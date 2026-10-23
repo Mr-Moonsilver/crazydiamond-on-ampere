@@ -1,0 +1,27 @@
+[Unit]
+Description=Qwen3.8 Flash Next W4A16 (production), TP2xPP2/EP2, host QSA KV + PLE, VRAM row cache
+After=network-online.target docker.service gpu-memory-profile.service
+Wants=network-online.target
+Requires=docker.service
+# Only one model server owns the GPUs. Rollback: systemctl stop vllm-flash && systemctl start vllm-qwen38
+Conflicts=vllm-qwen38.service
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=<service-user>
+Group=<service-user>
+WorkingDirectory=/data/vllm/flash-next-tp4
+EnvironmentFile=/etc/default/vllm-flash
+ExecStart=/bin/bash /data/vllm/flash-next-tp4/prod/run-flash-prod.sh
+ExecStop=/usr/bin/sudo /usr/bin/docker stop --timeout 60 qwen-flash-prod
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=1200
+TimeoutStopSec=90
+StandardOutput=append:/data/vllm/flash-next-tp4/logs/server-flash-prod.log
+StandardError=append:/data/vllm/flash-next-tp4/logs/server-flash-prod.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,243 @@
+--- ops_qsa.py.image	2026-10-23 02:02:05
++++ ops_qsa.py.patched	2026-10-23 02:02:05
+@@ -25,6 +25,13 @@
+     partial_output_ptr,
+     partial_lse_ptr,
+     output_ptr,
++    cache_kv_ptr,
++    tags_ptr,
++    row_map_ptr,
++    stride_c_req,
++    stride_c_slot,
++    stride_c_head,
++    num_cache_reqs,
+     stride_q_row,
+     stride_q_head,
+     stride_k_block,
+@@ -50,6 +57,8 @@
+     NUM_TILES: tl.constexpr,
+     BLOCK_M: tl.constexpr,
+     BLOCK_N: tl.constexpr,
++    CACHE_SLOTS: tl.constexpr = 1,
++    USE_CACHE: tl.constexpr = False,
+ ) -> None:
+     row = tl.program_id(0)
+     kv_head = tl.program_id(1)
+@@ -109,24 +118,35 @@
+         valid &= (physical_page >= 0) & (physical_page < num_cache_blocks)
+         # physical_page * block stride can overflow int32 for large caches.
+         safe_page = tl.maximum(physical_page, 0).to(tl.int64)
+-        keys = tl.load(
++        key_ptrs = (
+             k_cache_ptr
+             + safe_page[None, :] * stride_k_block
+             + page_offset[None, :] * stride_k_token
+             + kv_head * stride_k_head
+-            + dim_offsets[:, None],
+-            mask=valid[None, :],
+-            other=0.0,
++            + dim_offsets[:, None]
+         )
+-        values = tl.load(
++        value_ptrs = (
+             v_cache_ptr
+             + safe_page[:, None] * stride_v_block
+             + page_offset[:, None] * stride_v_token
+             + kv_head * stride_v_head
+-            + dim_offsets[None, :],
+-            mask=valid[:, None],
+-            other=0.0,
++            + dim_offsets[None, :]
+         )
++        if USE_CACHE:
++            # One load per row either way: cached rows point into VRAM, the rest keep their
++            # host-mapped (UVA) address, so shared-memory use matches the uncached kernel.
++            mapped = tl.load(row_map_ptr + safe_request)
++            cache_req = tl.minimum(tl.maximum(mapped, 0), num_cache_reqs - 1)
++            slot = safe_token % CACHE_SLOTS
++            in_cache_range = (request >= 0) & (request < num_requests) & (mapped >= 0) & (mapped < num_cache_reqs)
++            tag = tl.load(tags_ptr + cache_req * CACHE_SLOTS + slot,
++                          mask=valid & in_cache_range, other=-1)
++            hit = valid & in_cache_range & (tag == logical_token)
++            cache_row = cache_kv_ptr + cache_req * stride_c_req + slot * stride_c_slot + kv_head * stride_c_head
++            key_ptrs = tl.where(hit[None, :], cache_row[None, :] + dim_offsets[:, None], key_ptrs)
++            value_ptrs = tl.where(hit[:, None], cache_row[:, None] + HEAD_DIM + dim_offsets[None, :], value_ptrs)
++        keys = tl.load(key_ptrs, mask=valid[None, :], other=0.0)
++        values = tl.load(value_ptrs, mask=valid[:, None], other=0.0)
+         scores = tl.dot(query, keys)
+         # Scaling scores avoids re-quantizing a scaled query to BF16.
+         scores *= softmax_scale_log2
+@@ -182,6 +202,95 @@
+         )
+ 
+ 
++@triton.jit
++def _qsa_rowcache_select(
++    indices_ptr, block_table_ptr, token_to_req_ptr, row_map_ptr, row, tile, stride_indices_row, stride_table_req,
++    num_requests, num_cache_reqs, num_cache_blocks,
++    TOPK: tl.constexpr, PAGE_SIZE: tl.constexpr, PAGE_TABLE_WIDTH: tl.constexpr,
++    CACHE_SLOTS: tl.constexpr, BLOCK_N: tl.constexpr,
++):
++    request = tl.load(token_to_req_ptr + row)
++    safe_request = tl.minimum(tl.maximum(request, 0), num_requests - 1)
++    mapped = tl.load(row_map_ptr + safe_request)
++    cache_req = tl.minimum(tl.maximum(mapped, 0), num_cache_reqs - 1)
++    valid_count = tl.minimum(tl.load(indices_ptr + row * stride_indices_row + TOPK), TOPK)
++    columns = tile * BLOCK_N + tl.arange(0, BLOCK_N)
++    token = tl.load(indices_ptr + row * stride_indices_row + columns, mask=columns < valid_count, other=-1)
++    safe_token = tl.maximum(token, 0)
++    logical_page = safe_token // PAGE_SIZE
++    valid = ((request >= 0) & (request < num_requests) & (mapped >= 0) & (mapped < num_cache_reqs)
++             & (token >= 0) & (logical_page < PAGE_TABLE_WIDTH))
++    physical_page = tl.load(
++        block_table_ptr + safe_request * stride_table_req + tl.minimum(logical_page, PAGE_TABLE_WIDTH - 1),
++        mask=valid, other=-1)
++    valid &= (physical_page >= 0) & (physical_page < num_cache_blocks)
++    slot = safe_token % CACHE_SLOTS
++    return token, valid, cache_req, slot, tl.maximum(physical_page, 0).to(tl.int64), safe_token % PAGE_SIZE
++
++
++@triton.jit(do_not_specialize=["num_requests", "num_cache_reqs", "num_cache_blocks"])
++def _qsa_rowcache_claim_kernel(
++    indices_ptr, block_table_ptr, token_to_req_ptr, row_map_ptr, tags_ptr, claim_ptr,
++    stride_indices_row, stride_table_req, num_requests, num_cache_reqs, num_cache_blocks,
++    TOPK: tl.constexpr, PAGE_SIZE: tl.constexpr, PAGE_TABLE_WIDTH: tl.constexpr,
++    CACHE_SLOTS: tl.constexpr, BLOCK_N: tl.constexpr,
++) -> None:
++    # Phase 1 of 2: one winner per slot and step. A slot already holding a selected token is
++    # kept (priority KEEP); otherwise the largest selected token wins. claim is reset to -1 first.
++    token, valid, cache_req, slot, _, _ = _qsa_rowcache_select(
++        indices_ptr, block_table_ptr, token_to_req_ptr, row_map_ptr, tl.program_id(0), tl.program_id(1),
++        stride_indices_row, stride_table_req, num_requests, num_cache_reqs, num_cache_blocks,
++        TOPK, PAGE_SIZE, PAGE_TABLE_WIDTH, CACHE_SLOTS, BLOCK_N)
++    offset = cache_req * CACHE_SLOTS + slot
++    tag = tl.load(tags_ptr + offset, mask=valid, other=-1)
++    priority = tl.where(tag == token, 2147483647, token)
++    tl.atomic_max(claim_ptr + offset, priority, mask=valid)
++
++
++@triton.jit(do_not_specialize=["num_requests", "num_cache_reqs", "num_cache_blocks"])
++def _qsa_rowcache_copy_kernel(
++    k_cache_ptr, v_cache_ptr, indices_ptr, block_table_ptr, token_to_req_ptr, row_map_ptr,
++    cache_kv_ptr, tags_ptr, claim_ptr, counters_ptr,
++    stride_k_block, stride_k_token, stride_k_head,
++    stride_v_block, stride_v_token, stride_v_head,
++    stride_indices_row, stride_table_req,
++    stride_c_req, stride_c_slot, stride_c_head,
++    num_requests, num_cache_reqs, num_cache_blocks,
++    TOPK: tl.constexpr, PAGE_SIZE: tl.constexpr, PAGE_TABLE_WIDTH: tl.constexpr,
++    CACHE_SLOTS: tl.constexpr, NUM_KV_HEADS: tl.constexpr, HEAD_DIM: tl.constexpr,
++    BLOCK_N: tl.constexpr,
++    PUBLISH: tl.constexpr,
++) -> None:
++    # Phase 2 (PUBLISH=False): the claim winner, if it is a miss, copies its host row; only one
++    # token can win a slot, so every write to a slot carries the same data. Phase 3 (PUBLISH=True,
++    # a separate launch): the same lanes, decided from the same unchanged tags/claims, set the tag.
++    # Keeping the tag writes out of the copy launch means no lane can see a tag whose row is still
++    # in flight (that race lost rows on the x8 card, where host reads are slowest).
++    token, valid, cache_req, slot, safe_page, page_offset = _qsa_rowcache_select(
++        indices_ptr, block_table_ptr, token_to_req_ptr, row_map_ptr, tl.program_id(0), tl.program_id(1),
++        stride_indices_row, stride_table_req, num_requests, num_cache_reqs, num_cache_blocks,
++        TOPK, PAGE_SIZE, PAGE_TABLE_WIDTH, CACHE_SLOTS, BLOCK_N)
++    offset = cache_req * CACHE_SLOTS + slot
++    tag = tl.load(tags_ptr + offset, mask=valid, other=-1)
++    claim = tl.load(claim_ptr + offset, mask=valid, other=-1)
++    miss = valid & (tag != token)
++    copy = miss & (claim == token)
++    if PUBLISH:
++        tl.store(tags_ptr + offset, token, mask=copy)
++    else:
++        tl.atomic_add(counters_ptr, tl.sum(valid.to(tl.int64), axis=0))
++        tl.atomic_add(counters_ptr + 1, tl.sum(miss.to(tl.int64), axis=0))
++        dims = tl.arange(0, HEAD_DIM)
++        for head in tl.static_range(NUM_KV_HEADS):
++            keys = tl.load(k_cache_ptr + safe_page[:, None] * stride_k_block + page_offset[:, None] * stride_k_token
++                           + head * stride_k_head + dims[None, :], mask=copy[:, None], other=0.0)
++            values = tl.load(v_cache_ptr + safe_page[:, None] * stride_v_block + page_offset[:, None] * stride_v_token
++                             + head * stride_v_head + dims[None, :], mask=copy[:, None], other=0.0)
++            dest = cache_kv_ptr + cache_req * stride_c_req + slot[:, None] * stride_c_slot + head * stride_c_head
++            tl.store(dest + dims[None, :], keys, mask=copy[:, None])
++            tl.store(dest + HEAD_DIM + dims[None, :], values, mask=copy[:, None])
++
++
+ @triton.jit(do_not_specialize=["num_rows"])
+ def _qsa_merge_splitk_kernel(
+     partial_output_ptr,
+@@ -799,6 +908,7 @@
+     token_to_req: torch.Tensor,
+     use_prefill_config: bool,
+     out: torch.Tensor | None = None,
++    rowcache: tuple[torch.Tensor, ...] | None = None,
+ ) -> torch.Tensor:
+     """Run sparse GQA directly over paged BF16 K/V caches.
+ 
+@@ -866,6 +976,37 @@
+             device=q.device,
+         )
+ 
++    if rowcache is not None:
++        cache_kv, tags, counters, claim = rowcache[:4]
++        row_map = rowcache[6]
++        cache_slots = cache_kv.shape[1]
++        fill_n = 32
++        fill_grid = (q.shape[0], triton.cdiv(selection_width, fill_n))
++        claim.fill_(-1)
++        _qsa_rowcache_claim_kernel[fill_grid](
++            logical_indices, block_table, token_to_req, row_map, tags, claim,
++            logical_indices.stride(0), block_table.stride(0),
++            block_table.shape[0], cache_kv.shape[0], k_cache.shape[0],
++            TOPK=selection_width, PAGE_SIZE=k_cache.shape[1], PAGE_TABLE_WIDTH=block_table.shape[1],
++            CACHE_SLOTS=cache_slots, BLOCK_N=fill_n, num_warps=1, num_stages=1,
++        )
++        for publish in (False, True):
++            _qsa_rowcache_copy_kernel[fill_grid](
++                k_cache, v_cache, logical_indices, block_table, token_to_req, row_map, cache_kv, tags, claim, counters,
++                k_cache.stride(0), k_cache.stride(1), k_cache.stride(2),
++                v_cache.stride(0), v_cache.stride(1), v_cache.stride(2),
++                logical_indices.stride(0), block_table.stride(0),
++                cache_kv.stride(0), cache_kv.stride(1), cache_kv.stride(2),
++                block_table.shape[0], cache_kv.shape[0], k_cache.shape[0],
++                TOPK=selection_width, PAGE_SIZE=k_cache.shape[1], PAGE_TABLE_WIDTH=block_table.shape[1],
++                CACHE_SLOTS=cache_slots, NUM_KV_HEADS=k_cache.shape[2], HEAD_DIM=q.shape[2],
++                BLOCK_N=fill_n, PUBLISH=publish, num_warps=1 if publish else 4, num_stages=1,
++            )
++        cache_args = (cache_kv, tags, row_map, cache_kv.stride(0), cache_kv.stride(1), cache_kv.stride(2),
++                      cache_kv.shape[0])
++    else:
++        cache_slots = 1
++        cache_args = (out, out, out, 0, 0, 0, 1)
+     partial_grid = (q.shape[0], k_cache.shape[2], num_splits)
+     _qsa_sparse_paged_gqa_splitk_kernel[partial_grid](
+         q,
+@@ -877,6 +1018,7 @@
+         partial_output,
+         partial_lse,
+         out,
++        *cache_args,
+         q.stride(0),
+         q.stride(1),
+         k_cache.stride(0),
+@@ -902,6 +1044,8 @@
+         NUM_TILES=num_tiles,
+         BLOCK_M=block_m,
+         BLOCK_N=block_n,
++        CACHE_SLOTS=cache_slots,
++        USE_CACHE=rowcache is not None,
+         num_warps=partial_warps,
+         num_stages=2,
+     )
+@@ -1002,7 +1146,14 @@
+             token_to_req_ptr,
+             partial_output_ptr,
+             partial_lse_ptr,
++            output_ptr,
++            output_ptr,
++            output_ptr,
+             output_ptr,
++            0,
++            0,
++            0,
++            1,
+             row_stride,
+             head_stride,
+             key_cache.stride(0),
