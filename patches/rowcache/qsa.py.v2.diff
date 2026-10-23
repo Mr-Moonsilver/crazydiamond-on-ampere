@@ -1,0 +1,113 @@
+--- qsa.py.image	2026-10-23 02:02:05
++++ qsa.py.v2	2026-10-23 13:48:54
+@@ -227,6 +227,68 @@
+             use_prefill_config,
+             output,
+         )
++        rowcache = getattr(layer, "_qsa_rowcache", None)
++        if rowcache is not None and not getattr(__import__("vllm.forward_context").forward_context,
++                                                 "QSA_REQ_UID_WRITER", False):
++            # Without the runner patch every request would carry the same id: never cache then.
++            rowcache = None
++        if rowcache is not None:
++            # Cache rows belong to requests, not batch indices: with pipeline parallelism two
++            # micro-batches alternate, so batch index i is a different request on every other step.
++            # A request is identified by the id the model runner assigns it (QSA_REQ_UID, batch
++            # order). NOT by its first physical KV page: under prefix caching sessions with the same
++            # prompt start share that page, and keying on it let them read each other's rows
++            # (cross-session leak, 23 Oct 2026). Each step: find the row owned by each request; give
++            # new requests (or ones in their first chunk) the least recently used row and clear its
++            # tags. Fixed-shape tensor ops only, so this also replays inside graphs.
++            import vllm.forward_context as _fc
++            _, tags, _, _, row_owner, row_last, row_map, step = rowcache
++            rows = row_owner.shape[0] - 1  # last row is the dummy
++            num_reqs = min(attn_metadata.seq_lens.shape[0], attn_metadata.block_table.shape[0], rows)
++            query_lens = attn_metadata.query_start_loc[1:num_reqs + 1] - attn_metadata.query_start_loc[:num_reqs]
++            owner = _fc.QSA_REQ_UID[:num_reqs]
++            active = query_lens > 0
++            fresh = active & (attn_metadata.seq_lens[:num_reqs] == query_lens)
++            matches = (row_owner[None, :rows] == owner[:, None]) & active[:, None]
++            has = matches.any(dim=1) & ~fresh
++            match_row = matches.to(torch.int32).argmax(dim=1)
++            used = torch.zeros(rows + 1, dtype=torch.int64, device=owner.device).scatter_reduce_(
++                0, match_row.long(), has.long(), "amax")
++            order = torch.argsort(row_last + used * 2**61)  # unused rows, oldest first; dummy last
++            need = active & ~has
++            pick = order[(torch.cumsum(need.long(), 0) - 1).clamp(min=0)]
++            row = torch.where(has, match_row.long(), torch.where(need, pick, torch.full_like(pick, rows)))
++            step.add_(1)
++            new_rows = torch.where(need, row, torch.full_like(row, rows))
++            tags.index_fill_(0, new_rows, -1)
++            row_owner.index_put_((new_rows,), owner)
++            row_last.index_put_((row,), step.expand(num_reqs))
++            row_last[rows:].fill_(2**62)
++            row_owner[rows:].fill_(-1)
++            tags[rows:].fill_(-1)
++            row_map[:num_reqs].copy_(torch.where(active, row, torch.full_like(row, -1)).to(torch.int32))
++            if os.environ.get("QSA_ROWCACHE_DEBUG") and layer.layer_name.split(".")[-3] == "3":
++                dbg = getattr(layer, "_qsa_dbg_steps", 0)
++                if dbg < 40:
++                    layer._qsa_dbg_steps = dbg + 1
++                    from vllm.logger import init_logger
++                    init_logger(__name__).warning("QSA_ROWCACHE_DEBUG step=%d owner=%s row=%s has=%s",
++                                                  dbg, owner.tolist(), row_map[:num_reqs].tolist(), has.tolist())
++        # Hit counters are read back (a GPU sync) only while /work/rowcache.report exists, and only on
++        # the first QSA layer of each stage; reading them on every layer and prefill step cost ~15-20 %
++        # of prefill throughput.
++        if (rowcache is not None and use_prefill_config and layer.layer_name.split(".")[-3] in ("3", "27")
++                and os.path.exists("/work/rowcache.report")):
++            selected, misses = rowcache[2].tolist()
++            if selected:
++                from vllm.logger import init_logger
++                init_logger(__name__).warning(
++                    "QSA_ROWCACHE_HITS layer=%s selected=%d misses=%d hit_rate=%.3f",
++                    layer.layer_name, selected, misses, 1 - misses / selected)
++            rowcache[2].zero_()
++        # A/B switch for experiments: the flush above still runs while the cache is off.
++        if rowcache is not None and os.path.exists("/work/rowcache.off"):
++            rowcache = None
+         if staged is None:
+             qsa_sparse_paged_attention(
+                 query[:num_tokens],
+@@ -237,6 +299,7 @@
+                 token_to_req,
+                 use_prefill_config,
+                 output[:num_tokens],
++                rowcache=None if use_prefill_config else rowcache,
+             )
+             return output
+         staged_start, staged_end = staged
+@@ -495,6 +558,33 @@
+         self._qsa_host_kv = allocate_registered_host_tensor(shape, torch.bfloat16)
+         self._qsa_gpu_slots = kv_cache
+         self.kv_cache = get_accelerator_view_from_cpu_tensor(self._qsa_host_kv)
++        rc_slots = int(os.environ.get("QSA_ROWCACHE_SLOTS", "0"))
++        self._qsa_rowcache = None
++        if rc_slots > 0:
++            rc_reqs = int(os.environ.get("QSA_ROWCACHE_REQS", "8")) + 1  # + dummy row
++            dev = kv_cache.device
++            row_last = torch.zeros(rc_reqs, dtype=torch.int64, device=dev)
++            row_last[-1] = 2**62  # the dummy row is never chosen for a request
++            self._qsa_rowcache = (
++                torch.empty((rc_reqs, rc_slots, self.num_kv_heads, 2 * self.head_dim), dtype=torch.bfloat16, device=dev),
++                torch.full((rc_reqs, rc_slots), -1, dtype=torch.int32, device=dev),   # tags
++                torch.zeros(2, dtype=torch.int64, device=dev),                      # [selected rows, misses]
++                torch.empty((rc_reqs, rc_slots), dtype=torch.int32, device=dev),    # per-step claims
++                torch.full((rc_reqs,), -1, dtype=torch.int32, device=dev),          # row -> owning request
++                row_last,                                                           # row -> last step used
++                torch.full((1024,), -1, dtype=torch.int32, device=dev),             # batch index -> row
++                torch.zeros(1, dtype=torch.int64, device=dev),                      # step counter
++            )
++            # Request identity for the row cache: the model runner (gpu_model_runner patch) writes a
++            # unique id per live request, in batch order, into this per-process buffer every step.
++            # Fixed address, so graphs replay with the current ids.
++            import vllm.forward_context as _fc
++            if getattr(_fc, "QSA_REQ_UID", None) is None:
++                _fc.QSA_REQ_UID = torch.full((1024,), -2, dtype=torch.int32, device=dev)
++            init_logger(__name__).info(
++                "QSA row cache %s: %d requests x %d slots, %.1f MiB VRAM",
++                self.layer_name, rc_reqs, rc_slots,
++                self._qsa_rowcache[0].numel() * 2 / 2**20)
+         init_logger(__name__).info(
+             "QSA host KV %s: %d blocks x %d tokens, %d local KV heads, "
+             "%.3f GiB exact-size pinned (UVA); budget is per rank",

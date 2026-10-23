@@ -46,6 +46,12 @@ qsa = sub(qsa, """        self._qsa_host_kv = allocate_registered_host_tensor(sh
                 torch.full((1024,), -1, dtype=torch.int32, device=dev),             # batch index -> row
                 torch.zeros(1, dtype=torch.int64, device=dev),                      # step counter
             )
+            # Request identity for the row cache: the model runner (gpu_model_runner patch) writes a
+            # unique id per live request, in batch order, into this per-process buffer every step.
+            # Fixed address, so graphs replay with the current ids.
+            import vllm.forward_context as _fc
+            if getattr(_fc, "QSA_REQ_UID", None) is None:
+                _fc.QSA_REQ_UID = torch.full((1024,), -2, dtype=torch.int32, device=dev)
             init_logger(__name__).info(
                 "QSA row cache %s: %d requests x %d slots, %.1f MiB VRAM",
                 self.layer_name, rc_reqs, rc_slots,
@@ -64,18 +70,25 @@ qsa = sub(qsa, """        if staged is None:
             )
             return output
 """, """        rowcache = getattr(layer, "_qsa_rowcache", None)
+        if rowcache is not None and not getattr(__import__("vllm.forward_context").forward_context,
+                                                 "QSA_REQ_UID_WRITER", False):
+            # Without the runner patch every request would carry the same id: never cache then.
+            rowcache = None
         if rowcache is not None:
             # Cache rows belong to requests, not batch indices: with pipeline parallelism two
             # micro-batches alternate, so batch index i is a different request on every other step.
-            # A request is identified by its first physical KV page (unique among live requests,
-            # moves with it when the batch is compacted). Each step: find the row owned by each
-            # request; give new requests (or ones in their first chunk) the least recently used row
-            # and clear its tags. Fixed-shape tensor ops only, so this also replays inside graphs.
+            # A request is identified by the id the model runner assigns it (QSA_REQ_UID, batch
+            # order). NOT by its first physical KV page: under prefix caching sessions with the same
+            # prompt start share that page, and keying on it let them read each other's rows
+            # (cross-session leak, 23 Oct 2026). Each step: find the row owned by each request; give
+            # new requests (or ones in their first chunk) the least recently used row and clear its
+            # tags. Fixed-shape tensor ops only, so this also replays inside graphs.
+            import vllm.forward_context as _fc
             _, tags, _, _, row_owner, row_last, row_map, step = rowcache
             rows = row_owner.shape[0] - 1  # last row is the dummy
             num_reqs = min(attn_metadata.seq_lens.shape[0], attn_metadata.block_table.shape[0], rows)
             query_lens = attn_metadata.query_start_loc[1:num_reqs + 1] - attn_metadata.query_start_loc[:num_reqs]
-            owner = attn_metadata.block_table[:num_reqs, 0].to(torch.int32)
+            owner = _fc.QSA_REQ_UID[:num_reqs]
             active = query_lens > 0
             fresh = active & (attn_metadata.seq_lens[:num_reqs] == query_lens)
             matches = (row_owner[None, :rows] == owner[:, None]) & active[:, None]
