@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Production launcher: Qwen3.8-Flash-Next W4A16 on CT <ct-id>, TP2 x PP2 / EP2, host QSA KV + PLE, custom
 # all-reduce, per-request VRAM row cache for selected QSA rows (overlay in $OVERLAY, checksummed).
-# Settings come from /etc/default/vllm-flash (see vllm-flash.service). Foreground: systemd owns the lifetime.
+# Settings come from /etc/default/vllm-flash (see vllm-flash.service); EXTRA_ARGS is appended word-split. Foreground: systemd owns the lifetime.
 set -euo pipefail
 task_dir=/data/vllm/flash-next-tp4
 expected_image=sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b
@@ -49,4 +49,4 @@ exec sudo docker run --rm --init --name "$name" --label qwen.flash-next-producti
   --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder \
   --max-logprobs 20 --host 0.0.0.0 --port 8000 \
   --compilation-config "$compilation" \
-  "${spec[@]}"
+  "${spec[@]}" ${EXTRA_ARGS:-}

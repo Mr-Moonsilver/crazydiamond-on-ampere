@@ -10,15 +10,23 @@ PCAP, PORT = sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 8000
 
 
 def packets(path):
+    """Yields (ts, frame) with frames normalised to a 14-byte Ethernet-style header (Linux cooked captures from
+    `tcpdump -i any`: SLL or SLL2)."""
     with open(path, "rb") as f:
-        magic = f.read(24)[:4]
-        endian = "<" if magic in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1") else ">"
+        ghdr = f.read(24)
+        endian = "<" if ghdr[:4] in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1") else ">"
+        linktype = struct.unpack(endian + "I", ghdr[20:24])[0]
         while True:
             hdr = f.read(16)
             if len(hdr) < 16:
                 return
             ts_s, ts_us, incl, _ = struct.unpack(endian + "IIII", hdr)
-            yield ts_s + ts_us / 1e6, f.read(incl)
+            frame = f.read(incl)
+            if linktype == 113:  # LINUX_SLL
+                frame = b"\0" * 12 + frame[14:]
+            elif linktype == 276:  # LINUX_SLL2: 20-byte header, ethertype in bytes 0-1
+                frame = b"\0" * 12 + frame[0:2] + frame[20:]
+            yield ts_s + ts_us / 1e6, frame
 
 
 flows = collections.defaultdict(dict)  # (src ip, src port) -> {seq: payload}

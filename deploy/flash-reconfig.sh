@@ -1,8 +1,8 @@
 #!/bin/bash
-# Switch vllm-flash to /etc/default/vllm-flash.next with automatic rollback to the backup if the new
+# Switch vllm-flash to /etc/default/vllm-flash.next with automatic rollback to a copy of the current settings if the new
 # configuration is not healthy within 12 minutes. Log: /data/vllm/flash-next-tp4/logs/reconfig-<stamp>.log
 set -u
-NEXT=/etc/default/vllm-flash.next; CUR=/etc/default/vllm-flash; BAK=/etc/default/vllm-flash.bak-20261023-pool18-chunk2048
+NEXT=/etc/default/vllm-flash.next; CUR=/etc/default/vllm-flash; BAK=/etc/default/vllm-flash.bak-$(date -u +%Y%m%dT%H%M%SZ); cp -p "$CUR" "$BAK"
 LOG=/data/vllm/flash-next-tp4/logs/reconfig-$(date -u +%Y%m%dT%H%M%SZ).log
 log(){ echo "$(date -u +%FT%TZ) $*" | tee -a "$LOG"; }
 wait_healthy(){ for i in $(seq 1 72); do curl -fs --max-time 5 http://127.0.0.1:8000/health >/dev/null && return 0; systemctl is-failed -q vllm-flash && return 1; sleep 10; done; return 1; }
