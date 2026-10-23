@@ -1,0 +1,1364 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Triton kernels for Qwen4Exp QSA sparse attention and cache updates."""
+
+from __future__ import annotations
+
+import os
+import torch
+
+from vllm.model_executor.warmup.jit_warmup_triton_helper import (
+    TritonWarmupTensor,
+    triton_scalar_specialization_rep,
+)
+from vllm.triton_utils import HAS_TRITON, tl, triton
+
+
+@triton.jit(do_not_specialize=["num_rows", "num_requests"])
+def _qsa_sparse_paged_gqa_splitk_kernel(
+    q_ptr,
+    k_cache_ptr,
+    v_cache_ptr,
+    indices_ptr,
+    block_table_ptr,
+    token_to_req_ptr,
+    partial_output_ptr,
+    partial_lse_ptr,
+    output_ptr,
+    cache_kv_ptr,
+    tags_ptr,
+    row_map_ptr,
+    stride_c_req,
+    stride_c_slot,
+    stride_c_head,
+    num_cache_reqs,
+    stride_q_row,
+    stride_q_head,
+    stride_k_block,
+    stride_k_token,
+    stride_k_head,
+    stride_v_block,
+    stride_v_token,
+    stride_v_head,
+    stride_indices_row,
+    stride_table_req,
+    stride_output_row,
+    stride_output_head,
+    num_rows,
+    num_cache_blocks,
+    num_requests,
+    TOPK: tl.constexpr,
+    PAGE_SIZE: tl.constexpr,
+    PAGE_TABLE_WIDTH: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    NUM_QUERY_HEADS: tl.constexpr,
+    NUM_SPLITS: tl.constexpr,
+    NUM_TILES: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    CACHE_SLOTS: tl.constexpr = 1,
+    USE_CACHE: tl.constexpr = False,
+) -> None:
+    row = tl.program_id(0)
+    kv_head = tl.program_id(1)
+    split_id = tl.program_id(2)
+    request = tl.load(token_to_req_ptr + row)
+    safe_request = tl.minimum(tl.maximum(request, 0), num_requests - 1)
+
+    # The packed selection buffer carries one TRAILING COUNT COLUMN per row
+    # (column TOPK of a TOPK+1-wide buffer): the row's valid-entry count,
+    # written by the expand kernel. It is never a token index — the tile loop
+    # and the index load below only ever cover columns [0, TOPK).
+    valid_count = tl.load(indices_ptr + row * stride_indices_row + TOPK)
+
+    head_offsets = tl.arange(0, BLOCK_M)
+    dim_offsets = tl.arange(0, HEAD_DIM)
+    column_offsets = tl.arange(0, BLOCK_N)
+    first_head = kv_head * GROUP_SIZE
+    query = tl.load(
+        q_ptr
+        + row * stride_q_row
+        + (first_head + head_offsets[:, None]) * stride_q_head
+        + dim_offsets[None, :],
+        mask=head_offsets[:, None] < GROUP_SIZE,
+        other=0.0,
+    )
+
+    max_value = tl.full((BLOCK_M,), -1.0e20, dtype=tl.float32)
+    normalizer = tl.zeros((BLOCK_M,), dtype=tl.float32)
+    accumulator = tl.zeros((BLOCK_M, HEAD_DIM), dtype=tl.float32)
+    softmax_scale_log2: tl.constexpr = (HEAD_DIM**-0.5) * 1.4426950408889634
+
+    tile_end = tl.minimum(NUM_TILES, tl.cdiv(tl.minimum(valid_count, TOPK), BLOCK_N))
+
+    for tile in range(split_id, tile_end, NUM_SPLITS):
+        columns = tile * BLOCK_N + column_offsets
+        logical_token = tl.load(
+            indices_ptr + row * stride_indices_row + columns,
+            mask=columns < TOPK,
+            other=-1,
+        )
+        safe_token = tl.maximum(logical_token, 0)
+        logical_page = safe_token // PAGE_SIZE
+        page_offset = safe_token % PAGE_SIZE
+        valid = (
+            (request >= 0)
+            & (request < num_requests)
+            & (logical_token >= 0)
+            & (logical_page < PAGE_TABLE_WIDTH)
+        )
+        physical_page = tl.load(
+            block_table_ptr
+            + safe_request * stride_table_req
+            + tl.minimum(logical_page, PAGE_TABLE_WIDTH - 1),
+            mask=valid,
+            other=-1,
+        )
+        valid &= (physical_page >= 0) & (physical_page < num_cache_blocks)
+        # physical_page * block stride can overflow int32 for large caches.
+        safe_page = tl.maximum(physical_page, 0).to(tl.int64)
+        key_ptrs = (
+            k_cache_ptr
+            + safe_page[None, :] * stride_k_block
+            + page_offset[None, :] * stride_k_token
+            + kv_head * stride_k_head
+            + dim_offsets[:, None]
+        )
+        value_ptrs = (
+            v_cache_ptr
+            + safe_page[:, None] * stride_v_block
+            + page_offset[:, None] * stride_v_token
+            + kv_head * stride_v_head
+            + dim_offsets[None, :]
+        )
+        if USE_CACHE:
+            # One load per row either way: cached rows point into VRAM, the rest keep their
+            # host-mapped (UVA) address, so shared-memory use matches the uncached kernel.
+            mapped = tl.load(row_map_ptr + safe_request)
+            cache_req = tl.minimum(tl.maximum(mapped, 0), num_cache_reqs - 1)
+            slot = safe_token % CACHE_SLOTS
+            in_cache_range = (request >= 0) & (request < num_requests) & (mapped >= 0) & (mapped < num_cache_reqs)
+            tag = tl.load(tags_ptr + cache_req * CACHE_SLOTS + slot,
+                          mask=valid & in_cache_range, other=-1)
+            hit = valid & in_cache_range & (tag == logical_token)
+            cache_row = cache_kv_ptr + cache_req * stride_c_req + slot * stride_c_slot + kv_head * stride_c_head
+            key_ptrs = tl.where(hit[None, :], cache_row[None, :] + dim_offsets[:, None], key_ptrs)
+            value_ptrs = tl.where(hit[:, None], cache_row[:, None] + HEAD_DIM + dim_offsets[None, :], value_ptrs)
+        keys = tl.load(key_ptrs, mask=valid[None, :], other=0.0)
+        values = tl.load(value_ptrs, mask=valid[:, None], other=0.0)
+        scores = tl.dot(query, keys)
+        # Scaling scores avoids re-quantizing a scaled query to BF16.
+        scores *= softmax_scale_log2
+        scores = tl.where(valid[None, :], scores, -1.0e20)
+        next_max = tl.maximum(max_value, tl.max(scores, axis=1))
+        alpha = tl.math.exp2(max_value - next_max)
+        probabilities = tl.where(
+            valid[None, :], tl.math.exp2(scores - next_max[:, None]), 0.0
+        )
+        accumulator = tl.dot(
+            probabilities.to(values.dtype),
+            values,
+            acc=accumulator * alpha[:, None],
+        )
+        normalizer = normalizer * alpha + tl.sum(probabilities, axis=1)
+        max_value = next_max
+
+    has_values = normalizer > 0
+    normalized_output = tl.where(
+        has_values[:, None],
+        accumulator / tl.maximum(normalizer[:, None], 1.0e-20),
+        0.0,
+    )
+    output_mask = head_offsets[:, None] < GROUP_SIZE
+    if NUM_SPLITS == 1:
+        tl.store(
+            output_ptr
+            + row * stride_output_row
+            + (first_head + head_offsets[:, None]) * stride_output_head
+            + dim_offsets[None, :],
+            normalized_output,
+            mask=output_mask,
+        )
+    else:
+        partial_lse = tl.where(
+            has_values,
+            max_value + tl.math.log2(tl.maximum(normalizer, 1.0e-20)),
+            -float("inf"),
+        )
+        partial_row = (split_id * num_rows + row).to(tl.int64)
+        tl.store(
+            partial_output_ptr
+            + (partial_row * NUM_QUERY_HEADS + first_head + head_offsets[:, None])
+            * HEAD_DIM
+            + dim_offsets[None, :],
+            normalized_output,
+            mask=output_mask,
+        )
+        tl.store(
+            partial_lse_ptr + partial_row * NUM_QUERY_HEADS + first_head + head_offsets,
+            partial_lse,
+            mask=head_offsets < GROUP_SIZE,
+        )
+
+
+@triton.jit
+def _qsa_rowcache_select(
+    indices_ptr, block_table_ptr, token_to_req_ptr, row_map_ptr, row, tile, stride_indices_row, stride_table_req,
+    num_requests, num_cache_reqs, num_cache_blocks,
+    TOPK: tl.constexpr, PAGE_SIZE: tl.constexpr, PAGE_TABLE_WIDTH: tl.constexpr,
+    CACHE_SLOTS: tl.constexpr, BLOCK_N: tl.constexpr,
+):
+    request = tl.load(token_to_req_ptr + row)
+    safe_request = tl.minimum(tl.maximum(request, 0), num_requests - 1)
+    mapped = tl.load(row_map_ptr + safe_request)
+    cache_req = tl.minimum(tl.maximum(mapped, 0), num_cache_reqs - 1)
+    valid_count = tl.minimum(tl.load(indices_ptr + row * stride_indices_row + TOPK), TOPK)
+    columns = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    token = tl.load(indices_ptr + row * stride_indices_row + columns, mask=columns < valid_count, other=-1)
+    safe_token = tl.maximum(token, 0)
+    logical_page = safe_token // PAGE_SIZE
+    valid = ((request >= 0) & (request < num_requests) & (mapped >= 0) & (mapped < num_cache_reqs)
+             & (token >= 0) & (logical_page < PAGE_TABLE_WIDTH))
+    physical_page = tl.load(
+        block_table_ptr + safe_request * stride_table_req + tl.minimum(logical_page, PAGE_TABLE_WIDTH - 1),
+        mask=valid, other=-1)
+    valid &= (physical_page >= 0) & (physical_page < num_cache_blocks)
+    slot = safe_token % CACHE_SLOTS
+    return token, valid, cache_req, slot, tl.maximum(physical_page, 0).to(tl.int64), safe_token % PAGE_SIZE
+
+
+@triton.jit(do_not_specialize=["num_requests", "num_cache_reqs", "num_cache_blocks"])
+def _qsa_rowcache_claim_kernel(
+    indices_ptr, block_table_ptr, token_to_req_ptr, row_map_ptr, tags_ptr, claim_ptr,
+    stride_indices_row, stride_table_req, num_requests, num_cache_reqs, num_cache_blocks,
+    TOPK: tl.constexpr, PAGE_SIZE: tl.constexpr, PAGE_TABLE_WIDTH: tl.constexpr,
+    CACHE_SLOTS: tl.constexpr, BLOCK_N: tl.constexpr,
+) -> None:
+    # Phase 1 of 2: one winner per slot and step. A slot already holding a selected token is
+    # kept (priority KEEP); otherwise the largest selected token wins. claim is reset to -1 first.
+    token, valid, cache_req, slot, _, _ = _qsa_rowcache_select(
+        indices_ptr, block_table_ptr, token_to_req_ptr, row_map_ptr, tl.program_id(0), tl.program_id(1),
+        stride_indices_row, stride_table_req, num_requests, num_cache_reqs, num_cache_blocks,
+        TOPK, PAGE_SIZE, PAGE_TABLE_WIDTH, CACHE_SLOTS, BLOCK_N)
+    offset = cache_req * CACHE_SLOTS + slot
+    tag = tl.load(tags_ptr + offset, mask=valid, other=-1)
+    priority = tl.where(tag == token, 2147483647, token)
+    tl.atomic_max(claim_ptr + offset, priority, mask=valid)
+
+
+@triton.jit(do_not_specialize=["num_requests", "num_cache_reqs", "num_cache_blocks"])
+def _qsa_rowcache_copy_kernel(
+    k_cache_ptr, v_cache_ptr, indices_ptr, block_table_ptr, token_to_req_ptr, row_map_ptr,
+    cache_kv_ptr, tags_ptr, claim_ptr, counters_ptr,
+    stride_k_block, stride_k_token, stride_k_head,
+    stride_v_block, stride_v_token, stride_v_head,
+    stride_indices_row, stride_table_req,
+    stride_c_req, stride_c_slot, stride_c_head,
+    num_requests, num_cache_reqs, num_cache_blocks,
+    TOPK: tl.constexpr, PAGE_SIZE: tl.constexpr, PAGE_TABLE_WIDTH: tl.constexpr,
+    CACHE_SLOTS: tl.constexpr, NUM_KV_HEADS: tl.constexpr, HEAD_DIM: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    PUBLISH: tl.constexpr,
+) -> None:
+    # Phase 2 (PUBLISH=False): the claim winner, if it is a miss, copies its host row; only one
+    # token can win a slot, so every write to a slot carries the same data. Phase 3 (PUBLISH=True,
+    # a separate launch): the same lanes, decided from the same unchanged tags/claims, set the tag.
+    # Keeping the tag writes out of the copy launch means no lane can see a tag whose row is still
+    # in flight (that race lost rows on the x8 card, where host reads are slowest).
+    token, valid, cache_req, slot, safe_page, page_offset = _qsa_rowcache_select(
+        indices_ptr, block_table_ptr, token_to_req_ptr, row_map_ptr, tl.program_id(0), tl.program_id(1),
+        stride_indices_row, stride_table_req, num_requests, num_cache_reqs, num_cache_blocks,
+        TOPK, PAGE_SIZE, PAGE_TABLE_WIDTH, CACHE_SLOTS, BLOCK_N)
+    offset = cache_req * CACHE_SLOTS + slot
+    tag = tl.load(tags_ptr + offset, mask=valid, other=-1)
+    claim = tl.load(claim_ptr + offset, mask=valid, other=-1)
+    miss = valid & (tag != token)
+    copy = miss & (claim == token)
+    if PUBLISH:
+        tl.store(tags_ptr + offset, token, mask=copy)
+    else:
+        tl.atomic_add(counters_ptr, tl.sum(valid.to(tl.int64), axis=0))
+        tl.atomic_add(counters_ptr + 1, tl.sum(miss.to(tl.int64), axis=0))
+        dims = tl.arange(0, HEAD_DIM)
+        for head in tl.static_range(NUM_KV_HEADS):
+            keys = tl.load(k_cache_ptr + safe_page[:, None] * stride_k_block + page_offset[:, None] * stride_k_token
+                           + head * stride_k_head + dims[None, :], mask=copy[:, None], other=0.0)
+            values = tl.load(v_cache_ptr + safe_page[:, None] * stride_v_block + page_offset[:, None] * stride_v_token
+                             + head * stride_v_head + dims[None, :], mask=copy[:, None], other=0.0)
+            dest = cache_kv_ptr + cache_req * stride_c_req + slot[:, None] * stride_c_slot + head * stride_c_head
+            tl.store(dest + dims[None, :], keys, mask=copy[:, None])
+            tl.store(dest + HEAD_DIM + dims[None, :], values, mask=copy[:, None])
+
+
+@triton.jit(do_not_specialize=["num_rows"])
+def _qsa_merge_splitk_kernel(
+    partial_output_ptr,
+    partial_lse_ptr,
+    output_ptr,
+    stride_output_row,
+    stride_output_head,
+    num_rows,
+    HEAD_DIM: tl.constexpr,
+    NUM_QUERY_HEADS: tl.constexpr,
+    NUM_SPLITS: tl.constexpr,
+    BLOCK_SPLITS: tl.constexpr,
+) -> None:
+    row = tl.program_id(0)
+    head = tl.program_id(1)
+    split_offsets = tl.arange(0, BLOCK_SPLITS)
+    dim_offsets = tl.arange(0, HEAD_DIM)
+    split_mask = split_offsets < NUM_SPLITS
+    lse = tl.load(
+        partial_lse_ptr + (split_offsets * num_rows + row) * NUM_QUERY_HEADS + head,
+        mask=split_mask,
+        other=-float("inf"),
+    )
+    lse_max = tl.max(lse, axis=0)
+    has_values = lse_max > -float("inf")
+    shifted = tl.where(split_mask & has_values, lse - lse_max, -float("inf"))
+    weights = tl.math.exp2(shifted)
+    denominator = tl.sum(weights, axis=0)
+    split_rows = split_offsets.to(tl.int64) * num_rows + row
+    partial_output = tl.load(
+        partial_output_ptr
+        + (split_rows[:, None] * NUM_QUERY_HEADS + head) * HEAD_DIM
+        + dim_offsets[None, :],
+        mask=split_mask[:, None],
+        other=0.0,
+    )
+    merged = tl.sum(partial_output * weights[:, None], axis=0)
+    merged = tl.where(denominator > 0, merged / denominator, 0.0)
+    tl.store(
+        output_ptr + row * stride_output_row + head * stride_output_head + dim_offsets,
+        merged,
+    )
+
+
+@triton.jit
+def _store_qsa_rows_kernel(
+    cache_ptr,
+    slots_ptr,
+    rows_ptr,
+    stride_cache_block,
+    stride_cache_token,
+    stride_cache_dim,
+    stride_rows_row,
+    stride_rows_dim,
+    num_rows,
+    num_blocks,
+    PAGE_SIZE: tl.constexpr,
+    WIDTH: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+) -> None:
+    row = tl.program_id(0)
+    dims = tl.arange(0, BLOCK_D)
+    slot = tl.load(slots_ptr + row)
+    valid = (row < num_rows) & (slot >= 0) & (slot < num_blocks * PAGE_SIZE)
+    block = tl.maximum(slot, 0) // PAGE_SIZE
+    token = tl.maximum(slot, 0) % PAGE_SIZE
+    values = tl.load(
+        rows_ptr + row * stride_rows_row + dims * stride_rows_dim,
+        mask=valid & (dims < WIDTH),
+        other=0,
+    )
+    tl.store(
+        cache_ptr
+        + block * stride_cache_block
+        + token * stride_cache_token
+        + dims * stride_cache_dim,
+        values,
+        mask=valid & (dims < WIDTH),
+    )
+
+
+@triton.jit
+def _compress_qsa_groups_kernel(
+    raw_keys_ptr,  # this step's raw key rows, straight from activations
+    raw_positions_ptr,  # this step's per-token positions
+    compressor_state_cache_ptr,  # per-request ring of previous raw keys
+    rope_cache_ptr,  # packed RoPE position tail of the ring
+    compressor_state_table_ptr,
+    token_to_req_ptr,
+    query_start_loc_ptr,
+    logical_positions_ptr,
+    compressed_slots_ptr,
+    pooled_ptr,
+    first_positions_ptr,
+    stride_raw_row,
+    stride_raw_dim,
+    stride_raw_positions_row,
+    stride_raw_positions_dim,
+    stride_compressor_state_block,
+    stride_compressor_state_token,
+    stride_compressor_state_dim,
+    stride_rope_block,
+    stride_rope_token,
+    stride_rope_dim,
+    stride_compressor_state_table_req,
+    stride_pooled_row,
+    stride_pooled_dim,
+    stride_positions_row,
+    stride_positions_dim,
+    num_rows,
+    num_compressor_state_blocks,
+    num_requests,
+    COMPRESSOR_STATE_SIZE: tl.constexpr,
+    COMPRESS_RATIO: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    LOAD_ROPE_POSITIONS: tl.constexpr,
+) -> None:
+    row = tl.program_id(0)
+    dims = tl.arange(0, BLOCK_D)
+    request = tl.load(token_to_req_ptr + row)
+    end_position = tl.load(logical_positions_ptr + row)
+    compressed_slot = tl.load(compressed_slots_ptr + row)
+    valid_request = (request >= 0) & (request < num_requests)
+    safe_request = tl.minimum(tl.maximum(request, 0), num_requests - 1)
+    query_row_start = tl.load(
+        query_start_loc_ptr + safe_request, mask=valid_request, other=0
+    )
+    query_row_end = tl.load(
+        query_start_loc_ptr + safe_request + 1, mask=valid_request, other=0
+    )
+    chunk_start_position = end_position - (row - query_row_start)
+    compressor_state_block = tl.load(
+        compressor_state_table_ptr + safe_request * stride_compressor_state_table_req,
+        mask=valid_request,
+        other=-1,
+    )
+    valid_compressor_state_block = (compressor_state_block >= 0) & (
+        compressor_state_block < num_compressor_state_blocks
+    )
+    valid_row = (
+        (row < num_rows)
+        & valid_request
+        & (row >= query_row_start)
+        & (row < query_row_end)
+        & (end_position >= COMPRESS_RATIO - 1)
+        & (compressed_slot >= 0)
+    )
+    accumulator = tl.zeros((BLOCK_D,), dtype=tl.float32)
+
+    # A group can span the compressor-state ring (older members) and this
+    # step's raw rows (members at positions >= chunk_start_position).
+    for group_offset in tl.range(0, COMPRESS_RATIO):
+        position = end_position - (COMPRESS_RATIO - 1 - group_offset)
+        use_raw = position >= chunk_start_position
+        raw_row = query_row_start + position - chunk_start_position
+        raw_values = tl.load(
+            raw_keys_ptr + raw_row * stride_raw_row + dims * stride_raw_dim,
+            mask=valid_row
+            & use_raw
+            & (raw_row >= query_row_start)
+            & (raw_row < query_row_end)
+            & (raw_row < num_rows)
+            & (dims < HEAD_DIM),
+            other=0.0,
+        ).to(tl.float32)
+        compressor_state_values = tl.load(
+            compressor_state_cache_ptr
+            + tl.maximum(compressor_state_block, 0).to(tl.int64)
+            * stride_compressor_state_block
+            + (position % COMPRESSOR_STATE_SIZE) * stride_compressor_state_token
+            + dims * stride_compressor_state_dim,
+            mask=valid_row
+            & ~use_raw
+            & valid_compressor_state_block
+            & (dims < HEAD_DIM),
+            other=0.0,
+        ).to(tl.float32)
+        accumulator += tl.where(use_raw, raw_values, compressor_state_values)
+
+    tl.store(
+        pooled_ptr + row * stride_pooled_row + dims * stride_pooled_dim,
+        accumulator / COMPRESS_RATIO,
+        mask=(row < num_rows) & (dims < HEAD_DIM),
+    )
+
+    position_dims = tl.arange(0, 4)
+    first_position = end_position - COMPRESS_RATIO + 1
+    if LOAD_ROPE_POSITIONS:
+        first_from_raw = first_position >= chunk_start_position
+        raw_first_row = query_row_start + first_position - chunk_start_position
+        raw_position_values = tl.load(
+            raw_positions_ptr
+            + raw_first_row * stride_raw_positions_row
+            + position_dims * stride_raw_positions_dim,
+            mask=valid_row
+            & first_from_raw
+            & (raw_first_row >= query_row_start)
+            & (raw_first_row < query_row_end)
+            & (raw_first_row < num_rows)
+            & (position_dims < 3),
+            other=0,
+        )
+        compressor_state_position_values = tl.load(
+            rope_cache_ptr
+            + tl.maximum(compressor_state_block, 0).to(tl.int64) * stride_rope_block
+            + (first_position % COMPRESSOR_STATE_SIZE) * stride_rope_token
+            + position_dims * stride_rope_dim,
+            mask=valid_row
+            & ~first_from_raw
+            & valid_compressor_state_block
+            & (position_dims < 3),
+            other=0,
+        )
+        position_values = tl.where(
+            first_from_raw,
+            raw_position_values,
+            compressor_state_position_values,
+        )
+    else:
+        position_values = tl.where(valid_row, first_position, 0)
+    tl.store(
+        first_positions_ptr
+        + row * stride_positions_row
+        + position_dims * stride_positions_dim,
+        position_values,
+        mask=(row < num_rows) & (position_dims < 3),
+    )
+
+
+_TP2_3090_DECODE_CONFIGS = {1: (64, 8, 64), 2: (32, 4, 64), 4: (32, 4, 64), 8: (32, 4, 8), 16: (32, 4, 8)}
+
+
+def _select_config(
+    num_rows: int, num_kv_heads: int, use_prefill_config: bool, num_columns: int
+) -> tuple[int, int, int, int]:
+    """Select (block_n, num_warps, num_tiles, num_splits) for the kernel.
+
+    Tuned on GB300 for the Qwen3.8-Flash-Next TP1/TP2/TP4 shapes, keyed on
+    base_programs = num_rows * num_kv_heads. The bp > 2048 region splits on
+    use_prefill_config (capture-stable: at FULL-graph capture max_query_len is the
+    uniform decode/verify length).
+    """
+    # TP2/RTX3090 host-KV experiment: measured configuration-only override.
+    # Baseline dispatch remains active for prefill and all untested row counts.
+    if not use_prefill_config and num_kv_heads == 1 and num_rows in _TP2_3090_DECODE_CONFIGS:
+        block_n, warps, splits = _TP2_3090_DECODE_CONFIGS[num_rows]
+        tiles = triton.cdiv(num_columns, block_n)
+        return block_n, warps, tiles, min(splits, tiles)
+    base_programs = num_rows * num_kv_heads
+    if base_programs > 2048:
+        BLOCK_N, target_splits, num_warps = (
+            (32, 1, 1) if use_prefill_config else (64, 1, 2)
+        )
+    elif base_programs <= 24:
+        BLOCK_N, target_splits, num_warps = 32, 64, 4
+    elif base_programs <= 32:
+        BLOCK_N, target_splits, num_warps = 32, 16, 1
+    elif base_programs <= 64:
+        BLOCK_N, target_splits, num_warps = 32, 8, 1
+    elif base_programs <= 128:
+        BLOCK_N, target_splits, num_warps = 32, 4, 1
+    elif base_programs <= 256:
+        BLOCK_N, target_splits, num_warps = 32, 8, 1
+    elif base_programs <= 512:
+        BLOCK_N, target_splits, num_warps = 64, 4, 2
+    else:
+        BLOCK_N, target_splits, num_warps = 64, 1, 2
+    num_tiles = triton.cdiv(num_columns, BLOCK_N)
+    # Never more splits than tiles, never empty.
+    num_splits = min(target_splits, num_tiles)
+    return BLOCK_N, num_warps, num_tiles, num_splits
+
+
+@triton.jit(do_not_specialize=["num_rows", "page_lo", "pages_in_arena"])
+def _qsa_sparse_staged_gqa_kernel(
+    q_ptr,
+    k_arena_ptr,
+    v_arena_ptr,
+    indices_ptr,
+    row_map_ptr,
+    acc_ptr,
+    max_ptr,
+    norm_ptr,
+    output_ptr,
+    stride_q_row,
+    stride_q_head,
+    stride_k_block,
+    stride_k_token,
+    stride_k_head,
+    stride_v_block,
+    stride_v_token,
+    stride_v_head,
+    stride_indices_row,
+    stride_output_row,
+    stride_output_head,
+    num_rows,
+    page_lo,
+    pages_in_arena,
+    TOPK: tl.constexpr,
+    PAGE_SIZE: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    NUM_QUERY_HEADS: tl.constexpr,
+    NUM_TILES: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    FIRST_BUCKET: tl.constexpr,
+    LAST_BUCKET: tl.constexpr,
+) -> None:
+    local_row = tl.program_id(0)
+    kv_head = tl.program_id(1)
+    row = tl.load(row_map_ptr + local_row)
+
+    valid_count = tl.load(indices_ptr + row * stride_indices_row + TOPK)
+
+    head_offsets = tl.arange(0, BLOCK_M)
+    dim_offsets = tl.arange(0, HEAD_DIM)
+    column_offsets = tl.arange(0, BLOCK_N)
+    first_head = kv_head * GROUP_SIZE
+    head_mask = head_offsets < GROUP_SIZE
+    query = tl.load(
+        q_ptr
+        + row * stride_q_row
+        + (first_head + head_offsets[:, None]) * stride_q_head
+        + dim_offsets[None, :],
+        mask=head_mask[:, None],
+        other=0.0,
+    )
+
+    state_head = local_row.to(tl.int64) * NUM_QUERY_HEADS + first_head + head_offsets
+    if FIRST_BUCKET:
+        max_value = tl.full((BLOCK_M,), -1.0e20, dtype=tl.float32)
+        normalizer = tl.zeros((BLOCK_M,), dtype=tl.float32)
+        accumulator = tl.zeros((BLOCK_M, HEAD_DIM), dtype=tl.float32)
+    else:
+        max_value = tl.load(max_ptr + state_head, mask=head_mask, other=-1.0e20)
+        normalizer = tl.load(norm_ptr + state_head, mask=head_mask, other=0.0)
+        accumulator = tl.load(
+            acc_ptr + state_head[:, None] * HEAD_DIM + dim_offsets[None, :],
+            mask=head_mask[:, None],
+            other=0.0,
+        )
+
+    softmax_scale_log2: tl.constexpr = (HEAD_DIM**-0.5) * 1.4426950408889634
+    tile_end = tl.minimum(NUM_TILES, tl.cdiv(tl.minimum(valid_count, TOPK), BLOCK_N))
+
+    for tile in range(0, tile_end):
+        columns = tile * BLOCK_N + column_offsets
+        logical_token = tl.load(
+            indices_ptr + row * stride_indices_row + columns,
+            mask=columns < TOPK,
+            other=-1,
+        )
+        safe_token = tl.maximum(logical_token, 0)
+        logical_page = safe_token // PAGE_SIZE
+        page_offset = safe_token % PAGE_SIZE
+        arena_page = logical_page - page_lo
+        valid = (
+            (logical_token >= 0) & (arena_page >= 0) & (arena_page < pages_in_arena)
+        )
+        safe_page = tl.maximum(arena_page, 0).to(tl.int64)
+        keys = tl.load(
+            k_arena_ptr
+            + safe_page[None, :] * stride_k_block
+            + page_offset[None, :] * stride_k_token
+            + kv_head * stride_k_head
+            + dim_offsets[:, None],
+            mask=valid[None, :],
+            other=0.0,
+        )
+        values = tl.load(
+            v_arena_ptr
+            + safe_page[:, None] * stride_v_block
+            + page_offset[:, None] * stride_v_token
+            + kv_head * stride_v_head
+            + dim_offsets[None, :],
+            mask=valid[:, None],
+            other=0.0,
+        )
+        scores = tl.dot(query, keys)
+        scores *= softmax_scale_log2
+        scores = tl.where(valid[None, :], scores, -1.0e20)
+        next_max = tl.maximum(max_value, tl.max(scores, axis=1))
+        alpha = tl.math.exp2(max_value - next_max)
+        probabilities = tl.where(
+            valid[None, :], tl.math.exp2(scores - next_max[:, None]), 0.0
+        )
+        accumulator = tl.dot(
+            probabilities.to(values.dtype),
+            values,
+            acc=accumulator * alpha[:, None],
+        )
+        normalizer = normalizer * alpha + tl.sum(probabilities, axis=1)
+        max_value = next_max
+
+    if LAST_BUCKET:
+        has_values = normalizer > 0
+        tl.store(
+            output_ptr
+            + row * stride_output_row
+            + (first_head + head_offsets[:, None]) * stride_output_head
+            + dim_offsets[None, :],
+            tl.where(
+                has_values[:, None],
+                accumulator / tl.maximum(normalizer[:, None], 1.0e-20),
+                0.0,
+            ),
+            mask=head_mask[:, None],
+        )
+    else:
+        tl.store(max_ptr + state_head, max_value, mask=head_mask)
+        tl.store(norm_ptr + state_head, normalizer, mask=head_mask)
+        tl.store(
+            acc_ptr + state_head[:, None] * HEAD_DIM + dim_offsets[None, :],
+            accumulator,
+            mask=head_mask[:, None],
+        )
+
+
+def qsa_staged_arena_pages(arena_bytes: int, page_bytes: int) -> int:
+    """Number of logical pages the staging arena holds (at least one)."""
+    return max(1, arena_bytes // max(page_bytes, 1))
+
+
+@triton.jit(do_not_specialize=["num_tokens"])
+def _qsa_gather_selected_host_rows(
+    cache_ptr, token_ids_ptr, table_ptr, arena_ptr,
+    cache_stride_block, cache_stride_head, cache_stride_token,
+    arena_stride_block, arena_stride_head, arena_stride_token,
+    num_tokens, PAGE_SIZE: tl.constexpr, ROW_WIDTH: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    token = tl.program_id(0)
+    head = tl.program_id(1)
+    logical = tl.load(token_ids_ptr + token, mask=token < num_tokens, other=0)
+    physical = tl.load(table_ptr + logical // PAGE_SIZE).to(tl.int64)
+    dims = tl.arange(0, BLOCK_D)
+    values = tl.load(
+        cache_ptr + physical * cache_stride_block + head * cache_stride_head
+        + (logical % PAGE_SIZE).to(tl.int64) * cache_stride_token + dims,
+        mask=(token < num_tokens) & (dims < ROW_WIDTH), other=0,
+    )
+    tl.store(
+        arena_ptr + (token // PAGE_SIZE).to(tl.int64) * arena_stride_block
+        + head * arena_stride_head + (token % PAGE_SIZE) * arena_stride_token + dims,
+        values, mask=(token < num_tokens) & (dims < ROW_WIDTH),
+    )
+
+
+def qsa_sparse_paged_attention_staged(
+    q: torch.Tensor,
+    kv_cache: torch.Tensor,
+    logical_indices: torch.Tensor,
+    block_table_row: torch.Tensor,
+    rows: torch.Tensor,
+    max_logical_page: int,
+    arena: torch.Tensor,
+    use_prefill_config: bool,
+    out: torch.Tensor,
+) -> None:
+    """Run the rows in ``rows`` against host-resident K/V via the arena.
+
+    Caller contract (use the direct path when it cannot be met):
+      * ``rows`` belongs to a single request and ``block_table_row`` is that
+        request's block table row.
+      * ``kv_cache`` is the host (UVA) tensor shaped
+        ``[blocks, num_kv_heads, page_size, 2 * head_dim]`` and ``arena`` is a
+        GPU tensor of the same dtype whose first dimension is a page count.
+    """
+    num_rows = rows.numel()
+    if num_rows == 0:
+        return
+    pages_in_arena = arena.shape[0]
+    page_size = kv_cache.shape[2]
+    head_dim = kv_cache.shape[3] // 2
+    num_kv_heads = kv_cache.shape[1]
+    num_pages = max_logical_page + 1
+    unique_tokens = None
+    # Long prefills often reuse the same selected keys across adjacent queries.
+    # Compact that union before transfer instead of reading every host page.
+    # Keep the existing path for small contexts or nearly dense selections.
+    if (num_pages > int(os.environ.get("QSA_SPARSE_MIN_PAGES", pages_in_arena))
+            and os.environ.get("VLLM_QSA_KVO_SPARSE_PREFILL", "1") == "1"):
+        selected_rows = logical_indices.index_select(0, rows)
+        unique, inverse = torch.unique(
+            selected_rows[:, :-1].reshape(-1), sorted=True, return_inverse=True
+        )
+        has_padding = unique.numel() > 0 and int(unique[0]) == -1
+        unique_valid = unique[1:] if has_padding else unique
+        if unique_valid.numel() == 0:
+            out[rows] = 0
+            return
+        if unique_valid.numel() < 0.8 * num_pages * page_size:
+            remapped = logical_indices.clone()
+            compact = inverse.reshape(num_rows, -1).to(torch.int32)
+            if has_padding:
+                compact -= 1
+            remapped[rows, :-1] = compact
+            logical_indices = remapped
+            unique_tokens = unique_valid
+            num_pages = triton.cdiv(unique_tokens.numel(), page_size)
+    num_buckets = triton.cdiv(num_pages, pages_in_arena)
+
+    group_size = q.shape[1] // num_kv_heads
+    # Ampere BF16 tensor-core dot requires at least 16 rows. TP4 has
+    # six query heads per local KV head; masked padding preserves the result.
+    block_m = max(16, triton.next_power_of_2(group_size))
+    selection_width = logical_indices.shape[1] - 1
+    block_n, partial_warps, num_tiles, _ = _select_config(
+        num_rows, num_kv_heads, use_prefill_config, selection_width
+    )
+
+    if num_buckets == 1:
+        acc = max_state = norm_state = q
+    else:
+        acc = torch.empty(
+            (num_rows, q.shape[1], q.shape[2]), dtype=torch.float32, device=q.device
+        )
+        max_state = torch.empty(
+            (num_rows, q.shape[1]), dtype=torch.float32, device=q.device
+        )
+        norm_state = torch.empty_like(max_state)
+
+    for bucket in range(num_buckets):
+        page_lo = bucket * pages_in_arena
+        page_hi = min(page_lo + pages_in_arena, num_pages)
+        staged = arena[: page_hi - page_lo]
+        if unique_tokens is None:
+            physical = block_table_row[page_lo:page_hi].to(torch.int64)
+            torch.index_select(kv_cache, 0, physical, out=staged)
+        else:
+            selected = unique_tokens[page_lo * page_size:page_hi * page_size]
+            _qsa_gather_selected_host_rows[(selected.numel(), num_kv_heads)](
+                kv_cache, selected, block_table_row, staged,
+                kv_cache.stride(0), kv_cache.stride(1), kv_cache.stride(2),
+                staged.stride(0), staged.stride(1), staged.stride(2),
+                selected.numel(), PAGE_SIZE=page_size, ROW_WIDTH=2 * head_dim,
+                BLOCK_D=triton.next_power_of_2(2 * head_dim), num_warps=4,
+            )
+        k_arena, v_arena = staged.transpose(1, 2).split(head_dim, dim=-1)
+        _qsa_sparse_staged_gqa_kernel[(num_rows, num_kv_heads)](
+            q,
+            k_arena,
+            v_arena,
+            logical_indices,
+            rows,
+            acc,
+            max_state,
+            norm_state,
+            out,
+            q.stride(0),
+            q.stride(1),
+            k_arena.stride(0),
+            k_arena.stride(1),
+            k_arena.stride(2),
+            v_arena.stride(0),
+            v_arena.stride(1),
+            v_arena.stride(2),
+            logical_indices.stride(0),
+            out.stride(0),
+            out.stride(1),
+            num_rows,
+            page_lo,
+            page_hi - page_lo,
+            TOPK=selection_width,
+            PAGE_SIZE=page_size,
+            GROUP_SIZE=group_size,
+            HEAD_DIM=q.shape[2],
+            NUM_QUERY_HEADS=q.shape[1],
+            NUM_TILES=num_tiles,
+            BLOCK_M=block_m,
+            BLOCK_N=block_n,
+            FIRST_BUCKET=bucket == 0,
+            LAST_BUCKET=bucket == num_buckets - 1,
+            num_warps=partial_warps,
+            num_stages=2,
+        )
+
+
+_QSA_ARENA_CACHE: dict[tuple, torch.Tensor] = {}
+
+
+def qsa_get_staging_arena(
+    kv_cache: torch.Tensor, arena_bytes: int
+) -> torch.Tensor | None:
+    """Staging arena, shared by every layer on a rank.
+
+    The layers of one forward pass run in sequence, so a single arena can be
+    reused instead of holding one resident buffer per layer.
+    """
+    page_bytes = kv_cache[0].numel() * kv_cache.element_size()
+    pages = qsa_staged_arena_pages(arena_bytes, page_bytes)
+    key = (kv_cache.device, kv_cache.dtype, pages, tuple(kv_cache.shape[1:]))
+    arena = _QSA_ARENA_CACHE.get(key)
+    if arena is None:
+        try:
+            arena = torch.empty(
+                (pages, *kv_cache.shape[1:]),
+                dtype=kv_cache.dtype,
+                device=kv_cache.device,
+            )
+        except torch.OutOfMemoryError:
+            return None
+        _QSA_ARENA_CACHE[key] = arena
+    return arena
+
+
+def qsa_sparse_paged_attention(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    logical_indices: torch.Tensor,
+    block_table: torch.Tensor,
+    token_to_req: torch.Tensor,
+    use_prefill_config: bool,
+    out: torch.Tensor | None = None,
+    rowcache: tuple[torch.Tensor, ...] | None = None,
+) -> torch.Tensor:
+    """Run sparse GQA directly over paged BF16 K/V caches.
+
+    logical_indices is the PACKED selection buffer: [rows, selection_width + 1]
+    with the trailing column holding each row's valid-entry count (written by
+    the expand kernel; never a token index). The kernel reads it as the
+    tile-loop bound. use_prefill_config only steers the top of the config table; see
+    _select_config.
+    """
+    if q.ndim != 3 or k_cache.ndim != 4 or v_cache.shape != k_cache.shape:
+        raise ValueError("QSA sparse attention received invalid Q/K/V shapes")
+    if logical_indices.ndim != 2 or logical_indices.shape[0] != q.shape[0]:
+        raise ValueError("QSA indices must have one row per query")
+    if token_to_req.shape != (q.shape[0],) or block_table.ndim != 2:
+        raise ValueError("QSA sparse attention metadata has invalid shapes")
+    if not all(k_cache.shape[:3]) or not all(block_table.shape):
+        raise ValueError("QSA sparse attention cache and block table must be nonempty")
+    if logical_indices.shape[1] < 2:
+        raise ValueError(
+            "QSA packed indices need selection columns plus the count column"
+        )
+    if q.shape[2] != k_cache.shape[3] or q.shape[1] % k_cache.shape[2]:
+        raise ValueError("QSA sparse attention requires valid grouped-query heads")
+    head_dim = q.shape[2]
+    assert head_dim >= 16 and (head_dim & (head_dim - 1)) == 0
+    assert q.dtype == k_cache.dtype == v_cache.dtype == torch.bfloat16
+    assert logical_indices.dtype == block_table.dtype == torch.int32
+    assert token_to_req.dtype == torch.int32
+    assert q.device == k_cache.device == v_cache.device
+    assert q.device == logical_indices.device == block_table.device
+    assert q.device == token_to_req.device
+    assert q.stride(2) == k_cache.stride(3) == v_cache.stride(3) == 1
+    assert logical_indices.stride(1) == block_table.stride(1) == 1
+    assert token_to_req.stride(0) == 1
+
+    if out is None:
+        out = torch.empty_like(q)
+    if out.shape != q.shape:
+        raise ValueError("QSA sparse output must match its query")
+    assert out.dtype == q.dtype and out.device == q.device
+    assert out.stride(2) == 1
+    if not q.shape[0]:
+        return out
+
+    group_size = q.shape[1] // k_cache.shape[2]
+    block_m = max(16, triton.next_power_of_2(group_size))
+    selection_width = logical_indices.shape[1] - 1  # trailing column is the count
+    block_n, partial_warps, num_tiles, num_splits = _select_config(
+        q.shape[0], k_cache.shape[2], use_prefill_config, selection_width
+    )
+
+    # Split=1 writes output directly and compiles out all workspace accesses.
+    if num_splits == 1:
+        partial_output = out
+        partial_lse = out
+    else:
+        # FP32 partials preserve accuracy when merging independently normalized
+        # splits.
+        partial_output = torch.empty(
+            (num_splits, *q.shape), dtype=torch.float32, device=q.device
+        )
+        partial_lse = torch.empty(
+            (num_splits, q.shape[0], q.shape[1]),
+            dtype=torch.float32,
+            device=q.device,
+        )
+
+    if rowcache is not None:
+        cache_kv, tags, counters, claim = rowcache[:4]
+        row_map = rowcache[6]
+        cache_slots = cache_kv.shape[1]
+        fill_n = 32
+        fill_grid = (q.shape[0], triton.cdiv(selection_width, fill_n))
+        claim.fill_(-1)
+        _qsa_rowcache_claim_kernel[fill_grid](
+            logical_indices, block_table, token_to_req, row_map, tags, claim,
+            logical_indices.stride(0), block_table.stride(0),
+            block_table.shape[0], cache_kv.shape[0], k_cache.shape[0],
+            TOPK=selection_width, PAGE_SIZE=k_cache.shape[1], PAGE_TABLE_WIDTH=block_table.shape[1],
+            CACHE_SLOTS=cache_slots, BLOCK_N=fill_n, num_warps=1, num_stages=1,
+        )
+        for publish in (False, True):
+            _qsa_rowcache_copy_kernel[fill_grid](
+                k_cache, v_cache, logical_indices, block_table, token_to_req, row_map, cache_kv, tags, claim, counters,
+                k_cache.stride(0), k_cache.stride(1), k_cache.stride(2),
+                v_cache.stride(0), v_cache.stride(1), v_cache.stride(2),
+                logical_indices.stride(0), block_table.stride(0),
+                cache_kv.stride(0), cache_kv.stride(1), cache_kv.stride(2),
+                block_table.shape[0], cache_kv.shape[0], k_cache.shape[0],
+                TOPK=selection_width, PAGE_SIZE=k_cache.shape[1], PAGE_TABLE_WIDTH=block_table.shape[1],
+                CACHE_SLOTS=cache_slots, NUM_KV_HEADS=k_cache.shape[2], HEAD_DIM=q.shape[2],
+                BLOCK_N=fill_n, PUBLISH=publish, num_warps=1 if publish else 4, num_stages=1,
+            )
+        cache_args = (cache_kv, tags, row_map, cache_kv.stride(0), cache_kv.stride(1), cache_kv.stride(2),
+                      cache_kv.shape[0])
+    else:
+        cache_slots = 1
+        cache_args = (out, out, out, 0, 0, 0, 1)
+    partial_grid = (q.shape[0], k_cache.shape[2], num_splits)
+    _qsa_sparse_paged_gqa_splitk_kernel[partial_grid](
+        q,
+        k_cache,
+        v_cache,
+        logical_indices,
+        block_table,
+        token_to_req,
+        partial_output,
+        partial_lse,
+        out,
+        *cache_args,
+        q.stride(0),
+        q.stride(1),
+        k_cache.stride(0),
+        k_cache.stride(1),
+        k_cache.stride(2),
+        v_cache.stride(0),
+        v_cache.stride(1),
+        v_cache.stride(2),
+        logical_indices.stride(0),
+        block_table.stride(0),
+        out.stride(0),
+        out.stride(1),
+        q.shape[0],
+        k_cache.shape[0],
+        block_table.shape[0],
+        TOPK=selection_width,
+        PAGE_SIZE=k_cache.shape[1],
+        PAGE_TABLE_WIDTH=block_table.shape[1],
+        GROUP_SIZE=group_size,
+        HEAD_DIM=q.shape[2],
+        NUM_QUERY_HEADS=q.shape[1],
+        NUM_SPLITS=num_splits,
+        NUM_TILES=num_tiles,
+        BLOCK_M=block_m,
+        BLOCK_N=block_n,
+        CACHE_SLOTS=cache_slots,
+        USE_CACHE=rowcache is not None,
+        num_warps=partial_warps,
+        num_stages=2,
+    )
+    if num_splits == 1:
+        return out
+
+    _qsa_merge_splitk_kernel[(q.shape[0], q.shape[1])](
+        partial_output,
+        partial_lse,
+        out,
+        out.stride(0),
+        out.stride(1),
+        q.shape[0],
+        HEAD_DIM=q.shape[2],
+        NUM_QUERY_HEADS=q.shape[1],
+        NUM_SPLITS=num_splits,
+        BLOCK_SPLITS=triton.next_power_of_2(num_splits),
+        num_warps=2,
+        num_stages=1,
+    )
+    return out
+
+
+def warmup_qsa_sparse_paged_attention(
+    kv_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    *,
+    num_query_heads: int,
+    selection_width: int,
+) -> tuple[tuple[int, int, int], ...]:
+    """Compile every production-reachable split-K/merge specialization."""
+
+    head_dim = kv_cache.shape[-1] // 2
+    key_cache, value_cache = kv_cache.transpose(1, 2).split(head_dim, dim=-1)
+    num_kv_heads = key_cache.shape[2]
+    group_size = num_query_heads // num_kv_heads
+    block_m = max(16, triton.next_power_of_2(group_size))
+
+    # Every config the dispatch can pick for this group size.
+    profiles = {
+        _select_config(num_rows, num_kv_heads, use_prefill_config, selection_width)
+        for num_rows in range(1, 8193)
+        for use_prefill_config in (False, True)
+    }
+
+    # Scalars constant per deployment get their real values (their divisibility
+    # specialization is wanted); the batch-varying ones are do_not_specialize'd
+    # on the kernels, so any value here compiles the only variant.
+    num_rows = 16
+    num_requests = 16
+    q_ptr = TritonWarmupTensor(
+        torch.bfloat16, shape=(num_rows, num_query_heads, head_dim)
+    )
+    k_cache_ptr = TritonWarmupTensor(
+        key_cache.dtype,
+        shape=tuple(key_cache.shape),
+        strides=tuple(key_cache.stride()),
+    )
+    v_cache_ptr = TritonWarmupTensor(
+        value_cache.dtype,
+        shape=tuple(value_cache.shape),
+        strides=tuple(value_cache.stride()),
+    )
+    # +1: the packed buffer's trailing count column.
+    indices_ptr = TritonWarmupTensor(torch.int32, shape=(num_rows, selection_width + 1))
+    block_table_ptr = TritonWarmupTensor(
+        block_table.dtype,
+        shape=tuple(block_table.shape),
+        strides=tuple(block_table.stride()),
+    )
+    token_to_req_ptr = TritonWarmupTensor(torch.int32)
+    output_ptr = TritonWarmupTensor(
+        torch.bfloat16, shape=(num_rows, num_query_heads, head_dim)
+    )
+    head_stride = head_dim
+    row_stride = num_query_heads * head_dim
+    num_cache_blocks = triton_scalar_specialization_rep(kv_cache.shape[0])
+
+    warmed = []
+    for block_n, warps, num_tiles, num_splits in sorted(profiles):
+        if num_splits == 1:
+            partial_output_ptr = output_ptr
+            partial_lse_ptr = output_ptr
+        else:
+            partial_output_ptr = TritonWarmupTensor(
+                torch.float32,
+                shape=(num_splits, num_rows, num_query_heads, head_dim),
+            )
+            partial_lse_ptr = TritonWarmupTensor(
+                torch.float32, shape=(num_splits, num_rows, num_query_heads)
+            )
+        _qsa_sparse_paged_gqa_splitk_kernel.warmup(
+            q_ptr,
+            k_cache_ptr,
+            v_cache_ptr,
+            indices_ptr,
+            block_table_ptr,
+            token_to_req_ptr,
+            partial_output_ptr,
+            partial_lse_ptr,
+            output_ptr,
+            output_ptr,
+            output_ptr,
+            output_ptr,
+            0,
+            0,
+            0,
+            1,
+            row_stride,
+            head_stride,
+            key_cache.stride(0),
+            key_cache.stride(1),
+            key_cache.stride(2),
+            value_cache.stride(0),
+            value_cache.stride(1),
+            value_cache.stride(2),
+            selection_width + 1,
+            block_table.stride(0),
+            row_stride,
+            head_stride,
+            num_rows,
+            num_cache_blocks,
+            num_requests,
+            TOPK=selection_width,
+            PAGE_SIZE=key_cache.shape[1],
+            PAGE_TABLE_WIDTH=block_table.shape[1],
+            GROUP_SIZE=group_size,
+            HEAD_DIM=head_dim,
+            NUM_QUERY_HEADS=num_query_heads,
+            NUM_SPLITS=num_splits,
+            NUM_TILES=num_tiles,
+            BLOCK_M=block_m,
+            BLOCK_N=block_n,
+            num_warps=warps,
+            num_stages=2,
+            grid=(num_rows, num_kv_heads, num_splits),
+        )
+        if num_splits > 1:
+            _qsa_merge_splitk_kernel.warmup(
+                partial_output_ptr,
+                partial_lse_ptr,
+                output_ptr,
+                row_stride,
+                head_stride,
+                num_rows,
+                HEAD_DIM=head_dim,
+                NUM_QUERY_HEADS=num_query_heads,
+                NUM_SPLITS=num_splits,
+                BLOCK_SPLITS=triton.next_power_of_2(num_splits),
+                num_warps=2,
+                num_stages=1,
+                grid=(num_rows, num_query_heads),
+            )
+        warmed.append((block_n, num_splits, warps))
+    return tuple(warmed)
+
+
+def qsa_store_cache_rows(
+    cache: torch.Tensor,
+    slot_mapping: torch.Tensor,
+    rows: torch.Tensor,
+) -> None:
+    """Store fixed-width rows in a QSA cache without boolean indexing."""
+
+    if not cache.is_cuda or not HAS_TRITON:
+        raise RuntimeError("QSA CUDA cache stores require Triton")
+    if cache.ndim != 4 or cache.shape[2] != 1:
+        raise ValueError("QSA cache must be [pages, page_size, 1, width]")
+    if not all(cache.shape):
+        raise ValueError("QSA cache dimensions must be nonzero")
+    if rows.ndim == 3:
+        if rows.shape[1] != 1:
+            raise ValueError("QSA cache rows must have one head")
+        rows = rows[:, 0]
+    if rows.shape != (slot_mapping.numel(), cache.shape[3]):
+        raise ValueError("QSA cache rows and slots have incompatible shapes")
+    if not rows.shape[0]:
+        return
+    _store_qsa_rows_kernel[(rows.shape[0],)](
+        cache,
+        slot_mapping,
+        rows,
+        cache.stride(0),
+        cache.stride(1),
+        cache.stride(3),
+        rows.stride(0),
+        rows.stride(1),
+        rows.shape[0],
+        cache.shape[0],
+        PAGE_SIZE=cache.shape[1],
+        WIDTH=cache.shape[3],
+        BLOCK_D=triton.next_power_of_2(cache.shape[3]),
+        num_warps=4,
+    )
+
+
+def qsa_compress_groups_with_ratio(
+    raw_keys: torch.Tensor,  # this step's raw key rows [rows, 1, head_size]
+    raw_positions: torch.Tensor,  # this step's positions [rows, 1, 3] int64
+    compressor_state_cache: torch.Tensor,
+    compressor_state_block_table: torch.Tensor,
+    token_to_req: torch.Tensor,
+    query_start_loc: torch.Tensor,
+    logical_positions: torch.Tensor,
+    compressed_slots: torch.Tensor,
+    compress_ratio: int,
+    rope_cache: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pool completed groups from the compressor-state ring and raw token rows."""
+
+    if not raw_keys.is_cuda or not HAS_TRITON:
+        raise RuntimeError("QSA CUDA compression requires Triton")
+    rows = token_to_req.numel()
+    if compress_ratio <= 0:
+        raise ValueError("QSA compression ratio must be positive")
+    if raw_keys.ndim != 3 or raw_keys.shape[:2] != (rows, 1):
+        raise ValueError("QSA raw keys must be [rows, 1, head_size]")
+    if raw_positions.shape != (rows, 1, 3) or raw_positions.dtype != torch.int64:
+        raise ValueError("QSA raw positions must be [rows, 1, 3] int64")
+    if logical_positions.shape != (rows,) or compressed_slots.shape != (rows,):
+        raise ValueError("QSA compression metadata must match token rows")
+    if compressor_state_cache.ndim != 4 or compressor_state_cache.shape[2] != 1:
+        raise ValueError("QSA compressor-state cache has an invalid shape")
+    if (
+        # The ring is wider than one group so speculative rows cannot alias
+        # onto the committed keys of the group still being collected.
+        compressor_state_cache.shape[1] < compress_ratio
+        or compressor_state_cache.shape[3] != raw_keys.shape[2]
+        or compressor_state_cache.dtype != raw_keys.dtype
+    ):
+        raise ValueError(
+            "QSA compressor-state cache does not match the compression layout"
+        )
+    if (
+        compressor_state_block_table.ndim != 2
+        or compressor_state_block_table.shape[1] < 1
+    ):
+        raise ValueError(
+            "QSA compressor-state block table must contain one block per request"
+        )
+    if query_start_loc.ndim != 1 or query_start_loc.shape[0] < 2:
+        raise ValueError("QSA query starts must contain a terminal offset")
+    num_requests = query_start_loc.shape[0] - 1
+    if compressor_state_block_table.shape[0] < num_requests:
+        raise ValueError("QSA compressor-state block table has too few request rows")
+    if rope_cache is not None and (
+        rope_cache.ndim != 4
+        or rope_cache.shape[:3] != compressor_state_cache.shape[:3]
+        or rope_cache.shape[3] != 3
+        or rope_cache.dtype != torch.int64
+    ):
+        raise ValueError("QSA packed position view has an invalid shape or dtype")
+    if rows and (
+        not all(compressor_state_cache.shape)
+        or not all(compressor_state_block_table.shape)
+    ):
+        raise ValueError("QSA compressor-state cache and block table must be nonempty")
+    pooled = torch.empty(
+        (rows, 1, raw_keys.shape[2]),
+        dtype=raw_keys.dtype,
+        device=raw_keys.device,
+    )
+    first_positions = torch.empty((rows, 3), dtype=torch.int64, device=raw_keys.device)
+    if not rows:
+        return pooled, first_positions
+    if rope_cache is None:
+        rope_cache = compressor_state_cache
+        load_rope_positions = False
+    else:
+        load_rope_positions = True
+    _compress_qsa_groups_kernel[(rows,)](
+        raw_keys,
+        raw_positions,
+        compressor_state_cache,
+        rope_cache,
+        compressor_state_block_table,
+        token_to_req,
+        query_start_loc,
+        logical_positions,
+        compressed_slots,
+        pooled,
+        first_positions,
+        raw_keys.stride(0),
+        raw_keys.stride(2),
+        raw_positions.stride(0),
+        raw_positions.stride(2),
+        compressor_state_cache.stride(0),
+        compressor_state_cache.stride(1),
+        compressor_state_cache.stride(3),
+        rope_cache.stride(0),
+        rope_cache.stride(1),
+        rope_cache.stride(3),
+        compressor_state_block_table.stride(0),
+        pooled.stride(0),
+        pooled.stride(2),
+        first_positions.stride(0),
+        first_positions.stride(1),
+        rows,
+        compressor_state_cache.shape[0],
+        num_requests,
+        COMPRESSOR_STATE_SIZE=compressor_state_cache.shape[1],
+        COMPRESS_RATIO=compress_ratio,
+        HEAD_DIM=raw_keys.shape[2],
+        LOAD_ROPE_POSITIONS=load_rope_positions,
+        BLOCK_D=triton.next_power_of_2(raw_keys.shape[2]),
+        num_warps=4,
+    )
+    return pooled, first_positions
+
+
+__all__ = [
+    "qsa_compress_groups_with_ratio",
+    "qsa_sparse_paged_attention",
+    "qsa_store_cache_rows",
+    "warmup_qsa_sparse_paged_attention",
+]

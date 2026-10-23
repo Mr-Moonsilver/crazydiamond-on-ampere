@@ -1,0 +1,50 @@
+--- a/scheduler.py
++++ b/scheduler.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import itertools
++import os
+ import time
+ from collections import defaultdict, deque
+ from collections.abc import Iterable
+@@ -329,6 +330,9 @@
+         # prefill batch fully drained the waiting queue. Prefill throttling
+         # is disabled in this case.
+         self.prefill_capacity_bound = False
++        # flash-next: alternate decode-only / prefill-only steps under PP (FLASH_PD_ALTERNATE=1).
++        self.pd_alternate = self.use_pp and os.environ.get("FLASH_PD_ALTERNATE", "0") == "1"
++        self._pd_last_decode = False
+         self.scheduler_reserve_full_isl = (
+             self.scheduler_config.scheduler_reserve_full_isl
+         )
+@@ -608,6 +612,17 @@
+             throttle_prefills and not self.prefill_capacity_bound
+         ) and any(not r.is_prefill_chunk for r in self.running)
+ 
++        # flash-next PD alternation (see make_pdalt.py): "D" = decode-only step, "P" = prefill-only step.
++        pd_mode = None
++        if self.pd_alternate:
++            decoders = [r for r in self.running if not r.is_prefill_chunk]
++            prefill_work = bool(self.waiting) or any(r.is_prefill_chunk for r in self.running)
++            if decoders and prefill_work:
++                eligible = any(self.current_step >= r.next_decode_eligible_step for r in decoders)
++                pd_mode = "D" if eligible and not self._pd_last_decode else "P"
++                defer_prefills = defer_prefills or pd_mode == "D"
++        self._pd_last_decode = pd_mode == "D"
++
+         # First, schedule the RUNNING requests.
+         req_index = 0
+         while req_index < len(self.running) and token_budget > 0:
+@@ -640,6 +655,11 @@
+             if defer_prefills and request.is_prefill_chunk:
+                 # DP prefill balancing: defer this in-progress prefill chunk to a
+                 # cadence-aligned step; decodes still run to fill this step.
++                req_index += 1
++                continue
++
++            if pd_mode == "P" and not request.is_prefill_chunk:
++                # flash-next PD alternation: decoders wait for the next decode-only step.
+                 req_index += 1
+                 continue
+ 

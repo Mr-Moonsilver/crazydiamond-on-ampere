@@ -424,6 +424,14 @@ ops = sub(ops, """            partial_lse_ptr,
             key_cache.stride(0),""")
 assert ops.count("_qsa_sparse_paged_gqa_splitk_kernel[") + ops.count("_qsa_sparse_paged_gqa_splitk_kernel.") == 2
 
+# Staged prefill: while a request's context fits in the staging arena the image copies its WHOLE context from
+# host RAM for every QSA layer and chunk (profile 23 Oct: 27-47 ms of a 128 ms 1024-token step at 45-85k
+# context). QSA_SPARSE_MIN_PAGES lowers the context size from which only the union of selected rows is copied
+# (the 80 % density fallback to the dense copy stays). Unset = the image's threshold (the arena size).
+ops = sub(ops, """    if (num_pages > pages_in_arena
+            and os.environ.get("VLLM_QSA_KVO_SPARSE_PREFILL", "1") == "1"):""", """    if (num_pages > int(os.environ.get("QSA_SPARSE_MIN_PAGES", pages_in_arena))
+            and os.environ.get("VLLM_QSA_KVO_SPARSE_PREFILL", "1") == "1"):""")
+
 open(sys.argv[3], "w").write(qsa)
 open(sys.argv[4], "w").write(ops)
 print("ok")
