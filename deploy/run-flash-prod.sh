@@ -15,6 +15,21 @@ sudo -n rm -f "$task_dir/rowcache.off" "$task_dir/rowcache.report" 2>/dev/null |
 D=/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia
 default_compilation='{"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[1,2,3,4,6,8,9,12,15,18,21,24]}'
 compilation=${COMPILATION_CONFIG:-$default_compilation}
+# CORE_OVERLAY=1: patched vllm/v1/core files (evict superseded Mamba partial tails first), checksummed.
+core=()
+if [[ ${CORE_OVERLAY:-0} == 1 ]]; then
+  C=/usr/local/lib/python3.12/dist-packages/vllm/v1/core
+  (cd "$OVERLAY/core" && sha256sum --quiet -c SHA256SUMS) || { echo "core overlay checksum mismatch" >&2; exit 2; }
+  core=(-v "$OVERLAY/core/block_pool.py:$C/block_pool.py:ro"
+        -v "$OVERLAY/core/single_type_kv_cache_manager.py:$C/single_type_kv_cache_manager.py:ro")
+fi
+# An overlay that carries model_runner_v2.py (row-cache request ids for Model Runner V2, overlay-v2) mounts it too;
+# its checksum is in the overlay SHA256SUMS checked above.
+runner=()
+if [[ -f $OVERLAY/model_runner_v2.py ]]; then
+  grep -q " model_runner_v2.py$" "$OVERLAY/SHA256SUMS" || { echo "runner not checksummed" >&2; exit 2; }
+  runner=(-v "$OVERLAY/model_runner_v2.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/model_runner.py:ro")
+fi
 spec=()
 if [[ ${MTP_TOKENS:-0} != 0 ]]; then
   printf -v spec_json '{"method":"mtp","num_speculative_tokens":%d}' "$MTP_TOKENS"
@@ -36,6 +51,8 @@ exec sudo docker run --rm --init --name "$name" --label qwen.flash-next-producti
   -e FLASHINFER_WORKSPACE_BASE=/work/cache/flashinfer \
   -v "$task_dir/models/intel-w4a16:/model:ro" -v "$task_dir:/work" \
   -v "$OVERLAY/qsa.py:$D/qsa.py:ro" -v "$OVERLAY/ops_qsa.py:$D/ops/qsa.py:ro" \
+  "${core[@]}" \
+  "${runner[@]}" \
   "$expected_image" /model \
   --served-model-name qwen38-w8a8-tp4 Qwen3.8-Flash-Next Intel/Qwen3.8-Flash-Next-W4A16-AutoRound \
     cyankiwi/Qwen3.8-27B-AWQ-INT4 cyankiwi/Qwen3.5-122B-A10B-AWQ-4bit \

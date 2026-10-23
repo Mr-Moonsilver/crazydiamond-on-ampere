@@ -1,0 +1,65 @@
+--- a/model_runner.py
++++ b/model_runner.py
+@@ -38,6 +38,10 @@
+     get_pp_group,
+ )
+ from vllm.forward_context import BatchDescriptor, set_forward_context
++import vllm.forward_context as _qsa_fc
++
++# QSA row cache: this runner writes per-request ids (see _qsa_write_req_uids).
++_qsa_fc.QSA_REQ_UID_WRITER = True
+ from vllm.logger import init_logger
+ from vllm.model_executor.layers.fused_moe.all2all_utils import get_ep_all2all_manager
+ from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
+@@ -1062,6 +1066,25 @@
+         )
+         return cuda_graph_size
+ 
++    def _qsa_new_uid(self, req_index: int) -> None:
++        slots = getattr(self, "_qsa_uid_slots", None)
++        if slots is None:
++            slots = self._qsa_uid_slots = torch.full(
++                (self.max_num_reqs,), -2, dtype=torch.int32, device=self.device)
++            self._qsa_uid_next = 0
++        self._qsa_uid_next = self._qsa_uid_next % (2**31 - 2) + 1  # ids >= 1; -1 empty, -2 dummy
++        slots[req_index] = self._qsa_uid_next
++
++    def _qsa_write_req_uids(self, input_batch: InputBatch) -> None:
++        buf = getattr(_qsa_fc, "QSA_REQ_UID", None)
++        if buf is None:
++            return
++        n = input_batch.num_reqs
++        buf.fill_(-2)
++        if n and getattr(self, "_qsa_uid_slots", None) is not None:
++            # GPU gather in batch order, stream-ordered before the forward pass that reads buf.
++            buf[:n].copy_(self._qsa_uid_slots[input_batch.idx_mapping[:n]])
++
+     def _remove_request(self, req_id: str) -> bool:
+         # Call model_state.remove_request *before* req_states.remove_request
+         # so the model_state can still look up the slot index.
+@@ -1129,6 +1152,7 @@
+                 max_tokens=sampling_params.max_tokens if sampling_params else 1,  # type: ignore[arg-type]
+             )
+             req_index = self.req_states.req_id_to_index[req_id]
++            self._qsa_new_uid(req_index)
+             if self.adaptive_verification is not None:
+                 self.adaptive_verification.add_request(req_index)
+ 
+@@ -1467,6 +1491,7 @@
+         if self.pcp_manager is not None:
+             return self.pcp_manager.prepare_attn(input_batch)
+ 
++        self._qsa_write_req_uids(input_batch)
+         # Block tables: num_kv_cache_groups x [num_reqs_padded, max_num_blocks].
+         block_tables = self.block_tables.gather_block_tables(
+             input_batch.idx_mapping,
+@@ -1485,6 +1510,9 @@
+     def prepare_dummy_attn(
+         self, input_batch: InputBatch, valid_state_slots: bool = False
+     ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
++        buf = getattr(_qsa_fc, "QSA_REQ_UID", None)
++        if buf is not None:
++            buf.fill_(-2)  # dummy requests never own a real request's row
+         block_tables = self.block_tables.get_dummy_block_tables(input_batch.num_reqs)
+         if valid_state_slots:
+             state_slots = torch.arange(
