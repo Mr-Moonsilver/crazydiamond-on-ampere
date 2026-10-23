@@ -1,0 +1,64 @@
+--- a/single_type_kv_cache_manager.py
++++ b/single_type_kv_cache_manager.py
+@@ -1482,6 +1482,8 @@
+             # connector; a request that finishes first hands off this table
+             # source directly.
+             self._producer_partial_tail_reqs: dict[str, tuple[KVCacheBlock, int]] = {}
++            # Partial tail a request resumed from: (block, hash, tokens).
++            self._consumed_tails: dict = {}
+ 
+     @classmethod
+     def find_longest_cache_hit(
+@@ -1925,6 +1927,11 @@
+                             self.cached_blocks_this_step.add(cow_block.block_hash)
+                     else:
+                         self._apply_cow(request_id, block_idx, source_block, cow_block)
++                        self._consumed_tails[request_id] = (
++                            source_block,
++                            source_block.block_hash,
++                            source_block.block_hash_num_tokens,
++                        )
+                         returned_blocks = [cow_block] + returned_blocks
+                 req_blocks.extend(new_blocks)
+                 self._allocated_block_reqs.add(request_id)
+@@ -1966,6 +1973,7 @@
+             self._num_retired_blocks.pop(request_id, None)
+             self._checkpoints.pop(request_id, None)
+             self._producer_partial_tail_reqs.pop(request_id, None)
++            self._consumed_tails.pop(request_id, None)
+             # An offer is only guaranteed to hold committed bytes until the end
+             # of the pass that made it. This request's blocks are going back to
+             # the pool now, so drop its not-yet-offered hand-offs rather than
+@@ -2006,6 +2014,7 @@
+             partial_hash = self._cache_partial_tail_block(request, num_tokens)
+             if partial_hash is not None:
+                 self.cached_blocks_this_step.add(partial_hash)
++                self._demote_consumed_tail(request)
+         if num_cached_blocks_after > num_cached_blocks_before:
+             blocks = self.req_to_blocks[request.request_id]
+             for idx in range(num_cached_blocks_before, num_cached_blocks_after):
+@@ -2033,6 +2042,24 @@
+ 
+     def new_step_starts(self) -> None:
+         self.cached_blocks_this_step.clear()
++
++    def _demote_consumed_tail(self, request: Request) -> None:
++        # flash-next evict-first patch: once this request has published its own
++        # later prompt-boundary state, the partial tail it resumed from is
++        # superseded for a linear conversation; let it be evicted first.
++        consumed = self._consumed_tails.pop(request.request_id, None)
++        if consumed is None:
++            return
++        block, block_hash, num_tokens = consumed
++        unit = self.block_pool.hash_block_size
++        if (
++            block_hash is None
++            or block.block_hash != block_hash
++            or num_tokens is None
++            or num_tokens >= request.num_prompt_tokens // unit * unit
++        ):
++            return
++        self.block_pool.demote(block)
+ 
+     def _cache_partial_tail_block(
+         self,

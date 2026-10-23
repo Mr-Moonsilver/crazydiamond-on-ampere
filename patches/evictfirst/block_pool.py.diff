@@ -1,0 +1,76 @@
+--- a/block_pool.py
++++ b/block_pool.py
+@@ -186,6 +186,10 @@
+         # Cache for block lookup
+         self.cached_block_hash_to_block: BlockHashToBlockMap = BlockHashToBlockMap()
+         self.cached_block_hashes_by_block: dict[int, set[BlockHashWithGroupId]] = {}
++        # Superseded partial-tail sources, freed to the front of the queue
++        # (flash-next evict-first patch).
++        self._evict_first: set[int] = set()
++        self.num_demoted = 0
+ 
+         # To represent a placeholder block with block_id=0.
+         # The ref_cnt of null_block is not maintained, needs special care to
+@@ -661,6 +665,21 @@
+             # `num_tokens` only applies to the first (primary) insertion.
+             self._insert_block_hash(block_hash, dst_block, num_tokens=num_tokens)
+ 
++    def demote(self, block: KVCacheBlock) -> None:
++        """Make a cached block the next eviction candidate without dropping
++        its hash: a superseded partial-tail source still hits until reused."""
++        if block.is_null:
++            return
++        self.num_demoted += 1
++        if self.num_demoted % 2000 == 1:
++            logger.info("evict-first: %d superseded tail blocks demoted",
++                        self.num_demoted)
++        if block.ref_cnt == 0:
++            self.free_block_queue.remove(block)
++            self.free_block_queue.prepend_n([block])
++        else:
++            self._evict_first.add(block.block_id)
++
+     def get_new_blocks(self, num_blocks: int) -> list[KVCacheBlock]:
+         """Get new blocks from the free block pool.
+ 
+@@ -683,6 +702,7 @@
+         # In order to only iterate the list once, we duplicated code a bit
+         if self.enable_caching:
+             for block in ret:
++                self._evict_first.discard(block.block_id)
+                 self._maybe_evict_cached_block(block)
+                 assert block.ref_cnt == 0
+                 block.ref_cnt += 1
+@@ -759,6 +779,7 @@
+             # candidate), so remove it.
+             if block.ref_cnt == 0 and not block.is_null:
+                 self.free_block_queue.remove(block)
++            self._evict_first.discard(block.block_id)
+             block.ref_cnt += 1
+             if self.metrics_collector:
+                 self.metrics_collector.on_block_accessed(block)
+@@ -785,8 +806,14 @@
+                 continue
+             block.ref_cnt -= 1
+             if block.ref_cnt == 0 and not block.is_null:
+-                if block.block_hash is None or not self.enable_caching:
+-                    # LIFO reuse of non-cached blocks for better GPU locality.
++                if (
++                    block.block_hash is None
++                    or not self.enable_caching
++                    or block.block_id in self._evict_first
++                ):
++                    # LIFO reuse of non-cached blocks for better GPU locality;
++                    # superseded partial tails go here too.
++                    self._evict_first.discard(block.block_id)
+                     blocks_to_evict_first.append(block)
+                 else:
+                     # FIFO reuse of cached blocks for LRU eviction behavior.
+@@ -839,6 +866,7 @@
+         # Remove all hashes so that no new blocks will hit.
+         self.cached_block_hash_to_block = BlockHashToBlockMap()
+         self.cached_block_hashes_by_block.clear()
++        self._evict_first.clear()
+         if self._reuse_watchers:
+             self._notify_reuse(
+                 [self.blocks[block_id] for block_id in list(self._reuse_watchers)]
