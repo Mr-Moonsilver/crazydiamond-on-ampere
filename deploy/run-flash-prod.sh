@@ -10,6 +10,8 @@ OVERLAY=${OVERLAY:-$task_dir/prod/overlay}
 [[ $(sudo docker image inspect "$expected_image" --format '{{.Id}}') == "$expected_image" ]] || exit 2
 (cd "$OVERLAY" && sha256sum --quiet -c SHA256SUMS) || { echo "overlay checksum mismatch" >&2; exit 2; }
 sudo docker rm -f "$name" >/dev/null 2>&1 || true
+# test-only switches of the row-cache overlay must not exist in production
+sudo -n rm -f "$task_dir/rowcache.off" "$task_dir/rowcache.report" 2>/dev/null || true
 D=/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia
 default_compilation='{"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[1,2,3,4,6,8,9,12,15,18,21,24]}'
 compilation=${COMPILATION_CONFIG:-$default_compilation}
@@ -43,7 +45,7 @@ exec sudo docker run --rm --init --name "$name" --label qwen.flash-next-producti
   --max-model-len "${MAX_MODEL_LEN:-262144}" --max-num-seqs "${MAX_SEQS:-8}" \
   --max-num-batched-tokens "${PREFILL_CHUNK:-512}" \
   --gpu-memory-utilization 0.95 --mamba-cache-mode align \
-  --no-enable-prefix-caching --enable-chunked-prefill \
+  $( [[ ${PREFIX_CACHING:-1} == 1 ]] && echo --enable-prefix-caching || echo --no-enable-prefix-caching ) --enable-chunked-prefill \
   --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder \
   --max-logprobs 20 --host 0.0.0.0 --port 8000 \
   --compilation-config "$compilation" \
