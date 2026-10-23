@@ -22,6 +22,8 @@ if [[ ${CORE_OVERLAY:-0} == 1 ]]; then
   (cd "$OVERLAY/core" && sha256sum --quiet -c SHA256SUMS) || { echo "core overlay checksum mismatch" >&2; exit 2; }
   core=(-v "$OVERLAY/core/block_pool.py:$C/block_pool.py:ro"
         -v "$OVERLAY/core/single_type_kv_cache_manager.py:$C/single_type_kv_cache_manager.py:ro")
+  # the core overlay may also carry the scheduler (PD alternation under PP, FLASH_PD_ALTERNATE=1)
+  [[ -f $OVERLAY/core/scheduler.py ]] && core+=(-v "$OVERLAY/core/scheduler.py:$C/sched/scheduler.py:ro")
 fi
 # An overlay that carries model_runner_v2.py (row-cache request ids for Model Runner V2, overlay-v2) mounts it too;
 # its checksum is in the overlay SHA256SUMS checked above.
@@ -40,10 +42,12 @@ exec sudo docker run --rm --init --name "$name" --label qwen.flash-next-producti
   -e CUDA_DEVICE_ORDER=PCI_BUS_ID -e CUDA_VISIBLE_DEVICES="${GPU_ORDER:-0,2,1,3}" \
   -e NCCL_P2P_LEVEL=SYS -e NCCL_CUMEM_ENABLE=0 -e NCCL_DEBUG=WARN \
   -e HF_HUB_OFFLINE=1 -e HF_HUB_DISABLE_TELEMETRY=1 -e OMP_NUM_THREADS=1 \
-  -e VLLM_WORKER_MULTIPROC_METHOD=spawn -e VLLM_USE_BREAKABLE_CUDAGRAPH=0 \
+  -e VLLM_WORKER_MULTIPROC_METHOD=spawn -e VLLM_USE_BREAKABLE_CUDAGRAPH="${BREAKABLE_CG:-0}" \
   -e VLLM_QSA_KV_OFFLOAD=1 -e VLLM_QSA_KV_OFFLOAD_MAX_GIB="${HOST_KV_GIB_PER_RANK:-28}" \
   -e VLLM_QSA_KVO_ARENA=100663296 -e VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0 \
   -e VLLM_QSA_KVO_SPARSE_PREFILL=1 \
+  -e FLASH_PD_ALTERNATE="${FLASH_PD_ALTERNATE:-0}" \
+  ${QSA_SPARSE_MIN_PAGES:+-e QSA_SPARSE_MIN_PAGES="$QSA_SPARSE_MIN_PAGES"} \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False \
   -e VLLM_PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-26,22}" \
   -e QSA_ROWCACHE_SLOTS="${QSA_ROWCACHE_SLOTS:-8192}" -e QSA_ROWCACHE_REQS="${MAX_SEQS:-8}" \
