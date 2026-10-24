@@ -15,16 +15,24 @@ REPEATS times in shuffled order after a warm-up pass; medians of the repeats are
 decode-high-priority streams. Green partitions are measured by greenctx_feasibility.py on single GPUs.
 Correctness is enforced: the all-reduced results are checked against a reference and any mismatch aborts (exit 1).
 UVA is required: no fallback copy mode. Results: one JSON per rank 0 in OUT.
+v2b (24 Oct, first run): with 6 layers x 32 MiB the decode step took 0.6 ms alone, far below the engine's ~9 ms per
+stage step (W1 424 tok/s = 8 streams x 53 tok/s, two PP cohorts), so the overlap result was not representative.
+Defaults now model one pipeline stage: LAYERS=24, each reading its own DEC_W_MB of weights (24 x 140 MiB ~ 3.4 GB per
+step, ~3.7 ms at HBM rate), every QSA_EVERY-th layer (6 of 24) also gathering DEC_HOST_KB from host (~36 MB per step,
+~2.8 ms at the x8 link's 13 GB/s), plus 24 all-reduces. The decode-alone step time is reported (late_p50 of mode
+decode) so the calibration is visible; prefill alone also reports TFLOP/s from a host-timed synchronized run as a
+cross-check of the event counting (the first run implied ~97 TFLOP/s, above the 3090's 71 BF16 spec).
 usage: python3 -m torch.distributed.run --nproc_per_node 2 overlap_tp.py OUT.json
-       (env: PERIOD=9.5 LAYERS=6 DEC_W_MB=220 DEC_HOST_KB=512 PRE_HOST_MB=3 STEPS=400)
+       (env: PERIOD=9.5 LAYERS=24 QSA_EVERY=4 DEC_W_MB=140 DEC_HOST_KB=6144 PRE_HOST_MB=3 STEPS=400 REPEATS=3)
 """
 import json, os, sys, time
 import torch
 import torch.distributed as dist
 
 E = lambda k, d: type(d)(os.environ.get(k, d))
-PERIOD, LAYERS, STEPS, PRE_QUEUE = E("PERIOD", 9.5), E("LAYERS", 6), E("STEPS", 400), E("PRE_QUEUE", 8)
-DEC_W_MB, DEC_HOST_KB, PRE_HOST_MB = E("DEC_W_MB", 220), E("DEC_HOST_KB", 512), E("PRE_HOST_MB", 3)
+PERIOD, LAYERS, STEPS, PRE_QUEUE = E("PERIOD", 9.5), E("LAYERS", 24), E("STEPS", 400), E("PRE_QUEUE", 8)
+DEC_W_MB, DEC_HOST_KB, PRE_HOST_MB = E("DEC_W_MB", 140), E("DEC_HOST_KB", 6144), E("PRE_HOST_MB", 3)
+QSA_EVERY = E("QSA_EVERY", 4)
 out_path = sys.argv[1]
 
 dist.init_process_group("nccl")
@@ -42,8 +50,9 @@ except Exception as e:
 
 K, N = 4096, 14336
 torch.manual_seed(1234 + rank)
-n_dec_w = max(1, DEC_W_MB * 2**20 // (K * K * 2))  # decode: K x K slices (attention/MoE projection sized)
-Wd = [torch.randn(K, K, device=dev, dtype=torch.bfloat16) * 0.01 for _ in range(n_dec_w)]
+n_dec_w = LAYERS  # decode: one weight matrix per layer, DEC_W_MB each, so every step streams all of them from HBM
+Nd = max(K, DEC_W_MB * 2**20 // (K * 2))
+Wd = [torch.randn(K, Nd, device=dev, dtype=torch.bfloat16) * 0.01 for _ in range(n_dec_w)]
 xd = torch.randn(8, K, device=dev, dtype=torch.bfloat16)
 A = torch.randn(1024, K, device=dev, dtype=torch.bfloat16) * 0.01
 B = torch.randn(K, N, device=dev, dtype=torch.bfloat16) * 0.01
@@ -60,8 +69,9 @@ torch.cuda.synchronize()  # everything above is ready before other streams read 
 
 
 def decode_layer(i):
-    y = torch.mm(xd, Wd[i % n_dec_w])
-    torch.index_select(uva, 0, dec_idx, out=dec_g)
+    y = torch.mm(xd, Wd[i % n_dec_w])[:, :K].contiguous()
+    if i % QSA_EVERY == 0:
+        torch.index_select(uva, 0, dec_idx, out=dec_g)
     dist.all_reduce(y, group=g_dec)
     return y
 
@@ -74,7 +84,7 @@ def prefill_layer():
 
 
 # correctness: all-reduced results on side streams equal a reference computed on the default stream
-ref_d = torch.mm(xd, Wd[0]); dist.all_reduce(ref_d, group=g_dec)
+ref_d = torch.mm(xd, Wd[0])[:, :K].contiguous(); dist.all_reduce(ref_d, group=g_dec)
 ref_p = torch.mm(torch.mm(A, B), Bo); dist.all_reduce(ref_p, group=g_pre)
 torch.cuda.synchronize()
 
@@ -153,6 +163,19 @@ def run(mode):
 
 
 import random
+
+
+def prefill_wall(n=40):
+    """Host-timed prefill layers (synchronized): TFLOP/s cross-check of the event-based counts."""
+    dist.barrier(); torch.cuda.synchronize()
+    t = time.perf_counter()
+    for _ in range(n):
+        prefill_layer()
+    torch.cuda.synchronize()
+    dt = time.perf_counter() - t
+    return round(n / dt, 1), round(n * 4 * 1024 * K * N / dt / 1e12, 1)
+
+
 MODES, REPEATS = ("decode", "prefill", "plain", "prio"), E("REPEATS", 3)
 for m in MODES:  # warm-up pass (allocator, NCCL, clocks), discarded
     run(m)
@@ -180,8 +203,9 @@ for r in results[2:]:
     r["gap_p99_x"] = round(r["gap_p99"] / base["gap_p99"], 2)
     r["late_p99_x"] = round(r["late_p99"] / base["late_p99"], 2)
     r["prefill_share"] = round(r["prefill_layers_per_s"] / alone_rate, 3) if alone_rate else None
+wall_rate, wall_tflops = prefill_wall()
 if rank == 0:
-    meta = {"devices": [torch.cuda.get_device_name(dev)], "visible": os.environ.get("CUDA_VISIBLE_DEVICES"),
+    meta = {"prefill_wall_layers_per_s": wall_rate, "prefill_wall_tflops": wall_tflops, "qsa_every": QSA_EVERY,"devices": [torch.cuda.get_device_name(dev)], "visible": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "period_ms": PERIOD, "layers": LAYERS, "dec_w_mb": DEC_W_MB, "dec_host_kb": DEC_HOST_KB,
             "pre_host_mb": PRE_HOST_MB, "steps": STEPS, "repeats": REPEATS, "order": order, "uva": True,
             "priority_range": torch.cuda.Stream.priority_range() if hasattr(torch.cuda.Stream, "priority_range")
