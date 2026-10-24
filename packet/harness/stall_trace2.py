@@ -15,7 +15,10 @@ Measurement semantics:
   * newcomer: TTFT (client), plus engine queue / prefill time from /metrics histogram deltas.
 Fails (exit 1) on any thread error, a stream that stops before the newcomer finishes, a missing newcomer token,
 too few advances, or injected faults (INJECT=missing|error|stop, to prove the checks work).
-usage: stall_trace2.py URL MODEL STREAMS PROMPT LONG LABEL OUT.json      env BASE=20 AFTER=10 INJECT=
+APPEND=n (small-arrival case): the newcomer is stream 0's prompt + n new tokens under stream 0's cache salt, i.e. a
+short append on a long cached history (an agent's next turn); LONG is then ignored and the newcomer's cached-token
+count is recorded (newcomer.cached_tokens) so a missed cache hit is visible.
+usage: stall_trace2.py URL MODEL STREAMS PROMPT LONG LABEL OUT.json      env BASE=20 AFTER=10 INJECT= APPEND=0
        stall_trace2.py --recompute OUT.json                              (recomputes the report from raw events)
 """
 import json, os, random, re, sys, threading, time, urllib.request, uuid
@@ -68,6 +71,7 @@ def report(raw):
                after=window(raw, m['p1'], m['a1']))
     res['newcomer'] = {'client_ttft_s': round(m['p1'] - m['p0'], 2),
                        'client_prompt_tps': round(raw['long_prompt'] / (m['p1'] - m['p0'])),
+                       'cached_tokens': m.get('cached'), 'append': raw.get('append', 0),
                        **raw.get('engine_newcomer', {})}
     fails = list(raw['errors'])
     for i, ev in enumerate(raw['events']):
@@ -100,6 +104,7 @@ if sys.argv[1] == '--recompute':
 URL, MODEL, N, PT, LONG, LABEL, OUT = (sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]),
                                        int(sys.argv[5]), sys.argv[6], sys.argv[7])
 BASE, AFTER, INJECT = float(os.environ.get('BASE', 20)), float(os.environ.get('AFTER', 10)), os.environ.get('INJECT', '')
+APPEND = int(os.environ.get('APPEND', 0))
 corpus = open('/home/<service-user>/p2p-tests/corpus.txt', encoding='utf-8', errors='ignore').read()
 
 
@@ -120,15 +125,20 @@ def engine_hist():
 
 base_tokens = json.load(post('/tokenize', {'model': MODEL, 'prompt': corpus[:max(PT, LONG) * 6]}, 300))['tokens']
 events = [[] for _ in range(N)]
+salts = [uuid.uuid4().hex for _ in range(N)]
+
+
+def stream_tokens(i):
+    start = random.Random(i).randrange(0, len(base_tokens) // 3)
+    return (base_tokens[start:] + base_tokens[:start])[:PT]
 errors, stop, lock = [], threading.Event(), threading.Lock()
 
 
 def stream(i):
     try:
-        start = random.Random(i).randrange(0, len(base_tokens) // 3)
-        tokens = (base_tokens[start:] + base_tokens[:start])[:PT]
+        tokens = stream_tokens(i)
         body = {'model': MODEL, 'prompt': tokens, 'max_tokens': 16384, 'min_tokens': 16384, 'ignore_eos': True,
-                'temperature': 0.7, 'seed': i, 'stream': True, 'cache_salt': uuid.uuid4().hex,
+                'temperature': 0.7, 'seed': i, 'stream': True, 'cache_salt': salts[i],
                 'stream_options': {'include_usage': True, 'continuous_usage_stats': True}}
         if INJECT == 'error' and i == 0:
             body['model'] = 'no-such-model'
@@ -159,14 +169,20 @@ def newcomer_run():
     time.sleep(3)
     marks['b0'] = time.monotonic(); time.sleep(BASE); marks['b1'] = time.monotonic()
     long_tokens = (base_tokens * (LONG // len(base_tokens) + 2))[:LONG]
+    salt = uuid.uuid4().hex
+    if APPEND:
+        tail = random.Random(12345).randrange(0, len(base_tokens) - APPEND)
+        long_tokens, salt = stream_tokens(0) + base_tokens[tail:tail + APPEND], salts[0]
     h0 = engine_hist()
     marks['p0'] = time.monotonic()
     with post('/v1/completions', {'model': MODEL, 'prompt': long_tokens, 'max_tokens': 1, 'temperature': 0,
-                                  'stream': True, 'cache_salt': uuid.uuid4().hex,
+                                  'stream': True, 'cache_salt': salt,
                                   'stream_options': {'include_usage': True, 'continuous_usage_stats': True}}) as r:
         for line in r:
             if line.startswith(b'data: {'):
                 u = json.loads(line[6:]).get('usage') or {}
+                if u.get('prompt_tokens_details'):
+                    marks['cached'] = u['prompt_tokens_details'].get('cached_tokens')
                 if u.get('completion_tokens', 0) >= 1:   # a validated token advance, not just an event
                     newcomer_token = INJECT != 'missing'
                     marks['p1'] = time.monotonic()
@@ -193,7 +209,8 @@ else:
 stop.set()
 for t in threads:
     t.join(timeout=30)
-raw = {'label': LABEL, 'streams': N, 'stream_prompt': PT, 'long_prompt': LONG, 'wall_anchor': wall_anchor,
+raw = {'label': LABEL, 'streams': N, 'stream_prompt': PT, 'long_prompt': PT + APPEND if APPEND else LONG,
+       'append': APPEND, 'wall_anchor': wall_anchor,
        'errors': errors, 'marks': marks, 'events': events, 'newcomer_token': newcomer_token, 'engine_newcomer': eng}
 if not marks or 'a1' not in marks:
     json.dump({'verdict': 'FAIL', 'fails': errors or ['incomplete run'], 'raw': raw}, open(OUT, 'w'))
