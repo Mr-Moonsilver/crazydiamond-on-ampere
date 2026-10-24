@@ -79,6 +79,13 @@ def percentile(xs, p):
     return sorted(xs)[max(0, math.ceil(p * len(xs)) - 1)]
 
 
+def refault():
+    """tvm_ffi (imported with vllm) installs its own SIGSEGV handler, which prints only a banner (q8f 24 Oct);
+    re-register Python's fault handler on top so a crash dumps every thread's Python stack (it chains on)."""
+    import faulthandler
+    faulthandler.enable(all_threads=True)
+
+
 def checked(condition, message):
     if not condition:
         raise CorrectnessError(message)
@@ -421,6 +428,22 @@ def stage_time(parts, spec, pair):
             + parts.get("hc_final",0))
 
 
+def ulp_close(a, b, max_fraction=1e-4):
+    """True when a and b (bf16) differ only by rare one-ulp flips; returns (ok, summary)."""
+    if a.shape != b.shape:
+        return False, f"shape {tuple(a.shape)} vs {tuple(b.shape)}"
+    af, bf = a.float(), b.float()
+    if not (torch.isfinite(af).all() and torch.isfinite(bf).all()):
+        return False, "nonfinite"
+    d = (af - bf).abs()
+    n = int((d > 0).sum().item())
+    mag = torch.maximum(af.abs(), bf.abs()).clamp_min(torch.finfo(torch.bfloat16).tiny)
+    ulp = torch.exp2(torch.floor(torch.log2(mag)) - 7)
+    worst = (d / ulp).max().item()
+    ok = worst <= 1.0 and n <= max_fraction * a.numel()
+    return ok, f"{n}/{a.numel()} differ, max {worst:.2f} ulp"
+
+
 def state_equal(a, b):
     return len(a) == len(b) and all(torch.equal(x,y) for x,y in zip(a,b))
 
@@ -501,7 +524,13 @@ def verify_mode(dec, pre, graph, sd, sp):
     if errors:
         raise errors[0]
     checked(state_equal(snapshot(dec),refd), "decode graph/concurrent state differs from eager")
-    checked(state_equal(snapshot(pre),refp), "concurrent prefill state differs from eager")
+    got = snapshot(pre)
+    # Persistent GDN/conv state stays bit-exact. The prefill output alone is not bit-deterministic (q8f 24 Oct: a
+    # third solo run flipped 349 of 10.5M elements by one bf16 ulp, identically to the concurrent run), so the output
+    # may differ only by isolated single-ulp flips.
+    checked(state_equal(got[1:],refp[1:]), "concurrent prefill state differs from eager")
+    ok, why = ulp_close(got[0], refp[0])
+    checked(ok, "concurrent prefill output beyond single-ulp rounding: " + why)
     checked(all(bool(torch.isfinite(x).all()) for x in snapshot(dec)+snapshot(pre)), "nonfinite warm outputs/state")
 
 
@@ -705,10 +734,12 @@ def run(args, spec):
         torch.cuda.reset_peak_memory_stats()
         result["phase"] = "reducers-and-kernel-setup"
         rd, rp = Reducer(dg,device), Reducer(pg,device)
+        refault()
         rd.check(refgroup); rp.check(refgroup)
         result["reduction_equal"] = True
         w = weights(spec,rank)
         dec, pre = Slice(spec,rank,rd,False,w,args.gdn_decode), Slice(spec,rank,rp,True,w,args.gdn_decode)
+        refault()
         source = importlib.import_module("vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn")
         source_hash = digest(source.__file__)
         evidence = json.loads(args.dispatch_evidence.read_text()) if args.dispatch_evidence else {}

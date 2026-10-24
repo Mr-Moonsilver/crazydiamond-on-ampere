@@ -46,10 +46,10 @@ class RecTrace(g.Trace):
         return out
 
 
-def bisect(lane, stream):
-    """Run the lane twice alone with per-op snapshots; first op whose output differs."""
+def bisect(lane, stream, n=3):
+    """Run the lane n times alone with per-op snapshots; per op, which runs differ from run 1."""
     runs = []
-    for _ in range(3):
+    for _ in range(n):
         lane.reset(); torch.cuda.synchronize()
         t = RecTrace()
         with torch.cuda.stream(stream):
@@ -57,15 +57,18 @@ def bisect(lane, stream):
         stream.synchronize()
         runs.append(t.outs)
     rows = []
-    for idx, ((k1, o1), (k2, o2), (k3, o3)) in enumerate(zip(*runs)):
-        eq12 = all(torch.equal(a, b) for a, b in zip(o1, o2))
-        eq13 = all(torch.equal(a, b) for a, b in zip(o1, o3))
-        md = max(((a.float() - b.float()).abs().max().item() for a, b in zip(o1, o2)), default=0.0)
-        fin = all(bool(torch.isfinite(a.float()).all()) for a in o1 + o2)
-        rows.append({"op": idx, "kind": k1, "eq_run1_run2": eq12, "eq_run1_run3": eq13, "max_abs_1v2": md,
-                     "finite": fin, "shapes": [list(a.shape) for a in o1]})
-    first = next((r for r in rows if not (r["eq_run1_run2"] and r["eq_run1_run3"])), None)
-    return {"ops": len(rows), "first_differing": first, "rows": rows}
+    for idx, ops in enumerate(zip(*runs)):
+        k1, o1 = ops[0]
+        bad, md = [], 0.0
+        for j, (_, oj) in enumerate(ops[1:], 2):
+            if not all(torch.equal(a, b) for a, b in zip(o1, oj)):
+                bad.append(j)
+                md = max(md, max(((a.float() - b.float()).abs().max().item() for a, b in zip(o1, oj)), default=0.0))
+        fin = all(bool(torch.isfinite(a.float()).all()) for _, o in ops for a in o)
+        rows.append({"op": idx, "kind": k1, "differs_in_runs": bad, "max_abs": md, "finite": fin,
+                     "shapes": [list(a.shape) for a in o1]})
+    first = next((r for r in rows if r["differs_in_runs"]), None)
+    return {"ops": len(rows), "runs": n, "first_differing": first, "rows": rows}
 
 
 def names(lane):
@@ -132,7 +135,8 @@ def main():
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--layers", type=int, default=4)
     ap.add_argument("--gdn-decode", choices=("cuda", "packed"), default="packed")
-    ap.add_argument("--bisect", action="store_true", help="per-op snapshots of prefill alone (x3) and decode alone (x3) first")
+    ap.add_argument("--bisect", action="store_true", help="per-op snapshots of prefill alone and decode alone first")
+    ap.add_argument("--bisect-runs", type=int, default=3)
     args = ap.parse_args()
     rank = int(os.environ.get("RANK", "0"))
     out = args.out.with_name(f"{args.out.stem}.rank{rank}.json")
@@ -146,10 +150,12 @@ def main():
         spec = plan(json.loads(args.config.read_text()), args.layers, 4, (24, 24))
         torch.manual_seed(871)
         rd, rp = g.Reducer(dg, device), g.Reducer(pg, device)
+        g.refault()
         rd.check(refgroup); rp.check(refgroup)
         w = g.weights(spec, rank)
         dec = g.Slice(spec, rank, rd, False, w, args.gdn_decode)
         pre = g.Slice(spec, rank, rp, True, w, args.gdn_decode)
+        g.refault()
         L = names(pre)
         s1, s2, sd = torch.cuda.Stream(), torch.cuda.Stream(), torch.cuda.Stream()
         report["device_name"] = torch.cuda.get_device_name(device)
@@ -159,10 +165,10 @@ def main():
         if args.bisect:
             report["phase"] = "bisect prefill"
             out.write_text(json.dumps(report, indent=2, default=str) + "\n")
-            report["bisect_prefill"] = bisect(pre, s1)
+            report["bisect_prefill"] = bisect(pre, s1, args.bisect_runs)
             report["phase"] = "bisect decode"
             out.write_text(json.dumps(report, indent=2, default=str) + "\n")
-            report["bisect_decode"] = bisect(dec, sd)
+            report["bisect_decode"] = bisect(dec, sd, args.bisect_runs)
             out.write_text(json.dumps(report, indent=2, default=str) + "\n")
             print(json.dumps({"rank": rank, "bisect_prefill_first": report["bisect_prefill"]["first_differing"],
                               "bisect_decode_first": report["bisect_decode"]["first_differing"]}), flush=True)
@@ -195,12 +201,12 @@ def main():
         report["D_prefill_after_vs_alone"] = diff(ref, eager(pre, s2), L)
         report["phase"] = "done"
 
-        a, c, d_ = (report[k]["all_equal"] for k in ("A_prefill_alone_repeat", "C_prefill_vs_alone",
-                                                       "D_prefill_vs_alone"))
-        report["reading"] = ("prefill not bit-deterministic even alone: q8b gate needs a tolerance or deterministic"
-                             " kernels, not a hazard" if not a else
-                             "prefill deterministic alone but differs next to decode: cross-lane hazard" if not (c and d_)
-                             else "all equal here: q8b difference not reproduced; check graph/mode order")
+        alone = all(report[k]["all_equal"] for k in ("A_prefill_alone_repeat", "A3_prefill_alone_third",
+                                                       "B_prefill_other_stream"))
+        nxt = all(report[k]["all_equal"] for k in ("C_prefill_vs_alone", "D_prefill_vs_alone"))
+        report["reading"] = ("prefill not bit-equal even alone (A/A3/B): compare the concurrent difference with it"
+                             if not alone else "prefill bit-equal alone but differs next to decode: cross-lane hazard"
+                             if not nxt else "all prefill runs bit-equal")
         rc = 0
     except BaseException as e:  # noqa: BLE001
         report.update(error=f"{type(e).__name__}: {e}", traceback=traceback.format_exc()[-4000:])
