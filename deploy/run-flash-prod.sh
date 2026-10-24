@@ -56,6 +56,16 @@ if [[ -n ${MPS_PIPE:-} ]]; then
   [[ -S $MPS_PIPE/control ]] || { echo "no MPS daemon at $MPS_PIPE" >&2; exit 2; }
   mps=(-v "$MPS_PIPE:$MPS_PIPE" -e CUDA_MPS_PIPE_DIRECTORY="$MPS_PIPE")
 fi
+# MODEL_DIR: another checkpoint directory under $task_dir/models (FP8 PLE phase: intel-w4a16-fp8ple, made by
+# tools/ple_fp8_convert.py, hard links + one rewritten table file).
+model_dir=${MODEL_DIR:-$task_dir/models/intel-w4a16}
+[[ $model_dir == "$task_dir"/models/* && -f $model_dir/config.json ]] || { echo "bad MODEL_DIR: $model_dir" >&2; exit 2; }
+# An overlay that carries ngram_embedding.py (make_plefp8.py: byte-view lookup for 1-byte PLE tables) mounts it too.
+ngram=()
+if [[ -f $OVERLAY/ngram_embedding.py ]]; then
+  grep -q " ngram_embedding.py$" "$OVERLAY/SHA256SUMS" || { echo "ngram_embedding.py not checksummed" >&2; exit 2; }
+  ngram=(-v "$OVERLAY/ngram_embedding.py:$D/ngram_embedding.py:ro")
+fi
 spec=()
 if [[ ${MTP_TOKENS:-0} != 0 ]]; then
   printf -v spec_json '{"method":"mtp","num_speculative_tokens":%d}' "$MTP_TOKENS"
@@ -81,11 +91,11 @@ exec sudo docker run --rm --init --name "$name" --label qwen.flash-next-producti
   -e VLLM_CACHE_ROOT=/work/cache/vllm -e TRITON_CACHE_DIR=/work/cache/triton \
   -e FLASHINFER_WORKSPACE_BASE=/work/cache/flashinfer \
   "${extra_env[@]}" "${mps[@]}" \
-  -v "$task_dir/models/intel-w4a16:/model:ro" -v "$task_dir:/work" \
+  -v "$model_dir:/model:ro" -v "$task_dir:/work" \
   -v "$OVERLAY/qsa.py:$D/qsa.py:ro" -v "$OVERLAY/ops_qsa.py:$D/ops/qsa.py:ro" \
   "${core[@]}" \
   "${runner[@]}" \
-  "${vision[@]}" \
+  "${vision[@]}" "${ngram[@]}" \
   "$expected_image" /model \
   --served-model-name qwen38-w8a8-tp4 Qwen3.8-Flash-Next Intel/Qwen3.8-Flash-Next-W4A16-AutoRound \
     cyankiwi/Qwen3.8-27B-AWQ-INT4 cyankiwi/Qwen3.5-122B-A10B-AWQ-4bit \
