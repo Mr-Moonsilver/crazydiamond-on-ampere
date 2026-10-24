@@ -67,7 +67,7 @@ def diff(x, y):
 
 def inproc(url, model, switch, out):
     import os
-    res, ok = {}, True
+    res, verdicts = {}, []
     tag = str(int(time.time()))
     for k, p in cases().items():
         # C must extend B's cached prefix in the same mode, so C reuses B's salt per mode
@@ -82,21 +82,35 @@ def inproc(url, model, switch, out):
         res[k] = {"on": on, "offa": offa, "offb": offb}
         n_eff, d_eff = diff(on, offa)
         n_noise, d_noise = diff(offa, offb)
-        good = (n_eff >= min(n_noise, 32)) and d_eff <= max(2 * d_noise, 0.05)
-        # every run must prefill from scratch (A, B) or from its own mode's B prefix (C): a salt that is ignored
-        # would serve off-runs from the on-run's cache and compare nothing
-        cached = [r.get("cached_tokens") for r in (on, offa, offb)]
-        limit = 0 if k != "C" else res["B"]["on"]["prompt_tokens"]
-        if any(c is None or c > limit + 4096 for c in cached):
-            good = False
-            print(f"{k}: cache isolation not proven, cached tokens {cached}", flush=True)
-        ok &= good
-        print(f"{k}: {'ok' if good else 'BAD'} prompt {on['prompt_tokens']} | on vs off: same prefix {n_eff}, max |d| "
-              f"{d_eff:.4f} | off vs off (noise): prefix {n_noise}, max |d| {d_noise:.4f} | seconds on/off "
-              f"{on['seconds']}/{offa['seconds']}", flush=True)
+        verdict = "ok" if ((n_eff >= min(n_noise, 32)) and d_eff <= max(2 * d_noise, 0.05)) else "BAD"
+        # evidence requirements (24 Oct review): complete outputs, a nonzero compared prefix, finite values, and proof
+        # that every run prefilled as intended -- otherwise INCONCLUSIVE, never ok
+        why = []
+        runs = (on, offa, offb)
+        if any(len(r["tokens"]) != 64 or len(r["logprobs"]) != 64 for r in runs):
+            why.append(f"incomplete outputs {[len(r['tokens']) for r in runs]}")
+        if n_eff == 0 or n_noise == 0:
+            why.append(f"no common prefix to compare (on/off {n_eff}, off/off {n_noise})")
+        if any(not (x == x and abs(x) < 1e30) for r in runs for x in r["logprobs"]):
+            why.append("non-finite logprob")
+        cached = [r.get("cached_tokens") for r in runs]
+        if k != "C":
+            if any(c is None or c != 0 for c in cached):
+                why.append(f"fresh case served from cache: cached tokens {cached}")
+        else:
+            b_prompt = res["B"]["on"]["prompt_tokens"]
+            if any(c is None or c < b_prompt - 4096 or c > on["prompt_tokens"] for c in cached):
+                why.append(f"extension did not start from its own B prefix: cached {cached}, B prompt {b_prompt}")
+        if why and verdict == "ok":
+            verdict = "INCONCLUSIVE"
+        verdicts.append(verdict)
+        print(f"{k}: {verdict} prompt {on['prompt_tokens']} | on vs off: same prefix {n_eff}, max |d| {d_eff:.4f} | "
+              f"off vs off (noise): prefix {n_noise}, max |d| {d_noise:.4f} | cached {cached} | seconds on/off "
+              f"{on['seconds']}/{offa['seconds']}{' | ' + '; '.join(why) if why else ''}", flush=True)
     json.dump(res, open(out, "w"))
-    print("retain_ab inproc:", "PASS" if ok else "FAIL")
-    return ok
+    final = "FAIL" if "BAD" in verdicts else "PASS" if verdicts == ["ok"] * 3 else "INCONCLUSIVE"
+    print("retain_ab inproc:", final)
+    return {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[final]
 
 
 def compare(base, cand):
@@ -109,6 +123,7 @@ def compare(base, cand):
         dl = max((abs(p - q) for p, q in zip(x["logprobs"][:n], y["logprobs"][:n])), default=0.0)
         strict = k == "A"
         good = (div is None and dl == 0.0) if strict else ((div is None or div >= 32) and dl < 0.05)
+        good &= len(x["tokens"]) == len(y["tokens"]) == 64  # zip() would hide a truncated output (24 Oct review)
         ok &= good
         print(f"{k}: {'ok' if good else 'BAD'} first divergence {div}, max |dlogprob| before it {dl:.4f}"
               f" ({'exact required' if strict else 'tolerance: no divergence before token 32, |d| < 0.05'})")
@@ -118,7 +133,7 @@ def compare(base, cand):
 
 if __name__ == "__main__":
     if sys.argv[1] == "--inproc":
-        sys.exit(0 if inproc(*sys.argv[2:6]) else 1)
+        sys.exit(inproc(*sys.argv[2:6]))
     if sys.argv[1] == "--compare":
         sys.exit(0 if compare(sys.argv[2], sys.argv[3]) else 1)
     record(*sys.argv[1:4])

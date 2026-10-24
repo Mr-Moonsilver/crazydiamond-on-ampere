@@ -82,7 +82,7 @@ fi
 
 ID1=$(ident); [[ -n $ID0 && $ID0 == "$ID1" ]] && put identity PASS "$ID0" || put identity FAIL "container changed: $ID0 -> $ID1"
 HARNESS_DIR=$H bash "$H/manifest.sh" "$OUT/manifest-end.txt" > /dev/null
-{ for k in "${ORDER[@]}"; do echo "$k ${V[$k]}"; done; } > "$OUT/verdicts.txt"
+{ for k in "${ORDER[@]}"; do echo "$k ${V[$k]}"; done; echo "END $(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s%N)"; } > "$OUT/verdicts.txt"
 if grep -q ' FAIL$' "$OUT/verdicts.txt"; then echo "RELEASE CHECK FAIL"; exit 1; fi
 if grep -qE ' (INCONCLUSIVE|NOT_RUN)$' "$OUT/verdicts.txt"; then echo "RELEASE CHECK INCONCLUSIVE"; exit 2; fi
 echo "RELEASE CHECK PASS"; exit 0

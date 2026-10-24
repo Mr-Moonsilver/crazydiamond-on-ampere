@@ -176,5 +176,82 @@ for name, mode, answers, want in [
     srv.shutdown()
     check(f'vision {mode}: {name}', rc, want)
 
+# --- cow_invariants schema (24 Oct review fixture: counters missing -> must not pass) ---
+check('invariants: mutation counters missing (review fixture)',
+      cow_invariants.check([line % (r, "{'src_rechecks': 1, 'controls': 1}") for r in ranks])[0], False)
+check('invariants: counter not an integer',
+      cow_invariants.check([line % (r, inv.replace("'prefix_unknown': 0", "'prefix_unknown': None") % (0, 0)) for r in ranks])[0], False)
+
+# --- release_combine completeness (24 Oct review fixture: only `bytes PASS` + empty files was approved) ---
+GATES = ['harness', 'identity', 'cow-hook', 'inside', 'after', 'steer-agent-31', 'steer-agent-32', 'steer-agent-33',
+         'steer-std-41', 'steer-std-42', 'coverage', 'bytes', 'errors', 'bench']
+MANIFEST = ('## mounted overlay files\naaaa /o/qsa.py\nbbbb /o/ops_qsa.py\n## settings\nOVERLAY=/o\nQSA_COW_VERIFY=%s\n'
+            '## harness\nhhhh selftest\nweights digest 0123456789abcdef\n')
+
+
+def release_fixture(v_rows, p_rows, steps, end=(True, True), same_id=False, profile=None):
+    d = tempfile.mkdtemp(prefix='release-fixture-')
+    for ph, rows, verify, e, rid in (('V', v_rows, '1', end[0], 'run-v'), ('P', p_rows, '-', end[1], 'run-v' if same_id else 'run-p')):
+        os.makedirs(f'{d}/{ph}')
+        open(f'{d}/{ph}/verdicts.txt', 'w').write(''.join(f'{k} {v}\n' for k, v in rows) + (f'END {rid}\n' if e else ''))
+        open(f'{d}/{ph}/manifest-start.txt', 'w').write(MANIFEST % verify)
+    open(f'{d}/steps.txt', 'w').write(''.join(f'{k} {v}\n' for k, v in steps))
+    args = [sys.executable, os.path.join(HERE, 'release_combine.py'), f'{d}/V', f'{d}/P', f'{d}/steps.txt', f'{d}/out.txt']
+    return subprocess.run(args + ([profile] if profile else []), capture_output=True, text=True).returncode
+
+
+good_v = [(g, 'NOT_RUN' if g == 'bench' else 'PASS') for g in GATES]
+good_p = [(g, 'NOT_RUN' if g == 'bytes' else 'PASS') for g in GATES]
+good_steps = [(x, 'PASS') for x in ('restart-verify', 'restart-async', 'inside-gen200-cancel', 'long-fullpool')]
+check('release: complete matched run', release_fixture(good_v, good_p, good_steps), 0)
+check('release: only bytes PASS + empty files (review fixture)', release_fixture([('bytes', 'PASS')], [], []), 2)
+check('release: a gate missing in one phase', release_fixture(good_v, good_p[:-1], good_steps), 2)
+check('release: duplicate gate', release_fixture(good_v + [('inside', 'PASS')], good_p, good_steps), 1)
+check('release: no END marker (run cut short)', release_fixture(good_v, good_p, good_steps, end=(True, False)), 2)
+check('release: both phases same run id', release_fixture(good_v, good_p, good_steps, same_id=True), 1)
+check('release: required step missing', release_fixture(good_v, good_p, good_steps[:2]), 2)
+check('release: vision profile without vision steps', release_fixture(good_v, good_p, good_steps, profile='vision'), 2)
+
+
+# --- retain_ab --inproc against a mocked engine (24 Oct review fixture: zero compared tokens passed) ---
+def mock_lp_engine(first_tokens, cached_fn):
+    import http.server, threading, itertools
+    seq = itertools.cycle(first_tokens)
+    state = {'n': 0}
+
+    class Hd(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            state['n'] += 1
+            first = next(seq)
+            toks = [first] + ['t'] * 63
+            out = {'choices': [{'logprobs': {'content': [{'token': t, 'logprob': -0.5} for t in toks]}}],
+                   'usage': {'prompt_tokens': 1000 + len(body['messages'][0]['content']) // 10,
+                             'prompt_tokens_details': {'cached_tokens': cached_fn(state['n'], body)}}}
+            b = json.dumps(out).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Hd)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def cached_ok(n, body):  # requests 1-6 are A and B (fresh), 7-9 are C (extend B)
+    return 0 if n <= 6 else 1000 + 67000 * 0  + len(body['messages'][0]['content']) // 10 - 700
+
+
+import retain_ab  # noqa: E402
+retain_ab.cases = lambda: {'A': 'a' * 100, 'B': 'b' * 1000, 'C': 'b' * 1000 + 'c' * 1000}
+for name, firsts, cfn, want in [('identical outputs, caches as required', ['x'], cached_ok, 0),
+                                 ('every run diverges at token 0 (review fixture)', ['x', 'y', 'z'], cached_ok, 2),
+                                 ('salt ignored: off runs served from cache', ['x'], lambda n, b: 500, 2)]:
+    srv = mock_lp_engine(firsts, cfn)
+    sw = tempfile.mkstemp()[1]
+    rc = retain_ab.inproc(f'http://127.0.0.1:{srv.server_port}', 'm', sw, tempfile.mkstemp(suffix='.json')[1])
+    srv.shutdown()
+    check(f'retain_ab inproc: {name}', rc, want)
+
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)
