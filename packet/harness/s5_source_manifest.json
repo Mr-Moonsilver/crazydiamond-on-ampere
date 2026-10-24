@@ -1,0 +1,14 @@
+{
+  "model_config_sha256": "0fabfa21fab8bfe69f02234f7ae8df4ed91b785fca2e22011c1230f6a07e5329",
+  "modules": {
+    "vllm.models.qwen4_exp.nvidia.ops.qsa": "5a0d962022ec4e47809fa072d2b13745c84413de894048e67f10c3c10a45d51b",
+    "vllm.models.qwen4_exp.nvidia.ops.hc": "f4af1d4bf4564c6ce18b59f5aa3bc6e4c07a8e785a671de26ff4a92f62927813",
+    "vllm.models.qwen4_exp.nvidia.ngram_embedding": "40320647b13c31e4f94bf611b4bed386292a5b3bf97ed138249d710493501b17",
+    "vllm.model_executor.layers.fused_moe.experts.marlin_moe": "93916b721548e6194dc70cf6cec224b4b1456a0cc0980235e97beba7bf36541d",
+    "vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn": "b80f8e6f3fff442fb880aebb3209c52f814f66490009f4ac4003de603576d10a",
+    "vllm.model_executor.layers.mamba.ops.causal_conv1d": "044d005cfe59fd0818ed421274e04f3e8dd679b8cdb64fca9f4422f2643484b2",
+    "vllm.third_party.flash_linear_attention.ops.chunk": "c105ead259e86aedc248c53e7c4cef07034d0ff12da608d80265d1dd0990803f",
+    "vllm.distributed.device_communicators.custom_all_reduce": "a048c1327c23580805600c0c951831bec333b1ffc4eb26a0e3d34119c4f0c445",
+    "vllm._custom_ops": "236af80568375bc41ed7f0fa28067e29efd5c77a6cf49f24d796312fa3870e43"
+  }
+}

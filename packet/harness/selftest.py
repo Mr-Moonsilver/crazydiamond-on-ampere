@@ -535,5 +535,21 @@ if resume.returncode:
     print(resume.stdout + resume.stderr)
 check('resumable prefill: generated control flow + offline protocol (fake tensors)', resume.returncode, 0)
 
+# --- S5: offline production-shape plan and fail-closed evidence grading ---
+s5 = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_segment.py')],
+                    capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+if s5.returncode:
+    print(s5.stdout + s5.stderr)
+check('S5 segment: CPU tests (GPU path not run)', s5.returncode, 0)
+from test_s5_segment import fixture as s5_fixture
+from s5_segment import combine as s5_combine
+check('S5 verdict GO: both pairs', s5_combine([s5_fixture(), s5_fixture('1,3')])['verdict'], 'GO')
+s5_bad = s5_fixture('1,3')
+for s5_rank in s5_bad['ranks']:
+    for s5_mode in ('green24', 'green34', 'green44'):
+        s5_rank['modes'][s5_mode]['prefill_steps_s'] = 30
+check('S5 verdict NO-GO: prefill floor', s5_combine([s5_fixture(), s5_bad])['verdict'], 'NO-GO')
+check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdict'], 'INCONCLUSIVE')
+
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)
