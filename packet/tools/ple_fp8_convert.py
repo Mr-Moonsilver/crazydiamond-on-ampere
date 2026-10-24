@@ -82,7 +82,8 @@ if not math.isfinite(amax) or amax <= 0:
 scale = amax / FP8_MAX
 sb = torch.tensor([scale], dtype=torch.float32).to(torch.bfloat16).float().item()
 if sb < scale:
-    sb = torch.nextafter(torch.tensor([sb], dtype=torch.bfloat16), torch.tensor([math.inf], dtype=torch.bfloat16)).float().item()
+    t = torch.tensor([sb], dtype=torch.float32).to(torch.bfloat16)  # positive: the next bf16 up is bit pattern + 1
+    sb = (t.view(torch.int16) + 1).view(torch.bfloat16).float().item()
 scale = sb
 assert torch.tensor([scale]).to(torch.bfloat16).float().item() == scale and scale * FP8_MAX >= amax
 print(f"amax {amax:.6g} -> scale {scale:.6g}", flush=True)
