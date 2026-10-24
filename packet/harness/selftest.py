@@ -339,5 +339,45 @@ RL = lambda w, sn, c: f"(Worker_PP{w // 2}_TP{w % 2} pid=1) INFO QSA rowcache mi
 check('cov_gate rowmix: used on every worker', cov('rowmix', ''.join(RL(w, 100, 90) for w in range(4))), 0)
 check('cov_gate rowmix: never used', cov('rowmix', ''.join(RL(w, 100, 0) for w in range(4))), 1)
 
+# --- decode_ab against a mocked engine: identical decodes pass; a shifted decode during the prefill fails ---
+def mock_decode_engine(leak):
+    import http.server, threading
+    busy = {'prefill': False}
+
+    class Hd(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if self.path == '/tokenize':
+                out = {'tokens': list(range(len(body['prompt'].split()) * 2))}
+            elif body['max_tokens'] == 1:  # the long prefill
+                busy['prefill'] = True; time.sleep(5.0); busy['prefill'] = False
+                out = {'choices': [{'text': 'x'}]}
+            else:
+                time.sleep(0.6 if busy['prefill'] else 0.05)
+                n, base = body['max_tokens'], sum(body['prompt'][:5]) % 50
+                toks = [f'token_id:{base + j}' for j in range(n)]
+                lps = [-0.1] * n
+                if leak and busy['prefill']:
+                    lps[10] = -2.5
+                top = [{t: lp, 'token_id:99999': lp - 1.0} for t, lp in zip(toks, lps)]
+                out = {'choices': [{'logprobs': {'tokens': toks, 'token_logprobs': lps, 'top_logprobs': top}}]}
+            b = json.dumps(out).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Hd)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+for name, leak, want in [('identical decodes', False, 0), ('decode shifted during the prefill', True, 1)]:
+    srv = mock_decode_engine(leak)
+    rc = subprocess.run([sys.executable, os.path.join(HERE, 'decode_ab.py'), f'http://127.0.0.1:{srv.server_port}', 'm',
+                         tempfile.mkstemp(suffix='.json')[1]], capture_output=True, text=True,
+                        env=dict(os.environ, N='3', LEN='16', LONG='20000')).returncode
+    srv.shutdown()
+    check(f'decode_ab: {name}', rc, want)
+
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)

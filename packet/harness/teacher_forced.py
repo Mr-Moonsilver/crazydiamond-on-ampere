@@ -97,7 +97,7 @@ def load_streams(url, model, rng, stop, log):
 
 
 def load_evidence(log, probes_run, nload):
-    """Every load stream error-free with >= 1 completed request before the probes, and each concurrent probe's
+    """Every load stream error-free with >= 1 completed request (all 400 tokens: token progress) before the probes, and each concurrent probe's
     interval covered by every stream's requests (gaps <= 1 s between back-to-back requests). Returns the list of problems (empty = valid)."""
     probs = []
     if not log or not probes_run or any("t0" not in r or "t1" not in r for r in probes_run.values()):
@@ -106,10 +106,10 @@ def load_evidence(log, probes_run, nload):
         probs.append(("load", "errors", sum(tok is None for _, _, _, tok in log)))
     first = min((r["t0"] for r in probes_run.values()), default=0)
     for k in range(nload):
-        if not any(s == k and t1 <= first and tok for s, _, t1, tok in log):
+        if not any(s == k and t1 <= first and (tok or 0) >= 400 for s, _, t1, tok in log):
             probs.append(("load", k, "no completed request before the probes"))
     def covered(k, a, b, gap=1.0):  # [a, b] inside stream k's successful requests, back-to-back gaps <= 1 s allowed
-        for t0, t1 in sorted((t0, t1) for s, t0, t1, tok in log if s == k and tok):
+        for t0, t1 in sorted((t0, t1) for s, t0, t1, tok in log if s == k and (tok or 0) >= 400):
             if t0 > a + gap:
                 return False
             if t1 >= a:
@@ -214,7 +214,7 @@ def main():
     stop, load_log = threading.Event(), []
     th = load_streams(url, model, random.Random(SEED + 1), stop, load_log)
     t_set = time.time()  # wait until every load stream has completed a request (cached, decoding), max 600 s
-    while len({k for k, _, _, tok in load_log if tok}) < LOAD and time.time() - t_set < 600:
+    while len({k for k, _, _, tok in load_log if (tok or 0) >= 400}) < LOAD and time.time() - t_set < 600:
         time.sleep(1)
     time.sleep(E("TF_SETTLE", 5.0))
     conds["concurrent"] = run_condition(url, model, probes, "concurrent", fwd)

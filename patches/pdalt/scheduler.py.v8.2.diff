@@ -1,0 +1,106 @@
+--- scheduler.py.v7
++++ scheduler.py.v8
+@@ -346,6 +346,13 @@
+         self._pd_hist = collections.deque()  # (end time, mode, seconds) of recent D/P steps
+         self._pd_prev = None  # (mode, start time) of the previous D/P step
+         self._pd_d_run = 0
++        # flash-next v5 short-first (make_sfirst.py)
++        self._sf_max = int(os.environ.get("FLASH_SHORT_FIRST", "0"))
++        self._sf_max_run = int(os.environ.get("FLASH_SHORT_FIRST_MAX_RUN", "8"))
++        self._sf_run = 0
++        self._sf_memo = {}  # request id -> (num_tokens, uncached tokens), this scheduling pass only
++        self._sf_bypass = False
++        self._sched_stats.update(sf_steps=0, sf_skips=0, sf_empty=0, sf_aged=0)
+         self.scheduler_reserve_full_isl = (
+             self.scheduler_config.scheduler_reserve_full_isl
+         )
+@@ -587,6 +594,32 @@
+             self._pd_hist.popleft()
+         tot = sum(d for _, _, d in self._pd_hist)
+         return sum(d for _, m, d in self._pd_hist if m == "D") / tot if tot else 0.0
++
++    def _sf_uncached(self, request):
++        # flash-next v5: prefill tokens still to compute (waiting: prompt minus the prefix-cache hit, no side effects)
++        if request.num_computed_tokens > 0:
++            return request.num_tokens - request.num_computed_tokens
++        memo = self._sf_memo.get(request.request_id)
++        if memo is not None and memo[0] == request.num_tokens:
++            return memo[1]
++        hit = 0
++        kvm = self.kv_cache_manager
++        if kvm.prefix_cache_lookup_enabled(request):
++            hit = kvm.coordinator.find_longest_cache_hit(request.block_hashes, request.num_tokens - 1)[1]
++        self._sf_memo[request.request_id] = (request.num_tokens, request.num_tokens - hit)
++        return request.num_tokens - hit
++
++    def _sf_short_pending(self):
++        # flash-next v5: ids of short prefills (waiting and ready, or running mid-prefill)
++        short = set()
++        admissible = len(self.running) + self.num_waiting_for_streaming_input < self.max_num_running_reqs
++        for r in (itertools.chain(self.waiting, self.skipped_waiting) if admissible else ()):
++            if not self._is_blocked_waiting_status(r.status) and self._sf_uncached(r) <= self._sf_max:
++                short.add(r.request_id)
++        for r in self.running:
++            if r.is_prefill_chunk and r.num_tokens - r.num_computed_tokens <= self._sf_max:
++                short.add(r.request_id)
++        return short
+ 
+     def schedule(self, throttle_prefills: bool = False) -> SchedulerOutput:
+         self.current_step += 1
+@@ -672,6 +705,17 @@
+ 
+         # First, schedule the RUNNING requests.
+         req_index = 0
++        # flash-next v5 short-first: while a short prefill is pending, long prefills yield (aging bound)
++        sf_short = set()
++        if self._sf_max and pd_mode != "D":
++            self._sf_memo = {}
++            sf_short = self._sf_short_pending()
++            if sf_short and (self._sf_run >= self._sf_max_run or self._sf_bypass):
++                self._sched_stats["sf_aged" if self._sf_run >= self._sf_max_run else "sf_empty"] += 1
++                sf_short = set()
++            self._sf_bypass = False
++            self._sf_run = self._sf_run + 1 if sf_short else 0  # decode-only steps leave the counter alone
++            self._sched_stats["sf_steps"] += bool(sf_short)
+         while req_index < len(self.running) and token_budget > 0:
+             request = self.running[req_index]
+             if input_budget <= draft_slots:
+@@ -707,6 +751,12 @@
+ 
+             if pd_mode == "P" and not request.is_prefill_chunk:
+                 # flash-next PD alternation: decoders wait for the next decode-only step.
++                req_index += 1
++                continue
++
++            if (sf_short and request.is_prefill_chunk and request.request_id not in sf_short):
++                # flash-next v5 short-first: a long prefill chunk yields this step to a short prefill
++                self._sched_stats["sf_skips"] += 1
+                 req_index += 1
+                 continue
+ 
+@@ -960,6 +1010,13 @@
+                             "%s is still in WAITING_FOR_REMOTE_KVS state.",
+                             request_id,
+                         )
++                    request_queue.pop_request()
++                    step_skipped_waiting.prepend_request(request)
++                    continue
++
++                if sf_short and request_id not in sf_short:
++                    # flash-next v5 short-first: a long waiting request is deferred to the next step
++                    self._sched_stats["sf_skips"] += 1
+                     request_queue.pop_request()
+                     step_skipped_waiting.prepend_request(request)
+                     continue
+@@ -1379,6 +1436,11 @@
+ 
+         # Check if the scheduling constraints are satisfied.
+         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
++        prefill_scheduled_tokens = sum(num_scheduled_tokens.get(r.request_id, 0) for r in itertools.chain(
++            scheduled_running_reqs, scheduled_new_reqs, scheduled_resumed_reqs) if r.is_prefill_chunk)
++        if sf_short:
++            # flash-next v8.2: a deferring step that scheduled no prefill at all -> next prefill step without deferral
++            self._sf_bypass = prefill_scheduled_tokens <= 0
+ 
+         # flash-next PD alternation v2: a prefill step that admitted nothing pauses alternation until the queue or
+         # the running set changes (otherwise a blocked queue empties every other step).

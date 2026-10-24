@@ -6,13 +6,16 @@ through qsa_sparse_paged_attention with the prefill configuration and rowcache=N
 all their selected rows from host instead of the VRAM row cache. PD alternation keeps such steps rare, but short-first
 fallbacks, paused alternation and any S5 variant that batches decode with prefill make them common.
 QSA_ROWCACHE_MIXED=1 (needs QSA_HOST_META=1 for the CPU offsets, no sync): the leading run of requests with exactly
-one query row (decodes; the batch is checked, not assumed, to start with them) is served first with the decode
+one query row (decodes, and also a prefill's one-token last chunk: the runner sorts single-row requests first, Codex
+round 3 -- each row still reads only its own request's rows through its own UID) is served first with the decode
 configuration and the row cache, exactly as in a decode-only step; the remaining rows take the existing path. If the
 batch does not start with decode rows, nothing changes. The row-cache ownership update above runs for every step
 already, so the cache state the decoders see is the same as in a decode step. Leak, lifetime and canary gates are
 required before this is used (the row cache has a leak history, 23 Oct).
+v7.2: the use counters are logged every 100 counted calls per worker (2000 never fired in a W2 run), for the
+per-worker gate harness/cov_gate.py rowmix.
 Unset, the patched file behaves exactly like its input.
-usage: make_rowmix.py qsa.py.v6 qsa.py.v7
+usage: make_rowmix.py qsa.py.v6.1 qsa.py.v7.2
 """
 import difflib, sys
 
@@ -65,7 +68,7 @@ sub('''        if staged is None:
             if layer.layer_name.split(".")[-3] in ("3", "27"):
                 _QSA_ROWMIX_STATS[0] += 1
                 _QSA_ROWMIX_STATS[1] += lead > 0
-                if _QSA_ROWMIX_STATS[0] % 2000 == 0:
+                if _QSA_ROWMIX_STATS[0] % 100 == 0:
                     from vllm.logger import init_logger
                     init_logger(__name__).info("QSA rowcache mixed steps: %d seen, %d with cached decode rows",
                                                *_QSA_ROWMIX_STATS)

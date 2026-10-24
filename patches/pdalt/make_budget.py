@@ -8,13 +8,16 @@ prompt alone prefills ~10 % faster, sweep 1); while any decoder is running, a st
 Step budget, FLASH_STEP_TARGET_MS=T (with decoders running, on non-decode steps): the prefill budget is chosen so
 the step should take about T ms. Cost model: wall ms per prefill token, learned per history bin (32k tokens of the
 longest running prefill) as an EWMA (0.8 / 0.2) over previous steps that scheduled >= 128 prefill tokens, where a
-step's wall time is the time to the next schedule() call. That proxy over-attributes under pipeline overlap (24 Oct
-review); it is conservative (smaller chunks) and its estimates are logged so the error is visible. Budget =
+step's wall time is the time to the next schedule() call. That is a scheduler-CADENCE heuristic, not an execution
+time: under async PP2 it can under- or over-estimate (Codex round 3), so bg_infeasible is a prediction from that
+heuristic, never evidence that a step-time target was met or impossible; the run's measured gaps decide.
+v9.2 (Codex round 3): samples are attributed to the history of the prefill actually scheduled (after short-first and
+admission) and count only scheduled prefill-chunk tokens. Budget =
 T / (ms per token), rounded down to 16, at least FLASH_STEP_MIN_CHUNK (default 256). When even the minimum chunk is
 predicted to exceed T, the step runs the minimum chunk and counts as infeasible (bg_infeasible): the target cannot
 be met by slicing at that history length -- the measured reason the plan needs S5.
 Stats add bg_budget (last budget), bg_infeasible, bg_k (ms per token per bin). Unset, v8 behaviour is unchanged.
-usage: make_budget.py scheduler.py.v8.1 scheduler.py.v9.1   (v9 was built on v8, before the short-first fixes)
+usage: make_budget.py scheduler.py.v8.2 scheduler.py.v9.2   (v9 / v9.1 were built on v8 / v8.1)
 """
 import difflib, sys
 
@@ -65,13 +68,13 @@ sub("""        # flash-next v5 short-first: while a short prefill is pending, lo
         # flash-next v5 short-first: while a short prefill is pending, long prefills yield (aging bound)
 """)
 
-sub("""        # Check if the scheduling constraints are satisfied.
-        total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
-""", """        # Check if the scheduling constraints are satisfied.
-        total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+sub("""            self._sf_bypass = prefill_scheduled_tokens <= 0
+""", """            self._sf_bypass = prefill_scheduled_tokens <= 0
         if bg_bin is not None:
-            ndec_b = sum(1 for r in scheduled_running_reqs if not r.is_prefill_chunk)
-            self._bg_prev = (total_num_scheduled_tokens - ndec_b, bg_bin, self._bg_t0) if pd_mode != "D" else None
+            hist_s = max((r.num_computed_tokens for r in itertools.chain(scheduled_running_reqs, scheduled_new_reqs,
+                          scheduled_resumed_reqs) if r.is_prefill_chunk), default=0)
+            self._bg_prev = ((prefill_scheduled_tokens, min(hist_s // 32768, 8), self._bg_t0)
+                             if pd_mode != "D" else None)
 """)
 open(sys.argv[2], "w").write(src)
 sys.stdout.writelines(difflib.unified_diff(orig.splitlines(True), src.splitlines(True), "scheduler.py.v8", "scheduler.py.v9"))

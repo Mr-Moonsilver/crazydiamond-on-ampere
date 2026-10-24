@@ -18,7 +18,9 @@ v8.1 (Codex round 2): decode-only steps no longer reset the aging counter (with 
 at 1 and aging never fired); the cache-hit estimate is looked up once per scheduling pass, never memoised across
 passes (a memo survived eviction or a sibling publishing the prefix); and a deferring step that schedules no prefill
 token at all (the short request could not be admitted: KV, stale output, encoder, preemption ...) makes the next
-prefill step run without deferral (sf_empty counts them), so a non-admissible short request cannot stall prefill. Decode scheduling, PD
+prefill step run without deferral (sf_empty counts them), so a non-admissible short request cannot stall prefill.
+v8.2 (Codex round 3): "no prefill scheduled" is counted from the scheduled requests that are prefill chunks, not as
+all tokens minus one per decoder (wrong with draft tokens). Decode scheduling, PD
 alternation and the parity cap are unchanged. Stats add sf_steps (steps that deferred) and sf_skips (deferrals).
 usage: make_sfirst.py scheduler.py.v7 scheduler.py.v8
 """
@@ -120,10 +122,11 @@ sub("""        # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
 """, """        # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+        prefill_scheduled_tokens = sum(num_scheduled_tokens.get(r.request_id, 0) for r in itertools.chain(
+            scheduled_running_reqs, scheduled_new_reqs, scheduled_resumed_reqs) if r.is_prefill_chunk)
         if sf_short:
-            # flash-next v8.1: a deferring step that scheduled no prefill at all -> next prefill step without deferral
-            ndec_sf = sum(1 for r in scheduled_running_reqs if not r.is_prefill_chunk)
-            self._sf_bypass = total_num_scheduled_tokens - ndec_sf <= 0
+            # flash-next v8.2: a deferring step that scheduled no prefill at all -> next prefill step without deferral
+            self._sf_bypass = prefill_scheduled_tokens <= 0
 """)
 
 open(sys.argv[2], "w").write(src)

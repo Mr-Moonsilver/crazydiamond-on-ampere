@@ -12,7 +12,7 @@ send the same sequence of requests (timing aside).
 Metrics (warm turns only, after WARMUP s): completed turns per hour, turn time p50/p95 (send -> last token), TTFT
 p50/p95, per-turn decode rate p50/p5, prefix-cache hit rate (usage.prompt_tokens_details.cached_tokens / prompt
 tokens), errors. Per-turn records go to the JSON.
-usage: agent_replay.py URL MODEL OUT.json   (env: AGENTS=8 DURATION=1200 WARMUP=300 SEED=1 + the ranges below)
+usage: agent_replay.py URL MODEL OUT.json | --resummarize OUT.json   (env: AGENTS=8 DURATION=1200 WARMUP=300 SEED=1 + the ranges below)
 """
 import json, os, random, statistics, sys, threading, time, urllib.request
 
@@ -104,7 +104,11 @@ def pct(xs, q):
 
 
 def summarize(records, warmup, duration):
+    """Latency over every turn sent inside [warmup, duration] (all of them run to completion); throughput
+    (turns/hour, output tokens/s) only over turns that also FINISHED inside the window (Codex round 3: a turn sent
+    before the cutoff and finished after it was credited to the window)."""
     warm = [r for r in records if r["t"] >= warmup and "error" not in r and r.get("ttft") is not None]
+    done = [r for r in warm if r["t"] + r["seconds"] <= duration]
     span_h = max(1e-9, (duration - warmup) / 3600)
     appends = [r for r in warm if r["kind"] == "append"]
     fresh = [r for r in warm if r["kind"] == "fresh"]
@@ -112,13 +116,13 @@ def summarize(records, warmup, duration):
         r.get("completion_tokens") and r["seconds"] > r["ttft"]) else None
     hit = (sum(r["cached_tokens"] or 0 for r in appends) / max(1, sum(r["prompt_tokens"] or 0 for r in appends)))
     return {
-        "turns_per_hour": round(len(warm) / span_h, 1),
+        "turns_per_hour": round(len(done) / span_h, 1), "turns_finished_after_window": len(warm) - len(done),
         "turn_s_p50": pct([r["seconds"] for r in warm], 0.5), "turn_s_p95": pct([r["seconds"] for r in warm], 0.95),
         "append_ttft_p50": pct([r["ttft"] for r in appends], 0.5),
         "append_ttft_p95": pct([r["ttft"] for r in appends], 0.95),
         "fresh_ttft_p50": pct([r["ttft"] for r in fresh], 0.5), "fresh_turns": len(fresh),
         "decode_tps_p50": pct([rate(r) for r in warm], 0.5), "decode_tps_p5": pct([rate(r) for r in warm], 0.05),
-        "output_tokens_per_s": round(sum(r.get("completion_tokens") or 0 for r in warm) / (duration - warmup), 1),
+        "output_tokens_per_s": round(sum(r.get("completion_tokens") or 0 for r in done) / (duration - warmup), 1),
         "prefix_hit_rate_appends": round(hit, 4),
         "errors": sum(1 for r in records if "error" in r),
         "warm_turns": len(warm),
@@ -126,6 +130,10 @@ def summarize(records, warmup, duration):
 
 
 def main():
+    if sys.argv[1] == "--resummarize":  # recompute a saved run's summary with the current rule (its own config)
+        d = json.load(open(sys.argv[2]))
+        print("agent_replay resummarized", json.dumps(summarize(d["turns"], d["config"]["WARMUP"], d["config"]["DURATION"])))
+        return
     url, model, out = sys.argv[1:4]
     records, lock = [], threading.Lock()
     t_start = time.time()
