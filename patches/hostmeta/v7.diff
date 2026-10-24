@@ -1,0 +1,76 @@
+--- qsa.py.v6
++++ qsa.py.v7
+@@ -59,6 +59,20 @@
+ _QSA_HOST_META = os.environ.get("QSA_HOST_META", "0") == "1"
+ _QSA_HOST_META_VERIFY = os.environ.get("QSA_HOST_META_VERIFY", "0") == "1"
+ _QSA_HOST_META_STATS = [0, 0]  # verified calls, mismatches
++_QSA_ROWCACHE_MIXED = os.environ.get("QSA_ROWCACHE_MIXED", "0") == "1"
++_QSA_ROWMIX_STATS = [0, 0]  # mixed steps seen (first QSA layer), of which served decode rows from the row cache
++
++
++def _qsa_leading_decode_rows(attn_metadata):
++    """Rows [0, n) of the batch that are single-row requests (decodes), from the CPU offsets; 0 if unknown."""
++    host = getattr(attn_metadata, "_qsa_host_meta", None)
++    if host is None:
++        return 0
++    offs = host[0]
++    n = 0
++    while n + 1 < len(offs) and offs[n + 1] - offs[n] == 1:
++        n += 1
++    return n
+ 
+ 
+ class Qwen4ExpQSAMetadataBuilder(FlashAttentionMetadataBuilder):
+@@ -337,21 +351,47 @@
+         # A/B switch for experiments: the flush above still runs while the cache is off.
+         if rowcache is not None and os.path.exists("/work/rowcache.off"):
+             rowcache = None
++        lead = 0
++        if _QSA_ROWCACHE_MIXED and use_prefill_config and rowcache is not None:
++            # make_rowmix.py: the batch's leading decode rows keep the row cache in a mixed step
++            lead = min(_qsa_leading_decode_rows(attn_metadata), num_tokens,
++                       staged[0] if staged is not None else num_tokens)
++            if layer.layer_name.split(".")[-3] in ("3", "27"):
++                _QSA_ROWMIX_STATS[0] += 1
++                _QSA_ROWMIX_STATS[1] += lead > 0
++                if _QSA_ROWMIX_STATS[0] % 2000 == 0:
++                    from vllm.logger import init_logger
++                    init_logger(__name__).info("QSA rowcache mixed steps: %d seen, %d with cached decode rows",
++                                               *_QSA_ROWMIX_STATS)
++            if lead:
++                qsa_sparse_paged_attention(
++                    query[:lead],
++                    key_cache,
++                    value_cache,
++                    logical_indices[:lead],
++                    attn_metadata.block_table,
++                    token_to_req[:lead],
++                    False,
++                    output[:lead],
++                    rowcache=rowcache,
++                )
+         if staged is None:
++            if lead >= num_tokens:
++                return output
+             qsa_sparse_paged_attention(
+-                query[:num_tokens],
++                query[lead:num_tokens],
+                 key_cache,
+                 value_cache,
+-                logical_indices,
++                logical_indices[lead:],
+                 attn_metadata.block_table,
+-                token_to_req,
++                token_to_req[lead:],
+                 use_prefill_config,
+-                output[:num_tokens],
++                output[lead:num_tokens],
+                 rowcache=None if use_prefill_config else rowcache,
+             )
+             return output
+         staged_start, staged_end = staged
+-        for low, high in ((0, staged_start), (staged_end, num_tokens)):
++        for low, high in ((lead, staged_start), (staged_end, num_tokens)):
+             if high > low:
+                 qsa_sparse_paged_attention(
+                     query[low:high],
