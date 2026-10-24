@@ -106,9 +106,9 @@ class PlanTests(unittest.TestCase):
         wrapped.reset();self.assertEqual(calls,["replay","reset"])
 
     def test_queue_syntax_and_no_automatic_engine_restore(self):
-        p = subprocess.run(["bash","-n",str(HERE/"runs/q7-draft.sh")],capture_output=True,text=True)
+        p = subprocess.run(["bash","-n",str(HERE/"s5_queue.sh")],capture_output=True,text=True)
         self.assertEqual(p.returncode,0,p.stderr)
-        src = (HERE/"runs/q7-draft.sh").read_text()
+        src = (HERE/"s5_queue.sh").read_text()
         self.assertNotIn("systemctl start",src)
         self.assertNotIn("flash-reconfig.sh",src)
         self.assertIn("gpu_idle",src)
