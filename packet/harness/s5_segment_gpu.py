@@ -209,11 +209,14 @@ class Slice:
         self.dtype = torch.bfloat16
         self.x = torch.randn(self.t, 10240, device="cuda", dtype=self.dtype) * .02
         self.initial_x = self.x.clone()
-        self.state = [torch.zeros(self.reqs, 24, 128, 128, device="cuda", dtype=torch.float32)
+        # Cache line 0 is vLLM's NULL_BLOCK_ID: the conv kernels skip it and leave the output unwritten (q8e 24 Oct:
+        # prefill output was uninitialised memory). The engine never schedules line 0, so lines 1..reqs are used here.
+        self.state = [torch.zeros(self.reqs + 1, 24, 128, 128, device="cuda", dtype=torch.float32)
                       for _ in range(spec["layers"])]
-        self.conv = [torch.zeros(self.reqs, 5120, 3, device="cuda", dtype=self.dtype)
+        self.conv = [torch.zeros(self.reqs + 1, 5120, 3, device="cuda", dtype=self.dtype)
                      for _ in range(spec["layers"])]
         self.state_ids = torch.arange(self.reqs, device="cuda", dtype=torch.int32)
+        self.cache_ids = self.state_ids + 1
         self.cu = torch.tensor([0, self.t], device="cuda", dtype=torch.int32) if prefill else torch.arange(self.t+1, device="cuda", dtype=torch.int32)
         self.chunk_indices = self.chunk_offsets = None
         if prefill:
@@ -306,26 +309,26 @@ class Slice:
         z = z.reshape(self.t, 24, 128).contiguous()
         if self.pre:
             cv = causal_conv1d_fn(packed.T, self.w["conv"], None, self.conv[i], self.cu,
-                                  cache_indices=self.state_ids, has_initial_state=self.initial,
+                                  cache_indices=self.cache_ids, has_initial_state=self.initial,
                                   activation="silu", validate_data=False).T.contiguous()
             q,k,v,g,beta = fused_post_conv_prep(cv,a,b,self.w["A"],self.w["dt"],8,128,128)
             out, state = chunk_gated_delta_rule(q.unsqueeze(0),k.unsqueeze(0),v.unsqueeze(0),
-                            g.unsqueeze(0),beta.unsqueeze(0),initial_state=self.state[i],
+                            g.unsqueeze(0),beta.unsqueeze(0),initial_state=self.state[i][1:],
                             output_final_state=True,cu_seqlens=self.cu,use_qk_l2norm_in_kernel=False,
                             chunk_indices=self.chunk_indices,chunk_offsets=self.chunk_offsets)
-            self.state[i].copy_(state)
+            self.state[i][1:].copy_(state)
             out = out.reshape(self.t,24,128)
         else:
             cv = causal_conv1d_update(packed,self.conv[i],self.w["conv"],None,"silu",
-                                      conv_state_indices=self.state_ids,validate_data=False)
+                                      conv_state_indices=self.cache_ids,validate_data=False)
             out = torch.empty(self.t,24,128,device="cuda",dtype=self.dtype)
             if self.gdn_decode == "cuda":
                 ops.fused_gdn_decode_post_conv_mtp(cv,a,b,self.w["A"],self.w["dt"],
-                       self.state_ids[:,None],self.cu,self.accepted,self.state[i],z,self.w["gdn_norm"],
+                       self.cache_ids[:,None],self.cu,self.accepted,self.state[i],z,self.w["gdn_norm"],
                        out=out,scale=128**-.5,norm_eps=1e-6,output_gate_activation="silu")
             else:
                 fused_recurrent_gated_delta_rule_packed_decode(cv,a,b,self.w["A"],self.w["dt"],
-                       128**-.5,self.state[i],out.unsqueeze(1),self.state_ids,True)
+                       128**-.5,self.state[i],out.unsqueeze(1),self.cache_ids,True)
         if self.pre or self.gdn_decode == "packed":
             layer_norm_fwd(out.reshape(-1,128),self.w["gdn_norm"],None,1e-6,
                            z=z.reshape(-1,128),out=out.reshape(-1,128),group_size=128,
