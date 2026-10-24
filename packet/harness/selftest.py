@@ -420,5 +420,40 @@ for name, fault, want in [('identical decodes', None, 0), ('logprob shifted duri
     srv.shutdown()
     check(f'decode_ab: {name}', rc, want)
 
+# --- sf_starve against a mocked engine: the long prompt returns under short load (PASS); it waits until the shorts stop
+# (starved: FAIL at MAX_S); no short completes while it waits (load not sustained: INCONCLUSIVE) ---
+def mock_starve_engine(mode):
+    import http.server, threading
+    st = {'long': False}
+
+    class Hd(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if body['max_tokens'] == 1:
+                st['long'] = True
+                time.sleep(30 if mode == 'starve' else 2.0)
+                out = {'choices': [{'text': 'x'}], 'usage': {'prompt_tokens': len(body['prompt'])}}
+            else:
+                time.sleep(5.0 if mode == 'stall' and st['long'] else 0.1)
+                out = {'choices': [{'text': 'y'}]}
+            b = json.dumps(out).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Hd)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+for name, mode, want in [('long prompt completes under short load', None, 0), ('long prompt starved', 'starve', 1),
+                         ('shorts stall while the long waits', 'stall', 2)]:
+    srv = mock_starve_engine(mode)
+    rc = subprocess.run([sys.executable, os.path.join(HERE, 'sf_starve.py'), f'http://127.0.0.1:{srv.server_port}', 'm',
+                         tempfile.mkstemp(suffix='.json')[1]], capture_output=True, text=True,
+                        env=dict(os.environ, K='3', SHORT='64', LONG='2000', WARM='0.5', MAX_S='4', MIN_SHORTS='5')).returncode
+    srv.shutdown()
+    check(f'sf_starve: {name}', rc, want)
+
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)
