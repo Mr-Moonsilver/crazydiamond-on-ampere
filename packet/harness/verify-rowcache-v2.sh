@@ -21,11 +21,14 @@ n=$(docker logs --since 30m "$C" 2>&1 | grep -c QSA_ROWCACHE_HITS)
 rm -f $W/rowcache.report
 echo "hit lines: $n"; [[ $n -gt 0 ]] || { echo "CACHE NOT ACTIVE"; fail=1; }
 echo "== single-session warm == cold"
-python3 /tmp/salt_ab.py $URL $MODEL 6 1500 2>&1 | grep -E "warm==cold|RESULT"
+python3 /tmp/salt_ab.py $URL $MODEL 6 1500 2>&1 | grep -E "warm==cold|RESULT"   # informational: greedy text can differ by batch noise
 if [[ ${1:-} != skip-bench ]]; then
   echo "== decode 8 x 60k"
   QUICK_WINDOW_S=30 timeout 900 python3 /tmp/quick_c8.py $URL $MODEL 8 60000 2048 v2-8x60k /tmp/v2-8x60k.json 2>&1 | tail -4
 fi
 echo "== errors"
-docker logs --since 30m "$C" 2>&1 | grep -E "Traceback|AssertionError|CUDA error|Xid" | head -5
-[[ $fail == 0 ]] && echo "RELEASE CHECK PASS" || echo "RELEASE CHECK FAIL"
+errs=$(docker logs --since 30m "$C" 2>&1 | grep -E "Traceback|AssertionError|CUDA error|Xid" | head -5)
+[[ -z $errs ]] || { echo "$errs"; fail=1; }
+# superseded by verify-release.sh (adds the partial-copy tests); exit status now reflects the verdict
+[[ $fail == 0 ]] && { echo "RELEASE CHECK PASS"; exit 0; }
+echo "RELEASE CHECK FAIL"; exit 1
