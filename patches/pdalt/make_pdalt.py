@@ -18,7 +18,10 @@ prefill steps.
 v2 (24 Oct 2026, Codex's audit): prefill work only counts when it is feasible -- a running prefill chunk, or a
 waiting / skipped_waiting request AND a free request slot. A prefill step that still schedules nothing (memory or
 status blocked) pauses alternation until the waiting set, the running set or a running prefill chunk changes, so a
-blocked queue costs at most one empty step instead of every other step. FLASH_SCHED_STATS=N logs counters every N
+blocked queue costs at most one empty step instead of every other step. The waiting set is compared by request id
+AND status (a request turning ready, or replaced by another at equal queue lengths, re-enables alternation).
+While paused, the stock scheduler runs, so a blocked request that becomes admissible without such a change can be
+admitted into a mixed batch (supported fallback, counted as "plain" steps with prefill in the stats). FLASH_SCHED_STATS=N logs counters every N
 steps: decode/prefill/plain steps, empty prefill steps, and decoders scheduled on even vs odd steps (PP parity).
 FLASH_PARITY_BALANCE=1 (needs PP; independent of FLASH_PD_ALTERNATE): on steps that are not PD-alternation decode
 steps, schedule at most ceil(decoders / 2) decoders. With PP2 every decoder runs every other step, so decoders
@@ -45,12 +48,21 @@ src = sub(src, """        self.prefill_capacity_bound = False
         # flash-next: alternate decode-only / prefill-only steps under PP (FLASH_PD_ALTERNATE=1).
         self.pd_alternate = self.use_pp and os.environ.get("FLASH_PD_ALTERNATE", "0") == "1"
         self._pd_last_decode = False
-        self._pd_blocked_sig = None  # (waiting, skipped, running) when a prefill step admitted nothing
+        self._pd_blocked_sig = None  # queue identity+status and running count when a prefill step admitted nothing
         self._sched_stats_every = int(os.environ.get("FLASH_SCHED_STATS", "0"))
         self._sched_stats = dict(D=0, P=0, plain=0, empty_P=0, dec_even=0, dec_odd=0, cap_skips=0,
                                  parity_changes=0)
         self.parity_balance = self.use_pp and os.environ.get("FLASH_PARITY_BALANCE", "0") == "1"
         self.scheduler_reserve_full_isl = (
+""")
+
+src = sub(src, """    def schedule(self, throttle_prefills: bool = False) -> SchedulerOutput:
+""", """    def _pd_queue_sig(self):
+        # flash-next PD alternation: identity + readiness of queued work, and the running count
+        return (tuple((r.request_id, r.status) for r in itertools.chain(self.waiting, self.skipped_waiting)),
+                len(self.running))
+
+    def schedule(self, throttle_prefills: bool = False) -> SchedulerOutput:
 """)
 
 src = sub(src, """        defer_prefills = (
@@ -67,7 +79,7 @@ src = sub(src, """        defer_prefills = (
             running_chunk = any(r.is_prefill_chunk for r in self.running)
             queued = len(self.waiting) + len(self.skipped_waiting)
             free_slot = len(self.running) + self.num_waiting_for_streaming_input < self.max_num_running_reqs
-            sig = (len(self.waiting), len(self.skipped_waiting), len(self.running))
+            sig = self._pd_queue_sig()
             if running_chunk or sig != self._pd_blocked_sig:
                 self._pd_blocked_sig = None
             prefill_work = running_chunk or (queued > 0 and free_slot and self._pd_blocked_sig is None)
@@ -130,10 +142,12 @@ src = sub(src, """        # Check if the scheduling constraints are satisfied.
         # flash-next PD alternation v2: a prefill step that admitted nothing pauses alternation until the queue or
         # the running set changes (otherwise a blocked queue empties every other step).
         if pd_mode == "P" and total_num_scheduled_tokens == 0:
-            self._pd_blocked_sig = (len(self.waiting), len(self.skipped_waiting), len(self.running))
+            self._pd_blocked_sig = self._pd_queue_sig()
         if self._sched_stats_every:
             st = self._sched_stats
             st[pd_mode or "plain"] += 1
+            st["plain_mixed"] = st.get("plain_mixed", 0) + (pd_mode is None and prefill_scheduled
+                                                             and any(not r.is_prefill_chunk for r in scheduled_running_reqs))
             st["empty_P"] += pd_mode == "P" and total_num_scheduled_tokens == 0
             ndec = sum(1 for r in scheduled_running_reqs if not r.is_prefill_chunk)
             st["dec_even" if self.current_step % 2 == 0 else "dec_odd"] += ndec

@@ -15,7 +15,7 @@
 +        # flash-next: alternate decode-only / prefill-only steps under PP (FLASH_PD_ALTERNATE=1).
 +        self.pd_alternate = self.use_pp and os.environ.get("FLASH_PD_ALTERNATE", "0") == "1"
 +        self._pd_last_decode = False
-+        self._pd_blocked_sig = None  # (waiting, skipped, running) when a prefill step admitted nothing
++        self._pd_blocked_sig = None  # queue identity+status and running count when a prefill step admitted nothing
 +        self._sched_stats_every = int(os.environ.get("FLASH_SCHED_STATS", "0"))
 +        self._sched_stats = dict(D=0, P=0, plain=0, empty_P=0, dec_even=0, dec_odd=0, cap_skips=0,
 +                                 parity_changes=0)
@@ -23,10 +23,23 @@
          self.scheduler_reserve_full_isl = (
              self.scheduler_config.scheduler_reserve_full_isl
          )
-@@ -608,6 +617,29 @@
+@@ -559,6 +568,11 @@
+             num_new_tokens -= self.num_prefill_lookahead - remaining
+         return max(num_new_tokens, 0)
+ 
++    def _pd_queue_sig(self):
++        # flash-next PD alternation: identity + readiness of queued work, and the running count
++        return (tuple((r.request_id, r.status) for r in itertools.chain(self.waiting, self.skipped_waiting)),
++                len(self.running))
++
+     def schedule(self, throttle_prefills: bool = False) -> SchedulerOutput:
+         self.current_step += 1
+         # NOTE(woosuk) on the scheduling algorithm:
+@@ -607,6 +621,29 @@
+         defer_prefills = (
              throttle_prefills and not self.prefill_capacity_bound
          ) and any(not r.is_prefill_chunk for r in self.running)
- 
++
 +        # flash-next PD alternation (see make_pdalt.py): "D" = decode-only step, "P" = prefill-only step.
 +        pd_mode = None
 +        if self.pd_alternate:
@@ -34,7 +47,7 @@
 +            running_chunk = any(r.is_prefill_chunk for r in self.running)
 +            queued = len(self.waiting) + len(self.skipped_waiting)
 +            free_slot = len(self.running) + self.num_waiting_for_streaming_input < self.max_num_running_reqs
-+            sig = (len(self.waiting), len(self.skipped_waiting), len(self.running))
++            sig = self._pd_queue_sig()
 +            if running_chunk or sig != self._pd_blocked_sig:
 +                self._pd_blocked_sig = None
 +            prefill_work = running_chunk or (queued > 0 and free_slot and self._pd_blocked_sig is None)
@@ -49,11 +62,10 @@
 +            ndec_all = sum(1 for r in self.running if not r.is_prefill_chunk)
 +            dec_cap = (ndec_all + 1) // 2 if ndec_all > 1 else None
 +        ndec_sched = 0
-+
+ 
          # First, schedule the RUNNING requests.
          req_index = 0
-         while req_index < len(self.running) and token_budget > 0:
-@@ -640,6 +672,17 @@
+@@ -640,6 +677,17 @@
              if defer_prefills and request.is_prefill_chunk:
                  # DP prefill balancing: defer this in-progress prefill chunk to a
                  # cadence-aligned step; decodes still run to fill this step.
@@ -71,7 +83,7 @@
                  req_index += 1
                  continue
  
-@@ -802,6 +845,13 @@
+@@ -802,6 +850,13 @@
              # Schedule the request.
              scheduled_running_reqs.append(request)
              prefill_scheduled |= request.is_prefill_chunk
@@ -85,7 +97,7 @@
              request_id = request.request_id
              req_to_new_blocks[request_id] = new_blocks
              num_scheduled_tokens[request_id] = num_new_tokens
-@@ -1299,6 +1349,21 @@
+@@ -1299,6 +1354,23 @@
  
          # Check if the scheduling constraints are satisfied.
          total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
@@ -93,10 +105,12 @@
 +        # flash-next PD alternation v2: a prefill step that admitted nothing pauses alternation until the queue or
 +        # the running set changes (otherwise a blocked queue empties every other step).
 +        if pd_mode == "P" and total_num_scheduled_tokens == 0:
-+            self._pd_blocked_sig = (len(self.waiting), len(self.skipped_waiting), len(self.running))
++            self._pd_blocked_sig = self._pd_queue_sig()
 +        if self._sched_stats_every:
 +            st = self._sched_stats
 +            st[pd_mode or "plain"] += 1
++            st["plain_mixed"] = st.get("plain_mixed", 0) + (pd_mode is None and prefill_scheduled
++                                                             and any(not r.is_prefill_chunk for r in scheduled_running_reqs))
 +            st["empty_P"] += pd_mode == "P" and total_num_scheduled_tokens == 0
 +            ndec = sum(1 for r in scheduled_running_reqs if not r.is_prefill_chunk)
 +            st["dec_even" if self.current_step % 2 == 0 else "dec_odd"] += ndec

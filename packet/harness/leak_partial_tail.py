@@ -11,9 +11,14 @@ shared tail entry; the fact is recomputed, so it only tests state hand-over, not
 Each graded request also runs cold (unique cache_salt). Verdicts and the path-recreating retries: see leakgrade.py.
 The output JSON keeps every prompt's token ids, answers, hit lengths, retries and the engine container identity at
 start and end. Exit 0 PASS, 1 FAIL, 2 INCONCLUSIVE.
-usage: leak_partial_tail.py URL MODEL SESSIONS ROUNDS [B] [OUT.json]   env: MODE=inside GEN=300 UNIT=176 FACT=5000 SEED=1
+UNIQUE_PREFIX=1 (MODE=inside): every session gets its own first block, so long runs fill the KV pool (preemption).
+CANCEL_FRAC=f: that share of sessions first opens request 2 as a stream and drops the connection 0-300 ms in (an
+abort around the copy submission), then asks again; the re-asked answer is graded. NEED_PARTIAL=0 for whole-block
+control runs (B a multiple of BLOCK: no partial copy expected).
+usage: leak_partial_tail.py URL MODEL SESSIONS ROUNDS [B] [OUT.json]
+       env: MODE=inside GEN=300 UNIT=176 BLOCK=4048 FACT=5000 FACT2=6800 SEED=1 CANCEL_FRAC=0 NEED_PARTIAL=1
 """
-import json, os, random, re, subprocess, sys, threading, time, urllib.request, uuid
+import http.client, json, os, random, subprocess, sys, threading, time, urllib.parse, urllib.request, uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import leakgrade  # noqa: E402
@@ -24,6 +29,10 @@ OUT = sys.argv[6] if len(sys.argv) > 6 else None
 GEN, UNIT, COLD = int(os.environ.get("GEN", "300")), int(os.environ.get("UNIT", "176")), os.environ.get("COLD", "1") == "1"
 MODE, FACT, BLOCK = os.environ.get("MODE", "inside"), int(os.environ.get("FACT", "5000")), int(os.environ.get("BLOCK", "4048"))
 FACT2 = int(os.environ.get("FACT2", "6800"))  # MODE=inside: 2nd fact, asked only by request 3 (chained copies)
+CANCEL_FRAC = float(os.environ.get("CANCEL_FRAC", "0"))
+NEED_PARTIAL = os.environ.get("NEED_PARTIAL", "1") == "1"
+UNIQUE_PREFIX = os.environ.get("UNIQUE_PREFIX", "0") == "1"  # MODE=inside: no shared first block (fills the pool)
+cancelled = []
 rnd = random.Random(int(os.environ.get("SEED", "1")))
 corpus = open('/home/<service-user>/p2p-tests/corpus.txt', encoding='utf-8', errors='ignore').read()
 
@@ -87,6 +96,17 @@ def engine_identity():
         return None
 
 
+def abort_after(prompt, seconds):
+    # send a streamed request and drop the connection `seconds` after submission, without waiting for headers
+    # (the engine sees a client abort while the request is being scheduled / its copy is being submitted)
+    u = urllib.parse.urlparse(URL)
+    conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=900)
+    body = json.dumps({'model': MODEL, 'prompt': prompt, 'max_tokens': 12, 'temperature': 0, 'stream': True})
+    conn.request('POST', '/v1/completions', body, {'Content-Type': 'application/json'})
+    time.sleep(seconds)
+    conn.close()
+
+
 def run_session(rd, i, shared, code, delay):
     time.sleep(delay)
     if MODE == "after":
@@ -94,10 +114,17 @@ def run_session(rd, i, shared, code, delay):
         assert len(priv) < UNIT - 8, len(priv)
         p1 = shared + priv
     else:
+        if UNIQUE_PREFIX:
+            off = random.Random(rd * 31337 + i).randrange(0, len(corpus) - B * 6 - 1)
+            shared = tok(f"[round {rd} session {i} {uuid.uuid4().hex}]\n" + corpus[off:off + B * 6])[:B]
         p1 = build_inside(shared, i, rd, code, locker_of(code))
         assert len(p1) - B < UNIT - 8
     _, ids1, _ = complete(p1, GEN + rnd.randrange(0, GEN), ignore_eos=True)
     p2 = p1 + list(ids1) + QUESTION
+    if random.Random(rd * 7919 + i).random() < CANCEL_FRAC:
+        abort_after(p2, random.Random(rd * 104729 + i).uniform(0, 0.3))
+        with lock:
+            cancelled.append((rd, i))
     a, ids_a, det = complete(p2, 12, ignore_eos=True)
     cold = complete(p2, 12, salt=uuid.uuid4().hex, ignore_eos=True)[0] if COLD else None
     rec = {'round': rd, 'session': i, 'code': code, 'answer': a, 'cold': cold, 'cached': det.get('cached_tokens'),
@@ -184,7 +211,11 @@ for r in sorted(results, key=lambda x: (x['round'], x['session'])):
                   f"cold={(r.get('cold' if k == 'answer' else 'cold3') or '')[:40]!r}", flush=True)
 expected = N * ROUNDS * (2 if MODE == 'inside' else 1)
 run = leakgrade.run_verdict(cases, expected, errors, restarted=identity_start != identity_end or identity_start is None,
-                            need_partial=MODE == 'inside')
+                            need_partial=MODE == 'inside' and NEED_PARTIAL)
+run['cancelled'] = len(cancelled)
+if CANCEL_FRAC and not cancelled:
+    run['inconclusive'].append('no request was cancelled')
+    run['verdict'] = 'INCONCLUSIVE' if run['verdict'] == 'PASS' else run['verdict']
 for e in errors:
     print("ERROR", e, flush=True)
 seen = sorted({r['cached'] for r in results}) + sorted({r['cached3'] for r in results if 'cached3' in r})
