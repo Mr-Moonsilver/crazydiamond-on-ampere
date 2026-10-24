@@ -372,6 +372,7 @@ def mock_decode_engine(fault):
                                                                          'prompt_tokens_details': {'cached_tokens': 0}}})
             self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
             n, sess = body['max_tokens'], sum(body['prompt'][:5]) % 997
+            tied = False  # neartie: every position is a near-tie; the run swaps winners at its first token under the prefill
             for j in range(n):
                 mixed = busy['prefill']
                 if fault == 'queued' and mixed:
@@ -385,9 +386,11 @@ def mock_decode_engine(fault):
                     lp = -2.5; alp = -3.9
                 if fault == 'nan' and mixed:
                     lp = float('nan')
-                if fault == 'neartie' and j == 2:
-                    a1, a2 = f'token_id:{sess * 50 + j}', f'token_id:{sess * 50 + 49}'
-                    tok, alt = (a2, a1) if mixed or busy['done'].is_set() else (a1, a2)
+                if fault == 'neartie':
+                    a1, a2 = f'token_id:{s2 * 50 + j}', f'token_id:{s2 * 50 + 49}'
+                    swap = mixed and not tied
+                    tied = tied or swap
+                    tok, alt = (a2, a1) if swap else (a1, a2)
                     lp, alp = -0.6, -0.8
                 top = {tok: lp, alt: alp}
                 ch = {'choices': [{'logprobs': {'tokens': [tok], 'token_logprobs': [lp], 'top_logprobs': [top]}}]}
@@ -411,7 +414,7 @@ for name, fault, want in [('identical decodes', None, 0), ('logprob shifted duri
                           ('another session\'s tokens during the prefill', 'swapped', 1),
                           ('NaN logprobs during the prefill', 'nan', 2),
                           ('queued-only: no token arrives during the prefill', 'queued', 2),
-                          ('near-tie divergence at token 2 (no mixed coverage)', 'neartie', 2)]:
+                          ('near-tie divergence at the first token under the prefill (no mixed coverage)', 'neartie', 2)]:
     srv = mock_decode_engine(fault)
     rc = subprocess.run([sys.executable, os.path.join(HERE, 'decode_ab.py'), f'http://127.0.0.1:{srv.server_port}', 'm',
                          tempfile.mkstemp(suffix='.json')[1]], capture_output=True, text=True,
