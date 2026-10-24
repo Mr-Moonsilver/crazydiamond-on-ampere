@@ -551,5 +551,14 @@ for s5_rank in s5_bad['ranks']:
 check('S5 verdict NO-GO: prefill floor', s5_combine([s5_fixture(), s5_bad])['verdict'], 'NO-GO')
 check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdict'], 'INCONCLUSIVE')
 
+# --- Full engine identity: mocked docker, actual destination-side hashing; no GPU ---
+for suite, label in [('test_identity.py', 'engine identity: mocked Docker and content/provenance checks'),
+                     ('test_round7_review.py', 'round 7 review: offline q8/decode_ab counterexamples')]:
+    identity_test = subprocess.run([sys.executable, os.path.join(HERE, suite)], capture_output=True, text=True,
+                                   env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+    if identity_test.returncode:
+        print(identity_test.stdout + identity_test.stderr)
+    check(label, identity_test.returncode, 0)
+
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)

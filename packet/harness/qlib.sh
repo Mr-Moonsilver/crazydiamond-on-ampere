@@ -9,6 +9,9 @@
 #   stall_case NAME OVL tCHUNK XCFG XENV   /tmp/stall2.sh (restart + W1/W2 trace) into $Q/NAME, its STEP lines prefixed
 #                         and counted here; returns 0 only when the restart passed and `installed` holds
 #   ident                 container id + start time (a restart between two points invalidates what lies between)
+#   identity OUT REQUEST [capture options]  full redacted manifest + check against an independently pinned request
+#   identity_check BEFORE REQUEST [AFTER]   check config/content; with AFTER also require same container lifetime
+#                         (see identity.md; these helpers never control the engine)
 FAILS=0; INCS=0
 SWITCHES="QSA_HOST_META QSA_HOST_META_VERIFY QSA_ROWCACHE_MIXED QSA_RETAIN_HISTORY QSA_RETAIN_PAGES QSA_RETAIN_VERIFY
 QSA_COW_VERIFY FLASH_SHORT_FIRST FLASH_STEP_TARGET_MS FLASH_CHUNK_BUSY FLASH_PD_DECODE_SHARE"
@@ -22,6 +25,12 @@ finish() {
   [[ $FAILS == 0 ]] || exit 1; [[ $INCS == 0 ]] || exit 2; exit 0
 }
 ident() { docker inspect qwen-flash-prod --format '{{.Id}} {{.State.StartedAt}}' 2>/dev/null; }
+_QLIB_IDENTITY_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+identity() {  # Keep arguments out of xtrace; caller passes paths, never secret literals.
+  local out=$1 request=$2; shift 2
+  python3 "$_QLIB_IDENTITY_DIR/engine_identity.py" capture "$out" --request "$request" "$@"
+}
+identity_check() { python3 "$_QLIB_IDENTITY_DIR/engine_identity.py" check "$@"; }
 installed() {
   local ovl=$1 chunk=$2 env mounts kv k; shift 2
   env=$(docker inspect qwen-flash-prod --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)
