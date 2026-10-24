@@ -32,6 +32,42 @@ import s5_segment_gpu as g  # noqa: E402
 
 
 
+class RecTrace(g.Trace):
+    """Trace that also keeps a clone of every op's output, synchronizing after each op."""
+    def __init__(self):
+        super().__init__()
+        self.outs = []
+
+    def call(self, kind, fn):
+        out = super().call(kind, fn)
+        torch.cuda.current_stream().synchronize()
+        flat = [out] if isinstance(out, torch.Tensor) else [t for t in (out or ()) if isinstance(t, torch.Tensor)]
+        self.outs.append((kind, [t.detach().clone() for t in flat]))
+        return out
+
+
+def bisect(lane, stream):
+    """Run the lane twice alone with per-op snapshots; first op whose output differs."""
+    runs = []
+    for _ in range(3):
+        lane.reset(); torch.cuda.synchronize()
+        t = RecTrace()
+        with torch.cuda.stream(stream):
+            lane.forward(t)
+        stream.synchronize()
+        runs.append(t.outs)
+    rows = []
+    for idx, ((k1, o1), (k2, o2), (k3, o3)) in enumerate(zip(*runs)):
+        eq12 = all(torch.equal(a, b) for a, b in zip(o1, o2))
+        eq13 = all(torch.equal(a, b) for a, b in zip(o1, o3))
+        md = max(((a.float() - b.float()).abs().max().item() for a, b in zip(o1, o2)), default=0.0)
+        fin = all(bool(torch.isfinite(a.float()).all()) for a in o1 + o2)
+        rows.append({"op": idx, "kind": k1, "eq_run1_run2": eq12, "eq_run1_run3": eq13, "max_abs_1v2": md,
+                     "finite": fin, "shapes": [list(a.shape) for a in o1]})
+    first = next((r for r in rows if not (r["eq_run1_run2"] and r["eq_run1_run3"])), None)
+    return {"ops": len(rows), "first_differing": first, "rows": rows}
+
+
 def names(lane):
     n = len(lane.state)
     return ["last_output"] + [f"gdn_state[{i}]" for i in range(n)] + [f"conv_state[{i}]" for i in range(n)]
@@ -96,6 +132,7 @@ def main():
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--layers", type=int, default=4)
     ap.add_argument("--gdn-decode", choices=("cuda", "packed"), default="packed")
+    ap.add_argument("--bisect", action="store_true", help="per-op snapshots of prefill alone (x3) and decode alone (x3) first")
     args = ap.parse_args()
     rank = int(os.environ.get("RANK", "0"))
     out = args.out.with_name(f"{args.out.stem}.rank{rank}.json")
@@ -119,6 +156,16 @@ def main():
         report["cuda_visible_devices"] = os.environ.get("CUDA_VISIBLE_DEVICES")
         report["deterministic_algorithms"] = torch.are_deterministic_algorithms_enabled()
 
+        if args.bisect:
+            report["phase"] = "bisect prefill"
+            out.write_text(json.dumps(report, indent=2, default=str) + "\n")
+            report["bisect_prefill"] = bisect(pre, s1)
+            report["phase"] = "bisect decode"
+            out.write_text(json.dumps(report, indent=2, default=str) + "\n")
+            report["bisect_decode"] = bisect(dec, sd)
+            out.write_text(json.dumps(report, indent=2, default=str) + "\n")
+            print(json.dumps({"rank": rank, "bisect_prefill_first": report["bisect_prefill"]["first_differing"],
+                              "bisect_decode_first": report["bisect_decode"]["first_differing"]}), flush=True)
         report["phase"] = "A: prefill alone x2"
         before = inputs(pre)
         ref = eager(pre, s1)
