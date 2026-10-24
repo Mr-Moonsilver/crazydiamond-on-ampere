@@ -1,0 +1,156 @@
+--- ops_qsa.py.in
++++ ops_qsa.py.out
+@@ -808,6 +808,56 @@
+ _STAGE_TIMER = _QSAStageTimer() if os.environ.get("QSA_STAGE_TIMING", "0") == "1" else None
+ 
+ 
++class _QSARetainedHistory:
++    """QSA_RETAIN_HISTORY=1: one prefilling request's host K/V pages kept in VRAM per layer (see make_retain.py)."""
++
++    def __init__(self, cap_pages):
++        self.cap = cap_pages
++        self.buf = {}    # host kv_cache data_ptr (one per layer) -> VRAM [cap, heads, page, 2 * head_dim]
++        self.state = {}  # data_ptr -> (request id, block ids of the copied pages, pages complete when copied)
++        self.failed = False
++
++    def get(self, kv_cache, block_table_row, num_pages, seq_len, uid, ids):
++        """Pages [0, min(num_pages, cap)) of request ``uid`` in VRAM, refreshed; (view, pages copied) or (None, 0)."""
++        key = kv_cache.data_ptr()
++        old_uid, old_ids, complete = self.state.get(key, (None, (), 0))
++        if self.failed or uid < 1:
++            self.state.pop(key, None)
++            return None, 0
++        if old_uid != uid:
++            self.state[key] = (uid, (), 0)  # first chunk seen: arm only
++            return None, 0
++        buf = self.buf.get(key)
++        if buf is None:
++            try:
++                buf = torch.empty((self.cap, *kv_cache.shape[1:]), dtype=kv_cache.dtype,
++                                  device=block_table_row.device)
++            except torch.OutOfMemoryError:
++                self.failed = True
++                self.state.clear()
++                return None, 0
++            self.buf[key] = buf
++        keep = min(num_pages, self.cap)
++        first, lim = 0, min(complete, keep, len(old_ids))
++        while first < lim and old_ids[first] == ids[first]:
++            first += 1
++        if first < keep:
++            physical = block_table_row[first:keep].to(torch.int64)
++            torch.index_select(kv_cache, 0, physical, out=buf[first:keep])
++        self.state[key] = (uid, tuple(ids[:keep]), min(keep, seq_len // kv_cache.shape[2]))
++        return buf[:keep], keep - first
++
++
++_RETAINED = (_QSARetainedHistory(int(os.environ.get("QSA_RETAIN_PAGES", "40")))
++             if os.environ.get("QSA_RETAIN_HISTORY", "0") == "1" else None)
++
++
++def qsa_retained_history(kv_cache, block_table_row, num_pages, seq_len, uid, ids):
++    if _RETAINED is None:
++        return None, 0
++    return _RETAINED.get(kv_cache, block_table_row, num_pages, seq_len, uid, ids)
++
++
+ def qsa_sparse_paged_attention_staged(
+     q: torch.Tensor,
+     kv_cache: torch.Tensor,
+@@ -818,8 +868,13 @@
+     arena: torch.Tensor,
+     use_prefill_config: bool,
+     out: torch.Tensor,
++    retained: torch.Tensor | None = None,
++    retained_copied: int = 0,
+ ) -> None:
+     """Run the rows in ``rows`` against host-resident K/V via the arena.
++
++    With ``retained`` (the first pages of this request already in VRAM, see qsa_retained_history) that is the first
++    bucket; the remaining pages are staged through the arena (dense) as further buckets.
+ 
+     Caller contract (use the direct path when it cannot be met):
+       * ``rows`` belongs to a single request and ``block_table_row`` is that
+@@ -841,7 +896,7 @@
+     # Long prefills often reuse the same selected keys across adjacent queries.
+     # Compact that union before transfer instead of reading every host page.
+     # Keep the existing path for small contexts or nearly dense selections.
+-    if (num_pages > int(os.environ.get("QSA_SPARSE_MIN_PAGES", pages_in_arena))
++    if (retained is None and num_pages > int(os.environ.get("QSA_SPARSE_MIN_PAGES", pages_in_arena))
+             and os.environ.get("VLLM_QSA_KVO_SPARSE_PREFILL", "1") == "1"):
+         selected_rows = logical_indices.index_select(0, rows)
+         unique, inverse = torch.unique(
+@@ -863,10 +918,13 @@
+             logical_indices = remapped
+             unique_tokens = unique_valid
+             num_pages = triton.cdiv(unique_tokens.numel(), page_size)
+-    num_buckets = triton.cdiv(num_pages, pages_in_arena)
++    first_hi = retained.shape[0] if retained is not None else 0
++    spans = ([(0, first_hi)] if retained is not None else []) + [
++        (lo, min(lo + pages_in_arena, num_pages)) for lo in range(first_hi, num_pages, pages_in_arena)]
++    num_buckets = len(spans)
+     if _t is not None:
+         _t["sparse"] = unique_tokens is not None
+-        _t["moved"] = num_pages
++        _t["moved"] = num_pages if retained is None else retained_copied + num_pages - first_hi
+ 
+     group_size = q.shape[1] // num_kv_heads
+     # Ampere BF16 tensor-core dot requires at least 16 rows. TP4 has
+@@ -888,13 +946,14 @@
+         )
+         norm_state = torch.empty_like(max_state)
+ 
+-    for bucket in range(num_buckets):
+-        page_lo = bucket * pages_in_arena
+-        page_hi = min(page_lo + pages_in_arena, num_pages)
+-        staged = arena[: page_hi - page_lo]
++    for bucket, (page_lo, page_hi) in enumerate(spans):
++        from_retained = retained is not None and bucket == 0
++        staged = retained if from_retained else arena[: page_hi - page_lo]
+         if _t is not None:
+             _t["ev"].append(_STAGE_TIMER.mark())
+-        if unique_tokens is None:
++        if from_retained:
++            pass  # already in VRAM
++        elif unique_tokens is None:
+             physical = block_table_row[page_lo:page_hi].to(torch.int64)
+             torch.index_select(kv_cache, 0, physical, out=staged)
+         else:
+--- qsa.py.in
++++ qsa.py.out
+@@ -134,7 +134,7 @@
+     if end - start < min_rows or end > num_tokens:
+         return None
+ 
+-    from .ops.qsa import qsa_get_staging_arena, qsa_sparse_paged_attention_staged
++    from .ops.qsa import qsa_get_staging_arena, qsa_retained_history, qsa_sparse_paged_attention_staged
+ 
+     arena = qsa_get_staging_arena(
+         kv_cache, getattr(layer, "_qsa_stage_arena_bytes", 0)
+@@ -146,6 +146,17 @@
+     if max_logical_page >= attn_metadata.block_table.shape[1]:
+         return None
+     rows = torch.arange(start, end, device=query.device, dtype=torch.int64)
++    retained, copied = None, 0
++    if os.environ.get("QSA_RETAIN_HISTORY", "0") == "1" and not os.path.exists("/work/retain.off"):
++        # S3 (make_retain.py): request identity = the runner's per-request id, as for the row cache.
++        # /work/retain.off: test-only A/B switch inside one engine process (the launcher removes it).
++        import vllm.forward_context as _fc
++        uids = getattr(_fc, "QSA_REQ_UID", None)
++        if uids is not None and getattr(_fc, "QSA_REQ_UID_WRITER", False) and best < uids.shape[0]:
++            table = attn_metadata.block_table[best]
++            meta = torch.cat([uids[best:best + 1].to(table.dtype), table[: max_logical_page + 1]]).tolist()
++            retained, copied = qsa_retained_history(
++                kv_cache, table, max_logical_page + 1, int(lengths[best]), int(meta[0]), meta[1:])
+     qsa_sparse_paged_attention_staged(
+         query[:num_tokens],
+         kv_cache,
+@@ -156,6 +167,8 @@
+         arena,
+         use_prefill_config,
+         output[:num_tokens],
++        retained=retained,
++        retained_copied=copied,
+     )
+     return start, end
+ 

@@ -4,8 +4,10 @@
 Today every 1,024-token chunk, each QSA layer copies the request's whole history (or its sparse union, 50-66 % at
 long histories) from pinned host RAM into the 96 MiB arena again: 18 ms per prefill step on the x16 ranks, 33 ms on
 the x8 rank (24 Oct timing). With QSA_RETAIN_HISTORY=1 each layer keeps one request's pages in a VRAM buffer of
-QSA_RETAIN_PAGES pages and copies only what changed since its previous chunk, then attends over the buffer in one
-bucket (the dense staged kernel, identical maths to the arena path with one bucket).
+QSA_RETAIN_PAGES pages (default 40, ~1 GiB per rank over 6 layers) and copies only what changed since its previous
+chunk, then attends over the buffer as the first bucket; pages beyond the buffer go through the arena as today (dense).
+v2 (24 Oct): v1 retained up to 65 pages (1.6 GiB per rank) and ran the rank out of VRAM in the next prefill
+activation (overlay-v10, OOM at 20 MiB); now a fixed budget plus the arena tail.
 
 Reuse rules (anything else is copied again):
   * same request: the runner's per-request id (QSA_REQ_UID, also used by the row cache; a re-added or resumed request
@@ -14,8 +16,7 @@ Reuse rules (anything else is copied again):
     the current chunk's K/V is written to host before attention, so pages touched by it are always recopied.
   * the first chunk a layer sees for a request uses the old path (sparse union) and only arms retention: one-chunk
     appends keep today's cost, retention pays from the second chunk on.
-One request per layer at a time. More pages than the buffer, or a failed allocation (then off for the process):
-old path. Unset, the patched files behave exactly like their inputs.
+One request per layer at a time. A failed allocation turns retention off for the process (old path). Unset, the patched files behave exactly like their inputs.
 
 usage: make_retain.py ops_qsa.py.in ops_qsa.py.out qsa.py.in qsa.py.out
 """
@@ -45,10 +46,10 @@ class _QSARetainedHistory:
         self.failed = False
 
     def get(self, kv_cache, block_table_row, num_pages, seq_len, uid, ids):
-        """Pages [0, num_pages) of request ``uid`` in VRAM, refreshed; (view, pages copied) or (None, 0)."""
+        """Pages [0, min(num_pages, cap)) of request ``uid`` in VRAM, refreshed; (view, pages copied) or (None, 0)."""
         key = kv_cache.data_ptr()
         old_uid, old_ids, complete = self.state.get(key, (None, (), 0))
-        if self.failed or num_pages > self.cap or uid < 1:
+        if self.failed or uid < 1:
             self.state.pop(key, None)
             return None, 0
         if old_uid != uid:
@@ -64,17 +65,18 @@ class _QSARetainedHistory:
                 self.state.clear()
                 return None, 0
             self.buf[key] = buf
-        first, lim = 0, min(complete, num_pages, len(old_ids))
+        keep = min(num_pages, self.cap)
+        first, lim = 0, min(complete, keep, len(old_ids))
         while first < lim and old_ids[first] == ids[first]:
             first += 1
-        if first < num_pages:
-            physical = block_table_row[first:num_pages].to(torch.int64)
-            torch.index_select(kv_cache, 0, physical, out=buf[first:num_pages])
-        self.state[key] = (uid, tuple(ids[:num_pages]), min(num_pages, seq_len // kv_cache.shape[2]))
-        return buf[:num_pages], num_pages - first
+        if first < keep:
+            physical = block_table_row[first:keep].to(torch.int64)
+            torch.index_select(kv_cache, 0, physical, out=buf[first:keep])
+        self.state[key] = (uid, tuple(ids[:keep]), min(keep, seq_len // kv_cache.shape[2]))
+        return buf[:keep], keep - first
 
 
-_RETAINED = (_QSARetainedHistory(int(os.environ.get("QSA_RETAIN_PAGES", "65")))
+_RETAINED = (_QSARetainedHistory(int(os.environ.get("QSA_RETAIN_PAGES", "40")))
              if os.environ.get("QSA_RETAIN_HISTORY", "0") == "1" else None)
 
 
@@ -95,32 +97,40 @@ src = sub(src, """    use_prefill_config: bool,
 ) -> None:
     \"\"\"Run the rows in ``rows`` against host-resident K/V via the arena.
 
-    With ``retained`` (pages [0, max_logical_page] of this request already in VRAM, see qsa_retained_history) the
-    rows attend over it in one bucket and nothing is copied here.
+    With ``retained`` (the first pages of this request already in VRAM, see qsa_retained_history) that is the first
+    bucket; the remaining pages are staged through the arena (dense) as further buckets.
 """)
 
-src = sub(src, """    _t = _STAGE_TIMER.begin(num_rows, num_pages) if _STAGE_TIMER is not None else None
-""", """    _t = _STAGE_TIMER.begin(num_rows, num_pages) if _STAGE_TIMER is not None else None
-    if retained is not None:
-        arena = retained
-        pages_in_arena = num_pages
-""")
 
 src = sub(src, """    if (num_pages > int(os.environ.get("QSA_SPARSE_MIN_PAGES", pages_in_arena))
 """, """    if (retained is None and num_pages > int(os.environ.get("QSA_SPARSE_MIN_PAGES", pages_in_arena))
 """)
 
-src = sub(src, """    if _t is not None:
+src = sub(src, """    num_buckets = triton.cdiv(num_pages, pages_in_arena)
+    if _t is not None:
         _t["sparse"] = unique_tokens is not None
         _t["moved"] = num_pages
-""", """    if _t is not None:
+""", """    first_hi = retained.shape[0] if retained is not None else 0
+    spans = ([(0, first_hi)] if retained is not None else []) + [
+        (lo, min(lo + pages_in_arena, num_pages)) for lo in range(first_hi, num_pages, pages_in_arena)]
+    num_buckets = len(spans)
+    if _t is not None:
         _t["sparse"] = unique_tokens is not None
-        _t["moved"] = num_pages if retained is None else retained_copied
+        _t["moved"] = num_pages if retained is None else retained_copied + num_pages - first_hi
+""")
+
+src = sub(src, """    for bucket in range(num_buckets):
+        page_lo = bucket * pages_in_arena
+        page_hi = min(page_lo + pages_in_arena, num_pages)
+        staged = arena[: page_hi - page_lo]
+""", """    for bucket, (page_lo, page_hi) in enumerate(spans):
+        from_retained = retained is not None and bucket == 0
+        staged = retained if from_retained else arena[: page_hi - page_lo]
 """)
 
 src = sub(src, """        if unique_tokens is None:
             physical = block_table_row[page_lo:page_hi].to(torch.int64)
-""", """        if retained is not None:
+""", """        if from_retained:
             pass  # already in VRAM
         elif unique_tokens is None:
             physical = block_table_row[page_lo:page_hi].to(torch.int64)
@@ -147,8 +157,9 @@ src = sub(src, """    rows = torch.arange(start, end, device=query.device, dtype
     )
 """, """    rows = torch.arange(start, end, device=query.device, dtype=torch.int64)
     retained, copied = None, 0
-    if os.environ.get("QSA_RETAIN_HISTORY", "0") == "1":
+    if os.environ.get("QSA_RETAIN_HISTORY", "0") == "1" and not os.path.exists("/work/retain.off"):
         # S3 (make_retain.py): request identity = the runner's per-request id, as for the row cache.
+        # /work/retain.off: test-only A/B switch inside one engine process (the launcher removes it).
         import vllm.forward_context as _fc
         uids = getattr(_fc, "QSA_REQ_UID", None)
         if uids is not None and getattr(_fc, "QSA_REQ_UID_WRITER", False) and best < uids.shape[0]:

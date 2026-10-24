@@ -11,7 +11,7 @@ OVERLAY=${OVERLAY:-$task_dir/prod/overlay}
 (cd "$OVERLAY" && sha256sum --quiet -c SHA256SUMS) || { echo "overlay checksum mismatch" >&2; exit 2; }
 sudo docker rm -f "$name" >/dev/null 2>&1 || true
 # test-only switches of the row-cache overlay must not exist in production
-sudo -n rm -f "$task_dir/rowcache.off" "$task_dir/rowcache.report" 2>/dev/null || true
+sudo -n rm -f "$task_dir/rowcache.off" "$task_dir/rowcache.report" "$task_dir/retain.off" 2>/dev/null || true
 D=/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia
 default_compilation='{"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[1,2,3,4,6,8,9,12,15,18,21,24]}'
 compilation=${COMPILATION_CONFIG:-$default_compilation}

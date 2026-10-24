@@ -73,12 +73,17 @@ for b in table.tolist():
 c = run_request(r, kv, 6, table, 60, 7)
 check(all(x >= 0 for x in c), "case 3")
 
-# 4. more pages than the buffer: old path (None), and the state is dropped
-big = torch.arange(13, dtype=torch.int32)
-v, _ = r.get(kv, big, 13, 13 * PAGE, 6, big.tolist())
-check(v is None, "case 4: over-capacity request must use the old path")
-v, _ = r.get(kv, table, 3, 24, 6, table[:3].tolist())
-check(v is None, "case 4: state must be re-armed after the old path")
+# 4. more pages than the buffer: the first cap pages are retained (the caller stages the rest through the arena)
+big = torch.arange(14, dtype=torch.int32) + 20
+for b in big.tolist():
+    kv[b] = torch.randn(HEADS, PAGE, W)
+v, _ = r.get(kv, big, 14, 14 * PAGE, 8, big.tolist())
+check(v is None, "case 4: first chunk must only arm")
+v, n = r.get(kv, big, 14, 14 * PAGE, 8, big.tolist())
+check(v is not None and v.shape[0] == 12 and torch.equal(v, kv.index_select(0, big[:12].long())),
+      "case 4: over-capacity request must return the first cap pages")
+v, n = r.get(kv, big, 14, 14 * PAGE, 8, big.tolist())
+check(n == 0, f"case 4: complete pages must not be recopied, copied {n}")
 
 # 5. invalid request id (dummy / missing writer) never retained
 v, _ = r.get(kv, table, 2, 16, -2, table[:2].tolist())
