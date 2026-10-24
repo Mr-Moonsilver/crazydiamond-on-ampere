@@ -221,7 +221,7 @@ class DecodeReviewReproductions(unittest.TestCase):
 
     def record(self):
         return dict(tokens=["token_id:7"]*70,lp=[-.01]*70,top=[{"token_id:7":-.01,"token_id:8":-2.} for _ in range(70)],
-                    ts=[2.]*70,usage=dict(prompt_tokens=1,prompt_tokens_details=dict(cached_tokens=0)))
+                    ts=[2.]*70,t0=0.,t1=3.,usage=dict(prompt_tokens=1,prompt_tokens_details=dict(cached_tokens=0)))
 
     def finish(self,runs):
         directory = Path(tempfile.mkdtemp(prefix="s5-review-",dir=ROOT.parent/"tmp"))

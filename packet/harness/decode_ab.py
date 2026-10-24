@@ -24,6 +24,8 @@ outranked the emitted token in alone runs).
 Prompts are copy tasks (PROMPT=copy): a seeded passage B of PLEN/2+LEN tokens followed by its first PLEN-|B| tokens,
 so the greedy continuation repeats B with wide top-1 margins; PROMPT=random (the seeded word+number text alone) gave
 near-uniform digit positions where even alone-a vs alone-b split on exact ties within 1-14 tokens (q4 noalt).
+v5 (24 Oct, Codex round 7): request arrivals inside their own start/end, finite prefill window that survives the trim,
+a failure is FAIL where the noise control covers its first violating position.
 v4 (24 Oct, Codex round 6 review): exactly N complete records per condition (empty/truncated saved runs are
 INCONCLUSIVE), finite ordered arrival times, explicit "started" saved, per-prompt verdict against its own noise control (which must have compared at least
 the candidate's positions).
@@ -41,6 +43,7 @@ TOL, NEAR_TIE = 0.375, 0.375
 STOP = {f"token_id:{i}" for i in os.environ.get("STOP_IDS", "248046,248044").split(",") if i}
 STOP |= {"<|im_end|>", "<|endoftext|>"}
 live = lambda tp: {k: v for k, v in tp.items() if k not in STOP}  # what the min_tokens-masked sampler chose from
+num = lambda x: fin(x) and not isinstance(x, bool)
 fin = lambda x: isinstance(x, (int, float)) and math.isfinite(x)
 
 
@@ -100,6 +103,8 @@ def problems(r, plen):
     ts = r["ts"]
     if not all(fin(t) for t in ts) or any(b < a for a, b in zip(ts, ts[1:])):
         return ["arrival times not finite and ordered"]
+    if not (num(r.get("t0")) and num(r.get("t1")) and r["t0"] <= ts[0] and ts[-1] <= r["t1"]):
+        return ["arrivals outside the request's own start/end"]
     for i, (t, l, tp) in enumerate(zip(r["tokens"], r["lp"], r["top"])):
         if not fin(l) or len(tp) < 2 or not all(fin(v) for v in tp.values()):
             return [f"pos {i}: nonfinite or short top map"]
@@ -134,9 +139,11 @@ def at_divergence(a, b, k):
 
 def compare(a, b, window=None):
     """Common prefix, max |Δ| of the emitted token, divergence verdict, mixed positions in the prefix (b's arrivals)."""
-    k, d = 0, 0.0
+    k, d, bad = 0, 0.0, None
     while k < LEN and a["tokens"][k] == b["tokens"][k]:
         d = max(d, abs(a["lp"][k] - b["lp"][k]))
+        if bad is None and abs(a["lp"][k] - b["lp"][k]) > TOL:
+            bad = k
         k += 1
     div = None
     if k < LEN:
@@ -145,7 +152,9 @@ def compare(a, b, window=None):
     mixed = sum(1 for t in b["ts"][:k] if window and window[0] <= t <= window[1])
     status = ("fail" if d > TOL or (div and div["verdict"] == "fail") else
               "inconclusive" if div and div["verdict"] == "inconclusive" else "ok")
-    return {"prefix": k, "max_d": round(d, 5), "divergence": div, "mixed": mixed, "status": status}
+    if bad is None and div and div["verdict"] == "fail":
+        bad = k
+    return {"prefix": k, "max_d": round(d, 5), "divergence": div, "mixed": mixed, "status": status, "first_bad": bad}
 
 
 def main():
@@ -198,6 +207,8 @@ def finish(runs, pre, started, out):
     pc = (pu.get("prompt_tokens_details") or {}).get("cached_tokens")
     if "error" in pre or pu.get("prompt_tokens") != LONG or pc != 0:
         probs.append(("prefill", pre.get("error") or f"usage prompt {pu.get('prompt_tokens')} cached {pc}"))
+    if not (num(pre.get("t0")) and num(pre.get("t1")) and pre["t0"] + PRE_LEAD < pre["t1"] - PRE_TAIL):
+        probs.append(("prefill", "start/end not finite, or no overlap window after the lead/tail trim"))
     window = (pre.get("t0", 0) + PRE_LEAD, pre.get("t1", 0) - PRE_TAIL)
     summ = {"config": {"N": N, "LEN": LEN, "LONG": LONG, "SEED": SEED, "TOPK": TOPK, "TOL": TOL, "NEAR_TIE": NEAR_TIE,
                        "MIN_MIXED": MIN_MIXED, "PRE_LEAD": PRE_LEAD, "PRE_TAIL": PRE_TAIL, "PROMPT": PROMPT,
@@ -214,9 +225,13 @@ def finish(runs, pre, started, out):
         # failure on a clean control stays FAIL whatever another prompt's noise; a failure on its own noisy
         # control is INCONCLUSIVE (both observations kept)
         # a control vouches only for the positions it compared: a noise prefix shorter than the candidate's is no control
-        per = ["inconclusive" if nz["status"] != "ok" or nz["prefix"] < cd["prefix"] else
-               "fail" if cd["status"] == "fail" else
-               "inconclusive" if cd["status"] != "ok" or cd["mixed"] < MIN_MIXED else "ok" for nz, cd in zip(noise, cand)]
+        # v5 (Codex round 7): a failure counts where the control covers it (its first violating position lies
+        # inside the control's agreed prefix); an ok still needs the control to cover the whole candidate prefix
+        per = ["inconclusive" if nz["status"] != "ok" else
+               ("fail" if cd["first_bad"] is not None and cd["first_bad"] < nz["prefix"] else "inconclusive")
+               if cd["status"] == "fail" else
+               "inconclusive" if nz["prefix"] < cd["prefix"] or cd["status"] != "ok" or cd["mixed"] < MIN_MIXED
+               else "ok" for nz, cd in zip(noise, cand)]
         summ["per_prompt"] = per
         summ["final"] = "FAIL" if "fail" in per else "INCONCLUSIVE" if "inconclusive" in per else "PASS"
     json.dump({"summary": summ, "runs": runs, "prefill": pre}, open(out, "w"), indent=1)

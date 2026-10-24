@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Offline counterexamples for the round-7 review, not fixes to deployed queues.
-
-These tests assert the current defects so the review is reproducible. Turn them
-into desired-behavior regression tests when adopting the recommended fixes.
-"""
+"""Round-7 review cases (Codex), turned into regression tests for decode_ab v5 and q8 v2."""
 import copy
 from contextlib import redirect_stdout
 import importlib.util
@@ -59,12 +55,12 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(d['summary']['noise'][0]['prefix'], 30)
         self.assertEqual(d['summary']['noise'][0]['status'], 'ok')
         self.assertEqual(d['summary']['under_prefill'][0]['status'], 'fail')
-        self.assertEqual(rc, 2, 'current defect: expected fix is FAIL for the covered failure at position 5')
+        self.assertEqual(rc, 1, 'decode_ab v5: a covered failure stays FAIL')
 
     def test_infinite_prefill_window_currently_false_passes(self):
         self.pre.update(t0=float('-inf'), t1=float('inf'))
         rc, _ = self.finish(self.runs())
-        self.assertEqual(rc, 0, 'current defect: nonfinite prefill endpoints must be INCONCLUSIVE')
+        self.assertEqual(rc, 2, 'decode_ab v5: nonfinite prefill endpoints are INCONCLUSIVE')
 
     def test_arrivals_outside_own_request_currently_false_pass(self):
         runs = self.runs()
@@ -72,17 +68,25 @@ class ReviewTests(unittest.TestCase):
             for r in runs[c]:
                 r.update(t0=100., t1=101.)  # all recorded arrivals are 2.0
         rc, _ = self.finish(runs)
-        self.assertEqual(rc, 0, 'current defect: arrival bounds must be validated')
+        self.assertEqual(rc, 2, 'decode_ab v5: arrivals must lie inside their own request')
 
-    def test_q8_interrupt_bail_currently_exits_success(self):
-        # Only evaluate the exact bail function with a no-op restore and qlib's
-        # accounting. Never run q8, systemctl, docker or any box path.
+    def test_q8_interrupt_is_recorded_as_failure(self):  # q8 v2: on_exit replaces bail
         src = (HERE / 'runs/q8.sh').read_text()
-        bail = re.search(r'^bail\(\) \{.*\}$', src, re.M).group(0)
-        shell = 'source "$1"\nCHANGED=1\nrestore() { :; }\n' + bail + '\nbail\n'
+        on_exit = re.search(r'^on_exit\(\) \{\n.*?^\}', src, re.M | re.S).group(0)
+        shell = 'source "$1"\nCHANGED=1; DONE=0; STAGE=s5\nrestore() { :; }\n' + on_exit + '\non_exit\n'
         r = subprocess.run(['bash', '-c', shell, 'review', str(HERE / 'qlib.sh')], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0)
-        self.assertIn('fails=0 inconclusive=0', r.stdout)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('STEP interrupted FAIL', r.stdout)
+
+    def test_q8_restore_leaves_engine_stopped_when_gpus_not_free(self):
+        src = (HERE / 'runs/q8.sh').read_text()
+        restore = re.search(r'^restore\(\) \{\n.*?^\}', src, re.M | re.S).group(0)
+        restore = restore.replace('/usr/local/sbin/flash-reconfig.sh', 'mock_reconfig')
+        shell = 'source "$1"\nQ=$2\ns5_clean() { return 1; }\nnvidia-smi() { echo 9000; }\npython3() { echo STARTED; }\n' \
+                'mock_reconfig() { echo STARTED; }\n' + restore + '\nrestore\n'
+        r = subprocess.run(['bash', '-c', shell, 'review', str(HERE / 'qlib.sh'), str(self.root)], capture_output=True, text=True)
+        self.assertIn('STEP gpu-handoff FAIL', r.stdout)
+        self.assertNotIn('STARTED', r.stdout)
 
     def test_q8_failed_setcfg_can_still_report_restore_pass(self):
         src = (HERE / 'runs/q8.sh').read_text()
@@ -93,14 +97,15 @@ class ReviewTests(unittest.TestCase):
         shell = '''source "$1"
 P=/fixture; MD=/fixture; Q=$2
 python3() { return 1; }
+s5_clean() { return 0; }
 systemctl() { :; }
 mock_reconfig() { return 0; }
 installed() { return 0; }
 model_is() { return 0; }
 ''' + restore + '\nrestore\n'
         r = subprocess.run(['bash', '-c', shell, 'review', str(HERE / 'qlib.sh'), str(self.root)], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0)
-        self.assertIn('STEP restart-final PASS', r.stdout)
+        self.assertIn('STEP restart-final FAIL', r.stdout)
+        self.assertIn('settings write failed', r.stdout)
 
 
 if __name__ == '__main__':
