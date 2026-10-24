@@ -15,8 +15,10 @@ Conditions (each runs every probe once):
                      (off), touched through docker exec by the caller-supplied SWITCH_CMD_ON / SWITCH_CMD_OFF
 Per pair of conditions: top-1 agreement, max |logprob(top-1 of A) in A - same token in B|, and max over the shared
 top-20 of |Δ logprob|. Verdict for each candidate pair (reordered, concurrent, switch-on vs switch-off) against the
-noise pair: PASS if top-1 agreement >= noise agreement and max |Δ| <= max(TOL_X * noise max, TOL_ABS); FAIL if
-exceeded; INCONCLUSIVE when fewer than MIN_PROBES probes returned complete top-20 evidence or a probe was served
+noise pair: PASS if there is no significant top-1 flip and max |Δ| <= max(TOL_X * noise max, TOL_ABS); FAIL if
+exceeded. A flip is significant when A's top-1 margin over its runner-up exceeds FLIP_X (default 2) x the noise
+pair's max |Δ| -- near-ties flip between two identical solo runs too (q2, 24 Oct: 1 of 12 probes, noise 0.125), so
+raw agreement counts would fail on noise; INCONCLUSIVE when fewer than MIN_PROBES probes returned complete top-20 evidence or a probe was served
 from cache (cached_tokens > 0). Exit 0 PASS, 1 FAIL, 2 INCONCLUSIVE.
 usage: teacher_forced.py URL MODEL OUT.json  (env: PROBES=12 CTX=60000 TAIL=2500 LOAD=6 SEED=7 TOL_X=1.5
        TOL_ABS=0.02 MIN_PROBES=10 [SWITCH_CMD_ON=... SWITCH_CMD_OFF=...])
@@ -25,7 +27,7 @@ import json, os, random, subprocess, sys, threading, time, urllib.request
 
 E = lambda k, d: type(d)(os.environ.get(k, d))
 PROBES, CTX, TAIL, LOAD, SEED = E("PROBES", 12), E("CTX", 60000), E("TAIL", 2500), E("LOAD", 6), E("SEED", 7)
-TOL_X, TOL_ABS, MIN_PROBES = E("TOL_X", 1.5), E("TOL_ABS", 0.02), E("MIN_PROBES", 10)
+TOL_X, TOL_ABS, MIN_PROBES, FLIP_X = E("TOL_X", 1.5), E("TOL_ABS", 0.02), E("MIN_PROBES", 10), E("FLIP_X", 2.0)
 SW_ON, SW_OFF = os.environ.get("SWITCH_CMD_ON"), os.environ.get("SWITCH_CMD_OFF")
 
 
@@ -83,32 +85,57 @@ def load_streams(url, model, rng, stop):
     return th
 
 
-def compare(a, b):
-    """Over probes present in both with full top-20: (n, top-1 agreement, max |Δ| on A's top-1, max |Δ| shared)."""
-    n, agree, d1, dall = 0, 0, 0.0, 0.0
+def compare(a, b, flip_margin=None):
+    """Over probes present in both with full top-20: n, top-1 agreement, max |Δ| on A's top-1, max |Δ| shared, and
+    (with flip_margin) the flips whose top-1 margin in A exceeded it."""
+    n, agree, d1, dall, sig = 0, 0, 0.0, 0.0, []
     for i in a:
         if i not in b or len(a[i]["top"]) < 20 or len(b[i]["top"]) < 20:
             continue
         n += 1
         ta, tb = a[i]["top"], b[i]["top"]
         t1 = max(ta, key=ta.get)
-        agree += t1 == max(tb, key=tb.get)
+        same = t1 == max(tb, key=tb.get)
+        agree += same
+        margin = ta[t1] - sorted(ta.values())[-2]
+        if not same and flip_margin is not None and margin > flip_margin:
+            sig.append({"probe": i, "margin": round(margin, 4)})
         d1 = max(d1, abs(ta[t1] - tb[t1]) if t1 in tb else float("inf"))
         shared = set(ta) & set(tb)
         dall = max(dall, max(abs(ta[k] - tb[k]) for k in shared) if shared else float("inf"))
-    return {"n": n, "top1_agree": agree / n if n else None, "max_d_top1": round(d1, 5), "max_d_shared": round(dall, 5)}
+    return {"n": n, "top1_agree": agree / n if n else None, "max_d_top1": round(d1, 5), "max_d_shared": round(dall, 5),
+            "significant_flips": sig}
 
 
 def verdict(cand, noise):
     if cand["n"] < MIN_PROBES or noise["n"] < MIN_PROBES:
         return "INCONCLUSIVE"
     lim = max(TOL_X * noise["max_d_top1"], TOL_ABS)
-    if cand["top1_agree"] < noise["top1_agree"] or cand["max_d_top1"] > lim:
+    if cand["significant_flips"] or cand["max_d_top1"] > lim:
         return "FAIL"
     return "PASS"
 
 
+def grade(conds):
+    noise = compare(conds["alone-a"], conds["alone-b"])
+    fm = FLIP_X * noise["max_d_top1"]
+    noise = compare(conds["alone-a"], conds["alone-b"], fm)
+    pairs = {"reordered": compare(conds["alone-a"], conds["reordered"], fm),
+             "concurrent": compare(conds["alone-a"], conds["concurrent"], fm)}
+    if "switch-off" in conds:
+        pairs["switch"] = compare(conds["alone-a"], conds["switch-off"], fm)
+    return noise, pairs
+
+
 def main():
+    if sys.argv[1] == "--regrade":  # re-grade a saved run with the current rule
+        d = json.load(open(sys.argv[2]))
+        conds = {c: {int(k): v for k, v in r.items()} for c, r in d["conditions"].items()}
+        noise, pairs = grade(conds)
+        vs = {k: verdict(v, noise) for k, v in pairs.items()}
+        final = "FAIL" if "FAIL" in vs.values() else "PASS" if all(v == "PASS" for v in vs.values()) else "INCONCLUSIVE"
+        print("teacher_forced regrade", json.dumps({"noise": noise, "pairs": pairs, "verdicts": vs, "final": final}))
+        sys.exit({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[final])
     url, model, out_path = sys.argv[1:4]
     if bool(SW_ON) != bool(SW_OFF):
         raise SystemExit("set both SWITCH_CMD_ON and SWITCH_CMD_OFF, or neither")
@@ -135,11 +162,7 @@ def main():
         subprocess.run(str(SW_ON), shell=True, check=True)
     bad_cache = [(c, i) for c, d in conds.items() for i, r in d.items() if r["cached"] not in (0, None)
                  or r["prompt_tokens"] != CTX + TAIL]
-    noise = compare(conds["alone-a"], conds["alone-b"])
-    pairs = {"reordered": compare(conds["alone-a"], conds["reordered"]),
-             "concurrent": compare(conds["alone-a"], conds["concurrent"])}
-    if "switch-off" in conds:
-        pairs["switch"] = compare(conds["alone-a"], conds["switch-off"])
+    noise, pairs = grade(conds)
     vs = {k: verdict(v, noise) for k, v in pairs.items()}
     if bad_cache:
         vs = {k: "INCONCLUSIVE" if v == "PASS" else v for k, v in vs.items()}
