@@ -9,13 +9,13 @@ variant "bytes": uint8 views. Each variant: compile/launch error (recorded, not 
 torch indexing on the host table; dequantized rows are also compared with the BF16 source (error stats, informative).
 Verdict: PASS if "bytes" is byte-exact (the patched overlay works); "fp8" is reported either way (whether the patch is
 needed). FAIL if "bytes" errors or differs. Exit 0 PASS, 1 FAIL.
-usage: ple_fp8_check.py OUT.json  (env ROWS=500000 N=16384 MODULE=vllm.model_executor.models.qwen4_exp.nvidia.ngram_embedding)
+usage: ple_fp8_check.py OUT.json  (env ROWS=500000 N=16384 MODULE=vllm.models.qwen4_exp.nvidia.ngram_embedding)
 """
 import importlib, json, os, sys, traceback
 import torch
 
 ROWS, N = int(os.environ.get("ROWS", 500000)), int(os.environ.get("N", 16384))
-MODULE = os.environ.get("MODULE", "vllm.model_executor.models.qwen4_exp.nvidia.ngram_embedding")
+MODULE = os.environ.get("MODULE", "vllm.models.qwen4_exp.nvidia.ngram_embedding")
 D, LO = 160, 1000  # row width (PLE head dim), first id this "rank" owns
 out_path = sys.argv[1]
 mod = importlib.import_module(MODULE)
