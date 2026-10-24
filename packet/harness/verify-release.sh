@@ -5,7 +5,7 @@
 #   harness     HARNESS_DIR's SHA256SUMS verify (only versioned harness files run; no /tmp copies)
 #   identity    engine container id/start identical at start and end (a restart invalidates the run)
 #   cow-hook    "host KV views" line from 4 distinct worker ranks with views > 0
-#   inside      leak_partial_tail.py MODE=inside 10 x 6 (+ 3rd requests)   (its exit 0/1/2 maps to the verdict)
+#   inside      leak_partial_tail.py MODE=inside GEN=200 10 x 6 (+ 3rd requests)   (its exit 0/1/2 maps to the verdict)
 #   after       leak_partial_tail.py MODE=after 10 x 4
 #   steer-*     vllm-leaktest.py agent-like 3 seeds x 10 x 3, standard 2 seeds x 6 x 3 (parsed: "bad 0")
 #   coverage    copy counters (verify off: "CoW count", verify on: "CoW verify") advanced on all 4 ranks DURING
@@ -32,7 +32,9 @@ ranks=$(docker logs --since "$STARTED" qwen-flash-prod 2>&1 | grep -E 'QSA host-
         grep -oE 'Worker_PP[0-9]+_TP[0-9]+' | sort -u | wc -l)
 [[ $ranks -eq 4 ]] && put cow-hook PASS "4 ranks" || put cow-hook FAIL "$ranks distinct ranks"
 
-timeout 3600 env MODE=inside python3 "$H/leak_partial_tail.py" $URL $MODEL 10 6 7568 "$OUT/inside.json" > "$OUT/inside.log" 2>&1
+# GEN=200 keeps every 2nd request inside its page, so it hits its partial tail (a longer request 1 output crosses the page
+# end and the stock hybrid lookup falls back to the previous full block: no copy, no coverage)
+timeout 3600 env MODE=inside GEN=200 TIMEOUT=1800 python3 "$H/leak_partial_tail.py" $URL $MODEL 10 6 7568 "$OUT/inside.json" > "$OUT/inside.log" 2>&1
 put inside "$(map $?)" "$(tail -1 "$OUT/inside.log" | cut -c1-160)"
 timeout 3000 env MODE=after python3 "$H/leak_partial_tail.py" $URL $MODEL 10 4 7568 "$OUT/after.json" > "$OUT/after.log" 2>&1
 put after "$(map $?)" "$(tail -1 "$OUT/after.log" | cut -c1-160)"

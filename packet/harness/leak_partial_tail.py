@@ -16,7 +16,10 @@ CANCEL_FRAC=f: that share of sessions first opens request 2 as a stream and drop
 abort around the copy submission), then asks again; the re-asked answer is graded. NEED_PARTIAL=0 for whole-block
 control runs (B a multiple of BLOCK: no partial copy expected).
 usage: leak_partial_tail.py URL MODEL SESSIONS ROUNDS [B] [OUT.json]
-       env: MODE=inside GEN=300 UNIT=176 BLOCK=4048 FACT=5000 FACT2=6800 SEED=1 CANCEL_FRAC=0 NEED_PARTIAL=1
+       env: MODE=inside GEN=300 UNIT=176 BLOCK=4048 FACT=5000 FACT2=6800 SEED=1 CANCEL_FRAC=0 NEED_PARTIAL=1 TIMEOUT=900
+Note: if request 1's output crosses the page end (p1 + gen1 > next block boundary), the stock hybrid lookup returns the
+previous full block instead of the partial tail (cache-efficiency gap, 24 Oct); keep GEN small (e.g. 200 for B=7568)
+when partial-copy coverage is the point of the run.
 """
 import http.client, json, os, random, subprocess, sys, threading, time, urllib.parse, urllib.request, uuid
 
@@ -37,7 +40,11 @@ rnd = random.Random(int(os.environ.get("SEED", "1")))
 corpus = open('/home/<service-user>/p2p-tests/corpus.txt', encoding='utf-8', errors='ignore').read()
 
 
-def post(path, body, timeout=900):
+HTTP_TIMEOUT = float(os.environ.get("TIMEOUT", "900"))
+
+
+def post(path, body, timeout=None):
+    timeout = timeout or HTTP_TIMEOUT
     r = urllib.request.Request(URL + path, json.dumps(body).encode(), {'Content-Type': 'application/json'})
     return json.load(urllib.request.urlopen(r, timeout=timeout))
 
