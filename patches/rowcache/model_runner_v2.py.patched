@@ -1110,6 +1110,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         copy_kv_cache_blocks_inplace(views, num_blocks, copies)
         stats = self._qsa_cow_stats
         stats[0] += len(copies)
+        now = time.monotonic()
+        if not self._qsa_cow_verify and now - getattr(self, "_qsa_cow_logged", 0.0) >= 5.0:
+            # cheap coverage counter for release checks (verify off): cumulative copies on this rank
+            self._qsa_cow_logged = now
+            logger.info("QSA host-page CoW count: total copies %d (x %d layers)", stats[0], len(views))
         if self._qsa_cow_verify:
             after = self._qsa_cow_unequal(views, copies)
             stats[1] += len(copies) * len(views)

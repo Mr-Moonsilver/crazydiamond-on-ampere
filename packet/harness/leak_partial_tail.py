@@ -8,11 +8,15 @@ prompt = SHARED (first full block, identical for all) + session-unique filler wi
 (inside the copied part [block start, B)) + filler up to exactly B + a short tail; request 1 generates GEN tokens,
 request 2 asks for the fact, which is never repeated after B. MODE=after puts the secret after B instead (cross-session
 shared tail entry; the fact is recomputed, so it only tests state hand-over, not the copy).
-Each request 2 also runs cold (unique cache_salt). Verdicts: LEAK = names another session's code (any round);
-COPYFAIL = warm wrong while cold right; MISS = both wrong (model). Exit 1 on LEAK, COPYFAIL, errors or missing results.
-usage: leak_partial_tail.py URL MODEL SESSIONS ROUNDS [B] [OUT.json]   env: MODE=inside GEN=300 UNIT=176 FACT=5500 SEED=1
+Each graded request also runs cold (unique cache_salt). Verdicts and the path-recreating retries: see leakgrade.py.
+The output JSON keeps every prompt's token ids, answers, hit lengths, retries and the engine container identity at
+start and end. Exit 0 PASS, 1 FAIL, 2 INCONCLUSIVE.
+usage: leak_partial_tail.py URL MODEL SESSIONS ROUNDS [B] [OUT.json]   env: MODE=inside GEN=300 UNIT=176 FACT=5000 SEED=1
 """
-import json, os, random, re, sys, threading, time, urllib.request, uuid
+import json, os, random, re, subprocess, sys, threading, time, urllib.request, uuid
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import leakgrade  # noqa: E402
 
 URL, MODEL, N, ROUNDS = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 B = int(sys.argv[5]) if len(sys.argv) > 5 else 43 * 176
@@ -68,8 +72,19 @@ def build_inside(shared, i, rd, code, locker):
     return shared[:BLOCK] + body + TAIL
 
 
+LOCKERS = {}  # code -> unique locker id, drawn when the code is drawn
+
+
 def locker_of(code):
-    return f"L{int(code[-4:]) * 7 % 90000 + 10000}"
+    return LOCKERS[code]
+
+
+def engine_identity():
+    try:
+        return subprocess.run(['docker', 'inspect', 'qwen-flash-prod', '--format', '{{.Id}} {{.State.StartedAt}}'],
+                              capture_output=True, text=True, timeout=30).stdout.strip() or None
+    except Exception:  # noqa: BLE001 - identity unknown is recorded as None
+        return None
 
 
 def run_session(rd, i, shared, code, delay):
@@ -86,13 +101,13 @@ def run_session(rd, i, shared, code, delay):
     a, ids_a, det = complete(p2, 12, ignore_eos=True)
     cold = complete(p2, 12, salt=uuid.uuid4().hex, ignore_eos=True)[0] if COLD else None
     rec = {'round': rd, 'session': i, 'code': code, 'answer': a, 'cold': cold, 'cached': det.get('cached_tokens'),
-           'p2_len': len(p2), '_p2': p2}
+           'p2_len': len(p2), 'p1_ids': p1, 'gen1_ids': list(ids1), 'p2': p2}
     if MODE == "inside":
         # request 3: continue from request 2 (its answer may repeat the code, so ask for the 2nd fact)
         p3 = p2 + list(ids_a) + tok("\n\n") + list(ids1[:200]) + QUESTION2
         a3, _, det3 = complete(p3, 12, ignore_eos=True)
         cold3 = complete(p3, 12, salt=uuid.uuid4().hex, ignore_eos=True)[0] if COLD else None
-        rec.update(locker=locker_of(code), answer3=a3, cold3=cold3, cached3=det3.get('cached_tokens'), _p3=p3)
+        rec.update(locker=locker_of(code), answer3=a3, cold3=cold3, cached3=det3.get('cached_tokens'), p3=p3)
     with lock:
         results.append(rec)
 
@@ -106,6 +121,7 @@ def session(rd, i, shared, code, delay):
 
 
 codes_all = []
+identity_start = engine_identity()
 for rd in range(ROUNDS):
     off = rnd.randrange(0, len(corpus) - 200000)
     shared = tok(f"[round {rd} {uuid.uuid4().hex}]\n" + corpus[off:off + B * 6])[:B]
@@ -115,6 +131,11 @@ for rd in range(ROUNDS):
         c = f"{rnd.choice(NAMES)}-{rnd.randint(1000, 9999)}"
         if c not in codes and all(c not in cs for cs in codes_all):
             codes.append(c)
+            while True:
+                lk = f"L{rnd.randrange(16**6):06x}"
+                if lk not in LOCKERS.values():
+                    LOCKERS[c] = lk
+                    break
     codes_all.append(codes)
     # MODE=after: warm the shared prefix once so every session's 1st request hits the same full blocks
     if MODE == 'after':
@@ -123,62 +144,53 @@ for rd in range(ROUNDS):
     [t.start() for t in th]
     [t.join() for t in th]
 
-def code_of(text):
-    m = re.search(r"[A-Z]{4,8}-\d{4}", text)
-    return m.group(0) if m else text.strip()[:20]
-
-
+identity_end = engine_identity()
 every_code = [c for cs in codes_all for c in cs]
 
 
-def settle(prompt, want):
-    # A warm-wrong / cold-right disagreement: re-ask both paths 3 more times. COPYFAIL only if the cached path fails
-    # every retry while the cold path mostly succeeds; anything mixed is NOISE (reported, never dropped).
-    warm, cold = [], []
-    for _ in range(3):
-        t, _, d = complete(prompt, 12, ignore_eos=True)
-        warm.append((want in t, d.get('cached_tokens')))
-        cold.append(want in complete(prompt, 12, salt=uuid.uuid4().hex, ignore_eos=True)[0])
-    return ('COPYFAIL' if not any(ok for ok, _ in warm) and sum(cold) >= 2 else 'NOISE'), warm, cold
+def retries_for(prompt, hit, n=3):
+    # recreate the original cache path: prime a fresh salt with prompt[:hit+1], then ask under that salt
+    out = []
+    for _ in range(n):
+        salt = uuid.uuid4().hex
+        if hit:
+            complete(prompt[:hit + 1], 1, salt=salt)
+        warm, _, d = complete(prompt, 12, salt=salt, ignore_eos=True)
+        cold = complete(prompt, 12, salt=uuid.uuid4().hex, ignore_eos=True)[0]
+        out.append({'warm': warm, 'warm_cached': d.get('cached_tokens'), 'cold': cold})
+    return out
 
 
-leak = miss = div = copyfail = noise = 0
-for r in results:
-    own = r['code'] in r['answer']
-    foreign = [c for c in every_code if c != r['code'] and c in r['answer']]
-    cold_ok = COLD and r['code'] in (r['cold'] or '')
-    r['verdict'] = 'LEAK' if foreign else ('OK' if own else ('COPYFAIL' if cold_ok else 'MISS'))
-    if r['verdict'] == 'COPYFAIL':
-        r['verdict'], r['retry_warm'], r['retry_cold'] = settle(r['_p2'], r['code'])
-    leak += bool(foreign); miss += r['verdict'] == 'MISS'; copyfail += r['verdict'] == 'COPYFAIL'
-    noise += r['verdict'] == 'NOISE'
-    if COLD and r['cold'] is not None and code_of(r['cold']) != code_of(r['answer']):
-        div += 1; r['diverged'] = True
+def grade_one(r, ans_key, cold_key, cached_key, prompt_key, own, ids):
+    foreign = [x for x in ids if x != own]
+    first = leakgrade.first_verdict(r[ans_key], own, foreign, r.get(cold_key))
+    case = {'first': first, 'settled': None, 'partial': bool(r.get(cached_key)) and r[cached_key] % BLOCK != 0}
+    if first == 'SUSPECT':
+        r[ans_key + '_retries'] = retries_for(r[prompt_key], r.get(cached_key) or 0)
+        case['settled'] = leakgrade.settle(r[ans_key + '_retries'], own, foreign, r.get(cached_key))
+    r[ans_key + '_first'], r[ans_key + '_settled'] = first, case['settled']
+    return case
+
+
+cases = []
+for r in sorted(results, key=lambda x: (x['round'], x['session'])):
+    cases.append(grade_one(r, 'answer', 'cold', 'cached', 'p2', r['code'], every_code))
     if 'answer3' in r:
-        own3 = r['locker'] in r['answer3']
-        foreign3 = [locker_of(c) for c in every_code if c != r['code'] and locker_of(c) in r['answer3']]
-        r['verdict3'] = 'LEAK' if foreign3 else ('OK' if own3 else ('COPYFAIL' if r['locker'] in (r['cold3'] or '') else 'MISS'))
-        if r['verdict3'] == 'COPYFAIL':
-            r['verdict3'], r['retry3_warm'], r['retry3_cold'] = settle(r['_p3'], r['locker'])
-        leak += bool(foreign3); miss += r['verdict3'] == 'MISS'; copyfail += r['verdict3'] == 'COPYFAIL'
-        noise += r['verdict3'] == 'NOISE'
-        if r['verdict3'] != 'OK':
-            print(f"r{r['round']} s{r['session']} req3 {r['verdict3']} cached={r['cached3']} locker={r['locker']} "
-                  f"warm={r['answer3'][:40]!r} cold={(r['cold3'] or '')[:40]!r}", flush=True)
-    if r['verdict'] != 'OK' or r.get('diverged'):
-        print(f"r{r['round']} s{r['session']} {r['verdict']} {r.get('retry_warm', '')}{r.get('retry_cold', '')} cached={r['cached']} code={r['code']} "
-              f"warm={r['answer'][:40]!r} cold={(r['cold'] or '')[:40]!r}", flush=True)
-cached = sorted({r['cached'] for r in results})
+        cases.append(grade_one(r, 'answer3', 'cold3', 'cached3', 'p3', r['locker'], [locker_of(c) for c in every_code]))
+    for k in ('answer', 'answer3'):
+        if r.get(k + '_first') not in (None, 'OK'):
+            print(f"r{r['round']} s{r['session']} {k} first={r[k + '_first']} settled={r[k + '_settled']} "
+                  f"cached={r.get('cached' if k == 'answer' else 'cached3')} warm={r[k][:40]!r} "
+                  f"cold={(r.get('cold' if k == 'answer' else 'cold3') or '')[:40]!r}", flush=True)
+expected = N * ROUNDS * (2 if MODE == 'inside' else 1)
+run = leakgrade.run_verdict(cases, expected, errors, restarted=identity_start != identity_end or identity_start is None,
+                            need_partial=MODE == 'inside')
 for e in errors:
     print("ERROR", e, flush=True)
-c3 = sorted({r['cached3'] for r in results if 'cached3' in r})
-print(f"MODE {MODE} sessions {N} rounds {ROUNDS} B {B}: answers {len(results)}/{N * ROUNDS} "
-      f"(+{sum('answer3' in r for r in results)} 3rd requests, cached {c3[:6]}) errors {len(errors)} "
-      f"LEAK {leak} COPYFAIL {copyfail} NOISE {noise} MISS {miss} warm/cold diverged {div}; "
-      f"cached_tokens seen {cached[:6]}{'...' if len(cached) > 6 else ''}")
+seen = sorted({r['cached'] for r in results}) + sorted({r['cached3'] for r in results if 'cached3' in r})
+print(f"MODE {MODE} sessions {N} rounds {ROUNDS} B {B}: {run['verdict']} answers {len(cases)}/{expected} "
+      f"{run['counts']} errors {len(errors)}; hits seen {seen[:8]}; {run['fails']} {run['inconclusive']}")
 if OUT:
-    for r in results:
-        r.pop('_p2', None); r.pop('_p3', None)
-    json.dump({'MODE': MODE, 'B': B, 'N': N, 'ROUNDS': ROUNDS, 'GEN': GEN, 'results': results, 'errors': errors},
-              open(OUT, 'w'), indent=1)
-sys.exit(1 if leak or copyfail or errors or len(results) != N * ROUNDS else 0)
+    json.dump({'MODE': MODE, 'B': B, 'N': N, 'ROUNDS': ROUNDS, 'GEN': GEN, 'identity_start': identity_start,
+               'identity_end': identity_end, 'run': run, 'results': results, 'errors': errors}, open(OUT, 'w'))
+sys.exit({'PASS': 0, 'FAIL': 1, 'INCONCLUSIVE': 2}[run['verdict']])

@@ -19,7 +19,7 @@
  from vllm.logger import init_logger
  from vllm.model_executor.layers.fused_moe.all2all_utils import get_ep_all2all_manager
  from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
-@@ -1062,6 +1067,91 @@
+@@ -1062,6 +1067,96 @@
          )
          return cuda_graph_size
  
@@ -66,6 +66,11 @@
 +        copy_kv_cache_blocks_inplace(views, num_blocks, copies)
 +        stats = self._qsa_cow_stats
 +        stats[0] += len(copies)
++        now = time.monotonic()
++        if not self._qsa_cow_verify and now - getattr(self, "_qsa_cow_logged", 0.0) >= 5.0:
++            # cheap coverage counter for release checks (verify off): cumulative copies on this rank
++            self._qsa_cow_logged = now
++            logger.info("QSA host-page CoW count: total copies %d (x %d layers)", stats[0], len(views))
 +        if self._qsa_cow_verify:
 +            after = self._qsa_cow_unequal(views, copies)
 +            stats[1] += len(copies) * len(views)
@@ -111,7 +116,7 @@
      def _remove_request(self, req_id: str) -> bool:
          # Call model_state.remove_request *before* req_states.remove_request
          # so the model_state can still look up the slot index.
-@@ -1129,6 +1219,7 @@
+@@ -1129,6 +1224,7 @@
                  max_tokens=sampling_params.max_tokens if sampling_params else 1,  # type: ignore[arg-type]
              )
              req_index = self.req_states.req_id_to_index[req_id]
@@ -119,7 +124,7 @@
              if self.adaptive_verification is not None:
                  self.adaptive_verification.add_request(req_index)
  
-@@ -1205,6 +1296,7 @@
+@@ -1205,6 +1301,7 @@
                  self.kv_cache_config.num_blocks,
                  scheduler_output.kv_cache_block_copies,
              )
@@ -127,7 +132,7 @@
  
      def gather_batch_req_state(
          self, scheduler_output: SchedulerOutput, dummy_run: bool
-@@ -1467,6 +1559,7 @@
+@@ -1467,6 +1564,7 @@
          if self.pcp_manager is not None:
              return self.pcp_manager.prepare_attn(input_batch)
  
@@ -135,7 +140,7 @@
          # Block tables: num_kv_cache_groups x [num_reqs_padded, max_num_blocks].
          block_tables = self.block_tables.gather_block_tables(
              input_batch.idx_mapping,
-@@ -1485,6 +1578,9 @@
+@@ -1485,6 +1583,9 @@
      def prepare_dummy_attn(
          self, input_batch: InputBatch, valid_state_slots: bool = False
      ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:

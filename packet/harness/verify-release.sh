@@ -1,60 +1,85 @@
 #!/bin/bash
 # Release check for Flash-Next cache/kernel/scheduler changes on CT <ct-id> (run inside the CT after a restart).
-# Exit 0 only if every gate passes; any failed test, missing result, engine error or unequal copied page fails it.
-# 1. mounts and the QSA host-page CoW hook (one "host KV views" line per rank, views > 0);
-# 2. partial-copy tests (leak_partial_tail.py): MODE=inside 10 x 6 with a 3rd request, MODE=after 10 x 4;
-# 3. <review-group>'s concurrent leak test (vllm-leaktest.py): agent-like 3 seeds x 10 x 3, standard 2 seeds x 6 x 3;
-# 4. with QSA_COW_VERIFY=1: every logged copy compared equal after the copy, on every rank;
-# 5. no Traceback / CUDA error / Xid in the engine log; optional decode bench 8 x 60k.
-# The real-route canary (harness/flash_canary.sh on the hub) is run separately.
-# usage: verify-release.sh OUTDIR [skip-bench]
+# Every gate ends PASS / FAIL / INCONCLUSIVE / NOT_RUN; the run is PASS (exit 0) only if every gate PASSed.
+# Any FAIL -> exit 1; otherwise any INCONCLUSIVE or NOT_RUN -> exit 2. Gates:
+#   harness     HARNESS_DIR's SHA256SUMS verify (only versioned harness files run; no /tmp copies)
+#   identity    engine container id/start identical at start and end (a restart invalidates the run)
+#   cow-hook    "host KV views" line from 4 distinct worker ranks with views > 0
+#   inside      leak_partial_tail.py MODE=inside 10 x 6 (+ 3rd requests)   (its exit 0/1/2 maps to the verdict)
+#   after       leak_partial_tail.py MODE=after 10 x 4
+#   steer-*     vllm-leaktest.py agent-like 3 seeds x 10 x 3, standard 2 seeds x 6 x 3 (parsed: "bad 0")
+#   coverage    copy counters (verify off: "CoW count", verify on: "CoW verify") advanced on all 4 ranks DURING
+#               this run (log lines since the run start)
+#   bytes       verify mode only: every copy logged in this run compared equal after the copy (else NOT_RUN)
+#   errors      no Traceback / CUDA error / Xid / AssertionError since the container started
+#   bench       quick_c8 8 x 60k: valid JSON, 8 streams > 0; >= BENCH_MIN tok/s if set (NOT_RUN with skip-bench)
+# usage: HARNESS_DIR=/home/<service-user>/harness/<ver> verify-release.sh OUTDIR [skip-bench]
 set -u
-OUT=${1:?outdir}; mkdir -p "$OUT"
-URL=http://127.0.0.1:8000; MODEL=qwen38-w8a8-tp4; H=/home/<service-user>
-C=$(docker ps -q --filter name=qwen-flash-prod | head -1)
-[[ -n $C ]] || { echo "no engine container"; exit 1; }
-since=$(docker inspect "$C" --format '{{.State.StartedAt}}')
-fail=0
-gate() { local name=$1; shift; if "$@"; then echo "PASS $name"; else echo "FAIL $name"; fail=1; fi; }
+OUT=${1:?outdir}; mkdir -p "$OUT"; H=${HARNESS_DIR:?set HARNESS_DIR}
+URL=http://127.0.0.1:8000; MODEL=qwen38-w8a8-tp4
+declare -A V; ORDER=()
+put() { V[$1]=$2; ORDER+=("$1"); echo "$2 $1${3:+ - $3}"; }
+map() { case $1 in 0) echo PASS;; 2) echo INCONCLUSIVE;; *) echo FAIL;; esac; }
+ident() { docker inspect qwen-flash-prod --format '{{.Id}} {{.State.StartedAt}}' 2>/dev/null; }
+RUN_START=$(date -u +%FT%TZ)
 
-echo "== deployment"
-docker inspect "$C" --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' | grep -E 'overlay' | tee "$OUT/mounts.txt"
-docker inspect "$C" --format '{{.Config.Env}}' | grep -oE 'QSA_[A-Z_]+=[^ ]+|FLASH_PD_ALTERNATE=[^ ]+' | tee "$OUT/env.txt"
-docker inspect "$C" --format '{{.Args}}' | grep -oE 'prefix-match-unit [0-9]+' | tee -a "$OUT/env.txt"
-for f in $(grep -E 'overlay' "$OUT/mounts.txt"); do sha256sum "$f"; done > "$OUT/sha256.txt"
+if (cd "$H" && sha256sum --quiet -c SHA256SUMS); then put harness PASS "$H"; else put harness FAIL "checksum mismatch in $H"; fi
+ID0=$(ident); [[ -n $ID0 ]] || { put identity FAIL "no engine container"; }
+HARNESS_DIR=$H bash "$H/manifest.sh" "$OUT/manifest-start.txt" > /dev/null
+STARTED=$(docker inspect qwen-flash-prod --format '{{.State.StartedAt}}')
 
-views=$(docker logs --since "$since" "$C" 2>&1 | grep -c 'QSA host-page CoW: [1-9][0-9]* host KV views')
-gate "cow-hook on 4 ranks ($views)" test "$views" -ge 4
+ranks=$(docker logs --since "$STARTED" qwen-flash-prod 2>&1 | grep -E 'QSA host-page CoW: [1-9][0-9]* host KV views' |
+        grep -oE 'Worker_PP[0-9]+_TP[0-9]+' | sort -u | wc -l)
+[[ $ranks -eq 4 ]] && put cow-hook PASS "4 ranks" || put cow-hook FAIL "$ranks distinct ranks"
 
-echo "== partial-copy tests"
-gate "inside 10x6 +req3" env MODE=inside timeout 3000 python3 $H/leak_partial_tail2.py $URL $MODEL 10 6 7568 "$OUT/inside.json"
-gate "after 10x4" env MODE=after timeout 2400 python3 $H/leak_partial_tail2.py $URL $MODEL 10 4 7568 "$OUT/after.json"
+timeout 3600 env MODE=inside python3 "$H/leak_partial_tail.py" $URL $MODEL 10 6 7568 "$OUT/inside.json" > "$OUT/inside.log" 2>&1
+put inside "$(map $?)" "$(tail -1 "$OUT/inside.log" | cut -c1-160)"
+timeout 3000 env MODE=after python3 "$H/leak_partial_tail.py" $URL $MODEL 10 4 7568 "$OUT/after.json" > "$OUT/after.log" 2>&1
+put after "$(map $?)" "$(tail -1 "$OUT/after.log" | cut -c1-160)"
 
-echo "== <review-group> leak test"
 for s in 31 32 33; do
-  r=$(RULES=45 FILL=60 SEED=$s GAP=2 timeout 1200 python3 $H/vllm-leaktest.py 10 3 2>&1 | tee "$OUT/steer-agent-$s.log" | tail -1)
-  gate "steer agent seed $s: $r" grep -q '^sessions 10 rounds 3 bad 0 ' <<<"$r"
+  timeout 1200 env RULES=45 FILL=60 SEED=$s GAP=2 python3 "$H/vllm-leaktest.py" 10 3 > "$OUT/steer-agent-$s.log" 2>&1; rc=$?
+  r=$(tail -1 "$OUT/steer-agent-$s.log")
+  [[ $rc -eq 0 && $r =~ ^sessions\ 10\ rounds\ 3\ bad\ 0\  ]] && put steer-agent-$s PASS "$r" || put steer-agent-$s FAIL "rc=$rc $r"
 done
 for s in 41 42; do
-  r=$(SEED=$s timeout 1500 python3 $H/vllm-leaktest.py 6 3 2>&1 | tee "$OUT/steer-std-$s.log" | tail -1)
-  gate "steer std seed $s: $r" grep -q '^sessions 6 rounds 3 bad 0 ' <<<"$r"
+  timeout 1500 env SEED=$s python3 "$H/vllm-leaktest.py" 6 3 > "$OUT/steer-std-$s.log" 2>&1; rc=$?
+  r=$(tail -1 "$OUT/steer-std-$s.log")
+  [[ $rc -eq 0 && $r =~ ^sessions\ 6\ rounds\ 3\ bad\ 0\  ]] && put steer-std-$s PASS "$r" || put steer-std-$s FAIL "rc=$rc $r"
 done
 
-if grep -q 'QSA_COW_VERIFY=1' "$OUT/env.txt"; then
-  echo "== copied host pages"
-  docker logs --since "$since" "$C" 2>&1 | grep 'CoW verify' > "$OUT/cow-verify.log"
-  n=$(wc -l < "$OUT/cow-verify.log"); bad=$(grep -vc ', after 0 (' "$OUT/cow-verify.log")
-  tail -4 "$OUT/cow-verify.log" | cut -c1-240
-  gate "cow verify lines $n, unequal after copy $bad" test "$n" -gt 0 -a "$bad" -eq 0
+docker logs --since "$RUN_START" qwen-flash-prod 2>&1 | grep -E 'QSA host-page CoW (count|verify)' > "$OUT/cow-run.log"
+cov=$(grep -oE 'Worker_PP[0-9]+_TP[0-9]+' "$OUT/cow-run.log" | sort -u | wc -l)
+[[ $cov -eq 4 ]] && put coverage PASS "copies logged on 4 ranks during this run" || put coverage FAIL "copies on $cov ranks during this run"
+if docker inspect qwen-flash-prod --format '{{.Config.Env}}' | grep -q 'QSA_COW_VERIFY=1'; then
+  nv=$(grep -c 'CoW verify' "$OUT/cow-run.log"); bad=$(grep 'CoW verify' "$OUT/cow-run.log" | grep -vc ', after 0 (')
+  [[ $nv -gt 0 && $bad -eq 0 ]] && put bytes PASS "$nv verify lines, all equal after copy" || put bytes FAIL "$nv lines, $bad unequal"
+else
+  put bytes NOT_RUN "verify mode off (byte check needs QSA_COW_VERIFY=1)"
 fi
 
-echo "== engine errors"
-errs=$(docker logs --since "$since" "$C" 2>&1 | grep -E 'Traceback|AssertionError|CUDA error|Xid' | head -5)
-gate "no engine errors" test -z "$errs"; [[ -z $errs ]] || echo "$errs"
+errs=$(docker logs --since "$STARTED" qwen-flash-prod 2>&1 | grep -E 'Traceback|AssertionError|CUDA error|Xid' | head -5)
+[[ -z $errs ]] && put errors PASS || { put errors FAIL; echo "$errs"; }
 
-if [[ ${2:-} != skip-bench ]]; then
-  echo "== decode 8 x 60k"
-  QUICK_WINDOW_S=30 timeout 900 python3 /tmp/quick_c8.py $URL $MODEL 8 60000 2048 release-8x60k "$OUT/bench-8x60k.json" 2>&1 | tail -4
+if [[ ${2:-} == skip-bench ]]; then put bench NOT_RUN "skip-bench"; else
+  QUICK_WINDOW_S=30 timeout 900 python3 "$H/quick_c8.py" $URL $MODEL 8 60000 2048 release-8x60k "$OUT/bench.json" > "$OUT/bench.log" 2>&1; rc=$?
+  b=$(python3 - "$OUT/bench.json" "${BENCH_MIN:-0}" <<'EOF'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1])); tps = float(d['aggregate_decode_tps']); per = d['per_stream_tps']
+    ok = len(per) == 8 and all(p > 0 for p in per) and tps >= float(sys.argv[2])
+    print(('PASS' if ok else 'FAIL'), f"{tps} tok/s (min {sys.argv[2]})")
+except Exception as e:  # noqa: BLE001
+    print('FAIL', f'invalid bench result: {e}')
+EOF
+)
+  [[ $rc -eq 0 ]] || b="FAIL rc=$rc"
+  put bench "${b%% *}" "${b#* }"
 fi
-[[ $fail == 0 ]] && { echo "RELEASE CHECK PASS"; exit 0; }
-echo "RELEASE CHECK FAIL"; exit 1
+
+ID1=$(ident); [[ -n $ID0 && $ID0 == "$ID1" ]] && put identity PASS "$ID0" || put identity FAIL "container changed: $ID0 -> $ID1"
+HARNESS_DIR=$H bash "$H/manifest.sh" "$OUT/manifest-end.txt" > /dev/null
+{ for k in "${ORDER[@]}"; do echo "$k ${V[$k]}"; done; } > "$OUT/verdicts.txt"
+if grep -q ' FAIL$' "$OUT/verdicts.txt"; then echo "RELEASE CHECK FAIL"; exit 1; fi
+if grep -qE ' (INCONCLUSIVE|NOT_RUN)$' "$OUT/verdicts.txt"; then echo "RELEASE CHECK INCONCLUSIVE"; exit 2; fi
+echo "RELEASE CHECK PASS"; exit 0

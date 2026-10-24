@@ -333,6 +333,11 @@ class Scheduler(SchedulerInterface):
         # flash-next: alternate decode-only / prefill-only steps under PP (FLASH_PD_ALTERNATE=1).
         self.pd_alternate = self.use_pp and os.environ.get("FLASH_PD_ALTERNATE", "0") == "1"
         self._pd_last_decode = False
+        self._pd_blocked_sig = None  # (waiting, skipped, running) when a prefill step admitted nothing
+        self._sched_stats_every = int(os.environ.get("FLASH_SCHED_STATS", "0"))
+        self._sched_stats = dict(D=0, P=0, plain=0, empty_P=0, dec_even=0, dec_odd=0, cap_skips=0,
+                                 parity_changes=0)
+        self.parity_balance = self.use_pp and os.environ.get("FLASH_PARITY_BALANCE", "0") == "1"
         self.scheduler_reserve_full_isl = (
             self.scheduler_config.scheduler_reserve_full_isl
         )
@@ -616,12 +621,24 @@ class Scheduler(SchedulerInterface):
         pd_mode = None
         if self.pd_alternate:
             decoders = [r for r in self.running if not r.is_prefill_chunk]
-            prefill_work = bool(self.waiting) or any(r.is_prefill_chunk for r in self.running)
+            running_chunk = any(r.is_prefill_chunk for r in self.running)
+            queued = len(self.waiting) + len(self.skipped_waiting)
+            free_slot = len(self.running) + self.num_waiting_for_streaming_input < self.max_num_running_reqs
+            sig = (len(self.waiting), len(self.skipped_waiting), len(self.running))
+            if running_chunk or sig != self._pd_blocked_sig:
+                self._pd_blocked_sig = None
+            prefill_work = running_chunk or (queued > 0 and free_slot and self._pd_blocked_sig is None)
             if decoders and prefill_work:
                 eligible = any(self.current_step >= r.next_decode_eligible_step for r in decoders)
                 pd_mode = "D" if eligible and not self._pd_last_decode else "P"
                 defer_prefills = defer_prefills or pd_mode == "D"
         self._pd_last_decode = pd_mode == "D"
+        # flash-next parity balance: cap decoders per non-"D" step at half of all decoders (rounded up).
+        dec_cap = None
+        if self.parity_balance and pd_mode != "D":
+            ndec_all = sum(1 for r in self.running if not r.is_prefill_chunk)
+            dec_cap = (ndec_all + 1) // 2 if ndec_all > 1 else None
+        ndec_sched = 0
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -660,6 +677,12 @@ class Scheduler(SchedulerInterface):
 
             if pd_mode == "P" and not request.is_prefill_chunk:
                 # flash-next PD alternation: decoders wait for the next decode-only step.
+                req_index += 1
+                continue
+
+            if dec_cap is not None and not request.is_prefill_chunk and ndec_sched >= dec_cap:
+                # flash-next parity balance: this decoder waits a step and moves to the other parity.
+                self._sched_stats["cap_skips"] += 1
                 req_index += 1
                 continue
 
@@ -822,6 +845,13 @@ class Scheduler(SchedulerInterface):
             # Schedule the request.
             scheduled_running_reqs.append(request)
             prefill_scheduled |= request.is_prefill_chunk
+            if not request.is_prefill_chunk:
+                # flash-next: only scheduled decoders count against the parity cap; track each decoder's cohort.
+                ndec_sched += 1
+                parity = self.current_step % 2
+                if getattr(request, "_flash_parity", parity) != parity:
+                    self._sched_stats["parity_changes"] += 1
+                request._flash_parity = parity
             request_id = request.request_id
             req_to_new_blocks[request_id] = new_blocks
             num_scheduled_tokens[request_id] = num_new_tokens
@@ -1319,6 +1349,21 @@ class Scheduler(SchedulerInterface):
 
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+
+        # flash-next PD alternation v2: a prefill step that admitted nothing pauses alternation until the queue or
+        # the running set changes (otherwise a blocked queue empties every other step).
+        if pd_mode == "P" and total_num_scheduled_tokens == 0:
+            self._pd_blocked_sig = (len(self.waiting), len(self.skipped_waiting), len(self.running))
+        if self._sched_stats_every:
+            st = self._sched_stats
+            st[pd_mode or "plain"] += 1
+            st["empty_P"] += pd_mode == "P" and total_num_scheduled_tokens == 0
+            ndec = sum(1 for r in scheduled_running_reqs if not r.is_prefill_chunk)
+            st["dec_even" if self.current_step % 2 == 0 else "dec_odd"] += ndec
+            if self.current_step % self._sched_stats_every == 0:
+                cohorts = [getattr(r, "_flash_parity", None) for r in self.running if not r.is_prefill_chunk]
+                logger.info("flash-sched stats step %d: %s cohorts even=%d odd=%d none=%d", self.current_step, st,
+                            cohorts.count(0), cohorts.count(1), cohorts.count(None))
         assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
 
         assert token_budget >= 0

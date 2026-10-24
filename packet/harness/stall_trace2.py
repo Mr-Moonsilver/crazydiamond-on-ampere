@@ -66,7 +66,8 @@ def report(raw):
     res = {k: raw[k] for k in ('label', 'streams', 'stream_prompt', 'long_prompt', 'wall_anchor', 'errors')}
     res.update(before=window(raw, m['b0'], m['b1']), during=window(raw, m['p0'], m['p1']),
                after=window(raw, m['p1'], m['a1']))
-    res['newcomer'] = {'ttft_s': round(m['p1'] - m['p0'], 2), 'prompt_tps': round(raw['long_prompt'] / (m['p1'] - m['p0'])),
+    res['newcomer'] = {'client_ttft_s': round(m['p1'] - m['p0'], 2),
+                       'client_prompt_tps': round(raw['long_prompt'] / (m['p1'] - m['p0'])),
                        **raw.get('engine_newcomer', {})}
     fails = list(raw['errors'])
     for i, ev in enumerate(raw['events']):
@@ -82,11 +83,19 @@ def report(raw):
     return res
 
 
+def short(res):
+    out = {k: v for k, v in res.items() if k not in ('before', 'during', 'after')}
+    out.update({w: {k: v for k, v in res[w].items() if k != 'per_stream'} for w in ('before', 'during', 'after') if w in res})
+    return out
+
+
 if sys.argv[1] == '--recompute':
     raw = json.load(open(sys.argv[2]))['raw']
-    print(json.dumps({k: v for k, v in report(raw).items() if k not in ('before', 'during', 'after')} |
-                     {w: {k: v for k, v in report(raw)[w].items() if k != 'per_stream'} for w in ('before', 'during', 'after')}))
-    sys.exit(0)
+    if not raw.get('marks') or 'a1' not in raw['marks']:
+        print(json.dumps({'verdict': 'FAIL', 'fails': ['incomplete run'] + raw.get('errors', [])})); sys.exit(1)
+    res = report(raw)
+    print(json.dumps(short(res)))
+    sys.exit(0 if res['verdict'] == 'PASS' else 1)
 
 URL, MODEL, N, PT, LONG, LABEL, OUT = (sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]),
                                        int(sys.argv[5]), sys.argv[6], sys.argv[7])
@@ -143,38 +152,53 @@ deadline = time.monotonic() + 900
 while not all(events) and time.monotonic() < deadline and not errors:
     time.sleep(0.5)
 marks, newcomer_token, eng = {}, False, {}
-if all(events) and not errors:
+
+
+def newcomer_run():
+    global newcomer_token, eng
     time.sleep(3)
     marks['b0'] = time.monotonic(); time.sleep(BASE); marks['b1'] = time.monotonic()
     long_tokens = (base_tokens * (LONG // len(base_tokens) + 2))[:LONG]
     h0 = engine_hist()
     marks['p0'] = time.monotonic()
     with post('/v1/completions', {'model': MODEL, 'prompt': long_tokens, 'max_tokens': 1, 'temperature': 0,
-                                  'stream': True, 'cache_salt': uuid.uuid4().hex}) as r:
+                                  'stream': True, 'cache_salt': uuid.uuid4().hex,
+                                  'stream_options': {'include_usage': True, 'continuous_usage_stats': True}}) as r:
         for line in r:
-            if line.startswith(b'data: {') and json.loads(line[6:])['choices'][0].get('text') is not None:
-                newcomer_token = INJECT != 'missing'
-                marks['p1'] = time.monotonic()
-                break
+            if line.startswith(b'data: {'):
+                u = json.loads(line[6:]).get('usage') or {}
+                if u.get('completion_tokens', 0) >= 1:   # a validated token advance, not just an event
+                    newcomer_token = INJECT != 'missing'
+                    marks['p1'] = time.monotonic()
+                    break
     marks.setdefault('p1', time.monotonic())
     h1 = engine_hist()
+    # attributable only if the newcomer is the one request whose queue/prefill histogram entry landed in the window
     if h1['request_queue_time_seconds_count'] - h0['request_queue_time_seconds_count'] == 1:
         eng = {'engine_queue_s': round(h1['request_queue_time_seconds_sum'] - h0['request_queue_time_seconds_sum'], 3),
                'engine_prefill_s': round(h1['request_prefill_time_seconds_sum'] - h0['request_prefill_time_seconds_sum'], 3)}
     else:
-        eng = {'engine_metrics': 'ambiguous (other requests finished in the window)'}
+        eng = {'engine_metrics': 'not attributable (other requests entered the histograms in the window)'}
     time.sleep(AFTER)
     marks['a1'] = time.monotonic()
+
+
+if all(events) and not errors:
+    try:
+        newcomer_run()
+    except Exception as e:  # noqa: BLE001 - fails the run, artifact still saved
+        errors.append(f'foreground: {type(e).__name__} {e}')
 else:
     errors.append('streams did not all start')
 stop.set()
+for t in threads:
+    t.join(timeout=30)
 raw = {'label': LABEL, 'streams': N, 'stream_prompt': PT, 'long_prompt': LONG, 'wall_anchor': wall_anchor,
        'errors': errors, 'marks': marks, 'events': events, 'newcomer_token': newcomer_token, 'engine_newcomer': eng}
-if not marks:
-    json.dump({'verdict': 'FAIL', 'raw': raw}, open(OUT, 'w')); print('FAIL', errors); sys.exit(1)
+if not marks or 'a1' not in marks:
+    json.dump({'verdict': 'FAIL', 'fails': errors or ['incomplete run'], 'raw': raw}, open(OUT, 'w'))
+    print('FAIL', errors); sys.exit(1)
 res = report(raw)
 json.dump({**res, 'raw': raw}, open(OUT, 'w'))
-short = {k: v for k, v in res.items() if k not in ('before', 'during', 'after')}
-short.update({w: {k: v for k, v in res[w].items() if k != 'per_stream'} for w in ('before', 'during', 'after')})
-print(json.dumps(short))
+print(json.dumps(short(res)))
 sys.exit(0 if res['verdict'] == 'PASS' else 1)
