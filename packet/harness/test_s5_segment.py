@@ -38,10 +38,12 @@ def fixture(pair="0,2"):
                 n = int(mode[5:])
                 modes[mode].update(sm_graph_restriction=True,sm_split=[n,82-n])
             if mode=="serial":modes[mode].update(decode_steps_s=30,prefill_steps_s=70)
+        for value in modes.values():
+            value.update(duration_source="same-stream CUDA events", prefill_steps_s_upper=value["prefill_steps_s"])
         ranks.append(dict(rank=rank,device_sms=82,peak_vram_gib=4,calibration=dict(decode_stage_ms=9,prefill_stage_ms=131),
                           cuda_visible_devices=pair,pci_bus_id=f'0000:0{int(pair.split(",")[rank])+1}:00.0',
                           cuda_graph_equal=True,finite=True,reduction_equal=True,gdn_dispatch_evidence=True,
-                          clock_units_validated=True,modes=modes))
+                          clock_units_validated=True,clock_check={"schema":2,"valid":True},modes=modes))
     return dict(pair=pair,run_spec={"fixture":True},correctness=True,ranks=ranks)
 
 
@@ -82,7 +84,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(json.loads(p.stdout)["hidden"],2560)
 
     def test_gpu_code_compiles_as_python_without_importing(self):
-        for name in ("s5_segment.py","s5_segment_gpu.py"):
+        for name in ("s5_segment.py","s5_segment_gpu.py", "s5_clock.py", "s5_clock_probe.py"):
             ast.parse((HERE/name).read_text())
 
     def test_source_manifest_matches_read_only_snapshot(self):
@@ -129,8 +131,8 @@ class VerdictTests(unittest.TestCase):
     def test_best_split_prefers_decode_gate_then_prefill(self):
         d = fixture()
         for r in d["ranks"]:
-            r["modes"]["green24"].update(decode_steps_s=94,prefill_steps_s=99)
-            r["modes"]["green34"].update(prefill_steps_s=55)
+            r["modes"]["green24"].update(decode_steps_s=94,prefill_steps_s=99,prefill_steps_s_upper=99)
+            r["modes"]["green34"].update(prefill_steps_s=55,prefill_steps_s_upper=55)
         self.assertEqual(grade_pair(d)["best"]["mode"],"green34")
 
     def test_prefill_floor(self):
@@ -138,11 +140,12 @@ class VerdictTests(unittest.TestCase):
         for r in d["ranks"]:
             for name in ("green24","green34","green44"):
                 r["modes"][name]["prefill_steps_s"] = 39
+                r["modes"][name]["prefill_steps_s_upper"] = 39
         self.assertEqual(grade_pair(d)["verdict"],"NO-GO")
 
     def test_normalized_total_work_must_not_regress(self):
         d = fixture()
-        for r in d["ranks"]:r["modes"]["serial"].update(decode_steps_s=100,prefill_steps_s=100)
+        for r in d["ranks"]:r["modes"]["serial"].update(decode_steps_s=100,prefill_steps_s=100,prefill_steps_s_upper=100)
         self.assertEqual(grade_pair(d)["verdict"],"NO-GO")
 
     def test_gpu_clock_evidence_required(self):

@@ -21,7 +21,7 @@ def finite(value, positive=False):
     return type(value) in (int, float) and math.isfinite(value) and (not positive or value > 0)
 
 
-def plan(config, layers=4, decode_rows=4):
+def plan(config, layers=4, decode_rows=4, partition=(24, 24)):
     c, q = config["text_config"], config["quantization_config"]
     expected = {"hidden_size": 2560, "hc_count": 4, "head_dim": 256,
                 "num_attention_heads": 24, "num_key_value_heads": 2,
@@ -44,7 +44,12 @@ def plan(config, layers=4, decode_rows=4):
         raise ValueError("slice layers must be 4, 8 or 12")
     if type(decode_rows) is not int or decode_rows not in (4, 8):
         raise ValueError("decode rows must be 4 (8 sessions / 2 PP cohorts) or 8")
-    return {"schema": 1, "layers": layers, "mix": mix * (layers // 4),
+    if tuple(partition) not in ((24, 24), (26, 22)):
+        raise ValueError("reviewed PP partitions are 24,24 and 26,22")
+    stages = [c["layer_types"][:partition[0]], c["layer_types"][partition[0]:]]
+    stage_counts = {pair:{"gdn": stage.count("linear_attention"), "qsa":stage.count("full_attention")}
+                    for pair,stage in zip(PAIRS, stages)}
+    return {"schema": 2, "pp_partition":list(partition), "layers": layers, "mix": mix * (layers // 4),
             "decode_rows": decode_rows, "streams": 8, "pp_cohorts": 2,
             "chunk": 1024, "history_decode": 153537, "history_prefill": 200000,
             "page_size": 4048, "selection_width": 2051, "rowcache_slots": 10240,
@@ -62,8 +67,7 @@ def plan(config, layers=4, decode_rows=4):
             "warmup": 1, "measured_repeats": 1, "vram_limit_gib": 18,
             "calibration": {"decode_ms": 9.0, "prefill_ms": 131.0, "tolerance": .25,
                             "reference": "x8 stage; x16 uses same conservative 25% band"},
-            "stage_counts": {"0,2": {"gdn": 20, "qsa": 6},
-                             "1,3": {"gdn": 16, "qsa": 6}},
+            "stage_counts": stage_counts,
             "scope": "kernel slice, fixed synthetic input distribution, not a model forward",
             "approximations": ["synthetic QSA selections replace indexer computation",
                                "no QSA RoPE/indexer/KV insertion or PLE convolution/projections",
@@ -96,6 +100,9 @@ def grade_pair(data):
             reasons.append("selected GDN implementation not bound to production dispatch evidence")
         if r.get("clock_units_validated") is not True:
             reasons.append("cross-context GPU clock scale not validated")
+        clock = r.get("clock_check", {})
+        if clock.get("schema") != 2 or clock.get("valid") is not True:
+            reasons.append("missing multi-window clock/granularity evidence")
         peak = r.get("peak_vram_gib")
         if not finite(peak, True) or peak > 18:
             reasons.append("VRAM evidence absent or exceeds 18 GiB")
@@ -113,6 +120,14 @@ def grade_pair(data):
             if (pcie.get("available") is not True or type(pcie.get("samples")) is not int
                     or pcie["samples"]<2 or not finite(pcie.get("mean_rx_GB_s")) or pcie["mean_rx_GB_s"]<0):
                 reasons.append(f"{name}: missing device PCIe counter evidence")
+            if m.get("duration_source") != "same-stream CUDA events":
+                reasons.append(f"{name}: durations must use in-stream CUDA events")
+            if m.get("prefill_tail_order_ambiguous") and name not in ("decode", "prefill", "serial"):
+                reasons.append(f"{name}: coarse clock cannot establish prefill tail coverage")
+            if name != "decode":
+                lo, hi = m.get("prefill_steps_s"), m.get("prefill_steps_s_upper")
+                if not finite(hi) or not finite(lo) or hi < lo:
+                    reasons.append(f"{name}: missing/invalid cross-context boundary bounds")
             if m.get("correct") is False:
                 return {"verdict": "FAIL", "reasons": [f"{name}: output mismatch"]}
             if m.get("correct") is not True:
@@ -138,17 +153,27 @@ def grade_pair(data):
     for mode in ("green24", "green34", "green44"):
         shares = [r["modes"][mode]["decode_steps_s"] / r["modes"]["decode"]["decode_steps_s"] for r in ranks]
         gaps = [r["modes"][mode]["gap_p99_ms"] / r["modes"]["decode"]["gap_p99_ms"] for r in ranks]
-        pre = [r["modes"][mode]["prefill_steps_s"] / r["modes"]["prefill"]["prefill_steps_s"] for r in ranks]
+        pre = [r["modes"][mode]["prefill_steps_s"] / r["modes"]["prefill"]["prefill_steps_s_upper"] for r in ranks]
+        pre_upper = [r["modes"][mode]["prefill_steps_s_upper"] / r["modes"]["prefill"]["prefill_steps_s"] for r in ranks]
         total = [(shares[i]+pre[i]) / (
             r["modes"]["serial"]["decode_steps_s"]/r["modes"]["decode"]["decode_steps_s"] +
-            r["modes"]["serial"]["prefill_steps_s"]/r["modes"]["prefill"]["prefill_steps_s"])
+            r["modes"]["serial"]["prefill_steps_s_upper"]/r["modes"]["prefill"]["prefill_steps_s"])
+                 for i,r in enumerate(ranks)]
+        total_upper = [(shares[i]+pre_upper[i]) / (
+            r["modes"]["serial"]["decode_steps_s"]/r["modes"]["decode"]["decode_steps_s"] +
+            r["modes"]["serial"]["prefill_steps_s"]/r["modes"]["prefill"]["prefill_steps_s_upper"])
                  for i,r in enumerate(ranks)]
         candidates.append({"mode": mode, "decode_share": min(shares), "p99_ratio": max(gaps),
-                           "prefill_share": min(pre), "normalized_work_vs_serial":min(total),
+                           "prefill_share": min(pre), "prefill_share_upper":min(pre_upper),
+                           "normalized_work_vs_serial":min(total), "normalized_work_vs_serial_upper":min(total_upper),
                            "decode_gate": min(shares) >= .95 and max(gaps) <= 1.2})
     eligible = [m for m in candidates if m["decode_gate"] and m["normalized_work_vs_serial"]>=1]
     best = max(eligible, key=lambda m: m["prefill_share"]) if eligible else None
     verdict = "GO" if best and best["prefill_share"] >= .4 else "NO-GO"
+    if verdict == "NO-GO" and any(m["decode_gate"] and m["prefill_share_upper"] >= .4
+                                  and m["normalized_work_vs_serial_upper"] >= 1 for m in candidates):
+        return {"verdict":"INCONCLUSIVE", "candidates":candidates,
+                "reasons":["coarse timestamp boundary uncertainty crosses a service/work threshold"]}
     return {"verdict": verdict, "best": best, "candidates": candidates,
             "reasons": [] if verdict == "GO" else
             ["measured service/p99/prefill-share gate missed; consult per-class timings and requested host bytes",
@@ -190,6 +215,7 @@ def main():
     ap.add_argument("--layers", type=int, default=4)
     ap.add_argument("--decode-rows", type=int, default=4)
     ap.add_argument("--steps", type=int, default=400)
+    ap.add_argument("--pp-partition", choices=("24,24", "26,22"), default="24,24")
     ap.add_argument("--gdn-decode", choices=("cuda", "packed"), default="cuda")
     ap.add_argument("--dispatch-evidence", type=Path, help="JSON {kernel, source_sha256, evidence}; inspected production trace/dispatch record")
     args = ap.parse_args()
@@ -217,7 +243,7 @@ def main():
         print(json.dumps(result, indent=2))
         return EXIT[result["verdict"]]
     cfg = json.loads(args.config.read_text())
-    spec = plan(cfg, args.layers, args.decode_rows)
+    spec = plan(cfg, args.layers, args.decode_rows, tuple(map(int,args.pp_partition.split(","))))
     spec["model_config_sha256"] = hashlib.sha256(args.config.read_bytes()).hexdigest()
     if args.plan:
         print(json.dumps(spec, indent=2))

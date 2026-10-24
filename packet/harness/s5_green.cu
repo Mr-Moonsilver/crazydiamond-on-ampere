@@ -58,3 +58,32 @@ extern "C" int s5_stamp(uint64_t ptr, uint64_t stream) {
 extern "C" int s5_pci_bus_id(int dev, char *out, int len) {
   return (int)cuDeviceGetPCIBusId(out,len,dev);
 }
+
+// Back-to-back reads stay inside one kernel. A minimum cycle window observes
+// even millisecond-quantized clocks without confusing launch gaps with ticks.
+__global__ void timer_samples(unsigned long long *out, int count, unsigned long long cycles) {
+  unsigned long long begin=clock64(), first=0, last=0, mn=~0ULL, mx=0, zeros=0, nz=0, back=0, n=0;
+  do {
+    unsigned long long t; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    if(n < (unsigned)count) out[9+n]=t;
+    if(!n) first=t;
+    else if(t < last) ++back;
+    else if(t == last) ++zeros;
+    else { unsigned long long d=t-last; mn=d<mn?d:mn; mx=d>mx?d:mx; ++nz; }
+    last=t; ++n;
+  } while(n < (unsigned)count || clock64()-begin < cycles);
+  out[0]=first; out[1]=last; out[2]=nz?mn:0; out[3]=mx; out[4]=zeros;
+  out[5]=nz; out[6]=back; out[7]=n;
+#if defined(__CUDA_ARCH__)
+  out[8]=__CUDA_ARCH__;
+#endif
+}
+extern "C" int s5_samples(uint64_t ptr, int count, uint64_t cycles, uint64_t stream) {
+  timer_samples<<<1,1,0,(cudaStream_t)stream>>>((unsigned long long*)ptr,count,cycles);
+  return (int)cudaPeekAtLastError();
+}
+extern "C" int s5_runtime(int *runtime, int *driver, int *device) {
+  cudaError_t r=cudaRuntimeGetVersion(runtime); if(r) return r;
+  r=cudaDriverGetVersion(driver); if(r) return r;
+  return (int)cudaGetDevice(device);
+}

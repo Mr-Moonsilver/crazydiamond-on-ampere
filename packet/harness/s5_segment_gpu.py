@@ -13,7 +13,6 @@ import json
 import math
 import os
 from pathlib import Path
-import subprocess
 import threading
 import time
 import traceback
@@ -24,46 +23,11 @@ import torch.distributed as dist
 from s5_segment import EXIT, MODES, grade_pair, write_json
 
 
-class Inconclusive(RuntimeError):
-    pass
+from s5_clock import DeviceClock, Inconclusive, build_helper, sm_restriction, ordering_window
 
 
 class CorrectnessError(RuntimeError):
     pass
-
-
-class DeviceClock:
-    """Same-device globaltimer across green contexts; no cross-context event subtraction."""
-    def __init__(self, library):
-        self.lib = ctypes.CDLL(str(library))
-        self.lib.s5_stamp.argtypes = [ctypes.c_uint64,ctypes.c_uint64]
-        self.lib.s5_stamp.restype = ctypes.c_int
-        self.lib.s5_pci_bus_id.argtypes = [ctypes.c_int,ctypes.c_char_p,ctypes.c_int]
-        self.lib.s5_pci_bus_id.restype = ctypes.c_int
-
-    def pci_bus_id(self, device):
-        buf = ctypes.create_string_buffer(32)
-        rc = self.lib.s5_pci_bus_id(device,buf,32)
-        if rc:raise Inconclusive(f"CUDA PCI bus ID status={rc}")
-        return buf.value.decode()
-
-    def stamp(self, tensor, stream):
-        rc = self.lib.s5_stamp(tensor.data_ptr(),stream.cuda_stream)
-        if rc:
-            raise Inconclusive(f"globaltimer CUDA status={rc}")
-
-    def validate(self):
-        ticks = torch.empty(2,dtype=torch.int64,device="cuda")
-        a,b = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
-        stream = torch.cuda.current_stream()
-        a.record();self.stamp(ticks,stream)
-        torch.cuda._sleep(10000000)
-        self.stamp(ticks[1:],stream);b.record();b.synchronize()
-        ns = ticks.cpu().tolist()
-        ms = (ns[1]-ns[0])/1e6
-        if not .9 <= ms/a.elapsed_time(b) <= 1.1:
-            raise Inconclusive("globaltimer scale disagrees with CUDA events")
-        return {"globaltimer_ms":ms,"cuda_event_ms":a.elapsed_time(b)}
 
 
 class PcieSampler:
@@ -151,12 +115,24 @@ class Green:
 
     def membership(self):
         sets = []
-        for stream in (self.sd, self.sp):
-            out = torch.empty(self.nsm * 32, dtype=torch.int32, device="cuda")
-            with torch.cuda.stream(stream):
-                self.probe(out, stream, 100000)
-            stream.synchronize()
-            sets.append(set(out.cpu().tolist()))
+        self.membership_evidence = []
+        for stream, wanted in zip((self.sd, self.sp), self.split):
+            seen, rounds = set(), []
+            for _ in range(3):
+                out = torch.full((self.nsm * 32,), -1, dtype=torch.int32, device="cuda")
+                torch.cuda.synchronize()  # initialization precedes the external stream
+                with torch.cuda.stream(stream):
+                    self.probe(out, stream, 100000)
+                stream.synchronize()
+                sample = set(out.cpu().tolist())
+                if -1 in sample:
+                    raise Inconclusive("SM membership probe left unwritten output")
+                seen |= sample
+                rounds.append(sorted(sample))
+                if len(seen) >= wanted:
+                    break
+            sets.append(seen)
+            self.membership_evidence.append(rounds)
         ok = (len(sets[0]) == self.split[0] and len(sets[1]) == self.split[1]
               and not sets[0] & sets[1] and len(sets[0] | sets[1]) == self.nsm)
         return sets, ok
@@ -463,21 +439,29 @@ class DecodeGraph:
 
 
 def make_graph(dec, sd, green=None):
-    # Warm the exact eager ops before capture; never record uncompiled kernels.
+    # Warm the exact eager ops and SM probe before capture. Observe allocation
+    # readiness explicitly when the stream belongs to a different green context.
+    torch.cuda.synchronize()
+    smout = torch.full((green.nsm*32,), -1, dtype=torch.int32, device="cuda") if green else None
+    torch.cuda.synchronize()
     with torch.cuda.stream(sd):
         dec.reset()
         dec.forward(Trace())
+        if green:
+            green.probe(smout, sd)
     sd.synchronize()
     dec.reset(); torch.cuda.synchronize()
     graph = torch.cuda.CUDAGraph()
     trace = Trace()
-    smout = torch.empty(82*32,dtype=torch.int32,device="cuda") if green else None
     with dec.reduce.capture():
         with torch.cuda.graph(graph, stream=sd):
             dec.forward(trace)
             if green:
                 green.probe(smout,sd)
     torch.cuda.synchronize()
+    if smout is not None:
+        smout.fill_(-1)  # the first replay must prove the probe was captured
+        torch.cuda.synchronize()
     return DecodeGraph(graph,dec,dec.last_output), trace, smout
 
 
@@ -531,7 +515,9 @@ def run_mode(name, dec, pre, graph, dtrace, sd, sp, ctl, steps, period, clock, g
     clock_zero = int(clock_origin.item())
     origin = time.perf_counter()
     sp.wait_event(anchor); sd.wait_event(anchor)
-    sm_pre = torch.empty(82*32,dtype=torch.int32,device="cuda") if green else None
+    sm_pre = torch.full((green.nsm*32,), -1, dtype=torch.int32, device="cuda") if green else None
+    torch.cuda.synchronize()
+    event_rows = {"decode": [], "prefill": []}
 
     def execute(lane, stream, is_decode, release, issued=None):
         start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
@@ -555,7 +541,8 @@ def run_mode(name, dec, pre, graph, dtrace, sd, sp, ctl, steps, period, clock, g
             time.sleep(.0001)
         observed = time.perf_counter()-origin
         ticks = stamps.cpu().tolist()
-        return {"release_s": release, "submitted_s": submitted, "observed_s": observed,
+        event_rows["decode" if is_decode else "prefill"].append((start, end))
+        return {"raw_ticks": ticks, "cuda_event_ms": start.elapsed_time(end), "release_s": release, "submitted_s": submitted, "observed_s": observed,
                 "gpu_start_s": (ticks[0]-clock_zero)/1e9,
                 "gpu_end_s": (ticks[1]-clock_zero)/1e9, "parts_ms": trace.times()}
 
@@ -609,25 +596,35 @@ def run_mode(name, dec, pre, graph, dtrace, sd, sp, ctl, steps, period, clock, g
             f"{name}: nonfinite output/state")
     for r in dec.rowcaches.values():
         checked(bool((r[2]>=0).all()), "negative row-cache counters")
-    window_end = drows[-1]["gpu_end_s"] if drows else prows[-1]["gpu_end_s"]
-    window_start = drows[0]["gpu_start_s"] if drows else prows[0]["gpu_start_s"]
-    duration = window_end-window_start
-    # Partial prefill slices crossing the window are excluded and reported.
-    inside = [r for r in prows if r["gpu_start_s"]>=window_start and r["gpu_end_s"] <= window_end]
+    primary_events = event_rows["decode" if drows else "prefill"]
+    uncertainty = clock.evidence["ordering_uncertainty_ns"]
+    window_first, window_last, inside, possible, tail_delta = ordering_window(drows, prows, uncertainty)
+    window_start = (window_first-clock_zero)/1e9
+    window_end = (window_last-clock_zero)/1e9
+    # Same-stream elapsed time remains precise even if globaltimer ticks coarsely.
+    duration = primary_events[0][0].elapsed_time(primary_events[-1][1])/1000
+    if not math.isfinite(duration) or duration <= 0:
+        raise Inconclusive("invalid same-stream measurement window")
     result = {"correct": True,"window_s": duration,"window_start_s":window_start,
+              "duration_source":"same-stream CUDA events", "ordering_uncertainty_ns":uncertainty,
               "host_window":[origin+window_start,origin+window_end],
+              "host_window_note":"approximate globaltimer/host anchor; NVML contextual only",
               "raw_decode": drows,"raw_prefill": prows,
               "prefill_steps_s": len(inside)/duration if prows else 0,
+              "prefill_steps_s_upper": len(possible)/duration if prows else 0,
+              "prefill_boundary_ambiguous":len(possible)-len(inside),
               "prefill_completed_in_window": len(inside),
-              "prefill_covers_decode_tail": bool(prows and prows[-1]["gpu_end_s"]>=window_end),
-              "prefill_tail_s": max(0,prows[-1]["gpu_end_s"]-window_end) if prows else 0}
+              "prefill_covers_decode_tail": bool(tail_delta is not None and tail_delta>uncertainty),
+              "prefill_tail_order_ambiguous":bool(tail_delta is not None and abs(tail_delta)<=uncertainty),
+              "prefill_tail_s": max(0,tail_delta/1e9) if tail_delta is not None else 0}
     if name == "serial":
         # Serial baseline intentionally completes P before D; the final decode
         # has no simultaneously executing P. Report this instead of a false load gate.
         result["prefill_covers_decode_tail"] = False
     if drows:
         gaps = [1000*(b["observed_s"]-a["observed_s"]) for a,b in zip(drows,drows[1:])]
-        gpu_gaps = [1000*(b["gpu_end_s"]-a["gpu_end_s"]) for a,b in zip(drows,drows[1:])]
+        de = event_rows["decode"]
+        gpu_gaps = [a[1].elapsed_time(b[1]) for a,b in zip(de,de[1:])]
         late = [1000*(r["observed_s"]-r["release_s"]) for r in drows]
         result.update(decode_steps_s=len(drows)/duration,gap_p50_ms=percentile(gaps,.5),
                       gap_p99_ms=percentile(gaps,.99),gap_max_ms=max(gaps),gpu_gap_p99_ms=percentile(gpu_gaps,.99),
@@ -679,21 +676,19 @@ def run(args, spec):
         compiled = [None]
         if rank == 0:
             try:
-                if library.exists():
-                    raise Inconclusive("refuse to replace existing green library")
-                p = subprocess.run(["nvcc","-shared","-Xcompiler=-fPIC","-lcuda",
-                                    str(Path(__file__).with_name("s5_green.cu")),"-o",str(library)],
-                                   capture_output=True,text=True,timeout=180)
-                compiled[0] = {"rc":p.returncode,"log":(p.stdout+p.stderr)[-6000:]}
-            except Exception as e:
-                compiled[0] = {"rc":2,"log":str(e)}
+                compiled[0] = build_helper(library, torch.cuda.get_device_capability())
+            except Inconclusive as e:
+                compiled[0] = {"rc":2,"log":str(e),"evidence":e.evidence}
         dist.broadcast_object_list(compiled,src=0)
+        result["helper_build"] = compiled[0]
         if compiled[0]["rc"]:
-            raise Inconclusive("header-built green shim failed: "+compiled[0]["log"])
+            raise Inconclusive("header-built green shim failed: "+compiled[0]["log"], compiled[0])
         result["green_shim_sha256"] = digest(library)
+        result["phase"] = "clock-validation"
         clock = DeviceClock(library)
         result["clock_check"] = clock.validate()
         result["clock_units_validated"] = True
+        result["phase"] = "source-validation"
         expected = json.loads(Path(__file__).with_name("s5_source_manifest.json").read_text())
         if expected["model_config_sha256"] != spec["model_config_sha256"]:
             raise Inconclusive("model config hash differs from the reviewed config")
@@ -705,6 +700,7 @@ def run(args, spec):
                 raise Inconclusive(f"reviewed source hash mismatch: {module}")
         torch.manual_seed(871)
         torch.cuda.reset_peak_memory_stats()
+        result["phase"] = "reducers-and-kernel-setup"
         rd, rp = Reducer(dg,device), Reducer(pg,device)
         rd.check(refgroup); rp.check(refgroup)
         result["reduction_equal"] = True
@@ -728,19 +724,33 @@ def run(args, spec):
         # performance. Keep the raw slice timings; no claimed full-model token rate.
         period = .0095*spec["layers"]/24
         for mode in MODES:
+            result["phase"] = mode + ":setup"
             torch.cuda.reset_peak_memory_stats()
             green = None
             if mode.startswith("green"):
                 green = Green(library,int(mode[5:]),device)
                 contexts.append(green)
                 membership, complete = green.membership()
+                if not complete:
+                    raise Inconclusive("SM membership coverage incomplete or overlapping",
+                                       {"split":green.split,"samples":green.membership_evidence})
                 sd,sp = green.sd,green.sp
             else:
                 sd = torch.cuda.Stream(priority=-1 if mode=="prio" else 0)
                 sp = torch.cuda.Stream()
+            result["phase"] = mode + ":stream-clock-and-graph-smoke"
+            checks = [clock.validate(sd, repeats=1), clock.validate(sp, repeats=1)]
+            result.setdefault("stream_clock_checks", {})[mode] = checks
+            # Use the least precise observed stream for boundary decisions.
+            clock.evidence = max(checks + [result["clock_check"]], key=lambda c:c["ordering_uncertainty_ns"])
+            result.setdefault("stream_order_checks", {})[mode] = clock.check_order(
+                [torch.cuda.current_stream(), sd, sp, torch.cuda.current_stream()])
+            result["phase"] = mode + ":kernel-graph-capture"
             graph,dtrace,smout = make_graph(dec,sd,green)
+            result["phase"] = mode + ":kernel-graph-equality"
             verify_mode(dec,pre,graph,sd,sp)
             result["cuda_graph_equal"] = result["finite"] = True
+            result["phase"] = mode + ":measurement"
             # One warmup trial, then exactly one measured trial.
             run_mode(mode,dec,pre,graph,dtrace,sd,sp,ctl,4,period,clock,green)
             counters = PcieSampler(clock.pci_bus_id(device));counters.start()
@@ -755,7 +765,9 @@ def run(args, spec):
                 pp = set(value["prefill_observed_sms"])
                 value["decode_graph_observed_sms"] = sorted(observed)
                 value["sm_membership"] = [sorted(x) for x in membership]
-                value["sm_graph_restriction"] = complete and observed==membership[0] and pp==membership[1]
+                value["sm_membership_probe_rounds"] = green.membership_evidence
+                value["sm_graph_restriction"] = complete and sm_restriction(
+                    membership, green.split, observed, pp, green.nsm)
             result["modes"][mode] = value
             value["peak_reserved_gib"] = torch.cuda.max_memory_reserved()/2**30
             value["peak_allocated_gib"] = torch.cuda.max_memory_allocated()/2**30
@@ -765,7 +777,7 @@ def run(args, spec):
         result["calibration"] = {
             "decode_stage_ms":stage_time(result["modes"]["decode"]["decode_parts_ms"],spec,args.pair),
             "prefill_stage_ms":stage_time(result["modes"]["prefill"]["prefill_parts_ms"],spec,args.pair),
-            "note":"class-count extrapolation, not a full 26/22-layer measurement; eager CPU gaps excluded"}
+            "note":"class-count extrapolation at declared PP partition, not a full-stage measurement; eager CPU gaps excluded"}
         result["peak_vram_gib"] = max(result["setup_peak_vram_gib"],max(v["peak_reserved_gib"] for v in result["modes"].values()))
         result["peak_allocated_gib"] = max(v["peak_allocated_gib"] for v in result["modes"].values())
         result["reduction_paths"] = {"decode":sorted(rd.paths),"prefill":sorted(rp.paths)}
@@ -793,7 +805,8 @@ def run(args, spec):
     except BaseException as e:
         verdict = "FAIL" if isinstance(e,CorrectnessError) else "INCONCLUSIVE"
         report.update(fatal_correctness=isinstance(e,CorrectnessError),error=type(e).__name__+": "+str(e),
-                      grade={"verdict":verdict},partial_rank=result)
+                      grade={"verdict":verdict},partial_rank=result,
+                      error_evidence=getattr(e,"evidence",{}), traceback=traceback.format_exc())
         # Per-rank failures survive distributed peer/timeout problems, without
         # replacing a previous artifact. The combiner will reject partial evidence.
         failure = output.with_name(output.name+f".rank{rank}.error.json")

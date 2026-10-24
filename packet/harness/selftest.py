@@ -541,6 +541,11 @@ s5 = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_segment.py')],
 if s5.returncode:
     print(s5.stdout + s5.stderr)
 check('S5 segment: CPU tests (GPU path not run)', s5.returncode, 0)
+clock_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_clock.py')],
+                            capture_output=True, text=True)
+if clock_test.returncode:
+    print(clock_test.stdout + clock_test.stderr)
+check('S5 clock: multi-window, coarse ordering, build and SM-probe rules (CPU)', clock_test.returncode, 0)
 from test_s5_segment import fixture as s5_fixture
 from s5_segment import combine as s5_combine
 check('S5 verdict GO: both pairs', s5_combine([s5_fixture(), s5_fixture('1,3')])['verdict'], 'GO')
@@ -548,6 +553,7 @@ s5_bad = s5_fixture('1,3')
 for s5_rank in s5_bad['ranks']:
     for s5_mode in ('green24', 'green34', 'green44'):
         s5_rank['modes'][s5_mode]['prefill_steps_s'] = 30
+        s5_rank['modes'][s5_mode]['prefill_steps_s_upper'] = 30
 check('S5 verdict NO-GO: prefill floor', s5_combine([s5_fixture(), s5_bad])['verdict'], 'NO-GO')
 check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdict'], 'INCONCLUSIVE')
 
