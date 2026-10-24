@@ -13,21 +13,26 @@ Conditions (each runs every probe once):
   concurrent         probes while LOAD streams decode on their own (warm) contexts
   switch-on/off      only with SWITCH=<file inside the container's /work>: the S3 switch file absent (on) / present
                      (off), touched through docker exec by the caller-supplied SWITCH_CMD_ON / SWITCH_CMD_OFF
-Per pair of conditions: top-1 agreement, max |logprob(top-1 of A) in A - same token in B|, and max over the shared
-top-20 of |Δ logprob|. Verdict for each candidate pair (reordered, concurrent, switch-on vs switch-off) against the
-noise pair: PASS if there is no significant top-1 flip and max |Δ| <= max(TOL_X * noise max, TOL_ABS); FAIL if
-exceeded. A flip is significant when A's top-1 margin over its runner-up exceeds FLIP_X (default 2) x the noise
-pair's max |Δ| -- near-ties flip between two identical solo runs too (q2, 24 Oct: 1 of 12 probes, noise 0.125), so
-raw agreement counts would fail on noise; INCONCLUSIVE when fewer than MIN_PROBES probes returned complete top-20 evidence or a probe was served
-from cache (cached_tokens > 0). Exit 0 PASS, 1 FAIL, 2 INCONCLUSIVE.
-usage: teacher_forced.py URL MODEL OUT.json  (env: PROBES=12 CTX=60000 TAIL=2500 LOAD=6 SEED=7 TOL_X=1.5
-       TOL_ABS=0.02 MIN_PROBES=10 [SWITCH_CMD_ON=... SWITCH_CMD_OFF=...])
+Grading rule v3 (Codex round 2; frozen 24 Oct from the q2 pilot -- noise pair: winners within 0.125, A's top 5
+within 0.134, one near-tie flip at margin 0.125; bf16 logprob steps are 0.125 here -- before any new data). Fixed
+absolute tolerances, never scaled by the run's own noise: for every probe, |Δ logprob| of BOTH conditions' top-1
+tokens <= TOL_WIN (0.375) and of A's top 5 <= TOL_TOP5 (0.5); a token missing from the other condition's top 20
+counts as unbounded (evidence incomplete -> fail of that probe). Every top-1 flip is reported; a flip whose margin
+in A is <= NEAR_TIE (0.375) is labelled near-tie, any other flip fails. The noise pair (alone-b vs alone-a) is held
+to the same rule: if it fails, the baseline is noisier than the rule and the run is INCONCLUSIVE (characterise the
+baseline; the gate is not widened). Evidence must be complete: every probe in every condition with 20 finite
+logprobs, prompt length CTX+TAIL and cached_tokens reported and 0 -- else INCONCLUSIVE (also on --regrade, which
+re-validates against the artifact's recorded configuration). PROBES=12 on one shared context is a smoke test: PASS
+means "no regression seen in 12 probes", not population equivalence (0/12 gives a 95 % upper bound of 22 % on the
+event rate). Exit 0 PASS, 1 FAIL, 2 INCONCLUSIVE.
+usage: teacher_forced.py URL MODEL OUT.json  (env: PROBES=12 CTX=60000 TAIL=2500 LOAD=6 SEED=7
+       [SWITCH_CMD_ON=... SWITCH_CMD_OFF=...])      teacher_forced.py --regrade OUT.json
 """
-import json, os, random, subprocess, sys, threading, time, urllib.request
+import json, math, os, random, subprocess, sys, threading, time, urllib.request
 
 E = lambda k, d: type(d)(os.environ.get(k, d))
 PROBES, CTX, TAIL, LOAD, SEED = E("PROBES", 12), E("CTX", 60000), E("TAIL", 2500), E("LOAD", 6), E("SEED", 7)
-TOL_X, TOL_ABS, MIN_PROBES, FLIP_X = E("TOL_X", 1.5), E("TOL_ABS", 0.02), E("MIN_PROBES", 10), E("FLIP_X", 2.0)
+RULE = {"version": 3, "TOL_WIN": 0.375, "TOL_TOP5": 0.5, "NEAR_TIE": 0.375}  # frozen; see docstring
 SW_ON, SW_OFF = os.environ.get("SWITCH_CMD_ON"), os.environ.get("SWITCH_CMD_OFF")
 
 
@@ -85,57 +90,71 @@ def load_streams(url, model, rng, stop):
     return th
 
 
-def compare(a, b, flip_margin=None):
-    """Over probes present in both with full top-20: n, top-1 agreement, max |Δ| on A's top-1, max |Δ| shared, and
-    (with flip_margin) the flips whose top-1 margin in A exceeded it."""
-    n, agree, d1, dall, sig = 0, 0, 0.0, 0.0, []
-    for i in a:
-        if i not in b or len(a[i]["top"]) < 20 or len(b[i]["top"]) < 20:
-            continue
+def compare(a, b, rule=RULE):
+    """Per-probe rule v3 over probes present in a: symmetric winners, A's top 5, every flip (near-tie or not)."""
+    n, bad, flips, dwin, d5, dshared = 0, [], [], 0.0, 0.0, 0.0
+    for i in sorted(a):
         n += 1
-        ta, tb = a[i]["top"], b[i]["top"]
-        t1 = max(ta, key=ta.get)
-        same = t1 == max(tb, key=tb.get)
-        agree += same
-        margin = ta[t1] - sorted(ta.values())[-2]
-        if not same and flip_margin is not None and margin > flip_margin:
-            sig.append({"probe": i, "margin": round(margin, 4)})
-        d1 = max(d1, abs(ta[t1] - tb[t1]) if t1 in tb else float("inf"))
+        ta, tb = a[i]["top"], b.get(i, {}).get("top", {})
+        wa, wb = max(ta, key=ta.get), max(tb, key=tb.get) if tb else None
+        dw = max(abs(ta[t] - tb[t]) if t in ta and t in tb else math.inf for t in {wa, wb})
+        top5 = sorted(ta, key=ta.get)[-5:]
+        d5i = max(abs(ta[k] - tb[k]) if k in tb else math.inf for k in top5)
+        dwin, d5 = max(dwin, dw), max(d5, d5i)
         shared = set(ta) & set(tb)
-        dall = max(dall, max(abs(ta[k] - tb[k]) for k in shared) if shared else float("inf"))
-    return {"n": n, "top1_agree": agree / n if n else None, "max_d_top1": round(d1, 5), "max_d_shared": round(dall, 5),
-            "significant_flips": sig}
+        dshared = max(dshared, max(abs(ta[k] - tb[k]) for k in shared) if shared else math.inf)
+        if wa != wb:
+            margin = ta[wa] - ta[wb] if wb in ta else math.inf
+            flips.append({"probe": i, "margin": round(margin, 4), "near_tie": margin <= rule["NEAR_TIE"]})
+        if dw > rule["TOL_WIN"] or d5i > rule["TOL_TOP5"] or (wa != wb and not flips[-1]["near_tie"]):
+            bad.append(i)
+    r = lambda x: round(x, 5) if math.isfinite(x) else "inf"
+    return {"n": n, "fail_probes": bad, "flips": flips, "max_d_winners": r(dwin), "max_d_top5": r(d5),
+            "max_d_shared_info": r(dshared)}
 
 
-def verdict(cand, noise):
-    if cand["n"] < MIN_PROBES or noise["n"] < MIN_PROBES:
-        return "INCONCLUSIVE"
-    lim = max(TOL_X * noise["max_d_top1"], TOL_ABS)
-    if cand["significant_flips"] or cand["max_d_top1"] > lim:
-        return "FAIL"
-    return "PASS"
+def validate(conds, ctx, tail):
+    """Complete, finite, cold evidence at the right length; returns the list of problems (empty = valid)."""
+    probs = []
+    ids = set(conds.get("alone-a", {}))
+    for c, d in conds.items():
+        if set(d) != ids or not ids:
+            probs.append((c, "probe set"))
+        for i, r in d.items():
+            top = r.get("top") or {}
+            if len(top) < 20 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in top.values()):
+                probs.append((c, i, "top20"))
+            if r.get("cached") != 0:
+                probs.append((c, i, f"cached={r.get('cached')}"))
+            if r.get("prompt_tokens") != ctx + tail:
+                probs.append((c, i, f"len={r.get('prompt_tokens')}"))
+    return probs
 
 
-def grade(conds):
+def grade(conds, ctx, tail):
+    probs = validate(conds, ctx, tail)
     noise = compare(conds["alone-a"], conds["alone-b"])
-    fm = FLIP_X * noise["max_d_top1"]
-    noise = compare(conds["alone-a"], conds["alone-b"], fm)
-    pairs = {"reordered": compare(conds["alone-a"], conds["reordered"], fm),
-             "concurrent": compare(conds["alone-a"], conds["concurrent"], fm)}
+    pairs = {"reordered": compare(conds["alone-a"], conds["reordered"]),
+             "concurrent": compare(conds["alone-a"], conds["concurrent"])}
     if "switch-off" in conds:
-        pairs["switch"] = compare(conds["alone-a"], conds["switch-off"], fm)
-    return noise, pairs
+        pairs["switch"] = compare(conds["alone-a"], conds["switch-off"])
+    if probs or noise["fail_probes"]:
+        vs = {k: "INCONCLUSIVE" for k in pairs}
+    else:
+        vs = {k: "FAIL" if v["fail_probes"] else "PASS" for k, v in pairs.items()}
+    final = "FAIL" if "FAIL" in vs.values() else "PASS" if all(v == "PASS" for v in vs.values()) else "INCONCLUSIVE"
+    return {"noise": noise, "pairs": pairs, "verdicts": vs, "invalid_evidence": probs[:20], "final": final,
+            "rule": RULE, "claim": f"smoke test, {noise['n']} probes on one shared context"}
 
 
 def main():
-    if sys.argv[1] == "--regrade":  # re-grade a saved run with the current rule
+    if sys.argv[1] == "--regrade":  # re-grade a saved run with the current rule, validated against its own config
         d = json.load(open(sys.argv[2]))
+        cfg = d["summary"]["config"]
         conds = {c: {int(k): v for k, v in r.items()} for c, r in d["conditions"].items()}
-        noise, pairs = grade(conds)
-        vs = {k: verdict(v, noise) for k, v in pairs.items()}
-        final = "FAIL" if "FAIL" in vs.values() else "PASS" if all(v == "PASS" for v in vs.values()) else "INCONCLUSIVE"
-        print("teacher_forced regrade", json.dumps({"noise": noise, "pairs": pairs, "verdicts": vs, "final": final}))
-        sys.exit({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[final])
+        summ = grade(conds, cfg["CTX"], cfg["TAIL"])
+        print("teacher_forced regrade", json.dumps(summ))
+        sys.exit({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[summ["final"]])
     url, model, out_path = sys.argv[1:4]
     if bool(SW_ON) != bool(SW_OFF):
         raise SystemExit("set both SWITCH_CMD_ON and SWITCH_CMD_OFF, or neither")
@@ -160,16 +179,9 @@ def main():
         subprocess.run(SW_OFF, shell=True, check=True)
         conds["switch-off"] = run_condition(url, model, probes, "switch-off", fwd)
         subprocess.run(str(SW_ON), shell=True, check=True)
-    bad_cache = [(c, i) for c, d in conds.items() for i, r in d.items() if r["cached"] not in (0, None)
-                 or r["prompt_tokens"] != CTX + TAIL]
-    noise, pairs = grade(conds)
-    vs = {k: verdict(v, noise) for k, v in pairs.items()}
-    if bad_cache:
-        vs = {k: "INCONCLUSIVE" if v == "PASS" else v for k, v in vs.items()}
-    final = "FAIL" if "FAIL" in vs.values() else "PASS" if all(v == "PASS" for v in vs.values()) else "INCONCLUSIVE"
-    summ = {"noise": noise, "pairs": pairs, "verdicts": vs, "bad_cache_or_length": bad_cache[:10], "final": final,
-            "config": {"PROBES": PROBES, "CTX": CTX, "TAIL": TAIL, "LOAD": LOAD, "SEED": SEED, "TOL_X": TOL_X,
-                       "TOL_ABS": TOL_ABS, "MIN_PROBES": MIN_PROBES, "switch": bool(SW_OFF)}}
+    summ = grade(conds, CTX, TAIL)
+    summ["config"] = {"PROBES": PROBES, "CTX": CTX, "TAIL": TAIL, "LOAD": LOAD, "SEED": SEED, "switch": bool(SW_OFF)}
+    final = summ["final"]
     json.dump({"summary": summ, "conditions": conds}, open(out_path, "w"), indent=1)
     print("teacher_forced", json.dumps(summ))
     sys.exit({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[final])

@@ -9,6 +9,9 @@ QSA_HOST_META=1: the metadata builder keeps the CPU copies on the metadata objec
 seq_lens_cpu_upper_bound is exact for prefill rows (vLLM's own note; MTP=0 here), and only the largest prefill row's
 length is used. QSA_HOST_META_VERIFY=1 (test only) also reads the GPU values and counts mismatches of the offsets or
 of the chosen row's length; the first mismatches are logged as errors and the GPU values are used for that call.
+v6.1 (Codex round 2): QSA_HOST_META_VERIFY=1 implies QSA_HOST_META=1, and coverage is counted per process --
+host-used, fallback (host lists missing/short), verified, mismatches -- logged every 500 staged calls, so "0
+mismatches" cannot come from a path that never ran.
 Unset, the patched file behaves exactly like its input.
 usage: make_hostmeta.py qsa.py.in qsa.py.out
 """
@@ -27,9 +30,18 @@ sub('''class Qwen4ExpQSAMetadataBuilder(FlashAttentionMetadataBuilder):
     """Flash metadata supporting uniform decode and target-verify graphs."""
 
     _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.UNIFORM_BATCH
-''', '''_QSA_HOST_META = os.environ.get("QSA_HOST_META", "0") == "1"
-_QSA_HOST_META_VERIFY = os.environ.get("QSA_HOST_META_VERIFY", "0") == "1"
+''', '''_QSA_HOST_META_VERIFY = os.environ.get("QSA_HOST_META_VERIFY", "0") == "1"
+_QSA_HOST_META = os.environ.get("QSA_HOST_META", "0") == "1" or _QSA_HOST_META_VERIFY
 _QSA_HOST_META_STATS = [0, 0]  # verified calls, mismatches
+_QSA_HOST_META_COV = [0, 0]    # staged calls that used the host lists, fell back to GPU lists
+
+
+def _qsa_host_meta_report():
+    n = _QSA_HOST_META_COV[0] + _QSA_HOST_META_COV[1]
+    if n % 500 == 0:
+        from vllm.logger import init_logger
+        init_logger(__name__).info("QSA host meta coverage: host %d fallback %d verified %d mismatches %d",
+                                   _QSA_HOST_META_COV[0], _QSA_HOST_META_COV[1], *_QSA_HOST_META_STATS)
 
 
 class Qwen4ExpQSAMetadataBuilder(FlashAttentionMetadataBuilder):
@@ -54,6 +66,7 @@ sub('''    offsets = starts[: num_requests + 1].tolist()
     best = max(range(num_requests), key=lambda i: offsets[i + 1] - offsets[i])
 ''', '''    host = getattr(attn_metadata, "_qsa_host_meta", None)
     if host is not None and len(host[0]) >= num_requests + 1 and len(host[1]) >= num_requests:
+        _QSA_HOST_META_COV[0] += 1
         offsets = host[0][: num_requests + 1]  # host lists: no device sync
         lengths = host[1][:num_requests]
         best = max(range(num_requests), key=lambda i: offsets[i + 1] - offsets[i])
@@ -69,10 +82,11 @@ sub('''    offsets = starts[: num_requests + 1].tolist()
                                                 lengths[best], g_off[:8], g_len[best])
                 offsets, lengths = g_off, g_len
                 best = max(range(num_requests), key=lambda i: offsets[i + 1] - offsets[i])
-            elif _QSA_HOST_META_STATS[0] % 5000 == 0:
-                from vllm.logger import init_logger
-                init_logger(__name__).info("QSA host meta verify: %d calls, %d mismatches", *_QSA_HOST_META_STATS)
+        _qsa_host_meta_report()
     else:
+        if _QSA_HOST_META:
+            _QSA_HOST_META_COV[1] += 1
+            _qsa_host_meta_report()
         offsets = starts[: num_requests + 1].tolist()
         lengths = seq_lens[:num_requests].tolist()
         best = max(range(num_requests), key=lambda i: offsets[i + 1] - offsets[i])

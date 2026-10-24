@@ -257,7 +257,7 @@ for name, firsts, cfn, want in [('identical outputs, caches as required', ['x'],
     check(f'retain_ab inproc: {name}', rc, want)
 
 # --- teacher_forced against a mocked engine: identical distributions pass, a shifted top-1 fails, cache hit inconclusive ---
-def mock_tf_engine(shift_after, cached=0):
+def mock_tf_engine(shift_after, cached=0, mode='top1'):
     import http.server, threading
     state = {'n': 0}
 
@@ -273,10 +273,14 @@ def mock_tf_engine(shift_after, cached=0):
                     state['n'] += 1
                     k = sum(body['prompt'][-5:]) % 7
                     top = {f'token_id:{j}': -0.1 * (j + 1) for j in range(20)}
-                    if state['n'] > shift_after:  # later conditions: a different top-1 at large Δ
+                    if state['n'] > shift_after and mode == 'top1':  # later conditions: a different top-1 at large Δ
                         top['token_id:5'] = -0.01
-                    out = {'choices': [{'logprobs': {'tokens': [f'token_id:{k}'], 'top_logprobs': [top]}}],
-                           'usage': {'prompt_tokens': len(body['prompt']), 'prompt_tokens_details': {'cached_tokens': cached}}}
+                    if state['n'] > shift_after and mode == 'runner-up':  # same winner, a top-5 competitor moves 2.0
+                        top['token_id:2'] = -2.3
+                    usage = {'prompt_tokens': len(body['prompt'])}
+                    if cached is not None:
+                        usage['prompt_tokens_details'] = {'cached_tokens': cached}
+                    out = {'choices': [{'logprobs': {'tokens': [f'token_id:{k}'], 'top_logprobs': [top]}}], 'usage': usage}
             b = json.dumps(out).encode()
             self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
 
@@ -288,13 +292,26 @@ def mock_tf_engine(shift_after, cached=0):
 
 
 env = dict(os.environ, PROBES='10', CTX='200', TAIL='40', LOAD='1', MIN_PROBES='10', TF_SETTLE='0')
-for name, shift, cached, want in [('identical everywhere', 10**9, 0, 0), ('concurrent shifts top-1', 30, 0, 1),
-                                  ('probes served from cache', 10**9, 128, 2)]:
-    srv = mock_tf_engine(shift, cached)
+tf_out = {}
+for name, shift, cached, mode, want in [('identical everywhere', 10**9, 0, 'top1', 0),
+                                        ('concurrent shifts top-1', 30, 0, 'top1', 1),
+                                        ('probes served from cache', 10**9, 128, 'top1', 2),
+                                        ('no cache evidence (cached missing)', 10**9, None, 'top1', 2),
+                                        ('winner kept, top-5 competitor moves 2.0', 30, 0, 'runner-up', 1)]:
+    srv = mock_tf_engine(shift, cached, mode)
+    tf_out[name] = tempfile.mkstemp(suffix='.json')[1]
     rc = subprocess.run([sys.executable, os.path.join(HERE, 'teacher_forced.py'), f'http://127.0.0.1:{srv.server_port}', 'm',
-                         tempfile.mkstemp(suffix='.json')[1]], capture_output=True, text=True, env=env).returncode
+                         tf_out[name]], capture_output=True, text=True, env=env).returncode
     srv.shutdown()
     check(f'teacher_forced: {name}', rc, want)
+# --regrade re-validates the evidence: a PASS artifact with one probe made cached / short must become INCONCLUSIVE
+d = json.load(open(tf_out['identical everywhere']))
+regrade = lambda dd: subprocess.run([sys.executable, os.path.join(HERE, 'teacher_forced.py'), '--regrade',
+                                     (lambda f: (json.dump(dd, open(f, 'w')), f)[1])(tempfile.mkstemp(suffix='.json')[1])],
+                                    capture_output=True, text=True).returncode
+check('teacher_forced regrade: valid artifact', regrade(d), 0)
+d['conditions']['concurrent']['0'].update(cached=100, prompt_tokens=1)
+check('teacher_forced regrade: cached + wrong length', regrade(d), 2)
 
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)

@@ -1,0 +1,56 @@
+--- scheduler.py.v8
++++ scheduler.py.v9
+@@ -353,6 +353,14 @@
+         self._sf_memo = {}  # request id -> (num_tokens, uncached tokens), this scheduling pass only
+         self._sf_bypass = False
+         self._sched_stats.update(sf_steps=0, sf_skips=0, sf_empty=0, sf_aged=0)
++        # flash-next v6 chunk by load + step budget (make_budget.py)
++        self._chunk_busy = int(os.environ.get("FLASH_CHUNK_BUSY", "0"))
++        self._bg_target = float(os.environ.get("FLASH_STEP_TARGET_MS", "0"))
++        self._bg_min = int(os.environ.get("FLASH_STEP_MIN_CHUNK", "256"))
++        self._bg_k = {}       # history bin -> EWMA wall ms per prefill token
++        self._bg_prev = None  # (prefill tokens, bin, schedule time) of the previous step
++        if self._chunk_busy or self._bg_target:
++            self._sched_stats.update(bg_budget=0, bg_infeasible=0, bg_k={})
+         self.scheduler_reserve_full_isl = (
+             self.scheduler_config.scheduler_reserve_full_isl
+         )
+@@ -705,6 +713,28 @@
+ 
+         # First, schedule the RUNNING requests.
+         req_index = 0
++        # flash-next v6 (make_budget.py): learn ms per prefill token, then size this step's prefill budget
++        bg_bin = None
++        if self._chunk_busy or self._bg_target:
++            now_b = time.monotonic()
++            if self._bg_prev is not None and self._bg_prev[0] >= 128:
++                k = (now_b - self._bg_prev[2]) * 1000 / self._bg_prev[0]
++                old = self._bg_k.get(self._bg_prev[1])
++                self._bg_k[self._bg_prev[1]] = k if old is None else 0.8 * old + 0.2 * k
++                self._sched_stats["bg_k"] = {b: round(v, 4) for b, v in sorted(self._bg_k.items())}
++            hist = max((r.num_computed_tokens for r in self.running if r.is_prefill_chunk), default=0)
++            bg_bin = min(hist // 32768, 8)
++            if pd_mode != "D" and token_budget > 0 and any(not r.is_prefill_chunk for r in self.running):
++                if self._chunk_busy:
++                    token_budget = min(token_budget, self._chunk_busy)
++                k = self._bg_k.get(bg_bin)
++                if self._bg_target and k:
++                    want = int(self._bg_target / k) // 16 * 16
++                    if want < self._bg_min:
++                        self._sched_stats["bg_infeasible"] += 1
++                    token_budget = min(token_budget, max(self._bg_min, want))
++                self._sched_stats["bg_budget"] = token_budget
++            self._bg_t0 = now_b
+         # flash-next v5 short-first: while a short prefill is pending, long prefills yield (aging bound)
+         sf_short = set()
+         if self._sf_max and pd_mode != "D":
+@@ -1436,6 +1466,9 @@
+ 
+         # Check if the scheduling constraints are satisfied.
+         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
++        if bg_bin is not None:
++            ndec_b = sum(1 for r in scheduled_running_reqs if not r.is_prefill_chunk)
++            self._bg_prev = (total_num_scheduled_tokens - ndec_b, bg_bin, self._bg_t0) if pd_mode != "D" else None
+         if sf_short:
+             # flash-next v8.1: a deferring step that scheduled no prefill at all -> next prefill step without deferral
+             ndec_sf = sum(1 for r in scheduled_running_reqs if not r.is_prefill_chunk)

@@ -14,7 +14,7 @@ T / (ms per token), rounded down to 16, at least FLASH_STEP_MIN_CHUNK (default 2
 predicted to exceed T, the step runs the minimum chunk and counts as infeasible (bg_infeasible): the target cannot
 be met by slicing at that history length -- the measured reason the plan needs S5.
 Stats add bg_budget (last budget), bg_infeasible, bg_k (ms per token per bin). Unset, v8 behaviour is unchanged.
-usage: make_budget.py scheduler.py.v8 scheduler.py.v9
+usage: make_budget.py scheduler.py.v8.1 scheduler.py.v9.1   (v9 was built on v8, before the short-first fixes)
 """
 import difflib, sys
 
@@ -27,8 +27,8 @@ def sub(old, new):
     src = src.replace(old, new)
 
 
-sub("""        self._sched_stats.update(sf_steps=0, sf_skips=0)
-""", """        self._sched_stats.update(sf_steps=0, sf_skips=0)
+sub("""        self._sched_stats.update(sf_steps=0, sf_skips=0, sf_empty=0, sf_aged=0)
+""", """        self._sched_stats.update(sf_steps=0, sf_skips=0, sf_empty=0, sf_aged=0)
         # flash-next v6 chunk by load + step budget (make_budget.py)
         self._chunk_busy = int(os.environ.get("FLASH_CHUNK_BUSY", "0"))
         self._bg_target = float(os.environ.get("FLASH_STEP_TARGET_MS", "0"))

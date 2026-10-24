@@ -12,8 +12,13 @@ prefill is pending, on non-decode steps:
   * running prefill chunks that are not short are skipped this step;
   * waiting requests that are not short are deferred to the step's skipped list (they keep their queue position).
 A waiting short request only counts while a request slot is free (else nothing could use the yielded budget).
-Aging: after FLASH_SHORT_FIRST_MAX_RUN (default 8) consecutive deferring steps, one step runs without deferral, so a
-long prompt keeps at least 1/(MAX_RUN+1) of the prefill steps under a stream of short turns. Decode scheduling, PD
+Aging: after FLASH_SHORT_FIRST_MAX_RUN (default 8) consecutive deferring prefill steps, one step runs without
+deferral, so a long prompt keeps at least 1/(MAX_RUN+1) of the prefill steps under a stream of short turns.
+v8.1 (Codex round 2): decode-only steps no longer reset the aging counter (with PD alternation every P step started
+at 1 and aging never fired); the cache-hit estimate is looked up once per scheduling pass, never memoised across
+passes (a memo survived eviction or a sibling publishing the prefix); and a deferring step that schedules no prefill
+token at all (the short request could not be admitted: KV, stale output, encoder, preemption ...) makes the next
+prefill step run without deferral (sf_empty counts them), so a non-admissible short request cannot stall prefill. Decode scheduling, PD
 alternation and the parity cap are unchanged. Stats add sf_steps (steps that deferred) and sf_skips (deferrals).
 usage: make_sfirst.py scheduler.py.v7 scheduler.py.v8
 """
@@ -35,8 +40,9 @@ sub("""        self._pd_d_run = 0
         self._sf_max = int(os.environ.get("FLASH_SHORT_FIRST", "0"))
         self._sf_max_run = int(os.environ.get("FLASH_SHORT_FIRST_MAX_RUN", "8"))
         self._sf_run = 0
-        self._sf_memo = {}  # request id -> (num_tokens, uncached tokens)
-        self._sched_stats.update(sf_steps=0, sf_skips=0)
+        self._sf_memo = {}  # request id -> (num_tokens, uncached tokens), this scheduling pass only
+        self._sf_bypass = False
+        self._sched_stats.update(sf_steps=0, sf_skips=0, sf_empty=0, sf_aged=0)
         self.scheduler_reserve_full_isl = (
 """)
 
@@ -65,9 +71,6 @@ sub("""    def schedule(self, throttle_prefills: bool = False) -> SchedulerOutpu
         for r in self.running:
             if r.is_prefill_chunk and r.num_tokens - r.num_computed_tokens <= self._sf_max:
                 short.add(r.request_id)
-        live = {r.request_id for r in itertools.chain(self.waiting, self.skipped_waiting)}
-        for k in [k for k in self._sf_memo if k not in live]:
-            del self._sf_memo[k]
         return short
 
     def schedule(self, throttle_prefills: bool = False) -> SchedulerOutput:
@@ -75,11 +78,16 @@ sub("""    def schedule(self, throttle_prefills: bool = False) -> SchedulerOutpu
 
 sub("""        while req_index < len(self.running) and token_budget > 0:
 """, """        # flash-next v5 short-first: while a short prefill is pending, long prefills yield (aging bound)
-        sf_short = self._sf_short_pending() if self._sf_max and pd_mode != "D" else set()
-        if sf_short and self._sf_run >= self._sf_max_run:
-            sf_short = set()
-        self._sf_run = self._sf_run + 1 if sf_short else 0
-        self._sched_stats["sf_steps"] += bool(sf_short)
+        sf_short = set()
+        if self._sf_max and pd_mode != "D":
+            self._sf_memo = {}
+            sf_short = self._sf_short_pending()
+            if sf_short and (self._sf_run >= self._sf_max_run or self._sf_bypass):
+                self._sched_stats["sf_aged" if self._sf_run >= self._sf_max_run else "sf_empty"] += 1
+                sf_short = set()
+            self._sf_bypass = False
+            self._sf_run = self._sf_run + 1 if sf_short else 0  # decode-only steps leave the counter alone
+            self._sched_stats["sf_steps"] += bool(sf_short)
         while req_index < len(self.running) and token_budget > 0:
 """)
 
@@ -107,6 +115,16 @@ sub("""                if (
                     request.num_stale_output_tokens > 0
                     and not request.drop_stale_output
                 ):""")
+
+sub("""        # Check if the scheduling constraints are satisfied.
+        total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+""", """        # Check if the scheduling constraints are satisfied.
+        total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+        if sf_short:
+            # flash-next v8.1: a deferring step that scheduled no prefill at all -> next prefill step without deferral
+            ndec_sf = sum(1 for r in scheduled_running_reqs if not r.is_prefill_chunk)
+            self._sf_bypass = total_num_scheduled_tokens - ndec_sf <= 0
+""")
 
 open(sys.argv[2], "w").write(src)
 sys.stdout.writelines(difflib.unified_diff(orig.splitlines(True), src.splitlines(True), "scheduler.py.v7", "scheduler.py.v8"))

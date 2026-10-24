@@ -104,8 +104,8 @@ _RETAIN_VERIFY = os.environ.get("QSA_RETAIN_VERIFY", "0") == "1"
 
 def qsa_retained_history_from(kv_cache, table, num_pages, seq_len, uids, best):
     \"\"\"qsa_retained_history with the id/block-id host transfer done here, timed (see make_retain3.py).\"\"\"
-    if _RETAINED is None:
-        return None, 0
+    if _RETAINED is None or _RETAINED.failed:
+        return None, 0  # v3.1: no metadata transfer once retention is off for the process
     t0 = time.perf_counter()
     meta = torch.cat([uids[best:best + 1].to(table.dtype), table[:num_pages]]).tolist()
     host_ms = (time.perf_counter() - t0) * 1000
@@ -128,6 +128,8 @@ def qsa_retained_history_from(kv_cache, table, num_pages, seq_len, uids, best):
             from vllm.logger import init_logger
             init_logger("vllm.qsa.retain").error("QSA retained history MISMATCH: %d pages, request id %d",
                                                  view.shape[0], int(meta[0]))
+            _RETAINED.state.pop(kv_cache.data_ptr(), None)
+            return None, 0  # v3.1: never attend over a suspect view; this call stages from host as before
     return view, copied
 """)
 src = sub(src, """    _t = _STAGE_TIMER.begin(num_rows, num_pages) if _STAGE_TIMER is not None else None

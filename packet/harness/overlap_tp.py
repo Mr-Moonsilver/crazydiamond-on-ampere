@@ -30,7 +30,7 @@ import torch
 import torch.distributed as dist
 
 E = lambda k, d: type(d)(os.environ.get(k, d))
-PERIOD, LAYERS, STEPS, PRE_QUEUE = E("PERIOD", 9.5), E("LAYERS", 24), E("STEPS", 400), E("PRE_QUEUE", 8)
+PERIOD, LAYERS, STEPS, PRE_PER_STEP = E("PERIOD", 9.5), E("LAYERS", 24), E("STEPS", 400), E("PRE_PER_STEP", 0.0)
 DEC_W_MB, DEC_HOST_KB, PRE_HOST_MB = E("DEC_W_MB", 140), E("DEC_HOST_KB", 6144), E("PRE_HOST_MB", 3)
 QSA_EVERY = E("QSA_EVERY", 4)
 out_path = sys.argv[1]
@@ -104,8 +104,10 @@ def check_streams(sd, sp):
 
 
 def run(mode):
-    """mode: decode | prefill | plain | prio. One host loop issues decode steps at the cadence and keeps PRE_QUEUE
-    prefill layers queued, polling completions (host timestamps) between issues. Returns rank-local metrics."""
+    """mode: decode | prefill | plain | prio. Collective schedule is identical on both ranks (Codex round 2, P1): at
+    every release i the host issues the decode step (if any) and then exactly PRE_PER_STEP prefill layers, in that
+    order, on both ranks; nothing depends on rank-local completion observations. Completions are only observed
+    (host timestamps, between issues) and every issued operation is drained before returning. Returns metrics."""
     import collections
     if mode == "prio":
         sd, sp = torch.cuda.Stream(priority=-1), torch.cuda.Stream(priority=0)
@@ -115,7 +117,7 @@ def run(mode):
     dist.barrier(); torch.cuda.synchronize()
     with_dec, with_pre = mode != "prefill", mode != "decode"
     pend_d, pend_p = collections.deque(), collections.deque()
-    done_d, done_p, release = [], [], []
+    done_d, done_p, release, issued_p = [], [], [], 0
 
     def poll():
         now = time.perf_counter()
@@ -123,38 +125,43 @@ def run(mode):
             pend_d.popleft(); done_d.append(now)
         while pend_p and pend_p[0].query():
             pend_p.popleft(); done_p.append(now)
-        while with_pre and len(pend_p) < PRE_QUEUE:
-            with torch.cuda.stream(sp):
-                prefill_layer()
-                e = torch.cuda.Event(); e.record(sp)
-            pend_p.append(e)
 
     t0 = time.perf_counter()
     for i in range(STEPS):
         while (time.perf_counter() - t0) * 1000 < i * PERIOD:
             poll()
+        release.append(t0 + i * PERIOD / 1000)
         if with_dec:
-            release.append(t0 + i * PERIOD / 1000)
             with torch.cuda.stream(sd):
                 for l in range(LAYERS):
                     decode_layer(l)
                 e = torch.cuda.Event(); e.record(sd)
             pend_d.append(e)
+        if with_pre:
+            with torch.cuda.stream(sp):
+                for _ in range(int((i + 1) * pre_rate) - int(i * pre_rate)):
+                    prefill_layer()
+                    e = torch.cuda.Event(); e.record(sp)
+                    pend_p.append(e)
+                    issued_p += 1
         poll()
     t1 = time.perf_counter()
     while pend_d:
         poll()
     t_end = done_d[-1] if done_d else t1
-    torch.cuda.synchronize()
+    torch.cuda.synchronize()  # drains the prefill backlog: same number of collectives issued on both ranks
+    poll()
     span = t_end - t0
-    res = {"mode": mode, "window_s": round(span, 3)}
+    res = {"mode": mode, "rank": rank, "window_s": round(span, 3), "prefill_issued": issued_p}
     if done_d:
         gaps = sorted((b - a) * 1000 for a, b in zip(done_d, done_d[1:]))
         res.update({"gap_p50": round(gaps[len(gaps) // 2], 2), "gap_p99": round(gaps[int(len(gaps) * 0.99) - 1], 2),
-                    "gap_max": round(gaps[-1], 2), "steps": len(done_d)})
+                    "gap_max": round(gaps[-1], 2), "steps": len(done_d),
+                    "decode_steps_per_s": round(len(done_d) / span, 1)})
         late = sorted((d - r) * 1000 for d, r in zip(done_d, release))
         res.update({"late_p50": round(late[len(late) // 2], 2), "late_p99": round(late[int(len(late) * 0.99) - 1], 2),
-                    "late_max": round(late[-1], 2), "missed": sum(1 for x in late if x > 2 * PERIOD)})
+                    "late_max": round(late[-1], 2), "late_gt_period": sum(1 for x in late if x > PERIOD),
+                    "late_gt_2period": sum(1 for x in late if x > 2 * PERIOD)})
     if with_pre:
         n = sum(1 for t in done_p if t0 <= t <= t_end)
         res["prefill_layers_in_window"] = n
@@ -176,6 +183,11 @@ def prefill_wall(n=40):
     return round(n / dt, 1), round(n * 4 * 1024 * K * N / dt / 1e12, 1)
 
 
+# Prefill lookahead agreed by both ranks: PRE_PER_STEP layers per release (fractional, accumulated), default 1.25 x
+# the slower rank's synchronized prefill rate -- prefill never starves and its backlog stays bounded (<= 25 % over).
+wall0 = torch.tensor([prefill_wall()[0]], device=dev)
+dist.all_reduce(wall0, op=dist.ReduceOp.MIN)
+pre_rate = PRE_PER_STEP or float(wall0) * PERIOD / 1000 * 1.25
 MODES, REPEATS = ("decode", "prefill", "plain", "prio"), E("REPEATS", 3)
 for m in MODES:  # warm-up pass (allocator, NCCL, clocks), discarded
     run(m)
@@ -186,11 +198,22 @@ for m in order:
     raw[m].append(run(m))
 
 
+WORST = ("gap_p99", "gap_max", "late_p50", "late_p99", "late_max", "late_gt_period", "late_gt_2period")
+
+
 def med(m, k):
-    xs = sorted(r[k] for r in raw[m] if r.get(k) is not None)
-    return xs[len(xs) // 2] if xs else None
+    """median over repeats of the worst rank per repeat (max for latency-like keys, min for rates)"""
+    per = []
+    for j in range(len(raw[m])):
+        vals = [allraw[r][m][j].get(k) for r in range(world) if allraw[r][m][j].get(k) is not None]
+        if vals:
+            per.append(max(vals) if k in WORST else min(vals))
+    per.sort()
+    return per[len(per) // 2] if per else None
 
 
+allraw = [None] * world
+dist.all_gather_object(allraw, raw)  # both ranks' trials (Codex round 2, P2: rank 1 was discarded)
 results = []
 for m in MODES:
     keys = sorted({k for r in raw[m] for k in r if isinstance(r[k], (int, float))})
@@ -207,10 +230,10 @@ wall_rate, wall_tflops = prefill_wall()
 if rank == 0:
     meta = {"prefill_wall_layers_per_s": wall_rate, "prefill_wall_tflops": wall_tflops, "qsa_every": QSA_EVERY,"devices": [torch.cuda.get_device_name(dev)], "visible": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "period_ms": PERIOD, "layers": LAYERS, "dec_w_mb": DEC_W_MB, "dec_host_kb": DEC_HOST_KB,
-            "pre_host_mb": PRE_HOST_MB, "steps": STEPS, "repeats": REPEATS, "order": order, "uva": True,
+            "pre_host_mb": PRE_HOST_MB, "pre_per_step": round(pre_rate, 3), "results_are": "median over repeats of the worst rank", "steps": STEPS, "repeats": REPEATS, "order": order, "uva": True,
             "priority_range": torch.cuda.Stream.priority_range() if hasattr(torch.cuda.Stream, "priority_range")
             else None}
-    json.dump({"meta": meta, "results": results}, open(out_path, "w"), indent=1)
+    json.dump({"meta": meta, "results": results, "raw_per_rank": allraw}, open(out_path, "w"), indent=1)
     for r in results:
         print(json.dumps(r))
 dist.barrier()
