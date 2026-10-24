@@ -25,8 +25,9 @@ SRC, DST = sys.argv[1], sys.argv[2]
 ROWS = int(os.environ.get("ROWS", 262144))
 FP8_MAX = float(torch.finfo(torch.float8_e4m3fn).max)  # 448
 SHARD = "ple.ple_embedding.ngram_embedding.shard_"
-if os.path.exists(DST):
-    raise SystemExit(f"{DST} exists -- refusing to touch it")
+if os.path.exists(DST) or os.path.exists(DST + ".tmp"):
+    raise SystemExit(f"{DST} or {DST}.tmp exists -- refusing to touch it")
+FINAL, DST = DST, DST + ".tmp"  # everything is written under DST.tmp and renamed at the end: no half-made DST
 
 
 def header(path):
@@ -76,7 +77,14 @@ with open(f"{SRC}/{table_file}", "rb") as f:
             print(f"pass 1: {i + 1}/{len(shards)} shards, amax {amax:.6g}, {time.time() - t0:.0f} s", flush=True)
 if not math.isfinite(amax) or amax <= 0:
     raise SystemExit(f"bad amax {amax}")
+# the engine dequantizes with weight_scale.to(bf16) (Qwen4ExpPLEFp8EmbeddingMethod.dequantize): use a scale that bf16
+# represents exactly, rounded up (so |w| / scale <= 448 still holds), or every row would carry the rounding error
 scale = amax / FP8_MAX
+sb = torch.tensor([scale], dtype=torch.float32).to(torch.bfloat16).float().item()
+if sb < scale:
+    sb = torch.nextafter(torch.tensor([sb], dtype=torch.bfloat16), torch.tensor([math.inf], dtype=torch.bfloat16)).float().item()
+scale = sb
+assert torch.tensor([scale]).to(torch.bfloat16).float().item() == scale and scale * FP8_MAX >= amax
 print(f"amax {amax:.6g} -> scale {scale:.6g}", flush=True)
 
 # ---- new header: shards become F8_E4M3 (half the bytes), the scale is appended, everything else keeps its bytes
@@ -103,6 +111,8 @@ cfg = json.load(open(f"{SRC}/config.json"))
 (cfg["text_config"] if "text_config" in cfg else cfg)["ple_embedding_dtype"] = "float8_e4m3fn"
 json.dump(cfg, open(f"{DST}/config.json", "w"), indent=2)
 index["weight_map"][scale_name] = table_file
+if "total_size" in index.get("metadata", {}):
+    index["metadata"]["total_size"] += off + 4 - sum(hdr[k]["data_offsets"][1] - hdr[k]["data_offsets"][0] for k in order)
 json.dump(index, open(f"{DST}/model.safetensors.index.json", "w"), indent=2)
 
 g = torch.Generator().manual_seed(0)
@@ -143,6 +153,9 @@ stats = {"rel_rms_err": math.sqrt(st["sq_err"] / max(st["sq_ref"], 1e-30)),
 rep = {"src": SRC, "dst": DST, "table_file": table_file, "prefix": prefix, "shards": len(shards), "amax": amax,
        "scale": scale, "bytes_src": os.path.getsize(f"{SRC}/{table_file}"), "bytes_dst": os.path.getsize(f"{DST}/{table_file}"),
        "error_on_1pct_rows": stats, "tensor_sha256": digests, "seconds": round(time.time() - t0)}
+rep["converter_sha256"] = hashlib.sha256(open(os.path.abspath(__file__), "rb").read()).hexdigest()
+rep["dst"] = FINAL
 json.dump(rep, open(f"{DST}/PLE_FP8.json", "w"), indent=1)
+os.rename(DST, FINAL)
 print("ple_fp8_convert done", json.dumps({k: rep[k] for k in ("amax", "scale", "bytes_src", "bytes_dst", "seconds")}),
       json.dumps(stats), flush=True)

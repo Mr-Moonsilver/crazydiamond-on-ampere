@@ -40,7 +40,10 @@ installed() {
 gpu_idle() {
   systemctl is-active -q vllm-flash && return 1
   [[ -z $(docker ps -q -f name=^qwen-flash-prod$) ]] || return 1
-  [[ -z $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null) ]]
+  [[ -z $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null) ]] || return 1
+  # processes outside this container may not be listed inside the LXC: every GPU's used memory must be near zero too
+  local m; m=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null)
+  [[ -n $m ]] && ! awk '$1 > 500 {bad=1} END {exit !bad}' <<<"$m"
 }
 stall_case() {
   local name=$1 ovl=$2 c=$3 xcfg=$4 xenv=$5 why

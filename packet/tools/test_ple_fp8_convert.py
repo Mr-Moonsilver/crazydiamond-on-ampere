@@ -36,7 +36,7 @@ src, dst = f"{tmp}/src", f"{tmp}/dst"
 os.makedirs(src)
 torch.manual_seed(1)
 shards = {f"{P}{i}.weight": (torch.randn(n, 160) * 0.02).to(torch.bfloat16) for i, n in enumerate((300, 300, 300, 77))}
-shards[f"{P}1.weight"][5, 7] = 3.5  # outlier: sets amax
+shards[f"{P}1.weight"][5, 7] = 3.3  # outlier: sets amax (3.3 / 448 is not a bf16 value)
 other = {"model.language_model.layers.2.ple.kv_proj.weight": torch.randn(64, 32).to(torch.bfloat16),
          "model.language_model.layers.2.ple.ple_embedding.layer_multipliers": torch.arange(10, dtype=torch.int64)}
 save_file({**shards, **other}, f"{src}/model-00016-of-00017.safetensors")
@@ -46,7 +46,7 @@ json.dump({"model_type": "x", "text_config": {"hidden_size": 2560}, "quantizatio
           open(f"{src}/config.json", "w"))
 wm = {k: "model-00016-of-00017.safetensors" for k in {**shards, **other}}
 wm["model.language_model.embed_tokens.weight"] = "model-00001-of-00017.safetensors"
-json.dump({"metadata": {}, "weight_map": wm}, open(f"{src}/model.safetensors.index.json", "w"))
+json.dump({"metadata": {"total_size": 1000}, "weight_map": wm}, open(f"{src}/model.safetensors.index.json", "w"))
 open(f"{src}/generation_config.json", "w").write("{}")
 before = {n: digest(f"{src}/{n}") for n in os.listdir(src)}
 
@@ -64,6 +64,10 @@ if r.returncode == 0:
           and "ple_embedding_dtype" not in cfg)
     idx = json.load(open(f"{dst}/model.safetensors.index.json"))["weight_map"]
     scale_name = f"{P[:-len('.shard_')]}.weight_scale"
+    meta = json.load(open(f"{dst}/model.safetensors.index.json"))["metadata"]
+    shard_bytes = sum(t.numel() * 2 for t in shards.values())
+    check("index total_size: shards halved, + 4 scale bytes", meta["total_size"] == 1000 - shard_bytes // 2 + 4, meta)
+    check("no DST.tmp left", not os.path.exists(dst + ".tmp"))
     check("index maps the scale", idx.get(scale_name) == "model-00016-of-00017.safetensors")
     amax = max(float(t.float().abs().max()) for t in shards.values())
     rep = json.load(open(f"{dst}/PLE_FP8.json"))
@@ -71,8 +75,10 @@ if r.returncode == 0:
         keys = set(f.keys())
         check("tensor set", keys == set(shards) | set(other) | {scale_name}, sorted(keys))
         sc = f.get_tensor(scale_name)
-        check("scale [1] float32 = amax/448", sc.dtype == torch.float32 and tuple(sc.shape) == (1,)
-              and abs(float(sc[0]) - amax / 448) < 1e-9, (sc.dtype, tuple(sc.shape), float(sc[0]), amax / 448))
+        v = float(sc[0])
+        check("scale [1] float32, bf16-exact, amax/448 rounded up by < 1 bf16 step",
+              sc.dtype == torch.float32 and tuple(sc.shape) == (1,) and float(sc.to(torch.bfloat16)[0]) == v
+              and amax / 448 <= v < amax / 448 * (1 + 2 ** -7), (sc.dtype, tuple(sc.shape), v, amax / 448))
         for k, t in other.items():
             check(f"unchanged {k.split('.')[-1]}", torch.equal(f.get_tensor(k), t))
         worst = 0.0
