@@ -428,6 +428,9 @@ def stage_time(parts, spec, pair):
             + parts.get("hc_final",0))
 
 
+SOLO_RUNS = 4
+
+
 def ulp_close(a, b, max_fraction=1e-4):
     """True when a and b (bf16) differ only by rare one-ulp flips; returns (ok, summary)."""
     if a.shape != b.shape:
@@ -506,6 +509,19 @@ def verify_mode(dec, pre, graph, sd, sp):
         pre.forward(Trace())
     sp.synchronize()
     refp = snapshot(pre)
+    # The prefill output alone is not bit-deterministic (q8g 24 Oct: the layer-2 Marlin MoE output switches between
+    # two results across solo runs; 349/10.5M final elements, up to 2 ulp). Collect the solo outputs; the concurrent
+    # output must equal one of them bit for bit, and every solo state must equal the reference state.
+    solo = [refp[0]]
+    for _ in range(SOLO_RUNS - 1):
+        pre.reset(); torch.cuda.synchronize()
+        with torch.cuda.stream(sp):
+            pre.forward(Trace())
+        sp.synchronize()
+        snap = snapshot(pre)
+        checked(state_equal(snap[1:], refp[1:]), "prefill state not deterministic alone")
+        if not any(torch.equal(snap[0], o) for o in solo):
+            solo.append(snap[0])
     dec.reset(); pre.reset(); torch.cuda.synchronize()
     errors = []
     def p():
@@ -525,12 +541,11 @@ def verify_mode(dec, pre, graph, sd, sp):
         raise errors[0]
     checked(state_equal(snapshot(dec),refd), "decode graph/concurrent state differs from eager")
     got = snapshot(pre)
-    # Persistent GDN/conv state stays bit-exact. The prefill output alone is not bit-deterministic (q8f 24 Oct: a
-    # third solo run flipped 349 of 10.5M elements by one bf16 ulp, identically to the concurrent run), so the output
-    # may differ only by isolated single-ulp flips.
     checked(state_equal(got[1:],refp[1:]), "concurrent prefill state differs from eager")
-    ok, why = ulp_close(got[0], refp[0])
-    checked(ok, "concurrent prefill output beyond single-ulp rounding: " + why)
+    if not any(torch.equal(got[0], o) for o in solo):
+        _, why = ulp_close(got[0], refp[0])
+        checked(False, f"concurrent prefill output matches none of {len(solo)} distinct solo outputs "
+                       f"({SOLO_RUNS} solo runs); vs reference: {why}")
     checked(all(bool(torch.isfinite(x).all()) for x in snapshot(dec)+snapshot(pre)), "nonfinite warm outputs/state")
 
 
