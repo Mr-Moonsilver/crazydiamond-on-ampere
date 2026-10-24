@@ -5,6 +5,7 @@ Usage: pp_stats_grade.py ENGINE.log 0|1 OUT.json
 Accepts Docker timestamp/worker prefixes before structured FLASH records.
 """
 import json
+import os
 import re
 from pathlib import Path
 import sys
@@ -20,7 +21,13 @@ def grade(text, enabled):
                     rows.append(json.loads(line.split(marker, 1)[1]))
                 except (ValueError, TypeError):
                     errors.append('malformed ' + marker.strip())
-    total_groups = 23 if enabled else 39
+    # PP_PARTITION (default 26,22): production runs 24,24 (flash-next, 24 Oct); counts from round 9's planner tests
+    part = os.environ.get("PP_PARTITION", "26,22")
+    table = {"26,22": {True: (23, [0, 0, 5, 5]), False: (39, [16, 16, 21, 21])},
+             "24,24": {True: (21, [0, 0, 1, 1]), False: (39, [18, 18, 19, 19])}}
+    if part not in table:
+        return {'verdict': 'FAIL', 'errors': [f'unknown PP_PARTITION {part}']}
+    total_groups, empties = table[part][enabled]
     if len(layouts) != 4 or {r.get('worker_index') for r in layouts} != set(range(4)):
         errors.append('expected exactly four worker layouts')
     for r in layouts:
@@ -31,8 +38,8 @@ def grade(text, enabled):
         if sum(g.get('kind') == 'MambaSpec' for g in groups) != total_groups - 2:
             errors.append('wrong state group count')
     if sorted(sum(g.get('empty') is True for g in r.get('groups', [])) for r in layouts) != (
-            [0, 0, 5, 5] if enabled else [16, 16, 21, 21]):
-        errors.append('wrong 26/22 empty-stage distribution')
+            empties):
+        errors.append(f'wrong {part} empty-stage distribution')
     if not samples:
         errors.append('no periodic pool evidence')
     previous = 0

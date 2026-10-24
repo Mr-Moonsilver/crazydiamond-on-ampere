@@ -554,6 +554,7 @@ check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdi
 # --- Full engine identity: mocked docker, actual destination-side hashing; no GPU ---
 for suite, label in [('test_identity.py', 'engine identity: mocked Docker and content/provenance checks'),
                      ('test_round7_review.py', 'round 7 review: offline q8/decode_ab counterexamples'),
+                     ('test_agent_replay.py', 'agent_replay v2: cut-off streams, full reuse'),
                      ('test_prefix_capacity.py', 'prefix capacity: source shapes and conditional LRU model'),
                      ('test_pp_grouping.py', 'PP grouping, pool stats, warm/cold gates: offline checks')]:
     identity_test = subprocess.run([sys.executable, os.path.join(HERE, suite)], capture_output=True, text=True,

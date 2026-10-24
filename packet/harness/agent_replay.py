@@ -43,7 +43,7 @@ def stream_chat(url, model, messages, max_tokens):
     req = urllib.request.Request(url + "/v1/chat/completions", json.dumps(body).encode(),
                                  {"Content-Type": "application/json"})
     t0 = time.time()
-    ttft, out, usage, n = None, [], {}, 0
+    ttft, out, usage, n, finish = None, [], {}, 0, None
     with urllib.request.urlopen(req, timeout=3600) as r:
         for raw in r:
             line = raw.decode().strip()
@@ -53,13 +53,14 @@ def stream_chat(url, model, messages, max_tokens):
             if d.get("usage"):
                 usage = d["usage"]
             for c in d.get("choices", []):
+                finish = c.get("finish_reason") or finish
                 piece = (c.get("delta") or {}).get("content")
                 if piece:
                     if ttft is None:
                         ttft = time.time() - t0
                     out.append(piece)
                     n += 1
-    return {"ttft": ttft, "seconds": time.time() - t0, "chunks": n, "text": "".join(out),
+    return {"ttft": ttft, "seconds": time.time() - t0, "chunks": n, "text": "".join(out), "finish": finish,
             "completion_tokens": usage.get("completion_tokens"), "prompt_tokens": usage.get("prompt_tokens"),
             "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens")}
 
@@ -86,7 +87,12 @@ def agent(i, url, model, t_start, t_end, records, lock):
                "history_est": history_tokens, "reply_target": reply}
         try:
             r = stream_chat(url, model, messages, reply)
-            rec.update({k: r[k] for k in ("ttft", "seconds", "completion_tokens", "prompt_tokens", "cached_tokens")})
+            rec.update({k: r[k] for k in ("ttft", "seconds", "completion_tokens", "prompt_tokens", "cached_tokens",
+                                          "finish")})
+            # v2: a turn counts only when the stream ended properly with full usage and the requested length
+            rec["complete"] = (r["finish"] in ("length", "stop") and r["completion_tokens"] == reply
+                               and r["prompt_tokens"] is not None and r["cached_tokens"] is not None
+                               and r["ttft"] is not None)
             messages.append({"role": "assistant", "content": r["text"]})
             history_tokens = (r["prompt_tokens"] or history_tokens) + (r["completion_tokens"] or reply)
         except Exception as e:  # recorded, the agent continues with a new session
@@ -107,14 +113,29 @@ def summarize(records, warmup, duration):
     """Latency over every turn sent inside [warmup, duration] (all of them run to completion); throughput
     (turns/hour, output tokens/s) only over turns that also FINISHED inside the window (Codex round 3: a turn sent
     before the cutoff and finished after it was credited to the window)."""
-    warm = [r for r in records if r["t"] >= warmup and "error" not in r and r.get("ttft") is not None]
+    # v2 (24 Oct): only complete turns count (old records without the flag: ttft present, as before)
+    ok = lambda r: "error" not in r and r.get("ttft") is not None and r.get("complete", True)
+    warm = [r for r in records if r["t"] >= warmup and ok(r)]
+    incomplete = sum(1 for r in records if "error" not in r and not ok(r))
+    # per-turn full reuse: an append whose cached tokens cover the agent's previous prompt (within one 4048 page)
+    prev, full, judged = {}, 0, 0
+    for r in sorted(records, key=lambda r: r["t"]):
+        a = r["agent"]
+        if r["kind"] == "append" and r["t"] >= warmup and ok(r) and a in prev and r.get("cached_tokens") is not None:
+            judged += 1
+            full += r["cached_tokens"] >= prev[a] - 4048
+        if ok(r) and r.get("prompt_tokens"):
+            prev[a] = r["prompt_tokens"]
+        if r["kind"] == "fresh" or "error" in r:
+            prev.pop(a, None) if r["kind"] != "fresh" else None
     done = [r for r in warm if r["t"] + r["seconds"] <= duration]
     span_h = max(1e-9, (duration - warmup) / 3600)
     appends = [r for r in warm if r["kind"] == "append"]
     fresh = [r for r in warm if r["kind"] == "fresh"]
     rate = lambda r: (r["completion_tokens"] - 1) / (r["seconds"] - r["ttft"]) if (
         r.get("completion_tokens") and r["seconds"] > r["ttft"]) else None
-    hit = (sum(r["cached_tokens"] or 0 for r in appends) / max(1, sum(r["prompt_tokens"] or 0 for r in appends)))
+    known = [r for r in appends if r.get("cached_tokens") is not None]
+    hit = (sum(r["cached_tokens"] for r in known) / max(1, sum(r["prompt_tokens"] or 0 for r in known)))
     return {
         "turns_per_hour": round(len(done) / span_h, 1), "turns_finished_after_window": len(warm) - len(done),
         "turn_s_p50": pct([r["seconds"] for r in warm], 0.5), "turn_s_p95": pct([r["seconds"] for r in warm], 0.95),
@@ -124,7 +145,8 @@ def summarize(records, warmup, duration):
         "decode_tps_p50": pct([rate(r) for r in warm], 0.5), "decode_tps_p5": pct([rate(r) for r in warm], 0.05),
         "output_tokens_per_s": round(sum(r.get("completion_tokens") or 0 for r in done) / (duration - warmup), 1),
         "prefix_hit_rate_appends": round(hit, 4),
-        "errors": sum(1 for r in records if "error" in r),
+        "append_full_reuse": round(full / judged, 4) if judged else None, "appends_judged": judged,
+        "errors": sum(1 for r in records if "error" in r), "incomplete": incomplete,
         "warm_turns": len(warm),
     }
 
@@ -150,7 +172,7 @@ def main():
                                      "APPEND_MAX", "REPLY_MIN", "REPLY_MAX", "TOOL_MIN", "TOOL_MAX", "ROLL_AT")}
     json.dump({"config": cfg, "summary": summ, "turns": records}, open(out, "w"), indent=1)
     print("agent_replay", json.dumps(summ))
-    sys.exit(1 if summ["errors"] or not summ["warm_turns"] else 0)
+    sys.exit(1 if summ["errors"] or summ["incomplete"] or not summ["warm_turns"] else 0)
 
 
 if __name__ == "__main__":
