@@ -465,5 +465,13 @@ for name, mode, want in [('long prompt completes under short load', None, 0), ('
     srv.shutdown()
     check(f'sf_starve: {name}', rc, want)
 
+# --- S4: anchored model continuation + pure-Python ownership/completion protocol ---
+# No torch/GPU/network in this sub-suite; fake tensor arithmetic is labelled in its output.
+resume = subprocess.run([sys.executable, os.path.join(HERE, 'test_resume_prefill.py')],
+                        capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+if resume.returncode:
+    print(resume.stdout + resume.stderr)
+check('resumable prefill: generated control flow + offline protocol (fake tensors)', resume.returncode, 0)
+
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)

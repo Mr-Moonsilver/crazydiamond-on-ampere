@@ -1,0 +1,15 @@
+{
+  "status": "OFFLINE_PROTOTYPE_NOT_DEPLOYABLE",
+  "files": {
+    "model.py.v1": {
+      "source": "models/qwen4_exp/nvidia/model.py",
+      "source_sha256": "ae72d95610b80188df2ee54a8649329a2a5601c4c31cbc7b60bbda9c6dcff9c4",
+      "output_sha256": "9e9c8d6ca8e24af4c779ef38652d42bccc34700bc3eb6dda3a6421819054b13d"
+    },
+    "model_runner.py.v1": {
+      "source": "v1/worker/gpu/model_runner.py",
+      "source_sha256": "a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2",
+      "output_sha256": "102e3785e6ad7b5645b5001ff52da5f782a6a6f9af2f07374e7a72e3772573ab"
+    }
+  }
+}
