@@ -35,6 +35,11 @@ call, attributed to that step's mode; over the last 3 s, decode-only steps run w
 below f, otherwise a prefill step runs (a prompt step costs ~100-140 ms and a decode step ~20-30 ms, so f = 0.5 gives
 several decode steps per prefill step). FLASH_PD_MAX_D (default 64) bounds consecutive decode steps so a prompt is
 never starved. Unset, v2 behaviour is unchanged. Stats add the realised decode share of the window.
+v4 (24 Oct 2026, first sweep): with only the share rule, D steps always fell on one parity and prefill steps skip
+decoders, so all decoders collapsed into one PP cohort (0/8) and the step after a D step had no eligible decoder:
+strict 1:1 again (realised share ~0.07 for f = 0.3/0.5/0.7). With FLASH_PD_DECODE_SHARE set, the parity cap now
+also applies to D steps (at most ceil(n/2) decoders), keeping two cohorts so consecutive D steps can each serve
+half the decoders -- the normal PP2 decode cadence.
 usage: make_pdalt.py scheduler.image.py out_scheduler.py
 """
 import difflib, sys
@@ -120,7 +125,7 @@ src = sub(src, """        defer_prefills = (
             self._pd_d_run = self._pd_d_run + 1 if pd_mode == "D" else 0
         # flash-next parity balance: cap decoders per non-"D" step at half of all decoders (rounded up).
         dec_cap = None
-        if self.parity_balance and pd_mode != "D":
+        if self.parity_balance and (pd_mode != "D" or self._pd_share is not None):
             ndec_all = sum(1 for r in self.running if not r.is_prefill_chunk)
             dec_cap = (ndec_all + 1) // 2 if ndec_all > 1 else None
         ndec_sched = 0
