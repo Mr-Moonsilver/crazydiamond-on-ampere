@@ -24,6 +24,9 @@ outranked the emitted token in alone runs).
 Prompts are copy tasks (PROMPT=copy): a seeded passage B of PLEN/2+LEN tokens followed by its first PLEN-|B| tokens,
 so the greedy continuation repeats B with wide top-1 margins; PROMPT=random (the seeded word+number text alone) gave
 near-uniform digit positions where even alone-a vs alone-b split on exact ties within 1-14 tokens (q4 noalt).
+v4 (24 Oct, Codex round 6 review): exactly N complete records per condition (empty/truncated saved runs are
+INCONCLUSIVE), finite ordered arrival times, explicit "started" saved, per-prompt verdict against its own noise control (which must have compared at least
+the candidate's positions).
 usage: decode_ab.py URL MODEL OUT.json  (env N=6 LEN=384 LONG=200000 SEED=11 TOPK=5 MIN_MIXED=64 PRE_LEAD=1 PRE_TAIL=0.5
                                          STOP_IDS=248046,248044)
        decode_ab.py --rescore IN.json OUT.json   (re-judge saved runs with this version's rules; no engine needed)
@@ -91,9 +94,12 @@ def problems(r, plen):
     """Why a record is not usable evidence ([] when it is)."""
     if "error" in r:
         return [r["error"]]
-    p = [f"{k} {len(r[k])}/{LEN}" for k in ("tokens", "lp", "top", "ts") if len(r[k]) != LEN]
+    p = [f"{k} {len(r.get(k) or [])}/{LEN}" for k in ("tokens", "lp", "top", "ts") if len(r.get(k) or []) != LEN]
     if p:
         return p
+    ts = r["ts"]
+    if not all(fin(t) for t in ts) or any(b < a for a, b in zip(ts, ts[1:])):
+        return ["arrival times not finite and ordered"]
     for i, (t, l, tp) in enumerate(zip(r["tokens"], r["lp"], r["top"])):
         if not fin(l) or len(tp) < 2 or not all(fin(v) for v in tp.values()):
             return [f"pos {i}: nonfinite or short top map"]
@@ -180,8 +186,12 @@ def main():
 
 
 def finish(runs, pre, started, out):
-    res = runs["under-prefill"]
-    probs: list = [(c, i, p) for c, rs in runs.items() for i, r in enumerate(rs) for p in problems(r, PLEN)[:1]]
+    res = runs.get("under-prefill") or []
+    probs: list = []
+    if sorted(runs) != ["alone-a", "alone-b", "under-prefill"] or any(len(rs) != N for rs in runs.values()):
+        # v4 (Codex round 6 P1): an empty or truncated saved run must never grade as PASS
+        probs.append(("records", f"want exactly N={N} per condition, got {{{', '.join(f'{k}: {len(v)}' for k, v in runs.items())}}}"))
+    probs += [(c, i, p) for c, rs in runs.items() for i, r in enumerate(rs) for p in problems(r, PLEN)[:1]]
     if not started:
         probs.append(("first tokens", "not every decode streamed before the prefill"))
     pu = pre.get("usage") or {}
@@ -192,17 +202,23 @@ def finish(runs, pre, started, out):
     summ = {"config": {"N": N, "LEN": LEN, "LONG": LONG, "SEED": SEED, "TOPK": TOPK, "TOL": TOL, "NEAR_TIE": NEAR_TIE,
                        "MIN_MIXED": MIN_MIXED, "PRE_LEAD": PRE_LEAD, "PRE_TAIL": PRE_TAIL, "PROMPT": PROMPT,
                        "STOP": sorted(STOP)},
-            "prefill_s": round(pre.get("t1", 0) - pre.get("t0", 0), 2), "invalid": probs[:20]}
+            "prefill_s": round(pre.get("t1", 0) - pre.get("t0", 0), 2), "invalid": probs[:20],
+            "invalid_count": len(probs), "started": bool(started)}
     if probs:
         summ["final"] = "INCONCLUSIVE"
     else:
         noise = [compare(a, b) for a, b in zip(runs["alone-a"], runs["alone-b"])]
         cand = [compare(a, c, window) for a, c in zip(runs["alone-a"], res)]
         summ.update(noise=noise, under_prefill=cand)
-        summ["final"] = ("INCONCLUSIVE" if any(x["status"] != "ok" for x in noise) else  # the rule's own noise
-                         "FAIL" if any(x["status"] == "fail" for x in cand) else
-                         "INCONCLUSIVE" if any(x["status"] != "ok" for x in cand)
-                         or any(x["mixed"] < MIN_MIXED for x in cand) else "PASS")
+        # v4 (Codex round 6 P2): each prompt is judged against its own noise control, then aggregated -- a clear
+        # failure on a clean control stays FAIL whatever another prompt's noise; a failure on its own noisy
+        # control is INCONCLUSIVE (both observations kept)
+        # a control vouches only for the positions it compared: a noise prefix shorter than the candidate's is no control
+        per = ["inconclusive" if nz["status"] != "ok" or nz["prefix"] < cd["prefix"] else
+               "fail" if cd["status"] == "fail" else
+               "inconclusive" if cd["status"] != "ok" or cd["mixed"] < MIN_MIXED else "ok" for nz, cd in zip(noise, cand)]
+        summ["per_prompt"] = per
+        summ["final"] = "FAIL" if "fail" in per else "INCONCLUSIVE" if "inconclusive" in per else "PASS"
     json.dump({"summary": summ, "runs": runs, "prefill": pre}, open(out, "w"), indent=1)
     up = summ.get("under_prefill", [])
     print("decode_ab", json.dumps({k: summ[k] for k in ("final", "prefill_s", "invalid")}),
@@ -221,7 +237,9 @@ def rescore(src, out):
         raise SystemExit(f"rescore: saved config {old['config']} differs from this environment; set the same env")
     global PROMPT
     PROMPT = old["config"].get("PROMPT", "random")  # how the saved prompts were made (pre-copy runs: random)
-    started = not any(p[0] == "first tokens" for p in old.get("invalid", []))  # the live run's own observation
+    # the live run's own observation; runs before v4 kept only the first 20 problems, so a truncated list is not proof
+    started = old["started"] if "started" in old else (
+        len(old.get("invalid", [])) < 20 and not any(p[0] == "first tokens" for p in old.get("invalid", [])))
     finish(runs, pre, started, out)
 
 

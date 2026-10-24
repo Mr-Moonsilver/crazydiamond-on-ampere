@@ -230,10 +230,10 @@ class DecodeReviewReproductions(unittest.TestCase):
             self.m.finish(runs,self.pre,True,str(out))
         return ex.exception.code,json.loads(out.read_text())
 
-    def test_review_empty_saved_runs_currently_false_pass(self):
+    def test_review_empty_saved_runs_are_inconclusive(self):  # decode_ab v4: was a false PASS
         rc,d = self.finish({k:[] for k in ("alone-a","alone-b","under-prefill")})
-        self.assertEqual(rc,0,"update this reproduction when Claude fixes record cardinality")
-        self.assertEqual(d["summary"]["final"],"PASS")
+        self.assertEqual(rc,2)
+        self.assertEqual(d["summary"]["final"],"INCONCLUSIVE")
 
     def test_review_noise_elsewhere_masks_clear_candidate_failure(self):
         runs = {k:[self.record(),self.record()] for k in ("alone-a","alone-b","under-prefill")}
@@ -243,7 +243,15 @@ class DecodeReviewReproductions(unittest.TestCase):
         rc,d = self.finish(runs)
         self.assertEqual(d["summary"]["noise"][1]["status"],"ok")
         self.assertEqual(d["summary"]["under_prefill"][1]["status"],"fail")
-        self.assertEqual(rc,2,"current global noise-first ordering hides this distinct FAIL")
+        self.assertEqual(rc,1,"decode_ab v4: a failure on a clean control stays FAIL")
+
+    def test_failure_on_its_own_noisy_control_is_inconclusive(self):
+        runs = {k:[self.record(),self.record()] for k in ("alone-a","alone-b","under-prefill")}
+        r = runs["alone-b"][1];r["lp"][0] = -.5;r["top"][0]["token_id:7"] = -.5
+        r = runs["under-prefill"][1];r["tokens"][5] = "token_id:8"
+        r["top"][5] = {"token_id:8":-.01,"token_id:7":-2.}
+        rc,d = self.finish(runs)
+        self.assertEqual((rc,d["summary"]["per_prompt"]),(2,["ok","inconclusive"]))
 
     def test_stop_exclusion_does_not_hide_nonstop_wrong_winner(self):
         r = self.record()
