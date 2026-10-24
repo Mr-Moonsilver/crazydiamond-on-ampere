@@ -22,6 +22,12 @@ REQUIRED_GATES = {'harness', 'identity', 'cow-hook', 'inside', 'after', 'steer-a
                   'steer-agent-33', 'steer-std-41', 'steer-std-42', 'coverage', 'bytes', 'errors', 'bench'}
 REQUIRED_STEPS = {'text': {'restart-verify', 'restart-async', 'inside-gen200-cancel', 'long-fullpool'}}
 REQUIRED_STEPS['vision'] = REQUIRED_STEPS['text'] | {f'vision-{m}' for m in ('quality', 'bound', 'followup', 'isolation', 'uuid')}
+# S3 candidate (release_s3.sh): + the retained-value gate (verify phase) and retained reads used (shipping phase)
+REQUIRED_STEPS['text-s3'] = REQUIRED_STEPS['text'] | {'retain-verify', 'retain-used'}
+# Permitted diagnostic differences between the phases besides QSA_COW_VERIFY: whole K=V words removed from the
+# settings lines before comparing (e.g. RELEASE_DIAG_WORDS=QSA_RETAIN_VERIFY=1 inside EXTRA_ENV); stated in the output.
+import os
+DIAG = os.environ.get('RELEASE_DIAG_WORDS', '').split()
 run_ids = {}
 
 
@@ -88,7 +94,10 @@ def section(text, title):
 def ident(d):
     t = open(f'{d}/manifest-start.txt').read()
     overlay = sorted(l.split()[0] + ' ' + l.split()[-1] for l in (section(t, 'mounted overlay files') or '').splitlines() if l)
-    settings = sorted(l for l in (section(t, 'settings') or '').splitlines() if not l.startswith('QSA_COW_VERIFY'))
+    def strip(l):
+        m = re.match(r'^(\w+)="(.*)"$', l)
+        return f'{m.group(1)}="{" ".join(w for w in m.group(2).split() if w not in DIAG)}"' if m else l
+    settings = sorted(strip(l) for l in (section(t, 'settings') or '').splitlines() if not l.startswith('QSA_COW_VERIFY'))
     weights = re.search(r'^weights digest (\w+)', t, re.M)
     return {'overlay': overlay, 'settings': settings, 'weights': weights and weights.group(1), 'harness': section(t, 'harness')}
 
@@ -101,7 +110,7 @@ try:
         elif iv[k] != ip[k]:
             fails.append(f'phases ran different {k}')
     lines.append(f"identity: {len(iv['overlay'])} overlay files, weights {iv['weights'][:12] if iv['weights'] else None}, "
-                 f"settings identical except QSA_COW_VERIFY: {iv['settings'] == ip['settings']}")
+                 f"settings identical except QSA_COW_VERIFY{' and ' + ' '.join(DIAG) if DIAG else ''}: {iv['settings'] == ip['settings']}")
 except OSError as e:
     inconc.append(f'manifest missing: {e}')
 

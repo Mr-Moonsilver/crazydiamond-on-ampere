@@ -83,7 +83,12 @@ def green_streams(dec_sms):
         _ck(_cu.cuGreenCtxStreamCreate(ctypes.byref(st), g, 1, 0), "cuGreenCtxStreamCreate")
         out.append(torch.cuda.ExternalStream(st.value, device=dev))
     smc = lambda b: int.from_bytes(bytes(b[96:100]), "little")
-    _green[dec_sms] = (out[0], out[1], smc(group), smc(rest))
+    gc, rc, total = smc(group), smc(rest), torch.cuda.get_device_properties(dev).multi_processor_count
+    # Codex round 4: the count is a minimum, so validate what came back before any trial uses it
+    if n.value != 1 or gc < dec_sms or gc <= 0 or rc <= 0 or gc + rc != total:
+        raise RuntimeError(f"green split {dec_sms}: groups {n.value}, {gc} + {rc} SMs of {total}")
+    print(f"rank {rank} green split {dec_sms}: {gc} + {rc} of {total} SMs", flush=True)
+    _green[dec_sms] = (out[0], out[1], gc, rc)
     return _green[dec_sms]
 
 
@@ -167,6 +172,16 @@ def run(mode):
         while pend_p and pend_p[0].query():
             pend_p.popleft(); done_p.append(now)
 
+    def refill(wm):
+        nonlocal issued_p, maxq
+        with torch.cuda.stream(sp):
+            for _ in range(max(0, PRE_MAXQ - (issued_p - wm))):
+                prefill_layer()
+                e = torch.cuda.Event(); e.record(sp)
+                pend_p.append(e)
+                issued_p += 1
+        maxq = max(maxq, issued_p - wm)
+
     t0 = time.perf_counter()
     for i in range(STEPS):
         while (time.perf_counter() - t0) * 1000 < i * PERIOD:
@@ -182,19 +197,29 @@ def run(mode):
             # Codex round 3: refill to PRE_MAXQ outstanding layers against the slower rank's completed count (MIN
             # over the gloo group), so both ranks issue the same tickets and the backlog never exceeds PRE_MAXQ
             poll()
-            wm = torch.tensor([len(done_p)], dtype=torch.int64)
+            wm = torch.tensor([len(done_p), 0], dtype=torch.int64)
             dist.all_reduce(wm, op=dist.ReduceOp.MIN, group=g_ctl)
-            with torch.cuda.stream(sp):
-                for _ in range(max(0, PRE_MAXQ - (issued_p - int(wm)))):
-                    prefill_layer()
-                    e = torch.cuda.Event(); e.record(sp)
-                    pend_p.append(e)
-                    issued_p += 1
-            maxq = max(maxq, issued_p - int(wm))
+            refill(int(wm[0]))
         poll()
     t1 = time.perf_counter()
-    while pend_d:
-        poll()
+    # Codex round 4: the prefill keeps its bounded backlog until BOTH ranks have completed the last decode, so the
+    # decode tail runs under the same load as the rest of the window. Each round agrees (MIN) the watermark and an
+    # all-done flag, so both ranks run the same rounds and issue the same tickets.
+    rounds = 0
+    while True:
+        tw = time.perf_counter()
+        while (time.perf_counter() - tw) * 1000 < PERIOD / 4:
+            poll()
+        if not with_pre:
+            if not pend_d:
+                break
+            continue
+        st = torch.tensor([len(done_p), 0 if pend_d else 1], dtype=torch.int64)
+        dist.all_reduce(st, op=dist.ReduceOp.MIN, group=g_ctl)
+        rounds += 1
+        if int(st[1]):
+            break
+        refill(int(st[0]))
     t_end = done_d[-1] if done_d else t1
     td = time.perf_counter()
     torch.cuda.synchronize()  # drains the prefill backlog (<= PRE_MAXQ): same number of collectives on both ranks
@@ -202,7 +227,8 @@ def run(mode):
     poll()
     span = t_end - t0
     res = {"mode": mode, "rank": rank, "window_s": round(span, 3), "prefill_issued": issued_p,
-           "prefill_max_outstanding": maxq, "drain_s": round(drain_s, 3)}
+           "prefill_max_outstanding": maxq, "drain_s": round(drain_s, 3), "tail_s": round(t_end - t1, 3),
+           "tail_rounds": rounds, "last_prefill_done_s": round(done_p[-1] - t0, 3) if done_p else None}
     if done_d:
         gaps = sorted((b - a) * 1000 for a, b in zip(done_d, done_d[1:]))
         res.update({"gap_p50": round(gaps[len(gaps) // 2], 2), "gap_p99": round(gaps[int(len(gaps) * 0.99) - 1], 2),
@@ -282,7 +308,7 @@ for r in results[2:]:
         r["sm_split"] = green_streams(int(r["mode"].lstrip("gredcn")))[2:]
 wall_rate, wall_tflops = prefill_wall()
 if rank == 0:
-    meta = {"prefill_wall_layers_per_s": wall_rate, "prefill_wall_tflops": wall_tflops, "qsa_every": QSA_EVERY,"devices": [torch.cuda.get_device_name(dev)], "visible": os.environ.get("CUDA_VISIBLE_DEVICES"),
+    meta = {"prefill_wall_rank0_layers_per_s": wall_rate, "prefill_wall_rank0_tflops": wall_tflops, "prefill_wall_note": "dense BF16 torch.mm, rank 0 only; these 3090s run gpu-unlock (README): stock 71 TFLOP/s is not the ceiling", "qsa_every": QSA_EVERY,"devices": [torch.cuda.get_device_name(dev)], "visible": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "period_ms": PERIOD, "layers": LAYERS, "dec_w_mb": DEC_W_MB, "dec_host_kb": DEC_HOST_KB,
             "pre_host_mb": PRE_HOST_MB, "pre_maxq": PRE_MAXQ, "results_are": "median over repeats of the worst rank", "steps": STEPS, "repeats": REPEATS, "order": order, "uva": True,
             "priority_range": torch.cuda.Stream.priority_range() if hasattr(torch.cuda.Stream, "priority_range")

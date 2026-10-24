@@ -326,8 +326,8 @@ d3 = copy.deepcopy(d2); d3['load_log'] = []
 check('teacher_forced regrade: no load evidence', regrade(d3), 2)
 
 # --- cov_gate: per-worker coverage (Codex round 3: a clean last line from one worker hid a mismatch / a silent rank) ---
-def cov(kind, text):
-    return subprocess.run([sys.executable, os.path.join(HERE, 'cov_gate.py'), kind], input=text, capture_output=True,
+def cov(kind, text, *base):
+    return subprocess.run([sys.executable, os.path.join(HERE, 'cov_gate.py'), kind, '4', *base], input=text, capture_output=True,
                           text=True).returncode
 HL = lambda w, h, f, v, x: f"(Worker_PP{w // 2}_TP{w % 2} pid=1) INFO QSA host meta coverage: host {h} fallback {f} verified {v} mismatches {x}\n"
 hok = ''.join(HL(w, 500, 0, 500, 0) for w in range(4))
@@ -338,29 +338,64 @@ check('cov_gate hostmeta: MISMATCH line after the last report', cov('hostmeta', 
 RL = lambda w, sn, c: f"(Worker_PP{w // 2}_TP{w % 2} pid=1) INFO QSA rowcache mixed steps: {sn} seen, {c} with cached decode rows\n"
 check('cov_gate rowmix: used on every worker', cov('rowmix', ''.join(RL(w, 100, 90) for w in range(4))), 0)
 check('cov_gate rowmix: never used', cov('rowmix', ''.join(RL(w, 100, 0) for w in range(4))), 1)
+# Codex round 4: with a baseline the counters must advance during the test; the S3 retained-view gates
+_bf = tempfile.mkstemp(suffix='.log')[1]
+open(_bf, 'w').write(''.join(RL(w, 100, 90) for w in range(4)))
+check('cov_gate rowmix: counters unchanged since the baseline', cov('rowmix', ''.join(RL(w, 100, 90) for w in range(4)), _bf), 1)
+check('cov_gate rowmix: counters advanced since the baseline', cov('rowmix', ''.join(RL(w, 150, 120) for w in range(4)), _bf), 0)
+ACT = ''.join(f"(Worker_PP{w // 2}_TP{w % 2} pid=1) INFO QSA retained history active: 24 pages per layer\n" for w in range(4))
+VL = lambda w, n, b: f"(Worker_PP{w // 2}_TP{w % 2} pid=1) INFO QSA stage timing (5.0 s, per call): pages<=max: n=3 ; verify n={n} bad={b} | dropped 0\n"
+check('cov_gate retain: activation lines only (review fixture)', cov('retain', ACT), 1)
+check('cov_gate retain: activation then disabled (review fixture)', cov('retain', ACT + ''.join(VL(w, 40, 0) for w in range(4)) + "(Worker_PP0_TP0 pid=1) WARNING QSA retained history disabled: buffer allocation failed\n"), 1)
+check('cov_gate retain: verified on every worker', cov('retain', ACT + ''.join(VL(w, 40, 0) for w in range(4))), 0)
+check('cov_gate retain: one mismatch', cov('retain', ACT + ''.join(VL(w, 40, int(w == 2)) for w in range(4))), 1)
+UL = lambda w: f"(Worker_PP{w // 2}_TP{w % 2} pid=1) INFO QSA stage timing (5.0 s, per call): pages<=max: n=3 rows=9 ret=12 fill=0.10 meta_host=0.01 ms | dropped 0\n"
+check('cov_gate retain-used: retained reads on every worker', cov('retain-used', ACT + ''.join(UL(w) for w in range(4))), 0)
+check('cov_gate retain-used: active but never read', cov('retain-used', ACT), 1)
 
-# --- decode_ab against a mocked engine: identical decodes pass; a shifted decode during the prefill fails ---
-def mock_decode_engine(leak):
-    import http.server, threading
-    busy = {'prefill': False}
+# --- decode_ab against a mocked engine (Codex round 4: content-dependent tokens, per-session distributions, streamed
+# arrivals): identical decodes pass; a shifted logprob, a foreign winner, a swapped session fail; NaN scores, a
+# queued-only run (no token arrives during the prefill) and an early near-tie divergence are INCONCLUSIVE ---
+def mock_decode_engine(fault):
+    import http.server, threading, zlib
+    busy = {'prefill': False, 'done': threading.Event()}
 
     class Hd(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             if self.path == '/tokenize':
-                out = {'tokens': list(range(len(body['prompt'].split()) * 2))}
-            elif body['max_tokens'] == 1:  # the long prefill
-                busy['prefill'] = True; time.sleep(5.0); busy['prefill'] = False
-                out = {'choices': [{'text': 'x'}]}
-            else:
-                time.sleep(0.6 if busy['prefill'] else 0.05)
-                n, base = body['max_tokens'], sum(body['prompt'][:5]) % 50
-                toks = [f'token_id:{base + j}' for j in range(n)]
-                lps = [-0.1] * n
-                if leak and busy['prefill']:
-                    lps[10] = -2.5
-                top = [{t: lp, 'token_id:99999': lp - 1.0} for t, lp in zip(toks, lps)]
-                out = {'choices': [{'logprobs': {'tokens': toks, 'token_logprobs': lps, 'top_logprobs': top}}]}
+                ws = body['prompt'].split()
+                return self.send({'tokens': [zlib.crc32(w.encode()) % 100000 for w in ws for _ in (0, 1)]})
+            if body['max_tokens'] == 1:  # the long prefill
+                busy['prefill'] = True; time.sleep(3.0); busy['prefill'] = False; busy['done'].set()
+                return self.send({'choices': [{'text': 'x'}], 'usage': {'prompt_tokens': len(body['prompt']),
+                                                                         'prompt_tokens_details': {'cached_tokens': 0}}})
+            self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
+            n, sess = body['max_tokens'], sum(body['prompt'][:5]) % 997
+            for j in range(n):
+                mixed = busy['prefill']
+                if fault == 'queued' and mixed:
+                    busy['done'].wait(); mixed = False
+                time.sleep(0.03 if mixed else 0.002)
+                s2 = (sess + 1) % 997 if fault == 'swapped' and mixed else sess
+                tok, lp, alt, alp = f'token_id:{s2 * 50 + j}', -0.1, 'token_id:99999', -1.5
+                if fault == 'foreign' and mixed:
+                    tok, lp, alt, alp = 'token_id:77777', -50.0, f'token_id:{sess * 50 + j}', -99.0
+                if fault == 'shift' and mixed and j > 10:
+                    lp = -2.5; alp = -3.9
+                if fault == 'nan' and mixed:
+                    lp = float('nan')
+                if fault == 'neartie' and j == 2:
+                    a1, a2 = f'token_id:{sess * 50 + j}', f'token_id:{sess * 50 + 49}'
+                    tok, alt = (a2, a1) if mixed or busy['done'].is_set() else (a1, a2)
+                    lp, alp = -0.6, -0.8
+                top = {tok: lp, alt: alp}
+                ch = {'choices': [{'logprobs': {'tokens': [tok], 'token_logprobs': [lp], 'top_logprobs': [top]}}]}
+                self.wfile.write(b'data: ' + json.dumps(ch).encode() + b'\n\n'); self.wfile.flush()
+            u = {'choices': [], 'usage': {'prompt_tokens': len(body['prompt']), 'prompt_tokens_details': {'cached_tokens': 0}}}
+            self.wfile.write(b'data: ' + json.dumps(u).encode() + b'\n\ndata: [DONE]\n\n')
+
+        def send(self, out):
             b = json.dumps(out).encode()
             self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
 
@@ -371,11 +406,17 @@ def mock_decode_engine(leak):
     return srv
 
 
-for name, leak, want in [('identical decodes', False, 0), ('decode shifted during the prefill', True, 1)]:
-    srv = mock_decode_engine(leak)
+for name, fault, want in [('identical decodes', None, 0), ('logprob shifted during the prefill', 'shift', 1),
+                          ('foreign winner, nothing in common (zero prefix)', 'foreign', 1),
+                          ('another session\'s tokens during the prefill', 'swapped', 1),
+                          ('NaN logprobs during the prefill', 'nan', 2),
+                          ('queued-only: no token arrives during the prefill', 'queued', 2),
+                          ('near-tie divergence at token 2 (no mixed coverage)', 'neartie', 2)]:
+    srv = mock_decode_engine(fault)
     rc = subprocess.run([sys.executable, os.path.join(HERE, 'decode_ab.py'), f'http://127.0.0.1:{srv.server_port}', 'm',
                          tempfile.mkstemp(suffix='.json')[1]], capture_output=True, text=True,
-                        env=dict(os.environ, N='3', LEN='16', LONG='20000')).returncode
+                        env=dict(os.environ, N='3', LEN='48', LONG='20000', PLEN='800', MIN_MIXED='16',
+                                 PRE_LEAD='0.1', PRE_TAIL='0.1')).returncode
     srv.shutdown()
     check(f'decode_ab: {name}', rc, want)
 
