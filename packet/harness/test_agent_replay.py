@@ -24,5 +24,14 @@ class Summary(unittest.TestCase):
         self.assertEqual((s["append_full_reuse"], s["appends_judged"], s["incomplete"]), (0.5, 2, 0))
 
 
+
+class TurnComplete(unittest.TestCase):
+    def test_endings(self):
+        base = {"ttft": 1.0, "completion_tokens": 430, "prompt_tokens": 128564, "cached_tokens": 126192}
+        for finish, want in (("stop", True), ("length", True), ("tool_calls", True), (None, False), ("abort", False)):
+            self.assertEqual(m.turn_complete(dict(base, finish=finish), 430), want, finish)
+        self.assertFalse(m.turn_complete(dict(base, finish="tool_calls", completion_tokens=200), 430))
+        self.assertFalse(m.turn_complete(dict(base, finish="stop", cached_tokens=None), 430))
+
 if __name__ == "__main__":
     unittest.main()

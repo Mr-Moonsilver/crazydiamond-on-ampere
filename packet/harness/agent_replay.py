@@ -35,6 +35,17 @@ def text(rng, n_tokens):
     return " ".join(rng.choice(WORDS) + (str(rng.randint(0, 9999)) if rng.random() < 0.3 else "") for _ in range(n))
 
 
+# v3: a turn counts only when the stream ended properly (stop, length, or the model calling a tool -- q9 24 Oct: one
+# tool_calls ending with the full reply was miscounted as incomplete) with full usage and the requested length.
+FINISHED = ("length", "stop", "tool_calls")
+
+
+def turn_complete(r, reply):
+    return (r.get("finish") in FINISHED and r.get("completion_tokens") == reply
+            and r.get("prompt_tokens") is not None and r.get("cached_tokens") is not None
+            and r.get("ttft") is not None)
+
+
 def stream_chat(url, model, messages, max_tokens):
     """Streamed completion; returns dict(ttft, seconds, tokens, text, prompt_tokens, cached_tokens) or raises."""
     body = {"model": model, "messages": messages, "max_tokens": max_tokens, "min_tokens": max_tokens,
@@ -89,10 +100,7 @@ def agent(i, url, model, t_start, t_end, records, lock):
             r = stream_chat(url, model, messages, reply)
             rec.update({k: r[k] for k in ("ttft", "seconds", "completion_tokens", "prompt_tokens", "cached_tokens",
                                           "finish")})
-            # v2: a turn counts only when the stream ended properly with full usage and the requested length
-            rec["complete"] = (r["finish"] in ("length", "stop") and r["completion_tokens"] == reply
-                               and r["prompt_tokens"] is not None and r["cached_tokens"] is not None
-                               and r["ttft"] is not None)
+            rec["complete"] = turn_complete(r, reply)
             messages.append({"role": "assistant", "content": r["text"]})
             history_tokens = (r["prompt_tokens"] or history_tokens) + (r["completion_tokens"] or reply)
         except Exception as e:  # recorded, the agent continues with a new session
