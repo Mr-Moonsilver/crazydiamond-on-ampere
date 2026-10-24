@@ -131,10 +131,10 @@ def small_run():
                     u = json.loads(line[6:]).get('usage') or {}
                     if u.get('prompt_tokens_details'):
                         small['cached_tokens'] = u['prompt_tokens_details'].get('cached_tokens')
-                    if u.get('completion_tokens', 0) >= 1:
+                    if u.get('completion_tokens', 0) >= 1 and 'ttft_s' not in small:
                         small['ttft_s'] = round(time.monotonic() - t0, 2)
                         small['before_long_done'] = 'p1' not in marks
-                        break
+                    # read to the end: prompt_tokens_details arrives with the final usage chunk (q2: None at token 1)
     except Exception as e:  # noqa: BLE001 - fails the run
         with lock:
             errors.append(f'small_during: {type(e).__name__} {e}')
@@ -216,10 +216,10 @@ def newcomer_run():
                 u = json.loads(line[6:]).get('usage') or {}
                 if u.get('prompt_tokens_details'):
                     marks['cached'] = u['prompt_tokens_details'].get('cached_tokens')
-                if u.get('completion_tokens', 0) >= 1:   # a validated token advance, not just an event
+                if u.get('completion_tokens', 0) >= 1 and 'p1' not in marks:  # a validated token advance
                     newcomer_token = INJECT != 'missing'
                     marks['p1'] = time.monotonic()
-                    break
+                # no break: prompt_tokens_details (cached tokens) arrives with the final usage chunk
     marks.setdefault('p1', time.monotonic())
     h1 = engine_hist()
     # attributable only if the newcomer is the one request whose queue/prefill histogram entry landed in the window
