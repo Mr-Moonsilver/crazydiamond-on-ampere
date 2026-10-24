@@ -253,5 +253,45 @@ for name, firsts, cfn, want in [('identical outputs, caches as required', ['x'],
     srv.shutdown()
     check(f'retain_ab inproc: {name}', rc, want)
 
+# --- teacher_forced against a mocked engine: identical distributions pass, a shifted top-1 fails, cache hit inconclusive ---
+def mock_tf_engine(shift_after, cached=0):
+    import http.server, threading
+    state = {'n': 0}
+
+    class Hd(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if self.path == '/tokenize':
+                out = {'tokens': list(range(len(body['prompt'].split()) * 2))}
+            else:
+                if body.get('max_tokens') != 1:  # a load stream
+                    out = {'choices': [{'text': 'x'}]}
+                else:
+                    state['n'] += 1
+                    k = sum(body['prompt'][-5:]) % 7
+                    top = {f'token_id:{j}': -0.1 * (j + 1) for j in range(20)}
+                    if state['n'] > shift_after:  # later conditions: a different top-1 at large Δ
+                        top['token_id:5'] = -0.01
+                    out = {'choices': [{'logprobs': {'tokens': [f'token_id:{k}'], 'top_logprobs': [top]}}],
+                           'usage': {'prompt_tokens': len(body['prompt']), 'prompt_tokens_details': {'cached_tokens': cached}}}
+            b = json.dumps(out).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Hd)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+env = dict(os.environ, PROBES='10', CTX='200', TAIL='40', LOAD='1', MIN_PROBES='10', TF_SETTLE='0')
+for name, shift, cached, want in [('identical everywhere', 10**9, 0, 0), ('concurrent shifts top-1', 30, 0, 1),
+                                  ('probes served from cache', 10**9, 128, 2)]:
+    srv = mock_tf_engine(shift, cached)
+    rc = subprocess.run([sys.executable, os.path.join(HERE, 'teacher_forced.py'), f'http://127.0.0.1:{srv.server_port}', 'm',
+                         tempfile.mkstemp(suffix='.json')[1]], capture_output=True, text=True, env=env).returncode
+    srv.shutdown()
+    check(f'teacher_forced: {name}', rc, want)
+
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)
