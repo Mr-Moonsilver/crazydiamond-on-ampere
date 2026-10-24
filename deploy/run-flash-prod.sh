@@ -24,6 +24,13 @@ if [[ ${CORE_OVERLAY:-0} == 1 ]]; then
         -v "$OVERLAY/core/single_type_kv_cache_manager.py:$C/single_type_kv_cache_manager.py:ro")
   # the core overlay may also carry the scheduler (PD alternation under PP, FLASH_PD_ALTERNATE=1)
   [[ -f $OVERLAY/core/scheduler.py ]] && core+=(-v "$OVERLAY/core/scheduler.py:$C/sched/scheduler.py:ro")
+  # Optional PP grouping / pool telemetry overlay; each mounted file must be in the manifest.
+  for f in kv_cache_utils.py kv_cache_manager.py; do
+    if [[ -f $OVERLAY/core/$f ]]; then
+      grep -q "  *$f\$" "$OVERLAY/core/SHA256SUMS" || { echo "$f not checksummed" >&2; exit 2; }
+      core+=(-v "$OVERLAY/core/$f:$C/$f:ro")
+    fi
+  done
 fi
 # An overlay that carries model_runner_v2.py (row-cache request ids for Model Runner V2, overlay-v2) mounts it too;
 # its checksum is in the overlay SHA256SUMS checked above.

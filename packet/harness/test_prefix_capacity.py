@@ -17,14 +17,14 @@ from prefix_capacity import (CheckpointLRU, Layout, consume_text_rng, packed_lay
                              replay_config, simulate, turns)
 
 
-def source_packing(block_tokens, partition):
+def source_packing(block_tokens, partition, source_path=None, enabled=None, details=False):
     """Execute the IMAGE planner functions; fake spec objects supply only metadata.
 
     No vLLM/torch imports. Adapters reproduce this model's uniform-type rules,
     not arbitrary model backends; page sizes come from the independently tested
     payload calculation. The packing, projection and byte maximum are real code.
     """
-    @dataclass
+    @dataclass(frozen=True)
     class Spec:
         block_size: int
         page_size_bytes: int
@@ -73,9 +73,11 @@ def source_packing(block_tokens, partition):
         is_eagle_group: bool = False
 
     root = Path(__file__).resolve().parents[1]
-    tree = ast.parse((root / "reference/vllm-src/v1/core/kv_cache_utils.py").read_text())
+    tree = ast.parse((source_path or root / "reference/vllm-src/v1/core/kv_cache_utils.py").read_text())
     names = {"_approximate_gcd", "_get_packed_kv_cache_groups", "_project_kv_cache_groups_to_worker",
              "_get_per_layer_spec", "_get_kv_cache_bytes_per_block"}
+    if source_path:
+        names.update({"_flash_pp_group_count", "_flash_log_group_layout"})
     functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     assert len(functions) == len(names)
     module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
@@ -85,7 +87,9 @@ def source_packing(block_tokens, partition):
           "CircularBufferSpec": CircularBufferSpec, "SlidingWindowSpec": SlidingWindowSpec,
           "HiSparseHotSpec": type("Unused", (), {}), "_glm5_next_tensor_layout": lambda g: None,
           "_annotate_eagle_groups": lambda *a, **kw: None, "_warn_if_unannotated_eagle_mamba": lambda *a: None,
-          "_is_deepseek_v4_eagle": lambda c: False}
+          "_is_deepseek_v4_eagle": lambda c: False,
+          "_flash_os": SimpleNamespace(environ={"FLASH_PP_GROUPING": enabled or "0"}),
+          "_flash_json": json, "logger": SimpleNamespace(info=lambda *a: None)}
     exec(compile(ast.fix_missing_locations(module), "image_planner_functions", "exec"), ns)
     specs = {}
     for i in range(48):
@@ -99,13 +103,21 @@ def source_packing(block_tokens, partition):
             specs[f"{i}.gdn"] = MambaSpec(block_tokens, 1603584)
     config = SimpleNamespace(cache_config=SimpleNamespace(
         get_resolved_kv_cache_layout=lambda: SimpleNamespace(is_block_outermost=True)))
-    groups = ns["_get_packed_kv_cache_groups"](config, specs)
+    workers, start = [], 0
+    for size in partition:
+        owned = {n: s for n, s in specs.items() if start <= int(n.split('.')[0]) < start + size}
+        workers.extend([owned, owned.copy()])  # Two TP ranks on each PP stage.
+        start += size
+    kwargs = {"worker_layer_names": [set(w) for w in workers]} if source_path else {}
+    groups = ns["_get_packed_kv_cache_groups"](config, specs, **kwargs)
     pages, start = [], 0
     for size in partition:
         owned = {n: s for n, s in specs.items() if start <= int(n.split('.')[0]) < start + size}
         projected = ns["_project_kv_cache_groups_to_worker"](groups, owned)
         pages.append(ns["_get_kv_cache_bytes_per_block"](projected))
         start += size
+    if details:
+        return ns, specs, groups, workers, pages
     return sum(isinstance(g.kv_cache_spec.first_spec, MambaSpec) for g in groups), pages
 
 
