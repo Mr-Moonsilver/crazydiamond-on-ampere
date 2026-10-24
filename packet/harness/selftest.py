@@ -393,6 +393,8 @@ def mock_decode_engine(fault):
                     tok, alt = (a2, a1) if swap else (a1, a2)
                     lp, alp = -0.6, -0.8
                 top = {tok: lp, alt: alp}
+                if fault == 'eosmask':  # min_tokens masks the stop token, the raw logprobs still rank it first
+                    top['token_id:248046'] = -0.01
                 ch = {'choices': [{'logprobs': {'tokens': [tok], 'token_logprobs': [lp], 'top_logprobs': [top]}}]}
                 self.wfile.write(b'data: ' + json.dumps(ch).encode() + b'\n\n'); self.wfile.flush()
             u = {'choices': [], 'usage': {'prompt_tokens': len(body['prompt']), 'prompt_tokens_details': {'cached_tokens': 0}}}
@@ -414,14 +416,19 @@ for name, fault, want in [('identical decodes', None, 0), ('logprob shifted duri
                           ('another session\'s tokens during the prefill', 'swapped', 1),
                           ('NaN logprobs during the prefill', 'nan', 2),
                           ('queued-only: no token arrives during the prefill', 'queued', 2),
-                          ('near-tie divergence at the first token under the prefill (no mixed coverage)', 'neartie', 2)]:
+                          ('near-tie divergence at the first token under the prefill (no mixed coverage)', 'neartie', 2),
+                          ('a masked stop token outranks the emitted token (min_tokens)', 'eosmask', 0)]:
     srv = mock_decode_engine(fault)
+    dab_env = dict(os.environ, N='3', LEN='48', LONG='20000', PLEN='800', MIN_MIXED='16', PRE_LEAD='0.1', PRE_TAIL='0.1')
+    dab_out = tempfile.mkstemp(suffix='.json')[1]
     rc = subprocess.run([sys.executable, os.path.join(HERE, 'decode_ab.py'), f'http://127.0.0.1:{srv.server_port}', 'm',
-                         tempfile.mkstemp(suffix='.json')[1]], capture_output=True, text=True,
-                        env=dict(os.environ, N='3', LEN='48', LONG='20000', PLEN='800', MIN_MIXED='16',
-                                 PRE_LEAD='0.1', PRE_TAIL='0.1')).returncode
+                         dab_out], capture_output=True, text=True, env=dab_env).returncode
     srv.shutdown()
     check(f'decode_ab: {name}', rc, want)
+    if fault in (None, 'shift', 'queued'):  # --rescore of the saved runs reaches the same verdict without an engine
+        rc2 = subprocess.run([sys.executable, os.path.join(HERE, 'decode_ab.py'), '--rescore', dab_out,
+                              tempfile.mkstemp(suffix='.json')[1]], capture_output=True, text=True, env=dab_env).returncode
+        check(f'decode_ab rescore: {name}', rc2, want)
 
 # --- sf_starve against a mocked engine: the long prompt returns under short load (PASS); it waits until the shorts stop
 # (starved: FAIL at MAX_S); no short completes while it waits (load not sustained: INCONCLUSIVE) ---

@@ -18,15 +18,26 @@ Codex round 4 rules (a near-tie must not admit an unrelated winner, absent evide
   * the candidate must have >= MIN_MIXED compared (common-prefix) positions that arrived in the mixed window, per
     prompt; fewer (queued-only run, early divergence) is INCONCLUSIVE
 alone-b vs alone-a failing the same rule (noise) -> INCONCLUSIVE. Exit 0 PASS, 1 FAIL, 2 INCONCLUSIVE.
-usage: decode_ab.py URL MODEL OUT.json  (env N=6 LEN=384 LONG=200000 SEED=11 TOPK=5 MIN_MIXED=64 PRE_LEAD=1 PRE_TAIL=0.5)
+min_tokens=LEN makes the sampler mask the stop tokens (STOP_IDS, the model's eos ids) while the reported logprobs are
+taken before that mask, so stop tokens are left out of every top-1 and near-tie judgement (q4 noalt, 24 Oct: <|im_end|>
+outranked the emitted token in alone runs).
+Prompts are copy tasks (PROMPT=copy): a seeded passage B of PLEN/2+LEN tokens followed by its first PLEN-|B| tokens,
+so the greedy continuation repeats B with wide top-1 margins; PROMPT=random (the seeded word+number text alone) gave
+near-uniform digit positions where even alone-a vs alone-b split on exact ties within 1-14 tokens (q4 noalt).
+usage: decode_ab.py URL MODEL OUT.json  (env N=6 LEN=384 LONG=200000 SEED=11 TOPK=5 MIN_MIXED=64 PRE_LEAD=1 PRE_TAIL=0.5
+                                         STOP_IDS=248046,248044)
+       decode_ab.py --rescore IN.json OUT.json   (re-judge saved runs with this version's rules; no engine needed)
 """
 import json, math, os, random, sys, threading, time, urllib.request, uuid
 
 E = lambda k, d: type(d)(os.environ.get(k, d))
 N, LEN, LONG, SEED, TOPK = E("N", 6), E("LEN", 384), E("LONG", 200000), E("SEED", 11), E("TOPK", 5)
 MIN_MIXED, PRE_LEAD, PRE_TAIL = E("MIN_MIXED", 64), E("PRE_LEAD", 1.0), E("PRE_TAIL", 0.5)
-PLEN = E("PLEN", 8000)
+PLEN, PROMPT = E("PLEN", 8000), E("PROMPT", "copy")
 TOL, NEAR_TIE = 0.375, 0.375
+STOP = {f"token_id:{i}" for i in os.environ.get("STOP_IDS", "248046,248044").split(",") if i}
+STOP |= {"<|im_end|>", "<|endoftext|>"}
+live = lambda tp: {k: v for k, v in tp.items() if k not in STOP}  # what the min_tokens-masked sampler chose from
 fin = lambda x: isinstance(x, (int, float)) and math.isfinite(x)
 
 
@@ -86,7 +97,8 @@ def problems(r, plen):
     for i, (t, l, tp) in enumerate(zip(r["tokens"], r["lp"], r["top"])):
         if not fin(l) or len(tp) < 2 or not all(fin(v) for v in tp.values()):
             return [f"pos {i}: nonfinite or short top map"]
-        if t not in tp or abs(tp[t] - l) > 1e-3 or tp[t] < max(tp.values()) - 1e-3:
+        lv = live(tp)
+        if t not in lv or abs(lv[t] - l) > 1e-3 or lv[t] < max(lv.values()) - 1e-3:
             return [f"pos {i}: emitted token not the scored top-1"]
     u = r.get("usage") or {}
     cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens")
@@ -97,13 +109,16 @@ def problems(r, plen):
 
 def at_divergence(a, b, k):
     """'ok' (both winners within NEAR_TIE in both distributions), 'fail' or 'inconclusive' (a score is missing)."""
-    ta, tb, A, B = a["tokens"][k], b["tokens"][k], a["top"][k], b["top"][k]
+    ta, tb, A, B = a["tokens"][k], b["tokens"][k], live(a["top"][k]), live(b["top"][k])
     verdict = "ok"
     for W, mine, other in ((A, ta, tb), (B, tb, ta)):
         if other in W:
             if W[mine] - W[other] > NEAR_TIE:
                 return "fail", W[mine] - W[other]
         else:
+            if len(W) < 2:
+                verdict = "inconclusive"
+                continue
             second = sorted(W.values())[-2]
             if W[mine] - second > NEAR_TIE:  # the other winner scores <= second here, so it is not a near-tie
                 return "fail", W[mine] - second
@@ -130,7 +145,11 @@ def compare(a, b, window=None):
 def main():
     url, model, out = sys.argv[1:4]
     rng = random.Random(SEED)
-    prompts = [token_ids(url, model, rng, PLEN) for _ in range(N)]
+    if PROMPT == "copy":
+        bases = [token_ids(url, model, rng, PLEN // 2 + LEN) for _ in range(N)]
+        prompts = [b + b[:PLEN - len(b)] for b in bases]
+    else:
+        prompts = [token_ids(url, model, rng, PLEN) for _ in range(N)]
     runs = {"alone-a": [decode(url, model, p) for p in prompts], "alone-b": [decode(url, model, p) for p in prompts]}
     long_ids = (prompts[0] * (LONG // PLEN + 1))[:LONG]  # own cache_salt: shares nothing with the decodes
     pre, res, firsts = {}, [None] * N, [threading.Event() for _ in range(N)]
@@ -157,6 +176,11 @@ def main():
         t.join()
     th.join()
     runs["under-prefill"] = res
+    finish(runs, pre, started, out)
+
+
+def finish(runs, pre, started, out):
+    res = runs["under-prefill"]
     probs: list = [(c, i, p) for c, rs in runs.items() for i, r in enumerate(rs) for p in problems(r, PLEN)[:1]]
     if not started:
         probs.append(("first tokens", "not every decode streamed before the prefill"))
@@ -166,7 +190,8 @@ def main():
         probs.append(("prefill", pre.get("error") or f"usage prompt {pu.get('prompt_tokens')} cached {pc}"))
     window = (pre.get("t0", 0) + PRE_LEAD, pre.get("t1", 0) - PRE_TAIL)
     summ = {"config": {"N": N, "LEN": LEN, "LONG": LONG, "SEED": SEED, "TOPK": TOPK, "TOL": TOL, "NEAR_TIE": NEAR_TIE,
-                       "MIN_MIXED": MIN_MIXED, "PRE_LEAD": PRE_LEAD, "PRE_TAIL": PRE_TAIL},
+                       "MIN_MIXED": MIN_MIXED, "PRE_LEAD": PRE_LEAD, "PRE_TAIL": PRE_TAIL, "PROMPT": PROMPT,
+                       "STOP": sorted(STOP)},
             "prefill_s": round(pre.get("t1", 0) - pre.get("t0", 0), 2), "invalid": probs[:20]}
     if probs:
         summ["final"] = "INCONCLUSIVE"
@@ -174,8 +199,9 @@ def main():
         noise = [compare(a, b) for a, b in zip(runs["alone-a"], runs["alone-b"])]
         cand = [compare(a, c, window) for a, c in zip(runs["alone-a"], res)]
         summ.update(noise=noise, under_prefill=cand)
-        summ["final"] = ("FAIL" if any(x["status"] == "fail" for x in cand) else
-                         "INCONCLUSIVE" if any(x["status"] != "ok" for x in noise + cand)
+        summ["final"] = ("INCONCLUSIVE" if any(x["status"] != "ok" for x in noise) else  # the rule's own noise
+                         "FAIL" if any(x["status"] == "fail" for x in cand) else
+                         "INCONCLUSIVE" if any(x["status"] != "ok" for x in cand)
                          or any(x["mixed"] < MIN_MIXED for x in cand) else "PASS")
     json.dump({"summary": summ, "runs": runs, "prefill": pre}, open(out, "w"), indent=1)
     up = summ.get("under_prefill", [])
@@ -186,5 +212,20 @@ def main():
     sys.exit({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[summ["final"]])
 
 
+def rescore(src, out):
+    d = json.load(open(src))
+    runs, pre = d["runs"], d["prefill"]
+    old = d["summary"]
+    if any(old["config"].get(k) != v for k, v in (("N", N), ("LEN", LEN), ("LONG", LONG), ("MIN_MIXED", MIN_MIXED),
+                                                    ("PRE_LEAD", PRE_LEAD), ("PRE_TAIL", PRE_TAIL))):
+        raise SystemExit(f"rescore: saved config {old['config']} differs from this environment; set the same env")
+    global PROMPT
+    PROMPT = old["config"].get("PROMPT", "random")  # how the saved prompts were made (pre-copy runs: random)
+    started = not any(p[0] == "first tokens" for p in old.get("invalid", []))  # the live run's own observation
+    finish(runs, pre, started, out)
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--rescore"]:
+        rescore(*sys.argv[2:4])
     main()
