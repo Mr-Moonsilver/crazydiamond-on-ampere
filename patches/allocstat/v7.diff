@@ -1,0 +1,18 @@
+--- in
++++ out
+@@ -799,8 +799,13 @@
+                 parts.append(f"pages<={k if k < 1 << 30 else 'max'}: n={n} rows={rows / n:.0f} pages={pages / n:.1f} "
+                              f"sparse={sp / n:.0%} cov={cov / ncov if ncov else float('nan'):.2f} moved={moved / n:.1f}p "
+                              f"pre={pre / n:.2f} copy={copy / n:.2f} attn={attn / n:.2f} span={span / n:.2f} ms")
+-            self.log.info("QSA stage timing (%.1f s, per call): %s | dropped %d", now - self.last, " ; ".join(parts),
+-                          self.dropped)
++            m = torch.cuda.memory_stats()
++            torch.cuda.reset_peak_memory_stats()
++            self.log.info("QSA stage timing (%.1f s, per call): %s | dropped %d | alloc retries %d ooms %d reserved "
++                          "%.2fG allocated %.2fG peak %.2fG", now - self.last, " ; ".join(parts), self.dropped,
++                          m.get("num_alloc_retries", -1), m.get("num_ooms", -1),
++                          m.get("reserved_bytes.all.current", 0) / 2**30, m.get("allocated_bytes.all.current", 0) / 2**30,
++                          m.get("allocated_bytes.all.peak", 0) / 2**30)
+             self.agg = {}
+             self.last = now
+ 

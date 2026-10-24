@@ -10,6 +10,9 @@ Reported per configuration: decode steps/s and prefill TFLOP/s, alone (full GPU)
 concurrent; plus the default case of two ordinary streams without partitioning. The S5 question is answered by
 "concurrent decode on its partition" vs "decode alone on the full GPU" and the prefill rate left over.
 usage: greenctx_feasibility.py [DEC_SM_COUNTS e.g. 16,24,34,42]  (env: W_DEC_MB=900 HOST_MB=24 SECONDS=4)
+PACED=ms: decode steps issued at the real engine's cadence instead of back to back (a step every PACED ms, as the
+engine's ~9.5 ms per stage and cohort) -> per-step GPU latency p50/p99 alone vs with prefill running beside it. That
+is the S5 metric: decode keeps its speed if its steps do not stretch.
 """
 import ctypes, os, sys, time
 import torch
@@ -144,6 +147,42 @@ def run(dec_stream, pre_stream, do_dec, do_pre):
     return res.get("dec"), res.get("pre")
 
 
+def paced(dec_stream, pre_stream, with_prefill, period_ms, steps=300):
+    """Decode steps at a fixed cadence on dec_stream (optionally with prefill saturating pre_stream).
+    Returns decode step latency p50, p99 (ms) and the prefill TFLOP/s achieved meanwhile (None without prefill)."""
+    torch.cuda.synchronize()
+    tflops = None
+    if with_prefill:
+        with torch.cuda.stream(pre_stream):
+            a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            prefill_op(); a.record()
+            for _ in range(3):
+                prefill_op()
+            b.record()
+        b.synchronize()
+        n_pre = max(10, int(steps * period_ms / (a.elapsed_time(b) / 3) * 0.9))  # ends just before the decode run
+        with torch.cuda.stream(pre_stream):
+            p0, p1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            p0.record()
+            for _ in range(n_pre):
+                prefill_op()
+            p1.record()
+    evs = []
+    t0 = time.perf_counter()
+    for i in range(steps):
+        while (time.perf_counter() - t0) * 1000 < i * period_ms:
+            pass
+        with torch.cuda.stream(dec_stream):
+            a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            a.record(); decode_step(); b.record()
+        evs.append((a, b))
+    torch.cuda.synchronize()
+    lat = sorted(a.elapsed_time(b) for a, b in evs)
+    if with_prefill:
+        tflops = n_pre * prefill_flop / (p0.elapsed_time(p1) / 1000) / 1e12
+    return lat[len(lat) // 2], lat[int(len(lat) * 0.99) - 1], tflops
+
+
 # correctness of launches on green-context streams (memory is shared with torch's primary context)
 s_def_a, s_def_b = torch.cuda.Stream(), torch.cuda.Stream()
 ref = torch.mm(A[:64], B)
@@ -159,6 +198,23 @@ d_both, p_both = run(s_def_a, s_def_b, True, True)
 print(f"full GPU alone      : decode {d_full:8.1f} steps/s | prefill {p_full:6.1f} TFLOP/s", flush=True)
 print(f"two plain streams   : decode {d_both:8.1f} steps/s ({d_both / d_full:5.1%}) | prefill {p_both:6.1f} "
       f"TFLOP/s ({p_both / p_full:5.1%})   <- no partitioning", flush=True)
+if os.environ.get("PACED"):
+    _, p_full = run(s_def_a, s_def_b, False, True)
+    per = float(os.environ["PACED"])
+    p50, p99, _ = paced(s_def_a, s_def_b, False, per)
+    print(f"paced every {per} ms, full GPU alone : decode step p50 {p50:.2f} ms p99 {p99:.2f} ms | prefill alone "
+          f"{p_full:.1f} TFLOP/s", flush=True)
+    for name, sd, sp in (("two plain streams       ", s_def_a, s_def_b),
+                         ("plain, decode high prio ", torch.cuda.Stream(priority=-1), torch.cuda.Stream(priority=0))):
+        b50, b99, bt = paced(sd, sp, True, per)
+        print(f"paced, {name}: p50 {b50:.2f} ({b50 / p50:4.2f}x) p99 {b99:.2f} ({b99 / p99:4.2f}x) | prefill {bt:.1f} "
+              f"({bt / p_full:5.1%})", flush=True)
+    for c in [int(x) for x in (sys.argv[1] if len(sys.argv) > 1 else "12,20,28,36,42").split(",")]:
+        (sd, sp), nd, npre = green_streams(c)
+        c50, c99, ct = paced(sd, sp, True, per)
+        print(f"paced, split {nd:2d}/{npre:2d}       : p50 {c50:.2f} ({c50 / p50:4.2f}x) p99 {c99:.2f} ({c99 / p99:4.2f}x) | "
+              f"prefill {ct:.1f} ({ct / p_full:5.1%})", flush=True)
+    sys.exit(0)
 counts = [int(x) for x in (sys.argv[1] if len(sys.argv) > 1 else "12,20,28,36,42").split(",")]
 for c in counts:
     (sd, sp), nd, npre = green_streams(c)
