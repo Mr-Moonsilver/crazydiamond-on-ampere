@@ -430,6 +430,68 @@ for name, fault, want in [('identical decodes', None, 0), ('logprob shifted duri
                               tempfile.mkstemp(suffix='.json')[1]], capture_output=True, text=True, env=dab_env).returncode
         check(f'decode_ab rescore: {name}', rc2, want)
 
+# --- quality_ab against a mocked engine: top-20 maps are a function of the prompt (deterministic engine); "shift"
+# moves the winner on every 8th prompt (candidate worse than the noise floor -> FAIL), "noisy" on every 12th in one
+# reference run (noise agreement < 0.97 -> INCONCLUSIVE), "drop" returns 19 entries once (incomplete -> INCONCLUSIVE) ---
+def mock_quality_engine(fault):
+    import http.server, threading, zlib
+
+    class Hq(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if self.path == '/tokenize':
+                return self.send({'tokens': [zlib.crc32(w.encode()) % 5000 for w in body['prompt'].split()]})
+            pr = body['prompt']
+            h = zlib.crc32(json.dumps(pr[-8:]).encode())
+            # the corpus is a word chain w(n) -> w((7n + 3) % 401): the mock "model" predicts the true next token
+            true_next = QCHAIN.get(pr[-1], 0)
+            toks = [true_next] + [t for t in ((h + 13 * j) % 5000 for j in range(40)) if t != true_next][:19]
+            lps = [-0.2 - 0.5 * j for j in range(20)]
+            if (fault == 'shift' and h % 8 == 0) or (fault == 'noisy' and h % 12 == 0):
+                lps[0], lps[1] = lps[1] - 0.1, lps[0]
+            top = {f'token_id:{t}': v for t, v in zip(toks, lps)}
+            if fault == 'drop' and h % 50 == 1:
+                top.pop(next(iter(top)))
+            w = max(top, key=top.get)
+            self.send({'choices': [{'logprobs': {'tokens': [w], 'top_logprobs': [top]}}],
+                       'usage': {'prompt_tokens': len(pr), 'prompt_tokens_details': {'cached_tokens': 0}}})
+
+        def send(self, out):
+            b = json.dumps(out).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Hq)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+import zlib  # noqa: E402
+qd = tempfile.mkdtemp()
+qcorpus = os.path.join(qd, 'corpus.txt')
+QTOK = {n: zlib.crc32(f'w{n}'.encode()) % 5000 for n in range(401)}
+QCHAIN = {QTOK[n]: QTOK[(7 * n + 3) % 401] for n in range(401)}
+qn, qwords = 1, []
+for _ in range(10800):
+    qwords.append(f'w{qn}'); qn = (7 * qn + 3) % 401
+open(qcorpus, 'w').write('\n'.join(' '.join(qwords[i:i + 12]) for i in range(0, len(qwords), 12)))
+qenv = dict(os.environ, PROBES='200', CTXS='64,256', SEED='5')
+qruns = {}
+for fault in (None, 'shift', 'noisy', 'drop'):
+    srv = mock_quality_engine(fault)
+    qruns[fault] = os.path.join(qd, f'{fault}.json')
+    subprocess.run([sys.executable, os.path.join(HERE, 'quality_ab.py'), 'run', f'http://127.0.0.1:{srv.server_port}', 'm',
+                    qcorpus, qruns[fault]], capture_output=True, text=True, env=qenv)
+    srv.shutdown()
+for name, (a, b, c), want in [('identical engines', (None, None, None), 0),
+                              ('candidate moves the winner on 1/8 of the probes', (None, None, 'shift'), 1),
+                              ('reference noisier than 0.97 agreement', (None, 'noisy', None), 2),
+                              ('incomplete candidate run', (None, None, 'drop'), 2)]:
+    rc = subprocess.run([sys.executable, os.path.join(HERE, 'quality_ab.py'), 'compare', qruns[a], qruns[b], qruns[c],
+                         os.path.join(qd, 'cmp.json')], capture_output=True, text=True).returncode
+    check(f'quality_ab: {name}', rc, want)
+
 # --- sf_starve against a mocked engine: the long prompt returns under short load (PASS); it waits until the shorts stop
 # (starved: FAIL at MAX_S); no short completes while it waits (load not sustained: INCONCLUSIVE) ---
 def mock_starve_engine(mode):
