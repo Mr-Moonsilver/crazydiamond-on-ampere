@@ -49,6 +49,13 @@ for kv in ${EXTRA_ENV:-}; do
   [[ $kv =~ ^[A-Z][A-Z0-9_]*=[^[:space:]]*$ ]] || { echo "bad EXTRA_ENV word: $kv" >&2; exit 2; }
   extra_env+=(-e "$kv")
 done
+# MPS_PIPE=dir: diagnostic only -- connect to an MPS control daemon started in the CT with that pipe directory
+# (e.g. to cap SMs with EXTRA_ENV=CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=50). Unset in production.
+mps=()
+if [[ -n ${MPS_PIPE:-} ]]; then
+  [[ -S $MPS_PIPE/control ]] || { echo "no MPS daemon at $MPS_PIPE" >&2; exit 2; }
+  mps=(-v "$MPS_PIPE:$MPS_PIPE" -e CUDA_MPS_PIPE_DIRECTORY="$MPS_PIPE")
+fi
 spec=()
 if [[ ${MTP_TOKENS:-0} != 0 ]]; then
   printf -v spec_json '{"method":"mtp","num_speculative_tokens":%d}' "$MTP_TOKENS"
@@ -73,7 +80,7 @@ exec sudo docker run --rm --init --name "$name" --label qwen.flash-next-producti
   -e QSA_ROWCACHE_SLOTS="${QSA_ROWCACHE_SLOTS:-8192}" -e QSA_ROWCACHE_REQS="${MAX_SEQS:-8}" \
   -e VLLM_CACHE_ROOT=/work/cache/vllm -e TRITON_CACHE_DIR=/work/cache/triton \
   -e FLASHINFER_WORKSPACE_BASE=/work/cache/flashinfer \
-  "${extra_env[@]}" \
+  "${extra_env[@]}" "${mps[@]}" \
   -v "$task_dir/models/intel-w4a16:/model:ro" -v "$task_dir:/work" \
   -v "$OVERLAY/qsa.py:$D/qsa.py:ro" -v "$OVERLAY/ops_qsa.py:$D/ops/qsa.py:ro" \
   "${core[@]}" \
