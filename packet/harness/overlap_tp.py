@@ -49,6 +49,44 @@ except Exception as e:
     print("UVA import failed -- required, aborting:", e)
     sys.exit(1)
 
+# Green contexts (SM partitions, driver API via ctypes; same helper as greenctx_feasibility.py): GREEN_SMS="24,34,44"
+# adds, per count c, mode gdec<c> (decode alone on c SMs) and green<c> (decode on c SMs, prefill on the rest). The
+# NCCL collectives still run on torch's NCCL stream in the primary context, i.e. outside the partition.
+import ctypes
+GREEN = [int(x) for x in os.environ.get("GREEN_SMS", "").split(",") if x]
+_cu, _RES = (ctypes.CDLL("libcuda.so.1") if GREEN else None), 144
+
+
+def _ck(r, what):
+    if r != 0:
+        raise RuntimeError(f"{what}: CUresult {r}")
+
+
+_green = {}
+
+
+def green_streams(dec_sms):
+    """(decode stream on dec_sms SMs, prefill stream on the rest, actual counts); one pair of contexts per count."""
+    if dec_sms in _green:
+        return _green[dec_sms]
+    cudev = ctypes.c_int()
+    _ck(_cu.cuDeviceGet(ctypes.byref(cudev), dev), "cuDeviceGet")
+    whole, group, rest = ((ctypes.c_ubyte * _RES)() for _ in range(3))
+    _ck(_cu.cuDeviceGetDevResource(cudev, whole, 1), "cuDeviceGetDevResource")
+    n = ctypes.c_uint(1)
+    _ck(_cu.cuDevSmResourceSplitByCount(group, ctypes.byref(n), whole, rest, 0, ctypes.c_uint(dec_sms)), "split")
+    out = []
+    for res in (group, rest):
+        desc, g, st = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+        _ck(_cu.cuDevResourceGenerateDesc(ctypes.byref(desc), res, 1), "desc")
+        _ck(_cu.cuGreenCtxCreate(ctypes.byref(g), desc, cudev, 1), "cuGreenCtxCreate")
+        _ck(_cu.cuGreenCtxStreamCreate(ctypes.byref(st), g, 1, 0), "cuGreenCtxStreamCreate")
+        out.append(torch.cuda.ExternalStream(st.value, device=dev))
+    smc = lambda b: int.from_bytes(bytes(b[96:100]), "little")
+    _green[dec_sms] = (out[0], out[1], smc(group), smc(rest))
+    return _green[dec_sms]
+
+
 K, N = 4096, 14336
 torch.manual_seed(1234 + rank)
 n_dec_w = LAYERS  # decode: one weight matrix per layer, DEC_W_MB each, so every step streams all of them from HBM
@@ -112,11 +150,13 @@ def run(mode):
     import collections
     if mode == "prio":
         sd, sp = torch.cuda.Stream(priority=-1), torch.cuda.Stream(priority=0)
+    elif mode.startswith(("green", "gdec")):
+        sd, sp, _, _ = green_streams(int(mode.lstrip("gredcn")))
     else:
         sd, sp = torch.cuda.Stream(), torch.cuda.Stream()
     check_streams(sd, sp)
     dist.barrier(); torch.cuda.synchronize()
-    with_dec, with_pre = mode != "prefill", mode != "decode"
+    with_dec, with_pre = mode != "prefill", mode != "decode" and not mode.startswith("gdec")
     pend_d, pend_p = collections.deque(), collections.deque()
     done_d, done_p, release, issued_p, maxq = [], [], [], 0, 0
 
@@ -193,7 +233,8 @@ def prefill_wall(n=40):
     return round(n / dt, 1), round(n * 4 * 1024 * K * N / dt / 1e12, 1)
 
 
-MODES, REPEATS = ("decode", "prefill", "plain", "prio"), E("REPEATS", 3)
+MODES = ("decode", "prefill", "plain", "prio") + tuple(f"{k}{c}" for c in GREEN for k in ("gdec", "green"))
+REPEATS = E("REPEATS", 3)
 for m in MODES:  # warm-up pass (allocator, NCCL, clocks), discarded
     run(m)
 order = [m for m in MODES for _ in range(REPEATS)]
@@ -234,7 +275,11 @@ for r in results[2:]:
     r["gap_p50_x"] = round(r["gap_p50"] / base["gap_p50"], 2)
     r["gap_p99_x"] = round(r["gap_p99"] / base["gap_p99"], 2)
     r["late_p99_x"] = round(r["late_p99"] / base["late_p99"], 2)
-    r["prefill_share"] = round(r["prefill_layers_per_s"] / alone_rate, 3) if alone_rate else None
+    r["decode_rate_share"] = round(r["decode_steps_per_s"] / base["decode_steps_per_s"], 3)
+    r["prefill_share"] = (round(r["prefill_layers_per_s"] / alone_rate, 3)
+                          if alone_rate and r.get("prefill_layers_per_s") is not None else None)
+    if r["mode"].startswith(("green", "gdec")):
+        r["sm_split"] = green_streams(int(r["mode"].lstrip("gredcn")))[2:]
 wall_rate, wall_tflops = prefill_wall()
 if rank == 0:
     meta = {"prefill_wall_layers_per_s": wall_rate, "prefill_wall_tflops": wall_tflops, "qsa_every": QSA_EVERY,"devices": [torch.cuda.get_device_name(dev)], "visible": os.environ.get("CUDA_VISIBLE_DEVICES"),
