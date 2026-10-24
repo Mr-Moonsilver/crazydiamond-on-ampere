@@ -42,6 +42,13 @@ if [[ ${VISION:-0} == 1 ]]; then
     vision=(-v "$OVERLAY/vision/model.py:$D/model.py:ro")
   fi
 fi
+# EXTRA_ENV="K=V K2=V2": experiment switches passed to the container as-is (e.g. QSA_STAGE_TIMING=1,
+# FLASH_PD_DECODE_SHARE=0.5); only K=V words with an upper-case name are accepted.
+extra_env=()
+for kv in ${EXTRA_ENV:-}; do
+  [[ $kv =~ ^[A-Z][A-Z0-9_]*=[^[:space:]]*$ ]] || { echo "bad EXTRA_ENV word: $kv" >&2; exit 2; }
+  extra_env+=(-e "$kv")
+done
 spec=()
 if [[ ${MTP_TOKENS:-0} != 0 ]]; then
   printf -v spec_json '{"method":"mtp","num_speculative_tokens":%d}' "$MTP_TOKENS"
@@ -66,6 +73,7 @@ exec sudo docker run --rm --init --name "$name" --label qwen.flash-next-producti
   -e QSA_ROWCACHE_SLOTS="${QSA_ROWCACHE_SLOTS:-8192}" -e QSA_ROWCACHE_REQS="${MAX_SEQS:-8}" \
   -e VLLM_CACHE_ROOT=/work/cache/vllm -e TRITON_CACHE_DIR=/work/cache/triton \
   -e FLASHINFER_WORKSPACE_BASE=/work/cache/flashinfer \
+  "${extra_env[@]}" \
   -v "$task_dir/models/intel-w4a16:/model:ro" -v "$task_dir:/work" \
   -v "$OVERLAY/qsa.py:$D/qsa.py:ro" -v "$OVERLAY/ops_qsa.py:$D/ops/qsa.py:ro" \
   "${core[@]}" \

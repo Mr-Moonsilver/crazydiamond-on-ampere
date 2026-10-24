@@ -29,6 +29,12 @@ can pile onto one step parity; a decoder skipped once runs on the other parity f
 micro-batches even out at the cost of one step per moved decoder. Only decoders actually scheduled count against
 the cap (a decoder rejected later, e.g. by allocation, does not use a slot). Stats then also report the live
 cohorts (running decoders by the parity of their last scheduled decode step) and confirmed parity changes.
+v3 (24 Oct 2026, time budget; idea from DeepInfer's time-quota chunking): FLASH_PD_DECODE_SHARE=f (0 < f < 1)
+replaces the strict 1:1 alternation by a wall-time budget. Each step's duration is the time to the next schedule()
+call, attributed to that step's mode; over the last 3 s, decode-only steps run while their share of the time is
+below f, otherwise a prefill step runs (a prompt step costs ~100-140 ms and a decode step ~20-30 ms, so f = 0.5 gives
+several decode steps per prefill step). FLASH_PD_MAX_D (default 64) bounds consecutive decode steps so a prompt is
+never starved. Unset, v2 behaviour is unchanged. Stats add the realised decode share of the window.
 usage: make_pdalt.py scheduler.image.py out_scheduler.py
 """
 import difflib, sys
@@ -53,6 +59,13 @@ src = sub(src, """        self.prefill_capacity_bound = False
         self._sched_stats = dict(D=0, P=0, plain=0, empty_P=0, dec_even=0, dec_odd=0, cap_skips=0,
                                  parity_changes=0)
         self.parity_balance = self.use_pp and os.environ.get("FLASH_PARITY_BALANCE", "0") == "1"
+        # flash-next v3 time budget: decode share of wall time while prefill work is pending (None = 1:1 alternation)
+        _share = os.environ.get("FLASH_PD_DECODE_SHARE")
+        self._pd_share = float(_share) if _share else None
+        self._pd_max_d = int(os.environ.get("FLASH_PD_MAX_D", "64"))
+        self._pd_hist = collections.deque()  # (end time, mode, seconds) of recent D/P steps
+        self._pd_prev = None  # (mode, start time) of the previous D/P step
+        self._pd_d_run = 0
         self.scheduler_reserve_full_isl = (
 """)
 
@@ -61,6 +74,13 @@ src = sub(src, """    def schedule(self, throttle_prefills: bool = False) -> Sch
         # flash-next PD alternation: identity + readiness of queued work, and the running count
         return (tuple((r.request_id, r.status) for r in itertools.chain(self.waiting, self.skipped_waiting)),
                 len(self.running))
+
+    def _pd_decode_share(self, now):
+        # flash-next v3: share of the last 3 s of D/P step time spent in decode-only steps
+        while self._pd_hist and now - self._pd_hist[0][0] > 3.0:
+            self._pd_hist.popleft()
+        tot = sum(d for _, _, d in self._pd_hist)
+        return sum(d for _, m, d in self._pd_hist if m == "D") / tot if tot else 0.0
 
     def schedule(self, throttle_prefills: bool = False) -> SchedulerOutput:
 """)
@@ -85,9 +105,19 @@ src = sub(src, """        defer_prefills = (
             prefill_work = running_chunk or (queued > 0 and free_slot and self._pd_blocked_sig is None)
             if decoders and prefill_work:
                 eligible = any(self.current_step >= r.next_decode_eligible_step for r in decoders)
-                pd_mode = "D" if eligible and not self._pd_last_decode else "P"
+                if self._pd_share is None:
+                    pd_mode = "D" if eligible and not self._pd_last_decode else "P"
+                else:
+                    want_d = self._pd_decode_share(time.monotonic()) < self._pd_share
+                    pd_mode = "D" if eligible and want_d and self._pd_d_run < self._pd_max_d else "P"
                 defer_prefills = defer_prefills or pd_mode == "D"
         self._pd_last_decode = pd_mode == "D"
+        if self._pd_share is not None:
+            now = time.monotonic()
+            if self._pd_prev is not None:
+                self._pd_hist.append((now, self._pd_prev[0], now - self._pd_prev[1]))
+            self._pd_prev = (pd_mode, now) if pd_mode else None
+            self._pd_d_run = self._pd_d_run + 1 if pd_mode == "D" else 0
         # flash-next parity balance: cap decoders per non-"D" step at half of all decoders (rounded up).
         dec_cap = None
         if self.parity_balance and pd_mode != "D":
@@ -153,12 +183,17 @@ src = sub(src, """        # Check if the scheduling constraints are satisfied.
             st["dec_even" if self.current_step % 2 == 0 else "dec_odd"] += ndec
             if self.current_step % self._sched_stats_every == 0:
                 cohorts = [getattr(r, "_flash_parity", None) for r in self.running if not r.is_prefill_chunk]
-                logger.info("flash-sched stats step %d: %s cohorts even=%d odd=%d none=%d", self.current_step, st,
-                            cohorts.count(0), cohorts.count(1), cohorts.count(None))
+                logger.info("flash-sched stats step %d: %s cohorts even=%d odd=%d none=%d decode_share_3s=%s",
+                            self.current_step, st, cohorts.count(0), cohorts.count(1), cohorts.count(None),
+                            None if self._pd_share is None else round(self._pd_decode_share(time.monotonic()), 3))
 """)
 
 if "\nimport os\n" not in src:
     src = sub(src, "import itertools\n", "import itertools\nimport os\n")
+if "\nimport time\n" not in src:
+    src = sub(src, "import itertools\n", "import itertools\nimport time\n")
+if "\nimport collections\n" not in src:
+    src = sub(src, "import itertools\n", "import collections\nimport itertools\n")
 
 open(sys.argv[2], "w").write(src)
 open(sys.argv[2] + ".diff", "w").write("".join(difflib.unified_diff(
