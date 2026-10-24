@@ -61,7 +61,8 @@ def probe(url, model, ids, salt):
     top = (lp.get("top_logprobs") or [None])[0] or {}
     return {"top": {k: float(v) for k, v in top.items()}, "first": (lp.get("tokens") or [None])[0],
             "cached": (r.get("usage", {}).get("prompt_tokens_details") or {}).get("cached_tokens"),
-            "prompt_tokens": r.get("usage", {}).get("prompt_tokens"), "seconds": round(time.time() - t0, 2)}
+            "prompt_tokens": r.get("usage", {}).get("prompt_tokens"), "seconds": round(time.time() - t0, 2),
+            "t0": t0, "t1": time.time()}
 
 
 def run_condition(url, model, probes, name, order):
@@ -72,22 +73,55 @@ def run_condition(url, model, probes, name, order):
     return out
 
 
-def load_streams(url, model, rng, stop):
-    """LOAD decoding streams on their own warm contexts (short, so they are cached after the first round)."""
+def load_streams(url, model, rng, stop, log):
+    """LOAD decoding streams on their own warm contexts (short, so they are cached after the first round). Every
+    request is logged as (stream, start, end, completion tokens or None on error) -- the evidence that the concurrent
+    condition really ran beside decoding streams (Codex round 3)."""
     ctxs = [token_ids(url, model, rng, 8000) for _ in range(LOAD)]
 
-    def one(c):
+    def one(k, c):
         while not stop.is_set():
+            t0 = time.time()
             try:
-                post(url, "/v1/completions", {"model": model, "prompt": c, "max_tokens": 400, "min_tokens": 400,
-                                              "temperature": 0.7})
+                r = post(url, "/v1/completions", {"model": model, "prompt": c, "max_tokens": 400, "min_tokens": 400,
+                                                  "temperature": 0.7})
+                log.append((k, t0, time.time(), (r.get("usage") or {}).get("completion_tokens")))
             except Exception as e:
+                log.append((k, t0, time.time(), None))
                 print("load stream error", repr(e)[:200], flush=True)
                 time.sleep(1)
-    th = [threading.Thread(target=one, args=(c,), daemon=True) for c in ctxs]
+    th = [threading.Thread(target=one, args=(k, c), daemon=True) for k, c in enumerate(ctxs)]
     for t in th:
         t.start()
     return th
+
+
+def load_evidence(log, probes_run, nload):
+    """Every load stream error-free with >= 1 completed request before the probes, and each concurrent probe's
+    interval covered by every stream's requests (gaps <= 1 s between back-to-back requests). Returns the list of problems (empty = valid)."""
+    probs = []
+    if not log or not probes_run or any("t0" not in r or "t1" not in r for r in probes_run.values()):
+        return [("load", "no load log or probe timestamps")]
+    if any(tok is None for _, _, _, tok in log):
+        probs.append(("load", "errors", sum(tok is None for _, _, _, tok in log)))
+    first = min((r["t0"] for r in probes_run.values()), default=0)
+    for k in range(nload):
+        if not any(s == k and t1 <= first and tok for s, _, t1, tok in log):
+            probs.append(("load", k, "no completed request before the probes"))
+    def covered(k, a, b, gap=1.0):  # [a, b] inside stream k's successful requests, back-to-back gaps <= 1 s allowed
+        for t0, t1 in sorted((t0, t1) for s, t0, t1, tok in log if s == k and tok):
+            if t0 > a + gap:
+                return False
+            if t1 >= a:
+                a = max(a, t1)
+                if a >= b:
+                    return True
+        return False
+    for i, r in probes_run.items():
+        missing = [k for k in range(nload) if not covered(k, r["t0"], r["t1"])]
+        if missing:
+            probs.append(("load", "probe", i, "streams not in flight", missing))
+    return probs
 
 
 def compare(a, b, rule=RULE):
@@ -113,17 +147,23 @@ def compare(a, b, rule=RULE):
             "max_d_shared_info": r(dshared)}
 
 
-def validate(conds, ctx, tail):
-    """Complete, finite, cold evidence at the right length; returns the list of problems (empty = valid)."""
+def validate(conds, ctx, tail, nprobes, switch):
+    """Complete, finite, cold evidence at the right length, for the recorded probe count and condition set, with
+    the emitted (greedy) token among the best-scored; returns the list of problems (empty = valid)."""
     probs = []
-    ids = set(conds.get("alone-a", {}))
+    ids = set(range(nprobes))
+    need = {"alone-a", "alone-b", "reordered", "concurrent"} | ({"switch-off"} if switch else set())
+    if set(conds) != need:
+        probs.append(("conditions", sorted(conds), "want", sorted(need)))
     for c, d in conds.items():
-        if set(d) != ids or not ids:
-            probs.append((c, "probe set"))
+        if set(d) != ids:
+            probs.append((c, "probe set", len(d), "want", nprobes))
         for i, r in d.items():
             top = r.get("top") or {}
             if len(top) < 20 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in top.values()):
                 probs.append((c, i, "top20"))
+            elif r.get("first") not in top or top[r["first"]] < max(top.values()) - 1e-6:
+                probs.append((c, i, f"emitted token {r.get('first')} is not a top-1"))
             if r.get("cached") != 0:
                 probs.append((c, i, f"cached={r.get('cached')}"))
             if r.get("prompt_tokens") != ctx + tail:
@@ -131,14 +171,16 @@ def validate(conds, ctx, tail):
     return probs
 
 
-def grade(conds, ctx, tail):
-    probs = validate(conds, ctx, tail)
+def grade(conds, ctx, tail, nprobes, switch, load_probs=()):
+    probs = validate(conds, ctx, tail, nprobes, switch) + list(load_probs)
+    if probs:  # malformed or incomplete evidence: never compared, never PASS
+        return {"verdicts": {}, "invalid_evidence": probs[:20], "final": "INCONCLUSIVE", "rule": RULE}
     noise = compare(conds["alone-a"], conds["alone-b"])
     pairs = {"reordered": compare(conds["alone-a"], conds["reordered"]),
              "concurrent": compare(conds["alone-a"], conds["concurrent"])}
     if "switch-off" in conds:
         pairs["switch"] = compare(conds["alone-a"], conds["switch-off"])
-    if probs or noise["fail_probes"]:
+    if noise["fail_probes"]:
         vs = {k: "INCONCLUSIVE" for k in pairs}
     else:
         vs = {k: "FAIL" if v["fail_probes"] else "PASS" for k, v in pairs.items()}
@@ -152,7 +194,8 @@ def main():
         d = json.load(open(sys.argv[2]))
         cfg = d["summary"]["config"]
         conds = {c: {int(k): v for k, v in r.items()} for c, r in d["conditions"].items()}
-        summ = grade(conds, cfg["CTX"], cfg["TAIL"])
+        lp = load_evidence([tuple(x) for x in d.get("load_log", [])], conds.get("concurrent", {}), cfg["LOAD"])
+        summ = grade(conds, cfg["CTX"], cfg["TAIL"], cfg["PROBES"], cfg["switch"], lp)
         print("teacher_forced regrade", json.dumps(summ))
         sys.exit({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[summ["final"]])
     url, model, out_path = sys.argv[1:4]
@@ -168,9 +211,12 @@ def main():
     conds["alone-a"] = run_condition(url, model, probes, "alone-a", fwd)
     conds["alone-b"] = run_condition(url, model, probes, "alone-b", fwd)
     conds["reordered"] = run_condition(url, model, probes, "reordered", rev)
-    stop = threading.Event()
-    th = load_streams(url, model, random.Random(SEED + 1), stop)
-    time.sleep(E("TF_SETTLE", 20.0))  # load contexts prefilled and decoding
+    stop, load_log = threading.Event(), []
+    th = load_streams(url, model, random.Random(SEED + 1), stop, load_log)
+    t_set = time.time()  # wait until every load stream has completed a request (cached, decoding), max 600 s
+    while len({k for k, _, _, tok in load_log if tok}) < LOAD and time.time() - t_set < 600:
+        time.sleep(1)
+    time.sleep(E("TF_SETTLE", 5.0))
     conds["concurrent"] = run_condition(url, model, probes, "concurrent", fwd)
     stop.set()
     for t in th:
@@ -179,10 +225,10 @@ def main():
         subprocess.run(SW_OFF, shell=True, check=True)
         conds["switch-off"] = run_condition(url, model, probes, "switch-off", fwd)
         subprocess.run(str(SW_ON), shell=True, check=True)
-    summ = grade(conds, CTX, TAIL)
+    summ = grade(conds, CTX, TAIL, PROBES, bool(SW_OFF), load_evidence(load_log, conds["concurrent"], LOAD))
     summ["config"] = {"PROBES": PROBES, "CTX": CTX, "TAIL": TAIL, "LOAD": LOAD, "SEED": SEED, "switch": bool(SW_OFF)}
     final = summ["final"]
-    json.dump({"summary": summ, "conditions": conds}, open(out_path, "w"), indent=1)
+    json.dump({"summary": summ, "conditions": conds, "load_log": load_log}, open(out_path, "w"), indent=1)
     print("teacher_forced", json.dumps(summ))
     sys.exit({"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[final])
 

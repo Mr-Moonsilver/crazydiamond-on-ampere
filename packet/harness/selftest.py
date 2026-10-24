@@ -257,6 +257,9 @@ for name, firsts, cfn, want in [('identical outputs, caches as required', ['x'],
     check(f'retain_ab inproc: {name}', rc, want)
 
 # --- teacher_forced against a mocked engine: identical distributions pass, a shifted top-1 fails, cache hit inconclusive ---
+import time
+
+
 def mock_tf_engine(shift_after, cached=0, mode='top1'):
     import http.server, threading
     state = {'n': 0}
@@ -267,8 +270,9 @@ def mock_tf_engine(shift_after, cached=0, mode='top1'):
             if self.path == '/tokenize':
                 out = {'tokens': list(range(len(body['prompt'].split()) * 2))}
             else:
-                if body.get('max_tokens') != 1:  # a load stream
-                    out = {'choices': [{'text': 'x'}]}
+                if body.get('max_tokens') != 1:  # a load stream: 0.3 s per request, back to back
+                    time.sleep(0.3)
+                    out = {'choices': [{'text': 'x'}], 'usage': {'completion_tokens': 400}}
                 else:
                     state['n'] += 1
                     k = sum(body['prompt'][-5:]) % 7
@@ -280,7 +284,7 @@ def mock_tf_engine(shift_after, cached=0, mode='top1'):
                     usage = {'prompt_tokens': len(body['prompt'])}
                     if cached is not None:
                         usage['prompt_tokens_details'] = {'cached_tokens': cached}
-                    out = {'choices': [{'logprobs': {'tokens': [f'token_id:{k}'], 'top_logprobs': [top]}}], 'usage': usage}
+                    out = {'choices': [{'logprobs': {'tokens': [max(top, key=top.get)], 'top_logprobs': [top]}}], 'usage': usage}
             b = json.dumps(out).encode()
             self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(b)
 
@@ -310,8 +314,30 @@ regrade = lambda dd: subprocess.run([sys.executable, os.path.join(HERE, 'teacher
                                      (lambda f: (json.dump(dd, open(f, 'w')), f)[1])(tempfile.mkstemp(suffix='.json')[1])],
                                     capture_output=True, text=True).returncode
 check('teacher_forced regrade: valid artifact', regrade(d), 0)
+import copy
+d2 = copy.deepcopy(d)
 d['conditions']['concurrent']['0'].update(cached=100, prompt_tokens=1)
 check('teacher_forced regrade: cached + wrong length', regrade(d), 2)
+for c in d2['conditions'].values():
+    for k in [k for k in c if k != '0']:
+        del c[k]
+check('teacher_forced regrade: probes dropped from every condition', regrade(d2), 2)
+d3 = copy.deepcopy(d2); d3['load_log'] = []
+check('teacher_forced regrade: no load evidence', regrade(d3), 2)
+
+# --- cov_gate: per-worker coverage (Codex round 3: a clean last line from one worker hid a mismatch / a silent rank) ---
+def cov(kind, text):
+    return subprocess.run([sys.executable, os.path.join(HERE, 'cov_gate.py'), kind], input=text, capture_output=True,
+                          text=True).returncode
+HL = lambda w, h, f, v, x: f"(Worker_PP{w // 2}_TP{w % 2} pid=1) INFO QSA host meta coverage: host {h} fallback {f} verified {v} mismatches {x}\n"
+hok = ''.join(HL(w, 500, 0, 500, 0) for w in range(4))
+check('cov_gate hostmeta: 4 clean workers', cov('hostmeta', hok), 0)
+check('cov_gate hostmeta: earlier mismatch, clean last lines', cov('hostmeta', HL(0, 500, 0, 500, 1) + hok), 1)
+check('cov_gate hostmeta: a worker silent', cov('hostmeta', ''.join(HL(w, 500, 0, 500, 0) for w in range(3))), 1)
+check('cov_gate hostmeta: MISMATCH line after the last report', cov('hostmeta', hok + "(Worker_PP0_TP0 pid=1) ERROR QSA host meta MISMATCH\n"), 1)
+RL = lambda w, sn, c: f"(Worker_PP{w // 2}_TP{w % 2} pid=1) INFO QSA rowcache mixed steps: {sn} seen, {c} with cached decode rows\n"
+check('cov_gate rowmix: used on every worker', cov('rowmix', ''.join(RL(w, 100, 90) for w in range(4))), 0)
+check('cov_gate rowmix: never used', cov('rowmix', ''.join(RL(w, 100, 0) for w in range(4))), 1)
 
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)
