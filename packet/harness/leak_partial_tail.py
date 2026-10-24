@@ -126,7 +126,7 @@ def run_session(rd, i, shared, code, delay):
             shared = tok(f"[round {rd} session {i} {uuid.uuid4().hex}]\n" + corpus[off:off + B * 6])[:B]
         p1 = build_inside(shared, i, rd, code, locker_of(code))
         assert len(p1) - B < UNIT - 8
-    _, ids1, _ = complete(p1, GEN + rnd.randrange(0, GEN), ignore_eos=True)
+    gen1, ids1, _ = complete(p1, GEN + rnd.randrange(0, GEN), ignore_eos=True)
     p2 = p1 + list(ids1) + QUESTION
     if random.Random(rd * 7919 + i).random() < CANCEL_FRAC:
         abort_after(p2, random.Random(rd * 104729 + i).uniform(0, 0.3))
@@ -135,7 +135,7 @@ def run_session(rd, i, shared, code, delay):
     a, ids_a, det = complete(p2, 12, ignore_eos=True)
     cold = complete(p2, 12, salt=uuid.uuid4().hex, ignore_eos=True)[0] if COLD else None
     rec = {'round': rd, 'session': i, 'code': code, 'answer': a, 'cold': cold, 'cached': det.get('cached_tokens'),
-           'p2_len': len(p2), 'p1_ids': p1, 'gen1_ids': list(ids1), 'p2': p2}
+           'p2_len': len(p2), 'p1_ids': p1, 'gen1': gen1, 'gen1_ids': list(ids1), 'p2': p2}
     if MODE == "inside":
         # request 3: continue from request 2 (its answer may repeat the code, so ask for the 2nd fact)
         p3 = p2 + list(ids_a) + tok("\n\n") + list(ids1[:200]) + QUESTION2
@@ -207,7 +207,13 @@ def grade_one(r, ans_key, cold_key, cached_key, prompt_key, own, ids):
 
 
 cases = []
+every_id = every_code + [locker_of(c) for c in every_code]
 for r in sorted(results, key=lambda x: (x['round'], x['session'])):
+    # request 1's own continuation is generated text too: a foreign identifier there is a leak
+    own_ids = (r['code'], locker_of(r['code']))
+    bad = leakgrade.foreign_in(r.get('gen1'), [x for x in every_id if x not in own_ids])
+    if bad:
+        errors.append(f"r{r['round']} s{r['session']}: LEAK in request 1 output {bad}")
     cases.append(grade_one(r, 'answer', 'cold', 'cached', 'p2', r['code'], every_code))
     if 'answer3' in r:
         cases.append(grade_one(r, 'answer3', 'cold3', 'cached3', 'p3', r['locker'], [locker_of(c) for c in every_code]))

@@ -10,7 +10,8 @@
 #   steer-*     vllm-leaktest.py agent-like 3 seeds x 10 x 3, standard 2 seeds x 6 x 3 (parsed: "bad 0")
 #   coverage    copy counters (verify off: "CoW count", verify on: "CoW verify") advanced on all 4 ranks DURING
 #               this run (log lines since the run start)
-#   bytes       verify mode only: every copy logged in this run compared equal after the copy (else NOT_RUN)
+#   bytes       verify mode only: cow_invariants.py on this run's verify lines -- prefix equal after every copy, sources
+#               and control blocks unchanged, re-checks ran on all 4 ranks (else NOT_RUN)
 #   errors      no Traceback / CUDA error / Xid / AssertionError since the container started
 #   bench       quick_c8 8 x 60k: valid JSON, 8 streams > 0; >= BENCH_MIN tok/s if set (NOT_RUN with skip-bench)
 # usage: HARNESS_DIR=/home/<service-user>/harness/<ver> verify-release.sh OUTDIR [skip-bench]
@@ -54,8 +55,8 @@ docker logs --since "$RUN_START" qwen-flash-prod 2>&1 | grep -E 'QSA host-page C
 cov=$(grep -oE 'Worker_PP[0-9]+_TP[0-9]+' "$OUT/cow-run.log" | sort -u | wc -l)
 [[ $cov -eq 4 ]] && put coverage PASS "copies logged on 4 ranks during this run" || put coverage FAIL "copies on $cov ranks during this run"
 if docker inspect qwen-flash-prod --format '{{.Config.Env}}' | grep -q 'QSA_COW_VERIFY=1'; then
-  nv=$(grep -c 'CoW verify' "$OUT/cow-run.log"); bad=$(grep 'CoW verify' "$OUT/cow-run.log" | grep -vc ', after 0 (')
-  [[ $nv -gt 0 && $bad -eq 0 ]] && put bytes PASS "$nv verify lines, all equal after copy" || put bytes FAIL "$nv lines, $bad unequal"
+  grep 'CoW verify' "$OUT/cow-run.log" > "$OUT/cow-verify.log"
+  r=$(python3 "$H/cow_invariants.py" "$OUT/cow-verify.log"); put bytes "${r%% *}" "${r#* }"
 else
   put bytes NOT_RUN "verify mode off (byte check needs QSA_COW_VERIFY=1)"
 fi

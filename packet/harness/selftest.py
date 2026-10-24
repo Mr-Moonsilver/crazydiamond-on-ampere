@@ -50,9 +50,40 @@ check('canary: foreign note only in early text', canary_grade.grade(canary_dir(
 check('canary: duplicate codes', canary_grade.grade(canary_dir([good, ('AMBER-1111', 'note-bbbb', 'CODE=AMBER-1111 NOTE=note-bbbb\nrc=0\n')]))['verdict'],
       'FAIL')
 
+def transcripts_for(d, sessions, stale=False):
+    # a Claude Code projects dir with one transcript per synthetic workdir: (code, tools)
+    t = tempfile.mkdtemp(prefix='canary-transcripts-')
+    for i, (code, tools) in enumerate(sessions, 1):
+        p = os.path.join(t, f'-synthetic-{i}'); os.makedirs(p)
+        f = os.path.join(p, 's.jsonl')
+        with open(f, 'w') as fh:
+            content = [{'type': 'tool_use', 'name': n} for n in tools] + [{'type': 'text', 'text': f'CODE={code}'}]
+            fh.write(json.dumps({'type': 'assistant', 'message': {'id': f'm{i}', 'content': content,
+                                                                  'usage': {'cache_read_input_tokens': 0}}}) + '\n')
+        if stale:
+            old = os.path.getmtime(os.path.join(d, 'expected.txt')) - 3600
+            os.utime(f, (old, old))
+    return t
+
+
+TOOLS = ['Read', 'Bash', 'Bash']
+d = canary_dir([good, other])
+check('canary: transcripts present', canary_grade.grade(d, transcripts_for(d, [(good[0], TOOLS), (other[0], TOOLS)]))['verdict'], 'PASS')
+d = canary_dir([good, other])
+check('canary: requested transcript missing (review fixture)', canary_grade.grade(d, tempfile.mkdtemp())['verdict'], 'FAIL')
+d = canary_dir([good, other])
+check('canary: transcript older than this run', canary_grade.grade(
+    d, transcripts_for(d, [(good[0], TOOLS), (other[0], TOOLS)], stale=True))['verdict'], 'FAIL')
+d = canary_dir([good, other])
+check('canary: tool chain skipped', canary_grade.grade(d, transcripts_for(d, [(good[0], TOOLS), (other[0], ['Bash'])]))['verdict'],
+      'INCONCLUSIVE')
+
 # --- leakgrade ---
 own, foreign = 'JUNIPER-5856', ['AMBER-1111', 'COBALT-2222']
 check('leak: first verdict foreign', leakgrade.first_verdict(' AMBER-1111.', own, foreign, ' JUNIPER-5856'), 'LEAK')
+check('leak: foreign code in the cold control (review fixture)', leakgrade.first_verdict(' JUNIPER-5856', own, foreign, ' AMBER-1111'),
+      'LEAK')
+check('leak: foreign id in request-1 output', leakgrade.foreign_in('... AMBER-1111 ...', foreign), ['AMBER-1111'])
 check('leak: first verdict suspect', leakgrade.first_verdict(' Question:', own, foreign, ' JUNIPER-5856'), 'SUSPECT')
 check('leak: review counterexample (foreign in retries)', leakgrade.settle(
     [{'warm': 'AMBER-1111', 'warm_cached': 0, 'cold': own}, {'warm': own, 'warm_cached': 8096, 'cold': own},
@@ -99,6 +130,51 @@ for name, kw, want in [('good run', {}, 0), ('missing newcomer token', {'newcome
     rc = subprocess.run([sys.executable, os.path.join(HERE, 'stall_trace2.py'), '--recompute', f],
                         capture_output=True, text=True).returncode
     check(f'stall_trace2 --recompute: {name}', rc, want)
+
+# --- cow_invariants (release-gate byte phase) ---
+import cow_invariants  # noqa: E402
+inv = "{'src_rechecks': 50, 'src_mutated': %d, 'src_reallocated': 3, 'controls': 20, 'controls_changed': %d, " \
+      "'src_changed_by_copy': 0, 'prefix_unknown': 0}"
+ranks = ['Worker_PP0_TP0', 'Worker_PP0_TP1', 'Worker_PP1_TP0', 'Worker_PP1_TP1']
+line = '(%s_EP0 pid=1) INFO QSA host-page CoW verify: 10 copies, after 0 (x6 layers); invariants %s'
+check('invariants: clean 4 ranks', cow_invariants.check([line % (r, inv % (0, 0)) for r in ranks])[0], True)
+check('invariants: source mutated, destinations equal (review fixture)',
+      cow_invariants.check([line % (r, inv % (1 if r == ranks[2] else 0, 0)) for r in ranks])[0], False)
+check('invariants: control block changed', cow_invariants.check([line % (r, inv % (0, 1 if r == ranks[0] else 0)) for r in ranks])[0], False)
+check('invariants: only 3 ranks', cow_invariants.check([line % (r, inv % (0, 0)) for r in ranks[:3]])[0], False)
+
+
+# --- vision_test against a mocked engine ---
+def mock_engine(answers):
+    import http.server, threading
+    seq = iter(answers)
+
+    class Hd(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers['Content-Length']))
+            body = json.dumps({'choices': [{'message': {'content': next(seq)}}],
+                               'usage': {'prompt_tokens': 600, 'prompt_tokens_details': {'cached_tokens': 176}}}).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Hd)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+assets = os.path.join(HERE, 'vision_assets')
+vman = json.load(open(os.path.join(assets, 'manifest.json')))
+for name, mode, answers, want in [
+        ('followup right', 'followup', [vman['table.png']['a'], vman['table.png']['followup_a']], 0),
+        ('followup wrong number (review fixture)', 'followup', [vman['table.png']['a'], '999999'], 1),
+        ('uuid stale reuse (review fixture)', 'uuid', [vman['isolation'][0]['code']] * 2, 1),
+        ('uuid distinct answers', 'uuid', [vman['isolation'][0]['code'], vman['isolation'][1]['code']], 0)]:
+    srv = mock_engine(answers)
+    rc = subprocess.run([sys.executable, os.path.join(HERE, 'vision_test.py'), f'http://127.0.0.1:{srv.server_port}', 'm', assets,
+                         mode, tempfile.mkstemp(suffix='.json')[1]], capture_output=True, text=True).returncode
+    srv.shutdown()
+    check(f'vision {mode}: {name}', rc, want)
 
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)

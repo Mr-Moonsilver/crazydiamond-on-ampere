@@ -1,7 +1,7 @@
 """Verdict logic for leak_partial_tail.py, kept pure so harness/selftest.py can check it offline.
 
 First verdict of one answer (kept forever, never overwritten):
-  LEAK     names another session's identifier (any round)
+  LEAK     the warm answer OR its cold control names another session's identifier (any round)
   OK       names its own identifier
   SUSPECT  wrong while the uncached (cold) control is right
   MISS     wrong in both (model failure, not a cache symptom)
@@ -12,19 +12,24 @@ length equals H count as the same path. Settled verdict:
   COPYFAIL    every same-path retry is wrong while the cold control is right at least twice
   NOISE       at least two same-path retries, all right (not reproducible on the identical path)
   INCONCLUSIVE anything else (e.g. the path was not recreated) -- blocks a clearance
+Other generated stages (e.g. request 1's continuation) are scanned with foreign_in(); a hit is passed as an error.
 Run verdict: FAIL on LEAK / COPYFAIL / errors / missing results / an engine restart during the run; INCONCLUSIVE on
 any INCONCLUSIVE case, MISS above MISS_MAX of the answers, or too little partial-hit coverage; PASS otherwise.
 """
 
 
 def first_verdict(answer, own, foreign_ids, cold):
-    if any(x in answer for x in foreign_ids):
+    if any(x in answer + (cold or '') for x in foreign_ids):
         return 'LEAK'
     if own in answer:
         return 'OK'
     if cold is not None and own in cold:
         return 'SUSPECT'
     return 'MISS'
+
+
+def foreign_in(text, foreign_ids):
+    return [x for x in foreign_ids if x in (text or '')]
 
 
 def settle(retries, own, foreign_ids, hit):

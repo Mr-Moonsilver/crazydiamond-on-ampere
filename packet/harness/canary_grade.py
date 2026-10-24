@@ -8,20 +8,23 @@ transcript is read for its tool calls and per-request cache usage.
 Per session, first match wins:
   LEAK      any other session's code or note appears ANYWHERE in the output or the transcript's assistant text
   MISSING   no .out file, or no rc= line
+  NO_TRANSCRIPT  TRANSCRIPTS given but this session has no transcript written during this run (newer than
+            expected.txt) that contains its own code
   RC_FAIL   rc != 0 (e.g. 124 = timeout)
   WRONG     the final CODE= line lacks the own code or note
   TOOL_SKIP correct final line but the requested tool chain (Read + 2 Bash) did not run (needs TRANSCRIPTS)
   OK
-Run verdict: FAIL on any LEAK / MISSING / RC_FAIL, duplicate identifiers, or expected != graded count; WRONG and
+Run verdict: FAIL on any LEAK / MISSING / NO_TRANSCRIPT / RC_FAIL, duplicate identifiers, or expected != graded count; WRONG and
 TOOL_SKIP are model/tool-compliance failures: reported, counted, and make the verdict INCONCLUSIVE (never PASS).
 usage: canary_grade.py OUTDIR [TRANSCRIPTS] [OUT.json]   exit 0 = PASS, 1 = FAIL, 2 = INCONCLUSIVE
 """
 import glob, json, os, re, sys
 
 
-def transcript_facts(transcripts, workdir):
+def transcript_facts(transcripts, workdir, not_before=0.0):
     proj = os.path.join(transcripts, re.sub(r'[/.]', '-', workdir))
-    files = sorted(glob.glob(os.path.join(proj, '*.jsonl')), key=os.path.getmtime)
+    files = sorted((f for f in glob.glob(os.path.join(proj, '*.jsonl')) if os.path.getmtime(f) >= not_before),
+                   key=os.path.getmtime)
     if not files:
         return None
     tools, cached, texts, seen = [], [], [], set()
@@ -44,7 +47,9 @@ def transcript_facts(transcripts, workdir):
 
 
 def grade(outdir, transcripts=None):
-    rows = [l.split() for l in open(os.path.join(outdir, 'expected.txt')) if l.strip()]
+    exp = os.path.join(outdir, 'expected.txt')
+    rows = [l.split() for l in open(exp) if l.strip()]
+    run_start = os.path.getmtime(exp)
     fails, sessions = [], []
     codes = [r[2] for r in rows]
     notes = [r[3] for r in rows]
@@ -54,7 +59,7 @@ def grade(outdir, transcripts=None):
         rec: dict = {'round': rd, 'session': i, 'code': code, 'note': note}
         path = os.path.join(outdir, f'r{rd}-s{i}.out')
         out = open(path, errors='replace').read() if os.path.exists(path) else None
-        facts = transcript_facts(transcripts, wd) if transcripts else None
+        facts = transcript_facts(transcripts, wd, run_start) if transcripts else None
         if facts:
             rec.update(tools=facts['tools'], cached=facts['cached'])
         hay = (out or '') + '\n' + (facts['text'] if facts else '')
@@ -65,6 +70,8 @@ def grade(outdir, transcripts=None):
             rec['verdict'] = 'LEAK'; rec['foreign'] = foreign
         elif out is None or not rcm:
             rec['verdict'] = 'MISSING'
+        elif transcripts and (facts is None or code not in facts['text']):
+            rec['verdict'] = 'NO_TRANSCRIPT'
         elif rcm[-1] != '0':
             rec['verdict'] = 'RC_FAIL'; rec['rc'] = int(rcm[-1])
         elif code not in final or note not in final:
@@ -79,7 +86,7 @@ def grade(outdir, transcripts=None):
         counts[s['verdict']] = counts.get(s['verdict'], 0) + 1
     if len(sessions) != len(rows):
         fails.append(f'graded {len(sessions)} of {len(rows)}')
-    hard = sum(counts.get(k, 0) for k in ('LEAK', 'MISSING', 'RC_FAIL'))
+    hard = sum(counts.get(k, 0) for k in ('LEAK', 'MISSING', 'NO_TRANSCRIPT', 'RC_FAIL'))
     soft = sum(counts.get(k, 0) for k in ('WRONG', 'TOOL_SKIP'))
     verdict = 'FAIL' if hard or fails else ('INCONCLUSIVE' if soft else 'PASS')
     partial = sum(1 for s in sessions for c in s.get('cached', []) if c and c % 4048)

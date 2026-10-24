@@ -32,6 +32,16 @@ if [[ -f $OVERLAY/model_runner_v2.py ]]; then
   grep -q " model_runner_v2.py$" "$OVERLAY/SHA256SUMS" || { echo "runner not checksummed" >&2; exit 2; }
   runner=(-v "$OVERLAY/model_runner_v2.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/model_runner.py:ro")
 fi
+# VISION=1: image input (no --language-model-only), $VISION_ARGS appended, first-stage-only tower if the overlay has
+# vision/model.py (checksummed in vision/SHA256SUMS).
+vision=(); lmo=(--language-model-only)
+if [[ ${VISION:-0} == 1 ]]; then
+  lmo=()
+  if [[ -f $OVERLAY/vision/model.py ]]; then
+    (cd "$OVERLAY/vision" && sha256sum --quiet -c SHA256SUMS) || { echo "vision overlay checksum mismatch" >&2; exit 2; }
+    vision=(-v "$OVERLAY/vision/model.py:$D/model.py:ro")
+  fi
+fi
 spec=()
 if [[ ${MTP_TOKENS:-0} != 0 ]]; then
   printf -v spec_json '{"method":"mtp","num_speculative_tokens":%d}' "$MTP_TOKENS"
@@ -47,6 +57,8 @@ exec sudo docker run --rm --init --name "$name" --label qwen.flash-next-producti
   -e VLLM_QSA_KVO_ARENA=100663296 -e VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0 \
   -e VLLM_QSA_KVO_SPARSE_PREFILL=1 \
   ${QSA_COW_VERIFY:+-e QSA_COW_VERIFY="$QSA_COW_VERIFY"} \
+  ${FLASH_SCHED_STATS:+-e FLASH_SCHED_STATS="$FLASH_SCHED_STATS"} \
+  ${FLASH_PARITY_BALANCE:+-e FLASH_PARITY_BALANCE="$FLASH_PARITY_BALANCE"} \
   -e FLASH_PD_ALTERNATE="${FLASH_PD_ALTERNATE:-0}" \
   ${QSA_SPARSE_MIN_PAGES:+-e QSA_SPARSE_MIN_PAGES="$QSA_SPARSE_MIN_PAGES"} \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False \
@@ -58,11 +70,12 @@ exec sudo docker run --rm --init --name "$name" --label qwen.flash-next-producti
   -v "$OVERLAY/qsa.py:$D/qsa.py:ro" -v "$OVERLAY/ops_qsa.py:$D/ops/qsa.py:ro" \
   "${core[@]}" \
   "${runner[@]}" \
+  "${vision[@]}" \
   "$expected_image" /model \
   --served-model-name qwen38-w8a8-tp4 Qwen3.8-Flash-Next Intel/Qwen3.8-Flash-Next-W4A16-AutoRound \
     cyankiwi/Qwen3.8-27B-AWQ-INT4 cyankiwi/Qwen3.5-122B-A10B-AWQ-4bit \
   --tensor-parallel-size 2 --pipeline-parallel-size 2 --enable-expert-parallel \
-  --dtype bfloat16 --language-model-only --engram-config '{"cpu_offload":true}' \
+  --dtype bfloat16 "${lmo[@]}" --engram-config '{"cpu_offload":true}' \
   --kv-cache-dtype auto --kv-cache-memory-bytes "${GPU_KV_BYTES:-1800000000}" \
   --max-model-len "${MAX_MODEL_LEN:-262144}" --max-num-seqs "${MAX_SEQS:-8}" \
   --max-num-batched-tokens "${PREFILL_CHUNK:-512}" \
@@ -71,4 +84,4 @@ exec sudo docker run --rm --init --name "$name" --label qwen.flash-next-producti
   --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder \
   --max-logprobs 20 --host 0.0.0.0 --port 8000 \
   --compilation-config "$compilation" \
-  "${spec[@]}" ${EXTRA_ARGS:-}
+  "${spec[@]}" ${EXTRA_ARGS:-} ${VISION_ARGS:-}

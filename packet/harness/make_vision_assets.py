@@ -38,7 +38,8 @@ for i, r in enumerate(rows):
 for i in range(6):
     d.line((20, 80 + i * 75, 880, 80 + i * 75), fill='gray')
 img.save(os.path.join(out, 'table.png'))
-man['table.png'] = {'q': 'In this table, what is the value for region East in column Q2? Answer with the number only.', 'a': str(vals[('East', 'Q2')])}
+man['table.png'] = {'q': 'In this table, what is the value for region East in column Q2? Answer with the number only.', 'a': str(vals[('East', 'Q2')]),
+                    'followup_q': 'And the value for region North in column Q3? Answer with the number only.', 'followup_a': str(vals[('North', 'Q3')])}
 # diagram
 img = Image.new('RGB', (1000, 360), 'white'); d = ImageDraw.Draw(img)
 labels = rnd.sample(['Parser', 'Router', 'Cache', 'Scheduler', 'Encoder', 'Writer'], 3)
