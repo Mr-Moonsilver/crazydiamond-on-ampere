@@ -18,7 +18,11 @@ too few advances, or injected faults (INJECT=missing|error|stop, to prove the ch
 APPEND=n (small-arrival case): the newcomer is stream 0's prompt + n new tokens under stream 0's cache salt, i.e. a
 short append on a long cached history (an agent's next turn); LONG is then ignored and the newcomer's cached-token
 count is recorded (newcomer.cached_tokens) so a missed cache hit is visible.
+SMALL_DURING=n (mixed arrival): SMALL_DELAY s (default 5) after the long newcomer starts, a second request = stream 1's
+prompt + n new tokens under stream 1's salt arrives; its TTFT and cached tokens are reported as small_during (the
+short-first scheduler's target: an agent turn arriving behind a fresh long prompt).
 usage: stall_trace2.py URL MODEL STREAMS PROMPT LONG LABEL OUT.json      env BASE=20 AFTER=10 INJECT= APPEND=0
+       SMALL_DURING=0 SMALL_DELAY=5
        stall_trace2.py --recompute OUT.json                              (recomputes the report from raw events)
 """
 import json, os, random, re, sys, threading, time, urllib.request, uuid
@@ -73,7 +77,10 @@ def report(raw):
                        'client_prompt_tps': round(raw['long_prompt'] / (m['p1'] - m['p0'])),
                        'cached_tokens': m.get('cached'), 'append': raw.get('append', 0),
                        **raw.get('engine_newcomer', {})}
+    res['small_during'] = raw.get('small_during')
     fails = list(raw['errors'])
+    if raw.get('small_during') is not None and 'ttft_s' not in raw['small_during']:
+        fails.append('small_during request returned no token')
     for i, ev in enumerate(raw['events']):
         adv = advances(ev)
         if not any(t > m['p1'] for t, _, _ in adv):
@@ -105,6 +112,32 @@ URL, MODEL, N, PT, LONG, LABEL, OUT = (sys.argv[1], sys.argv[2], int(sys.argv[3]
                                        int(sys.argv[5]), sys.argv[6], sys.argv[7])
 BASE, AFTER, INJECT = float(os.environ.get('BASE', 20)), float(os.environ.get('AFTER', 10)), os.environ.get('INJECT', '')
 APPEND = int(os.environ.get('APPEND', 0))
+SMALL_DURING, SMALL_DELAY = int(os.environ.get('SMALL_DURING', 0)), float(os.environ.get('SMALL_DELAY', 5))
+small = {}
+
+
+def small_run():
+    while 'p0' not in marks:
+        time.sleep(0.05)
+    time.sleep(SMALL_DELAY)
+    tail = random.Random(54321).randrange(0, len(base_tokens) - SMALL_DURING)
+    t0 = time.monotonic()
+    try:
+        with post('/v1/completions', {'model': MODEL, 'prompt': stream_tokens(1) + base_tokens[tail:tail + SMALL_DURING],
+                                      'max_tokens': 1, 'temperature': 0, 'stream': True, 'cache_salt': salts[1],
+                                      'stream_options': {'include_usage': True, 'continuous_usage_stats': True}}) as r:
+            for line in r:
+                if line.startswith(b'data: {'):
+                    u = json.loads(line[6:]).get('usage') or {}
+                    if u.get('prompt_tokens_details'):
+                        small['cached_tokens'] = u['prompt_tokens_details'].get('cached_tokens')
+                    if u.get('completion_tokens', 0) >= 1:
+                        small['ttft_s'] = round(time.monotonic() - t0, 2)
+                        small['before_long_done'] = 'p1' not in marks
+                        break
+    except Exception as e:  # noqa: BLE001 - fails the run
+        with lock:
+            errors.append(f'small_during: {type(e).__name__} {e}')
 corpus = open('/home/<service-user>/p2p-tests/corpus.txt', encoding='utf-8', errors='ignore').read()
 
 
@@ -199,9 +232,14 @@ def newcomer_run():
     marks['a1'] = time.monotonic()
 
 
+small_thread = threading.Thread(target=small_run, daemon=True) if SMALL_DURING else None
 if all(events) and not errors:
     try:
+        if small_thread:
+            small_thread.start()
         newcomer_run()
+        if small_thread:
+            small_thread.join(timeout=900)
     except Exception as e:  # noqa: BLE001 - fails the run, artifact still saved
         errors.append(f'foreground: {type(e).__name__} {e}')
 else:
@@ -211,7 +249,8 @@ for t in threads:
     t.join(timeout=30)
 raw = {'label': LABEL, 'streams': N, 'stream_prompt': PT, 'long_prompt': PT + APPEND if APPEND else LONG,
        'append': APPEND, 'wall_anchor': wall_anchor,
-       'errors': errors, 'marks': marks, 'events': events, 'newcomer_token': newcomer_token, 'engine_newcomer': eng}
+       'errors': errors, 'marks': marks, 'events': events, 'newcomer_token': newcomer_token, 'engine_newcomer': eng,
+       'small_during': dict(small, tokens=SMALL_DURING, delay_s=SMALL_DELAY) if SMALL_DURING else None}
 if not marks or 'a1' not in marks:
     json.dump({'verdict': 'FAIL', 'fails': errors or ['incomplete run'], 'raw': raw}, open(OUT, 'w'))
     print('FAIL', errors); sys.exit(1)

@@ -110,7 +110,7 @@ check('leak: clean run', leakgrade.run_verdict([ok_case] * 10, 10, [])['verdict'
 
 
 # --- stall_trace2 --recompute ---
-def raw_run(newcomer=True, stop_stream=False, complete=True):
+def raw_run(newcomer=True, stop_stream=False, complete=True, small=None):
     ev = []
     for i in range(2):
         last = 30.0 if (stop_stream and i == 0) else 60.0
@@ -119,11 +119,14 @@ def raw_run(newcomer=True, stop_stream=False, complete=True):
     if complete:
         marks['a1'] = 50.0
     return {'raw': {'label': 'fixture', 'streams': 2, 'stream_prompt': 1000, 'long_prompt': 20000, 'wall_anchor': [0, 0],
-                    'errors': [], 'marks': marks, 'events': ev, 'newcomer_token': newcomer, 'engine_newcomer': {}}}
+                    'errors': [], 'marks': marks, 'events': ev, 'newcomer_token': newcomer, 'engine_newcomer': {},
+                    'small_during': small}}
 
 
 for name, kw, want in [('good run', {}, 0), ('missing newcomer token', {'newcomer': False}, 1),
-                       ('stopped stream', {'stop_stream': True}, 1), ('incomplete run', {'complete': False}, 1)]:
+                       ('stopped stream', {'stop_stream': True}, 1), ('incomplete run', {'complete': False}, 1),
+                       ('small arrival answered', {'small': {'tokens': 2048, 'ttft_s': 1.2}}, 0),
+                       ('small arrival without a token', {'small': {'tokens': 2048}}, 1)]:
     fd, f = tempfile.mkstemp(suffix='.json')
     with os.fdopen(fd, 'w') as fh:
         json.dump(raw_run(**kw), fh)
