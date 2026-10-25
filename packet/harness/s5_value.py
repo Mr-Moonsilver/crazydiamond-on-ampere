@@ -24,6 +24,10 @@ def comparison(full,solo,overlap,steps):
         v=overlap[k]
         if type(v) not in (int,float) or not math.isfinite(v) or v<0:raise ValueError('invalid prefill rate')
     if overlap['prefill_steps_s_upper']<overlap['prefill_steps_s']:raise ValueError('inverted rate bounds')
+    if 'tail_proof' in overlap:
+        from s5_terminal_stats import tail_coverage
+        if not tail_coverage(dict(decode=overlap['raw_decode'],prefill=overlap['raw_prefill']),overlap['tail_proof']):
+            raise ValueError('invalid workload-tail proof')
     threshold=2*percentile(s,.5)
     return dict(decode_share_vs_solo=overlap['decode_steps_s']/solo['decode_steps_s'],
         decode_share_vs_full=overlap['decode_steps_s']/full['decode_steps_s'],
@@ -37,6 +41,9 @@ def comparison(full,solo,overlap,steps):
         spike_fraction=sum(v>threshold for v in g)/len(g),
         solo_spike_count_same_threshold=sum(v>threshold for v in s),
         prefill_steps_s=overlap['prefill_steps_s'],prefill_steps_s_upper=overlap['prefill_steps_s_upper'],
+        tail_basis=overlap.get('tail_proof',{}).get('basis','legacy_terminal_event_query'),
+        device_active_at_tail_probe=overlap.get('prefill_device_active_at_tail_probe'),
+        dispatch_pending_at_tail=overlap.get('prefill_tail_dispatch_pending'),
         tail_proven=overlap['prefill_covers_decode_tail'] is True and not overlap['prefill_tail_order_ambiguous'])
 
 def grade(data):
@@ -58,6 +65,8 @@ def grade(data):
             if resident_kind!='legacy':
                 from s5_resident import KINDS,validate_prefetch
                 if resident_kind not in KINDS or r['resident_source_equality'] is not True:raise ValueError('resident source equality missing')
+                if 'resident_substitution' in r and r['resident_substitution'].get('passed') is not True:
+                    verdict='FAIL'
                 mem=r['resident_ledger'];stats=r['ple_prefetch_stats']
                 if mem['kind']!=resident_kind or probe['ple_itemsize'] not in (1,2):raise ValueError('resident kind mismatch')
                 if mem['ple_chunk_bytes']!=1024*16*160*probe['ple_itemsize']:raise ValueError('PLE payload mismatch')
@@ -144,7 +153,9 @@ def monitor_lines(case,report):
             f"spikes_gt_2x={r['spike_count_gt_2x_solo']}/{r['gap_count']} threshold_ms={r['spike_threshold_ms']:.3f} "
             f"prefill_share={r['prefill_share']:.4f} prefill_share_upper={r['prefill_share_upper']:.4f} target80_80={r['vs_80_80_target']} "
             f"prefill_vs_original_solo={r['prefill_vs_original_solo']:.4f} resident_kind={r['resident_kind']} ple_itemsize={r['ple_itemsize']} "
-            f"bitwise_equal={'y' if r['bitwise_equal'] else 'n'} tail={'y' if r['tail_proven'] else 'n'} verdict={report['verdict']}")
+            f"bitwise_equal={'y' if r['bitwise_equal'] else 'n'} tail={'y' if r['tail_proven'] else 'n'} "
+            f"tail_basis={r['tail_basis']} device_active_at_probe={r['device_active_at_tail_probe']} "
+            f"dispatch_pending_at_tail={r['dispatch_pending_at_tail']} verdict={report['verdict']}")
         if r.get('resident_dma'):
             dma=r['resident_dma']
             lines.append(f"S5_DMA case={case} rank={r['rank']} bytes={dma['bytes']} chunks={dma['chunks']} "

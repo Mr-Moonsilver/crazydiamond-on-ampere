@@ -31,7 +31,7 @@ def run(a):
     resident_dma=os.environ.get('S5_RESIDENT_DMA','0')=='1'
     def phase(name,timeout=180):
         if value:
-            setup=(name in ('setup','weights-and-lanes','baseline-capture','create-splits','terminal-prefill-warmup') or name.startswith('capture-green'))
+            setup=(name in ('setup','weights-and-lanes','baseline-capture','create-splits','terminal-prefill-warmup','terminal-resident-substitution') or name.startswith('capture-green'))
             timeout=int(os.environ.get('S5_VALUE_SETUP_TIMEOUT','300') if setup else os.environ.get('S5_VALUE_PHASE_TIMEOUT','120'))
             if timeout not in (120,300):raise Inconclusive('unreviewed value phase timeout')
         wd.arm(timeout,name)

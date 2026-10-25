@@ -563,7 +563,9 @@ check('S5 verdict NO-GO: prefill floor', s5_combine([s5_fixture(), s5_bad])['ver
 check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdict'], 'INCONCLUSIVE')
 
 # --- Full engine identity: mocked docker, actual destination-side hashing; no GPU ---
-for suite, label in [('test_s5_exit_cleanup.py', 'S5 pinned cleanup ordering and qualified measurement salvage (CPU)'),
+for suite, label in [('test_s5_substitution.py', 'S5 exact host/resident trajectory oracle and payload-free differences (CPU)'),
+                     ('test_s5_tail.py', 'S5 published tickets, workload-tail evidence and threaded eager-forward race (CPU)'),
+                     ('test_s5_exit_cleanup.py', 'S5 pinned cleanup ordering and qualified measurement salvage (CPU)'),
                      ('test_s5_resident.py', 'S5 resident: source attribution, memory ledger, PLE buffer ownership (CPU)'),
                      ('test_s5_value.py', 'S5 value: matched solo shares, soft targets, spike counts, no-op scope'),
                      ('test_s5_variants.py', 'S5 ladder: worst-rank frontier, fenced controller and queue scope (CPU)'),

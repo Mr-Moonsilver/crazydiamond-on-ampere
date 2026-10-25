@@ -144,21 +144,18 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
     import json
     print('S5_MEMORY '+json.dumps(dict(rank=result['rank'],**record)),flush=True)
     try:
-        # Compare three successive chunks to catch stale CPU row IDs. Include
-        # raw PLE bytes explicitly: the slice does not inject PLE into hidden x.
-        snapshots=[]
-        for candidate in (False,True):
-            transport.drain();pre.kv=resident_kv if candidate else original_kv
-            transport.prefetch=candidate and prefetch;pre.reset();torch.cuda.synchronize()
-            seq=[]
-            for _ in range(3):
-                with torch.cuda.stream(green.sp):
-                    pre.forward(b.Trace())
-                    seq.append(b.snapshot(pre)+[transport.raw.clone(),pre.ple_output.clone()])
-                green.sp.synchronize()
-            snapshots.append(seq)
-        b.checked(all(b.state_equal(a,c) for a,c in zip(*snapshots)), 'resident/prefetch substitution differs over rotating chunks')
-        result['resident_source_equality']=True
+        from s5_substitution import run as substitution
+        phase('terminal-resident-substitution',300)
+        check=substitution(pre,transport,original_kv,resident_kv,prefetch,green.sp,progress)
+        result['resident_substitution']=check
+        result['resident_source_equality']=check['passed']
+        print('S5_SUBSTITUTION '+json.dumps(dict(rank=result['rank'],passed=check['passed'],
+            all_states_and_ple_bitwise=check['all_states_and_ple_bitwise'],
+            resident_matches_host_sequences=check['resident_matches_host_sequences'])),flush=True)
+        if not check['passed']:
+            error=b.CorrectnessError('resident/prefetch substitution differs from matched host sequences')
+            error.evidence=check
+            raise error
         phase('terminal-resident-prefill-solo')
         result['modes']['resident_prefill']=terminal_run(dec,pre,g,sd,sp,ctl,progress,steps,'prefill',False)
         phase('terminal-resident-overlap');start=transport.stats()
