@@ -9,6 +9,9 @@ on ``Qwen4ExpModel`` (the stock ``forward`` is untouched byte-for-byte):
   that same layer is issued inline just before it (design: no cross-layer
   look-ahead in the lane), so nothing is carried between segments except the
   HC triple ``(hidden_states, block_output, injection)``;
+* ``_flash_e3_layer_pre``/``_flash_e3_layer_post`` on the decoder layer: the HC/PLE
+  part before the mixer and the HC/MoE part after it, so a QSA layer can pause
+  inside its attention (``qsa_driver``);
 * ``_flash_e3_forward_suffix``: stage 0 materializes the pending HC combine and
   returns the PP tensor. Stage 1 bulk chunks need no suffix: the lane never
   samples and the final mixer writes no state.
@@ -116,6 +119,67 @@ _METHODS = '''        return sample_hidden_states
 '''
 
 
+_LAYER_ANCHOR_OLD = '''        mlp_out = self.mlp(block_input)
+        return hidden_states, mlp_out, injection
+'''
+
+_LAYER_METHODS = '''        mlp_out = self.mlp(block_input)
+        return hidden_states, mlp_out, injection
+
+    # --- Flash-Next E3 lane: the HC/PLE part before the mixer and the HC/MoE part after it.
+    # Byte-copied from forward above so a QSA layer can pause inside its attention.
+    def _flash_e3_layer_pre(
+        self,
+        hidden_states: torch.Tensor,
+        prev_block_output: torch.Tensor | None,
+        prev_injection: torch.Tensor | None,
+        *,
+        input_ids: torch.Tensor | None,
+        query_start_loc: torch.Tensor | None,
+        ngram_context: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if prev_block_output is None:
+            assert prev_injection is None
+        attn_hc = self.attn_hyper_connection
+        if self.ple is not None:
+            if prev_block_output is not None:
+                hidden_states = attn_hc.combine(
+                    hidden_states, prev_block_output, prev_injection
+                )
+                prev_block_output = prev_injection = None
+
+            if input_ids is None or query_start_loc is None or ngram_context is None:
+                raise RuntimeError("PLE inputs were not prepared")
+            hidden_states = hidden_states + self.ple(
+                hidden_states,
+                input_ids,
+                query_start_loc,
+                ngram_context,
+            )
+
+        if prev_block_output is not None:
+            hidden_states, block_input, injection = attn_hc.combine_and_mix(
+                hidden_states, prev_block_output, prev_injection
+            )
+        else:
+            hidden_states, block_input, injection = attn_hc.mix(hidden_states)
+        return hidden_states, block_input, injection
+
+    def _flash_e3_layer_post(
+        self,
+        hidden_states: torch.Tensor,
+        attn_out: torch.Tensor,
+        injection: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        mlp_hc = self.mlp_hyper_connection
+        hidden_states, block_input, injection = mlp_hc.combine_and_mix(
+            hidden_states, attn_out, injection
+        )
+        mlp_out = self.mlp(block_input)
+        return hidden_states, mlp_out, injection
+'''
+
+
 class ModelHookError(E3ContractError):
     pass
 
@@ -140,6 +204,7 @@ def generate_one(path, source):
     if _sha(source) != pinned:
         raise ValueError('source is not the pinned bytes: ' + path)
     text = _replace(source, _ANCHOR_OLD, _METHODS)
+    text = _replace(text, _LAYER_ANCHOR_OLD, _LAYER_METHODS)
     try:
         ast.parse(text)
     except SyntaxError as exc:
@@ -152,7 +217,8 @@ def revert_one(path, source, expected=None):
         raise ValueError('model hooks do not transform ' + path)
     if '_flash_e3_forward_' not in source:
         raise ValueError('source does not carry the lane forward methods')
-    text = _replace(source, _METHODS, _ANCHOR_OLD)
+    text = _replace(source, _LAYER_METHODS, _LAYER_ANCHOR_OLD)
+    text = _replace(text, _METHODS, _ANCHOR_OLD)
     if expected is not None and text != expected:
         raise ValueError('revert did not recover the supplied source')
     if _sha(text) != PINS[path]:

@@ -177,6 +177,11 @@ class TransformTests(unittest.TestCase):
         names = [node.name for node in model_cls.body if isinstance(node, ast.FunctionDef)]
         for name in ('_flash_e3_forward_prefix', '_flash_e3_forward_layer', '_flash_e3_forward_suffix'):
             self.assertIn(name, names)
+        layer_cls = next(node for node in ast.walk(tree)
+                         if isinstance(node, ast.ClassDef) and node.name == 'Qwen4ExpDecoderLayer')
+        layer_names = [node.name for node in layer_cls.body if isinstance(node, ast.FunctionDef)]
+        self.assertIn('_flash_e3_layer_pre', layer_names)
+        self.assertIn('_flash_e3_layer_post', layer_names)
         stock = ast.parse(self.source)
         stock_cls = next(node for node in ast.walk(stock)
                          if isinstance(node, ast.ClassDef) and node.name == 'Qwen4ExpModel')
