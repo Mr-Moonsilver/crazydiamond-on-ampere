@@ -47,7 +47,7 @@ import worker_hooks
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
-E3_MODULES = ('e3_types', 'lane_state', 'reply_transport', 'native_backend',
+E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend',
               'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver',
               'executor_hooks', 'scheduler_hooks', 's5_startup',
               'graph_router', 'graph_hooks', 'qsa_operation',
