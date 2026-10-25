@@ -28,7 +28,9 @@ PUBLIC = set('PATH HOME USER LANG LC_ALL TZ HOSTNAME PYTHONPATH PYTHON_VERSION P
              'MODEL_DIR MODEL_PROFILE OVERLAY IMAGE GPU_ORDER PP_LAYER_PARTITION MAX_MODEL_LEN MAX_SEQS '
              'GPU_KV_BYTES HOST_KV_GIB_PER_RANK PREFILL_CHUNK PREFIX_CACHING MTP_TOKENS CORE_OVERLAY '
              'VISION BREAKABLE_CG MPS_PIPE PORT TP PP EAGER DISABLE_CUSTOM_ALL_REDUCE SPARSE_PREFILL '
-             'OMP_NUM_THREADS HF_HUB_OFFLINE HF_HUB_DISABLE_TELEMETRY'.split())
+             'OMP_NUM_THREADS HF_HUB_OFFLINE HF_HUB_DISABLE_TELEMETRY '
+             'DEBIAN_FRONTEND NVARCH NV_CUDA_CUDART_VERSION UV_CACHE_DIR UV_HTTP_TIMEOUT UV_INDEX_STRATEGY '
+             'UV_LINK_MODE UV_OVERRIDE UV_PYTHON_INSTALL_DIR FLASHINFER_WORKSPACE_BASE'.split())
 PUBLIC_PREFIX = ('VLLM_', 'QSA_', 'FLASH_', 'CUDA_', 'NCCL_', 'PYTORCH_', 'TORCH_', 'TRITON_', 'NVIDIA_')
 PUBLIC_FLAGS = set('model served-model-name tensor-parallel-size pipeline-parallel-size dtype kv-cache-dtype '
                    'kv-cache-memory-bytes max-model-len max-num-seqs max-num-batched-tokens gpu-memory-utilization '
@@ -143,7 +145,7 @@ def clean_arg_value(flag, value):
     return redacted(value, unclassified=not bool(flag and SECRET.search(flag)))
 
 
-def defaults_snapshot(raw):
+def defaults_snapshot(raw, redact=True):
     """Supported EnvironmentFile subset: KEY=value, single/double quotes, no continuations.
 
     No sourcing, interpolation or shell execution. Reject unsupported syntax instead
@@ -168,7 +170,7 @@ def defaults_snapshot(raw):
             val = re.sub(r'\\([\\"$`])', r'\1', inner)
         else:
             need(not any(c in val for c in ('"', "'", '\\')))
-        values[key] = clean_value(key, val)
+        values[key] = clean_value(key, val) if redact else val
         lines.append({'key': key, 'value': values[key]})
     need(bool(values))
     return {'values': dict(sorted(values.items())), 'lines': lines}
@@ -368,8 +370,36 @@ def main():
     c.add_argument('--timeout', type=int, default=300)
     c.add_argument('--max-bytes', type=int, default=512 * 1024**3)
     c.add_argument('--max-files', type=int, default=100000)
+    for name in ('declare','declare-pair'):
+        d = sub.add_parser(name, help='source-based declaration; no container control')
+        d.add_argument('out')
+        d.add_argument('--settings', nargs='*', default=[])
+        d.add_argument('--defaults', default='/etc/default/vllm-flash')
+        d.add_argument('--launcher', default='/data/vllm/flash-next-tp4/prod/run-flash-prod.sh')
+        d.add_argument('--setcfg', default='/tmp/setcfg.py')
+        d.add_argument('--image-file', default='/tmp/flash-image.txt')
+        d.add_argument('--image-inspect', help='saved docker image inspect JSON, for offline work')
+        d.add_argument('--source-mirror', help='offline mirror of /data/vllm/flash-next-tp4 (declare only)')
+        d.add_argument('--mount-policy', help='explicit destination -> {exclusions, watch} JSON')
+        d.add_argument('--timeout', type=int, default=1800)
+        d.add_argument('--max-bytes', type=int, default=512*1024**3)
+        d.add_argument('--max-files', type=int, default=100000)
+        d.add_argument('--harness', default=str(HERE))
+        d.add_argument('--found-launcher', default='/data/vllm/flash-next-tp4/prod/run-flash-prod.sh')
+        d.add_argument('--reconfig', default='/usr/local/sbin/flash-reconfig.sh')
+        d.add_argument('--queue', default=str(HERE/'runs/qN_pp_grouping.draft.sh'))
     v = sub.add_parser('check'); v.add_argument('before'); v.add_argument('request'); v.add_argument('after', nargs='?')
     a = parser.parse_args()
+    if a.action in ('declare','declare-pair'):
+        try:
+            from identity_declare import run as declare
+            need(a.timeout>0 and a.max_bytes>0 and a.max_files>0)
+            rc=declare(a)
+            print('identity declaration PASS: sources only; no container launched')
+            return rc
+        except Exception:
+            print('identity declaration INCONCLUSIVE: invalid source, unsupported setting, unstable content or budget; no request clearance')
+            return 2
     artifact = None
     try:
         request = load_request(a.request)

@@ -145,3 +145,48 @@ change-and-revert between captures, runtime mutation outside declared mounts,
 external proxy routing, altered driver/clocks, or a forged artifact. Those need
 their own run controls. It does catch ordinary rollback, restart, stale mount,
 wrong image/args/env/defaults and source-content drift without reading a GPU.
+
+## Source-only declarations (25 Oct)
+
+`engine_identity.py declare OUT --launcher REVIEWED_LAUNCHER --settings KEY=VALUE ...`
+uses pinned image **metadata**, the reviewed launcher, defaults transformed by the
+exact pinned `setcfg.py` algorithm, and bind-source bytes. Docker in the launcher
+is an inert private-PATH stub; it neither launches nor removes anything. The only
+real Docker operation is `docker image inspect`. `--image-inspect FILE` and
+`--source-mirror DIR` support entirely offline fixtures. Unknown scripts, options,
+environment keys, mutable contents and exhausted hash budgets fail closed.
+
+For the grouping release, build a fresh bundle:
+
+```sh
+python3 tools/build_harness_bundle.py <hub-dir>/agents/flash-next/harness-release-pins
+```
+
+The queue owner copies that bundle to CT <ct-id> using their normal procedure, then
+creates REQUESTS **from sources, before starting the candidate**:
+
+```sh
+H=/home/<service-user>/s0/harness-release-pins
+R=/home/<service-user>/s0/requests-v16g-release
+python3 "$H/engine_identity.py" declare-pair "$R" --harness "$H" \
+  --launcher "$H/run-flash-prod.sh.q9"
+```
+
+This writes on.json, verify.json, launcher.found, declaration.json and SHA256SUMS.
+The pair must differ only by `QSA_COW_VERIFY=1` in defaults and container env.
+It pins the found production launcher (45cc5d81...) independently of the intended
+grouping launcher (98d6d2a2...). It projects that exact planned launcher replacement
+into the `/work` content manifest; the file remains hashed, not excluded.
+
+The queue installs the intended launcher only for its test slot, stops its engine
+on every exit, verifies the restored found launcher, restores the private defaults,
+and leaves the engine STOPPED. A restore failure fails the queue.
+
+The built bundle includes the generated `ppg` payload, checked against its source
+manifest. Source hashing covers model weights and `/work` code. The explicit
+release policy excludes only mutable `/work/cache` and `/work/logs`; three test
+switches are watched and must be absent. Full reads may be expensive (model files
+appear under both mounts). Run declaration after concurrent conversion/source
+writes finish; an unstable tree is INCONCLUSIVE. No previously captured container
+can bless its own configuration. `capture` still rehashes actual mounted bytes
+inside the container, detecting stale bind inodes.
