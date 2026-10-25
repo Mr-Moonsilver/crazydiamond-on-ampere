@@ -68,6 +68,9 @@ def grade(lines):
         stale = []
         if d['cow_max'] > row['final_rpc_sequence']:
             stale.append('latest completed COW seq %d > final STATE rpc_sequence %d' % (d['cow_max'], row['final_rpc_sequence']))
+        elif d['cow_max'] < row['final_rpc_sequence']:
+            # Codex (16:05): the proof must match a COMPLETED sequence; a STATE ahead of every COW line lacks completion evidence.
+            stale.append('final STATE rpc_sequence %d has no completed COW seq (latest %d)' % (row['final_rpc_sequence'], d['cow_max']))
         if d['cow_last_index'] > d['state_index']:
             stale.append('a COW line (seq %d) follows the final STATE line' % d['cow_max'])
         row['freshness'] = 'stale' if stale else 'fresh'

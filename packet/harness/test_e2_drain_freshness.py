@@ -35,6 +35,15 @@ class FreshnessTests(unittest.TestCase):
         self.assertTrue(any('11 > final STATE rpc_sequence 10' in s for s in out['inconclusive']))
         self.assertEqual(out['workers']['Worker_PP0_TP0']['freshness'], 'fresh')
 
+    def test_state_ahead_of_every_cow_is_inconclusive(self):
+        lines = []
+        for r in RANKS: lines += [cow_line(r, 20), state_line(r, rpc_sequence=20)]
+        lines.append(state_line('Worker_PP0_TP0', rpc_sequence=21))   # a state record with no completed COW seq 21
+        out = f.grade(lines)
+        self.assertEqual(out['verdict'], 'INCONCLUSIVE')
+        self.assertEqual(out['workers']['Worker_PP0_TP0']['freshness'], 'stale')
+        self.assertTrue(any('rpc_sequence 21 has no completed COW seq (latest 20)' in s for s in out['inconclusive']))
+
     def test_stale_by_order_same_sequence(self):
         lines = []
         for r in RANKS: lines += [cow_line(r, 7), state_line(r, rpc_sequence=7)]
