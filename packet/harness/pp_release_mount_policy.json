@@ -2,7 +2,8 @@
   "/work": {
     "exclusions": [
       {"path": "cache", "reason": "Mutable CUDA/Triton/vLLM JIT caches; source and model weights remain hashed."},
-      {"path": "logs", "reason": "Mutable reconfiguration logs; engine identity is checked separately."}
+      {"path": "logs", "reason": "Mutable reconfiguration logs; engine identity is checked separately."},
+      {"path": "models", "reason": "active weights are hashed via the /model mount; inactive model trees are not loaded"}
     ],
     "watch": ["rowcache.off", "rowcache.report", "retain.off"]
   }

@@ -129,6 +129,43 @@ class DeclareTests(unittest.TestCase):
         self.a.max_bytes=1
         with self.assertRaises(ident.EvidenceError):self.declare(True)
 
+    def test_declared_exclusions_match_capture_and_active_weights_stay_hashed(self):
+        self.defaults.write_text(dec.apply_setcfg(self.defaults.read_text(),dec.PP_SETTINGS,self.a.setcfg))
+        declared=self.declare(); spec=declared['identity']
+        work=next(m for m in spec['mounts'] if m['destination']=='/work')
+        self.assertFalse(any(e['path']=='models' or e['path'].startswith('models/') for e in work['content']['entries']))
+        model=next(m for m in spec['mounts'] if m['destination']=='/model')
+        self.assertTrue(any(e['path']=='weights.fixture' for e in model['content']['entries']))
+        argv=dec.render(self.a.launcher,dec.raw_defaults(self.defaults.read_text()),IMAGE,self.root/'capture-render',self.task)
+        before={'Id':'c'*64,'Image':IMAGE,'Path':spec['command']['path'],'Args':['serve']+argv[argv.index(IMAGE)+1:],
+                'Config':{'Env':[k+'='+v for k,v in spec['env'].items()]},'RestartCount':0,
+                'State':{'StartedAt':'fixture','Pid':123},'Mounts':[
+                {'Type':m['type'],'Source':m['source'],'Destination':m['destination'],'RW':m['rw'],'Propagation':m['propagation']}
+                for m in spec['mounts']]}
+        expected={m['destination']:m for m in spec['mounts']}
+        def run(argv,timeout,data=None):
+            if argv[:3]==['docker','image','inspect']:return [self.image]
+            query=json.loads(data);destinations=[]
+            for m in query['mounts']:
+                destinations.append(m['destination'])
+                self.assertEqual(m['exclusions'],expected[m['destination']]['content'].get('exclusions',[]))
+                m['destination']=str(dec.host_path(expected[m['destination']]['source'],self.task))
+            p=subprocess.run([sys.executable,str(HERE/'identity_probe.py')],input=json.dumps(query),capture_output=True,text=True)
+            value=json.loads(p.stdout)
+            for m,d in zip(value['mounts'],destinations):m['destination']=d
+            return value
+        a=argparse.Namespace(container='fixture',defaults=str(self.defaults),timeout=1800,max_bytes=2**24,max_files=1000)
+        with patch('engine_identity.inspect',return_value=before),patch('engine_identity.run',side_effect=run):
+            captured=ident.capture(a,declared)
+            self.assertEqual(captured['identity'],spec)
+            self.assertGreaterEqual(captured['io']['wall_seconds'],0)
+            # An inactive checkpoint is excluded, but the active /model bytes
+            # still change the captured identity and fail the declared comparison.
+            inactive=self.task/'models/inactive';inactive.mkdir();(inactive/'weights').write_text('irrelevant')
+            self.assertEqual(ident.capture(a,declared)['identity'],spec)
+            (self.task/'models/intel-w4a16/weights.fixture').write_text('changed weights')
+            self.assertNotEqual(ident.capture(a,declared)['identity'],spec)
+
     def test_image_metadata_can_be_supplied_offline(self):
         path=self.root/'image.json';path.write_text(json.dumps([self.image]))
         idfile=self.root/'image.txt';idfile.write_text(IMAGE)

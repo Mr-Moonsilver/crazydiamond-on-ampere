@@ -190,3 +190,10 @@ appear under both mounts). Run declaration after concurrent conversion/source
 writes finish; an unstable tree is INCONCLUSIVE. No previously captured container
 can bless its own configuration. `capture` still rehashes actual mounted bytes
 inside the container, detecting stale bind inodes.
+
+Capture-budget correction: the release policy also excludes `/work/models`,
+because the active weights remain fully hashed by `/model`. Declarations and
+captures use the identical policy. Timeout is 1,800 s by default and explicit in
+the queues. Capture step lines report monotonic wall time and bytes read. With
+~170 GB covered at the measured ~1.2 GB/s, budget at least ~142 s plus overhead per
+capture; this estimate does not substitute for the recorded measurement.

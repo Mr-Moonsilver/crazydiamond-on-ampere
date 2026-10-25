@@ -280,6 +280,7 @@ def descriptors(d):
 
 def capture(a, request):
     start = time.time_ns()
+    wall_start = time.monotonic()
     before = inspect(a.container, a.timeout)
     raw_defaults = Path(a.defaults).read_bytes()
     snap = defaults_snapshot(raw_defaults)
@@ -309,7 +310,8 @@ def capture(a, request):
     return {'schema': SCHEMA, 'complete': True, 'capture_id': uuid.uuid4().hex, 'begin_ns': start, 'end_ns': time.time_ns(),
             'requested_sha256': digest(request), 'execution': execution(before), 'identity': ident,
             'defaults_path': str(Path(a.defaults).absolute()), 'defaults_snapshot': snap['lines'],
-            'io': {'bytes_read': probe['bytes_read'], 'files_read': probe['files_read']},
+            'io': {'bytes_read': probe['bytes_read'], 'files_read': probe['files_read'],
+                   'wall_seconds': time.monotonic() - wall_start},
             'limits': {'max_bytes': a.max_bytes, 'max_files': a.max_files},
             'redaction': 'Unknown or sensitive values are lengths only; same-length secret changes across captures are not attested.'}
 
@@ -367,7 +369,7 @@ def main():
     c.add_argument('out'); c.add_argument('--request', required=True)
     c.add_argument('--container', default='qwen-flash-prod')
     c.add_argument('--defaults', default='/etc/default/vllm-flash')
-    c.add_argument('--timeout', type=int, default=300)
+    c.add_argument('--timeout', type=int, default=1800)
     c.add_argument('--max-bytes', type=int, default=512 * 1024**3)
     c.add_argument('--max-files', type=int, default=100000)
     for name in ('declare','declare-pair'):

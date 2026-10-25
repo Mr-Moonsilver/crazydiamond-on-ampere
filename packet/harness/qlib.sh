@@ -31,6 +31,16 @@ identity() {  # Keep arguments out of xtrace; caller passes paths, never secret 
   python3 "$_QLIB_IDENTITY_DIR/engine_identity.py" capture "$out" --request "$request" "$@"
 }
 identity_check() { python3 "$_QLIB_IDENTITY_DIR/engine_identity.py" check "$@"; }
+identity_cost() {  # Only numerical I/O metadata is printed; no identity fields.
+  python3 - "$1" <<'PY'
+import json, sys
+try:
+    d=json.load(open(sys.argv[1])); i=d['io']
+    print('capture_wall_s=%.3f bytes_read=%d' % (i['wall_seconds'],i['bytes_read']))
+except Exception:
+    print('capture_wall_s=unavailable bytes_read=unavailable')
+PY
+}
 installed() {
   local ovl=$1 chunk=$2 env mounts kv k; shift 2
   env=$(docker inspect qwen-flash-prod --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)

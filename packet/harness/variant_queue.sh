@@ -29,6 +29,11 @@ cleanup_variant() {
 }
 trap cleanup_variant EXIT; trap 'exit 130' INT TERM HUP
 run_step() { local n=$1 rc; shift; "$@" > "$Q/$n.log" 2>&1; rc=$?; step "$n" "$rc"; return "$rc"; }
+capture_variant() {
+  local name=$1 out=$2 request=$3 rc
+  identity "$out" "$request" --timeout 1800 > "$Q/$name.log" 2>&1; rc=$?
+  step "$name" "$rc" "$(identity_cost "$out")"; return "$rc"
+}
 prepare_variant() {
   [[ $(sha256sum /tmp/setcfg.py | cut -d' ' -f1) == f3cae1379fa9079785c03a5555dbf739c687c5dcde9b1c6e058b38e8849754fe ]] || return 1
   [[ $(sha256sum "$H/run-flash-prod.sh.q9" | cut -d' ' -f1) == 98d6d2a21927b8943f1ae9b0b43616757e80adac0c628e65f482e4332e3cf126 ]] || return 1
@@ -54,14 +59,14 @@ start_variant() {
   systemctl reset-failed vllm-flash
   run_step "$name.restart" /usr/local/sbin/flash-reconfig.sh || return 1
   CURRENT=$name
-  run_step "$name.identity" identity "$Q/$name.identity.json" "$Q/$name.request.json"
+  capture_variant "$name.identity" "$Q/$name.identity.json" "$Q/$name.request.json"
 }
 measured() {
   local n=$1; shift
-  run_step "$n.before" identity "$Q/$n.before.json" "$Q/$CURRENT.request.json" || return 1
+  capture_variant "$n.before" "$Q/$n.before.json" "$Q/$CURRENT.request.json" || return 1
   local rc=0 ar=0
   run_step "$n" "$@" || rc=$?
-  run_step "$n.after" identity "$Q/$n.after.json" "$Q/$CURRENT.request.json" || ar=$?
+  capture_variant "$n.after" "$Q/$n.after.json" "$Q/$CURRENT.request.json" || ar=$?
   run_step "$n.stable" identity_check "$Q/$n.before.json" "$Q/$CURRENT.request.json" "$Q/$n.after.json" || ar=$?
   [[ $rc == 0 && $ar == 0 ]]
 }
