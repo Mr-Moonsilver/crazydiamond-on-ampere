@@ -178,7 +178,7 @@ class DeclareTests(unittest.TestCase):
         configs={}
         for cfg in ('DENSE','CONTROL','VERIFY','SHIP'):
             # Source the actual shared settings arrays, not a handwritten copy.
-            script='QNAME=q16-regression; E2_OVERLAY=$3; source "$1"; declare -n words="$2"; printf "%s\\0" "${words[@]}"'
+            script='unset E2_KV_BYTES; QNAME=q16-regression; E2_OVERLAY=$3; source "$1"; declare -n words="$2"; printf "%s\\0" "${words[@]}"'
             p=subprocess.run(['bash','-uc',script,'fixture',str(HERE/'runs/q16_settings.sh'),
                               'E2_'+cfg,dec.TASK+'/prod/overlay-v16g'],capture_output=True,check=True)
             words=p.stdout.decode().rstrip('\0').split('\0')
@@ -190,6 +190,7 @@ class DeclareTests(unittest.TestCase):
             with self.subTest(config=cfg):
                 expected='0' if cfg=='DENSE' else '1'
                 self.assertEqual(overrides['SPARSE_PREFILL'],'0' if cfg=='DENSE' else '-')
+                self.assertEqual(overrides['GPU_KV_BYTES'],'1500000000')
                 self.assertNotIn('VLLM_QSA_KVO_SPARSE_PREFILL=',overrides['EXTRA_ENV'])
                 # Model the current defaults after a previous dense run: each
                 # normal configuration MUST explicitly clear the persisted 0.
@@ -198,6 +199,8 @@ class DeclareTests(unittest.TestCase):
                 values=dec.raw_defaults(future)
                 if cfg!='DENSE':self.assertNotIn('SPARSE_PREFILL',values)
                 argv=dec.render(launch,values,IMAGE,self.root/('q16-argv-'+cfg),self.task)
+                self.assertEqual(argv.count('--kv-cache-memory-bytes'),1)
+                self.assertEqual(argv[argv.index('--kv-cache-memory-bytes')+1],'1500000000')
                 assignments=[v for v in argv if v.startswith('VLLM_QSA_KVO_SPARSE_PREFILL=')]
                 self.assertEqual(assignments,['VLLM_QSA_KVO_SPARSE_PREFILL='+expected])
                 declared,_=dec.declare(self.a,overrides,self.image,policy,self.root/('q16-declare-'+cfg))
