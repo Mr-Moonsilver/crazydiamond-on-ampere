@@ -349,6 +349,9 @@ class LaneForward:
         torch = self.torch
         with ExitStack() as stack:
             if torch is not None:
+                inference = getattr(torch, 'inference_mode', None)
+                if inference is not None:
+                    stack.enter_context(inference())
                 stack.enter_context(torch.cuda.stream(self.stream))
             if self.forward_context is not None:
                 stack.enter_context(self.forward_context())
