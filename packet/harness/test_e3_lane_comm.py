@@ -14,9 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
 
 import lane_comm  # noqa: E402
-from e3_types import TransactionId  # noqa: E402
+from e3_types import (TransactionId, LaneId, LaneRole, OperationTicket,
+                      DependencyRole, CompletionKind, CompletionProof)  # noqa: E402
 from lane_comm import (  # noqa: E402
     HEADER_MAGIC,
+    PPConsumerReceipt,
     LaneCommError,
     PrefillCommunicators,
     PrefillPPChannel,
@@ -258,6 +260,9 @@ class PPChannelTests(unittest.TestCase):
             header_values(txn(), 0, 0, 2048)
         with self.assertRaises(LaneCommError):
             header_values(object(), 0, 0, 1)
+        for stage, seq in ((0, 1_000_000), (1, 0)):
+            with self.assertRaises(LaneCommError):
+                header_values(txn(), stage, seq, 1)
 
     def test_round_trip_validates_header_and_releases_in_order(self):
         payload = FakeTensor([1, 2, 3, 4, 5, 6], (2, 3))
@@ -290,8 +295,48 @@ class PPChannelTests(unittest.TestCase):
         self.assertEqual(self.receiver.outstanding(), 0)
         with self.assertRaises(LaneCommError):
             self.sender.release_send(ticket, None)
-        self.assertTrue(self.sender.release_send(ticket, 'pp-consumer-proof'))
+        # The typed consumer proof binds transfer, peer storage and route.
+        peer = LaneId(2, LaneRole.PREFILL, 1, 7)
+        with self.assertRaises(LaneCommError):
+            self.sender.release_send(ticket, types.SimpleNamespace(transaction=t, stage=0, seq=0))
+        with self.assertRaises(LaneCommError):
+            self.sender.bind_consumer(peer, 2)  # live slot cannot be rebound
+        self.sender.consumer_binding = (peer, 2)  # fixture pre-admission binding
+        proof = PPConsumerReceipt(0, 0, 2, CompletionProof(
+            OperationTicket(t, 2, peer, 9, DependencyRole.HANDOFF),
+            CompletionKind.PP_CONSUMER, 1))
+        for bad in (types.SimpleNamespace(transaction=txn(2, 0, 4), stage=0, seq=0),
+                    types.SimpleNamespace(transaction=t, stage=1, seq=0),
+                    types.SimpleNamespace(transaction=t, stage=0, seq=1),
+                    'pp-consumer-proof'):
+            with self.assertRaises(LaneCommError):
+                self.sender.release_send(ticket, bad)
+        ticket.event.complete = False
+        with self.assertRaises(LaneCommError):
+            self.sender.release_send(ticket, proof)
+        ticket.event.complete = True
+        self.assertTrue(self.sender.release_send(ticket, proof))
         self.assertEqual(self.sender.free_slots, [1, 0])
+
+    def test_receipt_requires_real_kind_peer_epoch_and_route(self):
+        peer = LaneId(2, LaneRole.PREFILL, 3, 10)
+        self.sender.bind_consumer(peer, 7)
+        t = txn(1, 0, 4)
+        sent = self.sender.send(FakeTensor([0] * 6, (2, 3)), t, 0, 4)
+        def receipt(lane=peer, route=7, kind=CompletionKind.PP_CONSUMER,
+                    role=DependencyRole.HANDOFF):
+            return PPConsumerReceipt(0, 4, route, CompletionProof(
+                OperationTicket(t, lane.worker_rank, lane, 20, role), kind, 1))
+        for lane, route in ((LaneId(2, LaneRole.PREFILL, 2, 10), 7),
+                            (LaneId(3, LaneRole.PREFILL, 3, 10), 7), (peer, 6)):
+            with self.assertRaises(LaneCommError):
+                self.sender.release_send(sent, receipt(lane, route))
+        for kind in (CompletionKind.GPU_EVENT, CompletionKind.STATE_WRITE):
+            with self.assertRaises(LaneCommError):
+                receipt(kind=kind)
+        with self.assertRaises(LaneCommError):
+            receipt(role=DependencyRole.PRODUCER)
+        self.assertTrue(self.sender.release_send(sent, receipt()))
 
     def test_header_mismatch_quarantines(self):
         t = txn(1, 0, 4)

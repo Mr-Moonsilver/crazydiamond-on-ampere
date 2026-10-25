@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
 import numpy as np  # noqa: E402
 
 import lane_chunk  # noqa: E402
+from e3_types import TransactionId  # noqa: E402
 from lane_chunk import ChunkAdmission, LaneChunkError, LaneChunkFactory, LaneTables, Ports  # noqa: E402
 
 
@@ -223,9 +224,20 @@ def fake_ports(calls):
 
 
 def admission(**overrides):
-    base = dict(request_uid='req-a', request_generation=0, prompt_end=12, chunk_start=0, chunk_end=8,
-                input_ids=tuple(range(8)), ngram_context=(1, 2), block_tables=((5, 6, 7), (9, 10), ()),
-                new_block_ids_to_zero=(), cow_pairs=(), state_epoch=1)
+    txn = {name: overrides.pop(name) for name in
+           ('engine_epoch', 'request_uid', 'request_generation', 'chunk_start', 'chunk_end',
+            'txn_seq') if name in overrides}
+    start, end = txn.get('chunk_start', 0), txn.get('chunk_end', 8)
+    txn.setdefault('engine_epoch', 1)
+    txn.setdefault('request_uid', 'req-a')
+    txn.setdefault('request_generation', 0)
+    txn.setdefault('chunk_start', start)
+    txn.setdefault('chunk_end', end)
+    txn.setdefault('txn_seq', 1)
+    base = dict(transaction=TransactionId(**txn), prompt_end=12,
+                input_ids=tuple(range(start, end)), ngram_context=(1, 2),
+                block_tables=((5, 6, 7), (9, 10), ()), new_block_ids_to_zero=(),
+                cow_pairs=(), state_epoch=1)
     base.update(overrides)
     return ChunkAdmission(**base)
 
@@ -245,6 +257,33 @@ class AdmissionTests(unittest.TestCase):
             admission(block_tables=())
         with self.assertRaises(LaneChunkError):
             Ports(InputBatch=None)
+
+    def test_identity_is_derived_from_the_canonical_transaction(self):
+        adm = admission()
+        self.assertIs(type(adm.transaction), TransactionId)
+        self.assertEqual((adm.request_uid, adm.request_generation, adm.chunk_start,
+                          adm.chunk_end, adm.num_tokens), ('req-a', 0, 0, 8, 8))
+        second = admission(chunk_start=8, chunk_end=11, txn_seq=2)
+        self.assertEqual((second.request_uid, second.chunk_start, second.chunk_end,
+                          second.num_tokens), ('req-a', 8, 11, 3))
+        with self.assertRaises(TypeError):
+            ChunkAdmission(request_uid='req-a', prompt_end=12,
+                           input_ids=tuple(range(8)), ngram_context=(),
+                           block_tables=((5,),))  # no duplicated identity fields
+        for bad in ('txn', object(), None):
+            with self.assertRaises(LaneChunkError):
+                admission(transaction=bad)
+
+    def test_repr_redacts_request_tokens_and_block_tables(self):
+        text = repr(admission())
+        self.assertNotIn('req-a', text, 'request uid must not be logged')
+        self.assertIn('TransactionId(', text)
+        self.assertIn('input_ids=<8 ids>', text)
+        self.assertIn('block_tables=<3 groups>', text)
+        self.assertIn('cow_pairs=<0 pairs>', text)
+        self.assertNotIn('block_tables=(', text)
+        self.assertNotIn('input_ids=(', text)
+        self.assertNotIn('5, 6, 7', text)
 
 
 class TablesTests(unittest.TestCase):

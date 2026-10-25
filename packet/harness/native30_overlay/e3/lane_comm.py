@@ -23,17 +23,47 @@ Nothing here is imported at module load from torch/vLLM; the constructors take
 the communicator class and torch module so CPU tests inject fakes.
 """
 from contextlib import contextmanager
+from dataclasses import dataclass
 
-from e3_types import E3ContractError, TransactionId
+from e3_types import (E3ContractError, TransactionId, CompletionProof, CompletionKind,
+                      DependencyRole, LaneId, LaneRole)
 
 HEADER_MAGIC = 0x5E3_C0DE
 HEADER_LEN = 8
 PP_SLOTS = 2
 WARMUP_ELEMENTS = 16
+_MISSING = object()
 
 
 class LaneCommError(E3ContractError):
     pass
+
+
+@dataclass(frozen=True)
+class PPConsumerReceipt:
+    """Engine-routed, queried receiver proof, bound to a PP transfer and route.
+
+    Creating the record does not establish completion: the receiver/engine
+    adapter must supply a real outstanding-ticket CompletionProof.
+    """
+    stage: int
+    seq: int
+    route_generation: int
+    proof: CompletionProof
+
+    def __post_init__(self):
+        if any(type(v) is not int or v < 0 for v in
+               (self.stage, self.seq, self.route_generation)) or self.stage != 0:
+            raise LaneCommError('invalid PP receipt identity')
+        if (type(self.proof) is not CompletionProof
+                or self.proof.kind is not CompletionKind.PP_CONSUMER
+                or self.proof.ticket.dependency_role is not DependencyRole.HANDOFF
+                or self.proof.ticket.lane.role is not LaneRole.PREFILL):
+            raise LaneCommError('queried PP_CONSUMER/HANDOFF proof required')
+
+    @property
+    def transaction(self):
+        return self.proof.ticket.transaction
 
 
 def _torch():
@@ -159,6 +189,8 @@ def header_values(transaction, stage, seq, num_tokens):
     for name, value in (('stage', stage), ('seq', seq), ('num_tokens', num_tokens)):
         if type(value) is not int or value < 0:
             raise LaneCommError(f'PP header {name} must be a non-negative int')
+    if stage != 0 or seq >= 1_000_000:
+        raise LaneCommError('PP header stage/sequence outside the two-stage encoding')
     if num_tokens == 0 or num_tokens > transaction.chunk_end - transaction.chunk_start:
         raise LaneCommError('PP header token count does not fit the transaction chunk')
     return [HEADER_MAGIC, transaction.engine_epoch, transaction.txn_seq,
@@ -216,6 +248,7 @@ class PrefillPPChannel:
         self.received = 0
         self.quarantined = None
         self.warmed = False
+        self.consumer_binding = None
 
     # -- inventory ----------------------------------------------------------
     def bytes_owned(self):
@@ -267,13 +300,37 @@ class PrefillPPChannel:
         return ticket
 
     def release_send(self, ticket, consumer_proof):
-        """Free a send slot after local completion and the receiver's consumer proof."""
+        """Free a send slot after local completion and the receiver's consumer proof.
+
+        The proof must name the same transaction, stage and transfer sequence
+        as the ticket; an RPC acknowledgment or any other ticket cannot free a
+        slot.
+        """
         self._check_ticket(ticket, 'send')
-        if consumer_proof is None:
-            raise LaneCommError('send release needs the receiver consumer proof')
+        self.validate_consumer_proof(ticket, consumer_proof)
         if not bool(ticket.event.query()):
             raise LaneCommError('send release before local send completion')
         self._retire(ticket)
+        return True
+
+    def bind_consumer(self, lane, route_generation):
+        """Bind the admitted peer lane/epoch before PP work; never rebind live slots."""
+        if (type(lane) is not LaneId or lane.role is not LaneRole.PREFILL
+                or type(route_generation) is not int or route_generation < 0):
+            raise LaneCommError('invalid peer lane/route binding')
+        if self.tickets:
+            raise LaneCommError('cannot rebind a live PP channel')
+        self.consumer_binding = (lane, route_generation)
+
+    def validate_consumer_proof(self, ticket, receipt):
+        self._check_ticket(ticket, 'send')
+        if type(receipt) is not PPConsumerReceipt or self.consumer_binding is None:
+            raise LaneCommError('typed PP receipt and admitted peer binding required')
+        lane, route = self.consumer_binding
+        if (receipt.transaction != ticket.transaction or receipt.stage != ticket.stage
+                or receipt.seq != ticket.seq or receipt.route_generation != route
+                or receipt.proof.ticket.lane != lane):
+            raise LaneCommError('PP receipt does not match transfer/lane/route')
         return True
 
     # -- receiver -----------------------------------------------------------
@@ -413,6 +470,6 @@ class PrefillCommunicators:
         return record
 
 
-__all__ = ['HEADER_LEN', 'HEADER_MAGIC', 'LaneCommError', 'PP_SLOTS', 'PPTicket',
+__all__ = ['PPConsumerReceipt', 'HEADER_LEN', 'HEADER_MAGIC', 'LaneCommError', 'PP_SLOTS', 'PPTicket',
            'PrefillCommunicators', 'PrefillPPChannel', 'PrefillTpCommunicator',
            'header_values', 'tp_scope']

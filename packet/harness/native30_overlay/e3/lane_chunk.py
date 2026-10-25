@@ -28,7 +28,7 @@ decode graph still reads is an open audit item for the GPU smoke.
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from e3_types import E3ContractError
+from e3_types import E3ContractError, TransactionId
 
 PAD_SLOT_ID_DEFAULT = -1
 
@@ -50,13 +50,15 @@ def _ints(name, values, *, allow_empty=False):
 
 @dataclass(frozen=True)
 class ChunkAdmission:
-    """What the lane consumes from the engine's admission record (frozen CPU values)."""
+    """What the lane consumes from the engine's admission record (frozen CPU values).
 
-    request_uid: str
-    request_generation: int
+    Identity comes from the canonical :class:`e3_types.TransactionId`: the
+    request UID/generation and chunk bounds are derived from it, never
+    duplicated as independent fields.
+    """
+
+    transaction: TransactionId
     prompt_end: int
-    chunk_start: int
-    chunk_end: int
     input_ids: tuple
     ngram_context: tuple
     block_tables: tuple
@@ -65,11 +67,12 @@ class ChunkAdmission:
     state_epoch: int = 0
 
     def __post_init__(self):
-        if not isinstance(self.request_uid, str) or not self.request_uid:
-            raise LaneChunkError('request_uid required')
-        for name in ('request_generation', 'prompt_end', 'chunk_start', 'chunk_end', 'state_epoch'):
-            if type(getattr(self, name)) is not int or getattr(self, name) < 0:
-                raise LaneChunkError(f'{name} must be a non-negative int')
+        if type(self.transaction) is not TransactionId:
+            raise LaneChunkError('transaction must be the canonical TransactionId')
+        if type(self.prompt_end) is not int or self.prompt_end < 0:
+            raise LaneChunkError('prompt_end must be a non-negative int')
+        if type(self.state_epoch) is not int or self.state_epoch < 0:
+            raise LaneChunkError('state_epoch must be a non-negative int')
         if not (self.chunk_start < self.chunk_end <= self.prompt_end - 1):
             raise LaneChunkError('chunk must lie inside the prompt and leave the final token')
         _ints('input_ids', self.input_ids)
@@ -88,8 +91,35 @@ class ChunkAdmission:
                 raise LaneChunkError('cow_pairs must hold (src, dst) int pairs')
 
     @property
+    def request_uid(self):
+        return self.transaction.request_uid
+
+    @property
+    def request_generation(self):
+        return self.transaction.request_generation
+
+    @property
+    def chunk_start(self):
+        return self.transaction.chunk_start
+
+    @property
+    def chunk_end(self):
+        return self.transaction.chunk_end
+
+    @property
     def num_tokens(self):
         return self.chunk_end - self.chunk_start
+
+    def __repr__(self):
+        """Never log request ids, token ids or block tables; counts only."""
+        return (f'ChunkAdmission(transaction={self.transaction!r}, '
+                f'prompt_end={self.prompt_end}, '
+                f'input_ids=<{len(self.input_ids)} ids>, '
+                f'ngram_context=<{len(self.ngram_context)} ids>, '
+                f'block_tables=<{len(self.block_tables)} groups>, '
+                f'new_block_ids_to_zero=<{len(self.new_block_ids_to_zero)} ids>, '
+                f'cow_pairs=<{len(self.cow_pairs)} pairs>, '
+                f'state_epoch={self.state_epoch})')
 
 
 class Ports:
