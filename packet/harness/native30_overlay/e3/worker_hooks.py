@@ -162,6 +162,26 @@ def _enabled(env=None):
     return env.get('FLASH_S5_OVERLAP', '0') == '1'
 
 
+PROBE_ENV = 'FLASH_S5_DECODE_ONLY_PROBE'
+
+
+def _split_enabled(env=None):
+    """True when either the overlap path or the decode-only probe needs a split.
+
+    The default-off pair takes no import and no allocation.  With either flag
+    set, ``decode_probe.mode_settings`` validates the flag conflict and the
+    explicit decode SM declaration before the split is opened.
+    """
+    env = os.environ if env is None else env
+    if env.get('FLASH_S5_OVERLAP', '0') == '0' and env.get(PROBE_ENV, '0') == '0':
+        return False
+    from decode_probe import mode_settings
+
+    if mode_settings(env) is not None:
+        return True
+    return _enabled(env)
+
+
 def workspace_lanes(stock_lanes, env=None):
     """One dedicated prefill lane on top of the stock count when enabled."""
     if type(stock_lanes) is not int or stock_lanes < 1:
@@ -186,8 +206,13 @@ def capture_context(manager):
 
 
 def after_runner_init(worker, env=None):
-    """Create the declared green split and install the split bank objects."""
-    if not _enabled(env):
+    """Create the declared green split and install the split bank objects.
+
+    In the decode-only probe mode only the split is created here; the split
+    bank is installed later by ``install_decode_probe`` once the stock manager
+    exists.
+    """
+    if not _split_enabled(env):
         return None
     runner = getattr(worker, 'model_runner', None)
     if runner is None:
@@ -240,6 +265,6 @@ def decode_scope(worker):
     return scope(runner)
 
 
-__all__ = ['ACCEPTED', 'CUDAGRAPH_FORWARD', 'PINS', 'WORKER_AFTER_C_SHA256', 'TRANSFORMS', 'WORKER_FORWARD', 'after_runner_init',
+__all__ = ['ACCEPTED', 'CUDAGRAPH_FORWARD', 'PINS', 'PROBE_ENV', 'WORKER_AFTER_C_SHA256', 'TRANSFORMS', 'WORKER_FORWARD', 'after_runner_init',
            'capture_context', 'decode_scope', 'generate', 'generate_one',
            'install_split_bank', 'prefill_workspace_lane', 'revert_one', 'workspace_lanes']

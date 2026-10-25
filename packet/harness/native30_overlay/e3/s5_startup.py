@@ -31,6 +31,7 @@ from async_handoff import (
     HandoffError,
     build_composition,
 )
+from decode_probe import mode_settings, require_decode_probe_ready
 from lane_hooks import LaneRuntime
 from lane_state import estimated_e3_inventory
 from scheduler_hooks import SchedulerLeases
@@ -64,6 +65,12 @@ def _enabled(env):
 def install_builder(runner, kv_caches, is_profiling=False, *, env=None):
     """Install the builder A's ``init_lane`` calls at the end of runner init."""
     env = os.environ if env is None else env
+    probe = mode_settings(env)
+    if probe is not None:
+        # Diagnostic mode: the split (worker_hooks) and later the split bank
+        # (native_startup.install_decode_probe) are the whole construction.
+        require_decode_probe_ready()
+        return None
     if is_profiling or not _enabled(env):
         return None
     require_native_ready()
@@ -139,6 +146,9 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
 def install_engine(engine, *, env=None, clock=time.monotonic):
     """Install the engine-side composition at the generated ``__init__`` seam."""
     env = os.environ if env is None else env
+    if mode_settings(env) is not None:
+        # The decode-only probe has no engine-side lane composition.
+        return None
     if not _enabled(env):
         return None
     require_native_ready()
@@ -189,4 +199,4 @@ def settings(env=None):
 
 
 __all__ = ['OVERLAP_ENV', 'StartupError', 'install_builder', 'install_engine', 'install_native_lane',
-           'settings']
+           'require_decode_probe_ready', 'require_native_ready', 'settings']

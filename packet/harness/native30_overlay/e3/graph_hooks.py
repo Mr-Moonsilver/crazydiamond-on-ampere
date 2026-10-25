@@ -26,9 +26,10 @@ import hashlib
 import os
 
 from e3_types import OperationTicket, TransactionId
-from graph_router import ExecutionDescriptor, GraphRouter, GraphRoutingError
+from graph_router import DecodeProbeRouter, ExecutionDescriptor, GraphRouter, GraphRoutingError
 
 PINNED_SHA256 = 'a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2'
+PROBE_ENV = 'FLASH_S5_DECODE_ONLY_PROBE'
 
 # Reviewed A-generated runner compositions (pinned, E2 execution, E2 startup).
 A_SOURCE_SHA256 = {
@@ -141,14 +142,37 @@ def _overlap_enabled():
     return os.environ.get('FLASH_S5_OVERLAP', '0') == '1'
 
 
+def _probe_enabled():
+    return os.environ.get(PROBE_ENV, '0') == '1'
+
+
 def _router(runner):
     router = getattr(runner, '_flash_e3_graph_router', None)
-    if router is not None and not isinstance(router, GraphRouter):
+    if router is not None and not isinstance(router, (GraphRouter, DecodeProbeRouter)):
         raise GraphRoutingError('runner E3 graph router is not a GraphRouter')
     return router
 
 
+def _probe(runner):
+    """The decode-only probe, when this runner started in that diagnostic mode."""
+    probe = getattr(runner, '_flash_s5_decode_probe', None)
+    if probe is None:
+        return None
+    from decode_probe import DecodeProbe
+
+    if not isinstance(probe, DecodeProbe):
+        raise GraphRoutingError('runner decode probe is not a DecodeProbe')
+    if not isinstance(getattr(runner, '_flash_e3_graph_router', None), DecodeProbeRouter):
+        raise GraphRoutingError('decode probe runner has no split-only router')
+    return probe
+
+
 def _transaction(scheduler_output, router):
+    if isinstance(router, DecodeProbeRouter):
+        if getattr(scheduler_output, 'flash_e3_transaction', None) is not None:
+            raise GraphRoutingError('decode-only probe has no prefill transaction')
+        # Typed no-prefill guard in place of the anchor transaction.
+        return router.no_prefill_guard()
     transaction = getattr(scheduler_output, 'flash_e3_transaction', None)
     if transaction is None and (router.worker.active_prefill is not None
                                 or router.current_mode != 'ordinary'):
@@ -178,6 +202,12 @@ def check_route(runner, scheduler_output, batch_desc,
         return None
     if batch_desc is None:
         raise GraphRoutingError("router dispatch requires a descriptor")
+    if isinstance(router, DecodeProbeRouter):
+        probe = _probe(runner)
+        if probe is None:
+            raise GraphRoutingError('decode probe router installed without the probe')
+        descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
+        return probe.check_route(descriptor, _transaction(scheduler_output, router))
     transaction = _transaction(scheduler_output, router)
     if transaction is None:
         return None
@@ -207,6 +237,13 @@ def replay_fullgraph(runner, scheduler_output, batch_desc, stock):
         return stock(batch_desc)
     if batch_desc is None:
         raise GraphRoutingError("router replay requires a descriptor")
+    if isinstance(router, DecodeProbeRouter):
+        probe = _probe(runner)
+        if probe is None:
+            raise GraphRoutingError('decode probe router installed without the probe')
+        if probe.route != 'split':
+            return stock(batch_desc)
+        return probe.replay(ExecutionDescriptor.from_vllm(batch_desc))
     transaction = _transaction(scheduler_output, router)
     if transaction is None:
         return stock(batch_desc)
@@ -240,6 +277,14 @@ def capture_banks(runner):
     """Capture the declared split bank after the ordinary engine capture."""
     router = _router(runner)
     if router is None:
+        if _probe_enabled():
+            from native_startup import install_decode_probe
+
+            probe = install_decode_probe(runner)
+            if getattr(runner, '_flash_e3_graph_captured', False):
+                raise GraphRoutingError('graph banks were already captured')
+            runner._flash_e3_graph_captured = True
+            return probe.router
         if not _overlap_enabled():
             return None
         builder = getattr(runner, '_flash_e3_graph_builder', None)
@@ -249,6 +294,18 @@ def capture_banks(runner):
         if not isinstance(router, GraphRouter):
             raise GraphRoutingError('C graph builder did not return a GraphRouter')
         runner._flash_e3_graph_router = router
+    if isinstance(router, DecodeProbeRouter):
+        probe = _probe(runner)
+        if probe is None:
+            raise GraphRoutingError('decode probe router installed without the probe')
+        if getattr(runner, '_flash_e3_graph_captured', False):
+            raise GraphRoutingError('graph banks were already captured')
+        if probe.router.state == 'empty':
+            probe.capture()
+        elif probe.router.state != 'ready':
+            raise GraphRoutingError('decode probe bank is not capturable')
+        runner._flash_e3_graph_captured = True
+        return router
     if getattr(runner, '_flash_e3_graph_captured', False):
         raise GraphRoutingError('graph banks were already captured')
     router.capture_at_startup()
@@ -258,6 +315,13 @@ def capture_banks(runner):
 
 def shutdown_banks(runner):
     """Destroy graph banks after C has drained; idempotent once complete."""
+    probe = _probe(runner)
+    if probe is not None:
+        if getattr(runner, '_flash_e3_graph_shutdown', False):
+            return None
+        record = probe.shutdown()
+        runner._flash_e3_graph_shutdown = True
+        return record
     router = _router(runner)
     if router is None:
         return None
@@ -269,6 +333,6 @@ def shutdown_banks(runner):
 
 
 __all__ = [
-    'A_SOURCE_SHA256', 'PINNED_SHA256', 'capture_banks', 'check_route', 'generate',
-    'replay_fullgraph', 'revert', 'shutdown_banks', 'source_kind',
+    'A_SOURCE_SHA256', 'PINNED_SHA256', 'PROBE_ENV', 'capture_banks', 'check_route',
+    'generate', 'replay_fullgraph', 'revert', 'shutdown_banks', 'source_kind',
 ]

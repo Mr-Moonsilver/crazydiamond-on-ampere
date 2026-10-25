@@ -34,11 +34,13 @@ from pathlib import Path
 import shutil
 
 import async_handoff
+import decode_probe
 import executor_hooks
-import lane_hooks
-import operation_source
 import graph_hooks
+import green_context
+import lane_hooks
 import model_hooks
+import operation_source
 import qsa_driver
 import scheduler_hooks
 import worker_hooks
@@ -53,7 +55,7 @@ E3_MODULES = ('e3_types', 'lane_state', 'reply_transport', 'native_backend',
               'graph_router', 'graph_hooks', 'qsa_operation',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
               # lane forward/QSA driver, communicators, startup, chunk, dispatcher.
-              'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source')
+              'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe')
 NATIVE_FILES = ('native/flash_s5_green.cu',)
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
 CUDAGRAPH_PATH = 'v1/worker/gpu/cudagraph_utils.py'
@@ -230,6 +232,50 @@ def compose_graph(module, files):
     return result
 
 
+def _decode_probe_declaration(files):
+    """Structured declaration of the diagnostic decode-only mode only.
+
+    It qualifies ``diagnostic_modes.decode_only`` for an explicitly requested
+    GPU diagnostic; it does not qualify, arm or change the full package.
+    """
+    pins = dict(worker_hooks.PINS)
+    pins['v1/worker/gpu/model_runner.py'] = graph_hooks.PINNED_SHA256
+    shas = {}
+    for name in decode_probe.GENERATED_SOURCES:
+        key = 'e3/' + name + '.py'
+        if key not in files:
+            raise ValueError('decode probe declaration lacks generated ' + key)
+        shas[name] = _sha_text(files[key])
+    return {
+        'declared': True,
+        'qualifies': 'diagnostic_modes.decode_only',
+        'diagnostic_only': True,
+        'scope': ('separately declared diagnostic mode; it does not qualify the full '
+                  'FLASH_S5_OVERLAP package, which stays armable:false'),
+        'enabled_by': {decode_probe.PROBE_ENV: '1',
+                       decode_probe.OVERLAP_ENV: '0',
+                       decode_probe.DECODE_SMS_ENV: '<explicit, no default>'},
+        'requires': {
+            'flag_conflict': 'probe=1 with overlap=1 refuses before any allocation',
+            'decode_sms': 'FLASH_S5_DECODE_SMS must be declared; code supplies no default',
+            'storage_epoch': decode_probe.STORAGE_EPOCH,
+            'route': 'drained RouteController transitions; unsupported dispatch invalidates the interval',
+        },
+        'gate': 's5_startup.require_decode_probe_ready',
+        'startup': 'native_startup.install_decode_probe',
+        'constructs': ['green split (worker_hooks.after_runner_init)',
+                       'split decode graph bank, own pool (split_bank)',
+                       'drained RouteController'],
+        'excluded': list(decode_probe.EXCLUDED),
+        'evidence': {
+            'pins': pins,
+            'helper_source_sha256': green_context.helper_source_sha256(),
+            'generated_source_shas': shas,
+            'tests': list(decode_probe.REQUIRED_TESTS),
+        },
+    }
+
+
 def build(base, out, reference, base_manifest_sha256, graph=None,
           settings=None):
     base, out, reference = map(Path, (base, out, reference))
@@ -335,6 +381,7 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
 
     installed = {
         async_handoff.OVERLAP_ENV: '0',
+        decode_probe.PROBE_ENV: '0',
         async_handoff.TRANSPORT_ENV: async_handoff.QUALIFIED_TRANSPORT,
         async_handoff.SPARSE_OVERLAP_ENV: '0',
         async_handoff.COMMAND_SLOTS_ENV: str(async_handoff.PINNED_RING_SLOTS),
@@ -398,6 +445,10 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
             'no GPU, CUDA graph, PP ring, DMA qualification or performance run',
         ],
         'incremental_kv_bytes': 0,
+    }
+    # Diagnostic-only declaration, separate from the full package's armability.
+    record['diagnostic_modes'] = {
+        'decode_only': _decode_probe_declaration(files),
     }
     if settings:
         record['requested_settings'] = dict(settings)
