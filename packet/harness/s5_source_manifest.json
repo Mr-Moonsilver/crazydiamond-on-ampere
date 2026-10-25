@@ -9,6 +9,8 @@
     "vllm.model_executor.layers.mamba.ops.causal_conv1d": "044d005cfe59fd0818ed421274e04f3e8dd679b8cdb64fca9f4422f2643484b2",
     "vllm.third_party.flash_linear_attention.ops.chunk": "c105ead259e86aedc248c53e7c4cef07034d0ff12da608d80265d1dd0990803f",
     "vllm.distributed.device_communicators.custom_all_reduce": "a048c1327c23580805600c0c951831bec333b1ffc4eb26a0e3d34119c4f0c445",
-    "vllm._custom_ops": "236af80568375bc41ed7f0fa28067e29efd5c77a6cf49f24d796312fa3870e43"
+    "vllm._custom_ops": "236af80568375bc41ed7f0fa28067e29efd5c77a6cf49f24d796312fa3870e43",
+    "vllm.v1.attention.backends.utils": "f3e0d77c31df8e23ad866371953b6ab7b33ec9ed36813256356f741caf0c97bb",
+    "vllm.distributed.device_communicators.pynccl": "882fb83c5a3c565a3f8fd664b79f5ceae566dca180019ecafd74bc8c11d9f8cf"
   }
 }

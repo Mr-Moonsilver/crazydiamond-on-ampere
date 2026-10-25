@@ -16,6 +16,8 @@ from pathlib import Path
 import threading
 import time
 import traceback
+from types import SimpleNamespace
+from s5_runtime import Progress, Watchdog
 
 import torch
 import torch.distributed as dist
@@ -151,20 +153,29 @@ class Green:
 
 
 class Reducer:
-    """Separate per-lane custom-AR/communicator instances and scratch.
+    """Decode uses CA, prefill uses a separate PyNccl communicator, with no fallback.
 
-    PyNccl is an explicit reported fallback. Both launch on the caller's current
-    stream; torch.distributed NCCL's private stream is used only by the oracle.
+    Both launch on the caller's current stream. This removes dual-CA spinning,
+    but NCCL also waits on peers: GPU liveness remains an experimental gate.
+    torch.distributed NCCL's private stream is used only by the oracle.
     """
-    def __init__(self, group, device):
+    def __init__(self, group, device, lane, progress, backend="custom"):
         from vllm.distributed.device_communicators.custom_all_reduce import CustomAllreduce
         from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-        self.ca = CustomAllreduce(group, device=device)
+        self.ca = CustomAllreduce(group, device=device) if backend == "custom" else None
+        self.backend, self.lane, self.progress = backend, lane, progress
+        self.step, self.collective = "setup", 0
         self.nc = PyNcclCommunicator(group, device=device)
         self.paths = set()
 
     def __call__(self, x):
-        if not self.ca.disabled and self.ca.should_custom_ar(x):
+        self.collective += 1
+        fields = dict(step=self.step, collective=self.collective, shape=list(x.shape), backend=self.backend,
+                      stream=int(torch.cuda.current_stream().cuda_stream))
+        self.progress.event(self.lane, "collective-enter", **fields)
+        if self.backend == "custom":
+            if self.ca.disabled or not self.ca.should_custom_ar(x):
+                raise Inconclusive("decode CustomAllreduce unavailable for declared shape")
             self.paths.add("CustomAllreduce")
             out = self.ca.custom_all_reduce(x)
         else:
@@ -172,10 +183,11 @@ class Reducer:
             out = self.nc.all_reduce(x,stream=torch.cuda.current_stream())
         if out is None:
             raise Inconclusive("no custom/PyNccl all-reduce available; no torch-NCCL fallback")
+        self.progress.event(self.lane, "collective-issued", **fields)
         return out
 
     def capture(self):
-        return self.ca.capture() if not self.ca.disabled else nullcontext()
+        return self.ca.capture() if self.ca is not None and not self.ca.disabled else nullcontext()
 
     def check(self, refgroup):
         for n in (4, 1024):
@@ -225,12 +237,16 @@ class Slice:
         self.state_ids = torch.arange(self.reqs, device="cuda", dtype=torch.int32)
         self.cache_ids = self.state_ids + 1
         self.cu = torch.tensor([0, self.t], device="cuda", dtype=torch.int32) if prefill else torch.arange(self.t+1, device="cuda", dtype=torch.int32)
+        self.conv_metadata = None
         self.chunk_indices = self.chunk_offsets = None
         if prefill:
             from vllm.third_party.flash_linear_attention.ops.index import prepare_chunk_indices, prepare_chunk_offsets
             starts = torch.tensor([0,self.t],dtype=torch.int32)
             self.chunk_indices = prepare_chunk_indices(starts,64).to("cuda")
             self.chunk_offsets = prepare_chunk_offsets(starts,64).to("cuda")
+            from vllm.v1.attention.backends.utils import compute_causal_conv1d_metadata
+            nums, batch, offset = compute_causal_conv1d_metadata(starts, device=torch.device("cuda", torch.cuda.current_device()))
+            self.conv_metadata = SimpleNamespace(nums_dict=nums, batch_ptr=batch, token_chunk_offset_ptr=offset)
         self.accepted = torch.ones(self.reqs, dtype=torch.int32, device="cuda")
         self.initial = torch.ones(self.reqs, dtype=torch.bool, device="cuda")
         self.workspace = marlin_make_workspace_new(torch.device("cuda", torch.cuda.current_device()), 4)
@@ -317,7 +333,7 @@ class Slice:
         if self.pre:
             cv = causal_conv1d_fn(packed.T, self.w["conv"], None, self.conv[i], self.cu,
                                   cache_indices=self.cache_ids, has_initial_state=self.initial,
-                                  activation="silu", validate_data=False).T.contiguous()
+                                  activation="silu", metadata=self.conv_metadata, validate_data=False).T.contiguous()
             q,k,v,g,beta = fused_post_conv_prep(cv,a,b,self.w["A"],self.w["dt"],8,128,128)
             out, state = chunk_gated_delta_rule(q.unsqueeze(0),k.unsqueeze(0),v.unsqueeze(0),
                             g.unsqueeze(0),beta.unsqueeze(0),initial_state=self.state[i][1:],
@@ -532,7 +548,7 @@ def verify_mode(dec, pre, graph, sd, sp):
             sp.synchronize()
         except BaseException as e:
             errors.append(e)
-    worker = threading.Thread(target=p)
+    worker = threading.Thread(target=p, daemon=True)
     worker.start()
     with torch.cuda.stream(sd):
         graph.replay()
@@ -565,16 +581,27 @@ def run_mode(name, dec, pre, graph, dtrace, sd, sp, ctl, steps, period, clock, g
     sm_pre = torch.full((green.nsm*32,), -1, dtype=torch.int32, device="cuda") if green else None
     torch.cuda.synchronize()
     event_rows = {"decode": [], "prefill": []}
+    stamp_buffers = {key: (torch.empty(2, dtype=torch.int64, device="cuda"),
+                          torch.empty(2, dtype=torch.int64, pin_memory=True)) for key in event_rows}
+    torch.cuda.synchronize()
 
     def execute(lane, stream, is_decode, release, issued=None):
         start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         trace = dtrace if is_decode else Trace()
-        stamps = torch.empty(2,dtype=torch.int64,device="cuda")
+        key = "decode" if is_decode else "prefill"
+        stamps, host_stamps = stamp_buffers[key]
+        complete = torch.cuda.Event()
+        lane.reduce.step = len(event_rows[key])
+        lane.reduce.progress.event(key, "step-enter", step=lane.reduce.step)
         submitted = time.perf_counter()-origin
         with torch.cuda.stream(stream):
             clock.stamp(stamps,stream)
             start.record()
             if is_decode:
+                lane.reduce.progress.event(key, "graph-issue", step=lane.reduce.step,
+                                           collectives=[dict(index=j, kind=x[0]) for j,x in enumerate(dtrace.events)
+                                                        if x[0] in ("allreduce", "ple_allreduce")],
+                                           meaning="one graph launch; these collectives are graph-ordered, not separate host calls")
                 graph.replay()
             else:
                 lane.forward(trace)
@@ -582,12 +609,16 @@ def run_mode(name, dec, pre, graph, dtrace, sd, sp, ctl, steps, period, clock, g
                     green.probe(sm_pre,stream)
             clock.stamp(stamps[1:],stream)
             end.record()
+            host_stamps.copy_(stamps, non_blocking=True)
+            complete.record()
+        lane.reduce.progress.event(key, "step-issued", step=lane.reduce.step)
         if issued:
             issued()
-        while not end.query():
+        while not complete.query():
             time.sleep(.0001)
         observed = time.perf_counter()-origin
-        ticks = stamps.cpu().tolist()
+        ticks = host_stamps.tolist()
+        lane.reduce.progress.event(key, "step-complete", step=lane.reduce.step)
         event_rows["decode" if is_decode else "prefill"].append((start, end))
         return {"raw_ticks": ticks, "cuda_event_ms": start.elapsed_time(end), "release_s": release, "submitted_s": submitted, "observed_s": observed,
                 "gpu_start_s": (ticks[0]-clock_zero)/1e9,
@@ -618,7 +649,9 @@ def run_mode(name, dec, pre, graph, dtrace, sd, sp, ctl, steps, period, clock, g
                 # Both ranks issue the same prefill tickets and drain the decode
                 # tail before stopping. Separate control and data communicators.
                 done = torch.tensor([int(ddone.is_set())],dtype=torch.int32)
+                pre.reduce.progress.event("prefill", "control-enter", step=len(prows))
                 dist.all_reduce(done,op=dist.ReduceOp.MIN,group=ctl)
+                pre.reduce.progress.event("prefill", "control-complete", step=len(prows))
                 if int(done[0]):
                     break
                 prows.append(execute(pre,sp,False,0.,issued=ready.set))
@@ -633,7 +666,7 @@ def run_mode(name, dec, pre, graph, dtrace, sd, sp, ctl, steps, period, clock, g
     elif name in ("decode","serial"):
         decoder()
     else:
-        p = threading.Thread(target=prefiller); d = threading.Thread(target=decoder)
+        p = threading.Thread(target=prefiller, daemon=True); d = threading.Thread(target=decoder, daemon=True)
         p.start(); d.start(); d.join(); p.join()
     torch.cuda.synchronize()
     if errors:
@@ -707,7 +740,13 @@ def run(args, spec):
     output = args.out
     result = {"rank":rank}
     contexts = []
+    progress = Progress(output, rank)
+    watchdog = Watchdog(progress, output, rank)
+    def phase(name, timeout=None):
+        result["phase"] = name
+        watchdog.arm(args.mode_timeout if timeout is None else timeout, name)
     try:
+        phase("distributed-and-helper-setup", 300)
         if os.environ.get("WORLD_SIZE") != "2":
             raise Inconclusive("launch with torch.distributed.run --nproc_per_node 2")
         if (os.environ.get("CUDA_DEVICE_ORDER")!="PCI_BUS_ID"
@@ -731,11 +770,11 @@ def run(args, spec):
         if compiled[0]["rc"]:
             raise Inconclusive("header-built green shim failed: "+compiled[0]["log"], compiled[0])
         result["green_shim_sha256"] = digest(library)
-        result["phase"] = "clock-validation"
+        phase("clock-validation")
         clock = DeviceClock(library)
         result["clock_check"] = clock.validate()
         result["clock_units_validated"] = True
-        result["phase"] = "source-validation"
+        phase("source-validation")
         expected = json.loads(Path(__file__).with_name("s5_source_manifest.json").read_text())
         if expected["model_config_sha256"] != spec["model_config_sha256"]:
             raise Inconclusive("model config hash differs from the reviewed config")
@@ -747,8 +786,8 @@ def run(args, spec):
                 raise Inconclusive(f"reviewed source hash mismatch: {module}")
         torch.manual_seed(871)
         torch.cuda.reset_peak_memory_stats()
-        result["phase"] = "reducers-and-kernel-setup"
-        rd, rp = Reducer(dg,device), Reducer(pg,device)
+        phase("reducers-and-kernel-setup")
+        rd, rp = Reducer(dg,device,"decode",progress), Reducer(pg,device,"prefill",progress,backend="pynccl")
         refault()
         rd.check(refgroup); rp.check(refgroup)
         result["reduction_equal"] = True
@@ -772,8 +811,8 @@ def run(args, spec):
         # Slice cadence scales by the layer fraction, not by measured slowed-down
         # performance. Keep the raw slice timings; no claimed full-model token rate.
         period = .0095*spec["layers"]/24
-        for mode in MODES:
-            result["phase"] = mode + ":setup"
+        for mode in spec["modes"]:
+            phase(mode + ":setup")
             torch.cuda.reset_peak_memory_stats()
             green = None
             if mode.startswith("green"):
@@ -787,21 +826,22 @@ def run(args, spec):
             else:
                 sd = torch.cuda.Stream(priority=-1 if mode=="prio" else 0)
                 sp = torch.cuda.Stream()
-            result["phase"] = mode + ":stream-clock-and-graph-smoke"
+            phase(mode + ":stream-clock-and-graph-smoke")
             checks = [clock.validate(sd, repeats=1), clock.validate(sp, repeats=1)]
             result.setdefault("stream_clock_checks", {})[mode] = checks
             # Use the least precise observed stream for boundary decisions.
             clock.evidence = max(checks + [result["clock_check"]], key=lambda c:c["ordering_uncertainty_ns"])
             result.setdefault("stream_order_checks", {})[mode] = clock.check_order(
                 [torch.cuda.current_stream(), sd, sp, torch.cuda.current_stream()])
-            result["phase"] = mode + ":kernel-graph-capture"
+            phase(mode + ":kernel-graph-capture")
             graph,dtrace,smout = make_graph(dec,sd,green)
-            result["phase"] = mode + ":kernel-graph-equality"
+            phase(mode + ":kernel-graph-equality")
             verify_mode(dec,pre,graph,sd,sp)
             result["cuda_graph_equal"] = result["finite"] = True
-            result["phase"] = mode + ":measurement"
             # One warmup trial, then exactly one measured trial.
+            phase(mode + ":warmup")
             run_mode(mode,dec,pre,graph,dtrace,sd,sp,ctl,4,period,clock,green)
+            phase(mode + ":measurement")
             counters = PcieSampler(clock.pci_bus_id(device));counters.start()
             value = None
             try:
@@ -823,19 +863,24 @@ def run(args, spec):
             if torch.cuda.max_memory_reserved()/2**30 > 18:
                 raise Inconclusive("peak reserved VRAM exceeded 18 GiB")
             graph.reset()
-        result["calibration"] = {
-            "decode_stage_ms":stage_time(result["modes"]["decode"]["decode_parts_ms"],spec,args.pair),
-            "prefill_stage_ms":stage_time(result["modes"]["prefill"]["prefill_parts_ms"],spec,args.pair),
-            "note":"class-count extrapolation at declared PP partition, not a full-stage measurement; eager CPU gaps excluded"}
+        result["diagnostic_completed"] = set(spec["modes"]) != set(MODES)
+        if {"decode", "prefill"} <= result["modes"].keys():
+            result["calibration"] = {
+                "decode_stage_ms":stage_time(result["modes"]["decode"]["decode_parts_ms"],spec,args.pair),
+                "prefill_stage_ms":stage_time(result["modes"]["prefill"]["prefill_parts_ms"],spec,args.pair),
+                "note":"class-count extrapolation at declared PP partition, not a full-stage measurement; eager CPU gaps excluded"}
         result["peak_vram_gib"] = max(result["setup_peak_vram_gib"],max(v["peak_reserved_gib"] for v in result["modes"].values()))
         result["peak_allocated_gib"] = max(v["peak_allocated_gib"] for v in result["modes"].values())
         result["reduction_paths"] = {"decode":sorted(rd.paths),"prefill":sorted(rp.paths)}
         for value in result["modes"].values():
             value["class_slowdown_vs_alone"] = {}
             for lane in ("decode","prefill"):
+                if lane not in result["modes"]:
+                    continue
                 base = result["modes"][lane][lane+"_parts_ms"]
                 value["class_slowdown_vs_alone"][lane] = {k:v/base[k] for k,v in value[lane+"_parts_ms"].items()
                                                           if base.get(k,0)>0}
+        phase("cleanup-and-grade")
         # No success artifact is written before resource cleanup has succeeded.
         torch.cuda.synchronize()
         for ctx in contexts:
@@ -850,6 +895,8 @@ def run(args, spec):
             write_json(output,report)
             print(json.dumps(report["grade"],indent=2),flush=True)
         dist.destroy_process_group()
+        progress.update("completed", verdict=verdict)
+        watchdog.close()
         return EXIT[verdict]
     except BaseException as e:
         verdict = "FAIL" if isinstance(e,CorrectnessError) else "INCONCLUSIVE"
@@ -862,4 +909,6 @@ def run(args, spec):
         if not failure.exists():
             write_json(failure,report)
         print(json.dumps({"rank":rank,"verdict":verdict,"error":report["error"]}),flush=True)
-        return EXIT[verdict]
+        # CUDA/collective threads may be wedged. Do not enter CUDA destructors.
+        watchdog.close()
+        os._exit(EXIT[verdict])

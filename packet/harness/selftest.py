@@ -546,6 +546,11 @@ clock_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_clock.p
 if clock_test.returncode:
     print(clock_test.stdout + clock_test.stderr)
 check('S5 clock: multi-window, coarse ordering, build and SM-probe rules (CPU)', clock_test.returncode, 0)
+runtime_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_runtime.py')],
+                              capture_output=True, text=True)
+if runtime_test.returncode:
+    print(runtime_test.stdout + runtime_test.stderr)
+check('S5 runtime: progress, alarms and hard watchdog (CPU only)', runtime_test.returncode, 0)
 from test_s5_segment import fixture as s5_fixture
 from s5_segment import combine as s5_combine
 check('S5 verdict GO: both pairs', s5_combine([s5_fixture(), s5_fixture('1,3')])['verdict'], 'GO')

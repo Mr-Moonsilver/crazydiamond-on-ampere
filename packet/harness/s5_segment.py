@@ -205,6 +205,13 @@ def write_json(path, value):
         out.write("\n")
 
 
+def parse_modes(value):
+    modes = value.split(",")
+    if not modes or len(set(modes)) != len(modes) or any(m not in MODES for m in modes):
+        raise argparse.ArgumentTypeError("unique comma-separated S5 modes required")
+    return modes
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--plan", action="store_true")
@@ -214,6 +221,9 @@ def main():
     ap.add_argument("--pair", choices=PAIRS)
     ap.add_argument("--layers", type=int, default=4)
     ap.add_argument("--decode-rows", type=int, default=4)
+    ap.add_argument("--modes", type=parse_modes, default=list(MODES),
+                    help="exact mode subset; subset results are diagnostic INCONCLUSIVE, never GO")
+    ap.add_argument("--mode-timeout", type=float, default=120., help="seconds per mode phase, plus 5s hard grace")
     ap.add_argument("--steps", type=int, default=400)
     ap.add_argument("--pp-partition", choices=("24,24", "26,22"), default="24,24")
     ap.add_argument("--gdn-decode", choices=("cuda", "packed"), default="cuda")
@@ -244,6 +254,11 @@ def main():
         return EXIT[result["verdict"]]
     cfg = json.loads(args.config.read_text())
     spec = plan(cfg, args.layers, args.decode_rows, tuple(map(int,args.pp_partition.split(","))))
+    if not math.isfinite(args.mode_timeout) or args.mode_timeout <= 0:
+        ap.error("--mode-timeout must be finite and positive")
+    spec["modes"] = args.modes
+    spec["collectives"] = {"decode":"CustomAllreduce", "prefill":"PyNccl"}
+    spec["mode_timeout_s"] = args.mode_timeout
     spec["model_config_sha256"] = hashlib.sha256(args.config.read_bytes()).hexdigest()
     if args.plan:
         print(json.dumps(spec, indent=2))

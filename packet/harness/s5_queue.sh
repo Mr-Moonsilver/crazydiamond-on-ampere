@@ -23,10 +23,11 @@ mkdir -p "$OUT"
 cp "$S5_CONFIG" "$OUT/model-config.json"
 sha256sum "$S5_CONFIG" "$S5_OVERLAY/ops_qsa.py" > "$OUT/input-sha256.txt"
 docker image inspect "$IMG" --format '{{.Id}} {{json .RepoDigests}}' > "$OUT/image.txt" || exit 2
-extra=()
+extra=(--modes "${S5_MODES:-decode,prefill,serial,prio,green24,green34,green44}"
+       --mode-timeout "${S5_MODE_TIMEOUT:-120}")
 if [[ -n ${S5_DISPATCH_EVIDENCE:-} ]]; then
   cp "$S5_DISPATCH_EVIDENCE" "$OUT/dispatch-evidence.json"
-  extra=(--dispatch-evidence /q/dispatch-evidence.json)
+  extra+=(--dispatch-evidence /q/dispatch-evidence.json)
 fi
 worst=0
 active=''
@@ -50,7 +51,7 @@ for pair in 1,3 0,2; do
     -v "$H:/h:ro" -v "$OUT:/q" \
     -v "$S5_OVERLAY/qsa.py:$D/qsa.py:ro" -v "$S5_OVERLAY/ops_qsa.py:$D/ops/qsa.py:ro" \
     --entrypoint python3 "$IMG" -m torch.distributed.run --nproc_per_node 2 \
-    /h/s5_segment.py --config /q/model-config.json --pair "$pair" --layers 4 --steps 400 \
+    /h/s5_segment.py --config /q/model-config.json --pair "$pair" --layers 4 --steps "${S5_STEPS:-400}" \
     --gdn-decode "${S5_GDN_DECODE:-cuda}" --out "/q/pair-${pair/,/-}.json" "${extra[@]}" \
     > "$OUT/pair-${pair/,/-}.log" 2>&1
   rc=$?
