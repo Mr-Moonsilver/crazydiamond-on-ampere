@@ -105,9 +105,13 @@ def main():
         (out/'grade.json').write_text(json.dumps(d,indent=2))
         (out/'release-grade.json').write_text(json.dumps(v,indent=2))
         archive=out/'raw.tar.gz'
+        # relay.jsonl exists only once the relay saw a request; its absence is already an INCONCLUSIVE release grade
+        # (unattributed traffic) and must not stop the result from being published (q12g: FileNotFoundError here left
+        # the gate waiting 45 min for a result that never came).
         with tarfile.open(archive,'x:gz') as tf:
             for name in ('run','transcripts','request.json','grade.json','release-grade.json','runner.log','relay.jsonl'):
-                tf.add(out/name,arcname=name)
+                if (out/name).exists(): tf.add(out/name,arcname=name)
+        if not (out/'relay.jsonl').exists(): v.setdefault('missing',[]).append('relay journal absent: no canary request reached the relay')
         sha=digest(archive)
         remote(ct_h,q,'archive',sha,archive.stat().st_size,data=archive.read_bytes())
         res=dict(id=r['id'],engine=r['engine'],runner_rc=rc,grade=d,release_grade=v,

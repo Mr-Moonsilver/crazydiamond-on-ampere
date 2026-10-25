@@ -23,11 +23,15 @@ for r in $(seq 1 "$R"); do
     done
     echo "$note" > "$d/notes.txt"; printf 'filler line %s\n' $(seq 1 40) >> "$d/notes.txt"
     echo "$r $i $code $note $d" >> "$OUT/expected.txt"
-    api_env=()
+    # Relay route (q12g 25 Oct finding): Claude Code applies the settings.json `env` block OVER the process environment,
+    # so an ANTHROPIC_BASE_URL environment override is ignored and the sessions bypass the relay (relay.jsonl never
+    # written, attribution INCONCLUSIVE). The --settings flag overrides the file (verified with two local listeners:
+    # 0 hits on the settings.json URL, 6 on the --settings URL), so the per-session relay URL is passed that way.
+    api_args=()
     if [[ -n ${CANARY_PROXY_URL:-} ]]; then
-      api_env=("ANTHROPIC_BASE_URL=$CANARY_PROXY_URL/s/${CANARY_RUN_ID:?}-r$r-s$i")
+      api_args=(--settings "{\"env\":{\"ANTHROPIC_BASE_URL\":\"$CANARY_PROXY_URL/s/${CANARY_RUN_ID:?}-r$r-s$i\"}}")
     fi
-    ( cd "$d" && env "${api_env[@]}" CLAUDE_CONFIG_DIR=/home/<service-user>/.claude-local timeout 900 "$HOME/.local/bin/claude" -p --model Qwen3.8-Flash-Next \
+    ( cd "$d" && env CLAUDE_CONFIG_DIR=/home/<service-user>/.claude-local timeout 900 "$HOME/.local/bin/claude" -p --model Qwen3.8-Flash-Next "${api_args[@]}" \
         --tools "Bash,Read,Edit,Write,Grep,Glob,LSP" --strict-mcp-config --dangerously-skip-permissions --output-format text \
         <<<"Canary check of the local model, no real work. Your session code is $code. Do these steps in order: 1) Read the file notes.txt in the current directory with the Read tool. 2) Run ls -la with Bash. 3) Run wc -l notes.txt with Bash. 4) Then reply with exactly one line: CODE=<your session code> NOTE=<first line of notes.txt>. Nothing else." \
         > "$OUT/r$r-s$i.out" 2>&1; echo "rc=$?" >> "$OUT/r$r-s$i.out" ) &
