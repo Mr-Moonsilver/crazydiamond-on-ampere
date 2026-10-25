@@ -85,6 +85,12 @@ fi
 '''
     addition=addition.replace('for f in e2/__init__.py ', 'for f in e2/__init__.py '+
                               ' '.join('e2/'+name+'.py' for name in RUNTIME)+' ')
+    # q16c (25 Oct): the dense-verification phase needs sparse prefill selection OFF. The production launcher fixes
+    # VLLM_QSA_KVO_SPARSE_PREFILL=1, and a second -e from EXTRA_ENV is a duplicate key, which the declaration parser
+    # refuses by design (q16b declare-dense INCONCLUSIVE). The test launcher takes it from the declared defaults like
+    # BREAKABLE_CG/FLASH_PD_ALTERNATE (SPARSE_PREFILL, default 1 = production's value); exactly one -e either way.
+    source=mirror_hooks.once(source,'  -e VLLM_QSA_KVO_SPARSE_PREFILL=1 \\\n',
+                             '  -e VLLM_QSA_KVO_SPARSE_PREFILL="${SPARSE_PREFILL:-1}" \\\n')
     source=mirror_hooks.once(source,'# VISION=1: image input',addition+'# VISION=1: image input')
     return mirror_hooks.once(source,'  "${runner[@]}" \\\n','  "${runner[@]}" "${e2[@]}" \\\n')
 
