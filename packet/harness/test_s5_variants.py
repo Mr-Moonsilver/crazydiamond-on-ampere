@@ -58,6 +58,21 @@ class Frontier(unittest.TestCase):
         self.assertEqual((r['prefill_steps_s'],r['prefill_steps_s_upper']),(1.,3.))
         self.assertEqual(r['gap_p99_ms'],900.);self.assertTrue(r['prefill_covers_decode_tail'])
         self.assertFalse(summarize(rows,dict(decode=1.,prefill=1.2),[900.],False,'overlap')['prefill_covers_decode_tail'])
+    def test_missing_grade_case_is_kept_and_cannot_pass(self):
+        import json
+        from s5_bisect_summary import summarize,CASES
+        h=Path(__file__).resolve().parent;tmp=h.parent.parent/'tmp';tmp.mkdir(exist_ok=True)
+        d=Path(tempfile.mkdtemp(prefix='s5-summary-',dir=tmp))
+        r=summarize(d);self.assertEqual(len(r['cases']),7);self.assertEqual(r['verdict'],'INCONCLUSIVE')
+        for name in CASES[:-1]:
+            p=d/name/'model-terminal';p.mkdir(parents=True)
+            (p/'grade.json').write_text(json.dumps(dict(verdict='PASS')))
+        (d/'steps.txt').write_text('marlin-green-cap rc=2 connections=8\n')
+        r=summarize(d);self.assertEqual(r['cases'][-1]['case_rc'],2)
+        self.assertFalse(r['cases'][-1]['grade_present']);self.assertEqual(r['verdict'],'INCONCLUSIVE')
+        p=d/CASES[-1]/'model-terminal';p.mkdir(parents=True)
+        (p/'result.json.rank0.error.json').write_text(json.dumps(dict(fatal_correctness=True)))
+        self.assertEqual(summarize(d)['verdict'],'FAIL')
 
 class Cap(unittest.TestCase):
     def test_fail_closed_and_ablation_shapes(self):
