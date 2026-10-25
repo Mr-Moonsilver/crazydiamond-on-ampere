@@ -772,6 +772,7 @@ class EngineFixture:
 
 
 @mock.patch('s5_startup.require_native_ready', lambda: None)
+@mock.patch('s5_startup.install_native_lane', lambda runner, env=None, clock=None: None)  # D4 lane: fixture-only bypass
 class StartupSeamTests(unittest.TestCase):
     def test_worker_builder_is_installed_and_constructs_the_runtime(self):
         class Runner:

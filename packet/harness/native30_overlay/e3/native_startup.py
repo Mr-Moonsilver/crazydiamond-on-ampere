@@ -25,7 +25,7 @@ import time
 from e3_types import E3ContractError
 from lane_comm import PrefillCommunicators
 from model_hooks import LaneForward, PlePrivateScratch, ple_embedding
-import split_bank
+from split_bank import install as install_split_bank
 
 SPLIT_BANK_NAME = 'decode-split'
 FULL_ROUTE = 'full'
@@ -185,7 +185,7 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
         raise NativeStartupError('runner has no model')
     tp_group, pp_group = _groups(tp_group, pp_group)
 
-    bank, backend, controller = split_bank.install(
+    bank, backend, controller = install_split_bank(
         runner, split, torch_module=torch, set_graph_pool_id=set_graph_pool_id, clock=clock)
     comms = PrefillCommunicators.build(
         tp_group, pp_group, runner.device, split.prefill_stream, max_tokens=chunk_tokens,

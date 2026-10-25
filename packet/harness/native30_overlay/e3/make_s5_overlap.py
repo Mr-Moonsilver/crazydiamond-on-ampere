@@ -38,7 +38,10 @@ import executor_hooks
 import lane_hooks
 import operation_source
 import graph_hooks
+import model_hooks
+import qsa_driver
 import scheduler_hooks
+import worker_hooks
 
 
 HERE = Path(__file__).resolve().parent
@@ -47,7 +50,24 @@ ROOT = HERE.parents[1]
 E3_MODULES = ('e3_types', 'lane_state', 'reply_transport', 'native_backend',
               'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver',
               'executor_hooks', 'scheduler_hooks', 's5_startup',
-              'graph_router', 'graph_hooks', 'qsa_operation')
+              'graph_router', 'graph_hooks', 'qsa_operation',
+              # D4 worker/native side (Claude): contexts, split bank, worker seams,
+              # lane forward/QSA driver, communicators, startup, chunk, dispatcher.
+              'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source')
+NATIVE_FILES = ('native/flash_s5_green.cu',)
+MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
+CUDAGRAPH_PATH = 'v1/worker/gpu/cudagraph_utils.py'
+MODEL_DEST = '/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py'
+BUILD_GREEN_HELPER = '''#!/bin/bash
+# Build the E3 green-context helper INSIDE the pinned image on the box (never on the hub).
+# usage: build_green_helper.sh <image> <overlay/e3/native dir>   -> writes flash_s5_green.so next to the .cu
+# The queue records the resulting library sha; FLASH_S5_GREEN_LIB points the workers at it.
+set -eu
+img=$1; dir=$(cd "$2" && pwd)
+docker run --rm -v "$dir:/native" "$img" bash -c \\
+  'nvcc -O2 -shared -Xcompiler -fPIC -o /native/flash_s5_green.so /native/flash_s5_green.cu -lcuda && nvcc --version | tail -n 2'
+sha256sum "$dir/flash_s5_green.so"
+'''
 
 # Exact reviewed E2-composed inputs. Any other bytes are refused.
 E2_RUNNER_SHA256 = lane_hooks.E2_STARTUP_SHA256
@@ -64,6 +84,8 @@ E2_WORKER_INPUTS = {
     'ops_qsa.py': operation_source.E2_OPS_SHA256,
 }
 REFERENCE_INPUTS = dict(executor_hooks.PINS)
+REFERENCE_INPUTS.update(worker_hooks.PINS)
+REFERENCE_INPUTS.update(model_hooks.PINS)
 LAUNCHER_NAME = 'run-flash-e2-test.sh'
 S5_LAUNCHER_NAME = 'run-flash-s5-test.sh'
 
@@ -146,14 +168,16 @@ def _s5_launcher(source):
 s5=()
 if [[ -d $OVERLAY/e3 ]]; then
   [[ ${S5:-0} == 1 ]] || { echo "S5 needs the declared overlap launcher" >&2; exit 2; }
-  for f in e3/__init__.py ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + '''e3_sources/executor.py e3_sources/core.py e3_sources/worker.py qsa.py ops_qsa.py; do
+  for f in e3/__init__.py ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/model.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
   V=/usr/local/lib/python3.12/dist-packages/vllm/v1
   s5=(-v "$OVERLAY/e3:$V/flash_e3:ro"
       -v "$OVERLAY/e3_sources/executor.py:$V/executor/multiproc_executor.py:ro"
       -v "$OVERLAY/e3_sources/core.py:$V/engine/core.py:ro"
-      -v "$OVERLAY/e3_sources/worker.py:$V/worker/gpu_worker.py:ro")
+      -v "$OVERLAY/e3_sources/worker.py:$V/worker/gpu_worker.py:ro"
+      -v "$OVERLAY/e3_sources/cudagraph_utils.py:$V/worker/gpu/cudagraph_utils.py:ro"
+      -v "$OVERLAY/e3_sources/model.py:''' + MODEL_DEST + ''':ro")
 fi
 '''
     text = _replace(source, '# VISION=1: image input', addition + '# VISION=1: image input')
@@ -267,7 +291,8 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
     # transforms are E2-byte-preserving outside their inserted boundaries; the
     # runner seam is inserted into the S5-composed runner before B's optional
     # final graph transform.
-    files['qsa.py'] = operation_source.generate_layer(files['qsa.py'])
+    files['qsa.py'] = qsa_driver.generate_one(
+        'models/qwen4_exp/nvidia/qsa.py', operation_source.generate_layer(files['qsa.py']))
     files['ops_qsa.py'] = operation_source.generate_ops(files['ops_qsa.py'])
     files['model_runner_v2.py'] = operation_source.generate_runner(
         files['model_runner_v2.py'])
@@ -278,8 +303,19 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         (reference / executor_hooks.EXECUTOR_PATH).read_text())
     files['e3_sources/core.py'] = executor_hooks.generate_core(
         (reference / executor_hooks.CORE_PATH).read_text())
-    files['e3_sources/worker.py'] = executor_hooks.generate_worker(
-        (reference / executor_hooks.WORKER_PATH).read_text())
+    # C's worker RPC methods, then D4's worker seams (lane, split creation,
+    # decode scope) on that composition; plus the capture-context seam and the
+    # lane forward methods on their pinned sources; plus the native helper.
+    files['e3_sources/worker.py'] = worker_hooks.generate_one(
+        executor_hooks.WORKER_PATH,
+        executor_hooks.generate_worker((reference / executor_hooks.WORKER_PATH).read_text()))
+    files['e3_sources/cudagraph_utils.py'] = worker_hooks.generate_one(
+        CUDAGRAPH_PATH, (reference / CUDAGRAPH_PATH).read_text())
+    files['e3_sources/model.py'] = model_hooks.generate_one(
+        MODEL_PATH, (reference / MODEL_PATH).read_text())
+    for name in NATIVE_FILES:
+        files['e3/' + name] = (HERE / name).read_text()
+    files['e3/native/build_green_helper.sh'] = BUILD_GREEN_HELPER
     files[S5_LAUNCHER_NAME] = _s5_launcher(launcher_source)
     graph_record = {'module': 'graph_hooks.py',
                     'sha256': sha(HERE / 'graph_hooks.py'),
@@ -352,13 +388,13 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         'native_gaps': [
             'enabled startup is hard-refused before allocation/transport ownership; CPU fixtures explicitly bypass this refusal',
             'production scheduler admission marker and mixed-batch extraction not implemented; without SchedulerOutput.flash_s5_prefill_admission the driver parks nothing',
-            'split-graph capture callable runner._flash_s5_graph_capture not supplied; split-bank capture fails closed',
+            'runner._flash_s5_graph_capture is supplied by split_bank (second stock-manager instance on the green decode stream, own pool); split-bank capture, green contexts, lane communicators, lane forward/QSA driver, chunk admission and the segment dispatcher are implemented offline with fake-CUDA tests only; the native helper library is built on the box by e3/native/build_green_helper.sh and its sha must be recorded by the queue',
             'SOURCE_HISTORY (COPY_EVENT) and PP-buffer leases are not acquired or released; only ARENA leases are wired',
             'real model persistent-state commit value: admission must supply an immutable state snapshot (A accepts CPU snapshots only)',
             'bounded attention generator is implemented; stock runner/layer path explicitly refuses until prefix/layer/suffix dispatcher is wired',
             'native admission must supply explicit complete per-layer CPU tables and real allocation/source leases; flat block ids are not a QSA history map',
             'PP handoff output/parity validation not implemented; PrefillPPChannel is constructed but carries no traffic',
-            'green-context/SM allocation and graph-pool measurement not performed; scaffold constants are not measurements and capture refuses even with a callable',
+            'SM membership, split-pool bytes, host launch quanta and ACK lag are unmeasured until the owner GPU smoke',
             'no GPU, CUDA graph, PP ring, DMA qualification or performance run',
         ],
         'incremental_kv_bytes': 0,

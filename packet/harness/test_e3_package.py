@@ -59,7 +59,7 @@ class SyntheticTests(unittest.TestCase):
             {'default_feature': 'FLASH_E2_ARENA=0', 'incremental_kv_bytes': 0}))
         launcher = e2.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text())
         (base / 'run-flash-e2-test.sh').write_text(launcher)
-        for name in eh.PINS:
+        for name in (*eh.PINS, *g.worker_hooks.PINS, *g.model_hooks.PINS):
             path = ref / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('# ref ' + name + '\n')
@@ -74,7 +74,7 @@ class SyntheticTests(unittest.TestCase):
         stack.enter_context(patch.object(g, 'E2_WORKER_INPUTS', {
             name: g.sha(base / name) for name in g.E2_WORKER_INPUTS}))
         stack.enter_context(patch.object(g, 'REFERENCE_INPUTS', {
-            name: g.sha(ref / name) for name in eh.PINS}))
+            name: g.sha(ref / name) for name in (*eh.PINS, *g.worker_hooks.PINS, *g.model_hooks.PINS)}))
         stack.enter_context(patch.object(g, 'compose_runner',
                                          side_effect=lambda s: s + '# A+C builder\n'))
         stack.enter_context(patch.object(g.scheduler_hooks, 'generate_scheduler',
@@ -90,6 +90,13 @@ class SyntheticTests(unittest.TestCase):
                                          side_effect=lambda s: s + '# S5 attention operation\n'))
         stack.enter_context(patch.object(g.operation_source, 'generate_runner',
                                          side_effect=lambda s: s + '# S5 operation seam\n'))
+        # D4 worker/native transforms (Claude): pinned to real sources, stubbed here.
+        stack.enter_context(patch.object(g.qsa_driver, 'generate_one',
+                                         side_effect=lambda path, s: s + '# S5 qsa driver\n'))
+        stack.enter_context(patch.object(g.worker_hooks, 'generate_one',
+                                         side_effect=lambda path, s: s + '# S5 worker seams\n'))
+        stack.enter_context(patch.object(g.model_hooks, 'generate_one',
+                                         side_effect=lambda path, s: s + '# S5 lane forward\n'))
         return stack
 
     def build(self):

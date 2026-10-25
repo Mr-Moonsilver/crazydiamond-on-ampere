@@ -29,6 +29,11 @@ PINS = {
     'v1/worker/gpu_worker.py': '596f5b6e97be754f84b04c17bc0b96fd92d2f05ee86e0459aa515ffa48d8c5cb',
     'v1/worker/gpu/cudagraph_utils.py': 'b1423812da6d07933bbaf014fa21236c944af1c5f8e553aefb2de89af8afb384',
 }
+# executor_hooks.generate_worker output (C's RPC methods); the worker seams
+# compose after C in the overlay, so that composition is an accepted input too.
+WORKER_AFTER_C_SHA256 = '95f03df33d31af06d27b3dd7ffb9fbc7d45a90466f354e2a45972752e29cd0b6'
+ACCEPTED = {path: (digest,) for path, digest in PINS.items()}
+ACCEPTED['v1/worker/gpu_worker.py'] = (PINS['v1/worker/gpu_worker.py'], WORKER_AFTER_C_SHA256)
 
 # --- gpu_worker.py ----------------------------------------------------------
 _W_IMPORT_OLD = 'from vllm.v1.worker.workspace import init_workspace_manager\n'
@@ -87,6 +92,11 @@ TRANSFORMS = {
     'v1/worker/gpu_worker.py': WORKER_FORWARD,
     'v1/worker/gpu/cudagraph_utils.py': CUDAGRAPH_FORWARD,
 }
+# Presence markers of THIS module's seams (C's worker transform uses other names).
+_MARKER = {
+    'v1/worker/gpu_worker.py': '_flash_s5_worker.',
+    'v1/worker/gpu/cudagraph_utils.py': '_flash_s5_capture_context(',
+}
 
 
 def _replace(text, old, new):
@@ -105,9 +115,9 @@ def generate_one(path, source):
     pinned = PINS.get(path)
     if pinned is None:
         raise ValueError('worker hooks do not transform ' + path)
-    if '_flash_s5_' in source:
+    if _MARKER[path] in source:
         raise ValueError('source already carries worker hooks: ' + path)
-    if _sha(source) != pinned:
+    if _sha(source) not in ACCEPTED[path]:
         raise ValueError('source is not the pinned bytes: ' + path)
     text = source
     for old, new in TRANSFORMS[path]:
@@ -123,14 +133,14 @@ def revert_one(path, source, expected=None):
     """Exact inverse of :func:`generate_one`."""
     if path not in TRANSFORMS:
         raise ValueError('worker hooks do not transform ' + path)
-    if '_flash_s5_' not in source:
+    if _MARKER[path] not in source:
         raise ValueError('source does not carry worker hooks: ' + path)
     text = source
     for old, new in reversed(TRANSFORMS[path]):
         text = _replace(text, new, old)
     if expected is not None and text != expected:
         raise ValueError('revert did not recover the supplied source')
-    if _sha(text) != PINS[path]:
+    if _sha(text) not in ACCEPTED[path]:
         raise ValueError('revert did not recover the pinned bytes: ' + path)
     return text
 
@@ -230,6 +240,6 @@ def decode_scope(worker):
     return scope(runner)
 
 
-__all__ = ['CUDAGRAPH_FORWARD', 'PINS', 'TRANSFORMS', 'WORKER_FORWARD', 'after_runner_init',
+__all__ = ['ACCEPTED', 'CUDAGRAPH_FORWARD', 'PINS', 'WORKER_AFTER_C_SHA256', 'TRANSFORMS', 'WORKER_FORWARD', 'after_runner_init',
            'capture_context', 'decode_scope', 'generate', 'generate_one',
            'install_split_bank', 'prefill_workspace_lane', 'revert_one', 'workspace_lanes']
