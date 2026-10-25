@@ -563,7 +563,8 @@ check('S5 verdict NO-GO: prefill floor', s5_combine([s5_fixture(), s5_bad])['ver
 check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdict'], 'INCONCLUSIVE')
 
 # --- Full engine identity: mocked docker, actual destination-side hashing; no GPU ---
-for suite, label in [('test_s5_followup.py', 'S5 follow-up: strict liveness, hang phases and queue admission (CPU)'),
+for suite, label in [('test_morning_summary.py', 'morning report: scoped verdicts, per-stream metrics, cleanup and no payloads (CPU)'),
+                     ('test_s5_followup.py', 'S5 follow-up: strict liveness, hang phases and queue admission (CPU)'),
                      ('test_vision_plan.py', 'remote vision: bytes, topology budget and CPU-only probe planning'),
                      ('test_cost_budget.py', 'cost budget: proxy fit decisions and generated scheduler hook (CPU)'),
                      ('test_sparse_stage.py', 'S6 sorted compaction, staged reduction oracle and verification coverage (CPU)'),
