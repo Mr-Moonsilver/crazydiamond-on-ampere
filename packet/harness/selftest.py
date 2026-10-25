@@ -565,6 +565,7 @@ check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdi
 # --- Full engine identity: mocked docker, actual destination-side hashing; no GPU ---
 for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithmetic, bucket bytes, fragmentation and no extra window (CPU)'),
                      ('test_s5_dma_window.py', 'S5 repeated DMA: every layer/chunk, bounded CPU copies, strict oracle, solo/overlap accounting (CPU)'),
+                     ('test_e2_arena.py', 'E2 single arena: owner epochs, bounded fills, completion and retirement (CPU only)'),
                      ('test_e2_serial.py', 'E2 serial CPU-source DMA adapter and unchanged attention arithmetic (CPU only)'),
                      ('test_s5_marlin_partition.py', 'S5 Marlin DP/Stream-K positional partition (CPU, not GPU attribution)'),
                      ('test_s5_retention.py', 'S5 E0 retained histories: incarnation, dirty DMA, publication and retirement (CPU)'),
