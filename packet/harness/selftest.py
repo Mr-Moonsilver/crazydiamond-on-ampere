@@ -636,6 +636,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e2_startup.py', 'E2 startup: loaded six-layer discovery, baseline arena geometry and config rejection (CPU only)'),
                      ('test_e2_exactness.py', 'E2 exactness: same-input bucket/output byte oracle, immutable failure and strict coverage grader (CPU only)'),
                      ('test_e2_package.py', 'E2 package: pinned-source transforms, manifest coverage, default-off mounts and import identity (CPU only)'),
+                     ('test_e2_state_grade.py', 'E2 owner gate: startup geometry and drained-state ledger grader on log lines (CPU only)'),
                      ('test_e2_serial.py', 'E2 serial CPU-source DMA adapter and unchanged attention arithmetic (CPU only)'),
                      ('test_s5_marlin_partition.py', 'S5 Marlin DP/Stream-K positional partition (CPU, not GPU attribution)'),
                      ('test_s5_retention.py', 'S5 E0 retained histories: incarnation, dirty DMA, publication and retirement (CPU)'),
