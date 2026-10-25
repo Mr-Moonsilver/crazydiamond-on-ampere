@@ -1,4 +1,4 @@
-"""e2_ledger_grade: the declared-reserve memory contract on ledger records and sampled peaks (CPU only)."""
+"""e2_ledger_grade: free reserve at the sampled peak, matched-baseline overhead, cumulative counters (CPU only)."""
 import sys
 import unittest
 from pathlib import Path
@@ -9,38 +9,62 @@ import e2_ledger_grade as g
 RANKS = g.RANKS
 
 
-def ledger(peak=22.0, retries=2, ooms=0, used=22.5):
-    return dict(per_rank={r: dict(alloc_retries=retries, ooms=ooms, reserved_gib=peak, allocated_gib=peak - 1, peak_gib=peak) for r in RANKS},
+def ledger(peak=22.0, retries=2, ooms=0, used=22.5, rows=True):
+    return dict(per_rank={r: (dict(alloc_retries=retries, ooms=ooms, reserved_gib=peak, allocated_gib=peak - 1, peak_gib=peak) if rows else {}) for r in RANKS},
                 gpus=[dict(index=i, bus='x', total_gib=24.0, used_gib=used) for i in range(4)])
 
 
-def peaks(used_mib=23040, n=4):
-    return dict(gpus={str(i): dict(max_used_mib=used_mib, total_mib=24576) for i in range(n)}, samples=100)
+def peaks(used_mib=23040, n=4, total_mib=24576):
+    return dict(gpus={str(i): dict(max_used_mib=used_mib, total_mib=total_mib) for i in range(n)}, samples=100)
 
 
 class LedgerGradeTests(unittest.TestCase):
-    def test_pass_inside_reserve_and_retry_budget(self):
-        out = g.grade(ledger(retries=1), ledger(peak=22.3, retries=3), peaks(), ledger(peak=22.0, retries=4, used=22.5))
+    def test_pass_with_reserve_free_and_retries_within_baseline(self):
+        out = g.grade(ledger(retries=1), ledger(peak=22.3, retries=3), peaks(), ledger(peak=21.1, retries=4, used=23.5))
         self.assertEqual(out['verdict'], 'PASS', out)
-        self.assertEqual(out['ranks'][RANKS[0]]['retries_delta'], 2)
+        self.assertEqual(out['ranks'][RANKS[0]]['retries_phase_delta'], 2)
+        self.assertEqual(out['gpus']['0']['free_at_peak_gib'], 1.5)
 
-    def test_missing_baseline_peaks_or_rows_is_inconclusive(self):
+    def test_reserve_is_free_memory_at_peak_not_a_baseline_allowance(self):
+        # Codex counterexample: peak used = baseline used + 0.49 GiB with only 11 MiB free must FAIL
+        base = ledger(peak=21.1, retries=4, used=23.5)
+        self.assertEqual(g.grade(base, base, peaks(used_mib=24576 - 11), base)['verdict'], 'FAIL')
+        self.assertEqual(g.grade(base, base, peaks(used_mib=24576 - 512), base)['verdict'], 'PASS')
+        self.assertEqual(g.grade(base, base, peaks(used_mib=24576 - 511), base)['verdict'], 'FAIL')
+
+    def test_missing_start_rows_is_noted_not_invented(self):
+        out = g.grade(ledger(rows=False), ledger(retries=3), peaks(), ledger(retries=4, used=23.5))
+        self.assertEqual(out['verdict'], 'PASS')
+        self.assertNotIn('retries_phase_delta', out['ranks'][RANKS[0]])
+        self.assertEqual(out['ranks'][RANKS[0]]['retries_since_start'], 3)
+        self.assertTrue(any('phase start' in n for n in out['notes']))
+
+    def test_missing_baseline_peaks_or_end_rows_is_inconclusive(self):
         self.assertEqual(g.grade(ledger(), ledger(), peaks(), None)['verdict'], 'INCONCLUSIVE')
         self.assertEqual(g.grade(ledger(), ledger(), None, ledger())['verdict'], 'INCONCLUSIVE')
         end = ledger(); del end['per_rank'][RANKS[3]]
         self.assertEqual(g.grade(ledger(), end, peaks(), ledger())['verdict'], 'INCONCLUSIVE')
         self.assertEqual(g.grade(ledger(), ledger(), peaks(n=3), ledger())['verdict'], 'INCONCLUSIVE')
+        self.assertEqual(g.grade(ledger(), ledger(), peaks(), dict(per_rank={}, gpus=[]))['verdict'], 'INCONCLUSIVE')
 
-    def test_ooms_backwards_counter_peak_and_retry_excess_fail(self):
-        self.assertEqual(g.grade(ledger(), ledger(ooms=1), peaks(), ledger())['verdict'], 'FAIL')
-        self.assertEqual(g.grade(ledger(retries=5), ledger(retries=2), peaks(), ledger())['verdict'], 'FAIL')
-        self.assertEqual(g.grade(ledger(), ledger(peak=22.6), peaks(), ledger(peak=22.0))['verdict'], 'FAIL')
-        self.assertEqual(g.grade(ledger(retries=0), ledger(retries=6), peaks(), ledger(retries=4))['verdict'], 'FAIL')
-        self.assertEqual(g.grade(ledger(), ledger(), peaks(used_mib=23700), ledger(used=22.5))['verdict'], 'FAIL')
+    def test_ooms_backwards_counter_and_retry_excess_fail(self):
+        self.assertEqual(g.grade(ledger(), ledger(ooms=1), peaks(), ledger(retries=4))['verdict'], 'FAIL')
+        self.assertEqual(g.grade(ledger(retries=5), ledger(retries=2), peaks(), ledger(retries=4))['verdict'], 'FAIL')
+        self.assertEqual(g.grade(ledger(retries=0), ledger(retries=5), peaks(), ledger(retries=4))['verdict'], 'FAIL')
+        out = g.grade(ledger(retries=0), ledger(peak=23.0, retries=4), peaks(), ledger(peak=21.1, retries=4))
+        self.assertEqual(out['verdict'], 'PASS'); self.assertAlmostEqual(out['ranks'][RANKS[0]]['peak_delta_gib'], 1.9)
 
-    def test_reserve_bytes_parameter_scales_the_margin(self):
-        self.assertEqual(g.grade(ledger(), ledger(peak=22.4), peaks(), ledger(peak=22.0), reserve_bytes=256 * 1024 ** 2)['verdict'], 'FAIL')
-        self.assertEqual(g.grade(ledger(), ledger(peak=22.4), peaks(), ledger(peak=22.0), reserve_bytes=512 * 1024 ** 2)['verdict'], 'PASS')
+    def test_reserve_only_mode_reports_without_attributing(self):
+        # no control: PASS on the reserve alone, the missing control is a note; retries above a reference stay a note
+        out = g.grade(ledger(), ledger(retries=9), peaks(), None, reserve_only=True)
+        self.assertEqual(out['verdict'], 'PASS'); self.assertEqual(out['mode'], 'reserve-only')
+        self.assertTrue(any('matched control' in n for n in out['notes']))
+        out = g.grade(ledger(), ledger(retries=9), peaks(), ledger(retries=4), reserve_only=True)
+        self.assertEqual(out['verdict'], 'PASS'); self.assertTrue(any('not attributed' in n for n in out['notes']))
+        # the reserve still decides in reserve-only mode
+        self.assertEqual(g.grade(ledger(), ledger(), peaks(used_mib=24576 - 100), None, reserve_only=True)['verdict'], 'FAIL')
+        # full mode without a control stays INCONCLUSIVE
+        self.assertEqual(g.grade(ledger(), ledger(), peaks(), None)['verdict'], 'INCONCLUSIVE')
 
 
 if __name__ == '__main__':

@@ -132,7 +132,9 @@ def run_session(rd, i, shared, code, delay):
         p1 = build_inside(shared, i, rd, code, locker_of(code))
         assert len(p1) - B < UNIT - 8
     ns = f'{CACHE_NS}-{rd}-{i}' if CACHE_NS else None
-    gen1, ids1, _ = complete(p1, GEN + rnd.randrange(0, GEN), salt=ns, ignore_eos=True)
+    # matched mode: the generation budget is per-session deterministic (the shared rnd stream is thread-order dependent)
+    budget = GEN + (random.Random(rd * 48611 + i).randrange(0, GEN) if CACHE_NS else rnd.randrange(0, GEN))
+    gen1, ids1, _ = complete(p1, budget, salt=ns, ignore_eos=True)
     p2 = p1 + list(ids1) + QUESTION
     if random.Random(rd * 7919 + i).random() < CANCEL_FRAC:
         abort_after(p2, random.Random(rd * 104729 + i).uniform(0, 0.3), salt=ns)
