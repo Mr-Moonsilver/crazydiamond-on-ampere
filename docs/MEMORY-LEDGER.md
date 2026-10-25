@@ -16,7 +16,7 @@ Tool for the live engine: `harness/memory_ledger.py` (read-only, allowlisted set
 | **Headroom** | **~2.7** | 24.0 − used |
 | S3 retained history, full, active prefill | 1.16 at 200k / 1.5 at 262k | **estimate** (six independent QSA histories; Codex: ~1.158 GiB padded at 200k). 24 pages = 0.56, 40 pages = 0.94 measured as configured |
 | PLE chunk-row prefetch buffer | ~0.005 (FP8: ~2.5 MiB per 1,024-token chunk; ×2 if double-buffered) | **estimate**; only needed if PLE reads matter (q11s PLE-only control) |
-| Vision tower (stage 0 only) | 0.42 | measured as BF16 weights; off in production (`--language-model-only`) |
+| Vision tower (stage 0 only) | 0.42 (TP-split weights) + encode peak | BF16 weights measured; off in production (`--language-model-only`). q14b on one GPU (whole tower): 0.84 GiB weights, peak reserved 0.93 / 1.10 / 1.45 GiB at 512² / 1024² / 1536² |
 | S5 extras: prefill-lane activations/workspace, per-split decode graphs, PyNccl buffers, green-context overhead | unknown | **to measure**: per-rank ledger in the next S5 queue (Codex `codex/s5-resident`) |
 
 Fit on paper (stage 0, worst case): full 200k retention 1.16 + vision 0.42 = 1.58 GiB of ~2.7 → ~1.1 GiB left

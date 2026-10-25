@@ -64,3 +64,18 @@ Nothing here is deployed.
 The tower's 0.42 GiB per stage-0 GPU returns to the KV pool / retained history, and the 22.9 → 221.8 ms p99
 interference from encoding on the serving GPUs disappears; what remains is the image tokens' prefill, which the
 short-first scheduler and S5 treat like any other short append.
+
+## q14b measurement (25 Oct 04:24 UTC, tower only, one RTX 3090 x16, BF16, no LM, no network)
+
+Weights 333 tensors, 897,862,112 B (0.84 GiB) on one GPU, load 2.8 s. Single run after one warm-up (not a distribution).
+
+| Input | Visual tokens | Encode (CUDA events) | Preprocess (CPU) | Peak reserved | Embedding payload | Ideal transfer 1 / 10 Gb/s (one copy) |
+|---|---:|---:|---:|---:|---:|---:|
+| 512² | 256 | 14.7 ms | 10.3 ms | 0.93 GiB | 1.25 MiB | 10.5 / 1.0 ms |
+| 1024² | 1,024 | 66.4 ms | 30.4 ms | 1.10 GiB | 5.0 MiB | 41.9 / 4.2 ms |
+| 1536² | 2,304 | 205.1 ms | 70.8 ms | 1.45 GiB | 11.25 MiB | 94.4 / 9.4 ms |
+
+Reading: on 10 GbE the network adds ~5–7 % to the encode time; on 1 GbE it adds ~60 % (more if both TP ranks
+need their own copy, or with base64 framing, which is +33 %). The visual tokens still have to be prefilled by the
+language model on the four main GPUs. The remote tower takes the encoder's VRAM and compute off them, not the
+prefill of the visual tokens. Not yet measured: the remote route, language decode, image quality.
