@@ -52,24 +52,35 @@ class SplitController:
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--grade',type=Path)
-    p.add_argument('--rung',choices=['profile','bandwidth','bank','model-terminal']);p.add_argument('--split',type=int,default=24)
+    p.add_argument('--rung',choices=['profile','bandwidth','bank','model-terminal','profile-terminal']);p.add_argument('--split',type=int,default=24)
     p.add_argument('--rows',type=int,default=4);p.add_argument('--pair',choices=['1,3','0,2'],default='1,3')
     p.add_argument('--out',type=Path);p.add_argument('--config',type=Path)
     a=p.parse_args()
     if a.grade:
         try:
-            d=json.loads(a.grade.read_text())
             errors=[json.loads(p.read_text()) for p in a.grade.parent.glob(a.grade.name+'.rank*.error.json')]
             if any(x.get('fatal_correctness') for x in errors):
                 print(json.dumps(dict(verdict='FAIL',reason='explicit correctness failure')));return 1
             if errors:raise ValueError('rank error artifact')
+            d=json.loads(a.grade.read_text())
             for rank in (0,1):
                 assert json.loads(Path(str(a.grade)+f'.rank{rank}.progress.json').read_text())['phase']=='completed'
-            if d['rung']=='profile':r=score_profile(d)
+            if any(x.get('correctness_verified') is False for x in d['ranks']):
+                print(json.dumps(dict(verdict='FAIL',reason='concurrent trajectory differs from solo',data=d)));return 1
+            if d['rung']=='profile-terminal':assert all(x.get('correctness_verified') is True for x in d['ranks'])
+            if d['rung'] in ('profile','profile-terminal'):r=score_profile(d)
             else:
                 assert len(d['ranks'])==2 and {x['rank'] for x in d['ranks']}=={0,1} and all(x['completed'] for x in d['ranks'])
                 if d['rung']=='bank':assert all(len(x['switches'])==18 and len(x['bank_memory'])==4 for x in d['ranks'])
-                if d['rung']=='model-terminal':assert all(len(x['terminal_ms']['decode'])==30 and x['terminal_ms']['prefill'] for x in d['ranks'])
+                if d['rung']=='model-terminal':
+                    for x in d['ranks']:
+                        m=x['modes']['overlap'];assert x['steps'] in (30,200,400)
+                        assert len(m['raw_decode'])==x['steps'] and m['raw_prefill']
+                        assert x['audit']['verdict']=='PASS' and x['correctness_verified'] is True
+                        assert all(type(y['gpu_ms']) in (int,float) and math.isfinite(y['gpu_ms']) and y['gpu_ms']>0 for key in ('raw_decode','raw_prefill') for y in m[key])
+                        if x['ablation']['marlin_cap']:
+                            caps=[r for r in x['marlin_cap']['streams'] if r['cap']>0]
+                            assert len(caps)>=2 and all(r['calls']>0 and r['intercepted_queries']>=r['calls'] for r in caps)
                 if d['rung']=='bandwidth':assert all({'overlap','resident_overlap'}<=x['modes'].keys() for x in d['ranks'])
                 r=dict(verdict='PASS',scope='diagnostic completed only; inspect per-rank evidence',data=d)
         except Exception:r=dict(verdict='INCONCLUSIVE',reason='missing, malformed, unproven or incomplete evidence')

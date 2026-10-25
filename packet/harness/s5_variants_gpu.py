@@ -35,10 +35,18 @@ def run(a):
         result['sources']={m:b.digest(importlib.import_module(m).__file__) for m in manifest['modules']}
         if result['sources']!=manifest['modules'] or b.digest(a.config)!=manifest['model_config_sha256']:raise Inconclusive('source/config mismatch')
         clock=DeviceClock(library);result['pci_bus_id']=clock.pci_bus_id(device)
-        if a.rung!='model-terminal':clock.validate()
+        terminal=a.rung in ('model-terminal','profile-terminal')
+        if not terminal:clock.validate()
         spec=plan(json.loads(a.config.read_text()),layers=4,decode_rows=4)
         # Diagnostic extension of the same shapes to actual cohort loads1..5.
         spec.update(decode_rows=a.rows,streams=2*a.rows,gdn_state=[a.rows,24,128,128])
+        kind=os.environ.get('S5_LAYER_KIND','mixed');moe=os.environ.get('S5_MOE','on')
+        cap=os.environ.get('FLASH_MARLIN_GREEN_CAP','0')
+        if cap not in ('0','1'):raise Inconclusive('invalid Marlin cap flag')
+        if a.rung!='model-terminal' and (kind!='mixed' or moe!='on' or cap!='0'):raise Inconclusive('ablation only in terminal diagnostic')
+        from s5_ablation import configure,apply
+        configure(spec,kind)
+        result['ablation']=dict(layer_kind=kind,moe=moe,marlin_cap=cap=='1')
         result['spec']=spec;result['max_connections']=os.environ.get('CUDA_DEVICE_MAX_CONNECTIONS','unset')
         torch.manual_seed(871);phase('weights-and-lanes',300)
         backend=os.environ.get('S5_DECODE_BACKEND','custom')
@@ -46,8 +54,14 @@ def run(a):
         result['decode_backend']=backend
         rd=b.Reducer(dg,device,'decode',progress,backend=backend);rp=b.Reducer(pg,device,'prefill',progress,backend='pynccl');b.refault()
         weights=b.weights(spec,rank);dec=b.Slice(spec,rank,rd,False,weights,'packed');pre=b.Slice(spec,rank,rp,True,weights,'packed')
+        apply(dec,pre,moe)
+        cap_evidence=None
+        if cap=='1':
+            if moe!='on':raise Inconclusive('cap with MoE off has no meaning')
+            from s5_marlin_cap import install
+            cap_evidence=install(progress)
         sd,sp=torch.cuda.Stream(),torch.cuda.Stream()
-        if a.rung=='model-terminal':
+        if terminal:
             from s5_terminal_mode import NullTrace
             b.Trace=NullTrace
         if a.rung!='model-terminal':
@@ -59,7 +73,7 @@ def run(a):
             finally:
                 torch.cuda.nvtx.range_pop();counters=sampler.finish(v['host_window'] if v else None)
             v['pcie']=counters;v['phase_wall_seconds']=[host_start,time.time()];return v
-        if a.rung not in ('bank','model-terminal'):
+        if a.rung not in ('bank','model-terminal','profile-terminal'):
             result['modes']['decode']=measure('decode',basegraph,basetrace,sd,sp)
             result['modes']['prefill']=measure('prefill',basegraph,basetrace,sd,sp)
         phase('create-splits')
@@ -74,12 +88,38 @@ def run(a):
             if evidence['verdict']!='PASS':raise Inconclusive('node placement not established',evidence)
             bank[split]=(green,g,trace);result['bank_memory'].append(dict(split=split,**memory()))
             if torch.cuda.memory_reserved()>18*2**30:raise Inconclusive('graph bank exceeds18GiB slice cap')
-        if a.rung=='model-terminal':
+        if terminal:
             from s5_terminal_mode import run as terminal_run
+            from s5_terminal_correctness import verify as terminal_verify
             green,g,trace=bank[a.split];result['audit']=evidence
+            steps=int(os.environ.get('S5_TERMINAL_STEPS','200'))
+            if steps not in (30,200,400):raise Inconclusive('unreviewed terminal step count')
+            result['steps']=steps
+            # Cold-cache JIT is a setup phase, never a throughput sample.
+            phase('terminal-prefill-warmup',300)
+            with torch.cuda.stream(green.sp):pre.forward(b.Trace())
+            green.sp.synchronize()
+            if a.rung=='profile-terminal':
+                for name,gg,ds,ps,mode in (
+                    ('decode',basegraph,sd,sp,'decode'),('prefill',basegraph,sd,sp,'prefill'),
+                    ('decode_split',g,green.sd,green.sp,'decode'),
+                    ('prefill_split',g,green.sd,green.sp,'prefill'),
+                    ('serial',basegraph,sd,sp,'serial')):
+                    phase('terminal-'+name,300)
+                    result['modes'][name]=terminal_run(dec,pre,gg,ds,ps,ctl,progress,steps,mode,False)
             phase('model-overlap-terminal-events')
-            result['terminal_ms']=terminal_run(dec,pre,g,green.sd,green.sp,ctl,progress)
-            phase('terminal-correctness',300);b.verify_mode(dec,pre,g,green.sd,green.sp)
+            result['modes']['overlap']=terminal_run(dec,pre,g,green.sd,green.sp,ctl,progress,steps,'overlap',False)
+            phase('terminal-correctness',300)
+            overlap=result['modes']['overlap']
+            result['correctness']=terminal_verify(dec,pre,g,green.sd,green.sp,
+                (len(overlap['raw_decode']),len(overlap['raw_prefill'])),progress)
+            result['correctness_verified']=result['correctness']['passed']
+            if cap_evidence:
+                result['marlin_cap']=cap_evidence()
+                by_stream={r['stream']:r for r in result['marlin_cap']['streams']}
+                for stream,count in ((green.sd,green.split[0]),(green.sp,green.split[1])):
+                    r=by_stream.get(stream.cuda_stream,{})
+                    if r.get('cap')!=count or r.get('intercepted_queries',0)<1:raise Inconclusive('missing actual lane cap evidence',r)
         elif a.rung=='bank':
             result['switches']=[]
             # Contexts/graphs all exist before any timed switch. One warmup per
