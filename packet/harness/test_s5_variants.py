@@ -22,10 +22,19 @@ class Controller(unittest.TestCase):
         self.assertTrue(c.choose(4,True,.1,1.)['switch'])
         self.assertEqual(c.choose(5,True,.1,1.)['reason'],'infeasible_or_uncalibrated')
     def test_never_interpolate_or_use_unsafe_candidate(self):
-        for v in self.table.values():v['decode_share']=.94
+        for v in self.table.values():v['validated']=False
         self.assertEqual(SplitController(self.table).choose(4,True,.1,1.)['reason'],'infeasible_or_uncalibrated')
         self.table[4,24]['decode_share']=1.;self.table[4,24]['validated']=False
         self.assertFalse(SplitController(self.table).choose(4,True,.1,1.)['switch'])
+    def test_soft_targets_and_balanced_objective(self):
+        self.table[4,24].update(decode_share=.79,prefill_share=.85)
+        self.table[4,34].update(decode_share=.95,prefill_share=.50)
+        self.table[4,44].update(decode_share=.98,prefill_share=.40)
+        c=SplitController(self.table)
+        for _ in range(4):r=c.choose(4,True,.1,1.)
+        self.assertEqual(r['split'],24) # Below80 still better combined progress.
+        self.table[4,34].update(decode_share=.87,prefill_share=.87)
+        self.assertEqual(c.choose(4,True,.1,1.)['split'],34) # Keep optimizing.
 
 class Frontier(unittest.TestCase):
     def fixture(self):
@@ -34,9 +43,9 @@ class Frontier(unittest.TestCase):
                prefill_steps_s=8.2,prefill_covers_decode_tail=True,prefill_tail_order_ambiguous=False))
         return dict(ranks=[dict(rank=i,completed=True,audit=dict(verdict='PASS'),modes=copy.deepcopy(m)) for i in (0,1)])
     def test_worst_rank_and_missing_audit(self):
-        d=self.fixture();self.assertTrue(score_profile(d)['decode_gate'])
+        d=self.fixture();self.assertTrue(score_profile(d)['decode_target_met'])
         d['ranks'][1]['modes']['overlap']['decode_steps_s']=90.
-        self.assertFalse(score_profile(d)['decode_gate'])
+        self.assertTrue(score_profile(d)['decode_target_met']) # Operator target now80.
         d['ranks'][1]['audit']['verdict']='INCONCLUSIVE'
         with self.assertRaises(AssertionError):score_profile(d)
     def test_uncertain_tail_not_pass(self):

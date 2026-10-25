@@ -20,10 +20,10 @@ def score_profile(data):
           prefill_share=o['prefill_steps_s']/p['prefill_steps_s_upper'],raw_gap_ms=o['gap_p99_ms']))
     decode=min(r['decode_share'] for r in summaries);gap=max(r['p99_ratio'] for r in summaries)
     pre=min(r['prefill_share'] for r in summaries)
-    return dict(verdict='PASS',decode_gate=decode>=.95 and gap<=1.2,
-        prefill_target_proxy=pre>=.81,minimum_decode_share=decode,maximum_p99_ratio=gap,
+    return dict(verdict='PASS',decode_target_met=decode>=.80,p99_target_met=gap<=1.2,
+        both_80_target=decode>=.80 and pre>=.80,prefill_target_proxy=pre>=.80,minimum_decode_share=decode,maximum_p99_ratio=gap,
         minimum_prefill_share=pre,ranks=summaries,
-        scope='slice frontier only; .81 is measured full-engine budget translated to a proxy, not a TTFT prediction')
+        scope='slice frontier only; 80/80 are soft comparison targets, not a verdict or a TTFT prediction')
 
 
 class SplitController:
@@ -32,14 +32,17 @@ class SplitController:
     All entries must be measured on BOTH TP ranks, at relevant history/coverage.
     No invented interpolation or presumed linear SM scaling. Select only at a
     fully fenced boundary; unknown loads retain the safe split and flag unknown.
+    Maximize the weaker lane, then the product of both shares; decode breaks
+    ties. There is no threshold saturation at 80/80. p99 remains reported.
     """
     def __init__(self,table,safe_split=44):self.table=table;self.current=safe_split;self.pending=None;self.streak=0
     def choose(self,rows,fenced,split_cost_ms,slack_ms):
         if rows==0:return dict(split=self.current,switch=False,reason='no decode; ordinary prefill allowed after fence')
         options=[(split,v) for (load,split),v in self.table.items() if load==rows and
-                 v.get('validated') is True and v['decode_share']>=.95 and v['p99_ratio']<=1.2]
+                 v.get('validated') is True and all(math.isfinite(v[k]) and v[k]>0 for k in ('decode_share','prefill_share','p99_ratio'))]
         if not options:return dict(split=self.current,switch=False,reason='infeasible_or_uncalibrated')
-        candidate=max(options,key=lambda x:(x[1]['prefill_share'],-x[0]))[0]
+        candidate=max(options,key=lambda x:(min(x[1]['decode_share'],x[1]['prefill_share']),
+            x[1]['decode_share']*x[1]['prefill_share'],x[1]['decode_share'],-x[0]))[0]
         if candidate==self.pending:self.streak+=1
         else:self.pending=candidate;self.streak=1
         if not fenced:return dict(split=self.current,switch=False,reason='wait_for_both_lane_fences')
@@ -65,6 +68,9 @@ def main():
             d=json.loads(a.grade.read_text())
             for rank in (0,1):
                 assert json.loads(Path(str(a.grade)+f'.rank{rank}.progress.json').read_text())['phase']=='completed'
+            if d['rung']=='profile-terminal' and all(x.get('value_probe',{}).get('enabled') is True for x in d['ranks']):
+                from s5_value import grade
+                r=grade(d);print(json.dumps(r,allow_nan=False));return {'PASS':0,'FAIL':1,'INCONCLUSIVE':2}[r['verdict']]
             if any(x.get('correctness_verified') is False for x in d['ranks']):
                 print(json.dumps(dict(verdict='FAIL',reason='concurrent trajectory differs from solo',data=d)));return 1
             if d['rung']=='profile-terminal':assert all(x.get('correctness_verified') is True for x in d['ranks'])

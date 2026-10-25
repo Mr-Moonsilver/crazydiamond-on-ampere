@@ -18,8 +18,8 @@ from s5_segment import plan, write_json
 from s5_onepair import audit_grade
 
 
-def build(path):
-    source=Path(__file__).with_name('s5_graph_audit.cu')
+def build(path,copy_kernels=False):
+    source=Path(__file__).with_name('s5_graph_copy.cu' if copy_kernels else 's5_graph_audit.cu')
     if path.exists():raise Inconclusive('new helper path required')
     command=build_command(source,path,torch.cuda.get_device_capability())
     p=subprocess.run(command,capture_output=True,text=True,timeout=180)

@@ -22,14 +22,27 @@ def run(a):
     rank=int(os.environ['RANK']);device=int(os.environ['LOCAL_RANK']);output=a.out
     progress=Progress(output,rank);wd=Watchdog(progress,output,rank)
     result=dict(rank=rank,rows=a.rows,requested_split=a.split,modes={});contexts=[];graphs=[]
-    def phase(name,timeout=180):wd.arm(timeout,name)
+    value=os.environ.get('S5_VALUE_PROBE','0')=='1'
+    noop=os.environ.get('S5_PREFILL_NOOP_PROBE','0')=='1'
+    resident=os.environ.get('S5_PREFILL_RESIDENT_PROBE','0')=='1'
+    copy_kernels=os.environ.get('S5_GRAPH_KERNEL_COPIES','0')=='1'
+    def phase(name,timeout=180):
+        if value:
+            setup=(name in ('setup','weights-and-lanes','baseline-capture','create-splits','terminal-prefill-warmup') or name.startswith('capture-green'))
+            timeout=int(os.environ.get('S5_VALUE_SETUP_TIMEOUT','300') if setup else os.environ.get('S5_VALUE_PHASE_TIMEOUT','120'))
+            if timeout not in (120,300):raise Inconclusive('unreviewed value phase timeout')
+        wd.arm(timeout,name)
     try:
         phase('setup',300)
+        if (value or noop or resident or copy_kernels) and a.rung!='profile-terminal':raise Inconclusive('value/control requires profile-terminal')
+        if noop and (not value or a.split!=24):raise Inconclusive('no-op control scoped to value green24')
+        result['value_probe']=dict(enabled=value,prefill_noop=noop,resident_prefill=resident,graph_kernel_copies=copy_kernels,
+                                  sparse_prefill=os.environ.get('VLLM_QSA_KVO_SPARSE_PREFILL'))
         if os.environ.get('CUDA_VISIBLE_DEVICES')!=a.pair or os.environ.get('WORLD_SIZE')!='2':raise Inconclusive('pair mismatch')
         torch.cuda.set_device(device);dist.init_process_group('gloo')
         ctl=dist.new_group([0,1],backend='gloo');dg=dist.new_group([0,1],backend='gloo');pg=dist.new_group([0,1],backend='gloo')
         library=output.parent/'audit.so';built=[None]
-        if rank==0:built[0]=build(library)
+        if rank==0:built[0]=build(library,copy_kernels)
         dist.broadcast_object_list(built,src=0);result['build']=built[0]
         manifest=json.loads(Path(__file__).with_name('s5_source_manifest.json').read_text())
         result['sources']={m:b.digest(importlib.import_module(m).__file__) for m in manifest['modules']}
@@ -43,7 +56,7 @@ def run(a):
         kind=os.environ.get('S5_LAYER_KIND','mixed');moe=os.environ.get('S5_MOE','on')
         cap=os.environ.get('FLASH_MARLIN_GREEN_CAP','0')
         if cap not in ('0','1'):raise Inconclusive('invalid Marlin cap flag')
-        if a.rung!='model-terminal' and (kind!='mixed' or moe!='on' or cap!='0'):raise Inconclusive('ablation only in terminal diagnostic')
+        if a.rung!='model-terminal' and not value and (kind!='mixed' or moe!='on' or cap!='0'):raise Inconclusive('ablation only in terminal diagnostic')
         from s5_ablation import configure,apply
         configure(spec,kind)
         result['ablation']=dict(layer_kind=kind,moe=moe,marlin_cap=cap=='1')
@@ -86,12 +99,34 @@ def run(a):
             g,trace=capture(dec,green.sd);graphs.append(g)
             evidence=audit(g.graph,green.sd,library,Path(str(output)+f'.rank{rank}.split{split}.nodes.jsonl'))
             if evidence['verdict']!='PASS':raise Inconclusive('node placement not established',evidence)
+            result['memory_nodes']=[x for x in evidence['nodes'] if x['type'] in ('memcpy','memset')]
+            for node in result['memory_nodes']:
+                print('S5_COPY '+json.dumps(dict(rank=rank,**node)),flush=True)
+            if copy_kernels:
+                from s5_copy_graph import KernelCopyGraph
+                candidate=KernelCopyGraph(g,green.sd,library);graphs.append(candidate)
+                converted=audit(candidate,green.sd,library,Path(str(output)+f'.rank{rank}.copy-nodes.jsonl'))
+                if converted['verdict']!='PASS' or any(x['type'] in ('memcpy','memset') for x in converted['nodes']):raise Inconclusive('copy conversion audit failed',converted)
+                expected={k:sum(x['type']==k for x in result['memory_nodes']) for k in ('memcpy','memset')}
+                if candidate.counts!=expected or not expected['memcpy']:raise Inconclusive('replacement count mismatch',candidate.counts)
+                # Original and converted trajectories must be bit-identical,
+                # independent of the later concurrent-vs-solo noise control.
+                snaps=[]
+                for runner in (g,candidate):
+                    dec.reset();torch.cuda.synchronize()
+                    with torch.cuda.stream(green.sd):
+                        for _ in range(4):runner.replay()
+                    green.sd.synchronize();snaps.append(b.snapshot(dec)+[x.clone() for rc in dec.rowcaches.values() for x in (rc[1],rc[2])])
+                b.checked(b.state_equal(*snaps),'kernel-copy graph differs from original graph')
+                result['copy_graph']=dict(counts=candidate.counts,equality=True,audit=converted['verdict'])
+                g=candidate
             bank[split]=(green,g,trace);result['bank_memory'].append(dict(split=split,**memory()))
             if torch.cuda.memory_reserved()>18*2**30:raise Inconclusive('graph bank exceeds18GiB slice cap')
         if terminal:
             from s5_terminal_mode import run as terminal_run
             from s5_terminal_correctness import verify as terminal_verify
             green,g,trace=bank[a.split];result['audit']=evidence
+            result['actual_split']=green.split
             steps=int(os.environ.get('S5_TERMINAL_STEPS','200'))
             if steps not in (30,200,400):raise Inconclusive('unreviewed terminal step count')
             result['steps']=steps
@@ -105,6 +140,7 @@ def run(a):
                     ('decode_split',g,green.sd,green.sp,'decode'),
                     ('prefill_split',g,green.sd,green.sp,'prefill'),
                     ('serial',basegraph,sd,sp,'serial')):
+                    if value and name in ('serial','prefill_split'):continue
                     phase('terminal-'+name,300)
                     result['modes'][name]=terminal_run(dec,pre,gg,ds,ps,ctl,progress,steps,mode,False)
             phase('model-overlap-terminal-events')
@@ -114,6 +150,50 @@ def run(a):
             result['correctness']=terminal_verify(dec,pre,g,green.sd,green.sp,
                 (len(overlap['raw_decode']),len(overlap['raw_prefill'])),progress)
             result['correctness_verified']=result['correctness']['passed']
+            if noop:
+                from s5_collective_control import local_prefill_collectives
+                # The real communicator remains allocated: only calls are
+                # bypassed. Neither decode graph nor its CA path changes.
+                with local_prefill_collectives(pre,lambda:torch.cuda.current_stream().cuda_stream) as control:
+                    phase('terminal-noop-warmup')
+                    pre.reset();torch.cuda.synchronize()
+                    with torch.cuda.stream(green.sp):pre.forward(b.Trace())
+                    green.sp.synchronize()
+                    phase('terminal-noop-prefill-solo')
+                    result['modes']['noop_prefill']=terminal_run(dec,pre,g,sd,sp,ctl,progress,steps,'prefill',False)
+                    before=control.collective
+                    phase('terminal-noop-overlap')
+                    m=terminal_run(dec,pre,g,green.sd,green.sp,ctl,progress,steps,'overlap',False)
+                    result['modes']['overlap_noop']=m
+                    result['noop_collective_calls']=control.collective-before
+                    phase('terminal-noop-correctness')
+                    result['noop_correctness']=terminal_verify(dec,pre,g,green.sd,green.sp,
+                        (len(m['raw_decode']),len(m['raw_prefill'])),progress)
+                result['noop_scope']='local-return prefill collective ablation; own solo oracle; not equivalent model or a link-only attribution'
+            if resident:
+                phase('terminal-resident-setup')
+                original_kv,original_ple=pre.kv,pre.ple_uva
+                result['resident_before']=memory()
+                pre.kv=pre.host.to('cuda');pre.ple_uva=pre.ple_host.to('cuda')
+                torch.cuda.synchronize();result['resident_after']=memory()
+                result['resident_bytes']=pre.host.numel()*pre.host.element_size()+pre.ple_host.numel()*pre.ple_host.element_size()
+                if torch.cuda.memory_reserved()>18*2**30:raise Inconclusive('resident control exceeds18GiB')
+                try:
+                    # Prove substitution itself against the original host path.
+                    snapshots=[]
+                    for kv,ple in ((original_kv,original_ple),(pre.kv,pre.ple_uva)):
+                        pre.kv,pre.ple_uva=kv,ple;pre.reset();torch.cuda.synchronize()
+                        with torch.cuda.stream(green.sp):pre.forward(b.Trace())
+                        green.sp.synchronize();snapshots.append(b.snapshot(pre))
+                    b.checked(b.state_equal(*snapshots),'resident prefill differs from host-input prefill')
+                    phase('terminal-resident-prefill-solo')
+                    result['modes']['resident_prefill']=terminal_run(dec,pre,g,sd,sp,ctl,progress,steps,'prefill',False)
+                    phase('terminal-resident-overlap')
+                    m=terminal_run(dec,pre,g,green.sd,green.sp,ctl,progress,steps,'overlap',False)
+                    result['modes']['overlap_resident']=m
+                    phase('terminal-resident-correctness')
+                    result['resident_correctness']=terminal_verify(dec,pre,g,green.sd,green.sp,(len(m['raw_decode']),len(m['raw_prefill'])),progress)
+                finally:pre.kv,pre.ple_uva=original_kv,original_ple
             if cap_evidence:
                 result['marlin_cap']=cap_evidence()
                 by_stream={r['stream']:r for r in result['marlin_cap']['streams']}
@@ -165,7 +245,7 @@ def run(a):
                 result['modes']['resident_overlap']=measure('resident-overlap',g,trace,green.sd,green.sp,green)
                 result['bandwidth_scope']='prefill PCIe-source ablation; NVML PCIe only. DRAM attribution requires sampled GPU metrics; no claim from source byte counts.'
         phase('cleanup');torch.cuda.synchronize()
-        for g in graphs:g.reset()
+        for g in reversed(graphs):g.reset()
         for gc in contexts:gc.close()
         observed={'decode':set(),'prefill':set()}
         for line in progress.events.read_text().splitlines():
