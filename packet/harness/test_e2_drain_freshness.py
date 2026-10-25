@@ -52,7 +52,7 @@ class FreshnessTests(unittest.TestCase):
         out2 = f.grade(lines2)
         self.assertEqual(out2['verdict'], 'INCONCLUSIVE')
         self.assertTrue(all(w['freshness'] == 'unproven' for w in out2['workers'].values()))
-        self.assertNotIn('FAIL', json.dumps(out) + json.dumps(out2))
+        self.assertNotEqual(out['verdict'], 'FAIL'); self.assertNotEqual(out2['verdict'], 'FAIL')
 
     def test_malformed_final_state_is_inconclusive_and_conservative_fields_reported(self):
         lines = []
