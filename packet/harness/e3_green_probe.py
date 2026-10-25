@@ -27,6 +27,7 @@ import argparse
 import ctypes
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -45,6 +46,29 @@ DEFAULT_ROUNDS = 3
 DEFAULT_SIZE = 4096
 DEFAULT_ITERS = 20
 ABI_VERSION = 1
+# Reviewed independent pins, not merely a self-signed directory manifest.
+NATIVE_PINS = {
+    'green_context.py': '26fdd7f650a17bd4382a46b0875d83f5cfde3287ee5221bc600c3870773dc7d9',
+    'e3_types.py': '2a9f08b94d7e383efd358f8b044648cf52a65d76f71119a9ebdc89e5f1d04068',
+    'native/flash_s5_green.cu': '731d31d10c69bd8f4e9cb302e46d8dc65564d974fe9480c2e1c290e0f385c598',
+}
+
+
+def verify_native(root):
+    root = Path(root)
+    files = list(root.rglob('*'))
+    if any(path.is_symlink() for path in files):
+        raise ValueError('native bundle contains a symlink')
+    actual = {str(path.relative_to(root)) for path in files if path.is_file()}
+    if actual != set(NATIVE_PINS) | {'SHA256SUMS'}:
+        raise ValueError('native bundle file inventory differs')
+    expected = ''.join(f'{sha}  {name}\n' for name, sha in sorted(NATIVE_PINS.items()))
+    if (root / 'SHA256SUMS').read_text() != expected:
+        raise ValueError('native manifest differs from reviewed pins')
+    for name, sha in NATIVE_PINS.items():
+        if hashlib.sha256((root / name).read_bytes()).hexdigest() != sha:
+            raise ValueError('native source pin differs: ' + name)
+    return dict(NATIVE_PINS)
 
 # Error kinds that mean "the probe could not measure this", not "the device is
 # wrong". Any other recorded kind is hard evidence and grades FAIL.
@@ -107,7 +131,7 @@ def build(source, library):
               'log_tail': None, 'command': None,
               'cudart': 'shared', 'arch': 'sm_86', 'ptx_fallback': False,
               'refused': False}
-    if library.exists():
+    if library.exists() or library.is_symlink():
         record.update(refused=True,
                       error='refusing to replace existing library: ' + library.name)
         return record
@@ -162,13 +186,15 @@ def measure_timings(torch, split, device, size, iters):
     streams = {'ordinary': cuda.current_stream(device),
                'decode_stream': split.decode_stream,
                'prefill_stream': split.prefill_stream}
-    # Warm every stream (kernel, cuBLAS handle, allocator path) before timing.
-    for stream in streams.values():
+    # Allocate outputs on the primary context, retain them across every launch,
+    # and make primary-stream initialization ready before using either lane.
+    outputs = {name: torch.empty_like(a) for name in streams}
+    cuda.synchronize(device)
+    for name, stream in streams.items():
         with cuda.stream(stream):
             for _ in range(2):
-                torch.matmul(a, b)
+                torch.matmul(a, b, out=outputs[name])
         stream.synchronize()
-    cuda.synchronize(device)
     timings = {'shape': [size, size, size], 'dtype': 'bfloat16', 'iterations': iters}
     for name, stream in streams.items():
         samples = []
@@ -177,37 +203,39 @@ def measure_timings(torch, split, device, size, iters):
             end = cuda.Event(enable_timing=True)
             with cuda.stream(stream):
                 start.record()
-                torch.matmul(a, b)
+                torch.matmul(a, b, out=outputs[name])
                 end.record()
             stream.synchronize()
             samples.append(float(start.elapsed_time(end)))
         timings[name] = {'ms': samples, 'total_ms': float(sum(samples)),
                          'median_ms': float(statistics.median(samples)),
                          'min_ms': float(min(samples)), 'max_ms': float(max(samples))}
-    # Concurrent solo launches: each stream's own event span plus wall time.
-    decode_start = cuda.Event(enable_timing=True)
-    decode_end = cuda.Event(enable_timing=True)
-    prefill_start = cuda.Event(enable_timing=True)
-    prefill_end = cuda.Event(enable_timing=True)
+    # Interleave submissions to avoid queuing the complete prefill batch first.
+    # Only lane-local events; these spans DO NOT prove simultaneous kernels.
+    starts = {name: cuda.Event(enable_timing=True) for name in ('decode_stream', 'prefill_stream')}
+    ends = {name: cuda.Event(enable_timing=True) for name in starts}
     wall_start = time.perf_counter()
-    with cuda.stream(split.prefill_stream):
-        prefill_start.record()
-        for _ in range(iters):
-            torch.matmul(a, b)
-        prefill_end.record()
-    with cuda.stream(split.decode_stream):
-        decode_start.record()
-        for _ in range(iters):
-            torch.matmul(a, b)
-        decode_end.record()
-    cuda.synchronize(device)
+    for name in starts:
+        with cuda.stream(streams[name]):
+            starts[name].record()
+    for _ in range(iters):
+        for name in starts:
+            with cuda.stream(streams[name]):
+                torch.matmul(a, b, out=outputs[name])
+    for name in starts:
+        with cuda.stream(streams[name]):
+            ends[name].record()
+    for name in starts:
+        streams[name].synchronize()
     wall_ms = (time.perf_counter() - wall_start) * 1000.0
     timings['concurrent'] = {
         'wall_ms': float(wall_ms),
-        'decode_stream_ms': float(decode_start.elapsed_time(decode_end)),
-        'prefill_stream_ms': float(prefill_start.elapsed_time(prefill_end)),
-        'iterations': iters}
-    del a, b
+        'decode_stream_ms': float(starts['decode_stream'].elapsed_time(ends['decode_stream'])),
+        'prefill_stream_ms': float(starts['prefill_stream'].elapsed_time(ends['prefill_stream'])),
+        'iterations': iters,
+        'basis': 'interleaved host submissions; lane-local spans, not simultaneous-kernel proof'}
+    timings['outputs_finite'] = all(bool(torch.isfinite(out).all().item()) for out in outputs.values())
+    del a, b, outputs, starts, ends, start, end
     cuda.synchronize(device)
     return timings
 
@@ -258,20 +286,24 @@ def _measure_device(record, torch, green_context, args):
         failure = exc
         raise
     finally:
-        if failure is None:
-            split.close()  # a close failure is the primary measurement failure
-        else:
-            try:
-                split.close()
-            except Exception as close_exc:
-                record['errors'].append(
-                    _error('cuda', 'close after failure: ' + scrub_text(close_exc)))
+        try:
+            split.close()
+            record['cleanup'] = 'closed'
+        except Exception as close_exc:
+            record['cleanup'] = 'failed'
+            record['errors'].append(_error('cuda', 'split close failed: ' + scrub_text(close_exc)))
+            if failure is None:
+                raise
 
 
 # -- frozen verdict ----------------------------------------------------------
 
 def _record_verdict(record):
     """Frozen per-device rules. Returns (verdict, reasons)."""
+    errors = record.get('errors') or []
+    hard = [err for err in errors if err.get('kind') not in INCONCLUSIVE_KINDS]
+    if hard:
+        return 'FAIL', ['%s: %s' % (err.get('kind'), err.get('message', '')) for err in hard]
     build_record = record.get('build') or {}
     if build_record.get('available') is not True:
         return 'INCONCLUSIVE', ['helper not built']
@@ -289,10 +321,6 @@ def _record_verdict(record):
         capability = None
     if capability != [8, 6]:
         return 'INCONCLUSIVE', ['capability %r != [8, 6]' % (capability,)]
-    errors = record.get('errors') or []
-    hard = [err for err in errors if err.get('kind') not in INCONCLUSIVE_KINDS]
-    if hard:
-        return 'FAIL', ['%s: %s' % (err.get('kind'), err.get('message', '')) for err in hard]
     inconclusive = [err for err in errors if err.get('kind') in INCONCLUSIVE_KINDS]
     if inconclusive:
         return 'INCONCLUSIVE', ['%s: %s' % (err.get('kind'), err.get('message', ''))
@@ -316,40 +344,44 @@ def _record_verdict(record):
     total = describe.get('total_sms')
     if type(requested) is not int or requested < 1:
         return 'FAIL', ['requested decode SM count not recorded']
-    if describe.get('decode_sms') != requested:
-        return 'FAIL', ['decode SMs %r != requested %d'
-                        % (describe.get('decode_sms'), requested)]
-    if type(total) is not int:
-        return 'FAIL', ['total SM count not recorded']
-    if describe.get('prefill_sms') != total - requested:
-        return 'FAIL', ['prefill SMs %r != total - requested %d'
-                        % (describe.get('prefill_sms'), total - requested)]
+    decode, prefill = describe.get('decode_sms'), describe.get('prefill_sms')
+    if describe.get('requested_decode_sms') != requested:
+        return 'FAIL', ['helper request differs from declared request']
+    if (type(total) is not int or type(decode) is not int or type(prefill) is not int
+            or decode < requested or prefill <= 0 or decode + prefill != total):
+        return 'FAIL', ['invalid actual rounded SM allocation']
     if membership.get('disjoint') is not True:
         return 'FAIL', ['decode/prefill SM sets are not disjoint']
-    if (membership.get('decode_seen') != requested
-            or membership.get('prefill_seen') != total - requested
+    if (membership.get('decode_seen') != decode
+            or membership.get('prefill_seen') != prefill
             or membership.get('total') != total):
         return 'FAIL', ['membership counts off']
     timings = record.get('timings') or {}
+    iterations = timings.get('iterations')
+    if type(iterations) is not int or iterations < 1:
+        return 'FAIL', ['invalid timing iteration count']
+    if timings.get('outputs_finite') is not True:
+        return 'FAIL', ['matmul outputs not proven finite']
+    positive = lambda x: type(x) in (int, float) and math.isfinite(x) and x > 0
     for key in ('ordinary', 'decode_stream', 'prefill_stream'):
         entry = timings.get(key)
         total_ms = entry.get('total_ms') if isinstance(entry, dict) else None
         if (not isinstance(entry, dict) or not entry.get('ms')
-                or not isinstance(total_ms, (int, float)) or total_ms <= 0):
+                or len(entry['ms']) != iterations or not all(positive(x) for x in entry['ms'])
+                or not positive(total_ms)):
             return 'FAIL', ['timings missing: ' + key]
     concurrent = timings.get('concurrent')
     wall_ms = concurrent.get('wall_ms') if isinstance(concurrent, dict) else None
     decode_ms = concurrent.get('decode_stream_ms') if isinstance(concurrent, dict) else None
     prefill_ms = concurrent.get('prefill_stream_ms') if isinstance(concurrent, dict) else None
     if (not isinstance(concurrent, dict)
-            or not isinstance(wall_ms, (int, float)) or wall_ms <= 0
-            or not isinstance(decode_ms, (int, float)) or decode_ms <= 0
-            or not isinstance(prefill_ms, (int, float)) or prefill_ms <= 0):
+            or concurrent.get('iterations') != iterations
+            or not positive(wall_ms) or not positive(decode_ms) or not positive(prefill_ms)):
         return 'FAIL', ['timings missing: concurrent']
     return 'PASS', []
 
 
-def verdict(records):
+def verdict(records, expected_devices=None):
     """Frozen whole-run rules: PASS only if every requested device passes.
 
     A hard failure on any measured device outranks an inconclusive device, so a
@@ -361,12 +393,18 @@ def verdict(records):
         return {'verdict': 'INCONCLUSIVE', 'reasons': ['no device records']}
     results = [(record.get('device'), _record_verdict(record)) for record in records]
     reasons = []
+    device_ids = [r.get('device') for r in records]
+    coverage_bad = (any(type(d) is not int or d < 0 for d in device_ids)
+                    or len(set(device_ids)) != len(device_ids)
+                    or (expected_devices is not None and set(device_ids) != set(expected_devices)))
+    if coverage_bad:
+        reasons.append('device inventory incomplete or duplicated')
     for device, (_, why) in results:
         reasons.extend('device %r: %s' % (device, item) for item in why)
     outcomes = [result[0] for _, result in results]
     if 'FAIL' in outcomes:
         overall = 'FAIL'
-    elif 'INCONCLUSIVE' in outcomes:
+    elif 'INCONCLUSIVE' in outcomes or coverage_bad:
         overall = 'INCONCLUSIVE'
     elif all(outcome == 'PASS' for outcome in outcomes):
         overall = 'PASS'
@@ -380,15 +418,15 @@ def verdict(records):
 def write_json(path, value):
     """Atomic exclusive create: a concurrent/killed writer never leaves partial JSON."""
     path = Path(path)
-    if path.exists():
+    if path.exists() or path.is_symlink():
         raise FileExistsError('refusing to overwrite ' + path.name)
     temp = path.with_name(path.name + '.tmp')
-    if temp.exists():
+    if temp.exists() or temp.is_symlink():
         raise FileExistsError('refusing to overwrite ' + temp.name)
     text = json.dumps(json_safe(scrub_obj(value)), indent=2, allow_nan=False)
     with open(temp, 'x') as handle:
         handle.write(text + '\n')
-    os.replace(temp, path)
+    os.link(temp, path)  # exclusive publication; retain the staging artifact
 
 
 def _flush_record(out, record):
@@ -407,7 +445,7 @@ def _unavailable_build(error):
 
 
 def _finish(records, args, devices, environment):
-    result = verdict(records)
+    result = verdict(records, devices)
     requested = next((record.get('requested_decode_sms') for record in records
                       if record.get('requested_decode_sms') is not None), None)
     summary = {'schema': 1, 'verdict': result['verdict'], 'reasons': result['reasons'],
@@ -475,6 +513,7 @@ def main(argv=None):
         return 0
     if args.native is None or args.out is None or args.library is None:
         parser.error('--native, --out and --build are required together')
+    args.out.mkdir(parents=True, exist_ok=True)
     source = Path(args.native) / 'native' / 'flash_s5_green.cu'
     records = [{'schema': 1, 'device': device, 'status': 'new',
                 'requested_decode_sms': None, 'capability': None, 'build': None,
@@ -485,11 +524,15 @@ def main(argv=None):
                    'cuda_visible_devices': os.environ.get('CUDA_VISIBLE_DEVICES')}
     torch = green_context = None
     try:
+        environment['native_pins'] = verify_native(args.native)
+        sys.path.insert(0, str(args.native.resolve()))
         import torch as torch_module
         torch = torch_module
         environment['torch'] = getattr(torch, '__version__', None)
         environment['torch_cuda'] = getattr(getattr(torch, 'version', None), 'cuda', None)
         import green_context as green_module
+        if Path(green_module.__file__).resolve() != (args.native / 'green_context.py').resolve():
+            raise ValueError('imported native module differs from pinned directory')
         green_context = green_module
     except Exception as exc:
         fatal = _error('config', 'import failed: ' + scrub_text(exc))
@@ -542,7 +585,7 @@ def main(argv=None):
         if record['status'] != 'new':
             _flush_record(args.out, record)
             continue
-        if build_record.get('available') is not True:
+        if build_record.get('available') is not True or build_record.get('abi') != ABI_VERSION:
             record['status'] = 'build-failed'
             record['errors'].append(_error(
                 'build', build_record.get('error') or 'helper not built'))
@@ -561,6 +604,8 @@ def main(argv=None):
             record['errors'].append(_error(classify_exception(exc), scrub_text(exc)))
         finally:
             _flush_record(args.out, record)
+        if record.get('cleanup') == 'failed':
+            break  # no later device work after an unproven context teardown
     return _finish(records, args, devices, environment)
 
 
