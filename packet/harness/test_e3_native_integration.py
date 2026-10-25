@@ -403,8 +403,11 @@ class FakeMQ:
 
 class FakeBroadcast:
     def __init__(self, executor):
+        from contextlib import nullcontext
         self.executor = executor
-        self.buffer = types.SimpleNamespace(max_chunks=10)
+        self.current_idx = 0
+        self.buffer = types.SimpleNamespace(max_chunks=10, max_chunk_bytes=1 << 20,
+            n_reader=4, get_metadata=lambda index: nullcontext(bytearray((0, 0, 0, 0, 0))))
 
     def enqueue(self, item):
         self.executor.enqueue(item)
@@ -730,8 +733,34 @@ def admission(transaction, *, blocks=(10, 11), grammar=None, sparse=False):
                                grammar_output=grammar, sparse_active=sparse)
 
 
+def build_legacy_fixture_engine(engine):
+    """Exercise the earlier post-schedule controller explicitly, NOT startup.
+
+    Native startup no longer silently selects this controller when its real
+    model/config discovery fails. These fake-worker lifetime regressions stay
+    useful and separate from wire-v1 admission/driver tests.
+    """
+    from async_handoff import HandoffConfig, build_composition
+    from lane_state import estimated_e3_inventory
+    from scheduler_hooks import SchedulerLeases
+    env = {'FLASH_S5_OVERLAP': '1'}
+    config = HandoffConfig.from_env(env)
+    transport = eh.install(engine.model_executor, config=config,
+                           success_status=nr.response_success())
+    backend = nb.RemoteCompletionBackend(config)
+    allocation = estimated_e3_inventory(chunk_tokens=config.chunk_tokens)
+    composition = build_composition(env, transport=transport, backend=backend, lanes={},
+        native_allocations=allocation, allocation=allocation, side='engine',
+        scheduler_leases=SchedulerLeases())
+    composition.attach(engine=engine, scheduler=engine.scheduler, executor=engine.model_executor)
+    driver = ed.SegmentDriver(composition, executor=engine.model_executor,
+        scheduler=engine.scheduler, engine=engine).install()
+    engine._flash_s5_composition = composition
+    return composition
+
+
 class EngineFixture:
-    """Enabled engine startup through the generated ``EngineCore.__init__`` seam."""
+    """Earlier post-schedule controller; explicit CPU fixture, not native startup."""
 
     def __init__(self, *, workers=4, cuda=None):
         self.workers = [make_worker_stack(rank, output_rank=0, cuda=cuda)
@@ -748,7 +777,7 @@ class EngineFixture:
         with mock.patch.dict(sys.modules, self.modules), \
                 mock.patch.dict(os.environ, {'FLASH_S5_OVERLAP': '1'}):
             with mock.patch.object(nb.RemoteCompletionBackend, 'native_verified', True):
-                self.composition = eh.after_engine_startup(self.engine)
+                self.composition = build_legacy_fixture_engine(self.engine)
 
     @property
     def driver(self):

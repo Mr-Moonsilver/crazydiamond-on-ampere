@@ -108,6 +108,11 @@ class SegmentCommand:
     @classmethod
     def from_descriptor(cls, descriptor):
         """Typed view of a wire descriptor; no int()/str() coercion of its fields."""
+        from wire_v1 import SegmentCommand as WireCommand
+        if type(descriptor) is WireCommand:
+            command, d = descriptor, descriptor.descriptor
+            return cls(d.transaction, d.stage, d.kind.value, command.op_seq,
+                       layer_start=d.layer_start, layer_end=d.layer_end, seq=d.seq)
         kind = descriptor.kind
         if type(kind) is not str:
             raise LaneDispatchError('descriptor kind must be a str')

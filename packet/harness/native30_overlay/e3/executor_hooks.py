@@ -86,6 +86,9 @@ _WORKER_METHODS = '''    def flash_s5_open(self, message):
     def flash_s5_cancel(self, message):
         return _flash_s5_hooks.worker_rpc(self, "cancel", message)
 
+    def flash_s5_transition(self, message):
+        return _flash_s5_hooks.worker_rpc(self, "transition", message)
+
 '''
 
 
@@ -352,6 +355,80 @@ def _reply_ranks(executor, unique_reply_rank):
     return (unique_reply_rank,)
 
 
+class BoundedSender:
+    """Strict bounded inline sender for the one broadcast ring.
+
+    A command is written only when the ring already has a writable slot and the
+    serialized envelope fits: no queue growth, no blocking wait and no overflow
+    path (remote readers are refused outright). ``check`` runs BEFORE any reply
+    expectation is registered, so a full ring is plain backpressure -- it never
+    poisons the owned transport. The first write failure after registration
+    quarantines the transport (partial-send), and no command is retried here.
+    """
+
+    def __init__(self, queue):
+        if queue is None or not callable(getattr(queue, 'enqueue', None)):
+            raise E3ContractError('bounded sender needs the broadcast queue')
+        if getattr(queue, '_is_writer', True) is not True:
+            raise E3ContractError('bounded sender must own the writer side')
+        owner = getattr(queue, '_flash_s5_sender_owner', None)
+        if owner is not None and owner is not self:
+            raise E3ContractError('broadcast queue already has an E3 sender')
+        queue._flash_s5_sender_owner = self
+        self.queue = queue
+        self.sent = 0
+        self.refused_full = 0
+        self.refused_large = 0
+
+    def _writable(self):
+        buffer = getattr(self.queue, 'buffer', None)
+        metadata = getattr(buffer, 'get_metadata', None)
+        index = getattr(self.queue, 'current_idx', None)
+        if not callable(metadata) or type(index) is not int:
+            raise E3ContractError('broadcast ring metadata is unavailable')
+        with metadata(index) as slots:
+            return not (slots[0] and sum(slots[1:]) != buffer.n_reader)
+
+    def _check_size(self, envelope):
+        import pickle
+        try:
+            size = len(pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL))
+        except BaseException:
+            raise E3ContractError('command envelope is not serializable')
+        buffer = getattr(self.queue, 'buffer', None)
+        limit = getattr(buffer, 'max_chunk_bytes', None)
+        if type(limit) is not int or limit < 7:
+            raise E3ContractError('broadcast inline capacity is unavailable')
+        if size + 6 >= limit:
+            self.refused_large += 1
+            raise Backpressure('command_too_large')
+
+    def check(self, envelope):
+        """Pure precheck: no registration, no write, no state change on success."""
+        if getattr(self.queue, '_flash_s5_sender_owner', None) is not self:
+            raise E3ContractError('bounded sender lost sole-writer ownership')
+        if getattr(self.queue, 'n_remote_reader', 0):
+            raise Backpressure('remote_readers_unsupported')
+        if getattr(self.queue, 'shutting_down', False):
+            raise TransportError('broadcast queue is shutting down')
+        self._check_size(envelope)
+        if not self._writable():
+            self.refused_full += 1
+            raise Backpressure('command_ring_full')
+        return True
+
+    def __call__(self, envelope):
+        """One attempt. A failure here may be a partial send: never retry."""
+        self.check(envelope)
+        self.queue.enqueue(envelope)
+        self.sent += 1
+        return self.sent
+
+    def __repr__(self):
+        return (f'BoundedSender(sent={self.sent}, full={self.refused_full}, '
+                f'large={self.refused_large})')
+
+
 def install(executor, *, config, success_status, clock=time.monotonic,
             capacity=None):
     """Take sole receiver ownership at an idle executor handoff.
@@ -386,6 +463,7 @@ def install(executor, *, config, success_status, clock=time.monotonic,
                                handoff_idle=True, max_calls=slots,
                                clock=clock)
     executor._flash_s5_transport = transport
+    executor._flash_s5_bounded_send = BoundedSender(broadcast)
     executor._flash_s5_command_slots = slots
     executor._flash_s5_stock_forbidden = True
     executor._flash_s5_close = None
@@ -513,7 +591,8 @@ def park_prefill(engine, scheduler_output):
     driver = _driver(engine)
     if driver is None:
         return False
-    return driver.park(scheduler_output) is not None
+    parked = driver.park(scheduler_output)
+    return parked is not None and parked is not False
 
 
 def before_step_with_batch_queue(engine):
@@ -533,6 +612,16 @@ def before_step_with_batch_queue(engine):
 def before_abort(engine, request_ids):
     driver = _driver(engine)
     if driver is not None:
+        if hasattr(driver, 'tx'):
+            # Native driver: abort may target a begun transaction or a chunk
+            # that is only parked in the admission controller.
+            transaction = driver.tx
+            if transaction is None and driver.controller.active:
+                transaction = driver.controller.admission().transaction
+            if (transaction is not None
+                    and transaction.request_uid in tuple(request_ids)):
+                return driver.stop('abort', drain=False)
+            return None
         active = driver.dispatcher.active
         if active is not None and active.transaction.request_uid in tuple(request_ids):
             return driver.stop('abort', drain=False)
@@ -605,7 +694,7 @@ def before_engine_shutdown(engine):
 
 def worker_rpc(worker, name, message):
     """Generated worker entry point for typed open/submit/poll/commit/cancel."""
-    if name not in ('open', 'submit', 'poll', 'commit', 'cancel'):
+    if name not in ('open', 'submit', 'poll', 'commit', 'cancel', 'transition'):
         raise E3ContractError('unknown S5 worker RPC')
     if not hasattr(message, 'validate'):
         raise E3ContractError('S5 worker RPC requires a typed message')
@@ -629,8 +718,8 @@ def worker_rpc(worker, name, message):
 
 
 __all__ = [
-    'CORE_PATH', 'CORE_SHA256', 'EXECUTOR_PATH', 'EXECUTOR_SHA256',
-    'LocalFuture', 'PINS', 'WORKER_PATH', 'WORKER_SHA256',
+    'BoundedSender', 'CORE_PATH', 'CORE_SHA256', 'EXECUTOR_PATH',
+    'EXECUTOR_SHA256', 'LocalFuture', 'PINS', 'WORKER_PATH', 'WORKER_SHA256',
     'after_engine_startup', 'before_abort', 'before_engine_shutdown',
     'before_finish_pause', 'before_pause', 'before_reset_prefix',
     'before_shutdown', 'before_step_with_batch_queue', 'collective_rpc',

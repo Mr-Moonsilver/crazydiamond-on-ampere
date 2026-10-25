@@ -42,6 +42,7 @@ from async_handoff import (
 )
 from e3_types import (
     CompletionKind,
+    CompletionProof,
     DependencyRole,
     E3ContractError,
     E3Pending,
@@ -49,7 +50,28 @@ from e3_types import (
     TransactionId,
 )
 from lane_state import BatchRow, MetadataSnapshot, _freeze
-from scheduler_hooks import LeaseCategory
+from reply_transport import Backpressure
+from scheduler_hooks import LeaseCategory, PrefillAdmissionController
+from wire_v1 import (
+    ReleaseRequest,
+    ReleaseAck,
+    OpenAck,
+    OpenRequest,
+    OpSeqTracker,
+    SegmentAcceptance,
+    SegmentCommand,
+    SegmentDescriptor,
+    SegmentKind,
+    TransitionAck,
+    TransitionCommand,
+    WorkerCompletionReport,
+)
+
+
+def _wire_ready():
+    if SegmentDescriptor is None:
+        raise DriverError('wire-v1 is not packaged; the native driver cannot run')
+
 
 # Reported when a chunk cannot be parked; the engine then runs the stock path.
 _STOP_KINDS = ('abort', 'cancel', 'disconnect', 'preempt', 'reset', 'pause',
@@ -484,4 +506,706 @@ class SegmentDriver:
         return self.parked is not None
 
 
-__all__ = ['DriverError', 'ParkedBatch', 'PrefillAdmission', 'SegmentDriver']
+class PPTransferLedger:
+    """Identity-validated PP transfer bookkeeping for the two-stage split.
+
+    A send is releasable only after BOTH the sender's local completion proof
+    and the receiver's remote ``PP_CONSUMER`` proof for the same transaction,
+    stage and transfer sequence. Cancellation does not skip either.
+    """
+
+    def __init__(self, stages=2, *, stage1_ranks=None):
+        if stages != 2:
+            raise DriverError('the first cut has exactly two PP stages')
+        _wire_ready()
+        self.stages = stages
+        self.stage1_ranks = None if stage1_ranks is None else tuple(stage1_ranks)
+        self._transfers = {}
+
+    def note_sent(self, transaction, seq, sender_rank=0):
+        if type(transaction) is not TransactionId:
+            raise DriverError('PP send needs a TransactionId')
+        if type(seq) is not int or seq < 0:
+            raise DriverError('PP transfer seq must be a nonnegative int')
+        key = (transaction, seq)
+        if key in self._transfers:
+            raise DriverError('PP transfer seq already used')
+        self._transfers[key] = dict(sender_rank=sender_rank, sender_done=None,
+                                    consumer=None, released=False)
+        return key
+
+    def _entry(self, transaction, seq):
+        key = (transaction, seq)
+        entry = self._transfers.get(key)
+        if entry is None:
+            raise DriverError('unknown PP transfer sequence')
+        return key, entry
+
+    def note_sender_complete(self, transaction, seq, proof):
+        """The sender's own operation completed (a device-event proof)."""
+        if type(proof) is not CompletionProof:
+            raise DriverError('PP sender completion needs a CompletionProof')
+        if proof.ticket.transaction != transaction:
+            raise DriverError('PP sender proof belongs to another transaction')
+        if proof.kind is not CompletionKind.GPU_EVENT:
+            raise DriverError('PP sender proof is not a device completion')
+        if proof.ticket.dependency_role is not DependencyRole.HANDOFF:
+            raise DriverError('PP sender proof is not a handoff operation')
+        key, entry = self._entry(transaction, seq)
+        if proof.ticket.worker_rank != entry['sender_rank']:
+            raise DriverError('PP sender proof comes from another lane')
+        if entry['sender_done'] is not None:
+            if entry['sender_done'] != proof:
+                raise DriverError('PP sender completion changed')
+            return key
+        entry['sender_done'] = proof
+        return key
+
+    def note_consumer(self, transaction, seq, stage, proof):
+        """The receiver proved it consumed this exact transfer."""
+        if stage != 1:
+            raise DriverError('PP consumer proof belongs to stage 1')
+        if type(proof) is not CompletionProof:
+            raise DriverError('PP consumer completion needs a CompletionProof')
+        if proof.ticket.transaction != transaction:
+            raise DriverError('PP consumer proof belongs to another transaction')
+        if proof.kind is not CompletionKind.PP_CONSUMER:
+            raise DriverError('PP consumer proof has the wrong kind')
+        if proof.ticket.dependency_role is not DependencyRole.HANDOFF:
+            raise DriverError('PP consumer proof is not a handoff operation')
+        if self.stage1_ranks is not None and proof.ticket.worker_rank not in self.stage1_ranks:
+            raise DriverError('PP consumer proof comes from a sender lane')
+        key, entry = self._entry(transaction, seq)
+        if entry['consumer'] is not None:
+            if entry['consumer'] != proof:
+                raise DriverError('PP consumer completion changed')
+            return key
+        entry['consumer'] = proof
+        return key
+
+    def releasable(self, transaction, seq):
+        key, entry = self._entry(transaction, seq)
+        return entry['sender_done'] is not None and entry['consumer'] is not None
+
+    def release_send(self, transaction, seq):
+        """Consume the transfer's release exactly once; never bypass proofs."""
+        key, entry = self._entry(transaction, seq)
+        if entry['released']:
+            raise E3ContractError('PP transfer was already released')
+        if not self.releasable(transaction, seq):
+            raise E3Pending('PP transfer lacks its sender/consumer completion')
+        entry['released'] = True
+        return entry['consumer']
+
+    def outstanding(self, transaction):
+        return tuple(sorted(seq for (txn, seq), entry in self._transfers.items()
+                            if txn == transaction and not entry['released']))
+
+    def summary(self):
+        return dict(sent=len(self._transfers),
+                    released=sum(1 for e in self._transfers.values() if e['released']))
+
+
+_SEGMENT_ROLE = {
+    SegmentKind.PREPARE: DependencyRole.PRODUCER,
+    SegmentKind.PREFIX: DependencyRole.PRODUCER,
+    SegmentKind.LAYER: DependencyRole.PRODUCER,
+    SegmentKind.SUFFIX: DependencyRole.PRODUCER,
+    SegmentKind.STATE_FINALIZE: DependencyRole.COMMIT,
+    SegmentKind.PP_SEND: DependencyRole.HANDOFF,
+    SegmentKind.PP_RECEIVE: DependencyRole.HANDOFF,
+}
+
+
+class NativeSegmentDriver:
+    """Wire-v1 bounded driver: one segment per tick, no whole-forward call.
+
+    The scheduler admits the chunk pre-schedule (see
+    :class:`~scheduler_hooks.PrefillAdmissionController`); this driver never
+    parks a ``SchedulerOutput`` and never returns fabricated model outputs.
+    Each ``advance`` drains ready replies and then submits at most one wire
+    ``SegmentCommand`` (or one poll). Completion is only the controller's
+    publication after every rank's host-queried ``STATE_WRITE`` and every PP
+    consumer proof; the final token is then handed back to stock decode.
+    """
+
+    def __init__(self, controller, *, executor, scheduler, engine=None,
+                 layer_count, layer_split, stage_of, clock=time.monotonic,
+                 poll_budget=8, reply_timeout_s=300.0):
+        _wire_ready()
+        if type(controller) is not PrefillAdmissionController:
+            raise DriverError('native driver needs the admission controller')
+        if executor is None or scheduler is None:
+            raise DriverError('native driver needs the executor and scheduler')
+        if controller._scheduler is not scheduler:
+            raise DriverError('admission controller belongs to another scheduler')
+        if type(layer_count) is not int or layer_count < 2:
+            raise DriverError('layer_count must cover at least two layers')
+        if type(layer_split) is not int or not 0 < layer_split < layer_count:
+            raise DriverError('the layer split must leave layers on both stages')
+        stage_of = tuple(stage_of)
+        if not stage_of or any(len(item) != 2 for item in stage_of):
+            raise DriverError('stage_of is a (rank, stage) tuple per worker')
+        ranks = tuple(sorted(rank for rank, _ in stage_of))
+        if ranks != controller.ranks:
+            raise DriverError('stage_of must cover every admitted rank')
+        stages = {stage for _, stage in stage_of}
+        if stages != {0, 1}:
+            raise DriverError('the first cut has exactly two PP stages')
+        self.controller = controller
+        self.executor = executor
+        self.scheduler = scheduler
+        self.engine = engine
+        self.layer_count = layer_count
+        self.layer_split = layer_split
+        self.stage_of = dict(stage_of)
+        self.ranks = ranks
+        self.stage_ranks = {0: tuple(r for r in ranks if self.stage_of[r] == 0),
+                            1: tuple(r for r in ranks if self.stage_of[r] == 1)}
+        if not self.stage_ranks[0] or not self.stage_ranks[1]:
+            raise DriverError('both PP stages need at least one rank')
+        self.stage_layers = {0: (0, layer_split), 1: (layer_split, layer_count)}
+        self.clock = clock
+        self.poll_budget = _positive(poll_budget, 'poll budget')
+        if type(reply_timeout_s) not in (int, float) or reply_timeout_s <= 0:
+            raise DriverError('reply timeout must be positive')
+        self.reply_timeout_s = float(reply_timeout_s)
+        if len(self.stage_ranks[0]) != len(self.stage_ranks[1]):
+            raise DriverError('TP rank count differs across PP stages')
+        self.pp_peers = dict(zip(self.stage_ranks[0], self.stage_ranks[1]))
+        self.pp_ledgers = {sender: PPTransferLedger(2, stage1_ranks=(receiver,))
+                           for sender, receiver in self.pp_peers.items()}
+        self.pp = self.pp_ledgers[self.stage_ranks[0][0]]  # compatibility summary only
+        self.engine_epoch = controller.engine_epoch
+        self.route_generation = 0
+        self.tx = None
+        self.admission = None
+        self.lanes = {}
+        self.trackers = {}
+        self._last_lane_sequences = {}
+        self.tickets = {}
+        self.accepted_tickets = {}
+        self._accepted_descriptors = {}
+        self.phase = 'idle'
+        self.plan = []
+        self.index = 0
+        self.bound_ticket = None
+        self.pp_send_ticket = None
+        self.last_ticket = {0: None, 1: None}
+        self.transfer_seq = 0
+        self.reports = {}
+        self.stop_kind = None
+        self.error = None
+        self._inflight = {}
+        self._retry = None
+        self._transition = None
+
+    def install(self):
+        engine, scheduler = self.engine, self.scheduler
+        if engine is None:
+            raise DriverError('driver needs the engine object to install on')
+        if getattr(engine, '_flash_s5_driver', None) is not None:
+            raise DriverError('engine already has an E3 segment driver')
+        if getattr(scheduler, '_flash_s5_driver', None) is not None:
+            raise DriverError('scheduler already has an E3 segment driver')
+        engine._flash_s5_driver = self
+        scheduler._flash_s5_driver = self
+        return self
+
+    @property
+    def active(self):
+        return self.tx is not None or self.controller.active
+
+    # -- schedule seam ----------------------------------------------------
+    def park(self, scheduler_output):
+        """Pre-schedule admission owns parking; a step marker is refused."""
+        if getattr(scheduler_output, 'flash_s5_prefill_admission', None) is not None:
+            raise DriverError('the legacy post-schedule admission marker is gone')
+        return False
+
+    # -- bounded transport ------------------------------------------------
+    def _bounded(self):
+        sender = getattr(self.executor, '_flash_s5_bounded_send', None)
+        if not callable(sender):
+            raise DriverError('native bounded command sender is not installed')
+        return sender
+
+    def _submit(self, kind, envelope, ranks):
+        transport = getattr(self.executor, '_flash_s5_transport', None)
+        if transport is None:
+            raise DriverError('owned reply transport is not installed')
+        sender = self._bounded()
+        check = getattr(sender, 'check', None)
+        if callable(check):
+            check(envelope)      # backpressure before any expectation is registered
+        sequence = transport.submit(kind, lambda _sequence: sender(envelope),
+                                    ranks=tuple(ranks),
+                                    timeout_s=self.reply_timeout_s, aggregate=None)
+        self._inflight[sequence] = kind
+        return sequence
+
+    def _drain(self):
+        transport = getattr(self.executor, '_flash_s5_transport', None)
+        if transport is None:
+            return 0
+        transport.poll(self.poll_budget)
+        applied = 0
+        for sequence, kind in list(self._inflight.items()):
+            call = transport._calls.get(sequence)
+            if call is None or not call.ready:
+                continue
+            value, _lag = transport.take(sequence)
+            del self._inflight[sequence]
+            self._apply(kind, value)
+            applied += 1
+        return applied
+
+    def _apply(self, kind, values):
+        if kind == 'open':
+            self._apply_open(values)
+        elif kind == 'segment':
+            self._apply_segments(values)
+        elif kind == 'poll':
+            self._apply_poll(values)
+        elif kind == 'release':
+            self._apply_release(values)
+        elif kind == 'transition':
+            acks = tuple(values)
+            if len(acks) != len(self.ranks):
+                raise DriverError('transition reply does not cover every rank')
+            command = self._transition
+            if command is None:
+                raise DriverError('no transition is outstanding')
+            if {getattr(a, 'worker_rank', None) for a in acks} != set(self.ranks):
+                raise DriverError('transition reply ranks are duplicated or missing')
+            for ack in acks:
+                if type(ack) is not TransitionAck or not ack.matches(command):
+                    raise DriverError('transition acknowledgment is stale or mistyped')
+            self.route_generation = acks[0].applied_route_generation
+            self._transition = None
+        else:
+            raise DriverError('unknown wire reply kind')
+
+    def _apply_open(self, values):
+        acks = tuple(values)
+        if len(acks) != len(self.ranks):
+            raise DriverError('open reply does not cover every rank')
+        request = self.open_request
+        seen = set()
+        for ack in acks:
+            if type(ack) is not OpenAck or not ack.matches(request):
+                raise DriverError('open acknowledgment is stale or mistyped')
+            if not ack.accepted:
+                raise DriverError('worker refused the chunk open')
+            if ack.lane.worker_rank in seen:
+                raise DriverError('duplicate open acknowledgment')
+            seen.add(ack.lane.worker_rank)
+            self.lanes[ack.lane.worker_rank] = ack.lane
+            prior_lane, last = self._last_lane_sequences.get(
+                ack.lane.worker_rank, (None, -1))
+            self.trackers[ack.lane.worker_rank] = OpSeqTracker(
+                last if prior_lane == ack.lane else -1)
+            if ack.pp_stages != 2 or ack.lane.role.value != 'prefill':
+                raise DriverError('open acknowledged the wrong lane or PP topology')
+            if ack.stage != self.stage_of[ack.lane.worker_rank]:
+                raise DriverError('worker stage disagrees with the split')
+        self.plan = self._build_plan()
+        self.phase = 'segments'
+
+    def _build_plan(self):
+        """Bounded segment plan: stage 0 then the explicit PP transfer."""
+        seq = self.transfer_seq
+        self.transfer_seq += 1
+        plan = [dict(kind=SegmentKind.PREPARE, stage=0),
+                dict(kind=SegmentKind.PREPARE, stage=1),
+                dict(kind=SegmentKind.PP_RECEIVE, stage=1, seq=seq),
+                dict(kind=SegmentKind.PREFIX, stage=0)]
+        for stage in (0, 1):
+            if stage == 1:
+                plan.append(dict(kind=SegmentKind.PREFIX, stage=1))
+            for layer in range(*self.stage_layers[stage]):
+                plan.append(dict(kind=SegmentKind.LAYER, stage=stage, layer=layer))
+            plan.append(dict(kind=SegmentKind.SUFFIX, stage=stage))
+            if stage == 0:
+                plan.append(dict(kind=SegmentKind.PP_SEND, stage=0, seq=seq))
+            plan.append(dict(kind=SegmentKind.STATE_FINALIZE, stage=stage))
+        return plan
+
+    def _apply_segments(self, values):
+        accepted = tuple(values)
+        if (len(accepted) != len(self.ranks)
+                or {getattr(a, 'worker_rank', None) for a in accepted} != set(self.ranks)):
+            raise DriverError('segment reply does not cover every rank')
+        targets = self._targets
+        pending = False
+        reports = []
+        for item in accepted:
+            if type(item) is not SegmentAcceptance:
+                raise DriverError('segment reply is not a typed acceptance')
+            if item.worker_rank not in self.ranks:
+                raise DriverError('acceptance comes from an unknown rank')
+            if (item.transaction != self.tx or item.kind is not self._command.kind
+                    or item.stage != self._command.stage or item.op_seq != self._command.op_seq):
+                raise DriverError('reply identity differs from the outstanding command')
+            if item.report is not None:
+                reports.append(item.report)
+            if item.worker_rank not in targets:
+                if not item.skipped:
+                    raise DriverError('a non-target lane executed the segment')
+                continue
+            if item.skipped:
+                raise DriverError('a target lane skipped the segment')
+            if item.pending:
+                pending = True
+                continue
+            if not item.accepted:
+                raise DriverError('worker refused the segment')
+            if not item.matches(self._command):
+                raise DriverError('acceptance does not match the command')
+        # Record each accepted target even if a peer is pending: a retry
+        # must not forget work already submitted on the first rank.
+        descriptor = self._command.descriptor
+        accepted_ranks = {item.worker_rank for item in accepted if item.accepted}
+        for rank in accepted_ranks:
+            tracker = self.trackers[rank]
+            first = tracker.accepted(self._command.op_seq, descriptor)
+            if first:
+                self.tickets[rank] = OperationTicket(
+                    self.tx, rank, self.lanes[rank], self._command.op_seq,
+                    _SEGMENT_ROLE[descriptor.kind])
+                self.accepted_tickets[(rank, self._command.op_seq)] = self.tickets[rank]
+                self._accepted_descriptors[(rank, self._command.op_seq)] = descriptor
+                self._last_lane_sequences[rank] = (self.lanes[rank], self._command.op_seq)
+        if pending:
+            self._retry = self._command
+            for report in reports:
+                self._ingest_report(report)
+            return
+        paused = {item.paused for item in accepted if item.accepted}
+        cursors = {item.cursor for item in accepted if item.accepted}
+        if len(paused) != 1 or len(cursors) != 1:
+            raise DriverError('TP workers disagree on the layer continuation')
+        representative = targets[0]
+        self.last_ticket[descriptor.stage] = self.tickets[representative]
+        if descriptor.kind is SegmentKind.PREPARE and self.bound_ticket is None:
+            self.controller.bind(self.tickets[representative])
+            self.bound_ticket = self.tickets[representative]
+        if descriptor.kind is SegmentKind.PP_SEND:
+            self.controller.note_pp_send(self.tx, descriptor.seq)
+            for sender, ledger in self.pp_ledgers.items():
+                ledger.note_sent(self.tx, descriptor.seq, sender)
+            self.pp_send_ticket = self.tickets[representative]
+        if descriptor.kind is SegmentKind.PP_RECEIVE:
+            self.receiver_ticket = self.tickets[targets[0]]
+        self._retry = None
+        if paused != {True}:
+            self.index += 1
+        if self.index == len(self.plan):
+            self.phase = 'finalize'
+        # Completions piggybacked on this reply are host-queried facts too.
+        # Publication stays in the drive path, never inside acceptance.
+        for report in reports:
+            self._ingest_report(report)
+
+    def _ingest_report(self, report):
+        if type(report) is not WorkerCompletionReport:
+            raise DriverError('completion report is mistyped')
+        if report.transaction != self.tx:
+            raise DriverError('completion report belongs to another transaction')
+        if report.worker_rank not in self.lanes:
+            raise DriverError('report rank has no opened lane')
+        for op in report.completed_op_seqs + report.pending_op_seqs:
+            if (report.worker_rank, op) not in self.accepted_tickets:
+                raise DriverError('report names an unaccepted operation')
+        for proof in report.proofs:
+            key = (report.worker_rank, proof.ticket.op_seq)
+            if proof.ticket != self.accepted_tickets.get(key):
+                raise DriverError('proof differs from the issued ticket or lane epoch')
+            kind = self._accepted_descriptors[key].kind
+            allowed = {CompletionKind.GPU_EVENT}
+            if kind is SegmentKind.STATE_FINALIZE:
+                allowed.add(CompletionKind.STATE_WRITE)
+            if kind is SegmentKind.PP_RECEIVE:
+                allowed.add(CompletionKind.PP_CONSUMER)
+            if proof.kind not in allowed:
+                raise DriverError('proof role is impossible for the issued operation')
+        self.controller.note_report(report)
+        self.reports[report.worker_rank] = report
+        self._collect_pp_proofs(report)
+
+    def _apply_poll(self, values):
+        reports = tuple(values)
+        if (len(reports) != len(self.ranks)
+                or {getattr(r, 'worker_rank', None) for r in reports} != set(self.ranks)):
+            raise DriverError('poll reply does not cover every rank')
+        for report in reports:
+            self._ingest_report(report)
+        if self.stop_kind is not None:
+            return
+
+    def _apply_release(self, values):
+        acks = tuple(values)
+        if (self.phase != 'release' or len(acks) != len(self.ranks)
+                or any(type(a) is not ReleaseAck for a in acks)
+                or {a.worker_rank for a in acks} != set(self.ranks)):
+            raise DriverError('release lacks the complete typed all-rank reply')
+        expected = dict(self.release_request.completed_sequences)
+        for ack in acks:
+            if (ack.transaction != self.tx or ack.state_epoch != self.admission.state_epoch
+                    or ack.completed_sequence != expected[ack.worker_rank]):
+                raise DriverError('release acknowledgment differs from the final report')
+        for ack in acks:
+            self.controller.note_worker_release(ack)
+        self.controller.commit(self.tx, self._producer_proof())
+        self._reset()
+
+    def _collect_pp_proofs(self, report):
+        for proof in report.proofs:
+            descriptor = self._accepted_descriptors[(report.worker_rank, proof.ticket.op_seq)]
+            if proof.kind is CompletionKind.PP_CONSUMER:
+                sender = next((s for s, peer in self.pp_peers.items()
+                               if peer == report.worker_rank), None)
+                if sender is None or descriptor.kind is not SegmentKind.PP_RECEIVE:
+                    raise DriverError('PP consumer has no admitted sender peer')
+                if self.pp_send_seq is None:
+                    raise DriverError('consumer completion predates sender submission')
+                self.pp_ledgers[sender].note_consumer(self.tx, descriptor.seq, 1, proof)
+            elif (proof.kind is CompletionKind.GPU_EVENT
+                  and descriptor.kind is SegmentKind.PP_SEND):
+                self.pp_ledgers[report.worker_rank].note_sender_complete(
+                    self.tx, descriptor.seq, proof)
+        seq = self.pp_send_seq
+        if seq is not None:
+            for ledger in self.pp_ledgers.values():
+                if seq in ledger.outstanding(self.tx) and ledger.releasable(self.tx, seq):
+                    ledger.release_send(self.tx, seq)
+            if all(not ledger.outstanding(self.tx) for ledger in self.pp_ledgers.values()):
+                self.controller.note_pp_consumer(self.tx, seq, 1)
+
+    def _producer_proof(self):
+        if self.bound_ticket is None:
+            raise DriverError('no bound producer ticket')
+        report = self.reports.get(self.bound_ticket.worker_rank)
+        if report is None:
+            raise DriverError('producer rank did not report completion')
+        for proof in report.proofs:
+            if proof.ticket == self.bound_ticket and proof.kind is CompletionKind.GPU_EVENT:
+                return proof
+        raise DriverError('producer ticket has no device completion proof')
+
+    # -- step seam --------------------------------------------------------
+    def advance(self):
+        """One bounded tick. Returns no model output: the handback owns it."""
+        if self.error is not None:
+            raise DriverError(self.error)
+        try:
+            self._drain()
+            if self.stop_kind is not None:
+                self._drive_stop()
+                return None
+            if self.tx is None:
+                if not self.controller.active:
+                    return None
+                self._begin()
+            self._drive()
+            return None
+        except Backpressure:
+            # Ring full: no expectation was registered; retry on the next tick.
+            return None
+        except E3Pending:
+            raise
+        except BaseException:
+            self.error = 'native driver failed; ownership retained'
+            raise
+
+    def _begin(self):
+        admission = self.controller.admission()
+        self.tx = admission.transaction
+        self.admission = admission
+        self.open_request = OpenRequest(admission, self.ranks,
+                                        admission.state_epoch, 1)
+        self.phase = 'open'
+        self.plan = []
+        self.index = 0
+        self.reports = {}
+        self.accepted_tickets = {}
+        self._accepted_descriptors = {}
+        self.bound_ticket = None
+        self.pp_send_ticket = None
+        self.receiver_ticket = None
+        self.pp_send_seq = None
+        self.pp_receive_seq = None
+        self.last_ticket = {0: None, 1: None}
+
+    def _drive(self):
+        if self.phase == 'open':
+            if not self._inflight:
+                self._submit('open', ('flash_s5_open', (self.open_request,), {}, None),
+                             self.ranks)
+            return
+        if self.phase == 'segments':
+            if self._inflight:
+                return
+            if self._retry is not None:
+                self._send_segment(self._retry, self._targets)
+                return
+            if self.index >= len(self.plan):
+                self.phase = 'finalize'
+                return
+            self._send_plan_entry(self.plan[self.index])
+            return
+        if self.phase == 'finalize':
+            if self._inflight:
+                return
+            if self._drained() and self.controller.ready_to_release(self.tx):
+                self.release_request = ReleaseRequest(
+                    self.tx, self.admission.state_epoch,
+                    tuple((r, self.reports[r].completed_sequence) for r in self.ranks))
+                self._submit('release', ('flash_s5_commit', (self.release_request,), {}, None),
+                             self.ranks)
+                self.phase = 'release'
+                return
+            self._submit('poll', ('flash_s5_poll',
+                                  (PollOperations(self.tx, self.poll_budget),), {}, None),
+                         self.ranks)
+            return
+        if self.phase == 'release':
+            return
+        raise DriverError('unknown driver phase')
+
+    def _send_plan_entry(self, entry):
+        kind = entry['kind']
+        stage = entry['stage']
+        depends = ()
+        # Each worker consumes only its own prior ticket; this tuple names
+        # all stage-local predecessors and never fabricates a peer event.
+        depends = tuple(self.tickets[r] for r in self.stage_ranks[stage]
+                        if r in self.tickets)
+        layer = entry.get('layer')
+        descriptor = SegmentDescriptor(
+            self.tx, kind, stage, depends_on=depends,
+            layer_start=layer, layer_end=None if layer is None else layer + 1,
+            seq=entry.get('seq'))
+        targets = self.stage_ranks[stage]
+        tracker = self.trackers[targets[0]]
+        op_seq = tracker.propose(descriptor)
+        for rank in targets[1:]:
+            if self.trackers[rank].propose(descriptor) != op_seq:
+                raise DriverError('lane op_seq proposals diverged')
+        command = SegmentCommand(descriptor, op_seq, targets)
+        if kind is SegmentKind.PP_SEND:
+            self.pp_send_seq = descriptor.seq
+        if kind is SegmentKind.PP_RECEIVE:
+            self.pp_receive_seq = descriptor.seq
+        self._send_segment(command, targets)
+
+    def _send_segment(self, command, targets):
+        self._command = command
+        self._targets = tuple(targets)
+        self._submit('segment', ('flash_s5_submit', (command,), {}, None), self.ranks)
+
+    # -- stop path --------------------------------------------------------
+    def stop(self, kind, *, drain=False):
+        if kind not in _STOP_KINDS:
+            raise DriverError('unknown stop kind')
+        if self.tx is None and not self.controller.active:
+            return None
+        self.stop_kind = kind
+        return self.phase
+
+    def _drive_stop(self):
+        if self.tx is None:
+            # Admission happened pre-schedule; the driver may not have begun.
+            # Closing admissions retires the parked chunk without publishing.
+            admission = self.controller.admission()
+            if admission is not None:
+                self.controller.cancel(admission.transaction,
+                                       never_submitted=True)
+                self._reset()
+            return
+        if self._inflight:
+            return
+        if self.phase == 'open':
+            # Open may already have allocated private storage on every rank.
+            # No local cancellation until the remote close bridge proves it.
+            raise DriverError('opened workers require cancel/release RPCs; ownership retained')
+        if self.pp_sent() and not self._pp_consumed():
+            raise DriverError('PP transfer lacks a consumer proof; quarantine')
+        if self._drained():
+            raise DriverError('worker cancellation/release bridge required; ownership retained')
+        self._submit('poll', ('flash_s5_poll',
+                              (PollOperations(self.tx, self.poll_budget),), {}, None),
+                     self.ranks)
+
+    def pp_sent(self):
+        if self.tx is None:
+            return False
+        return any(ledger.outstanding(self.tx) for ledger in self.pp_ledgers.values())
+
+    def _pp_consumed(self):
+        return not self.pp_sent()
+
+    def _drained(self):
+        """Every accepted op on every rank; a producer is not a terminal fence."""
+        if set(self.reports) != set(self.ranks):
+            return False
+        for rank in self.ranks:
+            report = self.reports[rank]
+            expected = {op for r, op in self.accepted_tickets if r == rank}
+            if (report.failed or report.pending_op_seqs
+                    or not expected <= set(report.completed_op_seqs)):
+                return False
+        return True
+
+    def _reset(self):
+        self.tx = None
+        self.admission = None
+        self.phase = 'idle'
+        self.plan = []
+        self.index = 0
+        self._retry = None
+        self.stop_kind = None
+        self._command = None
+        self._targets = ()
+        self.lanes = {}
+        self.trackers = {}
+        self.tickets = {}
+        self.accepted_tickets = {}
+        self._accepted_descriptors = {}
+        self.reports = {}
+        self.bound_ticket = None
+        self.pp_send_ticket = None
+
+    def finish_pause(self):
+        if self.tx is not None:
+            raise DriverError('pause requires the asynchronous drain to retire the chunk')
+        report = self.controller.leases.shutdown()
+        if not report['clean']:
+            raise DriverError('pause with outstanding E3 block leases')
+        return True
+
+    # -- green/full route transition --------------------------------------
+    def issue_transition(self, *, expected_route_generation, target_bank,
+                         storage_epochs, decode_replay_watermarks):
+        if self._transition is not None or self._inflight:
+            raise DriverError('a transition or command is already outstanding')
+        if expected_route_generation != self.route_generation:
+            raise DriverError('transition starts from a stale route generation')
+        command = TransitionCommand(
+            engine_epoch=self.engine_epoch,
+            expected_route_generation=expected_route_generation,
+            route_generation=expected_route_generation + 1,
+            target_bank=target_bank,
+            storage_epochs=tuple(storage_epochs),
+            decode_replay_watermarks=tuple(decode_replay_watermarks))
+        self._transition = command
+        self._submit('transition', ('flash_s5_transition', (command,), {}, None),
+                     self.ranks)
+        return command
+
+    def accept_transition_ack(self, ack):
+        raise DriverError('transition needs the complete all-rank reply, not one ack')
+
+
+__all__ = ['DriverError', 'NativeSegmentDriver', 'PPTransferLedger',
+           'ParkedBatch', 'PrefillAdmission', 'SegmentDriver']
