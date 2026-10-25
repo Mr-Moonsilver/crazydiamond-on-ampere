@@ -160,6 +160,115 @@ class FakeTorch:
         return f'{kind}:{index}'
 
 
+# --- fake bounded-operation device (CPU evidence only) ---------------------
+
+class OpEvent:
+    def __init__(self, device='cuda:0', ready=False):
+        self.device = device
+        self.ready = ready
+        self.queried = 0
+
+    def query(self):
+        self.queried += 1
+        return bool(self.ready)
+
+
+class FakeQsaTensor:
+    """Shape/stride/ownership facts without torch or device memory."""
+
+    def __init__(self, shape, device='cpu', dtype='torch.bfloat16',
+                 pinned=True, address=0x1000, item_bytes=2):
+        self.shape = tuple(shape)
+        self.device = device
+        self.dtype = dtype
+        self._pinned = pinned
+        self._address = address
+        self._item = item_bytes
+
+    def stride(self):
+        strides = []
+        running = 1
+        for size in reversed(self.shape):
+            strides.append(running)
+            running *= size
+        return tuple(reversed(strides))
+
+    def element_size(self):
+        return self._item
+
+    def is_pinned(self):
+        return self._pinned
+
+    def is_contiguous(self):
+        return True
+
+    def data_ptr(self):
+        return self._address
+
+    def __getitem__(self, key):
+        if not isinstance(key, slice):
+            raise TypeError('fake tensor supports contiguous slices only')
+        pages = len(range(*key.indices(self.shape[0])))
+        return FakeQsaTensor((pages, *self.shape[1:]), self.device, self.dtype,
+                             self._pinned, self._address, self._item)
+
+
+class FakeQsaDevice:
+    device = 'cuda:0'
+    """Delayed-event device port; no CUDA, no synchronization primitive."""
+
+    compute = 'compute'
+    copy = 'copy'
+
+    def __init__(self, auto_ready=True):
+        self.auto_ready = auto_ready
+        self.events = []
+        self.copies = []
+        self.waits = []
+
+    def facts(self, tensor):
+        from e3_types import TensorFacts
+        return TensorFacts(str(tensor.device), tuple(tensor.shape),
+                           tuple(tensor.stride()), str(tensor.dtype),
+                           tensor.element_size(), tensor.is_pinned(),
+                           tensor.is_contiguous(), tensor.data_ptr())
+
+    def record(self, stream):
+        event = OpEvent(ready=self.auto_ready)
+        self.events.append((stream, event))
+        return event
+
+    def query(self, event):
+        return event.query()
+
+    def wait_event(self, stream, event):
+        self.waits.append((stream, event))
+
+    def copy_pages(self, source, arena, source_page, arena_page, pages):
+        if not 1 <= pages <= 4:
+            raise AssertionError('copy exceeded the four-page bound')
+        self.copies.append((source_page, arena_page, pages))
+
+    def complete_all(self):
+        for _, event in self.events:
+            event.ready = True
+
+
+class FakeQsaLayer:
+    def __init__(self, name='model.layers.0.attn'):
+        self.layer_name = name
+        self._qsa_kv_offload = True
+        self._qsa_host_kv = FakeQsaTensor((64, 1, 4048, 512), address=0x1000)
+
+
+class FakeModel:
+    def __init__(self, layers):
+        self._layers = list(layers)
+
+    def modules(self):
+        return [self, *self._layers]
+
+
 # --- fake pinned vLLM modules ----------------------------------------------
 
 class FakeForwardContext(types.ModuleType):
@@ -477,25 +586,76 @@ class ForwardOutput:
 
 
 class FakeRunner:
-    """The generated model runner: routes through A's real execute wrapper."""
+    """The generated model runner: routes through A's real execute wrapper.
 
-    def __init__(self, runtime, rank, calls):
+    ``_flash_s5_execute_prefill_operation`` is a fixture-only driver.
+    The generated runner now refuses stock forward; this fixture does not
+    establish native layer continuation or sample-ring safety.
+    The stock forward stands in for the pinned QSA layer call sites: it drives
+    the real operation state machine with fake tensors/events before recording
+    the stock frame.  This is CPU fake-CUDA evidence, not native qualification.
+    """
+
+    def __init__(self, runtime, rank, calls, layers=(), output_rank=0):
         self._flash_e3_lane = runtime
         self.execute_model_state = None
         self.rank = rank
         self.calls = calls
+        self.output_rank = output_rank
+        self.model = FakeModel(layers)
+
+    def _flash_s5_execute_prefill_operation(self, scheduler_output):
+        server = self._flash_s5_worker
+        server.begin_prefill_operation(self, scheduler_output)
+        try:
+            output = self.execute_model(scheduler_output)
+        except BaseException:
+            server.abort_prefill_operation(self)
+            raise
+        server.end_prefill_operation(self)
+        return output
 
     def execute_model(self, scheduler_output, *args, **kwargs):
         self.calls.append(('execute_model',
                            scheduler_output.flash_e3_transaction))
 
         def stock(scheduler_output, *rest):
+            self._run_qsa_operation()
             self.execute_model_state = types.SimpleNamespace(pending=True)
             self.calls.append(('stock_forward',
                                scheduler_output.flash_e3_transaction))
             return ForwardOutput(self.rank)
 
         return lh.execute_with_e3(self, stock, scheduler_output)
+
+    def _run_qsa_operation(self):
+        """Fixture stand-in for the pinned layer's generated call sites."""
+        server = self._flash_s5_worker
+        operation = server.operation
+        if operation is None or not self.model._layers:
+            return
+        layer = self.model._layers[0]
+        name = layer.layer_name
+        # Explicit fixture table; no production flat-ID-to-QSA inference.
+        operation.plan_provider = lambda layer_name, n: (10, 11)[:n]
+        arena = FakeQsaTensor((24, 1, 4048, 512), device='cuda:0',
+                              pinned=False, address=0x9000)
+        table = FakeQsaTensor((16,), device='cuda:0', dtype='torch.int64',
+                              pinned=False, address=0x7000)
+        operation.begin_layer(name, layer._qsa_host_kv)
+        operation.producer_submitted(name, layer._qsa_host_kv)
+        operation.bind_plan(name, table, 2, 2 * 4048, arena)
+        for bucket in operation._layers[name].buckets:
+            staged = arena[:bucket.pages]
+            operation.fill_bucket(staged, bucket.lo, bucket.hi, table)
+            operation.after_attention_bucket(staged, table)
+        operation.end_layer(name)
+        # Fixture-only stand-in for the not-yet-implemented asynchronous
+        # output detachment.  Only the PP output rank delivers a chunk result;
+        # no stock sampler or PP sample ring is touched.
+        if self.rank == self.output_rank:
+            server.accept_detached_output(
+                ForwardOutput(self.rank, sample='detached'))
 
 
 class FakeGPUWorker:
@@ -537,8 +697,10 @@ def make_worker_stack(rank, *, output_rank=0, cuda=None):
         uid_namespace=namespace, prefill_uid_buffer=[-2, -2])
     bindings = ((ls.ScratchSpec('prefill_input_ids', 'prefill', 'metadata', 4096),
                  500_000),)
-    server = nr.WorkerHandoffServer(runtime, bindings=bindings)
-    runner = FakeRunner(runtime, rank, calls)
+    server = nr.WorkerHandoffServer(runtime, bindings=bindings,
+                                    operation_device=FakeQsaDevice())
+    runner = FakeRunner(runtime, rank, calls, layers=(FakeQsaLayer(),),
+                        output_rank=output_rank)
     runner._flash_s5_worker = server
     worker = FakeGPUWorker(runner, rank, output_rank=output_rank, calls=calls)
     for name in ('open', 'submit', 'poll', 'commit', 'cancel'):
@@ -563,7 +725,7 @@ class FakeSchedulerOutput:
         self.flash_e3_transaction = None
 
 
-def admission(transaction, *, blocks=(10, 11), grammar=1234, sparse=False):
+def admission(transaction, *, blocks=(10, 11), grammar=None, sparse=False):
     return ed.PrefillAdmission(transaction, tuple(blocks), 'state-v1',
                                grammar_output=grammar, sparse_active=sparse)
 
@@ -592,7 +754,7 @@ class EngineFixture:
     def driver(self):
         return self.engine._flash_s5_driver
 
-    def output(self, transaction=None, *, tokens=8, grammar=1234, sparse=False):
+    def output(self, transaction=None, *, tokens=8, grammar=None, sparse=False):
         transaction = transaction or make_transaction()
         return transaction, FakeSchedulerOutput(
             transaction.request_uid, tokens,
@@ -720,13 +882,15 @@ class SegmentDriverTests(unittest.TestCase):
         self.assertIsNone(fixture.composition.dispatcher.active)
         self.assertEqual(fixture.composition.frontier.committed_blocks(),
                          (10, 11))
+        # D2 has no stock sampling and no PP sample ring in the chunk path.
         self.assertEqual([w.worker.samples for w in fixture.workers],
-                         [[1234], [1234], [1234], [1234]])
+                         [[], [], [], []])
         for stack in fixture.workers:
             frames = [c for c in stack.calls if c[0] == 'stock_forward']
             self.assertEqual(len(frames), 1)
             self.assertEqual(frames[0][1], transaction)
-            self.assertEqual(stack.calls[0][0], 'worker_execute')
+            self.assertEqual(stack.calls[0][0], 'execute_model')
+            self.assertNotIn('worker_execute', [c[0] for c in stack.calls])
             # Decode's module context and workspace are restored after the chunk.
             self.assertEqual(stack.runtime.dispatcher.forward_context.current,
                              'decode-ctx')
@@ -734,10 +898,35 @@ class SegmentDriverTests(unittest.TestCase):
                              ['decode-ws'])
             self.assertEqual(stack.runtime.dispatcher.workspace.calls,
                              [('enter', 'prefill-ws'), ('exit', 'prefill-ws')])
+            # The decode UID namespace and the private prefill buffer are
+            # restored/untouched by the operation path.
+            self.assertEqual(stack.runtime.uid_namespace.QSA_REQ_UID, [77, 77])
+            self.assertEqual(stack.runtime.prefill_uid_buffer, [-2, -2])
             self.assertIsNone(stack.runner.execute_model_state)
         # The fixture PP channel carried nothing; this is NOT native sample-ring proof.
         self.assertEqual(fixture.composition.pp_channel.sends, 0)
         self.assertEqual(fixture.composition.pp_channel.consumed, 0)
+
+    def test_operation_completion_is_not_hidden_by_ready_lane_events(self):
+        stack = make_worker_stack(0)
+        txn = make_transaction()
+        metadata = MetadataSnapshot.capture(
+            txn, (BatchRow('req-a', 0, 0, 0, 8, 0),), block_ids=(10, 11))
+        stack.worker.flash_s5_open(ah.OpenPrefill(txn, 8, metadata))
+        stack.server.operation_device.auto_ready = False
+        output = FakeSchedulerOutput('req-a', 8)
+        message = ah.SubmitOperation(txn, 0, DependencyRole.PRODUCER,
+                                     scheduler_output=output)
+        stack.worker.flash_s5_submit(message)
+        report = stack.worker.flash_s5_poll(ah.PollOperations(txn, 8))
+        self.assertEqual(report.proofs, ())
+        self.assertGreater(report.pending, 0)
+        self.assertTrue(stack.server._deferred_proofs)
+        stack.server.operation_device.complete_all()
+        report = stack.worker.flash_s5_poll(ah.PollOperations(txn, 8))
+        self.assertEqual(len(report.proofs), 1)
+        self.assertEqual(report.pending, 0)
+        self.assertEqual(stack.worker.flash_s5_poll(ah.PollOperations(txn, 8)).proofs, ())
 
     def test_producer_and_commit_proofs_are_equal_on_every_rank(self):
         fixture = EngineFixture()
@@ -1049,12 +1238,15 @@ class GeneratedSeamTests(unittest.TestCase):
 
 class PackageRecordTests(unittest.TestCase):
     def test_new_modules_are_mounted_and_the_record_stays_unarmable(self):
-        for name in ('native_backend', 'native_resources', 'engine_driver'):
+        for name in ('native_backend', 'native_resources', 'engine_driver',
+                     'qsa_operation'):
             self.assertIn(name, make.E3_MODULES)
         source = (ROOT / 'patches/s5_engine/make_s5_overlap.py').read_text()
         self.assertIn("'armable': False", source)
         for gap in ('flash_s5_prefill_admission', '_flash_s5_graph_capture',
-                    'SOURCE_HISTORY', 'segment execution'):
+                    'SOURCE_HISTORY',
+                    'prefix/layer/suffix dispatcher is wired',
+                    'flat block ids are not a QSA history map'):
             self.assertIn(gap, source)
 
     def test_generated_package_imports_the_new_modules(self):
