@@ -638,6 +638,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e2_package.py', 'E2 package: pinned-source transforms, manifest coverage, default-off mounts and import identity (CPU only)'),
                      ('test_e2_state_grade.py', 'E2 owner gate: startup geometry and drained-state ledger grader on log lines (CPU only)'),
                      ('test_e2_ledger_grade.py', 'E2 owner gate: declared-reserve memory contract on ledger records and sampled peaks (CPU only)'),
+                     ('test_exposure_compare.py', 'E2 owner gate: realized exposure of the matched steps next to the matched retry verdict (CPU only)'),
                      ('test_e2_serial.py', 'E2 serial CPU-source DMA adapter and unchanged attention arithmetic (CPU only)'),
                      ('test_s5_marlin_partition.py', 'S5 Marlin DP/Stream-K positional partition (CPU, not GPU attribution)'),
                      ('test_s5_retention.py', 'S5 E0 retained histories: incarnation, dirty DMA, publication and retirement (CPU)'),
