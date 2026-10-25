@@ -7,6 +7,7 @@ consumer/DMA drained before the RPC returns. E3 cannot inherit that assumption.
 Never log Frame/RequestRow: their request IDs are internal routing metadata.
 """
 from dataclasses import dataclass
+import json
 
 from arena_contract import Arena, Owner
 from retention_contract import ContractError, Pending, Pool, RequestKey
@@ -20,6 +21,17 @@ def natural(value, name, minimum=0):
 
 def freeze_tables(tables):
     return tuple(tuple(natural(b, 'physical block') for b in row) for row in tables)
+
+
+def table_delta(group, worker, scheduler):
+    """Metadata only (q16f, 25 Oct): lengths, differing positions, scheduler
+    NULL entries among them and the first differing index. No block IDs."""
+    n = min(len(worker), len(scheduler))
+    differ = [i for i in range(n) if worker[i] != scheduler[i]]
+    return dict(group=group, worker=len(worker), scheduler=len(scheduler),
+                differ=len(differ) + abs(len(worker) - len(scheduler)),
+                scheduler_null=sum(1 for i in differ if scheduler[i] == 0),
+                first=differ[0] if differ else n)
 
 
 @dataclass(frozen=True, repr=False)
@@ -159,6 +171,14 @@ class WorkerMirror:
         self.cow_views = 0
         self.frame_copies = (0, 0)
         self.ready_layers = set()
+        # E2 reads only its QSA source groups. Other cache groups are owned by
+        # the stock runner: the pinned Mamba align-mode manager retires older
+        # state blocks to NULL in the scheduler's table only (the worker table
+        # is append-only by design), so those groups legitimately diverge.
+        self.source_groups = frozenset(self.layer_groups.values())
+        self.table_divergences = 0
+        self.divergent_groups = set()
+        self.divergence_notes = []
 
     def _quiescent(self):
         if self.failed or self.arena.state == 'quarantined':
@@ -231,8 +251,26 @@ class WorkerMirror:
             if row.request_id in self.current or row.request_id not in slots:
                 raise ContractError('duplicate or missing scheduled request')
             slot = natural(slots[row.request_id], 'worker slot')
-            if cpu_tables.rows.get(slot) != row.tables:
-                raise ContractError('worker CPU table differs from scheduler snapshot')
+            mine = cpu_tables.rows.get(slot)
+            if mine is None or len(mine) != len(row.tables):
+                raise ContractError('worker CPU table differs from scheduler snapshot: %s vs %d groups'
+                                    % ('no' if mine is None else len(mine), len(row.tables)))
+            for g in sorted(self.source_groups):
+                if g >= len(mine) or mine[g] != row.tables[g]:
+                    raise ContractError('worker CPU table differs from scheduler snapshot in QSA group '
+                                        + json.dumps(table_delta(g, mine[g] if g < len(mine) else (),
+                                                                 row.tables[g] if g < len(row.tables) else ()),
+                                                     sort_keys=True))
+            deltas = [table_delta(g, mine[g], row.tables[g]) for g in range(len(mine))
+                      if g not in self.source_groups and mine[g] != row.tables[g]]
+            if deltas:
+                self.table_divergences += 1
+                new = [d for d in deltas if d['group'] not in self.divergent_groups]
+                if new:
+                    self.divergent_groups.update(d['group'] for d in new)
+                    self.divergence_notes.append(dict(
+                        sequence=frame.sequence, slot=slot, groups=sorted(self.divergent_groups),
+                        new=new[:8], total_groups=len(deltas)))
             key = self.requests.get(row.request_id)
             if key is not None and key.uid != 'slot' + str(slot):
                 raise ContractError('request moved without retirement')
@@ -349,8 +387,15 @@ class WorkerMirror:
         return ('FLASH_E2_COW seq=%d pairs=%d views=%d cumulative_pairs=%d cumulative_views=%d'
                 % (self.sequence, *self.frame_copies, self.cow_pairs, self.cow_views))
 
+    def take_divergence_notes(self):
+        """Once per newly divergent non-source group: bounded, no block IDs."""
+        notes, self.divergence_notes = self.divergence_notes, []
+        return notes
+
     def counters(self):
         return dict(self.arena.counters(), rpc_sequence=self.sequence, rpc_active=self.active,
                     pending_producer_pages=sum(p.writer is not None for p in self.pool.pages.values()),
                     metadata_pages=len(self.pool.pages), failed=self.failed,
-                    cow_pairs=self.cow_pairs, cow_views=self.cow_views)
+                    cow_pairs=self.cow_pairs, cow_views=self.cow_views,
+                    table_divergences=self.table_divergences,
+                    divergent_groups=sorted(self.divergent_groups))

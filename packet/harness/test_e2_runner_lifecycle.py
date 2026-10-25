@@ -278,6 +278,22 @@ class SourceHookTests(unittest.TestCase):
 
 
 
+class TableNoteTests(unittest.TestCase):
+    def test_divergence_notes_are_emitted_from_the_updated_hook_before_cow(self):
+        j,m,t,b,d,lines,switch,x,o,args = fixture()
+        note = dict(sequence=1, slot=0, groups=[0], new=[], total_groups=1)
+        m.take_divergence_notes = lambda: [note]
+        with x.rpc(o):
+            x.updated({'a':0},t)
+            self.assertEqual(lines, ['FLASH_E2_TABLES ' + json.dumps(note, sort_keys=True)])
+            m.take_divergence_notes = lambda: []
+            x.batch(batch())
+            for name in LAYERS:
+                x.staged(name,0,0,4,4,args,lambda *a:self.fail('off called'),candidate)
+        self.assertEqual(lines[1:], ['FLASH_E2_COW seq=1 pairs=0 views=0 cumulative_pairs=0 cumulative_views=0'])
+        self.assertEqual(m.counters()['table_divergences'], 0)
+
+
 class WarmupTests(unittest.TestCase):
     """q16f: the pinned vLLM kernel warmup drives frameless SchedulerOutputs (ids _warmup_i_ / _v2_mixed_warmup_*) through
     the ordinary execute path before any real frame; the lifecycle passes exactly those through with inert hooks."""

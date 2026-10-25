@@ -162,6 +162,8 @@ class RunnerLifecycle:
         if self.frame is None or self.updated_ok:
             raise ContractError('CPU table hook outside RPC or duplicated')
         self.mirror.enter(self.frame, slots, cpu_tables)
+        for note in self.mirror.take_divergence_notes():
+            self.emit('FLASH_E2_TABLES ' + json.dumps(note, sort_keys=True))
         if self.actual_copy_counts != self.mirror.frame_copies:
             self.mirror.failed = True
             raise ContractError('actual runner CoW list differs from scheduler mirror')

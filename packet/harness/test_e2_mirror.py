@@ -223,6 +223,57 @@ class BindingTests(unittest.TestCase):
         with self.assertRaises(ContractError):m.enter(j.frame(output(),lambda _:None),{},CpuTables([2],10))
 
 
+class TableScopeTests(unittest.TestCase):
+    """q16f (25 Oct 16:32): exact-dense died on the 8th RPC with 'worker CPU table differs from scheduler
+    snapshot'. The engine has 39 cache groups (37 MambaSpec, one circular buffer, one QSA group 38); the pinned
+    Mamba align-mode manager retires an older state block to NULL in the scheduler's req_to_blocks only, while the
+    worker's block table stays append-only. E2 reads only its QSA source groups: those remain exact, any other
+    group may diverge and is counted and reported once per group, without block IDs."""
+    def two_groups(self):
+        j = AllocationJournal(1, 100); m = WorkerMirror(1, 100, {k: 1 for k in LAYERS}, page_tokens=4, arena_pages=2)
+        t = CpuTables([1, 1], 100); j.allocated([5, 1]); t.append(0, ([5], [1]), True)
+        f = j.frame(output(new=[('a', ([5], [1]), 0)], scheduled={'a': 3}), lambda _: ([5], [1]))
+        m.enter(f, {'a': 0}, t); m.leave()
+        return j, m, t
+
+    def test_non_source_group_retired_to_null_is_tolerated_counted_and_noted_once(self):
+        j, m, t = self.two_groups()
+        f = j.frame(output(cached=[('a', 3, None)], scheduled={'a': 1}), lambda _: ([0], [1]))
+        m.enter(f, {'a': 0}, t)
+        self.assertFalse(m.failed)
+        self.assertEqual(consume(m, 'a', 'qsa0'), [(0, 1)]); m.leave()
+        c = m.counters()
+        self.assertEqual((c['table_divergences'], c['divergent_groups']), (1, [0]))
+        notes = m.take_divergence_notes()
+        self.assertEqual(notes, [dict(sequence=2, slot=0, groups=[0], total_groups=1,
+                                      new=[dict(group=0, worker=1, scheduler=1, differ=1, scheduler_null=1, first=0)])])
+        self.assertEqual(m.take_divergence_notes(), [])
+        j.allocated([2]); t.append(0, ([], [2]), False)
+        f = j.frame(output(cached=[('a', 4, ([], [2]))], scheduled={'a': 1}), lambda _: ([0], [1, 2]))
+        m.enter(f, {'a': 0}, t); m.leave()
+        self.assertEqual(m.counters()['table_divergences'], 2)
+        self.assertEqual(m.take_divergence_notes(), [])
+        self.assertNotIn('5', json.dumps(notes))
+
+    def test_source_group_divergence_is_still_a_hard_failure_with_metadata_only(self):
+        j, m, t = self.two_groups(); j.allocated([7])
+        f = j.frame(output(cached=[('a', 3, None)], scheduled={'a': 1}), lambda _: ([5], [7]))
+        with self.assertRaisesRegex(ContractError, 'differs.*QSA group') as cm: m.enter(f, {'a': 0}, t)
+        self.assertTrue(m.failed)
+        delta = json.loads(str(cm.exception).split('QSA group ', 1)[1])
+        self.assertEqual(delta, dict(group=1, worker=1, scheduler=1, differ=1, scheduler_null=0, first=0))
+        self.assertEqual(m.counters()['table_divergences'], 0)
+        with self.assertRaises(Pending): m.enter(f, {'a': 0}, t)
+
+    def test_group_count_and_missing_slot_rejected(self):
+        j, m, t = self.two_groups()
+        f = j.frame(output(cached=[('a', 3, None)], scheduled={'a': 1}), lambda _: ([5], [1], ()))
+        with self.assertRaisesRegex(ContractError, 'differs.*2 vs 3 groups'): m.enter(f, {'a': 0}, t)
+        j, m, t = self.two_groups()
+        f = j.frame(output(cached=[('a', 3, None)], scheduled={'a': 1}), lambda _: ([5], [1]))
+        with self.assertRaisesRegex(ContractError, 'differs.*no vs 2 groups'): m.enter(f, {'a': 1}, t)
+
+
 class SourceTests(unittest.TestCase):
     def test_exact_pinned_source_excerpts(self):
         for rel, entry in SOURCES.items():
