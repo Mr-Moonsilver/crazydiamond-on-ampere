@@ -66,6 +66,35 @@ class LedgerGradeTests(unittest.TestCase):
         # full mode without a control stays INCONCLUSIVE
         self.assertEqual(g.grade(ledger(), ledger(), peaks(), None)['verdict'], 'INCONCLUSIVE')
 
+    def test_matched_point_compares_cumulative_retries_without_peaks(self):
+        # Codex q16 v3 review P2-2: shipping-vs-control is a regression comparison only at a matched point (same steps,
+        # same seeds since start); the phase sampler is still running there, so peaks are optional, not INCONCLUSIVE
+        ctrl = ledger(retries=4, peak=21.1)
+        out = g.grade(ledger(rows=False), ledger(retries=4, peak=21.3), None, ctrl, matched=True)
+        self.assertEqual((out['verdict'], out['mode']), ('PASS', 'matched'), out)
+        self.assertTrue(any('matched point' in n for n in out['notes']))
+        self.assertEqual(out['ranks'][RANKS[0]]['baseline_retries'], 4)
+        self.assertAlmostEqual(out['ranks'][RANKS[0]]['peak_delta_gib'], 0.2)
+        self.assertEqual(g.grade(ledger(rows=False), ledger(retries=5), None, ctrl, matched=True)['verdict'], 'FAIL')
+        self.assertEqual(g.grade(ledger(rows=False), ledger(ooms=1, retries=4), None, ctrl, matched=True)['verdict'], 'FAIL')
+        # a matched point still needs the control record, four END rows; peaks when given still grade the reserve
+        self.assertEqual(g.grade(ledger(rows=False), ledger(retries=4), None, None, matched=True)['verdict'], 'INCONCLUSIVE')
+        self.assertEqual(g.grade(ledger(rows=False), ledger(retries=4), peaks(used_mib=24576 - 100), ctrl, matched=True)['verdict'], 'FAIL')
+        self.assertEqual(g.grade(ledger(rows=False), ledger(retries=4), peaks(), ctrl, matched=True)['verdict'], 'PASS')
+        with self.assertRaises(ValueError): g.grade(ledger(), ledger(), peaks(), ctrl, reserve_only=True, matched=True)
+
+    def test_matched_window_delta_when_both_start_records_have_rows(self):
+        ctrl_start, ctrl = ledger(retries=1), ledger(retries=4)
+        # same cumulative total, larger window delta than the control: FAIL (candidate started lower, gained more in the window)
+        out = g.grade(ledger(retries=0), ledger(retries=4), None, ctrl, matched=True, baseline_start=ctrl_start)
+        self.assertEqual(out['verdict'], 'FAIL', out); self.assertEqual(out['ranks'][RANKS[0]]['baseline_retries_delta'], 3)
+        self.assertEqual(g.grade(ledger(retries=1), ledger(retries=4), None, ctrl, matched=True, baseline_start=ctrl_start)['verdict'], 'PASS')
+        # a START record without rows on either side: no window comparison, noted; the cumulative comparison still decides
+        out = g.grade(ledger(rows=False), ledger(retries=4), None, ctrl, matched=True, baseline_start=ctrl_start)
+        self.assertEqual(out['verdict'], 'PASS'); self.assertTrue(any('matched-window delta not available' in n for n in out['notes']))
+        out = g.grade(ledger(retries=1), ledger(retries=4), None, ctrl, matched=True, baseline_start=ledger(rows=False))
+        self.assertEqual(out['verdict'], 'PASS'); self.assertNotIn('baseline_retries_delta', out['ranks'][RANKS[0]])
+
 
 if __name__ == '__main__':
     unittest.main()
