@@ -563,7 +563,8 @@ check('S5 verdict NO-GO: prefill floor', s5_combine([s5_fixture(), s5_bad])['ver
 check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdict'], 'INCONCLUSIVE')
 
 # --- Full engine identity: mocked docker, actual destination-side hashing; no GPU ---
-for suite, label in [('test_s5_marlin_partition.py', 'S5 Marlin DP/Stream-K positional partition (CPU, not GPU attribution)'),
+for suite, label in [('test_e2_serial.py', 'E2 serial CPU-source DMA adapter and unchanged attention arithmetic (CPU only)'),
+                     ('test_s5_marlin_partition.py', 'S5 Marlin DP/Stream-K positional partition (CPU, not GPU attribution)'),
                      ('test_s5_retention.py', 'S5 E0 retained histories: incarnation, dirty DMA, publication and retirement (CPU)'),
                      ('test_s5_collector.py', 'S5 E0 collector: 12 fake-worker ordering, ownership and shutdown cases (CPU)'),
                      ('test_s5_transport_source.py', 'S5 E0 exact-source async-output FIFO and overflow-marker hazards (CPU)'),
