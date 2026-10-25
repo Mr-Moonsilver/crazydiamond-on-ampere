@@ -188,6 +188,10 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
                             print('S5_SOURCE_TRACE '+json.dumps(dict(rank=result['rank'],left=pair['left'],right=pair['right'],
                                 chunk=chunk['chunk'],layer=chunk['first_layer'],op=chunk['first_op'],
                                 first_divergence=chunk['first_divergence'])),flush=True)
+                            boundary=chunk['layer3_boundary']
+                            print('S5_LAYER3_BOUNDARY '+json.dumps(dict(rank=result['rank'],left=pair['left'],right=pair['right'],
+                                chunk=chunk['chunk'],complete=boundary['complete'],all_equal=boundary['all_equal'],
+                                **boundary['status'])),flush=True)
                 except Exception as exc:
                     check['diagnostic_trace']=dict(completed=False,error_type=type(exc).__name__)
                 write_json(error_path,dict(fatal_correctness=True,

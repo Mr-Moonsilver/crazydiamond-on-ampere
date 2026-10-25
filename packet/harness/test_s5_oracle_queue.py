@@ -99,6 +99,26 @@ exit 2
         text=json.dumps(r,allow_nan=False)
         self.assertNotIn('"data"',text);self.assertNotIn('"values"',text)
 
+    def test_layer3_boundary_is_first_hc_tuple_not_later_hc(self):
+        first=[tensor(f'op30/layer3/hc/{i}',float(i)) for i in range(3)]
+        later=[tensor(f'op50/layer3/hc/{i}',float(i)) for i in range(3)]
+        attention=tensor('op40/layer3/qsa.attention',1.)
+        qsa_input=tensor('op31/layer3/qsa.input',1.)
+        a=first+[qsa_input,attention]+later;b=copy.deepcopy(a)
+        b[4]=tensor(attention.name,2.)
+        r=compare_traces([a]*3,[b]*3)[0]
+        self.assertTrue(r['layer3_boundary']['all_equal'])
+        self.assertEqual(r['first_op'],'qsa.attention')
+        b[1]=tensor(first[1].name,4.)
+        r=compare_traces([a]*3,[b]*3)[0]
+        self.assertFalse(r['layer3_boundary']['all_equal'])
+        self.assertEqual(r['layer3_boundary']['status'],dict(hidden_residual='equal',qsa_input='different',injection='equal'))
+        missing=compare_traces([[attention]]*3,[[attention]]*3)[0]['layer3_boundary']
+        self.assertFalse(missing['complete']);self.assertIsNone(missing['all_equal'])
+        # A missing first HC must not be replaced by the second, post-QSA HC.
+        missing=compare_traces([[qsa_input,attention]+later]*3,[[qsa_input,attention]+later]*3)[0]['layer3_boundary']
+        self.assertFalse(missing['complete']);self.assertIsNone(missing['all_equal'])
+
     def test_trace_copies_before_mutation_and_layer_numbering(self):
         class T:
             def __init__(self,v):self.v=v

@@ -21,6 +21,27 @@ def changed_axes(a,b):
     return result
 
 
+def layer3_boundary(diffs):
+    """First layer-3 HC returns (hidden residual, QSA input, injection).
+
+    Reuse the existing snapshots: no extra GPU clones or arithmetic. The second
+    layer-3 HC is after attention and must not stand in for this boundary.
+    """
+    qsa=next((i for i,d in enumerate(diffs) if d['name'].split('/')[1:]==['layer3','qsa.input']),None)
+    before_qsa=diffs[:qsa] if qsa is not None else []
+    first=next((d['name'].rsplit('/',1)[0] for d in before_qsa
+                if d['name'].split('/')[1:]==['layer3','hc','0']),None)
+    by_name={d['name']:d for d in before_qsa}
+    names=('hidden_residual','qsa_input','injection')
+    tensors={name:by_name.get(f'{first}/{i}') if first else None for i,name in enumerate(names)}
+    complete=all(t is not None for t in tensors.values())
+    status={name:('missing' if t is None else 'equal' if t['equal'] and t.get('finite') is True else 'different')
+            for name,t in tensors.items()}
+    return dict(complete=complete,status=status,
+        all_equal=all(s=='equal' for s in status.values()) if complete else None,
+        tensors=tensors,scope='first layer-3 HC output, before QSA projection/attention')
+
+
 def compare_traces(a,b):
     if len(a)!=3 or len(b)!=3:raise ValueError('three traced chunks required')
     rows=[]
@@ -33,6 +54,7 @@ def compare_traces(a,b):
         rows.append(dict(chunk=chunk,first_divergence=first,
                          first_layer=int(first.split('/')[1].removeprefix('layer')) if first else None,
                          first_op=first.split('/')[2] if first else None,
+                         layer3_boundary=layer3_boundary(diffs),
                          compared_tensors=len(diffs),differences=changed))
     return rows
 
