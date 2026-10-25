@@ -12,6 +12,28 @@ import json
 from block_mirror import Frame
 from retention_contract import ContractError, Pending
 
+# q16f (25 Oct 2026, q16e dense.restart FAIL): the pinned vLLM runs its kernel warmup through the ORDINARY execute path
+# (gpu_worker.compile_or_warm_up_model -> gpu/warmup.py warmup_kernels/_warmup_kernels and run_mixed_prefill_decode_warmup
+# -> worker.execute_model(SchedulerOutput.make_empty() ...)), not with dummy_run=True. Those outputs never pass through
+# Scheduler.schedule(), so they carry no flash_e2_frame and the instrumented worker refused them by contract (ContractError
+# 'instrumented worker requires a scheduler frame' during EngineCore initialization). The pass-through below is bounded
+# three ways: the output has no frame, EVERY request id it names uses vLLM's warmup prefixes, and no real frame has been
+# accepted yet (the window closes for good at the first real RPC). Hooks are inert inside the window; the count is
+# reported in every FLASH_E2_STATE record. A frameless output that fails any bound is still a ContractError.
+WARMUP_ID_PREFIXES = ('_warmup_', '_v2_mixed_warmup')
+
+
+def warmup_request_ids(output):
+    """All request ids an execute_model SchedulerOutput names (new, cached, scheduled, finished); never logged."""
+    ids = []
+    for r in getattr(output, 'scheduled_new_reqs', None) or ():
+        ids.append(getattr(r, 'req_id', None))
+    cached = getattr(output, 'scheduled_cached_reqs', None)
+    ids.extend(getattr(cached, 'req_ids', None) or ())
+    ids.extend((getattr(output, 'num_scheduled_tokens', None) or {}).keys())
+    ids.extend(getattr(output, 'finished_req_ids', None) or ())
+    return tuple(ids)
+
 
 @dataclass(frozen=True, repr=False)
 class BatchRow:
@@ -28,6 +50,8 @@ class RunnerLifecycle:
     Call order: rpc -> existing finish/add/update + actual_cow -> updated ->
     existing prepare_inputs -> batch -> zero or more staged calls -> rpc exit.
     Dummy/profile/capture execute calls bypass rpc and never use staged().
+    vLLM's kernel-warmup execute calls (frameless, warmup request ids only, before
+    the first real frame) pass through warmup() with every hook inert.
     dma_enabled is sampled ONCE at RPC entry; a switch cannot divide its layers.
     """
     def __init__(self, mirror, dma, dma_enabled, emit):
@@ -43,16 +67,44 @@ class RunnerLifecycle:
         self.enabled = False
         self.off_calls = {layer: 0 for layer in mirror.layer_groups}
         self.in_staged = False
+        self.in_warmup = False
+        self.warmup_rpcs = 0
+        self.real_frames = 0
+
+    def is_vllm_warmup(self, output):
+        """Frameless output naming only vLLM warmup request ids, before any real frame was accepted."""
+        if self.real_frames or getattr(output, 'flash_e2_frame', None) is not None:
+            return False
+        ids = warmup_request_ids(output)
+        return bool(ids) and all(isinstance(i, str) and i.startswith(WARMUP_ID_PREFIXES) for i in ids)
+
+    @contextmanager
+    def warmup(self, output):
+        """One pinned-vLLM warmup execute call: no frame, no mirror step, no emission; hooks are inert."""
+        if self.frame is not None or self.in_warmup or self.mirror.active or self.mirror.failed:
+            raise Pending('runner RPC is active or requires recovery')
+        if not self.is_vllm_warmup(output):
+            raise ContractError('warmup pass-through needs vLLM warmup request ids and no real frame yet')
+        self.in_warmup = True
+        try:
+            yield
+        except BaseException:
+            self.mirror.failed = True
+            raise
+        finally:
+            self.in_warmup = False
+            self.warmup_rpcs += 1
 
     @contextmanager
     def rpc(self, output):
-        if self.frame is not None or self.mirror.active or self.mirror.failed:
+        if self.frame is not None or self.in_warmup or self.mirror.active or self.mirror.failed:
             raise Pending('runner RPC is active or requires recovery')
         frame = getattr(output, 'flash_e2_frame', None)
         if not isinstance(frame, Frame):
             raise ContractError('instrumented worker requires a scheduler frame')
         # No source, request or output payload is emitted.
         self.frame = frame
+        self.real_frames += 1
         self.updated_ok = False
         self.batch_rows = None
         self.actual_copy_counts = (0, 0)
@@ -77,7 +129,7 @@ class RunnerLifecycle:
                 # merely because the scheduler became idle.
                 self.emit('FLASH_E2_STATE ' + json.dumps(dict(
                     self.mirror.counters(), dma=self.dma.stats,
-                    routes_by_layer=self.dma.routes_by_layer), sort_keys=True))
+                    routes_by_layer=self.dma.routes_by_layer, warmup_rpcs=self.warmup_rpcs), sort_keys=True))
         except BaseException:
             self.mirror.failed = True
             raise
@@ -94,6 +146,8 @@ class RunnerLifecycle:
         Its early return (no copies, no watchers) leaves the default zero. This
         hook must also run when QSA_COW_VERIFY takes its separate copy branch.
         """
+        if self.in_warmup:
+            return
         if self.frame is None or self.updated_ok or self.copy_seen:
             raise ContractError('CoW hook outside worker update or duplicated')
         if (type(pairs) is not int or pairs < 0 or type(local_views) is not int or
@@ -103,6 +157,8 @@ class RunnerLifecycle:
         self.copy_seen = True
 
     def updated(self, slots, cpu_tables):
+        if self.in_warmup:
+            return
         if self.frame is None or self.updated_ok:
             raise ContractError('CPU table hook outside RPC or duplicated')
         self.mirror.enter(self.frame, slots, cpu_tables)
@@ -119,6 +175,8 @@ class RunnerLifecycle:
         this first serial candidate. GPU lengths/table equality are an additional
         runtime exactness gate, not something this CPU comparison can establish.
         """
+        if self.in_warmup:
+            return
         if not self.updated_ok or self.batch_rows is not None:
             raise ContractError('input batch hook outside RPC or duplicated')
         n = input_batch.num_reqs
@@ -161,6 +219,10 @@ class RunnerLifecycle:
         arena, use_prefill_config, output. Both callables use these unchanged.
         Candidate additionally accepts e2=Session; no retained= shortcut.
         """
+        if self.in_warmup:
+            # Unreachable through the STAGED hook (it requires a frame); kept so a warmup call can never take the arena.
+            original(*args)
+            return
         if (not self.updated_ok or self.batch_rows is None or self.in_staged or
                 layer not in self.mirror.layer_groups or type(best) is not int or
                 not 0 <= best < len(self.batch_rows) or len(args) != 9):
@@ -219,6 +281,9 @@ def execute_with_e2(method):
             return method(*args)
         if is_profile or skip_attn_for_dummy_run or context_len or valid_dummy_state_slots:
             raise ContractError('profiling/capture flags on a real E2 RPC')
+        if lifecycle.is_vllm_warmup(scheduler_output):
+            with lifecycle.warmup(scheduler_output):
+                return method(*args)
         with lifecycle.rpc(scheduler_output):
             return method(*args)
     return wrapped

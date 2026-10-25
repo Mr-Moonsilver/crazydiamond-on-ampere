@@ -277,4 +277,73 @@ class SourceHookTests(unittest.TestCase):
         self.assertEqual(len(lines),2);self.assertFalse(b.events)
 
 
+
+class WarmupTests(unittest.TestCase):
+    """q16f: the pinned vLLM kernel warmup drives frameless SchedulerOutputs (ids _warmup_i_ / _v2_mixed_warmup_*) through
+    the ordinary execute path before any real frame; the lifecycle passes exactly those through with inert hooks."""
+    def runner_method(self, t, calls):
+        @execute_with_e2
+        def method(self, output, intermediate=None, *rest):
+            x = self._flash_e2_lifecycle
+            x.actual_cow(0, len(LAYERS)); x.updated({'_warmup_0_': 0}, t); x.batch(batch(ids=('_warmup_0_',)))
+            calls.append(output); return 'warm'
+        return method
+
+    def test_warmup_outputs_pass_through_with_inert_hooks_then_real_frames_work(self):
+        j,m,t,b,d,lines,switch,x,o,args=fixture(False)
+        runner=NS(_flash_e2_lifecycle=x); calls=[]; method=self.runner_method(t,calls)
+        prefill=output(new=[('_warmup_0_',([1],),0)],scheduled={'_warmup_0_':8})
+        decode=output(cached=[('_warmup_0_',8,([],))],scheduled={'_warmup_0_':1})
+        cleanup=output(retired=('_warmup_0_',))
+        for w in (prefill,decode,cleanup):
+            self.assertTrue(x.is_vllm_warmup(w)); self.assertEqual(method(runner,w,'pp'),'warm')
+        self.assertEqual(len(calls),3); self.assertEqual(x.warmup_rpcs,3); self.assertEqual(x.real_frames,0)
+        self.assertEqual(m.sequence,0); self.assertEqual(lines,[]); self.assertFalse(m.failed)
+        self.assertIsNone(x.frame); self.assertFalse(x.updated_ok); self.assertFalse(x.in_warmup)
+        # the first real (zero-token, retired) frame still works and reports the warmup count in its STATE record
+        o.flash_e2_frame=replace(o.flash_e2_frame,rows=(),restarted=()); o.total_num_scheduled_tokens=0
+        @execute_with_e2
+        def real(self,output,*rest): self._flash_e2_lifecycle.updated({},t); return 'real'
+        self.assertEqual(real(runner,o),'real'); self.assertEqual(m.sequence,1); self.assertEqual(x.real_frames,1)
+        state=[l for l in lines if l.startswith('FLASH_E2_STATE ')]; self.assertEqual(len(state),1)
+        self.assertEqual(json.loads(state[0].split(' ',1)[1])['warmup_rpcs'],3)
+
+    def test_frameless_non_warmup_outputs_are_still_refused(self):
+        j,m,t,b,d,lines,switch,x,o,args=fixture(False)
+        runner=NS(_flash_e2_lifecycle=x); method=self.runner_method(t,[])
+        for bad in (output(new=[('a',([1],),0)],scheduled={'a':4}),                       # real id, no frame
+                    output(new=[('_warmup_0_',([1],),0),('a',([2],),0)],scheduled={'_warmup_0_':4,'a':4}),  # mixed
+                    output(),                                                            # names nothing
+                    output(retired=('warmup_0',))):                                      # prefix without the underscore
+            self.assertFalse(x.is_vllm_warmup(bad))
+            with self.assertRaisesRegex(ContractError,'requires a scheduler frame'): method(runner,bad)
+        self.assertEqual(x.warmup_rpcs,0); self.assertEqual(m.sequence,0)
+
+    def test_window_closes_at_first_real_frame(self):
+        j,m,t,b,d,lines,switch,x,o,args=fixture(False)
+        runner=NS(_flash_e2_lifecycle=x)
+        @execute_with_e2
+        def real(self,output,*rest): self._flash_e2_lifecycle.updated({'a':0},t); self._flash_e2_lifecycle.batch(batch()); return 1
+        self.assertEqual(real(runner,o),1); self.assertEqual(x.real_frames,1)
+        late=output(new=[('_warmup_0_',([1],),0)],scheduled={'_warmup_0_':8})
+        self.assertFalse(x.is_vllm_warmup(late))
+        with self.assertRaisesRegex(ContractError,'requires a scheduler frame'): real(runner,late)
+        self.assertEqual(x.warmup_rpcs,0)
+
+    def test_warmup_refused_after_failure_or_nested_and_exception_quarantines(self):
+        j,m,t,b,d,lines,switch,x,o,args=fixture(False)
+        w=output(new=[('_warmup_0_',([1],),0)],scheduled={'_warmup_0_':8})
+        with x.warmup(w):
+            with self.assertRaises(Pending):
+                with x.warmup(w): pass
+            with self.assertRaises(Pending):
+                with x.rpc(o): pass
+        self.assertEqual(x.warmup_rpcs,1); self.assertFalse(m.failed)
+        with self.assertRaises(RuntimeError):
+            with x.warmup(w): raise RuntimeError('kernel warmup failed')
+        self.assertTrue(m.failed); self.assertFalse(x.in_warmup); self.assertEqual(x.warmup_rpcs,2)
+        with self.assertRaises(Pending):
+            with x.warmup(w): pass
+
+
 if __name__=='__main__':unittest.main()
