@@ -61,7 +61,11 @@ def check_log(log, phases):
                      'Aborted', 'c10::AcceleratorError', 'Signal 6 (SIGABRT)'):
         if required not in log:raise ValueError('missing native allocator/finalization signature')
     cuda_errors=re.findall(r'CUDA error:\s*([^\n]+)',log)
-    if len(cuda_errors)!=2 or any(x.strip()!='context is destroyed' for x in cuda_errors):
+    # q11s resident34/dma34: the SAME CUDAEvent.h:152 + GC/finalize failure
+    # reports invalid-device-context on the second worker. Accept only these
+    # two spellings under all the existing chronology/stack/rank-exit checks.
+    cuda_errors=[x.strip() for x in cuda_errors]
+    if len(cuda_errors)!=2 or any(x not in ('context is destroyed','invalid device context') for x in cuda_errors):
         raise ValueError('unrecognized CUDA error')
     if re.search(r'(?i)out of memory|illegal memory|device.side assert|watchdog|segmentation fault|'
                  r'nccl(?:Unhandled|System|Internal|Invalid|Remote)|NCCL WARN|'
@@ -73,7 +77,7 @@ def check_log(log, phases):
     exits=RANK_EXIT.findall(log)
     expected={(str(p['rank']),str(p['rank']),'-6',str(p['pid'])) for p in phases}
     if len(exits)!=2 or set(exits)!=expected:raise ValueError('both rank/PID SIGABRT exits required')
-    return dict(warning_utc_ns=warnings,latest_cleanup_utc_ns=start,
+    return dict(cuda_errors=cuda_errors,warning_utc_ns=warnings,latest_cleanup_utc_ns=start,
                 latest_completed_utc_ns=end,
                 warnings_after_all_completed=all(t>=end for t in warnings),
                 warning_offset_ms_from_latest_cleanup=[(t-start)/1e6 for t in warnings],

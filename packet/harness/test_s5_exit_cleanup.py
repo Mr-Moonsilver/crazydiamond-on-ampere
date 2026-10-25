@@ -125,6 +125,16 @@ class ExitRegrade(unittest.TestCase):
         with self.assertRaises(ValueError):check_log(log,self.phases)
         self.assertEqual(warning_times(self.log,1792903114.5)[0]%10**9,553282305)
 
+    def test_invalid_device_context_only_under_same_teardown_evidence(self):
+        log=self.log.replace('CUDA error: context is destroyed','CUDA error: invalid device context',1)
+        (self.path/'run.log').write_text(log)
+        r=self.run_grade();self.assertEqual(r['verdict'],'QUALIFIED_MEASUREMENT')
+        self.assertIn('invalid device context',r['timing']['cuda_errors'])
+        for bad in (log.replace('Py_FinalizeEx','missing'),log.replace('34.553282305','34.511999999'),
+                    log.replace('invalid device context','invalid device ordinal')):
+            (self.path/'run.log').write_text(bad)
+            self.assertEqual(self.run_grade()['verdict'],'INCONCLUSIVE')
+
     def test_other_failures_never_qualify(self):
         for text in ('RuntimeError: something unrelated', 'CUDA error: illegal memory access',
                      'NCCL WARN failed', 'watchdog expired', 'Fatal Python error: Segmentation fault'):
