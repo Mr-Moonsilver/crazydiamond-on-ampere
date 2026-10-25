@@ -14,6 +14,11 @@
           "line": 882,
           "source": "def dequeue(\n    self,\n    timeout: float | None = None,\n    indefinite: bool = False,\n):\n    \"\"\"Read from message queue with optional timeout (in seconds)\"\"\"\n    if self._is_local_reader:\n        with self.acquire_read(timeout, indefinite) as buf:\n            overflow = buf[0] == 1\n            if not overflow:\n                offset = 3\n                buf_count = from_bytes_big(buf[1:offset])\n                all_buffers = []\n                for i in range(buf_count):\n                    buf_offset = offset + 4\n                    buf_len = from_bytes_big(buf[offset:buf_offset])\n                    offset = buf_offset + buf_len\n                    all_buffers.append(buf[buf_offset:offset])\n                obj = pickle.loads(all_buffers[0], buffers=all_buffers[1:])\n        if overflow:\n            obj = MessageQueue.recv(self.local_socket, timeout)\n    elif self._is_remote_reader:\n        obj = MessageQueue.recv(self.remote_socket, timeout)\n    else:\n        raise RuntimeError(\"Only readers can dequeue\")\n    return obj\n",
           "sha256": "1d5f375deec05e4574ddbbca2b18884f5d9dc3039b88d72e1993f3ecb87ab0fa"
+        },
+        "recv": {
+          "line": 909,
+          "source": "@staticmethod\ndef recv(socket: zmq.Socket, timeout: float | None) -> Any:\n    # Ensure non-negative timeout passed to zmq poll.\n    timeout_ms = None if timeout is None else max(0, int(timeout * 1000))\n    if not socket.poll(timeout=timeout_ms):\n        raise TimeoutError\n    recv, *recv_oob = socket.recv_multipart(copy=False)\n    return pickle.loads(recv, buffers=recv_oob)\n",
+          "sha256": "7b0875ac9162537af431df4add9c9d585ce1b318304b8488b87185c8f5398dfd"
         }
       }
     },
