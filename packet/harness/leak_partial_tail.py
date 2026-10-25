@@ -35,6 +35,8 @@ FACT2 = int(os.environ.get("FACT2", "6800"))  # MODE=inside: 2nd fact, asked onl
 CANCEL_FRAC = float(os.environ.get("CANCEL_FRAC", "0"))
 NEED_PARTIAL = os.environ.get("NEED_PARTIAL", "1") == "1"
 UNIQUE_PREFIX = os.environ.get("UNIQUE_PREFIX", "0") == "1"  # MODE=inside: no shared first block (fills the pool)
+CACHE_NS = os.environ.get("CACHE_NS", "")  # warm requests of a session share cache_salt CACHE_NS-round-session: identical
+# token streams (same SEED) in two runs with different CACHE_NS values are equivalent fresh namespaces (matched CoW sets)
 cancelled = []
 rnd = random.Random(int(os.environ.get("SEED", "1")))
 corpus = open('/home/<service-user>/p2p-tests/corpus.txt', encoding='utf-8', errors='ignore').read()
@@ -103,12 +105,15 @@ def engine_identity():
         return None
 
 
-def abort_after(prompt, seconds):
+def abort_after(prompt, seconds, salt=None):
     # send a streamed request and drop the connection `seconds` after submission, without waiting for headers
     # (the engine sees a client abort while the request is being scheduled / its copy is being submitted)
     u = urllib.parse.urlparse(URL)
     conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=900)
-    body = json.dumps({'model': MODEL, 'prompt': prompt, 'max_tokens': 12, 'temperature': 0, 'stream': True})
+    body = {'model': MODEL, 'prompt': prompt, 'max_tokens': 12, 'temperature': 0, 'stream': True}
+    if salt:
+        body['cache_salt'] = salt
+    body = json.dumps(body)
     conn.request('POST', '/v1/completions', body, {'Content-Type': 'application/json'})
     time.sleep(seconds)
     conn.close()
@@ -126,20 +131,21 @@ def run_session(rd, i, shared, code, delay):
             shared = tok(f"[round {rd} session {i} {uuid.uuid4().hex}]\n" + corpus[off:off + B * 6])[:B]
         p1 = build_inside(shared, i, rd, code, locker_of(code))
         assert len(p1) - B < UNIT - 8
-    gen1, ids1, _ = complete(p1, GEN + rnd.randrange(0, GEN), ignore_eos=True)
+    ns = f'{CACHE_NS}-{rd}-{i}' if CACHE_NS else None
+    gen1, ids1, _ = complete(p1, GEN + rnd.randrange(0, GEN), salt=ns, ignore_eos=True)
     p2 = p1 + list(ids1) + QUESTION
     if random.Random(rd * 7919 + i).random() < CANCEL_FRAC:
-        abort_after(p2, random.Random(rd * 104729 + i).uniform(0, 0.3))
+        abort_after(p2, random.Random(rd * 104729 + i).uniform(0, 0.3), salt=ns)
         with lock:
             cancelled.append((rd, i))
-    a, ids_a, det = complete(p2, 12, ignore_eos=True)
+    a, ids_a, det = complete(p2, 12, salt=ns, ignore_eos=True)
     cold = complete(p2, 12, salt=uuid.uuid4().hex, ignore_eos=True)[0] if COLD else None
     rec = {'round': rd, 'session': i, 'code': code, 'answer': a, 'cold': cold, 'cached': det.get('cached_tokens'),
            'p2_len': len(p2), 'p1_ids': p1, 'gen1': gen1, 'gen1_ids': list(ids1), 'p2': p2}
     if MODE == "inside":
         # request 3: continue from request 2 (its answer may repeat the code, so ask for the 2nd fact)
         p3 = p2 + list(ids_a) + tok("\n\n") + list(ids1[:200]) + QUESTION2
-        a3, _, det3 = complete(p3, 12, ignore_eos=True)
+        a3, _, det3 = complete(p3, 12, salt=ns, ignore_eos=True)
         cold3 = complete(p3, 12, salt=uuid.uuid4().hex, ignore_eos=True)[0] if COLD else None
         rec.update(locker=locker_of(code), answer3=a3, cold3=cold3, cached3=det3.get('cached_tokens'), p3=p3)
     with lock:
