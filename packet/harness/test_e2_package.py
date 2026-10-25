@@ -79,6 +79,37 @@ class PackageTests(unittest.TestCase):
                 g.build(b,root/'out',r,'0'*64 if which=='root' else w,l,'0'*64 if which=='core' else c)
             self.assertFalse((root/'out').exists())
 
+    def vision_fixture(self):
+        root,b,r,w,c,l=self.fixture()
+        # Deliberately add AFTER root/core manifests, matching the real v16.
+        v=b/'vision';v.mkdir();(v/'model.py').write_text('# inert vision fixture\n')
+        vs=manifest(v)
+        return root,b,r,w,c,l,vs
+
+    def test_third_vision_manifest_verified_preserved_and_provenanced(self):
+        root,b,r,w,c,l,v=self.vision_fixture()
+        before={p.name:p.read_bytes() for p in (b/'vision').iterdir()}
+        with self.stubs(b,r):g.build(b,root/'out',r,w,l,c,v)
+        out=root/'out'
+        self.assertEqual(before,{p.name:p.read_bytes() for p in (out/'vision').iterdir()})
+        self.assertEqual(before,{p.name:p.read_bytes() for p in (b/'vision').iterdir()})
+        meta=json.loads((out/'E2-GENERATION.json').read_text())
+        self.assertEqual(meta['vision_manifest_sha256'],v)
+        self.assertEqual(meta['preserved_submanifests'],{'vision/SHA256SUMS':v})
+        self.assertEqual(meta['base_files']['vision/model.py'],g.sha(b/'vision/model.py'))
+        self.assertIn('vision/SHA256SUMS',g.manifest(out));g.manifest(out/'vision')
+
+    def test_vision_pin_content_and_coverage_fail_before_output(self):
+        for defect in ('pin','content','extra','link'):
+            root,b,r,w,c,l,v=self.vision_fixture()
+            if defect=='pin':v='0'*64
+            elif defect=='content':(b/'vision/model.py').write_text('# changed\n')
+            elif defect=='extra':(b/'vision/extra.py').write_text('# unmanifested\n')
+            else:(b/'vision/link').symlink_to(b/'vision/model.py')
+            with self.stubs(b,r),self.subTest(defect=defect),self.assertRaises(ValueError):
+                g.build(b,root/'out',r,w,l,c,v)
+            self.assertFalse((root/'out').exists())
+
     def test_unmanifested_or_symlink_entry_rejected_before_output(self):
         for kind in ('file','link'):
             root,b,r,w,c,l=self.fixture()

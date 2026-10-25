@@ -133,6 +133,19 @@ def grade_fixture():
 
 
 class GraderTests(unittest.TestCase):
+    def test_dense_only_phase_rejects_sparse_and_still_requires_dense_coverage(self):
+        root=grade_fixture()
+        self.assertEqual(e2_exact_grade.grade(root,require_dense_only=True)['verdict'],'FAIL')
+        for p in root.glob('*.exact.json'):
+            d=json.loads(p.read_text())
+            for s in d['layers'].values():s.update(calls=1,sparse_uva=0)
+            p.write_text(json.dumps(d))
+        self.assertEqual(e2_exact_grade.grade(root,require_dense_only=True)['verdict'],'PASS')
+        p=root/'PP0_TP0.exact.json';d=json.loads(p.read_text())
+        next(iter(d['layers'].values()))['dense_max_length']=10000
+        p.write_text(json.dumps(d))
+        self.assertEqual(e2_exact_grade.grade(root,require_dense_only=True)['verdict'],'INCONCLUSIVE')
+
     def test_complete_four_rank_six_layer_proof(self):
         self.assertEqual(e2_exact_grade.grade(grade_fixture())['verdict'],'PASS')
 

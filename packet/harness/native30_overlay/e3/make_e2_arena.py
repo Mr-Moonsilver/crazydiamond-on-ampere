@@ -38,6 +38,9 @@ REFERENCE_PINS={
  'config/model.py':'f4168b67cc93ce72ff2a6d4c66974223e32fd0f1fab4c05e44bd68a275e18d69',
 }
 LAUNCHER_SHA='98d6d2a21927b8943f1ae9b0b43616757e80adac0c628e65f482e4332e3cf126'
+# Independently supplied overlay-v16 record, 25 Oct. Inert in LM-only E2,
+# but still verified and preserved rather than silently excluded.
+VISION_MANIFEST_SHA='8c8b75d8821ad2db71377311226a8453778afcb426037665c596a786026a87e1'
 
 
 def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -86,7 +89,8 @@ fi
     return mirror_hooks.once(source,'  "${runner[@]}" \\\n','  "${runner[@]}" "${e2[@]}" \\\n')
 
 
-def build(base,out,reference,base_manifest_sha256,launcher_path,core_manifest_sha256):
+def build(base,out,reference,base_manifest_sha256,launcher_path,core_manifest_sha256,
+          vision_manifest_sha256=VISION_MANIFEST_SHA):
     base,out,reference=map(Path,(base,out,reference))
     if out.exists():raise ValueError('new output directory required; nothing overwritten')
     if out.resolve().is_relative_to(base.resolve()):raise ValueError('output cannot be inside baseline')
@@ -94,6 +98,12 @@ def build(base,out,reference,base_manifest_sha256,launcher_path,core_manifest_sh
     if sha(base/'core/SHA256SUMS')!=core_manifest_sha256:raise ValueError('core manifest differs from declaration')
     root=manifest(base);core=manifest(base/'core')
     covered=set(root)|{'core/'+name for name in core}|{'SHA256SUMS','core/SHA256SUMS'}
+    vision={};vision_hash=None
+    if (base/'vision').exists() or (base/'vision').is_symlink():
+        if sha(base/'vision/SHA256SUMS')!=vision_manifest_sha256:
+            raise ValueError('vision manifest differs from declaration')
+        vision=manifest(base/'vision');vision_hash=vision_manifest_sha256
+        covered|={'vision/'+name for name in vision}|{'vision/SHA256SUMS'}
     for path in base.rglob('*'):
         if path.is_symlink():raise ValueError('baseline symlinks not supported')
         if path.is_file() and path.relative_to(base).as_posix() not in covered:
@@ -116,7 +126,9 @@ def build(base,out,reference,base_manifest_sha256,launcher_path,core_manifest_sh
     for name,text in changes.items():ast.parse(text,filename=name)
     changes['run-flash-e2-test.sh']=launcher(Path(launcher_path).read_text())
     record=dict(schema=1,base_manifest_sha256=base_manifest_sha256,core_manifest_sha256=core_manifest_sha256,
-                base_files={**root,**{'core/'+k:v for k,v in core.items()}},
+                vision_manifest_sha256=vision_hash,
+                base_files={**root,**{'core/'+k:v for k,v in core.items()},**{'vision/'+k:v for k,v in vision.items()}},
+                preserved_submanifests=({'vision/SHA256SUMS':vision_hash} if vision_hash else {}),
                 changed_source_pins=PINS,reference_source_pins=REFERENCE_PINS,
                 telemetry_generator_sha256=telemetry_hooks.SOURCE_SHA,
                 generated_files=sorted(changes),status='offline-generated; owner gates required',
@@ -150,6 +162,9 @@ if __name__=='__main__':
     p.add_argument('--reference',required=True,type=Path)
     p.add_argument('--base-manifest-sha256',required=True)
     p.add_argument('--core-manifest-sha256',required=True)
+    p.add_argument('--vision-manifest-sha256',default=VISION_MANIFEST_SHA,
+                   help='approved optional vision sub-manifest; default is the supplied v16 record')
     p.add_argument('--launcher',type=Path,default=ROOT/'deploy/run-flash-prod.sh')
     a=p.parse_args()
-    print(json.dumps(build(a.base,a.out,a.reference,a.base_manifest_sha256,a.launcher,a.core_manifest_sha256),sort_keys=True))
+    print(json.dumps(build(a.base,a.out,a.reference,a.base_manifest_sha256,a.launcher,
+                          a.core_manifest_sha256,a.vision_manifest_sha256),sort_keys=True))
