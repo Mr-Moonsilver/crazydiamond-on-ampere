@@ -639,6 +639,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e2_state_grade.py', 'E2 owner gate: startup geometry and drained-state ledger grader on log lines (CPU only)'),
                      ('test_e2_drain_freshness.py', 'E2 drained proof freshness: final STATE rpc_sequence vs latest completed COW seq per worker, stale -> INCONCLUSIVE (CPU only)'),
                      ('test_e2_ledger_grade.py', 'E2 owner gate: declared-reserve memory contract on ledger records and sampled peaks (CPU only)'),
+                     ('test_e2_memory_attribution.py', 'E2 memory diagnostic: timestamp pairing, skew limits, missing evidence and bounded sampler (CPU only)'),
                      ('test_exposure_compare.py', 'E2 owner gate: realized exposure of the matched steps next to the matched retry verdict (CPU only)'),
                      ('test_q16_attribution.py', 'E2 owner gate v6: hard memory failures exit before exposure, retry-only failures attribute only with matched exposure (extracted queue fragment, CPU only)'),
                      ('test_e2_serial.py', 'E2 serial CPU-source DMA adapter and unchanged attention arithmetic (CPU only)'),
