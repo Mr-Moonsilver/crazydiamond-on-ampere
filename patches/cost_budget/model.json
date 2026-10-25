@@ -1,0 +1,205 @@
+{
+  "schema": "flash-prefill-cost/v1",
+  "tail_kind": "window-mean-copy-p95 + per-stream-client-gap-p99 proxy",
+  "calibrated_gpu_step_tail": false,
+  "page_size": 4048,
+  "qsa_layers_per_rank": 6,
+  "max_fit_history": 200000,
+  "copy_cells": {
+    "0:0": [
+      {
+        "pages_le": 12,
+        "copy_ms_per_page": 0.22571428571428573,
+        "coverage_upper": 1.0,
+        "windows": 52
+      },
+      {
+        "pages_le": 25,
+        "copy_ms_per_page": 0.17846153846153845,
+        "coverage_upper": 1.0,
+        "windows": 65
+      },
+      {
+        "pages_le": 37,
+        "copy_ms_per_page": 0.17142857142857143,
+        "coverage_upper": 0.7730769230769231,
+        "windows": 65
+      },
+      {
+        "pages_le": 50,
+        "copy_ms_per_page": 0.17433155080213902,
+        "coverage_upper": 0.6771844660194174,
+        "windows": 30
+      },
+      {
+        "pages_le": 65,
+        "copy_ms_per_page": 0.20461538461538462,
+        "coverage_upper": 1.0,
+        "windows": 0
+      }
+    ],
+    "0:1": [
+      {
+        "pages_le": 12,
+        "copy_ms_per_page": 0.22285714285714286,
+        "coverage_upper": 1.0,
+        "windows": 52
+      },
+      {
+        "pages_le": 25,
+        "copy_ms_per_page": 0.18181818181818182,
+        "coverage_upper": 1.0,
+        "windows": 65
+      },
+      {
+        "pages_le": 37,
+        "copy_ms_per_page": 0.17266666666666666,
+        "coverage_upper": 0.7730769230769231,
+        "windows": 65
+      },
+      {
+        "pages_le": 50,
+        "copy_ms_per_page": 0.1733812949640288,
+        "coverage_upper": 0.6771844660194174,
+        "windows": 30
+      },
+      {
+        "pages_le": 65,
+        "copy_ms_per_page": 0.2061224489795918,
+        "coverage_upper": 1.0,
+        "windows": 0
+      }
+    ],
+    "1:0": [
+      {
+        "pages_le": 12,
+        "copy_ms_per_page": 0.3666666666666667,
+        "coverage_upper": 1.0,
+        "windows": 52
+      },
+      {
+        "pages_le": 25,
+        "copy_ms_per_page": 0.32748091603053436,
+        "coverage_upper": 1.0,
+        "windows": 65
+      },
+      {
+        "pages_le": 37,
+        "copy_ms_per_page": 0.3164556962025316,
+        "coverage_upper": 0.6655629139072848,
+        "windows": 65
+      },
+      {
+        "pages_le": 50,
+        "copy_ms_per_page": 0.31798561151079136,
+        "coverage_upper": 0.5763157894736842,
+        "windows": 30
+      },
+      {
+        "pages_le": 65,
+        "copy_ms_per_page": 0.3411764705882353,
+        "coverage_upper": 1.0,
+        "windows": 0
+      }
+    ],
+    "1:1": [
+      {
+        "pages_le": 12,
+        "copy_ms_per_page": 0.2136363636363636,
+        "coverage_upper": 1.0,
+        "windows": 52
+      },
+      {
+        "pages_le": 25,
+        "copy_ms_per_page": 0.18267326732673267,
+        "coverage_upper": 1.0,
+        "windows": 65
+      },
+      {
+        "pages_le": 37,
+        "copy_ms_per_page": 0.17459016393442622,
+        "coverage_upper": 0.6655629139072848,
+        "windows": 65
+      },
+      {
+        "pages_le": 50,
+        "copy_ms_per_page": 0.18427672955974844,
+        "coverage_upper": 0.5763157894736842,
+        "windows": 30
+      },
+      {
+        "pages_le": 65,
+        "copy_ms_per_page": 0.19393939393939397,
+        "coverage_upper": 1.0,
+        "windows": 0
+      }
+    ]
+  },
+  "other_ms_knots": [
+    [
+      512,
+      57.39834437161376
+    ],
+    [
+      1024,
+      183.93785736519536
+    ],
+    [
+      2048,
+      392.77492438457597
+    ]
+  ],
+  "decode_gap99_ms": 22.3,
+  "sources": [
+    {
+      "path": "results/raw/overnight/stall1/timing-t1024.log",
+      "sha256": "a36bdddfe48b1d5ca5c53e94ce44c96587687d6d18d85e5f2b8fd1ed89c62135"
+    },
+    {
+      "path": "results/raw/overnight/stall1/timing-t2048.log",
+      "sha256": "85d5735c8b4220748c1651a68c3c6422d9e6e510bcf1053ee4ecf20fb1dbdf64"
+    },
+    {
+      "path": "reference/cost-budget/timing-t512.log",
+      "sha256": "0d4c7b38636fe598f912262b378d67842335a3a459726c816caab614b21b8ce5"
+    },
+    {
+      "path": "results/raw/overnight/stall1/w2-t1024.json",
+      "sha256": "92d52d1a748d79d4a9b9f104edc9f5bfa4853a6b9c9fdb317aa360a5b29a114a"
+    },
+    {
+      "path": "results/raw/overnight/stall1/w2-t2048.json",
+      "sha256": "9fb7a062c75781035198b1c1b04af390dd0798a08b427e623838c1307c5a3f62"
+    },
+    {
+      "path": "reference/cost-budget/w2-t512.json",
+      "sha256": "3d7848b4222db1588e09071d7daa8bf5353e22d34b67135192f72a31223aec17"
+    }
+  ],
+  "fit_windows": 848,
+  "excluded_windows": 54,
+  "tail_cases": [
+    {
+      "chunk": 1024,
+      "gap99_ms": 261.01589598692954,
+      "decode99_ms": 22.1,
+      "history": 200000,
+      "path": "results/raw/overnight/stall1/w2-t1024.json"
+    },
+    {
+      "chunk": 2048,
+      "gap99_ms": 470.05296300631016,
+      "decode99_ms": 22.3,
+      "history": 200000,
+      "path": "results/raw/overnight/stall1/w2-t2048.json"
+    },
+    {
+      "chunk": 512,
+      "gap99_ms": 134.67638299334794,
+      "decode99_ms": 22.3,
+      "history": 200000,
+      "path": "reference/cost-budget/w2-t512.json"
+    }
+  ],
+  "scope": "PP2 TP2 BF16 host KV, no retention, observed x8 rank 1:0; not overlap or deadline guarantee"
+}
