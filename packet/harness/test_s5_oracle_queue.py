@@ -104,19 +104,19 @@ exit 2
         q=root/'out'
         p=subprocess.run(['bash',str(H/'runs/q_s5_resident_oracle.draft.sh')],capture_output=True,text=True,
             env=dict(os.environ,PYTHONPATH=str(H),H=str(bundle),Q=str(q),S5_CONFIG='unused',S5_OVERLAY='unused',
-                     S5_RESIDENT_CASES='mixed-resident34 qsa-dma34 dma-every-step34 dma-batched34',S5_PAIR='1,3',S5_MOE='off',S5_SOURCE_TRIALS='6',S5_SOURCE_TRACE_ON_FAIL='1',S5_CUBLAS_DETERMINISTIC='1'))
+                     S5_RESIDENT_CASES='mixed-resident34 qsa-dma34 dma-every-step34 dma-batched34 arena-direct34',S5_PAIR='1,3',S5_MOE='off',S5_SOURCE_TRIALS='6',S5_SOURCE_TRACE_ON_FAIL='1',S5_CUBLAS_DETERMINISTIC='1'))
         self.assertEqual(p.returncode,2,p.stdout+p.stderr)
         r=json.loads((q/'summary.json').read_text())
-        self.assertEqual([c['case'] for c in r['cases']],['mixed-resident34','qsa-dma34','dma-every-step34','dma-batched34'])
+        self.assertEqual([c['case'] for c in r['cases']],['mixed-resident34','qsa-dma34','dma-every-step34','dma-batched34','arena-direct34'])
         self.assertTrue(all(c['verdict']=='INCONCLUSIVE' for c in r['cases']))
         for name in r['requested']['cases']:
             d=json.loads((q/name/'called.json').read_text())
             self.assertEqual(d['S5_MOE'],'off');self.assertEqual(d['S5_SOURCE_TRIALS'],'6')
             self.assertEqual(d['S5_SOURCE_TRACE_ON_FAIL'],'1');self.assertEqual(d['S5_PAIR'],'1,3')
             self.assertEqual(d['S5_CUBLAS_DETERMINISTIC'],'1')
-            self.assertEqual(d['S5_DMA_EVERY_LAYER'],'1' if name in ('dma-every-step34','dma-batched34') else '0')
+            self.assertEqual(d['S5_DMA_EVERY_LAYER'],'1' if name in ('dma-every-step34','dma-batched34','arena-direct34') else '0')
             self.assertEqual(d['S5_DMA_BATCHED'],'1' if name=='dma-batched34' else '0')
-            self.assertEqual(d['S5_RESIDENT_DMA'],'0' if name=='mixed-resident34' else '1')
+            self.assertEqual(d['S5_RESIDENT_DMA'],'0' if name in ('mixed-resident34','arena-direct34') else '1')
 
     def test_artifact_binding_and_fail_precedence(self):
         root=fresh();f=root/'qsa-resident24';(f/'profile-terminal').mkdir(parents=True)

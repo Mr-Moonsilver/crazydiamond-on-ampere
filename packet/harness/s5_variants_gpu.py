@@ -55,7 +55,9 @@ def run(a):
         if ple_itemsize==1 and resident_kind=='legacy':raise Inconclusive('FP8 transport scoped to resident matrix')
         if resident_dma and resident_kind not in ('kv','kv_ple_prefetch'):raise Inconclusive('DMA refill requires KV residency')
         if dma_batched and not dma_every_layer:raise Inconclusive('batched DMA requires every-layer window')
-        if dma_every_layer and not (resident_dma and resident_kind=='kv' and value and resident and a.split==34):
+        if resident_kind=='arena_direct' and not (value and resident and dma_every_layer and not resident_dma and not dma_batched):
+            raise Inconclusive('arena-direct flags')
+        if dma_every_layer and not ((resident_dma and resident_kind=='kv' or resident_kind=='arena_direct') and value and resident and a.split==34):
             raise Inconclusive('unreviewed repeated DMA configuration')
         result['value_probe']=dict(enabled=value,prefill_noop=noop,resident_prefill=resident,graph_kernel_copies=copy_kernels,
                                   sparse_prefill=os.environ.get('VLLM_QSA_KVO_SPARSE_PREFILL'),resident_kind=resident_kind,ple_itemsize=ple_itemsize,resident_dma=resident_dma,
@@ -85,6 +87,8 @@ def run(a):
         configure(spec,kind)
         if dma_every_layer:
             if kind!='qsa':raise Inconclusive('repeated DMA is a six-QSA-only control')
+            if resident_kind=='arena_direct' and os.environ.get('VLLM_QSA_KVO_SPARSE_PREFILL')!='0':
+                raise Inconclusive('arena-direct requires matched dense controls')
             spec.update(layers=6,mix=['full_attention']*6,
                         scope='six-QSA-only repeated-DMA control; no GDN or full-engine extrapolation')
         result['ablation']=dict(layer_kind=kind,moe=moe,marlin_cap=cap=='1')

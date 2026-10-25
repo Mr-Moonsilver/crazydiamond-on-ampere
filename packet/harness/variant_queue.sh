@@ -9,6 +9,16 @@ mkdir -p "$Q/private" || exit 1
 (cd "$H" && sha256sum --quiet -c SHA256SUMS) || exit 1
 source "$H/qlib.sh"
 CHANGED=0; DONE=0; LAUNCHER_SWAPPED=0
+# Service runs as <service-user>; umask 077 is for defaults/artifacts, not ExecStart.
+# Check the staged file before the atomic rename, then the installed path.
+install_variant_launcher() {
+  local source=$1 staged=$2 target=$3
+  install -m 0755 -- "$source" "$staged" &&
+    cmp -s "$source" "$staged" && [[ $(stat -c %a "$staged") == 755 ]] &&
+    sudo -n -u <service-user> test -r "$staged" &&
+    mv -- "$staged" "$target" && cmp -s "$source" "$target" &&
+    [[ $(stat -c %a "$target") == 755 ]] && sudo -n -u <service-user> test -r "$target"
+}
 idle_wait() { local i; for i in $(seq 1 36); do gpu_idle && return 0; sleep 5; done; return 1; }
 cleanup_variant() {
   trap - EXIT INT TERM HUP
@@ -17,9 +27,8 @@ cleanup_variant() {
     systemctl stop vllm-flash > "$Q/stop.log" 2>&1; step stop "$?"
     idle_wait; step gpu-handoff "$?"
     if [[ $LAUNCHER_SWAPPED == 1 ]]; then
-      cp -p "$Q/private/launcher" "$P/run-flash-prod.sh.experiment-back" &&
-      mv "$P/run-flash-prod.sh.experiment-back" "$P/run-flash-prod.sh" &&
-      cmp -s "$P/run-flash-prod.sh" "$Q/private/launcher"; step launcher-restore "$?"
+      install_variant_launcher "$Q/private/launcher" "$P/run-flash-prod.sh.experiment-back" \
+        "$P/run-flash-prod.sh"; step launcher-restore "$?"
     fi
     cp -p "$Q/private/defaults" /etc/default/vllm-flash.experiment-back &&
       mv /etc/default/vllm-flash.experiment-back /etc/default/vllm-flash &&
@@ -41,8 +50,7 @@ prepare_variant() {
   CHANGED=1
   systemctl stop vllm-flash && idle_wait || return 1
   LAUNCHER_SWAPPED=1
-  cp "$H/run-flash-prod.sh.q9" "$P/run-flash-prod.sh.experiment-new" &&
-    mv "$P/run-flash-prod.sh.experiment-new" "$P/run-flash-prod.sh" && cmp -s "$P/run-flash-prod.sh" "$H/run-flash-prod.sh.q9"
+  install_variant_launcher "$H/run-flash-prod.sh.q9" "$P/run-flash-prod.sh.experiment-new" "$P/run-flash-prod.sh"
 }
 # Declare sources AFTER the planned launcher install, BEFORE any engine creation.
 # Extra settings are explicit per case. Inputs never come from a running engine.

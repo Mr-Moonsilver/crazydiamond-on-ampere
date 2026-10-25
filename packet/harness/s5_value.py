@@ -57,6 +57,8 @@ def grade(data):
             verdict='FAIL'
         if any(r.get('resident_source_equality') is False for r in ranks):verdict='FAIL'
         if any(r.get('resident_substitution',{}).get('dma_layer_exact',{}).get('passed') is False for r in ranks):verdict='FAIL'
+        if any(r.get('resident_substitution',{}).get('arena_bucket_exact',{}).get('passed') is False
+               or r.get('arena_mapping_exact',{}).get('passed') is False for r in ranks):verdict='FAIL'
         for r in ranks:
             if r.get('completed') is not True or r['audit']['verdict']!='PASS':raise ValueError('completion/node placement missing')
             if r['max_connections'] not in ('8','32'):raise ValueError('unknown connections')
@@ -74,6 +76,10 @@ def grade(data):
                 if resident_kind in ('ple_prefetch','kv_ple_prefetch'):
                     validate_prefetch(stats,len(m['overlap_resident']['raw_prefill']),mem['ple_chunk_bytes'])
                 elif stats['calls'] or stats['h2d_bytes']:raise ValueError('KV-only copied PLE')
+                if resident_kind=='arena_direct':
+                    from s5_arena_direct import check_rank
+                    proof=check_rank(r)
+                    if not proof['inside_decode_window'] and verdict=='PASS':verdict='INCONCLUSIVE'
                 if probe.get('resident_dma'):
                     dma=r['resident_dma']
                     if probe.get('dma_every_layer'):
@@ -111,6 +117,9 @@ def grade(data):
                     resident_kind=resident_kind,ple_itemsize=probe.get('ple_itemsize',2),
                     resident_dma=r.get('resident_dma') if name=='overlap_resident' else None,
                     resident_dma_solo=r.get('resident_dma_solo') if name=='overlap_resident' else None,
+                    dma_layer_exact=r.get('resident_substitution',{}).get('dma_layer_exact'),
+                    arena_bucket_exact=r.get('resident_substitution',{}).get('arena_bucket_exact'),
+                    arena_mapping_exact=r.get('arena_mapping_exact'),
                     **comparison(m['decode'],m['decode_split'],m[name],steps))
                 row['bitwise_equal']=all(correctness[k]['bitwise_first'] is True and correctness[k]['concurrent_states_match'] is True for k in ('decode','prefill'))
                 solo_prefill=m[{'overlap':'prefill','overlap_noop':'noop_prefill','overlap_resident':'resident_prefill'}[name]]
@@ -146,7 +155,7 @@ def summarize(root,names=None):
                         and x['value_probe']['resident_kind']==source and x['value_probe']['ple_itemsize']==1
                         and x['max_connections']=='8'
                         and bool(x['value_probe'].get('resident_dma'))==(name in ('qsa-dma34','dma-every-step34','dma-batched34'))
-                        and bool(x['value_probe'].get('dma_every_layer'))==(name in ('dma-every-step34','dma-batched34'))
+                        and bool(x['value_probe'].get('dma_every_layer'))==(name in ('dma-every-step34','dma-batched34','arena-direct34'))
                         and bool(x['value_probe'].get('dma_batched'))==(name=='dma-batched34') for x in d['ranks'])
                     if not matched and r['verdict']!='FAIL':r['verdict']='INCONCLUSIVE'
                 stamped=json.loads((folder/'grade.json').read_text())
@@ -184,6 +193,14 @@ def monitor_lines(case,report):
             dma=r['resident_dma']
             lines.append(f"S5_DMA case={case} rank={r['rank']} bytes={dma['bytes']} chunks={dma['chunks']} "
                 f"gpu_copy_ms={dma['gpu_copy_ms']:.3f} inside_decode_window={dma['inside_decode_window']}")
+            if dma.get('mode')=='every_qsa_bucket':
+                exact=r['arena_bucket_exact'];maps=r['arena_mapping_exact'];layers=r['dma_layer_exact']
+                lines.append(f"S5_ARENA case={case} rank={r['rank']} windows=0 arena_pages=23 "
+                    f"layer_exact={layers['checks']}/{layers['expected']} bucket_exact={exact['checks']}/{exact['expected']} mapping_exact={maps['checks']}/{maps['expected']} "
+                    f"buckets={len(dma['refills'])} prefill_steps={dma['prefill_steps']} "
+                    f"bytes_per_chunk={dma['bytes']//dma['prefill_steps']} "
+                    f"inside_chunks={dma['fully_inside_decode_chunks']} inside_buckets={dma['fully_inside_decode_refills']} "
+                    f"inside_bytes={dma['fully_inside_decode_bytes']} timing_basis={dma['timing_basis']}")
             if dma.get('mode')=='every_qsa_layer':
                 solo=r['resident_dma_solo']
                 lines.append(f"S5_DMA_REPEAT case={case} rank={r['rank']} layers=6 windows=1 "

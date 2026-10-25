@@ -105,8 +105,31 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError): status(q)
             m.assert_not_called()
 
+    def test_variant_launcher_umask_and_unreadable_stage(self):
+        # Extract only the real installer, never source the engine lifecycle.
+        source=(HERE/'variant_queue.sh').read_text()
+        fn='install_variant_launcher() {'+source.split('install_variant_launcher() {',1)[1].split('\n}\n',1)[0]+'\n}\n'
+        self.assertEqual(source.count('install_variant_launcher "'),2)  # install AND restore
+        root=self.temp();src=root/'source';src.write_text('#!/bin/bash\ntrue\n');src.chmod(0o600)
+        target=root/'launcher';target.write_text('old launcher');target.chmod(0o755)
+        stage=root/'staged'
+        stub='''sudo() {
+          [[ $1 == -n && $2 == -u && $3 == <service-user> ]] || return 99
+          [[ ${DENY:-0} == 0 ]] || return 1
+          shift 3; "$@"
+        }
+'''
+        script='umask 077\n'+stub+fn+'install_variant_launcher "$1" "$2" "$3"\n'
+        args=['bash','-c',script,'test',str(src),str(stage),str(target)]
+        out=subprocess.run(args,capture_output=True,text=True,env=dict(os.environ,DENY='1'))
+        self.assertNotEqual(out.returncode,0);self.assertEqual(target.read_text(),'old launcher')
+        out=subprocess.run(args,capture_output=True,text=True,env=dict(os.environ,DENY='0'))
+        self.assertEqual(out.returncode,0,out.stderr)
+        self.assertEqual(target.read_bytes(),src.read_bytes());self.assertEqual(target.stat().st_mode&0o777,0o755)
+        self.assertEqual(src.stat().st_mode&0o777,0o600)  # private source stays private
+
     def test_shell_syntax(self):
-        for p in ('runs/qN_pp_grouping.draft.sh','canary_hub_runner.sh','flash_canary.sh'):
+        for p in ('runs/qN_pp_grouping.draft.sh','variant_queue.sh','canary_hub_runner.sh','flash_canary.sh'):
             r=subprocess.run(['bash','-n',str(HERE/p)],capture_output=True,text=True)
             self.assertEqual(r.returncode,0,r.stderr)
 

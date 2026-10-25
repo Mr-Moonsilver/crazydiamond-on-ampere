@@ -3,13 +3,14 @@ import math
 import os
 import time
 
-KINDS=('legacy','kv','ple_prefetch','kv_ple_prefetch')
+KINDS=('legacy','kv','ple_prefetch','kv_ple_prefetch','arena_direct')
 CASES=('qsa-resident24','qsa-resident34','qsa-resident44','qsa-kv34','qsa-ple34','mixed-resident34','qsa-dma34')
 CASE_CONFIG=dict(zip(CASES,((24,'qsa','kv_ple_prefetch'),(34,'qsa','kv_ple_prefetch'),
     (44,'qsa','kv_ple_prefetch'),(34,'qsa','kv'),(34,'qsa','ple_prefetch'),(34,'mixed','kv_ple_prefetch'),(34,'qsa','kv_ple_prefetch'))))
 # Opt-in subset case only; do not change the old seven-case matrix.
 CASE_CONFIG['dma-every-step34']=(34,'qsa','kv')
 CASE_CONFIG['dma-batched34']=(34,'qsa','kv')
+CASE_CONFIG['arena-direct34']=(34,'qsa','arena_direct')
 
 
 def dma_window_proven(mode,step=1):
@@ -134,7 +135,8 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
     retain_kv=kind in ('kv','kv_ple_prefetch');prefetch=kind in ('ple_prefetch','kv_ple_prefetch')
     phase('terminal-resident-setup');original_kv=pre.kv
     before=memory()
-    resident_kv=pre.host.to('cuda') if retain_kv else original_kv
+    resident_kv=(original_kv.view_as(original_kv) if kind=='arena_direct' else
+                 pre.host.to('cuda') if retain_kv else original_kv)
     torch.cuda.synchronize();after=memory()
     if after['reserved']>18*2**30:raise b.Inconclusive('resident control exceeds18GiB')
     record=ledger(pre.history,pre.host.shape[2],pre.host[0,0,0].numel()*pre.host.element_size(),
@@ -145,11 +147,22 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
         free_delta=after['free']-before['free'])
     result['resident_ledger']=record;result['resident_before']=before;result['resident_after']=after
     result['resident_bytes']=record['kv_added_bytes']
+    if kind=='arena_direct':
+        record.update(arena_reused=True,arena_allocated_bytes=pre.arena.numel()*pre.arena.element_size(),
+                      added_kv_window_bytes=0,source='existing arena allocation',
+                      oracle_gpu_input_bytes=pre.t*2560*2,
+                      oracle_host_bucket_snapshots_bytes=2*23*record['page_bytes'])
     import json
     print('S5_MEMORY '+json.dumps(dict(rank=result['rank'],**record)),flush=True)
     window=None
     try:
-        if every_layer:
+        if kind=='arena_direct':
+            from s5_arena_direct import ArenaDirect
+            window=ArenaDirect(pre,original_kv,resident_kv)
+            phase('terminal-arena-mapping')
+            result['arena_mapping_exact']=window.probe_maps(green.sp)
+            window.verify_layers=True
+        elif every_layer:
             if not dma or kind!='kv':raise ValueError('every-layer DMA requires KV-only resident control')
             from s5_dma_window import WindowRefill
             window=WindowRefill(pre,original_kv,resident_kv,batched=batched)
@@ -164,6 +177,10 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
             expected_checks=trials*3*6
             if window.layer_checks!=expected_checks:raise ValueError('missing per-layer exact DMA/UVA comparisons')
             check['dma_layer_exact']=dict(passed=True,checks=window.layer_checks,expected=expected_checks)
+            if kind=='arena_direct':
+                bucket_expected=expected_checks*((pre.pages+22)//23)
+                if window.bucket_checks!=bucket_expected:raise ValueError('missing exact arena bucket checks')
+                check['arena_bucket_exact']=dict(passed=True,checks=window.bucket_checks,expected=bucket_expected)
             window.verify_layers=False
         if os.environ.get('S5_MOE','on')=='off':
             check['deterministic_control']=all(p['output_equal'] for p in check['comparisons'])
@@ -212,9 +229,14 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
         if window is not None:window.reset_stats()
         result['modes']['resident_prefill']=terminal_run(dec,pre,g,sd,sp,ctl,progress,steps,'prefill',False)
         if window is not None:
-            from s5_dma_window import validate as validate_dma
+            if kind=='arena_direct':
+                from s5_arena_direct import validate as validate_dma
+                validation_args={}
+            else:
+                from s5_dma_window import validate as validate_dma
+                validation_args=dict(batched=batched)
             solo_dma=window.report()
-            solo_dma.update(validate_dma(solo_dma,result['modes']['resident_prefill'],pre.pages,record['page_bytes'],batched=batched))
+            solo_dma.update(validate_dma(solo_dma,result['modes']['resident_prefill'],pre.pages,record['page_bytes'],**validation_args))
             result['resident_dma_solo']=solo_dma
             window.reset_stats()
         phase('terminal-resident-overlap');start=transport.stats()
@@ -244,7 +266,7 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
         result['modes']['overlap_resident']=m
         if window is not None:
             repeated=window.report()
-            repeated.update(validate_dma(repeated,m,pre.pages,record['page_bytes'],batched=batched))
+            repeated.update(validate_dma(repeated,m,pre.pages,record['page_bytes'],**validation_args))
             result['resident_dma']=repeated
         elif dma:
             result['resident_dma']=dict(bytes=sum(n for _,_,n in dma_events),chunks=len(dma_events),
