@@ -102,6 +102,33 @@ class DeclareTests(unittest.TestCase):
         self.assertEqual(flag.read_text(),'keep this file')
         with self.assertRaises(ident.EvidenceError):dec.assert_pair(on,verify)
 
+    def test_e2_pinned_launcher_mounts_and_projected_swap_without_host_write(self):
+        sys.path.insert(0,str(ROOT/'patches/s5_engine'))
+        import make_e2_arena as g
+        launch=self.root/'e2-launcher';launch.write_text(g.launcher((ROOT/'deploy/run-flash-prod.sh').read_text()))
+        self.assertEqual(dec.sha(launch),dec.E2_LAUNCHER_SHA)
+        found=self.task/'prod/run-flash-prod.sh';found.write_bytes((ROOT/'deploy/run-flash-prod.sh').read_bytes())
+        found_before=found.read_bytes()
+        names=['e2/__init__.py',*[f'e2/{n}.py' for n in g.RUNTIME],
+               'e2_sources/scheduler_output.py','e2_sources/block_table.py']
+        with (self.ovl/'SHA256SUMS').open('a') as manifest:
+            for name in names:
+                p=self.ovl/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('# fixture\n')
+                manifest.write(dec.sha(p)+'  '+name+'\n')
+        self.a.launcher=str(launch)
+        policy=json.loads((HERE/'e2_mount_policy.json').read_text())
+        over=dict(dec.PP_SETTINGS,EXTRA_ENV='FLASH_E2_ARENA=1 FLASH_E2_DMA=1 FLASH_E2_VERIFY=0')
+        d,_=dec.declare(self.a,over,self.image,policy,self.root/'e2-render',install_launcher=True)
+        work=next(m for m in d['identity']['mounts'] if m['destination']=='/work')
+        entry=next(x for x in work['content']['entries'] if x['path']=='prod/run-flash-prod.sh')
+        self.assertEqual(entry['sha256'],dec.E2_LAUNCHER_SHA)
+        self.assertEqual(found.read_bytes(),found_before)
+        self.assertEqual({w['path']:w['kind'] for w in work['watch']}['e2-arena.off'],'absent')
+        for suffix in ('/flash_e2','/core/sched/output.py','/worker/gpu/block_table.py'):
+            self.assertTrue(any(m['destination'].endswith(suffix) for m in d['identity']['mounts']))
+        self.assertEqual(d['identity']['env']['FLASH_E2_DMA'],'1')
+        self.assertNotIn(DUMMY,json.dumps(d))
+
     def test_setcfg_matches_actual_source_with_no_real_open(self):
         text='# untouched\nA=old\nQSA_COW_VERIFY=1\nEXTRA_ARGS="old"\n'
         over={'A':'quote" slash\\ dollar$ backtick`','QSA_COW_VERIFY':'-','EXTRA_ARGS':'--flag value','NEW':'v'}

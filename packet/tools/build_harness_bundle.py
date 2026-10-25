@@ -9,6 +9,7 @@ import hashlib
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -34,6 +35,23 @@ def build(out):
         shutil.copy2(source/name,out/'ppg'/name)
     shutil.copy2(ROOT/'deploy/run-flash-prod.sh',out/'run-flash-prod.sh.q9')
     shutil.copy2(ROOT/'deploy/setcfg.py',out/'setcfg.reference.py')
+    # E2 generator/runtime and the exact pinned image inputs it needs. These
+    # are CPU-only build inputs, never generated from a running container.
+    sys.path.insert(0,str(ROOT/'patches/s5_engine'))
+    import make_e2_arena
+    builder=out/'e2_builder';builder.mkdir()
+    for name in (*make_e2_arena.RUNTIME,'make_e2_arena','arena_attention',
+                 'resident_attention','mirror_hooks','runner_hooks','telemetry_hooks'):
+        shutil.copy2(ROOT/'patches/s5_engine'/(name+'.py'),builder/(name+'.py'))
+    source=ROOT/'patches/ppgrouping/make_ppgrouping.py'
+    if sha(source)!=make_e2_arena.telemetry_hooks.SOURCE_SHA:raise ValueError('E2 pool telemetry source checksum mismatch')
+    shutil.copy2(source,builder/'pool_stats_source.py')
+    reference=ROOT/'reference/vllm-src'
+    for name,digest in make_e2_arena.REFERENCE_PINS.items():
+        source=reference/name
+        if sha(source)!=digest:raise ValueError('E2 image reference checksum mismatch: '+name)
+        dest=out/'e2_reference'/name;dest.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(source,dest)
     needed=('identity_declare.py','identity_declare_stub.py','pp_release_mount_policy.json','pp_canary_bridge.py')
     if not all((out/name).is_file() for name in needed):
         raise ValueError('required helper missing: commit new sources before building')

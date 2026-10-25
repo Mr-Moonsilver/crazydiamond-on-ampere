@@ -4,7 +4,7 @@ This is not a deployable overlay. Source hooks/startup checks must install it
 around the pinned runner in the stated order. No scheduler references, PP
 sample-ring state or CUDA graph policy are changed here. Never log request IDs.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from functools import wraps
 import json
@@ -71,6 +71,13 @@ class RunnerLifecycle:
                 raise Pending('runner returned with an active attention invocation')
             self.mirror.leave()
             self.emit(self.mirror.cow_line())
+            if frame.retired or not frame.rows:
+                # Pending producer markers are conservative stream provenance,
+                # not live DMA leases; report them separately, never erase them
+                # merely because the scheduler became idle.
+                self.emit('FLASH_E2_STATE ' + json.dumps(dict(
+                    self.mirror.counters(), dma=self.dma.stats,
+                    routes_by_layer=self.dma.routes_by_layer), sort_keys=True))
         except BaseException:
             self.mirror.failed = True
             raise
@@ -147,7 +154,7 @@ class RunnerLifecycle:
             rows.append(BatchRow(rid, slot, start, end, length))
         self.batch_rows = tuple(rows)
 
-    def staged(self, layer, best, start, end, length, args, original, candidate):
+    def staged(self, layer, best, start, end, length, args, original, candidate, *, gpu_metadata=None):
         """Route the existing staged call, with its exact positional arguments.
 
         args = query, UVA-KV, indices, GPU table row, rows, max_page, EXISTING
@@ -163,14 +170,23 @@ class RunnerLifecycle:
             raise ContractError('staged row/length disagrees with input batch')
         if args[5] != (length - 1) // self.mirror.pool.page_tokens:
             raise ContractError('staged logical page frontier differs from mirror')
+        if hasattr(self, 'uva_facts') and self.dma.backend.facts(args[1]) != self.uva_facts[layer]:
+            raise ContractError('staged UVA binding changed after startup')
         self.in_staged = True
         try:
             if not self.enabled:
                 self.off_calls[layer] += 1
                 original(*args)
             else:
-                with self.dma.session(row.request_id, layer, args[6], args[3], length) as session:
-                    candidate(*args, e2=session)
+                oracle = getattr(self, 'exactness', None)
+                context = oracle.layer(self, layer, best, row, args, gpu_metadata) if oracle else nullcontext()
+                with context:
+                    with self.dma.session(row.request_id, layer, args[6], args[3], length) as session:
+                        candidate(*args, e2=session)
+                    if oracle:
+                        oracle.output(self, original, session.route_name)
+                if oracle:
+                    oracle.completed()
         except BaseException:
             self.mirror.failed = True
             raise

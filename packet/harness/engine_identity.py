@@ -378,6 +378,8 @@ def main():
         d.add_argument('--settings', nargs='*', default=[])
         d.add_argument('--defaults', default='/etc/default/vllm-flash')
         d.add_argument('--launcher', default='/data/vllm/flash-next-tp4/prod/run-flash-prod.sh')
+        d.add_argument('--project-launcher', action='store_true',
+                       help='declare only: hash the reviewed planned launcher replacement in /work; changes no file')
         d.add_argument('--setcfg', default='/tmp/setcfg.py')
         d.add_argument('--image-file', default='/tmp/flash-image.txt')
         d.add_argument('--image-inspect', help='saved docker image inspect JSON, for offline work')

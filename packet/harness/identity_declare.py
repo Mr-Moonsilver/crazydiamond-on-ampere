@@ -20,6 +20,7 @@ import engine_identity as identity
 HERE=Path(__file__).resolve().parent
 TASK='/data/vllm/flash-next-tp4'
 LAUNCHER_SHA='98d6d2a21927b8943f1ae9b0b43616757e80adac0c628e65f482e4332e3cf126'
+E2_LAUNCHER_SHA='d0a5967e58336e8694161b887fcada6103ed4ad270984875c6201ef3b4507491'
 FOUND_SHA='45cc5d813dca6610dd871b99b095956f307f29ab5f8de4993400018c1ab80c88'
 SETCFG_SHA='f3cae1379fa9079785c03a5555dbf739c687c5dcde9b1c6e058b38e8849754fe'
 PP_SETTINGS=dict(OVERLAY=TASK+'/prod/overlay-v16g',PP_LAYER_PARTITION='24,24',MODEL_DIR='-',VISION='-',VISION_ARGS='-',
@@ -77,7 +78,7 @@ def logical_path(path, mirror):
 
 
 def render(launcher, values, image_id, scratch, mirror=None):
-    identity.need(sha(launcher)==LAUNCHER_SHA)
+    identity.need(sha(launcher) in (LAUNCHER_SHA,E2_LAUNCHER_SHA))
     scratch=Path(scratch);scratch.mkdir(mode=0o700)
     bindir=scratch/'bin';bindir.mkdir(mode=0o700)
     for name in ('docker','sudo','rm'):
@@ -180,9 +181,10 @@ def project_launcher(spec, launcher):
     """Declare the one planned host-file replacement visible through /work."""
     work=next(m for m in spec['mounts'] if m['destination']=='/work')
     entry=next(e for e in work['content']['entries'] if e['path']=='prod/run-flash-prod.sh')
-    identity.need(entry['kind']=='file' and entry['sha256'] in (FOUND_SHA,LAUNCHER_SHA))
-    identity.need(sha(launcher)==LAUNCHER_SHA)
-    entry.update(bytes=Path(launcher).stat().st_size,sha256=LAUNCHER_SHA)
+    identity.need(entry['kind']=='file' and entry['sha256'] in (FOUND_SHA,LAUNCHER_SHA,E2_LAUNCHER_SHA))
+    future_sha=sha(launcher)
+    identity.need(future_sha in (LAUNCHER_SHA,E2_LAUNCHER_SHA))
+    entry.update(bytes=Path(launcher).stat().st_size,sha256=future_sha)
 
 
 def declare(a, overrides, image, policy, scratch, install_launcher=False, hash_reference=None):
@@ -234,7 +236,7 @@ def run(a):
     policy_path=a.mount_policy or (HERE/'pp_release_mount_policy.json' if a.action=='declare-pair' else None)
     policy=json.loads(Path(policy_path).read_text()) if policy_path else {}
     if a.action=='declare-pair':
-        identity.need(not a.settings and not a.source_mirror)
+        identity.need(not a.settings and not a.source_mirror and not getattr(a,'project_launcher',False))
         identity.need(sha(a.found_launcher)==FOUND_SHA)
         out.mkdir(mode=0o700)
         scratch=out/'private-render';scratch.mkdir(mode=0o700)
@@ -259,6 +261,7 @@ def run(a):
             content_io=[io0,io1],policy=policy,claim='declared sources, not a running engine; no container commands'))
     else:
         scratch=Path(tempfile.mkdtemp(prefix='identity-render-',dir=out.parent));scratch.chmod(0o700)
-        declaration,_=declare(a,settings(a.settings),image,policy,scratch/'render')
+        declaration,_=declare(a,settings(a.settings),image,policy,scratch/'render',
+                              install_launcher=getattr(a,'project_launcher',False))
         identity.write(out,declaration)
     return 0

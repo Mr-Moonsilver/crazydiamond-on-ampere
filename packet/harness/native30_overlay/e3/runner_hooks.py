@@ -33,8 +33,12 @@ STAGED = '''    _e2_ref = getattr(layer, "_flash_e2_lifecycle_ref", None)
             layer._flash_e2_layer_name, best, int(start), int(end), int(lengths[best]),
             (query[:num_tokens], kv_cache, logical_indices, attn_metadata.block_table[best],
              rows, max_logical_page, arena, use_prefill_config, output[:num_tokens]),
-            qsa_sparse_paged_attention_staged, flash_e2_arena_attention)
+            qsa_sparse_paged_attention_staged, flash_e2_arena_attention,
+            gpu_metadata=(starts, seq_lens))
         return start, end
+'''
+STARTUP = '''        from vllm.v1.flash_e2.startup import install as _install_flash_e2
+        _install_flash_e2(self, is_profiling)
 '''
 
 
@@ -62,3 +66,9 @@ def qsa_staged(source):
     if '_flash_e2_lifecycle_ref' in source:
         raise ValueError('QSA already has an E2 staged hook')
     return once(source, '    retained, copied = None, 0\n', STAGED + '    retained, copied = None, 0\n')
+
+
+def runner_startup(source):
+    if '_install_flash_e2' in source:
+        raise ValueError('runner already has E2 startup hook')
+    return replace_method(source, 'GPUModelRunner', 'initialize_kv_cache', lambda s: s + '\n' + STARTUP)

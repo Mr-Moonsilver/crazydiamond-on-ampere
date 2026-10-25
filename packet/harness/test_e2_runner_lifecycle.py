@@ -146,7 +146,8 @@ class LifecycleTests(unittest.TestCase):
         o=output(retired=['a']);o.flash_e2_frame=j.frame(o,lambda _:())
         with x.rpc(o):x.updated({},t)
         self.assertEqual(m.sequence,2);self.assertFalse(m.requests)
-        self.assertIn('seq=2 pairs=0',lines[-1]);self.assertFalse(b.events)
+        self.assertTrue(any('seq=2 pairs=0' in line for line in lines));self.assertFalse(b.events)
+        self.assertTrue(lines[-1].startswith('FLASH_E2_STATE '))
 
     def test_rpc_exception_quarantines_and_cannot_report_completed(self):
         j,m,t,b,d,lines,switch,x,o,args=fixture()
@@ -273,7 +274,7 @@ class SourceHookTests(unittest.TestCase):
         self.assertIs(method(runner,o),sentinel)
         self.assertEqual(events,['existing-pp-update','finish','free','add','update','apply'])
         self.assertEqual(m.sequence,1);self.assertFalse(m.active)
-        self.assertEqual(len(lines),1);self.assertFalse(b.events)
+        self.assertEqual(len(lines),2);self.assertFalse(b.events)
 
 
 if __name__=='__main__':unittest.main()

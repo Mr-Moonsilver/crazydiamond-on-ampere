@@ -219,6 +219,9 @@ class Session:
         a.stats['buckets'] += 1
         a.stats['pieces'] += len(bucket.pieces)
         a.stats['bytes'] += (hi-lo) * a.mirror.pool.page_tokens * 1024
+        verify = getattr(a, 'verify_bucket', None)
+        if verify is not None:
+            verify(self, staged, lo, hi, table)
 
     def consume_begin(self):
         self._check()
