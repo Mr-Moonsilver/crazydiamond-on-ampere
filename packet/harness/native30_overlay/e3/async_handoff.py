@@ -114,6 +114,11 @@ class StopKind(str, Enum):
 
 
 _STOP_KINDS = frozenset(k.value for k in StopKind)
+_CONTROL_KINDS = frozenset({'open', 'poll', 'commit', 'cancel'})
+# A stop that ends with its retired lease; pause/reset also resume after the
+# engine's own drain.  Shutdown keeps refusing admission until the process exits.
+_RESUMABLE_STOPS = frozenset({'abort', 'cancel', 'disconnect', 'preempt',
+                              'reset', 'pause'})
 
 
 def _positive_float(name, value):
@@ -374,6 +379,10 @@ def _check_transaction(name, transaction):
 class OpenPrefill(WorkerMessage):
     transaction: TransactionId
     chunk_tokens: int
+    # Immutable CPU admission snapshot. It travels with the command because the
+    # worker reserves its private lane from it; it is never re-derived on the
+    # worker from the already-mutated batch.
+    metadata: object = None
     kind: str = field(default='open', init=False)
 
     def validate(self):
@@ -387,6 +396,12 @@ class SubmitOperation(WorkerMessage):
     transaction: TransactionId
     op_seq: int
     dependency_role: DependencyRole
+    # Producer role: the parked stock schedule this worker must execute, plus
+    # the grammar output the ordinary sampling path consumes. Commit role: the
+    # model/host state value the scheduler admitted, applied exactly once.
+    scheduler_output: object = None
+    grammar_output: object = None
+    state_value: object = None
     kind: str = field(default='submit', init=False)
 
     def validate(self):
@@ -414,6 +429,7 @@ class PollOperations(WorkerMessage):
 class CommitTransaction(WorkerMessage):
     transaction: TransactionId
     completion_seq: int
+    state_value: object = None
     kind: str = field(default='commit', init=False)
 
     def validate(self):
@@ -451,6 +467,28 @@ class SubmitAck:
             raise HandoffError('ack.accepted must be bool')
 
 
+@dataclass(frozen=True, repr=False)
+class OpenAck:
+    """The lane each worker actually reserved for this transaction.
+
+    The engine admits with unbound ranks because worker lane identities are
+    created by A inside each worker process. This reply is what binds them; it
+    is neither a completion nor a publication.
+    """
+    transaction: TransactionId
+    lane: LaneId
+    accepted: bool
+
+    def __post_init__(self):
+        _check_transaction('open ack', self.transaction)
+        if type(self.lane) is not LaneId:
+            raise HandoffError('open ack must carry a LaneId')
+        if self.lane.role is not LaneRole.PREFILL:
+            raise HandoffError('open ack must carry the prefill lane')
+        if type(self.accepted) is not bool:
+            raise HandoffError('open ack.accepted must be bool')
+
+
 @dataclass(frozen=True)
 class CompletionReport:
     transaction: TransactionId
@@ -478,6 +516,9 @@ class CommitAck:
     transaction: TransactionId
     epoch: int
     published: bool
+    # Only the output-producing rank carries one. It is the ordinary sampling
+    # result for the parked chunk, not a proof and not a second publication.
+    output: object = None
 
     def __post_init__(self):
         _check_transaction('commit ack', self.transaction)
@@ -623,7 +664,13 @@ class TransactionLease:
         if type(lanes) is not dict or not lanes:
             raise HandoffError('lease needs a rank -> LaneId map')
         for rank, lane in lanes.items():
-            if type(rank) is not int or type(lane) is not LaneId or lane.worker_rank != rank:
+            if type(rank) is not int:
+                raise HandoffError('invalid lane map')
+            if lane is None:
+                # Admission happens on the engine before any worker has
+                # reserved its lane; bind_lanes completes the map.
+                continue
+            if type(lane) is not LaneId or lane.worker_rank != rank:
                 raise HandoffError('invalid lane map')
         self.transaction = transaction
         self.lanes = dict(lanes)
@@ -637,6 +684,7 @@ class TransactionLease:
         self.acked = 0
         self.commit_proof = None
         self.commit_epoch = 0
+        self.worker_outputs = {}
         self.stop_kind = None
         self.quarantine = None
         self._last_op = {}
@@ -661,6 +709,31 @@ class TransactionLease:
     @property
     def request_uid_len(self):
         return len(self.transaction.request_uid)
+
+    @property
+    def unbound(self):
+        return tuple(sorted(rank for rank, lane in self.lanes.items() if lane is None))
+
+    def bind_lanes(self, lanes):
+        """Bind each rank to the prefill LaneId its worker actually reserved.
+
+        A rank can be bound once; the value must come from that rank's own
+        ``OpenAck``. Rebinding would launder a stale storage/context epoch.
+        """
+        if type(lanes) is not dict or set(lanes) != set(self.lanes):
+            raise HandoffError('lane binding must cover every leased rank once')
+        for rank, lane in lanes.items():
+            if type(lane) is not LaneId or lane.worker_rank != rank:
+                raise HandoffError('bound lane disagrees with its rank')
+            if lane.role is not LaneRole.PREFILL:
+                raise HandoffError('bound lane is not the prefill lane')
+            current = self.lanes[rank]
+            if current is not None and current != lane:
+                self._quarantine('stale_identity')
+                raise HandoffError('lane was already bound to another epoch')
+        for rank, lane in lanes.items():
+            self.lanes[rank] = lane
+        return dict(self.lanes)
 
     def _quarantine(self, reason):
         if self.phase is Phase.QUARANTINED:
@@ -696,7 +769,10 @@ class TransactionLease:
             raise HandoffError('operation belongs to another transaction')
         if ticket.worker_rank not in self.lanes:
             raise HandoffError('operation rank is not in the lease')
-        if ticket.lane != self.lanes[ticket.worker_rank]:
+        lane = self.lanes[ticket.worker_rank]
+        if lane is None:
+            raise HandoffError('operation submitted before the worker lane was bound')
+        if ticket.lane != lane:
             raise HandoffError('operation lane/storage epoch is stale')
         key = ticket.lane  # op_seq is the value, never part of its monotonic key.
         previous = self._last_op.get(key)
@@ -756,7 +832,7 @@ class TransactionLease:
         if operation is None:
             self._quarantine('late_reply')
             raise HandoffError('completion has no outstanding operation')
-        if proof.ticket.lane != self.lanes[proof.ticket.worker_rank]:
+        if proof.ticket.lane != self.lanes.get(proof.ticket.worker_rank):
             self._quarantine('stale_identity')
             raise HandoffError('completion lane/storage epoch is stale')
         if operation.proof is not None:
@@ -881,6 +957,7 @@ class HandoffDispatcher:
         self._stopping = None
         self._retired = 0
         self._quarantined = 0
+        self.replies = {}
 
     def assert_owner(self):
         if threading.get_ident() != self.owner_thread:
@@ -935,6 +1012,7 @@ class HandoffDispatcher:
         if metadata is not None and not getattr(metadata, 'rows', None):
             raise HandoffError('prefill metadata snapshot is empty')
         self.active = lease
+        self.replies.clear()
         self._decode_ready_s = None
         self.telemetry.record('transaction_opened', txn_seq=transaction.txn_seq,
                               generation=transaction.request_generation,
@@ -952,20 +1030,38 @@ class HandoffDispatcher:
         """
         self.assert_owner()
         lease = self.active
-        if lease is None or not lease.active:
+        if lease is None:
             raise HandoffError('no active prefill transaction')
         if not callable(transport_submit):
             raise HandoffError('submit needs a bounded transport sender')
         if self._transport is None:
             raise HandoffError('no owned reply transport is installed')
-        tickets = (ticket,) if type(ticket) is OperationTicket else tuple(ticket)
-        if not tickets or any(type(item) is not OperationTicket for item in tickets):
-            raise HandoffError('submit needs OperationTicket(s)')
         if kind == 'operation':
+            if not lease.active:
+                raise HandoffError('no active prefill transaction')
+            tickets = (ticket,) if type(ticket) is OperationTicket else tuple(ticket)
+            if not tickets or any(type(item) is not OperationTicket for item in tickets):
+                raise HandoffError('submit needs OperationTicket(s)')
             if {item.worker_rank for item in tickets} != set(lease.lanes):
                 raise HandoffError('one operation ticket is required per leased rank')
             if len({item.op_seq for item in tickets}) != 1:
                 raise HandoffError('one rank-set operation must share its op_seq')
+            for item in tickets:
+                if lease.lanes.get(item.worker_rank) is None:
+                    raise HandoffError('operation ticket names an unbound lane')
+                if lease.lanes[item.worker_rank] != item.lane:
+                    raise HandoffError('operation ticket lane is stale')
+        elif kind in _CONTROL_KINDS:
+            # A committing or stopping transaction still needs completion polls,
+            # the commit acknowledgment and the cancel command; refusing them
+            # would strand worker storage or drop the publication reply.
+            if lease.phase in (Phase.RETIRED, Phase.QUARANTINED):
+                raise HandoffError('transaction is not accepting control messages')
+            if ticket is not None and ticket != ():
+                raise HandoffError('a control message carries no operation ticket')
+            tickets = ()
+        else:
+            raise HandoffError('unknown prefill submission kind')
         expected = tuple(sorted(lease.lanes)) if ranks is None else tuple(ranks)
         if len(expected) != len(set(expected)) or set(expected) != set(lease.lanes):
             raise HandoffError('prefill operation must reach every leased rank once')
@@ -994,6 +1090,8 @@ class HandoffDispatcher:
             lease._quarantine('transport_failure')
             raise
         self._inflight[sequence] = (kind, lease.transaction, tickets)
+        if not tickets:
+            return None
         return tickets[0] if len(tickets) == 1 else tickets
 
     def _ranks(self, lease):
@@ -1055,6 +1153,15 @@ class HandoffDispatcher:
                         default=0.0)
             self.telemetry.record('reply_received', ack_lag_s=worst)
             self._apply_reply(context[0], context[1], context[2], value)
+            self.replies[context[0]] = self.replies.get(context[0], 0) + 1
+
+    @property
+    def total_replies(self):
+        """Applied reply count; lets the engine driver step without blocking."""
+        return sum(self.replies.values())
+
+    def reply_count(self, kind):
+        return self.replies.get(kind, 0)
 
     def _apply_reply(self, kind, transaction, tickets, value):
         lease = self.active
@@ -1062,6 +1169,20 @@ class HandoffDispatcher:
             # A reply for a retired/cancelled identity never mutates a newer one.
             self.telemetry.record('late_reply_rejected', reason_code='late_reply')
             self._quarantined += 1
+            return
+        if kind == 'open':
+            acks = value if isinstance(value, (list, tuple)) else (value,)
+            if len(acks) != len(lease.lanes):
+                raise HandoffError('open reply does not cover every rank')
+            binding = {}
+            for rank, ack in zip(sorted(lease.lanes), acks):
+                if type(ack) is not OpenAck:
+                    raise HandoffError('open reply is not a typed lane acknowledgment')
+                validate_typed_reply(transaction, ack)
+                if not ack.accepted:
+                    raise HandoffError('worker refused the prefill reservation')
+                binding[rank] = ack.lane
+            lease.bind_lanes(binding)
             return
         if kind == 'operation':
             acks = value if isinstance(value, (list, tuple)) else (value,)
@@ -1079,24 +1200,39 @@ class HandoffDispatcher:
             return
         if kind == 'poll':
             reports = value if isinstance(value, (list, tuple)) else (value,)
-            for report in reports:
+            if len(reports) != len(lease.lanes):
+                raise HandoffError('poll reply does not cover every rank')
+            for rank, report in zip(sorted(lease.lanes), reports):
                 if type(report) is not CompletionReport:
                     raise HandoffError('poll reply is not a completion report')
                 validate_typed_reply(transaction, report)
                 for proof in report.proofs:
+                    if proof.ticket.worker_rank != rank:
+                        raise HandoffError('completion arrived through another rank')
                     lease.complete(proof)
             return
         if kind in ('commit', 'cancel'):
             acks = value if isinstance(value, (list, tuple)) else (value,)
             if len(acks) != len(lease.lanes):
                 raise HandoffError('control reply does not cover every rank')
-            expected_type = CommitAck if kind == 'commit' else CancelAck
-            for ack in acks:
-                if type(ack) is not expected_type:
-                    raise HandoffError('control reply has wrong type')
-                validate_typed_reply(transaction, ack)
-                if kind == 'commit' and not ack.published:
-                    raise HandoffError('worker did not publish the transaction')
+            ranks = sorted(lease.lanes)
+            if kind == 'commit':
+                epochs = {ack.epoch for ack in acks if type(ack) is CommitAck}
+                if len(epochs) != 1:
+                    raise HandoffError('commit epochs differ across workers')
+                for rank, ack in zip(ranks, acks):
+                    if type(ack) is not CommitAck:
+                        raise HandoffError('control reply has wrong type')
+                    validate_typed_reply(transaction, ack)
+                    if not ack.published:
+                        raise HandoffError('worker did not publish the transaction')
+                    if ack.output is not None:
+                        lease.worker_outputs[rank] = ack.output
+            else:
+                for ack in acks:
+                    if type(ack) is not CancelAck:
+                        raise HandoffError('control reply has wrong type')
+                    validate_typed_reply(transaction, ack)
             return
         raise HandoffError('unknown prefill reply kind')
 
@@ -1145,6 +1281,11 @@ class HandoffDispatcher:
         phase = lease.drain()
         self._retired += 1
         self.active = lease if phase is Phase.QUARANTINED else None
+        if (phase is Phase.RETIRED and self._stopping is not None
+                and self._stopping.value in _RESUMABLE_STOPS):
+            # The stopped request retired cleanly; a later request may admit
+            # again. Engine shutdown keeps the dispatcher closed.
+            self._stopping = None
         self.telemetry.record('transaction_retired', state=phase.value,
                               reason_code='clean' if phase is Phase.RETIRED else lease.quarantine)
         return phase
@@ -1290,6 +1431,9 @@ class CommittedFrontier:
             raise HandoffError('block ids must be nonnegative ints')
         if transaction in self._published:
             raise HandoffError('transaction already published its threshold')
+        committed = {b for blocks in self._published.values() for b in blocks}
+        if committed.intersection(block_ids):
+            raise HandoffError('allocation reuse requires explicit frontier retirement')
         self._epoch[transaction] = block_ids
         return block_ids
 
@@ -1300,6 +1444,26 @@ class CommittedFrontier:
             raise HandoffError('frontier publishes exactly once')
         self._published[transaction] = self._epoch[transaction]
         return self._published[transaction]
+
+    def retire_blocks(self, block_ids):
+        """Offline allocator callback model; not wired to native incarnations."""
+        ids = set(block_ids)
+        if any(ids.intersection(blocks) for txn, blocks in self._epoch.items()
+               if txn not in self._published):
+            raise E3Pending('cannot retire blocks of an unpublished transaction')
+        for txn, blocks in list(self._published.items()):
+            remaining = tuple(b for b in blocks if b not in ids)
+            if remaining:
+                self._published[txn] = remaining
+                self._epoch[txn] = remaining
+            else:
+                del self._published[txn]
+                self._epoch.pop(txn, None)
+
+    def cancel(self, transaction):
+        if transaction in self._published:
+            raise HandoffError('cannot cancel a published frontier')
+        self._epoch.pop(transaction, None)
 
     def shareable(self, block_ids):
         committed = {b for blocks in self._published.values() for b in blocks}
@@ -1511,7 +1675,8 @@ class RuntimeWorkerHandoff:
     """
 
     def __init__(self, runtime, transaction, *, metadata, role=LaneRole.PREFILL,
-                 prepare_context=None, prepare_workspace=None):
+                 prepare_context=None, prepare_workspace=None, bindings=(),
+                 private_attrs=None, clock=time.monotonic):
         _check_transaction('runtime worker handoff', transaction)
         self.runtime = runtime
         self.transaction = transaction
@@ -1519,8 +1684,13 @@ class RuntimeWorkerHandoff:
         self.role = role
         self.prepare_context = prepare_context
         self.prepare_workspace = prepare_workspace
+        self.bindings = tuple(bindings)
+        self.private_attrs = dict(private_attrs or {})
+        self.clock = clock
         self.completions = []
         self.last_op = -1
+        self.last_ticket = None
+        self.last_ack = None
         self.phase = Phase.OPEN
         self.quarantine = None
 
@@ -1553,9 +1723,16 @@ class RuntimeWorkerHandoff:
         self._check(message, OpenPrefill)
         if self.phase is not Phase.OPEN:
             raise HandoffError('worker transaction is already opened')
-        self.runtime.open_prefill(self.transaction, self.metadata)
+        metadata = getattr(message, 'metadata', None)
+        if metadata is not None and metadata != self.metadata:
+            raise HandoffError('open message metadata differs from the admitted snapshot')
+        handle = self.runtime.open_prefill(
+            self.transaction, self.metadata, bindings=self.bindings,
+            private_attrs=self.private_attrs)
+        if getattr(handle, 'lane_id', None) is None or handle.lane_id.role is not LaneRole.PREFILL:
+            raise HandoffError('runtime open did not return a prefill lane')
         self.phase = Phase.OPEN
-        return SubmitAck(self.transaction, 0, True)
+        return OpenAck(self.transaction, handle.lane_id, True)
 
     def submit(self, message):
         self._check(message, SubmitOperation)
@@ -1564,10 +1741,12 @@ class RuntimeWorkerHandoff:
         if message.op_seq <= self.last_op:
             raise HandoffError('worker operation sequence is not monotonic')
         self.last_op = message.op_seq
-        self.runtime.submit(self.role, self.transaction, message.op_seq,
-                            message.dependency_role)
+        ticket = self.runtime.submit(self.role, self.transaction, message.op_seq,
+                                     message.dependency_role)
+        self.last_ticket = ticket
+        self.last_ack = SubmitAck(self.transaction, message.op_seq, True)
         self.phase = Phase.SUBMITTED
-        return SubmitAck(self.transaction, message.op_seq, True)
+        return self.last_ack
 
     def poll(self, message):
         self._check(message, PollOperations)
@@ -1686,7 +1865,8 @@ class Composition:
 
 def build_composition(env, *, transport, backend, lanes, transaction=None, allocation=None,
                       allow_fixture=False, clock=time.monotonic, telemetry=None,
-                      native_allocations=None, runtime=None, scheduler_leases=None):
+                      native_allocations=None, runtime=None, scheduler_leases=None,
+                      side='worker'):
     """Enabled-startup composition; fixture mode exists only for CPU tests.
 
     Native allocation, the real QSA UID namespace and the native completion
@@ -1695,7 +1875,14 @@ def build_composition(env, *, transport, backend, lanes, transaction=None, alloc
     armable engine. ``transaction`` is optional: the dispatcher creates the
     per-prefill TransactionId when ``open`` is called; a supplied value is
     validated but never invented here.
+
+    ``side`` names which process this composition belongs to. The engine has no
+    device: it coordinates typed worker RPCs and owns no A ``LaneRuntime`` or
+    private UID buffer, so those worker-only checks are skipped there. The
+    engine still refuses the fixture backend and an empty allocation inventory.
     """
+    if side not in ('worker', 'engine'):
+        raise ConfigurationError('composition side must be worker or engine')
     config = HandoffConfig.from_env(env)
     if not config.enabled:
         return None
@@ -1706,10 +1893,13 @@ def build_composition(env, *, transport, backend, lanes, transaction=None, alloc
         if not native_allocations:
             raise ConfigurationError(
                 'enabled startup requires C native allocations (UID buffer, PP buffers)')
-        if runtime is None or getattr(runtime, 'uid_namespace', None) is None \
-                or getattr(runtime, 'prefill_uid_buffer', None) is None:
+        if side == 'worker' and (
+                runtime is None or getattr(runtime, 'uid_namespace', None) is None
+                or getattr(runtime, 'prefill_uid_buffer', None) is None):
             raise ConfigurationError(
                 'enabled startup requires A runtime with UID namespace and private buffer')
+    if side == 'engine' and lanes is None:
+        lanes = {}
     dispatcher = HandoffDispatcher(config, clock=clock, telemetry=telemetry,
                                    allow_fixture=allow_fixture)
     dispatcher.install_transport(transport)

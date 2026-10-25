@@ -41,8 +41,9 @@ import scheduler_hooks
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
-E3_MODULES = ('e3_types', 'lane_state', 'reply_transport', 'lane_hooks',
-              'async_handoff', 'executor_hooks', 'scheduler_hooks', 's5_startup',
+E3_MODULES = ('e3_types', 'lane_state', 'reply_transport', 'native_backend',
+              'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver',
+              'executor_hooks', 'scheduler_hooks', 's5_startup',
               'graph_router', 'graph_hooks')
 
 # Exact reviewed E2-composed inputs. Any other bytes are refused.
@@ -322,13 +323,19 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
                      'mounts_require': 'S5=1',
                      'e2_launcher_preserved': LAUNCHER_NAME,
                      'status': 'offline-generated; not mounted or started'},
-        'status': 'offline checkpoint; native runtime and engine admission NOT IMPLEMENTED; NOT ARMABLE',
+        'status': ('offline checkpoint; experimental worker/engine construction is wired at the '
+                   'generated seams, production admission and whole-forward/capture seams '
+                   'are NOT IMPLEMENTED; NOT ARMABLE'),
         'armable': False,
         'native_gaps': [
-            'native worker factory, graph builder and event/PP backends not implemented',
-            'engine admission/segment dispatch/all-rank scheduler commit not implemented',
-            'scheduler committed-prefix lookup and allocation incarnations not integrated',
-            'bounded command sender and native reply transport not validated',
+            'enabled startup is hard-refused before allocation/transport ownership; CPU fixtures explicitly bypass this refusal',
+            'production scheduler admission marker and mixed-batch extraction not implemented; without SchedulerOutput.flash_s5_prefill_admission the driver parks nothing',
+            'split-graph capture callable runner._flash_s5_graph_capture not supplied; split-bank capture fails closed',
+            'SOURCE_HISTORY (COPY_EVENT) and PP-buffer leases are not acquired or released; only ARENA leases are wired',
+            'real model persistent-state commit value: admission must supply an immutable state snapshot (A accepts CPU snapshots only)',
+            'bounded DMA segment execution not implemented; only CPU fixtures can reach the stock whole-forward scaffold',
+            'PP handoff output/parity validation not implemented; PrefillPPChannel is constructed but carries no traffic',
+            'green-context/SM allocation and graph-pool measurement not performed; scaffold constants are not measurements and capture refuses even with a callable',
             'no GPU, CUDA graph, PP ring, DMA qualification or performance run',
         ],
         'incremental_kv_bytes': 0,

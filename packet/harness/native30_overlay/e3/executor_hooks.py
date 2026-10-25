@@ -19,7 +19,7 @@ import hashlib
 import math
 import time
 
-from e3_types import E3ContractError
+from e3_types import E3ContractError, E3Pending
 from reply_transport import Backpressure, NotReady, ReplyTransport, TransportError
 
 
@@ -169,11 +169,29 @@ def revert_executor(source, expected=None):
 
 _CORE_FORWARD = (
     ('logger = init_logger(__name__)\n', 'logger = init_logger(__name__)\n\n' + _IMPORT),
+    ('''        self.is_ec_consumer = (
+''', '''        _flash_s5_hooks.after_engine_startup(self)
+        self.is_ec_consumer = (
+'''),
     ('''        batch_queue = self.batch_queue
         assert batch_queue is not None
 ''', '''        batch_queue = self.batch_queue
         assert batch_queue is not None
-        _flash_s5_hooks.before_step_with_batch_queue(self)
+        _flash_s5_ready = _flash_s5_hooks.before_step_with_batch_queue(self)
+        if _flash_s5_ready is not None:
+            return _flash_s5_ready
+'''),
+    ('''        if self.scheduler.has_requests():
+            scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
+            with self.log_error_detail(scheduler_output):
+''', '''        if self.scheduler.has_requests():
+            scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
+            if _flash_s5_hooks.park_prefill(self, scheduler_output):
+                # E3 owns this chunk: it runs as a typed asynchronous operation
+                # on the workers. The engine must not launch stock work for it,
+                # and its single update_from_output happens on completion.
+                return None, False
+            with self.log_error_detail(scheduler_output):
 '''),
     ('''    def abort_requests(self, request_ids: list[str]):
         """Abort requests from the scheduler."""
@@ -476,18 +494,49 @@ def _handoff(engine):
     return handoff
 
 
+def _driver(engine):
+    driver = getattr(engine, '_flash_s5_driver', None)
+    if driver is not None and not callable(getattr(driver, 'advance', None)):
+        raise E3ContractError('engine E3 segment driver is invalid')
+    return driver
+
+
+def after_engine_startup(engine):
+    """Generated ``EngineCore.__init__`` seam: install the native composition."""
+    from s5_startup import install_engine
+
+    return install_engine(engine)
+
+
+def park_prefill(engine, scheduler_output):
+    """True when E3 took this whole scheduled step as an asynchronous chunk."""
+    driver = _driver(engine)
+    if driver is None:
+        return False
+    return driver.park(scheduler_output) is not None
+
+
 def before_step_with_batch_queue(engine):
-    """Bounded engine bypass: poll local state; never wait for a whole layer."""
+    """Bounded engine bypass: drive one typed step; never wait for a layer."""
+    driver = _driver(engine)
+    if driver is not None:
+        return driver.advance()
     handoff = _handoff(engine)
     if handoff is None:
         return None
     report = handoff.poll(8)
-    if report.quarantined:
+    if report.failed:
         raise E3ContractError('E3 handoff is quarantined')
-    return report
+    return None
 
 
 def before_abort(engine, request_ids):
+    driver = _driver(engine)
+    if driver is not None:
+        active = driver.dispatcher.active
+        if active is not None and active.transaction.request_uid in tuple(request_ids):
+            return driver.stop('abort', drain=False)
+        return None
     handoff = _handoff(engine)
     if handoff is None:
         return None
@@ -498,6 +547,9 @@ def before_abort(engine, request_ids):
 
 
 def before_pause(engine, mode):
+    driver = _driver(engine)
+    if driver is not None:
+        return driver.stop('pause', drain=False)
     handoff = _handoff(engine)
     if handoff is None:
         return None
@@ -505,6 +557,10 @@ def before_pause(engine, mode):
 
 
 def before_finish_pause(engine):
+    driver = _driver(engine)
+    if driver is not None:
+        driver.finish_pause()
+        return True
     handoff = _handoff(engine)
     if handoff is None:
         return None
@@ -517,6 +573,12 @@ def before_finish_pause(engine):
 
 
 def before_reset_prefix(engine):
+    driver = _driver(engine)
+    if driver is not None:
+        driver.stop('reset', drain=False)
+        if driver.active:
+            raise E3Pending('reset waits for parked prefill retirement')
+        return None
     handoff = _handoff(engine)
     if handoff is None:
         return None
@@ -527,6 +589,12 @@ def before_reset_prefix(engine):
 
 
 def before_engine_shutdown(engine):
+    driver = _driver(engine)
+    if driver is not None:
+        driver.stop('shutdown', drain=False)
+        if driver.active:
+            raise E3Pending('shutdown waits for parked prefill retirement')
+        return None
     handoff = _handoff(engine)
     if handoff is None:
         return None
@@ -550,6 +618,10 @@ def worker_rpc(worker, name, message):
         adapter = getattr(runner, '_flash_s5_worker', None) if runner is not None else None
     if adapter is None:
         raise E3ContractError('worker has no C S5 worker adapter')
+    attach = getattr(adapter, 'attach_worker', None)
+    if callable(attach):
+        # The generated GPU worker is the object that launches the forward.
+        attach(worker)
     handler = getattr(adapter, name, None)
     if handler is None:
         raise E3ContractError('worker adapter lacks the requested S5 RPC')
@@ -559,9 +631,10 @@ def worker_rpc(worker, name, message):
 __all__ = [
     'CORE_PATH', 'CORE_SHA256', 'EXECUTOR_PATH', 'EXECUTOR_SHA256',
     'LocalFuture', 'PINS', 'WORKER_PATH', 'WORKER_SHA256',
-    'before_abort', 'before_engine_shutdown', 'before_finish_pause',
-    'before_pause', 'before_reset_prefix', 'before_shutdown',
-    'before_step_with_batch_queue', 'collective_rpc', 'config_reply_timeout',
-    'generate_core', 'generate_executor', 'generate_worker', 'install',
-    'retain_mq', 'revert_core', 'revert_executor', 'revert_worker', 'worker_rpc',
+    'after_engine_startup', 'before_abort', 'before_engine_shutdown',
+    'before_finish_pause', 'before_pause', 'before_reset_prefix',
+    'before_shutdown', 'before_step_with_batch_queue', 'collective_rpc',
+    'config_reply_timeout', 'generate_core', 'generate_executor',
+    'generate_worker', 'install', 'park_prefill', 'retain_mq', 'revert_core',
+    'revert_executor', 'revert_worker', 'worker_rpc',
 ]

@@ -1,12 +1,26 @@
-"""C startup adapter: install A's lane builder and C's handoff composition.
+"""C startup: native worker construction and engine-side composition.
 
-Called from the generated runner just before A's ``init_lane``. Nothing is
-allocated here. The owner-reviewed native bundle supplies the real transport,
-completion backend, lanes, native allocation inventory and A ``LaneRuntime``;
-without it enabled startup fails instead of falling back to the CPU fixture.
+Production enabled startup is hard-refused before allocation or transport
+ownership: bounded native execution, admission and green capture are missing.
+The construction paths below are exercised only by explicitly marked CPU fixtures.
+Two different processes, two different startup paths:
 
-This module deliberately has no torch/vLLM import so the offline tests can load
-it. The generated runner imports it as ``vllm.v1.flash_e3.s5_startup``.
+* :func:`install_builder` is called from the generated model runner at the end
+  of construction, immediately before A's ``init_lane``. Its builder calls
+  :func:`native_resources.build_worker_runtime`, which allocates this worker's
+  private UID buffer and scratch, discovers the device/rank/weights, installs
+  the device-event completion backend and the typed worker RPC adapter, and
+  installs B's graph builder before the engine captures graphs. There is no
+  injected factory: the worker constructs its own objects from the real seam.
+* :func:`install_engine` is called from the generated ``EngineCore.__init__``.
+  It takes sole reply-transport ownership on the executor, installs the
+  engine-side relay backend, builds the composition over the TP ranks (worker
+  lane identities are bound later from each worker's open acknowledgment),
+  attaches it to the engine/scheduler/executor, and installs the segment
+  driver that park/advance call from the generated step seams.
+
+Nothing here is imported by torch/vLLM at module load time; the native pieces
+import lazily. Both paths are inert unless ``FLASH_S5_OVERLAP=1``.
 """
 import os
 import time
@@ -17,17 +31,27 @@ from async_handoff import (
     HandoffError,
     build_composition,
 )
-from lane_hooks import LaneRuntime, _NullBackend
-
+from lane_hooks import LaneRuntime
+from lane_state import estimated_e3_inventory
+from scheduler_hooks import SchedulerLeases
 
 OVERLAP_ENV = 'FLASH_S5_OVERLAP'
-_NATIVE_ATTR = '_flash_s5_native_factory'
 _BUILDER_ATTR = '_flash_e3_build_state'
 _COMPOSITION_ATTR = '_flash_s5_composition'
 
 
 class StartupError(HandoffError):
     pass
+
+
+def require_native_ready():
+    """Hard refusal until the missing native mechanisms have been implemented.
+
+    No environment escape hatch: tests may explicitly mock this function to
+    exercise controller scaffolding, which is not native integration evidence.
+    """
+    raise StartupError('E3 native integration incomplete: admission, bounded execution, '
+                       'green graph capture and source/PP ownership are not implemented')
 
 
 def _enabled(env):
@@ -37,57 +61,67 @@ def _enabled(env):
     return value == '1'
 
 
-def _bundle_field(bundle, name):
-    value = getattr(bundle, name, None)
-    if value is None:
-        raise StartupError('native bundle is missing ' + name)
-    return value
-
-
 def install_builder(runner, kv_caches, is_profiling=False, *, env=None):
     """Install the builder A's ``init_lane`` calls at the end of runner init."""
     env = os.environ if env is None else env
     if is_profiling or not _enabled(env):
         return None
+    require_native_ready()
     if getattr(runner, _BUILDER_ATTR, None) is not None:
         raise StartupError('E3 lane builder is already installed')
-    factory = getattr(runner, _NATIVE_ATTR, None)
-    if factory is None or not callable(factory):
-        raise StartupError(
-            'FLASH_S5_OVERLAP=1 requires the owner native allocation/transport factory')
 
     def build(current, caches):
         if getattr(current, _BUILDER_ATTR, None) is not build:
             raise StartupError('E3 lane builder was replaced during startup')
-        bundle = factory(current, caches)
-        if bundle is None:
-            raise StartupError('native factory returned no bundle')
-        transport = _bundle_field(bundle, 'transport')
-        backend = _bundle_field(bundle, 'backend')
-        lanes = _bundle_field(bundle, 'lanes')
-        runtime = _bundle_field(bundle, 'runtime')
+        from native_resources import build_worker_runtime
+
+        runtime = build_worker_runtime(current, caches, env=env)
         if not isinstance(runtime, LaneRuntime):
-            raise StartupError('native bundle runtime is not A LaneRuntime')
-        if isinstance(runtime.backend, _NullBackend):
-            raise StartupError('native bundle supplied the null fixture backend')
-        allocations = _bundle_field(bundle, 'native_allocations')
-        composition = build_composition(
-            env, transport=transport, backend=backend, lanes=lanes,
-            allocation=getattr(bundle, 'allocation', None),
-            native_allocations=allocations, runtime=runtime,
-            scheduler_leases=getattr(bundle, 'scheduler_leases', None),
-            clock=getattr(bundle, 'clock', None) or time.monotonic,
-            telemetry=getattr(bundle, 'telemetry', None),
-        )
-        if not isinstance(composition, Composition):
-            raise StartupError('enabled startup did not produce a composition')
-        if getattr(current, _COMPOSITION_ATTR, None) is not None:
-            raise StartupError('runner already carries an E3 composition')
-        current._flash_s5_composition = composition
+            raise StartupError('native worker construction returned no LaneRuntime')
         return runtime
 
     runner._flash_e3_build_state = build
     return build
+
+
+def install_engine(engine, *, env=None, clock=time.monotonic):
+    """Install the engine-side composition at the generated ``__init__`` seam."""
+    env = os.environ if env is None else env
+    if not _enabled(env):
+        return None
+    require_native_ready()
+    if getattr(engine, _COMPOSITION_ATTR, None) is not None:
+        raise StartupError('engine already carries an E3 composition')
+    executor = getattr(engine, 'model_executor', None)
+    scheduler = getattr(engine, 'scheduler', None)
+    if executor is None or scheduler is None:
+        raise StartupError('engine startup seam ran before executor/scheduler construction')
+    manager = getattr(scheduler, 'kv_cache_manager', None)
+    if manager is None or getattr(manager, 'block_pool', None) is None:
+        raise StartupError('engine startup requires the E2 block pool for E3 leases')
+
+    from executor_hooks import install
+    from engine_driver import SegmentDriver
+    from native_backend import RemoteCompletionBackend
+    from native_resources import response_success
+
+    config = HandoffConfig.from_env(env)
+    transport = install(executor, config=config, success_status=response_success(),
+                        clock=clock)
+    backend = RemoteCompletionBackend(config)
+    allocation = estimated_e3_inventory(chunk_tokens=config.chunk_tokens)
+    composition = build_composition(
+        env, transport=transport, backend=backend, lanes={},
+        native_allocations=allocation, allocation=allocation, clock=clock,
+        side='engine', scheduler_leases=SchedulerLeases())
+    if not isinstance(composition, Composition):
+        raise StartupError('enabled engine startup produced no composition')
+    composition.attach(engine=engine, scheduler=scheduler, executor=executor)
+    driver = SegmentDriver(composition, executor=executor, scheduler=scheduler,
+                           engine=engine, clock=clock).install()
+    engine._flash_s5_composition = composition
+    engine._flash_s5_driver = driver
+    return composition
 
 
 def settings(env=None):
@@ -99,7 +133,8 @@ def settings(env=None):
                 reply_timeout_s=config.reply_timeout_s,
                 ack_timeout_s=config.ack_timeout_s,
                 chunk_tokens=config.chunk_tokens,
-                sparse_overlap=False, backend='native' if config.enabled else 'inert')
+                sparse_overlap=False, backend='unimplemented' if config.enabled else 'inert')
 
 
-__all__ = ['OVERLAP_ENV', 'StartupError', 'install_builder', 'settings']
+__all__ = ['OVERLAP_ENV', 'StartupError', 'install_builder', 'install_engine',
+           'settings']
