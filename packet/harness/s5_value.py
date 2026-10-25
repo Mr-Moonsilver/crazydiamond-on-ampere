@@ -48,11 +48,30 @@ def grade(data):
         # data on the first rank.
         if any(r.get(k,{}).get('passed') is False for r in ranks for k in ('correctness','noop_correctness','resident_correctness')):
             verdict='FAIL'
+        if any(r.get('resident_source_equality') is False for r in ranks):verdict='FAIL'
         for r in ranks:
             if r.get('completed') is not True or r['audit']['verdict']!='PASS':raise ValueError('completion/node placement missing')
             if r['max_connections'] not in ('8','32'):raise ValueError('unknown connections')
             steps=r['steps'];m=r['modes'];probe=r['value_probe']
             if probe.get('enabled') is not True:raise ValueError('not a value case')
+            resident_kind=probe.get('resident_kind','legacy')
+            if resident_kind!='legacy':
+                from s5_resident import KINDS,validate_prefetch
+                if resident_kind not in KINDS or r['resident_source_equality'] is not True:raise ValueError('resident source equality missing')
+                mem=r['resident_ledger'];stats=r['ple_prefetch_stats']
+                if mem['kind']!=resident_kind or probe['ple_itemsize'] not in (1,2):raise ValueError('resident kind mismatch')
+                if mem['ple_chunk_bytes']!=1024*16*160*probe['ple_itemsize']:raise ValueError('PLE payload mismatch')
+                if resident_kind in ('ple_prefetch','kv_ple_prefetch'):
+                    validate_prefetch(stats,len(m['overlap_resident']['raw_prefill']),mem['ple_chunk_bytes'])
+                elif stats['calls'] or stats['h2d_bytes']:raise ValueError('KV-only copied PLE')
+                if probe.get('resident_dma'):
+                    dma=r['resident_dma']
+                    if dma['bytes']!=mem['kv_source_bytes'] or dma['chunks']!=(mem['pages']+3)//4 or dma['max_outstanding']!=1:
+                        raise ValueError('incomplete/unbounded DMA refill')
+                    positive(dma['gpu_copy_ms'])
+                    from s5_resident import dma_window_proven
+                    if dma['inside_decode_window'] is not True or not dma_window_proven(m['overlap_resident']):
+                        if verdict=='PASS':verdict='INCONCLUSIVE'
             names=['overlap']+(['overlap_noop'] if probe['prefill_noop'] else [])+(['overlap_resident'] if probe.get('resident_prefill') else [])
             for name in names:
                 correctness=r[{'overlap':'correctness','overlap_noop':'noop_correctness','overlap_resident':'resident_correctness'}[name]]
@@ -62,6 +81,8 @@ def grade(data):
                     raise ValueError('no-op not bound to each prefill collective')
                 row=dict(rank=r['rank'],connections=int(r['max_connections']),split=r['requested_split'],
                     actual_split=r['actual_split'],mode=name,correctness=correctness['passed'],
+                    resident_kind=resident_kind,ple_itemsize=probe.get('ple_itemsize',2),
+                    resident_dma=r.get('resident_dma') if name=='overlap_resident' else None,
                     **comparison(m['decode'],m['decode_split'],m[name],steps))
                 row['bitwise_equal']=all(correctness[k]['bitwise_first'] is True and correctness[k]['concurrent_states_match'] is True for k in ('decode','prefill'))
                 solo_prefill=m[{'overlap':'prefill','overlap_noop':'noop_prefill','overlap_resident':'resident_prefill'}[name]]
@@ -79,9 +100,9 @@ def grade(data):
                 fresh_prompt_ttft_s=None,full_engine_leak_gate='not_run',
                 spike_rule='strictly greater than twice this rank same-split solo median GPU completion gap')
 
-def summarize(root):
+def summarize(root,names=None):
     root=Path(root);cases=[]
-    for name in ('green24-c8','green24-c32','green34-c8','green34-c32','qsa-sparse-c8','qsa-copy-kernels-c8'):
+    for name in names or ('green24-c8','green24-c32','green34-c8','green34-c32','qsa-sparse-c8','qsa-copy-kernels-c8'):
             folder=root/name/'profile-terminal'
             errors=[]
             for p in folder.glob('result.json.rank*.error.json'):
@@ -89,6 +110,13 @@ def summarize(root):
                 except (OSError,ValueError):pass
             try:
                 d=json.loads((folder/'result.json').read_text());r=grade(d)
+                if names is not None:
+                    from s5_resident import CASE_CONFIG
+                    split,kind,source=CASE_CONFIG[name]
+                    matched=all(x['requested_split']==split and x['ablation']['layer_kind']==kind
+                        and x['value_probe']['resident_kind']==source and x['value_probe']['ple_itemsize']==1
+                        and x['max_connections']=='8' and bool(x['value_probe'].get('resident_dma'))==(name=='qsa-dma34') for x in d['ranks'])
+                    if not matched and r['verdict']!='FAIL':r['verdict']='INCONCLUSIVE'
                 stamped=json.loads((folder/'grade.json').read_text())
                 if stamped['verdict']=='FAIL':r['verdict']='FAIL'
                 elif stamped['verdict']!='PASS' and r['verdict']=='PASS':r['verdict']='INCONCLUSIVE'
@@ -115,7 +143,12 @@ def monitor_lines(case,report):
             f"gap_p50_ms={r['gap_p50_ms']:.3f} gap_p99_ms={r['gap_p99_ms']:.3f} "
             f"spikes_gt_2x={r['spike_count_gt_2x_solo']}/{r['gap_count']} threshold_ms={r['spike_threshold_ms']:.3f} "
             f"prefill_share={r['prefill_share']:.4f} prefill_share_upper={r['prefill_share_upper']:.4f} target80_80={r['vs_80_80_target']} "
+            f"prefill_vs_original_solo={r['prefill_vs_original_solo']:.4f} resident_kind={r['resident_kind']} ple_itemsize={r['ple_itemsize']} "
             f"bitwise_equal={'y' if r['bitwise_equal'] else 'n'} tail={'y' if r['tail_proven'] else 'n'} verdict={report['verdict']}")
+        if r.get('resident_dma'):
+            dma=r['resident_dma']
+            lines.append(f"S5_DMA case={case} rank={r['rank']} bytes={dma['bytes']} chunks={dma['chunks']} "
+                f"gpu_copy_ms={dma['gpu_copy_ms']:.3f} inside_decode_window={dma['inside_decode_window']}")
     if not lines:lines.append(f"S5_VALUE case={case} rank=unknown verdict={report['verdict']} metrics=unavailable")
     return lines
 
@@ -125,7 +158,12 @@ if __name__=='__main__':
         try:r=json.loads(path.read_text())
         except (OSError,ValueError):r=dict(verdict='INCONCLUSIVE',ranks=[])
         print('\n'.join(monitor_lines(sys.argv[2],r)));raise SystemExit(0)
-    root=Path(sys.argv[1]);r=summarize(root)
+    names=None
+    if len(sys.argv)==3 and sys.argv[1]=='--resident':
+        from s5_resident import CASES
+        root=Path(sys.argv[2]);names=CASES
+    else:root=Path(sys.argv[1])
+    r=summarize(root,names)
     (root/'summary.json').write_text(json.dumps(r)+'\n');(root/'summary.md').write_text(table(r))
     print(table(r),end='');print('S5 VALUE '+r['verdict'])
     raise SystemExit({'PASS':0,'FAIL':1,'INCONCLUSIVE':2}[r['verdict']])

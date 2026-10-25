@@ -26,6 +26,9 @@ def run(a):
     noop=os.environ.get('S5_PREFILL_NOOP_PROBE','0')=='1'
     resident=os.environ.get('S5_PREFILL_RESIDENT_PROBE','0')=='1'
     copy_kernels=os.environ.get('S5_GRAPH_KERNEL_COPIES','0')=='1'
+    resident_kind=os.environ.get('S5_RESIDENT_KIND','legacy')
+    ple_itemsize=int(os.environ.get('S5_PLE_ITEMSIZE','2'))
+    resident_dma=os.environ.get('S5_RESIDENT_DMA','0')=='1'
     def phase(name,timeout=180):
         if value:
             setup=(name in ('setup','weights-and-lanes','baseline-capture','create-splits','terminal-prefill-warmup') or name.startswith('capture-green'))
@@ -36,8 +39,13 @@ def run(a):
         phase('setup',300)
         if (value or noop or resident or copy_kernels) and a.rung!='profile-terminal':raise Inconclusive('value/control requires profile-terminal')
         if noop and (not value or a.split!=24):raise Inconclusive('no-op control scoped to value green24')
+        from s5_resident import KINDS
+        if resident_kind not in KINDS or ple_itemsize not in (1,2):raise Inconclusive('unknown resident source mode')
+        if resident_kind!='legacy' and not (value and resident):raise Inconclusive('resident matrix requires value + resident')
+        if ple_itemsize==1 and resident_kind=='legacy':raise Inconclusive('FP8 transport scoped to resident matrix')
+        if resident_dma and resident_kind not in ('kv','kv_ple_prefetch'):raise Inconclusive('DMA refill requires KV residency')
         result['value_probe']=dict(enabled=value,prefill_noop=noop,resident_prefill=resident,graph_kernel_copies=copy_kernels,
-                                  sparse_prefill=os.environ.get('VLLM_QSA_KVO_SPARSE_PREFILL'))
+                                  sparse_prefill=os.environ.get('VLLM_QSA_KVO_SPARSE_PREFILL'),resident_kind=resident_kind,ple_itemsize=ple_itemsize,resident_dma=resident_dma)
         if os.environ.get('CUDA_VISIBLE_DEVICES')!=a.pair or os.environ.get('WORLD_SIZE')!='2':raise Inconclusive('pair mismatch')
         torch.cuda.set_device(device);dist.init_process_group('gloo')
         ctl=dist.new_group([0,1],backend='gloo');dg=dist.new_group([0,1],backend='gloo');pg=dist.new_group([0,1],backend='gloo')
@@ -68,6 +76,12 @@ def run(a):
         rd=b.Reducer(dg,device,'decode',progress,backend=backend);rp=b.Reducer(pg,device,'prefill',progress,backend='pynccl');b.refault()
         weights=b.weights(spec,rank);dec=b.Slice(spec,rank,rd,False,weights,'packed');pre=b.Slice(spec,rank,rp,True,weights,'packed')
         apply(dec,pre,moe)
+        transport=None
+        if resident_kind!='legacy':
+            from s5_resident import PLETransport
+            decode_transport=PLETransport(dec,ple_itemsize)
+            transport=PLETransport(pre,ple_itemsize)
+            result['ple_transport_scope']='matched byte-view FP8/2-byte BF16 input transport; BF16 slice collective; no engine FP8 equivalence claim'
         cap_evidence=None
         if cap=='1':
             if moe!='on':raise Inconclusive('cap with MoE off has no meaning')
@@ -170,7 +184,10 @@ def run(a):
                     result['noop_correctness']=terminal_verify(dec,pre,g,green.sd,green.sp,
                         (len(m['raw_decode']),len(m['raw_prefill'])),progress)
                 result['noop_scope']='local-return prefill collective ablation; own solo oracle; not equivalent model or a link-only attribution'
-            if resident:
+            if resident and resident_kind!='legacy':
+                from s5_resident import run_control
+                run_control(dec,pre,transport,resident_kind,g,green,sd,sp,ctl,progress,steps,phase,memory,result,resident_dma)
+            elif resident:
                 phase('terminal-resident-setup')
                 original_kv,original_ple=pre.kv,pre.ple_uva
                 result['resident_before']=memory()

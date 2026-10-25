@@ -1,0 +1,183 @@
+"""Resident-source experiment helpers. GPU imports stay inside GPU entry points."""
+import math
+import time
+
+KINDS=('legacy','kv','ple_prefetch','kv_ple_prefetch')
+CASES=('qsa-resident24','qsa-resident34','qsa-resident44','qsa-kv34','qsa-ple34','mixed-resident34','qsa-dma34')
+CASE_CONFIG=dict(zip(CASES,((24,'qsa','kv_ple_prefetch'),(34,'qsa','kv_ple_prefetch'),
+    (44,'qsa','kv_ple_prefetch'),(34,'qsa','kv'),(34,'qsa','ple_prefetch'),(34,'mixed','kv_ple_prefetch'),(34,'qsa','kv_ple_prefetch'))))
+
+
+def dma_window_proven(mode,step=1):
+    d,p=mode['raw_decode'],mode['raw_prefill']
+    if len(d)<2 or len(p)<=step:return False
+    return p[step]['submitted_s']>=d[0]['observed_s'] and p[step]['observed_s']<=d[-1]['submitted_s']
+
+
+def ledger(history, page_size, row_bytes, kv_bytes, ple_rows, ple_width, ple_itemsize,
+           local_qsa_layers=6, slice_qsa_layers=4, retain_kv=True, prefetch_ple=True):
+    if min(history,page_size,row_bytes,kv_bytes,ple_rows,ple_width,ple_itemsize,local_qsa_layers)<1:
+        raise ValueError('invalid ledger dimensions')
+    pages=(history+page_size-1)//page_size;page_bytes=page_size*row_bytes
+    if kv_bytes!=pages*page_bytes:raise ValueError('slice KV allocation disagrees with shape')
+    payload=1024*16*ple_width*ple_itemsize
+    return dict(history=history,page_size=page_size,pages=pages,page_bytes=page_bytes,
+        slice_qsa_layers=slice_qsa_layers,slice_unique_kv_sources=1,
+        kv_source_bytes=kv_bytes,kv_added_bytes=kv_bytes if retain_kv else 0,
+        ple_toy_host_bytes=ple_rows*ple_width*ple_itemsize,ple_chunk_bytes=payload,
+        ple_pinned_buffer_bytes=payload,ple_prefetch_enabled=prefetch_ple,
+        ple_transport_raw_device_bytes=payload if ple_itemsize==1 else 0,
+        ple_added_device_buffer_bytes=0,ple_device_buffer_reused=True,
+        expected_resident_allocation_delta=kv_bytes if retain_kv else 0,
+        engine_fp8_ple_host_gib=48.6,engine_local_qsa_layers=local_qsa_layers,
+        engine_full_kv_bytes=kv_bytes*local_qsa_layers,
+        engine_s3_24_bytes=24*page_bytes*local_qsa_layers,
+        engine_s3_40_bytes=40*page_bytes*local_qsa_layers,
+        engine_kv_bytes_beyond_s3_24=max(0,pages-24)*page_bytes*local_qsa_layers,
+        engine_kv_bytes_beyond_s3_40=max(0,pages-40)*page_bytes*local_qsa_layers,
+        engine_staging_arena_bytes=23*page_bytes,
+        scope='slice shares one KV source across QSA layers; engine six-layer values are calculated, not allocated')
+
+
+class PLETransport:
+    """Matched UVA vs CPU-packed contiguous H2D, including per-chunk packing.
+
+    The slice keeps its BF16 collective. Byte transport/dequantization models
+    FP8 PLE cost; it is not the engine's int8 ETP collective implementation.
+    """
+    def __init__(self,lane,itemsize=1):
+        import torch
+        from vllm.utils.torch_utils import get_accelerator_view_from_cpu_tensor
+        if itemsize not in (1,2):raise ValueError('PLE itemsize')
+        self.lane=lane;self.itemsize=itemsize;self.prefetch=False;self.step=0
+        self.calls=0;self.bytes=0;self.pack_seconds=0.;self.pending=False
+        self.base=lane.ple_base.cpu()  # One setup readback; no GPU IDs read in the window.
+        if itemsize==1:
+            host=torch.empty(lane.ple_host.shape,dtype=torch.uint8,pin_memory=True)
+            host.copy_(lane.ple_host.to(torch.float8_e4m3fn).view(torch.uint8))
+            lane.ple_host=host;lane.ple_uva=get_accelerator_view_from_cpu_tensor(host)
+            self.raw=torch.empty(lane.ple_output.shape,dtype=torch.uint8,device='cuda')
+        else:self.raw=lane.ple_output
+        # Only prefill needs a pinned packing buffer. No whole-table device copy.
+        self.packed=torch.empty(lane.ple_output.shape,dtype=lane.ple_host.dtype,pin_memory=True) if lane.pre else None
+        self.copy_done=torch.cuda.Event() if lane.pre else None
+        self.original_reset=lane.reset
+        lane.reset=self.reset;lane.ple=self.lookup
+
+    def drain(self):
+        if self.pending:self.copy_done.synchronize();self.pending=False
+
+    def reset(self):
+        self.drain();self.step=0;self.original_reset()
+
+    def stats(self):return dict(calls=self.calls,h2d_bytes=self.bytes,pack_seconds=self.pack_seconds)
+
+    def lookup(self):
+        import torch
+        from vllm.models.qwen4_exp.nvidia.ngram_embedding import _lookup_ple_embedding_from_pinned_kernel
+        lane=self.lane
+        if self.prefetch:
+            if not lane.pre:raise RuntimeError('decode PLE prefetch forbidden')
+            # The prior copy must release the pinned buffer before the CPU
+            # overwrites it, including eager correctness loops without a step fence.
+            self.drain();start=time.perf_counter()
+            ids=(self.base+self.step*104729)%lane.ple_host.shape[0]
+            torch.index_select(lane.ple_host,0,ids,out=self.packed)
+            self.pack_seconds+=time.perf_counter()-start
+            self.raw.copy_(self.packed,non_blocking=True)
+            self.copy_done.record(torch.cuda.current_stream());self.pending=True
+            self.calls+=1;self.bytes+=self.raw.numel()*self.raw.element_size()
+        else:
+            _lookup_ple_embedding_from_pinned_kernel[(lane.ple_ids.numel(),)](
+                lane.ple_uva,lane.ple_ids,self.raw,160,0,lane.ple_host.shape[0],BLOCK_D=256)
+        if self.itemsize==1:
+            # Unit global scale in this synthetic table, identical in both paths.
+            lane.ple_output.copy_(self.raw.view(torch.float8_e4m3fn).to(lane.dtype))
+        self.step+=1
+        return lane.ple_output
+
+
+def validate_prefetch(stats,steps,payload):
+    if stats['calls']!=steps or stats['h2d_bytes']!=steps*payload:
+        raise ValueError('PLE prefetch not accounted once per step')
+    if not math.isfinite(stats['pack_seconds']) or stats['pack_seconds']<0:raise ValueError('invalid pack time')
+
+
+def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,memory,result,dma=False):
+    import torch
+    import s5_segment_gpu as b
+    from s5_terminal_mode import run as terminal_run
+    from s5_terminal_correctness import verify
+    retain_kv=kind in ('kv','kv_ple_prefetch');prefetch=kind in ('ple_prefetch','kv_ple_prefetch')
+    phase('terminal-resident-setup');original_kv=pre.kv
+    before=memory()
+    resident_kv=pre.host.to('cuda') if retain_kv else original_kv
+    torch.cuda.synchronize();after=memory()
+    if after['reserved']>18*2**30:raise b.Inconclusive('resident control exceeds18GiB')
+    record=ledger(pre.history,pre.host.shape[2],pre.host[0,0,0].numel()*pre.host.element_size(),
+        pre.host.numel()*pre.host.element_size(),pre.ple_host.shape[0],pre.ple_host.shape[1],transport.itemsize,
+        slice_qsa_layers=pre.spec['mix'].count('full_attention'),retain_kv=retain_kv,prefetch_ple=prefetch)
+    record.update(kind=kind,before=before,after=after,
+        allocated_delta=after['allocated']-before['allocated'],reserved_delta=after['reserved']-before['reserved'],
+        free_delta=after['free']-before['free'])
+    result['resident_ledger']=record;result['resident_before']=before;result['resident_after']=after
+    result['resident_bytes']=record['kv_added_bytes']
+    import json
+    print('S5_MEMORY '+json.dumps(dict(rank=result['rank'],**record)),flush=True)
+    try:
+        # Compare three successive chunks to catch stale CPU row IDs. Include
+        # raw PLE bytes explicitly: the slice does not inject PLE into hidden x.
+        snapshots=[]
+        for candidate in (False,True):
+            transport.drain();pre.kv=resident_kv if candidate else original_kv
+            transport.prefetch=candidate and prefetch;pre.reset();torch.cuda.synchronize()
+            seq=[]
+            for _ in range(3):
+                with torch.cuda.stream(green.sp):
+                    pre.forward(b.Trace())
+                    seq.append(b.snapshot(pre)+[transport.raw.clone(),pre.ple_output.clone()])
+                green.sp.synchronize()
+            snapshots.append(seq)
+        b.checked(all(b.state_equal(a,c) for a,c in zip(*snapshots)), 'resident/prefetch substitution differs over rotating chunks')
+        result['resident_source_equality']=True
+        phase('terminal-resident-prefill-solo')
+        result['modes']['resident_prefill']=terminal_run(dec,pre,g,sd,sp,ctl,progress,steps,'prefill',False)
+        phase('terminal-resident-overlap');start=transport.stats()
+        original_forward=pre.forward;dma_stream=torch.cuda.Stream() if dma else None
+        dma_events=[];forward_count=0
+        def refill_forward(trace):
+            nonlocal forward_count
+            if forward_count==1:
+                # The first prefill has already let decode start. Bound each
+                # transfer to four contiguous pages and allow one outstanding.
+                dma_stream.wait_stream(torch.cuda.current_stream())
+                for lo in range(0,pre.pages,4):
+                    hi=min(lo+4,pre.pages)
+                    a,z=torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
+                    with torch.cuda.stream(dma_stream):
+                        a.record();resident_kv[lo:hi].copy_(pre.host[lo:hi],non_blocking=True);z.record()
+                    z.synchronize() # releases this bounded transfer before the next
+                    dma_events.append((a,z,(hi-lo)*record['page_bytes']))
+                torch.cuda.current_stream().wait_event(dma_events[-1][1])
+            forward_count+=1
+            return original_forward(trace)
+        if dma:
+            if not retain_kv:raise ValueError('DMA refill needs retained KV')
+            pre.forward=refill_forward
+        try:m=terminal_run(dec,pre,g,green.sd,green.sp,ctl,progress,steps,'overlap',False)
+        finally:pre.forward=original_forward
+        result['modes']['overlap_resident']=m
+        if dma:
+            result['resident_dma']=dict(bytes=sum(n for _,_,n in dma_events),chunks=len(dma_events),
+                chunk_cap_pages=4,max_outstanding=1,gpu_copy_ms=sum(a.elapsed_time(z) for a,z,_ in dma_events),
+                inside_decode_window=dma_window_proven(m),prefill_step=1,
+                scope='forced full refill of prestaged values in step 1, DMA-only primary-context stream, no decode waits')
+        end=transport.stats();stats={k:end[k]-start[k] for k in end};result['ple_prefetch_stats']=stats
+        if prefetch:validate_prefetch(stats,len(m['raw_prefill']),record['ple_chunk_bytes'])
+        elif stats['calls'] or stats['h2d_bytes']:raise ValueError('unexpected PLE prefetch')
+        phase('terminal-resident-correctness')
+        result['resident_correctness']=verify(dec,pre,g,green.sd,green.sp,(len(m['raw_decode']),len(m['raw_prefill'])),progress)
+        record['peak_allocated_after']=torch.cuda.max_memory_allocated()
+        record['peak_reserved_after']=torch.cuda.max_memory_reserved()
+    finally:
+        transport.drain();transport.prefetch=False;pre.kv=original_kv
