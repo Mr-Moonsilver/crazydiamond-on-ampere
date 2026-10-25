@@ -83,11 +83,13 @@ def compare_sequences(a, b):
                 chunks=chunks)
 
 
-def assess(host, resident):
-    if len(host) != 3 or len(resident) != 3 or any(len(s) != 3 for s in host+resident):
-        raise ValueError('requires 3 matched solo trials per path, each with 3 chunks')
+def assess(host, resident, trials=3):
+    if type(trials) is not int or trials not in (3,6):
+        raise ValueError('source trials must be 3 or 6')
+    if len(host) != trials or len(resident) != trials or any(len(s) != 3 for s in host+resident):
+        raise ValueError('requires matched solo trials per path, each with 3 chunks')
     named=[(f'host-{i}', s) for i, s in enumerate(host)]+[(f'resident-{i}', s) for i, s in enumerate(resident)]
-    pairs=[]; matches={f'resident-{i}':[] for i in range(3)}
+    pairs=[]; matches={f'resident-{i}':[] for i in range(trials)}
     for (an, a), (bn, b) in combinations(named, 2):
         p=dict(left=an, right=bn, **compare_sequences(a, b)); pairs.append(p)
         if an.startswith('host-') and bn.startswith('resident-') and p['output_equal']:
@@ -97,19 +99,20 @@ def assess(host, resident):
     # A different host oracle for each chunk would invent a never-observed
     # trajectory. Each complete candidate must match one complete host trial.
     return dict(passed=stable and finite and all(matches.values()),
-                host_runs=3, resident_runs=3, chunks_per_run=3,
+                host_runs=trials, resident_runs=trials, chunks_per_run=3,
                 all_states_and_ple_bitwise=stable, finite=finite,
                 resident_matches_host_sequences=matches, comparisons=pairs,
                 policy='whole observed host sequence; all recurrent/conv/PLE bits exact; no tolerance',
                 ulp_definition='distance in ordered IEEE bit representation; diagnostics only')
 
 
-def run(pre, transport, original_kv, resident_kv, prefetch, stream, progress):
+def run(pre, transport, original_kv, resident_kv, prefetch, stream, progress, trials=3):
     import torch
     from s5_terminal_mode import NullTrace
+    if type(trials) is not int or trials not in (3,6):raise ValueError('source trials must be 3 or 6')
     samples={'host':[], 'resident':[]}
     # Interleave matched controls to avoid assigning all drift to one path.
-    for trial in range(3):
+    for trial in range(trials):
         for name in ('host', 'resident'):
             progress.update('terminal-resident-substitution', solo_path=name, solo_trial=trial)
             transport.drain(); pre.kv=resident_kv if name == 'resident' else original_kv
@@ -126,4 +129,4 @@ def run(pre, transport, original_kv, resident_kv, prefetch, stream, progress):
                 sequence.append(capture(named))
             samples[name].append(sequence)
     progress.update('terminal-resident-substitution-comparison')
-    return assess(samples['host'], samples['resident'])
+    return assess(samples['host'], samples['resident'],trials)

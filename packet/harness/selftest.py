@@ -565,6 +565,7 @@ check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdi
 # --- Full engine identity: mocked docker, actual destination-side hashing; no GPU ---
 for suite, label in [('test_s5_collector.py', 'S5 E0 collector: 12 fake-worker ordering, ownership and shutdown cases (CPU)'),
                      ('test_s5_transport_source.py', 'S5 E0 exact-source async-output FIFO and overflow-marker hazards (CPU)'),
+                     ('test_s5_oracle_queue.py', 'S5 source oracle: strict subset controls, per-op diagnostics, cuBLAS binding (CPU)'),
                      ('test_s5_substitution.py', 'S5 exact host/resident trajectory oracle and payload-free differences (CPU)'),
                      ('test_s5_tail.py', 'S5 published tickets, workload-tail evidence and threaded eager-forward race (CPU)'),
                      ('test_s5_exit_cleanup.py', 'S5 pinned cleanup ordering and qualified measurement salvage (CPU)'),

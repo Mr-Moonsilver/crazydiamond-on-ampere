@@ -31,12 +31,20 @@ def run(a):
     resident_dma=os.environ.get('S5_RESIDENT_DMA','0')=='1'
     def phase(name,timeout=180):
         if value:
-            setup=(name in ('setup','weights-and-lanes','baseline-capture','create-splits','terminal-prefill-warmup','terminal-resident-substitution') or name.startswith('capture-green'))
+            setup=(name in ('setup','weights-and-lanes','baseline-capture','create-splits','terminal-prefill-warmup','terminal-resident-substitution','terminal-resident-source-trace') or name.startswith('capture-green'))
             timeout=int(os.environ.get('S5_VALUE_SETUP_TIMEOUT','300') if setup else os.environ.get('S5_VALUE_PHASE_TIMEOUT','120'))
             if timeout not in (120,300):raise Inconclusive('unreviewed value phase timeout')
         wd.arm(timeout,name)
     try:
         phase('setup',300)
+        blas=os.environ.get('S5_CUBLAS_DETERMINISTIC','0')
+        if blas not in ('0','1'):raise Inconclusive('unknown cuBLAS control')
+        if blas=='1':
+            if os.environ.get('CUBLAS_WORKSPACE_CONFIG')!=':4096:8':raise Inconclusive('cuBLAS workspace control missing before process start')
+            torch.use_deterministic_algorithms(True)
+        result['cublas_control']=dict(requested=blas=='1',
+            deterministic_algorithms=torch.are_deterministic_algorithms_enabled(),
+            workspace_config=os.environ.get('CUBLAS_WORKSPACE_CONFIG'))
         if (value or noop or resident or copy_kernels) and a.rung!='profile-terminal':raise Inconclusive('value/control requires profile-terminal')
         if noop and (not value or a.split!=24):raise Inconclusive('no-op control scoped to value green24')
         from s5_resident import KINDS
@@ -46,6 +54,8 @@ def run(a):
         if resident_dma and resident_kind not in ('kv','kv_ple_prefetch'):raise Inconclusive('DMA refill requires KV residency')
         result['value_probe']=dict(enabled=value,prefill_noop=noop,resident_prefill=resident,graph_kernel_copies=copy_kernels,
                                   sparse_prefill=os.environ.get('VLLM_QSA_KVO_SPARSE_PREFILL'),resident_kind=resident_kind,ple_itemsize=ple_itemsize,resident_dma=resident_dma)
+        result['value_probe'].update(source_trials=int(os.environ.get('S5_SOURCE_TRIALS','3')),
+                                     source_trace_on_fail=os.environ.get('S5_SOURCE_TRACE_ON_FAIL','0')=='1')
         if os.environ.get('CUDA_VISIBLE_DEVICES')!=a.pair or os.environ.get('WORLD_SIZE')!='2':raise Inconclusive('pair mismatch')
         torch.cuda.set_device(device);dist.init_process_group('gloo')
         ctl=dist.new_group([0,1],backend='gloo');dg=dist.new_group([0,1],backend='gloo');pg=dist.new_group([0,1],backend='gloo')

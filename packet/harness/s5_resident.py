@@ -1,5 +1,6 @@
 """Resident-source experiment helpers. GPU imports stay inside GPU entry points."""
 import math
+import os
 import time
 
 KINDS=('legacy','kv','ple_prefetch','kv_ple_prefetch')
@@ -146,13 +147,51 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
     try:
         from s5_substitution import run as substitution
         phase('terminal-resident-substitution',300)
-        check=substitution(pre,transport,original_kv,resident_kv,prefetch,green.sp,progress)
+        trials=int(os.environ.get('S5_SOURCE_TRIALS','3'))
+        trace_on_fail=os.environ.get('S5_SOURCE_TRACE_ON_FAIL','0')
+        if trials not in (3,6) or trace_on_fail not in ('0','1'):raise ValueError('unreviewed source oracle settings')
+        check=substitution(pre,transport,original_kv,resident_kv,prefetch,green.sp,progress,trials)
+        if os.environ.get('S5_MOE','on')=='off':
+            check['deterministic_control']=all(p['output_equal'] for p in check['comparisons'])
+            check['passed']=check['passed'] and check['deterministic_control']
+        from s5_segment import write_json
+        error_path=progress.path.with_name(progress.path.name.replace('.progress.json','.error.json'))
+        # Preserve a local hard failure even if the peer never reaches the vote.
+        if not check['passed']:
+            write_json(error_path,dict(fatal_correctness=True,
+                error='resident/prefetch substitution differs from matched host sequences',evidence=check))
+        # Both ranks must enter diagnostic collectives, even when only one
+        # rank fails locally. This CPU Gloo vote is outside timing windows.
+        import torch.distributed as dist
+        failed=torch.tensor([not check['passed']],dtype=torch.int32,device='cpu')
+        dist.all_reduce(failed,op=dist.ReduceOp.MAX,group=ctl)
+        any_failed=bool(failed.item())
+        check['peer_or_local_failed']=any_failed
         result['resident_substitution']=check
         result['resident_source_equality']=check['passed']
         print('S5_SUBSTITUTION '+json.dumps(dict(rank=result['rank'],passed=check['passed'],
             all_states_and_ple_bitwise=check['all_states_and_ple_bitwise'],
             resident_matches_host_sequences=check['resident_matches_host_sequences'])),flush=True)
-        if not check['passed']:
+        if any_failed:
+            if trace_on_fail=='1':
+                from s5_substitution_trace import diagnose
+                phase('terminal-resident-source-trace',300)
+                # A tracing failure must not erase the established correctness
+                # failure. Save the primary evidence before any extra work.
+                write_json(error_path,dict(fatal_correctness=True,
+                    error='resident/prefetch substitution differs from matched host sequences',evidence=check))
+                try:
+                    result['resident_source_trace']=diagnose(pre,transport,original_kv,resident_kv,prefetch,green.sp,progress)
+                    check['diagnostic_trace']=result['resident_source_trace']
+                    for pair in result['resident_source_trace']['comparisons']:
+                        for chunk in pair['chunks']:
+                            print('S5_SOURCE_TRACE '+json.dumps(dict(rank=result['rank'],left=pair['left'],right=pair['right'],
+                                chunk=chunk['chunk'],layer=chunk['first_layer'],op=chunk['first_op'],
+                                first_divergence=chunk['first_divergence'])),flush=True)
+                except Exception as exc:
+                    check['diagnostic_trace']=dict(completed=False,error_type=type(exc).__name__)
+                write_json(error_path,dict(fatal_correctness=True,
+                    error='resident/prefetch substitution differs from matched host sequences',evidence=check))
             error=b.CorrectnessError('resident/prefetch substitution differs from matched host sequences')
             error.evidence=check
             raise error

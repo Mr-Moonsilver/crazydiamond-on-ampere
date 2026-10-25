@@ -2,6 +2,10 @@ import copy
 import json
 import struct
 import unittest
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest.mock import patch
+import sys
 from s5_substitution import TensorBytes, assess, tensor_diff
 
 
@@ -16,6 +20,32 @@ def sequence(output=10):
 
 
 class Substitution(unittest.TestCase):
+    def test_run_interleaves_all_six_and_resets_each_trajectory(self):
+        from s5_substitution import run
+        calls=[];pre=SimpleNamespace(state=[],conv=[],last_output=None,ple_output=None,kv=None,n=0)
+        def reset():pre.n=0;calls.append(pre.kv)
+        def forward(_):pre.n+=1
+        pre.reset=reset;pre.forward=forward
+        transport=SimpleNamespace(drain=lambda:None,raw=None,prefetch=False)
+        stream=SimpleNamespace(synchronize=lambda:None)
+        torch=SimpleNamespace(cuda=SimpleNamespace(stream=lambda _:nullcontext(),synchronize=lambda:None))
+        with patch.dict(sys.modules,{'torch':torch}),patch('s5_substitution.capture',side_effect=lambda _:sequence()[pre.n-1]):
+            result=run(pre,transport,'host','resident',True,stream,SimpleNamespace(update=lambda *a,**kw:None),6)
+        self.assertEqual(calls,['host','resident']*6)
+        self.assertTrue(result['passed']);self.assertEqual(len(result['comparisons']),66)
+
+    def test_six_trials_still_require_whole_trajectories(self):
+        a,b=sequence(10),sequence(20)
+        host=[a,a,a,a,a,b];resident=[b,a,b,a,b,a]
+        r=assess(host,resident,6)
+        self.assertTrue(r['passed']);self.assertEqual(len(r['comparisons']),66)
+        self.assertEqual(r['resident_matches_host_sequences']['resident-0'],['host-5'])
+        resident[0]=[a[0],b[1],a[2]]
+        self.assertFalse(assess(host,resident,6)['passed'])
+        for n in (0,1,4,True,6.0):
+            with self.assertRaises(ValueError):assess(host,resident,n)
+        with self.assertRaises(ValueError):assess(host[:3],resident,6)
+
     def test_observed_whole_solo_sequence_only(self):
         a,b=sequence(10),sequence(20)
         r=assess([a,b,a],[b,a,b])
