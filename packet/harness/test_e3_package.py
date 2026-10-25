@@ -21,9 +21,12 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
 
+import arena_attention
 import executor_hooks as eh
 import make_e2_arena as e2
 import make_s5_overlap as g
+import operation_source
+import runner_hooks
 import scheduler_hooks as sh
 
 
@@ -44,6 +47,8 @@ class SyntheticTests(unittest.TestCase):
         for name, text in (('model_runner_v2.py', '# runner\n'),
                            ('core/scheduler.py', '# scheduler\n'),
                            ('core/block_pool.py', '# pool\n'),
+                           ('qsa.py', '# qsa\n'),
+                           ('ops_qsa.py', '# ops qsa\n'),
                            ('e2/__init__.py', ''),
                            ('e2/startup.py', 'STARTUP = True\n'),
                            ('unchanged.py', 'UNCHANGED = True\n')):
@@ -66,6 +71,8 @@ class SyntheticTests(unittest.TestCase):
         stack = ExitStack()
         stack.enter_context(patch.object(g, 'E2_INPUTS', {
             name: g.sha(base / name) for name in g.E2_INPUTS}))
+        stack.enter_context(patch.object(g, 'E2_WORKER_INPUTS', {
+            name: g.sha(base / name) for name in g.E2_WORKER_INPUTS}))
         stack.enter_context(patch.object(g, 'REFERENCE_INPUTS', {
             name: g.sha(ref / name) for name in eh.PINS}))
         stack.enter_context(patch.object(g, 'compose_runner',
@@ -77,6 +84,12 @@ class SyntheticTests(unittest.TestCase):
         for name in ('generate_executor', 'generate_core', 'generate_worker'):
             stack.enter_context(patch.object(g.executor_hooks, name,
                                              side_effect=lambda s: s + '# S5 source\n'))
+        stack.enter_context(patch.object(g.operation_source, 'generate_layer',
+                                         side_effect=lambda s: s + '# S5 qsa operation\n'))
+        stack.enter_context(patch.object(g.operation_source, 'generate_ops',
+                                         side_effect=lambda s: s + '# S5 attention operation\n'))
+        stack.enter_context(patch.object(g.operation_source, 'generate_runner',
+                                         side_effect=lambda s: s + '# S5 operation seam\n'))
         return stack
 
     def build(self):
@@ -99,11 +112,15 @@ class SyntheticTests(unittest.TestCase):
         for name in g.E3_MODULES:
             self.assertIn('e3/' + name + '.py', listed)
         for name in ('e3_sources/executor.py', 'e3_sources/core.py',
-                     'e3_sources/worker.py', 'run-flash-s5-test.sh',
-                     'S5-OVERLAP-GENERATION.json'):
+                     'e3_sources/worker.py', 'qsa.py', 'ops_qsa.py',
+                     'run-flash-s5-test.sh', 'S5-OVERLAP-GENERATION.json'):
             self.assertIn(name, listed)
         self.assertEqual((out / 'model_runner_v2.py').read_text(),
-                         '# runner\n# A+C builder\n')
+                         '# runner\n# A+C builder\n# S5 operation seam\n')
+        self.assertEqual((out / 'qsa.py').read_text(),
+                         '# qsa\n# S5 qsa operation\n')
+        self.assertEqual((out / 'ops_qsa.py').read_text(),
+                         '# ops qsa\n# S5 attention operation\n')
         # The package rewrite is required for a separately mounted e3 package.
         text = (out / 'e3/async_handoff.py').read_text()
         self.assertIn('from .e3_types import', text)
@@ -145,7 +162,7 @@ class SyntheticTests(unittest.TestCase):
 
     def test_graph_transform_is_applied_last_through_declared_pins(self):
         root, base, ref, whole, core = self.fixture()
-        composed = '# runner\n# A+C builder\n'
+        composed = '# runner\n# A+C builder\n# S5 operation seam\n'
         stub = GraphCompositionTests.Stub(
             'model_runner_v2.py', composed + '# B graph\n',
             {'model_runner_v2.py': g._sha_text(composed)})
@@ -166,7 +183,10 @@ class SyntheticTests(unittest.TestCase):
         subprocess.run([sys.executable, '-I', '-c',
                         'import sys;sys.path.insert(0,sys.argv[1]);'
                         'import e3.async_handoff,e3.scheduler_hooks,e3.s5_startup;'
-                        'assert e3.s5_startup.Composition is not None',
+                        'import e3.qsa_operation,e3.native_resources;'
+                        'assert e3.s5_startup.Composition is not None;'
+                        'assert e3.qsa_operation.RUNNER_SEAM;'
+                        'assert e3.native_resources.RUNNER_SEAM == e3.qsa_operation.RUNNER_SEAM',
                         str(out)], check=True)
 
     def test_modes_normalized_on_new_output_only(self):
@@ -300,6 +320,8 @@ class FullPinnedTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp(prefix='s5-full-', dir=ROOT.parent / 'tmp'))
         base = root / 'base'
         sources = {'model_runner_v2.py': 'v1/worker/gpu/model_runner.py',
+                   'qsa.py': 'models/qwen4_exp/nvidia/qsa.py',
+                   'ops_qsa.py': 'models/qwen4_exp/nvidia/ops/qsa.py',
                    'core/scheduler.py': 'v1/core/sched/scheduler.py',
                    'core/block_pool.py': 'v1/core/block_pool.py'}
         for name, source in sources.items():
@@ -308,6 +330,10 @@ class FullPinnedTests(unittest.TestCase):
             text = (ref / source).read_text()
             if name == 'model_runner_v2.py':
                 text = e2.runner_hooks.runner_startup(e2.runner_hooks.runner_execution(text))
+            elif name == 'qsa.py':
+                text = runner_hooks.qsa_staged(text)
+            elif name == 'ops_qsa.py':
+                text = arena_attention.generate(text)
             elif name.endswith('scheduler.py'):
                 text = e2.mirror_hooks.scheduler(e2.telemetry_hooks.scheduler(text))
             else:
@@ -342,9 +368,35 @@ class FullPinnedTests(unittest.TestCase):
         self.assertTrue((self.out / 'e3/graph_router.py').is_file())
         self.assertIn('from .graph_router import', (self.out / 'e3/graph_hooks.py').read_text())
         json.dumps(self.result)  # Actual CLI output must be serializable.
-        # C's reverse path proves only C's insertion is removed before A's.
-        self.assertEqual(g.revert_runner(text, (self.base / 'model_runner_v2.py').read_text()),
-                         (self.base / 'model_runner_v2.py').read_text())
+        # C's reverse path proves only C's insertion is removed before A's,
+        # after the D2 seam is removed from the S5-composed runner.
+        original = (self.base / 'model_runner_v2.py').read_text()
+        self.assertEqual(g.revert_runner(operation_source.revert_runner(text),
+                                         original), original)
+
+    def test_qsa_operation_call_sites_are_generated_and_reversible(self):
+        qsa = (self.out / 'qsa.py').read_text()
+        ops = (self.out / 'ops_qsa.py').read_text()
+        runner = (self.out / 'model_runner_v2.py').read_text()
+        self.assertIn('def _flash_s5_staged_operation(', qsa)
+        self.assertIn('_s5_op.begin_layer(self.layer_name, self._qsa_host_kv)', qsa)
+        self.assertIn('_s5_op.producer_submitted(', qsa)
+        self.assertIn('_s5_op.end_layer(self.layer_name)', qsa)
+        self.assertIn('def flash_s5_arena_attention(', ops)
+        self.assertIn('e3op.fill_bucket(', ops)
+        self.assertIn('e3op.after_attention_bucket(', ops)
+        self.assertIn('def _flash_s5_execute_prefill_operation(', runner)
+        self.assertEqual(operation_source.revert_layer(qsa),
+                         (self.base / 'qsa.py').read_text())
+        self.assertEqual(operation_source.revert_ops(ops),
+                         (self.base / 'ops_qsa.py').read_text())
+        self.assertEqual(
+            operation_source.revert_runner(runner),
+            g.compose_runner((self.base / 'model_runner_v2.py').read_text()))
+        launcher = (self.out / 'run-flash-s5-test.sh').read_text()
+        self.assertEqual(launcher.count('$OVERLAY/qsa.py:$D/qsa.py:ro'), 1)
+        self.assertEqual(launcher.count('$OVERLAY/ops_qsa.py:$D/ops/qsa.py:ro'), 1)
+        self.assertNotIn('$M/qsa.py:ro', launcher)
 
     def test_scheduler_and_pool_leases_revert_to_reviewed_e2(self):
         scheduler = (self.out / 'core/scheduler.py').read_text()
@@ -388,6 +440,7 @@ class FullPinnedTests(unittest.TestCase):
         g.manifest(self.out / 'core')
         record = json.loads((self.out / 'S5-OVERLAP-GENERATION.json').read_text())
         self.assertEqual(record['e2_composed_pins'], g.E2_INPUTS)
+        self.assertEqual(record['e2_worker_composed_pins'], g.E2_WORKER_INPUTS)
         self.assertEqual(record['reference_source_pins'], eh.PINS)
         self.assertEqual(record['graph_composition']['module'], 'graph_hooks.py')
         self.assertFalse(record['armable'])

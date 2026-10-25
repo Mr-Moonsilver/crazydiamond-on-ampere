@@ -19,7 +19,7 @@ Everything here is immutable (frozen) and validated at construction. Request
 UIDs are redacted from ``repr`` because the E2/E3 runtime rule is that request
 IDs are never logged.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 # One active bulk-prefill transaction globally in the first fixed-split
@@ -33,6 +33,41 @@ ARENA_PAGES = 24                             # existing E2 arena, reused
 ARENA_BYTES = ARENA_PAGES * PAGE_BYTES       # 99_483_648
 BUCKETS_AT_200K = (24, 24, 2)                # baseline bucket order, 50 pages
 HISTORIES_PER_RANK = 6                       # six independent QSA histories
+
+
+@dataclass(frozen=True)
+class TensorFacts:
+    """Geometry/ownership facts for one bound tensor (never its storage).
+
+    Mirrors the E2 serial-DMA record so the separately mounted E3 package does
+    not import an E2 runtime module.  ``address`` is for internal overlap
+    checks only and is never written to reports or logs.
+    """
+    device: str
+    shape: tuple
+    strides: tuple
+    dtype: str
+    item_bytes: int
+    pinned: bool
+    contiguous: bool
+    address: int = field(repr=False)
+
+    def __post_init__(self):
+        if (type(self.device) is not str or type(self.dtype) is not str
+                or type(self.shape) is not tuple or type(self.strides) is not tuple
+                or len(self.shape) != len(self.strides)
+                or any(type(n) is not int or n < 0 for n in self.shape + self.strides)
+                or type(self.item_bytes) is not int or self.item_bytes <= 0
+                or type(self.address) is not int or self.address < 0
+                or type(self.pinned) is not bool or type(self.contiguous) is not bool):
+            raise E3ContractError('invalid immutable tensor geometry')
+
+    @property
+    def nbytes(self):
+        n = self.item_bytes
+        for dimension in self.shape:
+            n *= dimension
+        return n
 
 
 class E3ContractError(ValueError):

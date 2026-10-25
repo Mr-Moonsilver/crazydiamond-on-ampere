@@ -18,7 +18,9 @@ Deliberately *not* here (see Open items in the pass report):
   ``private_attrs`` stay empty rather than guessing attribute names);
 * committing real model/host state (the commit value is supplied by admission);
 * the model-forward callable for split-graph capture (``_flash_s5_graph_capture``);
-* native DMA / bounded segment execution (A still runs the whole stock forward).
+* cross-layer host continuation: the generated attention yields at a bucket,
+  but the native prefix/layer/suffix dispatcher is not installed. The old
+  whole-forward runner seam refuses even in fixtures unless explicitly replaced.
 """
 import hashlib
 import importlib
@@ -26,6 +28,7 @@ import time
 
 from async_handoff import (
     CommitAck,
+    CompletionReport,
     HandoffConfig,
     HandoffError,
     PollOperations,
@@ -48,6 +51,13 @@ from native_backend import (
     EventCompletionBackend,
     NativeDevice,
     NativeGraphCaptureBackend,
+)
+from qsa_operation import (
+    RUNNER_SEAM,
+    NativeQsaDevice,
+    OperationError,
+    QsaPrefillOperation,
+    metadata_plan_provider,
 )
 
 ENGINE_EPOCH = 1
@@ -230,28 +240,32 @@ def _allocate_scratch(device, chunk_tokens):
 class WorkerHandoffServer:
     """The ``_flash_s5_worker`` object the generated worker RPCs dispatch to.
 
-    One transaction at a time.  ``submit`` for the producer role launches the
-    parked stock schedule on this worker (A's wrapper routes it to the prefill
-    lane) and then runs the ordinary ``sample_tokens`` path with the grammar
-    output the engine scheduled, so the chunk's last prompt token is sampled by
-    the stock sampler, not by a private shortcut.  The commit role records a
-    state-write event ordered after that launch and, when given one, proposes
-    the admitted host/model state exactly once.
+    One transaction at a time.  The producer submission drives the generated
+    runner seam ``_flash_s5_execute_prefill_operation``. That seam refuses until
+    the native bounded dispatcher is installed. The standalone generated QSA
+    generator owns a producer -> CPU-source DMA -> attention continuation.  No stock
+    ``sample_tokens`` or output conversion belongs to this path.  The commit
+    role records a device event for its own ticket only when the lane backend
+    maps that role; a generic event is never turned into a state-write proof.
     """
 
     def __init__(self, runtime, *, bindings=(), private_attrs=None,
-                 clock=time.monotonic):
+                 operation_device=None, clock=time.monotonic):
         if not isinstance(runtime, LaneRuntime):
             raise NativeResourcesError('worker server needs A LaneRuntime')
         self.runtime = runtime
         self.bindings = tuple(bindings)
         self.private_attrs = dict(private_attrs or {})
+        self.operation_device = operation_device
         self.clock = clock
         self.worker = None
         self.handoff = None
+        self.operation = None
         self.last_output = None
         self.started_s = clock()
         self.executions = 0
+        self._operation_layers = ()
+        self._deferred_proofs = []
 
     def attach_worker(self, worker):
         """The generated GPU worker attaches itself before any typed RPC."""
@@ -276,6 +290,16 @@ class WorkerHandoffServer:
             clock=self.clock)
         ack = handoff.open(message)
         self.handoff = handoff
+        lane = self.runtime.state.prefill
+        if lane.handle is None or lane.transaction != transaction:
+            raise HandoffError('opened handoff has no active prefill lane')
+        try:
+            provider = metadata_plan_provider(message.metadata)
+        except OperationError:
+            provider = None  # refused at bind_plan, before any DMA
+        self.operation = QsaPrefillOperation(
+            transaction, lane.lane_id, device=self.operation_device,
+            plan_provider=provider, clock=self.clock)
         self.last_output = None
         return ack
 
@@ -297,7 +321,20 @@ class WorkerHandoffServer:
         return ack
 
     def poll(self, message):
-        return self._handoff(message.transaction).poll(message)
+        report = self._handoff(message.transaction).poll(message)
+        self._deferred_proofs.extend(report.proofs)
+        if self.operation is not None:
+            # Internal operation tickets are a separate namespace. Do not send
+            # them as engine tickets, or expose a launch proof as a drain proof.
+            self.operation.poll()
+            if self.operation._failed:
+                raise HandoffError('QSA operation is quarantined')
+            if not self.operation.drain():
+                return CompletionReport(report.transaction, (),
+                                        report.pending + max(1, self.operation.pending),
+                                        report.failed)
+        proofs, self._deferred_proofs = tuple(self._deferred_proofs), []
+        return CompletionReport(report.transaction, proofs, report.pending, report.failed)
 
     def commit(self, message):
         handoff = self._handoff(message.transaction)
@@ -306,6 +343,8 @@ class WorkerHandoffServer:
             raise HandoffError(
                 'commit needs the admitted host/model state value; the worker '
                 'must not invent a persistent state')
+        if self.operation is not None and not self.operation.drain():
+            raise E3Pending('commit waits for outstanding QSA operation events')
         self.runtime.propose_state(message.transaction, state_value)
         ack = handoff.commit(message)
         output = self.last_output
@@ -314,11 +353,17 @@ class WorkerHandoffServer:
 
     def cancel(self, message):
         handoff = self._handoff(message.transaction)
+        if self.operation is not None:
+            # Stop new submissions; submitted consumers stay owned until their
+            # events are observed by the polls below.
+            self.operation.cancel('transaction cancelled')
         ack = handoff.cancel(message)
         # Completion polling continues after the stop; one bounded poll lets an
         # already-ready event retire the lane in this call. Anything still
         # outstanding keeps storage leased rather than pretending it drained.
         handoff.poll(PollOperations(message.transaction, 8))
+        if self.operation is not None:
+            self.operation.poll()
         self._release_if_clean(message.transaction)
         return ack
 
@@ -329,40 +374,131 @@ class WorkerHandoffServer:
         return self.handoff
 
     def _execute_prefill(self, message):
-        # The stock execute/sample path advances PP decode state and is not a
-        # bounded prefill operation. Never run it natively from this scaffold.
+        """Drive one parked chunk through the generated operation seam.
+
+        This method never launches the stock worker forward itself, never
+        samples a token and never converts a segment output.  The generated
+        runner seam installs the bounded QSA operation on the real layers; the
+        pinned layer/attention call sites enqueue bounded copies and record
+        their producer/copy/consumer events.
+        """
         from s5_startup import require_native_ready
         require_native_ready()
-        if self.worker is None or not callable(getattr(self.worker, 'execute_model', None)):
-            raise NativeResourcesError(
-                'worker execute_model is unavailable; prefill cannot be launched')
+        if self.operation is None:
+            raise HandoffError('prefill submission has no open worker operation')
         handoff = self.handoff
         if handoff is None:
             raise HandoffError('prefill submission has no open worker handoff')
+        if getattr(message, 'grammar_output', None) is not None:
+            raise HandoffError(
+                'bounded prefill operation cannot consume a grammar output or '
+                'return a stock sampled segment')
+        worker = self.worker
+        runner = getattr(worker, 'model_runner', None)
+        seam = getattr(runner, RUNNER_SEAM, None)
+        if not callable(seam):
+            raise NativeResourcesError(
+                'generated runner has no ' + RUNNER_SEAM +
+                ' seam; the stock whole-forward path is refused')
         scheduler_output = message.scheduler_output
         current = getattr(scheduler_output, 'flash_e3_transaction', None)
         if current is not None and current != message.transaction:
             raise HandoffError('parked scheduler output carries another transaction')
         scheduler_output.flash_e3_transaction = message.transaction
-        # The generated GPU-worker method ultimately calls the generated model
-        # runner wrapper, which installs the prefill lane and runs the forward.
-        self.worker.execute_model(scheduler_output)
-        # The forward is enqueued on this worker's stream: record its completion
-        # event before handing control back to the RPC thread.
+        # Clear before the seam so a detached output the forward's output path
+        # delivers during it is what commit publishes; the stock sampler is
+        # never called and a forward that delivers nothing leaves ``None``.
+        self.last_output = None
+        seam(scheduler_output)
+        # The forward is enqueued (not synchronized) on this worker's stream;
+        # record the producer ticket's device event, which the backend maps as
+        # GPU_EVENT.  This is not a state-write or PP-consumer proof.
         ticket = handoff.last_ticket
         if ticket is None:
             raise HandoffError('producer submit recorded no outstanding ticket')
         self._record_launch(ticket)
         self.executions += 1
-        grammar = getattr(message, 'grammar_output', None)
-        sampler = getattr(self.worker, 'sample_tokens', None)
-        if callable(sampler):
-            # Ordinary sampling path for the last prompt token; None is a valid
-            # grammar output (no structured request scheduled).
-            self.last_output = _resolve_output(sampler(grammar))
-        elif grammar is not None:
-            raise NativeResourcesError(
-                'worker has no ordinary sample_tokens path for the parked chunk')
+
+    # -- generated operation seam -----------------------------------------
+    def begin_prefill_operation(self, runner, scheduler_output):
+        """Install the bounded operation on every QSA layer of this forward."""
+        operation = self.operation
+        if operation is None:
+            raise HandoffError('no QSA operation is bound to this transaction')
+        if self._operation_layers:
+            raise HandoffError('a QSA operation is already installed on this worker')
+        transaction = getattr(scheduler_output, 'flash_e3_transaction', None)
+        if transaction != operation.transaction:
+            raise HandoffError('scheduler output does not carry the operation transaction')
+        layers = _qsa_layers(runner)
+        try:
+            for name, layer in layers:
+                operation.register_source(name, layer._qsa_host_kv)
+            operation.begin_forward(layers=tuple(name for name, _ in layers))
+        except BaseException:
+            operation.cancel('operation layer binding failed')
+            raise
+        installed = []
+        try:
+            for name, layer in layers:
+                if getattr(layer, '_flash_s5_operation', None) is not None:
+                    raise NativeResourcesError(
+                        'QSA layer already carries an S5 operation: ' + name)
+                layer._flash_s5_operation = operation
+                installed.append(layer)
+        except BaseException:
+            for layer in installed:
+                if getattr(layer, '_flash_s5_operation', None) is operation:
+                    delattr(layer, '_flash_s5_operation')
+            operation.cancel('operation layer install failed')
+            raise
+        self._operation_layers = tuple(layers)
+        return operation
+
+    def end_prefill_operation(self, runner):
+        """Uninstall after a completed forward; every QSA layer must have run."""
+        operation = self.operation
+        layers, self._operation_layers = self._operation_layers, ()
+        self._uninstall(layers, operation)
+        if operation is None:
+            raise HandoffError('no QSA operation is bound to this transaction')
+        operation.end_forward()
+        return operation
+
+    def abort_prefill_operation(self, runner):
+        """Uninstall after a failed forward; keep consumers owned until drained."""
+        operation = self.operation
+        layers, self._operation_layers = self._operation_layers, ()
+        self._uninstall(layers, operation)
+        if operation is not None:
+            operation.cancel('prefill forward failed')
+        return operation
+
+    def _uninstall(self, layers, operation):
+        for _, layer in layers:
+            if getattr(layer, '_flash_s5_operation', None) is operation:
+                delattr(layer, '_flash_s5_operation')
+
+    def accept_detached_output(self, output):
+        """Record the detached chunk output the PP/transport worker delivers.
+
+        D2 does not implement native output detachment or a PP sample ring.
+        This seam is where that path will deliver its result; the stock
+        sampler is never called here, and a missing output leaves ``None``.
+        """
+        if self.operation is None:
+            raise HandoffError('no open operation can accept a detached output')
+        self.last_output = output
+        return output
+
+    def operation_inventory(self):
+        """Metadata-only operation inventory; no device query or readback."""
+        if self.operation is None:
+            return None
+        inventory = self.operation.inventory()
+        inventory['transaction_seq'] = self.operation.transaction.txn_seq
+        inventory['pending_buckets'] = self.operation.pending_buckets
+        return inventory
 
     def _record_launch(self, ticket):
         recorder = getattr(self.runtime.backend, 'record_launch', None)
@@ -372,6 +508,13 @@ class WorkerHandoffServer:
         recorder(ticket)
 
     def _release_if_clean(self, transaction):
+        if self.operation is not None:
+            try:
+                self.operation.release()
+            except E3Pending:
+                # Copy/consumer events still outstanding: keep every owner.
+                return False
+            self.operation = None
         try:
             self.runtime.release(transaction)
         except E3Pending:
@@ -381,21 +524,29 @@ class WorkerHandoffServer:
         return True
 
 
-def _resolve_output(output):
-    """Fixture-only stock-output conversion; this blocks the native RPC thread.
-
-    A real prefill operation must detach its output asynchronously without
-    touching the ordinary PP sample ring. Production startup refuses this path.
-    """
-    if output is None:
-        return None
-    try:
-        from vllm.v1.outputs import AsyncModelRunnerOutput
-    except ImportError:  # CPU hub without vLLM: only fakes reach this path.
-        AsyncModelRunnerOutput = ()
-    if isinstance(output, AsyncModelRunnerOutput):
-        return output.get_output()
-    return output
+def _qsa_layers(runner):
+    """Every offloaded QSA layer that must run through the operation."""
+    model = getattr(runner, 'model', None)
+    if not callable(getattr(model, 'modules', None)):
+        raise NativeResourcesError('runner model cannot enumerate QSA layers')
+    layers = []
+    seen = set()
+    for module in model.modules():
+        if not getattr(module, '_qsa_kv_offload', False):
+            continue
+        name = getattr(module, 'layer_name', None)
+        source = getattr(module, '_qsa_host_kv', None)
+        if not isinstance(name, str) or not name or name in seen:
+            raise NativeResourcesError('QSA layer identity is missing or duplicated')
+        if source is None:
+            raise NativeResourcesError(
+                'QSA layer has no pinned host KV pool: ' + name)
+        seen.add(name)
+        layers.append((name, module))
+    if not layers:
+        raise NativeResourcesError(
+            'prefill transaction has no offloaded QSA layer to operate on')
+    return tuple(layers)
 
 
 def _with_output(ack, output):
@@ -508,7 +659,9 @@ def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
         uid_namespace=forward_context, prefill_uid_buffer=uid_buffer.tensor)
     # Address tuples are not owners: keep every tensor alive for the runtime.
     runtime._native_owned_buffers = (uid_buffer, *scratch_buffers)
-    server = WorkerHandoffServer(runtime, bindings=bindings, clock=clock)
+    operation_device = NativeQsaDevice(_runner_device(runner), clock=clock)
+    server = WorkerHandoffServer(runtime, bindings=bindings,
+                                 operation_device=operation_device, clock=clock)
 
     runner._flash_s5_worker = server
     runner._flash_s5_native = {
@@ -518,6 +671,7 @@ def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
         'scratch': scratch_inventory,
         'workspace_lane': WORKSPACE_LANE,
         'weights_bytes': weights_bytes,
+        'operation': 'qsa_dense_bounded',
         'native_qualified': False,
     }
     install_graph_builder(runner, runtime, device, config=config, clock=clock)

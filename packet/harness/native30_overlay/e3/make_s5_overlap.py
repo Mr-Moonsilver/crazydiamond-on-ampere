@@ -12,7 +12,9 @@ Composition order:
   2. A's lane hooks transform the E2 runner.
   3. B's reviewed graph hooks compose after A; C's startup builder is inserted between E2's install and A's init_lane.
   4. C's scheduler/block-pool leases and executor/core/worker hooks are applied.
-  5. Optional additional pinned transforms can be applied last through this interface:
+  5. D2's bounded QSA operation call sites are generated into the E2 QSA layer,
+     the E2 attention module and the S5-composed runner (full-file pinned).
+  6. Optional additional pinned transforms can be applied last through this interface:
      a module with ``SOURCE_PINS`` (relative path -> sha256 of the composed
      input it reviewed) and ``generate(files) -> {relative path: source}``.
      B may only replace paths it pinned. No B module is guessed or imported by
@@ -34,6 +36,7 @@ import shutil
 import async_handoff
 import executor_hooks
 import lane_hooks
+import operation_source
 import graph_hooks
 import scheduler_hooks
 
@@ -44,7 +47,7 @@ ROOT = HERE.parents[1]
 E3_MODULES = ('e3_types', 'lane_state', 'reply_transport', 'native_backend',
               'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver',
               'executor_hooks', 'scheduler_hooks', 's5_startup',
-              'graph_router', 'graph_hooks')
+              'graph_router', 'graph_hooks', 'qsa_operation')
 
 # Exact reviewed E2-composed inputs. Any other bytes are refused.
 E2_RUNNER_SHA256 = lane_hooks.E2_STARTUP_SHA256
@@ -54,6 +57,11 @@ E2_INPUTS = {
     'model_runner_v2.py': E2_RUNNER_SHA256,
     'core/scheduler.py': E2_SCHEDULER_SHA256,
     'core/block_pool.py': E2_BLOCK_POOL_SHA256,
+}
+# E2 QSA worker sources the S5 operation call sites are generated into.
+E2_WORKER_INPUTS = {
+    'qsa.py': operation_source.E2_QSA_SHA256,
+    'ops_qsa.py': operation_source.E2_OPS_SHA256,
 }
 REFERENCE_INPUTS = dict(executor_hooks.PINS)
 LAUNCHER_NAME = 'run-flash-e2-test.sh'
@@ -138,7 +146,7 @@ def _s5_launcher(source):
 s5=()
 if [[ -d $OVERLAY/e3 ]]; then
   [[ ${S5:-0} == 1 ]] || { echo "S5 needs the declared overlap launcher" >&2; exit 2; }
-  for f in e3/__init__.py ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + '''e3_sources/executor.py e3_sources/core.py e3_sources/worker.py; do
+  for f in e3/__init__.py ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + '''e3_sources/executor.py e3_sources/core.py e3_sources/worker.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
   V=/usr/local/lib/python3.12/dist-packages/vllm/v1
@@ -230,6 +238,9 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
     for rel, digest in E2_INPUTS.items():
         if rel not in covered or sha(base / rel) != digest:
             raise ValueError('unreviewed E2-composed source: ' + rel)
+    for rel, digest in E2_WORKER_INPUTS.items():
+        if rel not in covered or sha(base / rel) != digest:
+            raise ValueError('unreviewed E2-composed worker source: ' + rel)
     for rel, digest in REFERENCE_INPUTS.items():
         if sha(reference / rel) != digest:
             raise ValueError('unreviewed image source: ' + rel)
@@ -245,12 +256,21 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         if path.is_symlink():
             raise ValueError('baseline symlinks not supported')
         rel = path.relative_to(base).as_posix()
-        if path.is_file() and rel not in _MANIFESTS and rel in (*E2_INPUTS, LAUNCHER_NAME):
+        if path.is_file() and rel not in _MANIFESTS and rel in (
+                *E2_INPUTS, *E2_WORKER_INPUTS, LAUNCHER_NAME):
             base_text[rel] = path.read_text()
     files = dict(base_text)
     files['model_runner_v2.py'] = compose_runner(files['model_runner_v2.py'])
     files['core/scheduler.py'] = scheduler_hooks.generate_scheduler(files['core/scheduler.py'])
     files['core/block_pool.py'] = scheduler_hooks.generate_block_pool(files['core/block_pool.py'])
+    # D2: generated native QSA operation call sites.  The layer/attention
+    # transforms are E2-byte-preserving outside their inserted boundaries; the
+    # runner seam is inserted into the S5-composed runner before B's optional
+    # final graph transform.
+    files['qsa.py'] = operation_source.generate_layer(files['qsa.py'])
+    files['ops_qsa.py'] = operation_source.generate_ops(files['ops_qsa.py'])
+    files['model_runner_v2.py'] = operation_source.generate_runner(
+        files['model_runner_v2.py'])
     files['e3/__init__.py'] = '"""Opt-in S5 overlap lane; owner review and GPU gates required."""\n'
     for name in E3_MODULES:
         files['e3/' + name + '.py'] = package((HERE / (name + '.py')).read_text())
@@ -311,6 +331,7 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         'base_e2_record': base_generation,
         'base_core_manifest_sha256': sha(base / 'core/SHA256SUMS'),
         'e2_composed_pins': E2_INPUTS,
+        'e2_worker_composed_pins': E2_WORKER_INPUTS,
         'reference_source_pins': REFERENCE_INPUTS,
         'generated_files': sorted(changed),
         'default_feature': 'FLASH_S5_OVERLAP=0',
@@ -323,9 +344,10 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
                      'mounts_require': 'S5=1',
                      'e2_launcher_preserved': LAUNCHER_NAME,
                      'status': 'offline-generated; not mounted or started'},
-        'status': ('offline checkpoint; experimental worker/engine construction is wired at the '
-                   'generated seams, production admission and whole-forward/capture seams '
-                   'are NOT IMPLEMENTED; NOT ARMABLE'),
+        'status': ('offline checkpoint; bounded dense QSA producer -> CPU-source DMA -> '
+                   'attention generator yields once per bucket; stock runner/layer entry refuses; '
+                   'cross-layer host continuation, production admission and capture are '
+                   'NOT IMPLEMENTED; NOT ARMABLE'),
         'armable': False,
         'native_gaps': [
             'enabled startup is hard-refused before allocation/transport ownership; CPU fixtures explicitly bypass this refusal',
@@ -333,7 +355,8 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
             'split-graph capture callable runner._flash_s5_graph_capture not supplied; split-bank capture fails closed',
             'SOURCE_HISTORY (COPY_EVENT) and PP-buffer leases are not acquired or released; only ARENA leases are wired',
             'real model persistent-state commit value: admission must supply an immutable state snapshot (A accepts CPU snapshots only)',
-            'bounded DMA segment execution not implemented; only CPU fixtures can reach the stock whole-forward scaffold',
+            'bounded attention generator is implemented; stock runner/layer path explicitly refuses until prefix/layer/suffix dispatcher is wired',
+            'native admission must supply explicit complete per-layer CPU tables and real allocation/source leases; flat block ids are not a QSA history map',
             'PP handoff output/parity validation not implemented; PrefillPPChannel is constructed but carries no traffic',
             'green-context/SM allocation and graph-pool measurement not performed; scaffold constants are not measurements and capture refuses even with a callable',
             'no GPU, CUDA graph, PP ring, DMA qualification or performance run',
