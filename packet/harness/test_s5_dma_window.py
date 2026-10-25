@@ -141,6 +141,46 @@ class DMAWindow(unittest.TestCase):
             w.close();self.assertIs(pre.forward,forward);self.assertIs(pre.qsa,qsa)
             self.assertIsNone(w.pre);self.assertIsNone(w.end)
 
+    def test_batched_control_queues_disjoint_pieces_then_one_terminal_fence(self):
+        torch,pre,resident,uva,events,forward,qsa=self.fake()
+        with patch.dict(sys.modules,{'torch':torch}):
+            w=WindowRefill(pre,uva,resident,batched=True);w.verify_layers=True
+            pre.forward(None);pre.forward(None)
+            self.assertEqual(w.layer_checks,12)
+            self.assertEqual(sum(e[0]=='copy' for e in events),36)
+            self.assertEqual(sum(e[0]=='fence' for e in events),12)
+            self.assertEqual(sum(e[0]=='wait-consumer' for e in events),12)
+            # Nothing reads/overwrites the window before all pieces finish.
+            for a,b in zip([i for i,e in enumerate(events) if e[0]=='wait-consumer'],
+                           [i for i,e in enumerate(events) if e[0]=='wait-copy']):
+                seq=events[a:b+1]
+                self.assertEqual([e[1] for e in seq if e[0]=='copy'],[4,4,2])
+                self.assertEqual([e[0] for e in seq][-3:],['record','fence','wait-copy'])
+                self.assertFalse(any(e[0]=='attend' for e in seq))
+            r=w.report();self.assertEqual(r['max_outstanding'],3)
+            self.assertEqual(r['max_outstanding_bytes'],40)
+            self.assertEqual(r['max_refills_in_flight'],1)
+            self.assertEqual(r['timing_basis'],'whole_refill_stream_span')
+            self.assertEqual(r['bytes'],480)
+            w.close();self.assertIs(pre.forward,forward)
+
+    def test_batched_evidence_bound_to_requested_policy_and_budget(self):
+        d=self.fixture()
+        for rank in d['ranks']:
+            rank['value_probe']['dma_batched']=True
+            for key in ('resident_dma','resident_dma_solo'):
+                rank[key].update(batched=True,max_outstanding=13,max_outstanding_bytes=50*1024,
+                                 max_refills_in_flight=1,timing_basis='whole_refill_stream_span')
+        self.assertEqual(grade(d)['verdict'],'PASS')
+        for key,value in [('max_outstanding',14),('max_outstanding_bytes',51*1024),
+                          ('max_refills_in_flight',2),('timing_basis','sum_of_piece_stream_spans')]:
+            bad=copy.deepcopy(d);bad['ranks'][0]['resident_dma'][key]=value
+            self.assertEqual(grade(bad)['verdict'],'INCONCLUSIVE',key)
+        bad=copy.deepcopy(d);bad['ranks'][0]['value_probe']['dma_batched']=False
+        self.assertEqual(grade(bad)['verdict'],'INCONCLUSIVE')
+        bad=copy.deepcopy(d);bad['ranks'][0]['resident_dma_solo']['batched']=False
+        self.assertEqual(grade(bad)['verdict'],'INCONCLUSIVE')
+
     def test_layer_mismatch_is_hard_and_missing_pinned_source_rejected(self):
         torch,pre,resident,uva,events,forward,qsa=self.fake()
         class CorrectnessError(RuntimeError):pass

@@ -87,8 +87,8 @@ def grade(data):
                         if check.get('passed') is False:verdict='FAIL'
                         if check['passed'] is not True or check['checks']!=expected or check['expected']!=expected:
                             raise ValueError('missing layer-wise DMA/UVA equality')
-                        proof=validate_dma(dma,m['overlap_resident'],mem['pages'],mem['page_bytes'])
-                        validate_dma(r['resident_dma_solo'],m['resident_prefill'],mem['pages'],mem['page_bytes'])
+                        proof=validate_dma(dma,m['overlap_resident'],mem['pages'],mem['page_bytes'],batched=probe.get('dma_batched',False))
+                        validate_dma(r['resident_dma_solo'],m['resident_prefill'],mem['pages'],mem['page_bytes'],batched=probe.get('dma_batched',False))
                         if not proof['inside_decode_window'] and verdict=='PASS':verdict='INCONCLUSIVE'
                         if dma['inside_decode_window']!=proof['inside_decode_window']:
                             raise ValueError('DMA inside-window claim disagrees with records')
@@ -145,8 +145,9 @@ def summarize(root,names=None):
                     matched=all(x['requested_split']==split and x['ablation']['layer_kind']==kind
                         and x['value_probe']['resident_kind']==source and x['value_probe']['ple_itemsize']==1
                         and x['max_connections']=='8'
-                        and bool(x['value_probe'].get('resident_dma'))==(name in ('qsa-dma34','dma-every-step34'))
-                        and bool(x['value_probe'].get('dma_every_layer'))==(name=='dma-every-step34') for x in d['ranks'])
+                        and bool(x['value_probe'].get('resident_dma'))==(name in ('qsa-dma34','dma-every-step34','dma-batched34'))
+                        and bool(x['value_probe'].get('dma_every_layer'))==(name in ('dma-every-step34','dma-batched34'))
+                        and bool(x['value_probe'].get('dma_batched'))==(name=='dma-batched34') for x in d['ranks'])
                     if not matched and r['verdict']!='FAIL':r['verdict']='INCONCLUSIVE'
                 stamped=json.loads((folder/'grade.json').read_text())
                 if stamped['verdict']=='FAIL':r['verdict']='FAIL'
@@ -186,6 +187,8 @@ def monitor_lines(case,report):
             if dma.get('mode')=='every_qsa_layer':
                 solo=r['resident_dma_solo']
                 lines.append(f"S5_DMA_REPEAT case={case} rank={r['rank']} layers=6 windows=1 "
+                    f"batched={dma.get('batched',False)} max_outstanding={dma['max_outstanding']} "
+                    f"timing_basis={dma.get('timing_basis','sum_of_piece_stream_spans')} "
                     f"prefill_steps={dma['prefill_steps']} refills={len(dma['refills'])} "
                     f"bytes_per_chunk={dma['bytes']//dma['prefill_steps']} "
                     f"inside_chunks={dma['fully_inside_decode_chunks']} inside_refills={dma['fully_inside_decode_refills']} inside_bytes={dma['fully_inside_decode_bytes']} "

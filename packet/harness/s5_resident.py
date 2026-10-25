@@ -9,6 +9,7 @@ CASE_CONFIG=dict(zip(CASES,((24,'qsa','kv_ple_prefetch'),(34,'qsa','kv_ple_prefe
     (44,'qsa','kv_ple_prefetch'),(34,'qsa','kv'),(34,'qsa','ple_prefetch'),(34,'mixed','kv_ple_prefetch'),(34,'qsa','kv_ple_prefetch'))))
 # Opt-in subset case only; do not change the old seven-case matrix.
 CASE_CONFIG['dma-every-step34']=(34,'qsa','kv')
+CASE_CONFIG['dma-batched34']=(34,'qsa','kv')
 
 
 def dma_window_proven(mode,step=1):
@@ -125,7 +126,7 @@ def validate_prefetch(stats,steps,payload):
     if not math.isfinite(stats['pack_seconds']) or stats['pack_seconds']<0:raise ValueError('invalid pack time')
 
 
-def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,memory,result,dma=False,every_layer=False):
+def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,memory,result,dma=False,every_layer=False,batched=False):
     import torch
     import s5_segment_gpu as b
     from s5_terminal_mode import run as terminal_run
@@ -151,7 +152,7 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
         if every_layer:
             if not dma or kind!='kv':raise ValueError('every-layer DMA requires KV-only resident control')
             from s5_dma_window import WindowRefill
-            window=WindowRefill(pre,original_kv,resident_kv)
+            window=WindowRefill(pre,original_kv,resident_kv,batched=batched)
             window.verify_layers=True
         from s5_substitution import run as substitution
         phase('terminal-resident-substitution',300)
@@ -213,7 +214,7 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
         if window is not None:
             from s5_dma_window import validate as validate_dma
             solo_dma=window.report()
-            solo_dma.update(validate_dma(solo_dma,result['modes']['resident_prefill'],pre.pages,record['page_bytes']))
+            solo_dma.update(validate_dma(solo_dma,result['modes']['resident_prefill'],pre.pages,record['page_bytes'],batched=batched))
             result['resident_dma_solo']=solo_dma
             window.reset_stats()
         phase('terminal-resident-overlap');start=transport.stats()
@@ -243,7 +244,7 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
         result['modes']['overlap_resident']=m
         if window is not None:
             repeated=window.report()
-            repeated.update(validate_dma(repeated,m,pre.pages,record['page_bytes']))
+            repeated.update(validate_dma(repeated,m,pre.pages,record['page_bytes'],batched=batched))
             result['resident_dma']=repeated
         elif dma:
             result['resident_dma']=dict(bytes=sum(n for _,_,n in dma_events),chunks=len(dma_events),

@@ -7,8 +7,13 @@ import math
 import time
 
 
-def validate(record, mode, pages, page_bytes, layers=6):
+def validate(record, mode, pages, page_bytes, layers=6, batched=False):
     """Account every refill, including warm-up/start and post-decode guard work."""
+    if record.get('batched',False) is not batched:raise ValueError('DMA fence policy mismatch')
+    if batched and (record.get('max_refills_in_flight')!=1 or
+                    record.get('max_outstanding_bytes')!=pages*page_bytes or
+                    record.get('timing_basis')!='whole_refill_stream_span'):
+        raise ValueError('unbounded batched DMA or wrong timing basis')
     steps = len(mode['raw_prefill'])
     if steps < 1 or pages < 1 or page_bytes < 1:raise ValueError('empty DMA workload')
     if [p['step'] for p in mode['raw_prefill']]!=list(range(steps)):
@@ -19,7 +24,7 @@ def validate(record, mode, pages, page_bytes, layers=6):
     if (len(keys) != len(expected) or set(keys) != expected or
             record['mode'] != 'every_qsa_layer' or record['layers'] != layers or
             record['windows'] != 1 or record['chunk_cap_pages'] != 4 or
-            record['max_outstanding'] != 1):
+            record['max_outstanding'] != ((pages+3)//4 if batched else 1)):
         raise ValueError('missing, duplicate or incorrectly scoped DMA refill')
     for r in entries:
         p = mode['raw_prefill'][r['step']]
@@ -47,7 +52,7 @@ def validate(record, mode, pages, page_bytes, layers=6):
 
 
 class WindowRefill:
-    def __init__(self, pre, original_kv, resident_kv):
+    def __init__(self, pre, original_kv, resident_kv, batched=False):
         import torch
         if pre.spec['mix'] != ['full_attention']*6:
             raise ValueError('repeated window case requires six QSA layers')
@@ -56,6 +61,7 @@ class WindowRefill:
         if pre.host.shape != resident_kv.shape or not pre.host.is_contiguous():
             raise ValueError('window source shape/stride')
         self.torch=torch; self.pre=pre; self.original_kv=original_kv; self.resident=resident_kv
+        self.batched=batched
         self.forward=pre.forward; self.qsa=pre.qsa
         self.stream=torch.cuda.Stream()
         self.begin=torch.cuda.Event(enable_timing=True); self.end=torch.cuda.Event(enable_timing=True)
@@ -80,14 +86,24 @@ class WindowRefill:
         # The previous attention consumer must finish before overwriting this
         # one shared window. This dependency is lane-local; decode never waits.
         self.stream.wait_stream(torch.cuda.current_stream())
+        if self.batched:
+            with torch.cuda.stream(self.stream):self.begin.record()
         for lo in range(0,self.pre.pages,4):
             hi=min(lo+4,self.pre.pages)
             with torch.cuda.stream(self.stream):
-                self.begin.record()
+                if not self.batched:self.begin.record()
                 self.resident[lo:hi].copy_(self.pre.host[lo:hi],non_blocking=True)
-                self.end.record()
-            self.end.synchronize()  # one outstanding DMA; event can now be reused
-            milliseconds += self.begin.elapsed_time(self.end); chunks += 1
+                if not self.batched:self.end.record()
+            if not self.batched:
+                self.end.synchronize()  # one outstanding piece
+                milliseconds += self.begin.elapsed_time(self.end)
+            chunks += 1
+        if self.batched:
+            # One bounded refill, all disjoint pieces on the SAME stream.
+            # CPU source and destination stay owned until this terminal fence.
+            with torch.cuda.stream(self.stream):self.end.record()
+            self.end.synchronize()
+            milliseconds=self.begin.elapsed_time(self.end)
         torch.cuda.current_stream().wait_event(self.end)
         self.refills.append(dict(step=self.step,layer=layer,start_s=start,end_s=time.perf_counter(),
             bytes=self.pre.pages*self.page_bytes,chunks=chunks,gpu_copy_ms=milliseconds))
@@ -105,7 +121,10 @@ class WindowRefill:
         return actual
 
     def report(self):
-        return dict(mode='every_qsa_layer',layers=6,windows=1,chunk_cap_pages=4,max_outstanding=1,
+        return dict(mode='every_qsa_layer',layers=6,windows=1,chunk_cap_pages=4,batched=self.batched,
+            max_outstanding=(self.pre.pages+3)//4 if self.batched else 1,max_refills_in_flight=1,
+            max_outstanding_bytes=(self.pre.pages if self.batched else min(4,self.pre.pages))*self.page_bytes,
+            timing_basis='whole_refill_stream_span' if self.batched else 'sum_of_piece_stream_spans',
             bytes=sum(r['bytes'] for r in self.refills),chunks=sum(r['chunks'] for r in self.refills),
             gpu_copy_ms=sum(r['gpu_copy_ms'] for r in self.refills),refills=list(self.refills),
             scope='six-QSA slice, one synthetic host table re-read per layer; not the 24-layer engine')
