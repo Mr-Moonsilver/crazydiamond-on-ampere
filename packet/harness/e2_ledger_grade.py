@@ -86,7 +86,10 @@ def grade(start, end, peaks=None, baseline=None, reserve_bytes=536870912, reserv
         if not peaks.get('samples'): missing.append('no GPU samples taken')
     if baseline is None: (notes if reserve_only else missing).append('no matched control record' + (' (reserve-only phase)' if reserve_only else ''))
     v = 'FAIL' if fails else 'INCONCLUSIVE' if missing else 'PASS'
-    return dict(verdict=v, mode='reserve-only' if reserve_only else 'matched' if matched else 'full', fails=sorted(set(fails)), missing=sorted(set(missing)), notes=sorted(set(notes)), reserve_gib=round(reserve, 3),
+    # retry_only: every failure is a retry-count excess against the control (attributable only with matched exposure);
+    # anything else (ooms, counter backwards, reserve) is a hard failure the queue must not defer to the attribution step
+    retry_only = bool(fails) and all('more allocator retries' in f for f in fails)
+    return dict(verdict=v, retry_only=retry_only, mode='reserve-only' if reserve_only else 'matched' if matched else 'full', fails=sorted(set(fails)), missing=sorted(set(missing)), notes=sorted(set(notes)), reserve_gib=round(reserve, 3),
                 ranks=ranks, gpus=gpus,
                 scope='reserve = free memory at the sampled peak; baseline deltas = overhead evidence; counters cumulative since process start'
                       + ('; matched point: same step list and seeds since the engine start as the control' if matched else ''))

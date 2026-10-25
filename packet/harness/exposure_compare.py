@@ -8,8 +8,11 @@ the realized work agrees. This tool compares the control and shipping artifacts 
   leak pairs      per (round, session): prompt/generation lengths (identical required), prefix hits cached/cached3
                   (identical required), retry-path counts (answer_retries/answer3_retries records) and cancellations
                   (within tolerance).
-  pressure pairs  issued and completed request totals, wall duration, KV occupancy mean/max, preemptions, prefix-cache
-                  hits delta, error counts (within tolerance; preemptions within max(2, tolerance)).
+  pressure pairs  issued and completed request totals, wall duration, KV occupancy mean/max (kv_cache_usage_perc is a
+                  raw 0..1 fraction: tolerance as an absolute difference), preemptions, prefix-cache hits delta, error
+                  counts (within tolerance; preemptions within max(2, tolerance)).
+Schemas (checked against the tools, Codex v5 review): leak_partial_tail.py writes run.cancelled as a COUNT (int);
+pressure2.py keeps the metrics raw.
 usage: exposure_compare.py OUT.json --leak CONTROL.json SHIP.json [--leak ...] --pressure CONTROL.json SHIP.json [...]
        [--tolerance 0.10]
 Exit 0 MATCHED (attribution allowed), 2 DIFFERS (attribution INCONCLUSIVE), 1 on unreadable/incomplete artifacts
@@ -34,7 +37,8 @@ def leak_pair(a, b, tol):
     out['length_mismatches'] = [list(k) for k in sorted(set(ka) | set(kb)) if ka.get(k) != kb.get(k)][:8]
     out['hit_mismatches'] = [[list(k), ha.get(k), hb.get(k)] for k in sorted(set(ha) | set(hb)) if ha.get(k) != hb.get(k)][:8]
     out['retry_records'] = (retries(a), retries(b))
-    out['cancelled'] = (len((a.get('run') or {}).get('cancelled') or []), len((b.get('run') or {}).get('cancelled') or []))
+    cancelled = lambda d: (lambda c: c if isinstance(c, int) else len(c or []))((d.get('run') or {}).get('cancelled'))  # leak_partial_tail serialises a count
+    out['cancelled'] = (cancelled(a), cancelled(b))
     out['errors'] = (len(a.get('errors') or []), len(b.get('errors') or []))
     if not ka or len(ka) != len(kb): diffs.append('session counts differ or empty')
     if out['length_mismatches']: diffs.append('prompt/generation lengths differ')
@@ -58,8 +62,10 @@ def pressure_pair(a, b, tol):
     out['errors'] = (len(a.get('errors') or []), len(b.get('errors') or []))
     for k in ('issued', 'completed', 'duration_s'):
         if not rel_ok(out[k][0], out[k][1], tol): diffs.append(k + ' differ beyond tolerance')
+    # vllm:kv_cache_usage_perc is a raw fraction 0..1 despite its name (pressure2 keeps it raw; q15b metrics_end 0.1329):
+    # the tolerance applies as an absolute difference of fractions (0.10 = ten points of occupancy)
     if out['kv_occupancy_mean'][0] is None or out['kv_occupancy_mean'][1] is None: diffs.append('kv occupancy missing')
-    elif abs(out['kv_occupancy_mean'][0] - out['kv_occupancy_mean'][1]) > 100 * tol: diffs.append('kv occupancy mean differs beyond tolerance (percentage points)')
+    elif abs(out['kv_occupancy_mean'][0] - out['kv_occupancy_mean'][1]) > tol: diffs.append('kv occupancy mean differs beyond tolerance (fraction of KV)')
     p0, p1 = out['preemptions']
     if p0 is None or p1 is None: diffs.append('preemptions missing')
     elif not (abs(p0 - p1) <= 2 or rel_ok(p0, p1, tol)): diffs.append('preemptions differ')
@@ -76,7 +82,11 @@ def compare(leaks, pressures, tol=0.10):
     if not leaks and not pressures: diffs.append('nothing compared')
     report['differences'] = diffs
     report['verdict'] = 'MATCHED' if not diffs else 'DIFFERS'
-    report['scope'] = 'realized exposure of the matched steps; DIFFERS = retry attribution INCONCLUSIVE, not a regression verdict'
+    report['compared'] = ['leak: session counts, prompt/generation lengths (identical), prefix hits cached/cached3 (identical), retry-path sessions and cancellations (+-2 or tolerance)',
+                          'pressure: issued and completed totals, wall duration (tolerance), kv occupancy mean (absolute fraction tolerance), preemptions (+-2 or tolerance), error counts (only when nonzero and unequal)']
+    report['recorded_only'] = ['leak: errors', 'pressure: kv_occupancy_max', 'pressure: prefix_cache_hits_delta']
+    report['scope'] = ('realized exposure of the matched steps as aggregate tolerance evidence; MATCHED is not identical allocator history; '
+                       'DIFFERS = retry attribution INCONCLUSIVE, not a regression verdict')
     return report
 
 

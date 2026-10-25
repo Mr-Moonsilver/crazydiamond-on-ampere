@@ -83,6 +83,16 @@ class LedgerGradeTests(unittest.TestCase):
         self.assertEqual(g.grade(ledger(rows=False), ledger(retries=4), peaks(), ctrl, matched=True)['verdict'], 'PASS')
         with self.assertRaises(ValueError): g.grade(ledger(), ledger(), peaks(), ctrl, reserve_only=True, matched=True)
 
+    def test_retry_only_separates_attributable_failures_from_hard_ones(self):
+        ctrl = ledger(retries=4)
+        out = g.grade(ledger(rows=False), ledger(retries=5), None, ctrl, matched=True)
+        self.assertEqual((out['verdict'], out['retry_only']), ('FAIL', True))
+        out = g.grade(ledger(rows=False), ledger(retries=5, ooms=1), None, ctrl, matched=True)
+        self.assertEqual((out['verdict'], out['retry_only']), ('FAIL', False))
+        self.assertFalse(g.grade(ledger(retries=5), ledger(retries=2), peaks(), ctrl)['retry_only'])          # counter backwards
+        self.assertFalse(g.grade(ledger(), ledger(), peaks(used_mib=24576 - 100), ctrl, matched=True)['retry_only'])  # reserve
+        self.assertFalse(g.grade(ledger(rows=False), ledger(retries=4), None, ctrl, matched=True)['retry_only'])     # PASS
+
     def test_matched_window_delta_when_both_start_records_have_rows(self):
         ctrl_start, ctrl = ledger(retries=1), ledger(retries=4)
         # same cumulative total, larger window delta than the control: FAIL (candidate started lower, gained more in the window)
