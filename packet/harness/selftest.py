@@ -632,6 +632,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e2_arena.py', 'E2 single arena: owner epochs, bounded fills, completion and retirement (CPU only)'),
                      ('test_e2_mirror.py', 'E2 mirror: allocation generations, exact-source tables/CoW and fenced RPC ownership (CPU only)'),
                      ('test_e2_arena_dma.py', 'E2 dense arena DMA: real backend call ordering, leases and unchanged sparse fallback (CPU only)'),
+                     ('test_e2_runner_lifecycle.py', 'E2 runner seam: actual CoW filter, immutable batch binding, zero-token/dummy RPC and drain (CPU only)'),
                      ('test_e2_serial.py', 'E2 serial CPU-source DMA adapter and unchanged attention arithmetic (CPU only)'),
                      ('test_s5_marlin_partition.py', 'S5 Marlin DP/Stream-K positional partition (CPU, not GPU attribution)'),
                      ('test_s5_retention.py', 'S5 E0 retained histories: incarnation, dirty DMA, publication and retirement (CPU)'),
