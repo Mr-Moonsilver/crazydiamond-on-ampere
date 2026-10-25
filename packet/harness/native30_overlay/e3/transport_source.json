@@ -1,0 +1,37 @@
+{
+  "provenance": "Pinned image ad067db5, vLLM build dc36fcce9; Apache-2.0 upstream source; exact dedented method excerpts",
+  "modules": {
+    "distributed/device_communicators/shm_broadcast.py": {
+      "sha256": "f3e7a3f3ff713fccbd535e0d41650ee05bdf8677e83d4b90519910645022c30b",
+      "class": "MessageQueue",
+      "methods": {
+        "acquire_read": {
+          "line": 760,
+          "source": "@contextmanager\ndef acquire_read(\n    self,\n    timeout: float | None = None,\n    indefinite: bool = False,\n):\n    assert self._is_local_reader, \"Only readers can acquire read\"\n    read_timeout = self.ReadTimeoutWithWarnings(\n        timeout=timeout, should_warn=not indefinite\n    )\n    with self.buffer.get_metadata(self.current_idx) as metadata_buffer:\n        while True:\n\n            def check():\n                memory_fence()\n                read_flag = metadata_buffer[self.local_reader_rank + 1]\n                written_flag = metadata_buffer[0]\n                return not (not written_flag or read_flag)\n\n            if SPINLOOP_EXT_ENABLED and not check():\n                spinloop(\n                    metadata_buffer[0 : self.local_reader_rank + 1],\n                    check,\n                    timeout=SPINLOOP_TIMEOUT_SECONDS,\n                )\n\n            if not check():\n                # this block is either\n                # (1) not written\n                # (2) already read by this reader\n\n                # for readers, `self.current_idx` is the next block to read\n                # if this block is not ready,\n                # we need to wait until it is written\n                self._spin_condition.wait(timeout_ms=read_timeout.timeout_ms())\n\n                if self.shutting_down:\n                    raise RuntimeError(\"cancelled\")\n\n                # if we wait for a long time, log a message\n                if read_timeout.should_warn():\n                    logger.info(\n                        LONG_WAIT_TIME_LOG_MSG, VLLM_RINGBUFFER_WARNING_INTERVAL\n                    )\n\n                continue\n            # found a block that is not read by this reader\n            # let caller read from the buffer\n            with self.buffer.get_data(self.current_idx) as buf:\n                try:\n                    yield buf\n                finally:\n                    # caller has read from the buffer; set the read flag.\n                    metadata_buffer[self.local_reader_rank + 1] = 1\n                    # Memory fence ensures the read flag is visible to the writer.\n                    # Without this, writer may not see our read completion and\n                    # could wait indefinitely for all readers to finish.\n                    memory_fence()\n                    next_idx = self.current_idx + 1\n                    self.current_idx = next_idx % self.buffer.max_chunks\n                    self._spin_condition.record_read()\n            break\n",
+          "sha256": "ec977d72df2e260b9cd40233518e28de038b4976d826556c73072ffce2182ede"
+        },
+        "dequeue": {
+          "line": 882,
+          "source": "def dequeue(\n    self,\n    timeout: float | None = None,\n    indefinite: bool = False,\n):\n    \"\"\"Read from message queue with optional timeout (in seconds)\"\"\"\n    if self._is_local_reader:\n        with self.acquire_read(timeout, indefinite) as buf:\n            overflow = buf[0] == 1\n            if not overflow:\n                offset = 3\n                buf_count = from_bytes_big(buf[1:offset])\n                all_buffers = []\n                for i in range(buf_count):\n                    buf_offset = offset + 4\n                    buf_len = from_bytes_big(buf[offset:buf_offset])\n                    offset = buf_offset + buf_len\n                    all_buffers.append(buf[buf_offset:offset])\n                obj = pickle.loads(all_buffers[0], buffers=all_buffers[1:])\n        if overflow:\n            obj = MessageQueue.recv(self.local_socket, timeout)\n    elif self._is_remote_reader:\n        obj = MessageQueue.recv(self.remote_socket, timeout)\n    else:\n        raise RuntimeError(\"Only readers can dequeue\")\n    return obj\n",
+          "sha256": "1d5f375deec05e4574ddbbca2b18884f5d9dc3039b88d72e1993f3ecb87ab0fa"
+        }
+      }
+    },
+    "v1/executor/multiproc_executor.py": {
+      "sha256": "3ed0149a8a8e1550c4f062af40e645d1b734e70f99981bc5bf15f0360507648a",
+      "class": "WorkerProc",
+      "methods": {
+        "handle_output": {
+          "line": 1001,
+          "source": "def handle_output(self, output: Any):\n    \"\"\"Handles output from the worker. If async scheduling is enabled,\n    it is passed to the async_output_busy_loop thread. Otherwise, it is\n    enqueued directly to the worker_response_mq.\n    \"\"\"\n    if self.use_async_scheduling:\n        self.async_output_queue.put(output)\n    else:\n        self.enqueue_output(output)\n",
+          "sha256": "0b0a4f3070fcab1a4edb9fd22ea4aaa7d35f9fe7081b96d9950a54575eb21cdf"
+        },
+        "enqueue_output": {
+          "line": 982,
+          "source": "def enqueue_output(self, output: Any):\n    \"\"\"Prepares output from the worker and enqueues it to the\n    worker_response_mq. If the output is an Exception, it is\n    converted to a FAILURE response.\n    \"\"\"\n    if isinstance(output, AsyncModelRunnerOutput):\n        try:\n            output = output.get_output()\n        except Exception as e:\n            logger.exception(\"Error getting async model runner output\")\n            output = e\n\n    if isinstance(output, Exception):\n        result = (WorkerProc.ResponseStatus.FAILURE, str(output))\n    else:\n        result = (WorkerProc.ResponseStatus.SUCCESS, output)\n    if (response_mq := self.worker_response_mq) is not None:\n        response_mq.enqueue(result)\n",
+          "sha256": "ca9fa18f9c73cb584192931c670db84a4f14192eda55557c08525942e333c5d4"
+        }
+      }
+    }
+  }
+}
