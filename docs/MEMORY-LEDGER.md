@@ -18,6 +18,7 @@ Tool for the live engine: `harness/memory_ledger.py` (read-only, allowlisted set
 | PLE chunk-row prefetch buffer | ~0.005 (FP8: ~2.5 MiB per 1,024-token chunk; ×2 if double-buffered) | **estimate**; only needed if PLE reads matter (q11s PLE-only control) |
 | Vision tower (stage 0 only) | 0.42 (TP-split weights) + encode peak | BF16 weights measured; off in production (`--language-model-only`). q14b on one GPU (whole tower): 0.84 GiB weights, peak reserved 0.93 / 1.10 / 1.45 GiB at 512² / 1024² / 1536² |
 | S5 extras: prefill-lane activations/workspace, per-split decode graphs, PyNccl buffers, green-context overhead | unknown | **to measure**: per-rank ledger in the next S5 queue (Codex `codex/s5-resident`) |
+| Slice residency cost (4-layer S5 slice, one shared 50-page source, per rank; q11u 25 Oct) | +198 MiB allocated and +198 MiB reserved, exactly the copied bytes (no allocator overhead); peak reserved during overlap 2.0 GiB (QSA slice) / 2.6 GiB (mixed slice), slice weights included | measured on both TP pairs; a slice data point, not the engine's S5 extras |
 | S5 sized components (design, not measured) | HC hidden 20 MiB, PP hidden 20 MiB per buffer, top-k 8 MiB (×6 if per layer), QSA accumulator 12 MiB, 23-page arena 91 MiB (reuse) | `reviews/codex-20261025s-s5-engine-design.md` §7; budget after retention: 1.54 GiB at 200k / 1.19 at 262k, minus a proposed 0.5 GiB reserve |
 
 Fit on paper (stage 0, worst case): full 200k retention 1.16 + vision 0.42 = 1.58 GiB of ~2.7 → ~1.1 GiB left
