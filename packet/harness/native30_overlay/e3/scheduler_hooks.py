@@ -170,15 +170,6 @@ _BLOCK_POOL_FORWARD = (
             # ref_cnt=0 means this block is in the free list (i.e. eviction
             # candidate), so remove it.
 '''),
-    ('''    def is_block_writable(self, block: KVCacheBlock) -> bool:
-        """Return whether a block can be mutated by its sole owner."""
-        return not block.is_null and block.ref_cnt == 1 and block.block_hash is None
-''', '''    def is_block_writable(self, block: KVCacheBlock) -> bool:
-        """Return whether a block can be mutated by its sole owner."""
-        if _flash_s5_hooks.block_held(self, block):
-            return False
-        return not block.is_null and block.ref_cnt == 1 and block.block_hash is None
-'''),
     ('''        # Identify blocks with hash (LRU cache) and without it (never match APC)
         blocks_to_evict_last = []
 ''', '''        ordered_blocks = _flash_s5_hooks.hold_leased_blocks(self, ordered_blocks)
@@ -191,11 +182,6 @@ _BLOCK_POOL_REVERSE = (
     ('''        ordered_blocks = _flash_s5_hooks.hold_leased_blocks(self, ordered_blocks)
         # Identify blocks with hash (LRU cache) and without it (never match APC)
 ''', '''        # Identify blocks with hash (LRU cache) and without it (never match APC)
-'''),
-    ('''        if _flash_s5_hooks.block_held(self, block):
-            return False
-        return not block.is_null and block.ref_cnt == 1 and block.block_hash is None
-''', '''        return not block.is_null and block.ref_cnt == 1 and block.block_hash is None
 '''),
     ('''        _flash_s5_hooks.before_touch(self, blocks)
         for block in blocks:
@@ -321,10 +307,13 @@ class SchedulerLeases:
         if category not in (LeaseCategory.SOURCE_HISTORY, LeaseCategory.ARENA):
             raise E3ContractError('block leases are source-history or arena leases')
         ids = _flatten_ids(block_ids)
-        if not ids or any(type(b) is not int or b < 0 for b in ids):
-            raise E3ContractError('lease block ids must be nonnegative ints')
+        if not ids or any(type(b) is not int or b <= 0 for b in ids):
+            raise E3ContractError('lease block ids must be positive, non-null ints')
         if len(set(ids)) != len(ids):
             raise E3ContractError('duplicate block in a lease')
+        if any(e['ticket'] == ticket and e['category'] is category
+               for entries in self._held.values() for e in entries):
+            raise E3ContractError('duplicate lease ticket/category')
         entry = {'ticket': ticket, 'category': category, 'blocks': tuple(ids),
                  'committed': bool(committed), 'released': False}
         for block in ids:
@@ -389,6 +378,7 @@ class SchedulerLeases:
                 del self._held[block]
         self.held_releases += 1
         self._free_released(tuple(sorted(released)))
+        self._retry_requests()
         return tuple(sorted(released))
 
     def _free_released(self, blocks):
@@ -399,18 +389,20 @@ class SchedulerLeases:
         for block_id in blocks:
             if block_id in self._held:
                 continue
-            item = self.pending_free.pop(block_id, None)
+            item = self.pending_free.get(block_id)
             if item is not None:
-                pending.append(item)
+                pending.append((block_id, item))
         if not pending:
             return
-        pending.sort(key=lambda item: item[2])
+        pending.sort(key=lambda item: item[1][2])
         free = []
-        for block, count, _ in pending:
+        for _, (block, count, _) in pending:
             free.extend([block] * count)
         self._bypass = True
         try:
             pool.free_blocks(free)
+            for block_id, _ in pending:
+                del self.pending_free[block_id]
         finally:
             self._bypass = False
 
@@ -450,7 +442,7 @@ class SchedulerLeases:
             if not self.block_held(block):
                 continue
             block_id = getattr(block, 'block_id', None)
-            committed = any(e['committed'] and not e['released']
+            committed = all(e['committed'] and not e['released']
                             for e in self._held.get(block_id, ()))
             if not committed:
                 raise E3Pending('an uncommitted prefill block cannot be shared')
@@ -472,8 +464,17 @@ class SchedulerLeases:
         blocks = _flatten_ids(getter(request_id))
         if not any(block in self._held for block in blocks):
             return False
-        self.deferred_requests[request_id] = blocks
+        self.deferred_requests[request_id] = (request, blocks)
         return True
+
+    def _retry_requests(self):
+        for request_id, (request, blocks) in tuple(self.deferred_requests.items()):
+            if any(block in self._held for block in blocks):
+                continue
+            # The stock scheduler may defer further on its own RPC fence.
+            # Keep our record if that call raises.
+            self._scheduler._free_request_blocks(request)
+            del self.deferred_requests[request_id]
 
     def blocked_deferred(self, blocks):
         return any(getattr(block, 'block_id', None) in self._held
@@ -502,15 +503,15 @@ class SchedulerLeases:
         cached = getattr(scheduler_output, 'scheduled_cached_reqs', None)
         destinations += _flatten_ids(getattr(cached, 'new_block_ids', ()))
         mine = self._held_by_transaction(transaction)
-        others = set(self._held) - mine
-        if set(destinations) & others:
+        # Even the same transaction cannot overwrite a still-consumed page.
+        if set(destinations) & set(self._held):
             return False
         if sources and not set(sources) <= (mine | self._committed()):
             return False
         if copies:
             self.cow_requested += len(copies)
             # The copy itself is the scheduler's, not a lease artifact.
-            self.cow_completed += len(copies)
+            # Submission is not proof that the scheduled copies completed.
         return True
 
     def note_cow_retained(self, blocks):
@@ -519,9 +520,9 @@ class SchedulerLeases:
         return tuple(blocks)
 
     def shutdown(self):
-        if self._held or self.pending_free:
+        if self._held or self.pending_free or self.deferred_requests:
             return dict(clean=False, held=len(self._held),
-                        pending_free=len(self.pending_free))
+                        pending_free=len(self.pending_free), deferred_requests=len(self.deferred_requests))
         return dict(clean=True, held=0, pending_free=0)
 
 
@@ -541,7 +542,9 @@ def after_schedule(scheduler, scheduler_output):
     dispatcher = getattr(scheduler, '_flash_s5_handoff', None)
     lease = getattr(dispatcher, 'active', None)
     transaction = getattr(lease, 'transaction', None) if lease is not None else None
-    return guard.mutation_guard(scheduler_output, transaction)
+    if not guard.mutation_guard(scheduler_output, transaction):
+        raise E3Pending('scheduled mutation conflicts with an outstanding E3 lease')
+    return True
 
 
 def defer_request_free(scheduler, request):

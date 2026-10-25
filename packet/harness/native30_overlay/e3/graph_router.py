@@ -807,7 +807,11 @@ class GraphRouter:
             raise GraphRoutingError('graph bank already registered')
         if type(context) is not ExecutionContext:
             raise GraphRoutingError('bank needs an ExecutionContext')
-        if context.pool_id in self.pools:
+        if self.calibrated:
+            raise GraphRoutingError('banks must be declared before startup capture')
+        if context.context_id != self.handle.context_id:
+            raise GraphRoutingError('bank context differs from A lane identity')
+        if context.pool_id == self.full_pool_id or context.pool_id in self.pools:
             raise GraphRoutingError('graph pools must not be shared between banks')
         if context.context_id == self.full_context_id:
             raise GraphRoutingError('split context id collides with the full-GPU context')

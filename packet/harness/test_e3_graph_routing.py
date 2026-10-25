@@ -356,28 +356,20 @@ class TestGraphIdentity(unittest.TestCase):
                                               storage_epoch=left.handle.storage_epoch,
                                               worker_rank=0))
 
-    def test_two_splits_in_one_router_never_share_graphs(self):
-        rig = make_router(banks=[
-            ('green34', split_context('green34', context_id=7, measured=34,
-                                      pool_id=0x5000), (descriptor(),)),
-            ('green44', split_context('green44', context_id=8, measured=44,
-                                      pool_id=0x5001), (descriptor(),)),
-        ])
-        router = rig.router
-        self.assertIsNot(router.banks['green34'].pool,
-                         router.banks['green44'].pool)
-        left = router.banks['green34'].graphs[descriptor()]
-        right = router.banks['green44'].graphs[descriptor()]
-        self.assertNotEqual(left.key, right.key)
-        self.assertNotEqual(left.handle, right.handle)
-        first = transition(rig, 'green34', target_context=7, seq=10)
-        self.assertEqual(first.target_mode, 'green34')
-        self.assertEqual(router.supported_route(rig.worker.decode.transaction,
-                                                descriptor()).bank, 'green34')
-        second = router.transition('green44', auth(router, 8, seq=11))
-        self.assertEqual(second.target_mode, 'green44')
-        self.assertEqual(router.supported_route(rig.worker.decode.transaction,
-                                                descriptor()).bank, 'green44')
+    def test_other_split_needs_a_matching_A_lane_identity(self):
+        rig = make_router(capture=False)
+        with self.assertRaises(GraphRoutingError):
+            rig.router.add_bank('green44', split_context('green44', context_id=8,
+                                measured=44, pool_id=0x5001), (descriptor(),))
+
+    def test_full_and_split_cannot_share_pool(self):
+        with self.assertRaises(GraphRoutingError):
+            make_router(banks=[('split', split_context(pool_id=0x1000), (descriptor(),))])
+
+    def test_capture_closes_bank_declaration(self):
+        rig = make_router()
+        with self.assertRaises(GraphRoutingError):
+            rig.router.add_bank('extra', split_context(pool_id=0x5001), (descriptor(),))
 
     def test_descriptor_conversion_and_validation(self):
         dispatched = NS(cg_mode=NS(name='FULL'), num_tokens=4, num_reqs=2,
@@ -1556,8 +1548,6 @@ class TestHookRuntime(unittest.TestCase):
                                          lambda desc: self.fail('silent full replay'))
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class ReviewRegressions(unittest.TestCase):
@@ -1586,3 +1576,7 @@ class ReviewRegressions(unittest.TestCase):
         rig.router.banks['split'].allocated_bytes = RESERVED + 1
         with self.assertRaises(GraphRoutingError):
             rig.router.budget(reserve_measured_bytes=150).require_bounded(RESERVED * 2)
+
+
+if __name__ == '__main__':
+    unittest.main()

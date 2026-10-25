@@ -640,7 +640,7 @@ class TransactionLease:
         self.stop_kind = None
         self.quarantine = None
         self._last_op = {}
-        self._last_completion = -1
+        self._last_completion = {}
         self._submitted_s = clock()
         self._completion_bytes = 0
         self._lane_categories = dict(lane_categories or {})
@@ -698,7 +698,7 @@ class TransactionLease:
             raise HandoffError('operation rank is not in the lease')
         if ticket.lane != self.lanes[ticket.worker_rank]:
             raise HandoffError('operation lane/storage epoch is stale')
-        key = ticket.sequence_key
+        key = ticket.lane  # op_seq is the value, never part of its monotonic key.
         previous = self._last_op.get(key)
         if previous is not None and ticket.op_seq <= previous:
             raise HandoffError('operation sequence is not monotonic')
@@ -718,10 +718,6 @@ class TransactionLease:
         """Record an RPC reply. It cannot complete or publish anything."""
         if self.phase in (Phase.RETIRED, Phase.QUARANTINED):
             raise HandoffError('reply after transaction retirement cannot mutate it')
-        if self.phase is Phase.RETIRING:
-            # Stop paths quarantine queued replies; they never relabel work.
-            self._quarantine('late_reply')
-            raise HandoffError('reply after stop is quarantined')
         if transaction != self.transaction:
             self._quarantine('late_reply')
             raise HandoffError('late reply cannot be reassociated')
@@ -731,7 +727,7 @@ class TransactionLease:
         if worker_rank is not None and type(worker_rank) is not int:
             self._quarantine('stale_identity')
             raise HandoffError('acknowledgment rank is invalid')
-        matches = [op for op in self.outstanding.values()
+        matches = [op for op in self.submitted
                    if op.ticket.op_seq == op_seq
                    and (worker_rank is None or op.ticket.worker_rank == worker_rank)]
         if len(matches) != 1:
@@ -750,6 +746,7 @@ class TransactionLease:
         return operation.ack
 
     def complete(self, proof):
+        self._require_live(allow_retiring=True)
         if type(proof) is not CompletionProof:
             raise HandoffError('completion needs CompletionProof')
         if proof.ticket.transaction != self.transaction:
@@ -765,14 +762,16 @@ class TransactionLease:
         if operation.proof is not None:
             self._quarantine('stale_identity')
             raise HandoffError('duplicate completion')
-        if proof.completion_seq <= self._last_completion:
+        key = proof.ticket.lane
+        if proof.completion_seq <= self._last_completion.get(key, -1):
             self._quarantine('stale_identity')
             raise HandoffError('completion sequence is not monotonic')
-        self._last_completion = proof.completion_seq
+        self._last_completion[key] = proof.completion_seq
         operation.proof = proof
         del self.outstanding[proof.ticket]
         self.completed.append(proof)
-        self.phase = Phase.COMPLETING
+        if self.phase is not Phase.RETIRING:
+            self.phase = Phase.COMPLETING
         self._emit('operation_completed', op_seq=proof.ticket.op_seq,
                    worker_rank=proof.ticket.worker_rank,
                    pending=len(self.outstanding), state=self.phase.value)
@@ -804,6 +803,11 @@ class TransactionLease:
                 raise E3Pending('an operation completed without acknowledgment')
         if len(self.completed) != len(self.submitted):
             raise E3Pending('completion set does not cover every submitted operation')
+        committed_ranks = {p.ticket.worker_rank for p in self.completed
+                           if p.kind is CompletionKind.STATE_WRITE
+                           and p.ticket.dependency_role is DependencyRole.COMMIT}
+        if committed_ranks != set(self.lanes):
+            raise E3Pending('commit requires state-write completion on every rank')
         self.commit_proof = proof
         self.commit_epoch += 1
         self.phase = Phase.COMMITTED
@@ -828,8 +832,10 @@ class TransactionLease:
         An unclean drain stays retirable but keeps quarantined outstanding
         identities; the caller must not release storage in that state.
         """
-        if self.outstanding:
-            raise E3Pending('transaction has outstanding operations')
+        if self.quarantine is not None:
+            raise HandoffError('quarantined transaction cannot retire storage')
+        if self.outstanding or any(not op.acked for op in self.submitted):
+            raise E3Pending('transaction has outstanding operations or acknowledgments')
         self.phase = Phase.RETIRED if self.quarantine is None else Phase.QUARANTINED
         self._emit('transaction_drained', state=self.phase.value,
                    reason_code='clean' if self.quarantine is None else self.quarantine)
@@ -911,6 +917,8 @@ class HandoffDispatcher:
         self.assert_owner()
         if not self.config.enabled:
             raise ConfigurationError('overlap is disabled')
+        if self._stopping is not None:
+            raise E3Pending('dispatcher admission stopped')
         if self.active is not None and self.active.phase is not Phase.RETIRED:
             raise E3Pending('one active prefill transaction is already leased')
         if MAX_ACTIVE_PREFILL != 1:
@@ -958,22 +966,32 @@ class HandoffDispatcher:
                 raise HandoffError('one operation ticket is required per leased rank')
             if len({item.op_seq for item in tickets}) != 1:
                 raise HandoffError('one rank-set operation must share its op_seq')
-        for item in tickets:
-            lease.submit(item)
         expected = tuple(sorted(lease.lanes)) if ranks is None else tuple(ranks)
-        if set(expected) != set(lease.lanes):
+        if len(expected) != len(set(expected)) or set(expected) != set(lease.lanes):
             raise HandoffError('prefill operation must reach every leased rank once')
+        if len(tickets) != len({item.worker_rank for item in tickets}):
+            raise HandoffError('duplicate rank ticket')
+        saved = (dict(lease.outstanding), list(lease.submitted), dict(lease._last_op), lease.phase)
+        if kind == 'operation':
+            try:
+                for item in tickets:
+                    lease.submit(item)
+            except BaseException:
+                lease.outstanding, lease.submitted, lease._last_op, lease.phase = saved
+                raise
         try:
             sequence = self._transport.submit(
                 'prefill-' + kind, transport_submit, ranks=expected,
                 timeout_s=self.config.reply_timeout_s + self.config.ack_timeout_s)
         except Backpressure:
+            # No broadcast was issued. Restore unsent tickets and sequence credits.
+            lease.outstanding, lease.submitted, lease._last_op, lease.phase = saved
             self.telemetry.record('command_ring_full', route=self.config.transport,
                                   command_slots=self.config.command_slots,
                                   pending=lease.pending)
             raise
         except BaseException:
-            lease.start_stop(StopKind.ABORT)
+            lease._quarantine('transport_failure')
             raise
         self._inflight[sequence] = (kind, lease.transaction, tickets)
         return tickets[0] if len(tickets) == 1 else tickets
@@ -1017,7 +1035,7 @@ class HandoffDispatcher:
         except TransportError:
             lease._quarantine('transport_failure')
             self._quarantined += 1
-        ready = self._poll_completions(lease, budget)
+        ready = () if lease.quarantine is not None else self._poll_completions(lease, budget)
         return DispatchReport(len(ready), tuple(ready), lease.pending, True,
                               lease.quarantine is not None, lease.phase.value)
 
@@ -1068,19 +1086,17 @@ class HandoffDispatcher:
                 for proof in report.proofs:
                     lease.complete(proof)
             return
-        if kind == 'commit':
-            ack = value[0] if isinstance(value, (list, tuple)) else value
-            if type(ack) is not CommitAck:
-                raise HandoffError('commit reply is not a typed acknowledgment')
-            validate_typed_reply(transaction, ack)
-            if not ack.published:
-                raise HandoffError('worker did not publish the transaction')
-            return
-        if kind == 'cancel':
-            ack = value[0] if isinstance(value, (list, tuple)) else value
-            if type(ack) is not CancelAck:
-                raise HandoffError('cancel reply is not a typed acknowledgment')
-            validate_typed_reply(transaction, ack)
+        if kind in ('commit', 'cancel'):
+            acks = value if isinstance(value, (list, tuple)) else (value,)
+            if len(acks) != len(lease.lanes):
+                raise HandoffError('control reply does not cover every rank')
+            expected_type = CommitAck if kind == 'commit' else CancelAck
+            for ack in acks:
+                if type(ack) is not expected_type:
+                    raise HandoffError('control reply has wrong type')
+                validate_typed_reply(transaction, ack)
+                if kind == 'commit' and not ack.published:
+                    raise HandoffError('worker did not publish the transaction')
             return
         raise HandoffError('unknown prefill reply kind')
 
@@ -1122,6 +1138,8 @@ class HandoffDispatcher:
         lease = self.active
         if lease is None:
             return Phase.IDLE
+        if self._inflight:
+            raise E3Pending('RPC acknowledgments still outstanding')
         if not (lease.phase is Phase.RETIRING or lease.phase is Phase.COMMITTED):
             raise E3Pending('only a stopping or committed transaction drains')
         phase = lease.drain()
@@ -1251,7 +1269,9 @@ class LifetimeLedger:
 # --- prefix sharing ---------------------------------------------------------
 
 class CommittedFrontier:
-    """Blocks visible to a prefix-sharing request: committed bytes only.
+    """Offline frontier model; NOT wired to the native cache lookup/allocation epoch.
+
+    Blocks visible to a prefix-sharing request: committed bytes only.
 
     A parked transaction's blocks are recorded when they are submitted and
     become shareable exactly at commit. A request that would share an
@@ -1380,6 +1400,8 @@ class WorkerHandoff:
     an explicit commit-role state-write proof recorded by the caller.
     """
 
+    fixture_only = True  # Metadata model, not a native worker execution adapter.
+
     def __init__(self, transaction, *, backend, now=time.monotonic):
         _check_transaction('worker handoff', transaction)
         if not isinstance(backend, CompletionBackend):
@@ -1391,6 +1413,7 @@ class WorkerHandoff:
         self.last_op = -1
         self.acks = 0
         self.completions = []
+        self.pending_operations = {}
         self.quarantine = None
 
     def apply(self, message):
@@ -1430,6 +1453,7 @@ class WorkerHandoff:
         self.last_op = message.op_seq
         self.phase = Phase.SUBMITTED
         self.acks += 1
+        self.pending_operations[message.op_seq] = message.dependency_role
         return SubmitAck(self.transaction, message.op_seq, True)
 
     def poll(self, message):
@@ -1443,18 +1467,24 @@ class WorkerHandoff:
             if type(proof) is not CompletionProof or proof.ticket.transaction != self.transaction:
                 self.quarantine = 'stale_identity'
                 raise HandoffError('worker backend returned a foreign completion')
+            if self.pending_operations.get(proof.ticket.op_seq) is not proof.ticket.dependency_role:
+                self.quarantine = 'stale_identity'
+                raise HandoffError('proof has no submitted operation')
+            del self.pending_operations[proof.ticket.op_seq]
             applied.append(proof)
             self.completions.append(proof)
-        return CompletionReport(self.transaction, tuple(applied), 0, False)
+        return CompletionReport(self.transaction, tuple(applied), len(self.pending_operations), False)
 
     def commit(self, message):
         self._check(message)
+        if self.phase not in (Phase.OPEN, Phase.SUBMITTED):
+            raise HandoffError('worker cannot publish after stop/commit')
         match = [p for p in self.completions
                  if p.completion_seq == message.completion_seq
                  and p.kind is CompletionKind.STATE_WRITE
                  and p.ticket.dependency_role is DependencyRole.COMMIT]
-        if not match:
-            raise HandoffError('commit has no recorded state-write completion')
+        if not match or self.pending_operations:
+            raise HandoffError('commit lacks completions for submitted operations')
         if self.phase is Phase.COMMITTED:
             raise HandoffError('worker commit is exactly-once')
         self.phase = Phase.COMMITTED
@@ -1511,12 +1541,26 @@ class RuntimeWorkerHandoff:
             return self.cancel(message)
         raise HandoffError('unknown S5 worker message')
 
+    def _check(self, message, expected):
+        if type(message) is not expected:
+            raise HandoffError('worker method/message type mismatch')
+        message.validate()
+        if self.quarantine is not None or message.transaction != self.transaction:
+            self.quarantine = 'stale_identity'
+            raise HandoffError('worker transaction is stale or quarantined')
+
     def open(self, message):
+        self._check(message, OpenPrefill)
+        if self.phase is not Phase.OPEN:
+            raise HandoffError('worker transaction is already opened')
         self.runtime.open_prefill(self.transaction, self.metadata)
         self.phase = Phase.OPEN
         return SubmitAck(self.transaction, 0, True)
 
     def submit(self, message):
+        self._check(message, SubmitOperation)
+        if self.phase not in (Phase.OPEN, Phase.SUBMITTED):
+            raise HandoffError('worker is not accepting operations')
         if message.op_seq <= self.last_op:
             raise HandoffError('worker operation sequence is not monotonic')
         self.last_op = message.op_seq
@@ -1526,6 +1570,7 @@ class RuntimeWorkerHandoff:
         return SubmitAck(self.transaction, message.op_seq, True)
 
     def poll(self, message):
+        self._check(message, PollOperations)
         result = self.runtime.poll(self.transaction)
         if not isinstance(result, PollResult):
             raise HandoffError('runtime poll did not return PollResult')
@@ -1537,6 +1582,9 @@ class RuntimeWorkerHandoff:
                                 result.pending, result.failed)
 
     def commit(self, message):
+        self._check(message, CommitTransaction)
+        if self.phase not in (Phase.OPEN, Phase.SUBMITTED):
+            raise HandoffError('worker cannot publish after stop/commit')
         match = [p for p in self.completions
                  if p.completion_seq == message.completion_seq
                  and p.kind is CompletionKind.STATE_WRITE
@@ -1546,10 +1594,16 @@ class RuntimeWorkerHandoff:
         record = self.runtime.commit(self.transaction, match[-1])
         if self.phase is Phase.COMMITTED:
             raise HandoffError('worker commit is exactly-once')
+        epoch = getattr(record, 'epoch', None)
+        if (getattr(record, 'transaction', None) != self.transaction
+                or type(epoch) is not int or epoch < 1):
+            self.quarantine = 'stale_identity'
+            raise HandoffError('runtime returned no valid commit record')
         self.phase = Phase.COMMITTED
-        return CommitAck(self.transaction, getattr(record, 'epoch', 1), True)
+        return CommitAck(self.transaction, epoch, True)
 
     def cancel(self, message):
+        self._check(message, CancelTransaction)
         self.runtime.abort(self.transaction)
         self.phase = Phase.RETIRING
         return CancelAck(self.transaction, self.phase.value)
@@ -1663,7 +1717,7 @@ def build_composition(env, *, transport, backend, lanes, transaction=None, alloc
     telemetry = dispatcher.telemetry
     ledger = LifetimeLedger()
     frontier = CommittedFrontier()
-    channel = PrefillPPChannel(stages=max(1, len(lanes)), telemetry=telemetry)
+    channel = PrefillPPChannel(stages=2, telemetry=telemetry)  # PP24/24; four TP ranks are not four stages.
     route = admit_route(overlap_enabled=True, transport=config.transport,
                         sparse_active=False, dense_available=True)
     budget = allocation if allocation is not None else allocation_budget(config.chunk_tokens,
@@ -1679,8 +1733,8 @@ def routing_contract():
     return {
         'lane_runtime': ('open_prefill', 'prepare_prefill', 'submit', 'poll',
                          'propose_state', 'commit', 'abort', 'release'),
-        'graph_router': ('supported_route', 'enter_lane_context', 'exit_lane_context',
-                         'register_decode_bank', 'transition_authorized'),
+        'graph_router': ('supported_route', 'add_bank', 'capture_at_startup',
+                         'replay', 'complete_replay', 'transition', 'shutdown'),
         'executor': ('collective_rpc', 'unique_reply_rank', 'aggregate_order'),
         'scheduler': ('mutation_guard', 'defer_request_free', 'committed_frontier'),
         'pp': ('dedicated_prefill_buffers', 'bounded_outstanding', 'no_sample_ring'),

@@ -16,6 +16,7 @@ fixtures run offline. Native shared-memory/ZMQ, CUDA reply deserialization, PP
 transport and real engine timing are owner-run acceptance steps.
 """
 import hashlib
+import math
 import time
 
 from e3_types import E3ContractError
@@ -137,6 +138,9 @@ _EXECUTOR_FORWARD = (
                         w.worker_response_mq.shutdown()
                         w.worker_response_mq = None
 '''),
+    ('        if response_mqs := getattr(self, "response_mqs", None):\n',
+     '        _flash_s5_hooks.before_shutdown(self)\n'
+     '        if (response_mqs := getattr(self, "response_mqs", None)) and not _flash_s5_hooks.retain_mq(self, None):\n'),
 )
 
 
@@ -266,8 +270,11 @@ class LocalFuture:
         self.executor = executor
         self.sequence = sequence
         self.aggregate = aggregate
+        self._consumed = False
         self._taken = None
         self._taken_lag = None
+        self._result_ready = False
+        self._result = None
 
     def _transport(self):
         transport = getattr(self.executor, '_flash_s5_transport', None)
@@ -282,18 +289,25 @@ class LocalFuture:
         return bool(call is not None and call.ready)
 
     def done(self):
-        if self._taken is not None:
+        if self._consumed:
             return True
         return self.poll(1)
 
     def take(self):
-        if self._taken is not None:
+        if self._consumed:
             raise NotReady('future result already consumed')
         value, lag = self._transport().take(self.sequence)
+        self._consumed = True
         self._taken, self._taken_lag = value, lag
         return value
 
     def result(self, timeout=None):
+        if self._result_ready:
+            return self._result
+        if self._consumed:
+            self._result = self.aggregate(self._taken) if self.aggregate else self._taken
+            self._result_ready = True
+            return self._result
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             transport = self._transport()
@@ -303,7 +317,9 @@ class LocalFuture:
                 raise TransportError('reply expectation disappeared')
             if call.ready:
                 value = self.take()
-                return self.aggregate(value) if self.aggregate else value
+                self._result = self.aggregate(value) if self.aggregate else value
+                self._result_ready = True
+                return self._result
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError('reply not ready before deadline')
             time.sleep(0.001)
@@ -376,6 +392,8 @@ def collective_rpc(executor, stock, method, timeout=None, args=(), kwargs=None,
                      ec_output_aggregator=ec_output_aggregator)
     if getattr(executor, '_flash_s5_stock_forbidden', False) is not True:
         raise E3ContractError('owned transport installed without disabling stock route')
+    if getattr(executor, 'is_failed', False):
+        raise TransportError('executor failed')
     kwargs = kwargs or {}
     if isinstance(method, str):
         send_method = method
@@ -404,7 +422,7 @@ def collective_rpc(executor, stock, method, timeout=None, args=(), kwargs=None,
 
         broadcast_rank = unique_reply_rank
     effective_timeout = timeout if timeout is not None else config_reply_timeout(executor)
-    if type(effective_timeout) not in (int, float) or effective_timeout <= 0:
+    if type(effective_timeout) not in (int, float) or not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise E3ContractError('executor RPC needs a positive finite timeout')
     def send(sequence):
         executor.rpc_broadcast_mq.enqueue((send_method, args, kwargs,
@@ -463,7 +481,10 @@ def before_step_with_batch_queue(engine):
     handoff = _handoff(engine)
     if handoff is None:
         return None
-    return handoff.poll(8)
+    report = handoff.poll(8)
+    if report.quarantined:
+        raise E3ContractError('E3 handoff is quarantined')
+    return report
 
 
 def before_abort(engine, request_ids):
@@ -489,7 +510,10 @@ def before_finish_pause(engine):
         return None
     if handoff.active is not None and handoff.active.quarantine is not None:
         raise E3ContractError('pause cannot complete with an unclean transaction')
-    return handoff.poll(8)
+    report = handoff.poll(8)
+    if handoff.active is not None:
+        raise E3ContractError('pause requires asynchronous drain before device synchronization')
+    return report
 
 
 def before_reset_prefix(engine):
@@ -518,6 +542,8 @@ def worker_rpc(worker, name, message):
     if not hasattr(message, 'validate'):
         raise E3ContractError('S5 worker RPC requires a typed message')
     message.validate()
+    if getattr(message, 'kind', None) != name:
+        raise E3ContractError('S5 RPC method and typed message disagree')
     adapter = getattr(worker, '_flash_s5_worker', None)
     if adapter is None:
         runner = getattr(worker, 'model_runner', None)

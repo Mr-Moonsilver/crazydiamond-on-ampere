@@ -199,17 +199,19 @@ class LeaseTests(unittest.TestCase):
     def test_commit_requires_commit_role_and_publication_is_once(self):
         lease = ah.TransactionLease(self.transaction, lanes(), max_outstanding=4,
                                     clock=lambda: 0.0)
-        commit_ticket = ticket(self.transaction, seq=1, role=DependencyRole.COMMIT)
-        lease.submit(commit_ticket)
-        lease.acknowledge(self.transaction, 1, True, worker_rank=0)
-        state = proof(commit_ticket, CompletionKind.STATE_WRITE)
+        commit_tickets = [ticket(self.transaction, rank=r, seq=1,
+                                 role=DependencyRole.COMMIT) for r in range(4)]
+        for item in commit_tickets:
+            lease.submit(item)
+            lease.acknowledge(self.transaction, 1, True, worker_rank=item.worker_rank)
+        states = [proof(t, CompletionKind.STATE_WRITE, seq=1) for t in commit_tickets]
         with self.assertRaises(ah.HandoffError):
-            lease.commit(state)  # never recorded as completed
-        lease.complete(state)
-        self.assertEqual(lease.commit(state), 1)
-        self.assertEqual(lease.commit_epoch, 1)
+            lease.commit(states[0])
+        for state in states:
+            lease.complete(state)
+        self.assertEqual(lease.commit(states[0]), 1)
         with self.assertRaises(ah.HandoffError):
-            lease.commit(state)
+            lease.commit(states[0])
 
     def test_stale_duplicate_and_late_proofs_quarantine_without_mutation(self):
         lease = ah.TransactionLease(self.transaction, lanes(), max_outstanding=4,
@@ -342,14 +344,14 @@ class SchedulerLeaseTests(unittest.TestCase):
             'new_block_ids_to_zero': (), 'kv_cache_block_copies': ()})()
         self.assertFalse(self.guard.mutation_guard(out, self.transaction))
         out.block_table_updates = ({'new_block_ids': [2]},)
-        self.assertTrue(self.guard.mutation_guard(out, self.transaction))
+        self.assertFalse(self.guard.mutation_guard(out, self.transaction))
         self.guard.publish(self.t)
         copy = type('Copy', (), {'src_block_id': 2, 'dst_block_id': 4})()
         out.block_table_updates = ()
         out.kv_cache_block_copies = (copy,)
         self.assertTrue(self.guard.mutation_guard(out, self.transaction))
         self.assertEqual(self.guard.cow_requested, 1)
-        self.assertEqual(self.guard.cow_completed, 1)
+        self.assertEqual(self.guard.cow_completed, 0)
         self.assertEqual(self.guard.lease_caused_cow, 0)
 
     def test_allocation_of_a_leased_block_and_unclean_shutdown_refused(self):
@@ -382,7 +384,7 @@ class SourceTransformTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(e2.encode()).hexdigest(), digest)
             out = gen(e2)
             self.assertEqual(rev(out), e2)
-            self.assertGreaterEqual(out.count('_flash_s5_hooks.'), 4)
+            self.assertGreaterEqual(out.count('_flash_s5_hooks.'), 3)
 
     def test_worker_typed_rpc_dispatch_and_unknown_method_rejected(self):
         class Worker:
@@ -530,6 +532,8 @@ class DispatcherTests(unittest.TestCase):
         second = tuple(ticket(self.transaction, rank, 2) for rank in range(4))
         with self.assertRaises(reply_transport.Backpressure):
             dispatcher.submit(second, lambda _s: None, kind='operation')
+        self.assertEqual(dispatcher.active.pending, 4)
+        self.assertEqual(len(dispatcher.active.submitted), 4)
         tiny.close(1.0)
 
     def test_partial_send_quarantines_and_stop_is_idempotent(self):
@@ -544,9 +548,9 @@ class DispatcherTests(unittest.TestCase):
             raise RuntimeError('partial broadcast')
         with self.assertRaises(RuntimeError):
             self.dispatcher.submit(ticket_, broken, kind='operation')
-        self.assertEqual(self.dispatcher.stop('shutdown'), ah.Phase.RETIRING)
-        self.assertEqual(self.dispatcher.stop('shutdown'), ah.Phase.RETIRING)
-        self.assertIsNotNone(self.dispatcher.active.stop_kind)
+        self.assertEqual(self.dispatcher.stop('shutdown'), ah.Phase.QUARANTINED)
+        self.assertEqual(self.dispatcher.stop('shutdown'), ah.Phase.QUARANTINED)
+        self.assertEqual(self.dispatcher.active.quarantine, 'transport_failure')
 
 
 class ExecutedTransformTests(unittest.TestCase):
@@ -612,7 +616,7 @@ class ExecutedTransformTests(unittest.TestCase):
         self.assertEqual([b.ref_cnt for b in blocks], [0, 0])
         self.assertEqual(guard.lease_caused_cow, 0)
 
-    def test_generated_writable_and_touch_refuse_uncommitted_lease(self):
+    def test_generated_writability_unchanged_and_touch_refuses_uncommitted_lease(self):
         from pathlib import Path
         import mirror_hooks
         import telemetry_hooks
@@ -652,7 +656,7 @@ class ExecutedTransformTests(unittest.TestCase):
         t = ticket(tx())
         block = Block(4)
         guard.lease_blocks(t, ah.LeaseCategory.ARENA, [4])
-        self.assertFalse(pool.is_block_writable(block))
+        self.assertTrue(pool.is_block_writable(block))
         with self.assertRaises(ah.E3Pending):
             pool.touch([block])
         self.assertEqual(block.ref_cnt, 1)
@@ -660,6 +664,161 @@ class ExecutedTransformTests(unittest.TestCase):
         pool.touch([block])
         self.assertEqual(block.ref_cnt, 2)
         self.assertFalse(pool.is_block_writable(block))
+
+
+
+class ReviewRegressions(unittest.TestCase):
+    def test_completion_before_ack_then_cancel_preserves_retiring(self):
+        transaction = tx()
+        lease = ah.TransactionLease(transaction, lanes(1), max_outstanding=2)
+        t = ticket(transaction)
+        lease.submit(t)
+        lease.start_stop('cancel')
+        lease.complete(proof(t))
+        self.assertIs(lease.phase, ah.Phase.RETIRING)
+        with self.assertRaises(ah.E3Pending):
+            lease.drain()
+        lease.acknowledge(transaction, 1, worker_rank=0)
+        self.assertIs(lease.drain(), ah.Phase.RETIRED)
+        with self.assertRaises(ah.HandoffError):
+            lease.complete(proof(t, seq=2))
+
+    def test_single_rank_commit_cannot_publish_four_rank_transaction(self):
+        lease = ah.TransactionLease(tx(), lanes(), max_outstanding=4)
+        t = ticket(tx(), role=DependencyRole.COMMIT)
+        lease.submit(t)
+        lease.complete(proof(t, CompletionKind.STATE_WRITE))
+        lease.acknowledge(tx(), 1, worker_rank=0)
+        with self.assertRaises(ah.E3Pending):
+            lease.commit(proof(t, CompletionKind.STATE_WRITE))
+
+    def test_quarantined_completion_does_not_reactivate_transaction(self):
+        lease = ah.TransactionLease(tx(), lanes(1), max_outstanding=1)
+        t = ticket(tx())
+        lease.submit(t)
+        lease._quarantine('transport_failure')
+        with self.assertRaises(ah.HandoffError):
+            lease.complete(proof(t))
+        self.assertEqual(lease.pending, 1)
+        self.assertIs(lease.phase, ah.Phase.QUARANTINED)
+
+    def test_control_reply_must_validate_every_rank(self):
+        d = ah.HandoffDispatcher(ah.HandoffConfig.from_env({ah.OVERLAP_ENV: '1'}), allow_fixture=True)
+        d.open(tx(), lanes())
+        acks = [ah.CommitAck(tx(), 1, True)] * 3 + [ah.CommitAck(tx(), 1, False)]
+        with self.assertRaises(ah.HandoffError):
+            d._apply_reply('commit', tx(), (), acks)
+        with self.assertRaises(ah.HandoffError):
+            d._apply_reply('cancel', tx(), (), [ah.CancelAck(tx(), 'retiring')])
+
+    def test_none_future_result_and_aggregation_are_cached(self):
+        class Transport:
+            _calls = {0: type('Call', (), {'ready': True})()}
+            count = 0
+            def poll(self, budget): pass
+            def take(self, sequence):
+                self.count += 1
+                del self._calls[sequence]
+                return [None], {}
+        transport = Transport()
+        executor = type('Executor', (), {'_flash_s5_transport': transport})()
+        aggregates = []
+        def aggregate(value):
+            aggregates.append(value)
+            return value[0]
+        future = eh.LocalFuture(executor, 0, aggregate)
+        self.assertIsNone(future.result())
+        self.assertTrue(future.done())
+        self.assertIsNone(future.result())
+        self.assertEqual(transport.count, 1)
+        self.assertEqual(len(aggregates), 1)
+
+    def test_generated_shutdown_guards_both_response_queue_aliases(self):
+        ref = ROOT / 'reference/vllm-src' / eh.EXECUTOR_PATH
+        generated = eh.generate_executor(ref.read_text())
+        tree = ast.parse(generated)
+        shutdown = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'shutdown')
+        # Execute the actual transformed shutdown with an unclean receiver.
+        events = []
+        class MQ:
+            def shutdown(self): events.append('destroy')
+        class Hooks:
+            def before_shutdown(self, executor): events.append('close'); return False, {}
+            def retain_mq(self, executor, worker): return True
+        class Log:
+            def debug(self, *args): pass
+            def debug_once(self, *args): pass
+        shutdown.decorator_list = []
+        module = ast.Module(body=[shutdown], type_ignores=[])
+        env = {'_flash_s5_hooks': Hooks(), 'logger': Log()}
+        # Name annotations in pinned source may be postponed in its module.
+        exec('from __future__ import annotations\n' + ast.unparse(module), env)
+        executor = type('Executor', (), {})()
+        executor.shutting_down = False
+        executor.workers = []
+        executor.rpc_broadcast_mq = None
+        executor.response_mqs = [MQ()]
+        env['shutdown'](executor)
+        self.assertEqual(events, ['close'])
+        self.assertEqual(len(executor.response_mqs), 1)
+
+    def test_deferred_request_retried_after_last_consumer(self):
+        pool = FakePool()
+        request = type('Request', (), {'request_id': 'r'})()
+        scheduler = FakeScheduler(pool)
+        scheduler.kv_cache_manager.get_block_ids = lambda rid: ((4,),)
+        freed = []
+        scheduler._free_request_blocks = freed.append
+        guard = sh.SchedulerLeases().attach(scheduler, pool)
+        t = ticket(tx())
+        guard.lease_blocks(t, ah.LeaseCategory.SOURCE_HISTORY, [4])
+        self.assertTrue(guard.defer_request_free(scheduler, request))
+        self.assertEqual(freed, [])
+        guard.release(t, ah.LeaseCategory.SOURCE_HISTORY, proof(t, CompletionKind.COPY_EVENT))
+        self.assertEqual(freed, [request])
+        self.assertFalse(guard.deferred_requests)
+        self.assertTrue(guard.shutdown()['clean'])
+
+    def test_after_schedule_rejection_is_not_silently_ignored(self):
+        pool = FakePool()
+        scheduler = FakeScheduler(pool)
+        guard = sh.SchedulerLeases().attach(scheduler, pool)
+        guard.lease_blocks(ticket(tx()), ah.LeaseCategory.ARENA, [4])
+        out = type('Output', (), {'new_block_ids_to_zero': [4]})()
+        with self.assertRaises(ah.E3Pending):
+            sh.after_schedule(scheduler, out)
+
+    def test_direct_worker_method_rejects_foreign_message_before_runtime(self):
+        runtime = type('Runtime', (), {'abort': lambda *args: self.fail('runtime called')})()
+        adapter = ah.RuntimeWorkerHandoff(runtime, tx(), metadata=object())
+        with self.assertRaises(ah.HandoffError):
+            adapter.cancel(ah.CancelTransaction(tx(seq=2), 'cancel'))
+
+
+class AdditionalReviewRegressions(unittest.TestCase):
+    def test_lower_operation_sequence_rejected_even_if_not_duplicate(self):
+        lease = ah.TransactionLease(tx(), lanes(1), max_outstanding=3)
+        lease.submit(ticket(tx(), seq=9))
+        with self.assertRaises(ah.HandoffError):
+            lease.submit(ticket(tx(), seq=8))
+
+    def test_stop_blocks_new_admission_without_an_active_transaction(self):
+        dispatcher = ah.HandoffDispatcher(ah.HandoffConfig.from_env({ah.OVERLAP_ENV: '1'}), allow_fixture=True)
+        dispatcher.stop('shutdown')
+        with self.assertRaises(ah.E3Pending):
+            dispatcher.open(tx(), lanes())
+
+
+class RuntimeCommitRecordTests(unittest.TestCase):
+    def test_missing_native_commit_record_cannot_fabricate_publication(self):
+        class Runtime:
+            def commit(self, transaction, proof): return None
+        adapter = ah.RuntimeWorkerHandoff(Runtime(), tx(), metadata=object())
+        t = ticket(tx(), role=DependencyRole.COMMIT)
+        adapter.completions = [proof(t, CompletionKind.STATE_WRITE)]
+        with self.assertRaises(ah.HandoffError):
+            adapter.commit(ah.CommitTransaction(tx(), 1))
+        self.assertIsNot(adapter.phase, ah.Phase.COMMITTED)
 
 
 if __name__ == '__main__':

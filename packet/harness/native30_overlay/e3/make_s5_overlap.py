@@ -10,9 +10,9 @@ a duplicate/missing anchor aborts before an output directory is created.
 Composition order:
   1. E2's serial overlay is the base (left byte-identical where unchanged).
   2. A's lane hooks transform the E2 runner.
-  3. C's startup builder is inserted between E2's install and A's init_lane.
+  3. B's reviewed graph hooks compose after A; C's startup builder is inserted between E2's install and A's init_lane.
   4. C's scheduler/block-pool leases and executor/core/worker hooks are applied.
-  5. B's declared graph transform is applied last, through a narrow interface:
+  5. Optional additional pinned transforms can be applied last through this interface:
      a module with ``SOURCE_PINS`` (relative path -> sha256 of the composed
      input it reviewed) and ``generate(files) -> {relative path: source}``.
      B may only replace paths it pinned. No B module is guessed or imported by
@@ -34,6 +34,7 @@ import shutil
 import async_handoff
 import executor_hooks
 import lane_hooks
+import graph_hooks
 import scheduler_hooks
 
 
@@ -41,7 +42,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
 E3_MODULES = ('e3_types', 'lane_state', 'reply_transport', 'lane_hooks',
-              'async_handoff', 'executor_hooks', 'scheduler_hooks', 's5_startup')
+              'async_handoff', 'executor_hooks', 'scheduler_hooks', 's5_startup',
+              'graph_router', 'graph_hooks')
 
 # Exact reviewed E2-composed inputs. Any other bytes are refused.
 E2_RUNNER_SHA256 = lane_hooks.E2_STARTUP_SHA256
@@ -112,7 +114,7 @@ def compose_runner(source):
     """A's lane transform, then C's startup-builder insertion."""
     if _sha_text(source) != E2_RUNNER_SHA256:
         raise ValueError('runner is not the reviewed E2 composition')
-    text = lane_hooks.generate(source)
+    text = graph_hooks.generate(lane_hooks.generate(source))
     text = _replace(text, _RUNNER_IMPORT, _RUNNER_IMPORT_S5)
     text = _replace(text, _RUNNER_INIT, _RUNNER_INIT_S5)
     ast.parse(text)
@@ -122,6 +124,7 @@ def compose_runner(source):
 def revert_runner(source, expected):
     text = _replace(source, _RUNNER_INIT_S5, _RUNNER_INIT)
     text = _replace(text, _RUNNER_IMPORT_S5, _RUNNER_IMPORT)
+    text = graph_hooks.revert(text)
     text = lane_hooks.revert(text, expected=expected)
     return text
 
@@ -241,7 +244,7 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         if path.is_symlink():
             raise ValueError('baseline symlinks not supported')
         rel = path.relative_to(base).as_posix()
-        if path.is_file() and rel not in _MANIFESTS:
+        if path.is_file() and rel not in _MANIFESTS and rel in (*E2_INPUTS, LAUNCHER_NAME):
             base_text[rel] = path.read_text()
     files = dict(base_text)
     files['model_runner_v2.py'] = compose_runner(files['model_runner_v2.py'])
@@ -257,7 +260,10 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
     files['e3_sources/worker.py'] = executor_hooks.generate_worker(
         (reference / executor_hooks.WORKER_PATH).read_text())
     files[S5_LAUNCHER_NAME] = _s5_launcher(launcher_source)
-    graph_record = None
+    graph_record = {'module': 'graph_hooks.py',
+                    'sha256': sha(HERE / 'graph_hooks.py'),
+                    'router_sha256': sha(HERE / 'graph_router.py'),
+                    'source_pins': dict(graph_hooks.A_SOURCE_SHA256)}
     if graph is not None:
         module = load_graph(graph)
         files = compose_graph(module, files)
@@ -316,9 +322,13 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
                      'mounts_require': 'S5=1',
                      'e2_launcher_preserved': LAUNCHER_NAME,
                      'status': 'offline-generated; not mounted or started'},
-        'status': 'offline-generated; owner source/lifetime review and GPU gates required',
+        'status': 'offline checkpoint; native runtime and engine admission NOT IMPLEMENTED; NOT ARMABLE',
+        'armable': False,
         'native_gaps': [
-            'owner native factory supplies transport/backend/UID/PP allocations',
+            'native worker factory, graph builder and event/PP backends not implemented',
+            'engine admission/segment dispatch/all-rank scheduler commit not implemented',
+            'scheduler committed-prefix lookup and allocation incarnations not integrated',
+            'bounded command sender and native reply transport not validated',
             'no GPU, CUDA graph, PP ring, DMA qualification or performance run',
         ],
         'incremental_kv_bytes': 0,
@@ -329,6 +339,8 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
     # Validation is complete: only now create the new output.
     shutil.copytree(base, out)
     for name, text in files.items():
+        if base_text.get(name) == text:
+            continue
         path = out / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
@@ -351,7 +363,7 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
     return dict(manifest_sha256=sha(out / 'SHA256SUMS'),
                 generated_files=sorted(changed),
                 settings=installed,
-                allocation_budget=budget)
+                allocation_budget=budget_record)
 
 
 def main():

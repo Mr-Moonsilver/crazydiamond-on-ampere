@@ -108,6 +108,17 @@ class SyntheticTests(unittest.TestCase):
         text = (out / 'e3/async_handoff.py').read_text()
         self.assertIn('from .e3_types import', text)
 
+    def test_inert_binary_and_line_endings_are_preserved(self):
+        root, base, ref, _, core = self.fixture()
+        binary = bytes((0, 255, 13, 10))
+        (base / 'inert.bin').write_bytes(binary)
+        (base / 'unchanged.py').write_bytes(b'UNCHANGED = True\r\n')
+        whole = manifest(base)
+        with self.stubs(base, ref):
+            g.build(base, root / 'out', ref, whole)
+        self.assertEqual((root / 'out/inert.bin').read_bytes(), binary)
+        self.assertEqual((root / 'out/unchanged.py').read_bytes(), b'UNCHANGED = True\r\n')
+
     def test_default_off_settings_budget_and_launcher_guard(self):
         root, base, ref, result = self.build()
         out = root / 'out'
@@ -326,6 +337,11 @@ class FullPinnedTests(unittest.TestCase):
         self.assertLess(builder, lane)
         self.assertEqual(text.count('_flash_s5_startup.install_builder'), 1)
         self.assertIn('import vllm.v1.flash_e3.s5_startup as _flash_s5_startup', text)
+        self.assertIn('_flash_e3_graph.replay_fullgraph(', text)
+        self.assertIn('_flash_e3_graph.capture_banks(self)', text)
+        self.assertTrue((self.out / 'e3/graph_router.py').is_file())
+        self.assertIn('from .graph_router import', (self.out / 'e3/graph_hooks.py').read_text())
+        json.dumps(self.result)  # Actual CLI output must be serializable.
         # C's reverse path proves only C's insertion is removed before A's.
         self.assertEqual(g.revert_runner(text, (self.base / 'model_runner_v2.py').read_text()),
                          (self.base / 'model_runner_v2.py').read_text())
@@ -336,7 +352,7 @@ class FullPinnedTests(unittest.TestCase):
         self.assertIn('_flash_s5_hooks.defer_request_free', scheduler)
         self.assertIn('_flash_s5_hooks.blocked_deferred', scheduler)
         self.assertIn('_flash_s5_hooks.hold_leased_blocks', pool)
-        self.assertIn('_flash_s5_hooks.block_held', pool)
+        self.assertNotIn('_flash_s5_hooks.block_held', pool)
         self.assertEqual(sh.revert_scheduler(scheduler),
                          (self.base / 'core/scheduler.py').read_text())
         self.assertEqual(sh.revert_block_pool(pool),
@@ -373,12 +389,13 @@ class FullPinnedTests(unittest.TestCase):
         record = json.loads((self.out / 'S5-OVERLAP-GENERATION.json').read_text())
         self.assertEqual(record['e2_composed_pins'], g.E2_INPUTS)
         self.assertEqual(record['reference_source_pins'], eh.PINS)
-        self.assertIsNone(record['graph_composition'])
+        self.assertEqual(record['graph_composition']['module'], 'graph_hooks.py')
+        self.assertFalse(record['armable'])
 
     def test_package_imports_and_no_old_reader_is_exposed(self):
         subprocess.run([sys.executable, '-I', '-c',
                         'import sys;sys.path.insert(0,sys.argv[1]);'
-                        'import e3.executor_hooks,e3.async_handoff;'
+                        'import e3.executor_hooks,e3.async_handoff,e3.graph_hooks,e3.graph_router;'
                         'assert hasattr(e3.executor_hooks,"LocalFuture")',
                         str(self.out)], check=True)
         executor = (self.out / 'e3_sources/executor.py').read_text()
