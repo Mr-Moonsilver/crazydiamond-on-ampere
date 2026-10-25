@@ -23,6 +23,56 @@ def fresh():
 
 
 class OracleQueue(unittest.TestCase):
+    def test_failure_trace_after_existing_primary_uses_real_exclusive_writer(self):
+        from s5_failure import diagnostic,worker_failure
+        from s5_segment import write_json
+        from contextlib import redirect_stderr
+        import io,hashlib
+        class CorrectnessError(RuntimeError):pass
+        for existing in (False,True):
+            root=fresh();path=root/'result.json.rank0.error.json'
+            primary=dict(fatal_correctness=True,error='primary mismatch',evidence={'immutable':True})
+            if existing:write_json(path,primary)
+            calls=[]
+            result=diagnostic(path,primary,lambda:calls.append('trace') or dict(completed=True,comparisons=[]))
+            self.assertEqual(calls,['trace']);self.assertTrue(result['completed'])
+            original=path.read_bytes()
+            side=json.loads((root/'result.json.rank0.source-trace.json').read_text())
+            self.assertEqual(json.loads(original),primary)
+            self.assertEqual(side['primary']['sha256'],hashlib.sha256(original).hexdigest())
+            self.assertTrue(side['diagnostic_trace']['completed'])
+            with redirect_stderr(io.StringIO()) as log:
+                try:raise FileExistsError('secondary diagnostic error')
+                except FileExistsError as exc:
+                    rc=worker_failure(path,exc,CorrectnessError,{},lambda:calls.append('closed'))
+            self.assertEqual(rc,1);self.assertEqual(path.read_bytes(),original)
+            self.assertIn('Traceback',log.getvalue());self.assertIn('FileExistsError',log.getvalue())
+            self.assertEqual(calls,['trace','closed'])
+            self.assertTrue(json.loads((root/'result.json.rank0.worker-exception.json').read_text())['fatal_correctness'])
+
+    def test_trace_exception_is_additive_and_cannot_clear_primary(self):
+        from s5_failure import diagnostic,worker_failure
+        from s5_segment import write_json
+        from contextlib import redirect_stderr
+        import io
+        root=fresh();path=root/'result.json.rank1.error.json'
+        write_json(path,dict(fatal_correctness=True,error='primary'))
+        original=path.read_bytes()
+        def fail():raise RuntimeError('trace failure')
+        with redirect_stderr(io.StringIO()) as log:
+            result=diagnostic(path,{},fail)
+        self.assertFalse(result['completed']);self.assertEqual(result['error_type'],'RuntimeError')
+        self.assertIn('Traceback',log.getvalue());self.assertEqual(path.read_bytes(),original)
+        self.assertTrue((root/'result.json.rank1.source-trace-start.json').exists())
+        self.assertFalse(json.loads((root/'result.json.rank1.source-trace.json').read_text())['diagnostic_trace']['completed'])
+        # A worker with no prior correctness failure remains INCONCLUSIVE;
+        # even failure of watchdog.close cannot hide its traceback/verdict.
+        other=root/'result.json.rank0.error.json'
+        with redirect_stderr(io.StringIO()) as log:
+            rc=worker_failure(other,ValueError('worker failure'),AssertionError,{},fail)
+        self.assertEqual(rc,2);self.assertFalse(json.loads(other.read_text())['fatal_correctness'])
+        self.assertIn('ValueError',log.getvalue());self.assertIn('trace failure',log.getvalue())
+
     def test_reject_bad_inputs_before_any_launch(self):
         for names in ([],['mixed-resident34']*2,['*'],['qsa-resident24','../x'],['$(touch x)']):
             with self.assertRaises(ValueError):validate(names,'0,2','on',6,1)

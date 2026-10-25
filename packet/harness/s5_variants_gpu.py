@@ -290,6 +290,6 @@ def run(a):
         if rank==0:write_json(output,dict(rung=a.rung,pair=a.pair,ranks=rows))
         dist.destroy_process_group();progress.update('completed');wd.close();return 0
     except BaseException as e:
+        from s5_failure import worker_failure
         path=Path(str(output)+f'.rank{rank}.error.json')
-        if not path.exists():write_json(path,dict(fatal_correctness=isinstance(e,b.CorrectnessError),error=str(e),evidence=getattr(e,'evidence',{}),partial_rank=result))
-        wd.close();return 1 if isinstance(e,b.CorrectnessError) else 2
+        return worker_failure(path,e,b.CorrectnessError,result,wd.close)

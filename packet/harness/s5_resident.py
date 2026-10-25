@@ -176,26 +176,21 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
             if trace_on_fail=='1':
                 from s5_substitution_trace import diagnose
                 phase('terminal-resident-source-trace',300)
-                # A tracing failure must not erase the established correctness
-                # failure. Save the primary evidence before any extra work.
-                write_json(error_path,dict(fatal_correctness=True,
-                    error='resident/prefetch substitution differs from matched host sequences',evidence=check))
-                try:
-                    result['resident_source_trace']=diagnose(pre,transport,original_kv,resident_kv,prefetch,green.sp,progress)
-                    check['diagnostic_trace']=result['resident_source_trace']
-                    for pair in result['resident_source_trace']['comparisons']:
-                        for chunk in pair['chunks']:
-                            print('S5_SOURCE_TRACE '+json.dumps(dict(rank=result['rank'],left=pair['left'],right=pair['right'],
-                                chunk=chunk['chunk'],layer=chunk['first_layer'],op=chunk['first_op'],
-                                first_divergence=chunk['first_divergence'])),flush=True)
-                            boundary=chunk['layer3_boundary']
-                            print('S5_LAYER3_BOUNDARY '+json.dumps(dict(rank=result['rank'],left=pair['left'],right=pair['right'],
-                                chunk=chunk['chunk'],complete=boundary['complete'],all_equal=boundary['all_equal'],
-                                **boundary['status'])),flush=True)
-                except Exception as exc:
-                    check['diagnostic_trace']=dict(completed=False,error_type=type(exc).__name__)
-                write_json(error_path,dict(fatal_correctness=True,
-                    error='resident/prefetch substitution differs from matched host sequences',evidence=check))
+                from s5_failure import diagnostic
+                result['resident_source_trace']=diagnostic(error_path,
+                    dict(fatal_correctness=True,
+                         error='resident/prefetch substitution differs from matched host sequences',evidence=check),
+                    lambda:diagnose(pre,transport,original_kv,resident_kv,prefetch,green.sp,progress))
+                check['diagnostic_trace']=result['resident_source_trace']
+                for pair in result['resident_source_trace'].get('comparisons',[]):
+                    for chunk in pair['chunks']:
+                        print('S5_SOURCE_TRACE '+json.dumps(dict(rank=result['rank'],left=pair['left'],right=pair['right'],
+                            chunk=chunk['chunk'],layer=chunk['first_layer'],op=chunk['first_op'],
+                            first_divergence=chunk['first_divergence'])),flush=True)
+                        boundary=chunk['layer3_boundary']
+                        print('S5_LAYER3_BOUNDARY '+json.dumps(dict(rank=result['rank'],left=pair['left'],right=pair['right'],
+                            chunk=chunk['chunk'],complete=boundary['complete'],all_equal=boundary['all_equal'],
+                            **boundary['status'])),flush=True)
             error=b.CorrectnessError('resident/prefetch substitution differs from matched host sequences')
             error.evidence=check
             raise error
