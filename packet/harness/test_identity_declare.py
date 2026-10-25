@@ -76,6 +76,32 @@ class DeclareTests(unittest.TestCase):
                         IMAGE,self.root/'timer-argv',self.task)
         self.assertEqual([s for s in argv if s.startswith('QSA_STAGE_TIMING=')],['QSA_STAGE_TIMING=0'])
 
+    def test_duplicate_launcher_env_remains_inconclusive(self):
+        # q16b's dense declaration failed here before any engine launch. Keep
+        # strictness for identical as well as conflicting duplicate keys; do
+        # not silently implement Docker last-wins in the declaration parser.
+        path=self.root/'duplicate-image.json';path.write_text(json.dumps([self.image]))
+        idfile=self.root/'duplicate-image.txt';idfile.write_text(IMAGE)
+        policy=self.root/'duplicate-policy.json';policy.write_text(json.dumps(self.policy))
+        for value in ('0','1'):
+            overrides=dict(dec.PP_SETTINGS,EXTRA_ENV='VLLM_QSA_KVO_SPARSE_PREFILL='+value)
+            argv=dec.render(self.a.launcher,dec.raw_defaults(dec.apply_setcfg(
+                self.defaults.read_text(),overrides,self.a.setcfg)),IMAGE,
+                self.root/('duplicate-render-'+value),self.task)
+            self.assertEqual([v for v in argv if v.startswith('VLLM_QSA_KVO_SPARSE_PREFILL=')],
+                             ['VLLM_QSA_KVO_SPARSE_PREFILL=1','VLLM_QSA_KVO_SPARSE_PREFILL='+value])
+            with self.assertRaises(ident.EvidenceError):dec.docker_spec(argv,self.image,self.task)
+            out=self.root/('duplicate-request-'+value+'.json')
+            command=[sys.executable,str(HERE/'engine_identity.py'),'declare',str(out),
+                '--defaults',str(self.defaults),'--launcher',self.a.launcher,'--setcfg',self.a.setcfg,
+                '--image-file',str(idfile),'--image-inspect',str(path),'--mount-policy',str(policy),
+                '--source-mirror',str(self.task),'--settings',*[k+'='+v for k,v in overrides.items()]]
+            p=subprocess.run(command,capture_output=True,text=True)
+            self.assertEqual(p.returncode,2,p.stdout+p.stderr)
+            self.assertIn('identity declaration INCONCLUSIVE',p.stdout)
+            self.assertFalse(out.exists())
+            self.assertNotIn(DUMMY,p.stdout+p.stderr)
+
     def test_pair_only_verifier_diff(self):
         on,verify=self.declare(),self.declare(True);dec.assert_pair(on,verify)
         changed=copy.deepcopy(verify);changed['identity']['env']['QSA_ROWCACHE_REQS']='9'
@@ -129,6 +155,62 @@ class DeclareTests(unittest.TestCase):
         self.assertEqual(d['identity']['env']['FLASH_E2_DMA'],'1')
         self.assertNotIn(DUMMY,json.dumps(d))
 
+    def test_q16_dense_and_other_configs_render_one_sparse_assignment(self):
+        sys.path.insert(0,str(ROOT/'patches/s5_engine'))
+        import make_e2_arena as g
+        launch=self.root/'q16-launcher'
+        launch.write_text(g.launcher((ROOT/'deploy/run-flash-prod.sh').read_text()))
+        self.assertEqual(dec.sha(launch),dec.E2_LAUNCHER_SHA)
+        old=self.root/'q16b-launcher'
+        old.write_text(launch.read_text().replace(
+            '-e VLLM_QSA_KVO_SPARSE_PREFILL="${SPARSE_PREFILL:-1}"',
+            '-e VLLM_QSA_KVO_SPARSE_PREFILL=1'))
+        old_sha='d0a5967e58336e8694161b887fcada6103ed4ad270984875c6201ef3b4507491'
+        self.assertEqual(dec.sha(old),old_sha)
+        names=['e2/__init__.py',*[f'e2/{n}.py' for n in g.RUNTIME],
+               'e2_sources/scheduler_output.py','e2_sources/block_table.py']
+        with (self.ovl/'SHA256SUMS').open('a') as manifest:
+            for name in names:
+                p=self.ovl/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('# fixture\n')
+                manifest.write(dec.sha(p)+'  '+name+'\n')
+        self.a.launcher=str(launch)
+        policy=json.loads((HERE/'e2_mount_policy.json').read_text())
+        configs={}
+        for cfg in ('DENSE','CONTROL','VERIFY','SHIP'):
+            # Source the actual shared settings arrays, not a handwritten copy.
+            script='QNAME=q16-regression; E2_OVERLAY=$3; source "$1"; declare -n words="$2"; printf "%s\\0" "${words[@]}"'
+            p=subprocess.run(['bash','-uc',script,'fixture',str(HERE/'runs/q16_settings.sh'),
+                              'E2_'+cfg,dec.TASK+'/prod/overlay-v16g'],capture_output=True,check=True)
+            words=p.stdout.decode().rstrip('\0').split('\0')
+            configs[cfg]=dec.settings(words)
+        original=self.defaults.read_text()
+        dense_values=dec.raw_defaults(dec.apply_setcfg(original,configs['DENSE'],self.a.setcfg))
+        self.assertEqual(dense_values['SPARSE_PREFILL'],'0')
+        for cfg,overrides in configs.items():
+            with self.subTest(config=cfg):
+                expected='0' if cfg=='DENSE' else '1'
+                self.assertEqual(overrides['SPARSE_PREFILL'],'0' if cfg=='DENSE' else '-')
+                self.assertNotIn('VLLM_QSA_KVO_SPARSE_PREFILL=',overrides['EXTRA_ENV'])
+                # Model the current defaults after a previous dense run: each
+                # normal configuration MUST explicitly clear the persisted 0.
+                self.defaults.write_text(dec.apply_setcfg(original,configs['DENSE'],self.a.setcfg))
+                future=dec.apply_setcfg(self.defaults.read_text(),overrides,self.a.setcfg)
+                values=dec.raw_defaults(future)
+                if cfg!='DENSE':self.assertNotIn('SPARSE_PREFILL',values)
+                argv=dec.render(launch,values,IMAGE,self.root/('q16-argv-'+cfg),self.task)
+                assignments=[v for v in argv if v.startswith('VLLM_QSA_KVO_SPARSE_PREFILL=')]
+                self.assertEqual(assignments,['VLLM_QSA_KVO_SPARSE_PREFILL='+expected])
+                declared,_=dec.declare(self.a,overrides,self.image,policy,self.root/('q16-declare-'+cfg))
+                self.assertEqual(declared['identity']['env']['VLLM_QSA_KVO_SPARSE_PREFILL'],expected)
+                if cfg!='DENSE':
+                    # Compare complete effective command/env/mount structure
+                    # to the prior pinned launcher; only source identity changes.
+                    with patch.object(dec,'E2_LAUNCHER_SHA',old_sha):
+                        old_argv=dec.render(old,values,IMAGE,self.root/('q16b-argv-'+cfg),self.task)
+                    self.assertEqual(dec.docker_spec(argv,self.image,self.task),
+                                     dec.docker_spec(old_argv,self.image,self.task))
+        self.assertNotIn(DUMMY,json.dumps(declared))
+
     def test_setcfg_matches_actual_source_with_no_real_open(self):
         text='# untouched\nA=old\nQSA_COW_VERIFY=1\nEXTRA_ARGS="old"\n'
         over={'A':'quote" slash\\ dollar$ backtick`','QSA_COW_VERIFY':'-','EXTRA_ARGS':'--flag value','NEW':'v'}
@@ -142,6 +224,24 @@ class DeclareTests(unittest.TestCase):
         self.assertEqual(dec.apply_setcfg(text,over,ROOT/'deploy/setcfg.py'),writer.getvalue())
         vals=dec.raw_defaults(dec.apply_setcfg(text,over,ROOT/'deploy/setcfg.py'))
         self.assertEqual(vals['A'],over['A']);self.assertNotIn('QSA_COW_VERIFY',vals)
+
+    def test_setcfg_persistence_unset_and_duplicate_word_semantics(self):
+        source=(ROOT/'deploy/setcfg.py').read_text()
+        def actual(raw,words):
+            writer=KeepBuffer()
+            def fake_open(path,mode='r'):
+                if path=='/etc/default/vllm-flash' and mode=='r':return io.StringIO(raw)
+                if path=='/etc/default/vllm-flash.next' and mode=='w':return writer
+                raise AssertionError('unexpected path')
+            with patch('builtins.open',fake_open),patch.object(sys,'argv',['setcfg.py']+words),contextlib.redirect_stdout(io.StringIO()):
+                exec(compile(source,'setcfg.py','exec'),{})
+            return dec.raw_defaults(writer.getvalue())
+        raw='SPARSE_PREFILL=0\nCORE_OVERLAY=1\n'
+        self.assertEqual(actual(raw,['CORE_OVERLAY=1'])['SPARSE_PREFILL'],'0')
+        self.assertNotIn('SPARSE_PREFILL',actual(raw,['SPARSE_PREFILL=-']))
+        self.assertEqual(actual(raw,['SPARSE_PREFILL=0','SPARSE_PREFILL=1'])['SPARSE_PREFILL'],'1')
+        # The declaration interface is intentionally stricter than direct setcfg.
+        with self.assertRaises(ident.EvidenceError):dec.settings(['SPARSE_PREFILL=0','SPARSE_PREFILL=1'])
 
     def test_unreviewed_source_and_shell_injection_rejected(self):
         source=self.root/'modified-launcher';source.write_text((ROOT/'deploy/run-flash-prod.sh').read_text()+'\ntrue\n')

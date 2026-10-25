@@ -150,6 +150,19 @@ class PackageTests(unittest.TestCase):
         self.assertIn('"${runner[@]}" "${e2[@]}"',new)
         with self.assertRaises(ValueError):g.launcher(source+'\n')
 
+    def test_sparse_switch_is_the_only_change_to_q16b_launcher(self):
+        # Reverse the one reviewed q16c edit and recover the independently
+        # pinned q16b output byte-for-byte (no golden generated file needed).
+        import hashlib
+        source=(ROOT/'deploy/run-flash-prod.sh').read_text()
+        new=g.launcher(source)
+        variable='-e VLLM_QSA_KVO_SPARSE_PREFILL="${SPARSE_PREFILL:-1}"'
+        self.assertEqual(new.count('VLLM_QSA_KVO_SPARSE_PREFILL='),1)
+        self.assertEqual(new.count(variable),1)
+        old=new.replace(variable,'-e VLLM_QSA_KVO_SPARSE_PREFILL=1')
+        self.assertEqual(hashlib.sha256(old.encode()).hexdigest(),
+                         'd0a5967e58336e8694161b887fcada6103ed4ad270984875c6201ef3b4507491')
+
     def test_full_pinned_source_transform_and_real_config_enums(self):
         ref=ROOT/'reference/vllm-src'
         mapping={'model_runner_v2.py':'v1/worker/gpu/model_runner.py',
