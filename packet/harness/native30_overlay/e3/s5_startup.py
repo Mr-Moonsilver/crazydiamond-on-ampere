@@ -85,34 +85,31 @@ def install_builder(runner, kv_caches, is_profiling=False, *, env=None):
     return build
 
 
-def _native_execution_shape(engine, ranks):
-    """Discover the declared layer count and the two-stage rank split.
-
-    Returns ``None`` when the engine does not declare a two-stage model shape;
-    the caller then keeps the reviewed legacy composition instead of guessing
-    a layer split. The only assumption is vLLM's rank ordering (pipeline stages
-    are contiguous blocks of ``world_size / pp_size`` ranks); every worker's
-    :class:`OpenAck` re-validates its own stage against this map and refuses a
-    mismatch.
-    """
-    model_config = getattr(engine, 'model_config', None)
-    hf_config = getattr(model_config, 'hf_config', None)
+def _native_execution_shape(engine, ranks, *, env=None):
+    """Use EngineCore.vllm_config and the declared PP partition, never guess."""
+    env = os.environ if env is None else env
+    config = getattr(engine, 'vllm_config', None)
+    model_config = getattr(config, 'model_config', None)
+    hf_config = getattr(model_config, 'hf_text_config', None)
+    if hf_config is None:
+        hf_config = getattr(model_config, 'hf_config', None)
     layer_count = getattr(hf_config, 'num_hidden_layers', None)
-    if type(layer_count) is not int:
-        layer_count = getattr(hf_config, 'num_layers', None)
-    parallel = getattr(model_config, 'parallel_config', None)
+    parallel = getattr(config, 'parallel_config', None)
     pp_size = getattr(parallel, 'pipeline_parallel_size', None)
-    if type(layer_count) is not int or type(pp_size) is not int:
+    partition = env.get('VLLM_PP_LAYER_PARTITION', '')
+    if type(layer_count) is not int or type(pp_size) is not int or not partition:
         return None
-    if layer_count < 2 or pp_size != 2 or len(ranks) % pp_size:
-        raise StartupError('the declared model shape is not a two-stage split')
-    per_stage = len(ranks) // pp_size
-    layer_split = layer_count // pp_size
-    if not 0 < layer_split < layer_count:
-        raise StartupError('the declared split leaves no layers on one stage')
-    stage_of = tuple((rank, index // per_stage)
-                     for index, rank in enumerate(ranks))
-    return layer_count, layer_split, stage_of
+    try:
+        parts = tuple(int(v) for v in partition.split(','))
+    except ValueError:
+        raise StartupError('invalid declared PP layer partition') from None
+    if (pp_size != 2 or len(parts) != 2 or min(parts) < 1
+            or sum(parts) != layer_count or len(ranks) % 2):
+        raise StartupError('declared model shape is not the supported two-stage split')
+    if ranks != tuple(range(len(ranks))):
+        raise StartupError('rank map must use the pinned executor order')
+    per_stage = len(ranks) // 2
+    return layer_count, parts[0], tuple((rank, rank // per_stage) for rank in ranks)
 
 
 def install_native_lane(runner, *, env=None, clock=time.monotonic):
@@ -185,6 +182,9 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     if not queues:
         raise StartupError('engine startup needs the executor reply queues')
     ranks = tuple(range(len(queues)))
+    shape = _native_execution_shape(engine, ranks, env=env)
+    if shape is None:
+        raise StartupError('native engine requires the declared PP model shape')
 
     from executor_hooks import install
     from native_backend import RemoteCompletionBackend
@@ -203,27 +203,19 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
         raise StartupError('enabled engine startup produced no composition')
     composition.attach(engine=engine, scheduler=scheduler, executor=executor)
 
-    shape = _native_execution_shape(engine, ranks)
-    if shape is None:
-        # No declared two-stage model shape: keep the reviewed legacy driver.
-        # It parks on the post-schedule marker, which never appears here.
-        from engine_driver import SegmentDriver
-
-        driver = SegmentDriver(composition, executor=executor, scheduler=scheduler,
-                               engine=engine, clock=clock).install()
-        engine._flash_s5_composition = composition
-        engine._flash_s5_driver = driver
-        return composition
-
     from engine_driver import NativeSegmentDriver
     from scheduler_hooks import PrefillAdmissionController
 
     layer_count, layer_split, stage_of = shape
-    epoch = getattr(engine, 'engine_epoch', 0)
+    # Created once by this EngineCore process, passed to all worker opens.
+    # It is not a model/request attribute and cannot silently default to zero.
+    import uuid
+    epoch = uuid.uuid4().int & ((1 << 63) - 1)
+    engine._flash_s5_engine_epoch = epoch
     controller = PrefillAdmissionController(
         scheduler, leases=composition.scheduler_leases,
         frontier=composition.frontier,
-        engine_epoch=epoch if type(epoch) is int else 0,
+        engine_epoch=epoch,
         chunk_tokens=config.chunk_tokens, ranks=ranks, clock=clock).attach()
     driver = NativeSegmentDriver(
         controller, executor=executor, scheduler=scheduler, engine=engine,

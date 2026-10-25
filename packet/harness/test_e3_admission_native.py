@@ -7,6 +7,7 @@ shared-memory ring, no PP traffic.
 from pathlib import Path
 import hashlib
 import types
+from dataclasses import replace
 import sys
 import unittest
 
@@ -65,7 +66,7 @@ class Block:
 
 
 class Request:
-    def __init__(self, uid=UID, tokens=10, computed=0, generation=3, epoch=5):
+    def __init__(self, uid=UID, tokens=10, computed=0, generation=3, epoch=1):
         self.request_id = uid
         self.all_token_ids = list(range(tokens))
         self.num_tokens = tokens
@@ -133,6 +134,10 @@ class Scheduler:
         self.waiting = Queue(requests)
         self.running = []
         self.max_num_running_reqs = max_num
+        self.max_num_scheduled_tokens = 1024
+        self._flash_s5_admission_metadata = lambda request, allocated, start, end: dict(
+            new_block_ids_to_zero=(), cow_pairs=(), ngram_context=(),
+            unpublished_blocks=manager.rows[request.request_id][- (end - start):])
         self.scheduler_reserve_full_isl = False
         self._pause_state = None
         self.connector = None
@@ -165,15 +170,15 @@ def make_proof(transaction, rank, op_seq, role, kind, completion_seq=1):
 
 
 def make_report(transaction, rank, completed, proofs, *, pending=(),
-                epoch=5):
+                epoch=1):
     completed = tuple(sorted(completed))
     return w.WorkerCompletionReport(
         transaction, rank, completed, tuple(sorted(pending)),
-        max(completed) if completed else 0, tuple(proofs),
+        max([p.completion_seq for p in proofs] + [0]), tuple(proofs),
         w.CompletionCursor('commit', 0, 0), epoch)
 
 
-def reports_for(transaction, *, bound_op=0):
+def reports_for(transaction, *, bound_op=0, epoch=1):
     rank0 = make_report(transaction, 0, (0, 1), (
         make_proof(transaction, 0, bound_op, DependencyRole.PRODUCER,
                    CompletionKind.GPU_EVENT),
@@ -182,7 +187,7 @@ def reports_for(transaction, *, bound_op=0):
     rank1 = make_report(transaction, 1, (0,),
                         (make_proof(transaction, 1, 0, DependencyRole.COMMIT,
                                     CompletionKind.STATE_WRITE),))
-    return rank0, rank1
+    return replace(rank0, state_epoch=epoch), replace(rank1, state_epoch=epoch)
 
 
 class AdmissionTests(unittest.TestCase):
@@ -195,7 +200,7 @@ class AdmissionTests(unittest.TestCase):
     def test_new_request_is_admitted_before_the_waiting_loop(self):
         record = self.scheduler._flash_s5_admission.admit(self.scheduler)
         self.assertEqual(record.chunk_tokens, 4)
-        self.assertEqual(record.committed_end, 4)
+        self.assertEqual(record.committed_end, 0)
         self.assertEqual(record.remaining_tokens, 6)
         self.assertEqual(record.transaction.chunk_start, 0)
         self.assertEqual(record.transaction.chunk_end, 4)
@@ -234,7 +239,7 @@ class AdmissionTests(unittest.TestCase):
         scheduler = Scheduler(Manager(), [request])
         controller = make_controller(scheduler, chunk=8)
         record = controller.admit(scheduler)
-        self.assertEqual(record.committed_end, 4)
+        self.assertEqual(record.committed_end, 0)
         self.assertEqual(record.remaining_tokens, 1)
 
     def test_allocation_failure_keeps_the_request_waiting(self):
@@ -267,6 +272,10 @@ class AdmissionTests(unittest.TestCase):
         self.controller.note_report(rank0)
         self.assertFalse(self.controller.ready_to_commit(transaction))
         self.controller.note_report(rank1)
+        self.assertFalse(self.controller.ready_to_commit(transaction))
+        for report in (rank0, rank1):
+            self.controller.note_worker_release(w.ReleaseAck(transaction, report.worker_rank,
+                record.state_epoch, report.completed_sequence))
         self.assertTrue(self.controller.ready_to_commit(transaction))
         proof = make_proof(transaction, 0, 0, DependencyRole.PRODUCER,
                            CompletionKind.GPU_EVENT)
@@ -288,6 +297,8 @@ class AdmissionTests(unittest.TestCase):
         self.controller.bind(ticket)
         for report in reports_for(first.transaction):
             self.controller.note_report(report)
+            self.controller.note_worker_release(w.ReleaseAck(first.transaction, report.worker_rank,
+                first.state_epoch, report.completed_sequence))
         self.controller.commit(first.transaction, make_proof(
             first.transaction, 0, 0, DependencyRole.PRODUCER,
             CompletionKind.GPU_EVENT))
@@ -305,6 +316,10 @@ class AdmissionTests(unittest.TestCase):
         self.controller.note_report(rank0)
         self.assertFalse(self.controller.ready_to_commit(transaction))
         self.controller.note_report(rank1)
+        self.assertFalse(self.controller.ready_to_commit(transaction))
+        for report in (rank0, rank1):
+            self.controller.note_worker_release(w.ReleaseAck(transaction, report.worker_rank,
+                record.state_epoch, report.completed_sequence))
         self.assertTrue(self.controller.ready_to_commit(transaction))
 
     def test_state_epoch_is_validated_per_chunk(self):
@@ -321,6 +336,8 @@ class AdmissionTests(unittest.TestCase):
                                          DependencyRole.PRODUCER))
         for report in reports_for(transaction):
             self.controller.note_report(report)
+            self.controller.note_worker_release(w.ReleaseAck(transaction, report.worker_rank,
+                record.state_epoch, report.completed_sequence))
         self.controller.note_pp_send(transaction, 0)
         self.assertFalse(self.controller.ready_to_commit(transaction))
         with self.assertRaises(E3ContractError):
@@ -348,12 +365,15 @@ class AdmissionTests(unittest.TestCase):
             self.controller.cancel(transaction, never_submitted=True)
         with self.assertRaises(E3ContractError):
             self.controller.cancel(transaction)
-        wrong = make_proof(transaction, 0, 0, DependencyRole.PRODUCER,
-                           CompletionKind.STATE_WRITE)
-        with self.assertRaises(E3ContractError):
-            self.controller.cancel(transaction, proof=wrong)
         proof = make_proof(transaction, 0, 0, DependencyRole.PRODUCER,
                            CompletionKind.GPU_EVENT)
+        with self.assertRaises(E3Pending):
+            self.controller.cancel(transaction, proof=proof)
+        self.assertTrue(self.controller.leases.held_blocks())
+        for report in reports_for(transaction):
+            self.controller.note_report(report)
+            self.controller.note_worker_release(w.ReleaseAck(transaction, report.worker_rank,
+                record.state_epoch, report.completed_sequence))
         self.controller.cancel(transaction, proof=proof)
         self.assertEqual(self.controller.leases.held_blocks(), ())
 
@@ -375,13 +395,73 @@ class AdmissionTests(unittest.TestCase):
             record = controller.admit(controller._scheduler)
             ticket = make_ticket(record.transaction, 0, 0, DependencyRole.PRODUCER)
             controller.bind(ticket)
-            for report in reports_for(record.transaction):
+            for report in reports_for(record.transaction, epoch=record.state_epoch):
                 controller.note_report(report)
+                controller.note_worker_release(w.ReleaseAck(record.transaction, report.worker_rank,
+                    record.state_epoch, report.completed_sequence))
             controller.commit(record.transaction, make_proof(
                 record.transaction, 0, 0, DependencyRole.PRODUCER,
                 CompletionKind.GPU_EVENT))
         self.assertEqual(len(controller._committed), 1)
         self.assertEqual(controller.summary()['commits'], 2)
+
+    def test_missing_allocator_metadata_refuses_before_allocating(self):
+        del self.scheduler._flash_s5_admission_metadata
+        with self.assertRaises(E3ContractError):
+            self.controller.admit(self.scheduler)
+        self.assertEqual(self.manager.alloc_calls, [])
+        self.assertTrue(self.scheduler.waiting)
+
+    def test_post_allocation_metadata_failure_quarantines_the_request(self):
+        self.scheduler._flash_s5_admission_metadata = lambda *args: {}
+        with self.assertRaises(E3ContractError):
+            self.controller.admit(self.scheduler)
+        self.assertTrue(self.controller.parked.failed)
+        self.assertFalse(self.scheduler.waiting)
+        self.assertIsNone(self.controller.admit(self.scheduler))
+
+    def test_alignment_zero_and_errors_are_not_bypassed(self):
+        self.scheduler._mamba_block_aligned_split = lambda *args, **kw: 0
+        self.assertIsNone(self.controller.admit(self.scheduler))
+        self.assertEqual(self.manager.alloc_calls, [])
+        def broken(*args, **kw):
+            raise TypeError('fixture')
+        self.scheduler._mamba_block_aligned_split = broken
+        with self.assertRaises(TypeError):
+            self.controller.admit(self.scheduler)
+        self.assertEqual(self.manager.alloc_calls, [])
+
+    def test_scheduler_budget_and_streaming_slots_are_respected(self):
+        self.scheduler.num_waiting_for_streaming_input = 8
+        self.assertIsNone(self.controller.admit(self.scheduler))
+        self.scheduler.num_waiting_for_streaming_input = 0
+        self.scheduler.max_num_scheduled_tokens = 2
+        self.assertEqual(self.controller.admit(self.scheduler).chunk_tokens, 2)
+
+    def test_all_group_positions_survive_and_nulls_are_not_leased(self):
+        self.manager.get_block_ids = lambda req: ((), (0, 0, 1, 2, 3, 4), ())
+        record = self.controller.admit(self.scheduler)
+        self.assertEqual(record.block_tables, ((), (0, 0, 1, 2, 3, 4), ()))
+        self.assertEqual(self.controller.leases.held_blocks(), (1, 2, 3, 4))
+        entry = self.controller.leases._held[1][0]
+        self.assertIs(entry['category'], ah.LeaseCategory.SOURCE_HISTORY)
+
+    def test_pending_work_with_state_proof_cannot_publish(self):
+        record = self.controller.admit(self.scheduler)
+        a, b = reports_for(record.transaction)
+        self.controller.note_report(replace(a, pending_op_seqs=(2,)))
+        self.controller.note_report(b)
+        self.assertFalse(self.controller.ready_to_release(record.transaction))
+        with self.assertRaises(E3ContractError):
+            self.controller.note_worker_release(w.ReleaseAck(record.transaction, 0, 1,
+                                                               a.completed_sequence))
+
+    def test_completed_watermark_cannot_regress(self):
+        record = self.controller.admit(self.scheduler)
+        a, _ = reports_for(record.transaction)
+        self.controller.note_report(a)
+        with self.assertRaises(E3ContractError):
+            self.controller.note_report(make_report(record.transaction, 0, (), ()))
 
 
 # --- PP ledger --------------------------------------------------------------
@@ -513,8 +593,8 @@ class DriverTests(unittest.TestCase):
 
     def acks(self):
         transaction = self.record.transaction
-        return [w.OpenAck(transaction, LaneId(0, LaneRole.PREFILL, 5, 0), 0, 5, 2, True),
-                w.OpenAck(transaction, LaneId(1, LaneRole.PREFILL, 5, 0), 1, 5, 2, True)]
+        return [w.OpenAck(transaction, LaneId(0, LaneRole.PREFILL, 5, 0), 0, 1, 2, True),
+                w.OpenAck(transaction, LaneId(1, LaneRole.PREFILL, 5, 0), 1, 1, 2, True)]
 
     def acceptances(self, command):
         values = []
@@ -526,20 +606,30 @@ class DriverTests(unittest.TestCase):
         return values
 
     def completion_reports(self):
-        transaction = self.record.transaction
-        bound = make_ticket(transaction, 0, 0, DependencyRole.PRODUCER)
-        sender = make_ticket(transaction, 0, 5, DependencyRole.HANDOFF)
-        rank0 = make_report(transaction, 0, (0, 1, 2, 3, 4, 5), (
-            CompletionProof(bound, CompletionKind.GPU_EVENT, 1),
-            CompletionProof(sender, CompletionKind.GPU_EVENT, 2),
-            make_proof(transaction, 0, 5, DependencyRole.COMMIT,
-                       CompletionKind.STATE_WRITE)))
-        receiver = make_ticket(transaction, 1, 0, DependencyRole.HANDOFF)
-        rank1 = make_report(transaction, 1, (0, 1, 2, 3, 4), (
-            CompletionProof(receiver, CompletionKind.PP_CONSUMER, 3),
-            make_proof(transaction, 1, 4, DependencyRole.COMMIT,
-                       CompletionKind.STATE_WRITE)))
-        return rank0, rank1
+        reports = []
+        for rank in self.driver.ranks:
+            tickets = sorted((t for (r, op), t in self.driver.accepted_tickets.items()
+                              if r == rank), key=lambda t: t.op_seq)
+            proofs = []
+            for t in tickets:
+                desc = self.driver._accepted_descriptors[(rank, t.op_seq)]
+                kind = (CompletionKind.STATE_WRITE if desc.kind is w.SegmentKind.STATE_FINALIZE
+                        else CompletionKind.PP_CONSUMER if desc.kind is w.SegmentKind.PP_RECEIVE
+                        else CompletionKind.GPU_EVENT)
+                proofs.append(CompletionProof(t, kind, len(proofs) + 1))
+            reports.append(make_report(self.record.transaction, rank,
+                tuple(t.op_seq for t in tickets), proofs))
+        return reports
+
+    def finish_release(self):
+        method, request = self.executor.last_command()
+        self.assertEqual(method, 'flash_s5_commit')
+        self.assertEqual(self.manager.cache_calls, [])
+        self.executor._flash_s5_transport.reply([
+            w.ReleaseAck(request.transaction, rank, request.state_epoch, seq)
+            for rank, seq in request.completed_sequences])
+        self.driver.advance()
+
 
     def test_one_bounded_command_per_tick(self):
         self.driver.advance()
@@ -572,9 +662,10 @@ class DriverTests(unittest.TestCase):
             seen.append(command.kind)
             self.executor._flash_s5_transport.reply(self.acceptances(command))
         self.assertEqual(seen, [
-            w.SegmentKind.PREPARE, w.SegmentKind.PREFIX,
+            w.SegmentKind.PREPARE, w.SegmentKind.PREPARE, w.SegmentKind.PP_RECEIVE,
+            w.SegmentKind.PREFIX,
             w.SegmentKind.LAYER, w.SegmentKind.LAYER, w.SegmentKind.SUFFIX,
-            w.SegmentKind.PP_SEND, w.SegmentKind.PP_RECEIVE,
+            w.SegmentKind.PP_SEND, w.SegmentKind.STATE_FINALIZE, w.SegmentKind.PREFIX,
             w.SegmentKind.LAYER, w.SegmentKind.LAYER, w.SegmentKind.SUFFIX,
             w.SegmentKind.STATE_FINALIZE])
         self.assertEqual(self.driver.phase, 'finalize')
@@ -588,6 +679,7 @@ class DriverTests(unittest.TestCase):
         rank0, rank1 = self.completion_reports()
         self.executor._flash_s5_transport.reply([rank0, rank1])
         self.driver.advance()
+        self.finish_release()
         self.assertIsNone(self.driver.tx)
         self.assertEqual(self.driver.phase, 'idle')
         self.assertIsNone(self.controller.parked)
@@ -596,33 +688,21 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(self.driver.pp.summary(), dict(sent=1, released=1))
         self.assertTrue(self.driver.finish_pause())
 
-    def test_piggybacked_completions_commit_without_a_poll(self):
+    def test_piggybacked_early_state_proof_is_rejected(self):
         self.driver.advance()
         self.executor._flash_s5_transport.reply(self.acks())
-        rank0, rank1 = self.completion_reports()
-        for _ in range(40):
+        self.driver.advance()
+        _method, command = self.executor.last_command()
+        values = self.acceptances(command)
+        forged = make_report(command.transaction, 0, (command.op_seq,), (
+            make_proof(command.transaction, 0, command.op_seq, DependencyRole.COMMIT,
+                       CompletionKind.STATE_WRITE),))
+        values[0] = replace(values[0], report=forged)
+        self.executor._flash_s5_transport.reply(values)
+        with self.assertRaises(ed.DriverError):
             self.driver.advance()
-            if self.driver.phase != 'segments':
-                break
-            _method, command = self.executor.last_command()
-            values = self.acceptances(command)
-            if command.kind is w.SegmentKind.STATE_FINALIZE:
-                values[0] = w.SegmentAcceptance(command.transaction, 0,
-                                                command.kind, command.stage,
-                                                command.op_seq, skipped=True,
-                                                report=rank0)
-                values[1] = w.SegmentAcceptance(command.transaction, 1,
-                                                command.kind, command.stage,
-                                                command.op_seq, accepted=True,
-                                                report=rank1)
-            self.executor._flash_s5_transport.reply(values)
-        self.assertIsNone(self.driver.tx)
-        self.assertEqual(self.driver.phase, 'idle')
-        methods = [env[0] for env in
-                   self.executor._flash_s5_bounded_send.envelopes]
-        self.assertNotIn('flash_s5_poll', methods)
-        self.assertEqual(self.manager.cache_calls, [(UID, 4)])
-        self.assertEqual(self.scheduler.waiting.items, [self.request])
+        self.assertEqual(self.manager.cache_calls, [])
+        self.assertTrue(self.controller.leases.held_blocks())
 
     def test_pending_retry_reuses_the_same_op_seq(self):
         self.driver.advance()
@@ -682,7 +762,7 @@ class DriverTests(unittest.TestCase):
             self.driver.advance()
             _method, command = self.executor.last_command()
             self.executor._flash_s5_transport.reply(self.acceptances(command))
-            if command.kind is w.SegmentKind.PP_RECEIVE:
+            if command.kind is w.SegmentKind.PP_SEND:
                 break
         self.driver.stop('pause')
         with self.assertRaises(ed.DriverError):
@@ -731,11 +811,80 @@ class DriverTests(unittest.TestCase):
         self.driver.issue_transition(expected_route_generation=0, target_bank=1,
                                      storage_epochs=(5, 6),
                                      decode_replay_watermarks=(0, 0))
-        ack = w.TransitionAck(7, 0, 1, 1, (5, 6), 1, 1, (5, 6))
-        self.executor._flash_s5_transport.reply([ack, ack])
+        acks = [w.TransitionAck(7, 0, 1, 1, (5, 6), 1, 1, (5, 6), rank)
+                for rank in (0, 1)]
+        self.executor._flash_s5_transport.reply(acks)
         self.driver.advance()
         self.assertIsNone(self.driver._transition)
         self.assertEqual(self.driver.route_generation, 1)
+
+    def test_native_hook_does_not_drop_ordinary_decode_output(self):
+        output = types.SimpleNamespace(total_num_scheduled_tokens=4)
+        self.assertFalse(eh.park_prefill(self.driver.engine, output))
+
+    def test_duplicate_rank_cannot_supply_two_acceptances(self):
+        self.driver.advance()
+        self.executor._flash_s5_transport.reply(self.acks())
+        self.driver.advance()
+        _, command = self.executor.last_command()
+        first = self.acceptances(command)[0]
+        self.executor._flash_s5_transport.reply([first, first])
+        with self.assertRaises(ed.DriverError):
+            self.driver.advance()
+        self.assertEqual(self.manager.cache_calls, [])
+
+    def test_paused_layer_repeats_cursor_with_new_operation_sequence(self):
+        self.driver.advance()
+        self.executor._flash_s5_transport.reply(self.acks())
+        for _ in range(10):
+            self.driver.advance()
+            _, command = self.executor.last_command()
+            if command.kind is w.SegmentKind.LAYER:
+                break
+            self.executor._flash_s5_transport.reply(self.acceptances(command))
+        index = self.driver.index
+        values = [replace(a, paused=True) if a.accepted else a
+                  for a in self.acceptances(command)]
+        self.executor._flash_s5_transport.reply(values)
+        self.driver.advance()
+        _, following = self.executor.last_command()
+        self.assertEqual(self.driver.index, index)
+        self.assertEqual(following.descriptor.layer_start, command.descriptor.layer_start)
+        self.assertEqual(following.op_seq, command.op_seq + 1)
+
+    def test_report_cannot_name_an_unaccepted_operation(self):
+        self.driver.advance()
+        self.executor._flash_s5_transport.reply(self.acks())
+        self.driver.advance()
+        fabricated = make_report(self.record.transaction, 0, (900,), ())
+        with self.assertRaises(ed.DriverError):
+            self.driver._ingest_report(fabricated)
+        self.assertEqual(self.manager.cache_calls, [])
+
+    def test_open_ack_is_not_a_safe_local_cancel(self):
+        self.driver.advance()
+        self.driver.stop('abort')
+        self.executor._flash_s5_transport.reply(self.acks())
+        self.driver.advance()
+        self.assertTrue(self.controller.leases.held_blocks())
+        self.assertEqual(self.manager.cache_calls, [])
+
+    def test_duplicate_valid_transition_ack_does_not_advance_generation(self):
+        self.driver.issue_transition(expected_route_generation=0, target_bank=1,
+            storage_epochs=(5, 4), decode_replay_watermarks=(0, 0))
+        ack = w.TransitionAck(7, 0, 1, 1, (5, 4), 1, 1, (5, 4), 0)
+        self.executor._flash_s5_transport.reply([ack, ack])
+        with self.assertRaises(ed.DriverError):
+            self.driver.advance()
+        self.assertEqual(self.driver.route_generation, 0)
+
+    def test_one_transition_ack_cannot_move_all_ranks(self):
+        self.driver.issue_transition(expected_route_generation=0, target_bank=1,
+            storage_epochs=(5, 6), decode_replay_watermarks=(0, 0))
+        ack = w.TransitionAck(7, 0, 1, 1, (5, 6), 1, 1, (5, 6), 0)
+        with self.assertRaises(ed.DriverError):
+            self.driver.accept_transition_ack(ack)
+        self.assertEqual(self.driver.route_generation, 0)
 
 
 # --- strict bounded sender --------------------------------------------------
@@ -818,18 +967,18 @@ class StartupShapeTests(unittest.TestCase):
 
     def test_shape_is_discovered_only_from_a_declared_two_stage_model(self):
         self.assertIsNone(s5_startup._native_execution_shape(types.SimpleNamespace(),
-                                                             (0, 1)))
-        engine = types.SimpleNamespace(
-            model_config=types.SimpleNamespace(
-                hf_config=types.SimpleNamespace(num_hidden_layers=8),
-                parallel_config=types.SimpleNamespace(pipeline_parallel_size=2)))
-        self.assertEqual(s5_startup._native_execution_shape(engine, (0, 1)),
-                         (8, 4, ((0, 0), (1, 1))))
-        self.assertEqual(s5_startup._native_execution_shape(engine, (0, 1, 2, 3)),
-                         (8, 4, ((0, 0), (1, 0), (2, 1), (3, 1))))
-        engine.model_config.parallel_config.pipeline_parallel_size = 1
+                                                             (0, 1), env={}))
+        engine = types.SimpleNamespace(vllm_config=types.SimpleNamespace(
+            model_config=types.SimpleNamespace(hf_config=types.SimpleNamespace(num_hidden_layers=8)),
+            parallel_config=types.SimpleNamespace(pipeline_parallel_size=2)))
+        env = {'VLLM_PP_LAYER_PARTITION': '3,5'}
+        self.assertEqual(s5_startup._native_execution_shape(engine, (0, 1), env=env),
+                         (8, 3, ((0, 0), (1, 1))))
+        self.assertEqual(s5_startup._native_execution_shape(engine, (0, 1, 2, 3), env=env),
+                         (8, 3, ((0, 0), (1, 0), (2, 1), (3, 1))))
+        engine.vllm_config.parallel_config.pipeline_parallel_size = 1
         with self.assertRaises(s5_startup.StartupError):
-            s5_startup._native_execution_shape(engine, (0, 1))
+            s5_startup._native_execution_shape(engine, (0, 1), env=env)
 
 
 if __name__ == '__main__':

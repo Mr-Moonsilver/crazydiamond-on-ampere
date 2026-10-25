@@ -46,7 +46,7 @@ def proof(transaction, rank=0, op_seq=0, role=DependencyRole.PRODUCER,
 def admission(**overrides):
     transaction = txn()
     values = dict(
-        transaction=transaction, prompt_end=9, state_epoch=4, committed_end=8,
+        transaction=transaction, prompt_end=9, state_epoch=4, committed_end=0,
         block_tables=((1, 2), (3, 4)), slot_mappings=((0, 1, 2, 3), (0, 1, 2, 3)),
         new_block_ids_to_zero=(2, 4), cow_pairs=((1, 5),), input_ids=tuple(range(8)))
     values.update(overrides)
@@ -71,8 +71,8 @@ class AdmissionRecordTests(unittest.TestCase):
         self.assertEqual(record.remaining_tokens, 1)
         self.assertEqual(record.flat_blocks(), (1, 2, 3, 4))
         self.assertEqual(record.align_accepted, 1)
-        self.assertEqual(record.align_seed(4), 1)   # (8 - 1) // 4
-        self.assertEqual(record.align_seed(8), 0)
+        self.assertEqual(record.align_seed(4), -1)   # no previously committed state
+        self.assertEqual(record.align_seed(8), -1)
 
     def test_repr_hides_uid_tokens_and_tables(self):
         text = repr(admission())
@@ -83,16 +83,16 @@ class AdmissionRecordTests(unittest.TestCase):
 
     def test_last_prompt_token_is_never_in_the_chunk(self):
         with self.assertRaises(E3ContractError):
-            admission(prompt_end=8, committed_end=8, transaction=txn(chunk_end=8))
+            admission(prompt_end=8, committed_end=0, transaction=txn(chunk_end=8))
         record = admission(prompt_end=10)
         self.assertEqual(record.remaining_tokens, 2)
 
-    def test_committed_end_is_the_chunk_end(self):
+    def test_committed_end_is_the_prior_frontier(self):
         with self.assertRaises(E3ContractError):
             admission(committed_end=9)
 
     def test_block_rows_are_full_and_non_empty(self):
-        for rows in ((), ((1, 2), ()), (('1', 2),), ((1, 2), (3, 3))):
+        for rows in ((), (('1', 2),), ((-1,),)):
             with self.assertRaises(E3ContractError):
                 admission(block_tables=rows)
 
@@ -118,15 +118,30 @@ class AdmissionRecordTests(unittest.TestCase):
         with self.assertRaises(Exception):
             admission().prompt_end = 12
 
+    def test_repeated_tokens_and_null_group_rows_are_preserved(self):
+        record = admission(input_ids=(42,) * 8, ngram_context=(7, 7),
+                           block_tables=((), (0, 0, 3), (4,)))
+        self.assertEqual(record.block_tables, ((), (0, 0, 3), (4,)))
+        self.assertEqual(record.flat_blocks(), (0, 0, 3, 4))
+
+    def test_align_seed_uses_previous_frontier_not_future_output(self):
+        t = txn(chunk_start=4048, chunk_end=5072)
+        record = admission(transaction=t, prompt_end=6000, committed_end=4048,
+                           input_ids=(3,) * 1024)
+        self.assertEqual(record.align_seed(4048), 0)
+        self.assertEqual(record.remaining_tokens, 928)
+        with self.assertRaises(E3ContractError):
+            admission(transaction=t, prompt_end=6000, committed_end=5072,
+                      input_ids=(3,) * 1024)
+
 
 class SegmentDescriptorTests(unittest.TestCase):
     def test_kind_stage_matrix(self):
         transaction = txn()
         self.assertEqual(w.SegmentDescriptor(transaction, w.SegmentKind.PREPARE, 0).kind,
                          w.SegmentKind.PREPARE)
-        for bad in ((w.SegmentKind.PREPARE, 1), (w.SegmentKind.PREFIX, 1),
-                    (w.SegmentKind.PP_SEND, 1), (w.SegmentKind.PP_RECEIVE, 0),
-                    (w.SegmentKind.STATE_FINALIZE, 0)):
+        for bad in ((w.SegmentKind.PP_SEND, 1), (w.SegmentKind.PP_RECEIVE, 0),
+                    (w.SegmentKind.PREPARE, 2)):
             kind, stage = bad
             values = dict(seq=0) if kind in (w.SegmentKind.PP_SEND,
                                              w.SegmentKind.PP_RECEIVE) else {}
@@ -223,7 +238,7 @@ class CompletionReportTests(unittest.TestCase):
 
     def test_host_submit_times_are_completed_and_ordered(self):
         with self.assertRaises(E3ContractError):
-            report(host_submit_ns=((0, 10), (1, 20), (2, 30)))
+            report(host_submit_ns=((0, 10), (1, 20), (3, 30)))
         with self.assertRaises(E3ContractError):
             report(host_submit_ns=((1, 20), (0, 10)))
 
@@ -237,6 +252,18 @@ class CompletionReportTests(unittest.TestCase):
     def test_cursor_phase(self):
         with self.assertRaises(E3ContractError):
             w.CompletionCursor('whole_forward', 0, 0)
+
+    def test_watermark_and_op_sequence_are_independent(self):
+        p = proof(txn(), op_seq=900, completion_seq=3)
+        r = report(completed_op_seqs=(900,), pending_op_seqs=(901,),
+                   completed_sequence=3, proofs=(p,), host_submit_ns=((901, 12),))
+        self.assertEqual(r.completed_sequence, 3)
+
+    def test_receive_event_and_consumer_proof_share_one_ticket(self):
+        t = ticket(txn(), role=DependencyRole.HANDOFF)
+        report(proofs=(CompletionProof(t, CompletionKind.GPU_EVENT, 1),
+                       CompletionProof(t, CompletionKind.PP_CONSUMER, 2)),
+               completed_sequence=2)
 
 
 class TransitionTests(unittest.TestCase):
@@ -268,8 +295,7 @@ class TransitionTests(unittest.TestCase):
     def test_one_watermark_per_rank(self):
         with self.assertRaises(E3ContractError):
             self.command(decode_replay_watermarks=(1,))
-        with self.assertRaises(E3ContractError):
-            self.command(storage_epochs=(6, 5))
+        self.assertEqual(self.command(storage_epochs=(6, 5)).storage_epochs, (6, 5))
 
     def test_ack_must_echo_the_applied_command(self):
         command = self.command()
@@ -353,7 +379,7 @@ class OpenAndCommandTests(unittest.TestCase):
     def test_acceptance_can_carry_a_host_queried_report(self):
         command = w.SegmentCommand(self.descriptor(), 3, (0, 1))
         attached = report(completed_op_seqs=(0,), pending_op_seqs=(),
-                          completed_sequence=0, host_submit_ns=())
+                          completed_sequence=1, host_submit_ns=())
         accepted = w.SegmentAcceptance(command.transaction, 0, command.kind,
                                        command.stage, 3, accepted=True,
                                        report=attached)
@@ -369,6 +395,20 @@ class OpenAndCommandTests(unittest.TestCase):
         with self.assertRaises(E3ContractError):
             w.SegmentAcceptance(other, 0, command.kind, command.stage, 3,
                                 accepted=True, report=attached)
+
+
+class WorkerWireAdapterTests(unittest.TestCase):
+    def test_explicit_command_adapter_preserves_pp_sequence(self):
+        from lane_dispatch import SegmentCommand as Local
+        d = w.SegmentDescriptor(txn(), w.SegmentKind.PP_RECEIVE, 1, seq=37)
+        local = Local.from_descriptor(w.SegmentCommand(d, 12, (2, 3)))
+        self.assertEqual((local.kind, local.seq, local.op_seq), ('pp_receive', 37, 12))
+        self.assertEqual(local.transaction, d.transaction)
+
+    def test_bare_descriptor_cannot_guess_the_operation_sequence(self):
+        from lane_dispatch import SegmentCommand as Local
+        with self.assertRaises(E3ContractError):
+            Local.from_descriptor(w.SegmentDescriptor(txn(), w.SegmentKind.PREPARE, 0))
 
 
 class OpSeqTrackerTests(unittest.TestCase):

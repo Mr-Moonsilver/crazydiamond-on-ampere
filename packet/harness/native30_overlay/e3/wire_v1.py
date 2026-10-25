@@ -67,15 +67,15 @@ class SegmentKind(str, Enum):
 
 
 # Kind -> stages the first implementation accepts. LAYER/SUFFIX are common to
-# every stage. PP_RECEIVE and STATE_FINALIZE belong to a non-first stage.
+# both stages. Only the two PP transfer directions are stage-specific.
 _KIND_STAGES = {
-    SegmentKind.PREPARE: (0,),
+    SegmentKind.PREPARE: (0, 1),
     SegmentKind.PP_RECEIVE: (1,),
-    SegmentKind.PREFIX: (0,),
+    SegmentKind.PREFIX: (0, 1),
     SegmentKind.LAYER: None,
     SegmentKind.SUFFIX: None,
     SegmentKind.PP_SEND: (0,),
-    SegmentKind.STATE_FINALIZE: (1,),
+    SegmentKind.STATE_FINALIZE: (0, 1),
 }
 
 _PP_KINDS = (SegmentKind.PP_SEND, SegmentKind.PP_RECEIVE)
@@ -119,7 +119,7 @@ class AdmissionRecord:
     ``prompt_end`` is the number of prompt tokens; the chunk is
     ``[transaction.chunk_start, transaction.chunk_end)`` and must leave at
     least the final token for the ordinary handback path. ``committed_end`` is
-    the position that becomes cache-visible exactly at commit; the worker's
+    the committed frontier BEFORE this chunk (chunk_start); the worker's
     private align seed is derived from it, never sent.
     """
     transaction: TransactionId
@@ -145,15 +145,15 @@ class AdmissionRecord:
             raise E3ContractError(
                 'admission must leave the last prompt token for handback')
         _int('state_epoch', self.state_epoch, 1)
-        _int('committed_end', self.committed_end, 1)
-        if self.committed_end != transaction.chunk_end:
-            raise E3ContractError('committed_end must be the chunk end')
+        _int('committed_end', self.committed_end, 0)
+        if self.committed_end != transaction.chunk_start:
+            raise E3ContractError('committed_end must be the prior chunk frontier')
 
         _tuple('block_tables', self.block_tables)
         if not self.block_tables:
             raise E3ContractError('admission needs its per-group block rows')
         for row in self.block_tables:
-            _ints('block table row', row, minimum=1, allow_empty=False)
+            _ints('block table row', row, minimum=0, unique=False)
         _tuple('slot_mappings', self.slot_mappings)
         for row in self.slot_mappings:
             _ints('slot mapping row', row, minimum=0)
@@ -175,10 +175,10 @@ class AdmissionRecord:
             seen_dst.add(destination)
 
         expected = transaction.chunk_end - transaction.chunk_start
-        _ints('input_ids', self.input_ids, minimum=0)
+        _ints('input_ids', self.input_ids, minimum=0, unique=False)
         if len(self.input_ids) != expected:
             raise E3ContractError('input_ids must cover exactly the chunk')
-        _ints('ngram_context', self.ngram_context, minimum=0)
+        _ints('ngram_context', self.ngram_context, minimum=0, unique=False)
         if type(self.sparse_active) is not bool:
             raise E3ContractError('sparse_active must be bool')
 
@@ -189,7 +189,7 @@ class AdmissionRecord:
     @property
     def remaining_tokens(self):
         """Prompt tokens still unprocessed after this chunk (>= 1)."""
-        return self.prompt_end - self.committed_end
+        return self.prompt_end - self.transaction.chunk_end
 
     @property
     def align_accepted(self):
@@ -202,7 +202,7 @@ class AdmissionRecord:
         return (self.committed_end - 1) // block_size
 
     def flat_blocks(self):
-        """All block ids in table order; a convenience, not a history."""
+        """All entries in group order, including nulls; never a lease-ID list."""
         return tuple(block for row in self.block_tables for block in row)
 
     def __repr__(self):
@@ -236,6 +236,8 @@ class SegmentDescriptor:
             raise E3ContractError('segment needs a TransactionId')
         _kind('kind', self.kind, SegmentKind)
         _int('stage', self.stage, 0)
+        if self.stage not in (0, 1):
+            raise E3ContractError('wire-v1 supports exactly two stages')
         allowed = _KIND_STAGES[self.kind]
         if allowed is not None and self.stage not in allowed:
             raise E3ContractError(
@@ -333,13 +335,13 @@ class WorkerCompletionReport:
         if done.intersection(self.pending_op_seqs):
             raise E3ContractError('an op_seq cannot be both complete and pending')
         _int('completed_sequence', self.completed_sequence, 0)
-        if done and self.completed_sequence < max(done):
-            raise E3ContractError('watermark is behind a completed operation')
         _tuple('proofs', self.proofs)
         tickets = set()
         for proof in self.proofs:
             if type(proof) is not CompletionProof:
                 raise E3ContractError('proofs must be CompletionProof records')
+            if proof.completion_seq > self.completed_sequence:
+                raise E3ContractError('watermark is behind a completion proof')
             ticket = proof.ticket
             if ticket.transaction != transaction:
                 raise E3ContractError('proof belongs to another transaction')
@@ -347,9 +349,10 @@ class WorkerCompletionReport:
                 raise E3ContractError('proof belongs to another worker')
             if ticket.op_seq not in done:
                 raise E3ContractError('proof without a completed op_seq')
-            if ticket in tickets:
+            key = (ticket, proof.kind)
+            if key in tickets:
                 raise E3ContractError('duplicate completion proof')
-            tickets.add(ticket)
+            tickets.add(key)
         if type(self.cursor) is not CompletionCursor:
             raise E3ContractError('report needs a CompletionCursor')
         _int('state_epoch', self.state_epoch, 1)
@@ -362,8 +365,8 @@ class WorkerCompletionReport:
             op_seq, ns = entry
             _int('host op_seq', op_seq, 0)
             _int('host_submit_ns', ns, 0)
-            if op_seq not in done:
-                raise E3ContractError('submit time for an incomplete operation')
+            if op_seq not in done.union(self.pending_op_seqs):
+                raise E3ContractError('submit time for an unaccepted operation')
             if op_seq <= last:
                 raise E3ContractError('host submit times must be ordered')
             last = op_seq
@@ -412,8 +415,6 @@ class TransitionCommand:
         _int('target_bank', self.target_bank, 0)
         _ints('storage_epochs', self.storage_epochs, minimum=1, allow_empty=False,
               unique=False)
-        if self.storage_epochs != tuple(sorted(self.storage_epochs)):
-            raise E3ContractError('storage epochs are reported per ordered rank')
         _ints('decode_replay_watermarks', self.decode_replay_watermarks,
               minimum=0, unique=False)
         if len(self.decode_replay_watermarks) != len(self.storage_epochs):
@@ -437,6 +438,7 @@ class TransitionAck:
     applied_route_generation: int
     applied_bank: int
     applied_storage_epochs: tuple
+    worker_rank: int = 0
 
     def __post_init__(self):
         _int('engine_epoch', self.engine_epoch, 0)
@@ -447,6 +449,7 @@ class TransitionAck:
         _int('target_bank', self.target_bank, 0)
         _ints('storage_epochs', self.storage_epochs, minimum=1, allow_empty=False,
               unique=False)
+        _int('worker_rank', self.worker_rank, 0)
         _int('applied_route_generation', self.applied_route_generation, 1)
         _int('applied_bank', self.applied_bank, 0)
         _ints('applied_storage_epochs', self.applied_storage_epochs, minimum=1,
@@ -595,6 +598,7 @@ class SegmentAcceptance:
     skipped: bool = False
     cursor: CompletionCursor | None = None
     host_submit_ns: int = 0
+    paused: bool = False
     # Host-queried completions ride along with the reply (piggybacked poll).
     report: WorkerCompletionReport | None = field(default=None, repr=False)
 
@@ -605,6 +609,10 @@ class SegmentAcceptance:
         _kind('kind', self.kind, SegmentKind)
         _int('stage', self.stage, 0)
         _int('op_seq', self.op_seq, 0)
+        if type(self.paused) is not bool or (self.paused and not self.accepted):
+            raise E3ContractError('only an accepted operation may be paused')
+        if self.paused and self.kind is not SegmentKind.LAYER:
+            raise E3ContractError('only a QSA layer can pause at bucket credit')
         flags = (self.accepted, self.pending, self.skipped)
         if any(type(flag) is not bool for flag in flags):
             raise E3ContractError('acceptance flags must be bool')
@@ -635,6 +643,61 @@ class SegmentAcceptance:
         return (f'SegmentAcceptance(txn_seq={self.transaction.txn_seq}, '
                 f'rank={self.worker_rank}, kind={self.kind.value}, '
                 f'stage={self.stage}, op_seq={self.op_seq}, {state})')
+
+
+@dataclass(frozen=True, repr=False)
+class ReleaseRequest:
+    """Close worker-owned storage after the final queried report on every rank.
+
+    No reply to this command is a GPU proof; reports were independently checked
+    against accepted tickets before this bounded release request was issued.
+    """
+    transaction: TransactionId
+    state_epoch: int
+    completed_sequences: tuple
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('release needs a TransactionId')
+        _int('state_epoch', self.state_epoch, 1)
+        _tuple('completed_sequences', self.completed_sequences)
+        if not self.completed_sequences:
+            raise E3ContractError('release needs all-rank watermarks')
+        ranks = []
+        for entry in self.completed_sequences:
+            _tuple('completed sequence entry', entry)
+            if len(entry) != 2:
+                raise E3ContractError('release entry is (rank, watermark)')
+            rank, sequence = entry
+            _int('rank', rank)
+            _int('watermark', sequence)
+            ranks.append(rank)
+        if ranks != sorted(set(ranks)):
+            raise E3ContractError('release ranks must be unique and ordered')
+
+    def __repr__(self):
+        return (f'ReleaseRequest(txn_seq={self.transaction.txn_seq}, '
+                f'state_epoch={self.state_epoch}, ranks={len(self.completed_sequences)})')
+
+
+@dataclass(frozen=True, repr=False)
+class ReleaseAck:
+    transaction: TransactionId
+    worker_rank: int
+    state_epoch: int
+    completed_sequence: int
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('release needs a TransactionId')
+        _int('worker_rank', self.worker_rank)
+        _int('state_epoch', self.state_epoch, 1)
+        _int('completed_sequence', self.completed_sequence)
+
+    def __repr__(self):
+        return (f'ReleaseAck(txn_seq={self.transaction.txn_seq}, '
+                f'rank={self.worker_rank}, state_epoch={self.state_epoch}, '
+                f'completed_sequence={self.completed_sequence})')
 
 
 class OpSeqTracker:
@@ -709,7 +772,7 @@ class OpSeqTracker:
 
 __all__ = [
     'AdmissionRecord', 'CURSOR_PHASES', 'CompletionCursor', 'FAILED_CODES',
-    'OpenAck', 'OpenRequest', 'OpSeqTracker', 'SegmentAcceptance',
+    'ReleaseRequest', 'ReleaseAck', 'OpenAck', 'OpenRequest', 'OpSeqTracker', 'SegmentAcceptance',
     'SegmentCommand', 'SegmentDescriptor', 'SegmentKind', 'TransitionAck',
     'TransitionCommand', 'WIRE_VERSION', 'WorkerCompletionReport',
 ]

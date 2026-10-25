@@ -506,6 +506,37 @@ class SchedulerLeases:
         self._retry_requests()
         return tuple(sorted(released))
 
+    def release_after_workers(self, ticket, acknowledgements, ranks):
+        """Conservative whole-chunk release AFTER every worker drained/released.
+
+        This is not a fabricated COPY_EVENT. The per-bucket release API remains
+        unchanged. Callers must first correlate acknowledgements to queried
+        final reports and their issued commands.
+        """
+        from wire_v1 import ReleaseAck
+        if set(acknowledgements) != set(ranks):
+            raise E3Pending('source release lacks an all-rank barrier')
+        for rank, ack in acknowledgements.items():
+            if (type(ack) is not ReleaseAck or ack.worker_rank != rank
+                    or ack.transaction != ticket.transaction):
+                raise E3ContractError('source release identity mismatch')
+        entries = [e for items in self._held.values() for e in items
+                   if e['ticket'] == ticket and e['category'] is LeaseCategory.SOURCE_HISTORY
+                   and not e['released']]
+        if not entries:
+            raise E3ContractError('no source lease at the terminal barrier')
+        blocks = set()
+        for entry in entries:
+            entry['released'] = True
+            blocks.update(entry['blocks'])
+        for block in tuple(self._held):
+            self._held[block] = [e for e in self._held[block] if not e['released']]
+            if not self._held[block]:
+                del self._held[block]
+        self.held_releases += 1
+        self._free_released(tuple(sorted(blocks)))
+        self._retry_requests()
+
     def _free_released(self, blocks):
         pool = self._pool
         if pool is None or not blocks:
@@ -665,6 +696,8 @@ class ParkedPrefill:
         self.pp_consumed = set()
         self.bound = False
         self.cache_published = False
+        self.worker_releases = {}
+        self.failed = False
 
     @property
     def request_id(self):
@@ -726,6 +759,9 @@ class PrefillAdmissionController:
         self.commits = 0
         self.cancels = 0
         self.state_epoch_rejections = 0
+        self._request_identities = {}
+        self._next_generation = 0
+        self._next_state_epoch = 0
 
     # -- installation -----------------------------------------------------
     def attach(self):
@@ -758,14 +794,11 @@ class PrefillAdmissionController:
         splitter = getattr(scheduler, '_mamba_block_aligned_split', None)
         if not callable(splitter):
             return num_new_tokens
-        try:
-            value = splitter(request, num_new_tokens,
-                             num_new_local_computed_tokens=num_new_local_computed_tokens)
-        except TypeError:
-            return num_new_tokens
-        if type(value) is not int or value <= 0:
-            return num_new_tokens
-        return min(value, num_new_tokens)
+        value = splitter(request, num_new_tokens,
+                         num_new_local_computed_tokens=num_new_local_computed_tokens)
+        if type(value) is not int or not 0 <= value <= num_new_tokens:
+            raise E3ContractError('invalid aligned chunk size')
+        return value
 
     def _environment_refuses(self, scheduler):
         if getattr(scheduler, 'connector', None) is not None:
@@ -794,7 +827,8 @@ class PrefillAdmissionController:
             raise E3ContractError('admission controller is attached elsewhere')
         if self.parked is not None or self._environment_refuses(scheduler):
             return None
-        if len(getattr(scheduler, 'running', ())) + 1 > getattr(
+        if (len(getattr(scheduler, 'running', ())) +
+                getattr(scheduler, 'num_waiting_for_streaming_input', 0) + 1) > getattr(
                 scheduler, 'max_num_running_reqs', 1):
             return None
         queue = self._queue(scheduler)
@@ -805,10 +839,18 @@ class PrefillAdmissionController:
             self.refused += 1
             return None
         manager = scheduler.kv_cache_manager
+        # Native allocation also owns CoW endpoints, zeroing and boundary
+        # state work. No fabricated empty defaults: the pinned allocation
+        # adapter must capture and retain those side effects explicitly.
+        metadata = getattr(scheduler, '_flash_s5_admission_metadata', None)
+        if not callable(metadata):
+            raise E3ContractError('native admission metadata adapter is not installed')
         prompt_end = getattr(request, 'num_tokens', None)
         start = getattr(request, 'num_computed_tokens', 0)
         if type(prompt_end) is not int or type(start) is not int or prompt_end < 2:
             self.refused += 1
+            return None
+        if getattr(request, 'num_output_tokens', 0) != 0:
             return None
         if prompt_end - start <= 1:
             return None
@@ -822,7 +864,10 @@ class PrefillAdmissionController:
             if prompt_end - start <= 1:
                 # Everything except the final token is cached: stock handback.
                 return None
-        num_new = min(self.chunk_tokens, prompt_end - 1 - start)
+        budget = getattr(scheduler, 'max_num_scheduled_tokens', None)
+        if type(budget) is not int or budget < 1:
+            raise E3ContractError('scheduler token budget is not declared')
+        num_new = min(self.chunk_tokens, budget, prompt_end - 1 - start)
         num_new = self._aligned_split(
             scheduler, request, num_new,
             num_new_local_computed_tokens=num_new_computed)
@@ -856,35 +901,53 @@ class PrefillAdmissionController:
             return None
 
         rows = manager.get_block_ids(request.request_id)
-        block_tables = tuple(tuple(row) for row in rows if row)
+        block_tables = tuple(tuple(row) for row in rows)
         if not block_tables:
             raise E3ContractError('admission allocated no block rows')
         self.txn_seq += 1
-        generation = getattr(request, 'request_generation', None)
-        if type(generation) is not int:
-            generation = getattr(request, 'generation', 0)
+        # Object identity distinguishes reuse of a request UID in this engine.
+        # Keep the object while registered; never infer generation from a
+        # nonexistent vLLM request field or from Python id() reuse.
+        identity = self._request_identities.get(request.request_id)
+        if identity is None or identity[0] is not request:
+            self._next_generation += 1
+            identity = (request, self._next_generation)
+            self._request_identities[request.request_id] = identity
+        self._next_state_epoch += 1
         transaction = TransactionId(self.engine_epoch, request.request_id,
-                                    generation if type(generation) is int else 0,
-                                    start, chunk_end, self.txn_seq)
-        record = _wire_admission()(
-            transaction=transaction, prompt_end=prompt_end,
-            state_epoch=getattr(request, 'state_epoch', 1), committed_end=chunk_end,
-            block_tables=block_tables, slot_mappings=(),
-            new_block_ids_to_zero=tuple(getattr(request, 'new_block_ids_to_zero', ()) or ()),
-            cow_pairs=(), input_ids=input_ids,
-            sparse_active=bool(getattr(request, 'sparse_active', False)))
+                                    identity[1], start, chunk_end, self.txn_seq)
+        # Park BEFORE any post-allocation validation can fail. Allocation is
+        # side-effectful, so a failure retains the request and blocks; it is
+        # never an ordinary scheduling fallback.
         queue.remove_request(request)
-        # From here the request is outside every stock queue: a failure must be
-        # fatal rather than silently returning optimistic storage to the pool.
-        flat = record.flat_blocks()
-        self.leases.reserve_blocks(transaction, LeaseCategory.ARENA, flat)
-        # Rows are full (prefix blocks included); only this chunk's unpublished
-        # blocks enter the frontier, the rest are already shareable.
-        published = set(self.frontier.committed_blocks())
-        self.frontier.reserve(transaction,
-                              tuple(b for b in flat if b not in published))
         self.parked = ParkedPrefill(request=request, queue=queue,
-                                    transaction=transaction, admission=record)
+                                   transaction=transaction, admission=None)
+        try:
+            details = metadata(request, blocks, start, chunk_end)
+            required = {'new_block_ids_to_zero', 'cow_pairs', 'ngram_context',
+                        'unpublished_blocks'}
+            if type(details) is not dict or set(details) != required:
+                raise E3ContractError('admission metadata is incomplete')
+            record = _wire_admission()(
+                transaction=transaction, prompt_end=prompt_end,
+                state_epoch=self._next_state_epoch, committed_end=start,
+                block_tables=block_tables, slot_mappings=(),
+                new_block_ids_to_zero=details['new_block_ids_to_zero'],
+                cow_pairs=details['cow_pairs'], input_ids=input_ids,
+                ngram_context=details['ngram_context'], sparse_active=False)
+            self.parked.admission = record
+            flat = tuple(sorted({b for b in record.flat_blocks() if b > 0}
+                                | {b for pair in record.cow_pairs for b in pair}))
+            self.leases.reserve_blocks(transaction, LeaseCategory.SOURCE_HISTORY, flat)
+            # Only allocation-owned new/unpublished pages, never cached prefix
+            # pages merely because this local frontier has not seen them yet.
+            unpublished = details['unpublished_blocks']
+            if type(unpublished) is not tuple or not set(unpublished) <= set(flat):
+                raise E3ContractError('unpublished pages are outside the source lease')
+            self.frontier.reserve(transaction, unpublished)
+        except BaseException:
+            self.parked.failed = True
+            raise
         self.admitted += 1
         return record
 
@@ -910,7 +973,7 @@ class PrefillAdmissionController:
         parked = self._parked_for(ticket.transaction)
         if parked.transaction != ticket.transaction:
             raise E3ContractError('lease ticket belongs to another transaction')
-        self.leases.bind(ticket, LeaseCategory.ARENA)
+        self.leases.bind(ticket, LeaseCategory.SOURCE_HISTORY)
         parked.ticket = ticket
         parked.bound = True
         return ticket
@@ -940,18 +1003,42 @@ class PrefillAdmissionController:
         if report.state_epoch != parked.admission.state_epoch:
             self.state_epoch_rejections += 1
             raise E3ContractError('report state_epoch does not match the chunk')
+        prior = parked.reports.get(report.worker_rank)
+        if prior is not None:
+            if (report.completed_sequence < prior.completed_sequence
+                    or not set(prior.completed_op_seqs) <= set(report.completed_op_seqs)):
+                raise E3ContractError('completion report regressed')
         parked.reports[report.worker_rank] = report
         return report
 
-    def ready_to_commit(self, transaction):
+    def ready_to_release(self, transaction):
         parked = self._parked_for(transaction)
         if set(parked.reports) != set(self.ranks):
             return False
-        if any(r.failed for r in parked.reports.values()):
+        if parked.failed or any(r.failed or r.pending_op_seqs for r in parked.reports.values()):
             return False
         if not all(r.state_written() for r in parked.reports.values()):
             return False
         return parked.pp_sent <= parked.pp_consumed
+
+    def ready_to_commit(self, transaction):
+        parked = self._parked_for(transaction)
+        return (self.ready_to_release(transaction)
+                and set(parked.worker_releases) == set(self.ranks))
+
+    def note_worker_release(self, acknowledgement):
+        from wire_v1 import ReleaseAck
+        if type(acknowledgement) is not ReleaseAck:
+            raise E3ContractError('release needs a typed worker acknowledgment')
+        parked = self._parked_for(acknowledgement.transaction)
+        rank = acknowledgement.worker_rank
+        if rank not in self.ranks or acknowledgement.state_epoch != parked.admission.state_epoch:
+            raise E3ContractError('release identity differs from the admission')
+        report = parked.reports.get(rank)
+        if (report is None or report.pending_op_seqs or report.failed
+                or acknowledgement.completed_sequence != report.completed_sequence):
+            raise E3ContractError('release is not bound to the final completion report')
+        parked.worker_releases[rank] = acknowledgement
 
     def commit(self, transaction, proof):
         """Publish the chunk once: cache blocks, leases, frontier, handback."""
@@ -964,20 +1051,21 @@ class PrefillAdmissionController:
             raise E3Pending('completion proofs are incomplete')
         if type(proof) is not CompletionProof:
             raise E3ContractError('commit needs the consumer completion proof')
-        if proof.ticket != parked.ticket or proof.kind is not CompletionKind.GPU_EVENT:
-            raise E3ContractError('commit proof does not consume the chunk lease')
+        if proof.ticket != parked.ticket:
+            raise E3ContractError('commit ticket differs from bound source reservation')
 
         admission = parked.admission
         manager = self._scheduler.kv_cache_manager
         # Delayed allocation skipped this call; publish exactly once now.
-        manager.cache_blocks(parked.request, admission.committed_end)
+        manager.cache_blocks(parked.request, transaction.chunk_end)
         parked.cache_published = True
         self.leases.publish(parked.ticket)
         self.frontier.publish(transaction)
-        self.leases.release(parked.ticket, LeaseCategory.ARENA, proof)
-        parked.request.num_computed_tokens = admission.committed_end
+        self.leases.release_after_workers(parked.ticket, parked.worker_releases,
+                                          self.ranks)
+        parked.request.num_computed_tokens = transaction.chunk_end
         self._committed[transaction] = dict(
-            committed_end=admission.committed_end,
+            committed_end=transaction.chunk_end,
             remaining=admission.remaining_tokens,
             state_epoch=admission.state_epoch,
             ranks=tuple(sorted(parked.reports)),
@@ -985,6 +1073,8 @@ class PrefillAdmissionController:
         while len(self._committed) > self.max_history:
             self._committed.pop(next(iter(self._committed)))
         self.parked = None
+        if admission.remaining_tokens == 1:
+            self._request_identities.pop(transaction.request_uid, None)
         self.commits += 1
         if admission.remaining_tokens > 0:
             # One-token handback: the pinned waiting branch schedules the rest.
@@ -1003,22 +1093,26 @@ class PrefillAdmissionController:
         deferred free waits for this lease and is retried here.
         """
         parked = self._parked_for(transaction)
-        if parked.pp_sent:
+        if not parked.pp_sent <= parked.pp_consumed:
             raise E3ContractError('a cancelled chunk still owns PP transfers')
         if never_submitted:
             if parked.bound:
                 raise E3ContractError('a bound chunk had accepted operations')
-            self.leases.cancel_reservation(transaction, LeaseCategory.ARENA)
+            self.leases.cancel_reservation(transaction, LeaseCategory.SOURCE_HISTORY)
         else:
             if not parked.bound:
                 raise E3ContractError('cancellation needs the accepted ticket')
             if type(proof) is not CompletionProof:
                 raise E3ContractError('cancellation needs the consumer proof')
-            if proof.ticket != parked.ticket or proof.kind is not CompletionKind.GPU_EVENT:
-                raise E3ContractError('cancellation proof does not consume the lease')
-            self.leases.release(parked.ticket, LeaseCategory.ARENA, proof)
+            if proof.ticket != parked.ticket:
+                raise E3ContractError('cancellation ticket differs from source reservation')
+            if set(parked.worker_releases) != set(self.ranks):
+                raise E3Pending('cancellation waits for all worker releases')
+            self.leases.release_after_workers(parked.ticket, parked.worker_releases,
+                                              self.ranks)
         self.frontier.cancel(transaction)
         self.parked = None
+        self._request_identities.pop(transaction.request_uid, None)
         self.cancels += 1
         return parked.request
 

@@ -384,8 +384,8 @@ class BoundedSender:
         buffer = getattr(self.queue, 'buffer', None)
         metadata = getattr(buffer, 'get_metadata', None)
         index = getattr(self.queue, 'current_idx', None)
-        if metadata is None or type(index) is not int:
-            return True
+        if not callable(metadata) or type(index) is not int:
+            raise E3ContractError('broadcast ring metadata is unavailable')
         with metadata(index) as slots:
             return not (slots[0] and sum(slots[1:]) != buffer.n_reader)
 
@@ -397,7 +397,9 @@ class BoundedSender:
             raise E3ContractError('command envelope is not serializable')
         buffer = getattr(self.queue, 'buffer', None)
         limit = getattr(buffer, 'max_chunk_bytes', None)
-        if type(limit) is int and size + 6 >= limit:
+        if type(limit) is not int or limit < 7:
+            raise E3ContractError('broadcast inline capacity is unavailable')
+        if size + 6 >= limit:
             self.refused_large += 1
             raise Backpressure('command_too_large')
 
@@ -589,7 +591,8 @@ def park_prefill(engine, scheduler_output):
     driver = _driver(engine)
     if driver is None:
         return False
-    return driver.park(scheduler_output) is not None
+    parked = driver.park(scheduler_output)
+    return parked is not None and parked is not False
 
 
 def before_step_with_batch_queue(engine):
