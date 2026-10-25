@@ -79,3 +79,44 @@ Reading: on 10 GbE the network adds ~5–7 % to the encode time; on 1 GbE it add
 need their own copy, or with base64 framing, which is +33 %). The visual tokens still have to be prefilled by the
 language model on the four main GPUs. The remote tower takes the encoder's VRAM and compute off them, not the
 prefill of the visual tokens. Not yet measured: the remote route, language decode, image quality.
+
+## Design for a remote vision encoder (25 Oct; preparation only, nothing implemented)
+
+**Topology.** A 5th RTX 3090 in a second host ("vision host") runs an encoder-only vLLM instance of the same model
+image as `ec_producer`. CT <ct-id>'s engine runs as `ec_consumer` with `--language-model-only` semantics for compute
+(tower weights not loaded on the serving GPUs). Both sides use the engine's content-derived multimodal hash as the
+cache key. Link: a direct 10 GbE run between the vision host and crazydiamond's second AQC113 port, outside the
+LAN switch, so image payloads never share the path with API traffic.
+
+**Request path.** Gateway → engine (consumer). The consumer's scheduler sees an image, asks the EC connector for the
+embedding by hash; on a miss it requests the producer to encode (pixels travel gateway → producer once), waits
+without holding a decode slot, then prefills the visual tokens on the four serving GPUs like a text append of the
+same length. Text requests never touch the connector.
+
+**Latency budget per image (from q14b + the 24 Oct prefill rate of ~130 ms per 1,024 tokens):**
+
+| Input | Encode (remote 3090) | Transfer 10 GbE | Visual-token prefill on the LM | Added TTFT, about |
+|---|---:|---:|---:|---:|
+| 512² (256 tok) | 15 ms | 1 ms | ~35 ms | ~50 ms |
+| 1024² (1,024 tok) | 66 ms | 5 ms | ~130 ms | ~200 ms |
+| 1536² (2,304 tok) | 205 ms | 10 ms | ~300 ms | ~0.5 s |
+
+The LM-side prefill dominates above 1024²; the remote tower removes the encoder's VRAM and its p99 interference
+(22.9 → 221.8 ms measured with the tower on the serving GPUs), not the visual-token prefill. Under S5 that prefill is
+one more short bulk-prefill transaction.
+
+**Memory effect on the serving GPUs.** Stage 0 gives back 0.42 GiB per GPU (TP-split tower) plus the encoder's
+activation peak (q14b: up to 0.6 GiB above weights at 1536²); the consumer-side encoder cache lives in host RAM
+(5–11 MiB per image, bounded by `--mm-encoder-cache` settings), which the FP8 PLE's 47 GiB of freed shmem covers.
+Ledger row: `docs/MEMORY-LEDGER.md` "Vision tower".
+
+**Failure semantics.** Producer unreachable or slow → image requests fail fast or wait with a bounded timeout, text
+traffic unaffected (fault-injection test required). Producer restart → cache cold, no correctness effect because
+the key is the content hash. Client-supplied UUIDs are rejected at the gateway (today's isolation blocker).
+
+**What must be true before any decision (open):** operator picks the vision host and link; Mooncake TCP transfer
+latency measured for 5 and 11 MiB payloads between the two hosts; EPD producer/consumer roles confirmed to work in
+this vLLM build with `--ec-transfer-config` (offline config review by Codex, then a two-process feasibility test on
+one box with a small fast-start LM config, since the TP2×PP2 engine needs all four GPUs); the vision_test.py gates
+(quality, bound, follow-up, isolation, uuid) on the EPD topology; an agreed image latency ceiling in the
+interference test. Not started; waits behind the S5 engine work by the operator's order.
