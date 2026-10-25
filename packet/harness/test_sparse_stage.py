@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import unittest
+from types import SimpleNamespace as NS
 import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('s6gen',ROOT/'patches/sparse_stage/make_sparse_stage.py')
@@ -62,6 +63,47 @@ def staged(plan,indices,rows,kv,q,page):
     return output
 
 class SparseTests(unittest.TestCase):
+    def public_wrapper(self, env, calls):
+        generated=g.generate((ROOT/'patches/retain/ops_qsa.py.v8.1').read_text())
+        wrapper=ast.parse(g.function(generated,'qsa_sparse_paged_attention_staged'))
+        fn=wrapper.body[0]
+        for a in fn.args.args: a.annotation=None
+        fn.returns=None
+        def record(route):
+            def invoke(*args):
+                # Exercise the same dimensional access that crashed q13b,
+                # and keep every public argument for identity comparison.
+                self.assertEqual(args[2].shape[1]-1,16)
+                self.assertEqual(len(args[3].shape),1)
+                calls.append((route,args))
+                return route
+            return invoke
+        ns=dict(os=NS(environ=env),_s6_staged_stock=record('stock'),_s6_staged_async=record('async'))
+        exec(compile(ast.fix_missing_locations(wrapper),'generated-public-wrapper','exec'),ns)
+        args=(object(),object(),NS(shape=(1024,17)),NS(shape=(100,)),
+              NS(numel=lambda:1024),49,NS(shape=(24,1,4048,512)),False,object(),None,0)
+        return ns['qsa_sparse_paged_attention_staged'],args
+
+    def test_public_order_stock_routes_including_first_prefill(self):
+        for case in ('off','early','retained','empty','sparse-off'):
+            calls=[];env={'FLASH_QSA_SPARSE_ASYNC':'1'}
+            fn,args=self.public_wrapper(env,calls);args=list(args)
+            if case=='off':env['FLASH_QSA_SPARSE_ASYNC']='0'
+            elif case=='early':args[5]=23
+            elif case=='retained':args[9]=object()
+            elif case=='empty':args[4]=NS(numel=lambda:0)
+            else:env['VLLM_QSA_KVO_SPARSE_PREFILL']='0'
+            with self.subTest(case=case):
+                self.assertEqual(fn(*args),'stock')
+                self.assertEqual(len(calls),1);self.assertEqual(calls[0][0],'stock')
+                for actual,expected in zip(calls[0][1],args):self.assertIs(actual,expected)
+
+    def test_public_order_async_route(self):
+        calls=[];fn,args=self.public_wrapper({'FLASH_QSA_SPARSE_ASYNC':'1'},calls)
+        fn(*args)
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0][0],'async')
+        for actual,expected in zip(calls[0][1],args):self.assertIs(actual,expected)
+
     def test_dense_sparse_empty_and_boundaries_byte_equal(self):
         rng=np.random.default_rng(71);n=96;page=8;arena=3
         for count in (0,1,23,24,25,48,76,77,96):

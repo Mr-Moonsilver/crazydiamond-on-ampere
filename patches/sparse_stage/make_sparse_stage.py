@@ -72,7 +72,7 @@ def generate(src):
     eligible = (retained is None and rows.numel() > 0 and
         max_logical_page + 1 > int(os.environ.get("QSA_SPARSE_MIN_PAGES", arena.shape[0])) and
         os.environ.get("VLLM_QSA_KVO_SPARSE_PREFILL", "1") == "1")
-    args = (q,kv_cache,block_table_row,logical_indices,rows,max_logical_page,arena,use_prefill_config,out,retained,retained_copied)
+    args = (q,kv_cache,logical_indices,block_table_row,rows,max_logical_page,arena,use_prefill_config,out,retained,retained_copied)
     if not enabled or not eligible:
         return _s6_staged_stock(*args)
     _s6_staged_async(*args)
