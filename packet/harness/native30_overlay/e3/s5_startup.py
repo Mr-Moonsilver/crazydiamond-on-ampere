@@ -84,6 +84,36 @@ def install_builder(runner, kv_caches, is_profiling=False, *, env=None):
     return build
 
 
+def _native_execution_shape(engine, ranks):
+    """Discover the declared layer count and the two-stage rank split.
+
+    Returns ``None`` when the engine does not declare a two-stage model shape;
+    the caller then keeps the reviewed legacy composition instead of guessing
+    a layer split. The only assumption is vLLM's rank ordering (pipeline stages
+    are contiguous blocks of ``world_size / pp_size`` ranks); every worker's
+    :class:`OpenAck` re-validates its own stage against this map and refuses a
+    mismatch.
+    """
+    model_config = getattr(engine, 'model_config', None)
+    hf_config = getattr(model_config, 'hf_config', None)
+    layer_count = getattr(hf_config, 'num_hidden_layers', None)
+    if type(layer_count) is not int:
+        layer_count = getattr(hf_config, 'num_layers', None)
+    parallel = getattr(model_config, 'parallel_config', None)
+    pp_size = getattr(parallel, 'pipeline_parallel_size', None)
+    if type(layer_count) is not int or type(pp_size) is not int:
+        return None
+    if layer_count < 2 or pp_size != 2 or len(ranks) % pp_size:
+        raise StartupError('the declared model shape is not a two-stage split')
+    per_stage = len(ranks) // pp_size
+    layer_split = layer_count // pp_size
+    if not 0 < layer_split < layer_count:
+        raise StartupError('the declared split leaves no layers on one stage')
+    stage_of = tuple((rank, index // per_stage)
+                     for index, rank in enumerate(ranks))
+    return layer_count, layer_split, stage_of
+
+
 def install_engine(engine, *, env=None, clock=time.monotonic):
     """Install the engine-side composition at the generated ``__init__`` seam."""
     env = os.environ if env is None else env
@@ -99,9 +129,12 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     manager = getattr(scheduler, 'kv_cache_manager', None)
     if manager is None or getattr(manager, 'block_pool', None) is None:
         raise StartupError('engine startup requires the E2 block pool for E3 leases')
+    queues = getattr(executor, 'response_mqs', None)
+    if not queues:
+        raise StartupError('engine startup needs the executor reply queues')
+    ranks = tuple(range(len(queues)))
 
     from executor_hooks import install
-    from engine_driver import SegmentDriver
     from native_backend import RemoteCompletionBackend
     from native_resources import response_success
 
@@ -117,9 +150,35 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     if not isinstance(composition, Composition):
         raise StartupError('enabled engine startup produced no composition')
     composition.attach(engine=engine, scheduler=scheduler, executor=executor)
-    driver = SegmentDriver(composition, executor=executor, scheduler=scheduler,
-                           engine=engine, clock=clock).install()
+
+    shape = _native_execution_shape(engine, ranks)
+    if shape is None:
+        # No declared two-stage model shape: keep the reviewed legacy driver.
+        # It parks on the post-schedule marker, which never appears here.
+        from engine_driver import SegmentDriver
+
+        driver = SegmentDriver(composition, executor=executor, scheduler=scheduler,
+                               engine=engine, clock=clock).install()
+        engine._flash_s5_composition = composition
+        engine._flash_s5_driver = driver
+        return composition
+
+    from engine_driver import NativeSegmentDriver
+    from scheduler_hooks import PrefillAdmissionController
+
+    layer_count, layer_split, stage_of = shape
+    epoch = getattr(engine, 'engine_epoch', 0)
+    controller = PrefillAdmissionController(
+        scheduler, leases=composition.scheduler_leases,
+        frontier=composition.frontier,
+        engine_epoch=epoch if type(epoch) is int else 0,
+        chunk_tokens=config.chunk_tokens, ranks=ranks, clock=clock).attach()
+    driver = NativeSegmentDriver(
+        controller, executor=executor, scheduler=scheduler, engine=engine,
+        layer_count=layer_count, layer_split=layer_split, stage_of=stage_of,
+        clock=clock, reply_timeout_s=config.reply_timeout_s).install()
     engine._flash_s5_composition = composition
+    engine._flash_s5_admission = controller
     engine._flash_s5_driver = driver
     return composition
 

@@ -1,0 +1,715 @@
+"""Canonical wire-v1 records shared by the engine driver and the worker lanes.
+
+This module is the single schema both sides of the E3 overlap speak. It is
+frozen and validated at construction, imports neither torch nor vLLM, and does
+no I/O, so the engine driver, the generated worker hooks and the CPU fixtures
+all use exactly the same objects.
+
+The records deliberately keep three things separate:
+
+* **Admission** is a snapshot of what the scheduler already allocated for one
+  chunk. ``block_tables`` are the FULL immutable per-group rows -- the worker
+  discovers its own local QSA/Mamba groups, it is never handed a flat
+  ``block_ids`` list as authoritative history.
+* **Segments** describe one bounded worker operation. There is no whole-forward
+  record and no implicit fallback: one kind, one stage, at most one layer.
+* **Completion** is reported only from host-queried facts. An RPC reply is not
+  a completion proof, and a report carries its own transaction/lane identity
+  so a stale report cannot advance another transaction.
+
+Sequence rules (binding, see ``docs/e3-briefs/contract-decisions.md``):
+
+* The ``seq`` in a PP segment is the explicit PP transfer sequence, shared by
+  sender and receiver. It is a different field from ``op_seq`` and is never
+  defaulted from it.
+* ``op_seq`` is not part of a descriptor. It is assigned when the worker
+  ACCEPTS the command and is strictly increasing per lane. A retry of an
+  identical command is idempotent; :class:`OpSeqTracker` enforces both rules
+  and never consumes a sequence for pending work.
+
+Request UIDs, token ids and physical block tables never appear in ``repr``.
+"""
+from dataclasses import dataclass, field
+from enum import Enum
+
+from e3_types import (
+    CompletionKind,
+    CompletionProof,
+    DependencyRole,
+    E3ContractError,
+    LaneId,
+    OperationTicket,
+    TransactionId,
+)
+
+WIRE_VERSION = 1
+
+CURSOR_PHASES = ('prepare', 'pp_receive', 'prefix', 'layer', 'suffix',
+                 'pp_send', 'state_finalize', 'commit', 'idle')
+
+FAILED_CODES = ('worker_failure', 'cancelled', 'preempted', 'timeout',
+                'state_epoch', 'pp_mismatch', 'quarantined', 'aborted')
+
+
+class SegmentKind(str, Enum):
+    """The only operations a worker may be asked to run in the first cut.
+
+    ``layer`` carries exactly one half-open global layer id, so slicing a
+    forward into arbitrary spans is refused here rather than at the worker.
+    """
+    PREPARE = 'prepare'
+    PP_RECEIVE = 'pp_receive'
+    PREFIX = 'prefix'
+    LAYER = 'layer'
+    SUFFIX = 'suffix'
+    PP_SEND = 'pp_send'
+    STATE_FINALIZE = 'state_finalize'
+
+
+# Kind -> stages the first implementation accepts. LAYER/SUFFIX are common to
+# every stage. PP_RECEIVE and STATE_FINALIZE belong to a non-first stage.
+_KIND_STAGES = {
+    SegmentKind.PREPARE: (0,),
+    SegmentKind.PP_RECEIVE: (1,),
+    SegmentKind.PREFIX: (0,),
+    SegmentKind.LAYER: None,
+    SegmentKind.SUFFIX: None,
+    SegmentKind.PP_SEND: (0,),
+    SegmentKind.STATE_FINALIZE: (1,),
+}
+
+_PP_KINDS = (SegmentKind.PP_SEND, SegmentKind.PP_RECEIVE)
+
+
+def _int(name, value, minimum=0):
+    if type(value) is not int:
+        raise E3ContractError(f'{name} must be an int, not {type(value).__name__}')
+    if value < minimum:
+        raise E3ContractError(f'{name} must be >= {minimum}')
+    return value
+
+
+def _tuple(name, value):
+    if type(value) is not tuple:
+        raise E3ContractError(name + ' must be an immutable tuple')
+    return value
+
+
+def _ints(name, value, *, minimum=0, allow_empty=True, unique=True):
+    _tuple(name, value)
+    if not allow_empty and not value:
+        raise E3ContractError(name + ' must not be empty')
+    for item in value:
+        _int(name, item, minimum)
+    if unique and len(set(value)) != len(value):
+        raise E3ContractError(name + ' must not repeat an entry')
+    return value
+
+
+def _kind(name, value, enum):
+    if type(value) is not enum:
+        raise E3ContractError(f'{name} must be {enum.__name__}')
+    return value
+
+
+@dataclass(frozen=True, repr=False)
+class AdmissionRecord:
+    """What the scheduler allocated for one chunk, captured once.
+
+    ``prompt_end`` is the number of prompt tokens; the chunk is
+    ``[transaction.chunk_start, transaction.chunk_end)`` and must leave at
+    least the final token for the ordinary handback path. ``committed_end`` is
+    the position that becomes cache-visible exactly at commit; the worker's
+    private align seed is derived from it, never sent.
+    """
+    transaction: TransactionId
+    prompt_end: int
+    state_epoch: int
+    committed_end: int
+    block_tables: tuple
+    slot_mappings: tuple
+    new_block_ids_to_zero: tuple
+    cow_pairs: tuple
+    input_ids: tuple = field(repr=False)
+    ngram_context: tuple = field(default=(), repr=False)
+    sparse_active: bool = False
+
+    def __post_init__(self):
+        transaction = self.transaction
+        if type(transaction) is not TransactionId:
+            raise E3ContractError('admission needs a TransactionId')
+        _int('prompt_end', self.prompt_end, 2)
+        if transaction.chunk_start >= transaction.chunk_end:
+            raise E3ContractError('admission chunk is empty')
+        if transaction.chunk_end > self.prompt_end - 1:
+            raise E3ContractError(
+                'admission must leave the last prompt token for handback')
+        _int('state_epoch', self.state_epoch, 1)
+        _int('committed_end', self.committed_end, 1)
+        if self.committed_end != transaction.chunk_end:
+            raise E3ContractError('committed_end must be the chunk end')
+
+        _tuple('block_tables', self.block_tables)
+        if not self.block_tables:
+            raise E3ContractError('admission needs its per-group block rows')
+        for row in self.block_tables:
+            _ints('block table row', row, minimum=1, allow_empty=False)
+        _tuple('slot_mappings', self.slot_mappings)
+        for row in self.slot_mappings:
+            _ints('slot mapping row', row, minimum=0)
+
+        _ints('new_block_ids_to_zero', self.new_block_ids_to_zero, minimum=1)
+        _tuple('cow_pairs', self.cow_pairs)
+        seen_dst = set()
+        for pair in self.cow_pairs:
+            _tuple('cow pair', pair)
+            if len(pair) != 2:
+                raise E3ContractError('a cow pair is (source, destination)')
+            source, destination = pair
+            _int('cow source', source, 1)
+            _int('cow destination', destination, 1)
+            if source == destination:
+                raise E3ContractError('a cow pair must copy to another block')
+            if destination in seen_dst:
+                raise E3ContractError('duplicate cow destination')
+            seen_dst.add(destination)
+
+        expected = transaction.chunk_end - transaction.chunk_start
+        _ints('input_ids', self.input_ids, minimum=0)
+        if len(self.input_ids) != expected:
+            raise E3ContractError('input_ids must cover exactly the chunk')
+        _ints('ngram_context', self.ngram_context, minimum=0)
+        if type(self.sparse_active) is not bool:
+            raise E3ContractError('sparse_active must be bool')
+
+    @property
+    def chunk_tokens(self):
+        return self.transaction.chunk_end - self.transaction.chunk_start
+
+    @property
+    def remaining_tokens(self):
+        """Prompt tokens still unprocessed after this chunk (>= 1)."""
+        return self.prompt_end - self.committed_end
+
+    @property
+    def align_accepted(self):
+        """The worker's private align precondition; always exactly 1."""
+        return 1
+
+    def align_seed(self, block_size):
+        """``(committed_end - 1) // block_size``; private to the worker."""
+        _int('block_size', block_size, 1)
+        return (self.committed_end - 1) // block_size
+
+    def flat_blocks(self):
+        """All block ids in table order; a convenience, not a history."""
+        return tuple(block for row in self.block_tables for block in row)
+
+    def __repr__(self):
+        groups = len(self.block_tables)
+        blocks = len(self.flat_blocks())
+        return (f'AdmissionRecord(txn_seq={self.transaction.txn_seq}, '
+                f'prompt_end={self.prompt_end}, state_epoch={self.state_epoch}, '
+                f'committed_end={self.committed_end}, groups={groups}, '
+                f'blocks={blocks}, chunk_tokens={self.chunk_tokens}, '
+                f'sparse_active={self.sparse_active})')
+
+
+@dataclass(frozen=True, repr=False)
+class SegmentDescriptor:
+    """One bounded worker operation. No transaction-wide forward exists.
+
+    ``depends_on`` names the tickets that must be complete before this segment
+    may run. ``seq`` is the explicit PP transfer sequence and exists only for
+    the two PP kinds; it is never derived from ``op_seq``.
+    """
+    transaction: TransactionId
+    kind: SegmentKind
+    stage: int
+    depends_on: tuple = ()
+    layer_start: int | None = None
+    layer_end: int | None = None
+    seq: int | None = None
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('segment needs a TransactionId')
+        _kind('kind', self.kind, SegmentKind)
+        _int('stage', self.stage, 0)
+        allowed = _KIND_STAGES[self.kind]
+        if allowed is not None and self.stage not in allowed:
+            raise E3ContractError(
+                f'{self.kind.value} is not valid on stage {self.stage}')
+        _tuple('depends_on', self.depends_on)
+        for ticket in self.depends_on:
+            if type(ticket) is not OperationTicket:
+                raise E3ContractError('depends_on needs OperationTickets')
+            if ticket.transaction != self.transaction:
+                raise E3ContractError('dependency belongs to another transaction')
+        if len(set(self.depends_on)) != len(self.depends_on):
+            raise E3ContractError('duplicate dependency ticket')
+        if self.kind is SegmentKind.LAYER:
+            start = _int('layer_start', self.layer_start, 0)
+            end = _int('layer_end', self.layer_end, 1)
+            if end != start + 1:
+                raise E3ContractError('one layer per segment in the first cut')
+        else:
+            if self.layer_start is not None or self.layer_end is not None:
+                raise E3ContractError('only layer segments carry layer ids')
+        if self.kind in _PP_KINDS:
+            _int('seq', self.seq, 0)
+        elif self.seq is not None:
+            raise E3ContractError('only PP segments carry a transfer seq')
+
+    @property
+    def is_pp(self):
+        return self.kind in _PP_KINDS
+
+    @property
+    def layers(self):
+        return () if self.kind is not SegmentKind.LAYER else (self.layer_start,)
+
+    def satisfied(self, completed_tickets):
+        """True when every dependency is present in the completed set."""
+        done = set(completed_tickets)
+        return all(ticket in done for ticket in self.depends_on)
+
+    def __repr__(self):
+        fields = [f'txn_seq={self.transaction.txn_seq}', f'kind={self.kind.value}',
+                  f'stage={self.stage}']
+        if self.kind is SegmentKind.LAYER:
+            fields.append(f'layer={self.layer_start}')
+        if self.kind in _PP_KINDS:
+            fields.append(f'seq={self.seq}')
+        fields.append(f'deps={len(self.depends_on)}')
+        return 'SegmentDescriptor(' + ', '.join(fields) + ')'
+
+
+@dataclass(frozen=True)
+class CompletionCursor:
+    """Where the worker's bounded operation cursor actually stands."""
+    phase: str
+    layer: int
+    bucket: int
+
+    def __post_init__(self):
+        if type(self.phase) is not str or self.phase not in CURSOR_PHASES:
+            raise E3ContractError('unknown completion phase')
+        _int('layer', self.layer, 0)
+        _int('bucket', self.bucket, 0)
+
+
+@dataclass(frozen=True, repr=False)
+class WorkerCompletionReport:
+    """One rank's host-queried completion state for one transaction.
+
+    ``completed_sequence`` is the worker's queried watermark, not the highest
+    submitted sequence. Proofs are real completion records; an operation that
+    is merely acknowledged is in ``pending_op_seqs``.
+    """
+    transaction: TransactionId
+    worker_rank: int
+    completed_op_seqs: tuple
+    pending_op_seqs: tuple
+    completed_sequence: int
+    proofs: tuple
+    cursor: CompletionCursor
+    state_epoch: int
+    host_submit_ns: tuple = ()
+    failed_code: str | None = None
+
+    def __post_init__(self):
+        transaction = self.transaction
+        if type(transaction) is not TransactionId:
+            raise E3ContractError('report needs a TransactionId')
+        _int('worker_rank', self.worker_rank, 0)
+        _ints('completed_op_seqs', self.completed_op_seqs, minimum=0)
+        _ints('pending_op_seqs', self.pending_op_seqs, minimum=0)
+        if self.completed_op_seqs != tuple(sorted(self.completed_op_seqs)):
+            raise E3ContractError('completed_op_seqs must be ordered')
+        if self.pending_op_seqs != tuple(sorted(self.pending_op_seqs)):
+            raise E3ContractError('pending_op_seqs must be ordered')
+        done = set(self.completed_op_seqs)
+        if done.intersection(self.pending_op_seqs):
+            raise E3ContractError('an op_seq cannot be both complete and pending')
+        _int('completed_sequence', self.completed_sequence, 0)
+        if done and self.completed_sequence < max(done):
+            raise E3ContractError('watermark is behind a completed operation')
+        _tuple('proofs', self.proofs)
+        tickets = set()
+        for proof in self.proofs:
+            if type(proof) is not CompletionProof:
+                raise E3ContractError('proofs must be CompletionProof records')
+            ticket = proof.ticket
+            if ticket.transaction != transaction:
+                raise E3ContractError('proof belongs to another transaction')
+            if ticket.worker_rank != self.worker_rank:
+                raise E3ContractError('proof belongs to another worker')
+            if ticket.op_seq not in done:
+                raise E3ContractError('proof without a completed op_seq')
+            if ticket in tickets:
+                raise E3ContractError('duplicate completion proof')
+            tickets.add(ticket)
+        if type(self.cursor) is not CompletionCursor:
+            raise E3ContractError('report needs a CompletionCursor')
+        _int('state_epoch', self.state_epoch, 1)
+        _tuple('host_submit_ns', self.host_submit_ns)
+        last = -1
+        for entry in self.host_submit_ns:
+            _tuple('host_submit_ns entry', entry)
+            if len(entry) != 2:
+                raise E3ContractError('host_submit_ns entries are (op_seq, ns)')
+            op_seq, ns = entry
+            _int('host op_seq', op_seq, 0)
+            _int('host_submit_ns', ns, 0)
+            if op_seq not in done:
+                raise E3ContractError('submit time for an incomplete operation')
+            if op_seq <= last:
+                raise E3ContractError('host submit times must be ordered')
+            last = op_seq
+        if self.failed_code is not None:
+            if type(self.failed_code) is not str or self.failed_code not in FAILED_CODES:
+                raise E3ContractError('unknown failed_code')
+
+    @property
+    def failed(self):
+        return self.failed_code is not None
+
+    def has_proof(self, kind, role=None):
+        if type(kind) is not CompletionKind:
+            raise E3ContractError('kind must be CompletionKind')
+        return any(p.kind is kind and (role is None or p.ticket.dependency_role is role)
+                   for p in self.proofs)
+
+    def state_written(self):
+        return self.has_proof(CompletionKind.STATE_WRITE, DependencyRole.COMMIT)
+
+    def __repr__(self):
+        return (f'WorkerCompletionReport(txn_seq={self.transaction.txn_seq}, '
+                f'rank={self.worker_rank}, completed={len(self.completed_op_seqs)}, '
+                f'pending={len(self.pending_op_seqs)}, '
+                f'watermark={self.completed_sequence}, proofs={len(self.proofs)}, '
+                f'phase={self.cursor.phase}, layer={self.cursor.layer}, '
+                f'state_epoch={self.state_epoch}, failed_code={self.failed_code})')
+
+
+@dataclass(frozen=True, repr=False)
+class TransitionCommand:
+    """Green/full route transition, fenced on the exact engine/route epoch."""
+    engine_epoch: int
+    expected_route_generation: int
+    route_generation: int
+    target_bank: int
+    storage_epochs: tuple
+    decode_replay_watermarks: tuple
+
+    def __post_init__(self):
+        _int('engine_epoch', self.engine_epoch, 0)
+        _int('expected_route_generation', self.expected_route_generation, 0)
+        _int('route_generation', self.route_generation, 1)
+        if self.route_generation != self.expected_route_generation + 1:
+            raise E3ContractError('a transition advances the route generation by one')
+        _int('target_bank', self.target_bank, 0)
+        _ints('storage_epochs', self.storage_epochs, minimum=1, allow_empty=False,
+              unique=False)
+        if self.storage_epochs != tuple(sorted(self.storage_epochs)):
+            raise E3ContractError('storage epochs are reported per ordered rank')
+        _ints('decode_replay_watermarks', self.decode_replay_watermarks,
+              minimum=0, unique=False)
+        if len(self.decode_replay_watermarks) != len(self.storage_epochs):
+            raise E3ContractError('one replay watermark per rank is required')
+
+    def __repr__(self):
+        return (f'TransitionCommand(engine_epoch={self.engine_epoch}, '
+                f'expected_route_generation={self.expected_route_generation}, '
+                f'route_generation={self.route_generation}, '
+                f'target_bank={self.target_bank}, ranks={len(self.storage_epochs)})')
+
+
+@dataclass(frozen=True, repr=False)
+class TransitionAck:
+    """A worker's applied transition. Identity must echo the command exactly."""
+    engine_epoch: int
+    expected_route_generation: int
+    route_generation: int
+    target_bank: int
+    storage_epochs: tuple
+    applied_route_generation: int
+    applied_bank: int
+    applied_storage_epochs: tuple
+
+    def __post_init__(self):
+        _int('engine_epoch', self.engine_epoch, 0)
+        _int('expected_route_generation', self.expected_route_generation, 0)
+        _int('route_generation', self.route_generation, 1)
+        if self.route_generation != self.expected_route_generation + 1:
+            raise E3ContractError('a transition advances the route generation by one')
+        _int('target_bank', self.target_bank, 0)
+        _ints('storage_epochs', self.storage_epochs, minimum=1, allow_empty=False,
+              unique=False)
+        _int('applied_route_generation', self.applied_route_generation, 1)
+        _int('applied_bank', self.applied_bank, 0)
+        _ints('applied_storage_epochs', self.applied_storage_epochs, minimum=1,
+              allow_empty=False, unique=False)
+        if self.applied_route_generation != self.route_generation:
+            raise E3ContractError('ack did not apply the requested generation')
+        if self.applied_bank != self.target_bank:
+            raise E3ContractError('ack did not apply the requested bank')
+        if self.applied_storage_epochs != self.storage_epochs:
+            raise E3ContractError('ack did not apply the requested storage epochs')
+
+    def matches(self, command):
+        if type(command) is not TransitionCommand:
+            raise E3ContractError('matches() needs a TransitionCommand')
+        return (self.engine_epoch == command.engine_epoch
+                and self.expected_route_generation == command.expected_route_generation
+                and self.route_generation == command.route_generation
+                and self.target_bank == command.target_bank
+                and self.storage_epochs == command.storage_epochs)
+
+    def __repr__(self):
+        return (f'TransitionAck(engine_epoch={self.engine_epoch}, '
+                f'route_generation={self.route_generation}, '
+                f'target_bank={self.target_bank}, '
+                f'applied_bank={self.applied_bank}, '
+                f'ranks={len(self.storage_epochs)})')
+
+
+@dataclass(frozen=True, repr=False)
+class OpenRequest:
+    """Bind each worker lane to one admitted chunk before any segment runs."""
+    admission: AdmissionRecord
+    ranks: tuple
+    expected_state_epoch: int
+    max_outstanding: int
+
+    def __post_init__(self):
+        if type(self.admission) is not AdmissionRecord:
+            raise E3ContractError('open needs an AdmissionRecord')
+        _ints('ranks', self.ranks, minimum=0, allow_empty=False)
+        if self.ranks != tuple(sorted(self.ranks)):
+            raise E3ContractError('open ranks must be ordered')
+        _int('expected_state_epoch', self.expected_state_epoch, 1)
+        if self.expected_state_epoch != self.admission.state_epoch:
+            raise E3ContractError('open does not match the admitted state epoch')
+        _int('max_outstanding', self.max_outstanding, 1)
+
+    @property
+    def transaction(self):
+        return self.admission.transaction
+
+    def __repr__(self):
+        return (f'OpenRequest(txn_seq={self.admission.transaction.txn_seq}, '
+                f'ranks={len(self.ranks)}, '
+                f'state_epoch={self.expected_state_epoch}, '
+                f'max_outstanding={self.max_outstanding})')
+
+
+@dataclass(frozen=True, repr=False)
+class OpenAck:
+    """One worker's lane identity for the opened chunk; an ack is not work."""
+    transaction: TransactionId
+    lane: LaneId
+    stage: int
+    state_epoch: int
+    pp_stages: int
+    accepted: bool
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('open ack needs a TransactionId')
+        if type(self.lane) is not LaneId:
+            raise E3ContractError('open ack needs a LaneId')
+        _int('stage', self.stage, 0)
+        _int('state_epoch', self.state_epoch, 1)
+        _int('pp_stages', self.pp_stages, 1)
+        if self.stage >= self.pp_stages:
+            raise E3ContractError('lane stage is outside the pipeline')
+        if type(self.accepted) is not bool:
+            raise E3ContractError('accepted must be bool')
+
+    def matches(self, request):
+        if type(request) is not OpenRequest:
+            raise E3ContractError('matches() needs an OpenRequest')
+        return (self.transaction == request.transaction
+                and self.lane.worker_rank in request.ranks
+                and self.state_epoch == request.expected_state_epoch)
+
+    def __repr__(self):
+        return (f'OpenAck(txn_seq={self.transaction.txn_seq}, '
+                f'rank={self.lane.worker_rank}, stage={self.stage}, '
+                f'state_epoch={self.state_epoch}, accepted={self.accepted})')
+
+
+@dataclass(frozen=True, repr=False)
+class SegmentCommand:
+    """One wire submission: an immutable descriptor plus its accepted seq.
+
+    ``ranks`` names the lanes that must execute. Every other worker returns a
+    skipped acceptance without executing anything.
+    """
+    descriptor: SegmentDescriptor
+    op_seq: int
+    ranks: tuple
+
+    def __post_init__(self):
+        if type(self.descriptor) is not SegmentDescriptor:
+            raise E3ContractError('command needs a SegmentDescriptor')
+        _int('op_seq', self.op_seq, 0)
+        _ints('ranks', self.ranks, minimum=0, allow_empty=False)
+        if self.ranks != tuple(sorted(self.ranks)):
+            raise E3ContractError('target ranks must be ordered')
+
+    @property
+    def transaction(self):
+        return self.descriptor.transaction
+
+    @property
+    def kind(self):
+        return self.descriptor.kind
+
+    @property
+    def stage(self):
+        return self.descriptor.stage
+
+    def __repr__(self):
+        return (f'SegmentCommand({self.descriptor!r}, op_seq={self.op_seq}, '
+                f'ranks={len(self.ranks)})')
+
+
+@dataclass(frozen=True, repr=False)
+class SegmentAcceptance:
+    """One worker's answer to a command: executed, pending, or not addressed.
+
+    ``pending`` means the bounded lane could not accept the work yet; the
+    engine retries the identical command with the same ``op_seq``. ``skipped``
+    means the lane was not a target and executed nothing.
+    """
+    transaction: TransactionId
+    worker_rank: int
+    kind: SegmentKind
+    stage: int
+    op_seq: int
+    accepted: bool = False
+    pending: bool = False
+    skipped: bool = False
+    cursor: CompletionCursor | None = None
+    host_submit_ns: int = 0
+    # Host-queried completions ride along with the reply (piggybacked poll).
+    report: WorkerCompletionReport | None = field(default=None, repr=False)
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('acceptance needs a TransactionId')
+        _int('worker_rank', self.worker_rank, 0)
+        _kind('kind', self.kind, SegmentKind)
+        _int('stage', self.stage, 0)
+        _int('op_seq', self.op_seq, 0)
+        flags = (self.accepted, self.pending, self.skipped)
+        if any(type(flag) is not bool for flag in flags):
+            raise E3ContractError('acceptance flags must be bool')
+        if sum(flags) != 1:
+            raise E3ContractError('exactly one of accepted/pending/skipped is set')
+        if self.cursor is not None and type(self.cursor) is not CompletionCursor:
+            raise E3ContractError('cursor must be a CompletionCursor')
+        _int('host_submit_ns', self.host_submit_ns, 0)
+        if self.report is not None:
+            if type(self.report) is not WorkerCompletionReport:
+                raise E3ContractError('acceptance report must be a completion report')
+            if self.report.transaction != self.transaction:
+                raise E3ContractError('acceptance report belongs to another transaction')
+            if self.report.worker_rank != self.worker_rank:
+                raise E3ContractError('acceptance report comes from another rank')
+
+    def matches(self, command):
+        if type(command) is not SegmentCommand:
+            raise E3ContractError('matches() needs a SegmentCommand')
+        return (self.transaction == command.transaction
+                and self.kind is command.kind
+                and self.stage == command.stage
+                and self.op_seq == command.op_seq
+                and self.worker_rank in command.ranks)
+
+    def __repr__(self):
+        state = 'accepted' if self.accepted else ('pending' if self.pending else 'skipped')
+        return (f'SegmentAcceptance(txn_seq={self.transaction.txn_seq}, '
+                f'rank={self.worker_rank}, kind={self.kind.value}, '
+                f'stage={self.stage}, op_seq={self.op_seq}, {state})')
+
+
+class OpSeqTracker:
+    """Per-lane ``op_seq`` discipline for one bounded in-flight command.
+
+    ``propose`` never consumes a sequence. ``accepted`` is the only consumer,
+    and it accepts a strictly greater sequence or replays an already accepted,
+    identical command. A pending/backpressured retry reuses its sequence.
+    """
+
+    def __init__(self, start=-1):
+        if type(start) is not int or start < -1:
+            raise E3ContractError('start must be -1 or an accepted op_seq')
+        self._last = start
+        self._pending = None
+        self._accepted = {}
+        self.replays = 0
+
+    @property
+    def last_accepted(self):
+        return self._last
+
+    @property
+    def pending(self):
+        """The outstanding (op_seq, descriptor) proposal, if any."""
+        return self._pending
+
+    def next_op_seq(self):
+        return self._last + 1
+
+    def propose(self, descriptor):
+        if type(descriptor) is not SegmentDescriptor:
+            raise E3ContractError('propose needs a SegmentDescriptor')
+        if self._pending is not None:
+            if self._pending[1] != descriptor:
+                raise E3ContractError(
+                    'a pending operation must be retried unchanged')
+            return self._pending[0]
+        op_seq = self._last + 1
+        self._pending = (op_seq, descriptor)
+        return op_seq
+
+    def accepted(self, op_seq, descriptor):
+        """Record acceptance; return True on first acceptance, False on replay."""
+        if type(descriptor) is not SegmentDescriptor:
+            raise E3ContractError('acceptance needs a SegmentDescriptor')
+        _int('op_seq', op_seq, 0)
+        prior = self._accepted.get(op_seq)
+        if prior is not None:
+            if prior != descriptor:
+                raise E3ContractError('accepted op_seq reused by another command')
+            self.replays += 1
+            return False
+        if self._pending is not None and self._pending[0] == op_seq:
+            if self._pending[1] != descriptor:
+                raise E3ContractError('pending operation changed before acceptance')
+            self._pending = None
+        if op_seq != self._last + 1:
+            raise E3ContractError('accepted op_seq must strictly increase')
+        self._accepted[op_seq] = descriptor
+        self._last = op_seq
+        return True
+
+    def accepted_descriptor(self, op_seq):
+        return self._accepted.get(op_seq)
+
+    def __repr__(self):
+        return (f'OpSeqTracker(last_accepted={self._last}, '
+                f'pending={None if self._pending is None else self._pending[0]}, '
+                f'replays={self.replays})')
+
+
+__all__ = [
+    'AdmissionRecord', 'CURSOR_PHASES', 'CompletionCursor', 'FAILED_CODES',
+    'OpenAck', 'OpenRequest', 'OpSeqTracker', 'SegmentAcceptance',
+    'SegmentCommand', 'SegmentDescriptor', 'SegmentKind', 'TransitionAck',
+    'TransitionCommand', 'WIRE_VERSION', 'WorkerCompletionReport',
+]
