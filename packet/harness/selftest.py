@@ -574,5 +574,15 @@ for suite, label in [('test_identity.py', 'engine identity: mocked Docker and co
         print(identity_test.stdout + identity_test.stderr)
     check(label, identity_test.returncode, 0)
 
+pp_release_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_pp_release.py')],
+                                 capture_output=True, text=True)
+if pp_release_test.returncode:
+    print(pp_release_test.stdout + pp_release_test.stderr)
+check('PP release: strict coverage, handshake and canary regressions (offline)', pp_release_test.returncode, 0)
+canary_relay_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_canary_relay.py')],
+                                   capture_output=True, text=True)
+if canary_relay_test.returncode:
+    print(canary_relay_test.stdout + canary_relay_test.stderr)
+check('Canary relay: unbuffered SSE, unchanged requests, terminal counting (loopback fake upstream)', canary_relay_test.returncode, 0)
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)

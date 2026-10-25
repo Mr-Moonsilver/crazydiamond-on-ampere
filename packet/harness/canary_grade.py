@@ -43,14 +43,19 @@ def transcript_facts(transcripts, workdir, not_before=0.0):
         if u and m.get('id') not in seen:
             seen.add(m.get('id'))
             cached.append(u.get('cache_read_input_tokens') or 0)
-    return {'tools': tools, 'cached': cached, 'requests': len(cached), 'text': '\n'.join(texts)}
+    return {'tools': tools, 'cached': cached, 'requests': len(cached), 'request_ids': sorted(seen), 'text': '\n'.join(texts)}
 
 
 def grade(outdir, transcripts=None):
     exp = os.path.join(outdir, 'expected.txt')
     rows = [l.split() for l in open(exp) if l.strip()]
-    run_start = os.path.getmtime(exp)
+    marker = os.path.join(outdir, "run-start.json")
+    run_start = json.load(open(marker))["started_wall"] if os.path.exists(marker) else os.path.getmtime(exp)
     fails, sessions = [], []
+    if not rows:
+        fails.append("no expected sessions")
+    if len({(r[0], r[1]) for r in rows}) != len(rows):
+        fails.append("duplicate round/session")
     codes = [r[2] for r in rows]
     notes = [r[3] for r in rows]
     if len(set(codes)) != len(codes) or len(set(notes)) != len(notes):
@@ -61,7 +66,7 @@ def grade(outdir, transcripts=None):
         out = open(path, errors='replace').read() if os.path.exists(path) else None
         facts = transcript_facts(transcripts, wd, run_start) if transcripts else None
         if facts:
-            rec.update(tools=facts['tools'], cached=facts['cached'])
+            rec.update(tools=facts['tools'], cached=facts['cached'], request_ids=facts['request_ids'])
         hay = (out or '') + '\n' + (facts['text'] if facts else '')
         foreign = [x for x in codes + notes if x not in (code, note) and x in hay]
         rcm = re.findall(r'^rc=(\d+)$', out or '', re.M)
