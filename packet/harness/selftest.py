@@ -178,6 +178,38 @@ check('e2 cow: compare expected pairs mismatch -> 2', e2_cow_count.compare(clean
 check('e2 cow: compare expected pairs match -> 0', e2_cow_count.compare(clean, clean, expected_pairs=4)[0], 0)
 check('e2 cow: compare with a broken side -> 1 FAIL', e2_cow_count.compare(clean, cow_log([1], ranks_=ranks[:2]))[0], 1)
 
+# --- pressure_wait (v3 lifetime phase: bounded wait for completed pressure requests after the leak) ---
+import pressure_wait  # noqa: E402
+
+
+def pw_run(states, bound=100.0, leak_end=1000.0):
+    """states: successive progress-file contents (None = unreadable); a fake clock advances 10 s per poll."""
+    fd, f = tempfile.mkstemp(suffix='.json'); os.close(fd)
+    it = iter(states); now = [0.0]
+
+    def sleep(s):
+        now[0] += 10.0
+        try:
+            d = next(it)
+        except StopIteration:
+            return
+        if d is None:
+            open(f, 'w').write('{')
+        else:
+            json.dump(d, open(f, 'w'))
+
+    open(f, 'w').write('{')  # unreadable until the first poll
+    return pressure_wait.wait(f, leak_end, bound, 1, sleep=sleep, clock=lambda: now[0])
+
+
+prog = lambda c, last: {'completed_requests': c, 'last_tokens': last, 'issued': [1, 1], 'max_tokens': 128}  # noqa: E731
+check('pressure_wait: both streams completed after the leak end -> 0', pw_run([prog([1, 2], [1001.0, 1005.0])])[0], 0)
+check('pressure_wait: one stream not completed within the bound -> 2', pw_run([prog([1, 0], [1001.0, 1005.0])] * 20)[0], 2)
+check('pressure_wait: last token before the leak end -> 2', pw_run([prog([1, 1], [999.0, 1005.0])] * 20)[0], 2)
+check('pressure_wait: completes on a later poll -> 0', pw_run([prog([0, 0], [900.0, 900.0]), prog([1, 1], [1001.0, 1002.0])])[0], 0)
+check('pressure_wait: progress never readable -> 1', pw_run([None] * 20)[0], 1)
+check('pressure_wait: stream count mismatch is not satisfied', pressure_wait.satisfied({'completed_requests': [1], 'last_tokens': [1001.0, 1002.0], 'issued': [1, 1]}, 1000.0), False)
+
 
 # --- vision_test against a mocked engine ---
 def mock_engine(answers):
