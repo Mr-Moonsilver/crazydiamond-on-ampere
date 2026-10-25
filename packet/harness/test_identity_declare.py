@@ -68,6 +68,14 @@ class DeclareTests(unittest.TestCase):
         self.assertTrue(all(m['source'].startswith(dec.TASK) for m in d['mounts']))
         self.assertFalse((self.root/'on/run-argv.private.json').exists())
 
+    def test_stage_timer_zero_is_one_explicit_launcher_assignment(self):
+        over=dict(dec.PP_SETTINGS,EXTRA_ENV='QSA_STAGE_TIMING=0 FLASH_PP_GROUPING=1 FLASH_POOL_STATS=200')
+        result,_=dec.declare(self.a,over,self.image,self.policy,self.root/'timer-off')
+        self.assertEqual(result['identity']['env']['QSA_STAGE_TIMING'],'0')
+        argv=dec.render(self.a.launcher,dec.raw_defaults(dec.apply_setcfg(self.defaults.read_text(),over,self.a.setcfg)),
+                        IMAGE,self.root/'timer-argv',self.task)
+        self.assertEqual([s for s in argv if s.startswith('QSA_STAGE_TIMING=')],['QSA_STAGE_TIMING=0'])
+
     def test_pair_only_verifier_diff(self):
         on,verify=self.declare(),self.declare(True);dec.assert_pair(on,verify)
         changed=copy.deepcopy(verify);changed['identity']['env']['QSA_ROWCACHE_REQS']='9'

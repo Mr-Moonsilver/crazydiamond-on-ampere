@@ -50,6 +50,8 @@ def generate(src):
     body=kernel.index('    valid_count = ')
     prefix=kernel[:body]
     tail=kernel[body:]
+    tail=sub(tail,'(logical_token >= 0) & (arena_page >= 0)',
+             '(logical_token >= 0) & (logical_token < tl.where(sparse, count, total_tokens)) & (arena_page >= 0)')
     tail=sub(tail,'    if LAST_BUCKET:', '    if page_lo + ARENA_PAGES >= effective_pages:')
     # Entire original arithmetic executes only for an active bucket. FIRST_BUCKET
     # still means page_lo==0; the device count determines the LAST active bucket.

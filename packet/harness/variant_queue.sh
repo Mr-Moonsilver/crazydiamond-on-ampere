@@ -52,7 +52,7 @@ start_variant() {
   local settings=("OVERLAY=$overlay" CORE_OVERLAY=1 PP_LAYER_PARTITION=24,24 MAX_SEQS=10
     MODEL_DIR=- VISION=- VISION_ARGS=- BREAKABLE_CG=- COMPILATION_CONFIG=- MTP_TOKENS=0
     FLASH_SCHED_STATS=200 PREFILL_CHUNK=1024 FLASH_PD_ALTERNATE=1 "QSA_COW_VERIFY=${COW_VERIFY:--}"
-    "EXTRA_ENV=QSA_STAGE_TIMING=1 FLASH_PP_GROUPING=1 FLASH_POOL_STATS=200 $extra" "$@")
+    "EXTRA_ENV=QSA_STAGE_TIMING=${STAGE_TIMING:-0} FLASH_PP_GROUPING=1 FLASH_POOL_STATS=200 $extra" "$@")
   run_step "$name.declare" python3 "$H/engine_identity.py" declare "$Q/$name.request.json" \
     --launcher "$H/run-flash-prod.sh.q9" --mount-policy "$H/pp_release_mount_policy.json" --settings "${settings[@]}" || return 1
   python3 /tmp/setcfg.py "${settings[@]}" > /dev/null 2>&1 || return 1

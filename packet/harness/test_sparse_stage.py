@@ -95,6 +95,34 @@ class SparseTests(unittest.TestCase):
         self.assertFalse(verify('\n'.join(rows[:-1])))
         self.assertFalse(verify('\n'.join(rows+[rows[0].replace('equal=1','equal=0')])))
 
+    def test_stale_partial_page_has_an_explicit_count_mask(self):
+        out=g.generate((ROOT/'patches/retain/ops_qsa.py.v8.1').read_text())
+        self.assertIn('logical_token < tl.where(sparse, count, total_tokens)',g.function(out,'_s6_staged_kernel'))
+        self.assertIn('(v<N)',g.function(out,'_s6_remap'))
+        # Poison all unselected rows, including the partial final page: the
+        # selected staged rows and result must be independent of those bytes.
+        ids=np.array([[1,4,7,-1,3]],np.int32);rows=np.array([0]);q=np.ones((1,8),np.float32)
+        kv=np.arange(32*8,dtype=np.float32).reshape(32,8)/100
+        plan=device_plan(ids,rows,32,8,2)
+        original=staged(plan,ids,rows,kv,q,8)
+        kv2=kv.copy();mask=np.ones(32,bool);mask[[1,4,7]]=False;kv2[mask]=np.nan
+        self.assertEqual(original.tobytes(),staged(plan,ids,rows,kv2,q,8).tobytes())
+
+    def test_aba_requires_gain_beyond_both_controls_and_reports_streams(self):
+        import copy
+        from s6_grade import performance
+        def record(tps):
+            w={'agg_tps':tps,'worst_stream_gap_ms':{'p99':100},'per_stream':[{'tps':tps/8} for _ in range(8)]}
+            return {'verdict':'PASS','fails':[],'streams':8,'stream_prompt':153537,'long_prompt':200000,
+                    'before':copy.deepcopy(w),'during':copy.deepcopy(w),
+                    'newcomer':{'cached_tokens':0,'client_ttft_s':27}}
+        a=record(100);b=record(104);c=record(103)
+        self.assertEqual(performance(a,b,c)['verdict'],'FAIL')
+        c=record(101);d=performance(a,b,c)
+        self.assertEqual(d['verdict'],'PASS');self.assertEqual(len(d['measurements']['during']['per_stream_tps']),8)
+        b['during']['per_stream'][0]['tps']=1
+        self.assertEqual(performance(a,b,c)['verdict'],'FAIL')
+
     def test_unknown_source_rejected(self):
         with self.assertRaises(AssertionError):g.generate('changed')
 

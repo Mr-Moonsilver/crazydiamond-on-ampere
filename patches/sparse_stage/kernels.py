@@ -32,11 +32,11 @@ def _s6_pack(flags, ranks, offsets, tokens, N: tl.constexpr, B: tl.constexpr):
 
 @triton.jit
 def _s6_remap(indices, rows, ranks, info, out, S: tl.constexpr, O: tl.constexpr,
-              K: tl.constexpr, R: tl.constexpr, B: tl.constexpr):
+              K: tl.constexpr, R: tl.constexpr, N: tl.constexpr, B: tl.constexpr):
     i=tl.program_id(0)*B+tl.arange(0,B)
     r=tl.load(rows+i//K,i<R*K,other=0)
     v=tl.load(indices+r*S+i%K,i<R*K,other=-1)
-    compact=tl.load(ranks+tl.maximum(v,0),(i<R*K)&(v>=0),other=-1)
+    compact=tl.load(ranks+tl.maximum(v,0),(i<R*K)&(v>=0)&(v<N),other=-1)
     sparse=tl.load(info+1)!=0
     tl.store(out+r*O+i%K,tl.where(sparse,compact,v),i<R*K)
 
@@ -74,5 +74,5 @@ def _s6_union(logical_indices,rows,num_tokens):
     _s6_pack[(groups,)](flags,ranks,offsets,tokens,num_tokens,b)
     remapped=logical_indices.clone()
     _s6_remap[(triton.cdiv(rows.numel()*width,b),)](logical_indices,rows,ranks,info,remapped,
-        logical_indices.stride(0),remapped.stride(0),width,rows.numel(),b)
+        logical_indices.stride(0),remapped.stride(0),width,rows.numel(),num_tokens,b)
     return tokens,info,remapped
