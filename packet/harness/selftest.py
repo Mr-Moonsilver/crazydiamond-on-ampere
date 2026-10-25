@@ -654,6 +654,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_async_handoffs.py', 'E3 async handoffs: parked transaction, owned replies, completion/publication split, lifetime leases, stop paths and pinned C seams (CPU only)'),
                      ('test_e3_package.py', 'E3 package: A+B+C composition, default-off mounts, manifest coverage, source drift and import identity (CPU only)'),
                      ('test_e3_graph_routing.py', 'E3 graph routing: fixed-split graph keys, capture/replay/transition guards, budgets and pinned seam transforms (CPU only)'),
+                     ('test_e3_model_hooks.py', 'E3 lane forward: additive prefix/layer/suffix on the pinned model, exact inverse, segment driver scopes and pause (CPU only)'),
                      ('test_e3_lane_comm.py', 'E3 prefill-lane communicators: PyNccl-only TP scope, tagged PP channel credits/header/release order (CPU only, faked NCCL/torch)'),
                      ('test_e3_green_native.py', 'E3 green-context split, split decode bank capture/replay/transition and worker/cudagraph seams (CPU only, faked driver/torch)'),
                      ('test_e3_native_integration.py', 'E3 native integration: generated worker/engine startup, typed RPC driving, completion/commit ordering, stop paths and record status (CPU only, faked device/transport)'),
