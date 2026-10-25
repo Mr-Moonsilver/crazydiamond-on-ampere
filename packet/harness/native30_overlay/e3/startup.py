@@ -159,6 +159,9 @@ def install(runner, is_profiling=False, *, env=None, backend_factory=TorchArenaB
     found = discover(runner, env)
     switch = Switch(env)
     verify = flag(env,'FLASH_E2_VERIFY')
+    memory_stats = flag(env,'FLASH_E2_MEMORY_STATS')
+    if memory_stats and not verify:
+        raise ContractError('E2 allocator diagnostics require FLASH_E2_VERIFY=1')
     directory = env.get('FLASH_E2_REPORT_DIR','')
     if verify and (not directory.startswith('/work/logs/e2/') or '..' in Path(directory).parts):
         raise ContractError('exactness requires an owned directory under /work/logs/e2/')
@@ -186,7 +189,8 @@ def install(runner, is_profiling=False, *, env=None, backend_factory=TorchArenaB
             tp_rank = get_tp_group().rank_in_group
         factory = TorchExactBackend if exact_backend_factory is None else exact_backend_factory
         oracle = Exactness(directory,f'PP{found.pp}_TP{tp_rank}',found.layers,factory(),emit,
-                           page_tokens=PAGE_TOKENS,arena_pages=found.arena_pages)
+                           page_tokens=PAGE_TOKENS,arena_pages=found.arena_pages,
+                           memory_stats=memory_stats)
         lifecycle.exactness = oracle
         dma.verify_bucket = oracle.bucket
     # No strong reference from layers back to the lifecycle/host tensors.
@@ -204,6 +208,7 @@ def install(runner, is_profiling=False, *, env=None, backend_factory=TorchArenaB
         source='existing baseline arena; no pool/row-cache/arena cuts',
         dma_env_enabled=switch.enabled,off_file=switch.path,
         exactness_enabled=verify,
+        memory_stats_enabled=memory_stats,
         reserve_bytes=536870912,ledger_status='reserve requires simultaneous peak measurement',
         additional_resources='one copy stream, completion events, bounded CPU metadata; measure runtime overhead'
     ),sort_keys=True))

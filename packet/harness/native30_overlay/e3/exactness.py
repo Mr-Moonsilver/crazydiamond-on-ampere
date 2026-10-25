@@ -7,6 +7,7 @@ second VRAM window. Any mismatch writes an immutable primary failure.
 from contextlib import contextmanager
 import json
 import os
+import time
 from pathlib import Path
 
 from retention_contract import ContractError
@@ -50,9 +51,22 @@ class TorchExactBackend:
         physical=table[lo:hi].to(self.torch.int64)
         self.torch.index_select(kv,0,physical,out=staged)
 
+    def memory_stats(self):
+        # Allocator bookkeeping only: no tensor, device query, peak reset,
+        # empty_cache, or additional synchronization. External GPU sampling
+        # remains necessary for native/context allocations and free memory.
+        stats = self.torch.cuda.memory_stats()
+        return {key: stats.get(key) for key in MEMORY_KEYS}
+
+
+MEMORY_KEYS = tuple(f'{kind}_bytes.all.{which}'
+                   for kind in ('allocated', 'reserved', 'active', 'inactive_split')
+                   for which in ('current', 'peak')) + ('num_alloc_retries', 'num_ooms')
+
 
 class Exactness:
-    def __init__(self,directory,rank,layers,backend,emit,*,page_tokens=4048,arena_pages=24):
+    def __init__(self,directory,rank,layers,backend,emit,*,page_tokens=4048,arena_pages=24,
+                 memory_stats=False):
         if rank not in ('PP0_TP0','PP0_TP1','PP1_TP0','PP1_TP1'):
             raise ContractError('invalid exactness worker rank')
         self.root=Path(directory)
@@ -66,6 +80,9 @@ class Exactness:
         self.active=None
         self.active_buckets=0
         self.failed=False
+        self.memory_enabled=memory_stats
+        self.memory=dict(samples=0, highwater={}, last=None, missing=[])
+        self.memory_context=None
         self.stats={name:dict(calls=0,dense_dma=0,sparse_uva=0,empty=0,buckets=0,bucket_bytes=0,
                              output_bytes=0,max_length=0,prefix_hit_calls=0,
                              dense_max_length=0,dense_multibucket_calls=0) for name in layers}
@@ -74,9 +91,43 @@ class Exactness:
         self._write(initial=True)
 
     def _record(self):
-        return dict(schema=1,rank=self.rank,failed=self.failed,active=self.active is not None,
+        record = dict(schema=1,rank=self.rank,failed=self.failed,active=self.active is not None,
                     page_tokens=self.page_tokens,arena_pages=self.arena_pages,
                     layers=self.stats,scope='same-input QSA bytes before MoE; not model-level equivalence')
+        if self.memory_enabled:
+            record['memory'] = dict(self.memory, scope=(
+                'allocator counters at existing oracle boundaries; cumulative peaks are not simultaneous; '
+                'a new peak arose since the prior observation, not necessarily inside the named op; '
+                'no device-free/native allocation measurement; no counter reset or extra CUDA fence'))
+        return record
+
+    def observe_memory(self, boundary):
+        if not self.memory_enabled:
+            return
+        raw = self.backend.memory_stats()
+        counters = {key: raw.get(key) for key in MEMORY_KEYS}
+        missing = [key for key,value in counters.items() if type(value) is not int or value < 0]
+        for key in missing:
+            counters[key] = None  # Unknown is never an invented zero.
+        previous = self.memory['last']
+        record = dict(rank=self.rank, boundary=boundary, wall_s=time.time(),
+                      **self.memory_context, counters=counters)
+        high = self.memory['highwater']
+        increased = []
+        for key,value in counters.items():
+            if value is not None and (key not in high or value > high[key]):
+                high[key] = value
+                increased.append(key)
+        self.memory['samples'] += 1
+        self.memory['missing'] = sorted(set(self.memory['missing']) | set(missing))
+        self.memory['last'] = record
+        # Preserve the observation interval around a new high-water mark while
+        # bounding storage to one previous sample. No request IDs or payloads.
+        if increased or missing:
+            self.emit('FLASH_E2_MEMORY ' + json.dumps(dict(record, increased=increased,
+                previous_boundary=None if previous is None else dict(
+                    boundary=previous['boundary'],rpc_sequence=previous['rpc_sequence'],
+                    layer=previous['layer'],wall_s=previous['wall_s']), missing=missing),sort_keys=True))
 
     def _write(self,initial=False):
         if initial:
@@ -119,6 +170,9 @@ class Exactness:
                 self.fail('gpu_block_table',layer=layer,pages=len(physical))
             if b.integers(args[4])!=list(range(row.start,row.end)):
                 self.fail('gpu_query_rows',layer=layer,rows=row.end-row.start)
+            self.memory_context=dict(rpc_sequence=lifecycle.mirror.sequence,layer=layer,
+                                     length=row.length)
+            self.observe_memory('before_candidate')
             yield
         except ExactnessError:
             raise
@@ -133,8 +187,10 @@ class Exactness:
         layer,args,_=self.active
         b=self.backend
         candidate=b.snapshot(staged)
+        self.observe_memory('bucket_candidate_snapshot')
         b.gather_reference(args[1],table,lo,hi,staged)
         baseline=b.snapshot(staged)
+        self.observe_memory('bucket_reference_snapshot')
         if not b.equal(candidate,baseline):
             self.fail('arena_bytes',layer=layer,lo=lo,hi=hi,
                       compared_bytes=b.nbytes(candidate),different_bytes=b.differing_bytes(candidate,baseline))
@@ -152,8 +208,10 @@ class Exactness:
         if self.active_buckets!=expected:
             self.fail('bucket_coverage',layer=layer,route=route,expected=expected,observed=self.active_buckets)
         candidate=b.snapshot(args[8][row.start:row.end])
+        self.observe_memory('output_candidate_snapshot')
         original(*args)
         baseline=b.snapshot(args[8][row.start:row.end])
+        self.observe_memory('output_reference_snapshot')
         if not b.equal(candidate,baseline):
             self.fail('qsa_output_bytes',layer=layer,route=route,rows=row.end-row.start,
                       compared_bytes=b.nbytes(candidate),different_bytes=b.differing_bytes(candidate,baseline))
@@ -172,4 +230,6 @@ class Exactness:
     def completed(self):
         if self.failed or self.active is not None:
             raise ExactnessError('cannot publish incomplete exactness evidence')
+        if self.memory_context is not None:
+            self.observe_memory('layer_completed')
         self._write()

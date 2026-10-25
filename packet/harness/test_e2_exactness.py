@@ -8,7 +8,7 @@ import numpy as np
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'patches/s5_engine'))
-from exactness import Exactness,ExactnessError
+from exactness import Exactness,ExactnessError,TorchExactBackend,MEMORY_KEYS
 import e2_exact_grade
 from test_e2_runner_lifecycle import fixture,batch,candidate
 
@@ -117,6 +117,69 @@ class ExactnessTests(unittest.TestCase):
     def test_existing_evidence_cannot_be_reused_as_new_worker(self):
         *_,v,backend,root=oracle_fixture()
         with self.assertRaises(Exception):Exactness(root,'PP0_TP0',v.stats,backend,lambda _:None)
+
+    def test_memory_opt_in_keeps_exact_oracle_and_reports_observation_boundaries(self):
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        v.memory_enabled=True
+        calls=[]
+        def memory():
+            calls.append(len(calls))
+            # New reserved peak first appears after reference output, while
+            # current allocated is lower. Never mistake current for peak.
+            values={key:0 for key in MEMORY_KEYS}
+            values['allocated_bytes.all.current']=10
+            values['reserved_bytes.all.peak']=200 if len(calls)>=5 else 100
+            return values
+        backend.memory_stats=memory
+        self.run_layer(x,o,t,a)
+        saved=json.loads(v.progress.read_text())
+        self.assertEqual(saved['layers']['qsa0']['calls'],1)
+        self.assertFalse(saved['failed']);self.assertFalse(saved['active'])
+        self.assertEqual(saved['memory']['samples'],6)
+        self.assertEqual(saved['memory']['last']['boundary'],'layer_completed')
+        self.assertEqual(saved['memory']['last']['rpc_sequence'],m.sequence)
+        self.assertEqual(saved['memory']['highwater']['reserved_bytes.all.peak'],200)
+        logs=[json.loads(s.split(' ',1)[1]) for s in lines if s.startswith('FLASH_E2_MEMORY ')]
+        self.assertEqual([s['boundary'] for s in logs],['before_candidate','output_reference_snapshot'])
+        self.assertEqual(logs[-1]['previous_boundary']['boundary'],'output_candidate_snapshot')
+        self.assertNotIn('request_id',json.dumps(logs));self.assertNotIn('address',json.dumps(logs))
+
+    def test_memory_disabled_does_not_call_backend_or_add_sidecar_fields(self):
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        backend.memory_stats=lambda:self.fail('disabled memory probe called')
+        self.run_layer(x,o,t,a)
+        self.assertNotIn('memory',json.loads(v.progress.read_text()))
+        self.assertFalse(any(s.startswith('FLASH_E2_MEMORY ') for s in lines))
+
+    def test_memory_missing_counters_are_unknown_not_zero(self):
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        v.memory_enabled=True
+        backend.memory_stats=lambda:{'num_alloc_retries':3,'num_ooms':-1}
+        self.run_layer(x,o,t,a)
+        record=json.loads(v.progress.read_text())['memory']
+        self.assertIn('reserved_bytes.all.peak',record['missing'])
+        self.assertIsNone(record['last']['counters']['num_ooms'])
+        self.assertEqual(record['last']['counters']['num_alloc_retries'],3)
+        self.assertNotIn('num_ooms',record['highwater'])
+
+    def test_memory_backend_uses_only_allocator_bookkeeping_and_whitelisted_fields(self):
+        from types import SimpleNamespace
+        backend=TorchExactBackend.__new__(TorchExactBackend)
+        backend.torch=SimpleNamespace(cuda=SimpleNamespace(memory_stats=lambda:{
+            'reserved_bytes.all.peak':123,'unrelated_payload':'not forwarded'}))
+        record=backend.memory_stats()
+        self.assertEqual(set(record),set(MEMORY_KEYS))
+        self.assertEqual(record['reserved_bytes.all.peak'],123)
+        self.assertIsNone(record['allocated_bytes.all.current'])
+
+    def test_memory_enabled_does_not_waive_exactness_failure(self):
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        v.memory_enabled=True
+        backend.memory_stats=lambda:{key:0 for key in MEMORY_KEYS}
+        backend.gather_bad=True
+        with self.assertRaises(ExactnessError):self.run_layer(x,o,t,a)
+        self.assertEqual(json.loads(v.primary.read_text())['kind'],'arena_bytes')
+        self.assertTrue(m.failed)
 
 
 def grade_fixture():

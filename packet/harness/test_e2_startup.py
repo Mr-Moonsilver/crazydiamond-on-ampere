@@ -106,6 +106,8 @@ class StartupTests(unittest.TestCase):
                  lambda r,e:e.update(CUDA_MPS_PIPE_DIRECTORY='/mps'),
                  lambda r,e:e.update(VLLM_QSA_KV_OFFLOAD='0')]
         changes.extend((lambda r,e:e.update(FLASH_E2_VERIFY='bad'),
+                        lambda r,e:e.update(FLASH_E2_MEMORY_STATS='bad'),
+                        lambda r,e:e.update(FLASH_E2_MEMORY_STATS='1',FLASH_E2_VERIFY='0'),
                         lambda r,e:e.update(FLASH_E2_VERIFY='1',FLASH_E2_REPORT_DIR='/other')))
         for name in ('speculator','speculative_config','adaptive_verification','pcp_manager','ubatch_runner','fast_prefill','lora_config'):
             changes.append(lambda r,e,name=name:setattr(r,name,object()))
@@ -113,6 +115,16 @@ class StartupTests(unittest.TestCase):
             r,e=fixture();change(r,e)
             with self.assertRaises(ContractError):
                 install(r,env=e,backend_factory=lambda _:self.fail('allocated before rejection'))
+
+    def test_memory_diagnostic_wired_only_with_verify_and_declared_at_startup(self):
+        r,e=fixture();lines=[]
+        e.update(FLASH_E2_MEMORY_STATS='1',FLASH_E2_VERIFY='1',
+                 FLASH_E2_REPORT_DIR='/work/logs/e2/test-memory')
+        with patch('exactness.Exactness') as constructor:
+            install(r,env=e,backend_factory=Backend,emit=lines.append,
+                    exact_backend_factory=lambda:object(),tp_rank=0)
+        self.assertTrue(constructor.call_args.kwargs['memory_stats'])
+        self.assertTrue(json.loads(lines[-1].split(' ',1)[1])['memory_stats_enabled'])
 
     def test_missing_duplicate_remote_or_misbound_layers_rejected(self):
         for defect in ('missing','duplicate','placement','name','stage-off','budget','blocksize','expanded'):
