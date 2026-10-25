@@ -78,6 +78,7 @@ def install_builder(runner, kv_caches, is_profiling=False, *, env=None):
         runtime = build_worker_runtime(current, caches, env=env)
         if not isinstance(runtime, LaneRuntime):
             raise StartupError('native worker construction returned no LaneRuntime')
+        install_native_lane(current, env=env)
         return runtime
 
     runner._flash_e3_build_state = build
@@ -112,6 +113,57 @@ def _native_execution_shape(engine, ranks):
     stage_of = tuple((rank, index // per_stage)
                      for index, rank in enumerate(ranks))
     return layer_count, layer_split, stage_of
+
+
+def install_native_lane(runner, *, env=None, clock=time.monotonic):
+    """D4: split bank, lane communicators, chunk factory and segment dispatcher.
+
+    Runs after D's worker runtime/server exist and before graph capture. The
+    green split itself was created at worker init (``worker_hooks``); the QSA
+    operation device gets its compute/copy streams bound here; the dispatcher
+    replaces the refusing whole-forward seam for typed segments.
+    """
+    env = os.environ if env is None else env
+    from native_startup import install_worker_native
+    from lane_chunk import LaneChunkFactory
+    from lane_dispatch import LaneDispatcher
+
+    config = HandoffConfig.from_env(env)
+    native = install_worker_native(runner, chunk_tokens=config.chunk_tokens, env=env, clock=clock)
+    server = getattr(runner, '_flash_s5_worker', None)
+    if server is None:
+        raise StartupError('native lane needs the worker handoff server')
+    device = getattr(server, 'operation_device', None)
+    if device is not None and callable(getattr(device, 'bind_streams', None)):
+        import torch
+
+        copy_stream = torch.cuda.Stream(device=runner.device)
+        native.copy_stream = copy_stream
+        device.bind_streams(native.split.prefill_stream, copy_stream)
+
+    def driver_factory(operation, qsa_module, forward_context_getter):
+        from qsa_driver import QsaLayerDriver
+
+        return QsaLayerDriver(operation, staged_operation=qsa_module._flash_s5_staged_operation,
+                              forward_context=forward_context_getter)
+
+    def qsa_module():
+        import vllm.models.qwen4_exp.nvidia.qsa as module
+
+        return module
+
+    def forward_context_getter():
+        from vllm.forward_context import get_forward_context
+
+        return get_forward_context()
+
+    factory = LaneChunkFactory(runner)
+    dispatcher = LaneDispatcher(runner, native, factory, server=server, qsa_module=qsa_module(),
+                                driver_factory=driver_factory,
+                                forward_context_getter=forward_context_getter)
+    server._flash_s5_dispatcher = dispatcher
+    runner._flash_s5_dispatcher = dispatcher
+    return dispatcher
 
 
 def install_engine(engine, *, env=None, clock=time.monotonic):
@@ -195,5 +247,5 @@ def settings(env=None):
                 sparse_overlap=False, backend='unimplemented' if config.enabled else 'inert')
 
 
-__all__ = ['OVERLAP_ENV', 'StartupError', 'install_builder', 'install_engine',
+__all__ = ['OVERLAP_ENV', 'StartupError', 'install_builder', 'install_engine', 'install_native_lane',
            'settings']

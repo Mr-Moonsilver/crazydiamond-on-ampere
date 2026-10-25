@@ -25,9 +25,12 @@ import arena_attention
 import executor_hooks as eh
 import make_e2_arena as e2
 import make_s5_overlap as g
+import model_hooks
 import operation_source
+import qsa_driver
 import runner_hooks
 import scheduler_hooks as sh
+import worker_hooks
 
 
 def manifest(folder, skip=()):
@@ -59,7 +62,7 @@ class SyntheticTests(unittest.TestCase):
             {'default_feature': 'FLASH_E2_ARENA=0', 'incremental_kv_bytes': 0}))
         launcher = e2.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text())
         (base / 'run-flash-e2-test.sh').write_text(launcher)
-        for name in eh.PINS:
+        for name in (*eh.PINS, *g.worker_hooks.PINS, *g.model_hooks.PINS):
             path = ref / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('# ref ' + name + '\n')
@@ -74,7 +77,7 @@ class SyntheticTests(unittest.TestCase):
         stack.enter_context(patch.object(g, 'E2_WORKER_INPUTS', {
             name: g.sha(base / name) for name in g.E2_WORKER_INPUTS}))
         stack.enter_context(patch.object(g, 'REFERENCE_INPUTS', {
-            name: g.sha(ref / name) for name in eh.PINS}))
+            name: g.sha(ref / name) for name in (*eh.PINS, *g.worker_hooks.PINS, *g.model_hooks.PINS)}))
         stack.enter_context(patch.object(g, 'compose_runner',
                                          side_effect=lambda s: s + '# A+C builder\n'))
         stack.enter_context(patch.object(g.scheduler_hooks, 'generate_scheduler',
@@ -90,6 +93,13 @@ class SyntheticTests(unittest.TestCase):
                                          side_effect=lambda s: s + '# S5 attention operation\n'))
         stack.enter_context(patch.object(g.operation_source, 'generate_runner',
                                          side_effect=lambda s: s + '# S5 operation seam\n'))
+        # D4 worker/native transforms (Claude): pinned to real sources, stubbed here.
+        stack.enter_context(patch.object(g.qsa_driver, 'generate_one',
+                                         side_effect=lambda path, s: s + '# S5 qsa driver\n'))
+        stack.enter_context(patch.object(g.worker_hooks, 'generate_one',
+                                         side_effect=lambda path, s: s + '# S5 worker seams\n'))
+        stack.enter_context(patch.object(g.model_hooks, 'generate_one',
+                                         side_effect=lambda path, s: s + '# S5 lane forward\n'))
         return stack
 
     def build(self):
@@ -112,13 +122,33 @@ class SyntheticTests(unittest.TestCase):
         for name in g.E3_MODULES:
             self.assertIn('e3/' + name + '.py', listed)
         for name in ('e3_sources/executor.py', 'e3_sources/core.py',
-                     'e3_sources/worker.py', 'qsa.py', 'ops_qsa.py',
+                     'e3_sources/worker.py', 'e3_sources/cudagraph_utils.py',
+                     'e3_sources/model.py', 'e3/native/flash_s5_green.cu',
+                     'e3/native/build_green_helper.sh', 'qsa.py', 'ops_qsa.py',
                      'run-flash-s5-test.sh', 'S5-OVERLAP-GENERATION.json'):
             self.assertIn(name, listed)
         self.assertEqual((out / 'model_runner_v2.py').read_text(),
                          '# runner\n# A+C builder\n# S5 operation seam\n')
         self.assertEqual((out / 'qsa.py').read_text(),
-                         '# qsa\n# S5 qsa operation\n')
+                         '# qsa\n# S5 qsa operation\n# S5 qsa driver\n')
+        # D4's worker/native transforms compose on their pinned sources and are
+        # mounted (and checksummed) by the S5 launcher. The C worker transform
+        # runs first, then D4's seams.
+        self.assertEqual((out / 'e3_sources/worker.py').read_text(),
+                         '# ref v1/worker/gpu_worker.py\n# S5 source\n# S5 worker seams\n')
+        self.assertEqual((out / 'e3_sources/cudagraph_utils.py').read_text(),
+                         '# ref v1/worker/gpu/cudagraph_utils.py\n# S5 worker seams\n')
+        self.assertEqual((out / 'e3_sources/model.py').read_text(),
+                         '# ref models/qwen4_exp/nvidia/model.py\n# S5 lane forward\n')
+        launcher_text = (out / 'run-flash-s5-test.sh').read_text()
+        for name in ('e3/native/flash_s5_green.cu', 'e3/native/build_green_helper.sh',
+                     'e3_sources/cudagraph_utils.py', 'e3_sources/model.py'):
+            self.assertIn(name, launcher_text)
+        # The two D4 mounts are on the pinned worker/utils destinations.
+        self.assertIn('-v "$OVERLAY/e3_sources/cudagraph_utils.py:'
+                      '$V/worker/gpu/cudagraph_utils.py:ro"', launcher_text)
+        self.assertIn('-v "$OVERLAY/e3_sources/model.py:' + g.MODEL_DEST + ':ro"',
+                      launcher_text)
         self.assertEqual((out / 'ops_qsa.py').read_text(),
                          '# ops qsa\n# S5 attention operation\n')
         # The package rewrite is required for a separately mounted e3 package.
@@ -386,7 +416,12 @@ class FullPinnedTests(unittest.TestCase):
         self.assertIn('e3op.fill_bucket(', ops)
         self.assertIn('e3op.after_attention_bucket(', ops)
         self.assertIn('def _flash_s5_execute_prefill_operation(', runner)
-        self.assertEqual(operation_source.revert_layer(qsa),
+        # D4's lane attention methods compose after D2's layer transform; the
+        # inverse removes them first, then D2's layer call sites.
+        self.assertIn('_flash_e3_attention_pre', qsa)
+        self.assertIn('_flash_e3_attention_post', qsa)
+        base_qsa = qsa_driver.revert_one('models/qwen4_exp/nvidia/qsa.py', qsa)
+        self.assertEqual(operation_source.revert_layer(base_qsa),
                          (self.base / 'qsa.py').read_text())
         self.assertEqual(operation_source.revert_ops(ops),
                          (self.base / 'ops_qsa.py').read_text())
@@ -415,18 +450,38 @@ class FullPinnedTests(unittest.TestCase):
         executor = (self.out / 'e3_sources/executor.py').read_text()
         core = (self.out / 'e3_sources/core.py').read_text()
         worker = (self.out / 'e3_sources/worker.py').read_text()
+        cudagraph = (self.out / 'e3_sources/cudagraph_utils.py').read_text()
+        model = (self.out / 'e3_sources/model.py').read_text()
+        worker_pin = (ref / eh.WORKER_PATH).read_text()
+        cudagraph_pin = (ref / g.CUDAGRAPH_PATH).read_text()
+        model_pin = (ref / g.MODEL_PATH).read_text()
         self.assertIn('_flash_s5_hooks.collective_rpc', executor)
         self.assertIn('_flash_s5_stock_forbidden', executor)
         self.assertIn('_flash_s5_hooks.before_step_with_batch_queue', core)
         self.assertIn('_flash_s5_hooks.before_engine_shutdown', core)
         for name in ('open', 'submit', 'poll', 'commit', 'cancel'):
             self.assertIn('def flash_s5_' + name + '(', worker)
+        # D4's worker seams: one call site per intended host operation.
+        self.assertEqual(worker.count('_flash_s5_worker.decode_scope(self)'), 2,
+                         'decode_scope wraps execute_model and sample_tokens')
+        self.assertEqual(worker.count('_flash_s5_worker.after_runner_init(self)'), 1)
+        self.assertEqual(worker.count('_flash_s5_worker.workspace_lanes('), 1)
+        self.assertEqual(worker.count('def _flash_s5_stock_execute_model('), 1)
+        self.assertEqual(cudagraph.count(
+            'graph_capture_context=_flash_s5_capture_context(self)'), 1)
+        self.assertIn('_flash_e3_forward_prefix', model)
+        # C's worker transform first, then D4's seams, back to the pinned bytes.
+        worker_after_c = worker_hooks.revert_one(eh.WORKER_PATH, worker)
+        self.assertEqual(worker_after_c, eh.generate_worker(worker_pin))
         self.assertEqual(eh.revert_executor(executor, (ref / eh.EXECUTOR_PATH).read_text()),
                          (ref / eh.EXECUTOR_PATH).read_text())
         self.assertEqual(eh.revert_core(core, (ref / eh.CORE_PATH).read_text()),
                          (ref / eh.CORE_PATH).read_text())
-        self.assertEqual(eh.revert_worker(worker, (ref / eh.WORKER_PATH).read_text()),
-                         (ref / eh.WORKER_PATH).read_text())
+        self.assertEqual(eh.revert_worker(worker_after_c, worker_pin), worker_pin)
+        self.assertEqual(worker_hooks.revert_one(g.CUDAGRAPH_PATH, cudagraph,
+                                                 expected=cudagraph_pin), cudagraph_pin)
+        self.assertEqual(model_hooks.revert_one(g.MODEL_PATH, model,
+                                                expected=model_pin), model_pin)
 
     def test_baseline_e2_payload_preserved_and_manifest_complete(self):
         self.assertEqual((self.out / 'e2/startup.py').read_bytes(),
@@ -441,7 +496,10 @@ class FullPinnedTests(unittest.TestCase):
         record = json.loads((self.out / 'S5-OVERLAP-GENERATION.json').read_text())
         self.assertEqual(record['e2_composed_pins'], g.E2_INPUTS)
         self.assertEqual(record['e2_worker_composed_pins'], g.E2_WORKER_INPUTS)
-        self.assertEqual(record['reference_source_pins'], eh.PINS)
+        expected_pins = dict(eh.PINS)
+        expected_pins.update(worker_hooks.PINS)
+        expected_pins.update(model_hooks.PINS)
+        self.assertEqual(record['reference_source_pins'], expected_pins)
         self.assertEqual(record['graph_composition']['module'], 'graph_hooks.py')
         self.assertFalse(record['armable'])
 
