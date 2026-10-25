@@ -1,8 +1,9 @@
 """E0 single-arena ownership model. CPU only; not engine allocator integration.
 
-Pool pins and completions here are injected models. An engine binding must hold
-real block references and prove producer/DMA/consumer completion. No persistent
-history slabs or cached destination-validity survive a bucket consumption.
+Pool pins and completions here are injected models. An engine binding must
+protect source lifetime and prove producer/DMA/consumer completion. Serial E2
+uses fenced ordered RPCs (block_mirror), not extra allocator references. No
+persistent history slabs or destination-validity survive a bucket consumption.
 """
 from dataclasses import dataclass
 
@@ -105,8 +106,9 @@ class Arena:
             if key.layer!=owner.layer:raise ContractError('wrong source layer')
             if p.writer is not None or p.valid<rows:raise Pending('source producer incomplete')
             snapshots.append(Snapshot(key,p.version,rows))
-        # Whole-layer source lease is conservative. Step 2 must bind it to real
-        # allocator ownership; a Python set is not a scheduler-side pin.
+        # Whole-layer source lease is conservative. Serial E2 binds it to an
+        # ordered worker RPC with fenced copies/consumers; this Python set is
+        # not a scheduler-side refcount increment.
         self.pool.pin(keys,owner)
         self.owner=owner;self.sources=tuple(snapshots);self.next_page=0;self.state='owned'
 

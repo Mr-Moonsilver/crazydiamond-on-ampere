@@ -1,0 +1,84 @@
+{
+  "scope": "Pinned method excerpts for CPU-only E2 lifecycle tests; no live/GPU claim.",
+  "modules": {
+    "v1/core/block_pool.py": {
+      "sha256": "7f781378710e616624f87d95ccc7b245e1e741c85f3751268e672c2a262038e8",
+      "class": "BlockPool",
+      "methods": {
+        "get_new_blocks": {
+          "source": "def get_new_blocks(self, num_blocks: int) -> list[KVCacheBlock]:\n    \"\"\"Get new blocks from the free block pool.\n\n    Note that we do not check block cache in this function.\n\n    Args:\n        num_blocks: The number of blocks to allocate.\n\n    Returns:\n        A list of new block.\n    \"\"\"\n    if num_blocks > self.get_num_free_blocks():\n        raise ValueError(f\"Cannot get {num_blocks} free blocks from the pool\")\n\n    ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)\n\n    if self._reuse_watchers:\n        self._notify_reuse(ret)\n\n    # In order to only iterate the list once, we duplicated code a bit\n    if self.enable_caching:\n        for block in ret:\n            self._evict_first.discard(block.block_id)\n            self._maybe_evict_cached_block(block)\n            assert block.ref_cnt == 0\n            block.ref_cnt += 1\n            if self.metrics_collector:\n                self.metrics_collector.on_block_allocated(block)\n    else:\n        for block in ret:\n            assert block.ref_cnt == 0\n            block.ref_cnt += 1\n            if self.metrics_collector:\n                self.metrics_collector.on_block_allocated(block)\n    return ret\n",
+          "sha256": "1c9c192987dfd19c1ab120147166a70bb02e26a3aa32d6d6baca9851718bf290",
+          "line": 683
+        },
+        "is_block_writable": {
+          "source": "def is_block_writable(self, block: KVCacheBlock) -> bool:\n    \"\"\"Return whether a block can be mutated by its sole owner.\"\"\"\n    return not block.is_null and block.ref_cnt == 1 and block.block_hash is None\n",
+          "sha256": "589e4fc1a3bf2ae392f69cd1a4e1352e9a77cd9664cdb49fad432c108af0afe8",
+          "line": 787
+        },
+        "touch": {
+          "source": "def touch(self, blocks: Sequence[KVCacheBlock]) -> None:\n    \"\"\"Touch a block increases its reference count by 1, and may remove\n    the block from the free queue. This is used when a block is hit by\n    another request with the same prefix.\n\n    Args:\n        blocks: A list of blocks to touch.\n    \"\"\"\n    for block in blocks:\n        # ref_cnt=0 means this block is in the free list (i.e. eviction\n        # candidate), so remove it.\n        if block.ref_cnt == 0 and not block.is_null:\n            self.free_block_queue.remove(block)\n        self._evict_first.discard(block.block_id)\n        block.ref_cnt += 1\n        if self.metrics_collector:\n            self.metrics_collector.on_block_accessed(block)\n",
+          "sha256": "107fdca67d3e3a15eafdc876fdf951746e97da0d145aa4350a14df48067f62a6",
+          "line": 769
+        },
+        "free_blocks": {
+          "source": "def free_blocks(self, ordered_blocks: Iterable[KVCacheBlock]) -> None:\n    \"\"\"Free a list of blocks. The blocks should be ordered by their\n    eviction priority, where the first block will be evicted first.\n\n    Args:\n        ordered_blocks: A list of blocks to free ordered by their eviction\n            priority.\n    \"\"\"\n    # Identify blocks with hash (LRU cache) and without it (never match APC)\n    blocks_to_evict_last = []\n    blocks_to_evict_first = []\n    other_pools: dict[BlockPool, list[KVCacheBlock]] = {}\n    for block in ordered_blocks:\n        if block.pool is not None and block.pool is not self:\n            other_pools.setdefault(block.pool, []).append(block)\n            continue\n        block.ref_cnt -= 1\n        if block.ref_cnt == 0 and not block.is_null:\n            if (\n                block.block_hash is None\n                or not self.enable_caching\n                or block.block_id in self._evict_first\n            ):\n                # LIFO reuse of non-cached blocks for better GPU locality;\n                # superseded partial tails go here too.\n                self._evict_first.discard(block.block_id)\n                blocks_to_evict_first.append(block)\n            else:\n                # FIFO reuse of cached blocks for LRU eviction behavior.\n                blocks_to_evict_last.append(block)\n\n    # Blocks to reuse first are prepended to the front of the free queue.\n    self.free_block_queue.prepend_n(blocks_to_evict_first)\n    # Blocks to reuse last are appended to the end of the free queue.\n    self.free_block_queue.append_n(blocks_to_evict_last)\n    for pool, blocks in other_pools.items():\n        pool.free_blocks(blocks)\n",
+          "sha256": "de724557b987e4951e4ef4090fc92381c4b6fc5635ce606ad66e0cc1b6a6ef71",
+          "line": 791
+        }
+      }
+    },
+    "v1/core/sched/scheduler.py": {
+      "sha256": "4d797e5ab6c5abaa06229dd88035ceede7562f1dbe054bdf7ad59be659c04c87",
+      "class": "Scheduler",
+      "methods": {
+        "_request_blocks_can_be_freed": {
+          "source": "def _request_blocks_can_be_freed(self, request: Request) -> bool:\n    # We must defer freeing blocks if an async kv connector may\n    # write to them immediately (not ordered with GPU stream).\n    return not self.defer_block_free or (\n        request.last_sched_seq <= self.processed_step_seq\n    )\n",
+          "sha256": "9e0d143c4da5adfa5203d692372ac4623c3258f3d3b30e8f7848c8f0a980fbb6",
+          "line": 2781
+        },
+        "_free_request_blocks": {
+          "source": "def _free_request_blocks(self, request: Request):\n    \"\"\"Free the request's KV blocks, deferring the return to the block\n    pool when an in-flight GPU step may still write them.\n    \"\"\"\n    if self._request_blocks_can_be_freed(request):\n        self.kv_cache_manager.free(request)\n        return\n    blocks = self.kv_cache_manager.pop_blocks_for_free(request)\n    if blocks:\n        self.deferred_frees.append((self.sched_step_seq, blocks))\n",
+          "sha256": "8cb33e2b8649b14e7adfca97f802b49dd120a582e4967a1a78c3d3098ad0252a",
+          "line": 2788
+        },
+        "_free_cow_retained_blocks": {
+          "source": "def _free_cow_retained_blocks(\n    self, blocks: list[KVCacheBlock], fence_seq: int\n) -> None:\n    \"\"\"Release CoW copy retentions, deferring their return to the block\n    pool while the step that runs the copy may still be in flight.\n    \"\"\"\n    if not self.defer_block_free or fence_seq <= self.processed_step_seq:\n        self.kv_cache_manager.block_pool.free_blocks(blocks)\n        return\n    self.deferred_frees.append((fence_seq, blocks[::-1]))\n",
+          "sha256": "be9907afa28a8ceaf4d3cc62247637bf365143ab2f8754f74492dd18730361b5",
+          "line": 2799
+        },
+        "_drain_deferred_frees": {
+          "source": "def _drain_deferred_frees(self):\n    \"\"\"Return deferred blocks whose fence step has completed.\n\n    Fences are appended in near-monotonic order (a CoW retention fence\n    can lead request-free fences by one step), so stop at the first\n    pending one; any satisfied entry behind it is merely freed later.\n    \"\"\"\n    while self.deferred_frees:\n        fence, _ = self.deferred_frees[0]\n        if fence > self.processed_step_seq:\n            break\n        _, blocks = self.deferred_frees.popleft()\n        # Free in reverse order so that the tail blocks are evicted first.\n        self.kv_cache_manager.block_pool.free_blocks(reversed(blocks))\n",
+          "sha256": "4a1d510f16c40ea2aa47ce6fb0ebe6615b9a85808b20aad151ec1c56a553d7b5",
+          "line": 2810
+        }
+      }
+    },
+    "v1/worker/gpu/block_table.py": {
+      "sha256": "61c004315d5af7e7eae4e2a9e6be92ea82c520327690a7f55a73bb9ce95f520a",
+      "class": "BlockTables",
+      "methods": {
+        "append_block_ids": {
+          "source": "def append_block_ids(\n    self,\n    req_index: int,\n    new_block_ids: tuple[list[int], ...],\n    overwrite: bool,\n) -> None:\n    for i in range(self.num_kv_cache_groups):\n        start = self.num_blocks.np[i, req_index] if not overwrite else 0\n        block_ids = new_block_ids[i]\n        bpk = self.blocks_per_kv_block[i]\n        if bpk > 1:\n            block_ids = [b * bpk + k for b in block_ids for k in range(bpk)]\n        end = start + len(block_ids)\n        row_capacity = self.block_tables[i].gpu.shape[1]\n        if end > row_capacity:\n            raise RuntimeError(\n                f\"Block table write for request {req_index}, group {i} exceeds \"\n                f\"row capacity ({end} > {row_capacity})\"\n            )\n        self.block_tables[i].stage_write(req_index, start, block_ids)\n        self.num_blocks.np[i, req_index] = end\n",
+          "sha256": "7b1be68493f33f64fdcce9f2eec43429b6f0df0ee195c48d23ae662c61be4597",
+          "line": 113
+        }
+      }
+    },
+    "v1/executor/multiproc_executor.py": {
+      "sha256": "3ed0149a8a8e1550c4f062af40e645d1b734e70f99981bc5bf15f0360507648a",
+      "class": "WorkerProc",
+      "methods": {
+        "worker_busy_loop": {
+          "source": "def worker_busy_loop(self):\n    \"\"\"Main busy loop for Multiprocessing Workers\"\"\"\n    assert self.rpc_broadcast_mq is not None\n    while True:\n        self._execute_worker_rpc(self.rpc_broadcast_mq.dequeue(indefinite=True))\n",
+          "sha256": "ba7ea359daecb16022da7ccf473420fb4c108253d2061c7178df712d3a52d5fe",
+          "line": 1029
+        },
+        "_execute_worker_rpc": {
+          "source": "def _execute_worker_rpc(\n    self,\n    rpc_request: tuple[str | bytes, tuple[Any, ...], dict[str, Any], int | None],\n) -> None:\n    \"\"\"Execute one RPC in a separate frame from the dequeue loop.\"\"\"\n    method, args, kwargs, output_rank = rpc_request\n    try:\n        if isinstance(method, str):\n            func = getattr(self.worker, method)\n        elif isinstance(method, bytes):\n            func = partial(cloudpickle.loads(method), self.worker)\n\n        output = func(*args, **kwargs)\n\n        if output_rank is None or self.rank == output_rank:\n            self.handle_output(output)\n    except Exception as e:\n        # Notes have been introduced in python 3.11\n        if hasattr(e, \"add_note\"):\n            e.add_note(traceback.format_exc())\n        logger.exception(\"WorkerProc hit an exception.\")\n        # enqueue_output converts the exception to a FAILURE response\n        # containing its string representation before transport.\n        if output_rank is None or self.rank == output_rank:\n            self.handle_output(e)\n",
+          "sha256": "f5c036a5c2804b66b780ad11bc992424e880ec7a5ef416cfb57da2c1ac7178cf",
+          "line": 1035
+        }
+      }
+    }
+  }
+}
