@@ -643,6 +643,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e2_diagnostic_continue.py', 'E2 operator diagnostic continuation: reserve FAIL retained, other faults stop, real queue final FAIL (CPU only)'),
                      ('test_exposure_compare.py', 'E2 owner gate: realized exposure of the matched steps next to the matched retry verdict (CPU only)'),
                      ('test_q16_attribution.py', 'E2 owner gate v6: hard memory failures exit before exposure, retry-only failures attribute only with matched exposure (extracted queue fragment, CPU only)'),
+                     ('test_partial_tail_cov.py', 'E2 lifetime coverage: constructed partial-tail eligibility, eviction vs exercise classification, cancellation, bounded budget and FAIL/INCONCLUSIVE propagation (CPU only)'),
                      ('test_e2_serial.py', 'E2 serial CPU-source DMA adapter and unchanged attention arithmetic (CPU only)'),
                      ('test_s5_marlin_partition.py', 'S5 Marlin DP/Stream-K positional partition (CPU, not GPU attribution)'),
                      ('test_s5_retention.py', 'S5 E0 retained histories: incarnation, dirty DMA, publication and retirement (CPU)'),
