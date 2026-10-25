@@ -652,6 +652,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_lane_state.py', 'E3 execution state: transaction/lane identities, completion proofs, lane lifecycle and pinned runner seams (CPU only)'),
                      ('test_e3_async_handoffs.py', 'E3 async handoffs: parked transaction, owned replies, completion/publication split, lifetime leases, stop paths and pinned C seams (CPU only)'),
                      ('test_e3_package.py', 'E3 package: A+B+C composition, default-off mounts, manifest coverage, source drift and import identity (CPU only)'),
+                     ('test_e3_graph_routing.py', 'E3 graph routing: fixed-split graph keys, capture/replay/transition guards, budgets and pinned seam transforms (CPU only)'),
                      ('test_s5_oracle_queue.py', 'S5 source oracle: strict subset controls, per-op diagnostics, cuBLAS binding (CPU)'),
                      ('test_s5_substitution.py', 'S5 exact host/resident trajectory oracle and payload-free differences (CPU)'),
                      ('test_s5_tail.py', 'S5 published tickets, workload-tail evidence and threaded eager-forward race (CPU)'),
