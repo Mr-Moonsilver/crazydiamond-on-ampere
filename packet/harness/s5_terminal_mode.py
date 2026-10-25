@@ -69,7 +69,7 @@ def run(dec,pre,graph,sd,sp,ctl,progress,steps=200,mode='overlap',op_logs=True):
             if mode=='overlap':ready.wait()
             origin=time.perf_counter()
             for i in range(steps):
-                release=origin+i*.0095*4/24
+                release=origin+i*.0095*getattr(dec,'spec',{}).get('layers',4)/24
                 while time.perf_counter()<release:time.sleep(.0001)
                 if mode=='serial':execute('prefill',sd,lambda:pre.forward(NullTrace()),i)
                 execute('decode',sd,graph.replay,i)

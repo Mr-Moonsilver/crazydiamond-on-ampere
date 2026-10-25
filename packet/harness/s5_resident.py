@@ -7,6 +7,8 @@ KINDS=('legacy','kv','ple_prefetch','kv_ple_prefetch')
 CASES=('qsa-resident24','qsa-resident34','qsa-resident44','qsa-kv34','qsa-ple34','mixed-resident34','qsa-dma34')
 CASE_CONFIG=dict(zip(CASES,((24,'qsa','kv_ple_prefetch'),(34,'qsa','kv_ple_prefetch'),
     (44,'qsa','kv_ple_prefetch'),(34,'qsa','kv'),(34,'qsa','ple_prefetch'),(34,'mixed','kv_ple_prefetch'),(34,'qsa','kv_ple_prefetch'))))
+# Opt-in subset case only; do not change the old seven-case matrix.
+CASE_CONFIG['dma-every-step34']=(34,'qsa','kv')
 
 
 def dma_window_proven(mode,step=1):
@@ -123,7 +125,7 @@ def validate_prefetch(stats,steps,payload):
     if not math.isfinite(stats['pack_seconds']) or stats['pack_seconds']<0:raise ValueError('invalid pack time')
 
 
-def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,memory,result,dma=False):
+def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,memory,result,dma=False,every_layer=False):
     import torch
     import s5_segment_gpu as b
     from s5_terminal_mode import run as terminal_run
@@ -144,13 +146,24 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
     result['resident_bytes']=record['kv_added_bytes']
     import json
     print('S5_MEMORY '+json.dumps(dict(rank=result['rank'],**record)),flush=True)
+    window=None
     try:
+        if every_layer:
+            if not dma or kind!='kv':raise ValueError('every-layer DMA requires KV-only resident control')
+            from s5_dma_window import WindowRefill
+            window=WindowRefill(pre,original_kv,resident_kv)
+            window.verify_layers=True
         from s5_substitution import run as substitution
         phase('terminal-resident-substitution',300)
         trials=int(os.environ.get('S5_SOURCE_TRIALS','3'))
         trace_on_fail=os.environ.get('S5_SOURCE_TRACE_ON_FAIL','0')
         if trials not in (3,6) or trace_on_fail not in ('0','1'):raise ValueError('unreviewed source oracle settings')
         check=substitution(pre,transport,original_kv,resident_kv,prefetch,green.sp,progress,trials)
+        if window is not None:
+            expected_checks=trials*3*6
+            if window.layer_checks!=expected_checks:raise ValueError('missing per-layer exact DMA/UVA comparisons')
+            check['dma_layer_exact']=dict(passed=True,checks=window.layer_checks,expected=expected_checks)
+            window.verify_layers=False
         if os.environ.get('S5_MOE','on')=='off':
             check['deterministic_control']=all(p['output_equal'] for p in check['comparisons'])
             check['passed']=check['passed'] and check['deterministic_control']
@@ -195,9 +208,16 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
             error.evidence=check
             raise error
         phase('terminal-resident-prefill-solo')
+        if window is not None:window.reset_stats()
         result['modes']['resident_prefill']=terminal_run(dec,pre,g,sd,sp,ctl,progress,steps,'prefill',False)
+        if window is not None:
+            from s5_dma_window import validate as validate_dma
+            solo_dma=window.report()
+            solo_dma.update(validate_dma(solo_dma,result['modes']['resident_prefill'],pre.pages,record['page_bytes']))
+            result['resident_dma_solo']=solo_dma
+            window.reset_stats()
         phase('terminal-resident-overlap');start=transport.stats()
-        original_forward=pre.forward;dma_stream=torch.cuda.Stream() if dma else None
+        original_forward=pre.forward;dma_stream=torch.cuda.Stream() if dma and not every_layer else None
         dma_events=[];forward_count=0
         def refill_forward(trace):
             nonlocal forward_count
@@ -215,13 +235,17 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
                 torch.cuda.current_stream().wait_event(dma_events[-1][1])
             forward_count+=1
             return original_forward(trace)
-        if dma:
+        if dma and not every_layer:
             if not retain_kv:raise ValueError('DMA refill needs retained KV')
             pre.forward=refill_forward
         try:m=terminal_run(dec,pre,g,green.sd,green.sp,ctl,progress,steps,'overlap',False)
         finally:pre.forward=original_forward
         result['modes']['overlap_resident']=m
-        if dma:
+        if window is not None:
+            repeated=window.report()
+            repeated.update(validate_dma(repeated,m,pre.pages,record['page_bytes']))
+            result['resident_dma']=repeated
+        elif dma:
             result['resident_dma']=dict(bytes=sum(n for _,_,n in dma_events),chunks=len(dma_events),
                 chunk_cap_pages=4,max_outstanding=1,gpu_copy_ms=sum(a.elapsed_time(z) for a,z,_ in dma_events),
                 inside_decode_window=dma_window_proven(m),prefill_step=1,
@@ -234,6 +258,7 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
         record['peak_allocated_after']=torch.cuda.max_memory_allocated()
         record['peak_reserved_after']=torch.cuda.max_memory_reserved()
     finally:
+        if window is not None:window.close()
         transport.drain();transport.prefetch=False;pre.kv=original_kv
 
 

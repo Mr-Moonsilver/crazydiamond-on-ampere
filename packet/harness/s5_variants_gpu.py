@@ -29,6 +29,7 @@ def run(a):
     resident_kind=os.environ.get('S5_RESIDENT_KIND','legacy')
     ple_itemsize=int(os.environ.get('S5_PLE_ITEMSIZE','2'))
     resident_dma=os.environ.get('S5_RESIDENT_DMA','0')=='1'
+    dma_every_layer=os.environ.get('S5_DMA_EVERY_LAYER','0')=='1'
     def phase(name,timeout=180):
         if value:
             setup=(name in ('setup','weights-and-lanes','baseline-capture','create-splits','terminal-prefill-warmup','terminal-resident-substitution','terminal-resident-source-trace') or name.startswith('capture-green'))
@@ -52,8 +53,11 @@ def run(a):
         if resident_kind!='legacy' and not (value and resident):raise Inconclusive('resident matrix requires value + resident')
         if ple_itemsize==1 and resident_kind=='legacy':raise Inconclusive('FP8 transport scoped to resident matrix')
         if resident_dma and resident_kind not in ('kv','kv_ple_prefetch'):raise Inconclusive('DMA refill requires KV residency')
+        if dma_every_layer and not (resident_dma and resident_kind=='kv' and value and resident and a.split==34):
+            raise Inconclusive('unreviewed repeated DMA configuration')
         result['value_probe']=dict(enabled=value,prefill_noop=noop,resident_prefill=resident,graph_kernel_copies=copy_kernels,
-                                  sparse_prefill=os.environ.get('VLLM_QSA_KVO_SPARSE_PREFILL'),resident_kind=resident_kind,ple_itemsize=ple_itemsize,resident_dma=resident_dma)
+                                  sparse_prefill=os.environ.get('VLLM_QSA_KVO_SPARSE_PREFILL'),resident_kind=resident_kind,ple_itemsize=ple_itemsize,resident_dma=resident_dma,
+                                  dma_every_layer=dma_every_layer)
         result['value_probe'].update(source_trials=int(os.environ.get('S5_SOURCE_TRIALS','3')),
                                      source_trace_on_fail=os.environ.get('S5_SOURCE_TRACE_ON_FAIL','0')=='1')
         if os.environ.get('CUDA_VISIBLE_DEVICES')!=a.pair or os.environ.get('WORLD_SIZE')!='2':raise Inconclusive('pair mismatch')
@@ -77,6 +81,10 @@ def run(a):
         if a.rung!='model-terminal' and not value and (kind!='mixed' or moe!='on' or cap!='0'):raise Inconclusive('ablation only in terminal diagnostic')
         from s5_ablation import configure,apply
         configure(spec,kind)
+        if dma_every_layer:
+            if kind!='qsa':raise Inconclusive('repeated DMA is a six-QSA-only control')
+            spec.update(layers=6,mix=['full_attention']*6,
+                        scope='six-QSA-only repeated-DMA control; no GDN or full-engine extrapolation')
         result['ablation']=dict(layer_kind=kind,moe=moe,marlin_cap=cap=='1')
         result['spec']=spec;result['max_connections']=os.environ.get('CUDA_DEVICE_MAX_CONNECTIONS','unset')
         torch.manual_seed(871);phase('weights-and-lanes',300)
@@ -196,7 +204,7 @@ def run(a):
                 result['noop_scope']='local-return prefill collective ablation; own solo oracle; not equivalent model or a link-only attribution'
             if resident and resident_kind!='legacy':
                 from s5_resident import run_control
-                run_control(dec,pre,transport,resident_kind,g,green,sd,sp,ctl,progress,steps,phase,memory,result,resident_dma)
+                run_control(dec,pre,transport,resident_kind,g,green,sd,sp,ctl,progress,steps,phase,memory,result,resident_dma,dma_every_layer)
             elif resident:
                 phase('terminal-resident-setup')
                 original_kv,original_ple=pre.kv,pre.ple_uva

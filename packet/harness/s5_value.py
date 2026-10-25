@@ -56,6 +56,7 @@ def grade(data):
         if any(r.get(k,{}).get('passed') is False for r in ranks for k in ('correctness','noop_correctness','resident_correctness')):
             verdict='FAIL'
         if any(r.get('resident_source_equality') is False for r in ranks):verdict='FAIL'
+        if any(r.get('resident_substitution',{}).get('dma_layer_exact',{}).get('passed') is False for r in ranks):verdict='FAIL'
         for r in ranks:
             if r.get('completed') is not True or r['audit']['verdict']!='PASS':raise ValueError('completion/node placement missing')
             if r['max_connections'] not in ('8','32'):raise ValueError('unknown connections')
@@ -75,12 +76,29 @@ def grade(data):
                 elif stats['calls'] or stats['h2d_bytes']:raise ValueError('KV-only copied PLE')
                 if probe.get('resident_dma'):
                     dma=r['resident_dma']
-                    if dma['bytes']!=mem['kv_source_bytes'] or dma['chunks']!=(mem['pages']+3)//4 or dma['max_outstanding']!=1:
-                        raise ValueError('incomplete/unbounded DMA refill')
-                    positive(dma['gpu_copy_ms'])
-                    from s5_resident import dma_window_proven
-                    if dma['inside_decode_window'] is not True or not dma_window_proven(m['overlap_resident']):
-                        if verdict=='PASS':verdict='INCONCLUSIVE'
+                    if probe.get('dma_every_layer'):
+                        from s5_dma_window import validate as validate_dma
+                        if (r['spec']['layers']!=6 or r['spec']['mix']!=['full_attention']*6 or
+                                resident_kind!='kv' or r['requested_split']!=34 or
+                                mem['kv_source_bytes']!=mem['pages']*mem['page_bytes']):
+                            raise ValueError('repeated DMA scope mismatch')
+                        check=r['resident_substitution']['dma_layer_exact']
+                        expected=probe['source_trials']*3*6
+                        if check.get('passed') is False:verdict='FAIL'
+                        if check['passed'] is not True or check['checks']!=expected or check['expected']!=expected:
+                            raise ValueError('missing layer-wise DMA/UVA equality')
+                        proof=validate_dma(dma,m['overlap_resident'],mem['pages'],mem['page_bytes'])
+                        validate_dma(r['resident_dma_solo'],m['resident_prefill'],mem['pages'],mem['page_bytes'])
+                        if not proof['inside_decode_window'] and verdict=='PASS':verdict='INCONCLUSIVE'
+                        if dma['inside_decode_window']!=proof['inside_decode_window']:
+                            raise ValueError('DMA inside-window claim disagrees with records')
+                    else:
+                        if dma['bytes']!=mem['kv_source_bytes'] or dma['chunks']!=(mem['pages']+3)//4 or dma['max_outstanding']!=1:
+                            raise ValueError('incomplete/unbounded DMA refill')
+                        positive(dma['gpu_copy_ms'])
+                        from s5_resident import dma_window_proven
+                        if dma['inside_decode_window'] is not True or not dma_window_proven(m['overlap_resident']):
+                            if verdict=='PASS':verdict='INCONCLUSIVE'
             names=['overlap']+(['overlap_noop'] if probe['prefill_noop'] else [])+(['overlap_resident'] if probe.get('resident_prefill') else [])
             for name in names:
                 correctness=r[{'overlap':'correctness','overlap_noop':'noop_correctness','overlap_resident':'resident_correctness'}[name]]
@@ -92,11 +110,13 @@ def grade(data):
                     actual_split=r['actual_split'],mode=name,correctness=correctness['passed'],
                     resident_kind=resident_kind,ple_itemsize=probe.get('ple_itemsize',2),
                     resident_dma=r.get('resident_dma') if name=='overlap_resident' else None,
+                    resident_dma_solo=r.get('resident_dma_solo') if name=='overlap_resident' else None,
                     **comparison(m['decode'],m['decode_split'],m[name],steps))
                 row['bitwise_equal']=all(correctness[k]['bitwise_first'] is True and correctness[k]['concurrent_states_match'] is True for k in ('decode','prefill'))
                 solo_prefill=m[{'overlap':'prefill','overlap_noop':'noop_prefill','overlap_resident':'resident_prefill'}[name]]
                 row['prefill_share']=row['prefill_steps_s']/positive(solo_prefill['prefill_steps_s'])
                 row['prefill_share_upper']=row['prefill_steps_s_upper']/solo_prefill['prefill_steps_s']
+                row['solo_prefill_vs_original_solo']=solo_prefill['prefill_steps_s']/positive(m['prefill']['prefill_steps_s'])
                 row['prefill_vs_original_solo']=row['prefill_steps_s']/positive(m['prefill']['prefill_steps_s'])
                 row['vs_80_80_target']='met' if row['decode_share_vs_full']>=.80 and row['prefill_share']>=.80 else 'below'
                 row['p99_target_met']=row['p99_vs_full']<=1.2
@@ -105,7 +125,7 @@ def grade(data):
                 rows.append(row)
     except (KeyError,ValueError,TypeError,ZeroDivisionError):
         if verdict!='FAIL':verdict='INCONCLUSIVE'
-    return dict(verdict=verdict,ranks=rows,scope='four-layer slice; no-op is attribution only, no full-engine or release verdict',
+    return dict(verdict=verdict,ranks=rows,scope='matched representative slice (layer count in spec); no-op is attribution only, no full-engine or release verdict',
                 fresh_prompt_ttft_s=None,full_engine_leak_gate='not_run',
                 spike_rule='strictly greater than twice this rank same-split solo median GPU completion gap')
 
@@ -124,7 +144,9 @@ def summarize(root,names=None):
                     split,kind,source=CASE_CONFIG[name]
                     matched=all(x['requested_split']==split and x['ablation']['layer_kind']==kind
                         and x['value_probe']['resident_kind']==source and x['value_probe']['ple_itemsize']==1
-                        and x['max_connections']=='8' and bool(x['value_probe'].get('resident_dma'))==(name=='qsa-dma34') for x in d['ranks'])
+                        and x['max_connections']=='8'
+                        and bool(x['value_probe'].get('resident_dma'))==(name in ('qsa-dma34','dma-every-step34'))
+                        and bool(x['value_probe'].get('dma_every_layer'))==(name=='dma-every-step34') for x in d['ranks'])
                     if not matched and r['verdict']!='FAIL':r['verdict']='INCONCLUSIVE'
                 stamped=json.loads((folder/'grade.json').read_text())
                 if stamped['verdict']=='FAIL':r['verdict']='FAIL'
@@ -152,6 +174,7 @@ def monitor_lines(case,report):
             f"gap_p50_ms={r['gap_p50_ms']:.3f} gap_p99_ms={r['gap_p99_ms']:.3f} "
             f"spikes_gt_2x={r['spike_count_gt_2x_solo']}/{r['gap_count']} threshold_ms={r['spike_threshold_ms']:.3f} "
             f"prefill_share={r['prefill_share']:.4f} prefill_share_upper={r['prefill_share_upper']:.4f} target80_80={r['vs_80_80_target']} "
+            f"solo_prefill_vs_original_solo={r['solo_prefill_vs_original_solo']:.4f} "
             f"prefill_vs_original_solo={r['prefill_vs_original_solo']:.4f} resident_kind={r['resident_kind']} ple_itemsize={r['ple_itemsize']} "
             f"bitwise_equal={'y' if r['bitwise_equal'] else 'n'} tail={'y' if r['tail_proven'] else 'n'} "
             f"tail_basis={r['tail_basis']} device_active_at_probe={r['device_active_at_tail_probe']} "
@@ -160,6 +183,13 @@ def monitor_lines(case,report):
             dma=r['resident_dma']
             lines.append(f"S5_DMA case={case} rank={r['rank']} bytes={dma['bytes']} chunks={dma['chunks']} "
                 f"gpu_copy_ms={dma['gpu_copy_ms']:.3f} inside_decode_window={dma['inside_decode_window']}")
+            if dma.get('mode')=='every_qsa_layer':
+                solo=r['resident_dma_solo']
+                lines.append(f"S5_DMA_REPEAT case={case} rank={r['rank']} layers=6 windows=1 "
+                    f"prefill_steps={dma['prefill_steps']} refills={len(dma['refills'])} "
+                    f"bytes_per_chunk={dma['bytes']//dma['prefill_steps']} "
+                    f"inside_chunks={dma['fully_inside_decode_chunks']} inside_refills={dma['fully_inside_decode_refills']} inside_bytes={dma['fully_inside_decode_bytes']} "
+                    f"solo_bytes={solo['bytes']} solo_gpu_copy_ms={solo['gpu_copy_ms']:.3f}")
     if not lines:lines.append(f"S5_VALUE case={case} rank=unknown verdict={report['verdict']} metrics=unavailable")
     return lines
 

@@ -96,7 +96,7 @@ mkdir -p "$Q/profile-terminal"
 python3 - <<'PY'
 import json,os,pathlib
 q=pathlib.Path(os.environ['Q'])
-(q/'called.json').write_text(json.dumps({k:os.environ[k] for k in ('S5_MOE','S5_SOURCE_TRIALS','S5_SOURCE_TRACE_ON_FAIL','S5_PAIR','S5_LAYER_KIND','S5_CUBLAS_DETERMINISTIC')}))
+(q/'called.json').write_text(json.dumps({k:os.environ[k] for k in ('S5_MOE','S5_SOURCE_TRIALS','S5_SOURCE_TRACE_ON_FAIL','S5_PAIR','S5_LAYER_KIND','S5_CUBLAS_DETERMINISTIC','S5_DMA_EVERY_LAYER','S5_RESIDENT_DMA')}))
 (q/'handoff.json').write_text(json.dumps(dict(own_container_stopped=1,gpu_idle=1,engine_untouched=True)))
 PY
 exit 2
@@ -104,16 +104,18 @@ exit 2
         q=root/'out'
         p=subprocess.run(['bash',str(H/'runs/q_s5_resident_oracle.draft.sh')],capture_output=True,text=True,
             env=dict(os.environ,PYTHONPATH=str(H),H=str(bundle),Q=str(q),S5_CONFIG='unused',S5_OVERLAY='unused',
-                     S5_RESIDENT_CASES='mixed-resident34 qsa-dma34',S5_PAIR='1,3',S5_MOE='off',S5_SOURCE_TRIALS='6',S5_SOURCE_TRACE_ON_FAIL='1',S5_CUBLAS_DETERMINISTIC='1'))
+                     S5_RESIDENT_CASES='mixed-resident34 qsa-dma34 dma-every-step34',S5_PAIR='1,3',S5_MOE='off',S5_SOURCE_TRIALS='6',S5_SOURCE_TRACE_ON_FAIL='1',S5_CUBLAS_DETERMINISTIC='1'))
         self.assertEqual(p.returncode,2,p.stdout+p.stderr)
         r=json.loads((q/'summary.json').read_text())
-        self.assertEqual([c['case'] for c in r['cases']],['mixed-resident34','qsa-dma34'])
+        self.assertEqual([c['case'] for c in r['cases']],['mixed-resident34','qsa-dma34','dma-every-step34'])
         self.assertTrue(all(c['verdict']=='INCONCLUSIVE' for c in r['cases']))
         for name in r['requested']['cases']:
             d=json.loads((q/name/'called.json').read_text())
             self.assertEqual(d['S5_MOE'],'off');self.assertEqual(d['S5_SOURCE_TRIALS'],'6')
             self.assertEqual(d['S5_SOURCE_TRACE_ON_FAIL'],'1');self.assertEqual(d['S5_PAIR'],'1,3')
             self.assertEqual(d['S5_CUBLAS_DETERMINISTIC'],'1')
+            self.assertEqual(d['S5_DMA_EVERY_LAYER'],'1' if name=='dma-every-step34' else '0')
+            self.assertEqual(d['S5_RESIDENT_DMA'],'0' if name=='mixed-resident34' else '1')
 
     def test_artifact_binding_and_fail_precedence(self):
         root=fresh();f=root/'qsa-resident24';(f/'profile-terminal').mkdir(parents=True)
@@ -192,6 +194,7 @@ exit 2
         # running any hardware command in an offline test.
         expected=old[old.index('idle() {'):].replace('  env_args+=(-e "S5_RESIDENT_DMA=$resident_dma")',
             '  env_args+=(-e "S5_RESIDENT_DMA=$resident_dma" -e "S5_SOURCE_TRIALS=$trials" -e "S5_SOURCE_TRACE_ON_FAIL=$trace")\n'
+            '  env_args+=(-e "S5_DMA_EVERY_LAYER=$every")\n'
             '  env_args+=(-e "S5_CUBLAS_DETERMINISTIC=$blas")\n'
             '  if [[ $blas == 1 ]];then env_args+=(-e CUBLAS_WORKSPACE_CONFIG=:4096:8);fi')
         self.assertEqual(expected,new[new.index('idle() {'):])
