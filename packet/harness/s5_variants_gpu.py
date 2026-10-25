@@ -76,7 +76,7 @@ def run(a):
         rd=b.Reducer(dg,device,'decode',progress,backend=backend);rp=b.Reducer(pg,device,'prefill',progress,backend='pynccl');b.refault()
         weights=b.weights(spec,rank);dec=b.Slice(spec,rank,rd,False,weights,'packed');pre=b.Slice(spec,rank,rp,True,weights,'packed')
         apply(dec,pre,moe)
-        transport=None
+        transport=decode_transport=None
         if resident_kind!='legacy':
             from s5_resident import PLETransport
             decode_transport=PLETransport(dec,ple_itemsize)
@@ -261,9 +261,15 @@ def run(a):
                 b.verify_mode(dec,pre,g,green.sd,green.sp)
                 result['modes']['resident_overlap']=measure('resident-overlap',g,trace,green.sd,green.sp,green)
                 result['bandwidth_scope']='prefill PCIe-source ablation; NVML PCIe only. DRAM attribution requires sampled GPU metrics; no claim from source byte counts.'
-        phase('cleanup');torch.cuda.synchronize()
-        for g in reversed(graphs):g.reset()
-        for gc in contexts:gc.close()
+        phase('cleanup')
+        if transport is not None:
+            from s5_resident import close_resident_resources
+            result['resident_cleanup']=close_resident_resources(
+                graphs,contexts,(dec,pre),(decode_transport,transport),progress)
+        else:
+            torch.cuda.synchronize()
+            for g in reversed(graphs):g.reset()
+            for gc in contexts:gc.close()
         observed={'decode':set(),'prefill':set()}
         for line in progress.events.read_text().splitlines():
             event=json.loads(line)

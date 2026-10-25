@@ -50,7 +50,7 @@ class PLETransport:
         from vllm.utils.torch_utils import get_accelerator_view_from_cpu_tensor
         if itemsize not in (1,2):raise ValueError('PLE itemsize')
         self.lane=lane;self.itemsize=itemsize;self.prefetch=False;self.step=0
-        self.calls=0;self.bytes=0;self.pack_seconds=0.;self.pending=False
+        self.calls=0;self.bytes=0;self.pack_seconds=0.;self.pending=False;self.closed=False
         self.base=lane.ple_base.cpu()  # One setup readback; no GPU IDs read in the window.
         if itemsize==1:
             host=torch.empty(lane.ple_host.shape,dtype=torch.uint8,pin_memory=True)
@@ -61,11 +61,30 @@ class PLETransport:
         # Only prefill needs a pinned packing buffer. No whole-table device copy.
         self.packed=torch.empty(lane.ple_output.shape,dtype=lane.ple_host.dtype,pin_memory=True) if lane.pre else None
         self.copy_done=torch.cuda.Event() if lane.pre else None
-        self.original_reset=lane.reset
+        self.original_reset=lane.reset;self.original_ple=lane.ple
         lane.reset=self.reset;lane.ple=self.lookup
 
     def drain(self):
         if self.pending:self.copy_done.synchronize();self.pending=False
+
+    def close(self):
+        """After graph destruction, release pinned ownership with contexts alive.
+
+        Dropping the caller's transport variable is insufficient: lane.reset and
+        lane.ple retain this object, which retains the lane and its pinned table.
+        Caller must fence BOTH green streams and destroy graphs first. The
+        device fence here also covers setup/default-stream uses of these buffers.
+        A failed fence leaves ownership intact; the outer watchdog owns hangs.
+        """
+        if self.closed:return
+        import torch
+        self.drain();torch.cuda.synchronize()
+        lane=self.lane
+        lane.reset=self.original_reset;lane.ple=self.original_ple
+        lane.ple_uva=None;lane.ple_host=None
+        self.packed=None;self.copy_done=None;self.raw=None;self.base=None
+        self.original_reset=None;self.original_ple=None;self.lane=None
+        self.closed=True
 
     def reset(self):
         self.drain();self.step=0;self.original_reset()
@@ -181,3 +200,35 @@ def run_control(dec,pre,transport,kind,g,green,sd,sp,ctl,progress,steps,phase,me
         record['peak_reserved_after']=torch.cuda.max_memory_reserved()
     finally:
         transport.drain();transport.prefetch=False;pre.kv=original_kv
+
+
+def close_resident_resources(graphs,contexts,lanes,transports,progress):
+    """Successful-run cleanup, outside all measurement windows. No best effort.
+
+    The pinned allocator may record a CUDA event only when a tensor is freed.
+    Thus even already-completed copies need their stream/context alive until
+    pinned tensors are released AND the allocator's cached events are drained.
+    Never destroy contexts after a failed fence or host-cache flush.
+    """
+    import gc
+    import torch
+    empty_host_cache=getattr(getattr(torch,'accelerator',None),'empty_host_cache',None)
+    if not callable(empty_host_cache):raise RuntimeError('resident cleanup requires torch.accelerator.empty_host_cache')
+    for context in contexts:
+        context.sd.synchronize();context.sp.synchronize()
+    torch.cuda.synchronize();progress.update('cleanup-streams-drained')
+    for graph in reversed(graphs):graph.reset()
+    progress.update('cleanup-graphs-released')
+    for transport in transports:
+        if transport is not None:transport.close()
+    # The DMA control also uses the host KV allocation. Drop its UVA view first.
+    for lane in lanes:
+        lane.kv=None;lane.host=None;lane.ple_uva=None;lane.ple_host=None
+    gc.collect();torch.cuda.synchronize()
+    empty_host_cache();torch.cuda.synchronize()
+    progress.update('cleanup-host-cache-drained')
+    for context in contexts:context.close()
+    progress.update('cleanup-contexts-destroyed')
+    return dict(streams_drained=True,graphs_released=True,transports_closed=True,
+                pinned_sources_released=True,host_cache_drained_before_contexts=True,
+                contexts_destroyed=True)
