@@ -146,6 +146,38 @@ check('invariants: source mutated, destinations equal (review fixture)',
 check('invariants: control block changed', cow_invariants.check([line % (r, inv % (0, 1 if r == ranks[0] else 0)) for r in ranks])[0], False)
 check('invariants: only 3 ranks', cow_invariants.check([line % (r, inv % (0, 0)) for r in ranks[:3]])[0], False)
 
+# --- e2_cow_count (matched CoW frequency gate on the FLASH_E2_COW per-frame counter; cow_invariants does not gate it) ---
+import e2_cow_count  # noqa: E402
+cow_line = '(%s_EP0 pid=1) INFO FLASH_E2_COW seq=%d pairs=%d views=%d cumulative_pairs=%d cumulative_views=%d'
+
+
+def cow_log(deltas, layers=6, ranks_=ranks, start_seq=1, base=0):
+    out = []
+    for r in ranks_:
+        cp, cv = base, base * layers
+        for i, p in enumerate(deltas):
+            cp += p; cv += p * layers
+            out.append(cow_line % (r, start_seq + i, p, p * layers, cp, cv))
+    return out
+
+
+clean = cow_log([0, 3, 0, 1, 0])
+check('e2 cow: clean 4 ranks PASS', e2_cow_count.phase(clean)[0], True)
+check('e2 cow: inferred layers 6', e2_cow_count.phase(clean)[1][ranks[0]]['layers'], 6)
+check('e2 cow: given layers mismatch FAIL', e2_cow_count.phase(clean, layers=4)[0], False)
+check('e2 cow: only 3 ranks FAIL', e2_cow_count.phase(cow_log([1, 0], ranks_=ranks[:3]))[0], False)
+check('e2 cow: seq gap FAIL', e2_cow_count.phase([l for l in clean if ' seq=3 ' not in l])[0], False)
+check('e2 cow: cumulative inconsistent FAIL',
+      e2_cow_count.phase([l.replace('cumulative_pairs=4', 'cumulative_pairs=5') for l in clean])[0], False)
+check('e2 cow: views not pairs x L FAIL', e2_cow_count.phase([l.replace('pairs=3 views=18', 'pairs=3 views=17') for l in clean])[0], False)
+check('e2 cow: no rank marker FAIL', e2_cow_count.phase([l.replace('Worker_', 'W_') for l in clean])[0], False)
+check('e2 cow: mid-life phase (seq 40, cumulative carried) PASS', e2_cow_count.phase(cow_log([2, 0, 1], start_seq=40, base=17))[0], True)
+check('e2 cow: compare equal -> 0', e2_cow_count.compare(clean, cow_log([1, 0, 3, 0, 0]))[0], 0)
+check('e2 cow: compare extra copies on -> 2 INSPECT', e2_cow_count.compare(clean, cow_log([0, 3, 0, 2, 0]))[0], 2)
+check('e2 cow: compare expected pairs mismatch -> 2', e2_cow_count.compare(clean, clean, expected_pairs=5)[0], 2)
+check('e2 cow: compare expected pairs match -> 0', e2_cow_count.compare(clean, clean, expected_pairs=4)[0], 0)
+check('e2 cow: compare with a broken side -> 1 FAIL', e2_cow_count.compare(clean, cow_log([1], ranks_=ranks[:2]))[0], 1)
+
 
 # --- vision_test against a mocked engine ---
 def mock_engine(answers):
