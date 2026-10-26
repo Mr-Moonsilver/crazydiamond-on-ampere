@@ -28,7 +28,8 @@ def diagnostic(route='green',origin='green'):
 def fixture(origin='green'):
     counts={k:0 for k in ('dropped_records_total','buffers_refused','parse_errors','callback_errors','ambiguous_node_records',
         'unknown_node_records','kind_mismatch_records','incomplete_records','unknown_timestamp_records',
-        'invalid_interval_records','boundary_overlap_records')}
+        'invalid_interval_records','boundary_overlap_records','drop_query_errors',
+        'unknown_activity_records','unknown_resource_events')}
     counts['ring_overflows']={k:0 for k in ('aliases','resource','context','kernel','copy')}
     return dict(family='aten',capture_origin=origin,cleanup_ok=True,serialized_stable=True,native_schema_valid=True,
         static_census_stable=True,membership={'ok':True},split=dict(decode=44,prefill=38,total=82),static={'complete':True,'graph_slots':[{'required':{'kernel':1}}]},
@@ -47,12 +48,13 @@ class GradeTests(unittest.TestCase):
         r=fixture('plain');r['windows']['plain']['diagnostics']['executions'][0]['context_id']=7
         self.assertIn('plain:ordinary_negative_not_rejected',j.case_grade(r)['failures'])
     def test_loss_missing_mapping_and_multiplicity_never_pass(self):
-        for kind in ('loss','missing_node','multiplicity','query','census'):
+        for kind in ('loss','missing_node','multiplicity','query','census','native_reason'):
             r=fixture()
             if kind=='loss':r['window']['counts']['ring_overflows']['kernel']=1
             elif kind=='missing_node':r['windows']['green']['diagnostics']['executions'][0]['node_index']=99
             elif kind=='multiplicity':r['windows']['green']['diagnostics']['executions'][0]['count']=2
             elif kind=='query':r['windows']['green']['diagnostics']['nodes'][0]['query_rc']=1
+            elif kind=='native_reason':r['window']['reasons']=['flush_failed']
             else:r['windows']['green']['diagnostics']['complete']=False
             self.assertNotEqual(j.case_grade(r)['verdict'],'PASS',kind)
     def test_ignored_func_ctx_is_not_effective_placement(self):

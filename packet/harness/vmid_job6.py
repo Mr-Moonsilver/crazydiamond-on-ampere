@@ -90,9 +90,12 @@ def case_grade(r):
     counts=window.get('counts',{})
     for key in ('dropped_records_total','buffers_refused','parse_errors','callback_errors',
                 'ambiguous_node_records','unknown_node_records','kind_mismatch_records',
-                'incomplete_records','unknown_timestamp_records','invalid_interval_records','boundary_overlap_records'):
+                'incomplete_records','unknown_timestamp_records','invalid_interval_records','boundary_overlap_records',
+                'drop_query_errors','unknown_activity_records','unknown_resource_events'):
         if type(counts.get(key)) is not int:missing.append('counter:'+key)
         elif counts[key]:failures.append('loss_or_mapping:'+key)
+    allowed={'known_wrong_context','missing_execution','incomplete_record','unattributed_expected_context'}
+    if set(window.get('reasons',[]))-allowed:missing.append('native_observation_failure')
     rings=counts.get('ring_overflows',{})
     if set(rings)!={'aliases','resource','context','kernel','copy'}:missing.append('overflow_evidence')
     elif any(rings.values()):failures.append('overflow')
