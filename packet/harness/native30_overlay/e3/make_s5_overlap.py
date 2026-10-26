@@ -252,8 +252,12 @@ def _decode_probe_declaration(files):
     It qualifies ``diagnostic_modes.decode_only`` for an explicitly requested
     GPU diagnostic; it does not qualify, arm or change the full package.
     """
-    if set(decode_probe.GENERATED_SOURCES) != set(E3_MODULES):
+    runtime_modules = tuple(name for name in E3_MODULES
+                            if name not in decode_probe.BUILD_ONLY_SOURCES)
+    if set(decode_probe.GENERATED_SOURCES) != set(runtime_modules):
         raise ValueError('diagnostic evidence module list drifted')
+    if not set(decode_probe.BUILD_ONLY_SOURCES) <= set(E3_MODULES):
+        raise ValueError('build-only module is not in the generated package')
     pins = dict(worker_hooks.PINS)
     pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
     pins.update(probe_control_hooks.PINS)
@@ -264,6 +268,12 @@ def _decode_probe_declaration(files):
         if key not in files:
             raise ValueError('decode probe declaration lacks generated ' + key)
         shas[name] = _sha_text(files[key])
+    build_only = {}
+    for name in decode_probe.BUILD_ONLY_SOURCES:
+        key = 'e3/' + name + '.py'
+        if key not in files:
+            raise ValueError('decode probe declaration lacks generated ' + key)
+        build_only[name] = _sha_text(files[key])
     return {
         'declared': True,
         'qualifies': 'diagnostic_modes.decode_only',
@@ -286,10 +296,17 @@ def _decode_probe_declaration(files):
                        'split decode graph bank, own pool (split_bank)',
                        'drained RouteController'],
         'excluded': list(decode_probe.EXCLUDED),
+        'module_inventory': {
+            'runtime': list(runtime_modules),
+            'build_only': list(decode_probe.BUILD_ONLY_SOURCES),
+            'basis': ('build-only sources generate runtime text and are shipped/checksummed '
+                      'for the builder; they are not imported by the runtime package'),
+        },
         'evidence': {
             'pins': pins,
             'helper_source_sha256': green_context.helper_source_sha256(),
             'generated_source_shas': shas,
+            'build_only_source_shas': build_only,
             'tests': list(decode_probe.REQUIRED_TESTS),
         },
     }

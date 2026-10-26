@@ -6,6 +6,7 @@ modifies a deployed bundle. OUT must not exist. No engine/box access.
 """
 import argparse
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -52,7 +53,46 @@ def build(out):
         if sha(source)!=digest:raise ValueError('E2 image reference checksum mismatch: '+name)
         dest=out/'e2_reference'/name;dest.parent.mkdir(parents=True,exist_ok=True)
         shutil.copy2(source,dest)
-    needed=('identity_declare.py','identity_declare_stub.py','pp_release_mount_policy.json','pp_canary_bridge.py')
+    # E3 build closure: every tracked CPU-only generator/source module and the
+    # complete pinned image reference set make_s5_overlap compiles against.
+    # The runtime overlay is generated later from these bytes; the bundle never
+    # fetches a checkout or imports vLLM while building.
+    import executor_hooks, graph_hooks, model_hooks, probe_control_hooks, worker_hooks
+    pins=dict(executor_hooks.PINS)
+    pins.update(worker_hooks.PINS)
+    pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
+    pins.update(model_hooks.PINS)
+    pins.update(probe_control_hooks.PINS)
+    pins['v1/worker/gpu/model_runner.py']=graph_hooks.PINNED_SHA256
+    tracked=subprocess.check_output(
+        ['git','ls-files','-z','patches/s5_engine'],cwd=ROOT).decode().split('\0')
+    tracked=[name for name in tracked if name and Path(name).suffix in ('.py','.cu','.cpp','.sh','.cuh','.h')]
+    if not tracked:raise ValueError('E3 builder sources are not tracked')
+    e3_builder=out/'e3_builder';e3_builder.mkdir()
+    builder_sources={}
+    for name in tracked:
+        source=ROOT/name
+        if source.is_symlink() or not source.is_file():raise ValueError('unsupported E3 builder entry: '+name)
+        rel=Path(name).relative_to('patches/s5_engine').as_posix()
+        dest=e3_builder/rel;dest.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(source,dest)
+        builder_sources[rel]=sha(source)
+    pp_source=ROOT/'patches/ppgrouping/make_ppgrouping.py'
+    shutil.copy2(pp_source,e3_builder/'pool_stats_source.py')
+    builder_sources['pool_stats_source.py']=sha(pp_source)
+    for name,digest in pins.items():
+        source=reference/name
+        if sha(source)!=digest:raise ValueError('E3 image reference checksum mismatch: '+name)
+        dest=out/'e3_reference'/name;dest.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(source,dest)
+    closure={'schema':1,'builder_sources':dict(sorted(builder_sources.items())),
+             'reference_pins':dict(sorted(pins.items())),
+             'basis':'tracked CPU-only generator/native/source bytes; reference tree verified against every transform pin',
+             'runtime_overlay':'generated separately by make_s5_overlap; not fetched on the box'}
+    (out/'e3_build_closure.json').write_text(json.dumps(closure,indent=2,sort_keys=True)+'\n')
+    needed=('identity_declare.py','identity_declare_stub.py','pp_release_mount_policy.json','pp_canary_bridge.py',
+            'e3_startup_mount_policy.json','e3_startup_grade.py','runs/q17_decode_startup.draft.sh',
+            'runs/q17_startup_settings.sh','runs/q17s_declare.sh')
     if not all((out/name).is_file() for name in needed):
         raise ValueError('required helper missing: commit new sources before building')
     with (out/'SHA256SUMS').open('x') as f:

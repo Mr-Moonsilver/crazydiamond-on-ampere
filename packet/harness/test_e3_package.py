@@ -212,14 +212,29 @@ class SyntheticTests(unittest.TestCase):
     def test_generated_package_imports_without_vllm(self):
         root, base, ref, result = self.build()
         out = root / 'out'
+        runtime = list(g.decode_probe.GENERATED_SOURCES)
+        self.assertNotIn('operation_source', runtime)
+        self.assertIn('operation_source', g.decode_probe.BUILD_ONLY_SOURCES)
         subprocess.run([sys.executable, '-I', '-c',
-                        'import sys;sys.path.insert(0,sys.argv[1]);'
-                        'import e3.async_handoff,e3.scheduler_hooks,e3.s5_startup;'
-                        'import e3.qsa_operation,e3.native_resources;'
+                        'import sys,importlib;sys.path.insert(0,sys.argv[1]);'
+                        '[importlib.import_module("e3."+name) for name in sys.argv[2:]];'
+                        'import e3.s5_startup,e3.qsa_operation,e3.native_resources;'
                         'assert e3.s5_startup.Composition is not None;'
                         'assert e3.qsa_operation.RUNNER_SEAM;'
                         'assert e3.native_resources.RUNNER_SEAM == e3.qsa_operation.RUNNER_SEAM',
-                        str(out)], check=True)
+                        str(out), *runtime], check=True)
+        # The build-only module must not resolve as part of the runtime import
+        # closure (it needs builder-only qsa_operation/resident_attention).
+        build_only = subprocess.run(
+            [sys.executable, '-I', '-c',
+             'import sys;sys.path.insert(0,sys.argv[1]);import e3.operation_source',
+             str(out)], capture_output=True, text=True)
+        self.assertNotEqual(build_only.returncode, 0)
+        evidence = json.loads((out / 'e3' / g.decode_probe.EVIDENCE_FILE).read_text())
+        self.assertEqual(set(evidence['generated_source_shas']), set(runtime))
+        self.assertEqual(set(evidence['build_only_source_shas']),
+                         set(g.decode_probe.BUILD_ONLY_SOURCES))
+        self.assertIn('e3/operation_source.py', g.manifest(out))
 
     def test_modes_normalized_on_new_output_only(self):
         root, base, ref, whole, core = self.fixture()
