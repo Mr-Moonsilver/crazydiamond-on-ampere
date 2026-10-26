@@ -256,7 +256,8 @@ def transition_rpc(runner, command, *, engine_epoch=None, clock=time.monotonic):
 # --- decode-only diagnostic startup ----------------------------------------------
 
 _PROBE_FORBIDDEN = ('_flash_s5_native', '_flash_s5_comms', '_flash_s5_ple_scratch',
-                    '_flash_s5_lane_forward', '_flash_s5_dispatcher')
+                    '_flash_s5_lane_forward', '_flash_s5_dispatcher', '_flash_s5_worker',
+                    '_flash_e3_lane', '_flash_e3_build_state')
 
 
 def install_decode_probe(runner, *, env=None, torch_module=None, set_graph_pool_id=None,
@@ -287,9 +288,19 @@ def install_decode_probe(runner, *, env=None, torch_module=None, set_graph_pool_
     split = getattr(runner, '_flash_s5_split', None)
     if split is None or getattr(split, 'state', None) != 'open':
         raise NativeStartupError('decode probe needs the open green split from worker init')
+    declared_lib = env.get('FLASH_S5_GREEN_LIB_SHA256')
+    helper_identity = split.binding.identity()
+    if (not isinstance(declared_lib, str) or len(declared_lib) != 64
+            or not isinstance(helper_identity, dict) or helper_identity.get('abi') != 1
+            or declared_lib != helper_identity.get('library_sha256')):
+        raise NativeStartupError('compiled helper library does not match declared sha256')
     if split.requested_decode_sms != settings.decode_sms:
         raise NativeStartupError('green split was not created with the declared decode SM count')
     torch = torch_module if torch_module is not None else _torch()
+    if set_graph_pool_id is None and torch_module is None:
+        from vllm.distributed.device_communicators import pynccl_allocator
+        previous_pool = pynccl_allocator._graph_pool_id
+        set_graph_pool_id = lambda _stock_pool: pynccl_allocator.set_graph_pool_id(previous_pool)
     bank, backend, controller = install_split_bank(
         runner, split, torch_module=torch, set_graph_pool_id=set_graph_pool_id, clock=clock)
     context = bank.execution_context(SPLIT_BANK_NAME)
@@ -308,8 +319,7 @@ def install_decode_probe(runner, *, env=None, torch_module=None, set_graph_pool_
         probe.capture()
         runner._flash_s5_decode_probe_inventory = probe.inventory()
     except BaseException:
-        runner._flash_s5_decode_probe = None
-        runner._flash_e3_graph_router = None
+        probe.quarantined = 'capture failed; retained ownership pending drained shutdown'
         raise
     return probe
 
@@ -326,6 +336,9 @@ def probe_transition_rpc(runner, command, *, engine_epoch=None, clock=time.monot
     for key in _REQUIRED_COMMAND:
         if key not in command:
             raise NativeStartupError(f'transition command lacks {key!r}')
+    for field in ('engine_epoch', 'expected_route_generation', 'route_generation', 'storage_epoch'):
+        if type(command.get(field)) is not int or command[field] < (0 if field == 'expected_route_generation' else 1):
+            raise NativeStartupError('transition integer field invalid: ' + field)
     if engine_epoch is not None and command['engine_epoch'] != engine_epoch:
         raise NativeStartupError('transition command names another engine epoch')
     if command['expected_route_generation'] != probe.route_generation:

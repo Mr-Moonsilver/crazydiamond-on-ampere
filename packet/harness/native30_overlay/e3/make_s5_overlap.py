@@ -61,15 +61,25 @@ MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
 CUDAGRAPH_PATH = 'v1/worker/gpu/cudagraph_utils.py'
 MODEL_DEST = '/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py'
 BUILD_GREEN_HELPER = '''#!/bin/bash
-# Build the E3 green-context helper INSIDE the pinned image on the box (never on the hub).
-# usage: build_green_helper.sh <image> <overlay/e3/native dir>   -> writes flash_s5_green.so next to the .cu
-# The queue records the resulting library sha; FLASH_S5_GREEN_LIB points the workers at it.
+# Owner-only CPU compiler container; new output, no GPU or engine access.
+# Same sm_86/shared-cudart recipe qualified by q17a. Container is retained.
+# Final overlay manifest and declared FLASH_S5_GREEN_LIB_SHA256 must cover
+# the new library BEFORE source declaration or any test-engine start.
 set -eu
 img=$1; dir=$(cd "$2" && pwd)
-docker run --rm -v "$dir:/native" "$img" bash -c \\
-  'nvcc -O2 -shared -Xcompiler -fPIC -o /native/flash_s5_green.so /native/flash_s5_green.cu -lcuda && nvcc --version | tail -n 2'
+[[ "$img" == sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b ]]
+[[ ! -e "$dir/flash_s5_green.so" && ! -L "$dir/flash_s5_green.so" ]]
+name="e3-green-build-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+# Inner timeout terminates compiler before the client bound.
+timeout --signal=TERM --kill-after=20s 300s docker run --name "$name" --network none \
+  -v "$dir:/native" --entrypoint timeout "$img" --signal=TERM --kill-after=10s 240s \
+  nvcc -O2 -std=c++17 -shared -Xcompiler=-fPIC \
+  --generate-code=arch=compute_86,code=sm_86 --cudart=shared -lcuda \
+  /native/flash_s5_green.cu -o /native/flash_s5_green.so
 sha256sum "$dir/flash_s5_green.so"
+echo "retained build container: $name"
 '''
+
 
 # Exact reviewed E2-composed inputs. Any other bytes are refused.
 E2_RUNNER_SHA256 = lane_hooks.E2_STARTUP_SHA256
@@ -170,7 +180,7 @@ def _s5_launcher(source):
 s5=()
 if [[ -d $OVERLAY/e3 ]]; then
   [[ ${S5:-0} == 1 ]] || { echo "S5 needs the declared overlap launcher" >&2; exit 2; }
-  for f in e3/__init__.py ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/model.py qsa.py ops_qsa.py; do
+  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/model.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
   V=/usr/local/lib/python3.12/dist-packages/vllm/v1
@@ -238,6 +248,8 @@ def _decode_probe_declaration(files):
     It qualifies ``diagnostic_modes.decode_only`` for an explicitly requested
     GPU diagnostic; it does not qualify, arm or change the full package.
     """
+    if set(decode_probe.GENERATED_SOURCES) != set(E3_MODULES):
+        raise ValueError('diagnostic evidence module list drifted')
     pins = dict(worker_hooks.PINS)
     pins['v1/worker/gpu/model_runner.py'] = graph_hooks.PINNED_SHA256
     shas = {}
@@ -254,7 +266,8 @@ def _decode_probe_declaration(files):
                   'FLASH_S5_OVERLAP package, which stays armable:false'),
         'enabled_by': {decode_probe.PROBE_ENV: '1',
                        decode_probe.OVERLAP_ENV: '0',
-                       decode_probe.DECODE_SMS_ENV: '<explicit, no default>'},
+                       decode_probe.DECODE_SMS_ENV: '<explicit, no default>',
+                       'FLASH_S5_GREEN_LIB_SHA256': '<compiled artifact pin, required>'},
         'requires': {
             'flag_conflict': 'probe=1 with overlap=1 refuses before any allocation',
             'decode_sms': 'FLASH_S5_DECODE_SMS must be declared; code supplies no default',
@@ -372,6 +385,8 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         files = compose_graph(module, files)
         graph_record = {'module': Path(graph).name,
                         'source_pins': dict(module.SOURCE_PINS)}
+    probe_declaration = _decode_probe_declaration(files)
+    files['e3/' + decode_probe.EVIDENCE_FILE] = json.dumps(probe_declaration['evidence'], sort_keys=True) + '\n'
     for name, text in files.items():
         if name.endswith('.py'):
             ast.parse(text, filename=name)
@@ -448,7 +463,7 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
     }
     # Diagnostic-only declaration, separate from the full package's armability.
     record['diagnostic_modes'] = {
-        'decode_only': _decode_probe_declaration(files),
+        'decode_only': probe_declaration,
     }
     if settings:
         record['requested_settings'] = dict(settings)

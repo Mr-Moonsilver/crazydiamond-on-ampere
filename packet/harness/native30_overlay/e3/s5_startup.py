@@ -70,6 +70,9 @@ def install_builder(runner, kv_caches, is_profiling=False, *, env=None):
         # Diagnostic mode: the split (worker_hooks) and later the split bank
         # (native_startup.install_decode_probe) are the whole construction.
         require_decode_probe_ready()
+        if not is_profiling:
+            from split_bank import full_descriptors
+            full_descriptors(runner.cudagraph_manager)
         return None
     if is_profiling or not _enabled(env):
         return None

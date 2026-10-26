@@ -394,7 +394,7 @@ class FullPinnedTests(unittest.TestCase):
         self.assertEqual(text.count('_flash_s5_startup.install_builder'), 1)
         self.assertIn('import vllm.v1.flash_e3.s5_startup as _flash_s5_startup', text)
         self.assertIn('_flash_e3_graph.replay_fullgraph(', text)
-        self.assertIn('_flash_e3_graph.capture_banks(self)', text)
+        self.assertIn('_flash_e3_graph.capture_banks(self, profile_only=profile_only)', text)
         self.assertTrue((self.out / 'e3/graph_router.py').is_file())
         self.assertIn('from .graph_router import', (self.out / 'e3/graph_hooks.py').read_text())
         json.dumps(self.result)  # Actual CLI output must be serializable.

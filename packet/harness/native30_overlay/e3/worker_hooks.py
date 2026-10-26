@@ -50,7 +50,10 @@ _W_RUNNER_NEW = _W_RUNNER_OLD + '            _flash_s5_worker.after_runner_init(
 
 _W_SAMPLE_OLD = '        return self.model_runner.sample_tokens(grammar_output)\n'
 _W_SAMPLE_NEW = ('        with _flash_s5_worker.decode_scope(self):\n'
-                 '            return self.model_runner.sample_tokens(grammar_output)\n')
+                 '            return self.model_runner.sample_tokens(grammar_output)\n'
+                 '\n'
+                 '    def flash_s5_decode_probe(self, command):\n'
+                 '        return _flash_s5_worker.decode_probe_rpc(self, command)\n')
 
 _W_EXEC_OLD = ('    @torch.inference_mode()\n'
                '    @with_gpu_sync_check\n'
@@ -76,16 +79,24 @@ WORKER_FORWARD = (
 # --- cudagraph_utils.py -----------------------------------------------------
 _C_IMPORT_OLD = 'from vllm.utils.torch_utils import current_stream\n'
 _C_IMPORT_NEW = (_C_IMPORT_OLD +
-                 'from vllm.v1.flash_e3.worker_hooks import capture_context as _flash_s5_capture_context\n')
+                 'from vllm.v1.flash_e3.worker_hooks import capture_context as _flash_s5_capture_context\n'
+                 'from vllm.v1.flash_e3.worker_hooks import capture_graph as _flash_s5_capture_graph, finish_graph as _flash_s5_finish_graph\n')
 _C_CAPTURE_OLD = '        with graph_capture(device=self.device):\n'
 _C_CAPTURE_NEW = ('        with graph_capture(\n'
                   '            device=self.device,\n'
                   '            graph_capture_context=_flash_s5_capture_context(self),\n'
                   '        ):\n')
 
+_C_GRAPH_OLD = '                        graph = torch.cuda.CUDAGraph()\n'
+_C_GRAPH_NEW = '                        graph = _flash_s5_capture_graph(self)\n'
+_C_STORE_OLD = '                        self.graphs[desc] = graph\n'
+_C_STORE_NEW = '                        _flash_s5_finish_graph(self, graph)\n' + _C_STORE_OLD
+
 CUDAGRAPH_FORWARD = (
     (_C_IMPORT_OLD, _C_IMPORT_NEW),
     (_C_CAPTURE_OLD, _C_CAPTURE_NEW),
+    (_C_GRAPH_OLD, _C_GRAPH_NEW),
+    (_C_STORE_OLD, _C_STORE_NEW),
 )
 
 TRANSFORMS = {
@@ -186,7 +197,9 @@ def workspace_lanes(stock_lanes, env=None):
     """One dedicated prefill lane on top of the stock count when enabled."""
     if type(stock_lanes) is not int or stock_lanes < 1:
         raise ValueError('stock workspace lane count must be a positive int')
-    return stock_lanes + 1 if _enabled(env) else stock_lanes
+    if _split_enabled(env):  # rejects a flag conflict before workspace allocation
+        return stock_lanes + 1 if _enabled(env) else stock_lanes
+    return stock_lanes
 
 
 def prefill_workspace_lane(stock_lanes):
@@ -219,6 +232,17 @@ def after_runner_init(worker, env=None):
         raise ValueError('worker has no model runner')
     if getattr(runner, '_flash_s5_split', None) is not None:
         raise ValueError('green split already created for this runner')
+    from decode_probe import mode_settings, require_decode_probe_ready
+    if mode_settings(os.environ if env is None else env) is not None:
+        require_decode_probe_ready()
+        values = os.environ if env is None else env
+        lib = values.get('FLASH_S5_GREEN_LIB')
+        digest = values.get('FLASH_S5_GREEN_LIB_SHA256')
+        if not lib or not digest or len(digest) != 64:
+            raise ValueError('decode probe needs the declared helper library sha256')
+        with open(lib, 'rb') as handle:
+            if hashlib.sha256(handle.read()).hexdigest() != digest:
+                raise ValueError('decode probe helper library pin differs')
     from green_context import open_split
 
     device = getattr(worker, 'device', None)
@@ -229,7 +253,8 @@ def after_runner_init(worker, env=None):
         index = torch.cuda.current_device()
     split = open_split(int(index), env=env)
     try:
-        split.membership()
+        if not split.membership().ok:
+            raise ValueError('green split membership failed')
     except BaseException:
         split.close()
         raise
@@ -268,3 +293,62 @@ def decode_scope(worker):
 __all__ = ['ACCEPTED', 'CUDAGRAPH_FORWARD', 'PINS', 'PROBE_ENV', 'WORKER_AFTER_C_SHA256', 'TRANSFORMS', 'WORKER_FORWARD', 'after_runner_init',
            'capture_context', 'decode_scope', 'generate', 'generate_one',
            'install_split_bank', 'prefill_workspace_lane', 'revert_one', 'workspace_lanes']
+
+
+def decode_probe_rpc(worker, command):
+    """Ordinary ordered worker RPC, separate from unqualified overlap transport.
+
+    Owner must submit at an engine dispatch boundary and collect every rank's
+    ACK before admitting the next request/step. A partial ACK set invalidates the
+    whole interval. No scheduler/admission/reply ownership is installed here.
+    """
+    from decode_probe import mode_settings
+    from native_startup import NativeStartupError, probe_transition_rpc
+    if mode_settings() is None:
+        raise NativeStartupError('decode probe RPC requires diagnostic mode')
+    runner = getattr(worker, 'model_runner', None)
+    probe = getattr(runner, '_flash_s5_decode_probe', None)
+    if probe is None or type(command) is not dict:
+        raise NativeStartupError('decode probe RPC before capture or invalid command')
+    if type(getattr(worker, 'rank', None)) is not int:
+        raise NativeStartupError('worker rank unavailable')
+    action = command.get('action')
+    if action == 'status':
+        if set(command) != {'action'}:
+            raise NativeStartupError('status has unexpected fields')
+        return {'rank': worker.rank, 'inventory': probe.inventory(), 'counters': probe.counters()}
+    if action != 'transition':
+        raise NativeStartupError('unknown decode probe RPC action')
+    expected = {'action', 'engine_epoch', 'expected_route_generation', 'route_generation',
+                'storage_epoch', 'target'}
+    if set(command) != expected:
+        raise NativeStartupError('transition fields differ')
+    epoch = command['engine_epoch']
+    if type(epoch) is not int or epoch < 1:
+        raise NativeStartupError('transition needs positive engine epoch')
+    bound = getattr(probe, '_rpc_engine_epoch', None)
+    if bound is not None and epoch != bound:
+        raise NativeStartupError('transition engine epoch changed')
+    ack = probe_transition_rpc(runner, {k: v for k,v in command.items() if k != 'action'},
+                               engine_epoch=epoch)
+    probe._rpc_engine_epoch = epoch
+    ack.update(rank=worker.rank, engine_epoch=epoch)
+    return ack
+
+
+def capture_graph(manager, *, torch_module=None):
+    """Retain raw split graphs for the diagnostic's required node audit only."""
+    if torch_module is None:
+        import torch as torch_module
+    retained = (os.environ.get(PROBE_ENV, '0') == '1'
+                and getattr(manager, '_flash_s5_capture_context', None) is not None)
+    if retained:
+        manager._flash_s5_keep_graphs = True
+        return torch_module.cuda.CUDAGraph(keep_graph=True)
+    return torch_module.cuda.CUDAGraph()
+
+
+def finish_graph(manager, graph):
+    if getattr(manager, '_flash_s5_keep_graphs', False):
+        # keep_graph=True preserves nodes; instantiate before timing/pool accounting.
+        graph.instantiate()

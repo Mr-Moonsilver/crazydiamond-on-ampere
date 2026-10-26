@@ -596,6 +596,8 @@ class DecodeProbeRouter:
         _int('route_generation', generation)
         if self.state == 'destroyed':
             raise GraphRoutingError('decode probe router is destroyed')
+        if generation != self.route_generation + 1:
+            raise GraphRoutingError('probe route generation must advance exactly once')
         self.route_generation = generation
         return generation
 
@@ -633,8 +635,9 @@ class DecodeProbeRouter:
             raise GraphRoutingError('decode probe route needs the typed no-prefill guard')
         if type(descriptor) is not ExecutionDescriptor:
             raise GraphRoutingError('decode probe route needs an ExecutionDescriptor')
-        if transaction.bank != self.name:
-            raise GraphRoutingError('no-prefill guard names another bank')
+        if (transaction.bank != self.name or transaction.context_id != self.context.context_id
+                or transaction.pool_id != self.context.pool_id):
+            raise GraphRoutingError('no-prefill guard names another bank/context/pool')
         if transaction.storage_epoch != self.storage_epoch:
             raise GraphRoutingError('no-prefill guard names a stale storage epoch')
         if transaction.route_generation != self.route_generation:

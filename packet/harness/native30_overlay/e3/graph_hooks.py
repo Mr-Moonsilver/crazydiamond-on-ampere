@@ -44,8 +44,11 @@ _IMPORT_NEW = _IMPORT_OLD + '\nimport vllm.v1.flash_e3.graph_hooks as _flash_e3_
 _CHECK_OLD = '        if batch_desc.num_tokens == 0:\n'
 _CHECK_NEW = ('        _flash_e3_graph.check_route(\n'
               '            self, scheduler_output, batch_desc,\n'
-              '            num_reqs, num_toks, uniform_tok_count,\n'
+              '            num_reqs, num_toks, uniform_tok_count, batch_req_state,\n'
               '        )\n' + _CHECK_OLD)
+
+_EARLY_OLD = '            if scheduler_output.total_num_scheduled_tokens == 0:\n'
+_EARLY_NEW = ('            _flash_e3_graph.check_empty(self, scheduler_output)\n' + _EARLY_OLD)
 
 _REPLAY_OLD = '            model_output = self.cudagraph_manager.run_fullgraph(batch_desc)\n'
 _REPLAY_NEW = ('            model_output = _flash_e3_graph.replay_fullgraph(\n'
@@ -58,7 +61,7 @@ _CAPTURE_OLD = '''                        lora_capture_hook=create_lora_capture_
                         ),
                     )
 '''
-_CAPTURE_NEW = _CAPTURE_OLD + '                    _flash_e3_graph.capture_banks(self)\n'
+_CAPTURE_NEW = _CAPTURE_OLD + '                    _flash_e3_graph.capture_banks(self, profile_only=profile_only)\n'
 
 _SHUTDOWN_PLAIN_OLD = ('        torch.accelerator.synchronize()\n'
                        '        self.cudagraph_manager = None\n')
@@ -97,6 +100,7 @@ def _forward(source):
     """Ordered B transforms on top of an A-composed runner."""
     text = _replace(source, _IMPORT_OLD, _IMPORT_NEW)
     text = _replace(text, _CHECK_OLD, _CHECK_NEW)
+    text = _replace(text, _EARLY_OLD, _EARLY_NEW)
     text = _replace(text, _REPLAY_OLD, _REPLAY_NEW)
     text = _replace(text, _CAPTURE_OLD, _CAPTURE_NEW)
     if '_flash_e2_lifecycle' in source:
@@ -128,6 +132,7 @@ def revert(source, expected=None):
         text = _replace(text, _SHUTDOWN_PLAIN_NEW, _SHUTDOWN_PLAIN_OLD)
     text = _replace(text, _CAPTURE_NEW, _CAPTURE_OLD)
     text = _replace(text, _REPLAY_NEW, _REPLAY_OLD)
+    text = _replace(text, _EARLY_NEW, _EARLY_OLD)
     text = _replace(text, _CHECK_NEW, _CHECK_OLD)
     text = _replace(text, _IMPORT_NEW, _IMPORT_OLD)
     if expected is not None:
@@ -194,8 +199,16 @@ def _is_prefill(router, transaction):
     return active is not None and transaction == active
 
 
+def check_empty(runner, output):
+    probe = _probe(runner)
+    if probe is not None and probe.route == 'split' and output.total_num_scheduled_tokens == 0:
+        probe.invalidate('empty_batch')
+        from decode_probe import DecodeProbeInvalidated
+        raise DecodeProbeInvalidated('empty batch invalidates split interval')
+
+
 def check_route(runner, scheduler_output, batch_desc,
-                num_reqs, num_tokens, uniform_tokens):
+                num_reqs, num_tokens, uniform_tokens, batch_state=None):
     """Query the route before the engine commits to a graph dispatch."""
     router = _router(runner)
     if router is None:
@@ -206,6 +219,7 @@ def check_route(runner, scheduler_output, batch_desc,
         probe = _probe(runner)
         if probe is None:
             raise GraphRoutingError('decode probe router installed without the probe')
+        probe.check_batch(num_reqs, num_tokens, uniform_tokens, batch_state)
         descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
         return probe.check_route(descriptor, _transaction(scheduler_output, router))
     transaction = _transaction(scheduler_output, router)
@@ -241,6 +255,7 @@ def replay_fullgraph(runner, scheduler_output, batch_desc, stock):
         probe = _probe(runner)
         if probe is None:
             raise GraphRoutingError('decode probe router installed without the probe')
+        probe._require_not_down()
         if probe.route != 'split':
             return stock(batch_desc)
         return probe.replay(ExecutionDescriptor.from_vllm(batch_desc))
@@ -273,8 +288,10 @@ def replay_fullgraph(runner, scheduler_output, batch_desc, stock):
     return result.output
 
 
-def capture_banks(runner):
+def capture_banks(runner, *, profile_only=False):
     """Capture the declared split bank after the ordinary engine capture."""
+    if profile_only and _probe_enabled():
+        return None  # ephemeral profiling capture is not the measured bank
     router = _router(runner)
     if router is None:
         if _probe_enabled():

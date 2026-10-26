@@ -14,6 +14,9 @@ import os
 from pathlib import Path
 import sys
 import types
+import tempfile
+import subprocess
+import shutil
 import unittest
 from unittest.mock import patch
 
@@ -65,10 +68,29 @@ def desc(num_tokens=8, num_reqs=None, uniform=1, mode='full', ubatches=1):
                                uniform, None, 0, ubatches)
 
 
+
+def fake_evidence(test):
+    root = Path(tempfile.mkdtemp(prefix='probe-evidence-'))
+    # Preserve fixture artifacts; no worktree/runtime manifest is mutated.
+    source = ROOT / 'patches/s5_engine'
+    for name in decode_probe.GENERATED_SOURCES:
+        shutil.copyfile(source / (name + '.py'), root / (name + '.py'))
+    (root / decode_probe.EVIDENCE_FILE).write_text(json.dumps(decode_probe.declared_evidence()))
+    fixture = patch.object(decode_probe, '_module_dir', lambda: str(root))
+    fixture.start()
+    test.addCleanup(fixture.stop)
+    return root
+
+
+def batch_state(n, prefill=False):
+    return types.SimpleNamespace(has_prefill=prefill, num_scheduled_tokens=[1]*n,
+                                 is_prefilling_np=[prefill]*n)
+
 class ProbeFixture(unittest.TestCase):
     """One fake worker with the split created and the probe installed."""
 
     def setUp(self):
+        fake_evidence(self)
         FakeManager.instances.clear()
         self.graph_contexts = []
         install_fake_vllm(self.graph_contexts)
@@ -80,7 +102,8 @@ class ProbeFixture(unittest.TestCase):
             torch_module=self.torch, binding=self.binding)
         self.runner._flash_s5_split = self.split
         self.extra_splits = []
-        self.env = {PROBE_ENV: '1', 'FLASH_S5_OVERLAP': '0', DECODE_SMS_ENV: str(SMS)}
+        self.env = {PROBE_ENV: '1', 'FLASH_S5_OVERLAP': '0', DECODE_SMS_ENV: str(SMS),
+                    'FLASH_S5_GREEN_LIB_SHA256': 'f' * 64}
         self.probe = native_startup.install_decode_probe(
             self.runner, env=self.env, torch_module=self.torch)
 
@@ -157,6 +180,9 @@ class FlagTests(unittest.TestCase):
 # --- gate -------------------------------------------------------------------
 
 class GateTests(unittest.TestCase):
+    def setUp(self):
+        self.evidence_root = fake_evidence(self)
+
     def test_require_decode_probe_ready_requires_complete_evidence(self):
         evidence = require_decode_probe_ready()
         self.assertEqual(set(evidence), set(EVIDENCE_KEYS))
@@ -206,7 +232,7 @@ class GateTests(unittest.TestCase):
             s5_startup.require_native_ready()
         self.assertIs(s5_startup.require_decode_probe_ready, require_decode_probe_ready)
         runner = types.SimpleNamespace()
-        self.assertIsNone(s5_startup.install_builder(runner, None, env={
+        self.assertIsNone(s5_startup.install_builder(runner, None, is_profiling=True, env={
             PROBE_ENV: '1', 'FLASH_S5_OVERLAP': '0', DECODE_SMS_ENV: '44'}))
         self.assertIsNone(getattr(runner, '_flash_e3_build_state', None))
         with self.assertRaises(s5_startup.StartupError):
@@ -221,7 +247,7 @@ class RouteGuardTests(ProbeFixture):
     def test_no_prefill_guard_and_captured_descriptor_routing(self):
         output = types.SimpleNamespace()
         self.assertIsNone(graph_hooks.check_route(
-            self.runner, output, FakeDesc(FULL, 8, 8), 8, 8, 1))
+            self.runner, output, FakeDesc(FULL, 8, 8), 8, 8, 1, batch_state(8)))
         self.assertEqual(self.stock.replayed, [], 'full route keeps the stock manager')
         with self.assertRaises(GraphRoutingError):
             graph_hooks._transaction(
@@ -230,7 +256,7 @@ class RouteGuardTests(ProbeFixture):
         record = self.probe.transition('split')
         self.assertEqual(record.drained_streams, 3)
         decision = graph_hooks.check_route(
-            self.runner, types.SimpleNamespace(), FakeDesc(FULL, 8, 8), 8, 8, 1)
+            self.runner, types.SimpleNamespace(), FakeDesc(FULL, 8, 8), 8, 8, 1, batch_state(8))
         self.assertEqual(decision.mode, 'split')
         self.assertEqual(decision.descriptor, desc(8, 8, 1))
         guard = self.probe.router.no_prefill_guard()
@@ -257,7 +283,7 @@ class RouteGuardTests(ProbeFixture):
         self.probe.transition('split')
         with self.assertRaises(DecodeProbeInvalidated):
             graph_hooks.check_route(self.runner, types.SimpleNamespace(),
-                                    FakeDesc(FULL, 16, 16), 16, 16, 1)
+                                    FakeDesc(FULL, 16, 16), 16, 16, 1, batch_state(16))
         counters = self.probe.counters()
         self.assertEqual(counters['interval_invalidations'], 1)
         self.assertEqual(counters['invalidation_reasons'], ['unsupported_descriptor'])
@@ -275,6 +301,7 @@ class RouteGuardTests(ProbeFixture):
 
     def test_capture_replay_and_warmup_through_the_split_bank(self):
         self.assertEqual(len(self.probe.router.handles), 2)
+        self.assertEqual(self.probe.warmup(), 2)
         self.probe.transition('split')
         with self.torch.cuda.stream(self.split.decode_stream):
             output = self.probe.replay(desc(8, 8, 1))
@@ -285,9 +312,9 @@ class RouteGuardTests(ProbeFixture):
         self.assertEqual(counters['replays_by_bank'], {'decode-split': 1})
         self.assertEqual(counters['replays_by_stream'], {self.split.decode_stream_token: 1})
         self.assertEqual(list(counters['replays_by_descriptor'].values()), [1])
-        self.assertEqual(counters['warmup_replays'], 0)
-        with self.torch.cuda.stream(self.split.decode_stream):
-            self.assertEqual(self.probe.warmup(), 2)
+        self.assertEqual(counters['warmup_replays'], 2)
+        with self.assertRaises(DecodeProbeError):
+            self.probe.warmup()
         self.assertEqual(self.probe.counters()['warmup_replays'], 2)
         self.assertEqual(self.probe.counters()['replays'], 1,
                          'warmup replays are counted apart from measured replays')
@@ -305,7 +332,7 @@ class BankWiringTests(ProbeFixture):
         self.assertEqual(self.probe.router.state, 'ready')
         inventory = self.probe.inventory()
         self.assertEqual(inventory['split_pool_bytes'], 4096)
-        self.assertEqual(inventory['split_pool_basis'], 'measured')
+        self.assertIn('device-free delta', inventory['split_pool_basis'])
         self.assertEqual(inventory['descriptors_captured'], 2)
         self.assertEqual(inventory['split_pool_id'], self.probe.router.context.pool_id)
         self.assertEqual(inventory['split_pool_context_id'], self.split.decode_context_id)
@@ -342,9 +369,16 @@ class BankWiringTests(ProbeFixture):
     def test_capture_banks_installs_the_probe_at_capture_time(self):
         runner = fake_runner(self.torch)
         runner._flash_s5_split = self.new_split()
-        with patch.dict(os.environ, self.env), patch.object(
+        alloc = types.ModuleType('vllm.distributed.device_communicators.pynccl_allocator')
+        restored = []
+        alloc.set_graph_pool_id = restored.append
+        alloc._graph_pool_id = 'previous-active-pool'
+        alloc_parent = types.ModuleType('vllm.distributed.device_communicators')
+        alloc_parent.pynccl_allocator = alloc
+        with patch.dict(sys.modules, {alloc.__name__: alloc, alloc_parent.__name__:alloc_parent}), patch.dict(os.environ, self.env), patch.object(
                 native_startup, '_torch', lambda: self.torch):
             router = graph_hooks.capture_banks(runner)
+        self.assertEqual(restored, ['previous-active-pool'])
         self.assertIsInstance(router, DecodeProbeRouter)
         self.assertIs(runner._flash_e3_graph_router, router)
         self.assertIsNotNone(runner._flash_s5_decode_probe)
@@ -422,8 +456,9 @@ class TransitionTests(ProbeFixture):
         self.assertEqual(self.probe.counters()['quarantined'], self.probe.quarantined)
         with self.assertRaises(DecodeProbeQuarantined):
             self.probe.transition('split')
-        # Decode continues on the route it was on: the stock full path.
-        self.assertIsNone(self.probe.check_route(desc(8, 8, 1)))
+        # A failed switch cannot silently resume a measured full-bank interval.
+        with self.assertRaises(DecodeProbeQuarantined):
+            self.probe.check_route(desc(8, 8, 1))
         self.assertEqual(self.probe.route_generation, 0)
 
     def test_probe_transition_rpc_validates_and_acks_after_draining(self):
@@ -471,7 +506,7 @@ class ShutdownTests(ProbeFixture):
         self.assertEqual(inventory['library_sha256'], 'f' * 64)
         self.assertEqual(inventory['split_pool_bytes'], 4096)
         self.assertIs(inventory['split_pool_bytes'], self.runner._flash_s5_split_bank.measured_bytes)
-        self.assertEqual(inventory['communicators'], 'none')
+        self.assertEqual(inventory['communicators'], 'stock TP/PP retained; no additional prefill communicators')
         self.assertEqual(inventory['pp_channel_bytes'], 0)
         self.assertEqual(inventory['ple_scratch_bytes'], 0)
         self.assertEqual(len(inventory['descriptors']), 2)
@@ -512,67 +547,19 @@ class BytePathTests(unittest.TestCase):
 
         import make_s5_overlap as g
 
-        def build_once(env, prune=False):
-            case = SyntheticTests('test_composes_new_package_and_preserves_baseline_bytes')
-            root, base, ref, whole, _core = case.fixture()
-            stack = case.stubs(base, ref)
-            try:
-                stack.__enter__()
-                patches = [patch.dict(os.environ, env, clear=False)]
-                if prune:
-                    patches.append(patch.object(
-                        g, 'E3_MODULES',
-                        tuple(m for m in g.E3_MODULES if m != 'decode_probe')))
-                    patches.append(patch.object(
-                        g, '_decode_probe_declaration', lambda files: {'declared': False}))
-                with contextlib.ExitStack() as inner:
-                    for item in patches:
-                        inner.enter_context(item)
-                    result = g.build(base, root / 'out', ref, whole)
-            finally:
-                stack.__exit__(None, None, None)
-            return root / 'out', result
-
+        case = SyntheticTests('test_composes_new_package_and_preserves_baseline_bytes')
+        root, base, ref, whole, _core = case.fixture()
+        with case.stubs(base, ref):
+            g.build(base, root / 'out', ref, whole)
+        out = root / 'out'
         off = {PROBE_ENV: '0', 'FLASH_S5_OVERLAP': '0'}
-        out, _result = build_once(off)
-        pruned, _result = build_once({}, prune=True)
-
-        # Composition bytes are exactly the pre-probe output: adding the
-        # diagnostic module changes no other generated file.
-        for name in ('model_runner_v2.py', 'qsa.py', 'ops_qsa.py',
-                     'e3_sources/executor.py', 'e3_sources/core.py',
-                     'e3_sources/worker.py', 'e3_sources/cudagraph_utils.py',
-                     'e3_sources/model.py', 'E2-GENERATION.json'):
-            self.assertEqual((out / name).read_bytes(), (pruned / name).read_bytes(), name)
-        probe_importers = {
-            name for name in g.E3_MODULES
-            if 'from decode_probe import' in
-            (ROOT / 'patches/s5_engine' / (name + '.py')).read_text()}
-        self.assertEqual(probe_importers, {'graph_hooks', 'native_startup',
-                                           's5_startup', 'worker_hooks'})
-        for name in g.E3_MODULES:
-            if name == 'decode_probe' or name in probe_importers:
-                continue
-            self.assertEqual((out / 'e3' / (name + '.py')).read_bytes(),
-                             (pruned / 'e3' / (name + '.py')).read_bytes(), name)
-        # Only the package's relative-import rewrite differs in the modules
-        # that consult the diagnostic mode.
-        self.assertIn('from .decode_probe import',
-                      (out / 'e3/s5_startup.py').read_text())
-        self.assertIn('from decode_probe import',
-                      (pruned / 'e3/s5_startup.py').read_text())
-        self.assertTrue((out / 'e3/decode_probe.py').is_file())
-        self.assertFalse((pruned / 'e3/decode_probe.py').exists())
-
-        # The transformed runner/worker sources carry no probe-only code path.
-        for name in ('model_runner_v2.py', 'qsa.py', 'ops_qsa.py',
-                     'e3_sources/executor.py', 'e3_sources/core.py',
-                     'e3_sources/worker.py', 'e3_sources/cudagraph_utils.py',
-                     'e3_sources/model.py'):
-            text = (out / name).read_text()
-            self.assertNotIn('FLASH_S5_DECODE_ONLY_PROBE', text, name)
-            self.assertNotIn('install_decode_probe', text, name)
-
+        # Exact inverse is tested against real pinned files by package/source suites.
+        # Here verify that the real packaged declaration pins packaged module bytes.
+        evidence = json.loads((out / 'e3' / decode_probe.EVIDENCE_FILE).read_text())
+        with patch.object(decode_probe, '_module_dir', lambda: str(out / 'e3')):
+            self.assertEqual(require_decode_probe_ready(), evidence)
+        self.assertEqual((out / 'E2-GENERATION.json').read_bytes(),
+                         (base / 'E2-GENERATION.json').read_bytes())
         record = json.loads((out / 'S5-OVERLAP-GENERATION.json').read_text())
         self.assertIn('e3/decode_probe.py', (out / 'run-flash-s5-test.sh').read_text())
         self.assertIs(record['armable'], False)
@@ -607,6 +594,165 @@ class BytePathTests(unittest.TestCase):
             self.assertIsNone(graph_hooks.capture_banks(quiet))
             self.assertIsNone(graph_hooks.shutdown_banks(quiet))
 
+
+
+class ReviewRegressions(ProbeFixture):
+    def test_actual_prefill_cannot_hide_in_a_captured_full_descriptor(self):
+        self.probe.transition('split')
+        mixed = batch_state(8, True)
+        with self.assertRaises(DecodeProbeInvalidated):
+            graph_hooks.check_route(self.runner, types.SimpleNamespace(), FakeDesc(FULL,8,8),
+                                    8, 8, 1, mixed)
+        self.assertEqual(self.probe.counters()['replays'], 0)
+        self.assertEqual(self.stock.replayed, [])
+
+    def test_missing_cpu_batch_proof_is_not_decode(self):
+        self.probe.transition('split')
+        with self.assertRaises(DecodeProbeInvalidated):
+            graph_hooks.check_route(self.runner, types.SimpleNamespace(), FakeDesc(FULL,8,8), 8,8,1)
+
+    def test_empty_early_return_invalidates(self):
+        self.probe.transition('split')
+        with self.assertRaises(DecodeProbeInvalidated):
+            graph_hooks.check_empty(self.runner, types.SimpleNamespace(total_num_scheduled_tokens=0))
+        self.assertEqual(self.probe.last_invalidation, 'empty_batch')
+
+    def test_no_prefill_guard_binds_context_and_pool(self):
+        from dataclasses import replace
+        self.probe.transition('split')
+        guard = self.probe.router.no_prefill_guard()
+        for bad in (replace(guard, pool_id=guard.pool_id+1),
+                    replace(guard, context_id=guard.context_id+1)):
+            with self.assertRaises(GraphRoutingError):
+                self.probe.router.supported_route(bad, desc(8,8,1))
+
+    def test_pending_sampling_refuses_transition(self):
+        self.runner.execute_model_state = object()
+        with self.assertRaises(DecodeProbeError):
+            self.probe.transition('split')
+        self.assertEqual(self.probe.route, 'full')
+        self.assertIsNone(self.probe.quarantined)
+
+    def test_probe_rpc_reaches_real_transition_and_binds_epoch(self):
+        worker = types.SimpleNamespace(model_runner=self.runner, rank=0)
+        command = dict(action='transition', engine_epoch=7, expected_route_generation=0,
+                       route_generation=1, storage_epoch=1, target='split')
+        with patch.dict(os.environ, self.env):
+            ack = worker_hooks.decode_probe_rpc(worker, command)
+            self.assertEqual((ack['rank'], ack['route'], ack['engine_epoch']), (0,'split',7))
+            self.assertEqual(decode_probe.validate_transition_acks(command, [ack], [0]), (0,))
+            with self.assertRaises(DecodeProbeError):
+                decode_probe.validate_transition_acks(command, [ack], [0,1,2,3])
+            with self.assertRaises(DecodeProbeError):
+                decode_probe.validate_transition_acks(command, [ack,ack], [0,1])
+            with self.assertRaises(native_startup.NativeStartupError):
+                worker_hooks.decode_probe_rpc(worker, dict(command, target='full', engine_epoch=8,
+                                                           expected_route_generation=1, route_generation=2))
+            with self.assertRaises(native_startup.NativeStartupError):
+                worker_hooks.decode_probe_rpc(worker, dict(command, expected_route_generation=True))
+            status = worker_hooks.decode_probe_rpc(worker, {'action':'status'})
+            self.assertEqual(status['counters']['route'], 'split')
+            self.assertEqual(self.probe.route_generation, 1)
+
+    def test_generated_worker_method_invokes_probe_bridge(self):
+        import ast
+        import executor_hooks
+        path = ROOT / 'reference/vllm-src/v1/worker/gpu_worker.py'
+        source = worker_hooks.generate_one('v1/worker/gpu_worker.py',
+                                          executor_hooks.generate_worker(path.read_text()))
+        tree = ast.parse(source)
+        method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                      and n.name == 'flash_s5_decode_probe')
+        namespace = {'_flash_s5_worker':worker_hooks}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[method],type_ignores=[])),
+                     '<generated probe RPC>', 'exec'), namespace)
+        worker = types.SimpleNamespace(model_runner=self.runner, rank=0)
+        with patch.dict(os.environ, self.env):
+            status = namespace['flash_s5_decode_probe'](worker, {'action':'status'})
+        self.assertEqual(status['rank'], 0)
+
+    def test_split_graph_retained_and_instantiated_stock_unchanged(self):
+        calls = []
+        def graph(**kw):
+            calls.append(kw)
+            return types.SimpleNamespace(instantiate=lambda:calls.append('instantiate'))
+        torch = types.SimpleNamespace(cuda=types.SimpleNamespace(CUDAGraph=graph))
+        split_manager = types.SimpleNamespace(_flash_s5_capture_context=object())
+        with patch.dict(os.environ, self.env):
+            handle = worker_hooks.capture_graph(split_manager, torch_module=torch)
+            worker_hooks.finish_graph(split_manager, handle)
+            stock = types.SimpleNamespace()
+            handle = worker_hooks.capture_graph(stock, torch_module=torch)
+            worker_hooks.finish_graph(stock, handle)
+        self.assertEqual(calls, [{'keep_graph':True}, 'instantiate', {}])
+        calls.clear()
+        with patch.dict(os.environ, {PROBE_ENV:'0'}):
+            worker_hooks.capture_graph(types.SimpleNamespace(_flash_s5_capture_context=object()),
+                                       torch_module=torch)
+        self.assertEqual(calls,[{}])
+
+    def test_wrong_compiled_library_pin_refused_before_bank_creation(self):
+        runner = fake_runner(self.torch)
+        runner._flash_s5_split = self.new_split()
+        with patch.object(native_startup, 'install_split_bank', side_effect=AssertionError('allocated')):
+            with self.assertRaisesRegex(native_startup.NativeStartupError, 'library'):
+                native_startup.install_decode_probe(runner, env=dict(self.env, FLASH_S5_GREEN_LIB_SHA256='0'*64),
+                                                    torch_module=self.torch)
+
+    def test_profile_capture_does_not_install_a_second_bank(self):
+        with patch.dict(os.environ, self.env), patch.object(native_startup, 'install_decode_probe',
+                                                            side_effect=AssertionError('capture')):
+            self.assertIsNone(graph_hooks.capture_banks(types.SimpleNamespace(), profile_only=True))
+
+    def test_flag_conflict_refused_before_workspace_lane_allocation(self):
+        with self.assertRaises(DecodeProbeError):
+            worker_hooks.workspace_lanes(2, {PROBE_ENV:'1', 'FLASH_S5_OVERLAP':'1'})
+        self.assertEqual(worker_hooks.workspace_lanes(2, self.env), 2)
+
+
+class PersistedEvidenceTests(unittest.TestCase):
+    def test_default_runtime_gate_requires_persisted_declaration(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(decode_probe, '_module_dir', lambda:tmp):
+            with self.assertRaises(DecodeProbeNotReady):
+                require_decode_probe_ready()
+
+    def test_tamper_after_declaration_is_detected(self):
+        root = fake_evidence(self)
+        require_decode_probe_ready()
+        (root / 'lane_state.py').write_text('modified')
+        with self.assertRaisesRegex(DecodeProbeNotReady, 'lane_state'):
+            require_decode_probe_ready()
+
+    def test_helper_recipe_is_q17a_sm86_shared_and_never_replaces(self):
+        import make_s5_overlap as g
+        from s5_clock import build_command
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / 'build.sh'
+            script.write_text(g.BUILD_GREEN_HELPER)
+            self.assertEqual(subprocess.run(['bash','-n',str(script)],capture_output=True).returncode,0)
+            # Verify the exact nvcc words in the generated shell, independent of
+            # line wrapping. No docker/CUDA/compiler invocation on the hub.
+            import shlex
+            words = shlex.split(g.BUILD_GREEN_HELPER.replace('\\\n',' '))
+            start = words.index('nvcc')
+            expected = build_command('/native/flash_s5_green.cu','/native/flash_s5_green.so',(8,6),'shared')
+            self.assertEqual(words[start:start+len(expected)], expected)
+            self.assertNotIn('--rm', words)
+            self.assertIn('--network',words)
+            (root/'flash_s5_green.so').write_bytes(b'existing')
+            done = subprocess.run(['bash',str(script),
+                'sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b',tmp],
+                capture_output=True,timeout=10)
+            self.assertNotEqual(done.returncode,0)
+            self.assertEqual((root/'flash_s5_green.so').read_bytes(),b'existing')
+
+    def test_no_full_graph_configuration_refused_at_startup(self):
+        fake_evidence(self)
+        runner = types.SimpleNamespace(cudagraph_manager=types.SimpleNamespace(_capture_descs={}))
+        with self.assertRaises(Exception) as caught:
+            s5_startup.install_builder(runner, None, env={PROBE_ENV:'1', DECODE_SMS_ENV:'44'})
+        self.assertIn('no FULL', str(caught.exception))
 
 if __name__ == '__main__':
     unittest.main()
