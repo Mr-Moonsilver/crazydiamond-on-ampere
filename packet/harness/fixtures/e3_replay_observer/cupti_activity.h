@@ -36,8 +36,7 @@ typedef struct CUpti_ActivityContext3 {
   uint16_t numMultiprocessors;
 } CUpti_ActivityContext3;
 
-typedef struct CUpti_ActivityKernel10 {
-  CUpti_ActivityKind kind;
+typedef struct CUpti_ActivityKernel10 {  CUpti_ActivityKind kind;
   uint32_t record_size;
   uint64_t start;
   uint64_t end;
@@ -58,6 +57,16 @@ typedef struct CUpti_ActivityKernel10 {
   uint32_t graphId;
   uint32_t channelID;
   uint32_t channelType;
+
+  struct {uint8_t both;} cacheConfig;
+  uint8_t sharedMemoryConfig;uint16_t registersPerThread;
+  uint32_t partitionedGlobalCacheRequested,partitionedGlobalCacheExecuted;
+  uint8_t launchType,isSharedMemoryCarveoutRequested,sharedMemoryCarveoutRequested;
+  uint32_t sharedMemoryExecuted,shmemLimitConfig;
+  struct Policy {void*base_ptr;size_t num_bytes;float hitRatio;int hitProp,missProp;} *pAccessPolicyWindow;
+  uint32_t clusterX,clusterY,clusterZ,clusterSchedulingPolicy;
+  uint64_t localMemoryTotal_v2;uint32_t maxPotentialClusterSize,maxActiveClusters;uint8_t isDeviceLaunched;
+
 } CUpti_ActivityKernel10;
 
 typedef struct CUpti_ActivityMemcpy6 {

@@ -27,7 +27,7 @@ from e3_types import E3ContractError
 
 ABI_VERSION = 1
 NATIVE_SCHEMA_STATIC = 's5ro-native-static/1'
-NATIVE_SCHEMA_WINDOW = 's5ro-native-window/1'
+NATIVE_SCHEMA_WINDOW = 's5ro-native-window/2'
 RECEIPT_SCHEMA = 's5ro-replay-observer/1'
 HELPER_SOURCE = 'native/flash_s5_replay_observer.cpp'
 CUPTI_API = 130001
@@ -366,6 +366,12 @@ class ReplayBinding:
             lib.s5ro_end_window.argtypes = [U64, U64, U32, P, U64,
                                             c.POINTER(U64)]
             lib.s5ro_end_window.restype = I
+            lib.s5ro_launch_begin.argtypes = [U64]
+            lib.s5ro_launch_begin.restype = I
+            lib.s5ro_launch_report.argtypes = [U64,U32,P,U64,c.POINTER(U64)]
+            lib.s5ro_launch_report.restype = I
+            lib.s5ro_graph_ids.argtypes = [U64,P,U64,c.POINTER(U64)]
+            lib.s5ro_graph_ids.restype = I
             lib.s5ro_stop.argtypes = [U64]
             lib.s5ro_stop.restype = I
             lib.s5ro_destroy.argtypes = [U64]
@@ -654,6 +660,7 @@ def _validate_window(report, limits, route_generation):
                           'missing_copy_indices', 'missing_memset_indices',
                           'context_mismatch_nodes', 'kernel_executions',
                           'copy_executions', 'memset_executions',
+                          'node_execution_bounds',
                           'graph_id_known', 'node_ids_known',
                           'static_complete', 'unsupported', 'unknown_type',
                           'inventory_changed', 'update_seen', 'destroy_seen',
@@ -697,6 +704,12 @@ def _validate_window(report, limits, route_generation):
         _strict_int(slot['kernel_executions'])
         _strict_int(slot['copy_executions'])
         _strict_int(slot['memset_executions'])
+        bounds = _exact_obj(slot['node_execution_bounds'], _OBSERVED_KEYS)
+        for kind in _OBSERVED_KEYS:
+            pair = _exact_obj(bounds[kind], ('min', 'max'))
+            low, high = _strict_int(pair['min']), _strict_int(pair['max'])
+            if low > high or (required[kind] == 0 and high != 0):
+                raise ReplayObserverError('malformed_native_report')
         _strict_bool(slot['graph_id_known'])
         _strict_bool(slot['node_ids_known'])
         static_complete = _strict_bool(slot['static_complete'])
@@ -1157,6 +1170,23 @@ class ObserverSession:
             return 'bank_mutated'
         return None
 
+    def replay_census(self):
+        """Private bound descriptors -> public graph labels; no CUPTI inference.
+
+        The owner calls this at drained boundaries. Missing/unrecognized
+        counters produce unavailable evidence, never an invented zero.
+        """
+        counts = getattr(self._router, 'replays_by_descriptor', None)
+        total = getattr(self._router, 'replays', None)
+        if (type(counts) is not dict or type(total) is not int or total < 0
+                or any(type(n) is not int or n < 0 for n in counts.values())
+                or sum(counts.values()) != total
+                or any(d not in self._local_handles for d in counts)):
+            return None
+        return {'total': total, 'graphs': {
+            f'graph:{i}': counts.get(d, 0)
+            for i, d in enumerate(self._local_handles)}}
+
     def begin_window(self, *, route_generation, descriptor=None):
         """Start a bounded ordinary-engine observation window.
 
@@ -1340,6 +1370,8 @@ class ObserverSession:
                 'kernel_executions': slot['kernel_executions'],
                 'copy_executions': slot['copy_executions'],
                 'memset_executions': slot['memset_executions'],
+                'node_execution_bounds': {k: dict(v) for k, v in
+                                          slot['node_execution_bounds'].items()},
                 'graph_id_known': slot['graph_id_known'],
                 'node_ids_known': slot['node_ids_known'],
                 'static_complete': slot['static_complete'],

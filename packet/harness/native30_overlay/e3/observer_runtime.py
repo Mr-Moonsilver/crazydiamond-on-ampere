@@ -5,6 +5,7 @@ first split cohort; stop/close completes before an unprofiled cohort can run.
 """
 import os
 import secrets
+from graph_router import GraphRoutingError
 from collections.abc import Mapping
 
 from replay_observer import (DrainedProof, ObserverSession, ReplayBinding,
@@ -38,6 +39,9 @@ class WorkerObserver:
         self.receipt = None
         self.started_before_split = False
         self.closed = False
+        self.full_launch=None
+        self.full_launch_active=False
+        self.launch_diagnostic=None
 
     def start(self):
         self.session.start()
@@ -63,6 +67,35 @@ class WorkerObserver:
             raise ReplayObserverError('bad_state')
         self.engine_epoch = epoch
 
+    def launch_begin(self,probe,epoch):
+        self._check(probe,epoch)
+        if self.closed or probe.route!='full' or self.full_launch is not None or self.full_launch_active:
+            raise ReplayObserverError('bad_state')
+        drained=probe.controller.drain()
+        if type(drained) is not int or drained<=0:raise ReplayObserverError('bad_proof')
+        from launch_diagnostic import inventory
+        try:self.full_launch_inventory=inventory(self.session,probe,True)
+        except (AttributeError,KeyError,ReplayObserverError,GraphRoutingError):
+            self.full_launch_inventory=None
+            return {'rank':self.rank,'ack':'flash_s5_launch_begin','engine_epoch':epoch,'drained_streams':drained,'diagnostic':'INCONCLUSIVE'}
+        rc=self.session.binding._lib.s5ro_launch_begin(self.session._token)
+        if rc:raise ReplayObserverError('launch_sample_begin_failed')
+        self.full_launch_active=True
+        return {'rank':self.rank,'ack':'flash_s5_launch_begin','engine_epoch':epoch,'drained_streams':drained}
+
+    def launch_end(self,probe,epoch):
+        self._check(probe,epoch)
+        if probe.route!='full':raise ReplayObserverError('bad_state')
+        if self.full_launch_inventory is None:
+            return {'rank':self.rank,'ack':'flash_s5_launch_end','engine_epoch':epoch,'drained_streams':probe.controller.drain(),'diagnostic':'INCONCLUSIVE'}
+        if not self.full_launch_active:raise ReplayObserverError('bad_state')
+        drained=probe.controller.drain()
+        if type(drained) is not int or drained<=0:raise ReplayObserverError('bad_proof')
+        report=self.session._report_call(self.session.binding._lib.s5ro_launch_report,(self.session._token,1))
+        self.full_launch=(report,self.full_launch_inventory)
+        self.full_launch_active=False
+        return {'rank':self.rank,'ack':'flash_s5_launch_end','engine_epoch':epoch,'drained_streams':drained}
+
     def begin(self, probe, epoch):
         self._check(probe, epoch)
         if self.closed or probe.route != 'split' or self.session.state != 'started':
@@ -73,12 +106,14 @@ class WorkerObserver:
         if type(drained) is not int or drained <= 0:
             raise ReplayObserverError('bad_proof')
         self.session.bind_bank(probe)
+        replay_census = self.session.replay_census()
         self.session.begin_window(route_generation=probe.route_generation)
         self.generation = probe.route_generation
         return {'ack': 'flash_s5_observer_begin', 'rank': self.rank,
                 'engine_epoch': epoch, 'route_generation': self.generation,
                 'storage_epoch': probe.storage_epoch, 'drained_streams': drained,
-                'state': 'window', 'worker_incarnation': self.incarnation}
+                'state': 'window', 'worker_incarnation': self.incarnation,
+                'replay_census': replay_census}
 
     def end(self, probe, epoch):
         self._check(probe, epoch)
@@ -91,7 +126,14 @@ class WorkerObserver:
         proof = DrainedProof(self.rank, self.incarnation, 'engine:' + str(epoch),
                              probe.route_generation, probe.storage_epoch,
                              drained, True)
+        replay_census = self.session.replay_census()
         receipt = plain(self.session.end_window(proof))
+        from launch_diagnostic import inventory,compare
+        try:
+            launch_report=self.session._report_call(self.session.binding._lib.s5ro_launch_report,(self.session._token,0))
+            self.launch_diagnostic=compare(self.full_launch,(launch_report,inventory(self.session,probe,False)))
+        except (AttributeError,KeyError,ReplayObserverError,GraphRoutingError):
+            self.launch_diagnostic={'schema':1,'verdict':'INCONCLUSIVE','gates_w1':False,'missing':['launch configuration report unavailable']}
         self.receipt = receipt
         # Stops only this owned subscriber. Stop failure propagates/quarantines;
         # no performance interval may proceed with unproven instrumentation off.
@@ -102,7 +144,8 @@ class WorkerObserver:
                 'engine_epoch': epoch, 'route_generation': self.generation,
                 'storage_epoch': probe.storage_epoch, 'drained_streams': drained,
                 'state': 'closed', 'observer_stopped': True,
-                'worker_incarnation': self.incarnation, 'receipt': receipt}
+                'worker_incarnation': self.incarnation, 'receipt': receipt,
+                'replay_census': replay_census,'launch_config':self.launch_diagnostic}
 
     def shutdown(self, probe=None):
         if self.closed:

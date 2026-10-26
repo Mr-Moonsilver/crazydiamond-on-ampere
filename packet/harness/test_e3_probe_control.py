@@ -242,7 +242,7 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.state['controller'])
 
     async def test_invalid_or_large_json_is_refused(self):
-        for data,code in [(b'{',400),(b' '*16385,409)]:
+        for data,code in [(b'{',400),(b' '*65537,409)]:
             response = await self.request(None,raw=data)
             self.assertEqual(response.status_code,code)
         self.assertIsNone(self.state['controller'])

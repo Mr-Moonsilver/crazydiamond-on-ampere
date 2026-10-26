@@ -367,6 +367,8 @@ void stub_emit_kernel(uint32_t context_id, uint32_t graph_id, uint64_t node_id,
   record.start = start;
   record.end = end;
   record.completed = completed;
+  record.name="fixture_kernel";record.gridX=4;record.gridY=1;record.gridZ=1;
+  record.blockX=32;record.blockY=1;record.blockZ=1;
   queue_record(record);
 }
 

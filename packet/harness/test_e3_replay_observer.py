@@ -83,6 +83,8 @@ class FakeRouter:
     def __init__(self, storage_epoch, route_generation):
         self.storage_epoch = int(storage_epoch)
         self.route_generation = int(route_generation)
+        self.replays = 0
+        self.replays_by_descriptor = {}
 
 
 class FakeProbe:
@@ -311,6 +313,33 @@ def _declare(lib):
 
 
 class ObserverCleanTests(ObserverTestBase):
+    def test_per_node_counts_expose_loss_hidden_by_total_and_presence(self):
+        self.open_clean()
+        self.begin()
+        for _ in range(3):
+            self.emit_kernel(11, 101)
+        self.emit_kernel(11, 102)
+        receipt = self.end()
+        # Presence alone remains PASS; the owner additionally requires min and
+        # max to equal the independent router's count (2 in this example).
+        slot = receipt['replay']['graph_slots'][0]
+        self.assertEqual(slot['kernel_executions'], 4)
+        self.assertEqual(slot['node_execution_bounds']['kernel'], {'min':1,'max':3})
+        self.assertEqual(slot['missing']['kernel'], 0)
+
+    def test_replay_census_preserves_zeroes_and_refuses_unknown_or_inconsistent_counts(self):
+        self.open_clean()
+        self.assertEqual(self.session.replay_census(),
+                         {'total':0,'graphs':{'graph:0':0,'graph:1':0}})
+        self.probe.router.replays = 2
+        self.probe.router.replays_by_descriptor[self.bank.pairs[0][1]] = 2
+        self.assertEqual(self.session.replay_census(),
+                         {'total':2,'graphs':{'graph:0':2,'graph:1':0}})
+        self.probe.router.replays = 3
+        self.assertIsNone(self.session.replay_census())
+        self.probe.router.replays_by_descriptor[object()] = 1
+        self.assertIsNone(self.session.replay_census())
+
     def test_execution_collection_is_enabled_only_for_replay_window(self):
         self.open_clean()
         self.assertEqual(self.ctl.stub_activity_enabled(9), 1)

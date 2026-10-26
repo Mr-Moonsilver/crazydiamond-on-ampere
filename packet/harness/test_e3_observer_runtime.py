@@ -20,6 +20,7 @@ class Session:
     def start(self): self.events.append('start'); self.state='started'
     def bind_bank(self,probe): self.events.append('bind'); self.state='bound'
     def begin_window(self,**kw): self.events.append('begin'); self.state='window'
+    def replay_census(self): return {'total':0,'graphs':{}}
     def end_window(self,proof):
         self.events.append('end'); self.state='ended'
         return {'schema':'s5ro-replay-observer/1','verdict':'PASS',
@@ -98,9 +99,11 @@ class NativeCompositionTests(ObserverTestBase):
             drain=lambda: drains.append('synchronized-tail-events') or 3)
         self.probe._require_not_down = lambda: None
         self.ctl.stub_set_timestamp(1000)
-        owner.begin(self.probe, 71)
+        begin = owner.begin(self.probe, 71)
         self.ctl.stub_set_timestamp(2000)
         self.emit_graph_kernels(0)
+        self.probe.router.replays = 1
+        self.probe.router.replays_by_descriptor[self.bank.pairs[0][1]] = 1
         self.ctl.stub_set_timestamp(3000)
         result = owner.end(self.probe, 71)
         self.assertEqual(result['receipt']['verdict'], 'PASS')
@@ -110,12 +113,45 @@ class NativeCompositionTests(ObserverTestBase):
         self.assertEqual(len(drains), 2)
         self.assertEqual(self.ctl.stub_has_subscriber(), 0)
         self.assertTrue(owner.closed)
+        from e3_q17b_clients import replay_multiplicity, replay_capacity
+        self.assertTrue(replay_multiplicity(begin, result, result['receipt']))
+        self.assertEqual(replay_capacity(begin,result,result['receipt'])['verdict'],'PASS')
+        # A second runtime replay with all its records lost would have passed
+        # the former presence-only gate. Missing CUPTI drop metadata cannot
+        # now turn that into complete evidence.
+        result['replay_census'] = {'total':2,'graphs':{'graph:0':2,'graph:1':0}}
+        self.assertFalse(replay_multiplicity(begin, result, result['receipt']))
+
+class NativeLaunchComposition(ObserverTestBase):
+    @patch("graph_router.descriptor_name",side_effect=lambda d:"descriptor:"+str(id(d)))
+    def test_late_enable_full_sample_and_split_report_same_bank(self,_name):
+        session=self.new_session();owner=runtime.WorkerObserver(session,0);owner.start();self.make_bank()
+        self.bank.stock=self.bank.manager
+        p=self.probe;p.route='full';p.in_flight=0;p.runner=types.SimpleNamespace(execute_model_state=None)
+        p.controller=types.SimpleNamespace(admitting=True,drain=lambda:3);p._require_not_down=lambda:None
+        self.ctl.stub_emit_context(CONTEXT_ID,1,EXPECTED_SMS,0)
+        self.ctl.stub_set_timestamp(1000);owner.launch_begin(p,71)
+        import ctypes
+        token=ctypes.c_uint64()
+        self.assertNotEqual(session.binding._lib.s5ro_begin_window(session._token,1,ctypes.byref(token)),0)
+        self.assertEqual(token.value,0)
+        self.ctl.stub_set_timestamp(2000);self.emit_graph_kernels(0)
+        self.ctl.stub_set_timestamp(3000);owner.launch_end(p,71)
+        p.route='split';self.ctl.stub_set_timestamp(4000);owner.begin(p,71)
+        self.ctl.stub_set_timestamp(5000)
+        self.emit_kernel(11,101,start=5000,end=5100,completed=5200);self.emit_kernel(11,102,start=5000,end=5100,completed=5200)
+        self.ctl.stub_set_timestamp(6000);result=owner.end(p,71)
+        self.assertEqual(result['launch_config']['verdict'],'PASS',result['launch_config'])
+        self.assertFalse(result['launch_config']['gates_w1'])
+        self.assertTrue(owner.closed)
 
 class ObservedEngine(CountedEngine):
     def __init__(self):
         super().__init__(); self.phase='started'; self.obs_calls=[]; self.bad_proof=False; self.bad_incarnation=False
     async def collective_rpc(self,*args,**kwargs):
         command=kwargs['args'][0]; action=command['action']
+        if action in ('launch_begin','launch_end'):
+            return [dict(rank=r,ack='flash_s5_'+action,engine_epoch=command['engine_epoch'],drained_streams=3) for r in range(4)]
         if action.startswith('observer_'):
             assert self.paused and self.route=='split'
             self.obs_calls.append(action); end=action=='observer_end'; self.phase='closed' if end else 'window'; rows=[]

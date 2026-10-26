@@ -700,7 +700,7 @@ class ReviewRegressions(ProbeFixture):
             stock = types.SimpleNamespace()
             handle = worker_hooks.capture_graph(stock, torch_module=torch)
             worker_hooks.finish_graph(stock, handle)
-        self.assertEqual(calls, [{'keep_graph':True}, 'instantiate', {}])
+        self.assertEqual(calls, [{'keep_graph':True}, 'instantiate', {'keep_graph':True}, 'instantiate'])
         calls.clear()
         with patch.dict(os.environ, {PROBE_ENV:'0'}):
             worker_hooks.capture_graph(types.SimpleNamespace(_flash_s5_capture_context=object()),

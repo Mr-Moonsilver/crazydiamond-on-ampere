@@ -28,8 +28,17 @@ def audit_data():
             caller_proof=dict(worker_rank=rank, worker_incarnation=row['worker_incarnation'],
                  storage_epoch=1, route_generation=1, engine_incarnation='engine:71', relevant_consumers=3, controller_drained=True,
                  route_generation_matches=True, storage_epoch_matches=True))
+        row['receipt']['replay']['graph_slots'] = [dict(label='graph:0',
+            required=dict(kernel=2,memcpy=0,memset=0),
+            kernel_executions=4,copy_executions=0,memset_executions=0,
+            node_execution_bounds=dict(kernel=dict(min=2,max=2),
+                                       memcpy=dict(min=0,max=0),memset=dict(min=0,max=0)))]
+        row['receipt']['limits'] = dict(max_kernel_records=131072,max_copy_records=32768,max_graph_events=262144)
+        row['receipt']['replay']['counts'] = dict(resource_events=10)
+        row['replay_census'] = {'total':2,'graphs':{'graph:0':2}}
         rows.append(row)
         begins.append(dict({k: row[k] for k in ('rank','engine_epoch','storage_epoch','route_generation','worker_incarnation')}, ack='flash_s5_observer_begin',state='window',drained_streams=3))
+        begins[-1]['replay_census'] = {'total':0,'graphs':{'graph:0':0}}
     receipt = dict(engine_epoch=71,storage_epoch=1,route_generation_after=1,
                    observer=dict(schema=1,complete=True,stopped=True,ranks=rows))
     start = dict(engine_epoch=71,storage_epoch=1,route_generation_after=1,observer=dict(schema=1,complete=False,stopped=False,ranks=begins))
@@ -45,7 +54,28 @@ def bound_call(action, receipt):
 
 
 class PlacementTests(unittest.TestCase):
-    def test_precontrol_instability_cannot_unlock_w1_even_with_placement_pass(self):
+    def test_partial_or_duplicate_replays_cannot_pass_multiplicity(self):
+        for kind in ('lost_replay','balanced_loss_duplicate','missing_census',
+                     'extra_record','count_backwards','unknown_descriptor'):
+            with self.subTest(kind=kind):
+                data=audit_data();call=data['runs'][0]['calls'][1]
+                row=call['receipt']['observer']['ranks'][0]
+                slot=row['receipt']['replay']['graph_slots'][0]
+                if kind=='lost_replay':
+                    slot['kernel_executions']=2
+                    slot['node_execution_bounds']['kernel']={'min':1,'max':1}
+                elif kind=='balanced_loss_duplicate':
+                    slot['node_execution_bounds']['kernel']={'min':1,'max':3}
+                elif kind=='missing_census':row.pop('replay_census')
+                elif kind=='extra_record':slot['kernel_executions']=5
+                elif kind=='count_backwards':row['replay_census']['total']=-1
+                else:row['replay_census']['graphs']['foreign']=1
+                data['runs'][0]['calls'][1]=bound_call('pause_end',call['receipt'])
+                grade=q.placement_grade(data)
+                self.assertEqual(grade['verdict'],'INCONCLUSIVE',grade)
+                self.assertIn('rank0: replay multiplicity incomplete',grade['missing'])
+
+    def test_rule3_control_instability_cannot_unlock_w1_even_with_placement_pass(self):
         data=audit_data()
         data.update(verdict='INCONCLUSIVE', verdict_reasons=[
             'inconclusive:pre_split_controls_differ'])
@@ -53,6 +83,8 @@ class PlacementTests(unittest.TestCase):
             args=types.SimpleNamespace(url='http://127.0.0.1:8000',
                 model='fixture',run_id='precontrol-gate',out=Path(tmp)/'out',
                 api_source=Path(tmp),
+                teacher_baseline=HERE/'baselines/q15-teacher-forced-rule3.json',
+                teacher_workload=HERE/'workloads/q17b-teacher-decode-v3.json',snapshot_max_bytes=2*1024**3,
                 correctness_workload=HERE/'workloads/q17b-correctness-precontrols.json',
                 w1_workload=HERE/'workloads/q17b-w1.json')
             ctrl=types.SimpleNamespace(execute=lambda *a:({},{}))
@@ -65,6 +97,15 @@ class PlacementTests(unittest.TestCase):
             self.assertEqual(result['verdict'],'INCONCLUSIVE')
             self.assertEqual(result['outcomes']['placement'],'PASS')
             self.assertEqual(result['outcomes']['performance'],'NOT_RUN')
+
+    def test_graph_growth_exceeding_ring_cannot_pass(self):
+        data=audit_data();call=data['runs'][0]['calls'][1]
+        call['receipt']['observer']['ranks'][0]['receipt']['limits']['max_kernel_records']=3
+        data['runs'][0]['calls'][1]=bound_call('pause_end',call['receipt'])
+        result=q.placement_grade(data)
+        self.assertEqual(result['verdict'],'INCONCLUSIVE')
+        self.assertEqual(result['capacity']['0']['required_kernel_records'],4)
+        self.assertEqual(result['capacity']['0']['largest_graph_replay_capacity'],1)
 
     def test_exact_four_closed_receipts(self):
         self.assertEqual(q.placement_grade(audit_data())['verdict'],'PASS')

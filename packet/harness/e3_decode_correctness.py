@@ -367,6 +367,8 @@ class Config:
     read_timeout_s: float = 0.0
     drain_timeout_s: float = 0.0
     out_dir: str = ''
+    instrument: object = None
+    continue_session: bool = False
 
     def __post_init__(self):
         if not self.controller_timeout_s:
@@ -616,6 +618,13 @@ def _consume_payload(state, payload, now_ns, workload):
     if type(event) is not dict:
         state.fail('event_not_object')
         return False
+    instrument = getattr(state, 'instrument', None)
+    if instrument is not None:
+        try:
+            instrument.consume(state, event)
+        except (ValueError, TypeError, KeyError):
+            state.fail('teacher_logprob_evidence_invalid')
+            return False
     with state.lock:
         state.event_count += 1
 
@@ -756,7 +765,7 @@ _MISSING = object()
 
 
 def stream_reader(state, url, model, body, workload):
-    """Read one live completion stream; retain only hashes/counts/timestamps."""
+    """Read one completion stream; the optional teacher also retains measured top20."""
     headers = {'Content-Type': 'application/json'}
     key = os.environ.get('VLLM_API_KEY')
     if key:
@@ -816,11 +825,14 @@ def stream_reader(state, url, model, body, workload):
         state.progress.set()
 
 
-def _start_streams(url, model, bodies, cohort, workload, started=None):
+def _start_streams(url, model, bodies, cohort, workload, started=None, instrument=None):
     states = []
     for index, body in enumerate(bodies):
         state = StreamRecord(index, cohort[index]['prompt_sha256'],
                              cohort[index]['prompt_chars'], request_sha256(body))
+        if instrument is not None:
+            state.instrument = instrument
+            state.teacher_top = []
         states.append(state)
     for state, body in zip(states, bodies):
         if started is not None:
@@ -1140,6 +1152,8 @@ def _safe_transport(transport):
 
 
 def _controller_call(controller, cfg, ctx, action, target_route):
+    if cfg.instrument is not None:
+        controller = cfg.instrument.controller(controller, action)
     record = protocol.controller_call(controller, cfg, ctx, action, target_route)
     record['reasons'] = _safe_reasons(record.get('reasons'))
     record['transport'] = _safe_transport(record.get('transport'))
@@ -1395,6 +1409,7 @@ def _trajectory_rows(states, window, workload):
             'complete': not problems,
             'problems': problems,
             '_tokens': tokens,
+            **({'teacher_top': list(state.teacher_top)} if hasattr(state, 'teacher_top') else {}),
         })
     return rows
 
@@ -1432,6 +1447,8 @@ def _measure_run_inner(record, cfg, controller, ctx, run_index, label, route,
     salt = build_cache_salt(cfg.run_id, run_index)
     bodies = [request_body(ctx['model'], row['prompt'], workload, salt)
               for row in cohort]
+    if cfg.instrument is not None:
+        cfg.instrument.requests(bodies, cohort, run_index)
     record['requests'] = [{
         'stream': index,
         'prompt_sha256': cohort[index]['prompt_sha256'],
@@ -1452,7 +1469,7 @@ def _measure_run_inner(record, cfg, controller, ctx, run_index, label, route,
         return _finish_run(record)
 
     states = _start_streams(ctx['url'], ctx['model'], bodies, cohort, workload,
-                            started)
+                            started, cfg.instrument)
     open_info = _wait_open(states, workload)
     record['open'] = open_info
     if not open_info['complete']:
@@ -1824,7 +1841,8 @@ def run(cfg, url, model, controller, source=None, context=None):
         'wall_anchor_ns': wall_anchor_ns,
         'basis': CLOCK_NOTE,
     }
-    cohort = build_cohort(cfg.workload)
+    cohort = (cfg.instrument.cohort(url, model) if cfg.instrument is not None
+              else build_cohort(cfg.workload))
     ctx = {
         'model': model,
         'url': url,
@@ -1840,10 +1858,12 @@ def run(cfg, url, model, controller, source=None, context=None):
         'route_generation': None,
     }
     if context is not None:
-        if context:
+        if context and cfg.instrument is None and not cfg.continue_session:
             raise ConfigError('correctness must start the shared client session')
-        context.update(ctx)
+        if not context:
+            context.update(ctx)
         ctx = context
+    repeat_base = ctx['repeat'] + 1
     runs = []
     abort_reason = None
     route_plan = cfg.workload.route_plan
@@ -1855,7 +1875,7 @@ def run(cfg, url, model, controller, source=None, context=None):
             runs.append(_not_run_record(run_index, label, route, abort_reason))
             continue
         try:
-            record = measure_run(cfg, controller, ctx, run_index, label, route,
+            record = measure_run(cfg, controller, ctx, repeat_base + run_index, label, route,
                                  cohort)
         except Exception as exc:  # noqa: BLE001 - preserve evidence, no raw body
             record = _new_run_record(run_index, label, route, None)
@@ -1873,6 +1893,11 @@ def run(cfg, url, model, controller, source=None, context=None):
             abort_reason = 'run_%d_%s' % (run_index, record.get('status', 'aborted'))
     comparison = compare_runs(runs)
     verdict, verdict_reasons = decide(runs, comparison)
+    teacher = None
+    if cfg.instrument is not None:
+        teacher = cfg.instrument.finish(runs)
+        verdict = teacher['grade']['verdict']
+        verdict_reasons = teacher['grade']['missing'] + teacher['grade']['failures']
     source_artifact = _api_source_artifact()
     if source_artifact.get('verified') is not True and verdict != 'FAIL':
         verdict = 'INCONCLUSIVE'
@@ -1941,6 +1966,10 @@ def run(cfg, url, model, controller, source=None, context=None):
         },
     }
     data['runs'] = [_public_run(record) for record in runs]
+    if teacher is not None:
+        data['notes']['evidence_boundary'] = ('Teacher instrument additionally retains fixed-position original top20 token IDs/logprobs; '
+            'prompt and continuation arrays stay in memory, public route proofs carry hashes/counts.')
+        data['teacher_forced'] = teacher
     return data
 
 

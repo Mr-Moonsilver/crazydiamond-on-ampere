@@ -126,6 +126,83 @@ class ProbeController:
         return await self.engine.collective_rpc('flash_s5_decode_probe',
             timeout=self.timeout_s, args=(command,), kwargs={})
 
+    async def configure_teacher(self, plan):
+        from teacher_decode import FrontendPlan, TeacherDecodeError, validate_plan
+        if plan is not None:
+            try: validate_plan(plan)
+            except TeacherDecodeError as exc: raise ProbeControlError(str(exc)) from None
+        owner = getattr(self, '_teacher_plan', None)
+        if plan is None and owner is None:
+            return None
+        await self.ingress.seal()
+        if self.engine.get_num_unfinished_requests() != 0:
+            raise ProbeControlError('teacher-config-needs-empty-engine')
+        await self._barrier(await self._snapshot())
+        replies = _rank_map(await self._rpc({'action': 'teacher_configure',
+                                           'engine_epoch': self.epoch,
+                                           'enabled': plan is not None,
+                                           'snapshot_max_bytes':plan.get('snapshot_max_bytes',2*1024**3) if plan else 2*1024**3}))
+        for rank, row in replies.items():
+            if (row.get('ack') != 'flash_s5_teacher_configure'
+                    or row.get('engine_epoch') != self.epoch
+                    or row.get('enabled') is not (plan is not None)
+                    or row.get('sampler_owner') is not (rank >= 2)
+                    or type(row.get('table_bytes')) is not int
+                    or row['table_bytes'] < 0
+                    or not _positive(row.get('drained_streams'))
+                    or row.get('snapshot_max_bytes') != (plan.get('snapshot_max_bytes',2*1024**3) if plan else 2*1024**3)
+                    or (plan is not None and rank>=2 and row['table_bytes']==0)):
+                raise ProbeControlError('teacher-worker-configuration-unproved')
+        try:
+            if owner is None:
+                owner = FrontendPlan(self.engine.input_processor)
+                self._teacher_plan = owner
+            evidence = owner.configure(plan)
+        except TeacherDecodeError as exc:
+            raise ProbeControlError(str(exc)) from None
+        return dict(evidence, ranks=[replies[r] for r in RANKS])
+
+    async def launch_sample(self,phase):
+        if not self.paused:raise ProbeControlError('launch-sample-needs-pause')
+        replies=_rank_map(await self._rpc({'action':'launch_'+phase,'engine_epoch':self.epoch}))
+        for r in replies.values():
+            if r.get('ack')!='flash_s5_launch_'+phase or r.get('engine_epoch')!=self.epoch or not _positive(r.get('drained_streams')):
+                raise ProbeControlError('launch-sample-ack-incomplete')
+        return True
+
+    async def route_invariant(self, phase):
+        owner=getattr(self,'_teacher_plan',None)
+        if owner is None or owner.pending is None:
+            return None
+        if not self.paused: raise ProbeControlError('route-invariant-needs-pause')
+        replies=_rank_map(await self._rpc({'action':'route_invariant','engine_epoch':self.epoch,'phase':phase}))
+        for row in replies.values():
+            if (row.get('ack')!='flash_s5_route_invariant' or row.get('engine_epoch')!=self.epoch
+                    or row.get('phase')!=phase or not _positive(row.get('drained_streams'))
+                    or row.get('verdict') not in ('PASS','FAIL','INCONCLUSIVE')):
+                raise ProbeControlError('route-invariant-evidence-invalid')
+        verdicts=[r['verdict'] for r in replies.values()]
+        return {'schema':1,'phase':phase,'verdict':'FAIL' if 'FAIL' in verdicts else
+                'PASS' if all(v=='PASS' for v in verdicts) else 'INCONCLUSIVE',
+                'ranks':[replies[r] for r in RANKS]}
+
+    async def teacher_evidence(self):
+        owner = getattr(self, '_teacher_plan', None)
+        if owner is None or owner.pending is None:
+            return None
+        if not self.paused:
+            raise ProbeControlError('teacher-evidence-needs-pause')
+        replies = _rank_map(await self._rpc({'action': 'teacher_evidence', 'engine_epoch': self.epoch}))
+        for rank, row in replies.items():
+            if (row.get('ack') != 'flash_s5_teacher_evidence'
+                    or row.get('engine_epoch') != self.epoch
+                    or row.get('sampler_owner') is not (rank >= 2)
+                    or not _positive(row.get('drained_streams'))
+                    or type(row.get('positions')) is not list or len(row['positions']) > 2048
+                    or type(row.get('overflow')) is not bool):
+                raise ProbeControlError('teacher-worker-evidence-unproved')
+        return dict(owner.status(), ranks=[replies[r] for r in RANKS])
+
     async def _snapshot(self):
         rows = await self._rpc({'action': 'status'})
         mapped = _rank_map(rows)
@@ -548,7 +625,7 @@ def attach_router(args, app, env=None):
         try:
             async for chunk in request.stream():
                 data.extend(chunk)
-                if len(data) > 16384:
+                if len(data) > 65536:
                     raise ProbeControlError('command-too-large')
             command = json.loads(data)
             engine = request.app.state.engine_client

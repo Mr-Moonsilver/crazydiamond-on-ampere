@@ -5,6 +5,7 @@ No arbitrary RPC/load command. Auth remains in the existing environment. This
 client never starts or stops the engine; the owner queue owns that lifecycle.
 """
 import argparse
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -41,6 +42,75 @@ def _audit_binding(call, failures, missing):
             failures.append('observer canonical identity differs: ' + field)
 
 
+def replay_multiplicity(begin, end, receipt):
+    """Independent router submissions vs every static node's record count.
+
+    Both censuses come from drained worker boundaries, are bound to canonical
+    observer receipts, and count successful backend replay calls, not CUPTI
+    records. Missing or excess records are incomplete evidence, not model FAIL.
+    """
+    def require(value):
+        if not value:
+            raise ValueError('incomplete replay census')
+
+    try:
+        a, b = begin['replay_census'], end['replay_census']
+        slots = receipt['replay']['graph_slots']
+        require(type(slots) is list and slots)
+        labels = [slot['label'] for slot in slots]
+        require(len(set(labels)) == len(labels))
+        for census in (a, b):
+            require(type(census) is dict and type(census['graphs']) is dict)
+            require(set(census['graphs']) == set(labels))
+            require(type(census['total']) is int and census['total'] >= 0)
+            require(all(type(n) is int and n >= 0 for n in census['graphs'].values()))
+            require(sum(census['graphs'].values()) == census['total'])
+        require(b['total'] > a['total'])
+        for slot in slots:
+            count = b['graphs'][slot['label']] - a['graphs'][slot['label']]
+            require(count >= 0)
+            for kind, field in (('kernel', 'kernel_executions'),
+                                ('memcpy', 'copy_executions'),
+                                ('memset', 'memset_executions')):
+                required = slot['required'][kind]
+                records = slot[field]
+                pair = slot['node_execution_bounds'][kind]
+                require(type(required) is int and required >= 0)
+                require(type(records) is int and records == required * count)
+                expected = count if required else 0
+                require(all(type(pair[k]) is int and pair[k] == expected for k in ('min', 'max')))
+        return True
+    except (KeyError, TypeError, ValueError):
+        return False
+
+def replay_capacity(begin, end, receipt):
+    """Measured inventory/census against fixed storage; never assumes graph growth fits."""
+    try:
+        limits=receipt['limits']; slots=receipt['replay']['graph_slots']
+        demand={'kernel':0,'copy':0}; max_kernel=0
+        for slot in slots:
+            n=end['replay_census']['graphs'][slot['label']]-begin['replay_census']['graphs'][slot['label']]
+            if type(n) is not int or n<0:raise ValueError('invalid census')
+            k=slot['required']['kernel']; c=slot['required']['memcpy']+slot['required']['memset']
+            demand['kernel']+=k*n; demand['copy']+=c*n; max_kernel=max(max_kernel,k)
+        for key in ('max_kernel_records','max_copy_records','max_graph_events'):
+            if type(limits[key]) is not int or limits[key]<=0:raise ValueError('invalid limit')
+        counts=receipt['replay']['counts']
+        events=counts['resource_events']
+        if type(events) is not int or events<0:raise ValueError('invalid events')
+        fits=(demand['kernel']<=limits['max_kernel_records'] and
+              demand['copy']<=limits['max_copy_records'] and events<=limits['max_graph_events'])
+        return {'verdict':'PASS' if fits else 'INCONCLUSIVE','required_kernel_records':demand['kernel'],
+                'required_copy_records':demand['copy'],'kernel_record_limit':limits['max_kernel_records'],
+                'copy_record_limit':limits['max_copy_records'],'resource_events_seen':events,
+                'resource_event_limit':limits['max_graph_events'],
+                'largest_graph_kernel_nodes':max_kernel,
+                'largest_graph_replay_capacity':limits['max_kernel_records']//max_kernel if max_kernel else 0,
+                'scope':'inventory-derived ring bound; buffers, aliases and lifetime loss flags are checked separately'}
+    except (KeyError,TypeError,ValueError):
+        return {'verdict':'INCONCLUSIVE','missing':'capacity evidence unavailable'}
+
+
 def placement_grade(data):
     failures, missing = [], []
     runs = data.get('runs', []) if type(data) is dict else []
@@ -74,6 +144,7 @@ def placement_grade(data):
         missing.append('observer begin binding unavailable')
         begin_rows = []
     begins = {r['rank']:r for r in begin_rows}
+    capacities = {}
     for row in rows:
         rank = row['rank']
         begin = begins.get(rank, {})
@@ -97,6 +168,11 @@ def placement_grade(data):
             continue
         if receipt.get('schema') != 's5ro-replay-observer/1':
             failures.append(f'rank{rank}: native receipt schema differs')
+        capacities[str(rank)] = replay_capacity(begin,row,receipt)
+        if capacities[str(rank)]['verdict'] != 'PASS':
+            missing.append(f'rank{rank}: replay capacity incomplete')
+        if not replay_multiplicity(begin, row, receipt):
+            missing.append(f'rank{rank}: replay multiplicity incomplete')
         for section in (receipt, receipt.get('static_structure', {}), receipt.get('replay', {})):
             verdict = section.get('verdict') if type(section) is dict else None
             if verdict == 'FAIL':
@@ -119,8 +195,46 @@ def placement_grade(data):
     return {'schema': 1, 'verdict': 'FAIL' if failures else 'INCONCLUSIVE' if missing else 'PASS',
             'failures': sorted(set(failures)), 'missing': sorted(set(missing)),
             'observer_stopped': observer.get('stopped') is True,
-            'ranks': sorted(r['rank'] for r in rows),
+            'ranks': sorted(r['rank'] for r in rows), 'capacity':capacities,
             'scope': 'actual exercised split-decode graphs, before unprofiled W1'}
+
+
+def data_invariant_grade(data):
+    failures, missing = [], []
+    runs=[r for r in data.get('runs',[]) if r.get('route')=='split']
+    if len(runs)!=1:
+        return {'verdict':'INCONCLUSIVE','failures':[],'missing':['one split cohort required']}
+    phases={}
+    for call in runs[0].get('calls',[]):
+        if not call.get('lifecycle_ok'):continue
+        receipt=call.get('receipt') or {}; core=call.get('receipt_core') or {}
+        evidence=receipt.get('data_invariant')
+        if not evidence:continue
+        if (core.get('data_invariant')!=evidence or call.get('receipt_sha256')!=w1._sha256_json(core)):
+            failures.append('byte-proof receipt binding differs');continue
+        for phase,record in evidence.items():
+            if phase in phases:failures.append('duplicate byte-proof phase')
+            phases[phase]=record
+            ranks=record.get('ranks',[])
+            if len(ranks)!=4 or {r.get('rank') for r in ranks}!={0,1,2,3}:
+                missing.append('four worker byte proofs required');continue
+            for r in ranks:
+                if (r.get('engine_epoch')!=core.get('engine_epoch') or r.get('storage_epoch')!=core.get('storage_epoch')
+                        or r.get('route')!=('full' if phase in ('capture','returned') else 'split')
+                        or r.get('route_generation')!=core.get('route_generation_before' if phase=='capture' else 'route_generation_after')
+                        or r.get('phase')!=phase
+                        or type(r.get('drained_streams')) is not int or r['drained_streams']<=0):
+                    failures.append('byte-proof boundary differs')
+                if r.get('verdict')=='FAIL':failures.append('rank%d: %s'%(r['rank'],r.get('failure','byte mismatch')))
+                elif r.get('verdict')!='PASS':missing.append('rank%d: byte proof incomplete'%r['rank'])
+                elif phase!='capture' and (r.get('local_layers')!=6 or r.get('cohort_size')!=8
+                        or type(r.get('history_bytes')) is not int or r['history_bytes']<=0
+                        or type(r.get('graph_count')) is not int or r['graph_count']<=0):
+                    missing.append('byte proof coverage missing')
+    if set(phases)!={'capture','entered','measured','returned'}:missing.append('all drained byte boundaries required')
+    return {'schema':1,'verdict':'FAIL' if failures else 'INCONCLUSIVE' if missing else 'PASS',
+            'failures':failures,'missing':missing,'phases':phases,
+            'scope':'immutable cohort prompt-prefix QSA KV/host history and split graph definitions only'}
 
 
 def final_status_grade(status, context):
@@ -208,27 +322,45 @@ def run(args, env=None, controller=None):
     if controller is None:
         controller = HttpController(url, env.get('VLLM_API_KEY'))
     context = {}
-    cfg = correctness.config_from_env(dict(env, WORKLOAD=str(args.correctness_workload)),
-                                      out / 'correctness.json')
-    result = correctness.run(cfg, url, args.model, controller,
-                             source=source, context=context)
-    write(out / 'correctness.json', result)
-    placement = placement_grade(result)
-    write(out / 'placement.json', placement)
-    outcomes = {'correctness': result.get('verdict'), 'placement': placement['verdict']}
-    if result.get('verdict') == 'PASS' and placement['verdict'] == 'PASS':
-        cfg = w1.config_from_env(dict(env, WORKLOAD=str(args.w1_workload),
-            CONTROLLER_TIMEOUT_S='120', READ_TIMEOUT_S='180', DRAIN_TIMEOUT_S='120'),
-            out / 'performance.json')
-        perf = w1.run(cfg, url, args.model, controller, context=context)
-        outcomes['performance'] = perf.get('summary', {}).get('verdict')
-        # The W1 summary uses PASS only when every required repeat is valid.
-        perf_rc = w1.exit_code(perf)
-        outcomes['performance'] = {0: 'PASS', 1: 'FAIL', 2: 'INCONCLUSIVE'}[perf_rc]
+    # Keep the short replay placement window bounded (~40 observed replays in
+    # full8). The longer teacher window uses the same immutable bank afterwards,
+    # with native execution tracing already stopped and its own route proofs.
+    cfg=correctness.config_from_env(dict(env,WORKLOAD=str(args.correctness_workload)),out/'correctness.json')
+    result=correctness.run(cfg,url,args.model,controller,source=source,context=context)
+    write(out/'correctness.json',result)
+    placement=placement_grade(result)
+    write(out/'placement.json',placement)
+    launch_rows=[]
+    for r in result.get('runs',[]):
+        if r.get('route')=='split':
+            for call in r.get('calls',[]):
+                if call.get('action')=='pause_end':
+                    for row in (call.get('receipt',{}).get('observer') or {}).get('ranks',[]):
+                        launch_rows.append({'rank':row['rank'],'diagnostic':row.get('launch_config')})
+    launch_verdicts=[(r['diagnostic'] or {}).get('verdict') for r in launch_rows]
+    launch={'schema':1,'gates_w1':False,'ranks':launch_rows,
+            'verdict':'DIFFER' if 'DIFFER' in launch_verdicts else
+                'PASS' if len(launch_rows)==4 and all(v=='PASS' for v in launch_verdicts) else 'INCONCLUSIVE'}
+    write(out/'launch-config.json',launch)
+    from e3_teacher_decode_client import Instrument
+    instrument=Instrument(args.teacher_baseline,snapshot_max_bytes=args.snapshot_max_bytes)
+    cfg=correctness.config_from_env(dict(env,WORKLOAD=str(args.teacher_workload)),out/'teacher-forced.json')
+    cfg=replace(cfg,instrument=instrument)
+    teacher=correctness.run(cfg,url,args.model,controller,source=source,context=context)
+    write(out/'teacher-forced.json',teacher)
+    data_exact=data_invariant_grade(teacher)
+    write(out/'data-invariant.json',data_exact)
+    outcomes={'teacher_forced':teacher.get('verdict'),'data_invariant':data_exact['verdict'],
+              'placement':placement['verdict']}
+    if all(v=='PASS' for v in outcomes.values()):
+        cfg=w1.config_from_env(dict(env,WORKLOAD=str(args.w1_workload),
+            CONTROLLER_TIMEOUT_S='120',READ_TIMEOUT_S='180',DRAIN_TIMEOUT_S='120'),out/'performance.json')
+        perf=w1.run(cfg,url,args.model,controller,context=context)
+        outcomes['performance']={0:'PASS',1:'FAIL',2:'INCONCLUSIVE'}[w1.exit_code(perf)]
     else:
-        outcomes['performance'] = 'NOT_RUN'
-        write(out / 'performance.json', {'schema': 1, 'verdict': 'NOT_RUN',
-              'reason': 'correctness and stopped placement audit must pass first'})
+        outcomes['performance']='NOT_RUN'
+        write(out/'performance.json',{'schema':1,'verdict':'NOT_RUN',
+              'reason':'scoped byte invariants, rule v3 and complete replay placement must PASS'})
     try:
         status, transport = controller.execute({'schema':1, 'run_id':args.run_id,
                                                'action':'status','read_only':True}, 120)
@@ -245,7 +377,8 @@ def run(args, env=None, controller=None):
              'engine_epoch': context.get('engine_epoch'),
              'final_route': context.get('route'), 'final_command_seq': context.get('command_seq'),
              'observer_during_performance': False if placement['verdict'] == 'PASS' else None,
-             'files': ['correctness.json', 'placement.json', 'performance.json', 'final-status.json']}
+             'free_running_evidence_verdict':result.get('verdict'),'launch_config_diagnostic':launch['verdict'],
+             'files': ['launch-config.json','teacher-forced.json','data-invariant.json','correctness.json', 'placement.json', 'performance.json', 'final-status.json']}
     write(out / 'clients-grade.json', final)
     return final
 
@@ -258,6 +391,9 @@ def main(argv=None):
     parser.add_argument('--out', required=True, type=Path)
     parser.add_argument('--api-source', required=True, type=Path)
     parser.add_argument('--correctness-workload', required=True, type=Path)
+    parser.add_argument('--teacher-workload',required=True,type=Path)
+    parser.add_argument('--teacher-baseline',required=True,type=Path)
+    parser.add_argument('--snapshot-max-bytes',type=int,default=2*1024**3)
     parser.add_argument('--w1-workload', required=True, type=Path)
     args = parser.parse_args(argv)
     try:

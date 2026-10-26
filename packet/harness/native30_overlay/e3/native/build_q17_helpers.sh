@@ -8,7 +8,7 @@ native=$(realpath "${2:?new generated native directory required}")
 for name in flash_s5_green.so flash_s5_replay_observer.so q17-helper-build.json; do
   [[ ! -e $native/$name && ! -L $native/$name ]]
 done
-for name in flash_s5_green.cu flash_s5_replay_observer.cpp; do
+for name in flash_s5_green.cu flash_s5_replay_observer.cpp flash_s5_graph_bytes.cpp; do
   [[ -f $native/$name && ! -L $native/$name ]]
 done
 name="q17-native-build-$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -28,14 +28,14 @@ nvcc -O2 -std=c++17 -shared -Xcompiler=-fPIC -L"$stub" \
   /native/flash_s5_green.cu -o /native/flash_s5_green.so
 nvcc -O2 -std=c++17 -shared -Xcompiler=-fPIC,-pthread -L"$stub" \
   -I"$wheel/include" -L"$wheel/lib" -Xlinker=-rpath -Xlinker="$wheel/lib" \
-  /native/flash_s5_replay_observer.cpp -l:libcupti.so.13 -lcuda \
+  /native/flash_s5_replay_observer.cpp /native/flash_s5_graph_bytes.cpp -l:libcupti.so.13 -lcuda \
   -o /native/flash_s5_replay_observer.so
 python3 - <<"PY"
 import hashlib, json, pathlib, re, subprocess
 root=pathlib.Path("/native")
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 files={name:sha(root/name) for name in ("flash_s5_green.cu", "flash_s5_green.so",
-                                     "flash_s5_replay_observer.cpp", "flash_s5_replay_observer.so")}
+                                     "flash_s5_replay_observer.cpp", "flash_s5_graph_bytes.cpp", "flash_s5_replay_observer.so")}
 needed={}
 for name in ("flash_s5_green.so", "flash_s5_replay_observer.so"):
     output=subprocess.check_output(["readelf","-d",str(root/name)],text=True)

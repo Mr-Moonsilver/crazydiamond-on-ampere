@@ -562,7 +562,7 @@ RECEIPT_CORE_KEYS = (
     'status', 'engine_epoch', 'storage_epoch', 'route_before', 'route_after',
     'route_generation_before', 'route_generation_after', 'expected_rank_set',
     'observed_clock_ns', 'clock_basis', 'pause', 'resume', 'ingress',
-    'barrier_replies', 'interval', 'decode_eligibility', 'lifecycle_proven', 'observer_sha256',
+    'barrier_replies', 'interval', 'decode_eligibility', 'lifecycle_proven', 'observer_sha256', 'teacher_forced', 'data_invariant',
 )
 MAX_STRING = 300
 MAX_LIST = 64
@@ -769,8 +769,24 @@ def _sanitize_receipt(obj):
         'status', 'engine_epoch', 'storage_epoch', 'route_before', 'route_after',
         'route_generation_before', 'route_generation_after', 'expected_rank_set',
         'observed_clock_ns', 'clock_basis', 'lifecycle_proven', 'measurement',
-        'lifecycle', 'observer_sha256') if key in obj}
+        'lifecycle', 'observer_sha256', 'teacher_forced', 'data_invariant') if key in obj}
     observer = obj.get('observer')
+    # These bounded proofs are deeper than generic metadata; validate a key
+    # allowlist before retaining them so private plans/payloads cannot leak.
+    proof_keys={
+      'teacher_forced':set('schema enabled plan_sha256 admitted pending steps entry_steps measured_steps tail_steps ranks rank ack engine_epoch storage_epoch route_generation route drained_streams sampler_owner table_bytes snapshot_max_bytes positions overflow basis trace_sha256 position worker_route full_graph decode_only forced_token_exact'.split()),
+      'data_invariant':set('capture entered measured returned schema phase verdict missing ranks rank ack engine_epoch storage_epoch route_generation route drained_streams failure checks captured_generation snapshot_bytes graph_count snapshot_cap_bytes local_layers cohort_size unique_layer_pages history_bytes scope'.split())}
+    def allowed(value,keys,depth=0):
+        if depth>9:return False
+        if type(value) is dict:return all(type(k) is str and k in keys and allowed(v,keys,depth+1) for k,v in value.items())
+        if type(value) is list:return len(value)<=2048 and all(allowed(v,keys,depth+1) for v in value)
+        return value is None or type(value) in (bool,int,str) and (type(value) is not str or len(value)<=512)
+    for key,keys in proof_keys.items():
+        proof=obj.get(key)
+        if type(proof) is dict:
+            encoded=json.dumps(proof,allow_nan=False)
+            out[key]=(json.loads(encoded) if len(encoded.encode())<=4*1024*1024 and allowed(proof,keys)
+                      else {'schema':1,'error':'proof-invalid-or-too-large'})
     if type(observer) is dict:
         try:
             encoded = json.dumps(observer, allow_nan=False)

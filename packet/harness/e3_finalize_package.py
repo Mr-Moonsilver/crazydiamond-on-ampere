@@ -15,7 +15,7 @@ IMAGE = 'sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b
 CUPTI = 'e2f9ed861fe27c492b8bb52b5e3220ef5120f3edcda36312e96b7fd8a186be3e'
 BUILD = 'e3/native/q17-helper-build.json'
 LIBS = ('flash_s5_green.so', 'flash_s5_replay_observer.so')
-SOURCES = ('flash_s5_green.cu', 'flash_s5_replay_observer.cpp')
+SOURCES = ('flash_s5_green.cu', 'flash_s5_replay_observer.cpp', 'flash_s5_graph_bytes.cpp')
 EXTRA = {BUILD, *(f'e3/native/{name}' for name in LIBS)}
 GENERATION = 'S5-OVERLAP-GENERATION.json'
 

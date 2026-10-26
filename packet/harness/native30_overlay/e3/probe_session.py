@@ -34,7 +34,7 @@ RECEIPT_CORE_KEYS = (
     'status', 'engine_epoch', 'storage_epoch', 'route_before', 'route_after',
     'route_generation_before', 'route_generation_after', 'expected_rank_set',
     'observed_clock_ns', 'clock_basis', 'pause', 'resume', 'ingress',
-    'barrier_replies', 'interval', 'decode_eligibility', 'lifecycle_proven', 'observer_sha256',
+    'barrier_replies', 'interval', 'decode_eligibility', 'lifecycle_proven', 'observer_sha256', 'teacher_forced', 'data_invariant',
 )
 
 CORE_COUNTER_KEYS = (
@@ -358,6 +358,8 @@ def interval(before, after):
 class ProbeSession:
     def __init__(self, controller):
         self.controller = controller
+        self.launch_sampled=False
+        self.launch_active=False
         self.lock = asyncio.Lock()
         self.seq = 0
         self.prior = None
@@ -410,6 +412,8 @@ class ProbeSession:
             return await self._status(command)
         fields = {'schema', 'run_id', 'repeat', 'command_seq', 'action', 'target_route',
                   'cohort_id', 'cohort_size', 'prior_receipt', 'expected_rank_set'}
+        if type(command) is dict and command.get('action') == 'prepare' and 'teacher_forced' in command:
+            fields.add('teacher_forced')
         actions = ('prepare', 'pause_enter_split', 'pause_full', 'resume', 'pause_end', 'leave_full')
         if (type(command) is not dict or set(command) != fields
                 or type(command['schema']) is not int or command['schema'] != 1
@@ -491,6 +495,9 @@ class ProbeSession:
             if (before['route'] != 'full' or raw['paused'] is not False
                     or ctl.engine.get_num_unfinished_requests() != 0):
                 raise ProbeControlError('prepare-requires-empty-running-full-engine')
+            teacher = await ctl.configure_teacher(c.get('teacher_forced'))
+            if teacher is not None:
+                extra['teacher_forced'] = teacher
             ctl.ingress.unseal()
             self.repeat, self.cohort, self.size = c['repeat'], c['cohort_id'], c['cohort_size']
             self.phase = 'prepared'
@@ -520,9 +527,13 @@ class ProbeSession:
                           for r in eligibility['ranks']]}
             after = paused['snapshot']
             if action == 'pause_enter_split':
+                invariant = await ctl.route_invariant('capture')
                 changed = await self._call('transition', target='split',
                     expected_route_generation=after['route_generation'], cohort_size=self.size)
                 after, acks = changed['snapshot'], changed['replies']
+                checked = await ctl.route_invariant('entered')
+                if invariant is not None:
+                    extra['data_invariant'] = {'capture':invariant,'entered':checked}
                 observer_phase = self._observer_phase(after)
                 if observer_phase == 'started':
                     observed = await self._call('observer_begin')
@@ -530,6 +541,9 @@ class ProbeSession:
                     extra['observer'] = observed['observer']
                 elif observer_phase not in ('disabled', 'closed'):
                     raise ProbeControlError('observer-window-already-active')
+            elif self._observer_phase(after)=='started' and not self.launch_sampled:
+                await ctl.launch_sample('begin')
+                self.launch_sampled=True;self.launch_active=True
             self.phase = 'entered'
         elif action == 'resume':
             if self.phase not in ('entered', 'left'):
@@ -566,6 +580,9 @@ class ProbeSession:
                 'storage_epoch': after['storage_epoch'],
                 'engine_epoch': ctl.epoch,
             }
+            if self.launch_active:
+                await ctl.launch_sample('end')
+                self.launch_active=False
             if self._observer_phase(after) == 'window':
                 observed = await self._call('observer_end')
                 after = observed['snapshot']
@@ -577,6 +594,12 @@ class ProbeSession:
                 'available': sample['available'],
                 'reasons': list(sample['reasons']),
             }
+            if after['route'] == 'split':
+                checked=await ctl.route_invariant('measured')
+                if checked is not None: extra['data_invariant']={'measured':checked}
+            teacher = await ctl.teacher_evidence()
+            if teacher is not None:
+                extra['teacher_forced'] = teacher
             self.phase = 'ended'
         elif action == 'leave_full':
             if self.phase != 'ended' or not ctl.paused:
@@ -585,6 +608,8 @@ class ProbeSession:
                 changed = await self._call('transition', target='full',
                     expected_route_generation=before['route_generation'], cohort_size=self.size)
                 after, acks = changed['snapshot'], changed['replies']
+                checked=await ctl.route_invariant('returned')
+                if checked is not None: extra['data_invariant']={'returned':checked}
             self.phase = 'left'
         if c['target_route'] != after['route']:
             raise ProbeControlError('session-target-route-differs')

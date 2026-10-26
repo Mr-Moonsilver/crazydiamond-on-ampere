@@ -330,12 +330,95 @@ def decode_probe_rpc(worker, command):
     if type(getattr(worker, 'rank', None)) is not int:
         raise NativeStartupError('worker rank unavailable')
     action = command.get('action')
+    if action == 'route_invariant':
+        from route_invariant import Snapshot, InvariantUnavailable
+        if (set(command) != {'action','engine_epoch','phase'}
+                or command['engine_epoch'] != getattr(probe, '_rpc_engine_epoch', None)
+                or command['phase'] not in ('capture','entered','measured','returned')):
+            raise NativeStartupError('route invariant identity differs')
+        probe._require_not_down()
+        if (probe.in_flight or getattr(runner, 'execute_model_state', None) is not None
+                or not probe.controller.admitting):
+            raise NativeStartupError('route invariant requires completed sampling')
+        drained=probe.controller.drain()
+        if type(drained) is not int or drained<=0:
+            raise NativeStartupError('route invariant drain unproved')
+        phase=command['phase']
+        expected_route='full' if phase in ('capture','returned') else 'split'
+        if probe.route!=expected_route:
+            raise NativeStartupError('route invariant wrong boundary')
+        if phase=='capture':
+            if getattr(probe,'_byte_snapshot',None) is not None:
+                raise NativeStartupError('route snapshot already owned')
+            try:
+                probe._byte_snapshot=Snapshot(probe)
+                probe._byte_snapshot_missing=None
+            except (InvariantUnavailable, AttributeError) as exc:
+                probe._byte_snapshot=None
+                probe._byte_snapshot_missing=(str(exc) if isinstance(exc,InvariantUnavailable)
+                                              else 'route-invariant-source-unavailable')
+            result={'schema':1,'phase':phase,'verdict':'INCONCLUSIVE' if probe._byte_snapshot is None else 'PASS',
+                    'missing':probe._byte_snapshot_missing}
+        else:
+            snap=getattr(probe,'_byte_snapshot',None)
+            result=(snap.check(phase) if snap is not None else
+                    {'schema':1,'phase':phase,'verdict':'INCONCLUSIVE',
+                     'missing':getattr(probe,'_byte_snapshot_missing','snapshot-not-captured')})
+            if phase=='returned':probe._byte_snapshot=None
+        return dict(result,rank=worker.rank,ack='flash_s5_route_invariant',
+                    engine_epoch=command['engine_epoch'],storage_epoch=probe.storage_epoch,route_generation=probe.route_generation,
+                    route=probe.route,drained_streams=drained)
+    if action == 'teacher_evidence':
+        from teacher_decode import worker_evidence
+        if (set(command) != {'action', 'engine_epoch'}
+                or type(command['engine_epoch']) is not int or command['engine_epoch'] < 1
+                or command['engine_epoch'] != getattr(probe, '_rpc_engine_epoch', None)):
+            raise NativeStartupError('teacher evidence identity differs')
+        probe._require_not_down()
+        if (probe.in_flight or getattr(runner, 'execute_model_state', None) is not None
+                or not getattr(probe.controller, 'admitting', False)):
+            raise NativeStartupError('teacher evidence requires completed sampling')
+        drained = probe.controller.drain()
+        if type(drained) is not int or drained <= 0:
+            raise NativeStartupError('teacher evidence drain unproved')
+        return dict(worker_evidence(runner), rank=worker.rank,
+                    ack='flash_s5_teacher_evidence', engine_epoch=command['engine_epoch'],
+                    storage_epoch=probe.storage_epoch, route_generation=probe.route_generation,
+                    route=probe.route, drained_streams=drained)
+    if action == 'teacher_configure':
+        from teacher_decode import configure_worker
+        if (set(command) != {'action', 'engine_epoch', 'enabled', 'snapshot_max_bytes'}
+                or type(command['snapshot_max_bytes']) is not int
+                or not 64*1024**2<=command['snapshot_max_bytes']<=2*1024**3
+                or type(command['enabled']) is not bool
+                or type(command['engine_epoch']) is not int
+                or command['engine_epoch'] < 1
+                or command['engine_epoch'] != getattr(probe, '_rpc_engine_epoch', None)):
+            raise NativeStartupError('teacher configuration identity differs')
+        probe._require_not_down()
+        if (probe.route != 'full' or probe.in_flight
+                or getattr(runner, 'execute_model_state', None) is not None
+                or not getattr(probe.controller, 'admitting', False)
+                or getattr(getattr(runner, 'req_states', None), 'req_id_to_index', None) != {}):
+            raise NativeStartupError('teacher configuration needs empty full worker')
+        try:
+            drained = probe.controller.drain()
+            if type(drained) is not int or drained <= 0:
+                raise NativeStartupError('teacher configuration drain unproved')
+            result = configure_worker(runner, command['enabled'])
+            probe._snapshot_max_bytes=command['snapshot_max_bytes']
+            result['snapshot_max_bytes']=command['snapshot_max_bytes']
+        except BaseException:
+            probe.quarantined = 'teacher configuration failed'
+            raise
+        return dict(result, rank=worker.rank, ack='flash_s5_teacher_configure',
+                    engine_epoch=command['engine_epoch'], drained_streams=drained)
     if action == 'status':
         if set(command) != {'action'}:
             raise NativeStartupError('status has unexpected fields')
         return {'rank': worker.rank, 'inventory': probe.inventory(),
                 'counters': probe.counters(), 'memory': probe.memory_snapshot()}
-    if action in ('observer_begin', 'observer_end'):
+    if action in ('observer_begin', 'observer_end','launch_begin','launch_end'):
         if set(command) != {'action', 'engine_epoch'}:
             raise NativeStartupError('observer fields differ')
         owner = getattr(runner, '_flash_s5_replay_observer', None)
@@ -346,6 +429,8 @@ def decode_probe_rpc(worker, command):
         if type(epoch) is not int or epoch < 1 or bound != epoch:
             raise NativeStartupError('observer engine epoch is not bound by a prior barrier')
         try:
+            if action=='launch_begin':return owner.launch_begin(probe,epoch)
+            if action=='launch_end':return owner.launch_end(probe,epoch)
             return owner.begin(probe, epoch) if action == 'observer_begin' else owner.end(probe, epoch)
         except BaseException:
             probe.quarantined = 'diagnostic observer operation failed'
@@ -399,11 +484,10 @@ def observe_scheduler(worker, scheduler_output):
 
 
 def capture_graph(manager, *, torch_module=None):
-    """Retain raw split graphs for the diagnostic's required node audit only."""
+    """Retain raw full/split definitions only in the declared decode diagnostic."""
     if torch_module is None:
         import torch as torch_module
-    retained = (os.environ.get(PROBE_ENV, '0') == '1'
-                and getattr(manager, '_flash_s5_capture_context', None) is not None)
+    retained = os.environ.get(PROBE_ENV, '0') == '1'
     if retained:
         manager._flash_s5_keep_graphs = True
         return torch_module.cuda.CUDAGraph(keep_graph=True)

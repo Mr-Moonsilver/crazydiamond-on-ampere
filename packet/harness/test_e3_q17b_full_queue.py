@@ -172,4 +172,37 @@ class PrecontrolQueue(FullQueue):
         following.pop('workload');previous.pop('workload')
         self.assertEqual(following,previous)
 
+class ProtocolV2Queue(FullQueue):
+    queue_name='q17b_full5.draft.sh'
+    correctness_name='q17b-correctness-precontrols.json'
+    def setUp(self):
+        from unittest.mock import patch
+        import make_s5_overlap,make_e2_arena
+        def current():return make_s5_overlap._s5_launcher(make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text()))
+        self._patches=[patch.object(old,'launcher_text',current),patch.object(old,'LAUNCHER_SHA',hashlib.sha256(current().encode()).hexdigest())]
+        for p in self._patches:p.start()
+        FullQueue.setUp(self)
+    def tearDown(self):
+        FullQueue.tearDown(self)
+        for p in reversed(self._patches):p.stop()
+    def make_harness(self):
+        FullQueue.make_harness(self)
+        for name in ('e3_teacher_decode_client.py','e3_teacher_decode_grade.py','teacher_forced.py'):
+            shutil.copyfile(HERE/name,self.h/name)
+        shutil.copyfile(HERE/'workloads/q17b-teacher-decode-v3.json',self.h/'workloads/q17b-teacher-decode-v3.json')
+        (self.h/'baselines').mkdir(exist_ok=True)
+        shutil.copyfile(HERE/'baselines/q15-teacher-forced-rule3.json',self.h/'baselines/q15-teacher-forced-rule3.json')
+        code=FAKE_CLIENTS.replace("('correctness.json','placement.json','performance.json')","('teacher-forced.json','data-invariant.json','correctness.json','placement.json','launch-config.json','performance.json')").replace("outcomes=dict(correctness=verdict,placement=verdict,performance=verdict)","outcomes=dict(teacher_forced=verdict,data_invariant=verdict,placement=verdict,performance=verdict)").replace("files=['correctness.json','placement.json','performance.json']","files=['teacher-forced.json','data-invariant.json','correctness.json','placement.json','launch-config.json','performance.json']")
+        (self.h/'e3_q17b_clients.py').write_text(code);old.write_manifest(self.h)
+    def make_requests(self):
+        FullQueue.make_requests(self)
+        p=self.r/'request-plan.json';data=json.loads(p.read_text());data['snapshot_max_bytes']=64*1024**2;p.write_text(json.dumps(data))
+        pins=self.r/'SHA256SUMS';paths=[Path(line.split(maxsplit=1)[1]) for line in pins.read_text().splitlines()]
+        pins.write_text(''.join(old.sha(p)+'  '+str(p)+'\n' for p in paths))
+    def test_byte_and_teacher_grades_required_for_success(self):
+        p=self.h/'e3_q17b_clients.py';p.write_text(p.read_text().replace('data_invariant=verdict','data_invariant="INCONCLUSIVE"'));old.write_manifest(self.h)
+        result=self.run_queue()
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('STEP clients-grade-consistency FAIL',result.stdout)
+
 if __name__=='__main__':unittest.main()

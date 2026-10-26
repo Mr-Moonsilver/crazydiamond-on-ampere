@@ -18,8 +18,9 @@
 //     boundary-spanning records are retained as INCONCLUSIVE evidence.
 //     A known wrong context or a known wrong green SM count is FAIL evidence.
 //   * Nothing here launches, replays, allocates on a device, synchronises,
-//     resets CUPTI globally, or emits kernel names, arguments, pointers,
-//     request IDs or tensor contents.
+//     resets CUPTI globally, or reads argument pointees/tensor contents.
+//     Launch reports contain names/configuration for private worker comparison;
+//     Python redacts policy pointers before any public receipt is emitted.
 //
 // Storage is allocated once in s5ro_create().  Callbacks copy only the fixed
 // facts below into preallocated rings while the CUPTI data is valid; they do
@@ -223,7 +224,11 @@ struct ContextRec {
   uint8_t is_green = 0;
 };
 
+constexpr unsigned kLaunchFields=36;
 struct ExecRec {
+  uint64_t launch[kLaunchFields]={0};
+  char name[1024]={0};
+  uint8_t launch_complete=0;
   uint32_t kind = 0;
   uint32_t context_id = 0;
   uint32_t device_id = 0;
@@ -266,6 +271,7 @@ struct NodeInfo {
   uint32_t local_index = 0;
   int32_t node_type = -1;
   uint8_t observed = 0;  // bit 0 kernel, bit 1 memcpy, bit 2 memset
+  uint64_t executions = 0;  // complete records for this exact static node
 };
 
 struct GraphSlot {
@@ -406,6 +412,8 @@ struct Session {
 
   uint32_t window_route_generation = 0;
   uint64_t window_token = 0;
+  uint64_t sample_start=0, sample_end=0;
+  std::atomic<uint8_t> launch_sampling{0};
   uint64_t window_start = 0;
   uint64_t window_end = 0;
   uint8_t end_flushing = 0;
@@ -836,6 +844,47 @@ void add_exec(Session *s, const CUpti_ActivityKernel10 *record) {
   out.start = record->start;
   out.end = record->end;
   out.completed = record->completed;
+  std::memset(out.launch,0,sizeof(out.launch));out.name[0]=0;out.launch_complete=0;
+  unsigned li=0;
+  out.launch[li++]=static_cast<uint64_t>(record->cacheConfig.both);
+  out.launch[li++]=static_cast<uint64_t>(record->sharedMemoryConfig);
+  out.launch[li++]=static_cast<uint64_t>(record->registersPerThread);
+  out.launch[li++]=static_cast<uint64_t>(record->partitionedGlobalCacheRequested);
+  out.launch[li++]=static_cast<uint64_t>(record->partitionedGlobalCacheExecuted);
+  out.launch[li++]=static_cast<uint64_t>(record->gridX);
+  out.launch[li++]=static_cast<uint64_t>(record->gridY);
+  out.launch[li++]=static_cast<uint64_t>(record->gridZ);
+  out.launch[li++]=static_cast<uint64_t>(record->blockX);
+  out.launch[li++]=static_cast<uint64_t>(record->blockY);
+  out.launch[li++]=static_cast<uint64_t>(record->blockZ);
+  out.launch[li++]=static_cast<uint64_t>(record->staticSharedMemory);
+  out.launch[li++]=static_cast<uint64_t>(record->dynamicSharedMemory);
+  out.launch[li++]=static_cast<uint64_t>(record->localMemoryPerThread);
+  out.launch[li++]=static_cast<uint64_t>(record->localMemoryTotal);
+  out.launch[li++]=static_cast<uint64_t>(record->launchType);
+  out.launch[li++]=static_cast<uint64_t>(record->isSharedMemoryCarveoutRequested);
+  out.launch[li++]=static_cast<uint64_t>(record->sharedMemoryCarveoutRequested);
+  out.launch[li++]=static_cast<uint64_t>(record->sharedMemoryExecuted);
+  out.launch[li++]=static_cast<uint64_t>(record->shmemLimitConfig);
+  out.launch[li++]=static_cast<uint64_t>(record->channelID);
+  out.launch[li++]=static_cast<uint64_t>(record->channelType);
+  out.launch[li++]=static_cast<uint64_t>(record->clusterX);
+  out.launch[li++]=static_cast<uint64_t>(record->clusterY);
+  out.launch[li++]=static_cast<uint64_t>(record->clusterZ);
+  out.launch[li++]=static_cast<uint64_t>(record->clusterSchedulingPolicy);
+  out.launch[li++]=static_cast<uint64_t>(record->localMemoryTotal_v2);
+  out.launch[li++]=static_cast<uint64_t>(record->maxPotentialClusterSize);
+  out.launch[li++]=static_cast<uint64_t>(record->maxActiveClusters);
+  out.launch[li++]=static_cast<uint64_t>(record->isDeviceLaunched);
+  out.launch[li++]=record->pAccessPolicyWindow?1:0;
+  if(record->pAccessPolicyWindow){
+    auto p=record->pAccessPolicyWindow;uint32_t ratio=0;std::memcpy(&ratio,&p->hitRatio,4);
+    out.launch[li++]=reinterpret_cast<uintptr_t>(p->base_ptr);out.launch[li++]=p->num_bytes;
+    out.launch[li++]=ratio;out.launch[li++]=p->hitProp;out.launch[li++]=p->missProp;
+  }
+  if(record->name){size_t n=strnlen(record->name,sizeof(out.name));
+    if(n<sizeof(out.name)){std::memcpy(out.name,record->name,n+1);out.launch_complete=1;}}
+
 }
 
 void add_copy(Session *s, RecKind kind, uint32_t context_id, uint32_t device_id,
@@ -879,9 +928,9 @@ void parse_buffer(Session *s, uint8_t *buffer, size_t valid_size) {
         add_context(s, reinterpret_cast<const CUpti_ActivityContext3 *>(record));
         break;
       case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL:
-        if (in_window) {
+        if (in_window || s->launch_sampling.load()) {
           add_exec(s, reinterpret_cast<const CUpti_ActivityKernel10 *>(record));
-          ++s->records_in_window;
+          if(in_window) ++s->records_in_window;
         } else {
           ++s->records_after_window;
         }
@@ -1595,6 +1644,7 @@ void analyze_events(Session *s, uint32_t graph_count, uint32_t key_count,
     g.context_mismatch_total = 0;
     for (uint32_t i = 0; i < g.node_count; ++i) {
       s->nodes[g.first_node + i].observed = 0;
+      s->nodes[g.first_node + i].executions = 0;
     }
   }
 
@@ -1993,6 +2043,7 @@ void analyze_window(Session *s, uint32_t graph_count, uint32_t key_count,
       continue;
     }
     s->nodes[slot.first_node + node_index].observed |= 1;
+    ++s->nodes[slot.first_node + node_index].executions;
   }
 
   for (uint32_t i = 0; i < s->copy_count; ++i) {
@@ -2103,6 +2154,7 @@ void analyze_window(Session *s, uint32_t graph_count, uint32_t key_count,
       ++slot.memset_executions;
       s->nodes[slot.first_node + node_index].observed |= 4;
     }
+    ++s->nodes[slot.first_node + node_index].executions;
   }
 
   for (uint32_t slot = 0; slot < s->slot_count; ++slot) {
@@ -2252,7 +2304,7 @@ void emit_window_document(Session *s, uint32_t graph_count, uint32_t key_count,
 
   j.open_obj();
   j.key("schema");
-  j.string("s5ro-native-window/1");
+  j.string("s5ro-native-window/2");
   j.key("abi");
   j.u64(kAbi);
   j.key("compiled_api");
@@ -2425,6 +2477,30 @@ void emit_window_document(Session *s, uint32_t graph_count, uint32_t key_count,
     j.u64(g.copy_executions);
     j.key("memset_executions");
     j.u64(g.memset_executions);
+    // Exact multiplicity bounds include zero-count nodes. min == max == the
+    // independently counted replays proves every node has that many records;
+    // a duplicate node cannot compensate for a missing occurrence elsewhere.
+    j.key("node_execution_bounds");
+    j.open_obj();
+    const char *names[] = {"kernel", "memcpy", "memset"};
+    const int32_t types[] = {CU_GRAPH_NODE_TYPE_KERNEL,
+                            CU_GRAPH_NODE_TYPE_MEMCPY, CU_GRAPH_NODE_TYPE_MEMSET};
+    for (uint32_t kind = 0; kind < 3; ++kind) {
+      uint64_t low = 0, high = 0;
+      bool found = false;
+      for (uint32_t n = 0; n < g.node_count; ++n) {
+        const NodeInfo &node = s->nodes[g.first_node + n];
+        if (node.node_type != types[kind]) continue;
+        if (!found || node.executions < low) low = node.executions;
+        high = std::max(high, node.executions);
+        found = true;
+      }
+      j.key(names[kind]); j.open_obj();
+      j.key("min"); j.u64(low);
+      j.key("max"); j.u64(high);
+      j.close_obj();
+    }
+    j.close_obj();
     j.key("graph_id_known");
     j.boolean(g.graph_id_known != 0);
     j.key("node_ids_known");
@@ -2829,6 +2905,71 @@ int stop_impl(Session *s) {
 
 extern "C" {
 
+
+int s5ro_launch_begin(uint64_t session){
+ auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
+ std::lock_guard<std::mutex> op(s->op_mu);
+ if(s->state!=kStarted||s->launch_sampling||s->sample_start)return S5RO_STATE;
+ if(cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED)!=CUPTI_SUCCESS){s->flush_failed=1;return S5RO_FLUSH_FAILED;}
+ sample_dropped(s.get());{std::lock_guard<std::recursive_mutex> lock(s->cb_mu);if(s->in_use_count)return S5RO_BUSY;s->kernel_count=0;}
+ if(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL)!=CUPTI_SUCCESS)return S5RO_ACTIVITY_ENABLE_FAILED;
+ s->activity_enabled[1]=1;
+ if(cuptiGetTimestamp(&s->sample_start)!=CUPTI_SUCCESS||!s->sample_start)return S5RO_TIMESTAMP_FAILED;
+ s->launch_sampling=true;return S5RO_OK;
+}
+
+int s5ro_launch_report(uint64_t session,uint32_t finish_sample,char*out,uint64_t cap,uint64_t*len){
+ if(!out||!len||finish_sample>1)return S5RO_BAD_ARGS;
+ *len=0;
+ auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
+ std::lock_guard<std::mutex> op(s->op_mu);
+ uint64_t begin=s->window_start,end=s->window_end;
+ if(finish_sample){
+  if(s->state!=kStarted||(!s->launch_sampling&&!s->sample_end))return S5RO_STATE;
+  if(s->launch_sampling){
+  if(cuptiGetTimestamp(&s->sample_end)!=CUPTI_SUCCESS)return S5RO_TIMESTAMP_FAILED;
+  if(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL)!=CUPTI_SUCCESS){s->flush_failed=1;return S5RO_ACTIVITY_ENABLE_FAILED;}
+  s->activity_enabled[1]=0;
+  if(cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED)!=CUPTI_SUCCESS){s->flush_failed=1;return S5RO_FLUSH_FAILED;}
+  sample_dropped(s.get());s->launch_sampling=false;}
+  begin=s->sample_start;end=s->sample_end;
+ }else if(s->state!=kEnded)return S5RO_STATE;
+ std::lock_guard<std::recursive_mutex> lock(s->cb_mu);
+ Json j(out,cap);j.open_obj();j.key("schema");j.u64(1);
+ j.key("complete");j.boolean(s->in_use_count==0&&!s->ring_kernel_overflow&&!s->ring_event_overflow&&!s->dropped_total&&!s->flush_failed&&!s->buffers_refused&&!s->drop_query_errors&&!s->callback_errors&&!s->parse_errors&&!s->invalid_records&&!s->unknown_activity_records&&!s->ring_context_overflow&&!s->ring_copy_overflow&&!s->ring_alias_overflow&&!s->duplicate_buffer_completions&&!s->callback_reentrant_refused&&!s->id_query_errors);
+ j.key("begin");j.u64(begin);j.key("end");j.u64(end);
+ j.key("aliases");j.open_arr();
+ for(uint32_t i=0;i<s->event_count;i++){auto&e=s->events[i];if((e.has_graph&&e.has_original_graph)||(e.has_node&&e.has_original_node)){
+  j.open_arr();j.u64(e.has_graph?e.graph_id:0);j.u64(e.has_original_graph?e.original_graph_id:0);
+  j.u64(e.has_node?e.node_id:0);j.u64(e.has_original_node?e.original_node_id:0);j.close_arr();}}
+ j.close_arr();j.key("nodes");j.open_arr();
+ std::sort(s->kernels,s->kernels+s->kernel_count,[](const ExecRec&a,const ExecRec&b){return a.graph_id<b.graph_id||(a.graph_id==b.graph_id&&a.graph_node_id<b.graph_node_id);});
+ for(uint32_t i=0;i<s->kernel_count;){uint32_t endi=i+1;auto&r=s->kernels[i];
+  while(endi<s->kernel_count&&s->kernels[endi].graph_id==r.graph_id&&s->kernels[endi].graph_node_id==r.graph_node_id)endi++;
+  bool same=true,valid=true;for(uint32_t k=i;k<endi;k++){auto&q=s->kernels[k];
+   valid=valid&&q.launch_complete&&q.graph_id&&q.graph_node_id&&q.start>=begin&&q.end<=end&&q.end>q.start;
+   same=same&&std::memcmp(q.launch,r.launch,sizeof(r.launch))==0&&std::strcmp(q.name,r.name)==0;}
+  j.open_obj();j.key("graph");j.u64(r.graph_id);j.key("node");j.u64(r.graph_node_id);
+  j.key("complete");j.boolean(valid);j.key("stable");j.boolean(same);j.key("records");j.u64(endi-i);
+  j.key("name");j.string(r.name);j.key("fields");j.open_arr();for(auto v:r.launch)j.u64(v);j.close_arr();j.close_obj();i=endi;
+ }j.close_arr();j.close_obj();*len=j.len;if(j.truncated()||j.bad)return S5RO_TRUNCATED;if(cap>j.len)out[j.len]=0;
+ return S5RO_OK;
+}
+
+int s5ro_graph_ids(uint64_t handle,char*out,uint64_t cap,uint64_t*len){
+ if(!handle||!out||!len)return S5RO_BAD_ARGS;
+ *len=0;CUgraph g=reinterpret_cast<CUgraph>(handle);
+ uint32_t id=0;size_t n=0;if(cuptiGetGraphId(g,&id)!=CUPTI_SUCCESS||cuGraphGetNodes(g,nullptr,&n)!=CUDA_SUCCESS||n>32768)return S5RO_GRAPH_BIND_FAILED;
+ std::unique_ptr<CUgraphNode[]>nodes(new(std::nothrow) CUgraphNode[n]);if(!nodes)return S5RO_INTERNAL_ERROR;
+ size_t got=n;if(cuGraphGetNodes(g,nodes.get(),&got)!=CUDA_SUCCESS||got!=n)return S5RO_GRAPH_BIND_FAILED;
+ Json j(out,cap);j.open_obj();j.key("graph");j.u64(id);j.key("nodes");j.open_arr();
+ for(size_t i=0;i<n;i++){CUgraphNodeType t;uint64_t nid=0;
+  if(cuGraphNodeGetType(nodes[i],&t)!=CUDA_SUCCESS||cuptiGetGraphNodeId(nodes[i],&nid)!=CUPTI_SUCCESS)return S5RO_GRAPH_BIND_FAILED;
+  if(t==CU_GRAPH_NODE_TYPE_KERNEL)j.u64(nid);
+ }j.close_arr();j.close_obj();*len=j.len;if(j.truncated()||j.bad)return S5RO_TRUNCATED;if(cap>j.len)out[j.len]=0;
+ return S5RO_OK;
+}
+
 int s5ro_abi(void) { return static_cast<int>(kAbi); }
 
 int s5ro_create(uint32_t buffer_count, uint64_t buffer_bytes,
@@ -3005,7 +3146,7 @@ int s5ro_begin_window(uint64_t session, uint32_t route_generation,
     return S5RO_UNKNOWN_SESSION;
   }
   if (s->state != kStarted) return S5RO_STATE;
-  if (s->window_active.load() != 0 || s->window_token != 0) {
+  if (s->window_active.load() != 0 || s->window_token != 0 || s->launch_sampling.load() != 0) {
     return S5RO_WINDOW_ACTIVE;
   }
   if (s->expected_known == 0 || s->slot_count == 0) return S5RO_NOT_BOUND;

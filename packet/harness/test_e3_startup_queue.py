@@ -44,11 +44,12 @@ def write_manifest(root):
 
 
 def launcher_text():
+    # Historical immutable queues pin the pre-teacher module inventory.
     sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
     import make_e2_arena
     import make_s5_overlap
     return make_s5_overlap._s5_launcher(
-        make_e2_arena.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text()))
+        make_e2_arena.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text())).replace('e3/teacher_decode.py ', '').replace('e3/route_invariant.py ', '').replace('e3/launch_diagnostic.py ', '').replace('e3/native/flash_s5_graph_bytes.cpp ', '')
 
 
 FAKE_SYSTEMCTL = r'''#!/usr/bin/env python3
