@@ -29,6 +29,11 @@ PINS = {
     'v1/worker/gpu_worker.py': '596f5b6e97be754f84b04c17bc0b96fd92d2f05ee86e0459aa515ffa48d8c5cb',
     'v1/worker/gpu/cudagraph_utils.py': 'b1423812da6d07933bbaf014fa21236c944af1c5f8e553aefb2de89af8afb384',
 }
+# Read-only behavior dependency; not a transformed source.
+CAPTURE_REFERENCE_PINS = {
+    'utils/torch_utils.py': 'eec8b1e3c7c673d3d171b92530f8b07acabdad5b0e3ab07cc0e717f827af8e5a',
+}
+
 # executor_hooks.generate_worker output (C's RPC methods); the worker seams
 # compose after C in the overlay, so that composition is an accepted input too.
 WORKER_AFTER_C_SHA256 = '237d6c700f240867adc22b714be4da4ee04d8dba3bbfc50ebc4d45502fbddecc'
@@ -80,7 +85,8 @@ WORKER_FORWARD = (
 _C_IMPORT_OLD = 'from vllm.utils.torch_utils import current_stream\n'
 _C_IMPORT_NEW = (_C_IMPORT_OLD +
                  'from vllm.v1.flash_e3.worker_hooks import capture_context as _flash_s5_capture_context\n'
-                 'from vllm.v1.flash_e3.worker_hooks import capture_graph as _flash_s5_capture_graph, finish_graph as _flash_s5_finish_graph\n')
+                 'from vllm.v1.flash_e3.worker_hooks import capture_graph as _flash_s5_capture_graph, finish_graph as _flash_s5_finish_graph\n'
+                 'from vllm.v1.flash_e3.worker_hooks import checked_capture_stream as _flash_s5_checked_capture_stream\n')
 _C_CAPTURE_OLD = '        with graph_capture(device=self.device):\n'
 _C_CAPTURE_NEW = ('        with graph_capture(\n'
                   '            device=self.device,\n'
@@ -89,6 +95,9 @@ _C_CAPTURE_NEW = ('        with graph_capture(\n'
 
 _C_GRAPH_OLD = '                        graph = torch.cuda.CUDAGraph()\n'
 _C_GRAPH_NEW = '                        graph = _flash_s5_capture_graph(self)\n'
+_C_STREAM_OLD = '                            graph, self.pool, stream=current_stream()\n'
+_C_STREAM_NEW = ('                            graph, self.pool,\n'
+                 '                            stream=_flash_s5_checked_capture_stream(self, current_stream(), desc)\n')
 _C_STORE_OLD = '                        self.graphs[desc] = graph\n'
 _C_STORE_NEW = '                        _flash_s5_finish_graph(self, graph)\n' + _C_STORE_OLD
 
@@ -96,6 +105,7 @@ CUDAGRAPH_FORWARD = (
     (_C_IMPORT_OLD, _C_IMPORT_NEW),
     (_C_CAPTURE_OLD, _C_CAPTURE_NEW),
     (_C_GRAPH_OLD, _C_GRAPH_NEW),
+    (_C_STREAM_OLD, _C_STREAM_NEW),
     (_C_STORE_OLD, _C_STORE_NEW),
 )
 
@@ -316,7 +326,8 @@ def decode_probe_rpc(worker, command):
     if action == 'status':
         if set(command) != {'action'}:
             raise NativeStartupError('status has unexpected fields')
-        return {'rank': worker.rank, 'inventory': probe.inventory(), 'counters': probe.counters()}
+        return {'rank': worker.rank, 'inventory': probe.inventory(),
+                'counters': probe.counters(), 'memory': probe.memory_snapshot()}
     if action != 'transition':
         raise NativeStartupError('unknown decode probe RPC action')
     expected = {'action', 'engine_epoch', 'expected_route_generation', 'route_generation',
@@ -352,3 +363,49 @@ def finish_graph(manager, graph):
     if getattr(manager, '_flash_s5_keep_graphs', False):
         # keep_graph=True preserves nodes; instantiate before timing/pool accounting.
         graph.instantiate()
+
+
+def checked_capture_stream(manager, vllm_stream, descriptor, *, torch_module=None):
+    """Check the stream argument immediately before the actual graph context.
+
+    The vLLM helper has already run at the generated call site. Do not call it
+    again, repair its cache or change streams here. Stock/default-off is an
+    identity function with no torch/driver queries. Native handles stay private.
+    """
+    if (os.environ.get(PROBE_ENV, '0') != '1'
+            or getattr(manager, '_flash_s5_capture_context', None) is None):
+        return vllm_stream
+    from decode_probe import DecodeProbeError
+    from graph_router import ExecutionDescriptor, descriptor_name
+    owner = getattr(manager, '_flash_s5_capture_owner', None)
+    if owner is None or getattr(owner, 'state', None) != 'open':
+        raise DecodeProbeError('split capture has no open owning context')
+    if torch_module is None:
+        import torch as torch_module
+    expected = getattr(owner, 'decode_stream_token', None)
+    owning_stream = getattr(owner, 'decode_stream', None)
+    torch_stream = torch_module.cuda.current_stream(manager.device)
+    observed = (getattr(owning_stream, 'cuda_stream', None),
+                getattr(vllm_stream, 'cuda_stream', None),
+                getattr(torch_stream, 'cuda_stream', None))
+    if (type(expected) is not int or expected <= 0
+            or any(type(value) is not int or value != expected for value in observed)):
+        raise DecodeProbeError('split capture stream agreement failed')
+    local = ExecutionDescriptor.from_vllm(descriptor)
+    if local.cg_mode != 'full':
+        raise DecodeProbeError('split diagnostic capture is not FULL')
+    label = descriptor_name(local)
+    checks = getattr(manager, '_flash_s5_capture_stream_checks', None)
+    if checks is None:
+        checks = {}
+        manager._flash_s5_capture_stream_checks = checks
+    if label in checks:
+        raise DecodeProbeError('duplicate split capture stream check')
+    checks[label] = {
+        'descriptor': label, 'bank': 'decode-split',
+        'stream_label': 'decode-split-stream',
+        'context_label': 'decode-split-context',
+        'vllm_matches_owner': True, 'torch_matches_owner': True,
+        'basis': 'checked at torch.cuda.graph stream argument; not node placement',
+    }
+    return vllm_stream
