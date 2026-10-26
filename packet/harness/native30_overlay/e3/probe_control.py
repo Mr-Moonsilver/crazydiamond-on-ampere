@@ -2,13 +2,16 @@
 
 No dev-router switch, new executor, engine lifecycle control or arbitrary RPC.
 HTTP registration is lazy and default-off. A timeout may leave remote work in
-flight: quarantine blocks resume/transition; status is the only remaining action.
+flight: quarantine blocks resume/transition. A separate, explicitly read-only
+status (``read_only: True``) stays available after quarantine without consuming
+the mutation sequence or clearing quarantine.
 """
 import asyncio
 import copy
 import hashlib
 import ipaddress
 import json
+import math
 import secrets
 import time
 
@@ -20,6 +23,7 @@ class ProbeControlError(RuntimeError):
 RANKS = (0, 1, 2, 3)
 PATH = '/v1/flash_s5_decode_probe'
 ACTIONS = ('status', 'pause', 'transition', 'resume')
+READ_ONLY_FIELDS = frozenset(('action', 'run_id', 'read_only'))
 
 
 def _positive(value):
@@ -31,6 +35,26 @@ def _label(value):
             and all(c in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in value))
 
 
+def _bounded(value, depth=0):
+    """Copy only bounded scalar metadata; never exception/payload material."""
+    if value is None or type(value) is bool:
+        return value
+    if type(value) is int:
+        return value if -(2 ** 63) < value < 2 ** 63 else None
+    if type(value) is float:
+        return value if math.isfinite(value) else None
+    if type(value) is str:
+        return value[:200]
+    if depth >= 4:
+        return None
+    if type(value) is list or type(value) is tuple:
+        return [_bounded(item, depth + 1) for item in list(value)[:32]]
+    if type(value) is dict:
+        return {str(key)[:64]: _bounded(item, depth + 1)
+                for key, item in list(value.items())[:64]}
+    return None
+
+
 def _rank_map(rows):
     if type(rows) is not list or len(rows) != len(RANKS):
         raise ProbeControlError('incomplete-rank-coverage')
@@ -40,6 +64,36 @@ def _rank_map(rows):
             raise ProbeControlError('invalid-rank-coverage')
         mapped[row['rank']] = row
     return mapped
+
+
+def _observation(row, rank):
+    """Actual worker metadata if present; an explicit unknown otherwise.
+
+    Never substitutes a cached all-rank success: a missing/foreign/failed row is
+    reported as unknown with its actual rank, never filled in from another rank.
+    """
+    if type(row) is not dict or type(row.get('rank')) is not int:
+        return {'rank': rank, 'status': 'unknown', 'reason': 'missing-or-invalid-worker'}
+    if row['rank'] != rank:
+        return {'rank': rank, 'status': 'unknown', 'reason': 'foreign-worker-row'}
+    out = {'rank': rank, 'status': 'ok'}
+    counters = row.get('counters')
+    for key in ('inventory', 'counters', 'memory'):
+        if type(row.get(key)) is dict:
+            out[key] = _bounded(row[key])
+    if type(counters) is not dict:
+        out['status'] = 'partial'
+        out['reason'] = 'worker-counters-unavailable'
+        return out
+    if (counters.get('route') not in ('full', 'split')
+            or type(counters.get('route_generation')) is not int
+            or type(counters.get('storage_epoch')) is not int):
+        out['status'] = 'partial'
+        out['reason'] = 'worker-identity-unavailable'
+    if counters.get('quarantined') is not None:
+        out['status'] = 'quarantined'
+        out['reason'] = _bounded(counters.get('quarantined'))
+    return out
 
 
 class ProbeController:
@@ -63,6 +117,7 @@ class ProbeController:
         self.lock = asyncio.Lock()
         self.paused = False
         self.quarantined = False
+        self.quarantine_reason = None
         self.last = None
         self.ingress = AdmissionSeal(engine)
 
@@ -136,10 +191,96 @@ class ProbeController:
                 'basis': 'paused live request/queued-token counts and last actual per-worker batch',
                 'ranks': observed}
 
+    async def _observe(self):
+        """Read-only, owner-bound observation that survives quarantine.
+
+        Never raises for a worker/transport failure and never invents a zero or
+        an all-rank success. The mutation sequence and prior receipt are not
+        read or written.
+        """
+        started = time.monotonic_ns()
+        rows = None
+        failure = None
+        try:
+            rows = await asyncio.wait_for(self._rpc({'action': 'status'}), self.timeout_s)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - observation reports failure
+            failure = type(exc).__name__
+        # Query the actual awaited pause state.  A partial failure can complete
+        # pause_generation() and then fail the barrier before self.paused is
+        # updated, so the cached acknowledgement must never stand in for the
+        # engine's current state.  Bounded by the existing configured timeout.
+        paused = None
+        pause_state = 'unknown'
+        pause_failure = None
+        try:
+            actual_paused = await asyncio.wait_for(self.engine.is_paused(), self.timeout_s)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - observation reports failure
+            pause_failure = type(exc).__name__
+        else:
+            if actual_paused is True:
+                paused, pause_state = True, 'paused'
+            elif actual_paused is False:
+                paused, pause_state = False, 'running'
+            else:
+                pause_failure = 'pause-state-not-boolean'
+        by_rank = {}
+        foreign = []
+        if type(rows) is list:
+            for row in rows:
+                if type(row) is dict and type(row.get('rank')) is int:
+                    rank = row['rank']
+                    if rank in RANKS and rank not in by_rank:
+                        by_rank[rank] = row
+                    elif rank in RANKS:
+                        foreign.append(rank)
+                    else:
+                        foreign.append(rank if abs(rank) <= 63 else 'foreign')
+        workers = [_observation(by_rank.get(rank), rank) for rank in RANKS]
+        available = sum(1 for row in workers if row.get('status') in ('ok', 'quarantined'))
+        return {
+            'schema': 1, 'action': 'status', 'read_only': True,
+            'run_id': self.run_id, 'sequence_independent': True,
+            'observed': rows is not None,
+            'failure': failure,
+            'workers_available': available,
+            'workers_expected': len(RANKS),
+            'foreign_ranks': sorted(str(value) for value in foreign),
+            'quarantined': self.quarantined,
+            'quarantine_reason': self.quarantine_reason,
+            # Actual engine observation, not the last acknowledged mutation
+            # state.  None means unknown; it is never replaced by self.paused.
+            'paused': paused,
+            'pause_observation': {
+                'state': pause_state,
+                'basis': 'awaited AsyncLLM is_paused() under the configured timeout',
+                'failure': pause_failure,
+            },
+            'last_acknowledged_paused': self.paused,
+            'command_seq_unchanged': self.seq,
+            'workers': workers,
+            'start_monotonic_ns': started,
+            'end_monotonic_ns': time.monotonic_ns(),
+            'wall_s': time.time(),
+        }
+
     async def execute(self, command):
         if type(command) is not dict or not _label(command.get('run_id')):
             raise ProbeControlError('invalid-command')
         action = command.get('action')
+        # Explicitly sequence-independent observation. It is read-only, allowed
+        # after quarantine, does not adopt/change ownership and does not touch
+        # seq/last/ingress/paused.
+        if action == 'status' and command.get('read_only') is True:
+            if set(command) != READ_ONLY_FIELDS:
+                raise ProbeControlError('command-fields-differ')
+            async with self.lock:
+                if self.run_id is not None and self.run_id != command['run_id']:
+                    raise ProbeControlError('stale-command')
+                return await self._observe()
         if action == 'open':
             expected = {'action', 'run_id'}
         else:
@@ -169,6 +310,11 @@ class ProbeController:
             except BaseException as exc:
                 self.quarantined = True
                 self.ingress.sealed = True
+                if self.quarantine_reason is None:
+                    if isinstance(exc, ProbeControlError):
+                        self.quarantine_reason = str(exc)[:120]
+                    else:
+                        self.quarantine_reason = 'control-operation-failed:' + type(exc).__name__
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 if isinstance(exc, ProbeControlError):
@@ -339,7 +485,9 @@ def attach_router(args, app, env=None):
                     state['session'] = ProbeSession(state['controller'])
                 result = await state['session'].execute(command)
             else:
-                if state['session'] is not None:
+                read_only = (type(command) is dict and command.get('action') == 'status'
+                             and command.get('read_only') is True)
+                if state['session'] is not None and not read_only:
                     raise ProbeControlError('raw-control-owned-by-session')
                 result = await state['controller'].execute(command)
             return JSONResponse(result)

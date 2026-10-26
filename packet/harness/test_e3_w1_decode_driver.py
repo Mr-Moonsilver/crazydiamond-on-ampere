@@ -82,7 +82,9 @@ class FakeConfig:
                  never_start=(), http_error_streams=(), close_after=None,
                  early_eos_streams=(), early_eos_after=6,
                  finish_after=None, usage_only_every=0,
-                 continuous=True, split_reads=False):
+                 continuous=True, split_reads=False, reasoning_only=False,
+                 repeat_usage=False, final_usage_jump=0, malformed_after=None,
+                 silent_after=None, silent_final=False, silent_s=5.0):
         self.streams = streams
         self.prompt_tokens = prompt_tokens
         self.cached_tokens = cached_tokens
@@ -98,6 +100,15 @@ class FakeConfig:
         self.usage_only_every = usage_only_every
         self.continuous = continuous
         self.split_reads = split_reads
+        self.reasoning_only = reasoning_only
+        self.repeat_usage = repeat_usage
+        self.final_usage_jump = final_usage_jump
+        self.malformed_after = dict(malformed_after or {})
+        self.silent_after = dict(silent_after or {})
+        # Keep the connection open after the trailing usage batch so the final
+        # coalesced jump lands inside a full measured window.
+        self.silent_final = silent_final
+        self.silent_s = silent_s
 
 
 class FakeServer:
@@ -112,11 +123,13 @@ class FakeServer:
         self.thread.start()
         self.url = 'http://127.0.0.1:%d' % self.httpd.server_address[1]
 
-    def record(self, kind, stream, max_tokens, sha, t_ns):
+    def record(self, kind, stream, max_tokens, sha, t_ns, shape=None):
         with self.lock:
             self.requests.append({'kind': kind, 'stream': stream,
                                   'max_tokens': max_tokens, 'sha256': sha,
-                                  't_ns': t_ns})
+                                  't_ns': t_ns,
+                                  'seed': (shape or {}).get('seed'),
+                                  'temperature': (shape or {}).get('temperature')})
 
     def stop(self):
         self.httpd.shutdown()
@@ -167,7 +180,9 @@ class _Handler(BaseHTTPRequestHandler):
             max_tokens = body.get('max_tokens')
             kind = 'prepare' if max_tokens == 1 else 'measure'
             sha = hashlib.sha256(raw).hexdigest()
-            fake.record(kind, stream, max_tokens, sha, time.monotonic_ns())
+            fake.record(kind, stream, max_tokens, sha, time.monotonic_ns(),
+                        {'seed': body.get('seed'),
+                         'temperature': body.get('temperature')})
         except Exception:  # noqa: BLE001 - malformed probe request
             self.send_response(400)
             self.send_header('Content-Length', '0')
@@ -265,26 +280,46 @@ class _Handler(BaseHTTPRequestHandler):
             if stream in cfg.finish_after and sent >= cfg.finish_after[stream]:
                 finish = 'length'
             event = {'id': 'x',
-                     'choices': [{'index': 0, 'delta': {'content': content},
+                     'choices': [{'index': 0,
+                                  'delta': ({'reasoning_content': content}
+                                            if cfg.reasoning_only
+                                            else {'content': content}),
                                   'finish_reason': finish}]}
             usage = self._usage(cfg, cumulative)
             if usage is not None:
                 event['usage'] = usage
             if not self._event(event):
                 return
+            if cfg.repeat_usage and usage is not None:
+                # Same cumulative count again: not an arrival.
+                if not self._event({'choices': [], 'usage': usage}):
+                    return
             if cfg.usage_only_every and sent % cfg.usage_only_every == 0:
                 if not self._event({'choices': [],
                                     'usage': usage or {'completion_tokens': cumulative}}):
                     return
+            if stream in cfg.malformed_after and sent >= cfg.malformed_after[stream]:
+                self._raw(b'data: {"choices": [this is not json}\n\n')
+                return
             if finish:
                 break
             if stream in cfg.close_after and sent >= cfg.close_after[stream]:
                 return  # EOF without finish: a disconnect before the window ends
+            if stream in cfg.silent_after and sent >= cfg.silent_after[stream]:
+                # Advance once, then send nothing.  Only active client
+                # cancellation can end this read promptly.
+                time.sleep(cfg.silent_s)
+                return
             time.sleep(cfg.interval)
-        final_usage = self._usage(cfg, cumulative)
+        final_usage = self._usage(cfg, cumulative + cfg.final_usage_jump)
         if final_usage is not None:
             if not self._event({'choices': [], 'usage': final_usage}):
                 return
+        if cfg.silent_final:
+            # No [DONE]: the client must cancel its own connection at the end
+            # boundary, and the trailing batch remains inside the window.
+            time.sleep(cfg.silent_s)
+            return
         self._raw(b'data: [DONE]\n\n')
 
 
@@ -402,6 +437,10 @@ class FakeController(D.Controller):
                                    for rank in D.EXPECTED_RANKS],
                 'invalidation': {'prefill': 0, 'mixed': 0,
                                  'unsupported': 0, 'preempted': 0},
+                'invalidation_complete': {'prefill': True, 'mixed': True,
+                                          'unsupported': True, 'preempted': True},
+                'invalidation_lower_bounds': [],
+                'invalidation_basis': 'fake exact counter deltas',
             }
         self._mutate(receipt, mode, action, route_before, route_after)
         self.state['route'] = route_after
@@ -443,6 +482,14 @@ class FakeController(D.Controller):
             receipt['route_after'] = 'full'
         elif mode == 'counter_prefill':
             receipt['interval']['invalidation']['prefill'] = 1
+        elif mode == 'prefill_eligibility':
+            receipt['decode_eligibility']['ranks'][0]['prefill'] = True
+        elif mode == 'resume_clock_missing':
+            receipt.pop('clock_basis', None)
+        elif mode == 'ack_rank_bool':
+            for entry in receipt['ranks']:
+                if 'transition_ack' in entry:
+                    entry['transition_ack']['rank'] = True
         elif mode == 'counter_regress':
             for row in receipt['interval']['counters_after']:
                 row['decode_steps'] = 1
@@ -684,6 +731,204 @@ class DriverTest(unittest.TestCase):
                     'open_gap_ms', 'rate_tokens_per_s'):
             self.assertIn(key, window)
 
+    def test_reasoning_only_advances_are_counted_and_labeled(self):
+        self.start_server(reasoning_only=True, streams=1)
+        manifest = self.write_manifest(
+            repeats=1, route_plan=['split'], streams=1,
+            request_shape={'enable_thinking': True})
+        rc, data, _server, _controller, _out = self.run_driver(manifest=manifest)
+        self.assertEqual(rc, 0, data['summary'])
+        stream = data['repeats'][0]['streams'][0]
+        window = stream['window']
+        self.assertEqual(window['token_count_basis'], 'continuous_usage_stats')
+        self.assertEqual(window['readiness_basis'], 'first_cumulative_token_advance')
+        self.assertGreater(window['reasoning_only_arrivals'], 0)
+        self.assertEqual(window['content_observations'], 0)
+        self.assertEqual(window['usage_only_arrivals'], 0)
+        self.assertGreater(window['arrivals'], 0)
+        self.assertIsNotNone(stream['first_arrival_at_ns'])
+        self.assertTrue(data['repeats'][0]['valid'])
+
+    def test_repeated_cumulative_usage_is_not_an_arrival(self):
+        self.start_server(repeat_usage=True, streams=1)
+        manifest = self.write_manifest(repeats=1, route_plan=['split'], streams=1)
+        rc, data, _server, _controller, _out = self.run_driver(manifest=manifest)
+        self.assertEqual(rc, 0, data['summary'])
+        window = data['repeats'][0]['streams'][0]['window']
+        self.assertGreater(window['repeated_counts'], 0)
+        self.assertGreater(window['arrivals'], 0)
+        self.assertTrue(all(increment == 1
+                            for increment in window['arrival_increments']))
+        # A repeated cumulative count is not a second client-visible arrival.
+        self.assertEqual(window['completion_delta'], window['arrivals'])
+        self.assertEqual(len(set(window['arrival_offsets_ms'])),
+                         window['arrivals'])
+
+    def test_trailing_usage_batch_is_one_coalesced_arrival(self):
+        self.start_server(final_usage_jump=5, silent_final=True, streams=1)
+        manifest = self.write_manifest(repeats=1, route_plan=['split'], streams=1,
+                                       generation_budget=4, window_s=0.12,
+                                       request_shape={'continuous_usage_stats': True})
+        rc, data, _server, _controller, _out = self.run_driver(manifest=manifest)
+        self.assertEqual(rc, 0, data['summary'])
+        record = data['repeats'][0]
+        self.assertTrue(record['window']['full'])
+        window = record['streams'][0]['window']
+        self.assertGreaterEqual(window['coalesced_arrivals'], 1)
+        self.assertEqual(max(window['arrival_increments']), 5)
+        self.assertEqual(window['arrival_increments'].count(5), 1)
+        # The 5-token trailing batch is one timestamp, not five invented ones.
+        self.assertEqual(window['completion_delta'] - window['arrivals'], 4)
+        self.assertEqual(sum(window['arrival_increments']),
+                         window['completion_delta'])
+
+    def test_malformed_sse_is_an_explicit_error_not_a_partial_count(self):
+        self.start_server(malformed_after={0: 2}, streams=1)
+        manifest = self.write_manifest(repeats=1, route_plan=['split'], streams=1)
+        rc, data, _server, _controller, _out = self.run_driver(manifest=manifest)
+        self.assertNotEqual(rc, 0)
+        record = data['repeats'][0]
+        stream = record['streams'][0]
+        self.assertEqual(stream['error'], 'malformed_sse_json')
+        self.assertTrue(any(event.get('kind') == 'unparsed'
+                            for event in stream['events']))
+        self.assertTrue(any('stream_error_before_window_end' in reason
+                            for reason in record['reasons']))
+        self.assertFalse(record['valid'])
+        # No raw malformed payload text is retained in the artifact.
+        self.assertNotIn('this is not json', json.dumps(data))
+
+    def test_declared_seed_is_bound_to_every_sampling_request(self):
+        self.start_server(streams=3)
+        manifest = self.write_manifest(repeats=2, route_plan=['full', 'split'],
+                                       seed=9, streams=3,
+                                       request_shape={'temperature': 0.7})
+        rc, data, server, _controller, _out = self.run_driver(manifest=manifest)
+        self.assertEqual(rc, 0, data['summary'])
+        measures = server.measure_requests()
+        self.assertEqual(len(measures), 6)
+        self.assertTrue(all(row['seed'] == 9 for row in measures))
+        self.assertTrue(all(row['temperature'] == 0.7 for row in measures))
+        # Same live request bytes across the full/split switch, sampling seed
+        # included in the hash.
+        by_stream = {}
+        for row in measures:
+            by_stream.setdefault(row['stream'], set()).add(row['sha256'])
+        self.assertTrue(all(len(shas) == 1 for shas in by_stream.values()))
+        config = data['config']
+        self.assertEqual(config['SEED'], 9)
+        self.assertEqual(config['SAMPLING_SEED'], 9)
+        self.assertIn('sampling seed', config['SEED_PURPOSE'])
+        policy = config['COMPLETION_POLICY']
+        for key in ('per_request_start_min', 'per_request_start_max',
+                    'per_request_delta_min', 'per_request_delta_max'):
+            self.assertIsInstance(policy[key], int)
+        self.assertEqual(policy['per_request_start_min'], 0)
+        self.assertEqual(policy['per_request_start_max'], 100000)
+        # A different declared seed changes the request hash bytes.
+        other = self.write_manifest(repeats=1, route_plan=['full'], seed=10,
+                                    streams=1)
+        rc2, _data2, server2, _controller2, _out2 = self.run_driver(manifest=other)
+        self.assertEqual(rc2, 0)
+        first = {row['stream']: row['sha256'] for row in measures
+                 if row['stream'] == 0}
+        changed = {row['stream']: row['sha256']
+                   for row in server2.measure_requests() if row['stream'] == 0}
+        self.assertNotEqual(first[0], changed[0])
+
+    def test_silent_stream_is_cancelled_before_join_on_control_failure(self):
+        self.start_server(silent_after={0: 1}, silent_s=5.0, streams=1)
+        manifest = self.write_manifest(repeats=1, route_plan=['split'], streams=1)
+        controller = FakeController(streams=1,
+                                    modes={'pause_end': 'counter_prefill'})
+        started = time.monotonic()
+        rc, data, _server, _controller, _out = self.run_driver(
+            controller=controller, manifest=manifest)
+        elapsed = time.monotonic() - started
+        self.assertNotEqual(rc, 0)
+        record = data['repeats'][0]
+        # The end receipt fails measurement, but its lifecycle proof is intact:
+        # cleanup still runs and no reader may survive it.
+        self.assertTrue(any('interval_invalidated:prefill' in reason
+                            for reason in record['reasons']))
+        self.assertTrue(record['cleanup']['attempted'])
+        self.assertTrue(record['cleanup']['restore_before_drain'])
+        self.assertFalse(record['drain']['timeout'])
+        self.assertEqual(record['drain']['readers_alive'], [])
+        stream = record['streams'][0]
+        self.assertTrue(stream['cancel_requested'])
+        self.assertTrue(stream['reader_done'])
+        self.assertNotEqual(stream['disposition'], 'drain_timeout')
+        # Active cancellation, not the one-second bounded join, ends the read.
+        self.assertLess(elapsed, 3.0)
+
+    def test_entry_eligibility_failure_does_not_start_split_window(self):
+        self.start_server(streams=3)
+        manifest = self.write_manifest(repeats=1, route_plan=['split'], streams=3)
+        controller = FakeController(streams=3,
+                                    modes={'pause_enter_split': 'prefill_eligibility'})
+        rc, data, _server, _controller, _out = self.run_driver(
+            controller=controller, manifest=manifest)
+        self.assertNotEqual(rc, 0)
+        record = data['repeats'][0]
+        actions = [call['command']['action'] for call in controller.calls]
+        # Lifecycle proof alone is cleanup permission, never permission to
+        # resume into a measured window on a failed entry.
+        self.assertNotIn('resume', actions)
+        self.assertNotIn('pause_end', actions)
+        self.assertNotIn('leave_full', actions)
+        self.assertTrue(record['abort_run'])
+        self.assertIsNone(record['window'])
+        self.assertFalse(record['cleanup']['attempted'])
+        self.assertEqual(record['drain']['readers_alive'], [])
+        self.assertTrue(any('decode_eligibility_prefill_observed' in reason
+                            for reason in record['reasons']), record['reasons'])
+        self.assertFalse(record['valid'])
+        self.assertEqual(record['phase'], 'aborted')
+
+    def test_first_resume_failure_opens_no_window_but_restores_full(self):
+        self.start_server(streams=3)
+        manifest = self.write_manifest(repeats=1, route_plan=['split'], streams=3)
+        controller = FakeController(
+            streams=3, modes={'resume': ['resume_clock_missing', 'valid']})
+        rc, data, _server, _controller, _out = self.run_driver(
+            controller=controller, manifest=manifest)
+        self.assertNotEqual(rc, 0)
+        record = data['repeats'][0]
+        actions = [call['command']['action'] for call in controller.calls]
+        self.assertEqual(actions, ['prepare', 'pause_enter_split', 'resume',
+                                   'pause_end', 'leave_full', 'resume'])
+        self.assertFalse(record['window']['measured'])
+        self.assertFalse(record['measurement']['valid'])
+        self.assertFalse(record['measurement']['window_measured'])
+        self.assertTrue(record['cleanup']['restore_before_drain'])
+        self.assertFalse(record['abort_run'])
+        self.assertIn('cleanup_resume', record['calls'])
+        self.assertTrue(any('resume_receipt_invalid' in reason
+                            for reason in record['reasons']), record['reasons'])
+        self.assertTrue(any('clock_basis_missing' in reason
+                            for reason in record['reasons']), record['reasons'])
+        self.assertEqual(controller.state['route'], 'full')
+        self.assertEqual(data['summary']['verdict'], 'INCONCLUSIVE')
+
+    def test_malformed_leave_transition_proof_sends_no_cleanup_resume(self):
+        self.start_server(streams=3)
+        manifest = self.write_manifest(repeats=1, route_plan=['split'], streams=3)
+        controller = FakeController(streams=3,
+                                    modes={'leave_full': 'ack_rank_bool'})
+        rc, data, _server, _controller, _out = self.run_driver(
+            controller=controller, manifest=manifest)
+        self.assertNotEqual(rc, 0)
+        record = data['repeats'][0]
+        actions = [call['command']['action'] for call in controller.calls]
+        self.assertEqual(actions.count('resume'), 1)
+        self.assertNotIn('cleanup_resume', record['calls'])
+        self.assertFalse(record['cleanup']['leave_ok'])
+        self.assertFalse(record['cleanup']['resume_ok'])
+        self.assertTrue(record['abort_run'])
+        self.assertTrue(any('transition_ack_identity_type' in reason
+                            for reason in record['calls']['leave']['lifecycle_reasons']))
+
     def test_explicit_end_boundary_before_client_completion(self):
         self.start_server()
         manifest = self.write_manifest(repeats=1, route_plan=['split'])
@@ -789,9 +1034,17 @@ class DriverTest(unittest.TestCase):
         rc, data, _server, _controller, _out = self.run_driver(manifest=manifest)
         self.assertEqual(rc, 2, data['summary'])
         record = data['repeats'][0]
-        self.assertFalse(record['exposure']['proven'])
-        self.assertTrue(any('completion_counters_unavailable' in reason
+        # Content without cumulative counts is retained as a content
+        # observation, never promoted to a token arrival or readiness proof.
+        self.assertFalse(record['open']['complete'])
+        self.assertTrue(any('stream_content_without_cumulative_counts' in reason
                             for reason in record['reasons']))
+        for stream in record['streams']:
+            self.assertFalse(stream['completion_counts_observed'])
+            self.assertEqual(stream['window']['token_count_basis'], 'none')
+            self.assertGreater(stream['window']['content_without_count'], 0)
+            self.assertIsNone(stream['first_arrival_at_ns'])
+            self.assertIsNotNone(stream['first_content_at_ns'])
 
     # --- controller receipt contract ----------------------------------------
 
@@ -801,6 +1054,20 @@ class DriverTest(unittest.TestCase):
         manifest = self.write_manifest(repeats=repeats, route_plan=routes)
         controller = FakeController(streams=3, modes=mode)
         return self.run_driver(controller=controller, manifest=manifest)
+
+    def test_partial_entry_ack_does_not_resume_or_open_window(self):
+        rc, data, _server, controller, _out = self._run_with_mode(
+            {'pause_enter_split': 'partial'})
+        self.assertNotEqual(rc, 0)
+        record = data['repeats'][0]
+        actions = [call['command']['action'] for call in controller.calls]
+        self.assertNotIn('resume', actions)
+        self.assertIsNone(record['window'])
+        self.assertFalse(record['cleanup']['attempted'])
+        self.assertTrue(record['abort_run'])
+        self.assertFalse(record['calls']['pause']['lifecycle_ok'])
+        self.assertTrue(any(reason.startswith(('inconclusive:', 'contract:'))
+                            for reason in record['calls']['pause']['lifecycle_reasons']))
 
     def test_missing_rank_is_a_contract_failure(self):
         rc, data, _server, _controller, _out = self._run_with_mode(
@@ -877,7 +1144,12 @@ class DriverTest(unittest.TestCase):
         self.assertTrue(record['window']['measured'])
         self.assertTrue(any('interval_invalidated:prefill' in reason
                             for reason in record['reasons']))
-        self.assertFalse(record['cleanup']['attempted'])
+        # The measured interval is invalid, but the independent lifecycle proof
+        # still allows the proven route to be restored and resumed.
+        self.assertFalse(record['measurement']['valid'])
+        self.assertTrue(record['measurement']['lifecycle_ok'])
+        self.assertTrue(record['cleanup']['attempted'])
+        self.assertTrue(record['cleanup']['restore_before_drain'])
 
     def test_final_interval_counter_regression_invalidates(self):
         rc, data, _server, _controller, _out = self._run_with_mode(
@@ -981,6 +1253,110 @@ class DriverTest(unittest.TestCase):
         self.assertFalse(valid)
         self.assertTrue(any('pause_end_not_called' in reason
                             for reason in reasons))
+
+    def test_receipt_sanitizer_retains_proof_metadata_and_drops_payloads(self):
+        ranks = list(D.EXPECTED_RANKS)
+        batch = {'sequence': 10, 'route': 'split', 'route_generation': 2,
+                 'num_reqs': 8, 'num_tokens': 8, 'decode_only': True,
+                 'full_graph': True}
+        counters = {'route': 'split', 'route_generation': 2, 'storage_epoch': 1,
+                    'replays': 4, 'replays_by_bank': {'decode-split': 4},
+                    'in_flight': 0, 'sampling_pending': False,
+                    'transition_pending': False,
+                    'batch_observations': {
+                        'decode_batches': 10, 'scheduler_observations': 10,
+                        'preempted_requests': 0,
+                        'unknown_preemption_observations': 0, 'last': dict(batch)}}
+        interval_rows = [{'rank': rank, 'decode_steps': 10,
+                          'counters': copy.deepcopy(counters)}
+                         for rank in ranks]
+        receipt = {
+            'schema': 1, 'run_id': 'r', 'repeat': 0, 'command_seq': 3,
+            'action': 'pause_end', 'cohort_id': 'c', 'status': 'ok',
+            'engine_epoch': 7, 'storage_epoch': 1,
+            'route_before': 'split', 'route_after': 'split',
+            'route_generation_before': 2, 'route_generation_after': 2,
+            'expected_rank_set': ranks,
+            'ranks': [{'rank': rank, 'status': 'ok'} for rank in ranks],
+            'observed_clock_ns': 123,
+            'clock_basis': 'monotonic', 'lifecycle_proven': True,
+            'pause': {'mode': 'keep', 'clear_cache': False,
+                      'completed': True, 'drained': True},
+            'resume': {'completed': True},
+            'ingress': {'sealed': True, 'pending': 0, 'rejected': 2,
+                        'basis': 'single AsyncLLM add_request entry'},
+            'barrier_replies': [{'rank': rank, 'ack': 'flash_s5_probe_barrier',
+                                 'mode': 'decode-only-probe', 'route': 'split',
+                                 'route_generation': 2, 'storage_epoch': 1,
+                                 'engine_epoch': 7, 'drained_streams': 8}
+                                for rank in ranks],
+            'interval': {'available': True, 'valid': True, 'reasons': [],
+                         'unavailable': [], 'observer_basis': 'counters',
+                         'invalidation': {'prefill': 0, 'mixed': 0,
+                                          'unsupported': 0, 'preempted': 0},
+                         'invalidation_complete': {'prefill': True, 'mixed': True,
+                                                   'unsupported': True,
+                                                   'preempted': True},
+                         'invalidation_lower_bounds': [],
+                         'invalidation_basis': 'synthetic exact counters',
+                         'counters_before': interval_rows,
+                         'counters_after': interval_rows},
+            'decode_eligibility': {
+                'cohort_id': 'c', 'cohort_cardinality': 8, 'reason': 'actual',
+                'ranks': [dict(batch, rank=rank, batch_reqs=8,
+                               scheduled_tokens=8, prefill=False)
+                          for rank in ranks]},
+            'worker_observations': [{
+                'rank': rank,
+                'inventory': {'helper_source_sha256': 'a' * 64,
+                              'library_sha256': 'b' * 64,
+                              'binding_identity': {'library_sha256': 'b' * 64,
+                                                   'abi': '3',
+                                                   'native_address': '0xdead'},
+                              'storage_epoch': 1, 'route': 'split',
+                              'route_generation': 2},
+                'counters': copy.deepcopy(counters),
+                'memory': {'schema': 1, 'monotonic_ns': 5,
+                           'device_free_bytes': None, 'peak_scope': 'lifetime',
+                           'device_scope': 'point sample', 'errors': [{'code': 'x'}],
+                           'allocator': {'allocated_peak_bytes': 9}},
+                'raw_graph': 'payload'} for rank in ranks],
+            'payload': 'secret prompt text', 'exception_message': 'private',
+        }
+        retained = D._sanitize_receipt(receipt)
+        dumped = json.dumps(retained)
+        for forbidden in ('payload', 'exception_message', 'raw_graph',
+                          'secret prompt text', 'private', '0xdead'):
+            self.assertNotIn(forbidden, dumped)
+        self.assertEqual(retained['ingress'],
+                         {'sealed': True, 'pending': 0, 'rejected': 2,
+                          'basis': 'single AsyncLLM add_request entry'})
+        self.assertEqual(len(retained['barrier_replies']), 4)
+        self.assertEqual(retained['barrier_replies'][0]['ack'],
+                         'flash_s5_probe_barrier')
+        self.assertEqual(retained['observed_clock_ns'], 123)
+        self.assertEqual(retained['clock_basis'], 'monotonic')
+        self.assertEqual(retained['lifecycle_proven'], True)
+        before = retained['interval']['counters_before'][0]['counters']
+        self.assertEqual(before['replays_by_bank'], {'decode-split': 4})
+        self.assertEqual(before['batch_observations']['last']['sequence'], 10)
+        self.assertTrue(before['batch_observations']['last']['decode_only'])
+        self.assertTrue(before['batch_observations']['last']['full_graph'])
+        worker = retained['worker_observations'][0]
+        self.assertEqual(worker['inventory']['binding_identity'],
+                         {'library_sha256': 'b' * 64, 'abi': '3'})
+        self.assertEqual(worker['memory']['allocator']['allocated_peak_bytes'], 9)
+        self.assertEqual(worker['memory']['errors'], [{'code': 'x'}])
+        self.assertIn('scope', worker['memory'])
+        # Canonical core survives independently of the display receipt.
+        core = D._receipt_core(receipt)
+        recomputed = json.loads(json.dumps(core))
+        self.assertEqual(recomputed, core)
+        self.assertEqual(D._sha256_json(recomputed), D._sha256_json(core))
+        ctx = {'run_id': 'r', 'repeat': 0, 'command_seq': 3,
+               'action': 'pause_end', 'cohort_id': 'c', 'engine_epoch': 7,
+               'storage_epoch': 1, 'route': 'split', 'route_generation': 2}
+        self.assertTrue(D.validate_lifecycle_receipt(receipt, {}, ctx)[0])
 
     def test_resummarize_reproduces_all_verdicts_including_invalid(self):
         self.start_server(early_eos_streams={1}, early_eos_after=3)
@@ -1100,18 +1476,35 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertFalse(D._exposure(rows,work)['proven'])
 
     def test_sse_regression_or_exception_does_not_echo_payload(self):
-        import io
         from unittest.mock import patch
         import types
-        payload=b'data: {"usage":{"completion_tokens":9},"choices":[]}\n\ndata: {"usage":{"completion_tokens":8},"choices":[]}\n\n'
-        state=D.StreamState(0,[],{}, {})
-        with patch.object(D.urllib.request,'urlopen',return_value=io.BytesIO(payload)):
-            D.stream_reader(state,types.SimpleNamespace(read_timeout_s=1),'http://127.0.0.1',threading.Event())
-        self.assertEqual(state.error,'ValueError')
-        state=D.StreamState(0,[],{}, {})
-        with patch.object(D.urllib.request,'urlopen',side_effect=RuntimeError('private response payload')):
-            D.stream_reader(state,types.SimpleNamespace(read_timeout_s=1),'http://127.0.0.1',threading.Event())
-        self.assertEqual(state.error,'RuntimeError')
+
+        class FakeResponse:
+            def __init__(self, rows):
+                self.rows = list(rows)
+
+            def readline(self):
+                return self.rows.pop(0) if self.rows else b''
+
+            def close(self):
+                pass
+
+        payload = [
+            b'data: {"usage":{"completion_tokens":9},"choices":[]}\n',
+            b'\n',
+            b'data: {"usage":{"completion_tokens":8},"choices":[]}\n',
+        ]
+        state = D.StreamState(0, [], {}, {})
+        with patch.object(D, '_open_stream', return_value=FakeResponse(payload)):
+            D.stream_reader(state, types.SimpleNamespace(read_timeout_s=1),
+                            'http://127.0.0.1', threading.Event())
+        self.assertEqual(state.error, 'completion_counter_regressed')
+        state = D.StreamState(0, [], {}, {})
+        with patch.object(D, '_open_stream',
+                          side_effect=RuntimeError('private response payload')):
+            D.stream_reader(state, types.SimpleNamespace(read_timeout_s=1),
+                            'http://127.0.0.1', threading.Event())
+        self.assertEqual(state.error, 'RuntimeError')
 
     def test_existing_artifact_refused_before_requests_and_resummarize_is_read_only(self):
         from unittest.mock import patch
@@ -1120,6 +1513,103 @@ class ReviewRegressionTests(unittest.TestCase):
             with patch.object(D,'run',side_effect=AssertionError('must not run')):
                 self.assertEqual(D.main(['http://127.0.0.1','m',str(path)],env={}),2)
             self.assertEqual(path.read_text(),'{"preserved":true}')
+
+    def test_both_validators_reject_malformed_identity_and_rank_evidence(self):
+        def base_receipt(action, route, generation, target_route):
+            ctl = FakeController(streams=3, engine_epoch=7, storage_epoch=1,
+                                 generation=generation)
+            ctl.state = {'route': route, 'generation': generation,
+                         'engine_epoch': 7, 'storage_epoch': 1}
+            ctx = {'run_id': 'r', 'repeat': 0, 'cohort_id': 'c',
+                   'command_seq': 0, 'action': action, 'engine_epoch': 7,
+                   'storage_epoch': 1, 'route': route,
+                   'route_generation': generation, 'streams': 3}
+            command = D._next_command(ctx, action, target_route)
+            ctx['command_seq'] = command['command_seq']
+            receipt, _transport = ctl.execute(command, 1.0)
+            return receipt, command, ctx
+
+        steady, steady_cmd, steady_ctx = base_receipt(
+            'pause_end', 'split', 2, 'split')
+        transition, t_cmd, t_ctx = base_receipt(
+            'pause_enter_split', 'full', 1, 'split')
+        for receipt, command, ctx in ((steady, steady_cmd, steady_ctx),
+                                      (transition, t_cmd, t_ctx)):
+            self.assertTrue(D.validate_receipt(receipt, command, ctx)[0])
+            self.assertTrue(
+                D.validate_lifecycle_receipt(receipt, command, ctx)[0])
+
+        def set_key(key, value):
+            return lambda r: r.__setitem__(key, value)
+
+        def set_rank(row_key, value):
+            return lambda r: r[row_key][0].__setitem__('rank', value)
+
+        def set_ack(key, value):
+            return lambda r: r['ranks'][0]['transition_ack'].__setitem__(key, value)
+
+        def set_barrier(key, value):
+            return lambda r: r['barrier_replies'][0].__setitem__(key, value)
+
+        def set_rank_set(index, value):
+            return lambda r: r['expected_rank_set'].__setitem__(index, value)
+
+        counterexamples = [
+            ('engine_epoch_bool', steady, steady_cmd, steady_ctx,
+             set_key('engine_epoch', True)),
+            ('engine_epoch_float', steady, steady_cmd, steady_ctx,
+             set_key('engine_epoch', 7.0)),
+            ('storage_epoch_bool', steady, steady_cmd, steady_ctx,
+             set_key('storage_epoch', True)),
+            ('route_generation_before_bool', steady, steady_cmd, steady_ctx,
+             set_key('route_generation_before', True)),
+            ('route_generation_after_float', steady, steady_cmd, steady_ctx,
+             set_key('route_generation_after', 2.0)),
+            ('expected_rank_set_float', steady, steady_cmd, steady_ctx,
+             set_rank_set(0, 0.0)),
+            ('expected_rank_set_bool', steady, steady_cmd, steady_ctx,
+             set_rank_set(0, False)),
+            ('expected_rank_set_short', steady, steady_cmd, steady_ctx,
+             lambda r: r['expected_rank_set'].pop()),
+            ('expected_rank_set_duplicate', steady, steady_cmd, steady_ctx,
+             lambda r: r['expected_rank_set'].__setitem__(3, 2)),
+            ('rank_bool', steady, steady_cmd, steady_ctx,
+             set_rank('ranks', True)),
+            ('rank_float', steady, steady_cmd, steady_ctx,
+             set_rank('ranks', 0.0)),
+            ('rank_duplicate', steady, steady_cmd, steady_ctx,
+             lambda r: r['ranks'][-1].__setitem__('rank', 0)),
+            ('rank_missing', steady, steady_cmd, steady_ctx,
+             lambda r: r['ranks'].pop()),
+            ('barrier_rank_bool', steady, steady_cmd, steady_ctx,
+             set_barrier('rank', True)),
+            ('barrier_engine_bool', steady, steady_cmd, steady_ctx,
+             set_barrier('engine_epoch', True)),
+            ('barrier_storage_float', steady, steady_cmd, steady_ctx,
+             set_barrier('storage_epoch', 1.0)),
+            ('barrier_generation_bool', steady, steady_cmd, steady_ctx,
+             set_barrier('route_generation', True)),
+            ('transition_ack_rank_bool', transition, t_cmd, t_ctx,
+             set_ack('rank', True)),
+            ('transition_ack_rank_float', transition, t_cmd, t_ctx,
+             set_ack('rank', 0.0)),
+            ('transition_ack_engine_bool', transition, t_cmd, t_ctx,
+             set_ack('engine_epoch', True)),
+            ('transition_ack_storage_float', transition, t_cmd, t_ctx,
+             set_ack('storage_epoch', 1.0)),
+            ('transition_ack_generation_bool', transition, t_cmd, t_ctx,
+             set_ack('route_generation', True)),
+            ('transition_ack_missing', transition, t_cmd, t_ctx,
+             lambda r: r['ranks'][0].pop('transition_ack')),
+        ]
+        for name, receipt, command, ctx, mutate in counterexamples:
+            for validator in (D.validate_receipt, D.validate_lifecycle_receipt):
+                bad = copy.deepcopy(receipt)
+                mutate(bad)
+                ok, reasons, severity, _state = validator(bad, command, ctx)
+                self.assertFalse(ok, '%s accepted by %s' % (name, validator.__name__))
+                self.assertNotEqual(severity, 'valid', name)
+                self.assertTrue(reasons, name)
 
 if __name__ == '__main__':
     unittest.main()

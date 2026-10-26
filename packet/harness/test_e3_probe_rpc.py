@@ -63,6 +63,25 @@ class RpcTests(unittest.TestCase):
             self.call()
         self.assertEqual(len(self.requests),1)
 
+    def test_read_only_status_is_sequence_independent_but_still_identity_bound(self):
+        self.command = dict(run_id='fixture', action='status', read_only=True)
+        self.result = dict(schema=1, run_id='fixture', action='status',
+                           read_only=True, sequence_independent=True,
+                           quarantined=True, quarantine_reason='fixture-reason')
+        self.assertEqual(self.call(raw=True), self.result)
+        self.assertEqual(self.call(), self.result)
+        self.assertEqual([row[0] for row in self.requests],
+                         [PATH, PATH + '/session'])
+        self.assertTrue(all(row[2] == self.command for row in self.requests))
+        for change in (dict(read_only=False), dict(sequence_independent=False),
+                       dict(action='prepare'), dict(run_id='other'),
+                       dict(schema=True)):
+            original = self.result.copy()
+            self.result.update(change)
+            with self.assertRaisesRegex(TransportError, 'identity'):
+                self.call(raw=True)
+            self.result = original
+
     def test_response_limit_is_real(self):
         self.result['extra']='x'*200
         with patch('e3_probe_rpc.MAX_RESPONSE',64):

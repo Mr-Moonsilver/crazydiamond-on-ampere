@@ -26,11 +26,18 @@ class Engine:
         self.pause_gate = None
         self.rpc_failure = False
         self.last_decode = True
+        self.pause_state = None
+        self.pause_state_delay = 0.0
 
     def get_num_unfinished_requests(self): return self.unfinished
     def get_num_queued_tokens(self): return self.queued
     async def add_request(self, *args, **kwargs): return 'accepted'
-    async def is_paused(self): return self.paused
+    async def is_paused(self):
+        if self.pause_state == 'raise':
+            raise RuntimeError('private pause-state failure')
+        if self.pause_state == 'slow':
+            await asyncio.sleep(self.pause_state_delay)
+        return self.paused
 
     async def pause_generation(self, **kwargs):
         self.calls.append(('pause', kwargs))
@@ -212,12 +219,14 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         self.modules.start(); self.addCleanup(self.modules.stop)
         self.state = attach_router(self.args,self.app,self.env)
 
-    async def request(self, command, *, host='127.0.0.1', auth='Bearer fixture-key', raw=None):
+    async def request(self, command, *, host='127.0.0.1', auth='Bearer fixture-key', raw=None,
+                      path=None):
         data = json.dumps(command).encode() if raw is None else raw
         async def stream():
             yield data[:3]; yield data[3:]
         request = types.SimpleNamespace(client=types.SimpleNamespace(host=host),headers={'authorization':auth},
-                                        stream=stream,app=self.app,url=types.SimpleNamespace(path=PATH))
+                                        stream=stream,app=self.app,
+                                        url=types.SimpleNamespace(path=path or PATH))
         return await self.app.router.fn(request)
 
     async def test_authenticated_local_open_uses_fixed_actual_controller(self):
@@ -237,6 +246,152 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
             response = await self.request(None,raw=data)
             self.assertEqual(response.status_code,code)
         self.assertIsNone(self.state['controller'])
+
+    async def test_read_only_status_survives_session_quarantine_over_http(self):
+        from probe_session import receipt_digest
+        engine = self.app.state.engine_client
+        engine.unfinished = 0
+        fields = dict(schema=1, run_id='http-session', repeat=0, action='prepare',
+                      target_route='full', cohort_id='cohort-0', cohort_size=8,
+                      prior_receipt=None, expected_rank_set=[0, 1, 2, 3],
+                      command_seq=1)
+        response = await self.request(fields, path=PATH + '/session')
+        self.assertEqual(response.status_code, 200)
+        prior = {'command_seq': 1, 'receipt_sha256': receipt_digest(response.value)}
+        pause = dict(fields, command_seq=2, action='pause_full', prior_receipt=prior)
+        engine = self.app.state.engine_client
+        engine.rpc_failure = True
+        failed = await self.request(pause, path=PATH + '/session')
+        self.assertEqual(failed.status_code, 409)
+        self.assertEqual(failed.value,
+                         {'error': 'control-operation-failed:RuntimeError'})
+        self.assertTrue(self.state['session'].failed)
+        self.assertTrue(self.state['controller'].quarantined)
+
+        # Raw read-only status is authenticated, ownership-bound and available
+        # after quarantine; failed workers are explicit unknown, not cached
+        # all-rank success.
+        raw = await self.request({'action': 'status', 'run_id': 'http-session',
+                                  'read_only': True})
+        self.assertEqual(raw.status_code, 200)
+        value = raw.value
+        self.assertTrue(value['read_only'])
+        self.assertTrue(value['sequence_independent'])
+        self.assertTrue(value['quarantined'])
+        self.assertEqual(value['quarantine_reason'],
+                         'control-operation-failed:RuntimeError')
+        self.assertEqual(value['command_seq_unchanged'], 1)
+        self.assertFalse(value['observed'])
+        self.assertEqual(value['workers_available'], 0)
+        self.assertEqual([row['rank'] for row in value['workers']], [0, 1, 2, 3])
+        self.assertTrue(all(row['status'] == 'unknown'
+                            for row in value['workers']))
+
+        # The session route exposes the same observation without consuming or
+        # rewriting the driver receipt/sequence chain.
+        session_status = await self.request(
+            {'schema': 1, 'run_id': 'http-session', 'action': 'status',
+             'read_only': True}, path=PATH + '/session')
+        self.assertEqual(session_status.status_code, 200)
+        observed = session_status.value
+        self.assertTrue(observed['sequence_independent'])
+        self.assertTrue(observed['session']['failed'])
+        self.assertEqual(observed['session']['command_seq'], 2)
+        self.assertEqual(observed['session']['prior_receipt'], prior)
+        self.assertEqual(observed['controller']['command_seq_unchanged'], 1)
+        self.assertEqual(observed['controller']['workers_available'], 0)
+
+        # Recovery of transport only restores observation. Quarantine and the
+        # sequence remain untouched, and mutations are still refused.
+        engine.rpc_failure = False
+        again = await self.request({'action': 'status', 'run_id': 'http-session',
+                                    'read_only': True})
+        self.assertEqual(again.status_code, 200)
+        self.assertTrue(again.value['quarantined'])
+        self.assertEqual(again.value['command_seq_unchanged'], 1)
+        self.assertEqual(again.value['workers_available'], 4)
+        by_rank = {row['rank']: row for row in again.value['workers']}
+        for rank in range(4):
+            self.assertEqual(by_rank[rank]['status'], 'ok')
+            self.assertEqual(by_rank[rank]['counters']['route'], 'full')
+            self.assertIn('batch_observations',
+                          by_rank[rank]['counters'])
+            self.assertIn('inventory', by_rank[rank])
+        raw_mutation = await self.request({'action': 'open', 'run_id': 'other'})
+        self.assertEqual(raw_mutation.status_code, 409)
+        session_mutation = await self.request(
+            dict(fields, command_seq=3, prior_receipt=prior),
+            path=PATH + '/session')
+        self.assertEqual(session_mutation.status_code, 409)
+        self.assertTrue(self.state['controller'].quarantined)
+
+    async def test_read_only_status_observes_actual_pause_after_partial_failure(self):
+        engine = self.app.state.engine_client
+        opened = await self.request({'action': 'open', 'run_id': 'partial-run'})
+        self.assertEqual(opened.status_code, 200)
+        ctl = self.state['controller']
+
+        def fail_barrier(command, rows):
+            if command['action'] == 'barrier':
+                raise RuntimeError('private barrier failure')
+            return rows
+
+        engine.corrupt = fail_barrier
+        paused = await self.request({'action': 'pause', 'run_id': 'partial-run',
+                                     'engine_epoch': ctl.epoch, 'seq': 1})
+        self.assertEqual(paused.status_code, 409)
+        # The awaited pause completed; the barrier failed before the cached
+        # acknowledgement was updated.
+        self.assertTrue(engine.paused)
+        self.assertFalse(ctl.paused)
+        self.assertTrue(ctl.quarantined)
+
+        command = {'action': 'status', 'run_id': 'partial-run', 'read_only': True}
+        status = await self.request(command)
+        self.assertEqual(status.status_code, 200)
+        value = status.value
+        self.assertIs(value['paused'], True)
+        self.assertEqual(value['pause_observation']['state'], 'paused')
+        self.assertIs(value['last_acknowledged_paused'], False)
+        self.assertTrue(value['quarantined'])
+        self.assertEqual(value['command_seq_unchanged'], 1)
+        self.assertEqual(value['workers_available'], 4)
+        self.assertEqual([row['rank'] for row in value['workers']], [0, 1, 2, 3])
+
+        # A failed pause observation is unknown, never the cached value.
+        engine.corrupt = None
+        engine.pause_state = 'raise'
+        failed = await self.request(command)
+        self.assertEqual(failed.status_code, 200)
+        self.assertIsNone(failed.value['paused'])
+        self.assertEqual(failed.value['pause_observation']['state'], 'unknown')
+        self.assertEqual(failed.value['pause_observation']['failure'], 'RuntimeError')
+        self.assertEqual(failed.value['workers_available'], 4)
+        self.assertIs(failed.value['last_acknowledged_paused'], False)
+        self.assertTrue(failed.value['quarantined'])
+
+        # Timed-out pause observation is also unknown.
+        engine.pause_state = 'slow'
+        engine.pause_state_delay = 1.0
+        ctl.timeout_s = 0.05
+        timed = await self.request(command)
+        self.assertEqual(timed.status_code, 200)
+        self.assertIsNone(timed.value['paused'])
+        self.assertEqual(timed.value['pause_observation']['failure'], 'TimeoutError')
+        self.assertEqual(timed.value['workers_available'], 4)
+        self.assertEqual(timed.value['command_seq_unchanged'], 1)
+        self.assertTrue(timed.value['quarantined'])
+
+        # Observation neither consumed the mutation sequence nor cleared
+        # quarantine; cancellation of the slow query did not leak a state write.
+        blocked = await self.request({'action': 'resume', 'run_id': 'partial-run',
+                                      'engine_epoch': ctl.epoch, 'seq': 2,
+                                      'cohort_size': 8})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertTrue(ctl.quarantined)
+        self.assertEqual(ctl.seq, 1)
+        self.assertTrue(any(call[0] == 'pause' for call in engine.calls))
+        self.assertFalse(any(call[0] == 'resume' for call in engine.calls))
 
     async def test_default_off_no_registration_and_missing_auth_refuses(self):
         app = types.SimpleNamespace()
