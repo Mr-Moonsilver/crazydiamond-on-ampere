@@ -58,6 +58,8 @@ BASE_MANIFEST = {
     'completion_policy': {
         'per_request_delta_min': 1,
         'per_request_delta_max': 100000,
+        'per_request_start_min': 0,
+        'per_request_start_max': 100000,
         'matched_across_routes': True,
     },
     'context_position_policy': 'same prompt, seed and context position per stream across routes',
@@ -375,13 +377,18 @@ class FakeController(D.Controller):
                                 'completed': True, 'drained': True}
         if action == 'resume':
             receipt['resume'] = {'completed': True}
+        if action in ('pause_enter_split', 'pause_full', 'pause_end', 'resume'):
+            receipt['barrier_replies'] = [dict(rank=r, ack='flash_s5_probe_barrier',
+                mode='decode-only-probe', route=route_before, route_generation=generation_before,
+                engine_epoch=before['engine_epoch'], storage_epoch=before['storage_epoch'],
+                drained_streams=3) for r in D.EXPECTED_RANKS]
         if action in ('pause_enter_split', 'pause_full'):
             receipt['decode_eligibility'] = {
                 'cohort_id': command['cohort_id'],
                 'cohort_cardinality': self.streams,
                 'ranks': [{'rank': rank,
                            'batch_reqs': self.streams,
-                           'scheduled_tokens': self.streams * 8,
+                           'scheduled_tokens': self.streams,
                            'prefill': False}
                           for rank in D.EXPECTED_RANKS],
                 'reason': 'fake worker observation: live cohort on every rank in a decode batch',
@@ -465,12 +472,12 @@ class DriverTest(unittest.TestCase):
         return path, manifest
 
     def run_driver(self, controller=None, server=None, manifest=None,
-                   env_overrides=None, out_name='out.json', use_controller_env=False):
+                   env_overrides=None, out_name=None, use_controller_env=False):
         server = server or self.server
         manifest_path, manifest_data = manifest or self.write_manifest()
         if controller is None:
             controller = FakeController(streams=manifest_data['streams'])
-        out_path = Path(self.temp.name) / out_name
+        out_path = Path(self.temp.name) / (out_name or ('out-%d.json' % len(list(Path(self.temp.name).glob('out-*.json')))))
         env = {
             'WORKLOAD': str(manifest_path),
             'RUN_ID': 'test-run',
@@ -1063,3 +1070,56 @@ class DriverTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+class ReviewRegressionTests(unittest.TestCase):
+    def test_typed_barriers_required_and_bool_identity_not_accepted(self):
+        ctl = FakeController(streams=3,engine_epoch=1,storage_epoch=1,generation=0)
+        ctx = dict(run_id='r',repeat=0,cohort_id='c',command_seq=0,action='pause_enter_split',
+                   engine_epoch=None,storage_epoch=None,route='full',route_generation=None,streams=3)
+        cmd = D._next_command(ctx,'pause_enter_split','split')
+        ctx['command_seq'] = cmd['command_seq']
+        receipt,_ = ctl.execute(cmd,1)
+        for mutate in (
+            lambda r:r.pop('barrier_replies'),
+            lambda r:r['barrier_replies'].pop(),
+            lambda r:r['barrier_replies'][0].update(engine_epoch=True),
+            lambda r:r['ranks'][0]['transition_ack'].update(engine_epoch=True),
+            lambda r:r['decode_eligibility']['ranks'][0].update(scheduled_tokens=24),
+        ):
+            bad=copy.deepcopy(receipt); mutate(bad)
+            self.assertFalse(D.validate_receipt(bad,cmd,ctx)[0])
+
+    def test_context_start_bounds_required_and_enforced(self):
+        manifest=copy.deepcopy(BASE_MANIFEST)
+        del manifest['completion_policy']['per_request_start_min']
+        self.assertIsNone(D.validate_workload(manifest)[1])
+        manifest=copy.deepcopy(BASE_MANIFEST)
+        manifest['completion_policy'].update(per_request_start_min=2,per_request_start_max=5)
+        work=D.validate_workload(manifest)[1]
+        rows=[{'stream':0,'window':{'start_completion':99,'end_completion':109,'completion_delta':10}}]
+        self.assertFalse(D._exposure(rows,work)['proven'])
+
+    def test_sse_regression_or_exception_does_not_echo_payload(self):
+        import io
+        from unittest.mock import patch
+        import types
+        payload=b'data: {"usage":{"completion_tokens":9},"choices":[]}\n\ndata: {"usage":{"completion_tokens":8},"choices":[]}\n\n'
+        state=D.StreamState(0,[],{}, {})
+        with patch.object(D.urllib.request,'urlopen',return_value=io.BytesIO(payload)):
+            D.stream_reader(state,types.SimpleNamespace(read_timeout_s=1),'http://127.0.0.1',threading.Event())
+        self.assertEqual(state.error,'ValueError')
+        state=D.StreamState(0,[],{}, {})
+        with patch.object(D.urllib.request,'urlopen',side_effect=RuntimeError('private response payload')):
+            D.stream_reader(state,types.SimpleNamespace(read_timeout_s=1),'http://127.0.0.1',threading.Event())
+        self.assertEqual(state.error,'RuntimeError')
+
+    def test_existing_artifact_refused_before_requests_and_resummarize_is_read_only(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'result.json'; path.write_text('{"preserved":true}')
+            with patch.object(D,'run',side_effect=AssertionError('must not run')):
+                self.assertEqual(D.main(['http://127.0.0.1','m',str(path)],env={}),2)
+            self.assertEqual(path.read_text(),'{"preserved":true}')
+
+if __name__ == '__main__':
+    unittest.main()

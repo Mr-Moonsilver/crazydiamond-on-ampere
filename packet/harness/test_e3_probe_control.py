@@ -29,6 +29,7 @@ class Engine:
 
     def get_num_unfinished_requests(self): return self.unfinished
     def get_num_queued_tokens(self): return self.queued
+    async def add_request(self, *args, **kwargs): return 'accepted'
     async def is_paused(self): return self.paused
 
     async def pause_generation(self, **kwargs):
@@ -129,6 +130,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_rank_and_mixed_generation_refused(self):
         for corrupt in (lambda c,rs:rs[:-1]+[rs[0]],
                         lambda c,rs:rs[:-1]+[dict(rs[-1], counters=dict(rs[-1]['counters'],route_generation=1))]):
+            self.engine = Engine()
             ctl = ProbeController(self.engine, epoch=72)
             self.engine.corrupt = corrupt
             with self.assertRaises(ProbeControlError):
@@ -270,5 +272,43 @@ class SourceTests(unittest.TestCase):
         with self.assertRaisesRegex(ProbeControlError,'auth-shape'):
             attach_router(types.SimpleNamespace(api_key='fixture-key'),object(),env)
 
+
+
+class AdmissionSealTests(unittest.IsolatedAsyncioTestCase):
+    async def test_seal_waits_for_accepted_preprocessing_and_refuses_new_requests(self):
+        from probe_control import AdmissionSeal
+        released = asyncio.Event()
+        entered = asyncio.Event()
+        async def original(*a, **kw):
+            entered.set()
+            await released.wait()
+            return 'accepted-before-seal'
+        engine = types.SimpleNamespace(add_request=original)
+        seal = AdmissionSeal(engine)
+        request = asyncio.create_task(engine.add_request('opaque', {}, types.SimpleNamespace(n=1)))
+        await entered.wait()
+        draining = asyncio.create_task(seal.seal())
+        await asyncio.sleep(0)
+        self.assertFalse(draining.done())
+        with self.assertRaisesRegex(ProbeControlError, 'admission-closed'):
+            await engine.add_request('another', {}, types.SimpleNamespace(n=1))
+        released.set()
+        self.assertEqual(await request, 'accepted-before-seal')
+        await draining
+        self.assertEqual(seal.snapshot()['pending'], 0)
+        seal.unseal()
+        self.assertEqual(await engine.add_request('next', {}, types.SimpleNamespace(n=1)), 'accepted-before-seal')
+
+    async def test_unsupported_streaming_input_and_multiple_outputs_refused(self):
+        from probe_control import AdmissionSeal
+        calls = []
+        async def original(*a, **kw): calls.append(1)
+        async def streaming(): yield 'not inspected'
+        engine = types.SimpleNamespace(add_request=original)
+        AdmissionSeal(engine)
+        for prompt, params in ((streaming(), types.SimpleNamespace(n=1)), ({}, types.SimpleNamespace(n=2))):
+            with self.assertRaises(ProbeControlError):
+                await engine.add_request('opaque', prompt, params)
+        self.assertEqual(calls, [])
 
 if __name__ == '__main__': unittest.main()

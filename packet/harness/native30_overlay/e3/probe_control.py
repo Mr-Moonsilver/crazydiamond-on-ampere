@@ -64,6 +64,7 @@ class ProbeController:
         self.paused = False
         self.quarantined = False
         self.last = None
+        self.ingress = AdmissionSeal(engine)
 
     async def _rpc(self, command):
         return await self.engine.collective_rpc('flash_s5_decode_probe',
@@ -167,6 +168,7 @@ class ProbeController:
                 result = await asyncio.wait_for(self._execute(action, command), self.timeout_s)
             except BaseException as exc:
                 self.quarantined = True
+                self.ingress.sealed = True
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 if isinstance(exc, ProbeControlError):
@@ -186,6 +188,7 @@ class ProbeController:
                 raise ProbeControlError('open-requires-full-route')
             return {'snapshot': snapshot, 'paused': await self.engine.is_paused()}
         if action == 'pause':
+            await self.ingress.seal()
             await self.engine.pause_generation(mode='keep', clear_cache=False)
             if await self.engine.is_paused() is not True:
                 raise ProbeControlError('pause-not-complete')
@@ -194,7 +197,8 @@ class ProbeController:
             barriers = await self._barrier(snapshot)
             self.paused = True
             return {'snapshot': snapshot, 'barriers': barriers,
-                    'pause': {'mode': 'keep', 'clear_cache': False, 'completed': True}}
+                    'pause': {'mode': 'keep', 'clear_cache': False, 'completed': True},
+                    'ingress': self.ingress.snapshot()}
         if not self.paused or await self.engine.is_paused() is not True:
             raise ProbeControlError('completed-pause-required')
         snapshot = await self._snapshot()
@@ -231,6 +235,51 @@ class ProbeController:
             return {'snapshot': snapshot, 'barriers': barriers,
                     'decode_eligibility': eligibility, 'resume': {'completed': True}}
         raise ProbeControlError('unsupported-action')
+
+
+class AdmissionSeal:
+    """One-frontend diagnostic admission boundary, before any async preprocessing.
+
+    Existing accepted requests continue; no scheduler or block ownership changes.
+    Streaming-input and multi-output requests are unsupported in this diagnostic.
+    """
+    def __init__(self, engine):
+        original = getattr(engine, 'add_request', None)
+        if not callable(original) or getattr(engine, '_flash_s5_admission_seal', None) is not None:
+            raise ProbeControlError('diagnostic-admission-seam-unavailable')
+        self.sealed, self.pending, self.rejected = False, 0, 0
+        self.idle = asyncio.Event()
+        self.idle.set()
+
+        async def guarded(*args, **kwargs):
+            prompt = args[1] if len(args) > 1 else kwargs.get('prompt')
+            params = args[2] if len(args) > 2 else kwargs.get('params')
+            if self.sealed or hasattr(prompt, '__aiter__') or getattr(params, 'n', None) != 1:
+                self.rejected += 1
+                raise ProbeControlError('diagnostic-admission-closed-or-unsupported')
+            self.pending += 1
+            self.idle.clear()
+            try:
+                return await original(*args, **kwargs)
+            finally:
+                self.pending -= 1
+                if not self.pending:
+                    self.idle.set()
+        engine.add_request = guarded
+        engine._flash_s5_admission_seal = self
+
+    async def seal(self):
+        self.sealed = True
+        await self.idle.wait()
+
+    def unseal(self):
+        if self.pending:
+            raise ProbeControlError('admission-still-pending')
+        self.sealed = False
+
+    def snapshot(self):
+        return {'sealed': self.sealed, 'pending': self.pending, 'rejected': self.rejected,
+                'basis': 'single AsyncLLM add_request entry; existing accepted requests preserved'}
 
 
 def attach_router(args, app, env=None):

@@ -757,6 +757,22 @@ class PersistedEvidenceTests(unittest.TestCase):
         self.assertIn('no FULL', str(caught.exception))
 
 class BatchAndBarrierTests(ProbeFixture):
+    def test_scheduler_preemption_is_counted_on_full_and_refused_on_split(self):
+        worker = types.SimpleNamespace(model_runner=self.runner)
+        worker_hooks.observe_scheduler(worker, types.SimpleNamespace(preempted_req_ids={'opaque'}))
+        self.assertEqual(self.probe.batch_observations['preempted_requests'], 1)
+        self.probe.transition('split')
+        with self.assertRaises(DecodeProbeInvalidated):
+            worker_hooks.observe_scheduler(worker, types.SimpleNamespace(preempted_req_ids={'opaque'}))
+        self.assertEqual(self.probe.last_invalidation, 'preempted_request')
+
+    def test_missing_scheduler_metadata_is_unknown_not_zero(self):
+        self.probe.observe_scheduler(types.SimpleNamespace())
+        self.assertEqual(self.probe.batch_observations['unknown_preemption_observations'], 1)
+        self.probe.observe_scheduler(types.SimpleNamespace(preempted_req_ids=None))
+        self.assertEqual(self.probe.batch_observations['unknown_preemption_observations'], 1)
+        self.assertEqual(self.probe.batch_observations['scheduler_observations'], 2)
+
     def test_full_route_records_prefill_and_decode_without_refusing_stock(self):
         self.probe.check_batch(8, 8, 1, batch_state(8, prefill=True))
         self.probe.check_route(desc())

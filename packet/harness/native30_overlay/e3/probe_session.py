@@ -98,6 +98,7 @@ class ProbeSession:
             except BaseException:
                 self.failed = True
                 self.controller.quarantined = True
+                self.controller.ingress.sealed = True
                 raise
             self.prior = {'command_seq': self.seq, 'receipt_sha256': digest(result)}
             return copy.deepcopy(result)
@@ -113,9 +114,19 @@ class ProbeSession:
         acks = None
         extra = {}
         if action == 'prepare':
+            if self.phase == 'cleanup':
+                # Client connections have closed; wait for the ordinary abort
+                # path to reach the output processor, without admitting a new
+                # cohort or manufacturing a completion.
+                deadline = time.monotonic() + ctl.timeout_s
+                while ctl.engine.get_num_unfinished_requests() != 0:
+                    if time.monotonic() >= deadline:
+                        raise ProbeControlError('previous-cohort-not-drained')
+                    await asyncio.sleep(.01)
             if (before['route'] != 'full' or raw['paused'] is not False
                     or ctl.engine.get_num_unfinished_requests() != 0):
                 raise ProbeControlError('prepare-requires-empty-running-full-engine')
+            ctl.ingress.unseal()
             self.repeat, self.cohort, self.size = c['repeat'], c['cohort_id'], c['cohort_size']
             self.phase = 'prepared'
         elif action in ('pause_enter_split', 'pause_full'):
@@ -124,6 +135,8 @@ class ProbeSession:
             paused = await self._call('pause')
             eligibility = ctl._eligibility(paused['snapshot'], self.size)
             extra['pause'] = dict(paused['pause'], drained=True)
+            extra['barrier_replies'] = paused['barriers']
+            extra['ingress'] = paused['ingress']
             extra['decode_eligibility'] = {
                 'cohort_id': self.cohort, 'cohort_cardinality': self.size,
                 'reason': eligibility['basis'],
@@ -143,6 +156,7 @@ class ProbeSession:
             resumed = await self._call('resume', cohort_size=self.size)
             after = resumed['snapshot']
             extra['resume'] = resumed['resume']
+            extra['barrier_replies'] = resumed['barriers']
             if measurement:
                 self.before = copy.deepcopy(after)
             self.phase = 'measuring' if measurement else 'cleanup'
@@ -152,6 +166,8 @@ class ProbeSession:
             paused = await self._call('pause')
             after = paused['snapshot']
             extra['pause'] = dict(paused['pause'], drained=True)
+            extra['barrier_replies'] = paused['barriers']
+            extra['ingress'] = paused['ingress']
             extra['interval'] = interval(self.before, after)
             self.phase = 'ended'
         elif action == 'leave_full':
@@ -173,4 +189,5 @@ class ProbeSession:
                     storage_epoch=after['storage_epoch'], route_before=before['route'], route_after=after['route'],
                     route_generation_before=before['route_generation'], route_generation_after=after['route_generation'],
                     expected_rank_set=list(RANKS), ranks=ranks, observed_clock_ns=time.monotonic_ns(),
+                    worker_observations=after['ranks'],
                     clock_basis='frontend monotonic completion; offset to client clock unknown', **extra)

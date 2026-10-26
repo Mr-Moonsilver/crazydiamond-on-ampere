@@ -222,6 +222,8 @@ class Workload:
     cache_preparation: bool
     completion_min: int
     completion_max: int
+    start_completion_min: int
+    start_completion_max: int
     context_position_policy: str
     block_size: int
     manifest_sha256: str
@@ -269,12 +271,17 @@ def validate_workload(data):
     repeats = _manifest_int(data, 'repeats', 1, problems)
     completion_min = None
     completion_max = None
+    start_min = start_max = None
     if 'completion_policy' not in data or type(data.get('completion_policy')) is not dict:
         problems.append('manifest_field_missing:completion_policy')
     else:
         policy = data['completion_policy']
         completion_min = _manifest_int(policy, 'per_request_delta_min', 1, problems)
         completion_max = _manifest_int(policy, 'per_request_delta_max', 1, problems)
+        start_min = _manifest_int(policy, 'per_request_start_min', 0, problems)
+        start_max = _manifest_int(policy, 'per_request_start_max', 0, problems)
+        if start_min is not None and start_max is not None and start_max < start_min:
+            problems.append('completion_policy_start_max_below_min')
         if (completion_min is not None and completion_max is not None
                 and completion_max < completion_min):
             problems.append('completion_policy_max_below_min')
@@ -362,6 +369,7 @@ def validate_workload(data):
         open_timeout_s=open_timeout_s, pause_timeout_s=pause_timeout_s,
         cache_preparation=cache_preparation, completion_min=completion_min,
         completion_max=completion_max, context_position_policy=context_policy,
+        start_completion_min=start_min, start_completion_max=start_max,
         block_size=block_size, manifest_sha256=sha)
     return [], workload, sha
 
@@ -548,6 +556,14 @@ def _sanitize_receipt(obj):
     resume = obj.get('resume')
     if type(resume) is dict:
         out['resume'] = {'completed': resume.get('completed')}
+    barriers = obj.get('barrier_replies')
+    if type(barriers) is list:
+        out['barrier_replies'] = [{key: row.get(key) for key in
+            ('rank', 'ack', 'mode', 'route', 'route_generation', 'storage_epoch', 'engine_epoch', 'drained_streams')}
+            for row in barriers if type(row) is dict]
+    observations = obj.get('worker_observations')
+    if type(observations) is list:
+        out['worker_observations'] = [_sanitize_observation(row) for row in observations]
     ranks = obj.get('ranks')
     if type(ranks) is list:
         clean_ranks = []
@@ -589,6 +605,31 @@ def _sanitize_receipt(obj):
             clean['invalidation'] = {key: inv.get(key) for key in
                                      ('prefill', 'mixed', 'unsupported', 'preempted')}
         out['interval'] = clean
+    return out
+
+
+def _sanitize_observation(row):
+    if type(row) is not dict:
+        return None
+    out = {'rank': row.get('rank')}
+    counters = row.get('counters', {})
+    out['counters'] = {key: counters.get(key) for key in
+        ('route', 'route_generation', 'storage_epoch', 'replays', 'interval_invalidations',
+         'in_flight', 'sampling_pending', 'transition_pending', 'replay_streams_match_owner')}
+    batches = counters.get('batch_observations', {})
+    out['counters']['batch_observations'] = {key: batches.get(key) for key in
+        ('batches', 'decode_batches', 'non_decode_batches', 'empty_batches', 'full_graph_dispatches',
+         'non_full_dispatches', 'scheduler_observations', 'preempted_requests', 'unknown_preemption_observations')}
+    memory = row.get('memory')
+    if type(memory) is dict:
+        out['memory'] = {key: memory.get(key) for key in
+            ('schema', 'wall_s', 'monotonic_ns', 'sample_end_wall_s', 'sample_end_monotonic_ns',
+             'device_free_bytes', 'device_total_bytes', 'synchronized_by_snapshot')}
+        allocator = memory.get('allocator', {})
+        out['memory']['allocator'] = {key: allocator.get(key) for key in
+            ('allocated_current_bytes', 'reserved_current_bytes', 'allocated_peak_bytes',
+             'reserved_peak_bytes', 'inactive_split_current_bytes', 'inactive_split_peak_bytes')}
+        out['memory']['scope'] = 'allocator lifetime peaks; device point samples, sequential reads'
     return out
 
 
@@ -663,7 +704,8 @@ def validate_receipt(obj, command, ctx):
     echoed = obj.get('expected_rank_set')
     if 'expected_rank_set' not in obj:
         missing('expected_rank_set_missing')
-    elif echoed != expected_ranks:
+    elif (echoed != expected_ranks or type(echoed) is not list
+          or any(not _is_int(r) for r in echoed)):
         contract('expected_rank_set_mismatch')
 
     route_before = obj.get('route_before')
@@ -775,6 +817,9 @@ def validate_receipt(obj, command, ctx):
                 elif type(ack) is not dict:
                     contract('transition_ack_not_object:%d' % rank)
                 else:
+                    if any(not _is_int(ack.get(k)) for k in
+                           ('rank', 'route_generation', 'storage_epoch', 'engine_epoch')):
+                        contract('transition_ack_identity_type:%d' % rank)
                     if ack.get('rank') != rank:
                         contract('transition_ack_rank_mismatch:%d' % rank)
                     if ack.get('ack') != 'flash_s5_transition':
@@ -820,6 +865,28 @@ def validate_receipt(obj, command, ctx):
         elif resume.get('completed') is not True:
             missing('resume_not_completed')
 
+    if action in ('pause_enter_split', 'pause_full', 'pause_end', 'resume'):
+        barriers = obj.get('barrier_replies')
+        if type(barriers) is not list or len(barriers) != len(expected_ranks):
+            missing('barrier_rank_coverage')
+        else:
+            seen = set()
+            for row in barriers:
+                if type(row) is not dict:
+                    contract('barrier_not_object'); continue
+                rank = row.get('rank')
+                if not _is_int(rank) or rank not in expected_ranks or rank in seen:
+                    contract('barrier_rank_invalid'); continue
+                seen.add(rank)
+                if (row.get('ack') != 'flash_s5_probe_barrier' or row.get('mode') != 'decode-only-probe'
+                        or row.get('route') != route_before or not _is_int(row.get('drained_streams'))
+                        or row['drained_streams'] < 1):
+                    contract('barrier_not_drained:%d' % rank)
+                for key, value in (('engine_epoch', engine), ('storage_epoch', storage),
+                                   ('route_generation', generation_before)):
+                    if not _is_int(row.get(key)) or row[key] != value:
+                        contract('barrier_identity_differs:%d' % rank)
+
     if action in ('pause_enter_split', 'pause_full'):
         eligibility = obj.get('decode_eligibility')
         if type(eligibility) is not dict:
@@ -846,10 +913,10 @@ def validate_receipt(obj, command, ctx):
                     if rank in observed_ranks:
                         contract('decode_eligibility_duplicate_rank')
                     observed_ranks.add(rank)
-                    if not _is_int(row.get('batch_reqs')) or row.get('batch_reqs') < 1:
+                    if not _is_int(row.get('batch_reqs')) or row.get('batch_reqs') != ctx['streams']:
                         contract('decode_eligibility_batch_reqs:%d' % rank)
                     if not _is_int(row.get('scheduled_tokens')) \
-                            or row.get('scheduled_tokens') < 1:
+                            or row.get('scheduled_tokens') != ctx['streams']:
                         contract('decode_eligibility_scheduled_tokens:%d' % rank)
                     if row.get('prefill') is not False:
                         contract('decode_eligibility_prefill_observed:%d' % rank)
@@ -1043,10 +1110,14 @@ class StreamState:
 
 def stream_reader(state, cfg, url, stop):
     """Stream one live request, retaining timestamps and counts only (no content)."""
+    headers = {'Content-Type': 'application/json'}
+    key = os.environ.get('VLLM_API_KEY')
+    if key:
+        headers['Authorization'] = 'Bearer ' + key
     request = urllib.request.Request(
         url + '/v1/chat/completions',
         json.dumps(state.body).encode(),
-        {'Content-Type': 'application/json'})
+        headers)
     state.send_at_ns = time.monotonic_ns()
     try:
         with urllib.request.urlopen(request, timeout=cfg.read_timeout_s) as response:
@@ -1065,7 +1136,7 @@ def stream_reader(state, cfg, url, stop):
                 except ValueError:
                     state.events.append({'t_ns': time.monotonic_ns(),
                                          'kind': 'unparsed'})
-                    continue
+                    raise ValueError('malformed SSE JSON') from None
                 now = time.monotonic_ns()
                 previous_cumulative = state.last_cumulative
                 usage = _sanitize_usage(event.get('usage'))
@@ -1075,6 +1146,8 @@ def stream_reader(state, cfg, url, stop):
                     state.last_usage = merged
                     completion = usage.get('completion_tokens')
                     if completion is not None:
+                        if previous_cumulative is not None and completion < previous_cumulative:
+                            raise ValueError('completion counter regressed')
                         state.last_cumulative = completion
                         state.cumulative_updates += 1
                 choices = event.get('choices') or []
@@ -1110,7 +1183,7 @@ def stream_reader(state, cfg, url, stop):
                         state.any_event.set()
     except Exception as exc:  # noqa: BLE001 - cancellation after stop is not an error
         if not stop.is_set():
-            state.error = repr(exc)[:300]
+            state.error = type(exc).__name__
             state.error_at_ns = time.monotonic_ns()
     finally:
         if not stop.is_set() and state.finish_at_ns is None and state.error is None:
@@ -1164,7 +1237,8 @@ def _stream_window(state, window):
     open_gap = (_ms(end_ns - prior_arrivals[-1]) if prior_arrivals
                 else (_ms(end_ns - start_ns) if span_s > 0 else None))
     coalesced = sum(1 for event in state.events
-                    if event.get('kind') == 'arrival' and event.get('coalesced'))
+                    if event.get('kind') == 'arrival' and event.get('coalesced')
+                    and start_ns <= event['t_ns'] < end_ns)
     return {
         'start_completion': start_completion,
         'end_completion': end_completion,
@@ -1193,9 +1267,10 @@ def _stream_window(state, window):
 def _finalize_streams(cfg, states, stop, window, t0_ns):
     stop.set()
     stop_at_ns = time.monotonic_ns()
+    deadline = time.monotonic() + cfg.drain_timeout_s
     for state in states:
         if state.thread is not None and state.thread.is_alive():
-            state.thread.join(timeout=cfg.drain_timeout_s)
+            state.thread.join(timeout=max(0.0, deadline - time.monotonic()))
     records = []
     for state in states:
         timed_out = state.thread.is_alive()
@@ -1254,7 +1329,9 @@ def _exposure(streams, workload):
         window = stream.get('window') or {}
         delta = window.get('completion_delta')
         proven = _is_int(delta) and delta >= 0
-        in_range = (proven and workload.completion_min <= delta <= workload.completion_max)
+        start = window.get('start_completion')
+        in_range = (proven and workload.completion_min <= delta <= workload.completion_max
+                    and _is_int(start) and workload.start_completion_min <= start <= workload.start_completion_max)
         window['in_range'] = in_range if proven else None
         rows.append({
             'stream': stream.get('stream'),
@@ -1274,6 +1351,8 @@ def _exposure(streams, workload):
         'policy': {
             'per_request_delta_min': workload.completion_min,
             'per_request_delta_max': workload.completion_max,
+            'per_request_start_min': workload.start_completion_min,
+            'per_request_start_max': workload.start_completion_max,
             'matched_across_routes': True,
             'context_position_policy': workload.context_position_policy,
             'common_window_s': workload.window_s,
@@ -1631,6 +1710,8 @@ def measure_repeat(cfg, controller, run_ctx, repeat, route, requests, meta,
                  'driver never waits for all requests to finish before ending '
                  'the window'),
     }
+    if record['drain']['timeout']:
+        record['abort_run'] = True
     record['exposure'] = _exposure(streams, workload)
     record['metrics'] = _repeat_metrics(streams, record['window'])
     record['phase'] = 'completed'
@@ -1965,6 +2046,8 @@ def _config_artifact(cfg, model, expected_digest, clock):
         'COMPLETION_POLICY': {
             'per_request_delta_min': workload.completion_min,
             'per_request_delta_max': workload.completion_max,
+            'per_request_start_min': workload.start_completion_min,
+            'per_request_start_max': workload.start_completion_max,
             'matched_across_routes': True,
             'context_position_policy': workload.context_position_policy,
         },
@@ -2057,7 +2140,7 @@ def run(cfg, url, model, controller):
 
 
 def write_output(path, data):
-    with open(path, 'w') as handle:
+    with open(path, 'x') as handle:
         json.dump(data, handle, indent=1)
 
 
@@ -2098,7 +2181,6 @@ def resummarize(path):
     if type(config) is not dict or not _is_int(config.get('REPEATS')):
         raise ValueError('artifact has no usable config.REPEATS')
     data['summary'] = summarize(data.get('repeats') or [], config)
-    write_output(path, data)
     return data
 
 
@@ -2133,6 +2215,9 @@ def main(argv, controller=None, env=None):
               '[--resummarize OUT.json]', file=sys.stderr)
         return 2
     url, model, out_path = argv
+    if Path(out_path).exists() or Path(out_path).is_symlink():
+        print('e3_w1_decode_driver refuses an existing output artifact', file=sys.stderr)
+        return 2
     try:
         cfg = config_from_env(env, out_path)
     except ConfigError as exc:
