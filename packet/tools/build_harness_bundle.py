@@ -28,6 +28,12 @@ def build(out):
         if source.is_symlink() or not source.is_file(): raise ValueError('unsupported harness entry')
         dest.parent.mkdir(exist_ok=True,parents=True)
         shutil.copy2(source,dest)
+    # Immutable public QSA source for VM-only synthetic attention qualification.
+    qsa=ROOT/'patches/retain/ops_qsa.py.v8.1'
+    if sha(qsa)!='5a0d962022ec4e47809fa072d2b13745c84413de894048e67f10c3c10a45d51b':
+        raise ValueError('VM QSA source pin')
+    (out/'vmid_sources').mkdir()
+    shutil.copy2(qsa,out/'vmid_sources/ops_qsa.py')
     source=ROOT/'patches/ppgrouping/overlay/core'
     manifest={name:digest for digest,name in (line.split(maxsplit=1) for line in (source/'SHA256SUMS').read_text().splitlines())}
     (out/'ppg').mkdir()
