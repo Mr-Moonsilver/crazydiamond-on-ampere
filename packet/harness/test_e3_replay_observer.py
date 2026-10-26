@@ -265,6 +265,7 @@ def _declare(lib):
         'stub_set_unsubscribe_rc': ([I], None),
         'stub_set_enable_callback_rc': ([I], None),
         'stub_set_enable_activity_rc': ([I], None),
+        'stub_activity_enabled': ([I], I),
         'stub_set_register_rc': ([I], None),
         'stub_set_flush_rc': ([I], None),
         'stub_set_timestamp_rc': ([I], None),
@@ -310,6 +311,80 @@ def _declare(lib):
 
 
 class ObserverCleanTests(ObserverTestBase):
+    def test_execution_collection_is_enabled_only_for_replay_window(self):
+        self.open_clean()
+        self.assertEqual(self.ctl.stub_activity_enabled(9), 1)
+        for kind in (1, 2, 10):
+            self.assertEqual(self.ctl.stub_activity_enabled(kind), 0)
+        # Context evidence queued at startup is flushed before the timestamp.
+        self.assertGreater(self.ctl.stub_pending_count(), 0)
+        self.ctl.stub_set_threaded_flush(1)
+        self.begin()
+        self.assertEqual(self.ctl.stub_pending_count(), 0)
+        for kind in (1, 2, 10):
+            self.assertEqual(self.ctl.stub_activity_enabled(kind), 1)
+        self.emit_graph_kernels(0)
+        receipt = self.end()
+        self.assertEqual(receipt['verdict'], 'PASS')
+        for kind in (1, 2, 10):
+            self.assertEqual(self.ctl.stub_activity_enabled(kind), 0)
+        self.assertEqual(self.ctl.stub_activity_enabled(9), 1)
+
+    def test_capture_event_volume_from_full8_fits_declared_resource_ring(self):
+        self.make_bank()
+        self.new_session(start=True)
+        # Real full8 had ~190k callbacks before its bounded replay. Repeated
+        # creation notifications exercise storage without inventing node data.
+        for _ in range(190000):
+            self.ctl.stub_resource_graph(9, self.bank.graph_handles[0],
+                                         0, 0, 0, 0, 0)
+        self.session.bind_bank(self.probe)
+        self.ctl.stub_emit_context(CONTEXT_ID, 1, EXPECTED_SMS, 0)
+        self.begin()
+        self.emit_graph_kernels(0)
+        receipt = self.end()
+        self.assertEqual(receipt['replay']['ring_overflows']['resource'], 0)
+        self.assertEqual(receipt['verdict'], 'PASS')
+
+    def test_pre_window_held_credit_refuses_begin_until_returned(self):
+        self.open_clean()
+        self.ctl.stub_set_hold_next(1)
+        self.ctl.stub_deliver()
+        self.assert_code('observer_busy', self.begin)
+        self.assertEqual(self.session.state, 'bound')
+        self.assertEqual(self.ctl.stub_activity_enabled(10), 0)
+        self.ctl.stub_release_held()
+        self.begin()
+        self.emit_graph_kernels(0)
+        self.assertEqual(self.end()['verdict'], 'PASS')
+
+    def test_pre_window_flush_failure_cannot_be_retried_into_a_pass(self):
+        self.open_clean()
+        self.ctl.stub_set_flush_rc(1)
+        self.assert_code('flush_failed', self.begin)
+        self.ctl.stub_set_flush_rc(0)
+        self.assert_code('bad_state', self.begin)
+        self.session.stop()
+
+    def test_window_enable_failure_retains_cleanup_ownership(self):
+        self.open_clean()
+        self.ctl.stub_set_enable_activity_rc(1)
+        self.assert_code('activity_enable_failed', self.begin)
+        self.ctl.stub_set_enable_activity_rc(0)
+        self.assert_code('bad_state', self.begin)
+        self.session.stop()
+
+    def test_window_disable_failure_invalidates_proof(self):
+        self.open_clean()
+        self.begin()
+        self.emit_graph_kernels(0)
+        self.ctl.stub_set_disable_activity_rc(1)
+        receipt = self.end()
+        self.ctl.stub_set_disable_activity_rc(0)
+        self.assertEqual(receipt['verdict'], 'INCONCLUSIVE')
+        self.assertIn('flush_failed', receipt['reasons'])
+        self.session.stop()
+
     def test_clean_exercised_descriptor_passes(self):
         self.open_clean()
         self.begin(self.bank.descriptors[0])
@@ -807,6 +882,21 @@ class ObserverMappingTests(ObserverTestBase):
 
 
 class ObserverBoundsTests(ObserverTestBase):
+    def test_pre_window_resource_overflow_is_not_cleared_by_begin(self):
+        self.make_bank()
+        self.new_session(ro.ObserverLimits(max_graph_events=1), start=True)
+        for _ in range(2):
+            self.ctl.stub_resource_graph(9, self.bank.graph_handles[0],
+                                         0, 0, 0, 0, 0)
+        self.session.bind_bank(self.probe)
+        self.ctl.stub_emit_context(CONTEXT_ID, 1, EXPECTED_SMS, 0)
+        self.begin()
+        self.emit_graph_kernels(0)
+        receipt = self.end()
+        self.assertEqual(receipt['verdict'], 'INCONCLUSIVE')
+        self.assertIn('ring_overflow', receipt['reasons'])
+        self.assertEqual(receipt['replay']['ring_overflows']['resource'], 1)
+
     def test_dropped_counts_accumulate_across_reset_on_read(self):
         self.make_bank()
         self.new_session()
@@ -845,11 +935,11 @@ class ObserverBoundsTests(ObserverTestBase):
 
     def test_refused_buffer_and_held_ownership(self):
         self.open_clean(ro.ObserverLimits(buffer_count=1))
+        self.begin()
         self.ctl.stub_emit_unknown(77)
         self.ctl.stub_set_hold_next(1)
         self.ctl.stub_deliver()
         self.assertEqual(int(self.ctl.stub_held_count()), 1)
-        self.begin()
         self.emit_graph_kernels(0)
         receipt = self.end()
         self.assertEqual(receipt['verdict'], 'INCONCLUSIVE')

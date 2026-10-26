@@ -218,12 +218,16 @@ def _check_int(value, low, high, code):
 class ObserverLimits:
     """Explicit bounded capacities; no opaque native growth is permitted."""
 
-    buffer_count: int = 4
+    # full8 exhausted four buffers before replay. Execution capture is now
+    # window-only; 32 MiB also covers the declared ~60k-node replay window.
+    # These are host allocations, reported by reserved_bytes, not free VRAM.
+    buffer_count: int = 32
     buffer_bytes: int = 1024 * 1024
     max_context_records: int = 128
     max_kernel_records: int = 131072
     max_copy_records: int = 32768
-    max_graph_events: int = 32768
+    # full8 observed ~190k resource callbacks while capturing the seven banks.
+    max_graph_events: int = 262144
     max_graphs: int = 64
     max_nodes_per_graph: int = 131072
     max_nodes_total: int = 131072

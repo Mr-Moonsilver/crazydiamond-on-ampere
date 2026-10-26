@@ -671,6 +671,56 @@ class ClientHarness(unittest.TestCase):
         return [call['action'] for call in record['calls']]
 
 
+class PreSplitControlTests(ClientHarness):
+    manifest_overrides = {'route_plan': ['full', 'full', 'split', 'full']}
+
+    def test_fixed_four_runs_and_both_controls_gate_split(self):
+        data = self.run_client()
+        self.assertEqual(data['verdict'], 'PASS', data['verdict_reasons'])
+        self.assertEqual(data['route_plan'], ['full', 'full', 'split', 'full'])
+        self.assertEqual([r['label'] for r in data['runs']],
+                         ['full-A1', 'full-A2', 'split-B', 'full-C'])
+        self.assertTrue(data['pre_split_controls_before_transition']['equal'])
+        for key in ('pre_split_controls', 'post_split_controls', 'split'):
+            self.assertTrue(data['comparison'][key]['equal'])
+        self.assertEqual(self.flow.request_count, 4 * self.workload.streams)
+        for record, pause in zip(data['runs'], ('pause_full', 'pause_full',
+                                                'pause_enter_split', 'pause_full')):
+            self.assertEqual(self.actions(record), [
+                'prepare', pause, 'resume', 'pause_end', 'leave_full', 'resume'])
+
+    def test_pre_split_instability_does_not_hide_placement_or_choose_other_control(self):
+        self.flow.configure(mutate=lambda run, stream, pos, token:
+                            token + 7 if (run == 1 and stream == 0 and pos == 2)
+                            else token)
+        data = self.run_client()
+        self.assertEqual(data['verdict'], 'INCONCLUSIVE')
+        self.assertIn('inconclusive:pre_split_controls_differ', data['verdict_reasons'])
+        self.assertFalse(data['pre_split_controls_before_transition']['equal'])
+        self.assertTrue(data['comparison']['post_split_controls']['equal'])
+        self.assertFalse(data['comparison']['split']['used_for_verdict'])
+        self.assertTrue(data['runs'][2]['complete'])
+        self.assertEqual(self.flow.request_count, 4 * self.workload.streams)
+
+    def test_post_control_must_still_agree(self):
+        self.flow.configure(mutate=lambda run, stream, pos, token:
+                            token + 7 if (run == 3 and stream == 0 and pos == 2)
+                            else token)
+        data = self.run_client()
+        self.assertEqual(data['verdict'], 'INCONCLUSIVE')
+        self.assertIn('inconclusive:post_split_controls_differ', data['verdict_reasons'])
+        self.assertTrue(data['pre_split_controls_before_transition']['equal'])
+        self.assertFalse(data['comparison']['split']['used_for_verdict'])
+
+    def test_split_only_difference_with_two_stable_controls_is_failure(self):
+        self.flow.configure(mutate=lambda run, stream, pos, token:
+                            token + 7 if (run == 2 and stream == 0 and pos == 2)
+                            else token)
+        data = self.run_client()
+        self.assertEqual(data['verdict'], 'FAIL')
+        self.assertIn('contract:split_trajectory_differs', data['verdict_reasons'])
+
+
 class NormalPassTests(ClientHarness):
     def test_exact_three_run_match_passes_and_action_order_is_explicit(self):
         data = self.run_client()
@@ -950,7 +1000,7 @@ class TransitionAndCleanupTests(ClientHarness):
             'transition_pending': True, 'interval_prefill': True}
         data = self.run_client()
         self.assertEqual(data['verdict'], 'FAIL')
-        split = data['runs'][1]
+        split = next(row for row in data['runs'] if row['route'] == 'split')
         self.assertFalse(split['cleanup']['attempted'])
         self.assertNotIn('leave_full', self.actions(split))
         self.assertTrue(data['runs'][2]['not_run'])
@@ -1329,7 +1379,7 @@ class ComposedActualSessionTests(ClientHarness):
     def test_client_drives_actual_session_and_validator_to_pass(self):
         data = self.run_client(controller=self.session_controller)
         self.assertEqual(data['verdict'], 'PASS', data['verdict_reasons'])
-        split = data['runs'][1]
+        split = next(row for row in data['runs'] if row['route'] == 'split')
         self.assertEqual(split['route'], 'split')
         self.assertEqual(self.actions(split), [
             'prepare', 'pause_enter_split', 'resume', 'pause_end',
@@ -1343,6 +1393,11 @@ class ComposedActualSessionTests(ClientHarness):
             self.assertEqual(row['length'], self.workload.generation_budget)
             self.assertEqual(row['finish_reason'], 'length')
         self.assertFalse(self.session_controller.session.failed)
+
+
+class ComposedPreControlSessionTests(ComposedActualSessionTests):
+    manifest_overrides = {'prompt': {'seed': 17, 'tokens': 16},
+                          'route_plan': ['full', 'full', 'split', 'full']}
 
 
 if __name__ == '__main__':

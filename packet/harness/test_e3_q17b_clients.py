@@ -45,6 +45,27 @@ def bound_call(action, receipt):
 
 
 class PlacementTests(unittest.TestCase):
+    def test_precontrol_instability_cannot_unlock_w1_even_with_placement_pass(self):
+        data=audit_data()
+        data.update(verdict='INCONCLUSIVE', verdict_reasons=[
+            'inconclusive:pre_split_controls_differ'])
+        with tempfile.TemporaryDirectory() as tmp:
+            args=types.SimpleNamespace(url='http://127.0.0.1:8000',
+                model='fixture',run_id='precontrol-gate',out=Path(tmp)/'out',
+                api_source=Path(tmp),
+                correctness_workload=HERE/'workloads/q17b-correctness-precontrols.json',
+                w1_workload=HERE/'workloads/q17b-w1.json')
+            ctrl=types.SimpleNamespace(execute=lambda *a:({},{}))
+            with mock.patch.object(c,'verify_sources',return_value=({'verified':True},[])), \
+                 mock.patch.object(c,'run',return_value=data), \
+                 mock.patch.object(q,'final_status_grade',return_value={'verdict':'PASS'}), \
+                 mock.patch.object(w1,'run') as perf:
+                result=q.run(args,env={},controller=ctrl)
+            perf.assert_not_called()
+            self.assertEqual(result['verdict'],'INCONCLUSIVE')
+            self.assertEqual(result['outcomes']['placement'],'PASS')
+            self.assertEqual(result['outcomes']['performance'],'NOT_RUN')
+
     def test_exact_four_closed_receipts(self):
         self.assertEqual(q.placement_grade(audit_data())['verdict'],'PASS')
 
@@ -73,6 +94,9 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual(short['streams'],8)
         self.assertEqual(perf['route_plan'],['full','split','full']*2)
         self.assertEqual(perf['prompt_tokens'],153537)
+        pre=json.loads((HERE/'workloads/q17b-correctness-precontrols.json').read_text())
+        self.assertEqual(c.validate_manifest(pre)[0],[])
+        self.assertEqual(pre['route_plan'],['full','full','split','full'])
 
 
 class SessionContinuation(ComposedActualSessionTests):
@@ -89,7 +113,7 @@ class SessionContinuation(ComposedActualSessionTests):
             out_path=str(Path(self.tmp.name)/'continued.json'))
         seen=[]
         def repeat(cfg,controller,ctx,repeat,route,*args):
-            self.assertEqual(repeat,3)
+            self.assertEqual(repeat,len(cfg0.workload.route_plan))
             self.assertEqual(ctx['command_seq'],old_seq)
             ctx.update(repeat=repeat,cohort_id='continued-cohort')
             # Real ProbeSession accepts the exact preceding canonical receipt.
@@ -109,6 +133,11 @@ class SessionContinuation(ComposedActualSessionTests):
              mock.patch.object(w1,'write_output'):
             w1.run(cfg,self.server.url,'correctness-test-model',self.session_controller,context=context)
         self.assertEqual(len(seen),1)
+
+
+class PrecontrolSessionContinuation(SessionContinuation):
+    manifest_overrides = {'prompt': {'seed': 17, 'tokens': 16},
+                          'route_plan': ['full', 'full', 'split', 'full']}
 
 
 if __name__=='__main__':unittest.main()

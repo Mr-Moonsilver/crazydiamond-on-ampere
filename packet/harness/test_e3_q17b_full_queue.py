@@ -23,13 +23,15 @@ print('Q17B_CLIENTS '+verdict)
 raise SystemExit(rc)
 '''
 class FullQueue(unittest.TestCase):
+    queue_name='q17b_full3.draft.sh'
+    correctness_name='q17b-correctness.json'
     setUp=old.QueueRun.setUp
     tearDown=old.QueueRun.tearDown
     fake=old.QueueRun.fake
     assert_no_secret=old.QueueRun.assert_no_secret
     def make_harness(self):
         old.QueueRun.make_harness(self)
-        for name in ('q17b_full3.draft.sh','q17b_full_settings.sh'):
+        for name in (self.queue_name,'q17b_full_settings.sh'):
             shutil.copyfile(HERE/'runs'/name,self.h/'runs'/name)
         shutil.copyfile(HERE/'e3_private_auth.py',self.h/'e3_private_auth.py')
         (self.h/'e3_q17b_clients.py').write_text(FAKE_CLIENTS)
@@ -37,7 +39,7 @@ class FullQueue(unittest.TestCase):
             shutil.copyfile(HERE/name,self.h/name)
         (self.h/'identity_declare.py').write_text('S5_LAUNCHER_SHA='+repr(hashlib.sha256(old.launcher_text().encode()).hexdigest())+'\n')
         (self.h/'workloads').mkdir()
-        for name in ('q17b-correctness.json','q17b-w1.json'):
+        for name in (self.correctness_name,'q17b-w1.json'):
             shutil.copyfile(HERE/'workloads'/name,self.h/'workloads'/name)
         closure=json.loads((self.h/'e3_build_closure.json').read_text())
         closure['builder_sources']['native/flash_s5_replay_observer.cpp']='f'*64
@@ -66,12 +68,12 @@ class FullQueue(unittest.TestCase):
         (self.r/'private').mkdir(mode=0o700)
         shutil.copyfile(self.auth_file,self.r/'private/vllm-api.env');(self.r/'private/vllm-api.env').chmod(0o600)
         paths=[Path(line.split(maxsplit=1)[1]) for line in (self.r/'SHA256SUMS').read_text().splitlines()]
-        paths += [self.h/'runs/q17b_full3.draft.sh',self.h/'runs/q17b_full_settings.sh',self.r/'request-plan.json']
+        paths += [self.h/'runs'/self.queue_name,self.h/'runs/q17b_full_settings.sh',self.r/'request-plan.json']
         (self.r/'SHA256SUMS').write_text(''.join(old.sha(p)+'  '+str(p)+'\n' for p in paths))
     def install_fakes(self):
         env=old.QueueRun.install_fakes(self);env.update(S5_REPLAY_LIB_SHA256=self.replay,Q17B_FULL_BOUNDED='1');return env
     def run_queue(self):
-        return subprocess.run(['bash',str(self.h/'runs/q17b_full3.draft.sh'),str(self.q)],env=self.install_fakes(),capture_output=True,text=True,timeout=120)
+        return subprocess.run(['bash',str(self.h/'runs'/self.queue_name),str(self.q)],env=self.install_fakes(),capture_output=True,text=True,timeout=120)
     def test_all_phases_then_cleanup(self):
         result=self.run_queue();self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('STEP full-clients PASS',result.stdout);self.assertIn('Q17B-FULL DONE rc=0',result.stdout)
@@ -149,4 +151,25 @@ class FullQueue(unittest.TestCase):
         from unittest import mock
         with mock.patch.object(old,'FAKE_DOCKER',original):result=self.run_queue()
         self.assertEqual(result.returncode,1,result.stdout+result.stderr);self.assertIn('STEP engine-errors FAIL',result.stdout)
+class PrecontrolQueue(FullQueue):
+    queue_name='q17b_full4.draft.sh'
+    correctness_name='q17b-correctness-precontrols.json'
+
+    def test_new_identity_changes_only_workload_and_queue_references(self):
+        for old_name,new_name in [('q17b_full3.draft.sh',self.queue_name),
+                                  ('q17b_full3_declare.sh','q17b_full4_declare.sh')]:
+            actual=(HERE/'runs'/new_name).read_text()
+            actual='\n'.join(line for line in actual.splitlines()
+                             if not line.startswith(('# Supersedes queue3', '# A pre-control mismatch'))) + '\n'
+            expected=(HERE/'runs'/old_name).read_text().replace(
+                'q17b_full3.draft.sh',self.queue_name).replace(
+                'q17b-correctness.json',self.correctness_name)
+            self.assertEqual(actual,expected)
+        previous=json.loads((HERE/'workloads/q17b-correctness.json').read_text())
+        following=json.loads((HERE/'workloads'/self.correctness_name).read_text())
+        self.assertEqual(following.pop('route_plan'),['full','full','split','full'])
+        previous.pop('route_plan')
+        following.pop('workload');previous.pop('workload')
+        self.assertEqual(following,previous)
+
 if __name__=='__main__':unittest.main()

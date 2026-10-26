@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """q17b short live-cohort decode-correctness client (offline build).
 
-Three runs of one protocol
+Legacy three-run protocol (retained for existing manifests)
   1. full-A: prepare on full, open one fixed cohort on full, wait until every
      request has actually advanced, pause (keep / clear_cache=False), resume,
      measure a bounded decode window, pause_end, leave_full (no-op), resume,
@@ -9,6 +9,12 @@ Three runs of one protocol
   2. split-B: the same protocol with pause_enter_split instead of pause_full;
      the same live requests cross the transition.
   3. full-C: identical to full-A with a fresh cohort namespace.
+
+The next-slot manifest declares full-A1/full-A2/split-B/full-C. Both pre-split
+controls finish and are compared before split begins. All four runs remain a
+fixed diagnostic sequence: unstable controls forbid split correctness and W1
+PASS, while the split interval can still supply independent placement evidence.
+There is no retry-until-equal or selection among alternative control outputs.
 
 The client compares the generated *integer token IDs* of A, B and C.  It is an
 equality check, not a performance test and not proof of full E3 correctness.
@@ -70,6 +76,8 @@ CLIENT_NAME = 'q17b-short-correctness'
 CLIENT_SCHEMA = 1
 ROUTE_PLAN = ('full', 'split', 'full')
 RUN_LABELS = ('full-A', 'split-B', 'full-C')
+PRECONTROL_ROUTE_PLAN = ('full', 'full', 'split', 'full')
+PRECONTROL_RUN_LABELS = ('full-A1', 'full-A2', 'split-B', 'full-C')
 ENDPOINT = '/v1/completions'
 EXPECTED_RANKS = tuple(protocol.EXPECTED_RANKS)
 
@@ -194,6 +202,7 @@ class Workload:
     expected_finish_reason: str
     fresh_namespace_per_run: bool
     manifest_sha256: str
+    route_plan: tuple = ROUTE_PLAN
 
 
 def _field_int(data, key, minimum, maximum, problems, label=None):
@@ -321,8 +330,9 @@ def validate_manifest(data):
             problems.append('manifest_cache_fresh_namespace_must_be_true')
 
     route_plan = data.get('route_plan')
-    if type(route_plan) is not list or tuple(route_plan) != ROUTE_PLAN:
-        problems.append('manifest_route_plan_must_be_full_split_full')
+    if (type(route_plan) is not list
+            or tuple(route_plan) not in (ROUTE_PLAN, PRECONTROL_ROUTE_PLAN)):
+        problems.append('manifest_route_plan_must_be_full_split_full_or_full_full_split_full')
 
     if problems:
         return problems, None, sha
@@ -340,7 +350,8 @@ def validate_manifest(data):
         controller_timeout_s=timeout_values['controller_timeout_s'],
         expected_output_tokens=expected_tokens,
         expected_finish_reason=expected_reason,
-        fresh_namespace_per_run=fresh, manifest_sha256=sha)
+        fresh_namespace_per_run=fresh, manifest_sha256=sha,
+        route_plan=tuple(route_plan))
     return [], workload, sha
 
 
@@ -1703,23 +1714,38 @@ def _compare_rows(left_run, right_run):
     return mismatches
 
 
+def _compare_control_pair(a, c):
+    if not (a.get('complete') and c.get('complete')):
+        return {'comparable': False, 'reason': 'control_run_incomplete'}
+    mismatches = _compare_rows(a, c)
+    return {'comparable': True, 'equal': not mismatches,
+            'mismatches': mismatches, 'a_label': a.get('label'),
+            'c_label': c.get('label')}
+
+
 def compare_runs(runs):
-    a, b, c = runs
+    if len(runs) == 4:
+        a, pre, b, c = runs
+    else:
+        a, b, c = runs
+        pre = None
     result = {
         'basis': 'exact integer token-ID equality; no tolerance',
         'controls': {'comparable': False},
         'split': {'comparable': False, 'used_for_verdict': False},
     }
-    if not (a.get('complete') and c.get('complete')):
-        result['controls']['reason'] = 'control_run_incomplete'
-    else:
-        mismatches = _compare_rows(a, c)
+    result['controls'] = _compare_control_pair(a, c)
+    if pre is not None:
+        result['pre_split_controls'] = _compare_control_pair(a, pre)
+        result['post_split_controls'] = dict(result['controls'])
+        # Both comparisons must hold. Never choose whichever full trajectory
+        # happens to match split, or retry controls until a matching pair exists.
         result['controls'] = {
-            'comparable': True,
-            'equal': not mismatches,
-            'mismatches': mismatches,
-            'a_label': a.get('label'),
-            'c_label': c.get('label'),
+            'comparable': all(result[k].get('comparable') is True for k in
+                              ('pre_split_controls', 'post_split_controls')),
+            'equal': all(result[k].get('equal') is True for k in
+                        ('pre_split_controls', 'post_split_controls')),
+            'basis': 'both exact pre-split and post-split controls must agree',
         }
     if result['controls'].get('equal') is True:
         if not b.get('complete'):
@@ -1751,7 +1777,11 @@ def decide(runs, comparison):
         return 'INCONCLUSIVE', reasons
     controls = comparison.get('controls') or {}
     if controls.get('equal') is not True:
-        return 'INCONCLUSIVE', ['inconclusive:control_instability']
+        reasons = ['inconclusive:control_instability']
+        for key in ('pre_split_controls', 'post_split_controls'):
+            if comparison.get(key, {}).get('equal') is False:
+                reasons.append('inconclusive:' + key + '_differ')
+        return 'INCONCLUSIVE', reasons
     split = comparison.get('split') or {}
     if split.get('equal') is True:
         return 'PASS', []
@@ -1816,7 +1846,11 @@ def run(cfg, url, model, controller, source=None, context=None):
         ctx = context
     runs = []
     abort_reason = None
-    for run_index, (label, route) in enumerate(zip(RUN_LABELS, ROUTE_PLAN)):
+    route_plan = cfg.workload.route_plan
+    labels = (PRECONTROL_RUN_LABELS if route_plan == PRECONTROL_ROUTE_PLAN
+              else RUN_LABELS)
+    pre_split_controls = None
+    for run_index, (label, route) in enumerate(zip(labels, route_plan)):
         if abort_reason is not None:
             runs.append(_not_run_record(run_index, label, route, abort_reason))
             continue
@@ -1831,6 +1865,10 @@ def run(cfg, url, model, controller, source=None, context=None):
             record['abort_run'] = True
             record = _finish_run(record)
         runs.append(record)
+        if route_plan == PRECONTROL_ROUTE_PLAN and run_index == 1:
+            pre_split_controls = _compare_control_pair(runs[0], runs[1])
+            # Fixed diagnostic sequence: disagreement does not hide the raw
+            # placement observation. It forbids split correctness/W1 PASS.
         if record.get('abort_run'):
             abort_reason = 'run_%d_%s' % (run_index, record.get('status', 'aborted'))
     comparison = compare_runs(runs)
@@ -1884,7 +1922,8 @@ def run(cfg, url, model, controller, source=None, context=None):
                 'chars': row['prompt_chars'],
             } for row in cohort],
         },
-        'route_plan': list(ROUTE_PLAN),
+        'route_plan': list(route_plan),
+        'pre_split_controls_before_transition': pre_split_controls,
         'run_id': cfg.run_id,
         'model_sha256': _sha256_text(str(model)),
         'runs': runs,

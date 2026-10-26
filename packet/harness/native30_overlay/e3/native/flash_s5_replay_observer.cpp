@@ -2740,7 +2740,10 @@ int start_impl(Session *s) {
       CUPTI_ACTIVITY_KIND_MEMCPY,
       CUPTI_ACTIVITY_KIND_MEMSET,
   };
-  for (uint32_t i = 0; i < 4; ++i) {
+  // Context provenance must start before green-context creation. Execution
+  // activity must NOT span model loading, warmup or graph capture: it exhausted
+  // the bounded callback buffers before the first replay in full8.
+  for (uint32_t i = 0; i < 1; ++i) {
     if (cuptiActivityEnable(kinds[i]) != CUPTI_SUCCESS) {
       return cleanup_start_failure(s, S5RO_ACTIVITY_ENABLE_FAILED);
     }
@@ -3006,8 +3009,36 @@ int s5ro_begin_window(uint64_t session, uint32_t route_generation,
     return S5RO_WINDOW_ACTIVE;
   }
   if (s->expected_known == 0 || s->slot_count == 0) return S5RO_NOT_BOUND;
+  // The caller has paused and drained the engine. Return startup/context
+  // buffers before borrowing replay credit. Never hold cb_mu across CUPTI:
+  // flush can synchronously wait for a callback on another thread.
+  if (cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED) != CUPTI_SUCCESS) {
+    ++s->flush_failures;
+    s->flush_failed = 1;
+    s->state = kQuarantined;
+    return S5RO_FLUSH_FAILED;
+  }
+  sample_dropped(s.get());
+  {
+    std::lock_guard<std::recursive_mutex> lock(s->cb_mu);
+    if (s->in_use_count != 0) return S5RO_BUSY;
+  }
+  const CUpti_ActivityKind execution_kinds[] = {
+      CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
+      CUPTI_ACTIVITY_KIND_MEMCPY,
+      CUPTI_ACTIVITY_KIND_MEMSET,
+  };
+  for (uint32_t i = 0; i < 3; ++i) {
+    if (cuptiActivityEnable(execution_kinds[i]) != CUPTI_SUCCESS) {
+      ++s->callback_errors;
+      s->state = kQuarantined;
+      return S5RO_ACTIVITY_ENABLE_FAILED;
+    }
+    s->activity_enabled[i + 1] = 1;
+  }
   uint64_t start = 0;
   if (cuptiGetTimestamp(&start) != CUPTI_SUCCESS || start == 0) {
+    s->state = kQuarantined;
     return S5RO_TIMESTAMP_FAILED;
   }
   sample_dropped(s.get());
@@ -3024,8 +3055,7 @@ int s5ro_begin_window(uint64_t session, uint32_t route_generation,
     s->window_completed_base = s->buffers_completed;
     s->window_buffers_issued = 0;
     s->window_buffers_completed = 0;
-    s->buffer_outstanding = 0;
-    s->flush_failed = 0;
+    // Loss/error counters are lifetime evidence; never reset them at begin.
     s->window_active.store(1);
     s->state = kWindow;
     *token_out = s->window_token;
@@ -3060,6 +3090,22 @@ int s5ro_end_window(uint64_t session, uint64_t window_token,
     s->window_end = end;
   }
   s->end_flushing = 1;
+  // Work is drained, but retain window_active until all queued records have
+  // been delivered. A disable failure remains a permanent incomplete proof.
+  const CUpti_ActivityKind execution_kinds[] = {
+      CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
+      CUPTI_ACTIVITY_KIND_MEMCPY,
+      CUPTI_ACTIVITY_KIND_MEMSET,
+  };
+  for (uint32_t i = 0; i < 3; ++i) {
+    if (s->activity_enabled[i + 1] == 0) continue;
+    if (cuptiActivityDisable(execution_kinds[i]) == CUPTI_SUCCESS) {
+      s->activity_enabled[i + 1] = 0;
+    } else {
+      ++s->callback_errors;
+      s->flush_failed = 1;
+    }
+  }
   // Flush and all callback-waiting CUPTI operations happen with only the
   // per-session operation lock held.  A callback thread can always take its
   // own cb_mu and complete.

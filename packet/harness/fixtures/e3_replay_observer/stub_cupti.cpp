@@ -60,6 +60,7 @@ CUpti_CallbackFunc g_callback = nullptr;
 void *g_userdata = nullptr;
 CUpti_SubscriberHandle g_subscriber = nullptr;
 std::set<CUpti_CallbackId> g_resource_callbacks;
+std::set<CUpti_ActivityKind> g_activity_kinds;
 
 std::vector<uint8_t> g_pending;
 std::vector<HeldBuffer> g_held;
@@ -177,9 +178,9 @@ int deliver_pending() {
       held.size = size;
       held.pending.assign(g_pending.begin() + offset, g_pending.end());
       g_held.push_back(std::move(held));
-      if (offset > 0) {
-        g_pending.erase(g_pending.begin(), g_pending.begin() + offset);
-      }
+      // The held buffer owns these records. A later flush must not deliver a
+      // second copy while its original completion is still withheld.
+      g_pending.clear();
       offset = 0;
       break;
     }
@@ -224,6 +225,7 @@ void stub_reset(void) {
   g_userdata = nullptr;
   g_subscriber = nullptr;
   g_resource_callbacks.clear();
+  g_activity_kinds.clear();
   g_next_handle = 0x100000;
   g_next_green = 0x500000;
   g_timestamp = 1;
@@ -252,6 +254,9 @@ void stub_reset(void) {
 }
 
 void stub_set_version(uint32_t version) { g_version = version; }
+int stub_activity_enabled(int kind) {
+  return g_activity_kinds.count(static_cast<CUpti_ActivityKind>(kind)) != 0;
+}
 void stub_set_version_rc(int rc) { g_version_rc = rc; }
 void stub_set_subscribe_rc(int rc) { g_subscribe_rc = rc; }
 void stub_set_unsubscribe_rc(int rc) { g_unsubscribe_rc = rc; }
@@ -428,9 +433,6 @@ void stub_release_held(void) {
     if (g_complete != nullptr) {
       g_complete(nullptr, 0, held.buffer, held.size, valid);
     }
-    if (valid > 0 && valid <= g_pending.size()) {
-      g_pending.erase(g_pending.begin(), g_pending.begin() + valid);
-    }
   }
   g_held.clear();
 }
@@ -577,18 +579,18 @@ CUptiResult cuptiEnableCallback(uint32_t enable,
 }
 
 CUptiResult cuptiActivityEnable(CUpti_ActivityKind kind) {
-  (void)kind;
   if (g_enable_activity_rc != 0) {
     return static_cast<CUptiResult>(g_enable_activity_rc);
   }
+  g_activity_kinds.insert(kind);
   return CUPTI_SUCCESS;
 }
 
 CUptiResult cuptiActivityDisable(CUpti_ActivityKind kind) {
-  (void)kind;
   if (g_disable_activity_rc != 0) {
     return static_cast<CUptiResult>(g_disable_activity_rc);
   }
+  g_activity_kinds.erase(kind);
   return CUPTI_SUCCESS;
 }
 
