@@ -64,7 +64,9 @@ def build(out):
     # The runtime overlay is generated later from these bytes; the bundle never
     # fetches a checkout or imports vLLM while building.
     import executor_hooks, graph_hooks, model_hooks, probe_control_hooks, worker_hooks
+    import capture_streams
     pins=dict(executor_hooks.PINS)
+    pins.update(capture_streams.PINS)
     pins.update(worker_hooks.PINS)
     pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
     pins.update(model_hooks.PINS)

@@ -79,6 +79,30 @@ class DriverBinding:
     def probe(self, pointer, blocks, stream_token, cycles):
         return int(self._lib.s5_probe(int(pointer), int(blocks), int(stream_token), int(cycles)))
 
+    def _aux(self, name, handle, value=None):
+        c = self._c
+        fn = getattr(self._lib, name, None)
+        if fn is None:
+            raise GreenContextError('green helper lacks decode auxiliary stream extension')
+        fn.restype = c.c_int
+        if value is None:
+            fn.argtypes = [c.c_void_p, c.POINTER(c.c_uint64)]
+            out = c.c_uint64()
+            rc = fn(handle, c.byref(out))
+            if rc: raise GreenContextError(f'decode auxiliary create failed: CUresult={rc}')
+            return int(out.value)
+        fn.argtypes = [c.c_void_p, c.c_uint64]
+        return int(fn(handle, value))
+
+    def aux_create(self, handle):
+        return self._aux('s5_decode_aux_create', handle)
+
+    def aux_destroy(self, handle, token):
+        return self._aux('s5_decode_aux_destroy', handle, token)
+
+    def decode_stream_check(self, handle, token):
+        return self._aux('s5_decode_stream_check', handle, token)
+
     def identity(self):
         return {'library_sha256': self.library_sha256, 'abi': self.abi,
                 'helper_source_sha256': helper_source_sha256()}
@@ -128,6 +152,8 @@ class GreenSplit:
         self.prefill_sms = None
         self.total_sms = None
         self.membership_result = None
+        self._aux_streams = {}
+        self._graph_owners = set()
 
     # -- lifecycle --------------------------------------------------------
     def create(self):
@@ -192,9 +218,53 @@ class GreenSplit:
         self.membership_result = MembershipResult(sets[0], sets[1], self.total_sms, ok, evidence)
         return self.membership_result
 
+    def create_decode_aux(self):
+        self._require_open()
+        token = self.binding.aux_create(self._handle)
+        if not token or token in self._aux_streams or token in (self.decode_stream_token, self.prefill_stream_token):
+            self.state = 'quarantined'
+            raise GreenContextError('aliased auxiliary stream')
+        try:
+            stream = self.torch.cuda.ExternalStream(token, device=self.device_index)
+            if stream.cuda_stream != token or self.binding.decode_stream_check(self._handle, token):
+                raise GreenContextError('auxiliary stream is not in decode green context')
+        except BaseException:
+            if self.binding.aux_destroy(self._handle, token): self.state = 'quarantined'
+            raise
+        self._aux_streams[token] = stream
+        return stream
+
+    def check_decode_stream(self, stream):
+        self._require_open()
+        if self.binding.decode_stream_check(self._handle, stream.cuda_stream):
+            raise GreenContextError('stream is not in decode green context')
+
+    def retain_graph_owner(self, owner):
+        self._require_open()
+        if id(owner) in self._graph_owners: raise GreenContextError('duplicate graph owner')
+        self._graph_owners.add(id(owner))
+
+    def release_graph_owner(self, owner):
+        if id(owner) not in self._graph_owners: raise GreenContextError('unknown graph owner')
+        self._graph_owners.remove(id(owner))
+
+    def destroy_decode_aux(self, stream):
+        self._require_open()
+        if self._graph_owners: raise GreenContextError('auxiliary streams still owned by graphs')
+        token = stream.cuda_stream
+        if self._aux_streams.get(token) is not stream: raise GreenContextError('foreign auxiliary stream')
+        if self.binding.aux_destroy(self._handle, token):
+            self.state = 'quarantined'
+            raise GreenContextError('auxiliary stream destroy failed')
+        del self._aux_streams[token]
+
     def close(self):
+        if self._graph_owners:
+            raise GreenContextError('split still owned by captured graphs')
         if self.state != 'open':
             raise GreenContextError(f'green split cannot be closed from state {self.state!r}')
+        for stream in list(self._aux_streams.values()):
+            self.destroy_decode_aux(stream)
         rc = self.binding.close(self._handle)
         if rc:
             self.state = 'quarantined'

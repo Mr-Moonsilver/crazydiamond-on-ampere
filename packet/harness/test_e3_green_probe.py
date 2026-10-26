@@ -188,7 +188,11 @@ class ArtifactIdentity(unittest.TestCase):
         for name in NATIVE_PINS:
             dest = root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(HERE.parent / 'patches/s5_engine' / name, dest)
+            # Immutable q17a pins: do not replace them with a new helper ABI extension.
+            frozen = {'green_context.py': 'q17c_original_green_context.py',
+                      'native/flash_s5_green.cu': 'q17a_original_flash_s5_green.cu'}
+            source = HERE / 'fixtures' / frozen[name] if name in frozen else HERE.parent / 'patches/s5_engine' / name
+            shutil.copyfile(source, dest)
         (root / 'SHA256SUMS').write_text(''.join(f'{sha}  {name}\n' for name, sha in sorted(NATIVE_PINS.items())))
 
     def test_exact_native_pins_extra_file_and_changed_source(self):

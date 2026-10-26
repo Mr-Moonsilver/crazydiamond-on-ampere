@@ -52,7 +52,7 @@ STORAGE_EPOCH = 1
 # (a plain qsa_operation import and resident_attention). It stays shipped and
 # checksummed for the builder, separately from the runtime module inventory.
 BUILD_ONLY_SOURCES = ('operation_source',)
-GENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'graph_router', 'graph_hooks', 'qsa_operation', 'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime')
+GENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'graph_router', 'graph_hooks', 'qsa_operation', 'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime')
 EVIDENCE_FILE = 'decode-probe-evidence.json'
 
 # Test ids that the declaration must name; the new suite verifies they exist.
@@ -601,6 +601,7 @@ class DecodeProbe:
             'identity_scope': 'worker incarnation and storage epoch; opaque labels, not CUDA handles',
             'capture_stream_checks': [dict(value) for _, value in sorted(
                 getattr(self.bank.manager, '_flash_s5_capture_stream_checks', {}).items())],
+            'capture_side_streams': self.bank.capture_streams.record() if self.bank.capture_streams is not None else None,
             'capture_memory': dict(self.bank.capture_memory) if self.bank.capture_memory is not None else None,
             'storage_epoch': self.storage_epoch,
             'route': self.controller.route,

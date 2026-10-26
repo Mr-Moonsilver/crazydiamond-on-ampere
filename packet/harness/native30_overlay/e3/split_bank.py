@@ -94,6 +94,8 @@ class SplitDecodeBank:
         self.capture_memory = None
         self.handles = {}
         self._context_factory = None
+        self.capture_streams = None
+        self.capture_failed = False
 
     # -- construction -----------------------------------------------------
     def build_manager(self):
@@ -145,8 +147,8 @@ class SplitDecodeBank:
 
     def capture(self, *, set_graph_pool_id=None, memory_info=None):
         """Capture every FULL descriptor once; measure the pool delta on this rank."""
-        if self.captured:
-            raise SplitBankError('split bank already captured')
+        if self.captured or self.capture_failed:
+            raise SplitBankError('split bank captured or quarantined')
         if self.manager is None:
             self.build_manager()
         torch = self.torch
@@ -156,11 +158,17 @@ class SplitDecodeBank:
         free_before = int(memory_info()[0])
         started = self.clock()
         try:
-            self.manager.capture(**self.capture_kwargs())
+            from capture_streams import for_runner
+            self.capture_streams = for_runner(self.runner, self.split)
+            with self.capture_streams.capture():
+                self.manager.capture(**self.capture_kwargs())
         except BaseException:
+            self.capture_failed = True
             self.captured = False
             raise
         finally:
+            if self.capture_streams is not None and self.capture_streams.retained:
+                for graph in self.manager.graphs.values(): self.capture_streams.attach_graph(graph)
             # The stock capture pointed the pynccl allocator at our pool;
             # the stock manager's pool must stay the process default afterwards.
             if set_graph_pool_id is not None:
@@ -205,9 +213,11 @@ class SplitDecodeBank:
             raise SplitBankError('destroy needs a handle of this split bank')
         if handle.destroyed:
             raise SplitBankError('split graph already destroyed')
+        if self.capture_streams is not None: self.capture_streams.drain()
         graph = self.manager.graphs.pop(handle.descriptor, None)
         if graph is not None and callable(getattr(graph, 'reset', None)):
             graph.reset()
+            if self.capture_streams is not None: self.capture_streams.retire_graph(graph)
         handle.destroyed = True
         del self.handles[handle.local]
         return True
@@ -337,6 +347,8 @@ class RouteController:
     def consumer_streams(self):
         """Every stream that consumes decode work and must be drained."""
         streams = [self.runner.main_stream]
+        if self.bank.capture_streams is not None:
+            streams.extend(self.bank.capture_streams.consumer_streams())
         for name in ('output_copy_stream',):
             stream = getattr(self.runner, name, None)
             if stream is not None:
@@ -461,8 +473,18 @@ def shutdown(runner):
         raise SplitBankError('shutdown requires the full route (leave split first)')
     bank = getattr(runner, '_flash_s5_split_bank', None)
     if bank is not None:
+        if controller is not None: controller.drain()
         for handle in list(bank.handles.values()):
             bank.destroy(handle)
+        # Also reset graphs retained by a manager whose capture failed before
+        # SplitGraphHandles were published. Never release auxiliary streams first.
+        if bank.capture_streams is not None: bank.capture_streams.drain()
+        if bank.manager is not None:
+            for graph in list(bank.manager.graphs.values()):
+                graph.reset()
+                if bank.capture_streams is not None: bank.capture_streams.retire_graph(graph)
+            bank.manager.graphs.clear()
+        if bank.capture_streams is not None: bank.capture_streams.close_after_graphs()
         bank.manager = None
         bank.pool = None
     split = getattr(runner, '_flash_s5_split', None)

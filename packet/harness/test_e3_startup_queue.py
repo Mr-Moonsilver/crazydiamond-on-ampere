@@ -49,7 +49,7 @@ def launcher_text():
     import make_e2_arena
     import make_s5_overlap
     return make_s5_overlap._s5_launcher(
-        make_e2_arena.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text())).replace('e3/teacher_decode.py ', '').replace('e3/route_invariant.py ', '').replace('e3/launch_diagnostic.py ', '').replace('e3/native/flash_s5_graph_bytes.cpp ', '')
+        make_e2_arena.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text())).replace('e3/capture_streams.py ', '').replace('e3/teacher_decode.py ', '').replace('e3/route_invariant.py ', '').replace('e3/launch_diagnostic.py ', '').replace('e3/native/flash_s5_graph_bytes.cpp ', '')
 
 
 FAKE_SYSTEMCTL = r'''#!/usr/bin/env python3

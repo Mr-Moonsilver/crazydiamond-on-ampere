@@ -178,7 +178,7 @@ class ProtocolV2Queue(FullQueue):
     def setUp(self):
         from unittest.mock import patch
         import make_s5_overlap,make_e2_arena
-        def current():return make_s5_overlap._s5_launcher(make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text()))
+        def current():return make_s5_overlap._s5_launcher(make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text())).replace('e3/capture_streams.py ', '')
         self._patches=[patch.object(old,'launcher_text',current),patch.object(old,'LAUNCHER_SHA',hashlib.sha256(current().encode()).hexdigest())]
         for p in self._patches:p.start()
         FullQueue.setUp(self)

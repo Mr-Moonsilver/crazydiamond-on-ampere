@@ -518,6 +518,8 @@ class FullPinnedTests(unittest.TestCase):
         expected_pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
         expected_pins.update(model_hooks.PINS)
         expected_pins.update(g.probe_control_hooks.PINS)
+        import capture_streams
+        expected_pins.update(capture_streams.PINS)
         self.assertEqual(record['reference_source_pins'], expected_pins)
         self.assertEqual(record['graph_composition']['module'], 'graph_hooks.py')
         self.assertFalse(record['armable'])

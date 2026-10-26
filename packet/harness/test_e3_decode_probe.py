@@ -108,10 +108,10 @@ class ProbeFixture(unittest.TestCase):
             self.runner, env=self.env, torch_module=self.torch)
 
     def tearDown(self):
+        remove_fake_vllm()
         for split in [self.split, *self.extra_splits]:
             if split.state == 'open':
                 split.close()
-        remove_fake_vllm()
 
     def new_split(self):
         split = green_context.open_split(
