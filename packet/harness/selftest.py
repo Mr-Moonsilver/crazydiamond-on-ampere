@@ -686,6 +686,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_identity_declare.py', 'source-only identity declaration: inert launcher and exact setcfg'),
                      ('test_round7_review.py', 'round 7 review: offline q8/decode_ab counterexamples'),
                      ('test_agent_replay.py', 'agent_replay v2: cut-off streams, full reuse'),
+                     ('test_e3_w1_decode_driver.py', 'E3 W1 decode-only driver: live-cohort window after controller receipt, early-EOS invalidation, leave-before-drain, retained invalid repeats (loopback fakes)'),
                      ('test_prefix_capacity.py', 'prefix capacity: source shapes and conditional LRU model'),
                      ('test_pp_grouping.py', 'PP grouping, pool stats, warm/cold gates: offline checks')]:
     identity_test = subprocess.run([sys.executable, os.path.join(HERE, suite)], capture_output=True, text=True,
