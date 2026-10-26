@@ -72,9 +72,10 @@ def kernel(node_id, *, graph=0, parent=-1, depth=0, ctx_known=True,
     return {
         'id': node_id, 'graph': graph, 'parent': parent, 'depth': depth,
         'type': 'kernel', 'type_id': 0, 'supported': True, 'unknown': unknown,
-        'params': params, 'query_rc': query_rc,
+        'params': params, 'query_rc': query_rc if params == 'ok' else 400,
+        'context_basis': 'kernel_ctx' if ctx_known else 'unavailable',
         'context_known': ctx_known, 'context_matches': ctx_matches,
-        'sm_query': sm_query, 'sm_query_rc': 0, 'sm_count': sm_count,
+        'sm_query': sm_query, 'sm_query_rc': 0 if sm_query in ('ok', 'unknown') else 801, 'sm_count': sm_count,
         'grid': None if grid is None else list(grid),
         'block': None if block is None else list(block),
         'shared_bytes': shared,
@@ -89,6 +90,7 @@ def memcpy(node_id, *, graph=0, parent=-1, depth=0, params='ok',
     if params == 'error':
         return {
             'id': node_id, 'graph': graph, 'parent': parent, 'depth': depth,
+            'context_basis': 'not_exposed', 'context_known': False,
             'type': 'memcpy', 'type_id': 1, 'supported': True, 'unknown': True,
             'params': 'error', 'query_rc': 400,
             'direction': 'unknown', 'width_bytes': None, 'height': None,
@@ -97,7 +99,8 @@ def memcpy(node_id, *, graph=0, parent=-1, depth=0, params='ok',
         }
     return {
         'id': node_id, 'graph': graph, 'parent': parent, 'depth': depth,
-        'type': 'memcpy', 'type_id': 1, 'supported': True, 'unknown': False,
+        'context_basis': 'not_exposed', 'context_known': False,
+            'type': 'memcpy', 'type_id': 1, 'supported': True, 'unknown': True,
         'params': 'ok', 'query_rc': 0,
         'direction': f'{src}-to-{dst}', 'width_bytes': width,
         'height': height, 'depth_count': depth_count,
@@ -111,13 +114,15 @@ def memset(node_id, *, graph=0, parent=-1, depth=0, params='ok',
     if params == 'error':
         return {
             'id': node_id, 'graph': graph, 'parent': parent, 'depth': depth,
+            'context_basis': 'not_exposed', 'context_known': False,
             'type': 'memset', 'type_id': 2, 'supported': True, 'unknown': True,
             'params': 'error', 'query_rc': 400, 'element_bytes': None,
             'width_elements': None, 'height': None, 'bytes': None, 'pitch': None,
         }
     return {
         'id': node_id, 'graph': graph, 'parent': parent, 'depth': depth,
-        'type': 'memset', 'type_id': 2, 'supported': True, 'unknown': False,
+        'context_basis': 'not_exposed', 'context_known': False,
+            'type': 'memset', 'type_id': 2, 'supported': True, 'unknown': True,
         'params': 'ok', 'query_rc': 0, 'element_bytes': element,
         'width_elements': width, 'height': height,
         'bytes': element * width * height, 'pitch': 0,
@@ -198,7 +203,7 @@ def build_report(nodes, *, stream_sm_query='ok', stream_sm_count=SMS,
             if node['collective_candidate'] == 'unavailable':
                 reasons.add('kernel_name_unavailable')
         elif node['type'] in ('memcpy', 'memset') and node['unknown']:
-            reasons.add('node_query_error')
+            reasons.add('memory_context_unavailable')
         elif node['type'] == 'graph' and node['unknown']:
             reasons.add('child_graph_error')
     if stream_sm_query != 'ok':
@@ -221,7 +226,7 @@ def build_report(nodes, *, stream_sm_query='ok', stream_sm_count=SMS,
         'stream_context': {
             'green_query': 'ok', 'green_matches': True,
             'context_convert': 'ok', 'sm_query': stream_sm_query,
-            'sm_query_rc': 0, 'sm_count': stream_sm_count,
+            'sm_query_rc': 0 if stream_sm_query == 'ok' else 801, 'sm_count': stream_sm_count,
         },
         'collective': {
             'basis': 'function_name_substring', 'confirmed': False,
@@ -249,11 +254,17 @@ class VllmDesc:
 
     def __init__(self, num_tokens):
         self.num_tokens = num_tokens
+        self.cg_mode = 'FULL'
+        self.num_reqs = num_tokens
+        self.uniform_token_count = 1
+        self.max_query_len = None
+        self.num_active_loras = 0
+        self.num_ubatches = 1
 
 
 class FakeBinding:
     library_sha256 = DIGEST0
-    helper_source_sha256 = None
+    helper_source_sha256 = helper_source_sha256()
     abi = ABI_VERSION
 
     def __init__(self, reports):
@@ -282,7 +293,7 @@ def scene(descriptors=None, handles=None, report_factory=None):
         vllm = VllmDesc(local.num_tokens)
         pairs.append((vllm, local))
         graphs[vllm] = FakeGraph(handles[index])
-        router_handles[local] = object()
+        router_handles[local] = types.SimpleNamespace(descriptor=vllm, local=local, bank=None, destroyed=False)
         checks[descriptor_name(local)] = {
             'bank': 'decode-split',
             'stream_label': 'decode-split-stream',
@@ -296,7 +307,9 @@ def scene(descriptors=None, handles=None, report_factory=None):
         graphs=graphs, _flash_s5_keep_graphs=True,
         _flash_s5_capture_owner=split,
         _flash_s5_capture_stream_checks=checks)
-    bank = types.SimpleNamespace(manager=manager, pairs=tuple(pairs), captured=True)
+    bank = types.SimpleNamespace(manager=manager, pairs=tuple(pairs), captured=True, handles=dict(router_handles))
+    for owned in router_handles.values():
+        owned.bank = bank
     router = types.SimpleNamespace(
         name='decode-split', descriptors=tuple(descriptors),
         handles=router_handles, storage_epoch=1, route_generation=3,
@@ -553,7 +566,7 @@ class AuditBankTests(unittest.TestCase):
         binding.reports[raw[0]] = GraphAuditError('malformed_json')
         result = audit_bank(probe, binding)
         self.assertEqual(result['verdict'], INCONCLUSIVE)
-        self.assertIn('native_malformed_json', result['reasons'])
+        self.assertIn('native_call_invalid', result['reasons'])
 
     def test_random_status_string_is_not_echoed(self):
         probe, binding, manager, graphs, checks, handles, raw = scene()
@@ -702,6 +715,112 @@ class AuditBankTests(unittest.TestCase):
             self.assertEqual(binding.calls, [])
 
 
+
+class ReviewRegressionTests(unittest.TestCase):
+    def test_missing_source_identity_refused(self):
+        probe, binding, *_ = scene()
+        binding.helper_source_sha256 = None
+        with self.assertRaisesRegex(GraphAuditError, '^binding_contract$'):
+            audit_bank(probe, binding)
+        self.assertEqual(binding.calls, [])
+
+    def test_conflicting_native_status_and_rc_never_pass(self):
+        for rc, status in ((5, 'ok'), (0, 'green_context_mismatch')):
+            probe, binding, *_, handles = scene()
+            binding.reports[handles[0]] = NativeInspection(status, rc, True, build_report([kernel(0)]))
+            result = audit_bank(probe, binding)
+            self.assertNotEqual(result['verdict'], PASS)
+            self.assertIn('native_contract', result['reasons'])
+
+    def test_missing_and_foreign_replay_handles_never_pass(self):
+        for mutation in ('missing', 'foreign', 'destroyed'):
+            probe, binding, *_ = scene()
+            if mutation == 'missing':
+                probe.router.handles = None
+            elif mutation == 'foreign':
+                next(iter(probe.router.handles.values())).bank = object()
+            else:
+                next(iter(probe.router.handles.values())).destroyed = True
+            self.assertNotEqual(audit_bank(probe, binding)['verdict'], PASS)
+
+    def test_duplicate_raw_graph_never_passes(self):
+        probe, binding, *_ = scene(handles=[1234, 1234])
+        result = audit_bank(probe, binding)
+        self.assertEqual(result['verdict'], FAIL)
+        self.assertIn('graph_duplicate', result['reasons'])
+
+    def test_vllm_descriptor_must_match_declared_mirror(self):
+        probe, binding, *_ = scene()
+        probe.bank.pairs[0][0].num_tokens = 77
+        result = audit_bank(probe, binding)
+        self.assertEqual(result['verdict'], FAIL)
+        self.assertIn('capture_descriptor_mismatch', result['reasons'])
+
+    def test_callbacks_cannot_replace_graph_or_change_ownership(self):
+        for what in ('graph', 'checks', 'generation', 'quarantine', 'owner', 'handles'):
+            probe, binding, manager, *_ = scene()
+            inspect = binding.inspect
+            def mutate(*args, **kwargs):
+                if what == 'graph':
+                    key = next(iter(manager.graphs))
+                    manager.graphs[key] = FakeGraph(123)
+                elif what == 'checks':
+                    next(iter(manager._flash_s5_capture_stream_checks.values()))['torch_matches_owner'] = False
+                elif what == 'generation':
+                    probe.route_generation += 1
+                elif what == 'quarantine':
+                    probe.quarantined = 'payload-hidden'
+                elif what == 'owner':
+                    manager._flash_s5_capture_owner = object()
+                else:
+                    next(iter(probe.router.handles.values())).destroyed = True
+                return inspect(*args, **kwargs)
+            binding.inspect = mutate
+            result = audit_bank(probe, binding)
+            self.assertNotEqual(result['verdict'], PASS, what)
+            self.assertIn('concurrent_mutation', result['reasons'])
+            self.assertNotIn('payload-hidden', json.dumps(result))
+
+    def test_invalid_probe_labels_are_never_echoed(self):
+        for name in ('route', 'interval'):
+            probe, binding, *_ = scene()
+            setattr(probe, name, '0xfeedface-secret-payload')
+            result = audit_bank(probe, binding)
+            self.assertNotEqual(result['verdict'], PASS)
+            self.assertNotIn('0xfeedface', json.dumps(result))
+        probe, binding, *_ = scene()
+        probe.router.name = '0xfeedface-secret-payload'
+        with self.assertRaisesRegex(GraphAuditError, '^probe_contract$'):
+            audit_bank(probe, binding)
+
+    def test_error_codes_from_untrusted_binding_are_not_echoed(self):
+        probe, binding, *_, handles = scene()
+        binding.reports[handles[0]] = GraphAuditError('0xfeedface-secret-payload')
+        result = audit_bank(probe, binding)
+        self.assertNotIn('0xfeedface', json.dumps(result))
+        self.assertEqual(result['verdict'], INCONCLUSIVE)
+
+    def test_report_cannot_exceed_requested_node_limit(self):
+        probe, binding, *_, handles = scene()
+        binding.reports[handles[0]] = NativeInspection('ok', 0, True, build_report([kernel(0), kernel(1)]))
+        result = audit_bank(probe, binding, max_nodes=1)
+        self.assertEqual(result['verdict'], INCONCLUSIVE)
+
+    def test_query_status_contradictions_cannot_pass(self):
+        for field in ('query_rc', 'sm_query_rc'):
+            probe, binding, *_, handles = scene()
+            report = build_report([kernel(0)])
+            report['nodes'][0][field] = 801
+            binding.reports[handles[0]] = NativeInspection('ok', 0, True, report)
+            self.assertEqual(audit_bank(probe, binding)['verdict'], INCONCLUSIVE)
+
+    def test_invalid_node_ids_and_unknown_copy_kind_cannot_pass(self):
+        for nodes in ([kernel(9)], [memcpy(0, src='unknown')]):
+            probe, binding, *_, handles = scene()
+            report = build_report(nodes)
+            binding.reports[handles[0]] = NativeInspection('ok', 0, True, report)
+            self.assertEqual(audit_bank(probe, binding)['verdict'], INCONCLUSIVE)
+
 class BindingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -732,6 +851,12 @@ class BindingTests(unittest.TestCase):
     @staticmethod
     def _declare_stub(lib):
         U, I, N = ctypes.c_uint64, ctypes.c_int, None
+        lib.stub_func_backed.argtypes = [U]
+        lib.stub_func_backed.restype = N
+        lib.stub_stream_ctx.argtypes = [U, U, I]
+        lib.stub_stream_ctx.restype = N
+        lib.stub_enumeration.argtypes = [U, I]
+        lib.stub_enumeration.restype = N
         lib.stub_reset.argtypes = []
         lib.stub_reset.restype = N
         lib.stub_make_green.argtypes = [U, ctypes.c_uint, I, I]
@@ -757,7 +882,8 @@ class BindingTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        shutil.rmtree(cls.tmp, ignore_errors=True)
+        # Preserve CPU compiler artifacts under the operator's no-delete rule.
+        pass
 
     @classmethod
     def _toy_library(cls, name, text):
@@ -780,6 +906,61 @@ class BindingTests(unittest.TestCase):
 
     def stream(self, green, rc=0):
         return self.lib.stub_make_stream(green, rc)
+
+    def test_func_backed_ignored_ctx_cannot_prove_placement(self):
+        green = self.green(12345, SMS)
+        stream = self.stream(green)
+        graph = self.lib.stub_make_graph()
+        node = self.lib.stub_add_kernel(graph, self.lib.stub_make_func(b'ncclAllReduce'), 12345, 0)
+        self.lib.stub_func_backed(node)
+        seen = self.binding.inspect(graph, stream, green, max_nodes=10, max_depth=4, max_bytes=8192)
+        self.assertFalse(seen.complete)
+        node = seen.report['nodes'][0]
+        self.assertEqual(node['context_basis'], 'ignored_for_func')
+        self.assertFalse(node['context_known'])
+        self.assertIsNone(node['sm_count'])
+        self.assertEqual(node['collective_candidate'], 'allreduce')
+
+    def test_actual_stream_context_query_and_mismatch(self):
+        green = self.green(12345, SMS)
+        stream = self.stream(green)
+        graph = self.lib.stub_make_graph()
+        for ctx, rc, status in ((0, 801, 'stream_context_query_failed'),
+                                (54321, 0, 'stream_context_mismatch')):
+            self.lib.stub_stream_ctx(stream, ctx, rc)
+            seen = self.binding.inspect(graph, stream, green, max_nodes=10, max_depth=4, max_bytes=8192)
+            self.assertEqual(seen.status, status)
+            self.assertFalse(seen.complete)
+
+    def test_changed_or_duplicate_native_inventory_is_not_complete(self):
+        green = self.green(12345, SMS)
+        stream = self.stream(green)
+        graph = self.lib.stub_make_graph()
+        func = self.lib.stub_make_func(b'k')
+        self.lib.stub_add_kernel(graph, func, 12345, 0)
+        self.lib.stub_add_kernel(graph, func, 12345, 0)
+        for mode, reason in ((1, 'graph_changed'), (2, 'node_inventory_invalid')):
+            self.lib.stub_enumeration(graph, mode)
+            seen = self.binding.inspect(graph, stream, green, max_nodes=10, max_depth=4, max_bytes=8192)
+            self.assertFalse(seen.complete)
+            self.assertIn(reason, seen.report['reasons'])
+
+    def test_pinned_cuda13_header_syntax(self):
+        header = ROOT / 'reference/cuda-13/cuda.h'
+        if not header.is_file():
+            self.skipTest('pinned CUDA 13 reference header absent')
+        self.assertEqual(hashlib.sha256(header.read_bytes()).hexdigest(),
+                         '64025f81a9d6d2b10e9e11654f3523e5b046d01b883f0b9ca474e463274b80d4')
+        result = subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                                 '-I', str(header.parent), '-x', 'c++', '-fsyntax-only',
+                                 str(ROOT / 'patches/s5_engine/native/flash_s5_graph_audit.cu')],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handle_integer_overflow_refused_before_native(self):
+        for handle in (-1, True, 2**64, 2**64 + 1):
+            with self.assertRaisesRegex(GraphAuditError, '^bad_handle$'):
+                self.binding.inspect(handle, 1, 1, max_nodes=10, max_depth=2, max_bytes=4096)
 
     def test_binding_identity_and_source_digest(self):
         self.assertEqual(self.binding.abi, ABI_VERSION)
@@ -942,8 +1123,10 @@ class BindingTests(unittest.TestCase):
         self.lib.stub_add_memset(graph, 4, 4, 2, 0)
         seen = self.binding.inspect(graph, stream, green, max_nodes=10,
                                     max_depth=2, max_bytes=8192)
-        self.assertTrue(seen.complete)
+        self.assertFalse(seen.complete)
         first, second = seen.report['nodes']
+        self.assertFalse(first['context_known'])
+        self.assertEqual(second['context_basis'], 'not_exposed')
         self.assertEqual(first['direction'], 'device-to-host')
         self.assertEqual(first['bytes'], 16 * 2 * 3)
         self.assertEqual(second['bytes'], 4 * 4 * 2)
@@ -1088,6 +1271,7 @@ typedef struct CUdevResource_st {
   CUdevSmResource sm;
 } CUdevResource;
 
+typedef void *CUkernel;
 typedef struct CUDA_KERNEL_NODE_PARAMS_st {
   CUfunction func;
   unsigned gridDimX, gridDimY, gridDimZ;
@@ -1095,6 +1279,7 @@ typedef struct CUDA_KERNEL_NODE_PARAMS_st {
   unsigned sharedMemBytes;
   void **kernelParams;
   void **extra;
+  CUkernel kern;
   CUcontext ctx;
 } CUDA_KERNEL_NODE_PARAMS;
 
@@ -1127,6 +1312,8 @@ typedef struct CUDA_MEMSET_NODE_PARAMS_st {
 extern "C" {
 #endif
 CUresult cuStreamGetGreenCtx(CUstream stream, CUgreenCtx *green);
+CUresult cuStreamGetCtx(CUstream stream, CUcontext *ctx);
+CUresult cuKernelGetName(const char **name, CUkernel kernel);
 CUresult cuCtxFromGreenCtx(CUcontext *ctx, CUgreenCtx green);
 CUresult cuCtxGetDevResource(CUcontext ctx, CUdevResource *resource,
                              CUdevResourceType type);
@@ -1157,6 +1344,7 @@ struct StreamInfo { uint64_t green = 0; int rc = 0; };
 struct NodeInfo {
   int type = 0;
   int params_rc = 0;
+  bool func_backed = false;
   uint64_t func = 0;
   uint64_t ctx = 0;
   uint64_t child = 0;
@@ -1170,6 +1358,8 @@ struct GraphInfo { int rc = 0; std::vector<uint64_t> nodes; };
 static uint64_t g_counter = 0;
 static std::map<uint64_t, CtxInfo> g_ctx;
 static std::map<uint64_t, StreamInfo> g_stream;
+static std::map<uint64_t, StreamInfo> g_stream_ctx;
+static std::map<uint64_t, int> g_enumeration;
 static std::map<uint64_t, GraphInfo> g_graph;
 static std::map<uint64_t, NodeInfo> g_node;
 static std::map<uint64_t, std::string> g_func;
@@ -1178,7 +1368,7 @@ static uint64_t next_token() { return ++g_counter; }
 
 extern "C" void stub_reset() {
   g_counter = 0;
-  g_ctx.clear(); g_stream.clear(); g_graph.clear(); g_node.clear(); g_func.clear();
+  g_ctx.clear(); g_stream.clear(); g_stream_ctx.clear(); g_enumeration.clear(); g_graph.clear(); g_node.clear(); g_func.clear();
 }
 
 extern "C" uint64_t stub_make_green(uint64_t ctx, unsigned sm, int sm_rc,
@@ -1285,6 +1475,27 @@ extern "C" CUresult cuStreamGetGreenCtx(CUstream stream, CUgreenCtx *green) {
   return CUDA_SUCCESS;
 }
 
+extern "C" void stub_func_backed(uint64_t node) { g_node[node].func_backed = true; }
+extern "C" void stub_stream_ctx(uint64_t stream, uint64_t ctx, int rc) {
+  g_stream_ctx[stream] = StreamInfo{ctx, rc};
+}
+extern "C" void stub_enumeration(uint64_t graph, int mode) { g_enumeration[graph] = mode; }
+extern "C" CUresult cuStreamGetCtx(CUstream stream, CUcontext *ctx) {
+  auto custom = g_stream_ctx.find((uint64_t)(uintptr_t)stream);
+  if (custom != g_stream_ctx.end()) {
+    *ctx = (CUcontext)(uintptr_t)custom->second.green;
+    return custom->second.rc;
+  }
+  auto it = g_stream.find((uint64_t)(uintptr_t)stream);
+  if (it == g_stream.end()) return CUDA_ERROR_INVALID_HANDLE;
+  auto green = g_stream.find(it->second.green);
+  if (green == g_stream.end()) return CUDA_ERROR_INVALID_HANDLE;
+  *ctx = (CUcontext)(uintptr_t)green->second.green;
+  return CUDA_SUCCESS;
+}
+extern "C" CUresult cuKernelGetName(const char **name, CUkernel kernel) {
+  return cuFuncGetName(name, (CUfunction)kernel);
+}
 extern "C" CUresult cuCtxFromGreenCtx(CUcontext *ctx, CUgreenCtx green) {
   auto it = g_stream.find((uint64_t)(uintptr_t)green);
   if (it == g_stream.end()) return CUDA_ERROR_INVALID_HANDLE;
@@ -1313,8 +1524,8 @@ extern "C" CUresult cuGraphGetNodes(CUgraph graph, CUgraphNode *nodes,
   if (nodes == nullptr) { *count = n; return CUDA_SUCCESS; }
   size_t room = *count < n ? *count : n;
   for (size_t i = 0; i < room; ++i)
-    nodes[i] = (CUgraphNode)(uintptr_t)it->second.nodes[i];
-  *count = n;
+    nodes[i] = (CUgraphNode)(uintptr_t)it->second.nodes[g_enumeration[(uint64_t)(uintptr_t)graph] == 2 ? 0 : i];
+  *count = n + (g_enumeration[(uint64_t)(uintptr_t)graph] == 1 ? 1 : 0);
   return CUDA_SUCCESS;
 }
 
@@ -1330,7 +1541,8 @@ extern "C" CUresult cuGraphKernelNodeGetParams(CUgraphNode node,
   NodeInfo *info = find_node((uint64_t)(uintptr_t)node);
   if (info == nullptr) return CUDA_ERROR_INVALID_HANDLE;
   if (info->params_rc != CUDA_SUCCESS) return info->params_rc;
-  p->func = (CUfunction)(uintptr_t)info->func;
+  p->func = info->func_backed ? (CUfunction)(uintptr_t)info->func : nullptr;
+  p->kern = info->func_backed ? nullptr : (CUkernel)(uintptr_t)info->func;
   p->gridDimX = 4; p->gridDimY = 1; p->gridDimZ = 1;
   p->blockDimX = 128; p->blockDimY = 1; p->blockDimZ = 1;
   p->sharedMemBytes = 0;

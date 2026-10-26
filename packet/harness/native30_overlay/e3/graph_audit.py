@@ -50,6 +50,9 @@ NATIVE_GREEN_MISSING = 4
 NATIVE_GREEN_MISMATCH = 5
 NATIVE_CONTEXT_CONVERT_FAILED = 6
 NATIVE_GRAPH_QUERY_FAILED = 7
+NATIVE_INTERNAL_ERROR = 8
+NATIVE_STREAM_CONTEXT_QUERY_FAILED = 9
+NATIVE_STREAM_CONTEXT_MISMATCH = 10
 
 STATUS_BY_RC = {
     NATIVE_OK: 'ok',
@@ -60,6 +63,9 @@ STATUS_BY_RC = {
     NATIVE_GREEN_MISMATCH: 'green_context_mismatch',
     NATIVE_CONTEXT_CONVERT_FAILED: 'context_convert_failed',
     NATIVE_GRAPH_QUERY_FAILED: 'graph_query_failed',
+    NATIVE_INTERNAL_ERROR: 'internal_error',
+    NATIVE_STREAM_CONTEXT_QUERY_FAILED: 'stream_context_query_failed',
+    NATIVE_STREAM_CONTEXT_MISMATCH: 'stream_context_mismatch',
 }
 
 DEFAULT_MAX_NODES = 200_000
@@ -95,13 +101,13 @@ CANDIDATE_KEYS = {'allreduce', 'allgather', 'reducescatter', 'broadcast',
 NODE_COMMON = {'id', 'graph', 'parent', 'depth', 'type', 'type_id',
                'supported', 'unknown', 'params', 'query_rc'}
 NODE_EXTRA = {
-    'kernel': {'context_known', 'context_matches', 'sm_query', 'sm_query_rc',
+    'kernel': {'context_basis', 'context_known', 'context_matches', 'sm_query', 'sm_query_rc',
                'sm_count', 'grid', 'block', 'shared_bytes',
                'collective_candidate', 'collective_basis',
                'collective_confirmed'},
-    'memcpy': {'direction', 'width_bytes', 'height', 'depth_count', 'bytes',
+    'memcpy': {'context_basis', 'context_known', 'direction', 'width_bytes', 'height', 'depth_count', 'bytes',
                'src_pitch', 'dst_pitch'},
-    'memset': {'element_bytes', 'width_elements', 'height', 'bytes', 'pitch'},
+    'memset': {'context_basis', 'context_known', 'element_bytes', 'width_elements', 'height', 'bytes', 'pitch'},
     'graph': {'child'},
     'other': set(),
     'unknown': set(),
@@ -115,6 +121,7 @@ NATIVE_REASONS = {
     'node_query_error', 'node_type_error', 'kernel_context_unknown',
     'kernel_sm_unknown', 'kernel_name_unavailable', 'child_graph_error',
     'child_graph_cycle', 'child_graph_not_expanded', 'stream_sm_unknown',
+    'graph_changed', 'node_inventory_invalid', 'memory_context_unavailable',
 }
 STATUSES = frozenset(STATUS_BY_RC.values())
 CAPTURE_CHECK_KEYS = {'bank', 'stream_label', 'context_label',
@@ -156,8 +163,8 @@ def helper_source_sha256():
     try:
         with open(path, 'rb') as handle:
             return hashlib.sha256(handle.read()).hexdigest()
-    except OSError as exc:
-        raise GraphAuditError('helper_source_missing') from exc
+    except OSError:
+        raise GraphAuditError('helper_source_missing') from None
 
 
 def _validate_limits(max_nodes, max_depth, max_bytes):
@@ -171,7 +178,7 @@ def _validate_limits(max_nodes, max_depth, max_bytes):
 
 def _freeze(value):
     """Deep, immutable copy of a JSON document with strict scalar types."""
-    if isinstance(value, dict):
+    if isinstance(value, (dict, types.MappingProxyType)):
         out = {}
         for key, item in value.items():
             if type(key) is not str:
@@ -211,8 +218,8 @@ class AuditBinding:
         try:
             with open(path, 'rb') as handle:
                 digest = hashlib.sha256(handle.read()).hexdigest()
-        except OSError as exc:
-            raise GraphAuditError('library_unreadable') from exc
+        except OSError:
+            raise GraphAuditError('library_unreadable') from None
         if digest != expected_sha256:
             raise GraphAuditError('library_sha_mismatch')
         if ctypes_module is None:
@@ -220,13 +227,13 @@ class AuditBinding:
         c = ctypes_module
         try:
             lib = c.CDLL(path)
-        except OSError as exc:
-            raise GraphAuditError('library_load_failed') from exc
+        except OSError:
+            raise GraphAuditError('library_load_failed') from None
         try:
             abi_fn = lib.s5ga_abi
             inspect_fn = lib.s5ga_inspect
-        except AttributeError as exc:
-            raise GraphAuditError('symbol_missing') from exc
+        except AttributeError:
+            raise GraphAuditError('symbol_missing') from None
         U, I = c.c_uint64, c.c_int
         abi_fn.argtypes = []
         abi_fn.restype = I
@@ -235,8 +242,8 @@ class AuditBinding:
         inspect_fn.restype = I
         try:
             abi = int(abi_fn())
-        except Exception as exc:  # a broken library is not a usable binding
-            raise GraphAuditError('abi_missing') from exc
+        except Exception:  # a broken library is not a usable binding
+            raise GraphAuditError('abi_missing') from None
         if abi != ABI_VERSION:
             raise GraphAuditError('abi_mismatch')
         self.library_path = path
@@ -252,7 +259,7 @@ class AuditBinding:
                 max_bytes):
         """Bounded metadata for one raw graph; no path, replay or allocation."""
         for value in (graph_handle, stream_handle, expected_green_context_handle):
-            if type(value) is not int or value <= 0:
+            if type(value) is not int or not 0 < value < 2**64:
                 raise GraphAuditError('bad_handle')
         _validate_limits(max_nodes, max_depth, max_bytes)
         c = self._c
@@ -273,14 +280,16 @@ class AuditBinding:
         try:
             text = bytes(buffer.raw[:length]).decode('utf-8')
             document = json.loads(text, object_pairs_hook=_no_duplicate_keys)
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise GraphAuditError('malformed_json') from exc
+        except (UnicodeDecodeError, ValueError):
+            raise GraphAuditError('malformed_json') from None
         if type(document) is not dict:
             raise GraphAuditError('malformed_json')
         complete = document.get('complete')
         if type(complete) is not bool:
             complete = False
-        return NativeInspection('ok', 0, complete, _freeze(document), None)
+        frozen = _freeze(document)
+        _validate_native_report(frozen, {'max_nodes': max_nodes, 'max_depth': max_depth})
+        return NativeInspection('ok', 0, complete, frozen, None)
 
 
 # --- native report validation ----------------------------------------------
@@ -319,12 +328,17 @@ def _validate_kernel(node):
     params = node['params']
     if params not in ('ok', 'error'):
         _invalid()
+    basis = _text(node['context_basis'], {'kernel_ctx', 'ignored_for_func', 'unavailable'})
     ctx_known = _bool(node['context_known'])
+    if ctx_known != (basis == 'kernel_ctx'):
+        _invalid()
     ctx_matches = _bool(node['context_matches'])
     if ctx_matches and not ctx_known:
         _invalid()
     sm_query = _text(node['sm_query'], SM_QUERIES)
-    _int(node['sm_query_rc'])
+    sm_rc = _int(node['sm_query_rc'])
+    if (sm_query == 'ok' and sm_rc != 0) or (sm_query in ('error', 'unsupported') and sm_rc == 0):
+        _invalid()
     sm_count = node['sm_count']
     if sm_query == 'ok':
         _int(sm_count, 1)
@@ -354,6 +368,8 @@ def _validate_kernel(node):
 
 
 def _validate_memcpy(node):
+    if node['context_basis'] != 'not_exposed' or node['context_known'] is not False or node['unknown'] is not True:
+        _invalid()
     params = node['params']
     if params not in ('ok', 'error'):
         _invalid()
@@ -371,6 +387,8 @@ def _validate_memcpy(node):
     parts = direction.split('-to-')
     if len(parts) != 2 or any(part not in MEMORY_KINDS for part in parts):
         _invalid()
+    if 'unknown' in parts and node['unknown'] is not True:
+        _invalid()
     width = _int(node['width_bytes'])
     height = _int(node['height'])
     depth = _int(node['depth_count'])
@@ -382,11 +400,13 @@ def _validate_memcpy(node):
     if bytes_value is None:
         if node['unknown'] is not True:
             _invalid()
-    elif _int(bytes_value) != expected or node['unknown'] is not False:
+    elif _int(bytes_value) != expected:
         _invalid()
 
 
 def _validate_memset(node):
+    if node['context_basis'] != 'not_exposed' or node['context_known'] is not False or node['unknown'] is not True:
+        _invalid()
     params = node['params']
     if params not in ('ok', 'error'):
         _invalid()
@@ -398,6 +418,8 @@ def _validate_memset(node):
             _invalid()
         return
     element = _int(node['element_bytes'])
+    if element not in (1, 2, 4):
+        _invalid()
     width = _int(node['width_elements'])
     height = _int(node['height'])
     bytes_value = node['bytes']
@@ -406,7 +428,7 @@ def _validate_memset(node):
     if bytes_value is None:
         if node['unknown'] is not True:
             _invalid()
-    elif _int(bytes_value) != expected or node['unknown'] is not False:
+    elif _int(bytes_value) != expected:
         _invalid()
 
 
@@ -464,7 +486,8 @@ def _validate_native_report(report, limits):
         _invalid()
     sm_query = _text(stream['sm_query'], {'ok', 'unsupported', 'error'})
     sm_query_rc = _int(stream['sm_query_rc'])
-    del sm_query_rc
+    if (sm_query == 'ok') != (sm_query_rc == 0):
+        _invalid()
     stream_sm_count = stream['sm_count']
     if sm_query == 'ok':
         _int(stream_sm_count, 1)
@@ -513,7 +536,9 @@ def _validate_native_report(report, limits):
         _int(node['type_id'], -1)
         supported = _bool(node['supported'])
         _bool(node['unknown'])
-        _int(node['query_rc'])
+        query_rc = _int(node['query_rc'])
+        if node['params'] in ('ok', 'error') and ((query_rc == 0) != (node['params'] == 'ok')):
+            _invalid()
         if node_type in ('kernel', 'memcpy', 'memset', 'graph'):
             if supported is not True or node['type_id'] != TYPE_IDS[node_type]:
                 _invalid()
@@ -559,6 +584,8 @@ def _validate_native_report(report, limits):
     for node in normalized:
         recomputed_counts[node['type']] += 1
     if recomputed_counts != counts:
+        _invalid()
+    if node_count > limits['max_nodes'] or seen_ids != set(range(node_count)):
         _invalid()
     if node_count != len(normalized):
         _invalid()
@@ -625,7 +652,7 @@ def _validate_native_report(report, limits):
 
     computed_complete = (not limits_exceeded and evidence_unsupported == 0
                          and evidence_unknown == 0 and sm_query == 'ok'
-                         and collective_complete)
+                         and collective_complete and not reason_list)
     if complete is not computed_complete:
         _invalid()
     if complete and reason_list:
@@ -689,11 +716,10 @@ def _binding_metadata(binding):
     if not callable(getattr(binding, 'inspect', None)):
         raise GraphAuditError('binding_contract')
     source = getattr(binding, 'helper_source_sha256', None)
-    if source is not None:
-        if not _is_digest(source):
-            raise GraphAuditError('binding_contract')
-        if source != helper_source_sha256():
-            raise GraphAuditError('helper_source_mismatch')
+    if not _is_digest(source):
+        raise GraphAuditError('binding_contract')
+    if source != helper_source_sha256():
+        raise GraphAuditError('helper_source_mismatch')
     return {'library_sha256': digest, 'abi': abi, 'source_sha256': source,
             'source_basis': 'packaged source; build provenance is owner-pinned'}
 
@@ -703,8 +729,8 @@ def _label(descriptor):
 
     try:
         return descriptor_name(descriptor)
-    except Exception as exc:
-        raise GraphAuditError('capture_descriptor_invalid') from exc
+    except Exception:
+        raise GraphAuditError('capture_descriptor_invalid') from None
 
 
 def _equals(left, right):
@@ -747,6 +773,8 @@ def _base_result(meta, binding_meta, limits, fail_reasons, inconclusive_reasons,
             'engine_incarnation': 'caller-supplied',
             'scheduler_pause': 'caller-proven',
             'replay_absent': 'not-proven-by-this-function',
+            'kernel_context_basis': 'CUDA_KERNEL_NODE_PARAMS.ctx only when func is null and kern is nonnull',
+            'memory_context_basis': 'not exposed by CUDA 13 memcpy/memset getters; placement unknown',
             'worker_and_pause_note': 'audit_bank cannot certify scheduler pause or an engine incarnation',
         },
         'limits': dict(limits),
@@ -819,9 +847,9 @@ def _graph_record(label, graph_index, status, native_rc, complete, report=None,
 def _native_reason(reason):
     if reason.startswith('limits_') or reason == 'child_graph_not_expanded':
         return 'limits_exceeded'
-    if reason in ('kernel_context_unknown', 'kernel_sm_unknown'):
+    if reason in ('kernel_context_unknown', 'kernel_sm_unknown', 'memory_context_unavailable'):
         return 'node_placement_unknown'
-    if reason in ('child_graph_error', 'child_graph_cycle'):
+    if reason in ('child_graph_error', 'child_graph_cycle', 'graph_changed', 'node_inventory_invalid'):
         return 'child_graph_unknown'
     if reason in ('kernel_name_unavailable',):
         return 'collective_coverage_unknown'
@@ -858,7 +886,7 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
               'max_bytes': max_bytes, 'max_graphs': max_graphs}
 
     bank_label = getattr(router, 'name', None)
-    if type(bank_label) is not str or not bank_label:
+    if type(bank_label) is not str or bank_label != CAPTURE_BANK_LABEL:
         raise GraphAuditError('probe_contract')
     storage_epoch = getattr(probe, 'storage_epoch', None)
     route_generation = getattr(probe, 'route_generation', None)
@@ -871,7 +899,7 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
 
     meta = {
         'bank': bank_label,
-        'route': getattr(probe, 'route', None),
+        'route': probe.route if type(getattr(probe, 'route', None)) is str and probe.route in ('full', 'split') else None,
         'storage_epoch': storage_epoch if type(storage_epoch) is int else None,
         'route_generation': route_generation if type(route_generation) is int else None,
         'descriptor_inventory': [],
@@ -886,22 +914,26 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
     }
     probe_observation = {
         'in_flight': getattr(probe, 'in_flight', None),
-        'interval': getattr(probe, 'interval', None),
+        'interval': probe.interval if type(getattr(probe, 'interval', None)) is str and probe.interval in ('idle', 'active', 'ended', 'invalidated', 'closed') else None,
         'quarantined': getattr(probe, 'quarantined', None),
         'shutdown_recorded': getattr(probe, 'shutdown_record', None) is not None,
     }
 
     fail, inconclusive = [], []
+    if meta['route'] is None or probe_observation['interval'] is None:
+        inconclusive.append('probe_contract')
 
     def finish(graphs=()):
         return _base_result(meta, binding_meta, limits, fail, inconclusive,
                             list(graphs), probe_observation)
 
-    if (type(storage_epoch) is not int or type(router_epoch) is not int):
+    if (type(storage_epoch) is not int or type(router_epoch) is not int
+            or storage_epoch < 1 or router_epoch < 1):
         inconclusive.append('storage_epoch_missing')
     elif storage_epoch != router_epoch:
         fail.append('storage_epoch_mismatch')
-    if (type(route_generation) is not int or type(router_generation) is not int):
+    if (type(route_generation) is not int or type(router_generation) is not int
+            or route_generation < 0 or router_generation < 0):
         inconclusive.append('route_generation_missing')
     elif route_generation != router_generation:
         fail.append('route_generation_mismatch')
@@ -929,6 +961,7 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
     if type(pairs) not in (tuple, list) or not pairs:
         inconclusive.append('descriptor_inventory_missing')
         return finish()
+    pairs = tuple(tuple(pair) if type(pair) in (list, tuple) else pair for pair in pairs)
     if getattr(bank, 'captured', None) is not True:
         inconclusive.append('bank_not_captured')
 
@@ -946,8 +979,10 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
             inconclusive.append('descriptor_inventory_missing')
             continue
         try:
+            if ExecutionDescriptor.from_vllm(vllm_desc) != local:
+                fail.append('capture_descriptor_mismatch')
             label = _label(local)
-        except GraphAuditError:
+        except Exception:
             inconclusive.append('capture_descriptor_invalid')
             continue
         if label in seen_labels:
@@ -956,6 +991,9 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
         local_labels.append(label)
         ordered.append((vllm_desc, local, label))
     meta['descriptor_inventory'] = sorted(local_labels)
+    if len(ordered) > max_graphs:
+        inconclusive.append('graph_limit')
+        return finish()
     if not ordered:
         inconclusive.append('descriptor_inventory_missing')
         return finish()
@@ -1061,6 +1099,21 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
                 and tuple(router_locals) != tuple(pair_locals)):
             inconclusive.append('descriptor_inventory_order')
     handles = getattr(router, 'handles', None)
+    bank_handles = getattr(bank, 'handles', None)
+    if type(handles) is not dict or type(bank_handles) is not dict:
+        inconclusive.append('router_handles_missing')
+    else:
+        if set(bank_handles) != set(handles):
+            inconclusive.append('bank_handles_mismatch')
+        for vllm_desc, local, label in ordered:
+            owned = bank_handles.get(local)
+            if owned is None or handles.get(local) is not owned:
+                inconclusive.append('router_handle_mismatch')
+            elif (getattr(owned, 'bank', None) is not bank
+                  or getattr(owned, 'destroyed', None) is not False
+                  or not _equals(getattr(owned, 'descriptor', None), vllm_desc)
+                  or not _equals(getattr(owned, 'local', None), local)):
+                fail.append('router_handle_owner_mismatch')
     if type(handles) is dict:
         handle_keys = list(handles)
         for item in handle_keys:
@@ -1085,13 +1138,37 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
         inconclusive.append('concurrent_mutation')
         return finish()
 
+    capture_snapshot = None
+    if type(checks) is dict and all(type(value) is dict for value in checks.values()):
+        capture_snapshot = [(key, dict(value)) for key, value in checks.items()]
+    owner_snapshot = ()
+    if type(handles) is dict:
+        owner_snapshot = tuple(
+            (key, value, getattr(value, 'bank', None),
+             getattr(value, 'descriptor', None), getattr(value, 'local', None),
+             getattr(value, 'destroyed', None)) for key, value in handles.items())
+
+    def identity_now():
+        return (getattr(probe, 'route', None), getattr(probe, 'interval', None),
+                getattr(router, 'storage_epoch', None),
+                getattr(router, 'route_generation', None), getattr(router, 'state', None),
+                split.decode_stream_token, split.decode_context_id, split.decode_sms,
+                getattr(split, 'requested_decode_sms', None))
+
+    identity_snapshot = identity_now()
+
     # --- one native inspection per actual retained graph --------------------
     graph_records = []
+    seen_raw = set()
+    seen_graphs = set()
     for index, (_, local, label) in enumerate(ordered):
         entry = matched.get(label)
         if entry is None:
             continue
         _, graph_obj, _ = entry
+        if id(graph_obj) in seen_graphs:
+            fail.append('graph_duplicate')
+        seen_graphs.add(id(graph_obj))
         raw = getattr(graph_obj, 'raw_cuda_graph', None)
         if not callable(raw):
             inconclusive.append('graph_api_unsupported')
@@ -1110,14 +1187,17 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
             graph_records.append(_graph_record(label, index, 'unsupported', 0,
                                                False, reasons=('graph_api_failed',)))
             continue
+        if handle in seen_raw:
+            fail.append('graph_duplicate')
+        seen_raw.add(handle)
         try:
             inspection = binding.inspect(handle, stream_handle, green_handle,
                                          max_nodes=max_nodes, max_depth=max_depth,
                                          max_bytes=max_bytes)
         except GraphAuditError as exc:
-            inconclusive.append('native_' + exc.code)
+            inconclusive.append('native_call_invalid')
             graph_records.append(_graph_record(label, index, 'invalid', 0, False,
-                                               reasons=('native_' + exc.code,)))
+                                               reasons=('native_call_invalid',)))
             continue
         except Exception:
             inconclusive.append('native_call_failed')
@@ -1132,7 +1212,10 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
         if (type(inspection.status) is not str
                 or inspection.status not in STATUSES
                 or type(inspection.native_rc) is not int
+                or STATUS_BY_RC.get(inspection.native_rc) != inspection.status
                 or type(inspection.complete) is not bool
+                or (inspection.status != 'ok' and (inspection.complete or inspection.report is not None))
+                or (inspection.status == 'ok' and inspection.required_bytes is not None)
                 or (inspection.required_bytes is not None
                     and (type(inspection.required_bytes) is not int
                          or inspection.required_bytes < 0))):
@@ -1141,8 +1224,8 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
                                                reasons=('native_contract',)))
             continue
         if inspection.status != 'ok':
-            if inspection.status == 'green_context_mismatch':
-                fail.append('green_context_mismatch')
+            if inspection.status in ('green_context_mismatch', 'stream_context_mismatch'):
+                fail.append(inspection.status)
             else:
                 inconclusive.append('native_' + inspection.status)
             graph_records.append(_graph_record(
@@ -1151,7 +1234,7 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
                 required_bytes=inspection.required_bytes))
             continue
         try:
-            report = _validate_native_report(inspection.report, limits)
+            report = _validate_native_report(_freeze(inspection.report), limits)
         except GraphAuditError as exc:
             inconclusive.append('native_' + exc.code)
             graph_records.append(_graph_record(label, index, 'invalid',
@@ -1203,6 +1286,30 @@ def audit_bank(probe, binding, *, max_nodes=DEFAULT_MAX_NODES,
         if not report['complete']:
             inconclusive.append('native_incomplete')
         graph_records.append(record)
+
+    # Reject mutation during callbacks/native inspection, including same-size replacement.
+    current = getattr(manager, 'graphs', None)
+    if (probe.bank is not bank or probe.router is not router or probe.split is not split
+            or current is not graphs_obj or len(current) != len(items)
+            or any(current.get(key) is not graph for key, graph in items)
+            or probe.storage_epoch != storage_epoch or probe.route_generation != route_generation):
+        inconclusive.append('concurrent_mutation')
+    try:
+        _probe_state(probe)
+        if (tuple(tuple(pair) for pair in bank.pairs) != pairs or tuple(router.descriptors) != tuple(router_locals)
+                or manager._flash_s5_capture_owner is not split
+                or manager._flash_s5_keep_graphs is not True
+                or bank.captured is not True
+                or identity_snapshot != identity_now()
+                or len(router.handles) != len(owner_snapshot)
+                or len(bank.handles) != len(owner_snapshot)
+                or (capture_snapshot is not None and list(manager._flash_s5_capture_stream_checks.items()) != capture_snapshot)
+                or any(router.handles.get(key) is not value or bank.handles.get(key) is not value
+                       or (value.bank, value.descriptor, value.local, value.destroyed) != (owner, descriptor, local, destroyed)
+                       for key, value, owner, descriptor, local, destroyed in owner_snapshot)):
+            inconclusive.append('concurrent_mutation')
+    except Exception:
+        inconclusive.append('concurrent_mutation')
 
     # A graph missing its retained object is missing proof, not a PASS.
     if len(graph_records) != len(ordered):

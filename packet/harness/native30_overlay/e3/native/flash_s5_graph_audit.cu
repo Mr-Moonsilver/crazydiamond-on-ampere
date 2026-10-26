@@ -31,6 +31,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <set>
 
 #if !defined(CUDA_VERSION) || CUDA_VERSION < 13000
 #error "flash_s5_graph_audit.cu requires the pinned CUDA 13 headers"
@@ -46,7 +47,10 @@ enum {
   S5GA_GREEN_MISSING = 4,
   S5GA_GREEN_MISMATCH = 5,
   S5GA_CONTEXT_CONVERT_FAILED = 6,
-  S5GA_GRAPH_QUERY_FAILED = 7
+  S5GA_GRAPH_QUERY_FAILED = 7,
+  S5GA_INTERNAL_ERROR = 8,
+  S5GA_STREAM_CONTEXT_QUERY_FAILED = 9,
+  S5GA_STREAM_CONTEXT_MISMATCH = 10
 };
 
 static const char *kSchema = "s5ga-native-audit/1";
@@ -231,7 +235,7 @@ static bool walk_node(Walk &w, CUgraphNode node, CUcontext expected_ctx,
       std::string s = node_prefix(id, graph_index, parent, depth, "kernel",
                                   (int)CU_GRAPH_NODE_TYPE_KERNEL, true, true,
                                   "error", rc);
-      s += ",\"context_known\":false,\"context_matches\":false";
+      s += ",\"context_basis\":\"unavailable\",\"context_known\":false,\"context_matches\":false";
       s += ",\"sm_query\":\"unknown\",\"sm_query_rc\":0,\"sm_count\":null";
       s += ",\"grid\":null,\"block\":null,\"shared_bytes\":null";
       s += ",\"collective_candidate\":\"unavailable\"";
@@ -246,7 +250,11 @@ static bool walk_node(Walk &w, CUgraphNode node, CUcontext expected_ctx,
       }
       return true;
     }
-    bool ctx_known = p.ctx != nullptr;
+    // CUDA 13 CUDA_KERNEL_NODE_PARAMS_v2 explicitly ignores ctx when func
+    // is set. A CUfunction's module context is not green-node placement proof.
+    const char *context_basis = p.func ? "ignored_for_func" :
+                               (p.kern && p.ctx ? "kernel_ctx" : "unavailable");
+    bool ctx_known = p.func == nullptr && p.kern != nullptr && p.ctx != nullptr;
     bool ctx_matches = ctx_known && p.ctx == expected_ctx;
     const char *sm_query = "unknown";
     CUresult sm_rc = CUDA_SUCCESS;
@@ -272,7 +280,9 @@ static bool walk_node(Walk &w, CUgraphNode node, CUcontext expected_ctx,
     const char *name = nullptr;
     CUresult name_rc = p.func ? cuFuncGetName(&name, p.func)
                               : CUDA_ERROR_INVALID_HANDLE;
-    const char *candidate = collective_candidate(name);
+    if (!p.func && p.kern) name_rc = cuKernelGetName(&name, p.kern);
+    const char *candidate = name_rc == CUDA_SUCCESS
+                                ? collective_candidate(name) : "unavailable";
     if (name_rc != CUDA_SUCCESS || name == nullptr) {
       candidate = "unavailable";
       add_reason(w, "kernel_name_unavailable");
@@ -281,6 +291,7 @@ static bool walk_node(Walk &w, CUgraphNode node, CUcontext expected_ctx,
     std::string s = node_prefix(id, graph_index, parent, depth, "kernel",
                                 (int)CU_GRAPH_NODE_TYPE_KERNEL, true, unknown,
                                 "ok", CUDA_SUCCESS);
+    s += ",\"context_basis\":"; put_q(s, context_basis);
     s += ",\"context_known\":"; put_b(s, ctx_known);
     s += ",\"context_matches\":"; put_b(s, ctx_matches);
     s += ",\"sm_query\":"; put_q(s, sm_query);
@@ -316,12 +327,16 @@ static bool walk_node(Walk &w, CUgraphNode node, CUcontext expected_ctx,
       dims = mul_ok(p.WidthInBytes, p.Height, bytes) &&
              mul_ok(bytes, p.Depth, bytes);
     }
-    bool unknown = !have_params || !dims;
+    // These getter APIs return dimensions, not the node execution context.
+    // Pointer ownership or the expected stream cannot supply the missing proof.
+    bool unknown = true;
+    add_reason(w, "memory_context_unavailable");
     if (!have_params) add_reason(w, "node_query_error");
     else if (!dims) add_reason(w, "node_query_error");
     std::string s = node_prefix(id, graph_index, parent, depth, "memcpy",
                                 (int)CU_GRAPH_NODE_TYPE_MEMCPY, true, unknown,
                                 have_params ? "ok" : "error", rc);
+    s += ",\"context_basis\":\"not_exposed\",\"context_known\":false";
     if (!have_params) {
       s += ",\"direction\":\"unknown\",\"width_bytes\":null,\"height\":null";
       s += ",\"depth_count\":null,\"bytes\":null,\"src_pitch\":null,\"dst_pitch\":null}";
@@ -355,11 +370,15 @@ static bool walk_node(Walk &w, CUgraphNode node, CUcontext expected_ctx,
       dims = mul_ok(p.width, p.height, bytes) &&
              mul_ok(bytes, (size_t)p.elementSize, bytes);
     }
-    bool unknown = !have_params || !dims;
-    if (unknown) add_reason(w, "node_query_error");
+    // These getter APIs return dimensions, not the node execution context.
+    // Pointer ownership or the expected stream cannot supply the missing proof.
+    bool unknown = true;
+    add_reason(w, "memory_context_unavailable");
+    if (!have_params || !dims) add_reason(w, "node_query_error");
     std::string s = node_prefix(id, graph_index, parent, depth, "memset",
                                 (int)CU_GRAPH_NODE_TYPE_MEMSET, true, unknown,
                                 have_params ? "ok" : "error", rc);
+    s += ",\"context_basis\":\"not_exposed\",\"context_known\":false";
     if (!have_params) {
       s += ",\"element_bytes\":null,\"width_elements\":null,\"height\":null";
       s += ",\"bytes\":null,\"pitch\":null}";
@@ -475,7 +494,6 @@ static void walk_graph(Walk &w, CUgraph graph, CUcontext expected_ctx,
   }
   for (size_t i = 0; i < w.stack.size(); ++i) {
     if (w.stack[i] == graph) {
-      ++w.unknown;
       add_reason(w, "child_graph_cycle");
       return;
     }
@@ -486,7 +504,6 @@ static void walk_graph(Walk &w, CUgraph graph, CUcontext expected_ctx,
     if (root) {
       ok = false;
     } else {
-      ++w.unknown;
       add_reason(w, "child_graph_error");
     }
     return;
@@ -498,18 +515,27 @@ static void walk_graph(Walk &w, CUgraph graph, CUcontext expected_ctx,
     return;
   }
   std::vector<CUgraphNode> nodes(count);
+  const size_t capacity = count;
   rc = cuGraphGetNodes(graph, nodes.data(), &count);
+  if (rc == CUDA_SUCCESS && count != capacity) {
+    add_reason(w, "graph_changed");
+    return;
+  }
   if (rc != CUDA_SUCCESS) {
     if (root) {
       ok = false;
     } else {
-      ++w.unknown;
       add_reason(w, "child_graph_error");
     }
     return;
   }
+  std::set<CUgraphNode> seen;
   w.stack.push_back(graph);
   for (size_t i = 0; i < count; ++i) {
+    if (!nodes[i] || !seen.insert(nodes[i]).second) {
+      add_reason(w, "node_inventory_invalid");
+      continue;
+    }
     if (w.node_count >= w.max_nodes) {
       w.limits_exceeded = true;
       add_reason(w, "limits_nodes");
@@ -525,15 +551,16 @@ static void walk_graph(Walk &w, CUgraph graph, CUcontext expected_ctx,
 
 extern "C" int s5ga_abi(void) { return FLASH_S5_GRAPH_AUDIT_ABI; }
 
-extern "C" int s5ga_inspect(uint64_t graph_handle, uint64_t stream_handle,
+static int inspect_impl(uint64_t graph_handle, uint64_t stream_handle,
                             uint64_t expected_green_handle, uint32_t max_nodes,
                             uint32_t max_depth, uint64_t max_bytes, char *out,
                             uint64_t out_cap, uint64_t *out_len) {
+  if (out_len) *out_len = 0;
   if (graph_handle == 0 || stream_handle == 0 || expected_green_handle == 0)
     return S5GA_BAD_ARGS;
-  if (max_nodes == 0 || max_nodes > 1000000u || max_depth > 256u)
+  if (max_nodes == 0 || max_nodes > 1000000u || max_depth > 64u)
     return S5GA_BAD_ARGS;
-  if (max_bytes < 64 || out == nullptr || out_cap == 0 || out_len == nullptr)
+  if (max_bytes < 256 || max_bytes > 64u * 1024u * 1024u || out == nullptr || out_cap == 0 || out_len == nullptr)
     return S5GA_BAD_ARGS;
 
   CUgraph graph = (CUgraph)(uintptr_t)graph_handle;
@@ -550,12 +577,18 @@ extern "C" int s5ga_inspect(uint64_t graph_handle, uint64_t stream_handle,
   if (rc != CUDA_SUCCESS || expected_ctx == nullptr)
     return S5GA_CONTEXT_CONVERT_FAILED;
 
+  CUcontext stream_ctx = nullptr;
+  rc = cuStreamGetCtx(stream, &stream_ctx);
+  if (rc != CUDA_SUCCESS || stream_ctx == nullptr)
+    return S5GA_STREAM_CONTEXT_QUERY_FAILED;
+  if (stream_ctx != expected_ctx) return S5GA_STREAM_CONTEXT_MISMATCH;
+
   bool stream_sm_known = false;
   const char *stream_sm_query = "unknown";
   CUresult stream_sm_rc = CUDA_SUCCESS;
   unsigned stream_sm_count = 0;
   CUdevResource stream_resource{};
-  stream_sm_rc = cuCtxGetDevResource(expected_ctx, &stream_resource,
+  stream_sm_rc = cuCtxGetDevResource(stream_ctx, &stream_resource,
                                      CU_DEV_RESOURCE_TYPE_SM);
   if (stream_sm_rc == CUDA_SUCCESS) {
     stream_sm_known = true;
@@ -583,7 +616,7 @@ extern "C" int s5ga_inspect(uint64_t graph_handle, uint64_t stream_handle,
   bool collective_complete = (w.collective_unknown == 0) &&
                              !w.limits_exceeded && w.unsupported == 0;
   bool complete = !w.limits_exceeded && w.unsupported == 0 && w.unknown == 0 &&
-                  stream_sm_known && collective_complete;
+                  stream_sm_known && collective_complete && w.reasons.empty();
 
   std::string s;
   s.reserve(w.nodes.size() + 1024);
@@ -626,8 +659,22 @@ extern "C" int s5ga_inspect(uint64_t graph_handle, uint64_t stream_handle,
   s += ",\"nodes\":["; s += w.nodes; s += "]}";
 
   *out_len = (uint64_t)s.size();
-  if (s.size() > out_cap) return S5GA_TRUNCATED;
+  if (s.size() > budget) return S5GA_TRUNCATED;
   memcpy(out, s.data(), s.size());
   if (s.size() < out_cap) out[s.size()] = '\0';
   return S5GA_OK;
+}
+
+// Never unwind a host allocation/library exception across the C/ctypes boundary.
+extern "C" int s5ga_inspect(uint64_t graph, uint64_t stream,
+                            uint64_t expected_green, uint32_t max_nodes,
+                            uint32_t max_depth, uint64_t max_bytes, char *out,
+                            uint64_t out_cap, uint64_t *out_len) {
+  try {
+    return inspect_impl(graph, stream, expected_green, max_nodes, max_depth,
+                        max_bytes, out, out_cap, out_len);
+  } catch (...) {
+    if (out_len) *out_len = 0;
+    return S5GA_INTERNAL_ERROR;
+  }
 }
