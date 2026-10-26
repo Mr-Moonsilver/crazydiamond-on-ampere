@@ -560,5 +560,102 @@ class ReviewedRuntimePaths(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 main(['--plan',name,value])
 
+class WorkerConfigContext(unittest.TestCase):
+    def exercise(self, phase, fail_at=None):
+        import types
+        from unittest.mock import patch
+        import e3_lane_comm_probe as p
+        expected = (2, 1) if phase == 'tp' else (1, 2)
+        previous = object()
+        active = [previous]
+        calls = []
+        class ParallelConfig:
+            def __init__(self, **kw):
+                self.kw = kw
+                assert kw == dict(tensor_parallel_size=expected[0],
+                                  pipeline_parallel_size=expected[1])
+                calls.append('parallel_config')
+        class VllmConfig:
+            def __init__(self, *, parallel_config):
+                assert isinstance(parallel_config, ParallelConfig)
+                self.parallel_config = parallel_config
+                calls.append('vllm_config')
+        @contextlib.contextmanager
+        def set_current_vllm_config(config):
+            self.assertIs(active[0], previous)
+            active[0] = config
+            calls.append('enter')
+            try:
+                yield
+            finally:
+                calls.append('exit')
+                active[0] = previous
+        def step(name):
+            self.assertIsInstance(active[0], VllmConfig, name)
+            calls.append(name)
+            if name == fail_at:
+                raise RuntimeError('injected ' + name)
+        def distributed(**kw):
+            step('distributed')
+            self.assertEqual(kw['world_size'], 2)
+            self.assertEqual(kw['backend'], 'nccl')
+        def model(**kw):
+            step('model')
+            self.assertEqual(kw, dict(tensor_model_parallel_size=expected[0],
+                                     pipeline_model_parallel_size=expected[1]))
+        def body(*args): step('body')
+        config_module=types.ModuleType('vllm.config')
+        config_module.ParallelConfig=ParallelConfig
+        config_module.VllmConfig=VllmConfig
+        config_module.set_current_vllm_config=set_current_vllm_config
+        vllm=types.ModuleType('vllm')
+        vllm.__version__='fake'
+        cuda=types.SimpleNamespace(set_device=lambda device:None,
+            get_device_capability=lambda device:(8,6),
+            Stream=lambda **kw:object(), synchronize=lambda:step('synchronize'))
+        torch=types.SimpleNamespace(cuda=cuda,__version__='fake',version=types.SimpleNamespace(cuda='fake'))
+        imported=(torch,vllm,object(),distributed,model,object(),object(),
+                  lambda:step('destroy_model'),lambda:step('destroy_dist'),object(),object())
+        with patch.dict(sys.modules, {'vllm':vllm,'vllm.config':config_module}), \
+                patch.object(p,'_imports',return_value=imported), \
+                patch.object(p,'_phase_tp',side_effect=body), \
+                patch.object(p,'_phase_pp',side_effect=body):
+            record=p._run_rank(phase,0,'unused','unused',0,10240,2048,20,
+                               p.DEFAULT_TOKEN_COUNTS,30,60)
+        self.assertIs(active[0],previous)
+        self.assertEqual(calls[:4], ['parallel_config','vllm_config','enter','distributed'])
+        self.assertEqual(calls[-1], 'exit')
+        self.assertIn('destroy_model',calls)
+        self.assertIn('destroy_dist',calls)
+        self.assertEqual(record['vllm_config'], {
+            'construction':'VllmConfig(parallel_config=ParallelConfig(...))',
+            'tensor_parallel_size':expected[0], 'pipeline_parallel_size':expected[1],
+            'model_config':None,'context_entered':True,'context_closed':True})
+        return record,calls
+
+    def test_real_worker_enters_phase_config_through_cleanup(self):
+        for phase in ('tp','pp'):
+            with self.subTest(phase=phase):
+                record,calls=self.exercise(phase)
+                self.assertEqual(record['status'],'ok',record)
+                self.assertEqual(record['cleanup'],'ok')
+                self.assertEqual(calls[4:-1],['model','body','synchronize','destroy_model','destroy_dist'])
+
+    def test_failed_init_or_body_restores_config_after_cleanup(self):
+        for phase in ('tp','pp'):
+            for where in ('distributed','model','body'):
+                with self.subTest(phase=phase,where=where):
+                    record,_=self.exercise(phase,where)
+                    self.assertEqual(record['status'],'error')
+                    self.assertEqual(record['cleanup'],'ok')
+                    self.assertTrue(any('injected '+where in e['message'] for e in record['errors']))
+
+    def test_cleanup_failure_still_exits_config_and_preserves_failure(self):
+        record,calls=self.exercise('pp','destroy_model')
+        self.assertEqual(record['cleanup'],'failed')
+        self.assertIn('destroy_dist',calls)
+        self.assertTrue(any(e['kind']=='cleanup' for e in record['errors']))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -34,6 +34,7 @@ The final stdout line is ``E3_LANE_COMM_PROBE <PASS|FAIL|INCONCLUSIVE> ...``.
 No device addresses, secrets, hostnames or payloads are written.
 """
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import math
@@ -915,6 +916,15 @@ def _phase_pp(torch, lane_comm, e3_types, PyNcclCommunicator, get_tp_group,
     record['outstanding_after'] = int(channel.outstanding())
 
 
+def _config_context(tp_size, pp_size):
+    # Lazy import: --plan and CPU-only grading must not initialize vLLM/torch.
+    from vllm.config import ParallelConfig, VllmConfig, set_current_vllm_config
+
+    config = VllmConfig(parallel_config=ParallelConfig(
+        tensor_parallel_size=tp_size, pipeline_parallel_size=pp_size))
+    return set_current_vllm_config(config)
+
+
 # -- rank process entry ------------------------------------------------------
 
 def _run_rank(phase, rank, out, native, device, hidden_width, max_tokens, iterations,
@@ -922,6 +932,7 @@ def _run_rank(phase, rank, out, native, device, hidden_width, max_tokens, iterat
     record = _new_record(phase, rank, device, hidden_width, max_tokens, iterations)
     torch = None
     destroy = None
+    config_scope = ExitStack()
     try:
         (torch, vllm, PyNcclCommunicator, init_distributed_environment,
          initialize_model_parallel, get_tp_group, get_pp_group,
@@ -939,13 +950,19 @@ def _run_rank(phase, rank, out, native, device, hidden_width, max_tokens, iterat
             record['errors'].append(_error(
                 'capability', 'device capability %r != (8, 6)' % (capability,)))
             return record
+        tp_size, pp_size = ((2, 1) if phase == 'tp' else (1, 2))
+        record['vllm_config'] = {
+            'construction': 'VllmConfig(parallel_config=ParallelConfig(...))',
+            'tensor_parallel_size': tp_size, 'pipeline_parallel_size': pp_size,
+            'model_config': None, 'context_entered': False, 'context_closed': False}
+        config_scope.enter_context(_config_context(tp_size, pp_size))
+        record['vllm_config']['context_entered'] = True
         destroy = (destroy_model_parallel, destroy_distributed_environment)
         world_size = len(RANKS)
         rendezvous = Path(out) / ('%s-rendezvous' % phase)
         init_distributed_environment(
             world_size=world_size, rank=rank, local_rank=device, backend='nccl',
             distributed_init_method='file://' + str(rendezvous))
-        tp_size, pp_size = ((2, 1) if phase == 'tp' else (1, 2))
         initialize_model_parallel(tensor_model_parallel_size=tp_size,
                                   pipeline_model_parallel_size=pp_size)
         stream = torch.cuda.Stream(device=device)
@@ -983,6 +1000,15 @@ def _run_rank(phase, rank, out, native, device, hidden_width, max_tokens, iterat
         except BaseException as exc:
             cleanup = 'failed'
             record['errors'].append(_error('cleanup', 'cleanup failed: ' + scrub_text(exc)))
+        finally:
+            # Keep config current through distributed cleanup, then restore it.
+            try:
+                config_scope.close()
+                if 'vllm_config' in record:
+                    record['vllm_config']['context_closed'] = True
+            except BaseException as exc:
+                cleanup = 'failed'
+                record['errors'].append(_error('cleanup', 'config cleanup failed: ' + scrub_text(exc)))
         record['cleanup'] = cleanup
     return record
 
