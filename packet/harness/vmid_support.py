@@ -139,4 +139,3 @@ def observation_grade(r, replays, expected):
             if n and (bounds.get('min') != replays or bounds.get('max') != replays):
                 missing.append(kind + '_node_multiplicity')
     return verdict(fails, missing)
-
