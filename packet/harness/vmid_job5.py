@@ -168,7 +168,7 @@ def phase(torch,ro,gc,native,receipt,replays,out,name):
                     r['bound_graphs']+=1
                 else:r['startup_pressure_graphs']+=1
                 r['graphs'].append(item)
-                s.write(out/(name+'-progress.json'),r)
+                s.write(out/f'{name}-progress-{role}-{i:02d}.json',r)
         r['static']=session._report_call(lib.s5ro_static,(token,));ro._validate_static(r['static'])
         s.write(out/(name+'-startup.json'),r)
         target=next(owner for role,i,owner,_ in owners if role=='bound' and i==0)
