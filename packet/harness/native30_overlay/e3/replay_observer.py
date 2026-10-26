@@ -27,7 +27,7 @@ from e3_types import E3ContractError
 
 ABI_VERSION = 1
 NATIVE_SCHEMA_STATIC = 's5ro-native-static/1'
-NATIVE_SCHEMA_WINDOW = 's5ro-native-window/2'
+NATIVE_SCHEMA_WINDOW = 's5ro-native-window/3'
 RECEIPT_SCHEMA = 's5ro-replay-observer/1'
 HELPER_SOURCE = 'native/flash_s5_replay_observer.cpp'
 CUPTI_API = 130001
@@ -98,6 +98,7 @@ LIMITATIONS = (
     'tracing overhead is declared only; trace wall time is not performance',
     'only exercised descriptors receive replay-qualified status',
     'driver handles, graph/node IDs and kernel names are never emitted',
+    'clone callback type disagreements are diagnostic; retained driver node types and typed activities govern execution qualification',
     'descriptor labels are capture-order positions for this bank incarnation',
     'CUPTI activity enable/disable is process-global; a conflicting subscriber is refused',
     'CUPTI activity callback registration carries no subscriber identity; an activity-only user is not detectable and its callbacks are replaced',
@@ -128,6 +129,8 @@ _COUNT_KEYS = (
     'drop_query_errors', 'parse_errors', 'invalid_records', 'callback_errors',
     'callback_reentrant_refused', 'duplicate_buffer_completions',
     'dependency_events', 'outside_scope_updates', 'graph_passes',
+    'alias_type_disagreements', 'alias_type_memcpy_disagreements',
+    'alias_type_memset_disagreements', 'alias_type_reported_kernel_disagreements',
 )
 _FLAG_KEYS = (
     'permanent_overflow', 'buffer_refused', 'buffer_outstanding', 'parse_error', 'unknown_activity',

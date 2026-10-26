@@ -19,7 +19,7 @@ def combine(rows):
 
 def monitor(out, container):
     """One-second all-app evidence; only our named container can be stopped."""
-    if container not in ('flashnext-job2', 'flashnext-job3'):
+    if container not in ('flashnext-job2', 'flashnext-job2b', 'flashnext-job3'):
         raise ValueError('unowned_container')
     summary = {'schema': 'vm<vm-id>-memory/1', 'samples': 0, 'own_samples': 0,
                'own_peak_mib': 0, 'errors': 0, 'stop_triggered': False,

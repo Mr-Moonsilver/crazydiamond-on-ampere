@@ -470,6 +470,13 @@ struct Session {
   uint64_t dependency_events = 0;
   uint64_t outside_scope_updates = 0;
   uint64_t alias_unknown = 0;
+  // Recomputed from retained callback facts for each alias census. Diagnostic
+  // only: type authority is cuGraphNodeGetType on the retained original plus
+  // the independently typed activity record, never the clone callback hint.
+  uint64_t alias_type_disagreements = 0;
+  uint64_t alias_type_memcpy_disagreements = 0;
+  uint64_t alias_type_memset_disagreements = 0;
+  uint64_t alias_type_reported_kernel_disagreements = 0;
   uint64_t graph_passes = 0;
   uint8_t graph_pass_limit_hit = 0;
   uint8_t ambiguous_graph_ids = 0;
@@ -1545,6 +1552,10 @@ bool find_original_node(Session *s, uint32_t key_count, uint64_t id,
 void build_node_aliases(Session *s, uint32_t key_count, uint32_t graph_count,
                         uint32_t *alias_count) {
   *alias_count = 0;
+  s->alias_type_disagreements = 0;
+  s->alias_type_memcpy_disagreements = 0;
+  s->alias_type_memset_disagreements = 0;
+  s->alias_type_reported_kernel_disagreements = 0;
   for (uint32_t e = 0; e < s->event_count; ++e) {
     const EventRec &event = s->events[e];
     if (event.kind != kEvNodeCloned && event.kind != kEvNodeCreated) continue;
@@ -1577,9 +1588,20 @@ void build_node_aliases(Session *s, uint32_t key_count, uint32_t graph_count,
       const NodeInfo &original =
           s->nodes[s->slots[slot].first_node + index];
       if (original.node_type != event.node_type) {
-        s->slots[slot].mapping_ambiguous = 1;
-        s->node_overlap = 1;
-        mark(s->slots[slot].static_reasons, kRNodeOverlap);
+        // A callback type disagreement is not an identity overlap. Identity
+        // comes from the graph clone link and originalNode ID above. Type
+        // comes from the retained driver's inventory; analyze_window checks
+        // EVERY kernel/copy/memset activity against that inventory before it
+        // counts. Do not replace either proof with callback nodeType (or query
+        // ephemeral clone handles / call the CUDA driver from this callback).
+        // Keep the disagreement visible so the VM rerun can localize it.
+        ++s->alias_type_disagreements;
+        if (original.node_type == CU_GRAPH_NODE_TYPE_MEMCPY)
+          ++s->alias_type_memcpy_disagreements;
+        if (original.node_type == CU_GRAPH_NODE_TYPE_MEMSET)
+          ++s->alias_type_memset_disagreements;
+        if (event.node_type == CU_GRAPH_NODE_TYPE_KERNEL)
+          ++s->alias_type_reported_kernel_disagreements;
       }
     }
     if (s->node_aliases == nullptr ||
@@ -2304,7 +2326,7 @@ void emit_window_document(Session *s, uint32_t graph_count, uint32_t key_count,
 
   j.open_obj();
   j.key("schema");
-  j.string("s5ro-native-window/2");
+  j.string("s5ro-native-window/3");
   j.key("abi");
   j.u64(kAbi);
   j.key("compiled_api");
@@ -2374,6 +2396,10 @@ void emit_window_document(Session *s, uint32_t graph_count, uint32_t key_count,
       {"dependency_events", s->dependency_events},
       {"outside_scope_updates", s->outside_scope_updates},
       {"graph_passes", s->graph_passes},
+      {"alias_type_disagreements", s->alias_type_disagreements},
+      {"alias_type_memcpy_disagreements", s->alias_type_memcpy_disagreements},
+      {"alias_type_memset_disagreements", s->alias_type_memset_disagreements},
+      {"alias_type_reported_kernel_disagreements", s->alias_type_reported_kernel_disagreements},
   };
   for (const CountEntry &entry : counts) {
     j.key(entry.name);

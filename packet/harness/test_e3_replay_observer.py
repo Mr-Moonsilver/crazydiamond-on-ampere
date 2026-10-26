@@ -6,6 +6,7 @@ Python wrapper drives; no driver, GPU, profiling run or model replay occurs.
 Build artifacts are kept under a fresh temporary directory.
 """
 import ctypes
+import copy
 import hashlib
 import json
 import os
@@ -745,6 +746,117 @@ class ObserverMappingTests(ObserverTestBase):
         self.assertEqual(slot['observed']['kernel'], 2)
         self.assertEqual(receipt['coverage']['replay_qualified'], ('graph:0',))
 
+    def mixed_clone(self, truthful=False):
+        # Retained driver inventory is authoritative. Reproduce clone
+        # callbacks advertising KERNEL for the memcpy/memset aliases.
+        self.open_clean(specs=[{'id': 11, 'nodes': [(101, 0), (102, 1), (103, 2)]}])
+        clone_graph = int(self.ctl.stub_new_graph(112))
+        self.ctl.stub_set_timestamp(500)
+        self.ctl.stub_resource_graph(11, clone_graph, self.bank.graph_handles[0],
+                                     0, 0, 0, 0)
+        for i, kind in enumerate((0, 1, 2)):
+            node = int(self.ctl.stub_new_node(201 + i, kind))
+            self.ctl.stub_resource_graph(20, clone_graph, self.bank.graph_handles[0],
+                                         node, self.bank.node_handles[0][i], kind if truthful else 0, 0)
+
+    def test_mixed_clone_type_hint_does_not_override_driver_inventory(self):
+        self.mixed_clone()
+        self.begin(self.bank.descriptors[0])
+        for _ in range(3):
+            self.emit_kernel(112, 201)
+            self.ctl.stub_emit_copy(CONTEXT_ID, 112, 202, 1100, 1200)
+            self.ctl.stub_emit_memset(CONTEXT_ID, 112, 203, 1100, 1200)
+        receipt = self.end()
+        self.assertEqual(receipt['verdict'], 'PASS', self.text(receipt))
+        for kind in ('kernel', 'memcpy', 'memset'):
+            self.assertEqual(receipt['replay']['graph_slots'][0]
+                             ['node_execution_bounds'][kind], {'min': 3, 'max': 3})
+        counts = receipt['replay']['counts']
+        self.assertEqual(counts['alias_type_disagreements'], 2)
+        self.assertEqual(counts['alias_type_memcpy_disagreements'], 1)
+        self.assertEqual(counts['alias_type_memset_disagreements'], 1)
+        self.assertEqual(counts['alias_type_reported_kernel_disagreements'], 2)
+        self.assertFalse(receipt['replay']['mapping']['node_overlap'])
+
+    def test_mixed_clone_true_type_and_schema_roundtrip(self):
+        self.mixed_clone(truthful=True)
+        captured = []
+        original = self.session._report_call
+        def capture(*args, **kwargs):
+            report = original(*args, **kwargs)
+            captured.append(copy.deepcopy(report))
+            return report
+        self.session._report_call = capture
+        self.begin(self.bank.descriptors[0])
+        self.emit_kernel(112, 201)
+        self.ctl.stub_emit_copy(CONTEXT_ID, 112, 202, 1100, 1200)
+        self.ctl.stub_emit_memset(CONTEXT_ID, 112, 203, 1100, 1200)
+        receipt = self.end()
+        self.assertEqual(receipt['verdict'], 'PASS')
+        self.assertEqual(receipt['replay']['counts']['alias_type_disagreements'], 0)
+        report = captured[-1]
+        self.assertEqual(report['schema'], 's5ro-native-window/3')
+        report['schema'] = 's5ro-native-window/2'
+        with self.assertRaises(ro.ReplayObserverError):
+            ro._validate_window(report, self.session.limits, ROUTE_GENERATION)
+        report['schema'] = 's5ro-native-window/3'
+        del report['counts']['alias_type_disagreements']
+        with self.assertRaises(ro.ReplayObserverError):
+            ro._validate_window(report, self.session.limits, ROUTE_GENERATION)
+
+    def test_two_copy_aliases_cannot_hide_missing_original(self):
+        self.open_clean(specs=[{'id': 11, 'nodes': [(101, 1), (102, 1)]}])
+        graph = int(self.ctl.stub_new_graph(112))
+        self.ctl.stub_set_timestamp(500)
+        self.ctl.stub_resource_graph(11, graph, self.bank.graph_handles[0], 0, 0, 0, 0)
+        for node_id in (201, 202):
+            node = int(self.ctl.stub_new_node(node_id, 1))
+            self.ctl.stub_resource_graph(20, graph, self.bank.graph_handles[0],
+                                         node, self.bank.node_handles[0][0], 0, 0)
+        self.begin(self.bank.descriptors[0])
+        for node_id in (201, 202):
+            self.ctl.stub_emit_copy(CONTEXT_ID, 112, node_id, 1100, 1200)
+        receipt = self.end()
+        self.assertEqual(receipt['verdict'], 'INCONCLUSIVE')
+        self.assertIn('missing_execution', receipt['reasons'])
+        self.assertEqual(receipt['replay']['graph_slots'][0]
+                         ['node_execution_bounds']['memcpy'], {'min': 0, 'max': 2})
+
+    def test_one_copy_alias_to_two_originals_is_still_ambiguous(self):
+        self.open_clean(specs=[{'id': 11, 'nodes': [(101, 1), (102, 1)]}])
+        graph = int(self.ctl.stub_new_graph(112))
+        node = int(self.ctl.stub_new_node(201, 1))
+        self.ctl.stub_set_timestamp(500)
+        self.ctl.stub_resource_graph(11, graph, self.bank.graph_handles[0], 0, 0, 0, 0)
+        for original in self.bank.node_handles[0]:
+            self.ctl.stub_resource_graph(20, graph, self.bank.graph_handles[0],
+                                         node, original, 0, 0)
+        self.begin(self.bank.descriptors[0])
+        self.ctl.stub_emit_copy(CONTEXT_ID, 112, 201, 1100, 1200)
+        receipt = self.end()
+        self.assertEqual(receipt['verdict'], 'INCONCLUSIVE')
+        self.assertIn('ambiguous_node', receipt['reasons'])
+
+    def test_clone_type_hint_cannot_turn_copy_into_kernel(self):
+        self.mixed_clone()
+        self.begin(self.bank.descriptors[0])
+        self.emit_kernel(112, 201)
+        self.emit_kernel(112, 202)
+        self.ctl.stub_emit_memset(CONTEXT_ID, 112, 203, 1100, 1200)
+        receipt = self.end()
+        self.assertEqual(receipt['verdict'], 'INCONCLUSIVE')
+        self.assertIn('kind_mismatch', receipt['reasons'])
+        self.assertEqual(receipt['replay']['graph_slots'][0]['copy_executions'], 0)
+
+    def test_clone_type_hint_cannot_cover_a_missing_copy(self):
+        self.mixed_clone()
+        self.begin(self.bank.descriptors[0])
+        self.emit_kernel(112, 201)
+        self.ctl.stub_emit_memset(CONTEXT_ID, 112, 203, 1100, 1200)
+        receipt = self.end()
+        self.assertEqual(receipt['verdict'], 'INCONCLUSIVE')
+        self.assertIn('missing_execution', receipt['reasons'])
+
     def test_original_and_clone_both_count(self):
         self.open_clean()
         cloned_graph = int(self.ctl.stub_new_graph(112))
@@ -1408,6 +1520,7 @@ class ObserverThreadingTests(ObserverTestBase):
     def test_threaded_callbacks_do_not_deadlock(self):
         code = r"""
 import ctypes
+import copy
 import sys
 sys.path.insert(0, %r)
 import test_e3_replay_observer as t

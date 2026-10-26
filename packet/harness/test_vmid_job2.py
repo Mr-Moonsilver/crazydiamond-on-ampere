@@ -74,6 +74,26 @@ class Tests(unittest.TestCase):
             self.assertEqual([a for a in calls if 'stop' in a],[['sudo','-n','docker','stop','-t','5','flashnext-job2']])
             self.assertEqual(json.loads((out/'monitor.json').read_text())['own_peak_mib'],2900)
 
+    def test_job2b_is_identical_workload_under_fresh_identity(self):
+        import vmid_job2b as b
+        self.assertIs(b.job.grade, j.grade)
+        self.assertIs(b.job.probe, j.probe)
+        original=(HERE/'runs/vmid_job2.sh').read_text()
+        fresh=(HERE/'runs/vmid_job2b.sh').read_text()
+        self.assertEqual(fresh, original.replace('job2','job2b').replace('VMID_JOB1','VMID_JOB2B'))
+        subprocess.run(['bash','-n',str(HERE/'runs/vmid_job2b.sh')],check=True)
+        with tempfile.TemporaryDirectory() as d:
+            out=Path(d); (out/'monitor.stop').touch(); calls=[]
+            def command(a):
+                calls.append(a)
+                if any('query-compute-apps' in x for x in a):
+                    return 0,'GPU-x, 1, python3, 2900\nGPU-x, 2, UnrealEditor, 2700\n'
+                if 'top' in a: return 0,'PID\n1\n'
+                return 0,''
+            with patch.object(s,'command',command): s.monitor(out,'flashnext-job2b')
+            self.assertEqual([a for a in calls if 'stop' in a],
+                [['sudo','-n','docker','stop','-t','5','flashnext-job2b']])
+
     def test_queue_and_native_headers(self):
         subprocess.run(['bash','-n',str(HERE/'runs/vmid_job2.sh')],check=True)
         subprocess.run(['g++','-std=c++17','-x','c++','-fsyntax-only','-I',str(HERE.parent/'reference/cuda-runtime-13'),
