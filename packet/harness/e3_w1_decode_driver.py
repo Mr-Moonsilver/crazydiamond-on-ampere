@@ -830,7 +830,7 @@ def _sanitize_receipt(obj):
                 {key: _bounded(row.get(key)) for key in
                  ('rank', 'batch_reqs', 'scheduled_tokens', 'prefill', 'sequence',
                   'num_reqs', 'num_tokens', 'decode_only', 'full_graph', 'route',
-                  'route_generation') if key in row}
+                  'route_generation', 'live_decode') if key in row}
                 for row in obs[:MAX_LIST] if type(row) is dict]
         out['decode_eligibility'] = clean
     if 'interval' in obj:
@@ -1178,11 +1178,21 @@ def validate_receipt(obj, command, ctx):
                     if rank in observed_ranks:
                         contract('decode_eligibility_duplicate_rank')
                     observed_ranks.add(rank)
-                    if not _is_int(row.get('batch_reqs')) or row.get('batch_reqs') != ctx['streams']:
+                    count = row.get('batch_reqs')
+                    valid_count = _is_int(count) and 0 < count <= ctx['streams']
+                    if not valid_count:
                         contract('decode_eligibility_batch_reqs:%d' % rank)
-                    if not _is_int(row.get('scheduled_tokens')) \
-                            or row.get('scheduled_tokens') != ctx['streams']:
+                    if not _is_int(row.get('scheduled_tokens')) or row.get('scheduled_tokens') != count:
                         contract('decode_eligibility_scheduled_tokens:%d' % rank)
+                    if valid_count and count < ctx['streams']:
+                        live = row.get('live_decode')
+                        if not (type(live) is dict and live.get('basis') == 'worker-cpu-live-decode-v1'
+                                and live.get('available') is True
+                                and _is_int(live.get('live_requests')) and live['live_requests'] == ctx['streams']
+                                and _is_int(live.get('prefill_requests')) and live['prefill_requests'] == 0
+                                and live.get('batch_is_live_subset') is True
+                                and _is_int(live.get('last_batch_member_count')) and live['last_batch_member_count'] == count):
+                            contract('decode_eligibility_live_census:%d' % rank)
                     if row.get('prefill') is not False:
                         contract('decode_eligibility_prefill_observed:%d' % rank)
                 if observed_ranks != set(expected_ranks):

@@ -836,6 +836,46 @@ def pinned_paused_scheduler():
 
 
 class BatchAndBarrierTests(ProbeFixture):
+    def test_partial_batch_requires_fresh_complete_live_rows(self):
+        ids = ['private-row-%d' % i for i in range(8)]
+        self.runner.req_states = types.SimpleNamespace(
+            req_id_to_index={key:i for i,key in enumerate(ids)},
+            prefill_len=types.SimpleNamespace(np=[1024]*8), num_computed_prefill_tokens=[1024]*8)
+        batch = batch_state(4); batch.req_ids = ids[:4]
+        self.probe.check_batch(4,4,1,batch); self.probe.check_route(desc())
+        live = self.probe.counters()['live_decode']
+        self.assertEqual(live, dict(basis='worker-cpu-live-decode-v1', available=True,
+            live_requests=8, prefill_requests=0, batch_is_live_subset=True, last_batch_member_count=4))
+        from probe_control import ProbeController, ProbeControlError
+        owner=types.SimpleNamespace(engine=types.SimpleNamespace(
+            get_num_unfinished_requests=lambda:8, get_num_queued_tokens=lambda:0))
+        snapshot=lambda:{'ranks':[{'rank':r,'counters':self.probe.counters()} for r in range(4)]}
+        self.assertTrue(ProbeController._eligibility(owner,snapshot(),8)['proved'])
+        self.runner.req_states.num_computed_prefill_tokens[7] = 1023
+        with self.assertRaises(ProbeControlError): ProbeController._eligibility(owner,snapshot(),8)
+        failure = owner.eligibility_failure
+        self.assertEqual(failure['batch']['num_reqs'],4)
+        self.assertEqual(failure['live_decode']['prefill_requests'],1)
+        self.runner.req_states.num_computed_prefill_tokens[7] = 1024
+        self.runner.req_states.req_id_to_index.pop(ids[0])
+        self.assertFalse(self.probe.counters()['live_decode']['batch_is_live_subset'])
+        with self.assertRaises(ProbeControlError): ProbeController._eligibility(owner,snapshot(),8)
+        self.probe.observe_empty(types.SimpleNamespace(total_num_scheduled_tokens=0))
+        self.assertEqual(failure['batch']['num_reqs'],4)
+        self.assertNotIn('private-row-',json.dumps(self.probe.counters()))
+
+    def test_live_census_missing_duplicate_or_foreign_metadata_refuses(self):
+        self.assertFalse(self.probe.live_decode_census()['available'])
+        self.runner.req_states = types.SimpleNamespace(req_id_to_index={'a':0,'b':0},
+            prefill_len=types.SimpleNamespace(np=[1]), num_computed_prefill_tokens=[1])
+        self.assertFalse(self.probe.live_decode_census()['available'])
+        self.runner.req_states.req_id_to_index={'a':0}
+        batch=batch_state(1);batch.req_ids=['foreign']
+        self.probe.check_batch(1,1,1,batch)
+        self.assertFalse(self.probe.live_decode_census()['batch_is_live_subset'])
+        self.runner.req_states.req_id_to_index={'a':True}
+        self.assertFalse(self.probe.live_decode_census()['available'])
+
     def test_actual_paused_schedule_with_running_unscheduled_request(self):
         scheduler = pinned_paused_scheduler()
         self.probe.check_batch(8, 8, 1, batch_state(8)); self.probe.check_route(desc())

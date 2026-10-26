@@ -309,6 +309,7 @@ class DecodeProbe:
         self.invalidations = 0
         self.last_invalidation = None
         self.in_flight = 0
+        self._last_batch_request_ids = None
         self.batch_observations = {'batches': 0, 'decode_batches': 0,
                                    'non_decode_batches': 0, 'empty_batches': 0,
                                    'noop_empty_batches': 0, 'noop_rejections': {},
@@ -384,6 +385,10 @@ class DecodeProbe:
                          and not any(bool(x) for x in prefills))
         except (TypeError, ValueError, OverflowError):
             valid = False
+        ids = getattr(batch_state, 'req_ids', None)
+        self._last_batch_request_ids = (frozenset(ids)
+            if valid and type(ids) is list and len(ids) == num_reqs
+            and all(type(x) is str for x in ids) and len(set(ids)) == num_reqs else None)
         observed = self.batch_observations
         observed['batches'] += 1
         observed['decode_batches' if valid else 'non_decode_batches'] += 1
@@ -474,6 +479,7 @@ class DecodeProbe:
             observed['last_noop_rejection'] = {
                 'field': field, 'empty_sequence': observed['empty_batches']}
             observed['last'] = None
+            self._last_batch_request_ids = None
 
 
     def invalidate(self, reason):
@@ -608,6 +614,44 @@ class DecodeProbe:
         record['replay_observer'] = observer.status() if observer is not None else {'enabled': False}
         return record
 
+    def live_decode_census(self):
+        """Fresh CPU request-row census; no IDs or per-request lengths escape.
+
+        PP/parity can schedule only part of a decode cohort per tick. The live
+        rows must all have finished prefill; the last actual batch must be a
+        nonempty subset of exactly these rows. The controller additionally
+        binds the live count to its sealed frontend cohort and drain barrier.
+        """
+        import operator
+        result = {'basis': 'worker-cpu-live-decode-v1', 'available': False,
+                  'live_requests': None, 'prefill_requests': None,
+                  'batch_is_live_subset': False, 'last_batch_member_count': None}
+        states = getattr(self.runner, 'req_states', None)
+        rows = getattr(states, 'req_id_to_index', None)
+        if type(rows) is not dict or not all(type(k) is str for k in rows):
+            return result
+        try:
+            slots = [operator.index(v) for v in rows.values() if type(v) is not bool]
+            if len(slots) != len(rows) or len(set(slots)) != len(slots) or any(v < 0 for v in slots):
+                return result
+            lengths = states.prefill_len.np
+            computed = states.num_computed_prefill_tokens
+            prefill = 0
+            for slot in slots:
+                if type(lengths[slot]) is bool or type(computed[slot]) is bool:
+                    return result
+                n, done = operator.index(lengths[slot]), operator.index(computed[slot])
+                if n < 0 or done < 0:
+                    return result
+                prefill += done < n
+            batch = self._last_batch_request_ids
+            result.update(available=True, live_requests=len(rows), prefill_requests=prefill,
+                batch_is_live_subset=bool(batch) and batch.issubset(rows),
+                last_batch_member_count=len(batch) if batch is not None else None)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
+            return result
+        return result
+
     def counters(self):
         """Everything the GPU test reads; exposed on the runner as a callable."""
         record = self.router.counters()
@@ -635,6 +679,7 @@ class DecodeProbe:
             'in_flight': self.in_flight,
             'sampling_pending': getattr(self.runner, 'execute_model_state', None) is not None,
             'transition_pending': not getattr(self.controller, 'admitting', False),
+            'live_decode': self.live_decode_census(),
             'batch_observations': {**self.batch_observations,
                 'noop_rejections': dict(self.batch_observations['noop_rejections']),
                 'last_noop_rejection': (dict(self.batch_observations['last_noop_rejection'])

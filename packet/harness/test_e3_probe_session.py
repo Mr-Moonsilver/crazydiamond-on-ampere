@@ -61,6 +61,45 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.action('pause_enter_split' if route == 'split' else 'pause_full', route)
         await self.action('resume', route)
 
+    async def test_partial_pp_batch_composes_with_live_census_and_client(self):
+        def partial(command, rows):
+            if command['action'] == 'status':
+                for row in rows:
+                    row['counters']['batch_observations']['last'].update(num_reqs=4,num_tokens=4)
+                    row['counters']['live_decode']=dict(basis='worker-cpu-live-decode-v1',
+                        available=True,live_requests=8,prefill_requests=0,
+                        batch_is_live_subset=True,last_batch_member_count=4)
+            return rows
+        self.engine.corrupt=partial
+        await self.enter('split')
+        self.engine.steps += 5
+        await self.action('pause_end','split')
+        await self.action('leave_full','full')
+        await self.action('resume','full')
+        self.assertFalse(self.session.failed)
+
+    async def test_partial_batch_failure_snapshot_survives_client_cleanup(self):
+        def partial(command, rows):
+            if command['action'] == 'status':
+                for row in rows:
+                    row['counters']['batch_observations']['last'].update(num_reqs=4,num_tokens=4)
+            return rows
+        self.engine.corrupt=partial
+        await self.action('prepare','full'); self.engine.unfinished=8
+        command=driver._next_command(self.ctx,'pause_full','full')
+        with self.assertRaises(ProbeControlError): await self.session.execute(command)
+        failure=copy.deepcopy(self.session.controller.eligibility_failure)
+        self.assertEqual(failure['batch']['num_reqs'],4)
+        self.engine.unfinished=0
+        def cleared(command,rows):
+            if command['action']=='status':
+                for row in rows:row['counters']['batch_observations']['last']=None
+            return rows
+        self.engine.corrupt=cleared
+        status=await self.session.controller._observe()
+        self.assertEqual(status['eligibility_failure'],failure)
+        self.assertIsNone(status['workers'][0]['counters']['batch_observations']['last'])
+
     async def test_actual_client_validator_accepts_full_split_full_and_next_repeat(self):
         for repeat, route in enumerate(('full', 'split')):
             self.ctx.update(repeat=repeat, cohort_id=f'cohort-{repeat}')

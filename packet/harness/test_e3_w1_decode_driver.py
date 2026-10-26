@@ -1210,6 +1210,28 @@ class DriverTest(unittest.TestCase):
 
     # --- receipt/summary pure checks ----------------------------------------
 
+    def test_partial_batch_receipt_needs_exact_live_census(self):
+        controller=FakeController(streams=8)
+        ctx=dict(run_id='r',repeat=0,cohort_id='c',command_seq=0,action='pause_enter_split',
+                 engine_epoch=None,storage_epoch=None,route='full',route_generation=None,streams=8)
+        command=D._next_command(ctx,'pause_enter_split','split');ctx['command_seq']=command['command_seq']
+        receipt,_=controller.execute(command,1)
+        for row in receipt['decode_eligibility']['ranks']:
+            row.update(batch_reqs=4,scheduled_tokens=4,live_decode=dict(
+                basis='worker-cpu-live-decode-v1',available=True,live_requests=8,
+                prefill_requests=0,batch_is_live_subset=True,last_batch_member_count=4))
+        self.assertTrue(D.validate_receipt(receipt,command,ctx)[0])
+        for change in ({'available':False},{'live_requests':7},{'prefill_requests':1},
+                       {'batch_is_live_subset':False},{'last_batch_member_count':3},
+                       {'prefill_requests':False}):
+            bad=copy.deepcopy(receipt)
+            bad['decode_eligibility']['ranks'][0]['live_decode'].update(change)
+            self.assertFalse(D.validate_receipt(bad,command,ctx)[0])
+        bad=copy.deepcopy(receipt);bad['decode_eligibility']['ranks'][0].pop('live_decode')
+        self.assertFalse(D.validate_receipt(bad,command,ctx)[0])
+        clean=D.sanitize_receipt(receipt) if hasattr(D,'sanitize_receipt') else D._sanitize_receipt(receipt)
+        self.assertEqual(clean['decode_eligibility']['ranks'][0]['live_decode']['live_requests'],8)
+
     def test_validate_receipt_rejects_bool_as_int_and_accepts_valid(self):
         controller = FakeController(streams=3)
         ctx = {'run_id': 'r', 'repeat': 0, 'cohort_id': 'c',

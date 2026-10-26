@@ -54,7 +54,7 @@ CORE_LAST_KEYS = ('sequence', 'route', 'route_generation', 'num_reqs',
 CORE_BARRIER_KEYS = ('rank', 'ack', 'mode', 'route', 'route_generation',
                      'storage_epoch', 'engine_epoch', 'drained_streams')
 CORE_ELIGIBILITY_RANK_KEYS = (
-    'rank', 'batch_reqs', 'scheduled_tokens', 'prefill', 'sequence',
+    'rank', 'batch_reqs', 'scheduled_tokens', 'prefill', 'sequence', 'live_decode',
     'num_reqs', 'num_tokens', 'decode_only', 'full_graph', 'route',
     'route_generation',
 )
@@ -506,6 +506,7 @@ class ProbeSession:
                 'cohort_id': self.cohort, 'cohort_cardinality': self.size,
                 'reason': eligibility['basis'],
                 'ranks': [{'rank': r['rank'],
+                           'live_decode': copy.deepcopy(r.get('live_decode')),
                            'batch_reqs': r['batch']['num_reqs'],
                            'scheduled_tokens': r['batch']['num_tokens'],
                            'prefill': not r['batch']['decode_only'],

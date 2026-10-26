@@ -118,6 +118,7 @@ class ProbeController:
         self.paused = False
         self.quarantined = False
         self.quarantine_reason = None
+        self.eligibility_failure = None
         self.last = None
         self.ingress = AdmissionSeal(engine)
 
@@ -181,14 +182,36 @@ class ProbeController:
         observed = []
         for row in snapshot['ranks']:
             batch = row['counters'].get('batch_observations', {}).get('last')
-            if (type(batch) is not dict or not _positive(batch.get('sequence'))
-                    or batch.get('decode_only') is not True or batch.get('full_graph') is not True
-                    or type(batch.get('num_reqs')) is not int or batch['num_reqs'] != cohort_size
-                    or type(batch.get('num_tokens')) is not int or batch['num_tokens'] != cohort_size):
+            live = row['counters'].get('live_decode')
+            batch_ok = (type(batch) is dict and _positive(batch.get('sequence'))
+                and batch.get('decode_only') is True and batch.get('full_graph') is True
+                and _positive(batch.get('num_reqs')) and batch['num_reqs'] <= cohort_size
+                and type(batch.get('num_tokens')) is int and batch['num_tokens'] == batch['num_reqs'])
+            partial = batch_ok and batch['num_reqs'] < cohort_size
+            live_ok = (type(live) is dict and live.get('basis') == 'worker-cpu-live-decode-v1'
+                and live.get('available') is True and type(live.get('live_requests')) is int
+                and live['live_requests'] == cohort_size and type(live.get('prefill_requests')) is int
+                and live['prefill_requests'] == 0 and live.get('batch_is_live_subset') is True
+                and type(live.get('last_batch_member_count')) is int
+                and batch_ok and live['last_batch_member_count'] == batch['num_reqs'])
+            if not batch_ok or (partial and not live_ok):
+                # Preserve the initiating observation before client disconnect
+                # cleanup changes worker rows. No IDs, values or payload reprs.
+                self.eligibility_failure = {
+                    'rank': row['rank'], 'cohort_size': cohort_size,
+                    'unfinished': unfinished, 'queued': queued,
+                    'batch': {k: batch.get(k) if type(batch.get(k)) in (int, bool) else None
+                              for k in ('sequence','num_reqs','num_tokens','decode_only','full_graph')}
+                             if type(batch) is dict else None,
+                    'live_decode': {k: live.get(k) if type(live.get(k)) in (int,bool) else None
+                                    for k in ('available','live_requests','prefill_requests',
+                                              'batch_is_live_subset','last_batch_member_count')}
+                                   if type(live) is dict else None}
                 raise ProbeControlError('worker-decode-eligibility-unproven')
-            observed.append({'rank': row['rank'], 'batch': copy.deepcopy(batch)})
+            observed.append({'rank': row['rank'], 'batch': copy.deepcopy(batch),
+                             'live_decode': copy.deepcopy(live) if live_ok else None})
         return {'cohort_size': cohort_size, 'proved': True,
-                'basis': 'paused live request/queued-token counts and last actual per-worker batch, retained only across proven no-op empty steps',
+                'basis': 'sealed live cohort with one-token full-graph batch; partial PP/parity batches additionally require fresh CPU live-row decode census',
                 'ranks': observed}
 
     async def _observe(self):
@@ -251,6 +274,7 @@ class ProbeController:
             'foreign_ranks': sorted(str(value) for value in foreign),
             'quarantined': self.quarantined,
             'quarantine_reason': self.quarantine_reason,
+            'eligibility_failure': copy.deepcopy(self.eligibility_failure),
             # Actual engine observation, not the last acknowledged mutation
             # state.  None means unknown; it is never replaced by self.paused.
             'paused': paused,
