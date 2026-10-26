@@ -685,6 +685,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_vmid_job2.py', 'VM<vm-id> mixed nodes/capacity: exact counts, copy directions, explicit child limitation and pinned header syntax (CPU only)'),
                      ('test_vmid_job3.py', 'VM<vm-id> sparse DMA: compact-row mapping, four-page pieces, whole-plan fragmentation refusal and exact byte coverage (CPU only)'),
                      ('test_vmid_job4.py', 'VM<vm-id> actual QSA sparse DMA: pinned gather-only substitution, exact outputs and cancellation/reuse ownership (CPU only)'),
+                     ('test_vmid_job5.py', 'VM<vm-id> bank-scale observer: seven graph inventories, exact per-node windows and explicit capacity-loss failures (CPU only)'),
                      ('test_e3_observer_runtime.py', 'E3 replay observer integration: pre-context start, actual worker drain, one scoped window and stopped-before-performance (CPU only)'),
                      ('test_e3_replay_observer.py', 'E3 actual replay context observer: bounded CUPTI activity collection, real green-context binding, clone/update mapping and FAIL-over-missing grading (CPU only, fake CUPTI)'),
                      ('test_s5_oracle_queue.py', 'S5 source oracle: strict subset controls, per-op diagnostics, cuBLAS binding (CPU)'),
