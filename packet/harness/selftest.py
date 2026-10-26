@@ -664,6 +664,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_lane_comm.py', 'E3 prefill-lane communicators: PyNccl-only TP scope, tagged PP channel credits/header/release order (CPU only, faked NCCL/torch)'),
                      ('test_e3_lane_comm_probe.py', 'E3 lane-comm probe: frozen verdict, import isolation and unarmed pair-1,3 queue (CPU only)'),
                      ('test_e3_activity_accounting.py', 'Deferred CUPTI joins and conservation (CPU only)'),
+                     ('test_vmid_job9b.py', 'VM9b CUPTI thread identity and wrapper conservation (CPU only)'),
                      ('test_vmid_job9.py', 'VM9 bridge grading and ownership (CPU only)'),
                      ('test_vmid_job8.py', 'VM8 positive eager activity accounting and negative controls (CPU only)'),
                      ('test_vmid_job7b.py', 'VM7b late allocator release and native-crash veto (CPU only)'),

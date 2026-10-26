@@ -740,3 +740,7 @@ void stub_emit_correlated(uint32_t c,uint64_t offer,uint32_t domain,uint32_t thr
  k.start=end+1;k.end=end+10;k.completed=end+10;queue_record(k);}
 }
 }
+
+static int stub_thread_id_mode=0;
+extern "C" void stub_set_thread_id_mode(int mode){stub_thread_id_mode=mode;}
+extern "C" CUptiResult cuptiGetThreadIdType(CUpti_ActivityThreadIdType*out){if(!out)return CUPTI_ERROR_INVALID_PARAMETER;*out=static_cast<CUpti_ActivityThreadIdType>(stub_thread_id_mode);return CUPTI_SUCCESS;}

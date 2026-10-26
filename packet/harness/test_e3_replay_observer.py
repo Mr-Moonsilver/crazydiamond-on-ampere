@@ -514,8 +514,10 @@ class ObserverCleanTests(ObserverTestBase):
         self.assertEqual(receipt['replay']['mapping']['node_keys'], 3)
 
 class ObserverCorrelationTests(ObserverTestBase):
-    def configure(self):
+    def configure(self,mode=0):
         import activity_accounting as a
+        self.ctl.stub_set_thread_id_mode.argtypes=[ctypes.c_int]
+        self.ctl.stub_set_thread_id_mode(mode)
         self.open_clean()
         self.bridge=a.CorrelationBridge(self.session,epoch=1,generation=ROUTE_GENERATION)
         f=self.ctl.stub_emit_correlated
@@ -531,13 +533,15 @@ class ObserverCorrelationTests(ObserverTestBase):
         with b.offer('outer',{},context_id=7,stream_id=9):
             try:
                 with b.offer('inner',{'kernel':1},context_id=7,stream_id=9) as o:
-                    self.ctl.stub_emit_correlated(10,o['id'],5,threading.get_native_id(),1100,1500,7,0,0,0)
-                    self.ctl.stub_emit_correlated(11,o['id'],4,threading.get_native_id(),1200,1400,7,0,0,1)
+                    self.ctl.stub_emit_correlated(10,o['id'],5,o['thread'],1100,1500,7,0,0,0)
+                    self.ctl.stub_emit_correlated(11,o['id'],4,o['thread'],1200,1400,7,0,0,1)
                     raise ValueError('CPU fixture')
             except ValueError:pass
         self.end();r=b.report()
         self.assertEqual(r['grade']['verdict'],'PASS',r['grade'])
         self.assertEqual(r['native']['open_scopes'],0)
+        self.assertEqual(r['native']['thread_id_type'],'default-pthread-low32')
+        self.assertNotEqual(b.offers[0]['thread'],b.offers[0]['system_thread'])
         self.assertEqual(r,b.report())
         self.assertEqual(r['grade']['joined_records'],1)
         self.assertEqual(len(r['grade']['wrappers']),1)
@@ -545,13 +549,15 @@ class ObserverCorrelationTests(ObserverTestBase):
 
     def test_native_two_threads_scopes_do_not_leak_between_threads(self):
         import threading
-        b=self.configure();errors=[]
+        b=self.configure();errors=[];barrier=threading.Barrier(2,timeout=5)
         def work(c):
             try:
+                barrier.wait()
                 with b.offer('thread',{'kernel':1},context_id=7,stream_id=9) as o:
                     # No concurrent stub buffer mutation; native TLS itself is
                     # tested on two distinct threads using a CPU lock.
-                    with lock:self.ctl.stub_emit_correlated(c,o['id'],4,threading.get_native_id(),1100+c,1200+c,7,0,0,1)
+                    with lock:self.ctl.stub_emit_correlated(c,o['id'],4,o['thread'],1100+c,1200+c,7,0,0,1)
+                barrier.wait()
             except Exception as e:errors.append(type(e).__name__)
         lock=threading.Lock();ts=[threading.Thread(target=work,args=(i,)) for i in (10,20)]
         for t in ts:t.start()
@@ -570,6 +576,18 @@ class ObserverCorrelationTests(ObserverTestBase):
         self.assertEqual(r['native']['errors'],2)
         self.assertEqual(r['native']['open_scopes'],0)
 
+
+    def test_explicit_system_mode_and_mid_session_change_refused(self):
+        import threading
+        b=self.configure(mode=1)
+        with b.offer('empty',{},context_id=7,stream_id=9) as o:
+            self.assertEqual(o['thread'],threading.get_native_id())
+            self.assertEqual(o['system_thread'],o['thread'])
+        self.ctl.stub_set_thread_id_mode(0)
+        with self.assertRaises(RuntimeError):
+            with b.offer('foreign_mode',{},context_id=7,stream_id=9):pass
+        self.end()
+        self.assertEqual(b.report()['grade']['verdict'],'INCONCLUSIVE')
 
 class ObserverContextTests(ObserverTestBase):
     def test_activity_census_counts_graph_zero_all_kinds_without_waiving_guard(self):

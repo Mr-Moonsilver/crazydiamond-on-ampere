@@ -37,10 +37,10 @@ class Job9Tests(unittest.TestCase):
         self.assertIn("for mode in ('positive','unoffered','primary')",code)
     def test_complete_positive_and_exact_bank_multiplicity(self):
         r,o=fixture();o[0].update(epoch=1,generation=1)
-        o.append(dict(o[0],id=2,thread=20,family='exception',expected={},body_exception=True))
-        r['scopes'] += [dict(id=2,parent=0,thread=20,action=x) for x in ('push','pop')]
+        o.append(dict(o[0],id=2,thread=1020,system_thread=20,family='exception',expected={},body_exception=True))
+        r['scopes'] += [dict(id=2,parent=0,thread=1020,system_thread=20,action=x) for x in ('push','pop')]
         o.append(dict(o[0],id=3,family='graph',graph=True,expected={k:n*40 for k,n in j.MIX.items()},copy_kinds=[1,2,8]))
-        r['scopes'] += [dict(id=3,parent=0,thread=10,action=x) for x in ('push','pop')]
+        r['scopes'] += [dict(id=3,parent=0,thread=1010,system_thread=10,action=x) for x in ('push','pop')]
         r['apis'].append(dict(r['apis'][1],correlation_id=12,name='cuGraphLaunch',start=200,end=210))
         r['external'].append(dict(kind='custom0',correlation_id=12,external_id=3))
         r['activities'] += [dict(correlation_id=12,kind=k,count=n*40,graph_id=9,context_id=7,stream_id=9,copy_kind=1 if k=='memcpy' else 0) for k,n in j.MIX.items()]

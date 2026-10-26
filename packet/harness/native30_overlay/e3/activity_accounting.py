@@ -5,7 +5,7 @@ from the immutable raw graph-only placement receipt.
 from collections import Counter
 import re
 
-SCHEMA='s5ro-correlation/1'
+SCHEMA='s5ro-correlation/2'
 KINDS=('kernel','memcpy','memset')
 
 
@@ -26,7 +26,7 @@ def api_kind(name):
         'cuEventQuery','cuEventSynchronize','cuStreamWaitEvent','cuCtxGetCurrent',
         'cuCtxSetCurrent','cuCtxGetDevice','cuCtxPushCurrent','cuCtxPopCurrent',
         'cuGetProcAddress','cuGetExportTable','cudaGetDriverEntryPointByVersion',
-        'cuStreamGetCtx','cuStreamGetId','cuCtxGetId')
+        'cuStreamGetCtx','cuStreamGetId','cuCtxGetId','cuDevicePrimaryCtxGetState')
     if any(re.fullmatch(re.escape(x)+r'(?:_v\d+)?(?:_ptsz|_ptds)?',name) for x in harmless):return 'host'
     return None
 
@@ -38,6 +38,7 @@ def grade(report,offers,*,epoch,generation):
     try:
         require(report.get('schema')==SCHEMA,'correlation_schema')
         require(report.get('complete') is True,'correlation_incomplete')
+        require(report.get('thread_id_type') in ('system-gettid','default-pthread-low32'),'thread_key_basis')
         require(all(report.get(k)==0 for k in ('overflow','errors','open_scopes','boundary_records')),'correlation_loss_or_scope')
         om={}
         for o in offers:
@@ -47,12 +48,16 @@ def grade(report,offers,*,epoch,generation):
             require(type(o.get('family')) is str and o['family'],'offer_family')
             require(set(o.get('expected',{}))<=set(KINDS) and all(type(n) is int and n>=0 for n in o['expected'].values()),'offer_expected_counts')
             om[ident]=o
+        keys={};systems={}
         for o in offers:
+            require(type(o.get('system_thread')) is int and o['system_thread']>0,'system_thread_missing')
+            require(keys.setdefault(o['thread'],o['system_thread'])==o['system_thread'] and systems.setdefault(o['system_thread'],o['thread'])==o['thread'],'thread_key_not_bijective')
+            if report['thread_id_type']=='system-gettid':require(o['thread']==o['system_thread'],'system_thread_key_differs')
             if o.get('parent'):
                 p=om.get(o['parent']);require(p is not None and p['thread']==o['thread'] and p['id']!=o['id'],'offer_parent')
         stacks={};opened=set();closed=set()
         for e in report['scopes']:
-            o=om.get(e['id']);require(o is not None and o['thread']==e['thread'],'native_scope_identity')
+            o=om.get(e['id']);require(o is not None and o['thread']==e['thread'] and o['system_thread']==e.get('system_thread'),'native_scope_identity')
             stack=stacks.setdefault(e['thread'],[])
             if e['action']=='push':
                 require(e['id'] not in opened and e['parent']==o.get('parent',0)==(stack[-1] if stack else 0),'native_scope_parent')
@@ -93,10 +98,12 @@ def grade(report,offers,*,epoch,generation):
         peer_index={}
         for c,a in apis.items():
             if by_api[c]:peer_index.setdefault((a['thread'],external.get(c),api_kind(a['name'])),[]).append((c,a))
+        claimed_wrappers=set()
         for c,a in apis.items():
             k=api_kind(a['name'])
             if k is None:m.append('unsupported_api:'+a['name']);continue
             if k=='host':
+                if a['return_value']!=0:f.append('host_api_failed')
                 if by_api[c]:f.append('host_api_has_activity')
                 continue
             if a['return_value']!=0:f.append('api_submission_failed');continue
@@ -110,8 +117,9 @@ def grade(report,offers,*,epoch,generation):
                 if (by_api[d] and a['domain']!=b['domain'] and a['thread']==b['thread']
                     and external.get(c) is not None and external.get(c)==external.get(d)
                     and api_kind(b['name'])==k and nested):peers.append(d)
-            if len(peers)!=1:m.append('submission_without_unique_activity')
-            else:wrappers.append(dict(wrapper=c,activity_api=peers[0]))
+            if len(peers)!=1 or peers[0] in claimed_wrappers:m.append('submission_without_unique_activity')
+            else:
+                claimed_wrappers.add(peers[0]);wrappers.append(dict(wrapper=c,activity_api=peers[0]))
         for i,o in om.items():
             if counts[i]!=Counter(o['expected']):f.append('offer_count_mismatch')
             families.setdefault(o['family'],Counter()).update(counts[i])
@@ -138,6 +146,8 @@ class CorrelationBridge:
         self.lock=threading.Lock();self.local=threading.local();self.offers=[];self.next_id=1
         lib=session.binding._lib;self.lib=lib;self.token=session._token
         lib.s5ro_correlation_enable.argtypes=[C.c_uint64];lib.s5ro_correlation_enable.restype=C.c_int
+        lib.s5ro_correlation_thread_key.argtypes=[C.c_uint64,C.POINTER(C.c_uint32),C.POINTER(C.c_uint32)]
+        lib.s5ro_correlation_thread_key.restype=C.c_int
         lib.s5ro_offer_push.argtypes=[C.c_uint64,C.c_uint64,C.c_uint32];lib.s5ro_offer_push.restype=C.c_int
         lib.s5ro_offer_pop.argtypes=[C.c_uint64,C.c_uint64];lib.s5ro_offer_pop.restype=C.c_int
         lib.s5ro_correlation_report.argtypes=[C.c_uint64,C.c_void_p,C.c_uint64,C.POINTER(C.c_uint64)];lib.s5ro_correlation_report.restype=C.c_int
@@ -153,11 +163,14 @@ class CorrelationBridge:
         def scope():
             stack=getattr(self.local,'stack',None)
             if stack is None:stack=[];self.local.stack=stack
+            import ctypes as C
+            key,system=C.c_uint32(),C.c_uint32()
+            if self.lib.s5ro_correlation_thread_key(self.token,C.byref(key),C.byref(system)) or system.value!=threading.get_native_id():raise RuntimeError('native_thread_identity')
             with self.lock:
                 if len(self.offers)>=32768:raise RuntimeError('offer_capacity')
                 ident=self.next_id;self.next_id+=1
                 row=dict(id=ident,epoch=self.epoch,generation=self.generation,rank=self.rank,
-                    thread=threading.get_native_id(),parent=stack[-1] if stack else 0,family=family,
+                    thread=key.value,system_thread=system.value,parent=stack[-1] if stack else 0,family=family,
                     expected=dict(expected),context_id=context_id,stream_id=stream_id,graph=graph,
                     copy_kinds=list(copy_kinds),closed=False,body_exception=False)
                 self.offers.append(row)

@@ -6,12 +6,12 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'patches/s5_engine'))
 import activity_accounting as a
 
 def fixture():
-    o=[dict(id=1,epoch=4,generation=2,thread=10,parent=0,family='pre',closed=True,graph=False,
+    o=[dict(id=1,epoch=4,generation=2,thread=1010,system_thread=10,parent=0,family='pre',closed=True,graph=False,
             expected={'kernel':1},context_id=7,stream_id=9)]
-    r=dict(schema=a.SCHEMA,complete=True,overflow=0,errors=0,open_scopes=0,boundary_records=0,activity_records=1,
-        scopes=[dict(id=1,parent=0,thread=10,action=x) for x in ('push','pop')],
-        apis=[dict(correlation_id=10,domain='runtime',name='cudaLaunchKernel_v7000',start=100,end=150,thread=10,return_value=0),
-              dict(correlation_id=11,domain='driver',name='cuLaunchKernel',start=110,end=140,thread=10,return_value=0)],
+    r=dict(schema=a.SCHEMA,thread_id_type="default-pthread-low32",complete=True,overflow=0,errors=0,open_scopes=0,boundary_records=0,activity_records=1,
+        scopes=[dict(id=1,parent=0,thread=1010,system_thread=10,action=x) for x in ('push','pop')],
+        apis=[dict(correlation_id=10,domain='runtime',name='cudaLaunchKernel_v7000',start=100,end=150,thread=1010,return_value=0),
+              dict(correlation_id=11,domain='driver',name='cuLaunchKernel',start=110,end=140,thread=1010,return_value=0)],
         external=[dict(kind='custom0',correlation_id=c,external_id=1) for c in (10,11)],
         activities=[dict(correlation_id=11,kind='kernel',count=1,graph_id=0,context_id=7,stream_id=9,copy_kind=0)])
     return r,o
@@ -53,8 +53,8 @@ class JoinTests(unittest.TestCase):
         r,o=fixture();r['activities'][0].update(kind='memcpy',copy_kind=2)
         self.assertIn('copy_direction',self.grade(r,o)['failures'])
     def test_two_threads_parent_scopes_no_work_and_nested_exception_status(self):
-        r,o=fixture();o.append(dict(o[0],id=2,thread=20,expected={},family='exception_parent'))
-        r['scopes'] += [dict(id=2,parent=0,thread=20,action=x) for x in ('push','pop')]
+        r,o=fixture();o.append(dict(o[0],id=2,thread=1020,system_thread=20,expected={},family='exception_parent'))
+        r['scopes'] += [dict(id=2,parent=0,thread=1020,system_thread=20,action=x) for x in ('push','pop')]
         self.assertEqual(self.grade(r,o)['verdict'],'PASS')
         o[0]['parent']=2
         self.assertIn('offer_parent',self.grade(r,o)['missing'])

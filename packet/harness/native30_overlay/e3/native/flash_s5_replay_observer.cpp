@@ -49,6 +49,7 @@
 #include <vector>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <pthread.h>
 
 namespace {
 
@@ -370,7 +371,7 @@ constexpr uint32_t kResourceIdCount =
 constexpr uint32_t kCorrCapacity=131072;
 struct ApiRec {uint32_t domain=0,correlation=0,thread=0,result=0;uint64_t start=0,end=0;char name[128]={0};};
 struct ExternalRec {uint32_t correlation=0,kind=0;uint64_t external=0;};
-struct ScopeRec {uint64_t id=0,parent=0;uint32_t thread=0,action=0;};
+struct ScopeRec {uint64_t id=0,parent=0;uint32_t thread=0,action=0,system_thread=0;};
 struct ScopeEntry {uint64_t session,id;};
 thread_local std::vector<ScopeEntry> tl_scopes;
 
@@ -421,6 +422,7 @@ struct Session {
   uint8_t activities_registered = 0;
   uint8_t activity_enabled[7] = {};
   bool correlation_enabled=false;
+  CUpti_ActivityThreadIdType correlation_thread_type=CUPTI_ACTIVITY_THREAD_ID_TYPE_DEFAULT;
   ApiRec *apis=nullptr;ExternalRec *external=nullptr;ScopeRec *scopes=nullptr;
   uint32_t api_count=0,external_count=0,scope_count=0,open_scopes=0;
   std::atomic<uint64_t> correlation_overflow{0},correlation_errors{0};
@@ -3343,6 +3345,10 @@ int s5ro_correlation_enable(uint64_t session){
  auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
  std::lock_guard<std::mutex> op(s->op_mu);
  if(s->state!=kStarted||s->correlation_enabled)return S5RO_STATE;
+ CUpti_ActivityThreadIdType type;
+ if(cuptiGetThreadIdType(&type)!=CUPTI_SUCCESS||
+    (type!=CUPTI_ACTIVITY_THREAD_ID_TYPE_DEFAULT&&type!=CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM))return S5RO_STATE;
+ s->correlation_thread_type=type;
  const uint64_t bytes=kCorrCapacity*(sizeof(ApiRec)+sizeof(ExternalRec)+sizeof(ScopeRec));
  if(s->reserved_bytes+bytes>kMaxReservedBytes)return S5RO_LIMIT_EXCEEDED;
  std::unique_ptr<ApiRec[]>a(alloc_array<ApiRec>(kCorrCapacity));
@@ -3353,29 +3359,48 @@ int s5ro_correlation_enable(uint64_t session){
  s->reserved_bytes+=bytes;s->correlation_enabled=true;return S5RO_OK;
 }
 
+int s5ro_correlation_thread_key(uint64_t session,uint32_t*key,uint32_t*system){
+ if(!key||!system)return S5RO_BAD_ARGS;
+ auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
+ std::lock_guard<std::mutex> op(s->op_mu);
+ CUpti_ActivityThreadIdType type;
+ if(!s->correlation_enabled||cuptiGetThreadIdType(&type)!=CUPTI_SUCCESS||type!=s->correlation_thread_type){++s->correlation_errors;return S5RO_STATE;}
+ *system=static_cast<uint32_t>(syscall(SYS_gettid));
+ *key=type==CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM?*system:static_cast<uint32_t>(pthread_self());
+ return S5RO_OK;
+}
+
 int s5ro_offer_push(uint64_t session,uint64_t id,uint32_t generation){
  auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
  std::lock_guard<std::mutex> op(s->op_mu);
  if(s->state!=kWindow||!s->correlation_enabled||generation!=s->window_route_generation||!id||tl_scopes.size()>=32){++s->correlation_errors;return S5RO_STATE;}
  if(!tl_scopes.empty()&&tl_scopes.back().session!=session){++s->correlation_errors;return S5RO_STATE;}
  try{if(tl_scopes.capacity()<32)tl_scopes.reserve(32);}catch(...){++s->correlation_errors;return S5RO_INTERNAL_ERROR;}
+ CUpti_ActivityThreadIdType type;
+ if(cuptiGetThreadIdType(&type)!=CUPTI_SUCCESS||type!=s->correlation_thread_type){++s->correlation_errors;return S5RO_STATE;}
+ uint32_t system=static_cast<uint32_t>(syscall(SYS_gettid));
+ uint32_t thread=type==CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM?system:static_cast<uint32_t>(pthread_self());
  if(cuptiActivityPushExternalCorrelationId(CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0,id)!=CUPTI_SUCCESS){++s->correlation_errors;return S5RO_STATE;}
  uint64_t parent=tl_scopes.empty()?0:tl_scopes.back().id;
  tl_scopes.push_back({session,id});++s->open_scopes;
  std::lock_guard<std::recursive_mutex> cb(s->cb_mu);
  if(s->scope_count>=kCorrCapacity)++s->correlation_overflow;
- else s->scopes[s->scope_count++]={id,parent,static_cast<uint32_t>(syscall(SYS_gettid)),1};
+ else s->scopes[s->scope_count++]={id,parent,thread,1,system};
  return S5RO_OK;
 }
 int s5ro_offer_pop(uint64_t session,uint64_t id){
  auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
  std::lock_guard<std::mutex> op(s->op_mu);
  if(!s->correlation_enabled||tl_scopes.empty()||tl_scopes.back().session!=session||tl_scopes.back().id!=id){++s->correlation_errors;return S5RO_STATE;}
+ CUpti_ActivityThreadIdType type;
+ if(cuptiGetThreadIdType(&type)!=CUPTI_SUCCESS||type!=s->correlation_thread_type){++s->correlation_errors;return S5RO_STATE;}
+ uint32_t system=static_cast<uint32_t>(syscall(SYS_gettid));
+ uint32_t thread=type==CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM?system:static_cast<uint32_t>(pthread_self());
  uint64_t got=0;if(cuptiActivityPopExternalCorrelationId(CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0,&got)!=CUPTI_SUCCESS||got!=id){++s->correlation_errors;return S5RO_STATE;}
  tl_scopes.pop_back();--s->open_scopes;
  std::lock_guard<std::recursive_mutex> cb(s->cb_mu);
  if(s->scope_count>=kCorrCapacity)++s->correlation_overflow;
- else s->scopes[s->scope_count++]={id,0,static_cast<uint32_t>(syscall(SYS_gettid)),2};
+ else s->scopes[s->scope_count++]={id,0,thread,2,system};
  return S5RO_OK;
 }
 int s5ro_correlation_report(uint64_t session,char*out,uint64_t cap,uint64_t*len){
@@ -3386,6 +3411,8 @@ int s5ro_correlation_report(uint64_t session,char*out,uint64_t cap,uint64_t*len)
  if(!s->correlation_enabled||s->state!=kEnded)return S5RO_STATE;
  std::lock_guard<std::recursive_mutex> cb(s->cb_mu);
  try{
+ CUpti_ActivityThreadIdType type;
+ if(cuptiGetThreadIdType(&type)!=CUPTI_SUCCESS||type!=s->correlation_thread_type){++s->correlation_errors;}
  using Key=std::tuple<uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,std::string>;
  std::map<Key,uint64_t> rows;uint64_t boundary=0,records=0;
  auto add=[&](uint32_t corr,uint32_t kind,uint32_t ctx,uint32_t stream,uint32_t graph,uint32_t direction,const char*name,uint64_t a,uint64_t b){
@@ -3395,7 +3422,8 @@ int s5ro_correlation_report(uint64_t session,char*out,uint64_t cap,uint64_t*len)
  for(uint32_t i=0;i<s->kernel_count;i++){const auto&r=s->kernels[i];add(r.correlation_id,kRecKernel,r.context_id,r.stream_id,r.graph_id,0,r.name,r.start,r.end);}
  for(uint32_t i=0;i<s->copy_count;i++){const auto&r=s->copies[i];add(r.correlation_id,r.kind,r.context_id,r.stream_id,r.graph_id,r.copy_kind,"",r.start,r.end);}
  for(uint32_t i=0;i<s->api_count;i++){const auto&r=s->apis[i];if(!r.start||r.end<r.start||r.start<s->window_start||r.end>s->window_end)++boundary;}
- Json j(out,cap);j.open_obj();j.key("schema");j.string("s5ro-correlation/1");
+ Json j(out,cap);j.open_obj();j.key("schema");j.string("s5ro-correlation/2");
+ j.key("thread_id_type");j.string(s->correlation_thread_type==CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM?"system-gettid":"default-pthread-low32");
  j.key("complete");j.boolean(!s->correlation_errors&&!s->correlation_overflow&&!s->open_scopes&&!boundary);
  j.key("capacity");j.u64(kCorrCapacity);j.key("reserved_bytes");j.u64(s->reserved_bytes);
  j.key("errors");j.u64(s->correlation_errors);j.key("overflow");j.u64(s->correlation_overflow);
@@ -3410,6 +3438,7 @@ int s5ro_correlation_report(uint64_t session,char*out,uint64_t cap,uint64_t*len)
   j.key("correlation_id");j.u64(r.correlation);j.key("external_id");j.u64(r.external);j.close_obj();}j.close_arr();
  j.key("scopes");j.open_arr();for(uint32_t i=0;i<s->scope_count;i++){const auto&r=s->scopes[i];j.open_obj();
   j.key("id");j.u64(r.id);j.key("parent");j.u64(r.parent);j.key("thread");j.u64(r.thread);
+  j.key("system_thread");j.u64(r.system_thread);
   j.key("action");j.string(r.action==1?"push":"pop");j.close_obj();}j.close_arr();
  j.key("activities");j.open_arr();for(const auto&it:rows){const auto&k=it.first;j.open_obj();
   j.key("correlation_id");j.u64(std::get<0>(k));j.key("kind");j.string(std::get<1>(k)==kRecKernel?"kernel":std::get<1>(k)==kRecMemcpy?"memcpy":"memset");

@@ -146,3 +146,10 @@ CUptiResult cuptiGetGraphNodeId(CUgraphNode node, uint64_t *nodeId);
 #endif
 
 #endif
+
+#ifndef TEST_CUPTI_THREAD_ID_TYPE
+#define TEST_CUPTI_THREAD_ID_TYPE
+typedef enum {CUPTI_ACTIVITY_THREAD_ID_TYPE_DEFAULT=0,CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM=1} CUpti_ActivityThreadIdType;
+extern "C" CUptiResult cuptiGetThreadIdType(CUpti_ActivityThreadIdType*);
+
+#endif
