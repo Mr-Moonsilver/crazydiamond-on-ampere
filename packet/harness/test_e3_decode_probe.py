@@ -544,7 +544,9 @@ class ShutdownTests(ProbeFixture):
         self.assertNotIn('leave-split', record['order'])
         self.assertEqual(record['route'], 'full')
         self.assertEqual(self.split.state, 'closed')
-        self.assertEqual(self.binding.closed, self.binding.created)
+        self.assertEqual(self.binding.closed, [])
+        self.assertTrue(record['native_lifetime']['native_retained'])
+        self.assertEqual(record['native_lifetime']['native_release'], 'process-exit')
 
 
 # --- default-off byte path --------------------------------------------------

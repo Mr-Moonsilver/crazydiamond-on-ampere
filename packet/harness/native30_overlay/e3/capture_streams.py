@@ -2,7 +2,8 @@
 
 Only object-owned SharedExperts/PLE streams are replaced, and only while the
 split bank warms/captures. Event topology is untouched. Streams are retained
-until the bank has drained and explicitly destroyed every graph.
+through process exit once exposed to tensor work. Graph drain is necessary but
+not sufficient to release CUDA allocator block-to-stream records.
 """
 from contextlib import contextmanager
 import hashlib
@@ -69,8 +70,10 @@ class CaptureStreams:
             self.state = 'ready'
         except BaseException:
             self.state = 'failed'
-            # No graph has ever seen these streams. Destroy only owned resources.
-            for stream in reversed(self.streams): self.split.destroy_decode_aux(stream)
+            # Usually pre-exposure; a diagnostic may already have used the main
+            # green stream. In that case preserve all native resources as well.
+            if not self.split.lifetime_record()['allocator_exposed']:
+                for stream in reversed(self.streams): self.split.destroy_decode_aux(stream)
             self.streams.clear()
             raise
 
@@ -121,7 +124,10 @@ class CaptureStreams:
         if self.retained:
             self.split.release_graph_owner(self)
             self.retained = False
-        for stream in reversed(self.streams): self.split.destroy_decode_aux(stream)
+        # Exposure is irreversible even when capture raises: tensors may already
+        # carry record_stream entries. The split owns wrappers until process exit.
+        if not self.split.lifetime_record()['allocator_exposed']:
+            for stream in reversed(self.streams): self.split.destroy_decode_aux(stream)
         self.streams.clear()
         self.state = 'closed'
 
@@ -129,6 +135,7 @@ class CaptureStreams:
         return {'state': self.state, 'shared_owners': sum(r == 'shared' for _, _, r in self.owners),
                 'ple_owners': sum(r == 'ple' for _, _, r in self.owners),
                 'auxiliary_streams': len(self.streams), 'graph_lease': self.retained,
+                'allocator_lifetime': self.split.lifetime_record(),
                 'original_owners_restored': all(getattr(o, a) is v for (o,a,_),v in zip(self.owners,self.originals))}
 
 

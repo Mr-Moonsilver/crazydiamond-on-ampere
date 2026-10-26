@@ -811,7 +811,7 @@ class DecodeProbe:
 
     # -- teardown ---------------------------------------------------------
     def shutdown(self):
-        """Leave split if entered, drain, destroy graphs, close bank, close split."""
+        """Drain/destroy graphs and close routing; retain allocator-exposed contexts."""
         if self.shutdown_record is not None:
             return self.shutdown_record
         order = []
@@ -845,6 +845,7 @@ class DecodeProbe:
             'graphs': sum(1 for step in order if step == 'graph'),
             'split_pool_bytes': self.bank.measured_bytes,
             'split_state': self.split.state,
+            'native_lifetime': self.split.lifetime_record(),
             'route': self.controller.route,
             'route_generation': self.controller.route_generation,
             'storage_epoch': self.storage_epoch,

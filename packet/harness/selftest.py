@@ -663,6 +663,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_model_hooks.py', 'E3 lane forward: additive prefix/layer/suffix on the pinned model, exact inverse, segment driver scopes and pause (CPU only)'),
                      ('test_e3_lane_comm.py', 'E3 prefill-lane communicators: PyNccl-only TP scope, tagged PP channel credits/header/release order (CPU only, faked NCCL/torch)'),
                      ('test_e3_lane_comm_probe.py', 'E3 lane-comm probe: frozen verdict, import isolation and unarmed pair-1,3 queue (CPU only)'),
+                     ('test_vmid_job7b.py', 'VM7b late allocator release and native-crash veto (CPU only)'),
                      ('test_vmid_job7.py', 'VM7 real-owner capture repair, frozen negative controls, exact native node join and pinned header compile (CPU only)'),
                      ('test_e3_capture_streams.py', 'Pinned split capture side-stream ownership, sharing, restoration, graph leases and source pins (CPU only)'),
                      ('test_e3_green_native.py', 'E3 green-context split, split decode bank capture/replay/transition and worker/cudagraph seams (CPU only, faked driver/torch)'),

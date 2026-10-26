@@ -467,7 +467,7 @@ def install(runner, split, *, torch_module=None, set_graph_pool_id=None, clock=t
 
 
 def shutdown(runner):
-    """Destroy split graphs, then close the green split; refuse while in split."""
+    """Destroy graphs and logically close; exposed native contexts live to exit."""
     controller = getattr(runner, '_flash_s5_route', None)
     if controller is not None and controller.route != 'full':
         raise SplitBankError('shutdown requires the full route (leave split first)')

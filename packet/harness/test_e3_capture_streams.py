@@ -41,7 +41,25 @@ class Owners(unittest.TestCase):
         with self.assertRaises(GreenContextError):self.split.close()
         with self.assertRaises(GreenContextError):self.split.destroy_decode_aux(self.owner.streams[0])
         self.owner.retire_graph(graph);self.owner.close_after_graphs();self.split.close()
-        self.assertEqual(len(self.binding.destroyed),2)
+        self.assertEqual(self.binding.destroyed,[])
+        self.assertTrue(self.split.native_retained)
+    def test_late_tensor_free_after_logical_bank_shutdown(self):
+        # Fake allocator retains a stream use until tensor destruction, exactly
+        # the obligation that graph-only leases failed to cover in job7.
+        self.owner.prepare()
+        with self.owner.capture():
+            used = self.a._stream.cuda_stream
+        graph=object();self.owner.attach_graph(graph)
+        self.owner.retire_graph(graph);self.owner.close_after_graphs()
+        self.split.close()
+        self.assertIn(used,self.binding.tokens)  # event insertion at late free
+        self.assertFalse(self.binding.destroyed)
+        self.assertTrue(self.split.native_retained)
+        from green_context import _PROCESS_RETAINED_SPLITS
+        self.assertIn(self.split,_PROCESS_RETAINED_SPLITS)
+        with self.assertRaises(GreenContextError):self.split.create_decode_aux()
+        with self.assertRaises(GreenContextError):self.split.close()
+
     def test_exception_restores_but_retains_resources_until_cleanup(self):
         old=self.a._stream;self.owner.prepare()
         with self.assertRaisesRegex(RuntimeError,'capture'):

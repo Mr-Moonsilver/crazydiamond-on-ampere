@@ -124,6 +124,12 @@ class MembershipResult:
                 'ok': self.ok, 'rounds': self.rounds}
 
 
+# Strong process-lifetime roots, deliberately without an atexit/destructor hook.
+# CUDA allocator block->stream uses outlive graphs and may outlive the model.
+# Only process teardown can reclaim capture-exposed native contexts safely.
+_PROCESS_RETAINED_SPLITS = []
+
+
 class GreenSplit:
     """Two green contexts (decode N SMs, prefill the rest) and one stream each."""
 
@@ -154,6 +160,8 @@ class GreenSplit:
         self.membership_result = None
         self._aux_streams = {}
         self._graph_owners = set()
+        self._allocator_exposed = False
+        self.native_retained = False
 
     # -- lifecycle --------------------------------------------------------
     def create(self):
@@ -239,9 +247,30 @@ class GreenSplit:
         if self.binding.decode_stream_check(self._handle, stream.cuda_stream):
             raise GreenContextError('stream is not in decode green context')
 
+    def retain_allocator_context(self):
+        """Call BEFORE tensor work can record a use of an external stream.
+
+        Irreversible: no public Torch API proves absence of live block stream
+        records. Synchronize and empty_cache alone do not establish that proof.
+        Retain wrappers/binding as well as native handles through interpreter
+        teardown; there is intentionally no Python finalizer calling s5_close.
+        """
+        self._require_open()
+        if not self._allocator_exposed:
+            _PROCESS_RETAINED_SPLITS.append(self)
+            self._allocator_exposed = True
+
+    def lifetime_record(self):
+        return {'allocator_exposed': self._allocator_exposed,
+                'native_release': 'process-exit' if self._allocator_exposed else 'explicit-close',
+                'native_retained': self.native_retained,
+                'retained_auxiliary_streams': len(self._aux_streams),
+                'logical_state': self.state}
+
     def retain_graph_owner(self, owner):
         self._require_open()
         if id(owner) in self._graph_owners: raise GreenContextError('duplicate graph owner')
+        self.retain_allocator_context()
         self._graph_owners.add(id(owner))
 
     def release_graph_owner(self, owner):
@@ -251,6 +280,8 @@ class GreenSplit:
     def destroy_decode_aux(self, stream):
         self._require_open()
         if self._graph_owners: raise GreenContextError('auxiliary streams still owned by graphs')
+        if self._allocator_exposed:
+            raise GreenContextError('allocator stream uses require process-lifetime retention')
         token = stream.cuda_stream
         if self._aux_streams.get(token) is not stream: raise GreenContextError('foreign auxiliary stream')
         if self.binding.aux_destroy(self._handle, token):
@@ -263,6 +294,14 @@ class GreenSplit:
             raise GreenContextError('split still owned by captured graphs')
         if self.state != 'open':
             raise GreenContextError(f'green split cannot be closed from state {self.state!r}')
+        if self._allocator_exposed:
+            # Logical shutdown only. Existing tensors may be freed much later.
+            # Drain while all contexts/streams are valid; refuse reuse afterwards.
+            for stream in (self.decode_stream, self.prefill_stream, *self._aux_streams.values()):
+                stream.synchronize()
+            self.native_retained = True
+            self.state = 'closed'
+            return True
         for stream in list(self._aux_streams.values()):
             self.destroy_decode_aux(stream)
         rc = self.binding.close(self._handle)
