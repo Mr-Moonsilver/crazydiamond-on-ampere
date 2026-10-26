@@ -683,6 +683,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_graph_audit.py', 'E3 raw retained-graph audit: exact descriptor inventory, expected green owners, bounded native node walk, FAIL-over-unknown verdicts and stub-CUDA compile (CPU only)'),
                      ('test_vmid_job1.py', 'VM<vm-id> tiny graph diagnostic: exact multiplicity, resource ownership and fail-closed receipts (CPU only)'),
                      ('test_vmid_job2.py', 'VM<vm-id> mixed nodes/capacity: exact counts, copy directions, explicit child limitation and pinned header syntax (CPU only)'),
+                     ('test_vmid_job3.py', 'VM<vm-id> sparse DMA: compact-row mapping, four-page pieces, whole-plan fragmentation refusal and exact byte coverage (CPU only)'),
                      ('test_e3_observer_runtime.py', 'E3 replay observer integration: pre-context start, actual worker drain, one scoped window and stopped-before-performance (CPU only)'),
                      ('test_e3_replay_observer.py', 'E3 actual replay context observer: bounded CUPTI activity collection, real green-context binding, clone/update mapping and FAIL-over-missing grading (CPU only, fake CUPTI)'),
                      ('test_s5_oracle_queue.py', 'S5 source oracle: strict subset controls, per-op diagnostics, cuBLAS binding (CPU)'),
