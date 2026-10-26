@@ -300,6 +300,7 @@ def _declare(lib):
         'stub_release_held': ([], None),
         'stub_resource_graph': ([U32, U64, U64, U64, U64, I, U64], None),
         'stub_resource_context': ([U32, U64], None),
+        'stub_resource_missing_descriptor': ([U32], None),
     }
     for name, (args, result) in specs.items():
         function = getattr(lib, name)
@@ -603,6 +604,25 @@ class ObserverRecordTests(ObserverTestBase):
 
 
 class ObserverMappingTests(ObserverTestBase):
+    def test_graph_create_resource_envelope_does_not_query_descriptor_as_node(self):
+        self.open_clean()
+        self.ctl.stub_set_timestamp(500)
+        self.ctl.stub_resource_graph(9, self.bank.graph_handles[0], 0, 0, 0, 0, 0)
+        self.begin(self.bank.descriptors[0])
+        self.emit_graph_kernels(0)
+        receipt = self.end()
+        self.assertNotIn('mapping_unknown', receipt['reasons'])
+        # Creating an already bound graph is still an inventory mutation.
+        self.assertEqual(receipt['verdict'], 'INCONCLUSIVE')
+
+    def test_missing_graph_descriptor_cannot_pass(self):
+        self.open_clean()
+        self.begin(self.bank.descriptors[0])
+        self.emit_graph_kernels(0)
+        self.ctl.stub_resource_missing_descriptor(9)
+        receipt = self.end()
+        self.assertEqual(receipt['verdict'], 'INCONCLUSIVE', self.text(receipt))
+
     def test_cloned_graph_node_maps_to_retained_original(self):
         self.open_clean()
         cloned_graph = int(self.ctl.stub_new_graph(112))

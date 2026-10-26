@@ -449,7 +449,24 @@ void stub_resource_graph(uint32_t cbid, uint64_t graph, uint64_t original_graph,
       reinterpret_cast<CUgraphNode>(static_cast<uintptr_t>(original_node));
   data.nodeType = static_cast<CUgraphNodeType>(node_type);
   data.graphExec = reinterpret_cast<CUgraphExec>(static_cast<uintptr_t>(exec));
-  g_callback(g_userdata, CUPTI_CB_DOMAIN_RESOURCE, cbid, &data);
+  // Real CUPTI supplies a resource envelope, not GraphData as cbdata.
+  // Padding makes the old erroneous cast deterministic in the CPU fixture:
+  // it queries the descriptor address as a node instead of reading beyond it.
+  struct Envelope {
+    CUpti_ResourceData resource;
+    unsigned char padding[sizeof(CUpti_GraphData)];
+  } envelope{};
+  envelope.resource.resourceDescriptor = &data;
+  g_callback(g_userdata, CUPTI_CB_DOMAIN_RESOURCE, cbid, &envelope.resource);
+}
+
+void stub_resource_missing_descriptor(uint32_t cbid) {
+  if (g_callback == nullptr || g_resource_callbacks.count(cbid) == 0) return;
+  struct Envelope {
+    CUpti_ResourceData resource;
+    unsigned char padding[sizeof(CUpti_GraphData)];
+  } envelope{};
+  g_callback(g_userdata, CUPTI_CB_DOMAIN_RESOURCE, cbid, &envelope.resource);
 }
 
 void stub_resource_context(uint32_t cbid, uint64_t context) {

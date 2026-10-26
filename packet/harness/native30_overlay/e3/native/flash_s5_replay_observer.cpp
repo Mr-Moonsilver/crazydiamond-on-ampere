@@ -1140,7 +1140,16 @@ void CUPTIAPI resource_callback(void *userdata, CUpti_CallbackDomain domain,
     ++s->unknown_resource_events;
     return;
   }
-  add_event(s, kind, static_cast<const CUpti_GraphData *>(cbdata));
+  // Resource callbacks carry CUpti_ResourceData; the graph-specific payload
+  // lives behind resourceDescriptor (NVIDIA cuda_graphs_trace sample). Casting
+  // the envelope itself to GraphData treats this descriptor pointer as a node.
+  const auto *resource = static_cast<const CUpti_ResourceData *>(cbdata);
+  if (resource->resourceDescriptor == nullptr) {
+    ++s->unknown_resource_events;
+    return;
+  }
+  add_event(s, kind, static_cast<const CUpti_GraphData *>(
+                         resource->resourceDescriptor));
 }
 
 void sample_dropped(Session *s) {
