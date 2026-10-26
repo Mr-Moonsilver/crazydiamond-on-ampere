@@ -27,7 +27,7 @@ class FullQueue(unittest.TestCase):
     assert_no_secret=old.QueueRun.assert_no_secret
     def make_harness(self):
         old.QueueRun.make_harness(self)
-        for name in ('q17b_full.draft.sh','q17b_full_settings.sh'):
+        for name in ('q17b_full2.draft.sh','q17b_full_settings.sh'):
             shutil.copyfile(HERE/'runs'/name,self.h/'runs'/name)
         shutil.copyfile(HERE/'e3_private_auth.py',self.h/'e3_private_auth.py')
         (self.h/'e3_q17b_clients.py').write_text(FAKE_CLIENTS)
@@ -44,6 +44,15 @@ class FullQueue(unittest.TestCase):
         old.QueueRun.make_overlay(self)
         (self.overlay/'e3/native/flash_s5_replay_observer.so').write_bytes(b'fake-observer-library')
         self.replay=old.sha(self.overlay/'e3/native/flash_s5_replay_observer.so')
+        # Match the real generator: helper evidence is CUDA source, not its Python wrapper.
+        self.helper=old.sha(self.overlay/'e3/native/flash_s5_green.cu')
+        self.assertNotEqual(self.helper,old.sha(self.overlay/'e3/green_context.py'))
+        ep=self.overlay/'e3/decode-probe-evidence.json'
+        ev=json.loads(ep.read_text());ev['helper_source_sha256']=self.helper
+        ep.write_text(json.dumps(ev))
+        gp=self.overlay/'S5-OVERLAP-GENERATION.json'
+        gen=json.loads(gp.read_text());gen['diagnostic_modes']['decode_only']['evidence']=ev
+        gp.write_text(json.dumps(gen))
         (self.overlay/'e3/native/q17-helper-build.json').write_text('{}');old.write_manifest(self.overlay)
     def make_requests(self):
         old.QueueRun.make_requests(self)
@@ -55,18 +64,35 @@ class FullQueue(unittest.TestCase):
         (self.r/'private').mkdir(mode=0o700)
         shutil.copyfile(self.auth_file,self.r/'private/vllm-api.env');(self.r/'private/vllm-api.env').chmod(0o600)
         paths=[Path(line.split(maxsplit=1)[1]) for line in (self.r/'SHA256SUMS').read_text().splitlines()]
-        paths += [self.h/'runs/q17b_full.draft.sh',self.h/'runs/q17b_full_settings.sh',self.r/'request-plan.json']
+        paths += [self.h/'runs/q17b_full2.draft.sh',self.h/'runs/q17b_full_settings.sh',self.r/'request-plan.json']
         (self.r/'SHA256SUMS').write_text(''.join(old.sha(p)+'  '+str(p)+'\n' for p in paths))
     def install_fakes(self):
         env=old.QueueRun.install_fakes(self);env.update(S5_REPLAY_LIB_SHA256=self.replay,Q17B_FULL_BOUNDED='1');return env
     def run_queue(self):
-        return subprocess.run(['bash',str(self.h/'runs/q17b_full.draft.sh'),str(self.q)],env=self.install_fakes(),capture_output=True,text=True,timeout=120)
+        return subprocess.run(['bash',str(self.h/'runs/q17b_full2.draft.sh'),str(self.q)],env=self.install_fakes(),capture_output=True,text=True,timeout=120)
     def test_all_phases_then_cleanup(self):
         result=self.run_queue();self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('STEP full-clients PASS',result.stdout);self.assertIn('Q17B-FULL DONE rc=0',result.stdout)
         self.assertIn('STEP launcher-restore PASS',result.stdout);self.assertIn('STEP defaults-restore PASS',result.stdout)
         self.assert_no_secret(result.stdout+result.stderr)
         self.assertEqual(json.loads((self.q/'queue-grade.json').read_text())['verdict'],'PASS')
+    def test_python_wrapper_hash_cannot_certify_native_helper(self):
+        ep=self.overlay/'e3/decode-probe-evidence.json'
+        ev=json.loads(ep.read_text())
+        ev['helper_source_sha256']=old.sha(self.overlay/'e3/green_context.py')
+        ep.write_text(json.dumps(ev))
+        gp=self.overlay/'S5-OVERLAP-GENERATION.json'
+        gen=json.loads(gp.read_text());gen['diagnostic_modes']['decode_only']['evidence']=ev
+        gp.write_text(json.dumps(gen));old.write_manifest(self.overlay)
+        pins=self.r/'SHA256SUMS'
+        paths=[Path(line.split(maxsplit=1)[1]) for line in pins.read_text().splitlines()]
+        pins.write_text(''.join(old.sha(p)+'  '+str(p)+'\n' for p in paths))
+        result=self.run_queue()
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('STEP pins FAIL',result.stdout)
+        self.assertIn('native helper source evidence differs',result.stdout)
+        self.assertNotIn('STEP launcher-install',result.stdout)
+
     def test_startup_failure_never_runs_clients(self):
         (self.bin/'fail-health').write_text('');result=self.run_queue();self.assertNotEqual(result.returncode,0)
         self.assertNotIn('STEP full-clients',result.stdout);self.assertIn('STEP engine-stop PASS',result.stdout);self.assertIn('STEP defaults-restore PASS',result.stdout)
