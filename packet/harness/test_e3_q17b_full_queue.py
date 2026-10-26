@@ -12,6 +12,8 @@ FAKE_CLIENTS='''import argparse,json,os
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--out',required=True);p.add_argument('--run-id');a,rest=p.parse_known_args()
 out=Path(a.out);out.mkdir()
+if (Path(os.environ['FAKE_BIN'])/'change-next').exists():
+ Path(os.environ['FAKE_DEFAULTS']+'.next').write_text('replacement staged defaults')
 rc=1 if (Path(os.environ['FAKE_BIN'])/'fail-clients').exists() else 0
 verdict='FAIL' if rc else 'PASS'
 for name in ('correctness.json','placement.json','performance.json'):(out/name).write_text('{}')
@@ -27,7 +29,7 @@ class FullQueue(unittest.TestCase):
     assert_no_secret=old.QueueRun.assert_no_secret
     def make_harness(self):
         old.QueueRun.make_harness(self)
-        for name in ('q17b_full2.draft.sh','q17b_full_settings.sh'):
+        for name in ('q17b_full3.draft.sh','q17b_full_settings.sh'):
             shutil.copyfile(HERE/'runs'/name,self.h/'runs'/name)
         shutil.copyfile(HERE/'e3_private_auth.py',self.h/'e3_private_auth.py')
         (self.h/'e3_q17b_clients.py').write_text(FAKE_CLIENTS)
@@ -64,17 +66,20 @@ class FullQueue(unittest.TestCase):
         (self.r/'private').mkdir(mode=0o700)
         shutil.copyfile(self.auth_file,self.r/'private/vllm-api.env');(self.r/'private/vllm-api.env').chmod(0o600)
         paths=[Path(line.split(maxsplit=1)[1]) for line in (self.r/'SHA256SUMS').read_text().splitlines()]
-        paths += [self.h/'runs/q17b_full2.draft.sh',self.h/'runs/q17b_full_settings.sh',self.r/'request-plan.json']
+        paths += [self.h/'runs/q17b_full3.draft.sh',self.h/'runs/q17b_full_settings.sh',self.r/'request-plan.json']
         (self.r/'SHA256SUMS').write_text(''.join(old.sha(p)+'  '+str(p)+'\n' for p in paths))
     def install_fakes(self):
         env=old.QueueRun.install_fakes(self);env.update(S5_REPLAY_LIB_SHA256=self.replay,Q17B_FULL_BOUNDED='1');return env
     def run_queue(self):
-        return subprocess.run(['bash',str(self.h/'runs/q17b_full2.draft.sh'),str(self.q)],env=self.install_fakes(),capture_output=True,text=True,timeout=120)
+        return subprocess.run(['bash',str(self.h/'runs/q17b_full3.draft.sh'),str(self.q)],env=self.install_fakes(),capture_output=True,text=True,timeout=120)
     def test_all_phases_then_cleanup(self):
         result=self.run_queue();self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('STEP full-clients PASS',result.stdout);self.assertIn('Q17B-FULL DONE rc=0',result.stdout)
         self.assertIn('STEP launcher-restore PASS',result.stdout);self.assertIn('STEP defaults-restore PASS',result.stdout)
         self.assert_no_secret(result.stdout+result.stderr)
+        self.assertIn('STEP defaults-next-preserve PASS',result.stdout)
+        self.assertFalse(Path(str(self.defaults)+'.next').exists())
+        self.assertTrue((self.q/'private/defaults.next.generated').is_file())
         self.assertEqual(json.loads((self.q/'queue-grade.json').read_text())['verdict'],'PASS')
     def test_python_wrapper_hash_cannot_certify_native_helper(self):
         ep=self.overlay/'e3/decode-probe-evidence.json'
@@ -96,6 +101,8 @@ class FullQueue(unittest.TestCase):
     def test_startup_failure_never_runs_clients(self):
         (self.bin/'fail-health').write_text('');result=self.run_queue();self.assertNotEqual(result.returncode,0)
         self.assertNotIn('STEP full-clients',result.stdout);self.assertIn('STEP engine-stop PASS',result.stdout);self.assertIn('STEP defaults-restore PASS',result.stdout)
+        self.assertFalse(Path(str(self.defaults)+'.next').exists())
+        self.assertIn('STEP defaults-next-preserve PASS',result.stdout)
     def test_client_failure_keeps_failure_and_restores(self):
         (self.bin/'fail-clients').write_text('');result=self.run_queue();self.assertEqual(result.returncode,1,result.stdout+result.stderr)
         self.assertIn('STEP full-clients FAIL',result.stdout);self.assertIn('STEP engine-log PASS',result.stdout);self.assertIn('STEP defaults-restore PASS',result.stdout)
@@ -103,6 +110,34 @@ class FullQueue(unittest.TestCase):
         (self.bin/'missing-clients-grade').write_text('');result=self.run_queue()
         self.assertEqual(result.returncode,1,result.stdout+result.stderr)
         self.assertIn('STEP clients-grade-consistency FAIL',result.stdout)
+    def test_changed_owned_next_is_not_moved(self):
+        (self.bin/'change-next').write_text('')
+        result=self.run_queue()
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('STEP defaults-next-preserve FAIL',result.stdout)
+        self.assertEqual(Path(str(self.defaults)+'.next').read_text(),'replacement staged defaults')
+        self.assertFalse((self.q/'private/defaults.next.generated').exists())
+        self.assertIn('STEP defaults-restore PASS',result.stdout)
+
+    def test_preexisting_next_is_preserved(self):
+        staged=Path(str(self.defaults)+'.next');staged.write_text('preexisting')
+        result=self.run_queue()
+        self.assertEqual(result.returncode,2,result.stdout+result.stderr)
+        self.assertEqual(staged.read_text(),'preexisting')
+        self.assertFalse((self.q/'private/defaults.next.generated').exists())
+
+    def test_failed_setcfg_output_is_preserved_privately(self):
+        self.setcfg.write_text(self.setcfg.read_text()+'\nraise SystemExit(1)\n')
+        pins=self.r/'SHA256SUMS'
+        paths=[Path(line.split(maxsplit=1)[1]) for line in pins.read_text().splitlines()]
+        pins.write_text(''.join(old.sha(p)+'  '+str(p)+'\n' for p in paths))
+        result=self.run_queue()
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('STEP configure FAIL',result.stdout)
+        self.assertIn('STEP defaults-next-preserve PASS',result.stdout)
+        self.assertFalse(Path(str(self.defaults)+'.next').exists())
+        self.assertTrue((self.q/'private/defaults.next.generated').exists())
+
     def test_existing_output_not_modified(self):
         self.q.mkdir();(self.q/'sentinel').write_text('keep');result=self.run_queue();self.assertEqual(result.returncode,2)
         self.assertEqual(sorted(p.name for p in self.q.iterdir()),['sentinel'])
