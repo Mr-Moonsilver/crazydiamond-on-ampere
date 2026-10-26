@@ -436,19 +436,23 @@ def _samples(grade, samples):
     previous_end = None
     first_start = None
     for row in rows:
+        if type(row) is dict and row.get('kind') == 'stopped' and row is last:
+            continue
+        if type(row) is not dict or row.get('error') is not None:
+            grade.absent('device sampler reports an error or malformed row')
+            continue
         gpus = row.get('gpus') if type(row) is dict else None
         if type(gpus) is not dict or set(gpus) != {'0', '1', '2', '3'}:
+            grade.absent('device sample lacks complete GPU coverage')
             continue
         # Only bracketed real-time samples count as timestamped evidence.
         if (row.get('clock') != 'unix_realtime_seconds'
                 or not _number(row.get('start_s')) or not _number(row.get('end_s'))
                 or row['start_s'] > row['end_s']):
-            continue
-        if row.get('error') is not None:
-            grade.absent('device sampler reports an error')
+            grade.absent('device sample has no valid clock bracket')
             continue
         if (not _number(row.get('elapsed_s')) or row['elapsed_s'] < 0
-                or abs((row['end_s'] - row['start_s']) - row['elapsed_s']) > 1):
+                or abs((row['end_s'] - row['start_s']) - row['elapsed_s']) > 0.1):
             grade.absent('device sampler clock bracket is inconsistent')
             continue
         if previous_end is not None and row['start_s'] < previous_end:

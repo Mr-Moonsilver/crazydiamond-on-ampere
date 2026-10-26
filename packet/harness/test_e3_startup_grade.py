@@ -181,6 +181,15 @@ class VerdictRules(unittest.TestCase):
         bad_samples[0]['error'] = 'ClockStep'
         self.assertVerdict(self.run_grade(samples_value=bad_samples), 'INCONCLUSIVE')
 
+    def test_a_good_sample_does_not_hide_a_failed_query(self):
+        bad = samples()
+        bad.insert(1, {'clock': 'unix_realtime_seconds', 'start_s': 1.2,
+                       'end_s': 1.3, 'elapsed_s': 0.1, 'error': 'TimeoutExpired'})
+        self.assertVerdict(self.run_grade(samples_value=bad), 'INCONCLUSIVE')
+        bad = samples()
+        bad[0]['start_s'], bad[0]['end_s'] = 1.5, 1.6
+        self.assertVerdict(self.run_grade(samples_value=bad), 'INCONCLUSIVE')
+
     def test_actual_controller_replies_compose(self):
         import asyncio
         from test_e3_probe_control import Engine, ProbeController
