@@ -155,6 +155,65 @@ class DeclareTests(unittest.TestCase):
         self.assertEqual(d['identity']['env']['FLASH_E2_DMA'],'1')
         self.assertNotIn(DUMMY,json.dumps(d))
 
+    def test_s5_pinned_launcher_declares_selectors_and_projected_swap(self):
+        sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
+        import make_e2_arena as e2g
+        import make_s5_overlap as s5g
+        launch = self.root / 's5-launcher'
+        launch.write_text(s5g._s5_launcher(
+            e2g.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text())))
+        self.assertEqual(dec.sha(launch), dec.S5_LAUNCHER_SHA)
+        found = self.task / 'prod/run-flash-prod.sh'
+        found.write_bytes((ROOT / 'deploy/run-flash-prod.sh').read_bytes())
+        found_before = found.read_bytes()
+        names = ['e3/__init__.py', 'e3/decode-probe-evidence.json',
+                 *[f'e3/{name}.py' for name in s5g.E3_MODULES],
+                 *[f'e3/{name}' for name in s5g.NATIVE_FILES],
+                 'e3/native/build_green_helper.sh',
+                 'e3_sources/executor.py', 'e3_sources/core.py',
+                 'e3_sources/worker.py', 'e3_sources/cudagraph_utils.py',
+                 'e3_sources/model.py', 'e3_sources/api_routers.py']
+        with (self.ovl / 'SHA256SUMS').open('a') as manifest:
+            for name in names:
+                p = self.ovl / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text('# fixture ' + name + '\n')
+                manifest.write(dec.sha(p) + '  ' + name + '\n')
+        self.a.launcher = str(launch)
+        policy = json.loads((HERE / 'e3_startup_mount_policy.json').read_text())
+        over = dict(dec.PP_SETTINGS, S5='1', CORE_OVERLAY='1',
+                    EXTRA_ENV=('QSA_STAGE_TIMING=1 FLASH_PP_GROUPING=1 FLASH_POOL_STATS=200 '
+                               'FLASH_S5_OVERLAP=0 FLASH_S5_DECODE_ONLY_PROBE=1 '
+                               'FLASH_S5_DECODE_SMS=44 FLASH_S5_GREEN_LIB_SHA256=' + 'a' * 64))
+        d, _ = dec.declare(self.a, over, self.image, policy,
+                           self.root / 's5-render', install_launcher=True)
+        identity = d['identity']
+        work = next(m for m in identity['mounts'] if m['destination'] == '/work')
+        entry = next(x for x in work['content']['entries']
+                     if x['path'] == 'prod/run-flash-prod.sh')
+        self.assertEqual(entry['sha256'], dec.S5_LAUNCHER_SHA)
+        self.assertEqual(found.read_bytes(), found_before)
+        self.assertEqual(identity['defaults']['S5'], '1')
+        self.assertEqual(identity['env']['FLASH_S5_DECODE_ONLY_PROBE'], '1')
+        self.assertEqual(identity['env']['FLASH_S5_DECODE_SMS'], '44')
+        self.assertEqual(identity['env']['FLASH_S5_GREEN_LIB_SHA256'], 'a' * 64)
+        # The exact reviewed generated launcher mounts the split-bank package
+        # and the source transforms; no second E2 or S5 mount is fabricated.
+        destinations = {m['destination'] for m in identity['mounts']}
+        self.assertTrue(any(p.endswith('/vllm/v1/flash_e3') for p in destinations))
+        for suffix in ('/vllm/v1/engine/core.py', '/vllm/v1/worker/gpu_worker.py',
+                       '/vllm/v1/worker/gpu/cudagraph_utils.py',
+                       '/vllm/v1/executor/multiproc_executor.py',
+                       '/vllm/entrypoints/launchers/api_server/routers.py'):
+            self.assertTrue(any(p.endswith(suffix) for p in destinations), suffix)
+        self.assertNotIn(DUMMY, json.dumps(d))
+        values = dec.raw_defaults(dec.apply_setcfg(
+            self.defaults.read_text(), over, self.a.setcfg))
+        bad = self.root / 's5-launcher-modified'
+        bad.write_text(launch.read_text() + '\ntrue\n')
+        with self.assertRaises(ident.EvidenceError):
+            dec.render(bad, values, IMAGE, self.root / 's5-modified')
+
     def test_q16_dense_and_other_configs_render_one_sparse_assignment(self):
         sys.path.insert(0,str(ROOT/'patches/s5_engine'))
         import make_e2_arena as g

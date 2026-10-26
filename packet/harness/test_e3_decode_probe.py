@@ -73,7 +73,7 @@ def fake_evidence(test):
     root = Path(tempfile.mkdtemp(prefix='probe-evidence-'))
     # Preserve fixture artifacts; no worktree/runtime manifest is mutated.
     source = ROOT / 'patches/s5_engine'
-    for name in decode_probe.GENERATED_SOURCES:
+    for name in (*decode_probe.GENERATED_SOURCES, *decode_probe.BUILD_ONLY_SOURCES):
         shutil.copyfile(source / (name + '.py'), root / (name + '.py'))
     (root / decode_probe.EVIDENCE_FILE).write_text(json.dumps(decode_probe.declared_evidence()))
     fixture = patch.object(decode_probe, '_module_dir', lambda: str(root))
@@ -189,6 +189,9 @@ class GateTests(unittest.TestCase):
         self.assertEqual(evidence['helper_source_sha256'],
                          green_context.helper_source_sha256())
         self.assertIn('decode_probe', evidence['generated_source_shas'])
+        self.assertNotIn('operation_source', evidence['generated_source_shas'])
+        self.assertEqual(set(evidence['build_only_source_shas']),
+                         set(decode_probe.BUILD_ONLY_SOURCES))
         self.assertEqual(evidence['pins']['v1/worker/gpu_worker.py'],
                          worker_hooks.PINS['v1/worker/gpu_worker.py'])
         self.assertEqual(evidence['pins']['v1/worker/gpu/model_runner.py'],
@@ -215,6 +218,9 @@ class GateTests(unittest.TestCase):
         tamper('generated_source_shas',
                lambda shas: shas.update({'decode_probe': '0' * 64}) or shas)
         tamper('generated_source_shas', lambda shas: shas.pop('graph_hooks') and shas)
+        tamper('build_only_source_shas', lambda shas: shas.update({'operation_source': '0' * 64}) or shas)
+        tamper('build_only_source_shas', lambda shas: shas.pop('operation_source') and shas)
+        tamper('build_only_source_shas', lambda shas: shas.update({'decode_probe': '0' * 64}) or shas)
         tamper('tests', lambda _: ('other.Test',))
         with self.assertRaises(DecodeProbeNotReady):
             require_decode_probe_ready('not-a-mapping')
@@ -583,6 +589,14 @@ class BytePathTests(unittest.TestCase):
                          green_context.helper_source_sha256())
         self.assertEqual(set(evidence['generated_source_shas']),
                          set(decode_probe.GENERATED_SOURCES))
+        self.assertEqual(set(evidence['build_only_source_shas']),
+                         set(decode_probe.BUILD_ONLY_SOURCES))
+        self.assertNotIn('operation_source',
+                         declaration['module_inventory']['runtime'])
+        self.assertEqual(declaration['module_inventory']['build_only'],
+                         list(decode_probe.BUILD_ONLY_SOURCES))
+        self.assertIn('e3/operation_source.py',
+                      (out / 'run-flash-s5-test.sh').read_text())
 
         # The runtime seams are inert with both flags unset.
         self.assertIsNone(mode_settings(off))

@@ -21,6 +21,7 @@ HERE=Path(__file__).resolve().parent
 TASK='/data/vllm/flash-next-tp4'
 LAUNCHER_SHA='98d6d2a21927b8943f1ae9b0b43616757e80adac0c628e65f482e4332e3cf126'
 E2_LAUNCHER_SHA='2630f86c961c3c5ecff9b1be87b1602fca182f48484991ea1744071dea5f7d8b'
+S5_LAUNCHER_SHA='8454c4ad660a6384f064e8ee9de2d4741d637743f04f49dc0185491f1076b8bb'
 FOUND_SHA='45cc5d813dca6610dd871b99b095956f307f29ab5f8de4993400018c1ab80c88'
 SETCFG_SHA='f3cae1379fa9079785c03a5555dbf739c687c5dcde9b1c6e058b38e8849754fe'
 PP_SETTINGS=dict(OVERLAY=TASK+'/prod/overlay-v16g',PP_LAYER_PARTITION='24,24',MODEL_DIR='-',VISION='-',VISION_ARGS='-',
@@ -78,7 +79,7 @@ def logical_path(path, mirror):
 
 
 def render(launcher, values, image_id, scratch, mirror=None):
-    identity.need(sha(launcher) in (LAUNCHER_SHA,E2_LAUNCHER_SHA))
+    identity.need(sha(launcher) in (LAUNCHER_SHA,E2_LAUNCHER_SHA,S5_LAUNCHER_SHA))
     scratch=Path(scratch);scratch.mkdir(mode=0o700)
     bindir=scratch/'bin';bindir.mkdir(mode=0o700)
     for name in ('docker','sudo','rm'):
@@ -183,7 +184,7 @@ def project_launcher(spec, launcher):
     entry=next(e for e in work['content']['entries'] if e['path']=='prod/run-flash-prod.sh')
     identity.need(entry['kind']=='file' and entry['sha256'] in (FOUND_SHA,LAUNCHER_SHA,E2_LAUNCHER_SHA))
     future_sha=sha(launcher)
-    identity.need(future_sha in (LAUNCHER_SHA,E2_LAUNCHER_SHA))
+    identity.need(future_sha in (LAUNCHER_SHA,E2_LAUNCHER_SHA,S5_LAUNCHER_SHA))
     entry.update(bytes=Path(launcher).stat().st_size,sha256=future_sha)
 
 
