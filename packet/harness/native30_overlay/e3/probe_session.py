@@ -34,7 +34,7 @@ RECEIPT_CORE_KEYS = (
     'status', 'engine_epoch', 'storage_epoch', 'route_before', 'route_after',
     'route_generation_before', 'route_generation_after', 'expected_rank_set',
     'observed_clock_ns', 'clock_basis', 'pause', 'resume', 'ingress',
-    'barrier_replies', 'interval', 'decode_eligibility', 'lifecycle_proven',
+    'barrier_replies', 'interval', 'decode_eligibility', 'lifecycle_proven', 'observer_sha256',
 )
 
 CORE_COUNTER_KEYS = (
@@ -450,6 +450,24 @@ class ProbeSession:
                           'receipt_sha256': receipt_digest(result)}
             return copy.deepcopy(result)
 
+    def _observer_phase(self, snapshot):
+        observers = [row.get('inventory', {}).get('replay_observer')
+                     for row in snapshot['ranks']]
+        if all(value is None or value == {'enabled': False} for value in observers):
+            return 'disabled'
+        if any(type(value) is not dict or value.get('enabled') is not True
+               for value in observers):
+            raise ProbeControlError('mixed-observer-declaration')
+        phases = {value.get('state') for value in observers}
+        if len(phases) != 1 or not phases <= {'started', 'window', 'closed'}:
+            raise ProbeControlError('mixed-or-unexpected-observer-state')
+        if any(value.get('started_before_split') is not True for value in observers):
+            raise ProbeControlError('observer-did-not-start-before-split')
+        phase = next(iter(phases))
+        if phase == 'closed' and any(value.get('closed') is not True for value in observers):
+            raise ProbeControlError('observer-close-not-proven')
+        return phase
+
     async def _execute(self, c):
         ctl, action = self.controller, c['action']
         if ctl.run_id is None:
@@ -504,6 +522,13 @@ class ProbeSession:
                 changed = await self._call('transition', target='split',
                     expected_route_generation=after['route_generation'], cohort_size=self.size)
                 after, acks = changed['snapshot'], changed['replies']
+                observer_phase = self._observer_phase(after)
+                if observer_phase == 'started':
+                    observed = await self._call('observer_begin')
+                    after = observed['snapshot']
+                    extra['observer'] = observed['observer']
+                elif observer_phase not in ('disabled', 'closed'):
+                    raise ProbeControlError('observer-window-already-active')
             self.phase = 'entered'
         elif action == 'resume':
             if self.phase not in ('entered', 'left'):
@@ -540,6 +565,10 @@ class ProbeSession:
                 'storage_epoch': after['storage_epoch'],
                 'engine_epoch': ctl.epoch,
             }
+            if self._observer_phase(after) == 'window':
+                observed = await self._call('observer_end')
+                after = observed['snapshot']
+                extra['observer'] = observed['observer']
             sample = interval(self.before, after)
             extra['interval'] = sample
             extra['measurement'] = {
@@ -562,6 +591,8 @@ class ProbeSession:
         if acks is not None:
             for row, ack in zip(ranks, sorted(acks, key=lambda a:a['rank'])):
                 row['transition_ack'] = copy.deepcopy(ack)
+        if 'observer' in extra:
+            extra['observer_sha256'] = digest(extra['observer'])
         return dict(schema=1, run_id=c['run_id'], repeat=c['repeat'], command_seq=self.seq,
                     action=action, cohort_id=c['cohort_id'], status='ok', engine_epoch=ctl.epoch,
                     storage_epoch=after['storage_epoch'], route_before=before['route'], route_after=after['route'],

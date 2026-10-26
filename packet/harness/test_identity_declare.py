@@ -181,7 +181,10 @@ class DeclareTests(unittest.TestCase):
                 manifest.write(dec.sha(p) + '  ' + name + '\n')
         self.a.launcher = str(launch)
         policy = json.loads((HERE / 'e3_startup_mount_policy.json').read_text())
-        over = dict(dec.PP_SETTINGS, S5='1', CORE_OVERLAY='1',
+        from e3_private_auth import prepare
+        private = self.root / 'auth'; private.mkdir(mode=0o700)
+        envfile = private / 'api.env'; prepare(envfile, {'VLLM_API_KEY': DUMMY})
+        over = dict(dec.PP_SETTINGS, S5='1', CORE_OVERLAY='1', FLASH_S5_AUTH_ENV_FILE=str(envfile),
                     EXTRA_ENV=('QSA_STAGE_TIMING=1 FLASH_PP_GROUPING=1 FLASH_POOL_STATS=200 '
                                'FLASH_S5_OVERLAP=0 FLASH_S5_DECODE_ONLY_PROBE=1 '
                                'FLASH_S5_DECODE_SMS=44 FLASH_S5_GREEN_LIB_SHA256=' + 'a' * 64))
@@ -196,6 +199,11 @@ class DeclareTests(unittest.TestCase):
         self.assertEqual(identity['defaults']['S5'], '1')
         self.assertEqual(identity['env']['FLASH_S5_DECODE_ONLY_PROBE'], '1')
         self.assertEqual(identity['env']['FLASH_S5_DECODE_SMS'], '44')
+        self.assertEqual(identity['env']['VLLM_API_KEY'], {'redacted_length': len(DUMMY)})
+        raw_argv=dec.render(launch, dec.raw_defaults(dec.apply_setcfg(self.defaults.read_text(),over,self.a.setcfg)), IMAGE,self.root/'s5-argv',self.task)
+        self.assertIn('--env-file',raw_argv)
+        self.assertEqual(raw_argv[raw_argv.index('--env-file')+1],str(envfile))
+        self.assertNotIn(DUMMY,json.dumps(raw_argv))
         self.assertEqual(identity['env']['FLASH_S5_GREEN_LIB_SHA256'], 'a' * 64)
         # The exact reviewed generated launcher mounts the split-bank package
         # and the source transforms; no second E2 or S5 mount is fabricated.
@@ -209,6 +217,13 @@ class DeclareTests(unittest.TestCase):
         self.assertNotIn(DUMMY, json.dumps(d))
         values = dec.raw_defaults(dec.apply_setcfg(
             self.defaults.read_text(), over, self.a.setcfg))
+        for index, private_override in enumerate((
+                dict(values, EXTRA_ARGS='--api-key ' + DUMMY),
+                dict(values, EXTRA_ARGS='--api-key=' + DUMMY),
+                dict(values, EXTRA_ENV=values['EXTRA_ENV'] + ' VLLM_API_KEY=' + DUMMY))):
+            with self.subTest(auth_override=index), self.assertRaises(ident.EvidenceError):
+                dec.render(launch, private_override, IMAGE,
+                           self.root/('s5-private-refused-' + str(index)), self.task)
         bad = self.root / 's5-launcher-modified'
         bad.write_text(launch.read_text() + '\ntrue\n')
         with self.assertRaises(ident.EvidenceError):

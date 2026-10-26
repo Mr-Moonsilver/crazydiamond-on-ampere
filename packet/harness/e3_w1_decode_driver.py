@@ -562,7 +562,7 @@ RECEIPT_CORE_KEYS = (
     'status', 'engine_epoch', 'storage_epoch', 'route_before', 'route_after',
     'route_generation_before', 'route_generation_after', 'expected_rank_set',
     'observed_clock_ns', 'clock_basis', 'pause', 'resume', 'ingress',
-    'barrier_replies', 'interval', 'decode_eligibility', 'lifecycle_proven',
+    'barrier_replies', 'interval', 'decode_eligibility', 'lifecycle_proven', 'observer_sha256',
 )
 MAX_STRING = 300
 MAX_LIST = 64
@@ -769,7 +769,19 @@ def _sanitize_receipt(obj):
         'status', 'engine_epoch', 'storage_epoch', 'route_before', 'route_after',
         'route_generation_before', 'route_generation_after', 'expected_rank_set',
         'observed_clock_ns', 'clock_basis', 'lifecycle_proven', 'measurement',
-        'lifecycle') if key in obj}
+        'lifecycle', 'observer_sha256') if key in obj}
+    observer = obj.get('observer')
+    if type(observer) is dict:
+        try:
+            encoded = json.dumps(observer, allow_nan=False)
+            if len(encoded.encode()) <= 36 * 1024 * 1024:
+                out['observer'] = json.loads(encoded)
+            else:
+                out['observer'] = {'schema': 1, 'complete': False,
+                                   'error': 'observer-receipt-too-large'}
+        except (ValueError, TypeError):
+            out['observer'] = {'schema': 1, 'complete': False,
+                               'error': 'observer-receipt-invalid'}
     pause = obj.get('pause')
     if type(pause) is dict:
         out['pause'] = {key: _bounded(pause.get(key)) for key in
@@ -1431,6 +1443,18 @@ def controller_call(controller, cfg, ctx, action, target_route):
         record['reasons'] = ['inconclusive:controller_exception:' + type(exc).__name__]
         ctx['command_seq'] = command['command_seq']
         return record
+    if type(receipt) is dict and ('observer' in receipt or 'observer_sha256' in receipt):
+        try:
+            bound = (type(receipt.get('observer')) is dict and
+                     receipt.get('observer_sha256') == _sha256_json(receipt['observer']))
+        except (ValueError, TypeError):
+            bound = False
+        if not bound:
+            record['returned_at_ns'] = time.monotonic_ns()
+            record['reasons'] = ['contract:observer_receipt_hash_differs']
+            record['severity'] = 'contract'
+            ctx['command_seq'] = command['command_seq']
+            return record
     record['returned_at_ns'] = time.monotonic_ns()
     record['transport'] = transport
     record['receipt'] = _sanitize_receipt(receipt)
@@ -2103,7 +2127,7 @@ def measure_repeat(cfg, controller, run_ctx, repeat, route, requests, meta,
         return record
 
     # Optional owner-declared cache preparation, on full, uncounted.
-    if repeat == 0 and workload.cache_preparation and not preparation.get('done'):
+    if repeat == run_ctx.get('repeat_start', 0) and workload.cache_preparation and not preparation.get('done'):
         preparation.update(prepare_cache(cfg, run_ctx['url'], run_ctx['model'],
                                          requests, meta, expected_hashes))
         preparation['done'] = True
@@ -2788,7 +2812,7 @@ def _config_artifact(cfg, model, expected_digest, clock):
     }
 
 
-def run(cfg, url, model, controller):
+def run(cfg, url, model, controller, context=None):
     t0_ns = time.monotonic_ns()
     wall_anchor_ns = time.time_ns()
     clock = {
@@ -2825,10 +2849,24 @@ def run(cfg, url, model, controller):
         'repeat': 0,
         'cohort_id': None,
     }
+    repeat_start = 0
+    if context is not None:
+        if (context.get('run_id') != cfg.run_id or context.get('route') != 'full'
+                or type(context.get('command_seq')) is not int
+                or type(context.get('repeat')) is not int
+                or context.get('prior_receipt') is None):
+            raise ConfigError('invalid composed session continuation')
+        repeat_start = context['repeat'] + 1
+        saved = {k: context[k] for k in ('engine_epoch', 'storage_epoch', 'route',
+                 'route_generation', 'command_seq', 'prior_receipt', 'repeat')}
+        context.update(run_ctx)
+        context.update(saved)
+        run_ctx = context
+    run_ctx['repeat_start'] = repeat_start
     config = _config_artifact(cfg, model, expected_digest, clock)
     repeats = []
     abort_reason = None
-    for repeat, route in enumerate(cfg.workload.route_plan):
+    for repeat, route in enumerate(cfg.workload.route_plan, start=repeat_start):
         if abort_reason is not None:
             repeats.append(_not_run_record(cfg, repeat, route, abort_reason))
             continue

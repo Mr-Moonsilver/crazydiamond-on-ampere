@@ -22,7 +22,7 @@ class ProbeControlError(RuntimeError):
 
 RANKS = (0, 1, 2, 3)
 PATH = '/v1/flash_s5_decode_probe'
-ACTIONS = ('status', 'pause', 'transition', 'resume')
+ACTIONS = ('status', 'pause', 'transition', 'resume', 'observer_begin', 'observer_end')
 READ_ONLY_FIELDS = frozenset(('action', 'run_id', 'read_only'))
 
 
@@ -261,6 +261,7 @@ class ProbeController:
             },
             'last_acknowledged_paused': self.paused,
             'command_seq_unchanged': self.seq,
+            'engine_epoch': self.epoch,
             'workers': workers,
             'start_monotonic_ns': started,
             'end_monotonic_ns': time.monotonic_ns(),
@@ -349,6 +350,59 @@ class ProbeController:
             raise ProbeControlError('completed-pause-required')
         snapshot = await self._snapshot()
         self._idle(snapshot)
+        if action in ('observer_begin', 'observer_end'):
+            if snapshot['route'] != 'split':
+                raise ProbeControlError('observer-requires-split-route')
+            owners = {}
+            for row in snapshot['ranks']:
+                owner = row.get('inventory', {}).get('replay_observer')
+                if (type(owner) is not dict or owner.get('enabled') is not True
+                        or type(owner.get('worker_incarnation')) is not str
+                        or not owner['worker_incarnation']):
+                    raise ProbeControlError('observer-owner-inventory-missing')
+                owners[row['rank']] = owner['worker_incarnation']
+            replies = await self._rpc({'action': action, 'engine_epoch': self.epoch})
+            mapped = _rank_map(replies)
+            expected_state = 'window' if action == 'observer_begin' else 'closed'
+            for row in mapped.values():
+                if (row.get('ack') != 'flash_s5_' + action
+                        or type(row.get('engine_epoch')) is not int or row['engine_epoch'] != self.epoch
+                        or not _positive(row.get('drained_streams'))
+                        or row.get('state') != expected_state
+                        or any(type(row.get(k)) is not int or row[k] != snapshot[k]
+                               for k in ('route_generation', 'storage_epoch'))
+                        or type(row.get('worker_incarnation')) is not str
+                        or row['worker_incarnation'] != owners[row['rank']]):
+                    raise ProbeControlError('invalid-worker-observer-ack')
+                if action == 'observer_end':
+                    receipt = row.get('receipt')
+                    if (row.get('observer_stopped') is not True or type(receipt) is not dict
+                            or receipt.get('schema') != 's5ro-replay-observer/1'
+                            or receipt.get('verdict') not in ('PASS', 'FAIL', 'INCONCLUSIVE')):
+                        raise ProbeControlError('invalid-worker-observer-receipt')
+                    proof = receipt.get('caller_proof')
+                    if (type(proof) is not dict or type(proof.get('worker_rank')) is not int
+                            or proof['worker_rank'] != row['rank']
+                            or proof.get('worker_incarnation') != row['worker_incarnation']
+                            or proof.get('engine_incarnation') != 'engine:' + str(self.epoch)
+                            or proof.get('route_generation') != snapshot['route_generation']
+                            or proof.get('storage_epoch') != snapshot['storage_epoch']
+                            or proof.get('relevant_consumers') != row['drained_streams']
+                            or proof.get('controller_drained') is not True):
+                        raise ProbeControlError('observer-caller-proof-does-not-match-worker')
+            after = await self._snapshot()
+            for row in after['ranks']:
+                owner = row.get('inventory', {}).get('replay_observer')
+                if (type(owner) is not dict or owner.get('worker_incarnation') != owners[row['rank']]
+                        or owner.get('state') != expected_state
+                        or (action == 'observer_end' and owner.get('closed') is not True)):
+                    raise ProbeControlError('observer-owner-changed-after-rpc')
+            return {'snapshot': after, 'paused': True,
+                    'observer': {'schema': 1,
+                        'complete': action == 'observer_end' and all(
+                            row['receipt']['verdict'] == 'PASS' for row in mapped.values()),
+                        'stopped': action == 'observer_end',
+                        'ranks': [copy.deepcopy(mapped[r]) for r in RANKS]}}
         if action == 'transition':
             target = command['target']
             if target not in ('full', 'split') or target == snapshot['route']:

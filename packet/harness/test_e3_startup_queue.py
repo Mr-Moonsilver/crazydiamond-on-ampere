@@ -27,7 +27,7 @@ QUEUE = HERE / 'runs' / 'q17_decode_startup.draft.sh'
 SETTINGS = HERE / 'runs' / 'q17_startup_settings.sh'
 IMAGE = 'sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b'
 AUTH = 'offline-fixture-key-1234567890'
-LAUNCHER_SHA = '8454c4ad660a6384f064e8ee9de2d4741d637743f04f49dc0185491f1076b8bb'
+LAUNCHER_SHA = 'c812eb3d610a963919c537d4963b49c54f25ba8d7d518448dbb81ca18e860d98'
 CU = b'// fixture native green helper source\n'
 
 
@@ -239,6 +239,10 @@ class QueueRun(unittest.TestCase):
         self.h = self.root / 'harness'; self.h.mkdir()
         self.r = self.root / 'requests'; self.r.mkdir()
         self.q = self.root / 'out'
+        private = self.root / 'private'; private.mkdir(mode=0o700)
+        self.auth_file = private / 'api.env'
+        from e3_private_auth import prepare
+        prepare(self.auth_file, {'VLLM_API_KEY': AUTH})
         self.overlay = self.root / 'overlay'; self.overlay.mkdir()
         self.calls = self.root / 'calls.log'; self.calls.write_text('')
         self.log = self.root / 'engine.log'; self.log.write_text('old startup line\n')
@@ -385,6 +389,7 @@ class QueueRun(unittest.TestCase):
             'FAKE_LOG': str(self.log), 'FAKE_DEFAULTS': str(self.defaults),
             'HARNESS_DIR': str(self.h), 'REQUESTS': str(self.r),
             'S5_OVERLAY': str(self.overlay), 'S5_GREEN_LIB_SHA256': self.lib,
+            'S5_AUTH_ENV_FILE': str(self.auth_file),
             'VLLM_API_KEY': AUTH, 'PROBE_URL': 'http://127.0.0.1:%d' % self.port,
             'Q17_TEST_OFFLINE': '1', 'Q17_TEST_TASK_BASE': str(self.task),
             'Q17_TEST_DEFAULTS_FILE': str(self.defaults),

@@ -52,7 +52,7 @@ STORAGE_EPOCH = 1
 # (a plain qsa_operation import and resident_attention). It stays shipped and
 # checksummed for the builder, separately from the runtime module inventory.
 BUILD_ONLY_SOURCES = ('operation_source',)
-GENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'graph_router', 'graph_hooks', 'qsa_operation', 'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session')
+GENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'graph_router', 'graph_hooks', 'qsa_operation', 'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'replay_observer', 'observer_runtime')
 EVIDENCE_FILE = 'decode-probe-evidence.json'
 
 # Test ids that the declaration must name; the new suite verifies they exist.
@@ -548,6 +548,8 @@ class DecodeProbe:
             'ple_scratch_bytes': 0,
             'excluded': list(EXCLUDED),
         }
+        observer = getattr(self.runner, '_flash_s5_replay_observer', None)
+        record['replay_observer'] = observer.status() if observer is not None else {'enabled': False}
         return record
 
     def counters(self):
@@ -709,6 +711,10 @@ class DecodeProbe:
             return self.shutdown_record
         order = []
         try:
+            observer = getattr(self.runner, '_flash_s5_replay_observer', None)
+            if observer is not None:
+                observer.shutdown(self)
+                order.append('observer-closed')
             if self.controller.route != 'full':
                 # Teardown leaves the split even after a quarantine: the
                 # controller is the only object that can put the worker back

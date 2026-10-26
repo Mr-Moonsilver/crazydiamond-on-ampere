@@ -56,8 +56,9 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
               'graph_router', 'graph_hooks', 'qsa_operation',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
               # lane forward/QSA driver, communicators, startup, chunk, dispatcher.
-              'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session')
-NATIVE_FILES = ('native/flash_s5_green.cu',)
+              'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'replay_observer', 'observer_runtime')
+NATIVE_FILES = ('native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
+                'native/build_q17_helpers.sh')
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
 CUDAGRAPH_PATH = 'v1/worker/gpu/cudagraph_utils.py'
 MODEL_DEST = '/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py'
@@ -180,9 +181,13 @@ def _s5_launcher(source):
     # Keep the E2 branch and all its checks byte-identical; only add a guarded
     # mount set. e2 is still mounted when present; S5=1 does not imply E2.
     addition = '''# E3/S5 offline-unqualified payload. Inert unless S5=1.
-s5=()
+s5=(); s5_auth=()
 if [[ -d $OVERLAY/e3 ]]; then
   [[ ${S5:-0} == 1 ]] || { echo "S5 needs the declared overlap launcher" >&2; exit 2; }
+  [[ ${FLASH_S5_AUTH_ENV_FILE:-} == /* ]] || { echo "S5 needs private auth file" >&2; exit 2; }
+  [[ ${EXTRA_ARGS:-} != *--api-key* ]] || { echo "S5 refuses argv authentication" >&2; exit 2; }
+  [[ ${EXTRA_ENV:-} != *VLLM_API_KEY* ]] || { echo "S5 requires private-file authentication" >&2; exit 2; }
+  s5_auth=(--env-file "$FLASH_S5_AUTH_ENV_FILE")
   for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
@@ -199,6 +204,8 @@ fi
     text = _replace(source, '# VISION=1: image input', addition + '# VISION=1: image input')
     text = _replace(text, '  "${runner[@]}" "${e2[@]}" \\\n',
                     '  "${runner[@]}" "${e2[@]}" "${s5[@]}" \\\n')
+    text = _replace(text, '  "${extra_env[@]}" "${mps[@]}"',
+                    '  "${extra_env[@]}" "${s5_auth[@]}" "${mps[@]}"')
     return text
 
 
@@ -296,6 +303,15 @@ def _decode_probe_declaration(files):
                        'split decode graph bank, own pool (split_bank)',
                        'drained RouteController'],
         'excluded': list(decode_probe.EXCLUDED),
+        'replay_observation': {
+            'opt_in': 'FLASH_S5_REPLAY_OBSERVER=1',
+            'helper_source': 'e3/native/flash_s5_replay_observer.cpp',
+            'helper_library': 'e3/native/flash_s5_replay_observer.so',
+            'library_pin_env': 'FLASH_S5_REPLAY_LIB_SHA256',
+            'cupti_library_sha256': 'e2f9ed861fe27c492b8bb52b5e3220ef5120f3edcda36312e96b7fd8a186be3e',
+            'scope': 'first split correctness window only; owned stop required before W1',
+            'build': 'e3/native/build_q17_helpers.sh; final manifest after e3_finalize_package.py',
+        },
         'module_inventory': {
             'runtime': list(runtime_modules),
             'build_only': list(decode_probe.BUILD_ONLY_SOURCES),

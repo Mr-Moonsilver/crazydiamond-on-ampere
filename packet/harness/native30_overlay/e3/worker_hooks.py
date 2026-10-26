@@ -254,6 +254,8 @@ def after_runner_init(worker, env=None):
         with open(lib, 'rb') as handle:
             if hashlib.sha256(handle.read()).hexdigest() != digest:
                 raise ValueError('decode probe helper library pin differs')
+    from observer_runtime import start_worker_observer
+    observer = start_worker_observer(worker, runner, env)
     from green_context import open_split
 
     device = getattr(worker, 'device', None)
@@ -262,12 +264,16 @@ def after_runner_init(worker, env=None):
         import torch
 
         index = torch.cuda.current_device()
-    split = open_split(int(index), env=env)
+    split = None
     try:
+        split = open_split(int(index), env=env)
         if not split.membership().ok:
             raise ValueError('green split membership failed')
     except BaseException:
-        split.close()
+        if split is not None:
+            split.close()
+        if observer is not None:
+            observer.shutdown()
         raise
     runner._flash_s5_split = split
     runner._flash_s5_native_identity = split.describe()
@@ -329,6 +335,21 @@ def decode_probe_rpc(worker, command):
             raise NativeStartupError('status has unexpected fields')
         return {'rank': worker.rank, 'inventory': probe.inventory(),
                 'counters': probe.counters(), 'memory': probe.memory_snapshot()}
+    if action in ('observer_begin', 'observer_end'):
+        if set(command) != {'action', 'engine_epoch'}:
+            raise NativeStartupError('observer fields differ')
+        owner = getattr(runner, '_flash_s5_replay_observer', None)
+        if owner is None:
+            raise NativeStartupError('observer is not declared')
+        epoch = command['engine_epoch']
+        bound = getattr(probe, '_rpc_engine_epoch', None)
+        if type(epoch) is not int or epoch < 1 or bound != epoch:
+            raise NativeStartupError('observer engine epoch is not bound by a prior barrier')
+        try:
+            return owner.begin(probe, epoch) if action == 'observer_begin' else owner.end(probe, epoch)
+        except BaseException:
+            probe.quarantined = 'diagnostic observer operation failed'
+            raise
     if action == 'barrier':
         if set(command) != {'action', 'engine_epoch'}:
             raise NativeStartupError('barrier fields differ')

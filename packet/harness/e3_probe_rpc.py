@@ -16,7 +16,8 @@ from urllib.parse import urlsplit
 
 PATH = '/v1/flash_s5_decode_probe'
 MAX_COMMAND = 16384
-MAX_RESPONSE = 4 * 1024 * 1024
+# Four bounded observer receipts (8 MiB each) plus the controller envelope.
+MAX_RESPONSE = 40 * 1024 * 1024
 
 
 class TransportError(RuntimeError):

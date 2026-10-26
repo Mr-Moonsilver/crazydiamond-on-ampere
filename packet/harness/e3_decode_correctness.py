@@ -82,7 +82,7 @@ MAX_TOKEN_ID = 2 ** 31 - 1
 MAX_REASON_CHARS = 300
 ALLOWED_FINISH_REASONS = ('stop', 'length', 'abort')
 KNOWN_STATUS = ('ok', 'error', 'timeout', 'busy', 'unavailable')
-KNOWN_TRANSPORT_KINDS = ('subprocess', 'injected', 'injected_error')
+KNOWN_TRANSPORT_KINDS = ('subprocess', 'injected', 'injected_error', 'http')
 KNOWN_TRANSPORT_ERRORS = ('TimeoutExpired', 'OSError', 'RuntimeError', 'ValueError',
                           'URLError', 'ConnectionResetError', 'BrokenPipeError',
                           'IncompleteRead', 'ProtocolError')
@@ -1773,7 +1773,7 @@ def _not_run_record(run_index, label, route, reason):
     return _finish_run(record)
 
 
-def run(cfg, url, model, controller, source=None):
+def run(cfg, url, model, controller, source=None, context=None):
     t0_ns = time.monotonic_ns()
     wall_anchor_ns = time.time_ns()
     if source is not None:
@@ -1798,6 +1798,11 @@ def run(cfg, url, model, controller, source=None):
         'route': 'full',
         'route_generation': None,
     }
+    if context is not None:
+        if context:
+            raise ConfigError('correctness must start the shared client session')
+        context.update(ctx)
+        ctx = context
     runs = []
     abort_reason = None
     for run_index, (label, route) in enumerate(zip(RUN_LABELS, ROUTE_PLAN)):

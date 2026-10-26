@@ -80,13 +80,18 @@ def build(out):
     pp_source=ROOT/'patches/ppgrouping/make_ppgrouping.py'
     shutil.copy2(pp_source,e3_builder/'pool_stats_source.py')
     builder_sources['pool_stats_source.py']=sha(pp_source)
-    for name,digest in pins.items():
+    qualification_pins={
+        'entrypoints/openai/completion/protocol.py':'0be20e3d7f21ab6cbe0ba77cb50068aa39a35fc0369ef38de068ac38ca9800aa',
+        'entrypoints/openai/completion/serving.py':'75d05ddddf303734a078a3e42fcb173fef58ea56da09bc0b5c7525cb9bbbf527',
+    }
+    for name,digest in {**pins,**qualification_pins}.items():
         source=reference/name
         if sha(source)!=digest:raise ValueError('E3 image reference checksum mismatch: '+name)
         dest=out/'e3_reference'/name;dest.parent.mkdir(parents=True,exist_ok=True)
         shutil.copy2(source,dest)
     closure={'schema':1,'builder_sources':dict(sorted(builder_sources.items())),
              'reference_pins':dict(sorted(pins.items())),
+             'qualification_reference_pins':qualification_pins,
              'basis':'tracked CPU-only generator/native/source bytes; reference tree verified against every transform pin',
              'runtime_overlay':'generated separately by make_s5_overlap; not fetched on the box'}
     (out/'e3_build_closure.json').write_text(json.dumps(closure,indent=2,sort_keys=True)+'\n')
