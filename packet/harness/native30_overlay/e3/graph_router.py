@@ -479,6 +479,235 @@ class RouteDecision:
         _text('reason', self.reason)
 
 
+def descriptor_name(descriptor):
+    """Stable, request-free label for counters and diagnostics."""
+    if type(descriptor) is not ExecutionDescriptor:
+        raise GraphRoutingError('descriptor label needs an ExecutionDescriptor')
+    return (f'{descriptor.cg_mode}:tokens={descriptor.num_tokens}:'
+            f'reqs={descriptor.num_reqs}:uniform={descriptor.uniform_token_count}')
+
+
+@dataclass(frozen=True)
+class NoPrefillRoute:
+    """Typed route identity for the decode-only diagnostic mode.
+
+    It replaces the prefill transaction that :class:`GraphRouter` requires for
+    split routing.  It is *not* a fabricated transaction: it names no request,
+    chunk or engine transaction, only the split bank, its context/pool, the
+    stable decode storage epoch and the route generation it was issued under.
+    """
+    bank: str
+    context_id: int
+    pool_id: int
+    storage_epoch: int
+    route_generation: int
+
+    def __post_init__(self):
+        _text('bank', self.bank)
+        _int('context_id', self.context_id)
+        _int('pool_id', self.pool_id)
+        _int('storage_epoch', self.storage_epoch, 1)
+        _int('route_generation', self.route_generation)
+
+
+@dataclass(frozen=True)
+class ProbeGraphKey:
+    """Backend key for one diagnostic split graph; no lane/compilation ticket."""
+    descriptor: ExecutionDescriptor
+    storage_epoch: int
+    route_generation: int
+
+    def __post_init__(self):
+        if type(self.descriptor) is not ExecutionDescriptor:
+            raise GraphRoutingError('probe graph key needs an ExecutionDescriptor')
+        _int('storage_epoch', self.storage_epoch, 1)
+        _int('route_generation', self.route_generation)
+
+
+class DecodeProbeRouter:
+    """Split-only router for the decode-only diagnostic mode.
+
+    It captures the declared FULL descriptors through the supplied backend into
+    the split bank (which owns a separate graph pool) and replays only exact
+    captured descriptors.  There is no prefill transaction, no operation
+    ticket, no ordinary-route fallback and no completion proof: the diagnostic
+    interval is bounded by the drained route transitions, and every host replay
+    is counted per bank, stream and descriptor so the GPU test can read it.
+    """
+    def __init__(self, name, context, descriptors, backend, *, storage_epoch,
+                 route_generation=0, context_factory=None):
+        self.name = _text('name', name)
+        if type(context) is not ExecutionContext:
+            raise GraphRoutingError('decode probe needs an ExecutionContext')
+        descriptors = tuple(descriptors)
+        if not descriptors:
+            raise GraphRoutingError('a decode probe bank needs at least one descriptor')
+        for descriptor in descriptors:
+            if type(descriptor) is not ExecutionDescriptor:
+                raise GraphRoutingError('probe descriptors must be ExecutionDescriptor')
+        if len(set(descriptors)) != len(descriptors):
+            raise GraphRoutingError('duplicate descriptor in decode probe bank')
+        for method in _BACKEND_METHODS:
+            if not callable(getattr(backend, method, None)):
+                raise GraphRoutingError(f'capture backend is missing {method}()')
+        if context_factory is not None and not callable(context_factory):
+            raise GraphRoutingError('context factory must be callable')
+        self.context = context
+        self.descriptors = descriptors
+        self.backend = backend
+        self.storage_epoch = _int('storage_epoch', storage_epoch, 1)
+        self.route_generation = _int('route_generation', route_generation)
+        self.context_factory = context_factory
+        self.state = 'empty'
+        self.handles = {}
+        self.replays = 0
+        self.warmup_replays = 0
+        self.replays_by_bank = {self.name: 0}
+        self.replays_by_stream = {}
+        self.replays_by_descriptor = {}
+        self.quarantine_reason = None
+
+    # -- identity ---------------------------------------------------------
+    def _require_ready(self):
+        if self.state == 'destroyed':
+            raise GraphRoutingError('decode probe bank is destroyed')
+        if self.state == 'quarantined':
+            raise GraphUnclean(f'decode probe bank is unclean: {self.quarantine_reason}')
+        if self.state != 'ready':
+            raise GraphRoutingError('decode probe bank is not captured')
+
+    def _quarantine(self, reason):
+        self.state = 'quarantined'
+        self.quarantine_reason = reason
+
+    def _key(self, descriptor):
+        return ProbeGraphKey(descriptor, self.storage_epoch, self.route_generation)
+
+    def no_prefill_guard(self):
+        """The typed guard used in place of an anchor transaction."""
+        if self.state == 'destroyed':
+            raise GraphRoutingError('decode probe router is destroyed')
+        if self.state == 'quarantined':
+            raise GraphUnclean(f'decode probe router is unclean: {self.quarantine_reason}')
+        return NoPrefillRoute(self.name, self.context.context_id, self.context.pool_id,
+                              self.storage_epoch, self.route_generation)
+
+    def set_route_generation(self, generation):
+        _int('route_generation', generation)
+        if self.state == 'destroyed':
+            raise GraphRoutingError('decode probe router is destroyed')
+        if generation != self.route_generation + 1:
+            raise GraphRoutingError('probe route generation must advance exactly once')
+        self.route_generation = generation
+        return generation
+
+    # -- capture / replay -------------------------------------------------
+    def capture_at_startup(self):
+        if self.state != 'empty':
+            raise GraphRoutingError('decode probe bank was already captured')
+        self.state = 'capturing'
+        try:
+            for descriptor in self.descriptors:
+                handle = self.backend.capture(self.name, self._key(descriptor), None,
+                                              self.context)
+                if handle is None:
+                    raise GraphRoutingError('split capture returned no graph handle')
+                self.handles[descriptor] = handle
+            if self.context_factory is not None:
+                fresh = self.context_factory()
+                if type(fresh) is not ExecutionContext:
+                    raise GraphRoutingError('context factory did not return an ExecutionContext')
+                if (fresh.context_id, fresh.pool_id, fresh.stream_token) != (
+                        self.context.context_id, self.context.pool_id,
+                        self.context.stream_token):
+                    raise GraphRoutingError('measured split context changed identity')
+                self.context = fresh
+        except BaseException as exc:
+            self._quarantine(f'capture failed: {type(exc).__name__}')
+            raise
+        self.state = 'ready'
+        return tuple(self.descriptors)
+
+    def supported_route(self, transaction, descriptor):
+        """Exact captured descriptor on the declared split; nothing else."""
+        self._require_ready()
+        if type(transaction) is not NoPrefillRoute:
+            raise GraphRoutingError('decode probe route needs the typed no-prefill guard')
+        if type(descriptor) is not ExecutionDescriptor:
+            raise GraphRoutingError('decode probe route needs an ExecutionDescriptor')
+        if (transaction.bank != self.name or transaction.context_id != self.context.context_id
+                or transaction.pool_id != self.context.pool_id):
+            raise GraphRoutingError('no-prefill guard names another bank/context/pool')
+        if transaction.storage_epoch != self.storage_epoch:
+            raise GraphRoutingError('no-prefill guard names a stale storage epoch')
+        if transaction.route_generation != self.route_generation:
+            raise GraphRoutingError('no-prefill guard names a stale route generation')
+        if descriptor not in self.handles:
+            raise UnsupportedRoute('descriptor is not captured in the decode probe bank')
+        return RouteDecision('split', self.name, descriptor,
+                             'decode-only probe: exact captured FULL descriptor; no prefill')
+
+    def replay(self, transaction, descriptor, *, observed_context, observed_stream):
+        decision = self.supported_route(transaction, descriptor)
+        if type(observed_context) is not int or type(observed_stream) is not int:
+            raise GraphRoutingError('decode probe replay needs C\'s observed context and stream')
+        if (observed_context != self.context.context_id
+                or observed_stream != self.context.stream_token):
+            raise GraphRoutingError('decode probe replay would run on the wrong context or stream')
+        handle = self.handles[descriptor]
+        try:
+            output = self.backend.replay(handle, self._key(descriptor), None, self.context)
+        except BaseException as exc:
+            self._quarantine(f'replay failed: {type(exc).__name__}')
+            raise
+        self.replays += 1
+        self.replays_by_bank[self.name] = self.replays_by_bank.get(self.name, 0) + 1
+        self.replays_by_stream[observed_stream] = self.replays_by_stream.get(observed_stream, 0) + 1
+        key = decision.descriptor
+        self.replays_by_descriptor[key] = self.replays_by_descriptor.get(key, 0) + 1
+        return output
+
+    def warmup(self):
+        """Replay every captured descriptor once; counted apart from measurement."""
+        self._require_ready()
+        for descriptor in self.descriptors:
+            try:
+                self.backend.replay(self.handles[descriptor], self._key(descriptor),
+                                    None, self.context)
+            except BaseException as exc:
+                self._quarantine(f'warmup failed: {type(exc).__name__}')
+                raise
+            self.warmup_replays += 1
+        return self.warmup_replays
+
+    def counters(self):
+        return {
+            'state': self.state,
+            'bank': self.name,
+            'storage_epoch': self.storage_epoch,
+            'route_generation': self.route_generation,
+            'replays': self.replays,
+            'replays_by_bank': dict(self.replays_by_bank),
+            'replays_by_stream': dict(self.replays_by_stream),
+            'replays_by_descriptor': {descriptor_name(descriptor): count
+                                      for descriptor, count in self.replays_by_descriptor.items()},
+            'warmup_replays': self.warmup_replays,
+        }
+
+    def shutdown(self):
+        """Destroy this router's graph handles; the bank/pool follow in split_bank."""
+        if self.state == 'destroyed':
+            return ()
+        order = []
+        for descriptor in reversed(self.descriptors):
+            handle = self.handles.pop(descriptor, None)
+            if handle is not None:
+                self.backend.destroy_graph(handle)
+                order.append('graph')
+        self.state = 'destroyed'
+        return tuple(order)
+
+
 @dataclass(frozen=True)
 class ReplayLease:
     """One host-submitted replay awaiting C's GPU completion proof."""
@@ -1189,9 +1418,10 @@ class GraphRouter:
 
 
 __all__ = [
-    'BankBudget', 'CG_MODES', 'CapturedGraph', 'CompilationIdentity', 'ExecutionDescriptor',
-    'ExecutionContext', 'ExternalUsers', 'GraphBank', 'GraphBudgetReport', 'GraphKey',
-    'GraphPool', 'GraphRouter', 'GraphRoutingError', 'GraphUnclean', 'ReplayLease',
-    'ReplayResult', 'RouteDecision', 'RouterStatus', 'ShutdownRecord', 'TimingRecord',
-    'TransitionAuthorization', 'TransitionRecord', 'UnsupportedRoute',
+    'BankBudget', 'CG_MODES', 'CapturedGraph', 'CompilationIdentity', 'DecodeProbeRouter',
+    'ExecutionDescriptor', 'ExecutionContext', 'ExternalUsers', 'GraphBank',
+    'GraphBudgetReport', 'GraphKey', 'GraphPool', 'GraphRouter', 'GraphRoutingError',
+    'GraphUnclean', 'NoPrefillRoute', 'ProbeGraphKey', 'ReplayLease', 'ReplayResult',
+    'RouteDecision', 'RouterStatus', 'ShutdownRecord', 'TimingRecord',
+    'TransitionAuthorization', 'TransitionRecord', 'UnsupportedRoute', 'descriptor_name',
 ]

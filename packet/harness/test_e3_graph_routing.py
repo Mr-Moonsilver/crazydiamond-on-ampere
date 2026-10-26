@@ -1201,7 +1201,7 @@ class TestGeneratedSource(unittest.TestCase):
             self.assertEqual(graph_hooks.revert(generated, expected=a_source), a_source)
             with self.assertRaises(ValueError):
                 graph_hooks.revert(generated, expected=self.sources['pinned'])
-            self.assertEqual(generated.count('_flash_e3_graph.'), 4)
+            self.assertEqual(generated.count('_flash_e3_graph.'), 5)
             self.assertEqual(generated.count('_flash_e3_hooks.'), 13)
             self.assertEqual(generated.count('_flash_e3_graph.shutdown_banks(self)'), 1)
         with self.assertRaises(ValueError):
@@ -1248,7 +1248,7 @@ class TestGeneratedSource(unittest.TestCase):
                 '            model_output = _flash_e3_graph.replay_fullgraph('), 1)
             self.assertEqual(generated.count('self.cudagraph_manager.run_fullgraph'), 1)
             self.assertNotIn(graph_hooks._REPLAY_OLD, generated)
-            capture = generated.index('_flash_e3_graph.capture_banks(self)')
+            capture = generated.index('_flash_e3_graph.capture_banks(self, profile_only=profile_only)')
             stock_capture = generated.index(
                 '                    self.cudagraph_manager.capture(')
             self.assertLess(stock_capture, capture)
@@ -1287,7 +1287,7 @@ class TestGeneratedSource(unittest.TestCase):
             self.assertEqual(generated.count('StreamContext'),
                              a_source.count('StreamContext'))
             self.assertEqual(generated.count('_flash_e3_graph.shutdown_banks(self)'), 1)
-            self.assertEqual(generated.count('_flash_e3_graph.capture_banks(self)'), 1)
+            self.assertEqual(generated.count('_flash_e3_graph.capture_banks(self, profile_only=profile_only)'), 1)
 
     def test_generated_source_adds_no_sync_or_ring_calls(self):
         for kind, a_source in self.sources.items():

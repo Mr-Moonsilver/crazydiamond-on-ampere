@@ -32,7 +32,7 @@ from resident_attention import function
 
 E2_QSA_SHA256 = '3dc7e447d174eaa0463865edfe978af08e75d1fd8bc5de86810c4aa914281ad7'
 E2_OPS_SHA256 = 'aab7f8d83426f9c7c097347330102dbef991fd5403916107d52cd4d883b8f190'
-S5_RUNNER_SHA256 = 'a9dc60073613e1beaf2832a4048baad55b09bccb0bcee57c59c00e18b4bdfdd4'
+S5_RUNNER_SHA256 = '0f5b40fd506beb42a46a70a97bb7784e538aa97b0227e7a64ba41366fe9b4535'
 
 OPS_NAME = 'flash_s5_arena_attention'
 LAYER_HELPER = '_flash_s5_staged_operation'

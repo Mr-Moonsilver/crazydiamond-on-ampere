@@ -161,7 +161,7 @@ class SplitDecodeBank:
         finally:
             # The stock capture pointed the pynccl allocator at our pool;
             # the stock manager's pool must stay the process default afterwards.
-            if set_graph_pool_id is not None and getattr(self.stock, 'pool', None) is not None:
+            if set_graph_pool_id is not None:
                 set_graph_pool_id(self.stock.pool)
         torch.accelerator.synchronize()
         free_after = int(memory_info()[0])

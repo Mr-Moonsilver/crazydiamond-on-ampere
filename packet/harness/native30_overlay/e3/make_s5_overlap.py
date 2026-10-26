@@ -34,11 +34,13 @@ from pathlib import Path
 import shutil
 
 import async_handoff
+import decode_probe
 import executor_hooks
-import lane_hooks
-import operation_source
 import graph_hooks
+import green_context
+import lane_hooks
 import model_hooks
+import operation_source
 import qsa_driver
 import scheduler_hooks
 import worker_hooks
@@ -53,21 +55,31 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
               'graph_router', 'graph_hooks', 'qsa_operation',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
               # lane forward/QSA driver, communicators, startup, chunk, dispatcher.
-              'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source')
+              'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe')
 NATIVE_FILES = ('native/flash_s5_green.cu',)
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
 CUDAGRAPH_PATH = 'v1/worker/gpu/cudagraph_utils.py'
 MODEL_DEST = '/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py'
 BUILD_GREEN_HELPER = '''#!/bin/bash
-# Build the E3 green-context helper INSIDE the pinned image on the box (never on the hub).
-# usage: build_green_helper.sh <image> <overlay/e3/native dir>   -> writes flash_s5_green.so next to the .cu
-# The queue records the resulting library sha; FLASH_S5_GREEN_LIB points the workers at it.
+# Owner-only CPU compiler container; new output, no GPU or engine access.
+# Same sm_86/shared-cudart recipe qualified by q17a. Container is retained.
+# Final overlay manifest and declared FLASH_S5_GREEN_LIB_SHA256 must cover
+# the new library BEFORE source declaration or any test-engine start.
 set -eu
 img=$1; dir=$(cd "$2" && pwd)
-docker run --rm -v "$dir:/native" "$img" bash -c \\
-  'nvcc -O2 -shared -Xcompiler -fPIC -o /native/flash_s5_green.so /native/flash_s5_green.cu -lcuda && nvcc --version | tail -n 2'
+[[ "$img" == sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b ]]
+[[ ! -e "$dir/flash_s5_green.so" && ! -L "$dir/flash_s5_green.so" ]]
+name="e3-green-build-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+# Inner timeout terminates compiler before the client bound.
+timeout --signal=TERM --kill-after=20s 300s docker run --name "$name" --network none \
+  -v "$dir:/native" --entrypoint timeout "$img" --signal=TERM --kill-after=10s 240s \
+  nvcc -O2 -std=c++17 -shared -Xcompiler=-fPIC \
+  --generate-code=arch=compute_86,code=sm_86 --cudart=shared -lcuda \
+  /native/flash_s5_green.cu -o /native/flash_s5_green.so
 sha256sum "$dir/flash_s5_green.so"
+echo "retained build container: $name"
 '''
+
 
 # Exact reviewed E2-composed inputs. Any other bytes are refused.
 E2_RUNNER_SHA256 = lane_hooks.E2_STARTUP_SHA256
@@ -168,7 +180,7 @@ def _s5_launcher(source):
 s5=()
 if [[ -d $OVERLAY/e3 ]]; then
   [[ ${S5:-0} == 1 ]] || { echo "S5 needs the declared overlap launcher" >&2; exit 2; }
-  for f in e3/__init__.py ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/model.py qsa.py ops_qsa.py; do
+  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/model.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
   V=/usr/local/lib/python3.12/dist-packages/vllm/v1
@@ -228,6 +240,53 @@ def compose_graph(module, files):
             raise ValueError('graph transform produced invalid source: ' + name) from exc
         result[name] = text
     return result
+
+
+def _decode_probe_declaration(files):
+    """Structured declaration of the diagnostic decode-only mode only.
+
+    It qualifies ``diagnostic_modes.decode_only`` for an explicitly requested
+    GPU diagnostic; it does not qualify, arm or change the full package.
+    """
+    if set(decode_probe.GENERATED_SOURCES) != set(E3_MODULES):
+        raise ValueError('diagnostic evidence module list drifted')
+    pins = dict(worker_hooks.PINS)
+    pins['v1/worker/gpu/model_runner.py'] = graph_hooks.PINNED_SHA256
+    shas = {}
+    for name in decode_probe.GENERATED_SOURCES:
+        key = 'e3/' + name + '.py'
+        if key not in files:
+            raise ValueError('decode probe declaration lacks generated ' + key)
+        shas[name] = _sha_text(files[key])
+    return {
+        'declared': True,
+        'qualifies': 'diagnostic_modes.decode_only',
+        'diagnostic_only': True,
+        'scope': ('separately declared diagnostic mode; it does not qualify the full '
+                  'FLASH_S5_OVERLAP package, which stays armable:false'),
+        'enabled_by': {decode_probe.PROBE_ENV: '1',
+                       decode_probe.OVERLAP_ENV: '0',
+                       decode_probe.DECODE_SMS_ENV: '<explicit, no default>',
+                       'FLASH_S5_GREEN_LIB_SHA256': '<compiled artifact pin, required>'},
+        'requires': {
+            'flag_conflict': 'probe=1 with overlap=1 refuses before any allocation',
+            'decode_sms': 'FLASH_S5_DECODE_SMS must be declared; code supplies no default',
+            'storage_epoch': decode_probe.STORAGE_EPOCH,
+            'route': 'drained RouteController transitions; unsupported dispatch invalidates the interval',
+        },
+        'gate': 's5_startup.require_decode_probe_ready',
+        'startup': 'native_startup.install_decode_probe',
+        'constructs': ['green split (worker_hooks.after_runner_init)',
+                       'split decode graph bank, own pool (split_bank)',
+                       'drained RouteController'],
+        'excluded': list(decode_probe.EXCLUDED),
+        'evidence': {
+            'pins': pins,
+            'helper_source_sha256': green_context.helper_source_sha256(),
+            'generated_source_shas': shas,
+            'tests': list(decode_probe.REQUIRED_TESTS),
+        },
+    }
 
 
 def build(base, out, reference, base_manifest_sha256, graph=None,
@@ -326,6 +385,8 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         files = compose_graph(module, files)
         graph_record = {'module': Path(graph).name,
                         'source_pins': dict(module.SOURCE_PINS)}
+    probe_declaration = _decode_probe_declaration(files)
+    files['e3/' + decode_probe.EVIDENCE_FILE] = json.dumps(probe_declaration['evidence'], sort_keys=True) + '\n'
     for name, text in files.items():
         if name.endswith('.py'):
             ast.parse(text, filename=name)
@@ -335,6 +396,7 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
 
     installed = {
         async_handoff.OVERLAP_ENV: '0',
+        decode_probe.PROBE_ENV: '0',
         async_handoff.TRANSPORT_ENV: async_handoff.QUALIFIED_TRANSPORT,
         async_handoff.SPARSE_OVERLAP_ENV: '0',
         async_handoff.COMMAND_SLOTS_ENV: str(async_handoff.PINNED_RING_SLOTS),
@@ -398,6 +460,10 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
             'no GPU, CUDA graph, PP ring, DMA qualification or performance run',
         ],
         'incremental_kv_bytes': 0,
+    }
+    # Diagnostic-only declaration, separate from the full package's armability.
+    record['diagnostic_modes'] = {
+        'decode_only': probe_declaration,
     }
     if settings:
         record['requested_settings'] = dict(settings)

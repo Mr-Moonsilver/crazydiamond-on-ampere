@@ -26,9 +26,10 @@ import hashlib
 import os
 
 from e3_types import OperationTicket, TransactionId
-from graph_router import ExecutionDescriptor, GraphRouter, GraphRoutingError
+from graph_router import DecodeProbeRouter, ExecutionDescriptor, GraphRouter, GraphRoutingError
 
 PINNED_SHA256 = 'a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2'
+PROBE_ENV = 'FLASH_S5_DECODE_ONLY_PROBE'
 
 # Reviewed A-generated runner compositions (pinned, E2 execution, E2 startup).
 A_SOURCE_SHA256 = {
@@ -43,8 +44,11 @@ _IMPORT_NEW = _IMPORT_OLD + '\nimport vllm.v1.flash_e3.graph_hooks as _flash_e3_
 _CHECK_OLD = '        if batch_desc.num_tokens == 0:\n'
 _CHECK_NEW = ('        _flash_e3_graph.check_route(\n'
               '            self, scheduler_output, batch_desc,\n'
-              '            num_reqs, num_toks, uniform_tok_count,\n'
+              '            num_reqs, num_toks, uniform_tok_count, batch_req_state,\n'
               '        )\n' + _CHECK_OLD)
+
+_EARLY_OLD = '            if scheduler_output.total_num_scheduled_tokens == 0:\n'
+_EARLY_NEW = ('            _flash_e3_graph.check_empty(self, scheduler_output)\n' + _EARLY_OLD)
 
 _REPLAY_OLD = '            model_output = self.cudagraph_manager.run_fullgraph(batch_desc)\n'
 _REPLAY_NEW = ('            model_output = _flash_e3_graph.replay_fullgraph(\n'
@@ -57,7 +61,7 @@ _CAPTURE_OLD = '''                        lora_capture_hook=create_lora_capture_
                         ),
                     )
 '''
-_CAPTURE_NEW = _CAPTURE_OLD + '                    _flash_e3_graph.capture_banks(self)\n'
+_CAPTURE_NEW = _CAPTURE_OLD + '                    _flash_e3_graph.capture_banks(self, profile_only=profile_only)\n'
 
 _SHUTDOWN_PLAIN_OLD = ('        torch.accelerator.synchronize()\n'
                        '        self.cudagraph_manager = None\n')
@@ -96,6 +100,7 @@ def _forward(source):
     """Ordered B transforms on top of an A-composed runner."""
     text = _replace(source, _IMPORT_OLD, _IMPORT_NEW)
     text = _replace(text, _CHECK_OLD, _CHECK_NEW)
+    text = _replace(text, _EARLY_OLD, _EARLY_NEW)
     text = _replace(text, _REPLAY_OLD, _REPLAY_NEW)
     text = _replace(text, _CAPTURE_OLD, _CAPTURE_NEW)
     if '_flash_e2_lifecycle' in source:
@@ -127,6 +132,7 @@ def revert(source, expected=None):
         text = _replace(text, _SHUTDOWN_PLAIN_NEW, _SHUTDOWN_PLAIN_OLD)
     text = _replace(text, _CAPTURE_NEW, _CAPTURE_OLD)
     text = _replace(text, _REPLAY_NEW, _REPLAY_OLD)
+    text = _replace(text, _EARLY_NEW, _EARLY_OLD)
     text = _replace(text, _CHECK_NEW, _CHECK_OLD)
     text = _replace(text, _IMPORT_NEW, _IMPORT_OLD)
     if expected is not None:
@@ -141,14 +147,37 @@ def _overlap_enabled():
     return os.environ.get('FLASH_S5_OVERLAP', '0') == '1'
 
 
+def _probe_enabled():
+    return os.environ.get(PROBE_ENV, '0') == '1'
+
+
 def _router(runner):
     router = getattr(runner, '_flash_e3_graph_router', None)
-    if router is not None and not isinstance(router, GraphRouter):
+    if router is not None and not isinstance(router, (GraphRouter, DecodeProbeRouter)):
         raise GraphRoutingError('runner E3 graph router is not a GraphRouter')
     return router
 
 
+def _probe(runner):
+    """The decode-only probe, when this runner started in that diagnostic mode."""
+    probe = getattr(runner, '_flash_s5_decode_probe', None)
+    if probe is None:
+        return None
+    from decode_probe import DecodeProbe
+
+    if not isinstance(probe, DecodeProbe):
+        raise GraphRoutingError('runner decode probe is not a DecodeProbe')
+    if not isinstance(getattr(runner, '_flash_e3_graph_router', None), DecodeProbeRouter):
+        raise GraphRoutingError('decode probe runner has no split-only router')
+    return probe
+
+
 def _transaction(scheduler_output, router):
+    if isinstance(router, DecodeProbeRouter):
+        if getattr(scheduler_output, 'flash_e3_transaction', None) is not None:
+            raise GraphRoutingError('decode-only probe has no prefill transaction')
+        # Typed no-prefill guard in place of the anchor transaction.
+        return router.no_prefill_guard()
     transaction = getattr(scheduler_output, 'flash_e3_transaction', None)
     if transaction is None and (router.worker.active_prefill is not None
                                 or router.current_mode != 'ordinary'):
@@ -170,14 +199,29 @@ def _is_prefill(router, transaction):
     return active is not None and transaction == active
 
 
+def check_empty(runner, output):
+    probe = _probe(runner)
+    if probe is not None and probe.route == 'split' and output.total_num_scheduled_tokens == 0:
+        probe.invalidate('empty_batch')
+        from decode_probe import DecodeProbeInvalidated
+        raise DecodeProbeInvalidated('empty batch invalidates split interval')
+
+
 def check_route(runner, scheduler_output, batch_desc,
-                num_reqs, num_tokens, uniform_tokens):
+                num_reqs, num_tokens, uniform_tokens, batch_state=None):
     """Query the route before the engine commits to a graph dispatch."""
     router = _router(runner)
     if router is None:
         return None
     if batch_desc is None:
         raise GraphRoutingError("router dispatch requires a descriptor")
+    if isinstance(router, DecodeProbeRouter):
+        probe = _probe(runner)
+        if probe is None:
+            raise GraphRoutingError('decode probe router installed without the probe')
+        probe.check_batch(num_reqs, num_tokens, uniform_tokens, batch_state)
+        descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
+        return probe.check_route(descriptor, _transaction(scheduler_output, router))
     transaction = _transaction(scheduler_output, router)
     if transaction is None:
         return None
@@ -207,6 +251,14 @@ def replay_fullgraph(runner, scheduler_output, batch_desc, stock):
         return stock(batch_desc)
     if batch_desc is None:
         raise GraphRoutingError("router replay requires a descriptor")
+    if isinstance(router, DecodeProbeRouter):
+        probe = _probe(runner)
+        if probe is None:
+            raise GraphRoutingError('decode probe router installed without the probe')
+        probe._require_not_down()
+        if probe.route != 'split':
+            return stock(batch_desc)
+        return probe.replay(ExecutionDescriptor.from_vllm(batch_desc))
     transaction = _transaction(scheduler_output, router)
     if transaction is None:
         return stock(batch_desc)
@@ -236,10 +288,20 @@ def replay_fullgraph(runner, scheduler_output, batch_desc, stock):
     return result.output
 
 
-def capture_banks(runner):
+def capture_banks(runner, *, profile_only=False):
     """Capture the declared split bank after the ordinary engine capture."""
+    if profile_only and _probe_enabled():
+        return None  # ephemeral profiling capture is not the measured bank
     router = _router(runner)
     if router is None:
+        if _probe_enabled():
+            from native_startup import install_decode_probe
+
+            probe = install_decode_probe(runner)
+            if getattr(runner, '_flash_e3_graph_captured', False):
+                raise GraphRoutingError('graph banks were already captured')
+            runner._flash_e3_graph_captured = True
+            return probe.router
         if not _overlap_enabled():
             return None
         builder = getattr(runner, '_flash_e3_graph_builder', None)
@@ -249,6 +311,18 @@ def capture_banks(runner):
         if not isinstance(router, GraphRouter):
             raise GraphRoutingError('C graph builder did not return a GraphRouter')
         runner._flash_e3_graph_router = router
+    if isinstance(router, DecodeProbeRouter):
+        probe = _probe(runner)
+        if probe is None:
+            raise GraphRoutingError('decode probe router installed without the probe')
+        if getattr(runner, '_flash_e3_graph_captured', False):
+            raise GraphRoutingError('graph banks were already captured')
+        if probe.router.state == 'empty':
+            probe.capture()
+        elif probe.router.state != 'ready':
+            raise GraphRoutingError('decode probe bank is not capturable')
+        runner._flash_e3_graph_captured = True
+        return router
     if getattr(runner, '_flash_e3_graph_captured', False):
         raise GraphRoutingError('graph banks were already captured')
     router.capture_at_startup()
@@ -258,6 +332,13 @@ def capture_banks(runner):
 
 def shutdown_banks(runner):
     """Destroy graph banks after C has drained; idempotent once complete."""
+    probe = _probe(runner)
+    if probe is not None:
+        if getattr(runner, '_flash_e3_graph_shutdown', False):
+            return None
+        record = probe.shutdown()
+        runner._flash_e3_graph_shutdown = True
+        return record
     router = _router(runner)
     if router is None:
         return None
@@ -269,6 +350,6 @@ def shutdown_banks(runner):
 
 
 __all__ = [
-    'A_SOURCE_SHA256', 'PINNED_SHA256', 'capture_banks', 'check_route', 'generate',
-    'replay_fullgraph', 'revert', 'shutdown_banks', 'source_kind',
+    'A_SOURCE_SHA256', 'PINNED_SHA256', 'PROBE_ENV', 'capture_banks', 'check_route',
+    'generate', 'replay_fullgraph', 'revert', 'shutdown_banks', 'source_kind',
 ]
