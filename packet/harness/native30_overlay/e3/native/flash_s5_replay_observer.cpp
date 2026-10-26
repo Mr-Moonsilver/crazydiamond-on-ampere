@@ -46,6 +46,9 @@
 #include <map>
 #include <tuple>
 #include <string>
+#include <vector>
+#include <unistd.h>
+#include <sys/syscall.h>
 
 namespace {
 
@@ -229,6 +232,7 @@ struct ContextRec {
 
 constexpr unsigned kLaunchFields=36;
 struct ExecRec {
+  uint32_t correlation_id=0;
   uint64_t launch[kLaunchFields]={0};
   char name[1024]={0};
   uint8_t launch_complete=0;
@@ -244,6 +248,7 @@ struct ExecRec {
 };
 
 struct CopyRec {
+  uint32_t correlation_id=0;
   uint32_t stream_id = 0;
   uint32_t copy_kind = 0; // CUPTI direction for memcpy; zero for memset
   uint32_t kind = 0;  // kRecMemcpy or kRecMemset
@@ -362,6 +367,13 @@ constexpr CUpti_CallbackId kResourceIds[] = {
 constexpr uint32_t kResourceIdCount =
     static_cast<uint32_t>(sizeof(kResourceIds) / sizeof(kResourceIds[0]));
 
+constexpr uint32_t kCorrCapacity=131072;
+struct ApiRec {uint32_t domain=0,correlation=0,thread=0,result=0;uint64_t start=0,end=0;char name[128]={0};};
+struct ExternalRec {uint32_t correlation=0,kind=0;uint64_t external=0;};
+struct ScopeRec {uint64_t id=0,parent=0;uint32_t thread=0,action=0;};
+struct ScopeEntry {uint64_t session,id;};
+thread_local std::vector<ScopeEntry> tl_scopes;
+
 struct Session {
   uint64_t token = 0;
   uint32_t state = kCreated;
@@ -407,7 +419,11 @@ struct Session {
   CUpti_SubscriberHandle subscriber = nullptr;
   uint8_t subscribed = 0;
   uint8_t activities_registered = 0;
-  uint8_t activity_enabled[4] = {0, 0, 0, 0};
+  uint8_t activity_enabled[7] = {};
+  bool correlation_enabled=false;
+  ApiRec *apis=nullptr;ExternalRec *external=nullptr;ScopeRec *scopes=nullptr;
+  uint32_t api_count=0,external_count=0,scope_count=0,open_scopes=0;
+  std::atomic<uint64_t> correlation_overflow{0},correlation_errors{0};
   uint8_t callback_enabled[kResourceIdCount] = {0};
   uint8_t cleanup_failed = 0;
   uint64_t context_bind_event_count = 0;
@@ -540,6 +556,7 @@ void free_session_storage(Session *s) {
   delete[] s->kernels;
   delete[] s->copies;
   delete[] s->events;
+  delete[] s->apis;delete[] s->external;delete[] s->scopes;
   delete[] s->slots;
   delete[] s->nodes;
   delete[] s->node_handles;
@@ -553,6 +570,7 @@ void free_session_storage(Session *s) {
   s->kernels = nullptr;
   s->copies = nullptr;
   s->events = nullptr;
+  s->apis=nullptr;s->external=nullptr;s->scopes=nullptr;
   s->slots = nullptr;
   s->nodes = nullptr;
   s->node_handles = nullptr;
@@ -852,6 +870,7 @@ void add_exec(Session *s, const CUpti_ActivityKernel10 *record) {
   }
   ExecRec &out = s->kernels[s->kernel_count++];
   out.kind = kRecKernel;
+  out.correlation_id=record->correlationId;
   out.stream_id = record->streamId;
   out.context_id = record->contextId;
   out.device_id = record->deviceId;
@@ -905,12 +924,13 @@ void add_exec(Session *s, const CUpti_ActivityKernel10 *record) {
 
 void add_copy(Session *s, RecKind kind, uint32_t context_id, uint32_t device_id,
               uint32_t graph_id, uint64_t graph_node_id, uint64_t start,
-              uint64_t end, uint32_t stream_id = 0, uint32_t copy_kind = 0) {
+              uint64_t end, uint32_t stream_id = 0, uint32_t copy_kind = 0, uint32_t correlation_id = 0) {
   if (s->copy_count >= s->limits.max_copy_records) {
     ++s->ring_copy_overflow;
     return;
   }
   CopyRec &out = s->copies[s->copy_count++];
+  out.correlation_id=correlation_id;
   out.stream_id = stream_id;
   out.copy_kind = copy_kind;
   out.kind = kind;
@@ -957,7 +977,7 @@ void parse_buffer(Session *s, uint8_t *buffer, size_t valid_size) {
         const auto *r = reinterpret_cast<const CUpti_ActivityMemcpy6 *>(record);
         if (in_window) {
           add_copy(s, kRecMemcpy, r->contextId, r->deviceId, r->graphId,
-                   r->graphNodeId, r->start, r->end, r->streamId, r->copyKind);
+                   r->graphNodeId, r->start, r->end, r->streamId, r->copyKind, r->correlationId);
           ++s->records_in_window;
         } else {
           ++s->records_after_window;
@@ -968,11 +988,33 @@ void parse_buffer(Session *s, uint8_t *buffer, size_t valid_size) {
         const auto *r = reinterpret_cast<const CUpti_ActivityMemset4 *>(record);
         if (in_window) {
           add_copy(s, kRecMemset, r->contextId, r->deviceId, r->graphId,
-                   r->graphNodeId, r->start, r->end, r->streamId, 0);
+                   r->graphNodeId, r->start, r->end, r->streamId, 0, r->correlationId);
           ++s->records_in_window;
         } else {
           ++s->records_after_window;
         }
+        break;
+      }
+      case CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION: {
+        if(!s->correlation_enabled){++s->unknown_activity_records;break;}
+        if(!in_window){++s->records_after_window;break;}
+        const auto*r=reinterpret_cast<const CUpti_ActivityExternalCorrelation*>(record);
+        if(s->external_count>=kCorrCapacity){++s->correlation_overflow;break;}
+        auto&o=s->external[s->external_count++];o.correlation=r->correlationId;o.kind=r->externalKind;o.external=r->externalId;
+        break;
+      }
+      case CUPTI_ACTIVITY_KIND_DRIVER:
+      case CUPTI_ACTIVITY_KIND_RUNTIME: {
+        if(!s->correlation_enabled){++s->unknown_activity_records;break;}
+        if(!in_window){++s->records_after_window;break;}
+        const auto*r=reinterpret_cast<const CUpti_ActivityAPI*>(record);
+        if(s->api_count>=kCorrCapacity){++s->correlation_overflow;break;}
+        auto&o=s->apis[s->api_count++];o.domain=record->kind;o.correlation=r->correlationId;
+        o.thread=r->threadId;o.result=r->returnValue;o.start=r->start;o.end=r->end;
+        const char*name=nullptr;
+        auto domain=record->kind==CUPTI_ACTIVITY_KIND_DRIVER?CUPTI_CB_DOMAIN_DRIVER_API:CUPTI_CB_DOMAIN_RUNTIME_API;
+        if(cuptiGetCallbackName(domain,r->cbid,&name)!=CUPTI_SUCCESS||!name||strnlen(name,sizeof(o.name))>=sizeof(o.name))++s->correlation_errors;
+        else std::memcpy(o.name,name,std::strlen(name)+1);
         break;
       }
       default:
@@ -2801,8 +2843,9 @@ int cleanup_start_failure(Session *s, int original_status) {
       CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
       CUPTI_ACTIVITY_KIND_MEMCPY,
       CUPTI_ACTIVITY_KIND_MEMSET,
+      CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION, CUPTI_ACTIVITY_KIND_RUNTIME, CUPTI_ACTIVITY_KIND_DRIVER,
   };
-  for (uint32_t i = 0; i < 4; ++i) {
+  for (uint32_t i = 0; i < 7; ++i) {
     if (s->activity_enabled[i] == 0) continue;
     if (cuptiActivityDisable(kinds[i]) == CUPTI_SUCCESS) {
       s->activity_enabled[i] = 0;
@@ -2923,6 +2966,7 @@ int start_impl(Session *s) {
 }
 
 int stop_impl(Session *s) {
+  if(s->correlation_enabled&&s->open_scopes)return S5RO_BUSY;
   if (s->state == kWindow) return S5RO_WINDOW_ACTIVE;
   if (s->state == kCreated || s->state == kStopped) return S5RO_STATE;
   if (s->state != kStarted && s->state != kEnded &&
@@ -2934,9 +2978,10 @@ int stop_impl(Session *s) {
       CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
       CUPTI_ACTIVITY_KIND_MEMCPY,
       CUPTI_ACTIVITY_KIND_MEMSET,
+      CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION, CUPTI_ACTIVITY_KIND_RUNTIME, CUPTI_ACTIVITY_KIND_DRIVER,
   };
   bool disable_ok = true;
-  for (uint32_t i = 0; i < 4; ++i) {
+  for (uint32_t i = 0; i < 7; ++i) {
     if (s->activity_enabled[i] == 0) continue;
     if (cuptiActivityDisable(kinds[i]) == CUPTI_SUCCESS) {
       s->activity_enabled[i] = 0;
@@ -3294,6 +3339,88 @@ int s5ro_activity_census(uint64_t session,uint64_t start,uint64_t end,
  }catch(...){return S5RO_INTERNAL_ERROR;}
 }
 
+int s5ro_correlation_enable(uint64_t session){
+ auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
+ std::lock_guard<std::mutex> op(s->op_mu);
+ if(s->state!=kStarted||s->correlation_enabled)return S5RO_STATE;
+ const uint64_t bytes=kCorrCapacity*(sizeof(ApiRec)+sizeof(ExternalRec)+sizeof(ScopeRec));
+ if(s->reserved_bytes+bytes>kMaxReservedBytes)return S5RO_LIMIT_EXCEEDED;
+ std::unique_ptr<ApiRec[]>a(alloc_array<ApiRec>(kCorrCapacity));
+ std::unique_ptr<ExternalRec[]>e(alloc_array<ExternalRec>(kCorrCapacity));
+ std::unique_ptr<ScopeRec[]>q(alloc_array<ScopeRec>(kCorrCapacity));
+ if(!a||!e||!q)return S5RO_INTERNAL_ERROR;
+ s->apis=a.release();s->external=e.release();s->scopes=q.release();
+ s->reserved_bytes+=bytes;s->correlation_enabled=true;return S5RO_OK;
+}
+
+int s5ro_offer_push(uint64_t session,uint64_t id,uint32_t generation){
+ auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
+ std::lock_guard<std::mutex> op(s->op_mu);
+ if(s->state!=kWindow||!s->correlation_enabled||generation!=s->window_route_generation||!id||tl_scopes.size()>=32){++s->correlation_errors;return S5RO_STATE;}
+ if(!tl_scopes.empty()&&tl_scopes.back().session!=session){++s->correlation_errors;return S5RO_STATE;}
+ try{if(tl_scopes.capacity()<32)tl_scopes.reserve(32);}catch(...){++s->correlation_errors;return S5RO_INTERNAL_ERROR;}
+ if(cuptiActivityPushExternalCorrelationId(CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0,id)!=CUPTI_SUCCESS){++s->correlation_errors;return S5RO_STATE;}
+ uint64_t parent=tl_scopes.empty()?0:tl_scopes.back().id;
+ tl_scopes.push_back({session,id});++s->open_scopes;
+ std::lock_guard<std::recursive_mutex> cb(s->cb_mu);
+ if(s->scope_count>=kCorrCapacity)++s->correlation_overflow;
+ else s->scopes[s->scope_count++]={id,parent,static_cast<uint32_t>(syscall(SYS_gettid)),1};
+ return S5RO_OK;
+}
+int s5ro_offer_pop(uint64_t session,uint64_t id){
+ auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
+ std::lock_guard<std::mutex> op(s->op_mu);
+ if(!s->correlation_enabled||tl_scopes.empty()||tl_scopes.back().session!=session||tl_scopes.back().id!=id){++s->correlation_errors;return S5RO_STATE;}
+ uint64_t got=0;if(cuptiActivityPopExternalCorrelationId(CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0,&got)!=CUPTI_SUCCESS||got!=id){++s->correlation_errors;return S5RO_STATE;}
+ tl_scopes.pop_back();--s->open_scopes;
+ std::lock_guard<std::recursive_mutex> cb(s->cb_mu);
+ if(s->scope_count>=kCorrCapacity)++s->correlation_overflow;
+ else s->scopes[s->scope_count++]={id,0,static_cast<uint32_t>(syscall(SYS_gettid)),2};
+ return S5RO_OK;
+}
+int s5ro_correlation_report(uint64_t session,char*out,uint64_t cap,uint64_t*len){
+ if(!out||!len)return S5RO_BAD_ARGS;
+ *len=0;
+ auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
+ std::lock_guard<std::mutex> op(s->op_mu);
+ if(!s->correlation_enabled||s->state!=kEnded)return S5RO_STATE;
+ std::lock_guard<std::recursive_mutex> cb(s->cb_mu);
+ try{
+ using Key=std::tuple<uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,std::string>;
+ std::map<Key,uint64_t> rows;uint64_t boundary=0,records=0;
+ auto add=[&](uint32_t corr,uint32_t kind,uint32_t ctx,uint32_t stream,uint32_t graph,uint32_t direction,const char*name,uint64_t a,uint64_t b){
+   if(!a||b<=a||a<s->window_start||b>s->window_end){++boundary;return;}
+   ++rows[Key(corr,kind,ctx,stream,graph,direction,std::string(name))];++records;
+ };
+ for(uint32_t i=0;i<s->kernel_count;i++){const auto&r=s->kernels[i];add(r.correlation_id,kRecKernel,r.context_id,r.stream_id,r.graph_id,0,r.name,r.start,r.end);}
+ for(uint32_t i=0;i<s->copy_count;i++){const auto&r=s->copies[i];add(r.correlation_id,r.kind,r.context_id,r.stream_id,r.graph_id,r.copy_kind,"",r.start,r.end);}
+ for(uint32_t i=0;i<s->api_count;i++){const auto&r=s->apis[i];if(!r.start||r.end<r.start||r.start<s->window_start||r.end>s->window_end)++boundary;}
+ Json j(out,cap);j.open_obj();j.key("schema");j.string("s5ro-correlation/1");
+ j.key("complete");j.boolean(!s->correlation_errors&&!s->correlation_overflow&&!s->open_scopes&&!boundary);
+ j.key("capacity");j.u64(kCorrCapacity);j.key("reserved_bytes");j.u64(s->reserved_bytes);
+ j.key("errors");j.u64(s->correlation_errors);j.key("overflow");j.u64(s->correlation_overflow);
+ j.key("open_scopes");j.u64(s->open_scopes);j.key("boundary_records");j.u64(boundary);
+ j.key("activity_records");j.u64(records);j.key("apis");j.open_arr();
+ for(uint32_t i=0;i<s->api_count;i++){const auto&r=s->apis[i];j.open_obj();
+  j.key("domain");j.string(r.domain==CUPTI_ACTIVITY_KIND_RUNTIME?"runtime":"driver");j.key("name");j.string(r.name);
+  j.key("correlation_id");j.u64(r.correlation);j.key("thread");j.u64(r.thread);j.key("return_value");j.u64(r.result);
+  j.key("start");j.u64(r.start);j.key("end");j.u64(r.end);j.close_obj();}j.close_arr();
+ j.key("external");j.open_arr();for(uint32_t i=0;i<s->external_count;i++){const auto&r=s->external[i];j.open_obj();
+  j.key("kind");j.string(r.kind==CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0?"custom0":"unsupported");
+  j.key("correlation_id");j.u64(r.correlation);j.key("external_id");j.u64(r.external);j.close_obj();}j.close_arr();
+ j.key("scopes");j.open_arr();for(uint32_t i=0;i<s->scope_count;i++){const auto&r=s->scopes[i];j.open_obj();
+  j.key("id");j.u64(r.id);j.key("parent");j.u64(r.parent);j.key("thread");j.u64(r.thread);
+  j.key("action");j.string(r.action==1?"push":"pop");j.close_obj();}j.close_arr();
+ j.key("activities");j.open_arr();for(const auto&it:rows){const auto&k=it.first;j.open_obj();
+  j.key("correlation_id");j.u64(std::get<0>(k));j.key("kind");j.string(std::get<1>(k)==kRecKernel?"kernel":std::get<1>(k)==kRecMemcpy?"memcpy":"memset");
+  j.key("context_id");j.u64(std::get<2>(k));j.key("stream_id");j.u64(std::get<3>(k));j.key("graph_id");j.u64(std::get<4>(k));
+  j.key("copy_kind");j.u64(std::get<5>(k));j.key("name");j.string(std::get<6>(k).c_str());j.key("count");j.u64(it.second);j.close_obj();}j.close_arr();
+ j.close_obj();*len=j.len;if(j.truncated()||j.bad)return S5RO_TRUNCATED;
+ if(cap>j.len)out[j.len]=0;
+ return S5RO_OK;
+ }catch(...){return S5RO_INTERNAL_ERROR;}
+}
+
 int s5ro_begin_window(uint64_t session, uint32_t route_generation,
                       uint64_t *token_out) {
   if (token_out == nullptr) return S5RO_BAD_ARGS;
@@ -3327,8 +3454,9 @@ int s5ro_begin_window(uint64_t session, uint32_t route_generation,
       CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
       CUPTI_ACTIVITY_KIND_MEMCPY,
       CUPTI_ACTIVITY_KIND_MEMSET,
+      CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION, CUPTI_ACTIVITY_KIND_RUNTIME, CUPTI_ACTIVITY_KIND_DRIVER,
   };
-  for (uint32_t i = 0; i < 3; ++i) {
+  for (uint32_t i = 0; i < (s->correlation_enabled?6u:3u); ++i) {
     if (cuptiActivityEnable(execution_kinds[i]) != CUPTI_SUCCESS) {
       ++s->callback_errors;
       s->state = kQuarantined;
@@ -3389,6 +3517,7 @@ int s5ro_end_window(uint64_t session, uint64_t window_token,
     std::lock_guard<std::recursive_mutex> lock(s->cb_mu);
     s->window_end = end;
   }
+  if(s->correlation_enabled&&s->open_scopes)++s->correlation_errors;
   s->end_flushing = 1;
   // Work is drained, but retain window_active until all queued records have
   // been delivered. A disable failure remains a permanent incomplete proof.
@@ -3396,8 +3525,9 @@ int s5ro_end_window(uint64_t session, uint64_t window_token,
       CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL,
       CUPTI_ACTIVITY_KIND_MEMCPY,
       CUPTI_ACTIVITY_KIND_MEMSET,
+      CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION, CUPTI_ACTIVITY_KIND_RUNTIME, CUPTI_ACTIVITY_KIND_DRIVER,
   };
-  for (uint32_t i = 0; i < 3; ++i) {
+  for (uint32_t i = 0; i < (s->correlation_enabled?6u:3u); ++i) {
     if (s->activity_enabled[i + 1] == 0) continue;
     if (cuptiActivityDisable(execution_kinds[i]) == CUPTI_SUCCESS) {
       s->activity_enabled[i + 1] = 0;

@@ -10,6 +10,8 @@
 #include <set>
 #include <thread>
 #include <vector>
+#include <unistd.h>
+#include <sys/syscall.h>
 
 #include "cuda.h"
 #include "cupti_activity.h"
@@ -716,3 +718,25 @@ CUptiResult cuptiGetGraphNodeId(CUgraphNode node, uint64_t *nodeId) {
 }
 
 }  // extern "C"
+
+namespace {thread_local std::vector<uint64_t> stub_external_stack;}
+extern "C" {
+CUptiResult cuptiActivityPushExternalCorrelationId(CUpti_ExternalCorrelationKind,uint64_t id){stub_external_stack.push_back(id);return CUPTI_SUCCESS;}
+CUptiResult cuptiActivityPopExternalCorrelationId(CUpti_ExternalCorrelationKind,uint64_t*out){
+ if(stub_external_stack.empty())return CUPTI_ERROR_INVALID_PARAMETER;
+ *out=stub_external_stack.back();stub_external_stack.pop_back();return CUPTI_SUCCESS;}
+CUptiResult cuptiGetCallbackName(CUpti_CallbackDomain d,CUpti_CallbackId cb,const char**out){
+ *out=cb==1?(d==CUPTI_CB_DOMAIN_DRIVER_API?"cuLaunchKernel":"cudaLaunchKernel_v7000"):"cuStreamSynchronize";
+ return CUPTI_SUCCESS;}
+void stub_emit_correlated(uint32_t c,uint64_t offer,uint32_t domain,uint32_t thread,
+ uint64_t start,uint64_t end,uint32_t ctx,uint32_t graph,uint64_t node,uint32_t activity){
+ CUpti_ActivityAPI a{};a.kind=static_cast<CUpti_ActivityKind>(domain);a.record_size=sizeof(a);
+ a.cbid=1;a.correlationId=c;a.threadId=thread;a.start=start;a.end=end;
+ queue_record(a);
+ CUpti_ActivityExternalCorrelation e{};e.kind=CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION;e.record_size=sizeof(e);
+ e.externalKind=CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0;e.correlationId=c;e.externalId=offer;queue_record(e);
+ if(activity){CUpti_ActivityKernel10 k{};k.kind=CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL;k.record_size=sizeof(k);
+ k.contextId=ctx;k.graphId=graph;k.graphNodeId=node;k.correlationId=c;k.streamId=9;k.name="correlated_fixture";
+ k.start=end+1;k.end=end+10;k.completed=end+10;queue_record(k);}
+}
+}

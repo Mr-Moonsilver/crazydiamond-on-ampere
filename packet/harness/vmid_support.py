@@ -19,13 +19,13 @@ def combine(rows):
 
 def monitor(out, container):
     """One-second all-app evidence; only our named container can be stopped."""
-    if container not in ('flashnext-job2', 'flashnext-job2b', 'flashnext-job3', 'flashnext-job4', 'flashnext-job5', 'flashnext-job5b', 'flashnext-job6', 'flashnext-job7', 'flashnext-job7b', 'flashnext-job8'):
+    if container not in ('flashnext-job2', 'flashnext-job2b', 'flashnext-job3', 'flashnext-job4', 'flashnext-job5', 'flashnext-job5b', 'flashnext-job6', 'flashnext-job7', 'flashnext-job7b', 'flashnext-job8','flashnext-job9'):
         raise ValueError('unowned_container')
     summary = {'schema': 'vm<vm-id>-memory/1', 'samples': 0, 'own_samples': 0,
                'own_peak_mib': 0, 'errors': 0, 'stop_triggered': False,
                'cap_mib': CAP_MIB, 'stop_mib': STOP_MIB,
                'basis': '1s sampled process memory, not a hard instantaneous native-memory cap; Vulkan may be absent from compute-apps'}
-    deadline = time.monotonic() + (540 if container in ('flashnext-job4','flashnext-job6', 'flashnext-job7', 'flashnext-job7b', 'flashnext-job8') else 240)
+    deadline = time.monotonic() + (540 if container in ('flashnext-job4','flashnext-job6', 'flashnext-job7', 'flashnext-job7b', 'flashnext-job8','flashnext-job9') else 240)
     consecutive_errors = 0
     with (out / 'compute-apps.jsonl').open('x') as f:
         while True:

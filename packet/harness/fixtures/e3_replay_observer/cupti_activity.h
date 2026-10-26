@@ -14,6 +14,9 @@
 typedef enum CUpti_ActivityKind {
   CUPTI_ACTIVITY_KIND_MEMCPY = 1,
   CUPTI_ACTIVITY_KIND_MEMSET = 2,
+  CUPTI_ACTIVITY_KIND_DRIVER = 4,
+  CUPTI_ACTIVITY_KIND_RUNTIME = 5,
+  CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION = 39,
   CUPTI_ACTIVITY_KIND_CONTEXT = 9,
   CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL = 10
 } CUpti_ActivityKind;
@@ -23,6 +26,15 @@ typedef struct CUpti_Activity {
   uint32_t record_size;
 } CUpti_Activity;
 
+typedef enum {CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0=3} CUpti_ExternalCorrelationKind;
+typedef struct {
+ CUpti_ActivityKind kind;uint32_t record_size;uint32_t cbid;uint64_t start,end;
+ uint32_t processId,threadId,correlationId,returnValue;
+} CUpti_ActivityAPI;
+typedef struct {
+ CUpti_ActivityKind kind;uint32_t record_size;CUpti_ExternalCorrelationKind externalKind;
+ uint64_t externalId;uint32_t correlationId;
+} CUpti_ActivityExternalCorrelation;
 typedef struct CUpti_ActivityContext3 {
   CUpti_ActivityKind kind;
   uint32_t record_size;
@@ -112,6 +124,8 @@ typedef struct CUpti_ActivityMemset4 {
 extern "C" {
 #endif
 
+CUptiResult cuptiActivityPushExternalCorrelationId(CUpti_ExternalCorrelationKind,uint64_t);
+CUptiResult cuptiActivityPopExternalCorrelationId(CUpti_ExternalCorrelationKind,uint64_t*);
 CUptiResult cuptiActivityGetNextRecord(uint8_t *buffer,
                                        size_t validBufferSizeBytes,
                                        CUpti_Activity **record);

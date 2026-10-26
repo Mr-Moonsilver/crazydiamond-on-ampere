@@ -513,6 +513,64 @@ class ObserverCleanTests(ObserverTestBase):
         self.assertEqual(receipt['replay']['counts']['kernel_records'], 2)
         self.assertEqual(receipt['replay']['mapping']['node_keys'], 3)
 
+class ObserverCorrelationTests(ObserverTestBase):
+    def configure(self):
+        import activity_accounting as a
+        self.open_clean()
+        self.bridge=a.CorrelationBridge(self.session,epoch=1,generation=ROUTE_GENERATION)
+        f=self.ctl.stub_emit_correlated
+        f.argtypes=[ctypes.c_uint32,ctypes.c_uint64,ctypes.c_uint32,ctypes.c_uint32,
+                    ctypes.c_uint64,ctypes.c_uint64,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint64,ctypes.c_uint32]
+        f.restype=None
+        self.begin()
+        return self.bridge
+
+    def test_actual_c_abi_deferred_ids_nested_exception_pop_and_readonly_report(self):
+        import threading
+        b=self.configure()
+        with b.offer('outer',{},context_id=7,stream_id=9):
+            try:
+                with b.offer('inner',{'kernel':1},context_id=7,stream_id=9) as o:
+                    self.ctl.stub_emit_correlated(10,o['id'],5,threading.get_native_id(),1100,1500,7,0,0,0)
+                    self.ctl.stub_emit_correlated(11,o['id'],4,threading.get_native_id(),1200,1400,7,0,0,1)
+                    raise ValueError('CPU fixture')
+            except ValueError:pass
+        self.end();r=b.report()
+        self.assertEqual(r['grade']['verdict'],'PASS',r['grade'])
+        self.assertEqual(r['native']['open_scopes'],0)
+        self.assertEqual(r,b.report())
+        self.assertEqual(r['grade']['joined_records'],1)
+        self.assertEqual(len(r['grade']['wrappers']),1)
+        self.assertTrue(b.offers[1]['body_exception'])
+
+    def test_native_two_threads_scopes_do_not_leak_between_threads(self):
+        import threading
+        b=self.configure();errors=[]
+        def work(c):
+            try:
+                with b.offer('thread',{'kernel':1},context_id=7,stream_id=9) as o:
+                    # No concurrent stub buffer mutation; native TLS itself is
+                    # tested on two distinct threads using a CPU lock.
+                    with lock:self.ctl.stub_emit_correlated(c,o['id'],4,threading.get_native_id(),1100+c,1200+c,7,0,0,1)
+            except Exception as e:errors.append(type(e).__name__)
+        lock=threading.Lock();ts=[threading.Thread(target=work,args=(i,)) for i in (10,20)]
+        for t in ts:t.start()
+        for t in ts:t.join()
+        self.assertEqual(errors,[]);self.end();r=b.report()
+        self.assertEqual(r['grade']['verdict'],'PASS',r['grade'])
+        self.assertEqual(len({x['thread'] for x in r['offers']}),2)
+
+    def test_wrong_pop_and_stale_generation_remain_poisoned_after_cleanup(self):
+        b=self.configure()
+        with b.offer('empty',{},context_id=7,stream_id=9) as o:
+            self.assertNotEqual(b.lib.s5ro_offer_pop(b.token,o['id']+1),0)
+            self.assertNotEqual(b.lib.s5ro_offer_push(b.token,99,ROUTE_GENERATION-1),0)
+        self.end();r=b.report()
+        self.assertEqual(r['grade']['verdict'],'INCONCLUSIVE')
+        self.assertEqual(r['native']['errors'],2)
+        self.assertEqual(r['native']['open_scopes'],0)
+
+
 class ObserverContextTests(ObserverTestBase):
     def test_activity_census_counts_graph_zero_all_kinds_without_waiving_guard(self):
         self.open_clean();self.begin()

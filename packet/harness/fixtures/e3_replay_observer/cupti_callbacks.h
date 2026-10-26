@@ -11,6 +11,7 @@
 typedef uint32_t CUpti_CallbackId;
 
 typedef enum CUpti_CallbackDomain {
+  CUPTI_CB_DOMAIN_DRIVER_API=1, CUPTI_CB_DOMAIN_RUNTIME_API=2,
   CUPTI_CB_DOMAIN_RESOURCE = 3
 } CUpti_CallbackDomain;
 
@@ -71,6 +72,7 @@ enum {
 extern "C" {
 #endif
 
+CUptiResult cuptiGetCallbackName(CUpti_CallbackDomain,CUpti_CallbackId,const char**);
 CUptiResult cuptiSubscribe(CUpti_SubscriberHandle *subscriber,
                            CUpti_CallbackFunc callback, void *userdata);
 CUptiResult cuptiUnsubscribe(CUpti_SubscriberHandle subscriber);
