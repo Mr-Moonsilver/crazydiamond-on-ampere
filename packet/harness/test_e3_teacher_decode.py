@@ -201,6 +201,39 @@ class GradeTests(unittest.TestCase):
 
 
 class ClientTests(unittest.TestCase):
+    def test_real_instrument_cohort_survives_shared_result_assembly(self):
+        from dataclasses import replace
+        from unittest import mock
+        import e3_decode_correctness as dc
+        import e3_teacher_decode_client as client
+        calls=[]
+        def post(url,path,body):
+            calls.append(path)
+            return {'tokens':[len(calls)]*900}
+        instrument=client.Instrument(ROOT/'harness/baselines/q15-teacher-forced-rule3.json',post=post)
+        cfg=dc.config_from_env({'RUN_ID':'teacher-assembly-fixture','CONTROLLER_CMD':'false',
+            'WORKLOAD':str(ROOT/'harness/workloads/q17b-teacher-decode-v3.json')},
+            Path('unused-teacher-artifact.json'))
+        cfg=replace(cfg,instrument=instrument)
+        def measure(cfg,controller,ctx,index,label,route,cohort):
+            return dc._not_run_record(index,label,route,'offline-no-engine')
+        # Exercise the actual cohort, teacher finish, and shared artifact
+        # assembly. Only the network/controller measurement is replaced.
+        with mock.patch.object(dc,'measure_run',side_effect=measure):
+            result=dc.run(cfg,'http://unused','fixture',object(),source={'verified':True})
+        self.assertEqual(len(calls),16)
+        self.assertEqual([r['stream'] for r in result['workload']['prompts']],list(range(8)))
+        self.assertEqual(result['verdict'],'INCONCLUSIVE')
+        self.assertIn('teacher_forced',result)
+        self.assertTrue(all(r['not_run'] for r in result['runs']))
+        bad=instrument.cohort('http://unused','fixture')
+        bad[0].pop('stream')
+        with mock.patch.object(instrument,'cohort',return_value=bad), \
+             mock.patch.object(dc,'measure_run') as measure:
+            with self.assertRaisesRegex(dc.ConfigError,'cohort artifact identities incomplete'):
+                dc.run(cfg,'http://unused','fixture',object(),source={'verified':True})
+        measure.assert_not_called()
+
     def instrument(self):
         import e3_teacher_decode_client as client
         i=client.Instrument.__new__(client.Instrument);i.snapshot_max_bytes=2*1024**3;i.plan_shas={}

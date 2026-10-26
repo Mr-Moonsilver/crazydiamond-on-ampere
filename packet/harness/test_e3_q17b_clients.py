@@ -54,6 +54,36 @@ def bound_call(action, receipt):
 
 
 class PlacementTests(unittest.TestCase):
+    def test_teacher_exception_retains_placement_fail_and_writes_final_grade(self):
+        data=audit_data()
+        call=data['runs'][0]['calls'][1]
+        call['receipt']['observer']['ranks'][0]['receipt']['replay']['verdict']='FAIL'
+        data['runs'][0]['calls'][1]=bound_call('pause_end',call['receipt'])
+        with tempfile.TemporaryDirectory() as tmp:
+            args=types.SimpleNamespace(url='http://127.0.0.1:8000',model='fixture',
+                run_id='teacher-exception',out=Path(tmp)/'out',api_source=Path(tmp),
+                teacher_baseline=HERE/'baselines/q15-teacher-forced-rule3.json',
+                teacher_workload=HERE/'workloads/q17b-teacher-decode-v3.json',
+                snapshot_max_bytes=2*1024**3,
+                correctness_workload=HERE/'workloads/q17b-correctness-precontrols.json',
+                w1_workload=HERE/'workloads/q17b-w1.json')
+            ctrl=types.SimpleNamespace(execute=mock.Mock(return_value=({},{})))
+            with mock.patch.object(c,'verify_sources',return_value=({'verified':True},[])), \
+                 mock.patch.object(c,'run',side_effect=[data,KeyError('sensitive-fixture-value')]), \
+                 mock.patch.object(q,'final_status_grade',return_value={'verdict':'PASS'}), \
+                 mock.patch.object(w1,'run') as perf:
+                result=q.run(args,env={},controller=ctrl)
+            perf.assert_not_called()
+            ctrl.execute.assert_called_once()
+            self.assertEqual(result['verdict'],'FAIL')
+            self.assertEqual(result['outcomes']['placement'],'FAIL')
+            self.assertEqual(result['outcomes']['teacher_forced'],'INCONCLUSIVE')
+            self.assertEqual(result['outcomes']['performance'],'NOT_RUN')
+            self.assertEqual(json.loads((args.out/'clients-grade.json').read_text()),result)
+            teacher=json.loads((args.out/'teacher-forced.json').read_text())
+            self.assertEqual(teacher['error_type'],'KeyError')
+            self.assertNotIn('sensitive-fixture-value',json.dumps(teacher))
+
     def test_partial_or_duplicate_replays_cannot_pass_multiplicity(self):
         for kind in ('lost_replay','balanced_loss_duplicate','missing_census',
                      'extra_record','count_backwards','unknown_descriptor'):

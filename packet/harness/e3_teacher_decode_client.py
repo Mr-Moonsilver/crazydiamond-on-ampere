@@ -65,7 +65,8 @@ class Instrument:
         rng=random.Random(7)
         self.traces=[self.token_ids(url,model,rng,TOTAL) for _ in range(8)]
         if len({digest(t) for t in self.traces})!=8:raise ValueError('teacher trace identities collide')
-        return [dict(prompt=p,prompt_sha256=digest(p),prompt_chars=0) for p in self.prompts]
+        return [dict(stream=n,prompt=p,prompt_sha256=digest(p),prompt_chars=0)
+                for n,p in enumerate(self.prompts)]
 
     def requests(self,bodies,cohort,repeat):
         rows=[]

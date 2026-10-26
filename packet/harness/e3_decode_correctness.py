@@ -1843,6 +1843,15 @@ def run(cfg, url, model, controller, source=None, context=None):
     }
     cohort = (cfg.instrument.cohort(url, model) if cfg.instrument is not None
               else build_cohort(cfg.workload))
+    # These identities are needed both by measurement and final serialization.
+    # Reject malformed adapters before opening any engine requests, rather than
+    # discovering a missing field after an otherwise completed experiment.
+    if (type(cohort) is not list or len(cohort) != cfg.workload.streams
+            or any(type(row) is not dict or type(row.get('stream')) is not int
+                   or row['stream'] != index
+                   or not {'prompt','prompt_sha256','prompt_chars'} <= row.keys()
+                   for index,row in enumerate(cohort))):
+        raise ConfigError('cohort artifact identities incomplete')
     ctx = {
         'model': model,
         'url': url,

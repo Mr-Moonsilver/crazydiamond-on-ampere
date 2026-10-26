@@ -346,7 +346,16 @@ def run(args, env=None, controller=None):
     instrument=Instrument(args.teacher_baseline,snapshot_max_bytes=args.snapshot_max_bytes)
     cfg=correctness.config_from_env(dict(env,WORKLOAD=str(args.teacher_workload)),out/'teacher-forced.json')
     cfg=replace(cfg,instrument=instrument)
-    teacher=correctness.run(cfg,url,args.model,controller,source=source,context=context)
+    try:
+        teacher=correctness.run(cfg,url,args.model,controller,source=source,context=context)
+    except Exception as exc:
+        # A result-assembly failure may occur AFTER engine work. Do not call
+        # this NOT_RUN, retry it, or erase an already recorded placement FAIL.
+        # Exception values can contain request data: retain only their type.
+        teacher={'schema':1,'verdict':'INCONCLUSIVE',
+                 'verdict_reasons':['teacher_client_exception'],
+                 'error_type':type(exc).__name__,
+                 'evidence_scope':'teacher execution may have occurred; result unavailable'}
     write(out/'teacher-forced.json',teacher)
     data_exact=data_invariant_grade(teacher)
     write(out/'data-invariant.json',data_exact)
