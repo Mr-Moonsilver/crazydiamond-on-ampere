@@ -36,6 +36,8 @@ struct NodeEntry {
   uint64_t handle = 0;
   uint64_t id = 0;
   int32_t type = 0;
+  int params_rc=0;
+  CUDA_KERNEL_NODE_PARAMS params{reinterpret_cast<void*>(1),nullptr,nullptr};
 };
 
 struct ExecEntry {
@@ -515,6 +517,14 @@ CUresult cuGraphGetNodes(CUgraph hGraph, CUgraphNode *nodes, size_t *numNodes) {
   return 0;
 }
 
+void stub_node_params(uint64_t node,int rc,int func,int kern,uint64_t ctx){
+ auto*n=find_node(node);if(!n)return;n->params_rc=rc;
+ n->params={func?reinterpret_cast<void*>(1):nullptr,kern?reinterpret_cast<void*>(2):nullptr,reinterpret_cast<CUcontext>(ctx)};
+}
+CUresult cuGraphKernelNodeGetParams(CUgraphNode node,CUDA_KERNEL_NODE_PARAMS*p){
+ auto*n=find_node(reinterpret_cast<uintptr_t>(node));if(!n||!p)return 1;
+ *p=n->params;return n->params_rc;
+}
 CUresult cuGraphNodeGetType(CUgraphNode hNode, CUgraphNodeType *type) {
   if (type == nullptr) return 1;
   NodeEntry *entry = find_node(reinterpret_cast<uintptr_t>(hNode));

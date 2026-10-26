@@ -43,6 +43,8 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <map>
+#include <tuple>
 
 namespace {
 
@@ -229,6 +231,7 @@ struct ExecRec {
   uint64_t launch[kLaunchFields]={0};
   char name[1024]={0};
   uint8_t launch_complete=0;
+  uint32_t stream_id=0;
   uint32_t kind = 0;
   uint32_t context_id = 0;
   uint32_t device_id = 0;
@@ -267,6 +270,7 @@ struct EventRec {
 };
 
 struct NodeInfo {
+  CUgraphNode retained_handle=nullptr; // private; never serialized
   uint64_t node_id = 0;
   uint32_t local_index = 0;
   int32_t node_type = -1;
@@ -410,6 +414,7 @@ struct Session {
   uint32_t expected_sms = 0;
   uint8_t expected_known = 0;
 
+  uint32_t diag_graphs=0,diag_keys=0,diag_aliases=0;
   uint32_t window_route_generation = 0;
   uint64_t window_token = 0;
   uint64_t sample_start=0, sample_end=0;
@@ -844,6 +849,7 @@ void add_exec(Session *s, const CUpti_ActivityKernel10 *record) {
   }
   ExecRec &out = s->kernels[s->kernel_count++];
   out.kind = kRecKernel;
+  out.stream_id = record->streamId;
   out.context_id = record->contextId;
   out.device_id = record->deviceId;
   out.graph_id = record->graphId;
@@ -1316,6 +1322,7 @@ int bind_graph_impl(Session *s, uint64_t graph_handle, uint32_t slot_index,
   for (uint32_t i = 0; i < slot.node_count; ++i) {
     NodeInfo &node = s->nodes[s->node_used + i];
     node.local_index = i;
+    node.retained_handle=s->node_handles[i];
     node.node_type = -1;
     CUgraphNodeType type = CU_GRAPH_NODE_TYPE_EMPTY;
     if (cuGraphNodeGetType(s->node_handles[i], &type) == CUDA_SUCCESS) {
@@ -2239,6 +2246,57 @@ void analyze_window(Session *s, uint32_t graph_count, uint32_t key_count,
   }
 }
 
+
+// Diagnostic only: CUPTI IDs, never CUDA handles/arguments. Allocations occur
+// after drain, never in callbacks; capped output cannot masquerade as complete.
+void emit_context_diagnostics(Session *s,uint32_t graphs,uint32_t keys,
+ uint32_t aliases,uint64_t start,uint64_t end,bool census,Json &j){
+ constexpr size_t cap=4096;
+ using Key=std::tuple<uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint64_t>;
+ std::map<Key,uint64_t> rows;uint64_t eligible=0,omitted=0,boundary=0;
+ for(uint32_t i=0;i<s->kernel_count;++i){const auto&r=s->kernels[i];
+  if(!start||!end||!r.start||!r.end||r.end<r.start||r.end<start||r.start>end)continue;
+  if(r.start<start||r.end>end){++boundary;continue;}++eligible;
+  auto g=graph_lookup(s,r.graph_id,graphs);uint32_t slot=kNoSlot,index=kNoSlot;
+  if(!g.ambiguous&&g.slot!=kNoSlot){slot=g.slot;uint32_t n=0;
+   auto found=resolve_activity_node(s,slot,r.graph_node_id,keys,aliases,&n);
+   if(found.found&&!found.ambiguous)index=n;}
+  Key k(slot,index,r.context_id,r.stream_id,r.graph_id,r.graph_node_id);
+  auto it=rows.find(k);if(it!=rows.end())++it->second;
+  else if(rows.size()<cap)rows.emplace(k,1);else ++omitted;
+ }
+ j.open_obj();j.key("schema");j.string("s5ro-context-diagnostics/1");
+ j.key("id_namespace");j.string("CUPTI");j.key("expected_context_id");j.u64(s->expected_context_id);
+ j.key("start_ns");j.u64(start);j.key("end_ns");j.u64(end);
+ j.key("eligible_kernel_records");j.u64(eligible);j.key("omitted_records");j.u64(omitted);
+ j.key("boundary_records");j.u64(boundary);j.key("row_cap");j.u64(cap);
+ j.key("contexts");j.open_arr();for(uint32_t i=0;i<s->context_count;++i){const auto&c=s->contexts[i];
+  j.open_obj();j.key("context_id");j.u64(c.context_id);j.key("parent_context_id");j.u64(c.parent_context_id);
+  j.key("is_green");j.boolean(c.is_green!=0);j.key("sms");j.u64(c.num_multiprocessors);j.close_obj();}
+ j.close_arr();j.key("executions");j.open_arr();for(const auto&e:rows){const auto&k=e.first;j.open_obj();
+  j.key("slot");j.u64(std::get<0>(k));j.key("node_index");j.u64(std::get<1>(k));
+  j.key("context_id");j.u64(std::get<2>(k));j.key("stream_id");j.u64(std::get<3>(k));
+  j.key("graph_id");j.u64(std::get<4>(k));j.key("graph_node_id");j.u64(std::get<5>(k));
+  j.key("count");j.u64(e.second);j.close_obj();}
+ j.close_arr();j.key("nodes");j.open_arr();size_t emitted=0,skipped=0;
+ if(census)for(uint32_t slot=0;slot<s->slot_count;++slot){const auto&g=s->slots[slot];if(!g.used)continue;
+  for(uint32_t n=0;n<g.node_count;++n){size_t ix=g.first_node+n;
+   if(s->nodes[ix].node_type!=CU_GRAPH_NODE_TYPE_KERNEL)continue;
+   if(emitted>=cap){++skipped;continue;}++emitted;
+   CUDA_KERNEL_NODE_PARAMS p{};CUresult rc=cuGraphKernelNodeGetParams(s->nodes[ix].retained_handle,&p);
+   const bool applicable=rc==CUDA_SUCCESS&&!p.func&&p.kern&&p.ctx;
+   uint32_t id=0;int idrc=-1;if(applicable)idrc=static_cast<int>(cuptiGetContextId(p.ctx,&id));
+   j.open_obj();j.key("slot");j.u64(slot);j.key("node_index");j.u64(n);
+   j.key("graph_node_id");j.u64(s->nodes[ix].node_id);j.key("query_rc");j.u64(static_cast<unsigned>(rc));
+   j.key("func_present");j.boolean(p.func!=nullptr);j.key("kern_present");j.boolean(p.kern!=nullptr);
+   j.key("ctx_present");j.boolean(p.ctx!=nullptr);j.key("ctx_semantics");
+   j.string(rc!=CUDA_SUCCESS?"unavailable":p.func?"ignored_func_set":!p.kern?"unavailable":
+            !p.ctx?"null_current_context_semantics":"explicit_kernel_context");
+   j.key("context_id_available");j.boolean(applicable&&idrc==CUPTI_SUCCESS);j.key("context_id");j.u64(id);j.close_obj();}}
+ j.close_arr();j.key("nodes_omitted");j.u64(skipped);j.key("census_requested");j.boolean(census);
+ j.key("complete");j.boolean(!omitted&&!boundary&&!skipped);j.close_obj();
+}
+
 void emit_window_document(Session *s, uint32_t graph_count, uint32_t key_count,
                           uint32_t alias_count, Json &j) {
   ContextSummary context;
@@ -2326,7 +2384,10 @@ void emit_window_document(Session *s, uint32_t graph_count, uint32_t key_count,
 
   j.open_obj();
   j.key("schema");
-  j.string("s5ro-native-window/3");
+  j.string("s5ro-native-window/4");
+  j.key("context_diagnostics");
+  try{emit_context_diagnostics(s,graph_count,key_count,alias_count,s->window_start,s->window_end,false,j);}
+  catch(...){j.bad=true;}
   j.key("abi");
   j.u64(kAbi);
   j.key("compiled_api");
@@ -3161,6 +3222,25 @@ int s5ro_static(uint64_t session, char *out, uint64_t out_cap,
   return S5RO_OK;
 }
 
+
+// Read-only retained-node/range query. Never resets loss, opens a second
+// window, replays a graph, or changes the placement decision.
+int s5ro_context_diagnostics(uint64_t session,uint64_t start,uint64_t end,
+ char*out,uint64_t cap,uint64_t*len){
+ if(!out||!len||(start==0)!=(end==0)||end<start)return S5RO_BAD_ARGS;
+ *len=0;auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
+ std::lock_guard<std::mutex> op(s->op_mu);
+ if(s->destroyed.load()||(s->state!=kStarted&&s->state!=kEnded))return S5RO_STATE;
+ if(start&&(s->state!=kEnded||start<s->window_start||end>s->window_end))return S5RO_BAD_ARGS;
+ std::lock_guard<std::recursive_mutex> cb(s->cb_mu);
+ uint32_t graphs=start?s->diag_graphs:0,keys=start?s->diag_keys:0,aliases=start?s->diag_aliases:0;
+ try{Json j(out,cap);emit_context_diagnostics(s.get(),graphs,keys,aliases,start,end,true,j);
+  *len=j.len;if(j.truncated()||j.bad)return S5RO_TRUNCATED;
+  if(cap>j.len)out[j.len]='\0';
+  return S5RO_OK;
+ }catch(...){return S5RO_BAD_ARGS;}
+}
+
 int s5ro_begin_window(uint64_t session, uint32_t route_generation,
                       uint64_t *token_out) {
   if (token_out == nullptr) return S5RO_BAD_ARGS;
@@ -3302,6 +3382,7 @@ int s5ro_end_window(uint64_t session, uint64_t window_token,
   build_node_aliases(s.get(), key_count, graph_count, &alias_count);
 
   Json j(out, out_cap);
+  s->diag_graphs=graph_count;s->diag_keys=key_count;s->diag_aliases=alias_count;
   emit_window_document(s.get(), graph_count, key_count, alias_count, j);
   *out_len = j.len;
   s->window_token = 0;

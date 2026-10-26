@@ -27,7 +27,7 @@ from e3_types import E3ContractError
 
 ABI_VERSION = 1
 NATIVE_SCHEMA_STATIC = 's5ro-native-static/1'
-NATIVE_SCHEMA_WINDOW = 's5ro-native-window/3'
+NATIVE_SCHEMA_WINDOW = 's5ro-native-window/4'
 RECEIPT_SCHEMA = 's5ro-replay-observer/1'
 HELPER_SOURCE = 'native/flash_s5_replay_observer.cpp'
 CUPTI_API = 130001
@@ -562,11 +562,50 @@ def _validate_context(value):
         raise ReplayObserverError('malformed_native_report')
 
 
+def _validate_context_diagnostics(d):
+    _exact_obj(d, ('schema','id_namespace','expected_context_id','start_ns','end_ns',
+        'eligible_kernel_records','omitted_records','boundary_records','row_cap','contexts',
+        'executions','nodes','nodes_omitted','census_requested','complete'))
+    if d['schema'] != 's5ro-context-diagnostics/1' or d['id_namespace'] != 'CUPTI':
+        raise ReplayObserverError('malformed_native_report')
+    for k in ('expected_context_id','start_ns','end_ns','eligible_kernel_records','omitted_records',
+              'boundary_records','row_cap','nodes_omitted'):_strict_int(d[k])
+    if d['row_cap']!=4096 or type(d['executions']) is not list or len(d['executions'])>4096:
+        raise ReplayObserverError('malformed_native_report')
+    total=0
+    for r in d['executions']:
+        _exact_obj(r,('slot','node_index','context_id','stream_id','graph_id','graph_node_id','count'))
+        for v in r.values():_strict_int(v)
+        if not r['count']:raise ReplayObserverError('malformed_native_report')
+        total+=r['count']
+    if total+d['omitted_records'] != d['eligible_kernel_records']:
+        raise ReplayObserverError('malformed_native_report')
+    if type(d['contexts']) is not list or type(d['nodes']) is not list or len(d['nodes'])>4096:
+        raise ReplayObserverError('malformed_native_report')
+    for r in d['contexts']:
+        _exact_obj(r,('context_id','parent_context_id','is_green','sms'))
+        for k in ('context_id','parent_context_id','sms'):_strict_int(r[k])
+        _strict_bool(r['is_green'])
+    for n in d['nodes']:
+        _exact_obj(n,('slot','node_index','graph_node_id','query_rc','func_present','kern_present',
+                     'ctx_present','ctx_semantics','context_id_available','context_id'))
+        for k in ('slot','node_index','graph_node_id','query_rc','context_id'):_strict_int(n[k])
+        for k in ('func_present','kern_present','ctx_present','context_id_available'):_strict_bool(n[k])
+        expected=('unavailable' if n['query_rc'] else 'ignored_func_set' if n['func_present']
+                  else 'unavailable' if not n['kern_present'] else 'explicit_kernel_context'
+                  if n['ctx_present'] else 'null_current_context_semantics')
+        if n['ctx_semantics']!=expected or (n['context_id_available'] and expected!='explicit_kernel_context'):
+            raise ReplayObserverError('malformed_native_report')
+    _strict_bool(d['census_requested']);_strict_bool(d['complete'])
+    if d['complete'] != (not d['omitted_records'] and not d['boundary_records'] and not d['nodes_omitted']):
+        raise ReplayObserverError('malformed_native_report')
+
+
 def _validate_window(report, limits, route_generation):
     _exact_obj(report, ('schema', 'abi', 'compiled_api', 'runtime_api',
                         'limits', 'reserved_bytes', 'window',
                         'expected_context', 'counts', 'mapping', 'graph_slots',
-                        'flags', 'complete', 'reasons'))
+                        'flags', 'complete', 'reasons', 'context_diagnostics'))
     if report['schema'] != NATIVE_SCHEMA_WINDOW:
         raise ReplayObserverError('malformed_native_report')
     if _strict_int(report['abi']) != ABI_VERSION:
@@ -591,6 +630,7 @@ def _validate_window(report, limits, route_generation):
     if _strict_bool(window['flush_forced']) is not False:
         raise ReplayObserverError('malformed_native_report')
     _validate_context(report['expected_context'])
+    _validate_context_diagnostics(report['context_diagnostics'])
     counts_obj = _exact_obj(report['counts'],
                             tuple(_COUNT_KEYS) + ('ring_overflows',))
     for key in _COUNT_KEYS:
@@ -1430,6 +1470,7 @@ class ObserverSession:
                 'counts': {key: counts[key] for key in _COUNT_KEYS},
                 'ring_overflows': dict(counts['ring_overflows']),
                 'mapping': dict(report['mapping']),
+                'context_diagnostics': report['context_diagnostics'],
                 'graph_slots': tuple(window_slots),
                 'flags': {key: flags[key] for key in _FLAG_KEYS},
                 'complete': report['complete'],

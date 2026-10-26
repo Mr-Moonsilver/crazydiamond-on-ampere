@@ -795,11 +795,11 @@ class ObserverMappingTests(ObserverTestBase):
         self.assertEqual(receipt['verdict'], 'PASS')
         self.assertEqual(receipt['replay']['counts']['alias_type_disagreements'], 0)
         report = captured[-1]
-        self.assertEqual(report['schema'], 's5ro-native-window/3')
+        self.assertEqual(report['schema'], 's5ro-native-window/4')
         report['schema'] = 's5ro-native-window/2'
         with self.assertRaises(ro.ReplayObserverError):
             ro._validate_window(report, self.session.limits, ROUTE_GENERATION)
-        report['schema'] = 's5ro-native-window/3'
+        report['schema'] = 's5ro-native-window/4'
         del report['counts']['alias_type_disagreements']
         with self.assertRaises(ro.ReplayObserverError):
             ro._validate_window(report, self.session.limits, ROUTE_GENERATION)
@@ -1700,7 +1700,7 @@ class ObserverPythonTests(ObserverTestBase):
         receipt = self.end()
         text = self.text(receipt)
         forbidden_keys = {'handle', 'pointer', 'address', 'name', 'kernel_name',
-                          'context_id', 'graph_id', 'node_id', 'exec_id',
+                          'node_id', 'exec_id',
                           'library_path', 'cupti_library_path'}
         seen = set()
 
@@ -1714,6 +1714,8 @@ class ObserverPythonTests(ObserverTestBase):
                     walk(item)
 
         walk(receipt)
+        # Schema4 deliberately exposes CUPTI numeric IDs, never CUDA handles.
+        self.assertEqual(receipt['replay']['context_diagnostics']['id_namespace'],'CUPTI')
         self.assertFalse(forbidden_keys & seen)
         self.assertNotIn('0x', text)
         for raw in (str(self.bank.graph_handles[0]),

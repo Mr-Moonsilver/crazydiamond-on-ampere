@@ -11,12 +11,16 @@
 #define CUDA_SUCCESS 0
 
 typedef int CUresult;
+typedef void* CUfunction;
+typedef void* CUkernel;
 typedef struct CUctx_st *CUcontext;
 typedef struct CUstream_st *CUstream;
 typedef struct CUgraph_st *CUgraph;
 typedef struct CUgraphExec_st *CUgraphExec;
 typedef struct CUgraphNode_st *CUgraphNode;
 typedef struct CUgreenCtx_st *CUgreenCtx;
+
+typedef struct { CUfunction func; CUkernel kern; CUcontext ctx; } CUDA_KERNEL_NODE_PARAMS;
 
 typedef enum CUgraphNodeType {
   CU_GRAPH_NODE_TYPE_KERNEL = 0,
@@ -41,6 +45,7 @@ extern "C" {
 
 CUresult cuCtxFromGreenCtx(CUcontext *pContext, CUgreenCtx hCtx);
 CUresult cuGraphGetNodes(CUgraph hGraph, CUgraphNode *nodes, size_t *numNodes);
+CUresult cuGraphKernelNodeGetParams(CUgraphNode node, CUDA_KERNEL_NODE_PARAMS *p);
 CUresult cuGraphNodeGetType(CUgraphNode hNode, CUgraphNodeType *type);
 
 #ifdef __cplusplus
