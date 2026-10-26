@@ -31,13 +31,13 @@ ITERS = 20
 
 def tp_record(rank=0, **overrides):
     cases = [{'chunk_tokens': tokens, 'hidden_width': WIDTH, 'dtype': 'bfloat16',
-              'exact': True, 'ms': [1.0] * ITERS, 'total_ms': float(ITERS),
+              'exact': True, 'timed_exact': True, 'ms': [1.0] * ITERS, 'total_ms': float(ITERS),
               'median_ms': 1.0, 'min_ms': 1.0, 'max_ms': 1.0, 'collectives': 100}
              for tokens in DEFAULT_TOKEN_COUNTS]
     overlap = {'matmul': [MATMUL_SIZE] * 3, 'dtype': 'bfloat16',
                'chunk_tokens': DEFAULT_TOKEN_COUNTS[-1], 'hidden_width': WIDTH,
                'iterations': ITERS, 'wall_ms': 30.0, 'matmul_stream_ms': 25.0,
-               'allreduce_stream_ms': 24.0, 'matmul_finite': True,
+               'allreduce_stream_ms': 24.0, 'matmul_finite': True, 'allreduce_exact': True,
                'basis': ('interleaved host submissions; lane-local spans, not '
                          'simultaneous-kernel proof')}
     scope = {'inside': {'is_lane': True, 'installed_is_lane': True,
@@ -67,7 +67,7 @@ def pp_record(rank=0, **overrides):
                         receipt_verified=True, receipt_queries=True)
         else:
             case.update(payload_equal=True, header_equal=True,
-                        consumer_event_query=True, receipt_written=True)
+                        consumer_event_query=True, receipt_written=True, consumer_finite=True)
         cases.append(case)
     ownership = ({'consumer_event_query': True} if rank == 1 else
                  {'wrong_seq_refused': True, 'wrong_route_refused': True,
@@ -153,6 +153,10 @@ class VerdictRules(unittest.TestCase):
         self.assertVerdict([bad], 'FAIL')
 
     def test_tp_overlap_and_warm_fail(self):
+        for key in ('matmul_finite', 'allreduce_exact'):
+            bad = tp_record()
+            bad['overlap'][key] = False
+            self.assertVerdict([bad], 'FAIL')
         bad = tp_record()
         bad['overlap']['wall_ms'] = 0
         self.assertVerdict([bad], 'FAIL')
@@ -375,7 +379,7 @@ class EarlyRefusal(unittest.TestCase):
             self.assertIn('native identity refused', reasons)
             self.assertNotIn('capability', reasons)
             self.assertEqual(sorted(path.name for path in out.iterdir()),
-                             ['summary.json', 'summary.json.tmp'])
+                             ['probe.claim', 'probe.claim.tmp', 'summary.json', 'summary.json.tmp'])
 
 
 class QueueScript(unittest.TestCase):
@@ -461,6 +465,100 @@ class QueueScript(unittest.TestCase):
                                       capture_output=True, text=True, timeout=10)
                 self.assertEqual(done.returncode, 2, broken)
 
+
+
+class ReviewedRuntimePaths(unittest.TestCase):
+    def test_cross_rank_mismatch_identity_and_inventory(self):
+        records = all_records()
+        records[3]['mismatch']['txn_seq'] += 1
+        self.assertEqual(verdict(records)['verdict'], 'FAIL')
+        records = all_records()
+        records[0]['allreduce'][0]['timed_exact'] = False
+        self.assertEqual(verdict(records)['verdict'], 'FAIL')
+        records = all_records()
+        records[3]['bytes_owned_matches'] = False
+        self.assertEqual(verdict(records)['verdict'], 'FAIL')
+        records = all_records()
+        records[3]['cases'][0]['consumer_finite'] = False
+        self.assertEqual(verdict(records)['verdict'], 'FAIL')
+
+    def test_worker_exit_cannot_be_hidden_by_a_good_record(self):
+        from e3_lane_comm_probe import _with_process_exit
+        for rc in (-11, 1, 2, None):
+            records = all_records()
+            records[0] = _with_process_exit(records[0], rc)
+            self.assertEqual(verdict(records)['verdict'], 'INCONCLUSIVE')
+        records[0]['allreduce'][0]['exact'] = False
+        # Existing arithmetic evidence must survive a later abnormal exit.
+        self.assertEqual(verdict(records)['verdict'], 'FAIL')
+
+    def test_partial_timeout_not_confused_with_observed_mismatch(self):
+        records = all_records()
+        records[3]['cases'] = records[3]['cases'][:1]
+        records[3]['errors'] = [{'kind': 'timeout', 'message': 'bounded poll'}]
+        self.assertEqual(verdict(records)['verdict'], 'INCONCLUSIVE')
+        records[3]['cases'][0]['payload_equal'] = False
+        self.assertEqual(verdict(records)['verdict'], 'FAIL')
+
+    def test_receipts_are_exclusive_and_rerun_refused(self):
+        import e3_lane_comm_probe as p
+        with tempfile.TemporaryDirectory() as tmp:
+            p._write_receipt(tmp, 'pp', 0, {'status': 'ok'})
+            with self.assertRaises(FileExistsError):
+                p._write_receipt(tmp, 'pp', 0, {'status': 'different'})
+            with self.assertRaises(SystemExit):
+                p.main(['--native', tmp, '--out', tmp, '--hidden-width', '10240'])
+
+    def test_pp_executes_real_channel_both_roles_and_records_proof(self):
+        # Exercise actual _phase_pp + actual lane_comm over the existing CPU wire
+        # fakes. This catches bookkeeping bugs synthetic PASS records miss.
+        import types
+        from unittest.mock import patch
+        import e3_lane_comm_probe as p
+        from test_e3_lane_comm import fake_torch, FakeStream, FakeTensor, FakeWire, FakePyNccl
+        import lane_comm as lc
+        import e3_types as et
+        class Scalar:
+            def __init__(self, value): self.value = value
+            def item(self): return self.value
+        width, counts = 4, p.DEFAULT_TOKEN_COUNTS
+        def pattern(torch, n, w, dev, seed=0):
+            return FakeTensor([(i + seed) % 200 for i in range(n * w)], (n,w))
+        wire = FakeWire()
+        wire.messages.append([lc.HEADER_MAGIC] * lc.HEADER_LEN)
+        for seq, n in enumerate(counts):
+            txn = et.TransactionId(1, p.SYNTHETIC_UID, 0, 0, n, seq)
+            wire.messages += [lc.header_values(txn, 0, seq, n), pattern(None,n,width,0,seq).values]
+        seq = len(counts)
+        txn = et.TransactionId(1,p.SYNTHETIC_UID,0,0,1,900+seq)
+        wire.messages += [lc.header_values(txn,0,seq+1,1),pattern(None,1,width,0,seq).values]
+        records=[]
+        with tempfile.TemporaryDirectory() as tmp, patch.object(p,'_pattern',pattern), \
+                patch.object(FakeTensor,'float',lambda x:x,create=True), \
+                patch.object(FakeTensor,'sum',lambda x:Scalar(sum(x.values)),create=True):
+            for rank in (1,0):
+                torch=fake_torch()
+                torch.equal=lambda a,b:a.values==b.values
+                torch.isfinite=lambda x:Scalar(True)
+                group=types.SimpleNamespace(world_size=2,is_last_rank=bool(rank),rank_in_group=rank,cpu_group=object())
+                tp=types.SimpleNamespace(world_size=1)
+                factory=lambda **kw:FakePyNccl(rank,2,wire=wire)
+                record=p._new_record('pp',rank,rank,width,2048,20)
+                p._phase_pp(torch,lc,et,factory,lambda:tp,lambda:group,rank,rank,
+                            FakeStream(50),tmp,width,2048,counts,1,1,record)
+                record.update(status='ok',capability=[8,6],cleanup='ok')
+                records.append(record)
+                self.assertEqual(p._phase_pp_failures(record), [], record)
+            self.assertTrue(records[0]['ownership']['consumer_event_query'])
+            self.assertEqual([r['num_tokens'] for r in records[0]['cases']],list(counts))
+            self.assertTrue(all(r['consumer_finite'] for r in records[0]['cases']))
+            self.assertEqual(records[1]['ownership']['correct_release'],True)
+
+    def test_invalid_bounds_rejected_before_import(self):
+        for name, value in (('--phase-timeout','nan'),('--poll-timeout','inf'),
+                            ('--receipt-timeout','0'),('--max-tokens','1')):
+            with self.assertRaises(SystemExit):
+                main(['--plan',name,value])
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

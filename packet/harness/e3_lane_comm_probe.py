@@ -201,7 +201,7 @@ def _phase_tp_failures(record):
     else:
         for case in cases:
             name = 'all-reduce[%r]' % case.get('chunk_tokens')
-            if case.get('exact') is not True:
+            if case.get('exact') is not True or case.get('timed_exact') is not True:
                 failures.append(name + ': result not exact')
             if case.get('hidden_width') != record.get('hidden_width'):
                 failures.append(name + ': hidden width differs')
@@ -216,6 +216,8 @@ def _phase_tp_failures(record):
     if not isinstance(overlap, dict):
         failures.append('overlap evidence missing')
     else:
+        if overlap.get('allreduce_exact') is not True or overlap.get('matmul_finite') is not True:
+            failures.append('overlap arithmetic not proven')
         if overlap.get('iterations') != iterations:
             failures.append('overlap iteration count differs')
         if overlap.get('matmul') != [MATMUL_SIZE, MATMUL_SIZE, MATMUL_SIZE]:
@@ -282,6 +284,8 @@ def _phase_pp_failures(record):
                     failures.append(name + ': header round trip differs')
                 if case.get('consumer_event_query') is not True:
                     failures.append(name + ': consumer event not queried complete')
+                if case.get('consumer_finite') is not True:
+                    failures.append(name + ': consumer result nonfinite')
                 if case.get('receipt_written') is not True:
                     failures.append(name + ': consumer receipt not written')
             else:
@@ -289,6 +293,8 @@ def _phase_pp_failures(record):
                     failures.append(name + ': payload not sent')
                 if case.get('header_sent') is not True:
                     failures.append(name + ': header not sent')
+                if case.get('receipt_queries') is not True:
+                    failures.append(name + ': receipt lacks queried completion')
                 if case.get('receipt_verified') is not True:
                     failures.append(name + ': consumer receipt not verified')
     ownership = record.get('ownership')
@@ -316,12 +322,30 @@ def _phase_pp_failures(record):
         else:
             if mismatch.get('completed') is not True:
                 failures.append('sender send did not complete')
-        if mismatch.get('txn_seq') != mismatch.get('peer_txn_seq'):
-            failures.append('header mismatch transaction disagrees across ranks')
+        if (type(mismatch.get('txn_seq')) is not int
+                or mismatch.get('sent_seq') != mismatch.get('expected_seq', -2) + 1):
+            failures.append('header mismatch injection not recorded')
     owned = record.get('bytes_owned')
-    if type(owned) is not int or owned <= 0:
+    if (type(owned) is not int or owned <= 0
+            or record.get('bytes_owned_matches') is not True
+            or owned != record.get('bytes_owned_expected')):
         failures.append('bytes_owned inventory missing')
     return failures
+
+
+def _observed_bad_arithmetic(record):
+    # Explicit mismatches survive later interruption; absent measurements do not
+    # turn a bounded timeout into a numerical FAIL.
+    for case in record.get('allreduce') or []:
+        if case.get('exact') is False or case.get('timed_exact') is False:
+            return True
+    for case in record.get('cases') or []:
+        if any(case.get(k) is False for k in ('payload_equal', 'header_equal', 'consumer_finite')):
+            return True
+    overlap = record.get('overlap') or {}
+    scope = (record.get('scope') or {}).get('inside') or {}
+    return (any(overlap.get(k) is False for k in ('allreduce_exact', 'matmul_finite'))
+            or scope.get('exact') is False)
 
 
 def _record_verdict(record):
@@ -330,6 +354,8 @@ def _record_verdict(record):
     hard = [err for err in errors if err.get('kind') not in INCONCLUSIVE_KINDS]
     if hard:
         return 'FAIL', ['%s: %s' % (err.get('kind'), err.get('message', '')) for err in hard]
+    if _observed_bad_arithmetic(record):
+        return 'FAIL', ['observed arithmetic mismatch']
     status = record.get('status')
     capability = record.get('capability')
     if isinstance(capability, (list, tuple)) and len(capability) == 2:
@@ -391,12 +417,23 @@ def verdict(records):
     expected = {(phase, rank) for phase in PHASES for rank in RANKS}
     if len(pairs) != len(expected) or set(pairs) != expected:
         coverage_bad = True
+    if not coverage_bad:
+        pp = {r['rank']: r for r in records if r['phase'] == 'pp'}
+        if all(r.get('status') == 'ok' for r in pp.values()):
+            for key in ('txn_seq', 'sent_seq', 'expected_seq'):
+                if pp[0].get('mismatch', {}).get(key) != pp[1].get('mismatch', {}).get(key):
+                    results.append(('FAIL', ['PP mismatch trial identities differ across ranks']))
+            for key in ('hidden_width', 'max_tokens'):
+                if len({r.get(key) for r in records}) != 1:
+                    results.append(('FAIL', ['phase geometry differs across ranks']))
     reasons = []
     if coverage_bad:
         reasons.append('phase/rank inventory incomplete or duplicated')
     for record, (outcome, why) in zip([r for r in records if isinstance(r, dict)], results):
         reasons.extend('%s rank %r: %s' % (record.get('phase', '?'), record.get('rank'), item)
                        for item in why)
+    for _, why in results[len(pairs):]:
+        reasons.extend(why)
     outcomes = [outcome for outcome, _ in results]
     if 'FAIL' in outcomes:
         overall = 'FAIL'
@@ -463,30 +500,32 @@ def _imports(native):
         destroy_model_parallel, destroy_distributed_environment, lane_comm, e3_types
 
 
-def _pattern(torch, rows, width, device):
+def _pattern(torch, rows, width, device, seed=0):
     """Deterministic bf16 payload: integers 0..199 are exact in bf16."""
     total = int(rows) * int(width)
     index = torch.arange(total, dtype=torch.int32, device=device)
-    return (index % 200).to(torch.bfloat16).reshape(int(rows), int(width))
+    return ((index + seed) % 200).to(torch.bfloat16).reshape(int(rows), int(width))
 
 
-def _event_ms(torch, stream, fn, iterations):
+def _event_ms(torch, stream, fn, iterations, expected):
     """Event-timed median/min/max over ``iterations`` after warmup."""
     with torch.cuda.stream(stream):
         for _ in range(WARMUP_ITERS):
             fn()
     stream.synchronize()
     samples = []
+    exact = True
     for _ in range(iterations):
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         with torch.cuda.stream(stream):
             start.record()
-            fn()
+            result = fn()
             end.record()
         stream.synchronize()
         samples.append(float(start.elapsed_time(end)))
-    return {'ms': samples, 'total_ms': float(sum(samples)),
+        exact = bool(torch.equal(result, expected)) and exact
+    return {'ms': samples, 'timed_exact': exact, 'total_ms': float(sum(samples)),
             'median_ms': float(statistics.median(samples)),
             'min_ms': float(min(samples)), 'max_ms': float(max(samples))}
 
@@ -499,9 +538,7 @@ def _phase_tp(torch, lane_comm, get_tp_group, get_pp_group, rank, device, stream
     record['pp_world_size'] = int(pp_group.world_size)
     record['stream_basis'] = ('explicit torch.cuda.Stream stands in for the green '
                               'prefill stream')
-    record['hidden_width_basis'] = ('passed by the queue (--hidden-width); the pinned '
-                                    'model config is absent from this worktree and the '
-                                    'S5 manifest carries only source hashes')
+    record['hidden_width_basis'] = 'owner-declared HC width; reference text_config hc_count=4 * hidden_size=2560'
     comms = lane_comm.PrefillCommunicators.build(
         tp_group, pp_group, device, stream, max_tokens=max_tokens,
         hidden_width=hidden_width, dtype=torch.bfloat16, torch_module=torch)
@@ -517,14 +554,15 @@ def _phase_tp(torch, lane_comm, get_tp_group, get_pp_group, rank, device, stream
         # Build the input on the lane stream too: the module copies it into an
         # owned slot on that stream, so creation and copy are ordered.
         with torch.cuda.stream(stream):
-            x = _pattern(torch, token_count, hidden_width, device)
+            x = _pattern(torch, token_count, hidden_width, device, rank)
             out = comms.tp.all_reduce(x)
         stream.synchronize()
         if out is None:
             raise lane_comm.LaneCommError('all-reduce returned nothing')
-        expected = x * 2
+        expected = (_pattern(torch, token_count, hidden_width, device, 0)
+                    + _pattern(torch, token_count, hidden_width, device, 1))
         exact = bool(torch.equal(out, expected))
-        timing = _event_ms(torch, stream, lambda: comms.tp.all_reduce(x), iterations)
+        timing = _event_ms(torch, stream, lambda: comms.tp.all_reduce(x), iterations, expected)
         case = {'chunk_tokens': int(token_count), 'hidden_width': int(hidden_width),
                 'dtype': 'bfloat16', 'exact': exact, 'collectives': int(comms.tp.collectives)}
         case.update(timing)
@@ -536,7 +574,9 @@ def _phase_tp(torch, lane_comm, get_tp_group, get_pp_group, rank, device, stream
     a = torch.randn((size, size), device=device, dtype=torch.bfloat16)
     b = torch.randn((size, size), device=device, dtype=torch.bfloat16)
     mat_out = torch.empty_like(a)
-    x = _pattern(torch, cases[-1]['chunk_tokens'], hidden_width, device)
+    x = _pattern(torch, cases[-1]['chunk_tokens'], hidden_width, device, rank)
+    expected_overlap = (_pattern(torch, cases[-1]['chunk_tokens'], hidden_width, device, 0)
+                        + _pattern(torch, cases[-1]['chunk_tokens'], hidden_width, device, 1))
     mat_stream = torch.cuda.Stream(device=device)
     torch.cuda.synchronize(device)
     with torch.cuda.stream(mat_stream):
@@ -556,11 +596,14 @@ def _phase_tp(torch, lane_comm, get_tp_group, get_pp_group, rank, device, stream
     with torch.cuda.stream(stream):
         lane_start.record()
     wall_start = time.perf_counter()
+    overlap_checks = []
     for _ in range(iterations):
         with torch.cuda.stream(mat_stream):
             torch.matmul(a, b, out=mat_out)
         with torch.cuda.stream(stream):
-            comms.tp.all_reduce(x)
+            reduced = comms.tp.all_reduce(x)
+            # Device-side scalar check per result, without a host wait in the loop.
+            overlap_checks.append((reduced == expected_overlap).all())
     with torch.cuda.stream(mat_stream):
         mat_end.record()
     with torch.cuda.stream(stream):
@@ -575,6 +618,7 @@ def _phase_tp(torch, lane_comm, get_tp_group, get_pp_group, rank, device, stream
         'matmul_stream_ms': float(mat_start.elapsed_time(mat_end)),
         'allreduce_stream_ms': float(lane_start.elapsed_time(lane_end)),
         'matmul_finite': bool(torch.isfinite(mat_out).all().item()),
+        'allreduce_exact': all(bool(check.item()) for check in overlap_checks),
         'basis': ('interleaved host submissions; lane-local spans, not '
                   'simultaneous-kernel proof')}
     del a, b, mat_out
@@ -621,15 +665,8 @@ def _phase_tp(torch, lane_comm, get_tp_group, get_pp_group, rank, device, stream
     record['describe'] = comms.describe()
 
 
-def _atomic_write(path, value):
-    temp = Path(str(path) + '.tmp')
-    with open(temp, 'w') as handle:
-        handle.write(json.dumps(scrub_obj(value), allow_nan=False) + '\n')
-    os.replace(temp, path)
-
-
 def _write_receipt(out, phase, seq, value):
-    _atomic_write(Path(out) / ('%s-receipt-%d.json' % (phase, seq)), value)
+    write_json(Path(out) / ('%s-receipt-%d.json' % (phase, seq)), value)
 
 
 def _wait_for_receipt(out, phase, seq, timeout):
@@ -704,7 +741,7 @@ def _phase_pp(torch, lane_comm, e3_types, PyNcclCommunicator, get_tp_group,
     lane = _bind_and_warm(torch, lane_comm, e3_types, channel, stream, record)
     cases = []
     keepalive = []
-    ownership: dict[str, object] = {'consumer_event_query': None}
+    ownership: dict[str, object] = {'consumer_event_query': True}
     mismatch = None
     seq = 0
     for token_count in token_counts:
@@ -713,7 +750,7 @@ def _phase_pp(torch, lane_comm, e3_types, PyNcclCommunicator, get_tp_group,
         case: dict[str, object] = {'num_tokens': n, 'seq': seq, 'stage': 0}
         if is_sender:
             with torch.cuda.stream(stream):
-                payload = _pattern(torch, n, hidden_width, device)
+                payload = _pattern(torch, n, hidden_width, device, seq)
                 ticket = channel.send(payload, txn, 0, seq)
             # Keep the source alive until its slot copy is known complete; the
             # module copies on the lane stream, not the allocating stream.
@@ -724,7 +761,7 @@ def _phase_pp(torch, lane_comm, e3_types, PyNcclCommunicator, get_tp_group,
                             receipt_verified=False, timeout=True)
                 cases.append(case)
                 mismatch = {'deadlock': False, 'bounded': True, 'completed': bool(ticket.event.query()),
-                            'txn_seq': txn.txn_seq, 'peer_txn_seq': txn.txn_seq,
+                            'txn_seq': txn.txn_seq,
                             'note': 'peer receipt did not arrive within the bound'}
                 record['error_kind_hint'] = 'timeout'
                 record['errors'].append(_error('timeout', 'PP receipt wait timed out'))
@@ -736,6 +773,8 @@ def _phase_pp(torch, lane_comm, e3_types, PyNcclCommunicator, get_tp_group,
                 record['errors'].append(_error(
                     'timeout', 'peer reported ' + str(receipt_data.get('status'))))
                 break
+            if receipt_data.get('consumer_event_query') is not True:
+                raise lane_comm.LaneCommError('receipt lacks a queried consumer event')
             receipt = _decode_receipt(lane_comm, e3_types, receipt_data)
             if seq == 0:
                 proof = receipt.proof
@@ -784,7 +823,7 @@ def _phase_pp(torch, lane_comm, e3_types, PyNcclCommunicator, get_tp_group,
                 record['errors'].append(_error('timeout', 'PP poll_receive timed out'))
                 break
             with torch.cuda.stream(stream):
-                expected = _pattern(torch, n, hidden_width, device)
+                expected = _pattern(torch, n, hidden_width, device, seq)
                 case['payload_equal'] = bool(torch.equal(view, expected))
             actual = [int(value) for value in channel.header_host[rticket.slot].tolist()]
             case['header_equal'] = (actual == lane_comm.header_values(txn, 0, seq, n))
@@ -796,8 +835,12 @@ def _phase_pp(torch, lane_comm, e3_types, PyNcclCommunicator, get_tp_group,
             queried = bool(consumer_event.query())
             case['consumer_event_query'] = queried
             case['consumer_finite'] = bool(torch.isfinite(consumed).item())
+            if not queried:
+                raise lane_comm.LaneCommError('consumer event incomplete after synchronization')
             channel.consumer_done(rticket, consumer_event)
             released = bool(channel.release_receive(rticket))
+            if not released:
+                raise lane_comm.LaneCommError('receive slot did not retire')
             # The receipt carries plain values only; completion was queried here.
             _write_receipt(out, 'pp', seq, {
                 'schema': 1, 'kind': 'pp-consumer-receipt', 'status': 'ok',
@@ -827,11 +870,11 @@ def _phase_pp(torch, lane_comm, e3_types, PyNcclCommunicator, get_tp_group,
     n = 1
     txn = e3_types.TransactionId(1, SYNTHETIC_UID, 0, 0, n, 900 + expected_seq)
     mismatch_record = {'expected_seq': expected_seq, 'sent_seq': expected_seq + 1,
-                       'txn_seq': txn.txn_seq, 'peer_txn_seq': txn.txn_seq,
+                       'txn_seq': txn.txn_seq,
                        'deadlock': False, 'bounded': True}
     if is_sender:
         with torch.cuda.stream(stream):
-            payload = _pattern(torch, n, hidden_width, device)
+            payload = _pattern(torch, n, hidden_width, device, seq)
             ticket = channel.send(payload, txn, 0, expected_seq + 1)
         keepalive.append(payload)
         channel.stream.synchronize()
@@ -896,6 +939,7 @@ def _run_rank(phase, rank, out, native, device, hidden_width, max_tokens, iterat
             record['errors'].append(_error(
                 'capability', 'device capability %r != (8, 6)' % (capability,)))
             return record
+        destroy = (destroy_model_parallel, destroy_distributed_environment)
         world_size = len(RANKS)
         rendezvous = Path(out) / ('%s-rendezvous' % phase)
         init_distributed_environment(
@@ -905,7 +949,6 @@ def _run_rank(phase, rank, out, native, device, hidden_width, max_tokens, iterat
         initialize_model_parallel(tensor_model_parallel_size=tp_size,
                                   pipeline_model_parallel_size=pp_size)
         stream = torch.cuda.Stream(device=device)
-        destroy = (destroy_model_parallel, destroy_distributed_environment)
         record['distributed'] = {'world_size': world_size, 'rank': rank,
                                  'tp_size': tp_size, 'pp_size': pp_size}
         if phase == 'tp':
@@ -928,11 +971,14 @@ def _run_rank(phase, rank, out, native, device, hidden_width, max_tokens, iterat
             if torch is not None:
                 torch.cuda.synchronize()
             if destroy is not None:
-                try:
-                    destroy[0]()
-                except Exception:
-                    pass
-                destroy[1]()
+                errors = []
+                for cleanup_fn in destroy:
+                    try:
+                        cleanup_fn()
+                    except Exception as exc:
+                        errors.append(scrub_text(exc))
+                if errors:
+                    raise RuntimeError('distributed cleanup: ' + '; '.join(errors))
             cleanup = 'ok'
         except BaseException as exc:
             cleanup = 'failed'
@@ -987,8 +1033,18 @@ def _launch_phase(phase, args, devices):
                 record = _synthetic_record(phase, rank, 'internal',
                                            'worker record identity differs')
                 _finish_record(record, args.out)
+        record = _with_process_exit(record, process.exitcode)
         records.append(record)
     return records
+
+
+def _with_process_exit(record, exitcode):
+    # A published good record cannot hide a later interpreter/allocator abort.
+    if exitcode != 0:
+        record = dict(record, errors=list(record.get('errors') or []))
+        record['errors'].append(_error('interrupted', 'worker exitcode %r' % exitcode))
+    record['process_exitcode'] = exitcode
+    return record
 
 
 # -- command line ------------------------------------------------------------
@@ -1052,8 +1108,10 @@ def main(argv=None):
         devices = parse_devices(args.devices)
     except ValueError:
         parser.error('--devices requires exactly two unique nonnegative ordinals')
-    if args.max_tokens < 1 or args.iters < 1 or args.poll_timeout <= 0 or args.receipt_timeout <= 0:
-        parser.error('--max-tokens/--iters/--poll-timeout/--receipt-timeout must be positive')
+    if (args.max_tokens != DEFAULT_MAX_TOKENS or args.iters < 1
+            or any(not math.isfinite(v) or v <= 0 for v in
+                   (args.poll_timeout, args.receipt_timeout, args.phase_timeout))):
+        parser.error('--max-tokens must be 2048 and iterations/time bounds positive finite')
     if args.plan:
         print(json.dumps(_plan(args, devices), indent=2))
         return 0
@@ -1062,6 +1120,10 @@ def main(argv=None):
     if args.hidden_width < 1:
         parser.error('--hidden-width must be positive')
     args.out.mkdir(parents=True, exist_ok=True)
+    if any(p.name.startswith(('tp-', 'pp-', 'summary.json', 'probe.claim'))
+           for p in args.out.iterdir()):
+        parser.error('refusing existing probe artifacts')
+    write_json(args.out / 'probe.claim', {'schema': 1, 'phases': args.phase})
     try:
         verify_native(args.native)
     except Exception as exc:
@@ -1101,6 +1163,7 @@ def _write_summary(args, records, result, phases=None):
                'hidden_width': args.hidden_width, 'max_tokens': args.max_tokens,
                'iterations': args.iters, 'token_counts': list(DEFAULT_TOKEN_COUNTS),
                'native_pins': dict(NATIVE_PINS),
+               'process_exits': {f"{r.get('phase')}-rank-{r.get('rank')}": r.get('process_exitcode') for r in records},
                'records': ['%s-rank-%d.json' % (record.get('phase'), record.get('rank'))
                            for record in records]}
     write_json(Path(args.out) / 'summary.json', summary)
