@@ -45,6 +45,7 @@
 #include <new>
 #include <map>
 #include <tuple>
+#include <string>
 
 namespace {
 
@@ -243,6 +244,8 @@ struct ExecRec {
 };
 
 struct CopyRec {
+  uint32_t stream_id = 0;
+  uint32_t copy_kind = 0; // CUPTI direction for memcpy; zero for memset
   uint32_t kind = 0;  // kRecMemcpy or kRecMemset
   uint32_t context_id = 0;
   uint32_t device_id = 0;
@@ -902,12 +905,14 @@ void add_exec(Session *s, const CUpti_ActivityKernel10 *record) {
 
 void add_copy(Session *s, RecKind kind, uint32_t context_id, uint32_t device_id,
               uint32_t graph_id, uint64_t graph_node_id, uint64_t start,
-              uint64_t end) {
+              uint64_t end, uint32_t stream_id = 0, uint32_t copy_kind = 0) {
   if (s->copy_count >= s->limits.max_copy_records) {
     ++s->ring_copy_overflow;
     return;
   }
   CopyRec &out = s->copies[s->copy_count++];
+  out.stream_id = stream_id;
+  out.copy_kind = copy_kind;
   out.kind = kind;
   out.context_id = context_id;
   out.device_id = device_id;
@@ -952,7 +957,7 @@ void parse_buffer(Session *s, uint8_t *buffer, size_t valid_size) {
         const auto *r = reinterpret_cast<const CUpti_ActivityMemcpy6 *>(record);
         if (in_window) {
           add_copy(s, kRecMemcpy, r->contextId, r->deviceId, r->graphId,
-                   r->graphNodeId, r->start, r->end);
+                   r->graphNodeId, r->start, r->end, r->streamId, r->copyKind);
           ++s->records_in_window;
         } else {
           ++s->records_after_window;
@@ -963,7 +968,7 @@ void parse_buffer(Session *s, uint8_t *buffer, size_t valid_size) {
         const auto *r = reinterpret_cast<const CUpti_ActivityMemset4 *>(record);
         if (in_window) {
           add_copy(s, kRecMemset, r->contextId, r->deviceId, r->graphId,
-                   r->graphNodeId, r->start, r->end);
+                   r->graphNodeId, r->start, r->end, r->streamId, 0);
           ++s->records_in_window;
         } else {
           ++s->records_after_window;
@@ -3239,6 +3244,54 @@ int s5ro_context_diagnostics(uint64_t session,uint64_t start,uint64_t end,
   if(cap>j.len)out[j.len]='\0';
   return S5RO_OK;
  }catch(...){return S5RO_BAD_ARGS;}
+}
+
+// Additive diagnostic only: every retained record in a drained interval,
+// including graphId==0. No name/graph whitelist and no placement-rule change.
+// Keys contain scoped CUPTI ids, names and copy directions, never pointers.
+int s5ro_activity_census(uint64_t session,uint64_t start,uint64_t end,
+ char*out,uint64_t cap,uint64_t*len){
+ if(!out||!len||!start||end<=start)return S5RO_BAD_ARGS;
+ *len=0;auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
+ std::lock_guard<std::mutex> op(s->op_mu);
+ if(s->destroyed.load()||s->state!=kEnded||start<s->window_start||end>s->window_end)return S5RO_STATE;
+ std::lock_guard<std::recursive_mutex> cb(s->cb_mu);
+ try{
+ using Key=std::tuple<uint32_t,uint32_t,uint32_t,uint32_t,uint64_t,uint32_t,std::string>;
+ std::map<Key,uint64_t> rows;uint64_t boundary=0,invalid=0,omitted=0,matched=0;
+ constexpr size_t row_cap=4096;
+ auto add=[&](uint32_t kind,uint32_t ctx,uint32_t stream,uint32_t graph,uint64_t node,
+              uint32_t direction,const char*name,uint64_t a,uint64_t b){
+   if(!a||b<=a){++invalid;return;}
+   if(b<=start||a>=end)return;
+   if(a<start||b>end){++boundary;return;}
+   ++matched;Key key(kind,ctx,stream,graph,node,direction,std::string(name));
+   auto it=rows.find(key);if(it!=rows.end())++it->second;
+   else if(rows.size()<row_cap)rows.emplace(std::move(key),1);
+   else ++omitted;
+ };
+ for(uint32_t i=0;i<s->kernel_count;++i){const auto&r=s->kernels[i];
+   if(!r.launch_complete)++invalid;
+   add(kRecKernel,r.context_id,r.stream_id,r.graph_id,r.graph_node_id,0,r.name,r.start,r.end);}
+ for(uint32_t i=0;i<s->copy_count;++i){const auto&r=s->copies[i];
+   add(r.kind,r.context_id,r.stream_id,r.graph_id,r.graph_node_id,r.copy_kind,"",r.start,r.end);}
+ Json j(out,cap);j.open_obj();j.key("schema");j.string("s5ro-activity-census/1");
+ j.key("complete");j.boolean(!boundary&&!invalid&&!omitted);
+ j.key("scope");j.string("retained records only; caller must also require native loss counters and guards");
+ j.key("start");j.u64(start);j.key("end");j.u64(end);
+ j.key("boundary_records");j.u64(boundary);j.key("invalid_records");j.u64(invalid);
+ j.key("omitted_records");j.u64(omitted);j.key("matched_records");j.u64(matched);
+ j.key("row_cap");j.u64(row_cap);j.key("rows");j.open_arr();
+ for(const auto&it:rows){const auto&k=it.first;j.open_obj();
+   j.key("kind");j.string(std::get<0>(k)==kRecKernel?"kernel":std::get<0>(k)==kRecMemcpy?"memcpy":"memset");
+   j.key("context_id");j.u64(std::get<1>(k));j.key("stream_id");j.u64(std::get<2>(k));
+   j.key("graph_id");j.u64(std::get<3>(k));j.key("node_id");j.u64(std::get<4>(k));
+   j.key("copy_kind");j.u64(std::get<5>(k));j.key("name");j.string(std::get<6>(k).c_str());
+   j.key("count");j.u64(it.second);j.close_obj();}
+ j.close_arr();j.close_obj();*len=j.len;if(j.truncated()||j.bad)return S5RO_TRUNCATED;
+ if(cap>j.len)out[j.len]=0;
+ return S5RO_OK;
+ }catch(...){return S5RO_INTERNAL_ERROR;}
 }
 
 int s5ro_begin_window(uint64_t session, uint32_t route_generation,

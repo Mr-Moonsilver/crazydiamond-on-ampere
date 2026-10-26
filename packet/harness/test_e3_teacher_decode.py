@@ -156,6 +156,22 @@ class ControllerCompositionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GradeTests(unittest.TestCase):
+    def test_ordered_ties_survive_sorted_json_and_bad_order_refused(self):
+        import json
+        from e3_teacher_decode_grade import grade, RUNS
+        e=self.evidence();e['top_order_basis']='response-insertion-order/1'
+        for name in RUNS:
+            for row in e['runs'][name]['positions']:
+                keys=list(row['top']);row['top'][keys[0]]=row['top'][keys[1]]=0.
+                row['top_order']=keys if name=='full-A1' else list(reversed(keys))
+        before=grade(e);after=grade(json.loads(json.dumps(e,sort_keys=True)))
+        self.assertEqual(before,after)
+        self.assertTrue(before['comparisons']['control_pre']['flips'])
+        for bad in (None, [], ['token_id:1']*20):
+            broken=copy.deepcopy(e);broken['runs']['split-B']['positions'][0]['top_order']=bad
+            self.assertEqual(grade(broken)['verdict'],'INCONCLUSIVE')
+            self.assertIn('original top20 order incomplete',grade(broken)['missing'])
+
     def evidence(self):
         import e3_teacher_decode_grade as g
         positions=list(range(1,257)); prefixes=['a'*64]*8
@@ -248,7 +264,7 @@ class ClientTests(unittest.TestCase):
         top={f'token_id:{n}':-n/10 for n in range(20)}
         event={'choices':[{'token_ids':[20], 'logprobs':{'tokens':['token_id:20'],'top_logprobs':[top]}}]}
         i.consume(state,event)
-        self.assertEqual(state.teacher_top,[{'position':client.ENTRY,'top':top}])
+        self.assertEqual(state.teacher_top,[{'position':client.ENTRY,'top':top,'top_order':list(top)}])
         event['choices'][0]['token_ids']=[21]
         with self.assertRaises(ValueError):i.consume(state,event)
     def test_requests_bind_private_plan_without_changing_sampling(self):
@@ -274,7 +290,7 @@ class ClientTests(unittest.TestCase):
                     route_generation=gen,full_graph=True,decode_only=True,forced_token_exact=True)
                     for p in range(client.ENTRY,client.ENTRY+client.MEASURE))
                 streams.append(dict(stream=stream,_tokens=trace,
-                    teacher_top=[dict(position=p,top=top) for p in range(client.ENTRY,client.ENTRY+client.MEASURE)]))
+                    teacher_top=[dict(position=p,top=top,top_order=list(top)) for p in range(client.ENTRY,client.ENTRY+client.MEASURE)]))
             workers=[dict(rank=r,sampler_owner=r>=2,engine_epoch=71,route_generation=gen,
                           overflow=False,route=route,drained_streams=3,positions=rows if r==2 else []) for r in range(4)]
             i.plan_shas[repeat]='a'*64

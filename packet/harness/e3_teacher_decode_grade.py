@@ -35,7 +35,7 @@ class ForcedTokenMismatch(ValueError):
     pass
 
 
-def _rows(run, route, positions, prefix_digests):
+def _rows(run, route, positions, prefix_digests, ordered=False):
     _require(type(run) is dict and run.get('route') == route, 'route differs')
     _require(run.get('lifecycle_verdict') == 'PASS', 'lifecycle unproved')
     _require(run.get('prefix_digests') == prefix_digests, 'forced prefixes differ')
@@ -61,6 +61,15 @@ def _rows(run, route, positions, prefix_digests):
                  and all(type(k) is str and k.startswith('token_id:') and k[9:].isdigit()
                          and type(v) in (int,float) and math.isfinite(v) for k,v in top.items()),
                  'original top20 logprobs incomplete')
+        if ordered:
+            order=row.get('top_order')
+            _require(type(order) is list and len(order)==len(top)
+                     and all(type(k) is str for k in order)
+                     and len(set(order))==len(order) and set(order)==set(top),
+                     'original top20 order incomplete')
+            # Frozen compare resolves equal values by insertion order. Restore
+            # the response order after sort_keys JSON, without changing rule v3.
+            top={k:top[k] for k in order}
         observed[key]={'top':top}
     _require(set(observed)=={(s,p) for s in range(STREAMS) for p in positions},
              'position set differs')
@@ -88,7 +97,10 @@ def grade(evidence):
                          for p in prefixes), 'fixed prefix identity missing')
         runs=evidence.get('runs')
         _require(type(runs) is dict and set(runs)==set(RUNS), 'fixed run set differs')
-        mapped={name:_rows(runs[name], 'split' if name=='split-B' else 'full',positions,prefixes)
+        order_basis=evidence.get('top_order_basis')
+        _require(order_basis in (None,'response-insertion-order/1'), 'top order basis unsupported')
+        out['top_order_basis']=order_basis or 'legacy-object-order; original tie order unproved'
+        mapped={name:_rows(runs[name], 'split' if name=='split-B' else 'full',positions,prefixes,order_basis is not None)
                 for name in RUNS}
     except ForcedTokenMismatch as exc:
         out['verdict']='FAIL'; out['failures']=[str(exc)]

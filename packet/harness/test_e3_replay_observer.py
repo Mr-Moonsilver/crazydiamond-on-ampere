@@ -514,6 +514,31 @@ class ObserverCleanTests(ObserverTestBase):
         self.assertEqual(receipt['replay']['mapping']['node_keys'], 3)
 
 class ObserverContextTests(ObserverTestBase):
+    def test_activity_census_counts_graph_zero_all_kinds_without_waiving_guard(self):
+        self.open_clean();self.begin()
+        self.emit_graph_kernels()
+        self.emit_kernel(0,0,start=1500,end=1550,completed=1550)
+        self.ctl.stub_emit_copy(CONTEXT_ID,0,0,1600,1650)
+        self.ctl.stub_emit_memset(CONTEXT_ID,0,0,1700,1750)
+        receipt=self.end()
+        self.assertIn('unattributed_expected_context',receipt['replay']['reasons'])
+        fn=self.binding._lib.s5ro_activity_census
+        fn.argtypes=[ctypes.c_uint64]*3+[ctypes.c_void_p,ctypes.c_uint64,ctypes.POINTER(ctypes.c_uint64)]
+        fn.restype=ctypes.c_int
+        def query(a,b):return self.session._report_call(fn,(self.session._token,a,b))
+        all_=query(1000,3000)
+        self.assertTrue(all_['complete']);self.assertEqual(all_['matched_records'],5)
+        zero=[x for x in all_['rows'] if x['graph_id']==0]
+        self.assertEqual({x['kind'] for x in zero},{'kernel','memcpy','memset'})
+        self.assertEqual(sum(x['count'] for x in zero),3)
+        sub=query(1490,1560)
+        self.assertEqual(sub['matched_records'],1)
+        self.assertEqual(sub['rows'][0]['name'],'fixture_kernel')
+        boundary=query(1520,1560)
+        self.assertFalse(boundary['complete']);self.assertEqual(boundary['boundary_records'],1)
+        again=query(1000,3000)
+        self.assertEqual(all_,again)  # query never consumes records or clears loss
+
     def test_context_delivered_before_window_is_retained(self):
         self.open_clean()
         self.ctl.stub_deliver()

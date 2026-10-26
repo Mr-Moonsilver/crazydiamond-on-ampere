@@ -112,11 +112,11 @@ class Instrument:
                     or any(type(k) is not str or not k.startswith('token_id:') or not k[9:].isdigit()
                            or type(v) not in (int,float) or not math.isfinite(v) for k,v in values.items())):
                 raise ValueError('teacher original top20 incomplete')
-            state.teacher_top.append(dict(position=position,top=dict(values)))
+            state.teacher_top.append(dict(position=position,top=dict(values),top_order=list(values)))
 
     def finish(self,runs):
         prefixes=[digest(p+t[:ENTRY]) for p,t in zip(self.prompts,self.traces)]
-        evidence=dict(schema=SCHEMA,rule=dict(grade_module.FROZEN_RULE),
+        evidence=dict(schema=SCHEMA,top_order_basis='response-insertion-order/1',rule=dict(grade_module.FROZEN_RULE),
                       baseline_sha256=self.baseline['sha256'],fixed_positions=list(range(ENTRY,ENTRY+MEASURE)),
                       prefix_digests=prefixes,runs={})
         known_failure=[]
@@ -166,7 +166,7 @@ class Instrument:
                     known_failure.append(name+': forced-token bitwise mismatch');continue
                 for row in stream.get('teacher_top',[]):
                     p=actual.get((i,row['position']))
-                    if p is not None:result['positions'].append(dict(p,stream=i,top=row['top']))
+                    if p is not None:result['positions'].append(dict(p,stream=i,top=row['top'],top_order=row.get('top_order')))
         verdict=grade_module.grade(evidence)
         if known_failure:
             verdict['verdict']='FAIL';verdict['failures'].extend(known_failure)
