@@ -784,7 +784,111 @@ def noop_scheduler_output():
             num_computed_tokens=[], num_output_tokens=[]))
 
 
+def pinned_paused_scheduler():
+    """Real pinned schedule(), with only cache-manager boundaries faked on CPU."""
+    import ast
+    import itertools
+    import time
+    source = ROOT / 'reference/vllm-src/v1/core/sched/output.py'
+    tree = ast.parse(source.read_text())
+    classes = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name in ('CachedRequestData', 'SchedulerOutput'):
+            node.body = [part for part in node.body if isinstance(part, ast.AnnAssign)
+                         or isinstance(part, ast.FunctionDef) and part.name == 'make_empty']
+            classes.append(node)
+    module = ast.parse('from __future__ import annotations\nfrom dataclasses import dataclass, field\n')
+    module.body.extend(classes)
+    namespace = {'__name__': __name__, 'time': time, 'itertools': itertools,
+                 'record_function_or_nullcontext': lambda *a: contextlib.nullcontext(),
+                 'PauseState': types.SimpleNamespace(PAUSED_ALL=1, UNPAUSED=0)}
+    source = ROOT / 'reference/vllm-src/v1/core/sched/scheduler.py'
+    scheduler = next(n for n in ast.parse(source.read_text()).body
+                     if isinstance(n, ast.ClassDef) and n.name == 'Scheduler')
+    scheduler.bases = []; scheduler.decorator_list = []
+    scheduler.body = [n for n in scheduler.body if isinstance(n, ast.FunctionDef)
+                      and n.name in ('schedule', '_make_cached_request_data',
+                                     '_get_new_block_ids_to_zero', '_update_after_schedule')]
+    module.body.append(scheduler)
+    exec(compile(ast.fix_missing_locations(module), str(source), 'exec'), namespace)
+    obj = namespace['Scheduler']()
+    attrs = dict(current_step=0, max_num_scheduled_tokens=1024,
+        vllm_config=types.SimpleNamespace(speculative_config=None),
+        scheduler_config=types.SimpleNamespace(max_num_batched_tokens=1024, async_scheduling=True),
+        _pause_state=1, max_num_encoder_input_tokens=0,
+        running=[types.SimpleNamespace(request_id='fixture', is_prefill_chunk=False)],
+        waiting=[], skipped_waiting=[], pd_alternate=False, parity_balance=False,
+        _pd_share=None, _sf_max=0, lora_config=None, _sched_stats_every=0,
+        max_num_running_reqs=11, use_v2_model_runner=True, model_uses_mrope=False,
+        kv_cache_config=types.SimpleNamespace(kv_cache_groups=[object()]),
+        connector=None, ec_connector=None, num_spec_tokens=0, dynamic_sd_lookup=None,
+        log_stats=False, reset_preempted_req_ids=set(), finished_req_ids=set(),
+        needs_kv_cache_zeroing=False, defer_block_free=True, sched_step_seq=17,
+        enable_return_routed_experts=False)
+    for key, value in attrs.items():
+        setattr(obj, key, value)
+    obj.kv_cache_manager = types.SimpleNamespace(new_step_starts=lambda:None,
+        get_num_common_prefix_blocks=lambda rid:[0], take_boundary_state_offloads=lambda:{},
+        take_kv_cache_block_copies=lambda:([], []), take_new_block_ids=lambda:[])
+    obj.encoder_cache_manager = types.SimpleNamespace(get_freed_mm_hashes=lambda:[],
+                                                       get_manager_metadata=lambda:None)
+    return obj
+
+
 class BatchAndBarrierTests(ProbeFixture):
+    def test_actual_paused_schedule_with_running_unscheduled_request(self):
+        scheduler = pinned_paused_scheduler()
+        self.probe.check_batch(8, 8, 1, batch_state(8)); self.probe.check_route(desc())
+        for _ in range(3):
+            output = scheduler.schedule()
+            self.assertEqual(output.total_num_scheduled_tokens, 0)
+            self.assertEqual(output.scheduled_cached_reqs.req_ids, [])
+            self.assertIsNone(decode_probe.DecodeProbe._empty_noop_rejection(output))
+            self.probe.observe_empty(output)
+        self.assertEqual(scheduler.sched_step_seq, 17)
+        self.assertTrue(self.probe.batch_observations['last']['full_graph'])
+        self.assertEqual(self.probe.batch_observations['noop_empty_batches'], 3)
+
+    def test_paused_schedule_finished_and_zeroing_rejections_are_identified(self):
+        scheduler = pinned_paused_scheduler()
+        scheduler.finished_req_ids = {'fixture-finished'}
+        self.probe.observe_empty(scheduler.schedule())
+        self.assertEqual(self.probe.batch_observations['noop_rejections'], {'finished_req_ids':1})
+        scheduler.needs_kv_cache_zeroing = True
+        scheduler._skip_zero_block_ids = set()
+        scheduler.kv_cache_manager.take_new_block_ids = lambda:[123]
+        self.probe.observe_empty(scheduler.schedule())
+        self.assertEqual(self.probe.batch_observations['last_noop_rejection'],
+                         {'field':'new_block_ids_to_zero', 'empty_sequence':2})
+
+    def test_rejections_are_bounded_first_fields_with_independent_snapshots(self):
+        output = noop_scheduler_output()
+        output.finished_req_ids = {'never-emit-this-id'}
+        output.new_block_ids_to_zero = [987654321]
+        self.probe.observe_empty(output)
+        saved = self.probe.counters()['batch_observations']
+        self.probe.observe_empty(output)
+        self.assertEqual(saved['noop_rejections'], {'finished_req_ids':1})
+        self.assertEqual(saved['last_noop_rejection']['empty_sequence'], 1)
+        self.assertEqual(self.probe.batch_observations['noop_rejections'], {'finished_req_ids':2})
+        output = noop_scheduler_output()
+        output.scheduled_cached_reqs.req_ids = ['never-emit-this-id']
+        self.probe.observe_empty(output)
+        self.assertEqual(self.probe.batch_observations['last_noop_rejection']['field'],
+                         'scheduled_cached_reqs.req_ids')
+        output = noop_scheduler_output()
+        del output.num_scheduled_tokens
+        self.probe.observe_empty(output)
+        self.assertEqual(self.probe.batch_observations['last_noop_rejection']['field'],
+                         'num_scheduled_tokens')
+        class DictSubclass(dict): pass
+        output = noop_scheduler_output(); output.num_scheduled_tokens = DictSubclass()
+        self.probe.observe_empty(output)
+        self.assertEqual(self.probe.batch_observations['noop_rejections']['num_scheduled_tokens'],2)
+        data = json.dumps(self.probe.counters())
+        self.assertNotIn('never-emit-this-id', data)
+        self.assertNotIn('987654321', data)
+
     def test_noop_matches_pinned_scheduler_output_make_empty(self):
         import ast
         source=ROOT/'reference/vllm-src/v1/core/sched/output.py'

@@ -311,6 +311,8 @@ class DecodeProbe:
         self.in_flight = 0
         self.batch_observations = {'batches': 0, 'decode_batches': 0,
                                    'non_decode_batches': 0, 'empty_batches': 0,
+                                   'noop_empty_batches': 0, 'noop_rejections': {},
+                                   'last_noop_rejection': None,
                                    'full_graph_dispatches': 0, 'non_full_dispatches': 0,
                                    'scheduler_observations': 0, 'preempted_requests': 0,
                                    'unknown_preemption_observations': 0,
@@ -416,7 +418,7 @@ class DecodeProbe:
             raise DecodeProbeInvalidated('split interval contains preemption')
 
     @staticmethod
-    def _empty_is_noop(output):
+    def _empty_noop_rejection(output):
         """Only a fully described empty scheduler step may preserve batch truth.
 
         A keep-pause emits empty steps after the final real batch. These are
@@ -426,24 +428,24 @@ class DecodeProbe:
         absent = object()
         if (type(getattr(output, 'total_num_scheduled_tokens', absent)) is not int
                 or output.total_num_scheduled_tokens != 0):
-            return False
+            return 'total_num_scheduled_tokens'
         for name, typ in (('scheduled_new_reqs', list), ('num_scheduled_tokens', dict),
                           ('finished_req_ids', set), ('scheduled_spec_decode_tokens', dict),
                           ('scheduled_encoder_inputs', dict), ('free_encoder_mm_hashes', list)):
             value = getattr(output, name, absent)
             if type(value) is not typ or value:
-                return False
+                return name
         for name, typ in (('preempted_req_ids', set), ('new_block_ids_to_zero', list),
                           ('kv_cache_block_copies', list), ('block_table_updates', dict)):
             value = getattr(output, name, absent)
             if value is not None and (type(value) is not typ or value):
-                return False
+                return name
         for name in ('kv_connector_metadata', 'kv_connector_block_state',
                      'ec_connector_metadata', 'ec_manager_metadata'):
             if getattr(output, name, absent) is not None:
-                return False
+                return name
         if getattr(output, 'has_sync_kv_loads', absent) is not False:
-            return False
+            return 'has_sync_kv_loads'
         cached = getattr(output, 'scheduled_cached_reqs', absent)
         for name, typ in (('req_ids', list), ('resumed_req_ids', set),
                           ('new_token_ids', list), ('all_token_ids', dict),
@@ -451,13 +453,27 @@ class DecodeProbe:
                           ('num_output_tokens', list)):
             value = getattr(cached, name, absent)
             if type(value) is not typ or value:
-                return False
-        return True
+                return 'scheduled_cached_reqs.' + name
+        return None
+
+    @staticmethod
+    def _empty_is_noop(output):
+        return DecodeProbe._empty_noop_rejection(output) is None
 
     def observe_empty(self, output=None):
-        self.batch_observations['empty_batches'] += 1
-        if not self._empty_is_noop(output):
-            self.batch_observations['last'] = None
+        observed = self.batch_observations
+        observed['empty_batches'] += 1
+        field = self._empty_noop_rejection(output)
+        if field is None:
+            observed['noop_empty_batches'] += 1
+        else:
+            # Bounded field-name vocabulary only: no request IDs, values, reprs
+            # or payloads. Count one first rejection for each empty step.
+            counts = observed['noop_rejections']
+            counts[field] = counts.get(field, 0) + 1
+            observed['last_noop_rejection'] = {
+                'field': field, 'empty_sequence': observed['empty_batches']}
+            observed['last'] = None
 
 
     def invalidate(self, reason):
@@ -620,6 +636,9 @@ class DecodeProbe:
             'sampling_pending': getattr(self.runner, 'execute_model_state', None) is not None,
             'transition_pending': not getattr(self.controller, 'admitting', False),
             'batch_observations': {**self.batch_observations,
+                'noop_rejections': dict(self.batch_observations['noop_rejections']),
+                'last_noop_rejection': (dict(self.batch_observations['last_noop_rejection'])
+                    if self.batch_observations['last_noop_rejection'] is not None else None),
                 'last': dict(self.batch_observations['last'])
                         if self.batch_observations['last'] is not None else None},
         })
