@@ -405,7 +405,7 @@ def decode_probe_rpc(worker, command):
             drained = probe.controller.drain()
             if type(drained) is not int or drained <= 0:
                 raise NativeStartupError('teacher configuration drain unproved')
-            result = configure_worker(runner, command['enabled'])
+            result = configure_worker(runner, command['enabled'], rank=worker.rank)
             probe._snapshot_max_bytes=command['snapshot_max_bytes']
             result['snapshot_max_bytes']=command['snapshot_max_bytes']
         except BaseException:

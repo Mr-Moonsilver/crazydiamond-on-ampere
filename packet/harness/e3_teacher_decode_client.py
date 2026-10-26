@@ -17,10 +17,30 @@ import e3_teacher_decode_grade as grade_module
 
 ENTRY, MEASURE, TAIL, TOTAL = 256, 256, 256, 768
 SCHEMA='s5-teacher-decode/1'
+EVIDENCE_SCHEMA='s5-teacher-decode/2'
+ROW_SCHEMA='s5-teacher-rows/1'
+ROW_BASIS='sampler-invocation/1'
+ROW_MAPPING_SCHEMA='s5-teacher-row-mapping/1'
+MAX_ROWS=2048
+MAX_CALLS=2048
 
 
 def digest(x):
     return hashlib.sha256(json.dumps(x,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+
+def _decode_only(snapshot):
+    """Prove a one-token, no-prefill, no-draft batch from the captured global batch."""
+    if type(snapshot) is not dict:
+        return False
+    scheduled = snapshot.get('num_scheduled_tokens')
+    prefilling = snapshot.get('is_prefilling_np')
+    return (snapshot.get('num_draft_tokens') == 0
+            and snapshot.get('num_tokens') == snapshot.get('num_reqs')
+            and type(scheduled) is list and len(scheduled) > 0
+            and all(type(value) is int and value == 1 for value in scheduled)
+            and type(prefilling) is list and len(prefilling) == len(scheduled)
+            and all(type(value) is bool and value is False for value in prefilling))
 
 
 class Instrument:
@@ -116,50 +136,180 @@ class Instrument:
 
     def finish(self,runs):
         prefixes=[digest(p+t[:ENTRY]) for p,t in zip(self.prompts,self.traces)]
-        evidence=dict(schema=SCHEMA,top_order_basis='response-insertion-order/1',rule=dict(grade_module.FROZEN_RULE),
-                      baseline_sha256=self.baseline['sha256'],fixed_positions=list(range(ENTRY,ENTRY+MEASURE)),
-                      prefix_digests=prefixes,runs={})
+        cohort=[digest(t) for t in self.traces]
+        measured=set(range(ENTRY,ENTRY+MEASURE))
+        evidence=dict(schema=EVIDENCE_SCHEMA,top_order_basis='response-insertion-order/1',
+                      rule=dict(grade_module.FROZEN_RULE),baseline_sha256=self.baseline['sha256'],
+                      fixed_positions=list(range(ENTRY,ENTRY+MEASURE)),prefix_digests=prefixes,
+                      cohort_trace_digests=cohort,row_schema=ROW_SCHEMA,
+                      row_mapping_basis=ROW_BASIS,runs={})
         known_failure=[]
         for run in runs:
             name=run['label'];route=run['route']
+            defects=[]
+            mapping=dict(schema=ROW_MAPPING_SCHEMA,basis=ROW_BASIS,calls=[],records=[],
+                         defects=defects,overflow=False,physical_layout_differs=False,
+                         rank_layout={})
             result=dict(route=route,lifecycle_verdict='PASS' if run.get('complete') else 'INCONCLUSIVE',
-                        prefix_digests=prefixes,positions=[])
+                        prefix_digests=prefixes,positions=[],repeat=None,engine_epoch=None,
+                        route_generation=None,storage_epoch=None,row_mapping=mapping)
             evidence['runs'][name]=result
             if run.get('contract'):known_failure.append(name+': lifecycle/data contract failure')
             ends=[c for c in run.get('calls',[]) if c.get('action')=='pause_end' and c.get('lifecycle_ok')]
-            if len(ends)!=1:continue
+            if len(ends)!=1:
+                defects.append('pause_end receipt absent');continue
             call=ends[0];proof=(call.get('receipt') or {}).get('teacher_forced')
             core=call.get('receipt_core') or {}
             if (type(proof) is not dict or core.get('teacher_forced')!=proof
                     or call.get('receipt_sha256')!=digest(core)
                     or proof.get('pending')!=0 or proof.get('admitted')!=8
-                    or proof.get('plan_sha256')!=self.plan_shas.get(core.get('repeat'))):continue
+                    or proof.get('plan_sha256')!=self.plan_shas.get(core.get('repeat'))):
+                defects.append('teacher receipt binding differs');continue
+            result['repeat']=core.get('repeat')
+            result['engine_epoch']=core.get('engine_epoch')
+            result['route_generation']=core.get('route_generation_after')
             workers=proof.get('ranks')
             if (type(workers) is not list or len(workers)!=4
-                    or {r.get('rank') for r in workers}!={0,1,2,3}):continue
-            by_trace={digest(t):i for i,t in enumerate(self.traces)}
-            actual={};valid=True
+                    or {r.get('rank') for r in workers}!={0,1,2,3}):
+                defects.append('four worker evidence blocks required');continue
+            by_trace={cohort[i]:i for i in range(len(cohort))}
+            actual={};calls={}
+            owner_ranks=sorted(worker['rank'] for worker in workers if worker.get('sampler_owner'))
+            layouts={}
             for worker in workers:
-                rank=worker['rank']
-                if (worker.get('overflow') is not False
+                rank=worker['rank'];owner=rank>=2
+                if (worker.get('overflow') is not False or worker.get('call_overflow') is not False
+                        or type(worker.get('capture_defects')) is not list or worker['capture_defects']
                         or worker.get('engine_epoch')!=core.get('engine_epoch')
                         or worker.get('route_generation')!=core.get('route_generation_after')
-                        or worker.get('sampler_owner') is not (rank>=2)
+                        or worker.get('sampler_owner') is not owner
                         or type(worker.get('drained_streams')) is not int or worker['drained_streams']<=0
-                        or rank<2 and worker.get('positions')!=[]):
-                    valid=False;break
-                seen=set()
-                for position in worker.get('positions',[]):
+                        or (owner and (worker.get('row_schema')!=ROW_SCHEMA
+                                       or worker.get('row_basis')!=ROW_BASIS))
+                        or (not owner and (worker.get('positions')!=[] or worker.get('calls')!=[]))):
+                    if (worker.get('overflow') is not False
+                            or worker.get('call_overflow') is not False):
+                        mapping['overflow']=True
+                    defects.append('rank%d: worker evidence unproved'%rank);continue
+                if not owner:continue
+                if result['storage_epoch'] is None:
+                    result['storage_epoch']=worker.get('storage_epoch')
+                elif result['storage_epoch']!=worker.get('storage_epoch'):
+                    defects.append('rank%d: storage generation differs'%rank)
+                raw_calls=worker.get('calls');raw_positions=worker.get('positions')
+                if (type(raw_calls) is not list or len(raw_calls)>MAX_CALLS
+                        or type(raw_positions) is not list or len(raw_positions)>MAX_ROWS):
+                    mapping['overflow']=True
+                    defects.append('rank%d: worker evidence exceeds bounds'%rank);continue
+                worker_calls={};seen=set()
+                for row_call in raw_calls:
+                    seq=row_call.get('sampler_call_seq') if type(row_call) is dict else None
+                    if (type(row_call) is not dict or row_call.get('rank')!=rank or type(seq) is not int):
+                        defects.append('rank%d: sampler call identity differs'%rank);continue
+                    if seq in worker_calls:
+                        defects.append('rank%d: duplicate sampler call'%rank);continue
+                    if (row_call.get('engine_epoch')!=core.get('engine_epoch')
+                            or row_call.get('route')!=worker.get('route')
+                            or row_call.get('route_generation')!=core.get('route_generation_after')
+                            or row_call.get('storage_epoch')!=worker.get('storage_epoch')
+                            or type(row_call.get('graph')) is not dict
+                            or row_call.get('descriptor_stale') is not False
+                            or row_call.get('descriptor_matches_batch') is not True
+                            or type(row_call.get('global_snapshot')) is not dict
+                            or type(row_call.get('local_snapshot')) is not dict):
+                        defects.append('rank%d: sampler call proof differs'%rank);continue
+                    worker_calls[seq]=row_call;calls[(rank,seq)]=row_call
+                    mapping['calls'].append(row_call)
+                if rank not in (2,3):
+                    defects.append('sampler rank is not qualified');continue
+                layout=layouts.setdefault(str(rank),{'streams':set(),'num_reqs':set(),'slots':set()})
+                for position in raw_positions:
+                    if type(position) is not dict:
+                        defects.append('rank%d: position row invalid'%rank);continue
+                    seq=position.get('sampler_call_seq');row_call=worker_calls.get(seq)
+                    if row_call is None:
+                        defects.append('rank%d: row references an absent sampler call'%rank);continue
                     stream=by_trace.get(position.get('trace_sha256'))
-                    key=(stream,position.get('position'))
-                    if (stream is None or key in seen or position.get('route_generation')!=worker['route_generation']
-                            or position.get('worker_route')!=worker.get('route')):valid=False;break
+                    position_index=position.get('position')
+                    if stream is None:
+                        defects.append('rank%d: foreign row'%rank);continue
+                    if type(position_index) is not int or position_index not in measured:
+                        defects.append('rank%d: row outside measured set'%rank);continue
+                    key=(stream,position_index)
+                    if key in seen:
+                        defects.append('rank%d: duplicate measured row'%rank);continue
+                    local=row_call['local_snapshot'];global_snapshot=row_call['global_snapshot']
+                    batch_row=position.get('batch_row');slot=position.get('slot')
+                    idx_mapping=local.get('idx_mapping')
+                    if (type(idx_mapping) is not list or type(batch_row) is not int
+                            or not 0<=batch_row<len(idx_mapping) or idx_mapping[batch_row]!=slot):
+                        defects.append('rank%d: batch row/slot differs'%rank);continue
+                    order=row_call.get('local_cohort_order')
+                    if (type(order) is not list or batch_row>=len(order)
+                            or order[batch_row]!=position.get('trace_sha256')):
+                        defects.append('rank%d: local cohort row differs'%rank);continue
+                    prompt_len,total_len=position.get('prompt_len'),position.get('total_len')
+                    if (type(prompt_len) is not int or type(total_len) is not int
+                            or total_len-prompt_len!=position_index):
+                        defects.append('rank%d: derived output position differs'%rank);continue
+                    # Pinned positions[] = num_computed_tokens = total_len-1 here.
+                    if position.get('input_position')!=total_len-1:
+                        defects.append('rank%d: input position differs'%rank);continue
+                    logits_row=position.get('logits_row');cu_num_logits=local.get('cu_num_logits')
+                    if (type(logits_row) is not int or type(cu_num_logits) is not list
+                            or batch_row+1>=len(cu_num_logits) or cu_num_logits[batch_row]!=logits_row):
+                        defects.append('rank%d: logits row differs'%rank);continue
+                    input_positions=local.get('logit_input_positions')
+                    if (type(input_positions) is not list or not 0<=logits_row<len(input_positions)
+                            or input_positions[logits_row]!=position.get('input_position')):
+                        defects.append('rank%d: logit input position differs'%rank);continue
+                    if local != global_snapshot or row_call.get('local_cohort_order') != row_call.get('global_cohort_order'):
+                        defects.append('rank%d: batch-sharded sampling is not qualified'%rank);continue
                     seen.add(key)
-                    p={k:position.get(k) for k in ('position','worker_route','route_generation',
-                                                  'full_graph','decode_only','forced_token_exact')}
-                    if key in actual and actual[key]!=p:valid=False;break
+                    mapping['records'].append(dict(
+                        rank=rank,run=name,repeat=core.get('repeat'),stream=stream,
+                        position=position_index,sampler_call_seq=seq,
+                        trace_sha256=position['trace_sha256'],slot=slot,batch_row=batch_row,
+                        logits_row=logits_row,prompt_len=prompt_len,total_len=total_len,
+                        output_position=position_index,input_position=position['input_position'],
+                        forced_token_exact=position.get('forced_token_exact'),
+                        logprob_sha256=position.get('logprob_sha256')))
+                    layout['streams'].add(stream);layout['num_reqs'].add(local.get('num_reqs'))
+                    layout['slots'].add(slot)
+                    full_graph=row_call['graph'].get('cg_mode')=='full'
+                    decode_only=_decode_only(global_snapshot)
+                    p={'position':position_index,'worker_route':row_call['route'],
+                       'route_generation':row_call['route_generation'],'full_graph':full_graph,
+                       'decode_only':decode_only,
+                       'forced_token_exact':position.get('forced_token_exact')}
+                    if key in actual and actual[key]!=p:
+                        defects.append('rank%d: sampler ranks disagree on a coordinate'%rank);continue
                     actual[key]=p
-            if not valid:continue
+                if seen != {(stream,position) for stream in range(len(cohort)) for position in measured}:
+                    defects.append('rank%d: physical coverage incomplete'%rank)
+            for seq in sorted({seq for (_,seq) in calls}):
+                present=[rank for rank in owner_ranks if (rank,seq) in calls]
+                if len(present)!=len(owner_ranks):
+                    defects.append('pp rank sampler-call gap');continue
+                first=calls[(present[0],seq)]
+                for rank in present[1:]:
+                    other=calls[(rank,seq)]
+                    if (other.get('global_snapshot')!=first.get('global_snapshot')
+                            or other.get('global_cohort_order')!=first.get('global_cohort_order')
+                            or other.get('graph')!=first.get('graph')
+                            or other.get('route')!=first.get('route')
+                            or other.get('route_generation')!=first.get('route_generation')
+                            or other.get('engine_epoch')!=first.get('engine_epoch')
+                            or other.get('storage_epoch')!=first.get('storage_epoch')):
+                        defects.append('pp ranks disagree on the logical row')
+                    if (other.get('local_snapshot')!=first.get('local_snapshot')
+                            or other.get('local_cohort_order')!=first.get('local_cohort_order')):
+                        mapping['physical_layout_differs']=True
+            expected={(stream,position) for stream in range(len(cohort)) for position in measured}
+            if set(actual)!=expected:defects.append('row mapping coverage incomplete')
+            mapping['rank_layout']={rank:{'streams':sorted(layout['streams']),
+                'num_reqs':sorted(value for value in layout['num_reqs'] if type(value) is int),
+                'slots':sorted(layout['slots'])} for rank,layout in layouts.items()}
             for stream in run.get('streams',[]):
                 i=stream['stream']
                 if stream.get('_tokens')!=self.traces[i]:
@@ -167,6 +317,11 @@ class Instrument:
                 for row in stream.get('teacher_top',[]):
                     p=actual.get((i,row['position']))
                     if p is not None:result['positions'].append(dict(p,stream=i,top=row['top'],top_order=row.get('top_order')))
+        for result in evidence['runs'].values():
+            mapping=result['row_mapping']
+            mapping['defect_count']=len(mapping['defects'])
+            if len(mapping['defects'])>32:
+                mapping['defects']=mapping['defects'][:31]+['defects-overflow']
         verdict=grade_module.grade(evidence)
         if known_failure:
             verdict['verdict']='FAIL';verdict['failures'].extend(known_failure)

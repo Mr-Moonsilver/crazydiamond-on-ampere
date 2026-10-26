@@ -127,7 +127,7 @@ class ProbeController:
             timeout=self.timeout_s, args=(command,), kwargs={})
 
     async def configure_teacher(self, plan):
-        from teacher_decode import FrontendPlan, TeacherDecodeError, validate_plan
+        from teacher_decode import FrontendPlan, ROW_BASIS, ROW_SCHEMA, TeacherDecodeError, validate_plan
         if plan is not None:
             try: validate_plan(plan)
             except TeacherDecodeError as exc: raise ProbeControlError(str(exc)) from None
@@ -151,7 +151,9 @@ class ProbeController:
                     or row['table_bytes'] < 0
                     or not _positive(row.get('drained_streams'))
                     or row.get('snapshot_max_bytes') != (plan.get('snapshot_max_bytes',2*1024**3) if plan else 2*1024**3)
-                    or (plan is not None and rank>=2 and row['table_bytes']==0)):
+                    or (plan is not None and rank>=2 and row['table_bytes']==0)
+                    or row.get('row_schema') != (ROW_SCHEMA if plan is not None and rank>=2 else None)
+                    or row.get('row_basis') != (ROW_BASIS if plan is not None and rank>=2 else None)):
                 raise ProbeControlError('teacher-worker-configuration-unproved')
         try:
             if owner is None:
@@ -187,6 +189,7 @@ class ProbeController:
                 'ranks':[replies[r] for r in RANKS]}
 
     async def teacher_evidence(self):
+        from teacher_decode import ROW_BASIS, ROW_SCHEMA
         owner = getattr(self, '_teacher_plan', None)
         if owner is None or owner.pending is None:
             return None
@@ -199,6 +202,11 @@ class ProbeController:
                     or row.get('sampler_owner') is not (rank >= 2)
                     or not _positive(row.get('drained_streams'))
                     or type(row.get('positions')) is not list or len(row['positions']) > 2048
+                    or type(row.get('calls')) is not list or len(row['calls']) > 2048
+                    or row.get('row_schema') != (ROW_SCHEMA if rank>=2 else None)
+                    or row.get('row_basis') != (ROW_BASIS if rank>=2 else None)
+                    or type(row.get('capture_defects')) is not list
+                    or type(row.get('call_overflow')) is not bool
                     or type(row.get('overflow')) is not bool):
                 raise ProbeControlError('teacher-worker-evidence-unproved')
         return dict(owner.status(), ranks=[replies[r] for r in RANKS])
