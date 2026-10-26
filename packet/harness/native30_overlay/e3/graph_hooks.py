@@ -202,7 +202,7 @@ def _is_prefill(router, transaction):
 def check_empty(runner, output):
     probe = _probe(runner)
     if probe is not None and output.total_num_scheduled_tokens == 0:
-        probe.observe_empty()
+        probe.observe_empty(output)
         if probe.route == 'split':
             probe.invalidate('empty_batch')
             from decode_probe import DecodeProbeInvalidated

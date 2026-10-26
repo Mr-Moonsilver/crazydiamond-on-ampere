@@ -4,7 +4,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from e3_probe_rpc import exchange, target, TransportError, PATH
+from e3_probe_rpc import exchange, target, TransportError, ControllerRefusal, PATH
 
 
 class RpcTests(unittest.TestCase):
@@ -48,6 +48,34 @@ class RpcTests(unittest.TestCase):
         self.status=307; self.result={'error':'fixture-auth private-payload'}
         with self.assertRaisesRegex(TransportError,'^http-status-307$'): self.call()
         self.assertEqual(len(self.requests),1)
+
+    def test_409_retains_only_reviewed_reason_and_body_digest(self):
+        self.status=409; self.result={'error':'worker-decode-eligibility-unproven'}
+        with self.assertRaises(ControllerRefusal) as caught:self.call()
+        record=caught.exception.record
+        self.assertEqual(record['http_status'],409)
+        self.assertEqual(record['refusal_code'],'worker-decode-eligibility-unproven')
+        self.assertEqual(len(record['response_sha256']),64)
+        self.assertGreater(record['response_bytes'],0)
+        self.result={'error':'fixture-auth private-payload'}
+        with self.assertRaises(ControllerRefusal) as caught:self.call()
+        self.assertEqual(caught.exception.record['refusal_code'],'unrecognized')
+        self.assertNotIn('fixture-auth',str(caught.exception)+json.dumps(caught.exception.record))
+        with patch('e3_probe_rpc.MAX_REFUSAL',8):
+            with self.assertRaisesRegex(TransportError,'refusal-too-large'):self.call()
+
+    def test_http_controller_retains_refusal_after_correctness_redaction(self):
+        from e3_q17b_clients import HttpController
+        from e3_w1_decode_driver import ControllerTransportError
+        from e3_decode_correctness import _safe_transport
+        self.status=409; self.result={'error':'worker-decode-eligibility-unproven'}
+        with self.assertRaises(ControllerTransportError) as caught:
+            HttpController(self.url,'fixture-auth').execute(self.command,2)
+        record=_safe_transport(caught.exception.record)
+        self.assertEqual(record['http_status'],409)
+        self.assertEqual(record['error'],'controller_refusal')
+        self.assertEqual(record['refusal_code'],'worker-decode-eligibility-unproven')
+        self.assertEqual(len(record['response_sha256']),64)
 
     def test_changed_reply_identity_refused(self):
         for change in (dict(run_id='other'),dict(command_seq=True),dict(command_seq=2),dict(schema=True)):

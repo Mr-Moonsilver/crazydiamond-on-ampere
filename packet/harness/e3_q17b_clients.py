@@ -181,6 +181,10 @@ class HttpController:
         try:
             result = rpc.exchange(command, url=self.url, key=self.key,
                                   timeout_s=timeout_s, raw=False)
+        except rpc.ControllerRefusal as exc:
+            raise w1.ControllerTransportError('controller_refusal',
+                {'kind':'http', 'error':'controller_refusal', 'timeout':False,
+                 **exc.record}) from None
         except rpc.TransportError as exc:
             raise w1.ControllerTransportError('http_transport',
                 {'kind': 'http', 'error': type(exc).__name__, 'timeout': False}) from None

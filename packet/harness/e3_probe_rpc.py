@@ -6,6 +6,7 @@ pins this executable; PROBE_URL and the existing VLLM_API_KEY stay environment
 only. --raw selects the fixed low-level diagnostic endpoint for owner checks.
 """
 import argparse
+import hashlib
 import http.client
 import ipaddress
 import json
@@ -20,8 +21,33 @@ MAX_COMMAND = 16384
 MAX_RESPONSE = 40 * 1024 * 1024
 
 
+# Only reviewed protocol codes may leave an HTTP refusal body as text.
+# Unknown bodies are represented by length/hash, never echoed.
+PUBLIC_REFUSALS = frozenset({
+    'worker-decode-eligibility-unproven', 'cohort-not-decode-only',
+    'controller-quarantined', 'session-quarantined', 'completed-pause-required',
+    'worker-still-active', 'invalid-worker-barrier', 'stale-route-generation',
+    'invalid-transition-target', 'control-operation-failed:TimeoutError',
+})
+MAX_REFUSAL = 16384
+
 class TransportError(RuntimeError):
     pass
+
+class ControllerRefusal(TransportError):
+    def __init__(self, body):
+        code = 'unrecognized'
+        try:
+            parsed = json.loads(body)
+            if (type(parsed) is dict and set(parsed) == {'error'}
+                    and type(parsed['error']) is str and parsed['error'] in PUBLIC_REFUSALS):
+                code = parsed['error']
+        except (ValueError, UnicodeError):
+            pass
+        self.record = {'http_status':409, 'refusal_code':code,
+                       'response_bytes':len(body),
+                       'response_sha256':hashlib.sha256(body).hexdigest()}
+        super().__init__('controller-refused:' + code)
 
 
 def target(url):
@@ -53,6 +79,11 @@ def exchange(command, *, url, key, timeout_s, raw=False):
         connection.request('POST', PATH if raw else PATH + '/session', body=data,
             headers={'Content-Type':'application/json', 'Authorization':'Bearer ' + key})
         response = connection.getresponse()
+        if response.status == 409:
+            body = response.read(MAX_REFUSAL + 1)
+            if len(body) > MAX_REFUSAL:
+                raise TransportError('refusal-too-large')
+            raise ControllerRefusal(body)
         if response.status != 200:
             # Never print response/error bodies or URLs; they can echo secrets.
             raise TransportError('http-status-' + str(response.status))

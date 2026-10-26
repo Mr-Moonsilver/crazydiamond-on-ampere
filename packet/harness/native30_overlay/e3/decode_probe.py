@@ -415,9 +415,49 @@ class DecodeProbe:
             self.invalidate('preempted_request')
             raise DecodeProbeInvalidated('split interval contains preemption')
 
-    def observe_empty(self):
+    @staticmethod
+    def _empty_is_noop(output):
+        """Only a fully described empty scheduler step may preserve batch truth.
+
+        A keep-pause emits empty steps after the final real batch. These are
+        not new model executions. Missing metadata or any request/storage
+        mutation must still destroy the previous eligibility evidence.
+        """
+        absent = object()
+        if (type(getattr(output, 'total_num_scheduled_tokens', absent)) is not int
+                or output.total_num_scheduled_tokens != 0):
+            return False
+        for name, typ in (('scheduled_new_reqs', list), ('num_scheduled_tokens', dict),
+                          ('finished_req_ids', set), ('scheduled_spec_decode_tokens', dict),
+                          ('scheduled_encoder_inputs', dict), ('free_encoder_mm_hashes', list)):
+            value = getattr(output, name, absent)
+            if type(value) is not typ or value:
+                return False
+        for name, typ in (('preempted_req_ids', set), ('new_block_ids_to_zero', list),
+                          ('kv_cache_block_copies', list), ('block_table_updates', dict)):
+            value = getattr(output, name, absent)
+            if value is not None and (type(value) is not typ or value):
+                return False
+        for name in ('kv_connector_metadata', 'kv_connector_block_state',
+                     'ec_connector_metadata', 'ec_manager_metadata'):
+            if getattr(output, name, absent) is not None:
+                return False
+        if getattr(output, 'has_sync_kv_loads', absent) is not False:
+            return False
+        cached = getattr(output, 'scheduled_cached_reqs', absent)
+        for name, typ in (('req_ids', list), ('resumed_req_ids', set),
+                          ('new_token_ids', list), ('all_token_ids', dict),
+                          ('new_block_ids', list), ('num_computed_tokens', list),
+                          ('num_output_tokens', list)):
+            value = getattr(cached, name, absent)
+            if type(value) is not typ or value:
+                return False
+        return True
+
+    def observe_empty(self, output=None):
         self.batch_observations['empty_batches'] += 1
-        self.batch_observations['last'] = None
+        if not self._empty_is_noop(output):
+            self.batch_observations['last'] = None
 
 
     def invalidate(self, reason):

@@ -770,7 +770,92 @@ class PersistedEvidenceTests(unittest.TestCase):
             s5_startup.install_builder(runner, None, env={PROBE_ENV:'1', DECODE_SMS_ENV:'44'})
         self.assertIn('no FULL', str(caught.exception))
 
+def noop_scheduler_output():
+    return types.SimpleNamespace(total_num_scheduled_tokens=0,
+        scheduled_new_reqs=[], num_scheduled_tokens={}, finished_req_ids=set(),
+        scheduled_spec_decode_tokens={}, scheduled_encoder_inputs={},
+        free_encoder_mm_hashes=[], preempted_req_ids=None,
+        new_block_ids_to_zero=None, kv_cache_block_copies=None,
+        block_table_updates=None, kv_connector_metadata=None,
+        kv_connector_block_state=None, ec_connector_metadata=None,
+        ec_manager_metadata=None, has_sync_kv_loads=False,
+        scheduled_cached_reqs=types.SimpleNamespace(req_ids=[], resumed_req_ids=set(),
+            new_token_ids=[], all_token_ids={}, new_block_ids=[],
+            num_computed_tokens=[], num_output_tokens=[]))
+
+
 class BatchAndBarrierTests(ProbeFixture):
+    def test_noop_matches_pinned_scheduler_output_make_empty(self):
+        import ast
+        source=ROOT/'reference/vllm-src/v1/core/sched/output.py'
+        tree=ast.parse(source.read_text())
+        classes=[]
+        for node in tree.body:
+            if isinstance(node,ast.ClassDef) and node.name in ('CachedRequestData','SchedulerOutput'):
+                node.body=[part for part in node.body if isinstance(part,ast.AnnAssign)
+                           or isinstance(part,ast.FunctionDef) and part.name=='make_empty']
+                classes.append(node)
+        module=ast.parse('from __future__ import annotations\nfrom dataclasses import dataclass, field\n')
+        module.body.extend(classes)
+        namespace={'__name__':__name__}
+        exec(compile(ast.fix_missing_locations(module),str(source),'exec'),namespace)
+        output=namespace['SchedulerOutput'].make_empty()
+        self.assertTrue(decode_probe.DecodeProbe._empty_is_noop(output))
+        output.finished_req_ids.add('fixture')
+        self.assertFalse(decode_probe.DecodeProbe._empty_is_noop(output))
+
+    def test_keep_pause_noop_preserves_actual_decode_evidence(self):
+        self.probe.check_batch(8, 8, 1, batch_state(8))
+        self.probe.check_route(desc())
+        before = self.probe.counters()['batch_observations']['last']
+        for _ in range(4):
+            graph_hooks.check_empty(self.runner, noop_scheduler_output())
+        self.assertEqual(self.probe.counters()['batch_observations']['last'], before)
+        self.assertTrue(before['decode_only']); self.assertTrue(before['full_graph'])
+        self.assertEqual(self.probe.batch_observations['empty_batches'], 4)
+        from probe_control import ProbeController, ProbeControlError
+        owner=types.SimpleNamespace(engine=types.SimpleNamespace(
+            get_num_unfinished_requests=lambda:8, get_num_queued_tokens=lambda:0))
+        snapshot={'ranks':[{'rank':r,'counters':self.probe.counters()} for r in range(4)]}
+        self.assertTrue(ProbeController._eligibility(owner,snapshot,8)['proved'])
+        owner.engine.get_num_unfinished_requests=lambda:7
+        with self.assertRaises(ProbeControlError):
+            ProbeController._eligibility(owner,snapshot,8)
+
+    def test_empty_mutations_and_missing_fields_clear_evidence(self):
+        mutations = [('finished_req_ids', {'fixture'}), ('scheduled_new_reqs', [object()]),
+            ('preempted_req_ids', {'fixture'}), ('kv_cache_block_copies', [object()]),
+            ('new_block_ids_to_zero', [1]), ('block_table_updates', {'fixture': ()}),
+            ('kv_connector_metadata', object()), ('has_sync_kv_loads', True)]
+        for name, value in mutations:
+            with self.subTest(name=name):
+                self.probe.check_batch(8,8,1,batch_state(8)); self.probe.check_route(desc())
+                output=noop_scheduler_output();setattr(output,name,value)
+                graph_hooks.check_empty(self.runner,output)
+                self.assertIsNone(self.probe.batch_observations['last'])
+                graph_hooks.check_empty(self.runner,noop_scheduler_output())
+                self.assertIsNone(self.probe.batch_observations['last'])
+        self.probe.check_batch(8,8,1,batch_state(8))
+        output=noop_scheduler_output();del output.finished_req_ids
+        graph_hooks.check_empty(self.runner,output)
+        self.assertIsNone(self.probe.batch_observations['last'])
+
+    def test_noop_does_not_hide_prefill_or_nonfull_dispatch(self):
+        self.probe.check_batch(8,8,1,batch_state(8, prefill=True))
+        self.probe.check_route(desc())
+        graph_hooks.check_empty(self.runner,noop_scheduler_output())
+        self.assertFalse(self.probe.batch_observations['last']['decode_only'])
+        self.probe.check_batch(8,8,1,batch_state(8))
+        self.probe.check_route(desc(mode='none'))
+        graph_hooks.check_empty(self.runner,noop_scheduler_output())
+        self.assertFalse(self.probe.batch_observations['last']['full_graph'])
+
+    def test_split_empty_still_invalidates(self):
+        self.probe.transition('split')
+        with self.assertRaises(DecodeProbeInvalidated):
+            graph_hooks.check_empty(self.runner,noop_scheduler_output())
+        self.assertEqual(self.probe.last_invalidation,'empty_batch')
+
     def test_scheduler_preemption_is_counted_on_full_and_refused_on_split(self):
         worker = types.SimpleNamespace(model_runner=self.runner)
         worker_hooks.observe_scheduler(worker, types.SimpleNamespace(preempted_req_ids={'opaque'}))

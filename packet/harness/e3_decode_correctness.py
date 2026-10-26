@@ -83,7 +83,7 @@ MAX_REASON_CHARS = 300
 ALLOWED_FINISH_REASONS = ('stop', 'length', 'abort')
 KNOWN_STATUS = ('ok', 'error', 'timeout', 'busy', 'unavailable')
 KNOWN_TRANSPORT_KINDS = ('subprocess', 'injected', 'injected_error', 'http')
-KNOWN_TRANSPORT_ERRORS = ('TimeoutExpired', 'OSError', 'RuntimeError', 'ValueError',
+KNOWN_TRANSPORT_ERRORS = ('controller_refusal', 'TimeoutExpired', 'OSError', 'RuntimeError', 'ValueError',
                           'URLError', 'ConnectionResetError', 'BrokenPipeError',
                           'IncompleteRead', 'ProtocolError')
 ACK = 'flash_s5_transition'
@@ -1114,6 +1114,17 @@ def _safe_transport(transport):
     error = transport.get('error')
     if error is not None:
         out['error'] = error if error in KNOWN_TRANSPORT_ERRORS else 'other'
+    if transport.get('http_status') == 409:
+        from e3_probe_rpc import PUBLIC_REFUSALS
+        out['http_status'] = 409
+        code = transport.get('refusal_code')
+        out['refusal_code'] = code if type(code) is str and code in PUBLIC_REFUSALS else 'unrecognized'
+        n = transport.get('response_bytes')
+        if type(n) is int and 0 <= n <= 16384:
+            out['response_bytes'] = n
+        digest = transport.get('response_sha256')
+        if type(digest) is str and re.fullmatch('[0-9a-f]{64}',digest):
+            out['response_sha256'] = digest
     return out
 
 

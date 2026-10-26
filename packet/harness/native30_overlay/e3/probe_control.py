@@ -188,7 +188,7 @@ class ProbeController:
                 raise ProbeControlError('worker-decode-eligibility-unproven')
             observed.append({'rank': row['rank'], 'batch': copy.deepcopy(batch)})
         return {'cohort_size': cohort_size, 'proved': True,
-                'basis': 'paused live request/queued-token counts and last actual per-worker batch',
+                'basis': 'paused live request/queued-token counts and last actual per-worker batch, retained only across proven no-op empty steps',
                 'ranks': observed}
 
     async def _observe(self):
