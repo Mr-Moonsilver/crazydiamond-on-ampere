@@ -672,6 +672,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_probe_control.py', 'E3 diagnostic control: actual awaited pause/ordered RPC, all-rank barriers, scoped auth, source inverse and fail-closed transitions (CPU only)'),
                      ('test_e3_decode_probe.py', 'E3 decode-only diagnostic probe: flag conflict before allocation, evidence gate, typed no-prefill routing/invalidation, split bank pool/bytes, drained transitions/quarantine, shutdown order and default-off bytes (CPU only, fakes)'),
                      ('test_e3_graph_audit.py', 'E3 raw retained-graph audit: exact descriptor inventory, expected green owners, bounded native node walk, FAIL-over-unknown verdicts and stub-CUDA compile (CPU only)'),
+                     ('test_e3_replay_observer.py', 'E3 actual replay context observer: bounded CUPTI activity collection, real green-context binding, clone/update mapping and FAIL-over-missing grading (CPU only, fake CUPTI)'),
                      ('test_s5_oracle_queue.py', 'S5 source oracle: strict subset controls, per-op diagnostics, cuBLAS binding (CPU)'),
                      ('test_s5_substitution.py', 'S5 exact host/resident trajectory oracle and payload-free differences (CPU)'),
                      ('test_s5_tail.py', 'S5 published tickets, workload-tail evidence and threaded eager-forward race (CPU)'),
