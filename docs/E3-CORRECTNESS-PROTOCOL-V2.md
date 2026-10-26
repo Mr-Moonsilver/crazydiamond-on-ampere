@@ -38,6 +38,16 @@ exact gate; it moves the model-level comparison onto the rule the gate spec alre
 
 W1 (performance) runs only on 1, 2 and 4 PASS. No retry, no picking among runs.
 
+Row 1 at each rung (clarified 26 Oct 14:05 CET on Codex's question): row 1 is the E2 exactness
+rule (`docs/E2-CANDIDATE-GATE.md` row "Exactness vs the UVA path"), which instruments the
+resident/DMA paths and therefore applies from the rung that has them (rung 3/4). Rung 2 has no
+such path and the full8 queue carried no runtime byte-content artifact; none is claimed. For
+rung 2, row 1 is a bounded, drained, before/after route-switch invariant check: bytes that must
+not change across pause -> split -> return are compared bitwise (the cohort's prompt-prefix KV
+blocks, split-bank contents, retained host-history pages); recurrent/conv/PLE states and the
+KV written inside the window are excluded because they advance. It is stated as its own scope,
+fail-closed, and is never relabelled from forced-token equality or launch identity.
+
 Implementation of 2 is Codex's call between: (a) a sampler override inside the existing probe
 patch that forces the fixed continuation and records the logits (preferred: full 256-step
 coverage, positions fixed, rule v3 semantics exact); (b) free running with per-step top-k
