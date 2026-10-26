@@ -97,6 +97,7 @@ E2_WORKER_INPUTS = {
 }
 REFERENCE_INPUTS = dict(executor_hooks.PINS)
 REFERENCE_INPUTS.update(worker_hooks.PINS)
+REFERENCE_INPUTS.update(worker_hooks.CAPTURE_REFERENCE_PINS)
 REFERENCE_INPUTS.update(model_hooks.PINS)
 LAUNCHER_NAME = 'run-flash-e2-test.sh'
 S5_LAUNCHER_NAME = 'run-flash-s5-test.sh'
@@ -251,6 +252,7 @@ def _decode_probe_declaration(files):
     if set(decode_probe.GENERATED_SOURCES) != set(E3_MODULES):
         raise ValueError('diagnostic evidence module list drifted')
     pins = dict(worker_hooks.PINS)
+    pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
     pins['v1/worker/gpu/model_runner.py'] = graph_hooks.PINNED_SHA256
     shas = {}
     for name in decode_probe.GENERATED_SOURCES:

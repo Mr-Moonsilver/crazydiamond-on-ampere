@@ -310,7 +310,8 @@ class RouteGuardTests(ProbeFixture):
         counters = self.probe.counters()
         self.assertEqual(counters['replays'], 1)
         self.assertEqual(counters['replays_by_bank'], {'decode-split': 1})
-        self.assertEqual(counters['replays_by_stream'], {self.split.decode_stream_token: 1})
+        self.assertEqual(counters['replays_by_stream'], {'decode-split-stream': 1})
+        self.assertTrue(counters['replay_streams_match_owner'])
         self.assertEqual(list(counters['replays_by_descriptor'].values()), [1])
         self.assertEqual(counters['warmup_replays'], 2)
         with self.assertRaises(DecodeProbeError):
@@ -334,8 +335,9 @@ class BankWiringTests(ProbeFixture):
         self.assertEqual(inventory['split_pool_bytes'], 4096)
         self.assertIn('device-free delta', inventory['split_pool_basis'])
         self.assertEqual(inventory['descriptors_captured'], 2)
-        self.assertEqual(inventory['split_pool_id'], self.probe.router.context.pool_id)
-        self.assertEqual(inventory['split_pool_context_id'], self.split.decode_context_id)
+        self.assertEqual(inventory['split_pool_label'], 'decode-split-pool')
+        self.assertEqual(inventory['split_context_label'], 'decode-split-context')
+        self.assertNotIn('split_pool_context_id', inventory)
         self.assertEqual(inventory['storage_epoch'], decode_probe.STORAGE_EPOCH)
         self.assertEqual(inventory['route_generation'], 0)
         self.assertIn('prefill lane', inventory['excluded'])
@@ -753,6 +755,156 @@ class PersistedEvidenceTests(unittest.TestCase):
         with self.assertRaises(Exception) as caught:
             s5_startup.install_builder(runner, None, env={PROBE_ENV:'1', DECODE_SMS_ENV:'44'})
         self.assertIn('no FULL', str(caught.exception))
+
+class CaptureObservationTests(unittest.TestCase):
+    def setUp(self):
+        self.env = {PROBE_ENV: '1'}
+        self.stream = types.SimpleNamespace(cuda_stream=891234567890123)
+        self.owner = types.SimpleNamespace(state='open', decode_stream=self.stream,
+                                          decode_stream_token=self.stream.cuda_stream)
+        self.manager = types.SimpleNamespace(device='cuda:0',
+                    _flash_s5_capture_context=object(), _flash_s5_capture_owner=self.owner)
+        self.descriptor = FakeDesc(FULL, 8, 8)
+        self.torch = types.SimpleNamespace(cuda=types.SimpleNamespace(
+                    current_stream=lambda device:self.stream))
+
+    def check(self, stream=None):
+        with patch.dict(os.environ, self.env):
+            return worker_hooks.checked_capture_stream(self.manager,
+                       self.stream if stream is None else stream, self.descriptor,
+                       torch_module=self.torch)
+
+    def test_matching_stream_records_metadata_without_native_handles(self):
+        self.assertIs(self.check(), self.stream)
+        checks = self.manager._flash_s5_capture_stream_checks
+        record = next(iter(checks.values()))
+        self.assertTrue(record['torch_matches_owner'])
+        self.assertTrue(record['vllm_matches_owner'])
+        self.assertNotIn(str(self.stream.cuda_stream), json.dumps(record))
+        with self.assertRaisesRegex(DecodeProbeError, 'duplicate'):
+            self.check()
+
+    def test_each_observed_stream_must_match_the_owner(self):
+        wrong = types.SimpleNamespace(cuda_stream=42)
+        with self.assertRaisesRegex(DecodeProbeError, 'agreement'):
+            self.check(wrong)
+        self.torch.cuda.current_stream = lambda device: wrong
+        with self.assertRaisesRegex(DecodeProbeError, 'agreement'):
+            self.check()
+        self.torch.cuda.current_stream = lambda device:self.stream
+        self.owner.decode_stream = wrong
+        with self.assertRaisesRegex(DecodeProbeError, 'agreement'):
+            self.check()
+        self.assertFalse(hasattr(self.manager, '_flash_s5_capture_stream_checks'))
+
+    def test_missing_closed_or_boolean_owner_is_refused(self):
+        for state, token in [('closed', self.stream.cuda_stream), ('open', True),
+                             ('open', None), ('open', 0)]:
+            self.owner.state, self.owner.decode_stream_token = state, token
+            with self.assertRaises(DecodeProbeError):
+                self.check()
+        self.manager._flash_s5_capture_owner = None
+        with self.assertRaises(DecodeProbeError):
+            self.check()
+
+    def test_stock_and_default_off_do_not_query_torch(self):
+        def forbidden(*args):
+            raise AssertionError('stock query')
+        self.torch.cuda.current_stream = forbidden
+        with patch.dict(os.environ, {PROBE_ENV:'0'}):
+            self.assertIs(worker_hooks.checked_capture_stream(self.manager, self.stream,
+                          self.descriptor, torch_module=self.torch), self.stream)
+        with patch.dict(os.environ, self.env):
+            self.assertIs(worker_hooks.checked_capture_stream(types.SimpleNamespace(),
+                          self.stream, self.descriptor, torch_module=self.torch), self.stream)
+
+    def test_generated_graph_stream_argument_executes_the_guard(self):
+        import ast
+        rel = 'v1/worker/gpu/cudagraph_utils.py'
+        original = (ROOT / 'reference/vllm-src' / rel).read_text()
+        generated = worker_hooks.generate_one(rel, original)
+        self.assertEqual(worker_hooks.revert_one(rel, generated), original)
+        tree = ast.parse(generated)
+        stream_expr = next(n.value for n in ast.walk(tree)
+                           if isinstance(n, ast.keyword) and n.arg == 'stream'
+                           and isinstance(n.value, ast.Call)
+                           and isinstance(n.value.func, ast.Name)
+                           and n.value.func.id == '_flash_s5_checked_capture_stream')
+        calls = []
+        def current_stream():
+            calls.append('vllm')
+            return self.stream
+        def guard(manager, stream, descriptor):
+            return worker_hooks.checked_capture_stream(manager, stream, descriptor,
+                                                       torch_module=self.torch)
+        ns = {'self':self.manager, 'desc':self.descriptor,
+              'current_stream':current_stream, '_flash_s5_checked_capture_stream':guard}
+        with patch.dict(os.environ, self.env):
+            value = eval(compile(ast.Expression(stream_expr), '<actual stream argument>', 'eval'), ns)
+        self.assertIs(value, self.stream)
+        self.assertEqual(calls, ['vllm'])
+        # Actual graph() construction occurs only after its argument has passed.
+        self.assertEqual(len(self.manager._flash_s5_capture_stream_checks), 1)
+
+    def test_helper_source_behavior_is_pinned_and_packaged(self):
+        import hashlib
+        path = ROOT / 'reference/vllm-src/utils/torch_utils.py'
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),
+                         worker_hooks.CAPTURE_REFERENCE_PINS['utils/torch_utils.py'])
+        tree = __import__('ast').parse(path.read_text())
+        fn = next(n for n in tree.body if getattr(n, 'name', None) == 'current_stream')
+        self.assertEqual(len(fn.args.args), 0)
+        evidence = decode_probe.declared_evidence()
+        evidence['pins'].pop('utils/torch_utils.py')
+        with self.assertRaisesRegex(DecodeProbeNotReady, 'known pin'):
+            require_decode_probe_ready(evidence)
+
+
+class MemoryObservationTests(ProbeFixture):
+    def test_status_samples_labeled_memory_without_sync_or_reset(self):
+        keys = ('allocated_bytes.all.current', 'reserved_bytes.all.current',
+                'allocated_bytes.all.peak', 'reserved_bytes.all.peak',
+                'inactive_split_bytes.all.current', 'inactive_split_bytes.all.peak')
+        self.torch.cuda.memory_stats = lambda device: dict(zip(keys, [10,20,30,40,5,6]))
+        self.torch.cuda.mem_get_info = lambda device: (50,100)
+        def forbidden(*args):
+            raise AssertionError('sync/reset called')
+        self.torch.cuda.synchronize = forbidden
+        self.torch.cuda.reset_peak_memory_stats = forbidden
+        self.torch.accelerator.synchronize = forbidden
+        worker = types.SimpleNamespace(model_runner=self.runner, rank=0)
+        with patch.dict(os.environ, self.env):
+            record = worker_hooks.decode_probe_rpc(worker, {'action':'status'})
+        m = record['memory']
+        self.assertEqual(m['allocator']['reserved_peak_bytes'], 40)
+        self.assertEqual(m['device_free_bytes'], 50)
+        self.assertEqual(m['errors'], [])
+        self.assertFalse(m['synchronized_by_snapshot'])
+        self.assertIn('lifetime', m['peak_scope'])
+        self.assertGreaterEqual(m['sample_end_monotonic_ns'], m['monotonic_ns'])
+        self.assertEqual(record['inventory']['capture_memory']['delta_bytes'], 4096)
+
+    def test_unknown_and_error_values_are_not_zero_or_error_payloads(self):
+        def failed(device):
+            raise RuntimeError('private memory payload')
+        self.torch.cuda.memory_stats = failed
+        self.torch.cuda.mem_get_info = failed
+        m = self.probe.memory_snapshot()
+        self.assertTrue(all(v is None for v in m['allocator'].values()))
+        self.assertIsNone(m['device_free_bytes'])
+        self.assertNotIn('private memory payload', json.dumps(m))
+        self.assertIn('allocator:RuntimeError', m['errors'])
+
+    def test_invalid_counter_types_and_device_pair_remain_unknown(self):
+        self.torch.cuda.memory_stats = lambda device:{'allocated_bytes.all.current':True,
+                                                     'reserved_bytes.all.peak':-1}
+        self.torch.cuda.mem_get_info = lambda device:(101,100)
+        m = self.probe.memory_snapshot()
+        self.assertIsNone(m['allocator']['allocated_current_bytes'])
+        self.assertIsNone(m['allocator']['reserved_peak_bytes'])
+        self.assertIsNone(m['device_total_bytes'])
+        self.assertIn('device:ValueError', m['errors'])
+
 
 if __name__ == '__main__':
     unittest.main()

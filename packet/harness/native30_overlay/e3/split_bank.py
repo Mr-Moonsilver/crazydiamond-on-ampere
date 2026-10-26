@@ -91,6 +91,7 @@ class SplitDecodeBank:
         self.captured = False
         self.measured_bytes = None
         self.capture_seconds = None
+        self.capture_memory = None
         self.handles = {}
         self._context_factory = None
 
@@ -120,6 +121,7 @@ class SplitDecodeBank:
 
         self._context_factory = context_factory
         manager._flash_s5_capture_context = context_factory
+        manager._flash_s5_capture_owner = self.split
         self.manager = manager
         self.pool = pool
         return manager
@@ -167,6 +169,11 @@ class SplitDecodeBank:
         free_after = int(memory_info()[0])
         self.capture_seconds = self.clock() - started
         self.measured_bytes = free_before - free_after
+        self.capture_memory = {
+            'free_before_bytes': free_before, 'free_after_bytes': free_after,
+            'delta_bytes': self.measured_bytes,
+            'basis': 'device-free samples around synchronized capture, not allocator pool attribution',
+        }
         graphs = getattr(self.manager, 'graphs', {})
         for desc, local in self.pairs:
             if desc not in graphs:
