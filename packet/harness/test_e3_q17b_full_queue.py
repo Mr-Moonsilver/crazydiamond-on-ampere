@@ -205,4 +205,30 @@ class ProtocolV2Queue(FullQueue):
         self.assertEqual(result.returncode,1,result.stdout+result.stderr)
         self.assertIn('STEP clients-grade-consistency FAIL',result.stdout)
 
+class Full11Queue(ProtocolV2Queue):
+    queue_name='q17b_full11.draft.sh'
+    def setUp(self):
+        from unittest.mock import patch
+        import sys
+        sys.path.insert(0,str(old.ROOT/'patches/s5_engine'))
+        import make_s5_overlap,make_e2_arena
+        def current():return make_s5_overlap._s5_launcher(make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text()))
+        self._patches=[patch.object(old,'launcher_text',current),patch.object(old,'LAUNCHER_SHA',hashlib.sha256(current().encode()).hexdigest())]
+        for p in self._patches:p.start()
+        FullQueue.setUp(self)
+
+    def test_only_identity_changes_from_protocol_v2_queue(self):
+        import identity_declare
+        expected_pin='f1310837266716ac90875cb637490cf8d08a5a81f3008d46affe57fa4b928b54'
+        self.assertEqual(identity_declare.S5_LAUNCHER_SHA,expected_pin)
+        self.assertEqual(old.LAUNCHER_SHA,expected_pin)
+        for before,after in [('q17b_full5.draft.sh',self.queue_name),('q17b_full5_declare.sh','q17b_full11_declare.sh')]:
+            expected=(HERE/'runs'/before).read_text().replace(
+                '68d6c1b9aee62895cb4d92cd8a6d7f1734c0091d25234156382524d0ede4fb62',expected_pin).replace(
+                'q17b_full5.draft.sh',self.queue_name).replace('QNAME=${QNAME:-q17b}','QNAME=${QNAME:-q17b-full11}')
+            actual=(HERE/'runs'/after).read_text()
+            actual='\n'.join(line for line in actual.splitlines() if not line.startswith('# Full11:'))+'\n'
+            self.assertEqual(actual,expected)
+            subprocess.run(['bash','-n',str(HERE/'runs'/after)],check=True)
+
 if __name__=='__main__':unittest.main()
