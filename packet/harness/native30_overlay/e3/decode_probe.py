@@ -25,6 +25,7 @@ result, and the full package stays ``armable: False``.
 import hashlib
 import json
 import os
+import time
 from dataclasses import dataclass
 
 from e3_types import E3ContractError
@@ -60,6 +61,9 @@ REQUIRED_TESTS = (
     'TransitionTests.test_failed_transition_quarantines_and_keeps_route',
     'ShutdownTests.test_inventory_helper_sha_and_shutdown_order',
     'BytePathTests.test_default_off_generated_sources_are_probe_free',
+    'CaptureObservationTests.test_generated_graph_stream_argument_executes_the_guard',
+    'CaptureObservationTests.test_each_observed_stream_must_match_the_owner',
+    'MemoryObservationTests.test_status_samples_labeled_memory_without_sync_or_reset',
 )
 
 EVIDENCE_KEYS = ('pins', 'helper_source_sha256', 'generated_source_shas', 'tests')
@@ -141,9 +145,10 @@ def _module_dir():
 def declared_evidence():
     """Evidence derived from this runtime's pinned transforms and bytes."""
     from graph_hooks import PINNED_SHA256
-    from worker_hooks import PINS as WORKER_PINS
+    from worker_hooks import PINS as WORKER_PINS, CAPTURE_REFERENCE_PINS
 
     pins = dict(WORKER_PINS)
+    pins.update(CAPTURE_REFERENCE_PINS)
     pins['v1/worker/gpu/model_runner.py'] = PINNED_SHA256
     shas = {}
     for name in GENERATED_SOURCES:
@@ -192,11 +197,12 @@ def require_decode_probe_ready(evidence=None):
         if not isinstance(path, str) or not path or not _is_digest(digest):
             raise DecodeProbeNotReady('decode probe pin is not a 64-hex digest')
     from graph_hooks import PINNED_SHA256 as runner_pin
-    from worker_hooks import PINS as worker_pins
+    from worker_hooks import PINS as worker_pins, CAPTURE_REFERENCE_PINS
 
     known = dict(worker_pins)
+    known.update(CAPTURE_REFERENCE_PINS)
     known['v1/worker/gpu/model_runner.py'] = runner_pin
-    for path, digest in worker_pins.items():
+    for path, digest in known.items():
         if pins.get(path) != digest:
             raise DecodeProbeNotReady('decode probe pin does not match the known pin: ' + path)
     if pins.get('v1/worker/gpu/model_runner.py') != runner_pin:
@@ -455,8 +461,13 @@ class DecodeProbe:
             'raw_graphs_retained': bool(getattr(self.bank.manager, '_flash_s5_keep_graphs', False)),
             'split_pool_bytes': measured,
             'split_pool_basis': 'device-free delta around capture; not isolated allocator pool bytes' if measured is not None else 'uncaptured',
-            'split_pool_id': self.router.context.pool_id,
-            'split_pool_context_id': self.router.context.context_id,
+            'split_pool_label': 'decode-split-pool',
+            'split_context_label': 'decode-split-context',
+            'split_stream_label': 'decode-split-stream',
+            'identity_scope': 'worker incarnation and storage epoch; opaque labels, not CUDA handles',
+            'capture_stream_checks': [dict(value) for _, value in sorted(
+                getattr(self.bank.manager, '_flash_s5_capture_stream_checks', {}).items())],
+            'capture_memory': dict(self.bank.capture_memory) if self.bank.capture_memory is not None else None,
             'storage_epoch': self.storage_epoch,
             'route': self.controller.route,
             'route_generation': self.controller.route_generation,
@@ -470,6 +481,14 @@ class DecodeProbe:
     def counters(self):
         """Everything the GPU test reads; exposed on the runner as a callable."""
         record = self.router.counters()
+        # Public diagnostic artifacts use scoped labels, never CUDA handles.
+        streams = record['replays_by_stream']
+        expected = self.split.decode_stream_token
+        record['replays_by_stream'] = {
+            ('decode-split-stream' if token == expected else 'unexpected-stream-%d' % index): count
+            for index, (token, count) in enumerate(streams.items())
+        }
+        record['replay_streams_match_owner'] = all(token == expected for token in streams)
         record.update({
             'mode': 'decode-only-probe',
             'route': self.controller.route,
@@ -485,6 +504,57 @@ class DecodeProbe:
             'quarantined': self.quarantined,
         })
         return record
+
+    def memory_snapshot(self):
+        """Explicit status RPC only; no synchronization, reset or per-step work.
+
+        Allocator peaks are lifetime high-water observations (since the last
+        external allocator reset, if any), not interval/device/native peaks.
+        API failures and missing fields stay unknown; errors contain no payload.
+        """
+        started_wall = time.time()
+        started_ns = time.monotonic_ns()
+        cuda = self.torch.cuda
+        errors = []
+        keys = {
+            'allocated_current_bytes': 'allocated_bytes.all.current',
+            'reserved_current_bytes': 'reserved_bytes.all.current',
+            'allocated_peak_bytes': 'allocated_bytes.all.peak',
+            'reserved_peak_bytes': 'reserved_bytes.all.peak',
+            'inactive_split_current_bytes': 'inactive_split_bytes.all.current',
+            'inactive_split_peak_bytes': 'inactive_split_bytes.all.peak',
+        }
+        try:
+            stats = cuda.memory_stats(self.runner.device)
+            if not isinstance(stats, dict):
+                raise TypeError('allocator stats are not a mapping')
+        except Exception as exc:
+            stats = {}
+            errors.append('allocator:' + type(exc).__name__)
+        allocator = {}
+        for label, key in keys.items():
+            value = stats.get(key)
+            allocator[label] = value if type(value) is int and value >= 0 else None
+        if any(value is None for value in allocator.values()):
+            errors.append('allocator:missing-or-invalid-fields')
+        free = total = None
+        try:
+            values = cuda.mem_get_info(self.runner.device)
+            if (not isinstance(values, (tuple, list)) or len(values) != 2
+                    or any(type(v) is not int for v in values)
+                    or not 0 <= values[0] <= values[1] or values[1] <= 0):
+                raise ValueError('invalid device memory sample')
+            free, total = values
+        except Exception as exc:
+            errors.append('device:' + type(exc).__name__)
+        return {
+            'schema': 1, 'wall_s': started_wall, 'monotonic_ns': started_ns,
+            'sample_end_wall_s': time.time(), 'sample_end_monotonic_ns': time.monotonic_ns(),
+            'allocator': allocator, 'device_free_bytes': free, 'device_total_bytes': total,
+            'peak_scope': 'allocator lifetime since last allocator reset; this probe never resets',
+            'device_scope': 'point sample, not peak; allocator and device reads are sequential',
+            'synchronized_by_snapshot': False, 'errors': errors,
+        }
 
     # -- transitions ------------------------------------------------------
     def transition(self, target):
