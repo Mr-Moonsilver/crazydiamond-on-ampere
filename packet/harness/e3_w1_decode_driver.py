@@ -930,6 +930,7 @@ def _next_command(ctx, action, target_route):
         'action': action,
         'target_route': target_route,
         'cohort_id': ctx['cohort_id'],
+        'cohort_size': ctx['streams'],
         'prior_receipt': ctx.get('prior_receipt'),
         'expected_rank_set': list(EXPECTED_RANKS),
     }
@@ -1588,7 +1589,7 @@ def measure_repeat(cfg, controller, run_ctx, repeat, route, requests, meta,
 
     # 9: restore full and resume only if the route chain is proven.  A contract
     # contradiction at the end means we must not guess the engine route.
-    route_proven = pause_end['severity'] != 'contract'
+    route_proven = pause_end['ok']
     leave_ok = resume_ok = False
     if route_proven:
         leave = controller_call(controller, cfg, run_ctx, 'leave_full', 'full')
