@@ -59,11 +59,30 @@ def exchange(command, *, url, key, timeout_s, raw=False):
         if len(body) > MAX_RESPONSE:
             raise TransportError('response-too-large')
         result = json.loads(body)
-        expected_seq = command.get('seq', 0) if raw else command.get('command_seq')
-        if (type(result) is not dict or type(result.get('schema')) is not int or result['schema'] != 1
-                or result.get('run_id') != command.get('run_id')
-                or result.get('action') != command.get('action')
-                or type(result.get('command_seq')) is not int or result['command_seq'] != expected_seq):
+        # Read-only status is deliberately sequence-independent (and remains
+        # available after session quarantine), so it has no command_seq to
+        # echo.  Its identity is the explicit read_only flag plus the
+        # sequence_independent marker.
+        read_only = (command.get('action') == 'status'
+                     and command.get('read_only') is True)
+        if read_only:
+            identity_ok = (type(result) is dict
+                           and type(result.get('schema')) is int
+                           and result['schema'] == 1
+                           and result.get('run_id') == command.get('run_id')
+                           and result.get('action') == 'status'
+                           and result.get('read_only') is True
+                           and result.get('sequence_independent') is True)
+        else:
+            expected_seq = command.get('seq', 0) if raw else command.get('command_seq')
+            identity_ok = (type(result) is dict
+                           and type(result.get('schema')) is int
+                           and result['schema'] == 1
+                           and result.get('run_id') == command.get('run_id')
+                           and result.get('action') == command.get('action')
+                           and type(result.get('command_seq')) is int
+                           and result['command_seq'] == expected_seq)
+        if not identity_ok:
             raise TransportError('response-identity-differs')
         return result
     except TransportError:
