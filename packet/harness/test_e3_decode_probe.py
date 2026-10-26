@@ -756,6 +756,53 @@ class PersistedEvidenceTests(unittest.TestCase):
             s5_startup.install_builder(runner, None, env={PROBE_ENV:'1', DECODE_SMS_ENV:'44'})
         self.assertIn('no FULL', str(caught.exception))
 
+class BatchAndBarrierTests(ProbeFixture):
+    def test_full_route_records_prefill_and_decode_without_refusing_stock(self):
+        self.probe.check_batch(8, 8, 1, batch_state(8, prefill=True))
+        self.probe.check_route(desc())
+        before = self.probe.counters()['batch_observations']
+        self.assertEqual(before['non_decode_batches'], 1)
+        self.assertFalse(before['last']['decode_only'])
+        self.probe.check_batch(8, 8, 1, batch_state(8))
+        self.probe.check_route(desc())
+        after = self.probe.counters()['batch_observations']
+        self.assertEqual(after['decode_batches'], 1)
+        self.assertTrue(after['last']['decode_only'])
+        self.assertTrue(after['last']['full_graph'])
+        before['last']['decode_only'] = 'tampered'
+        self.assertTrue(self.probe.counters()['batch_observations']['last']['decode_only'])
+        self.assertEqual(self.probe.route, 'full')
+
+    def test_empty_full_batch_clears_stale_eligibility(self):
+        self.probe.check_batch(8, 8, 1, batch_state(8))
+        graph_hooks.check_empty(self.runner, types.SimpleNamespace(total_num_scheduled_tokens=0))
+        self.assertIsNone(self.probe.counters()['batch_observations']['last'])
+        self.assertEqual(self.probe.batch_observations['empty_batches'], 1)
+
+    def test_real_worker_barrier_binds_epoch_and_drains_without_transition(self):
+        worker = types.SimpleNamespace(model_runner=self.runner, rank=0)
+        with patch.dict(os.environ, self.env):
+            ack = worker_hooks.decode_probe_rpc(worker, {'action':'barrier','engine_epoch':9})
+            self.assertGreater(ack['drained_streams'], 0)
+            self.assertEqual(ack['ack'], 'flash_s5_probe_barrier')
+            self.assertEqual(ack['route_generation'], 0)
+            self.assertEqual(self.probe.route, 'full')
+            with self.assertRaises(native_startup.NativeStartupError):
+                worker_hooks.decode_probe_rpc(worker, {'action':'barrier','engine_epoch':10})
+
+    def test_barrier_pending_sampling_refuses_and_drain_failure_quarantines(self):
+        worker = types.SimpleNamespace(model_runner=self.runner, rank=0)
+        with patch.dict(os.environ, self.env):
+            self.runner.execute_model_state = object()
+            with self.assertRaises(native_startup.NativeStartupError):
+                worker_hooks.decode_probe_rpc(worker, {'action':'barrier','engine_epoch':9})
+            self.runner.execute_model_state = None
+            with patch.object(self.probe.controller, 'drain', side_effect=RuntimeError('drain failed')):
+                with self.assertRaises(RuntimeError):
+                    worker_hooks.decode_probe_rpc(worker, {'action':'barrier','engine_epoch':9})
+            self.assertEqual(self.probe.quarantined, 'diagnostic barrier failed')
+
+
 class CaptureObservationTests(unittest.TestCase):
     def setUp(self):
         self.env = {PROBE_ENV: '1'}

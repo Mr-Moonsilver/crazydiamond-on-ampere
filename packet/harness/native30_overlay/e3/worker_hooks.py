@@ -66,6 +66,7 @@ _W_EXEC_OLD = ('    @torch.inference_mode()\n'
                '        self, scheduler_output: "SchedulerOutput"\n'
                '    ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:\n')
 _W_EXEC_NEW = (_W_EXEC_OLD +
+               '        _flash_s5_worker.observe_scheduler(self, scheduler_output)\n'
                '        with _flash_s5_worker.decode_scope(self):\n'
                '            return self._flash_s5_stock_execute_model(scheduler_output)\n'
                '\n'
@@ -328,6 +329,29 @@ def decode_probe_rpc(worker, command):
             raise NativeStartupError('status has unexpected fields')
         return {'rank': worker.rank, 'inventory': probe.inventory(),
                 'counters': probe.counters(), 'memory': probe.memory_snapshot()}
+    if action == 'barrier':
+        if set(command) != {'action', 'engine_epoch'}:
+            raise NativeStartupError('barrier fields differ')
+        epoch = command['engine_epoch']
+        if type(epoch) is not int or epoch < 1:
+            raise NativeStartupError('barrier needs positive engine epoch')
+        bound = getattr(probe, '_rpc_engine_epoch', None)
+        if bound is not None and epoch != bound:
+            raise NativeStartupError('barrier engine epoch changed')
+        probe._require_not_down()
+        if (probe.in_flight or getattr(runner, 'execute_model_state', None) is not None
+                or not getattr(probe.controller, 'admitting', False)):
+            raise NativeStartupError('barrier has unresolved worker work')
+        try:
+            drained = probe.controller.drain()
+        except BaseException:
+            probe.quarantined = 'diagnostic barrier failed'
+            raise
+        probe._rpc_engine_epoch = epoch
+        return {'rank': worker.rank, 'ack': 'flash_s5_probe_barrier',
+                'mode': 'decode-only-probe', 'engine_epoch': epoch,
+                'storage_epoch': probe.storage_epoch, 'route': probe.route,
+                'route_generation': probe.route_generation, 'drained_streams': drained}
     if action != 'transition':
         raise NativeStartupError('unknown decode probe RPC action')
     expected = {'action', 'engine_epoch', 'expected_route_generation', 'route_generation',
@@ -345,6 +369,12 @@ def decode_probe_rpc(worker, command):
     probe._rpc_engine_epoch = epoch
     ack.update(rank=worker.rank, engine_epoch=epoch)
     return ack
+
+
+def observe_scheduler(worker, scheduler_output):
+    probe = getattr(getattr(worker, 'model_runner', None), '_flash_s5_decode_probe', None)
+    if probe is not None:
+        probe.observe_scheduler(scheduler_output)
 
 
 def capture_graph(manager, *, torch_module=None):

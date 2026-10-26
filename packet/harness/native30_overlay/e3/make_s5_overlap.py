@@ -44,6 +44,7 @@ import operation_source
 import qsa_driver
 import scheduler_hooks
 import worker_hooks
+import probe_control_hooks
 
 
 HERE = Path(__file__).resolve().parent
@@ -55,7 +56,7 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
               'graph_router', 'graph_hooks', 'qsa_operation',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
               # lane forward/QSA driver, communicators, startup, chunk, dispatcher.
-              'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe')
+              'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session')
 NATIVE_FILES = ('native/flash_s5_green.cu',)
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
 CUDAGRAPH_PATH = 'v1/worker/gpu/cudagraph_utils.py'
@@ -99,6 +100,7 @@ REFERENCE_INPUTS = dict(executor_hooks.PINS)
 REFERENCE_INPUTS.update(worker_hooks.PINS)
 REFERENCE_INPUTS.update(worker_hooks.CAPTURE_REFERENCE_PINS)
 REFERENCE_INPUTS.update(model_hooks.PINS)
+REFERENCE_INPUTS.update(probe_control_hooks.PINS)
 LAUNCHER_NAME = 'run-flash-e2-test.sh'
 S5_LAUNCHER_NAME = 'run-flash-s5-test.sh'
 
@@ -181,7 +183,7 @@ def _s5_launcher(source):
 s5=()
 if [[ -d $OVERLAY/e3 ]]; then
   [[ ${S5:-0} == 1 ]] || { echo "S5 needs the declared overlap launcher" >&2; exit 2; }
-  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/model.py qsa.py ops_qsa.py; do
+  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
   V=/usr/local/lib/python3.12/dist-packages/vllm/v1
@@ -190,6 +192,7 @@ if [[ -d $OVERLAY/e3 ]]; then
       -v "$OVERLAY/e3_sources/core.py:$V/engine/core.py:ro"
       -v "$OVERLAY/e3_sources/worker.py:$V/worker/gpu_worker.py:ro"
       -v "$OVERLAY/e3_sources/cudagraph_utils.py:$V/worker/gpu/cudagraph_utils.py:ro"
+      -v "$OVERLAY/e3_sources/api_routers.py:/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/routers.py:ro"
       -v "$OVERLAY/e3_sources/model.py:''' + MODEL_DEST + ''':ro")
 fi
 '''
@@ -253,6 +256,7 @@ def _decode_probe_declaration(files):
         raise ValueError('diagnostic evidence module list drifted')
     pins = dict(worker_hooks.PINS)
     pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
+    pins.update(probe_control_hooks.PINS)
     pins['v1/worker/gpu/model_runner.py'] = graph_hooks.PINNED_SHA256
     shas = {}
     for name in decode_probe.GENERATED_SOURCES:
@@ -374,6 +378,8 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         CUDAGRAPH_PATH, (reference / CUDAGRAPH_PATH).read_text())
     files['e3_sources/model.py'] = model_hooks.generate_one(
         MODEL_PATH, (reference / MODEL_PATH).read_text())
+    files['e3_sources/api_routers.py'] = probe_control_hooks.generate(
+        (reference / probe_control_hooks.PATH).read_text())
     for name in NATIVE_FILES:
         files['e3/' + name] = (HERE / name).read_text()
     files['e3/native/build_green_helper.sh'] = BUILD_GREEN_HELPER

@@ -62,7 +62,7 @@ class SyntheticTests(unittest.TestCase):
             {'default_feature': 'FLASH_E2_ARENA=0', 'incremental_kv_bytes': 0}))
         launcher = e2.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text())
         (base / 'run-flash-e2-test.sh').write_text(launcher)
-        for name in (*eh.PINS, *g.worker_hooks.PINS, *g.worker_hooks.CAPTURE_REFERENCE_PINS, *g.model_hooks.PINS):
+        for name in (*eh.PINS, *g.worker_hooks.PINS, *g.worker_hooks.CAPTURE_REFERENCE_PINS, *g.model_hooks.PINS, *g.probe_control_hooks.PINS):
             path = ref / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('# ref ' + name + '\n')
@@ -77,7 +77,7 @@ class SyntheticTests(unittest.TestCase):
         stack.enter_context(patch.object(g, 'E2_WORKER_INPUTS', {
             name: g.sha(base / name) for name in g.E2_WORKER_INPUTS}))
         stack.enter_context(patch.object(g, 'REFERENCE_INPUTS', {
-            name: g.sha(ref / name) for name in (*eh.PINS, *g.worker_hooks.PINS, *g.worker_hooks.CAPTURE_REFERENCE_PINS, *g.model_hooks.PINS)}))
+            name: g.sha(ref / name) for name in (*eh.PINS, *g.worker_hooks.PINS, *g.worker_hooks.CAPTURE_REFERENCE_PINS, *g.model_hooks.PINS, *g.probe_control_hooks.PINS)}))
         stack.enter_context(patch.object(g, 'compose_runner',
                                          side_effect=lambda s: s + '# A+C builder\n'))
         stack.enter_context(patch.object(g.scheduler_hooks, 'generate_scheduler',
@@ -98,6 +98,8 @@ class SyntheticTests(unittest.TestCase):
                                          side_effect=lambda path, s: s + '# S5 qsa driver\n'))
         stack.enter_context(patch.object(g.worker_hooks, 'generate_one',
                                          side_effect=lambda path, s: s + '# S5 worker seams\n'))
+        stack.enter_context(patch.object(g.probe_control_hooks, 'generate',
+                                         side_effect=lambda s: s + '# probe frontend\n'))
         stack.enter_context(patch.object(g.model_hooks, 'generate_one',
                                          side_effect=lambda path, s: s + '# S5 lane forward\n'))
         return stack
@@ -500,6 +502,7 @@ class FullPinnedTests(unittest.TestCase):
         expected_pins.update(worker_hooks.PINS)
         expected_pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
         expected_pins.update(model_hooks.PINS)
+        expected_pins.update(g.probe_control_hooks.PINS)
         self.assertEqual(record['reference_source_pins'], expected_pins)
         self.assertEqual(record['graph_composition']['module'], 'graph_hooks.py')
         self.assertFalse(record['armable'])
