@@ -150,6 +150,7 @@ class CorrelationBridge:
         lib.s5ro_correlation_thread_key.restype=C.c_int
         lib.s5ro_offer_push.argtypes=[C.c_uint64,C.c_uint64,C.c_uint32];lib.s5ro_offer_push.restype=C.c_int
         lib.s5ro_offer_pop.argtypes=[C.c_uint64,C.c_uint64];lib.s5ro_offer_pop.restype=C.c_int
+        lib.s5ro_correlation_window.argtypes=[C.c_uint64,C.c_void_p,C.c_uint64,C.POINTER(C.c_uint64)];lib.s5ro_correlation_window.restype=C.c_int
         lib.s5ro_correlation_report.argtypes=[C.c_uint64,C.c_void_p,C.c_uint64,C.POINTER(C.c_uint64)];lib.s5ro_correlation_report.restype=C.c_int
         if lib.s5ro_correlation_enable(self.token):raise RuntimeError('correlation_enable')
         reserved=C.c_uint64()
@@ -185,6 +186,10 @@ class CorrelationBridge:
                 if self.lib.s5ro_offer_pop(self.token,ident):raise RuntimeError('offer_pop')
                 stack.pop();row['closed']=True
         return scope()
+
+    def window(self):
+        """Native session bounds; end is zero until its drained window ends."""
+        return self.session._report_call(self.lib.s5ro_correlation_window,(self.token,))
 
     def report(self):
         report=self.session._report_call(self.lib.s5ro_correlation_report,(self.token,))

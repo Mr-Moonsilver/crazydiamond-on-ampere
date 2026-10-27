@@ -191,6 +191,7 @@ class Positions:
 def batch_fixture(*,slots,prompts,position,logits_indices=None,cu=None,
                   positions_slots=None,padded_tokens=None,padded_reqs=None,
                   num_tokens=None,draft=0):
+    import numpy as np
     n=len(slots)
     logits_indices=list(range(n)) if logits_indices is None else list(logits_indices)
     cu=list(range(n+1)) if cu is None else list(cu)
@@ -199,7 +200,8 @@ def batch_fixture(*,slots,prompts,position,logits_indices=None,cu=None,
     return types.SimpleNamespace(
         idx_mapping=list(slots),expanded_idx_mapping=list(slots),
         logits_indices=logits_indices,cu_num_logits=cu,
-        expanded_local_pos=[0]*n,num_scheduled_tokens=[1]*n,is_prefilling_np=[False]*n,
+        expanded_local_pos=[0]*n,num_scheduled_tokens=np.ones(n,dtype=np.int32),
+        is_prefilling_np=np.zeros(n,dtype=np.bool_),
         num_reqs=n,num_reqs_after_padding=n if padded_reqs is None else padded_reqs,
         num_tokens=n if num_tokens is None else num_tokens,
         num_tokens_after_padding=n if padded_tokens is None else padded_tokens,
@@ -307,6 +309,18 @@ class RowCaptureTests(unittest.TestCase):
         self.assertEqual([row['slot'] for row in three['rows']],[1,3,5,7])
         self.assertEqual(two['call']['global_snapshot'],three['call']['global_snapshot'])
         self.assertNotEqual(two['call']['local_snapshot'],three['call']['local_snapshot'])
+    def test_numpy_host_mirrors_match_python_lists_without_waiving_missing_fields(self):
+        import numpy as np
+        for values, allow_bool in ((np.array([1, 1], dtype=np.int32), False),
+                                   (np.array([False, True], dtype=np.bool_), True)):
+            got, bad = td._bounded(values, 8, allow_bool)
+            self.assertFalse(bad)
+            self.assertEqual(got, values.tolist())
+            self.assertTrue(all(type(x) is (bool if allow_bool else int) for x in got))
+        for value, boolean in ((None, False), (np.array([1.0]), False),
+                               (np.array([1]), True), (np.arange(9), False)):
+            self.assertTrue(td._bounded(value, 8, boolean)[1])
+
     def test_overflow_is_flagged_never_silently_truncated(self):
         calls=self.capture(calls_used=td.MAX_CALLS)
         self.assertTrue(calls['call_overflow'])

@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -172,6 +173,15 @@ class PlacementTests(unittest.TestCase):
 
 class SessionContinuation(ComposedActualSessionTests):
     # Inherit the real session + completion SSE fixture, not invented receipts.
+    def test_positive_session_survives_delayed_window_reader(self):
+        wait_window = c._wait_window
+        def delayed(*args):
+            time.sleep(0.12)
+            return wait_window(*args)
+        with mock.patch.object(c, '_wait_window', side_effect=delayed):
+            data = self.run_client(controller=self.session_controller)
+        self.assertEqual(data['verdict'], 'PASS', data['verdict_reasons'])
+
     def test_w1_continues_actual_correctness_session(self):
         context={}
         cfg0=self.config()

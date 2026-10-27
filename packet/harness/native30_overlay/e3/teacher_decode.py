@@ -187,7 +187,14 @@ class FrontendPlan:
 def _bounded(value, limit, allow_bool=False):
     """Return (items, overflow). Oversize/unreadable values keep a digest+length only."""
     try:
-        items = value.cpu().tolist() if hasattr(value, 'cpu') else list(value)
+        if hasattr(value, 'cpu'):
+            items = value.cpu().tolist()
+        elif hasattr(value, 'tolist'):
+            # Pinned InputBatch host mirrors are NumPy arrays. list(array)
+            # leaves NumPy scalar types, unlike tensor/ndarray.tolist().
+            items = value.tolist()
+        else:
+            items = list(value)
     except (TypeError, ValueError, AttributeError):
         return None, True
     if type(items) is not list or len(items) > limit:

@@ -132,6 +132,7 @@ class Flow:
         self.gate = gate
         self.open_tokens = open_tokens
         self.delay_s = delay_s
+        self.measure_token_cap = None
         self.budget = workload.generation_budget
         self.lock = threading.Lock()
         self.cohort = client.build_cohort(workload)
@@ -343,6 +344,8 @@ class FakeServer:
                             time.sleep(0.01)
                         return
                     while (emitted < finish_at
+                           and (self.flow.measure_token_cap is None
+                                or emitted < self.flow.measure_token_cap)
                            and not self.flow.gate.events['end'].is_set()):
                         if self.flow.gate.stop.is_set() or not emit_chunk():
                             return
@@ -1357,6 +1360,12 @@ class ComposedActualSessionTests(ClientHarness):
 
     def setUp(self):
         super().setUp()
+        # Positive composition fixtures test protocol sequencing, not whether
+        # a host thread wins a race against a 16-token synthetic response.
+        # Supply the measured prefix, then retain a live tail until pause/end.
+        # General fixtures keep the uncapped stream for early-finish negatives.
+        self.flow.measure_token_cap = (self.flow.open_tokens
+                                       + self.workload.window_tokens + 1)
         from test_e3_probe_session import CountedEngine
 
         class ReplayEngine(CountedEngine):

@@ -3403,6 +3403,19 @@ int s5ro_offer_pop(uint64_t session,uint64_t id){
  else s->scopes[s->scope_count++]={id,0,thread,2,system};
  return S5RO_OK;
 }
+int s5ro_correlation_window(uint64_t session,char*out,uint64_t cap,uint64_t*len){
+ if(!out||!len)return S5RO_BAD_ARGS;
+ *len=0;auto s=acquire_session(session);if(!s)return S5RO_UNKNOWN_SESSION;
+ std::lock_guard<std::mutex> op(s->op_mu);
+ if(!s->correlation_enabled||(s->state!=kWindow&&s->state!=kEnded))return S5RO_STATE;
+ Json j(out,cap);j.open_obj();j.key("start_ns");j.u64(s->window_start);
+ j.key("end_ns");j.u64(s->state==kEnded?s->window_end:0);
+ j.key("route_generation");j.u64(s->window_route_generation);j.close_obj();
+ *len=j.len;if(j.truncated()||j.bad)return S5RO_TRUNCATED;
+ if(cap>j.len)out[j.len]=0;
+ return S5RO_OK;
+}
+
 int s5ro_correlation_report(uint64_t session,char*out,uint64_t cap,uint64_t*len){
  if(!out||!len)return S5RO_BAD_ARGS;
  *len=0;
@@ -3423,6 +3436,8 @@ int s5ro_correlation_report(uint64_t session,char*out,uint64_t cap,uint64_t*len)
  for(uint32_t i=0;i<s->copy_count;i++){const auto&r=s->copies[i];add(r.correlation_id,r.kind,r.context_id,r.stream_id,r.graph_id,r.copy_kind,"",r.start,r.end);}
  for(uint32_t i=0;i<s->api_count;i++){const auto&r=s->apis[i];if(!r.start||r.end<r.start||r.start<s->window_start||r.end>s->window_end)++boundary;}
  Json j(out,cap);j.open_obj();j.key("schema");j.string("s5ro-correlation/2");
+ j.key("window");j.open_obj();j.key("start_ns");j.u64(s->window_start);
+ j.key("end_ns");j.u64(s->window_end);j.key("route_generation");j.u64(s->window_route_generation);j.close_obj();
  j.key("thread_id_type");j.string(s->correlation_thread_type==CUPTI_ACTIVITY_THREAD_ID_TYPE_SYSTEM?"system-gettid":"default-pthread-low32");
  j.key("complete");j.boolean(!s->correlation_errors&&!s->correlation_overflow&&!s->open_scopes&&!boundary);
  j.key("capacity");j.u64(kCorrCapacity);j.key("reserved_bytes");j.u64(s->reserved_bytes);

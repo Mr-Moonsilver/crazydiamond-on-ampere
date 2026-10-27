@@ -726,7 +726,8 @@ CUptiResult cuptiActivityPopExternalCorrelationId(CUpti_ExternalCorrelationKind,
  if(stub_external_stack.empty())return CUPTI_ERROR_INVALID_PARAMETER;
  *out=stub_external_stack.back();stub_external_stack.pop_back();return CUPTI_SUCCESS;}
 CUptiResult cuptiGetCallbackName(CUpti_CallbackDomain d,CUpti_CallbackId cb,const char**out){
- *out=cb==1?(d==CUPTI_CB_DOMAIN_DRIVER_API?"cuLaunchKernel":"cudaLaunchKernel_v7000"):"cuStreamSynchronize";
+ *out=cb==1?(d==CUPTI_CB_DOMAIN_DRIVER_API?"cuLaunchKernel":"cudaLaunchKernel_v7000"):
+      cb==2?(d==CUPTI_CB_DOMAIN_DRIVER_API?"cuGraphLaunch":"cudaGraphLaunch"):"cuStreamSynchronize";
  return CUPTI_SUCCESS;}
 void stub_emit_correlated(uint32_t c,uint64_t offer,uint32_t domain,uint32_t thread,
  uint64_t start,uint64_t end,uint32_t ctx,uint32_t graph,uint64_t node,uint32_t activity){
@@ -744,3 +745,17 @@ void stub_emit_correlated(uint32_t c,uint64_t offer,uint32_t domain,uint32_t thr
 static int stub_thread_id_mode=0;
 extern "C" void stub_set_thread_id_mode(int mode){stub_thread_id_mode=mode;}
 extern "C" CUptiResult cuptiGetThreadIdType(CUpti_ActivityThreadIdType*out){if(!out)return CUPTI_ERROR_INVALID_PARAMETER;*out=static_cast<CUpti_ActivityThreadIdType>(stub_thread_id_mode);return CUPTI_SUCCESS;}
+
+// One graph launch correlation shared by both retained kernel-node records.
+extern "C" void stub_emit_correlated_graph(uint32_t c,uint64_t offer,uint32_t thread,
+ uint32_t ctx,uint32_t graph,uint64_t node1,uint64_t node2){
+ CUpti_ActivityAPI a{};a.kind=CUPTI_ACTIVITY_KIND_RUNTIME;a.record_size=sizeof(a);
+ a.cbid=2;a.correlationId=c;a.threadId=thread;a.start=1600;a.end=1650;queue_record(a);
+ CUpti_ActivityExternalCorrelation e{};e.kind=CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION;e.record_size=sizeof(e);
+ e.externalKind=CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0;e.correlationId=c;e.externalId=offer;queue_record(e);
+ for(uint64_t node:{node1,node2}){
+  CUpti_ActivityKernel10 k{};k.kind=CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL;k.record_size=sizeof(k);
+  k.contextId=ctx;k.graphId=graph;k.graphNodeId=node;k.correlationId=c;k.streamId=9;k.name="graph_fixture";
+  k.start=1700;k.end=1800;k.completed=1800;queue_record(k);
+ }
+}

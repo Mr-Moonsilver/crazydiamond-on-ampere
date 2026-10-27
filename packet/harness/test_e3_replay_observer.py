@@ -547,6 +547,84 @@ class ObserverCorrelationTests(ObserverTestBase):
         self.assertEqual(len(r['grade']['wrappers']),1)
         self.assertTrue(b.offers[1]['body_exception'])
 
+    def test_native_window_identity_is_available_before_and_after_work(self):
+        b = self.configure()
+        start = b.window()
+        self.assertEqual(start, dict(start_ns=1000, end_ns=0,
+                                     route_generation=ROUTE_GENERATION))
+        with b.offer('probe', {'kernel': 1}, context_id=7, stream_id=9) as offer:
+            self.ctl.stub_emit_correlated(10, offer['id'], 4, offer['thread'],
+                                         1100, 1400, 7, 0, 0, 1)
+        receipt = self.end()
+        final = b.window()
+        self.assertEqual(final, dict(start_ns=1000, end_ns=3000,
+                                     route_generation=ROUTE_GENERATION))
+        self.assertEqual(b.report()['native']['window'], final)
+        self.assertEqual(receipt['replay']['window']['start_ns'], final['start_ns'])
+        self.assertEqual(receipt['replay']['window']['end_ns'], final['end_ns'])
+        self.assertEqual(b.report()['grade']['verdict'], 'PASS')
+
+    def test_real_native_receipts_compose_after_observed_window_finalization(self):
+        import engine_offers as eo
+        import activity_accounting as accounting
+        self.open_clean(specs=[STATIC_GRAPH, SECOND_GRAPH])
+        bridge = accounting.CorrelationBridge(self.session, epoch=1,
+                                              generation=ROUTE_GENERATION, rank=0)
+        descriptor = {'num_tokens': 8, 'num_reqs': 8}
+        roles = {'main': {'context_id': CONTEXT_ID, 'stream_id': 9}}
+        self.begin()
+        start = bridge.window()
+        binding = eo.bind_window(
+            run_id='native-fixture', window_id='placement-1', worker='w0', rank=0,
+            worker_incarnation='worker-1', engine_incarnation='engine-1',
+            engine_epoch=1, route_generation=ROUTE_GENERATION,
+            storage_epoch=STORAGE_EPOCH, green_context_id=CONTEXT_ID,
+            native_start_ns=start['start_ns'], native_end_ns=None,
+            observer_identity=self.binding.identity(),
+            helper_identity={'native_static_schema': ro.NATIVE_SCHEMA_STATIC,
+                             'native_window_schema': ro.NATIVE_SCHEMA_WINDOW,
+                             'compiled_api': 130001, 'runtime_api': 130001},
+            declared_target='graph:0',
+            descriptor_labels={'graph:0': eo.descriptor_key(descriptor),
+                               'graph:1': eo.descriptor_key(dict(descriptor, num_tokens=16))},
+            router_census=None, bank_identity_sha256=eo.bank_identity(self.session._bank_meta),
+            stream_roles=roles, pp_stage=0)
+        ledger = eo.EngineOfferLedger(
+            bridge, worker='w0', rank=0, epoch=1, generation=ROUTE_GENERATION,
+            route_generation=ROUTE_GENERATION, green_context_id=CONTEXT_ID,
+            identities=roles, pp_stage=0, env={eo.ENABLE_ENV: '1'}, binding=binding)
+        self.addCleanup(ledger.deactivate)
+        ledger.activate()
+        eager = self.ctl.stub_emit_correlated
+        eager.argtypes = [ctypes.c_uint32,ctypes.c_uint64,ctypes.c_uint32,ctypes.c_uint32,
+                          ctypes.c_uint64,ctypes.c_uint64,ctypes.c_uint32,ctypes.c_uint32,
+                          ctypes.c_uint64,ctypes.c_uint32]
+        graph = self.ctl.stub_emit_correlated_graph
+        graph.argtypes = [ctypes.c_uint32,ctypes.c_uint64,ctypes.c_uint32,
+                          ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint64,ctypes.c_uint64]
+        with ledger.step('execute'):
+            with ledger.offer_scope('request_state_table', 'prep_state'):
+                offer = bridge.offers[-1]
+                eager(10,offer['id'],4,offer['thread'],1100,1400,CONTEXT_ID,0,0,1)
+            with ledger.offer_scope('forward_dispatch', 'graph_replay',
+                    descriptor=descriptor, census={'kernel':2,'memcpy':0,'memset':0}):
+                offer = bridge.offers[-1]
+                graph(11,offer['id'],offer['thread'],CONTEXT_ID,11,101,102)
+        ledger.deactivate()
+        raw = self.end()
+        raw_copy = ro._receipt_dict(raw)
+        self.assertEqual(raw['verdict'], 'INCONCLUSIVE')
+        self.assertEqual(raw['replay']['counts']['unattributed_expected_context'], 1)
+        ledger.finish_window({'total':1,'graphs':{'graph:0':1}})
+        engine = ledger.seal()
+        self.assertEqual(engine['verdict'], 'PASS', engine)
+        composed = eo.compose_placement(raw_copy, engine)
+        self.assertEqual(composed['verdict'], 'PASS', composed)
+        self.assertEqual(ro._receipt_dict(raw), raw_copy)
+        self.assertEqual(engine['joined_records'], 3)
+        self.assertEqual(engine['eager_green_records'], 1)
+        self.assertEqual(engine['native_window']['start_ns'], start['start_ns'])
+
     def test_native_two_threads_scopes_do_not_leak_between_threads(self):
         import threading
         b=self.configure();errors=[];barrier=threading.Barrier(2,timeout=5)
