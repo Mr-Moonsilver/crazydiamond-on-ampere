@@ -2,10 +2,10 @@
   "cpu_regression": {
     "cases": 262,
     "exit_code": 0,
-    "log": "tmp/native-performance-final-selftest.log",
-    "log_sha256": "c1578bfe0ff8db74a22d6fe2a4453bfb77d721feecc137da82423a3d878439b2",
+    "log": "tmp/q18a-native2-selftest-20261027T2213Z.log",
+    "log_sha256": "677fb53a52f3c97e8c5d127e4eb2d217f37fec21702f79436f1eb293c6d9b7b6",
     "required": 262,
-    "tested_commit": "5fce7e7"
+    "tested_commit": "09b9623"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -643,13 +643,6 @@
     "workloads/q18a-native-placement-prefill.json": "4924771797b65564456539984e0769066332cba092f1223f35144ce6ec34e711",
     "workloads/q18a-native-row1-template.json": "3c9b69c5541649f2c5cefd3b79b3fdced640e716544dd411185c4f9e75ea04eb",
     "workloads/q18a-w2-overlap.json": "e6dd96cadf82c0c7786bca2f561f159d0d0590329b3630d21918dae8f429fbb1"
-  },
-  "post_regression_delta": {
-    "commit": "48c9d2c",
-    "exit_code": 0,
-    "focused_tests": 12,
-    "log_sha256": "81b84e96f4d7fa041e4e9fbe8c672e03fdf8d06893c90363471a5082f3e0addf",
-    "scope": "strictly earlier07:00CET queue deadline and late-launch CPU guard; no runtime/module/numerical/workload change"
   },
   "profile": "q18a-native-performance",
   "qualified_observer_library_sha256": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d",
