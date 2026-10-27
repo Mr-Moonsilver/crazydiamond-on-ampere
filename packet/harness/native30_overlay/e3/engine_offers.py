@@ -1325,8 +1325,32 @@ class EngineOfferLedger:
         try:
             raw = self.bridge.report()
         except BaseException as exc:
-            receipt = _empty_receipt(
-                window, missing=['bridge_report_failed:' + type(exc).__name__])
+            receipt = _empty_receipt(window,
+                missing=['bridge_report_failed:' + type(exc).__name__],
+                offer_count=len(self._meta))
+            # Only trusted native error codes and bounded scalar diagnostics.
+            # Never copy arbitrary exception text, paths or engine payloads.
+            code = getattr(exc, 'code', None)
+            from replay_observer import _STATUS_NAMES
+            known = set(_STATUS_NAMES.values()) | {
+                'receipt_too_large', 'malformed_native_report', 'duplicate_json_key', 'native_error'}
+            detail = {'type':type(exc).__name__[:80]}
+            if type(code) is str and code in known:
+                detail['message'] = code
+            source = getattr(exc, 'report_diagnostics', {})
+            if isinstance(source, dict):
+                for key in ('return_code','required_bytes','capacity_bytes'):
+                    value=source.get(key)
+                    if type(value) is int and 0 <= value < 2**63:
+                        detail[key]=value
+                for key in ('function','session_state'):
+                    value=source.get(key)
+                    allowed = ({'s5ro_correlation_report','s5ro_correlation_window','native_report'}
+                               if key == 'function' else
+                               {'created','started','bound','window','ended','stopped','closed'})
+                    if type(value) is str and value in allowed:
+                        detail[key]=value
+            receipt['bridge_report_error'] = detail
             self._sealed = receipt
             return receipt
         native = raw.get('native') if isinstance(raw, dict) else None

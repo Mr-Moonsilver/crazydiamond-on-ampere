@@ -7,6 +7,9 @@ import re
 
 SCHEMA='s5ro-correlation/2'
 KINDS=('kernel','memcpy','memset')
+# Native API rows are not the bounded engine receipt. Keep this separate from
+# the graph-only report's8MiB and engine receipt's16MiB limits.
+CORRELATION_REPORT_MAX_BYTES=64*1024*1024
 
 
 def api_kind(name):
@@ -198,6 +201,7 @@ class CorrelationBridge:
         return self.session._report_call(self.lib.s5ro_correlation_window,(self.token,))
 
     def report(self):
-        report=self.session._report_call(self.lib.s5ro_correlation_report,(self.token,))
+        report=self.session._report_call(self.lib.s5ro_correlation_report,(self.token,),
+                                         max_bytes=CORRELATION_REPORT_MAX_BYTES)
         return dict(native=report,offers=self.offers,
                     grade=grade(report,self.offers,epoch=self.epoch,generation=self.generation))

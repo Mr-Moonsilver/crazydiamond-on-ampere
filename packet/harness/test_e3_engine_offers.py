@@ -743,6 +743,13 @@ class VocabularyTests(unittest.TestCase):
 
 
 class TransformTests(unittest.TestCase):
+    def tearDown(self):
+        # Generated-call tests own real ledger activation. Do not leave that
+        # process-global owner live for another suite in a composed test run.
+        if eo._ACTIVE is not None:
+            eo._ACTIVE.deactivate()
+        eo._CENSUS = {}
+
     @classmethod
     def setUpClass(cls):
         cls.sources = {
@@ -1718,6 +1725,32 @@ class CodexReviewTests(unittest.TestCase):
         if eo._ACTIVE is not None:
             eo._ACTIVE.deactivate()
         eo._CENSUS = {}
+
+    def test_bridge_failure_retains_trusted_code_and_sizes_without_exception_payload(self):
+        from replay_observer import ReplayObserverError
+        owner,bridge,ledger,builder=positive()
+        error=ReplayObserverError('receipt_too_large')
+        error.report_diagnostics={'function':'s5ro_correlation_report','session_state':'ended',
+            'return_code':1,'required_bytes':12000000,'capacity_bytes':8388608,
+            'payload':'private-fixture-value'}
+        def failed():raise error
+        bridge.report=failed
+        result=ledger.seal()
+        self.assertEqual(result['verdict'],'INCONCLUSIVE')
+        self.assertEqual(result['bridge_report_error']['message'],'receipt_too_large')
+        self.assertEqual(result['bridge_report_error']['required_bytes'],12000000)
+        self.assertEqual(result['bridge_report_error']['session_state'],'ended')
+        self.assertGreater(result['capacity']['offers'],0)
+        self.assertNotIn('private-fixture-value',json.dumps(result))
+        ledger.deactivate()
+        owner,bridge,ledger,builder=positive()
+        error=RuntimeError('private-fixture-value')
+        error.code='private_fixture_value'
+        error.report_diagnostics={'function':'private_fixture_value','session_state':'private_fixture_value'}
+        bridge.report=failed
+        result=ledger.seal()
+        self.assertEqual(result['bridge_report_error'],{'type':'RuntimeError'})
+        self.assertNotIn('private',json.dumps(result))
 
     def pending(self):
         bridge = FakeBridge()

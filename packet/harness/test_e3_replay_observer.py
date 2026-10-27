@@ -547,6 +547,32 @@ class ObserverCorrelationTests(ObserverTestBase):
         self.assertEqual(len(r['grade']['wrappers']),1)
         self.assertTrue(b.offers[1]['body_exception'])
 
+    def test_real_engine_api_volume_exceeds_default_native_json_budget(self):
+        from dataclasses import replace
+        b = self.configure()
+        with b.offer('volume', {}, context_id=7, stream_id=9) as offer:
+            for i in range(60000):
+                self.ctl.stub_emit_correlated(10000+i,offer['id'],4,offer['thread'],
+                                             1100,1400,7,0,0,0)
+        self.end()
+        with self.assertRaises(ro.ReplayObserverError) as caught:
+            self.session._report_call(b.lib.s5ro_correlation_report,(b.token,))
+        self.assertEqual(caught.exception.code,'receipt_too_large')
+        info=caught.exception.report_diagnostics
+        self.assertEqual(info['return_code'],1)
+        self.assertGreater(info['required_bytes'],8*1024**2)
+        self.assertEqual(info['capacity_bytes'],8*1024**2)
+        self.assertEqual(info['session_state'],'ended')
+        # The separate correlation cap does not mutate the graph-only budget,
+        # reset records or loss flags, or stop/restart the native subscriber.
+        report=b.report()['native']
+        self.assertEqual(self.session.limits.max_receipt_bytes,8*1024**2)
+        self.assertEqual(len(report['apis']),60000)
+        self.assertEqual(len(report['external']),60000)
+        self.assertTrue(report['complete'])
+        self.assertEqual(report['overflow'],0)
+        self.assertEqual(report['open_scopes'],0)
+
     def test_native_window_identity_is_available_before_and_after_work(self):
         b = self.configure()
         start = b.window()

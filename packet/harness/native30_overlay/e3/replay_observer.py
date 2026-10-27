@@ -950,9 +950,20 @@ class ObserverSession:
         if self.state not in states:
             raise ReplayObserverError('bad_state')
 
-    def _report_call(self, function, args, retry=True):
+    def _report_call(self, function, args, retry=True, *, max_bytes=None):
         c = self.binding._c
-        capacity = self.limits.max_receipt_bytes
+        limit = self.limits.max_receipt_bytes if max_bytes is None else max_bytes
+        _check_int(limit, 1024, 64 * 1024 * 1024, 'bad_limits')
+        capacity = limit
+        def failure(code, rc, required):
+            error = ReplayObserverError(code)
+            name = getattr(function, '__name__', 'native_report')
+            if type(name) is not str or len(name)>80 or not name.replace('_','').isalnum():
+                name = 'native_report'
+            error.report_diagnostics = {'function':name, 'return_code':int(rc),
+                'required_bytes':int(required), 'capacity_bytes':int(capacity),
+                'session_state':self.state}
+            return error
         for _attempt in range(2):
             buffer = c.create_string_buffer(capacity)
             length = c.c_uint64()
@@ -961,21 +972,24 @@ class ObserverSession:
             required = int(length.value)
             if rc == 0:
                 if required > capacity:
-                    raise ReplayObserverError('malformed_native_report')
+                    raise failure('malformed_native_report',rc,required)
                 raw = bytes(buffer.raw[:required])
                 try:
                     text = raw.decode('utf-8')
                 except UnicodeDecodeError:
-                    raise ReplayObserverError('malformed_native_report') from None
-                return _parse_report(text)
+                    raise failure('malformed_native_report',rc,required) from None
+                try:
+                    return _parse_report(text)
+                except ReplayObserverError as exc:
+                    raise failure(exc.code,rc,required) from None
             if rc == 1:
                 if (not retry or required <= capacity
-                        or required > self.limits.max_receipt_bytes):
-                    raise ReplayObserverError('receipt_too_large')
+                        or required > limit):
+                    raise failure('receipt_too_large',rc,required)
                 capacity = required
                 continue
-            raise ReplayObserverError(_STATUS_NAMES.get(rc, 'native_error'))
-        raise ReplayObserverError('receipt_too_large')
+            raise failure(_STATUS_NAMES.get(rc, 'native_error'),rc,required)
+        raise failure('receipt_too_large',rc,required)
 
     # -- lifecycle --------------------------------------------------------
     def start(self):
