@@ -238,7 +238,11 @@ class Full12Queue(ProtocolV2Queue):
     def setUp(self):
         from unittest.mock import patch
         import make_s5_overlap,make_e2_arena
-        def current():return make_s5_overlap._s5_launcher(make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text()))
+        def current():
+            # Full12 is an immutable executed identity. Later native modules
+            # belong to a fresh candidate, not to a rewritten full12 queue.
+            text=make_s5_overlap._s5_launcher(make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text()))
+            return text.replace('e3/admission_metadata.py ', '').replace('e3/worker_bridge.py ', '')
         self._patches=[patch.object(old,'launcher_text',current),patch.object(old,'LAUNCHER_SHA',hashlib.sha256(current().encode()).hexdigest())]
         for p in self._patches:p.start()
         FullQueue.setUp(self)

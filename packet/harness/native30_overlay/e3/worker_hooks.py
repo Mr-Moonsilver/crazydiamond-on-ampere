@@ -36,7 +36,7 @@ CAPTURE_REFERENCE_PINS = {
 
 # executor_hooks.generate_worker output (C's RPC methods); the worker seams
 # compose after C in the overlay, so that composition is an accepted input too.
-WORKER_AFTER_C_SHA256 = '237d6c700f240867adc22b714be4da4ee04d8dba3bbfc50ebc4d45502fbddecc'
+WORKER_AFTER_C_SHA256 = '5790592edd43449944a7bdeeed84cd9d69c74b615499f01d4535946366158554'
 ACCEPTED = {path: (digest,) for path, digest in PINS.items()}
 ACCEPTED['v1/worker/gpu_worker.py'] = (PINS['v1/worker/gpu_worker.py'], WORKER_AFTER_C_SHA256)
 

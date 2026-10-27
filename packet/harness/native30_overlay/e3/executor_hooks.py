@@ -83,6 +83,15 @@ _WORKER_METHODS = '''    def flash_s5_open(self, message):
     def flash_s5_commit(self, message):
         return _flash_s5_hooks.worker_rpc(self, "commit", message)
 
+    def flash_s5_release(self, message):
+        return _flash_s5_hooks.worker_rpc(self, "release", message)
+
+    def flash_s5_bind(self, message):
+        return _flash_s5_hooks.worker_rpc(self, "bind", message)
+
+    def flash_s5_receipt(self, message):
+        return _flash_s5_hooks.worker_rpc(self, "receipt", message)
+
     def flash_s5_cancel(self, message):
         return _flash_s5_hooks.worker_rpc(self, "cancel", message)
 
@@ -692,8 +701,54 @@ def before_engine_shutdown(engine):
 
 # --- worker-side hook -------------------------------------------------------
 
+def _wire_method(message):
+    """Exact wire-v1 record -> generated method name; ``None`` for legacy RPCs."""
+    from wire_v1 import (CancelRequest, OpenRequest, PPReceiptDelivery,
+                         PeerBinding, PollRequest, ReleaseRequest,
+                         SegmentCommand, TransitionCommand)
+    for record, name in ((OpenRequest, 'open'), (SegmentCommand, 'submit'),
+                         (PollRequest, 'poll'), (ReleaseRequest, 'release'),
+                         (CancelRequest, 'cancel'), (PeerBinding, 'bind'),
+                         (PPReceiptDelivery, 'receipt'),
+                         (TransitionCommand, 'transition')):
+        if type(message) is record:
+            return name
+    return None
+
+
+def _wire_bridge(worker):
+    for owner in (worker, getattr(worker, 'model_runner', None)):
+        if owner is None:
+            continue
+        bridge = getattr(owner, '_flash_s5_bridge', None)
+        if bridge is not None:
+            return bridge
+    raise E3ContractError('worker has no native LaneDispatcher bridge')
+
+
 def worker_rpc(worker, name, message):
     """Generated worker entry point for typed open/submit/poll/commit/cancel."""
+    wire_name = _wire_method(message)
+    if wire_name is not None:
+        # Wire-v1 records carry their own exact type; they have no legacy
+        # ``kind``/``validate`` adapter and never fall through to it.
+        if name != wire_name:
+            raise E3ContractError('S5 RPC method and wire record disagree')
+        bridge = _wire_bridge(worker)
+        attach = getattr(bridge, 'attach', None)
+        if callable(attach):
+            attach(worker)
+        if name in ('bind', 'receipt') and message.sender_rank != bridge.rank:
+            # The stock MQ executes every broadcast on every worker; selecting
+            # output_rank only selects the reply. Non-senders must do no work
+            # and return quietly instead of logging a spurious worker error.
+            return None
+        handler = getattr(bridge, wire_name, None)
+        if not callable(handler):
+            raise E3ContractError('native bridge lacks the requested S5 RPC')
+        return handler(message)
+    if name in ('bind', 'receipt', 'release'):
+        raise E3ContractError('S5 RPC requires its exact wire record')
     if name not in ('open', 'submit', 'poll', 'commit', 'cancel', 'transition'):
         raise E3ContractError('unknown S5 worker RPC')
     if not hasattr(message, 'validate'):

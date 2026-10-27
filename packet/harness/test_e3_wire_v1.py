@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
 
 import wire_v1 as w
+from lane_chunk import ChunkAdmission
 from e3_types import (
     CompletionKind,
     CompletionProof,
@@ -133,6 +134,62 @@ class AdmissionRecordTests(unittest.TestCase):
         with self.assertRaises(E3ContractError):
             admission(transaction=t, prompt_end=6000, committed_end=5072,
                       input_ids=(3,) * 1024)
+
+
+class SourceLeaseDescriptorTests(unittest.TestCase):
+    """The transport half of the engine's source ownership, never a bool."""
+
+    def descriptor(self, **overrides):
+        values = dict(transaction=txn(), state_epoch=4,
+                      block_ids=(1, 2, 3, 5), consumer_ranks=(0, 1))
+        values.update(overrides)
+        return w.SourceLeaseDescriptor(**values)
+
+    def test_pages_and_ranks_are_canonical(self):
+        with self.assertRaises(E3ContractError):
+            self.descriptor(block_ids=(2, 1))
+        with self.assertRaises(E3ContractError):
+            self.descriptor(block_ids=())
+        with self.assertRaises(E3ContractError):
+            self.descriptor(block_ids=(0, 1))
+        with self.assertRaises(E3ContractError):
+            self.descriptor(consumer_ranks=(1, 0))
+        with self.assertRaises(E3ContractError):
+            self.descriptor(consumer_ranks=())
+
+    def test_frame_must_match_transaction_epoch_pages_and_ranks(self):
+        descriptor = self.descriptor()
+        self.assertTrue(descriptor.validate_frame(admission(), (0, 1)))
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(admission(state_epoch=5), (0, 1))
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(admission(transaction=txn(txn_seq=2)), (0, 1))
+        # Page 5 is the retained CoW source: it is absent from the rows and
+        # named only by cow_pairs. Dropping that pair must refuse the read.
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(
+                admission(cow_pairs=()), (0, 1))
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(admission(), (0, 2))
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(
+                admission(block_tables=((1, 2), (3,)), cow_pairs=((1, 4),)),
+                (0, 1))
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(object(), (0, 1))
+
+    def test_worker_lane_frame_is_the_same_proof(self):
+        frame = ChunkAdmission(
+            transaction=txn(), prompt_end=9, input_ids=tuple(range(8)),
+            ngram_context=(), block_tables=((1, 2), (3, 4)),
+            cow_pairs=((1, 5),), state_epoch=4)
+        self.assertTrue(self.descriptor().validate_frame(frame, (0, 1)))
+        stale = ChunkAdmission(
+            transaction=txn(), prompt_end=9, input_ids=tuple(range(8)),
+            ngram_context=(), block_tables=((1, 2), (3, 4)),
+            cow_pairs=((1, 5),), state_epoch=5)
+        with self.assertRaises(E3ContractError):
+            self.descriptor().validate_frame(stale, (0, 1))
 
 
 class SegmentDescriptorTests(unittest.TestCase):
@@ -465,6 +522,46 @@ class OpSeqTrackerTests(unittest.TestCase):
     def test_start_sequence(self):
         tracker = w.OpSeqTracker(4)
         self.assertEqual(tracker.propose(self.prepare), 5)
+
+
+class TerminalReleaseTests(unittest.TestCase):
+    """The typed terminal field and the request-row closure it certifies."""
+
+    def request(self, terminal, **overrides):
+        values = dict(transaction=txn(), state_epoch=4,
+                      completed_sequences=((0, 3), (1, 3)), terminal=terminal)
+        values.update(overrides)
+        return w.ReleaseRequest(**values)
+
+    def test_terminality_is_derived_from_the_admission_not_a_caller_flag(self):
+        self.assertTrue(admission().terminal)
+        self.assertFalse(admission(prompt_end=10).terminal)
+        self.assertTrue(admission(prompt_end=9, transaction=txn(chunk_end=8)).terminal)
+
+    def test_release_requires_an_explicit_boolean_terminal_field(self):
+        self.assertIs(self.request(False).terminal, False)
+        self.assertIs(self.request(True).terminal, True)
+        with self.assertRaises(E3ContractError):
+            self.request(1)
+        with self.assertRaises(E3ContractError):
+            self.request(None)
+
+    def test_repr_names_the_terminal_disposition(self):
+        self.assertIn('terminal=False', repr(self.request(False)))
+        self.assertIn('terminal=True', repr(self.request(True)))
+
+    def test_nonterminal_and_terminal_ack_closure_shapes(self):
+        transaction = txn()
+        nonterminal = w.ReleaseAck(transaction, 0, 4, 3, released=True,
+                                   request_closed=False)
+        self.assertTrue(nonterminal.released)
+        self.assertFalse(nonterminal.closed)
+        terminal = w.ReleaseAck(transaction, 0, 4, 3, released=True,
+                                request_closed=True)
+        self.assertTrue(terminal.closed)
+        # The row can never be closed without the storage release.
+        with self.assertRaises(E3ContractError):
+            w.ReleaseAck(transaction, 0, 4, 3, released=False, request_closed=True)
 
 
 if __name__ == '__main__':

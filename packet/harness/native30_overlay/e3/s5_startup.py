@@ -170,6 +170,13 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
                                 forward_context_getter=forward_context_getter)
     server._flash_s5_dispatcher = dispatcher
     runner._flash_s5_dispatcher = dispatcher
+    # The typed wire-v1 RPCs route to this bridge, which is the only adapter
+    # over the constructed dispatcher. It allocates no storage of its own.
+    from worker_bridge import NativeWorkerBridge
+
+    bridge = NativeWorkerBridge(dispatcher, server=server)
+    server._flash_s5_bridge = bridge
+    runner._flash_s5_bridge = bridge
     return dispatcher
 
 
@@ -217,6 +224,7 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     composition.attach(engine=engine, scheduler=scheduler, executor=executor)
 
     from engine_driver import NativeSegmentDriver
+    from admission_metadata import install_admission_metadata
     from scheduler_hooks import PrefillAdmissionController
 
     layer_count, layer_split, stage_of = shape
@@ -230,6 +238,10 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
         frontier=composition.frontier,
         engine_epoch=epoch,
         chunk_tokens=config.chunk_tokens, ranks=ranks, clock=clock).attach()
+    # The only construction site of the production admission-metadata
+    # provider: it captures allocation side effects around the controller's
+    # allocate_slots call and owns CoW endpoint retention until commit/cancel.
+    install_admission_metadata(scheduler)
     driver = NativeSegmentDriver(
         controller, executor=executor, scheduler=scheduler, engine=engine,
         layer_count=layer_count, layer_split=layer_split, stage_of=stage_of,

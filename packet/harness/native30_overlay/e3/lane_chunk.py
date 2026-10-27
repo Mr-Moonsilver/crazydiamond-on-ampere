@@ -281,10 +281,30 @@ class LaneRequest:
         states.apply_staged_writes()
         runner.model_state.apply_staged_writes()
         runner.block_tables.apply_staged_writes()
+        # The first chunk is allocated exactly like a later one: its new pages
+        # must be zeroed and its CoW destinations copied before any layer reads
+        # them. Registration alone is not admission.
+        self._apply_allocated_pages(admission)
         self.req_id = admission.request_uid
         self.req_index = req_index
         self.generation = admission.request_generation
         return req_index
+
+    def _apply_allocated_pages(self, admission):
+        """Zero allocation-owned pages and apply CoW copies (shared by all chunks)."""
+        runner = self.runner
+        if admission.new_block_ids_to_zero:
+            zeroer = getattr(runner, 'kv_block_zeroer', None)
+            if zeroer is None:
+                raise LaneChunkError('runner has no KV block zeroer for the new blocks')
+            zeroer.zero_block_ids(list(admission.new_block_ids_to_zero))
+        if admission.cow_pairs:
+            copies = [self.ports.block_copy(src, dst) for src, dst in admission.cow_pairs]
+            self.ports.copy_blocks_inplace(runner.kv_caches, runner.kv_cache_config.num_blocks,
+                                           copies)
+            views = getattr(runner, '_qsa_host_views', None)
+            if views:
+                self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
 
     def update(self, admission):
         if self.req_id != admission.request_uid or self.generation != admission.request_generation:
@@ -299,17 +319,7 @@ class LaneRequest:
             index, tuple(list(row) for row in admission.block_tables), overwrite=True)
         states.apply_staged_writes()
         runner.block_tables.apply_staged_writes()
-        if admission.new_block_ids_to_zero:
-            zeroer = getattr(runner, 'kv_block_zeroer', None)
-            if zeroer is None:
-                raise LaneChunkError('runner has no KV block zeroer for the new blocks')
-            zeroer.zero_block_ids(list(admission.new_block_ids_to_zero))
-        if admission.cow_pairs:
-            copies = [self.ports.block_copy(src, dst) for src, dst in admission.cow_pairs]
-            self.ports.copy_blocks_inplace(runner.kv_caches, runner.kv_cache_config.num_blocks, copies)
-            views = getattr(runner, '_qsa_host_views', None)
-            if views:
-                self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
+        self._apply_allocated_pages(admission)
         self.chunks += 1
         return index
 
@@ -408,8 +418,10 @@ class LaneChunk:
         self.seq_lens_cpu = torch.tensor([admission.chunk_end], dtype=torch.int32)
         self.idx_mapping = torch.tensor([req_index], dtype=torch.int64, device=device)
         self.is_padding = torch.zeros((n,), dtype=torch.bool, device=device)
-        self.ngram_context = torch.tensor(list(admission.ngram_context), dtype=torch.int64,
-                                          device=device)
+        # The pinned PLE/ngram path consumes ``[num_reqs, context_len]`` and
+        # slices ``[:num_reqs]``; this private chunk carries exactly one row.
+        self.ngram_context = torch.tensor([list(admission.ngram_context)],
+                                          dtype=torch.int64, device=device)
         self.block_tables = tables.write(admission)
         mappings = tables.slot_mappings(admission, ports.pad_slot_id)
         self.slot_mappings = mappings.to(device) if hasattr(mappings, 'to') else mappings

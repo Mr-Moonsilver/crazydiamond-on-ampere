@@ -652,6 +652,8 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_s5_reply_transport.py', 'S5 E3 owned receiver: FIFO, bounded credits, delayed overflow, quarantine, CPU process (offline)'),
                      ('test_e3_wire_v1.py', 'E3 wire-v1 schema and identities (CPU only)'),
                      ('test_e3_admission_native.py', 'E3 admission and bounded engine prototype (CPU only, no native bridge qualification)'),
+                     ('test_e3_admission_metadata.py', 'E3 production admission metadata: scoped allocator capture, CoW endpoint retention, PLE ngram context, boundary refusal (CPU only, fakes)'),
+                     ('test_e3_r4_worker_bridge.py', 'E3 typed worker bridge: open/segment/bind/receipt/release/cancel over the real dispatcher, terminal handback and stock broadcast fidelity (CPU only, fakes)'),
                      ('test_e3_lane_state.py', 'E3 execution state: transaction/lane identities, completion proofs, lane lifecycle and pinned runner seams (CPU only)'),
                      ('test_e3_async_handoffs.py', 'E3 async handoffs: parked transaction, owned replies, completion/publication split, lifetime leases, stop paths and pinned C seams (CPU only)'),
                      ('test_e3_package.py', 'E3 package: A+B+C composition, default-off mounts, manifest coverage, source drift and import identity (CPU only)'),

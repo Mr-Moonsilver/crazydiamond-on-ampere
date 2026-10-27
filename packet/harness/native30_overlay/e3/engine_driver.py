@@ -49,10 +49,18 @@ from e3_types import (
     OperationTicket,
     TransactionId,
 )
+from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
 from reply_transport import Backpressure
 from scheduler_hooks import LeaseCategory, PrefillAdmissionController
 from wire_v1 import (
+    CancelAck,
+    CancelRequest,
+    PPReceiptAck,
+    PPReceiptDelivery,
+    PeerBinding,
+    PeerBindingAck,
+    PollRequest,
     ReleaseRequest,
     ReleaseAck,
     OpenAck,
@@ -631,7 +639,8 @@ class NativeSegmentDriver:
 
     def __init__(self, controller, *, executor, scheduler, engine=None,
                  layer_count, layer_split, stage_of, clock=time.monotonic,
-                 poll_budget=8, reply_timeout_s=300.0):
+                 poll_budget=8, reply_timeout_s=300.0, stop_budget=64,
+                 stop_tick_budget=8):
         _wire_ready()
         if type(controller) is not PrefillAdmissionController:
             raise DriverError('native driver needs the admission controller')
@@ -676,6 +685,8 @@ class NativeSegmentDriver:
         self.pp_ledgers = {sender: PPTransferLedger(2, stage1_ranks=(receiver,))
                            for sender, receiver in self.pp_peers.items()}
         self.pp = self.pp_ledgers[self.stage_ranks[0][0]]  # compatibility summary only
+        self.stop_budget = _positive(stop_budget, 'stop budget')
+        self.stop_tick_budget = _positive(stop_tick_budget, 'stop tick budget')
         self.engine_epoch = controller.engine_epoch
         self.route_generation = 0
         self.tx = None
@@ -699,6 +710,24 @@ class NativeSegmentDriver:
         self._inflight = {}
         self._retry = None
         self._transition = None
+        self.pp_send_seq = None
+        self.pp_receive_seq = None
+        self.receiver_ticket = None
+        self._bindings = {}
+        self._bind_index = 0
+        self._pending_binding = None
+        self._receipts = {}
+        self._receipt_inflight = None
+        self._receipt_acked = set()
+        self._receipt_last = None
+        self._consumer_proofs = {}
+        self._pp_noted = False
+        self._stop_acks = {}
+        self._stop_rounds = 0
+        self._stop_ticks = 0
+        self._cancel_targets = frozenset()
+        self._release_acks = {}
+        self._release_attempts = 0
 
     def install(self):
         engine, scheduler = self.engine, self.scheduler
@@ -763,10 +792,16 @@ class NativeSegmentDriver:
     def _apply(self, kind, values):
         if kind == 'open':
             self._apply_open(values)
+        elif kind == 'bind':
+            self._apply_bind(values)
         elif kind == 'segment':
             self._apply_segments(values)
         elif kind == 'poll':
             self._apply_poll(values)
+        elif kind == 'receipt':
+            self._apply_receipt(values)
+        elif kind == 'cancel':
+            self._apply_cancel(values)
         elif kind == 'release':
             self._apply_release(values)
         elif kind == 'transition':
@@ -810,7 +845,47 @@ class NativeSegmentDriver:
             if ack.stage != self.stage_of[ack.lane.worker_rank]:
                 raise DriverError('worker stage disagrees with the split')
         self.plan = self._build_plan()
+        # The scheduler hold may only be validated for lanes that actually
+        # received this admitted frame; bind their exact identities now.
+        self.controller.note_source_owners(self.tx, self.lanes, self.layer_count)
+        self._bindings = {}
+        self._bind_index = 0
+        self._pending_binding = None
+        self.phase = 'bind'
+
+    def _apply_bind(self, values):
+        acks = tuple(values)
+        binding = self._pending_binding
+        if binding is None or len(acks) != 1:
+            raise DriverError('peer binding reply does not match the targeted sender')
+        ack = acks[0]
+        if type(ack) is not PeerBindingAck or not ack.matches(binding):
+            raise DriverError('peer binding acknowledgment is stale or mistyped')
+        if not ack.bound:
+            raise DriverError('sender refused the peer binding')
+        if ack.receiver_lane != self.lanes[self.pp_peers[binding.sender_rank]]:
+            raise DriverError('sender bound an unopened receiver lane')
+        self._bindings[binding.sender_rank] = ack
+        self._pending_binding = None
+        self._bind_index += 1
+        if self._bind_index == len(self.stage_ranks[0]):
+            self.phase = 'segments'
+
+    def _next_binding(self):
+        while self._bind_index < len(self.stage_ranks[0]):
+            sender = self.stage_ranks[0][self._bind_index]
+            if sender in self._bindings:
+                self._bind_index += 1
+                continue
+            receiver = self.pp_peers[sender]
+            binding = PeerBinding(self.tx, sender, self.lanes[receiver],
+                                  self.route_generation)
+            self._pending_binding = binding
+            self._submit('bind', ('flash_s5_bind', (binding,), {}, sender),
+                         (sender,))
+            return True
         self.phase = 'segments'
+        return False
 
     def _build_plan(self):
         """Bounded segment plan: stage 0 then the explicit PP transfer."""
@@ -950,14 +1025,53 @@ class NativeSegmentDriver:
                 or {a.worker_rank for a in acks} != set(self.ranks)):
             raise DriverError('release lacks the complete typed all-rank reply')
         expected = dict(self.release_request.completed_sequences)
+        terminal = self.release_request.terminal
         for ack in acks:
             if (ack.transaction != self.tx or ack.state_epoch != self.admission.state_epoch
                     or ack.completed_sequence != expected[ack.worker_rank]):
                 raise DriverError('release acknowledgment differs from the final report')
+            if not terminal and ack.request_closed:
+                # A nonterminal release must not drop the request row: the next
+                # chunk of this request needs it for LaneRequest.update().
+                raise DriverError('nonterminal release closed the request row')
         for ack in acks:
-            self.controller.note_worker_release(ack)
+            prior = self._release_acks.get(ack.worker_rank)
+            if prior is not None and ack != prior:
+                # A rank that already certified this chunk answers a broadcast
+                # retry with the identical row, never a different one.
+                raise DriverError('release retry contradicts an earlier accepted row')
+            complete = ack.closed if terminal else ack.released
+            if complete:
+                self._release_acks[ack.worker_rank] = ack
+        if self.stop_kind is not None:
+            # A release that raced the stop certifies closure only; it is not a
+            # publication. The cancellation path owns the terminal row.
+            return
+        if set(self._release_acks) != set(self.ranks):
+            # Bounded retry: the not-closed workers kept ownership and the row.
+            return
+        for rank in self.ranks:
+            self.controller.note_worker_release(self._release_acks[rank])
         self.controller.commit(self.tx, self._producer_proof())
         self._reset()
+        return
+
+    def _send_release(self):
+        self._release_attempts += 1
+        if self._release_attempts > self.stop_budget:
+            raise DriverError('release did not close worker ownership within the bound')
+        # Closed rows from an earlier attempt are kept: the retry is still one
+        # all-rank broadcast (every worker executes it and replies), and the
+        # already-closed workers answer with their identical closed row.
+        # Terminality is the scheduler's admission fact, never inferred from a
+        # reply: the chunk that leaves the final prompt token for stock must
+        # close the worker request row before it acknowledges.
+        self.release_request = ReleaseRequest(
+            self.tx, self.admission.state_epoch,
+            tuple((r, self.reports[r].completed_sequence) for r in self.ranks),
+            self.admission.terminal)
+        self._submit('release', ('flash_s5_release', (self.release_request,), {}, None),
+                     self.ranks)
 
     def _collect_pp_proofs(self, report):
         for proof in report.proofs:
@@ -967,20 +1081,76 @@ class NativeSegmentDriver:
                                if peer == report.worker_rank), None)
                 if sender is None or descriptor.kind is not SegmentKind.PP_RECEIVE:
                     raise DriverError('PP consumer has no admitted sender peer')
-                if self.pp_send_seq is None:
-                    raise DriverError('consumer completion predates sender submission')
+                if self.pp_send_seq is None or descriptor.seq != self.pp_send_seq:
+                    raise DriverError('consumer completion predates or differs from the sender submission')
+                if descriptor.seq != self.pp_receive_seq:
+                    raise DriverError('consumer completion names another transfer sequence')
                 self.pp_ledgers[sender].note_consumer(self.tx, descriptor.seq, 1, proof)
+                self._consumer_proofs[sender] = proof
             elif (proof.kind is CompletionKind.GPU_EVENT
                   and descriptor.kind is SegmentKind.PP_SEND):
                 self.pp_ledgers[report.worker_rank].note_sender_complete(
                     self.tx, descriptor.seq, proof)
+        for sender in self.pp_peers:
+            self._maybe_queue_receipt(sender)
+
+    def _maybe_queue_receipt(self, sender):
+        """Queue the typed receipt only once both queried proofs are present."""
+        if sender in self._receipt_acked or sender in self._receipts:
+            return False
         seq = self.pp_send_seq
-        if seq is not None:
-            for ledger in self.pp_ledgers.values():
-                if seq in ledger.outstanding(self.tx) and ledger.releasable(self.tx, seq):
-                    ledger.release_send(self.tx, seq)
-            if all(not ledger.outstanding(self.tx) for ledger in self.pp_ledgers.values()):
-                self.controller.note_pp_consumer(self.tx, seq, 1)
+        if seq is None or sender not in self._consumer_proofs:
+            return False
+        ledger = self.pp_ledgers[sender]
+        if not ledger.releasable(self.tx, seq):
+            return False
+        binding = self._bindings[sender]
+        self._receipts[sender] = PPConsumerReceipt(
+            0, seq, binding.route_generation, self._consumer_proofs[sender])
+        return True
+
+    def _next_receipt(self):
+        """Submit at most one targeted receipt delivery; True when work was sent."""
+        sender = self._receipt_inflight
+        if sender is not None:
+            return True
+        for candidate in sorted(self._receipts):
+            if candidate in self._receipt_acked:
+                continue
+            delivery = PPReceiptDelivery(self.tx, candidate,
+                                         (self._receipts[candidate],))
+            self._receipt_inflight = candidate
+            self._receipt_last = delivery
+            self._submit('receipt', ('flash_s5_receipt', (delivery,), {}, candidate),
+                         (candidate,))
+            return True
+        return False
+
+    def _apply_receipt(self, values):
+        acks = tuple(values)
+        delivery = self._receipt_last
+        sender = self._receipt_inflight
+        if delivery is None or sender is None or len(acks) != 1:
+            raise DriverError('PP receipt reply has no outstanding delivery')
+        ack = acks[0]
+        if type(ack) is not PPReceiptAck or not ack.matches(delivery):
+            raise DriverError('PP receipt acknowledgment is stale or mistyped')
+        if not ack.accepted:
+            raise DriverError('sender refused the PP consumer receipt')
+        ledger = self.pp_ledgers[sender]
+        seq = delivery.receipts[0].seq
+        if sender not in self._receipt_acked:
+            # The sender accepted the queried consumer proof: only now may its
+            # local PP slot be released and only now is the transfer consumed.
+            ledger.release_send(self.tx, seq)
+            self._receipt_acked.add(sender)
+        self._receipt_inflight = None
+        self._receipt_last = None
+        if (not self._pp_noted
+                and all(not item.outstanding(self.tx)
+                        for item in self.pp_ledgers.values())):
+            self.controller.note_pp_consumer(self.tx, seq, 1)
+            self._pp_noted = True
 
     def _producer_proof(self):
         if self.bound_ticket is None:
@@ -1036,12 +1206,31 @@ class NativeSegmentDriver:
         self.pp_send_seq = None
         self.pp_receive_seq = None
         self.last_ticket = {0: None, 1: None}
+        self._bindings = {}
+        self._bind_index = 0
+        self._pending_binding = None
+        self._receipts = {}
+        self._receipt_inflight = None
+        self._receipt_acked = set()
+        self._receipt_last = None
+        self._consumer_proofs = {}
+        self._pp_noted = False
+        self._release_acks = {}
+        self._release_attempts = 0
+        self._stop_acks = {}
+        self._cancel_targets = frozenset()
+        self._stop_ticks = 0
 
     def _drive(self):
         if self.phase == 'open':
             if not self._inflight:
                 self._submit('open', ('flash_s5_open', (self.open_request,), {}, None),
                              self.ranks)
+            return
+        if self.phase == 'bind':
+            if self._inflight:
+                return
+            self._next_binding()
             return
         if self.phase == 'segments':
             if self._inflight:
@@ -1057,19 +1246,25 @@ class NativeSegmentDriver:
         if self.phase == 'finalize':
             if self._inflight:
                 return
+            # A sender's PP slot is released only after it accepted the
+            # receiver's queried consumer receipt, before publication.
+            if self._next_receipt():
+                return
             if self._drained() and self.controller.ready_to_release(self.tx):
-                self.release_request = ReleaseRequest(
-                    self.tx, self.admission.state_epoch,
-                    tuple((r, self.reports[r].completed_sequence) for r in self.ranks))
-                self._submit('release', ('flash_s5_commit', (self.release_request,), {}, None),
-                             self.ranks)
                 self.phase = 'release'
+                self._send_release()
                 return
             self._submit('poll', ('flash_s5_poll',
-                                  (PollOperations(self.tx, self.poll_budget),), {}, None),
+                                  (PollRequest(self.tx, self.admission.state_epoch,
+                                               self.poll_budget),), {}, None),
                          self.ranks)
             return
         if self.phase == 'release':
+            if self._inflight:
+                return
+            # Not-closed acknowledgments keep worker ownership; retry within
+            # the same bound instead of treating an ACK as closure.
+            self._send_release()
             return
         raise DriverError('unknown driver phase')
 
@@ -1110,32 +1305,139 @@ class NativeSegmentDriver:
             raise DriverError('unknown stop kind')
         if self.tx is None and not self.controller.active:
             return None
-        self.stop_kind = kind
+        if self.stop_kind is None:
+            self.stop_kind = kind
+        # Bounded pump: the engine seam sees one call, never a device wait.
+        self.pump_stop(self.stop_tick_budget)
         return self.phase
+
+    def pump_stop(self, budget=None):
+        """Run at most ``budget`` bounded ticks; never wait for a forward."""
+        budget = self.stop_tick_budget if budget is None else _positive(
+            budget, 'stop pump budget')
+        for _ in range(budget):
+            if not self.active:
+                return True
+            self.advance()
+        return not self.active
 
     def _drive_stop(self):
         if self.tx is None:
             # Admission happened pre-schedule; the driver may not have begun.
             # Closing admissions retires the parked chunk without publishing.
-            admission = self.controller.admission()
-            if admission is not None:
+            if self.controller.active:
+                admission = self.controller.admission()
                 self.controller.cancel(admission.transaction,
                                        never_submitted=True)
                 self._reset()
+            elif self.controller.active:
+                raise DriverError('cancellation has no transaction to close')
             return
-        if self._inflight:
+        if self._inflight and any(kind != 'poll'
+                                  for kind in self._inflight.values()):
+            # Waiting for a reply is not a cancellation round: the owned
+            # transport's reply deadline bounds it, not the engine's tick rate.
             return
-        if self.phase == 'open':
-            # Open may already have allocated private storage on every rank.
-            # No local cancellation until the remote close bridge proves it.
-            raise DriverError('opened workers require cancel/release RPCs; ownership retained')
-        if self.pp_sent() and not self._pp_consumed():
-            raise DriverError('PP transfer lacks a consumer proof; quarantine')
-        if self._drained():
-            raise DriverError('worker cancellation/release bridge required; ownership retained')
-        self._submit('poll', ('flash_s5_poll',
-                              (PollOperations(self.tx, self.poll_budget),), {}, None),
+        if self._receipts_pending():
+            self._stop_round()
+            self._next_receipt()
+            return
+        closed = self._closed_rows()
+        if set(closed) == set(self.ranks):
+            self._retire_cancel(closed)
+            return
+        # One bounded cancellation/poll tick. The command is one all-rank
+        # broadcast: every worker executes it and replies, so the expected reply
+        # ranks are always every rank (a subset would desynchronize the owned
+        # FIFO transport). Already-closed ranks answer without new ownership
+        # and their earlier terminal row is kept.
+        self._stop_round()
+        reason = self.stop_kind
+        self._cancel_targets = frozenset(self.ranks)
+        self._submit('cancel', ('flash_s5_cancel',
+                                (CancelRequest(self.tx, self.admission.state_epoch,
+                                               reason),), {}, None),
                      self.ranks)
+
+    def _stop_round(self):
+        """Count one submitted stop round; refuse past the bound, keep ownership."""
+        self._stop_ticks += 1
+        if self._stop_ticks > self.stop_budget:
+            raise DriverError('cancellation did not close worker ownership within the bound')
+
+    def _receipts_pending(self):
+        return any(sender not in self._receipt_acked for sender in self._receipts)
+
+    def _closed_rows(self):
+        """Every rank's certified-closed terminal row (release or cancel)."""
+        rows = {rank: ack for rank, ack in self._release_acks.items() if ack.closed}
+        for rank, ack in self._stop_acks.items():
+            if ack.closed and rank not in rows:
+                rows[rank] = ack
+        return rows
+
+    def _apply_cancel(self, values):
+        acks = tuple(values)
+        targets = self._cancel_targets or frozenset(self.ranks)
+        if (len(acks) != len(targets)
+                or {getattr(a, 'worker_rank', None) for a in acks} != set(targets)
+                or any(type(a) is not CancelAck for a in acks)):
+            raise DriverError('cancel reply does not cover every outstanding rank')
+        closed = self._closed_rows()
+        for ack in acks:
+            if ack.transaction != self.tx or ack.state_epoch != self.admission.state_epoch:
+                raise DriverError('cancel acknowledgment belongs to another transaction/epoch')
+            if ack.worker_rank in closed:
+                # The rank already certified closure; its broadcast copy may
+                # only confirm it and never replaces the terminal row.
+                if not ack.closed:
+                    raise DriverError('a closed worker reports cancellation ownership again')
+                continue
+            if ack.disposition == 'quarantined':
+                self._stop_acks[ack.worker_rank] = ack
+                raise DriverError('worker retained quarantined work; ownership kept')
+            prior = self._stop_acks.get(ack.worker_rank)
+            if prior is not None:
+                if (ack.completed_sequence < prior.completed_sequence
+                        or not set(prior.completed_op_seqs)
+                        <= set(ack.completed_op_seqs)
+                        or not set(prior.pending_op_seqs) >= set(ack.pending_op_seqs)):
+                    raise DriverError('cancellation report regressed')
+            if ack.report is not None:
+                self._ingest_report(ack.report)
+            elif ack.disposition != 'never_open':
+                raise DriverError('cancellation closed a worker without a queried report')
+            self._stop_acks[ack.worker_rank] = ack
+
+    def _retire_cancel(self, acks):
+        """Terminal cancellation row: storage/request closure, no publication."""
+        if set(acks) != set(self.ranks):
+            raise DriverError('cancellation lacks an all-rank close disposition')
+        if any(not ack.closed for ack in acks.values()):
+            raise DriverError('cancellation retirement requires closed worker ownership')
+        if self.bound_ticket is None:
+            if self.accepted_tickets:
+                raise DriverError('accepted operations exist without a bound producer')
+            self.controller.cancel(self.tx, never_submitted=True)
+            self._reset()
+            return
+        # Cancellation is its own retirement path: reports supply completion
+        # identity, but state_written()/publication is never consulted here.
+        # A row is either this path's CancelAck or a closed ReleaseAck from a
+        # normal release that raced the stop (it carries no report of its own).
+        for rank in self.ranks:
+            ack = acks[rank]
+            report = getattr(ack, 'report', None) or self.reports.get(rank)
+            if report is None:
+                raise DriverError('cancellation retirement needs a queried report per rank')
+            if (report.pending_op_seqs or report.failed
+                    or report.completed_sequence != ack.completed_sequence):
+                raise DriverError('cancellation report is not a clean terminal row')
+            row = ack if type(ack) is ReleaseAck else ack.release_ack(
+                report.completed_sequence)
+            self.controller.note_worker_release(row)
+        self.controller.cancel(self.tx, proof=self._producer_proof())
+        self._reset()
 
     def pp_sent(self):
         if self.tx is None:
@@ -1175,10 +1477,33 @@ class NativeSegmentDriver:
         self.reports = {}
         self.bound_ticket = None
         self.pp_send_ticket = None
+        self.receiver_ticket = None
+        self.pp_send_seq = None
+        self.pp_receive_seq = None
+        self._bindings = {}
+        self._bind_index = 0
+        self._pending_binding = None
+        self._receipts = {}
+        self._receipt_inflight = None
+        self._receipt_acked = set()
+        self._receipt_last = None
+        self._consumer_proofs = {}
+        self._pp_noted = False
+        self._release_acks = {}
+        self._release_attempts = 0
+        self._stop_acks = {}
+        self._stop_rounds = 0
+        self._stop_ticks = 0
+        self._cancel_targets = frozenset()
 
     def finish_pause(self):
-        if self.tx is not None:
-            raise DriverError('pause requires the asynchronous drain to retire the chunk')
+        if self.tx is not None or self.controller.active:
+            if self.stop_kind is None:
+                self.stop('pause')
+            else:
+                self.pump_stop(self.stop_tick_budget)
+            if self.active:
+                raise E3Pending('pause waits for bounded native cancellation to close')
         report = self.controller.leases.shutdown()
         if not report['clean']:
             raise DriverError('pause with outstanding E3 block leases')

@@ -38,9 +38,11 @@ from e3_types import (
     DependencyRole,
     E3ContractError,
     LaneId,
+    LaneRole,
     OperationTicket,
     TransactionId,
 )
+from lane_comm import PPConsumerReceipt
 
 WIRE_VERSION = 1
 
@@ -49,6 +51,17 @@ CURSOR_PHASES = ('prepare', 'pp_receive', 'prefix', 'layer', 'suffix',
 
 FAILED_CODES = ('worker_failure', 'cancelled', 'preempted', 'timeout',
                 'state_epoch', 'pp_mismatch', 'quarantined', 'aborted')
+
+# Why a bounded cancellation was requested. The values are the generated stop
+# kinds; the worker records the reason but never infers a disposition from it.
+CANCEL_REASONS = ('abort', 'cancel', 'disconnect', 'preempt', 'reset', 'pause',
+                  'shutdown', 'timeout')
+
+# What the worker actually owned when cancellation reached it. This is a
+# disposition, not a completion proof: only ``released`` certifies that the
+# lane storage and the request row are closed.
+CANCEL_DISPOSITIONS = ('never_open', 'opened', 'accepted', 'quarantined',
+                       'released')
 
 
 class SegmentKind(str, Enum):
@@ -192,6 +205,15 @@ class AdmissionRecord:
         return self.prompt_end - self.transaction.chunk_end
 
     @property
+    def terminal(self):
+        """This chunk hands the request to stock for its final prompt token.
+
+        Only a terminal chunk releases the worker's request row; a chunk that
+        is followed by another native chunk keeps the row for ``update()``.
+        """
+        return self.remaining_tokens == 1
+
+    @property
     def align_accepted(self):
         """The worker's private align precondition; always exactly 1."""
         return 1
@@ -213,6 +235,75 @@ class AdmissionRecord:
                 f'committed_end={self.committed_end}, groups={groups}, '
                 f'blocks={blocks}, chunk_tokens={self.chunk_tokens}, '
                 f'sparse_active={self.sparse_active})')
+
+
+@dataclass(frozen=True, repr=False)
+class SourceLeaseDescriptor:
+    """Immutable engine-owned source lease handed to a worker transport.
+
+    The engine retains the real allocator block objects; this record is the
+    serialisable half of that ownership. It is not a ``source_pinned=True``
+    claim: the worker must call :meth:`validate_frame` with the admission it
+    actually opened, which re-checks the transaction, the state epoch and every
+    physical page against that frame's own block rows. Anything else is
+    refused, so a stale or widened descriptor cannot authorise an attention
+    read.
+    """
+    transaction: TransactionId
+    state_epoch: int
+    block_ids: tuple
+    consumer_ranks: tuple
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('source lease needs a TransactionId')
+        _int('state_epoch', self.state_epoch, 1)
+        _ints('block_ids', self.block_ids, minimum=1)
+        if not self.block_ids:
+            raise E3ContractError('a source lease covers at least one page')
+        if self.block_ids != tuple(sorted(set(self.block_ids))):
+            raise E3ContractError('source lease pages must be unique and ordered')
+        _ints('consumer_ranks', self.consumer_ranks, minimum=0)
+        if not self.consumer_ranks:
+            raise E3ContractError('a source lease names its consumer ranks')
+        if self.consumer_ranks != tuple(sorted(set(self.consumer_ranks))):
+            raise E3ContractError('source lease ranks must be unique and ordered')
+
+    def validate_frame(self, admission, ranks):
+        """Prove the descriptor against the worker's admitted chunk.
+
+        ``admission`` is the frame the worker actually opened: the engine's
+        :class:`AdmissionRecord` or the lane's frozen ``ChunkAdmission``. Both
+        carry the same transaction, state epoch, per-group rows and CoW pairs.
+        Every lease page must appear in those rows (a retained CoW source is
+        named by ``cow_pairs`` after its destination replaced it in the row).
+        Returns ``True``; any difference raises before a page can be read.
+        """
+        block_tables = getattr(admission, 'block_tables', None)
+        cow_pairs = getattr(admission, 'cow_pairs', None)
+        if (type(block_tables) is not tuple or type(cow_pairs) is not tuple
+                or type(getattr(admission, 'transaction', None)) is not TransactionId
+                or type(getattr(admission, 'state_epoch', None)) is not int):
+            raise E3ContractError('source lease validation needs the opened admission')
+        if admission.transaction != self.transaction:
+            raise E3ContractError('source lease belongs to another transaction')
+        if admission.state_epoch != self.state_epoch:
+            raise E3ContractError('source lease state epoch differs from the admission')
+        page_set = set(self.block_ids)
+        frame_pages = {block for row in block_tables for block in row if block > 0}
+        # A retained CoW source has already been replaced in the request row
+        # by its destination; the admitted frame names it in ``cow_pairs``.
+        frame_pages.update(block for pair in cow_pairs for block in pair)
+        if not page_set <= frame_pages:
+            raise E3ContractError('source lease page is outside the admitted rows')
+        if not set(ranks) <= set(self.consumer_ranks):
+            raise E3ContractError('source lease does not name every consumer rank')
+        return True
+
+    def __repr__(self):
+        return (f'SourceLeaseDescriptor(txn_seq={self.transaction.txn_seq}, '
+                f'state_epoch={self.state_epoch}, pages={len(self.block_ids)}, '
+                f'ranks={len(self.consumer_ranks)})')
 
 
 @dataclass(frozen=True, repr=False)
@@ -545,6 +636,162 @@ class OpenAck:
 
 
 @dataclass(frozen=True, repr=False)
+class PeerBinding:
+    """Bind a stage-0 sender's PP channel to the actual receiver lane/route.
+
+    The engine learns the receiver lane only from that rank's :class:`OpenAck`,
+    so the binding is a separate bounded command. The worker calls
+    ``PrefillPPChannel.bind_consumer`` with exactly these values; no lane id or
+    route generation is inferred from local state, a rank number or a
+    watermark.
+    """
+    transaction: TransactionId
+    sender_rank: int
+    receiver_lane: LaneId
+    route_generation: int
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('peer binding needs a TransactionId')
+        _int('sender_rank', self.sender_rank, 0)
+        if type(self.receiver_lane) is not LaneId:
+            raise E3ContractError('peer binding needs the receiver LaneId')
+        if self.receiver_lane.role is not LaneRole.PREFILL:
+            raise E3ContractError('PP peer must be a prefill lane')
+        if self.receiver_lane.worker_rank == self.sender_rank:
+            raise E3ContractError('a sender cannot be its own PP consumer')
+        _int('route_generation', self.route_generation, 0)
+
+    @property
+    def receiver_rank(self):
+        return self.receiver_lane.worker_rank
+
+    def __repr__(self):
+        return (f'PeerBinding(txn_seq={self.transaction.txn_seq}, '
+                f'sender={self.sender_rank}, receiver={self.receiver_rank}, '
+                f'storage_epoch={self.receiver_lane.storage_epoch}, '
+                f'route_generation={self.route_generation})')
+
+
+@dataclass(frozen=True, repr=False)
+class PeerBindingAck:
+    """The sender applied exactly the requested peer/route binding."""
+    transaction: TransactionId
+    sender_rank: int
+    receiver_lane: LaneId
+    route_generation: int
+    bound: bool
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('peer binding ack needs a TransactionId')
+        _int('sender_rank', self.sender_rank, 0)
+        if type(self.receiver_lane) is not LaneId:
+            raise E3ContractError('peer binding ack needs the receiver LaneId')
+        _int('route_generation', self.route_generation, 0)
+        if type(self.bound) is not bool:
+            raise E3ContractError('bound must be bool')
+
+    def matches(self, binding):
+        if type(binding) is not PeerBinding:
+            raise E3ContractError('matches() needs a PeerBinding')
+        return (self.transaction == binding.transaction
+                and self.sender_rank == binding.sender_rank
+                and self.receiver_lane == binding.receiver_lane
+                and self.route_generation == binding.route_generation)
+
+    def __repr__(self):
+        return (f'PeerBindingAck(txn_seq={self.transaction.txn_seq}, '
+                f'sender={self.sender_rank}, receiver={self.receiver_lane.worker_rank}, '
+                f'route_generation={self.route_generation}, bound={self.bound})')
+
+
+@dataclass(frozen=True, repr=False)
+class PPReceiptDelivery:
+    """Engine-routed, already-validated consumer receipts for one sender.
+
+    The engine forwards only receipts whose queried PP_CONSUMER proof came from
+    the paired receiver lane; the sender revalidates transaction, stage,
+    sequence and route through its bound channel before storing anything.
+    """
+    transaction: TransactionId
+    sender_rank: int
+    receipts: tuple
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('receipt delivery needs a TransactionId')
+        _int('sender_rank', self.sender_rank, 0)
+        _tuple('receipts', self.receipts)
+        if not self.receipts:
+            raise E3ContractError('receipt delivery must carry a receipt')
+        seen = set()
+        for receipt in self.receipts:
+            if type(receipt) is not PPConsumerReceipt:
+                raise E3ContractError('receipts must be PPConsumerReceipt records')
+            if receipt.transaction != self.transaction:
+                raise E3ContractError('receipt belongs to another transaction')
+            if receipt.seq in seen:
+                raise E3ContractError('duplicate receipt sequence')
+            seen.add(receipt.seq)
+
+    @property
+    def seqs(self):
+        return tuple(receipt.seq for receipt in self.receipts)
+
+    def __repr__(self):
+        return (f'PPReceiptDelivery(txn_seq={self.transaction.txn_seq}, '
+                f'sender={self.sender_rank}, seqs={self.seqs})')
+
+
+@dataclass(frozen=True, repr=False)
+class PPReceiptAck:
+    """The sender accepted the receipts; a duplicate receipt is idempotent."""
+    transaction: TransactionId
+    sender_rank: int
+    seqs: tuple
+    accepted: bool
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('receipt ack needs a TransactionId')
+        _int('sender_rank', self.sender_rank, 0)
+        _ints('seqs', self.seqs, minimum=0, allow_empty=False)
+        if type(self.accepted) is not bool:
+            raise E3ContractError('accepted must be bool')
+
+    def matches(self, delivery):
+        if type(delivery) is not PPReceiptDelivery:
+            raise E3ContractError('matches() needs a PPReceiptDelivery')
+        return (self.transaction == delivery.transaction
+                and self.sender_rank == delivery.sender_rank
+                and self.seqs == delivery.seqs)
+
+    def __repr__(self):
+        return (f'PPReceiptAck(txn_seq={self.transaction.txn_seq}, '
+                f'sender={self.sender_rank}, seqs={self.seqs}, '
+                f'accepted={self.accepted})')
+
+
+@dataclass(frozen=True, repr=False)
+class PollRequest:
+    """Typed bounded poll: it carries the epoch the query must still match."""
+    transaction: TransactionId
+    state_epoch: int
+    budget: int
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('poll needs a TransactionId')
+        _int('state_epoch', self.state_epoch, 1)
+        _int('budget', self.budget, 1)
+
+    def __repr__(self):
+        return (f'PollRequest(txn_seq={self.transaction.txn_seq}, '
+                f'state_epoch={self.state_epoch}, budget={self.budget})')
+
+
+@dataclass(frozen=True, repr=False)
 class SegmentCommand:
     """One wire submission: an immutable descriptor plus its accepted seq.
 
@@ -647,7 +894,17 @@ class SegmentAcceptance:
 
 @dataclass(frozen=True, repr=False)
 class ReleaseRequest:
-    """Close worker-owned storage after the final queried report on every rank.
+    """Release worker-owned chunk storage after the final queried report.
+
+    ``terminal`` is the explicit request-row disposition and is not inferred by
+    the worker:
+
+    * nonterminal (``False``): the chunk's storage is released but the lane's
+      request row is preserved, because the next chunk of the same request
+      reaches ``LaneRequest.update()``;
+    * terminal (``True``): the engine is handing the request to the ordinary
+      one-token path, so the worker closes the request row before it
+      acknowledges; stock must never see a row this lane still owns.
 
     No reply to this command is a GPU proof; reports were independently checked
     against accepted tickets before this bounded release request was issued.
@@ -655,12 +912,15 @@ class ReleaseRequest:
     transaction: TransactionId
     state_epoch: int
     completed_sequences: tuple
+    terminal: bool
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
             raise E3ContractError('release needs a TransactionId')
         _int('state_epoch', self.state_epoch, 1)
         _tuple('completed_sequences', self.completed_sequences)
+        if type(self.terminal) is not bool:
+            raise E3ContractError('release needs an explicit boolean terminal flag')
         if not self.completed_sequences:
             raise E3ContractError('release needs all-rank watermarks')
         ranks = []
@@ -677,15 +937,31 @@ class ReleaseRequest:
 
     def __repr__(self):
         return (f'ReleaseRequest(txn_seq={self.transaction.txn_seq}, '
-                f'state_epoch={self.state_epoch}, ranks={len(self.completed_sequences)})')
+                f'state_epoch={self.state_epoch}, ranks={len(self.completed_sequences)}, '
+                f'terminal={self.terminal})')
 
 
 @dataclass(frozen=True, repr=False)
 class ReleaseAck:
+    """Storage/request-row closure after the correlated final report.
+
+    ``released`` and ``request_closed`` are closure facts the worker derived
+    from its drained dispatcher and freed request row. They are deliberately
+    not a new kind of GPU proof: the engine only asks for this ack after its
+    own accepted-ticket, state-write and PP-consumer checks passed.
+
+    A nonterminal release answers ``released=True, request_closed=False``: the
+    chunk storage is gone but the request row is retained for the next chunk.
+    A terminal release must answer closed, and the engine refuses a terminal
+    acknowledgment that still owns the row (or a nonterminal one that dropped
+    it).
+    """
     transaction: TransactionId
     worker_rank: int
     state_epoch: int
     completed_sequence: int
+    released: bool = False
+    request_closed: bool = False
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
@@ -693,11 +969,119 @@ class ReleaseAck:
         _int('worker_rank', self.worker_rank)
         _int('state_epoch', self.state_epoch, 1)
         _int('completed_sequence', self.completed_sequence)
+        if type(self.released) is not bool or type(self.request_closed) is not bool:
+            raise E3ContractError('release closure flags must be bool')
+        if self.request_closed and not self.released:
+            raise E3ContractError('request closure requires released storage')
+
+    @property
+    def closed(self):
+        return self.released and self.request_closed
 
     def __repr__(self):
         return (f'ReleaseAck(txn_seq={self.transaction.txn_seq}, '
                 f'rank={self.worker_rank}, state_epoch={self.state_epoch}, '
-                f'completed_sequence={self.completed_sequence})')
+                f'completed_sequence={self.completed_sequence}, '
+                f'released={self.released}, request_closed={self.request_closed})')
+
+
+@dataclass(frozen=True, repr=False)
+class CancelRequest:
+    """Bounded cancellation attempt for one opened transaction."""
+    transaction: TransactionId
+    state_epoch: int
+    reason: str
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('cancel needs a TransactionId')
+        _int('state_epoch', self.state_epoch, 1)
+        if type(self.reason) is not str or self.reason not in CANCEL_REASONS:
+            raise E3ContractError('unknown cancel reason')
+
+    def __repr__(self):
+        return (f'CancelRequest(txn_seq={self.transaction.txn_seq}, '
+                f'state_epoch={self.state_epoch}, reason={self.reason})')
+
+
+@dataclass(frozen=True, repr=False)
+class CancelAck:
+    """One bounded cancellation tick's disposition on one worker.
+
+    ``released``/``request_closed`` are true only after the dispatcher drained
+    and the request row was removed. A not-released ack keeps all ownership on
+    the worker; the engine retries within its own bound and never treats a
+    transport reply as a drain proof.
+    """
+    transaction: TransactionId
+    worker_rank: int
+    state_epoch: int
+    disposition: str
+    completed_op_seqs: tuple
+    pending_op_seqs: tuple
+    completed_sequence: int
+    released: bool = False
+    request_closed: bool = False
+    # Host-queried completion state observed in this same bounded cancel tick.
+    # Cancellation retirement uses this report instead of re-running the normal
+    # state-written publication gate; it is not a publication signal.
+    report: WorkerCompletionReport | None = None
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('cancel ack needs a TransactionId')
+        _int('worker_rank', self.worker_rank, 0)
+        _int('state_epoch', self.state_epoch, 1)
+        if type(self.disposition) is not str or self.disposition not in CANCEL_DISPOSITIONS:
+            raise E3ContractError('unknown cancellation disposition')
+        _ints('completed_op_seqs', self.completed_op_seqs, minimum=0)
+        _ints('pending_op_seqs', self.pending_op_seqs, minimum=0)
+        if self.completed_op_seqs != tuple(sorted(self.completed_op_seqs)):
+            raise E3ContractError('completed_op_seqs must be ordered')
+        if self.pending_op_seqs != tuple(sorted(self.pending_op_seqs)):
+            raise E3ContractError('pending_op_seqs must be ordered')
+        if set(self.completed_op_seqs).intersection(self.pending_op_seqs):
+            raise E3ContractError('an op_seq cannot be both complete and pending')
+        _int('completed_sequence', self.completed_sequence, 0)
+        if type(self.released) is not bool or type(self.request_closed) is not bool:
+            raise E3ContractError('cancel closure flags must be bool')
+        if self.request_closed and not self.released:
+            raise E3ContractError('request closure requires released storage')
+        if self.disposition == 'released' and not self.closed:
+            raise E3ContractError('a released disposition must certify closure')
+        if self.closed and self.disposition not in ('released', 'never_open'):
+            raise E3ContractError('closure requires the released disposition')
+        if self.disposition == 'never_open' and self.report is not None:
+            raise E3ContractError('a never-open worker has no completion report')
+        if (self.disposition == 'never_open'
+                and (self.completed_op_seqs or self.pending_op_seqs
+                     or self.completed_sequence != 0)):
+            raise E3ContractError('a never-open worker has no operation history')
+        if self.report is not None:
+            if type(self.report) is not WorkerCompletionReport:
+                raise E3ContractError('cancel report must be a completion report')
+            if (self.report.transaction != self.transaction
+                    or self.report.worker_rank != self.worker_rank
+                    or self.report.completed_sequence != self.completed_sequence):
+                raise E3ContractError('cancel report identity differs from the ack')
+
+    @property
+    def closed(self):
+        return self.released and self.request_closed
+
+    def release_ack(self, completed_sequence):
+        """The controller's terminal row for an all-rank cancellation barrier."""
+        return ReleaseAck(self.transaction, self.worker_rank, self.state_epoch,
+                          completed_sequence, released=self.released,
+                          request_closed=self.request_closed)
+
+    def __repr__(self):
+        return (f'CancelAck(txn_seq={self.transaction.txn_seq}, '
+                f'rank={self.worker_rank}, epoch={self.state_epoch}, '
+                f'disposition={self.disposition}, '
+                f'completed={len(self.completed_op_seqs)}, '
+                f'pending={len(self.pending_op_seqs)}, '
+                f'released={self.released}, request_closed={self.request_closed})')
 
 
 class OpSeqTracker:
@@ -771,8 +1155,11 @@ class OpSeqTracker:
 
 
 __all__ = [
-    'AdmissionRecord', 'CURSOR_PHASES', 'CompletionCursor', 'FAILED_CODES',
-    'ReleaseRequest', 'ReleaseAck', 'OpenAck', 'OpenRequest', 'OpSeqTracker', 'SegmentAcceptance',
-    'SegmentCommand', 'SegmentDescriptor', 'SegmentKind', 'TransitionAck',
-    'TransitionCommand', 'WIRE_VERSION', 'WorkerCompletionReport',
+    'AdmissionRecord', 'CANCEL_DISPOSITIONS', 'CANCEL_REASONS', 'CURSOR_PHASES',
+    'CancelAck', 'CancelRequest', 'CompletionCursor', 'FAILED_CODES',
+    'OpenAck', 'OpenRequest', 'OpSeqTracker', 'PPReceiptAck', 'PPReceiptDelivery',
+    'PeerBinding', 'PeerBindingAck', 'PollRequest', 'ReleaseRequest', 'ReleaseAck',
+    'SegmentAcceptance', 'SegmentCommand', 'SegmentDescriptor', 'SegmentKind',
+    'SourceLeaseDescriptor',
+    'TransitionAck', 'TransitionCommand', 'WIRE_VERSION', 'WorkerCompletionReport',
 ]

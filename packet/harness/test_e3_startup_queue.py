@@ -48,7 +48,10 @@ def full11_launcher_text():
     import make_e2_arena, make_s5_overlap
     text = make_s5_overlap._s5_launcher(make_e2_arena.launcher(
         (ROOT / 'deploy/run-flash-prod.sh').read_text()))
+    # The legacy full11/teacher12/startup launchers predate these engine-side
+    # modules; strip them so the frozen queues still reconstruct byte-identically.
     for value in ('e3/activity_accounting.py ', 'e3/engine_offers.py ',
+                  'e3/admission_metadata.py ', 'e3/worker_bridge.py ',
                   'e3_sources/sampler.py ', 'e3_sources/async_utils.py '):
         text = text.replace(value, '')
     text = text.replace('      -v "$OVERLAY/e3_sources/sampler.py:$V/worker/gpu/sample/sampler.py:ro"\n', '')

@@ -54,6 +54,7 @@ ROOT = HERE.parents[1]
 E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend',
               'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver',
               'executor_hooks', 'scheduler_hooks', 's5_startup',
+              'admission_metadata', 'worker_bridge',
               'graph_router', 'graph_hooks', 'qsa_operation',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
               # lane forward/QSA driver, communicators, startup, chunk, dispatcher.

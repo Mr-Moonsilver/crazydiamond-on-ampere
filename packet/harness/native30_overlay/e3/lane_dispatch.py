@@ -235,8 +235,19 @@ class LaneDispatcher:
         self.admission = admission
         return {'opened': True, 'stage': self._stage()}
 
+    @property
+    def stage(self):
+        """This worker's PP stage (0 sender, 1 receiver); never inferred by the engine."""
+        return self._stage()
+
     def _stage(self):
         return 0 if not self.native.comms.pp or self.native.comms.pp.is_sender else 1
+
+    def pp_consumer_complete(self):
+        """True only when the receiver's consumer event was host-queried complete."""
+        ticket = self.pp_ticket
+        event = getattr(ticket, 'consumer_event', None)
+        return event is not None and bool(event.query())
 
     def submit(self, command):
         """Run one bounded host operation; returns the accepted record."""

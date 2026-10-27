@@ -367,6 +367,23 @@ class WorkerHandoffServer:
         self._release_if_clean(message.transaction)
         return ack
 
+    def clear_native(self, transaction):
+        """Drop the old handoff/operation after the native bridge closed the row.
+
+        The legacy typed protocol keeps its ``commit``/``cancel`` behaviour; only
+        the native bridge calls this, and only after its dispatcher drained and
+        released. A terminal release has also closed the worker request row; a
+        nonterminal one leaves that row to the chunk factory for ``update()``.
+        """
+        if self.handoff is None or self.handoff.transaction != transaction:
+            raise HandoffError('no worker handoff for this transaction')
+        self.handoff = None
+        self.operation = None
+        self.last_output = None
+        self._deferred_proofs = []
+        self._operation_layers = ()
+        return True
+
     # -- helpers ----------------------------------------------------------
     def _handoff(self, transaction):
         if self.handoff is None or self.handoff.transaction != transaction:
