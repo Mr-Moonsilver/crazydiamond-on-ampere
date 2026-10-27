@@ -57,6 +57,7 @@ from sparse_history_dma import (
     SparseSourceHold,
     make_sparse_plan,
 )
+from row1_oracle import Row1Bucket, Row1OracleError
 from e3_types import (
     ARENA_PAGES,
     CompletionKind,
@@ -193,6 +194,14 @@ class LayerRun:
     source_versions: tuple = field(default=(), repr=False)
     sparse_hold: object = field(default=None, repr=False)
     sparse: object = field(default=None, repr=False)
+    # Native row1 qualification (serial, opt-in; never shipping performance).
+    state_epoch: object = None
+    mapping_version: object = None
+    uva: object = field(default=None, repr=False)
+    uva_facts: object = None
+    row1_reference: object = field(default=None, repr=False)
+    row1_failed: object = None
+    qualification_bucket: object = None
 
 
 @dataclass(frozen=True)
@@ -258,6 +267,7 @@ class SparseLayerRun:
     host_info: object = field(default=None, repr=False)
     next_bucket: int = 0
     active_bucket: object = None
+    route: object = None                 # 'sparse_dma'|'dense_dma'|'empty'
 
 
 def plan_buckets(pages, *, bucket_pages=MAX_BUCKET_PAGES,
@@ -538,6 +548,10 @@ class QsaPrefillOperation:
         self._union_scratch_key = None
         self._fallback = None
         self._source_release = []
+        # The opt-in native row1 byte oracle. ``None`` means qualification is
+        # off (shipping): no UVA reference, snapshot or comparison is created.
+        self.qualification = None
+        self.state_epoch = None
         self.stats = dict(producers=0, buckets=0, pieces=0, bytes=0,
                           copy_events=0, consumer_events=0, waits=0,
                           selection_copies=0, selection_bytes=0,
@@ -813,7 +827,11 @@ class QsaPrefillOperation:
             raise OperationError('layer already has a different sparse source hold')
         if run.pages and tuple(owner.physical_pages) != run.pages:
             raise SourceRefused('source hold map differs from the bound plan')
+        if type(self.state_epoch) is not int or self.state_epoch < 1:
+            raise SourceRefused('sparse source attached without the admitted state epoch')
         run.sparse_hold = hold
+        run.state_epoch = self.state_epoch
+        run.mapping_version = getattr(owner, 'mapping_version', None)
         return hold
 
     def has_sparse_source(self, layer_name):
@@ -867,6 +885,122 @@ class QsaPrefillOperation:
         self._owners[('sparse_source', layer_name)] = (run.sparse_hold,)
         return state
 
+    # --- native row1 qualification (opt-in, serial) -----------------------
+    def bind_row1_uva(self, layer_name, uva):
+        """Bind the original UVA view the reference gather must read.
+
+        Qualification only; the native route's own source is the pinned CPU
+        pool. The reference tensor must have the admitted source's exact
+        geometry so a compact row offset addresses the same logical row.
+        """
+        if self.qualification is None:
+            return None
+        self._check_identity(layer_name=layer_name)
+        run = self._layer(layer_name)
+        if run.sparse_hold is None:
+            raise OperationError('row1 UVA binding needs the admitted source hold')
+        facts = self.device.facts(uva)
+        if (len(facts.shape) != 4 or facts.shape != run.source_facts.shape
+                or facts.dtype != run.source_facts.dtype
+                or facts.item_bytes != run.source_facts.item_bytes
+                or not facts.contiguous):
+            raise SourceRefused(
+                'row1 UVA view does not match the admitted source geometry')
+        if run.uva is not None and self.device.facts(run.uva) != facts:
+            raise SourceRefused('row1 UVA view changed during the layer')
+        run.uva = uva
+        run.uva_facts = facts
+        return facts
+
+    def bind_row1_reference(self, layer_name, reference):
+        """Bind the original attention function used as the byte oracle."""
+        if self.qualification is None:
+            return None
+        self._check_identity(layer_name=layer_name)
+        if not callable(reference):
+            raise OperationError('row1 reference must be the original function')
+        run = self._layer(layer_name)
+        if run.row1_reference is not None and run.row1_reference is not reference:
+            raise OperationError('row1 reference changed during the layer')
+        run.row1_reference = reference
+        return reference
+
+    def _mark_qualification_bucket(self, run, index, *, route, rows, pieces,
+                                   compact_start, nbytes, segments):
+        if self.qualification is None:
+            return None
+        bucket = Row1Bucket(index=index, route=route, rows=rows, pieces=pieces,
+                            compact_start=compact_start, nbytes=nbytes,
+                            segments=tuple(segments))
+        run.qualification_bucket = (index, bucket)
+        return bucket
+
+    def _qualify_pending_bucket(self):
+        """Compare a completed bucket's actual arena bytes with the UVA gather.
+
+        Runs strictly after the attention consumer event was host-queried
+        complete and before the next fill can reuse the arena.
+        """
+        qualifier = self.qualification
+        if qualifier is None:
+            return
+        for run in list(self._layers.values()):
+            pending = run.qualification_bucket
+            if pending is None:
+                continue
+            index, bucket = pending
+            record = None
+            for candidate in run.consumed:
+                if candidate.stage is Stage.ATTENTION and candidate.bucket == index:
+                    record = candidate
+                    break
+            if record is None or not record.complete:
+                continue
+            run.qualification_bucket = None
+            qualifier.bucket(run, bucket, run.arena)
+
+    def row1_output(self, layer_name, q, kv_cache, logical_indices,
+                    block_table_row, rows, max_logical_page, arena,
+                    use_prefill_config, out):
+        """Compare the actual QSA output before MoE with the original function.
+
+        The original runs on the same query/arena/output storage; it may use
+        its own bulk UVA gather. This is serial qualification, never shipping
+        performance, and it writes no second history GPU buffer.
+        """
+        if self.qualification is None:
+            return None
+        self._check_identity(layer_name=layer_name)
+        run = self._layer(layer_name)
+        if run.uva is None or run.uva_facts is None:
+            raise OperationError('row1 output without the bound UVA view')
+        if run.row1_reference is None:
+            raise OperationError('row1 output without the bound original function')
+        if self.device.facts(kv_cache) != run.uva_facts:
+            raise SourceRefused('row1 output UVA view changed after binding')
+        if self.device.facts(arena) != run.arena_facts:
+            raise OperationError('row1 output arena changed after binding')
+        sparse = run.sparse
+        if sparse is None or sparse.route is None:
+            raise OperationError('row1 output before a declared route')
+        if run.qualification_bucket is not None:
+            raise OperationError('row1 output with an uncompared bucket')
+        expected = {'sparse_dma': 'sparse_uva', 'dense_dma': 'dense_dma',
+                    'empty': 'empty'}[sparse.route]
+        expected_fills = len(run.buckets) if expected == 'dense_dma' else 0
+        session = self.qualification.reference_session(run)
+        reference = run.row1_reference
+
+        def original():
+            reference(q, kv_cache, logical_indices, block_table_row, rows,
+                      max_logical_page, arena, use_prefill_config, out,
+                      e2=session)
+
+        self.qualification.output(run, session, original, out,
+                                  expected_route=expected,
+                                  expected_fills=expected_fills)
+        return True
+
     def _sparse_state(self):
         run = self._current_run()
         if run.sparse is None:
@@ -912,6 +1046,7 @@ class QsaPrefillOperation:
                 raise OperationError('dense route declared with a sparse plan')
         else:
             raise OperationError('unknown sparse route declaration')
+        sparse.route = route
         self.stats['sparse_routes'] += 1
         return route
 
@@ -922,6 +1057,7 @@ class QsaPrefillOperation:
         if sparse.selection_count != 0:
             raise OperationError('empty route without a completed empty selection')
         sparse.empty = True
+        sparse.route = 'empty'
         self.stats['sparse_empty'] += 1
         return 0
 
@@ -1240,6 +1376,12 @@ class QsaPrefillOperation:
         copy.pieces = tuple((piece.source_row, piece.arena_row, piece.rows)
                             for piece in bucket.pieces)
         copy.owners = (run.source, run.arena, run.table)
+        self._mark_qualification_bucket(
+            run, index, route='sparse_dma', rows=bucket.rows,
+            pieces=bucket.descriptors, compact_start=bucket.compact_start,
+            nbytes=bucket.nbytes,
+            segments=((piece.source_row, piece.arena_row, piece.rows)
+                      for piece in bucket.pieces))
         sparse.active_bucket = index
         run._pending_consumer = consumer
         sparse.hold.begin_bucket(index, bucket.rows, bucket.descriptors, bucket.nbytes)
@@ -1322,6 +1464,12 @@ class QsaPrefillOperation:
         copy.page_bytes = page_bytes
         copy.pieces = bucket.pieces
         copy.owners = (run.source, run.arena, run.table)
+        self._mark_qualification_bucket(
+            run, index, route='dense_dma', rows=bucket.pages * PAGE_ROWS,
+            pieces=len(bucket.pieces), compact_start=None, nbytes=copy.bytes,
+            segments=((source_page * PAGE_ROWS, arena_page * PAGE_ROWS,
+                       pages * PAGE_ROWS)
+                      for source_page, arena_page, pages in bucket.pieces))
         run.active_bucket = index
         run._pending_consumer = consumer
         try:
@@ -1510,6 +1658,13 @@ class QsaPrefillOperation:
         """
         self._check_identity()
         self._refresh()
+        try:
+            # The previous bucket's actual bytes are compared while they still
+            # occupy the arena, before the next fill may reuse it.
+            self._qualify_pending_bucket()
+        except BaseException:
+            self._failed = True
+            raise
         if self.pending_buckets:
             raise E3Pending('previous bucket consumer has not completed')
         if self._continuation is None:
@@ -1615,12 +1770,21 @@ class QsaPrefillOperation:
             raise E3Pending('cannot release an unfinished layer: ' + ','.join(sorted(opened)))
         # SOURCE_HISTORY may be released only now, after every accepted copy
         # and attention consumer was observed; a partial bucketed source keeps
-        # release pending and quarantines ownership.
+        # release pending and quarantines ownership. The row1 output comparison
+        # must also have completed (or been aborted by a cancel) first.
+        qualifier = self.qualification
+        cancelled = self._cancelled is not None
+        if qualifier is not None:
+            for run in self._layers.values():
+                if run.sparse_hold is not None or run.row1_reference is not None:
+                    qualifier.check_releasable(run, cancelled=cancelled)
         for run in self._layers.values():
             if run.sparse_hold is not None:
                 info = run.sparse_hold.release()
                 self._source_release.append(info)
                 self.stats['sparse_source_released'] += 1
+                if qualifier is not None:
+                    qualifier.finish_layer(run, hold_stats=info)
         dropped = len(self._owners)
         self._released = True
         if self._continuation is not None:
@@ -1635,6 +1799,8 @@ class QsaPrefillOperation:
             record.owners = ()
         for run in self._layers.values():
             run.source = run.arena = run.table = None
+            run.uva = None
+            run.row1_reference = None
         return dropped
 
     # --- inventory --------------------------------------------------------
@@ -1680,6 +1846,17 @@ class QsaPrefillOperation:
             sparse_source_released=self.stats['sparse_source_released'],
             sparse_fallback_reason=(None if self._fallback is None
                                     else self._fallback.reason),
+            row1_enabled=self.qualification is not None,
+            row1_buckets=(0 if self.qualification is None
+                          else int(self.qualification.stats['buckets'])),
+            row1_bucket_bytes=(0 if self.qualification is None
+                               else int(self.qualification.stats['bucket_bytes'])),
+            row1_outputs=(0 if self.qualification is None
+                          else int(self.qualification.stats['outputs'])),
+            row1_failures=(0 if self.qualification is None
+                           else int(self.qualification.stats['failures'])),
+            row1_layers=(0 if self.qualification is None
+                         else int(self.qualification.stats['layers'])),
             basis='estimate; no transfer timing, SM measurement or readback',
         )
 

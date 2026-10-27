@@ -619,6 +619,27 @@ class LocalSourceRegistry:
         self._source_seq = 0
         self._epoch_seq = 0
 
+    def rebind_lane(self, lane):
+        """Advance a drained prefill lane without losing source registrations.
+
+        The per-chunk storage epoch advances at WorkerState.reserve. Source
+        registrations and their versions live across chunks; an old live hold
+        must never be relabelled with the next chunk's lane identity.
+        """
+        if type(lane) is not LaneId:
+            raise SourceRefused('registry rebind needs the worker LaneId')
+        old = self.lane
+        if lane == old:
+            return self
+        if self._active:
+            raise SourceRefused('source lane changed while a local lease is open')
+        if (lane.worker_rank != old.worker_rank or lane.role != old.role
+                or lane.context_id != old.context_id
+                or lane.storage_epoch <= old.storage_epoch):
+            raise SourceRefused('source lane rebind is foreign or stale')
+        self.lane = lane
+        return self
+
     def current(self, layer, group):
         return self._records.get((layer, group))
 

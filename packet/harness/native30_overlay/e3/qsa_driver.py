@@ -34,6 +34,7 @@ from sparse_history_dma import (
     SparsePlanRefused,
     SparseSourceHold,
 )
+from row1_oracle import Row1OracleError
 from e3_types import E3ContractError, E3Pending
 
 # D2-composed qsa.py: runner_hooks.qsa_staged(pinned) -> operation_source.generate_layer.
@@ -43,7 +44,7 @@ from e3_types import E3ContractError, E3Pending
 # Codex review.
 PINS = {
     'models/qwen4_exp/nvidia/qsa.py':
-        'ea31a07bfa0bf5713b79d15b876714a96c466a99be2a751afb72285e14eeb34d',
+        '9cfe8556ad1272e8d9a9c84c59a2cca4143520b35d49b7f34210d84480526d8f',
 }
 
 _ATTN_ANCHOR_OLD = '''        output, _ = self.o_proj(flat_output)
@@ -285,6 +286,12 @@ class QsaLayerDriver:
             self.abort('sparse_refusal')
             raise QsaDriverError(
                 'sparse history refused the overlap route: ' + refusal.reason) from exc
+        except Row1OracleError as exc:
+            # The actual arena/output bytes differ from the original UVA path.
+            # Stop this transaction; the records live in the bounded store.
+            self.records.append(('row1_failure', phase.layer_idx, str(exc)))
+            self.abort('row1_failure')
+            raise QsaDriverError('native row1 qualification failed: ' + str(exc)) from exc
         if getattr(value, 'sparse_selection_pending', False):
             phase.selections += 1
             self.records.append(('selection', phase.layer_idx))

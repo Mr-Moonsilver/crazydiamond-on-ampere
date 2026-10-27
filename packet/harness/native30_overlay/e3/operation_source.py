@@ -457,8 +457,28 @@ def _sparse_helper_text():
         attn_metadata.block_table[best],
         min_pages=arena.shape[0],
     )
+    # Native row1 qualification binds the original UVA view and the original
+    # attention function; both are no-ops unless qualification is enabled.
+    operation.bind_row1_uva(layer.layer_name, kv_cache)
+    from .ops.qsa import flash_e2_arena_attention
+    operation.bind_row1_reference(layer.layer_name, flash_e2_arena_attention)
     yield from flash_s5_arena_attention(
 ''')),
+        ('    return start, end\n',
+         '''    operation.row1_output(
+        layer.layer_name,
+        query[:num_tokens],
+        kv_cache,
+        logical_indices,
+        attn_metadata.block_table[best],
+        rows,
+        max_logical_page,
+        arena,
+        use_prefill_config,
+        output[:num_tokens],
+    )
+    return start, end
+'''),
     ):
         if text.count(old) != 1:
             raise ValueError('sparse helper anchor changed: ' + old[:60])

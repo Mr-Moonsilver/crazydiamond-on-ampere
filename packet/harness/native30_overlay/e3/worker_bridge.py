@@ -59,6 +59,7 @@ from wire_v1 import (
     SegmentAcceptance,
     SegmentCommand,
     SegmentKind,
+    SourceLeaseDescriptor,
     TransitionAck,
     TransitionCommand,
     TransitionPending,
@@ -134,7 +135,7 @@ class NativeWorkerBridge:
     """One worker's typed wire-v1 front end over its real lane dispatcher."""
 
     def __init__(self, dispatcher, *, server=None, rank=None,
-                 clock=time.monotonic_ns):
+                 source_binder=None, clock=time.monotonic_ns):
         if dispatcher is None or not callable(getattr(dispatcher, 'submit', None)):
             raise WorkerBridgeError('native bridge needs the constructed LaneDispatcher')
         if not callable(getattr(dispatcher, 'open', None)):
@@ -145,6 +146,12 @@ class NativeWorkerBridge:
         if type(self.rank) is not int or self.rank < 0:
             raise WorkerBridgeError('native bridge rank must be a non-negative int')
         self.clock = clock
+        self.source_binder = source_binder
+        # The worker-local pinned source binding, kept until the lane's release
+        # (or a drained cancel) proves every consumer finished. It is never
+        # derived from a boolean or a generic cache.
+        self._source_binding = None
+        self._source_close = None
         self.worker = None
         self.transaction = None
         self.lane = None
@@ -213,6 +220,8 @@ class NativeWorkerBridge:
         self._request_closed = False
         self._last_error = None
         self._final_report = None
+        self._source_binding = None
+        self._source_close = None
 
     def _require_open(self, transaction, state_epoch=None):
         if self.transaction is None or self.transaction != transaction:
@@ -234,6 +243,69 @@ class NativeWorkerBridge:
         if state is None:
             raise WorkerBridgeError('native bridge cannot reach the worker state')
         return state
+
+    # -- scheduler source lease -------------------------------------------
+    def _bind_prepare_source(self, command):
+        """Prove and bind the engine's actual lease before any submission.
+
+        The descriptor is validated against the frame this worker actually
+        opened, then the worker-local binder retains the real ``_qsa_host_kv``
+        pages. A missing, stale, foreign or second, different lease refuses
+        here, before the dispatcher can enqueue anything.
+        """
+        source = command.source
+        if source is None:
+            if self._source_binding is not None:
+                raise WorkerBridgeError(
+                    'prepare is missing the already-bound source lease')
+            raise WorkerBridgeError('prepare carries no source lease')
+        if type(source) is not SourceLeaseDescriptor:
+            raise WorkerBridgeError('prepare source is not a typed lease descriptor')
+        if source.transaction != self.transaction:
+            raise WorkerBridgeError('source lease belongs to another transaction')
+        if source.state_epoch != self.state_epoch:
+            raise WorkerBridgeError('source lease state epoch is stale')
+        admission = getattr(self.dispatcher, 'admission', None)
+        if admission is None:
+            raise WorkerBridgeError('prepare has no opened admission to prove the lease')
+        try:
+            source.validate_frame(admission, (self.rank,))
+        except E3ContractError as exc:
+            raise WorkerBridgeError('source lease was refused: ' + str(exc)) from exc
+        existing = self._source_binding
+        if existing is not None:
+            if existing.descriptor != source:
+                raise WorkerBridgeError('a different source lease is already bound')
+            return existing
+        binder = self.source_binder
+        if binder is None:
+            from native_source import bind_local_sources
+            binder = bind_local_sources
+        binding = binder(self.dispatcher, admission, source, rank=self.rank)
+        if (binding is None
+                or getattr(binding, 'descriptor', None) != source
+                or getattr(binding, 'transaction', None) != self.transaction):
+            raise WorkerBridgeError('source binder did not bind this exact lease')
+        self._source_binding = binding
+        self.dispatcher.source_binding = binding
+        operation = getattr(self.dispatcher, 'operation', None)
+        if operation is not None:
+            operation.native_source_holds = binding.holds
+        return binding
+
+    def _close_source_binding(self):
+        """Release worker-local source ownership only after the lane release."""
+        binding = self._source_close
+        if binding is None:
+            binding = self.dispatcher.source_binding
+        if binding is None:
+            return True
+        binding.close(self.dispatcher.source_registry)
+        self._source_close = None
+        self._source_binding = None
+        if getattr(self.dispatcher, 'source_binding', None) is binding:
+            self.dispatcher.source_binding = None
+        return True
 
     # -- engine owner bootstrap -------------------------------------------
     def bootstrap(self, command):
@@ -328,6 +400,8 @@ class NativeWorkerBridge:
             return SegmentAcceptance(
                 command.transaction, self.rank, command.kind, command.stage,
                 command.op_seq, skipped=True, cursor=report.cursor, report=report)
+        if command.kind is SegmentKind.PREPARE:
+            self._bind_prepare_source(command)
         try:
             acknowledgement = self.dispatcher.submit(command)
         except E3Pending:
@@ -497,7 +571,13 @@ class NativeWorkerBridge:
             # nonterminal request row must carry its own final report for the
             # engine's later cancellation retirement.
             self._final_report = self._build_report()
+            # ``release`` resets the dispatcher's per-transaction fields, so
+            # the binding is captured first and closed only after the lane
+            # itself proved every consumer drained.
+            binding = getattr(self.dispatcher, 'source_binding', None)
             self.dispatcher.release()
+            self._source_close = binding
+            self._close_source_binding()
             self._released = True
         if not self._runtime_released:
             runtime = getattr(self.server, 'runtime', None)

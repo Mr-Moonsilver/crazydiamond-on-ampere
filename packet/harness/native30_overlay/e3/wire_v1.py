@@ -925,10 +925,16 @@ class SegmentCommand:
 
     ``ranks`` names the lanes that must execute. Every other worker returns a
     skipped acceptance without executing anything.
+
+    ``source`` is the engine's actual :class:`SourceLeaseDescriptor`, attached
+    only to a stage's first PREPARE command after open/bind. It is the transport
+    half of the engine's real allocator hold; a worker refuses the command when
+    it is missing, stale or foreign, before any GPU submission.
     """
     descriptor: SegmentDescriptor
     op_seq: int
     ranks: tuple
+    source: SourceLeaseDescriptor | None = None
 
     def __post_init__(self):
         if type(self.descriptor) is not SegmentDescriptor:
@@ -937,6 +943,16 @@ class SegmentCommand:
         _ints('ranks', self.ranks, minimum=0, allow_empty=False)
         if self.ranks != tuple(sorted(self.ranks)):
             raise E3ContractError('target ranks must be ordered')
+        if self.source is not None:
+            if type(self.source) is not SourceLeaseDescriptor:
+                raise E3ContractError('command source must be a source lease')
+            if self.kind is not SegmentKind.PREPARE:
+                raise E3ContractError('only a PREPARE command carries a source lease')
+            if self.source.transaction != self.transaction:
+                raise E3ContractError('source lease belongs to another transaction')
+            if not set(self.ranks) <= set(self.source.consumer_ranks):
+                raise E3ContractError(
+                    'source lease does not name every target rank')
 
     @property
     def transaction(self):
@@ -951,8 +967,10 @@ class SegmentCommand:
         return self.descriptor.stage
 
     def __repr__(self):
+        source = ('' if self.source is None
+                  else f', source_pages={len(self.source.block_ids)}')
         return (f'SegmentCommand({self.descriptor!r}, op_seq={self.op_seq}, '
-                f'ranks={len(self.ranks)})')
+                f'ranks={len(self.ranks)}{source})')
 
 
 @dataclass(frozen=True, repr=False)

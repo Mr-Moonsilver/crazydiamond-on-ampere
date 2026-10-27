@@ -74,7 +74,8 @@ def build(out):
     shutil.copy2(sparse_source,vm_sources/'sparse_stage/kernels.py')
     (vm_sources/'s5_engine').mkdir()
     for name in ('e3_types','sparse_history_dma','qsa_operation','operation_source',
-                 'arena_attention','resident_attention'):
+                 'arena_attention','resident_attention','native_source',
+                 'row1_oracle'):
         shutil.copy2(ROOT/'patches/s5_engine'/(name+'.py'),
                      vm_sources/'s5_engine'/(name+'.py'))
     # E3 build closure: every tracked CPU-only generator/source module and the

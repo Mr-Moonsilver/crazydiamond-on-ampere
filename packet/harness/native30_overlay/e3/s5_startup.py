@@ -151,8 +151,13 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
     def driver_factory(operation, qsa_module, forward_context_getter):
         from qsa_driver import QsaLayerDriver
 
-        return QsaLayerDriver(operation, staged_operation=qsa_module._flash_s5_staged_operation,
-                              forward_context=forward_context_getter)
+        return QsaLayerDriver(
+            operation,
+            staged_operation=qsa_module._flash_s5_staged_operation,
+            sparse_staged_operation=getattr(
+                qsa_module, '_flash_s5_sparse_staged_operation', None),
+            source_holds=getattr(operation, 'native_source_holds', None),
+            forward_context=forward_context_getter)
 
     def qsa_module():
         import vllm.models.qwen4_exp.nvidia.qsa as module
@@ -163,6 +168,50 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
         from vllm.forward_context import get_forward_context
 
         return get_forward_context()
+
+    # The oracle is always OFF at startup. Only the paused/drained native
+    # qualification action can install a fresh run-bound store and factory.
+    if env.get('FLASH_S5_ROW1_QUALIFY', '0') != '0':
+        raise StartupError('row1 qualification requires scoped native control')
+
+    def row1_provider(store, engine_epoch, route_generation):
+        state = server.runtime.state
+        controller = native.controller
+        if (not state.engine_bound or state.engine_epoch != engine_epoch
+                or controller.route_generation != route_generation
+                or controller.route != 'split'):
+            raise StartupError('row1 qualification needs the current split route')
+        # Collective pause is the action owner's responsibility. This local
+        # fence independently queries every actual decode/prefill consumer.
+        drained = controller.drain()
+        if type(drained) is not int or drained <= 0:
+            raise StartupError('row1 qualification decode drain is unproved')
+        if native.prefill_streams is None:
+            raise StartupError('row1 qualification prefill owners are unavailable')
+        drained = native.drain_prefill_streams()
+        if type(drained) is not int or drained < 0:
+            raise StartupError('row1 qualification prefill drain is unproved')
+        from native_resources import _qsa_layers
+        layers = tuple(name for name, _ in _qsa_layers(runner))
+        if store is None:
+            return None, layers
+        from exactness import TorchExactBackend
+        from row1_oracle import Row1Qualifier
+
+        def row1_factory(operation):
+            def epochs():
+                if (state.engine_epoch != engine_epoch
+                        or controller.route_generation != route_generation):
+                    raise StartupError('row1 scope changed during qualification')
+                return dict(worker_incarnation=state.incarnation,
+                            engine_epoch=engine_epoch,
+                            route_generation=route_generation)
+            return Row1Qualifier(
+                store, transaction=operation.transaction,
+                lane=operation.lane, backend=TorchExactBackend(), epochs=epochs)
+        return row1_factory, layers
+
+    server.row1_provider = row1_provider
 
     factory = LaneChunkFactory(runner)
     dispatcher = LaneDispatcher(runner, native, factory, server=server, qsa_module=qsa_module(),

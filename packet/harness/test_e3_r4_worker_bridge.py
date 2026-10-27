@@ -274,6 +274,32 @@ class FakeRuntime:
         return True
 
 
+class FakeSourceBinding:
+    """Stand-in for the worker-local pinned source binding.
+
+    The real binder's tensor/storage checks are exercised by
+    ``test_e3_native_source_oracle``; here only the bridge's strict lease
+    validation and its close-after-release ordering are under test.
+    """
+
+    def __init__(self, descriptor):
+        self.descriptor = descriptor
+        self.transaction = descriptor.transaction
+        self.state_epoch = descriptor.state_epoch
+        self.holds = {}
+        self.closed = False
+
+    def close(self, registry):
+        if self.closed:
+            raise AssertionError('source binding closed twice')
+        self.closed = True
+
+
+def fake_source_binder(dispatcher, admission, descriptor, *, rank=None):
+    descriptor.validate_frame(admission, (rank,))
+    return FakeSourceBinding(descriptor)
+
+
 class BridgeServer:
     """Worker handoff-server fake with the real open/clear fallback shape."""
 
@@ -618,7 +644,8 @@ class Stack:
             f'runner-{rank}', native, factory, server=server,
             driver_factory=lambda operation, module, context: FakeDriver(),
             torch_module=torch, clock=lambda: 1000 + rank)
-        bridge = NativeWorkerBridge(dispatcher, server=server)
+        bridge = NativeWorkerBridge(dispatcher, server=server,
+                                    source_binder=fake_source_binder)
         worker = FakeWorker(rank, stage, bridge, dispatcher)
         worker.bus = bus
         worker.torch = torch
@@ -1011,17 +1038,24 @@ class IdentityTests(unittest.TestCase):
     def test_dispatcher_rejects_wrong_stage_and_op_seq_reuse(self):
         worker = self.stack.worker(0)
         bridge = worker._flash_s5_bridge
+        # The production bridge refuses a PREPARE without the engine's actual
+        # lease, so the direct submissions here carry it explicitly.
+        source = self.stack.controller.source_hold(self.tx).descriptor()
         command = w.SegmentCommand(
-            w.SegmentDescriptor(self.tx, w.SegmentKind.PREPARE, 1), 1, (0, 1))
+            w.SegmentDescriptor(self.tx, w.SegmentKind.PREPARE, 1), 1, (0, 1),
+            source=source)
         with self.assertRaises(Exception):
             bridge.submit(command)
         good = w.SegmentCommand(
-            w.SegmentDescriptor(self.tx, w.SegmentKind.PREPARE, 0), 1, (0, 1))
+            w.SegmentDescriptor(self.tx, w.SegmentKind.PREPARE, 0), 1, (0, 1),
+            source=source)
         self.assertTrue(bridge.submit(good).accepted)
+        self.assertEqual(worker.dispatcher.source_binding.descriptor, source)
         stale = w.SegmentCommand(
             w.SegmentDescriptor(self.tx, w.SegmentKind.PREFIX, 0), 1, (0, 1))
         with self.assertRaises(Exception):
             bridge.submit(stale)
+        self.assertFalse(worker.dispatcher.source_binding.closed)
 
     def test_driver_rejects_peer_binding_to_another_receiver_lane(self):
         driver = self.stack.driver

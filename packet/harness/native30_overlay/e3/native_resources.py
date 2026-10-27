@@ -288,7 +288,8 @@ class WorkerHandoffServer:
     """
 
     def __init__(self, runtime, *, bindings=(), private_attrs=None,
-                 operation_device=None, clock=time.monotonic):
+                 operation_device=None, clock=time.monotonic, row1_factory=None,
+                 row1_store=None):
         if not isinstance(runtime, LaneRuntime):
             raise NativeResourcesError('worker server needs A LaneRuntime')
         self.runtime = runtime
@@ -296,6 +297,11 @@ class WorkerHandoffServer:
         self.private_attrs = dict(private_attrs or {})
         self.operation_device = operation_device
         self.clock = clock
+        self.row1_factory = row1_factory
+        self.row1_store = row1_store
+        self.row1_provider = None
+        self._row1_scopes = {}
+        self._row1_run_id = None
         self.worker = None
         self.handoff = None
         self.operation = None
@@ -304,6 +310,10 @@ class WorkerHandoffServer:
         self.executions = 0
         self._operation_layers = ()
         self._deferred_proofs = []
+        # The exact metadata snapshot of the frame this worker opened; the
+        # source binding's per-layer tables are bound against it, never against
+        # a later or coalesced snapshot.
+        self._metadata_snapshot = None
 
     def attach_worker(self, worker):
         """The generated GPU worker attaches itself before any typed RPC."""
@@ -338,6 +348,7 @@ class WorkerHandoffServer:
         self.operation = QsaPrefillOperation(
             transaction, lane.lane_id, device=self.operation_device,
             plan_provider=provider, clock=self.clock)
+        self._metadata_snapshot = message.metadata
         self.last_output = None
         return ack
 
@@ -420,6 +431,9 @@ class WorkerHandoffServer:
         self.last_output = None
         self._deferred_proofs = []
         self._operation_layers = ()
+        self._metadata_snapshot = None
+        # A row1 record store passed to this server survives clear_native: the
+        # raw qualification records must remain queryable after release.
         return True
 
     # -- helpers ----------------------------------------------------------
@@ -486,9 +500,18 @@ class WorkerHandoffServer:
         if transaction != operation.transaction:
             raise HandoffError('scheduler output does not carry the operation transaction')
         layers = _qsa_layers(runner)
+        binding = getattr(scheduler_output, 'flash_e3_source_binding', None)
         try:
-            for name, layer in layers:
-                operation.register_source(name, layer._qsa_host_kv)
+            if binding is not None:
+                # The bridge proved and retained this exact frame's pinned
+                # histories; bind their tables, epochs and versions explicitly.
+                bind_operation_sources(operation, layers, binding,
+                                       self._metadata_snapshot)
+                if self.row1_factory is not None:
+                    operation.qualification = self.row1_factory(operation)
+            else:
+                for name, layer in layers:
+                    operation.register_source(name, layer._qsa_host_kv)
             operation.begin_forward(layers=tuple(name for name, _ in layers))
         except BaseException:
             operation.cancel('operation layer binding failed')
@@ -555,6 +578,116 @@ class WorkerHandoffServer:
         inventory['pending_buckets'] = self.operation.pending_buckets
         return inventory
 
+    def configure_row1(self, *, enabled, run_id, engine_epoch, route_generation):
+        """Scope the serial oracle to a paused/drained qualification phase.
+
+        The native qualification action owns the collective pause/drain. This
+        second boundary checks the worker's actual idle prefill ownership and
+        bound epoch, and the installed provider queries its real route. Stores
+        remain retained after disable; an old run id is never recycled.
+        """
+        if (type(enabled) is not bool or type(run_id) is not str
+                or not 1 <= len(run_id) <= 128):
+            raise HandoffError('row1 scope needs a bounded run id and bool')
+        state = self.runtime.state
+        if (not state.engine_bound or engine_epoch != state.engine_epoch
+                or type(engine_epoch) is not int):
+            raise HandoffError('row1 scope has a stale engine epoch')
+        if type(route_generation) is not int or route_generation < 0:
+            raise HandoffError('row1 scope needs a route generation')
+        lane = state.prefill
+        dispatcher = getattr(self, '_flash_s5_dispatcher', None)
+        bridge = getattr(self, '_flash_s5_bridge', None)
+        if (self.runtime.prefill_execution is not None
+                or (bridge is not None and (bridge.active
+                    or bridge._retained is not None
+                    or bridge._source_binding is not None
+                    or bridge._source_close is not None))
+                or self.handoff is not None or self.operation is not None
+                or lane.handle is not None or lane.outstanding
+                or (dispatcher is not None and (
+                    dispatcher.transaction is not None
+                    or dispatcher.quarantined is not None))):
+            raise E3Pending('row1 scope waits for closed prefill ownership')
+        provider = self.row1_provider
+        if not callable(provider):
+            raise HandoffError('row1 scoped provider is unavailable')
+        if self._row1_run_id == run_id:
+            scope = self._row1_scopes[run_id]
+            if scope['engine_epoch'] != engine_epoch or scope['route_generation'] != route_generation:
+                raise HandoffError('row1 scope identity changed')
+            if scope['enabled'] is enabled:
+                return self.row1_evidence(run_id=run_id)
+            if enabled:
+                raise HandoffError('a disabled row1 scope cannot be reopened')
+            # Verify the native route is still the one that was qualified.
+            provider(None, engine_epoch, route_generation)
+            self.row1_factory = None
+            scope['enabled'] = False
+            return self.row1_evidence(run_id=run_id)
+        if not enabled:
+            raise HandoffError('row1 disable names an unknown scope')
+        if run_id in self._row1_scopes:
+            raise HandoffError('a retained row1 scope cannot be reused')
+        if self.row1_factory is not None:
+            raise HandoffError('another row1 scope is still enabled')
+        if len(self._row1_scopes) >= 8:
+            raise HandoffError('row1 scope capacity reached; evidence retained')
+        from row1_oracle import Row1RecordStore
+        store = Row1RecordStore()
+        factory, layers = provider(store, engine_epoch, route_generation)
+        if (not callable(factory) or type(layers) is not tuple or not layers
+                or any(type(name) is not str or not name for name in layers)
+                or len(set(layers)) != len(layers)):
+            raise HandoffError('row1 provider has no exact local QSA census')
+        scope = dict(engine_epoch=engine_epoch, route_generation=route_generation,
+                     local_layers=layers, enabled=True, store=store)
+        self._row1_scopes[run_id] = scope
+        self._row1_run_id = run_id
+        self.row1_store, self.row1_factory = store, factory
+        return self.row1_evidence(run_id=run_id)
+
+    def row1_evidence(self, *, run_id):
+        scope = self._row1_scopes.get(run_id)
+        if scope is None:
+            raise HandoffError('row1 evidence names an unknown scope')
+        state = self.runtime.state
+        enabled = (scope['enabled'] and self._row1_run_id == run_id
+                   and self.row1_factory is not None)
+        return dict(schema='s5-native-row1-store/1', run_id=run_id,
+                    rank=state.worker_rank, worker_incarnation=state.incarnation,
+                    engine_epoch=scope['engine_epoch'],
+                    route_generation=scope['route_generation'],
+                    local_layers=list(scope['local_layers']),
+                    enabled=enabled,
+                    raw=self._query_row1_store(scope['store'], enabled=enabled))
+
+    def row1_records(self, *, layer=None, limit=None):
+        """The bounded raw comparison store, queryable after release."""
+        if self.row1_store is None:
+            return ()
+        return self.row1_store.records(layer=layer, limit=limit)
+
+    def query_row1(self, *, layer=None, limit=None):
+        """A bounded summary plus the raw records for one layer or all layers."""
+        return self._query_row1_store(self.row1_store,
+            enabled=self.row1_factory is not None, layer=layer, limit=limit)
+
+    @staticmethod
+    def _query_row1_store(store, *, enabled, layer=None, limit=None):
+        if store is None:
+            return dict(enabled=False, comparisons=0, layers=0, failures=0,
+                        capacity=0, records=(), layer_records=(),
+                        failure_records=())
+        summary = dict(store.summary(), enabled=enabled)
+        summary['records'] = tuple(r.as_dict() for r in
+                                   store.records(layer=layer, limit=limit))
+        summary['layer_records'] = tuple(r.as_dict() for r in
+                                         store.layer_records(layer=layer, limit=limit))
+        summary['failure_records'] = tuple(r.as_dict() for r in
+                                           store.failures(layer=layer, limit=limit))
+        return summary
+
     def _record_launch(self, ticket):
         recorder = getattr(self.runtime.backend, 'record_launch', None)
         if recorder is None:
@@ -577,6 +710,54 @@ class WorkerHandoffServer:
             return False
         self.handoff = None
         return True
+
+
+def bind_operation_sources(operation, layers, binding, snapshot):
+    """Bind the bridge's worker-local source lease to the QSA operation.
+
+    ``binding`` is produced by :func:`native_source.bind_local_sources` over the
+    exact frame this worker opened and the actual pinned ``_qsa_host_kv``
+    tensors. Every local QSA layer must appear exactly once, own that same
+    tensor, and carry its epoch/version census. Anything missing, extra or
+    foreign refuses before the first copy can be planned.
+    """
+    if operation is None:
+        raise HandoffError('source binding needs the open QSA operation')
+    if binding is None:
+        raise HandoffError('source binding needs the bridge-bound lease')
+    if binding.transaction != operation.transaction:
+        raise HandoffError('source binding belongs to another transaction')
+    if binding.rank != operation.lane.worker_rank:
+        raise HandoffError('source binding belongs to another worker rank')
+    if snapshot is None:
+        raise HandoffError('source binding needs the opened admission snapshot')
+    names = tuple(name for name, _ in layers)
+    if len(set(names)) != len(names):
+        raise HandoffError('a QSA layer appears twice in the operation binding')
+    if tuple(sorted(names)) != binding.layers:
+        raise HandoffError('source binding does not cover exactly the QSA layers')
+    for name, layer in layers:
+        source = binding.sources.get(name)
+        if source is None or source is not getattr(layer, '_qsa_host_kv', None):
+            raise HandoffError('source binding does not own this layer history')
+        if name not in binding.source_epochs or name not in binding.versions:
+            raise HandoffError('source binding has no epoch/version census')
+    operation.plan_provider = metadata_plan_provider(
+        snapshot, layer_tables=binding.layer_tables)
+    operation.state_epoch = binding.state_epoch
+    for name, _ in layers:
+        operation.register_source(
+            name, binding.sources[name],
+            source_epoch=binding.source_epochs[name],
+            versions=binding.versions[name])
+        # Attach the admitted hold now, not only when the layer driver first
+        # runs this layer: a cancel before that point still releases every
+        # retained history, so the lane can close its registry views.
+        hold = binding.holds.get(name)
+        if hold is None:
+            raise HandoffError('source binding has no hold for ' + name)
+        operation.attach_sparse_source(name, hold)
+    return operation
 
 
 def _qsa_layers(runner):

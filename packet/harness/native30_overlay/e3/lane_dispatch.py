@@ -64,12 +64,17 @@ class SegmentCommand:
 
     ``seq`` is the PP transfer sequence; it is mandatory for the two PP kinds
     and must be absent for all others (there is no implicit zero).
+
+    ``source`` is the wire-v1 :class:`SourceLeaseDescriptor` the engine attached
+    to a PREPARE command. It is carried unchanged so the worker bridge can
+    validate it against the frame it actually opened before any submission.
     """
 
-    __slots__ = ('transaction', 'stage', 'layer_start', 'layer_end', 'op_seq', 'kind', 'seq')
+    __slots__ = ('transaction', 'stage', 'layer_start', 'layer_end', 'op_seq',
+                 'kind', 'seq', 'source')
 
     def __init__(self, transaction, stage, kind, op_seq, *, layer_start=None, layer_end=None,
-                 seq=_UNSET):
+                 seq=_UNSET, source=None):
         if type(transaction) is not TransactionId:
             raise LaneDispatchError('canonical transaction required')
         if type(kind) is not str or kind not in KINDS:
@@ -97,6 +102,14 @@ class SegmentCommand:
                 raise LaneDispatchError('layer segment needs half-open global layer bounds')
             if layer_end != layer_start + 1:
                 raise LaneDispatchError('layer segment must cover exactly one layer for now')
+        if source is not None:
+            from wire_v1 import SourceLeaseDescriptor
+            if type(source) is not SourceLeaseDescriptor:
+                raise LaneDispatchError('segment source must be a wire source lease')
+            if kind != 'prepare':
+                raise LaneDispatchError('only prepare carries a source lease')
+            if source.transaction != transaction:
+                raise LaneDispatchError('source lease belongs to another transaction')
         self.transaction = transaction
         self.stage = stage
         self.kind = kind
@@ -104,6 +117,7 @@ class SegmentCommand:
         self.layer_start = layer_start
         self.layer_end = layer_end
         self.seq = None if seq is _UNSET else seq
+        self.source = source
 
     @classmethod
     def from_descriptor(cls, descriptor):
@@ -112,27 +126,30 @@ class SegmentCommand:
         if type(descriptor) is WireCommand:
             command, d = descriptor, descriptor.descriptor
             return cls(d.transaction, d.stage, d.kind.value, command.op_seq,
-                       layer_start=d.layer_start, layer_end=d.layer_end, seq=d.seq)
+                       layer_start=d.layer_start, layer_end=d.layer_end, seq=d.seq,
+                       source=command.source)
         kind = descriptor.kind
         if type(kind) is not str:
             raise LaneDispatchError('descriptor kind must be a str')
         layer_start = getattr(descriptor, 'layer_start', None)
         layer_end = getattr(descriptor, 'layer_end', None)
+        source = getattr(descriptor, 'source', None)
         if kind in PP_KINDS:
             seq = getattr(descriptor, 'seq', _UNSET)
             if seq is _UNSET:
                 raise LaneDispatchError(f'descriptor {kind} needs a transfer seq')
             return cls(descriptor.transaction, descriptor.stage, kind, descriptor.op_seq,
-                       layer_start=layer_start, layer_end=layer_end, seq=seq)
+                       layer_start=layer_start, layer_end=layer_end, seq=seq,
+                       source=source)
         if getattr(descriptor, 'seq', None) is not None:
             raise LaneDispatchError('non-PP descriptor carries transfer seq')
         return cls(descriptor.transaction, descriptor.stage, kind, descriptor.op_seq,
-                   layer_start=layer_start, layer_end=layer_end)
+                   layer_start=layer_start, layer_end=layer_end, source=source)
 
     def identity(self):
         """Everything that makes two submissions the same accepted command."""
         return (self.transaction, self.stage, self.kind, self.op_seq,
-                self.layer_start, self.layer_end, self.seq)
+                self.layer_start, self.layer_end, self.seq, self.source)
 
 
 class SegmentEvent:
@@ -163,6 +180,11 @@ class LaneDispatcher:
             import torch as torch_module
         self.torch = torch_module
         self.clock = clock
+        # Worker-local pinned source ownership outlives one transaction: the
+        # bridge closes the opened registry only after release, and a stranded
+        # allocation stays visible until then.
+        self.source_registry = None
+        self.source_allocator = None
         self._reset_transaction()
 
     def _reset_transaction(self):
@@ -172,6 +194,7 @@ class LaneDispatcher:
         self.lane = None
         self.driver = None
         self.operation = None
+        self.source_binding = None
         self.admission = None
         self.events = []
         self.state_event = None
@@ -310,6 +333,11 @@ class LaneDispatcher:
     def _do_prepare(self, command):
         if self.chunk is not None:
             raise LaneDispatchError('chunk already prepared for this transaction')
+        if command.source is not None:
+            binding = self.source_binding
+            if binding is None or binding.descriptor != command.source:
+                raise LaneDispatchError(
+                    'prepare source lease was not bound for this command')
         self._partial = True
         chunk = self.factory.admit(self.admission)
         self.chunk = chunk
@@ -324,6 +352,9 @@ class LaneDispatcher:
         if self.server is not None:
             marker = type('Parked', (), {})()
             marker.flash_e3_transaction = command.transaction
+            # The bound source lease reaches the server through this marker;
+            # this dispatch never invents a lease of its own.
+            marker.flash_e3_source_binding = self.source_binding
             self.server.begin_prefill_operation(self.runner, marker)
         return {'prepared': True, 'req_index': chunk.req_index}
 

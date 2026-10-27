@@ -31,6 +31,12 @@ class OracleBackend:
     def gather_reference(self,host,table,lo,hi,staged):
         staged.data[:]=b''.join(host.data[int(p)*4096:(int(p)+1)*4096] for p in table[lo:hi])
         if self.gather_bad:staged.data[0]^=1
+    def gather_rows(self,host,source_row,rows,staged,arena_row):
+        width=512
+        flat=np.frombuffer(host.data,dtype=np.uint8).reshape(-1,width)
+        dst=np.frombuffer(staged.data,dtype=np.uint8).reshape(-1,width)
+        dst[arena_row:arena_row+rows]=flat[source_row:source_row+rows]
+        if self.gather_bad:dst[arena_row]^=1
 
 
 def oracle_fixture():

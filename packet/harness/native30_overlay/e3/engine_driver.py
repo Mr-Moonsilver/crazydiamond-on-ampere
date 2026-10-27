@@ -1442,12 +1442,44 @@ class NativeSegmentDriver:
         for rank in targets[1:]:
             if self.trackers[rank].propose(descriptor) != op_seq:
                 raise DriverError('lane op_seq proposals diverged')
-        command = SegmentCommand(descriptor, op_seq, targets)
+        # Only a stage's first PREPARE carries the engine's actual source lease;
+        # a missing/stale/foreign hold refuses before any GPU submission.
+        source = (self._prepare_source(targets)
+                  if kind is SegmentKind.PREPARE else None)
+        command = SegmentCommand(descriptor, op_seq, targets, source=source)
         if kind is SegmentKind.PP_SEND:
             self.pp_send_seq = descriptor.seq
         if kind is SegmentKind.PP_RECEIVE:
             self.pp_receive_seq = descriptor.seq
         self._send_segment(command, targets)
+
+    def _prepare_source(self, targets):
+        """The parked chunk's actual immutable lease for a PREPARE command.
+
+        The descriptor is produced from the scheduler's retained block objects
+        and its exact admission; it is refused when missing, released, foreign
+        to this transaction/state epoch, unbound from the opened lanes, or not a
+        subset of this admission's own rows for the target ranks. The engine
+        keeps ownership of the block objects throughout.
+        """
+        hold = self.controller.source_hold(self.tx)
+        if hold is None:
+            raise DriverError('PREPARE has no scheduler-owned source hold')
+        if hold.transaction != self.tx:
+            raise DriverError('source hold belongs to another transaction')
+        if self.admission is None or hold.state_epoch != self.admission.state_epoch:
+            raise DriverError('source hold state epoch is stale')
+        owners = hold.owners
+        if owners is None:
+            raise DriverError('source hold owners are not bound to the opened lanes')
+        if {owner.worker_rank for owner in owners} != set(self.ranks):
+            raise DriverError('source hold owners do not cover every opened rank')
+        try:
+            descriptor = hold.descriptor()
+            descriptor.validate_frame(self.admission, tuple(targets))
+        except E3ContractError as exc:
+            raise DriverError('source hold descriptor was refused: ' + str(exc)) from exc
+        return descriptor
 
     def _send_segment(self, command, targets):
         self._command = command

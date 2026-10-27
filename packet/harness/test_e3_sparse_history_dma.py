@@ -829,6 +829,7 @@ class _GeneratedHarness:
         package = _module(package_name,
                           flash_s5_sparse_arena_attention=self.attention,
                           flash_s5_arena_attention=self.attention,
+                          flash_e2_arena_attention=lambda *args, **kwargs: None,
                           qsa_get_staging_arena=lambda kv_cache, nbytes: self.arena)
         for name in ('models', 'models.qwen4_exp', 'models.qwen4_exp.nvidia',
                      'models.qwen4_exp.nvidia.ops'):
@@ -884,6 +885,10 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
             plan_provider=qo.metadata_plan_provider(
                 Snapshot([Row()], range(260)),
                 layer_tables=tuple(layer_tables)))
+        # The admitted state epoch is an explicit part of the source identity;
+        # these fixtures construct the operation directly instead of through
+        # the bridge, so they declare the frame themselves.
+        operation.state_epoch = 1
         return operation, lane, transaction
 
     def hold_for(self, lane, transaction, layer, mapping, tokens):
@@ -1630,6 +1635,7 @@ class ComposedSourceLeaseTests(_GeneratedHarness, unittest.TestCase):
             world.transaction, world.lane, device=self.device,
             plan_provider=lambda name, count: world.pages[:count],
             source_epochs={'qsa.0': world.registration.source_epoch})
+        operation.state_epoch = world.admission.state_epoch
         operation.register_source(
             'qsa.0', world.source,
             source_epoch=world.registration.source_epoch,
