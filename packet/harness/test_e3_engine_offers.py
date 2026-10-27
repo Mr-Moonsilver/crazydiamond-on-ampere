@@ -1946,6 +1946,30 @@ class BindingTests(unittest.TestCase):
 
 
 # --- negative joins ---------------------------------------------------------
+class DrainControlTests(unittest.TestCase):
+    def test_tail_event_controls_are_zero_activity_and_fail_on_error_or_activity(self):
+        import activity_accounting as accounting
+        names=('cudaEventCreate','cudaEventCreateWithFlags','cudaEventDestroy',
+               'cuEventCreate','cuEventDestroy_v2')
+        for index,name in enumerate(names):
+            with self.subTest(api=name):
+                self.assertEqual(accounting.api_kind(name),'host')
+                owner,bridge,ledger,builder=positive()
+                try:
+                    cid=900000+index
+                    api=dict(builder.apis[0],correlation_id=cid,name=name,return_value=0)
+                    builder.apis.append(api)
+                    self.assertEqual(grade(ledger,bridge,builder)['verdict'],'PASS')
+                    api['return_value']=1
+                    self.assertIn('host_api_failed',grade(ledger,bridge,builder)['failures'])
+                    api['return_value']=0
+                    row=dict(builder.activities[0],correlation_id=cid,graph_id=0)
+                    builder.activities.append(row)
+                    self.assertIn('unoffered_eager_activity',grade(ledger,bridge,builder)['failures'])
+                    builder.external.append(dict(builder.external[0],correlation_id=cid))
+                    self.assertIn('host_api_has_activity',grade(ledger,bridge,builder)['failures'])
+                finally:ledger.deactivate()
+
 class NegativeJoinTests(unittest.TestCase):
     def tearDown(self):
         active = eo._ACTIVE

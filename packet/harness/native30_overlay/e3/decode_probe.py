@@ -52,7 +52,7 @@ STORAGE_EPOCH = 1
 # (a plain qsa_operation import and resident_attention). It stays shipped and
 # checksummed for the builder, separately from the runtime module inventory.
 BUILD_ONLY_SOURCES = ('operation_source',)
-GENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'graph_router', 'graph_hooks', 'qsa_operation', 'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime')
+GENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'graph_router', 'graph_hooks', 'qsa_operation', 'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers')
 EVIDENCE_FILE = 'decode-probe-evidence.json'
 
 # Test ids that the declaration must name; the new suite verifies they exist.
@@ -163,7 +163,9 @@ def declared_evidence():
     from graph_hooks import PINNED_SHA256
     from worker_hooks import PINS as WORKER_PINS, CAPTURE_REFERENCE_PINS
 
+    from engine_offers import PINS as OFFER_PINS
     pins = dict(WORKER_PINS)
+    pins.update(OFFER_PINS)
     pins.update(CAPTURE_REFERENCE_PINS)
     from probe_control_hooks import PINS as CONTROL_PINS
     pins.update(CONTROL_PINS)
@@ -212,7 +214,9 @@ def require_decode_probe_ready(evidence=None):
     from graph_hooks import PINNED_SHA256 as runner_pin
     from worker_hooks import PINS as worker_pins, CAPTURE_REFERENCE_PINS
 
+    from engine_offers import PINS as OFFER_PINS
     known = dict(worker_pins)
+    known.update(OFFER_PINS)
     known.update(CAPTURE_REFERENCE_PINS)
     from probe_control_hooks import PINS as CONTROL_PINS
     known.update(CONTROL_PINS)
@@ -310,6 +314,7 @@ class DecodeProbe:
         self.last_invalidation = None
         self.in_flight = 0
         self._last_batch_request_ids = None
+        self._last_decode_descriptor = None
         self.batch_observations = {'batches': 0, 'decode_batches': 0,
                                    'non_decode_batches': 0, 'empty_batches': 0,
                                    'noop_empty_batches': 0, 'noop_rejections': {},
@@ -510,6 +515,9 @@ class DecodeProbe:
                                 else 'non_full_dispatches'] += 1
         if self.batch_observations['last'] is not None:
             self.batch_observations['last']['full_graph'] = descriptor.cg_mode == 'full'
+        last = self.batch_observations['last']
+        self._last_decode_descriptor = (descriptor if descriptor.cg_mode == 'full'
+            and last is not None and last.get('decode_only') is True else None)
         if self.controller.route != 'split':
             return None
         self._require_usable()

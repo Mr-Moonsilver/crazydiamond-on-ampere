@@ -172,6 +172,7 @@ class DeclareTests(unittest.TestCase):
                  'e3/native/build_green_helper.sh',
                  'e3_sources/executor.py', 'e3_sources/core.py',
                  'e3_sources/worker.py', 'e3_sources/cudagraph_utils.py',
+                 'e3_sources/sampler.py', 'e3_sources/async_utils.py',
                  'e3_sources/model.py', 'e3_sources/api_routers.py']
         with (self.ovl / 'SHA256SUMS').open('a') as manifest:
             for name in names:

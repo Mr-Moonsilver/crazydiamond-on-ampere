@@ -24,6 +24,7 @@ raise SystemExit(rc)
 '''
 class FullQueue(unittest.TestCase):
     queue_name='q17b_full3.draft.sh'
+    settings_name='q17b_full_settings.sh'
     correctness_name='q17b-correctness.json'
     setUp=old.QueueRun.setUp
     tearDown=old.QueueRun.tearDown
@@ -31,7 +32,7 @@ class FullQueue(unittest.TestCase):
     assert_no_secret=old.QueueRun.assert_no_secret
     def make_harness(self):
         old.QueueRun.make_harness(self)
-        for name in (self.queue_name,'q17b_full_settings.sh'):
+        for name in (self.queue_name,self.settings_name):
             shutil.copyfile(HERE/'runs'/name,self.h/'runs'/name)
         shutil.copyfile(HERE/'e3_private_auth.py',self.h/'e3_private_auth.py')
         (self.h/'e3_q17b_clients.py').write_text(FAKE_CLIENTS)
@@ -68,7 +69,7 @@ class FullQueue(unittest.TestCase):
         (self.r/'private').mkdir(mode=0o700)
         shutil.copyfile(self.auth_file,self.r/'private/vllm-api.env');(self.r/'private/vllm-api.env').chmod(0o600)
         paths=[Path(line.split(maxsplit=1)[1]) for line in (self.r/'SHA256SUMS').read_text().splitlines()]
-        paths += [self.h/'runs'/self.queue_name,self.h/'runs/q17b_full_settings.sh',self.r/'request-plan.json']
+        paths += [self.h/'runs'/self.queue_name,self.h/'runs'/self.settings_name,self.r/'request-plan.json']
         (self.r/'SHA256SUMS').write_text(''.join(old.sha(p)+'  '+str(p)+'\n' for p in paths))
     def install_fakes(self):
         env=old.QueueRun.install_fakes(self);env.update(S5_REPLAY_LIB_SHA256=self.replay,Q17B_FULL_BOUNDED='1');return env
@@ -178,7 +179,7 @@ class ProtocolV2Queue(FullQueue):
     def setUp(self):
         from unittest.mock import patch
         import make_s5_overlap,make_e2_arena
-        def current():return make_s5_overlap._s5_launcher(make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text())).replace('e3/capture_streams.py ', '')
+        def current():return old.full11_launcher_text().replace('e3/capture_streams.py ', '')
         self._patches=[patch.object(old,'launcher_text',current),patch.object(old,'LAUNCHER_SHA',hashlib.sha256(current().encode()).hexdigest())]
         for p in self._patches:p.start()
         FullQueue.setUp(self)
@@ -212,7 +213,7 @@ class Full11Queue(ProtocolV2Queue):
         import sys
         sys.path.insert(0,str(old.ROOT/'patches/s5_engine'))
         import make_s5_overlap,make_e2_arena
-        def current():return make_s5_overlap._s5_launcher(make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text()))
+        def current():return old.full11_launcher_text()
         self._patches=[patch.object(old,'launcher_text',current),patch.object(old,'LAUNCHER_SHA',hashlib.sha256(current().encode()).hexdigest())]
         for p in self._patches:p.start()
         FullQueue.setUp(self)
@@ -220,7 +221,7 @@ class Full11Queue(ProtocolV2Queue):
     def test_only_identity_changes_from_protocol_v2_queue(self):
         import identity_declare
         expected_pin='f1310837266716ac90875cb637490cf8d08a5a81f3008d46affe57fa4b928b54'
-        self.assertEqual(identity_declare.S5_LAUNCHER_SHA,expected_pin)
+        self.assertNotEqual(identity_declare.S5_LAUNCHER_SHA,expected_pin)  # Current generator has full12 mounts.
         self.assertEqual(old.LAUNCHER_SHA,expected_pin)
         for before,after in [('q17b_full5.draft.sh',self.queue_name),('q17b_full5_declare.sh','q17b_full11_declare.sh')]:
             expected=(HERE/'runs'/before).read_text().replace(
@@ -230,5 +231,39 @@ class Full11Queue(ProtocolV2Queue):
             actual='\n'.join(line for line in actual.splitlines() if not line.startswith('# Full11:'))+'\n'
             self.assertEqual(actual,expected)
             subprocess.run(['bash','-n',str(HERE/'runs'/after)],check=True)
+
+class Full12Queue(ProtocolV2Queue):
+    queue_name='q17b_full12.draft.sh'
+    settings_name='q17b_full12_settings.sh'
+    def setUp(self):
+        from unittest.mock import patch
+        import make_s5_overlap,make_e2_arena
+        def current():return make_s5_overlap._s5_launcher(make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text()))
+        self._patches=[patch.object(old,'launcher_text',current),patch.object(old,'LAUNCHER_SHA',hashlib.sha256(current().encode()).hexdigest())]
+        for p in self._patches:p.start()
+        FullQueue.setUp(self)
+    def make_harness(self):
+        ProtocolV2Queue.make_harness(self)
+        p=self.h/'e3_q17b_clients.py';s=p.read_text()
+        s=s.replace("('teacher-forced.json',", "('engine-accounting.json','teacher-forced.json',",1)
+        s=s.replace('schema=1,run_id=a.run_id,verdict=verdict',
+                    'schema=1,engine_accounting_required=True,run_id=a.run_id,verdict=verdict',1)
+        p.write_text(s);old.write_manifest(self.h)
+    def make_requests(self):
+        ProtocolV2Queue.make_requests(self)
+        p=self.r/'startup.json';d=json.loads(p.read_text())
+        d['identity']['env']['FLASH_S5_ENGINE_OFFERS']='1';p.write_text(json.dumps(d))
+        pins=self.r/'SHA256SUMS';paths=[Path(line.split(maxsplit=1)[1]) for line in pins.read_text().splitlines()]
+        pins.write_text(''.join(old.sha(p)+'  '+str(p)+'\n' for p in paths))
+    def test_missing_separate_engine_artifact_refuses_success(self):
+        p=self.h/'e3_q17b_clients.py';s=p.read_text().replace("'engine-accounting.json',",'')
+        p.write_text(s);old.write_manifest(self.h)
+        r=self.run_queue();self.assertEqual(r.returncode,1,r.stdout+r.stderr)
+        self.assertIn('STEP clients-grade-consistency FAIL',r.stdout)
+    def test_settings_change_only_the_declared_offer_instrument(self):
+        old_text=(HERE/'runs/q17b_full_settings.sh').read_text()
+        new_text=(HERE/'runs'/self.settings_name).read_text().split('\n',1)[1]
+        self.assertEqual(new_text,old_text.replace('FLASH_S5_REPLAY_OBSERVER=1',
+                          'FLASH_S5_REPLAY_OBSERVER=1 FLASH_S5_ENGINE_OFFERS=1'))
 
 if __name__=='__main__':unittest.main()

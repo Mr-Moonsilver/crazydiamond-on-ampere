@@ -122,6 +122,104 @@ class NativeCompositionTests(ObserverTestBase):
         result['replay_census'] = {'total':2,'graphs':{'graph:0':2,'graph:1':0}}
         self.assertFalse(replay_multiplicity(begin, result, result['receipt']))
 
+class NativeLedgerOwnerTests(ObserverTestBase):
+    def test_owned_window_drives_real_native_ledger_and_separate_composition(self):
+        import ctypes
+        import engine_offers as eo
+        session = self.new_session()
+        owner = runtime.WorkerObserver(session, 0, engine_offers=True)
+        owner.start()
+        self.make_bank()
+        class Descriptor:
+            def __init__(self, tokens):
+                self.num_tokens=tokens; self.num_reqs=tokens
+                self.uniform_token_count=1; self.num_ubatches=1
+        for i, (old, local) in enumerate(self.bank.pairs):
+            desc=Descriptor(i+1)
+            self.bank.manager.graphs[desc]=self.bank.manager.graphs.pop(old)
+            self.bank.pairs[i]=(desc,local);self.bank.descriptors[i]=desc
+        target=self.bank.descriptors[0]
+        stream=types.SimpleNamespace(cuda_stream=101)
+        p=self.probe;p._last_decode_descriptor=target;p.in_flight=0
+        p.runner=types.SimpleNamespace(execute_model_state=None,main_stream=stream,
+            parallel_config=types.SimpleNamespace(pipeline_parallel_size=2),
+            is_first_pp_rank=True,is_last_pp_rank=False)
+        p.split.decode_stream=stream
+        p.controller=types.SimpleNamespace(admitting=True,drain=lambda:3)
+        p._require_not_down=lambda:None
+        self.ctl.stub_emit_context(CONTEXT_ID,1,EXPECTED_SMS,0)
+        def query_identity(stream):
+            self.assertEqual(session.state, 'bound', 'setup query must precede the native window')
+            return {'context_id':CONTEXT_ID,'stream_id':9}
+        with patch.object(session.binding,'stream_identity',side_effect=query_identity):
+            self.ctl.stub_set_timestamp(1000)
+            begin=owner.begin(p,71,run_id='owner-fixture',window_id='short-placement')
+        self.addCleanup(owner.ledger.deactivate)
+        self.assertIs(eo.current_ledger(p.runner),owner.ledger)
+        eager=self.ctl.stub_emit_correlated
+        eager.argtypes=[ctypes.c_uint32,ctypes.c_uint64,ctypes.c_uint32,ctypes.c_uint32,
+            ctypes.c_uint64,ctypes.c_uint64,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint64,ctypes.c_uint32]
+        graph=self.ctl.stub_emit_correlated_graph
+        graph.argtypes=[ctypes.c_uint32,ctypes.c_uint64,ctypes.c_uint32,ctypes.c_uint32,
+                       ctypes.c_uint32,ctypes.c_uint64,ctypes.c_uint64]
+        with owner.ledger.step('execute'):
+            with eo.leaf(p.runner,'request_state_table','prep_state'):
+                offer=owner.bridge.offers[-1]
+                eager(10,offer['id'],4,offer['thread'],1100,1400,CONTEXT_ID,0,0,1)
+            with owner.ledger.offer_scope('forward_dispatch','graph_replay',
+                    descriptor=eo.graph_descriptor(None,target),census={'kernel':2,'memcpy':0,'memset':0}):
+                offer=owner.bridge.offers[-1]
+                graph(11,offer['id'],offer['thread'],CONTEXT_ID,11,101,102)
+        p.router.replays=1;p.router.replays_by_descriptor[self.bank.pairs[0][1]]=1
+        self.ctl.stub_set_timestamp(3000)
+        result=owner.end(p,71)
+        self.assertEqual(result['receipt']['verdict'],'INCONCLUSIVE')
+        self.assertEqual(result['engine_accounting']['verdict'],'PASS',result['engine_accounting'])
+        self.assertEqual(result['composed_placement']['verdict'],'PASS',result['composed_placement'])
+        binding=result['engine_accounting']['binding']
+        self.assertEqual(binding['run_id'],'owner-fixture')
+        self.assertEqual(binding['router_census']['total'],1)
+        self.assertEqual(binding['pp_stage'],0)
+        self.assertIsNone(eo.current_ledger(p.runner))
+        self.assertTrue(owner.closed)
+
+    def test_missing_target_refused_before_window(self):
+        session=self.new_session();owner=runtime.WorkerObserver(session,0,engine_offers=True)
+        owner.start();self.make_bank();p=self.probe;p.in_flight=0
+        p.runner=types.SimpleNamespace(execute_model_state=None)
+        p.controller=types.SimpleNamespace(admitting=True,drain=lambda:3);p._require_not_down=lambda:None
+        with self.assertRaisesRegex(ReplayObserverError,'engine_target_unproved'):
+            owner.begin(p,71,run_id='owner-fixture',window_id='short-placement')
+        self.assertEqual(session.state,'bound')
+
+class StreamIdentityTests(unittest.TestCase):
+    def test_green_identity_uses_converted_context_and_ordinary_uses_primary(self):
+        import ctypes as c
+        from replay_observer import ReplayBinding
+        for green in (0,55):
+            seen=[]
+            def query(stream,primary,out):
+                c.cast(primary,c.POINTER(c.c_void_p))[0]=11
+                c.cast(out,c.POINTER(c.c_void_p))[0]=green
+                return 0
+            def convert(out,handle):
+                self.assertEqual(handle.value,55)
+                c.cast(out,c.POINTER(c.c_void_p))[0]=22
+                return 0
+            def cid(context,out):
+                seen.append(context.value);c.cast(out,c.POINTER(c.c_uint32))[0]=42 if green else 41
+                return 0
+            def sid(context,stream,flag,out):
+                self.assertIsNone(context);self.assertEqual(flag,0)
+                c.cast(out,c.POINTER(c.c_uint32))[0]=9
+                return 0
+            b=ReplayBinding.__new__(ReplayBinding);b._c=c
+            b._lib=types.SimpleNamespace(cuStreamGetCtx_v2=query,cuCtxFromGreenCtx=convert,
+                                        cuptiGetContextId=cid,cuptiGetStreamIdEx=sid)
+            self.assertEqual(b.stream_identity(types.SimpleNamespace(cuda_stream=7)),
+                             {'context_id':42 if green else 41,'stream_id':9})
+            self.assertEqual(seen,[22 if green else 11])
+
 class NativeLaunchComposition(ObserverTestBase):
     @patch("graph_router.descriptor_name",side_effect=lambda d:"descriptor:"+str(id(d)))
     def test_late_enable_full_sample_and_split_report_same_bank(self,_name):

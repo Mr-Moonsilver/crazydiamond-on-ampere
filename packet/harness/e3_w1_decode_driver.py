@@ -790,7 +790,7 @@ def _sanitize_receipt(obj):
     if type(observer) is dict:
         try:
             encoded = json.dumps(observer, allow_nan=False)
-            if len(encoded.encode()) <= 36 * 1024 * 1024:
+            if len(encoded.encode()) <= 104 * 1024 * 1024:
                 out['observer'] = json.loads(encoded)
             else:
                 out['observer'] = {'schema': 1, 'complete': False,

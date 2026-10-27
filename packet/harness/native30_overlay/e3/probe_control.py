@@ -470,7 +470,8 @@ class ProbeController:
                         or not owner['worker_incarnation']):
                     raise ProbeControlError('observer-owner-inventory-missing')
                 owners[row['rank']] = owner['worker_incarnation']
-            replies = await self._rpc({'action': action, 'engine_epoch': self.epoch})
+            replies = await self._rpc({'action': action, 'engine_epoch': self.epoch,
+                                       'run_id': self.run_id, 'window_id': 'short-placement'})
             mapped = _rank_map(replies)
             expected_state = 'window' if action == 'observer_begin' else 'closed'
             for row in mapped.values():

@@ -43,13 +43,24 @@ def write_manifest(root):
     (Path(root) / 'SHA256SUMS').write_text(''.join(lines))
 
 
+def full11_launcher_text():
+    sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
+    import make_e2_arena, make_s5_overlap
+    text = make_s5_overlap._s5_launcher(make_e2_arena.launcher(
+        (ROOT / 'deploy/run-flash-prod.sh').read_text()))
+    for value in ('e3/activity_accounting.py ', 'e3/engine_offers.py ',
+                  'e3_sources/sampler.py ', 'e3_sources/async_utils.py '):
+        text = text.replace(value, '')
+    text = text.replace('      -v "$OVERLAY/e3_sources/sampler.py:$V/worker/gpu/sample/sampler.py:ro"\n', '')
+    text = text.replace('      -v "$OVERLAY/e3_sources/async_utils.py:$V/worker/gpu/async_utils.py:ro"\n', '')
+    return text
+
 def launcher_text():
     # Historical immutable queues pin the pre-teacher module inventory.
     sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
     import make_e2_arena
     import make_s5_overlap
-    return make_s5_overlap._s5_launcher(
-        make_e2_arena.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text())).replace('e3/capture_streams.py ', '').replace('e3/teacher_decode.py ', '').replace('e3/route_invariant.py ', '').replace('e3/launch_diagnostic.py ', '').replace('e3/native/flash_s5_graph_bytes.cpp ', '')
+    return full11_launcher_text().replace('e3/capture_streams.py ', '').replace('e3/teacher_decode.py ', '').replace('e3/route_invariant.py ', '').replace('e3/launch_diagnostic.py ', '').replace('e3/native/flash_s5_graph_bytes.cpp ', '')
 
 
 FAKE_SYSTEMCTL = r'''#!/usr/bin/env python3

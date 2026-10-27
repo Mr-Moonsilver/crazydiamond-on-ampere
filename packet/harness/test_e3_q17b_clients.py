@@ -171,6 +171,66 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual(pre['route_plan'],['full','full','split','full'])
 
 
+class EnginePlacementTests(unittest.TestCase):
+    def fixture(self):
+        from test_e3_engine_offers import positive, raw_receipt
+        import engine_offers as eo
+        data=audit_data()
+        begins=[];ends=[]
+        for rank in range(4):
+            owner,bridge,ledger,builder=positive()
+            engine=ledger.seal();ledger.deactivate()
+            raw=raw_receipt(engine,verdict='INCONCLUSIVE',
+                native_reasons=['unattributed_expected_context'],qualified=False)
+            def bind(value):
+                if type(value) is dict:
+                    out={k:bind(v) for k,v in value.items()}
+                    for k in ('rank','worker_rank'):
+                        if k in out:out[k]=rank
+                    if 'engine_incarnation' in out:out['engine_incarnation']='engine:3'
+                    if 'worker_incarnation' in out:out['worker_incarnation']='worker-'+str(rank)
+                    if 'window_id' in out:out['window_id']='short-placement'
+                    return out
+                if type(value) is list:return [bind(v) for v in value]
+                return value
+            engine,raw=bind(engine),bind(raw)
+            composed=eo.compose_placement(raw,engine)
+            self.assertEqual(composed['verdict'],'PASS',composed)
+            row={'rank':rank,'engine_epoch':3,'storage_epoch':1,'route_generation':7,
+                 'drained_streams':3,'worker_incarnation':'worker-'+str(rank)}
+            begins.append(dict(row,ack='flash_s5_observer_begin',state='window',
+                               replay_census={'total':0,'graphs':{'graph:0':0}}))
+            ends.append(dict(row,ack='flash_s5_observer_end',state='closed',observer_stopped=True,
+                replay_census={'total':1,'graphs':{'graph:0':1}},receipt=raw,
+                engine_accounting=engine,composed_placement=composed))
+        for call,rows,stopped in ((data['runs'][0]['calls'][0],begins,False),
+                                  (data['runs'][0]['calls'][1],ends,True)):
+            receipt=call['receipt'];receipt.update(run_id='run-1',engine_epoch=3,route_generation_after=7)
+            receipt['observer'].update(ranks=rows,complete=False,stopped=stopped)
+            call.update(bound_call(call['action'],receipt))
+        return data
+
+    def test_real_composer_discharges_only_accounted_guard_on_all_four_ranks(self):
+        data=self.fixture();before=json.dumps(data,sort_keys=True)
+        self.assertEqual(q.placement_grade(data)['verdict'],'INCONCLUSIVE')
+        grade=q.placement_grade(data,engine_required=True)
+        self.assertEqual(grade['verdict'],'PASS',grade)
+        self.assertEqual(set(grade['engine_accounting']),{'0','1','2','3'})
+        self.assertEqual(json.dumps(data,sort_keys=True),before)
+
+    def test_missing_or_forged_receipt_cannot_use_engine_path(self):
+        for kind,want in [('missing','INCONCLUSIVE'),('forged','FAIL'),('foreign','FAIL'),('raw_fail','FAIL')]:
+            with self.subTest(kind=kind):
+                data=self.fixture();call=data['runs'][0]['calls'][1]
+                row=call['receipt']['observer']['ranks'][0]
+                if kind=='missing':row.pop('engine_accounting');row.pop('composed_placement')
+                elif kind=='forged':row['composed_placement']['verdict']='INCONCLUSIVE'
+                elif kind=='foreign':row['engine_accounting']['binding']['run_id']='foreign'
+                else:row['receipt']['verdict']='FAIL'
+                call.update(bound_call('pause_end',call['receipt']))
+                grade=q.placement_grade(data,engine_required=True)
+                self.assertEqual(grade['verdict'],want,grade)
+
 class SessionContinuation(ComposedActualSessionTests):
     # Inherit the real session + completion SSE fixture, not invented receipts.
     def test_positive_session_survives_delayed_window_reader(self):

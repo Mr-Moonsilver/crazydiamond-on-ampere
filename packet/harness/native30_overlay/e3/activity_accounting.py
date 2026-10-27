@@ -20,7 +20,13 @@ def api_kind(name):
         ('cuMemcpyAsync','memcpy'),('cudaMemsetAsync','memset'),
         ('cuMemsetD8Async','memset'),('cuMemsetD16Async','memset'),('cuMemsetD32Async','memset')):
         if re.fullmatch(re.escape(stem)+r'(?:_v\d+)?(?:_ptsz|_ptds)?',name):return kind
-    harmless=('cudaGetDevice','cudaSetDevice','cudaGetLastError','cudaPeekAtLastError',
+    # RouteController.drain (split_bank.py) creates, records, synchronizes and
+    # releases a tail event on every consumer stream. Creation/destruction are
+    # host control operations. Every such API must still return success and
+    # have ZERO kernel/copy/memset activity; grade_engine enforces both.
+    harmless=('cudaEventCreate','cudaEventCreateWithFlags','cudaEventDestroy',
+        'cuEventCreate','cuEventDestroy',
+        'cudaGetDevice','cudaSetDevice','cudaGetLastError','cudaPeekAtLastError',
         'cudaStreamSynchronize','cudaDeviceSynchronize','cudaEventRecord','cudaEventQuery',
         'cudaEventSynchronize','cudaStreamWaitEvent','cuStreamSynchronize','cuEventRecord',
         'cuEventQuery','cuEventSynchronize','cuStreamWaitEvent','cuCtxGetCurrent',

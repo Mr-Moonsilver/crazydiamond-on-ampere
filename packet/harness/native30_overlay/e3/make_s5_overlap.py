@@ -36,6 +36,7 @@ import shutil
 import async_handoff
 import decode_probe
 import executor_hooks
+import engine_offers
 import graph_hooks
 import green_context
 import lane_hooks
@@ -56,7 +57,7 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
               'graph_router', 'graph_hooks', 'qsa_operation',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
               # lane forward/QSA driver, communicators, startup, chunk, dispatcher.
-              'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime')
+              'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers')
 NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
                 'native/build_q17_helpers.sh')
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
@@ -99,6 +100,7 @@ E2_WORKER_INPUTS = {
 }
 import capture_streams
 REFERENCE_INPUTS = dict(executor_hooks.PINS)
+REFERENCE_INPUTS.update(engine_offers.PINS)
 REFERENCE_INPUTS.update(capture_streams.PINS)
 REFERENCE_INPUTS.update(worker_hooks.PINS)
 REFERENCE_INPUTS.update(worker_hooks.CAPTURE_REFERENCE_PINS)
@@ -190,7 +192,7 @@ if [[ -d $OVERLAY/e3 ]]; then
   [[ ${EXTRA_ARGS:-} != *--api-key* ]] || { echo "S5 refuses argv authentication" >&2; exit 2; }
   [[ ${EXTRA_ENV:-} != *VLLM_API_KEY* ]] || { echo "S5 requires private-file authentication" >&2; exit 2; }
   s5_auth=(--env-file "$FLASH_S5_AUTH_ENV_FILE")
-  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
+  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/sampler.py e3_sources/async_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
   V=/usr/local/lib/python3.12/dist-packages/vllm/v1
@@ -199,6 +201,8 @@ if [[ -d $OVERLAY/e3 ]]; then
       -v "$OVERLAY/e3_sources/core.py:$V/engine/core.py:ro"
       -v "$OVERLAY/e3_sources/worker.py:$V/worker/gpu_worker.py:ro"
       -v "$OVERLAY/e3_sources/cudagraph_utils.py:$V/worker/gpu/cudagraph_utils.py:ro"
+      -v "$OVERLAY/e3_sources/sampler.py:$V/worker/gpu/sample/sampler.py:ro"
+      -v "$OVERLAY/e3_sources/async_utils.py:$V/worker/gpu/async_utils.py:ro"
       -v "$OVERLAY/e3_sources/api_routers.py:/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/routers.py:ro"
       -v "$OVERLAY/e3_sources/model.py:''' + MODEL_DEST + ''':ro")
 fi
@@ -268,6 +272,7 @@ def _decode_probe_declaration(files):
     if not set(decode_probe.BUILD_ONLY_SOURCES) <= set(E3_MODULES):
         raise ValueError('build-only module is not in the generated package')
     pins = dict(worker_hooks.PINS)
+    pins.update(engine_offers.PINS)
     pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
     pins.update(probe_control_hooks.PINS)
     pins['v1/worker/gpu/model_runner.py'] = graph_hooks.PINNED_SHA256
@@ -428,6 +433,16 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         files = compose_graph(module, files)
         graph_record = {'module': Path(graph).name,
                         'source_pins': dict(module.SOURCE_PINS)}
+    # Reviewed source-owned offers compose last, after E2/A/B/D2 and capture
+    # stream transforms. Full-file input pins and exact inverses are enforced.
+    files['model_runner_v2.py'] = engine_offers.generate_one(
+        'v1/worker/gpu/model_runner.py', files['model_runner_v2.py'])
+    files['e3_sources/cudagraph_utils.py'] = engine_offers.generate_one(
+        CUDAGRAPH_PATH, files['e3_sources/cudagraph_utils.py'])
+    for relative, output in (
+            ('v1/worker/gpu/sample/sampler.py', 'e3_sources/sampler.py'),
+            ('v1/worker/gpu/async_utils.py', 'e3_sources/async_utils.py')):
+        files[output] = engine_offers.generate_one(relative, (reference / relative).read_text())
     probe_declaration = _decode_probe_declaration(files)
     files['e3/' + decode_probe.EVIDENCE_FILE] = json.dumps(probe_declaration['evidence'], sort_keys=True) + '\n'
     for name, text in files.items():
@@ -474,6 +489,16 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         'e2_composed_pins': E2_INPUTS,
         'e2_worker_composed_pins': E2_WORKER_INPUTS,
         'reference_source_pins': REFERENCE_INPUTS,
+        'engine_offer_composition': {
+            'enabled_by': engine_offers.ENABLE_ENV,
+            'window': 'short placement window only; inactive before and after',
+            'reference_pins': dict(engine_offers.PINS),
+            'runner_input_sha256': engine_offers.MODEL_RUNNER_PACKAGE_SHA256,
+            'cudagraph_input_sha256': engine_offers.CUDAGRAPH_AFTER_WORKER_SHA256,
+            'outputs': {key: _sha_text(files[key]) for key in (
+                'model_runner_v2.py', 'e3_sources/cudagraph_utils.py',
+                'e3_sources/sampler.py', 'e3_sources/async_utils.py')},
+        },
         'generated_files': sorted(changed),
         'default_feature': 'FLASH_S5_OVERLAP=0',
         'installed_settings': installed,

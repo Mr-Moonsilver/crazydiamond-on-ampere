@@ -111,7 +111,7 @@ def replay_capacity(begin, end, receipt):
         return {'verdict':'INCONCLUSIVE','missing':'capacity evidence unavailable'}
 
 
-def placement_grade(data):
+def placement_grade(data, *, engine_required=False):
     failures, missing = [], []
     runs = data.get('runs', []) if type(data) is dict else []
     split = [r for r in runs if type(r) is dict and r.get('route') == 'split']
@@ -145,6 +145,7 @@ def placement_grade(data):
         begin_rows = []
     begins = {r['rank']:r for r in begin_rows}
     capacities = {}
+    engine_grades = {}
     for row in rows:
         rank = row['rank']
         begin = begins.get(rank, {})
@@ -173,11 +174,41 @@ def placement_grade(data):
             missing.append(f'rank{rank}: replay capacity incomplete')
         if not replay_multiplicity(begin, row, receipt):
             missing.append(f'rank{rank}: replay multiplicity incomplete')
+        composed = None
+        if engine_required:
+            try:
+                for source in (Path(__file__).resolve().parent/'e3_builder',
+                               Path(__file__).resolve().parents[1]/'patches/s5_engine'):
+                    if (source/'engine_offers.py').is_file():
+                        sys.path.insert(0, str(source))
+                        break
+                from engine_offers import compose_placement
+                accounting = row.get('engine_accounting')
+                composed = compose_placement(receipt, accounting)
+                engine_grades[str(rank)] = composed
+                binding = accounting.get('binding', {}) if type(accounting) is dict else {}
+                if not binding:
+                    missing.append(f'rank{rank}: engine binding absent')
+                elif (binding.get('run_id') != outer.get('run_id')
+                        or binding.get('window_id') != 'short-placement'
+                        or binding.get('rank') != rank):
+                    failures.append(f'rank{rank}: engine window identity differs')
+                if row.get('composed_placement') is None:
+                    missing.append(f'rank{rank}: composed receipt absent')
+                elif composed != row.get('composed_placement'):
+                    failures.append(f'rank{rank}: composed receipt differs from regrade')
+                if composed['verdict'] == 'FAIL':
+                    failures.append(f'rank{rank}: engine placement contradiction')
+                elif composed['verdict'] != 'PASS':
+                    missing.append(f'rank{rank}: engine accounting incomplete')
+            except (ImportError, KeyError, TypeError, ValueError):
+                missing.append(f'rank{rank}: engine accounting unavailable')
         for section in (receipt, receipt.get('static_structure', {}), receipt.get('replay', {})):
             verdict = section.get('verdict') if type(section) is dict else None
             if verdict == 'FAIL':
                 failures.append(f'rank{rank}: known graph/context contradiction')
-            elif verdict != 'PASS' or section.get('complete') is not True:
+            elif (verdict != 'PASS' or section.get('complete') is not True) and not (
+                    engine_required and composed is not None and composed.get('verdict') == 'PASS'):
                 missing.append(f'rank{rank}: placement evidence incomplete')
         proof = receipt.get('caller_proof') or {}
         if (proof.get('worker_rank') != rank
@@ -190,12 +221,16 @@ def placement_grade(data):
                 or proof.get('route_generation_matches') is not True
                 or proof.get('storage_epoch_matches') is not True):
             failures.append(f'rank{rank}: drain proof binding differs')
-    if observer.get('complete') is not True:
+    if engine_required:
+        if len(engine_grades) != 4 or any(g.get('verdict') != 'PASS' for g in engine_grades.values()):
+            missing.append('engine accounting aggregate incomplete')
+    elif observer.get('complete') is not True:
         missing.append('observer aggregate incomplete')
     return {'schema': 1, 'verdict': 'FAIL' if failures else 'INCONCLUSIVE' if missing else 'PASS',
             'failures': sorted(set(failures)), 'missing': sorted(set(missing)),
             'observer_stopped': observer.get('stopped') is True,
             'ranks': sorted(r['rank'] for r in rows), 'capacity':capacities,
+            'engine_accounting_required': engine_required, 'engine_accounting': engine_grades,
             'scope': 'actual exercised split-decode graphs, before unprofiled W1'}
 
 
@@ -329,8 +364,20 @@ def run(args, env=None, controller=None):
     cfg=correctness.config_from_env(dict(env,WORKLOAD=str(args.correctness_workload)),out/'correctness.json')
     result=correctness.run(cfg,url,args.model,controller,source=source,context=context)
     write(out/'correctness.json',result)
-    placement=placement_grade(result)
+    placement=placement_grade(result, engine_required=getattr(args, 'engine_accounting', False))
     write(out/'placement.json',placement)
+    if getattr(args, 'engine_accounting', False):
+        engine_rows = []
+        for run in result.get('runs', []):
+            if run.get('route') != 'split':
+                continue
+            for call in run.get('calls', []):
+                if call.get('action') == 'pause_end':
+                    engine_rows = (call.get('receipt', {}).get('observer') or {}).get('ranks', [])
+        write(out/'engine-accounting.json', {'schema':1, 'run_id':args.run_id,
+            'ranks':[{'rank':row.get('rank'), 'engine_accounting':row.get('engine_accounting'),
+                      'composed_placement':row.get('composed_placement')} for row in engine_rows],
+            'scope':'separate source-owned accounting; raw graph receipt is retained in correctness.json'})
     launch_rows=[]
     for r in result.get('runs',[]):
         if r.get('route')=='split':
@@ -396,12 +443,17 @@ def run(args, env=None, controller=None):
         final.update(scope='teacher-row-diagnostic', w1_eligible=False,
                      excluded=['W1','leak','lifetime','canary'],
                      placement_basis='unchanged raw graph-only receipt; no engine offer ledger')
+    if getattr(args, 'engine_accounting', False):
+        final['files'].append('engine-accounting.json')
+        final['engine_accounting_required'] = True
     write(out / 'clients-grade.json', final)
     return final
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--engine-accounting', action='store_true',
+                        help='require native-window-bound source-owned eager accounting')
     parser.add_argument('--teacher-diagnostic', action='store_true',
                         help='stop after teacher + raw placement evidence; never run W1')
     parser.add_argument('--url', required=True)

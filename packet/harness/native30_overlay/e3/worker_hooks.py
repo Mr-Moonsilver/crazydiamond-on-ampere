@@ -419,7 +419,9 @@ def decode_probe_rpc(worker, command):
         return {'rank': worker.rank, 'inventory': probe.inventory(),
                 'counters': probe.counters(), 'memory': probe.memory_snapshot()}
     if action in ('observer_begin', 'observer_end','launch_begin','launch_end'):
-        if set(command) != {'action', 'engine_epoch'}:
+        fields = ({'action', 'engine_epoch', 'run_id', 'window_id'}
+                  if action in ('observer_begin', 'observer_end') else {'action', 'engine_epoch'})
+        if set(command) != fields:
             raise NativeStartupError('observer fields differ')
         owner = getattr(runner, '_flash_s5_replay_observer', None)
         if owner is None:
@@ -431,7 +433,11 @@ def decode_probe_rpc(worker, command):
         try:
             if action=='launch_begin':return owner.launch_begin(probe,epoch)
             if action=='launch_end':return owner.launch_end(probe,epoch)
-            return owner.begin(probe, epoch) if action == 'observer_begin' else owner.end(probe, epoch)
+            if action == 'observer_begin':
+                return owner.begin(probe, epoch, run_id=command['run_id'], window_id=command['window_id'])
+            if owner.window_identity is not None and owner.window_identity != (command['run_id'], command['window_id']):
+                raise NativeStartupError('observer window identity changed')
+            return owner.end(probe, epoch)
         except BaseException:
             probe.quarantined = 'diagnostic observer operation failed'
             raise

@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 PATH = '/v1/flash_s5_decode_probe'
 MAX_COMMAND = 65536  # bounded private 8x768 teacher plan; never logged
 # Four bounded observer receipts (8 MiB each) plus the controller envelope.
-MAX_RESPONSE = 40 * 1024 * 1024
+MAX_RESPONSE = 112 * 1024 * 1024
 
 
 # Only reviewed protocol codes may leave an HTTP refusal body as text.

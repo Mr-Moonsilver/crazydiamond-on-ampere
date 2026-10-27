@@ -393,6 +393,48 @@ class ReplayBinding:
         self._c = c
         self._lib = lib  # private; not part of the public surface
 
+    def stream_identity(self, stream):
+        """CUPTI IDs from the owned stream, using the VM6/11 query contract.
+
+        cuStreamGetCtx_v2 returns primary+green separately; a green stream must
+        be converted before asking CUPTI for its execution context ID. Native
+        handles stay inside this method. The launch/current context is not used.
+        """
+        c = self._c
+        token = getattr(stream, 'cuda_stream', None)
+        if type(token) is not int or token <= 0:
+            raise ReplayObserverError('stream_identity_missing')
+        lib = self._lib
+        try:
+            query = lib.cuStreamGetCtx_v2
+            query.argtypes = [c.c_void_p, c.POINTER(c.c_void_p), c.POINTER(c.c_void_p)]
+            query.restype = c.c_int
+            convert = lib.cuCtxFromGreenCtx
+            convert.argtypes = [c.POINTER(c.c_void_p), c.c_void_p]
+            convert.restype = c.c_int
+            context_id = lib.cuptiGetContextId
+            context_id.argtypes = [c.c_void_p, c.POINTER(c.c_uint32)]
+            context_id.restype = c.c_int
+            stream_id = lib.cuptiGetStreamIdEx
+            stream_id.argtypes = [c.c_void_p, c.c_void_p, c.c_uint8, c.POINTER(c.c_uint32)]
+            stream_id.restype = c.c_int
+            primary, green, converted = c.c_void_p(), c.c_void_p(), c.c_void_p()
+            if query(token, c.byref(primary), c.byref(green)) or not primary.value:
+                raise ReplayObserverError('stream_identity_query')
+            context = primary
+            if green.value:
+                if convert(c.byref(converted), green) or not converted.value:
+                    raise ReplayObserverError('stream_identity_query')
+                context = converted
+            cid, sid = c.c_uint32(), c.c_uint32()
+            if context_id(context, c.byref(cid)) or stream_id(None, token, 0, c.byref(sid)):
+                raise ReplayObserverError('stream_identity_query')
+            if not cid.value or not sid.value:
+                raise ReplayObserverError('stream_identity_query')
+            return {'context_id': cid.value, 'stream_id': sid.value}
+        except (AttributeError, TypeError, ValueError):
+            raise ReplayObserverError('stream_identity_query') from None
+
     def identity(self):
         return {
             'abi': self.abi,

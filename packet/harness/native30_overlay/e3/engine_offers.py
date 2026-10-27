@@ -3211,15 +3211,16 @@ PINS = {
     'v1/worker/gpu/cudagraph_utils.py':
         'b1423812da6d07933bbaf014fa21236c944af1c5f8e553aefb2de89af8afb384',
 }
-# The production runner is the E2+A+B composition; the default-namespace
-# A+B bytes are accepted for offline review. The full E2+A+B pin must be
-# supplied by the package owner before this transform is mounted.
+# Exact package inputs, reproduced from the pinned E2/A/B/D2 pipeline.
+# The existing standalone A+B variant remains accepted for offline fixtures.
 MODEL_RUNNER_AFTER_AB_SHA256 = (
     '1841a6dc838554c9f2df410c5a809f7eed8136b10de517d115b9563c8e598ffa')
+MODEL_RUNNER_PACKAGE_SHA256 = '61aeb2053b423e4278b43bef90bcd582b762a4282777b3425751af19b25c36a9'
+CUDAGRAPH_AFTER_WORKER_SHA256 = '283a654aa858fce0f29b1cbd761685dfee32bc3a02de731305452ddeadafc584'
 ACCEPTED = {
     'v1/worker/gpu/model_runner.py': (
         PINS['v1/worker/gpu/model_runner.py'],
-        MODEL_RUNNER_AFTER_AB_SHA256,
+        MODEL_RUNNER_AFTER_AB_SHA256, MODEL_RUNNER_PACKAGE_SHA256,
     ),
     'v1/worker/gpu/sample/sampler.py': (
         PINS['v1/worker/gpu/sample/sampler.py'],
@@ -3228,7 +3229,7 @@ ACCEPTED = {
         PINS['v1/worker/gpu/async_utils.py'],
     ),
     'v1/worker/gpu/cudagraph_utils.py': (
-        PINS['v1/worker/gpu/cudagraph_utils.py'],
+        PINS['v1/worker/gpu/cudagraph_utils.py'], CUDAGRAPH_AFTER_WORKER_SHA256,
     ),
 }
 SOURCE_PINS = dict(PINS)
@@ -4056,7 +4057,7 @@ _CUDAGRAPH_TRANSFORMS = (
 def _runner_variant(source):
     if _sha(source) == PINS['v1/worker/gpu/model_runner.py']:
         return 'pinned'
-    if _sha(source) == MODEL_RUNNER_AFTER_AB_SHA256:
+    if _sha(source) in (MODEL_RUNNER_AFTER_AB_SHA256, MODEL_RUNNER_PACKAGE_SHA256):
         return 'ab'
     raise ValueError('source is not a reviewed model runner')
 
@@ -4076,7 +4077,7 @@ def _transforms(path, source):
             raise ValueError('source is not the pinned async utils')
         return _ASYNC_TRANSFORMS, 'pinned'
     if path == 'v1/worker/gpu/cudagraph_utils.py':
-        if _sha(source) != PINS[path]:
+        if _sha(source) not in ACCEPTED[path]:
             raise ValueError('source is not the pinned cudagraph utils')
         return _CUDAGRAPH_TRANSFORMS, 'pinned'
     raise ValueError('engine offers do not transform ' + str(path))
