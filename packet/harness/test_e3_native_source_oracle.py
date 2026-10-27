@@ -1675,6 +1675,21 @@ class Row1ScopeTests(unittest.TestCase):
         self.assertIsNot(self.server.row1_store, store)
         self.assertEqual(self.server.row1_evidence(run_id='native-row1'), stopped)
 
+    def test_terminal_full_handback_can_disable_the_previous_split_scope(self):
+        self.configure()
+        # The all-rank terminal handback legitimately advances the route after
+        # every layer comparison/release; it must not strand an enabled oracle.
+        result = self.server.configure_row1(enabled=False, run_id='native-row1',
+                                              engine_epoch=1, route_generation=4)
+        self.assertFalse(result['enabled'])
+        self.assertEqual(result['route_generation'], 3)
+        self.assertEqual(result['disabled_route_generation'], 4)
+        self.assertEqual(self.providers[-1][1:], (1, 4))
+        self.assertIsNone(self.server.row1_factory)
+        with self.assertRaisesRegex(Exception, 'identity changed'):
+            self.server.configure_row1(enabled=True, run_id='native-row1',
+                                        engine_epoch=1, route_generation=4)
+
     def test_scopes_cannot_reopen_or_replace_enabled_scope(self):
         self.configure()
         with self.assertRaisesRegex(Exception, 'still enabled'):

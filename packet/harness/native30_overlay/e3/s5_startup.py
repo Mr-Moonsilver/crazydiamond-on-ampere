@@ -178,9 +178,10 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
         state = server.runtime.state
         controller = native.controller
         if (not state.engine_bound or state.engine_epoch != engine_epoch
-                or controller.route_generation != route_generation
-                or controller.route != 'split'):
-            raise StartupError('row1 qualification needs the current split route')
+                or controller.route_generation != route_generation):
+            raise StartupError('row1 qualification needs the current engine and route')
+        if store is not None and controller.route != 'split':
+            raise StartupError('row1 qualification enable needs the split route')
         # Collective pause is the action owner's responsibility. This local
         # fence independently queries every actual decode/prefill consumer.
         drained = controller.drain()

@@ -614,7 +614,9 @@ class WorkerHandoffServer:
             raise HandoffError('row1 scoped provider is unavailable')
         if self._row1_run_id == run_id:
             scope = self._row1_scopes[run_id]
-            if scope['engine_epoch'] != engine_epoch or scope['route_generation'] != route_generation:
+            if (scope['engine_epoch'] != engine_epoch
+                    or route_generation < scope['route_generation']
+                    or (enabled and route_generation != scope['route_generation'])):
                 raise HandoffError('row1 scope identity changed')
             if scope['enabled'] is enabled:
                 return self.row1_evidence(run_id=run_id)
@@ -624,6 +626,7 @@ class WorkerHandoffServer:
             provider(None, engine_epoch, route_generation)
             self.row1_factory = None
             scope['enabled'] = False
+            scope['disabled_route_generation'] = route_generation
             return self.row1_evidence(run_id=run_id)
         if not enabled:
             raise HandoffError('row1 disable names an unknown scope')
@@ -658,6 +661,7 @@ class WorkerHandoffServer:
                     rank=state.worker_rank, worker_incarnation=state.incarnation,
                     engine_epoch=scope['engine_epoch'],
                     route_generation=scope['route_generation'],
+                    disabled_route_generation=scope.get('disabled_route_generation'),
                     local_layers=list(scope['local_layers']),
                     enabled=enabled,
                     raw=self._query_row1_store(scope['store'], enabled=enabled))
