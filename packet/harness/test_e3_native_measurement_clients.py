@@ -419,5 +419,18 @@ class ExactAuthentication(unittest.TestCase):
         self.assertIn("env.pop('ANTHROPIC_AUTH_TOKEN',None)",runner)
         self.assertIn("(r['N'],r['ROUNDS'])!=(10,2)",runner)
 
+    def test_candidate_canary_path_matches_owner_and_queue_contract(self):
+        import canary_hub_candidate_runner as canary
+        path='/home/<service-user>/.flashnext/canary-client-auth.env'
+        self.assertEqual(canary.client_auth_path({'CANARY_CLIENT_AUTH_FILE':path}),path)
+        for supplied in ({},{'CANARY_CLIENT_AUTH_FILE':path+'.other'},
+                         {'CANARY_CLIENT_AUTH_FILE':'relative.env'}):
+            with self.assertRaisesRegex(ValueError,'pinned owner contract'):
+                canary.client_auth_path(supplied)
+        settings=(ROOT/'harness/runs/q18a_overlap_settings.sh').read_text()
+        declaration=(ROOT/'harness/runs/q18a_overlap_declare.sh').read_text()
+        self.assertIn('CANARY_CLIENT_AUTH_FILE='+path,settings)
+        self.assertIn("canary_client_auth_file='"+path+"'",declaration)
+
 
 if __name__=='__main__':unittest.main()

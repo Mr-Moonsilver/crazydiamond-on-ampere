@@ -903,7 +903,10 @@ class PrivateBindingsTests(unittest.TestCase):
         split = types.SimpleNamespace(prefill_stream=FakeStream(700),
                                       describe=lambda: 'split')
         bank = types.SimpleNamespace(measured_bytes=1024)
-        comms = types.SimpleNamespace(tp=None, pp=None)
+        comms = types.SimpleNamespace(
+            tp=None, pp=None,
+            describe=lambda: {'tp_world_size': 1, 'tp_warmed': False,
+                              'basis': 'CPU private-scope fixture'})
         controller = types.SimpleNamespace(route='split', route_generation=0)
         native = WorkerNative(
             self.runner, split, bank, None, controller, comms, None, None,

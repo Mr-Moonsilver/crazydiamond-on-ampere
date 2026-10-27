@@ -17,6 +17,7 @@ from pp_release_grade import canary
 from canary_relay import Relay
 from e3_private_auth import read_private
 
+CANDIDATE_AUTH_ENV_FILE='/home/<service-user>/.flashnext/canary-client-auth.env'
 H=Path(__file__).resolve().parent
 SSH=['ssh','-F','/dev/null','-i',str(Path.home()/'.ssh/<ssh-key>'),'-o','IdentitiesOnly=yes',
      '-o','BatchMode=yes','-o','ConnectTimeout=10','root@<pve-host>']
@@ -52,6 +53,13 @@ def prepare_client_config(settings, auth_path, out):
     return candidate_config
 
 
+def client_auth_path(environ=None):
+    environ=os.environ if environ is None else environ
+    if environ.get('CANARY_CLIENT_AUTH_FILE')!=CANDIDATE_AUTH_ENV_FILE:
+        raise ValueError('candidate canary auth path differs from pinned owner contract')
+    return CANDIDATE_AUTH_ENV_FILE
+
+
 def main():
     q=safe_path(sys.argv[1],'/home/<service-user>/s0')
     ct_h=safe_path(sys.argv[2],'/home/<service-user>/harness')
@@ -62,7 +70,7 @@ def main():
     settings=json.loads((config/'settings.json').read_text())
     if settings.get('env',{}).get('ANTHROPIC_BASE_URL')!='http://<gateway-host>:8000':
         raise ValueError('Claude local route differs from reviewed gateway')
-    config=prepare_client_config(settings,os.environ.get('CANARY_CLIENT_AUTH_FILE'),out)
+    config=prepare_client_config(settings,client_auth_path(),out)
     client=Path('/home/<service-user>/.local/bin/claude')
     if not client.is_file(): raise ValueError('missing Claude client')
     deadline=time.monotonic()+4*3600
