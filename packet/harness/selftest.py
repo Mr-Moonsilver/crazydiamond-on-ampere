@@ -676,6 +676,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_lane_private.py', 'E3 lane-private bindings: owned QSA top-k/UID views, extra workspace lane, interleaved decoder access, exact restoration and refusals (CPU only, fakes)'),
                      ('test_e3_lane_comm.py', 'E3 prefill-lane communicators: PyNccl-only TP scope, tagged PP channel credits/header/release order (CPU only, faked NCCL/torch)'),
                      ('test_e3_lane_comm_probe.py', 'E3 lane-comm probe: frozen verdict, import isolation and unarmed pair-1,3 queue (CPU only)'),
+                     ('test_e3_native_report_read.py', 'Actual bounded native JSON read: capacity vs bytes, successful parse/digest, failure freshness and thread-local identity (CPU ctypes only)'),
                      ('test_e3_activity_accounting.py', 'Deferred CUPTI joins and conservation (CPU only)'),
                      ('test_vmid_job9b.py', 'VM9b CUPTI thread identity and wrapper conservation (CPU only)'),
                      ('test_e3_engine_offers.py', 'Engine offer ledger: pinned leaves and separate composition (CPU only)'),

@@ -243,5 +243,8 @@ class CorrelationBridge:
     def report(self):
         report=self.session._report_call(self.lib.s5ro_correlation_report,(self.token,),
                                          max_bytes=CORRELATION_REPORT_MAX_BYTES)
+        metadata = getattr(self.session, 'native_read_metadata', None)
+        read = metadata() if callable(metadata) else None
         return dict(native=report,offers=self.offers,
+                    native_report_read=read,
                     grade=grade(report,self.offers,epoch=self.epoch,generation=self.generation))

@@ -20,6 +20,7 @@ not a performance measurement.
 import hashlib
 import json
 import os
+import threading
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -925,6 +926,7 @@ class ObserverSession:
         self._probe_interval = None
         self._split_state = _MISSING
         self._native_reserved = 0
+        self._native_read_metadata = threading.local()
         c = binding._c
         out = c.c_uint64()
         values = (limits.buffer_count, limits.buffer_bytes,
@@ -955,14 +957,18 @@ class ObserverSession:
         limit = self.limits.max_receipt_bytes if max_bytes is None else max_bytes
         _check_int(limit, 1024, 64 * 1024 * 1024, 'bad_limits')
         capacity = limit
+        local = self._native_read_metadata
+        local.value = None
+        name = getattr(function, '__name__', 'native_report')
+        if type(name) is not str or len(name)>80 or not name.replace('_','').isalnum():
+            name = 'native_report'
         def failure(code, rc, required):
             error = ReplayObserverError(code)
-            name = getattr(function, '__name__', 'native_report')
-            if type(name) is not str or len(name)>80 or not name.replace('_','').isalnum():
-                name = 'native_report'
             error.report_diagnostics = {'function':name, 'return_code':int(rc),
                 'required_bytes':int(required), 'capacity_bytes':int(capacity),
                 'session_state':self.state}
+            local.value = dict(error.report_diagnostics, completed=False,
+                               limit_bytes=limit, error=code)
             return error
         for _attempt in range(2):
             buffer = c.create_string_buffer(capacity)
@@ -979,9 +985,16 @@ class ObserverSession:
                 except UnicodeDecodeError:
                     raise failure('malformed_native_report',rc,required) from None
                 try:
-                    return _parse_report(text)
+                    result = _parse_report(text)
                 except ReplayObserverError as exc:
                     raise failure(exc.code,rc,required) from None
+                local.value = {'function': name, 'return_code': 0,
+                    'required_bytes': required, 'capacity_bytes': capacity,
+                    'limit_bytes': limit, 'completed': True,
+                    'schema': result.get('schema'),
+                    'decoded_report_sha256': hashlib.sha256(json.dumps(result,
+                        sort_keys=True, separators=(',', ':')).encode()).hexdigest()}
+                return result
             if rc == 1:
                 if (not retry or required <= capacity
                         or required > limit):
@@ -990,6 +1003,11 @@ class ObserverSession:
                 continue
             raise failure(_STATUS_NAMES.get(rc, 'native_error'),rc,required)
         raise failure('receipt_too_large',rc,required)
+
+    def native_read_metadata(self):
+        """This thread's last actual native JSON read; not GPU bank data."""
+        value = getattr(self._native_read_metadata, 'value', None)
+        return dict(value) if isinstance(value, dict) else None
 
     # -- lifecycle --------------------------------------------------------
     def start(self):

@@ -213,6 +213,7 @@ class NativeObservation:
         return {'engine_accounting': decode_receipt, 'native_prefill_accounting': prefill,
                 'native_overlap_accounting': paired,
                 'native_report': native, 'offer_report': offers,
+                'native_report_read': whole.get('native_report_read'),
                 'native_source_seams': list(self.source_records),
                 'decode_declared': {str(k): v for k, v in declared.items()},
                 'decode_window': decode.window()}
