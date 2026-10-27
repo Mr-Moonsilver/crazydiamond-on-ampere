@@ -68,7 +68,7 @@ REQ_INDEX = 2
 SEED = 7
 # Bounded finite delay for a deterministic pending query (~1.3 s at 1.5 GHz).
 SLEEP_CYCLES = 2_000_000_000
-MODULES = ('lane_private.py', 'native_prefill_offers.py', 'native_placement.py')
+MODULES = ('lane_private.py', 'native_prefill_offers.py', 'native_placement.py', 'native_graph_placement.py')
 PINNED_MODULES = ('activity_accounting.py', 'capture_streams.py',
                   'e3_types.py', 'engine_offers.py', 'green_context.py',
                   'lane_chunk.py', 'lane_dispatch.py', 'lane_hooks.py',
@@ -318,14 +318,14 @@ def case_grade(record):
                 or raw.get('activity_records')
                 != (composed.get('whole') or {}).get('activity_records')):
             f.append('whole_report_rewritten')
-    if not record.get('shadow_pins'):
-        m.append('source_shadow_pins')
-    else:
-        for row in record['shadow_pins']:
-            digest = row.get('source_sha256')
-            if not isinstance(digest, str) or len(digest) != 64:
-                m.append('source_shadow_pin')
-                break
+    method_pins = record.get('private_method_pins')
+    methods = {'LanePrivateChunk._populate_uid_once',
+               'LanePrivateBindings._initialize_lock_once'}
+    if not isinstance(method_pins, list) or {row.get('method') for row in method_pins} != methods:
+        m.append('private_method_source_pins')
+    elif any(row.get('source_sha256') != record.get('source_pins', {}).get('lane_private.py')
+             for row in method_pins):
+        f.append('private_method_source_mismatch')
     try:
         import native_placement
         rebuilt = native_placement.compose_overlap(
@@ -345,6 +345,24 @@ def case_grade(record):
             f.append('private_families_native_mismatch')
     except (KeyError, TypeError, ValueError):
         m.append('composition_regrade_inputs')
+    if not isinstance(record.get('window_receipt'), dict):
+        m.append('raw_graph_receipt_missing')
+    else:
+        try:
+            import native_graph_placement as ngp
+            graph_grade = ngp.compose_native_placement(
+                record['window_receipt'], record['native_report'], record['offer_report'],
+                decode_declared=record['decode_declared'], decode_window=record['decode_window'],
+                prefill_declared=receipt['declared'], prefill_window=receipt['window'],
+                prefill_receipt=receipt)
+            if graph_grade != record.get('graph_placement'):
+                m.append('raw_graph_composition_regrade_mismatch')
+            if graph_grade['verdict'] == 'FAIL':
+                f.extend('raw_graph:' + reason for reason in graph_grade['failures'])
+            elif graph_grade['verdict'] != 'PASS':
+                m.extend('raw_graph:' + reason for reason in graph_grade['missing'])
+        except (KeyError, TypeError, ValueError):
+            m.append('raw_graph_composition_inputs')
     return s.verdict(f, m)
 
 
@@ -484,6 +502,21 @@ def _set(tensor, index, value):
         tensor[index] = value
 
 
+def private_method_pins(bindings, lane_private, expected):
+    """Verify the explicit source methods; no nonexistent shadow is claimed."""
+    import inspect
+    methods = (lane_private.LanePrivateChunk._populate_uid_once,
+               type(bindings)._initialize_lock_once)
+    result = []
+    for method in methods:
+        actual = s.sha(Path(inspect.getfile(method)))
+        if actual != expected:
+            raise RuntimeError('private_method_source_pin')
+        result.append(dict(method=method.__qualname__, source_sha256=actual,
+                           basis='explicit method; no instance shadow'))
+    return result
+
+
 def initialize_workspace(torch_module, workspace_module):
     """Use the pinned module's real reset/init API before private discovery."""
     workspace_module.reset_workspace_manager()
@@ -523,6 +556,7 @@ def build_bindings(torch_module, *, workspace_module, prefill_stream=None,
     import lane_state
     import native_resources
 
+    device = torch_module.device(device)
     uid = torch_module.full((4,), -2, dtype=torch_module.int32, device=device)
     decode_uid = torch_module.full((4,), -2, dtype=torch_module.int32,
                                    device=device)
@@ -690,6 +724,7 @@ def case(torch, ro, gc, cs, mh, native, receipt, modules, out):
         bundle = build_bindings(torch, workspace_module=ws_module,
                                 prefill_stream=split.prefill_stream)
         bindings = bundle['bindings']
+        r['private_method_pins'] = private_method_pins(bindings, bundle['lane_private'], r['source_pins']['lane_private.py'])
         r['discovery'] = bindings.audit()
         r['workspace_bytes'] = bundle['workspace_bytes']
         torch.cuda.synchronize()
@@ -901,6 +936,12 @@ def case(torch, ro, gc, cs, mh, native, receipt, modules, out):
             offers={'decode': len(decode._meta),
                     'prefill': len(receipt_prefill['declared']),
                     'shared_report': len(snapshot['offers'])})
+        import native_graph_placement as ngp
+        r['graph_placement'] = ngp.compose_native_placement(
+            raw_report, snapshot['native'], snapshot['offers'],
+            decode_declared=r['decode_declared'], decode_window=r['decode_window'],
+            prefill_declared=receipt_prefill['declared'], prefill_window=receipt_prefill['window'],
+            prefill_receipt=receipt_prefill)
         after_bytes = s.graph_bytes(lib, graph_handle)
         r['graph_bytes_stable'] = before_bytes == after_bytes
         r['graph_bytes'] = {'before': len(before_bytes),

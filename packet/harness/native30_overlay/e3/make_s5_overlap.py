@@ -63,7 +63,7 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
               # Native control over the pinned EngineCore utility channel.
               'native_overlap_metrics', 'native_overlap_worker',
               'native_overlap_control', 'native_overlap_session',
-              'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation')
+              'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement')
 NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
                 'native/build_q17_helpers.sh')
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'

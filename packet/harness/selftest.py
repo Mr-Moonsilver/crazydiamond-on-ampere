@@ -685,6 +685,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_vmid_job13d.py', 'VM13d actual private initialization and exact pending query: source constructor, shared accounting and hardware-probe collection guards (CPU only)'),
     ('test_vmid_job14.py', 'VM<vm-id> native source/oracle: real holds, same-storage UVA, actual epoch rebind, cancellation, exact packed union and bounded queue (CPU only)'),
     ('test_vmid_job14b.py', 'VM<vm-id> native oracle setup: actual operation/backend constructor, source registration and scoped abort, correct exactness module and fresh bounded rerun (CPU only)'),
+                     ('test_e3_native_graph_placement.py', 'Native raw graph + two-partition accounting: same bound window, per-node replay multiplicity, eager conservation and raw FAIL precedence (CPU only)'),
                      ('test_e3_native_placement.py', 'Native overlap accounting: exact-id decode/prefill partition union, independent regrade, raw-loss retention and receipt refusals (CPU only)'),
                      ('test_e3_native_prefill_offers.py', 'Native prefill offers: source-pinned lane vocabulary, auxiliary owner scopes, copy-only role, completion credit and fail-closed seams (CPU only)'),
                      ('test_e3_native_accounting_source_closure.py', 'E3 native accounting source closure: exact pending event queries, private UID/lock leaves and original-operation failure ownership (CPU only)'),

@@ -66,6 +66,7 @@ def cpu_torch():
         shape, dtype, device=device or 'cuda:0').fill_(value)
     torch.tensor = lambda values, dtype, device=None: ObservedTensor(
         (len(values),), dtype, device=device or 'cuda:0')
+    torch.device = lambda value: value
     return torch
 
 
@@ -395,12 +396,20 @@ class ProbeGradeTests(unittest.TestCase):
                                  'with_activity': []},
             'shadow_pins': [{'source_sha256': 'a' * 64}],
         }
+        expected = job.s.sha(Path(lane_private.__file__))
+        record['source_pins'] = {'lane_private.py': expected}
+        record['private_method_pins'] = [dict(method=name, source_sha256=expected)
+            for name in ('LanePrivateChunk._populate_uid_once', 'LanePrivateBindings._initialize_lock_once')]
         record.update(copy.deepcopy(self.fixture))
         job.collect_pending(record, record['native_report'])
         return record
 
-    def test_real_producer_record_passes(self):
-        self.assertEqual(job.case_grade(self.record())['verdict'], 'PASS')
+    def test_real_producer_partition_passes_without_inventing_raw_graph_evidence(self):
+        record = self.record()
+        self.assertEqual(record['composed']['verdict'], 'PASS')
+        result = job.case_grade(record)
+        self.assertEqual(result['verdict'], 'INCONCLUSIVE')
+        self.assertIn('raw_graph_receipt_missing', result['missing'])
 
     def test_missing_or_wrong_private_counts_never_pass(self):
         record = self.record()
@@ -514,6 +523,32 @@ class RootCollectorTests(unittest.TestCase):
         self.assertIs(manager, module.current_workspace_manager())
         self.assertEqual(manager._num_lanes, 2)
         self.assertEqual(manager._num_ubatches, 1)
+
+class RootDeviceAndSourceTests(unittest.TestCase):
+    def test_constructor_uses_the_tensor_device_object_not_the_input_string(self):
+        class Device:
+            def __init__(self, value):self.value=str(value)
+            def __str__(self):return self.value
+            def __eq__(self, other):return isinstance(other, Device) and str(self)==str(other)
+        torch=cpu_torch();torch.device=Device
+        full,empty=torch.full,torch.empty
+        def normalized(fn):
+            def call(*args,**kwargs):
+                kwargs['device']=Device(kwargs.get('device','cuda:0'))
+                return fn(*args,**kwargs)
+            return call
+        torch.full=normalized(full);torch.empty=normalized(empty)
+        workspace=lp.FakeWorkspaceModule(lanes=2,torch=torch)
+        bundle=job.build_bindings(torch,workspace_module=workspace)
+        self.assertIsInstance(bundle['runner'].device, Device)
+        self.assertEqual(bundle['runner'].device,bundle['uid'].device)
+    def test_actual_private_method_pin_and_drift(self):
+        torch=cpu_torch();workspace=lp.FakeWorkspaceModule(lanes=2,torch=torch)
+        bundle=job.build_bindings(torch,workspace_module=workspace)
+        pins=job.private_method_pins(bundle['bindings'],lane_private,job.s.sha(Path(lane_private.__file__)))
+        self.assertEqual(len(pins),2)
+        with self.assertRaisesRegex(RuntimeError,'private_method_source_pin'):
+            job.private_method_pins(bundle['bindings'],lane_private,'0'*64)
 
 if __name__ == '__main__':
     unittest.main()

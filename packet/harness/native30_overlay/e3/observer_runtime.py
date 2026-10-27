@@ -183,14 +183,17 @@ class WorkerObserver:
             else:
                 self.native_accounting = self.prefill.after_end(self.ledger)
                 self.engine_accounting = self.native_accounting['engine_accounting']
-                # The paired native proof does not replace the raw graph
-                # proof. X's separately reviewed composer will discharge only
-                # independently accounted eager records. Until installed this
-                # remains explicitly incomplete.
-                self.composed_placement = {
-                    'schema': 's5-native-graph-placement/1',
-                    'verdict': 'INCONCLUSIVE', 'failures': [],
-                    'missing': ['native-graph-composition-not-installed']}
+                from native_graph_placement import compose_native_placement
+                data = self.native_accounting
+                self.composed_placement = compose_native_placement(
+                    receipt, data['native_report'], data['offer_report'],
+                    decode_declared=data['decode_declared'],
+                    decode_window=data['decode_window'],
+                    prefill_declared=data['native_prefill_accounting']['declared'],
+                    prefill_window=data['native_prefill_accounting']['window'],
+                    decode_receipt=self.engine_accounting,
+                    prefill_receipt=data['native_prefill_accounting'])
+
         from launch_diagnostic import inventory,compare
         try:
             launch_report=self.session._report_call(self.session.binding._lib.s5ro_launch_report,(self.session._token,0))
