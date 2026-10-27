@@ -180,6 +180,9 @@ class NativeWorkerBridge:
         # Cancellation of that chunk closes this row before acknowledging; the
         # report is what the engine's cancellation retirement re-checks.
         self._retained = None
+        # One typed close tombstone, including the final queried report, for
+        # identical broadcast retries after a retained row has closed.
+        self._retained_cancel_ack = None
         # Set when a route switch could not be proven complete.  Every later
         # transition refuses; ownership is quarantined rather than reused.
         self._route_failure = None
@@ -360,6 +363,7 @@ class NativeWorkerBridge:
             # The retained row belongs to another request; opening would reuse
             # or overwrite the lane row of a request that never closed.
             raise WorkerBridgeError('a retained request row belongs to another request')
+        self._retained_cancel_ack = None
         chunk_admission = admission_to_chunk(record)
         snapshot = admission_metadata(record)
         ack = self.server.open(OpenPrefill(record.transaction, chunk_admission.num_tokens,
@@ -658,6 +662,11 @@ class NativeWorkerBridge:
                 # bridge never bound) owns storage it cannot certify closed.
                 return CancelAck(request.transaction, self.rank, request.state_epoch,
                                  'quarantined', (), (), 0)
+            prior_cancel = self._retained_cancel_ack
+            if (self._retained is None and prior_cancel is not None
+                    and prior_cancel.transaction == request.transaction
+                    and prior_cancel.state_epoch == request.state_epoch):
+                return prior_cancel
             prior = self._closed
             if (prior is not None and prior.closed
                     and prior.transaction == request.transaction
@@ -687,12 +696,14 @@ class NativeWorkerBridge:
                                          report.completed_sequence, report=report)
                     self._retained = None
                     self._closed = None
-                    return CancelAck(request.transaction, self.rank, request.state_epoch,
+                    ack = CancelAck(request.transaction, self.rank, request.state_epoch,
                                      'released', report.completed_op_seqs,
                                      report.pending_op_seqs,
                                      report.completed_sequence,
                                      released=True, request_closed=True,
                                      report=report)
+                    self._retained_cancel_ack = ack
+                    return ack
                 # The retained row belongs to another chunk/request: do not
                 # guess which row this cancellation owns.
                 return CancelAck(request.transaction, self.rank, request.state_epoch,

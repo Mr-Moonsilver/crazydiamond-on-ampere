@@ -508,7 +508,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_unowned_container_is_refused_before_writing(self):
         with self.assertRaises(ValueError):
-            support.monitor(Path('/nonexistent-job12c-out'), 'flashnext-job13')
+            support.monitor(Path('/nonexistent-job12c-out'), 'flashnext-unowned-fixture')
         with self.assertRaises(ValueError):
             support.monitor(Path('/nonexistent-job12c-out'), 'flashnext-job1')
         with self.assertRaises(ValueError):

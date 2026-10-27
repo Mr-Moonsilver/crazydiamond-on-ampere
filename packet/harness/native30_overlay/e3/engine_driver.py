@@ -817,6 +817,16 @@ class NativeSegmentDriver:
         self._cancel_targets = frozenset()
         self._release_acks = {}
         self._release_attempts = 0
+        # The exact worker request row a certified nonterminal all-rank release
+        # left open.  It is bound from the real ReleaseAck rows and the final
+        # queried reports, never inferred from a queue size or ``active`` flag.
+        # It survives ``_reset``: the row belongs to the request *between*
+        # chunks, not to the chunk whose storage was just released.  A same
+        # request reopen moves it back to an active transaction; only an
+        # all-rank typed terminal release/cancel clears it.
+        self._retained = None
+        self._retained_cancel_request = None
+        self._retained_cancel_acks = {}
         # Engine-owner bootstrap and route completion.  These survive a chunk
         # reset: the worker storage epoch and replay census are worker-stable.
         self._bootstrapped = False
@@ -881,11 +891,51 @@ class NativeSegmentDriver:
         return self
 
     @property
-    def active(self):
+    def live(self):
+        """Owned chunk/route work; a retained request row is not a chunk."""
         return (self.tx is not None or self.controller.active
                 or self._return_pending is not None
                 or self._transition is not None
                 or self._bootstrap_command is not None)
+
+    @property
+    def active(self):
+        # A retained worker request row is real owned work between chunks even
+        # though no chunk, GPU replay or paused ordinary batch is outstanding.
+        return self.live or self._retained is not None
+
+    def retained_request(self):
+        """The exact transaction whose worker request row is still owned."""
+        row = self._retained
+        return None if row is None else row['transaction']
+
+    def retained_row(self):
+        """Bounded status row for the retained metadata; no request UID."""
+        row = self._retained
+        if row is None:
+            return None
+        transaction = row['transaction']
+        return {
+            'transaction': transaction.txn_seq,
+            'request_generation': transaction.request_generation,
+            'chunk_start': transaction.chunk_start,
+            'chunk_end': transaction.chunk_end,
+            'state_epoch': row['state_epoch'],
+            'ranks': list(self.ranks),
+            'completed_sequences': [row['completed_sequences'][rank]
+                                    for rank in self.ranks],
+            'cancel_pending': self._retained_cancel_request is not None,
+            # Replied ranks are not closed ranks: a partial reply (or a rank
+            # that still owns the row) must never read as a clean closure.
+            'replied_ranks': sorted(self._retained_cancel_acks),
+            'closed_ranks': sorted(rank for rank, ack
+                                   in self._retained_cancel_acks.items()
+                                   if ack.closed),
+            'closure': ('closed' if (len(self._retained_cancel_acks) == len(self.ranks)
+                                     and all(ack.closed for ack
+                                             in self._retained_cancel_acks.values()))
+                        else 'open'),
+        }
 
     # -- schedule seam ----------------------------------------------------
     def park(self, scheduler_output):
@@ -949,6 +999,8 @@ class NativeSegmentDriver:
             self._apply_cancel(values)
         elif kind == 'release':
             self._apply_release(values)
+        elif kind == 'retained_cancel':
+            self._apply_retained_cancel(values)
         elif kind == 'native_overlap':
             self._apply_native_overlap(values, sequence)
         elif kind == 'transition':
@@ -1062,6 +1114,26 @@ class NativeSegmentDriver:
                 raise DriverError('open acknowledged the wrong lane or PP topology')
             if ack.stage != self.stage_of[ack.lane.worker_rank]:
                 raise DriverError('worker stage disagrees with the split')
+        if self._retained is not None:
+            row = self._retained
+            if (not row['transaction'].same_request(self.tx)
+                    or row['transaction'] == self.tx):
+                # The worker open moved a *different* request/generation onto
+                # the retained row.  Refuse instead of guessing whose row it is.
+                raise DriverError('open does not continue the retained request row')
+            self._record('request_row_continued', transaction=self.tx.txn_seq,
+                         previous_transaction=row['transaction'].txn_seq,
+                         request_generation=self.tx.request_generation,
+                         state_epoch=self.admission.state_epoch,
+                         previous_state_epoch=row['state_epoch'],
+                         chunk_start=self.tx.chunk_start,
+                         chunk_end=self.tx.chunk_end,
+                         ranks=list(self.ranks))
+            # Every rank accepted this chunk's open; the row now belongs to the
+            # active transaction and is released/closed by the normal paths.
+            self._retained = None
+            self._retained_cancel_request = None
+            self._retained_cancel_acks = {}
         self.plan = self._build_plan()
         # The scheduler hold may only be validated for lanes that actually
         # received this admitted frame; bind their exact identities now.
@@ -1343,6 +1415,35 @@ class NativeSegmentDriver:
                                'ranks': list(frontier.get('ranks') or ()),
                                'pp_seqs': list(frontier.get('pp_seqs') or ())}
                      if frontier else None)
+        if terminal:
+            # The request row closed with this chunk; no retained metadata may
+            # survive into stock decode or a later admission of the same UID.
+            self._retained = None
+            self._retained_cancel_request = None
+            self._retained_cancel_acks = {}
+        else:
+            # Every rank certified ``released=True, request_closed=False``
+            # against the complete final report.  Bind that exact row here,
+            # before ``_reset`` drops the chunk's own state.
+            self._retained = {
+                'transaction': transaction,
+                'state_epoch': admission.state_epoch,
+                'reports': dict(self.reports),
+                'completed_sequences': {
+                    rank: self._release_acks[rank].completed_sequence
+                    for rank in self.ranks},
+            }
+            self._retained_cancel_request = None
+            self._retained_cancel_acks = {}
+            self._record('request_row_retained', transaction=transaction.txn_seq,
+                         request_generation=transaction.request_generation,
+                         state_epoch=admission.state_epoch,
+                         chunk_start=transaction.chunk_start,
+                         chunk_end=transaction.chunk_end,
+                         ranks=list(self.ranks),
+                         completed_sequences=[
+                             self._retained['completed_sequences'][rank]
+                             for rank in self.ranks])
         self._reset()
         if terminal:
             # The chunk left the final prompt token for stock decode.  Stock
@@ -1502,6 +1603,10 @@ class NativeSegmentDriver:
         """One bounded step towards the drained all-rank full-bank return."""
         if self._route_exchange() is not None or self._inflight:
             return
+        if self._retained is not None:
+            # The full-bank return may not abandon a worker request row the
+            # engine still owns.  Closure is driven by the stop/cancel path.
+            raise DriverError('full route return requires the retained row to close')
         if not self._split_ready:
             # Already home (or never left); the return is satisfied.
             self._return_pending = None
@@ -1574,6 +1679,16 @@ class NativeSegmentDriver:
 
     def _begin(self):
         admission = self.controller.admission()
+        row = self._retained
+        if row is not None:
+            # Only the next chunk of the SAME request/generation may move the
+            # retained row through the existing LaneRequest.update() path.  A
+            # foreign request, a reused UID with a new generation, or a state
+            # epoch that did not advance is refused before any worker open.
+            if not row['transaction'].same_request(admission.transaction):
+                raise DriverError('a retained request row belongs to another request')
+            if admission.state_epoch <= row['state_epoch']:
+                raise DriverError('a retained request row has no newer state epoch')
         self.tx = admission.transaction
         self.admission = admission
         self.open_request = OpenRequest(admission, self.ranks,
@@ -1723,6 +1838,24 @@ class NativeSegmentDriver:
                          or self._transition is not None
                          or self._bootstrap_command is not None)
         if self.tx is None and not self.controller.active and not route_pending:
+            if self._retained is not None:
+                # Between chunks the request row is owned with no chunk, GPU
+                # replay or parked batch to cancel.  Close it through the same
+                # bounded typed worker path; only then is a full return owed.
+                if self.stop_kind is None:
+                    self.stop_kind = kind
+                if kind == 'pause' and self._control_owns_route():
+                    # A control intent owns this split route: the row closes,
+                    # the route is not abandoned and no full return is owed.
+                    self._record('control_route_pause_kept',
+                                 reason=self._control_route.get('intent'),
+                                 stop_kind=kind,
+                                 retained_transaction=self._retained['transaction'].txn_seq,
+                                 route_generation=self.route_generation)
+                elif self._split_ready:
+                    self._return_pending = 'stop'
+                self.pump_stop(self.stop_tick_budget)
+                return self.phase
             if not self._split_ready:
                 return None
             if kind == 'pause' and self._control_owns_route():
@@ -1769,6 +1902,12 @@ class NativeSegmentDriver:
                 self._send_transition()
             return
         if self.tx is None:
+            if self._retained is not None:
+                # The request row outlived its chunk.  It is not a parked
+                # admission and not a published chunk: close the exact row the
+                # workers certified before retiring any parked next chunk.
+                self._drive_retained_cancel()
+                return
             # Admission happened pre-schedule; the driver may not have begun.
             # Closing admissions retires the parked chunk without publishing.
             if self.controller.active:
@@ -1806,6 +1945,107 @@ class NativeSegmentDriver:
                                 (CancelRequest(self.tx, self.admission.state_epoch,
                                                reason),), {}, None),
                      self.ranks)
+
+    def _drive_retained_cancel(self):
+        """Close the exact retained request row through the typed worker path.
+
+        One all-rank ``CancelRequest`` for the retained transaction and its own
+        state epoch; every rank executes the broadcast and replies.  The command
+        is immutable and retried unchanged until every rank certifies closure or
+        the stop bound refuses (ownership is kept in both cases).
+        """
+        row = self._retained
+        if row is None:
+            return
+        if self._inflight and any(kind != 'poll'
+                                  for kind in self._inflight.values()):
+            return
+        acks = self._retained_cancel_acks
+        if set(acks) == set(self.ranks) and all(ack.closed for ack in acks.values()):
+            self._retire_retained_cancel()
+            return
+        self._stop_round()
+        request = self._retained_cancel_request
+        if request is None:
+            request = CancelRequest(row['transaction'], row['state_epoch'],
+                                    self.stop_kind or 'cancel')
+            self._retained_cancel_request = request
+        self._submit('retained_cancel',
+                     ('flash_s5_cancel', (request,), {}, None), self.ranks)
+
+    def _apply_retained_cancel(self, values):
+        """One bounded all-rank close of the retained request row."""
+        row = self._retained
+        if row is None:
+            raise DriverError('retained cancellation has no owned request row')
+        acks = tuple(values)
+        if (len(acks) != len(self.ranks)
+                or any(type(ack) is not CancelAck for ack in acks)
+                or {ack.worker_rank for ack in acks} != set(self.ranks)):
+            raise DriverError('retained cancellation lacks the typed all-rank reply')
+        for ack in acks:
+            if (ack.transaction != row['transaction']
+                    or ack.state_epoch != row['state_epoch']):
+                raise DriverError(
+                    'retained cancellation binds another transaction/state epoch')
+            expected = row['completed_sequences'][ack.worker_rank]
+            prior = self._retained_cancel_acks.get(ack.worker_rank)
+            if ack == prior:
+                continue
+            if ack.disposition == 'quarantined':
+                # Keep the row and the quarantine disposition; never report a
+                # clean close from a worker that still owns storage.
+                self._retained_cancel_acks[ack.worker_rank] = ack
+                raise DriverError('worker quarantined the retained row; ownership kept')
+            if not ack.closed:
+                # The rank still owns the row; keep waiting/retrying.
+                self._retained_cancel_acks[ack.worker_rank] = ack
+                continue
+            if not self._retained_close_certified(ack, expected):
+                raise DriverError(
+                    'retained row closed without its certified queried report')
+            if prior is not None and prior.closed:
+                # The rank already certified this exact row closed; the
+                # broadcast copy confirms it and never replaces the terminal row.
+                continue
+            self._retained_cancel_acks[ack.worker_rank] = ack
+
+    def _retained_close_certified(self, ack, expected):
+        """One closed ack that binds the retained transaction and final report."""
+        # This worker positively retained the row; zero-history never_open
+        # contradicts that binding. A retry must return its typed close report.
+        if ack.disposition == 'never_open':
+            return False
+        report = ack.report
+        row = self._retained
+        return (ack.disposition == 'released' and report is not None
+                and report.transaction == row['transaction']
+                and report.state_epoch == row['state_epoch']
+                and report.worker_rank == ack.worker_rank
+                and report == row['reports'][ack.worker_rank]
+                and ack.completed_op_seqs == report.completed_op_seqs
+                and not ack.pending_op_seqs
+                and report.completed_sequence == expected
+                and ack.completed_sequence == expected)
+
+    def _retire_retained_cancel(self):
+        """Forget a row every rank certified closed; no publication/frontier move."""
+        row = self._retained
+        acks = self._retained_cancel_acks
+        if row is None or set(acks) != set(self.ranks) \
+                or any(not ack.closed for ack in acks.values()):
+            raise DriverError('retained cancellation lacks an all-rank close disposition')
+        self._record('request_row_closed', transaction=row['transaction'].txn_seq,
+                     request_generation=row['transaction'].request_generation,
+                     state_epoch=row['state_epoch'],
+                     chunk_start=row['transaction'].chunk_start,
+                     chunk_end=row['transaction'].chunk_end,
+                     ranks=list(self.ranks),
+                     reason=self.stop_kind,
+                     dispositions=sorted({ack.disposition for ack in acks.values()}))
+        self._retained = None
+        self._retained_cancel_request = None
+        self._retained_cancel_acks = {}
 
     def _stop_round(self):
         """Count one submitted stop round; refuse past the bound, keep ownership."""
@@ -1930,7 +2170,9 @@ class NativeSegmentDriver:
         ``_bootstrapped``/``_storage_epochs``/``_decode_watermarks``/
         ``_split_ready``/``_return_pending`` deliberately survive: the storage
         epoch and replay census belong to the worker incarnation, and a chunk
-        boundary is never a route boundary.
+        boundary is never a route boundary.  ``_retained`` also survives: a
+        nonterminal release leaves the worker request row owned by the request,
+        and only a same-request reopen or a typed all-rank close clears it.
         """
         self.tx = None
         self.admission = None
@@ -2069,7 +2311,13 @@ class NativeSegmentDriver:
         if existing is not None:
             if existing['phase'] != phase:
                 raise DriverError('native-admission-intent-change-with-owned-intent')
+            # Idempotent same-phase intent may continue the SAME retained
+            # request row; it grants nothing about a different request.
             return dict(existing)
+        if self._retained is not None:
+            # Arming a new phase cannot silently abandon a row the workers
+            # still own for the previous request.
+            raise DriverError('native-admission-arm-with-retained-request-row')
         self._admission_seq += 1
         intent = {'schema': 1,
                   'owner': 'engine-core',
@@ -2087,6 +2335,11 @@ class NativeSegmentDriver:
 
     def _disarm_admission(self, reason):
         intent = self._admission_intent
+        if self._retained is not None:
+            # Disarm is a phase change even when no intent is currently armed:
+            # it must see actual row closure (through the stop/cancel path)
+            # instead of reporting a clean phase while workers own a row.
+            raise DriverError('native-admission-disable-with-retained-request-row')
         if intent is None:
             return None
         if (self._control is not None or self._inflight
@@ -2158,10 +2411,16 @@ class NativeSegmentDriver:
                 raise DriverError('native-control-route-requires-paused-engine')
             if self.tx is not None or self._inflight:
                 raise DriverError('native-control-requires-idle-driver')
+            if self._retained is not None:
+                # A route change to/from the full bank is not allowed to
+                # abandon a worker request row; close it through the stop path.
+                raise DriverError('native-control-requires-retained-row-closure')
             return
-        if self.active or self._inflight:
+        if self.live or self._inflight:
             # A live native chunk, source hold, PP transfer or route exchange
             # is never bypassed just because the cohort is ordinary decode.
+            # A retained request row is idle metadata: observation may query it
+            # and the worker census reports it, but it is never a chunk.
             raise DriverError('native-control-requires-idle-driver')
         if not self._engine_paused():
             raise DriverError('native-control-requires-paused-engine')
@@ -2286,7 +2545,22 @@ class NativeSegmentDriver:
             'bootstrap_pending': self._bootstrap_command is not None,
             'return_pending': self._return_pending,
             'active': bool(self.active),
+            'live': bool(self.live),
             'controller_active': bool(self.controller.active),
+            'retained_row': self.retained_row(),
+            'owned_work': {
+                # A retained request row is distinct from an outstanding native
+                # chunk, a GPU replay and a paused ordinary batch.  These
+                # queried facts are reported separately, never inferred from
+                # ``active`` or a scheduler-queue size.
+                'chunk': self.tx is not None,
+                'parked_admission': bool(self.controller.active),
+                'retained_request_row': self._retained is not None,
+                'route_exchange': self._route_exchange() is not None,
+                'return_pending': self._return_pending,
+                'control_intent': (None if self._control is None
+                                   else self._control['action']),
+            },
             'chunk': None if self.tx is None else self.tx.txn_seq,
             'phase': self.phase,
             'paused': (self.engine is not None

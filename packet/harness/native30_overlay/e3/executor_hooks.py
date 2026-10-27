@@ -730,11 +730,18 @@ def before_abort(engine, request_ids):
         if hasattr(driver, 'tx'):
             # Native driver: abort may target a begun transaction or a chunk
             # that is only parked in the admission controller.
+            ids = tuple(request_ids)
             transaction = driver.tx
             if transaction is None and driver.controller.active:
                 transaction = driver.controller.admission().transaction
-            if (transaction is not None
-                    and transaction.request_uid in tuple(request_ids)):
+            if transaction is not None and transaction.request_uid in ids:
+                return driver.stop('abort', drain=False)
+            retained = getattr(driver, 'retained_request', None)
+            retained = retained() if callable(retained) else None
+            if retained is not None and retained.request_uid in ids:
+                # Between chunks the request row is owned with no chunk and no
+                # parked admission; abort must close it through the same typed
+                # worker cancellation, never leave it stranded.
                 return driver.stop('abort', drain=False)
             return None
         active = driver.dispatcher.active

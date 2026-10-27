@@ -25,6 +25,7 @@ import textwrap
 import time
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 import sys
 
@@ -42,6 +43,7 @@ import s5_startup  # noqa: E402
 import scheduler_hooks as sh  # noqa: E402
 import wire_v1 as w  # noqa: E402
 
+from test_e3_admission_native import Request as QueuedRequest  # noqa: E402
 from test_e3_native_storage_replay import make_native_stack  # noqa: E402
 
 UID = 'req-r4-bridge'
@@ -640,13 +642,18 @@ class WorkerRowTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(stack.driver.error)
             self.assertIsNotNone(stack.worker(0)._flash_s5_bridge._retained)
 
-        # Only an actual typed close (the existing bridge path) releases it.
+        # Only the engine-owned typed close (one all-rank CancelRequest for the
+        # exact retained transaction and state epoch) releases it.
+        self.assertTrue(stack.driver.active)
+        stack.driver.stop('abort', drain=False)
+        stack.drive(lambda: not stack.driver.active)
+        self.assertIsNone(stack.driver.error)
+        self.assertIsNone(stack.driver.retained_row())
+        self.assertFalse(stack.driver._split_ready)
         for rank in stack.driver.ranks:
             bridge = stack.worker(rank)._flash_s5_bridge
-            ack = bridge.cancel(w.CancelRequest(stack.record.transaction,
-                                                stack.record.state_epoch, 'abort'))
-            self.assertTrue(ack.closed)
             self.assertIsNone(bridge._retained)
+            self.assertIsNone(bridge._closed)
         row = nw.handle(stack.worker(0),
                         {'action': 'barrier',
                          'engine_epoch': stack.driver.engine_epoch},
@@ -691,6 +698,678 @@ class WorkerRowTests(unittest.IsolatedAsyncioTestCase):
         # Only the four exact actions reach the worker at all.
         with self.assertRaises(nc.NativeControlError):
             await control.qualification('teacher_verdict', {})
+
+
+# --- engine ownership of the worker request row between chunks -------------
+
+class RetainedRowClosureTests(unittest.IsolatedAsyncioTestCase):
+    """The engine owns the exact worker row a nonterminal chunk left behind.
+
+    A nonterminal release answers ``released=True, request_closed=False`` and
+    the worker keeps its ``LaneRequest`` row so the next chunk can update it.
+    The engine must remember that exact row, refuse every phase/route change
+    that would abandon it, continue it only for the same request/generation,
+    and close it through one typed all-rank cancellation before a full return.
+    """
+
+    def finish_chunk(self, stack):
+        driver = stack.driver
+        stack.drive_to_finalize()
+        stack.complete_everything()
+        stack.drive(lambda: driver.tx is None, limit=400)
+        self.assertIsNone(driver.error)
+        return driver
+
+    def bridge(self, stack, rank):
+        return stack.worker(rank)._flash_s5_bridge
+
+    def factory_rows(self, stack):
+        return {rank: (worker.factory.registers, worker.factory.updates,
+                       worker.factory.released)
+                for rank, worker in stack.workers.items()}
+
+    def journal_kinds(self, driver):
+        return [entry['kind'] for entry in driver._journal]
+
+    def assert_row_open(self, stack, transaction, state_epoch, completed):
+        driver = stack.driver
+        row = driver.retained_row()
+        self.assertIsNotNone(row)
+        self.assertEqual(row['transaction'], transaction.txn_seq)
+        self.assertEqual(row['request_generation'], transaction.request_generation)
+        self.assertEqual(row['chunk_start'], transaction.chunk_start)
+        self.assertEqual(row['chunk_end'], transaction.chunk_end)
+        self.assertEqual(row['state_epoch'], state_epoch)
+        self.assertEqual(row['ranks'], list(driver.ranks))
+        self.assertEqual(row['completed_sequences'], completed)
+        self.assertEqual(row['replied_ranks'], [])
+        self.assertEqual(row['closed_ranks'], [])
+        self.assertEqual(row['closure'], 'open')
+        # A retained row is idle metadata: no chunk, no parked admission, no
+        # route exchange, and no live ordinary batch inferred from it.
+        self.assertTrue(driver.active)
+        self.assertFalse(driver.live)
+        self.assertIsNone(driver.tx)
+        self.assertFalse(driver.controller.active)
+        for rank in driver.ranks:
+            bridge = self.bridge(stack, rank)
+            self.assertFalse(bridge.active)
+            self.assertIsNotNone(bridge._retained)
+            self.assertEqual(bridge._retained['transaction'], transaction)
+            self.assertEqual(bridge._retained['report'].state_epoch, state_epoch)
+        return row
+
+    def assert_rows_closed(self, stack):
+        driver = stack.driver
+        self.assertIsNone(driver.retained_row())
+        self.assertIsNone(driver.retained_request())
+        for rank in driver.ranks:
+            bridge = self.bridge(stack, rank)
+            self.assertFalse(bridge.active)
+            self.assertIsNone(bridge._retained)
+            if bridge._closed is not None:
+                # A terminal release leaves its own closed row to answer a
+                # later duplicate confirmation; a typed cancel clears it.
+                self.assertTrue(bridge._closed.closed)
+
+    async def split_route(self, control, core):
+        task = asyncio.get_running_loop().create_task(control.enter_split())
+        await pump_until(lambda: task.done(), core)
+        self.assertEqual(task.result()['route_after'], 'split')
+        return task.result()
+
+    def test_nonterminal_chunks_continue_one_row_and_only_terminal_release_closes_it(self):
+        stack = active_stack()
+        core, _frontend = core_for(stack)
+        driver = self.finish_chunk(stack)
+        first = stack.record.transaction
+        self.assert_row_open(stack, first, stack.record.state_epoch, [7, 7, 8, 8])
+        self.assertEqual(self.factory_rows(stack),
+                         {rank: (1, 0, 0) for rank in driver.ranks})
+        committed = dict(stack.controller._committed)
+        self.assertEqual(committed[first]['committed_end'], 4)
+
+        status = driver._status_record()
+        self.assertFalse(status['owned_work']['chunk'])
+        self.assertFalse(status['owned_work']['parked_admission'])
+        self.assertFalse(status['owned_work']['route_exchange'])
+        self.assertTrue(status['owned_work']['retained_request_row'])
+        self.assertEqual(status['retained_row']['transaction'], first.txn_seq)
+        self.assertIsNone(status['chunk'])
+        self.assertTrue(status['active'])
+        self.assertFalse(status['live'])
+        self.assertFalse(status['controller_active'])
+        # The worker storage epoch and replay census belong to the worker
+        # incarnation; retaining a request row never moves either.
+        storage = status['storage_epochs_by_rank']
+        self.assertEqual(set(storage), set(driver.ranks))
+        self.assertEqual(len(set(storage.values())), 1)
+        watermarks = status['decode_watermarks_by_rank']
+
+        # The next chunk of the SAME request/generation reaches LaneRequest.
+        second = stack.controller.admit(stack.scheduler)
+        self.assertTrue(second.transaction.same_request(first))
+        self.assertEqual(second.transaction.request_generation,
+                         first.request_generation)
+        self.finish_chunk(stack)
+        self.assert_row_open(stack, second.transaction, second.state_epoch,
+                             [7, 7, 8, 8])
+        self.assertEqual(self.factory_rows(stack),
+                         {rank: (1, 1, 0) for rank in driver.ranks})
+        self.assertEqual(self.journal_kinds(driver).count('request_row_continued'), 1)
+        self.assertEqual(stack.controller._committed[first]['committed_end'], 4)
+        self.assertEqual(stack.controller._committed[second.transaction]['committed_end'], 8)
+        after = driver._status_record()
+        self.assertEqual(after['storage_epochs_by_rank'], storage)
+        self.assertEqual(after['decode_watermarks_by_rank'], watermarks)
+        self.assertTrue(all(entry['retired'] for entry in driver._journal
+                            if entry['kind'] == 'source_hold'))
+
+        # Only the terminal release closes the actual worker rows.
+        third = stack.controller.admit(stack.scheduler)
+        self.assertTrue(third.terminal)
+        self.finish_chunk(stack)
+        stack.drive(lambda: not driver.active, limit=400)
+        self.assertIsNone(driver.error)
+        self.assert_rows_closed(stack)
+        self.assertFalse(driver.active)
+        self.assertEqual(self.factory_rows(stack),
+                         {rank: (1, 2, 1) for rank in driver.ranks})
+        self.assertEqual(self.journal_kinds(driver).count('request_row_retained'), 2)
+        self.assertEqual(stack.controller._committed[third.transaction]['committed_end'], 11)
+
+    def test_disarm_and_route_controls_cannot_strand_the_retained_worker_rows(self):
+        stack = active_stack()
+        core, _frontend = core_for(stack)
+        driver = self.finish_chunk(stack)
+        transaction = stack.record.transaction
+        row = self.assert_row_open(stack, transaction, stack.record.state_epoch,
+                                   [7, 7, 8, 8])
+        committed = dict(stack.controller._committed)
+        status = driver._status_record()
+        storage = status['storage_epochs_by_rank']
+        watermarks = status['decode_watermarks_by_rank']
+
+        # The worker census separates the retained row from a live chunk.
+        census = nw.handle(stack.worker(0),
+                           {'action': 'barrier',
+                            'engine_epoch': driver.engine_epoch},
+                           clock=time.monotonic_ns)
+        self.assertEqual(census['retained_rows'], 1)
+        self.assertEqual(census['retained_active_rows'], 0)
+        self.assertEqual(census['retained_request_uids'], [UID])
+
+        for command, message in (
+                ({'action': 'arm_admission', 'phase': 'w2-overlap'},
+                 'native-admission-arm-with-retained-request-row'),
+                ({'action': 'disarm_admission'},
+                 'native-admission-disable-with-retained-request-row'),
+                ({'action': 'enter_split'},
+                 'native-control-requires-retained-row-closure'),
+                ({'action': 'leave_split'},
+                 'native-control-requires-retained-row-closure')):
+            with self.assertRaises(ed.DriverError) as caught:
+                driver.submit_control(command)
+            self.assertIn(message, str(caught.exception))
+            self.assertIsNone(driver.error)
+            self.assertEqual(driver.retained_row(), row)
+            for rank in driver.ranks:
+                self.assertIsNotNone(self.bridge(stack, rank)._retained)
+
+        # The owned typed stop closes every actual worker row, then the driver
+        # takes the all-rank full return it owes.
+        driver.stop('pause', drain=False)
+        stack.drive(lambda: not driver.active, limit=400)
+        self.assertIsNone(driver.error)
+        self.assert_rows_closed(stack)
+        self.assertFalse(driver._split_ready)
+        self.assertEqual(driver.route_generation, 2)
+        self.assertIsNone(driver._return_pending)
+        self.assertIsNone(driver.stop_kind)
+        self.assertEqual(stack.controller._committed, committed)
+        self.assertEqual(driver._status_record()['storage_epochs_by_rank'], storage)
+        self.assertEqual(driver._status_record()['decode_watermarks_by_rank'],
+                         watermarks)
+        closed = [entry for entry in driver._journal
+                  if entry['kind'] == 'request_row_closed']
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]['reason'], 'pause')
+        self.assertEqual(closed[0]['dispositions'], ['released'])
+        self.assertEqual(closed[0]['state_epoch'], stack.record.state_epoch)
+
+    async def test_an_armed_intent_may_continue_the_same_row_but_not_change_phase(self):
+        stack = cold_stack()
+        core, frontend = core_for(stack)
+        driver = stack.driver
+        control = nc.NativeControlClient(frontend, timeout_s=5.0)
+        await self.split_route(control, core)
+        armed = driver.submit_control({'action': 'arm_admission',
+                                       'phase': 'w2-overlap'})
+        record = sh.flash_s5_admit(stack.scheduler)
+        self.assertIsNotNone(record)
+        self.finish_chunk(stack)
+        row = self.assert_row_open(stack, record.transaction, record.state_epoch,
+                                   [7, 7, 8, 8])
+        committed = dict(stack.controller._committed)
+
+        same = driver.submit_control({'action': 'arm_admission',
+                                      'phase': 'w2-overlap'})
+        self.assertEqual(same['admission_intent'], armed['admission_intent'])
+        self.assertEqual(driver.retained_row(), row)
+        with self.assertRaises(ed.DriverError) as caught:
+            driver.submit_control({'action': 'arm_admission',
+                                   'phase': 'row1-native'})
+        self.assertIn('native-admission-intent-change-with-owned-intent',
+                      str(caught.exception))
+        with self.assertRaises(ed.DriverError) as caught:
+            driver.submit_control({'action': 'disarm_admission'})
+        self.assertIn('native-admission-disable-with-retained-request-row',
+                      str(caught.exception))
+        self.assertEqual(driver.retained_row(), row)
+
+        # A control intent owns the split route: the pause closes the rows and
+        # keeps the route instead of abandoning the observation.
+        generation = driver.route_generation
+        driver.stop('pause', drain=False)
+        stack.drive(lambda: not driver.active, limit=400)
+        self.assertIsNone(driver.error)
+        self.assert_rows_closed(stack)
+        self.assertTrue(driver._split_ready)
+        self.assertEqual(driver.route_generation, generation)
+        self.assertIn('control_route_pause_kept', self.journal_kinds(driver))
+        self.assertEqual(driver.admission_intent(), armed['admission_intent'])
+        self.assertEqual(stack.controller._committed, committed)
+
+        # Only after actual closure may the phase change; a reset then retires
+        # the owned split route back to the full bank.
+        disarmed = driver.submit_control({'action': 'disarm_admission'})
+        self.assertEqual(disarmed['previous_admission_intent'],
+                         armed['admission_intent'])
+        self.assertIsNone(driver.admission_intent())
+        driver.stop('reset')
+        stack.drive(lambda: not driver.active, limit=400)
+        self.assertIsNone(driver.error)
+        self.assertFalse(driver._split_ready)
+        self.assertEqual(driver.route_generation, generation + 1)
+        self.assertIsNone(driver.retained_row())
+        self.assertEqual(stack.controller._committed, committed)
+
+    async def test_generated_keep_pause_between_chunks_closes_rows_then_returns_full(self):
+        stack = active_stack()
+        core, frontend = core_for(stack, paused=False)
+        driver = self.finish_chunk(stack)
+        self.assert_row_open(stack, stack.record.transaction,
+                             stack.record.state_epoch, [7, 7, 8, 8])
+        committed = dict(stack.controller._committed)
+        generation = driver.route_generation
+        self.assertFalse(core.paused)
+
+        await frontend.pause_generation(mode='keep', clear_cache=False)
+        self.assertTrue(core.paused)
+        self.assertEqual(core.pause_states, ['PAUSED_ALL'])
+        self.assertEqual(core.rpc_calls, ['synchronize_device'])
+        self.assertIsNone(driver.error)
+        self.assert_rows_closed(stack)
+        self.assertFalse(driver.active)
+        self.assertFalse(driver._split_ready)
+        self.assertEqual(driver.route_generation, generation + 1)
+        self.assertIsNone(driver._return_pending)
+        self.assertIn('request_row_closed', self.journal_kinds(driver))
+        self.assertEqual(stack.controller._committed, committed)
+
+    def test_process_pause_waits_for_the_retained_close_then_returns_full(self):
+        stack = active_stack()
+        core = process_core(stack)
+        driver = self.finish_chunk(stack)
+        self.assert_row_open(stack, stack.record.transaction,
+                             stack.record.state_epoch, [7, 7, 8, 8])
+        committed = dict(stack.controller._committed)
+        generation = driver.route_generation
+        # The paused process loop must stay awake for the row alone.
+        self.assertFalse(stack.controller.active)
+        self.assertTrue(core.has_work())
+
+        stack.transport.hold = True
+        result = core.pause_scheduler(mode='keep', clear_cache=False)
+        self.assertIsInstance(result, concurrent.futures.Future)
+        self.assertFalse(result.done())
+        for _ in range(4):
+            core.step()
+        self.assertFalse(result.done())
+        self.assertEqual(core.rpc_calls, [])
+        self.assertTrue(driver.active)
+        self.assertIsNotNone(driver.retained_row())
+        self.assertTrue(driver.retained_row()['cancel_pending'])
+        self.assertIsNone(driver.error)
+
+        stack.transport.deliver_held()
+        for _ in range(100):
+            core.step()
+            if result.done():
+                break
+        self.assertTrue(result.done())
+        self.assertIsNone(result.result())
+        self.assertIsNone(driver.error)
+        self.assert_rows_closed(stack)
+        self.assertFalse(driver.active)
+        self.assertFalse(driver._split_ready)
+        self.assertEqual(driver.route_generation, generation + 1)
+        self.assertEqual(core.rpc_calls, ['synchronize_device'])
+        self.assertEqual(stack.controller._committed, committed)
+
+    def test_reset_or_shutdown_between_chunks_waits_for_every_row_to_close(self):
+        for hook in (eh.before_reset_prefix, eh.before_engine_shutdown):
+            with self.subTest(hook=hook.__name__):
+                stack = active_stack()
+                core, _frontend = core_for(stack)
+                driver = self.finish_chunk(stack)
+                transaction = stack.record.transaction
+                self.assert_row_open(stack, transaction, stack.record.state_epoch,
+                                     [7, 7, 8, 8])
+                committed = dict(stack.controller._committed)
+                generation = driver.route_generation
+
+                stack.transport.hold = True
+                with self.assertRaises(ed.E3Pending):
+                    hook(core)
+                self.assertIsNone(driver.error)
+                self.assertTrue(driver.active)
+                retained = driver.retained_row()
+                self.assertEqual(retained['transaction'], transaction.txn_seq)
+                self.assertEqual(retained['state_epoch'], stack.record.state_epoch)
+                self.assertTrue(retained['cancel_pending'])
+                self.assertEqual(retained['closure'], 'open')
+                self.assertLessEqual(driver._stop_ticks, driver.stop_budget)
+                # The bounded typed close was broadcast; with its certified
+                # reply still in flight the engine keeps the row and refuses to
+                # report a clean lifecycle transition, even though the workers
+                # already executed the close.
+                self.assertTrue(all(self.bridge(stack, rank)._retained is None
+                                    for rank in driver.ranks))
+
+                stack.transport.deliver_held()
+                self.assertIsNone(hook(core))
+                self.assertIsNone(driver.error)
+                self.assert_rows_closed(stack)
+                self.assertFalse(driver.active)
+                self.assertFalse(driver._split_ready)
+                self.assertEqual(driver.route_generation, generation + 1)
+                self.assertEqual(stack.controller._committed, committed)
+
+    def test_abort_between_chunks_closes_only_the_retained_request(self):
+        stack = active_stack()
+        core, _frontend = core_for(stack)
+        driver = self.finish_chunk(stack)
+        row = self.assert_row_open(stack, stack.record.transaction,
+                                   stack.record.state_epoch, [7, 7, 8, 8])
+
+        self.assertIsNone(eh.before_abort(core, ('ordinary-request',)))
+        self.assertIsNone(driver.stop_kind)
+        self.assertTrue(driver.active)
+        self.assertEqual(driver.retained_row(), row)
+        for rank in driver.ranks:
+            self.assertIsNotNone(self.bridge(stack, rank)._retained)
+
+        self.assertIsNotNone(eh.before_abort(core, (UID,)))
+        stack.drive(lambda: not driver.active, limit=400)
+        self.assertIsNone(driver.error)
+        self.assert_rows_closed(stack)
+        self.assertFalse(driver._split_ready)
+        closed = [entry for entry in driver._journal
+                  if entry['kind'] == 'request_row_closed']
+        self.assertEqual(closed[-1]['reason'], 'abort')
+
+    def test_a_partial_close_rebroadcasts_the_exact_command_and_confirms_late(self):
+        stack = active_stack()
+        core, _frontend = core_for(stack)
+        driver = self.finish_chunk(stack)
+        transaction = stack.record.transaction
+        row = self.assert_row_open(stack, transaction, stack.record.state_epoch,
+                                   [7, 7, 8, 8])
+        committed = dict(stack.controller._committed)
+
+        stack.transport.hold = True
+        driver.stop('pause', drain=False)
+        request = driver._retained_cancel_request
+        self.assertIsNotNone(request)
+        self.assertEqual(request.transaction, transaction)
+        self.assertEqual(request.state_epoch, row['state_epoch'])
+        sequence = stack.transport.next - 1
+        values = stack.transport.ready[sequence]
+        self.assertEqual([ack.worker_rank for ack in values], [0, 1, 2, 3])
+        self.assertTrue(all(ack.closed for ack in values))
+        # One rank's reply is delayed; its first applied row still owns the
+        # request (a later duplicate confirms the close, never replaces it).
+        values[2] = w.CancelAck(request.transaction, 2, request.state_epoch,
+                                'opened', (), (), row['completed_sequences'][2])
+        stack.transport.deliver_held()
+
+        driver.advance()
+        self.assertIsNone(driver.error)
+        partial = driver.retained_row()
+        self.assertEqual(partial['replied_ranks'], [0, 1, 2, 3])
+        self.assertEqual(partial['closed_ranks'], [0, 1, 3])
+        self.assertEqual(partial['closure'], 'open')
+        resends = [envelope for envelope in stack.sender.envelopes
+                   if envelope[0] == 'flash_s5_cancel']
+        self.assertEqual(len(resends), 2)
+        self.assertIs(resends[-1][1][0], request)
+        self.assertEqual(resends[-1][1][0].state_epoch, request.state_epoch)
+
+        stack.drive(lambda: not driver.active, limit=400)
+        self.assertIsNone(driver.error)
+        self.assert_rows_closed(stack)
+        self.assertFalse(driver._split_ready)
+        self.assertEqual(stack.controller._committed, committed)
+        closed = [entry for entry in driver._journal
+                  if entry['kind'] == 'request_row_closed']
+        self.assertEqual(closed[-1]['dispositions'], ['released'])
+
+    def test_a_missing_rank_reply_fails_closed_and_keeps_that_rank_owned(self):
+        stack = active_stack()
+        core, _frontend = core_for(stack)
+        driver = self.finish_chunk(stack)
+        transaction = stack.record.transaction
+        self.assert_row_open(stack, transaction, stack.record.state_epoch,
+                             [7, 7, 8, 8])
+        committed = dict(stack.controller._committed)
+
+        # Rank 2 never executes the broadcast and never answers: the driver
+        # must not retire the row from a three-rank reply.
+        stack.transport.withhold(2)
+        with self.assertRaises(ed.DriverError) as caught:
+            driver.stop('pause', drain=False)
+        self.assertIn('lacks the typed all-rank reply', str(caught.exception))
+        self.assertEqual(driver.error, 'native driver failed; ownership retained')
+        retained = driver.retained_row()
+        self.assertIsNotNone(retained)
+        self.assertEqual(retained['transaction'], transaction.txn_seq)
+        self.assertEqual(retained['state_epoch'], stack.record.state_epoch)
+        self.assertEqual(retained['replied_ranks'], [])
+        self.assertEqual(retained['closed_ranks'], [])
+        self.assertTrue(retained['cancel_pending'])
+        # The withheld rank still owns its actual row; nothing was published.
+        self.assertIsNotNone(self.bridge(stack, 2)._retained)
+        self.assertEqual(stack.controller._committed, committed)
+
+    def test_cancellation_between_chunks_retires_the_parked_next_chunk_unopened(self):
+        stack = active_stack()
+        core, _frontend = core_for(stack)
+        driver = self.finish_chunk(stack)
+        self.assert_row_open(stack, stack.record.transaction,
+                             stack.record.state_epoch, [7, 7, 8, 8])
+        committed = dict(stack.controller._committed)
+        second = stack.controller.admit(stack.scheduler)
+        self.assertTrue(stack.controller.active)
+        opens = [envelope[0] for envelope in stack.sender.envelopes].count(
+            'flash_s5_open')
+
+        driver.stop('pause', drain=False)
+        stack.drive(lambda: not driver.active, limit=400)
+        self.assertIsNone(driver.error)
+        self.assert_rows_closed(stack)
+        self.assertFalse(stack.controller.active)
+        self.assertIsNone(stack.controller.admission())
+        # The parked next chunk was never opened on a worker.
+        self.assertEqual([envelope for envelope in stack.sender.envelopes
+                          if envelope[0] == 'flash_s5_open'
+                          and envelope[1][0].transaction == second.transaction], [])
+        self.assertEqual([envelope[0] for envelope in stack.sender.envelopes].count(
+            'flash_s5_open'), opens)
+        self.assertEqual(self.factory_rows(stack),
+                         {rank: (1, 0, 1) for rank in driver.ranks})
+        self.assertFalse(driver._split_ready)
+        self.assertEqual(stack.controller._committed, committed)
+        cancelled = [entry for entry in driver._journal if entry['kind'] == 'cancel']
+        self.assertEqual(cancelled[-1]['transaction'], second.transaction.txn_seq)
+
+    def test_foreign_or_stale_admissions_cannot_claim_the_retained_row(self):
+        for case in ('foreign-uid', 'reused-uid', 'stale-epoch'):
+            with self.subTest(case=case):
+                stack = active_stack()
+                core, _frontend = core_for(stack)
+                driver = self.finish_chunk(stack)
+                row = self.assert_row_open(stack, stack.record.transaction,
+                                           stack.record.state_epoch, [7, 7, 8, 8])
+                opens = [envelope[0] for envelope in stack.sender.envelopes].count(
+                    'flash_s5_open')
+                if case == 'stale-epoch':
+                    # The same transaction with the epoch it already used.
+                    stack.controller.parked = types.SimpleNamespace(
+                        transaction=stack.record.transaction,
+                        admission=stack.record, failed=False,
+                        cache_published=False)
+                    message = 'a retained request row has no newer state epoch'
+                else:
+                    uid = 'req-foreign' if case == 'foreign-uid' else UID
+                    stack.scheduler.waiting.items = [
+                        QueuedRequest(uid=uid, tokens=12, computed=0)]
+                    # Deliberately bypass the source policy gate to exercise
+                    # the driver's second, fail-closed defense on a bad frame.
+                    with mock.patch.object(stack.scheduler, '_flash_s5_driver', None):
+                        record = stack.controller.admit(stack.scheduler)
+                    self.assertIsNotNone(record)
+                    if case == 'reused-uid':
+                        # Same UID, different Request object: a fresh generation
+                        # is a different request and may not inherit the row.
+                        self.assertGreater(record.transaction.request_generation,
+                                           stack.record.transaction.request_generation)
+                        self.assertFalse(record.transaction.same_request(
+                            stack.record.transaction))
+                    message = 'a retained request row belongs to another request'
+
+                with self.assertRaises(ed.DriverError) as caught:
+                    driver.advance()
+                self.assertIn(message, str(caught.exception))
+                self.assertEqual(driver.error,
+                                 'native driver failed; ownership retained')
+                self.assertEqual(driver.retained_row(), row)
+                for rank in driver.ranks:
+                    self.assertIsNotNone(self.bridge(stack, rank)._retained)
+                # No foreign/generation/epoch claim reached a worker open.
+                self.assertEqual(
+                    [envelope[0] for envelope in stack.sender.envelopes].count(
+                        'flash_s5_open'), opens)
+
+    def test_a_reused_uid_after_terminal_close_gets_a_fresh_generation_and_row(self):
+        stack = active_stack()
+        core, _frontend = core_for(stack)
+        driver = self.finish_chunk(stack)
+        self.assert_row_open(stack, stack.record.transaction,
+                             stack.record.state_epoch, [7, 7, 8, 8])
+        stack.controller.admit(stack.scheduler)
+        self.finish_chunk(stack)
+        terminal = stack.controller.admit(stack.scheduler)
+        self.assertTrue(terminal.terminal)
+        self.finish_chunk(stack)
+        stack.drive(lambda: not driver.active, limit=400)
+        self.assertIsNone(driver.error)
+        self.assert_rows_closed(stack)
+        for rank in driver.ranks:
+            # The terminal release certified every worker row closed.
+            self.assertIsNotNone(self.bridge(stack, rank)._closed)
+        self.assertEqual(self.factory_rows(stack),
+                         {rank: (1, 2, 1) for rank in driver.ranks})
+
+        # The same UID is a new object: it gets its own generation and must
+        # register its own worker row; the old terminal ack cannot certify it.
+        stack.scheduler.waiting.items = [QueuedRequest(uid=UID, tokens=12, computed=0)]
+        fresh = stack.controller.admit(stack.scheduler)
+        self.assertGreater(fresh.transaction.request_generation,
+                           terminal.transaction.request_generation)
+        self.assertGreater(fresh.transaction.txn_seq, terminal.transaction.txn_seq)
+        self.assertFalse(fresh.transaction.same_request(terminal.transaction))
+        stack.drive_to_finalize()
+        self.assertIsNone(driver.error)
+        self.assertIsNone(driver.retained_row())
+        for rank in driver.ranks:
+            bridge = self.bridge(stack, rank)
+            self.assertEqual(bridge.transaction, fresh.transaction)
+            self.assertEqual(bridge.state_epoch, fresh.state_epoch)
+            self.assertIsNone(bridge._closed)
+        self.assertEqual(self.factory_rows(stack),
+                         {rank: (2, 2, 1) for rank in driver.ranks})
+        # Chunks two and three continued the row; the fresh UID did not.
+        self.assertEqual(self.journal_kinds(driver).count('request_row_continued'), 2)
+
+
+    def test_source_admission_keeps_foreign_head_unallocated_and_row_closable(self):
+        for uid in ('foreign-native-head', UID):
+            with self.subTest(uid=uid):
+                stack = active_stack()
+                core_for(stack)
+                driver = self.finish_chunk(stack)
+                old_row = driver.retained_row()
+                request = QueuedRequest(uid=uid, tokens=12, computed=0)
+                stack.scheduler.waiting.items = [request]
+                controller = stack.controller
+                counters = (controller.txn_seq, controller._next_generation,
+                            controller._next_state_epoch)
+                manager = stack.scheduler.kv_cache_manager
+                with mock.patch.object(manager, 'allocate_slots', wraps=manager.allocate_slots) as allocate:
+                    self.assertIsNone(controller.admit(stack.scheduler))
+                    allocate.assert_not_called()
+                self.assertIs(stack.scheduler.waiting.peek_request(), request)
+                self.assertEqual((controller.txn_seq, controller._next_generation,
+                                  controller._next_state_epoch), counters)
+                self.assertIsNone(driver.error)
+                self.assertEqual(driver.retained_row(), old_row)
+                driver.stop('cancel', drain=False)
+                stack.drive(lambda: not driver.active, limit=400)
+                self.assert_rows_closed(stack)
+                self.assertIsNone(driver.error)
+
+    def test_known_retained_row_cannot_be_closed_by_zero_history_never_open(self):
+        stack = active_stack()
+        core_for(stack)
+        driver = self.finish_chunk(stack)
+        row = driver._retained
+        replies = []
+        for rank in driver.ranks:
+            report = row['reports'][rank]
+            replies.append(w.CancelAck(row['transaction'], rank, row['state_epoch'],
+                'released', report.completed_op_seqs, (), report.completed_sequence,
+                released=True, request_closed=True, report=report))
+        replies[2] = w.CancelAck(row['transaction'], 2, row['state_epoch'],
+            'never_open', (), (), 0, released=True, request_closed=True)
+        with self.assertRaisesRegex(ed.DriverError, 'certified queried report'):
+            driver._apply_retained_cancel(replies)
+        self.assertIs(driver._retained, row)
+        self.assertIsNotNone(self.bridge(stack, 2)._retained)
+
+    def test_retained_close_binds_the_exact_final_report_not_only_watermark(self):
+        from dataclasses import replace
+        stack = active_stack()
+        core_for(stack)
+        driver = self.finish_chunk(stack)
+        row = driver._retained
+        replies = []
+        for rank in driver.ranks:
+            report = row['reports'][rank]
+            if rank == 2:
+                report = replace(report, proofs=())
+            replies.append(w.CancelAck(row['transaction'], rank, row['state_epoch'],
+                'released', report.completed_op_seqs, (), report.completed_sequence,
+                released=True, request_closed=True, report=report))
+        with self.assertRaisesRegex(ed.DriverError, 'certified queried report'):
+            driver._apply_retained_cancel(replies)
+        self.assertIs(driver._retained, row)
+
+    def test_close_uses_actual_dispatcher_factory_and_request_release_chain(self):
+        from lane_chunk import LaneChunkFactory, LaneRequest
+        stack = active_stack()
+        core_for(stack)
+        driver = self.finish_chunk(stack)
+        removed = []
+        requests = []
+        for rank in driver.ranks:
+            factory = stack.worker(rank).factory
+            original = factory.release
+            def remove(uid, rank=rank, original=original):
+                removed.append((rank, uid))
+                original()
+            req = LaneRequest.__new__(LaneRequest)
+            req.req_id, req.req_index, req.generation = UID, 0, stack.record.transaction.request_generation
+            req.runner = types.SimpleNamespace(_remove_request=remove)
+            requests.append(req)
+            factory.request = req
+            factory.release = types.MethodType(LaneChunkFactory.release, factory)
+        driver.stop('pause', drain=False)
+        stack.drive(lambda: not driver.active, limit=400)
+        self.assert_rows_closed(stack)
+        self.assertEqual(removed, [(rank, UID) for rank in driver.ranks])
+        for req in requests:
+            self.assertIsNone(req.req_id)
+            self.assertIsNone(req.req_index)
+            self.assertIsNone(req.generation)
+        # A late broadcast repeats the exact typed close proof, without a new
+        # call into request removal and without advertising never_open.
+        for rank in driver.ranks:
+            bridge = self.bridge(stack, rank)
+            ack = bridge._retained_cancel_ack
+            self.assertIsNotNone(ack)
+            self.assertIs(bridge.cancel(w.CancelRequest(ack.transaction, ack.state_epoch, 'pause')), ack)
+        self.assertEqual(len(removed), 4)
 
 
 # --- live ordinary cohort vs native ownership ------------------------------

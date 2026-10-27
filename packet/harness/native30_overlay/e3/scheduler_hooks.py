@@ -1257,6 +1257,17 @@ class PrefillAdmissionController:
         if queue is None:
             return None
         request = queue.peek_request()
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        retained_query = getattr(owner, 'retained_request', None)
+        retained = retained_query() if callable(retained_query) else None
+        if retained is not None:
+            identity = self._request_identities.get(request.request_id)
+            if (request.request_id != retained.request_uid
+                    or identity is None or identity[0] is not request
+                    or identity[1] != retained.request_generation):
+                # No allocation/parking/UID generation change for a request
+                # whose worker row is still owned by another request frame.
+                return None
         if self._request_refuses(scheduler, request):
             self.refused += 1
             return None
