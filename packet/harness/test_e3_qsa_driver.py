@@ -9,9 +9,12 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
 
+import e3_types as et  # noqa: E402
 import operation_source  # noqa: E402
 import qsa_driver  # noqa: E402
+import qsa_operation as qo  # noqa: E402
 import runner_hooks  # noqa: E402
+import sparse_history_dma as shd  # noqa: E402
 from e3_types import E3Pending  # noqa: E402
 from model_hooks import LaneForward  # noqa: E402
 from qsa_driver import QsaDriverError, QsaLayerDriver  # noqa: E402
@@ -244,6 +247,169 @@ class DriverTests(unittest.TestCase):
             QsaLayerDriver(None, staged_operation=staged_operation, forward_context=metadata)
         with self.assertRaises(QsaDriverError):
             QsaLayerDriver(self.operation, staged_operation=None, forward_context=metadata)
+
+
+# --- sparse-history driver seam -------------------------------------------------------
+
+class LeaseAllocator:
+    """Retains a reference object for the shared source-hold proof."""
+
+    def __init__(self):
+        self.refs = set()
+
+    def retain(self, owner):
+        reference = object()
+        self.refs.add(id(reference))
+        return reference
+
+    def assert_retained(self, reference):
+        if id(reference) not in self.refs:
+            raise RuntimeError('lease lost')
+
+    def release(self, reference):
+        self.refs.discard(id(reference))
+
+
+def make_sparse_hold(layer='qsa1'):
+    inner_transaction = et.TransactionId(engine_epoch=1, request_uid='req',
+                                         request_generation=0, chunk_start=0,
+                                         chunk_end=8, txn_seq=1)
+    inner_lane = et.LaneId(worker_rank=0, role=et.LaneRole.PREFILL,
+                           storage_epoch=2, context_id=0)
+    owner = shd.SourceOwner(inner_transaction, inner_lane, layer,
+                            storage_epoch=inner_lane.storage_epoch,
+                            source_epoch=0, source_incarnation=1,
+                            allocation_incarnation=1,
+                            physical_pages=(3,), valid_tokens=8,
+                            mapping_version=1)
+    return shd.SparseSourceHold(owner, allocator=LeaseAllocator())
+
+
+class SparseFakeOperation(FakeOperation):
+    def __init__(self, *, pending_selection=False, refuse_after=0, **kwargs):
+        super().__init__(**kwargs)
+        self.pending_selection = pending_selection
+        self.refuse_after = refuse_after
+        self.attached = []
+        self.sparse_source = None
+        self.next_sparse_ticket = 0
+
+    def attach_sparse_source(self, name, hold):
+        self.calls.append(('hold', name))
+        self.attached.append(hold)
+        self.sparse_source = (name, hold)
+
+    def has_sparse_source(self, name):
+        return self.sparse_source is not None and self.sparse_source[0] == name
+
+    def sparse_selection_pending(self, token):
+        return qo.SparseSelectionPending(token)
+
+    def stage_ticket(self):
+        self.next_sparse_ticket += 1
+        return self.next_sparse_ticket
+
+
+def sparse_staged_operation(operation, attn, query, kv_cache, logical, main,
+                            num_tokens, use_prefill, output):
+    if operation.pending_selection:
+        yield operation.sparse_selection_pending(operation.stage_ticket())
+    for bucket in range(operation.buckets):
+        yield ('sparse-ticket', bucket)
+    return (0, num_tokens)
+
+
+def refusing_staged_operation(operation, attn, query, kv_cache, logical, main,
+                              num_tokens, use_prefill, output):
+    yield ('sparse-ticket', 0)
+    raise shd.SparsePlanRefused(
+        shd.SparseRefusal('descriptor_cap', 0, shd.MAX_DESCRIPTORS + 1,
+                          num_tokens, 1, num_tokens * shd.ROW_BYTES, 1))
+
+
+class SparseDriverTests(unittest.TestCase):
+    def build(self, operation, **kwargs):
+        driver = QsaLayerDriver(
+            operation, staged_operation=staged_operation,
+            sparse_staged_operation=kwargs.pop('sparse_staged_operation',
+                                               sparse_staged_operation),
+            source_holds=kwargs.pop('source_holds', None),
+            forward_context=metadata, clock=lambda: 0)
+        lane = LaneForward(make_model(), inputs(),
+                           stream=types.SimpleNamespace(cuda_stream=5),
+                           attention_driver=driver, clock=lambda: 0)
+        lane.begin()
+        lane.layer(0)
+        return driver, lane
+
+    def test_hold_attaches_before_the_compact_helper_runs(self):
+        operation = SparseFakeOperation(buckets=1, pending_before=set(),
+                                        pending_selection=True)
+        hold = make_sparse_hold()
+        driver, lane = self.build(operation, source_holds={'qsa1': hold})
+        self.assertEqual(lane.layer(1).kind, 'layer-paused')   # pre + attach
+        self.assertEqual(operation.calls[-2:], [('hold', 'qsa1'), ('attach',)])
+        self.assertIs(operation.attached[0], hold)
+        self.assertTrue(operation.has_sparse_source('qsa1'))
+        self.assertEqual(lane.layer(1).kind, 'layer-paused')   # selection phase
+        self.assertEqual(lane.layer(1).kind, 'layer-paused')   # compact bucket
+        lane.layer(1)                                          # StopIteration
+        tags = [record[0] for record in driver.records]
+        self.assertEqual(tags, ['pre', 'selection', 'bucket', 'attended', 'tail'])
+        self.assertEqual(driver.phases, {})
+
+    def test_dense_helper_is_kept_when_no_hold_is_admitted(self):
+        operation = SparseFakeOperation(buckets=1, pending_before=set())
+        driver, lane = self.build(operation)
+        lane.layer(1)
+        self.assertFalse(operation.has_sparse_source('qsa1'))
+        self.assertEqual(operation.attached, [])
+        self.assertNotIn(('hold', 'qsa1'), operation.calls)
+        lane.layer(1)
+        lane.layer(1)
+        self.assertEqual(driver.records[-1][0], 'tail')
+
+    def test_typed_refusal_parks_the_layer_and_never_counts_overlap(self):
+        operation = SparseFakeOperation(buckets=1, pending_before=set())
+        driver, lane = self.build(
+            operation, source_holds={'qsa1': make_sparse_hold()},
+            sparse_staged_operation=refusing_staged_operation)
+        lane.layer(1)                      # pre; the generator body is lazy
+        lane.layer(1)                      # the first sparse bucket is admitted
+        with self.assertRaises(QsaDriverError) as caught:
+            lane.layer(1)                  # the generator then refuses
+        self.assertIn('descriptor_cap', str(caught.exception))
+        refusal = [record for record in driver.records
+                   if record[0] == 'sparse_refusal']
+        self.assertEqual(refusal, [('sparse_refusal', 1, 'descriptor_cap', 8, 8192)])
+        self.assertEqual(driver.phases, {})
+        self.assertIn(('cancel', 'sparse_refusal'), operation.calls)
+        # Only buckets admitted before the typed refusal are reported; the
+        # layer never reaches attention/tail and cannot pass as overlap success.
+        self.assertEqual([record[0] for record in driver.records],
+                         ['pre', 'bucket', 'sparse_refusal'])
+        self.assertNotIn('attended', [record[0] for record in driver.records])
+
+    def test_source_holds_require_the_sparse_helper_and_an_admitted_hold(self):
+        hold = make_sparse_hold()
+        operation = FakeOperation()
+        with self.assertRaises(QsaDriverError):
+            QsaLayerDriver(operation, staged_operation=staged_operation,
+                           forward_context=metadata,
+                           source_holds={'qsa1': hold})
+        with self.assertRaises(QsaDriverError):
+            QsaLayerDriver(operation, staged_operation=staged_operation,
+                           sparse_staged_operation=sparse_staged_operation,
+                           forward_context=metadata,
+                           source_holds={'qsa1': object()})
+        with self.assertRaises(QsaDriverError):
+            QsaLayerDriver(operation, staged_operation=staged_operation,
+                           sparse_staged_operation='not-callable',
+                           forward_context=metadata)
+        with self.assertRaises(QsaDriverError):
+            QsaLayerDriver(operation, staged_operation=staged_operation,
+                           sparse_staged_operation=sparse_staged_operation,
+                           source_holds={'': hold}, forward_context=metadata)
 
 
 if __name__ == '__main__':

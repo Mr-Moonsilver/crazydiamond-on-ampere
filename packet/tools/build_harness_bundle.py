@@ -59,6 +59,24 @@ def build(out):
         if sha(source)!=digest:raise ValueError('E2 image reference checksum mismatch: '+name)
         dest=out/'e2_reference'/name;dest.parent.mkdir(parents=True,exist_ok=True)
         shutil.copy2(source,dest)
+    # The fixed-capacity sparse union is generated from these exact reviewed
+    # kernels. Both the standalone overlay generator and the VM operation
+    # probe resolve the input relative to their own s5_engine directory.
+    import operation_source
+    sparse_source=ROOT/'patches/sparse_stage/kernels.py'
+    if sha(sparse_source)!=operation_source.SPARSE_STAGE_SHA256:
+        raise ValueError('sparse union input checksum mismatch')
+    sparse_dest=out/'sparse_stage/kernels.py'
+    sparse_dest.parent.mkdir()
+    shutil.copy2(sparse_source,sparse_dest)
+    vm_sources=out/'vmid_sources'
+    (vm_sources/'sparse_stage').mkdir()
+    shutil.copy2(sparse_source,vm_sources/'sparse_stage/kernels.py')
+    (vm_sources/'s5_engine').mkdir()
+    for name in ('e3_types','sparse_history_dma','qsa_operation','operation_source',
+                 'arena_attention','resident_attention'):
+        shutil.copy2(ROOT/'patches/s5_engine'/(name+'.py'),
+                     vm_sources/'s5_engine'/(name+'.py'))
     # E3 build closure: every tracked CPU-only generator/source module and the
     # complete pinned image reference set make_s5_overlap compiles against.
     # The runtime overlay is generated later from these bytes; the bundle never
@@ -100,6 +118,7 @@ def build(out):
         dest=out/'e3_reference'/name;dest.parent.mkdir(parents=True,exist_ok=True)
         shutil.copy2(source,dest)
     closure={'schema':1,'builder_sources':dict(sorted(builder_sources.items())),
+             'external_source_pins':{'sparse_stage/kernels.py':sha(sparse_source)},
              'reference_pins':dict(sorted(pins.items())),
              'qualification_reference_pins':qualification_pins,
              'basis':'tracked CPU-only generator/native/source bytes; reference tree verified against every transform pin',

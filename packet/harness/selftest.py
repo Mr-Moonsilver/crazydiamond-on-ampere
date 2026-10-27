@@ -683,6 +683,8 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_green_probe.py', 'E3 green probe: frozen verdict rules, reviewed sm_86 build command and unarmed queue mounts/syntax (CPU only)'),
                      ('test_e3_native_integration.py', 'E3 native integration: generated worker/engine startup, typed RPC driving, completion/commit ordering, stop paths and record status (CPU only, faked device/transport)'),
                      ('test_e3_worker_operations.py', 'E3 D2 worker operations: bounded QSA buckets, generated call sites executed, delayed events, cancel/drain and stale-epoch refusal (CPU only, fake CUDA)'),
+                     ('test_e3_sparse_history_dma.py', 'E3 sparse transport: fixed-capacity union, deferred selection and lease-bound compact DMA (CPU)'),
+                     ('test_vmid_job12.py', 'VM<vm-id> native sparse operation: real generated union and attention, delayed selection and cancellation (CPU)'),
                      ('test_e3_teacher_decode.py', 'E3 teacher forcing: private fixed cohort, pinned sampler, unchanged settings and temporary ownership (CPU only)'),
                      ('test_e3_teacher_decode_rule4.py', 'E3 teacher forcing rule v4: frozen control-envelope allowances, symmetric metrics, tie order, calibration pinning and immutable evidence (CPU only)'),
                      ('test_e3_route_invariant.py', 'E3 route invariants: deduplicated prompt bytes, mutation failures and native graph definition serialization (CPU only)'),

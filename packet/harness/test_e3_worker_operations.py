@@ -22,6 +22,7 @@ import arena_attention
 import e3_types as et
 import operation_source
 import qsa_operation as qo
+import resident_attention
 import runner_hooks
 
 
@@ -846,10 +847,17 @@ class GeneratedCallSiteTests(unittest.TestCase):
                 return operation, end.value
 
     def test_generated_sites_are_present_exactly_once(self):
-        self.assertEqual(self.generated_ops.count('e3op.fill_bucket('), 1)
-        self.assertEqual(self.generated_ops.count('e3op.after_attention_bucket('), 1)
+        # Two overlays: the dense S5 function and the sparse-history one.  Each
+        # must contain its bounded fill and consumer yield exactly once.
+        for name in ('flash_s5_arena_attention', 'flash_s5_sparse_arena_attention'):
+            generated = resident_attention.function(self.generated_ops, name)
+            self.assertEqual(generated.count('e3op.fill_bucket('), 1)
+            self.assertEqual(generated.count('e3op.after_attention_bucket('), 1)
         self.assertEqual(self.generated_qsa.count('_flash_s5_staged_operation('), 1)
+        self.assertEqual(
+            self.generated_qsa.count('_flash_s5_sparse_staged_operation('), 1)
         self.assertIn('operation.bind_plan(', self.generated_qsa)
+        self.assertIn('operation.bind_sparse_context(', self.generated_qsa)
         self.assertIn('e3op=operation,', self.generated_qsa)
         # Producer boundary wraps index_and_store; consumer closes after the
         # pinned forward call.  Removing either site changes this ordering.
