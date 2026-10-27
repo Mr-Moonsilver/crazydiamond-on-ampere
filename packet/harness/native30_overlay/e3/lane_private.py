@@ -33,7 +33,7 @@ from contextlib import contextmanager
 from e3_types import E3ContractError
 from lane_hooks import _ATTR_MISSING, _aliases, LaneRuntime
 from lane_chunk import LaneChunk, ChunkAdmission
-from model_hooks import ple_embedding
+from model_hooks import local_text_model, ple_embedding
 
 UID_BUFFER_NAME = 'flash_s5_prefill_uid'
 TOPK_SCRATCH_NAME = 'prefill_qsa_topk'
@@ -403,9 +403,13 @@ class LanePrivateBindings:
                 'prefill workspace lane is not the last provisioned lane; '
                 'stock lanes and the prefill lane disagree')
 
-        model = getattr(runner, 'model', None)
-        if model is None:
+        root_model = getattr(runner, 'model', None)
+        if root_model is None:
             raise LanePrivateError('runner has no model to bind')
+        try:
+            model = local_text_model(root_model)
+        except E3ContractError as exc:
+            raise LanePrivateError('cannot resolve the local text backbone to bind') from exc
         owners = []
         names = set()
         widths = set()

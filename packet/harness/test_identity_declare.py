@@ -221,7 +221,7 @@ class DeclareTests(unittest.TestCase):
         # Source the ACTUAL old and repaired settings, render the trusted
         # launcher, hash fixture mounts and run no_unknown/validate_identity.
         # No identity executable/success result is stubbed in this regression.
-        for attempt in ('q18a_native1', 'q18a_native2'):
+        for attempt in ('q18a_native1', 'q18a_native2', 'q18a_native3'):
             script = ('S5_OVERLAY=$2 S5_AUTH_ENV_FILE=$3 '
                       'S5_GREEN_LIB_SHA256=$4 S5_REPLAY_LIB_SHA256=$5 '
                       'Q18A_TARGET_LABEL=s5-overlap-80-80; '

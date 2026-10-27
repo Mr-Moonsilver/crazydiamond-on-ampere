@@ -898,7 +898,11 @@ class PrivateBindingsTests(unittest.TestCase):
             admitted_chunk(chunk.forward_scope, runner=other)
 
     def test_worker_native_derives_the_chunk_scope(self):
-        from native_startup import WorkerNative
+        from native_startup import NativeStartupError, WorkerNative
+
+        wrapper = types.SimpleNamespace(language_model=types.SimpleNamespace(model=self.model),
+                                        config=types.SimpleNamespace(text_config=object()))
+        self.runner.model = wrapper
 
         split = types.SimpleNamespace(prefill_stream=FakeStream(700),
                                       describe=lambda: 'split')
@@ -910,11 +914,14 @@ class PrivateBindingsTests(unittest.TestCase):
         controller = types.SimpleNamespace(route='split', route_generation=0)
         native = WorkerNative(
             self.runner, split, bank, None, controller, comms, None, None,
-            self.chunk_tokens, None, self.torch, private_bindings=self.bindings)
+            self.chunk_tokens, None, self.torch, private_bindings=self.bindings,
+            text_model=self.model)
         chunk = self.make_chunk()
         lane = native.lane_forward(chunk.lane_inputs(),
                                    forward_context=chunk.forward_scope)
         self.assertIsNotNone(lane.private_scope)
+        self.assertIs(lane.model, self.model)
+        self.assertIs(self.runner.model, wrapper)
         self.assertEqual(native.inventory()['private_bindings']['isolation'], 'partial')
         with lane._scopes(0):
             self.assertIs(self.attn.topk_indices_buffer, self.bindings.topk)
@@ -923,6 +930,19 @@ class PrivateBindingsTests(unittest.TestCase):
         self.assertIs(self.fc.QSA_REQ_UID, self.decode_uid)
         with self.assertRaises(LanePrivateError):
             native.lane_forward(chunk.lane_inputs(), forward_context=lambda: None)
+        wrapper.language_model.model = FakeModel(self.model.layers[0])
+        with self.assertRaisesRegex(NativeStartupError, 'backbone changed'):
+            native.lane_forward(chunk.lane_inputs(), forward_context=chunk.forward_scope)
+
+    def test_wrapped_private_discovery_binds_the_actual_backbone_owners(self):
+        wrapper = types.SimpleNamespace(language_model=types.SimpleNamespace(model=self.model),
+                                        config=types.SimpleNamespace(text_config=object()))
+        self.runner.model = wrapper
+        bindings = self.discover()
+        self.assertIs(self.runner.model, wrapper)
+        self.assertEqual(len(bindings.owners), 1)
+        self.assertIs(bindings.owners[0].module, self.attn)
+        self.assertIs(bindings.owners[0].original, self.original)
 
     def test_ple_prefetch_needs_its_private_owner(self):
         embedding = types.SimpleNamespace(supports_prefetch=True)

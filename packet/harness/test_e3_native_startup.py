@@ -150,6 +150,29 @@ class StartupTests(unittest.TestCase):
         self._discover.stop()
         remove_fake_vllm()
 
+    def test_real_conditional_owner_shape_resolves_backbone_without_changing_runner(self):
+        backbone = self.runner.model
+        outer_config = types.SimpleNamespace(text_config=backbone.config)
+        causal = types.SimpleNamespace(model=backbone, config=backbone.config)
+        wrapper = types.SimpleNamespace(language_model=causal, config=outer_config)
+        self.runner.model = wrapper
+        # Exact native2 failure before the fix: the outer config does not own HC.
+        with self.assertRaisesRegex(NativeStartupError, 'hc_count/hidden_size'):
+            native_startup._hc_width(wrapper)
+        native = self.install()
+        self.assertIs(self.runner.model, wrapper)
+        self.assertIs(native.text_model, backbone)
+        self.assertEqual(native_startup._hc_width(native.text_model), 4*2560)
+        self.assertEqual(native.ple_layer, 1)
+
+    def test_causal_owner_shape_resolves_the_same_backbone(self):
+        backbone = self.runner.model
+        wrapper = types.SimpleNamespace(model=backbone, config=backbone.config)
+        self.runner.model = wrapper
+        native = self.install()
+        self.assertIs(native.text_model, backbone)
+        self.assertIs(self.runner.model, wrapper)
+
     def install(self):
         return install_worker_native(self.runner, chunk_tokens=1024, torch_module=self.torch,
                                      pynccl_class=FakeNccl, tp_group=self.tp, pp_group=self.pp)

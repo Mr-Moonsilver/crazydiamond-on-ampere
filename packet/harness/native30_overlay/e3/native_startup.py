@@ -26,7 +26,8 @@ from e3_types import E3ContractError
 from lane_comm import PrefillCommunicators
 from lane_hooks import LaneRuntime
 from lane_private import LanePrivateBindings, admitted_chunk
-from model_hooks import LaneForward, PlePrivateScratch, PrefillStreamOwners, ple_embedding
+from model_hooks import (LaneForward, PlePrivateScratch, PrefillStreamOwners,
+                         local_text_model, ple_embedding)
 from native_resources import compilation_identity, full_graph_identity
 from split_bank import install as install_split_bank
 
@@ -103,7 +104,7 @@ class WorkerNative:
     def __init__(self, runner, split, bank, backend, controller, comms, ple_layer, ple_scratch,
                  chunk_tokens, tp_group, torch, *, state=None, compilation=None,
                  full_identity=None, decode_owner=None, prefill_streams=None,
-                 private_bindings=None):
+                 private_bindings=None, text_model=None):
         self.runner = runner
         self.split = split
         self.bank = bank
@@ -121,6 +122,7 @@ class WorkerNative:
         self.decode_owner = decode_owner
         self.prefill_streams = prefill_streams
         self.private_bindings = private_bindings
+        self.text_model = text_model
         self.observation = None
         self.router = None
         self.host_submit_ns = []
@@ -143,7 +145,10 @@ class WorkerNative:
             kwargs['private_scope'] = self.private_bindings.chunk_scope(chunk).scope
         if clock is not None:
             kwargs['clock'] = clock
-        forward = LaneForward(self.runner.model, inputs, **kwargs)
+        model = local_text_model(self.runner.model)
+        if self.text_model is not None and model is not self.text_model:
+            raise NativeStartupError('local text backbone changed after native startup')
+        forward = LaneForward(model, inputs, **kwargs)
         self.observe_prefill(forward, 'lane_forward')
         return forward
 
@@ -245,9 +250,13 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
     if split is None or getattr(split, 'state', None) != 'open':
         raise NativeStartupError('worker-native startup needs the open green split from worker init')
     torch = torch_module if torch_module is not None else _torch()
-    model = getattr(runner, 'model', None)
-    if model is None:
+    root_model = getattr(runner, 'model', None)
+    if root_model is None:
         raise NativeStartupError('runner has no model')
+    try:
+        model = local_text_model(root_model)
+    except E3ContractError as exc:
+        raise NativeStartupError('cannot resolve the local text backbone') from exc
     tp_group, pp_group = _groups(tp_group, pp_group)
 
     bank, backend, controller = install_split_bank(
@@ -292,7 +301,7 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
                           chunk_tokens, tp_group, torch, state=state,
                           compilation=compilation, full_identity=full_identity,
                           decode_owner=decode_owner, prefill_streams=prefill_streams,
-                          private_bindings=private_bindings)
+                          private_bindings=private_bindings, text_model=model)
     runner._flash_s5_native = native
     runner._flash_s5_compilation = compilation
     runner._flash_s5_comms = comms

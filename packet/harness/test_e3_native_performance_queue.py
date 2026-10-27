@@ -233,6 +233,14 @@ def verify_finalized_package(root,modules):
                              .replace('q18a-native1','q18a-native2'))
             subprocess.run(['bash','-n',str(HERE/'runs'/('q18a_native2'+suffix))],check=True)
 
+    def test_native3_is_name_only_clone_of_native2(self):
+        for suffix in ('.draft.sh','_declare.sh','_settings.sh'):
+            before=(HERE/'runs'/('q18a_native2'+suffix)).read_text()
+            after=(HERE/'runs'/('q18a_native3'+suffix)).read_text()
+            self.assertEqual(after,before.replace('q18a_native2','q18a_native3')
+                             .replace('q18a-native2','q18a-native3'))
+            subprocess.run(['bash','-n',str(HERE/'runs'/('q18a_native3'+suffix))],check=True)
+
     def test_late_real_launch_refuses_before_paths_or_engine_actions(self):
         # Deliberately leave fake-OS mode: the slot guard must return before
         # resolving any actual box path, key or engine interface.

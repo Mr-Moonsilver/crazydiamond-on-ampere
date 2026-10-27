@@ -184,6 +184,44 @@ class ModelHookError(E3ContractError):
     pass
 
 
+def local_text_model(root):
+    """Resolve the one local backbone through the pinned model owner paths.
+
+    Qwen4ExpModel owns the local layers and HC text config (model.py:388).
+    Qwen4ExpForCausalLM owns it as ``model`` (model.py:671), and the outer
+    Qwen4ExpForConditionalGeneration owns that causal model as
+    ``language_model`` (model.py:958), including language-model-only serving.
+    Direct backbone callers remain supported. Never guess dimensions from an
+    outer config or recursively search arbitrary ``model`` attributes.
+
+    This only resolves ownership. Existing pinned-family/stream census,
+    channel geometry, native methods and private-buffer guards remain in force.
+    """
+    found = {}
+    for path in ((), ('model',), ('language_model', 'model')):
+        candidate = root
+        for name in path:
+            candidate = getattr(candidate, name, None)
+        layers = getattr(candidate, 'layers', None)
+        if layers is None:
+            continue
+        start = getattr(candidate, 'start_layer', None)
+        end = getattr(candidate, 'end_layer', None)
+        if (type(start) is not int or type(end) is not int
+                or not 0 <= start < end
+                or not callable(getattr(layers, '__getitem__', None))):
+            raise ModelHookError('local text model has an invalid layer interval')
+        try:
+            if end > len(layers):
+                raise ModelHookError('local text model layer interval exceeds its storage')
+        except TypeError as exc:
+            raise ModelHookError('local text model layers have no bounded length') from exc
+        found[id(candidate)] = candidate
+    if len(found) != 1:
+        raise ModelHookError('expected one local text backbone at the pinned owner paths')
+    return next(iter(found.values()))
+
+
 def _sha(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -646,4 +684,4 @@ class LaneForward:
 
 __all__ = ['AttributeSwap', 'LaneForward', 'ModelHookError', 'PINS', 'PlePrivateScratch',
            'PrefillStreamOwners', 'SegmentRecord', 'generate', 'generate_one',
-           'ple_embedding', 'prefill_pinned_types', 'revert_one']
+           'local_text_model', 'ple_embedding', 'prefill_pinned_types', 'revert_one']
