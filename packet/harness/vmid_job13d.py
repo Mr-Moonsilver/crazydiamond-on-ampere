@@ -528,6 +528,17 @@ def initialize_workspace(torch_module, workspace_module):
     return manager
 
 
+def drain_split_streams(split):
+    """Synchronize both actual measured streams; return the deduplicated count."""
+    streams = {int(stream.cuda_stream): stream
+               for stream in (split.decode_stream, split.prefill_stream)}
+    if len(streams) != 2 or 0 in streams:
+        raise RuntimeError('split_consumer_streams_unproved')
+    for stream in streams.values():
+        stream.synchronize()
+    return len(streams)
+
+
 def collect_pending(record, native):
     """The scanner consumes the retained correlation /2 report, never graphs."""
     if native.get('schema') != 's5ro-correlation/2':
@@ -870,11 +881,12 @@ def case(torch, ro, gc, cs, mh, native, receipt, modules, out):
                           'replay')
                 progress(out, 'positive:after_measured_replay')
         decode.deactivate()
+        r['drained_streams'] = drain_split_streams(split)
         proof = ro.DrainedProof(
             worker_rank=0, worker_incarnation='vm-worker-1',
             engine_incarnation='synthetic-no-engine',
             route_generation=ROUTE, storage_epoch=STORAGE_EPOCH,
-            relevant_consumers=1, controller_drained=True)
+            relevant_consumers=r['drained_streams'], controller_drained=True)
 
         # Every value comparison runs after the native window has closed.
         progress(out, 'positive:before_window_end')
@@ -965,8 +977,12 @@ def case(torch, ro, gc, cs, mh, native, receipt, modules, out):
                 decode.deactivate()
             except Exception:
                 errors.append('ledger_deactivate')
+        drained = 0
         try:
-            torch.cuda.synchronize()
+            if split is not None:
+                drained = drain_split_streams(split)
+            else:
+                torch.cuda.synchronize()
         except Exception:
             errors.append('drain')
         for shadow in reversed(shadows):
@@ -977,12 +993,14 @@ def case(torch, ro, gc, cs, mh, native, receipt, modules, out):
         try:
             if session:
                 if session.state == 'window':
+                    if drained != 2:
+                        raise RuntimeError('window_cleanup_consumer_drain_unproved')
                     session.end_window(ro.DrainedProof(
                         worker_rank=0, worker_incarnation='vm-worker-1',
                         engine_incarnation='synthetic-no-engine',
                         route_generation=ROUTE,
                         storage_epoch=STORAGE_EPOCH,
-                        relevant_consumers=1, controller_drained=True))
+                        relevant_consumers=drained, controller_drained=True))
                 if session.state in ('started', 'bound', 'ended'):
                     session.stop()
                 session.close()

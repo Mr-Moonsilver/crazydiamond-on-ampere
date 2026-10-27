@@ -524,6 +524,15 @@ class RootCollectorTests(unittest.TestCase):
         self.assertEqual(manager._num_lanes, 2)
         self.assertEqual(manager._num_ubatches, 1)
 
+class RootDrainTests(unittest.TestCase):
+    def test_both_actual_streams_drained_and_no_constant_claim(self):
+        calls=[]
+        streams=[NS(cuda_stream=n,synchronize=lambda n=n:calls.append(n)) for n in (11,12)]
+        self.assertEqual(job.drain_split_streams(NS(decode_stream=streams[0],prefill_stream=streams[1])),2)
+        self.assertEqual(calls,[11,12])
+        with self.assertRaisesRegex(RuntimeError,'consumer_streams_unproved'):
+            job.drain_split_streams(NS(decode_stream=streams[0],prefill_stream=streams[0]))
+
 class RootDeviceAndSourceTests(unittest.TestCase):
     def test_constructor_uses_the_tensor_device_object_not_the_input_string(self):
         class Device:
