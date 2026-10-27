@@ -5,6 +5,7 @@ authentication and package predicates have separate actual-module CPU suites;
 these fakes exercise order, path/argument contracts, refusal and owned cleanup.
 """
 import json
+import datetime
 from pathlib import Path
 import shutil
 import subprocess
@@ -220,6 +221,21 @@ def verify_finalized_package(root,modules):
         for name in ('q18a_native1.draft.sh','q18a_native1_declare.sh','q18a_native1_settings.sh'):
             text=(HERE/'runs'/name).read_text();self.assertIn(path,text)
             subprocess.run(['bash','-n',str(HERE/'runs'/name)],check=True)
+
+    def test_late_real_launch_refuses_before_paths_or_engine_actions(self):
+        # Deliberately leave fake-OS mode: the slot guard must return before
+        # resolving any actual box path, key or engine interface.
+        end=int(datetime.datetime(2026,10,28,6,tzinfo=datetime.timezone.utc).timestamp())
+        self.fake('date',"#!/usr/bin/env python3\nimport sys\nprint("+str(end)+" if '-d' in sys.argv else "+str(end-15300+1)+")\n")
+        env=self.install_fakes();env['Q17_TEST_OFFLINE']='0'
+        # install_fakes does not replace date, and prevents a child re-exec.
+        done=subprocess.run(['bash',str(HERE/'runs/q18a_native1.draft.sh')],
+            cwd=self.root,env=env,capture_output=True,text=True,timeout=5)
+        self.assertEqual(done.returncode,2,done.stdout+done.stderr)
+        self.assertIn('insufficient-slot-for-full-bound-and-restore',done.stdout)
+        self.assertEqual(self.calls.read_text(),'')
+        text=(HERE/'runs/q18a_native1.draft.sh').read_text()
+        self.assertIn("2026-10-28 06:00:00 UTC",text)
 
 
 if __name__=='__main__':unittest.main()
