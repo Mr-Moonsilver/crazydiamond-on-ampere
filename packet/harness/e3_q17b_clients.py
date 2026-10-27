@@ -307,6 +307,7 @@ class HttpController:
 
 
 def run(args, env=None, controller=None):
+    teacher_diagnostic = getattr(args, 'teacher_diagnostic', False) is True
     env = dict(os.environ if env is None else env)
     rpc.target(args.url)
     url = args.url.rstrip('/')
@@ -361,7 +362,7 @@ def run(args, env=None, controller=None):
     write(out/'data-invariant.json',data_exact)
     outcomes={'teacher_forced':teacher.get('verdict'),'data_invariant':data_exact['verdict'],
               'placement':placement['verdict']}
-    if all(v=='PASS' for v in outcomes.values()):
+    if not teacher_diagnostic and all(v=='PASS' for v in outcomes.values()):
         cfg=w1.config_from_env(dict(env,WORKLOAD=str(args.w1_workload),
             CONTROLLER_TIMEOUT_S='120',READ_TIMEOUT_S='180',DRAIN_TIMEOUT_S='120'),out/'performance.json')
         perf=w1.run(cfg,url,args.model,controller,context=context)
@@ -369,7 +370,8 @@ def run(args, env=None, controller=None):
     else:
         outcomes['performance']='NOT_RUN'
         write(out/'performance.json',{'schema':1,'verdict':'NOT_RUN',
-              'reason':'scoped byte invariants, rule v3 and complete replay placement must PASS'})
+              'reason':('teacher-only diagnostic: W1 unconditionally excluded' if teacher_diagnostic else
+                        'scoped byte invariants, rule v3 and complete replay placement must PASS')})
     try:
         status, transport = controller.execute({'schema':1, 'run_id':args.run_id,
                                                'action':'status','read_only':True}, 120)
@@ -380,20 +382,28 @@ def run(args, env=None, controller=None):
                         'error':type(exc).__name__}
         write(out / 'final-status.json', {'grade':status_grade})
     outcomes['final_status'] = status_grade['verdict']
-    verdict = ('FAIL' if 'FAIL' in outcomes.values() else
-               'PASS' if all(v == 'PASS' for v in outcomes.values()) else 'INCONCLUSIVE')
+    grading_outcomes = {k:v for k,v in outcomes.items()
+                        if not (teacher_diagnostic and k == 'performance')}
+    verdict = ('FAIL' if 'FAIL' in grading_outcomes.values() else
+               'PASS' if all(v == 'PASS' for v in grading_outcomes.values()) else 'INCONCLUSIVE')
     final = {'schema': 1, 'run_id': args.run_id, 'verdict': verdict, 'outcomes': outcomes,
              'engine_epoch': context.get('engine_epoch'),
              'final_route': context.get('route'), 'final_command_seq': context.get('command_seq'),
              'observer_during_performance': False if placement['verdict'] == 'PASS' else None,
              'free_running_evidence_verdict':result.get('verdict'),'launch_config_diagnostic':launch['verdict'],
              'files': ['launch-config.json','teacher-forced.json','data-invariant.json','correctness.json', 'placement.json', 'performance.json', 'final-status.json']}
+    if teacher_diagnostic:
+        final.update(scope='teacher-row-diagnostic', w1_eligible=False,
+                     excluded=['W1','leak','lifetime','canary'],
+                     placement_basis='unchanged raw graph-only receipt; no engine offer ledger')
     write(out / 'clients-grade.json', final)
     return final
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--teacher-diagnostic', action='store_true',
+                        help='stop after teacher + raw placement evidence; never run W1')
     parser.add_argument('--url', required=True)
     parser.add_argument('--model', required=True)
     parser.add_argument('--run-id', required=True)
