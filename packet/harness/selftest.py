@@ -682,6 +682,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
     ('test_vmid_job14b.py', 'VM<vm-id> native oracle setup: actual operation/backend constructor, source registration and scoped abort, correct exactness module and fresh bounded rerun (CPU only)'),
                      ('test_e3_native_placement.py', 'Native overlap accounting: exact-id decode/prefill partition union, independent regrade, raw-loss retention and receipt refusals (CPU only)'),
                      ('test_e3_native_prefill_offers.py', 'Native prefill offers: source-pinned lane vocabulary, auxiliary owner scopes, copy-only role, completion credit and fail-closed seams (CPU only)'),
+                     ('test_e3_native_accounting_source_closure.py', 'E3 native accounting source closure: exact pending event queries, private UID/lock leaves and original-operation failure ownership (CPU only)'),
                      ('test_e3_teacher12_queue.py', 'Teacher12 diagnostic never runs W1; scope and cleanup (CPU only)'),
                      ('test_vmid_job10b.py', 'VM10b pinned NumPy host mirrors in teacher collector (CPU only)'),
                      ('test_vmid_job11.py', 'VM11 native-window-bound engine ledger composition (CPU only)'),

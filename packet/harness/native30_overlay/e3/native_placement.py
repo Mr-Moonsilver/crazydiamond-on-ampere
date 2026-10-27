@@ -30,14 +30,14 @@ from collections import Counter
 
 try:
     from activity_accounting import api_kind as _api_kind
-    from activity_accounting import KINDS
+    from activity_accounting import KINDS, host_return_ok as _host_return_ok
     from engine_offers import grade_engine, validate_receipt as validate_engine
     from native_prefill_offers import (MAX_OFFERS, NATIVE_SCHEMA,
                                        grade_prefill, partition_view,
                                        validate_receipt as validate_prefill)
 except ImportError:  # pragma: no cover - package-relative import
     from .activity_accounting import api_kind as _api_kind
-    from .activity_accounting import KINDS
+    from .activity_accounting import KINDS, host_return_ok as _host_return_ok
     from .engine_offers import grade_engine, validate_receipt as validate_engine
     from .native_prefill_offers import (MAX_OFFERS, NATIVE_SCHEMA,
                                         grade_prefill, partition_view,
@@ -141,7 +141,9 @@ def _api_bucket(row, external):
     if cid in external:
         return external[cid]
     if _api_kind(row.get('name')) == 'host':
-        if row.get('return_value') != 0:
+        # Success, or the documented NOT_READY of the exact event query. The
+        # query carries no GPU work and pending is never completion.
+        if not _host_return_ok(row.get('name'), row.get('return_value')):
             raise OverlapError('host_api_failed:' + str(cid))
         return HOST
     raise OverlapError('unpartitioned_api:' + str(cid))

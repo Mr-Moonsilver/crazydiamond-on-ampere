@@ -31,12 +31,14 @@ import os
 import threading
 import time
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 try:  # imported from the generated package when installed there
     from activity_accounting import KINDS, api_kind as _api_kind
+    from activity_accounting import host_return_ok as _host_return_ok
 except ImportError:  # pragma: no cover - package-relative import
     from .activity_accounting import KINDS, api_kind as _api_kind
+    from .activity_accounting import host_return_ok as _host_return_ok
 
 try:  # same exception object the lane raises; package() rewrites this import
     from e3_types import E3Pending as _PENDING
@@ -130,6 +132,19 @@ FAMILIES = {
         'tail': {'expectation': 'activity_or_zero', 'kinds': _ALL,
                  'copy_kinds': ALL_COPY_KINDS,
                  'role': 'prefill_main', 'phase': 'tail'},
+        # LanePrivateChunk.scope runs these exact initializations inside the
+        # QSA layer container, before the QsaLayerDriver child: uid.fill_(-2)
+        # plus one 4-byte D2D seed copy, and each retained private Marlin lock
+        # array's first zero. They are declared leaves, never generic
+        # activity_or_zero work and never a relaxation of the container.
+        'uid_init': {'expectation': 'activity_or_zero',
+                     'kinds': ('kernel', 'memcpy'),
+                     'copy_kinds': (COPY_KIND['D2D'],),
+                     'role': 'prefill_main'},
+        'lock_init': {'expectation': 'activity_or_zero',
+                      'kinds': ('kernel', 'memset'),
+                      'copy_kinds': _ZERO,
+                      'role': 'prefill_main'},
     },
     'shared_experts': {
         # Real pinned SharedExperts owner methods.  The async branch executes
@@ -632,6 +647,54 @@ class NativePrefillLedger:
         """Offer for one history bucket copy on the owned copy stream."""
         decl = declared_suboperation('qsa', suboperation)
         return self._offer(decl, phase='bucket', cursor=cursor)
+
+    def private_leaf(self, suboperation, *, cursor=None):
+        """Offer for one exact lane-private initialization leaf.
+
+        Opened by ``lane_private.LanePrivateChunk`` around the real
+        ``uid.fill_``/D2D seed or the first ``lock.zero_`` while the QSA layer
+        container is active. The caller's body is the original operation: this
+        provider never retries, skips or duplicates it. A refused or failing
+        observation latches the window incomplete (the body still runs once)
+        and never counts as completion.
+        """
+        try:
+            ctx = self._ctx_binding()
+            if ctx is None or ctx.get('segment') != 'layer':
+                # The private scope only runs inside an active lane layer
+                # offer. Anything else is an invalid scope: latch incomplete,
+                # still run the caller's body once, and never fake a leaf.
+                raise NativePrefillError('private leaf outside a lane layer')
+            decl = declared_suboperation('qsa', suboperation)
+            scope = self._offer(decl, cursor=cursor, owner='private')
+            enter, leave = scope.__enter__, scope.__exit__
+        except Exception:
+            self._invalidate('private_leaf_refused:' + str(suboperation))
+            return nullcontext()
+
+        @contextmanager
+        def leaf():
+            try:
+                meta = enter()
+            except Exception:
+                self._invalidate('private_leaf_entry:' + str(suboperation))
+                yield None
+                return
+            try:
+                yield meta
+            except BaseException as exc:
+                try:
+                    leave(type(exc), exc, exc.__traceback__)
+                except Exception:
+                    self._invalidate('private_leaf_close:' + str(suboperation))
+                raise
+            else:
+                try:
+                    leave(None, None, None)
+                except Exception:
+                    self._invalidate('private_leaf_close:' + str(suboperation))
+
+        return leaf()
 
     def aux(self, family, suboperation, *, owner=None, stream=None):
         """Offer for one real source-owner method under the current segment."""
@@ -1217,11 +1280,27 @@ def _grade_activities(native, meta, apis, external, fail, miss, by_offer,
         _add(miss, 'partition_totals_missing')
     elif {k: v for k, v in totals.items() if v} != dict(by_kind):
         _add(miss, 'partition_totals_mismatch')
+    for cid, api in apis.items():
+        if _api_kind(api.get('name')) != 'host':
+            continue
+        # Every observed host control call, joined or not, must be a success
+        # or the exact pending event query. A pending query with GPU activity
+        # is never host-only work.
+        if not _host_return_ok(api.get('name'), api.get('return_value')):
+            fail('host_api_failed')
+        if cid in activity_cids:
+            fail('host_api_has_activity')
     for cid, oid in external.items():
         api = apis[cid]
         kind = _api_kind(api.get('name'))
         if kind is None:
             _add(miss, 'unsupported_api:' + api['name'])
+        elif kind == 'host':
+            # Host control joined inside an offer: the exact event query may
+            # report NOT_READY (600) with zero GPU work; other nonzero host
+            # returns still fail, and a pending query completes nothing.
+            if not _host_return_ok(api.get('name'), api.get('return_value')):
+                fail('host_api_failed')
         elif api.get('return_value') != 0:
             fail('api_submission_failed')
         elif kind in KINDS and cid not in activity_cids:

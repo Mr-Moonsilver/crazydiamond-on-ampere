@@ -27,9 +27,11 @@ import sys
 import threading
 
 try:  # imported from the generated package when installed there
-    from activity_accounting import KINDS, api_kind as _api_kind
+    from activity_accounting import (KINDS, api_kind as _api_kind,
+                                     host_return_ok as _host_return_ok)
 except ImportError:  # pragma: no cover - package-relative import
-    from .activity_accounting import KINDS, api_kind as _api_kind
+    from .activity_accounting import (KINDS, api_kind as _api_kind,
+                                      host_return_ok as _host_return_ok)
 
 SCHEMA = 's5-engine-accounting/1'
 NATIVE_SCHEMA = 's5ro-correlation/2'
@@ -2079,7 +2081,10 @@ def grade_engine(native, offers, declared, window):
                 miss('unsupported_api:' + api['name'])
                 continue
             if kind == 'host':
-                if api['return_value'] != 0:
+                # Success, or the documented NOT_READY of the exact event
+                # query; a pending query observes zero GPU work and is never
+                # completion. Any other nonzero host return still fails.
+                if not _host_return_ok(api['name'], api['return_value']):
                     fail('host_api_failed')
                 if by_api[cid]:
                     fail('host_api_has_activity')

@@ -265,6 +265,87 @@ class LanePrivateBindings:
         self._workspace_bytes = 0
         self.marlin_locks = []
         self._lock_initialized = set()
+        self._ledger = None
+
+    # -- offer provider ----------------------------------------------------
+    def attach_ledger(self, ledger):
+        """Attach the source-pinned native offer provider (or ``None``).
+
+        ``native_prefill_offers.NativePrefillLedger`` is duck-typed: it owns
+        the exact ``private_leaf`` declarations for the initializations this
+        scope performs. The hookup is deliberately tiny so the observer
+        integration can install it once per worker; without a provider the
+        operations run exactly as before.
+        """
+        if ledger is not None and not callable(getattr(ledger, 'private_leaf', None)):
+            raise LanePrivateError(
+                'native offer provider exposes no exact private_leaf entry')
+        self._ledger = ledger
+        return self
+
+    @contextmanager
+    def _private_leaf(self, suboperation):
+        """Observe one exact initialization leaf; never blocks the original.
+
+        A missing provider, a refused offer or an observation failure latches
+        the ledger incomplete (when it has an invalidator) and yields ``None``;
+        the caller's body still executes exactly once. The leaf is never
+        treated as completion.
+        """
+        ledger = self._ledger
+        if ledger is None:
+            yield None
+            return
+        invalidate = getattr(ledger, '_invalidate', None)
+
+        def invalid(reason):
+            # Observer failures cannot skip or duplicate a model operation.
+            # The real ledger's invalidator is bounded and non-raising; keep
+            # the same body-once contract if a supplied provider itself fails.
+            if callable(invalidate):
+                try:
+                    invalidate(reason)
+                except Exception:
+                    pass
+
+        opener = getattr(ledger, 'private_leaf', None)
+        if not callable(opener):
+            invalid('private_leaf_provider_missing')
+            yield None
+            return
+        try:
+            scope = opener(suboperation)
+            enter, leave = scope.__enter__, scope.__exit__
+            meta = enter()
+        except Exception:
+            invalid('private_leaf_refused:' + str(suboperation))
+            yield None
+            return
+        try:
+            yield meta
+        except BaseException as exc:
+            try:
+                leave(type(exc), exc, exc.__traceback__)
+            except Exception:
+                invalid('private_leaf_close:' + str(suboperation))
+            # A provider may observe an operation error, never suppress it.
+            raise
+        else:
+            try:
+                leave(None, None, None)
+            except Exception:
+                invalid('private_leaf_close:' + str(suboperation))
+
+    def _initialize_lock_once(self, private):
+        """Zero one retained private lock array on first use, in this scope.
+
+        Extracted so the one-time initialization is auditable and carries its
+        exact leaf offer. Order, stream/context, sharing, the one-time flag and
+        failure ownership (a raising zero leaves the flag unset) are unchanged.
+        """
+        with self._private_leaf('lock_init'):
+            private.zero_()
+        self._lock_initialized.add(id(private))
 
     # -- discovery ---------------------------------------------------------
     @classmethod
@@ -534,8 +615,7 @@ class LanePrivateChunk:
                         if getattr(module, 'workspace', None) is not original:
                             raise LanePrivateError('Marlin lock owner changed since discovery')
                         if id(private) not in bindings._lock_initialized:
-                            private.zero_()
-                            bindings._lock_initialized.add(id(private))
+                            bindings._initialize_lock_once(private)
                         setattr(module, 'workspace', private)
                         saved.append((module, 'workspace', original))
                     yield self
@@ -582,8 +662,12 @@ class LanePrivateChunk:
         if type(issued) is not int or issued < 1:
             raise LanePrivateError('admitted request has no issued QSA UID')
         # One device-to-device copy on the lane stream; no host read, no sync.
-        bindings.uid.fill_(-2)
-        bindings.uid[0].copy_(slots[self.req_index])
+        # The fill and the seed copy are the exact uid_init leaf; a missing
+        # provider or refused offer latches incomplete but still runs both
+        # operations once, in this order.
+        with bindings._private_leaf('uid_init'):
+            bindings.uid.fill_(-2)
+            bindings.uid[0].copy_(slots[self.req_index])
         self._populated = True
 
 

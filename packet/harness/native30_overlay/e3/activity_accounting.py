@@ -11,6 +11,39 @@ KINDS=('kernel','memcpy','memset')
 # the graph-only report's8MiB and engine receipt's16MiB limits.
 CORRELATION_REPORT_MAX_BYTES=64*1024*1024
 
+# CUDA_ERROR_NOT_READY / cudaErrorNotReady (reference/cuda-13/cuda.h:2828,
+# reference/cuda-runtime-13/driver_types.h:767). cuEventQuery/cudaEventQuery
+# return it while captured work is pending; that is a documented host
+# observation, not a failure and not completion (cuda.h:16048-16071,
+# cuda_runtime_api.h near 2920). Pinned to the event-query family only.
+CUDA_ERROR_NOT_READY=600
+_HOST_QUERY_APIS=('cudaEventQuery','cuEventQuery')
+
+
+def is_host_query(name):
+    """True only for the exact event-query API (version suffix rules)."""
+    if not isinstance(name,str):return False
+    return any(re.fullmatch(re.escape(stem)+r'(?:_v\d+)?(?:_ptsz|_ptds)?',name)
+               for stem in _HOST_QUERY_APIS)
+
+
+def host_return_class(name,return_value):
+    """Classify one host-API return: ``success`` / ``pending`` / ``refused``.
+
+    Only cuEventQuery/cudaEventQuery may report the pending status. A pending
+    query observes zero GPU work; it is never completion and never evidence
+    for a missing event, source or graph. Every other nonzero return refuses.
+    """
+    if type(return_value) is not int:return 'refused'
+    if return_value==0:return 'success'
+    if return_value==CUDA_ERROR_NOT_READY and is_host_query(name):return 'pending'
+    return 'refused'
+
+
+def host_return_ok(name,return_value):
+    """A zero-GPU-work host observation: success, or a pending event query."""
+    return host_return_class(name,return_value) in ('success','pending')
+
 
 def api_kind(name):
     # Exact API families, version/thread-default suffixes only. Unsupported
@@ -117,7 +150,9 @@ def grade(report,offers,*,epoch,generation):
             k=api_kind(a['name'])
             if k is None:m.append('unsupported_api:'+a['name']);continue
             if k=='host':
-                if a['return_value']!=0:f.append('host_api_failed')
+                # A pending event query (600) carries no GPU work and is not
+                # completion; only the exact query API may report it.
+                if not host_return_ok(a['name'],a['return_value']):f.append('host_api_failed')
                 if by_api[c]:f.append('host_api_has_activity')
                 continue
             if a['return_value']!=0:f.append('api_submission_failed');continue
