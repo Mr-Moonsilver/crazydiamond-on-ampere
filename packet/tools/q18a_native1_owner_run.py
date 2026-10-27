@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 
 sys.dont_write_bytecode=True
 H=Path('/home/<service-user>/harness/038e5c95e7f8')
@@ -26,6 +27,7 @@ MANIFEST='b232748413431bc5ad3cceee767f9c099f865389fdc0d5e1e83caa729dd64784'
 GREEN='e06b062263dcc315dec1ab279f1c08abc8f627e4c6f901ef5a740ec307cba41b'
 OBSERVER='05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d'
 LATEST_QUEUE_START=datetime.datetime(2026,10,28,1,45,tzinfo=datetime.timezone.utc).timestamp()
+_REDACTIONS=[]  # credential values stay in this owner process's memory only
 
 
 class Refused(ValueError):
@@ -49,6 +51,7 @@ def environment(key,model,cap,original=None):
     require(type(key) is str and re.fullmatch('[0-9a-f]{64}',key) is not None,'fresh-64-hex-key-required')
     require(type(model) is str and model and len(model)<=200 and not any(x in model for x in '\r\n'),'model-required')
     require(type(cap) is int and 64*1024**2<=cap<=2*1024**3,'snapshot-cap-invalid')
+    if key not in _REDACTIONS:_REDACTIONS.append(key)
     env=dict(os.environ if original is None else original)
     for name in list(env):
         if name.startswith('Q17_TEST_') or name in ('Q18A_OVERLAP_BOUNDED','S5_LAUNCHER_SHA','CONTROLLER_CMD'):
@@ -118,6 +121,17 @@ def phase(script,log,env):
                               stdout=handle,stderr=subprocess.STDOUT).returncode
 
 
+def diagnostic(exc):
+    message=('input-encoding-invalid' if isinstance(exc,UnicodeError) else str(exc))
+    for secret in (*_REDACTIONS,os.environ.get('VLLM_API_KEY')):
+        if type(secret) is str and secret:message=message.replace(secret,'***')
+    return {'error_type':type(exc).__name__,
+            'error_message':message.replace('\n',' ').replace('\r',' ')[:512],
+            'error_stack':[{'file':Path(frame.filename).name,'line':frame.lineno,
+                            'function':frame.name}
+                           for frame in traceback.extract_tb(exc.__traceback__)[-8:]]}
+
+
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--auth-env-file',type=Path,required=True)
@@ -144,7 +158,6 @@ def main(argv=None):
 if __name__=='__main__':
     try:raise SystemExit(main())
     except Exception as exc:
-        # Never render arbitrary exception text, child output, env or key data.
-        reason=str(exc) if type(exc) is Refused else type(exc).__name__
-        print('OWNER_CHAIN INCONCLUSIVE '+reason,flush=True)
+        # Bounded location/message diagnostics, never key data or source/locals.
+        print('OWNER_CHAIN INCONCLUSIVE '+json.dumps(diagnostic(exc),sort_keys=True),flush=True)
         raise SystemExit(2)

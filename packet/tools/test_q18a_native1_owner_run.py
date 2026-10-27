@@ -56,5 +56,16 @@ class OwnerRunner(unittest.TestCase):
                 run.assert_not_called()
             self.assertEqual(log.read_text(),'prior evidence')
 
+    def test_bounded_exception_reason_and_location_without_key_or_input_bytes(self):
+        key='f'*64;runner.environment(key,'model',2*1024**3,{})
+        try:raise ValueError('refused '+key+'\n'+('x'*1000))
+        except ValueError as exc:result=runner.diagnostic(exc)
+        self.assertNotIn(key,repr(result))
+        self.assertIn('***',result['error_message'])
+        self.assertLessEqual(len(result['error_message']),512)
+        self.assertEqual(result['error_stack'][-1]['file'],Path(__file__).name)
+        bad=UnicodeDecodeError('utf-8',b'credential\xff',10,11,'invalid')
+        self.assertEqual(runner.diagnostic(bad)['error_message'],'input-encoding-invalid')
+
 
 if __name__=='__main__':unittest.main()
