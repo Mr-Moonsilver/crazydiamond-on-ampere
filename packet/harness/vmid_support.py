@@ -24,11 +24,11 @@ OWNED_CONTAINERS = ('flashnext-job2', 'flashnext-job2b', 'flashnext-job3',
                     'flashnext-job6', 'flashnext-job7', 'flashnext-job7b', 'flashnext-job7c',
                     'flashnext-job8', 'flashnext-job9', 'flashnext-job9b',
                     'flashnext-job10', 'flashnext-job11', 'flashnext-job10b',
-                    'flashnext-job12', 'flashnext-job12b')
+                    'flashnext-job12', 'flashnext-job12b', 'flashnext-job12c')
 LONG_RUN_CONTAINERS = ('flashnext-job4', 'flashnext-job6', 'flashnext-job7',
                        'flashnext-job7b', 'flashnext-job7c', 'flashnext-job8', 'flashnext-job9',
                        'flashnext-job9b', 'flashnext-job10', 'flashnext-job11',
-                       'flashnext-job10b', 'flashnext-job12', 'flashnext-job12b')
+                       'flashnext-job10b', 'flashnext-job12', 'flashnext-job12b', 'flashnext-job12c')
 
 
 def monitor(out, container):

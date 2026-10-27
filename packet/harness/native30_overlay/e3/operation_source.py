@@ -42,7 +42,7 @@ S5_RUNNER_SHA256 = '0f5b40fd506beb42a46a70a97bb7784e538aa97b0227e7a64ba41366fe9b
 SPARSE_STAGE_KERNELS = ('_s6_mark', '_s6_scan', '_s6_offsets', '_s6_pack',
                         '_s6_remap')
 SPARSE_STAGE_SHA256 = '10d675e158465971cb7a7726055a4f55aa42c18a22baddd1a451104f3f827660'
-UNION_SOURCE_SHA256 = 'd70c4f413651cb6c3a93ad57782608c1cf4856d171d0b09f0b6f555d4867b3d3'
+UNION_SOURCE_SHA256 = '87ab16989a02626d5e380e4607d0e411feb621d2435ff9c9a59d76b90d75057e'
 
 OPS_NAME = 'flash_s5_arena_attention'
 SPARSE_OPS_NAME = 'flash_s5_sparse_arena_attention'
@@ -77,7 +77,20 @@ def _union_text(source):
     """Five pinned kernels plus the fixed-capacity launch wrapper."""
     if _sha(source) != SPARSE_STAGE_SHA256:
         raise ValueError('unreviewed sparse-stage union kernels')
-    parts = [function(source, name).rstrip('\n') for name in SPARSE_STAGE_KERNELS]
+    # resident_attention.function intentionally starts at ``def`` for ordinary
+    # wrappers. A Triton kernel must retain its decorator to be subscriptable.
+    # Preserve the pinned kernel's actual decorator/source bytes, not a guessed
+    # replacement, and refuse any unreviewed decorator shape.
+    nodes = {node.name: node for node in ast.parse(source).body
+             if isinstance(node, ast.FunctionDef)}
+    lines = source.splitlines(keepends=True)
+    parts = []
+    for name in SPARSE_STAGE_KERNELS:
+        node = nodes[name]
+        if ([ast.unparse(item) for item in node.decorator_list] != ['triton.jit']):
+            raise ValueError('sparse union kernel lost its pinned Triton decorator')
+        start = node.decorator_list[0].lineno - 1
+        parts.append(''.join(lines[start:node.end_lineno]).rstrip('\n'))
     if '_s6_gather' in '\n\n'.join(parts):
         raise ValueError('the sparse union overlay must not emit the UVA gather')
     text = '\n\n'.join(parts) + '\n\n' + _S6_UNION.rstrip('\n')
