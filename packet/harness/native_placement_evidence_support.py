@@ -37,7 +37,7 @@ def packet(rank=0):
     with patch.object(t,'START',b.start_ns),patch.object(t,'END',b.end_ns):
      raw=t.raw_receipt(dict(engine_by_kind=dict(counts),joined_records=sum(counts.values())),expected=expected,other=other,verdict='INCONCLUSIVE',native_reasons=['unattributed_expected_context'])
     raw['caller_proof'].update(engine_incarnation='engine:3',worker_rank=rank,worker_incarnation='worker-inc-%d'%rank)
-    
+
     packet = dict(receipt=raw, native_report=whole['native'],
         offer_report=whole['offers'], decode_declared=decl,
         decode_window=d.window(), engine_accounting=dec,
