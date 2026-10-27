@@ -164,6 +164,7 @@ def _completion_rows(completions):
         rows.append({
             'index': index,
             'request': row.get('request'),
+            'request_generation': row.get('request_generation'),
             'worker_rank': row.get('worker_rank'),
             'queried': queried,
             'completed_sequence': row.get('completed_sequence'),
@@ -229,8 +230,13 @@ def _window(label, basis, family, completions):
             if type(item.get('request')) is str}
     starts = [item['start_monotonic_ns'] for item in family
               if type(item.get('start_monotonic_ns')) is int]
+    # Current source frames carry generations. Never borrow a completion from
+    # another incarnation of a reused UID. Legacy all-absent rows stay readable.
+    generation_bound = any(item.get('request_generation') is not None for item in family)
+    keys = {(item.get('request'), item.get('request_generation')) for item in family}
     rows = [row for row in completions
-            if row['queried'] and row.get('request') in uids]
+            if row['queried'] and ((row.get('request'), row.get('request_generation')) in keys
+                                  if generation_bound else row.get('request') in uids)]
     writes = [row['state_write_ns'] for row in rows
               if type(row.get('state_write_ns')) is int]
     if not starts:

@@ -2172,7 +2172,7 @@ class EvidenceTests(unittest.IsolatedAsyncioTestCase):
         stack.drive(lambda: stack.driver.tx is None)
         self.assertIsNone(stack.driver.error)
 
-    def test_fresh_and_append_journal_survive_release_and_build_evidence(self):
+    def test_fresh_request_family_survives_chunk_reset_and_builds_complete_evidence(self):
         stack = active_stack()
         core, frontend = core_for(stack)
         stack.drive(lambda: stack.driver._split_ready)
@@ -2185,9 +2185,11 @@ class EvidenceTests(unittest.IsolatedAsyncioTestCase):
                                              'run_id': 'run-b'}))
         self.assertEqual(begin['route'], 'split')
 
-        self.finish_chunk(stack)                     # fresh chunk on the split
+        self.finish_chunk(stack)
         self.assertIsNotNone(stack.controller.admit(stack.scheduler))
-        self.finish_chunk(stack)                     # append chunk on the split
+        self.finish_chunk(stack)
+        self.assertIsNotNone(stack.controller.admit(stack.scheduler))
+        self.finish_chunk(stack)  # terminal chunk of the SAME fresh request
 
         result = asyncio.run(session.execute(
             {'schema': 1, 'action': 'overlap_end', 'run_id': 'run-b',
@@ -2195,12 +2197,12 @@ class EvidenceTests(unittest.IsolatedAsyncioTestCase):
         segments = [segment for segment in result['segments']
                     if segment.get('accepted')]
         self.assertEqual([segment['prefill'] for segment in segments],
-                         ['fresh', 'append'])
+                         ['fresh', 'fresh', 'fresh'])
         self.assertEqual([segment['transport'] for segment in segments],
-                         ['native-split', 'native-split'])
+                         ['native-split', 'native-split', 'native-split'])
         self.assertTrue(all(segment['state_write'] for segment in segments))
         self.assertEqual([segment['state_write_ranks'] for segment in segments],
-                         [[0, 1, 2, 3], [0, 1, 2, 3]])
+                         [[0, 1, 2, 3], [0, 1, 2, 3], [0, 1, 2, 3]])
         # Every accepted segment carries the queried per-op reports of all four
         # ranks, not a submission count.
         self.assertTrue(all(segment['report_count'] >= 4 for segment in segments))
@@ -2218,7 +2220,8 @@ class EvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result['enabled'])
         self.assertEqual(result['decode_progress'], 4)
         self.assertGreater(result['fresh_prefill']['useful_tokens'], 0)
-        self.assertGreater(result['append_prefill']['useful_tokens'], 0)
+        self.assertFalse(result['append_prefill']['valid'])
+        self.assertTrue(result['measurement_binding']['valid'])
         self.assertEqual(result['clock']['begin']['basis'], nm.CLOCK_BASIS)
         self.assertTrue(result['clock']['end']['proved'])
         self.assertFalse(result['native_ready'])

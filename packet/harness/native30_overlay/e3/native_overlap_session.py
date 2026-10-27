@@ -19,6 +19,7 @@ lift it.
 import time
 
 from native_overlap_control import NativeControlClient
+from native_measurement import select_window_evidence
 from native_overlap_metrics import (
     clock_identity,
     measure_windows,
@@ -239,30 +240,38 @@ class NativeOverlapSession:
         decode_progress = command.get('decode_progress')
         if decode_progress is not None and type(decode_progress) is not int:
             raise NativeOverlapSessionError('session-decode-progress-not-an-int')
+        measured, binding = select_window_evidence(
+            evidence, self.begin_receipt, self.measure_start_ns, end_ns)
         windows = measure_windows(
             begin_receipt=self.begin_receipt, end_receipt=evidence,
             begin_proof=self.begin_proof, end_proof=end_proof,
-            segments=evidence.get('segments'), completions=evidence.get('completions'),
+            segments=measured.get('segments'), completions=measured.get('completions'),
             decode_progress=decode_progress)
-        prefill = dict(evidence.get('prefill') or {})
+        prefill = dict(measured.get('prefill') or {})
         prefill['prefill_tokens_per_s'] = throughput(
             prefill.get('useful_completed_tokens'), prefill.get('prefill_wall_s'))
-        serialized = bool(evidence.get('serialized_transport')) or any(
+        serialized = bool(measured.get('serialized_transport')) or any(
             segment.get('transport') != 'native-split'
             for segment in windows.get('segments') or []
             if segment.get('accepted') is True)
         enabled = (windows.get('valid') is True
-                   and (self.control.last_snapshot or {}).get('route') == 'split'
+                   and binding.get('valid') is True
                    and not serialized)
         reasons = list(windows.get('reasons') or [])
+        reasons.extend(binding.get('reasons') or [])
+        phase = (self.begin_receipt.get('admission_intent') or {}).get('phase')
+        if phase == 'w2-overlap' and (windows.get('append_prefill') or {}).get('valid') is not True:
+            enabled = False
+            reasons.append('native-append-window-unproved')
         if serialized:
             reasons.append('serialized-or-uva-transport-not-accepted-overlap')
-        if (evidence.get('journal') or {}).get('complete_in_window') is not True:
+        raw_loss = (evidence.get('journal') or {}).get('complete_in_window') is not True
+        if raw_loss and binding.get('complete') is not True:
             reasons.append('engine-journal-evicted-before-window')
         return {
             'measure_start_ns': self.measure_start_ns,
             'measure_end_ns': end_ns,
-            'route': (self.control.last_snapshot or {}).get('route'),
+            'route': evidence.get('route'),
             'engine_epoch': evidence.get('engine_epoch'),
             'enabled': enabled,
             'reasons': sorted(set(reasons)),
@@ -273,12 +282,20 @@ class NativeOverlapSession:
             'completions': windows.get('completions') or [],
             'decode_progress': windows.get('decode_progress'),
             'prefill': prefill,
-            'source_holds': evidence.get('source_holds') or [],
-            'committed_frontiers': evidence.get('committed_frontiers') or [],
-            'pp_consumer_receipts': evidence.get('pp_consumer_receipts') or [],
-            'cancellations': evidence.get('cancellations') or [],
+            'source_holds': measured.get('source_holds') or [],
+            'committed_frontiers': measured.get('committed_frontiers') or [],
+            'pp_consumer_receipts': measured.get('pp_consumer_receipts') or [],
+            'cancellations': measured.get('cancellations') or [],
             'workers': evidence.get('workers') or [],
             'journal': evidence.get('journal') or {},
+            'measurement': evidence.get('measurement'),
+            'measurement_binding': binding,
+            'raw_journal_evidence': {key: evidence.get(key) for key in (
+                'segments', 'completions', 'prefill', 'source_holds',
+                'committed_frontiers', 'pp_consumer_receipts', 'cancellations',
+                'reasons', 'construction_valid')},
+            'notes': (['raw journal eviction retained descriptively; independent census required']
+                      if raw_loss else []),
             'allocator_peaks': _allocator_peaks(evidence.get('workers') or []),
             'clock': {'begin': self.begin_proof, 'end': end_proof,
                       'identity': clock_identity()},

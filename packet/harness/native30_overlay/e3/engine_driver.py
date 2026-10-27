@@ -55,6 +55,7 @@ from e3_types import (
 )
 from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
+from native_measurement import NativeMeasurementCensus
 from reply_transport import Backpressure, TransportError
 from scheduler_hooks import (
     ADMISSION_PHASES,
@@ -774,6 +775,9 @@ class NativeSegmentDriver:
         self.stop_budget = _positive(stop_budget, 'stop budget')
         self.stop_tick_budget = _positive(stop_tick_budget, 'stop tick budget')
         self.engine_epoch = controller.engine_epoch
+        self.measurement_census = NativeMeasurementCensus(
+            engine_epoch=self.engine_epoch, ranks=self.ranks,
+            stage_ranks=self.stage_ranks, pp_senders=self.stage_ranks[0])
         self.route_generation = 0
         self.tx = None
         self.admission = None
@@ -3007,6 +3011,7 @@ class NativeSegmentDriver:
         for key, value in fields.items():
             entry[key] = _bounded_value(value)
         self._journal.append(entry)
+        self.measurement_census.ingest(entry)
         return entry
 
     # -- overlap evidence from the journal -------------------------------
@@ -3206,6 +3211,9 @@ class NativeSegmentDriver:
                         'complete_in_window': bool(complete)},
             'workers': self._last_census,
             'workers_observed_ns': self._last_census_observed_ns,
+            'measurement': self.measurement_census.evidence(start_ns, end_ns, now_ns=now),
+            'transition_acks': self.transition_ack_rows(),
+            'native_owned': bool(self.active),
         }
         reasons = []
         if not complete:

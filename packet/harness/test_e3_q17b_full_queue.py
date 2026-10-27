@@ -245,7 +245,7 @@ class Full12Queue(ProtocolV2Queue):
             return (text.replace('e3/lane_private.py ', '').replace('e3/admission_metadata.py ', '').replace('e3/worker_bridge.py ', '').replace('e3/sparse_history_dma.py ', '').replace('e3/native_source.py ', '').replace('e3/row1_oracle.py ', '')
                     .replace('e3/native_overlap_metrics.py ', '').replace('e3/native_overlap_worker.py ', '')
                     .replace('e3/native_overlap_control.py ', '').replace('e3/native_overlap_session.py ', '')
-                    .replace('e3/native_prefill_offers.py ', '').replace('e3/native_placement.py ', ''))
+                    .replace('e3/native_prefill_offers.py ', '').replace('e3/native_placement.py ', '').replace('e3/native_measurement.py ', ''))
         self._patches=[patch.object(old,'launcher_text',current),patch.object(old,'LAUNCHER_SHA',hashlib.sha256(current().encode()).hexdigest())]
         for p in self._patches:p.start()
         FullQueue.setUp(self)

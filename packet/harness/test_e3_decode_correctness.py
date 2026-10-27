@@ -827,6 +827,12 @@ class NormalPassTests(ClientHarness):
             self.assertEqual(row['length'], self.workload.generation_budget)
 
     def test_fragmented_and_coalesced_events_are_one_arrival_each(self):
+        # This positive parser fixture must remain live until the end gate.
+        # A coalesced stream can otherwise emit its entire budget while the
+        # client validates the resume receipt on a busy CPU, turning this
+        # framing check into an accidental early-EOS negative. Retain the
+        # final two tokens for cleanup; the real client rules stay unchanged.
+        self.flow.measure_token_cap = self.workload.generation_budget - 2
         self.flow.configure(fragment=lambda run, stream: stream == 0,
                             chunk_size=lambda run, stream: 2 if stream == 1 else 1)
         data = self.run_client()

@@ -365,9 +365,6 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(out['verdict'], 'PASS')
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 class ReviewWindowBindingTests(unittest.TestCase):
     def test_each_partition_must_bind_the_actual_whole_window(self):
@@ -381,3 +378,7 @@ class ReviewWindowBindingTests(unittest.TestCase):
                 self.assertEqual(out['verdict'], 'INCONCLUSIVE', out)
                 self.assertNotEqual(out['row4'], 'PASS')
                 self.assertIn('compose_failed:' + label + '_window_differs_from_whole', out['missing'])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -389,9 +389,6 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('aux_without_binding', ledger.window()['invalid'])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 class SourceShapedReviewTests(unittest.TestCase):
     def test_real_sparse_operation_copy_boundaries_have_copy_offers(self):
@@ -507,3 +504,7 @@ class SourceShapedReviewTests(unittest.TestCase):
         out = grade(native, rec)
         self.assertEqual(out['verdict'], 'INCONCLUSIVE', out)
         self.assertIn('malformed_prefill_evidence:NativePrefillError', out['missing'])
+
+
+if __name__ == '__main__':
+    unittest.main()

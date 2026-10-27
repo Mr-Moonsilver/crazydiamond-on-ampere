@@ -109,6 +109,7 @@ def build(out):
     shutil.copy2(pp_source,e3_builder/'pool_stats_source.py')
     builder_sources['pool_stats_source.py']=sha(pp_source)
     qualification_pins={
+        'models/qwen4_exp/nvidia/qsa.py':'4ad6e74fe6a6d2678f3944ca4780c61c32e56680da2456869a789d12ef860c69',
         'v1/worker/gpu/input_batch.py':'abfbb9075a80354bd4bb59d2729fcdea3c62eed827067a823761c98356670ad1',
         'entrypoints/openai/completion/protocol.py':'0be20e3d7f21ab6cbe0ba77cb50068aa39a35fc0369ef38de068ac38ca9800aa',
         'entrypoints/openai/completion/serving.py':'75d05ddddf303734a078a3e42fcb173fef58ea56da09bc0b5c7525cb9bbbf527',
