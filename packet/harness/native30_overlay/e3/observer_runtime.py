@@ -28,7 +28,7 @@ def plain(value):
 
 
 class WorkerObserver:
-    def __init__(self, session, rank, *, engine_offers=False):
+    def __init__(self, session, rank, *, engine_offers=False, native_offers=False):
         if type(rank) is not int or rank not in (0, 1, 2, 3):
             raise ReplayObserverError('bad_proof')
         self.session = session
@@ -47,6 +47,10 @@ class WorkerObserver:
         self.engine_accounting = self.composed_placement = None
         self.window_identity = None
         self.census_start = None
+        self.native_offers = native_offers
+        self.prefill = None
+        self.completed_reply = None
+        self._native_probe = None
 
     def start(self):
         self.session.start()
@@ -131,9 +135,21 @@ class WorkerObserver:
             target = matches[0]
         # Native context/stream queries are observation setup, before tracing.
         roles = self._stream_roles(probe) if self.engine_offers_enabled else None
+        if self.native_offers:
+            from native_observation import (NativeObservation, native_clock,
+                                            persisted_source_pins)
+            self.prefill = NativeObservation(probe.native, probe.runner,
+                query=self.session.binding.stream_identity,
+                pins=persisted_source_pins(), clock=native_clock(self.session.binding))
         self.session.begin_window(route_generation=probe.route_generation, descriptor=target)
         if self.engine_offers_enabled:
             self._begin_ledger(probe, epoch, run_id, window_id, target, replay_census, roles)
+        if self.prefill is not None:
+            self.prefill.begin(self.bridge, worker=self.ledger.worker,
+                rank=self.rank, epoch=epoch,
+                generation=probe.route_generation, storage_epoch=probe.storage_epoch,
+                run_id=run_id, window_id=window_id)
+            self._native_probe = probe
         self.generation = probe.route_generation
         return {'ack': 'flash_s5_observer_begin', 'rank': self.rank,
                 'engine_epoch': epoch, 'route_generation': self.generation,
@@ -155,12 +171,26 @@ class WorkerObserver:
         replay_census = self.session.replay_census()
         if self.ledger is not None:
             self.ledger.deactivate()
+        if self.prefill is not None:
+            self.prefill.before_end()
         receipt = plain(self.session.end_window(proof))
         if self.ledger is not None:
             from engine_offers import compose_placement
             self.ledger.finish_window(self._census_delta(replay_census))
-            self.engine_accounting = self.ledger.seal()
-            self.composed_placement = compose_placement(receipt, self.engine_accounting)
+            if self.prefill is None:
+                self.engine_accounting = self.ledger.seal()
+                self.composed_placement = compose_placement(receipt, self.engine_accounting)
+            else:
+                self.native_accounting = self.prefill.after_end(self.ledger)
+                self.engine_accounting = self.native_accounting['engine_accounting']
+                # The paired native proof does not replace the raw graph
+                # proof. X's separately reviewed composer will discharge only
+                # independently accounted eager records. Until installed this
+                # remains explicitly incomplete.
+                self.composed_placement = {
+                    'schema': 's5-native-graph-placement/1',
+                    'verdict': 'INCONCLUSIVE', 'failures': [],
+                    'missing': ['native-graph-composition-not-installed']}
         from launch_diagnostic import inventory,compare
         try:
             launch_report=self.session._report_call(self.session.binding._lib.s5ro_launch_report,(self.session._token,0))
@@ -173,7 +203,7 @@ class WorkerObserver:
         self.session.stop()
         self.session.close()
         self.closed = True
-        return {'ack': 'flash_s5_observer_end', 'rank': self.rank,
+        self.completed_reply = {'ack': 'flash_s5_observer_end', 'rank': self.rank,
                 'engine_epoch': epoch, 'route_generation': self.generation,
                 'storage_epoch': probe.storage_epoch, 'drained_streams': drained,
                 'state': 'closed', 'observer_stopped': True,
@@ -182,6 +212,18 @@ class WorkerObserver:
                 **({'engine_accounting': self.engine_accounting,
                     'composed_placement': self.composed_placement}
                    if self.engine_offers_enabled else {})}
+        if self.prefill is not None:
+            self.completed_reply.update(self.native_accounting)
+        return self.completed_reply
+
+    def before_native_full_return(self, native):
+        """Close the actual split window before the worker changes its route."""
+        if not self.native_offers or self.session.state != 'window':
+            return
+        probe = self._native_probe
+        if probe is None or probe.native is not native:
+            raise ReplayObserverError('native_observer_owner_changed')
+        self.end(probe, self.engine_epoch)
 
     def _stream_roles(self, probe):
         runner = probe.runner
@@ -307,7 +349,8 @@ def start_worker_observer(worker, runner, env=None, *, binding_factory=ReplayBin
     if ledger_flag not in ('0', '1'):
         raise ReplayObserverError('bad_state')
     owner = WorkerObserver(session_factory(binding), getattr(worker, 'rank', None),
-                           engine_offers=ledger_flag == '1')
+                           engine_offers=ledger_flag == '1',
+                           native_offers=(probe_mode, overlap_mode) == ('0', '1'))
     # Retain ownership before start: partial native setup failure must not lose
     # the subscriber/buffer owner or permit a second start.
     runner._flash_s5_replay_observer = owner

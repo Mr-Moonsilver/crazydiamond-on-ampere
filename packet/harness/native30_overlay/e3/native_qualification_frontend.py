@@ -20,8 +20,8 @@ bounded:
     acknowledgement, drain or row1 record is synthesised here.
 
 The two controls are deliberately **distinct objects**: the plan owner is the
-engine-side ``NativeControlClient`` over the constructed driver, while the
-dispatcher is the API-side ``NativeControlClient`` over the EngineCore utility.
+API-side ``NativeControlClient`` that owns the input-processor plan, while
+the dispatcher is a separate API client for the named EngineCore utility.
 They are constructed and cached separately; the adapter refuses to run if a
 single object is supplied for both.
 

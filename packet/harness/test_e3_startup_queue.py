@@ -55,7 +55,7 @@ def full11_launcher_text():
                   'e3/sparse_history_dma.py ', 'e3/native_source.py ', 'e3/row1_oracle.py ',
                   'e3/native_overlap_metrics.py ', 'e3/native_overlap_worker.py ',
                   'e3/native_overlap_control.py ', 'e3/native_overlap_session.py ',
-                  'e3/native_prefill_offers.py ', 'e3/native_placement.py ', 'e3/native_measurement.py ',
+                  'e3/native_prefill_offers.py ', 'e3/native_placement.py ', 'e3/native_measurement.py ', 'e3/native_qualification.py ', 'e3/native_qualification_frontend.py ', 'e3/native_observation.py ',
                   'e3_sources/sampler.py ', 'e3_sources/async_utils.py '):
         text = text.replace(value, '')
     text = text.replace('      -v "$OVERLAY/e3_sources/sampler.py:$V/worker/gpu/sample/sampler.py:ro"\n', '')

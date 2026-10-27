@@ -151,13 +151,15 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
     def driver_factory(operation, qsa_module, forward_context_getter):
         from qsa_driver import QsaLayerDriver
 
-        return QsaLayerDriver(
+        native.observe_prefill(operation, 'qsa_operation')
+        driver = QsaLayerDriver(
             operation,
             staged_operation=qsa_module._flash_s5_staged_operation,
             sparse_staged_operation=getattr(
                 qsa_module, '_flash_s5_sparse_staged_operation', None),
             source_holds=getattr(operation, 'native_source_holds', None),
             forward_context=forward_context_getter)
+        return native.observe_prefill(driver, 'qsa_driver')
 
     def qsa_module():
         import vllm.models.qwen4_exp.nvidia.qsa as module

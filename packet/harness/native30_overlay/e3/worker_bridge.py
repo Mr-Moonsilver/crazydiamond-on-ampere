@@ -840,6 +840,9 @@ class NativeWorkerBridge:
             raise self._route_fail(
                 'prefill side streams did not drain: ' + type(exc).__name__) from exc
         try:
+            before = getattr(native, 'before_route_change', None)
+            if callable(before):
+                before(route)
             record = controller.enter_split() if route == 'split' else controller.leave_split()
         except BaseException as exc:
             raise self._route_fail(

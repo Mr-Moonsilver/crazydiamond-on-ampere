@@ -121,6 +121,7 @@ class WorkerNative:
         self.decode_owner = decode_owner
         self.prefill_streams = prefill_streams
         self.private_bindings = private_bindings
+        self.observation = None
         self.router = None
         self.host_submit_ns = []
 
@@ -142,7 +143,21 @@ class WorkerNative:
             kwargs['private_scope'] = self.private_bindings.chunk_scope(chunk).scope
         if clock is not None:
             kwargs['clock'] = clock
-        return LaneForward(self.runner.model, inputs, **kwargs)
+        forward = LaneForward(self.runner.model, inputs, **kwargs)
+        self.observe_prefill(forward, 'lane_forward')
+        return forward
+
+    def observe_prefill(self, target, kind):
+        """Attach a source observer only inside its explicitly owned window."""
+        if self.observation is not None:
+            self.observation.attach(target, kind)
+        return target
+
+    def before_route_change(self, target):
+        """Retire any owned observation before a drained FULL handback."""
+        owner = getattr(self.runner, '_flash_s5_replay_observer', None)
+        if target == FULL_ROUTE and owner is not None:
+            owner.before_native_full_return(self)
 
     def inventory(self):
         record = {
@@ -331,6 +346,7 @@ def transition_rpc(runner, command, *, engine_epoch=None, clock=time.monotonic):
     if storage_epoch is not None and handle is not None and storage_epoch != handle.storage_epoch:
         raise NativeStartupError('transition command names a stale storage epoch')
     started = clock()
+    native.before_route_change(target)
     record = controller.enter_split() if target == SPLIT_ROUTE else controller.leave_split()
     router = getattr(runner, '_flash_e3_graph_router', None)
     authorization = command.get('authorization')

@@ -1708,7 +1708,10 @@ def _invoke(ledger, kind, attr, target, original, args, kwargs):
                       else 'direct')
         sub = 'layer_qsa' if segment == 'layer' and branch == 'driver' else segment
         decl = declared_suboperation('prefill_segment', sub)
-        cursor = getattr(target, 'cursor', None)
+        # LaneForward owns an integer cursor. Nested owner offers inherit this
+        # binding, so retain the same bounded list shape as dispatcher/QSA
+        # cursors rather than passing a scalar that the raw grader refuses.
+        cursor = _safe_cursor(target)
         try:
             scope = ledger._offer(decl, transaction=binding['transaction'],
                                   op_seq=binding['op_seq'], segment=segment,
@@ -1718,7 +1721,7 @@ def _invoke(ledger, kind, attr, target, original, args, kwargs):
                 ledger, 'lane_offer_refused', original, args, kwargs)
         with scope as meta:
             result = original(*args, **kwargs)
-            meta['cursor'] = [cursor, getattr(target, 'cursor', None)]
+            meta['cursor'] = [cursor, _safe_cursor(target)]
             return result
 
     if kind == 'qsa_driver':

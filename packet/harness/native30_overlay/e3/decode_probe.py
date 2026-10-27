@@ -52,7 +52,7 @@ STORAGE_EPOCH = 1
 # (a plain qsa_operation import and resident_attention). It stays shipped and
 # checksummed for the builder, separately from the runtime module inventory.
 BUILD_ONLY_SOURCES = ('operation_source',)
-GENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'admission_metadata', 'worker_bridge', 'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma', 'native_source', 'row1_oracle', 'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers', 'native_overlap_metrics', 'native_overlap_worker', 'native_overlap_control', 'native_overlap_session', 'native_prefill_offers', 'native_placement', 'native_measurement')
+GENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'admission_metadata', 'worker_bridge', 'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma', 'native_source', 'row1_oracle', 'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers', 'native_overlap_metrics', 'native_overlap_worker', 'native_overlap_control', 'native_overlap_session', 'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation')
 EVIDENCE_FILE = 'decode-probe-evidence.json'
 
 # Test ids that the declaration must name; the new suite verifies they exist.
@@ -185,12 +185,12 @@ def _helper_sha():
     return helper_source_sha256()
 
 
-def require_decode_probe_ready(evidence=None):
-    """Gate the diagnostic mode on complete, matching evidence.
+def verify_runtime_sources(evidence=None):
+    """Verify persisted transform/module identities; no readiness claim.
 
-    This is deliberately separate from ``s5_startup.require_native_ready()``,
-    which keeps refusing the full package unchanged.  No environment bypass:
-    a caller that supplies incomplete or stale evidence is refused.
+    This source-only check is shared by diagnostic and native observers.
+    Native admission, lifetime and execution readiness are separate gates.
+    Never mint an attestation by hashing live files against themselves.
     """
     if evidence is None:
         # The generator writes this before launch; never mint an attestation
@@ -265,6 +265,11 @@ def require_decode_probe_ready(evidence=None):
     if absent:
         raise DecodeProbeNotReady('decode probe evidence lacks tests: ' + ', '.join(absent))
     return dict(evidence)
+
+
+def require_decode_probe_ready(evidence=None):
+    """Diagnostic source-evidence gate, separate from native readiness."""
+    return verify_runtime_sources(evidence)
 
 
 # --- diagnostics ------------------------------------------------------------

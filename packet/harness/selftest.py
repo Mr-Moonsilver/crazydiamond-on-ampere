@@ -666,6 +666,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_qsa_driver.py', 'E3 QSA layer driver: additive attention pre/post on the D2-composed QSA source, producer -> one-bucket generator -> tail phases, pause/pending (CPU only)'),
                      ('test_e3_native_startup.py', 'E3 worker-native startup: split bank + lane communicators + PLE scratch composition, graph builder, transition RPC (CPU only, fakes)'),
                      ('test_e3_model_hooks.py', 'E3 lane forward: additive prefix/layer/suffix on the pinned model, exact inverse, segment driver scopes and pause (CPU only)'),
+                     ('test_e3_native_observation.py', 'Native shared observer lifecycle: real ledgers, dynamic source pins, role drains and retained window before FULL handback (CPU only)'),
                      ('test_e3_native_qualification.py', 'Native qualification worker identity, source scope, teacher and observer ownership over actual modules (CPU only)'),
                      ('test_e3_native_qualification_frontend.py', 'Native qualification API frontend: exact commands, authenticated loopback and actual teacher plan ownership (CPU only)'),
                      ('test_e3_native_api_qualification_composition.py', 'Actual API NativeControlClient owns the input processor, distinct from EngineCore utility ownership (CPU only)'),

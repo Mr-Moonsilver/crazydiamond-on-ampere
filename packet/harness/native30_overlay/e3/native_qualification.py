@@ -475,6 +475,22 @@ def _observer(runner, native, identity, command, epoch, *, begin):
              'native-qualification-observer-offers-disabled')
     _require(_text(command['run_id']) and _text(command['window_id']),
              'native-qualification-observer-window-identity-invalid')
+    if not begin and owner.closed:
+        _require(owner.engine_epoch == epoch,
+                 'native-qualification-observer-retained-epoch-differs')
+        _require(owner.window_identity == (command['run_id'], command['window_id']),
+                 'native-qualification-observer-window-identity-changed')
+        _require(type(owner.completed_reply) is dict,
+                 'native-qualification-observer-retained-receipt-missing')
+        drain = _drain(runner, native, require_quiet=True)
+        # Outer worker telemetry carries the live generation. Keep the
+        # completed window's own generation unchanged in the retained packet.
+        result = dict(_common(runner, native, identity, command, drain,
+                              ack='flash_s5_observer_end'))
+        result.update(owner.completed_reply)
+        result.update(current_route=identity.route,
+                      current_route_generation=identity.route_generation)
+        return result
     _require(identity.route == 'split',
              'native-qualification-observer-needs-split-route')
     if begin:

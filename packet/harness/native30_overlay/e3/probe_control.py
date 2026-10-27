@@ -605,7 +605,10 @@ def attach_router(args, app, env=None):
     import os
     env = os.environ if env is None else env
     if env.get('FLASH_S5_OVERLAP', '0') == '1':
-        return attach_native_router(args, app, env)
+        state = attach_native_router(args, app, env)
+        from native_qualification_frontend import attach_router as qualification_router
+        state['qualification'] = qualification_router(args, app, env=env)
+        return state
     if env.get('FLASH_S5_DECODE_ONLY_PROBE', '0') != '1':
         return None
     from decode_probe import mode_settings
