@@ -44,10 +44,17 @@ def _decode_only(snapshot):
 
 
 class Instrument:
-    def __init__(self, baseline, post=None, snapshot_max_bytes=2*1024**3):
+    def __init__(self, baseline, post=None, snapshot_max_bytes=2*1024**3,
+                 numerical_rule=3, calibration_path=None):
         if type(snapshot_max_bytes) is not int or not 64*1024**2<=snapshot_max_bytes<=2*1024**3:
             raise ValueError("snapshot budget invalid")
+        if type(numerical_rule) is not int or numerical_rule not in (3,4):
+            raise ValueError("numerical rule selection invalid")
+        if calibration_path is not None and not isinstance(calibration_path,(str,Path)):
+            raise ValueError("calibration path invalid")
         self.snapshot_max_bytes=snapshot_max_bytes
+        self.numerical_rule=numerical_rule
+        self.calibration_path=calibration_path
         self.baseline=grade_module.baseline_record(baseline)
         self.post=post or self._post
         self.prompts=None;self.traces=None;self.plan=None;self.plan_shas={}
@@ -322,9 +329,27 @@ class Instrument:
             mapping['defect_count']=len(mapping['defects'])
             if len(mapping['defects'])>32:
                 mapping['defects']=mapping['defects'][:31]+['defects-overflow']
-        verdict=grade_module.grade(evidence)
+        rule=getattr(self,'numerical_rule',3)
+        if rule not in (3,4):
+            raise ValueError("numerical rule selection invalid")
+        if rule==4:
+            import e3_teacher_decode_rule4 as rule4
+            verdict=rule4.grade(evidence,calibration_path=getattr(self,'calibration_path',None))
+        else:
+            verdict=grade_module.grade(evidence)
         if known_failure:
             verdict['verdict']='FAIL';verdict['failures'].extend(known_failure)
-        return {'schema':1,'grade':verdict,'evidence':evidence,'baseline':self.baseline,
+        result={'schema':1,'grade':verdict,'evidence':evidence,'baseline':self.baseline,
                 'geometry':dict(entry=ENTRY,measured=MEASURE,tail=TAIL,total=TOTAL),
                 'scope':'fixed decode positions and original raw top20; not a replacement for bitwise storage gates'}
+        if rule==4:
+            result['numerical_rule']=4
+            result['gate_policy']={
+                'name':'control-envelope-v4','version':4,
+                'comparison_policy':'control-envelope-v4',
+                'collector_schema':evidence.get('schema'),
+                'collector_rule_version':(evidence.get('rule') or {}).get('version'),
+                'calibration_sha256':verdict.get('calibration_sha256'),
+                'note':('v4 comparison policy applied separately to schema/2 collection '
+                        'evidence; the retained artifact still declares rule v3')}
+        return result
