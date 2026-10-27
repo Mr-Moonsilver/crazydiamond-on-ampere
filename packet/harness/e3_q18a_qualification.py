@@ -539,7 +539,8 @@ def run(phase, url, model, run_id, epoch, out, artifact_sha256=None,
         request_plan=None, prefill_plan=None, placement=None,
         placement_workload=None, native_read_provider=None,
         native_prefill_provider=None, native_source_provider=None,
-        window_id=None, key=None, timeout_s=None):
+        window_id=None, key=None, timeout_s=None,
+        snapshot_max_bytes=2*1024**3):
     """Collect one phase over the actual native transport, then grade it.
 
     ``evidence_path`` remains the offline pure-grading path.  Without it the
@@ -630,13 +631,14 @@ def run(phase, url, model, run_id, epoch, out, artifact_sha256=None,
                     and placement_workload_object is not None):
                 placement = NativePlacementRunner(
                     workload=placement_workload_object, url=url,
-                    prefill_plan=prefill_plan)
+                    prefill_plan=prefill_plan,snapshot_max_bytes=snapshot_max_bytes)
             driver = QualificationDriver(
                 store, run_id=run_id, model=model, engine_epoch=epoch,
                 url=url, key=key if key is not None else env.get('VLLM_API_KEY'),
                 teacher_baseline=teacher_baseline,
                 teacher_workload=workload,
                 teacher_instrument=teacher_instrument,
+                snapshot_max_bytes=snapshot_max_bytes,
                 placement=placement,
                 native_read_provider=native_read_provider,
                 native_prefill_provider=native_prefill_provider,
@@ -728,6 +730,7 @@ def main(argv=None):
                         default=os.environ.get('Q18A_TEACHER_BASELINE'))
     parser.add_argument('--window-id', default=os.environ.get('Q18A_WINDOW_ID'))
     parser.add_argument('--timeout-s', type=float, default=None)
+    parser.add_argument('--snapshot-max-bytes',type=int,default=2*1024**3)
     args = parser.parse_args(argv)
     try:
         request_plan = _json_arg(args.request_plan)
@@ -748,7 +751,8 @@ def main(argv=None):
                teacher_workload=teacher_workload, request_plan=request_plan,
                prefill_plan=prefill_plan,
                placement_workload=placement_workload,
-               window_id=args.window_id, timeout_s=args.timeout_s)
+               window_id=args.window_id, timeout_s=args.timeout_s,
+               snapshot_max_bytes=args.snapshot_max_bytes)
 
 
 if __name__ == '__main__':

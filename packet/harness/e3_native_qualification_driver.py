@@ -486,7 +486,8 @@ class QualificationDriver:
                  row1_provider=None, row1_producer=None, placement=None,
                  native_read_provider=None, native_prefill_provider=None,
                  native_source_provider=None, clock=time.monotonic_ns,
-                 timeout_s=120.0, route_banks=None):
+                 timeout_s=120.0, route_banks=None,
+                 snapshot_max_bytes=SNAPSHOT_MAX_BYTES):
         if not _text(run_id):
             raise QualificationError('run-id-required')
         if not _text(model):
@@ -507,6 +508,10 @@ class QualificationDriver:
         elif self.url is None:
             self.url = getattr(self.control, 'base_url', None)
         self.teacher_baseline = teacher_baseline
+        if (type(snapshot_max_bytes) is not int
+                or not 64*1024**2<=snapshot_max_bytes<=SNAPSHOT_MAX_BYTES):
+            raise QualificationError('snapshot-cap-outside-declared-bound')
+        self.snapshot_max_bytes = snapshot_max_bytes
         self.teacher_workload = teacher_workload
         self.teacher_instrument = teacher_instrument
         self.row1_provider = row1_provider
@@ -1047,7 +1052,7 @@ class QualificationDriver:
             if self.teacher_baseline is None:
                 raise PhaseUnavailable('missing-teacher-baseline')
             instrument = teacher_client.Instrument(
-                self.teacher_baseline, snapshot_max_bytes=SNAPSHOT_MAX_BYTES,
+                self.teacher_baseline, snapshot_max_bytes=self.snapshot_max_bytes,
                 numerical_rule=4)
         return instrument
 

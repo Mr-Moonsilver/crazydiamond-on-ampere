@@ -509,5 +509,47 @@ class ExactAuthentication(unittest.TestCase):
         self.assertIn('CANARY_CLIENT_AUTH_FILE='+path,settings)
         self.assertIn("canary_client_auth_file='"+path+"'",declaration)
 
+    def test_fresh_ct_bridge_process_reads_owned_file_without_secret_argv(self):
+        import canary_hub_candidate_runner as canary
+        import e3_auth_exec as auth
+        import e3_private_auth as private
+        import tempfile,http.client,sys
+        seen=[]
+        original_argv=sys.argv
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);root.chmod(0o700)
+            private.prepare(root/'api.env',{'VLLM_API_KEY':'fixture-file-only-credential'})
+            def execute(path,run_name):
+                self.assertEqual(Path(path).name,'pp_canary_bridge.py')
+                self.assertNotIn('fixture-file-only-credential',repr(sys.argv))
+                http.client.HTTPConnection('127.0.0.1',8000).request('GET','/metrics')
+            def request(connection,method,url,body=None,headers=None,**kwargs):
+                seen.append(headers)
+            with patch.object(auth.runpy,'run_path',execute),patch.object(http.client.HTTPConnection,'request',request):
+                self.assertEqual(auth.main(['--env-file',str(root/'api.env'),
+                    'http://127.0.0.1:8000',str(ROOT/'harness/pp_canary_bridge.py'),'idle','/owner/run']),0)
+        self.assertIs(sys.argv,original_argv)
+        self.assertEqual(seen,[{'Authorization':'Bearer fixture-file-only-credential'}])
+        result=types.SimpleNamespace(returncode=0,stdout=b'{}')
+        with patch.object(canary.subprocess,'run',return_value=result) as run:
+            canary.remote('/home/<service-user>/harness/id','/home/<service-user>/s0/q18a-native1','idle')
+        command=run.call_args.args[0][-1]
+        self.assertIn('e3_auth_exec.py --env-file /home/<service-user>/s0/q18a-native1-requests/private/vllm-api.env',command)
+        self.assertNotIn('VLLM_API_KEY=',command)
+
+    def test_declared_snapshot_cap_reaches_the_actual_teacher_instrument(self):
+        import tempfile
+        import e3_native_qualification_driver as driver
+        with tempfile.TemporaryDirectory() as tmp:
+            value=driver.QualificationDriver(tmp,run_id='cpu-cap',model='fixture',engine_epoch=71,
+                control=types.SimpleNamespace(),teacher_baseline='fixture-baseline',snapshot_max_bytes=64*1024**2)
+            with patch.object(driver.teacher_client,'Instrument') as instrument:
+                value._instrument()
+            self.assertEqual(instrument.call_args.kwargs['snapshot_max_bytes'],64*1024**2)
+            for cap in (True,1,2*1024**3+1):
+                with self.assertRaises(driver.QualificationError):
+                    driver.QualificationDriver(tmp,run_id='cpu-cap',model='fixture',engine_epoch=71,
+                        control=types.SimpleNamespace(),snapshot_max_bytes=cap)
+
 
 if __name__=='__main__':unittest.main()

@@ -12,7 +12,7 @@ from pathlib import Path
 import runpy
 import sys
 from urllib.parse import urlsplit
-from e3_private_auth import _value
+from e3_private_auth import _value,read_private
 from e3_probe_rpc import target
 
 
@@ -35,6 +35,9 @@ def authentication(base,key):
 
 def main(argv=None):
     args=sys.argv[1:] if argv is None else argv
+    key=os.environ.get('VLLM_API_KEY')
+    if len(args)>=2 and args[0]=='--env-file':
+        key=read_private(args[1]);args=args[2:]
     if len(args)<3:return 2
     base,script,*arguments=args
     path=Path(script).resolve()
@@ -43,7 +46,7 @@ def main(argv=None):
         return 2
     original_argv=sys.argv
     try:
-        with authentication(base,os.environ.get('VLLM_API_KEY')):
+        with authentication(base,key):
             sys.argv=[str(path)]+arguments
             runpy.run_path(str(path),run_name='__main__')
     finally:sys.argv=original_argv

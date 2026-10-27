@@ -34,7 +34,12 @@ def safe_path(p,root):
 
 
 def remote(ct_h,q,cmd,*args,data=None):
-    command=shlex.join(['pct','exec','<ct-id>','--','python3',ct_h+'/pp_canary_bridge.py',cmd,q,*map(str,args)])
+    # New remote processes do not inherit the queue environment. The path is
+    # public; read the same owned private candidate file on CT without moving
+    # its value through argv, output or the handshake journal.
+    command=shlex.join(['pct','exec','<ct-id>','--','python3',ct_h+'/e3_auth_exec.py',
+        '--env-file',q+'-requests/private/vllm-api.env','http://127.0.0.1:8000',
+        ct_h+'/pp_canary_bridge.py',cmd,q,*map(str,args)])
     p=subprocess.run(SSH+[command],input=data,capture_output=True,timeout=90)
     if p.returncode: raise RuntimeError('CT bridge '+cmd+' failed (output suppressed)')
     return p.stdout
