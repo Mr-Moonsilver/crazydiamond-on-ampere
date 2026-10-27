@@ -674,6 +674,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_vmid_job9b.py', 'VM9b CUPTI thread identity and wrapper conservation (CPU only)'),
                      ('test_e3_engine_offers.py', 'Engine offer ledger: pinned leaves and separate composition (CPU only)'),
                      ('test_vmid_job13.py', 'VM13 native prefill probe: grading wiring, negative control, declared vocabulary and queue text (CPU only, never run)'),
+                     ('test_vmid_job13b.py', 'VM13b graph helper ABI: actual replay call sites use owner, raw graph reserved for serialization, retained progress (CPU only)'),
                      ('test_e3_native_placement.py', 'Native overlap accounting: exact-id decode/prefill partition union, independent regrade, raw-loss retention and receipt refusals (CPU only)'),
                      ('test_e3_native_prefill_offers.py', 'Native prefill offers: source-pinned lane vocabulary, auxiliary owner scopes, copy-only role, completion credit and fail-closed seams (CPU only)'),
                      ('test_e3_teacher12_queue.py', 'Teacher12 diagnostic never runs W1; scope and cleanup (CPU only)'),
