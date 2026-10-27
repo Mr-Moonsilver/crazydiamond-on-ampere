@@ -297,7 +297,10 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     driver = NativeSegmentDriver(
         controller, executor=executor, scheduler=scheduler, engine=engine,
         layer_count=layer_count, layer_split=layer_split, stage_of=stage_of,
-        clock=clock, reply_timeout_s=config.reply_timeout_s).install()
+        clock=clock, reply_timeout_s=config.reply_timeout_s,
+        # Host-monotonic observation clock for the control journal; the driver
+        # never substitutes a CUDA elapsed duration for a host timestamp.
+        monotonic_ns=time.monotonic_ns).install()
     engine._flash_s5_composition = composition
     engine._flash_s5_admission = controller
     engine._flash_s5_driver = driver

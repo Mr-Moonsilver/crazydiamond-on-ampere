@@ -56,6 +56,16 @@ def _wire_report():
 SCHEDULER_PATH = 'v1/core/sched/scheduler.py'
 BLOCK_POOL_PATH = 'v1/core/block_pool.py'
 
+# Native admission is an explicit, EngineCore-owned phase intent -- never an
+# environment/config switch.  Stock full-route preparation, W1 decode-only
+# preparation (on either route) and the split decode-only phase keep it off;
+# only the matched split prefill solo, the row1 native qualification and the
+# W2 overlap phase arm it.  The driver is the sole owner of the typed record;
+# this module only reads the validated query at the policy seam.
+ADMISSION_PHASES = ('full-prefill-solo', 'split-prefill-solo',
+                    'split-w1-decode', 'row1-native', 'w2-overlap')
+NATIVE_ADMISSION_PHASES = ('split-prefill-solo', 'row1-native', 'w2-overlap')
+
 # Pinned reference digests (unchanged inputs) and the exact E2-composed outputs.
 SCHEDULER_PINNED_SHA256 = '4d797e5ab6c5abaa06229dd88035ceede7562f1dbe054bdf7ad59be659c04c87'
 SCHEDULER_E2_SHA256 = 'c767a87918d48a4dced38d42367a958e5c9f81b18737ba385f9d88b7019cf6eb'
@@ -1162,6 +1172,46 @@ class PrefillAdmissionController:
             return True
         return False
 
+    def _native_admission_disabled(self, scheduler):
+        """Read the EngineCore-owned admission intent at the policy seam.
+
+        The generated policy seam defaults to stock when no driver is bound.
+        Unit/qualification code can still call controller.admit directly. A
+        bound driver is the sole owner of the intent: an absent intent keeps every
+        request on the stock route, and a malformed, foreign-epoch or
+        non-native one is refused rather than silently parked.
+        """
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        query = getattr(owner, 'admission_intent', None)
+        if owner is None:
+            return True
+        if not callable(query):
+            raise E3ContractError('native admission owner has no intent query')
+        intent = query()
+        if intent is None:
+            return True
+        if type(intent) is not dict:
+            raise E3ContractError('native admission intent is not a typed record')
+        if intent.get('armed') is not True:
+            raise E3ContractError('native admission intent is not armed')
+        if intent.get('owner') != 'engine-core':
+            raise E3ContractError('native admission intent has no engine owner')
+        if intent.get('phase') not in NATIVE_ADMISSION_PHASES:
+            raise E3ContractError('native admission intent names no native phase')
+        if intent.get('engine_epoch') != self.engine_epoch:
+            raise E3ContractError('native admission intent names another engine epoch')
+        if intent.get('route') != 'split':
+            raise E3ContractError('native admission intent needs the split route')
+        generation = intent.get('route_generation')
+        if (type(generation) is not int
+                or generation != getattr(owner, 'route_generation', None)
+                or getattr(owner, '_split_ready', None) is not True):
+            raise E3ContractError('native admission intent has a stale route generation')
+        if (getattr(owner, 'controller', None) is not self
+                or getattr(owner, 'engine_epoch', None) != self.engine_epoch):
+            raise E3ContractError('native admission intent has a foreign driver owner')
+        return False
+
     def _next_transaction(self, request, start, chunk_end):
         self.txn_seq += 1
         # Object identity distinguishes reuse of a request UID in this engine.
@@ -1614,12 +1664,20 @@ def _guard(owner):
 
 
 def flash_s5_admit(scheduler):
-    """Generated pre-schedule seam: admit at most one chunk, before any mutation."""
+    """Generated pre-schedule seam: admit at most one chunk, before any mutation.
+
+    This is the policy seam as well as the parking seam: with no explicit
+    EngineCore-owned native intent the request stays on the stock route.  A
+    direct ``controller.admit`` call is the lower-level reviewed primitive used
+    by construction/qualification code and is not re-gated here.
+    """
     controller = getattr(scheduler, '_flash_s5_admission', None)
     if controller is None:
         return None
     if not isinstance(controller, PrefillAdmissionController):
         raise E3ContractError('scheduler E3 admission controller is invalid')
+    if controller._native_admission_disabled(scheduler):
+        return None
     return controller.admit(scheduler)
 
 

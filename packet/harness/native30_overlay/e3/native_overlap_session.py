@@ -1,0 +1,366 @@
+"""Owner-side native overlap session: prepare, measure, leave.
+
+The session is a thin orchestration over :class:`native_overlap_control.
+NativeControlClient`.  It never touches the driver directly, never installs an
+RPC and never treats an enqueue, a submission counter or a declared boolean as
+a completion.  Its receipts are built from
+
+* the engine control journal (``overlap_evidence``) with real admitted segment
+  intervals, queried worker reports, PP receipts, retired source holds and
+  committed frontiers;
+* the client-visible decode completion delta the caller supplies for the same
+  window (an int, not a rate);
+* host-monotonic clock-domain proofs for both boundary commands.
+
+``native_ready`` is always reported ``False`` with an explicit reason: the
+startup gate ``require_native_ready()`` still refuses, and this package does not
+lift it.
+"""
+import time
+
+from native_overlap_control import NativeControlClient
+from native_overlap_metrics import (
+    clock_identity,
+    measure_windows,
+    throughput,
+)
+from wire_v1 import ROUTE_BANK_FULL
+
+SCHEMA = 1
+RUN_ID_CHARS = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_')
+# The engine's typed phase names.  The engine remains the authority: it refuses
+# an unknown, non-native, foreign-epoch or already-armed-for-another-phase
+# intent.  Stock full-route preparation, split W1 decode-only and the split
+# decode-only phase deliberately leave admission off (no env/config switch).
+ADMISSION_PHASES = ('full-prefill-solo', 'split-prefill-solo',
+                    'split-w1-decode', 'row1-native', 'w2-overlap')
+NATIVE_ADMISSION_PHASES = ('split-prefill-solo', 'row1-native', 'w2-overlap')
+NATIVE_READY_REASON = (
+    'native readiness is refused: require_native_ready() still raises and the '
+    'reviewed construction gaps (private QSA scratch/UID binding, source/oracle '
+    'transport, real qualification provider) remain open')
+
+
+def _label(value):
+    return (type(value) is str and 1 <= len(value) <= 80
+            and all(char in RUN_ID_CHARS for char in value))
+
+
+class NativeOverlapSessionError(RuntimeError):
+    pass
+
+
+class NativeOverlapSession:
+    def __init__(self, engine, *, control=None, clock=time.monotonic_ns,
+                 timeout_s=120.0):
+        self.engine = engine
+        self.control = (control if control is not None
+                        else NativeControlClient(engine, timeout_s=timeout_s,
+                                                 clock=clock))
+        self.clock = clock
+        self.run_id = None
+        self.route = None
+        self.measure_start_ns = None
+        self.begin_receipt = None
+        self.begin_proof = None
+
+    async def execute(self, command):
+        if type(command) is not dict:
+            raise NativeOverlapSessionError('session-command-not-an-object')
+        if command.get('schema') != SCHEMA:
+            raise NativeOverlapSessionError('session-command-schema-differs')
+        action = command.get('action')
+        run_id = command.get('run_id')
+        if run_id is not None and not _label(run_id):
+            raise NativeOverlapSessionError('session-run-id-invalid')
+        handler = getattr(self, '_action_' + str(action), None)
+        if handler is None:
+            raise NativeOverlapSessionError('session-action-not-exposed')
+        if self.run_id is not None and run_id is not None and run_id != self.run_id:
+            raise NativeOverlapSessionError('session-run-id-changed')
+        result = await handler(command)
+        if type(result) is not dict:
+            raise NativeOverlapSessionError('session-action-returned-no-record')
+        result.setdefault('schema', SCHEMA)
+        result.setdefault('action', action)
+        result['run_id'] = self.run_id
+        result['native_ready'] = False
+        result['native_ready_reason'] = NATIVE_READY_REASON
+        result['armable'] = False
+        return result
+
+    # -- prepare ---------------------------------------------------------
+    async def _action_prepare(self, command):
+        target = command.get('target_route')
+        if target not in ('full', 'split'):
+            raise NativeOverlapSessionError('session-target-route-invalid')
+        if command.get('run_id') is None:
+            raise NativeOverlapSessionError('session-run-id-required')
+        phase = command.get('phase')
+        if phase is not None and phase not in ADMISSION_PHASES:
+            raise NativeOverlapSessionError('session-admission-phase-invalid')
+        if target == 'full' and phase in NATIVE_ADMISSION_PHASES:
+            # A full-route preparation ends the native phase before the all-rank
+            # return; arming one here would only race its own auto-close.
+            raise NativeOverlapSessionError(
+                'session-full-prepare-requires-admission-off')
+        self.run_id = command['run_id']
+        pause = await self.control.ensure_paused()
+        admission = None
+        if target == 'full':
+            # The native phase (if any) ends before the all-rank return.
+            admission = await self._set_admission(phase or 'full-prefill-solo')
+            reply = await self.control.leave_split()
+        else:
+            reply = await self.control.enter_split()
+            if phase is not None:
+                admission = await self._set_admission(phase)
+        resume = await self.control.resume()
+        self.route = reply.get('route_after')
+        epoch = reply.get('engine_epoch')
+        if type(epoch) is not int or epoch < 1:
+            raise NativeOverlapSessionError('session-engine-epoch-unavailable')
+        acks = reply.get('transition_acks') or []
+        return {
+            'target_route': target,
+            'route': self.route,
+            'engine_epoch': epoch,
+            'phase': phase,
+            'admission': admission,
+            'paused': pause,
+            'resumed': resume,
+            'changed': reply.get('changed'),
+            'bootstrap_acks': reply.get('bootstrap_acks') or [],
+            'transition_acks': acks,
+            'typed_acks': reply.get('typed_acks') is True,
+            'workers': ((self.control.last_snapshot or {}).get('workers')),
+            'snapshot': self.control.last_snapshot,
+        }
+
+    # -- pause / enter split ---------------------------------------------
+    async def _action_pause_enter_split(self, command):
+        phase = command.get('phase')
+        if phase is not None and phase not in ADMISSION_PHASES:
+            raise NativeOverlapSessionError('session-admission-phase-invalid')
+        pause = await self.control.ensure_paused()
+        reply = await self.control.enter_split()
+        admission = (await self._set_admission(phase)
+                     if phase is not None else None)
+        self.route = reply.get('route_after')
+        return {
+            'route': self.route,
+            'pause': pause,
+            'phase': phase,
+            'admission': admission,
+            'engine_epoch': reply.get('engine_epoch'),
+            'changed': reply.get('changed'),
+            'route_generation_before': reply.get('route_generation_before'),
+            'route_generation_after': reply.get('route_generation_after'),
+            'bootstrap_acks': reply.get('bootstrap_acks') or [],
+            'transition_acks': reply.get('transition_acks') or [],
+            'typed_acks': reply.get('typed_acks') is True,
+        }
+
+    # -- typed admission intent ------------------------------------------
+    async def _set_admission(self, phase):
+        if phase in NATIVE_ADMISSION_PHASES:
+            reply = await self.control.arm_admission(phase)
+            armed = True
+        elif phase in ADMISSION_PHASES:
+            # Stock full-route preparation and the two decode-only phases
+            # explicitly keep the native admission policy off.
+            reply = await self.control.disarm_admission()
+            armed = False
+        else:
+            raise NativeOverlapSessionError('session-admission-phase-invalid')
+        return {'phase': phase,
+                'armed': armed,
+                'admission_intent': reply.get('admission_intent'),
+                'previous_admission_intent': reply.get(
+                    'previous_admission_intent'),
+                'route': reply.get('route'),
+                'route_generation': reply.get('route_generation')}
+
+    async def _action_admission(self, command):
+        phase = command.get('phase')
+        if phase not in ADMISSION_PHASES:
+            raise NativeOverlapSessionError('session-admission-phase-invalid')
+        return await self._set_admission(phase)
+
+    async def _action_arm_admission(self, command):
+        phase = command.get('phase')
+        if phase not in NATIVE_ADMISSION_PHASES:
+            raise NativeOverlapSessionError('session-admission-phase-not-native')
+        return await self._set_admission(phase)
+
+    async def _action_disarm_admission(self, command):
+        reply = await self.control.disarm_admission()
+        return {'armed': False,
+                'admission_intent': reply.get('admission_intent'),
+                'previous_admission_intent': reply.get(
+                    'previous_admission_intent'),
+                'route': reply.get('route'),
+                'route_generation': reply.get('route_generation')}
+
+    async def _action_resume(self, command):
+        return await self.control.resume()
+
+    # -- measurement -----------------------------------------------------
+    async def _action_overlap_begin(self, command):
+        if command.get('route') not in (None, 'split'):
+            raise NativeOverlapSessionError('session-begin-requires-split-route')
+        status = await self.control.status()
+        if status.get('route') != 'split':
+            raise NativeOverlapSessionError('session-begin-route-is-not-split')
+        proof = (self.control.history[-1].get('clock_proof')
+                 if self.control.history else None)
+        if type(proof) is not dict or proof.get('proved') is not True:
+            raise NativeOverlapSessionError('session-begin-clock-unproved')
+        self.begin_receipt = status
+        self.begin_proof = proof
+        self.measure_start_ns = int(self.clock())
+        return {
+            'route': status.get('route'),
+            'engine_epoch': status.get('engine_epoch'),
+            'measure_start_ns': self.measure_start_ns,
+            'clock_proof': proof,
+            'decode_streams': command.get('decode_streams'),
+            'snapshot': status,
+        }
+
+    async def _action_overlap_end(self, command):
+        if self.measure_start_ns is None or self.begin_receipt is None:
+            raise NativeOverlapSessionError('session-end-without-begin')
+        end_ns = int(self.clock())
+        evidence = await self.control.overlap_evidence(self.measure_start_ns,
+                                                       end_ns)
+        end_proof = (self.control.history[-1].get('clock_proof')
+                     if self.control.history else None)
+        decode_progress = command.get('decode_progress')
+        if decode_progress is not None and type(decode_progress) is not int:
+            raise NativeOverlapSessionError('session-decode-progress-not-an-int')
+        windows = measure_windows(
+            begin_receipt=self.begin_receipt, end_receipt=evidence,
+            begin_proof=self.begin_proof, end_proof=end_proof,
+            segments=evidence.get('segments'), completions=evidence.get('completions'),
+            decode_progress=decode_progress)
+        prefill = dict(evidence.get('prefill') or {})
+        prefill['prefill_tokens_per_s'] = throughput(
+            prefill.get('useful_completed_tokens'), prefill.get('prefill_wall_s'))
+        serialized = bool(evidence.get('serialized_transport')) or any(
+            segment.get('transport') != 'native-split'
+            for segment in windows.get('segments') or []
+            if segment.get('accepted') is True)
+        enabled = (windows.get('valid') is True
+                   and (self.control.last_snapshot or {}).get('route') == 'split'
+                   and not serialized)
+        reasons = list(windows.get('reasons') or [])
+        if serialized:
+            reasons.append('serialized-or-uva-transport-not-accepted-overlap')
+        if (evidence.get('journal') or {}).get('complete_in_window') is not True:
+            reasons.append('engine-journal-evicted-before-window')
+        return {
+            'measure_start_ns': self.measure_start_ns,
+            'measure_end_ns': end_ns,
+            'route': (self.control.last_snapshot or {}).get('route'),
+            'engine_epoch': evidence.get('engine_epoch'),
+            'enabled': enabled,
+            'reasons': sorted(set(reasons)),
+            'segments': windows.get('segments') or [],
+            'outer': windows.get('outer'),
+            'fresh_prefill': windows.get('fresh_prefill'),
+            'append_prefill': windows.get('append_prefill'),
+            'completions': windows.get('completions') or [],
+            'decode_progress': windows.get('decode_progress'),
+            'prefill': prefill,
+            'source_holds': evidence.get('source_holds') or [],
+            'committed_frontiers': evidence.get('committed_frontiers') or [],
+            'pp_consumer_receipts': evidence.get('pp_consumer_receipts') or [],
+            'cancellations': evidence.get('cancellations') or [],
+            'workers': evidence.get('workers') or [],
+            'journal': evidence.get('journal') or {},
+            'allocator_peaks': _allocator_peaks(evidence.get('workers') or []),
+            'clock': {'begin': self.begin_proof, 'end': end_proof,
+                      'identity': clock_identity()},
+            'interval': {'reset_count': None,
+                         'basis': ('the control journal does not expose a '
+                                   'scheduler interval reset counter')},
+        }
+
+    # -- return to the full route ----------------------------------------
+    async def _action_leave_full(self, command):
+        pause = await self.control.ensure_paused()
+        # Disable the explicit intent before the all-rank return so no stale
+        # arm survives into stock sampling, even if the route is already full.
+        admission = await self._set_admission('full-prefill-solo')
+        census = await self.control.census()
+        reply = await self.control.leave_split()
+        self.route = reply.get('route_after')
+        acks = reply.get('transition_acks') or []
+        if reply.get('typed_acks') is not True:
+            raise NativeOverlapSessionError('session-leave-acks-not-typed')
+        drain = []
+        for row in acks:
+            value = row.get('drained_streams')
+            if type(value) is not int or value < 1:
+                raise NativeOverlapSessionError(
+                    'session-leave-ack-drain-unproved')
+            # ``applied_bank`` is the wire-v1 route bank the worker switched
+            # to (an int), never a transport label.
+            if type(row.get('applied_bank')) is not int \
+                    or row['applied_bank'] != ROUTE_BANK_FULL:
+                raise NativeOverlapSessionError(
+                    'session-leave-ack-bank-unproved')
+            drain.append({'worker_rank': row.get('worker_rank'),
+                          'drained_streams': value,
+                          'applied_route_generation':
+                              row.get('applied_route_generation'),
+                          'decode_replay_watermark': row.get('decode_replay_watermark')})
+        resume = await self.control.resume()
+        self.measure_start_ns = None
+        self.begin_receipt = None
+        self.begin_proof = None
+        return {
+            'route': self.route,
+            'pause': pause,
+            'resume': resume,
+            'admission': admission,
+            'census_before_return': census,
+            'transition_acks': acks,
+            'worker_drain': drain,
+            'typed_acks': True,
+        }
+
+    # -- read-only -------------------------------------------------------
+    async def _action_status(self, command):
+        status = await self.control.status()
+        status.pop('native_ready', None)
+        return status
+
+
+def _allocator_peaks(workers):
+    """Peak allocator bytes copied from the workers' own queried census."""
+    rows = [row for row in workers
+            if type(row) is dict and type(row.get('allocator')) is dict]
+    ranks = [row.get('worker_rank') for row in rows]
+    if not rows or not all(type(rank) is int for rank in ranks):
+        return {'measured': False,
+                'basis': 'worker allocator census unavailable',
+                'ranks': []}
+    return {
+        'measured': True,
+        'basis': 'torch-cuda-allocator-queried-v1',
+        'ranks': sorted(ranks),
+        'allocated_peak_bytes': {row['worker_rank']:
+                                 row['allocator'].get('allocated_peak_bytes')
+                                 for row in rows},
+        'reserved_peak_bytes': {row['worker_rank']:
+                                row['allocator'].get('reserved_peak_bytes')
+                                for row in rows},
+        'devices': {row['worker_rank']: row['allocator'].get('device_index')
+                    for row in rows},
+    }
+
+
+__all__ = ['ADMISSION_PHASES', 'NATIVE_ADMISSION_PHASES', 'NATIVE_READY_REASON',
+           'NativeOverlapSession', 'NativeOverlapSessionError', 'SCHEMA']

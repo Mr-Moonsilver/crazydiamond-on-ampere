@@ -182,19 +182,48 @@ def revert_executor(source, expected=None):
 
 # --- engine core ------------------------------------------------------------
 
+_NATIVE_CONTROL_METHOD = '''    def flash_s5_native_control(self, command):
+        """Bounded named utility: one typed native-control intent or query."""
+        return _flash_s5_hooks.native_control(self, command)
+
+'''
+
 _CORE_FORWARD = (
     ('logger = init_logger(__name__)\n', 'logger = init_logger(__name__)\n\n' + _IMPORT),
     ('''        self.is_ec_consumer = (
 ''', '''        _flash_s5_hooks.after_engine_startup(self)
         self.is_ec_consumer = (
 '''),
+    ('    def step(self) -> tuple[dict[int, EngineCoreOutputs], bool]:\n',
+     _NATIVE_CONTROL_METHOD + '    def step(self) -> tuple[dict[int, EngineCoreOutputs], bool]:\n'),
     ('''        batch_queue = self.batch_queue
         assert batch_queue is not None
 ''', '''        batch_queue = self.batch_queue
         assert batch_queue is not None
+        _flash_s5_tick = _flash_s5_hooks.engine_idle_tick(self)
+        if _flash_s5_tick is not None:
+            return _flash_s5_tick
         _flash_s5_ready = _flash_s5_hooks.before_step_with_batch_queue(self)
         if _flash_s5_ready is not None:
             return _flash_s5_ready
+'''),
+    ('''        # Check for any requests remaining in the scheduler - unfinished,
+        # or finished and not yet removed from the batch.
+        if not self.scheduler.has_requests():
+            return {}, False
+''', '''        _flash_s5_tick = _flash_s5_hooks.engine_idle_tick(self)
+        if _flash_s5_tick is not None:
+            return _flash_s5_tick
+        # Check for any requests remaining in the scheduler - unfinished,
+        # or finished and not yet removed from the batch.
+        if not self.scheduler.has_requests():
+            return {}, False
+'''),
+    ('''            or bool(self.batch_queue)
+        )
+''', '''            or bool(self.batch_queue)
+            or _flash_s5_hooks.native_work_pending(self)
+        )
 '''),
     ('''        if self.scheduler.has_requests():
             scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
@@ -219,6 +248,12 @@ _CORE_FORWARD = (
 ''', '''        _flash_s5_hooks.before_pause(self, mode)
         if mode == "abort":
             self.scheduler.finish_requests(None, RequestStatus.FINISHED_ABORTED)
+'''),
+    ('''        if mode == "abort":
+            aborted_reqs = self.scheduler.finish_requests(
+''', '''        _flash_s5_hooks.before_pause(self, mode)
+        if mode == "abort":
+            aborted_reqs = self.scheduler.finish_requests(
 '''),
     ('        self.model_executor.collective_rpc("synchronize_device")\n',
      '        _flash_s5_hooks.before_finish_pause(self)\n'
@@ -621,6 +656,74 @@ def before_step_with_batch_queue(engine):
     return None
 
 
+def native_control(engine, command):
+    """Generated ``EngineCore.flash_s5_native_control`` seam.
+
+    Returns the driver's ``concurrent.futures.Future`` for an intent so the
+    core defers the utility reply instead of pumping worker replies inline.
+    """
+    if type(command) is not dict:
+        raise E3ContractError('native control command must be a bounded dict')
+    driver = _driver(engine)
+    if driver is None:
+        raise E3ContractError('native control requires an installed driver')
+    submit = getattr(driver, 'submit_control', None)
+    if not callable(submit):
+        raise E3ContractError('native driver has no control-intent seam')
+    return submit(command)
+
+
+def control_pending(engine):
+    """True while one bounded control intent still needs engine ticks."""
+    driver = getattr(engine, '_flash_s5_driver', None)
+    pending = getattr(driver, 'control_pending', None)
+    return bool(pending()) if callable(pending) else False
+
+
+def native_work_pending(engine):
+    """Keep the process loop awake for native ownership, even while paused."""
+    driver = getattr(engine, '_flash_s5_driver', None)
+    return bool(getattr(driver, 'active', False)) or control_pending(engine)
+
+
+def engine_idle_tick(engine):
+    """Advance one bounded control/paused-native tick without a reply wait.
+
+    PAUSED_ALL hides ordinary scheduler work. Native ownership must nevertheless
+    keep EngineCoreProc out of its blocking input wait and prevent an idle
+    callback from finishing pause before the queried stop/transition settles.
+    Normal active stock steps retain their existing driver seam and quantum.
+    """
+    driver = getattr(engine, '_flash_s5_driver', None)
+    tick = getattr(driver, 'control_tick', None)
+    pump = getattr(driver, 'pump_control', None)
+    if not callable(tick) and not callable(pump):
+        return None
+    if control_pending(engine):
+        if callable(tick):
+            tick()
+        elif callable(pump):
+            pump()
+        # One bounded control advance per engine tick; settlement does not
+        # license a second native/stock submission in this same tick.
+        if control_pending(engine):
+            time.sleep(0.001)
+        return {}, False
+    scheduler = getattr(engine, 'scheduler', None)
+    has_requests = getattr(scheduler, 'has_requests', None)
+    if (getattr(driver, 'active', False)
+            and (getattr(driver, 'stop_kind', None) is not None
+                 or (callable(has_requests) and not has_requests()))):
+        # PAUSED_ALL hides scheduler requests. A native stop/partial transition
+        # still owns its reply and must settle before the process idle callback
+        # may finish pause or block waiting for a new client request.
+        driver.advance()
+        if getattr(driver, 'active', False):
+            time.sleep(0.001)
+        return {}, False
+    return None
+
+
 def before_abort(engine, request_ids):
     driver = _driver(engine)
     if driver is not None:
@@ -783,7 +886,9 @@ __all__ = [
     'after_engine_startup', 'before_abort', 'before_engine_shutdown',
     'before_finish_pause', 'before_pause', 'before_reset_prefix',
     'before_shutdown', 'before_step_with_batch_queue', 'collective_rpc',
-    'config_reply_timeout', 'generate_core', 'generate_executor',
-    'generate_worker', 'install', 'park_prefill', 'retain_mq', 'revert_core',
+    'config_reply_timeout', 'control_pending', 'engine_idle_tick',
+    'generate_core', 'generate_executor',
+    'generate_worker', 'install', 'native_control', 'native_work_pending', 'park_prefill',
+    'retain_mq', 'revert_core',
     'revert_executor', 'revert_worker', 'worker_rpc',
 ]

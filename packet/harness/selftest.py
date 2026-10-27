@@ -658,6 +658,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_async_handoffs.py', 'E3 async handoffs: parked transaction, owned replies, completion/publication split, lifetime leases, stop paths and pinned C seams (CPU only)'),
                      ('test_e3_package.py', 'E3 package: A+B+C composition, default-off mounts, manifest coverage, source drift and import identity (CPU only)'),
                      ('test_e3_native_storage_replay.py', 'E3 retained decode storage: native graph replay events and exact-command all-rank transition retries (CPU)'),
+                     ('test_e3_native_overlap.py', 'E3 native-control completion: named engine utility dispatch, typed all-rank acks, worker census/drain, journaled overlap evidence and qualification delegation (CPU only, fakes)'),
                      ('test_e3_graph_routing.py', 'E3 graph routing: fixed-split graph keys, capture/replay/transition guards, budgets and pinned seam transforms (CPU only)'),
                      ('test_e3_lane_dispatch.py', 'E3 lane dispatcher: typed segment kinds to bounded host operations, pause/cursor, PP send/receive, STATE_WRITE event, cancel/drain/release (CPU only, fakes)'),
                      ('test_e3_lane_chunk.py', 'E3 lane chunk: worker-side request registration/update, lane tables and CPU slot mappings, private align context, metadata and forward context (CPU only, fakes)'),

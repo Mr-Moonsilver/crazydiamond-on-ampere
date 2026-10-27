@@ -111,12 +111,19 @@ class FakeConfig:
         self.silent_s = silent_s
 
 
+class _CohortHTTPServer(ThreadingHTTPServer):
+    # The fixture opens eight concurrent streams. The stock backlog of five
+    # can lose an initial SYN, delaying it past the fixture's 0.6s open bound.
+    # This is test transport capacity; real driver deadlines stay unchanged.
+    request_queue_size = 64
+
+
 class FakeServer:
     def __init__(self, config):
         self.config = config
         self.requests = []
         self.lock = threading.Lock()
-        self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), _Handler)
+        self.httpd = _CohortHTTPServer(('127.0.0.1', 0), _Handler)
         self.httpd.fake = self
         self.httpd.daemon_threads = True
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)

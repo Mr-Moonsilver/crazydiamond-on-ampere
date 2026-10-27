@@ -411,6 +411,20 @@ class DropEndCounterEngine(CountedEngine):
 
 class DriverCompositionTests(unittest.TestCase):
     def test_measurement_invalid_end_still_proves_cleanup_and_next_repeat(self):
+        self._measurement_invalid_end_cleanup()
+
+    def test_eight_stream_cohort_survives_bounded_slow_socket_accept(self):
+        import time
+        from unittest.mock import patch
+        from test_e3_w1_decode_driver import ThreadingHTTPServer
+        original = ThreadingHTTPServer.process_request
+        def delayed(server, *args, **kwargs):
+            time.sleep(0.025)
+            return original(server, *args, **kwargs)
+        with patch.object(ThreadingHTTPServer, 'process_request', delayed):
+            self._measurement_invalid_end_cleanup()
+
+    def _measurement_invalid_end_cleanup(self):
         import asyncio
         import json
         from pathlib import Path
@@ -449,6 +463,8 @@ class DriverCompositionTests(unittest.TestCase):
                     {'WORKLOAD':str(path),'RUN_ID':'composed-driver'},str(out))
                 result = driver.run(cfg,server.url,'fake-model',Adapter())
                 first = result['repeats'][0]
+                self.assertIn('measurement', first, {key: first.get(key)
+                    for key in ('phase', 'reasons', 'open')})
                 self.assertFalse(first['measurement']['valid'])
                 self.assertTrue(first['measurement']['lifecycle_ok'])
                 self.assertTrue(first['cleanup']['attempted'])

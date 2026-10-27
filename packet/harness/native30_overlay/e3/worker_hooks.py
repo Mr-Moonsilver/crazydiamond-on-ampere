@@ -55,10 +55,14 @@ _W_RUNNER_NEW = _W_RUNNER_OLD + '            _flash_s5_worker.after_runner_init(
 
 _W_SAMPLE_OLD = '        return self.model_runner.sample_tokens(grammar_output)\n'
 _W_SAMPLE_NEW = ('        with _flash_s5_worker.decode_scope(self):\n'
+                 '            _flash_s5_worker.observe_sample(self)\n'
                  '            return self.model_runner.sample_tokens(grammar_output)\n'
                  '\n'
                  '    def flash_s5_decode_probe(self, command):\n'
-                 '        return _flash_s5_worker.decode_probe_rpc(self, command)\n')
+                 '        return _flash_s5_worker.decode_probe_rpc(self, command)\n'
+                 '\n'
+                 '    def flash_s5_native_overlap(self, command):\n'
+                 '        return _flash_s5_worker.native_overlap_rpc(self, command)\n')
 
 _W_EXEC_OLD = ('    @torch.inference_mode()\n'
                '    @with_gpu_sync_check\n'
@@ -277,6 +281,10 @@ def after_runner_init(worker, env=None):
         raise
     runner._flash_s5_split = split
     runner._flash_s5_native_identity = split.describe()
+    if _enabled(env):
+        from native_overlap_worker import install_census
+
+        install_census(runner)
     return split
 
 
@@ -309,7 +317,9 @@ def decode_scope(worker):
 
 __all__ = ['ACCEPTED', 'CUDAGRAPH_FORWARD', 'PINS', 'PROBE_ENV', 'WORKER_AFTER_C_SHA256', 'TRANSFORMS', 'WORKER_FORWARD', 'after_runner_init',
            'capture_context', 'decode_scope', 'generate', 'generate_one',
-           'install_split_bank', 'prefill_workspace_lane', 'revert_one', 'workspace_lanes']
+           'install_split_bank', 'native_overlap_rpc', 'observe_sample',
+           'observe_scheduler', 'prefill_workspace_lane', 'revert_one',
+           'workspace_lanes']
 
 
 def decode_probe_rpc(worker, command):
@@ -484,9 +494,35 @@ def decode_probe_rpc(worker, command):
 
 
 def observe_scheduler(worker, scheduler_output):
-    probe = getattr(getattr(worker, 'model_runner', None), '_flash_s5_decode_probe', None)
+    runner = getattr(worker, 'model_runner', None)
+    probe = getattr(runner, '_flash_s5_decode_probe', None)
     if probe is not None:
         probe.observe_scheduler(scheduler_output)
+    # The native lane has its own dispatch census; it never reuses the probe's
+    # (the probe refuses a runner that carries the native lane).
+    census = getattr(runner, '_flash_s5_native_census', None)
+    if census is not None:
+        census.observe_scheduler(scheduler_output)
+
+
+def observe_sample(worker):
+    census = getattr(getattr(worker, 'model_runner', None),
+                     '_flash_s5_native_census', None)
+    if census is not None:
+        census.observe_sample()
+
+
+def native_overlap_rpc(worker, command):
+    """Typed native-control RPC at the worker's ordinary ordered RPC boundary.
+
+    All state stays on the worker: this handler only queries the worker's own
+    constructed lane and runner rows, or delegates an exact qualification
+    action to ``native_qualification.handle_worker``.  It owns no engine queue
+    and never reports a completion that was not queried.
+    """
+    from native_overlap_worker import handle
+
+    return handle(worker, command)
 
 
 def capture_graph(manager, *, torch_module=None):

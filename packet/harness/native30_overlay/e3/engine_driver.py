@@ -30,6 +30,8 @@ marker this driver never parks anything.  See the pass report's Open items.
 """
 import math
 import time
+from collections import deque
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 
 from async_handoff import (
@@ -53,8 +55,13 @@ from e3_types import (
 )
 from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
-from reply_transport import Backpressure
-from scheduler_hooks import LeaseCategory, PrefillAdmissionController
+from reply_transport import Backpressure, TransportError
+from scheduler_hooks import (
+    ADMISSION_PHASES,
+    NATIVE_ADMISSION_PHASES,
+    LeaseCategory,
+    PrefillAdmissionController,
+)
 from wire_v1 import (
     BootstrapAck,
     BootstrapCommand,
@@ -91,6 +98,76 @@ def _wire_ready():
 # Reported when a chunk cannot be parked; the engine then runs the stock path.
 _STOP_KINDS = ('abort', 'cancel', 'disconnect', 'preempt', 'reset', 'pause',
                'shutdown')
+
+# Every journal/evidence timestamp in this module is a host ``CLOCK_MONOTONIC``
+# nanosecond observation taken on the engine thread.  A CUDA event elapsed time
+# is never stored here: it is not a host timestamp and cannot bound a window.
+CLOCK_BASIS = 'clock-monotonic'
+EVIDENCE_TIME_BASIS = 'engine-monotonic-observation-of-queried-report'
+MAX_EVIDENCE_WINDOW_NS = 10 * 60 * 1000 * 1000 * 1000
+
+# One bounded named utility carries exactly these actions.  Reads settle from
+# queried engine state; every worker query and every route mutation is a
+# deferred intent driven from the engine's own tick.
+CONTROL_READ_ACTIONS = ('status', 'snapshot', 'transition_acks',
+                        'bootstrap_acks', 'overlap_evidence', 'cancel')
+# Admission is a typed EngineCore-owned intent, not a boolean or an env switch.
+# Arming is synchronous engine state (no transport), like a read, but unlike a
+# read it mutates the policy decision and therefore refuses while owned work is
+# live.
+CONTROL_STATE_ACTIONS = ('arm_admission', 'disarm_admission')
+CONTROL_WORKER_ACTIONS = ('census', 'barrier', 'drain', 'poll_native',
+                          'qualification')
+CONTROL_ROUTE_ACTIONS = ('bootstrap_engine_owner', 'enter_split', 'leave_split')
+CONTROL_ACTIONS = (CONTROL_READ_ACTIONS + CONTROL_STATE_ACTIONS
+                   + CONTROL_WORKER_ACTIONS + CONTROL_ROUTE_ACTIONS)
+_CONTROL_TIMEOUT_ACTIONS = frozenset(CONTROL_WORKER_ACTIONS + CONTROL_ROUTE_ACTIONS)
+
+# Worker observation actions that a paused LIVE ordinary decode cohort must not
+# block: a frozen cohort is not native work.  The driver must still be idle and
+# own no chunk/source/PP state, and teacher configuration stays stricter (it
+# changes the qualification target, so it needs a configurable worker).
+CONTROL_LIVE_COHORT_ACTIONS = ('census', 'barrier', 'drain', 'poll_native')
+CONTROL_LIVE_COHORT_QUALIFICATION = ('teacher_evidence', 'observer_begin',
+                                     'observer_end', 'row1_evidence')
+
+
+def _bounded_value(value, depth=0):
+    """Plain, bounded copy for the journal and for a worker command payload.
+
+    The journal is evidence, so nothing device- or object-shaped is stored: only
+    observation values that a later reader can compare without trusting a repr.
+    """
+    if depth > 3:
+        raise DriverError('bounded value is nested too deeply')
+    if value is None or type(value) in (bool, int, str):
+        if type(value) is str and len(value) > 4096:
+            raise DriverError('bounded value string is too long')
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise DriverError('bounded value float is not finite')
+        return value
+    if type(value) in (list, tuple):
+        if len(value) > 64:
+            raise DriverError('bounded value sequence is too long')
+        return [_bounded_value(item, depth + 1) for item in value]
+    if type(value) is dict:
+        if len(value) > 64:
+            raise DriverError('bounded value mapping is too long')
+        out = {}
+        for key, item in value.items():
+            if type(key) is not str or not key or len(key) > 64:
+                raise DriverError('bounded value key is invalid')
+            out[key] = _bounded_value(item, depth + 1)
+        return out
+    if type(value) in (set, frozenset):
+        if len(value) > 64:
+            raise DriverError('bounded value set is too long')
+        return sorted((_bounded_value(item, depth + 1) for item in value),
+                      key=lambda item: repr(item))
+    raise DriverError('bounded value type is not plain: ' + type(value).__name__)
+
 
 
 class DriverError(E3ContractError):
@@ -647,7 +724,8 @@ class NativeSegmentDriver:
     def __init__(self, controller, *, executor, scheduler, engine=None,
                  layer_count, layer_split, stage_of, clock=time.monotonic,
                  poll_budget=8, reply_timeout_s=300.0, stop_budget=64,
-                 stop_tick_budget=8):
+                 stop_tick_budget=8, monotonic_ns=None, journal_limit=1024,
+                 control_timeout_s=None):
         _wire_ready()
         if type(controller) is not PrefillAdmissionController:
             raise DriverError('native driver needs the admission controller')
@@ -747,6 +825,48 @@ class NativeSegmentDriver:
         self._decode_watermarks = {}
         self._split_ready = False
         self._return_pending = None
+        # Host-monotonic journal of real admitted segments, accepted replies,
+        # queried STATE_WRITE reports, PP receipts, source holds and committed
+        # frontiers.  It is preserved across a chunk reset (only chunk *state*
+        # is dropped); the window read refuses a non-monotonic or stale epoch.
+        if monotonic_ns is not None and not callable(monotonic_ns):
+            raise DriverError('monotonic_ns must be callable or None')
+        self._monotonic_ns = monotonic_ns if monotonic_ns is not None else time.monotonic_ns
+        if type(journal_limit) is not int or journal_limit < 8:
+            raise DriverError('journal_limit must be an int of at least 8')
+        self.journal_limit = journal_limit
+        self._journal = deque(maxlen=journal_limit)
+        self._journal_dropped = 0
+        self.clock_basis = CLOCK_BASIS
+        # One bounded control intent at a time.  The utility dispatch only
+        # registers it; every submission/settlement happens on the engine tick.
+        timeout = reply_timeout_s if control_timeout_s is None else control_timeout_s
+        if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+                or timeout <= 0):
+            raise DriverError('control timeout must be positive')
+        self._control_timeout_s = float(timeout)
+        self._control = None
+        self._control_future = None
+        self._control_seq = None
+        self._control_deadline = None
+        self._control_reply = None
+        self._control_orphans = []
+        self._last_bootstrap_acks = {}
+        self._last_bootstrap_observed_ns = None
+        self._last_transition_observed_ns = None
+        self._last_census = None
+        self._last_census_observed_ns = None
+        # Explicit native-control route ownership: set only when an explicit
+        # ``enter_split`` control intent settles on the split route.  An idle
+        # pause then drains the frozen cohort without abandoning the selected
+        # route.  It is route-stable state, cleared by the all-rank FULL
+        # transition; chunk reset never touches it.
+        self._control_route = None
+        # The engine-owned native-admission intent.  ``None`` is the default
+        # (stock admission for every request); a typed record is the only way
+        # to park a native chunk.  It outlives chunk reset by design.
+        self._admission_intent = None
+        self._admission_seq = 0
 
     def install(self):
         engine, scheduler = self.engine, self.scheduler
@@ -808,11 +928,11 @@ class NativeSegmentDriver:
                 continue
             value, _lag = transport.take(sequence)
             del self._inflight[sequence]
-            self._apply(kind, value)
+            self._apply(kind, value, sequence)
             applied += 1
         return applied
 
-    def _apply(self, kind, values):
+    def _apply(self, kind, values, sequence=None):
         if kind == 'bootstrap':
             self._apply_bootstrap(values)
         elif kind == 'open':
@@ -829,6 +949,8 @@ class NativeSegmentDriver:
             self._apply_cancel(values)
         elif kind == 'release':
             self._apply_release(values)
+        elif kind == 'native_overlap':
+            self._apply_native_overlap(values, sequence)
         elif kind == 'transition':
             acks = tuple(values)
             if len(acks) != len(self.ranks):
@@ -859,10 +981,31 @@ class NativeSegmentDriver:
             self._split_ready = command.target_bank == ROUTE_BANK_SPLIT
             if command.target_bank == ROUTE_BANK_FULL:
                 self._return_pending = None
+                self._control_route = None
+                if self._admission_intent is not None:
+                    # A full return is the end of the native phase: the intent
+                    # may not survive into stock sampling as a stale arm.
+                    closed = self._admission_intent
+                    self._admission_intent = None
+                    self._record('admission_disarmed', phase=closed['phase'],
+                                 reason='route-returned-full',
+                                 route_generation=self.route_generation)
             self._transition = None
             self._transition_retry = False
             self._transition_deadline = None
             self._last_transition_acks = {ack.worker_rank: ack for ack in acks}
+            entry = self._record(
+                'transition',
+                target_bank=command.target_bank,
+                applied_route_generation=self.route_generation,
+                acks=[{'worker_rank': ack.worker_rank,
+                       'applied_route_generation': ack.applied_route_generation,
+                       'applied_bank': ack.applied_bank,
+                       'decode_replay_watermark': ack.decode_replay_watermark,
+                       'drained_streams': ack.drained_streams}
+                      for ack in acks])
+            self._last_transition_observed_ns = entry['observed_ns']
+            self._control_notice('transition')
         else:
             raise DriverError('unknown wire reply kind')
 
@@ -886,6 +1029,15 @@ class NativeSegmentDriver:
             self._decode_watermarks[ack.worker_rank] = ack.decode_replay_watermark
         self._bootstrapped = True
         self._bootstrap_command = None
+        self._last_bootstrap_acks = {ack.worker_rank: ack for ack in acks}
+        entry = self._record(
+            'bootstrap',
+            ranks=[ack.worker_rank for ack in acks],
+            lane_storage_epochs=[ack.lane.storage_epoch for ack in acks],
+            decode_replay_watermarks=[ack.decode_replay_watermark for ack in acks],
+            incarnations=[ack.incarnation for ack in acks])
+        self._last_bootstrap_observed_ns = entry['observed_ns']
+        self._control_notice('bootstrap')
 
     def _apply_open(self, values):
         acks = tuple(values)
@@ -918,6 +1070,19 @@ class NativeSegmentDriver:
         self._bind_index = 0
         self._pending_binding = None
         self.phase = 'bind'
+        self._record('chunk_open', transaction=self.tx.txn_seq,
+                     request=self.tx.request_uid,
+                     request_generation=self.tx.request_generation,
+                     chunk_start=self.tx.chunk_start,
+                     chunk_end=self.tx.chunk_end,
+                     state_epoch=acks[0].state_epoch,
+                     committed_end=self.admission.committed_end,
+                     prompt_end=self.admission.prompt_end,
+                     remaining_tokens=self.admission.remaining_tokens,
+                     terminal=self.admission.terminal,
+                     stages=[self.stage_of[rank] for rank in sorted(self.lanes)],
+                     lane_storage_epochs=[self.lanes[rank].storage_epoch
+                                          for rank in sorted(self.lanes)])
 
     def _apply_bind(self, values):
         acks = tuple(values)
@@ -1043,6 +1208,20 @@ class NativeSegmentDriver:
             self.index += 1
         if self.index == len(self.plan):
             self.phase = 'finalize'
+        self._record('segment', transaction=self.tx.txn_seq,
+                     op_seq=self._command.op_seq,
+                     # Never ``kind``: that field carries the journal entry
+                     # type the evidence builder keys on.
+                     segment_kind=getattr(descriptor.kind, 'value',
+                                          str(descriptor.kind)),
+                     stage=descriptor.stage,
+                     layer_start=descriptor.layer_start,
+                     layer_end=descriptor.layer_end,
+                     targets=list(targets),
+                     # The route is checked by the engine at this reply; it is
+                     # descriptive of where the operation actually ran, never a
+                     # substitute for the queried completion below.
+                     transport=('native-split' if self._split_ready else 'serialized'))
         # Completions piggybacked on this reply are host-queried facts too.
         # Publication stays in the drive path, never inside acceptance.
         for report in reports:
@@ -1072,6 +1251,19 @@ class NativeSegmentDriver:
                 raise DriverError('proof role is impossible for the issued operation')
         self.controller.note_report(report)
         self.reports[report.worker_rank] = report
+        self._record('report', transaction=report.transaction.txn_seq,
+                     worker_rank=report.worker_rank,
+                     completed_sequence=report.completed_sequence,
+                     completed_op_seqs=list(report.completed_op_seqs),
+                     pending_op_seqs=list(report.pending_op_seqs),
+                     failed_code=report.failed_code,
+                     # The worker's own host-queried proof; a submission counter
+                     # is never consulted here.
+                     state_written=report.state_written(),
+                     proofs=[{'kind': getattr(proof.kind, 'value', str(proof.kind)),
+                              'op_seq': proof.ticket.op_seq,
+                              'completion_seq': proof.completion_seq}
+                             for proof in report.proofs])
         self._collect_pp_proofs(report)
 
     def _apply_poll(self, values):
@@ -1118,7 +1310,39 @@ class NativeSegmentDriver:
             return
         for rank in self.ranks:
             self.controller.note_worker_release(self._release_acks[rank])
+        # Retire the scheduler source hold: capture its own description and the
+        # controller's retained publication row *before* ``commit`` clears the
+        # parked chunk.  Both are queried facts of the real allocator/hold.
+        hold = self.controller.source_hold(self.tx)
+        hold_record = (hold.describe()
+                       if hold is not None and callable(getattr(hold, 'describe', None))
+                       else None)
+        released = [{'worker_rank': rank,
+                     'released': self._release_acks[rank].released,
+                     'closed': self._release_acks[rank].closed,
+                     'completed_sequence': self._release_acks[rank].completed_sequence}
+                    for rank in self.ranks]
+        transaction, admission = self.tx, self.admission
         self.controller.commit(self.tx, self._producer_proof())
+        frontier = dict(getattr(self.controller, '_committed', {}).get(transaction, {}))
+        self._record('chunk_commit', transaction=transaction.txn_seq,
+                     request=transaction.request_uid,
+                     chunk_start=transaction.chunk_start,
+                     chunk_end=transaction.chunk_end,
+                     committed_end=admission.committed_end,
+                     state_epoch=admission.state_epoch,
+                     terminal=admission.terminal,
+                     worker_releases=released)
+        self._record('source_hold', transaction=transaction.txn_seq,
+                     description=hold_record,
+                     retired=True)
+        self._record('committed_frontier', transaction=transaction.txn_seq,
+                     frontier={'committed_end': frontier.get('committed_end'),
+                               'remaining': frontier.get('remaining'),
+                               'state_epoch': frontier.get('state_epoch'),
+                               'ranks': list(frontier.get('ranks') or ()),
+                               'pp_seqs': list(frontier.get('pp_seqs') or ())}
+                     if frontier else None)
         self._reset()
         if terminal:
             # The chunk left the final prompt token for stock decode.  Stock
@@ -1215,6 +1439,10 @@ class NativeSegmentDriver:
             # local PP slot be released and only now is the transfer consumed.
             ledger.release_send(self.tx, seq)
             self._receipt_acked.add(sender)
+            self._record('pp_receipt', transaction=self.tx.txn_seq,
+                         sender_rank=sender, seq=seq,
+                         completion_seq=delivery.receipts[0].proof.completion_seq,
+                         accepted=True)
         self._receipt_inflight = None
         self._receipt_last = None
         if (not self._pp_noted
@@ -1241,6 +1469,7 @@ class NativeSegmentDriver:
             raise DriverError(self.error)
         try:
             self._drain()
+            self.pump_control()
             if self.stop_kind is not None:
                 self._drive_stop()
                 return None
@@ -1496,6 +1725,16 @@ class NativeSegmentDriver:
         if self.tx is None and not self.controller.active and not route_pending:
             if not self._split_ready:
                 return None
+            if kind == 'pause' and self._control_owns_route():
+                # An explicit native-control intent selected this split route.
+                # A pause freezes the ordinary cohort; it is not permission to
+                # abandon the route (which would change generation and make the
+                # observation refuse).  Nothing is owed and nothing is parked.
+                self._record('control_route_pause_kept',
+                             reason=self._control_route.get('intent'),
+                             stop_kind=kind,
+                             route_generation=self.route_generation)
+                return self.phase
             # Idle on the split route with no chunk to cancel: the return is
             # still owed before stock may touch the full bank again.
             self._return_pending = 'stop'
@@ -1536,6 +1775,9 @@ class NativeSegmentDriver:
                 admission = self.controller.admission()
                 self.controller.cancel(admission.transaction,
                                        never_submitted=True)
+                self._record('cancel', transaction=admission.transaction.txn_seq,
+                             never_submitted=True, closed_ranks=[],
+                             reason=self.stop_kind)
                 self._reset()
                 self._note_terminal_route('cancel')
             if self._return_pending is not None:
@@ -1644,8 +1886,18 @@ class NativeSegmentDriver:
                 report.completed_sequence)
             self.controller.note_worker_release(row)
         self.controller.cancel(self.tx, proof=self._producer_proof())
+        self._record('cancel', transaction=self.tx.txn_seq, never_submitted=False,
+                     closed_ranks=[rank for rank in self.ranks if acks[rank].closed],
+                     reason=self.stop_kind)
         self._reset()
         self._note_terminal_route('cancel')
+
+    def _control_owns_route(self):
+        """True while an explicit native-control intent owns the split route."""
+        record = self._control_route
+        return (record is not None and self._split_ready
+                and record.get('engine_epoch') == self.engine_epoch
+                and record.get('route_generation') == self.route_generation)
 
     def _note_terminal_route(self, reason):
         """A chunk retired for good: the split route now owes a full return."""
@@ -1717,7 +1969,15 @@ class NativeSegmentDriver:
         self._cancel_targets = frozenset()
 
     def finish_pause(self):
-        if self.active:
+        # A pause utility may arrive while a route/worker intent is registered:
+        # settle what the owned transport already holds, then advance one stage.
+        self._drain()
+        self.pump_control()
+        # Only a live chunk or an already-started bounded stop is cancelled
+        # here.  A registered control intent owns a route transition, not
+        # stock work; it keeps its ownership and settles from the typed reply
+        # or its absolute deadline, so pause never waits on it forever.
+        if self.tx is not None or self.stop_kind is not None:
             if self.stop_kind is None:
                 self.stop('pause')
             else:
@@ -1728,6 +1988,963 @@ class NativeSegmentDriver:
         if not report['clean']:
             raise DriverError('pause with outstanding E3 block leases')
         return True
+
+    # -- bounded native-control utility -----------------------------------
+    #
+    # ``EngineCore.flash_s5_native_control(command)`` is the only engine entry
+    # point.  It never pumps, polls or waits: a read settles synchronously from
+    # queried engine state, and every worker query / route mutation registers
+    # one intent that the engine's own tick (``advance``/``pump_control``)
+    # submits and settles from the owned reply transport.  Client cancellation
+    # never drops route or worker ownership; the absolute deadline or the typed
+    # reply settles it.
+
+    def control_pending(self):
+        return self._control is not None
+
+    def control_blocks_stock(self):
+        """True while stock work may not be launched into this engine tick.
+
+        Every control intent is admitted only against a paused engine, so a
+        registered intent never holds stock work that is allowed to run; the
+        route exchange predicates are kept because an intent may have settled
+        while the engine-owned transition it issued is still outstanding.
+        """
+        if self._route_exchange() is not None or self._return_pending is not None:
+            return True
+        return self._control is not None
+
+    def admission_intent(self):
+        """The typed engine-owned admission intent, or ``None`` when off."""
+        intent = self._admission_intent
+        return None if intent is None else dict(intent)
+
+    def _state_control(self, action, command):
+        """Arm/disarm the typed admission intent; never a raw boolean.
+
+        Both actions are synchronous engine state: no worker RPC, no device
+        wait and no poll loop.  They refuse while a chunk, route exchange or
+        registered control intent owns work, so disabling can never silently
+        park an admitted request.
+        """
+        now = int(self._monotonic_ns())
+        epoch = command.get('engine_epoch')
+        if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
+            # A stale client may not arm or disarm the current engine's phase.
+            raise DriverError('native-control-engine-epoch-differs')
+        if action == 'arm_admission':
+            previous = None
+            self._arm_admission(command.get('phase'))
+        elif action == 'disarm_admission':
+            previous = self._disarm_admission('explicit')
+        else:
+            raise DriverError('native-control-state-action-not-implemented')
+        return {'schema': 1, 'action': action, 'engine_epoch': self.engine_epoch,
+                'route': 'split' if self._split_ready else 'full',
+                'route_generation': self.route_generation,
+                'admission_intent': self.admission_intent(),
+                'previous_admission_intent': previous,
+                'observed_clock_ns': now,
+                'clock': self._clock_record(now),
+                'clock_basis': self.clock_basis}
+
+    def _arm_admission(self, phase):
+        if phase not in ADMISSION_PHASES:
+            raise DriverError('native-admission-phase-unknown')
+        if phase not in NATIVE_ADMISSION_PHASES:
+            raise DriverError('native-admission-phase-not-native')
+        if not self._engine_paused():
+            # The phase is chosen on a frozen engine and takes effect when the
+            # caller resumes; arming mid-step would park into live sampling.
+            raise DriverError('native-admission-requires-paused-engine')
+        if (self._control is not None or self._inflight
+                or self._route_exchange() is not None
+                or self._return_pending is not None):
+            raise DriverError('native-admission-requires-idle-control-transport')
+        if self.tx is not None or self.controller.active:
+            raise DriverError('native-admission-arm-with-owned-chunk')
+        if not self._split_ready:
+            raise DriverError('native-admission-requires-split-route')
+        existing = self._admission_intent
+        if existing is not None:
+            if existing['phase'] != phase:
+                raise DriverError('native-admission-intent-change-with-owned-intent')
+            return dict(existing)
+        self._admission_seq += 1
+        intent = {'schema': 1,
+                  'owner': 'engine-core',
+                  'engine_epoch': self.engine_epoch,
+                  'phase': phase,
+                  'route': 'split',
+                  'route_generation': self.route_generation,
+                  'armed': True,
+                  'seq': self._admission_seq,
+                  'armed_ns': int(self._monotonic_ns())}
+        self._admission_intent = intent
+        self._record('admission_armed', phase=phase, seq=intent['seq'],
+                     route_generation=self.route_generation)
+        return dict(intent)
+
+    def _disarm_admission(self, reason):
+        intent = self._admission_intent
+        if intent is None:
+            return None
+        if (self._control is not None or self._inflight
+                or self._route_exchange() is not None
+                or self._return_pending is not None):
+            raise DriverError('native-admission-requires-idle-control-transport')
+        if self.tx is not None or self.controller.active:
+            raise DriverError('native-admission-disable-with-owned-work')
+        self._admission_intent = None
+        self._record('admission_disarmed', phase=intent['phase'], seq=intent['seq'],
+                     reason=reason, route_generation=self.route_generation)
+        return dict(intent)
+
+    def submit_control(self, command):
+        if type(command) is not dict:
+            raise DriverError('native-control-command-not-an-object')
+        action = command.get('action')
+        if action not in CONTROL_ACTIONS:
+            raise DriverError('native-control-unknown-action')
+        if action == 'cancel':
+            # Cancellation is always available: it marks the registered intent
+            # and reports ownership, never drops or settles anything itself.
+            return self._cancel_control()
+        if action in CONTROL_READ_ACTIONS:
+            # Reads settle synchronously from queried engine state and never
+            # take ownership, so they stay available while an intent (even an
+            # abandoned one) is registered.
+            return self._read_control(action, command)
+        if self.error is not None:
+            raise DriverError(self.error)
+        if action in CONTROL_STATE_ACTIONS:
+            return self._state_control(action, command)
+        if self._control is not None:
+            raise DriverError('native-control-busy')
+        self._admit_control(action, command)
+        future = Future()
+        self._control_future = future
+        self._control = {'action': action,
+                         'command': dict(command),
+                         'stage': 'pending',
+                         'inner': None,
+                         'notices': [],
+                         'started_ns': int(self._monotonic_ns()),
+                         'start_route': ('split' if self._split_ready else 'full'),
+                         'start_route_generation': self.route_generation}
+        self._control_deadline = self.clock() + self._control_timeout_s
+        self._control_seq = None
+        self._control_reply = None
+        return future
+
+    def _admit_control(self, action, command):
+        epoch = command.get('engine_epoch')
+        if epoch is not None and epoch != self.engine_epoch:
+            raise DriverError('native-control-engine-epoch-differs')
+        if action == 'qualification':
+            worker_action = command.get('worker_action')
+            from native_overlap_worker import QUALIFICATION_ACTIONS
+            if worker_action not in QUALIFICATION_ACTIONS:
+                raise DriverError('native-qualification-action-unknown')
+        if self._route_exchange() is not None or self._return_pending is not None:
+            raise DriverError('native-control-route-exchange-outstanding')
+        if action in CONTROL_ROUTE_ACTIONS:
+            # A route intent needs the scheduler paused and no live chunk
+            # transaction.  Frozen requests may still be owned by the scheduler:
+            # the all-rank transition drains their streams, it does not require
+            # them to be finished, so route admission is pause + idle driver,
+            # never an empty scheduler.
+            if not self._engine_paused():
+                raise DriverError('native-control-route-requires-paused-engine')
+            if self.tx is not None or self._inflight:
+                raise DriverError('native-control-requires-idle-driver')
+            return
+        if self.active or self._inflight:
+            # A live native chunk, source hold, PP transfer or route exchange
+            # is never bypassed just because the cohort is ordinary decode.
+            raise DriverError('native-control-requires-idle-driver')
+        if not self._engine_paused():
+            raise DriverError('native-control-requires-paused-engine')
+        if action == 'qualification':
+            worker_action = command.get('worker_action')
+            if worker_action in ('teacher_configure', 'row1_configure'):
+                # Changing the qualification target needs a genuinely
+                # configurable (empty) worker, not a frozen live cohort.
+                if not self._engine_quiescent():
+                    raise DriverError(
+                        'native-' + worker_action.replace('_', '-')
+                        + '-requires-paused-empty-engine')
+                return
+            if worker_action in CONTROL_LIVE_COHORT_QUALIFICATION:
+                return
+            raise DriverError('native-qualification-action-unknown')
+        if action in CONTROL_LIVE_COHORT_ACTIONS:
+            # Census/barrier/drain/poll observe native ownership only.  The
+            # paused ordinary cohort is reported separately in the row and is
+            # never a reason to refuse a native query or to call a drain dirty.
+            return
+        raise DriverError('native-control-requires-paused-empty-engine')
+
+    def _engine_paused(self):
+        engine = self.engine
+        paused = getattr(engine, 'is_scheduler_paused', None)
+        return callable(paused) and paused() is True
+
+    def _engine_quiescent(self):
+        if not self._engine_paused():
+            return False
+        scheduler = getattr(self.engine, 'scheduler', None)
+        # The pinned scheduler deliberately reports zero under PAUSED_ALL;
+        # actual registered requests still exist and cannot be reconfigured.
+        requests = getattr(scheduler, 'requests', None)
+        if requests is not None and (type(requests) is not dict or requests):
+            return False
+        unfinished = getattr(scheduler, 'get_num_unfinished_requests', None)
+        if callable(unfinished) and unfinished() != 0:
+            return False
+        return True
+
+    def _issue_bootstrap_control(self):
+        """Owner bootstrap for an explicit control intent.
+
+        The generated tick only bootstraps lazily when a chunk is admitted;
+        an explicit prepare must bind worker route ownership before any chunk
+        exists, so it sends the same typed command from the same engine-owned
+        identity and waits for the same queried all-rank acknowledgments.
+        """
+        if self._bootstrap_command is not None or self._inflight:
+            raise DriverError('native-control-bootstrap-already-outstanding')
+        command = BootstrapCommand(self.engine_epoch, self.ranks)
+        self._bootstrap_command = command
+        try:
+            self._submit('bootstrap',
+                         ('flash_s5_bootstrap', (command,), {}, None),
+                         self.ranks)
+        except BaseException:
+            self._bootstrap_command = None
+            raise
+
+    def _cancel_control(self):
+        control = self._control
+        now = int(self._monotonic_ns())
+        if control is None:
+            return {'schema': 1, 'action': 'cancel', 'engine_epoch': self.engine_epoch,
+                    'cancelled': False, 'reason': 'no-native-control-intent-pending',
+                    'ownership_retained': False,
+                    'observed_clock_ns': now,
+                    'clock': self._clock_record(now)}
+        control['cancelled'] = True
+        return {'schema': 1, 'action': 'cancel', 'engine_epoch': self.engine_epoch,
+                'cancelled': True, 'intent': control['action'],
+                'intent_stage': control['stage'],
+                'ownership_retained': True,
+                'reason': ('the engine keeps worker/route ownership until the typed '
+                           'reply or the absolute deadline settles the intent'),
+                'observed_clock_ns': now,
+                'clock': self._clock_record(now)}
+
+    def _read_control(self, action, command):
+        now = int(self._monotonic_ns())
+        if action in ('status', 'snapshot'):
+            return self._status_record(now)
+        if action == 'transition_acks':
+            rows = self.transition_ack_rows()
+            return {'schema': 1, 'action': action, 'engine_epoch': self.engine_epoch,
+                    'complete': set(self._last_transition_acks) == set(self.ranks),
+                    'transition_pending': self._transition is not None,
+                    'acks': rows, 'observed_clock_ns': now,
+                    'clock_basis': self.clock_basis}
+        if action == 'bootstrap_acks':
+            rows = self.bootstrap_ack_rows()
+            return {'schema': 1, 'action': action, 'engine_epoch': self.engine_epoch,
+                    'complete': set(self._last_bootstrap_acks) == set(self.ranks),
+                    'bootstrapped': self._bootstrapped,
+                    'acks': rows, 'observed_clock_ns': now,
+                    'clock_basis': self.clock_basis}
+        if action == 'overlap_evidence':
+            record = self.overlap_evidence(command.get('start_ns'),
+                                           command.get('end_ns'))
+            record.update({'action': action, 'clock': self._clock_record(now),
+                           'observed_clock_ns': now})
+            return record
+        raise DriverError('native-control-read-action-not-implemented')
+
+    # -- queried status and typed acknowledgments ------------------------
+    def _status_record(self, now=None):
+        now = int(self._monotonic_ns()) if now is None else now
+        epochs = set(self._storage_epochs.values())
+        census = self._last_census
+        return {
+            'schema': 1,
+            'mode': 'native-overlap',
+            'engine_epoch': self.engine_epoch,
+            'ranks': list(self.ranks),
+            'route': 'split' if self._split_ready else 'full',
+            'route_generation': self.route_generation,
+            'bootstrapped': bool(self._bootstrapped),
+            'transition_pending': self._transition is not None,
+            'bootstrap_pending': self._bootstrap_command is not None,
+            'return_pending': self._return_pending,
+            'active': bool(self.active),
+            'controller_active': bool(self.controller.active),
+            'chunk': None if self.tx is None else self.tx.txn_seq,
+            'phase': self.phase,
+            'paused': (self.engine is not None
+                       and callable(getattr(self.engine, 'is_scheduler_paused', None))
+                       and self.engine.is_scheduler_paused() is True),
+            'scheduler_requests': (self.engine.scheduler.get_num_unfinished_requests()
+                                   if self.engine is not None
+                                   and callable(getattr(self.engine.scheduler,
+                                                        'get_num_unfinished_requests', None))
+                                   else None),
+            'storage_epoch': next(iter(epochs)) if len(epochs) == 1 else None,
+            'storage_epochs_by_rank': {rank: self._storage_epochs[rank]
+                                       for rank in sorted(self._storage_epochs)},
+            'decode_watermarks_by_rank': {rank: self._decode_watermarks[rank]
+                                          for rank in sorted(self._decode_watermarks)},
+            'reports': sorted(int(rank) for rank in self.reports),
+            'control_pending': None if self._control is None else self._control['action'],
+            'admission_intent': self.admission_intent(),
+            'control_route': (None if self._control_route is None
+                              else dict(self._control_route)),
+            'workers': census,
+            'workers_observed_ns': self._last_census_observed_ns,
+            'journal': {'entries': len(self._journal),
+                        'dropped': self._journal_dropped,
+                        'limit': self.journal_limit,
+                        'clock_basis': self.clock_basis},
+            'clock': self._clock_record(now),
+            'observed_clock_ns': now,
+        }
+
+    def transition_ack_rows(self):
+        rows = []
+        for rank in sorted(self._last_transition_acks):
+            ack = self._last_transition_acks[rank]
+            rows.append({
+                'typed': type(ack).__name__,
+                'worker_rank': ack.worker_rank,
+                'engine_epoch': ack.engine_epoch,
+                'expected_route_generation': ack.expected_route_generation,
+                'route_generation': ack.route_generation,
+                'applied_route_generation': ack.applied_route_generation,
+                'target_bank': ack.target_bank,
+                'applied_bank': ack.applied_bank,
+                'applied_storage_epochs': list(ack.applied_storage_epochs),
+                'decode_replay_watermark': ack.decode_replay_watermark,
+                # The worker's RouteController drained-stream count, never an echo.
+                'drained_streams': ack.drained_streams,
+                'observed_ns': self._last_transition_observed_ns,
+                'clock_basis': self.clock_basis,
+            })
+        return rows
+
+    def bootstrap_ack_rows(self):
+        rows = []
+        for rank in sorted(self._last_bootstrap_acks):
+            ack = self._last_bootstrap_acks[rank]
+            rows.append({
+                'typed': type(ack).__name__,
+                'worker_rank': ack.worker_rank,
+                'engine_epoch': ack.engine_epoch,
+                'bound': ack.bound,
+                'incarnation': ack.incarnation,
+                'lane_worker_rank': ack.lane.worker_rank,
+                'storage_epoch': ack.lane.storage_epoch,
+                'route_generation': ack.route_generation,
+                'decode_replay_watermark': ack.decode_replay_watermark,
+                'observed_ns': self._last_bootstrap_observed_ns,
+                'clock_basis': self.clock_basis,
+            })
+        return rows
+
+    # -- control state machine -------------------------------------------
+    def control_tick(self):
+        """One bounded engine tick for a registered control intent.
+
+        Consumes what the owned reply transport already holds and advances the
+        intent by at most one stage.  It never polls a worker, never waits and
+        never pumps a decode reply: the reply is taken from the same transport
+        the stock step consumes on a later tick.
+        """
+        self._drain()
+        self.pump_control()
+
+    def pump_control(self):
+        """Advance the one registered intent; bounded, never waits."""
+        control = self._control
+        if control is None:
+            return
+        try:
+            self._advance_control(control)
+        except Backpressure:
+            return
+        except BaseException as error:
+            retain = (self._route_exchange() is not None
+                      or self._return_pending is not None
+                      or isinstance(error, TransportError))
+            self._fail_control(
+                'native-control-failed:%s:%s' % (type(error).__name__,
+                                                 str(error)[:160]),
+                retain=retain)
+            if retain:
+                raise
+
+    def _advance_control(self, control):
+        if (self._control_deadline is not None
+                and self.clock() > self._control_deadline):
+            raise DriverError('native-control-deadline-expired')
+        if (self._transition is not None and self._transition_retry
+                and not self._inflight):
+            # The reviewed exact-command transition retry, shared with the
+            # engine's own route drive: one absolute deadline, one command.
+            self._send_transition()
+            return
+        inner = control.get('inner')
+        if inner is not None:
+            self._advance_inner(control, inner)
+            return
+        action = control['action']
+        if action in CONTROL_WORKER_ACTIONS:
+            if control['stage'] == 'pending':
+                self._submit_worker_control(control, self._worker_command(control))
+                return
+            if self._control_reply is None:
+                return
+            reply, self._control_reply = self._control_reply, None
+            self._settle_worker_control(control, reply)
+            return
+        if action == 'bootstrap_engine_owner':
+            if self._bootstrapped:
+                self._settle_route_control(control)
+                return
+            if self._bootstrap_command is None and not self._inflight:
+                self._issue_bootstrap_control()
+            return
+        if action == 'enter_split':
+            if not self._bootstrapped:
+                if self._bootstrap_command is None and not self._inflight:
+                    self._issue_bootstrap_control()
+                return
+            if (set(self._storage_epochs) != set(self.ranks)
+                    or set(self._decode_watermarks) != set(self.ranks)):
+                control['inner'] = {'action': 'census', 'stage': 'submit',
+                                    'command': self._worker_command(control, 'census')}
+                return
+            if self._split_ready and self._route_exchange() is None:
+                self._settle_route_control(control)
+                return
+            if self._route_exchange() is None and not self._inflight:
+                try:
+                    self._issue_transition(ROUTE_BANK_SPLIT)
+                except E3Pending:
+                    return
+            return
+        if action == 'leave_split':
+            if not self._split_ready:
+                if self._route_exchange() is None:
+                    self._settle_route_control(control)
+                return
+            if self._route_exchange() is None and not self._inflight:
+                try:
+                    self._issue_transition(ROUTE_BANK_FULL)
+                except E3Pending:
+                    return
+            return
+        raise DriverError('native-control-action-not-implemented')
+
+    def _worker_command(self, control, action=None):
+        """Build the worker command from engine-owned identity, not client echo."""
+        action = action or control['action']
+        command = {'action': action, 'engine_epoch': self.engine_epoch,
+                   'route_generation': self.route_generation}
+        source = control['command']
+        if action == 'poll_native':
+            limit = source.get('limit', 8)
+            if type(limit) is not int or not 1 <= limit <= 64:
+                raise DriverError('native-poll-limit-invalid')
+            command['limit'] = limit
+        if action == 'drain':
+            budget = source.get('budget', 32)
+            if type(budget) is not int or not 1 <= budget <= 64:
+                raise DriverError('native-drain-budget-invalid')
+            command['budget'] = budget
+        if action == 'qualification':
+            payload = source.get('payload') or {}
+            if type(payload) is not dict:
+                raise DriverError('native-qualification-payload-not-an-object')
+            bounded = _bounded_value(payload)
+            if type(bounded) is not dict:
+                raise DriverError('native-qualification-payload-unbounded')
+            # The payload is copied first and the engine-owned identity is
+            # written last: a payload can never rename the action or the epoch.
+            command = dict(bounded)
+            command.update({'action': source.get('worker_action'),
+                            'engine_epoch': self.engine_epoch,
+                            'route_generation': self.route_generation})
+        return command
+
+    def _submit_worker_control(self, control, command):
+        if self._control_seq is not None:
+            raise DriverError('native-control-command-already-outstanding')
+        remaining = self._control_deadline - self.clock()
+        if remaining <= 0:
+            raise DriverError('native-control-deadline-expired')
+        sequence = self._submit(
+            'native_overlap',
+            ('flash_s5_native_overlap', (command,), {}, None),
+            self.ranks, timeout_s=remaining)
+        control['stage'] = 'reply'
+        self._control_seq = sequence
+
+    def _advance_inner(self, control, inner):
+        if inner['stage'] == 'submit':
+            self._submit_worker_control(control, inner['command'])
+            inner['stage'] = 'reply'
+            return
+        if self._control_reply is None:
+            return
+        reply, self._control_reply = self._control_reply, None
+        rows = self._validate_worker_rows(reply, inner['action'])
+        self._apply_census_rows(rows)
+        control['inner'] = None
+        self._control_seq = None
+
+    def _validate_worker_rows(self, reply, action):
+        """One typed, complete, same-epoch row per rank from the owned reply."""
+        from native_overlap_worker import (
+            ROW_BOOL_FIELDS,
+            ROW_FIELDS,
+            ROW_INT_FIELDS,
+            ROW_LIST_FIELDS,
+            ROW_NULLABLE,
+            ROW_STR_FIELDS,
+        )
+        if type(reply) not in (list, tuple):
+            raise DriverError('native worker reply is not a row list')
+        expected = set(ROW_FIELDS)
+        rows = []
+        seen = set()
+        for item in reply:
+            if type(item) is not dict or set(item) != expected:
+                raise DriverError('native worker row is not the exact typed schema')
+            for key in ROW_INT_FIELDS:
+                if type(item[key]) is not int or item[key] < 0:
+                    raise DriverError('native worker row integer invalid: ' + key)
+            for key in ROW_STR_FIELDS:
+                if type(item[key]) is not str or not item[key]:
+                    raise DriverError('native worker row string invalid: ' + key)
+            for key in ROW_BOOL_FIELDS:
+                if type(item[key]) is not bool:
+                    raise DriverError('native worker row boolean invalid: ' + key)
+            for key in ROW_LIST_FIELDS:
+                if type(item[key]) is not list:
+                    raise DriverError('native worker row list invalid: ' + key)
+            for key in ROW_NULLABLE:
+                if item[key] is not None and type(item[key]) is not dict:
+                    raise DriverError('native worker row mapping invalid: ' + key)
+            if item['action'] not in (action, 'census'):
+                raise DriverError('native worker row answered a different action')
+            if item['schema'] != 1 or item['engine_epoch_ok'] is not True:
+                raise DriverError('native worker row is not a same-epoch reading')
+            rank = item['worker_rank']
+            if rank not in self.ranks or rank in seen:
+                raise DriverError('native worker reply ranks are duplicated or unknown')
+            seen.add(rank)
+            if item['engine_epoch'] != self.engine_epoch:
+                raise DriverError('native worker row engine epoch differs')
+            if item['route_generation'] != self.route_generation:
+                raise DriverError('native worker row route generation differs')
+            known = self._storage_epochs.get(rank)
+            if known is not None and item['storage_epoch'] != known:
+                raise DriverError('native worker row storage epoch differs')
+            if item['decode_eligible'] > item['live_decode_requests']:
+                raise DriverError('native worker row decode census exceeds its live requests')
+            if item['live_batch_rows'] > item['live_decode_requests']:
+                raise DriverError('native worker row batch census exceeds its live requests')
+            if item['retained_active_rows'] > item['retained_rows']:
+                raise DriverError('native worker row retained-active count exceeds retained rows')
+            rows.append(dict(item))
+        if seen != set(self.ranks):
+            raise DriverError('native worker reply does not cover every rank')
+        return sorted(rows, key=lambda row: row['worker_rank'])
+
+    def _apply_native_overlap(self, values, sequence):
+        if self._control is None:
+            self._record('control_orphan', sequence=sequence,
+                         reason='no-control-intent-registered')
+            return
+        if sequence != self._control_seq:
+            self._record('control_orphan', sequence=sequence,
+                         expected=self._control_seq,
+                         reason='reply-sequence-differs')
+            return
+        if self._control_reply is not None:
+            raise DriverError('native control already holds an unclaimed reply')
+        self._control_reply = values
+
+    def _control_notice(self, kind):
+        control = self._control
+        if control is None:
+            return
+        control['notices'].append(kind)
+
+    def _apply_census_rows(self, rows):
+        for row in rows:
+            self._storage_epochs[row['worker_rank']] = row['storage_epoch']
+            self._decode_watermarks[row['worker_rank']] = row['decode_replay_watermark']
+        self._last_census = rows
+        self._last_census_observed_ns = int(self._monotonic_ns())
+        self._record('worker_census', ranks=[row['worker_rank'] for row in rows],
+                     storage_epochs=[row['storage_epoch'] for row in rows],
+                     decode_replay_watermarks=[row['decode_replay_watermark']
+                                               for row in rows],
+                     pending_native_replays=[row['pending_native_replays']
+                                             for row in rows],
+                     retained_rows=[row['retained_rows'] for row in rows])
+
+    def _settle_worker_control(self, control, reply):
+        action = control['action']
+        rows = self._validate_worker_rows(reply, action)
+        self._apply_census_rows(rows)
+        result = {'schema': 1, 'action': action,
+                  'engine_epoch': self.engine_epoch,
+                  'ranks': list(self.ranks),
+                  'workers': rows,
+                  'clock': self._clock_record(int(self._monotonic_ns())),
+                  'clock_basis': self.clock_basis,
+                  'snapshot': self._status_record()}
+        if action in ('barrier', 'drain'):
+            for row in rows:
+                if not row['barrier_clean']:
+                    raise DriverError('native-barrier-not-clean:rank-%d'
+                                      % row['worker_rank'])
+            if action == 'drain':
+                for row in rows:
+                    if (row['pending_native_replays'] or row['retained_rows']
+                            or row['pending_prefill_streams']
+                            or row['pending_output_copies']):
+                        raise DriverError('native-drain-owned-work-remains:rank-%d'
+                                          % row['worker_rank'])
+            self._record('worker_barrier', action=action,
+                         ranks=[row['worker_rank'] for row in rows],
+                         drained_streams=[row['drained_streams'] for row in rows])
+        if action == 'poll_native':
+            self._record('worker_poll_native',
+                         completed=[row['polled_replays'] for row in rows],
+                         pending=[row['pending_native_replays'] for row in rows])
+        if action == 'qualification':
+            result['qualification'] = rows
+            result['graded_by_engine'] = False
+        self._finish_control(control, result)
+
+    def _settle_route_control(self, control):
+        action = control['action']
+        route_after = 'split' if self._split_ready else 'full'
+        if action == 'enter_split' and self._split_ready:
+            # Explicit control now owns this route across pauses and chunks.
+            self._control_route = {'owner': 'native-control',
+                                   'intent': action,
+                                   'engine_epoch': self.engine_epoch,
+                                   'route_generation': self.route_generation,
+                                   'since_ns': int(self._monotonic_ns())}
+        elif action == 'leave_split' and not self._split_ready:
+            self._control_route = None
+        result = {'schema': 1, 'action': action,
+                  'engine_epoch': self.engine_epoch,
+                  'bootstrapped': bool(self._bootstrapped),
+                  'route_before': control['start_route'],
+                  'route_after': 'split' if self._split_ready else 'full',
+                  'route_generation_before': control['start_route_generation'],
+                  'route_generation_after': self.route_generation,
+                  'changed': (control['start_route'] !=
+                              ('split' if self._split_ready else 'full')),
+                  'admission_intent': self.admission_intent(),
+                  'bootstrap_acks': self.bootstrap_ack_rows(),
+                  'transition_acks': self.transition_ack_rows(),
+                  'typed_acks': True,
+                  'clock': self._clock_record(int(self._monotonic_ns())),
+                  'clock_basis': self.clock_basis,
+                  'snapshot': self._status_record()}
+        self._record('control_route_settled', action=action,
+                     route_after=result['route_after'],
+                     route_generation=result['route_generation_after'],
+                     transition_acks=len(result['transition_acks']),
+                     bootstrap_acks=len(result['bootstrap_acks']))
+        self._finish_control(control, result)
+
+    def _finish_control(self, control, result):
+        future = self._control_future
+        cancelled = bool(control.get('cancelled'))
+        self._control = None
+        self._control_future = None
+        self._control_seq = None
+        self._control_deadline = None
+        self._control_reply = None
+        result['cancelled_by_client'] = cancelled
+        if cancelled:
+            result['client_await_abandoned'] = True
+        if future is not None and not future.done():
+            future.set_result(result)
+
+    def _fail_control(self, reason, *, retain):
+        control = self._control
+        future = self._control_future
+        self._control = None
+        self._control_future = None
+        self._control_seq = None
+        self._control_deadline = None
+        self._control_reply = None
+        if control is not None:
+            self._record('control_failed', attempted=control['action'],
+                         retained=bool(retain))
+        if future is not None and not future.done():
+            future.set_exception(DriverError(reason))
+        if retain:
+            self.error = reason + '; route or worker ownership retained'
+
+    # -- host-monotonic journal ------------------------------------------
+    def _clock_record(self, sample_ns):
+        record = {'basis': self.clock_basis, 'sample_ns': sample_ns,
+                  'proc': 'engine'}
+        try:
+            import os
+            with open('/proc/sys/kernel/random/boot_id', 'r') as handle:
+                boot_id = handle.read().strip()
+            record['boot_id'] = boot_id or None
+            record['time_namespace'] = os.readlink('/proc/self/ns/time')
+        except OSError as exc:
+            record['boot_id'] = None
+            record['time_namespace'] = None
+            record['unavailable'] = type(exc).__name__
+        return record
+
+    def _record(self, entry_kind, **fields):
+        if type(entry_kind) is not str or not entry_kind:
+            raise DriverError('journal kind required')
+        if len(self._journal) == self._journal.maxlen:
+            self._journal_dropped += 1
+        entry = {'kind': entry_kind,
+                 'observed_ns': int(self._monotonic_ns()),
+                 'clock_basis': self.clock_basis,
+                 'engine_epoch': int(self.engine_epoch),
+                 'route_generation': int(self.route_generation),
+                 'route': 'split' if self._split_ready else 'full'}
+        for key, value in fields.items():
+            entry[key] = _bounded_value(value)
+        self._journal.append(entry)
+        return entry
+
+    # -- overlap evidence from the journal -------------------------------
+    def overlap_evidence(self, start_ns, end_ns):
+        """Bounded host-monotonic evidence over real journaled observations."""
+        if type(start_ns) is not int or type(end_ns) is not int:
+            raise DriverError('overlap-window-not-integers')
+        if start_ns <= 0 or end_ns <= 0 or end_ns <= start_ns:
+            raise DriverError('overlap-window-empty-or-negative')
+        if end_ns - start_ns > MAX_EVIDENCE_WINDOW_NS:
+            raise DriverError('overlap-window-exceeds-bound')
+        now = int(self._monotonic_ns())
+        # The client samples are host monotonic values; a value after the
+        # engine's own sample (or one far behind it) proves the two clocks are
+        # not the same domain, and the window is refused rather than shifted.
+        if end_ns > now:
+            raise DriverError('overlap-journal-clock-mismatch:end-after-engine-sample')
+        if now - end_ns > MAX_EVIDENCE_WINDOW_NS:
+            raise DriverError('overlap-journal-clock-mismatch:end-before-engine-sample')
+        entries = [entry for entry in self._journal
+                   if start_ns <= entry['observed_ns'] <= end_ns]
+        if not entries:
+            raise DriverError('overlap-journal-empty-window')
+        stale = [entry for entry in entries
+                 if entry['clock_basis'] != self.clock_basis
+                 or entry['engine_epoch'] != self.engine_epoch]
+        if stale:
+            raise DriverError('overlap-journal-stale-epoch-or-clock')
+        for first, second in zip(entries, entries[1:]):
+            if second['observed_ns'] < first['observed_ns']:
+                raise DriverError('overlap-journal-not-monotonic')
+        complete = (self._journal_dropped == 0
+                    or (self._journal and self._journal[0]['observed_ns'] <= start_ns))
+
+        chunks = {}
+        completions = []
+        receipts = []
+        handles = []
+        frontiers = []
+        cancels = []
+        for entry in entries:
+            kind = entry['kind']
+            txn = entry.get('transaction')
+            if kind == 'chunk_open' and type(txn) is int:
+                chunk = chunks.setdefault(txn, {})
+                chunk.update({key: entry.get(key) for key in
+                              ('request', 'request_generation', 'chunk_start',
+                               'chunk_end', 'state_epoch', 'committed_end',
+                               'prompt_end', 'remaining_tokens', 'terminal')})
+                chunk['begin_ns'] = entry['observed_ns']
+                chunk['segments'] = []
+                chunk['routes'] = set()
+                chunk['state_written'] = {}
+                chunk['reports'] = 0
+            elif kind == 'segment' and type(txn) is int and txn in chunks:
+                chunks[txn]['segments'].append(entry)
+                chunks[txn]['routes'].add(entry.get('route'))
+            elif kind == 'report' and type(txn) is int and txn in chunks:
+                chunks[txn]['reports'] += 1
+                if entry.get('state_written') is True:
+                    chunks[txn]['state_written'][entry.get('worker_rank')] = True
+                for proof in entry.get('proofs') or []:
+                    if type(proof) is not dict:
+                        continue
+                    completions.append({
+                        'request': chunks[txn].get('request'),
+                        'worker_rank': entry.get('worker_rank'),
+                        'queried': True,
+                        'completed_sequence': entry.get('completed_sequence'),
+                        'state_written': entry.get('state_written') is True,
+                        'observed_ns': entry['observed_ns'],
+                        'clock_basis': entry['clock_basis'],
+                        'proofs': [{'kind': proof.get('kind'),
+                                    'op_seq': proof.get('op_seq'),
+                                    'completion_seq': proof.get('completion_seq'),
+                                    # The engine tick's observation of a queried
+                                    # report; never a device timestamp.
+                                    'completed_ns': entry['observed_ns'],
+                                    'time_basis': EVIDENCE_TIME_BASIS}],
+                    })
+            elif kind == 'chunk_commit' and type(txn) is int and txn in chunks:
+                chunks[txn]['commit_ns'] = entry['observed_ns']
+                chunks[txn]['worker_releases'] = entry.get('worker_releases')
+            elif kind == 'pp_receipt':
+                receipts.append({'transaction': txn, 'sender_rank': entry.get('sender_rank'),
+                                 'seq': entry.get('seq'),
+                                 'completion_seq': entry.get('completion_seq'),
+                                 'observed_ns': entry['observed_ns'],
+                                 'clock_basis': entry['clock_basis']})
+            elif kind == 'source_hold':
+                handles.append({'transaction': txn,
+                                'description': entry.get('description'),
+                                'retired': entry.get('retired'),
+                                'observed_ns': entry['observed_ns'],
+                                'clock_basis': entry['clock_basis']})
+            elif kind == 'committed_frontier':
+                frontiers.append({'transaction': txn,
+                                  'frontier': entry.get('frontier'),
+                                  'observed_ns': entry['observed_ns'],
+                                  'clock_basis': entry['clock_basis']})
+            elif kind == 'cancel':
+                cancels.append({'transaction': txn,
+                                'never_submitted': entry.get('never_submitted'),
+                                'closed_ranks': entry.get('closed_ranks'),
+                                'observed_ns': entry['observed_ns'],
+                                'clock_basis': entry['clock_basis']})
+
+        segments = []
+        useful_tokens = 0
+        commits = 0
+        wall_ns = 0
+        for txn in sorted(chunks):
+            chunk = chunks[txn]
+            begin = chunk.get('begin_ns')
+            commit = chunk.get('commit_ns')
+            written = chunk.get('state_written') or {}
+            all_written = set(written) == set(self.ranks) and all(written.values())
+            routes = chunk.get('routes') or set()
+            transport = 'native-split' if routes == {'split'} else 'serialized'
+            tokens = None
+            if type(chunk.get('chunk_start')) is int and type(chunk.get('chunk_end')) is int:
+                tokens = chunk['chunk_end'] - chunk['chunk_start']
+            accepted = (type(commit) is int and type(begin) is int
+                        and commit > begin and all_written
+                        and chunk.get('remaining_tokens') is not None)
+            if accepted:
+                commits += 1
+                useful_tokens += tokens or 0
+                wall_ns += commit - begin
+            segments.append({
+                'transaction': txn,
+                'request': chunk.get('request'),
+                'prefill': ('fresh' if chunk.get('committed_end') == 0 else 'append'),
+                'committed_end': chunk.get('committed_end'),
+                'prompt_end': chunk.get('prompt_end'),
+                'chunk_start': chunk.get('chunk_start'),
+                'chunk_end': chunk.get('chunk_end'),
+                'chunk_tokens': tokens,
+                'terminal': chunk.get('terminal'),
+                'start_monotonic_ns': begin,
+                'end_monotonic_ns': commit,
+                'transport': transport,
+                'accepted': accepted,
+                'state_write': all_written,
+                'state_write_ranks': sorted(int(rank) for rank in written),
+                'report_count': chunk.get('reports'),
+                'segment_count': len(chunk.get('segments') or []),
+                'decode_progress': None,
+                'decode_progress_basis': 'not-queried-engine-side',
+                'worker_releases': chunk.get('worker_releases'),
+                'clock_basis': self.clock_basis,
+                'engine_epoch': self.engine_epoch,
+            })
+
+        route_generations = sorted({entry['route_generation'] for entry in entries})
+        epochs = set(self._storage_epochs.values())
+        incarnations = sorted({row['incarnation'] for row in (self._last_census or [])
+                               if type(row.get('incarnation')) is str})
+        record = {
+            'schema': 1,
+            'start_ns': start_ns,
+            'end_ns': end_ns,
+            'observed_clock_ns': now,
+            'clock_basis': self.clock_basis,
+            'clock': self._clock_record(now),
+            'engine_epoch': self.engine_epoch,
+            'route': 'split' if self._split_ready else 'full',
+            'route_generation': self.route_generation,
+            'route_generations_in_window': route_generations,
+            'storage_epoch': next(iter(epochs)) if len(epochs) == 1 else None,
+            'worker_incarnation': incarnations[0] if len(incarnations) == 1 else None,
+            'segments': segments,
+            'completions': completions,
+            'queried_reports': [],
+            'pp_consumer_receipts': receipts,
+            'source_holds': handles,
+            'committed_frontiers': frontiers,
+            'cancellations': cancels,
+            'errors': [],
+            'decode_progress': None,
+            'decode_progress_basis': ('decode completion is a client-visible delta; '
+                                      'the engine journal does not infer it'),
+            'prefill': {
+                'useful_completed_tokens': useful_tokens,
+                'completed_prefills': commits,
+                'prefill_wall_ns': wall_ns,
+                'prefill_wall_s': round(wall_ns / 1e9, 9) if wall_ns else None,
+                'prompt_tokens': None,
+                'prompt_tokens_basis': 'per-request prompt length is not a driver fact',
+                'basis': ('engine journal: admitted chunk token spans and host-monotonic '
+                          'chunk open..commit observations; not device elapsed time'),
+            },
+            'serialized_transport': any(segment['transport'] != 'native-split'
+                                        for segment in segments),
+            'journal': {'entries': len(self._journal), 'dropped': self._journal_dropped,
+                        'selected': len(entries), 'limit': self.journal_limit,
+                        'complete_in_window': bool(complete)},
+            'workers': self._last_census,
+            'workers_observed_ns': self._last_census_observed_ns,
+        }
+        reasons = []
+        if not complete:
+            reasons.append('journal-evicted-before-window')
+        if not segments:
+            reasons.append('no-admitted-segment-in-window')
+        if not any(segment['accepted'] for segment in segments):
+            reasons.append('no-accepted-segment-in-window')
+        if not completions:
+            reasons.append('no-queried-worker-completion-in-window')
+        record['reasons'] = reasons
+        record['construction_valid'] = not reasons
+        return record
 
     # -- green/full route transition --------------------------------------
     def issue_transition(self, *, expected_route_generation, target_bank,

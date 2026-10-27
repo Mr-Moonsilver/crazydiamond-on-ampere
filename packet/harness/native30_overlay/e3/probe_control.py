@@ -22,6 +22,10 @@ class ProbeControlError(RuntimeError):
 
 RANKS = (0, 1, 2, 3)
 PATH = '/v1/flash_s5_decode_probe'
+NATIVE_PATH = '/v1/flash_s5_native_overlap'
+NATIVE_SESSION_ACTIONS = ('prepare', 'pause_enter_split', 'overlap_begin',
+                          'overlap_end', 'leave_full', 'resume', 'status',
+                          'admission', 'arm_admission', 'disarm_admission')
 ACTIONS = ('status', 'pause', 'transition', 'resume', 'observer_begin', 'observer_end')
 READ_ONLY_FIELDS = frozenset(('action', 'run_id', 'read_only'))
 
@@ -600,6 +604,8 @@ def attach_router(args, app, env=None):
     """
     import os
     env = os.environ if env is None else env
+    if env.get('FLASH_S5_OVERLAP', '0') == '1':
+        return attach_native_router(args, app, env)
     if env.get('FLASH_S5_DECODE_ONLY_PROBE', '0') != '1':
         return None
     from decode_probe import mode_settings
@@ -662,5 +668,91 @@ def attach_router(args, app, env=None):
     endpoint.__annotations__['request'] = Request
     router.add_api_route(PATH, endpoint, methods=['POST'])
     router.add_api_route(PATH + '/session', endpoint, methods=['POST'])
+    app.include_router(router)
+    return state
+
+
+def attach_native_router(args, app, env=None):
+    """Narrow native-mode endpoint: session actions and exact qualification ones.
+
+    Same guard rails as the diagnostic router (loopback, an existing configured
+    API key, no broad dev router, bounded body) but a separate path and a small
+    action vocabulary.  It exposes no general RPC: the session's typed actions
+    and the four exact qualification actions are the only entries, and the
+    qualification payload is forwarded to ``native_qualification.handle_worker``
+    through the engine control channel -- the endpoint never supplies a verdict.
+    """
+    import os
+    env = os.environ if env is None else env
+    if env.get('FLASH_S5_OVERLAP', '0') != '1':
+        return None
+    if env.get('VLLM_SERVER_DEV_MODE', '0') not in ('0', ''):
+        raise ProbeControlError('native-control-refuses-broad-dev-router')
+    configured = getattr(args, 'api_key', None)
+    if configured is not None and type(configured) is not list:
+        raise ProbeControlError('invalid-existing-api-auth-shape')
+    tokens = [value for value in (configured or [env.get('VLLM_API_KEY')]) if value]
+    if not tokens or any(type(value) is not str for value in tokens):
+        raise ProbeControlError('native-control-requires-existing-api-auth')
+    hashes = [hashlib.sha256(value.encode()).digest() for value in tokens]
+    from fastapi import APIRouter, Request
+    from fastapi.responses import JSONResponse
+    from native_overlap_control import (
+        QUALIFICATION_ACTIONS,
+        NativeControlClient,
+        NativeControlError,
+    )
+    from native_overlap_session import NativeOverlapSession, NativeOverlapSessionError
+    router = APIRouter()
+    state = {'engine': None, 'control': None, 'session': None,
+             'mode': 'native-overlap'}
+
+    async def endpoint(request):
+        host = getattr(getattr(request, 'client', None), 'host', '')
+        try:
+            local = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            local = False
+        header = request.headers.get('authorization', '')
+        scheme, _, value = header.partition(' ')
+        candidate = hashlib.sha256(value.encode()).digest()
+        authorized = (scheme.lower() == 'bearer'
+                      and any(secrets.compare_digest(candidate, h) for h in hashes))
+        if not local or not authorized:
+            return JSONResponse({'error': 'native-control-auth-required'},
+                                status_code=403)
+        data = bytearray()
+        try:
+            async for chunk in request.stream():
+                data.extend(chunk)
+                if len(data) > 65536:
+                    raise ProbeControlError('command-too-large')
+            command = json.loads(data)
+            if type(command) is not dict:
+                raise ProbeControlError('native-command-not-an-object')
+            engine = request.app.state.engine_client
+            if state['engine'] is None:
+                state['engine'] = engine
+                state['control'] = NativeControlClient(engine)
+                state['session'] = NativeOverlapSession(engine,
+                                                        control=state['control'])
+            elif state['engine'] is not engine:
+                raise ProbeControlError('engine-client-incarnation-changed')
+            action = command.get('action')
+            if action in QUALIFICATION_ACTIONS:
+                result = await state['control'].qualification(
+                    action, command.get('payload'))
+            elif action in NATIVE_SESSION_ACTIONS:
+                result = await state['session'].execute(command)
+            else:
+                raise ProbeControlError('native-action-not-exposed')
+            return JSONResponse(result)
+        except (ValueError, TypeError):
+            return JSONResponse({'error': 'invalid-command-json'}, status_code=400)
+        except (ProbeControlError, NativeControlError,
+                NativeOverlapSessionError) as exc:
+            return JSONResponse({'error': str(exc)}, status_code=409)
+    endpoint.__annotations__['request'] = Request
+    router.add_api_route(NATIVE_PATH, endpoint, methods=['POST'])
     app.include_router(router)
     return state

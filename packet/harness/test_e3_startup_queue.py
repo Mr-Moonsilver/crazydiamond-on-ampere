@@ -52,8 +52,9 @@ def full11_launcher_text():
     # modules; strip them so the frozen queues still reconstruct byte-identically.
     for value in ('e3/activity_accounting.py ', 'e3/engine_offers.py ',
                   'e3/admission_metadata.py ', 'e3/worker_bridge.py ',
-                  'e3/sparse_history_dma.py ', 'e3/native_source.py ',
-                  'e3/row1_oracle.py ',
+                  'e3/sparse_history_dma.py ', 'e3/native_source.py ', 'e3/row1_oracle.py ',
+                  'e3/native_overlap_metrics.py ', 'e3/native_overlap_worker.py ',
+                  'e3/native_overlap_control.py ', 'e3/native_overlap_session.py ',
                   'e3_sources/sampler.py ', 'e3_sources/async_utils.py '):
         text = text.replace(value, '')
     text = text.replace('      -v "$OVERLAY/e3_sources/sampler.py:$V/worker/gpu/sample/sampler.py:ro"\n', '')
