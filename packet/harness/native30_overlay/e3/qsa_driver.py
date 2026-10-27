@@ -215,6 +215,23 @@ class QsaLayerDriver:
             return self._bucket(lane, phase)
         raise QsaDriverError(f'layer {layer_idx} is in unexpected phase {phase.phase!r}')
 
+    def submission_credit(self, layer_idx):
+        """Host-query-only credit for the next call on ``layer_idx``.
+
+        ``None`` means this driver has no credit seam for that layer: no phase
+        is outstanding yet (the next call is the real ``pre`` submission), or
+        the operation predates the seam.  The dispatcher must then keep the old
+        paused behaviour.  A credit object is always the operation's own
+        queried answer, never a guessed elapsed time or a cached flag.
+        """
+        phase = self.phases.get(layer_idx)
+        if phase is None or phase.phase != 'bucket':
+            return None
+        query = getattr(self.operation, 'submission_credit', None)
+        if not callable(query):
+            return None
+        return query()
+
     # -- phases -------------------------------------------------------------------
     def _pre(self, lane, layer_idx):
         if self.phases:
@@ -267,9 +284,21 @@ class QsaLayerDriver:
 
     def _bucket(self, lane, phase):
         operation = self.operation
+        credit = self.submission_credit(phase.layer_idx)
+        if credit is not None and credit.can_submit is not True:
+            # No submission was made: the same command must be retried with its
+            # unchanged op_seq and no new accepted operation may be recorded.
+            raise E3Pending('lane submission credit pending: ' + credit.reason)
         try:
             value = operation.advance()
         except E3Pending:
+            if credit is not None:
+                # The seam above proved credit was available and ``advance``
+                # checks the same monotonic predicates before pulling the
+                # continuation, so this is not a pre-submission credit wait.
+                # Never swallow it: an unknown frontier stays pending/partial
+                # for the dispatcher to quarantine.
+                raise
             self.records.append(('pending', phase.layer_idx))
             return None
         except StopIteration as stop:

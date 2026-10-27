@@ -661,6 +661,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_native_overlap.py', 'E3 native-control completion: named engine utility dispatch, typed all-rank acks, worker census/drain, journaled overlap evidence and qualification delegation (CPU only, fakes)'),
                      ('test_e3_graph_routing.py', 'E3 graph routing: fixed-split graph keys, capture/replay/transition guards, budgets and pinned seam transforms (CPU only)'),
                      ('test_e3_lane_dispatch.py', 'E3 lane dispatcher: typed segment kinds to bounded host operations, pause/cursor, PP send/receive, STATE_WRITE event, cancel/drain/release (CPU only, fakes)'),
+    ('test_e3_native_submission_credit.py', 'E3 native submission credit: real dispatcher/bridge op identity under delayed selection/attention queries, unchanged pending retry, quarantine and pinned accepted-op bound (CPU only)'),
                      ('test_e3_lane_chunk.py', 'E3 lane chunk: worker-side request registration/update, lane tables and CPU slot mappings, private align context, metadata and forward context (CPU only, fakes)'),
                      ('test_e3_qsa_driver.py', 'E3 QSA layer driver: additive attention pre/post on the D2-composed QSA source, producer -> one-bucket generator -> tail phases, pause/pending (CPU only)'),
                      ('test_e3_native_startup.py', 'E3 worker-native startup: split bank + lane communicators + PLE scratch composition, graph builder, transition RPC (CPU only, fakes)'),

@@ -391,6 +391,15 @@ class LaneDispatcher:
         self._need_chunk()
         if command.layer_start != self.lane.cursor:
             raise LaneDispatchError(f'layer segment {command.layer_start} does not match cursor {self.lane.cursor}')
+        # Query the driver's source-owned credit *before* the partial-enqueue
+        # boundary: a credit-only attempt must stay typed pending for the
+        # unchanged command and must record no event or accepted operation.
+        query = getattr(self.driver, 'submission_credit', None)
+        credit = query(command.layer_start) if callable(query) else None
+        if credit is not None and getattr(credit, 'can_submit', None) is not True:
+            raise E3Pending(
+                'lane submission credit pending: '
+                + str(getattr(credit, 'reason', 'unspecified')))
         self._partial = True
         record = self.lane.layer(command.layer_start)
         return {'kind': record.kind, 'layer': command.layer_start, 'paused': record.kind == 'layer-paused'}

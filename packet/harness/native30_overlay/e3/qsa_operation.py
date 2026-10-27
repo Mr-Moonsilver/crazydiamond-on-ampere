@@ -244,6 +244,21 @@ class SparseSelectionPending:
         return True
 
 
+@dataclass(frozen=True)
+class SubmissionCredit:
+    """Host-queried answer to "may the next bounded submission run now?".
+
+    ``can_submit`` is the only decision; the two counts are the exact pending
+    predicates it was derived from, so a caller can report why it is waiting
+    without guessing.  A false answer means the lane must return typed pending
+    for the unchanged command and mutate nothing.
+    """
+    can_submit: bool
+    reason: str
+    pending_buckets: int
+    pending_selection: int
+
+
 @dataclass
 class SparseLayerRun:
     """Per-layer sparse plan/readback state; built after the producer boundary."""
@@ -1649,6 +1664,30 @@ class QsaPrefillOperation:
             raise OperationError('one generated continuation required')
         self._continuation = continuation
 
+    def submission_credit(self):
+        """Host-query-only credit for the next ``advance``.
+
+        This is the same evidence ``advance`` itself consults before it pulls
+        the continuation: queried completion events (``_refresh``), the
+        outstanding attention consumers and the staged selection readback.
+        It allocates nothing, records no event, enqueues no copy or kernel,
+        never synchronizes and never runs the row1 byte oracle.  A caller that
+        sees ``can_submit is False`` returns typed pending for the unchanged
+        command, so polling credit cannot consume an accepted operation.
+        """
+        self._check_identity()
+        self._refresh()
+        pending_buckets = self.pending_buckets
+        pending_selection = self.pending_selection
+        if pending_buckets:
+            return SubmissionCredit(False, 'attention consumer not observed',
+                                    pending_buckets, pending_selection)
+        if pending_selection:
+            return SubmissionCredit(False, 'selection readback not observed',
+                                    pending_buckets, pending_selection)
+        return SubmissionCredit(True, 'credit available',
+                                pending_buckets, pending_selection)
+
     def advance(self):
         """Submit at most one bucket; pending credit leaves the frame untouched.
 
@@ -1873,5 +1912,5 @@ __all__ = [
     'NativeQsaDevice', 'OperationCancelled', 'OperationError',
     'QsaPrefillOperation', 'RUNNER_SEAM', 'SelectionToken', 'SparseLayerRun',
     'SparseSelectionPending', 'SparseUnionScratch', 'Stage', 'StageRecord',
-    'metadata_plan_provider', 'plan_buckets',
+    'SubmissionCredit', 'metadata_plan_provider', 'plan_buckets',
 ]
