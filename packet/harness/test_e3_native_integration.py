@@ -838,9 +838,13 @@ class StartupSeamTests(unittest.TestCase):
                          nr.WORKSPACE_LANE)
         self.assertGreater(runner._flash_s5_native['uid_bytes'], 0)
         self.assertTrue(callable(runner._flash_s5_worker.open))
-        self.assertTrue(callable(runner._flash_e3_graph_builder))
+        # Construction is unbound until the engine-owner bootstrap; the real
+        # split bank graph builder is installed by the D4 lane seam, which this
+        # fixture bypasses and native_startup exercises directly.
+        self.assertFalse(runner._flash_s5_native['engine_bound'])
+        self.assertEqual(runner._flash_s5_native['engine_epoch'], 0)
 
-    def test_split_capture_fails_closed_without_the_model_forward_callable(self):
+    def test_split_graph_builder_is_not_faked_without_the_native_lane(self):
         runner = types.SimpleNamespace(
             vllm_config=types.SimpleNamespace(
                 parallel_config=types.SimpleNamespace(rank=0),
@@ -856,15 +860,11 @@ class StartupSeamTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {'FLASH_S5_OVERLAP': '1'}):
             su.install_builder(runner, {}, env={'FLASH_S5_OVERLAP': '1'})
             lh.init_lane(runner, {})
-        router = runner._flash_e3_graph_builder(runner)
-        self.assertEqual(router.current_mode, 'ordinary')
-        descriptor = object()
-        context = types.SimpleNamespace(reserved_bytes=1 << 20,
-                                        context_id=router.handle.context_id)
-        with self.assertRaisesRegex(ah.ConfigurationError,
-                                    '_flash_s5_graph_capture'):
-            router.backend.capture('decode-split', descriptor,
-                                   router.handle, context)
+        # The resource seam constructs the runtime but must not guess a
+        # context/SM/pool identity: the real builder registers the split bank
+        # only in native_startup with retained decode storage.
+        self.assertIsNone(getattr(runner, '_flash_e3_graph_builder', None))
+        self.assertIsNone(getattr(runner, '_flash_s5_split_backend', None))
 
     def test_disabled_startup_is_inert_on_both_seams(self):
         runner = types.SimpleNamespace()

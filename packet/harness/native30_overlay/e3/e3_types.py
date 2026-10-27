@@ -203,6 +203,38 @@ class LaneId:
 
 
 @dataclass(frozen=True, repr=False)
+class DecodeStorageOwner:
+    """The worker's persistent decode storage for its whole incarnation.
+
+    Unlike a prefill lane, this owner is retained once at worker startup and is
+    never reserved by a request/chunk transaction: captured decode graphs stay
+    bound to exactly this storage epoch while chunks come and go.  The engine
+    binds its epoch to ``incarnation`` exactly once; a foreign or late rebind is
+    refused by :class:`lane_state.WorkerState`.
+    """
+    worker_rank: int
+    incarnation: str
+    storage_epoch: int
+    context_id: int
+
+    def __post_init__(self):
+        _int('worker_rank', self.worker_rank)
+        _text('incarnation', self.incarnation)
+        _int('storage_epoch', self.storage_epoch)
+        _int('context_id', self.context_id)
+
+    @property
+    def lane_id(self):
+        return LaneId(self.worker_rank, LaneRole.DECODE, self.storage_epoch,
+                      self.context_id)
+
+    def __repr__(self):
+        return (f'DecodeStorageOwner(worker_rank={self.worker_rank}, '
+                f'incarnation=<len {len(self.incarnation)}>, '
+                f'storage_epoch={self.storage_epoch}, context_id={self.context_id})')
+
+
+@dataclass(frozen=True, repr=False)
 class OperationTicket:
     """One bounded submission. It is not a completion or a commit."""
     transaction: TransactionId

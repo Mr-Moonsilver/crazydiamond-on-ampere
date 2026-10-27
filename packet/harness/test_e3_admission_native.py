@@ -861,9 +861,41 @@ class DriverTests(unittest.TestCase):
                 tuple(t.op_seq for t in tickets), proofs))
         return reports
 
+    def bootstrap_acks(self):
+        return [w.BootstrapAck(self.driver.engine_epoch, rank, f'inc-{rank}-a',
+                               LaneId(rank, LaneRole.DECODE, 5, 1), 0, 0, True)
+                for rank in self.driver.ranks]
+
+    def route_acks(self, command):
+        """Every rank answers with its own applied switch and queried census."""
+        return [w.TransitionAck(command.engine_epoch,
+                                command.expected_route_generation,
+                                command.route_generation, command.target_bank,
+                                command.storage_epochs, command.route_generation,
+                                command.target_bank, command.storage_epochs, rank,
+                                command.decode_replay_watermarks[rank])
+                for rank in self.driver.ranks]
+
+    def settle_route(self):
+        """Bootstrap every worker and obtain the all-rank split transition."""
+        self.driver.advance()
+        method, command = self.executor.last_command()
+        self.assertEqual(method, 'flash_s5_bootstrap')
+        self.assertIsInstance(command, w.BootstrapCommand)
+        self.assertEqual(command.engine_epoch, self.driver.engine_epoch)
+        self.executor._flash_s5_transport.reply(self.bootstrap_acks())
+        self.driver.advance()
+        method, command = self.executor.last_command()
+        self.assertEqual(method, 'flash_s5_transition')
+        self.assertIsInstance(command, w.TransitionCommand)
+        self.assertEqual(command.target_bank, w.ROUTE_BANK_SPLIT)
+        self.assertEqual(command.expected_route_generation, 0)
+        self.executor._flash_s5_transport.reply(self.route_acks(command))
+        self.driver.advance()
+
     def begin_segments(self):
         """Open every rank, deliver the targeted peer bind, return PREPARE."""
-        self.driver.advance()
+        self.settle_route()
         self.executor._flash_s5_transport.reply(self.acks())
         self.driver.advance()
         method, binding = self.executor.last_command()
@@ -905,17 +937,31 @@ class DriverTests(unittest.TestCase):
     def test_one_bounded_command_per_tick(self):
         self.driver.advance()
         method, message = self.executor.last_command()
-        self.assertEqual(method, 'flash_s5_open')
-        self.assertIsInstance(message, w.OpenRequest)
+        self.assertEqual(method, 'flash_s5_bootstrap')
+        self.assertIsInstance(message, w.BootstrapCommand)
         self.assertEqual(len(self.executor._flash_s5_bounded_send.envelopes), 1)
         self.assertEqual(self.executor._flash_s5_bounded_send.checks,
                          self.executor._flash_s5_bounded_send.envelopes)
+
+        self.executor._flash_s5_transport.reply(self.bootstrap_acks())
+        self.driver.advance()
+        method, transition = self.executor.last_command()
+        self.assertEqual(method, 'flash_s5_transition')
+        self.assertEqual(transition.target_bank, w.ROUTE_BANK_SPLIT)
+        self.assertEqual(len(self.executor._flash_s5_bounded_send.envelopes), 2)
+
+        self.executor._flash_s5_transport.reply(self.route_acks(transition))
+        self.driver.advance()
+        method, message = self.executor.last_command()
+        self.assertEqual(method, 'flash_s5_open')
+        self.assertIsInstance(message, w.OpenRequest)
+        self.assertEqual(len(self.executor._flash_s5_bounded_send.envelopes), 3)
 
         self.executor._flash_s5_transport.reply(self.acks())
         self.driver.advance()
         method, binding = self.executor.last_command()
         self.assertEqual(method, 'flash_s5_bind')
-        self.assertEqual(len(self.executor._flash_s5_bounded_send.envelopes), 2)
+        self.assertEqual(len(self.executor._flash_s5_bounded_send.envelopes), 4)
         self.executor._flash_s5_transport.reply([
             w.PeerBindingAck(binding.transaction, binding.sender_rank,
                              binding.receiver_lane, binding.route_generation, True)])
@@ -923,7 +969,7 @@ class DriverTests(unittest.TestCase):
         method, command = self.executor.last_command()
         self.assertEqual(method, 'flash_s5_submit')
         self.assertIs(command.kind, w.SegmentKind.PREPARE)
-        self.assertEqual(len(self.executor._flash_s5_bounded_send.envelopes), 3)
+        self.assertEqual(len(self.executor._flash_s5_bounded_send.envelopes), 5)
         self.assertEqual(self.driver.bound_ticket, None)
 
     def test_full_plan_publishes_only_after_every_proof(self):
@@ -1133,7 +1179,7 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(self.manager.cache_calls, [])
 
     def test_open_ack_is_not_a_safe_local_cancel(self):
-        self.driver.advance()
+        self.settle_route()
         self.driver.stop('abort')
         self.executor._flash_s5_transport.reply(self.acks())
         self.driver.advance()

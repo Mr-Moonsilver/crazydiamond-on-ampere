@@ -231,7 +231,9 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     # Created once by this EngineCore process, passed to all worker opens.
     # It is not a model/request attribute and cannot silently default to zero.
     import uuid
-    epoch = uuid.uuid4().int & ((1 << 63) - 1)
+    # Bootstrap/binding contracts require a positive owner epoch; the random
+    # draw is masked to 63 bits and must never land on the unbound sentinel 0.
+    epoch = (uuid.uuid4().int & ((1 << 63) - 1)) or 1
     engine._flash_s5_engine_epoch = epoch
     controller = PrefillAdmissionController(
         scheduler, leases=composition.scheduler_leases,

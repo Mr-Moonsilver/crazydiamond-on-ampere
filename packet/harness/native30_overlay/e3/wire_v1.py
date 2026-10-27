@@ -46,6 +46,12 @@ from lane_comm import PPConsumerReceipt
 
 WIRE_VERSION = 1
 
+# The two route banks in the fixed decode-graph bank. They are wire values, not
+# local enum names, so both sides compare the same integer.
+ROUTE_BANK_FULL = 0
+ROUTE_BANK_SPLIT = 1
+ROUTE_BANKS = (ROUTE_BANK_FULL, ROUTE_BANK_SPLIT)
+
 CURSOR_PHASES = ('prepare', 'pp_receive', 'prefix', 'layer', 'suffix',
                  'pp_send', 'state_finalize', 'commit', 'idle')
 
@@ -122,6 +128,14 @@ def _ints(name, value, *, minimum=0, allow_empty=True, unique=True):
 def _kind(name, value, enum):
     if type(value) is not enum:
         raise E3ContractError(f'{name} must be {enum.__name__}')
+    return value
+
+
+def _text(name, value):
+    if type(value) is not str or not value:
+        raise E3ContractError(f'{name} must be a non-empty string')
+    if len(value) > 256 or any(ord(c) < 32 for c in value):
+        raise E3ContractError(f'{name} contains unsupported characters')
     return value
 
 
@@ -488,6 +502,75 @@ class WorkerCompletionReport:
 
 
 @dataclass(frozen=True, repr=False)
+class BootstrapCommand:
+    """Bind every worker incarnation to the engine owner, exactly once.
+
+    The command carries no worker-local context/SM/pool identity: each worker
+    answers from its own retained decode storage and its own route controller.
+    It is idempotent for the same engine epoch; a worker already bound to a
+    different epoch refuses instead of mutating a live transaction.
+    """
+    engine_epoch: int
+    ranks: tuple
+
+    def __post_init__(self):
+        _int('engine_epoch', self.engine_epoch, 1)
+        _ints('ranks', self.ranks, minimum=0, allow_empty=False)
+        if self.ranks != tuple(sorted(self.ranks)):
+            raise E3ContractError('bootstrap ranks must be ordered')
+
+    def __repr__(self):
+        return (f'BootstrapCommand(engine_epoch={self.engine_epoch}, '
+                f'ranks={len(self.ranks)})')
+
+
+@dataclass(frozen=True, repr=False)
+class BootstrapAck:
+    """One worker's engine-owner binding and retained decode storage identity.
+
+    ``lane`` is the persistent decode storage retained at worker startup, not a
+    request lane.  ``decode_replay_watermark`` is the worker's own queried
+    replay census under that storage; the engine seeds route transitions with
+    it rather than guessing.  ``bound=False`` is a refusal, never a success.
+    """
+    engine_epoch: int
+    worker_rank: int
+    incarnation: str = field(repr=False)
+    lane: LaneId
+    route_generation: int = 0
+    decode_replay_watermark: int = 0
+    bound: bool = False
+
+    def __post_init__(self):
+        _int('engine_epoch', self.engine_epoch, 1)
+        _int('worker_rank', self.worker_rank, 0)
+        _text('incarnation', self.incarnation)
+        if type(self.lane) is not LaneId:
+            raise E3ContractError('bootstrap ack needs the retained decode LaneId')
+        if self.lane.role is not LaneRole.DECODE:
+            raise E3ContractError('bootstrap lane must be decode storage')
+        if self.lane.worker_rank != self.worker_rank:
+            raise E3ContractError('bootstrap lane belongs to another worker')
+        _int('route_generation', self.route_generation, 0)
+        _int('decode_replay_watermark', self.decode_replay_watermark, 0)
+        if type(self.bound) is not bool:
+            raise E3ContractError('bound must be bool')
+
+    def matches(self, command):
+        if type(command) is not BootstrapCommand:
+            raise E3ContractError('matches() needs a BootstrapCommand')
+        return (self.engine_epoch == command.engine_epoch
+                and self.worker_rank in command.ranks)
+
+    def __repr__(self):
+        return (f'BootstrapAck(engine_epoch={self.engine_epoch}, '
+                f'rank={self.worker_rank}, incarnation=<len {len(self.incarnation)}>, '
+                f'storage_epoch={self.lane.storage_epoch if self.lane else None}, '
+                f'route_generation={self.route_generation}, '
+                f'watermark={self.decode_replay_watermark}, bound={self.bound})')
+
+
+@dataclass(frozen=True, repr=False)
 class TransitionCommand:
     """Green/full route transition, fenced on the exact engine/route epoch."""
     engine_epoch: int
@@ -504,6 +587,8 @@ class TransitionCommand:
         if self.route_generation != self.expected_route_generation + 1:
             raise E3ContractError('a transition advances the route generation by one')
         _int('target_bank', self.target_bank, 0)
+        if self.target_bank not in ROUTE_BANKS:
+            raise E3ContractError('unknown route bank')
         _ints('storage_epochs', self.storage_epochs, minimum=1, allow_empty=False,
               unique=False)
         _ints('decode_replay_watermarks', self.decode_replay_watermarks,
@@ -520,7 +605,11 @@ class TransitionCommand:
 
 @dataclass(frozen=True, repr=False)
 class TransitionAck:
-    """A worker's applied transition. Identity must echo the command exactly."""
+    """A worker's applied transition. Identity echoes the command exactly.
+
+    The replay watermark is the one field that is *not* an echo: it is this
+    rank's own queried census, so it may exceed the commanded floor.
+    """
     engine_epoch: int
     expected_route_generation: int
     route_generation: int
@@ -530,6 +619,9 @@ class TransitionAck:
     applied_bank: int
     applied_storage_epochs: tuple
     worker_rank: int = 0
+    # This rank's queried replay census under the persistent decode storage.
+    decode_replay_watermark: int = 0
+    drained_streams: int = 0
 
     def __post_init__(self):
         _int('engine_epoch', self.engine_epoch, 0)
@@ -538,9 +630,13 @@ class TransitionAck:
         if self.route_generation != self.expected_route_generation + 1:
             raise E3ContractError('a transition advances the route generation by one')
         _int('target_bank', self.target_bank, 0)
+        if self.target_bank not in ROUTE_BANKS:
+            raise E3ContractError('unknown route bank')
         _ints('storage_epochs', self.storage_epochs, minimum=1, allow_empty=False,
               unique=False)
         _int('worker_rank', self.worker_rank, 0)
+        _int('decode_replay_watermark', self.decode_replay_watermark, 0)
+        _int('drained_streams', self.drained_streams, 0)
         _int('applied_route_generation', self.applied_route_generation, 1)
         _int('applied_bank', self.applied_bank, 0)
         _ints('applied_storage_epochs', self.applied_storage_epochs, minimum=1,
@@ -555,11 +651,18 @@ class TransitionAck:
     def matches(self, command):
         if type(command) is not TransitionCommand:
             raise E3ContractError('matches() needs a TransitionCommand')
+        if self.worker_rank >= len(command.decode_replay_watermarks):
+            return False
+        # The commanded watermark is a floor: the worker answers with its own
+        # queried census under the persistent storage, which may be ahead of
+        # what the engine last saw.  A lower value would be a regression.
+        commanded = command.decode_replay_watermarks[self.worker_rank]
         return (self.engine_epoch == command.engine_epoch
                 and self.expected_route_generation == command.expected_route_generation
                 and self.route_generation == command.route_generation
                 and self.target_bank == command.target_bank
-                and self.storage_epochs == command.storage_epochs)
+                and self.storage_epochs == command.storage_epochs
+                and self.decode_replay_watermark >= commanded)
 
     def __repr__(self):
         return (f'TransitionAck(engine_epoch={self.engine_epoch}, '
@@ -567,6 +670,31 @@ class TransitionAck:
                 f'target_bank={self.target_bank}, '
                 f'applied_bank={self.applied_bank}, '
                 f'ranks={len(self.storage_epochs)})')
+
+
+@dataclass(frozen=True)
+class TransitionPending:
+    """Successful RPC reply: this exact command has not switched this rank.
+
+    A transient drain never travels as a worker exception over the owned FIFO
+    transport. It is neither an applied transition nor a completion proof.
+    """
+    command: TransitionCommand
+    worker_rank: int
+    observed_route_generation: int
+
+    def __post_init__(self):
+        if type(self.command) is not TransitionCommand:
+            raise E3ContractError('pending transition needs the exact command')
+        _int('worker_rank', self.worker_rank, 0)
+        _int('observed_route_generation', self.observed_route_generation, 0)
+        if self.worker_rank >= len(self.command.storage_epochs):
+            raise E3ContractError('pending rank is outside the transition cohort')
+        if self.observed_route_generation != self.command.expected_route_generation:
+            raise E3ContractError('pending rank has already changed its route')
+
+    def matches(self, command):
+        return type(command) is TransitionCommand and self.command == command
 
 
 @dataclass(frozen=True, repr=False)
@@ -1155,11 +1283,13 @@ class OpSeqTracker:
 
 
 __all__ = [
-    'AdmissionRecord', 'CANCEL_DISPOSITIONS', 'CANCEL_REASONS', 'CURSOR_PHASES',
+    'AdmissionRecord', 'BootstrapAck', 'BootstrapCommand',
+    'CANCEL_DISPOSITIONS', 'CANCEL_REASONS', 'CURSOR_PHASES',
     'CancelAck', 'CancelRequest', 'CompletionCursor', 'FAILED_CODES',
     'OpenAck', 'OpenRequest', 'OpSeqTracker', 'PPReceiptAck', 'PPReceiptDelivery',
     'PeerBinding', 'PeerBindingAck', 'PollRequest', 'ReleaseRequest', 'ReleaseAck',
+    'ROUTE_BANKS', 'ROUTE_BANK_FULL', 'ROUTE_BANK_SPLIT',
     'SegmentAcceptance', 'SegmentCommand', 'SegmentDescriptor', 'SegmentKind',
     'SourceLeaseDescriptor',
-    'TransitionAck', 'TransitionCommand', 'WIRE_VERSION', 'WorkerCompletionReport',
+    'TransitionAck', 'TransitionCommand', 'TransitionPending', 'WIRE_VERSION', 'WorkerCompletionReport',
 ]

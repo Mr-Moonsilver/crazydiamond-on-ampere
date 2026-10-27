@@ -58,6 +58,35 @@ def full_descriptors(stock_manager):
     return mode, tuple(pairs)
 
 
+class ReplayCompletion:
+    """One real CUDA event recorded after a split replay enqueue.
+
+    ``query()`` is the only completion evidence: a successful host enqueue is
+    not completion, and no RPC acknowledgement is invented.  The event is
+    recorded on the green decode stream so a subsequent drained route switch
+    (which records and synchronizes a tail event on that stream) also orders
+    this replay.
+    """
+
+    __slots__ = ('event', 'stream_token', 'basis')
+
+    def __init__(self, event, stream_token):
+        if not callable(getattr(event, 'query', None)):
+            raise SplitBankError('split replay completion needs a CUDA event with query()')
+        if type(stream_token) is not int:
+            raise SplitBankError('split replay event has no stream identity')
+        self.event = event
+        self.stream_token = stream_token
+        self.basis = 'cuda-event-on-green-decode-stream'
+
+    def query(self):
+        """True only when the device reports this replay complete."""
+        return self.event.query()
+
+    def synchronize(self):
+        return self.event.synchronize()
+
+
 class SplitGraphHandle:
     """Opaque handle for one captured FULL descriptor in the split bank."""
 
@@ -208,6 +237,18 @@ class SplitDecodeBank:
         handle.replays += 1
         return output
 
+    def record_completion_event(self):
+        """Record a completion event after the replay on the green decode stream."""
+        stream = self.split.decode_stream
+        if stream is None:
+            raise SplitBankError('split replay completion needs the green decode stream')
+        event = self.torch.cuda.Event(enable_timing=False)
+        event.record(stream)
+        token = int(getattr(stream, 'cuda_stream', -1))
+        if token != self.split.decode_stream_token:
+            raise SplitBankError('completion event was recorded on another stream')
+        return ReplayCompletion(event, token)
+
     def destroy(self, handle):
         if not isinstance(handle, SplitGraphHandle) or handle.bank is not self:
             raise SplitBankError('destroy needs a handle of this split bank')
@@ -283,6 +324,15 @@ class SplitCaptureBackend:
         if token != context.stream_token:
             raise SplitBankError('split replay must run with the green decode stream current')
         return bank.replay(handle)
+
+    def replay_with_event(self, handle, key, lane, context):
+        """Replay the actual split graph, then record this replay's real event.
+
+        The event is created only after the actual manager call so its query
+        names this enqueued replay, not the host's submission.
+        """
+        output = self.replay(handle, key, lane, context)
+        return output, self.bank.record_completion_event()
 
     def destroy_graph(self, handle):
         return self.bank.destroy(handle)
@@ -493,6 +543,6 @@ def shutdown(runner):
     return True
 
 
-__all__ = ['RouteController', 'SplitBankError', 'SplitCaptureBackend', 'SplitDecodeBank',
-           'SplitGraphHandle', 'TransitionRecord', 'decode_scope', 'full_descriptors',
-           'install', 'prefill_scope', 'shutdown']
+__all__ = ['ReplayCompletion', 'RouteController', 'SplitBankError', 'SplitCaptureBackend',
+           'SplitDecodeBank', 'SplitGraphHandle', 'TransitionRecord', 'decode_scope',
+           'full_descriptors', 'install', 'prefill_scope', 'shutdown']

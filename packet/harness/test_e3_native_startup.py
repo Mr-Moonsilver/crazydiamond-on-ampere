@@ -3,12 +3,14 @@ from pathlib import Path
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
 sys.path.insert(0, str(ROOT / 'harness'))
 
 import native_startup  # noqa: E402
+import lane_state  # noqa: E402
 from green_context import GreenSplit  # noqa: E402
 from native_startup import NativeStartupError, WorkerNative, install_worker_native, transition_rpc  # noqa: E402
 from test_e3_green_native import FakeBinding, FakeManager, FakeTensor, fake_runner, fake_torch, install_fake_vllm, remove_fake_vllm  # noqa: E402
@@ -106,11 +108,31 @@ class StartupTests(unittest.TestCase):
             _flash_e3_is_last_stage=lambda: False)
         self.split = GreenSplit(FakeBinding(), 0, 44, torch_module=self.torch).create()
         self.runner._flash_s5_split = self.split
+        # The worker runtime state is what build_worker_runtime returns: one
+        # persistent decode storage owner per worker incarnation.
+        self.state = lane_state.WorkerState(0, engine_epoch=0, engine_bound=False)
+        self.runner._flash_s5_worker = types.SimpleNamespace(
+            runtime=types.SimpleNamespace(state=self.state), operation_device=None)
         self.tp = types.SimpleNamespace(cpu_group='tp', world_size=2, device_communicator=object())
         self.pp = types.SimpleNamespace(cpu_group='pp', world_size=2, rank_in_group=0,
                                         is_first_rank=True, is_last_rank=False)
+        # Owner discovery walks the pinned vLLM model family, which this CPU
+        # fixture does not construct. Use the real PrefillStreamOwners API over
+        # the fixture's actual PLE embedding; discovery itself is covered in
+        # test_e3_prefill_streams.py.
+        import model_hooks
+        embedding = self.runner.model.layers[1].ple.ngram_embedding
+        self.ple_embedding = embedding
+        self.ple_origin_stream = embedding._prefetch_stream
+
+        def discover(runner, split, *, pinned=None):
+            return model_hooks.PrefillStreamOwners(split, [(embedding, '_prefetch_stream')])
+
+        self._discover = patch.object(model_hooks.PrefillStreamOwners, 'discover', discover)
+        self._discover.start()
 
     def tearDown(self):
+        self._discover.stop()
         remove_fake_vllm()
 
     def install(self):
@@ -132,6 +154,14 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(inventory['split_bank_basis'], 'uncaptured')
         self.assertEqual(inventory['route'], 'full')
         self.assertEqual(inventory['split']['decode_sms'], 44)
+        # The PLE prefetch stream is the owned prefill-green auxiliary, not a
+        # private primary-context stream.
+        self.assertEqual(native.prefill_streams.record()['basis'], 'prefill-green')
+        self.assertEqual(inventory['prefill_streams']['auxiliary_streams'], 1)
+        self.assertEqual(native.ple_scratch.stream_basis, 'prefill-green')
+        self.assertIs(native.ple_scratch.stream,
+                      native.prefill_streams.replacements[0])
+        self.assertEqual(native.drain_prefill_streams(), 1)
         with self.assertRaises(NativeStartupError):
             self.install()
         lane = native.lane_forward(dict(positions='p', input_ids='i', query_start_loc='q', ngram_context='n'),
@@ -141,6 +171,19 @@ class StartupTests(unittest.TestCase):
             lane.layer(idx)
         lane.finish()
         self.assertEqual(lane.output, {'hidden_states': 'hc'})
+        # Every segment restored the stock owner exactly.
+        self.assertIs(self.ple_embedding._prefetch_stream, self.ple_origin_stream)
+
+    def test_install_refuses_without_the_prefill_helper_extension(self):
+        from green_context import GreenContextError
+
+        class NoPrefill(FakeBinding):
+            prefill_aux_create = None
+
+        self.runner._flash_s5_split = GreenSplit(
+            NoPrefill(), 0, 44, torch_module=self.torch).create()
+        with self.assertRaises(GreenContextError):
+            self.install()
 
     def test_install_refusals(self):
         with self.assertRaises(NativeStartupError):
@@ -163,29 +206,65 @@ class StartupTests(unittest.TestCase):
                 built['args'] = (state, handle, compilation, kwargs)
                 self.banks = {}
 
-            def add_bank(self, name, context, descriptors):
+            def add_bank(self, name, context, descriptors, *, context_factory):
+                built['factory'] = context_factory
                 self.banks[name] = (context, descriptors)
 
-        handle = types.SimpleNamespace(storage_epoch=3)
-        self.runner._flash_e3_lane = types.SimpleNamespace(
-            state=types.SimpleNamespace(decode=types.SimpleNamespace(handle=handle)))
-        self.runner._flash_s5_compilation = 'compilation'
+        handle = self.state.decode.handle
+        self.assertIsNotNone(self.state.decode_owner)
+        self.assertEqual(handle.lane_id, self.state.decode_owner.lane_id)
         build = native.graph_builder(router_class=Router, full_context_id=0, full_pool_id=0,
                                      full_allocated_bytes=5)
         router = build(self.runner)
+        self.assertIs(built['args'][0], self.state)
         self.assertIs(built['args'][1], handle)
+        self.assertIs(built['args'][2], native.compilation)
         self.assertIs(built['args'][3]['backend'], native.backend)
         context, descriptors = router.banks['decode-split']
         self.assertEqual(context.measured_sm, 44)
         self.assertEqual(len(descriptors), 2)
+        # The refreshed factory must describe the same bank identity and agree
+        # with the graph router's own non-mutating verification.
+        refreshed = built['factory']()
+        self.assertEqual((refreshed.context_id, refreshed.pool_id, refreshed.stream_token),
+                         (context.context_id, context.pool_id, context.stream_token))
         with self.torch.cuda.stream(self.split.decode_stream):
             self.assertEqual(router.probe(), (self.split.decode_context_id, self.split.decode_stream_token))
         with self.assertRaises(NativeStartupError):
             build(self.runner)
-        del self.runner._flash_e3_lane
+        # Without the retained runtime state the builder refuses rather than
+        # accepting a guessed context/pool identity.
         self.runner._flash_e3_graph_builder_used = False
-        with self.assertRaises(NativeStartupError):
-            build(self.runner)
+        saved, native.state = native.state, None
+        server, self.runner._flash_s5_worker = self.runner._flash_s5_worker, None
+        try:
+            with self.assertRaises(NativeStartupError):
+                build(self.runner)
+        finally:
+            native.state = saved
+            self.runner._flash_s5_worker = server
+
+    def test_real_graph_router_builder_registers_the_retained_bank(self):
+        native = self.install()
+        built = native.graph_builder(
+            full_context_id=native.full_identity.context_id,
+            full_pool_id=native.full_identity.pool_id,
+            full_allocated_bytes=native.full_identity.allocated_bytes)
+        router = built(self.runner)
+        self.assertIs(router, native.router)
+        self.assertIs(self.runner._flash_e3_graph_router_split, native)
+        self.assertEqual(router.current_mode, 'ordinary')
+        self.assertIn('decode-split', router.banks)
+        bank = router.banks['decode-split']
+        self.assertEqual(bank.context.context_id, self.split.decode_context_id)
+        self.assertEqual(bank.context.stream_token, self.split.decode_stream_token)
+        self.assertFalse(router.engine_owner_bound)
+        # Until the engine bootstrap binds this worker, no route may switch.
+        from graph_router import GraphRoutingError, TransitionAuthorization
+        with self.assertRaises(GraphRoutingError):
+            router.validate_transition(
+                'decode-split',
+                TransitionAuthorization(1, self.split.decode_context_id, 1, 1, 'test'))
 
     def test_transition_rpc_validates_and_acks_after_switch(self):
         native = self.install()

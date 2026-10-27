@@ -332,6 +332,9 @@ class TransitionTests(unittest.TestCase):
         return w.TransitionCommand(**values)
 
     def ack(self, command, **overrides):
+        worker_rank = overrides.get('worker_rank', 0)
+        watermark = (command.decode_replay_watermarks[worker_rank]
+                     if worker_rank < len(command.decode_replay_watermarks) else 0)
         values = dict(engine_epoch=command.engine_epoch,
                       expected_route_generation=command.expected_route_generation,
                       route_generation=command.route_generation,
@@ -339,7 +342,9 @@ class TransitionTests(unittest.TestCase):
                       storage_epochs=command.storage_epochs,
                       applied_route_generation=command.route_generation,
                       applied_bank=command.target_bank,
-                      applied_storage_epochs=command.storage_epochs)
+                      applied_storage_epochs=command.storage_epochs,
+                      worker_rank=worker_rank,
+                      decode_replay_watermark=watermark)
         values.update(overrides)
         return w.TransitionAck(**values)
 
@@ -365,6 +370,60 @@ class TransitionTests(unittest.TestCase):
             self.ack(command, applied_storage_epochs=(5, 9))
         stale = self.ack(self.command(engine_epoch=3, expected_route_generation=2))
         self.assertFalse(stale.matches(command))
+
+    def test_ack_reports_its_queried_census_not_an_echo(self):
+        command = self.command()
+        # The commanded value is a floor: the worker's own queried census may
+        # have advanced while the split chunk ran.
+        self.assertTrue(self.ack(command, decode_replay_watermark=20).matches(command))
+        # A census behind the floor is a stale/storage-reuse answer.
+        self.assertFalse(self.ack(command, decode_replay_watermark=10).matches(command))
+        # A rank outside the command has no commanded floor to compare.
+        self.assertFalse(self.ack(command, worker_rank=2,
+                                  decode_replay_watermark=99).matches(command))
+
+
+class BootstrapTests(unittest.TestCase):
+    def command(self, **overrides):
+        values = dict(engine_epoch=4, ranks=(0, 1))
+        values.update(overrides)
+        return w.BootstrapCommand(**values)
+
+    def ack(self, command, **overrides):
+        values = dict(engine_epoch=command.engine_epoch, worker_rank=0,
+                      incarnation='worker-incarnation-a',
+                      lane=lane(0, LaneRole.DECODE, epoch=5, context=9),
+                      route_generation=0, decode_replay_watermark=3, bound=True)
+        values.update(overrides)
+        return w.BootstrapAck(**values)
+
+    def test_command_names_the_engine_owner_and_ordered_ranks(self):
+        command = self.command()
+        self.assertEqual(command.engine_epoch, 4)
+        with self.assertRaises(E3ContractError):
+            self.command(engine_epoch=0)
+        with self.assertRaises(E3ContractError):
+            self.command(ranks=(1, 0))
+        with self.assertRaises(E3ContractError):
+            self.command(ranks=())
+        self.assertNotIn('incarnation', repr(command))
+
+    def test_ack_carries_retained_decode_storage_identity(self):
+        command = self.command()
+        self.assertTrue(self.ack(command).matches(command))
+        self.assertFalse(self.ack(command, worker_rank=1,
+                                  lane=lane(1, LaneRole.DECODE)).matches(
+            self.command(ranks=(0,))))
+        self.assertFalse(self.ack(command, engine_epoch=3).matches(command))
+        with self.assertRaises(E3ContractError):
+            self.ack(command, lane=lane(0, LaneRole.PREFILL))
+        with self.assertRaises(E3ContractError):
+            self.ack(command, lane=lane(1, LaneRole.DECODE))
+        with self.assertRaises(E3ContractError):
+            self.ack(command, bound='yes')
+        # A refusal is representable but never a success.
+        self.assertFalse(self.ack(command, bound=False).bound)
+        self.assertNotIn('worker-incarnation-a', repr(self.ack(command)))
 
 
 class OpenAndCommandTests(unittest.TestCase):

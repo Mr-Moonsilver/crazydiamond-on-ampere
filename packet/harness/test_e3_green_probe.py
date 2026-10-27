@@ -188,8 +188,10 @@ class ArtifactIdentity(unittest.TestCase):
         for name in NATIVE_PINS:
             dest = root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
-            # Immutable q17a pins: do not replace them with a new helper ABI extension.
+            # Immutable q17a/q17c pins: do not replace them with a new helper ABI
+            # extension or newer additive type. The pinned bytes stay under fixtures.
             frozen = {'green_context.py': 'q17c_original_green_context.py',
+                      'e3_types.py': 'q17c_original_e3_types.py',
                       'native/flash_s5_green.cu': 'q17a_original_flash_s5_green.cu'}
             source = HERE / 'fixtures' / frozen[name] if name in frozen else HERE.parent / 'patches/s5_engine' / name
             shutil.copyfile(source, dest)

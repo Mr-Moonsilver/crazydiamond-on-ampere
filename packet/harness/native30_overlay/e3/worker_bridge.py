@@ -38,7 +38,10 @@ from e3_types import (
 )
 from lane_chunk import ChunkAdmission
 from lane_state import BatchRow, MetadataSnapshot
+from graph_router import TransitionAuthorization
 from wire_v1 import (
+    BootstrapAck,
+    BootstrapCommand,
     CancelAck,
     CancelRequest,
     CompletionCursor,
@@ -51,10 +54,14 @@ from wire_v1 import (
     PollRequest,
     ReleaseAck,
     ReleaseRequest,
+    ROUTE_BANK_FULL,
+    ROUTE_BANK_SPLIT,
     SegmentAcceptance,
     SegmentCommand,
     SegmentKind,
+    TransitionAck,
     TransitionCommand,
+    TransitionPending,
     WorkerCompletionReport,
 )
 
@@ -166,6 +173,17 @@ class NativeWorkerBridge:
         # Cancellation of that chunk closes this row before acknowledging; the
         # report is what the engine's cancellation retirement re-checks.
         self._retained = None
+        # Set when a route switch could not be proven complete.  Every later
+        # transition refuses; ownership is quarantined rather than reused.
+        self._route_failure = None
+        self.engine_epoch = None
+        # The last replay census this worker reported to the engine.  Commands
+        # carry a floor, so a floor below what was already acknowledged means
+        # the engine lost a reply and must not be trusted.
+        self._ack_watermark = 0
+        # One exact-command ACK, retained across partial all-rank retries.
+        # A same-target command with different identity is never idempotent.
+        self._transition_cache = None
 
     # -- lifecycle ---------------------------------------------------------
     def attach(self, worker):
@@ -201,6 +219,57 @@ class NativeWorkerBridge:
             raise WorkerBridgeError('no native transaction matches the request')
         if state_epoch is not None and state_epoch != self.state_epoch:
             raise WorkerBridgeError('state epoch differs from the opened chunk')
+
+    def _native(self):
+        native = getattr(self.dispatcher, 'native', None)
+        if native is None:
+            raise WorkerBridgeError('native bridge has no worker-native composition')
+        return native
+
+    def _worker_state(self):
+        runtime = getattr(self.server, 'runtime', None)
+        state = getattr(runtime, 'state', None)
+        if state is None:
+            state = getattr(self._native(), 'state', None)
+        if state is None:
+            raise WorkerBridgeError('native bridge cannot reach the worker state')
+        return state
+
+    # -- engine owner bootstrap -------------------------------------------
+    def bootstrap(self, command):
+        """Bind this worker incarnation to the engine epoch and retain storage.
+
+        The answer is derived from the worker's own retained decode storage and
+        route controller, never from a local default.  Binding is once per
+        incarnation: a foreign or late epoch is refused, while a retry of the
+        same epoch is idempotent and reports the current route generation.
+        """
+        if type(command) is not BootstrapCommand:
+            raise WorkerBridgeError('bootstrap needs a typed BootstrapCommand')
+        if self.rank not in command.ranks:
+            raise WorkerBridgeError('bootstrap does not include this worker rank')
+        state = self._worker_state()
+        if state.worker_rank != self.rank:
+            raise WorkerBridgeError('worker state belongs to another rank')
+        owner = getattr(state, 'decode_owner', None)
+        handle = getattr(getattr(state, 'decode', None), 'handle', None)
+        if owner is None or handle is None:
+            raise WorkerBridgeError('worker has no retained decode storage')
+        if state.decode.state != 'retained':
+            raise WorkerBridgeError('decode storage is not persistently retained')
+        if owner.lane_id != handle.lane_id:
+            raise WorkerBridgeError('retained decode owner differs from the lane handle')
+        state.bind_engine_owner(command.engine_epoch, incarnation=state.incarnation)
+        router = getattr(self._native(), 'router', None)
+        if router is not None:
+            router.bind_engine_owner(command.engine_epoch, incarnation=state.incarnation)
+        controller = self._native().controller
+        self.engine_epoch = command.engine_epoch
+        watermark = getattr(router, 'replay_watermark', 0)
+        self._ack_watermark = max(self._ack_watermark, watermark)
+        return BootstrapAck(command.engine_epoch, self.rank, state.incarnation,
+                            owner.lane_id, controller.route_generation,
+                            watermark, True)
 
     # -- open --------------------------------------------------------------
     def open(self, request):
@@ -401,6 +470,16 @@ class NativeWorkerBridge:
             return 0
         return drain()
 
+    def _route_fail(self, reason):
+        self._route_failure = reason
+        router = getattr(self._native(), 'router', None)
+        if router is not None and not getattr(router, 'unclean', False):
+            try:
+                router.quarantine(reason)
+            except E3ContractError:
+                pass
+        return WorkerBridgeError(reason)
+
     def _release_lane(self, transaction, terminal):
         """Idempotent drain/release; close the request row only when terminal.
 
@@ -575,9 +654,129 @@ class NativeWorkerBridge:
                          disposition, completed, pending, watermark, report=report)
 
     def transition(self, command):
+        """Drained full <-> split switch, acknowledged only after it applied.
+
+        Every field is proven against this worker's own retained storage, route
+        controller and queried replay census.  A refused command mutates
+        nothing; an unexpected failure after mutation starts quarantines this
+        worker's route ownership instead of claiming a partial success.
+        """
         if type(command) is not TransitionCommand:
             raise WorkerBridgeError('transition needs a typed TransitionCommand')
-        raise WorkerBridgeError('native route transition is not part of this bridge')
+        if self._route_failure is not None:
+            raise WorkerBridgeError('route ownership is quarantined: ' + self._route_failure)
+        state = self._worker_state()
+        native = self._native()
+        controller = getattr(native, 'controller', None)
+        router = getattr(native, 'router', None)
+        owner = getattr(state, 'decode_owner', None)
+        handle = getattr(getattr(state, 'decode', None), 'handle', None)
+        if controller is None or router is None:
+            raise WorkerBridgeError('route transition needs the constructed controller and router')
+        if not state.engine_bound or self.engine_epoch is None:
+            raise WorkerBridgeError('route transition before the engine owner bootstrap')
+        if command.engine_epoch != state.engine_epoch:
+            raise WorkerBridgeError('transition command names another engine epoch')
+        if self.transaction is not None or self._retained is not None:
+            raise WorkerBridgeError('route transition while a request row is still owned')
+        if self.rank >= len(command.storage_epochs):
+            raise WorkerBridgeError('transition command does not cover this rank')
+        if owner is None or handle is None or owner.lane_id != handle.lane_id:
+            raise WorkerBridgeError('persistent decode storage owner changed')
+        if state.decode.state != 'retained':
+            raise WorkerBridgeError('decode storage is not persistently retained')
+        if command.storage_epochs[self.rank] != handle.storage_epoch:
+            raise WorkerBridgeError('transition command names a stale storage epoch')
+        cached = self._transition_cache
+        if cached is not None and command == cached[0]:
+            ack = cached[1]
+            route = 'split' if command.target_bank == ROUTE_BANK_SPLIT else 'full'
+            mode = 'decode-split' if route == 'split' else 'ordinary'
+            router.poll_native_replays()
+            if (controller.route != route
+                    or controller.route_generation != command.route_generation
+                    or router.current_mode != mode
+                    or router.route_generation != command.route_generation
+                    or router.pending_replays
+                    or router.replay_watermark != ack.decode_replay_watermark):
+                raise self._route_fail('applied transition changed before its exact retry')
+            return ack
+        commanded = command.decode_replay_watermarks[self.rank]
+        if commanded < self._ack_watermark:
+            # The engine lost an earlier acknowledgment and is driving this
+            # rank from a census this worker already passed.
+            raise WorkerBridgeError('transition replay floor predates the acknowledged census')
+        if commanded > router.replay_watermark:
+            raise WorkerBridgeError('transition replay floor is ahead of the queried census')
+        if command.expected_route_generation != controller.route_generation:
+            raise WorkerBridgeError('transition command expects another route generation')
+        if command.route_generation != controller.route_generation + 1:
+            raise WorkerBridgeError('transition command must advance the route generation by one')
+        if command.target_bank == ROUTE_BANK_SPLIT:
+            route, router_target = 'split', 'decode-split'
+            target_context = owner.context_id
+        elif command.target_bank == ROUTE_BANK_FULL:
+            route, router_target = 'full', 'ordinary'
+            target_context = router.full_context_id
+        else:
+            raise WorkerBridgeError('unknown transition target bank')
+        if route == controller.route:
+            raise WorkerBridgeError('transition would not change the worker route')
+        authorization = TransitionAuthorization(
+            command.engine_epoch, target_context, handle.storage_epoch,
+            command.route_generation, 'drained native route switch')
+        # Retire already-queried native replays.  If any are still in flight,
+        # the consumer drain is the real GPU barrier (the replay event is on
+        # the green decode stream); query again afterwards and only then make
+        # the non-mutating route proof.  A still-pending event stays pending
+        # and refuses the switch instead of being acknowledged or cleared.
+        router.poll_native_replays()
+        try:
+            router.validate_transition(router_target, authorization)
+        except E3Pending:
+            controller.drain()
+            router.poll_native_replays()
+            try:
+                router.validate_transition(router_target, authorization)
+            except E3Pending:
+                return TransitionPending(command, self.rank,
+                                         controller.route_generation)
+        try:
+            # Prefill side streams are part of the drained route: no queued
+            # stock SharedExperts/PLE work may cross the bank switch.
+            self._drain_prefill_streams()
+        except BaseException as exc:
+            raise self._route_fail(
+                'prefill side streams did not drain: ' + type(exc).__name__) from exc
+        try:
+            record = controller.enter_split() if route == 'split' else controller.leave_split()
+        except BaseException as exc:
+            raise self._route_fail(
+                'route switch failed; stream/bank state is ambiguous: '
+                + type(exc).__name__) from exc
+        if controller.route != route or controller.route_generation != command.route_generation:
+            raise self._route_fail('route controller did not apply the requested switch')
+        try:
+            router.transition(router_target, authorization)
+        except BaseException as exc:
+            raise self._route_fail(
+                'graph router did not apply the switched route: '
+                + type(exc).__name__) from exc
+        if router.current_mode != router_target:
+            raise self._route_fail('graph router mode differs from the switched route')
+        if router.replay_watermark < commanded:
+            raise self._route_fail('replay census went backwards during the route switch')
+        self._ack_watermark = max(self._ack_watermark, router.replay_watermark)
+        self.route_generation = controller.route_generation
+        ack = TransitionAck(
+            command.engine_epoch, command.expected_route_generation,
+            command.route_generation, command.target_bank, command.storage_epochs,
+            controller.route_generation, command.target_bank, command.storage_epochs,
+            worker_rank=self.rank,
+            decode_replay_watermark=router.replay_watermark,
+            drained_streams=record.drained_streams)
+        self._transition_cache = (command, ack)
+        return ack
 
 
 __all__ = ['NativeWorkerBridge', 'WorkerBridgeError', 'admission_metadata',

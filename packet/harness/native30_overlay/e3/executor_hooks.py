@@ -98,6 +98,9 @@ _WORKER_METHODS = '''    def flash_s5_open(self, message):
     def flash_s5_transition(self, message):
         return _flash_s5_hooks.worker_rpc(self, "transition", message)
 
+    def flash_s5_bootstrap(self, message):
+        return _flash_s5_hooks.worker_rpc(self, "bootstrap", message)
+
 '''
 
 
@@ -703,10 +706,11 @@ def before_engine_shutdown(engine):
 
 def _wire_method(message):
     """Exact wire-v1 record -> generated method name; ``None`` for legacy RPCs."""
-    from wire_v1 import (CancelRequest, OpenRequest, PPReceiptDelivery,
-                         PeerBinding, PollRequest, ReleaseRequest,
-                         SegmentCommand, TransitionCommand)
-    for record, name in ((OpenRequest, 'open'), (SegmentCommand, 'submit'),
+    from wire_v1 import (BootstrapCommand, CancelRequest, OpenRequest,
+                         PPReceiptDelivery, PeerBinding, PollRequest,
+                         ReleaseRequest, SegmentCommand, TransitionCommand)
+    for record, name in ((BootstrapCommand, 'bootstrap'),
+                         (OpenRequest, 'open'), (SegmentCommand, 'submit'),
                          (PollRequest, 'poll'), (ReleaseRequest, 'release'),
                          (CancelRequest, 'cancel'), (PeerBinding, 'bind'),
                          (PPReceiptDelivery, 'receipt'),
@@ -747,9 +751,10 @@ def worker_rpc(worker, name, message):
         if not callable(handler):
             raise E3ContractError('native bridge lacks the requested S5 RPC')
         return handler(message)
-    if name in ('bind', 'receipt', 'release'):
+    if name in ('bind', 'receipt', 'release', 'bootstrap'):
         raise E3ContractError('S5 RPC requires its exact wire record')
-    if name not in ('open', 'submit', 'poll', 'commit', 'cancel', 'transition'):
+    if name not in ('open', 'submit', 'poll', 'commit', 'cancel', 'transition',
+                    'bootstrap'):
         raise E3ContractError('unknown S5 worker RPC')
     if not hasattr(message, 'validate'):
         raise E3ContractError('S5 worker RPC requires a typed message')

@@ -5,8 +5,9 @@ which the *generated* runner invokes immediately before A's ``init_lane`` at the
 end of model-runner construction.  It is the real worker startup path: it
 discovers the worker rank/device and the canonical QSA UID namespace, allocates
 the private prefill UID buffer and scratch inventory, installs the event
-completion backend and the typed worker RPC adapter, and installs B's graph
-builder before the engine's graph-capture call.
+completion backend and the typed worker RPC adapter.  The engine epoch stays
+unbound; ``install_worker_native`` later retains the persistent decode storage
+and installs B's real split-bank graph builder before the engine's capture call.
 
 It allocates storage, therefore it is only ever called with
 ``FLASH_S5_OVERLAP=1``.  Everything vLLM/torch specific is imported lazily so
@@ -25,6 +26,7 @@ Deliberately *not* here (see Open items in the pass report):
 import hashlib
 import importlib
 import time
+from dataclasses import dataclass
 
 from async_handoff import (
     CommitAck,
@@ -35,12 +37,7 @@ from async_handoff import (
     RuntimeWorkerHandoff,
 )
 from e3_types import E3ContractError, E3Pending
-from graph_router import (
-    CompilationIdentity,
-    ExecutionContext,
-    GraphRouter,
-    GraphRoutingError,
-)
+from graph_router import CompilationIdentity
 from lane_hooks import LaneRuntime
 from lane_state import (
     GRAPH_POOL_MEASURED_BYTES,
@@ -50,7 +47,6 @@ from lane_state import (
 from native_backend import (
     EventCompletionBackend,
     NativeDevice,
-    NativeGraphCaptureBackend,
 )
 from qsa_operation import (
     RUNNER_SEAM,
@@ -60,14 +56,29 @@ from qsa_operation import (
     metadata_plan_provider,
 )
 
-ENGINE_EPOCH = 1
+ENGINE_EPOCH = 1                   # legacy default; the native worker binds later
 PREFLIGHT_CONTEXT_ID = 1
 DECODE_CONTEXT_ID = 1          # B requires the split context to equal A's lane.
-FULL_CONTEXT_ID = 0            # placeholder; see Open items.
-FULL_POOL_ID = 0               # placeholder; see Open items.
-SPLIT_POOL_ID = 1
+FULL_CONTEXT_ID = 0            # the pinned stock decode execution context
 SPLIT_RESERVED_BYTES = GRAPH_POOL_MEASURED_BYTES
 WORKSPACE_LANE = 1
+
+
+@dataclass(frozen=True)
+class FullGraphIdentity:
+    """Identity of the stock full-GPU decode bank, with an honest basis.
+
+    The pool number comes from the stock manager that actually captured the
+    bank; it is never a placeholder.  ``allocated_bytes`` remains the reviewed
+    budget constant because this seam has no pre/post ``capture_model`` memory
+    observation to attribute; it is therefore an estimate, not a measured
+    allocation, and cannot supply qualification.  ``context_id`` is B's
+    declared primary-context scope label, not a CUPTI/CUDA context identity.
+    """
+    context_id: int
+    pool_id: int
+    allocated_bytes: int
+    basis: str = 'estimate'
 
 
 class NativeResourcesError(E3ContractError):
@@ -145,7 +156,7 @@ def _weights(runner):
     return model, address, total
 
 
-def _compilation_identity(runner):
+def compilation_identity(runner):
     config = getattr(runner, 'compilation_config', None)
     if config is None:
         vllm_config = getattr(runner, 'vllm_config', None)
@@ -161,6 +172,33 @@ def _compilation_identity(runner):
     digest = hashlib.sha256(
         f'{mode_name}:{sorted(sizes)}:{query_len}'.encode()).hexdigest()
     return CompilationIdentity(digest, mode_name, sizes or (1,), query_len)
+
+
+def full_pool_id(runner):
+    """The stock full-GPU graph pool's actual numeric identity.
+
+    vLLM returns either an int or a two-int tuple; both are accepted, and
+    anything else is refused rather than guessed.  The split bank applies the
+    same formula to its separately allocated pool, so the two can never be
+    mistaken for one another.
+    """
+    manager = getattr(runner, 'cudagraph_manager', None)
+    if manager is None:
+        raise NativeResourcesError('runner has no stock cudagraph manager for the full pool')
+    pool = getattr(manager, 'pool', None)
+    if isinstance(pool, tuple):
+        if len(pool) != 2 or any(type(part) is not int for part in pool):
+            raise NativeResourcesError('stock graph pool identity is not a pair of ints')
+        return int(pool[0]) * 1000003 + int(pool[1])
+    if type(pool) is int:
+        return pool
+    raise NativeResourcesError('stock graph pool identity is unavailable')
+
+
+def full_graph_identity(runner):
+    """Identity of the stock full-GPU decode bank; bytes stay an estimate."""
+    return FullGraphIdentity(FULL_CONTEXT_ID, full_pool_id(runner),
+                             GRAPH_POOL_MEASURED_BYTES, 'estimate')
 
 
 class _ForwardContextAdapter:
@@ -582,65 +620,6 @@ def _commit_role():
     return DependencyRole.COMMIT
 
 
-# --- graph builder ----------------------------------------------------------
-
-def _reserve_decode_anchor(state):
-    """Give B's router the stable decode lane handle it requires.
-
-    A reserves a lane per transaction; B captures once and needs the handle to
-    stay alive.  The anchor is an explicit startup identity, listed in Open
-    items because per-request decode lanes are not yet reconciled with it.
-    """
-    if state.decode.active:
-        return state.decode.handle
-    transaction = state.new_transaction('__flash_s5_decode_anchor__', 0, 0, 1)
-    handle = state.decode.reserve(transaction, context_id=DECODE_CONTEXT_ID)
-    state.decode.ready()
-    return handle
-
-
-def _split_descriptors(runner):
-    value = getattr(runner, '_flash_s5_split_descriptors', ()) or ()
-    return tuple(value)
-
-
-def install_graph_builder(runner, runtime, device, *, config, clock=time.monotonic):
-    """Install the graph-builder scaffold, never a native qualified split."""
-    from s5_startup import require_native_ready
-    require_native_ready()
-    state = runtime.state
-
-    def build(current):
-        if getattr(current, '_flash_e3_graph_builder_used', False):
-            raise GraphRoutingError('E3 graph builder was already used')
-        capture = getattr(current, '_flash_s5_graph_capture', None)
-        backend = NativeGraphCaptureBackend(device, capture_callable=capture,
-                                            clock=clock)
-        handle = _reserve_decode_anchor(state)
-        compilation = _compilation_identity(current)
-        router = GraphRouter(
-            state, handle, compilation, backend=backend,
-            full_context_id=FULL_CONTEXT_ID, full_pool_id=FULL_POOL_ID,
-            full_allocated_bytes=GRAPH_POOL_MEASURED_BYTES, full_basis='measured')
-        stream_token = device.current_stream_token()
-        setattr(router, 'probe',
-                lambda: (handle.context_id, device.current_stream_token()))
-        descriptors = _split_descriptors(current)
-        if descriptors:
-            context = ExecutionContext(
-                'decode-split', handle.context_id, requested_sm=device.sm_count(),
-                measured_sm=device.sm_count(), pool_id=SPLIT_POOL_ID,
-                stream_token=stream_token, reserved_bytes=SPLIT_RESERVED_BYTES,
-                basis='estimate')
-            router.add_bank('decode-split', context, descriptors)
-        current._flash_e3_graph_builder_used = True
-        current._flash_e3_graph_builder_stream = stream_token
-        return router
-
-    runner._flash_e3_graph_builder = build
-    return build
-
-
 # --- startup ----------------------------------------------------------------
 
 def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
@@ -662,7 +641,9 @@ def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
     _ensure_workspace_lanes(workspace, device, WORKSPACE_LANE)
 
     model, weights_address, weights_bytes = _weights(runner)
-    state = WorkerState(rank, engine_epoch=ENGINE_EPOCH, weights=model,
+    # No engine epoch is known at worker construction.  The engine's bootstrap
+    # binds this incarnation exactly once before any transaction is admitted.
+    state = WorkerState(rank, engine_epoch=0, engine_bound=False, weights=model,
                         weights_address=weights_address,
                         weights_bytes=weights_bytes,
                         max_outstanding=min(config.chunk_tokens, 16))
@@ -683,7 +664,9 @@ def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
     runner._flash_s5_worker = server
     runner._flash_s5_native = {
         'rank': rank,
-        'engine_epoch': ENGINE_EPOCH,
+        'engine_epoch': 0,
+        'engine_bound': False,
+        'incarnation': state.incarnation,
         'uid_bytes': uid_buffer.nbytes,
         'scratch': scratch_inventory,
         'workspace_lane': WORKSPACE_LANE,
@@ -691,13 +674,15 @@ def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
         'operation': 'qsa_dense_bounded',
         'native_qualified': False,
     }
-    install_graph_builder(runner, runtime, device, config=config, clock=clock)
+    # The real split-bank graph builder is installed by install_worker_native
+    # after the bank and the retained decode storage exist.
     return runtime
 
 
 __all__ = [
-    'DECODE_CONTEXT_ID', 'ENGINE_EPOCH', 'FULL_CONTEXT_ID', 'FULL_POOL_ID',
-    'NativeResourcesError', 'PREFLIGHT_CONTEXT_ID', 'SPLIT_POOL_ID',
+    'DECODE_CONTEXT_ID', 'ENGINE_EPOCH', 'FULL_CONTEXT_ID', 'FullGraphIdentity',
+    'NativeResourcesError', 'PREFLIGHT_CONTEXT_ID', 'SPLIT_RESERVED_BYTES',
     'WORKSPACE_LANE', 'WorkerHandoffServer', 'build_worker_runtime',
-    'install_graph_builder', 'response_success',
+    'compilation_identity', 'full_graph_identity', 'full_pool_id',
+    'response_success',
 ]

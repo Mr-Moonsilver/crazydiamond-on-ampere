@@ -473,6 +473,19 @@ class LaneRuntime:
         self.real_frames += 1
         return stock(scheduler_output, *args)
 
+    def execute_native_decode(self, runner, stock, scheduler_output, *args):
+        """Ordinary decode under the persistent owner: no request transaction.
+
+        B's graph hooks make the typed retained-storage route decision and
+        replay the actual split bank; this method only preserves A's single
+        forward/dispatcher ownership.
+        """
+        self.dispatcher.assert_owner()
+        if self.dispatcher.active:
+            raise E3Pending('another Python forward has installed its context')
+        self.real_frames += 1
+        return stock(scheduler_output, *args)
+
     def _execute_prefill(self, runner, stock, scheduler_output, *args):
         lane = self._prefill_lane()
         if not lane.outstanding:
@@ -710,6 +723,18 @@ def _runtime(runner):
     return runtime
 
 
+def native_decode_ready(runner):
+    """True only when native startup installed B's retained-storage decode path.
+
+    The decode-only diagnostic sets a DecodeProbeRouter (with no
+    ``native_decode_route``) and is deliberately excluded.
+    """
+    if not getattr(runner, '_flash_s5_native_decode', False):
+        return False
+    router = getattr(runner, '_flash_e3_graph_router', None)
+    return router is not None and callable(getattr(router, 'native_decode_route', None))
+
+
 def execute_with_e3(runner, stock, scheduler_output, intermediate_tensors=None,
                     dummy_run=False, skip_attn_for_dummy_run=False, is_profile=False,
                     context_len=0, valid_dummy_state_slots=False):
@@ -728,6 +753,11 @@ def execute_with_e3(runner, stock, scheduler_output, intermediate_tensors=None,
         if runtime.is_vllm_warmup(scheduler_output):
             with runtime.warmup(scheduler_output):
                 return stock(scheduler_output, *forwarded)
+        if native_decode_ready(runner):
+            # Persistent decode storage: no request transaction or per-step
+            # ticket.  B decides stock vs the actual split bank and refuses an
+            # ambiguous route rather than falling back.
+            return runtime.execute_native_decode(runner, stock, scheduler_output, *forwarded)
         raise E3ContractError('real frameless E3 work is not permitted')
     if type(transaction) is not TransactionId:
         raise E3ContractError('scheduler output carries an invalid E3 transaction')
@@ -825,6 +855,6 @@ __all__ = [
     'AttributeBinding', 'FORWARD', 'HostDispatcher', 'LaneRuntime', 'PINNED_SHA256', 'WARMUP_ID_PREFIXES',
     'before_prepare_inputs', 'check_add', 'check_remove', 'check_sample_tokens',
     'check_update', 'defer_num_computed', 'execute_with_e3', 'generate', 'host_copies',
-    'init_lane', 'new_uid', 'note_batch', 'prepare_attn_uids', 'revert', 'warmup_request_ids',
-    'write_uids',
+    'init_lane', 'native_decode_ready', 'new_uid', 'note_batch', 'prepare_attn_uids',
+    'revert', 'warmup_request_ids', 'write_uids',
 ]

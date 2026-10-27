@@ -37,9 +37,17 @@ from e3_types import (  # noqa: E402
     LaneRole,
     OperationTicket,
 )
+from graph_router import (  # noqa: E402
+    CompilationIdentity,
+    ExecutionContext,
+    ExecutionDescriptor,
+    GraphRouter,
+)
 from lane_chunk import ChunkAdmission  # noqa: E402
 from lane_comm import PPConsumerReceipt  # noqa: E402
 from lane_dispatch import LaneDispatcher  # noqa: E402
+from lane_state import WorkerState  # noqa: E402
+from split_bank import RouteController, SplitDecodeBank  # noqa: E402
 from worker_bridge import NativeWorkerBridge, WorkerBridgeError  # noqa: E402
 
 # Reuse the reviewed admission scheduler fixtures and the dispatcher's fakes.
@@ -72,10 +80,19 @@ class ControllableEvent:
     def query(self):
         return self.complete
 
+    def synchronize(self):
+        # A real host wait blocks until the tail kernel completes.  The fake
+        # records the wait order and completes immediately: the CPU evidence is
+        # that every consumer stream got its own tail event and was waited on
+        # before the route switched.
+        self.complete = True
+        self.bus.syncs.append(self)
+
 
 class EventBus:
     def __init__(self):
         self.events = []
+        self.syncs = []
 
     def event(self):
         return ControllableEvent(self)
@@ -83,6 +100,9 @@ class EventBus:
     def complete_all(self, complete=True):
         for event in self.events:
             event.complete = complete
+
+    def sync_streams(self):
+        return tuple(event.stream for event in self.syncs)
 
 
 def bus_torch(bus):
@@ -174,7 +194,7 @@ class FakePPChannel:
         self.release_send_calls = 0
 
     def bind_consumer(self, lane, route_generation):
-        if self.consumer_binding is not None:
+        if any(ticket.state != 'retired' for ticket in self.tickets):
             raise AssertionError('live PP channel rebound')
         self.consumer_binding = (lane, route_generation)
 
@@ -242,21 +262,23 @@ class FakePPChannel:
 
 
 class FakeRuntime:
-    def __init__(self, rank):
-        self.state = types.SimpleNamespace(worker_rank=rank, prefill=None)
+    def __init__(self, state):
+        self.state = state
         self.releases = []
 
     def release(self, transaction):
         self.releases.append(transaction)
-        self.state.prefill = None
+        lane = self.state.prefill
+        if lane.state != 'free':
+            lane.release()
         return True
 
 
 class BridgeServer:
     """Worker handoff-server fake with the real open/clear fallback shape."""
 
-    def __init__(self, rank):
-        self.runtime = FakeRuntime(rank)
+    def __init__(self, state):
+        self.runtime = FakeRuntime(state)
         self.operation = None
         self.handoff = None
         self.calls = []
@@ -267,11 +289,14 @@ class BridgeServer:
 
     def open(self, message):
         # The legacy server's OpenAck has no lane; the bridge must use the
-        # runtime handle actually allocated by the worker's prefill state.
-        lane = LaneId(self.runtime.state.worker_rank, LaneRole.PREFILL,
-                      40 + self.runtime.state.worker_rank, 0)
-        self.runtime.state.prefill = types.SimpleNamespace(
-            handle=types.SimpleNamespace(lane_id=lane))
+        # runtime handle actually allocated by the worker's prefill state, so
+        # this fake reserves the real LaneStorage row, exactly like the native
+        # handoff server does.
+        state = self.runtime.state
+        state.declare_request(message.transaction.request_uid,
+                              message.transaction.request_generation)
+        state.prefill.reserve(message.transaction, metadata=message.metadata)
+        state.prefill.ready()
         self.handoff = message.transaction
         self.operation = FakeOperation(drained=True)
         self.calls.append(('open', message.transaction, message.metadata))
@@ -293,6 +318,104 @@ class BridgeServer:
         self.operation = None
         self.calls.append(('clear', transaction))
         return True
+
+
+class _Mode:
+    """A stand-in for the pinned cudagraph mode enum (name-keyed)."""
+
+    def __init__(self, name):
+        self.name = name
+
+
+class _VllmDescriptor:
+    """The minimal pinned BatchExecutionDescriptor mirror B converts."""
+
+    def __init__(self, tokens=1):
+        self.cg_mode = _Mode('FULL')
+        self.num_tokens = tokens
+        self.num_reqs = 1
+        self.uniform_token_count = tokens
+        self.max_query_len = tokens
+        self.num_active_loras = 0
+        self.num_ubatches = 1
+
+
+class _StockCudagraphManager:
+    """Fake stock manager: one FULL descriptor, its own full-GPU pool."""
+
+    pool = (2, 0)
+    _capture_descs = {_Mode('FULL'): [_VllmDescriptor()]}
+
+
+class _RouteBackend:
+    """B's capture backend protocol over fake graphs (no device work)."""
+
+    def __init__(self):
+        self.captured = []
+
+    def capture(self, name, key, lane, context):
+        self.captured.append(key)
+        return object()
+
+    def replay(self, handle, key, lane, context):
+        return object()
+
+    def destroy_graph(self, handle):
+        return True
+
+    def destroy_event(self, token):
+        return True
+
+    def destroy_stream(self, token):
+        return True
+
+
+FULL_POOL_ID = 2 * 1000003
+SPLIT_POOL_ID = 1 * 1000003
+
+
+def route_objects(rank, state, bus, torch):
+    """Real RouteController + real GraphRouter over fake streams/events.
+
+    The split bank is a real ``SplitDecodeBank`` whose stock manager and capture
+    are fakes (this suite never runs CUDA); the graph bank is declared and
+    captured through the real router so a transition validates real bank
+    readiness, context identity and pool/epoch fencing.
+    """
+    split = types.SimpleNamespace(
+        decode_stream=FakeStream(1000 + rank),
+        prefill_stream=FakeStream(2000 + rank),
+        decode_stream_token=1000 + rank,
+        decode_context_id=state.decode_owner.context_id,
+        decode_sms=16,
+        requested_decode_sms=16,
+    )
+    runner = types.SimpleNamespace(
+        main_stream=FakeStream(3000 + rank),
+        output_copy_stream=FakeStream(4000 + rank),
+        pp_handler=types.SimpleNamespace(main_stream=FakeStream(5000 + rank),
+                                         broadcast_stream=FakeStream(6000 + rank)),
+        cudagraph_manager=_StockCudagraphManager(),
+        lora_config=None,
+        device=f'cuda:{rank}',
+    )
+    bank = SplitDecodeBank(runner, split, torch_module=torch)
+    bank.captured = True
+    bank.pool = (1, 0)
+    controller = RouteController(runner, bank, torch_module=torch)
+    backend = _RouteBackend()
+    router = GraphRouter(
+        state, state.decode.handle,
+        CompilationIdentity('test-digest', 'full', (1,), 1),
+        full_context_id=0, full_pool_id=FULL_POOL_ID, backend=backend)
+    context = ExecutionContext(
+        'decode-split', state.decode_owner.context_id, requested_sm=16,
+        measured_sm=16, pool_id=SPLIT_POOL_ID, stream_token=1000 + rank,
+        reserved_bytes=4096, basis='estimate')
+    router.add_bank('decode-split', context,
+                    descriptors=(ExecutionDescriptor('full', 1, 1, 1, 1),))
+    router.capture_at_startup()
+    return split, controller, router, backend
 
 
 class FakeWorker:
@@ -330,6 +453,9 @@ class FakeWorker:
 
     def flash_s5_transition(self, message):
         return eh.worker_rpc(self, 'transition', message)
+
+    def flash_s5_bootstrap(self, message):
+        return eh.worker_rpc(self, 'bootstrap', message)
 
 
 class RoutingSender:
@@ -463,23 +589,30 @@ class Stack:
     def _add_worker(self, rank, stage):
         bus = EventBus()
         torch = bus_torch(bus)
+        state = WorkerState(rank, engine_epoch=0, engine_bound=False)
+        state.retain_decode_storage(context_id=100 + rank)
+        split, controller, router, route_backend = route_objects(
+            rank, state, bus, torch)
         sender = stage == 0
         if sender:
             receiver = self.workers.get(2 if rank == 0 else 3)
             receiver_lane = None
             if receiver is not None:
-                receiver_lane = receiver.server.runtime.state.prefill
+                receiver_lane = getattr(receiver.server.runtime.state.prefill,
+                                        'handle', None)
             channel = FakePPChannel(bus, is_sender=True)
         else:
             channel = FakePPChannel(bus, is_sender=False)
         lane = FakeLane(layers=(0, 1) if stage == 0 else (2, 3))
         lane.is_sender = sender
         native = types.SimpleNamespace(
-            split=types.SimpleNamespace(prefill_stream=FakeStream(rank)),
+            split=split,
             comms=types.SimpleNamespace(pp=channel),
             copy_stream=FakeStream(100 + rank),
+            controller=controller,
+            router=router,
             lane_forward=lambda inputs, forward_context=None, attention_driver=None: lane)
-        server = BridgeServer(rank)
+        server = BridgeServer(state)
         factory = FakeFactory(rank)
         dispatcher = LaneDispatcher(
             f'runner-{rank}', native, factory, server=server,
@@ -489,6 +622,11 @@ class Stack:
         worker = FakeWorker(rank, stage, bridge, dispatcher)
         worker.bus = bus
         worker.torch = torch
+        worker.state = state
+        worker.split = split
+        worker.controller = controller
+        worker.router = router
+        worker.route_backend = route_backend
         worker.lane = lane
         worker.channel = channel
         worker.server = server
@@ -801,8 +939,8 @@ class RetryAndCycleTests(unittest.TestCase):
         stack = Stack()
         first = stack.record.transaction
         stack.drive_to_finalize()
-        first_ops = {rank: set(worker.dispatcher.accepted)
-                     for rank, worker in stack.workers.items()}
+        first_epochs = {rank: worker.state.prefill.storage_epoch
+                        for rank, worker in stack.workers.items()}
         stack.complete_everything()
         stack.drive(lambda: stack.driver.tx is None)
         self.assertEqual(stack.cache_calls(), [(UID, 4)])
@@ -813,10 +951,14 @@ class RetryAndCycleTests(unittest.TestCase):
         stack.drive_to_finalize()
         for rank, worker in stack.workers.items():
             ops = set(worker.dispatcher.accepted)
-            self.assertEqual(ops & first_ops[rank], set(),
-                             'a new transaction never replays an old op_seq')
-            self.assertEqual(min(ops), max(first_ops[rank]) + 1,
-                             'lane operation history stays monotone across transactions')
+            # A prefill chunk owns its own lane reservation: the storage epoch
+            # (and therefore the LaneId) advances per chunk, and the real
+            # dispatcher resets its accepted history for that new lane epoch.
+            # Restarted op sequences are a new lane, never an old replay.
+            self.assertGreater(worker.state.prefill.storage_epoch,
+                               first_epochs[rank])
+            self.assertEqual(min(ops), 0)
+            self.assertEqual(worker.dispatcher.transaction, second)
         stack.complete_everything()
         stack.drive(lambda: stack.driver.tx is None)
         self.assertEqual(stack.cache_calls(), [(UID, 4), (UID, 8)])
@@ -841,9 +983,8 @@ class RetryAndCycleTests(unittest.TestCase):
 class IdentityTests(unittest.TestCase):
     def setUp(self):
         self.stack = Stack()
-        self.stack.advance()  # open submitted and answered
-        self.stack.advance()  # reply drained; bind rank 0 submitted
-        self.stack.advance()  # bind rank 1 submitted
+        # Bootstrap, split transition, open, then the first targeted peer bind.
+        self.stack.drive(lambda: self.stack.driver._pending_binding is not None)
         self.tx = self.stack.record.transaction
 
     def test_bridge_rejects_wrong_transaction_epoch_stage_and_rank(self):
@@ -930,10 +1071,7 @@ class CancellationTests(unittest.TestCase):
 
     def test_open_before_prepare_is_not_free_and_closes_every_request_row(self):
         stack = Stack()
-        stack.advance()  # open
-        stack.advance()  # bind rank 0
-        stack.advance()  # bind rank 1 still not consumed
-        self.assertEqual(stack.driver.phase, 'bind')
+        stack.drive(lambda: stack.driver.phase == 'bind')
         self.assertIsNone(stack.driver.bound_ticket)
         self.assertTrue(stack.driver.stop('abort'))
         self.assertEqual(stack.controller.cancels, 1)
@@ -1126,6 +1264,8 @@ class ReviewFixTests(unittest.TestCase):
         stack = Stack()
         worker = stack.worker(0)
         bridge = worker._flash_s5_bridge
+        # The worker must own its engine epoch before any request row.
+        worker.flash_s5_bootstrap(w.BootstrapCommand(7, (0, 1, 2, 3)))
         # The server opened (storage leased) but the dispatcher refuses: the
         # bridge never binds the transaction.
         def refuse(*args, **kwargs):
@@ -1322,6 +1462,327 @@ class DecodeProgressTests(unittest.TestCase):
         self.assertTrue(stack.all_dispatchers_reset())
 
 
+class RouteCompletionTests(unittest.TestCase):
+    """Engine-owner bootstrap and the drained full <-> split route completion."""
+
+    def finish_chunk(self, stack):
+        stack.drive_to_finalize()
+        stack.complete_everything()
+        stack.drive(lambda: stack.driver.tx is None)
+        self.assertIsNone(stack.driver.error)
+
+    def full_command(self, stack, **overrides):
+        values = dict(
+            engine_epoch=stack.driver.engine_epoch,
+            expected_route_generation=stack.driver.route_generation,
+            route_generation=stack.driver.route_generation + 1,
+            target_bank=w.ROUTE_BANK_FULL,
+            storage_epochs=tuple(stack.driver._storage_epochs[rank]
+                                 for rank in stack.driver.ranks),
+            decode_replay_watermarks=tuple(stack.driver._decode_watermarks[rank]
+                                           for rank in stack.driver.ranks))
+        values.update(overrides)
+        return w.TransitionCommand(**values)
+
+    def bind_split(self, stack):
+        """Bind and switch every worker without opening a request row."""
+        epoch = stack.driver.engine_epoch
+        ranks = stack.driver.ranks
+        command = w.BootstrapCommand(epoch, ranks)
+        for rank in ranks:
+            self.assertTrue(stack.worker(rank).flash_s5_bootstrap(command).bound)
+        storage = tuple(stack.worker(rank).state.decode.handle.storage_epoch
+                        for rank in ranks)
+        transition = w.TransitionCommand(
+            epoch, 0, 1, w.ROUTE_BANK_SPLIT, storage, (0,) * len(ranks))
+        for rank in ranks:
+            ack = stack.worker(rank).flash_s5_transition(transition)
+            self.assertEqual(ack.target_bank, w.ROUTE_BANK_SPLIT)
+        return transition
+
+    def worker_full_command(self, stack, **overrides):
+        ranks = stack.driver.ranks
+        values = dict(
+            engine_epoch=stack.driver.engine_epoch,
+            expected_route_generation=1, route_generation=2,
+            target_bank=w.ROUTE_BANK_FULL,
+            storage_epochs=tuple(stack.worker(rank).state.decode.handle.storage_epoch
+                                 for rank in ranks),
+            decode_replay_watermarks=tuple(stack.worker(rank).router.replay_watermark
+                                           for rank in ranks))
+        values.update(overrides)
+        return w.TransitionCommand(**values)
+
+    def test_bootstrap_and_split_are_applied_before_any_open(self):
+        stack = Stack()
+        stack.driver.advance()
+        self.assertEqual([envelope[0] for envelope in stack.sender.envelopes],
+                         ['flash_s5_bootstrap'])
+        self.assertFalse(stack.driver._bootstrapped)
+        for rank in stack.driver.ranks:
+            worker = stack.worker(rank)
+            # The worker executed the command; the engine has not consumed
+            # the ACK, so no split/storage decision has been accepted yet.
+            self.assertTrue(worker.state.engine_bound)
+            self.assertTrue(worker.router.engine_owner_bound)
+            self.assertEqual(worker.controller.route, 'full')
+
+        stack.driver.advance()
+        self.assertTrue(stack.driver._bootstrapped)
+        self.assertFalse(stack.driver._split_ready)
+        self.assertEqual([envelope[0] for envelope in stack.sender.envelopes],
+                         ['flash_s5_bootstrap', 'flash_s5_transition'])
+        command = stack.sender.envelopes[-1][1][0]
+        self.assertIsInstance(command, w.TransitionCommand)
+        self.assertEqual(command.target_bank, w.ROUTE_BANK_SPLIT)
+        self.assertEqual(command.expected_route_generation, 0)
+        for rank in stack.driver.ranks:
+            worker = stack.worker(rank)
+            self.assertEqual(worker.state.engine_epoch, stack.driver.engine_epoch)
+            self.assertTrue(worker.state.engine_bound)
+            # The switch was computed for the reply, but the engine still
+            # treats the route as full and has admitted no open work.
+            self.assertEqual(worker.controller.route, 'split')
+            self.assertEqual(stack.driver.route_generation, 0)
+            self.assertIsNone(stack.driver.tx)
+        self.assertNotIn('flash_s5_open',
+                         [envelope[0] for envelope in stack.sender.envelopes])
+
+        stack.driver.advance()
+        self.assertTrue(stack.driver._split_ready)
+        self.assertEqual([envelope[0] for envelope in stack.sender.envelopes][:3],
+                         ['flash_s5_bootstrap', 'flash_s5_transition', 'flash_s5_open'])
+        for rank in stack.driver.ranks:
+            worker = stack.worker(rank)
+            self.assertEqual(worker.controller.route, 'split')
+            self.assertEqual(worker.router.current_mode, 'decode-split')
+            self.assertEqual(worker.controller.route_generation, 1)
+            # The drained switch queried every local consumer stream.
+            self.assertTrue(worker.bus.syncs)
+            self.assertEqual(stack.driver._storage_epochs[rank],
+                             worker.state.decode.handle.storage_epoch)
+            self.assertEqual(stack.driver._decode_watermarks[rank],
+                             worker.router.replay_watermark)
+
+    def test_two_chunks_keep_one_persistent_decode_epoch_and_split_route(self):
+        stack = Stack()
+        self.finish_chunk(stack)
+        self.assertTrue(stack.driver._split_ready)
+        self.assertEqual(stack.driver.route_generation, 1)
+        epochs = dict(stack.driver._storage_epochs)
+        handles = {rank: stack.worker(rank).state.decode.handle
+                   for rank in stack.driver.ranks}
+        for rank in stack.driver.ranks:
+            self.assertEqual(stack.worker(rank).controller.route, 'split')
+
+        record = stack.controller.admit(stack.scheduler)
+        self.assertIsNotNone(record)
+        self.finish_chunk(stack)
+        self.assertEqual(dict(stack.driver._storage_epochs), epochs)
+        self.assertEqual(stack.driver.route_generation, 1)
+        for rank in stack.driver.ranks:
+            worker = stack.worker(rank)
+            self.assertIs(worker.state.decode.handle, handles[rank])
+            self.assertIs(worker.state.decode_owner, worker.router.worker.decode_owner)
+            self.assertEqual(worker.controller.route, 'split')
+            self.assertEqual(worker.controller.route_generation, 1)
+        # No full-bank return happened between two nonterminal chunks.
+        kinds = [envelope[0] for envelope in stack.sender.envelopes]
+        self.assertEqual(kinds.count('flash_s5_transition'), 1)
+
+    def test_delayed_transition_ack_blocks_open_and_stock_work(self):
+        stack = Stack()
+        stack.transport.hold = True
+        stack.driver.advance()
+        self.assertFalse(stack.driver._bootstrapped)
+        stack.transport.deliver_held()
+        stack.transport.hold = True
+        stack.driver.advance()
+        # Bootstrap applied, split issued, its reply is still on the wire.
+        self.assertTrue(stack.driver._bootstrapped)
+        self.assertEqual(stack.executor.last_method(), 'flash_s5_transition')
+        self.assertEqual(stack.driver.advance(), (None, False))
+        self.assertFalse(stack.driver._split_ready)
+        self.assertIsNone(stack.driver.tx)
+        self.assertEqual(stack.cache_calls(), [])
+        for rank in stack.driver.ranks:
+            worker = stack.worker(rank)
+            # The worker computed the drained switch for its reply; the engine
+            # has not seen the ACK and must not open or admit stock work.
+            self.assertEqual(worker.controller.route, 'split')
+            self.assertEqual(worker.router.current_mode, 'decode-split')
+        self.assertNotIn('flash_s5_open',
+                         [envelope[0] for envelope in stack.sender.envelopes])
+
+        stack.transport.deliver_held()
+        stack.driver.advance()
+        self.assertTrue(stack.driver._split_ready)
+        for rank in stack.driver.ranks:
+            self.assertEqual(stack.worker(rank).controller.route, 'split')
+            self.assertEqual(stack.worker(rank).router.current_mode, 'decode-split')
+
+    def test_terminal_handback_holds_full_bank_until_the_drained_ack(self):
+        stack = Stack()
+        self.finish_chunk(stack)
+        self.assertIsNotNone(stack.controller.admit(stack.scheduler))
+        self.finish_chunk(stack)
+        self.assertIsNotNone(stack.controller.admit(stack.scheduler))
+        stack.drive_to_finalize()
+        stack.complete_everything()
+        stack.drive(lambda: stack.driver.phase == 'release')
+        # Hold the all-rank FULL reply at the transport: the switch has been
+        # computed and drained on every worker but is not visible yet.
+        for rank in stack.driver.ranks:
+            worker = stack.worker(rank)
+            real = worker.flash_s5_transition
+
+            def held(message, real=real):
+                ack = real(message)
+                if message.target_bank == w.ROUTE_BANK_FULL:
+                    stack.transport.hold = True
+                return ack
+
+            worker.flash_s5_transition = held
+        stack.drive(lambda: stack.driver.tx is None)
+        opens = sum(1 for envelope in stack.sender.envelopes
+                    if envelope[0] == 'flash_s5_open')
+        self.assertEqual(stack.driver._return_pending, 'handback')
+        self.assertIsNotNone(stack.driver._transition)
+        self.assertEqual(stack.driver._transition.target_bank, w.ROUTE_BANK_FULL)
+        self.assertTrue(stack.driver._split_ready)
+        for rank in stack.driver.ranks:
+            # The local switch is proven, but the engine has no ACK.
+            self.assertEqual(stack.worker(rank).controller.route, 'full')
+            self.assertEqual(stack.worker(rank).router.current_mode, 'ordinary')
+        self.assertEqual(stack.executor.last_method(), 'flash_s5_transition')
+        self.assertEqual(stack.driver.advance(), (None, False))
+        self.assertEqual(sum(1 for envelope in stack.sender.envelopes
+                             if envelope[0] == 'flash_s5_open'), opens)
+
+        stack.transport.deliver_held()
+        stack.driver.advance()
+        self.assertFalse(stack.driver._split_ready)
+        self.assertIsNone(stack.driver._return_pending)
+        self.assertEqual(stack.driver.route_generation, 2)
+        for rank in stack.driver.ranks:
+            self.assertEqual(stack.worker(rank).controller.route, 'full')
+        self.assertFalse(stack.driver.active)
+
+    def test_cancel_before_prepare_returns_to_full_after_drain(self):
+        stack = Stack()
+        stack.drive(lambda: stack.driver.phase == 'open')
+        self.assertTrue(stack.driver._split_ready)
+        stack.driver.stop('abort')
+        stack.drive(lambda: not stack.driver.active)
+        self.assertIsNone(stack.driver.tx)
+        self.assertFalse(stack.driver._split_ready)
+        self.assertIsNone(stack.driver._return_pending)
+        self.assertEqual(stack.driver.route_generation, 2)
+        for rank in stack.driver.ranks:
+            worker = stack.worker(rank)
+            self.assertEqual(worker.controller.route, 'full')
+            self.assertEqual(worker.router.current_mode, 'ordinary')
+            self.assertIsNone(worker.dispatcher.transaction)
+        self.assertEqual(stack.cache_calls(), [])
+        self.assertEqual(stack.controller.commits, 0)
+
+    def test_missing_worker_reply_never_advances_the_route(self):
+        stack = Stack()
+        stack.driver.advance()          # bootstrap
+        stack.transport.withhold(3)
+        stack.driver.advance()          # applies bootstrap, issues split
+        with self.assertRaises(ed.DriverError):
+            stack.driver.advance()
+        self.assertEqual(stack.driver.error,
+                         'native driver failed; ownership retained')
+        self.assertFalse(stack.driver._split_ready)
+        self.assertEqual(stack.driver.route_generation, 0)
+        self.assertIsNone(stack.driver.tx)
+        self.assertEqual(stack.cache_calls(), [])
+        # Ranks 0-2 did switch locally; the engine never reports that as success.
+        for rank in (0, 1, 2):
+            self.assertEqual(stack.worker(rank).controller.route, 'split')
+        self.assertEqual(stack.worker(3).controller.route, 'full')
+
+    def test_partial_local_switch_quarantines_the_router(self):
+        stack = Stack()
+        self.bind_split(stack)
+        worker = stack.worker(0)
+        bridge = worker._flash_s5_bridge
+        command = self.worker_full_command(stack)
+        real = worker.controller.leave_split
+
+        def ambiguous():
+            real()
+            raise RuntimeError('copy stream drain state is unclear')
+
+        worker.controller.leave_split = ambiguous
+        with self.assertRaises(E3ContractError):
+            worker.flash_s5_transition(command)
+        self.assertIn('ambiguous', bridge._route_failure)
+        self.assertTrue(worker.router.unclean)
+        self.assertEqual(worker.router.state, 'quarantined')
+        # The controller did move, but no success was acknowledged.
+        self.assertEqual(worker.controller.route, 'full')
+
+    def test_foreign_late_bootstrap_never_rebinds_a_live_incarnation(self):
+        stack = Stack()
+        stack.drive(lambda: stack.driver._split_ready)
+        worker = stack.worker(0)
+        epoch = worker.state.engine_epoch
+        # Retrying the same engine epoch is idempotent and re-reports the census.
+        ack = worker.flash_s5_bootstrap(w.BootstrapCommand(epoch, (0, 1, 2, 3)))
+        self.assertTrue(ack.bound)
+        self.assertEqual(ack.engine_epoch, epoch)
+        self.assertIs(ack.lane.role, LaneRole.DECODE)
+        with self.assertRaises(E3ContractError):
+            worker.flash_s5_bootstrap(w.BootstrapCommand(epoch + 1, (0, 1, 2, 3)))
+        with self.assertRaises(E3ContractError):
+            worker.flash_s5_bootstrap(w.BootstrapCommand(epoch, (1, 2, 3)))
+        self.assertEqual(worker.state.engine_epoch, epoch)
+        self.assertEqual(worker.controller.route, 'split')
+
+    def test_stale_storage_generation_and_watermark_are_refused(self):
+        stack = Stack()
+        self.bind_split(stack)
+        worker = stack.worker(0)
+        bridge = worker._flash_s5_bridge
+        command = self.worker_full_command(stack)
+        owner = worker.state.decode_owner
+        with self.assertRaises(E3ContractError):
+            worker.state.retain_decode_storage(context_id=99999)
+        self.assertIs(worker.state.decode_owner, owner)
+
+        stale_storage = replace(command, storage_epochs=tuple(
+            epoch + 1 for epoch in command.storage_epochs))
+        with self.assertRaises(E3ContractError):
+            worker.flash_s5_transition(stale_storage)
+        wrong_engine = replace(command, engine_epoch=command.engine_epoch + 1)
+        with self.assertRaises(E3ContractError):
+            worker.flash_s5_transition(wrong_engine)
+        stale_route = w.TransitionCommand(
+            command.engine_epoch, 0, 1, w.ROUTE_BANK_FULL,
+            command.storage_epochs, command.decode_replay_watermarks)
+        with self.assertRaises(E3ContractError):
+            worker.flash_s5_transition(stale_route)
+        # A commanded watermark behind the census this worker acknowledged.
+        bridge._ack_watermark = 5
+        try:
+            with self.assertRaises(E3ContractError):
+                worker.flash_s5_transition(command)
+        finally:
+            bridge._ack_watermark = 0
+        # A floor ahead of the worker's own queried census.
+        ahead = replace(command, decode_replay_watermarks=tuple(
+            value + 99 for value in command.decode_replay_watermarks))
+        with self.assertRaises(E3ContractError):
+            worker.flash_s5_transition(ahead)
+        # Every refusal left both the controller and graph router on split.
+        self.assertEqual(worker.controller.route, 'split')
+        self.assertEqual(worker.router.current_mode, 'decode-split')
+        self.assertEqual(worker.controller.route_generation, 1)
+
+
 class ConstructionTests(unittest.TestCase):
     def test_package_import_and_default_off_identity_plus_native_refusal(self):
         self.assertEqual(worker_hooks.workspace_lanes(3, env={}), 3)
@@ -1342,7 +1803,8 @@ class ConstructionTests(unittest.TestCase):
         generated = eh.generate_worker(source)
         for name in ('flash_s5_open', 'flash_s5_submit', 'flash_s5_poll',
                      'flash_s5_release', 'flash_s5_bind', 'flash_s5_receipt',
-                     'flash_s5_cancel', 'flash_s5_transition'):
+                     'flash_s5_cancel', 'flash_s5_transition',
+                     'flash_s5_bootstrap'):
             self.assertIn(f'def {name}(', generated)
         self.assertEqual(eh.revert_worker(generated), source)
 

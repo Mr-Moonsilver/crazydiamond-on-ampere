@@ -172,6 +172,18 @@ def _probe(runner):
     return probe
 
 
+def _native_decode(router):
+    """The real retained-storage decode route, installed by native startup.
+
+    It is distinguished from the separately named decode-only diagnostic by the
+    persistent storage owner E's bootstrap binds; no request transaction or
+    per-step ticket exists on this path.
+    """
+    return (isinstance(router, GraphRouter)
+            and getattr(getattr(router, 'worker', None), 'decode_owner', None) is not None
+            and callable(getattr(router, 'native_decode_route', None)))
+
+
 def _transaction(scheduler_output, router):
     if isinstance(router, DecodeProbeRouter):
         if getattr(scheduler_output, 'flash_e3_transaction', None) is not None:
@@ -179,8 +191,9 @@ def _transaction(scheduler_output, router):
         # Typed no-prefill guard in place of the anchor transaction.
         return router.no_prefill_guard()
     transaction = getattr(scheduler_output, 'flash_e3_transaction', None)
-    if transaction is None and (router.worker.active_prefill is not None
-                                or router.current_mode != 'ordinary'):
+    if (transaction is None and not _native_decode(router)
+            and (router.worker.active_prefill is not None
+                 or router.current_mode != 'ordinary')):
         raise GraphRoutingError('split/active prefill requires an explicit decode transaction')
     return transaction
 
@@ -226,7 +239,12 @@ def check_route(runner, scheduler_output, batch_desc,
         return probe.check_route(descriptor, _transaction(scheduler_output, router))
     transaction = _transaction(scheduler_output, router)
     if transaction is None:
-        return None
+        if not _native_decode(router):
+            return None
+        descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
+        # A zero-token descriptor is a declared no-op: the stock engine returns
+        # before dispatch, so no bank is touched and no watermark moves.
+        return router.native_decode_route(descriptor)
     if type(transaction) is not TransactionId:
         raise GraphRoutingError('scheduler output carries an invalid E3 transaction')
     descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
@@ -263,7 +281,25 @@ def replay_fullgraph(runner, scheduler_output, batch_desc, stock):
         return probe.replay(ExecutionDescriptor.from_vllm(batch_desc))
     transaction = _transaction(scheduler_output, router)
     if transaction is None:
-        return stock(batch_desc)
+        if not _native_decode(router):
+            return stock(batch_desc)
+        descriptor = ExecutionDescriptor.from_vllm(batch_desc)
+        decision = router.native_decode_route(descriptor)
+        if decision is None or decision.mode == 'ordinary':
+            # The full route is restored (or this is a declared no-op); only
+            # the stock FULL manager may run, never a green-stream graph.
+            return stock(batch_desc)
+        probe = getattr(router, 'probe', None)
+        if not callable(probe):
+            raise GraphRoutingError('native split replay needs C\'s context/stream probe')
+        observed = probe()
+        if (type(observed) is not tuple or len(observed) != 2
+                or type(observed[0]) is not int or type(observed[1]) is not int):
+            raise GraphRoutingError('C context/stream probe returned an invalid pair')
+        result = router.native_replay(descriptor,
+                                      observed_context=observed[0],
+                                      observed_stream=observed[1])
+        return result.output
     if type(transaction) is not TransactionId:
         raise GraphRoutingError('scheduler output carries an invalid E3 transaction')
     descriptor = ExecutionDescriptor.from_vllm(batch_desc)

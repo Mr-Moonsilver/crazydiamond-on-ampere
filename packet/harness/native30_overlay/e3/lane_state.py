@@ -19,6 +19,7 @@ This is the contract B and C import. It is not an engine overlay and establishes
 nothing about CUDA completion, aliasing or speed on a GPU.
 """
 from dataclasses import dataclass, field, replace
+import uuid
 
 from e3_types import (
     ARENA_BYTES,
@@ -26,6 +27,7 @@ from e3_types import (
     BUCKETS_AT_200K,
     CompletionKind,
     CompletionProof,
+    DecodeStorageOwner,
     DependencyRole,
     E3ContractError,
     E3Pending,
@@ -580,6 +582,7 @@ class LaneStorage:
         self.handle = None
         self.buffers = {}
         self.scratch = {}
+        self.owner = None
         self.outstanding = {}
         self.completed = []
         self.graph_pools = {}
@@ -605,7 +608,7 @@ class LaneStorage:
 
     @property
     def active(self):
-        return self.state in ('reserved', 'ready', 'in_use', 'retiring')
+        return self.state in ('retained', 'reserved', 'ready', 'in_use', 'retiring')
 
     @property
     def failed(self):
@@ -680,6 +683,58 @@ class LaneStorage:
         if self.role is LaneRole.PREFILL:
             self.worker.active_prefill = transaction
         return self.handle
+
+    def retain(self, *, context_id=None, incarnation=None):
+        """Reserve the decode lane once, outside every request transaction.
+
+        The decoded-graph bank is captured against this storage epoch and keeps
+        it for the worker's incarnation.  A prefill/request transaction never
+        owns or advances it, so a route transition cannot invalidate a captured
+        graph.  Idempotent for the identical owner; any other state is refused.
+        """
+        if self.role is not LaneRole.DECODE:
+            raise E3ContractError('only the decode lane retains persistent storage')
+        if type(incarnation) is not str or not incarnation:
+            raise E3ContractError('retained decode storage needs a worker incarnation')
+        _text('incarnation', incarnation)
+        if self.state == 'retained':
+            owner = getattr(self, 'owner', None)
+            if (owner is not None and owner.incarnation == incarnation
+                    and (context_id is None or owner.context_id == context_id)):
+                return owner
+            raise E3ContractError('decode storage is already retained by another owner')
+        if self.state != 'free':
+            raise E3Pending('decode lane is still leased by a request transaction')
+        if self.outstanding:
+            raise E3Pending('decode lane has outstanding operations')
+        if self.transaction is not None:
+            raise E3ContractError('decode lane still carries a request transaction')
+        if context_id is not None:
+            _int('context_id', context_id)
+            self.context_id = context_id
+        self.storage_epoch += 1
+        self.transaction = None
+        self.metadata = None
+        self.state = 'retained'
+        self.outstanding = {}
+        self.completed = []
+        self.graph_pools = {}
+        self.histories = None
+        self.hc = None
+        self.recurrent = None
+        self.uid = PrivateUidBank()
+        self.persistent.reset()
+        self._aborted = False
+        self._quarantine = None
+        self._last_op_seq = -1
+        self._last_completion_seq = -1
+        self._batch_seq = 0
+        self._latest_batch = None
+        self._hc_materialized = False
+        self.handle = LaneHandle(self.lane_id, object())
+        self.owner = DecodeStorageOwner(self.worker.worker_rank, incarnation,
+                                        self.storage_epoch, self.context_id)
+        return self.owner
 
     def ready(self):
         if self.state != 'reserved':
@@ -894,15 +949,28 @@ class WorkerState:
     """Decode and prefill lanes on one worker, plus shared immutable weights."""
 
     def __init__(self, worker_rank, *, engine_epoch=1, weights=None,
-                 weights_address=0, weights_bytes=0, max_outstanding=16):
+                 weights_address=0, weights_bytes=0, max_outstanding=16,
+                 engine_bound=True, incarnation=None):
         _int('worker_rank', worker_rank)
         _int('engine_epoch', engine_epoch)
         _int('weights_address', weights_address)
         _int('weights_bytes', weights_bytes)
         _int('max_outstanding', max_outstanding, 1)
+        if type(engine_bound) is not bool:
+            raise E3ContractError('engine_bound must be bool')
+        if incarnation is None:
+            incarnation = uuid.uuid4().hex
+        _text('incarnation', incarnation)
+        if not engine_bound and engine_epoch != 0:
+            raise E3ContractError('an unbound worker cannot carry an engine epoch')
+        if engine_bound and engine_epoch < 1:
+            raise E3ContractError('a bound worker needs a positive engine epoch')
         self.max_outstanding = max_outstanding
         self.worker_rank = worker_rank
         self.engine_epoch = engine_epoch
+        self.engine_bound = engine_bound
+        self.incarnation = incarnation
+        self.decode_owner = None
         self.weights_object = weights
         self.weights_address = weights_address
         self.weights_bytes = weights_bytes
@@ -913,6 +981,37 @@ class WorkerState:
         self._txn_seq = 0
         self._bindings = {}
         self._declared = []
+
+    def retain_decode_storage(self, *, context_id, incarnation=None):
+        """Retain the worker's decode storage for its whole incarnation.
+
+        The returned :class:`DecodeStorageOwner` is the only storage a decode
+        graph may be captured against.  No request transaction is involved.
+        """
+        if incarnation is None:
+            incarnation = self.incarnation
+        if incarnation != self.incarnation:
+            raise E3ContractError('decode storage must belong to this incarnation')
+        owner = self.decode.retain(context_id=context_id, incarnation=incarnation)
+        if self.decode_owner is not None and self.decode_owner != owner:
+            raise E3ContractError('decode storage owner changed for one incarnation')
+        self.decode_owner = owner
+        return owner
+
+    def bind_engine_owner(self, engine_epoch, *, incarnation=None):
+        """Bind this worker incarnation to one engine epoch, exactly once."""
+        _int('engine_epoch', engine_epoch)
+        if engine_epoch < 1:
+            raise E3ContractError('engine epoch must be positive')
+        if incarnation is not None and incarnation != self.incarnation:
+            raise E3ContractError('engine owner names a foreign worker incarnation')
+        if self.engine_bound:
+            if engine_epoch == self.engine_epoch:
+                return self.engine_epoch
+            raise E3ContractError('worker is already bound to another engine epoch')
+        self.engine_epoch = engine_epoch
+        self.engine_bound = True
+        return self.engine_epoch
 
     def lane(self, role):
         if role is LaneRole.DECODE:
@@ -949,6 +1048,8 @@ class WorkerState:
     def check_transaction(self, transaction):
         if type(transaction) is not TransactionId:
             raise E3ContractError('transaction must be TransactionId')
+        if not self.engine_bound:
+            raise E3ContractError('worker engine owner is not bound')
         if transaction.engine_epoch != self.engine_epoch:
             raise E3ContractError('transaction engine epoch is stale')
         if self._generations.get(transaction.request_uid) != transaction.request_generation:
@@ -1107,6 +1208,7 @@ def estimated_e3_inventory(*, chunk_tokens=1024, graph_split_bytes=GRAPH_POOL_ME
 __all__ = [
     'ARENA_BYTES', 'ARENA_PAGES', 'BUCKETS_AT_200K', 'BatchRow', 'BufferBinding',
     'CommitRecord', 'GraphPoolBinding', 'GRAPH_POOL_MEASURED_BYTES',
+    'DecodeStorageOwner',
     'HC_BLOCK_OUTPUT_BYTES', 'HC_HIDDEN_BYTES',
     'HC_INJECTION_BYTES', 'HcTupleBinding', 'HISTORIES_PER_RANK', 'HISTORY_BYTES_PER_RANK',
     'HISTORY_PAGES_AT_200K', 'InventoryEntry', 'InventoryReport', 'LaneHandle', 'LaneStorage',

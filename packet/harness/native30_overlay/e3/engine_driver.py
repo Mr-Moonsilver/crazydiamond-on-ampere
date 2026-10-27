@@ -28,6 +28,7 @@ Admission is fail-closed.  The E2 scheduler integration that would emit
 optimistic publication) is not implemented in this increment; without that
 marker this driver never parks anything.  See the pass report's Open items.
 """
+import math
 import time
 from dataclasses import dataclass, field
 
@@ -46,6 +47,7 @@ from e3_types import (
     DependencyRole,
     E3ContractError,
     E3Pending,
+    LaneRole,
     OperationTicket,
     TransactionId,
 )
@@ -54,6 +56,8 @@ from lane_state import BatchRow, MetadataSnapshot, _freeze
 from reply_transport import Backpressure
 from scheduler_hooks import LeaseCategory, PrefillAdmissionController
 from wire_v1 import (
+    BootstrapAck,
+    BootstrapCommand,
     CancelAck,
     CancelRequest,
     PPReceiptAck,
@@ -66,12 +70,15 @@ from wire_v1 import (
     OpenAck,
     OpenRequest,
     OpSeqTracker,
+    ROUTE_BANK_FULL,
+    ROUTE_BANK_SPLIT,
     SegmentAcceptance,
     SegmentCommand,
     SegmentDescriptor,
     SegmentKind,
     TransitionAck,
     TransitionCommand,
+    TransitionPending,
     WorkerCompletionReport,
 )
 
@@ -676,7 +683,8 @@ class NativeSegmentDriver:
         self.stage_layers = {0: (0, layer_split), 1: (layer_split, layer_count)}
         self.clock = clock
         self.poll_budget = _positive(poll_budget, 'poll budget')
-        if type(reply_timeout_s) not in (int, float) or reply_timeout_s <= 0:
+        if (type(reply_timeout_s) not in (int, float)
+                or not math.isfinite(reply_timeout_s) or reply_timeout_s <= 0):
             raise DriverError('reply timeout must be positive')
         self.reply_timeout_s = float(reply_timeout_s)
         if len(self.stage_ranks[0]) != len(self.stage_ranks[1]):
@@ -710,6 +718,9 @@ class NativeSegmentDriver:
         self._inflight = {}
         self._retry = None
         self._transition = None
+        self._transition_retry = False
+        self._transition_deadline = None
+        self._last_transition_acks = {}
         self.pp_send_seq = None
         self.pp_receive_seq = None
         self.receiver_ticket = None
@@ -728,6 +739,14 @@ class NativeSegmentDriver:
         self._cancel_targets = frozenset()
         self._release_acks = {}
         self._release_attempts = 0
+        # Engine-owner bootstrap and route completion.  These survive a chunk
+        # reset: the worker storage epoch and replay census are worker-stable.
+        self._bootstrapped = False
+        self._bootstrap_command = None
+        self._storage_epochs = {}
+        self._decode_watermarks = {}
+        self._split_ready = False
+        self._return_pending = None
 
     def install(self):
         engine, scheduler = self.engine, self.scheduler
@@ -743,7 +762,10 @@ class NativeSegmentDriver:
 
     @property
     def active(self):
-        return self.tx is not None or self.controller.active
+        return (self.tx is not None or self.controller.active
+                or self._return_pending is not None
+                or self._transition is not None
+                or self._bootstrap_command is not None)
 
     # -- schedule seam ----------------------------------------------------
     def park(self, scheduler_output):
@@ -759,7 +781,7 @@ class NativeSegmentDriver:
             raise DriverError('native bounded command sender is not installed')
         return sender
 
-    def _submit(self, kind, envelope, ranks):
+    def _submit(self, kind, envelope, ranks, *, timeout_s=None):
         transport = getattr(self.executor, '_flash_s5_transport', None)
         if transport is None:
             raise DriverError('owned reply transport is not installed')
@@ -769,7 +791,8 @@ class NativeSegmentDriver:
             check(envelope)      # backpressure before any expectation is registered
         sequence = transport.submit(kind, lambda _sequence: sender(envelope),
                                     ranks=tuple(ranks),
-                                    timeout_s=self.reply_timeout_s, aggregate=None)
+                                    timeout_s=(self.reply_timeout_s if timeout_s is None
+                                               else timeout_s), aggregate=None)
         self._inflight[sequence] = kind
         return sequence
 
@@ -790,7 +813,9 @@ class NativeSegmentDriver:
         return applied
 
     def _apply(self, kind, values):
-        if kind == 'open':
+        if kind == 'bootstrap':
+            self._apply_bootstrap(values)
+        elif kind == 'open':
             self._apply_open(values)
         elif kind == 'bind':
             self._apply_bind(values)
@@ -814,12 +839,53 @@ class NativeSegmentDriver:
             if {getattr(a, 'worker_rank', None) for a in acks} != set(self.ranks):
                 raise DriverError('transition reply ranks are duplicated or missing')
             for ack in acks:
-                if type(ack) is not TransitionAck or not ack.matches(command):
+                if type(ack) not in (TransitionAck, TransitionPending) or not ack.matches(command):
                     raise DriverError('transition acknowledgment is stale or mistyped')
+                if type(ack) is TransitionPending:
+                    continue
+                if (ack.decode_replay_watermark
+                        < command.decode_replay_watermarks[ack.worker_rank]):
+                    raise DriverError('transition replay census went backwards')
+            if any(type(ack) is TransitionPending for ack in acks):
+                self._transition_retry = True
+                return
+            # The worker reports its own queried census; it is not an echo.
+            for ack in acks:
+                self._decode_watermarks[ack.worker_rank] = ack.decode_replay_watermark
+            applied = {ack.applied_route_generation for ack in acks}
+            if applied != {command.route_generation}:
+                raise DriverError('transition acknowledgments disagree on the route generation')
             self.route_generation = acks[0].applied_route_generation
+            self._split_ready = command.target_bank == ROUTE_BANK_SPLIT
+            if command.target_bank == ROUTE_BANK_FULL:
+                self._return_pending = None
             self._transition = None
+            self._transition_retry = False
+            self._transition_deadline = None
+            self._last_transition_acks = {ack.worker_rank: ack for ack in acks}
         else:
             raise DriverError('unknown wire reply kind')
+
+    def _apply_bootstrap(self, values):
+        acks = tuple(values)
+        command = self._bootstrap_command
+        if command is None:
+            raise DriverError('no bootstrap is outstanding')
+        if len(acks) != len(self.ranks):
+            raise DriverError('bootstrap reply does not cover every rank')
+        if {getattr(a, 'worker_rank', None) for a in acks} != set(self.ranks):
+            raise DriverError('bootstrap reply ranks are duplicated or missing')
+        for ack in acks:
+            if type(ack) is not BootstrapAck or not ack.matches(command):
+                raise DriverError('bootstrap acknowledgment is stale or mistyped')
+            if not ack.bound:
+                raise DriverError('worker refused the engine owner bootstrap')
+            if ack.lane.role is not LaneRole.DECODE:
+                raise DriverError('bootstrap acknowledged a non-decode storage lane')
+            self._storage_epochs[ack.worker_rank] = ack.lane.storage_epoch
+            self._decode_watermarks[ack.worker_rank] = ack.decode_replay_watermark
+        self._bootstrapped = True
+        self._bootstrap_command = None
 
     def _apply_open(self, values):
         acks = tuple(values)
@@ -1054,6 +1120,11 @@ class NativeSegmentDriver:
             self.controller.note_worker_release(self._release_acks[rank])
         self.controller.commit(self.tx, self._producer_proof())
         self._reset()
+        if terminal:
+            # The chunk left the final prompt token for stock decode.  Stock
+            # work on the full bank may not start before every rank drained
+            # the split route and acknowledged the return.
+            self._note_terminal_route('handback')
         return
 
     def _send_release(self):
@@ -1173,6 +1244,11 @@ class NativeSegmentDriver:
             if self.stop_kind is not None:
                 self._drive_stop()
                 return None
+            if self._drive_route():
+                # A route command is outstanding: the worker is draining or
+                # switching streams/banks, so no stock work may be launched
+                # into the old route.  The engine skips this step instead.
+                return (None, False)
             if self.tx is None:
                 if not self.controller.active:
                     return None
@@ -1187,6 +1263,85 @@ class NativeSegmentDriver:
         except BaseException:
             self.error = 'native driver failed; ownership retained'
             raise
+
+    # -- engine-owner bootstrap and route completion ----------------------
+    def _route_exchange(self):
+        """The route command whose reply is still owed, if any."""
+        return self._bootstrap_command or self._transition
+
+    def _drive_return(self):
+        """One bounded step towards the drained all-rank full-bank return."""
+        if self._route_exchange() is not None or self._inflight:
+            return
+        if not self._split_ready:
+            # Already home (or never left); the return is satisfied.
+            self._return_pending = None
+            return
+        try:
+            self._issue_transition(ROUTE_BANK_FULL)
+        except E3Pending:
+            # A worker still owns an unqueried native replay: the bridge
+            # refused the drained switch before mutating any route.  Keep the
+            # handback pending and skip stock work for this tick; the next tick
+            # retries with the workers' advertised census.
+            self._return_pending = 'handback'
+
+    def _issue_transition(self, target_bank):
+        """Send one transition built from the census the workers acknowledged."""
+        if set(self._storage_epochs) != set(self.ranks) \
+                or set(self._decode_watermarks) != set(self.ranks):
+            raise DriverError('route census is incomplete; refusing a transition')
+        if self.ranks != tuple(range(len(self.ranks))):
+            # Wire-v1 carries one entry per rank position, so the admitted
+            # ranks must be the contiguous worker set.
+            raise DriverError('route ranks are not contiguous for a rank-indexed command')
+        self.issue_transition(
+            expected_route_generation=self.route_generation,
+            target_bank=target_bank,
+            storage_epochs=tuple(self._storage_epochs[rank] for rank in self.ranks),
+            decode_replay_watermarks=tuple(self._decode_watermarks[rank]
+                                           for rank in self.ranks))
+
+    def _drive_route(self):
+        """Advance bootstrap/split/return; True when stock work must skip."""
+        exchange = self._route_exchange()
+        if exchange is not None:
+            if self._transition is not None and self._transition_retry and not self._inflight:
+                self._send_transition()
+            # The reply deadline bounds this; the engine must not admit stock
+            # work into a route that is being drained or switched underneath it.
+            return True
+        if not self._bootstrapped:
+            if not self.controller.active:
+                # Nothing is admitted: the engine does not bind worker route
+                # ownership until the first chunk actually needs the split.
+                return False
+            if self._inflight:
+                return True
+            command = BootstrapCommand(self.engine_epoch, self.ranks)
+            self._bootstrap_command = command
+            try:
+                self._submit('bootstrap',
+                             ('flash_s5_bootstrap', (command,), {}, None),
+                             self.ranks)
+            except BaseException:
+                self._bootstrap_command = None
+                raise
+            return True
+        if self._return_pending is not None:
+            self._drive_return()
+            return True
+        if self.controller.active and not self._split_ready:
+            if self._inflight:
+                return True
+            try:
+                self._issue_transition(ROUTE_BANK_SPLIT)
+            except E3Pending:
+                # Same typed pending as the handback: no route was mutated,
+                # no stock work may run, and a later tick retries.
+                return True
+            return True
+        return False
 
     def _begin(self):
         admission = self.controller.admission()
@@ -1303,8 +1458,15 @@ class NativeSegmentDriver:
     def stop(self, kind, *, drain=False):
         if kind not in _STOP_KINDS:
             raise DriverError('unknown stop kind')
-        if self.tx is None and not self.controller.active:
-            return None
+        route_pending = (self._return_pending is not None
+                         or self._transition is not None
+                         or self._bootstrap_command is not None)
+        if self.tx is None and not self.controller.active and not route_pending:
+            if not self._split_ready:
+                return None
+            # Idle on the split route with no chunk to cancel: the return is
+            # still owed before stock may touch the full bank again.
+            self._return_pending = 'stop'
         if self.stop_kind is None:
             self.stop_kind = kind
         # Bounded pump: the engine seam sees one call, never a device wait.
@@ -1322,6 +1484,11 @@ class NativeSegmentDriver:
         return not self.active
 
     def _drive_stop(self):
+        if self._inflight and any(kind != 'poll'
+                                  for kind in self._inflight.values()):
+            # Waiting for a reply is not a cancellation round: the owned
+            # transport's reply deadline bounds it, not the engine's tick rate.
+            return
         if self.tx is None:
             # Admission happened pre-schedule; the driver may not have begun.
             # Closing admissions retires the parked chunk without publishing.
@@ -1330,13 +1497,12 @@ class NativeSegmentDriver:
                 self.controller.cancel(admission.transaction,
                                        never_submitted=True)
                 self._reset()
-            elif self.controller.active:
-                raise DriverError('cancellation has no transaction to close')
-            return
-        if self._inflight and any(kind != 'poll'
-                                  for kind in self._inflight.values()):
-            # Waiting for a reply is not a cancellation round: the owned
-            # transport's reply deadline bounds it, not the engine's tick rate.
+                self._note_terminal_route('cancel')
+            if self._return_pending is not None:
+                self._drive_return()
+                return
+            # Nothing is owned and the full route is restored: stop is done.
+            self.stop_kind = None
             return
         if self._receipts_pending():
             self._stop_round()
@@ -1420,6 +1586,7 @@ class NativeSegmentDriver:
                 raise DriverError('accepted operations exist without a bound producer')
             self.controller.cancel(self.tx, never_submitted=True)
             self._reset()
+            self._note_terminal_route('cancel')
             return
         # Cancellation is its own retirement path: reports supply completion
         # identity, but state_written()/publication is never consulted here.
@@ -1438,6 +1605,12 @@ class NativeSegmentDriver:
             self.controller.note_worker_release(row)
         self.controller.cancel(self.tx, proof=self._producer_proof())
         self._reset()
+        self._note_terminal_route('cancel')
+
+    def _note_terminal_route(self, reason):
+        """A chunk retired for good: the split route now owes a full return."""
+        if self._split_ready:
+            self._return_pending = reason
 
     def pp_sent(self):
         if self.tx is None:
@@ -1460,6 +1633,13 @@ class NativeSegmentDriver:
         return True
 
     def _reset(self):
+        """Drop one chunk's ownership.  Route state is worker-stable, not per-chunk.
+
+        ``_bootstrapped``/``_storage_epochs``/``_decode_watermarks``/
+        ``_split_ready``/``_return_pending`` deliberately survive: the storage
+        epoch and replay census belong to the worker incarnation, and a chunk
+        boundary is never a route boundary.
+        """
         self.tx = None
         self.admission = None
         self.phase = 'idle'
@@ -1497,7 +1677,7 @@ class NativeSegmentDriver:
         self._cancel_targets = frozenset()
 
     def finish_pause(self):
-        if self.tx is not None or self.controller.active:
+        if self.active:
             if self.stop_kind is None:
                 self.stop('pause')
             else:
@@ -1524,9 +1704,21 @@ class NativeSegmentDriver:
             storage_epochs=tuple(storage_epochs),
             decode_replay_watermarks=tuple(decode_replay_watermarks))
         self._transition = command
-        self._submit('transition', ('flash_s5_transition', (command,), {}, None),
-                     self.ranks)
+        self._transition_retry = True
+        self._transition_deadline = self.clock() + self.reply_timeout_s
+        self._send_transition()
         return command
+
+    def _send_transition(self):
+        command = self._transition
+        if command is None or self._inflight:
+            raise DriverError('transition retry has no exclusive command ownership')
+        remaining = self._transition_deadline - self.clock()
+        if remaining <= 0:
+            raise DriverError('all-rank transition drain deadline expired; ownership retained')
+        self._submit('transition', ('flash_s5_transition', (command,), {}, None),
+                     self.ranks, timeout_s=remaining)
+        self._transition_retry = False
 
     def accept_transition_ack(self, ack):
         raise DriverError('transition needs the complete all-rank reply, not one ack')
