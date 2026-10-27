@@ -24,6 +24,8 @@ import time
 
 from e3_types import E3ContractError
 from lane_comm import PrefillCommunicators
+from lane_hooks import LaneRuntime
+from lane_private import LanePrivateBindings, admitted_chunk
 from model_hooks import LaneForward, PlePrivateScratch, PrefillStreamOwners, ple_embedding
 from native_resources import compilation_identity, full_graph_identity
 from split_bank import install as install_split_bank
@@ -100,7 +102,8 @@ class WorkerNative:
 
     def __init__(self, runner, split, bank, backend, controller, comms, ple_layer, ple_scratch,
                  chunk_tokens, tp_group, torch, *, state=None, compilation=None,
-                 full_identity=None, decode_owner=None, prefill_streams=None):
+                 full_identity=None, decode_owner=None, prefill_streams=None,
+                 private_bindings=None):
         self.runner = runner
         self.split = split
         self.bank = bank
@@ -117,6 +120,7 @@ class WorkerNative:
         self.full_identity = full_identity
         self.decode_owner = decode_owner
         self.prefill_streams = prefill_streams
+        self.private_bindings = private_bindings
         self.router = None
         self.host_submit_ns = []
 
@@ -131,6 +135,11 @@ class WorkerNative:
                       tp_comm=self.comms.tp, forward_context=forward_context,
                       ple_scratch=self.ple_scratch, attention_driver=attention_driver,
                       torch_module=self.torch, prefill_owners=self.prefill_streams)
+        if self.private_bindings is not None:
+            # The admitted chunk is the authority for the request UID and the
+            # chunk's top-k capacity; a generic callable is refused.
+            chunk = admitted_chunk(forward_context, runner=self.runner)
+            kwargs['private_scope'] = self.private_bindings.chunk_scope(chunk).scope
         if clock is not None:
             kwargs['clock'] = clock
         return LaneForward(self.runner.model, inputs, **kwargs)
@@ -145,6 +154,8 @@ class WorkerNative:
             'ple_layer': self.ple_layer,
             'prefill_streams': (self.prefill_streams.record()
                                 if self.prefill_streams is not None else None),
+            'private_bindings': (self.private_bindings.audit()
+                                 if self.private_bindings is not None else None),
             'communicators': 'unmeasured',
             'chunk_tokens': self.chunk_tokens,
             'route': self.controller.route,
@@ -228,6 +239,8 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
         runner, split, torch_module=torch, set_graph_pool_id=set_graph_pool_id, clock=clock)
     server = getattr(runner, '_flash_s5_worker', None)
     runtime = getattr(server, 'runtime', None)
+    if not isinstance(runtime, LaneRuntime):
+        raise NativeStartupError('worker-native startup needs the real LaneRuntime')
     state = getattr(runtime, 'state', None)
     if state is None:
         raise NativeStartupError(
@@ -257,10 +270,14 @@ def install_worker_native(runner, *, chunk_tokens, env=None, torch_module=None,
     prefill_streams.prepare()
     ple_layer, ple_scratch = _ple_scratch(model, chunk_tokens, torch, runner.device,
                                           prefill_streams)
+    private_bindings = LanePrivateBindings.discover(
+        runner, runtime, chunk_tokens=chunk_tokens, torch_module=torch,
+        ple_scratch=ple_scratch)
     native = WorkerNative(runner, split, bank, backend, controller, comms, ple_layer, ple_scratch,
                           chunk_tokens, tp_group, torch, state=state,
                           compilation=compilation, full_identity=full_identity,
-                          decode_owner=decode_owner, prefill_streams=prefill_streams)
+                          decode_owner=decode_owner, prefill_streams=prefill_streams,
+                          private_bindings=private_bindings)
     runner._flash_s5_native = native
     runner._flash_s5_compilation = compilation
     runner._flash_s5_comms = comms

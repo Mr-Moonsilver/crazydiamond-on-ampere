@@ -58,7 +58,7 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
               'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
               # lane forward/QSA driver, communicators, startup, chunk, dispatcher.
-              'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers')
+              'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers')
 NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
                 'native/build_q17_helpers.sh')
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'

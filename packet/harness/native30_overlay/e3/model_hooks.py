@@ -496,7 +496,8 @@ class LaneForward:
 
     def __init__(self, model, inputs, *, stream, tp_group=None, tp_comm=None,
                  forward_context=None, ple_scratch=None, attention_driver=None,
-                 torch_module=None, clock=time.monotonic_ns, prefill_owners=None):
+                 torch_module=None, clock=time.monotonic_ns, prefill_owners=None,
+                 private_scope=None):
         if not all(callable(getattr(model, m, None)) for m in (
                 '_flash_e3_forward_prefix', '_flash_e3_forward_layer', '_flash_e3_forward_suffix')):
             raise ModelHookError('model does not carry the generated lane forward methods')
@@ -517,6 +518,7 @@ class LaneForward:
         self.forward_context = forward_context
         self.ple_scratch = ple_scratch
         self.prefill_owners = prefill_owners
+        self.private_scope = private_scope
         self.attention_driver = attention_driver
         self.torch = torch_module
         self.clock = clock
@@ -540,6 +542,10 @@ class LaneForward:
                 if inference is not None:
                     stack.enter_context(inference())
                 stack.enter_context(torch.cuda.stream(self.stream))
+            if self.private_scope is not None:
+                # The lane-private QSA top-k/UID bindings and the lane's own
+                # host forward-context/workspace ownership for this segment.
+                stack.enter_context(self.private_scope(layer_idx))
             if self.forward_context is not None:
                 stack.enter_context(self.forward_context())
             if self.tp_group is not None:

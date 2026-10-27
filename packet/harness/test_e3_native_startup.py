@@ -1,5 +1,6 @@
 """CPU-only tests for the E3 worker-native startup composition and transition RPC (D4)."""
 from pathlib import Path
+from contextlib import nullcontext
 import sys
 import types
 import unittest
@@ -11,6 +12,9 @@ sys.path.insert(0, str(ROOT / 'harness'))
 
 import native_startup  # noqa: E402
 import lane_state  # noqa: E402
+from lane_hooks import LaneRuntime
+from lane_chunk import LaneChunk, ChunkAdmission
+from e3_types import TransactionId
 from green_context import GreenSplit  # noqa: E402
 from native_startup import NativeStartupError, WorkerNative, install_worker_native, transition_rpc  # noqa: E402
 from test_e3_green_native import FakeBinding, FakeManager, FakeTensor, fake_runner, fake_torch, install_fake_vllm, remove_fake_vllm  # noqa: E402
@@ -112,7 +116,10 @@ class StartupTests(unittest.TestCase):
         # persistent decode storage owner per worker incarnation.
         self.state = lane_state.WorkerState(0, engine_epoch=0, engine_bound=False)
         self.runner._flash_s5_worker = types.SimpleNamespace(
-            runtime=types.SimpleNamespace(state=self.state), operation_device=None)
+            runtime=LaneRuntime(self.state,
+                forward_context=types.SimpleNamespace(get=lambda: None, set=lambda value: None),
+                workspace=types.SimpleNamespace(enter=lambda value: None, exit=lambda value: None)),
+            operation_device=None)
         self.tp = types.SimpleNamespace(cpu_group='tp', world_size=2, device_communicator=object())
         self.pp = types.SimpleNamespace(cpu_group='pp', world_size=2, rank_in_group=0,
                                         is_first_rank=True, is_last_rank=False)
@@ -130,8 +137,16 @@ class StartupTests(unittest.TestCase):
 
         self._discover = patch.object(model_hooks.PrefillStreamOwners, 'discover', discover)
         self._discover.start()
+        # This suite isolates startup ordering/stream ownership. Actual private
+        # tensors and admission lifetime are exercised in test_e3_lane_private.
+        self._private = patch.object(native_startup.LanePrivateBindings, 'discover',
+            return_value=types.SimpleNamespace(
+                audit=lambda: {'isolation': 'fixture-only', 'readiness': 'unclaimed'},
+                chunk_scope=lambda chunk: types.SimpleNamespace(scope=lambda layer=None: nullcontext())))
+        self.private_discover = self._private.start()
 
     def tearDown(self):
+        self._private.stop()
         self._discover.stop()
         remove_fake_vllm()
 
@@ -164,8 +179,15 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(native.drain_prefill_streams(), 1)
         with self.assertRaises(NativeStartupError):
             self.install()
+        chunk = LaneChunk.__new__(LaneChunk)
+        chunk.runner = self.runner
+        chunk.req_index = 0
+        chunk.admission = ChunkAdmission(TransactionId(1, 'fixture', 1, 0, 4, 1),
+                                          5, (1, 2, 3, 4), (), ((1,),))
+        chunk.forward_context = object()
+        chunk.ports = types.SimpleNamespace(override_forward_context=lambda value: nullcontext(value))
         lane = native.lane_forward(dict(positions='p', input_ids='i', query_start_loc='q', ngram_context='n'),
-                                   clock=lambda: 0)
+                                   forward_context=chunk.forward_scope, clock=lambda: 0)
         lane.begin()
         for idx in range(4):
             lane.layer(idx)
@@ -173,6 +195,12 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(lane.output, {'hidden_states': 'hc'})
         # Every segment restored the stock owner exactly.
         self.assertIs(self.ple_embedding._prefetch_stream, self.ple_origin_stream)
+
+    def test_native_startup_never_skips_private_bindings_for_a_lookalike_runtime(self):
+        self.runner._flash_s5_worker.runtime = types.SimpleNamespace(state=self.state)
+        with self.assertRaisesRegex(NativeStartupError, 'real LaneRuntime'):
+            self.install()
+        self.private_discover.assert_not_called()
 
     def test_install_refuses_without_the_prefill_helper_extension(self):
         from green_context import GreenContextError

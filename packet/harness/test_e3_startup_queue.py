@@ -64,7 +64,7 @@ def launcher_text():
     sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
     import make_e2_arena
     import make_s5_overlap
-    return full11_launcher_text().replace('e3/capture_streams.py ', '').replace('e3/teacher_decode.py ', '').replace('e3/route_invariant.py ', '').replace('e3/launch_diagnostic.py ', '').replace('e3/native/flash_s5_graph_bytes.cpp ', '')
+    return full11_launcher_text().replace('e3/capture_streams.py ', '').replace('e3/teacher_decode.py ', '').replace('e3/route_invariant.py ', '').replace('e3/launch_diagnostic.py ', '').replace('e3/lane_private.py ', '').replace('e3/native/flash_s5_graph_bytes.cpp ', '')
 
 
 FAKE_SYSTEMCTL = r'''#!/usr/bin/env python3

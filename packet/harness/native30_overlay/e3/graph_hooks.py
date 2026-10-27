@@ -363,6 +363,12 @@ def capture_banks(runner, *, profile_only=False):
         return router
     if getattr(runner, '_flash_e3_graph_captured', False):
         raise GraphRoutingError('graph banks were already captured')
+    native = getattr(runner, '_flash_s5_native', None)
+    private = getattr(native, 'private_bindings', None)
+    if private is not None:
+        # Stock profile/warmup and ordinary capture established the real bound.
+        # Fund the extra lane before capture_model locks the workspace manager.
+        private.prepare_workspace()
     router.capture_at_startup()
     runner._flash_e3_graph_captured = True
     return router
