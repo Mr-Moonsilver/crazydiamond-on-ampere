@@ -108,10 +108,18 @@ class NativeOverlapSession:
         self.run_id = command['run_id']
         pause = await self.control.ensure_paused()
         admission = None
+        initial_full_fence = None
         if target == 'full':
             # The native phase (if any) ends before the all-rank return.
             admission = await self._set_admission(phase or 'full-prefill-solo')
             reply = await self.control.leave_split()
+            if reply.get('bootstrapped') is False:
+                # A cold FULL route has no TransitionAck: wire-v1 transitions
+                # advance generation0 to1 or later. Do not invent an ACK or
+                # accept an empty typed_acks flag. Bootstrap the real workers,
+                # prove that they are empty/drained, then perform one actual
+                # empty SPLIT->FULL warmup inside this preparation.
+                reply, initial_full_fence = await self._initial_full_fence(reply)
         else:
             reply = await self.control.enter_split()
             if phase is not None:
@@ -136,7 +144,45 @@ class NativeOverlapSession:
             'typed_acks': reply.get('typed_acks') is True,
             'workers': ((self.control.last_snapshot or {}).get('workers')),
             'snapshot': self.control.last_snapshot,
+            'initial_full_fence': initial_full_fence,
         }
+
+    async def _initial_full_fence(self, initial):
+        if (initial.get('route_after') != 'full'
+                or type(initial.get('route_generation_after')) is not int
+                or initial.get('route_generation_after') != 0
+                or initial.get('transition_acks') != []
+                or initial.get('bootstrap_acks') != []):
+            raise NativeOverlapSessionError('initial-full-state-contradictory')
+        bootstrap = await self.control.bootstrap_engine_owner()
+        barrier = await self.control.barrier()
+        rows = barrier.get('workers')
+        ranks = (bootstrap.get('snapshot') or {}).get('ranks')
+        if (type(rows) is not list or not rows or type(ranks) is not list
+                or any(type(row) is not dict for row in rows)
+                or any(type(rank) is not int or rank < 0 for rank in ranks)
+                or len(set(ranks)) != len(ranks)
+                or {row.get('worker_rank') for row in rows} != set(ranks)
+                or len(rows) != len(ranks)):
+            raise NativeOverlapSessionError('initial-full-worker-coverage-unproved')
+        zeros = ('live_decode_requests', 'running_requests', 'prefill_requests',
+                 'retained_rows', 'pending_native_replays',
+                 'pending_prefill_streams', 'pending_output_copies')
+        for row in rows:
+            if (row.get('engine_epoch') != initial.get('engine_epoch')
+                    or row.get('route') != 'full' or row.get('route_generation') != 0
+                    or row.get('barrier_clean') is not True
+                    or (row.get('live_decode') or {}).get('available') is not True
+                    or any(type(row.get(key)) is not int or row[key] != 0 for key in zeros)):
+                raise NativeOverlapSessionError('initial-full-warmup-needs-empty-drained-workers')
+        entered = await self.control.enter_split()
+        if entered.get('route_after') != 'split' or entered.get('typed_acks') is not True:
+            raise NativeOverlapSessionError('initial-full-split-transition-unproved')
+        returned = await self.control.leave_split()
+        if returned.get('route_after') != 'full' or returned.get('typed_acks') is not True:
+            raise NativeOverlapSessionError('initial-full-return-unproved')
+        return returned, {'initial': initial, 'bootstrap': bootstrap,
+                          'barrier': barrier, 'entered': entered, 'returned': returned}
 
     # -- pause / enter split ---------------------------------------------
     async def _action_pause_enter_split(self, command):

@@ -43,6 +43,57 @@ def _decode_only(snapshot):
             and all(type(value) is bool and value is False for value in prefilling))
 
 
+def _native_teacher_binding(run, plans):
+    """Project actual native worker/frontend receipts without probe relabelling."""
+    native = run.get('native_teacher_window')
+    if type(native) is not dict or native.get('schema') != 's5-native-teacher-window/1':
+        raise ValueError('native teacher window absent')
+    repeat = native.get('repeat')
+    reply = native.get('worker_reply')
+    cleared = native.get('frontend_clear')
+    if type(reply) is not dict or type(cleared) is not dict:
+        raise ValueError('native teacher receipts absent')
+    if type(reply.get('engine_epoch')) is not int or reply['engine_epoch'] <= 0:
+        raise ValueError('native teacher engine epoch absent')
+    previous = cleared.get('previous_status')
+    if (type(repeat) is not int or type(previous) is not dict
+            or previous.get('enabled') is not True
+            or type(previous.get('plan_sha256')) is not str
+            or len(previous['plan_sha256']) != 64
+            or previous.get('plan_sha256') != plans.get(repeat)
+            or previous.get('pending') != 0 or previous.get('admitted') != 8
+            or previous.get('steps') != TOTAL or cleared.get('enabled') is not False
+            or cleared.get('engine_epoch') != reply.get('engine_epoch')):
+        raise ValueError('native frontend admission binding differs')
+    workers = reply.get('workers')
+    if type(workers) is not list or len(workers) != 4:
+        raise ValueError('native teacher worker coverage differs')
+    ranks, rows, generations = set(), [], set()
+    for worker in workers:
+        if type(worker) is not dict:
+            raise ValueError('native teacher worker invalid')
+        row = worker.get('qualification')
+        rank = worker.get('worker_rank')
+        if (type(rank) is not int or rank not in (0,1,2,3) or rank in ranks or type(row) is not dict
+                or row.get('rank') != rank or row.get('native_route') is not True
+                or row.get('mode') != 'native-overlap'
+                or row.get('ack') != 'flash_s5_teacher_evidence'
+                or row.get('engine_epoch') != reply.get('engine_epoch')
+                or row.get('route') != run.get('route')
+                or type(row.get('route_generation')) is not int
+                or row['route_generation'] < 0
+                or type(row.get('drained_streams')) is not int
+                or row['drained_streams'] <= 0):
+            raise ValueError('native teacher worker identity differs')
+        ranks.add(rank); rows.append(row); generations.add(row['route_generation'])
+    if len(generations) != 1:
+        raise ValueError('native teacher window spans generations')
+    proof = dict(previous, ranks=rows)
+    core = dict(repeat=repeat, engine_epoch=reply['engine_epoch'],
+                route_generation_after=next(iter(generations)))
+    return proof, core
+
+
 class Instrument:
     def __init__(self, baseline, post=None, snapshot_max_bytes=2*1024**3,
                  numerical_rule=3, calibration_path=None):
@@ -162,16 +213,25 @@ class Instrument:
                         route_generation=None,storage_epoch=None,row_mapping=mapping)
             evidence['runs'][name]=result
             if run.get('contract'):known_failure.append(name+': lifecycle/data contract failure')
-            ends=[c for c in run.get('calls',[]) if c.get('action')=='pause_end' and c.get('lifecycle_ok')]
-            if len(ends)!=1:
-                defects.append('pause_end receipt absent');continue
-            call=ends[0];proof=(call.get('receipt') or {}).get('teacher_forced')
-            core=call.get('receipt_core') or {}
-            if (type(proof) is not dict or core.get('teacher_forced')!=proof
-                    or call.get('receipt_sha256')!=digest(core)
-                    or proof.get('pending')!=0 or proof.get('admitted')!=8
-                    or proof.get('plan_sha256')!=self.plan_shas.get(core.get('repeat'))):
-                defects.append('teacher receipt binding differs');continue
+            if 'native_teacher_window' in run:
+                try:
+                    proof, core = _native_teacher_binding(run, self.plan_shas)
+                except (KeyError, TypeError, ValueError) as exc:
+                    defects.append(str(exc)); continue
+                # Keep the actual native receipts separately. No native action
+                # or acknowledgement is renamed to the legacy pause_end.
+                result['native_teacher_window'] = run['native_teacher_window']
+            else:
+                ends=[c for c in run.get('calls',[]) if c.get('action')=='pause_end' and c.get('lifecycle_ok')]
+                if len(ends)!=1:
+                    defects.append('pause_end receipt absent');continue
+                call=ends[0];proof=(call.get('receipt') or {}).get('teacher_forced')
+                core=call.get('receipt_core') or {}
+                if (type(proof) is not dict or core.get('teacher_forced')!=proof
+                        or call.get('receipt_sha256')!=digest(core)
+                        or proof.get('pending')!=0 or proof.get('admitted')!=8
+                        or proof.get('plan_sha256')!=self.plan_shas.get(core.get('repeat'))):
+                    defects.append('teacher receipt binding differs');continue
             result['repeat']=core.get('repeat')
             result['engine_epoch']=core.get('engine_epoch')
             result['route_generation']=core.get('route_generation_after')

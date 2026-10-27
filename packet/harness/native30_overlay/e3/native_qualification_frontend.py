@@ -164,7 +164,13 @@ def handle_frontend(command, *, control, qualification=None, status=None):
     if qualification is None:
         qualification = _peer_module('native_qualification')
     plan = command['plan'] if command['enabled'] else None
+    previous = None
     try:
+        if not command['enabled']:
+            # Clearing resets the plan owner's admission counters. Preserve
+            # the actual pre-clear observation separately for the native
+            # teacher collector; do not infer it from worker token equality.
+            previous = dict(qualification.frontend_status(control))
         receipt = qualification.configure_frontend(control, plan)
     except qualification.NativeQualificationError as exc:
         raise NativeQualificationFrontendError(str(exc)) from None
@@ -190,7 +196,9 @@ def handle_frontend(command, *, control, qualification=None, status=None):
                    receipt={key: receipt.get(key) for key in
                             ('schema', 'enabled', 'plan_sha256', 'admitted',
                              'pending', 'steps') if key in receipt},
-                   status=observed)
+                   status=observed,
+                   **({'previous_status': previous}
+                      if previous is not None else {}))
 
 
 async def handle_worker(command, *, control):

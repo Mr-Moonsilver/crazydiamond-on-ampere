@@ -587,7 +587,8 @@ def make_trace_state(req_states):
     return BoundedTraceReplayState(req_states)
 
 
-def configure_worker(runner, enabled, *, rank=None, factory=make_trace_state):
+def configure_worker(runner, enabled, *, rank=None, factory=make_trace_state,
+                     identity=None):
     """Caller must hold a drained, empty, full-route worker boundary."""
     _require(type(enabled) is bool, 'teacher-enable-invalid')
     _require(type(getattr(runner, 'is_last_pp_rank', None)) is bool, 'teacher-pp-role-unavailable')
@@ -605,7 +606,8 @@ def configure_worker(runner, enabled, *, rank=None, factory=make_trace_state):
         prior.rank = rank
         runner._flash_s5_teacher_trace = prior
         sampler.trace_replay_state = prior
-        prior.probe = runner._flash_s5_decode_probe
+        prior.probe = (identity if identity is not None
+                       else runner._flash_s5_decode_probe)
     elif enabled:
         _reset_state(prior)
         prior.rank = rank

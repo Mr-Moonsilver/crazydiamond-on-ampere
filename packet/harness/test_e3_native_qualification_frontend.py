@@ -179,6 +179,10 @@ class PeerCompositionTest(unittest.TestCase):
             self.command(False, None), control=self.control,
             qualification=self.peer)
         self.assertFalse(cleared['enabled'])
+        self.assertEqual(cleared['previous_status']['admitted'], 8)
+        self.assertEqual(cleared['previous_status']['pending'], 0)
+        self.assertEqual(cleared['previous_status']['plan_sha256'], teacher_decode.digest(plan))
+        self.assertEqual(cleared['admitted'], 0)
         self.assertIsNone(self.processor._flash_s5_teacher.pending)
 
     def test_default_peer_import_reaches_the_actual_input_processor(self):

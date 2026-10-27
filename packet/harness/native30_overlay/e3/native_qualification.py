@@ -428,15 +428,14 @@ def _teacher_configure(runner, native, identity, command):
              'native-qualification-teacher-configuration-needs-empty-worker')
     drain = _drain(runner, native, require_quiet=True)
     rank = _rank(runner, native)
-    result = configure_worker(runner, enabled, rank=rank)
+    result = configure_worker(runner, enabled, rank=rank, identity=identity)
     if enabled:
         if getattr(runner, 'is_last_pp_rank', False):
             state = getattr(runner, '_flash_s5_teacher_trace', None)
             _require(state is not None,
                      'native-qualification-teacher-state-unavailable')
-            # The reviewed installer stamps the probe seam on first creation.
-            # The native action rebinds that single seam to the native identity;
-            # it never installs a probe object.
+            # The installer receives the native identity on first creation.
+            # Keep the same identity on reset; no probe object is installed.
             state.probe = identity
         # Every rank needs the last FULL descriptor for the observer target;
         # only the last PP rank owns the sampler trace state.
