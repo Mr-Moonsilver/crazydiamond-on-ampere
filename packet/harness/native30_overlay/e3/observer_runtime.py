@@ -286,10 +286,18 @@ def start_worker_observer(worker, runner, env=None, *, binding_factory=ReplayBin
         raise ReplayObserverError('bad_state')
     if enabled == '0':
         return None
-    if (values.get('FLASH_S5_DECODE_ONLY_PROBE') != '1'
-            or values.get('FLASH_S5_OVERLAP', '0') != '0'
-            or getattr(runner, '_flash_s5_split', None) is not None
+    probe_mode = values.get('FLASH_S5_DECODE_ONLY_PROBE', '0')
+    overlap_mode = values.get('FLASH_S5_OVERLAP', '0')
+    if (getattr(runner, '_flash_s5_split', None) is not None
             or getattr(runner, '_flash_s5_replay_observer', None) is not None):
+        raise ReplayObserverError('bad_state')
+    if (probe_mode, overlap_mode) == ('0', '1'):
+        # Native observation uses the same owned subscriber, only after the
+        # separate native readiness check. This still hard-refuses today;
+        # an environment flag is not an authorization to allocate or subscribe.
+        from s5_startup import require_native_ready
+        require_native_ready()
+    elif (probe_mode, overlap_mode) != ('1', '0'):
         raise ReplayObserverError('bad_state')
     path, sha = values.get(LIBRARY_ENV), values.get(LIBRARY_SHA_ENV)
     if not path or not sha:

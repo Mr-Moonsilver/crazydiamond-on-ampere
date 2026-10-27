@@ -38,6 +38,23 @@ def probe(session):
         controller=types.SimpleNamespace(admitting=True,drain=drain),_require_not_down=lambda:None)
 
 class WorkerTests(unittest.TestCase):
+    def test_native_start_is_guarded_before_binding_or_subscription(self):
+        import s5_startup
+        env={'FLASH_S5_REPLAY_OBSERVER':'1', 'FLASH_S5_DECODE_ONLY_PROBE':'0',
+             'FLASH_S5_OVERLAP':'1', 'FLASH_S5_REPLAY_LIB':'fixture',
+             'FLASH_S5_REPLAY_LIB_SHA256':'f'*64}
+        worker=types.SimpleNamespace(rank=0);runner=types.SimpleNamespace()
+        calls=[]
+        with self.assertRaises(s5_startup.StartupError):
+            runtime.start_worker_observer(worker,runner,env,
+                binding_factory=lambda *a:calls.append('binding'))
+        self.assertEqual(calls,[])
+        with patch('s5_startup.require_native_ready') as ready:
+            owner=runtime.start_worker_observer(worker,runner,env,
+                binding_factory=lambda *a:object(),session_factory=lambda b:Session())
+        ready.assert_called_once_with()
+        self.assertTrue(owner.started_before_split)
+
     def test_real_window_order_and_worker_proof(self):
         session=Session(); owner=runtime.WorkerObserver(session,0); owner.start(); p=probe(session)
         begun=owner.begin(p,7); ended=owner.end(p,7)

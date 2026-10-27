@@ -693,6 +693,8 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_private_auth.py', 'E3 private auth: existing-key file, no value-bearing argv, strict immutable private file and source declaration (CPU only)'),
                      ('test_e3_q17b_clients.py', 'Q17b composed clients: one controller owner, observer placement and stopped-before-W1 (CPU only)'),
                      ('test_e3_q17b_full_queue.py', 'Q17b full queue: declared startup, actual clients aggregate and owned cleanup (CPU fake commands)'),
+                     ('test_e3_overlap_performance.py', 'Q18a real overlap: frozen target/denominator policy, accepted segment proofs, serialized refusal, invalid-interval retention and reviewed readiness (CPU fake SSE/controller)'),
+                     ('test_e3_overlap_performance_queue.py', 'Q18a overlap queue: armable refusal, all-gate gating, retained FAIL/INCONCLUSIVE, crash/stop cleanup, exact restore and no production start (CPU fake commands)'),
                      ('test_e3_startup_grade.py', 'E3 startup/capture grade: frozen FAIL-over-INCONCLUSIVE verdict, requested 44 recorded apart from the measured split, no replay or speed claim (CPU only)'),
                      ('test_e3_startup_queue.py', 'E3 startup/capture queue: offline fake-command lifecycle, owned cleanup on every failure, no production start and no printed auth (CPU only)'),
                      ('test_e3_graph_audit.py', 'E3 raw retained-graph audit: exact descriptor inventory, expected green owners, bounded native node walk, FAIL-over-unknown verdicts and stub-CUDA compile (CPU only)'),
