@@ -346,7 +346,8 @@ def _graph_offer_proof(offers, decode_declared, prefill_declared, binding,
     for row in offer_proofs.values():
         for kind in WORK_KINDS:
             total[kind] += row['census'][kind]
-    if dict(total) != dict(proof['graph_by_kind']):
+    if any(total[kind] != proof['graph_by_kind'].get(kind, 0)
+           for kind in WORK_KINDS):
         raise _LedgerViolation('graph_node_multiset')
     return offer_proofs, dict(offers_by_label)
 
@@ -492,7 +493,8 @@ def _native_ledger(native, decode_declared, prefill_declared, binding, proof,
         raise _LedgerViolation('raw_expected_mismatch')
     if sum(other_by_kind.values()) != counts['unattributed_other_context']:
         raise _LedgerViolation('raw_other_mismatch')
-    if dict(graph_by_kind) != dict(proof['graph_by_kind']):
+    if any(graph_by_kind[kind] != proof['graph_by_kind'].get(kind, 0)
+           for kind in WORK_KINDS):
         raise _LedgerViolation('raw_graph_kind_mismatch')
     if records != counts['records_in_window']:
         raise _LedgerViolation('raw_records_mismatch')

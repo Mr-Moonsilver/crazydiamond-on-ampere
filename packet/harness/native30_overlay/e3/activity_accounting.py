@@ -72,6 +72,11 @@ def api_kind(name):
         # Pinned CUDA13 metadata queries and event recording. These have no
         # kernel/copy/memset activity; unexpected activity still fails the join.
         'cuFuncGetAttribute','cuKernelGetFunction','cuKernelGetName',
+        # CUDA13 cuda.h:7881-7940 loads code (EAGER/LAZY); :8024-8048
+        # retrieves a kernel handle. Neither is a launch API. VM13e cids
+        # 103/104 returned0 and had no activity. A GPU join or nonzero return
+        # remains a refusal, including lazy initialization side effects.
+        'cuLibraryLoadData','cuLibraryGetKernel',
         'cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags','cuPointerGetAttribute',
         'cudaDeviceGetAttribute','cudaEventRecordWithFlags','cudaStreamIsCapturing')
     if any(re.fullmatch(re.escape(x)+r'(?:_v\d+)?(?:_ptsz|_ptds)?',name) for x in harmless):return 'host'
