@@ -1,11 +1,11 @@
 {
   "cpu_regression": {
-    "cases": 262,
+    "cases": 263,
     "exit_code": 0,
-    "log": "tmp/q18a-native2-selftest-20261027T2213Z.log",
-    "log_sha256": "677fb53a52f3c97e8c5d127e4eb2d217f37fec21702f79436f1eb293c6d9b7b6",
-    "required": 262,
-    "tested_commit": "09b9623"
+    "log": "tmp/native-backbone-vm13g-selftest-20261027T2305Z.log",
+    "log_sha256": "c7e82d5dfda1ee82e775ab7fcae7c6c0fa4439921d664a60689b70a3a92b452f",
+    "required": 263,
+    "tested_commit": "c5c7548"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -284,6 +284,9 @@
     "runs/q18a_native2.draft.sh": "2518bbbd35a01fbf646aa9594b71404dbd1eff4567e17208ec9470dd8a70973a",
     "runs/q18a_native2_declare.sh": "16e2062b0950b3f62ba692e345bd0a637347c8abf30e04454a1b4dc1af962600",
     "runs/q18a_native2_settings.sh": "eb32439c9073c442840164eb4ad5743a0e7fed2abc63539c7c5ef171612bcb0b",
+    "runs/q18a_native3.draft.sh": "0a80c208d94db7b828a644284b39e7c572f274fbf1619311156a8b139ce98436",
+    "runs/q18a_native3_declare.sh": "ebfbb85ec1ba75bd59936bf119ce65803cbed77ddce9567ec3aedf2b85213fbc",
+    "runs/q18a_native3_settings.sh": "60c978820686b346a59360c04d5b9aa1140765b24c417cdc6aa41931b5554cd3",
     "runs/q18a_overlap.draft.sh": "43096d9ea8a606a5416651febbd645e068ce8d7dbabb3a13cd1f40ba34579b83",
     "runs/q18a_overlap_declare.sh": "b082237f505768a013f22899ae58119c9e79a8b05c71a3cd3ba793d65ea14f74",
     "runs/q18a_overlap_settings.sh": "b0c5959b1a05b928360832bef7151e81a60bb3db87b16c479e236e5c2a1cab73",
@@ -341,6 +344,7 @@
     "runs/vmid_job13d.sh": "1a85167748571d3ed37cf45f7ddf4723eccc7c63b4e64fdfc47c64c31ede2153",
     "runs/vmid_job13e.sh": "542cf6dd4d4877aa405278bdfc82ddfc76c1dd4c7ddb69687eaa6f0bccd13029",
     "runs/vmid_job13f.sh": "8e21562ca437a3e8a5426ffad4e4d08376e34d353503d29ee3d7c9554a9625fb",
+    "runs/vmid_job13g.sh": "58b5c3f85fdad2ce1b92139872dca289095ce3b6634ccd2c92a0f26f33dafb9b",
     "runs/vmid_job14.sh": "01c0ad4890bd8b50ba90d5d365c27a5dfc2b90c846754cfcb12933b11cff9aa7",
     "runs/vmid_job14b.sh": "94567c3ac90871cba0c028e79f4bcd5531d6b2a78fecb5aa9b713e9e98fdfb5c",
     "runs/vmid_job2.sh": "471f8fbb7c112f5697b3a513c96ea7754d6b5e69e9b8c217bacf66dc567c222e",
@@ -414,7 +418,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "7fdee4c4ae35e97166181d069e6112f826d6ea90000cb69e167dd240e23ff201",
+    "selftest.py": "78440f8134440fc26531da734f24ec3bb64132004d42ce8436bf39c186d9debe",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -471,10 +475,10 @@
     "test_e3_lane_comm.py": "323c3c6fa0dfe422b37678aff57d90f516f02c63ec902e7bb6b7d8b9f278ccb0",
     "test_e3_lane_comm_probe.py": "71dbd8bc9c8cb22838126ff27ae4fe69f69efee616654f95d1a7fd12dcfda435",
     "test_e3_lane_dispatch.py": "8264e576e295cb6acc93f910c68b1b9b4c552e54d8f1d60266469ff2a75176a7",
-    "test_e3_lane_private.py": "4e7f0e6e067434c321c5e5c9ee0afd2a0d4afd75ce551e0daf392c0bf3a5c951",
+    "test_e3_lane_private.py": "120c073fbedf896dcc47e00e21a4512a05456918651c085d34f48d5d69bf9ccc",
     "test_e3_lane_state.py": "69d8167fad5089c43800ee7da8facb7c04195e8fd3f0b1948b05b91e9853048c",
     "test_e3_launch_diagnostic.py": "2d1847e263797b31fc413ac600901c1a8e8d9b983fe74ba2b3166f8cf0d49f43",
-    "test_e3_model_hooks.py": "fb7bfe2c1aa516752132024038312a2747e6409432e01d44aa47387a8f6c76d3",
+    "test_e3_model_hooks.py": "ee46c2ad8f2c3ec291a26561ba5f7c8f16af90953478a75e0c1ab22e767cfbcc",
     "test_e3_native_accounting_source_closure.py": "447fb56c7b9e8708ccbc179f58d341ef9360fe60aaaa1b3b9a0d7205aa90b0e9",
     "test_e3_native_api_qualification_composition.py": "22940948b5833f615b4d0ecfffb481cb40808f3a57e11e5a2f1d850b4d1f5042",
     "test_e3_native_graph_placement.py": "a339aee928d6a867c1a9e8bfa85de0054eb85ac0530bd8d533a939ad8be807dc",
@@ -483,7 +487,7 @@
     "test_e3_native_measurement_clients.py": "ddbb2495402a0a2d7e058fba1f7f572bdfc27376bc98fee1bb6fbdb1c3fa5ecd",
     "test_e3_native_observation.py": "bacd82bddaac107cd99e83e45d9e755d3060b11435644d24b37412cd068602e7",
     "test_e3_native_overlap.py": "bb0a2ddbe4ab0ed9e791f9e837d7fb1194fd10264760373a7a5dd362f2554618",
-    "test_e3_native_performance_queue.py": "de48beb44805545e6bf452405a3d080ee778c7b72ac5605b325cd097407416c6",
+    "test_e3_native_performance_queue.py": "81b528b5bb6866c1a987c003fa4a84512882d8b26b3b7c3926e047420df56bd8",
     "test_e3_native_placement.py": "97ba4ffae84faf7f4b0b397aa0daf2078b7036eac6bcc789dcc16ac6caa34613",
     "test_e3_native_placement_evidence.py": "185c9b07966e035922ec4ea66a811db52f32aed46f3530a5517691732957d2f8",
     "test_e3_native_prefill_offers.py": "68ddd59b289196a4d9cffa66fe919bb6139df44f56af8ad68829010fa5bc9c0f",
@@ -494,7 +498,7 @@
     "test_e3_native_report_read.py": "0f3ebbcf5c9b2bf4865084e56b3aeaf372d09d83256371b49abaad530806130b",
     "test_e3_native_row1_grade.py": "35d00ed74bc0c63a48ea55cb009449e4c32ef46668ccc461dc487b9cb6d333f1",
     "test_e3_native_source_oracle.py": "92e09186f235173baa783d24c560dadaaaa3497495108db0b655629cbf24ce95",
-    "test_e3_native_startup.py": "5c70a4fe04b7ecae5944ca7341707690d05091232b01dff208596c64c66c474d",
+    "test_e3_native_startup.py": "7badd18e12dcfa7fd04518d04aa1d4b71173abc33818b8d01fd50c11b7247016",
     "test_e3_native_storage_replay.py": "346e2c61ead00e232fb91647bb4bce76c5dfab97ef1a1983061642822a0314b9",
     "test_e3_native_submission_credit.py": "bdf2099d35b277dd8d2acce32236ced01aed6f6431ccec3ad2818a65b1151006",
     "test_e3_native_teacher_sequence.py": "a6a77e5f24120d0790f84f6132902108fedf3f4018da6f1dd5533f5998d7c100",
@@ -525,7 +529,7 @@
     "test_e3_worker_operations.py": "c95720af2fecd954a95af446e24ea12d54582dd2135e3fd22c5d4fda6d2168c0",
     "test_exposure_compare.py": "d58035af67996e04832b80a9785c7316d1d8f3bf938a5b4457e243692f059aff",
     "test_identity.py": "dd1bdaf4bb5a51c91a2078afdf78d6dbde811c9be6a93833220c3098138e5c3f",
-    "test_identity_declare.py": "88f3943d8069d53e86c717e35ba9366d05ff8a2d1abbc6a42e754611c178d0f2",
+    "test_identity_declare.py": "561591bee188068076371038580dc53e5a45e2a0410f8444b76b876bf4116a72",
     "test_morning_summary.py": "c65b37d02d31a4ee39054c1393568a9ee8968d5d492820406dadc76bff251845",
     "test_partial_tail_cov.py": "b5f8bbf6cb9e6e34347eb24a38f5c113b0ea556b4365ea8899b8682e133a0c8c",
     "test_pp_grouping.py": "2af0255e9e2f34098678ab6b7cdf83c49c03a20aab7eadb361db2fbd86b07e1a",
@@ -568,6 +572,7 @@
     "test_vmid_job13d.py": "ec3fb4222f4be1557314dd75c8f495e9ac0867bb28f4891fd724f1a03f69bf22",
     "test_vmid_job13e.py": "9506a6bdc611910b3a563c78d11c21fe16d59da44d60a22f2024c4ac66096812",
     "test_vmid_job13f.py": "cf7828b3e42bf852976ffca188166d92537e7513ef56c68cf4a86be6f8408eed",
+    "test_vmid_job13g.py": "aa2c0da66698160863e1c382fc778dd5c75e526e5b958150d616bfacd56400db",
     "test_vmid_job14.py": "27b80b8aa0b52be4e61ba4bfe79ca35b395cb119625d03b9b8028bd66c829722",
     "test_vmid_job14b.py": "8a16e6d8898186857745a6896d6784c1b850d1169b90a4bcfc57d3ccea843adf",
     "test_vmid_job2.py": "47e15aa66c86ad46c5b2dd1f20db501cd5ab2b8b2408140b3ebb82be326572c7",
@@ -615,6 +620,7 @@
     "vmid_job13d.py": "18b26e55f2fab29ca0c9bf82381fcf89458a4f06fc946d0ad53267b772b5debe",
     "vmid_job13e.py": "a29756e095b8a26bfbe231d12e8eddc145889cdd2c3a6f70ca72effb7bf18137",
     "vmid_job13f.py": "a75cc850b68566313b637e4f02e6a0d5ae9454d69b5c5787f317e2140e74f789",
+    "vmid_job13g.py": "762ad7ba7cb3dfd1c8cf6c16dbfd0ba234dba9f9ac3f5bd77a36290b6b5d9161",
     "vmid_job14.py": "8ce07416f286bd03317a384aabb46ded272d19a73cebd4f15f5f59d90a8c4f44",
     "vmid_job14b.py": "c333e4011cdedac3f758f26c97d7f4b3b03c14a53e8906d8769a5e9ad83cab79",
     "vmid_job2.py": "999e1cfc2f1a409abf05ee65834606b7e7f4a4b6c2d946e542f75fe38b293bd1",
@@ -633,7 +639,7 @@
     "vmid_job9b.py": "4649e7d43f8f881d195e2353073152425fbb1d18c20ea427c59377dcb1f6cf7e",
     "vmid_qsa_dma.py": "63c69acb8d6a5ebe36208ad7fb51420240f6869ea694aca88be5b4434ee7a883",
     "vmid_sparse_plan.py": "0e93e63c8f7db6d3606feec166e8722dcc725fd168c96e005c7d2ce17f267869",
-    "vmid_support.py": "490f3aac43fb57968d766ec1c5649b6d5f13218303d0ef917e5a0e94f5b5e999",
+    "vmid_support.py": "df896e99d50d210fb2c3e740cdbd2dc1ff4cf4f7f6492b70bd343e7c07af6204",
     "w3_queue.py": "7663550efa6357beb5a6a64a5859450264dd0ba05b3ccfec2a941149826bdd4e",
     "window_report.py": "70d3ba0d43d1c82b9ca6f2ef4b5541b660b4266bc4c878fcced30d2144250ca9",
     "workloads/q17b-correctness-precontrols.json": "0b6bd5bf0d40f04803b65cdf70f706b266682dd04a5a4ac82cb7160f4bbb76d8",
@@ -651,11 +657,22 @@
     "reviews/codex-20261027-vm13f-independent-regrade.md",
     "reviews/codex-20261027-native-implementation-closure-review.md",
     "reviews/codex-20261027-native-performance-queue-composition.md",
-    "reviews/codex-20261027-q18a-native1-declaration-repair.md"
+    "reviews/codex-20261027-q18a-native1-declaration-repair.md",
+    "reviews/codex-20261028-native-backbone-owner-repair.md",
+    "reviews/codex-20261028-vm13g-independent-regrade.md"
   ],
   "reviewed_by": "Codex",
   "schema": "e3-native-source-review/1",
   "scope": "implementation closure for owner test only",
+  "source_delta": {
+    "basis": "q18a-native2 worker startup traceback and independently regraded VM13g",
+    "runtime_modules": [
+      "lane_private.py",
+      "model_hooks.py",
+      "native_startup.py"
+    ],
+    "scope": "pinned local-backbone ownership only; generated model/runner/QSA/ops/launcher bytes and all settings/workloads/numerics/gates unchanged"
+  },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
     "admission_metadata.py": "bb8cd120c25a20d712bc84141382012e7085f1b3a2f9b2c8da237749a026f12b",
@@ -673,11 +690,11 @@
     "lane_comm.py": "ae86ed9b5799fc6de8cb8159913999eaf9c047838604e9ec10a7506db15fb14f",
     "lane_dispatch.py": "b12276ac3a5577723e449bb02466249a63d3212772d5f40c03cb3d02d441e4ff",
     "lane_hooks.py": "9c7b3a08b412e36dbacd1b78509dc39c94db8c4fbfe0e3f2f141a13a6828d405",
-    "lane_private.py": "b44f9686cc8f4b2600f379146f0769fb8cd7f0629ade7db1d37d12e0a363f364",
+    "lane_private.py": "89c1e4bc1f5f789dbfcb12b816e96b8629e951b6c56f9ef778ad02c34f6fde9b",
     "lane_state.py": "dfeefb712ad20581de6198d8436b5cf0b8b55869f4fa3bac0610a06ec000fade",
     "launch_diagnostic.py": "842c179ebbec27c7997692e701db489bf15f2e3836c66d95ea6930f523b5abe2",
     "make_s5_overlap.py": "dce06ecefc0da566c28e26028b307cea2082c79619dd28dd7eabdc554bd576ed",
-    "model_hooks.py": "4591d87a39a537d9255bf17642a57c1cb0f1ccc785665573dd5140d16c98cf47",
+    "model_hooks.py": "308d980dde5cd658addd1c0424151a45326f4650a6603713640d29e8e79e38d9",
     "native/build_q17_helpers.sh": "6e59366e0b057c1bcea8bc677d29d694111125f11b89edb3b15773801b710ec4",
     "native/flash_s5_graph_bytes.cpp": "56f550ebc345ee96077bb473264c42cce92140218dc014f7555718bf95e36110",
     "native/flash_s5_green.cu": "c2151ef6a805f620d6c57ef57c405fc0cdbce3c815b25574f9e0d2e7f1fa1907",
@@ -697,7 +714,7 @@
     "native_readiness.py": "20acdcf8d4cc08c11635d68570535c176b610e007b7aa7acc54a49b684684261",
     "native_resources.py": "04f64370f1e64885a18aae816add860ead3f9c03e1cce0193b12816d54f137f9",
     "native_source.py": "01e61fc356883d9ebbf65ab415ea71279025c30cbed380d39f9c1848cb5ca771",
-    "native_startup.py": "18f4d45af8691809d3d676177dbc1c8f4d00fd82553ed79b35e2b0dbffb44801",
+    "native_startup.py": "311e1953d659485ff1a37c38e8491098544c8a77f6aa036ec0819a7a44f763ff",
     "observer_runtime.py": "a14fd87ec561da01ff02b11129f839806752a35b976e6fa9cc7d0b33921f544d",
     "operation_source.py": "3abc7885cf93c80356ec9655ddeaa90163a0fe79aa176b58c1185772e6943ce9",
     "probe_control.py": "c2b34f321ac49ab423f05bebdeef96d479cb141d7f3ba2147666dfed98d7ad28",
@@ -717,6 +734,14 @@
     "wire_v1.py": "f8aaa360a18c7fe9e530ffcf4775b741c88fa5c8a2156b03651e5fd303200721",
     "worker_bridge.py": "b28280bdff8d2e7d3b6683a2fe2267d16aa9cea5412dbffaf9d61a2029c8066b",
     "worker_hooks.py": "5fae77ec149f188ee298a4d1300f333531e18a46f918bf6e5778382fbc15099b"
+  },
+  "vm_followup": {
+    "job13g": {
+      "receipt_commit": "82b6273",
+      "receipt_sha256": "b9a822ee9c8aae1cb7948eac05ca7763b51f85abd23b8b67c59de6ddb0401305",
+      "scope": "actual pinned owner-class shells with synthetic local metadata; repaired startup/private/forward ownership plus real CUDA private/observer scopes; no weights, model arithmetic or TP/PP proof",
+      "verdict": "PASS"
+    }
   },
   "vm_prerequisites": {
     "job13c": {
