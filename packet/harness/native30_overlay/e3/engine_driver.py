@@ -1489,6 +1489,14 @@ class NativeSegmentDriver:
             # Waiting for a reply is not a cancellation round: the owned
             # transport's reply deadline bounds it, not the engine's tick rate.
             return
+        if self._transition is not None:
+            # A stop cannot abandon a partially applied route or report a
+            # clean pause while ready ranks and a draining rank disagree.
+            # Finish the exact outstanding command under its original deadline
+            # before cancellation/full-route retirement can progress.
+            if self._transition_retry:
+                self._send_transition()
+            return
         if self.tx is None:
             # Admission happened pre-schedule; the driver may not have begun.
             # Closing admissions retires the parked chunk without publishing.

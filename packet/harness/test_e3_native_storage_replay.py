@@ -929,6 +929,21 @@ class NativeBridgeIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(stack.driver._transition)
         self.assertTrue(stack.driver._split_ready)
 
+    def test_pause_mid_partial_transition_keeps_retrying_until_all_ranks_drain(self):
+        stack, events = self.pending_return()
+        command = stack.driver._transition
+        stack.driver.stop('pause')
+        self.assertEqual(stack.driver._transition, command)
+        self.assertTrue(stack.driver.active)
+        self.assertIsNone(stack.driver.error)
+        events[1].complete = True
+        stack.drive(lambda: not stack.driver.active)
+        self.assertIsNone(stack.driver.stop_kind)
+        self.assertFalse(stack.driver._split_ready)
+        self.assertTrue(stack.driver.finish_pause())
+        for worker in stack.workers.values():
+            self.assertEqual(worker.controller.route, 'full')
+
     def test_exact_retry_cache_refuses_changed_command_and_route(self):
         stack, _ = self.pending_return()
         worker = stack.worker(0)
