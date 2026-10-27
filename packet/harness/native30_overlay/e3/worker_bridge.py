@@ -385,6 +385,22 @@ class NativeWorkerBridge:
             else 'quarantined')
 
     # -- closure -----------------------------------------------------------
+    def _drain_prefill_streams(self):
+        """Retire owned side-stream work before releasing the lane's storage.
+
+        Older CPU/diagnostic ports have no native side-stream owner. Real
+        native construction supplies it through the dispatcher; this hook
+        does not establish that construction or grant native readiness.
+        """
+        native_getter = getattr(self, '_native', None)
+        native = (native_getter() if callable(native_getter)
+                  else getattr(self.dispatcher, 'native', None))
+        streams = getattr(native, 'prefill_streams', None)
+        drain = getattr(streams, 'drain', None)
+        if not callable(drain):
+            return 0
+        return drain()
+
     def _release_lane(self, transaction, terminal):
         """Idempotent drain/release; close the request row only when terminal.
 
@@ -397,6 +413,7 @@ class NativeWorkerBridge:
         if not self._released:
             if not self.dispatcher.drain():
                 return False
+            self._drain_prefill_streams()
             # Query the drained lane now: release() clears its events, and a
             # nonterminal request row must carry its own final report for the
             # engine's later cancellation retirement.

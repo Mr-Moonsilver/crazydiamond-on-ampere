@@ -140,6 +140,38 @@ def fake_torch(total_sms=82, default_stream=None):
 class FakeBinding:
     def decode_stream_check(self, handle, token):
         return 0
+
+    def aux_create(self, handle):
+        self.decode_tokens = getattr(self, 'decode_tokens', set())
+        token = 1000 + len(self.decode_tokens)
+        self.decode_tokens.add(token)
+        return token
+
+    def aux_destroy(self, handle, token):
+        tokens = getattr(self, 'decode_tokens', set())
+        if token not in tokens:
+            return 1
+        tokens.remove(token)
+        return 0
+
+    def prefill_aux_create(self, handle):
+        self.prefill_tokens = getattr(self, 'prefill_tokens', set())
+        token = 2000 + len(self.prefill_tokens)
+        self.prefill_tokens.add(token)
+        return token
+
+    def prefill_aux_destroy(self, handle, token):
+        tokens = getattr(self, 'prefill_tokens', set())
+        if token not in tokens:
+            return 1
+        tokens.remove(token)
+        return 0
+
+    def prefill_stream_check(self, handle, token):
+        if getattr(self, 'wrong_prefill', False):
+            return 1
+        return token not in getattr(self, 'prefill_tokens', set())
+
     """Driver boundary: returns the split counts and marks probe SMs."""
 
     def __init__(self, total=82, overlap=False, alias=False, lie=False):
@@ -237,7 +269,9 @@ class FakeManager:
         self.decode_query_len = decode_query_len
         self.lora_capture_cases = lora_capture_cases
         self.varlen_decode = varlen_decode
-        self.pool = ('stock', 0)
+        # The pinned manager returns an int or a pair of ints; the native
+        # construction reads this identity instead of guessing a pool.
+        self.pool = (2, 0)
         self._capture_descs = {}
         self.graphs = {}
         self.capture_calls = []

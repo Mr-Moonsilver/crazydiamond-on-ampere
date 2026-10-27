@@ -678,6 +678,8 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_vmid_job7.py', 'VM7 real-owner capture repair, frozen negative controls, exact native node join and pinned header compile (CPU only)'),
                      ('test_e3_capture_streams.py', 'Pinned split capture side-stream ownership, sharing, restoration, graph leases and source pins (CPU only)'),
                      ('test_e3_green_native.py', 'E3 green-context split, split decode bank capture/replay/transition and worker/cudagraph seams (CPU only, faked driver/torch)'),
+                     ('test_e3_prefill_streams.py', 'E3 prefill side-stream owners: green-role isolation, exact owner restoration and allocator lifetime (CPU)'),
+                     ('test_vmid_job7c.py', 'VM<vm-id> prefill owner qualification: raw eager/graph census, negative controls and retained context cleanup (CPU)'),
                      ('test_e3_green_probe.py', 'E3 green probe: frozen verdict rules, reviewed sm_86 build command and unarmed queue mounts/syntax (CPU only)'),
                      ('test_e3_native_integration.py', 'E3 native integration: generated worker/engine startup, typed RPC driving, completion/commit ordering, stop paths and record status (CPU only, faked device/transport)'),
                      ('test_e3_worker_operations.py', 'E3 D2 worker operations: bounded QSA buckets, generated call sites executed, delayed events, cancel/drain and stale-epoch refusal (CPU only, fake CUDA)'),

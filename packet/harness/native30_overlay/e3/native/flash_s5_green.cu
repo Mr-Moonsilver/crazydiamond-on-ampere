@@ -11,7 +11,13 @@
 
 #define FLASH_S5_GREEN_ABI 1
 
-struct Pair { CUgreenCtx d{}, p{}; CUstream ds{}, ps{}; int dc{}, pc{}; std::vector<CUstream> aux; };
+struct Pair {
+  CUgreenCtx d{}, p{};
+  CUstream ds{}, ps{};
+  int dc{}, pc{};
+  std::vector<CUstream> aux;   // decode-green auxiliary streams
+  std::vector<CUstream> paux;  // prefill-green auxiliary streams
+};
 
 extern "C" int s5_abi(void) { return FLASH_S5_GREEN_ABI; }
 
@@ -78,10 +84,44 @@ extern "C" int s5_decode_aux_destroy(void *handle, uint64_t token) {
   p->aux.erase(it); return CUDA_SUCCESS;
 }
 
+// Additive ABI-1 extension: bounded streams on the EXISTING prefill context.
+// The decode extension above is unchanged; the two pools are separate so a
+// decode auxiliary can never be handed out as a prefill one (or vice versa).
+extern "C" int s5_prefill_aux_create(void *handle, uint64_t *out) {
+  if (!handle || !out) return CUDA_ERROR_INVALID_VALUE;
+  Pair *p = static_cast<Pair*>(handle);
+  if (p->paux.size() >= 8) return CUDA_ERROR_OUT_OF_MEMORY;
+  CUstream stream{};
+  CUresult r = cuGreenCtxStreamCreate(&stream, p->p, CU_STREAM_NON_BLOCKING, 0);
+  if (r) return r;
+  try { p->paux.push_back(stream); }
+  catch (...) { cuStreamDestroy(stream); return CUDA_ERROR_OUT_OF_MEMORY; }
+  *out = reinterpret_cast<uint64_t>(stream); return CUDA_SUCCESS;
+}
+extern "C" int s5_prefill_stream_check(void *handle, uint64_t token) {
+  if (!handle || !token) return CUDA_ERROR_INVALID_VALUE;
+  Pair *p = static_cast<Pair*>(handle);
+  CUcontext primary{}; CUgreenCtx green{};
+  CUresult r = cuStreamGetCtx_v2(reinterpret_cast<CUstream>(token), &primary, &green);
+  if (r) return r;
+  return primary && green == p->p ? CUDA_SUCCESS : CUDA_ERROR_INVALID_CONTEXT;
+}
+extern "C" int s5_prefill_aux_destroy(void *handle, uint64_t token) {
+  if (!handle || !token) return CUDA_ERROR_INVALID_VALUE;
+  Pair *p = static_cast<Pair*>(handle);
+  CUstream stream = reinterpret_cast<CUstream>(token);
+  auto it = std::find(p->paux.begin(), p->paux.end(), stream);
+  if (it == p->paux.end()) return CUDA_ERROR_INVALID_VALUE;
+  CUresult r = cuStreamSynchronize(stream); if (r) return r;
+  r = cuStreamDestroy(stream); if (r) return r;
+  p->paux.erase(it); return CUDA_SUCCESS;
+}
+
 // Teardown order: drain both streams, destroy streams, destroy contexts.
+// Retained auxiliary streams (either pool) keep the pair alive by contract.
 extern "C" int s5_close(void *handle) {
   Pair *p = (Pair*)handle;
-  if (!p || !p->aux.empty()) return CUDA_ERROR_INVALID_VALUE;
+  if (!p || !p->aux.empty() || !p->paux.empty()) return CUDA_ERROR_INVALID_VALUE;
   CUresult r = cuStreamSynchronize(p->ds); if (r) return r;
   r = cuStreamSynchronize(p->ps); if (r) return r;
   r = cuStreamDestroy(p->ds); if (r) return r;

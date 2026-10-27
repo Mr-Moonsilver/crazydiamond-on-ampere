@@ -79,29 +79,41 @@ class DriverBinding:
     def probe(self, pointer, blocks, stream_token, cycles):
         return int(self._lib.s5_probe(int(pointer), int(blocks), int(stream_token), int(cycles)))
 
-    def _aux(self, name, handle, value=None):
+    def _aux(self, name, handle, value=None, *, role='decode'):
         c = self._c
         fn = getattr(self._lib, name, None)
         if fn is None:
-            raise GreenContextError('green helper lacks decode auxiliary stream extension')
+            # A helper built before this extension cannot be used: there is no
+            # primary-context fallback for either role.
+            raise GreenContextError(
+                f'green helper lacks {role} auxiliary stream extension')
         fn.restype = c.c_int
         if value is None:
             fn.argtypes = [c.c_void_p, c.POINTER(c.c_uint64)]
             out = c.c_uint64()
             rc = fn(handle, c.byref(out))
-            if rc: raise GreenContextError(f'decode auxiliary create failed: CUresult={rc}')
+            if rc: raise GreenContextError(f'{role} auxiliary create failed: CUresult={rc}')
             return int(out.value)
         fn.argtypes = [c.c_void_p, c.c_uint64]
         return int(fn(handle, value))
 
     def aux_create(self, handle):
-        return self._aux('s5_decode_aux_create', handle)
+        return self._aux('s5_decode_aux_create', handle, role='decode')
 
     def aux_destroy(self, handle, token):
-        return self._aux('s5_decode_aux_destroy', handle, token)
+        return self._aux('s5_decode_aux_destroy', handle, token, role='decode')
 
     def decode_stream_check(self, handle, token):
-        return self._aux('s5_decode_stream_check', handle, token)
+        return self._aux('s5_decode_stream_check', handle, token, role='decode')
+
+    def prefill_aux_create(self, handle):
+        return self._aux('s5_prefill_aux_create', handle, role='prefill')
+
+    def prefill_aux_destroy(self, handle, token):
+        return self._aux('s5_prefill_aux_destroy', handle, token, role='prefill')
+
+    def prefill_stream_check(self, handle, token):
+        return self._aux('s5_prefill_stream_check', handle, token, role='prefill')
 
     def identity(self):
         return {'library_sha256': self.library_sha256, 'abi': self.abi,
@@ -159,6 +171,7 @@ class GreenSplit:
         self.total_sms = None
         self.membership_result = None
         self._aux_streams = {}
+        self._prefill_aux_streams = {}
         self._graph_owners = set()
         self._allocator_exposed = False
         self.native_retained = False
@@ -229,7 +242,8 @@ class GreenSplit:
     def create_decode_aux(self):
         self._require_open()
         token = self.binding.aux_create(self._handle)
-        if not token or token in self._aux_streams or token in (self.decode_stream_token, self.prefill_stream_token):
+        if not token or token in self._aux_streams or token in self._prefill_aux_streams \
+                or token in (self.decode_stream_token, self.prefill_stream_token):
             self.state = 'quarantined'
             raise GreenContextError('aliased auxiliary stream')
         try:
@@ -244,8 +258,44 @@ class GreenSplit:
 
     def check_decode_stream(self, stream):
         self._require_open()
+        if stream.cuda_stream in self._prefill_aux_streams:
+            raise GreenContextError('prefill auxiliary cannot serve as a decode stream')
         if self.binding.decode_stream_check(self._handle, stream.cuda_stream):
             raise GreenContextError('stream is not in decode green context')
+
+    def create_prefill_aux(self):
+        """One bounded auxiliary on the EXISTING prefill green context.
+
+        Distinct pool from the decode auxiliaries: a prefill side stream is
+        never handed out as a decode stream, and no primary-context stream is
+        ever substituted.  A helper without the prefill extension refuses.
+        """
+        self._require_open()
+        create = getattr(self.binding, 'prefill_aux_create', None)
+        if not callable(create):
+            raise GreenContextError('green helper lacks prefill auxiliary stream extension')
+        token = create(self._handle)
+        if not token or token in self._aux_streams or token in self._prefill_aux_streams \
+                or token in (self.decode_stream_token, self.prefill_stream_token):
+            self.state = 'quarantined'
+            raise GreenContextError('aliased prefill auxiliary stream')
+        try:
+            stream = self.torch.cuda.ExternalStream(token, device=self.device_index)
+            if stream.cuda_stream != token or self.binding.prefill_stream_check(self._handle, token):
+                raise GreenContextError('auxiliary stream is not in prefill green context')
+        except BaseException:
+            if self.binding.prefill_aux_destroy(self._handle, token): self.state = 'quarantined'
+            raise
+        self._prefill_aux_streams[token] = stream
+        return stream
+
+    def check_prefill_stream(self, stream):
+        self._require_open()
+        token = getattr(stream, 'cuda_stream', None)
+        if not token or token in self._aux_streams:
+            raise GreenContextError('stream is not in prefill green context')
+        if self.binding.prefill_stream_check(self._handle, token):
+            raise GreenContextError('stream is not in prefill green context')
 
     def retain_allocator_context(self):
         """Call BEFORE tensor work can record a use of an external stream.
@@ -265,6 +315,7 @@ class GreenSplit:
                 'native_release': 'process-exit' if self._allocator_exposed else 'explicit-close',
                 'native_retained': self.native_retained,
                 'retained_auxiliary_streams': len(self._aux_streams),
+                'retained_prefill_auxiliary_streams': len(self._prefill_aux_streams),
                 'logical_state': self.state}
 
     def retain_graph_owner(self, owner):
@@ -289,6 +340,18 @@ class GreenSplit:
             raise GreenContextError('auxiliary stream destroy failed')
         del self._aux_streams[token]
 
+    def destroy_prefill_aux(self, stream):
+        self._require_open()
+        if self._allocator_exposed:
+            raise GreenContextError('allocator stream uses require process-lifetime retention')
+        token = stream.cuda_stream
+        if self._prefill_aux_streams.get(token) is not stream:
+            raise GreenContextError('foreign prefill auxiliary stream')
+        if self.binding.prefill_aux_destroy(self._handle, token):
+            self.state = 'quarantined'
+            raise GreenContextError('prefill auxiliary stream destroy failed')
+        del self._prefill_aux_streams[token]
+
     def close(self):
         if self._graph_owners:
             raise GreenContextError('split still owned by captured graphs')
@@ -297,13 +360,17 @@ class GreenSplit:
         if self._allocator_exposed:
             # Logical shutdown only. Existing tensors may be freed much later.
             # Drain while all contexts/streams are valid; refuse reuse afterwards.
-            for stream in (self.decode_stream, self.prefill_stream, *self._aux_streams.values()):
+            for stream in (self.decode_stream, self.prefill_stream,
+                           *self._aux_streams.values(),
+                           *self._prefill_aux_streams.values()):
                 stream.synchronize()
             self.native_retained = True
             self.state = 'closed'
             return True
         for stream in list(self._aux_streams.values()):
             self.destroy_decode_aux(stream)
+        for stream in list(self._prefill_aux_streams.values()):
+            self.destroy_prefill_aux(stream)
         rc = self.binding.close(self._handle)
         if rc:
             self.state = 'quarantined'

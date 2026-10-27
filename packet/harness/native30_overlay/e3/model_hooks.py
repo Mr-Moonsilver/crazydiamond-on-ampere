@@ -276,23 +276,209 @@ def ple_embedding(model, layer_idx):
 
 
 class PlePrivateScratch:
-    """Lane-private prefetch stream/buffer for the one PLE layer."""
+    """Lane-private prefetch stream/buffer for the one PLE layer.
 
-    def __init__(self, embedding, chunk_tokens, *, torch_module, device):
+    The stream is supplied by the caller.  The native lane passes the owned
+    prefill-green auxiliary (see :class:`PrefillStreamOwners`); the default-off
+    path and the CPU tests pass none and keep a private primary-context stream.
+    ``stream_basis`` records which one was used.
+    """
+
+    def __init__(self, embedding, chunk_tokens, *, torch_module, device, stream=None):
         buffer = getattr(embedding, '_prefetch_buffer', None)
-        stream = getattr(embedding, '_prefetch_stream', None)
-        if buffer is None or stream is None:
+        original = getattr(embedding, '_prefetch_stream', None)
+        if buffer is None or original is None:
             raise ModelHookError('PLE embedding has no prefetch buffer/stream to privatize')
+        if stream is None:
+            self.stream = torch_module.cuda.Stream(device=device)
+            self.stream_basis = 'primary-context'
+        else:
+            if not getattr(stream, 'cuda_stream', 0):
+                raise ModelHookError('PLE prefetch stream is not a CUDA stream wrapper')
+            self.stream = stream
+            self.stream_basis = 'prefill-green'
         rows = int(chunk_tokens) * int(getattr(embedding, 'etp_data_parallel_size', 1))
         shape = (rows,) + tuple(buffer.shape[1:])
         self.buffer = torch_module.empty(shape, dtype=buffer.dtype, device=device)
-        self.stream = torch_module.cuda.Stream(device=device)
         self.bytes = int(self.buffer.numel() * self.buffer.element_size())
         self.embedding = embedding
 
     def scope(self):
         return AttributeSwap(self.embedding, {'_prefetch_buffer': self.buffer,
                                               '_prefetch_stream': self.stream})
+
+
+def prefill_pinned_types():
+    """Exact stock types whose side streams the prefill lane may own.
+
+    Same pinned sources as the decode capture repair, so the two ownership
+    paths cannot drift apart.  Imported lazily: no vLLM import at startup and
+    no torch import in this module.
+    """
+    from capture_streams import pinned_types
+    return pinned_types()
+
+
+class PrefillStreamOwners:
+    """Persistent prefill side-stream ownership for one worker incarnation.
+
+    Unlike ``capture_streams.CaptureStreams`` (decode graph capture only), this
+    keeps one prefill-green auxiliary per distinct original side stream and
+    swaps it in for every prefill segment, restoring the exact original in a
+    finally.  Originals are never destroyed and the stock event topology is
+    untouched.  Owners sharing one original stream keep sharing its
+    replacement; a decoder auxiliary is never reused.
+
+    ``prepare`` retains the split's allocator context BEFORE any tensor can be
+    exposed to the new streams (VM7b): wrappers and green contexts outlive the
+    allocator's block->stream records, so native destruction is refused from
+    then on and only process teardown reclaims them.
+    """
+
+    ATTRS = ('_stream', '_prefetch_stream')
+
+    def __init__(self, split, owners):
+        if not all(callable(getattr(split, m, None)) for m in (
+                'create_prefill_aux', 'check_prefill_stream', 'destroy_prefill_aux',
+                'retain_allocator_context', 'lifetime_record')):
+            raise ModelHookError('prefill stream owners need the green split extension')
+        self.split = split
+        self.owners = tuple(owners)
+        self.originals = []
+        self.replacements = []
+        self.streams = []
+        self.state = 'new'
+        self._in_scope = False
+        seen = set()
+        for entry in self.owners:
+            if type(entry) is not tuple or len(entry) != 2 or entry[1] not in self.ATTRS:
+                raise ModelHookError('unsupported prefill stream owner')
+            obj, attr = entry
+            if (id(obj), attr) in seen:
+                raise ModelHookError('duplicate prefill stream owner')
+            seen.add((id(obj), attr))
+            old = getattr(obj, attr, None)
+            if old is not None and not getattr(old, 'cuda_stream', 0):
+                raise ModelHookError('prefill stream owner has no stream')
+            if old is None and attr == '_prefetch_stream':
+                raise ModelHookError('PLE owner has no prefetch stream to own')
+            self.originals.append(old)
+
+    @classmethod
+    def discover(cls, runner, split, *, pinned=None):
+        """Find this stage's exact SharedExperts/PLE owners.
+
+        Mirrors the owner census of ``capture_streams.for_runner``: exactly one
+        local Qwen4Exp model, one SharedExperts per local layer and one PLE
+        embedding per local PLE layer.  A stream disabled by the stock flag
+        (``_stream is None``) is preserved as disabled, never re-enabled.
+        """
+        shared_type, ple_type = (pinned or prefill_pinned_types())
+        modules = tuple(runner.model.modules())
+        models = [m for m in modules if type(m).__name__ == 'Qwen4ExpModel'
+                  and type(m).__module__ == 'vllm.models.qwen4_exp.nvidia.model']
+        if len(models) != 1:
+            raise ModelHookError('expected one local Qwen4Exp model for prefill streams')
+        model = models[0]
+        start, end = model.start_layer, model.end_layer
+        if type(start) is not int or type(end) is not int or not 0 <= start < end:
+            raise ModelHookError('invalid local layer interval for prefill streams')
+        shared = [m for m in modules if type(m) is shared_type]
+        ple = [m for m in modules if type(m) is ple_type]
+        expected_ple = sum(start < n <= end for n in set(model.config.ple_layer_ids))
+        if len(shared) != end - start or len(ple) != expected_ple:
+            raise ModelHookError('prefill side-stream owner census differs from local model')
+        return cls(split, [(m, '_stream') for m in shared]
+                   + [(m, '_prefetch_stream') for m in ple])
+
+    def prepare(self):
+        """Create one prefill auxiliary per distinct original stream."""
+        if self.state != 'new':
+            raise ModelHookError('prefill stream ownership is already prepared')
+        groups = {}
+        created = []
+        try:
+            for old in self.originals:
+                if old is None:
+                    # Stock shared-experts stream disabled: preserve that.
+                    self.replacements.append(None)
+                    continue
+                key = old.cuda_stream
+                if key not in groups:
+                    stream = self.split.create_prefill_aux()
+                    self.split.check_prefill_stream(stream)
+                    created.append(stream)
+                    groups[key] = stream
+                self.replacements.append(groups[key])
+            # VM7b: the allocator may already hold block->stream records for
+            # these wrappers; retain the contexts before any tensor work.
+            self.split.retain_allocator_context()
+            self.streams = created
+            self.state = 'ready'
+        except BaseException:
+            self.state = 'failed'
+            self.replacements = []
+            if not self.split.lifetime_record()['allocator_exposed']:
+                for stream in reversed(created):
+                    self.split.destroy_prefill_aux(stream)
+            self.streams = []
+            raise
+        return self
+
+    @contextmanager
+    def scope(self):
+        """Swap every owned prefill side stream in; restore exactly in finally."""
+        if self.state != 'ready':
+            raise ModelHookError('prefill stream ownership is not ready')
+        if self._in_scope:
+            raise ModelHookError('prefill stream scope is not reentrant')
+        for (obj, attr), old in zip(self.owners, self.originals):
+            if getattr(obj, attr, None) is not old:
+                raise ModelHookError('prefill side-stream owner changed outside the lane scope')
+        installed = []
+        self._in_scope = True
+        try:
+            for (obj, attr), old, new in zip(self.owners, self.originals, self.replacements):
+                if new is None:
+                    continue
+                setattr(obj, attr, new)
+                installed.append((obj, attr, old))
+            yield self
+        finally:
+            for obj, attr, old in reversed(installed):
+                setattr(obj, attr, old)
+            self._in_scope = False
+
+    def replacement(self, owner, attr):
+        """The owned replacement stream for one registered owner."""
+        for (obj, name), new in zip(self.owners, self.replacements):
+            if obj is owner and name == attr:
+                if new is None:
+                    raise ModelHookError('stream owner is disabled in the stock model')
+                return new
+        raise ModelHookError('owner is not registered for prefill streams')
+
+    def drain(self):
+        """Synchronize every owned prefill auxiliary; returns the count."""
+        if self.state != 'ready':
+            raise ModelHookError('prefill stream ownership is not ready')
+        for stream in self.streams:
+            stream.synchronize()
+        return len(self.streams)
+
+    def record(self):
+        originals = {id(old) for old in self.originals if old is not None}
+        return {'state': self.state,
+                'owners': len(self.owners),
+                'shared_owners': sum(a == '_stream' for _, a in self.owners),
+                'ple_owners': sum(a == '_prefetch_stream' for _, a in self.owners),
+                'distinct_original_streams': len(originals),
+                'auxiliary_streams': len(self.streams),
+                'basis': 'prefill-green',
+                'original_owners_restored': all(
+                    getattr(o, a, None) is old
+                    for (o, a), old in zip(self.owners, self.originals)),
+                'allocator_lifetime': self.split.lifetime_record()}
 
 
 class SegmentRecord:
@@ -310,7 +496,7 @@ class LaneForward:
 
     def __init__(self, model, inputs, *, stream, tp_group=None, tp_comm=None,
                  forward_context=None, ple_scratch=None, attention_driver=None,
-                 torch_module=None, clock=time.monotonic_ns):
+                 torch_module=None, clock=time.monotonic_ns, prefill_owners=None):
         if not all(callable(getattr(model, m, None)) for m in (
                 '_flash_e3_forward_prefix', '_flash_e3_forward_layer', '_flash_e3_forward_suffix')):
             raise ModelHookError('model does not carry the generated lane forward methods')
@@ -330,6 +516,7 @@ class LaneForward:
         self.tp_comm = tp_comm
         self.forward_context = forward_context
         self.ple_scratch = ple_scratch
+        self.prefill_owners = prefill_owners
         self.attention_driver = attention_driver
         self.torch = torch_module
         self.clock = clock
@@ -359,6 +546,11 @@ class LaneForward:
                 from lane_comm import tp_scope
 
                 stack.enter_context(tp_scope(self.tp_group, self.tp_comm))
+            if self.prefill_owners is not None:
+                # Side streams that stock code runs on (SharedExperts and the
+                # PLE prefetch stream) are owned by the prefill green context
+                # for this segment and restored exactly afterwards.
+                stack.enter_context(self.prefill_owners.scope())
             if (layer_idx is not None and self.ple_scratch is not None
                     and ple_embedding(self.model, layer_idx) is self.ple_scratch.embedding):
                 stack.enter_context(self.ple_scratch.scope())
@@ -447,4 +639,5 @@ class LaneForward:
 
 
 __all__ = ['AttributeSwap', 'LaneForward', 'ModelHookError', 'PINS', 'PlePrivateScratch',
-           'SegmentRecord', 'generate', 'generate_one', 'ple_embedding', 'revert_one']
+           'PrefillStreamOwners', 'SegmentRecord', 'generate', 'generate_one',
+           'ple_embedding', 'prefill_pinned_types', 'revert_one']
