@@ -171,7 +171,7 @@ class WorkerNative:
                                 if self.prefill_streams is not None else None),
             'private_bindings': (self.private_bindings.audit()
                                  if self.private_bindings is not None else None),
-            'communicators': 'unmeasured',
+            'communicators': self.comms.describe(),
             'chunk_tokens': self.chunk_tokens,
             'route': self.controller.route,
             'route_generation': self.controller.route_generation,

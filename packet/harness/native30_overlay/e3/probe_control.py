@@ -23,7 +23,7 @@ class ProbeControlError(RuntimeError):
 RANKS = (0, 1, 2, 3)
 PATH = '/v1/flash_s5_decode_probe'
 NATIVE_PATH = '/v1/flash_s5_native_overlap'
-NATIVE_SESSION_ACTIONS = ('prepare', 'pause_enter_split', 'overlap_begin',
+NATIVE_SESSION_ACTIONS = ('prefill_begin', 'prefill_end', 'identity', 'pause', 'prepare', 'pause_enter_split', 'overlap_begin',
                           'overlap_end', 'leave_full', 'resume', 'status',
                           'admission', 'arm_admission', 'disarm_admission')
 ACTIONS = ('status', 'pause', 'transition', 'resume', 'observer_begin', 'observer_end')

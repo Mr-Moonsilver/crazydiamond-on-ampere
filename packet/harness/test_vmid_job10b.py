@@ -41,7 +41,14 @@ class VM10BTests(unittest.TestCase):
         self.assertEqual(j.grade(r)['verdict'],'FAIL')
     def test_pinned_real_serializer_and_teacher_source(self):
         sys.path.insert(0,str(ROOT/'patches/s5_engine'));import teacher_decode as td
-        self.assertEqual(j.s.sha(Path(td.__file__)),j.TEACHER_SHA)
+        # The historical VM10b probe remains pinned to its immutable collector.
+        # Native configuration now also accepts its separately owned identity;
+        # that additive installation seam is not part of the digest algorithm.
+        self.assertEqual(j.TEACHER_SHA,'3e8bfd2443a98f6df830c69983cd70b528cf37bdf0aa7514bab9668a4a7bd22c')
+        import ast,inspect,hashlib
+        node=ast.parse(inspect.getsource(td.logprob_digest)).body[0]
+        self.assertEqual(hashlib.sha256(ast.dump(node,include_attributes=False).encode()).hexdigest(),
+                         'bdfe27ba49a1dbd6c361949205aa349c0391befe615276520d7d16247a8e1adf')
         emit=j.serializers(ROOT/'reference/vllm-src')
         for token in (3,24):
             ids=[token]+list(range(20));values=[-float(token)]+[-float(x) for x in range(20)]

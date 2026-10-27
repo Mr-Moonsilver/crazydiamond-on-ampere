@@ -39,7 +39,7 @@ ADMISSION_PHASES = ('full-prefill-solo', 'split-prefill-solo',
 NATIVE_ADMISSION_PHASES = ('split-prefill-solo', 'row1-native', 'w2-overlap')
 READ_ACTIONS = ('status', 'snapshot', 'transition_acks', 'bootstrap_acks',
                 'overlap_evidence', 'cancel')
-INTENT_ACTIONS = ('census', 'barrier', 'drain', 'poll_native', 'qualification',
+INTENT_ACTIONS = ('identity', 'census', 'barrier', 'drain', 'poll_native', 'qualification',
                   'bootstrap_engine_owner', 'enter_split', 'leave_split',
                   'arm_admission', 'disarm_admission')
 ACTIONS = READ_ACTIONS + INTENT_ACTIONS
@@ -275,6 +275,9 @@ class NativeControlClient:
             self.last_snapshot = reply.get('snapshot') or self.last_snapshot
         return reply
 
+    async def worker_identity(self):
+        return await self._intent({'action': 'identity'})
+
     async def census(self):
         return await self._intent({'action': 'census'})
 
@@ -360,6 +363,8 @@ class NativeControlClient:
             return await self.transition_acks()
         if action == 'bootstrap_acks':
             return await self.bootstrap_acks()
+        if action == 'identity':
+            return await self.worker_identity()
         if action == 'census':
             return await self.census()
         if action == 'barrier':

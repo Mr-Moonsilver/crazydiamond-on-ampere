@@ -76,7 +76,7 @@ ROW_MAPPING_SCHEMA = 's5-teacher-row-mapping/1'
 ROW_BASIS = 'sampler-invocation/1'
 ROW1_PLAN_SCHEMA = 's5-native-row1-request-plan/1'
 ROW1_PLAN_FIELDS = frozenset({'schema', 'workload', 'streams', 'run_index',
-                              'request_sha256', 'phase'})
+                              'request_sha256', 'phase', 'prompts'})
 PREFILL_PLAN_SCHEMA = 's5-native-prefill-request-plan/1'
 PREFILL_PLAN_FIELDS = frozenset({'schema', 'workload', 'streams', 'run_index',
                                  'request_sha256'})
@@ -191,6 +191,16 @@ def freeze_row1_plan(plan, *, run_id, model):
     if not _text(model):
         raise QualificationError('model-required')
     cohort = correctness.build_cohort(workload)
+    explicit = plan.get('prompts')
+    if explicit is not None:
+        if (type(explicit) is not list or len(explicit) != workload.streams
+                or any(type(ids) is not list or len(ids) != workload.prompt_tokens
+                       or len(ids) > 200000
+                       or any(type(token) is not int or token < 0 for token in ids)
+                       for ids in explicit)):
+            raise QualificationRefused('row1-exact-prompt-shape-invalid')
+        cohort = [dict(stream=index, prompt=list(ids), prompt_chars=0,
+                       prompt_sha256=canonical_sha(ids)) for index,ids in enumerate(explicit)]
     salt = correctness.build_cache_salt(run_id, run_index)
     bodies = [correctness.request_body(model, row['prompt'], workload, salt)
               for row in cohort]
@@ -2004,7 +2014,7 @@ class NativePlacementRunner:
             if prefill_api['advanced'] is not True:
                 raise QualificationRefused('native-prefill-not-started')
             prefill_api['token_count_proved'] = any(
-                row['prompt_tokens_match_declared']
+                row['prompt_tokens_proven']
                 for row in prefill_api['streams_detail'])
             if prefill_api['token_count_proved'] is not True:
                 # No relabelling: an unproved prompt length is not a native
@@ -2204,6 +2214,13 @@ class NativePlacementRunner:
                     'error': copy.deepcopy(state.error),
                     'malformed': copy.deepcopy(state.malformed),
                 }
+            row['nominal_prompt_tokens'] = workload.prompt_tokens
+            row['prompt_tokens_proven'] = (
+                type(row['prompt_tokens']) is int and row['prompt_tokens'] > 0
+                and row['prompt_tokens'] == row['prompt_token_ids_len'])
+            # agent_replay.text uses a calibrated words/token estimate. The
+            # unchanged seeded text is the request; actual token geometry is
+            # bound by returned prompt ids and usage, not that estimate.
             row['prompt_tokens_match_declared'] = (
                 row['prompt_tokens'] is not None
                 and row['prompt_tokens'] == workload.prompt_tokens)

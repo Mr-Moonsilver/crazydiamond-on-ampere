@@ -83,6 +83,9 @@ class NativeOverlapSession:
         if type(result) is not dict:
             raise NativeOverlapSessionError('session-action-returned-no-record')
         result.setdefault('schema', SCHEMA)
+        epoch = getattr(self.control, 'engine_epoch', None)
+        if 'engine_epoch' not in result and type(epoch) is int and epoch > 0:
+            result['engine_epoch'] = epoch  # the utility-bound immutable owner
         result.setdefault('action', action)
         result['run_id'] = self.run_id
         result['native_ready'] = False
@@ -252,6 +255,26 @@ class NativeOverlapSession:
     async def _action_resume(self, command):
         return await self.control.resume()
 
+    async def _action_pause(self, command):
+        """An actual awaited keep-pause plus all-rank queried barrier."""
+        pause = await self.control.ensure_paused()
+        barrier = await self.control.barrier()
+        snapshot = await self.control.status()
+        return {'pause': pause, 'barrier': barrier, 'snapshot': snapshot,
+                'engine_epoch': snapshot.get('engine_epoch'),
+                'route': snapshot.get('route'),
+                'route_generation': snapshot.get('route_generation')}
+
+    async def _action_identity(self, command):
+        """Actual worker construction records while paused; never a probe open."""
+        pause = await self.control.ensure_paused()
+        # identity uses the same ordered worker-reply path, with its explicit
+        # worker action; no additional RPC or reply-queue owner is installed.
+        rows = await self.control.worker_identity()
+        return {'pause': pause, 'workers': rows.get('workers'),
+                'engine_epoch': rows.get('engine_epoch'),
+                'snapshot': rows.get('snapshot')}
+
     # -- measurement -----------------------------------------------------
     async def _action_overlap_begin(self, command):
         if command.get('route') not in (None, 'split'):
@@ -349,6 +372,48 @@ class NativeOverlapSession:
                          'basis': ('the control journal does not expose a '
                                    'scheduler interval reset counter')},
         }
+
+    async def _action_prefill_begin(self, command):
+        """One native request family, measured separately across a FULL tail.
+
+        Unlike overlap_begin/end this also serves the matched prefill-only
+        denominator: it makes no claim that a decode cohort exists.
+        """
+        if self.measure_start_ns is not None:
+            raise NativeOverlapSessionError('prefill-window-already-open')
+        phase = command.get('phase')
+        if phase not in ('split-prefill-solo', 'w2-overlap'):
+            raise NativeOverlapSessionError('prefill-phase-invalid')
+        status = await self.control.status()
+        if (status.get('route') != 'split'
+                or (status.get('admission_intent') or {}).get('phase') != phase):
+            raise NativeOverlapSessionError('prefill-admission-not-armed')
+        proof = self.control.history[-1].get('clock_proof') if self.control.history else None
+        if type(proof) is not dict or proof.get('proved') is not True:
+            raise NativeOverlapSessionError('prefill-begin-clock-unproved')
+        self.measure_start_ns = int(self.clock())
+        self.begin_receipt, self.begin_proof = status, proof
+        return {'engine_epoch': status.get('engine_epoch'), 'route': status.get('route'),
+                'phase': phase, 'snapshot': status, 'clock_proof': proof,
+                'measure_start_ns': self.measure_start_ns}
+
+    async def _action_prefill_end(self, command):
+        if self.measure_start_ns is None or self.begin_receipt is None:
+            raise NativeOverlapSessionError('prefill-end-without-begin')
+        end_ns = int(self.clock())
+        raw = await self.control.overlap_evidence(self.measure_start_ns, end_ns)
+        proof = self.control.history[-1].get('clock_proof') if self.control.history else None
+        measured, binding = select_window_evidence(raw, self.begin_receipt,
+                                                   self.measure_start_ns, end_ns)
+        result = {'engine_epoch': raw.get('engine_epoch'), 'route': raw.get('route'),
+                  'begin': self.begin_receipt, 'clock': {'begin': self.begin_proof, 'end': proof},
+                  'measure_start_ns': self.measure_start_ns, 'measure_end_ns': end_ns,
+                  'measurement_binding': binding, 'measurement': raw.get('measurement'),
+                  'raw_journal_evidence': raw,
+                  'complete': binding.get('valid') is True
+                              and type(proof) is dict and proof.get('proved') is True}
+        self.measure_start_ns, self.begin_receipt, self.begin_proof = None, None, None
+        return result
 
     # -- return to the full route ----------------------------------------
     async def _action_leave_full(self, command):

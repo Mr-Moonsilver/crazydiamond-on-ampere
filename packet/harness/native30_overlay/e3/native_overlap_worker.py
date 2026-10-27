@@ -59,7 +59,7 @@ ROW_INT_FIELDS = (
 ROW_STR_FIELDS = ('action', 'route', 'worker_incarnation', 'clock_basis')
 ROW_BOOL_FIELDS = ('engine_epoch_ok', 'barrier_clean')
 ROW_LIST_FIELDS = ('retained_request_uids', 'unavailable')
-ROW_NULLABLE = ('allocator', 'memory', 'live_decode', 'qualification')
+ROW_NULLABLE = ('allocator', 'memory', 'live_decode', 'qualification', 'native_inventory')
 ROW_FIELDS = (ROW_INT_FIELDS + ROW_STR_FIELDS + ROW_BOOL_FIELDS
               + ROW_LIST_FIELDS + ROW_NULLABLE)
 
@@ -78,6 +78,11 @@ class NativeCensus:
         self.samples = 0
         self.empty_noops = 0
         self.rejected = []
+        self.dispatches = 0
+        self.decode_dispatches = 0
+        self.non_decode_dispatches = 0
+        self.full_graph_dispatches = 0
+        self.dispatch_errors = 0
 
     def observe_scheduler(self, scheduler_output):
         scheduled = getattr(scheduler_output, 'num_scheduled_tokens', None)
@@ -97,6 +102,33 @@ class NativeCensus:
             # An empty dispatched batch is a meaningful no-op, not a failure.
             self.empty_noops += 1
 
+    def observe_dispatch(self, num_reqs, num_tokens, uniform_tokens, batch_state, full_graph):
+        """Observe the unpadded CPU batch at the existing graph route seam.
+
+        The same source facts as the probe are observed without installing a
+        probe, changing a dispatch or making a GPU read. Counters never reset.
+        Missing metadata is a non-decode observation, never an assumed zero.
+        """
+        valid = (type(num_reqs) is int and num_reqs > 0
+                 and type(num_tokens) is int and num_tokens == num_reqs
+                 and uniform_tokens == 1 and batch_state is not None
+                 and getattr(batch_state, 'has_prefill', None) is False)
+        try:
+            rows = getattr(batch_state, 'num_scheduled_tokens', None)
+            prefills = getattr(batch_state, 'is_prefilling_np', None)
+            valid = bool(valid and rows is not None and len(rows) == num_reqs
+                         and all(isinstance(n, Integral) and not isinstance(n, bool)
+                                 and int(n) == 1 for n in rows)
+                         and prefills is not None and len(prefills) == num_reqs
+                         and not any(bool(n) for n in prefills))
+        except (TypeError, ValueError, OverflowError):
+            self.dispatch_errors += 1
+            valid = False
+        self.dispatches += 1
+        self.decode_dispatches += int(valid)
+        self.non_decode_dispatches += int(not valid)
+        self.full_graph_dispatches += int(full_graph is True)
+
     def observe_sample(self):
         self.samples += 1
 
@@ -109,6 +141,10 @@ class NativeCensus:
                 'steps': self.steps, 'samples': self.samples,
                 'last_batch_member_count': len(self.last_batch_req_ids),
                 'empty_noops': self.empty_noops,
+                'dispatches': self.dispatches, 'decode_dispatches': self.decode_dispatches,
+                'non_decode_dispatches': self.non_decode_dispatches,
+                'full_graph_dispatches': self.full_graph_dispatches,
+                'dispatch_errors': self.dispatch_errors,
                 'rejected': list(self.rejected)}
 
 
@@ -398,9 +434,31 @@ def _row(worker, native, action, command, clock, *, census, allocator, memory,
         'allocator': allocator,
         'memory': memory,
         'live_decode': copy.deepcopy(census_row),
+        'native_inventory': (_native_inventory(native) if action == 'identity' else None),
         'qualification': (copy.deepcopy(qualification)
                           if qualification is not None else None),
     }
+
+
+def _native_inventory(native):
+    """Queried construction inventory, not a readiness attestation."""
+    if not callable(getattr(native, 'inventory', None)):
+        return None
+    inventory = native.inventory()
+    state = native.state
+    owner = native.decode_owner
+    inventory.update({
+        'schema': 's5-native-construction/1',
+        'worker_incarnation': state.incarnation,
+        'engine_bound': state.engine_bound, 'engine_epoch': state.engine_epoch,
+        'worker_rank': state.worker_rank, 'storage_epoch': owner.storage_epoch,
+        'decode_owner_incarnation': owner.incarnation,
+        'decode_lane': {'context_id': owner.lane_id.context_id,
+                        'storage_epoch': owner.storage_epoch,
+                        'worker_rank': owner.worker_rank},
+        'router': native.router.native_census(),
+    })
+    return inventory
 
 
 def _qualification(runner, command):

@@ -237,6 +237,11 @@ def check_route(runner, scheduler_output, batch_desc,
         probe.check_batch(num_reqs, num_tokens, uniform_tokens, batch_state)
         descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
         return probe.check_route(descriptor, _transaction(scheduler_output, router))
+    census = getattr(runner, '_flash_s5_native_census', None)
+    if census is not None and _native_decode(router) and num_tokens > 0:
+        descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
+        census.observe_dispatch(num_reqs, num_tokens, uniform_tokens, batch_state,
+                                descriptor.cg_mode == 'full')
     transaction = _transaction(scheduler_output, router)
     if transaction is None:
         if not _native_decode(router):

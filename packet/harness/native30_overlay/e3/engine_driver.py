@@ -30,6 +30,8 @@ marker this driver never parks anything.  See the pass report's Open items.
 """
 import math
 import time
+import copy
+import hashlib
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, field
@@ -117,7 +119,7 @@ CONTROL_READ_ACTIONS = ('status', 'snapshot', 'transition_acks',
 # read it mutates the policy decision and therefore refuses while owned work is
 # live.
 CONTROL_STATE_ACTIONS = ('arm_admission', 'disarm_admission')
-CONTROL_WORKER_ACTIONS = ('census', 'barrier', 'drain', 'poll_native',
+CONTROL_WORKER_ACTIONS = ('identity', 'census', 'barrier', 'drain', 'poll_native',
                           'qualification')
 CONTROL_ROUTE_ACTIONS = ('bootstrap_engine_owner', 'enter_split', 'leave_split')
 CONTROL_ACTIONS = (CONTROL_READ_ACTIONS + CONTROL_STATE_ACTIONS
@@ -128,7 +130,7 @@ _CONTROL_TIMEOUT_ACTIONS = frozenset(CONTROL_WORKER_ACTIONS + CONTROL_ROUTE_ACTI
 # block: a frozen cohort is not native work.  The driver must still be idle and
 # own no chunk/source/PP state, and teacher configuration stays stricter (it
 # changes the qualification target, so it needs a configurable worker).
-CONTROL_LIVE_COHORT_ACTIONS = ('census', 'barrier', 'drain', 'poll_native')
+CONTROL_LIVE_COHORT_ACTIONS = ('identity', 'census', 'barrier', 'drain', 'poll_native')
 CONTROL_LIVE_COHORT_QUALIFICATION = ('teacher_evidence', 'observer_begin',
                                      'observer_end', 'row1_evidence')
 
@@ -831,6 +833,7 @@ class NativeSegmentDriver:
         self._retained = None
         self._retained_cancel_request = None
         self._retained_cancel_acks = {}
+        self._last_native_closure = None
         # Engine-owner bootstrap and route completion.  These survive a chunk
         # reset: the worker storage epoch and replay census are worker-stable.
         self._bootstrapped = False
@@ -940,6 +943,15 @@ class NativeSegmentDriver:
                                              in self._retained_cancel_acks.values()))
                         else 'open'),
         }
+
+    def native_work_identity(self):
+        transaction = self.tx if self.tx is not None else self.retained_request()
+        if transaction is None:
+            return None
+        return {'transaction': transaction.txn_seq,
+                'request_uid_sha256': hashlib.sha256(transaction.request_uid.encode()).hexdigest(),
+                'request_generation': transaction.request_generation,
+                'chunk_start': transaction.chunk_start, 'chunk_end': transaction.chunk_end}
 
     # -- schedule seam ----------------------------------------------------
     def park(self, scheduler_output):
@@ -2047,6 +2059,7 @@ class NativeSegmentDriver:
                      ranks=list(self.ranks),
                      reason=self.stop_kind,
                      dispositions=sorted({ack.disposition for ack in acks.values()}))
+        self._remember_native_closure(row['transaction'], acks, row['reports'], self.stop_kind)
         self._retained = None
         self._retained_cancel_request = None
         self._retained_cancel_acks = {}
@@ -2101,6 +2114,54 @@ class NativeSegmentDriver:
                 raise DriverError('cancellation closed a worker without a queried report')
             self._stop_acks[ack.worker_rank] = ack
 
+    def _remember_native_closure(self, transaction, acks, reports, reason):
+        """Retain the already-certified all-rank close; no new completion proof.
+
+        Pure metadata after the existing closure/publication guards. Failure to
+        observe this record never changes execution or retries an operation.
+        It survives _reset and is bound to the exact transaction, not a last
+        active scope or a guessed request identity.
+        """
+        try:
+            rows = []
+            for rank in self.ranks:
+                ack = acks[rank]
+                report = getattr(ack, 'report', None) or reports.get(rank)
+                rows.append({'worker_rank': rank, 'typed': type(ack).__name__,
+                    'transaction': ack.transaction.txn_seq,
+                    'request_generation': ack.transaction.request_generation,
+                    'state_epoch': ack.state_epoch, 'closed': ack.closed,
+                    'released': ack.released, 'request_closed': ack.request_closed,
+                    'disposition': getattr(ack, 'disposition', None),
+                    'completed_sequence': ack.completed_sequence,
+                    'report': (None if report is None else {
+                        'worker_rank': report.worker_rank,
+                        'transaction': report.transaction.txn_seq,
+                        'request_generation': report.transaction.request_generation,
+                        'state_epoch': report.state_epoch,
+                        'completed_sequence': report.completed_sequence,
+                        'completed_op_seqs': list(report.completed_op_seqs),
+                        'pending_op_seqs': list(report.pending_op_seqs),
+                        'proofs': [{'kind': proof.kind.value,
+                                    'op_seq': proof.ticket.op_seq,
+                                    'completion_seq': proof.completion_seq}
+                                   for proof in report.proofs]})})
+            self._last_native_closure = {
+                'schema': 's5-native-certified-close/1',
+                'engine_epoch': self.engine_epoch, 'transaction': transaction.txn_seq,
+                'request_generation': transaction.request_generation,
+                'request_uid_sha256': hashlib.sha256(transaction.request_uid.encode()).hexdigest(),
+                'chunk_start': transaction.chunk_start, 'chunk_end': transaction.chunk_end,
+                'observed_ns': int(self._monotonic_ns()), 'clock_basis': self.clock_basis,
+                'reason': reason, 'rows': rows,
+                'source_leases': self.controller.leases.shutdown(),
+                'pp_receipts_pending': self._receipts_pending(),
+                'basis': 'existing typed all-rank close guards and their same queried reports',
+                'complete': True}
+        except BaseException as exc:
+            self._last_native_closure = {'schema': 's5-native-certified-close/1',
+                'complete': False, 'error_type': type(exc).__name__}
+
     def _retire_cancel(self, acks):
         """Terminal cancellation row: storage/request closure, no publication."""
         if set(acks) != set(self.ranks):
@@ -2111,6 +2172,7 @@ class NativeSegmentDriver:
             if self.accepted_tickets:
                 raise DriverError('accepted operations exist without a bound producer')
             self.controller.cancel(self.tx, never_submitted=True)
+            self._remember_native_closure(self.tx, acks, self.reports, self.stop_kind)
             self._reset()
             self._note_terminal_route('cancel')
             return
@@ -2133,6 +2195,7 @@ class NativeSegmentDriver:
         self._record('cancel', transaction=self.tx.txn_seq, never_submitted=False,
                      closed_ranks=[rank for rank in self.ranks if acks[rank].closed],
                      reason=self.stop_kind)
+        self._remember_native_closure(self.tx, acks, self.reports, self.stop_kind)
         self._reset()
         self._note_terminal_route('cancel')
 
@@ -2566,6 +2629,9 @@ class NativeSegmentDriver:
                                    else self._control['action']),
             },
             'chunk': None if self.tx is None else self.tx.txn_seq,
+            'native_work_identity': self.native_work_identity(),
+            'last_native_closure': copy.deepcopy(self._last_native_closure),
+            'source_leases': self.controller.leases.shutdown(),
             'phase': self.phase,
             'paused': (self.engine is not None
                        and callable(getattr(self.engine, 'is_scheduler_paused', None))
