@@ -216,6 +216,36 @@ class DeclareTests(unittest.TestCase):
                        '/vllm/entrypoints/launchers/api_server/routers.py'):
             self.assertTrue(any(p.endswith(suffix) for p in destinations), suffix)
         self.assertNotIn(DUMMY, json.dumps(d))
+        # q18a-native1 stopped here in production before any GPU work: its
+        # public target label was absent from identity's exact vocabulary.
+        # Source the ACTUAL old and repaired settings, render the trusted
+        # launcher, hash fixture mounts and run no_unknown/validate_identity.
+        # No identity executable/success result is stubbed in this regression.
+        for attempt in ('q18a_native1', 'q18a_native2'):
+            script = ('S5_OVERLAY=$2 S5_AUTH_ENV_FILE=$3 '
+                      'S5_GREEN_LIB_SHA256=$4 S5_REPLAY_LIB_SHA256=$5 '
+                      'Q18A_TARGET_LABEL=s5-overlap-80-80; '
+                      'source "$1"; printf "%s\\0" "${S5_SETTINGS[@]}"')
+            rendered = subprocess.run(
+                ['bash', '-uc', script, 'fixture',
+                 str(HERE/'runs'/(attempt+'_settings.sh')),
+                 dec.TASK+'/prod/overlay-v16g', str(envfile), 'a'*64, 'b'*64],
+                capture_output=True, check=True)
+            overrides = dec.settings(rendered.stdout.decode().rstrip('\0').split('\0'))
+            actual, _ = dec.declare(self.a, overrides, self.image, policy,
+                                    self.root/(attempt+'-actual-settings'), install_launcher=True)
+            self.assertEqual(actual['identity']['env']['Q18A_TARGET_LABEL'], 's5-overlap-80-80')
+            self.assertEqual(actual['identity']['defaults']['EXTRA_ENV']['Q18A_TARGET_LABEL'],
+                             's5-overlap-80-80')
+            self.assertTrue(dec.no_unknown(actual['identity']))
+            self.assertEqual(actual['identity']['env']['VLLM_API_KEY'],
+                             {'redacted_length': len(DUMMY)})
+            self.assertNotIn(DUMMY, json.dumps(actual))
+        # Unknown names still reach the unchanged strict no_unknown refusal.
+        overrides['EXTRA_ENV'] += ' Q18A_UNREVIEWED=1'
+        with self.assertRaises(ident.EvidenceError):
+            dec.declare(self.a, overrides, self.image, policy,
+                        self.root/'q18a-unknown-refused', install_launcher=True)
         values = dec.raw_defaults(dec.apply_setcfg(
             self.defaults.read_text(), over, self.a.setcfg))
         for index, private_override in enumerate((
@@ -229,6 +259,36 @@ class DeclareTests(unittest.TestCase):
         bad.write_text(launch.read_text() + '\ntrue\n')
         with self.assertRaises(ident.EvidenceError):
             dec.render(bad, values, IMAGE, self.root / 's5-modified')
+
+    def test_target_policy_enum_is_exact_and_has_no_prefix_allowance(self):
+        import e3_overlap_grade
+        self.assertEqual(set(ident.PUBLIC_TARGET_LABELS), set(e3_overlap_grade.TARGET_POLICIES))
+        for label in ident.PUBLIC_TARGET_LABELS:
+            self.assertEqual(ident.clean_value('Q18A_TARGET_LABEL', label), label)
+        for label in ('unknown', 's5-overlap-80-80\n', DUMMY, 'https://private.invalid'):
+            with self.subTest(label_length=len(label)), self.assertRaises(ident.EvidenceError):
+                ident.clean_value('Q18A_TARGET_LABEL', label)
+        unknown = ident.clean_env({'Q18A_UNREVIEWED': '1'})
+        self.assertFalse(dec.no_unknown(unknown))
+        self.assertEqual(unknown['Q18A_UNREVIEWED'], {'redacted_length': 1, 'unclassified': True})
+
+    def test_declaration_cli_failure_retains_sites_without_exception_values(self):
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['engine_identity.py', 'declare', '/unused']), \
+                patch.object(dec, 'run', side_effect=ValueError(DUMMY+'\nprivate parser input')), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(ident.main(), 2)
+        text = output.getvalue()
+        self.assertNotIn(DUMMY, text)
+        self.assertNotIn('private parser input', text)
+        rows = text.splitlines()
+        self.assertEqual(len(rows), 2)
+        prefix = 'identity declaration diagnostic '
+        diagnostic = json.loads(rows[1].removeprefix(prefix))
+        self.assertEqual(diagnostic['error_type'], 'ValueError')
+        self.assertTrue(0 < len(diagnostic['error_stack']) <= 8)
+        self.assertTrue(all(set(row) == {'file', 'function', 'line'}
+                            for row in diagnostic['error_stack']))
 
     def test_q16_dense_and_other_configs_render_one_sparse_assignment(self):
         sys.path.insert(0,str(ROOT/'patches/s5_engine'))

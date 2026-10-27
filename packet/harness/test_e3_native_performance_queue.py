@@ -222,6 +222,17 @@ def verify_finalized_package(root,modules):
             text=(HERE/'runs'/name).read_text();self.assertIn(path,text)
             subprocess.run(['bash','-n',str(HERE/'runs'/name)],check=True)
 
+    def test_native2_is_name_only_queue_settings_and_declaration_clone(self):
+        # All hardware phases, workloads, gates, bounds and settings remain the
+        # already-tested native1 sequence. The declaration/outer-log fixes live
+        # in identity and the owner runner; do not slip a runtime delta here.
+        for suffix in ('.draft.sh','_declare.sh','_settings.sh'):
+            before=(HERE/'runs'/('q18a_native1'+suffix)).read_text()
+            after=(HERE/'runs'/('q18a_native2'+suffix)).read_text()
+            self.assertEqual(after,before.replace('q18a_native1','q18a_native2')
+                             .replace('q18a-native1','q18a-native2'))
+            subprocess.run(['bash','-n',str(HERE/'runs'/('q18a_native2'+suffix))],check=True)
+
     def test_late_real_launch_refuses_before_paths_or_engine_actions(self):
         # Deliberately leave fake-OS mode: the slot guard must return before
         # resolving any actual box path, key or engine interface.

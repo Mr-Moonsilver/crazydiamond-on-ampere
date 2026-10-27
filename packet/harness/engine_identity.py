@@ -16,6 +16,7 @@ import shlex
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 
 SCHEMA = 'flash-engine-identity/v1'
@@ -32,6 +33,9 @@ PUBLIC = set('PATH HOME USER LANG LC_ALL TZ HOSTNAME PYTHONPATH PYTHON_VERSION P
              'DEBIAN_FRONTEND NVARCH NV_CUDA_CUDART_VERSION UV_CACHE_DIR UV_HTTP_TIMEOUT UV_INDEX_STRATEGY '
              'UV_LINK_MODE UV_OVERRIDE UV_PYTHON_INSTALL_DIR FLASHINFER_WORKSPACE_BASE'.split())
 PUBLIC_PREFIX = ('VLLM_', 'QSA_', 'FLASH_', 'CUDA_', 'NCCL_', 'PYTORCH_', 'TORCH_', 'TRITON_', 'NVIDIA_')
+# Public queue policy metadata, not an unrestricted Q18A_* environment prefix.
+# Keep in step with the existing e3_overlap_grade.TARGET_POLICIES vocabulary.
+PUBLIC_TARGET_LABELS = frozenset(('s5-w2-target', 's5-overlap-80-80'))
 PUBLIC_FLAGS = set('model served-model-name tensor-parallel-size pipeline-parallel-size dtype kv-cache-dtype '
                    'kv-cache-memory-bytes max-model-len max-num-seqs max-num-batched-tokens gpu-memory-utilization '
                    'mamba-cache-mode reasoning-parser tool-call-parser max-logprobs host port prefix-match-unit '
@@ -87,6 +91,9 @@ def clean_value(k, v):
     need(isinstance(v, str))
     if SECRET.search(k):
         return redacted(v)
+    if k == 'Q18A_TARGET_LABEL':
+        need(v in PUBLIC_TARGET_LABELS)
+        return v
     if k == 'EXTRA_ENV':
         words = shlex.split(v)
         need(all('=' in w for w in words))
@@ -362,6 +369,21 @@ def write(path, d):
         f.write('\n')
 
 
+def declaration_failure(exc):
+    """Bounded failure sites only: never exception text, source, values or locals.
+
+    Parser/subprocess exception messages can contain private environment bytes.
+    File/function/line locations still distinguish rendering, source hashing,
+    classification and request-writing failures without emitting those bytes.
+    """
+    def name(value):
+        return value if re.fullmatch(r'[A-Za-z0-9_.<>-]{1,100}', value) else 'unavailable'
+    return {'error_type': name(type(exc).__name__),
+            'error_stack': [{'file': name(Path(frame.filename).name),
+                             'function': name(frame.name), 'line': frame.lineno}
+                            for frame in traceback.extract_tb(exc.__traceback__)[-8:]]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
@@ -401,8 +423,9 @@ def main():
             rc=declare(a)
             print('identity declaration PASS: sources only; no container launched')
             return rc
-        except Exception:
+        except Exception as exc:
             print('identity declaration INCONCLUSIVE: invalid source, unsupported setting, unstable content or budget; no request clearance')
+            print('identity declaration diagnostic ' + canonical(declaration_failure(exc)), flush=True)
             return 2
     artifact = None
     try:
