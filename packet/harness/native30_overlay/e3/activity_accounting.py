@@ -35,7 +35,12 @@ def api_kind(name):
         'cuEventQuery','cuEventSynchronize','cuStreamWaitEvent','cuCtxGetCurrent',
         'cuCtxSetCurrent','cuCtxGetDevice','cuCtxPushCurrent','cuCtxPopCurrent',
         'cuGetProcAddress','cuGetExportTable','cudaGetDriverEntryPointByVersion',
-        'cuStreamGetCtx','cuStreamGetId','cuCtxGetId','cuDevicePrimaryCtxGetState')
+        'cuStreamGetCtx','cuStreamGetId','cuCtxGetId','cuDevicePrimaryCtxGetState',
+        # Pinned CUDA13 metadata queries and event recording. These have no
+        # kernel/copy/memset activity; unexpected activity still fails the join.
+        'cuFuncGetAttribute','cuKernelGetFunction','cuKernelGetName',
+        'cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags','cuPointerGetAttribute',
+        'cudaDeviceGetAttribute','cudaEventRecordWithFlags','cudaStreamIsCapturing')
     if any(re.fullmatch(re.escape(x)+r'(?:_v\d+)?(?:_ptsz|_ptds)?',name) for x in harmless):return 'host'
     return None
 

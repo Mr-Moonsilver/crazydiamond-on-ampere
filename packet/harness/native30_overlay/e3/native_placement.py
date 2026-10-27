@@ -141,6 +141,8 @@ def _api_bucket(row, external):
     if cid in external:
         return external[cid]
     if _api_kind(row.get('name')) == 'host':
+        if row.get('return_value') != 0:
+            raise OverlapError('host_api_failed:' + str(cid))
         return HOST
     raise OverlapError('unpartitioned_api:' + str(cid))
 
