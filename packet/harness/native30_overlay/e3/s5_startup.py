@@ -1,8 +1,9 @@
 """C startup: native worker construction and engine-side composition.
 
-Production enabled startup is hard-refused before allocation or transport
-ownership: bounded native execution, admission and green capture are missing.
-The construction paths below are exercised only by explicitly marked CPU fixtures.
+Enabled startup requires a reviewed immutable source/build closure before
+allocation or transport ownership. Missing closure still refuses. Source
+construction and hardware qualification are separate; the owner queue grades
+exactness, numerics, placement, performance and lifetime on the actual engine.
 Two different processes, two different startup paths:
 
 * :func:`install_builder` is called from the generated model runner at the end
@@ -46,13 +47,17 @@ class StartupError(HandoffError):
 
 
 def require_native_ready():
-    """Hard refusal until the missing native mechanisms have been implemented.
+    """Require the reviewed immutable implementation/build closure, no bypass.
 
-    No environment escape hatch: tests may explicitly mock this function to
-    exercise controller scaffolding, which is not native integration evidence.
+    The returned capability is for the owner's candidate queue only. Hardware
+    exactness/numerics/placement/performance/lifetime are graded by that queue,
+    never asserted by this startup source check.
     """
-    raise StartupError('E3 native integration incomplete: admission, bounded execution, '
-                       'green graph capture and source/PP ownership are not implemented')
+    from native_readiness import require_implementation_closure, NativeReadinessError
+    try:
+        return require_implementation_closure()
+    except (NativeReadinessError, OSError, ValueError, TypeError, KeyError) as exc:
+        raise StartupError(str(exc)) from None
 
 
 def _enabled(env):
@@ -313,12 +318,16 @@ def settings(env=None):
     """Metadata-only settings echo; no secret or path is read."""
     env = os.environ if env is None else env
     config = HandoffConfig.from_env(env)
+    from native_readiness import implementation_status
+    ready = implementation_status() if config.enabled else {'native_ready': False}
     return dict(enabled=config.enabled, transport=config.transport,
                 command_slots=config.command_slots,
                 reply_timeout_s=config.reply_timeout_s,
                 ack_timeout_s=config.ack_timeout_s,
                 chunk_tokens=config.chunk_tokens,
-                sparse_overlap=False, backend='unimplemented' if config.enabled else 'inert')
+                sparse_overlap=bool(config.enabled and ready['native_ready']),
+                backend=('native-owner-test' if ready['native_ready'] else 'unimplemented')
+                        if config.enabled else 'inert')
 
 
 __all__ = ['OVERLAP_ENV', 'StartupError', 'install_builder', 'install_engine', 'install_native_lane',

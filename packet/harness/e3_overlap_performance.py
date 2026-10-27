@@ -470,6 +470,14 @@ def _package_gate(env):
         package_sha256=(readiness or {}).get('package_sha256'),
         manifest_entries=entries,
         env_launcher_sha=env.get('S5_LAUNCHER_SHA'))
+    if overlay and (generation or {}).get('candidate_profile') == 'q18a-native-performance':
+        from native_readiness import verify_finalized_package
+        from decode_probe import GENERATED_SOURCES
+        try:
+            verify_finalized_package(overlay, GENERATED_SOURCES)
+        except Exception as exc:
+            ready['verdict'] = 'FAIL'
+            ready['failures'].append('native-payload-closure:' + type(exc).__name__)
     return {'ok': ready['verdict'] == 'PASS', 'reasons': ready['failures'],
             'missing': ready['missing'], 'launcher_sha256': launcher_sha,
             'package_sha256': ready.get('package_sha256'),

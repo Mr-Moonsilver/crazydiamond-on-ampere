@@ -1290,11 +1290,11 @@ class PackageRecordTests(unittest.TestCase):
 class NativeRefusalReviewTests(unittest.TestCase):
     def test_enable_refuses_before_cuda_allocation_or_transport(self):
         with mock.patch.object(nb, 'NativeDevice') as allocate, mock.patch.object(eh, 'install') as transport:
-            with self.assertRaisesRegex(su.StartupError, 'incomplete'):
+            with self.assertRaisesRegex(su.StartupError, 'implementation closure missing'):
                 su.install_builder(types.SimpleNamespace(), {}, env={'FLASH_S5_OVERLAP':'1'})
-            with self.assertRaisesRegex(su.StartupError, 'incomplete'):
+            with self.assertRaisesRegex(su.StartupError, 'implementation closure missing'):
                 su.install_engine(types.SimpleNamespace(), env={'FLASH_S5_OVERLAP':'1'})
-            with self.assertRaisesRegex(su.StartupError, 'incomplete'):
+            with self.assertRaisesRegex(su.StartupError, 'implementation closure missing'):
                 nr.build_worker_runtime(types.SimpleNamespace(), {}, env={'FLASH_S5_OVERLAP':'1'})
             allocate.assert_not_called(); transport.assert_not_called()
 

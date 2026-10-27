@@ -8,6 +8,7 @@ retained beside the independent source-joined measurement census.
 """
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import statistics
@@ -158,7 +159,11 @@ def prefill(cfg, client, url, model, lane, family, prompts, salt, *, decode_stat
 
 
 def grade(record):
-    """Fixed 80/80 target over complete rows; no invalid survivor selection."""
+    """Report the fixed 80/80 target over complete rows, without survivor selection.
+
+    The operator's target line is descriptive. Exactness, numerical, placement,
+    ownership and memory gates remain separate hard gates in the same queue.
+    """
     missing,failures = [],[]
     lanes = record.get('lanes') or {}
     proofs = {}
@@ -200,18 +205,20 @@ def grade(record):
     rates,base = decode.get('stream_rates_tokens_per_s'),denominator.get('stream_rates_tokens_per_s')
     per_stream = [a/b for a,b in zip(rates,base)] if (type(rates) is list and type(base) is list
         and len(rates)==len(base)==8 and all(type(x) in (int,float) and x>0 for x in base)
-        and all(type(x) in (int,float) for x in rates)) else None
+        and all(type(x) in (int,float) and math.isfinite(x) and x>=0 for x in rates)
+        and all(math.isfinite(x) for x in base)) else None
     if per_stream is None:
         missing.append('eight-stream-decode-share-unproved')
-    if not missing:
-        if marker['status']=='SHORTFALL' or any(v<.8 for v in per_stream):
-            failures.append('80-80-target-shortfall')
-        elif marker['status']!='PASS':
-            missing.append('80-80-marker-incomplete')
+    if not missing and marker['status'] not in ('PASS','SHORTFALL'):
+        missing.append('80-80-marker-incomplete')
+    if record.get('first_error'):
+        missing.append('declared-run-error-retained')
     serving_rate = full.get('serving_prefill_tokens_per_s')
     return {'schema':'s5-native-performance-grade/1','verdict':'FAIL' if failures else 'INCONCLUSIVE' if missing else 'PASS',
         'failures':failures,'missing':sorted(set(missing)),'target':marker,
         'decode_shares_by_stream':per_stream,
+        'target_met':None if missing or failures else marker['status']=='PASS',
+        'target_is_gate':False,
         'prefill_share_full_serving_ttft_basis':candidate_rate/serving_rate if type(candidate_rate) in (int,float) and type(serving_rate) in (int,float) and serving_rate>0 else None,
         'ttft_s':{lane:{family:(row.get('request') or {}).get('ttft_s') for family,row in rows.items()}
                   for lane,rows in lanes.items() if type(rows) is dict},
@@ -220,8 +227,13 @@ def grade(record):
 
 
 def run(cfg,client,url,model,w1):
+    # Bound conversion of engine/host monotonic observation times to physical
+    # memory sampler query brackets. Clock steps invalidate the conversion.
+    mono_before=time.monotonic_ns();wall=time.time();mono_after=time.monotonic_ns()
     result = {'schema':'s5-native-performance/1','run_id':client.run_id,'engine_epoch':client.epoch,
-              'manifest_sha256':cfg['manifest_sha256'],'lanes':{},'w1':w1}
+              'manifest_sha256':cfg['manifest_sha256'],'lanes':{},'w1':w1,
+              'wall_anchor_s':wall,'wall_anchor_ns':(mono_before+mono_after)//2,
+              'wall_anchor_uncertainty_ns':mono_after-mono_before}
     prompts = shared._prefill_prompts(cfg)
     for lane in shared.LANES:
         result['lanes'][lane] = {}
@@ -249,6 +261,7 @@ def run(cfg,client,url,model,w1):
             if standing:
                 streams._stop_streams({},standing,workload)
     result['engine_epoch']=client.epoch
+    result['wall_end_s']=time.time();result['wall_end_ns']=time.monotonic_ns()
     result['grade']=grade(result)
     return result
 

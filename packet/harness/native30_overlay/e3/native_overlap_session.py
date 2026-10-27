@@ -12,9 +12,9 @@ a completion.  Its receipts are built from
   window (an int, not a rate);
 * host-monotonic clock-domain proofs for both boundary commands.
 
-``native_ready`` is always reported ``False`` with an explicit reason: the
-startup gate ``require_native_ready()`` still refuses, and this package does not
-lift it.
+``native_ready`` describes the independently checked implementation/build
+closure only. Missing closure remains refused; hardware/release qualification
+is never supplied by this session's status metadata.
 """
 import time
 
@@ -88,9 +88,12 @@ class NativeOverlapSession:
             result['engine_epoch'] = epoch  # the utility-bound immutable owner
         result.setdefault('action', action)
         result['run_id'] = self.run_id
-        result['native_ready'] = False
-        result['native_ready_reason'] = NATIVE_READY_REASON
-        result['armable'] = False
+        from native_readiness import implementation_status
+        implementation = implementation_status()
+        result['native_ready'] = implementation['native_ready']
+        result['native_ready_reason'] = implementation.get('reason') or implementation['scope']
+        result['armable'] = implementation['armable']
+        result['implementation_closure'] = implementation
         return result
 
     # -- prepare ---------------------------------------------------------

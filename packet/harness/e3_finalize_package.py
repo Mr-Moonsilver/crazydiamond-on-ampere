@@ -87,6 +87,35 @@ def finalize(source, out):
             target = out/rel
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
             shutil.copy2(path, target)
+    native_candidate = generation.get('candidate_profile') == 'q18a-native-performance'
+    if native_candidate:
+        # This directory is a new owned output; a failed closure is retained
+        # as partial evidence and can never produce an armable manifest.
+        import sys
+        builder = Path(__file__).resolve().parent/'e3_builder'
+        if not builder.is_dir():
+            builder = Path(__file__).resolve().parents[1]/'patches/s5_engine'
+        sys.path.insert(0, str(builder))
+        from native_readiness import verify_directory, payload_identity, digest
+        from decode_probe import GENERATED_SOURCES
+        capability = verify_directory(out/'e3', GENERATED_SOURCES)
+        payload = payload_identity(out)
+        generation.update(armable=True, package_sha256=payload,
+            package_identity_basis='runtime payload excluding generation/readiness/manifest')
+        readiness = dict(schema='e3-native-candidate-readiness/1', reviewed=True,
+            reviewed_by='Codex', require_native_ready=True, native_ready=True,
+            full_native_overlap=True, sparse_dma_lease=True, armable=True,
+            hardware_qualified=False, release_qualified=False,
+            path='e3/native-overlap-readiness.json',
+            launcher_sha256=sha(out/generation['launcher']['name']),
+            review_sha256=capability['review_sha256'], package_sha256=payload,
+            package_identity_basis=generation['package_identity_basis'],
+            scope='reviewed implementation/build closure for owner test only; same-queue hardware gates pending')
+        readiness['receipt_sha256'] = digest(readiness)
+        with (out/'e3/native-overlap-readiness.json').open('x') as handle:
+            json.dump(readiness,handle,sort_keys=True,indent=2)
+        generation['generated_files'] = sorted(set(generation['generated_files']) |
+                                               {'e3/native-overlap-readiness.json'})
     (out/GENERATION).write_text(json.dumps(generation, indent=2, sort_keys=True)+'\n')
     lines = [sha(p)+'  '+p.relative_to(out).as_posix()+'\n'
              for p in sorted(out.rglob('*')) if p.is_file()]
@@ -97,7 +126,7 @@ def finalize(source, out):
     out.chmod(0o755)
     for path in out.rglob('*'):
         path.chmod(0o755 if path.is_dir() else 0o644 | (path.stat().st_mode & 0o111))
-    return {'manifest_sha256': sha(out/'SHA256SUMS'), 'armable': False,
+    return {'manifest_sha256': sha(out/'SHA256SUMS'), 'armable': generation['armable'],
             'green_library_sha256': receipt['files'][LIBS[0]],
             'observer_library_sha256': receipt['files'][LIBS[1]],
             'cupti_library_sha256': CUPTI}

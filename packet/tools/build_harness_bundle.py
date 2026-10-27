@@ -94,7 +94,7 @@ def build(out):
     pins['v1/worker/gpu/model_runner.py']=graph_hooks.PINNED_SHA256
     tracked=subprocess.check_output(
         ['git','ls-files','-z','patches/s5_engine'],cwd=ROOT).decode().split('\0')
-    tracked=[name for name in tracked if name and Path(name).suffix in ('.py','.cu','.cpp','.sh','.cuh','.h')]
+    tracked=[name for name in tracked if name and Path(name).suffix in ('.py','.cu','.cpp','.sh','.cuh','.h','.json')]
     if not tracked:raise ValueError('E3 builder sources are not tracked')
     e3_builder=out/'e3_builder';e3_builder.mkdir()
     builder_sources={}

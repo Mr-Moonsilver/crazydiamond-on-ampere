@@ -63,7 +63,7 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
               # Native control over the pinned EngineCore utility channel.
               'native_overlap_metrics', 'native_overlap_worker',
               'native_overlap_control', 'native_overlap_session',
-              'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement')
+              'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement', 'native_readiness')
 NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
                 'native/build_q17_helpers.sh')
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
@@ -341,8 +341,34 @@ def _decode_probe_declaration(files):
     }
 
 
+def _native_candidate_closure(files):
+    from native_readiness import check_review, digest, PROFILE, SCHEMA
+    path = HERE / 'native_candidate_review.json'
+    if not path.is_file() or path.is_symlink():
+        raise ValueError('reviewed native candidate source receipt is absent')
+    review = check_review(json.loads(path.read_text()))
+    required = {name + '.py' for name in E3_MODULES} | {'make_s5_overlap.py'} | set(NATIVE_FILES)
+    for name in required:
+        if review['source_shas'].get(name) != sha(HERE/name):
+            raise ValueError('native source changed after review: ' + name)
+    # The source review binds the actual client/queue implementation as well.
+    harness = ROOT / 'harness' if (ROOT/'harness').is_dir() else HERE.parent
+    for name, expected in (review.get('harness_source_shas') or {}).items():
+        if Path(name).is_absolute() or '..' in Path(name).parts or sha(harness/name) != expected:
+            raise ValueError('native harness source changed after review: ' + name)
+    closure = {'schema': SCHEMA, 'profile': PROFILE,
+               'review': review, 'review_sha256': digest(review),
+               'generated_source_shas': {name: _sha_text(files['e3/'+name+'.py'])
+                                         for name in decode_probe.GENERATED_SOURCES},
+               'native_source_shas': {Path(name).name: _sha_text(files['e3/'+name])
+                                      for name in NATIVE_FILES if Path(name).suffix in ('.cu','.cpp')}}
+    return closure
+
+
 def build(base, out, reference, base_manifest_sha256, graph=None,
-          settings=None):
+          settings=None, native_candidate=False):
+    if type(native_candidate) is not bool:
+        raise ValueError('native candidate selection must be boolean')
     base, out, reference = map(Path, (base, out, reference))
     if out.exists():
         raise ValueError('new output directory required; nothing overwritten')
@@ -454,6 +480,9 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
     for name, text in files.items():
         if name.endswith('.py'):
             ast.parse(text, filename=name)
+    native_closure = _native_candidate_closure(files) if native_candidate else None
+    if native_closure is not None:
+        files['e3/native-implementation-closure.json'] = json.dumps(native_closure, sort_keys=True, indent=2)+'\n'
     changed = {name for name, text in files.items() if base_text.get(name) != text}
     changed |= {S5_LAUNCHER_NAME, 'S5-OVERLAP-GENERATION.json',
                 'SHA256SUMS', 'core/SHA256SUMS'}
@@ -535,6 +564,18 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         ],
         'incremental_kv_bytes': 0,
     }
+    if native_closure is not None:
+        record.update(candidate_profile='q18a-native-performance',
+                      require_native_ready=True,
+                      implementation_review_sha256=native_closure['review_sha256'],
+                      status='reviewed native implementation candidate; CPU helper build/finalization and all same-queue hardware gates pending',
+                      native_gaps=[],
+                      qualification_pending=['row1 byte oracle', 'rule4 same-instrument numerics',
+                          'raw graph plus decode/prefill placement', 'W1 and W2 performance',
+                          'memory/pressure/lifetime/leak/real-route canary'],
+                      native_overlap={'enabled':True, 'sparse_dma_lease':True,
+                          'stock_forward_fallback_hidden':False,
+                          'scope':'implemented source path; not a hardware qualification'})
     # Diagnostic-only declaration, separate from the full package's armability.
     record['diagnostic_modes'] = {
         'decode_only': probe_declaration,
@@ -580,9 +621,11 @@ def main():
     parser.add_argument('--base-manifest-sha256', required=True)
     parser.add_argument('--graph', type=Path,
                         help='B graph transform module with SOURCE_PINS/generate')
+    parser.add_argument('--native-candidate', action='store_true',
+                        help='require the bundled reviewed native source closure; finalizer still requires compiled helpers')
     args = parser.parse_args()
     print(json.dumps(build(args.base, args.out, args.reference,
-                           args.base_manifest_sha256, args.graph),
+                           args.base_manifest_sha256, args.graph, native_candidate=args.native_candidate),
                      sort_keys=True))
 
 

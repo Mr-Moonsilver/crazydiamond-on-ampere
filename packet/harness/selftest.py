@@ -726,6 +726,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_probe_control.py', 'E3 diagnostic control: actual awaited pause/ordered RPC, all-rank barriers, scoped auth, source inverse and fail-closed transitions (CPU only)'),
                      ('test_e3_decode_probe.py', 'E3 decode-only diagnostic probe: flag conflict before allocation, evidence gate, typed no-prefill routing/invalidation, split bank pool/bytes, drained transitions/quarantine, shutdown order and default-off bytes (CPU only, fakes)'),
                      ('test_e3_finalize_package.py', 'E3 native final package: immutable source closure, exact library dependency/source hashes, no GPU qualification (CPU only)'),
+                     ('test_e3_native_readiness.py', 'Native implementation/build closure: immutable source and VM build pins, actual finalizer, payload mutation refusals, no environment bypass or hardware qualification (CPU only)'),
                      ('test_e3_private_auth.py', 'E3 private auth: existing-key file, no value-bearing argv, strict immutable private file and source declaration (CPU only)'),
                      ('test_e3_q17b_clients.py', 'Q17b composed clients: one controller owner, observer placement and stopped-before-W1 (CPU only)'),
                      ('test_e3_q17b_full_queue.py', 'Q17b full queue: declared startup, actual clients aggregate and owned cleanup (CPU fake commands)'),

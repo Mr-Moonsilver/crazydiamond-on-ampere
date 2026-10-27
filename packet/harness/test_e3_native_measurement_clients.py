@@ -204,6 +204,83 @@ class NativeWindowSource(unittest.TestCase):
 
 
 
+class PerformanceMetricContract(unittest.TestCase):
+    def record(self):
+        window={'start_ns':10,'end_ns':20,'aggregate_tokens_per_s':40,
+                'stream_rates_tokens_per_s':[5.0]*8}
+        lanes={lane:{family:{'complete':True,'request':{'ttft_s':2.0},
+                            'decode_window':copy.deepcopy(window),
+                            'serving_prefill_tokens_per_s':200}
+                     for family in ('fresh','append')} for lane in perf.shared.LANES}
+        w1={'summary':{'verdict':'COMPLETE','routes':{'full':{'aggregate_tokens_per_s_median':80}}},
+            'repeats':[{'valid':True,'route':'full','metrics':{'stream_rates_tokens_per_s':[10.0]*8}}]}
+        return {'engine_epoch':71,'lanes':lanes,'w1':w1}
+    def proof(self,row,family,epoch):
+        # Metric policy fixture only; actual source-packet regrades are covered
+        # independently above and are never replaced in production.
+        return {'complete':True,'reasons':[],
+                'prefill_tokens_per_s':50 if row['decode_window']['aggregate_tokens_per_s']==40 else 100,
+                'group':{'start_ns':10,'end_ns':20}}
+    def test_80_80_shortfall_is_reported_without_changing_hard_gates(self):
+        record=self.record()
+        record['lanes']['prefill_split']['fresh']['decode_window']['aggregate_tokens_per_s']=80
+        with patch.object(perf,'native_window',side_effect=self.proof):result=perf.grade(record)
+        self.assertEqual(result['verdict'],'PASS',result['missing'])
+        self.assertEqual(result['target']['status'],'SHORTFALL')
+        self.assertFalse(result['target_met']);self.assertFalse(result['target_is_gate'])
+        self.assertEqual(result['decode_shares_by_stream'],[.5]*8)
+        self.assertEqual(result['target']['prefill_share'],.5)
+    def test_incomplete_append_and_nan_stream_cannot_be_selected_away(self):
+        for mutate in (lambda r:r['lanes']['overlap']['append'].update(complete=False),
+                       lambda r:r['lanes']['overlap']['fresh']['decode_window']['stream_rates_tokens_per_s'].__setitem__(0,float('nan')),
+                       lambda r:r.update(first_error={'error_type':'RuntimeError'})):
+            record=self.record();mutate(record)
+            with patch.object(perf,'native_window',side_effect=self.proof):result=perf.grade(record)
+            self.assertEqual(result['verdict'],'INCONCLUSIVE')
+            self.assertIsNone(result['target_met'])
+            self.assertFalse(result['filtered_invalid'])
+
+
+class NativeMemoryWindow(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        NativeWindowSource.setUpClass()
+    def fixture(self):
+        import e3_native_memory_grade as memory
+        row=copy.deepcopy(NativeWindowSource.record)
+        proof=perf.native_window(row,'fresh',NativeWindowSource.epoch)
+        start,stop=proof['group']['start_ns'],proof['group']['end_ns']
+        row['drain']={'barrier':{'workers':[dict(census_row(r),engine_epoch=NativeWindowSource.epoch,
+            allocator={'basis':'torch-cuda-allocator-queried-v1',
+                       'allocated_peak_bytes':1024,'reserved_peak_bytes':2048}) for r in range(4)]}}
+        duration=(stop-start)/1e9
+        performance={'engine_epoch':NativeWindowSource.epoch,'wall_anchor_s':1000.,
+            'wall_anchor_ns':start,'wall_anchor_uncertainty_ns':0,
+            'wall_end_s':1001.+duration,'wall_end_ns':stop+10**9,
+            'lanes':{'overlap':{'fresh':row}}}
+        sample={'start_s':1000.+duration*.5,'end_s':1000.+duration*.5,
+                'gpus':{str(r):{'total_mib':24576,'used_mib':23000} for r in range(4)}}
+        return memory,performance,[sample]
+    def test_actual_packet_and_physical_free_are_separate_from_allocator(self):
+        memory,record,samples=self.fixture();result=memory.grade(record,samples)
+        self.assertEqual(result['verdict'],'PASS',result['missing'])
+        self.assertEqual(result['min_free_mib_under_pressure'],{r:1576 for r in range(4)})
+        self.assertEqual(result['reserve_mib'],512)
+        samples[0]['gpus']['2']['used_mib']=24100
+        result=memory.grade(record,samples)
+        self.assertEqual(result['verdict'],'FAIL')
+        self.assertTrue(any('gpu2' in reason for reason in result['failures']))
+    def test_missing_clock_or_rank_and_crossing_query_bracket_are_unproved(self):
+        for mutate in (
+            lambda r,s:r.update(wall_end_s=10000.),
+            lambda r,s:r['lanes']['overlap']['fresh']['drain']['barrier']['workers'].pop(),
+            lambda r,s:s[0].update(end_s=100000.),
+            lambda r,s:s[0]['gpus'].pop('3'),
+            lambda r,s:s[0].update(error='ClockStep')):
+            memory,record,samples=self.fixture();mutate(record,samples)
+            self.assertEqual(memory.grade(record,samples)['verdict'],'INCONCLUSIVE')
+
+
 class ActualW1Reader(unittest.TestCase):
     def test_original_requests_and_fixed_repeats_over_live_sse_native_boundaries(self):
         import tempfile
