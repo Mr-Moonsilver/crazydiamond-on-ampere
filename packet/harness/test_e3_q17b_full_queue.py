@@ -9,9 +9,18 @@ import hashlib
 import test_e3_startup_queue as old
 HERE=Path(__file__).resolve().parent
 FAKE_CLIENTS='''import argparse,json,os
+import time
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--out',required=True);p.add_argument('--run-id');a,rest=p.parse_known_args()
 out=Path(a.out);out.mkdir()
+# Real clients take far longer than sampler startup. The instantaneous fake
+# must wait for the real sampler's first record/installed signal handler before
+# it exits; otherwise the queue can send SIGTERM during interpreter startup.
+ready=out.parent/'client-samples.timed.jsonl'
+deadline=time.monotonic()+5
+while not (ready.is_file() and ready.stat().st_size) and time.monotonic()<deadline:
+ time.sleep(.002)
+if not (ready.is_file() and ready.stat().st_size):raise RuntimeError('fake-client-sampler-not-ready')
 if (Path(os.environ['FAKE_BIN'])/'change-next').exists():
  Path(os.environ['FAKE_DEFAULTS']+'.next').write_text('replacement staged defaults')
 rc=1 if (Path(os.environ['FAKE_BIN'])/'fail-clients').exists() else 0

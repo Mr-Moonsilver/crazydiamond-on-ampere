@@ -1387,6 +1387,20 @@ class ComposedActualSessionTests(ClientHarness):
             self.engine, self.workload.streams, self.gate)
         self.session_controller.start()
         self.addCleanup(self.session_controller.close)
+        # The fake stream starts measured emission when the client actually
+        # enters its observation loop, after receipt validation. Otherwise an
+        # eight-stream fake can consume the capped prefix before starts[] is
+        # captured, making this protocol composition test CPU-speed dependent.
+        set_phase = self.gate.set_phase
+        wait_window = client._wait_window
+        gate_patch = mock.patch.object(self.gate, 'set_phase',
+            side_effect=lambda name: None if name == 'measure' else set_phase(name))
+        def observe(*args, **kwargs):
+            set_phase('measure')
+            return wait_window(*args, **kwargs)
+        window_patch = mock.patch.object(client, '_wait_window', side_effect=observe)
+        gate_patch.start(); self.addCleanup(gate_patch.stop)
+        window_patch.start(); self.addCleanup(window_patch.stop)
 
     def extra_flow_plans(self):
         return {}
