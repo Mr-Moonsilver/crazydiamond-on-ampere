@@ -682,6 +682,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_native_qualification_frontend.py', 'Native qualification API frontend: exact commands, authenticated loopback and actual teacher plan ownership (CPU only)'),
                      ('test_e3_native_api_qualification_composition.py', 'Actual API NativeControlClient owns the input processor, distinct from EngineCore utility ownership (CPU only)'),
                      ('test_e3_native_row1_grade.py', 'E3 native row1 raw grader: direct producer records, exact layer/route coverage, identity and release census (CPU only)'),
+                     ('test_e3_native_daytime_rehearsal.py', 'E3 daytime integration: full-prompt source-store/HTTP/grader lifecycle and exact held native12 queue refusal/restore (CPU fixtures only)'),
                      ('test_e3_native_source_oracle.py', 'E3 native source ownership and serial QSA byte/output oracle: first-PREPARE binding, pinned host layout, source holds and cancellation (CPU only)'),
     ('test_e3_native_measurement.py', 'E3 source-joined native measurement: stage-local expanded ops, actual queried completions, raw journal loss retained and exact session window binding (CPU only)'),
                      ('test_e3_lane_private.py', 'E3 lane-private bindings: owned QSA top-k/UID views, extra workspace lane, interleaved decoder access, exact restoration and refusals (CPU only, fakes)'),
