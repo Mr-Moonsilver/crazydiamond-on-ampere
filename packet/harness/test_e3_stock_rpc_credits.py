@@ -89,4 +89,21 @@ class StockRpcCreditTests(unittest.TestCase):
         self.assertEqual(t._calls,{})
         self.assertEqual(e._flash_s5_stock_futures,{})
 
+    def test_two_stock_threads_share_ordered_claims_without_native_reader(self):
+        e,t=fixture.install();self.addCleanup(t.close,1)
+        def run():
+            for _ in range(40):
+                execute=e.collective_rpc('execute_model',non_block=True,timeout=2)
+                sampled=e.collective_rpc('sample_tokens',non_block=True,timeout=2)
+                sampled.result(2)
+                self.assertTrue(execute.done())
+        rows=[fixture.threaded(run),fixture.threaded(run)]
+        errors=[]
+        for row in rows:
+            _,err=fixture.join(self,row,6);errors.extend(err)
+        self.assertEqual(errors,[])
+        self.assertEqual(t._calls,{})
+        self.assertEqual(e._flash_s5_stock_futures,{})
+        self.assertTrue(all(len(q.readers)==1 for q in e.response_mqs))
+
 if __name__=='__main__':unittest.main()
