@@ -52,7 +52,7 @@ def full11_launcher_text():
     # modules; strip them so the frozen queues still reconstruct byte-identically.
     for value in ('e3/activity_accounting.py ', 'e3/engine_offers.py ',
                   'e3/admission_metadata.py ', 'e3/worker_bridge.py ',
-                  'e3/sparse_history_dma.py ', 'e3/native_source.py ', 'e3/row1_oracle.py ',
+                  'e3/sparse_history_dma.py ', 'e3/native_source.py ', 'e3/row1_oracle.py ', 'e3/row1_exactness.py ',
                   'e3/native_overlap_metrics.py ', 'e3/native_overlap_worker.py ',
                   'e3/native_overlap_control.py ', 'e3/native_overlap_session.py ',
                   'e3/native_prefill_offers.py ', 'e3/native_placement.py ', 'e3/native_measurement.py ', 'e3/native_qualification.py ', 'e3/native_qualification_frontend.py ', 'e3/native_observation.py ', 'e3/native_graph_placement.py ',
