@@ -741,7 +741,7 @@ class ReviewRegressions(unittest.TestCase):
         ref = ROOT / 'reference/vllm-src' / eh.EXECUTOR_PATH
         generated = eh.generate_executor(ref.read_text())
         tree = ast.parse(generated)
-        shutdown = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'shutdown')
+        shutdown = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == '_flash_s5_stock_shutdown')
         # Execute the actual transformed shutdown with an unclean receiver.
         events = []
         class MQ:
@@ -762,7 +762,7 @@ class ReviewRegressions(unittest.TestCase):
         executor.workers = []
         executor.rpc_broadcast_mq = None
         executor.response_mqs = [MQ()]
-        env['shutdown'](executor)
+        env['_flash_s5_stock_shutdown'](executor)
         self.assertEqual(events, ['close'])
         self.assertEqual(len(executor.response_mqs), 1)
 

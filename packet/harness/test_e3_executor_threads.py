@@ -47,6 +47,7 @@ class Executor:
  SUCCESS=object()
  collective_rpc=method(eh.EXECUTOR_PATH,'MultiprocExecutor','collective_rpc',generate=True)
  supports_draft_weight_updates=method('v1/executor/abstract.py','Executor','supports_draft_weight_updates')
+ _flash_s5_stock_shutdown=method(eh.EXECUTOR_PATH,'MultiprocExecutor','_flash_s5_stock_shutdown',{'logger':types.SimpleNamespace(debug=lambda *a:None,debug_once=lambda *a:None)},generate=True)
  def __init__(self):
   self.workers=[];self.response_mqs=[Reader() for _ in range(4)];self.rpc_broadcast_mq=Broadcast(self);self.futures_queue=[];self.is_failed=False;self.capabilities=[False]*4
  def _flash_s5_stock_collective_rpc(self,*a,**kw):raise AssertionError('stock reply reader forbidden')
@@ -167,4 +168,15 @@ class ThreadedExecutorTests(unittest.TestCase):
   with self.assertRaisesRegex(Backpressure,'serialization_busy'):t.submit('native',lambda _:None,precheck=lambda:None)
   self.assertLess(time.monotonic()-start,.2);self.assertEqual(t._next,1);self.assertEqual(len(t._calls),1);self.assertIsNone(t._failure)
   b.release.set();_,err=join(self,slow);self.assertEqual(err,[])
+ def test_full_stock_shutdown_is_serialized_until_workers_terminate(self):
+  e,t=install();readers=list(e.response_mqs);writer=e.rpc_broadcast_mq
+  e.workers=[types.SimpleNamespace(proc=object(),death_writer=None,worker_response_mq=readers[0])]
+  entered=threading.Event();release=threading.Event()
+  def terminate(procs):entered.set();assert release.wait(3)
+  e._ensure_worker_termination=terminate
+  a=threaded(lambda:self.stock_shutdown()(e));self.assertTrue(entered.wait(1))
+  b=threaded(lambda:self.stock_shutdown()(e));time.sleep(.02)
+  self.assertEqual(writer.closed,0);self.assertTrue(all(q.closed==0 for q in readers))
+  self.assertTrue(b[0].is_alive());release.set();_,ea=join(self,a);_,eb=join(self,b)
+  self.assertEqual(ea+eb,[]);self.assertEqual(writer.closed,1);self.assertEqual(e.response_mqs,[])
 if __name__=='__main__':unittest.main()

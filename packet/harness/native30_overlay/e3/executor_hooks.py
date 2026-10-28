@@ -137,7 +137,9 @@ _EXECUTOR_FORWARD = (
         aggregator is provided, otherwise list."""
 ''' + _EXECUTOR_GUARD),
     ('    def shutdown(self):\n        """Properly shut down the executor and its workers"""\n',
-     '    def shutdown(self):\n        """Properly shut down the executor and its workers"""\n'
+     '    def shutdown(self):\n'
+     '        return _flash_s5_hooks.executor_shutdown(self, self._flash_s5_stock_shutdown)\n\n'
+     '    def _flash_s5_stock_shutdown(self):\n        """Properly shut down the executor and its workers"""\n'
      '        _flash_s5_hooks.before_shutdown(self)\n'),
     ('        if rpc_broadcast_mq := getattr(self, "rpc_broadcast_mq", None):\n',
      '        if (rpc_broadcast_mq := getattr(self, "rpc_broadcast_mq", None)) and not _flash_s5_hooks.retain_mq(self, None):\n'),
@@ -596,6 +598,25 @@ def config_reply_timeout(executor):
     return 300.0
 
 
+def executor_shutdown(executor, stock):
+    """Serialize the full stock teardown, not only the transport close call.
+
+    Otherwise a second monitor/finalizer can skip the worker-termination wait
+    and destroy MQs while the first shutdown still waits for live workers.
+    """
+    current = getattr(executor, '_flash_s5_transport', None)
+    if current is not None:
+        current._owner()
+    with _INSTALL_LOCK:
+        executor._flash_s5_shutdown_started = True
+        current = getattr(executor, '_flash_s5_transport', None)
+    if current is None:
+        return stock()
+    current._owner()
+    with current._shutdown_lock:
+        return stock()
+
+
 def before_shutdown(executor):
     """Close the owned receiver before response MQs are destroyed.
 
@@ -914,7 +935,7 @@ __all__ = [
     'after_engine_startup', 'before_abort', 'before_engine_shutdown',
     'before_finish_pause', 'before_pause', 'before_reset_prefix',
     'before_shutdown', 'before_step_with_batch_queue', 'collective_rpc',
-    'config_reply_timeout', 'control_pending', 'engine_idle_tick',
+    'config_reply_timeout', 'control_pending', 'engine_idle_tick', 'executor_shutdown',
     'generate_core', 'generate_executor',
     'generate_worker', 'install', 'native_control', 'native_work_pending', 'park_prefill',
     'retain_mq', 'revert_core',
