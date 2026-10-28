@@ -17,15 +17,15 @@ import sys
 import traceback
 
 sys.dont_write_bytecode=True
-H=Path('/home/<service-user>/harness/2bfadb912407')
+H=Path('/home/<service-user>/harness/232bc55ca8fe')
 S0=Path('/home/<service-user>/s0')
 QNAME='q18a-native14'
 OVERLAY=Path('/data/vllm/flash-next-tp4/prod/overlay-v16s5-q18a-native14')
-BUNDLE='2bfadb9124070bc4de00026cab53df1bc9edb9eaa46c874ae6f6f50dc2a1aa1d'
+BUNDLE='232bc55ca8fe3b52bef061139945aa3552fb4122394ba5334a3a6b16ec28cbb8'
 BASE=Path('/data/vllm/flash-next-tp4/prod/overlay-v16e2f')
 BASE_MANIFEST='da561411fadbb82922eeb8eafbe9424bc9703aaf8c2030bd813743c692b641a5'
 IMAGE='sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b'
-REVIEW='29e6501a979c409cba56703f9c77fbdedcc663d1e09ea538a9f1224e911b655a'
+REVIEW='c6728a8afd6f7225bbf257bbe37e85b5a287b4aee6a715813e5964c466c06261'
 LAUNCHER='83ca0128798fe184b87c006149800994c825979ecedae24a72387b4d7a7085a4'
 EXPECTED_SOURCES={
     "E2-GENERATION.json": "822c670c45bcd49f52f72dd985699349caf14590e68042c7b9ba81f4eee4cef6",
@@ -49,7 +49,7 @@ EXPECTED_SOURCES={
     "e3/admission_metadata.py": "cc66a1cbf13132cb624213fe4761d5c95f0755f56851f075d8110557bb665cdb",
     "e3/async_handoff.py": "0bf965d34f09cc3ea68de57195922c34409783b21c7893fae7882e5978e4f452",
     "e3/capture_streams.py": "46181a6f4ee4650244f0de9cfa54a663be95347083accaf82297f53de9dea4c2",
-    "e3/decode-probe-evidence.json": "760153dcd8b4ff6c5def23b9b60b882b5eb4ced86576ea02920da287e6f1e26b",
+    "e3/decode-probe-evidence.json": "2fea91208d2802152bf2aa9b059d0580298e05096f3fa7e401fb687b4f56a901",
     "e3/decode_probe.py": "67415c45806f96297d82f6c0b2c9d746613b5f6931d976664d513ec560f1d1d8",
     "e3/e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
     "e3/engine_driver.py": "b2e6b93651663ac0a70d999a2e6f655cf77176882a51efb37353ab8977ca3b5c",
@@ -66,7 +66,7 @@ EXPECTED_SOURCES={
     "e3/lane_state.py": "f31c755e47f0ad04a61a87deb9f5777f96e62bc4b4fa071e809782d8d24678c1",
     "e3/launch_diagnostic.py": "29925d2946217906d8a4134a69ad41d408d9c09de670a677df80534608e0fff7",
     "e3/model_hooks.py": "7b9c24ac3a2fcd220fbfa1b18393be89dcde9d79084b5de63c4aeaea1929b8d0",
-    "e3/native-implementation-closure.json": "dc3ed85434631ab8d275d3703a868a7bf3befd8e18926769e003af16811d14a8",
+    "e3/native-implementation-closure.json": "c77d9ef4a1dcf39b9f47c094847f3ae4b4eb01132c4b1ffa1acfe0ecbe817d5a",
     "e3/native/build_green_helper.sh": "b47a0d466d676dc08d85d12458926f3e5dcd6a3cb28097136207f8ff1a979b73",
     "e3/native/build_q17_helpers.sh": "6e59366e0b057c1bcea8bc677d29d694111125f11b89edb3b15773801b710ec4",
     "e3/native/flash_s5_graph_bytes.cpp": "56f550ebc345ee96077bb473264c42cce92140218dc014f7555718bf95e36110",
@@ -105,7 +105,7 @@ EXPECTED_SOURCES={
     "e3/sparse_history_dma.py": "060e728aa519f88fdc39a43218dd553c3dd8d18be8b5758f5d9a9657a52777c2",
     "e3/split_bank.py": "f504a07ff2b56c1f9ba5ec3ea371ec0fdce51bc06a42ae9c9ea5ea8522b7c50d",
     "e3/teacher_decode.py": "8ab74b57de7ea90f4a94154d9bd609ab748400e989f58eb5bc553d427faff05c",
-    "e3/wire_v1.py": "5960cbdbfa58e2512128321c2238f38468ec364a248b7c71b9b6fa1a607a6de2",
+    "e3/wire_v1.py": "c97e245811560b00321837e0f882f7b88bf3d67904f4b9247bebdf101a879000",
     "e3/worker_bridge.py": "30ee0e84ea1be09eafc218ad5ca9b4545da7518d5c38a1fd9ae136619e6f4dc6",
     "e3/worker_hooks.py": "16d207a3a6c1c69a32417f3959218aada9412b24aa6a4fe9b5491414e49cde4e",
     "e3_sources/api_routers.py": "867116ae133e04ff70651d25d50aabdfe0ec70de875fbcef7326a83ef92814f1",
