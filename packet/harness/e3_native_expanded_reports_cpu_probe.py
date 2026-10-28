@@ -15,9 +15,11 @@ def collect(graph):
     # The reviewed fixture imports bare names. These aliases name exactly the
     # already mounted modules, with no replacement classes or implementations.
     aliases=[]
+    builder_only={row['module'] for row in graph['builder_only_proof']}
     for row in graph['modules']:
         name=row['module']
-        if name.startswith('vllm.v1.flash_e3.') and row['active_mount']:
+        if (name.startswith('vllm.v1.flash_e3.') and row['active_mount']
+                and name not in builder_only):
             mod=importlib.import_module(name)
             leaf=name.rsplit('.',1)[-1]
             if leaf not in sys.modules:sys.modules[leaf]=mod
