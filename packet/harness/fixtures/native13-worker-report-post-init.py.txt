@@ -1,0 +1,53 @@
+def __post_init__(self):
+    transaction = self.transaction
+    if type(transaction) is not TransactionId:
+        raise E3ContractError('report needs a TransactionId')
+    _int('worker_rank', self.worker_rank, 0)
+    _ints('completed_op_seqs', self.completed_op_seqs, minimum=0)
+    _ints('pending_op_seqs', self.pending_op_seqs, minimum=0)
+    if self.completed_op_seqs != tuple(sorted(self.completed_op_seqs)):
+        raise E3ContractError('completed_op_seqs must be ordered')
+    if self.pending_op_seqs != tuple(sorted(self.pending_op_seqs)):
+        raise E3ContractError('pending_op_seqs must be ordered')
+    done = set(self.completed_op_seqs)
+    if done.intersection(self.pending_op_seqs):
+        raise E3ContractError('an op_seq cannot be both complete and pending')
+    _int('completed_sequence', self.completed_sequence, 0)
+    _tuple('proofs', self.proofs)
+    tickets = set()
+    for proof in self.proofs:
+        if type(proof) is not CompletionProof:
+            raise E3ContractError('proofs must be CompletionProof records')
+        if proof.completion_seq > self.completed_sequence:
+            raise E3ContractError('watermark is behind a completion proof')
+        ticket = proof.ticket
+        if ticket.transaction != transaction:
+            raise E3ContractError('proof belongs to another transaction')
+        if ticket.worker_rank != self.worker_rank:
+            raise E3ContractError('proof belongs to another worker')
+        if ticket.op_seq not in done:
+            raise E3ContractError('proof without a completed op_seq')
+        key = (ticket, proof.kind)
+        if key in tickets:
+            raise E3ContractError('duplicate completion proof')
+        tickets.add(key)
+    if type(self.cursor) is not CompletionCursor:
+        raise E3ContractError('report needs a CompletionCursor')
+    _int('state_epoch', self.state_epoch, 1)
+    _tuple('host_submit_ns', self.host_submit_ns)
+    last = -1
+    for entry in self.host_submit_ns:
+        _tuple('host_submit_ns entry', entry)
+        if len(entry) != 2:
+            raise E3ContractError('host_submit_ns entries are (op_seq, ns)')
+        op_seq, ns = entry
+        _int('host op_seq', op_seq, 0)
+        _int('host_submit_ns', ns, 0)
+        if op_seq not in done.union(self.pending_op_seqs):
+            raise E3ContractError('submit time for an unaccepted operation')
+        if op_seq <= last:
+            raise E3ContractError('host submit times must be ordered')
+        last = op_seq
+    if self.failed_code is not None:
+        if type(self.failed_code) is not str or self.failed_code not in FAILED_CODES:
+            raise E3ContractError('unknown failed_code')

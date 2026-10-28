@@ -462,6 +462,7 @@ class WorkerCompletionReport:
             raise E3ContractError('report needs a CompletionCursor')
         _int('state_epoch', self.state_epoch, 1)
         _tuple('host_submit_ns', self.host_submit_ns)
+        accepted_ops = done.union(self.pending_op_seqs)
         last = -1
         for entry in self.host_submit_ns:
             _tuple('host_submit_ns entry', entry)
@@ -470,7 +471,7 @@ class WorkerCompletionReport:
             op_seq, ns = entry
             _int('host op_seq', op_seq, 0)
             _int('host_submit_ns', ns, 0)
-            if op_seq not in done.union(self.pending_op_seqs):
+            if op_seq not in accepted_ops:
                 raise E3ContractError('submit time for an unaccepted operation')
             if op_seq <= last:
                 raise E3ContractError('host submit times must be ordered')
