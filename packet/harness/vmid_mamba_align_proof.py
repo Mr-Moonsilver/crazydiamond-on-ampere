@@ -109,7 +109,7 @@ def collect(torch, modules):
     out = {'schema': 'vm<vm-id>-mamba-align-startup/1', 'source_pins': sources,
            'source_pins_verified': True, 'initial_cache_none': state._mamba_state_copy_funcs is None,
            'initial_context_none': state._mamba_ctx is None,
-           'families': [spec.mamba_type.name for spec in specs], 'copy_prefix_lengths': [2, 1],
+           'families': [spec.mamba_type.name for spec in specs],
            'scope': 'actual pinned methods/classes over a manually populated model-state shell; '
                     'small synthetic GDN/PLE caches, no model constructor/forward or engine'}
     factory = lane_chunk.LaneChunkFactory(runner)
@@ -126,6 +126,9 @@ def collect(torch, modules):
     gids, _ = state._get_mamba_group_info(config)
     ordinary = state._ensure_align_ctx(config, gids, ordinary_tables)
     descriptors = state._mamba_state_copy_funcs
+    out['copy_prefix_lengths'] = [len(descriptors[spec.mamba_type]) for spec in specs]
+    out['copy_function_names'] = [[function.__name__ for function in
+                                  descriptors[spec.mamba_type]] for spec in specs]
     out.update(stock_later_initialized=ordinary.is_initialized,
                stock_context_distinct=ordinary is not private,
                stock_tables_exact=ordinary.block_table_ptrs.tolist() ==
@@ -142,9 +145,10 @@ def collect(torch, modules):
     ordinary_indices = ordinary.compute_aligned_state_indices(seq_lens, 1)
     torch.cuda.synchronize()
     out['aligned_indices_exact'] = torch.equal(private_indices, ordinary_indices)
-    out['state_cache_bytes_unchanged'] = all(torch.equal(a, b) for aa, bb in zip(caches, before)
-                                                   for a, b in zip(aa, bb))
-    out['ordinary_table_bytes_unchanged'] = all(torch.equal(a, b)
+    out['state_cache_bytes_unchanged'] = all(torch.equal(a.view(torch.uint8), b.view(torch.uint8))
+                                            for aa, bb in zip(caches, before)
+                                            for a, b in zip(aa, bb))
+    out['ordinary_table_bytes_unchanged'] = all(torch.equal(a.view(torch.uint8), b.view(torch.uint8))
                                                for a, b in zip(ordinary_tables, ordinary_before))
     # Real stock validator negatives, not substituted CUDA or native rows.
     ports = lane_chunk.PinnedPorts.load()
