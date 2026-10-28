@@ -345,6 +345,7 @@ class LocalFuture:
         self._taken_lag = None
         self._result_ready = False
         self._result = None
+        self._exception = None
 
     def _transport(self):
         transport = getattr(self.executor, '_flash_s5_transport', None)
@@ -377,6 +378,8 @@ class LocalFuture:
         while True:
             with self._lock:
                 if self._result_ready:
+                    if self._exception is not None:
+                        raise self._exception
                     return self._result
                 if not self._consumed:
                     transport = self._transport()
@@ -384,12 +387,60 @@ class LocalFuture:
                     if transport.call_ready(self.sequence):
                         self.take()
                 if self._consumed:
-                    self._result = self.aggregate(self._taken) if self.aggregate else self._taken
-                    self._result_ready = True
+                    try:
+                        self._result = self.aggregate(self._taken) if self.aggregate else self._taken
+                    except Exception as exc:
+                        self._exception = exc
+                        raise
+                    finally:
+                        self._result_ready = True
                     return self._result
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError('reply not ready before deadline')
             time.sleep(0.001)
+
+
+class StockLocalFuture(LocalFuture):
+    """Stock RPC lifecycle over the sole receiver, without a second MQ reader.
+
+    Stock EngineCore intentionally resolves the sampling future and discards
+    its earlier execute_model future on success. FutureWrapper.result claims
+    that earlier reply too. Preserve that contract for ordinary RPCs only;
+    native typed calls and LocalFuture.done/poll/take remain independent.
+    """
+
+    def __init__(self, executor, sequence, aggregate=None):
+        super().__init__(executor, sequence, aggregate)
+        with self._transport()._condition:
+            executor._flash_s5_stock_futures[sequence] = self
+
+    def take(self):
+        with self._lock:
+            value = super().take()
+            with self._transport()._condition:
+                self.executor._flash_s5_stock_futures.pop(self.sequence, None)
+            return value
+
+    def result(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        # Registration occurs inside submit's writer section, before enqueue.
+        # Snapshot only ordinary RPCs. Never claim a native operation's ACK.
+        with self._transport()._condition:
+            preceding = sorted((seq, future) for seq, future in
+                               self.executor._flash_s5_stock_futures.items()
+                               if seq < self.sequence)
+        for _seq, future in preceding:
+            remaining = None if deadline is None else max(0., deadline - time.monotonic())
+            try:
+                LocalFuture.result(future, remaining)
+            except Exception:
+                # Stock FutureWrapper stores an earlier future's exception;
+                # resolving a later successful future does not raise it. The
+                # transport still propagates global poison on our own result.
+                if not future._result_ready:
+                    raise
+        remaining = None if deadline is None else max(0., deadline - time.monotonic())
+        return super().result(remaining)
 
 
 def _reply_ranks(executor, unique_reply_rank):
@@ -523,6 +574,7 @@ def _install_owned(executor, *, config, success_status, clock=time.monotonic,
     transport = ReplyTransport(dict(enumerate(queues)), success_status,
                                handoff_idle=True, max_calls=slots,
                                clock=clock)
+    executor._flash_s5_stock_futures = {}
     executor._flash_s5_transport = transport
     executor._flash_s5_bounded_send = BoundedSender(broadcast)
     executor._flash_s5_command_slots = slots
@@ -581,12 +633,16 @@ def collective_rpc(executor, stock, method, timeout=None, args=(), kwargs=None,
     effective_timeout = timeout if timeout is not None else config_reply_timeout(executor)
     if type(effective_timeout) not in (int, float) or not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise E3ContractError('executor RPC needs a positive finite timeout')
+    future = None
     def send(sequence):
+        nonlocal future
+        # Register in the same serialized section as the reply expectation and
+        # broadcast, so a second stock caller cannot omit an earlier future.
+        future = StockLocalFuture(executor, sequence, aggregate=aggregate)
         executor.rpc_broadcast_mq.enqueue((send_method, args, kwargs,
                                            broadcast_rank))
     sequence = transport.submit(kind, send, ranks=ranks,
                                 timeout_s=effective_timeout, aggregate=None)
-    future = LocalFuture(executor, sequence, aggregate=aggregate)
     return future if non_block else future.result(timeout=effective_timeout)
 
 
