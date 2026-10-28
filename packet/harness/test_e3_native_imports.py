@@ -60,12 +60,17 @@ class ImportOwnershipTests(unittest.TestCase):
                 (base/'candidate/v1/flash_e3'/(name+'.py')).write_text(m.package((ROOT/'patches/s5_engine'/(name+'.py')).read_text()))
             for name in e2.RUNTIME:
                 (base/'candidate/v1/flash_e2'/(name+'.py')).write_text(e2.package((ROOT/'patches/s5_engine'/(name+'.py')).read_text()))
+            frozen=ROOT/'harness/fixtures/frozen_e2_exactness.py'
+            (base/'candidate/v1/flash_e2/exactness.py').write_bytes(frozen.read_bytes())
             program='''import importlib,sys
 sys.path.insert(0,sys.argv[1])
 s=importlib.import_module('candidate.v1.flash_e3.s5_startup')
 b,q=s.row1_qualification_types()
-assert b.__module__=='candidate.v1.flash_e2.exactness'
+assert b.__module__=='candidate.v1.flash_e3.row1_exactness'
 assert q.__module__=='candidate.v1.flash_e3.row1_oracle'
+assert all(callable(getattr(b,n,None)) for n in ('snapshot','equal','nbytes','differing_bytes','finite','gather_rows','gather_reference'))
+old=importlib.import_module('candidate.v1.flash_e2.exactness').TorchExactBackend
+assert not hasattr(old,'gather_rows')
 try:exec('from exactness import TorchExactBackend',dict(s.__dict__))
 except ModuleNotFoundError as e:assert e.name=='exactness'
 else:raise AssertionError('bare source path leaked')

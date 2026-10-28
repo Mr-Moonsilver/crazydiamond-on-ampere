@@ -90,7 +90,8 @@ def check(graph):
             value=getattr(importlib.import_module(module_name),name)(*args)
             if name=='row1_qualification_types':
                 backend,qualifier=value
-                assert backend.__module__=='vllm.v1.flash_e2.exactness'
+                assert backend.__module__=='vllm.v1.flash_e3.row1_exactness'
+                assert all(callable(getattr(backend,n,None)) for n in ('snapshot','equal','nbytes','differing_bytes','finite','gather_rows','gather_reference'))
                 assert qualifier.__module__=='vllm.v1.flash_e3.row1_oracle'
                 obj=backend()  # Actual constructor only imports real torch.
                 assert obj.torch is sys.modules['torch']

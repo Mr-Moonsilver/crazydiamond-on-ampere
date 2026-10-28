@@ -70,12 +70,12 @@ def _enabled(env):
 def row1_qualification_types():
     """Actual provider import path, callable without constructing GPU owners.
 
-    Packaging binds exactness to its mounted E2 owner, not a builder sys.path.
+    Packaging binds the complete native row1 backend to its explicit E3 owner.
     The live provider invokes this only after its existing pause/drain fences.
     """
-    from exactness import TorchExactBackend
+    from row1_exactness import TorchRow1Backend
     from row1_oracle import Row1Qualifier
-    return TorchExactBackend, Row1Qualifier
+    return TorchRow1Backend, Row1Qualifier
 
 
 def install_builder(runner, kv_caches, is_profiling=False, *, env=None):
@@ -214,7 +214,7 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
         layers = tuple(name for name, _ in _qsa_layers(runner))
         if store is None:
             return None, layers
-        TorchExactBackend, Row1Qualifier = row1_qualification_types()
+        TorchRow1Backend, Row1Qualifier = row1_qualification_types()
 
         def row1_factory(operation):
             def epochs():
@@ -226,7 +226,7 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
                             route_generation=route_generation)
             return Row1Qualifier(
                 store, transaction=operation.transaction,
-                lane=operation.lane, backend=TorchExactBackend(), epochs=epochs)
+                lane=operation.lane, backend=TorchRow1Backend(), epochs=epochs)
         return row1_factory, layers
 
     server.row1_provider = row1_provider
