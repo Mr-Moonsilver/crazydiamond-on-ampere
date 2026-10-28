@@ -1,5 +1,6 @@
 """Observability-only CPU contracts; no GPU or performance qualification."""
 import ast
+import asyncio
 import types
 import unittest
 from pathlib import Path
@@ -57,6 +58,33 @@ class Tests(unittest.TestCase):
         for name in ('prepare_ns','poll_ns','validate_ns','serialize_ns'):self.assertGreater(cost[name],0)
         self.assertEqual(s.controller.commits,1)
         self.assertIsNone(s.driver.retained_row())
+
+    def test_session_retains_real_driver_counter_delta_without_granting_a_gate(self):
+        # Explicit CPU API/Core/worker leaves from the existing control suite;
+        # the actual driver, client, generated utility and session execute.
+        import test_e3_native_overlap as control_fixture
+        from native_overlap_control import NativeControlClient
+        from native_overlap_session import NativeOverlapSession
+        async def scenario():
+            stack=control_fixture.idle_stack()
+            core,frontend=control_fixture.core_for(stack)
+            control=NativeControlClient(frontend,timeout_s=5.)
+            task=asyncio.create_task(control.enter_split())
+            await control_fixture.pump_until(lambda:task.done(),core)
+            task.result()
+            session=NativeOverlapSession(frontend,control=control,timeout_s=5.)
+            await session.execute({'schema':1,'action':'overlap_begin','run_id':'counter-window'})
+            task=asyncio.create_task(control.census())
+            await control_fixture.pump_until(lambda:task.done(),core)
+            task.result()
+            end=await session.execute({'schema':1,'action':'overlap_end','run_id':'counter-window'})
+            self.assertTrue(end['control_path']['available'])
+            self.assertGreater(end['control_path']['ops_count'],0)
+            for key in ('prepare_ns','poll_ns','validate_ns','serialize_ns'):
+                self.assertGreater(end['control_path'][key],0)
+            self.assertFalse(end['native_ready'])
+            self.assertFalse(end['armable'])
+        asyncio.run(scenario())
 
 
 if __name__=='__main__':unittest.main()

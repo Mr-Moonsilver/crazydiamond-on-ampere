@@ -1,0 +1,81 @@
+{
+  "schema": "native15-transitions-fixture-leaves/1",
+  "matrix_complete": false,
+  "clears_box_hold": false,
+  "scenarios": {
+    "worker_lifecycle": {
+      "real_objects": [
+        "GPUModelRunner constructor/load_model/initialize_kv_cache/execute_model/sample_tokens",
+        "real Qwen4Exp model with PLE/GDN/QSA modules and stock dummy-weight loader",
+        "Qwen4ExpModelState",
+        "Scheduler and actual recycling KVCacheManager/BlockPool",
+        "PrefillAdmissionController and NativeAdmissionMetadata",
+        "LaneRuntime/WorkerState/WorkerHandoffServer",
+        "LaneChunkFactory/LaneRequest/LaneChunk/LaneAlign",
+        "WorkerNative/LaneForward/QsaLayerDriver",
+        "LanePrivateBindings",
+        "LaneDispatcher/NativeWorkerBridge",
+        "queried CUDA events and typed reports/release",
+        "ordinary stock final-token execution/sampling/scheduler update"
+      ],
+      "leaves": [
+        {
+          "leaf": "three-layer real Qwen model with reduced dimensions/vocabulary, unquantized dense MLP and actual dummy-weight loader",
+          "replaces": "48-layer quantized production model/weights, MoE/Marlin",
+          "equivalent_for": "the actually exercised class methods and typed request-row/source/metadata/finalization lifecycle for these real PLE/GDN/QSA owners",
+          "more_convenient_for": "production model accuracy, quantization, MoE, resource pressure and full layer coverage",
+          "box_evidence": false
+        },
+        {
+          "leaf": "one real TP1/PP1 rank and direct ordered typed RPC caller",
+          "replaces": "EngineCore/FIFO plus TP2/PP2 peer communication and graph-bank route controller",
+          "equivalent_for": "local ordered bridge/dispatcher command, query and release method contracts; no peer or FULL acknowledgement is synthesized",
+          "more_convenient_for": "distributed replies/races, bank transitions, ownership isolation against concurrent decode and complete FULL certificate",
+          "box_evidence": false
+        },
+        {
+          "leaf": "ordinary CUDA prefill/copy streams and explicit real primitive constructor composition",
+          "replaces": "public green-context/multi-rank native startup",
+          "equivalent_for": "separate CUDA stream event dependencies in the local lifecycle",
+          "more_convenient_for": "green-context identity, SM placement, replay banks and hardware/native readiness",
+          "box_evidence": false
+        },
+        {
+          "leaf": "64 real allocator blocks and 128-byte unquantized workspace reservation through the real manager",
+          "replaces": "production cache capacity and stock quantized workspace high-water measurement",
+          "equivalent_for": "actual allocator/cache APIs and private workspace scope mechanics at the declared geometry",
+          "more_convenient_for": "production memory pressure, workspace sufficiency and Marlin locks",
+          "box_evidence": false
+        }
+      ]
+    },
+    "cpu_source_preflight": {
+      "leaves": [
+        {
+          "leaf": "CPU allocation metadata with real model-derived GDN/PLE specs, three groups and a constructed typed LaneId",
+          "replaces": "GPU model cache groups and actual worker-open ACK",
+          "equivalent_for": "execution of the exact shared rank/lane binding and source-descriptor constructor/validation methods; no worker open or completion is claimed",
+          "more_convenient_for": "all opened-lane/hardware/source-completion evidence; no ticket bound or publication attempted",
+          "box_evidence": false
+        }
+      ]
+    },
+    "predicate_selftest": {
+      "leaves": [
+        {
+          "leaf": "synthetic rows built with actual wire dataclass constructors",
+          "replaces": "none: predicate mutation selftest only",
+          "equivalent_for": "raw JSON predicate field/identity/closure paths",
+          "more_convenient_for": "all actual completion/hardware evidence",
+          "box_evidence": false
+        }
+      ]
+    }
+  },
+  "deferred": {
+    "1": "all-rank typed FULL graph-bank return needs the real TP2/PP2 startup; public communicator refuses disabled TP1 PyNccl and is not patched",
+    "5": "route/strict-streamed coverage is reported only if the real producer naturally exercises it; no selection or source-route flag is forced",
+    "6": "paged-report cancellation belongs to EngineCore's multi-rank transport; local ordered calls do not simulate that phase",
+    "scope": "this is additional actual-object lifecycle evidence, not equivalent full-engine/accuracy/placement evidence and not authority to clear box HOLD"
+  }
+}
