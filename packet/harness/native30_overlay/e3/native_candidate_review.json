@@ -9,15 +9,14 @@
     "target_sha256": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799"
   },
   "cpu_regression": {
-    "basis": "final runtime plus reviewed exact launcher pin and corrected historical-only fixture reconstruction; prior interrupted/failed logs retained and unqualified",
+    "basis": "final registered runtime and lane-host-plan regressions; new standalone proof program separately executed on actual image after full registered run",
     "cases": 269,
     "exit_code": 0,
-    "launcher_pin_commit": "7bc4342",
-    "log": "tmp/native10-final-selftest-20261028T0615Z.log",
-    "log_sha256": "663becb951f6f1ba5d09f7f63b03f7b576923ccd607ef280f1b090543a749f4e",
+    "log": "tmp/native11-final-selftest-20261028T0657Z.log",
+    "log_sha256": "9123404b283852db76e9ebfdfb348cb25a14fe80e1404627c882aa474ab3a843",
     "required": 269,
-    "runtime_commit": "c9ab10b",
-    "tested_commit": "1431d5d6fa5e60072571882f94fa9db3fd4e9a31"
+    "runtime_commit": "3664ffda35d986520f458c00b146e3500a15b12e",
+    "tested_commit": "3664ffda35d986520f458c00b146e3500a15b12e"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -64,6 +63,7 @@
     "e3_finalize_package.py": "ae14c5937cf899a76b9edf6aee572bb552c9b5b02e21b17de878e6a788a6db23",
     "e3_green_probe.py": "7fa16cc1da3ea0e3adf37313db0ce948121a1428b67038e0a94d0ebe9f28560e",
     "e3_lane_comm_probe.py": "c662ef7139d8a2c423261defa4405d4e3d43e385c4e32c6271ee76217fdbe1bf",
+    "e3_native_host_plan_probe.py": "a598bbc9221cd479a0fb0e0d6da6ef62fbfb7ed8cd1535dfb6b1192040160041",
     "e3_native_import_probe.py": "7643e5c7d8ae8bbf8202c918472e33e5fd774cbdf94dbbbcde2e0963b4127bbb",
     "e3_native_memory_grade.py": "f3778b4c2153a06c6eff4136206c30c937d153a971b2228ef518ae511f3e7c86",
     "e3_native_performance.py": "c6b9780877f4684971ac87486459e6e445c8bb34b01ef652c055ca883e09efdc",
@@ -300,6 +300,9 @@
     "runs/q18a_native10.draft.sh": "976cc1a9dcd58b6e5e5c55e208ff2ba44c097ae8d1d3b327dcdf7da29f1b5285",
     "runs/q18a_native10_declare.sh": "89d07d8ee4d6b46a0bbbd83fd7b337febb2663806e5c3590fcec51568f1b1655",
     "runs/q18a_native10_settings.sh": "0cc8b6dcaaaa7b685fde00df40e1093ccb0974cb930829f55bbfdcf17499e4c0",
+    "runs/q18a_native11.draft.sh": "a51ff4938d3a3bfbb90f95b0ea4adb0642b6beb458b08533c4eeb27ffb14bf22",
+    "runs/q18a_native11_declare.sh": "188806d08fb683cb5fe11a90e08b7ed3b60c05bccadbf2c7163ad396219ec1ac",
+    "runs/q18a_native11_settings.sh": "2886c0f383ab31aa09afe82549848c0a30eae17cdb84675666355ec45b1df12d",
     "runs/q18a_native1_declare.sh": "2052525e381dec2544a41d9af00fcacc9776b0cdc7bc9d9857f9810baa3e2d9a",
     "runs/q18a_native1_settings.sh": "6e4494bb5c5228187f48242a2568c32aa770c2ba70bf5f0333fdd90d559f9e42",
     "runs/q18a_native2.draft.sh": "2518bbbd35a01fbf646aa9594b71404dbd1eff4567e17208ec9470dd8a70973a",
@@ -512,7 +515,7 @@
     "test_e3_graph_routing.py": "8cf938864dcb3ce94224e8371df9615e3729b9f35328c43d3cd577c8ad6169a3",
     "test_e3_green_native.py": "092b8d751774cc63479e72cf9ea14c9afab9ffcbe2c291e82c79595087980ef4",
     "test_e3_green_probe.py": "baa17a2327676e644ec8e776b7ab6732502191f4f795b1ddac7ddbc3aa27d0f3",
-    "test_e3_lane_chunk.py": "a6aea6cc6b7b7bf0922e31ae0ff540f9bbaac4d29d39bed45ebe3c044a7b5230",
+    "test_e3_lane_chunk.py": "cd9992043657ccf219976738b0333e4daeb8be53e895a19f25c6071e929c3772",
     "test_e3_lane_comm.py": "323c3c6fa0dfe422b37678aff57d90f516f02c63ec902e7bb6b7d8b9f278ccb0",
     "test_e3_lane_comm_probe.py": "71dbd8bc9c8cb22838126ff27ae4fe69f69efee616654f95d1a7fd12dcfda435",
     "test_e3_lane_dispatch.py": "8264e576e295cb6acc93f910c68b1b9b4c552e54d8f1d60266469ff2a75176a7",
@@ -706,71 +709,94 @@
     "review_sha256": "934025897e7437987ad319d81320fe50b4d49fbe570bad99485f2012f7ac1a45"
   },
   "mounted_runtime_import_audit": {
-    "deferred": 276,
-    "edges": 1100,
-    "graph": "reviews/codex-20261028-native10-mounted-import-edges.json",
-    "graph_sha256": "69f7db40db3e4e59f7a3d3d67aa18ece6ff5bfdf57eae20ccaeb67821494c753",
+    "deferred": 277,
+    "edges": 1101,
+    "graph": "reviews/codex-20261028-native11-mounted-import-edges.json",
+    "graph_sha256": "27ac18ed29735c23864fbe88ccbefa5d65bd39f07aa9c6698b42098852fb7050",
     "modules": 83,
     "runtime_ownership_errors": 0,
-    "scope": "actual generated overlay mount graph and final source-byte equality required; no builder paths at runtime",
+    "scope": "same exact trusted launcher; final generated module bytes must equal actual CPU-proven overlay",
     "tool_sha256": "b14408916e55983c9ec922926a4bdfac3c54d96db62eb5b7f8c265c98fed63d1"
   },
   "profile": "q18a-native-performance",
   "qualified_observer_library_sha256": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d",
   "real_overlay_import_cpu_proof": {
     "counts": {
-      "deferred": 261,
+      "deferred": 262,
       "modules": 81,
       "providers": 6
     },
     "cuda_initialized": false,
     "gpu_device_nodes": [],
     "gpu_owners_constructed": false,
-    "graph_sha256": "69f7db40db3e4e59f7a3d3d67aa18ece6ff5bfdf57eae20ccaeb67821494c753",
+    "graph_sha256": "27ac18ed29735c23864fbe88ccbefa5d65bd39f07aa9c6698b42098852fb7050",
     "hardware_qualified": false,
-    "input_manifest_sha256": "73bd00672c41ebf003255668633c05b347790da32dabe0d63386e39bd4c266e8",
-    "launcher_sha256": "83ca0128798fe184b87c006149800994c825979ecedae24a72387b4d7a7085a4",
+    "host_plan": {
+      "actual_guard_prefix_pass": true,
+      "actual_metadata_class": "vllm.v1.attention.backends.flash_attn.FlashAttentionMetadata",
+      "cpu_buffer_reuse_preserved": true,
+      "device_fields_unchanged": true,
+      "guard_has_no_device_readback": true,
+      "lane_source_sha256": "e7cb42d4b5f79779e6a3d0b00c2397fe7ee661a70093910388824f00fe839d21",
+      "metadata_source_sha256": "b170a4789e18104c1bee35bea70df51abe6766693d8f4726a59f2e6f5c4282aa",
+      "native10_negative_rejected": true,
+      "qsa_source_sha256": "883ed12486acba8bd50212219b35de37d0051ef992c67f8977ead691fcd7bd05",
+      "refusals": 3,
+      "scope": "actual metadata class and generated guard-prefix projection plus real lane binding helper; operation config is CPU input data from observed preconditions; no model/GPU/lease qualification",
+      "shared_plan_object": true,
+      "unrelated_metadata_untouched": true,
+      "verdict": "PASS"
+    },
+    "input_manifest_sha256": "e6c5af3807491530acbad923b50f2ed3a2735ea6975c7e209cd78607c35e440a",
     "native7_negative_rejected": true,
     "no_fixture_shims": true,
     "no_mocks": true,
-    "probe_sha256": "13bfee90afb80400482559c9fdcc2e5d636e715b94f8d56f86a9db55437d0c97",
+    "probe_sha256": "a598bbc9221cd479a0fb0e0d6da6ef62fbfb7ed8cd1535dfb6b1192040160041",
     "rc": 0,
-    "receipt_sha256": "fb3f7e3e16bab436374e65bdaff8ea34a3af77c42f2e4f13d4f651dff9011396",
-    "record": "results/vm<vm-id>/native10-row1-backend/result.json",
+    "receipt_sha256": "b6b4eb6329c5d67f5ee792904ce7c2124bfca23be651d234e18b98443d0971c7",
+    "record": "results/vm<vm-id>/native11-host-plan/result.json",
     "release_qualified": false,
-    "row1_backend": {
-      "actual_qualifier_constructed": true,
-      "all_seven_callable": true,
-      "all_seven_exercised_on_cpu": true,
-      "backend_origin": "/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3/row1_exactness.py",
-      "backend_owner": "vllm.v1.flash_e3.row1_exactness.TorchRow1Backend",
-      "backend_sha256": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799",
-      "dense_gather_exact": true,
-      "frozen_e2_missing": [
-        "gather_rows"
-      ],
-      "frozen_e2_origin": "/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e2/exactness.py",
-      "frozen_e2_sha256": "baf79d18af1b1c97f5b61472c7bac93d9d937d9f72adcbe517212718c1f10545",
-      "gpu_owners_constructed": false,
-      "native9_constructor_negative_rejected": true,
-      "qualifier_origin": "/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3/row1_oracle.py",
-      "qualifier_sha256": "bd94ba04c0317c4cdb90e140bbe4f09fc79c6a4c73d64939197ffd4a4044dc04",
-      "required": [
-        "snapshot",
-        "equal",
-        "nbytes",
-        "differing_bytes",
-        "finite",
-        "gather_rows",
-        "gather_reference"
-      ],
-      "scope": "actual mounted E2/E3 files, real Torch CPU tensors and actual Row1Qualifier constructor; no native GPU/lease/lifecycle qualification",
-      "source_unchanged": true,
-      "sparse_gather_exact": true,
-      "sparse_outside_rows_unchanged": true,
+    "schema": "native11-real-qsa-host-plan/1",
+    "unbound_forward_context_refused": true,
+    "verdict": "PASS"
+  },
+  "real_qsa_host_plan_cpu_proof": {
+    "counts": {
+      "deferred": 262,
+      "modules": 81,
+      "providers": 6
+    },
+    "cuda_initialized": false,
+    "gpu_device_nodes": [],
+    "gpu_owners_constructed": false,
+    "graph_sha256": "27ac18ed29735c23864fbe88ccbefa5d65bd39f07aa9c6698b42098852fb7050",
+    "hardware_qualified": false,
+    "host_plan": {
+      "actual_guard_prefix_pass": true,
+      "actual_metadata_class": "vllm.v1.attention.backends.flash_attn.FlashAttentionMetadata",
+      "cpu_buffer_reuse_preserved": true,
+      "device_fields_unchanged": true,
+      "guard_has_no_device_readback": true,
+      "lane_source_sha256": "e7cb42d4b5f79779e6a3d0b00c2397fe7ee661a70093910388824f00fe839d21",
+      "metadata_source_sha256": "b170a4789e18104c1bee35bea70df51abe6766693d8f4726a59f2e6f5c4282aa",
+      "native10_negative_rejected": true,
+      "qsa_source_sha256": "883ed12486acba8bd50212219b35de37d0051ef992c67f8977ead691fcd7bd05",
+      "refusals": 3,
+      "scope": "actual metadata class and generated guard-prefix projection plus real lane binding helper; operation config is CPU input data from observed preconditions; no model/GPU/lease qualification",
+      "shared_plan_object": true,
+      "unrelated_metadata_untouched": true,
       "verdict": "PASS"
     },
-    "schema": "native10-real-overlay-row1-backend/1",
+    "input_manifest_sha256": "e6c5af3807491530acbad923b50f2ed3a2735ea6975c7e209cd78607c35e440a",
+    "native7_negative_rejected": true,
+    "no_fixture_shims": true,
+    "no_mocks": true,
+    "probe_sha256": "a598bbc9221cd479a0fb0e0d6da6ef62fbfb7ed8cd1535dfb6b1192040160041",
+    "rc": 0,
+    "receipt_sha256": "b6b4eb6329c5d67f5ee792904ce7c2124bfca23be651d234e18b98443d0971c7",
+    "record": "results/vm<vm-id>/native11-host-plan/result.json",
+    "release_qualified": false,
+    "schema": "native11-real-qsa-host-plan/1",
     "unbound_forward_context_refused": true,
     "verdict": "PASS"
   },
@@ -950,24 +976,21 @@
     "reviews/codex-20261028-native9-request-view-review.md",
     "reviews/codex-20261028-native9-independent-regrade.md",
     "reviews/codex-20261028-native10-backend-ownership-review.md",
-    "reviews/codex-20261028-native10-launcher-inventory-delta.md"
+    "reviews/codex-20261028-native10-launcher-inventory-delta.md",
+    "reviews/codex-20261028-native10-independent-regrade.md",
+    "reviews/codex-20261028-native11-host-plan-review.md"
   ],
   "reviewed_by": "Codex",
   "schema": "e3-native-source-review/1",
   "scope": "implementation closure for owner test only",
   "source_delta": {
-    "basis": "native9 worker prepare reaches actual Row1Qualifier constructor but frozen E2 backend lacks gather_rows",
-    "builder_modules": [
-      "make_s5_overlap.py"
-    ],
-    "new_runtime_modules": [
-      "row1_exactness.py"
-    ],
+    "basis": "native10 reaches real native QSA layer but metadata lacks mandatory CPU host plan",
+    "builder_modules": [],
+    "new_runtime_modules": [],
     "runtime_modules": [
-      "s5_startup.py",
-      "decode_probe.py"
+      "lane_chunk.py"
     ],
-    "scope": "explicit E3-owned seven-method native-row1 backend; method bodies exactly VM14b-qualified source; frozen E2 payload unchanged; required module added to both inventories and launcher checksum list; no mounts, engine commands, flags, CUDA source, model arithmetic, settings, workload, v4 or gate change; new native10 names"
+    "scope": "copy private CPU metadata arrays onto exact named QSA main metadata with admitted bounds/stale-plan/device checks; no device readback, metadata GPU-array replacement, settings/workload/v4/kernel/guard change; launcher83ca unchanged; fresh native11 names"
   },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
@@ -982,7 +1005,7 @@
     "graph_hooks.py": "12ad7e3500b559f2d398a6676292094e4d455df12d4c6951803dbac9f38663c5",
     "graph_router.py": "5d19c0a2ee7c291ba910916ae3fefc652117a4efa2c8d7d235241e8902272a71",
     "green_context.py": "f0b9e48e536c120946235490829295a3941c9f93b89df4d8be231172b1f6f0fe",
-    "lane_chunk.py": "e1538fa075e3636ee0095a0c2cbef1cbe81eae6dc6592c609198371fa36d49bd",
+    "lane_chunk.py": "5ad9d273c79ccb82afaef7d9a85fcd4b50481c50719314bcec21ea4df5b40579",
     "lane_comm.py": "ae86ed9b5799fc6de8cb8159913999eaf9c047838604e9ec10a7506db15fb14f",
     "lane_dispatch.py": "b12276ac3a5577723e449bb02466249a63d3212772d5f40c03cb3d02d441e4ff",
     "lane_hooks.py": "9c7b3a08b412e36dbacd1b78509dc39c94db8c4fbfe0e3f2f141a13a6828d405",
@@ -1045,10 +1068,7 @@
     "source_contract_tests": 10
   },
   "startup_guard_delta": {
-    "baseline": "native9 source",
-    "index": "tmp/native10-startup-guard-index.json",
-    "index_sha256": "5340934ed86f8e1c6ba8adb86bffa028009544899aa5ae24e361a61fa80ffa69",
-    "scope": "new backend and strict owner binding; no runtime ready/capability/mock flag supplied or guard waived; real qualifier constructor and frozen E2 negative positively discriminated"
+    "scope": "lane metadata data-flow repair only; no ready/capability flag supplied or guard removed; actual metadata/guard negative and positive discriminate"
   },
   "stock_api_audit": {
     "contract_sha256": "96bfbd945ab3e3dcac8b2da465c28e12307249703e152d5643b169a7370c3f66",
