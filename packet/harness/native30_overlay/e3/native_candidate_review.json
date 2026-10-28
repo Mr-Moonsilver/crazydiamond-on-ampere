@@ -10,13 +10,13 @@
   },
   "cpu_regression": {
     "basis": "registered sparse waves and expanded-report closure regressions; actual mounted-image CPU source proof and GPU device proof separately executed; fresh native14 queue files names-only",
-    "cases": 275,
+    "cases": 276,
     "exit_code": 0,
-    "log": "tmp/native14-closure-selftest.log",
-    "log_sha256": "c77b1b265a1f4b1b266861e228b07178163de3ad1dfd61b6c9320e334f8b1f81",
-    "required": 275,
-    "runtime_commit": "47a53b38ec2a8df13ad0c4dbec2f0e1bf479f69a",
-    "tested_commit": "47a53b38ec2a8df13ad0c4dbec2f0e1bf479f69a"
+    "log": "tmp/native14-validation-hoist-selftest.log",
+    "log_sha256": "36dd1a0f074b8b5c49ab4e1447db31a01b21ce4b4ea135b8de39d007364e8c6e",
+    "required": 276,
+    "runtime_commit": "8802c49ba8a1c9fdbe54cdfcfee8c6b53ed41118",
+    "tested_commit": "8802c49ba8a1c9fdbe54cdfcfee8c6b53ed41118"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -65,7 +65,7 @@
     "e3_lane_comm_probe.py": "c662ef7139d8a2c423261defa4405d4e3d43e385c4e32c6271ee76217fdbe1bf",
     "e3_native_align_capacity_probe.py": "2e7ffd021eba1940aac657ba26995eb604beee593004df1e898e0abfc3c0045d",
     "e3_native_device_path_probe.py": "8bda791f4aa2ee24c314c66df0e7f74d97ba42c7bd39382336a02dd0fa593a1c",
-    "e3_native_expanded_reports_cpu_probe.py": "f4ae27e5464e11c56e8197650ad42618b70a6fcac7b7620a279c8f474b079dec",
+    "e3_native_expanded_reports_cpu_probe.py": "d3bb80fd0777b600d894e2fdd0e93688c1620185dc471dea4da8b76d8b37fc57",
     "e3_native_frontier_reuse_probe.py": "8fdceece78dcfcc58ba812026096524b7371e1de110bd63d27758e5c098f6f5f",
     "e3_native_host_plan_probe.py": "a598bbc9221cd479a0fb0e0d6da6ef62fbfb7ed8cd1535dfb6b1192040160041",
     "e3_native_import_probe.py": "7643e5c7d8ae8bbf8202c918472e33e5fd774cbdf94dbbbcde2e0963b4127bbb",
@@ -90,6 +90,7 @@
     "e3_q17b_clients.py": "5cc839044418a14452065c897e404a6afdec60c9661633b01b1c91913e60bdcc",
     "e3_q18a_lifecycle.py": "34c75674876a76fff6f7eec9324e3a189cabed5a1bb314f9bbf20f5b69e92007",
     "e3_q18a_qualification.py": "42a49e3c14b0fccc2e1c715eba6afd7792a54127f58215351527ff1f8115cc34",
+    "e3_report_validation_check.py": "9168d289771fcbf9241170637cd67973018dfa99f5d41a101baae0553b719fe6",
     "e3_startup_grade.py": "ccd60b516239ed55eb0789b0b1db95fb963cb091e0dd7ac03654b07b5f78d2cc",
     "e3_startup_mount_policy.json": "7b46255f0082b78ec8e658adc5c4cc5c63988de92cd4621591a7fdc58fce16f5",
     "e3_stock_api_contract.json": "96bfbd945ab3e3dcac8b2da465c28e12307249703e152d5643b169a7370c3f66",
@@ -108,6 +109,7 @@
     "fixtures/e3_replay_observer/cupti_version.h": "638936ac29b9d667ec9dba4a3c9608fd1540b1359873bbbb6d19993c22d73b18",
     "fixtures/e3_replay_observer/stub_cupti.cpp": "2f2bc6ebc2cf95b02d408b410c14e848c9b632830b3885388c2103561688103c",
     "fixtures/frozen_e2_exactness.py": "baf79d18af1b1c97f5b61472c7bac93d9d937d9f72adcbe517212718c1f10545",
+    "fixtures/native13-worker-report-post-init.py.txt": "4f3c29949fddd0944275387cd1d6efd977f90d4d35f6a5e2d5191aa23cc9fb85",
     "fixtures/q17a_original_flash_s5_green.cu": "731d31d10c69bd8f4e9cb302e46d8dc65564d974fe9480c2e1c290e0f385c598",
     "fixtures/q17c_original_e3_types.py": "2a9f08b94d7e383efd358f8b044648cf52a65d76f71119a9ebdc89e5f1d04068",
     "fixtures/q17c_original_green_context.py": "26fdd7f650a17bd4382a46b0875d83f5cfde3287ee5221bc600c3870773dc7d9",
@@ -476,7 +478,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "b89e423e230a5ee5eba392432513ea47d63f92d0de8ed8e0b3ecb6d757eee2f6",
+    "selftest.py": "bd847a1d7bd839fe5c4767a48f80c0ca839a1a8b0dfbf16707e90022fd29d605",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -583,6 +585,7 @@
     "test_e3_qsa_driver.py": "d363c571d3c24b6c352d6e3dccb79094296c326d7e72fbab137eb39c39d0318e",
     "test_e3_r4_worker_bridge.py": "bdd533da9a32f737807babe0b82b9a7d682b5dc4a6a5179e25d8ac198fb01c83",
     "test_e3_replay_observer.py": "a8f33da2bc9707cec1668ce1a4a7ad1285ab7b1e82a15df0048732056315cbda",
+    "test_e3_report_validation_cost.py": "822f535ea2a52834fe14694f0cd9b04f2ffff916a1547d4118211917ce22e583",
     "test_e3_route_invariant.py": "a96d8a23d61428abd274e4ddedc5bd648c723935dad0ee3f6712fe8fc3f79b6e",
     "test_e3_row1_exactness.py": "1bf9ab1ac759ac2895850f3ca205ecf49b6e162b47da0d0c6d6c71ea02ec9263",
     "test_e3_sparse_copy_waves.py": "5ba0253f1e25e0b9dc74e2d1157111478afcfd65bd48a7d895cebc1e36b224b7",
@@ -732,8 +735,8 @@
   "mounted_runtime_import_audit": {
     "deferred": 277,
     "edges": 1102,
-    "graph": "reviews/codex-20261028-native14-mounted-import-edges.json",
-    "graph_sha256": "e4fb61bd309b6fac39ff6a60853f14bd52e166f526fa8f4324bb6908a5909008",
+    "graph": "reviews/codex-20261028-native14-validation-mounted-import-edges.json",
+    "graph_sha256": "051bd09c59238f1857b7c9045d36c44bb484877f1ed3bd282f4a679d418d1520",
     "modules": 83,
     "runtime_ownership_errors": 0,
     "scope": "same exact trusted launcher; final generated module bytes must equal actual CPU-proven overlay",
@@ -785,40 +788,6 @@
   },
   "real_expanded_report_cpu_proof": {
     "accepted_segments": 258,
-    "aggregate_limits": {
-      "completed_per_rank_total_limit": 1048576,
-      "max_cancels_per_chunk": 4,
-      "max_chunks_per_request": 256,
-      "max_chunks_total": 8192,
-      "max_frontiers_per_chunk": 4,
-      "max_orphan_transactions": 128,
-      "max_pp_receipts_per_chunk": 8,
-      "max_proofs_per_rank": null,
-      "max_requests": 32,
-      "max_segments_per_chunk": null,
-      "max_source_holds_per_chunk": 4,
-      "max_standalone_cancellations": 128,
-      "plan_segments_basis": "driver _build_plan = 10 + 48 layers = 58; descriptive, not a completeness count: a paused QSA continuation is re-issued under a new stage-local id",
-      "plan_segments_per_chunk": null,
-      "pool_chunk_capacity": true,
-      "proofs_per_rank_total_limit": 1048576,
-      "retained_completed_per_rank": {
-        "0": 229,
-        "1": 229,
-        "2": 29,
-        "3": 29
-      },
-      "retained_proofs_per_rank": {
-        "0": 230,
-        "1": 230,
-        "2": 31,
-        "3": 31
-      },
-      "retained_segments_total": 258,
-      "segment_identity": "(stage, op_seq)",
-      "segments_total_limit": 1048576,
-      "shape_basis": "MAX_MODEL_LEN=262144 / 1024-token chunks = 256 chunks; plan = 10 + 48 layers = 58 segments; 32 requests = 3 lanes x (fresh+append) x 4 declared repeats + headroom"
-    },
     "box_go": false,
     "counts": {
       "deferred": 262,
@@ -826,7 +795,7 @@
       "providers": 6
     },
     "hardware_qualified": false,
-    "manifest_sha256": "34d54095bf86f16694b9801062cae486eee1205fac337f5eaa61174dfbe8630f",
+    "manifest_sha256": "601be62f6c36f340366da0b847f8c89ec82fc65d141b46e1d21da2bc1356f9ae",
     "paged_reports": 2,
     "queried_proofs": [
       230,
@@ -834,20 +803,175 @@
       31,
       31
     ],
-    "raw_commit": "dc9440c",
+    "raw_commit": "5d50eb4",
     "raw_journal_dropped": 282,
-    "raw_path": "<hub-dir>/agents/flash-next/fn-main/results/vm<vm-id>/native14-expanded-reports-c/result.json",
-    "raw_sha256": "034adf548b8f2d3f91eb810ac33f05e4332bed09f45474255e8549bf2cf49098",
-    "scope": "mounted actual own-runtime source with declared CPU fake scheduler/device leaves; no GPU/model/TP/PP/performance",
+    "raw_path": "<hub-dir>/agents/flash-next/fn-main/results/vm<vm-id>/native14-expanded-reports-d/result.json",
+    "raw_sha256": "a083ad68a82f31b220daf2688ae3c57e757f472ecaf2baf70f8600e628e93f7c",
+    "scope": "actual mounted own-runtime with declared CPU device/scheduler leaves; validator equivalence and CPU timing, no engine throughput claim",
     "source_shas": {
       "engine_driver": "b2e6b93651663ac0a70d999a2e6f655cf77176882a51efb37353ab8977ca3b5c",
-      "native_measurement": "ded2f2b2ac5fa6f6099d9e850db707da824fad0f16f4a7e54f08c687c6dae84a"
+      "native_measurement": "ded2f2b2ac5fa6f6099d9e850db707da824fad0f16f4a7e54f08c687c6dae84a",
+      "wire_v1": "c97e245811560b00321837e0f882f7b88bf3d67904f4b9247bebdf101a879000"
     },
-    "stage_segments": {
-      "0": 229,
-      "1": 29
-    },
-    "verdict": "PASS"
+    "verdict": "PASS",
+    "wire_validation": {
+      "baseline_sha256": "4f3c29949fddd0944275387cd1d6efd977f90d4d35f6a5e2d5191aa23cc9fb85",
+      "cases": [
+        {
+          "changed_fields": [],
+          "message": null,
+          "result": "accepted"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": null,
+          "result": "accepted"
+        },
+        {
+          "changed_fields": [
+            "completed_op_seqs",
+            "pending_op_seqs"
+          ],
+          "message": "submit time for an unaccepted operation",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "submit time for an unaccepted operation",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host_submit_ns must be >= 0",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host submit times must be ordered",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host submit times must be ordered",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host op_seq must be an int, not bool",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host_submit_ns must be an int, not bool",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host_submit_ns entries are (op_seq, ns)",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host_submit_ns entry must be an immutable tuple",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host_submit_ns must be an immutable tuple",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "pending_op_seqs"
+          ],
+          "message": "pending_op_seqs must be ordered",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "pending_op_seqs"
+          ],
+          "message": "an op_seq cannot be both complete and pending",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "pending_op_seqs"
+          ],
+          "message": "pending_op_seqs must be an int, not str",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "transaction"
+          ],
+          "message": "report needs a TransactionId",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "worker_rank"
+          ],
+          "message": "worker_rank must be an int, not bool",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "completed_sequence"
+          ],
+          "message": "completed_sequence must be >= 0",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "state_epoch"
+          ],
+          "message": "state_epoch must be >= 1",
+          "result": "E3ContractError"
+        }
+      ],
+      "numerical_or_protocol_field_changes": false,
+      "runtime_methods_patched": false,
+      "scope": "report acceptance and rejection messages, CPU construction time; not engine throughput",
+      "status": "PASS",
+      "timings": [
+        {
+          "baseline_ns": 228061,
+          "current_ns": 36770,
+          "operations": 128
+        },
+        {
+          "baseline_ns": 10020365,
+          "current_ns": 277835,
+          "operations": 1024
+        },
+        {
+          "baseline_ns": 233517133,
+          "current_ns": 1138402,
+          "operations": 4096
+        }
+      ]
+    }
   },
   "real_mamba_slot_capacity_cpu_proof": {
     "align_capacity": {
@@ -1019,40 +1143,6 @@
   },
   "real_overlay_import_cpu_proof": {
     "accepted_segments": 258,
-    "aggregate_limits": {
-      "completed_per_rank_total_limit": 1048576,
-      "max_cancels_per_chunk": 4,
-      "max_chunks_per_request": 256,
-      "max_chunks_total": 8192,
-      "max_frontiers_per_chunk": 4,
-      "max_orphan_transactions": 128,
-      "max_pp_receipts_per_chunk": 8,
-      "max_proofs_per_rank": null,
-      "max_requests": 32,
-      "max_segments_per_chunk": null,
-      "max_source_holds_per_chunk": 4,
-      "max_standalone_cancellations": 128,
-      "plan_segments_basis": "driver _build_plan = 10 + 48 layers = 58; descriptive, not a completeness count: a paused QSA continuation is re-issued under a new stage-local id",
-      "plan_segments_per_chunk": null,
-      "pool_chunk_capacity": true,
-      "proofs_per_rank_total_limit": 1048576,
-      "retained_completed_per_rank": {
-        "0": 229,
-        "1": 229,
-        "2": 29,
-        "3": 29
-      },
-      "retained_proofs_per_rank": {
-        "0": 230,
-        "1": 230,
-        "2": 31,
-        "3": 31
-      },
-      "retained_segments_total": 258,
-      "segment_identity": "(stage, op_seq)",
-      "segments_total_limit": 1048576,
-      "shape_basis": "MAX_MODEL_LEN=262144 / 1024-token chunks = 256 chunks; plan = 10 + 48 layers = 58 segments; 32 requests = 3 lanes x (fresh+append) x 4 declared repeats + headroom"
-    },
     "box_go": false,
     "counts": {
       "deferred": 262,
@@ -1060,7 +1150,7 @@
       "providers": 6
     },
     "hardware_qualified": false,
-    "manifest_sha256": "34d54095bf86f16694b9801062cae486eee1205fac337f5eaa61174dfbe8630f",
+    "manifest_sha256": "601be62f6c36f340366da0b847f8c89ec82fc65d141b46e1d21da2bc1356f9ae",
     "paged_reports": 2,
     "queried_proofs": [
       230,
@@ -1068,20 +1158,175 @@
       31,
       31
     ],
-    "raw_commit": "dc9440c",
+    "raw_commit": "5d50eb4",
     "raw_journal_dropped": 282,
-    "raw_path": "<hub-dir>/agents/flash-next/fn-main/results/vm<vm-id>/native14-expanded-reports-c/result.json",
-    "raw_sha256": "034adf548b8f2d3f91eb810ac33f05e4332bed09f45474255e8549bf2cf49098",
-    "scope": "mounted actual own-runtime source with declared CPU fake scheduler/device leaves; no GPU/model/TP/PP/performance",
+    "raw_path": "<hub-dir>/agents/flash-next/fn-main/results/vm<vm-id>/native14-expanded-reports-d/result.json",
+    "raw_sha256": "a083ad68a82f31b220daf2688ae3c57e757f472ecaf2baf70f8600e628e93f7c",
+    "scope": "actual mounted own-runtime with declared CPU device/scheduler leaves; validator equivalence and CPU timing, no engine throughput claim",
     "source_shas": {
       "engine_driver": "b2e6b93651663ac0a70d999a2e6f655cf77176882a51efb37353ab8977ca3b5c",
-      "native_measurement": "ded2f2b2ac5fa6f6099d9e850db707da824fad0f16f4a7e54f08c687c6dae84a"
+      "native_measurement": "ded2f2b2ac5fa6f6099d9e850db707da824fad0f16f4a7e54f08c687c6dae84a",
+      "wire_v1": "c97e245811560b00321837e0f882f7b88bf3d67904f4b9247bebdf101a879000"
     },
-    "stage_segments": {
-      "0": 229,
-      "1": 29
-    },
-    "verdict": "PASS"
+    "verdict": "PASS",
+    "wire_validation": {
+      "baseline_sha256": "4f3c29949fddd0944275387cd1d6efd977f90d4d35f6a5e2d5191aa23cc9fb85",
+      "cases": [
+        {
+          "changed_fields": [],
+          "message": null,
+          "result": "accepted"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": null,
+          "result": "accepted"
+        },
+        {
+          "changed_fields": [
+            "completed_op_seqs",
+            "pending_op_seqs"
+          ],
+          "message": "submit time for an unaccepted operation",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "submit time for an unaccepted operation",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host_submit_ns must be >= 0",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host submit times must be ordered",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host submit times must be ordered",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host op_seq must be an int, not bool",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host_submit_ns must be an int, not bool",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host_submit_ns entries are (op_seq, ns)",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host_submit_ns entry must be an immutable tuple",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "host_submit_ns"
+          ],
+          "message": "host_submit_ns must be an immutable tuple",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "pending_op_seqs"
+          ],
+          "message": "pending_op_seqs must be ordered",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "pending_op_seqs"
+          ],
+          "message": "an op_seq cannot be both complete and pending",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "pending_op_seqs"
+          ],
+          "message": "pending_op_seqs must be an int, not str",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "transaction"
+          ],
+          "message": "report needs a TransactionId",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "worker_rank"
+          ],
+          "message": "worker_rank must be an int, not bool",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "completed_sequence"
+          ],
+          "message": "completed_sequence must be >= 0",
+          "result": "E3ContractError"
+        },
+        {
+          "changed_fields": [
+            "state_epoch"
+          ],
+          "message": "state_epoch must be >= 1",
+          "result": "E3ContractError"
+        }
+      ],
+      "numerical_or_protocol_field_changes": false,
+      "runtime_methods_patched": false,
+      "scope": "report acceptance and rejection messages, CPU construction time; not engine throughput",
+      "status": "PASS",
+      "timings": [
+        {
+          "baseline_ns": 228061,
+          "current_ns": 36770,
+          "operations": 128
+        },
+        {
+          "baseline_ns": 10020365,
+          "current_ns": 277835,
+          "operations": 1024
+        },
+        {
+          "baseline_ns": 233517133,
+          "current_ns": 1138402,
+          "operations": 4096
+        }
+      ]
+    }
   },
   "real_qsa_host_plan_cpu_proof": {
     "counts": {
@@ -1304,6 +1549,10 @@
     "verdict": "PASS"
   },
   "release_qualified": false,
+  "report_validation_delta": {
+    "basis": "post-delivery deep stress revealed repeated set construction",
+    "scope": "one set computed once, identical accepted values and exception messages, no field/signature/guard change"
+  },
   "review_notes": [
     "reviews/codex-20261027-vm13f-independent-regrade.md",
     "reviews/codex-20261027-native-implementation-closure-review.md",
@@ -1350,9 +1599,10 @@
       "qsa_operation.py",
       "qsa_driver.py",
       "engine_driver.py",
-      "native_measurement.py"
+      "native_measurement.py",
+      "wire_v1.py"
     ],
-    "scope": "256-descriptor queried copy waves preserve one compact attention bucket; long source reports losslessly paged, same aggregate telemetry capacity pooled across chunks; settings, thresholds, numerics, oracle, source holds and launcher unchanged; native14 names"
+    "scope": "256-descriptor queried copy waves preserve one compact attention bucket; long source reports losslessly paged, same aggregate telemetry capacity pooled across chunks; equivalent host-submit validation hoists one repeated accepted-op set; settings, thresholds, numerics, oracle, source holds and launcher unchanged; native14 names"
   },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
@@ -1413,7 +1663,7 @@
     "sparse_history_dma.py": "8d797043b9f077906e93cc32f13f2ba54e56197ba4ce701405951446cc843287",
     "split_bank.py": "ef8222d57888c8103936dffe4f3643edc5ba437b96fb1cab3c8341f97c1d19b4",
     "teacher_decode.py": "8ab74b57de7ea90f4a94154d9bd609ab748400e989f58eb5bc553d427faff05c",
-    "wire_v1.py": "f8aaa360a18c7fe9e530ffcf4775b741c88fa5c8a2156b03651e5fd303200721",
+    "wire_v1.py": "cde7647a8b82d7bc8d4092986d9ac49e1e854cbed082ee53345d80f92ec83164",
     "worker_bridge.py": "b28280bdff8d2e7d3b6683a2fe2267d16aa9cea5412dbffaf9d61a2029c8066b",
     "worker_hooks.py": "5fae77ec149f188ee298a4d1300f333531e18a46f918bf6e5778382fbc15099b"
   },
