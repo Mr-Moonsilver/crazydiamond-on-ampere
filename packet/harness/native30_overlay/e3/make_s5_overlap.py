@@ -40,6 +40,7 @@ import engine_offers
 import graph_hooks
 import green_context
 import lane_hooks
+import make_e2_arena
 import model_hooks
 import operation_source
 import qsa_driver
@@ -142,11 +143,15 @@ def manifest(folder):
 
 
 def package(source):
-    """Rewrite intra-package absolute imports for ``vllm.v1.flash_e3``."""
+    """Bind E3 peers and E2-owned dependencies to their mounted packages."""
+    e2_peers = set(make_e2_arena.RUNTIME) - set(E3_MODULES)
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in E3_MODULES:
             source = source.replace('from ' + node.module + ' import ',
                                     'from .' + node.module + ' import ')
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in e2_peers:
+            source = source.replace('from ' + node.module + ' import ',
+                                    'from ..flash_e2.' + node.module + ' import ')
     # Local runtime imports inside methods need the same package identity as
     # top-level ``from`` imports. Bare imports can appear to work in CPU tests
     # whose sys.path contains the source folder, but fail in vllm.v1.flash_e3.
@@ -154,11 +159,13 @@ def package(source):
     lines = source.splitlines(keepends=True)
     edits = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import) and any(a.name in E3_MODULES for a in node.names):
+        if isinstance(node, ast.Import) and any(a.name in E3_MODULES or a.name in e2_peers for a in node.names):
             parts = []
             for alias in node.names:
                 text = alias.name + (' as ' + alias.asname if alias.asname else '')
-                parts.append(('from . import ' if alias.name in E3_MODULES else 'import ') + text)
+                prefix = ('from . import ' if alias.name in E3_MODULES else
+                          'from ..flash_e2 import ' if alias.name in e2_peers else 'import ')
+                parts.append(prefix + text)
             edits.append((node.lineno - 1, node.col_offset, node.end_lineno - 1,
                           node.end_col_offset, '; '.join(parts)))
     for first, start, last, end, replacement in sorted(edits, reverse=True):

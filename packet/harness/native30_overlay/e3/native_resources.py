@@ -112,8 +112,13 @@ def _max_num_reqs(runner):
     return value
 
 
+def _import_forward_context():
+    """Pure import leaf; constructing/binding QSA state remains GPU-owned."""
+    return importlib.import_module('vllm.forward_context')
+
+
 def _forward_context_module():
-    module = importlib.import_module('vllm.forward_context')
+    module = _import_forward_context()
     if not hasattr(module, 'QSA_REQ_UID'):
         raise NativeResourcesError(
             'vllm.forward_context has no QSA_REQ_UID buffer; the pinned QSA '

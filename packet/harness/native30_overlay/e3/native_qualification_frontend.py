@@ -89,10 +89,9 @@ def _require(condition, code):
 def _peer_module(name):
     """Import a peer module relative to this package, else as a top-level one."""
     if __package__:
-        try:
-            return importlib.import_module('.' + name, __package__)
-        except ImportError:
-            pass
+        # A nested import failure must preserve its real owner/cause. The
+        # engine never has standalone builder modules on its search path.
+        return importlib.import_module('.' + name, __package__)
     return importlib.import_module(name)
 
 
