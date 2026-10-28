@@ -10,7 +10,7 @@ from e3_native_import_probe import check,error
 
 
 def collect_source(graph):
-    from vllm.v1.flash_e3 import engine_driver as ed,native_measurement as nm
+    from vllm.v1.flash_e3 import engine_driver as ed,native_measurement as nm,wire_v1 as wire
     # The reviewed fixture imports bare names. These aliases name exactly the
     # already mounted modules, with no replacement classes or implementations.
     aliases=[]
@@ -24,6 +24,8 @@ def collect_source(graph):
             if leaf not in sys.modules:sys.modules[leaf]=mod
             assert sys.modules[leaf] is mod
             aliases.append(leaf)
+    from e3_report_validation_check import check as check_validation
+    validation=check_validation(wire,Path(__file__).parent/'fixtures/native13-worker-report-post-init.py.txt')
     from test_e3_native_measurement import make_long_stack
     from vllm.v1.flash_e3.lane_dispatch import LaneDispatcher
     from vllm.v1.flash_e3.worker_bridge import NativeWorkerBridge
@@ -69,7 +71,7 @@ def collect_source(graph):
     assert caps['segments_total_limit']==128*8192
     assert caps['proofs_per_rank_total_limit']==128*8192
     assert caps['completed_per_rank_total_limit']==128*8192
-    return dict(verdict='PASS',accepted_segments=258,stage_segments={'0':229,'1':29},
+    return dict(verdict='PASS',wire_validation=validation,accepted_segments=258,stage_segments={'0':229,'1':29},
         queried_proofs=[230,230,31,31],measurement=evidence,
         native_commit=commits[0],raw_journal_dropped=s.driver._journal_dropped,
         release_basis='actual driver _apply_release validates typed all-rank ReleaseAck before chunk_commit',
@@ -79,7 +81,7 @@ def collect_source(graph):
         startup_flags_patched=False,fixture_import_aliases=aliases,
         simulated_device_and_scheduler_inputs=True,hardware_qualified=False,
         source_shas={name:hashlib.sha256(Path(mod.__file__).read_bytes()).hexdigest()
-                     for name,mod in (('engine_driver',ed),('native_measurement',nm))})
+                     for name,mod in (('engine_driver',ed),('native_measurement',nm),('wire_v1',wire))})
 
 
 def collect(graph):
