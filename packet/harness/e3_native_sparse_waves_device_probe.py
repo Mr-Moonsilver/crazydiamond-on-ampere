@@ -502,7 +502,9 @@ def grade(record):
         buckets=[r for r in row.get('records',[]) if r.get('operation')=='sparse_row_bucket']
         if (len(buckets)!=1 or buckets[0].get('rows')!=4097
                 or buckets[0].get('pieces')!=4097
-                or buckets[0].get('compared_bytes')!=4097*1024):
+                or buckets[0].get('coverage_rows')!=4097
+                or buckets[0].get('coverage_bytes')!=24*4048*1024
+                or buckets[0].get('compared_bytes')!=buckets[0].get('coverage_bytes')):
             missing.append(name+':fragmented_raw_coverage')
         if (row.get('fragmented') is not True or len(waves)!=16
             or [w.get('descriptors') for w in waves] != list(range(256,4097,256))

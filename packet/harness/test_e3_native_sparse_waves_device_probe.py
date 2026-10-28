@@ -21,7 +21,7 @@ def record():
         row['fragmented']=True
         row['waves']=[dict(descriptors=n,rows=n,published=0,consumers=0) for n in range(256,4097,256)]
         row['sparse_stats']=dict(sparse_descriptor_high_water=256,sparse_descriptors=4097,sparse_buckets=1)
-        b=row['records'][0];b.update(rows=4097,pieces=4097,compared_bytes=4097*1024);b['digest']=_digest(b)
+        b=row['records'][0];b.update(rows=4097,pieces=4097,coverage_rows=4097,coverage_bytes=24*4048*1024,compared_bytes=24*4048*1024);b['digest']=_digest(b)
         r['sections'][name]=row
     aborted=dict(passed=False,aborted='cancelled',hold_released=True)
     aborted['digest']=_digest(aborted,layer=True)
@@ -62,6 +62,21 @@ class ProofTests(unittest.TestCase):
     def test_abort_digest_checked(self):
         r=record();r['sections']['cancel_fragmented']['layer_records'][0]['digest']='x'
         self.assertEqual(probe.grade(r)['verdict'],'FAIL')
+    def test_retained_actual_gpu_receipt(self):
+        path=Path('<hub-dir>/agents/flash-next/fn-main/results/vm<vm-id>/native14-device-waves/probe.json')
+        if not path.is_file(): self.skipTest('retained VM receipt unavailable')
+        import json,hashlib
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),
+                         '27cc1851d19d3eee848e5f2544b0f8e83a06306e82450557675a8d9540669911')
+        raw=json.loads(path.read_text())
+        self.assertEqual(raw['verdict'],'INCONCLUSIVE')
+        self.assertEqual(set(raw['missing']),{'sparse_fragmented:fragmented_raw_coverage','refill_fragmented:fragmented_raw_coverage'})
+        self.assertEqual(probe.grade(raw)['verdict'],'PASS')
+        for field in ('coverage_rows','coverage_bytes','compared_bytes','pieces'):
+            changed=copy.deepcopy(raw);bucket=changed['sections']['sparse_fragmented']['records'][0]
+            bucket[field]-=1;bucket['digest']=_digest(bucket)
+            self.assertNotEqual(probe.grade(changed)['verdict'],'PASS')
+
     def test_owner_delta_only_names(self):
         old=(ROOT/'tools/native12_device_path_owner.py').read_text()
         new=(ROOT/'tools/native14_device_waves_owner.py').read_text()
