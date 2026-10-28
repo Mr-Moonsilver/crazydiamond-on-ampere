@@ -73,7 +73,15 @@ def collect():
         init_workspace_manager(torch.device('cpu'),num_lanes=2)
         workspace=current_workspace_manager().get_simultaneous(((128,),torch.uint8))
         assert workspace[0].shape==(128,) and workspace[0].device.type=='cpu'
-        source_preflight=source_owner_preflight(cfg)
+        import sys
+        observed=set()
+        def host_profile(frame,event,arg):
+            if event=='call':observed.add((frame.f_globals.get('__name__',''),frame.f_code.co_qualname))
+            elif event=='c_call':observed.add(('builtin',getattr(arg,'__qualname__',getattr(arg,'__name__',''))))
+        previous=sys.getprofile();sys.setprofile(host_profile)
+        try:source_preflight=source_owner_preflight(cfg)
+        finally:sys.setprofile(previous)
+        sequence_audit=stock_sequence_audit(observed)
         from vllm.v1.flash_e3 import qsa_operation,e3_types
         qsa=importlib.import_module('vllm.models.qwen4_exp.nvidia.qsa')
         getter=importlib.import_module('vllm.forward_context').get_forward_context
@@ -113,13 +121,15 @@ def collect():
     assert not torch.cuda.is_initialized()
     return dict(verdict='PASS',constructor_index=index,host_constructor=host,
         gpu_branch_import_statements_executed=True,actual_operation_and_driver_constructed=True,
-        source_owner_preflight=source_preflight,
+        source_owner_preflight=source_preflight,stock_startup_sequence_audit=sequence_audit,
         predicate_selftest=predicate_selftest(w,e3_types),
         actual_config_constructed=True,actual_model_constructor_entered=True,
         cuda_constructor_boundary=boundary,cuda_initialized=False,
         cpu_executed_gpu_host_steps=['config','register_all_kvcache_specs',
             'get_supported_kv_cache_layouts','resolve_kv_cache_layout','record_kv_cache_layout',
-            'get_kv_cache_configs','Scheduler','StructuredOutputManager','SchedulerLeases.attach',
+            'get_kv_cache_configs','QSAKeyStateCache','QSACompressedKeyCache',
+            'generate_scheduler_kv_cache_config','update_kv_cache_capacity','validate_block_size','get_scheduler_cls',
+            'resolve_kv_cache_block_sizes','Scheduler','StructuredOutputManager','SchedulerLeases.attach',
             'CommittedFrontier','PrefillAdmissionController.attach','install_admission_metadata',
             'init_none_hash','get_request_block_hasher','Request','Scheduler.add_request',
             'PrefillAdmissionController.admit','opened_source','SourceDescriptor.validate_frame',
@@ -130,6 +140,63 @@ def collect():
             'execute_chunk CUDA prefix/layers/finalize/query/release',
             'stock execute_model/sample_tokens/update_from_output'],
         full_gpu_constructors_executed=False,fixtures_patched=False)
+
+
+def stock_sequence_audit(observed):
+    """Fail on any stock call absent from executed evidence or named deferrals.
+
+    The actual EngineCore is inspected, never constructed or patched. The
+    extracted spans are semantic AST statement anchors, not a copied step list.
+    """
+    import ast,textwrap
+    from vllm.v1.engine.core import EngineCore
+    def call_name(node):return ast.unparse(node.func)
+    extracted=[]
+    spans=((EngineCore._initialize_kv_caches,'resolve_kv_cache_layout','vllm_config.validate_block_size'),
+           (EngineCore.__init__,'self._initialize_kv_caches','Scheduler'))
+    for fn,start,stop in spans:
+        lines,first=inspect.getsourcelines(fn);text=textwrap.dedent(''.join(lines));tree=ast.parse(text)
+        body=tree.body[0].body
+        first_stmt=next(i for i,node in enumerate(body) if any(isinstance(n,ast.Call) and call_name(n)==start for n in ast.walk(node)))
+        last_stmt=next(i for i,node in enumerate(body) if i>=first_stmt and any(isinstance(n,ast.Call) and call_name(n)==stop for n in ast.walk(node)))
+        for statement in body[first_stmt:last_stmt+1]:
+            for node in sorted((n for n in ast.walk(statement) if isinstance(n,ast.Call)),key=lambda n:(n.lineno,n.col_offset)):
+                extracted.append(dict(method=fn.__name__,line=first+node.lineno-1,call=call_name(node)))
+    # Map the stock variable spelling to actual Python/C call observations.
+    expected={
+        'resolve_kv_cache_layout':('vllm.v1.attention.backends.utils','resolve_kv_cache_layout'),
+        'get_kv_cache_configs':('vllm.v1.core.kv_cache_utils','get_kv_cache_configs'),
+        'generate_scheduler_kv_cache_config':('vllm.v1.core.kv_cache_utils','generate_scheduler_kv_cache_config'),
+        'update_kv_cache_capacity':('vllm.v1.core.kv_cache_utils','update_kv_cache_capacity'),
+        'vllm_config.validate_block_size':('vllm.config.vllm','VllmConfig.validate_block_size'),
+        'StructuredOutputManager':('vllm.v1.structured_output','StructuredOutputManager.__init__'),
+        'vllm_config.scheduler_config.get_scheduler_cls':('vllm.config.scheduler','SchedulerConfig.get_scheduler_cls'),
+        'resolve_kv_cache_block_sizes':('vllm.v1.core.kv_cache_utils','resolve_kv_cache_block_sizes'),
+        'Scheduler':('vllm.v1.core.sched.scheduler','Scheduler.__init__'),
+        'len':('builtin','len'),'any':('builtin','any'),'min':('builtin','min'),
+        'specs.values':('builtin','dict.values'),
+    }
+    deferred={
+        'self.model_executor.get_supported_kv_cache_layouts':'no executor/FIFO on hub; real underlying backend-declaration function executed',
+        'self.model_executor.set_kv_cache_layout':'no executor/FIFO on hub; real underlying record_kv_cache_layout adoption executed',
+        'self.model_executor.determine_available_memory':'GPU profiling deferred; explicit 256MiB reduced-model fixture budget, not production memory evidence',
+        'self.collective_rpc':'conditional auto-fit update RPC absent because fixed max_model_len; no executor or rank ACK simulated',
+        'self._initialize_kv_caches':'EngineCore/executor and GPU profiling intentionally not constructed; extracted host functions executed by shared helper',
+        'logger.warning':'empty-cache branch not taken: actual hybrid cache groups are nonempty',
+    }
+    for row in extracted:
+        name=row['call']
+        if name in expected:
+            witness=expected[name]
+            assert witness in observed,('stock-call-not-executed',name,witness)
+            row.update(status='executed',observed_module=witness[0],observed_function=witness[1])
+        elif name in deferred:row.update(status='deferred',reason=deferred[name])
+        else:raise AssertionError('unclassified-stock-startup-call:'+name)
+    path=Path(inspect.getsourcefile(EngineCore))
+    assert extracted
+    return dict(verdict='PASS',actual_core_source=str(path),source_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        callsites=extracted,missing=[],profiled_actual_calls=True,engine_core_constructed=False,
+        fixture_scope='CPU host metadata projection; actual source-derived call coverage, not GPU platform or RPC evidence')
 
 
 def wait(fn,seconds=60):
@@ -185,12 +252,24 @@ def cache_configuration(cfg,specs,backends,*,legacy_negative=False):
         num_blocks=kv.num_blocks,groups=len(kv.kv_cache_groups))
 
 
-def controller_components(cfg,kv):
-    """Shared actual host composition; no GPU-dependent constructor here."""
+def controller_components(cfg,worker_kv):
+    """The stock worker->scheduler projection, capacity and block-size path."""
     from vllm.v1.core.sched.scheduler import Scheduler
     from vllm.v1.structured_output import StructuredOutputManager
+    from vllm.v1.core.kv_cache_utils import (generate_scheduler_kv_cache_config,
+        update_kv_cache_capacity,resolve_kv_cache_block_sizes)
     from vllm.v1.flash_e3 import scheduler_hooks as sh,async_handoff as ah,admission_metadata as am
-    scheduler=Scheduler(cfg,kv,StructuredOutputManager(cfg),block_size=4048,hash_block_size=176)
+    kv=generate_scheduler_kv_cache_config([worker_kv])
+    cfg.cache_config.num_gpu_blocks=kv.num_blocks
+    groups=kv.kv_cache_groups
+    participating=[g.kv_cache_spec.block_size for g in groups if g.kv_cache_spec.prefix_cacheable]
+    cfg.cache_config.block_size=min(participating or [g.kv_cache_spec.block_size for g in groups])
+    update_kv_cache_capacity(cfg,kv)
+    cfg.validate_block_size()
+    block_size,hash_block_size=resolve_kv_cache_block_sizes(kv,cfg)
+    assert block_size==4048 and hash_block_size==176,(block_size,hash_block_size)
+    Scheduler=cfg.scheduler_config.get_scheduler_cls()
+    scheduler=Scheduler(cfg,kv,StructuredOutputManager(cfg),block_size=block_size,hash_block_size=hash_block_size)
     leases=sh.SchedulerLeases().attach(scheduler,scheduler.kv_cache_manager.block_pool)
     controller=sh.PrefillAdmissionController(scheduler,leases=leases,frontier=ah.CommittedFrontier(),
         engine_epoch=1,chunk_tokens=1024,ranks=(0,),minimum_stage_rows=64).attach()
@@ -218,6 +297,7 @@ def source_owner_preflight(cfg):
     from vllm.v1.attention.backends.gdn_attn import GDNAttentionBackend
     from vllm.v1.attention.backends.short_conv_attn import PleShortConvAttentionBackend
     from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionBackend
+    from vllm.models.qwen4_exp.common.qsa_cache import QSAKeyStateCache,QSACompressedKeyCache,QSAStateBackend
     specs=Model.get_mamba_specs_from_config(cfg)
     assert len(specs)==2
     gdn,ple=specs
@@ -241,8 +321,23 @@ def source_owner_preflight(cfg):
     host_cfg.scheduler_config=SchedulerConfig(max_model_len=98320,is_encoder_decoder=False,
         max_num_batched_tokens=1024,max_num_seqs=10,scheduler_reserve_full_isl=False,
         disable_hybrid_kv_cache_manager=False)
+    # These real side-cache constructors allocate empty CPU tensors, register
+    # their actual classes, and derive their exact circular/compressed specs.
+    side_caches=[QSAKeyStateCache(head_size=64,dtype=torch.bfloat16,cache_config=host_cfg.cache_config,
+        prefix='shape.indexer.raw_key_cache',vllm_config=host_cfg,compress_ratio=4,
+        cache_rope_positions=host_cfg.model_config.uses_mrope),
+        QSACompressedKeyCache(head_size=64,dtype=torch.bfloat16,cache_config=host_cfg.cache_config,
+        prefix='shape.indexer.compressed_key_cache',vllm_config=host_cfg,compress_ratio=4)]
+    for owner in side_caches:cache_specs[owner.prefix]=owner.get_kv_cache_spec(host_cfg)
     kv,cache_proof=cache_configuration(host_cfg,cache_specs,
-        (GDNAttentionBackend,PleShortConvAttentionBackend,Qwen4ExpQSAFlashAttentionBackend),legacy_negative=True)
+        (GDNAttentionBackend,PleShortConvAttentionBackend,Qwen4ExpQSAFlashAttentionBackend,QSAStateBackend),legacy_negative=True)
+    worker_spec_types=[type(g.kv_cache_spec).__name__ for g in kv.kv_cache_groups]
+    assert 'UniformTypeKVCacheSpecs' in worker_spec_types,worker_spec_types
+    try:Scheduler(host_cfg,kv,StructuredOutputManager(host_cfg),block_size=4048,hash_block_size=176)
+    except AssertionError as exc:
+        assert 'No manager registered' in str(exc) and 'UniformTypeKVCacheSpecs' in str(exc),str(exc)
+        scheduler_negative=str(exc)
+    else:raise AssertionError('matrix2B worker-config-as-scheduler negative passed')
     scheduler,controller=controller_components(host_cfg,kv)
     hash_fn=get_hash_fn_by_name('sha256');init_none_hash(hash_fn)
     request=Request(request_id='source-shape-only',prompt_token_ids=[1]*98312,
@@ -262,7 +357,9 @@ def source_owner_preflight(cfg):
     assert controller.commits==0 and not controller.frontier.committed_blocks()
     return dict(verdict='PASS',actual_scheduler_constructor=True,actual_allocator_capture=True,
         actual_shared_source_binding=True,rank_lane_map_validated=True,
-        cache_configuration=cache_proof,cpu_hma_metadata_projection=True,
+        cache_configuration=cache_proof,worker_spec_types=worker_spec_types,
+        scheduler_spec_types=[type(g.kv_cache_spec).__name__ for g in scheduler.kv_cache_manager.kv_cache_config.kv_cache_groups],
+        legacy_worker_config_negative=scheduler_negative,cpu_hma_metadata_projection=True,
         cpu_platform_hma_auto_disabled=cfg.scheduler_config.disable_hybrid_kv_cache_manager,
         unpublished_count=len(unpublished),no_ticket_bound=True,no_publication=True,
         synthetic_lane_input=True,box_evidence=False)
