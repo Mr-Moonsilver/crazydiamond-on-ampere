@@ -19,7 +19,7 @@ is never supplied by this session's status metadata.
 import time
 
 from native_overlap_control import NativeControlClient
-from native_measurement import select_window_evidence
+from native_measurement import select_window_evidence, control_path_delta
 from native_overlap_metrics import (
     clock_identity,
     measure_windows,
@@ -361,6 +361,8 @@ class NativeOverlapSession:
             'workers': evidence.get('workers') or [],
             'journal': evidence.get('journal') or {},
             'measurement': evidence.get('measurement'),
+            'control_path': control_path_delta(
+                self.begin_receipt.get('control_path'), evidence.get('control_path')),
             'measurement_binding': binding,
             'raw_journal_evidence': {key: evidence.get(key) for key in (
                 'segments', 'completions', 'prefill', 'source_holds',

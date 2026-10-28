@@ -59,6 +59,64 @@ entry; no duration is converted or invented.
 
 import json
 import sys
+import time
+from contextlib import contextmanager
+
+
+CONTROL_PATH_FIELDS = ('prepare_ns', 'poll_ns', 'validate_ns', 'serialize_ns', 'ops_count')
+
+
+class ControlPathCounters:
+    """Exclusive host-wall counters; descriptive only, never a readiness gate.
+
+    One engine tick owns this object. Nested spans subtract their elapsed time
+    from the parent, so the four buckets can be added without double counting.
+    Serialize includes bounded precheck/pickle and inline MQ enqueue; validate
+    includes reply validation/application and its measurement bookkeeping.
+    These are not CPU cycles, GPU durations or a complete engine wall clock.
+    """
+    def __init__(self, engine_epoch, clock=time.perf_counter_ns):
+        self.engine_epoch = engine_epoch
+        self.clock = clock
+        self.values = dict.fromkeys(CONTROL_PATH_FIELDS, 0)
+        self._stack = []
+
+    @contextmanager
+    def span(self, field):
+        frame = [self.clock(), 0]
+        self._stack.append(frame)
+        try:
+            yield
+        finally:
+            elapsed = max(0, self.clock() - frame[0])
+            self._stack.pop()
+            self.values[field] += max(0, elapsed - frame[1])
+            if self._stack:
+                self._stack[-1][1] += elapsed
+
+    def snapshot(self):
+        return dict(schema='s5-control-path-cost/1', engine_epoch=self.engine_epoch,
+                    basis='exclusive EngineCore host wall; prepare includes admission/RPC prep; serialize is outbound precheck/enqueue; validate is reply application; worker CPU/response serialization excluded; ops_count is submitted RPCs',
+                    **self.values)
+
+
+def control_path_delta(begin, end):
+    """Descriptive status-snapshot delta; absent telemetry changes no gate."""
+    if (type(begin) is not dict or type(end) is not dict
+            or begin.get('schema') != 's5-control-path-cost/1'
+            or end.get('schema') != begin.get('schema')
+            or begin.get('engine_epoch') != end.get('engine_epoch')):
+        return {'available': False, 'reason': 'control-path-snapshots-unavailable'}
+    result = {}
+    for key in CONTROL_PATH_FIELDS:
+        a, b = begin.get(key), end.get(key)
+        if type(a) is not int or type(b) is not int or a < 0 or b < a:
+            return {'available': False, 'reason': 'control-path-counter-regressed-or-invalid'}
+        result[key] = b - a
+    return dict(available=True, schema='s5-control-path-cost/1',
+                engine_epoch=end['engine_epoch'], basis=end.get('basis'),
+                interval='begin status snapshot to end evidence snapshot; includes boundary RPC coordination',
+                **result)
 
 
 JOURNAL_VECTOR_SCHEMA = 's5-journal-vector/1'

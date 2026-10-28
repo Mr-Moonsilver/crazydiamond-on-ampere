@@ -380,6 +380,9 @@ _HELPER = '''def _flash_s5_staged_operation(
     if not getattr(layer, "_qsa_kv_offload", False):
         raise RuntimeError("S5 operation requires the QSA host-KV path")
     min_rows = getattr(layer, "_qsa_stage_min_rows", 0)
+    _observe_shape = getattr(operation, "observe_chunk_shape", None)
+    if callable(_observe_shape):
+        _observe_shape(num_tokens, min_rows, "dense_staged")
     if min_rows <= 0 or num_tokens < min_rows:
         raise RuntimeError("S5 operation requires the staged dense row threshold")
     host = getattr(attn_metadata, "_qsa_host_meta", None)
@@ -447,6 +450,8 @@ def _sparse_helper_text():
     text = _HELPER
     for old, new in (
         ('def _flash_s5_staged_operation(', 'def _flash_s5_sparse_staged_operation('),
+        ('_observe_shape(num_tokens, min_rows, "dense_staged")',
+         '_observe_shape(num_tokens, min_rows, "sparse_staged")'),
         ('"""Dense staged rows driven by the worker\'s bounded prefill operation.',
          '"""Compact-row staged rows driven by the worker\'s bounded prefill operation.'),
         ('a missing/fragmented plan, sparse compaction or retained-bucket\n'

@@ -1,0 +1,34 @@
+{
+  "schema": "native15-transitions-fixture-leaves/1",
+  "matrix_complete": false,
+  "clears_box_hold": false,
+  "scenarios": {
+    "budget_allocation": {
+      "real_objects": ["Request with real block hasher", "ModelConfig/VllmConfig/CacheConfig/SchedulerConfig", "Scheduler constructor/add_request/schedule/finish_requests", "KVCacheManager and actual single-type managers/BlockPool", "PrefillAdmissionController", "NativeAdmissionMetadata", "SchedulerLeases and CommittedFrontier"],
+      "leaves": [
+        {"leaf": "local metadata-only Qwen configuration and CPU device", "replaces": "production model metadata/EngineCore startup", "equivalent_for": "CPU split, queue, allocator and admission method contracts using the declared block/hash/budget values", "more_convenient_for": "whole-engine initialization/model execution and TP2PP2", "box_evidence": false},
+        {"leaf": "three real KV groups, small Mamba state shapes, six physical blocks", "replaces": "39 production groups and their resource capacity", "equivalent_for": "real allocator reference/reuse and metadata capture APIs; physical IDs actually recycle", "more_convenient_for": "full model cache geometry, pressure and group-count coverage", "box_evidence": false},
+        {"leaf": "direct native cancellation caller after proving no worker was bound/submitted", "replaces": "EngineCore stop/abort dispatch", "equivalent_for": "the actual never_submitted cancellation branch and subsequent actual Scheduler.finish_requests", "more_convenient_for": "normal completed-chunk release/commit and engine stop races", "box_evidence": false}
+      ]
+    },
+    "sampler_rule4": {
+      "real_objects": ["Request", "RequestState", "InputBatch", "Sampler and its states", "stock CUDA post_update kernel", "Scheduler._update_request_with_output", "frozen v4 comparison/calibration functions"],
+      "leaves": [
+        {"leaf": "synthetic logits, vocabulary64, four-token prompts with three precomputed tokens", "replaces": "full model logits and the actual committed native prefix", "equivalent_for": "greedy sampler/output/state bookkeeping and raw v4 arithmetic on the observed numeric rows", "more_convenient_for": "actual model accuracy and completed native-to-stock handoff", "box_evidence": false},
+        {"leaf": "direct scheduler output method on a fresh Scheduler view", "replaces": "EngineCore output delivery/step and distributed worker returns", "equivalent_for": "actual Request append/stop method", "more_convenient_for": "scheduler ownership/timing, native bank return, TP/PP and SSE capture", "box_evidence": false}
+      ]
+    },
+    "predicate_selftest": {
+      "leaves": [{"leaf": "synthetic numeric receipt", "replaces": "none: explicit predicate unit test only", "equivalent_for": "positive/mutation code paths", "more_convenient_for": "all execution and numerical evidence", "box_evidence": false}]
+    }
+  },
+  "deferred": {
+    "1": "completed native interval -> typed FULL bank return -> ordinary full-model sampling needs the real worker/dispatcher composition; no fake lane is substituted",
+    "2": "planned tail sizes separately pass real source planner and device B; connected real worker chunk-to-chunk lifecycle remains open",
+    "3": "real cached GPU states for inside-page and page-edge hits remain open",
+    "5": "strict/streamed mid-request operation/source ownership remains open",
+    "6": "copy-wave cancellation/refill has separate device evidence; connected paged-report cancellation remains open",
+    "7": "this scenario proves two unsubmitted requests recycle actual IDs; normal completed-request retirement/reuse remains open",
+    "8": "actual sampler -> request -> raw numeric comparison plumbing is tested; four-rank teacher capture/SSE/full structural row2 grade still needs the engine"
+  }
+}

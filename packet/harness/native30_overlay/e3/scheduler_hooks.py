@@ -1329,6 +1329,14 @@ class PrefillAdmissionController:
 
     def admit(self, scheduler):
         """Attempt one pre-schedule admission; return its record or ``None``."""
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        cost = getattr(owner, 'control_path', None)
+        if cost is not None:
+            with cost.span('prepare_ns'):
+                return self._admit_observed(scheduler)
+        return self._admit_observed(scheduler)
+
+    def _admit_observed(self, scheduler):
         if scheduler is not self._scheduler:
             raise E3ContractError('admission controller is attached elsewhere')
         if self.parked is not None or self._environment_refuses(scheduler):

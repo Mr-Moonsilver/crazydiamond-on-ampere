@@ -40,11 +40,11 @@ from e3_types import E3ContractError, E3Pending
 # D2-composed qsa.py: runner_hooks.qsa_staged(pinned) -> operation_source.generate_layer.
 # The sparse-history worker added the compact-row helper and the fixed-capacity
 # union prelude, so this intermediate pin moved from 98395b80... to the value
-# below; the E2 source pin and every stock byte are unchanged.  Reported for
-# Codex review.
+# below; native15 adds only helper-entry shape observation to that intermediate
+# source. The E2 source pin, attention methods and every stock byte are unchanged.
 PINS = {
     'models/qwen4_exp/nvidia/qsa.py':
-        '9cfe8556ad1272e8d9a9c84c59a2cca4143520b35d49b7f34210d84480526d8f',
+        '7614ea785b05e50acd0f98b8f26801da9a6900c097e2ba63241b906bcb1b5f39',
 }
 
 _ATTN_ANCHOR_OLD = '''        output, _ = self.o_proj(flat_output)

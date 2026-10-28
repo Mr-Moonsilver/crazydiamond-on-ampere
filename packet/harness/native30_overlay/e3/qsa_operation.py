@@ -602,6 +602,18 @@ class QsaPrefillOperation:
         return tuple(versions)
 
     # --- identity / ownership validation ---------------------------------
+    def observe_chunk_shape(self, rows, min_rows, route):
+        """Host-only diagnostic at helper entry; no token/UID/page data."""
+        import logging
+        try:
+            logging.getLogger(__name__).info(
+                'flash-s5 chunk_shape rows=%d min_rows=%d route=%s chunk_index=%d',
+                rows, min_rows, route, self.transaction.txn_seq)
+        except Exception:
+            # A broken diagnostic handler cannot change an operation's route,
+            # admission guard, completion or failure. Keep a count, not values.
+            self.stats['shape_log_errors'] = self.stats.get('shape_log_errors', 0) + 1
+
     def __repr__(self):
         return (f'QsaPrefillOperation(txn_seq={self.transaction.txn_seq}, '
                 f'rank={self.lane.worker_rank}, storage_epoch={self.lane.storage_epoch}, '

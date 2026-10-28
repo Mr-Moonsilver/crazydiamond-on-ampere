@@ -57,7 +57,8 @@ from e3_types import (
 )
 from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
-from native_measurement import NativeMeasurementCensus, encode_report_vector, decode_report_vector
+from native_measurement import (NativeMeasurementCensus, encode_report_vector,
+                                decode_report_vector, ControlPathCounters)
 from reply_transport import Backpressure, TransportError
 from scheduler_hooks import (
     ADMISSION_PHASES,
@@ -856,6 +857,7 @@ class NativeSegmentDriver:
         self._journal = deque(maxlen=journal_limit)
         self._journal_dropped = 0
         self.clock_basis = CLOCK_BASIS
+        self.control_path = ControlPathCounters(self.engine_epoch)
         # One bounded control intent at a time.  The utility dispatch only
         # registers it; every submission/settlement happens on the engine tick.
         timeout = reply_timeout_s if control_timeout_s is None else control_timeout_s
@@ -969,21 +971,35 @@ class NativeSegmentDriver:
         return sender
 
     def _submit(self, kind, envelope, ranks, *, timeout_s=None):
+        with self.control_path.span('prepare_ns'):
+            return self._submit_observed(kind, envelope, ranks, timeout_s=timeout_s)
+
+    def _submit_observed(self, kind, envelope, ranks, *, timeout_s=None):
         transport = getattr(self.executor, '_flash_s5_transport', None)
         if transport is None:
             raise DriverError('owned reply transport is not installed')
         sender = self._bounded()
         check = getattr(sender, 'check', None)
-        precheck = (lambda: check(envelope)) if callable(check) else None
-        sequence = transport.submit(kind, lambda _sequence: sender(envelope),
+        def precheck():
+            with self.control_path.span('serialize_ns'):
+                return check(envelope)
+        def send(_sequence):
+            with self.control_path.span('serialize_ns'):
+                return sender(envelope)
+        sequence = transport.submit(kind, send,
                                     ranks=tuple(ranks),
                                     timeout_s=(self.reply_timeout_s if timeout_s is None
                                                else timeout_s), aggregate=None,
-                                    precheck=precheck)
+                                    precheck=precheck if callable(check) else None)
+        self.control_path.values['ops_count'] += 1
         self._inflight[sequence] = kind
         return sequence
 
     def _drain(self):
+        with self.control_path.span('poll_ns'):
+            return self._drain_observed()
+
+    def _drain_observed(self):
         transport = getattr(self.executor, '_flash_s5_transport', None)
         if transport is None:
             return 0
@@ -995,7 +1011,8 @@ class NativeSegmentDriver:
                 continue
             value, _lag = transport.take(sequence)
             del self._inflight[sequence]
-            self._apply(kind, value, sequence)
+            with self.control_path.span('validate_ns'):
+                self._apply(kind, value, sequence)
             applied += 1
         return applied
 
@@ -2604,6 +2621,7 @@ class NativeSegmentDriver:
         return {
             'schema': 1,
             'mode': 'native-overlap',
+            'control_path': self.control_path.snapshot(),
             'engine_epoch': self.engine_epoch,
             'ranks': list(self.ranks),
             'route': 'split' if self._split_ready else 'full',
@@ -3288,6 +3306,7 @@ class NativeSegmentDriver:
             'workers': self._last_census,
             'workers_observed_ns': self._last_census_observed_ns,
             'measurement': self.measurement_census.evidence(start_ns, end_ns, now_ns=now),
+            'control_path': self.control_path.snapshot(),
             'transition_acks': self.transition_ack_rows(),
             'native_owned': bool(self.active),
         }
