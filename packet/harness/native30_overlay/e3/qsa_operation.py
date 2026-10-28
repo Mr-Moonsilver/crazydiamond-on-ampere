@@ -55,7 +55,9 @@ from sparse_history_dma import (
     SparsePlanRefused,
     SparseRefusal,
     SparseSourceHold,
+    SparseStreamBucket,
     make_sparse_plan,
+    stream_sparse_plan,
 )
 from row1_oracle import Row1Bucket, Row1OracleError
 from e3_types import (
@@ -257,6 +259,14 @@ class SubmissionCredit:
     reason: str
     pending_buckets: int
     pending_selection: int
+    pending_copy_waves: int = 0
+
+
+@dataclass(frozen=True)
+class SparseCopyPending:
+    """A bounded copy wave was submitted, but its bucket is unpublished."""
+    ticket: OperationTicket
+    sparse_copy_pending: bool = True
 
 
 @dataclass
@@ -283,6 +293,12 @@ class SparseLayerRun:
     next_bucket: int = 0
     active_bucket: object = None
     route: object = None                 # 'sparse_dma'|'dense_dma'|'empty'
+    wave_iterator: object = field(default=None, repr=False)
+    wave_copy: object = None
+    wave_event: object = None
+    wave_ready: bool = False
+    wave_rows: int = 0
+    wave_descriptors: int = 0
 
 
 def plan_buckets(pages, *, bucket_pages=MAX_BUCKET_PAGES,
@@ -1300,6 +1316,8 @@ class QsaPrefillOperation:
             except SparsePlanError as exc:
                 self._failed = True
                 raise OperationError('sparse plan could not be formed') from exc
+            if plan.refused and plan.fallback.reason == 'descriptor_cap':
+                plan = stream_sparse_plan(plan)
             sparse.plan = plan
             self.stats['sparse_planned'] += 1
             if plan.refused:
@@ -1376,8 +1394,11 @@ class QsaPrefillOperation:
         self._refresh()
         if self.pending_buckets >= MAX_OUTSTANDING_BUCKETS:
             raise E3Pending('one arena bucket is still outstanding')
-        if len(self._records) + 2 > self.max_tickets:
+        needed = 1 if sparse.wave_copy is not None else 2
+        if len(self._records) + needed > self.max_tickets:
             raise OperationError('bounded operation-ticket budget exhausted')
+        if type(bucket) is SparseStreamBucket:
+            return self._fill_sparse_wave(run, sparse, bucket, pages)
         copy = self._new_ticket(Stage.HISTORY_READY, run.layer_name, index)
         consumer = self._new_ticket(Stage.ATTENTION, run.layer_name, index)
         copy.sparse = True
@@ -1428,6 +1449,78 @@ class QsaPrefillOperation:
             self._failed = True
             raise
         return copy.ticket
+
+    def _fill_sparse_wave(self, run, sparse, bucket, pages):
+        """One <=256-descriptor submission, inside fill_sparse_bucket's offer.
+
+        Intermediate events grant host-queried submission credit only. The
+        logical copy proof and attention consumer are created/published only
+        once the full, unchanged compact bucket has been enqueued.
+        """
+        index = bucket.index
+        if sparse.wave_copy is not None and not sparse.wave_ready:
+            raise E3Pending('sparse copy wave not observed')
+        try:
+            if sparse.wave_copy is None:
+                copy = self._new_ticket(Stage.HISTORY_READY, run.layer_name, index)
+                copy.rows, copy.descriptors = bucket.rows, bucket.descriptors
+                copy.nbytes, copy.pages = bucket.nbytes, pages
+                copy.owners = (run.source, run.arena, run.table)
+                sparse.wave_copy = copy
+                sparse.wave_iterator = bucket.waves()
+                sparse.wave_rows = sparse.wave_descriptors = 0
+                sparse.hold.begin_stream_bucket(index, bucket.rows,
+                                                 bucket.descriptors, bucket.nbytes)
+                self.device.wait_event(self.device.copy, run.producer.event)
+                self.stats['waits'] += 1
+                previous = (run.consumed[-1].event if index
+                            else self._last_arena_consumer)
+                if previous is not None:
+                    self.device.wait_event(self.device.copy, previous)
+                    self.stats['waits'] += 1
+            copy = sparse.wave_copy
+            wave = next(sparse.wave_iterator)
+            for piece in wave:
+                self.device.copy_rows(run.source, run.arena, piece.source_row,
+                                      piece.arena_row, piece.rows)
+            sparse.wave_event = self.device.record(self.device.copy)
+            sparse.wave_ready = False
+            rows = sum(piece.rows for piece in wave)
+            sparse.hold.stream_wave_recorded(index, rows, len(wave))
+            sparse.wave_rows += rows
+            sparse.wave_descriptors += len(wave)
+            self.stats['copy_events'] += 1
+            if sparse.wave_rows < bucket.rows:
+                return SparseCopyPending(copy.ticket)
+            if (sparse.wave_rows != bucket.rows
+                    or sparse.wave_descriptors != bucket.descriptors):
+                raise OperationError('streamed sparse bucket accounting disagrees')
+            copy.event = sparse.wave_event
+            copy.sparse = True
+            consumer = self._new_ticket(Stage.ATTENTION, run.layer_name, index)
+            consumer.sparse = True
+            run._pending_consumer = consumer
+            sparse.active_bucket = index
+            self._mark_qualification_bucket(
+                run, index, route='sparse_dma', rows=bucket.rows,
+                pieces=bucket.descriptors, compact_start=bucket.compact_start,
+                nbytes=bucket.nbytes,
+                segments=((p.source_row, p.arena_row, p.rows)
+                          for p in bucket.iter_pieces()))
+            sparse.hold.copy_recorded(index)
+            sparse.hold.publish(index)
+            self.stats['sparse_buckets'] += 1
+            self.stats['sparse_rows'] += bucket.rows
+            self.stats['sparse_pieces'] += bucket.descriptors
+            self.stats['sparse_bytes'] += bucket.nbytes
+            self.stats['sparse_descriptors'] += bucket.descriptors
+            self.device.wait_event(self.device.compute, copy.event)
+            self.stats['waits'] += 1
+            sparse.wave_copy = sparse.wave_iterator = sparse.wave_event = None
+            return copy.ticket
+        except BaseException:
+            self._failed = True
+            raise
 
     def take_fallback(self):
         """Typed refusal for the caller's serial route; never an overlap pass."""
@@ -1679,6 +1772,10 @@ class QsaPrefillOperation:
         self._refresh()
         pending_buckets = self.pending_buckets
         pending_selection = self.pending_selection
+        pending_waves = self.pending_copy_waves
+        if pending_waves:
+            return SubmissionCredit(False, 'sparse copy wave not observed',
+                                    pending_buckets, pending_selection, pending_waves)
         if pending_buckets:
             return SubmissionCredit(False, 'attention consumer not observed',
                                     pending_buckets, pending_selection)
@@ -1706,6 +1803,8 @@ class QsaPrefillOperation:
             raise
         if self.pending_buckets:
             raise E3Pending('previous bucket consumer has not completed')
+        if self.pending_copy_waves:
+            raise E3Pending('sparse copy wave not observed')
         if self._continuation is None:
             raise OperationError('no generated continuation attached')
         try:
@@ -1728,6 +1827,25 @@ class QsaPrefillOperation:
         completed = []
         if self._failed or self._released:
             return ()
+        for run in self._layers.values():
+            sparse = run.sparse
+            if sparse is None or sparse.wave_copy is None or sparse.wave_event is None:
+                continue
+            try:
+                if not sparse.wave_ready:
+                    sparse.wave_ready = bool(self.device.query(sparse.wave_event))
+                if self._cancelled is not None and sparse.wave_ready:
+                    # Only the accepted prefix is retired; it is never a
+                    # published bucket or an attention-completion claim.
+                    sparse.hold.abandon_stream_after_drain(sparse.next_bucket)
+                    sparse.wave_copy.rows = sparse.wave_rows
+                    sparse.wave_copy.descriptors = sparse.wave_descriptors
+                    sparse.wave_copy.nbytes = sparse.wave_rows * (PAGE_BYTES // PAGE_ROWS)
+                    sparse.wave_copy.event = sparse.wave_event
+                    sparse.wave_copy = sparse.wave_iterator = sparse.wave_event = None
+            except BaseException:
+                self._failed = True
+                raise
         for record in self._records:
             if record.complete or record.failed is not None:
                 continue
@@ -1776,6 +1894,13 @@ class QsaPrefillOperation:
     def pending_selection(self):
         return int(any(record.stage is Stage.SELECTION and not record.complete
                        for record in self._records))
+
+    @property
+    def pending_copy_waves(self):
+        return int(any(run.sparse is not None
+                       and run.sparse.wave_copy is not None
+                       and not run.sparse.wave_ready
+                       for run in self._layers.values()))
 
     @property
     def cancelled(self):

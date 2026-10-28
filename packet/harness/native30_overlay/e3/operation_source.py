@@ -255,8 +255,12 @@ _SPARSE_FORWARD = (
      '            )\n',
      '            selected = unique_tokens[\n'
      '                page_lo * page_size:min(page_hi * page_size, selected_count)]\n'
-     '            e3op.fill_sparse_bucket(\n'
-     '                staged, selected, page_lo * page_size, block_table_row)\n'),
+     '            while True:\n'
+     '                _copy = e3op.fill_sparse_bucket(\n'
+     '                    staged, selected, page_lo * page_size, block_table_row)\n'
+     '                if not getattr(_copy, "sparse_copy_pending", False):\n'
+     '                    break\n'
+     '                yield _copy\n'),
     ('        if unique_tokens is None:\n            e2.consume_begin()\n', ''),
     ('        if unique_tokens is None:\n            e2.consume_end()\n',
      '        yield e3op.after_attention_bucket(\n'

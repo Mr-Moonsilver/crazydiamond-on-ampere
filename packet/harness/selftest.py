@@ -725,6 +725,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_native_integration.py', 'E3 native integration: generated worker/engine startup, typed RPC driving, completion/commit ordering, stop paths and record status (CPU only, faked device/transport)'),
                      ('test_e3_worker_operations.py', 'E3 D2 worker operations: bounded QSA buckets, generated call sites executed, delayed events, cancel/drain and stale-epoch refusal (CPU only, fake CUDA)'),
                      ('test_e3_sparse_history_dma.py', 'E3 sparse transport: fixed-capacity union, deferred selection and lease-bound compact DMA (CPU)'),
+                     ('test_e3_sparse_copy_waves.py', 'E3 sparse descriptor overflow: bounded copy waves, queried credit, original attention boundaries and unpublished cancellation (CPU)'),
                      ('test_vmid_job12.py', 'VM<vm-id> native sparse operation: real generated union and attention, delayed selection and cancellation (CPU)'),
                      ('test_vmid_job12b.py', 'VM<vm-id> sparse qualification: inspectable pinned generated Triton module and bounded exception evidence (CPU)'),
                      ('test_vmid_job12c.py', 'VM<vm-id> sparse qualification: preserved pinned JIT decorators and actual wrapper grid-launch protocol (CPU)'),

@@ -325,6 +325,9 @@ class QsaLayerDriver:
             phase.selections += 1
             self.records.append(('selection', phase.layer_idx))
             return None
+        if getattr(value, 'sparse_copy_pending', False):
+            self.records.append(('copy_wave', phase.layer_idx))
+            return None
         phase.buckets += 1
         phase.advances += 1
         self.records.append(('bucket', phase.layer_idx, phase.buckets))

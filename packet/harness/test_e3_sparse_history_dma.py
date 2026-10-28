@@ -1315,12 +1315,10 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
         self.assertTrue(operation.drain())
         operation.release()
 
-    def test_descriptor_cap_refuses_before_any_copy(self):
+    def test_descriptor_cap_uses_bounded_waves_before_one_attention(self):
         mapping = (5, 7)
         tokens = len(mapping) * PAGE_TOKENS
-        # 2,500 even tokens inside one logical page: every selected row maps to
-        # a non-adjacent source row, so the plan needs 2,500 descriptors and is
-        # refused before the first copy is submitted.
+        # Fragmented rows overflow the strict plan but retain one attention bucket.
         selected = [2 * j for j in range(1250)] + [PAGE_TOKENS + 2 * j for j in range(625)]
         width = 1876
         operation, lane, transaction, sources = self.prepare({'qsa.0': mapping})
@@ -1335,26 +1333,30 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
                                    rows, 1, self.arena, True, output,
                                    e3op=operation)
         operation.attach_continuation(generator)
-        with self.assertRaises(shd.SparsePlanRefused) as caught:
-            operation.advance()
-        self.assertEqual(caught.exception.refusal.reason, 'descriptor_cap')
-        self.assertEqual(caught.exception.refusal.descriptors,
-                         shd.MAX_DESCRIPTORS + 1)
-        self.assertFalse(operation._failed)
-        self.assertEqual(self.device.copies, [])
-        self.assertTrue(all(row is None for row in self.arena.storage.rows))
-        fallback = operation.take_fallback()
-        self.assertEqual(fallback.reason, 'descriptor_cap')
-        # Duplicate token ids collapse in the sorted union before planning.
-        union = len(set(selected))
-        self.assertEqual(fallback.rows, union)
-        self.assertEqual(operation.stats['sparse_fallback'], 1)
-        self.assertEqual(operation.stats['sparse_fallback_rows'], union)
-        self.assertEqual(operation.stats['sparse_fallback_bytes'],
-                         union * shd.ROW_BYTES)
-        self.assertIn(hold, operation._owners[('sparse_source', 'qsa.0')])
-        operation.cancel('sparse_refusal')
-        self.device.ready_all()
+        waves = []
+        while True:
+            before = len(self.device.copies)
+            try:
+                value = operation.advance()
+            except StopIteration:
+                break
+            waves.append(len(self.device.copies) - before)
+            self.assertLessEqual(waves[-1], shd.MAX_DESCRIPTORS)
+            if getattr(value, 'sparse_copy_pending', False):
+                self.assertEqual(len(self.kernel.calls), 0)
+                self.assertEqual(hold.stats['published'], 0)
+            self.device.ready_all()
+        self.assertEqual(waves, [256] * 7 + [83])
+        self.assertEqual(len(self.kernel.calls), 1)
+        self.assertEqual(hold.stats['published'], 1)
+        self.assertEqual(operation.stats['sparse_descriptor_high_water'], 256)
+        self.assertEqual(operation.stats['sparse_fallback'], 0)
+        self.assertEqual(self.arena_rows(len(selected)),
+                         [struct.pack('<Q', row) * 4
+                          for row in self.expected_rows(selected, mapping)])
+        self.assertEqual(len(operation._records), 4)
+        operation.end_layer('qsa.0')
+        operation.end_forward()
         self.assertTrue(operation.drain())
         operation.release()
 

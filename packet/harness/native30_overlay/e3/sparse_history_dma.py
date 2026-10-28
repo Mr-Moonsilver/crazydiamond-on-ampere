@@ -31,6 +31,7 @@ published.  Cancellation stops new submissions, the accepted copies/consumers
 drain, and only then may the hold be released.
 """
 from dataclasses import dataclass, field
+from itertools import islice
 
 from e3_types import (
     ARENA_PAGES,
@@ -202,11 +203,80 @@ class SparseHistoryPlan:
 
     @property
     def descriptor_high_water(self):
-        return max((bucket.descriptors for bucket in self.buckets), default=0)
+        return max((min(bucket.descriptors, MAX_DESCRIPTORS)
+                    for bucket in self.buckets), default=0)
 
     @property
     def bucket_rows(self):
         return tuple(bucket.rows for bucket in self.buckets)
+
+
+@dataclass(frozen=True)
+class SparseStreamBucket:
+    """Same compact attention bucket, filled in bounded descriptor waves.
+
+    Only selected integers and a map are retained, not a per-row descriptor
+    array. Each iteration materializes at most MAX_DESCRIPTORS RowPieces.
+    """
+    index: int
+    compact_start: int
+    rows: int
+    selected: tuple = field(repr=False)
+    mapping: tuple = field(repr=False)
+    descriptors: int
+
+    @property
+    def compact_end(self):
+        return self.compact_start + self.rows
+
+    @property
+    def nbytes(self):
+        return self.rows * ROW_BYTES
+
+    def iter_pieces(self):
+        prior = None
+        for dst in range(self.rows):
+            token = self.selected[self.compact_start + dst]
+            source = self.mapping[token // PAGE_ROWS] * PAGE_ROWS + token % PAGE_ROWS
+            if (prior is not None and prior.source_row + prior.rows == source
+                    and prior.rows < MAX_PIECE_ROWS
+                    and source // PAGE_ROWS - prior.source_row // PAGE_ROWS < MAX_PIECE_PAGES):
+                prior = RowPiece(prior.source_row, prior.arena_row, prior.rows + 1)
+            else:
+                if prior is not None:
+                    yield prior
+                prior = RowPiece(source, dst, 1)
+        if prior is not None:
+            yield prior
+
+    def waves(self):
+        pieces = self.iter_pieces()
+        while True:
+            wave = tuple(islice(pieces, MAX_DESCRIPTORS))
+            if not wave:
+                return
+            yield wave
+
+
+def stream_sparse_plan(plan):
+    """Recover only descriptor overflow, without changing selection or buckets.
+
+    The strict planner remains the validator and still refuses at descriptor
+    257. Unsupported mappings and stale identities are never routed here.
+    """
+    if (type(plan) is not SparseHistoryPlan or not plan.refused
+            or plan.fallback.reason != 'descriptor_cap'):
+        raise SparsePlanError('streaming requires a descriptor-cap refusal')
+    buckets = []
+    for lo in range(0, len(plan.selected), ARENA_ROWS):
+        rows = min(ARENA_ROWS, len(plan.selected) - lo)
+        candidate = SparseStreamBucket(len(buckets), lo, rows,
+                                       plan.selected, plan.mapping, 0)
+        count = sum(1 for _ in candidate.iter_pieces())
+        buckets.append(SparseStreamBucket(len(buckets), lo, rows,
+                                         plan.selected, plan.mapping, count))
+    return SparseHistoryPlan(plan.epoch, plan.mapping, plan.versions,
+                             plan.selected, tuple(buckets))
 
 
 def _int_tuple(values, name, *, minimum=0, maximum=None):
@@ -452,11 +522,54 @@ class SparseSourceHold:
             raise SourceRefused('bucket was never started')
         return entry
 
+    def begin_stream_bucket(self, index, rows, descriptors, nbytes):
+        """Retain a logical bucket; no partial prefix is publishable."""
+        if (self._released or type(index) is not int or index < 0
+                or index in self._buckets or type(rows) is not int
+                or not 1 <= rows <= ARENA_ROWS or type(descriptors) is not int
+                or not 1 <= descriptors <= rows or nbytes != rows * ROW_BYTES):
+            raise SourceRefused('invalid streaming bucket accounting')
+        self._buckets[index] = dict(state='filling', rows=rows,
+            descriptors=descriptors, nbytes=nbytes, copied=False,
+            copy_recorded=False, stream_rows=0, stream_descriptors=0)
+        self.stats['buckets'] += 1
+        self.stats['rows'] += rows
+        self.stats['descriptors'] += descriptors
+        self.stats['nbytes'] += nbytes
+
+    def stream_wave_recorded(self, index, rows, descriptors):
+        entry = self._bucket(index)
+        if (entry['state'] != 'filling' or 'stream_rows' not in entry
+                or type(rows) is not int or rows < 1
+                or type(descriptors) is not int or not 1 <= descriptors <= MAX_DESCRIPTORS
+                or entry['stream_rows'] + rows > entry['rows']
+                or entry['stream_descriptors'] + descriptors > entry['descriptors']):
+            raise SourceRefused('invalid streaming wave accounting')
+        entry['stream_rows'] += rows
+        entry['stream_descriptors'] += descriptors
+
+    def abandon_stream_after_drain(self, index):
+        """Cancel an unpublished prefix only after its actual copy event query.
+
+        This does not certify the complete bucket, publication, or a consumer.
+        The operation owns and queries the last accepted wave's event.
+        """
+        entry = self._bucket(index)
+        if (entry['state'] != 'filling' or not entry.get('stream_rows')
+                or entry['copy_recorded']):
+            raise SourceRefused('no unpublished streaming prefix to retire')
+        entry['state'] = 'abandoned'
+        self.stats['abandoned'] += 1
+
     def copy_recorded(self, index):
         """All bounded copies for the bucket are enqueued behind one event."""
         entry = self._bucket(index)
         if entry['state'] != 'filling' or entry['copy_recorded']:
             raise SourceRefused('copy was not outstanding for this bucket')
+        if ('stream_rows' in entry
+                and (entry['stream_rows'] != entry['rows']
+                     or entry['stream_descriptors'] != entry['descriptors'])):
+            raise SourceRefused('streaming bucket is only partially copied')
         entry['copy_recorded'] = True
         entry['state'] = 'copied'
         self.stats['copied'] += 1
