@@ -1,13 +1,13 @@
 {
   "cpu_regression": {
-    "basis": "frozen native8 import-ownership runtime and registered six-test namespace regression; actual-image import proof independently retained",
+    "basis": "frozen native9 sequence contract; registered allocator/controller fixture uses exact pinned ConstantList class; actual-image Request proof independently retained",
     "cases": 268,
     "exit_code": 0,
-    "log": "tmp/native8-final-selftest-20261028T0452Z.log",
-    "log_sha256": "51464985b1935ddaa99947006958b36acb4c5493f2f4cd0f34f84029c11b64b1",
+    "log": "tmp/native9-final-selftest-20261028T0524Z.log",
+    "log_sha256": "34f64c7776d0f00b71d9dd53a8c2ecf66d8b83c3a1a75c6b97b2dc80b568ad16",
     "required": 268,
-    "runtime_commit": "db5bad405e9314505c9172dcf874cd71499e977d",
-    "tested_commit": "db5bad405e9314505c9172dcf874cd71499e977d"
+    "runtime_commit": "838cf31e5f950fb8573bfbd59229aad992d926d3",
+    "tested_commit": "838cf31e5f950fb8573bfbd59229aad992d926d3"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -60,6 +60,7 @@
     "e3_native_placement_evidence.py": "29605a3afbfc9b73ef8ca221220173c3f0e7598c8f9367509dcf3f9d3775a74b",
     "e3_native_qualification_driver.py": "b36ed914d668d9d7fde1c89b3fcbf461c1adc918c12371a4a47e11c6621cf0a3",
     "e3_native_request_plans.py": "402c024b25774448dec66541175e98ae393e3167f97cf6ca14a0882c4e0ebf36",
+    "e3_native_request_view_probe.py": "ef2e26f1923dd57a6800ea5d2ee3aefe45576b91689429be349e7b196251da7e",
     "e3_native_row1_grade.py": "06d6c85076f5418678315c0eddce60276a60bba747eb2f9ec8c7c12844d250b6",
     "e3_native_runtime_client.py": "901b59c267865e7f00ee2ec94dfb54f74edfba1f514d2827e221fa837d5b1526",
     "e3_native_startup_grade.py": "763407286621dd0f7eb5b05b8ed2dd2a500adad1c9f14de8c766e33641a7e5f2",
@@ -307,6 +308,9 @@
     "runs/q18a_native8.draft.sh": "227fd446cc7a10724e12f6a6ba1f3a29dbf89dd6613edba72fb319725dbfb7f6",
     "runs/q18a_native8_declare.sh": "3142758fe66293c6c0676936a2402524d2b18f5fbab7d05f444e8695412a3341",
     "runs/q18a_native8_settings.sh": "36df1dbd97c87db71ee29207d6546b5083aa106624b0229bab478d1e883d460e",
+    "runs/q18a_native9.draft.sh": "27333e14a57ad1eb8bf6afd8d2e0bd953f0f2a4ed3bef98d99e5e2abedb7fedb",
+    "runs/q18a_native9_declare.sh": "b8b7a5846e119a021a59cec3d0e66ae1e9419dfd88c5ac1f262a9f45fff936f6",
+    "runs/q18a_native9_settings.sh": "f197a2c41d0a85557c8b2780e4ef89884d3d41e0f3e9fcfaaf9271f2e7ee1dc5",
     "runs/q18a_overlap.draft.sh": "43096d9ea8a606a5416651febbd645e068ce8d7dbabb3a13cd1f40ba34579b83",
     "runs/q18a_overlap_declare.sh": "b082237f505768a013f22899ae58119c9e79a8b05c71a3cd3ba793d65ea14f74",
     "runs/q18a_overlap_settings.sh": "b0c5959b1a05b928360832bef7151e81a60bb3db87b16c479e236e5c2a1cab73",
@@ -480,7 +484,7 @@
     "test_e2_startup.py": "2e437f59b118a1964319ff6c5163c6d4faddb5fe6c88b1fc79d4bf0b76ec3678",
     "test_e2_state_grade.py": "5fd9a8131f6ee91b27348e3f82df337ac819c695c13c2aba4dac90b0ca1d4511",
     "test_e3_activity_accounting.py": "587ca2d9f8ce2cf304d7d23042b5281ab88d2ed9a955c45c7e96f0c9d0755335",
-    "test_e3_admission_metadata.py": "da9e34790a1a3499f70515ccc640fc361f208b988b091da64716cfd75bbc1a7d",
+    "test_e3_admission_metadata.py": "e8fbcb9b2217d1d0617e1a35d7561ea1c8c78ba13b7238a55ccc123b31e12de6",
     "test_e3_admission_native.py": "dfc244cefdeac538742b77d9403d3ed41800b772367e150a4c6838fa82ddf266",
     "test_e3_async_handoffs.py": "f280b11b8f9babfb474768e7a5a747322700e8e3b0a1810f16a55b77abe876a8",
     "test_e3_capture_streams.py": "be83c0dcbe0b59b68a99b6393cd6dbef9d2c2de04e3d2d49c75162dab96ca33d",
@@ -680,35 +684,167 @@
   },
   "mounted_runtime_import_audit": {
     "deferred": 275,
-    "edges": 1098,
-    "graph": "reviews/codex-20261028-native8-mounted-import-edges.json",
-    "graph_sha256": "81aff2acd35276a045cb9c22e299e508529d0f0b0195b012fc152522653f710f",
+    "edges": 1099,
+    "graph": "reviews/codex-20261028-native9-mounted-import-edges.json",
+    "graph_sha256": "ca5fa23445291a8abe7860860b4f76402ced2cf0348f4bba59dbdeda20d8e19e",
     "modules": 82,
     "runtime_ownership_errors": 0,
-    "scope": "actual trusted launcher mounts, all import edges including explicit TYPE_CHECKING/source-mode/build-only exclusions; live GPU bodies not called; every generated module byte must equal the CPU-proven source draft",
+    "scope": "same trusted launcher graph; exact final generated Python bytes must equal CPU-proven draft; no source/builder runtime path",
     "tool_sha256": "e63a26b6d4877aa0133b1c1a01db0aa8b577a88b7186ebb603273868ecda3340"
   },
   "profile": "q18a-native-performance",
   "qualified_observer_library_sha256": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d",
   "real_overlay_import_cpu_proof": {
+    "counts": {
+      "deferred": 260,
+      "modules": 80,
+      "providers": 6
+    },
     "cuda_initialized": false,
-    "deferred": 260,
     "gpu_device_nodes": [],
     "gpu_owners_constructed": false,
-    "graph_sha256": "81aff2acd35276a045cb9c22e299e508529d0f0b0195b012fc152522653f710f",
+    "graph_hash_basis": "verified immutable proof input manifest; raw result has no graph_sha256 field; all80 active mounted source hashes joined independently; inactive duplicate module profiles excluded exactly as the probe",
+    "graph_sha256": "ca5fa23445291a8abe7860860b4f76402ced2cf0348f4bba59dbdeda20d8e19e",
     "hardware_qualified": false,
-    "image": "sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b",
-    "modules": 80,
+    "input_manifest_sha256": "bde3c34b24a5f7566c07d02c89bb1cb63268510c458d843c1ba4855d638b9c92",
     "native7_negative_rejected": true,
     "no_fixture_shims": true,
     "no_mocks": true,
-    "probe_sha256": "533919d88f4cd901c66701da6638a44ef3fc5513beae18888275476ec9bf4e8c",
-    "providers": 6,
+    "probe_sha256": "ef2e26f1923dd57a6800ea5d2ee3aefe45576b91689429be349e7b196251da7e",
     "rc": 0,
-    "record": "results/vm<vm-id>/native8-imports-b/result.json",
+    "receipt_sha256": "78fff5a0421dfd968d6a40ea24432652f80b0cd3f7dc0d20cbaf27adec8c3ba3",
+    "record": "results/vm<vm-id>/native9-request-view/result.json",
     "release_qualified": false,
-    "result_sha256": "38a123c2d6557ce20959b1cccf1d68939592dc92ec05faf29431e264289b9c83",
-    "scope": "actual image and exact mounted namespaces; real driver libraries with no visible GPU; pure actual providers and import-only deferred clauses; no native body/lifecycle/GPU qualification",
+    "request_view": {
+      "actual_request_type": "vllm.v1.request.Request",
+      "actual_view_type": "vllm.v1.utils.ConstantList",
+      "allocator_constructed": false,
+      "cases": [
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 2,
+          "start": 0
+        },
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 1,
+          "start": 1
+        },
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 0,
+          "start": 4
+        },
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 0,
+          "start": 1024
+        },
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 0,
+          "start": 2048
+        },
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 0,
+          "start": 98304
+        }
+      ],
+      "legacy_refused": 6,
+      "malformed_refused": 7,
+      "metadata_provider_constructed": false,
+      "request_source_sha256": "da610d5203e72d2d524adc5fb39df11502a23520f2f31d9a44cf13d343f9c25d",
+      "scope": "actual real Request/ConstantList; unbound pure metadata method with explicit PLE contract values; no allocator/lifecycle proof",
+      "short_view_refused": true,
+      "source_unchanged": true,
+      "verdict": "PASS",
+      "view_source_sha256": "4093f1c040a5f3def599bb044b72109301b970f70a5e5b622fd03a450a11e36a"
+    },
+    "schema": "native9-real-request-view-proof/1",
+    "unbound_forward_context_refused": true,
+    "verdict": "PASS"
+  },
+  "real_request_view_cpu_proof": {
+    "counts": {
+      "deferred": 260,
+      "modules": 80,
+      "providers": 6
+    },
+    "cuda_initialized": false,
+    "gpu_device_nodes": [],
+    "gpu_owners_constructed": false,
+    "graph_hash_basis": "verified immutable proof input manifest; raw result has no graph_sha256 field; all80 active mounted source hashes joined independently; inactive duplicate module profiles excluded exactly as the probe",
+    "graph_sha256": "ca5fa23445291a8abe7860860b4f76402ced2cf0348f4bba59dbdeda20d8e19e",
+    "hardware_qualified": false,
+    "input_manifest_sha256": "bde3c34b24a5f7566c07d02c89bb1cb63268510c458d843c1ba4855d638b9c92",
+    "native7_negative_rejected": true,
+    "no_fixture_shims": true,
+    "no_mocks": true,
+    "probe_sha256": "ef2e26f1923dd57a6800ea5d2ee3aefe45576b91689429be349e7b196251da7e",
+    "rc": 0,
+    "receipt_sha256": "78fff5a0421dfd968d6a40ea24432652f80b0cd3f7dc0d20cbaf27adec8c3ba3",
+    "record": "results/vm<vm-id>/native9-request-view/result.json",
+    "release_qualified": false,
+    "request_view": {
+      "actual_request_type": "vllm.v1.request.Request",
+      "actual_view_type": "vllm.v1.utils.ConstantList",
+      "allocator_constructed": false,
+      "cases": [
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 2,
+          "start": 0
+        },
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 1,
+          "start": 1
+        },
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 0,
+          "start": 4
+        },
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 0,
+          "start": 1024
+        },
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 0,
+          "start": 2048
+        },
+        {
+          "available": 98312,
+          "context_exact": true,
+          "padding": 0,
+          "start": 98304
+        }
+      ],
+      "legacy_refused": 6,
+      "malformed_refused": 7,
+      "metadata_provider_constructed": false,
+      "request_source_sha256": "da610d5203e72d2d524adc5fb39df11502a23520f2f31d9a44cf13d343f9c25d",
+      "scope": "actual real Request/ConstantList; unbound pure metadata method with explicit PLE contract values; no allocator/lifecycle proof",
+      "short_view_refused": true,
+      "source_unchanged": true,
+      "verdict": "PASS",
+      "view_source_sha256": "4093f1c040a5f3def599bb044b72109301b970f70a5e5b622fd03a450a11e36a"
+    },
+    "schema": "native9-real-request-view-proof/1",
     "unbound_forward_context_refused": true,
     "verdict": "PASS"
   },
@@ -749,27 +885,25 @@
     "reviews/codex-20261028-native6-independent-regrade.md",
     "reviews/codex-20261028-native7-stock-api-review.md",
     "reviews/codex-20261028-native7-independent-regrade.md",
-    "reviews/codex-20261028-native8-import-ownership-review.md"
+    "reviews/codex-20261028-native8-import-ownership-review.md",
+    "reviews/codex-20261028-native8-independent-regrade.md",
+    "reviews/codex-20261028-native9-request-view-review.md"
   ],
   "reviewed_by": "Codex",
   "schema": "e3-native-source-review/1",
   "scope": "implementation closure for owner test only",
   "source_delta": {
-    "basis": "native7 row1 provider bare exactness import failed after measured startup PASS",
-    "builder_modules": [
-      "make_s5_overlap.py"
-    ],
+    "basis": "native8 measured startup PASS then metadata rejects every actual ConstantList regardless available tokens",
+    "builder_modules": [],
     "generated_source_modules": [],
     "runtime_modules": [
-      "s5_startup.py",
-      "native_resources.py",
-      "native_qualification_frontend.py"
+      "admission_metadata.py"
     ],
-    "scope": "qualify E2-only imports into sibling flash_e2 package; pure actual row1 and forward-context import leaves; strict packaged peer namespace; original model/QSA UID and lifecycle fences preserved; fresh native8 names only; no CUDA/helper/model/runner/QSA/numerical/settings/workload/tolerance/gate change"
+    "scope": "validated non-text integer Sequence rather than mutable list/tuple-only token facade; distinct wrong-type/short-view diagnostics; exact bounds/padding/EOS/nonnegative-int and no fallback preserved; no offset, helper, arithmetic, model/settings/workload/v4/gate changes; fresh native9 names only"
   },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
-    "admission_metadata.py": "bb8cd120c25a20d712bc84141382012e7085f1b3a2f9b2c8da237749a026f12b",
+    "admission_metadata.py": "5b7a51f4e878dcc4a48dbf841654f1e5e0847efab16766c42e81a5931fec7fb1",
     "async_handoff.py": "7bc29e22a58c18ea4e90eeab9a3e8495de3ffcfab06178230abd4b083cff2438",
     "capture_streams.py": "76944d3416a9635cbecd81c70c1d538d5e0efc25d4fed4a3f2cf200ec3f4bd2b",
     "decode_probe.py": "b49c8b3aaebfa65cff913bc32e755c5397abbcc8cb2d7469a4a4297edf848c94",
@@ -842,12 +976,10 @@
     "source_contract_tests": 10
   },
   "startup_guard_delta": {
-    "baseline": "native7 final indexed source",
-    "delta": "reviews/codex-20261028-native8-guard-delta.json",
-    "delta_sha256": "3b7fa9ae614f68dbd62895b6e27f219b5a68d46838283873a9ccc82cef17ae8b",
-    "index": "tmp/native8-startup-guard-index.json",
-    "index_sha256": "22c639b5c0afde5d90ea91341d8c7ca222e0946473c344f7d45b4b73dd656e97",
-    "scope": "new import/proof/namespace code only; no runtime guard is supplied or bypassed; stateful missing-UID guard independently rejects in actual image"
+    "baseline": "native8 source guard index",
+    "index": "tmp/native9-startup-guard-index.json",
+    "index_sha256": "25ccb6fef3c53037f536626484c74c4ee3868afebd9cf293ec18cf98cd9260fe",
+    "scope": "single runtime type-contract change, no positive ready/capability/mock flag supplied; real Request and ConstantList whole-file hashes match pinned references"
   },
   "stock_api_audit": {
     "contract_sha256": "96bfbd945ab3e3dcac8b2da465c28e12307249703e152d5643b169a7370c3f66",
