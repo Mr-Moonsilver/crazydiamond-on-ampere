@@ -44,6 +44,7 @@ def build(overlay,graph_path,out,*,probe_name='e3_native_transitions_matrix_prob
                     "'--env','VLLM_CACHE_ROOT=/tmp/vllm'")
     if probe_name=='e3_native_transitions_lifecycle_probe':
         gpu=gpu.replace("'--env','VLLM_CACHE_ROOT=/tmp/vllm'",
+            "'--env','VLLM_NO_USAGE_STATS=1','--env','DO_NOT_TRACK=1',"
             "'--env','VLLM_QSA_KV_OFFLOAD=1','--env','VLLM_QSA_KVO_ARENA=100663296',"
             "'--env','VLLM_QSA_KVO_SPARSE_PREFILL=1','--env','QSA_ROWCACHE_SLOTS=8192',"
             "'--env','QSA_ROWCACHE_REQS=8','--env','VLLM_CACHE_ROOT=/tmp/vllm'")

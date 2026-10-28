@@ -46,6 +46,23 @@ class Tests(unittest.TestCase):
     def test_full_certificate_cannot_be_claimed(self):
         r=self.record();r['all_rank_full_certificate']=True
         self.assertEqual(p.grade_lifecycle(r)['verdict'],'FAIL')
+    def test_exception_chain_retains_real_cause_context_messages_and_frames(self):
+        try:
+            try:raise ValueError('inner contract field')
+            except ValueError as inner:raise RuntimeError('outer quarantine') from inner
+        except RuntimeError as outer:rows=p.exception_chain(outer)
+        self.assertEqual(rows[0]['message'],'outer quarantine')
+        self.assertEqual(rows[rows[0]['cause']]['message'],'inner contract field')
+        self.assertEqual(rows[0]['cause'],rows[0]['context'])
+        self.assertTrue(rows[0]['stack'])
+        self.assertTrue(rows[rows[0]['cause']]['stack'])
+    def test_exception_chain_preserves_implicit_context_without_a_cause(self):
+        try:
+            try:raise KeyError('inner')
+            except KeyError:raise RuntimeError('outer')
+        except RuntimeError as outer:rows=p.exception_chain(outer)
+        self.assertIsNone(rows[0]['cause'])
+        self.assertEqual(rows[rows[0]['context']]['type'],'KeyError')
     def test_fixture_limits_are_machine_readable(self):
         d=json.loads(Path(__file__).with_name('native15_lifecycle_fixture_leaves.json').read_text())
         self.assertFalse(d['clears_box_hold'])

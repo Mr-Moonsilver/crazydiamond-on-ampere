@@ -5,6 +5,7 @@
   "scenarios": {
     "worker_lifecycle": {
       "real_objects": [
+        "GPUWorker constructor/init_device/load_model/initialize_from_config and actual conditional KV zeroer initialization",
         "GPUModelRunner constructor/load_model/initialize_kv_cache/execute_model/sample_tokens",
         "real Qwen4Exp model with PLE/GDN/QSA modules and stock dummy-weight loader",
         "Qwen4ExpModelState",
@@ -34,16 +35,16 @@
           "box_evidence": false
         },
         {
-          "leaf": "ordinary CUDA prefill/copy streams and explicit real primitive constructor composition",
+          "leaf": "ordinary CUDA streams, real stock Worker lifecycle and explicit primitive composition; empty pre-model workspace manager provisioned from one to two lanes only after asserting no allocated views/lock and retaining the old empty owner",
           "replaces": "public green-context/multi-rank native startup",
-          "equivalent_for": "separate CUDA stream event dependencies in the local lifecycle",
-          "more_convenient_for": "green-context identity, SM placement, replay banks and hardware/native readiness",
+          "equivalent_for": "local separate-stream dependencies, actual stock Worker initialization and private workspace use after empty geometry provisioning; no captured addresses are replaced",
+          "more_convenient_for": "public green startup/SM placement/replay banks and its workspace provisioning policy; local proof keeps the feature disabled and this geometry fixture is not box evidence for public initialization",
           "box_evidence": false
         },
         {
-          "leaf": "64 real allocator blocks and 128-byte unquantized workspace reservation through the real manager",
+          "leaf": "64 real allocator blocks, GPUWorker memory-utilization reservation0.08 and 128-byte unquantized workspace reservation through the real manager",
           "replaces": "production cache capacity and stock quantized workspace high-water measurement",
-          "equivalent_for": "actual allocator/cache APIs and private workspace scope mechanics at the declared geometry",
+          "equivalent_for": "actual allocator/cache/zeroing APIs and private workspace scope mechanics at the declared geometry; memory reservation stays below the existing2GiB allocator/3GiB process cap",
           "more_convenient_for": "production memory pressure, workspace sufficiency and Marlin locks",
           "box_evidence": false
         }
@@ -67,6 +68,17 @@
           "replaces": "none: predicate mutation selftest only",
           "equivalent_for": "raw JSON predicate field/identity/closure paths",
           "more_convenient_for": "all actual completion/hardware evidence",
+          "box_evidence": false
+        }
+      ]
+    },
+    "cpu_zeroer_diagnostic": {
+      "leaves": [
+        {
+          "leaf": "actual partially constructed GPUModelRunner retained from its real CPU stream-device refusal",
+          "replaces": "fully CUDA-initialized runner for one pure missing-zeroer guard reproduction only",
+          "equivalent_for": "real constructor assigns kv_block_zeroer=None and actual LaneRequest._apply_allocated_pages reads it with a real allocation record",
+          "more_convenient_for": "all GPU initialization/completion properties; no __new__, assigned runner fields, patched methods or shim runner",
           "box_evidence": false
         }
       ]

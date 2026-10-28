@@ -9,6 +9,92 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+_PROGRESS=None
+
+
+def exception_chain(exc):
+    """Retain both Python links, every frame/message, and cycle-safe references."""
+    pending=[exc];seen={};rows=[]
+    while pending:
+        value=pending.pop(0)
+        if id(value) in seen:continue
+        seen[id(value)]=len(rows)
+        rows.append(dict(type=type(value).__name__,module=type(value).__module__,message=str(value),
+            stack=[dict(file=f.filename,function=f.name,line=f.lineno) for f in traceback.extract_tb(value.__traceback__)],
+            suppress_context=bool(value.__suppress_context__),
+            _cause=value.__cause__,_context=value.__context__))
+        for other in (value.__cause__,value.__context__):
+            if other is not None and id(other) not in seen:pending.append(other)
+    for row in rows:
+        for field in ('cause','context'):
+            value=row.pop('_'+field);row[field]=None if value is None else seen[id(value)]
+    return rows
+
+
+def checkpoint(name,**fields):
+    if _PROGRESS is not None:
+        row=dict(step=name,observed_ns=time.monotonic_ns(),**fields)
+        _PROGRESS.write(json.dumps(row,default=str)+'\n');_PROGRESS.flush()
+    print('LIFECYCLE '+name,flush=True)
+
+
+def admission_shape(record):
+    return dict(transaction=dataclasses.asdict(record.transaction),prompt_end=record.prompt_end,
+        input_ids_count=len(record.input_ids),ngram_context_count=len(record.ngram_context),
+        block_table_rows=[len(row) for row in record.block_tables],
+        new_block_ids_to_zero=list(record.new_block_ids_to_zero),cow_pairs=list(record.cow_pairs),
+        state_epoch=record.state_epoch)
+
+
+def cpu_zeroer_diagnostic(cfg,admission):
+    """Real constructor's partial CPU object, not __new__/a runner shim."""
+    import torch
+    from vllm.v1.worker.gpu.model_runner import GPUModelRunner
+    from vllm.v1.flash_e3.lane_chunk import LaneRequest,PinnedPorts,LaneChunkError
+    try:GPUModelRunner(cfg,torch.device('cpu'))
+    except Exception as exc:
+        tb=exc.__traceback__;partial=None
+        while tb is not None:
+            candidate=tb.tb_frame.f_locals.get('self')
+            if type(candidate) is GPUModelRunner:partial=candidate
+            tb=tb.tb_next
+        assert partial is not None and hasattr(partial,'kv_block_zeroer'),exception_chain(exc)
+        constructor_boundary=exception_chain(exc)
+    else:raise AssertionError('GPU runner fully constructed on CPU; extend host execution')
+    assert partial.kv_block_zeroer is None
+    assert admission.new_block_ids_to_zero,'zeroer diagnostic requires actual allocation zero obligations'
+    request=LaneRequest(partial,PinnedPorts.load(),torch_module=torch)
+    try:request._apply_allocated_pages(admission)
+    except LaneChunkError as exc:
+        assert str(exc)=='runner has no KV block zeroer for the new blocks',str(exc)
+        guard=exception_chain(exc)
+    else:raise AssertionError('expected uninitialized zeroer guard did not fire')
+    return dict(verdict='PASS',actual_partial_runner_type=type(partial).__module__+'.'+type(partial).__name__,
+        actual_constructor_entered=True,runner_constructed_fully=False,runner_fields_assigned_by_fixture=False,
+        constructor_boundary=constructor_boundary,actual_lane_request_method=True,
+        new_block_ids_to_zero_count=len(admission.new_block_ids_to_zero),kv_block_zeroer_is_none=True,
+        guard=guard,methods_patched=False,box_evidence=False)
+
+
+_WORKSPACE_BOOTSTRAP_OWNERS=[]
+
+
+def provision_local_workspace(device):
+    """Declared pre-model empty-manager geometry fixture; never replace views."""
+    from vllm.v1.worker.workspace import current_workspace_manager,init_workspace_manager
+    before=current_workspace_manager()
+    assert before._num_lanes==1 and not before._locked
+    assert all(value is None for value in before._current_workspaces), 'workspace already owns allocated views'
+    _WORKSPACE_BOOTSTRAP_OWNERS.append(before)
+    init_workspace_manager(device,num_lanes=2)
+    after=current_workspace_manager()
+    assert after._num_lanes==2 and all(value is None for value in after._current_workspaces)
+    checkpoint('empty-workspace-provisioned',before_lanes=1,after_lanes=2,
+        allocated_views_replaced=0,old_empty_owner_retained=True,fixture_scope=True)
+    return dict(before_lanes=1,after_lanes=2,allocated_views_replaced=0,
+        old_empty_owner_retained=True,box_evidence=False)
+
+
 def config(device):
     from vllm.config import (ModelConfig,VllmConfig,CacheConfig,SchedulerConfig,
         ParallelConfig,DeviceConfig,CompilationConfig)
@@ -27,7 +113,7 @@ def config(device):
     model=ModelConfig(model=str(path),skip_tokenizer_init=True,language_model_only=True,
         dtype='bfloat16',max_model_len=98320,enforce_eager=True)
     return VllmConfig(model_config=model,cache_config=CacheConfig(block_size=4048,mamba_block_size=4048,
-        num_gpu_blocks_override=64,enable_prefix_caching=True,prefix_match_unit=176,mamba_cache_mode='align'),
+        num_gpu_blocks_override=64,gpu_memory_utilization=0.08,enable_prefix_caching=True,prefix_match_unit=176,mamba_cache_mode='align'),
         scheduler_config=SchedulerConfig(max_model_len=98320,is_encoder_decoder=False,
             max_num_batched_tokens=1024,max_num_seqs=10,scheduler_reserve_full_isl=False),
         parallel_config=ParallelConfig(),device_config=DeviceConfig(device=device),
@@ -70,7 +156,8 @@ def collect():
             distributed_init_method='file:///tmp/matrix-cpu-dist',backend='gloo')
         initialize_model_parallel(1,1,backend='gloo')
         from vllm.v1.worker.workspace import init_workspace_manager,current_workspace_manager
-        init_workspace_manager(torch.device('cpu'),num_lanes=2)
+        init_workspace_manager(torch.device('cpu'),num_lanes=1)
+        workspace_provision=provision_local_workspace(torch.device('cpu'))
         workspace=current_workspace_manager().get_simultaneous(((128,),torch.uint8))
         assert workspace[0].shape==(128,) and workspace[0].device.type=='cpu'
         import sys
@@ -124,6 +211,7 @@ def collect():
         source_owner_preflight=source_preflight,stock_startup_sequence_audit=sequence_audit,
         predicate_selftest=predicate_selftest(w,e3_types),
         actual_config_constructed=True,actual_model_constructor_entered=True,
+        empty_workspace_provision=workspace_provision,
         cuda_constructor_boundary=boundary,cuda_initialized=False,
         cpu_executed_gpu_host_steps=['config','register_all_kvcache_specs',
             'get_supported_kv_cache_layouts','resolve_kv_cache_layout','record_kv_cache_layout',
@@ -192,10 +280,30 @@ def stock_sequence_audit(observed):
             row.update(status='executed',observed_module=witness[0],observed_function=witness[1])
         elif name in deferred:row.update(status='deferred',reason=deferred[name])
         else:raise AssertionError('unclassified-stock-startup-call:'+name)
+    from vllm.v1.worker.gpu_worker import Worker
+    worker_rows=[]
+    for method in ('__init__','init_device','load_model','initialize_from_config'):
+        fn=getattr(Worker,method)
+        lines,first=inspect.getsourcelines(fn);text=textwrap.dedent(''.join(lines));tree=ast.parse(text)
+        entered=(Worker.__module__,'Worker.'+method) in observed
+        # CPU execution has no CUDA platform/device. The GPU proof now invokes
+        # every actual public method below; these are not hand-copied bodies.
+        for node in sorted((n for stmt in tree.body[0].body for n in ast.walk(stmt) if isinstance(n,ast.Call)),key=lambda n:(n.lineno,n.col_offset)):
+            worker_rows.append(dict(method=method,line=first+node.lineno-1,call=call_name(node),
+                cpu_method_entered=entered,status='deferred',
+                reason=('actual CPU constructor completed; individual branch/subcall is not inferred from method completion' if method=='__init__' else
+                        'actual CPU init_device stops at unsupported CPU device; full unmodified method and following load/cache methods require CUDA'),
+                gpu_execution='real Worker.'+method+' invoked directly by the device scenario'))
+    assert {row['method'] for row in worker_rows}=={'__init__','init_device','load_model','initialize_from_config'}
+    assert (Worker.__module__,'Worker.__init__') in observed
+    assert (Worker.__module__,'Worker.init_device') in observed
     path=Path(inspect.getsourcefile(EngineCore))
     assert extracted
     return dict(verdict='PASS',actual_core_source=str(path),source_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-        callsites=extracted,missing=[],profiled_actual_calls=True,engine_core_constructed=False,
+        callsites=extracted,worker_callsites=worker_rows,
+        worker_source_sha256=hashlib.sha256(Path(inspect.getsourcefile(Worker)).read_bytes()).hexdigest(),
+        worker_methods_indexed=['__init__','init_device','load_model','initialize_from_config'],
+        missing=[],profiled_actual_calls=True,engine_core_constructed=False,
         fixture_scope='CPU host metadata projection; actual source-derived call coverage, not GPU platform or RPC evidence')
 
 
@@ -339,8 +447,17 @@ def source_owner_preflight(cfg):
         scheduler_negative=str(exc)
     else:raise AssertionError('matrix2B worker-config-as-scheduler negative passed')
     scheduler,controller=controller_components(host_cfg,kv)
+    from vllm.v1.worker.gpu_worker import Worker,ensure_kv_transfer_initialized
+    worker=Worker(cfg,local_rank=0,rank=0,distributed_init_method='file:///tmp/matrix-cpu-worker',is_driver_worker=True)
+    assert worker.use_v2_model_runner is True
+    try:worker.init_device()
+    except RuntimeError as exc:
+        assert 'Unsupported device type' in str(exc),str(exc)
+        worker_boundary=exception_chain(exc)
+    else:raise AssertionError('CPU worker init_device completed; extend execution')
+    ensure_kv_transfer_initialized(host_cfg,kv)
     hash_fn=get_hash_fn_by_name('sha256');init_none_hash(hash_fn)
-    request=Request(request_id='source-shape-only',prompt_token_ids=[1]*98312,
+    request=Request(request_id='lifecycle-cold-a',prompt_token_ids=[i%200+1 for i in range(98312)],
         sampling_params=SamplingParams(max_tokens=1),pooling_params=None,
         block_hasher=get_request_block_hasher(176,hash_fn))
     scheduler.add_request(request)
@@ -349,7 +466,10 @@ def source_owner_preflight(cfg):
     assert unpublished
     lane=et.LaneId(0,et.LaneRole.PREFILL,1,0)
     source=opened_source(controller,record,lane)
-    source.validate_frame(wb.admission_to_chunk(record),(0,))
+    checkpoint('cpu-admission-contract',shape=admission_shape(record))
+    chunk_admission=wb.admission_to_chunk(record)
+    source.validate_frame(chunk_admission,(0,))
+    zero_diagnostic=cpu_zeroer_diagnostic(cfg,chunk_admission)
     assert controller.parked.bound is False
     assert controller.commits==0 and not controller.frontier.committed_blocks()
     controller.cancel(record.transaction,never_submitted=True)
@@ -361,6 +481,8 @@ def source_owner_preflight(cfg):
         scheduler_spec_types=[type(g.kv_cache_spec).__name__ for g in scheduler.kv_cache_manager.kv_cache_config.kv_cache_groups],
         legacy_worker_config_negative=scheduler_negative,cpu_hma_metadata_projection=True,
         cpu_platform_hma_auto_disabled=cfg.scheduler_config.disable_hybrid_kv_cache_manager,
+        admission_contract=admission_shape(record),zeroer_diagnostic=zero_diagnostic,
+        actual_worker_constructor=True,worker_device_boundary=worker_boundary,actual_transfer_precondition=True,
         unpublished_count=len(unpublished),no_ticket_bound=True,no_publication=True,
         synthetic_lane_input=True,box_evidence=False)
 
@@ -415,7 +537,9 @@ def execute_chunk(stack,controller,record):
     """Wire commands -> real bridge/dispatcher -> real model -> queried release."""
     from vllm.v1.flash_e3 import wire_v1 as w,e3_types as et
     bridge=stack.bridge
+    checkpoint('bridge-open-begin',admission=admission_shape(record),raw_admission=dataclasses.asdict(record))
     opened=bridge.open(w.OpenRequest(record,(0,),record.state_epoch,16))
+    checkpoint('bridge-open-end',ack=dataclasses.asdict(opened))
     source=opened_source(controller,record,opened.lane)
     seq=0;accepted=[];bound=None
     def command(kind,layer=None):
@@ -425,7 +549,9 @@ def execute_chunk(stack,controller,record):
         cmd=w.SegmentCommand(descriptor,seq,(0,),source if kind is w.SegmentKind.PREPARE else None)
         def submit():
             nonlocal seq,bound
+            checkpoint('submit-begin',kind=kind.value,op_seq=seq,layer=layer)
             ack=bridge.submit(cmd)
+            checkpoint('submit-end',kind=kind.value,op_seq=seq,ack=dataclasses.asdict(ack))
             if ack.pending:return None
             assert ack.accepted
             accepted.append(seq)
@@ -483,20 +609,28 @@ def gpu_scenarios():
     from vllm.v1.request import Request
     from vllm.v1.flash_e3 import scheduler_hooks as sh,admission_metadata as am,async_handoff as ah
     from vllm.v1.worker.workspace import init_workspace_manager
-    cfg=config('cuda')
+    cfg=config('cuda');checkpoint('config-constructed')
     with set_current_vllm_config(cfg):
-        init_distributed_environment(world_size=1,rank=0,local_rank=0,
-            distributed_init_method='file:///tmp/matrix-gpu-dist',backend='nccl')
-        initialize_model_parallel(1,1,backend='nccl')
-        init_workspace_manager(torch.device('cuda:0'),num_lanes=2)
-        runner=GPUModelRunner(cfg,torch.device('cuda:0'))
-        runner.load_model(load_dummy_weights=True)
+        from vllm.v1.worker.gpu_worker import Worker
+        checkpoint('worker-constructor-begin')
+        worker=Worker(cfg,local_rank=0,rank=0,distributed_init_method='file:///tmp/matrix-gpu-dist',is_driver_worker=True)
+        checkpoint('worker-constructed',runner_v2=worker.use_v2_model_runner)
+        assert worker.use_v2_model_runner is True
+        worker.init_device();runner=worker.model_runner
+        assert type(runner) is GPUModelRunner
+        checkpoint('worker-init-device-complete')
+        provision_local_workspace(runner.device)
+        worker.load_model(load_dummy_weights=True);checkpoint('worker-model-loaded')
         specs=runner.get_kv_cache_spec()
         from vllm.distributed.kv_transfer.kv_connector.utils import get_current_attn_backends
         kv,cache_proof=cache_configuration(cfg,specs,get_current_attn_backends(cfg))
-        runner.initialize_kv_cache(kv)
-        stack=worker_components(runner)
-        scheduler,controller=controller_components(cfg,kv)
+        checkpoint('cache-configured',proof=cache_proof)
+        worker.initialize_from_config(kv)
+        checkpoint('worker-cache-initialized',needs_kv_cache_zeroing=kv.needs_kv_cache_zeroing,
+            zeroer_type=type(runner.kv_block_zeroer).__name__)
+        assert not kv.needs_kv_cache_zeroing or runner.kv_block_zeroer is not None
+        stack=worker_components(runner);checkpoint('worker-components-constructed')
+        scheduler,controller=controller_components(cfg,kv);checkpoint('scheduler-constructed')
         h=get_hash_fn_by_name('sha256');init_none_hash(h)
         hasher=get_request_block_hasher(176,h)
         requests=[];previous_physical=set()
@@ -506,7 +640,7 @@ def gpu_scenarios():
             request=Request(request_id='lifecycle-'+name,
                 prompt_token_ids=[(i+shift)%200+1 for i in range(length)],
                 sampling_params=SamplingParams(max_tokens=1,temperature=0),pooling_params=None,block_hasher=hasher)
-            scheduler.add_request(request)
+            scheduler.add_request(request);checkpoint('request-added',request_name=name,prompt_tokens=length)
             _,hit,_=scheduler.kv_cache_manager.get_computed_blocks(request)
             chunks=[];physical=set()
             while request.num_computed_tokens<request.num_tokens-1:
@@ -516,7 +650,9 @@ def gpu_scenarios():
                 # or a convenient growing-ID allocation fixture.
                 unpublished=tuple(controller.parked.capture.details['unpublished_blocks'])
                 physical.update(unpublished)
+                checkpoint('admission-created',shape=admission_shape(record))
                 row=execute_chunk(stack,controller,record)
+                checkpoint('chunk-completed',receipt=row)
                 row['unpublished_blocks']=list(unpublished)
                 chunks.append(row)
             assert stack.factory.request.req_id is None
@@ -665,6 +801,8 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--graph',type=Path,required=True)
     p.add_argument('--out',type=Path,required=True);p.add_argument('--mode',choices=('cpu-shape','gpu-all'),default='cpu-shape')
     a=p.parse_args();start=time.monotonic()
+    global _PROGRESS
+    _PROGRESS=(a.out.parent/'progress.jsonl').open('x')
     result=dict(schema='native15-connected-lifecycle/1',verdict='INCONCLUSIVE',rc=2,
         failure_class='NONE',failures=[],missing=[],matrix_complete=False,box_go=False,engine_constructed=False)
     try:
@@ -688,10 +826,12 @@ def main():
         result.update(verdict='PASS',rc=0)
         if result['missing']:result.update(verdict='INCONCLUSIVE',rc=2)
     except Exception as e:
-        result.update(verdict='FAIL',rc=1,failure_class='HARNESS',failures=['HARNESS:'+type(e).__name__],
+        result.update(verdict='FAIL',rc=1,failure_class='OPEN',failures=['OPEN:'+type(e).__name__],
+            exception_chain=exception_chain(e),
             exception={'type':type(e).__name__,'message':str(e)[:1024],
                 'stack':[{'file':Path(f.filename).name,'function':f.name,'line':f.lineno}
                     for f in traceback.extract_tb(e.__traceback__)[-15:]]})
+    _PROGRESS.close();_PROGRESS=None
     result['wall_s']=time.monotonic()-start
     with a.out.open('x') as f:json.dump(result,f,indent=2,default=str)
     print(json.dumps({k:result[k] for k in ('schema','verdict','rc','failure_class','failures','wall_s')}),flush=True)
