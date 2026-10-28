@@ -26,11 +26,25 @@ class Tests(unittest.TestCase):
     def test_positive(self):self.assertEqual(p.grade(record())['verdict'],'PASS')
     def test_copied_device_body_has_only_declared_geometry_and_minimum_changes(self):
         source=inspect.getsource(old.qsa_case).strip()
-        expected=source.replace('def qsa_case(route, *, fragmented=False, cancel=False):',
+        expected=source.replace('ROWS','rows').replace('def qsa_case(route, *, fragmented=False, cancel=False):',
             'def qsa_case(route, *, rows, fragmented=False, cancel=False):',1).replace(
             'layer._qsa_stage_min_rows, layer._qsa_stage_arena_bytes = 1,',
-            'layer._qsa_stage_min_rows, layer._qsa_stage_arena_bytes = qsa._QSA_STAGE_MIN_ROWS,',1).replace('ROWS','rows')
+            'layer._qsa_stage_min_rows, layer._qsa_stage_arena_bytes = qsa._QSA_STAGE_MIN_ROWS,',1)
         self.assertEqual(inspect.getsource(p.qsa_case).strip(),expected)
+    def test_first_case_threshold_attribute_is_an_actual_generated_module_name(self):
+        import types
+        source=(Path(__file__).resolve().parents[1]/'reference/vllm-src/models/qwen4_exp/nvidia/qsa.py').read_text()
+        assignment=next(n for n in ast.parse(source).body if isinstance(n,ast.Assign)
+            and any(isinstance(t,ast.Name) and t.id=='_QSA_STAGE_MIN_ROWS' for t in n.targets))
+        namespace={};exec(compile(ast.Module(body=[assignment],type_ignores=[]),'<pinned-qsa-constant>','exec'),namespace)
+        module=types.ModuleType('pinned_qsa_source_constants')
+        module.__dict__.update(namespace)
+        body=ast.parse(inspect.getsource(p.qsa_case))
+        assignment=next(n for n in ast.walk(body) if isinstance(n,ast.Assign)
+            and any(isinstance(t,ast.Tuple) and any(isinstance(a,ast.Attribute)
+                and a.attr=='_qsa_stage_min_rows' for a in t.elts) for t in n.targets))
+        value=ast.Expression(assignment.value.elts[0])
+        self.assertEqual(eval(compile(value,'<actual-probe-first-case-attribute>','eval'),{'qsa':module}),64)
     def test_every_case_required(self):
         for key in record()['cases']:
             r=record();r['cases'].pop(key)

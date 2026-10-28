@@ -28,7 +28,7 @@ def qsa_case(route, *, rows, fragmented=False, cancel=False):
     layer = torch.nn.Module()
     layer.layer_name, layer._qsa_kv_offload = 'probe.qsa', True
     layer._qsa_host_kv, layer.kv_cache = source, uva
-    layer._qsa_stage_min_rows, layer._qsa_stage_arena_bytes = qsa._QSA_STAGE_MIN_rows, 24*PAGE*WIDTH*2
+    layer._qsa_stage_min_rows, layer._qsa_stage_arena_bytes = qsa._QSA_STAGE_MIN_ROWS, 24*PAGE*WIDTH*2
     f = make_alignment(block_size=PAGE, frontier=FRONTIER, tokens=rows, qsa_layer=layer)
     chunk = make_chunk(f, 9, seq=1 if route=='dense_dma' else 2)
     compute, copy = torch.cuda.current_stream(), torch.cuda.Stream()
