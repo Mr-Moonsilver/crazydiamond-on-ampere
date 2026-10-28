@@ -18,7 +18,7 @@ def checkpoint(step,**fields):
         _PROGRESS.flush()
 
 
-def collect(graph):
+def collect(graph,*,cpu_only=True):
     from vllm.v1.engine.core import EngineCore
     from vllm.v1.executor.multiproc_executor import MultiprocExecutor,FutureWrapper,WorkerProc
     from vllm.v1.flash_e3 import executor_hooks as hooks
@@ -31,7 +31,7 @@ def collect(graph):
     assert callable(EngineCore.step_with_batch_queue)
     assert callable(MultiprocExecutor.execute_model) and callable(MultiprocExecutor.sample_tokens)
     assert callable(FutureWrapper.result)
-    assert not torch.cuda.is_initialized()
+    if cpu_only:assert not torch.cuda.is_initialized()
     return EngineCore,MultiprocExecutor,FutureWrapper,WorkerProc,hooks
 
 
@@ -130,12 +130,13 @@ def gpu_config(device):
     return cfg
 
 
-def gpu_shape():
+def gpu_shape(*,cpu_only=True):
     from vllm.v1.engine.core import EngineCore
     from vllm.v1.executor.multiproc_executor import MultiprocExecutor,WorkerProc
     from vllm.v1.request import Request
     from vllm.sampling_params import SamplingParams
     import inspect,torch
+    cuda_before=torch.cuda.is_initialized()
     cfg=gpu_config('cpu')
     request=Request(request_id='credit-shape',prompt_token_ids=[1,2,3,4],
         sampling_params=SamplingParams(max_tokens=32,temperature=0.,ignore_eos=True),pooling_params=None)
@@ -143,8 +144,14 @@ def gpu_shape():
     inspect.signature(EngineCore.add_request).bind(None,request)
     assert callable(EngineCore.step_with_batch_queue) and callable(EngineCore.shutdown)
     assert WorkerProc.ResponseStatus.SUCCESS is not None
-    assert not torch.cuda.is_initialized()
+    if cpu_only:assert not torch.cuda.is_initialized()
+    else:assert torch.cuda.device_count()==1
     return dict(verdict='PASS',batch_queue_size=cfg.max_concurrent_batches,
+        venue_preconditions=dict(cpu_only=cpu_only,cuda_initialized_before=cuda_before,
+            cuda_initialized_after=torch.cuda.is_initialized(),device_count=torch.cuda.device_count(),
+            cuda_uninitialized_required=cpu_only,
+            gpu_venue_rule='config/real constructor may initialize CUDA normally; exactly one visible GPU required',
+            hub_limit='GPU-less CPU-shape cannot prove driver/device/GPU startup state'),
         executed=['real reduced Qwen config construction','VllmConfig/LoadConfig validation',
                   'Request/SamplingParams construction','EngineCore constructor signature binding',
                   'actual executor/worker/core imports and accessed callable attributes'],
@@ -203,12 +210,12 @@ def main():
         sections={},engine_constructed=False,gpu_execution=False,methods_patched=False,command_slots=10)
     _PROGRESS=a.out.with_suffix('.progress.jsonl').open('x')
     try:
-        graph=json.loads(a.graph.read_text());classes=collect(graph)
+        graph=json.loads(a.graph.read_text());classes=collect(graph,cpu_only=a.mode!='gpu-all')
         for kind in ('stock','native15','native16'):
             result['sections'][kind]=scenario(classes,kind)
             checkpoint(kind,receipt=result['sections'][kind])
             print('END '+kind+' PASS',flush=True)
-        result['sections']['gpu_constructor_shape']=gpu_shape()
+        result['sections']['gpu_constructor_shape']=gpu_shape(cpu_only=a.mode!='gpu-all')
         checkpoint('gpu-constructor-shape',receipt=result['sections']['gpu_constructor_shape'])
         if a.mode=='gpu-all':
             result['sections']['multiproc_executor']=gpu_executor()
