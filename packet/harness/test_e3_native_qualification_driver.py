@@ -435,7 +435,7 @@ class FakeEngine:
         self.identity = clock_identity()
         assert self.identity['proved'] is True
 
-    async def is_scheduler_paused(self):
+    async def is_paused(self):
         return self.paused
 
     async def pause_generation(self, mode='keep', clear_cache=False):

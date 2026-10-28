@@ -1,0 +1,3986 @@
+{
+  "classes": [
+    {
+      "class": "MessageQueue",
+      "fields": [
+        "_is_writer",
+        "buffer",
+        "current_idx",
+        "n_remote_reader",
+        "shutting_down"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "call_args": [
+            null,
+            {}
+          ],
+          "call_kwargs": {},
+          "defining_class": "MessageQueue",
+          "defining_source": "distributed/device_communicators/shm_broadcast.py",
+          "line": 823,
+          "name": "enqueue",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "obj"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "timeout"
+            }
+          ],
+          "signature_ast": "self, obj, timeout: float | None=None"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {
+            "timeout": 0.1
+          },
+          "defining_class": "MessageQueue",
+          "defining_source": "distributed/device_communicators/shm_broadcast.py",
+          "line": 882,
+          "name": "dequeue",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "timeout"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "indefinite"
+            }
+          ],
+          "signature_ast": "self, timeout: float | None=None, indefinite: bool=False"
+        }
+      ],
+      "module": "vllm.distributed.device_communicators.shm_broadcast",
+      "optional_absent": [
+        "_flash_s5_sender_owner",
+        "_flash_s5_receiver_owner"
+      ],
+      "source": "distributed/device_communicators/shm_broadcast.py",
+      "source_sha256": "f3e7a3f3ff713fccbd535e0d41650ee05bdf8677e83d4b90519910645022c30b"
+    },
+    {
+      "class": "ShmRingBuffer",
+      "fields": [
+        "max_chunk_bytes",
+        "max_chunks",
+        "n_reader"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "call_args": [
+            null,
+            0
+          ],
+          "call_kwargs": {},
+          "defining_class": "ShmRingBuffer",
+          "defining_source": "distributed/device_communicators/shm_broadcast.py",
+          "line": 381,
+          "name": "get_metadata",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "current_idx"
+            }
+          ],
+          "signature_ast": "self, current_idx: int"
+        }
+      ],
+      "module": "vllm.distributed.device_communicators.shm_broadcast",
+      "optional_absent": [],
+      "source": "distributed/device_communicators/shm_broadcast.py",
+      "source_sha256": "f3e7a3f3ff713fccbd535e0d41650ee05bdf8677e83d4b90519910645022c30b"
+    },
+    {
+      "class": "BlockPool",
+      "fields": [],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "BlockPool",
+          "line": 791,
+          "name": "free_blocks",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "ordered_blocks"
+            }
+          ],
+          "source": "v1/core/block_pool.py",
+          "source_signature": "self, ordered_blocks: Iterable[KVCacheBlock]"
+        },
+        {
+          "async": false,
+          "defining_class": "BlockPool",
+          "line": 889,
+          "name": "get_num_free_blocks",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/core/block_pool.py",
+          "source_signature": "self"
+        }
+      ],
+      "module": "vllm.v1.core.block_pool",
+      "optional_absent": [],
+      "source": "v1/core/block_pool.py",
+      "source_layer": "pristine image ad067db5",
+      "source_sha256": "34c2fd67148cecb7763ff49ad694a57073759b0fa67572a4270dc995b4acf8fc"
+    },
+    {
+      "class": "KVCacheManager",
+      "fields": [
+        "block_pool",
+        "coordinator"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "KVCacheManager",
+          "line": 265,
+          "name": "get_computed_blocks",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request"
+            }
+          ],
+          "source": "v1/core/kv_cache_manager.py",
+          "source_signature": "self, request: Request"
+        },
+        {
+          "async": false,
+          "defining_class": "KVCacheManager",
+          "line": 370,
+          "name": "allocate_slots",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_new_tokens"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_new_computed_tokens"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "new_computed_blocks"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_lookahead_tokens"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_external_computed_tokens"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "delay_cache_blocks"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_encoder_tokens"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "full_sequence_must_fit"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "reserved_blocks"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "has_scheduled_reqs"
+            }
+          ],
+          "source": "v1/core/kv_cache_manager.py",
+          "source_signature": "self, request: Request, num_new_tokens: int, num_new_computed_tokens: int=0, new_computed_blocks: KVCacheBlocks | None=None, num_lookahead_tokens: int=0, num_external_computed_tokens: int=0, delay_cache_blocks: bool=False, num_encoder_tokens: int=0, full_sequence_must_fit: bool=False, reserved_blocks: int=0, has_scheduled_reqs: bool=True"
+        },
+        {
+          "async": false,
+          "defining_class": "KVCacheManager",
+          "line": 733,
+          "name": "get_block_ids",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request_id"
+            }
+          ],
+          "source": "v1/core/kv_cache_manager.py",
+          "source_signature": "self, request_id: str"
+        },
+        {
+          "async": false,
+          "defining_class": "KVCacheManager",
+          "line": 788,
+          "name": "cache_blocks",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_computed_tokens"
+            }
+          ],
+          "source": "v1/core/kv_cache_manager.py",
+          "source_signature": "self, request: Request, num_computed_tokens: int"
+        }
+      ],
+      "module": "vllm.v1.core.kv_cache_manager",
+      "optional_absent": [],
+      "source": "v1/core/kv_cache_manager.py",
+      "source_sha256": "58800535eda854580d84e1025bf32fe01b2a43ce0bba501b4f3d125e4f2c8afa"
+    },
+    {
+      "class": "CachedRequestData",
+      "fields": [
+        "new_block_ids"
+      ],
+      "methods": [],
+      "module": "vllm.v1.core.sched.output",
+      "optional_absent": [],
+      "source": "v1/core/sched/output.py",
+      "source_sha256": "3a66c8efaefe10c572f6f33cf1f8aa4610758c945130cad62eb9f7331005677c"
+    },
+    {
+      "class": "SchedulerOutput",
+      "fields": [
+        "block_table_updates",
+        "finished_req_ids",
+        "kv_cache_block_copies",
+        "new_block_ids_to_zero",
+        "num_scheduled_tokens",
+        "preempted_req_ids",
+        "scheduled_cached_reqs",
+        "scheduled_new_reqs"
+      ],
+      "methods": [],
+      "module": "vllm.v1.core.sched.output",
+      "optional_absent": [],
+      "source": "v1/core/sched/output.py",
+      "source_sha256": "3a66c8efaefe10c572f6f33cf1f8aa4610758c945130cad62eb9f7331005677c"
+    },
+    {
+      "class": "RequestQueue",
+      "fields": [],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "RequestQueue",
+          "line": 34,
+          "name": "peek_request",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/core/sched/request_queue.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "RequestQueue",
+          "line": 29,
+          "name": "pop_request",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/core/sched/request_queue.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "RequestQueue",
+          "line": 39,
+          "name": "prepend_request",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request"
+            }
+          ],
+          "source": "v1/core/sched/request_queue.py",
+          "source_signature": "self, request: Request"
+        },
+        {
+          "async": false,
+          "defining_class": "RequestQueue",
+          "line": 24,
+          "name": "add_request",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request"
+            }
+          ],
+          "source": "v1/core/sched/request_queue.py",
+          "source_signature": "self, request: Request"
+        },
+        {
+          "async": false,
+          "defining_class": "RequestQueue",
+          "line": 50,
+          "name": "remove_request",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request"
+            }
+          ],
+          "source": "v1/core/sched/request_queue.py",
+          "source_signature": "self, request: Request"
+        }
+      ],
+      "module": "vllm.v1.core.sched.request_queue",
+      "optional_absent": [],
+      "source": "v1/core/sched/request_queue.py",
+      "source_sha256": "4b8d938e5fb8152fe61030b8aa991f983fcac9a405c37ed8908045e05e82ae5e"
+    },
+    {
+      "class": "Scheduler",
+      "fields": [
+        "_pause_state",
+        "connector",
+        "kv_cache_manager",
+        "max_num_running_reqs",
+        "max_num_scheduled_tokens",
+        "needs_kv_cache_zeroing",
+        "num_waiting_for_streaming_input",
+        "requests",
+        "running",
+        "sched_step_seq",
+        "scheduler_reserve_full_isl",
+        "skipped_waiting",
+        "vllm_config",
+        "waiting"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "Scheduler",
+          "defining_source": "v1/core/sched/scheduler.py",
+          "line": 2849,
+          "name": "has_requests",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "Scheduler",
+          "defining_source": "v1/core/sched/scheduler.py",
+          "line": 2825,
+          "name": "get_num_unfinished_requests",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null,
+            null,
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "Scheduler",
+          "defining_source": "v1/core/sched/scheduler.py",
+          "line": 2034,
+          "name": "update_from_output",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "scheduler_output"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "model_runner_output"
+            }
+          ],
+          "signature_ast": "self, scheduler_output: SchedulerOutput, model_runner_output: ModelRunnerOutput"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null,
+            false
+          ],
+          "call_kwargs": {},
+          "defining_class": "Scheduler",
+          "defining_source": "v1/core/sched/scheduler.py",
+          "line": 624,
+          "name": "schedule",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "throttle_prefills"
+            }
+          ],
+          "signature_ast": "self, throttle_prefills: bool=False"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null,
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "Scheduler",
+          "defining_source": "v1/core/sched/scheduler.py",
+          "line": 2777,
+          "name": "set_pause_state",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "pause_state"
+            }
+          ],
+          "signature_ast": "self, pause_state: PauseState"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null,
+            null,
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "Scheduler",
+          "defining_source": "v1/core/sched/scheduler.py",
+          "line": 2676,
+          "name": "finish_requests",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request_ids"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "finished_status"
+            }
+          ],
+          "signature_ast": "self, request_ids: str | Iterable[str] | None, finished_status: RequestStatus"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {
+            "reset_connector": false,
+            "reset_running_requests": false
+          },
+          "defining_class": "Scheduler",
+          "defining_source": "v1/core/sched/scheduler.py",
+          "line": 2866,
+          "name": "reset_prefix_cache",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "reset_running_requests"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "reset_connector"
+            }
+          ],
+          "signature_ast": "self, reset_running_requests: bool=False, reset_connector: bool=False"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "Scheduler",
+          "defining_source": "v1/core/sched/scheduler.py",
+          "line": 2774,
+          "name": "pause_state",
+          "property": true,
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "Scheduler",
+          "line": 2492,
+          "name": "_select_waiting_queue_for_scheduling",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/core/sched/scheduler.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "Scheduler",
+          "line": 438,
+          "name": "_mamba_block_aligned_split",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_new_tokens"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_new_local_computed_tokens"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_external_computed_tokens"
+            }
+          ],
+          "source": "v1/core/sched/scheduler.py",
+          "source_signature": "self, request: Request, num_new_tokens: int, num_new_local_computed_tokens: int=0, num_external_computed_tokens: int=0"
+        },
+        {
+          "async": false,
+          "defining_class": "Scheduler",
+          "line": 2479,
+          "name": "_is_blocked_waiting_status",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "status"
+            }
+          ],
+          "source": "v1/core/sched/scheduler.py",
+          "source_signature": "status: RequestStatus"
+        },
+        {
+          "async": false,
+          "defining_class": "Scheduler",
+          "line": 2788,
+          "name": "_free_request_blocks",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request"
+            }
+          ],
+          "source": "v1/core/sched/scheduler.py",
+          "source_signature": "self, request: Request"
+        },
+        {
+          "async": false,
+          "defining_class": "Scheduler",
+          "line": 2799,
+          "name": "_free_cow_retained_blocks",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "blocks"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "fence_seq"
+            }
+          ],
+          "source": "v1/core/sched/scheduler.py",
+          "source_signature": "self, blocks: list[KVCacheBlock], fence_seq: int"
+        }
+      ],
+      "module": "vllm.v1.core.sched.scheduler",
+      "optional_absent": [
+        "_flash_s5_driver"
+      ],
+      "source": "v1/core/sched/scheduler.py",
+      "source_layer": "pristine image ad067db5",
+      "source_sha256": "85a2b9c88fd1304de758a238ae67a7ad02269540623d416b6a0e62a286b932ea"
+    },
+    {
+      "class": "AsyncLLM",
+      "fields": [
+        "engine_core",
+        "input_processor",
+        "vllm_config"
+      ],
+      "methods": [
+        {
+          "async": true,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "AsyncLLM",
+          "defining_source": "v1/engine/async_llm.py",
+          "line": 924,
+          "name": "is_paused",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": true,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {
+            "clear_cache": false,
+            "mode": "keep"
+          },
+          "defining_class": "AsyncLLM",
+          "defining_source": "v1/engine/async_llm.py",
+          "line": 875,
+          "name": "pause_generation",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": true,
+              "kind": "KEYWORD_ONLY",
+              "name": "mode"
+            },
+            {
+              "default": true,
+              "kind": "KEYWORD_ONLY",
+              "name": "wait_for_inflight_requests"
+            },
+            {
+              "default": true,
+              "kind": "KEYWORD_ONLY",
+              "name": "clear_cache"
+            }
+          ],
+          "signature_ast": "self, *, mode: PauseMode='abort', wait_for_inflight_requests: bool | None=None, clear_cache: bool=True"
+        },
+        {
+          "async": true,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "AsyncLLM",
+          "defining_source": "v1/engine/async_llm.py",
+          "line": 920,
+          "name": "resume_generation",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": true,
+          "call_args": [
+            null,
+            "flash_s5_decode_probe"
+          ],
+          "call_kwargs": {
+            "args": [
+              {}
+            ],
+            "kwargs": {},
+            "timeout": 120.0
+          },
+          "defining_class": "AsyncLLM",
+          "defining_source": "v1/engine/async_llm.py",
+          "line": 1098,
+          "name": "collective_rpc",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "method"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "timeout"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "args"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "kwargs"
+            }
+          ],
+          "signature_ast": "self, method: str, timeout: float | None=None, args: tuple=(), kwargs: dict | None=None"
+        },
+        {
+          "async": true,
+          "call_args": [
+            null,
+            "audit",
+            null,
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "AsyncLLM",
+          "defining_source": "v1/engine/async_llm.py",
+          "line": 347,
+          "name": "add_request",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request_id"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "prompt"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "params"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "arrival_time"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "lora_request"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "tokenization_kwargs"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "trace_headers"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "priority"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "data_parallel_rank"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "session_id"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "prompt_text"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "reasoning_ended"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "reasoning_parser_kwargs"
+            }
+          ],
+          "signature_ast": "self, request_id: str, prompt: EngineCoreRequest | PromptType | EngineInput | AsyncGenerator[StreamingInput, None], params: SamplingParams | PoolingParams, arrival_time: float | None=None, lora_request: LoRARequest | None=None, tokenization_kwargs: dict[str, Any] | None=None, trace_headers: Mapping[str, str] | None=None, priority: int=0, data_parallel_rank: int | None=None, session_id: str | None=None, prompt_text: str | None=None, reasoning_ended: bool | None=None, reasoning_parser_kwargs: dict[str, Any] | None=None"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "AsyncLLM",
+          "defining_source": "v1/engine/async_llm.py",
+          "line": 282,
+          "name": "get_num_unfinished_requests",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "AsyncLLM",
+          "defining_source": "v1/engine/async_llm.py",
+          "line": 285,
+          "name": "get_num_queued_tokens",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        }
+      ],
+      "module": "vllm.v1.engine.async_llm",
+      "optional_absent": [
+        "is_scheduler_paused"
+      ],
+      "source": "v1/engine/async_llm.py",
+      "source_sha256": "32ab1c7b43bfa7e5fcada335f49627d3c540a43bb8376b4845006792c3415fb4"
+    },
+    {
+      "class": "EngineCore",
+      "fields": [
+        "batch_queue",
+        "model_executor",
+        "scheduler",
+        "step_fn",
+        "vllm_config"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 875,
+          "name": "is_scheduler_paused",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {
+            "clear_cache": false,
+            "mode": "keep"
+          },
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 841,
+          "name": "pause_scheduler",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "mode"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "clear_cache"
+            }
+          ],
+          "signature_ast": "self, mode: PauseMode='abort', clear_cache: bool=True"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 871,
+          "name": "resume_scheduler",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null,
+            false
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 834,
+          "name": "_finish_pause",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "clear_cache"
+            }
+          ],
+          "signature_ast": "self, clear_cache: bool"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null,
+            "synchronize_device"
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 964,
+          "name": "collective_rpc",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "method"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "timeout"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "args"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "kwargs"
+            }
+          ],
+          "signature_ast": "self, method: str | Callable[..., _R], timeout: float | None=None, args: tuple=(), kwargs: dict[str, Any] | None=None"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 589,
+          "name": "step",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 630,
+          "name": "step_with_batch_queue",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {
+            "model_executed": false
+          },
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 621,
+          "name": "post_step",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "model_executed"
+            }
+          ],
+          "signature_ast": "self, model_executed: bool"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 584,
+          "name": "_should_throttle_prefills",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        }
+      ],
+      "module": "vllm.v1.engine.core",
+      "optional_absent": [
+        "_flash_s5_driver",
+        "flash_s5_native_control"
+      ],
+      "source": "v1/engine/core.py",
+      "source_sha256": "268bf40534a853812867ae8e80040f190983cb364b41182b55969aace20c93f5"
+    },
+    {
+      "class": "EngineCoreProc",
+      "fields": [
+        "batch_queue",
+        "model_executor",
+        "scheduler",
+        "step_fn",
+        "vllm_config"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {
+            "clear_cache": false,
+            "mode": "keep"
+          },
+          "defining_class": "EngineCoreProc",
+          "defining_source": "v1/engine/core.py",
+          "line": 1918,
+          "name": "pause_scheduler",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "mode"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "clear_cache"
+            }
+          ],
+          "signature_ast": "self, mode: PauseMode='abort', clear_cache: bool=True"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 875,
+          "name": "is_scheduler_paused",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCore",
+          "defining_source": "v1/engine/core.py",
+          "line": 871,
+          "name": "resume_scheduler",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCoreProc",
+          "defining_source": "v1/engine/core.py",
+          "line": 1958,
+          "name": "_pause_complete",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCoreProc",
+          "defining_source": "v1/engine/core.py",
+          "line": 1644,
+          "name": "_make_ready_response",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCoreProc",
+          "defining_source": "v1/engine/core.py",
+          "line": 1429,
+          "name": "_process_input_queue",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "EngineCoreProc",
+          "defining_source": "v1/engine/core.py",
+          "line": 1460,
+          "name": "_process_engine_step",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        }
+      ],
+      "module": "vllm.v1.engine.core",
+      "optional_absent": [
+        "flash_s5_native_control"
+      ],
+      "source": "v1/engine/core.py",
+      "source_sha256": "268bf40534a853812867ae8e80040f190983cb364b41182b55969aace20c93f5"
+    },
+    {
+      "class": "AsyncMPClient",
+      "fields": [
+        "client_count",
+        "client_index",
+        "vllm_config"
+      ],
+      "methods": [
+        {
+          "async": true,
+          "call_args": [
+            null,
+            "flash_s5_native_control",
+            {}
+          ],
+          "call_kwargs": {},
+          "defining_class": "AsyncMPClient",
+          "defining_source": "v1/engine/core_client.py",
+          "line": 1199,
+          "name": "call_utility_async",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "method"
+            },
+            {
+              "default": false,
+              "kind": "VAR_POSITIONAL",
+              "name": "args"
+            }
+          ],
+          "signature_ast": "self, method: str, *args"
+        },
+        {
+          "async": true,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {
+            "clear_cache": false,
+            "mode": "keep"
+          },
+          "defining_class": "AsyncMPClient",
+          "defining_source": "v1/engine/core_client.py",
+          "line": 1228,
+          "name": "pause_scheduler_async",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "mode"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "clear_cache"
+            }
+          ],
+          "signature_ast": "self, mode: PauseMode='abort', clear_cache: bool=True"
+        },
+        {
+          "async": true,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "AsyncMPClient",
+          "defining_source": "v1/engine/core_client.py",
+          "line": 1233,
+          "name": "resume_scheduler_async",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": true,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "AsyncMPClient",
+          "defining_source": "v1/engine/core_client.py",
+          "line": 1236,
+          "name": "is_scheduler_paused_async",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": true,
+          "call_args": [
+            null,
+            "flash_s5_decode_probe",
+            120.0,
+            [
+              {}
+            ],
+            {}
+          ],
+          "call_kwargs": {},
+          "defining_class": "AsyncMPClient",
+          "defining_source": "v1/engine/core_client.py",
+          "line": 1292,
+          "name": "collective_rpc_async",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "method"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "timeout"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "args"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "kwargs"
+            }
+          ],
+          "signature_ast": "self, method: str | Callable[..., _R], timeout: float | None=None, args: tuple=(), kwargs: dict[str, Any] | None=None"
+        }
+      ],
+      "module": "vllm.v1.engine.core_client",
+      "optional_absent": [
+        "_flash_s5_driver"
+      ],
+      "source": "v1/engine/core_client.py",
+      "source_sha256": "fd6ca0cb7499b3086eef2fc57674b7ace56ef1c648f09e92e144b255b79018f8"
+    },
+    {
+      "class": "EngineCoreClient",
+      "fields": [],
+      "methods": [
+        {
+          "async": true,
+          "call_args": [
+            null,
+            "flash_s5_decode_probe"
+          ],
+          "call_kwargs": {
+            "args": [
+              {}
+            ],
+            "kwargs": {},
+            "timeout": 120.0
+          },
+          "defining_class": "EngineCoreClient",
+          "defining_source": "v1/engine/core_client.py",
+          "line": 315,
+          "name": "collective_rpc_async",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "method"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "timeout"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "args"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "kwargs"
+            }
+          ],
+          "signature_ast": "self, method: str | Callable[..., _R], timeout: float | None=None, args: tuple=(), kwargs: dict[str, Any] | None=None"
+        }
+      ],
+      "module": "vllm.v1.engine.core_client",
+      "optional_absent": [
+        "call_utility_async",
+        "client_count",
+        "client_index"
+      ],
+      "source": "v1/engine/core_client.py",
+      "source_sha256": "fd6ca0cb7499b3086eef2fc57674b7ace56ef1c648f09e92e144b255b79018f8"
+    },
+    {
+      "class": "InputProcessor",
+      "fields": [
+        "process_inputs_async"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "call_args": [
+            null,
+            "audit",
+            null,
+            null,
+            []
+          ],
+          "call_kwargs": {},
+          "defining_class": "InputProcessor",
+          "defining_source": "v1/engine/input_processor.py",
+          "line": 281,
+          "name": "process_inputs",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "request_id"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "prompt"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "params"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "supported_tasks"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "arrival_time"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "lora_request"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "tokenization_kwargs"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "trace_headers"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "priority"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "data_parallel_rank"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "resumable"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "session_id"
+            }
+          ],
+          "signature_ast": "self, request_id: str, prompt: PromptType | EngineInput, params: SamplingParams | PoolingParams, supported_tasks: tuple[SupportedTask, ...], arrival_time: float | None=None, lora_request: LoRARequest | None=None, tokenization_kwargs: dict[str, Any] | None=None, trace_headers: Mapping[str, str] | None=None, priority: int=0, data_parallel_rank: int | None=None, resumable: bool=False, session_id: str | None=None"
+        }
+      ],
+      "module": "vllm.v1.engine.input_processor",
+      "optional_absent": [
+        "_flash_s5_teacher"
+      ],
+      "source": "v1/engine/input_processor.py",
+      "source_sha256": "91dde56a548c09613ee9aaef8c43631481d12dc1bd439fddc12c6569f5e2e799"
+    },
+    {
+      "class": "Executor",
+      "fields": [
+        "is_sleeping",
+        "parallel_config",
+        "vllm_config"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "Executor",
+          "defining_source": "v1/executor/abstract.py",
+          "line": 305,
+          "name": "supports_draft_weight_updates",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null,
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "Executor",
+          "defining_source": "v1/executor/abstract.py",
+          "line": 141,
+          "name": "register_failure_callback",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "callback"
+            }
+          ],
+          "signature_ast": "self, callback: FailureCallback"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null,
+            "audit"
+          ],
+          "call_kwargs": {
+            "args": [],
+            "kwargs": {},
+            "timeout": 120.0
+          },
+          "defining_class": "Executor",
+          "defining_source": "v1/executor/abstract.py",
+          "line": 163,
+          "name": "collective_rpc",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "method"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "timeout"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "args"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "kwargs"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "non_block"
+            }
+          ],
+          "signature_ast": "self, method: str | Callable[[WorkerBase], _R], timeout: float | None=None, args: tuple=(), kwargs: dict | None=None, non_block: Literal[False]=False"
+        }
+      ],
+      "module": "vllm.v1.executor.abstract",
+      "optional_absent": [],
+      "source": "v1/executor/abstract.py",
+      "source_sha256": "97791426b549e4447c967f8b8e668c2e376c6a75fa7091fd9df11bc9dafb65f7"
+    },
+    {
+      "class": "MultiprocExecutor",
+      "fields": [
+        "futures_queue",
+        "is_failed",
+        "output_rank",
+        "parallel_config",
+        "response_mqs",
+        "rpc_broadcast_mq",
+        "workers",
+        "world_size"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "call_args": [
+            null,
+            "audit"
+          ],
+          "call_kwargs": {
+            "args": [],
+            "ec_output_aggregator": null,
+            "kv_output_aggregator": null,
+            "kwargs": {},
+            "non_block": false,
+            "timeout": 120.0,
+            "unique_reply_rank": null
+          },
+          "defining_class": "MultiprocExecutor",
+          "defining_source": "v1/executor/multiproc_executor.py",
+          "line": 375,
+          "name": "collective_rpc",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "method"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "timeout"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "args"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "kwargs"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "non_block"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "unique_reply_rank"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "kv_output_aggregator"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "ec_output_aggregator"
+            }
+          ],
+          "signature_ast": "self, method: str | Callable, timeout: float | None=None, args: tuple=(), kwargs: dict | None=None, non_block: bool=False, unique_reply_rank: int | None=None, kv_output_aggregator: KVOutputAggregator | None=None, ec_output_aggregator: ECOutputAggregator | None=None"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "MultiprocExecutor",
+          "defining_source": "v1/executor/multiproc_executor.py",
+          "line": 502,
+          "name": "shutdown",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "Executor",
+          "defining_source": "v1/executor/abstract.py",
+          "line": 305,
+          "name": "supports_draft_weight_updates",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "signature_ast": "self"
+        },
+        {
+          "async": false,
+          "call_args": [
+            null,
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "MultiprocExecutor",
+          "defining_source": "v1/executor/multiproc_executor.py",
+          "line": 334,
+          "name": "register_failure_callback",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "callback"
+            }
+          ],
+          "signature_ast": "self, callback: FailureCallback"
+        }
+      ],
+      "module": "vllm.v1.executor.multiproc_executor",
+      "optional_absent": [
+        "_flash_s5_transport",
+        "_flash_s5_handoff",
+        "_flash_s5_bounded_send"
+      ],
+      "source": "v1/executor/multiproc_executor.py",
+      "source_sha256": "3ed0149a8a8e1550c4f062af40e645d1b734e70f99981bc5bf15f0360507648a"
+    },
+    {
+      "class": "StagedWriteTensor",
+      "fields": [
+        "device",
+        "gpu"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "StagedWriteTensor",
+          "line": 165,
+          "name": "stage_write",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "index"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "start"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "x"
+            }
+          ],
+          "source": "v1/worker/gpu/buffer_utils.py",
+          "source_signature": "self, index: int, start: int, x: Iterable[int] | Iterable[float]"
+        },
+        {
+          "async": false,
+          "defining_class": "StagedWriteTensor",
+          "line": 177,
+          "name": "stage_write_elem",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "index"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "x"
+            }
+          ],
+          "source": "v1/worker/gpu/buffer_utils.py",
+          "source_signature": "self, index: int, x: int"
+        },
+        {
+          "async": false,
+          "defining_class": "StagedWriteTensor",
+          "line": 184,
+          "name": "apply_write",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/gpu/buffer_utils.py",
+          "source_signature": "self"
+        }
+      ],
+      "module": "vllm.v1.worker.gpu.buffer_utils",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/buffer_utils.py",
+      "source_sha256": "f81fd26a5faabf614b2c0d0a2aaa55a6664e35eeb5deada51bc657172963b596"
+    },
+    {
+      "class": "UvaBackedTensor",
+      "fields": [
+        "cpu",
+        "gpu",
+        "np"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "UvaBackedTensor",
+          "line": 117,
+          "name": "copy_to_uva",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "n"
+            }
+          ],
+          "source": "v1/worker/gpu/buffer_utils.py",
+          "source_signature": "self, n: int | None=None"
+        }
+      ],
+      "module": "vllm.v1.worker.gpu.buffer_utils",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/buffer_utils.py",
+      "source_sha256": "f81fd26a5faabf614b2c0d0a2aaa55a6664e35eeb5deada51bc657172963b596"
+    },
+    {
+      "class": "BatchExecutionDescriptor",
+      "fields": [
+        "cg_mode",
+        "max_query_len",
+        "num_active_loras",
+        "num_reqs",
+        "num_tokens",
+        "num_ubatches",
+        "uniform_token_count"
+      ],
+      "methods": [],
+      "module": "vllm.v1.worker.gpu.cudagraph_utils",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/cudagraph_utils.py",
+      "source_sha256": "b1423812da6d07933bbaf014fa21236c944af1c5f8e553aefb2de89af8afb384"
+    },
+    {
+      "class": "ModelCudaGraphManager",
+      "fields": [
+        "_candidates",
+        "_capture_descs",
+        "device",
+        "graphs",
+        "pool"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "CudaGraphManager",
+          "line": 440,
+          "name": "dispatch",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_reqs"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_tokens"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "uniform_token_count"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_active_loras"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "max_query_len"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_ubatches"
+            }
+          ],
+          "source": "v1/worker/gpu/cudagraph_utils.py",
+          "source_signature": "self, num_reqs: int, num_tokens: int, uniform_token_count: int | None, num_active_loras: int, max_query_len: int | None=None, num_ubatches: int=1"
+        },
+        {
+          "async": false,
+          "defining_class": "ModelCudaGraphManager",
+          "line": 527,
+          "name": "capture",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "model"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "model_state"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "input_buffers"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "intermediate_tensors"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "block_tables"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "attn_groups"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "kv_cache_config"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "pcp_manager"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "has_lora"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "use_aux_hidden_state_outputs"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "lora_capture_hook"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "progress_bar_desc"
+            }
+          ],
+          "source": "v1/worker/gpu/cudagraph_utils.py",
+          "source_signature": "self, model: nn.Module, model_state: ModelState, input_buffers: InputBuffers, intermediate_tensors: IntermediateTensors | None, block_tables: BlockTables, attn_groups: list[list[AttentionGroup]], kv_cache_config: KVCacheConfig, pcp_manager: 'PCPManager | None'=None, has_lora: bool=False, use_aux_hidden_state_outputs: bool=False, lora_capture_hook: Callable[[int, int, int], None] | None=None, progress_bar_desc: str='Capturing CUDA graphs'"
+        },
+        {
+          "async": false,
+          "defining_class": "ModelCudaGraphManager",
+          "line": 663,
+          "name": "run_fullgraph",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "desc"
+            }
+          ],
+          "source": "v1/worker/gpu/cudagraph_utils.py",
+          "source_signature": "self, desc: BatchExecutionDescriptor"
+        },
+        {
+          "async": false,
+          "defining_class": "CudaGraphManager",
+          "line": 494,
+          "name": "run_pw_graph",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "model"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "model_inputs"
+            }
+          ],
+          "source": "v1/worker/gpu/cudagraph_utils.py",
+          "source_signature": "self, model: nn.Module, model_inputs: dict[str, Any]"
+        }
+      ],
+      "module": "vllm.v1.worker.gpu.cudagraph_utils",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/cudagraph_utils.py",
+      "source_sha256": "b1423812da6d07933bbaf014fa21236c944af1c5f8e553aefb2de89af8afb384"
+    },
+    {
+      "class": "InputBatch",
+      "fields": [
+        "cu_num_logits",
+        "cu_num_logits_np",
+        "expanded_idx_mapping",
+        "expanded_local_pos",
+        "has_prefill",
+        "idx_mapping",
+        "idx_mapping_np",
+        "input_ids",
+        "is_prefilling_np",
+        "logits_indices",
+        "num_computed_prefill_tokens_np",
+        "num_computed_tokens_np",
+        "num_draft_tokens",
+        "num_reqs",
+        "num_reqs_after_padding",
+        "num_scheduled_tokens",
+        "num_tokens",
+        "num_tokens_after_padding",
+        "positions",
+        "prefill_len_np",
+        "query_start_loc_np",
+        "req_ids"
+      ],
+      "methods": [],
+      "module": "vllm.v1.worker.gpu.input_batch",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/input_batch.py",
+      "source_sha256": "abfbb9075a80354bd4bb59d2729fcdea3c62eed827067a823761c98356670ad1"
+    },
+    {
+      "class": "BatchReqState",
+      "fields": [
+        "has_prefill",
+        "idx_mapping_np",
+        "is_prefilling_np",
+        "num_computed_prefill_tokens_np",
+        "num_scheduled_tokens",
+        "num_tokens",
+        "prefill_len_np",
+        "req_ids"
+      ],
+      "methods": [],
+      "module": "vllm.v1.worker.gpu.model_runner",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/model_runner.py",
+      "source_layer": "pristine image ad067db5",
+      "source_sha256": "6e3bfbc91d88c65c7ca9259b0a226417b4aaa6c5a513b2e1a4c8973e5758795a"
+    },
+    {
+      "class": "GPUModelRunner",
+      "descriptors": [
+        {
+          "kind": "functools.cached_property",
+          "line": 572,
+          "name": "main_stream",
+          "source": "v1/worker/gpu/model_runner.py"
+        }
+      ],
+      "fields": [
+        "adaptive_verification",
+        "batch_sharder",
+        "block_tables",
+        "cudagraph_manager",
+        "device",
+        "dp_size",
+        "execute_model_state",
+        "is_first_pp_rank",
+        "is_last_pp_rank",
+        "kv_cache_config",
+        "max_num_tokens",
+        "model",
+        "model_config",
+        "output_copy_stream",
+        "parallel_config",
+        "pp_handler",
+        "req_states",
+        "sampler",
+        "vllm_config"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "GPUModelRunner",
+          "line": 1666,
+          "name": "sample",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "hidden_states"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "input_batch"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "grammar_output"
+            }
+          ],
+          "source": "v1/worker/gpu/model_runner.py",
+          "source_signature": "self, hidden_states: torch.Tensor, input_batch: InputBatch, grammar_output: GrammarOutput | None"
+        },
+        {
+          "async": false,
+          "defining_class": "GPUModelRunner",
+          "line": 545,
+          "name": "get_model",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/gpu/model_runner.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "GPUModelRunner",
+          "line": 2372,
+          "name": "postprocess_num_computed_tokens",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "input_batch"
+            }
+          ],
+          "source": "v1/worker/gpu/model_runner.py",
+          "source_signature": "self, input_batch: InputBatch"
+        },
+        {
+          "async": false,
+          "defining_class": "GPUModelRunner",
+          "line": 1744,
+          "name": "postprocess_sampled",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "idx_mapping"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "sampled_tokens"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_sampled"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_rejected"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "query_start_loc"
+            }
+          ],
+          "source": "v1/worker/gpu/model_runner.py",
+          "source_signature": "self, idx_mapping: torch.Tensor, sampled_tokens: torch.Tensor, num_sampled: torch.Tensor, num_rejected: torch.Tensor, query_start_loc: torch.Tensor | None=None"
+        },
+        {
+          "async": false,
+          "defining_class": "GPUModelRunner",
+          "line": 1368,
+          "name": "gather_batch_req_state",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "scheduler_output"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "dummy_run"
+            }
+          ],
+          "source": "v1/worker/gpu/model_runner.py",
+          "source_signature": "self, scheduler_output: SchedulerOutput, dummy_run: bool"
+        },
+        {
+          "async": false,
+          "defining_class": "GPUModelRunner",
+          "line": 1785,
+          "name": "execute_model",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "scheduler_output"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "intermediate_tensors"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "dummy_run"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "skip_attn_for_dummy_run"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "is_profile"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "context_len"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "valid_dummy_state_slots"
+            }
+          ],
+          "source": "v1/worker/gpu/model_runner.py",
+          "source_signature": "self, scheduler_output: SchedulerOutput, intermediate_tensors: IntermediateTensors | None=None, dummy_run: bool=False, skip_attn_for_dummy_run: bool=False, is_profile: bool=False, context_len: int=0, valid_dummy_state_slots: bool=False"
+        },
+        {
+          "async": false,
+          "defining_class": "GPUModelRunner",
+          "line": 2143,
+          "name": "sample_tokens",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "grammar_output"
+            }
+          ],
+          "source": "v1/worker/gpu/model_runner.py",
+          "source_signature": "self, grammar_output: GrammarOutput | None"
+        },
+        {
+          "async": false,
+          "descriptor": "cached_property",
+          "name": "main_stream",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ]
+        },
+        {
+          "async": false,
+          "call_args": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "call_kwargs": {},
+          "defining_class": "GPUModelRunner",
+          "defining_source": "v1/worker/gpu/model_runner.py",
+          "line": 1262,
+          "name": "prepare_inputs",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "scheduler_output"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "batch_req_state"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "batch_desc"
+            }
+          ],
+          "signature_ast": "self, scheduler_output: SchedulerOutput, batch_req_state: 'BatchReqState', batch_desc: BatchExecutionDescriptor"
+        }
+      ],
+      "module": "vllm.v1.worker.gpu.model_runner",
+      "optional_absent": [
+        {
+          "name": "rank",
+          "reason": "NativeQualification._rank requires native.state.worker_rank first; runner.rank is a guarded fallback only and absent from this image"
+        }
+      ],
+      "source": "v1/worker/gpu/model_runner.py",
+      "source_layer": "pristine image ad067db5",
+      "source_sha256": "6e3bfbc91d88c65c7ca9259b0a226417b4aaa6c5a513b2e1a4c8973e5758795a"
+    },
+    {
+      "class": "PPHandler",
+      "fields": [
+        "broadcast_stream",
+        "main_stream",
+        "queue"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "PPHandler",
+          "line": 116,
+          "name": "get_prev_sampled_outputs",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "draft_tokens_to_update"
+            }
+          ],
+          "source": "v1/worker/gpu/pp_utils.py",
+          "source_signature": "self, draft_tokens_to_update: torch.Tensor | None=None"
+        },
+        {
+          "async": false,
+          "defining_class": "PPHandler",
+          "line": 180,
+          "name": "receive",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "input_batch"
+            }
+          ],
+          "source": "v1/worker/gpu/pp_utils.py",
+          "source_signature": "self, input_batch: InputBatch"
+        },
+        {
+          "async": false,
+          "defining_class": "PPHandler",
+          "line": 238,
+          "name": "broadcast",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "sampled_token_ids"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_sampled"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "num_rejected"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "input_batch"
+            }
+          ],
+          "source": "v1/worker/gpu/pp_utils.py",
+          "source_signature": "self, sampled_token_ids: torch.Tensor, num_sampled: torch.Tensor, num_rejected: torch.Tensor, input_batch: InputBatch"
+        },
+        {
+          "async": false,
+          "defining_class": "PPHandler",
+          "line": 163,
+          "name": "broadcast_drafts",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "draft_tokens"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "input_batch"
+            }
+          ],
+          "source": "v1/worker/gpu/pp_utils.py",
+          "source_signature": "self, draft_tokens: torch.Tensor, input_batch: InputBatch"
+        }
+      ],
+      "module": "vllm.v1.worker.gpu.pp_utils",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/pp_utils.py",
+      "source_sha256": "3082b600b40a837402293396ec250fd0b3afc7e416bec83a58b393c52942659a"
+    },
+    {
+      "class": "BatchSharder",
+      "fields": [],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "BatchSharder",
+          "line": 162,
+          "name": "shard_sampler_inputs",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "input_batch"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "grammar_output"
+            }
+          ],
+          "source": "v1/worker/gpu/sample/batch_shard.py",
+          "source_signature": "self, input_batch: InputBatch, grammar_output: GrammarOutput | None"
+        }
+      ],
+      "module": "vllm.v1.worker.gpu.sample.batch_shard",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/sample/batch_shard.py",
+      "source_sha256": "c30274a3a04e6a03e89be9cd7c62de602b1aba4d412f64540ab6201036de3928"
+    },
+    {
+      "class": "Sampler",
+      "fields": [
+        "compute_nans",
+        "logprobs_mode",
+        "needs_logits_processing",
+        "sampling_states",
+        "trace_replay_state"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "Sampler",
+          "line": 122,
+          "name": "__call__",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "logits"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "input_batch"
+            }
+          ],
+          "source": "v1/worker/gpu/sample/sampler.py",
+          "source_signature": "self, logits: torch.Tensor, input_batch: InputBatch"
+        },
+        {
+          "async": false,
+          "defining_class": "Sampler",
+          "line": 209,
+          "name": "apply_sampling_params",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "logits"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "expanded_idx_mapping"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "idx_mapping"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "idx_mapping_np"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "pos"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "input_ids"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "expanded_local_pos"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "skip_top_k_top_p"
+            }
+          ],
+          "source": "v1/worker/gpu/sample/sampler.py",
+          "source_signature": "self, logits: torch.Tensor, expanded_idx_mapping: torch.Tensor, idx_mapping: torch.Tensor, idx_mapping_np: np.ndarray, pos: torch.Tensor, input_ids: torch.Tensor, expanded_local_pos: torch.Tensor, skip_top_k_top_p: bool=False"
+        },
+        {
+          "async": false,
+          "defining_class": "Sampler",
+          "line": 106,
+          "name": "get_logprobs_dims",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "idx_mapping_np"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "include_token_ids"
+            }
+          ],
+          "source": "v1/worker/gpu/sample/sampler.py",
+          "source_signature": "self, idx_mapping_np: np.ndarray, include_token_ids: bool=True"
+        },
+        {
+          "async": false,
+          "defining_class": "Sampler",
+          "line": 276,
+          "name": "sample",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "logits"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "expanded_idx_mapping"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "idx_mapping"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "idx_mapping_np"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "pos"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "input_ids"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "expanded_local_pos"
+            },
+            {
+              "default": true,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "return_logprobs"
+            }
+          ],
+          "source": "v1/worker/gpu/sample/sampler.py",
+          "source_signature": "self, logits: torch.Tensor, expanded_idx_mapping: torch.Tensor, idx_mapping: torch.Tensor, idx_mapping_np: np.ndarray, pos: torch.Tensor, input_ids: torch.Tensor, expanded_local_pos: torch.Tensor, return_logprobs: bool=False"
+        }
+      ],
+      "module": "vllm.v1.worker.gpu.sample.sampler",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/sample/sampler.py",
+      "source_sha256": "832c9945d201a1e730ff9b4b52076aa83bd4a5064e1e4cfea952cf84d4a8d1f0"
+    },
+    {
+      "class": "TraceReplayState",
+      "fields": [
+        "device",
+        "max_num_reqs",
+        "req_states",
+        "trace_len",
+        "trace_token_ids"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "TraceReplayState",
+          "line": 22,
+          "name": "__init__",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "req_states"
+            }
+          ],
+          "source": "v1/worker/gpu/sample/trace_replay.py",
+          "source_signature": "self, req_states: RequestState"
+        },
+        {
+          "async": false,
+          "defining_class": "TraceReplayState",
+          "line": 46,
+          "name": "apply_trace",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "sampled"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "idx_mapping"
+            }
+          ],
+          "source": "v1/worker/gpu/sample/trace_replay.py",
+          "source_signature": "self, sampled: torch.Tensor, idx_mapping: torch.Tensor"
+        },
+        {
+          "async": false,
+          "defining_class": "TraceReplayState",
+          "line": 34,
+          "name": "add_request",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "req_idx"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "sampling_params"
+            }
+          ],
+          "source": "v1/worker/gpu/sample/trace_replay.py",
+          "source_signature": "self, req_idx: int, sampling_params: SamplingParams"
+        },
+        {
+          "async": false,
+          "defining_class": "TraceReplayState",
+          "line": 42,
+          "name": "apply_staged_writes",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/gpu/sample/trace_replay.py",
+          "source_signature": "self"
+        }
+      ],
+      "module": "vllm.v1.worker.gpu.sample.trace_replay",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/sample/trace_replay.py",
+      "source_sha256": "d2a7d3b3b55379efabe4740a4b7f14030126dc11be36f6ea974164ce42316a50"
+    },
+    {
+      "class": "RequestState",
+      "fields": [
+        "all_token_ids",
+        "device",
+        "draft_tokens",
+        "last_sampled_tokens",
+        "max_num_reqs",
+        "next_prefill_tokens",
+        "num_computed_prefill_tokens",
+        "num_computed_tokens",
+        "prefill_len",
+        "prompt_len",
+        "req_id_to_index",
+        "total_len"
+      ],
+      "methods": [],
+      "module": "vllm.v1.worker.gpu.states",
+      "optional_absent": [],
+      "source": "v1/worker/gpu/states.py",
+      "source_sha256": "99418f5df43ca612ded72609fee011620b065b2cab2f249ccb387096bf4ae71a"
+    },
+    {
+      "class": "Worker",
+      "fields": [
+        "device",
+        "model_runner",
+        "rank"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "Worker",
+          "line": 1131,
+          "name": "execute_model",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "scheduler_output"
+            }
+          ],
+          "source": "v1/worker/gpu_worker.py",
+          "source_signature": "self, scheduler_output: 'SchedulerOutput'"
+        },
+        {
+          "async": false,
+          "defining_class": "Worker",
+          "line": 1124,
+          "name": "sample_tokens",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "grammar_output"
+            }
+          ],
+          "source": "v1/worker/gpu_worker.py",
+          "source_signature": "self, grammar_output: 'GrammarOutput | None'"
+        },
+        {
+          "async": false,
+          "defining_class": "WorkerBase",
+          "line": 128,
+          "name": "synchronize_device",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/worker_base.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "Worker",
+          "line": 958,
+          "name": "get_model",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/gpu_worker.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "Worker",
+          "line": 964,
+          "name": "supports_draft_weight_updates",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/gpu_worker.py",
+          "source_signature": "self"
+        }
+      ],
+      "module": "vllm.v1.worker.gpu_worker",
+      "optional_absent": [],
+      "source": "v1/worker/gpu_worker.py",
+      "source_sha256": "596f5b6e97be754f84b04c17bc0b96fd92d2f05ee86e0459aa515ffa48d8c5cb"
+    },
+    {
+      "class": "WorkerBase",
+      "fields": [
+        "rank"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "WorkerBase",
+          "line": 128,
+          "name": "synchronize_device",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/worker_base.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "WorkerBase",
+          "line": 145,
+          "name": "get_model",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/worker_base.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "WorkerBase",
+          "line": 148,
+          "name": "supports_draft_weight_updates",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/worker_base.py",
+          "source_signature": "self"
+        }
+      ],
+      "module": "vllm.v1.worker.worker_base",
+      "optional_absent": [],
+      "source": "v1/worker/worker_base.py",
+      "source_sha256": "4a1a5266b912fe97991d8dc89d92b923990da9f6cb4b817d00d52e9c0d26dd7c"
+    },
+    {
+      "class": "WorkerWrapperBase",
+      "fields": [
+        "worker"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "WorkerWrapperBase",
+          "line": 370,
+          "name": "execute_model",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "scheduler_output"
+            }
+          ],
+          "source": "v1/worker/worker_base.py",
+          "source_signature": "self, scheduler_output: SchedulerOutput"
+        },
+        {
+          "async": false,
+          "defining_class": "WorkerWrapperBase",
+          "line": 357,
+          "name": "__getattr__",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "attr"
+            }
+          ],
+          "source": "v1/worker/worker_base.py",
+          "source_signature": "self, attr: str"
+        },
+        {
+          "async": false,
+          "defining_class": "WorkerWrapperBase",
+          "line": 242,
+          "name": "shutdown",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/worker_base.py",
+          "source_signature": "self"
+        }
+      ],
+      "module": "vllm.v1.worker.worker_base",
+      "optional_absent": [],
+      "source": "v1/worker/worker_base.py",
+      "source_sha256": "4a1a5266b912fe97991d8dc89d92b923990da9f6cb4b817d00d52e9c0d26dd7c"
+    },
+    {
+      "class": "WorkspaceManager",
+      "fields": [
+        "_current_workspaces",
+        "_device",
+        "_locked",
+        "_num_lanes",
+        "_num_ubatches"
+      ],
+      "methods": [
+        {
+          "async": false,
+          "defining_class": "WorkspaceManager",
+          "line": 78,
+          "name": "lock",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/workspace.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "WorkspaceManager",
+          "line": 95,
+          "name": "unlock",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/workspace.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "WorkspaceManager",
+          "line": 112,
+          "name": "is_locked",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            }
+          ],
+          "source": "v1/worker/workspace.py",
+          "source_signature": "self"
+        },
+        {
+          "async": false,
+          "defining_class": "WorkspaceManager",
+          "line": 116,
+          "name": "get_simultaneous",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "VAR_POSITIONAL",
+              "name": "shapes_and_dtypes"
+            }
+          ],
+          "source": "v1/worker/workspace.py",
+          "source_signature": "self, *shapes_and_dtypes: tuple[tuple[int, ...], torch.dtype]"
+        },
+        {
+          "async": false,
+          "defining_class": "WorkspaceManager",
+          "line": 143,
+          "name": "_ensure_workspace_size",
+          "signature": [
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "self"
+            },
+            {
+              "default": false,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "name": "required_bytes"
+            }
+          ],
+          "source": "v1/worker/workspace.py",
+          "source_signature": "self, required_bytes: int"
+        }
+      ],
+      "module": "vllm.v1.worker.workspace",
+      "optional_absent": [],
+      "source": "v1/worker/workspace.py",
+      "source_sha256": "d21c08167d1d0d1c0cddaa80453a53a0b4dec5d81b5a537c94a21324344976b3"
+    }
+  ],
+  "derived_baseline_shas": {
+    "v1/core/block_pool.py": "7f781378710e616624f87d95ccc7b245e1e741c85f3751268e672c2a262038e8",
+    "v1/core/sched/scheduler.py": "4d797e5ab6c5abaa06229dd88035ceede7562f1dbe054bdf7ad59be659c04c87",
+    "v1/worker/gpu/model_runner.py": "a49588ad1ab173b1b5b1695d28fa64da7bbfc5a13d7d32d7aaaf9781879069a2"
+  },
+  "image": "sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b",
+  "review_notes": [
+    "Read-only source audit except this new pure-data file. No real vLLM import on hub (package not installed); parent runs real-image import/inspect check separately. No execution, hardware or release claim.",
+    "Only observed stock frontend name defect in audited direct access paths: NativeControlClient used is_scheduler_paused on AsyncLLM; replace with async is_paused. EngineCore synchronous is_scheduler_paused is correct and must remain.",
+    "AsyncMPClient is the actual data_parallel_size=1 client chosen by EngineCoreClient.make_async_mp_client. The abstract EngineCoreClient does NOT provide call_utility_async/client_count/client_index; require those on actual AsyncMPClient, not abstract base.",
+    "Fields require real class source/MRO declarations; ctor fields such as client_count or process_inputs_async must not be tested with class hasattr. process_inputs_async is assigned make_async(self.process_inputs,...); no new fixture object proves its invocation.",
+    "optional_absent entries are guarded stock absences or E3 extension names installed by reviewed transforms/runtime. Their absence in pristine imports is expected, never grounds for a native-ready override. AsyncLLM.is_scheduler_paused is the forbidden legacy frontend spelling.",
+    "NativeSession uses the E3 NativeControlClient rather than a stock engine directly. ProbeSession delegates to ProbeController and uses ctl.engine.get_num_unfinished_requests, a real AsyncLLM synchronous API.",
+    "Native teacher frontend additionally consumes InputProcessor.process_inputs and constructor-created process_inputs_async; original *args/**kwargs are delegated unchanged.",
+    "Pause roundtrip: AsyncLLM.pause_generation awaits AsyncMPClient.pause_scheduler_async and output flush; CoreProc.pause_scheduler returns a Future until _pause_complete and _finish_pause. keep/clear_cache=False preserves cache. Signature check does not prove actual Future/IPC/stream behavior.",
+    "Potential separate E3 protocol issue: direct transition_acks/bootstrap_acks read replies currently lack clock while NativeControlClient._call requires it. Startup prepare uses ACKs embedded in transition replies and does not call these direct readers; not the native6 HTTP500.",
+    "No edits to existing files, no GPU/docker/box/network/imported vllm execution. Data source checked from pinned reference AST only; real imported class checker is parent-owned.",
+    "Worker.rank inherited from WorkerBase; GPUModelRunner.main_stream is functools.cached_property, not plain property.",
+    "BatchReqState passed to graph dispatch has has_prefill/is_prefilling_np/num_scheduled_tokens; it is distinct from InputBatch used by sampler.",
+    "All listed fields were proven declared on their class or pinned MRO. Conditional instance values/liveness require actual engine evidence; declarations do not create objects or certify lifecycle.",
+    "All required direct GPUModelRunner/Worker/Scheduler role accesses in assigned modules resolve. GPUModelRunner.rank is the one known absent stock lookup and is optional fallback only.",
+    "PP postprocess leaves are GPUModelRunner methods, not PPHandler.postprocess (absent). TraceReplayState field is trace_token_ids, never trace.",
+    "Parent should include E3 extension installer closure separately, not pretend _flash_* fields are stock class declarations.",
+    "Three reference/vllm-src files are historic Flash-Next production baseline, not pristine image: block_pool evict-first; scheduler PD/parity/short-first; runner QSA CoW/UID. This pristine import profile pins the separately extracted image bytes. Required common member signatures and field declarations are identical; native candidate still composes from its unchanged derived baseline. Original wrong-pin CPU FAIL retained."
+  ],
+  "schema": "e3-native-stock-api/1",
+  "scope": "real imported stock classes, signatures and source/MRO instance declarations; constructors not called, no readiness/IPC/GPU proof",
+  "source_shas": {
+    "_custom_ops.py": "236af80568375bc41ed7f0fa28067e29efd5c77a6cf49f24d796312fa3870e43",
+    "compilation/breakable_cudagraph.py": "3cc427612a08e2b9b3fee47548026400c1d0776e2d4747535e59ef5512bdf1e8",
+    "config/__init__.py": "56fb0cb1598d297e4f95a97e5d86dc624145d1532f5faa432b7d2834d7155bd5",
+    "config/cache.py": "f1c226ba679c884930dbfcaf41a57248b137a9a20d3ed8e3d3b31752bb484c07",
+    "config/compilation.py": "c9cec5c7200e8e559810ec8c30113ad61dab6780f9f7fb3c116bd0d9b5a43065",
+    "config/ec_transfer.py": "0eabb2c25194676d23c6acf59562672a1dd24415043ac5737d621ce0d681ec70",
+    "config/model.py": "f4168b67cc93ce72ff2a6d4c66974223e32fd0f1fab4c05e44bd68a275e18d69",
+    "config/multimodal.py": "271911aee151f17f092228cecee82af0713e9a47340ffdf66834ca7638a50d22",
+    "config/vllm.py": "01384e505aae5ad984cc81ee2fe65c2ffd314dd86cc381260e830e477c62e0de",
+    "distributed/__init__.py": "97f28c30b32662af8cab163939e4ee423037f11630752e13b55cbc25a7d0ab71",
+    "distributed/communication_op.py": "3c3f8ac60db38ece891d39dc1e2f6f1947ad438685893d2e5777d072320bd1b8",
+    "distributed/device_communicators/all_reduce_utils.py": "ed0ab4dd05b2519a6313892e68824c97b540034664d7f8c3d031b322e33e1bfc",
+    "distributed/device_communicators/cuda_communicator.py": "102d95c67ec798cf352b817ba92e8abc9da37f30d1bbdf3aab45d3927b627b93",
+    "distributed/device_communicators/cuda_wrapper.py": "333b6d9ed173e7a18c7f2b6627a3c9c9ed88892ce52015f05e29d6d245e48ee3",
+    "distributed/device_communicators/custom_all_reduce.py": "a048c1327c23580805600c0c951831bec333b1ffc4eb26a0e3d34119c4f0c445",
+    "distributed/device_communicators/pynccl.py": "882fb83c5a3c565a3f8fd664b79f5ceae566dca180019ecafd74bc8c11d9f8cf",
+    "distributed/device_communicators/pynccl_allocator.py": "390e2576cbf4ae06341ca4dab24fc7e4d4f7c24dd444329ed05d828a9ce91460",
+    "distributed/device_communicators/pynccl_wrapper.py": "ce63c8da57bb88d4cf89956bd70bb63f0f44bfad468ddb37b765611551f6d99f",
+    "distributed/device_communicators/shm_broadcast.py": "f3e7a3f3ff713fccbd535e0d41650ee05bdf8677e83d4b90519910645022c30b",
+    "distributed/ec_transfer/__init__.py": "061405bb51df7409c9938b62e25caa8bd6ebf85da6d1700dbd4affe2a0825135",
+    "distributed/ec_transfer/ec_connector/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "distributed/ec_transfer/ec_connector/base.py": "22d4913375bb622473fbe1a77f9376b804949cd8a7e31e9518208f9561d161e2",
+    "distributed/ec_transfer/ec_connector/cpu/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "distributed/ec_transfer/ec_connector/cpu/common.py": "e2267abd8d00a6d2605e1a82ea5c73396a71b427452eab469fcca0134c334e7c",
+    "distributed/ec_transfer/ec_connector/cpu/connector.py": "72cd35d9fd754a2992dd090a8af13c91e0789b4038ac29276750d823120235db",
+    "distributed/ec_transfer/ec_connector/cpu/control/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "distributed/ec_transfer/ec_connector/cpu/control/base.py": "19e8df88b0fa831997896355ecdd49e0d86cb074cd7ae28aed0b328b0bb3ab2e",
+    "distributed/ec_transfer/ec_connector/cpu/control/zmq.py": "435641c0e37551ab4937855abd067be26905b91215e759cbd9d28a419a34ff9a",
+    "distributed/ec_transfer/ec_connector/cpu/data/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "distributed/ec_transfer/ec_connector/cpu/data/base.py": "3be698aeb67d32ee3741e76b2fb71806941c587578583acf8fbc42fbf22b46a5",
+    "distributed/ec_transfer/ec_connector/cpu/data/nixl.py": "03af8f6549a6027b7262a482907af591e45f28b9b1c5a3408bbc6600e38797e5",
+    "distributed/ec_transfer/ec_connector/cpu/ec_shared_region.py": "e40607952c9920024455eca2f419e8c3ef1de9a4d8b27c147a33bb941b8c08b1",
+    "distributed/ec_transfer/ec_connector/cpu/protocol.py": "05878336884396bfbef77b96b0fa6359f6fa0aba912961f14a84f5a436f27038",
+    "distributed/ec_transfer/ec_connector/cpu/scheduler/__init__.py": "01c42385bf3a55cff09cc05ba956f6dd4b8b6b986bf4d6eca4e566cb045b48e0",
+    "distributed/ec_transfer/ec_connector/cpu/scheduler/embedding_cache.py": "7359fb980af1fc30b3253681310ef636e2b4a19134e04a93270c9c45de2572d8",
+    "distributed/ec_transfer/ec_connector/cpu/session.py": "5973548a919e13c866222b91d502686a6757a31e5a5664b879bf2887ed9fb212",
+    "distributed/ec_transfer/ec_connector/cpu/utils.py": "160ac665f20f2c75b343c1e784084f2b0b4d1cf8fdb28ee15deee4dc8ed0ce45",
+    "distributed/ec_transfer/ec_connector/cpu/worker/__init__.py": "f08d296d3560c42173ae8af961af4a768033ccf1e36e9c17c0cdd53013d0c52e",
+    "distributed/ec_transfer/ec_connector/cpu/worker/descriptor_buffers.py": "be7c81be214e995da8499105ba485854d9c19d6f8e905f8f1b87b83694ca0864",
+    "distributed/ec_transfer/ec_connector/example_connector.py": "09022ce07a89114bb65d9befd2e60873453aed11bbac8c0a75c1e6084e785a5f",
+    "distributed/ec_transfer/ec_connector/factory.py": "d6cedca0a99c3dd2b03cd1c15d17472b983e3f7d8f5baf4a12eecaf6abedb817",
+    "distributed/ec_transfer/ec_connector/mooncake/__init__.py": "1cbfc2f95f8f4d48a9253056eb1fd4b562062884e3fd5cb6571583c352fc16f3",
+    "distributed/ec_transfer/ec_connector/mooncake/config.py": "98c60696f79d1de67d2364cd9e8a42a393b5c8e17ed9af2f971368e47891d7b3",
+    "distributed/ec_transfer/ec_connector/mooncake/control.py": "58e0d1a423fbe958bfa586ac26a17107e08d0b31d044b4c74ab4dde880e7ca9b",
+    "distributed/ec_transfer/ec_connector/mooncake/memory.py": "d5e90b1348de670a70f110d58eedcbdbd053db72c21dd007c3f5275c53951149",
+    "distributed/ec_transfer/ec_connector/mooncake/metadata.py": "497a7e6dfffb7fce80a41d5989f96119b970c143df77bb9d0f9c91d7a46e8c42",
+    "distributed/ec_transfer/ec_connector/mooncake/producer.py": "97fa4d0b19475574778eab02f55fad73db9642beb9156da890314fd53fa1a7ab",
+    "distributed/ec_transfer/ec_connector/mooncake/reservation.py": "4790bc65cde4db5f17733ca2c2910980ba594a8a9b79ee27c5b957dffd4c1113",
+    "distributed/ec_transfer/ec_connector/mooncake/scheduler.py": "53004b62529a31fdd80dfb2e6026610b95041a77e91f731ae526fefd84e7968d",
+    "distributed/ec_transfer/ec_connector/mooncake/state.py": "92f375d6c5cc9c83dbe95a7977ad8eb0f1b5629ccee92968bcacdc94eee15d65",
+    "distributed/ec_transfer/ec_connector/mooncake/transfer.py": "ada2113a5402054f1149d3edc2537f4e5e1bd696c9b17291c9f2b4cbf6b59753",
+    "distributed/ec_transfer/ec_connector/mooncake/worker.py": "89eb91bb64845b3b121d502972a6b04d448714253becd2ea662e5691cd5acdd7",
+    "distributed/ec_transfer/ec_connector/mooncake_ec_connector.py": "aaebab4711bc00dd0c622dfbfd8639fc41e7ed5d1658d7d68fe33e4d5fbef3ba",
+    "distributed/ec_transfer/ec_connector/utils.py": "11b9014b9c0697f8846deff1a55a22fa86a15dc2ac3e139442fb6d513ac03059",
+    "distributed/ec_transfer/ec_transfer_state.py": "9487a41f23fa1a4fa6dfca8b42b8e97a0ee19d8406ffd1dcf4bef66315180827",
+    "distributed/parallel_state.py": "d9b10ad56833ebc08a753e1a050ef0989c30d4134021b7b7b00150b7bd01adc6",
+    "distributed/utils.py": "792146b357139e705064a68d3b66858de8a0baaca4dc7db1232fa217d45db231",
+    "engine/protocol.py": "9be92767b2a92bc5522c14b00750c0636950c7b99f82b99ed2bc2780bd3eae7b",
+    "entrypoints/anthropic/api_router.py": "750b55ab5fc2478568e0a332edc2696cea61046633ab36bdc399cdac34ace739",
+    "entrypoints/chat_utils.py": "bc2615d8152899594902186697e2a905274f2301897eec50dd5823a402e0de7d",
+    "entrypoints/cli/openai.py": "7a80ba63a34194e93149e11a70b931c5bc52c035096ecf5eb56bdc161a23d7a8",
+    "entrypoints/cohere/api_router.py": "bcd20c25bfa2e1767fd1e0d92f341c24f328481abd08d60b6b972f605d2802d6",
+    "entrypoints/generate/api_router.py": "0978c84a2aaf29efc1195b1f5c8e3f45df407c7d51c65c5338966f7cde84e0de",
+    "entrypoints/generate/base/protocol.py": "cbf29ae008b7b51234d74e602f1395b5cbef660fa79e65eedab8228e9c49c9ee",
+    "entrypoints/generate/base/serving.py": "35ec53f63e86a8c1725728911db0df44eb3101d8cd65e9b2f39d048956977bad",
+    "entrypoints/generate/generative_scoring/api_router.py": "dd9d959609fc5c81ccc78bdf708bc32b5b0b9fe89a3086ad2dea02312dc67ca3",
+    "entrypoints/launchers/api_server/entry.py": "db689f8486e5d2c9eb59d347e03a27ce837d014f8d3d7f84d55a0e382813ca84",
+    "entrypoints/launchers/api_server/routers.py": "c2f1bb2708f44f0fe24f3d8ab8f884c7262e551c6557ebc606263abc4d7b1db1",
+    "entrypoints/launchers/app.py": "1f1ea5b79688cc042d9418435e84a6d04c17a46f6de6a98e560fe2f2ac5eeca4",
+    "entrypoints/launchers/cli_args.py": "218a287a514f739a55daab56c1f75d57399b9ef73792c37f62d4c7815ccbdb29",
+    "entrypoints/llm.py": "52de4ac99489e004ef6c61d0bedc84aa96020dd58b8bd1ae500814b548b2b83e",
+    "entrypoints/mcp/tool.py": "60d16d8833c050068ab88943953c1e3bda8b950d7db442d06606da7c0908a500",
+    "entrypoints/openai/api_server.py": "470ff555bdc19f8e17edf4ee7b6ec3f49ff5af0f773e2a7f91bab536e2239109",
+    "entrypoints/openai/chat_completion/api_router.py": "77f858fe0079b9dd131c26d22641c79d4ac0f2b22688d033863954a8a669d7d3",
+    "entrypoints/openai/chat_completion/protocol.py": "0ed35d120613fac0ae879a5be0463265cbf6731875fb755d31962a4639db85bf",
+    "entrypoints/openai/completion/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "entrypoints/openai/completion/api_router.py": "b93b00298a74a62a3f2d8da1c0a9380a2be5823f5ab7ab99a2c911906280d769",
+    "entrypoints/openai/completion/protocol.py": "0be20e3d7f21ab6cbe0ba77cb50068aa39a35fc0369ef38de068ac38ca9800aa",
+    "entrypoints/openai/completion/serving.py": "75d05ddddf303734a078a3e42fcb173fef58ea56da09bc0b5c7525cb9bbbf527",
+    "entrypoints/openai/models/api_router.py": "58d7bf90b7dd2a896441d3085b8a4467c12412120f21fe53d838109b7b85f48b",
+    "entrypoints/openai/responses/api_router.py": "f3e1755deee0613f8254e01c57df55676c2f53bab234485044743ea09029ba5a",
+    "entrypoints/pooling/factories.py": "76c6d2b25ab483b3dfb968bad7ea8d1a361cec8b434ae691320bd3479c0fbda3",
+    "entrypoints/scale_out/factories.py": "41d84ec43aa9e231c089fcb179a204053c6bd4dae562e6f952938c16e6ef53f0",
+    "entrypoints/scale_out/token_in_token_out/api_router.py": "e804aaa9f1f1e17eb9c2ea3a0c7f6cd3abeef45d95fade15e0f04a770dbdf4ca",
+    "entrypoints/serve/__init__.py": "bac4ffa8440759d9a244acc25bf28ce6700d7106a2b35eff90c35e70a7519f52",
+    "entrypoints/serve/dev/cache/api_router.py": "ba0e9be90c4fe8f42526c163d073ee5889492e4cdd8231599901d0b3aab669ce",
+    "entrypoints/serve/dev/rlhf/api_router.py": "438831c94338814a0c790910912f9af0efac3704a933102d1a827bce1bc035f5",
+    "entrypoints/serve/dev/rpc/api_router.py": "02b3ac71867b333548b15cb5d8382877d587b211c4ef80fdd881712ab523d107",
+    "entrypoints/serve/dev/server_info/api_router.py": "06af82ff18d062d0b4035c27c8454fd2062ae758df1ee4b7053aaa7f0d411901",
+    "entrypoints/serve/dev/sleep/api_router.py": "f16d4e6e878d2872c7754e649b3b9b306b757789bd80df4530d72989b78b4eca",
+    "entrypoints/serve/elastic_ep/api_router.py": "2d6805874a868eb63747903f5e10331855b7c277d46a4cef3dca7f20a2e631db",
+    "entrypoints/serve/engine/protocol.py": "9d865d7006ed6ede3417f75444f8b5dcd82769165e703b140b45ed639d0c16a4",
+    "entrypoints/serve/fault_tolerance/api_router.py": "84d9a86951547c9ac71a10c680dd12fc5c868d72fd8342b4b6e33ee91a5afa53",
+    "entrypoints/serve/instrumentator/__init__.py": "6dbe7ab09534bcc1454a64b4f7584b574cf8ce86529ac82a390e55c9939438ed",
+    "entrypoints/serve/lora/api_router.py": "3aff02255715835d48aa845aea6adf1c891804f8b3f5778ffa24f027ed71779d",
+    "entrypoints/serve/middleware/authenticate.py": "0633540cb788738dfee5a69075fbdc30eb98a510e26f69a0b43c57c50d9ef5ab",
+    "entrypoints/serve/middleware/register.py": "cff2d2c00e16f45a942eb1c1ef591834cb58d34ec9eefb3269f9134c4b1087bf",
+    "entrypoints/serve/profile/api_router.py": "b943c3a2201134e2d0b38bfa86d00e8b5685f5be6a54f6c7178dee784c1b78e5",
+    "entrypoints/serve/sagemaker/api_router.py": "2d44de3a47ccc4963ef0660020d61975b879b109bf672d84adcdc5bf610aa210",
+    "entrypoints/serve/tokenize/api_router.py": "dac2a4d0cd6076d50b568f3bae65dea0c6a65547fda073217a7dab9a1e2d8ccc",
+    "entrypoints/serve/utils/api_utils.py": "555b3a999237e1cd8d6313eb9aaa3f2f4ad8d040bf80563c01557da7a451d1ed",
+    "entrypoints/speech_to_text/factories.py": "41392827769079504ee073b075fcd12d7144a55b21d6f0c57e137eed499767d6",
+    "envs.py": "c2b9a5b0ce3a3281383a5c4f6fa72a2e710ebdbeb1c57abeb8529f5216103cb7",
+    "forward_context.py": "985adacc9e7ed2a7695819ac2e2ad9cb264a7d886806d3091ad75bfda7392242",
+    "logprobs.py": "3cc2ed6cdd30572d29f9b293ddbc14ad318c6b5d5dc7fdd36bee2f8af259b373",
+    "model_executor/kernels/linear/mixed_precision/marlin.py": "fef6ff0c4a945809bdc09c2bf684c0dceb7080d40f309fbc0535a94b992dc700",
+    "model_executor/kernels/linear/mxfp4/marlin.py": "6206f13ba32123ad52fb6bf677803fa736f148141cb1cd684fad159b1f359e42",
+    "model_executor/kernels/linear/mxfp8/marlin.py": "881d5e8a15eb5968ebce7676590639de64ba88e50d0f6677b1a65f4dfe866a78",
+    "model_executor/kernels/linear/nvfp4/marlin.py": "6dd9892f215049f24bd6479cca32463a6256baba5957b3ed549e35f210502e06",
+    "model_executor/kernels/linear/scaled_mm/marlin.py": "af9a504e9914e80bb25da0bc896df2f2dd88eb2811ed7456630f640a5ea98a04",
+    "model_executor/layers/fused_moe/__init__.py": "64a32665be6d5afcfbaf7a0915717267278b66b880b908b0263ea58f08e51b5e",
+    "model_executor/layers/fused_moe/activation.py": "78dec0e85e0c040304515f64ccf8f2c6a7a2e5b9f1124a2138a97d9a02585541",
+    "model_executor/layers/fused_moe/all2all_utils.py": "dc4750a446f7de31d09a46034da5fdf479bc169af90f47aa9af8ae15e67b0828",
+    "model_executor/layers/fused_moe/b12x.py": "ee76cc6aa801e24be8ec78a9e8502061ad48667d5ff8711e43f68fba912425bd",
+    "model_executor/layers/fused_moe/config.py": "a3a87cebcc7ac85d73f471dcfafc2d899c6fc08f264777b74a0e919adac9e03f",
+    "model_executor/layers/fused_moe/deep_gemm_utils.py": "8fdcd857eb333f9c68902105f157568d52067c94ba1e2df6dbfe0474ef1f4c02",
+    "model_executor/layers/fused_moe/eep_reconfigure.py": "9d7580265e8563e1140c2bb4c3a81a35ddd54903f5ec0a2720ffc064681f02f9",
+    "model_executor/layers/fused_moe/expert_map_manager.py": "308c00f63fcb6f44518ec3a56d8f902c7bba75928c2e3aea30fbe1f3f473973b",
+    "model_executor/layers/fused_moe/experts/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "model_executor/layers/fused_moe/experts/aiter_mxfp4_w4a16_moe.py": "53deea255175171971422d14082ad139b5ec7b62e21429a4c7cc0ebbefd29cdc",
+    "model_executor/layers/fused_moe/experts/aiter_mxfp4_w4a8_moe.py": "f3fc51b95ed89862381908a0134e326228827f44854248db9585a9c4899c34f4",
+    "model_executor/layers/fused_moe/experts/aiter_mxfp8_moe.py": "af6db1760961a5a71234f8b1cdf42e9e30a236e13601b0826a75110b79724948",
+    "model_executor/layers/fused_moe/experts/batched_deep_gemm_moe.py": "b0cd4ea706583518dc608fb56f832fc3595f24bd863b03ef1e8c22b36b873508",
+    "model_executor/layers/fused_moe/experts/cpu_int4_moe.py": "67170af3ba9dc4c4f71d78a72efc3fa4e366eac614936a79911dae5c75ac1864",
+    "model_executor/layers/fused_moe/experts/cpu_moe.py": "c4247fc07fcd283e32cea4386bd64d878bf2a08f8c7a20e6bd5db2844d25b0e2",
+    "model_executor/layers/fused_moe/experts/cutlass_moe.py": "db901bdbcd3fdac23a1d74e39c51e67f14a82be787b2fd704ed1e787372ae868",
+    "model_executor/layers/fused_moe/experts/deep_gemm_moe.py": "16911a64a72eafc26a1bcb544a91f90144d85dc41e3ee57cf20e89925227bbb7",
+    "model_executor/layers/fused_moe/experts/fallback.py": "1bdd0a4f2ebaa40ec96a5aacc07aee61511af59e6324ce456aa65003b6e2991a",
+    "model_executor/layers/fused_moe/experts/flashinfer_b12x_moe.py": "e613afe5da2742e42c717c1a0a56bd9e1c7e3e0452a828db0013d81063518954",
+    "model_executor/layers/fused_moe/experts/flashinfer_cutedsl_batched_moe.py": "295254dfeeec8df3eb8110e6f659a946cb9cded3de1565ecad4d741b3c3f3e00",
+    "model_executor/layers/fused_moe/experts/flashinfer_cutedsl_moe.py": "08578bcd0cf72d6a470e40950175e73639efaa6d8d23c6da0869345312b229c9",
+    "model_executor/layers/fused_moe/experts/flashinfer_cutlass_moe.py": "52887cec5fe628e0a4e7793deb546b40f6c29f7362b3b436c10ca36934ab9826",
+    "model_executor/layers/fused_moe/experts/fused_batched_moe.py": "2435587fc7f8fe8ea341ea0eb8f14c11f3f5b31fbbb9b29ce569ad3bace6e6a0",
+    "model_executor/layers/fused_moe/experts/fused_humming_moe.py": "a6830a76ff7f4cd3479b9c8372a30d03e8301604555cbdbcd9ac89a813b7431a",
+    "model_executor/layers/fused_moe/experts/gpt_oss_triton_kernels_moe.py": "1613a7a6b256e8faee6fdcfae84f293492db6229d28ceb3e8a8d6093af480e36",
+    "model_executor/layers/fused_moe/experts/int4_emulation_moe.py": "f12857caf0671a341687ad3c5f48616b816ed51e1bcbdefa0a7edbecdb81a79d",
+    "model_executor/layers/fused_moe/experts/lora_context.py": "9b41eefaaa57c5dd0dc54217ef95978821b0c52e90ea4db8b0752e08452bd3e5",
+    "model_executor/layers/fused_moe/experts/lora_experts_mixin.py": "b2bc55ed6be98b526c6a5698e2d98300650e78555f56b1820e58c04888e2a373",
+    "model_executor/layers/fused_moe/experts/marlin_moe.py": "93916b721548e6194dc70cf6cec224b4b1456a0cc0980235e97beba7bf36541d",
+    "model_executor/layers/fused_moe/experts/mxfp8_emulation_moe.py": "d09c62ad1398c51ff6f515f2a61014ee9e9a9798d0fe9762c47f446efc5edbef",
+    "model_executor/layers/fused_moe/experts/mxfp8_native_moe.py": "01a42cebf18189e566034111b2145573c655319e8af1a56db60d53a319c40613",
+    "model_executor/layers/fused_moe/experts/nvfp4_emulation_moe.py": "f24467762b60702f0df122ed64786be839a838a9b6cafaecbd04d35fbfedb189",
+    "model_executor/layers/fused_moe/experts/ocp_mx_emulation_moe.py": "dcaa60a9ebdb0bd8223b37af41f018ce7f95716ec7cd8526850f4433a579213b",
+    "model_executor/layers/fused_moe/experts/rdna3_moe.py": "e4abd802dc2f0ad9b338ebde397633c761d881c37813e2dc229902c526b597d8",
+    "model_executor/layers/fused_moe/experts/rocm_aiter_moe.py": "bf09a7b783f5752d61cab76221b32b598d8846d801ee39dc9209d636c9659c6f",
+    "model_executor/layers/fused_moe/experts/triton_cutlass_moe.py": "ffce5ad627c540940d122d8df7981644b2eb35d07d480995c0f4f30517815fac",
+    "model_executor/layers/fused_moe/experts/triton_deep_gemm_moe.py": "c7209fa5e1ccb184a68b37a0706fc571a76696c2ae79802ddc7f889b1c29684d",
+    "model_executor/layers/fused_moe/experts/triton_moe.py": "806fbccfe30f5fbd578acf773add99bdf022b12d617958bd6281aef6de369701",
+    "model_executor/layers/fused_moe/experts/trtllm_bf16_moe.py": "76256de96fefece9c41ffb1108487919e24da364cf4412c6c3474498aba59137",
+    "model_executor/layers/fused_moe/experts/trtllm_fp8_moe.py": "b54c7ceb45e5d07aa905f42ea44caccf85ca35ba9fb825d4c01947764510f68b",
+    "model_executor/layers/fused_moe/experts/trtllm_lora_moe.py": "dd35a9e4242c0dc8d691168813e14bd5543e591f02ee529d0691e07651942c5a",
+    "model_executor/layers/fused_moe/experts/trtllm_mxfp4_moe.py": "fe780f125a3dc3ba919659e9b85340bd32afcbfe47733a002bfdfb92eadf400c",
+    "model_executor/layers/fused_moe/experts/trtllm_mxint4_moe.py": "2106d67c2951aa690c4656ca58240d09c366cffe8cb4d9fd575df016c377cc30",
+    "model_executor/layers/fused_moe/experts/trtllm_nvfp4_moe.py": "e938ac9f058f7c90b41c9610513239bec54a95304bfb5ff5f6897ebd54733d7e",
+    "model_executor/layers/fused_moe/experts/xpu_moe.py": "2a11bac0cf9274d963315efd6eebdc62978b0b7aa02e8849ff2a562742f0b86d",
+    "model_executor/layers/fused_moe/fused_flydsl_moe.py": "0e74879ee5c72f616ae4064b9dff3b3a0b583b7fc70b8f92f1e8b730ecd5d39b",
+    "model_executor/layers/fused_moe/fused_moe.py": "7072eb06237be9d33dcb0ef7101410f886a6363c98cbee70a014c68b70f639cb",
+    "model_executor/layers/fused_moe/fused_moe_method_base.py": "18dcfc469d3252749801bbf943857f58da85de1f2db8fdff5a9f4986a925dc68",
+    "model_executor/layers/fused_moe/fused_moe_modular_method.py": "321c744eac1fcaffd6b1b2971204c8baa57dfec53e91e5d24140014d72d64f83",
+    "model_executor/layers/fused_moe/hpc_moe.py": "2ca9c5d71b6fd91651027905e2b83103a8823845e053e7153e148cb8e0ee666d",
+    "model_executor/layers/fused_moe/layer.py": "def0b4e13bcc1e4e21ee10644e647e2eda1acbf0cc01e76d6128abb59ea08224",
+    "model_executor/layers/fused_moe/modular_kernel.py": "8dc4e0dbbf35b3aac8add63ca6f2a7bbfdadaabbd60826e24598b22c7d8e5c22",
+    "model_executor/layers/fused_moe/moe_align_block_size.py": "c3f7fc2087836f0160a32ab99ceb1d8f6e87c793679da34dd672e225cb7fa31b",
+    "model_executor/layers/fused_moe/moe_fused_mul_sum.py": "112e72578002c3bff538418dac64b3b56d995994a2fc5e32b18d2cf3b8392a13",
+    "model_executor/layers/fused_moe/moe_output.py": "6ea4cbd78f9efc7f842c5df246f553f08b991c3479b8b04b89902ed08aaf8e8f",
+    "model_executor/layers/fused_moe/moe_permute_unpermute.py": "1adc592c6254d0c877d66be5406afbc822459c18a838f4bbd094a992e7609d06",
+    "model_executor/layers/fused_moe/oracle/__init__.py": "4dcf941d50d48bb812de0f39e9194bf17a76b8035fe324889c6038f710fdc453",
+    "model_executor/layers/fused_moe/oracle/base.py": "555bbcd18a3744e64eee4e953daabef3bd268a1bd4faf967d4cfd14d6074f685",
+    "model_executor/layers/fused_moe/oracle/fp8.py": "245bd36c285df1e6f7c51e52dcda31ad247894577a9f8d765613c2c2feae9aee",
+    "model_executor/layers/fused_moe/oracle/int8.py": "c1b67886511bd966b162db5bca8930f04895fb37a969818a4a10f0726c59547f",
+    "model_executor/layers/fused_moe/oracle/int_wna16.py": "cfffe8b8b290330be9d18ffa07aeecf296484395ff04df3147d99393e48b55c1",
+    "model_executor/layers/fused_moe/oracle/mxfp4.py": "b7915e6779b5c88e7dcd2d227f003a8e45071d6d86877013067142d4feb64a8c",
+    "model_executor/layers/fused_moe/oracle/mxfp8.py": "9cfdc8102a04bb844dcd7ed88043bba96ec751794bc093da76c69aa8cf88cf48",
+    "model_executor/layers/fused_moe/oracle/nvfp4.py": "735b4cdeb1258f11fb02320fc0c70cab5edaca468dd60b07b2d369389d2b0313",
+    "model_executor/layers/fused_moe/oracle/unquantized.py": "c8b8203bd0b73bb7f586f703607394d663f14c05711416ad42d45af564382223",
+    "model_executor/layers/fused_moe/oracle/w4a8.py": "d7fa6e2982f20b34d5ce9c5ce28a61122762a3fcdd53d249479472a4f2316c6a",
+    "model_executor/layers/fused_moe/oracle/w4a8_int8.py": "6d6f9ca2e67b630002873de2f8d8a231d091c5c2f0f3354a9e8209449b481a4c",
+    "model_executor/layers/fused_moe/prepare_finalize/__init__.py": "2800113263a83c2632e522fb22790b29f63384da75d43de32f0ae2f95e8ae4c1",
+    "model_executor/layers/fused_moe/prepare_finalize/batched.py": "d52425dd8c08e47cf8d9c3088daf3b1cc721c8667de4c738d04ba997f9a08ccb",
+    "model_executor/layers/fused_moe/prepare_finalize/deepep_ht.py": "465cdf1d6cee91b2ee8c2e43abbea6e8408976e3048c10f44c089f34b415bc60",
+    "model_executor/layers/fused_moe/prepare_finalize/deepep_ll.py": "f704922b1db680c4c212982a096e09d6b3eb97d89110313f86ed958a00df21b7",
+    "model_executor/layers/fused_moe/prepare_finalize/deepep_v2.py": "2ec8ed89582f76d21b46ec6d6e2ba2c245e7ec979385ca38cf6f86da80a30a35",
+    "model_executor/layers/fused_moe/prepare_finalize/flashinfer_nvlink_one_sided.py": "44f7938af1e5f265985e4a58bc38d61f7d4842e4bf0680daaefefdcb246d495f",
+    "model_executor/layers/fused_moe/prepare_finalize/flashinfer_nvlink_two_sided.py": "cc5b00d6a157b6eca5afaaf7435165dbd1b4524d6d88bf75808cbe074a389f79",
+    "model_executor/layers/fused_moe/prepare_finalize/mori.py": "8e9c3b5b1f0de13f467d95bf2f451cba0e4b0d9a1bdcf98da0988a3a9a79a045",
+    "model_executor/layers/fused_moe/prepare_finalize/naive_dp_ep.py": "db015e5b18750bbbf5b2bbaceca877dd6f3f3e74c2a94e8dc185f7413b387f91",
+    "model_executor/layers/fused_moe/prepare_finalize/nixl_ep.py": "1f71d70ac509bf5d3d67a8d95a8ee108a50af6bb5d4bde7181ca28e286f6ffce",
+    "model_executor/layers/fused_moe/prepare_finalize/no_dp_ep.py": "adbbf529cd22059c95b5380952943a70cf11e05e321dcd707f296bebde61a6e7",
+    "model_executor/layers/fused_moe/routed_experts.py": "68c48e5df0ea4a7cc1f04436b7b9153eb53802ecd9bb55d38db8738508daac6d",
+    "model_executor/layers/fused_moe/routed_experts_capturer.py": "cd006bc1a1703418cca3b589fafb2abc4268a086fb3db044bbb64348aeac8b13",
+    "model_executor/layers/fused_moe/router/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "model_executor/layers/fused_moe/router/aiter_shared_routed_fused_moe_router.py": "f47046db1275601a2c67c9232afc7b866c9623a19639d5be867e4c7914a35069",
+    "model_executor/layers/fused_moe/router/base_router.py": "47fa2324bcd9b6ebdc138d69ae6b6ecc0f2463d34bda8c5988bdb0a2a76d3fae",
+    "model_executor/layers/fused_moe/router/bf16x3_router_gemm_cutedsl.py": "d0f1edd1ebc48d88e490bdb3c93db49bdc0a135ff83e7e0b57130e9f8255fc32",
+    "model_executor/layers/fused_moe/router/cpu_router.py": "bff36b15818c87bfbb7ee3def7dc7f6396860abbe5893ff6148801fe941a4b92",
+    "model_executor/layers/fused_moe/router/custom_routing_router.py": "1a40c7054e3c3a1b3ee2e98f6bc9efa9dfdc11f316a8edf7357dd91533487bfe",
+    "model_executor/layers/fused_moe/router/dsv4_topk.py": "14f7c8487b9aef652dd61c91e0e3c3640b643bf9cd0d8a7184157d71f4beb63e",
+    "model_executor/layers/fused_moe/router/fused_moe_router.py": "0daa0dc05b931d66767feca444a4cd57ecf140f59b40ea0e8ad213eef6da2b36",
+    "model_executor/layers/fused_moe/router/fused_topk_bias_router.py": "8fdc28cc248180ad4f11bb4bcda3df47926ec12665a0d84bb712fe83fc6b9376",
+    "model_executor/layers/fused_moe/router/fused_topk_router.py": "1c80f4af4d781fd66b12aa6a7a0fd30082bc521df40f1252987a8ac4c0bef51c",
+    "model_executor/layers/fused_moe/router/gate_linear.py": "faa43362c2e7c568498a923c682ca18cae75e87f48d00882770821cb19c21198",
+    "model_executor/layers/fused_moe/router/grouped_topk_router.py": "048339e1799cdd42c9dae686a6cb891046577fb391b500f0d12eed73c8f61e52",
+    "model_executor/layers/fused_moe/router/rocm_fp32_router_gemm.py": "9c331ef3d0bb2fb6954387d77ac62a99c5c76d2753c7438bfbb5115f68aae5ac",
+    "model_executor/layers/fused_moe/router/router_factory.py": "019bc8adaa7642abab82843efd53cd1a378f62c652521a1de2b781480eb88742",
+    "model_executor/layers/fused_moe/router/routing_simulator_router.py": "a7345df5add00cf3bd93024492d6fc1189fd3ecf2754a11cef1b03a295d791f7",
+    "model_executor/layers/fused_moe/router/zero_expert_router.py": "dea306edd92e2b9c1b43f982ede8e1e10770d2c66220f5a106e0ed0165276e9c",
+    "model_executor/layers/fused_moe/runner/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "model_executor/layers/fused_moe/runner/moe_runner.py": "968b47dc99d301abbd7a75b07c7e103455e28227c7986ef2ce7b15b877f0634f",
+    "model_executor/layers/fused_moe/runner/moe_runner_interface.py": "189cad01611124eb44594713cbf5918d16fc70196dc81a525ae0a7a97a5fcc51",
+    "model_executor/layers/fused_moe/runner/shared_experts.py": "d89e4c79c46f6fe61262c51f3facf102e71ce1e4eb3db67f72b6bd8470937be9",
+    "model_executor/layers/fused_moe/topk_weight_and_reduce.py": "3dfede72d52bf99af40997994704e6c502ee3bab2bd39bfaa8a68d7dae440203",
+    "model_executor/layers/fused_moe/unquantized_fused_moe_method.py": "182a5ec1874ece2091a24c5303f6ab9ea64a9a61adf325b863927f0cdd83e5d3",
+    "model_executor/layers/fused_moe/utils.py": "a93a0bded4008db19d8b38370526ae34fafb9c8278e5b4f60acb6acc8fdc1850",
+    "model_executor/layers/mamba/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "model_executor/layers/mamba/abstract.py": "dfdc8c836894f574e41d93d76ab989cacd3d7ecf59c97a929abfa48d9364e8ad",
+    "model_executor/layers/mamba/gdn/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "model_executor/layers/mamba/gdn/base.py": "7fec748fc74131f5a45bcaf2644b3fa3a0598fd437d7347f8207ea3644a951c5",
+    "model_executor/layers/mamba/gdn/kimi_gdn_linear_attn.py": "1cec4da5c9da73557e192bfb36cd540aae51d3e91283b554449c4a97f0f89bd9",
+    "model_executor/layers/mamba/gdn/olmo_gdn_linear_attn.py": "60873ca3bb0c4d17c33bd259b62b658db4883cd23138f47dd4ead62cd2ff0605",
+    "model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py": "b80f8e6f3fff442fb880aebb3209c52f814f66490009f4ac4003de603576d10a",
+    "model_executor/layers/mamba/linear/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "model_executor/layers/mamba/linear/bailing_linear_attn.py": "3c480ddd6eba0766ed012a1074bbec5f241d868a87b020b0f6312222c32f93eb",
+    "model_executor/layers/mamba/linear/base.py": "26125cd427225954e1846ca361cdaf43f2b56f11b1e217cf26e91a80ef0edb6a",
+    "model_executor/layers/mamba/linear/minimax_linear_attn.py": "4adc00f54893b5bc6c31c613deda152a19af3b1bba04153ab5924c3bf2a3aaae",
+    "model_executor/layers/mamba/mamba_mixer.py": "a485e937ad9db14d3ad03fde5a9fe795cfa863649563e52fc7e6c52ef631164e",
+    "model_executor/layers/mamba/mamba_mixer2.py": "d58d93e90d9eb90bc5133b79f07c7c62d0032b35d6cf916e3fe34367b81c5cd5",
+    "model_executor/layers/mamba/mamba_utils.py": "ce9845b4a4ef4bc46577a33038ed69d59ceccb52f30e9c5bdaa36e48be3b2ca4",
+    "model_executor/layers/mamba/ops/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "model_executor/layers/mamba/ops/causal_conv1d.py": "044d005cfe59fd0818ed421274e04f3e8dd679b8cdb64fca9f4422f2643484b2",
+    "model_executor/layers/mamba/ops/cpu/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "model_executor/layers/mamba/ops/cpu/causal_conv1d.py": "64104672890ac2ef240c20c7f8059beeade707178574809dbca8721dff5ea6fa",
+    "model_executor/layers/mamba/ops/cpu/gdn_attention.py": "a50288945bf5b102ad3025ae536638dcc32d84cf7c22aaf3a85326b0c1c56c1f",
+    "model_executor/layers/mamba/ops/cpu/mamba_ssm.py": "5839e576172a3246337f5e4fb1bc19eb583b3e2b2f7e35dd060dc3041eb8372d",
+    "model_executor/layers/mamba/ops/gather_initial_states.py": "5198bb6de6d91c583a5f65d926412a76ee04a06fa72aaba76eaf156b27cd0523",
+    "model_executor/layers/mamba/ops/gdn_chunk_cutedsl/__init__.py": "b88b52e71fcb21bd3fa215ea171dcd2ad2ff17c97788cfe64caa7ba45c7ecf97",
+    "model_executor/layers/mamba/ops/gdn_chunk_cutedsl/kernel_h.py": "f50bbe5c0b6382323ec5dfc24a5e0c7971113d59727515e60c9fe3689734e5ba",
+    "model_executor/layers/mamba/ops/gdn_chunk_cutedsl/kernel_kkt_inv_uw.py": "b4a65dd194907db08865e0596fe254f915e670a9e6b27ffa2933c1026dde9b1e",
+    "model_executor/layers/mamba/ops/gdn_chunk_cutedsl/kernel_o.py": "629f7843a7e611efb9390f2ebb7a4b924b2c328d48a317fddfaa96af4d9bc60a",
+    "model_executor/layers/mamba/ops/layernorm_gated.py": "3433f2e3b87c2b2ccf8e9794ce40762c86a6da38a94ecee001f439ea0d0373dd",
+    "model_executor/layers/mamba/ops/mamba_ssm.py": "a4515ec7895b40ed878cf380445034b25faa61fbaa799d96c49217bbdfd7e400",
+    "model_executor/layers/mamba/ops/replayssm_config.py": "839d183eaf3057f2d7ca9a5d998555e11f92a4b7ab6e807265d2e97da0eaa956",
+    "model_executor/layers/mamba/ops/scatter_states.py": "f3bb004c73edaba56337747893eb07faf29b270dc8bb9c893ee9b1044e4ead9a",
+    "model_executor/layers/mamba/ops/selective_state_update_replayssm_output_only.py": "cea7fd3063ca9dcc4e33f180d01ea379195ec515cedc9d0b03b11dc67670d695",
+    "model_executor/layers/mamba/ops/ssd_bmm.py": "26983d97a7f5c5f9197a16a6bee7b1294839b9ae31a14c14aaee38b43523e630",
+    "model_executor/layers/mamba/ops/ssd_chunk_scan.py": "d5ef32e8cb47e2ce71984579df78ab69754895f891766394daf327867cfa4f8f",
+    "model_executor/layers/mamba/ops/ssd_chunk_state.py": "177e3aa7fe72647133bbd86135533e8688a5802678d4d1564aa549410362316f",
+    "model_executor/layers/mamba/ops/ssd_combined.py": "1317bbb668d3c60dfe0658850f9968614f03fa5eb61196f8ce6ac17dbb31b480",
+    "model_executor/layers/mamba/ops/ssd_state_passing.py": "36b8c8edba437916a5b789717c61fc22077de01e77892cb96dbff3b00a57410e",
+    "model_executor/layers/mamba/ops/ssu_dispatch.py": "bbe0f0e61da87f3ddfead19a79ca376516b63f1ea868be3485333c63fa20ef41",
+    "model_executor/layers/mamba/ops/triton_helpers.py": "a8795532f22c37a93e82c9d8e3fadcb5f4da98673d7b321fe8481305eaafad30",
+    "model_executor/layers/mamba/short_conv.py": "228494efab185ee17374f762874f4c8b9a26aac9decfa8c906ce38446e0de51a",
+    "model_executor/layers/quantization/__init__.py": "c8d3b11386ea66970c0e3e5e16794b21cc3b4b98bc0f45782678ac2b12794250",
+    "model_executor/layers/quantization/auto_awq.py": "4461351c05a44bd75225162d2617ac5a5cb1c2ea81da48a8de32e714bdd4133c",
+    "model_executor/layers/quantization/auto_gptq.py": "3efa1ab7ee3648a1239dcb2f7e0f9528a8229e7b8e36ba1ff6ac300b58c1d226",
+    "model_executor/layers/quantization/compressed_tensors/compressed_tensors_moe/compressed_tensors_moe_wna16.py": "0efe0b9f8bd77b766a8e2bfbf8309126a24abb41011fc584715abb5570bfe4e8",
+    "model_executor/layers/quantization/inc/__init__.py": "6ef2b8e7f5346e7ae284a2442e0b708da0783df96b92f67495a1866110358420",
+    "model_executor/layers/quantization/inc/config_parser.py": "87483942f440742cfe767bc87912d008390fe84432bc443acb554fea53710ee4",
+    "model_executor/layers/quantization/inc/inc.py": "c6a752ebbad6a5ec3ffc215fe2a50e7470fa254ad1d0378bfa07614a00766386",
+    "model_executor/layers/quantization/inc/inc_linear.py": "c34940d9bf3df081e301674167ddf3602cfea95ddc28bea77c6242ba2755bbf4",
+    "model_executor/layers/quantization/inc/schemes/__init__.py": "65a07079bbc9b402fa3fc9924597ae70d83578ce9ee187c49620bdffd4c194f1",
+    "model_executor/layers/quantization/inc/schemes/factory.py": "9af580546352954d499f49c336a0970b0b0217457f9d6004929eb97888c1b0cc",
+    "model_executor/layers/quantization/inc/schemes/inc_ark_ops.py": "8761157fb8e9f29201ac4da1892e9d6e4885cb26de968ab871fd20f3ea37cc97",
+    "model_executor/layers/quantization/inc/schemes/inc_fp8_linear.py": "fa7ada2b50509c81c6f686ed6fcec57bd4a687a9e9431ca0390580e0bf99da21",
+    "model_executor/layers/quantization/inc/schemes/inc_fp8_scheme.py": "9cfa44861dc10ce2654014b7039f4136edc8a83d5470e4e60be538a54d12685f",
+    "model_executor/layers/quantization/inc/schemes/inc_mxfp4_linear.py": "8db664643b30ba1f417e56bca35e72c7a18aea5cc0c13027e11380f1e19f06e7",
+    "model_executor/layers/quantization/inc/schemes/inc_mxfp4_moe.py": "cd6bf1588047e031b671f78136861381ecb1b975dbc8b399effc2975d3f6b84f",
+    "model_executor/layers/quantization/inc/schemes/inc_mxfp4_scheme.py": "c38c5e7bf1854dfe7f0f943f8a2a661830e3e77249fe76365b9355a21cfc52a8",
+    "model_executor/layers/quantization/inc/schemes/inc_mxfp8_linear.py": "6156a11e1689b4c0b7c553a53bab7fa5a9c20227e7999b9267dd075c823b3f69",
+    "model_executor/layers/quantization/inc/schemes/inc_mxfp8_moe.py": "7c4fb9fdd32627027132a39c088390bc271182ff28d23be600d94dc66f9e6f15",
+    "model_executor/layers/quantization/inc/schemes/inc_mxfp8_scheme.py": "dd01836ad3f28a20f7cdc69669637d701dbb04a849d339eb7c25c29e22d972a9",
+    "model_executor/layers/quantization/inc/schemes/inc_scheme.py": "45e9b7fc0449de9b486f3deeb5a0e0638ba4e9728dfde90b34054ba82200170b",
+    "model_executor/layers/quantization/inc/schemes/inc_w4a8_linear.py": "9875bf03c93d1523278d039e83135fd7031245e67d12f1b98be152da58c31cff",
+    "model_executor/layers/quantization/inc/schemes/inc_wna16_linear.py": "1c23f8eae92d0f36ab25171d45bafe6d2205528fbd519cc94085cef215627a74",
+    "model_executor/layers/quantization/inc/schemes/inc_wna16_scheme.py": "7fb531e2fb6039d35b818bf089b21a2d1dcceb719e1ed493c03ca7c95d88848b",
+    "model_executor/layers/quantization/utils/marlin_utils.py": "c51456a32fd1455e10a4b7bb83cdaae535a466720d4517230a54c2659ecb8636",
+    "model_executor/layers/quantization/utils/marlin_utils_fp4.py": "e7d400f542e2d2a1884fdb16a5a247b48f631603bc20a593eef24fd1a02eefab",
+    "model_executor/layers/quantization/utils/marlin_utils_fp8.py": "8807899cd206a8237951fc256f8426660d876b0b5cef9b41dfa0c06087088ba1",
+    "model_executor/models/interfaces.py": "a83e8e36a3edc3b0674c3fc90de10aded461356b257b57694aa7b8c3c278eae9",
+    "model_executor/models/qwen2_5_vl.py": "cf9a57d1071bb1bd83c5cc3f6f136beab46040363fece71d224813a0128306fd",
+    "model_executor/models/qwen3_5.py": "3abeac36180df7bd1bd96b1a7c698a8f212d92c063026420cbdd16d1980e90e6",
+    "model_executor/models/qwen3_vl.py": "ba8eb6603978073b54b4f09453e0741cb5534321fce60cd8cd3f9bd5ddec724a",
+    "model_executor/models/utils.py": "570a2eb26c7274c9790b6ff42e3fd30403ad6534c68d256f4d867d22e2924919",
+    "model_executor/models/vision.py": "668b6f99bb80074b5539915f1c187dcfb9087847648a0b11ebbd3c2103d4497e",
+    "models/qwen4_exp/__init__.py": "8cf06cea48bb14bc300b0fadd932dc542433bb294e4de86a48bbf96e11e5805b",
+    "models/qwen4_exp/amd/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "models/qwen4_exp/amd/hyperconnection.py": "29e15a7a9ba9d6f186a0b5613d388605b6680ef4bdaf37228057925e44de479c",
+    "models/qwen4_exp/amd/indexer_qsa.py": "3429bec22e9d1045b3651fd28757384f527efcd071b4f7e35c95476996ef671e",
+    "models/qwen4_exp/amd/low_latency_gemm.py": "2c38eb150e1c6ad450b0eef5b63d477e6ff07ea3cdb936d2359a1a4d95d67ebe",
+    "models/qwen4_exp/amd/model.py": "e9ee63d7921d1fba937a3674320225a1f914e668d5a2f91dbde11dfc70e2214e",
+    "models/qwen4_exp/amd/model_state.py": "6e976d1910c6321e436a09eefb64e66f69f4d3594b780ce60ff71cd30434bbb7",
+    "models/qwen4_exp/amd/mtp.py": "de357e48ad48aeaa19179c3fbf66fa0456e0d96612b4aed3a2ceee81a2ad0c41",
+    "models/qwen4_exp/amd/ops/__init__.py": "39882c6e8d178ac15ab88d0217ac1669d5e558e3cca6bff961c93c185206049e",
+    "models/qwen4_exp/amd/ops/hc.py": "350cd9c1cac549de10bf3554a03f0eb8b5563bfb80ba0f1dd4b3e2f87df111d2",
+    "models/qwen4_exp/amd/ops/qsa.py": "5c4537de679cf0ece14f71e8e1eabf474a4a1ea839e979897ad620de453be39b",
+    "models/qwen4_exp/amd/ple_layer.py": "8bb2e441dad2e9f3c8686bc48aa95001e5adc81b91199cc68b2e4bbe9eb69292",
+    "models/qwen4_exp/amd/qsa.py": "5c1291609f9f7f8d1145c8b97439bfd3d1305278c258f1aa0ea1c1ac0a3b5ac8",
+    "models/qwen4_exp/common/__init__.py": "f92a3aad71de89fa606edac5f69a5c3f9d6db7200735fc399ceb950d7bb3611f",
+    "models/qwen4_exp/common/hyperconnection.py": "cf2028bbd7dceb33f78393be62e3c936c29aff7255dc185f211d1e57cb007393",
+    "models/qwen4_exp/common/ple.py": "4266838d1b39a86c06e63654e80a256dc8515ad4aa99b648d875323b4d7119e0",
+    "models/qwen4_exp/common/qsa_cache.py": "c6651a0cf27e2ffb23b90eafe21e044df5609ce976f52ebffa7a4fbea688fc04",
+    "models/qwen4_exp/config.py": "1bfd57e65fec594dddb7af9d8cc24f537d76c19a6028c17b5f77ef8fcdaf8d18",
+    "models/qwen4_exp/nvidia/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "models/qwen4_exp/nvidia/host_memory.py": "1b4602cc65b12c8f68d6c9194f7132a9ab02ca3b1afd23ebea221ee7d36d8ad3",
+    "models/qwen4_exp/nvidia/hyperconnection.py": "2a15d6b22fbe1def4d2bcd85568269d1157c5e1c298f0c6af43c1fb9797489ba",
+    "models/qwen4_exp/nvidia/indexer_qsa.py": "23a39cc4ee463bd3441e4343d9a0933ab1a81ac5a3f5a5af80f5b084f70d8fef",
+    "models/qwen4_exp/nvidia/low_latency_gemm.py": "d5c077edb026c7ea341f321de444a7e65817839b4b45bbbb786770e7c8e12ace",
+    "models/qwen4_exp/nvidia/model.py": "ae72d95610b80188df2ee54a8649329a2a5601c4c31cbc7b60bbda9c6dcff9c4",
+    "models/qwen4_exp/nvidia/model_state.py": "1b25dc38e570473a4a9058e8cc8a66d1f0b15f338ed9e1e7ba16e34cf16bed4c",
+    "models/qwen4_exp/nvidia/mtp.py": "0aa0c80fccda542aa2a14cb351da5dde246387db2902feac4550bda81c974ad1",
+    "models/qwen4_exp/nvidia/ngram_embedding.py": "40320647b13c31e4f94bf611b4bed386292a5b3bf97ed138249d710493501b17",
+    "models/qwen4_exp/nvidia/ops/__init__.py": "5411ed7a26e8f839344d18eb2476b5b7ba85439177e37a59051e1010ce9af749",
+    "models/qwen4_exp/nvidia/ops/hc.py": "f4af1d4bf4564c6ce18b59f5aa3bc6e4c07a8e785a671de26ff4a92f62927813",
+    "models/qwen4_exp/nvidia/ops/ple.py": "cc8994b653dd4b59d6ba35b6ec10af34017e9944482ec67cad6a32a02c5dd00a",
+    "models/qwen4_exp/nvidia/ops/qsa.py": "5a0d962022ec4e47809fa072d2b13745c84413de894048e67f10c3c10a45d51b",
+    "models/qwen4_exp/nvidia/ops/qsa_indexer.py": "2c34883a6396bac0238f6308196854b653eadab8bbebbe7dd2d558e30d065cbb",
+    "models/qwen4_exp/nvidia/ops/qsa_pre_indexer.py": "8af0b1979e5896569d3a4c11b0708013f1f93bb4c5cb1d98dafdd7fb52c64b70",
+    "models/qwen4_exp/nvidia/ple_layer.py": "e22ec639e10f8465a3e7f0b1356d6af77c5389bd24462c6a15abd96664eb5b6a",
+    "models/qwen4_exp/nvidia/qsa.py": "4ad6e74fe6a6d2678f3944ca4780c61c32e56680da2456869a789d12ef860c69",
+    "multimodal/__init__.py": "60f19ed87c1de749ed6ea05e4fcff4d1cd8dca8c981fc3d63bcc7e399fc4e17f",
+    "multimodal/cache.py": "4e115f755e8b90817e8d5b94d729daf32acd6c13ce06db7590bc42f191c4b7ea",
+    "multimodal/hasher.py": "29b456ff3be793cd10585323e5dbb660a521d820fadb1898fd620ca21139965e",
+    "multimodal/inputs.py": "0231cf17279371f6529a026a41e64b0339d47c4d54c2193286ecd87987f0791a",
+    "multimodal/media/__init__.py": "cecf1ccf8f9ae6e47a1f83c7fa3394f155579ae134149c87c7a1da72fdeea11c",
+    "multimodal/media/audio.py": "ef6c2649a7fb1438321b8f10e67f7d770f626182a15f70b2f09493d04ebef0e0",
+    "multimodal/media/base.py": "560f2eb81c4519ee58832f71490f07360f4289c822b8f71ac2f82c75084bbbdc",
+    "multimodal/media/connector.py": "41230d20984205fc1fa711bab4e06cd56962ad542c2e179f82fd730e5da39a06",
+    "multimodal/media/image.py": "44004ef3f49ccc12235d55c2a5f22f91cd8014ef9ed53bab7d9065523423f33e",
+    "multimodal/media/video.py": "4d66fc29301260943c0b6f8b3852a4dec132eb11a890d0275a9aec4505bb217a",
+    "multimodal/parse.py": "21166de024d624ea98ad25774b8d365215457b9ac5c3ab317b755be61f315564",
+    "multimodal/processing/__init__.py": "70a331273d0d9858fcf4b0447dac1063d7fe59e80e04663f54f1818f1d385c39",
+    "multimodal/processing/context.py": "29abda6ef64c1feb339bbce2e7d0bceda8fbfc59388f0703198f8d7307733875",
+    "multimodal/processing/dummy_inputs.py": "2618e6c620f0ac7aa22e3ee177fcbaef9de174988292c7aefa535609bfa9bc88",
+    "multimodal/processing/inputs.py": "cf128693ee6b0c78768b91a0be161457f8fd984a160534e32f75217751185f1f",
+    "multimodal/processing/processor.py": "0f1b2ad34bc9ff97e8bfe3fa7923fa7c60b305843c7077b761ff6a137fa1b334",
+    "multimodal/registry.py": "265dfe93a97ee9a25851d21d59a22fa7364d126324842b0c669fe598117081bb",
+    "platforms/cuda.py": "63eff37e7db844c8e3023d1d757b5760b997d93116416b133366fcad8fc07104",
+    "platforms/interface.py": "645098cca12d3f88a0893e5d3ef575fc8399f6d6d78ca8e24a4c197a00023815",
+    "sampling_params.py": "75e0f4b7e6702fd211340b87e6835598c5dce05b30bb2ea0ad834418fd626967",
+    "third_party/flash_linear_attention/__init__.py": "5dbbfa3fc286edb2e970e175ef33cee4f6181c89b0784f5a8986201b2312f54e",
+    "third_party/flash_linear_attention/ops/__init__.py": "dd738dc1d08045e76455cdbe16052a5b769e0eb11d6e87ff28353994f880cd6c",
+    "third_party/flash_linear_attention/ops/chunk.py": "c105ead259e86aedc248c53e7c4cef07034d0ff12da608d80265d1dd0990803f",
+    "third_party/flash_linear_attention/ops/chunk_delta_h.py": "1b3ad391f939d9443c6b7adb19e57fe381bd5dccea064e8417a4f85b0e713b26",
+    "third_party/flash_linear_attention/ops/chunk_o.py": "3b63b836a8cc561723c23db5a528a0b474d9cd78508d610f0b348c585a889a19",
+    "third_party/flash_linear_attention/ops/chunk_scaled_dot_kkt.py": "7ae41df3755acc7e925a134d848f78bb5fc00b90069039d86403c5853323ea42",
+    "third_party/flash_linear_attention/ops/cumsum.py": "d818215669b451868823202ac0bcea77e7a9d75957254c7c1060a73a55dc39b6",
+    "third_party/flash_linear_attention/ops/fused_gdn_prefill_post_conv.py": "590717b2107abc90d72548de06b5d315229eb2775c94614f3f545df11cc2b5df",
+    "third_party/flash_linear_attention/ops/fused_norm_gate.py": "e6eb90467f29d8a0a04f2a364d20a2c3191b6ab857841bfb82076b33a6022d1a",
+    "third_party/flash_linear_attention/ops/fused_recurrent.py": "fe6f1311014809040497aa0a623e7fa97f4b3457cdc7ee1f1f8aed21f326f755",
+    "third_party/flash_linear_attention/ops/fused_sigmoid_gating.py": "000ab8996af9788fdb8843a6a3b91833e7a14c8acc0e1ea073a536330f64cb6f",
+    "third_party/flash_linear_attention/ops/index.py": "4cce2dcb84935e3d8287e59dda24457734be2ffaebd786849c61c3b20c9f77cb",
+    "third_party/flash_linear_attention/ops/kda.py": "e1f31aaa89b91f8e5db6d070b229e2c81c7206e8caec67de41db97d06be0c476",
+    "third_party/flash_linear_attention/ops/l2norm.py": "520f4513ef4fc97e6b88dc07877cca8e29da0d34e44673fe989e3af002d86381",
+    "third_party/flash_linear_attention/ops/layernorm_guard.py": "42af29be26e8fc94a4658e053c095fcdab9ffdc1bc2446a01e787deda2a298c0",
+    "third_party/flash_linear_attention/ops/op.py": "456da84fd12411cf53c96a90dd4f78f49afb454c3d51d2c524ea8e7106fe8ae5",
+    "third_party/flash_linear_attention/ops/solve_tril.py": "d1a4ff27623a938825052500afa7e2aa24fadd2fa4c9be6376c9128824f86f82",
+    "third_party/flash_linear_attention/ops/utils.py": "d6c90d36505e02086954c23ca4dd2fea82a69416d68ff1d0501e16b3148b5b0c",
+    "third_party/flash_linear_attention/ops/wy_fast.py": "c9fc8259db0a8746dc04f1d799cb73333457118cf89a0bdce8dde8a80a28cd96",
+    "tokenizers/detokenizer_utils.py": "e17ef23dae7bbb1db5875024c249567b988d8611b560d095c3f786d1e697fe11",
+    "utils/serial_utils.py": "f41af4faeb71229109a1909b9ef4f6f24e6e9d2f30e3e8cd83b741f60546043e",
+    "utils/torch_utils.py": "eec8b1e3c7c673d3d171b92530f8b07acabdad5b0e3ab07cc0e717f827af8e5a",
+    "v1/attention/backend.py": "01ac364372afa75fdb22486aa3a9c7cf9aebb742e3471dfb9e0f9d9d36b734bc",
+    "v1/attention/backends/flash_attn.py": "b170a4789e18104c1bee35bea70df51abe6766693d8f4726a59f2e6f5c4282aa",
+    "v1/attention/backends/gdn_attn.py": "3831019404a92200a38b43571c040cffeb6638bbdc71e4cb5e680dbc6c93d054",
+    "v1/attention/backends/mamba_attn.py": "5e7b2c4058fc5e6096d001bff6c789b78368b025bbe4600f191aaca2ff59b59f",
+    "v1/attention/backends/registry.py": "77f41b9bff9b4a2f6417e8360ead3a5b560861a958ed26072d8c97f5e6b2af2b",
+    "v1/attention/backends/utils.py": "f3e0d77c31df8e23ad866371953b6ab7b33ec9ed36813256356f741caf0c97bb",
+    "v1/core/block_pool.py": "34c2fd67148cecb7763ff49ad694a57073759b0fa67572a4270dc995b4acf8fc",
+    "v1/core/encoder_cache_manager.py": "45f167e4f5a8ae3448ef61ba8d13c21dbb13a90fc55ab49098b7aacedd52e0d1",
+    "v1/core/kv_cache_coordinator.py": "bf342f79f2bc8d6acb69d3becefb334509e84cae888d42bbd421a8dc8ca9eca3",
+    "v1/core/kv_cache_manager.py": "58800535eda854580d84e1025bf32fe01b2a43ce0bba501b4f3d125e4f2c8afa",
+    "v1/core/kv_cache_utils.py": "cc43b6a737d269483d1111bef1e61c1bcd0a91d8bd4d11ccf8acbc2523fa9b18",
+    "v1/core/sched/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "v1/core/sched/async_scheduler.py": "e586a0ef3c6778be56a93e7f9bb712d4de9de6e7d7fe7e3e1d51dae83ecfc508",
+    "v1/core/sched/interface.py": "be6c008664096c5660a8879de72b315bbe479bf1d688be9b25891063ec53a367",
+    "v1/core/sched/output.py": "3a66c8efaefe10c572f6f33cf1f8aa4610758c945130cad62eb9f7331005677c",
+    "v1/core/sched/request_queue.py": "4b8d938e5fb8152fe61030b8aa991f983fcac9a405c37ed8908045e05e82ae5e",
+    "v1/core/sched/scheduler.py": "85a2b9c88fd1304de758a238ae67a7ad02269540623d416b6a0e62a286b932ea",
+    "v1/core/sched/utils.py": "1ed988044eb8028c77ede875bd1a5fd05ff6998b455d61e3997d6a3d7fc1c3a7",
+    "v1/core/single_type_kv_cache_manager.py": "c49dcf97240537443c956c249b9c0e2baf3c5c77a6afeec28eb0a2a48de2ac18",
+    "v1/engine/__init__.py": "4e59828787634123026a6b424f48c21d691913dd338b59dd13f25fa260f2284b",
+    "v1/engine/async_llm.py": "32ab1c7b43bfa7e5fcada335f49627d3c540a43bb8376b4845006792c3415fb4",
+    "v1/engine/coordinator.py": "b2a9a2f32e84b5ce7b4979b41ab4749deb1fb20f157086a6a9e9185a03ad78d9",
+    "v1/engine/core.py": "268bf40534a853812867ae8e80040f190983cb364b41182b55969aace20c93f5",
+    "v1/engine/core_client.py": "fd6ca0cb7499b3086eef2fc57674b7ace56ef1c648f09e92e144b255b79018f8",
+    "v1/engine/input_processor.py": "91dde56a548c09613ee9aaef8c43631481d12dc1bd439fddc12c6569f5e2e799",
+    "v1/engine/llm_engine.py": "d4d5fba309db4d3f271ac7479e3ddaa623045499e4c6cfac41c0c7710012413c",
+    "v1/engine/logprobs.py": "14bbe78d92a2c451d79b3d9dd9d5268bc57e16bad5079e44ce9ed2cd805e873e",
+    "v1/engine/output_processor.py": "1a96ed5e41bf3df9f16ccba6e721a0bbda5baa500b3ff3117fe75679292b3bfc",
+    "v1/engine/tensor_ipc.py": "954b0b9d37ada6d9d92ddc9a6744eda13dad14cd9f50142aab73cbd0f2297c43",
+    "v1/engine/utils.py": "d09f86b107b3c63b62f40a6590036be5b711778ea997fc5a6af6de94fdd2ccd3",
+    "v1/executor/__init__.py": "570534a51c0a8ef702717208ffb376148613da8363d5faae2e3bd44beaaa1365",
+    "v1/executor/abstract.py": "97791426b549e4447c967f8b8e668c2e376c6a75fa7091fd9df11bc9dafb65f7",
+    "v1/executor/multiproc_executor.py": "3ed0149a8a8e1550c4f062af40e645d1b734e70f99981bc5bf15f0360507648a",
+    "v1/executor/uniproc_executor.py": "3cb039b80fe9b03dc1122f93c1f8a4098ef1355104b317ff6df25358f4349494",
+    "v1/fault_tolerance/__init__.py": "4089efb6f68cbe0d9e81b625969e386162597f4390f428688c4c0281ce510d51",
+    "v1/fault_tolerance/engine_core_sentinel.py": "0a91cea4146883f1d963fd23d9cf1e1e8f7bc63c34b6afd1ac7b6ad497702a30",
+    "v1/fault_tolerance/utils.py": "1deee3485a08cd951f970c58b0608bc0129285585003718a8b7fa882aad63342",
+    "v1/kv_cache_interface.py": "1cf202f1a44d5bc5c3832b70b41507687ecceea3784e67a4f003bc0210d6eecb",
+    "v1/outputs.py": "65ab7698bbdea1d53502ef8df3689bec860521ab6e2fab3c7bff63151be039b1",
+    "v1/request.py": "da610d5203e72d2d524adc5fb39df11502a23520f2f31d9a44cf13d343f9c25d",
+    "v1/serial_utils.py": "d75c17a098231b2398cbdb7da6f9983e5b9229c0ba138b2874934d45fafd1f28",
+    "v1/utils.py": "4093f1c040a5f3def599bb044b72109301b970f70a5e5b622fd03a450a11e36a",
+    "v1/worker/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "v1/worker/ec_connector_model_runner_mixin.py": "fe9b11cebb8562f1bfe98b98a5647b2b081a6e424cb60d4ffe2412c91a99215e",
+    "v1/worker/gpu/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "v1/worker/gpu/async_utils.py": "77e17a4570ead2be30ae9b00888cf077a3b873018c12ca0549b853bfda02c1ba",
+    "v1/worker/gpu/attn_utils.py": "b9b81e59dda2720b1f9c434471381f879228832443e52756e469b4ad4905888f",
+    "v1/worker/gpu/block_table.py": "61c004315d5af7e7eae4e2a9e6be92ea82c520327690a7f55a73bb9ce95f520a",
+    "v1/worker/gpu/buffer_utils.py": "f81fd26a5faabf614b2c0d0a2aaa55a6664e35eeb5deada51bc657172963b596",
+    "v1/worker/gpu/cp_utils.py": "456c1bb7e262d99ff555522a4f134e5a9b42aee23290be25455eaef36ee8eaaf",
+    "v1/worker/gpu/cudagraph_utils.py": "b1423812da6d07933bbaf014fa21236c944af1c5f8e553aefb2de89af8afb384",
+    "v1/worker/gpu/dp_utils.py": "36678953d7367e3c43fbf4f3e189b975684200e82d5afecf9dc37a833767748f",
+    "v1/worker/gpu/ec_connector.py": "2afe6e641f4ae3eb3b8da336c74eaa7479bf617b27cfb39a1fcbe487686f0a08",
+    "v1/worker/gpu/eplb_utils.py": "1829fac11464aed4649179b302df198de51b95d0589f4e56bea305a876a63e26",
+    "v1/worker/gpu/input_batch.py": "abfbb9075a80354bd4bb59d2729fcdea3c62eed827067a823761c98356670ad1",
+    "v1/worker/gpu/kv_connector.py": "b89a4333f1e552d86e1815674b59e9f1335f0f49c0a7b46082439076f62c6a81",
+    "v1/worker/gpu/lora_utils.py": "1e90eddd9ddb4ca55e574bb28e87ae3a6f6750175a62d373102426543f4ccd66",
+    "v1/worker/gpu/metrics/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "v1/worker/gpu/metrics/logits.py": "ea058d7510a077a55f8ac7e4c3d596508346244e908cb372865d7159f62edc89",
+    "v1/worker/gpu/mm/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "v1/worker/gpu/mm/encoder_cache.py": "89c500338fddbeee7c4fca978a3a7c4c566a03e848e399d303fbee3c80631cd2",
+    "v1/worker/gpu/mm/encoder_runner.py": "0981e352d70301b7154a217a48665ffe35f215d053ec5740c2515a3e1e11b4e6",
+    "v1/worker/gpu/mm/lora.py": "a3eddfad6ad64de276964240c28dc080888df4a56dd5eac18f89428f2cbb7a01",
+    "v1/worker/gpu/mm/rope.py": "0924375bcb367267e783b57dd2ad9de1189d97025ce4313baaa54f2911eaaf1e",
+    "v1/worker/gpu/model_runner.py": "6e3bfbc91d88c65c7ca9259b0a226417b4aaa6c5a513b2e1a4c8973e5758795a",
+    "v1/worker/gpu/model_states/__init__.py": "07815d0b788fc88185772f581bbf892a675259f9288375571f29887622f8d93c",
+    "v1/worker/gpu/model_states/default.py": "bb614f814780f052e869f9acf31dfbfa68718ee7dc6252eefa901b5730ee8a2a",
+    "v1/worker/gpu/model_states/encoder_decoder.py": "a5868059d8af672548b41d0e623e884320e6ed61e6aaca2d2828ff5be0356f2f",
+    "v1/worker/gpu/model_states/encoder_only.py": "84e96b55a2639e2a73fa4a0308acc89c8d053dc715481180b237e0196dcef99f",
+    "v1/worker/gpu/model_states/interface.py": "5675b6fedc7403a9ab410b1e5565974e78fac23c42ab4253ae1da52d6e09b594",
+    "v1/worker/gpu/model_states/mamba_hybrid.py": "573e130ac5587d4822fabf97adad1ad0fda02ff83c5e70df879a5bb175ae845c",
+    "v1/worker/gpu/model_states/mm_pruning.py": "b150940b12ae76048f050a8eeb54d532bbdc530a18ffbf320ddeeb0cfaa90f93",
+    "v1/worker/gpu/model_states/prompt_embeds.py": "11f9e270925c2df6a505557605ac2b859bb145cf3420b0111e7482a1c544f9b1",
+    "v1/worker/gpu/model_states/recoverssm.py": "b4b660e62eaf33f4fe8271f83ed1fb6de6bc08f800a8073b27803e42fb29a645",
+    "v1/worker/gpu/pcp_manager.py": "a8dacf2eb104dcccdf09b46d5fd7b259e56f96cd3938c2f4029d9e1834be9b2c",
+    "v1/worker/gpu/pool/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "v1/worker/gpu/pool/pooling_runner.py": "f8463f7648cce0f3f29418a4d9fee61634ead760957cf236d06d61cf8cd986e7",
+    "v1/worker/gpu/pp_utils.py": "3082b600b40a837402293396ec250fd0b3afc7e416bec83a58b393c52942659a",
+    "v1/worker/gpu/sample/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "v1/worker/gpu/sample/bad_words.py": "8d3cbd5613398260314d94739d8ee0e1ac0c22abf2f960f541d3c0d4e39d360b",
+    "v1/worker/gpu/sample/batch_shard.py": "c30274a3a04e6a03e89be9cd7c62de602b1aba4d412f64540ab6201036de3928",
+    "v1/worker/gpu/sample/gumbel.py": "3ec1df510bdad13e8b0a457b5b67c98affdf6e57369e56cb471246cc8f40dd34",
+    "v1/worker/gpu/sample/logit_bias.py": "9e80a3fe6f3c7474723408cfff52183f4585fdeedd9c2312843ee98d0b12724c",
+    "v1/worker/gpu/sample/logprob.py": "f47479a818192acb6b297c79fa67a3b2f9820e3492a394d5adda777e9b7c832e",
+    "v1/worker/gpu/sample/min_p.py": "4cb5e2f45e1ced6f9685283a7a5c8cfd7204d9a249822e866cfff756c7f04f62",
+    "v1/worker/gpu/sample/output.py": "d6e298c0f197d487a8faaf7200f500fa83df1d7a4bbf4339cadd6a18008f7f9c",
+    "v1/worker/gpu/sample/penalties.py": "46c29434caf5f415129ef4a9bb2b8d4f62d2765596e3e07f73ad2b198c7def1b",
+    "v1/worker/gpu/sample/prompt_logprob.py": "4cf22d390e7bf59e44c458cff7180268db63e95d06af2f1e14d720a2d77c9663",
+    "v1/worker/gpu/sample/sampler.py": "832c9945d201a1e730ff9b4b52076aa83bd4a5064e1e4cfea952cf84d4a8d1f0",
+    "v1/worker/gpu/sample/states.py": "4e3671f93695ba5a48fad7d2d13beb231ac8741034904ed5a15d9f7b9b86662e",
+    "v1/worker/gpu/sample/thinking_budget.py": "020513e1d3406f367de6ad995a95055008fd0c28f2873647e8283c9870e22404",
+    "v1/worker/gpu/sample/trace_replay.py": "d2a7d3b3b55379efabe4740a4b7f14030126dc11be36f6ea974164ce42316a50",
+    "v1/worker/gpu/sample/watermark.py": "a3581458169dab9153eb09fd67218e0ee5585406537a9de80ad528ae62b030c0",
+    "v1/worker/gpu/shutdown.py": "bb470f14b17c7e52571ef8938b2a9527e7c2846852ae8a3a94b69cd1c30aa4b1",
+    "v1/worker/gpu/spec_decode/__init__.py": "1f1f84bfe6f4f5af3a7e21a7a8716ecf7b9013da1d03327668a3ee36afc24c32",
+    "v1/worker/gpu/spec_decode/adaptive_verification.py": "5f50646400367f4d74dfe9b8e6127895edaa0882ede979db64851ba4a5ede56a",
+    "v1/worker/gpu/spec_decode/autoregressive/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "v1/worker/gpu/spec_decode/autoregressive/cudagraph_utils.py": "13392ef0a9ed59eb9c2b2bad43d7c61beb212a8805849e46b5130c230275d0a5",
+    "v1/worker/gpu/spec_decode/autoregressive/speculator.py": "5b97f54e20ddf65b98e939832d050745f67ef43cfa145786da300f1a8322e3c6",
+    "v1/worker/gpu/spec_decode/dflash/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "v1/worker/gpu/spec_decode/dflash/cudagraph.py": "beab567ae2df6a2ba2cd92fe7ee452c6b959b8a7037a4b5f493993a1824619bb",
+    "v1/worker/gpu/spec_decode/dflash/speculator.py": "f9c100f42f9326e48eb84e89281897e859ba761943f54d593523555ccd98dc63",
+    "v1/worker/gpu/spec_decode/dflash/utils.py": "53d2c3ad474d290d2c6df027446bbd80ac7447684e5242ab2c3c5337d2abd383",
+    "v1/worker/gpu/spec_decode/dflash2/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "v1/worker/gpu/spec_decode/dflash2/speculator.py": "9ae6a9e27e8777d9590914cbc925d9cb3b66a3031e830abb468c7c4cb2295382",
+    "v1/worker/gpu/spec_decode/dspark/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "v1/worker/gpu/spec_decode/dspark/speculator.py": "fc717856488a7a6fde1d00a6016c7d385fc41f7b9aef08165372e04e9c5586df",
+    "v1/worker/gpu/spec_decode/dspark/utils.py": "763ab333ff4de42fe8f593a65b16b136e81c33cb50cd811440a6736f38168917",
+    "v1/worker/gpu/spec_decode/eagle/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "v1/worker/gpu/spec_decode/eagle/eagle3_utils.py": "201ee875fcc3d076a8fc1f3876dcbf85736b221a368555243a8987ff26a1674e",
+    "v1/worker/gpu/spec_decode/eagle/speculator.py": "746e318a4f266d75522ff7f3731ea9b4527b7b4824f71364d1a62184ea1f7b3d",
+    "v1/worker/gpu/spec_decode/eagle/utils.py": "94de6f55a1761f24f4aa1388cbc3b3763d4ab3ee53260330056ad31ce0b78236",
+    "v1/worker/gpu/spec_decode/extract_hidden_states.py": "93c4233be7b2d2290b33902ea9b3bb5274c11701830851d03967a22144536e2d",
+    "v1/worker/gpu/spec_decode/gemma4/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "v1/worker/gpu/spec_decode/gemma4/speculator.py": "9991210d7babd2caf2cd10797ca8688543dedeafbc3b86bc7c979c1a6ae9f949",
+    "v1/worker/gpu/spec_decode/mtp/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "v1/worker/gpu/spec_decode/mtp/speculator.py": "926d6c9ffdb368c971647911a60493820d056ce236fcae9d94a42fa2e006255d",
+    "v1/worker/gpu/spec_decode/multi_module_mtp/__init__.py": "e3c55cbb0d7a8bd47df6f3378835644645f5d3bc89b45793b5d5a02d013e5c58",
+    "v1/worker/gpu/spec_decode/multi_module_mtp/speculator.py": "d9d4735b9b33829332b0e845b6d3073b2f0436045ed693b25c6434f351644127",
+    "v1/worker/gpu/spec_decode/rejection_sampler.py": "030db5bfca162cc1f305112f299de5d6d61c59d3ed0807fee46575441ca4086d",
+    "v1/worker/gpu/spec_decode/rejection_sampler_utils.py": "214b61fa0abe88573beb779872c035b3954e5651a85bd438d99ee5905d3a62ec",
+    "v1/worker/gpu/spec_decode/speculator.py": "e8eb2c6f489d60cf6f51070fdfc2bee77fe21a19623e4f284381767d554c2b06",
+    "v1/worker/gpu/spec_decode/utils.py": "282f2929eddae9ca7312269f799be07472334b6df9fd91878b5e839ec05e418c",
+    "v1/worker/gpu/states.py": "99418f5df43ca612ded72609fee011620b065b2cab2f249ccb387096bf4ae71a",
+    "v1/worker/gpu/structured_outputs.py": "8d00e766d8d38d87ef16cccd0661d71833e523e1dc8fee5aeab251536b57180c",
+    "v1/worker/gpu/ubatch_utils.py": "ccf085097189242b93c2dbdfbac225c2c7598039710edc14f30977e0635e61db",
+    "v1/worker/gpu/warmup.py": "423ac32d58fe008c228cfa223e4fcebfcf87e3463a9dbdf80a083c0578d73723",
+    "v1/worker/gpu_input_batch.py": "18cf455c9d0eea61cc581c7932f2e6cd09786914e82dd35eef1c1430da359a0f",
+    "v1/worker/gpu_model_runner.py": "87c29d08c0bbf66993d8b984811e7325e35e6436242a773feb55ec88f16b2c51",
+    "v1/worker/gpu_worker.py": "596f5b6e97be754f84b04c17bc0b96fd92d2f05ee86e0459aa515ffa48d8c5cb",
+    "v1/worker/mamba_utils.py": "7382bcc8a7b070eaec44339379ebce485777fe23b97e05ee108088faa707c7e6",
+    "v1/worker/sentinel/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "v1/worker/sentinel/gpu_worker_sentinel.py": "3959b8619d052c5dd247815074e03ec21ec9b43cc424ff2d296abc19b227b852",
+    "v1/worker/startup_plan.py": "84bcbb4f7a9fd7c8d10c9c895aadd9673d44c767b9132368d11eb5e017afe86b",
+    "v1/worker/utils.py": "0ca3ec6bf4d20076145b7fe64e564962adebedc8f75a856b517ba0b2f2d77acf",
+    "v1/worker/worker_base.py": "4a1a5266b912fe97991d8dc89d92b923990da9f6cb4b817d00d52e9c0d26dd7c",
+    "v1/worker/workspace.py": "d21c08167d1d0d1c0cddaa80453a53a0b4dec5d81b5a537c94a21324344976b3"
+  }
+}

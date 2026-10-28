@@ -85,6 +85,11 @@ class NativeControlClient:
         if core is None or not callable(getattr(core, 'call_utility_async', None)):
             raise NativeControlError(
                 'native-control-requires-the-pinned-engine-utility-channel')
+        # This is the API-side AsyncLLM, not EngineCore.  Core exposes
+        # is_scheduler_paused(); the pinned frontend exposes async is_paused().
+        for name in ('is_paused', 'pause_generation', 'resume_generation'):
+            if not callable(getattr(engine, name, None)):
+                raise NativeControlError('native-control-frontend-api-missing:' + name)
         if getattr(core, '_flash_s5_driver', None) is not None:
             # The utility channel is a client, not a second engine owner: an
             # object carrying both would be a driver lookup in disguise.
@@ -242,14 +247,20 @@ class NativeControlClient:
                                  'start_ns': int(start_ns), 'end_ns': int(end_ns)})
 
     # -- pause/resume (awaited API path) ---------------------------------
+    async def _is_paused(self):
+        value = await self.engine.is_paused()
+        if type(value) is not bool:
+            raise NativeControlError('native-control-pause-state-unproved')
+        return value
+
     async def ensure_paused(self):
-        current = await self.engine.is_scheduler_paused()
+        current = await self._is_paused()
         if current is True:
             self.paused = True
             return {'paused': True, 'called': False, 'mode': 'keep',
                     'clear_cache': False}
         await self.engine.pause_generation(mode='keep', clear_cache=False)
-        confirmed = await self.engine.is_scheduler_paused()
+        confirmed = await self._is_paused()
         if confirmed is not True:
             raise NativeControlError('native-control-pause-not-confirmed')
         self.paused = True
@@ -260,9 +271,11 @@ class NativeControlClient:
         if self.pending is not None:
             raise NativeControlError(
                 'native-control-resume-while-intent-outstanding')
-        if self.paused is False and await self.engine.is_scheduler_paused() is not True:
+        if self.paused is False and await self._is_paused() is False:
             return {'resumed': False, 'already_running': True}
         await self.engine.resume_generation()
+        if await self._is_paused() is not False:
+            raise NativeControlError('native-control-resume-not-confirmed')
         self.paused = False
         return {'resumed': True, 'already_running': False}
 

@@ -216,7 +216,7 @@ class Frontend:
         self.engine_core = UtilityClient(core)
         self.pause_calls = []
 
-    async def is_scheduler_paused(self):
+    async def is_paused(self):
         return self.core.paused
 
     async def pause_generation(self, mode, clear_cache):
@@ -2080,7 +2080,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await pump_until(lambda: self.stack.driver._bootstrap_command is not None
                          or self.stack.driver._transition is not None, self.core)
         # A pause utility arrives while the engine still owns the route intent.
-        self.assertTrue(await self.frontend.is_scheduler_paused())
+        self.assertTrue(await self.frontend.is_paused())
         self.assertTrue(self.stack.driver.finish_pause())
         self.assertIsNotNone(self.stack.driver._control)
         await asyncio.sleep(0)
