@@ -1,6 +1,7 @@
 """CPU receipt/packaging guards; actual classes execute in the pinned image."""
 import ast
 import copy
+import inspect
 import json
 from pathlib import Path
 import unittest
@@ -39,6 +40,23 @@ class Tests(unittest.TestCase):
         source=(Path(__file__).resolve().parents[1]/'tools/build_native15_matrix_input.py').read_text()
         ast.parse(source)
         self.assertIn("out/'proof/fixture-leaves.json'",source)
+
+    def test_shape_path_executes_lazy_gpu_host_imports_without_platform_patch(self):
+        source=inspect.getsource(probe.sampler_host_constructor_path)
+        self.assertIn("'vllm.v1.attention.backends.flashinfer'",source)
+        self.assertIn('importlib.import_module(name)',source)
+        self.assertIn("open('x')",source)
+        self.assertIn("RequestState(8,512,8,0,64,torch.device('cpu'))",source)
+        self.assertIn('constructors_fully_executed_on_cpu=False',source)
+        self.assertIn('sampler_host_constructor_path(',inspect.getsource(probe.sampler_cpu_shape))
+
+    def test_both_wrappers_put_flashinfer_workspace_on_tmpfs(self):
+        root=Path(__file__).resolve().parents[1]
+        for name in ('tools/native15_matrix_cpu_owner.py','tools/build_native15_matrix_input.py'):
+            source=(root/name).read_text()
+            self.assertIn('HOME=/tmp/flashnext-home',source)
+            self.assertIn('XDG_CACHE_HOME=/tmp/flashnext-cache',source)
+            self.assertIn('FLASHINFER_WORKSPACE_BASE=/tmp/flashnext-home',source)
 
 
 if __name__=='__main__':unittest.main()

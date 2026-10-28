@@ -180,7 +180,8 @@ def main():
         import sys,torch
         if args.mode!='gpu-all':assert not torch.cuda.is_initialized()
         if args.mode in ('cpu-shape','gpu-all'):
-            result['scenarios']['sampler_cpu_shape']=sampler_cpu_shape()
+            result['scenarios']['sampler_cpu_shape']=sampler_cpu_shape(
+                cpu_device_probe=args.mode=='cpu-shape')
             result['predicate_selftest']=predicate_selftest()
         if args.mode=='gpu-all':
             result['scenarios']['sampler_rule4']=connected_sampler_rule4()
@@ -238,12 +239,75 @@ def sampling_batch(torch, device, request_ids, slots, step):
         cu_num_logits=starts,cu_num_logits_np=starts_np,has_structured_output_reqs=False,prompt_lens=None)
 
 
-def sampler_cpu_shape():
+def sampler_host_constructor_path(*, cpu_device_probe):
+    """Execute CUDA-only lazy host imports even on the CPU platform.
+
+    The stock capability check returns before importing FlashInfer on CPU.
+    Import its real backend explicitly, without changing that check/platform.
+    UVA allocation still needs a driver; record an actual CPU-device attempt
+    rather than building a shim RequestState to bypass it.
+    """
+    import ast, importlib, json, os, textwrap
+    import torch
+    from vllm.v1.worker.gpu.sample.sampler import Sampler
+    from vllm.v1.worker.gpu.states import RequestState
+    modules=[importlib.import_module(name) for name in (
+        'flashinfer','flashinfer.jit.env','vllm.v1.attention.backends.flashinfer')]
+    env=modules[1]
+    cache=Path(env.FLASHINFER_CACHE_DIR)
+    workspace=Path(env.FLASHINFER_WORKSPACE_DIR)
+    for path in (cache,workspace):
+        assert path.is_relative_to('/tmp'), ('cache outside executable tmpfs',str(path))
+        path.mkdir(parents=True,exist_ok=True)
+        # Actual access catches readonly/cache-policy errors, not a name test.
+        with (path/'matrix1b-host-cache-check.json').open('x') as out:
+            json.dump({'cache_write':'PASS'},out)
+    # Constructor call targets are resolved from the real functions' globals.
+    constructors=[]
+    pending=[Sampler,RequestState];seen=set()
+    while pending:
+        cls=pending.pop()
+        if cls in seen:continue
+        seen.add(cls);method=cls.__init__
+        tree=ast.parse(textwrap.dedent(inspect.getsource(method)))
+        calls=[]
+        for node in ast.walk(tree):
+            if not isinstance(node,ast.Call) or not isinstance(node.func,ast.Name):continue
+            value=method.__globals__.get(node.func.id)
+            if inspect.isclass(value) and value.__module__.startswith('vllm.'):
+                calls.append(value.__module__+'.'+value.__name__)
+                pending.append(value)
+        source=Path(inspect.getfile(cls))
+        constructors.append(dict(name=cls.__module__+'.'+cls.__name__,
+            signature=str(inspect.signature(cls)),source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+            constructor_calls=sorted(set(calls)),host_module_import_executed=True,
+            full_constructor_execution='GPU owner-run (UVA/device allocation)'))
+    cpu_attempt={'attempted':False,'reason':'GPU owner path executes the actual CUDA constructors below'}
+    if cpu_device_probe:
+        try:RequestState(8,512,8,0,64,torch.device('cpu'))
+        except RuntimeError as exc:
+            message=str(exc)
+            assert any(s in message.lower() for s in ('nvidia driver','cuda driver','pin_memory','pin memory','accelerator')),message
+            assert torch.cuda.is_initialized() is False
+            cpu_attempt=dict(attempted=True,constructed=False,exception=type(exc).__name__,
+                message=message[:512],no_shim=True,
+                reason='real RequestState CPU construction reaches pinned/UVA allocation requiring a CUDA driver')
+        else:
+            raise AssertionError('CPU RequestState construction unexpectedly passed; extend CPU constructor execution')
+    return dict(verdict='PASS',lazy_host_imports_executed=[m.__name__ for m in modules],
+        cache=str(cache),workspace=str(workspace),actual_cache_write=True,
+        constructor_index=constructors,cpu_constructor_attempt=cpu_attempt,
+        constructors_fully_executed_on_cpu=False,platform_patched=False,
+        scope='host import/cache side effects plus actual CPU constructor boundary; full CUDA constructor path owner-run')
+
+
+def sampler_cpu_shape(*, cpu_device_probe=True):
     import torch
     from vllm.v1.worker.gpu.sample.sampler import Sampler
     from vllm.v1.worker.gpu.states import RequestState
     from vllm.v1.worker.gpu.input_batch import post_update
     from vllm.v1.core.sched.scheduler import Scheduler
+    host_constructor=sampler_host_constructor_path(cpu_device_probe=cpu_device_probe)
     rows=[]
     for step in (0,255):
         batch=sampling_batch(torch,'cpu',['shape-'+str(i) for i in range(8)],list(range(7,-1,-1)),step)
@@ -261,6 +325,7 @@ def sampler_cpu_shape():
         ('Sampler.add_request',getattr(Sampler,'add_request')),('RequestState',RequestState),
         ('post_update',post_update),('Scheduler._update_request_with_output',getattr(Scheduler,'_update_request_with_output')))}
     return dict(verdict='PASS',cases=rows,actual_method_signatures=methods,
+        host_constructor_path=host_constructor,
         gpu_owned_fixtures_constructed=False,gpu_execution=False,
         scope='CPU-shape: actual imports/method access and full InputBatch CPU fixture construction; GPU RequestState/Sampler allocation deferred to owner')
 

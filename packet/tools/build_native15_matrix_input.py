@@ -35,7 +35,11 @@ def build(overlay,graph_path,out):
     copy(ROOT/'harness/native15_transitions_fixture_leaves.json',out/'proof/fixture-leaves.json')
     copy(graph_path,out/'proof/import-graph.json')
     gpu=(ROOT/'tools/native15_staged_device_owner.py').read_text()
-    gpu=gpu.replace("NAME='flashnext-native15-staged-boundaries'","NAME='flashnext-native15-matrix1'")
+    gpu=gpu.replace("NAME='flashnext-native15-staged-boundaries'","NAME='flashnext-native15-matrix1b'")
+    gpu=gpu.replace("'--env','VLLM_CACHE_ROOT=/tmp/vllm'",
+                    "'--env','HOME=/tmp/flashnext-home','--env','XDG_CACHE_HOME=/tmp/flashnext-cache',"
+                    "'--env','FLASHINFER_WORKSPACE_BASE=/tmp/flashnext-home',"
+                    "'--env','VLLM_CACHE_ROOT=/tmp/vllm'")
     gpu=gpu.replace('e3_native_staged_plan_device_probe.py','e3_native_transitions_matrix_probe.py')
     gpu=gpu.replace("'--graph','/proof/import-graph.json','--out','/out/probe.json']",
                     "'--graph','/proof/import-graph.json','--out','/out/probe.json','--mode','gpu-all']")

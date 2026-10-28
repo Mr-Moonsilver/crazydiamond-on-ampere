@@ -146,7 +146,7 @@ class OperationSetupTests(unittest.TestCase):
             frame=helper(Operation(),owner,Buffer(),Buffer(),Buffer(),metadata,100,True,Buffer())
             self.assertIs(next(frame),marker)
             with self.assertRaises(StopIteration):next(frame)
-        self.assertEqual(calls,['bind_plan','bind_sparse_context','bind_row1_uva',
+        self.assertEqual(calls,['observe_chunk_shape','bind_plan','bind_sparse_context','bind_row1_uva',
                                 'bind_row1_reference','attention','row1_output'])
 
     def test_new_queue_is_owned_and_syntax_checked(self):

@@ -3,7 +3,7 @@
 import argparse,hashlib,json,subprocess,time
 from pathlib import Path
 IMAGE='sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b'
-NAME='flashnext-native15-matrix1-hub-cpu'
+NAME='flashnext-native15-matrix1b-hub-cpu'
 
 
 def main():
@@ -22,6 +22,8 @@ def main():
         '--read-only','--tmpfs','/tmp:rw,exec,nosuid,nodev,size=1024m','--env','NVIDIA_VISIBLE_DEVICES=none',
         '--env','CUDA_VISIBLE_DEVICES=','--env','PYTHONPATH=','--env','PYTHONDONTWRITEBYTECODE=1',
         '--env','HF_HUB_OFFLINE=1','--env','VLLM_CACHE_ROOT=/tmp/vllm','--env','HF_HOME=/tmp/hf',
+        '--env','HOME=/tmp/flashnext-home','--env','XDG_CACHE_HOME=/tmp/flashnext-cache',
+        '--env','FLASHINFER_WORKSPACE_BASE=/tmp/flashnext-home',
         '--env','TRITON_CACHE_DIR=/tmp/triton','--mount','type=bind,src='+str(root/'proof')+',dst=/proof,readonly',
         '--mount','type=bind,src='+str(out)+',dst=/out']
     for mount in graph['mounts']:
