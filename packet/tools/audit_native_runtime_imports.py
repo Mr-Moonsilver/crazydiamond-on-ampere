@@ -13,7 +13,7 @@ from pathlib import Path
 import re
 import sys
 
-TRUSTED_LAUNCHER = 'c9f5300cef30c6d53a5627f007cb743e00f99812e152dd7f4a2992b1f5476833'
+TRUSTED_LAUNCHER = '83ca0128798fe184b87c006149800994c825979ecedae24a72387b4d7a7085a4'
 SITE = '/usr/local/lib/python3.12/dist-packages/'
 VARS = {'V': SITE+'vllm/v1', 'C': SITE+'vllm/v1/core',
         'D': SITE+'vllm/models/qwen4_exp/nvidia'}
