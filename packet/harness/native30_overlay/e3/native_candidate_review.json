@@ -9,14 +9,14 @@
     "target_sha256": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799"
   },
   "cpu_regression": {
-    "basis": "registered runtime and allocator-retirement regressions on1f248f8; actual-image allocator proof separately executed; fresh queue files are name-only and separately verified",
-    "cases": 272,
+    "basis": "registered sparse waves and expanded-report closure regressions; actual mounted-image CPU source proof and GPU device proof separately executed; fresh native14 queue files names-only",
+    "cases": 275,
     "exit_code": 0,
-    "log": "tmp/native13-frontier-selftest.log",
-    "log_sha256": "04bd8a81f951b8275bf23789e645193af7687abbdcf3d282fee96e9595c0426a",
-    "required": 272,
-    "runtime_commit": "1f248f8e1d48ae1fcd8022dc1022ad016d759935",
-    "tested_commit": "1f248f8e1d48ae1fcd8022dc1022ad016d759935"
+    "log": "tmp/native14-closure-selftest.log",
+    "log_sha256": "c77b1b265a1f4b1b266861e228b07178163de3ad1dfd61b6c9320e334f8b1f81",
+    "required": 275,
+    "runtime_commit": "47a53b38ec2a8df13ad0c4dbec2f0e1bf479f69a",
+    "tested_commit": "47a53b38ec2a8df13ad0c4dbec2f0e1bf479f69a"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -65,6 +65,7 @@
     "e3_lane_comm_probe.py": "c662ef7139d8a2c423261defa4405d4e3d43e385c4e32c6271ee76217fdbe1bf",
     "e3_native_align_capacity_probe.py": "2e7ffd021eba1940aac657ba26995eb604beee593004df1e898e0abfc3c0045d",
     "e3_native_device_path_probe.py": "8bda791f4aa2ee24c314c66df0e7f74d97ba42c7bd39382336a02dd0fa593a1c",
+    "e3_native_expanded_reports_cpu_probe.py": "f4ae27e5464e11c56e8197650ad42618b70a6fcac7b7620a279c8f474b079dec",
     "e3_native_frontier_reuse_probe.py": "8fdceece78dcfcc58ba812026096524b7371e1de110bd63d27758e5c098f6f5f",
     "e3_native_host_plan_probe.py": "a598bbc9221cd479a0fb0e0d6da6ef62fbfb7ed8cd1535dfb6b1192040160041",
     "e3_native_import_probe.py": "7643e5c7d8ae8bbf8202c918472e33e5fd774cbdf94dbbbcde2e0963b4127bbb",
@@ -77,6 +78,8 @@
     "e3_native_row1_backend_probe.py": "13bfee90afb80400482559c9fdcc2e5d636e715b94f8d56f86a9db55437d0c97",
     "e3_native_row1_grade.py": "06d6c85076f5418678315c0eddce60276a60bba747eb2f9ec8c7c12844d250b6",
     "e3_native_runtime_client.py": "901b59c267865e7f00ee2ec94dfb54f74edfba1f514d2827e221fa837d5b1526",
+    "e3_native_sparse_waves_cpu_probe.py": "dd654ce3586c4e501da3ecb142340252a15b962f4abe252583dbbdaf81d771db",
+    "e3_native_sparse_waves_device_probe.py": "d78888eebf408cde0e9774a5fb8f43cbb5be30337a33aecfb6e5b097f508a254",
     "e3_native_startup_grade.py": "763407286621dd0f7eb5b05b8ed2dd2a500adad1c9f14de8c766e33641a7e5f2",
     "e3_native_teacher_sequence.py": "5ec1dadfb770e998fe7684e0d6252fb1efd5584d9bbd53d628b330057ecb7476",
     "e3_native_w1.py": "0f1e56c2b11e90f2f45873cfa43e4e8b8ae2ef9ef2bbb4ce4fea45e425e5bf0d",
@@ -312,6 +315,9 @@
     "runs/q18a_native13.draft.sh": "83a40854d84032173869020d722e0d221149e8ec67d02745b3b6b713135adcc1",
     "runs/q18a_native13_declare.sh": "e0a64a5fdaee79fcf1d0e6f6fcde46346ac04c2c761f4c88e38b38eda368b457",
     "runs/q18a_native13_settings.sh": "21ad7b366b737eccd62e69c915f639a31112a6650df7826403a39094c5f1f23a",
+    "runs/q18a_native14.draft.sh": "e308fec649b5633c9f8e34a20ed9bdb875964351cea631f584ebbcfb98cab39e",
+    "runs/q18a_native14_declare.sh": "cef6a11110fe88a24c04ff208a4861ffc790c162ce309c7f720f8e2e0557c582",
+    "runs/q18a_native14_settings.sh": "c9d7f2393922ce39382dd1cbce5734242c7d0d4eda92c7369176f85375e17486",
     "runs/q18a_native1_declare.sh": "2052525e381dec2544a41d9af00fcacc9776b0cdc7bc9d9857f9810baa3e2d9a",
     "runs/q18a_native1_settings.sh": "6e4494bb5c5228187f48242a2568c32aa770c2ba70bf5f0333fdd90d559f9e42",
     "runs/q18a_native2.draft.sh": "2518bbbd35a01fbf646aa9594b71404dbd1eff4567e17208ec9470dd8a70973a",
@@ -470,7 +476,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "afff1918be1931118c0a6ec8f878df626de045f163d2ea7faf1a83db5f0849ce",
+    "selftest.py": "b89e423e230a5ee5eba392432513ea47d63f92d0de8ed8e0b3ecb6d757eee2f6",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -537,6 +543,7 @@
     "test_e3_native_api_qualification_composition.py": "7763d35755d8a9da778fc17ad1099db3fd6a53a9afee2302a50168e9ad3c1af6",
     "test_e3_native_daytime_rehearsal.py": "8e773fffff82bd3a2d8f3bc4833c4229cb9a83ce89b1dad18caaf7b313da09c4",
     "test_e3_native_device_path_probe.py": "3b544836545da9fbd1a476726a50aa5b5ce38023aa31613dccf91bcb1c7f7917",
+    "test_e3_native_expanded_reports.py": "e576bbf67a606c4838662ca042b74454ade22ffebc2084df34ccac3c452a1a38",
     "test_e3_native_graph_placement.py": "a339aee928d6a867c1a9e8bfa85de0054eb85ac0530bd8d533a939ad8be807dc",
     "test_e3_native_imports.py": "6e19fe29661ecf9a447800100ec733df2961b4d5122dee1c4e98ea839303577f",
     "test_e3_native_integration.py": "fed4775b6f8d141e9c7a1026d949b2145499fbc319b2ea68af827e09a9d67b47",
@@ -555,6 +562,7 @@
     "test_e3_native_report_read.py": "0f3ebbcf5c9b2bf4865084e56b3aeaf372d09d83256371b49abaad530806130b",
     "test_e3_native_row1_grade.py": "35d00ed74bc0c63a48ea55cb009449e4c32ef46668ccc461dc487b9cb6d333f1",
     "test_e3_native_source_oracle.py": "92e09186f235173baa783d24c560dadaaaa3497495108db0b655629cbf24ce95",
+    "test_e3_native_sparse_waves_device_probe.py": "8d3aa9523725d7a1e76f2a797ef15b580d072bfb56c3854864243c4313797e96",
     "test_e3_native_startup.py": "7badd18e12dcfa7fd04518d04aa1d4b71173abc33818b8d01fd50c11b7247016",
     "test_e3_native_startup_binding.py": "f4073c9807518aad23e1f7c7f5500a46917ebb1a65e04aaff2f05a8a09cbc153",
     "test_e3_native_storage_replay.py": "346e2c61ead00e232fb91647bb4bce76c5dfab97ef1a1983061642822a0314b9",
@@ -577,7 +585,8 @@
     "test_e3_replay_observer.py": "a8f33da2bc9707cec1668ce1a4a7ad1285ab7b1e82a15df0048732056315cbda",
     "test_e3_route_invariant.py": "a96d8a23d61428abd274e4ddedc5bd648c723935dad0ee3f6712fe8fc3f79b6e",
     "test_e3_row1_exactness.py": "1bf9ab1ac759ac2895850f3ca205ecf49b6e162b47da0d0c6d6c71ea02ec9263",
-    "test_e3_sparse_history_dma.py": "2f9a30c5875f3dca49cb51d2bdc542f9bc149cd89d0d0512f24f4fda857ad0b2",
+    "test_e3_sparse_copy_waves.py": "5ba0253f1e25e0b9dc74e2d1157111478afcfd65bd48a7d895cebc1e36b224b7",
+    "test_e3_sparse_history_dma.py": "3fe1a7a4ebface6760e7def1fee7657211f8faa6aab315db7f018175ff773c06",
     "test_e3_startup_grade.py": "67251a3496944b0e5a5b85cf5bdbdeb570ee545a6fabd9f3a4e9429658c0b49a",
     "test_e3_startup_queue.py": "af7d2a703e0dc5711ab34d96d5ae1b51908c387ee077ff518b5c61029958ef1f",
     "test_e3_stock_api.py": "754ae93eda5fe6e15efa72c297ea07207390b983d0b8d45be6ee94a602f786ce",
@@ -722,9 +731,9 @@
   },
   "mounted_runtime_import_audit": {
     "deferred": 277,
-    "edges": 1101,
-    "graph": "reviews/codex-20261028-native13-mounted-import-edges.json",
-    "graph_sha256": "bc24264b94f7e8d603bef0bce0c50a93a514e08b4a823b927ffe7991f0420c13",
+    "edges": 1102,
+    "graph": "reviews/codex-20261028-native14-mounted-import-edges.json",
+    "graph_sha256": "e4fb61bd309b6fac39ff6a60853f14bd52e166f526fa8f4324bb6908a5909008",
     "modules": 83,
     "runtime_ownership_errors": 0,
     "scope": "same exact trusted launcher; final generated module bytes must equal actual CPU-proven overlay",
@@ -772,6 +781,72 @@
     "reused_chunks": 95,
     "schema": "native13-frontier-reuse-regrade/1",
     "scope": "real mounted allocator/Mamba manager and frontier on CPU; synthetic scheduler owner, no workers/model/performance",
+    "verdict": "PASS"
+  },
+  "real_expanded_report_cpu_proof": {
+    "accepted_segments": 258,
+    "aggregate_limits": {
+      "completed_per_rank_total_limit": 1048576,
+      "max_cancels_per_chunk": 4,
+      "max_chunks_per_request": 256,
+      "max_chunks_total": 8192,
+      "max_frontiers_per_chunk": 4,
+      "max_orphan_transactions": 128,
+      "max_pp_receipts_per_chunk": 8,
+      "max_proofs_per_rank": null,
+      "max_requests": 32,
+      "max_segments_per_chunk": null,
+      "max_source_holds_per_chunk": 4,
+      "max_standalone_cancellations": 128,
+      "plan_segments_basis": "driver _build_plan = 10 + 48 layers = 58; descriptive, not a completeness count: a paused QSA continuation is re-issued under a new stage-local id",
+      "plan_segments_per_chunk": null,
+      "pool_chunk_capacity": true,
+      "proofs_per_rank_total_limit": 1048576,
+      "retained_completed_per_rank": {
+        "0": 229,
+        "1": 229,
+        "2": 29,
+        "3": 29
+      },
+      "retained_proofs_per_rank": {
+        "0": 230,
+        "1": 230,
+        "2": 31,
+        "3": 31
+      },
+      "retained_segments_total": 258,
+      "segment_identity": "(stage, op_seq)",
+      "segments_total_limit": 1048576,
+      "shape_basis": "MAX_MODEL_LEN=262144 / 1024-token chunks = 256 chunks; plan = 10 + 48 layers = 58 segments; 32 requests = 3 lanes x (fresh+append) x 4 declared repeats + headroom"
+    },
+    "box_go": false,
+    "counts": {
+      "deferred": 262,
+      "modules": 81,
+      "providers": 6
+    },
+    "hardware_qualified": false,
+    "manifest_sha256": "34d54095bf86f16694b9801062cae486eee1205fac337f5eaa61174dfbe8630f",
+    "paged_reports": 2,
+    "queried_proofs": [
+      230,
+      230,
+      31,
+      31
+    ],
+    "raw_commit": "dc9440c",
+    "raw_journal_dropped": 282,
+    "raw_path": "<hub-dir>/agents/flash-next/fn-main/results/vm<vm-id>/native14-expanded-reports-c/result.json",
+    "raw_sha256": "034adf548b8f2d3f91eb810ac33f05e4332bed09f45474255e8549bf2cf49098",
+    "scope": "mounted actual own-runtime source with declared CPU fake scheduler/device leaves; no GPU/model/TP/PP/performance",
+    "source_shas": {
+      "engine_driver": "b2e6b93651663ac0a70d999a2e6f655cf77176882a51efb37353ab8977ca3b5c",
+      "native_measurement": "ded2f2b2ac5fa6f6099d9e850db707da824fad0f16f4a7e54f08c687c6dae84a"
+    },
+    "stage_segments": {
+      "0": 229,
+      "1": 29
+    },
     "verdict": "PASS"
   },
   "real_mamba_slot_capacity_cpu_proof": {
@@ -943,45 +1018,69 @@
     "verdict": "PASS"
   },
   "real_overlay_import_cpu_proof": {
-    "chunks": 97,
+    "accepted_segments": 258,
+    "aggregate_limits": {
+      "completed_per_rank_total_limit": 1048576,
+      "max_cancels_per_chunk": 4,
+      "max_chunks_per_request": 256,
+      "max_chunks_total": 8192,
+      "max_frontiers_per_chunk": 4,
+      "max_orphan_transactions": 128,
+      "max_pp_receipts_per_chunk": 8,
+      "max_proofs_per_rank": null,
+      "max_requests": 32,
+      "max_segments_per_chunk": null,
+      "max_source_holds_per_chunk": 4,
+      "max_standalone_cancellations": 128,
+      "plan_segments_basis": "driver _build_plan = 10 + 48 layers = 58; descriptive, not a completeness count: a paused QSA continuation is re-issued under a new stage-local id",
+      "plan_segments_per_chunk": null,
+      "pool_chunk_capacity": true,
+      "proofs_per_rank_total_limit": 1048576,
+      "retained_completed_per_rank": {
+        "0": 229,
+        "1": 229,
+        "2": 29,
+        "3": 29
+      },
+      "retained_proofs_per_rank": {
+        "0": 230,
+        "1": 230,
+        "2": 31,
+        "3": 31
+      },
+      "retained_segments_total": 258,
+      "segment_identity": "(stage, op_seq)",
+      "segments_total_limit": 1048576,
+      "shape_basis": "MAX_MODEL_LEN=262144 / 1024-token chunks = 256 chunks; plan = 10 + 48 layers = 58 segments; 32 requests = 3 lanes x (fresh+append) x 4 declared repeats + headroom"
+    },
+    "box_go": false,
     "counts": {
       "deferred": 262,
       "modules": 81,
       "providers": 6
     },
-    "distinct_pages": 2,
-    "engine_qualified": false,
     "hardware_qualified": false,
-    "input": {
-      "changed_overlay_files": [
-        "e3/scheduler_hooks.py",
-        "e3/async_handoff.py"
-      ],
-      "files": 96,
-      "graph_sha256": "bc24264b94f7e8d603bef0bce0c50a93a514e08b4a823b927ffe7991f0420c13",
-      "input": "<hub-dir>/agents/flash-next/tmp/native13-frontier-reuse-proof-20261028T121300Z",
-      "probe_sha256": "8fdceece78dcfcc58ba812026096524b7371e1de110bd63d27758e5c098f6f5f",
-      "runner_sha256": "a8d3cedb5e25bbb5de13c45991fd98f44be14c6701445fa69b6a7d2023f2bb5e",
-      "sha256": "35163423736b82930cf500c417441228aef3377b48e6d4ae416b9b6b32fd298b",
-      "vm_input": "/opt/flashnext/cpu/native13-frontier-reuse-35163423736b"
+    "manifest_sha256": "34d54095bf86f16694b9801062cae486eee1205fac337f5eaa61174dfbe8630f",
+    "paged_reports": 2,
+    "queried_proofs": [
+      230,
+      230,
+      31,
+      31
+    ],
+    "raw_commit": "dc9440c",
+    "raw_journal_dropped": 282,
+    "raw_path": "<hub-dir>/agents/flash-next/fn-main/results/vm<vm-id>/native14-expanded-reports-c/result.json",
+    "raw_sha256": "034adf548b8f2d3f91eb810ac33f05e4332bed09f45474255e8549bf2cf49098",
+    "scope": "mounted actual own-runtime source with declared CPU fake scheduler/device leaves; no GPU/model/TP/PP/performance",
+    "source_shas": {
+      "engine_driver": "b2e6b93651663ac0a70d999a2e6f655cf77176882a51efb37353ab8977ca3b5c",
+      "native_measurement": "ded2f2b2ac5fa6f6099d9e850db707da824fad0f16f4a7e54f08c687c6dae84a"
     },
-    "legacy_refusal": {
-      "message": "allocation reuse requires explicit frontier retirement",
-      "refused": true,
-      "scope": "unchanged legacy callback invoked directly on real owner/page",
-      "source_sha256": "4618e933258ca3a69715a20a564e75a2ecb0408741015050a5548bd3003b9ba1"
+    "stage_segments": {
+      "0": 229,
+      "1": 29
     },
-    "process": {
-      "container_retained": true,
-      "gpu_exposed": false,
-      "image": "ad067db5",
-      "rc": 0
-    },
-    "raw_sha256": "18c704fa11cf218548b77f311e1231ab8be8311facba56cb07599df78f9d8827",
-    "release_qualified": false,
-    "reused_chunks": 95,
-    "schema": "native13-frontier-reuse-regrade/1",
-    "scope": "real mounted allocator/Mamba manager and frontier on CPU; synthetic scheduler owner, no workers/model/performance",
     "verdict": "PASS"
   },
   "real_qsa_host_plan_cpu_proof": {
@@ -1158,6 +1257,33 @@
     "unbound_forward_context_refused": true,
     "verdict": "PASS"
   },
+  "real_sparse_waves_gpu_proof": {
+    "box_go": false,
+    "graded": {
+      "failures": [],
+      "missing": [],
+      "rc": 0,
+      "verdict": "PASS"
+    },
+    "overlay_manifest": "c09a8bdc757ec4827e063b7ba456e50eea0c8f8c11b6a38b72d1b0864a81bc89",
+    "own_peak_mib": 442,
+    "own_samples": 38,
+    "raw_commit": "50c179b",
+    "raw_path": "<hub-dir>/agents/flash-next/fn-main/results/vm<vm-id>/native14-device-waves-b",
+    "raw_probe_sha256": "da2ef05463a04e281e5db73ed5a5f8eded5ad80d6c3ac9bdd2803613219aa0f1",
+    "remaining_gate": "source-tested cumulative-report serialization and pooled telemetry closure",
+    "scope": "actual device alignment, dense and sparse attention, bounded fragmented waves, cancel/drain/release/refill; no full engine/TP/PP/placement/performance",
+    "sections": [
+      "alignment",
+      "backend_negative",
+      "cancel_fragmented",
+      "dense_dma",
+      "refill_fragmented",
+      "sparse_dma",
+      "sparse_fragmented"
+    ],
+    "verdict": "PASS"
+  },
   "real_stock_class_cpu_proof": {
     "classes": 32,
     "contract_sha256": "96bfbd945ab3e3dcac8b2da465c28e12307249703e152d5643b169a7370c3f66",
@@ -1206,20 +1332,27 @@
     "reviews/codex-20261028-native11-independent-regrade.md",
     "reviews/codex-20261028-native12-alignment-contract-review.md",
     "reviews/codex-20261028-native12-box-frontier-regrade.md",
-    "reviews/codex-20261028-native13-frontier-repair.md"
+    "reviews/codex-20261028-native13-frontier-repair.md",
+    "reviews/codex-20261028-native13-box-sparse-regrade.md",
+    "reviews/codex-20261028-native14-expanded-report-closure.md"
   ],
   "reviewed_by": "Codex",
   "schema": "e3-native-source-review/1",
   "scope": "implementation closure for owner test only",
   "source_delta": {
-    "basis": "native12 stale physical-page publication after allocator reuse",
-    "builder_modules": [],
+    "basis": "native13 sparse descriptor fragmentation and expanded continuation metadata",
+    "builder_modules": [
+      "operation_source.py"
+    ],
     "new_runtime_modules": [],
     "runtime_modules": [
-      "scheduler_hooks.py",
-      "async_handoff.py"
+      "sparse_history_dma.py",
+      "qsa_operation.py",
+      "qsa_driver.py",
+      "engine_driver.py",
+      "native_measurement.py"
     ],
-    "scope": "allocation event retires previous publication only after whole-batch lease and unpublished-reservation checks; free/cache hits/commit/device paths/launcher/settings/workload/gates unchanged; fresh native13 names"
+    "scope": "256-descriptor queried copy waves preserve one compact attention bucket; long source reports losslessly paged, same aggregate telemetry capacity pooled across chunks; settings, thresholds, numerics, oracle, source holds and launcher unchanged; native14 names"
   },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
@@ -1228,7 +1361,7 @@
     "capture_streams.py": "76944d3416a9635cbecd81c70c1d538d5e0efc25d4fed4a3f2cf200ec3f4bd2b",
     "decode_probe.py": "7e27045eeec2d3ed02263db1496727e27d732d724b192d1a7e0e50261e7d1f4b",
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
-    "engine_driver.py": "2c813f98c6e6007fa2b47a021903dde3cdbe1fe2c0622f08fad7bd76ee0f6472",
+    "engine_driver.py": "a487c0f798da5aa1fe758cfda8f81c92f165e13bf6e36fbd24875f5ee6c58a34",
     "engine_offers.py": "16e2775ba04461ad953e83eedd1ebb951a43b3d134789c225c6e6a1e5a721d2f",
     "executor_hooks.py": "d2ae6a2a5c561bdf596ae1a5744dfc3695193e85fd603b26de48019e0e2e26a9",
     "graph_hooks.py": "12ad7e3500b559f2d398a6676292094e4d455df12d4c6951803dbac9f38663c5",
@@ -1249,7 +1382,7 @@
     "native/flash_s5_replay_observer.cpp": "3713542b4165fb28e85d7099b3c3d91690856b2770b81da1aa179c6b4e605ece",
     "native_backend.py": "d7167cfb873d08138556663db44bf6bdbd2748706c5c8367d3719481e507a6a0",
     "native_graph_placement.py": "4c32310bbea2a70416eec85804dec578e7a3be8680f393c7211f1e59482ec216",
-    "native_measurement.py": "7f85cff78b7c4d076b55c3cb57b164abcad06ed2f7bcd44b5e9551c725214957",
+    "native_measurement.py": "e75e4597eeb66307a59b0a50f0e0d123a5ae4a5506b4dbd69b71232a7a600884",
     "native_observation.py": "714fadc6841cf5441134879039aaa776c81dd5f8d24af0130d4fabe237bc0a7a",
     "native_overlap_control.py": "3f50f5866c3cb01fd16e4e6b72c870b18a273f09c428c54c18d3442f10790975",
     "native_overlap_metrics.py": "17d3f5de2db7db8acc4cb5a130351ce169d7b5b76f052a03fd9a0315430827fa",
@@ -1264,12 +1397,12 @@
     "native_source.py": "01e61fc356883d9ebbf65ab415ea71279025c30cbed380d39f9c1848cb5ca771",
     "native_startup.py": "311e1953d659485ff1a37c38e8491098544c8a77f6aa036ec0819a7a44f763ff",
     "observer_runtime.py": "a14fd87ec561da01ff02b11129f839806752a35b976e6fa9cc7d0b33921f544d",
-    "operation_source.py": "3abc7885cf93c80356ec9655ddeaa90163a0fe79aa176b58c1185772e6943ce9",
+    "operation_source.py": "e9fb97e2ee28df794610e5805132b5247275708188812b3ce6a5b9483c95bab2",
     "probe_control.py": "c2b34f321ac49ab423f05bebdeef96d479cb141d7f3ba2147666dfed98d7ad28",
     "probe_control_hooks.py": "4e3f298a67d013a74822d1e6a1c3e84c807a5e6eef8e2c8f861f19afbe154301",
     "probe_session.py": "0faf61f5b265377ebebf59866787fcc250e7f321ca6913b76e8b2a07104ce1b4",
-    "qsa_driver.py": "740e8276e1baefa1488cc7fc27e497c38d3e0873bf0d764d6b8bcae96ef7efe7",
-    "qsa_operation.py": "babb80a3bae2b40b0e9a3a9b453303dbf4e22fe41c43b2a204b8e485163cfbdf",
+    "qsa_driver.py": "320e41f6e82116b424ca2f57a39db75a64ec71deae763edebe0031edc9c5189f",
+    "qsa_operation.py": "fd9554f17ab6630a1a780300921ae2520504763b860cba672cb8c1d268d26031",
     "replay_observer.py": "7b331d0eb55130b8def8b51c651b95b2d0aa9981cbc2329a06990b0d6ebc257c",
     "reply_transport.py": "6c0978654e022605379a7b845ba5f592f3d200f7015024ec69f42936e509259b",
     "route_invariant.py": "e20333e2a4e104cf2fe24aad2b3ef1d91a75effc2ee47b7a763f595a66ff6884",
@@ -1277,7 +1410,7 @@
     "row1_oracle.py": "222daf40526971511997aac1c8a5b485bae1b095ea0e0b7839d97d795e19ef12",
     "s5_startup.py": "849507d2045af3f8fd46ae2708e547be1d5cb8166c9605205f06b75a56143a66",
     "scheduler_hooks.py": "071ec06ab3f60682c2f0dc199fd6253c490c3ae26ea7edb629c18fc3bbcd53af",
-    "sparse_history_dma.py": "3f8218efb9133f18efd9aefee9a359ab0c6ea64403f98038ba620e85dcada211",
+    "sparse_history_dma.py": "8d797043b9f077906e93cc32f13f2ba54e56197ba4ce701405951446cc843287",
     "split_bank.py": "ef8222d57888c8103936dffe4f3643edc5ba437b96fb1cab3c8341f97c1d19b4",
     "teacher_decode.py": "8ab74b57de7ea90f4a94154d9bd609ab748400e989f58eb5bc553d427faff05c",
     "wire_v1.py": "f8aaa360a18c7fe9e530ffcf4775b741c88fa5c8a2156b03651e5fd303200721",
@@ -1297,7 +1430,7 @@
     "source_contract_tests": 10
   },
   "startup_guard_delta": {
-    "scope": "no startup flag change; actual allocation reuse retires prior publication, with existing lease/unpublished guards retained; unsafe allocator refusal remains fatal and is not retried"
+    "scope": "no startup flag or stock API change; actual same compact sparse bucket copied through queried bounded waves; metadata source vector pages and pooled budgets, no inferred completion"
   },
   "stock_api_audit": {
     "contract_sha256": "96bfbd945ab3e3dcac8b2da465c28e12307249703e152d5643b169a7370c3f66",
