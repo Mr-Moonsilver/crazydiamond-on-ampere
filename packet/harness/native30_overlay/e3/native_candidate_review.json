@@ -1,11 +1,11 @@
 {
   "cpu_regression": {
-    "cases": 263,
+    "cases": 264,
     "exit_code": 0,
-    "log": "tmp/native-backbone-vm13g-selftest-20261027T2305Z.log",
-    "log_sha256": "c7e82d5dfda1ee82e775ab7fcae7c6c0fa4439921d664a60689b70a3a92b452f",
-    "required": 263,
-    "tested_commit": "c5c7548"
+    "log": "tmp/native-mamba-vm13h-selftest-20261028T0009Z.log",
+    "log_sha256": "76838e91f9729c4b47a6834980babf01d91bdd8cde30b4202edb244cb3316328",
+    "required": 264,
+    "tested_commit": "c6b0813"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -287,6 +287,9 @@
     "runs/q18a_native3.draft.sh": "0a80c208d94db7b828a644284b39e7c572f274fbf1619311156a8b139ce98436",
     "runs/q18a_native3_declare.sh": "ebfbb85ec1ba75bd59936bf119ce65803cbed77ddce9567ec3aedf2b85213fbc",
     "runs/q18a_native3_settings.sh": "60c978820686b346a59360c04d5b9aa1140765b24c417cdc6aa41931b5554cd3",
+    "runs/q18a_native4.draft.sh": "d45c2fe153e785ee8563a55e1c7d0bcc31145ea027250501eac4bb9aca3c5b2e",
+    "runs/q18a_native4_declare.sh": "eae6d3d7f60e65e8630cab1e0a70318cb3ab3f060f95d80cea2ec871210c5000",
+    "runs/q18a_native4_settings.sh": "b8bc0865a6bad1e788489707791fa4355a656b2d0f4000b3f4f4de98dac52b45",
     "runs/q18a_overlap.draft.sh": "43096d9ea8a606a5416651febbd645e068ce8d7dbabb3a13cd1f40ba34579b83",
     "runs/q18a_overlap_declare.sh": "b082237f505768a013f22899ae58119c9e79a8b05c71a3cd3ba793d65ea14f74",
     "runs/q18a_overlap_settings.sh": "b0c5959b1a05b928360832bef7151e81a60bb3db87b16c479e236e5c2a1cab73",
@@ -345,6 +348,7 @@
     "runs/vmid_job13e.sh": "542cf6dd4d4877aa405278bdfc82ddfc76c1dd4c7ddb69687eaa6f0bccd13029",
     "runs/vmid_job13f.sh": "8e21562ca437a3e8a5426ffad4e4d08376e34d353503d29ee3d7c9554a9625fb",
     "runs/vmid_job13g.sh": "58b5c3f85fdad2ce1b92139872dca289095ce3b6634ccd2c92a0f26f33dafb9b",
+    "runs/vmid_job13h.sh": "31530ab416d78b556309d339d52ba54fd883986c95defddb54a6d42f20adbcb2",
     "runs/vmid_job14.sh": "01c0ad4890bd8b50ba90d5d365c27a5dfc2b90c846754cfcb12933b11cff9aa7",
     "runs/vmid_job14b.sh": "94567c3ac90871cba0c028e79f4bcd5531d6b2a78fecb5aa9b713e9e98fdfb5c",
     "runs/vmid_job2.sh": "471f8fbb7c112f5697b3a513c96ea7754d6b5e69e9b8c217bacf66dc567c222e",
@@ -418,7 +422,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "78440f8134440fc26531da734f24ec3bb64132004d42ce8436bf39c186d9debe",
+    "selftest.py": "5a4ee87f3d2e97347ff40dc0a988f6f18bcc51836a932ba48c162a4e45fcff13",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -471,7 +475,7 @@
     "test_e3_graph_routing.py": "8cf938864dcb3ce94224e8371df9615e3729b9f35328c43d3cd577c8ad6169a3",
     "test_e3_green_native.py": "092b8d751774cc63479e72cf9ea14c9afab9ffcbe2c291e82c79595087980ef4",
     "test_e3_green_probe.py": "baa17a2327676e644ec8e776b7ab6732502191f4f795b1ddac7ddbc3aa27d0f3",
-    "test_e3_lane_chunk.py": "e4928546c93288209e2dd1aa94fe0fafeeec986084a55002c51954621be37caf",
+    "test_e3_lane_chunk.py": "a6aea6cc6b7b7bf0922e31ae0ff540f9bbaac4d29d39bed45ebe3c044a7b5230",
     "test_e3_lane_comm.py": "323c3c6fa0dfe422b37678aff57d90f516f02c63ec902e7bb6b7d8b9f278ccb0",
     "test_e3_lane_comm_probe.py": "71dbd8bc9c8cb22838126ff27ae4fe69f69efee616654f95d1a7fd12dcfda435",
     "test_e3_lane_dispatch.py": "8264e576e295cb6acc93f910c68b1b9b4c552e54d8f1d60266469ff2a75176a7",
@@ -573,6 +577,7 @@
     "test_vmid_job13e.py": "9506a6bdc611910b3a563c78d11c21fe16d59da44d60a22f2024c4ac66096812",
     "test_vmid_job13f.py": "cf7828b3e42bf852976ffca188166d92537e7513ef56c68cf4a86be6f8408eed",
     "test_vmid_job13g.py": "aa2c0da66698160863e1c382fc778dd5c75e526e5b958150d616bfacd56400db",
+    "test_vmid_job13h.py": "250ebe5f51f912e6701e636ea394900cb1302b4a5599e4159ba80e0798551352",
     "test_vmid_job14.py": "27b80b8aa0b52be4e61ba4bfe79ca35b395cb119625d03b9b8028bd66c829722",
     "test_vmid_job14b.py": "8a16e6d8898186857745a6896d6784c1b850d1169b90a4bcfc57d3ccea843adf",
     "test_vmid_job2.py": "47e15aa66c86ad46c5b2dd1f20db501cd5ab2b8b2408140b3ebb82be326572c7",
@@ -621,6 +626,7 @@
     "vmid_job13e.py": "a29756e095b8a26bfbe231d12e8eddc145889cdd2c3a6f70ca72effb7bf18137",
     "vmid_job13f.py": "a75cc850b68566313b637e4f02e6a0d5ae9454d69b5c5787f317e2140e74f789",
     "vmid_job13g.py": "762ad7ba7cb3dfd1c8cf6c16dbfd0ba234dba9f9ac3f5bd77a36290b6b5d9161",
+    "vmid_job13h.py": "f6dd2dd0ad2cda2a2600f9713244695842538ebda7ccdceec3996f088e9d6897",
     "vmid_job14.py": "8ce07416f286bd03317a384aabb46ded272d19a73cebd4f15f5f59d90a8c4f44",
     "vmid_job14b.py": "c333e4011cdedac3f758f26c97d7f4b3b03c14a53e8906d8769a5e9ad83cab79",
     "vmid_job2.py": "999e1cfc2f1a409abf05ee65834606b7e7f4a4b6c2d946e542f75fe38b293bd1",
@@ -637,9 +643,10 @@
     "vmid_job8.py": "3b187be0bf5c501d479f8005998f136cc37adbac6b8d5fc82624c2d2f3311a36",
     "vmid_job9.py": "54795a7212c41dbf3da9acbfe2154f10beb5a5702005e51636fb1d159572c024",
     "vmid_job9b.py": "4649e7d43f8f881d195e2353073152425fbb1d18c20ea427c59377dcb1f6cf7e",
+    "vmid_mamba_align_proof.py": "405db9bd507cbdc62e3b7d9feedb4d38060b18b53b214cf486d7094f0adc9793",
     "vmid_qsa_dma.py": "63c69acb8d6a5ebe36208ad7fb51420240f6869ea694aca88be5b4434ee7a883",
     "vmid_sparse_plan.py": "0e93e63c8f7db6d3606feec166e8722dcc725fd168c96e005c7d2ce17f267869",
-    "vmid_support.py": "df896e99d50d210fb2c3e740cdbd2dc1ff4cf4f7f6492b70bd343e7c07af6204",
+    "vmid_support.py": "c4658690db46e3c86d6ad817f06393cb7eedf31e9f7920a5dadbdffefb8ebee2",
     "w3_queue.py": "7663550efa6357beb5a6a64a5859450264dd0ba05b3ccfec2a941149826bdd4e",
     "window_report.py": "70d3ba0d43d1c82b9ca6f2ef4b5541b660b4266bc4c878fcced30d2144250ca9",
     "workloads/q17b-correctness-precontrols.json": "0b6bd5bf0d40f04803b65cdf70f706b266682dd04a5a4ac82cb7160f4bbb76d8",
@@ -659,19 +666,20 @@
     "reviews/codex-20261027-native-performance-queue-composition.md",
     "reviews/codex-20261027-q18a-native1-declaration-repair.md",
     "reviews/codex-20261028-native-backbone-owner-repair.md",
-    "reviews/codex-20261028-vm13g-independent-regrade.md"
+    "reviews/codex-20261028-vm13g-independent-regrade.md",
+    "reviews/codex-20261028-q18a-native3-independent-regrade.md",
+    "reviews/codex-20261028-native-lazy-mamba-startup-repair.md",
+    "reviews/codex-20261028-vm13h-independent-regrade.md"
   ],
   "reviewed_by": "Codex",
   "schema": "e3-native-source-review/1",
   "scope": "implementation closure for owner test only",
   "source_delta": {
-    "basis": "q18a-native2 worker startup traceback and independently regraded VM13g",
+    "basis": "q18a-native3 all-rank lazy Mamba startup traceback and independently regraded VM13h",
     "runtime_modules": [
-      "lane_private.py",
-      "model_hooks.py",
-      "native_startup.py"
+      "lane_chunk.py"
     ],
-    "scope": "pinned local-backbone ownership only; generated model/runner/QSA/ops/launcher bytes and all settings/workloads/numerics/gates unchanged"
+    "scope": "lane-owned descriptors resolved/validated via actual stock APIs; ordinary cache/context and all generated model/runner/QSA/ops/launcher/native bytes unchanged; native4 queue names plus operator-authorized absolute-time-only change; settings/workloads/numerics/gates unchanged"
   },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
@@ -686,7 +694,7 @@
     "graph_hooks.py": "12ad7e3500b559f2d398a6676292094e4d455df12d4c6951803dbac9f38663c5",
     "graph_router.py": "5d19c0a2ee7c291ba910916ae3fefc652117a4efa2c8d7d235241e8902272a71",
     "green_context.py": "f0b9e48e536c120946235490829295a3941c9f93b89df4d8be231172b1f6f0fe",
-    "lane_chunk.py": "e82fa1876f40976fd820d608b9984e96091675e32050432dce6b3313478358c2",
+    "lane_chunk.py": "e1538fa075e3636ee0095a0c2cbef1cbe81eae6dc6592c609198371fa36d49bd",
     "lane_comm.py": "ae86ed9b5799fc6de8cb8159913999eaf9c047838604e9ec10a7506db15fb14f",
     "lane_dispatch.py": "b12276ac3a5577723e449bb02466249a63d3212772d5f40c03cb3d02d441e4ff",
     "lane_hooks.py": "9c7b3a08b412e36dbacd1b78509dc39c94db8c4fbfe0e3f2f141a13a6828d405",
@@ -740,6 +748,13 @@
       "receipt_commit": "82b6273",
       "receipt_sha256": "b9a822ee9c8aae1cb7948eac05ca7763b51f85abd23b8b67c59de6ddb0401305",
       "scope": "actual pinned owner-class shells with synthetic local metadata; repaired startup/private/forward ownership plus real CUDA private/observer scopes; no weights, model arithmetic or TP/PP proof",
+      "verdict": "PASS"
+    },
+    "job13h": {
+      "receipt_commit": "d04c52c",
+      "receipt_sha256": "21d70601bb6225b0e25fc286a877e9abbbb1a877bcfcb27752762b82ab3d59eb",
+      "scope": "actual pinned model copy getter/validator, LaneChunkFactory/private context from lazy state shell, distinct later stock ordinary context, aligned-index kernels and exact raw bytes over tiny synthetic GDN/PLE caches; VM13g owner/private/accounting/observer checks retained; no constructors, weights, full model/TPPP/speed proof",
+      "startup_receipt_sha256": "3eb28076a91e0848eb0467b0ffacae829abdafc98cbb4f6a7f6465057f21358c",
       "verdict": "PASS"
     }
   },
