@@ -118,7 +118,7 @@ def gpu_config(device):
     cfg=VllmConfig(
         model_config=ModelConfig(model=original.model_config.model,skip_tokenizer_init=True,
             language_model_only=True,dtype='bfloat16',max_model_len=256,enforce_eager=True),
-        cache_config=CacheConfig(block_size=4048,mamba_block_size=4048,num_gpu_blocks_override=4,
+        cache_config=CacheConfig(block_size=4048,mamba_block_size=4048,num_gpu_blocks_override=64,
             enable_prefix_caching=True,gpu_memory_utilization=.08,mamba_cache_mode='align'),
         scheduler_config=SchedulerConfig(max_model_len=256,is_encoder_decoder=False,
             max_num_batched_tokens=128,max_num_seqs=2,async_scheduling=True),
@@ -128,6 +128,44 @@ def gpu_config(device):
     assert cfg.max_concurrent_batches==2
     assert cfg.parallel_config.tensor_parallel_size==cfg.parallel_config.pipeline_parallel_size==1
     return cfg
+
+
+def cache_capacity_shape(cfg):
+    """Conservative per-owner page arithmetic, before any GPU allocation.
+
+    Real spec methods account for align-mode state's two resident pages and
+    the circular key ring; ceil(max_len / attention block) alone misses them.
+    These metadata specs are not the CUDA model's registered owner graph;
+    actual EngineCore still resolves/checks its own worker cache geometry.
+    """
+    import torch
+    from vllm.models.qwen4_exp.nvidia.model import Qwen4ExpForConditionalGeneration as Model
+    from vllm.v1.kv_cache_interface import FullAttentionSpec,MLAAttentionSpec,CircularBufferSpec
+    gdn,ple=Model.get_mamba_specs_from_config(cfg)
+    bs=cfg.cache_config.block_size;length=cfg.model_config.max_model_len
+    gdn=gdn.copy_with_new_block_size(bs);ple=ple.copy_with_new_block_size(bs)
+    specs={'gdn0':gdn,'gdn2':gdn,'ple':ple,
+        'qsa':FullAttentionSpec(block_size=bs,num_kv_heads=1,head_size=256,head_size_v=256,dtype=torch.bfloat16),
+        'raw_keys':CircularBufferSpec(block_size=4,num_kv_heads=1,head_size=64,head_size_v=0,dtype=torch.bfloat16),
+        'compressed_keys':MLAAttentionSpec(block_size=bs,num_kv_heads=1,head_size=64,dtype=torch.bfloat16,tokens_per_state=4)}
+    rows=[]
+    for name,spec in specs.items():
+        page=spec.page_size_bytes;needed=spec.max_memory_usage_bytes(cfg)
+        resident=(needed+page-1)//page
+        table=spec.max_num_blocks_per_req(cfg,length)
+        rows.append(dict(owner=name,type=type(spec).__name__,block_size=spec.block_size,
+            page_bytes=page,max_memory_bytes=needed,resident_pages=resident,table_entries=table))
+    per_request=sum(row['resident_pages'] for row in rows)
+    required=1+per_request*cfg.scheduler_config.max_num_seqs
+    override=cfg.cache_config.num_gpu_blocks_override
+    assert override>=required and 4<1+per_request
+    return dict(verdict='PASS',max_model_len=length,attention_block_size=bs,
+        attention_table_entries=(length+bs-1)//bs,per_owner=rows,
+        conservative_per_request_pages=per_request,null_page_reserve=1,
+        max_num_seqs=cfg.scheduler_config.max_num_seqs,required_with_margin=required,
+        override=override,legacy_four_blocks_rejected=True,
+        actual_spec_methods=True,worker_registered_specs_replaced=False,
+        scope='CPU metadata capacity guard only; real Core retains actual grouping/layout/byte-budget checks')
 
 
 def gpu_shape(*,cpu_only=True):
@@ -147,6 +185,7 @@ def gpu_shape(*,cpu_only=True):
     if cpu_only:assert not torch.cuda.is_initialized()
     else:assert torch.cuda.device_count()==1
     return dict(verdict='PASS',batch_queue_size=cfg.max_concurrent_batches,
+        cache_capacity=cache_capacity_shape(cfg),
         venue_preconditions=dict(cpu_only=cpu_only,cuda_initialized_before=cuda_before,
             cuda_initialized_after=torch.cuda.is_initialized(),device_count=torch.cuda.device_count(),
             cuda_uninitialized_required=cpu_only,

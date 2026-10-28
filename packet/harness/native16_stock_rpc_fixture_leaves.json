@@ -26,6 +26,13 @@
       "equivalence": "real EngineCore/MultiprocExecutor worker startup and32-token forward/sampling loop exercise the same ordinary futures, reply queues and credit retirement; model bytes, native startup, multi-rank placement and speed are not equivalent",
       "more_convenient": true,
       "box_evidence": false
+    },
+    {
+      "leaf": "CPU cache-spec capacity projection",
+      "replaces": "registered CUDA model cache-owner graph for preflight arithmetic only",
+      "equivalence": "real model-derived GDN/PLE state spec shapes and real FullAttention/CircularBuffer/MLA spec methods count resident pages, table rows, null reserve and max request slots; not a substitute for stock Core grouping/layout/byte-budget checks",
+      "more_convenient": true,
+      "box_evidence": false
     }
   ],
   "missing_contract_now_exercised": "Stock FutureWrapper.result drains earlier ordinary futures before returning a sampling future; native ACK sequences remain independently owned."
