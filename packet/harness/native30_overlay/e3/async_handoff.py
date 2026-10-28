@@ -971,8 +971,9 @@ class HandoffDispatcher:
             raise HandoffError('transport is already installed')
         if not isinstance(transport, ReplyTransport):
             raise ConfigurationError('dispatcher needs the owned ReplyTransport')
-        if transport._owner_thread != self.owner_thread:
-            raise ConfigurationError('transport must be created by the dispatcher thread')
+        # The dispatcher remains thread-affine; the reply broker is owned by
+        # this process and also serves stock IO/health/shutdown callers.
+        transport._owner()
         self._transport = transport
         return transport
 

@@ -117,7 +117,7 @@ class ReceiverTests(unittest.TestCase):
         with self.assertRaisesRegex(TransportError,'broadcast_failed'):self.t.poll()
         self.assertFalse(self.t.close(0)['clean'])
 
-    def test_second_owner_and_non_dispatcher_access_rejected(self):
+    def test_second_owner_refused_but_same_process_threads_share_the_broker(self):
         with self.assertRaises(TransportError):ReplyTransport(self.readers,Status.SUCCESS,handoff_idle=True)
         with self.assertRaises(ValueError):ReplyTransport({0:Reader()},Status.SUCCESS,handoff_idle=False)
         errors=[]
@@ -125,7 +125,7 @@ class ReceiverTests(unittest.TestCase):
             try:self.t.poll()
             except TransportError:errors.append(True)
         t=threading.Thread(target=wrong_thread);t.start();t.join(1)
-        self.assertEqual(errors,[True])
+        self.assertEqual(errors,[])
 
     def test_failed_handoff_does_not_leave_other_reader_claimed(self):
         class FixedReader:

@@ -973,12 +973,12 @@ class NativeSegmentDriver:
             raise DriverError('owned reply transport is not installed')
         sender = self._bounded()
         check = getattr(sender, 'check', None)
-        if callable(check):
-            check(envelope)      # backpressure before any expectation is registered
+        precheck = (lambda: check(envelope)) if callable(check) else None
         sequence = transport.submit(kind, lambda _sequence: sender(envelope),
                                     ranks=tuple(ranks),
                                     timeout_s=(self.reply_timeout_s if timeout_s is None
-                                               else timeout_s), aggregate=None)
+                                               else timeout_s), aggregate=None,
+                                    precheck=precheck)
         self._inflight[sequence] = kind
         return sequence
 

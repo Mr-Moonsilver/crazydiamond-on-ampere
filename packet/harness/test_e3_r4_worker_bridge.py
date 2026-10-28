@@ -516,7 +516,9 @@ class DirectTransport:
         # the reply is in flight on the owned transport.
         self.hold = False
 
-    def submit(self, kind, send, ranks=None, timeout_s=300.0, aggregate=None):
+    def submit(self, kind, send, ranks=None, timeout_s=300.0, aggregate=None, precheck=None):
+        if precheck is not None:
+            precheck()
         sequence = self.next
         self.next += 1
         self._calls[sequence] = types.SimpleNamespace(ready=False)

@@ -18,6 +18,7 @@ transport and real engine timing are owner-run acceptance steps.
 import hashlib
 import math
 import time
+import threading
 
 from e3_types import E3ContractError, E3Pending
 from reply_transport import Backpressure, NotReady, ReplyTransport, TransportError
@@ -135,12 +136,11 @@ _EXECUTOR_FORWARD = (
 ''', '''        """Returns single result if unique_reply_rank and/or an output
         aggregator is provided, otherwise list."""
 ''' + _EXECUTOR_GUARD),
-    ('''                for w in workers:
-                    # Shutdown response queues
-''', '''                _flash_s5_hooks.before_shutdown(self)
-                for w in workers:
-                    # Shutdown response queues
-'''),
+    ('    def shutdown(self):\n        """Properly shut down the executor and its workers"""\n',
+     '    def shutdown(self):\n        """Properly shut down the executor and its workers"""\n'
+     '        _flash_s5_hooks.before_shutdown(self)\n'),
+    ('        if rpc_broadcast_mq := getattr(self, "rpc_broadcast_mq", None):\n',
+     '        if (rpc_broadcast_mq := getattr(self, "rpc_broadcast_mq", None)) and not _flash_s5_hooks.retain_mq(self, None):\n'),
     ('''                for w in workers:
                     # Shutdown response queues
                     if w.worker_response_mq is not None:
@@ -154,7 +154,6 @@ _EXECUTOR_FORWARD = (
                         w.worker_response_mq = None
 '''),
     ('        if response_mqs := getattr(self, "response_mqs", None):\n',
-     '        _flash_s5_hooks.before_shutdown(self)\n'
      '        if (response_mqs := getattr(self, "response_mqs", None)) and not _flash_s5_hooks.retain_mq(self, None):\n'),
 )
 
@@ -338,6 +337,7 @@ class LocalFuture:
         self.executor = executor
         self.sequence = sequence
         self.aggregate = aggregate
+        self._lock = threading.RLock()
         self._consumed = False
         self._taken = None
         self._taken_lag = None
@@ -351,43 +351,40 @@ class LocalFuture:
         return transport
 
     def poll(self, budget=1):
-        transport = self._transport()
-        transport.poll(budget)
-        call = transport._calls.get(self.sequence)
-        return bool(call is not None and call.ready)
+        with self._lock:
+            if self._consumed:
+                return True
+            transport = self._transport()
+            transport.poll(budget)
+            return transport.call_ready(self.sequence)
 
     def done(self):
-        if self._consumed:
-            return True
         return self.poll(1)
 
     def take(self):
-        if self._consumed:
-            raise NotReady('future result already consumed')
-        value, lag = self._transport().take(self.sequence)
-        self._consumed = True
-        self._taken, self._taken_lag = value, lag
-        return value
+        with self._lock:
+            if self._consumed:
+                raise NotReady('future result already consumed')
+            value, lag = self._transport().take(self.sequence)
+            self._consumed = True
+            self._taken, self._taken_lag = value, lag
+            return value
 
     def result(self, timeout=None):
-        if self._result_ready:
-            return self._result
-        if self._consumed:
-            self._result = self.aggregate(self._taken) if self.aggregate else self._taken
-            self._result_ready = True
-            return self._result
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            transport = self._transport()
-            transport.poll(1)
-            call = transport._calls.get(self.sequence)
-            if call is None:
-                raise TransportError('reply expectation disappeared')
-            if call.ready:
-                value = self.take()
-                self._result = self.aggregate(value) if self.aggregate else value
-                self._result_ready = True
-                return self._result
+            with self._lock:
+                if self._result_ready:
+                    return self._result
+                if not self._consumed:
+                    transport = self._transport()
+                    transport.poll(1)
+                    if transport.call_ready(self.sequence):
+                        self.take()
+                if self._consumed:
+                    self._result = self.aggregate(self._taken) if self.aggregate else self._taken
+                    self._result_ready = True
+                    return self._result
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError('reply not ready before deadline')
             time.sleep(0.001)
@@ -476,7 +473,22 @@ class BoundedSender:
                 f'large={self.refused_large})')
 
 
+_INSTALL_LOCK = threading.RLock()
+
+
 def install(executor, *, config, success_status, clock=time.monotonic,
+            capacity=None):
+    current = getattr(executor, '_flash_s5_transport', None)
+    if current is not None:
+        current._owner()  # Refuse inherited parent resources before any lock.
+    with _INSTALL_LOCK:
+        if getattr(executor, '_flash_s5_shutdown_started', False):
+            raise E3ContractError('executor shutdown already started')
+        return _install_owned(executor, config=config, success_status=success_status,
+                              clock=clock, capacity=capacity)
+
+
+def _install_owned(executor, *, config, success_status, clock=time.monotonic,
             capacity=None):
     """Take sole receiver ownership at an idle executor handoff.
 
@@ -591,15 +603,24 @@ def before_shutdown(executor):
     MQs owned; ``retain_mq`` then refuses to tear those queues down. No forced
     thread cancellation or lease retirement is implied.
     """
-    transport = getattr(executor, '_flash_s5_transport', None)
+    current = getattr(executor, '_flash_s5_transport', None)
+    if current is not None:
+        current._owner()  # Forked processes cannot acquire parent lifecycle locks.
+    with _INSTALL_LOCK:
+        executor._flash_s5_shutdown_started = True
+        transport = getattr(executor, '_flash_s5_transport', None)
     if transport is None:
         return True, None
-    close = getattr(executor, '_flash_s5_close', None)
-    if close is not None:
-        return bool(close.get('clean')), close
-    report = transport.close(2.0)
-    executor._flash_s5_close = report
-    return bool(report.get('clean')), report
+    transport._owner()  # Same process, including IO/monitor/finalizer threads.
+    with transport._shutdown_lock:
+        close = getattr(executor, '_flash_s5_close', None)
+        if close is not None:
+            return bool(close.get('clean')), close
+        # Concurrent shutdown paths must retain MQs while close is in flight.
+        executor._flash_s5_close = {'clean': False, 'scope': 'transport close pending'}
+        report = transport.close(2.0)
+        executor._flash_s5_close = report
+        return bool(report.get('clean')), report
 
 
 def retain_mq(executor, worker):

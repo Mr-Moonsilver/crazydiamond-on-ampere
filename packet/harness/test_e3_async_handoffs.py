@@ -417,6 +417,9 @@ class SourceTransformTests(unittest.TestCase):
             def poll(self, budget):
                 return 0
 
+            def call_ready(self, sequence):
+                return self._calls[sequence].ready
+
             def take(self, sequence):
                 self.taken.append(sequence)
                 return sequence, {}
@@ -716,6 +719,7 @@ class ReviewRegressions(unittest.TestCase):
             _calls = {0: type('Call', (), {'ready': True})()}
             count = 0
             def poll(self, budget): pass
+            def call_ready(self, sequence): return self._calls[sequence].ready
             def take(self, sequence):
                 self.count += 1
                 del self._calls[sequence]
