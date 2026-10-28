@@ -63,6 +63,8 @@ class T:
             base._sync_parent()
 
     def copy_(self, other, non_blocking=False):
+        if self.shape != other.shape:
+            raise RuntimeError('tensor copy shapes differ')
         self.values[:len(other.values)] = list(other.values)
         self._sync_parent()
         return self
@@ -127,7 +129,7 @@ class FakeStates:
         self.num_computed_tokens_np = np.zeros(8, dtype=np.int32)
         self.num_computed_prefill_tokens = np.zeros(8, dtype=np.int32)
         self.num_computed_tokens = types.SimpleNamespace(
-            gpu='num-computed-gpu', stage_write_elem=lambda i, v: self.calls.append(('stage-computed', i, v)))
+            gpu=T([0] * 8), stage_write_elem=lambda i, v: self.calls.append(('stage-computed', i, v)))
 
     def add_request(self, req_id, prompt_len, all_token_ids, num_computed_tokens, max_tokens):
         index = self.free.pop()
@@ -172,6 +174,11 @@ class FakeCtx:
         return {0: 'idx-g0', 1: 'idx-g1'}
 
     def run_fused_postprocess_align(self, n, accepted, state_idx, new_computed, idx):
+        # Stock mamba_utils snapshots the entire request-slot buffer, not
+        # [:n]. Keep this fake strict enough to reproduce native11's failure.
+        self.num_accepted_tokens_out.copy_(accepted)
+        assert state_idx.shape == new_computed.shape == accepted.shape
+        assert idx.shape == (n,)
         self.calls.append(('postprocess', n))
 
 
@@ -182,6 +189,7 @@ class FakeMambaContext:
     def create(cls, max_num_reqs, kv_cache_config, copy_funcs, device, make_buffer):
         ctx = FakeCtx()
         ctx.max_num_reqs = max_num_reqs
+        ctx.num_accepted_tokens_out = T([0] * max_num_reqs)
         cls.instances.append(ctx)
         return ctx
 
@@ -192,7 +200,7 @@ def fake_runner(torch, calls):
     state = types.SimpleNamespace(
         _align_mode=True, _mamba_state_copy_funcs={'gdn': 1},
         _get_mamba_group_info=lambda cfg: ([0, 1], types.SimpleNamespace(block_size=4)),
-        _mamba_state_idx_gpu=T([0] * 8), _mamba_src_col_gpu='src-col', _mamba_src_off_gpu='src-off',
+        _mamba_state_idx_gpu=T([0] * 8), _mamba_src_col_gpu=T([-1] * 8), _mamba_src_off_gpu=T([0] * 8),
         num_accepted_tokens_gpu=T([1] * 8),
         add_request=lambda index, data: calls.append(('model-add', index, data.num_computed_tokens)),
         apply_staged_writes=lambda: calls.append(('apply-model',)))
@@ -374,7 +382,8 @@ class FactoryTests(unittest.TestCase):
 
     def test_align_context_bound_to_lane_tables(self):
         ctx = FakeMambaContext.instances[0]
-        self.assertEqual(ctx.max_num_reqs, 1)
+        self.assertEqual(ctx.max_num_reqs, 8)
+        self.assertEqual(self.factory.tables.rows[0].shape[0], 1)
         self.assertEqual(len(ctx.tables), 2)
         self.assertIs(ctx.tables[0], self.factory.tables.rows[0])
         self.assertIs(ctx.tables[1], self.factory.tables.rows[1])
@@ -490,7 +499,8 @@ class LazyAlignTests(unittest.TestCase):
         self.assertEqual(self.getter_types, [{'gdn'}])
         self.assertIsNone(self.state._mamba_state_copy_funcs)
         self.assertIsNone(self.state._mamba_ctx)
-        self.assertEqual(align.ctx.max_num_reqs, 1)
+        self.assertEqual(align.ctx.max_num_reqs, 8)
+        self.assertEqual(align.request_slot_capacity, 8)
         self.assertEqual(align.ctx.tables, [self.tables.rows[0], self.tables.rows[1]])
 
     def test_cached_ordinary_descriptors_are_reused_without_model_query(self):
@@ -542,6 +552,61 @@ class LazyAlignTests(unittest.TestCase):
         self.assertFalse(align.enabled)
         self.assertEqual(self.getter_types, [])
         self.assertEqual(FakeMambaContext.instances, [])
+
+
+class AlignSlotCapacityTests(unittest.TestCase):
+    def runner(self, capacity=10):
+        torch = fake_torch()
+        runner = fake_runner(torch, [])
+        for name in ('num_accepted_tokens_gpu', '_mamba_state_idx_gpu',
+                     '_mamba_src_col_gpu', '_mamba_src_off_gpu'):
+            setattr(runner.model_state, name, T(range(capacity)))
+        runner.req_states.num_computed_tokens.gpu = T(range(capacity))
+        return torch, runner, fake_ports([])
+
+    def test_one_batch_row_keeps_whole_request_slot_snapshot(self):
+        for slot in (0, 2, 9):
+            with self.subTest(slot=slot):
+                torch, runner, ports = self.runner()
+                tables = LaneTables(runner, torch_module=torch)
+                align = lane_chunk.LaneAlign(runner, ports, tables, torch_module=torch)
+                chunk = types.SimpleNamespace(req_index=slot, admission=admission(),
+                                              idx_mapping=T([slot]))
+                original = list(runner.model_state.num_accepted_tokens_gpu.values)
+                self.assertTrue(align.postprocess(chunk))
+                expected = list(original)
+                expected[slot] = 1
+                self.assertEqual(align.ctx.num_accepted_tokens_out.values, expected)
+                self.assertEqual(runner.model_state.num_accepted_tokens_gpu.values, expected)
+                self.assertEqual(align.ctx.num_accepted_tokens_out.shape, (10,))
+                self.assertEqual(align.ctx.calls, [('postprocess', 1)])
+                self.assertEqual(chunk.idx_mapping.values, [slot])
+                self.assertTrue(all(row.shape[0] == 1 for row in tables.rows))
+
+    def test_native11_single_slot_context_refuses_full_buffer(self):
+        _, runner, ports = self.runner()
+        old = ports.mamba_context.create(1, None, None, None, None)
+        with self.assertRaisesRegex(RuntimeError, 'copy shapes differ'):
+            old.run_fused_postprocess_align(
+                1, runner.model_state.num_accepted_tokens_gpu,
+                runner.model_state._mamba_state_idx_gpu,
+                runner.req_states.num_computed_tokens.gpu, T([9]))
+
+    def test_mismatched_request_slot_buffers_refuse_before_context_allocation(self):
+        for name in ('num_accepted_tokens_gpu', '_mamba_state_idx_gpu',
+                     '_mamba_src_col_gpu', '_mamba_src_off_gpu', 'computed'):
+            with self.subTest(name=name):
+                torch, runner, ports = self.runner()
+                if name == 'computed':
+                    runner.req_states.num_computed_tokens.gpu = T([0])
+                else:
+                    setattr(runner.model_state, name, T([0]))
+                FakeMambaContext.instances = []
+                with self.assertRaisesRegex(LaneChunkError, 'capacities differ'):
+                    lane_chunk.LaneAlign(runner, ports,
+                                         LaneTables(runner, torch_module=torch),
+                                         torch_module=torch)
+                self.assertEqual(FakeMambaContext.instances, [])
 
 
 if __name__ == '__main__':

@@ -369,7 +369,22 @@ class LaneAlign:
             copy_funcs = state.model.get_mamba_state_copy_funcs(
                 {group.mamba_type for group in groups})
             ports.validate_mamba_copy_funcs(groups, copy_funcs)
-        ctx = ports.mamba_context.create(max_num_reqs=1, kv_cache_config=runner.kv_cache_config,
+        # The block tables are batch ordered (one admitted row), but the
+        # decision arrays below are request-slot ordered. Stock V2 snapshots
+        # the *whole* accepted-token array before resolving idx_mapping; its
+        # private snapshot must have that same capacity even for one request.
+        # Narrowing only accepted tokens would misindex nonzero request slots.
+        shape = tuple(state.num_accepted_tokens_gpu.shape)
+        if len(shape) != 1 or type(shape[0]) is not int or shape[0] < 1:
+            raise LaneChunkError('Mamba accepted-token buffer has invalid request-slot capacity')
+        self.request_slot_capacity = shape[0]
+        for value in (state._mamba_state_idx_gpu, state._mamba_src_col_gpu,
+                      state._mamba_src_off_gpu,
+                      runner.req_states.num_computed_tokens.gpu):
+            if tuple(value.shape) != shape:
+                raise LaneChunkError('Mamba request-slot decision buffer capacities differ')
+        ctx = ports.mamba_context.create(max_num_reqs=self.request_slot_capacity,
+                                         kv_cache_config=runner.kv_cache_config,
                                          copy_funcs=copy_funcs, device=runner.device,
                                          make_buffer=ports.make_buffer(runner.device))
         forward_context = runner.vllm_config.compilation_config.static_forward_context
