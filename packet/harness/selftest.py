@@ -692,6 +692,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_vmid_job13e.py', 'VM13e real owner-start lifecycle and standalone bundle finalizer: bounded fresh rerun, positive/private/graph guards unchanged (CPU only)'),
                      ('test_vmid_job13f.py', 'VM13f exact header-backed library APIs: no GPU joins, no nonzero returns, raw retained hardware regrade and fresh queue (CPU only)'),
                      ('test_vmid_job13g.py', 'VM13g model owner shells: wrapped backbone discovery, native startup/private/forward ownership and unchanged scope gates (CPU imported-class doubles; actual vLLM classes require VM)'),
+                     ('test_vmid_job13h.py', 'VM13h lazy Mamba startup: stock descriptor validation, private/ordinary context isolation and required hardware proof (CPU fixtures; actual context kernels require VM)'),
     ('test_vmid_job14.py', 'VM<vm-id> native source/oracle: real holds, same-storage UVA, actual epoch rebind, cancellation, exact packed union and bounded queue (CPU only)'),
     ('test_vmid_job14b.py', 'VM<vm-id> native oracle setup: actual operation/backend constructor, source registration and scoped abort, correct exactness module and fresh bounded rerun (CPU only)'),
                      ('test_e3_native_graph_placement.py', 'Native raw graph + two-partition accounting: same bound window, per-node replay multiplicity, eager conservation and raw FAIL precedence (CPU only)'),

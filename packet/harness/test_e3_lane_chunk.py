@@ -4,6 +4,7 @@ Fake runner, torch and pinned ports; these check call order, row-scoped
 registration, CPU slot arithmetic and the metadata/forward-context flow. They
 are not GPU evidence and cannot audit builder scratch sharing.
 """
+import ast
 import contextlib
 from pathlib import Path
 import sys
@@ -152,9 +153,11 @@ class FakeCtx:
     def __init__(self):
         self.calls = []
         self.tables = None
+        self.is_initialized = False
 
     def initialize_from_forward_context(self, config, fc, funcs, tables):
         self.tables = tables
+        self.is_initialized = True
 
     def run_fused_precopy(self, n, state_idx, src_col, src_off, idx):
         self.calls.append(('precopy', n))
@@ -220,7 +223,10 @@ def fake_ports(calls):
         copy_blocks_inplace=lambda caches, n, copies: calls.append(('cow', caches, len(copies))),
         block_copy=lambda src, dst: (src, dst),
         new_request=lambda **kw: types.SimpleNamespace(**kw), pad_slot_id=-1,
-        make_buffer=lambda device: ('make-buffer', device))
+        make_buffer=lambda device: ('make-buffer', device),
+        mamba_groups=lambda cfg: {type('Spec', (), {'mamba_type': 'gdn',
+                                                   'shapes': ((2,), (2,))}): [0, 1]},
+        validate_mamba_copy_funcs=lambda groups, funcs: None)
 
 
 def admission(**overrides):
@@ -387,6 +393,111 @@ class FactoryTests(unittest.TestCase):
             self.factory.admit(admission())
         with self.assertRaises(LaneChunkError):
             self.factory.admit('not an admission')
+
+
+def pinned_function(path, name, *, class_name=None, namespace=None):
+    """Execute the pinned CPU method body, with device constructors doubled."""
+    tree = ast.parse(path.read_text())
+    owner = tree if class_name is None else next(
+        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
+    function = next(n for n in owner.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    module = ast.Module(body=[ast.ImportFrom(module='__future__',
+        names=[ast.alias(name='annotations')], level=0), function], type_ignores=[])
+    env = {} if namespace is None else dict(namespace)
+    exec(compile(ast.fix_missing_locations(module), str(path), 'exec'), env)
+    return env[name]
+
+
+class LazyAlignTests(unittest.TestCase):
+    """The stock startup state is lazy; lane construction must not require a batch."""
+
+    def setUp(self):
+        self.torch = fake_torch()
+        self.runner = fake_runner(self.torch, [])
+        self.state = self.runner.model_state
+        self.state._mamba_state_copy_funcs = None
+        self.state._mamba_ctx = None
+        self.state.max_num_reqs = 8
+        self.state.device = self.runner.device
+        self.state.vllm_config = self.runner.vllm_config
+        self.ports = fake_ports([])
+        self.functions = {'gdn': (lambda: None, lambda: None)}
+        self.getter_types = []
+        def getter(types):
+            self.getter_types.append(types)
+            return self.functions
+        self.state.model = types.SimpleNamespace(get_mamba_state_copy_funcs=getter)
+        self.ports.validate_mamba_copy_funcs = pinned_function(
+            ROOT/'reference/vllm-src/v1/worker/mamba_utils.py',
+            'validate_mamba_state_copy_funcs')
+        self.groups = self.ports.mamba_groups(self.runner.kv_cache_config)
+        self.ports.mamba_groups = lambda cfg: self.groups
+        self.tables = LaneTables(self.runner, torch_module=self.torch)
+        FakeMambaContext.instances = []
+
+    def construct(self):
+        return lane_chunk.LaneAlign(self.runner, self.ports, self.tables,
+                                    torch_module=self.torch)
+
+    def test_none_cache_uses_real_model_descriptors_and_stock_validator(self):
+        align = self.construct()
+        self.assertTrue(align.enabled)
+        self.assertTrue(align.ctx.is_initialized)
+        self.assertEqual(self.getter_types, [{'gdn'}])
+        self.assertIsNone(self.state._mamba_state_copy_funcs)
+        self.assertIsNone(self.state._mamba_ctx)
+        self.assertEqual(align.ctx.max_num_reqs, 1)
+        self.assertEqual(align.ctx.tables, [self.tables.rows[0], self.tables.rows[1]])
+
+    def test_cached_ordinary_descriptors_are_reused_without_model_query(self):
+        self.state._mamba_state_copy_funcs = self.functions
+        ordinary_ctx = object()
+        self.state._mamba_ctx = ordinary_ctx
+        self.construct()
+        self.assertEqual(self.getter_types, [])
+        self.assertIs(self.state._mamba_state_copy_funcs, self.functions)
+        self.assertIs(self.state._mamba_ctx, ordinary_ctx)
+
+    def test_stock_lazy_initializer_later_binds_ordinary_tables_independently(self):
+        lane = self.construct()
+        method = pinned_function(
+            ROOT/'reference/vllm-src/v1/worker/gpu/model_states/mamba_hybrid.py',
+            '_ensure_align_ctx', class_name='MambaHybridModelState', namespace={
+                'get_mamba_groups': self.ports.mamba_groups,
+                'validate_mamba_state_copy_funcs': self.ports.validate_mamba_copy_funcs,
+                'MambaSpecDecodeGPUContext': FakeMambaContext,
+                'CpuGpuBuffer': lambda *a, **kw: None})
+        ordinary_tables = tuple(object() for _ in range(3))
+        ordinary = method(self.state, self.runner.kv_cache_config, [0, 1], ordinary_tables)
+        self.assertIsNot(ordinary, lane.ctx)
+        self.assertEqual(ordinary.max_num_reqs, 8)
+        self.assertEqual(ordinary.tables, list(ordinary_tables[:2]))
+        self.assertIs(method(self.state, self.runner.kv_cache_config, [0, 1],
+                             ordinary_tables), ordinary)
+        self.assertEqual(len(self.getter_types), 2)
+        self.assertIs(self.state._mamba_state_copy_funcs, self.functions)
+        self.assertEqual(lane.ctx.tables, [self.tables.rows[0], self.tables.rows[1]])
+
+    def test_missing_copy_family_refuses_before_context_allocation(self):
+        self.functions = {}
+        with self.assertRaises(AssertionError):
+            self.construct()
+        self.assertEqual(FakeMambaContext.instances, [])
+        self.assertIsNone(self.state._mamba_state_copy_funcs)
+
+    def test_invalid_copy_prefix_refuses_before_context_allocation(self):
+        for functions in ({'gdn': ()}, {'gdn': (1, 2, 3)}):
+            self.functions = functions
+            with self.assertRaises(AssertionError):
+                self.construct()
+        self.assertEqual(FakeMambaContext.instances, [])
+
+    def test_align_off_remains_inert(self):
+        self.state._align_mode = False
+        align = self.construct()
+        self.assertFalse(align.enabled)
+        self.assertEqual(self.getter_types, [])
+        self.assertEqual(FakeMambaContext.instances, [])
 
 
 if __name__ == '__main__':

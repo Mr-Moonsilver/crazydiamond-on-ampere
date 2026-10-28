@@ -109,6 +109,12 @@ def build(out):
     shutil.copy2(pp_source,e3_builder/'pool_stats_source.py')
     builder_sources['pool_stats_source.py']=sha(pp_source)
     qualification_pins={
+        'v1/worker/gpu/model_states/mamba_hybrid.py':'573e130ac5587d4822fabf97adad1ad0fda02ff83c5e70df879a5bb175ae845c',
+        'v1/worker/mamba_utils.py':'7382bcc8a7b070eaec44339379ebce485777fe23b97e05ee108088faa707c7e6',
+        'v1/kv_cache_interface.py':'1cf202f1a44d5bc5c3832b70b41507687ecceea3784e67a4f003bc0210d6eecb',
+        'v1/attention/backends/registry.py':'77f41b9bff9b4a2f6417e8360ead3a5b560861a958ed26072d8c97f5e6b2af2b',
+        'model_executor/layers/mamba/mamba_utils.py':'ce9845b4a4ef4bc46577a33038ed69d59ceccb52f30e9c5bdaa36e48be3b2ca4',
+        'v1/utils.py':'4093f1c040a5f3def599bb044b72109301b970f70a5e5b622fd03a450a11e36a',
         'models/qwen4_exp/nvidia/qsa.py':'4ad6e74fe6a6d2678f3944ca4780c61c32e56680da2456869a789d12ef860c69',
         'v1/worker/gpu/input_batch.py':'abfbb9075a80354bd4bb59d2729fcdea3c62eed827067a823761c98356670ad1',
         'entrypoints/openai/completion/protocol.py':'0be20e3d7f21ab6cbe0ba77cb50068aa39a35fc0369ef38de068ac38ca9800aa',

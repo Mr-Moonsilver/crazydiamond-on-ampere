@@ -128,7 +128,8 @@ class Ports:
     required = ('InputBatch', 'BatchDescriptor', 'MambaHybridAttnMetadata', 'build_attn_metadata',
                 'build_slot_mappings_by_layer', 'create_forward_context', 'override_forward_context',
                 'cudagraph_none', 'align_preprocess', 'mamba_context', 'copy_blocks_inplace',
-                'block_copy', 'new_request', 'pad_slot_id', 'make_buffer')
+                'block_copy', 'new_request', 'pad_slot_id', 'make_buffer',
+                'mamba_groups', 'validate_mamba_copy_funcs')
 
     def __init__(self, **values):
         missing = [name for name in self.required if name not in values]
@@ -152,7 +153,8 @@ class PinnedPorts:
         from vllm.v1.worker.gpu.model_states.mamba_hybrid import (
             MambaHybridAttnMetadata, preprocess_mamba_align_fused_kernel)
         from vllm.v1.utils import CpuGpuBuffer
-        from vllm.v1.worker.mamba_utils import MambaSpecDecodeGPUContext
+        from vllm.v1.worker.mamba_utils import (
+            MambaSpecDecodeGPUContext, get_mamba_groups, validate_mamba_state_copy_funcs)
         from vllm.v1.worker.utils import copy_kv_cache_blocks_inplace
 
         def make_buffer(device):
@@ -175,7 +177,9 @@ class PinnedPorts:
                      mamba_context=MambaSpecDecodeGPUContext,
                      copy_blocks_inplace=copy_kv_cache_blocks_inplace,
                      block_copy=KVCacheBlockCopy, new_request=NewRequestData,
-                     pad_slot_id=PAD_SLOT_ID, make_buffer=make_buffer)
+                     pad_slot_id=PAD_SLOT_ID, make_buffer=make_buffer,
+                     mamba_groups=get_mamba_groups,
+                     validate_mamba_copy_funcs=validate_mamba_state_copy_funcs)
 
 
 # --- persistent lane tables ----------------------------------------------------------
@@ -355,7 +359,16 @@ class LaneAlign:
         self.block_size = int(spec.block_size)
         copy_funcs = getattr(state, '_mamba_state_copy_funcs', None)
         if copy_funcs is None:
-            raise LaneChunkError('runner model state has no Mamba copy functions yet')
+            # Stock MambaHybridModelState initializes this cache only in the
+            # first real preprocess_state, not initialize_kv_cache. Resolve
+            # the same model descriptors and run the same stock validator
+            # (mamba_hybrid.py:_ensure_align_ctx), but keep them lane-owned:
+            # never initialize/rebind the ordinary context to private tables
+            # and never populate its lazy cache on behalf of ordinary decode.
+            groups = ports.mamba_groups(runner.kv_cache_config)
+            copy_funcs = state.model.get_mamba_state_copy_funcs(
+                {group.mamba_type for group in groups})
+            ports.validate_mamba_copy_funcs(groups, copy_funcs)
         ctx = ports.mamba_context.create(max_num_reqs=1, kv_cache_config=runner.kv_cache_config,
                                          copy_funcs=copy_funcs, device=runner.device,
                                          make_buffer=ports.make_buffer(runner.device))
