@@ -1,12 +1,13 @@
 {
   "cpu_regression": {
-    "basis": "frozen runtime/harness blobs; native5 metadata finalized after the full successful exit",
-    "cases": 265,
+    "basis": "full final frozen source including EOS fixture handshake; earlier265/266 is retained, not qualified",
+    "cases": 266,
     "exit_code": 0,
-    "log": "tmp/native5-startup-selftest-20261028T0120Z.log",
-    "log_sha256": "4e56da94dd18e385c92656b8fd85a74e602d830606827473ce66225ee3f9333a",
-    "required": 265,
-    "tested_commit": "e8d09aa"
+    "log": "tmp/native6-process-owner-selftest-20261028T0243Z.log",
+    "log_sha256": "4a97c6f8088c59d1241a1a4034ee4a2543d106a3660755b7094d09f3c63c372a",
+    "required": 266,
+    "runtime_commit": "7fe5356",
+    "tested_commit": "f835466"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -294,6 +295,9 @@
     "runs/q18a_native5.draft.sh": "709b4a24ad3e3b8b0ef322fd4a8457c01c6bde4218b780b92d6115dfb8b9655c",
     "runs/q18a_native5_declare.sh": "b5bcc048b8c363b4c55c6aae0af62c2916ee21a4980a7fdd9208230fc50b0326",
     "runs/q18a_native5_settings.sh": "f19fce89de20a3357fc728fea84b9a452567deee97d8975302b23f2c4e6fa6c2",
+    "runs/q18a_native6.draft.sh": "3bfeea58fd3ab6558ec9234d75aab7cf219387783f2ea548cb8f7d5d5bf2af7b",
+    "runs/q18a_native6_declare.sh": "a584d49dc4c3aac1af6cae63fed68f10397534ff99b7e99e7db4ba5e30fbe1fc",
+    "runs/q18a_native6_settings.sh": "1516a93bcf4aae4a8dc962722c3ab76b354936afcccd79fa6f4c1203e8159b9f",
     "runs/q18a_overlap.draft.sh": "43096d9ea8a606a5416651febbd645e068ce8d7dbabb3a13cd1f40ba34579b83",
     "runs/q18a_overlap_declare.sh": "b082237f505768a013f22899ae58119c9e79a8b05c71a3cd3ba793d65ea14f74",
     "runs/q18a_overlap_settings.sh": "b0c5959b1a05b928360832bef7151e81a60bb3db87b16c479e236e5c2a1cab73",
@@ -426,7 +430,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "af45f795cb07d8d223e9ca007f1516cab0a031664780d8aeea89d1a45a7881aa",
+    "selftest.py": "fecd82789a845d9e3185820c8367b44d9ecba4219986b9308d0b49f8be889f72",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -468,12 +472,13 @@
     "test_e2_state_grade.py": "5fd9a8131f6ee91b27348e3f82df337ac819c695c13c2aba4dac90b0ca1d4511",
     "test_e3_activity_accounting.py": "587ca2d9f8ce2cf304d7d23042b5281ab88d2ed9a955c45c7e96f0c9d0755335",
     "test_e3_admission_metadata.py": "da9e34790a1a3499f70515ccc640fc361f208b988b091da64716cfd75bbc1a7d",
-    "test_e3_admission_native.py": "6b9f91235aea52f646db3e764e219f126391ffd977396ffb34d197bbf90fe2ef",
-    "test_e3_async_handoffs.py": "91b2c23b1a043157e6770f0dc437910deceb90d3235ca27a70f11ff1b99e933c",
+    "test_e3_admission_native.py": "dfc244cefdeac538742b77d9403d3ed41800b772367e150a4c6838fa82ddf266",
+    "test_e3_async_handoffs.py": "f280b11b8f9babfb474768e7a5a747322700e8e3b0a1810f16a55b77abe876a8",
     "test_e3_capture_streams.py": "be83c0dcbe0b59b68a99b6393cd6dbef9d2c2de04e3d2d49c75162dab96ca33d",
     "test_e3_decode_correctness.py": "cc989bd8ee61bf34d0bef67f298f80435520b2cace662f9b93332db04f08a74f",
     "test_e3_decode_probe.py": "108cd446edfd45b4fff6959e90a1efa88f843378fcb33297ad087729949149cd",
     "test_e3_engine_offers.py": "98bddbab1b28de0772e4827e3fd1e7396ab25a6e5b48a04125593a3e22cc581b",
+    "test_e3_executor_threads.py": "a1b6bf12cc8fc2e38320d291be03d681edbaf70b00f66591b0ca719616b49d7d",
     "test_e3_finalize_package.py": "a3519657a239232c7ba8c875e4719e14387772a9105ea8467471c62f52869678",
     "test_e3_graph_audit.py": "3cbeac6ebc75f08f59b79a5a8373961eaaa6d4b01af8db5733e26a86a5155cc0",
     "test_e3_graph_routing.py": "8cf938864dcb3ce94224e8371df9615e3729b9f35328c43d3cd577c8ad6169a3",
@@ -524,7 +529,7 @@
     "test_e3_q17b_full_queue.py": "41abceb7444ed43ede0f680f70786819e97dc035da0e863eb83ab4a07f9f4b4e",
     "test_e3_q18a_guards.py": "2564a150dc790942246f65ff93b4f76bccc6083731e2821d2e3cf62f6f263f2b",
     "test_e3_qsa_driver.py": "d363c571d3c24b6c352d6e3dccb79094296c326d7e72fbab137eb39c39d0318e",
-    "test_e3_r4_worker_bridge.py": "68387d8e042eb65cc4a79968213c412df34f2945161ae6e58b46b4d5d92f164f",
+    "test_e3_r4_worker_bridge.py": "bdd533da9a32f737807babe0b82b9a7d682b5dc4a6a5179e25d8ac198fb01c83",
     "test_e3_replay_observer.py": "a8f33da2bc9707cec1668ce1a4a7ad1285ab7b1e82a15df0048732056315cbda",
     "test_e3_route_invariant.py": "a96d8a23d61428abd274e4ddedc5bd648c723935dad0ee3f6712fe8fc3f79b6e",
     "test_e3_sparse_history_dma.py": "2f9a30c5875f3dca49cb51d2bdc542f9bc149cd89d0d0512f24f4fda857ad0b2",
@@ -533,7 +538,7 @@
     "test_e3_teacher12_queue.py": "c885a94bb0b5899f261b88a6189e29a486df83dc5760a27981a0924bcee80be7",
     "test_e3_teacher_decode.py": "de927c390220c8dbffc8fef989dad02ea82cab81786502c25060751f1fe75dfe",
     "test_e3_teacher_decode_rule4.py": "ef11bd7c4834e29a837769d615ea1f3c60256a5491638908f73f1a11467e7ab0",
-    "test_e3_w1_decode_driver.py": "2723feb95a5a3a7b1615b0bae80eb879a1c7cddab8626cab0c3620f256652255",
+    "test_e3_w1_decode_driver.py": "346f28adf1c572a873a5bf3fed4ed545f279ae9c2f5dc8a4e1ebc9ba89da6259",
     "test_e3_wire_v1.py": "938e50475f1029091706f6f8d743ba78c5e5bed62934228e236d114b5ae3c501",
     "test_e3_worker_operations.py": "c95720af2fecd954a95af446e24ea12d54582dd2135e3fd22c5d4fda6d2168c0",
     "test_exposure_compare.py": "d58035af67996e04832b80a9785c7316d1d8f3bf938a5b4457e243692f059aff",
@@ -556,7 +561,7 @@
     "test_s5_marlin_partition.py": "e85ffe9dab27c63a24ab32d0402067350a65e72d59f347f090f417c5a24c1524",
     "test_s5_onepair.py": "635ce41b2516a0c24e0b0b5a0d2a9d504c59d56e541eb56ed988b1063d7fab09",
     "test_s5_oracle_queue.py": "7a5b75e8151de21bc5a52d4a019b260a4362f5a2ce9a302ab8a8703f7230f10a",
-    "test_s5_reply_transport.py": "91ca6a13e5cc66dd659e63925b2b5ddfb6500d0205257cbe4efe61c918077e3f",
+    "test_s5_reply_transport.py": "63a6ba2625e711d8030d54e3e588dfe109a91a45a87fdb5075af8a3f7fc9799e",
     "test_s5_resident.py": "5f536b50d38193c56e33cfb2ed1ac368f20e30efa1f63e7bfdd043ea5cbba259",
     "test_s5_retention.py": "d0f9299e745a07026274a7707f044921dc863ac036933e89defc3456b5c157c1",
     "test_s5_runtime.py": "a7329fe27ae1ef33a8b21939651d862c4c8773f6e29759437f225e5763bb9e8e",
@@ -676,35 +681,36 @@
     "reviews/codex-20261028-native-lazy-mamba-startup-repair.md",
     "reviews/codex-20261028-vm13h-independent-regrade.md",
     "reviews/codex-20261028-native4-independent-regrade.md",
-    "reviews/codex-20261028-native5-startup-guard-sweep.md"
+    "reviews/codex-20261028-native5-startup-guard-sweep.md",
+    "reviews/codex-20261028-native5-independent-regrade.md",
+    "reviews/codex-20261028-native6-thread-ownership-review.md"
   ],
   "reviewed_by": "Codex",
   "schema": "e3-native-source-review/1",
   "scope": "implementation closure for owner test only",
   "source_delta": {
-    "basis": "native4 original all-rank trace/main bee8bfe plus exact CPU counterexample and actual generated-package binding",
-    "package_namespace_modules": [
-      "native_qualification.py",
-      "native_observation.py",
-      "operation_source.py"
+    "basis": "native5 actual pinned IO/monitor thread failures; same exact ready-response counterexample and real generated RPC/teardown CPU paths",
+    "generated_source_modules": [
+      "e3_sources/executor.py"
     ],
     "runtime_modules": [
-      "async_handoff.py",
-      "native_backend.py",
-      "s5_startup.py"
+      "reply_transport.py",
+      "executor_hooks.py",
+      "engine_driver.py",
+      "async_handoff.py"
     ],
-    "scope": "engine-only owned relay/source closure capability; generic worker backend/guard unchanged; package-local imports; fresh native5 names only; CUDA/model/runner/QSA arithmetic/settings/workloads/tolerances/gates unchanged"
+    "scope": "process PID-owned broker, serialized registration-through-broadcast and full stock teardown, nonblocking native contention/poll, atomic future claims; native actor affinity, queue/lease/loss guards preserved; no GPU/helper/model/runner/QSA/numerical/settings/workload/gate change; fresh native6 names only"
   },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
     "admission_metadata.py": "bb8cd120c25a20d712bc84141382012e7085f1b3a2f9b2c8da237749a026f12b",
-    "async_handoff.py": "5e9a1aa1edf55f0a880c9e39b58b316362282bb8c06aa1eab82f885887751a7f",
+    "async_handoff.py": "7bc29e22a58c18ea4e90eeab9a3e8495de3ffcfab06178230abd4b083cff2438",
     "capture_streams.py": "76944d3416a9635cbecd81c70c1d538d5e0efc25d4fed4a3f2cf200ec3f4bd2b",
     "decode_probe.py": "b49c8b3aaebfa65cff913bc32e755c5397abbcc8cb2d7469a4a4297edf848c94",
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
-    "engine_driver.py": "b8b1b6e3fca3e7f1ed5ca8a7c47a803df2b19577fdecd459d995bb11dc2e18e7",
+    "engine_driver.py": "2c813f98c6e6007fa2b47a021903dde3cdbe1fe2c0622f08fad7bd76ee0f6472",
     "engine_offers.py": "16e2775ba04461ad953e83eedd1ebb951a43b3d134789c225c6e6a1e5a721d2f",
-    "executor_hooks.py": "b13eb05d7e0fcec8b5764a1d16635da666fc7d4c8be64e1991e8c45e0c7a77f5",
+    "executor_hooks.py": "d2ae6a2a5c561bdf596ae1a5744dfc3695193e85fd603b26de48019e0e2e26a9",
     "graph_hooks.py": "12ad7e3500b559f2d398a6676292094e4d455df12d4c6951803dbac9f38663c5",
     "graph_router.py": "5d19c0a2ee7c291ba910916ae3fefc652117a4efa2c8d7d235241e8902272a71",
     "green_context.py": "f0b9e48e536c120946235490829295a3941c9f93b89df4d8be231172b1f6f0fe",
@@ -745,7 +751,7 @@
     "qsa_driver.py": "740e8276e1baefa1488cc7fc27e497c38d3e0873bf0d764d6b8bcae96ef7efe7",
     "qsa_operation.py": "babb80a3bae2b40b0e9a3a9b453303dbf4e22fe41c43b2a204b8e485163cfbdf",
     "replay_observer.py": "7b331d0eb55130b8def8b51c651b95b2d0aa9981cbc2329a06990b0d6ebc257c",
-    "reply_transport.py": "66982c35d037da983a73ff13c94b7307cfebc49b2253dcc744da872a66327014",
+    "reply_transport.py": "6c0978654e022605379a7b845ba5f592f3d200f7015024ec69f42936e509259b",
     "route_invariant.py": "e20333e2a4e104cf2fe24aad2b3ef1d91a75effc2ee47b7a763f595a66ff6884",
     "row1_oracle.py": "222daf40526971511997aac1c8a5b485bae1b095ea0e0b7839d97d795e19ef12",
     "s5_startup.py": "5f056766648a4e0d8e0f828def846391b00a86da1fc4b55b0cae31eb0f2d4f4c",
@@ -758,16 +764,22 @@
     "worker_hooks.py": "5fae77ec149f188ee298a4d1300f333531e18a46f918bf6e5778382fbc15099b"
   },
   "startup_guard_audit": {
-    "actual_binding_tests": 8,
-    "entries": 3954,
-    "files": 411,
-    "focused_tests": 122,
-    "index": "reviews/codex-20261028-native5-startup-guard-index.json",
-    "index_sha256": "8c33200367dfe89fce085bbd146dbcca677ef80f19db9006ede3efa8f3a97275",
-    "legacy_counterexample_log_sha256": "031f15a63fbf7fbfe9b3ef314e5e7b9fbf1bfbc379dc50554e9bc054ccace0bd",
-    "review": "reviews/codex-20261028-native5-startup-guard-sweep.md",
-    "scope": "CPU source/filesystem/external-framework boundaries; no ready/capability/closure override in actual generated engine binding",
-    "vm_detour": "not applicable: engine-side relay/namespace/auth binding; no new CUDA source/API"
+    "affected_tests": 385,
+    "baseline": "reviews/codex-20261028-native5-startup-guard-index.json",
+    "baseline_sha256": "8c33200367dfe89fce085bbd146dbcca677ef80f19db9006ede3efa8f3a97275",
+    "delta": "reviews/codex-20261028-native6-guard-delta.json",
+    "delta_sha256": "9603ccfa7f1fab770d2573c3df8c3e82e92210d827f25c6b9c8346ebfc094d96",
+    "entries": 4019,
+    "files": 414,
+    "native5_counterexample_log_sha256": "1dfaf05a87eb914e3fa797dfce1406804f67467f8f0aa2deef1cab6e02a04342",
+    "review": "reviews/codex-20261028-native6-thread-ownership-review.md",
+    "scope": "actual pinned methods and real E3 hooks/transport; CPU worker/MQ/response IO leaves; no ready/capability/closure override",
+    "stock_thread_index": "reviews/codex-20261028-native6-stock-thread-sites.json",
+    "stock_thread_index_sha256": "128b42ed905b08ce96601ce766217cf83581833d54d2f7bf6a82246b561fd9dc",
+    "stock_thread_sites": 85,
+    "thread_tests": 16,
+    "vm_detour": "not applicable: parent engine process/thread ownership; no new CUDA source/API",
+    "w1_driver_tests": 52
   },
   "vm_followup": {
     "job13g": {
