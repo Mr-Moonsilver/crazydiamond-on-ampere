@@ -56,6 +56,7 @@ Install/capture/abort/retire call sites are documented in
   It decrements retained allocator references; it is not a completion proof.
 """
 import hashlib
+from collections.abc import Sequence
 
 from e3_types import E3ContractError
 
@@ -469,7 +470,13 @@ class NativeAdmissionMetadata:
         tokens = getattr(request, 'all_token_ids', None)
         if tokens is None:
             tokens = getattr(request, 'prompt_token_ids', None)
-        if not isinstance(tokens, (list, tuple)) or len(tokens) < chunk_start:
+        # Request.all_token_ids is the pinned read-only ConstantList (a
+        # Sequence), not its mutable backing list. Never borrow prompt ids if
+        # that live view is present but invalid, nor infer unavailable tokens.
+        if (not isinstance(tokens, Sequence)
+                or isinstance(tokens, (str, bytes, bytearray, memoryview))):
+            raise E3ContractError('request tokens are not an integer token sequence')
+        if len(tokens) < chunk_start:
             raise E3ContractError('request tokens do not cover the chunk start')
         begin = chunk_start - length
         if begin < 0:

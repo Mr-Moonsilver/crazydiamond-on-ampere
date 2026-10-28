@@ -15,6 +15,8 @@ source fixtures are not a passing test: a digest or text mismatch fails here.
 No GPU, no vLLM process, no engine. CPU only.
 """
 from dataclasses import dataclass, field
+from collections.abc import Sequence
+from typing import Generic, TypeVar, overload
 from pathlib import Path
 import ast
 import hashlib
@@ -90,6 +92,18 @@ def _pinned_block_class():
 
 
 PinnedBlock = _pinned_block_class()
+
+
+def _pinned_constant_list_class():
+    source, full = _class_source('v1/utils.py', 'ConstantList')
+    assert hashlib.sha256(full.encode()).hexdigest() == '4093f1c040a5f3def599bb044b72109301b970f70a5e5b622fd03a450a11e36a'
+    namespace = {'Generic': Generic, 'T': TypeVar('T'),
+                 'Sequence': Sequence, 'overload': overload}
+    exec(compile(source, 'pinned/v1/utils.py', 'exec'), namespace)
+    return namespace['ConstantList']
+
+
+PinnedConstantList = _pinned_constant_list_class()
 
 
 def cdiv(a, b):
@@ -454,7 +468,7 @@ class FixtureManager:
 class Request:
     def __init__(self, uid=UID, tokens=12, computed=0):
         self.request_id = uid
-        self.all_token_ids = list(range(tokens))
+        self.all_token_ids = PinnedConstantList(list(range(tokens)))
         self.prompt_token_ids = list(range(tokens))
         self.num_tokens = tokens
         self.num_prompt_tokens = tokens
@@ -1224,6 +1238,43 @@ class PleContextTests(unittest.TestCase):
         controller = make_controller(scheduler, chunk=chunk)
         record = controller.admit(scheduler)
         return controller, record, scheduler
+
+    def test_real_pinned_token_view_covers_both_cold_and_cached_chunk_starts(self):
+        for computed in (0, 1, 4, 98304):
+            with self.subTest(computed=computed):
+                request = Request(tokens=98312, computed=computed)
+                self.assertIsInstance(request.all_token_ids, PinnedConstantList)
+                pool = FixturePool()
+                manager = FixtureManager(pool, [FixtureGroup(pool)])
+                scheduler = FixtureScheduler(manager, [request])
+                provider = am.install_admission_metadata(scheduler)
+                expected = tuple([248044] * max(0, 2-computed)
+                                 + list(request.all_token_ids[max(0,computed-2):computed]))
+                self.assertEqual(provider._ngram_context(request, computed),
+                                 (expected, max(0, 2-computed)))
+                self.assertEqual(len(request.all_token_ids), 98312)
+                with self.assertRaises(TypeError):
+                    request.all_token_ids.append(7)
+
+    def test_short_pinned_view_keeps_the_coverage_refusal(self):
+        pool = FixturePool()
+        request = Request(tokens=4)
+        scheduler = FixtureScheduler(FixtureManager(pool, [FixtureGroup(pool)]), [request])
+        provider = am.install_admission_metadata(scheduler)
+        with self.assertRaisesRegex(E3ContractError, 'do not cover'):
+            provider._ngram_context(request, 5)
+
+    def test_malformed_token_views_do_not_borrow_prompt_ids(self):
+        pool = FixturePool()
+        request = Request(tokens=4)
+        scheduler = FixtureScheduler(FixtureManager(pool, [FixtureGroup(pool)]), [request])
+        provider = am.install_admission_metadata(scheduler)
+        for bad in ('1234', b'1234', bytearray(b'1234'), {0: 1}, iter(range(4)),
+                    PinnedConstantList([0, True, 2, 3]),
+                    PinnedConstantList([0, -1, 2, 3])):
+            request.all_token_ids = bad
+            with self.subTest(kind=type(bad).__name__), self.assertRaises(E3ContractError):
+                provider._ngram_context(request, 2)
 
     def test_cold_start_is_left_padded_with_the_configured_eos(self):
         controller, record, _ = self._admit(ple=(2,), ngram=3, eos=99)
