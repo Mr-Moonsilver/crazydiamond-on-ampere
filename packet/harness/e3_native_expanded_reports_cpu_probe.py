@@ -9,8 +9,7 @@ import sys
 from e3_native_import_probe import check,error
 
 
-def collect(graph):
-    import torch
+def collect_source(graph):
     from vllm.v1.flash_e3 import engine_driver as ed,native_measurement as nm
     # The reviewed fixture imports bare names. These aliases name exactly the
     # already mounted modules, with no replacement classes or implementations.
@@ -47,7 +46,11 @@ def collect(graph):
     assert [len(r['proofs']) for r in evidence['completions']]==[230,230,31,31]
     assert s.driver.error is None and s.driver._journal_dropped>0
     assert evidence['completeness']['raw_journal_flag_mutated'] is False
-    assert s.driver._last_native_closure['complete'] is True
+    commits=[row for row in s.driver._journal if row['kind']=='chunk_commit']
+    assert len(commits)==1
+    released=commits[0]['worker_releases']
+    assert {row['worker_rank'] for row in released}=={0,1,2,3}
+    assert all(row['released'] and row['closed'] for row in released)
     assert methods==(ed.NativeSegmentDriver._record,ed.NativeSegmentDriver._ingest_report,
                      LaneDispatcher.submit,NativeWorkerBridge._build_report)
     reports=[row for row in s.driver._journal if row['kind']=='report'
@@ -66,10 +69,10 @@ def collect(graph):
     assert caps['segments_total_limit']==128*8192
     assert caps['proofs_per_rank_total_limit']==128*8192
     assert caps['completed_per_rank_total_limit']==128*8192
-    assert not torch.cuda.is_initialized()
     return dict(verdict='PASS',accepted_segments=258,stage_segments={'0':229,'1':29},
         queried_proofs=[230,230,31,31],measurement=evidence,
-        native_closure=s.driver._last_native_closure,raw_journal_dropped=s.driver._journal_dropped,
+        native_commit=commits[0],raw_journal_dropped=s.driver._journal_dropped,
+        release_basis='actual driver _apply_release validates typed all-rank ReleaseAck before chunk_commit',
         paged_reports=len(reports),sample_paged_report=reports[-1],
         generic64_refusal_preserved=True,aggregate_budget_unchanged=True,
         runtime_classes_actual_mounted=True,runtime_methods_patched=False,
@@ -77,6 +80,14 @@ def collect(graph):
         simulated_device_and_scheduler_inputs=True,hardware_qualified=False,
         source_shas={name:hashlib.sha256(Path(mod.__file__).read_bytes()).hexdigest()
                      for name,mod in (('engine_driver',ed),('native_measurement',nm))})
+
+
+def collect(graph):
+    import torch
+    assert not torch.cuda.is_initialized()
+    result=collect_source(graph)
+    assert not torch.cuda.is_initialized()
+    return result
 
 
 def main():
