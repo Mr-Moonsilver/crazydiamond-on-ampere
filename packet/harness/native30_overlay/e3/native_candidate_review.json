@@ -1,11 +1,12 @@
 {
   "cpu_regression": {
-    "cases": 264,
+    "basis": "frozen runtime/harness blobs; native5 metadata finalized after the full successful exit",
+    "cases": 265,
     "exit_code": 0,
-    "log": "tmp/native-mamba-vm13h-selftest-20261028T0009Z.log",
-    "log_sha256": "76838e91f9729c4b47a6834980babf01d91bdd8cde30b4202edb244cb3316328",
-    "required": 264,
-    "tested_commit": "c6b0813"
+    "log": "tmp/native5-startup-selftest-20261028T0120Z.log",
+    "log_sha256": "4e56da94dd18e385c92656b8fd85a74e602d830606827473ce66225ee3f9333a",
+    "required": 265,
+    "tested_commit": "e8d09aa"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -290,6 +291,9 @@
     "runs/q18a_native4.draft.sh": "d45c2fe153e785ee8563a55e1c7d0bcc31145ea027250501eac4bb9aca3c5b2e",
     "runs/q18a_native4_declare.sh": "eae6d3d7f60e65e8630cab1e0a70318cb3ab3f060f95d80cea2ec871210c5000",
     "runs/q18a_native4_settings.sh": "b8bc0865a6bad1e788489707791fa4355a656b2d0f4000b3f4f4de98dac52b45",
+    "runs/q18a_native5.draft.sh": "709b4a24ad3e3b8b0ef322fd4a8457c01c6bde4218b780b92d6115dfb8b9655c",
+    "runs/q18a_native5_declare.sh": "b5bcc048b8c363b4c55c6aae0af62c2916ee21a4980a7fdd9208230fc50b0326",
+    "runs/q18a_native5_settings.sh": "f19fce89de20a3357fc728fea84b9a452567deee97d8975302b23f2c4e6fa6c2",
     "runs/q18a_overlap.draft.sh": "43096d9ea8a606a5416651febbd645e068ce8d7dbabb3a13cd1f40ba34579b83",
     "runs/q18a_overlap_declare.sh": "b082237f505768a013f22899ae58119c9e79a8b05c71a3cd3ba793d65ea14f74",
     "runs/q18a_overlap_settings.sh": "b0c5959b1a05b928360832bef7151e81a60bb3db87b16c479e236e5c2a1cab73",
@@ -422,7 +426,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "5a4ee87f3d2e97347ff40dc0a988f6f18bcc51836a932ba48c162a4e45fcff13",
+    "selftest.py": "af45f795cb07d8d223e9ca007f1516cab0a031664780d8aeea89d1a45a7881aa",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -463,7 +467,7 @@
     "test_e2_startup.py": "2e437f59b118a1964319ff6c5163c6d4faddb5fe6c88b1fc79d4bf0b76ec3678",
     "test_e2_state_grade.py": "5fd9a8131f6ee91b27348e3f82df337ac819c695c13c2aba4dac90b0ca1d4511",
     "test_e3_activity_accounting.py": "587ca2d9f8ce2cf304d7d23042b5281ab88d2ed9a955c45c7e96f0c9d0755335",
-    "test_e3_admission_metadata.py": "5bfc2e4bb0e27e394701f0e42e8fecb3cdaecc88ff39c25d9ba44e65a5c871d1",
+    "test_e3_admission_metadata.py": "da9e34790a1a3499f70515ccc640fc361f208b988b091da64716cfd75bbc1a7d",
     "test_e3_admission_native.py": "6b9f91235aea52f646db3e764e219f126391ffd977396ffb34d197bbf90fe2ef",
     "test_e3_async_handoffs.py": "91b2c23b1a043157e6770f0dc437910deceb90d3235ca27a70f11ff1b99e933c",
     "test_e3_capture_streams.py": "be83c0dcbe0b59b68a99b6393cd6dbef9d2c2de04e3d2d49c75162dab96ca33d",
@@ -486,7 +490,7 @@
     "test_e3_native_accounting_source_closure.py": "447fb56c7b9e8708ccbc179f58d341ef9360fe60aaaa1b3b9a0d7205aa90b0e9",
     "test_e3_native_api_qualification_composition.py": "22940948b5833f615b4d0ecfffb481cb40808f3a57e11e5a2f1d850b4d1f5042",
     "test_e3_native_graph_placement.py": "a339aee928d6a867c1a9e8bfa85de0054eb85ac0530bd8d533a939ad8be807dc",
-    "test_e3_native_integration.py": "2848f003254c8890e4553e3d8b90d42e356e571193b8bc051387ccd5129ad65e",
+    "test_e3_native_integration.py": "fed4775b6f8d141e9c7a1026d949b2145499fbc319b2ea68af827e09a9d67b47",
     "test_e3_native_measurement.py": "f43231caf27fc1b218eeda97bee1a5fde600dea1d628e300b7f3a8c498bc6d6f",
     "test_e3_native_measurement_clients.py": "ddbb2495402a0a2d7e058fba1f7f572bdfc27376bc98fee1bb6fbdb1c3fa5ecd",
     "test_e3_native_observation.py": "bacd82bddaac107cd99e83e45d9e755d3060b11435644d24b37412cd068602e7",
@@ -503,6 +507,7 @@
     "test_e3_native_row1_grade.py": "35d00ed74bc0c63a48ea55cb009449e4c32ef46668ccc461dc487b9cb6d333f1",
     "test_e3_native_source_oracle.py": "92e09186f235173baa783d24c560dadaaaa3497495108db0b655629cbf24ce95",
     "test_e3_native_startup.py": "7badd18e12dcfa7fd04518d04aa1d4b71173abc33818b8d01fd50c11b7247016",
+    "test_e3_native_startup_binding.py": "f4073c9807518aad23e1f7c7f5500a46917ebb1a65e04aaff2f05a8a09cbc153",
     "test_e3_native_storage_replay.py": "346e2c61ead00e232fb91647bb4bce76c5dfab97ef1a1983061642822a0314b9",
     "test_e3_native_submission_credit.py": "bdf2099d35b277dd8d2acce32236ced01aed6f6431ccec3ad2818a65b1151006",
     "test_e3_native_teacher_sequence.py": "a6a77e5f24120d0790f84f6132902108fedf3f4018da6f1dd5533f5998d7c100",
@@ -669,22 +674,31 @@
     "reviews/codex-20261028-vm13g-independent-regrade.md",
     "reviews/codex-20261028-q18a-native3-independent-regrade.md",
     "reviews/codex-20261028-native-lazy-mamba-startup-repair.md",
-    "reviews/codex-20261028-vm13h-independent-regrade.md"
+    "reviews/codex-20261028-vm13h-independent-regrade.md",
+    "reviews/codex-20261028-native4-independent-regrade.md",
+    "reviews/codex-20261028-native5-startup-guard-sweep.md"
   ],
   "reviewed_by": "Codex",
   "schema": "e3-native-source-review/1",
   "scope": "implementation closure for owner test only",
   "source_delta": {
-    "basis": "q18a-native3 all-rank lazy Mamba startup traceback and independently regraded VM13h",
-    "runtime_modules": [
-      "lane_chunk.py"
+    "basis": "native4 original all-rank trace/main bee8bfe plus exact CPU counterexample and actual generated-package binding",
+    "package_namespace_modules": [
+      "native_qualification.py",
+      "native_observation.py",
+      "operation_source.py"
     ],
-    "scope": "lane-owned descriptors resolved/validated via actual stock APIs; ordinary cache/context and all generated model/runner/QSA/ops/launcher/native bytes unchanged; native4 queue names plus operator-authorized absolute-time-only change; settings/workloads/numerics/gates unchanged"
+    "runtime_modules": [
+      "async_handoff.py",
+      "native_backend.py",
+      "s5_startup.py"
+    ],
+    "scope": "engine-only owned relay/source closure capability; generic worker backend/guard unchanged; package-local imports; fresh native5 names only; CUDA/model/runner/QSA arithmetic/settings/workloads/tolerances/gates unchanged"
   },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
     "admission_metadata.py": "bb8cd120c25a20d712bc84141382012e7085f1b3a2f9b2c8da237749a026f12b",
-    "async_handoff.py": "6de530b35c7e8c850a024962c00efd98311dcc5490824715f6b58376dde0f7d9",
+    "async_handoff.py": "5e9a1aa1edf55f0a880c9e39b58b316362282bb8c06aa1eab82f885887751a7f",
     "capture_streams.py": "76944d3416a9635cbecd81c70c1d538d5e0efc25d4fed4a3f2cf200ec3f4bd2b",
     "decode_probe.py": "b49c8b3aaebfa65cff913bc32e755c5397abbcc8cb2d7469a4a4297edf848c94",
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
@@ -701,13 +715,13 @@
     "lane_private.py": "89c1e4bc1f5f789dbfcb12b816e96b8629e951b6c56f9ef778ad02c34f6fde9b",
     "lane_state.py": "dfeefb712ad20581de6198d8436b5cf0b8b55869f4fa3bac0610a06ec000fade",
     "launch_diagnostic.py": "842c179ebbec27c7997692e701db489bf15f2e3836c66d95ea6930f523b5abe2",
-    "make_s5_overlap.py": "dce06ecefc0da566c28e26028b307cea2082c79619dd28dd7eabdc554bd576ed",
+    "make_s5_overlap.py": "f5008ead17d3f425a850f587c1adb00f5600e84735efb661789acdbbc74c3da1",
     "model_hooks.py": "308d980dde5cd658addd1c0424151a45326f4650a6603713640d29e8e79e38d9",
     "native/build_q17_helpers.sh": "6e59366e0b057c1bcea8bc677d29d694111125f11b89edb3b15773801b710ec4",
     "native/flash_s5_graph_bytes.cpp": "56f550ebc345ee96077bb473264c42cce92140218dc014f7555718bf95e36110",
     "native/flash_s5_green.cu": "c2151ef6a805f620d6c57ef57c405fc0cdbce3c815b25574f9e0d2e7f1fa1907",
     "native/flash_s5_replay_observer.cpp": "3713542b4165fb28e85d7099b3c3d91690856b2770b81da1aa179c6b4e605ece",
-    "native_backend.py": "5dacae613af16fdb3b1461a4c6c332ab9f3019f9a51aca6ce68c5f0d7fa68c2e",
+    "native_backend.py": "d7167cfb873d08138556663db44bf6bdbd2748706c5c8367d3719481e507a6a0",
     "native_graph_placement.py": "4c32310bbea2a70416eec85804dec578e7a3be8680f393c7211f1e59482ec216",
     "native_measurement.py": "7f85cff78b7c4d076b55c3cb57b164abcad06ed2f7bcd44b5e9551c725214957",
     "native_observation.py": "714fadc6841cf5441134879039aaa776c81dd5f8d24af0130d4fabe237bc0a7a",
@@ -734,7 +748,7 @@
     "reply_transport.py": "66982c35d037da983a73ff13c94b7307cfebc49b2253dcc744da872a66327014",
     "route_invariant.py": "e20333e2a4e104cf2fe24aad2b3ef1d91a75effc2ee47b7a763f595a66ff6884",
     "row1_oracle.py": "222daf40526971511997aac1c8a5b485bae1b095ea0e0b7839d97d795e19ef12",
-    "s5_startup.py": "614f56e214fcec658283619338f03955283f1818ae955c4424a370cf88455c8a",
+    "s5_startup.py": "5f056766648a4e0d8e0f828def846391b00a86da1fc4b55b0cae31eb0f2d4f4c",
     "scheduler_hooks.py": "6cfff801dafc76701c309c15d50a2da8987040bc6a703ad5f7b053dd544af8e4",
     "sparse_history_dma.py": "3f8218efb9133f18efd9aefee9a359ab0c6ea64403f98038ba620e85dcada211",
     "split_bank.py": "ef8222d57888c8103936dffe4f3643edc5ba437b96fb1cab3c8341f97c1d19b4",
@@ -742,6 +756,18 @@
     "wire_v1.py": "f8aaa360a18c7fe9e530ffcf4775b741c88fa5c8a2156b03651e5fd303200721",
     "worker_bridge.py": "b28280bdff8d2e7d3b6683a2fe2267d16aa9cea5412dbffaf9d61a2029c8066b",
     "worker_hooks.py": "5fae77ec149f188ee298a4d1300f333531e18a46f918bf6e5778382fbc15099b"
+  },
+  "startup_guard_audit": {
+    "actual_binding_tests": 8,
+    "entries": 3954,
+    "files": 411,
+    "focused_tests": 122,
+    "index": "reviews/codex-20261028-native5-startup-guard-index.json",
+    "index_sha256": "8c33200367dfe89fce085bbd146dbcca677ef80f19db9006ede3efa8f3a97275",
+    "legacy_counterexample_log_sha256": "031f15a63fbf7fbfe9b3ef314e5e7b9fbf1bfbc379dc50554e9bc054ccace0bd",
+    "review": "reviews/codex-20261028-native5-startup-guard-sweep.md",
+    "scope": "CPU source/filesystem/external-framework boundaries; no ready/capability/closure override in actual generated engine binding",
+    "vm_detour": "not applicable: engine-side relay/namespace/auth binding; no new CUDA source/API"
   },
   "vm_followup": {
     "job13g": {
