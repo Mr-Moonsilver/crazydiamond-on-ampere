@@ -57,7 +57,7 @@ from e3_types import (
 )
 from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
-from native_measurement import NativeMeasurementCensus
+from native_measurement import NativeMeasurementCensus, encode_report_vector, decode_report_vector
 from reply_transport import Backpressure, TransportError
 from scheduler_hooks import (
     ADMISSION_PHASES,
@@ -779,7 +779,8 @@ class NativeSegmentDriver:
         self.engine_epoch = controller.engine_epoch
         self.measurement_census = NativeMeasurementCensus(
             engine_epoch=self.engine_epoch, ranks=self.ranks,
-            stage_ranks=self.stage_ranks, pp_senders=self.stage_ranks[0])
+            stage_ranks=self.stage_ranks, pp_senders=self.stage_ranks[0],
+            pool_chunk_capacity=True)
         self.route_generation = 0
         self.tx = None
         self.admission = None
@@ -3075,7 +3076,16 @@ class NativeSegmentDriver:
                  'route_generation': int(self.route_generation),
                  'route': 'split' if self._split_ready else 'full'}
         for key, value in fields.items():
-            entry[key] = _bounded_value(value)
+            # Only source-validated report vectors get the lossless page schema.
+            # Other metadata keeps the original strict64-element refusal.
+            if (entry_kind == 'report' and key in ('completed_op_seqs', 'pending_op_seqs', 'proofs')
+                    and type(value) in (list, tuple) and len(value) > 64):
+                # Preserve each original leaf's depth/type/string limits. The
+                # explicit page tree, separately width/height bounded by its
+                # encoder, replaces only the overlong outer source vector.
+                entry[key] = encode_report_vector([_bounded_value(item, 1) for item in value])
+            else:
+                entry[key] = _bounded_value(value)
         self._journal.append(entry)
         self.measurement_census.ingest(entry)
         return entry
@@ -3139,7 +3149,7 @@ class NativeSegmentDriver:
                 chunks[txn]['reports'] += 1
                 if entry.get('state_written') is True:
                     chunks[txn]['state_written'][entry.get('worker_rank')] = True
-                for proof in entry.get('proofs') or []:
+                for proof in decode_report_vector(entry.get('proofs') or []):
                     if type(proof) is not dict:
                         continue
                     completions.append({

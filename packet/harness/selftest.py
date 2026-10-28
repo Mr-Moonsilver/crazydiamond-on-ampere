@@ -665,6 +665,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
     ('test_e3_native_submission_credit.py', 'E3 native submission credit: real dispatcher/bridge op identity under delayed selection/attention queries, unchanged pending retry, quarantine and pinned accepted-op bound (CPU only)'),
                      ('test_e3_native_device_path_probe.py', 'E3 native device proof receipt/memory/owner guards (CPU only; actual GPU proof owner-run)'),
                      ('test_e3_native_sparse_waves_device_probe.py', 'E3 native sparse waves device-proof receipts, cancellation and owner bounds (CPU only; GPU proof owner-run)'),
+                     ('test_e3_native_expanded_reports.py', 'E3 expanded native continuation reports: lossless pages, unchanged aggregate capacity and exact source joins (CPU)'),
                      ('test_e3_lane_chunk.py', 'E3 lane chunk: worker-side request registration/update, lane tables and CPU slot mappings, private align context, metadata and forward context (CPU only, fakes)'),
                      ('test_e3_qsa_driver.py', 'E3 QSA layer driver: additive attention pre/post on the D2-composed QSA source, producer -> one-bucket generator -> tail phases, pause/pending (CPU only)'),
                      ('test_e3_native_startup.py', 'E3 worker-native startup: split bank + lane communicators + PLE scratch composition, graph builder, transition RPC (CPU only, fakes)'),

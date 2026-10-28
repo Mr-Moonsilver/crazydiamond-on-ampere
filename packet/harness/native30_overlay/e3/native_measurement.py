@@ -60,6 +60,67 @@ entry; no duration is converted or invented.
 import json
 import sys
 
+
+JOURNAL_VECTOR_SCHEMA = 's5-journal-vector/1'
+JOURNAL_VECTOR_WIDTH = 64
+MAX_JOURNAL_VECTOR_ITEMS = JOURNAL_VECTOR_WIDTH ** 3
+
+
+def encode_report_vector(values):
+    """Lossless paging of a validated worker vector; each list stays <=64.
+
+    Small reports keep their original shape. No element, ordering, identity,
+    completion sequence or timestamp is removed. The raw ring is unchanged.
+    """
+    if type(values) not in (list, tuple):
+        raise ValueError('report vector must be a sequence')
+    if len(values) > MAX_JOURNAL_VECTOR_ITEMS:
+        raise ValueError('report vector exceeds the bounded page tree')
+    if len(values) <= JOURNAL_VECTOR_WIDTH:
+        return list(values)
+    items = list(values)
+    levels = 0
+    while len(items) > JOURNAL_VECTOR_WIDTH:
+        items = [items[i:i + JOURNAL_VECTOR_WIDTH]
+                 for i in range(0, len(items), JOURNAL_VECTOR_WIDTH)]
+        levels += 1
+    return {'schema': JOURNAL_VECTOR_SCHEMA, 'length': len(values),
+            'levels': levels, 'items': items}
+
+
+def decode_report_vector(value):
+    """Validate canonical pages before returning the exact original vector."""
+    if type(value) is list:
+        return value
+    if (type(value) is not dict or value.get('schema') != JOURNAL_VECTOR_SCHEMA
+            or set(value) != {'schema', 'length', 'levels', 'items'}
+            or type(value['length']) is not int
+            or not JOURNAL_VECTOR_WIDTH < value['length'] <= MAX_JOURNAL_VECTOR_ITEMS
+            or type(value['levels']) is not int or not 1 <= value['levels'] <= 2):
+        raise ValueError('invalid paged report vector')
+    flat = []
+    def visit(items, levels):
+        if type(items) is not list or not 1 <= len(items) <= JOURNAL_VECTOR_WIDTH:
+            raise ValueError('invalid report vector page')
+        if levels:
+            for child in items:
+                visit(child, levels - 1)
+        else:
+            flat.extend(items)
+            if len(flat) > value['length']:
+                raise ValueError('report vector length overflow')
+    visit(value['items'], value['levels'])
+    if len(flat) != value['length'] or encode_report_vector(flat) != value:
+        raise ValueError('noncanonical report vector')
+    return flat
+
+
+def _report_vector(value):
+    # Preserve existing refusals for malformed legacy fields.
+    if type(value) is dict and value.get('schema') == JOURNAL_VECTOR_SCHEMA:
+        return decode_report_vector(value)
+    return value
+
 SCHEMA = 1
 
 #: Named completeness basis.  Deliberately separate from the raw ring's
@@ -187,7 +248,7 @@ class NativeMeasurementCensus:
                  max_source_holds_per_chunk=MAX_SOURCE_HOLDS_PER_CHUNK,
                  max_frontiers_per_chunk=MAX_FRONTIERS_PER_CHUNK,
                  max_cancels_per_chunk=MAX_CANCELS_PER_CHUNK,
-                 clock_basis=CLOCK_BASIS):
+                 clock_basis=CLOCK_BASIS, pool_chunk_capacity=False):
         self._config_reasons = []
         self.engine_epoch = self._config_int(
             'engine-epoch', engine_epoch, minimum=0)
@@ -246,6 +307,14 @@ class NativeMeasurementCensus:
         if self.clock_basis != CLOCK_BASIS:
             _add_reason(self._config_reasons, 'config-clock-basis-not-monotonic')
 
+        self.pool_chunk_capacity = pool_chunk_capacity is True
+        if type(pool_chunk_capacity) is not bool:
+            _add_reason(self._config_reasons, 'config-invalid:pool-chunk-capacity')
+        # Same aggregate capacities as the prior per-chunk allocation. Expanded
+        # chunks borrow unused slots; no facts are dropped and no total grows.
+        self._segment_total = 0
+        self._proof_totals = {rank: 0 for rank in self.ranks}
+        self._completed_totals = {rank: 0 for rank in self.ranks}
         self._chunks = {}
         self._groups = {}
         self._group_order = []
@@ -612,7 +681,7 @@ class NativeMeasurementCensus:
         if not _is_int(op_seq) or op_seq < 0:
             self._conflict(chunk['conflicts'], 'segment-op-seq-unproved')
             return {'accepted': False, 'reason': 'segment-op-seq-unproved'}
-        if op_seq >= self.max_segments_per_chunk:
+        if not self.pool_chunk_capacity and op_seq >= self.max_segments_per_chunk:
             self._overflow('segment-op-seq-capacity', chunk)
             return {'accepted': False, 'reason': 'segment-op-seq-capacity'}
         if not _is_int(stage) or not self.stage_ranks or stage not in self.stage_ranks:
@@ -663,11 +732,13 @@ class NativeMeasurementCensus:
                 return {'accepted': False, 'reason': 'segment-op-conflict'}
             seg['events'] += 1
             return {'accepted': True, 'repeated': True}
-        if seg['unique'] >= self.max_segments_per_chunk:
+        if ((self.pool_chunk_capacity and self._segment_total >= self.max_segments_per_chunk * self.max_chunks_total)
+                or (not self.pool_chunk_capacity and seg['unique'] >= self.max_segments_per_chunk)):
             self._overflow('segment-capacity', chunk)
             return {'accepted': False, 'reason': 'segment-capacity'}
         seg['attrs'][key] = attributes
         seg['unique'] += 1
+        self._segment_total += 1
         seg['events'] += 1
         if seg['first_ns'] is None or observed_ns < seg['first_ns']:
             seg['first_ns'] = observed_ns
@@ -753,7 +824,13 @@ class NativeMeasurementCensus:
         # The cumulative completed op set is the actual source fact the stage
         # join consumes.  It must be an int sequence, cumulative, and disjoint
         # from the rank's outstanding work.
-        completed = entry.get('completed_op_seqs')
+        try:
+            completed = _report_vector(entry.get('completed_op_seqs'))
+            pending = _report_vector(entry.get('pending_op_seqs')) or []
+            proofs = _report_vector(entry.get('proofs')) or []
+        except ValueError:
+            self._conflict(chunk['conflicts'], 'report-vector-invalid')
+            return {'accepted': False, 'reason': 'report-vector-invalid'}
         if type(completed) is not list:
             self._conflict(chunk['conflicts'], 'report-completed-not-a-list')
             completed_set = None
@@ -769,7 +846,6 @@ class NativeMeasurementCensus:
                 self._conflict(chunk['conflicts'],
                                'report-completed-set-unproved')
                 completed_set = None
-        pending = entry.get('pending_op_seqs') or []
         pending_set = set()
         if type(pending) is not list:
             self._conflict(chunk['conflicts'], 'report-pending-not-a-list')
@@ -799,7 +875,11 @@ class NativeMeasurementCensus:
                 self._conflict(chunk['conflicts'],
                                'report-pending-after-completion')
         if completed_set is not None:
-            if len(completed_set) > self.max_segments_per_chunk:
+            prior_count = len(record['completed_ops'] or ())
+            exceeds = (self._completed_totals[rank] + max(0, len(completed_set) - prior_count)
+                       > self.max_segments_per_chunk * self.max_chunks_total
+                       if self.pool_chunk_capacity else len(completed_set) > self.max_segments_per_chunk)
+            if exceeds:
                 self._overflow('report-completed-capacity', chunk)
                 completed_set = None
         if completed_set is not None:
@@ -811,9 +891,9 @@ class NativeMeasurementCensus:
                 # Keep the earlier superset: a later cumulative report may not
                 # retract an operation it already reported as complete.
             else:
+                self._completed_totals[rank] += len(completed_set) - len(prior or ())
                 record['completed_ops'] = frozenset(completed_set)
         state_written = entry.get('state_written') is True
-        proofs = entry.get('proofs') or []
         if type(proofs) is not list:
             self._conflict(chunk['conflicts'], 'report-proofs-not-a-list')
             proofs = []
@@ -846,13 +926,15 @@ class NativeMeasurementCensus:
                     record['proof_repeats'] += 1
                     self._duplicate_observations += 1
                 continue
-            if record['unique_proofs'] >= self.max_proofs_per_rank:
+            if ((self.pool_chunk_capacity and self._proof_totals[rank] >= self.max_proofs_per_rank * self.max_chunks_total)
+                    or (not self.pool_chunk_capacity and record['unique_proofs'] >= self.max_proofs_per_rank)):
                 self._overflow('proof-capacity', chunk)
                 continue
             retained = {'completion_seq': completion_seq,
                         'observed_ns': observed_ns}
             record['proofs'][key] = retained
             record['unique_proofs'] += 1
+            self._proof_totals[rank] += 1
             self._first_seen_proofs += 1
             # First queried observation, never a later cumulative duplicate.
             if record['first_proof_ns'] is None \
@@ -1166,8 +1248,15 @@ class NativeMeasurementCensus:
                 'max_requests': self.max_requests,
                 'max_chunks_per_request': self.max_chunks_per_request,
                 'max_chunks_total': self.max_chunks_total,
-                'max_segments_per_chunk': self.max_segments_per_chunk,
-                'max_proofs_per_rank': self.max_proofs_per_rank,
+                'max_segments_per_chunk': None if self.pool_chunk_capacity else self.max_segments_per_chunk,
+                'max_proofs_per_rank': None if self.pool_chunk_capacity else self.max_proofs_per_rank,
+                'pool_chunk_capacity': self.pool_chunk_capacity,
+                'segments_total_limit': self.max_segments_per_chunk * self.max_chunks_total,
+                'proofs_per_rank_total_limit': self.max_proofs_per_rank * self.max_chunks_total,
+                'completed_per_rank_total_limit': self.max_segments_per_chunk * self.max_chunks_total,
+                'retained_segments_total': self._segment_total,
+                'retained_proofs_per_rank': dict(self._proof_totals),
+                'retained_completed_per_rank': dict(self._completed_totals),
                 'max_pp_receipts_per_chunk': self.max_pp_receipts_per_chunk,
                 'max_source_holds_per_chunk': self.max_source_holds_per_chunk,
                 'max_frontiers_per_chunk': self.max_frontiers_per_chunk,
