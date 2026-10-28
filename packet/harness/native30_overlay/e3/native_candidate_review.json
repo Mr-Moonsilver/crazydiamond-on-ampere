@@ -9,14 +9,14 @@
     "target_sha256": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799"
   },
   "cpu_regression": {
-    "basis": "final registered runtime and lane-host-plan regressions; new standalone proof program separately executed on actual image after full registered run",
+    "basis": "registered runtime and strict snapshot/capacity regressions on d9875c1; actual-image CPU proof separately executed; fresh queue files are name-only and separately verified",
     "cases": 269,
     "exit_code": 0,
-    "log": "tmp/native11-final-selftest-20261028T0657Z.log",
-    "log_sha256": "9123404b283852db76e9ebfdfb348cb25a14fe80e1404627c882aa474ab3a843",
+    "log": "tmp/native12-align-final-selftest-20261028T0755Z.log",
+    "log_sha256": "a0b5861b8db5fd5431ad1a0fca5a5dda6003bb7fe4d11a3b3aa8d6557088b56f",
     "required": 269,
-    "runtime_commit": "3664ffda35d986520f458c00b146e3500a15b12e",
-    "tested_commit": "3664ffda35d986520f458c00b146e3500a15b12e"
+    "runtime_commit": "d9875c19d138909e7209282e4bb9fb3cd930742c",
+    "tested_commit": "d9875c19d138909e7209282e4bb9fb3cd930742c"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -63,6 +63,7 @@
     "e3_finalize_package.py": "ae14c5937cf899a76b9edf6aee572bb552c9b5b02e21b17de878e6a788a6db23",
     "e3_green_probe.py": "7fa16cc1da3ea0e3adf37313db0ce948121a1428b67038e0a94d0ebe9f28560e",
     "e3_lane_comm_probe.py": "c662ef7139d8a2c423261defa4405d4e3d43e385c4e32c6271ee76217fdbe1bf",
+    "e3_native_align_capacity_probe.py": "2e7ffd021eba1940aac657ba26995eb604beee593004df1e898e0abfc3c0045d",
     "e3_native_host_plan_probe.py": "a598bbc9221cd479a0fb0e0d6da6ef62fbfb7ed8cd1535dfb6b1192040160041",
     "e3_native_import_probe.py": "7643e5c7d8ae8bbf8202c918472e33e5fd774cbdf94dbbbcde2e0963b4127bbb",
     "e3_native_memory_grade.py": "f3778b4c2153a06c6eff4136206c30c937d153a971b2228ef518ae511f3e7c86",
@@ -303,6 +304,9 @@
     "runs/q18a_native11.draft.sh": "a51ff4938d3a3bfbb90f95b0ea4adb0642b6beb458b08533c4eeb27ffb14bf22",
     "runs/q18a_native11_declare.sh": "188806d08fb683cb5fe11a90e08b7ed3b60c05bccadbf2c7163ad396219ec1ac",
     "runs/q18a_native11_settings.sh": "2886c0f383ab31aa09afe82549848c0a30eae17cdb84675666355ec45b1df12d",
+    "runs/q18a_native12.draft.sh": "b9e5fb0b44d7233e9a2b5e2709c103816bb7be913fdbd993ce68ef89d559a290",
+    "runs/q18a_native12_declare.sh": "f9c5036bbd690037661559641b2e632c89b7beee7bc74f8fe5d0f3f2208dd35a",
+    "runs/q18a_native12_settings.sh": "41e9fe41f50bc13d90c9fa4db9e450d612dfa9f921ef29d8f58baad01faa00fe",
     "runs/q18a_native1_declare.sh": "2052525e381dec2544a41d9af00fcacc9776b0cdc7bc9d9857f9810baa3e2d9a",
     "runs/q18a_native1_settings.sh": "6e4494bb5c5228187f48242a2568c32aa770c2ba70bf5f0333fdd90d559f9e42",
     "runs/q18a_native2.draft.sh": "2518bbbd35a01fbf646aa9594b71404dbd1eff4567e17208ec9470dd8a70973a",
@@ -515,7 +519,7 @@
     "test_e3_graph_routing.py": "8cf938864dcb3ce94224e8371df9615e3729b9f35328c43d3cd577c8ad6169a3",
     "test_e3_green_native.py": "092b8d751774cc63479e72cf9ea14c9afab9ffcbe2c291e82c79595087980ef4",
     "test_e3_green_probe.py": "baa17a2327676e644ec8e776b7ab6732502191f4f795b1ddac7ddbc3aa27d0f3",
-    "test_e3_lane_chunk.py": "cd9992043657ccf219976738b0333e4daeb8be53e895a19f25c6071e929c3772",
+    "test_e3_lane_chunk.py": "44aecc261cf719672e4f4ceb6bc5797e6014c955aa6f203a54ea25407e57b47a",
     "test_e3_lane_comm.py": "323c3c6fa0dfe422b37678aff57d90f516f02c63ec902e7bb6b7d8b9f278ccb0",
     "test_e3_lane_comm_probe.py": "71dbd8bc9c8cb22838126ff27ae4fe69f69efee616654f95d1a7fd12dcfda435",
     "test_e3_lane_dispatch.py": "8264e576e295cb6acc93f910c68b1b9b4c552e54d8f1d60266469ff2a75176a7",
@@ -711,8 +715,8 @@
   "mounted_runtime_import_audit": {
     "deferred": 277,
     "edges": 1101,
-    "graph": "reviews/codex-20261028-native11-mounted-import-edges.json",
-    "graph_sha256": "27ac18ed29735c23864fbe88ccbefa5d65bd39f07aa9c6698b42098852fb7050",
+    "graph": "reviews/codex-20261028-native12-mounted-import-edges.json",
+    "graph_sha256": "0f59c04f3a59c2a58bbf0526f44d432a0adf1da10060fcb4b34ae923bd7c74b3",
     "modules": 83,
     "runtime_ownership_errors": 0,
     "scope": "same exact trusted launcher; final generated module bytes must equal actual CPU-proven overlay",
@@ -720,7 +724,150 @@
   },
   "profile": "q18a-native-performance",
   "qualified_observer_library_sha256": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d",
-  "real_overlay_import_cpu_proof": {
+  "real_mamba_slot_capacity_cpu_proof": {
+    "align_capacity": {
+      "actual_context_class": "vllm.v1.worker.mamba_utils.MambaSpecDecodeGPUContext",
+      "actual_method": "run_fused_postprocess_align",
+      "cases": [
+        {
+          "accepted_shape": [
+            10
+          ],
+          "accepted_unchanged": true,
+          "actual_method_entered": true,
+          "actual_snapshot_copy_executed": true,
+          "computed_shape": [
+            10
+          ],
+          "grid": [
+            1,
+            3,
+            16
+          ],
+          "kernel_executed": false,
+          "kernel_launch_intercepted": true,
+          "mapping_shape": [
+            1
+          ],
+          "mapping_values": [
+            0
+          ],
+          "num_reqs": 1,
+          "private_batch_rows": 1,
+          "request_slot_capacity": 10,
+          "slot": 0,
+          "snapshot_exact": true,
+          "snapshot_shape": [
+            10
+          ],
+          "state_shape": [
+            10
+          ]
+        },
+        {
+          "accepted_shape": [
+            10
+          ],
+          "accepted_unchanged": true,
+          "actual_method_entered": true,
+          "actual_snapshot_copy_executed": true,
+          "computed_shape": [
+            10
+          ],
+          "grid": [
+            1,
+            3,
+            16
+          ],
+          "kernel_executed": false,
+          "kernel_launch_intercepted": true,
+          "mapping_shape": [
+            1
+          ],
+          "mapping_values": [
+            2
+          ],
+          "num_reqs": 1,
+          "private_batch_rows": 1,
+          "request_slot_capacity": 10,
+          "slot": 2,
+          "snapshot_exact": true,
+          "snapshot_shape": [
+            10
+          ],
+          "state_shape": [
+            10
+          ]
+        },
+        {
+          "accepted_shape": [
+            10
+          ],
+          "accepted_unchanged": true,
+          "actual_method_entered": true,
+          "actual_snapshot_copy_executed": true,
+          "computed_shape": [
+            10
+          ],
+          "grid": [
+            1,
+            3,
+            16
+          ],
+          "kernel_executed": false,
+          "kernel_launch_intercepted": true,
+          "mapping_shape": [
+            1
+          ],
+          "mapping_values": [
+            9
+          ],
+          "num_reqs": 1,
+          "private_batch_rows": 1,
+          "request_slot_capacity": 10,
+          "slot": 9,
+          "snapshot_exact": true,
+          "snapshot_shape": [
+            10
+          ],
+          "state_shape": [
+            10
+          ]
+        }
+      ],
+      "cpu_allocator_pinning": false,
+      "engine_constructed": false,
+      "kernel_executed": false,
+      "kernels_unpatched": true,
+      "lane_source_sha256": "8c349430c6401cbcd6c4aedc25b70918feef188d33437443aff70658f9deb062",
+      "methods_unpatched": true,
+      "model_constructed": false,
+      "native11_negative": {
+        "accepted_shape": [
+          10
+        ],
+        "error_message": "output with shape [1] doesn't match the broadcast shape [10]",
+        "error_type": "RuntimeError",
+        "reached_kernel": false,
+        "rejected": true,
+        "snapshot_shape": [
+          1
+        ]
+      },
+      "ordinary_context_unchanged": true,
+      "ordinary_tables_unchanged": true,
+      "private_batch_rows": 1,
+      "private_tables_exact": true,
+      "ready_flag_derived_from_actual_initialization": true,
+      "request_slot_capacity": 10,
+      "scope": "actual imported lane/context construction and stock method through real CPU snapshot copy; explicit trace stop before GPU launch; small CPU ownership/descriptor inputs; no GPU/model/state-copy qualification",
+      "state_caches_unchanged": true,
+      "stock_source_sha256": "7382bcc8a7b070eaec44339379ebce485777fe23b97e05ee108088faa707c7e6",
+      "synthetic_cpu_ownership_inputs": true,
+      "verdict": "PASS"
+    },
+    "all_deferred_and_providers_pass": true,
+    "all_imported_module_pins_equal": true,
     "counts": {
       "deferred": 262,
       "modules": 81,
@@ -728,36 +875,189 @@
     },
     "cuda_initialized": false,
     "gpu_device_nodes": [],
-    "gpu_owners_constructed": false,
-    "graph_sha256": "27ac18ed29735c23864fbe88ccbefa5d65bd39f07aa9c6698b42098852fb7050",
-    "hardware_qualified": false,
-    "host_plan": {
-      "actual_guard_prefix_pass": true,
-      "actual_metadata_class": "vllm.v1.attention.backends.flash_attn.FlashAttentionMetadata",
-      "cpu_buffer_reuse_preserved": true,
-      "device_fields_unchanged": true,
-      "guard_has_no_device_readback": true,
-      "lane_source_sha256": "e7cb42d4b5f79779e6a3d0b00c2397fe7ee661a70093910388824f00fe839d21",
-      "metadata_source_sha256": "b170a4789e18104c1bee35bea70df51abe6766693d8f4726a59f2e6f5c4282aa",
-      "native10_negative_rejected": true,
-      "qsa_source_sha256": "883ed12486acba8bd50212219b35de37d0051ef992c67f8977ead691fcd7bd05",
-      "refusals": 3,
-      "scope": "actual metadata class and generated guard-prefix projection plus real lane binding helper; operation config is CPU input data from observed preconditions; no model/GPU/lease qualification",
-      "shared_plan_object": true,
-      "unrelated_metadata_untouched": true,
+    "pin_join_key": "active_mount import owners; conditional vision override inactive; operation_source explicitly builder-only and not imported by CPU probe",
+    "proof_input": {
+      "files": 94,
+      "graph_sha256": "0f59c04f3a59c2a58bbf0526f44d432a0adf1da10060fcb4b34ae923bd7c74b3",
+      "input": "<hub-dir>/agents/flash-next/tmp/native12-real-align-capacity-proof-20261028T074842Z",
+      "probe_sha256": "2e7ffd021eba1940aac657ba26995eb604beee593004df1e898e0abfc3c0045d",
+      "runner_sha256": "1aef138420b9a53baf8400b076a829716aac12368fb65fc5cea6804e271215c1",
+      "scope": "CPU only, unarmable source generation, actual snapshot method stops explicitly before Triton launch",
+      "sha256": "ebd620a4e639f9c7482662d90c1cd012187911bf8bd8a3abad7d34188c31bed0",
+      "source_runtime_commit": "d9875c1",
+      "vm_input": "/opt/flashnext/cpu/native12-align-capacity-ebd620a4e639"
+    },
+    "raw_receipt": "<hub-dir>/agents/flash-next/fn-main/results/vm<vm-id>/native12-align-capacity/result.json",
+    "raw_sha256": "7aa6e5c6ef98997746a0064073cdcc9a33000328a64bff6f23ad0c2d79f99541",
+    "scope": "independent regrade of real CPU snapshot method through explicit pre-GPU boundary; synthetic ownership data and CPU allocator pinning adaptation disclosed; no GPU/model/engine/state-copy qualification",
+    "verdict": "PASS"
+  },
+  "real_overlay_import_cpu_proof": {
+    "align_capacity": {
+      "actual_context_class": "vllm.v1.worker.mamba_utils.MambaSpecDecodeGPUContext",
+      "actual_method": "run_fused_postprocess_align",
+      "cases": [
+        {
+          "accepted_shape": [
+            10
+          ],
+          "accepted_unchanged": true,
+          "actual_method_entered": true,
+          "actual_snapshot_copy_executed": true,
+          "computed_shape": [
+            10
+          ],
+          "grid": [
+            1,
+            3,
+            16
+          ],
+          "kernel_executed": false,
+          "kernel_launch_intercepted": true,
+          "mapping_shape": [
+            1
+          ],
+          "mapping_values": [
+            0
+          ],
+          "num_reqs": 1,
+          "private_batch_rows": 1,
+          "request_slot_capacity": 10,
+          "slot": 0,
+          "snapshot_exact": true,
+          "snapshot_shape": [
+            10
+          ],
+          "state_shape": [
+            10
+          ]
+        },
+        {
+          "accepted_shape": [
+            10
+          ],
+          "accepted_unchanged": true,
+          "actual_method_entered": true,
+          "actual_snapshot_copy_executed": true,
+          "computed_shape": [
+            10
+          ],
+          "grid": [
+            1,
+            3,
+            16
+          ],
+          "kernel_executed": false,
+          "kernel_launch_intercepted": true,
+          "mapping_shape": [
+            1
+          ],
+          "mapping_values": [
+            2
+          ],
+          "num_reqs": 1,
+          "private_batch_rows": 1,
+          "request_slot_capacity": 10,
+          "slot": 2,
+          "snapshot_exact": true,
+          "snapshot_shape": [
+            10
+          ],
+          "state_shape": [
+            10
+          ]
+        },
+        {
+          "accepted_shape": [
+            10
+          ],
+          "accepted_unchanged": true,
+          "actual_method_entered": true,
+          "actual_snapshot_copy_executed": true,
+          "computed_shape": [
+            10
+          ],
+          "grid": [
+            1,
+            3,
+            16
+          ],
+          "kernel_executed": false,
+          "kernel_launch_intercepted": true,
+          "mapping_shape": [
+            1
+          ],
+          "mapping_values": [
+            9
+          ],
+          "num_reqs": 1,
+          "private_batch_rows": 1,
+          "request_slot_capacity": 10,
+          "slot": 9,
+          "snapshot_exact": true,
+          "snapshot_shape": [
+            10
+          ],
+          "state_shape": [
+            10
+          ]
+        }
+      ],
+      "cpu_allocator_pinning": false,
+      "engine_constructed": false,
+      "kernel_executed": false,
+      "kernels_unpatched": true,
+      "lane_source_sha256": "8c349430c6401cbcd6c4aedc25b70918feef188d33437443aff70658f9deb062",
+      "methods_unpatched": true,
+      "model_constructed": false,
+      "native11_negative": {
+        "accepted_shape": [
+          10
+        ],
+        "error_message": "output with shape [1] doesn't match the broadcast shape [10]",
+        "error_type": "RuntimeError",
+        "reached_kernel": false,
+        "rejected": true,
+        "snapshot_shape": [
+          1
+        ]
+      },
+      "ordinary_context_unchanged": true,
+      "ordinary_tables_unchanged": true,
+      "private_batch_rows": 1,
+      "private_tables_exact": true,
+      "ready_flag_derived_from_actual_initialization": true,
+      "request_slot_capacity": 10,
+      "scope": "actual imported lane/context construction and stock method through real CPU snapshot copy; explicit trace stop before GPU launch; small CPU ownership/descriptor inputs; no GPU/model/state-copy qualification",
+      "state_caches_unchanged": true,
+      "stock_source_sha256": "7382bcc8a7b070eaec44339379ebce485777fe23b97e05ee108088faa707c7e6",
+      "synthetic_cpu_ownership_inputs": true,
       "verdict": "PASS"
     },
-    "input_manifest_sha256": "e6c5af3807491530acbad923b50f2ed3a2735ea6975c7e209cd78607c35e440a",
-    "native7_negative_rejected": true,
-    "no_fixture_shims": true,
-    "no_mocks": true,
-    "probe_sha256": "a598bbc9221cd479a0fb0e0d6da6ef62fbfb7ed8cd1535dfb6b1192040160041",
-    "rc": 0,
-    "receipt_sha256": "b6b4eb6329c5d67f5ee792904ce7c2124bfca23be651d234e18b98443d0971c7",
-    "record": "results/vm<vm-id>/native11-host-plan/result.json",
-    "release_qualified": false,
-    "schema": "native11-real-qsa-host-plan/1",
-    "unbound_forward_context_refused": true,
+    "all_deferred_and_providers_pass": true,
+    "all_imported_module_pins_equal": true,
+    "counts": {
+      "deferred": 262,
+      "modules": 81,
+      "providers": 6
+    },
+    "cuda_initialized": false,
+    "gpu_device_nodes": [],
+    "pin_join_key": "active_mount import owners; conditional vision override inactive; operation_source explicitly builder-only and not imported by CPU probe",
+    "proof_input": {
+      "files": 94,
+      "graph_sha256": "0f59c04f3a59c2a58bbf0526f44d432a0adf1da10060fcb4b34ae923bd7c74b3",
+      "input": "<hub-dir>/agents/flash-next/tmp/native12-real-align-capacity-proof-20261028T074842Z",
+      "probe_sha256": "2e7ffd021eba1940aac657ba26995eb604beee593004df1e898e0abfc3c0045d",
+      "runner_sha256": "1aef138420b9a53baf8400b076a829716aac12368fb65fc5cea6804e271215c1",
+      "scope": "CPU only, unarmable source generation, actual snapshot method stops explicitly before Triton launch",
+      "sha256": "ebd620a4e639f9c7482662d90c1cd012187911bf8bd8a3abad7d34188c31bed0",
+      "source_runtime_commit": "d9875c1",
+      "vm_input": "/opt/flashnext/cpu/native12-align-capacity-ebd620a4e639"
+    },
+    "raw_receipt": "<hub-dir>/agents/flash-next/fn-main/results/vm<vm-id>/native12-align-capacity/result.json",
+    "raw_sha256": "7aa6e5c6ef98997746a0064073cdcc9a33000328a64bff6f23ad0c2d79f99541",
+    "scope": "independent regrade of real CPU snapshot method through explicit pre-GPU boundary; synthetic ownership data and CPU allocator pinning adaptation disclosed; no GPU/model/engine/state-copy qualification",
     "verdict": "PASS"
   },
   "real_qsa_host_plan_cpu_proof": {
@@ -978,19 +1278,21 @@
     "reviews/codex-20261028-native10-backend-ownership-review.md",
     "reviews/codex-20261028-native10-launcher-inventory-delta.md",
     "reviews/codex-20261028-native10-independent-regrade.md",
-    "reviews/codex-20261028-native11-host-plan-review.md"
+    "reviews/codex-20261028-native11-host-plan-review.md",
+    "reviews/codex-20261028-native11-independent-regrade.md",
+    "reviews/codex-20261028-native12-alignment-contract-review.md"
   ],
   "reviewed_by": "Codex",
   "schema": "e3-native-source-review/1",
   "scope": "implementation closure for owner test only",
   "source_delta": {
-    "basis": "native10 reaches real native QSA layer but metadata lacks mandatory CPU host plan",
+    "basis": "native11 reaches state_finalize but private snapshot capacity1 refuses stock request-slot buffer10",
     "builder_modules": [],
     "new_runtime_modules": [],
     "runtime_modules": [
       "lane_chunk.py"
     ],
-    "scope": "copy private CPU metadata arrays onto exact named QSA main metadata with admitted bounds/stale-plan/device checks; no device readback, metadata GPU-array replacement, settings/workload/v4/kernel/guard change; launcher83ca unchanged; fresh native11 names"
+    "scope": "derive private context capacity from actual full accepted-token shape; require all request-slot arrays to agree; keep one batch table row, original idx_mapping and num_reqs1; no slice/rebase/device readback, kernel/settings/workload/v4/gate change; launcher83ca unchanged; fresh native12 names"
   },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
@@ -1005,7 +1307,7 @@
     "graph_hooks.py": "12ad7e3500b559f2d398a6676292094e4d455df12d4c6951803dbac9f38663c5",
     "graph_router.py": "5d19c0a2ee7c291ba910916ae3fefc652117a4efa2c8d7d235241e8902272a71",
     "green_context.py": "f0b9e48e536c120946235490829295a3941c9f93b89df4d8be231172b1f6f0fe",
-    "lane_chunk.py": "5ad9d273c79ccb82afaef7d9a85fcd4b50481c50719314bcec21ea4df5b40579",
+    "lane_chunk.py": "e7083e0e139263531f0213c7b6330e29b7ac563de0ef5921a84691426e38c2f7",
     "lane_comm.py": "ae86ed9b5799fc6de8cb8159913999eaf9c047838604e9ec10a7506db15fb14f",
     "lane_dispatch.py": "b12276ac3a5577723e449bb02466249a63d3212772d5f40c03cb3d02d441e4ff",
     "lane_hooks.py": "9c7b3a08b412e36dbacd1b78509dc39c94db8c4fbfe0e3f2f141a13a6828d405",
@@ -1068,7 +1370,7 @@
     "source_contract_tests": 10
   },
   "startup_guard_delta": {
-    "scope": "lane metadata data-flow repair only; no ready/capability flag supplied or guard removed; actual metadata/guard negative and positive discriminate"
+    "scope": "private request-slot capacity repair with matching-array shape refusals; no ready/capability flag supplied or guard removed; actual stock method snapshot path and native11 negative discriminate; GPU launch intentionally unexecuted"
   },
   "stock_api_audit": {
     "contract_sha256": "96bfbd945ab3e3dcac8b2da465c28e12307249703e152d5643b169a7370c3f66",
