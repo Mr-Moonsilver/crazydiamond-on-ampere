@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -80,7 +81,7 @@ class FakeConfig:
     def __init__(self, streams=3, prompt_tokens=100, cached_tokens=0,
                  interval=0.004, coalesce=1, start_delays=None,
                  never_start=(), http_error_streams=(), close_after=None,
-                 early_eos_streams=(), early_eos_after=6,
+                 early_eos_streams=(), early_eos_after=6, early_eos_gate=None,
                  finish_after=None, usage_only_every=0,
                  continuous=True, split_reads=False, reasoning_only=False,
                  repeat_usage=False, final_usage_jump=0, malformed_after=None,
@@ -96,6 +97,7 @@ class FakeConfig:
         self.close_after = dict(close_after or {})
         self.early_eos_streams = set(early_eos_streams)
         self.early_eos_after = early_eos_after
+        self.early_eos_gate = early_eos_gate
         self.finish_after = dict(finish_after or {})
         self.usage_only_every = usage_only_every
         self.continuous = continuous
@@ -283,6 +285,9 @@ class _Handler(BaseHTTPRequestHandler):
                                for offset in range(cfg.coalesce))
             finish = None
             if stream in cfg.early_eos_streams and sent >= cfg.early_eos_after:
+                if cfg.early_eos_gate is not None:
+                    if not cfg.early_eos_gate.wait(2):
+                        raise AssertionError('CPU EOS fixture was never admitted')
                 finish = 'stop'
             if stream in cfg.finish_after and sent >= cfg.finish_after[stream]:
                 finish = 'length'
@@ -958,9 +963,36 @@ class DriverTest(unittest.TestCase):
     # --- invalid evidence ----------------------------------------------------
 
     def test_early_eos_invalidates_repeat_and_is_retained(self):
-        self.start_server(early_eos_streams={1}, early_eos_after=3)
+        # An 8ms server timer can finish before the client seals its cohort on
+        # a loaded hub. That is a different (also invalid) evidence class. Gate
+        # this fixture on actual resume and actual client EOS observation;
+        # keep the separate before-seal test and every production deadline.
+        gate = threading.Event()
+        observed = {}
+        self.start_server(early_eos_streams={1}, early_eos_after=3,
+                          early_eos_gate=gate)
+        original_open = D._open_stream
+        def capture_reader(state, *args):
+            observed[state.index] = state
+            return original_open(state, *args)
+        class EosController(FakeController):
+            def execute(inner, command, timeout_s):
+                if command['action'] == 'prepare':
+                    gate.clear()
+                    observed.clear()
+                if command['action'] == 'resume':
+                    gate.set()
+                    deadline = time.monotonic() + 2
+                    while (observed.get(1) is None
+                           or observed[1].finish_at_ns is None):
+                        if time.monotonic() >= deadline:
+                            raise AssertionError('real CPU reader did not observe EOS')
+                        time.sleep(.001)
+                return super().execute(command, timeout_s)
         manifest = self.write_manifest(repeats=2, route_plan=['full', 'split'])
-        rc, data, server, _controller, _out = self.run_driver(manifest=manifest)
+        with patch.object(D, '_open_stream', capture_reader):
+            rc, data, server, _controller, _out = self.run_driver(
+                controller=EosController(), manifest=manifest)
         self.assertEqual(rc, 2, data['summary'])
         self.assertEqual(data['summary']['verdict'], 'INCONCLUSIVE')
         self.assertEqual(data['summary']['totals']['invalid'], 2)
