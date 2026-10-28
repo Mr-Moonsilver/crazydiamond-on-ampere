@@ -159,6 +159,28 @@ class OperationTests(f._GeneratedHarness, unittest.TestCase):
         self.assertEqual(hold.stats['buckets'], 1)
         self.assertEqual(hold.stats['consumed'], 1)
 
+    def test_real_qsa_driver_counts_one_bucket_and_preserves_wave_credit(self):
+        import types
+        import qsa_driver
+        op,hold=self.start(1025)
+        driver=qsa_driver.QsaLayerDriver(op,staged_operation=lambda:None,
+                                         forward_context=lambda:None)
+        phase=types.SimpleNamespace(layer_idx=0,phase='bucket',selections=0,buckets=0,advances=0)
+        driver.phases[0]=phase
+        driver.run_layer(None,0)
+        self.assertEqual(driver.records,[('copy_wave',0)])
+        self.assertEqual(phase.buckets,0)
+        event=op._layers['qsa.0'].sparse.wave_event;event.ready=False
+        before=len(self.device.copies)
+        with self.assertRaises(et.E3Pending):driver.run_layer(None,0)
+        self.assertEqual(len(self.device.copies),before)
+        event.ready=True
+        while phase.buckets==0:driver.run_layer(None,0)
+        self.assertEqual(driver.records.count(('copy_wave',0)),4)
+        self.assertEqual((phase.buckets,phase.advances),(1,1))
+        self.assertEqual(len(self.kernel.calls),1)
+        self.assertEqual(hold.stats['published'],1)
+
     def test_event_query_failure_keeps_ownership_quarantined(self):
         op, hold = self.start()
         op.advance()
