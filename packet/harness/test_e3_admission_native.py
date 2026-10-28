@@ -775,7 +775,9 @@ class FakeTransport:
         self.ready = {}
         self.next = 0
 
-    def submit(self, kind, send, ranks=None, timeout_s=300.0, aggregate=None):
+    def submit(self, kind, send, ranks=None, timeout_s=300.0, aggregate=None, precheck=None):
+        if precheck is not None:
+            precheck()
         sequence = self.next
         self.next += 1
         send(sequence)
