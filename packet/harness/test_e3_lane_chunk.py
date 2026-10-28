@@ -34,6 +34,11 @@ class T:
         self.parent = None
         self.log = []
 
+    def tolist(self):
+        if self.device != 'cpu':
+            raise AssertionError('device readback forbidden in lane host plan')
+        return list(self.values)
+
     def numel(self):
         n = 1
         for d in self.shape:
@@ -200,6 +205,8 @@ def fake_runner(torch, calls):
         _qsa_new_uid=lambda index: calls.append(('uid', index)),
         _remove_request=lambda req_id: calls.append(('remove', req_id)))
     runner.builder = builder
+    qsa = types.SimpleNamespace(_qsa_kv_offload=True, layer_name='layer', _qsa_host_kv='pinned-source')
+    runner.model = types.SimpleNamespace(modules=lambda: (qsa,))
     return runner
 
 
@@ -214,7 +221,7 @@ def fake_ports(calls):
         InputBatch=lambda **kw: types.SimpleNamespace(**kw),
         BatchDescriptor=lambda num_tokens, num_reqs, uniform: ('desc', num_tokens, num_reqs),
         MambaHybridAttnMetadata=lambda **kw: ('mamba', kw['is_prefilling'].values),
-        build_attn_metadata=lambda **kw: calls.append(('build', kw['num_tokens'], kw['max_seq_len'])) or {'layer': 'md'},
+        build_attn_metadata=lambda **kw: calls.append(('build', kw['num_tokens'], kw['max_seq_len'])) or {'layer': types.SimpleNamespace(query_start_loc=kw['query_start_loc_gpu'], seq_lens=kw['seq_lens'], num_actual_tokens=kw['num_tokens'])},
         build_slot_mappings_by_layer=lambda m, cfg: {'layer': m},
         create_forward_context=lambda md, cfg, **kw: ('fc', md, kw['batch_descriptor']),
         override_forward_context=override, cudagraph_none='NONE',
@@ -320,6 +327,42 @@ class TablesTests(unittest.TestCase):
             self.tables.write(admission(block_tables=((5,), (9,))))
 
 
+class HostPlanTests(unittest.TestCase):
+    def fixture(self):
+        from lane_chunk import attach_qsa_host_metadata
+        md = types.SimpleNamespace(query_start_loc=T([0, 8], device='cuda:0'),
+                                   seq_lens=T([8], device='cuda:0'), num_actual_tokens=8)
+        return attach_qsa_host_metadata, md, T([0, 8]), T([8])
+
+    def test_cpu_plan_is_copied_and_bound_to_the_same_metadata(self):
+        bind, md, starts, lengths = self.fixture()
+        host = bind({'layer': md, 'other': 'untouched'}, ('layer',), starts, lengths, admission())
+        self.assertIs(md._qsa_host_meta, host)
+        self.assertEqual(host, ([0, 8], [8]))
+        starts.values[1] = 3
+        lengths.values[0] = 3
+        self.assertEqual(host, ([0, 8], [8]))
+
+    def test_wrong_or_device_plan_is_refused_without_readback(self):
+        bind, md, starts, lengths = self.fixture()
+        for first, second in ((T([0, 7]), lengths), (starts, T([7])),
+                              (T([0, 8], device='cuda:0'), lengths), (None, lengths)):
+            with self.assertRaises(LaneChunkError):
+                bind({'layer': md}, ('layer',), first, second, admission())
+
+    def test_missing_stale_and_wrong_shape_metadata_refuse(self):
+        bind, md, starts, lengths = self.fixture()
+        with self.assertRaises(LaneChunkError):
+            bind({}, ('layer',), starts, lengths, admission())
+        md._qsa_host_meta = ([0, 8], [9])
+        with self.assertRaises(LaneChunkError):
+            bind({'layer': md}, ('layer',), starts, lengths, admission())
+        del md._qsa_host_meta
+        md.seq_lens = T([8, 8], device='cuda:0')
+        with self.assertRaises(LaneChunkError):
+            bind({'layer': md}, ('layer',), starts, lengths, admission())
+
+
 class FactoryTests(unittest.TestCase):
     def setUp(self):
         FakeMambaContext.instances = []
@@ -348,7 +391,8 @@ class FactoryTests(unittest.TestCase):
         self.assertLess(tags.index('align-pre'), tags.index('build'), 'pre-copy before metadata')
         self.assertEqual(self.runner.builder.mamba_aligned_state_indices, 'idx-g1')
         self.assertEqual(FakeMambaContext.instances[0].calls, [('precopy', 1), ('aligned', 1)])
-        self.assertEqual(chunk.attn_metadata, {'layer': 'md'})
+        self.assertIs(chunk.attn_metadata['layer']._qsa_host_meta, chunk.qsa_host_plan)
+        self.assertEqual(chunk.qsa_host_plan, ([0, 8], [8]))
         self.assertEqual(chunk.forward_context[2], ('desc', 8, 1))
         self.assertEqual(chunk.batch.num_tokens, 8)
         self.assertEqual(chunk.batch.idx_mapping.values, [2])

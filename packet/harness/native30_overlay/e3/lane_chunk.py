@@ -410,6 +410,38 @@ class LaneAlign:
         return True
 
 
+def attach_qsa_host_metadata(metadata, layer_names, query_start_loc_cpu,
+                             seq_lens_cpu, admission):
+    """Carry this admitted chunk's private CPU plan onto its QSA metadata.
+
+    Production QSA's builder copies these same CPU arrays to lists. Native
+    execution requires the plan independently of the ordinary-path opt-in.
+    Device arrays are inspected for shape only; never read back or substituted.
+    """
+    for value in (query_start_loc_cpu, seq_lens_cpu):
+        if value is None or str(getattr(value, 'device', None)) != 'cpu':
+            raise LaneChunkError('QSA host plan requires owned CPU metadata buffers')
+    host = (query_start_loc_cpu.tolist(), seq_lens_cpu.tolist())
+    expected = ([0, admission.num_tokens], [admission.chunk_end])
+    if host != expected or any(type(x) is not int for row in host for x in row):
+        raise LaneChunkError('QSA host plan differs from the admitted chunk')
+    if not isinstance(metadata, dict) or not layer_names:
+        raise LaneChunkError('QSA host plan needs the actual named layer metadata')
+    for name in layer_names:
+        md = metadata.get(name)
+        starts = getattr(md, 'query_start_loc', None)
+        lengths = getattr(md, 'seq_lens', None)
+        if (starts is None or lengths is None
+                or tuple(starts.shape) != (2,) or tuple(lengths.shape) != (1,)
+                or getattr(md, 'num_actual_tokens', None) != admission.num_tokens):
+            raise LaneChunkError('QSA main metadata does not describe the admitted chunk')
+        prior = getattr(md, '_qsa_host_meta', None)
+        if prior is not None and prior != host:
+            raise LaneChunkError('QSA main metadata already carries a different CPU plan')
+        md._qsa_host_meta = host
+    return host
+
+
 class LaneChunk:
     """Private inputs, metadata and forward context for one admitted chunk."""
 
@@ -426,9 +458,9 @@ class LaneChunk:
         self.positions = torch.arange(admission.chunk_start, admission.chunk_end, dtype=torch.int64,
                                       device=device)
         self.query_start_loc = torch.tensor([0, n], dtype=torch.int32, device=device)
-        self.query_start_loc_cpu = torch.tensor([0, n], dtype=torch.int32)
+        self.query_start_loc_cpu = torch.tensor([0, n], dtype=torch.int32, device='cpu')
         self.seq_lens = torch.tensor([admission.chunk_end], dtype=torch.int32, device=device)
-        self.seq_lens_cpu = torch.tensor([admission.chunk_end], dtype=torch.int32)
+        self.seq_lens_cpu = torch.tensor([admission.chunk_end], dtype=torch.int32, device='cpu')
         self.idx_mapping = torch.tensor([req_index], dtype=torch.int64, device=device)
         self.is_padding = torch.zeros((n,), dtype=torch.bool, device=device)
         # The pinned PLE/ngram path consumes ``[num_reqs, context_len]`` and
@@ -496,6 +528,10 @@ class LaneChunk:
             kv_cache_config=runner.kv_cache_config, seq_lens_cpu_upper_bound=self.seq_lens_cpu,
             dcp_local_seq_lens=None, positions=self.positions, model_specific_attn_metadata=mamba,
             for_cudagraph_capture=False, rswa_prefix_lens=None)
+        from native_resources import _qsa_layers
+        self.qsa_host_plan = attach_qsa_host_metadata(
+            self.attn_metadata, tuple(name for name, _ in _qsa_layers(runner)),
+            self.query_start_loc_cpu, self.seq_lens_cpu, self.admission)
         self.forward_context = ports.create_forward_context(
             self.attn_metadata, runner.vllm_config, cudagraph_runtime_mode=ports.cudagraph_none,
             batch_descriptor=ports.BatchDescriptor(num_tokens=n, num_reqs=1, uniform=False),
