@@ -1493,7 +1493,7 @@ class StartupSeamTests(unittest.TestCase):
                                   lambda *a, **k: composition), \
                 mock.patch.object(eh, 'install', lambda *a, **k: object()), \
                 mock.patch.object(nb, 'RemoteCompletionBackend',
-                                  lambda config: object()), \
+                                  lambda config, **kwargs: object()), \
                 mock.patch.object(nr, 'response_success', lambda: object()), \
                 mock.patch.object(edrv, 'NativeSegmentDriver', FakeDriver):
             result = su.install_engine(engine, env={'FLASH_S5_OVERLAP': '1'})

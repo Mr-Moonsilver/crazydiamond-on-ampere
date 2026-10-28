@@ -147,6 +147,23 @@ def package(source):
         if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in E3_MODULES:
             source = source.replace('from ' + node.module + ' import ',
                                     'from .' + node.module + ' import ')
+    # Local runtime imports inside methods need the same package identity as
+    # top-level ``from`` imports. Bare imports can appear to work in CPU tests
+    # whose sys.path contains the source folder, but fail in vllm.v1.flash_e3.
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    edits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(a.name in E3_MODULES for a in node.names):
+            parts = []
+            for alias in node.names:
+                text = alias.name + (' as ' + alias.asname if alias.asname else '')
+                parts.append(('from . import ' if alias.name in E3_MODULES else 'import ') + text)
+            edits.append((node.lineno - 1, node.col_offset, node.end_lineno - 1,
+                          node.end_col_offset, '; '.join(parts)))
+    for first, start, last, end, replacement in sorted(edits, reverse=True):
+        lines[first:last + 1] = [lines[first][:start] + replacement + lines[last][end:]]
+    source = ''.join(lines)
     ast.parse(source)
     return source
 

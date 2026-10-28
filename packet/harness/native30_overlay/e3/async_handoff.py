@@ -1889,6 +1889,8 @@ def build_composition(env, *, transport, backend, lanes, transaction=None, alloc
     if transaction is not None:
         _check_transaction('build composition', transaction)
     if not allow_fixture:
+        if side == 'worker' and getattr(backend, 'engine_relay_only', False):
+            raise ConfigurationError('engine relay cannot serve as a worker event backend')
         require_native_backend(backend)
         if not native_allocations:
             raise ConfigurationError(

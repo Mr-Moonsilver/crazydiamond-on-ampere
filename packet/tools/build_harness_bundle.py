@@ -109,6 +109,8 @@ def build(out):
     shutil.copy2(pp_source,e3_builder/'pool_stats_source.py')
     builder_sources['pool_stats_source.py']=sha(pp_source)
     qualification_pins={
+        'entrypoints/serve/middleware/authenticate.py':'0633540cb788738dfee5a69075fbdc30eb98a510e26f69a0b43c57c50d9ef5ab',
+        'entrypoints/serve/middleware/register.py':'cff2d2c00e16f45a942eb1c1ef591834cb58d34ec9eefb3269f9134c4b1087bf',
         'v1/worker/gpu/model_states/mamba_hybrid.py':'573e130ac5587d4822fabf97adad1ad0fda02ff83c5e70df879a5bb175ae845c',
         'v1/worker/mamba_utils.py':'7382bcc8a7b070eaec44339379ebce485777fe23b97e05ee108088faa707c7e6',
         'v1/kv_cache_interface.py':'1cf202f1a44d5bc5c3832b70b41507687ecceea3784e67a4f003bc0210d6eecb',

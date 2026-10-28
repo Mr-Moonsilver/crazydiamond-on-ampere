@@ -751,7 +751,7 @@ def build_legacy_fixture_engine(engine):
     allocation = estimated_e3_inventory(chunk_tokens=config.chunk_tokens)
     composition = build_composition(env, transport=transport, backend=backend, lanes={},
         native_allocations=allocation, allocation=allocation, side='engine',
-        scheduler_leases=SchedulerLeases())
+        scheduler_leases=SchedulerLeases(), allow_fixture=True)
     composition.attach(engine=engine, scheduler=engine.scheduler, executor=engine.model_executor)
     driver = ed.SegmentDriver(composition, executor=engine.model_executor,
         scheduler=engine.scheduler, engine=engine).install()
@@ -776,8 +776,9 @@ class EngineFixture:
                                  self.success)
         with mock.patch.dict(sys.modules, self.modules), \
                 mock.patch.dict(os.environ, {'FLASH_S5_OVERLAP': '1'}):
-            with mock.patch.object(nb.RemoteCompletionBackend, 'native_verified', True):
-                self.composition = build_legacy_fixture_engine(self.engine)
+            # This is the explicitly legacy/fake controller, not live startup.
+            # Its fixture permission must not disguise the native relay guard.
+            self.composition = build_legacy_fixture_engine(self.engine)
 
     @property
     def driver(self):

@@ -270,7 +270,7 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     config = HandoffConfig.from_env(env)
     transport = install(executor, config=config, success_status=response_success(),
                         clock=clock)
-    backend = RemoteCompletionBackend(config)
+    backend = RemoteCompletionBackend(config, transport=transport)
     allocation = estimated_e3_inventory(chunk_tokens=config.chunk_tokens)
     composition = build_composition(
         env, transport=transport, backend=backend, lanes={},

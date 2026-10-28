@@ -20,11 +20,15 @@ stream after the work was *launched*.  It proves the stream reached that point;
 it does not prove which kernels ran, that a bounded segment (rather than the
 whole stock forward) ran, or that the PP consumer read its buffer.  Those remain
 owner-run checks.  ``native_verified`` is a capability declaration of the
-implementation. This incomplete adapter sets it False; CPU fixtures must opt in explicitly.
+implementation. The generic worker-event adapter remains unverified for
+state/PP completion. The engine relay can declare implementation capability
+only with its exclusively owned reply transport and verified package closure;
+that declaration is not a GPU or release result.
 """
 import time
 
-from async_handoff import CompletionBackend, ConfigurationError
+from async_handoff import CompletionBackend, ConfigurationError, HandoffConfig
+from reply_transport import ReplyTransport
 from e3_types import (
     CompletionKind,
     CompletionProof,
@@ -216,11 +220,46 @@ class RemoteCompletionBackend(CompletionBackend):
     running with no completion source.
     """
 
-    native_verified = False
     fixture_only = False
+    engine_relay_only = True
 
-    def __init__(self, config):
+    def __init__(self, config, *, transport=None):
+        if not isinstance(config, HandoffConfig):
+            raise ConfigurationError('relay requires the validated HandoffConfig')
         self.config = config
+        self._transport = transport
+        if transport is not None:
+            self._check_transport()
+
+    def _check_transport(self):
+        transport = self._transport
+        if not self.config.enabled or not isinstance(transport, ReplyTransport):
+            raise ConfigurationError('native relay requires the enabled owned ReplyTransport')
+        transport._owner()
+        with transport._condition:
+            transport._healthy()
+            ranks = tuple(transport._queues)
+            if (ranks != tuple(range(len(ranks))) or not ranks
+                    or not 0 < transport._max_calls <= self.config.command_slots
+                    or transport._status is None
+                    or any(getattr(queue, '_flash_s5_receiver_owner', None) is not transport
+                           for queue in transport._queues.values())):
+                raise ConfigurationError('native relay reply ownership or capacity is unproved')
+
+    @property
+    def native_verified(self):
+        # No naked flag or caller-provided ready dict can promote this relay.
+        # The source/build guard is the same real package-local check used by
+        # startup. It certifies implementation only; worker bootstrap, typed
+        # queried event proofs and same-queue hardware gates remain required.
+        if self._transport is None:
+            return False
+        self._check_transport()
+        from native_readiness import require_implementation_closure
+        capability = require_implementation_closure()
+        return (capability.get('native_ready') is True
+                and capability.get('hardware_qualified') is False
+                and capability.get('release_qualified') is False)
 
     def submit(self, ticket):
         raise NativeBackendError(
