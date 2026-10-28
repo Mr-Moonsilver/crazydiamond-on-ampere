@@ -639,9 +639,25 @@ class SchedulerLeases:
                 raise E3Pending('an uncommitted prefill block cannot be shared')
 
     def note_allocated(self, blocks):
+        # get_new_blocks has selected and evicted these pages. Validate the
+        # entire batch before changing any frontier entry: a later leased page
+        # must not partially retire an earlier page's publication record.
+        blocks = tuple(blocks)
         for block in blocks:
             if self.block_held(block):
                 raise E3ContractError('allocator handed out a leased block')
+        controller = getattr(self._scheduler, '_flash_s5_admission', None)
+        if controller is not None:
+            if (controller.leases is not self
+                    or controller._scheduler is not self._scheduler):
+                raise E3ContractError('allocator frontier belongs to another owner')
+            # A free cached page remains shareable until actual reallocation.
+            # Neither free_blocks nor commit is an incarnation boundary. The
+            # frontier validates all unpublished conflicts before mutating.
+            ids = tuple(getattr(block, 'block_id', None) for block in blocks)
+            if any(type(block_id) is not int or block_id <= 0 for block_id in ids):
+                raise E3ContractError('allocated frontier ids must be positive ints')
+            controller.frontier.retire_blocks(ids)
 
     # -- scheduler hooks --------------------------------------------------
     def defer_request_free(self, scheduler, request):
