@@ -52,10 +52,10 @@
     "cpu_source_preflight": {
       "leaves": [
         {
-          "leaf": "CPU allocation metadata with real model-derived GDN/PLE specs, three groups and a constructed typed LaneId",
-          "replaces": "GPU model cache groups and actual worker-open ACK",
-          "equivalent_for": "execution of the exact shared rank/lane binding and source-descriptor constructor/validation methods; no worker open or completion is claimed",
-          "more_convenient_for": "all opened-lane/hardware/source-completion evidence; no ticket bound or publication attempted",
+          "leaf": "CPU allocation metadata with real model-derived GDN/PLE specs and declared QSA geometry; actual SchedulerConfig with HMA enabled in a host-only VllmConfig copy; constructed typed LaneId",
+          "replaces": "GPU model registered cache specs/config and actual worker-open ACK; the CPU platform otherwise auto-disables hybrid cache management before the tested host logic",
+          "equivalent_for": "execution of the shared real cache resolver/configuration, scheduler, rank/lane source-binding and descriptor validation methods at the explicit metadata inputs; no GPU platform policy, worker open or completion is claimed",
+          "more_convenient_for": "all platform configuration derivation, opened-lane/hardware/source-completion evidence; no ticket bound or publication attempted; this CPU metadata projection is not box evidence",
           "box_evidence": false
         }
       ]

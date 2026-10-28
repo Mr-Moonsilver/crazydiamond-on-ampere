@@ -48,7 +48,7 @@ def collect():
     # Execute deferred import statements from all GPU helpers as well. The
     # first GPU function import must not hide a missing name until owner-run.
     namespace={}
-    for fn in (worker_components,execute_chunk,gpu_scenarios):
+    for fn in (worker_components,execute_chunk,gpu_scenarios,cache_configuration,controller_components):
         tree=ast.parse(inspect.getsource(fn))
         for node in ast.walk(tree):
             if isinstance(node,(ast.Import,ast.ImportFrom)):
@@ -117,6 +117,18 @@ def collect():
         predicate_selftest=predicate_selftest(w,e3_types),
         actual_config_constructed=True,actual_model_constructor_entered=True,
         cuda_constructor_boundary=boundary,cuda_initialized=False,
+        cpu_executed_gpu_host_steps=['config','register_all_kvcache_specs',
+            'get_supported_kv_cache_layouts','resolve_kv_cache_layout','record_kv_cache_layout',
+            'get_kv_cache_configs','Scheduler','StructuredOutputManager','SchedulerLeases.attach',
+            'CommittedFrontier','PrefillAdmissionController.attach','install_admission_metadata',
+            'init_none_hash','get_request_block_hasher','Request','Scheduler.add_request',
+            'PrefillAdmissionController.admit','opened_source','SourceDescriptor.validate_frame',
+            'typed-wire-constructors','QsaPrefillOperation','QsaLayerDriver','predicate_selftest'],
+        deferred_gpu_steps=['NCCL initialization','GPUModelRunner CUDA constructor',
+            'load_model CUDA allocation and dummy weights','get_kv_cache_spec from GPU model object graph',
+            'initialize_kv_cache CUDA/UVA allocation','worker_components CUDA streams/private bindings',
+            'execute_chunk CUDA prefix/layers/finalize/query/release',
+            'stock execute_model/sample_tokens/update_from_output'],
         full_gpu_constructors_executed=False,fixtures_patched=False)
 
 
@@ -142,6 +154,50 @@ def opened_source(controller,record,lane):
     return controller.source_hold(record.transaction).descriptor()
 
 
+def cache_configuration(cfg,specs,backends,*,legacy_negative=False):
+    """Stock EngineCore host sequence, shared by CPU-shape and GPU execution."""
+    from vllm.v1.core.single_type_kv_cache_manager import register_all_kvcache_specs
+    from vllm.v1.attention.backends.utils import (get_supported_kv_cache_layouts,
+        resolve_kv_cache_layout,record_kv_cache_layout)
+    from vllm.v1.core.kv_cache_utils import get_kv_cache_configs
+    register_all_kvcache_specs(cfg)
+    supported=[layout.name for layout in get_supported_kv_cache_layouts(backends)]
+    unresolved_negative=None
+    if legacy_negative:
+        assert cfg.cache_config.kv_cache_layout is None
+        try:get_kv_cache_configs(cfg,[specs],[256*1024**2])
+        except ValueError as exc:
+            assert 'KV cache layout has not been resolved yet' in str(exc), str(exc)
+            unresolved_negative=str(exc)
+        else:raise AssertionError('native15-matrix2 unresolved cache negative passed')
+    layout=resolve_kv_cache_layout(cfg,[supported],list(specs.values()))
+    # This is the stock worker adoption method's implementation, not a chosen
+    # layout value: resolve above derives it from actual backend declarations.
+    record_kv_cache_layout(cfg.cache_config,layout.name)
+    kv=get_kv_cache_configs(cfg,[specs],[256*1024**2])[0]
+    kv.kv_cache_layout=cfg.cache_config.kv_cache_layout
+    cfg.cache_config.num_gpu_blocks=kv.num_blocks
+    assert cfg.cache_config.get_resolved_kv_cache_layout()==layout
+    return kv,dict(verdict='PASS',layout=layout.name,supported=supported,
+        actual_resolver=True,manual_layout_assignment=False,
+        legacy_unresolved_negative=unresolved_negative,
+        spec_types={name:type(spec).__name__ for name,spec in specs.items()},
+        num_blocks=kv.num_blocks,groups=len(kv.kv_cache_groups))
+
+
+def controller_components(cfg,kv):
+    """Shared actual host composition; no GPU-dependent constructor here."""
+    from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm.v1.structured_output import StructuredOutputManager
+    from vllm.v1.flash_e3 import scheduler_hooks as sh,async_handoff as ah,admission_metadata as am
+    scheduler=Scheduler(cfg,kv,StructuredOutputManager(cfg),block_size=4048,hash_block_size=176)
+    leases=sh.SchedulerLeases().attach(scheduler,scheduler.kv_cache_manager.block_pool)
+    controller=sh.PrefillAdmissionController(scheduler,leases=leases,frontier=ah.CommittedFrontier(),
+        engine_epoch=1,chunk_tokens=1024,ranks=(0,),minimum_stage_rows=64).attach()
+    am.install_admission_metadata(scheduler)
+    return scheduler,controller
+
+
 def source_owner_preflight(cfg):
     """Real CPU allocation -> shared source-binding path; no worker/proof invented.
 
@@ -159,21 +215,35 @@ def source_owner_preflight(cfg):
     from vllm.v1.flash_e3 import scheduler_hooks as sh,async_handoff as ah,admission_metadata as am,e3_types as et,worker_bridge as wb
     from vllm.utils.hashing import get_hash_fn_by_name
     from vllm.v1.core.kv_cache_utils import init_none_hash,get_request_block_hasher
-    groups=[]
+    from vllm.v1.attention.backends.gdn_attn import GDNAttentionBackend
+    from vllm.v1.attention.backends.short_conv_attn import PleShortConvAttentionBackend
+    from vllm.models.qwen4_exp.nvidia.qsa import Qwen4ExpQSAFlashAttentionBackend
     specs=Model.get_mamba_specs_from_config(cfg)
     assert len(specs)==2
-    for (name,kind),spec in zip((('shape.gdn',Kind.GDN_ATTN),('shape.ple',Kind.SHORT_CONV)),specs):
-        groups.append(KVCacheGroupSpec(layer_names=[name],kv_cache_spec=MambaSpec(
-            block_size=4048,shapes=tuple(spec.shapes),dtypes=tuple(spec.dtypes),mamba_type=kind,mamba_cache_mode='align')))
-    groups.append(KVCacheGroupSpec(layer_names=['shape.qsa'],kv_cache_spec=FullAttentionSpec(
-        block_size=4048,num_kv_heads=1,head_size=256,dtype=torch.bfloat16)))
-    kv=KVCacheConfig(num_blocks=64,kv_cache_tensors=[],kv_cache_groups=groups)
-    cfg.cache_config.num_gpu_blocks=64
-    scheduler=Scheduler(cfg,kv,StructuredOutputManager(cfg),block_size=4048,hash_block_size=176)
-    leases=sh.SchedulerLeases().attach(scheduler,scheduler.kv_cache_manager.block_pool)
-    controller=sh.PrefillAdmissionController(scheduler,leases=leases,frontier=ah.CommittedFrontier(),
-        engine_epoch=1,chunk_tokens=1024,ranks=(0,),minimum_stage_rows=64).attach()
-    am.install_admission_metadata(scheduler)
+    gdn,ple=specs
+    def state_spec(spec,kind):
+        return MambaSpec(block_size=4048,shapes=tuple(spec.shapes),dtypes=tuple(spec.dtypes),
+            mamba_type=kind,mamba_cache_mode='align')
+    # Real model-derived state specs; reduced-model names/attention geometry are
+    # explicit CPU-shape leaves, not the GPU model's registered object graph.
+    cache_specs={'shape.gdn0':state_spec(gdn,Kind.GDN_ATTN),
+        'shape.gdn2':state_spec(gdn,Kind.GDN_ATTN),
+        'shape.ple':state_spec(ple,Kind.SHORT_CONV),
+        'shape.qsa':Qwen4ExpQSAFlashAttentionBackend.customize_spec(FullAttentionSpec(
+            block_size=4048,num_kv_heads=1,head_size=256,head_size_v=256,dtype=torch.bfloat16,
+            num_head_slots=1,state_content_bytes=2))}
+    # The actual CPU platform auto-disables HMA, unlike the GPU platform.
+    # This is an explicit host-metadata fixture projection, not a platform shim
+    # or a ready flag. Actual GPU execution uses its unmodified real config.
+    import copy
+    from vllm.config import SchedulerConfig
+    host_cfg=copy.copy(cfg)
+    host_cfg.scheduler_config=SchedulerConfig(max_model_len=98320,is_encoder_decoder=False,
+        max_num_batched_tokens=1024,max_num_seqs=10,scheduler_reserve_full_isl=False,
+        disable_hybrid_kv_cache_manager=False)
+    kv,cache_proof=cache_configuration(host_cfg,cache_specs,
+        (GDNAttentionBackend,PleShortConvAttentionBackend,Qwen4ExpQSAFlashAttentionBackend),legacy_negative=True)
+    scheduler,controller=controller_components(host_cfg,kv)
     hash_fn=get_hash_fn_by_name('sha256');init_none_hash(hash_fn)
     request=Request(request_id='source-shape-only',prompt_token_ids=[1]*98312,
         sampling_params=SamplingParams(max_tokens=1),pooling_params=None,
@@ -192,6 +262,8 @@ def source_owner_preflight(cfg):
     assert controller.commits==0 and not controller.frontier.committed_blocks()
     return dict(verdict='PASS',actual_scheduler_constructor=True,actual_allocator_capture=True,
         actual_shared_source_binding=True,rank_lane_map_validated=True,
+        cache_configuration=cache_proof,cpu_hma_metadata_projection=True,
+        cpu_platform_hma_auto_disabled=cfg.scheduler_config.disable_hybrid_kv_cache_manager,
         unpublished_count=len(unpublished),no_ticket_bound=True,no_publication=True,
         synthetic_lane_input=True,box_evidence=False)
 
@@ -323,15 +395,11 @@ def gpu_scenarios():
         runner=GPUModelRunner(cfg,torch.device('cuda:0'))
         runner.load_model(load_dummy_weights=True)
         specs=runner.get_kv_cache_spec()
-        kv=get_kv_cache_configs(cfg,[specs],[256*1024**2])[0]
+        from vllm.distributed.kv_transfer.kv_connector.utils import get_current_attn_backends
+        kv,cache_proof=cache_configuration(cfg,specs,get_current_attn_backends(cfg))
         runner.initialize_kv_cache(kv)
         stack=worker_components(runner)
-        scheduler=Scheduler(cfg,kv,StructuredOutputManager(cfg),block_size=4048,hash_block_size=176)
-        leases=sh.SchedulerLeases().attach(scheduler,scheduler.kv_cache_manager.block_pool)
-        frontier=ah.CommittedFrontier()
-        controller=sh.PrefillAdmissionController(scheduler,leases=leases,frontier=frontier,
-            engine_epoch=1,chunk_tokens=1024,ranks=(0,),minimum_stage_rows=64).attach()
-        am.install_admission_metadata(scheduler)
+        scheduler,controller=controller_components(cfg,kv)
         h=get_hash_fn_by_name('sha256');init_none_hash(h)
         hasher=get_request_block_hasher(176,h)
         requests=[];previous_physical=set()
@@ -375,6 +443,7 @@ def gpu_scenarios():
         assert requests[-1]['hit_page_edge']
         return dict(verdict='PASS',requests=requests,
             real_model_class=type(runner.model).__module__+'.'+type(runner.model).__name__,
+            cache_configuration=cache_proof,
             typed_single_worker_releases=True,all_rank_full_certificate=False,
             sampling_after_handoff=True,engine_qualified=False)
 
