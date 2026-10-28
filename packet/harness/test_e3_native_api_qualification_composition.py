@@ -21,8 +21,12 @@ class CoreClient:
 
 class ApiPlanTests(unittest.TestCase):
     def test_actual_api_client_owns_the_real_input_processor_plan(self):
+        async def scheduling_forbidden(*args,**kwargs):
+            raise AssertionError('plan ownership must never pause, resume or query scheduling')
         processor=Processor()
-        engine=types.SimpleNamespace(engine_core=CoreClient(),input_processor=processor)
+        engine=types.SimpleNamespace(engine_core=CoreClient(),input_processor=processor,
+            is_paused=scheduling_forbidden,pause_generation=scheduling_forbidden,
+            resume_generation=scheduling_forbidden)
         control=NativeControlClient(engine)
         owner=q.own_frontend_plan(control)
         self.assertIs(processor._flash_s5_teacher,owner)

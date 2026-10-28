@@ -528,8 +528,12 @@ class ObserverGateTests(unittest.TestCase):
 
 class FrontendOwnershipTests(unittest.TestCase):
     def setUp(self):
+        async def scheduling_forbidden(*args, **kwargs):
+            raise AssertionError('plan ownership must never pause, resume or query scheduling')
         self.engine = types.SimpleNamespace(engine_core=types.SimpleNamespace(
-            client_count=1, client_index=0, call_utility_async=lambda *args: None))
+            client_count=1, client_index=0, call_utility_async=lambda *args: None),
+            is_paused=scheduling_forbidden, pause_generation=scheduling_forbidden,
+            resume_generation=scheduling_forbidden)
         self.processor = types.SimpleNamespace(
             process_inputs=lambda request: request)
         self.engine.input_processor = self.processor
