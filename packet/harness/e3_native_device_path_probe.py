@@ -13,6 +13,7 @@ import importlib
 import inspect
 import json
 import math
+import os
 from pathlib import Path
 import time
 import traceback
@@ -397,36 +398,50 @@ def grade(record):
         if record.get(key) is not False: missing.append('scope:'+key)
     if record.get('exceptions'): failures.extend('exception:'+x for x in record['exceptions'])
     if record.get('imports_verified') is not True: missing.append('mounted_imports')
+    mount = record.get('jit_mount')
+    if not isinstance(mount, dict): missing.append('jit_mount')
+    else:
+        try: require_jit_mount(mount)
+        except RuntimeError: failures.append('jit_mount_not_executable_writable')
     sections = record.get('sections') or {}
     for name in SECTIONS:
         row = sections.get(name)
         if not isinstance(row, dict) or row.get('verdict') != 'PASS': missing.append(name)
-    a = sections.get('alignment') or {}
-    cases = a.get('cases') or []
-    if {(r.get('slot'), r.get('mode')) for r in cases} != {(s,m) for s in (0,2,9) for m in ('copy','self','unaligned')}:
-        missing.append('alignment_case_coverage')
-    if len(cases)!=9 or not all(r.get('kernel_executed') is True and r.get('all_state_bytes_exact') is True
-                               and r.get('completion_queried') is True for r in cases): missing.append('alignment_device_evidence')
-    if a.get('legacy_rejected') is not True: missing.append('native11_negative')
-    finals=a.get('finish_state') or []
-    if (len(finals)!=3 or {x.get('slot') for x in finals}!={0,2,9}
-        or not all(all(x.get(k) is True for k in ('actual_finish_state','staged_write_exact','state_bytes_exact','completion_queried')) for x in finals)):
-        missing.append('finish_state_slots')
-    if a.get('methods_unpatched') is not True or a.get('kernels_unpatched') is not True: failures.append('alignment_patched')
-    negative=sections.get('backend_negative') or {}
-    if not all(negative.get(k) is True for k in ('refused','device_differing_bytes','native9_negative_rejected')):
-        missing.append('backend_negative_evidence')
-    if not any(x.get('equal') is False and type(x.get('different_bytes')) is int and x['different_bytes']>0 for x in negative.get('raw') or []):
-        missing.append('backend_negative_raw')
+    if isinstance(sections.get('alignment'), dict):
+        a = sections.get('alignment') or {}
+        cases = a.get('cases') or []
+        if {(r.get('slot'), r.get('mode')) for r in cases} != {(s,m) for s in (0,2,9) for m in ('copy','self','unaligned')}:
+            missing.append('alignment_case_coverage')
+        if len(cases)!=9 or not all(r.get('kernel_executed') is True and r.get('all_state_bytes_exact') is True
+                                   and r.get('completion_queried') is True for r in cases): missing.append('alignment_device_evidence')
+        if a.get('legacy_rejected') is not True: missing.append('native11_negative')
+        finals=a.get('finish_state') or []
+        if (len(finals)!=3 or {x.get('slot') for x in finals}!={0,2,9}
+            or not all(all(x.get(k) is True for k in ('actual_finish_state','staged_write_exact','state_bytes_exact','completion_queried')) for x in finals)):
+            missing.append('finish_state_slots')
+        if a.get('methods_unpatched') is False or a.get('kernels_unpatched') is False:
+            failures.append('alignment_patched')
+        elif a.get('methods_unpatched') is not True or a.get('kernels_unpatched') is not True:
+            missing.append('alignment_unpatched_evidence')
+    if isinstance(sections.get('backend_negative'), dict):
+        negative=sections.get('backend_negative') or {}
+        if not all(negative.get(k) is True for k in ('refused','device_differing_bytes','native9_negative_rejected')):
+            missing.append('backend_negative_evidence')
+        if not any(x.get('equal') is False and type(x.get('different_bytes')) is int and x['different_bytes']>0 for x in negative.get('raw') or []):
+            missing.append('backend_negative_raw')
     for name in ('dense_dma','sparse_dma'):
-        row = sections.get(name) or {}
+        row = sections.get(name)
+        if not isinstance(row, dict):
+            continue  # Unrun section is missing, never evidence of a contradiction.
         for key in ('kernel_executed','actual_helper','host_plan_bound','uva_pointer_verified','finish_state',
                     'finalized_state_bytes_exact','native10_negative_rejected','state_event_queried','copy_event_joined','operation_drained','operation_released',
                     'source_registry_empty','ordinary_tables_unchanged','methods_unpatched','arena_provider_unpatched'):
             if row.get(key) is not True: missing.append(name+':'+key)
         layers = row.get('layer_records') or []
         comparisons = row.get('records') or []
-        if not comparisons or any(x.get('equal') is not True for x in comparisons): failures.append(name+':raw_comparisons')
+        if not comparisons: missing.append(name+':raw_comparisons')
+        elif any(x.get('equal') is False for x in comparisons): failures.append(name+':raw_comparisons')
+        elif any(x.get('equal') is not True for x in comparisons): missing.append(name+':comparison_equality')
         bucket_rows=[x for x in comparisons if x.get('operation') in ('dense_page_bucket','sparse_row_bucket')]
         output_rows=[x for x in comparisons if x.get('operation')=='qsa_output_before_moe']
         if (len(bucket_rows)!=(2 if name=='dense_dma' else 1) or len(output_rows)!=1
@@ -442,12 +457,33 @@ def grade(record):
         expected_buckets=2 if name=='dense_dma' else 1
         if not layers or layers[0].get('bucket_checks')!=expected_buckets or layers[0].get('output_checks')!=1:
             missing.append(name+':bucket_output_coverage')
-        if row.get('allocator_live')!=0 or row.get('failure_records'): failures.append(name+':source_or_oracle')
+        if row.get('allocator_live') is None: missing.append(name+':allocator_live')
+        elif row['allocator_live'] != 0: failures.append(name+':source_or_oracle')
+        if row.get('failure_records'): failures.append(name+':source_or_oracle')
     peak=record.get('gpu_allocator_peak_reserved')
     if type(peak) is not int or peak<0: missing.append('allocator_peak')
     elif peak>2*1024**3: failures.append('allocator_bound')
     verdict = 'FAIL' if failures else 'INCONCLUSIVE' if missing else 'PASS'
     return dict(verdict=verdict, rc={'PASS':0,'FAIL':1,'INCONCLUSIVE':2}[verdict], failures=failures, missing=missing)
+
+
+
+def check_jit_mount():
+    """Record actual effective flags before importing code that initializes Triton."""
+    flags = os.statvfs('/tmp').f_flag
+    mount = next((line.split() for line in Path('/proc/mounts').read_text().splitlines()
+                  if len(line.split()) >= 4 and line.split()[1] == '/tmp'), None)
+    row = dict(path='/tmp', filesystem=mount[2] if mount else None,
+               options=mount[3].split(',') if mount else [],
+               noexec=bool(flags & os.ST_NOEXEC), readonly=bool(flags & os.ST_RDONLY))
+    return row
+
+
+def require_jit_mount(row):
+    if (row.get('filesystem') != 'tmpfs' or row.get('noexec') is not False
+            or row.get('readonly') is not False):
+        raise RuntimeError('JIT scratch requires writable executable tmpfs')
+    return True
 
 
 def main():
@@ -462,6 +498,8 @@ def main():
                       'row1 collective configure-disable packet / four-rank coverage',
                       'green placement accounting / overlap / speed / lifetime / canary'])
     try:
+        result['jit_mount']=check_jit_mount()
+        require_jit_mount(result['jit_mount'])
         result['imports']=verify_imports(json.loads(args.graph.read_text()));result['imports_verified']=True
         import torch
         assert torch.cuda.device_count()==1 and torch.cuda.get_device_capability()==(8,6)

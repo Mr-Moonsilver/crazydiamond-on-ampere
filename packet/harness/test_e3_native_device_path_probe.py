@@ -36,7 +36,7 @@ def record():
                     'operation_drained','operation_released','source_registry_empty','ordinary_tables_unchanged',
                     'methods_unpatched','arena_provider_unpatched'):row[key]=True
         sections[route]=row
-    return dict(schema=probe.SCHEMA,sections=sections,imports_verified=True,exceptions={},gpu_allocator_peak_reserved=1024,
+    return dict(jit_mount=dict(filesystem='tmpfs',noexec=False,readonly=False),schema=probe.SCHEMA,sections=sections,imports_verified=True,exceptions={},gpu_allocator_peak_reserved=1024,
                 mocks_used=False,patched_methods=False,patched_kernels=False,engine_qualified=False,full_row1_qualified=False)
 
 
@@ -73,6 +73,33 @@ class DeviceProofTests(unittest.TestCase):
         r=record();r['exceptions']['alignment']={'error_type':'RuntimeError'}
         self.assertEqual(probe.grade(r)['verdict'],'FAIL')
     def test_empty_receipt_not_pass(self):self.assertNotEqual(probe.grade({})['verdict'],'PASS')
+    def test_setup_failure_does_not_invent_device_contradictions(self):
+        r=record();r['sections']={};r['imports_verified']=False
+        r['exceptions']={'setup':{'error_type':'ImportError'}}
+        r.pop('gpu_allocator_peak_reserved')
+        graded=probe.grade(r)
+        self.assertEqual(graded['verdict'],'FAIL')
+        self.assertEqual(graded['failures'],['exception:setup'])
+        self.assertTrue(set(probe.SECTIONS)<=set(graded['missing']))
+    def test_partial_receipt_preserves_observed_failures(self):
+        r=record();r['sections'].pop('sparse_dma')
+        r['sections']['dense_dma']['allocator_live']=1
+        graded=probe.grade(r)
+        self.assertIn('dense_dma:source_or_oracle',graded['failures'])
+        self.assertFalse(any(x.startswith('sparse_dma:') for x in graded['failures']))
+        self.assertIn('sparse_dma',graded['missing'])
+    def test_observed_patched_alignment_still_fails(self):
+        r=record();r['sections']['alignment']['methods_unpatched']=False
+        self.assertIn('alignment_patched',probe.grade(r)['failures'])
+    def test_noexec_and_readonly_mounts_rejected(self):
+        for key in ('noexec','readonly'):
+            row=dict(filesystem='tmpfs',noexec=False,readonly=False);row[key]=True
+            with self.subTest(key=key), self.assertRaises(RuntimeError):probe.require_jit_mount(row)
+        self.assertTrue(probe.require_jit_mount(dict(filesystem='tmpfs',noexec=False,readonly=False)))
+    def test_effective_mount_evidence_required(self):
+        r=record();r.pop('jit_mount')
+        self.assertIn('jit_mount',probe.grade(r)['missing'])
+
     def test_query_deadline_not_completion(self):
         with self.assertRaises(TimeoutError):probe.bounded_poll(lambda:False,seconds=0)
     def test_monitor_pid_separation(self):
@@ -88,6 +115,8 @@ class DeviceProofTests(unittest.TestCase):
             self.assertIn('CUDA_VISIBLE_DEVICES=0',cmd)
             self.assertEqual(cmd[cmd.index('--network')+1],'none')
             self.assertNotIn('--rm',cmd)
+            self.assertEqual(cmd[cmd.index('--tmpfs')+1],'/tmp:rw,exec,nosuid,nodev,size=1024m')
+            self.assertEqual(cmd[cmd.index('--name')+1],'flashnext-native12-device-path-b')
             self.assertIn('type=bind,src='+str(root/'overlay/a.py')+',dst=/actual/a.py,readonly',cmd)
     def test_budget_constants(self):
         self.assertEqual(owner.CAP_MIB,3072);self.assertEqual(owner.STOP_MIB,2816)

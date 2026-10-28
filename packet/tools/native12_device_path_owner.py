@@ -17,7 +17,7 @@ import subprocess
 import time
 
 IMAGE='sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b'
-NAME='flashnext-native12-device-path'
+NAME='flashnext-native12-device-path-b'
 CAP_MIB, STOP_MIB, TIMEOUT_S = 3072, 2816, 900
 
 
@@ -31,7 +31,7 @@ def docker_command(root, out, graph):
     cmd=['docker','run','--pull=never','--name',NAME,'--runtime','nvidia',
          '--env','NVIDIA_VISIBLE_DEVICES=0','--env','NVIDIA_DRIVER_CAPABILITIES=compute,utility',
          '--network','none','--cpus','4','--memory','4g','--memory-swap','4g',
-         '--pids-limit','256','--read-only','--tmpfs','/tmp:rw,nosuid,nodev,size=1024m',
+         '--pids-limit','256','--read-only','--tmpfs','/tmp:rw,exec,nosuid,nodev,size=1024m',
          '--mount','type=bind,src='+str(root/'proof')+',dst=/proof,readonly',
          '--mount','type=bind,src='+str(out)+',dst=/out',
          '--env','CUDA_VISIBLE_DEVICES=0','--env','PYTHONPATH=',
