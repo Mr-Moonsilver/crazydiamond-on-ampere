@@ -1,0 +1,9 @@
+{
+  "schema":"native15-transitions-fixture-leaves/1",
+  "matrix_complete":false,"clears_box_hold":false,
+  "leaves":[
+    {"leaf":"actual one-rank CPU Gloo TP/PP groups and default PyNccl constructor","replaces":"production TP2/PP2 groups","equivalent_for":"the shipped unconditional world_size1 disabled-communicator refusal","more_convenient_for":"all distributed/hardware progress claims","box_evidence":false},
+    {"leaf":"None stream in the negative PrefillCommunicators.build call","replaces":"CUDA prefill stream","equivalent_for":"guard raises before any stream use; no stream validity or device startup claimed","more_convenient_for":"all CUDA stream/green startup evidence","box_evidence":false},
+    {"leaf":"actual GPUModelRunner partial instance retained from its CPU stream-device constructor refusal","replaces":"fully initialized CUDA runner","equivalent_for":"absence of an open green split and the exact public install_worker_native entry refusal","more_convenient_for":"all completed native startup/handoff claims","box_evidence":false}
+  ]
+}
