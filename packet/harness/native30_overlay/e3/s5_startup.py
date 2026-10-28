@@ -292,7 +292,7 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
 
     from engine_driver import NativeSegmentDriver
     from admission_metadata import install_admission_metadata
-    from scheduler_hooks import PrefillAdmissionController
+    from scheduler_hooks import PrefillAdmissionController, QSA_STAGE_MIN_ROWS
 
     layer_count, layer_split, stage_of = shape
     # Created once by this EngineCore process, passed to all worker opens.
@@ -306,7 +306,8 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
         scheduler, leases=composition.scheduler_leases,
         frontier=composition.frontier,
         engine_epoch=epoch,
-        chunk_tokens=config.chunk_tokens, ranks=ranks, clock=clock).attach()
+        chunk_tokens=config.chunk_tokens, ranks=ranks, clock=clock,
+        minimum_stage_rows=QSA_STAGE_MIN_ROWS).attach()
     # The only construction site of the production admission-metadata
     # provider: it captures allocation side effects around the controller's
     # allocate_slots call and owns CoW endpoint retention until commit/cancel.

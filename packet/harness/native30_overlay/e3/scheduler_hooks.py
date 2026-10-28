@@ -1065,6 +1065,70 @@ class ParkedPrefill:
         return self.transaction.request_uid
 
 
+QSA_STAGE_MIN_ROWS = 64  # pinned qsa.py: _QSA_STAGE_MIN_ROWS; no setting override
+
+
+class _ProjectedPrefillRequest:
+    """Read-only view for the stock, CPU-only Mamba split calculation."""
+    __slots__ = ('_request', 'num_computed_tokens')
+
+    def __init__(self, request, start):
+        object.__setattr__(self, '_request', request)
+        object.__setattr__(self, 'num_computed_tokens', start)
+
+    def __getattr__(self, name):
+        return getattr(self._request, name)
+
+    def __setattr__(self, name, value):
+        raise E3ContractError('projected prefill request is read-only')
+
+
+def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536):
+    """Find a complete native prefix partition before allocating any chunk.
+
+    ``split(position, limit)`` is the stock alignment calculation, not an
+    allocator. Search largest permitted chunks first, backtracking only when
+    a later short tail cannot execute the unchanged staged attention path.
+    Every returned chunk is an exact stock split, within the unchanged cap.
+    A bounded search refusal leaves the request entirely stock-owned.
+    """
+    if any(type(v) is not int for v in (start, end, cap, minimum, query_limit)):
+        raise E3ContractError('staged chunk planning needs integer bounds')
+    if start < 0 or end <= start or minimum < 1 or cap < 1 or query_limit < 1:
+        raise E3ContractError('invalid staged chunk planning bounds')
+    if cap < minimum or end - start < minimum:
+        return ()
+    # Stack frames retain the next smaller candidate, so Python recursion and
+    # per-token allocation are unnecessary even for a long context.
+    stack = [[start, min(cap, end - start)]]
+    path, impossible, queries = [], set(), 0
+    while stack:
+        position, limit = stack[-1]
+        if limit < minimum:
+            impossible.add(position)
+            stack.pop()
+            if path:
+                path.pop()
+            continue
+        queries += 1
+        if queries > query_limit:
+            return ()
+        size = split(position, limit)
+        if type(size) is not int or not 0 <= size <= limit:
+            raise E3ContractError('invalid projected aligned chunk size')
+        stack[-1][1] = size - 1
+        if size < minimum:
+            continue
+        following = position + size
+        if following == end:
+            return tuple(path + [size])
+        if following in impossible or end - following < minimum:
+            continue
+        path.append(size)
+        stack.append([following, min(cap, end - following)])
+    return ()
+
+
 class PrefillAdmissionController:
     """Pre-schedule admission, delayed publication and one-token handback.
 
@@ -1086,7 +1150,8 @@ class PrefillAdmissionController:
     """
 
     def __init__(self, scheduler, *, leases, frontier, engine_epoch, chunk_tokens,
-                 ranks, max_active=MAX_ACTIVE_PREFILL, max_history=64, clock=None):
+                 ranks, max_active=MAX_ACTIVE_PREFILL, max_history=64, clock=None,
+                 minimum_stage_rows=1):
         if type(leases) is not SchedulerLeases:
             raise E3ContractError('admission needs the E3 scheduler leases')
         if type(max_history) is not int or max_history < 1:
@@ -1095,6 +1160,8 @@ class PrefillAdmissionController:
             raise E3ContractError('engine_epoch must be a nonnegative int')
         if type(chunk_tokens) is not int or chunk_tokens < 1:
             raise E3ContractError('chunk_tokens must be a positive int')
+        if type(minimum_stage_rows) is not int or minimum_stage_rows < 1:
+            raise E3ContractError('minimum_stage_rows must be a positive int')
         ranks = tuple(ranks)
         if not ranks or any(type(r) is not int or r < 0 for r in ranks):
             raise E3ContractError('admission needs the worker ranks')
@@ -1107,6 +1174,7 @@ class PrefillAdmissionController:
         self.frontier = frontier
         self.engine_epoch = engine_epoch
         self.chunk_tokens = chunk_tokens
+        self.minimum_stage_rows = minimum_stage_rows
         self.ranks = ranks
         self.max_active = max_active
         self.max_history = max_history
@@ -1316,10 +1384,29 @@ class PrefillAdmissionController:
         budget = getattr(scheduler, 'max_num_scheduled_tokens', None)
         if type(budget) is not int or budget < 1:
             raise E3ContractError('scheduler token budget is not declared')
-        num_new = min(self.chunk_tokens, budget, prompt_end - 1 - start)
-        num_new = self._aligned_split(
-            scheduler, request, num_new,
-            num_new_local_computed_tokens=num_new_computed)
+        cap = min(self.chunk_tokens, budget)
+        if self.minimum_stage_rows > 1:
+            def projected_split(position, limit):
+                if position == start:
+                    return self._aligned_split(
+                        scheduler, request, limit,
+                        num_new_local_computed_tokens=num_new_computed)
+                return self._aligned_split(
+                    scheduler, _ProjectedPrefillRequest(request, position), limit)
+            plan = staged_chunk_plan(start, prompt_end - 1, cap,
+                                     self.minimum_stage_rows, projected_split)
+            if not plan:
+                if retained is not None:
+                    # Returning None here would let stock touch a still-owned
+                    # private row. Keep the existing ownership refusal instead.
+                    raise E3ContractError('retained native request has no staged chunk plan')
+                self.refused += 1
+                return None
+            num_new = plan[0]
+        else:
+            num_new = self._aligned_split(
+                scheduler, request, min(cap, prompt_end - 1 - start),
+                num_new_local_computed_tokens=num_new_computed)
         if num_new < 1:
             self.refused += 1
             return None
