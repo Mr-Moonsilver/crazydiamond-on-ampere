@@ -123,7 +123,10 @@ def gpu_pause_resume():
                               max_tokens=3, temperature=0.0, ignore_eos=True),
                           pooling_params=None)
         core.add_request(request)
-        queued = core.scheduler.has_requests()
+        # has_requests() deliberately reports false under PAUSED_ALL. The
+        # registered request dictionary is the stock source of truth for a
+        # submitted cohort while the scheduler is stopped.
+        queued = core.scheduler.requests.get(request.request_id) is request
         assert queued
         for _ in range(8):
             core.step_with_batch_queue()
