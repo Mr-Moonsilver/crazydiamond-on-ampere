@@ -114,7 +114,7 @@ def main():
          and vm.get('cleanup_ok') is True and vm.get('container_retained') is True
          and vm.get('failures') == [] and vm.get('missing') == []
          and vm.get('manifest_sha256') ==
-             '22046b2347e73f6ae7d9db5e41a50e1677ad9748c22d903ac3b2fc612b32d18d'
+             '0353e33b95a0d5ff89efa63ad0b5bdcb402a00ac7793dcb734d0f704f380459f'
          and vm_probe.is_file() and sha(vm_probe) == vm.get('probe_sha256')
          and json.loads(vm_probe.read_text()).get('verdict') == 'PASS',
          'native23 pause/resume GPU proof absent')
