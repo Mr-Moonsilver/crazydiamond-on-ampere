@@ -149,7 +149,8 @@ def main():
         stop_reason=stop_reason,monitor_errors=errors,cleanup_ok=cleanup,container_retained=True,
         cap_mib=CAP_MIB,stop_mib=STOP_MIB,image=IMAGE,manifest_sha256=sha(root/'SHA256SUMS'),
         probe_sha256=sha(out/'probe.json') if probe else None,probe_verdict=probe.get('verdict') if probe else None,
-        elapsed_s=time.monotonic()-start,box_action=False,engine_constructed=False)
+        elapsed_s=time.monotonic()-start,box_action=False,
+        engine_constructed=probe.get('engine_constructed') is True if probe else False)
     write(out/'result.json',record)
     print(json.dumps(record),flush=True)
     return record['rc']

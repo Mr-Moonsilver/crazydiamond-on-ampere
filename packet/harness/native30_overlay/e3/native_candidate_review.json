@@ -24,14 +24,1481 @@
     ],
     "observability_only": true
   },
+  "cow_empty_lease_real_scheduler_cpu_proof": {
+    "actual_Core_preprocess_method_executed": true,
+    "all_requests_completed": true,
+    "command": [
+      "timeout",
+      "--signal=TERM",
+      "--kill-after=30s",
+      "360s",
+      "docker",
+      "run",
+      "--pull=never",
+      "--name",
+      "flashnext-native17-cow-executor-b-hub-cpu",
+      "--runtime",
+      "runc",
+      "--network",
+      "none",
+      "--cpus",
+      "2",
+      "--memory",
+      "4g",
+      "--memory-swap",
+      "4g",
+      "--pids-limit",
+      "256",
+      "--read-only",
+      "--tmpfs",
+      "/tmp:rw,exec,nosuid,nodev,size=1024m",
+      "--env",
+      "NVIDIA_VISIBLE_DEVICES=none",
+      "--env",
+      "CUDA_VISIBLE_DEVICES=",
+      "--env",
+      "PYTHONPATH=",
+      "--env",
+      "PYTHONDONTWRITEBYTECODE=1",
+      "--env",
+      "HF_HUB_OFFLINE=1",
+      "--env",
+      "VLLM_CACHE_ROOT=/tmp/vllm",
+      "--env",
+      "HF_HOME=/tmp/hf",
+      "--env",
+      "HOME=/tmp/flashnext-home",
+      "--env",
+      "XDG_CACHE_HOME=/tmp/flashnext-cache",
+      "--env",
+      "FLASHINFER_WORKSPACE_BASE=/tmp/flashnext-home",
+      "--env",
+      "TRITON_CACHE_DIR=/tmp/triton",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/proof,dst=/proof,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-hub-20261029T0040Z,dst=/out",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/core/block_pool.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/core/block_pool.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/core/single_type_kv_cache_manager.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/core/single_type_kv_cache_manager.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/core/scheduler.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/core/sched/scheduler.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/model_runner_v2.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/model_runner.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e2,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e2,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e2_sources/scheduler_output.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/core/sched/output.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e2_sources/block_table.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/block_table.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/executor.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/core.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/worker.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/cudagraph_utils.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/cudagraph_utils.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/sampler.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/sample/sampler.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/async_utils.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/async_utils.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/api_routers.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/routers.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/model.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/qsa.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/qsa.py,readonly",
+      "--mount",
+      "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/ops_qsa.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/ops/qsa.py,readonly",
+      "--entrypoint",
+      "python3",
+      "sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b",
+      "-B",
+      "/proof/e3_native_cow_lease_probe.py",
+      "--graph",
+      "/proof/import-graph.json",
+      "--out",
+      "/out/probe.json",
+      "--mode",
+      "cpu-full"
+    ],
+    "fixture_leaves": {
+      "clears_box_hold": false,
+      "leaves": [
+        {
+          "box_evidence": false,
+          "equivalence": "Real Scheduler and Request decide admission, token budget, prefix hits, allocation, CoW retention and completion; generated token 17 advances the host lifecycle. No numerical/device evidence.",
+          "leaf": "CPU synthetic ModelRunnerOutput",
+          "more_convenient": true,
+          "replaces": "GPU forward/sampling outputs"
+        },
+        {
+          "box_evidence": false,
+          "equivalence": "Actual spec constructors, stock layout resolver, scheduler config generator and recycling allocator. Metadata geometry reflects real block4048/hash176, but CPU projection is more convenient and is host negative/positive reproduction only.",
+          "leaf": "CPU model-derived cache owner metadata and CPU HMA support projection",
+          "more_convenient": true,
+          "replaces": "registered CUDA model cache-owner graph and platform capability"
+        },
+        {
+          "box_evidence": false,
+          "equivalence": "Real EngineCore, MultiprocExecutor, Worker, Scheduler, allocator CoW kernels and 32-token completion loop. No production numerical/placement/performance qualification.",
+          "leaf": "reduced real three-layer dummy-weight Qwen model TP1",
+          "more_convenient": true,
+          "replaces": "production48-layer TP2PP2 model"
+        },
+        {
+          "box_evidence": false,
+          "equivalence": "Uses actual installers and ledger, no fake ready flags or manual lease retirement. Native configure prefix and clean terminal FULL handback are observed-on-box native16, not CPU-constructed. VM starts from the identical observed empty-ledger state; does not independently prove that physical prefix.",
+          "leaf": "owned transport installed at idle and empty actual SchedulerLeases attached",
+          "more_convenient": true,
+          "replaces": "physical native green/multirank startup and row1 return"
+        },
+        {
+          "box_evidence": false,
+          "equivalence": "Actual typed transaction/ticket and real SchedulerLeases; unchanged predicate reads these exact two fields. No allocator or device mutation performed.",
+          "leaf": "host-only source/destination fields in focused foreign-lease negative",
+          "more_convenient": false,
+          "replaces": "SchedulerOutput CoW descriptor"
+        },
+        {
+          "box_evidence": false,
+          "equivalence": "Executes unmodified EngineCore.preprocess_add_request and actual EngineCoreRequest/Request conversion using the real request block hasher. CPU owner contains only actual no-multimodal cache and hash fields; GPU uses actual Core object end-to-end.",
+          "leaf": "CPU Core preprocessing receiver without MM cache",
+          "more_convenient": true,
+          "replaces": "actual EngineCore language-model-only input receiver"
+        }
+      ],
+      "missing_contract_now_exercised": "Ordinary shared-prefix allocator CoW after a completed request with an empty E3 lease ledger; foreign uncommitted sources remain refused.",
+      "schema": "fixture-leaves/1"
+    },
+    "input": {
+      "cpu_owner_sha256": "7d46faaf3083586925ccbc47629ffcdb159ccd5b534976eb9f76291616796d6a",
+      "gpu_owner_sha256": "1471fa80a4a044e0e949dd2b202be9d62da30c18cbde1a9e3b25066e7aaec98f",
+      "graph_sha256": "acd317ad8fe01411811a23b64c06e04d33b93c1d625b062cf0a7d0e903eadcbc",
+      "input": "<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z",
+      "listed": 104,
+      "manifest_sha256": "973e88df461c2773ceba25ad88daeb8744a2b21d8dd81a1f796f0d96265ebb5f",
+      "probe_sha256": "398592b2c9a21a3bac4f5d4083ec0f2d2330a9e7ddada1dc9b6893f2713644a1",
+      "proof_modules": [
+        "e3_native_cow_lease_probe",
+        "e3_native_stock_rpc_probe",
+        "e3_native_transitions_lifecycle_probe",
+        "e3_native_transitions_matrix_probe",
+        "e3_teacher_decode_grade",
+        "e3_teacher_decode_rule4",
+        "teacher_forced"
+      ],
+      "total": 105
+    },
+    "mode": "CPU-full",
+    "raw_probe_sha256": "4ef1dbae02e3d04cec8e2ca5f26df8487e32038134e821cc63fb3b427639a04e",
+    "scope": "CPU host reproduction and GPU constructor shape only; device execution owner-run",
+    "self_run": {
+      "container": "flashnext-native17-cow-executor-b-hub-cpu",
+      "failure_class": "NONE",
+      "gpu_exposed": false,
+      "image": "sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b",
+      "manifest_sha256": "973e88df461c2773ceba25ad88daeb8744a2b21d8dd81a1f796f0d96265ebb5f",
+      "mode": "cpu-full",
+      "probe_sha256": "4ef1dbae02e3d04cec8e2ca5f26df8487e32038134e821cc63fb3b427639a04e",
+      "rc": 0,
+      "retained": true,
+      "verdict": "PASS",
+      "wall_s": 51.330879291985184
+    },
+    "verdict": "PASS"
+  },
+  "cow_real_tp1_gpu_proof": {
+    "cleanup_ok": true,
+    "failure_class": "NONE",
+    "fixture_leaves": {
+      "clears_box_hold": false,
+      "leaves": [
+        {
+          "box_evidence": false,
+          "equivalence": "Real Scheduler and Request decide admission, token budget, prefix hits, allocation, CoW retention and completion; generated token 17 advances the host lifecycle. No numerical/device evidence.",
+          "leaf": "CPU synthetic ModelRunnerOutput",
+          "more_convenient": true,
+          "replaces": "GPU forward/sampling outputs"
+        },
+        {
+          "box_evidence": false,
+          "equivalence": "Actual spec constructors, stock layout resolver, scheduler config generator and recycling allocator. Metadata geometry reflects real block4048/hash176, but CPU projection is more convenient and is host negative/positive reproduction only.",
+          "leaf": "CPU model-derived cache owner metadata and CPU HMA support projection",
+          "more_convenient": true,
+          "replaces": "registered CUDA model cache-owner graph and platform capability"
+        },
+        {
+          "box_evidence": false,
+          "equivalence": "Real EngineCore, MultiprocExecutor, Worker, Scheduler, allocator CoW kernels and 32-token completion loop. No production numerical/placement/performance qualification.",
+          "leaf": "reduced real three-layer dummy-weight Qwen model TP1",
+          "more_convenient": true,
+          "replaces": "production48-layer TP2PP2 model"
+        },
+        {
+          "box_evidence": false,
+          "equivalence": "Uses actual installers and ledger, no fake ready flags or manual lease retirement. Native configure prefix and clean terminal FULL handback are observed-on-box native16, not CPU-constructed. VM starts from the identical observed empty-ledger state; does not independently prove that physical prefix.",
+          "leaf": "owned transport installed at idle and empty actual SchedulerLeases attached",
+          "more_convenient": true,
+          "replaces": "physical native green/multirank startup and row1 return"
+        },
+        {
+          "box_evidence": false,
+          "equivalence": "Actual typed transaction/ticket and real SchedulerLeases; unchanged predicate reads these exact two fields. No allocator or device mutation performed.",
+          "leaf": "host-only source/destination fields in focused foreign-lease negative",
+          "more_convenient": false,
+          "replaces": "SchedulerOutput CoW descriptor"
+        },
+        {
+          "box_evidence": false,
+          "equivalence": "Executes unmodified EngineCore.preprocess_add_request and actual EngineCoreRequest/Request conversion using the real request block hasher. CPU owner contains only actual no-multimodal cache and hash fields; GPU uses actual Core object end-to-end.",
+          "leaf": "CPU Core preprocessing receiver without MM cache",
+          "more_convenient": true,
+          "replaces": "actual EngineCore language-model-only input receiver"
+        }
+      ],
+      "missing_contract_now_exercised": "Ordinary shared-prefix allocator CoW after a completed request with an empty E3 lease ledger; foreign uncommitted sources remain refused.",
+      "schema": "fixture-leaves/1"
+    },
+    "foreign_lease_guard": {
+      "actual_typed_lease": true,
+      "foreign_uncommitted_source_rejected": true,
+      "held_destination_rejected": true,
+      "leaf": "host-only source/destination projection; no allocator/device mutation",
+      "methods_patched": false,
+      "verdict": "PASS"
+    },
+    "hardware_qualified": false,
+    "hub_self_run": {
+      "actual_Core_preprocess_method_executed": true,
+      "all_requests_completed": true,
+      "command": [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=30s",
+        "360s",
+        "docker",
+        "run",
+        "--pull=never",
+        "--name",
+        "flashnext-native17-cow-executor-b-hub-cpu",
+        "--runtime",
+        "runc",
+        "--network",
+        "none",
+        "--cpus",
+        "2",
+        "--memory",
+        "4g",
+        "--memory-swap",
+        "4g",
+        "--pids-limit",
+        "256",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,exec,nosuid,nodev,size=1024m",
+        "--env",
+        "NVIDIA_VISIBLE_DEVICES=none",
+        "--env",
+        "CUDA_VISIBLE_DEVICES=",
+        "--env",
+        "PYTHONPATH=",
+        "--env",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "--env",
+        "HF_HUB_OFFLINE=1",
+        "--env",
+        "VLLM_CACHE_ROOT=/tmp/vllm",
+        "--env",
+        "HF_HOME=/tmp/hf",
+        "--env",
+        "HOME=/tmp/flashnext-home",
+        "--env",
+        "XDG_CACHE_HOME=/tmp/flashnext-cache",
+        "--env",
+        "FLASHINFER_WORKSPACE_BASE=/tmp/flashnext-home",
+        "--env",
+        "TRITON_CACHE_DIR=/tmp/triton",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/proof,dst=/proof,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-hub-20261029T0040Z,dst=/out",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/core/block_pool.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/core/block_pool.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/core/single_type_kv_cache_manager.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/core/single_type_kv_cache_manager.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/core/scheduler.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/core/sched/scheduler.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/model_runner_v2.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/model_runner.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e2,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e2,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e2_sources/scheduler_output.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/core/sched/output.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e2_sources/block_table.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/block_table.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/executor.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/core.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/worker.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/cudagraph_utils.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/cudagraph_utils.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/sampler.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/sample/sampler.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/async_utils.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/async_utils.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/api_routers.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/routers.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/e3_sources/model.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/qsa.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/qsa.py,readonly",
+        "--mount",
+        "type=bind,src=<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z/overlay/ops_qsa.py,dst=/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/ops/qsa.py,readonly",
+        "--entrypoint",
+        "python3",
+        "sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b",
+        "-B",
+        "/proof/e3_native_cow_lease_probe.py",
+        "--graph",
+        "/proof/import-graph.json",
+        "--out",
+        "/out/probe.json",
+        "--mode",
+        "cpu-full"
+      ],
+      "fixture_leaves": {
+        "clears_box_hold": false,
+        "leaves": [
+          {
+            "box_evidence": false,
+            "equivalence": "Real Scheduler and Request decide admission, token budget, prefix hits, allocation, CoW retention and completion; generated token 17 advances the host lifecycle. No numerical/device evidence.",
+            "leaf": "CPU synthetic ModelRunnerOutput",
+            "more_convenient": true,
+            "replaces": "GPU forward/sampling outputs"
+          },
+          {
+            "box_evidence": false,
+            "equivalence": "Actual spec constructors, stock layout resolver, scheduler config generator and recycling allocator. Metadata geometry reflects real block4048/hash176, but CPU projection is more convenient and is host negative/positive reproduction only.",
+            "leaf": "CPU model-derived cache owner metadata and CPU HMA support projection",
+            "more_convenient": true,
+            "replaces": "registered CUDA model cache-owner graph and platform capability"
+          },
+          {
+            "box_evidence": false,
+            "equivalence": "Real EngineCore, MultiprocExecutor, Worker, Scheduler, allocator CoW kernels and 32-token completion loop. No production numerical/placement/performance qualification.",
+            "leaf": "reduced real three-layer dummy-weight Qwen model TP1",
+            "more_convenient": true,
+            "replaces": "production48-layer TP2PP2 model"
+          },
+          {
+            "box_evidence": false,
+            "equivalence": "Uses actual installers and ledger, no fake ready flags or manual lease retirement. Native configure prefix and clean terminal FULL handback are observed-on-box native16, not CPU-constructed. VM starts from the identical observed empty-ledger state; does not independently prove that physical prefix.",
+            "leaf": "owned transport installed at idle and empty actual SchedulerLeases attached",
+            "more_convenient": true,
+            "replaces": "physical native green/multirank startup and row1 return"
+          },
+          {
+            "box_evidence": false,
+            "equivalence": "Actual typed transaction/ticket and real SchedulerLeases; unchanged predicate reads these exact two fields. No allocator or device mutation performed.",
+            "leaf": "host-only source/destination fields in focused foreign-lease negative",
+            "more_convenient": false,
+            "replaces": "SchedulerOutput CoW descriptor"
+          },
+          {
+            "box_evidence": false,
+            "equivalence": "Executes unmodified EngineCore.preprocess_add_request and actual EngineCoreRequest/Request conversion using the real request block hasher. CPU owner contains only actual no-multimodal cache and hash fields; GPU uses actual Core object end-to-end.",
+            "leaf": "CPU Core preprocessing receiver without MM cache",
+            "more_convenient": true,
+            "replaces": "actual EngineCore language-model-only input receiver"
+          }
+        ],
+        "missing_contract_now_exercised": "Ordinary shared-prefix allocator CoW after a completed request with an empty E3 lease ledger; foreign uncommitted sources remain refused.",
+        "schema": "fixture-leaves/1"
+      },
+      "input": {
+        "cpu_owner_sha256": "7d46faaf3083586925ccbc47629ffcdb159ccd5b534976eb9f76291616796d6a",
+        "gpu_owner_sha256": "1471fa80a4a044e0e949dd2b202be9d62da30c18cbde1a9e3b25066e7aaec98f",
+        "graph_sha256": "acd317ad8fe01411811a23b64c06e04d33b93c1d625b062cf0a7d0e903eadcbc",
+        "input": "<hub-dir>/agents/flash-next/tmp/native17-cow-executor-b-input-20261029T0040Z",
+        "listed": 104,
+        "manifest_sha256": "973e88df461c2773ceba25ad88daeb8744a2b21d8dd81a1f796f0d96265ebb5f",
+        "probe_sha256": "398592b2c9a21a3bac4f5d4083ec0f2d2330a9e7ddada1dc9b6893f2713644a1",
+        "proof_modules": [
+          "e3_native_cow_lease_probe",
+          "e3_native_stock_rpc_probe",
+          "e3_native_transitions_lifecycle_probe",
+          "e3_native_transitions_matrix_probe",
+          "e3_teacher_decode_grade",
+          "e3_teacher_decode_rule4",
+          "teacher_forced"
+        ],
+        "total": 105
+      },
+      "mode": "CPU-full",
+      "raw_probe_sha256": "4ef1dbae02e3d04cec8e2ca5f26df8487e32038134e821cc63fb3b427639a04e",
+      "scope": "CPU host reproduction and GPU constructor shape only; device execution owner-run",
+      "self_run": {
+        "container": "flashnext-native17-cow-executor-b-hub-cpu",
+        "failure_class": "NONE",
+        "gpu_exposed": false,
+        "image": "sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b",
+        "manifest_sha256": "973e88df461c2773ceba25ad88daeb8744a2b21d8dd81a1f796f0d96265ebb5f",
+        "mode": "cpu-full",
+        "probe_sha256": "4ef1dbae02e3d04cec8e2ca5f26df8487e32038134e821cc63fb3b427639a04e",
+        "rc": 0,
+        "retained": true,
+        "verdict": "PASS",
+        "wall_s": 51.330879291985184
+      },
+      "verdict": "PASS"
+    },
+    "metadata_exclusion": "proof declaration-wrapper diagnostic JSON not consumed; actual final generator must emit evidence subobject",
+    "outer_engine_constructed": {
+      "classification": "HARNESS observability only, no verdict effect; immutable raw receipts untouched",
+      "derived_by_repaired_wrapper": true,
+      "probe": true,
+      "raw": false
+    },
+    "own_peak_mib": 1000,
+    "owner_receipts_commit": "0e8e7f9",
+    "raw_probe_sha256": "24ca8ce86cfd20b426f36ba6fdfc78c40a9151aa2f827c79c0a9e414b76f41ee",
+    "raw_result_sha256": "65abd8070a882975b623ff4a439ea64c8194d4861aa16a3fb7b63b47a8d7c36a",
+    "real_executor": {
+      "actual_allocator_recycling": true,
+      "actual_engine_core": true,
+      "actual_multiproc_executor": true,
+      "actual_request": true,
+      "actual_request_preprocessing": true,
+      "actual_scheduler": true,
+      "all_credits_returned": true,
+      "completed_prior_tokens": 32,
+      "completion_tokens": [
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32
+      ],
+      "concurrent_requests": 8,
+      "cow_copies": [
+        {
+          "dst_block_id": 6,
+          "src_block_id": 5
+        },
+        {
+          "dst_block_id": 7,
+          "src_block_id": 4
+        },
+        {
+          "dst_block_id": 8,
+          "src_block_id": 3
+        },
+        {
+          "dst_block_id": 9,
+          "src_block_id": 6
+        },
+        {
+          "dst_block_id": 14,
+          "src_block_id": 6
+        },
+        {
+          "dst_block_id": 19,
+          "src_block_id": 6
+        },
+        {
+          "dst_block_id": 24,
+          "src_block_id": 6
+        },
+        {
+          "dst_block_id": 10,
+          "src_block_id": 7
+        },
+        {
+          "dst_block_id": 15,
+          "src_block_id": 7
+        },
+        {
+          "dst_block_id": 20,
+          "src_block_id": 7
+        },
+        {
+          "dst_block_id": 25,
+          "src_block_id": 7
+        },
+        {
+          "dst_block_id": 11,
+          "src_block_id": 8
+        },
+        {
+          "dst_block_id": 16,
+          "src_block_id": 8
+        },
+        {
+          "dst_block_id": 21,
+          "src_block_id": 8
+        },
+        {
+          "dst_block_id": 26,
+          "src_block_id": 8
+        },
+        {
+          "dst_block_id": 13,
+          "src_block_id": 1
+        },
+        {
+          "dst_block_id": 18,
+          "src_block_id": 1
+        },
+        {
+          "dst_block_id": 23,
+          "src_block_id": 1
+        },
+        {
+          "dst_block_id": 28,
+          "src_block_id": 1
+        },
+        {
+          "dst_block_id": 29,
+          "src_block_id": 6
+        },
+        {
+          "dst_block_id": 34,
+          "src_block_id": 6
+        },
+        {
+          "dst_block_id": 39,
+          "src_block_id": 6
+        },
+        {
+          "dst_block_id": 30,
+          "src_block_id": 7
+        },
+        {
+          "dst_block_id": 35,
+          "src_block_id": 7
+        },
+        {
+          "dst_block_id": 40,
+          "src_block_id": 7
+        },
+        {
+          "dst_block_id": 31,
+          "src_block_id": 8
+        },
+        {
+          "dst_block_id": 36,
+          "src_block_id": 8
+        },
+        {
+          "dst_block_id": 41,
+          "src_block_id": 8
+        },
+        {
+          "dst_block_id": 33,
+          "src_block_id": 1
+        },
+        {
+          "dst_block_id": 38,
+          "src_block_id": 1
+        },
+        {
+          "dst_block_id": 43,
+          "src_block_id": 1
+        }
+      ],
+      "cow_requested": 31,
+      "credit_high_water": 2,
+      "full_model_numerics": false,
+      "gpu_execution": true,
+      "hardware_qualified": false,
+      "iterations": 74,
+      "kernels_patched": false,
+      "lease_ledger": {
+        "clean": true,
+        "held": 0,
+        "pending_free": 0
+      },
+      "leases_ever_acquired": false,
+      "manual_retirement": false,
+      "max_calls": 10,
+      "methods_patched": false,
+      "native_configure_prefix": "observed-on-box native16; not constructed by this TP1 proof",
+      "records": [
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 4
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-completed-prior": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {}
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {}
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 128
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 48
+          }
+        },
+        {
+          "copies": [
+            {
+              "dst_block_id": 6,
+              "src_block_id": 5
+            },
+            {
+              "dst_block_id": 7,
+              "src_block_id": 4
+            },
+            {
+              "dst_block_id": 8,
+              "src_block_id": 3
+            }
+          ],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 32
+          }
+        },
+        {
+          "copies": [
+            {
+              "dst_block_id": 9,
+              "src_block_id": 6
+            },
+            {
+              "dst_block_id": 14,
+              "src_block_id": 6
+            },
+            {
+              "dst_block_id": 19,
+              "src_block_id": 6
+            },
+            {
+              "dst_block_id": 24,
+              "src_block_id": 6
+            },
+            {
+              "dst_block_id": 10,
+              "src_block_id": 7
+            },
+            {
+              "dst_block_id": 15,
+              "src_block_id": 7
+            },
+            {
+              "dst_block_id": 20,
+              "src_block_id": 7
+            },
+            {
+              "dst_block_id": 25,
+              "src_block_id": 7
+            },
+            {
+              "dst_block_id": 11,
+              "src_block_id": 8
+            },
+            {
+              "dst_block_id": 16,
+              "src_block_id": 8
+            },
+            {
+              "dst_block_id": 21,
+              "src_block_id": 8
+            },
+            {
+              "dst_block_id": 26,
+              "src_block_id": 8
+            },
+            {
+              "dst_block_id": 13,
+              "src_block_id": 1
+            },
+            {
+              "dst_block_id": 18,
+              "src_block_id": 1
+            },
+            {
+              "dst_block_id": 23,
+              "src_block_id": 1
+            },
+            {
+              "dst_block_id": 28,
+              "src_block_id": 1
+            }
+          ],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 32,
+            "actual-control-2": 32,
+            "actual-control-3": 32,
+            "actual-control-4": 31
+          }
+        },
+        {
+          "copies": [
+            {
+              "dst_block_id": 29,
+              "src_block_id": 6
+            },
+            {
+              "dst_block_id": 34,
+              "src_block_id": 6
+            },
+            {
+              "dst_block_id": 39,
+              "src_block_id": 6
+            },
+            {
+              "dst_block_id": 30,
+              "src_block_id": 7
+            },
+            {
+              "dst_block_id": 35,
+              "src_block_id": 7
+            },
+            {
+              "dst_block_id": 40,
+              "src_block_id": 7
+            },
+            {
+              "dst_block_id": 31,
+              "src_block_id": 8
+            },
+            {
+              "dst_block_id": 36,
+              "src_block_id": 8
+            },
+            {
+              "dst_block_id": 41,
+              "src_block_id": 8
+            },
+            {
+              "dst_block_id": 33,
+              "src_block_id": 1
+            },
+            {
+              "dst_block_id": 38,
+              "src_block_id": 1
+            },
+            {
+              "dst_block_id": 43,
+              "src_block_id": 1
+            }
+          ],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 32,
+            "actual-control-6": 32,
+            "actual-control-7": 32
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-0": 1,
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-1": 1,
+            "actual-control-2": 1,
+            "actual-control-3": 1,
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {
+            "actual-control-4": 1,
+            "actual-control-5": 1,
+            "actual-control-6": 1,
+            "actual-control-7": 1
+          }
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {}
+        },
+        {
+          "copies": [],
+          "held": 0,
+          "scheduled_tokens": {}
+        }
+      ],
+      "verdict": "PASS"
+    },
+    "release_qualified": false,
+    "schema": "native17-cow-executor-regrade/1",
+    "scope": "TP1 reduced real engine ordinary shared-prefix CoW after completed request; native green/multirank configure prefix observed on native16 box, not CPU-constructed",
+    "source_input": "native17-cow-executor-b-input-20261029T0040Z",
+    "verdict": "PASS"
+  },
   "cpu_regression": {
-    "basis": "full282 registered regression with runtime bytes identical to ce4bf8a; additional concurrent-stock future test separately included in77focused tests; no runtime changes after selftest start",
+    "basis": "full282 registered regression with native17 scheduler source predicate repair; two additional lease guards inside registered async suite; native17 queue stderr-only snippet separately compared with actual native16 snippet; no runtime changes after test start",
     "cases": 282,
     "exit_code": 0,
-    "log": "tmp/native16-full-selftest.log",
-    "log_sha256": "3dc17748577e3887708a48bc7509e2d2179820833b6ca4d4d2e3de3c9c0d31c9",
+    "log": "tmp/native17-full-selftest.log",
+    "log_sha256": "34d964f4fcf30878bb7e6ad3fe23e340efbce7d735e2c937475e3b0179ec3f46",
     "required": 282,
-    "runtime_commit": "ce4bf8a8177daaae8d4d964d8cc0cce76bc9b233"
+    "runtime_commit": "0408225106e5c4ae96a64281f93de56f23db355f"
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -79,6 +1546,7 @@
     "e3_green_probe.py": "7fa16cc1da3ea0e3adf37313db0ce948121a1428b67038e0a94d0ebe9f28560e",
     "e3_lane_comm_probe.py": "c662ef7139d8a2c423261defa4405d4e3d43e385c4e32c6271ee76217fdbe1bf",
     "e3_native_align_capacity_probe.py": "2e7ffd021eba1940aac657ba26995eb604beee593004df1e898e0abfc3c0045d",
+    "e3_native_cow_lease_probe.py": "398592b2c9a21a3bac4f5d4083ec0f2d2330a9e7ddada1dc9b6893f2713644a1",
     "e3_native_device_path_probe.py": "8bda791f4aa2ee24c314c66df0e7f74d97ba42c7bd39382336a02dd0fa593a1c",
     "e3_native_expanded_reports_cpu_probe.py": "d3bb80fd0777b600d894e2fdd0e93688c1620185dc471dea4da8b76d8b37fc57",
     "e3_native_frontier_reuse_probe.py": "8fdceece78dcfcc58ba812026096524b7371e1de110bd63d27758e5c098f6f5f",
@@ -169,6 +1637,7 @@
     "native15_lifecycle_fixture_leaves.json": "fd63762668de5262bba53510b1a3441c23dc15ee68d00b8419c84e901f85d51a",
     "native15_transitions_fixture_leaves.json": "6eeb38baf968d076111dcdf49352e39b833a11f8d8c273292295e7f15051b4d0",
     "native16_stock_rpc_fixture_leaves.json": "0b3dc6afb247afe7b1f1e6c05dd1a9bc50244432a0d0d2dc9ba2a4ef8fa1d16b",
+    "native17_cow_fixture_leaves.json": "2fc0aa5bf95a5b87bea3189bced6ffb3d0bb525c0483807cf1b6bb4fb027bc7d",
     "native_placement_evidence_support.py": "345d37090992a4400862e307a34aac1a5abe3d062153a8f183e38bd479aee1c9",
     "native_prefill_support.py": "00c704e8935eea94e3030a4003f979693540f0e28e86a6326dcbfc5fb4644064",
     "overlap_tp.py": "8bb4b344180927245f685bee45b8897aa0abbeb073a8ac11f76c139080da4e7c",
@@ -351,6 +1820,9 @@
     "runs/q18a_native16.draft.sh": "1bde012d74a1678d0066b0374fbdb17b104d5b8c9d6c90d119a716238df966b5",
     "runs/q18a_native16_declare.sh": "15828b2deff70e4f2f3004c73bf7db5e8a76fdbac30032bcb14bd2153138234e",
     "runs/q18a_native16_settings.sh": "0370a89b052f24029af898bd1ea3da03e953f9c8bd7a56fb7f5be1ca789a9d01",
+    "runs/q18a_native17.draft.sh": "c41689a1c50c76d50f08110de96f6321f83577f2f4997e35fc323f2af1d5d3ab",
+    "runs/q18a_native17_declare.sh": "f99f16213b098307fe2cdcea4a9e5283413e5bb23ce41d14b673c9848885c67e",
+    "runs/q18a_native17_settings.sh": "fcfc420e4fc14b715b02fd441a3293374922496ca9740b71d8955a8ada103ea9",
     "runs/q18a_native1_declare.sh": "2052525e381dec2544a41d9af00fcacc9776b0cdc7bc9d9857f9810baa3e2d9a",
     "runs/q18a_native1_settings.sh": "6e4494bb5c5228187f48242a2568c32aa770c2ba70bf5f0333fdd90d559f9e42",
     "runs/q18a_native2.draft.sh": "2518bbbd35a01fbf646aa9594b71404dbd1eff4567e17208ec9470dd8a70973a",
@@ -552,7 +2024,7 @@
     "test_e3_activity_accounting.py": "587ca2d9f8ce2cf304d7d23042b5281ab88d2ed9a955c45c7e96f0c9d0755335",
     "test_e3_admission_metadata.py": "e8fbcb9b2217d1d0617e1a35d7561ea1c8c78ba13b7238a55ccc123b31e12de6",
     "test_e3_admission_native.py": "dfc244cefdeac538742b77d9403d3ed41800b772367e150a4c6838fa82ddf266",
-    "test_e3_async_handoffs.py": "f280b11b8f9babfb474768e7a5a747322700e8e3b0a1810f16a55b77abe876a8",
+    "test_e3_async_handoffs.py": "28c445ffa472e9cd2853dd732fddf21242846ae90bfb7219cf184357df902701",
     "test_e3_capture_streams.py": "be83c0dcbe0b59b68a99b6393cd6dbef9d2c2de04e3d2d49c75162dab96ca33d",
     "test_e3_control_observation.py": "e48f5a8b9a2d897f37ea62880818c0f219806eaba5191dcc40f6e2514bdc545d",
     "test_e3_decode_correctness.py": "cc989bd8ee61bf34d0bef67f298f80435520b2cace662f9b93332db04f08a74f",
@@ -771,17 +2243,16 @@
   },
   "matrix_complete": false,
   "matrix_scope_deferrals": [
-    "complete same-queue TP2PP2 row1 numerical/UVA transport oracle collection and whole request completion",
-    "rule-v4 controls/candidate and composed row4 raw graph/context/stream/activity conservation on the full quantized model",
+    "full quantized rule-v4 control/candidate comparison and composed row4 raw graph/context/stream/activity conservation",
     "full/matched-split W1, fresh/append W2, actual80/80 decode share and prefill speed/TTFT",
-    "completed-request cache reuse and inside-page/page-edge cached continuation,135-row no-partial tail through complete real engine request",
-    "multi-rank strict/streamed route boundaries, paged-report cancellation and refill, reserve/lifetime/leak and authenticated canary gates"
+    "full request135-row no-partial tail and cache/route boundary coverage outside retained proofs",
+    "multi-rank cancellation/paged reports/refill, reserve/lifetime/leak and authenticated canary gates"
   ],
   "mounted_runtime_import_audit": {
-    "graph": "reviews/codex-20261029-native16-mounted-import-edges.json",
-    "graph_sha256": "dcb71d0e99ac8f4b29533fa1d0c71e341d3b98e3be7e98798cccebc432ad7877",
+    "graph": "reviews/codex-20261029-native17-mounted-import-edges.json",
+    "graph_sha256": "acd317ad8fe01411811a23b64c06e04d33b93c1d625b062cf0a7d0e903eadcbc",
     "modules": 83,
-    "scope": "actual generated source index; runtime module names unchanged, executor_hooks only code delta; exact proof packaged executor bytes matched actual generator",
+    "scope": "all83 active generated module source pins matched proof and actual bundled generation; scheduler_hooks only code delta. Proof diagnostic JSON declaration wrapper was not consumed by ordinary CoW scenario; actual generator emits correct evidence subobject and final owner validator checks it.",
     "tool_sha256": "b14408916e55983c9ec922926a4bdfac3c54d96db62eb5b7f8c265c98fed63d1"
   },
   "native15_box_regrade": {
@@ -867,6 +2338,43 @@
     "scope": "real public native prefix and first ordinary sampling reached; row1 incomplete and rows2/4/performance remain unqualified",
     "startup": "PASS",
     "terminal_rows": 103
+  },
+  "native16_box_regrade": {
+    "cause": "ordinary stock allocator CoW source falsely required to belong to an E3 lease despite empty E3 ledger",
+    "classification": "ENGINE",
+    "cleanup": "PASS",
+    "connected_reproduction": "reviews/codex-20261029-native17-cow-hub-regrade.json",
+    "first_failure_log_sha256": "26381995de56072ce089336ffc7e3758a4f7b672bc9e0471b6f729649303e587",
+    "hardware_qualified": false,
+    "measured_performance": null,
+    "owner_chain_rc": 1,
+    "phase_outcomes": {
+      "row1": "PASS",
+      "row4": "INCONCLUSIVE",
+      "rule4_candidate": "INCONCLUSIVE",
+      "rule4_controls": "INCONCLUSIVE",
+      "startup": "PASS"
+    },
+    "production_copy_ids_recorded": false,
+    "production_restore": "operator only",
+    "queue_rc": 1,
+    "release_qualified": false,
+    "retired_deferrals": [
+      "complete TP2PP2 row1 numerical/source/transport collection PASS and64completion tokens",
+      "clean native terminal FULL handback and sampled completion",
+      "ce4bf8a credit lifecycle on TP2PP2"
+    ],
+    "row1_raw_sha256": "c12edf63b30d181dd85aedffcad2c4fa1f6996ebdfdd2dd1371c8a0bffadaa75",
+    "schema": "native16-box-regrade/1",
+    "source_receipts_commit": "1ec20bd",
+    "verdict": "FAIL"
+  },
+  "native16_progress": {
+    "clean_terminal_handback": true,
+    "completion_tokens": 64,
+    "row1": "PASS",
+    "scope": "complete first row1 numerical/transport source oracle on TP2PP2, ce4bf8a stock credit repair exercised; full rule4/row4/performance and later gates still required",
+    "startup": "PASS"
   },
   "night_window": {
     "kill_margin_s": 900,
@@ -1908,7 +3416,10 @@
     "scope": "one set computed once, identical accepted values and exception messages, no field/signature/guard change"
   },
   "retired_scope_deferrals": [
-    "native terminal prefix to ordinary final-token/sampling handback reached on native15 TP2PP2 and advanced6 actual completion tokens; this component boundary is retired, not full-row1 numerical qualification"
+    "complete same-queue TP2PP2 row1 oracle/source/transport collection and64completion tokens on native16",
+    "native terminal FULL handback and clean zero-lease ledger on native16",
+    "ce4bf8a credit lifecycle on TP2PP2 native16",
+    "reduced TP1 real allocator partial-prefix CoW after completed request and8 concurrent requests on native17 VM; production full-cohort qualification still required"
   ],
   "review_notes": [
     "reviews/codex-20261027-vm13f-independent-regrade.md",
@@ -1950,19 +3461,24 @@
     "reviews/codex-20261028-native15-box-regrade.json",
     "reviews/codex-20261028-native16-stock-credit-hub-regrade.json",
     "docs/e3-briefs/native16-stock-rpc-executor-vm-go.md",
-    "reviews/codex-20261029-native16-rpc-executor-d-regrade.json"
+    "reviews/codex-20261029-native16-rpc-executor-d-regrade.json",
+    "reviews/codex-20261029-native16-box-regrade.json",
+    "reviews/codex-20261029-native17-box-cause.md",
+    "reviews/codex-20261029-native17-cow-hub-regrade.json",
+    "reviews/codex-20261029-native17-cow-executor-regrade.json",
+    "docs/e3-briefs/native17-cow-executor-vm-go.md"
   ],
   "reviewed_by": "Codex",
   "schema": "e3-native-source-review/1",
   "scope": "implementation closure for owner test only",
   "source_delta": {
-    "basis": "native15 emitted6tokens then exhausted unchanged10 RPC credits because ordinary execute_model futures were discarded without claiming their ready replies",
+    "basis": "native16 complete row1 PASS followed by first ordinary teacher cohort; zero-lease guard falsely rejected ordinary allocator CoW sources",
     "builder_modules": [],
     "new_runtime_modules": [],
     "runtime_modules": [
-      "executor_hooks.py"
+      "scheduler_hooks.py"
     ],
-    "scope": "ordinary stock result claims prior ordinary futures in writer registration order, cached results/exceptions retained; native typed ACKs/done/poll/take remain independent; cap, worker transport protocol, kernels, settings, workloads and all gates unchanged; fresh native16 names"
+    "scope": "only intersect copy source ids with E3 held ids before ownership test; held-destination and foreign-uncommitted refusals preserved; stock CoW source/destination retention fence unchanged; native16 credit lifecycle unchanged; no command slot/kernel/workload/setting/tolerance/gate changes; fresh native17 names and harness-only teacher-digest stderr diagnostic"
   },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
@@ -2019,7 +3535,7 @@
     "row1_exactness.py": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799",
     "row1_oracle.py": "222daf40526971511997aac1c8a5b485bae1b095ea0e0b7839d97d795e19ef12",
     "s5_startup.py": "b6be27251f75dfaca7b47d35657f467c7f06787a213e817857597d350d990293",
-    "scheduler_hooks.py": "02bc34deba824d2e4fa429dc6bd2899c415cf9b45ba9d74788aab36841786ede",
+    "scheduler_hooks.py": "769f3f6c25ba07145043bc0a77eccde9ca0dd15434b0152cd4af53fc5995ea7c",
     "sparse_history_dma.py": "8d797043b9f077906e93cc32f13f2ba54e56197ba4ce701405951446cc843287",
     "split_bank.py": "ef8222d57888c8103936dffe4f3643edc5ba437b96fb1cab3c8341f97c1d19b4",
     "teacher_decode.py": "8ab74b57de7ea90f4a94154d9bd609ab748400e989f58eb5bc553d427faff05c",
