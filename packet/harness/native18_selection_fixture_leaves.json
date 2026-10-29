@@ -1,0 +1,35 @@
+{
+  "schema": "fixture-leaves/1",
+  "clears_box_hold": false,
+  "scope": "CPU source counterexample only",
+  "leaves": [
+    {
+      "leaf": "synthetic model/layer/CPU tensor and generated-kernel stand-ins",
+      "replaces": "CUDA model forward, real QSA tensors and Triton math",
+      "equivalence": "Preserves actual generator control-flow and typed operation/driver/dispatcher/bridge calls, not model bytes, shapes or numerical timing",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "controlled fake event query completion order",
+      "replaces": "actual selection D2H/consumer CUDA events",
+      "equivalence": "Models both permitted host-query outcomes without patching runtime methods. Real device ordering still needs VM GPU proof",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "inactive host scheduler/executor owner and outstanding-command state projection",
+      "replaces": "EngineCore/control transport/native startup and the live in-flight receiver",
+      "equivalence": "Actual controller and Driver constructors plus actual _apply_segments run. Source inputs are projected explicitly; no physical startup, IPC or all-rank FULL certificate is constructed",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "synthetic skipped reply envelopes for the other PP stage",
+      "replaces": "actual non-target stage bridge responses",
+      "equivalence": "Actual typed SegmentAcceptance enforces mutually exclusive flags; skipped replies do not enter accepted cursor sets. Real PP traffic is not exercised",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}
