@@ -560,7 +560,17 @@ class PrivateBindingsTests(unittest.TestCase):
         self.assertIsNone(self.ws.active)
         self.assertEqual(self.original.read_row(0)[0], 901)
 
-        # Segment 3: completion restores the exact decode owners again.
+        # Segment 3: the queried final event exposes the all-rank tail
+        # boundary without entering the TP post collective.
+        record = lane.layer(0)
+        self.assertEqual(record.kind, 'layer-paused')
+        self.assertEqual(operation.ended, [])
+        self.assertIs(self.attn.topk_indices_buffer, self.original)
+        self.assertIs(self.fc.QSA_REQ_UID, self.decode_uid)
+        self.assertEqual(self.original.read_row(0)[0], 901)
+
+        # Segment 4: the engine-issued tail command restores the exact
+        # decode owners after the completed layer.
         record = lane.layer(0)
         self.assertEqual(record.kind, 'layer')
         self.assertEqual(operation.ended, [self.attn.layer_name])
@@ -571,8 +581,8 @@ class PrivateBindingsTests(unittest.TestCase):
 
         self.assertEqual(self.releases, [])
         self.assertIs(self.bindings.topk._storage, self.scratch._storage)
-        self.assertEqual([event for event, _ in self.ws.entered[self.workspace_start:]].count('enter'), 5)
-        self.assertEqual([event for event, _ in self.ws.entered[self.workspace_start:]].count('exit'), 5)
+        self.assertEqual([event for event, _ in self.ws.entered[self.workspace_start:]].count('enter'), 6)
+        self.assertEqual([event for event, _ in self.ws.entered[self.workspace_start:]].count('exit'), 6)
 
     def test_missing_private_scope_writes_the_captured_decode_buffer(self):
         # Counterexample for the delivered gap: no private_scope means the
