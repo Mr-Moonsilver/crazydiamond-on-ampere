@@ -36,13 +36,30 @@ def cpu_shape(worker_hooks):
             if not self.keep_graph:
                 raise RuntimeError('keep_graph required')
             return 19
-    torch = NS(cuda=NS(CUDAGraph=lambda **kw: Graph(**kw)))
+    stream = NS(cuda_stream=91)
+    current = [stream]
+    torch = NS(cuda=NS(CUDAGraph=lambda **kw: Graph(**kw),
+                      current_stream=lambda device: current[0]))
     env = {'FLASH_S5_DECODE_ONLY_PROBE':'0', 'FLASH_S5_OVERLAP':'1',
            'FLASH_S5_REPLAY_OBSERVER':'1'}
     prior = {key:os.environ.get(key) for key in env}
     try:
         os.environ.update(env)
-        split = NS(_flash_s5_capture_context=lambda: None)
+        owner = NS(state='open', decode_stream=stream,
+                   decode_stream_token=stream.cuda_stream)
+        split = NS(device='cuda:0', _flash_s5_capture_context=lambda: None,
+                   _flash_s5_capture_owner=owner)
+        desc = NS(cg_mode='FULL', num_tokens=4, num_reqs=1)
+        assert worker_hooks.checked_capture_stream(
+            split, stream, desc, torch_module=torch) is stream
+        current[0] = NS(cuda_stream=92)
+        try:
+            worker_hooks.checked_capture_stream(split, stream, desc, torch_module=torch)
+        except Exception as exc:
+            assert 'split capture stream agreement failed' in str(exc)
+        else:
+            raise AssertionError('off-stream capture check accepted')
+        current[0] = stream
         retained = worker_hooks.capture_graph(split, torch_module=torch)
         worker_hooks.finish_graph(split, retained)
         assert retained.raw_cuda_graph() == 19
@@ -63,7 +80,8 @@ def cpu_shape(worker_hooks):
         assert calls == ['instantiate']
         return {'verdict':'PASS', 'retained_split_graph':True,
                 'ordinary_graph_unchanged':True, 'observer_off_unchanged':True,
-                'instantiate_once':True}
+                'instantiate_once':True, 'on_stream_check':True,
+                'off_stream_refused':True}
     finally:
         for key, value in prior.items():
             if value is None:
@@ -107,12 +125,13 @@ def gpu_capture_and_bind(worker_hooks):
         with torch.cuda.stream(stream):
             y.copy_(x)
         stream.synchronize()
-        checked = worker_hooks.checked_capture_stream(
-            manager, stream, capture_desc, torch_module=torch)
-        assert checked is stream
-        graph = worker_hooks.capture_graph(manager, torch_module=torch)
-        with torch.cuda.graph(graph, stream=stream):
-            y.add_(x)
+        with torch.cuda.stream(stream):
+            checked = worker_hooks.checked_capture_stream(
+                manager, stream, capture_desc, torch_module=torch)
+            assert checked is stream
+            graph = worker_hooks.capture_graph(manager, torch_module=torch)
+            with torch.cuda.graph(graph, stream=stream):
+                y.add_(x)
         worker_hooks.finish_graph(manager, graph)
         raw = graph.raw_cuda_graph()
         assert type(raw) is int and raw > 0

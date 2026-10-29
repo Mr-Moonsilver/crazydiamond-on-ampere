@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the exact native24 input's CPU-shape path in the pinned hub image."""
 import argparse
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -11,6 +12,25 @@ import run_gpu
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def audit_gpu_stream_scope(probe_path):
+    tree = ast.parse(probe_path.read_text())
+    function = next(node for node in tree.body
+                    if isinstance(node, ast.FunctionDef)
+                    and node.name == 'gpu_capture_and_bind')
+    stream_scopes = [node for node in ast.walk(function)
+                     if isinstance(node, ast.With)
+                     and any(ast.unparse(item.context_expr) == 'torch.cuda.stream(stream)'
+                             for item in node.items)]
+    checked = [node for scope in stream_scopes for node in ast.walk(scope)
+               if isinstance(node, ast.Call)
+               and ast.unparse(node.func) == 'worker_hooks.checked_capture_stream']
+    assert len(stream_scopes) >= 1 and len(checked) == 1, (
+        'capture stream check must execute under the decode stream',
+        len(stream_scopes), len(checked))
+    return {'verdict':'PASS', 'checked_capture_stream_calls_in_scope':len(checked),
+            'stream_scope_line':stream_scopes[0].lineno}
 
 
 def main():
@@ -28,6 +48,8 @@ def main():
     assert not any(path.is_symlink() for path in root.rglob('*'))
     assert all(sha(root / name) == digest for name, digest in entries.items())
     graph = json.loads((root / 'proof/import-graph.json').read_text())
+    stream_audit = audit_gpu_stream_scope(
+        root / 'proof/e3_native24_graph_probe.py')
     out.mkdir(mode=0o700)
     command = run_gpu.docker_command(root, out, graph)
     command[command.index('--name') + 1] += '-hub-cpu'
@@ -49,7 +71,7 @@ def main():
               'probe_sha256':sha(probe_path) if probe else None,
               'container':command[command.index('--name') + 1],
               'image':run_gpu.IMAGE, 'gpu_device_requests':0,
-              'mode':'cpu-shape'}
+              'mode':'cpu-shape', 'gpu_stream_scope_audit':stream_audit}
     (out / 'result.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
     print(json.dumps(result, sort_keys=True))
     return 0 if verdict == 'PASS' else 1
