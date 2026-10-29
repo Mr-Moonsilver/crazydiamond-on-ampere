@@ -709,6 +709,27 @@ class ReviewRegressions(ProbeFixture):
                                        torch_module=torch)
         self.assertEqual(calls,[{}])
 
+    def test_native_observer_retains_only_the_split_bank_graph(self):
+        calls = []
+        def graph(**kw):
+            calls.append(kw)
+            return types.SimpleNamespace(instantiate=lambda: calls.append('instantiate'))
+        torch = types.SimpleNamespace(cuda=types.SimpleNamespace(CUDAGraph=graph))
+        split = types.SimpleNamespace(_flash_s5_capture_context=object())
+        ordinary = types.SimpleNamespace()
+        env = {PROBE_ENV:'0', 'FLASH_S5_OVERLAP':'1',
+               'FLASH_S5_REPLAY_OBSERVER':'1'}
+        with patch.dict(os.environ, env):
+            worker_hooks.finish_graph(split, worker_hooks.capture_graph(split, torch_module=torch))
+            worker_hooks.finish_graph(ordinary, worker_hooks.capture_graph(ordinary, torch_module=torch))
+        self.assertEqual(calls, [{'keep_graph':True}, 'instantiate', {}])
+        self.assertIs(split._flash_s5_keep_graphs, True)
+        calls.clear()
+        with patch.dict(os.environ, dict(env, FLASH_S5_REPLAY_OBSERVER='0')):
+            worker_hooks.capture_graph(types.SimpleNamespace(_flash_s5_capture_context=object()),
+                                       torch_module=torch)
+        self.assertEqual(calls, [{}])
+
     def test_wrong_compiled_library_pin_refused_before_bank_creation(self):
         runner = fake_runner(self.torch)
         runner._flash_s5_split = self.new_split()
@@ -1091,6 +1112,12 @@ class CaptureObservationTests(unittest.TestCase):
         self.assertNotIn(str(self.stream.cuda_stream), json.dumps(record))
         with self.assertRaisesRegex(DecodeProbeError, 'duplicate'):
             self.check()
+
+    def test_native_observer_checks_split_capture_stream(self):
+        self.env = {PROBE_ENV:'0', 'FLASH_S5_OVERLAP':'1',
+                    'FLASH_S5_REPLAY_OBSERVER':'1'}
+        self.assertIs(self.check(), self.stream)
+        self.assertEqual(len(self.manager._flash_s5_capture_stream_checks), 1)
 
     def test_each_observed_stream_must_match_the_owner(self):
         wrong = types.SimpleNamespace(cuda_stream=42)

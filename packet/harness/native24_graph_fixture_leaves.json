@@ -1,0 +1,37 @@
+{
+  "schema": "native24-graph-fixture-leaves/1",
+  "scope": "one-card graph-capture and observer-binding proof; not TP2PP2 or row-4 qualification",
+  "leaves": [
+    {
+      "leaf": "SimpleNamespace manager",
+      "replaces": "vLLM CudagraphManager created by SplitBank.build_manager",
+      "equivalence": "It carries the same capture-context, capture-owner, device, graph map and stream-check fields read by worker_hooks and ObserverSession.bind_bank; actual graph capture and observer binding remain real.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "SimpleNamespace capture descriptor",
+      "replaces": "vLLM FULL CudagraphCaptureDesc",
+      "equivalence": "It provides the FULL mode and token/request fields consumed by ExecutionDescriptor.from_vllm; descriptor generation and model capture are not exercised.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "SimpleNamespace bank, router and probe",
+      "replaces": "E3 SplitBank, GraphRouter and DecodeProbe object shells",
+      "equivalence": "The fields and object identities inspected by the real ObserverSession.bind_bank match the production contract; the native replay observer library, CUDA graph and green context are real. Routing and replay are outside this proof.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "1024-element torch add graph",
+      "replaces": "captured full Qwen decode graph",
+      "equivalence": "It is a real PyTorch CUDAGraph on the declared decode green stream and proves the keep_graph/raw-handle and native binding mechanism. Node census and model numerics are deferred.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "one CUDA device",
+      "replaces": "four 3090 devices in TP2PP2",
+      "equivalence": "The graph factory and raw-handle API are rank-local, but inter-rank lifetime and placement cannot be established on this venue.",
+      "box_evidence": false
+    }
+  ],
+  "not_constructed": ["Qwen model", "EngineCore", "TP2PP2", "row-4 cohort"]
+}

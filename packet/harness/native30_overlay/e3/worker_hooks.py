@@ -526,14 +526,22 @@ def native_overlap_rpc(worker, command):
 
 
 def capture_graph(manager, *, torch_module=None):
-    """Retain raw full/split definitions only in the declared decode diagnostic."""
+    """Retain raw graphs when a declared observer will bind the split bank."""
     if torch_module is None:
         import torch as torch_module
-    retained = os.environ.get(PROBE_ENV, '0') == '1'
+    retained = _retained_graph_capture(manager)
     if retained:
         manager._flash_s5_keep_graphs = True
         return torch_module.cuda.CUDAGraph(keep_graph=True)
     return torch_module.cuda.CUDAGraph()
+
+
+def _retained_graph_capture(manager):
+    if os.environ.get(PROBE_ENV, '0') == '1':
+        return True
+    return (os.environ.get('FLASH_S5_OVERLAP', '0') == '1'
+            and os.environ.get('FLASH_S5_REPLAY_OBSERVER', '0') == '1'
+            and getattr(manager, '_flash_s5_capture_context', None) is not None)
 
 
 def finish_graph(manager, graph):
@@ -549,7 +557,7 @@ def checked_capture_stream(manager, vllm_stream, descriptor, *, torch_module=Non
     again, repair its cache or change streams here. Stock/default-off is an
     identity function with no torch/driver queries. Native handles stay private.
     """
-    if (os.environ.get(PROBE_ENV, '0') != '1'
+    if (not _retained_graph_capture(manager)
             or getattr(manager, '_flash_s5_capture_context', None) is None):
         return vllm_stream
     from decode_probe import DecodeProbeError
