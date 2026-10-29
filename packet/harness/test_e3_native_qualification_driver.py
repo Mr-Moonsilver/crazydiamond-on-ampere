@@ -1405,16 +1405,19 @@ class FakeState:
         self.index = index
         self.value = 0
         self.lock = threading.Lock()
+        self.progress = threading.Event()
         self.tokens = []
         self.prompt_sha256 = digest_char('1')
         self.prompt_chars = 32
         self.request_sha256 = digest_char('2')
         self.prompt_tokens = prompt_tokens
         self.prompt_token_ids_len = prompt_tokens
+        self.send_at_ns = time.monotonic_ns()
         self.first_advance_ns = 1234
         self.finish_at_ns = None
         self.finish_reason = None
         self.error = None
+        self.error_at_ns = None
         self.malformed = None
 
     def count(self):
@@ -1537,6 +1540,28 @@ class PlacementDriver:
 
 
 class PlacementRunnerTest(unittest.TestCase):
+    def test_real_control_worker_qualification_pauses_until_session_resume(self):
+        class QualificationEngine(FakeEngine):
+            def handle_native_control(self, payload):
+                if payload.get('action') == 'qualification':
+                    self.calls.append(copy.deepcopy(payload))
+                    return {'schema': 1, 'action': 'qualification',
+                            'engine_epoch': self.epoch, 'clock': self._clock(),
+                            'ranks': [0, 1, 2, 3], 'workers': []}
+                return super().handle_native_control(payload)
+
+        engine = QualificationEngine()
+        worker_client = NativeControlClient(engine)
+        session = NativeOverlapSession(engine)
+        asyncio.run(worker_client.qualification(
+            'teacher_configure', {'enabled': True,
+                                  'snapshot_max_bytes': 64 * 1024 ** 2}))
+        self.assertTrue(engine.paused)
+        resumed = asyncio.run(session.execute(
+            {'schema': 1, 'action': 'resume', 'run_id': 'run-1'}))
+        self.assertTrue(resumed['resumed'])
+        self.assertFalse(engine.paused)
+
     def test_terminal_full_telemetry_keeps_the_retained_split_window_generation(self):
         class Returned(PlacementDriver):
             def _session(self, phase_name, action, **fields):
@@ -1598,9 +1623,10 @@ class PlacementRunnerTest(unittest.TestCase):
     def test_runner_drives_real_order_and_retains_separate_receipts(self):
         driver = PlacementDriver()
         result = self.run_runner(driver)
-        self.assertEqual(driver.calls, ['prepare', 'pause_enter_split',
-                                        'overlap_begin', 'resume', 'overlap_end',
-                                        'leave_full'])
+        self.assertEqual(driver.calls, ['prepare', 'resume',
+                                        'pause_enter_split', 'overlap_begin',
+                                        'resume', 'overlap_end', 'leave_full',
+                                        'resume'])
         self.assertEqual(driver.worker_calls, ['teacher_configure',
                                                'observer_begin', 'observer_end',
                                                'teacher_evidence',
@@ -1640,6 +1666,68 @@ class PlacementRunnerTest(unittest.TestCase):
         self.assertFalse(result['cleanup']['admission']['armed'])
         self.assertEqual(result['cleanup']['admission']['phase'],
                          'full-prefill-solo')
+
+    def test_stock_cohort_opens_after_qualification_pause_is_resumed(self):
+        class PausingWorker(PlacementDriver):
+            paused = False
+            pending_states = ()
+
+            def _worker(self, phase, action, payload):
+                if action == 'teacher_configure':
+                    self.paused = True
+                return super()._worker(phase, action, payload)
+
+            def _session(self, phase_name, action, **fields):
+                reply = super()._session(phase_name, action, **fields)
+                if action == 'resume':
+                    self.paused = False
+                    for state in self.pending_states:
+                        state.first_advance_ns = time.monotonic_ns()
+                        state.progress.set()
+                    self.pending_states = ()
+                return reply
+
+        driver = PausingWorker()
+        runner = NativePlacementRunner(workload=placement_workload(),
+                                       prefill_plan=prefill_plan(),
+                                       url='http://127.0.0.1:9')
+        states = [FakeState(index) for index in range(8)]
+        prefill_states = [FakeState(0, prompt_tokens=8)]
+
+        # Use the real open-wait for both the paused negative and the resumed
+        # cohort. A paused fixture engine emits no first advance, matching the
+        # eight live streams in native21's retained row4 artifact.
+        paused_state = FakeState(99)
+        paused_state.first_advance_ns = None
+        paused_open = correctness._wait_open(
+            [paused_state], types.SimpleNamespace(open_timeout_s=0.01))
+        self.assertFalse(paused_open['complete'])
+        self.assertEqual(paused_open['reasons'], ['stream_not_advanced:99'])
+        for state in states + prefill_states:
+            state.first_advance_ns = None
+
+        def start_streams(url, model, bodies, cohort, workload, **kwargs):
+            if len(bodies) == 8:
+                self.assertTrue(driver.paused)
+            selected = prefill_states if len(bodies) == 1 else states
+            driver.pending_states = selected
+            return selected
+
+        def stop_streams(record, states, workload):
+            record['readers_alive_after_join'] = []
+            return []
+
+        with mock.patch.object(correctness, '_start_streams', start_streams), \
+             mock.patch.object(correctness, '_wait_window',
+                               return_value={'complete': True, 'start_ns': 1100,
+                                             'end_ns': 1900, 'streams': [],
+                                             'measured': True}), \
+             mock.patch.object(correctness, '_stop_streams', stop_streams):
+            runner.run(driver, window_id='window-1', run_id='run-1',
+                       engine_epoch=3, model='m')
+        self.assertEqual(driver.calls[:2], ['prepare', 'resume'])
+        self.assertFalse(driver.paused)
+        self.assertEqual(driver.calls[-2:], ['leave_full', 'resume'])
 
     def test_placement_admission_must_be_the_declared_native_phase(self):
         driver = PlacementDriver()

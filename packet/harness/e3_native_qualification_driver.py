@@ -1944,7 +1944,10 @@ class NativePlacementRunner:
             for rank in RANKS:
                 if configure_rows[rank].get('route') != 'full':
                     raise QualificationRefused('teacher-configure-route-differs')
-            # 4. Open the live cohort on the stock full route.
+            # 4. Submit the stock cohort while generation is paused, then
+            # resume before waiting for its first tokens.  Qualification's
+            # worker utility re-paused the engine after FULL preparation; an
+            # omitted resume accepts all eight HTTP streams but schedules none.
             cohort = correctness.build_cohort(self.workload)
             if (type(cohort) is not list or len(cohort) != PLACEMENT_STREAMS):
                 raise QualificationRefused('placement-cohort-shape-differs')
@@ -1954,6 +1957,10 @@ class NativePlacementRunner:
                       for row in cohort]
             states = correctness._start_streams(
                 self.url, model, bodies, cohort, self.workload)
+            resumed = driver._session('row4', 'resume', require_epoch=False)
+            if not (resumed.get('resumed') is True
+                    or resumed.get('already_running') is True):
+                raise QualificationRefused('placement-stock-route-not-resumed')
             opened = correctness._wait_open(states, self.workload)
             record['open'] = opened
             if opened.get('complete') is not True:
@@ -2118,6 +2125,13 @@ class NativePlacementRunner:
                 'snapshot_max_bytes': self.snapshot_max_bytes})
             clear_rows = self._qualifications(
                 teacher_clear, action='teacher_configure', epoch=engine_epoch)
+            # Clearing the worker observer is another qualification intent and
+            # therefore pauses generation.  Restore ordinary FULL sampling
+            # before handing the engine to the next same-queue gate.
+            resumed = driver._session('row4', 'resume', require_epoch=False)
+            if not (resumed.get('resumed') is True
+                    or resumed.get('already_running') is True):
+                raise QualificationRefused('placement-full-return-not-resumed')
             frontend_after = driver._frontend('row4', False, None)
             disabled = (frontend_after.get('enabled') is False
                         and frontend_after.get('admitted') is not True
