@@ -48,13 +48,19 @@ def main():
     core.write_text(scheduler_hooks._replace(core.read_text(), old, new))
     for name in ('test_e3_native_schedule_profile', 'test_e3_native_submission_credit',
                  'test_e3_r4_worker_bridge', 'test_e3_lane_dispatch',
-                 'test_e3_native_pp_stop_order'):
+                 'test_e3_native_pp_stop_order', 'test_e3_admission_native'):
         target = root / 'proof/harness' / (name + '.py')
         shutil.copyfile(repo / 'harness' / (name + '.py'), target)
     for name in ('e3_native19_vm_suite', 'e3_native19_pp_event_probe',
                  'e3_native19_indexer_ties_probe', 'e3_native_selection_skew_probe',
-                 'e3_native_sparse_waves_device_probe'):
+                 'e3_native_sparse_waves_device_probe', 'native18_scheduler_fixture',
+                 'e3_native_cow_lease_probe'):
         shutil.copyfile(repo / 'harness' / (name + '.py'), root / 'proof' / (name + '.py'))
+    for path in (root / 'proof').rglob('*.py'):
+        source = repo / 'harness' / path.name
+        if source.is_file() and source.read_bytes() != path.read_bytes():
+            raise ValueError('proof source differs from committed harness: ' +
+                             str(path.relative_to(root)))
     shutil.copyfile(repo / 'harness/native19_vm_fixture_leaves.json',
                     root / 'proof/native19_vm_fixture_leaves.json')
     graph_path = root / 'proof/import-graph.json'
