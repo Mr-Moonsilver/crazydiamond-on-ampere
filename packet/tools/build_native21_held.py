@@ -248,7 +248,7 @@ def main():
              and 'native_selection_audit.py' not in review['source_shas'],
              'native19 review unexpectedly contains audit')
         review['native21_rpc_stream'] = {
-            'source_commit': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
+            'source_commit': 'a7310f4',
             'vm_result_sha256': sha(a.vm_result),
             'vm_probe_sha256': vm.get('probe_sha256'),
             'audit_disabled': True,
