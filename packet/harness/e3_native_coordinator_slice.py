@@ -92,13 +92,13 @@ class ProcessBroadcast:
             connection.send_bytes(payload)
 
 
-def make_case():
+def make_case(selection_count=4097):
     import test_e3_native_schedule_profile as proof
     class Mounted(proof.ScheduleProfile):
         generated_ops = Path('/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/ops/qsa.py').read_text()
         generated_qsa = Path('/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/qsa.py').read_text()
     case = Mounted('runTest')
-    case.selection_counts = (4097,) * 4
+    case.selection_counts = (selection_count,) * 4
     case.setUp()
     return case
 
@@ -113,7 +113,7 @@ def child_worker(rank, stage, admission, recv, reply, count, controls, pp_slots,
         import wire_v1 as w
         import e3_types as et
         from vllm.v1.executor.multiproc_executor import WorkerProc
-        case = make_case()
+        case = make_case(variant.get('selection_count', 4097))
         selection = list(case.selection_counts)
         if variant.get('mismatch_stage') == stage and rank % 2:
             selection[rank] = 97153
@@ -213,7 +213,8 @@ def child_worker(rank, stage, admission, recv, reply, count, controls, pp_slots,
                         accepted=len(stack.dispatcher.accepted), owned=stack.dispatcher.transaction is not None,
                         pp_sends=worker.channel.sends, pp_tickets=[x.state for x in worker.channel.tickets])
                 else:
-                    key = (getattr(message, 'op_seq', None), method)
+                    key = (getattr(getattr(message, 'descriptor', None), 'transaction', None),
+                           getattr(message, 'op_seq', None), method)
                     before_stats = dict(stack.operation.stats) if stack.operation else {}
                     accepted_before = len(stack.dispatcher.accepted)
                     value = getattr(worker, method)(*args, **kwargs)
@@ -294,6 +295,7 @@ class Network:
         self.controls['hold_rank'].value = variant.get('pending_rank', 1)
         self.controls['hold_stage'].value = variant.get('hold_stage', 0)
         self.controls['delay_rank'].value = variant.get('delay_rank', 3)
+        self.controls['drop_rank'].value = variant.get('drop_rank', -1)
         pp_slots = [self.ctx.Array('B', 1024) for _ in range(4)]
         senders, counts = self.senders, self.counts
         readers, boots = [], []
@@ -371,7 +373,7 @@ def run_scenario(cfg, scheduler, leases, owner, cache_record, *, graph, out, var
     network = Network(scheduler, controller, admission, graph, out, variant)
     driver = network.driver
     outputs, polls, last, stop_sent = [], 0, None, False
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + (360 if variant.get('paged_cancel_refill') else 120)
     with (out / 'coordinator.jsonl').open('a') as journal:
         while time.monotonic() < deadline:
             if driver.phase == 'profile':
@@ -400,7 +402,43 @@ def run_scenario(cfg, scheduler, leases, owner, cache_record, *, graph, out, var
                     and 'poll' in driver._inflight.values()):
                 driver.stop('disconnect')
                 stop_sent = True
-            result = eh.before_step_with_batch_queue(network.engine)
+            if (variant.get('shutdown_at_profile') and driver.phase == 'profile'
+                    and 'profile' in driver._inflight.values()):
+                result_box = []
+                thread = threading.Thread(target=lambda: result_box.append(
+                    eh.before_shutdown(network.executor)), name='stock-monitor-shutdown')
+                thread.start(); thread.join(5.)
+                assert not thread.is_alive() and len(result_box) == 1
+                clean, close = result_box[0]
+                transport = network.transport
+                assert not clean and close['outstanding_calls'] >= 1
+                assert all(q._flash_s5_receiver_owner is transport
+                           for q in transport._queues.values())
+                network.stop()
+                return dict(verdict='PASS', kind='monitor_thread_shutdown',
+                    monitor_thread=thread.name, actual_profile_rpc_outstanding=True,
+                    transport_close=close, ownership_retained=True,
+                    next_scheduler_request='not-attempted:executor-is-shutting-down',
+                    control_path=driver.control_path.snapshot(),
+                    qsa_control=driver.qsa_control.snapshot(), box_evidence=False)
+            try:
+                result = eh.before_step_with_batch_queue(network.engine)
+            except eh.TransportError as exc:
+                if not variant.get('missing_reply') or 'reply_timeout' not in str(exc):
+                    raise
+                clean, close = eh.before_shutdown(network.executor)
+                transport = network.transport
+                assert not clean and close['failure'] == 'reply_timeout'
+                assert close['outstanding_calls'] >= 1
+                assert all(q._flash_s5_receiver_owner is transport
+                           for q in transport._queues.values())
+                network.stop()
+                return dict(verdict='PASS', kind='missing_reply',
+                    transport_failure=str(exc), transport_close=close,
+                    ownership_retained=True, fabricated_completion=False,
+                    next_scheduler_request='not-attempted:transport-poisoned',
+                    control_path=driver.control_path.snapshot(),
+                    qsa_control=driver.qsa_control.snapshot(), box_evidence=False)
             if result is not None and result[0]:
                 outputs.append(result)
             network.high_water = max(network.high_water, len(network.transport._calls))
@@ -428,6 +466,39 @@ def run_scenario(cfg, scheduler, leases, owner, cache_record, *, graph, out, var
         assert not driver._split_ready
         scheduler.finish_requests([request.request_id], RequestStatus.FINISHED_ABORTED)
         assert request.is_finished()
+        if variant.get('paged_cancel_refill'):
+            from native_measurement import JOURNAL_VECTOR_SCHEMA
+            cancel_closure = driver._last_native_closure
+            paged = [entry for entry in driver._journal if entry['kind'] == 'report'
+                     and any(type(entry.get(key)) is dict and
+                             entry[key].get('schema') == JOURNAL_VECTOR_SCHEMA
+                             for key in ('completed_op_seqs', 'pending_op_seqs', 'proofs'))]
+            assert paged, 'cancel did not consume an actual paged worker report'
+            refill = host_preprocess(owner, engine_request(
+                'coordinator-refill', [7] * 65, 'refill', 4))
+            scheduler.add_request(refill)
+            next_admission = controller.admit(scheduler)
+            assert next_admission is not None and next_admission.transaction != admission.transaction
+            refill_deadline = time.monotonic() + 360
+            while time.monotonic() < refill_deadline:
+                result = eh.before_step_with_batch_queue(network.engine)
+                if result is not None and result[0]:
+                    outputs.append(result)
+                if not driver.active and not driver._inflight:
+                    break
+                time.sleep(0.001)
+            else:
+                raise TimeoutError('native refill did not close')
+            commits = [entry for entry in driver._journal if entry['kind'] == 'chunk_commit'
+                       and entry['transaction'] == next_admission.transaction.txn_seq]
+            assert driver.error is None and len(commits) == 1 and commits[0]['terminal']
+            assert not driver._split_ready and leases.shutdown()['clean']
+            variant['paged_cancel_proof'] = dict(paged_reports=len(paged),
+                max_report_length=max(entry[key]['length'] for entry in paged
+                    for key in ('completed_op_seqs', 'pending_op_seqs', 'proofs')
+                    if type(entry.get(key)) is dict),
+                cancel_closure=cancel_closure, refill_commit=commits[0],
+                refill_transaction=next_admission.transaction.txn_seq)
     elif expected_refusal:
         assert errors == [expected_refusal], ('client errors', errors, expected_refusal)
         assert driver._last_native_closure['complete']
@@ -480,9 +551,74 @@ def run_scenario(cfg, scheduler, leases, owner, cache_record, *, graph, out, var
         'virtual_clock_advanced': bool(network.clock_offset[0]),
         'explicit_abort_stage': variant.get('stop_at_profile_stage') if stop_sent else None,
         'report_phase_disconnect': bool(stop_sent and variant.get('disconnect_at_report_poll')),
+        'paged_cancel_refill': variant.get('paged_cancel_proof'),
         'next_scheduler_request_completed': True, 'next_tokens': successor.num_output_tokens,
         'transport_close': close, 'cache': cache_record,
         'actual_scheduler': type(scheduler).__module__ + '.' + type(scheduler).__name__}
+
+
+def prefix_hit_under_lease(cfg, scheduler, leases, owner, cache_record, *, partial):
+    """Real stock prefix lookup against a parked native request's held pages."""
+    from e3_native_cow_lease_probe import engine_request, host_preprocess
+    import scheduler_hooks as sh
+    import admission_metadata as am
+    import async_handoff as ah
+    from vllm.v1.outputs import ModelRunnerOutput
+    # The pinned hybrid manager's Mamba groups require a complete 4048-row
+    # page before the shared prefix is cacheable in every group.
+    seed_tokens = [1 + i % 100 for i in range(4048)]
+    salt = 'coordinator-shared-prefix'
+    seed = host_preprocess(owner, engine_request('prefix-seed', seed_tokens + [151], salt, 4))
+    scheduler.add_request(seed)
+    for _ in range(40):
+        output = scheduler.schedule(False)
+        ids = list(output.num_scheduled_tokens)
+        sampled = [[17] if scheduler.requests[key].num_computed_tokens >=
+                   scheduler.requests[key].num_prompt_tokens else [] for key in ids]
+        scheduler.update_from_output(output, ModelRunnerOutput(
+            req_ids=ids, req_id_to_index={key: i for i, key in enumerate(ids)},
+            sampled_token_ids=sampled))
+        if seed.is_finished():
+            break
+    assert seed.is_finished() and seed.num_output_tokens == 4
+    native = host_preprocess(owner, engine_request(
+        'prefix-native', seed_tokens + [152] * 129, salt, 4))
+    scheduler.add_request(native)
+    controller = sh.PrefillAdmissionController(scheduler, leases=leases,
+        frontier=ah.CommittedFrontier(), engine_epoch=7, chunk_tokens=64,
+        ranks=(0, 1, 2, 3), minimum_stage_rows=64).attach()
+    am.install_admission_metadata(scheduler)
+    admission = controller.admit(scheduler)
+    assert admission is not None and admission.committed_end >= 176
+    assert leases._held and not leases.shutdown()['clean']
+    probe_tokens = seed_tokens + [153] * 25 if partial else seed_tokens + [153]
+    probe = host_preprocess(owner, engine_request(
+        'prefix-partial-hit' if partial else 'prefix-full-hit', probe_tokens, salt, 4))
+    cached, computed, _ = scheduler.kv_cache_manager.get_computed_blocks(probe)
+    cached_ids = sorted({getattr(block, 'block_id', None)
+                         for group in cached.blocks for block in group})
+    overlap = sorted(set(cached_ids) & set(leases.held_blocks()))
+    assert computed > 0 and overlap, ('stock prefix lookup did not touch leased pages',
+                                       computed, cached_ids, leases.held_blocks())
+    scheduler.add_request(probe)
+    before = dict(held=leases.held_blocks(), parked=controller.parked.transaction,
+                  seed_hashes=len(seed.block_hashes), native_start=admission.committed_end,
+                  probe_hashes=len(probe.block_hashes), cache_hit_tokens=computed,
+                  cached_ids=cached_ids, held_overlap=overlap)
+    try:
+        output = scheduler.schedule(False)
+    except BaseException as exc:
+        # A stock cache touch that raises out of schedule is a real engine
+        # finding. Keep the exact exception chain and held owner state.
+        return dict(verdict='PASS', finding='ENGINE', hit='partial' if partial else 'full',
+                    before=before, exception_graph=exception_graph(exc),
+                    held_after=leases.held_blocks(), owner_retained=controller.parked is not None,
+                    actual_scheduler=type(scheduler).__module__ + '.' + type(scheduler).__name__,
+                    next_request='not-attempted:real-scheduler-raised')
+    return dict(verdict='PASS', finding='NONE', hit='partial' if partial else 'full',
+                before=before, scheduled=dict(output.num_scheduled_tokens),
+                held_after=leases.held_blocks(), owner_retained=controller.parked is not None,
+                actual_scheduler=type(scheduler).__module__ + '.' + type(scheduler).__name__)
 
 
 def main():
@@ -512,16 +648,34 @@ def main():
                  'hold_stage': 1, 'delay_rank': 0, 'stop_at_profile_stage': 1}),
             ('report_phase_disconnect', {'ready_rank': 0, 'pending_rank': 1,
                  'delay_rank': 3, 'disconnect_at_report_poll': True}),
+            ('paged_report_cancel_refill', {'ready_rank': 0, 'pending_rank': 1,
+                 'delay_rank': 3, 'disconnect_at_report_poll': True,
+                 'paged_cancel_refill': True, 'selection_count': 16385}),
+            ('monitor_shutdown_profile', {'ready_rank': 0, 'pending_rank': 1,
+                 'delay_rank': 3, 'shutdown_at_profile': True}),
+            ('missing_profile_reply', {'ready_rank': 0, 'pending_rank': 1,
+                 'delay_rank': 3, 'missing_reply': True, 'drop_rank': 1}),
+            ('prefix_full_hit_held', {'prefix_hit': 'full'}),
+            ('prefix_partial_hit_held', {'prefix_hit': 'partial'}),
         )
         if args.scenario is not None:
             matches = [(name, variant) for name, variant in variants if name == args.scenario]
             assert len(matches) == 1, 'unknown connected scenario'
             name, variant = matches[0]
-            result['sections'][name] = with_actual_scheduler(lambda *a:
-                run_scenario(*a, graph=str(args.graph), out=args.out.parent, variant=variant))
+            if variant.get('prefix_hit'):
+                result['sections'][name] = with_actual_scheduler(lambda *a:
+                    prefix_hit_under_lease(*a, partial=variant['prefix_hit'] == 'partial'),
+                    max_model_len=8192)
+            else:
+                result['sections'][name] = with_actual_scheduler(lambda *a:
+                    run_scenario(*a, graph=str(args.graph), out=args.out.parent, variant=variant))
             import torch
             assert not torch.cuda.is_initialized()
-            result.update(verdict='PASS', rc=0, failure_class='NONE', cuda_initialized=False)
+            finding = result['sections'][name].get('finding')
+            result.update(verdict='FAIL' if finding == 'ENGINE' else 'PASS',
+                          rc=1 if finding == 'ENGINE' else 0,
+                          failure_class='ENGINE' if finding == 'ENGINE' else 'NONE',
+                          cuda_initialized=False)
         else:
             # The stock Gloo/model-parallel owner is process-global. Each
             # scenario gets its own real initialization in a fresh interpreter,
@@ -533,13 +687,19 @@ def main():
                     completed = subprocess.run([sys.executable, '-B', str(Path(__file__)),
                         '--graph', str(args.graph), '--out', str(scenario_out / 'probe.json'),
                         '--mode', args.mode, '--scenario', name],
-                        stdout=log, stderr=subprocess.STDOUT, timeout=240)
+                        stdout=log, stderr=subprocess.STDOUT, timeout=900)
                 scenario = json.loads((scenario_out / 'probe.json').read_text())
                 result['sections'][name] = scenario
                 write(args.out, result)
+                if scenario['failure_class'] == 'ENGINE':
+                    result.update(verdict='FAIL', rc=1, failure_class='ENGINE',
+                                  engine_finding_scenarios=result.get(
+                                      'engine_finding_scenarios', []) + [name])
+                    continue
                 assert completed.returncode == 0 and scenario['verdict'] == 'PASS', (
                     'connected scenario failed', name, completed.returncode)
-            result.update(verdict='PASS', rc=0, failure_class='NONE', cuda_initialized=False)
+            if result['failure_class'] != 'ENGINE':
+                result.update(verdict='PASS', rc=0, failure_class='NONE', cuda_initialized=False)
     except BaseException as exc:
         result.update(verdict='FAIL', rc=1, failure_class='OPEN', exception_graph=exception_graph(exc))
     finally:

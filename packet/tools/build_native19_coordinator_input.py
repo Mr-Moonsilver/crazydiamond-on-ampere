@@ -43,6 +43,9 @@ def main():
                  'test_e3_native_pp_stop_order'):
         shutil.copyfile(repo / 'harness' / (name + '.py'),
                         root / 'proof/harness' / (name + '.py'))
+    for name in ('e3_native_cow_lease_probe', 'native18_scheduler_fixture'):
+        shutil.copyfile(repo / 'harness' / (name + '.py'),
+                        root / 'proof' / (name + '.py'))
     shutil.copyfile(repo / 'harness/e3_native_coordinator_slice.py',
                     root / 'proof/e3_native_coordinator_slice.py')
     shutil.copyfile(repo / 'harness/native19_coordinator_fixture_leaves.json',
@@ -59,7 +62,11 @@ def main():
     wrapper = (base / 'run_cpu.py').read_text()
     old = "NAME='flashnext-native19-coordinator-dev-c'"
     assert old in wrapper
-    (root / 'run_cpu.py').write_text(wrapper.replace(old, f'NAME={args.container!r}'))
+    wrapper = wrapper.replace(old, f'NAME={args.container!r}')
+    wrapper = wrapper.replace("'900s','docker'", "'1800s','docker'")
+    wrapper = wrapper.replace("a=p.parse_args()", "p.add_argument('--scenario',default=None);a=p.parse_args()")
+    wrapper = wrapper.replace("'--mode',a.mode]", "'--mode',a.mode]+(['--scenario',a.scenario] if a.scenario else [])")
+    (root / 'run_cpu.py').write_text(wrapper)
     files = sorted(path for path in root.rglob('*') if path.is_file())
     (root / 'SHA256SUMS').write_text(''.join(
         f'{sha(path)}  {path.relative_to(root).as_posix()}\n' for path in files))

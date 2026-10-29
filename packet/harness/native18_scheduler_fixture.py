@@ -7,7 +7,7 @@ execute; no production class or method is patched.
 import copy
 from e3_native_cow_lease_probe import config
 
-def with_actual_scheduler(run):
+def with_actual_scheduler(run, *, max_model_len=512):
     import torch
     from vllm.config import set_current_vllm_config,SchedulerConfig
     from vllm.distributed import init_distributed_environment,initialize_model_parallel
@@ -26,9 +26,9 @@ def with_actual_scheduler(run):
     from vllm.utils.hashing import get_hash_fn_by_name
     from vllm.v1.flash_e3 import scheduler_hooks as hooks
     from e3_native_transitions_lifecycle_probe import cache_configuration
-    cfg=config()
+    cfg=config(max_model_len=max_model_len)
     host=copy.copy(cfg)
-    host.scheduler_config=SchedulerConfig(max_model_len=512,is_encoder_decoder=False,max_num_batched_tokens=128,
+    host.scheduler_config=SchedulerConfig(max_model_len=max_model_len,is_encoder_decoder=False,max_num_batched_tokens=128,
         max_num_seqs=8,async_scheduling=True,disable_hybrid_kv_cache_manager=False)
     with set_current_vllm_config(host):
         init_distributed_environment(world_size=1,rank=0,local_rank=0,distributed_init_method='file:///tmp/native18-cpu-dist',backend='gloo')

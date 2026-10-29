@@ -51,6 +51,34 @@
       "basis": "The actual driver's absolute-deadline check and named refusal execute while process RPCs retain enough wall-clock reply time. The earlier 0.3-second transport deadline expired inside ReplyTransport before the profile refusal; that development failure was a HARNESS timing leaf, not a completed engine-profile proof.",
       "more_convenient": true,
       "box_evidence": false
+    },
+    {
+      "leaf": "Named monitor-thread close during one outstanding profile RPC",
+      "replaces": "Stock worker-monitor/IO thread that invokes before_shutdown after a failed engine tick",
+      "basis": "A separate real Python thread calls the unchanged executor hook while the actual ReplyTransport has a submitted profile RPC. The thread identity and MQ owner retention are observed; stock EngineCore monitor orchestration is not constructed.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "One worker omits its typed profile RPC reply",
+      "replaces": "Lost shared-memory worker response",
+      "basis": "The process endpoint executes the profile poll but drops its reply. The actual ReplyTransport deadline and poisoned close path execute. The Pipe leaf cannot prove shared-memory receiver progress.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "CPU model outputs populate a 4048-row hybrid prefix page",
+      "replaces": "ModelRunnerOutput tokens and cache block publication from a completed production request",
+      "basis": "The actual AsyncScheduler, Request preprocessing, hybrid KVCacheManager, block pool and PrefillAdmissionController allocate, publish, lookup and reserve the same block objects. Synthetic sampled tokens do not prove model numerics.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "Reduced 65-wave sparse selection and client disconnect at report poll",
+      "replaces": "Production selection history and client transport disconnect during a paged worker report",
+      "basis": "The actual worker report and driver journal must contain a losslessly paged vector longer than 64; a second native admission must commit after cancel. CPU events and selected rows are explicit convenient leaves.",
+      "more_convenient": true,
+      "box_evidence": false
     }
   ]
 }

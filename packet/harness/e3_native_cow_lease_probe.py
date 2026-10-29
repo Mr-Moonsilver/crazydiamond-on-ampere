@@ -4,15 +4,15 @@ import argparse,copy,dataclasses,hashlib,json,time,traceback
 from pathlib import Path
 
 
-def config(device='cpu'):
+def config(device='cpu', max_model_len=512):
     from e3_native_stock_rpc_probe import gpu_config
     from vllm.config import VllmConfig,ModelConfig,CacheConfig,SchedulerConfig,ParallelConfig,DeviceConfig,CompilationConfig,LoadConfig
     original=gpu_config(device)
     return VllmConfig(model_config=ModelConfig(model=original.model_config.model,skip_tokenizer_init=True,
-            language_model_only=True,dtype='bfloat16',max_model_len=512,enforce_eager=True),
+            language_model_only=True,dtype='bfloat16',max_model_len=max_model_len,enforce_eager=True),
         cache_config=CacheConfig(block_size=4048,mamba_block_size=4048,prefix_match_unit=176,
             num_gpu_blocks_override=128,enable_prefix_caching=True,gpu_memory_utilization=.08,mamba_cache_mode='align'),
-        scheduler_config=SchedulerConfig(max_model_len=512,is_encoder_decoder=False,max_num_batched_tokens=128,
+        scheduler_config=SchedulerConfig(max_model_len=max_model_len,is_encoder_decoder=False,max_num_batched_tokens=128,
             max_num_seqs=8,async_scheduling=True),parallel_config=ParallelConfig(distributed_executor_backend='mp'),
         device_config=DeviceConfig(device=device),compilation_config=CompilationConfig(mode=0),load_config=LoadConfig(load_format='dummy'))
 
