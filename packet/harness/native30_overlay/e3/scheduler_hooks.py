@@ -9,8 +9,9 @@ an explicit lease guard on top of the reviewed E2 scheduler and block pool:
   ``is_block_writable`` and CoW counts keep their stock meaning.
 * A lease never allocates and never copies. ``lease_caused_cow`` must stay 0.
 * Prefix sharing can only see the :class:`~async_handoff.CommittedFrontier`
-  (committed blocks). An uncommitted lease is refused by ``before_touch`` and
-  truncated from a lookup so the caller recomputes.
+  (committed blocks). A stock request whose cached hit includes an uncommitted
+  E3 source is deferred before allocation and retried after lease retirement;
+  ``before_touch`` remains the final refusal guard.
 * Release requires the consumer completion proof C records. Until then the
   blocks stay out of the free queue and out of prefix-cache publication.
 
@@ -100,6 +101,26 @@ def _require_e2(source, digest, path, marker):
 
 _SCHEDULER_FORWARD = (
     ('logger = init_logger(__name__)\n', 'logger = init_logger(__name__)\n\n' + _IMPORT),
+    ('''                        request.shared_prefix_boundary,
+                        hit_diverged,
+                    ) = self._get_local_prefix_cache_hit(request)
+
+                    # Get externally-cached tokens if using a KVConnector.
+''', '''                        shared_prefix_boundary,
+                        hit_diverged,
+                    ) = self._get_local_prefix_cache_hit(request)
+                    # A cached block may also be a native prefill source. Keep
+                    # the waiting request intact until that source is committed
+                    # or released; touching it during allocate_slots would
+                    # raise after the scheduler has begun this admission.
+                    if _flash_s5_hooks.defer_stock_prefix_hit(self, new_computed_blocks):
+                        request_queue.pop_request()
+                        step_skipped_waiting.prepend_request(request)
+                        continue
+                    request.shared_prefix_boundary = shared_prefix_boundary
+
+                    # Get externally-cached tokens if using a KVConnector.
+'''),
     ('''        if _e2_journal is not None:
             scheduler_output.flash_e2_frame = _e2_journal.frame(
                 scheduler_output, self.kv_cache_manager.get_block_ids)
@@ -207,6 +228,26 @@ _SCHEDULER_REVERSE = (
     ('''    def shutdown(self) -> None:
         _flash_s5_hooks.before_scheduler_shutdown(self)
 ''', '''    def shutdown(self) -> None:
+'''),
+    ('''                        shared_prefix_boundary,
+                        hit_diverged,
+                    ) = self._get_local_prefix_cache_hit(request)
+                    # A cached block may also be a native prefill source. Keep
+                    # the waiting request intact until that source is committed
+                    # or released; touching it during allocate_slots would
+                    # raise after the scheduler has begun this admission.
+                    if _flash_s5_hooks.defer_stock_prefix_hit(self, new_computed_blocks):
+                        request_queue.pop_request()
+                        step_skipped_waiting.prepend_request(request)
+                        continue
+                    request.shared_prefix_boundary = shared_prefix_boundary
+
+                    # Get externally-cached tokens if using a KVConnector.
+''', '''                        request.shared_prefix_boundary,
+                        hit_diverged,
+                    ) = self._get_local_prefix_cache_hit(request)
+
+                    # Get externally-cached tokens if using a KVConnector.
 '''),
     ('logger = init_logger(__name__)\n\n' + _IMPORT,
      'logger = init_logger(__name__)\n'),
@@ -346,6 +387,7 @@ class SchedulerLeases:
         self.pending_free = {}
         self._free_order = 0
         self.rejected_late = 0
+        self.stock_prefix_deferrals = 0
 
     # -- attach -----------------------------------------------------------
     def attach(self, scheduler, block_pool):
@@ -637,6 +679,25 @@ class SchedulerLeases:
                             for e in self._held.get(block_id, ()))
             if not committed:
                 raise E3Pending('an uncommitted prefill block cannot be shared')
+
+    def defer_stock_prefix_hit(self, computed_blocks):
+        """Pure pre-allocation check over the exact stock cached block objects.
+
+        The scheduler keeps the request in its skipped-waiting queue for this
+        one step. Its next schedule pass repeats the stock lookup, so a later
+        source commit/release neither loses nor fabricates a cache hit.
+        """
+        groups = getattr(computed_blocks, 'blocks', None)
+        if type(groups) is not tuple:
+            raise E3ContractError('stock cached blocks have no typed groups')
+        for group in groups:
+            for block in group:
+                entries = self._held.get(getattr(block, 'block_id', None), ())
+                if any(not entry['committed'] and not entry['released']
+                       for entry in entries):
+                    self.stock_prefix_deferrals += 1
+                    return True
+        return False
 
     def note_allocated(self, blocks):
         # get_new_blocks has selected and evicted these pages. Validate the
@@ -1883,6 +1944,11 @@ def before_touch(block_pool, blocks):
         guard.before_touch(blocks)
 
 
+def defer_stock_prefix_hit(scheduler, computed_blocks):
+    guard = _guard(scheduler)
+    return False if guard is None else guard.defer_stock_prefix_hit(computed_blocks)
+
+
 def block_held(block_pool, block):
     guard = _guard(block_pool)
     return False if guard is None else guard.block_held(block)
@@ -1899,7 +1965,8 @@ __all__ = [
     'SCHEDULER_E2_SHA256', 'SCHEDULER_PATH', 'SCHEDULER_PINNED_SHA256',
     'SchedulerLeases', 'SourceHold', 'after_schedule',
     'before_scheduler_shutdown', 'before_touch', 'block_held',
-    'blocked_deferred', 'defer_request_free', 'flash_s5_admit',
+    'blocked_deferred', 'defer_request_free', 'defer_stock_prefix_hit',
+    'flash_s5_admit',
     'generate_block_pool', 'generate_scheduler', 'hold_leased_blocks',
     'note_allocated', 'note_cow_retained', 'note_source_owners',
     'parked_count', 'revert_block_pool', 'revert_scheduler', 'source_hold',

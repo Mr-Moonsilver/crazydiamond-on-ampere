@@ -335,6 +335,22 @@ class SchedulerLeaseTests(unittest.TestCase):
         self.guard.publish(self.t)
         sh.before_touch(self.pool, [self.blocks[0]])
 
+    def test_stock_cached_prefix_defers_only_uncommitted_held_blocks(self):
+        cached = type('Cached', (), {'blocks': ((self.blocks[0],),)})()
+        unrelated = type('Cached', (), {'blocks': ((self.blocks[1],),)})()
+        self.guard.lease_blocks(self.t, ah.LeaseCategory.ARENA, [1])
+        # The native18 counterexample remains live as the final guard: a
+        # direct touch still refuses, while the scheduler preflight defers.
+        with self.assertRaises(ah.E3Pending):
+            sh.before_touch(self.pool, [self.blocks[0]])
+        self.assertTrue(sh.defer_stock_prefix_hit(self.scheduler, cached))
+        self.assertEqual(self.guard.stock_prefix_deferrals, 1)
+        self.assertFalse(sh.defer_stock_prefix_hit(self.scheduler, unrelated))
+        self.assertEqual(self.guard.stock_prefix_deferrals, 1)
+        self.guard.publish(self.t)
+        self.assertFalse(sh.defer_stock_prefix_hit(self.scheduler, cached))
+        sh.before_touch(self.pool, [self.blocks[0]])
+
     def test_mutation_guard_refuses_other_leases_and_audits_copies(self):
         other_t = ticket(tx(seq=2))
         self.guard.lease_blocks(self.t, ah.LeaseCategory.ARENA, [1, 2])

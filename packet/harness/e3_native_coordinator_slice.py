@@ -557,12 +557,14 @@ def run_scenario(cfg, scheduler, leases, owner, cache_record, *, graph, out, var
         'actual_scheduler': type(scheduler).__module__ + '.' + type(scheduler).__name__}
 
 
-def prefix_hit_under_lease(cfg, scheduler, leases, owner, cache_record, *, partial):
+def prefix_hit_under_lease(cfg, scheduler, leases, owner, cache_record, *, partial,
+                           graph, out):
     """Real stock prefix lookup against a parked native request's held pages."""
     from e3_native_cow_lease_probe import engine_request, host_preprocess
     import scheduler_hooks as sh
     import admission_metadata as am
     import async_handoff as ah
+    import executor_hooks as eh
     from vllm.v1.outputs import ModelRunnerOutput
     # The pinned hybrid manager's Mamba groups require a complete 4048-row
     # page before the shared prefix is cacheable in every group.
@@ -582,7 +584,7 @@ def prefix_hit_under_lease(cfg, scheduler, leases, owner, cache_record, *, parti
             break
     assert seed.is_finished() and seed.num_output_tokens == 4
     native = host_preprocess(owner, engine_request(
-        'prefix-native', seed_tokens + [152] * 129, salt, 4))
+        'prefix-native', seed_tokens + [152] * 65, salt, 4))
     scheduler.add_request(native)
     controller = sh.PrefillAdmissionController(scheduler, leases=leases,
         frontier=ah.CommittedFrontier(), engine_epoch=7, chunk_tokens=64,
@@ -601,6 +603,9 @@ def prefix_hit_under_lease(cfg, scheduler, leases, owner, cache_record, *, parti
     assert computed > 0 and overlap, ('stock prefix lookup did not touch leased pages',
                                        computed, cached_ids, leases.held_blocks())
     scheduler.add_request(probe)
+    unrelated = host_preprocess(owner, engine_request(
+        'prefix-unrelated', [27] * 65, 'unrelated', 4))
+    scheduler.add_request(unrelated)
     before = dict(held=leases.held_blocks(), parked=controller.parked.transaction,
                   seed_hashes=len(seed.block_hashes), native_start=admission.committed_end,
                   probe_hashes=len(probe.block_hashes), cache_hit_tokens=computed,
@@ -615,10 +620,60 @@ def prefix_hit_under_lease(cfg, scheduler, leases, owner, cache_record, *, parti
                     held_after=leases.held_blocks(), owner_retained=controller.parked is not None,
                     actual_scheduler=type(scheduler).__module__ + '.' + type(scheduler).__name__,
                     next_request='not-attempted:real-scheduler-raised')
+    assert probe.request_id not in output.num_scheduled_tokens
+    assert unrelated.request_id in output.num_scheduled_tokens
+    assert leases.stock_prefix_deferrals == 1
+    assert probe.num_computed_tokens == 0 and not scheduler.kv_cache_manager.get_block_ids(
+        probe.request_id)[0]
+    network = Network(scheduler, controller, admission, graph, out,
+                      dict(ready_rank=0, pending_rank=1, delay_rank=3))
+    # This scenario targets stock prefix conflict and native commit, not a
+    # long selection-copy pending interval. The worker still queries its real
+    # profile; the declared CPU event leaf is ready on its first poll.
+    network.controls['hold_rank'].value = -1
+    driver = network.driver
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        eh.before_step_with_batch_queue(network.engine)
+        if not driver.active and not driver._inflight:
+            break
+        time.sleep(.001)
+    else:
+        raise TimeoutError('native prefix-holder did not complete')
+    commits = [e for e in driver._journal if e['kind'] == 'chunk_commit'
+               and e['transaction'] == admission.transaction.txn_seq]
+    assert len(commits) == 1 and commits[0]['terminal']
+    assert not driver._split_ready and leases.shutdown()['clean']
+    after_cached, after_count, _ = scheduler.kv_cache_manager.get_computed_blocks(probe)
+    assert after_count == computed and after_cached.get_block_ids() == cached.get_block_ids()
+    first_probe_schedule = None
+    pending = output
+    for _ in range(80):
+        ids = list(pending.num_scheduled_tokens)
+        if probe.request_id in pending.num_scheduled_tokens and first_probe_schedule is None:
+            first_probe_schedule = pending.num_scheduled_tokens[probe.request_id]
+        sampled = [[17] if scheduler.requests[key].num_computed_tokens >=
+                   scheduler.requests[key].num_prompt_tokens else [] for key in ids]
+        scheduler.update_from_output(pending, ModelRunnerOutput(
+            req_ids=ids, req_id_to_index={key: i for i, key in enumerate(ids)},
+            sampled_token_ids=sampled))
+        if all(r.is_finished() for r in (probe, unrelated, native)):
+            break
+        pending = scheduler.schedule(False)
+    assert all(r.is_finished() and r.num_output_tokens == 4
+               for r in (probe, unrelated, native))
+    assert first_probe_schedule == len(probe_tokens) - computed
+    clean, close = eh.before_shutdown(network.executor)
+    assert clean and close['outstanding_calls'] == 0
+    network.stop()
+    assert driver._status_record()['stock_prefix_deferrals'] == leases.stock_prefix_deferrals
     return dict(verdict='PASS', finding='NONE', hit='partial' if partial else 'full',
-                before=before, scheduled=dict(output.num_scheduled_tokens),
-                held_after=leases.held_blocks(), owner_retained=controller.parked is not None,
-                actual_scheduler=type(scheduler).__module__ + '.' + type(scheduler).__name__)
+                before=before, first_scheduled=dict(output.num_scheduled_tokens),
+                native_commit=commits[0], stock_prefix_deferrals=leases.stock_prefix_deferrals,
+                cached_hit_after_release=after_count,
+                first_probe_scheduled_tokens=first_probe_schedule,
+                all_requests_completed=True, next_scheduler_tokens=probe.num_output_tokens,
+                transport_close=close, actual_scheduler=type(scheduler).__module__ + '.' + type(scheduler).__name__)
 
 
 def main():
@@ -664,7 +719,8 @@ def main():
             name, variant = matches[0]
             if variant.get('prefix_hit'):
                 result['sections'][name] = with_actual_scheduler(lambda *a:
-                    prefix_hit_under_lease(*a, partial=variant['prefix_hit'] == 'partial'),
+                    prefix_hit_under_lease(*a, partial=variant['prefix_hit'] == 'partial',
+                                           graph=str(args.graph), out=args.out.parent),
                     max_model_len=8192)
             else:
                 result['sections'][name] = with_actual_scheduler(lambda *a:

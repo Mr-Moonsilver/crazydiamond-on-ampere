@@ -25,6 +25,12 @@ def main():
     repo = Path(__file__).resolve().parents[1]
     base, root = args.base.resolve(), args.out.absolute()
     assert base.is_dir() and not root.exists() and not root.is_symlink()
+    listed = {name: digest for digest, name in
+              (line.split(maxsplit=1) for line in (base / 'SHA256SUMS').read_text().splitlines())}
+    assert {path.relative_to(base).as_posix() for path in base.rglob('*') if path.is_file()} == (
+        set(listed) | {'SHA256SUMS'})
+    assert not any(path.is_symlink() for path in base.rglob('*'))
+    assert all(sha(base / name) == digest for name, digest in listed.items())
     assert args.container.startswith('flashnext-native19-coordinator-')
     assert all(c.isalnum() or c in '-_' for c in args.container)
     root.mkdir()
@@ -34,10 +40,17 @@ def main():
         path.chmod(0o700 if path.is_dir() else 0o600)
     sys.path.insert(0, str(repo / 'patches/s5_engine'))
     import make_s5_overlap
+    import scheduler_hooks
     for source in (repo / 'patches/s5_engine').glob('*.py'):
         target = root / 'overlay/e3' / source.name
         if target.is_file():
             target.write_text(make_s5_overlap.package(source.read_text()))
+    # The inherited core file is the exact old generated source. Apply only
+    # this new anchored scheduler hunk; checked separately against a full
+    # generate_scheduler() over the pinned E2-composed source.
+    core = root / 'overlay/core/scheduler.py'
+    old, new = scheduler_hooks._SCHEDULER_FORWARD[1]
+    core.write_text(scheduler_hooks._replace(core.read_text(), old, new))
     for name in ('test_e3_native_schedule_profile', 'test_e3_native_submission_credit',
                  'test_e3_r4_worker_bridge', 'test_e3_lane_dispatch',
                  'test_e3_native_pp_stop_order'):

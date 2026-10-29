@@ -2970,6 +2970,7 @@ class NativeSegmentDriver:
             'mode': 'native-overlap',
             'control_path': self.control_path.snapshot(),
             'stock_steps_skipped': self._stock_steps_skipped,
+            'stock_prefix_deferrals': self.controller.leases.stock_prefix_deferrals,
             'engine_epoch': self.engine_epoch,
             'ranks': list(self.ranks),
             'route': 'split' if self._split_ready else 'full',
@@ -3668,6 +3669,9 @@ class NativeSegmentDriver:
         record['measurement']['stock_steps_skipped'] = {
             'count': self._stock_steps_skipped,
             'basis': 'engine-lifetime hook bypasses; subtract matching status snapshots'}
+        record['measurement']['stock_prefix_deferrals'] = {
+            'count': self.controller.leases.stock_prefix_deferrals,
+            'basis': 'engine-lifetime stock cached-prefix request deferrals; subtract matching status snapshots'}
         reasons = []
         if not complete:
             reasons.append('journal-evicted-before-window')

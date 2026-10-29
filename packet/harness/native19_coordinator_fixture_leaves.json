@@ -74,6 +74,13 @@
       "box_evidence": false
     },
     {
+      "leaf": "Ready-on-first-query CPU selection event in the cached-prefix scenario",
+      "replaces": "Device selection-copy event timing while native holder commits",
+      "basis": "The case tests real stock prefix deferral and subsequent native commit, not selection timing. The actual worker QSA profile is still queried and the real dispatcher/bridge/driver retire the holder; CUDA timing is deferred to the VM and box gates.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
       "leaf": "Reduced 65-wave sparse selection and client disconnect at report poll",
       "replaces": "Production selection history and client transport disconnect during a paged worker report",
       "basis": "The actual worker report and driver journal must contain a losslessly paged vector longer than 64; a second native admission must commit after cancel. CPU events and selected rows are explicit convenient leaves.",
