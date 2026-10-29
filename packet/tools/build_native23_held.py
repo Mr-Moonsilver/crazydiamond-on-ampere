@@ -129,12 +129,13 @@ def main():
         ['git', '-C', str(ROOT), 'diff', '--name-only',
          str(source_commit) + '..HEAD', '--', 'patches/s5_engine', 'harness'],
         text=True).splitlines())
-    # The VM probe's venue-only precondition changed after the strict run
-    # started. It is not registered in selftest and cannot affect the tested
-    # row-4 producer, queue, runtime, registry or fixture tests.
+    # The VM probe and its CPU-shape wrapper changed after the strict run
+    # started. Neither is registered in selftest; they cannot affect the
+    # tested row-4 producer, queue, runtime, registry or fixture tests.
     need(record.get('schema') == 'native23-strict-regression/1'
          and source_commit == '72c11c153d5a695fc10de9256b48bb84b59e1c8a'
-         and changed_since <= {'harness/e3_native23_row4_pause_probe.py'}
+         and changed_since <= {'harness/e3_native23_row4_pause_probe.py',
+                               'harness/native23_vm_cpu_selfrun.py'}
          and record.get('exit_code') == 0 and record.get('skipped') == 0
          and record.get('log_sha256') == sha(a.regression_log)
          and len(coverage) == 1
