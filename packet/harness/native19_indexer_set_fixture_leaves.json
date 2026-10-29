@@ -1,0 +1,36 @@
+{
+  "schema": "native19-indexer-set-fixture-leaves/1",
+  "box_evidence": false,
+  "leaves": [
+    {
+      "leaf": "five-value bf16 Q/K and strictly increasing float32 score control",
+      "replaces": "real QSA index_qk_proj outputs and compressed key cache from the checkpoint",
+      "equivalence": "more convenient; creates boundary ties and a tie-free control, does not measure checkpoint tie rate",
+      "box_evidence": false
+    },
+    {
+      "leaf": "two serialized peers on one CUDA device with separate output buffers",
+      "replaces": "two concurrently scheduled TP worker processes and their local output buffers",
+      "equivalence": "more convenient; tests pinned selection determinism on identical scores, not TP process timing or actual cross-rank score identity",
+      "box_evidence": false
+    },
+    {
+      "leaf": "CUDA sleep on a second stream during the concurrent-load phase",
+      "replaces": "real model and other GPU work competing with QSA selection",
+      "equivalence": "more convenient; receipt records whether the load event was incomplete at each top-k submission, not model-equivalent contention",
+      "box_evidence": false
+    },
+    {
+      "leaf": "direct pinned _prefill_logits and _topk calls",
+      "replaces": "qsa_select_paged_prefill wrapper in the QSA indexer forward path",
+      "equivalence": "same pinned score and top-k functions with the wrapper's 64-row geometry, visible-block vector, logits width and workspace; omits model-side projection and later attention",
+      "box_evidence": false
+    },
+    {
+      "leaf": "CPU byte hashes and sorted index sets after CUDA synchronization",
+      "replaces": "no production leaf; diagnostic readback only",
+      "equivalence": "observability only, after each pinned kernel completes",
+      "box_evidence": false
+    }
+  ]
+}
