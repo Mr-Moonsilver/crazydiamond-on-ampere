@@ -630,10 +630,17 @@ class QsaPrefillOperation:
                 f'layers={len(self._layers)}, pending={self.pending})')
 
     def _check_identity(self, *, layer_name=None, lane=None,
-                        allocation_epoch=None, source_epoch=None):
-        validate = getattr(self.device, 'validate_compute', None)
-        if callable(validate):
-            validate()
+                        allocation_epoch=None, source_epoch=None,
+                        compute_required=True):
+        # The worker RPC thread may query an accepted profile while the lane
+        # continuation is paused at its submission boundary. Querying an
+        # event and reading the completed pinned plan are host operations;
+        # they do not own the lane's compute stream. Keep the stream check for
+        # every mutation that binds, advances or enqueues device work.
+        if compute_required:
+            validate = getattr(self.device, 'validate_compute', None)
+            if callable(validate):
+                validate()
         if self._released or self._failed:
             raise OperationError('operation released or quarantined')
         if self._cancelled is not None:
@@ -1309,7 +1316,7 @@ class QsaPrefillOperation:
         """Read-only host query of the plan, before any bucket submission."""
         from wire_v1 import QsaScheduleShape
         run = self._current_run()
-        self._check_identity(layer_name=run.layer_name)
+        self._check_identity(layer_name=run.layer_name, compute_required=False)
         if run.schedule_boundary is None:
             raise OperationError('QSA profile requested before its submission boundary')
         if run.schedule_shape is not None:
@@ -1863,7 +1870,7 @@ class QsaPrefillOperation:
         sees ``can_submit is False`` returns typed pending for the unchanged
         command, so polling credit cannot consume an accepted operation.
         """
-        self._check_identity()
+        self._check_identity(compute_required=False)
         self._refresh()
         pending_buckets = self.pending_buckets
         pending_selection = self.pending_selection

@@ -703,6 +703,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_stock_rpc_credits.py', 'Native16 stock batch queue: claim earlier ordinary RPC futures without consuming native credits, unchanged capacity and cached failures (CPU MQ/output leaves)'),
                      ('test_e3_native_selection_asymmetry.py', 'Native17 known TP selection-copy ordering counterexample: unmodified source stack over explicitly synthetic CPU tensor/event/model leaves, not box evidence'),
                      ('test_e3_native_schedule_profile.py', 'Native18 canonical selection boundary, queried TP profile agreement, exact retries and coordinated refusal/drain over explicit CPU device/model leaves; not box evidence'),
+                     ('test_e3_native21_rpc_stream.py', 'Native21 RPC-thread QSA profile query against a stream-checking device leaf; stream-bound operations still refuse (CPU only)'),
                      ('test_e3_native_pp_stop_order.py', 'Native19 deferred PP receive and typed stop obligation: matching-send-gated events, partial acceptance, clean stage-zero refusal/abort (CPU leaves; not box evidence)'),
                      ('test_e3_native_profile_observability.py', 'Native19 receipt-only peer profiles, worker host query time and actual stock-step bypass counts (CPU leaves)'),
                      ('test_e3_native_tp_tail_skew.py', 'Native19 TP tail barrier and exact stop retry: both peers clear the final event before collective entry (CPU model/communicator leaves, not hardware liveness)'),
