@@ -1,0 +1,56 @@
+{
+  "schema": "native19-coordinator-fixture-leaves/1",
+  "box_evidence": false,
+  "runtime_methods_patched": false,
+  "leaves": [
+    {
+      "leaf": "Four spawned OS-process Pipe endpoints and bounded pickle FIFO",
+      "replaces": "MultiprocExecutor shared-memory broadcast and response queues",
+      "basis": "Real ReplyTransport and LocalFuture own the same typed messages, response statuses, per-rank FIFO and credits. Pipe scheduling and capacity are convenient substitutes; this does not prove shared-memory backpressure or production timing.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "Process-shared PP identity slots and queried CPU events",
+      "replaces": "PrefillPPChannel NCCL send/receive and CUDA prefill-stream events",
+      "basis": "A receiver event completes only after the matching sender's transaction, stage and sequence are published across processes. It does not prove NCCL progress or CUDA ordering.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "Synthetic CPU QSA tensors, operations and four-layer model",
+      "replaces": "Production 48-layer TP2PP2 model and device kernels",
+      "basis": "Actual QsaLayerDriver, QsaPrefillOperation, LaneDispatcher and NativeWorkerBridge execute over a reduced model. Numerical kernels and TP collectives are not represented.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "CPU model-derived cache-owner metadata",
+      "replaces": "Registered CUDA model cache-owner graph",
+      "basis": "The pinned stock config, KV layout resolution, scheduler config generation, AsyncScheduler, Request and allocator run as real classes; cache-owner geometry is a CPU projection.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "Synthetic ModelRunnerOutput with fixed sampled token",
+      "replaces": "Production model sampling for the following scheduler request",
+      "basis": "Proves request and allocator progress after native closure through the real scheduler. It cannot prove decoded token values or model output.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "One selected worker reply delay or missing reply",
+      "replaces": "Worker RPC latency, scheduling pause or transport loss",
+      "basis": "Only the declared endpoint timing changes. Actual driver deadlines, transport ownership and cancellation logic stay unpatched.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "Injectable monotonic clock advanced after three real pending profile polls",
+      "replaces": "Elapsed wall time at the 300-second production profile deadline",
+      "basis": "The actual driver's absolute-deadline check and named refusal execute while process RPCs retain enough wall-clock reply time. The earlier 0.3-second transport deadline expired inside ReplyTransport before the profile refusal; that development failure was a HARNESS timing leaf, not a completed engine-profile proof.",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}

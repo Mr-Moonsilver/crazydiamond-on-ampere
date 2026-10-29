@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Connected native18 CPU coordinator proof; device/model/PP leaves declared.
+"""Connected native19 CPU coordinator proof; device/model/PP leaves declared.
 
 Actual mounted runtime classes and real OS-process pickle/FIFO replies. This
 does not construct CUDA owners or claim shmem overflow/NCCL equivalence.
@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import pickle
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -102,7 +103,7 @@ def make_case():
     return case
 
 
-def child_worker(rank, stage, admission, recv, reply, count, controls, boot, graph, out, variant):
+def child_worker(rank, stage, admission, recv, reply, count, controls, pp_slots, boot, graph, out, variant):
     try:
         bootstrap(graph)
         import test_e3_native_schedule_profile as proof
@@ -123,6 +124,33 @@ def child_worker(rank, stage, admission, recv, reply, count, controls, boot, gra
         worker = shell.workers[rank]
         stack = proof.HistoryStack(case, rank=rank, route='sparse',
                                    transaction=admission.transaction, ranks=(2 * stage, 2 * stage + 1))
+        # PP submission metadata crosses actual process boundaries. Device
+        # events remain CPU leaves, but cannot complete without a matching
+        # transaction/stage/transfer at the other OS-process endpoint.
+        class ProcessPP(r4.FakePPChannel):
+            def publish(self, ticket):
+                raw = pickle.dumps((ticket.transaction, ticket.stage, ticket.seq), protocol=5)
+                assert len(raw) + 4 <= len(pp_slots[rank]), 'PP identity leaf capacity'
+                with pp_slots[rank].get_lock():
+                    pp_slots[rank][:len(raw) + 4] = len(raw).to_bytes(4, 'big') + raw
+                return ticket
+
+            def matched(self, ticket):
+                slot = pp_slots[rank ^ 2]
+                with slot.get_lock():
+                    length = int.from_bytes(bytes(slot[:4]), 'big')
+                    raw = bytes(slot[4:4 + length])
+                return raw == pickle.dumps((ticket.transaction, ticket.stage, ticket.seq), protocol=5)
+
+            def send(self, *args):
+                return self.publish(super().send(*args))
+
+            def post_receive(self, *args):
+                return self.publish(super().post_receive(*args))
+
+        stack.bus = worker.bus
+        stack.torch = r4.bus_torch(stack.bus)
+        worker.channel = ProcessPP(stack.bus, is_sender=stage == 0)
         stack.stage = stage
         class StageModel(credit.FakeModel):
             def _flash_e3_is_last_stage(self):
@@ -169,7 +197,7 @@ def child_worker(rank, stage, admission, recv, reply, count, controls, boot, gra
                 # Device completion control is a declared leaf; driver and
                 # bridge methods/flags are never patched.
                 worker.bus.complete_all(True)
-                stack.bus.complete_all()
+                stack.bus.complete_all(True)
                 message = args[0] if args else None
                 is_profile = isinstance(message, w.QsaProfileQuery)
                 active = getattr(message, 'stage', None) == stage
@@ -202,6 +230,17 @@ def child_worker(rank, stage, admission, recv, reply, count, controls, boot, gra
                                     raise AssertionError('bucket submitted before profile grant')
                             assert pregrant == stack.operation.stats
                             telemetry['pregrant_retries'] = 1100
+                        if active and controls['retry_rank'].value == rank:
+                            # Exact worker-side retry of the accepted boundary
+                            # while its selection copy is still outstanding.
+                            # The real bridge/dispatcher handles the duplicate.
+                            before_retry = dict(stack.operation.stats)
+                            accepted_before_retry = len(stack.dispatcher.accepted)
+                            cached = worker.flash_s5_submit(message)
+                            assert dataclasses.replace(cached, report=None) == dataclasses.replace(value, report=None)
+                            assert len(stack.dispatcher.accepted) == accepted_before_retry
+                            assert dict(stack.operation.stats) == before_retry
+                            telemetry['cached_retries'] += 1
                     if isinstance(value, w.SegmentAcceptance) and value.accepted:
                         if key in repeat:
                             # The bridge intentionally refreshes its queried
@@ -219,6 +258,7 @@ def child_worker(rank, stage, admission, recv, reply, count, controls, boot, gra
                          'op_seq': getattr(message, 'op_seq', None), 'reply_type': type(value).__name__,
                          'accepted': getattr(value, 'accepted', None), 'pending': getattr(value, 'pending', None),
                          'profile_boundary': getattr(value, 'profile_boundary', None),
+                         'tail_boundary': getattr(value, 'tail_boundary', None),
                          'cursor': repr(getattr(value, 'cursor', None)), 'stats': dict(telemetry)}
                 journal.write(json.dumps(event) + '\n'); journal.flush()
                 if controls['drop_rank'].value == rank and is_profile:
@@ -254,6 +294,7 @@ class Network:
         self.controls['hold_rank'].value = variant.get('pending_rank', 1)
         self.controls['hold_stage'].value = variant.get('hold_stage', 0)
         self.controls['delay_rank'].value = variant.get('delay_rank', 3)
+        pp_slots = [self.ctx.Array('B', 1024) for _ in range(4)]
         senders, counts = self.senders, self.counts
         readers, boots = [], []
         for rank in range(4):
@@ -262,7 +303,7 @@ class Network:
             boot_recv, boot_send = self.ctx.Pipe(duplex=False)
             count = self.ctx.Value('i', 0)
             process = self.ctx.Process(target=child_worker, args=(rank, rank // 2, admission,
-                child_recv, child_send, count, self.controls, boot_send, graph, str(out), variant))
+                child_recv, child_send, count, self.controls, pp_slots, boot_send, graph, str(out), variant))
             process.start()
             self.processes.append(process); senders.append(parent_send)
             readers.append(ReplyReader(parent_recv)); counts.append(count); boots.append(boot_recv)
@@ -278,9 +319,14 @@ class Network:
         self.transport = eh.install(self.executor, config=SimpleNamespace(enabled=True, command_slots=10),
                                     success_status=WorkerProc.ResponseStatus.SUCCESS)
         self.engine = SimpleNamespace(scheduler=scheduler)
+        self.clock_offset = [0.]
+        def proof_clock():
+            return time.monotonic() + self.clock_offset[0]
         self.driver = ed.NativeSegmentDriver(controller, executor=self.executor, scheduler=scheduler,
             engine=self.engine, layer_count=4, layer_split=2,
-            stage_of=((0, 0), (1, 0), (2, 1), (3, 1)), reply_timeout_s=5., stop_budget=64).install()
+            stage_of=((0, 0), (1, 0), (2, 1), (3, 1)),
+            reply_timeout_s=variant.get('reply_timeout_s', 5.), stop_budget=64,
+            clock=proof_clock).install()
         self.high_water = 0
 
     def stats(self):
@@ -324,14 +370,36 @@ def run_scenario(cfg, scheduler, leases, owner, cache_record, *, graph, out, var
     assert admission is not None
     network = Network(scheduler, controller, admission, graph, out, variant)
     driver = network.driver
-    outputs, polls, last = [], 0, None
+    outputs, polls, last, stop_sent = [], 0, None, False
     deadline = time.monotonic() + 120
     with (out / 'coordinator.jsonl').open('a') as journal:
         while time.monotonic() < deadline:
             if driver.phase == 'profile':
                 polls += 1
-                if polls > 40:
+                if (variant.get('virtual_profile_deadline')
+                        and sum(row['profile_polls'] for row in
+                                driver.qsa_control.snapshot()['layers']) >= 3):
+                    # Injectable clock leaf advances beyond the *same* absolute
+                    # driver deadline after real typed pending observations.
+                    # RPC reply time stays sufficient for the OS processes.
+                    network.clock_offset[0] = driver.reply_timeout_s + 1.
+                if polls > 40 and not variant.get('hold_until_timeout'):
                     network.controls['hold_rank'].value = -1
+            stop_stage = variant.get('stop_at_profile_stage')
+            if (not stop_sent and stop_stage is not None and driver._profile_query is not None
+                    and driver._profile_query.stage == stop_stage):
+                if stop_stage == 1:
+                    obligation = driver._pp_submission
+                    assert obligation is not None
+                    assert obligation.send_accepted == {0, 1}
+                    assert obligation.receive_accepted == {2, 3}
+                driver.stop('abort')
+                stop_sent = True
+            if (not stop_sent and variant.get('disconnect_at_report_poll')
+                    and driver.phase == 'finalize'
+                    and 'poll' in driver._inflight.values()):
+                driver.stop('disconnect')
+                stop_sent = True
             result = eh.before_step_with_batch_queue(network.engine)
             if result is not None and result[0]:
                 outputs.append(result)
@@ -348,19 +416,44 @@ def run_scenario(cfg, scheduler, leases, owner, cache_record, *, graph, out, var
             raise TimeoutError('connected coordinator deadline')
     workers = network.stats()
     assert driver.error is None
+    assert stop_sent == bool(variant.get('stop_at_profile_stage') is not None
+                             or variant.get('disconnect_at_report_poll'))
+    expected_refusal = variant.get('expected_refusal')
+    errors = [item.stop_reason for result in outputs for batch in result[0].values()
+              for item in batch.outputs if item.finish_reason is not None]
+    if stop_sent:
+        from vllm.v1.request import RequestStatus
+        assert not errors, ('explicit abort emitted a profile refusal', errors)
+        assert driver._last_native_closure['complete']
+        assert not driver._split_ready
+        scheduler.finish_requests([request.request_id], RequestStatus.FINISHED_ABORTED)
+        assert request.is_finished()
+    elif expected_refusal:
+        assert errors == [expected_refusal], ('client errors', errors, expected_refusal)
+        assert driver._last_native_closure['complete']
+        assert not driver._split_ready
+        assert driver._profile_mismatches == int(expected_refusal == 'unsupported-native-schedule-profile')
+        assert driver._profile_timeouts == int(expected_refusal == 'native-schedule-profile-timeout')
+        assert request.is_finished(), 'refused request was not retired'
+    else:
+        assert not errors, ('unexpected client error', errors)
+        layers = driver.qsa_control.snapshot()['layers']
+        assert sum(row['tail_boundaries'] for row in layers) == 2
+        assert sum(row['tail_accepted_commands'] for row in layers) == 2
     assert leases.shutdown()['clean'] and not network.transport._calls, {
         'leases': leases.shutdown(), 'calls': list(network.transport._calls),
         'driver': driver.status()}
     # The actual ordinary scheduler advances the final prompt token and then
     # four tokens through an explicitly synthetic sampling-output leaf.
-    for tick in range(40):
-        result = scheduler.schedule(False)
-        ids = list(result.num_scheduled_tokens)
-        tokens = [[17] if scheduler.requests[k].num_computed_tokens >= scheduler.requests[k].num_prompt_tokens else [] for k in ids]
-        scheduler.update_from_output(result, ModelRunnerOutput(req_ids=ids,
-            req_id_to_index={k: i for i, k in enumerate(ids)}, sampled_token_ids=tokens))
-        if request.is_finished():break
-    assert request.is_finished()
+    if not expected_refusal and not stop_sent:
+        for tick in range(40):
+            result = scheduler.schedule(False)
+            ids = list(result.num_scheduled_tokens)
+            tokens = [[17] if scheduler.requests[k].num_computed_tokens >= scheduler.requests[k].num_prompt_tokens else [] for k in ids]
+            scheduler.update_from_output(result, ModelRunnerOutput(req_ids=ids,
+                req_id_to_index={k: i for i, k in enumerate(ids)}, sampled_token_ids=tokens))
+            if request.is_finished():break
+        assert request.is_finished()
     successor = host_preprocess(owner, engine_request('coordinator-next', [2, 3, 4], 'next', 4))
     scheduler.add_request(successor)
     for tick in range(40):
@@ -373,9 +466,20 @@ def run_scenario(cfg, scheduler, leases, owner, cache_record, *, graph, out, var
     clean, close = eh.before_shutdown(network.executor)
     assert clean, close
     network.stop()
+    control = driver.control_path.snapshot()
+    per_operation = {key: (control[key] / control['ops_count'] if control['ops_count'] else None)
+                     for key in ('prepare_ns', 'poll_ns', 'validate_ns', 'serialize_ns')}
     return {'verdict': 'PASS', 'pids': network.boots, 'workers': workers,
-        'qsa_control': driver.qsa_control.snapshot(), 'control_path': driver.control_path.snapshot(),
+        'qsa_control': driver.qsa_control.snapshot(), 'control_path': control,
+        'control_per_operation_ns': per_operation,
         'credit_high_water': network.high_water, 'credits_returned': True,
+        'client_errors': errors,
+        'native_closure': driver._last_native_closure,
+        'profile_mismatches': driver._profile_mismatches,
+        'profile_timeouts': driver._profile_timeouts,
+        'virtual_clock_advanced': bool(network.clock_offset[0]),
+        'explicit_abort_stage': variant.get('stop_at_profile_stage') if stop_sent else None,
+        'report_phase_disconnect': bool(stop_sent and variant.get('disconnect_at_report_poll')),
         'next_scheduler_request_completed': True, 'next_tokens': successor.num_output_tokens,
         'transport_close': close, 'cache': cache_record,
         'actual_scheduler': type(scheduler).__module__ + '.' + type(scheduler).__name__}
@@ -386,18 +490,56 @@ def main():
     p.add_argument('--graph', required=True, type=Path)
     p.add_argument('--out', required=True, type=Path)
     p.add_argument('--mode', default='cpu-full')
+    p.add_argument('--scenario', default=None)
     args = p.parse_args()
     result = {'verdict': 'INCONCLUSIVE', 'rc': 2, 'failure_class': 'OPEN', 'sections': {},
               'box_evidence': False, 'gpu_execution': False}
     try:
         bootstrap(args.graph)
         from native18_scheduler_fixture import with_actual_scheduler
-        variant = {'ready_rank': 0, 'pending_rank': 1, 'delay_rank': 3}
-        result['sections']['success_left_ready'] = with_actual_scheduler(lambda *a:
-            run_scenario(*a, graph=str(args.graph), out=args.out.parent, variant=variant))
-        import torch
-        assert not torch.cuda.is_initialized()
-        result.update(verdict='PASS', rc=0, failure_class='NONE', cuda_initialized=False)
+        variants = (
+            ('success_left_ready', {'ready_rank': 0, 'pending_rank': 1, 'delay_rank': 3}),
+            ('success_right_ready', {'ready_rank': 1, 'pending_rank': 0, 'delay_rank': 2}),
+            ('stage0_mismatch', {'ready_rank': 0, 'pending_rank': 1, 'delay_rank': 3,
+                 'mismatch_stage': 0, 'expected_refusal': 'unsupported-native-schedule-profile'}),
+            ('stage0_timeout', {'ready_rank': 0, 'pending_rank': 1, 'delay_rank': 3,
+                 'reply_timeout_s': 5., 'hold_until_timeout': True,
+                 'virtual_profile_deadline': True,
+                 'expected_refusal': 'native-schedule-profile-timeout'}),
+            ('stage0_abort', {'ready_rank': 0, 'pending_rank': 1, 'delay_rank': 3,
+                 'stop_at_profile_stage': 0}),
+            ('stage1_abort_after_sender', {'ready_rank': 2, 'pending_rank': 3,
+                 'hold_stage': 1, 'delay_rank': 0, 'stop_at_profile_stage': 1}),
+            ('report_phase_disconnect', {'ready_rank': 0, 'pending_rank': 1,
+                 'delay_rank': 3, 'disconnect_at_report_poll': True}),
+        )
+        if args.scenario is not None:
+            matches = [(name, variant) for name, variant in variants if name == args.scenario]
+            assert len(matches) == 1, 'unknown connected scenario'
+            name, variant = matches[0]
+            result['sections'][name] = with_actual_scheduler(lambda *a:
+                run_scenario(*a, graph=str(args.graph), out=args.out.parent, variant=variant))
+            import torch
+            assert not torch.cuda.is_initialized()
+            result.update(verdict='PASS', rc=0, failure_class='NONE', cuda_initialized=False)
+        else:
+            # The stock Gloo/model-parallel owner is process-global. Each
+            # scenario gets its own real initialization in a fresh interpreter,
+            # not a manually reset global or a patched fixture guard.
+            for name, _ in variants:
+                scenario_out = args.out.parent / name
+                scenario_out.mkdir(exist_ok=False)
+                with (scenario_out / 'process.log').open('xb') as log:
+                    completed = subprocess.run([sys.executable, '-B', str(Path(__file__)),
+                        '--graph', str(args.graph), '--out', str(scenario_out / 'probe.json'),
+                        '--mode', args.mode, '--scenario', name],
+                        stdout=log, stderr=subprocess.STDOUT, timeout=240)
+                scenario = json.loads((scenario_out / 'probe.json').read_text())
+                result['sections'][name] = scenario
+                write(args.out, result)
+                assert completed.returncode == 0 and scenario['verdict'] == 'PASS', (
+                    'connected scenario failed', name, completed.returncode)
+            result.update(verdict='PASS', rc=0, failure_class='NONE', cuda_initialized=False)
     except BaseException as exc:
         result.update(verdict='FAIL', rc=1, failure_class='OPEN', exception_graph=exception_graph(exc))
     finally:
