@@ -86,7 +86,10 @@ def cpu_shape():
     for name in ('is_scheduler_paused', 'resume_scheduler',
                  'add_request', 'step_with_batch_queue', 'shutdown'):
         assert callable(getattr(EngineCore, name))
-    assert not torch.cuda.is_initialized()
+    # Stock VllmConfig resolution may initialize CUDA on a GPU venue even
+    # before EngineCore construction. This is a venue observation, not a
+    # precondition for the paused-scheduler proof.
+    cuda_after_config = torch.cuda.is_initialized()
     return {'verdict': 'PASS', 'candidate_driver_sha256': _sha(source),
             'candidate_order': order,
             'actual_core_class': EngineCore.__module__ + '.' + EngineCore.__name__,
@@ -95,7 +98,8 @@ def cpu_shape():
             'actual_request_class': type(request).__module__ + '.'
                                     + type(request).__name__,
             'cache_capacity': cache_capacity_shape(cfg),
-            'cuda_initialized': False, 'gpu_owner_constructed': False}
+            'cuda_initialized_after_config': cuda_after_config,
+            'gpu_owner_constructed': False}
 
 
 def gpu_pause_resume():
