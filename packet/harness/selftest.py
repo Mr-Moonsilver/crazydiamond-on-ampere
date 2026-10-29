@@ -708,6 +708,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_native_profile_observability.py', 'Native19 receipt-only peer profiles, worker host query time and actual stock-step bypass counts (CPU leaves)'),
                      ('test_e3_native_tp_tail_skew.py', 'Native19 TP tail barrier and exact stop retry: both peers clear the final event before collective entry (CPU model/communicator leaves, not hardware liveness)'),
                      ('test_e3_native_speculation_gate.py', 'Native19 startup log gate: actual speculative config must be None, with missing or enabled evidence refused (CPU)'),
+                     ('test_e3_native26_host_observer.py', 'Native26 host Docker log follow, one-second disk samples, bounded shutdown markers and queue lifecycle (CPU fake Docker only)'),
                      ('test_e3_native_startup_binding.py', 'Native generated-package startup: actual closure/relay/transport/admission/driver binding, namespace identity and pinned auth with no mocked ready/capability flag (CPU filesystem/OS fixtures)'),
                      ('test_e3_model_hooks.py', 'E3 lane forward: additive prefix/layer/suffix on the pinned model, exact inverse, segment driver scopes and pause (CPU only)'),
                      ('test_e3_native_observation.py', 'Native shared observer lifecycle: real ledgers, dynamic source pins, role drains and retained window before FULL handback (CPU only)'),
