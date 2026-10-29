@@ -270,6 +270,7 @@ def main():
     need(record.get('schema') == 'native25-strict-regression/1'
          and source_commit == '2912fa5'
          and changed_since <= {
+             'patches/s5_engine/native_candidate_review.json',
              'harness/e3_native25_census_probe.py',
              'harness/native25_census_cpu_selfrun.py',
              'harness/native25_census_fixture_leaves.json',
