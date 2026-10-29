@@ -154,6 +154,11 @@ class TailSkew(unittest.TestCase):
         self.assertEqual([collective.calls[r] for r in (0, 1)], [1, 1])
         self.assertEqual(obligation.accepted, {0, 1})
         self.assertEqual(network.driver.qsa_control.snapshot()['layers'][0]['tail_accepted_commands'], 1)
+        sent = [args[0] for method, args, _, _ in network.sender.envelopes
+                if method == 'flash_s5_submit' and args[0].op_seq == obligation.command.op_seq
+                and args[0].stage == obligation.command.stage]
+        self.assertGreaterEqual(len(sent), 2)
+        self.assertTrue(all(item == obligation.command for item in sent))
         self.assertTrue(network.driver._last_native_closure['complete'])
         self.assertIsNone(network.driver.error)
         self.assertFalse(network.transport._calls)
