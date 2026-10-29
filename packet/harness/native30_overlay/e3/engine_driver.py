@@ -76,6 +76,8 @@ from wire_v1 import (
     PeerBinding,
     PeerBindingAck,
     PollRequest,
+    QsaProfileQuery,
+    qsa_profile_agreement,
     ReleaseRequest,
     ReleaseAck,
     OpenAck,
@@ -803,6 +805,14 @@ class NativeSegmentDriver:
         self.error = None
         self._inflight = {}
         self._retry = None
+        self._profile_query = None
+        self._profile_observed = {}
+        self._profile_grants = {}
+        self._profile_deadline = None
+        # Engine-lifetime count, not a count inferred from the raw ring/window.
+        self._profile_mismatches = 0
+        self._profile_failure = None
+        self._profile_failed_request = None
         self._transition = None
         self._transition_retry = False
         self._transition_deadline = None
@@ -906,7 +916,8 @@ class NativeSegmentDriver:
         return (self.tx is not None or self.controller.active
                 or self._return_pending is not None
                 or self._transition is not None
-                or self._bootstrap_command is not None)
+                or self._bootstrap_command is not None
+                or self._profile_failure is not None)
 
     @property
     def active(self):
@@ -1025,6 +1036,8 @@ class NativeSegmentDriver:
             self._apply_bind(values)
         elif kind == 'segment':
             self._apply_segments(values)
+        elif kind == 'profile':
+            self._apply_profile(values)
         elif kind == 'poll':
             self._apply_poll(values)
         elif kind == 'receipt':
@@ -1297,6 +1310,9 @@ class NativeSegmentDriver:
         cursors = {item.cursor for item in accepted if item.accepted}
         if len(paused) != 1 or len(cursors) != 1:
             raise DriverError('TP workers disagree on the layer continuation')
+        boundaries = {item.profile_boundary for item in accepted if item.accepted}
+        if len(boundaries) != 1:
+            raise DriverError('TP workers disagree on the QSA submission boundary')
         representative = targets[0]
         self.last_ticket[descriptor.stage] = self.tickets[representative]
         if descriptor.kind is SegmentKind.PREPARE and self.bound_ticket is None:
@@ -1332,6 +1348,52 @@ class NativeSegmentDriver:
         # Publication stays in the drive path, never inside acceptance.
         for report in reports:
             self._ingest_report(report)
+
+        if boundaries == {True}:
+            if self._command.profile is not None:
+                raise DriverError('QSA profile boundary repeated after its grant')
+            self._profile_query = QsaProfileQuery(
+                self.tx, self.admission.state_epoch, descriptor.stage,
+                descriptor.layer_start, self._command.op_seq, tuple(targets))
+            self._profile_observed = {}
+            self._profile_deadline = self.clock() + self.reply_timeout_s
+            self.phase = 'profile'
+
+    def _apply_profile(self, values):
+        query = self._profile_query
+        if (query is None or query.transaction != self.tx
+                or query.ranks != self.stage_ranks[query.stage]):
+            raise DriverError('QSA profile reply has no current active-stage query')
+        verdict, grant = qsa_profile_agreement(query, tuple(values), self.ranks)
+        for item in values:
+            prior = self._profile_observed.get(item.worker_rank)
+            if prior is not None and prior.status == 'ready' and prior != item:
+                raise DriverError('queried QSA schedule changed within its boundary')
+            self._profile_observed[item.worker_rank] = item
+        if verdict == 'pending':
+            if self.clock() >= self._profile_deadline:
+                self._refuse_profile('native-schedule-profile-timeout')
+            return
+        if verdict == 'unsupported-native-schedule-profile':
+            self._profile_mismatches += 1
+            self._refuse_profile(verdict)
+            return
+        self._profile_grants[(query.stage, query.layer)] = grant
+        self._profile_query = None
+        self._profile_observed = {}
+        self._profile_deadline = None
+        self.phase = 'segments'
+
+    def _refuse_profile(self, reason):
+        # No bucket has been submitted. The accepted producer/selection and
+        # every source/PP owner still go through the existing typed stop path.
+        self._profile_failure = (self.tx, reason)
+        self.stop_kind = 'abort'
+        self._return_pending = 'unsupported-profile'
+        self._record('schedule_profile_refused', transaction=self.tx.txn_seq,
+                     stage=self._profile_query.stage,
+                     layer=self._profile_query.layer, reason=reason,
+                     mismatch_count=self._profile_mismatches)
 
     def _ingest_report(self, report):
         if type(report) is not WorkerCompletionReport:
@@ -1598,16 +1660,23 @@ class NativeSegmentDriver:
         raise DriverError('producer ticket has no device completion proof')
 
     # -- step seam --------------------------------------------------------
-    def advance(self):
-        """One bounded tick. Returns no model output: the handback owns it."""
+    def advance(self, *, deliver_outputs=True):
+        """One bounded tick; only a drained refusal emits a request ERROR.
+
+        Successful model output continues to belong to the ordinary handback.
+        """
         if self.error is not None:
             raise DriverError(self.error)
         try:
             self._drain()
             self.pump_control()
+            if self._profile_failure is not None and deliver_outputs:
+                output = self._finish_profile_failure()
+                if output is not None:
+                    return output
             if self.stop_kind is not None:
                 self._drive_stop()
-                return None
+                return (None, False) if self._profile_failure is not None else None
             if self._drive_route():
                 # A route command is outstanding: the worker is draining or
                 # switching streams/banks, so no stock work may be launched
@@ -1627,6 +1696,26 @@ class NativeSegmentDriver:
         except BaseException:
             self.error = 'native driver failed; ownership retained'
             raise
+
+    def _finish_profile_failure(self):
+        """Emit a normal request ERROR only after certified drain/full return."""
+        if (self.tx is not None or self.controller.active or self._retained is not None
+                or self._return_pending is not None or self._route_exchange() is not None
+                or self._inflight or self.stop_kind is not None):
+            return None
+        transaction, reason = self._profile_failure
+        request = self._profile_failed_request
+        if request is None or request.request_id != transaction.request_uid:
+            raise DriverError('QSA profile refusal lacks its retired request identity')
+        from vllm.v1.request import RequestStatus
+        from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs, FinishReason
+        self.scheduler.finish_requests([request.request_id], RequestStatus.FINISHED_ERROR)
+        output = EngineCoreOutput(request_id=request.request_id, new_token_ids=[],
+                                  finish_reason=FinishReason.ERROR, stop_reason=reason)
+        result = {request.client_index: EngineCoreOutputs(outputs=[output])}
+        self._profile_failure = None
+        self._profile_failed_request = None
+        return result, False
 
     # -- engine-owner bootstrap and route completion ----------------------
     def _route_exchange(self):
@@ -1730,6 +1819,10 @@ class NativeSegmentDriver:
         self.phase = 'open'
         self.plan = []
         self.index = 0
+        self._profile_query = None
+        self._profile_observed = {}
+        self._profile_grants = {}
+        self._profile_deadline = None
         self.reports = {}
         self.accepted_tickets = {}
         self._accepted_descriptors = {}
@@ -1755,6 +1848,11 @@ class NativeSegmentDriver:
         self._stop_ticks = 0
 
     def _drive(self):
+        if self.phase == 'profile':
+            if not self._inflight:
+                self._submit('profile', ('flash_s5_poll',
+                    (self._profile_query,), {}, None), self.ranks)
+            return
         if self.phase == 'open':
             if not self._inflight:
                 self._submit('open', ('flash_s5_open', (self.open_request,), {}, None),
@@ -1824,7 +1922,8 @@ class NativeSegmentDriver:
         # a missing/stale/foreign hold refuses before any GPU submission.
         source = (self._prepare_source(targets)
                   if kind is SegmentKind.PREPARE else None)
-        command = SegmentCommand(descriptor, op_seq, targets, source=source)
+        profile = self._profile_grants.get((stage, layer)) if kind is SegmentKind.LAYER else None
+        command = SegmentCommand(descriptor, op_seq, targets, source=source, profile=profile)
         if kind is SegmentKind.PP_SEND:
             self.pp_send_seq = descriptor.seq
         if kind is SegmentKind.PP_RECEIVE:
@@ -1918,7 +2017,9 @@ class NativeSegmentDriver:
         for _ in range(budget):
             if not self.active:
                 return True
-            self.advance()
+            # Utility/pause callers do not own EngineCore's output channel.
+            # Leave a certified profile-refusal output for the engine step.
+            self.advance(deliver_outputs=False)
         return not self.active
 
     def _drive_stop(self):
@@ -2189,7 +2290,9 @@ class NativeSegmentDriver:
         if self.bound_ticket is None:
             if self.accepted_tickets:
                 raise DriverError('accepted operations exist without a bound producer')
-            self.controller.cancel(self.tx, never_submitted=True)
+            request = self.controller.cancel(self.tx, never_submitted=True)
+            if self._profile_failure is not None:
+                self._profile_failed_request = request
             self._remember_native_closure(self.tx, acks, self.reports, self.stop_kind)
             self._reset()
             self._note_terminal_route('cancel')
@@ -2209,7 +2312,9 @@ class NativeSegmentDriver:
             row = ack if type(ack) is ReleaseAck else ack.release_ack(
                 report.completed_sequence)
             self.controller.note_worker_release(row)
-        self.controller.cancel(self.tx, proof=self._producer_proof())
+        request = self.controller.cancel(self.tx, proof=self._producer_proof())
+        if self._profile_failure is not None:
+            self._profile_failed_request = request
         self._record('cancel', transaction=self.tx.txn_seq, never_submitted=False,
                      closed_ranks=[rank for rank in self.ranks if acks[rank].closed],
                      reason=self.stop_kind)
@@ -2265,6 +2370,10 @@ class NativeSegmentDriver:
         self.plan = []
         self.index = 0
         self._retry = None
+        self._profile_query = None
+        self._profile_observed = {}
+        self._profile_grants = {}
+        self._profile_deadline = None
         self.stop_kind = None
         self._command = None
         self._targets = ()
@@ -2666,6 +2775,7 @@ class NativeSegmentDriver:
             'decode_watermarks_by_rank': {rank: self._decode_watermarks[rank]
                                           for rank in sorted(self._decode_watermarks)},
             'reports': sorted(int(rank) for rank in self.reports),
+            'schedule_profile_mismatches': self._profile_mismatches,
             'control_pending': None if self._control is None else self._control['action'],
             'admission_intent': self.admission_intent(),
             'control_route': (None if self._control_route is None
@@ -3310,6 +3420,8 @@ class NativeSegmentDriver:
             'transition_acks': self.transition_ack_rows(),
             'native_owned': bool(self.active),
         }
+        record['measurement']['schedule_profile'] = {
+            'mismatches': self._profile_mismatches, 'basis': 'engine-lifetime-monotonic-count'}
         reasons = []
         if not complete:
             reasons.append('journal-evicted-before-window')

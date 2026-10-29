@@ -136,7 +136,7 @@ def revert_one(path, source, expected=None):
 
 class LayerPhase:
     __slots__ = ('layer_idx', 'hidden', 'injection', 'attn_state', 'buckets', 'phase',
-                 'started_ns', 'advances', 'selections')
+                 'started_ns', 'advances', 'selections', 'boundary', 'grant')
 
     def __init__(self, layer_idx, hidden, injection, attn_state):
         self.layer_idx = layer_idx
@@ -148,6 +148,8 @@ class LayerPhase:
         self.selections = 0
         self.phase = 'bucket'
         self.started_ns = 0
+        self.boundary = None
+        self.grant = None
 
 
 def _metadata_for(forward_context, attn):
@@ -231,6 +233,39 @@ class QsaLayerDriver:
         if not callable(query):
             return None
         return query()
+
+    def at_schedule_boundary(self, layer_idx):
+        phase = self.phases.get(layer_idx)
+        return phase is not None and phase.boundary is not None and phase.grant is None
+
+    def schedule_profile(self, query, rank):
+        from wire_v1 import QsaProfileObservation
+        phase = self.phases.get(query.layer)
+        if phase is None or phase.boundary is None or phase.grant is not None:
+            raise QsaDriverError('QSA profile query is outside its submitted boundary')
+        shape = self.operation.schedule_profile()
+        if shape is None:
+            return QsaProfileObservation(query, rank, 'pending')
+        run = self.operation._current_run()
+        basis = ('queried-selection-copy' if run.sparse is not None
+                 and run.sparse.selection is not None else 'bound-dense-host-plan')
+        return QsaProfileObservation(query, rank, 'ready', shape, basis)
+
+    def authorize_profile(self, layer_idx, grant):
+        from wire_v1 import QsaProfileGrant
+        phase = self.phases.get(layer_idx)
+        if phase is None or phase.boundary is None:
+            if grant is not None:
+                raise QsaDriverError('QSA grant precedes its submitted boundary')
+            return
+        if grant is None:
+            raise E3Pending('QSA schedule awaits active-stage TP agreement')
+        if type(grant) is not QsaProfileGrant or grant.query.layer != layer_idx:
+            raise QsaDriverError('QSA grant belongs to another layer')
+        if phase.grant is not None and phase.grant != grant:
+            raise QsaDriverError('QSA grant changed within the layer')
+        self.operation.authorize_schedule(grant)
+        phase.grant = grant
 
     # -- phases -------------------------------------------------------------------
     def _pre(self, lane, layer_idx):
@@ -321,6 +356,14 @@ class QsaLayerDriver:
             self.records.append(('row1_failure', phase.layer_idx, str(exc)))
             self.abort('row1_failure')
             raise QsaDriverError('native row1 qualification failed: ' + str(exc)) from exc
+        if getattr(value, 'qsa_schedule_boundary', False):
+            run = operation._current_run()
+            if value is not run.schedule_boundary or phase.boundary is not None:
+                raise QsaDriverError('foreign or repeated QSA schedule boundary')
+            phase.boundary = value
+            phase.selections += 1
+            self.records.append(('schedule_boundary', phase.layer_idx))
+            return None
         if getattr(value, 'sparse_selection_pending', False):
             phase.selections += 1
             self.records.append(('selection', phase.layer_idx))

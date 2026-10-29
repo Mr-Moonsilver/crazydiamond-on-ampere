@@ -204,6 +204,9 @@ class LayerRun:
     row1_reference: object = field(default=None, repr=False)
     row1_failed: object = None
     qualification_bucket: object = None
+    schedule_boundary: object = None
+    schedule_shape: object = None
+    schedule_grant: object = None
 
 
 @dataclass(frozen=True)
@@ -244,6 +247,13 @@ class SparseSelectionPending:
     @property
     def sparse_selection_pending(self):
         return True
+
+
+@dataclass(frozen=True)
+class QsaScheduleBoundary:
+    """A submitted boundary, never a claim that its copy completed."""
+    ticket: OperationTicket
+    qsa_schedule_boundary: bool = True
 
 
 @dataclass(frozen=True)
@@ -1271,6 +1281,79 @@ class QsaPrefillOperation:
         self.stats['selection_bytes'] += record.nbytes
         return sparse.selection_token
 
+    def schedule_boundary(self, token=None):
+        """Yield exactly once after selection submission or dense plan binding.
+
+        No query chooses whether this boundary exists. In particular a copy
+        that already completed cannot pull the first bucket into this call.
+        """
+        run = self._current_run()
+        self._check_identity(layer_name=run.layer_name)
+        if run.schedule_boundary is not None or not run.producer_submitted:
+            raise OperationError('QSA schedule boundary repeated or before producer')
+        if not run.buckets or run.next_bucket or run.active_bucket is not None:
+            raise OperationError('QSA schedule boundary outside the initial bound plan')
+        if token is not None:
+            sparse = run.sparse
+            if sparse is None or token is not sparse.selection_token:
+                raise OperationError('QSA schedule boundary for a foreign selection')
+            ticket = token.ticket
+        else:
+            if run.sparse is not None and run.sparse.selection is not None:
+                raise OperationError('selection schedule needs its submitted token')
+            ticket = run.producer.ticket
+        run.schedule_boundary = QsaScheduleBoundary(ticket)
+        return run.schedule_boundary
+
+    def schedule_profile(self):
+        """Read-only host query of the plan, before any bucket submission."""
+        from wire_v1 import QsaScheduleShape
+        run = self._current_run()
+        self._check_identity(layer_name=run.layer_name)
+        if run.schedule_boundary is None:
+            raise OperationError('QSA profile requested before its submission boundary')
+        if run.schedule_shape is not None:
+            return run.schedule_shape
+        sparse = run.sparse
+        if sparse is not None and sparse.selection is not None:
+            if not self.sparse_selection_ready(sparse.selection_token):
+                return None
+            if sparse.selection_count == 0:
+                shape = QsaScheduleShape('empty', (), ())
+            elif sparse.selection_sparse:
+                plan = sparse.plan
+                if plan is None or plan.refused:
+                    raise OperationError('queried sparse profile has no admitted plan')
+                waves = tuple((b.descriptors + MAX_DESCRIPTORS - 1)
+                              // MAX_DESCRIPTORS for b in plan.buckets)
+                shape = QsaScheduleShape('sparse_dma', waves, waves)
+            else:
+                counts = (1,) * len(run.buckets)
+                shape = QsaScheduleShape('dense_dma', counts, counts)
+        else:
+            counts = (1,) * len(run.buckets)
+            shape = QsaScheduleShape('dense_dma', counts, counts)
+        run.schedule_shape = shape
+        return shape
+
+    def authorize_schedule(self, grant):
+        """Bind the engine's typed agreement to this live queried local plan."""
+        from wire_v1 import QsaProfileGrant
+        run = self._current_run()
+        if type(grant) is not QsaProfileGrant:
+            raise OperationError('QSA schedule requires a typed engine grant')
+        if (grant.query.transaction != self.transaction
+                or self.lane.worker_rank not in grant.query.ranks):
+            raise OperationError('QSA schedule grant has a foreign owner')
+        shape = self.schedule_profile()
+        if shape is None:
+            raise E3Pending('QSA schedule selection has not completed')
+        if grant.shape != shape:
+            raise OperationError('QSA schedule grant differs from the queried local plan')
+        if run.schedule_grant is not None and run.schedule_grant != grant:
+            raise OperationError('QSA schedule grant changed after authorization')
+        run.schedule_grant = grant
+
     def sparse_selection_pending(self, token):
         run, sparse = self._sparse_state()
         if token is not sparse.selection_token:
@@ -1805,6 +1888,9 @@ class QsaPrefillOperation:
         needs a subsequent observed proof before StopIteration is returned.
         """
         self._check_identity()
+        run = self._current_run()
+        if run.schedule_boundary is not None and run.schedule_grant is None:
+            raise E3Pending('QSA schedule awaits active-stage TP agreement')
         self._refresh()
         try:
             # The previous bucket's actual bytes are compared while they still

@@ -156,7 +156,8 @@ _OPS_FORWARD = (
      '            raise RuntimeError("S5 operation received no selected rows")\n'),
     ('    e2.route("sparse_uva" if unique_tokens is not None else "dense_dma", num_pages)\n',
      '    if unique_tokens is not None:\n'
-     '        raise RuntimeError("S5 operation does not support sparse-UVA compaction")\n'),
+     '        raise RuntimeError("S5 operation does not support sparse-UVA compaction")\n'
+     '    yield e3op.schedule_boundary()\n'),
     ('            e2.fill(staged, page_lo, page_hi, block_table_row)\n',
      '            e3op.fill_bucket(staged, page_lo, page_hi, block_table_row)\n'),
     ('        if unique_tokens is None:\n            e2.consume_begin()\n', ''),
@@ -216,6 +217,7 @@ _SPARSE_PRELUDE_NEW = '''    if retained is None and e3op.sparse_selection_eligi
         # the count and selection prefix are read only from completed pinned
         # memory.  Host slicing by an already-read count is not a device read.
         _selection = e3op.stage_sparse_selection(unique_tokens, union_info)
+        yield e3op.schedule_boundary(_selection)
         while not e3op.sparse_selection_ready(_selection):
             yield e3op.sparse_selection_pending(_selection)
         selected_count = e3op.sparse_selection_count(_selection)
@@ -242,7 +244,9 @@ _SPARSE_FORWARD = (
      '        raise RuntimeError("S5 sparse operation received no attention rows")\n'),
     (_SPARSE_PRELUDE_OLD, _SPARSE_PRELUDE_NEW),
     ('    e2.route("sparse_uva" if unique_tokens is not None else "dense_dma", num_pages)\n',
-     '    e3op.declare_sparse_route("sparse_dma" if unique_tokens is not None else "dense_dma")\n'),
+     '    e3op.declare_sparse_route("sparse_dma" if unique_tokens is not None else "dense_dma")\n'
+     '    if e3op._current_run().schedule_boundary is None:\n'
+     '        yield e3op.schedule_boundary()\n'),
     ('            e2.fill(staged, page_lo, page_hi, block_table_row)\n',
      '            e3op.fill_bucket(staged, page_lo, page_hi, block_table_row)\n'),
     ('            selected = unique_tokens[page_lo * page_size:page_hi * page_size]\n'

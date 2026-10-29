@@ -651,8 +651,7 @@ class QsaProfileProtocolTests(unittest.TestCase):
             self.assertFalse(plan.refused)
             waves = tuple((bucket.descriptors + dma.MAX_DESCRIPTORS - 1)
                           // dma.MAX_DESCRIPTORS for bucket in plan.buckets)
-            shape = w.QsaScheduleShape('sparse_dma',
-                                       tuple(wave + 1 for wave in waves), waves)
+            shape = w.QsaScheduleShape('sparse_dma', waves, waves)
             shapes.append(shape)
             verdict, grant = w.qsa_profile_agreement(
                 self.query, self.replies(shape), (0, 1, 2, 3))
@@ -674,7 +673,7 @@ class QsaProfileProtocolTests(unittest.TestCase):
             (w.QsaScheduleShape('dense_dma', (1,), (1,)),
              w.QsaScheduleShape('sparse_dma', (1,), (1,))),
             (w.QsaScheduleShape('sparse_dma', (1,), (1,)),
-             w.QsaScheduleShape('sparse_dma', (2,), (1,))),
+             w.QsaScheduleShape('sparse_dma', (2,), (2,))),
         )
         for left, right in cases:
             self.assertEqual(w.qsa_profile_agreement(self.query,
@@ -720,7 +719,7 @@ class QsaProfileProtocolTests(unittest.TestCase):
 
     def test_shapes_retain_existing_bounds_and_submission_semantics(self):
         cases = (('empty', (1,), (1,)), ('dense_dma', (), ()),
-                 ('dense_dma', (2,), (1,)), ('sparse_dma', (17,), (17,)),
+                 ('dense_dma', (2,), (1,)), ('sparse_dma', (18,), (17,)),
                  ('sparse_dma', (382,), (381,)),
                  ('sparse_dma', (1,) * 7, (1,) * 7),
                  ('sparse_dma', (True,), (1,)),

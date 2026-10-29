@@ -25,6 +25,7 @@ refusal, whose legitimate fixed-model maximum is proven below.
 """
 import ast
 import contextlib
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -406,7 +407,8 @@ class Stack:
         self.ranks = tuple(ranks)
         self.legacy = legacy
         self.driverless = driverless
-        self.tokens = DENSE_TOKENS if route == 'dense' else SPARSE_TOKENS
+        self.tokens = getattr(harness, 'query_rows',
+                              DENSE_TOKENS if route == 'dense' else SPARSE_TOKENS)
         self.mapping = ((0,) if route == 'dense'
                         else tuple(range(SPARSE_PAGES)))
         self.versions = tuple(range(1, len(self.mapping) + 3))
@@ -510,7 +512,7 @@ class Stack:
         if self.route == 'sparse':
             hold = shd.SparseSourceHold(
                 sparse_test.make_owner(self.lane, LAYER, self.mapping,
-                                       self.tokens,
+                                       self.main._qsa_host_meta[1][0],
                                        transaction=operation.transaction),
                 allocator=sparse_test.FakeAllocator())
             self.holds.append(hold)
@@ -561,7 +563,8 @@ class World:
         self.h = harness
         self.route = route
         self.ranks = tuple(ranks)
-        self.tokens = DENSE_TOKENS if route == 'dense' else SPARSE_TOKENS
+        self.tokens = getattr(harness, 'query_rows',
+                              DENSE_TOKENS if route == 'dense' else SPARSE_TOKENS)
         self.txn = et.TransactionId(engine_epoch=1,
                                     request_uid='credit-' + route,
                                     request_generation=0, chunk_start=0,
@@ -574,7 +577,7 @@ class World:
             input_ids=tuple(index % 7 for index in range(self.tokens)))
         self.lease = w.SourceLeaseDescriptor(self.txn, 1, (1,), self.ranks)
         self.stacks = tuple(
-            Stack(harness, rank=rank, route=route, transaction=self.txn,
+            getattr(harness, 'stack_type', Stack)(harness, rank=rank, route=route, transaction=self.txn,
                   ranks=self.ranks, legacy=legacy, driverless=driverless)
             for rank in self.ranks)
         self.by_rank = {stack.rank: stack for stack in self.stacks}
@@ -601,7 +604,7 @@ class World:
             layer_start=layer,
             layer_end=None if layer is None else layer + 1)
 
-    def send(self, kind, layer=None, source=None):
+    def send(self, kind, layer=None, source=None, profile=None):
         descriptor = self.descriptor(kind, layer)
         # A pending proposal is never replaced: every rank retries the same
         # descriptor and sequence.
@@ -610,7 +613,7 @@ class World:
         if len(set(proposals.values())) != 1:
             raise AssertionError('ranks proposed different op_seq values')
         command = w.SegmentCommand(descriptor, proposals[self.ranks[0]],
-                                   self.ranks, source=source)
+                                   self.ranks, source=source, profile=profile)
         self.commands.append(command)
         return command, self.deliver(command)
 
@@ -656,6 +659,9 @@ class World:
 
 class CreditHarness:
     """Generated dense+sparse code, controlled device and real source stack."""
+    # These historical credit/counterexample tests retain the pre-profile
+    # generator. Native18 connected tests opt into current source explicitly.
+    legacy_schedule_source = True
 
     @classmethod
     def setUpClass(cls):
@@ -667,6 +673,20 @@ class CreditHarness:
         import runner_hooks
         ops = arena_attention.generate((REFERENCE / 'ops/qsa.py').read_text())
         cls.generated_ops = operation_source.generate_ops(ops)
+        if cls.legacy_schedule_source:
+            fixture = ROOT / 'harness/fixtures/native17_attention_operation.py'
+            frozen = fixture.read_text()
+            if hashlib.sha256(fixture.read_bytes()).hexdigest() != (
+                    'c8a0348bbbfda401461d3077afc8669d986368d156c97e18fb1eb5af31a374c4'):
+                raise RuntimeError('frozen native17 generator fixture changed')
+            current = ast.parse(cls.generated_ops)
+            replacements = {n.name: ast.get_source_segment(frozen, n)
+                            for n in ast.parse(frozen).body if isinstance(n, ast.FunctionDef)}
+            for node in current.body:
+                if isinstance(node, ast.FunctionDef) and node.name in replacements:
+                    cls.generated_ops = cls.generated_ops.replace(
+                        ast.get_source_segment(operation_source.generate_ops(ops), node),
+                        replacements[node.name], 1)
         qsa = runner_hooks.qsa_staged((REFERENCE / 'qsa.py').read_text())
         cls.generated_qsa = operation_source.generate_layer(qsa)
 

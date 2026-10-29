@@ -933,9 +933,10 @@ class QsaScheduleShape:
             raise E3ContractError('nonempty QSA schedule needs bucket work')
         if any(w > maximum_waves for w in self.bucket_waves):
             raise E3ContractError('QSA schedule exceeds existing per-bucket wave bound')
-        if any(s not in ((1, 2) if w == 1 else (w + 1,))
-               for s, w in zip(self.bucket_submissions, self.bucket_waves)):
-            raise E3ContractError('QSA schedule differs from copy-wave plus attention submissions')
+        # Intermediate streamed waves yield; the final wave and attention
+        # always share one pull. There is no event-timing-dependent extra pull.
+        if self.bucket_submissions != self.bucket_waves:
+            raise E3ContractError('QSA schedule differs from copy-wave submissions')
         if self.route == 'dense_dma' and any(s != 1 or w != 1 for s, w in
                 zip(self.bucket_submissions, self.bucket_waves)):
             raise E3ContractError('dense QSA bucket is one bounded submission')
@@ -1075,6 +1076,7 @@ class SegmentCommand:
     op_seq: int
     ranks: tuple
     source: SourceLeaseDescriptor | None = None
+    profile: QsaProfileGrant | None = None
 
     def __post_init__(self):
         if type(self.descriptor) is not SegmentDescriptor:
@@ -1093,6 +1095,14 @@ class SegmentCommand:
             if not set(self.ranks) <= set(self.source.consumer_ranks):
                 raise E3ContractError(
                     'source lease does not name every target rank')
+        if self.profile is not None:
+            if type(self.profile) is not QsaProfileGrant or self.kind is not SegmentKind.LAYER:
+                raise E3ContractError('only a layer carries a typed QSA profile grant')
+            query = self.profile.query
+            if (query.transaction != self.transaction or query.stage != self.stage
+                    or query.layer != self.descriptor.layer_start
+                    or query.ranks != self.ranks or query.boundary_op_seq >= self.op_seq):
+                raise E3ContractError('QSA profile grant differs from the layer command')
 
     @property
     def transaction(self):
@@ -1134,6 +1144,7 @@ class SegmentAcceptance:
     paused: bool = False
     # Host-queried completions ride along with the reply (piggybacked poll).
     report: WorkerCompletionReport | None = field(default=None, repr=False)
+    profile_boundary: bool = False
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
@@ -1146,6 +1157,9 @@ class SegmentAcceptance:
             raise E3ContractError('only an accepted operation may be paused')
         if self.paused and self.kind is not SegmentKind.LAYER:
             raise E3ContractError('only a QSA layer can pause at bucket credit')
+        if (type(self.profile_boundary) is not bool or
+                (self.profile_boundary and not self.paused)):
+            raise E3ContractError('QSA profile boundary must be an accepted paused layer')
         flags = (self.accepted, self.pending, self.skipped)
         if any(type(flag) is not bool for flag in flags):
             raise E3ContractError('acceptance flags must be bool')

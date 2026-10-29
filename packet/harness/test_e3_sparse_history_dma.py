@@ -865,6 +865,11 @@ class _GeneratedHarness:
                     raise
                 self.device.ready_all()
                 continue
+            if getattr(value, 'qsa_schedule_boundary', False):
+                if auto_mark:
+                    self.device.ready_all()
+                self.authorize_unit_profile(operation)
+                continue
             if getattr(value, 'sparse_selection_pending', False):
                 selections += 1
                 if auto_mark:
@@ -874,6 +879,22 @@ class _GeneratedHarness:
             if auto_mark:
                 self.device.ready_all()
         self.fail('sparse generator did not terminate')
+
+    def authorize_unit_profile(self, operation):
+        """Single-rank component-test coordinator, not engine/TP evidence.
+
+        The queried real local plan supplies the shape. The synthetic cohort
+        replaces EngineCore's real agreement RPC and is more convenient; the
+        separate native18 connected suite exercises active-stage agreement.
+        """
+        shape = operation.schedule_profile()
+        if shape is None:
+            raise et.E3Pending('component profile selection pending')
+        query = wire_v1.QsaProfileQuery(operation.transaction, 1, 0, 0, 0,
+                                        (operation.lane.worker_rank,))
+        grant = wire_v1.QsaProfileGrant(query, shape)
+        operation.authorize_schedule(grant)
+        return grant
 
 
 class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
@@ -1184,7 +1205,7 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
                                    self.arena, True, output, e3op=operation)
         operation.attach_continuation(generator)
         first = operation.advance()
-        self.assertTrue(first.sparse_selection_pending)
+        self.assertTrue(first.qsa_schedule_boundary)
         self.assertEqual(self.device.copies, [])
         self.assertEqual(operation.stats['selection_copies'], 1)
         # Nonblocking submit: the generator yielded while the copy event was
@@ -1197,12 +1218,14 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
         self.assertGreaterEqual(self.device.queries, 1)
         with self.assertRaises(qo.OperationError):
             operation.sparse_selection_count(token)
-        second = operation.advance()      # event still not queried: yield again
-        self.assertTrue(second.sparse_selection_pending)
+        with self.assertRaises(et.E3Pending):
+            operation.advance()          # no new accepted boundary while waiting
+        self.assertIsNone(operation.schedule_profile())
         self.assertEqual(operation.stats['selection_copies'], 1)
         self.assertEqual(self.device.host_reads, [])
         self.assertIsNone(operation._layers['qsa.0'].sparse.plan)
         self.device.ready_all()
+        self.authorize_unit_profile(operation)
         operand = operation.advance()
         self.assertFalse(getattr(operand, 'sparse_selection_pending', False))
         plan = operation._layers['qsa.0'].sparse.plan
@@ -1340,6 +1363,10 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
                 value = operation.advance()
             except StopIteration:
                 break
+            if getattr(value, 'qsa_schedule_boundary', False):
+                self.device.ready_all()
+                self.authorize_unit_profile(operation)
+                continue
             waves.append(len(self.device.copies) - before)
             self.assertLessEqual(waves[-1], shd.MAX_DESCRIPTORS)
             if getattr(value, 'sparse_copy_pending', False):
@@ -1385,6 +1412,8 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
                                    pages - 1, self.arena, True, output,
                                    e3op=operation)
         operation.attach_continuation(generator)
+        self.assertTrue(operation.advance().qsa_schedule_boundary)
+        self.authorize_unit_profile(operation)
         operation.advance()               # bucket 0 filled and submitted
         self.device.ready_all()
         operation.advance()               # bucket 1 filled and submitted
@@ -1427,6 +1456,8 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
         generator = self.attention(query, source, logical, self.table, rows, 2,
                                    self.arena, True, output, e3op=operation)
         operation.attach_continuation(generator)
+        self.assertTrue(operation.advance().qsa_schedule_boundary)
+        self.authorize_unit_profile(operation)
         with self.assertRaises(shd.SourceRefused):
             operation.advance()
         self.assertTrue(operation._failed)
@@ -1478,9 +1509,10 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
                 value = operation.advance()
             except StopIteration:
                 break
-            if getattr(value, 'sparse_selection_pending', False):
+            if getattr(value, 'qsa_schedule_boundary', False):
                 sentinels += 1
                 self.device.ready_all()
+                self.authorize_unit_profile(operation)
                 continue
             self.device.ready_all()
         self.assertEqual(sentinels, 1)
@@ -1512,6 +1544,8 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
         generator = self.attention(query, source, logical, self.table, rows, 2,
                                    self.arena, True, output, e3op=operation)
         operation.attach_continuation(generator)
+        self.assertTrue(operation.advance().qsa_schedule_boundary)
+        self.authorize_unit_profile(operation)
         with self.assertRaises(StopIteration):
             operation.advance()
         self.assertEqual(operation.stats['sparse_empty'], 1)
@@ -1846,7 +1880,7 @@ class ComposedSourceLeaseTests(_GeneratedHarness, unittest.TestCase):
         generator = self.attention_run(world, operation)
         operation.attach_continuation(generator)
         value = operation.advance()
-        self.assertTrue(getattr(value, 'sparse_selection_pending', False))
+        self.assertTrue(getattr(value, 'qsa_schedule_boundary', False))
         self.assertEqual(operation.pending_selection, 1)
         self.assertEqual(world.opened.hold.stats['buckets'], 0)
         self.assertEqual(self.device.copies, [])

@@ -815,10 +815,12 @@ def engine_idle_tick(engine):
         # PAUSED_ALL hides scheduler requests. A native stop/partial transition
         # still owns its reply and must settle before the process idle callback
         # may finish pause or block waiting for a new client request.
-        driver.advance()
+        output = driver.advance()
         if getattr(driver, 'active', False):
             time.sleep(0.001)
-        return {}, False
+        # A bounded native refusal may complete a parked request while stock
+        # work is hidden. Preserve its normal EngineCore output for the client.
+        return output if output is not None else ({}, False)
     return None
 
 
@@ -915,11 +917,12 @@ def before_engine_shutdown(engine):
 def _wire_method(message):
     """Exact wire-v1 record -> generated method name; ``None`` for legacy RPCs."""
     from wire_v1 import (BootstrapCommand, CancelRequest, OpenRequest,
-                         PPReceiptDelivery, PeerBinding, PollRequest,
+                         PPReceiptDelivery, PeerBinding, PollRequest, QsaProfileQuery,
                          ReleaseRequest, SegmentCommand, TransitionCommand)
     for record, name in ((BootstrapCommand, 'bootstrap'),
                          (OpenRequest, 'open'), (SegmentCommand, 'submit'),
                          (PollRequest, 'poll'), (ReleaseRequest, 'release'),
+                         (QsaProfileQuery, 'poll'),
                          (CancelRequest, 'cancel'), (PeerBinding, 'bind'),
                          (PPReceiptDelivery, 'receipt'),
                          (TransitionCommand, 'transition')):

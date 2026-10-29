@@ -52,6 +52,8 @@ from wire_v1 import (
     PeerBinding,
     PeerBindingAck,
     PollRequest,
+    QsaProfileQuery,
+    QsaProfileObservation,
     ReleaseAck,
     ReleaseRequest,
     ROUTE_BANK_FULL,
@@ -406,6 +408,8 @@ class NativeWorkerBridge:
                 command.op_seq, skipped=True, cursor=report.cursor, report=report)
         if command.kind is SegmentKind.PREPARE:
             self._bind_prepare_source(command)
+        if command.profile is not None:
+            self._profile_boundary_command(command.profile.query)
         try:
             acknowledgement = self.dispatcher.submit(command)
         except E3Pending:
@@ -427,7 +431,8 @@ class NativeWorkerBridge:
             command.transaction, self.rank, command.kind, command.stage,
             command.op_seq, accepted=True, cursor=report.cursor,
             host_submit_ns=self._host_ns[command.op_seq],
-            paused=bool(result.get('paused')), report=report)
+            paused=bool(result.get('paused')), report=report,
+            profile_boundary=bool(result.get('profile_boundary')))
 
     # -- peer binding / receipts ------------------------------------------
     def bind_pp(self, binding):
@@ -466,10 +471,32 @@ class NativeWorkerBridge:
 
     # -- completion --------------------------------------------------------
     def poll(self, request):
+        if type(request) is QsaProfileQuery:
+            self._require_open(request.transaction, request.state_epoch)
+            if self.rank not in request.ranks:
+                if self.stage == request.stage:
+                    raise WorkerBridgeError('QSA profile omitted a local-stage peer')
+                return QsaProfileObservation(request, self.rank, 'skipped')
+            self._profile_boundary_command(request)
+            if max(self.dispatcher.accepted) != request.boundary_op_seq:
+                raise WorkerBridgeError('QSA profile query follows another submission')
+            return self.dispatcher.driver.schedule_profile(request, self.rank)
         if type(request) is not PollRequest:
             raise WorkerBridgeError('poll needs a typed PollRequest')
         self._require_open(request.transaction, request.state_epoch)
         return self._build_report()
+
+    def _profile_boundary_command(self, query):
+        self._require_open(query.transaction, query.state_epoch)
+        if query.stage != self.stage or self.rank not in query.ranks:
+            raise WorkerBridgeError('QSA profile belongs to another stage')
+        stored = self.dispatcher.accepted.get(query.boundary_op_seq)
+        if stored is None:
+            raise WorkerBridgeError('QSA profile has no accepted submission boundary')
+        command, ack = stored
+        if (command.kind != 'layer' or command.layer_start != query.layer
+                or not (ack.get('result') or {}).get('profile_boundary')):
+            raise WorkerBridgeError('QSA profile does not name its accepted layer boundary')
 
     def _proof(self, op_seq, kind):
         key = (op_seq, kind)

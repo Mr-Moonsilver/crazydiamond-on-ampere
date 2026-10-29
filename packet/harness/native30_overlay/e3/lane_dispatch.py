@@ -71,10 +71,10 @@ class SegmentCommand:
     """
 
     __slots__ = ('transaction', 'stage', 'layer_start', 'layer_end', 'op_seq',
-                 'kind', 'seq', 'source')
+                 'kind', 'seq', 'source', 'profile')
 
     def __init__(self, transaction, stage, kind, op_seq, *, layer_start=None, layer_end=None,
-                 seq=_UNSET, source=None):
+                 seq=_UNSET, source=None, profile=None):
         if type(transaction) is not TransactionId:
             raise LaneDispatchError('canonical transaction required')
         if type(kind) is not str or kind not in KINDS:
@@ -118,6 +118,7 @@ class SegmentCommand:
         self.layer_end = layer_end
         self.seq = None if seq is _UNSET else seq
         self.source = source
+        self.profile = profile
 
     @classmethod
     def from_descriptor(cls, descriptor):
@@ -127,7 +128,7 @@ class SegmentCommand:
             command, d = descriptor, descriptor.descriptor
             return cls(d.transaction, d.stage, d.kind.value, command.op_seq,
                        layer_start=d.layer_start, layer_end=d.layer_end, seq=d.seq,
-                       source=command.source)
+                       source=command.source, profile=command.profile)
         kind = descriptor.kind
         if type(kind) is not str:
             raise LaneDispatchError('descriptor kind must be a str')
@@ -149,7 +150,7 @@ class SegmentCommand:
     def identity(self):
         """Everything that makes two submissions the same accepted command."""
         return (self.transaction, self.stage, self.kind, self.op_seq,
-                self.layer_start, self.layer_end, self.seq, self.source)
+                self.layer_start, self.layer_end, self.seq, self.source, self.profile)
 
 
 class SegmentEvent:
@@ -400,9 +401,17 @@ class LaneDispatcher:
             raise E3Pending(
                 'lane submission credit pending: '
                 + str(getattr(credit, 'reason', 'unspecified')))
+        authorize = getattr(self.driver, 'authorize_profile', None)
+        if callable(authorize):
+            authorize(command.layer_start, command.profile)
+        elif command.profile is not None:
+            raise LaneDispatchError('QSA profile grant without its constructed driver')
         self._partial = True
         record = self.lane.layer(command.layer_start)
-        return {'kind': record.kind, 'layer': command.layer_start, 'paused': record.kind == 'layer-paused'}
+        boundary = getattr(self.driver, 'at_schedule_boundary', None)
+        return {'kind': record.kind, 'layer': command.layer_start,
+                'paused': record.kind == 'layer-paused',
+                'profile_boundary': bool(callable(boundary) and boundary(command.layer_start))}
 
     def _do_suffix(self, command):
         self._need_chunk()
