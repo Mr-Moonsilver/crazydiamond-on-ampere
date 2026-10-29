@@ -88,6 +88,9 @@ def main():
     p.add_argument('--coordinator-result', required=True, type=Path)
     p.add_argument('--coordinator-input', required=True, type=Path)
     p.add_argument('--vm-result', required=True, type=Path)
+    p.add_argument('--vm-input', required=True, type=Path)
+    p.add_argument('--audited-input', required=True, type=Path)
+    p.add_argument('--audited-selfrun', required=True, type=Path)
     p.add_argument('--image-test-log', type=Path)
     p.add_argument('--image-test-container')
     p.add_argument('--disable-audit', action='store_true',
@@ -109,12 +112,46 @@ def main():
     need(sha(BASE / 'SHA256SUMS') == BASE_SHA, 'frozen E2 base')
     vm = json.loads(a.vm_result.read_text())
     vm_probe = a.vm_result.parent / 'probe.json'
+    vm_rows = inventory(a.vm_input)
+    audit_rows = inventory(a.audited_input)
+    audit = json.loads(a.audited_selfrun.read_text())
+    audit_sha = '0353e33b95a0d5ff89efa63ad0b5bdcb402a00ac7793dcb734d0f704f380459f'
+    need(sha(a.audited_input / 'SHA256SUMS') == audit_sha
+         and audit.get('manifest_sha256') == audit_sha
+         and audit.get('verdict') == 'PASS' and audit.get('rc') == 0
+         and audit.get('gpu_device_requests') == 0
+         and audit.get('paused_predicate_audit', {}).get('verdict') == 'PASS'
+         and sha(a.audited_selfrun.parent / 'probe.json') == audit.get('probe_sha256'),
+         'exact audited hub CPU self-run absent')
+    # E and F have the same mounted overlay and GPU probe. F's only VM wrapper
+    # change is the fresh container name; its CPU self-run adds the requested
+    # paused-predicate audit. A successful E GPU run can therefore be paired
+    # with F's exact-input audit without repeating identical device work.
+    compared = sorted(name for name in audit_rows
+                      if name.startswith(('overlay/', 'proof/'))
+                      and name != 'proof/import-graph.json')
+    need(all(vm_rows.get(name) == audit_rows[name] for name in compared)
+         and {name for name in vm_rows if name.startswith(('overlay/', 'proof/'))
+              and name != 'proof/import-graph.json'} == set(compared),
+         'VM and audited mounted payloads differ')
+    vm_graph = json.loads((a.vm_input / 'proof/import-graph.json').read_text())
+    audit_graph = json.loads((a.audited_input / 'proof/import-graph.json').read_text())
+    vm_graph.pop('overlay', None)
+    audit_graph.pop('overlay', None)
+    need(vm_graph == audit_graph, 'VM and audited import graphs differ')
+    vm_wrapper = (a.vm_input / 'run_gpu.py').read_text()
+    audit_wrapper = (a.audited_input / 'run_gpu.py').read_text()
+    need(vm_wrapper.replace('flashnext-native23-row4-pause-e',
+                            'flashnext-native23-row4-pause-f') == audit_wrapper,
+         'VM and audited GPU wrappers differ beyond container name')
     need(vm.get('verdict') == 'PASS' and vm.get('rc') == 0
          and vm.get('process_rc') == 0 and vm.get('gpu_execution') is True
          and vm.get('cleanup_ok') is True and vm.get('container_retained') is True
          and vm.get('failures') == [] and vm.get('missing') == []
-         and vm.get('manifest_sha256') ==
-             '0353e33b95a0d5ff89efa63ad0b5bdcb402a00ac7793dcb734d0f704f380459f'
+         and vm.get('manifest_sha256') == sha(a.vm_input / 'SHA256SUMS')
+         and vm.get('manifest_sha256') in (
+             '22046b2347e73f6ae7d9db5e41a50e1677ad9748c22d903ac3b2fc612b32d18d',
+             audit_sha)
          and vm_probe.is_file() and sha(vm_probe) == vm.get('probe_sha256')
          and json.loads(vm_probe.read_text()).get('verdict') == 'PASS',
          'native23 pause/resume GPU proof absent')
@@ -273,6 +310,9 @@ def main():
             'vm_result_sha256': sha(a.vm_result),
             'vm_probe_sha256': vm.get('probe_sha256'),
             'vm_input_manifest_sha256': vm['manifest_sha256'],
+            'audited_input_manifest_sha256': audit_sha,
+            'audited_selfrun_sha256': sha(a.audited_selfrun),
+            'vm_audited_payload_files_equal': len(compared),
             'fixture_leaves_sha256': sha(ROOT / 'harness/native23_row4_pause_fixture_leaves.json'),
             'scope': 'stock FULL cohort pause/resume ordering; TP2PP2 placement remains box-only',
             'gpu_qualified': False, 'box_qualified': False,
@@ -421,6 +461,10 @@ print('OWNER_VERIFY PASS')
                'row4_fixture_leaves_sha256': sha(bundle / 'native23_row4_pause_fixture_leaves.json'),
                'vm_result_sha256': sha(a.vm_result),
                'vm_probe_sha256': vm.get('probe_sha256'),
+               'vm_input_manifest_sha256': vm['manifest_sha256'],
+               'audited_input_manifest_sha256': audit_sha,
+               'audited_selfrun_sha256': sha(a.audited_selfrun),
+               'vm_audited_payload_files_equal': len(compared),
                'image_test_log_sha256': None if a.disable_audit else sha(a.image_test_log),
                'image_test_container': None if a.disable_audit else a.image_test_container,
                'hard_end_utc': a.hard_end,
@@ -446,6 +490,7 @@ Status: **HOLD**. The hard end alone is not a box GO.
 - Coordinator: 12/12 PASS in pinned image, CPU-full; result SHA256 `{receipt['coordinator_result_sha256']}`; probe SHA256 `{receipt['coordinator_probe_sha256']}`; input manifest SHA256 `{receipt['coordinator_input_manifest_sha256']}`
 - Fixture leaves: `native21_coordinator_fixture_leaves.json` SHA256 `{receipt['fixture_leaves_sha256']}`; row-4 seam leaves `native23_row4_pause_fixture_leaves.json` SHA256 `{receipt['row4_fixture_leaves_sha256']}`
 - CPU helper build: `{helper_names[0]}`, runc, no device requests
+- Row-4 VM GPU proof: result SHA256 `{receipt['vm_result_sha256']}`, input manifest `{receipt['vm_input_manifest_sha256']}`; exact audited hub self-run SHA256 `{receipt['audited_selfrun_sha256']}`, audited input `{receipt['audited_input_manifest_sha256']}`, {len(compared)} mounted payload files byte-equal
 
 This is the byte-unchanged native21 engine runtime plus the native23 row-4 harness resume repair. The native20 capture modules, transforms and receipt fields are absent. No grants, refusals, top-k, numerics, settings, workloads, W2 wait or speculative-config gate change. The one-card CUDA pause/resume proof passed; four-rank row-4 placement and performance remain box gates. The owner must pre-check and stage this candidate before any box action.
 
