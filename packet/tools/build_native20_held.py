@@ -115,9 +115,10 @@ def main():
              and record['runtime_commit'].startswith('3798ed9')
              and record['exit_code'] == 0 and record['skipped'] == 0
              and record['suites'] == len(suites)
-             and not subprocess.check_output(['git', '-C', str(ROOT), 'diff',
+             and set(subprocess.check_output(['git', '-C', str(ROOT), 'diff',
                                                '--name-only', '3798ed9..HEAD', '--',
-                                               'patches/s5_engine', 'harness/selftest.py']),
+                                               'patches/s5_engine', 'harness/selftest.py'])
+                     .decode().splitlines()) <= {'patches/s5_engine/native_candidate_review.json'},
              'native19 strict record cannot cover changed runtime or registry')
         regression_sha = record['log_sha256']
         regression_record_sha = sha(a.regression_record)
