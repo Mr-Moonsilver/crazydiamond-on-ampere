@@ -692,9 +692,9 @@ class SchedulerLeases:
 
         Only block fields are inspected; no payload or token text is read.
         Destination blocks may not belong to any *other* outstanding lease, and
-        a copy may only read blocks this transaction already holds or blocks
-        that are already committed. The guard never creates a CoW or changes a
-        refcount.
+        an E3-held copy source must belong to this transaction or already be
+        committed. Unleased sources remain under the stock scheduler's CoW
+        retention fence. The guard never creates a CoW or changes a refcount.
         """
         destinations = _flatten_ids(getattr(scheduler_output, 'block_table_updates', ()))
         destinations += _flatten_ids(getattr(scheduler_output, 'new_block_ids_to_zero', ()))
@@ -713,7 +713,8 @@ class SchedulerLeases:
         # Even the same transaction cannot overwrite a still-consumed page.
         if set(destinations) & set(self._held):
             return False
-        if sources and not set(sources) <= (mine | self._committed()):
+        leased_sources = set(sources) & set(self._held)
+        if not leased_sources <= (mine | self._committed()):
             return False
         if copies:
             self.cow_requested += len(copies)

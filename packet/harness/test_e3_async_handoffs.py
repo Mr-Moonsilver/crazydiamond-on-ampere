@@ -354,6 +354,29 @@ class SchedulerLeaseTests(unittest.TestCase):
         self.assertEqual(self.guard.cow_completed, 0)
         self.assertEqual(self.guard.lease_caused_cow, 0)
 
+    def test_ordinary_cow_sources_do_not_need_an_e3_lease(self):
+        from types import SimpleNamespace as Row
+        out = Row(kv_cache_block_copies=(Row(src_block_id=7, dst_block_id=8),))
+        self.assertTrue(self.guard.mutation_guard(out, None))
+        self.assertEqual(self.guard.shutdown(), dict(clean=True, held=0, pending_free=0))
+        self.assertEqual(self.guard.cow_requested, 1)
+        self.assertEqual(self.guard.cow_completed, 0)
+
+    def test_mixed_cow_sources_preserve_foreign_lease_and_destination_guards(self):
+        from types import SimpleNamespace as Row
+        foreign = ticket(tx(seq=2))
+        self.guard.lease_blocks(foreign, ah.LeaseCategory.ARENA, [3])
+        out = Row(kv_cache_block_copies=(Row(src_block_id=7, dst_block_id=8),
+                                        Row(src_block_id=3, dst_block_id=9)))
+        self.assertFalse(self.guard.mutation_guard(out, self.transaction))
+        self.assertEqual(self.guard.cow_requested, 0)
+        self.guard.publish(foreign)
+        self.assertTrue(self.guard.mutation_guard(out, self.transaction))
+        out.kv_cache_block_copies = (Row(src_block_id=7, dst_block_id=3),)
+        self.assertFalse(self.guard.mutation_guard(out, self.transaction))
+        self.assertEqual(self.guard.cow_requested, 2)
+        self.assertEqual(self.guard.cow_completed, 0)
+
     def test_allocation_of_a_leased_block_and_unclean_shutdown_refused(self):
         self.guard.lease_blocks(self.t, ah.LeaseCategory.ARENA, [1])
         with self.assertRaises(ah.E3ContractError):
