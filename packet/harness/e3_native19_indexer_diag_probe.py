@@ -88,8 +88,9 @@ def gpu_case():
     logits_width = min(((FRONTIER + RATIO - 1) // RATIO + 63) // 64 * 64,
                        PAGES * COMPRESSED_PAGE)
     score_digests = []
-    valid_columns = torch.arange(logits_width, device=device)[None, :] < visible[:, None]
     with torch.cuda.stream(compute):
+        valid_columns = (torch.arange(logits_width, device=device)[None, :]
+                         < visible[:, None])
         for _ in range(2):
             scores = idx._prefill_logits(q, keys, table, starts, visible,
                                         ROWS, logits_width, 0, ROWS)
