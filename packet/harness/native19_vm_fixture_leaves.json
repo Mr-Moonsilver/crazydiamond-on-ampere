@@ -1,0 +1,34 @@
+{
+  "schema": "native19-vm-fixture-leaves/1",
+  "box_evidence": false,
+  "leaves": [
+    {
+      "leaf": "Two one-card CUDA streams and a matching event wait",
+      "replaces": "TP2PP2 PrefillPPChannel send/receive on separate devices with NCCL",
+      "basis": "Actual CUDA Event.record, Stream.wait_event and Event.query run on one 3090. No NCCL collective or independent device/worker is constructed. The typed PP stop obligation is proven separately by connected CPU processes.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "Two serialized peer QSA programs on one GPU",
+      "replaces": "Two TP workers with separate private streams and arenas",
+      "basis": "The native18 skew probe executes real QSA selection/copy/attention kernels and host-queried events in both skew directions. It serializes arena ownership because the one-card venue cannot reproduce TP NCCL progress.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "Tie-heavy discrete bf16 Q/K values and a synthetic 50-page cache",
+      "replaces": "Checkpoint-weighted QSA indexer scores and actual scheduler page map",
+      "basis": "The pinned indexer scoring, persistent top-k, expansion and native union kernels execute at 64 query rows against the 202400-token history geometry. Synthetic low-cardinality Q/K deliberately stresses tie-breaking; it does not establish model logits or real per-rank score equality.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "A separate CUDA stream running a bounded sleep kernel",
+      "replaces": "Concurrent decode/model load while QSA selection runs",
+      "basis": "The load perturbs stream scheduling without constructing another model, engine or GPU owner. Idle and loaded selected-set digests are compared over 200 repeats each.",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}
