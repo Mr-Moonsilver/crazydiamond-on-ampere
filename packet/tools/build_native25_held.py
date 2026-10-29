@@ -276,6 +276,9 @@ def main():
              'harness/e3_native25_observer_path_probe.py',
              'harness/native25_observer_path_cpu_selfrun.py',
              'harness/native25_observer_path_fixture_leaves.json',
+             'harness/e3_native25_observer_offer_probe.py',
+             'harness/native25_observer_offer_cpu_selfrun.py',
+             'harness/native25_observer_offer_fixture_leaves.json',
              'harness/runs/q18a_native25.draft.sh',
              'harness/runs/q18a_native25_declare.sh',
              'harness/runs/q18a_native25_settings.sh'}
