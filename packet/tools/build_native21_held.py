@@ -138,6 +138,19 @@ def main():
         regression_basis = 'committed strict native19 record, runtime and registry byte-identical'
     else:
         need(a.regression_log is not None, 'regression evidence absent')
+        frozen_record_path = ROOT / 'reviews/codex-20261029-native21-strict-regression.json'
+        frozen_record = json.loads(frozen_record_path.read_text())
+        changed_sources = set(subprocess.check_output(
+            ['git', '-C', str(ROOT), 'diff', '--name-only',
+             frozen_record['frozen_harness_commit'] + '..HEAD', '--',
+             'patches/s5_engine', 'harness']).decode().splitlines())
+        need(frozen_record['frozen_runtime_commit'] == 'a7310f4'
+             and frozen_record['frozen_harness_commit'] == 'd14232d'
+             and frozen_record['exit_code'] == 0
+             and frozen_record['skipped'] == 0
+             and sha(a.regression_log) == frozen_record['log_sha256']
+             and changed_sources <= {'patches/s5_engine/native_candidate_review.json'},
+             'regression log does not cover the frozen runtime and harness')
         regression = a.regression_log.read_text()
         counts = re.findall(r'selftest: (\d+)/(\d+) cases as required', regression)
         # A loopback test can print its separator to stderr immediately after a
