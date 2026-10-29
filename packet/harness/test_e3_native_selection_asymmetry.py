@@ -23,6 +23,12 @@ import wire_v1 as wire
 
 
 class SelectionAsymmetry(c.CreditHarness,unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not c.REFERENCE.is_dir():
+            raise RuntimeError('required source reference unavailable; selection counterexample NOT_RUN, never skipped PASS')
+        super().setUpClass()
+
     def scenario(self,ready):
         world=self.world(route='sparse',ranks=(0,1))
         for rank in world.ranks:

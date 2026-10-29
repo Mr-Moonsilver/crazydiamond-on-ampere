@@ -7,7 +7,7 @@ cache path -- the J-inside case; recreated path all right / all wrong; missing r
 stall_trace2.py --recompute (good run; missing newcomer token; stopped stream; incomplete run).
 usage: selftest.py [REVIEW_FIXTURE_DIR]   exit 0 only if every case behaves as required
 """
-import json, os, subprocess, sys, tempfile
+import hashlib, json, os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -20,6 +20,27 @@ def check(name, got, want):
     ok = got == want
     results.append(ok)
     print(f"{'ok  ' if ok else 'FAIL'} {name}: got {got!r}, want {want!r}")
+
+
+unittest_observations = []
+
+
+def audit_suite(name, process):
+    """A skipped unittest is missing coverage, not a green child exit."""
+    output = (process.stdout or '') + (process.stderr or '')
+    summaries = re.findall(r'^(?:OK|FAILED)\s*\(([^\n]*)\)\s*$', output, re.MULTILINE)
+    skipped = sum(int(count) for summary in summaries
+                  for count in re.findall(r'\bskipped=(\d+)\b', summary))
+    ran = re.findall(r'^Ran (\d+) tests? in ', output, re.MULTILINE)
+    row = dict(suite=name, returncode=process.returncode, skipped=skipped,
+               tests_run=int(ran[-1]) if ran else None,
+               stdout_sha256=hashlib.sha256((process.stdout or '').encode()).hexdigest(),
+               stderr_sha256=hashlib.sha256((process.stderr or '').encode()).hexdigest())
+    unittest_observations.append(row)
+    print('selftest suite: ' + json.dumps(row, sort_keys=True))
+    if skipped:
+        print('selftest missing coverage: ' + name + ' skipped=' + str(skipped))
+    return process.returncode or (1 if skipped else 0)
 
 
 def canary_dir(sessions):
@@ -597,24 +618,24 @@ resume = subprocess.run([sys.executable, os.path.join(HERE, 'test_resume_prefill
                         capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
 if resume.returncode:
     print(resume.stdout + resume.stderr)
-check('resumable prefill: generated control flow + offline protocol (fake tensors)', resume.returncode, 0)
+check('resumable prefill: generated control flow + offline protocol (fake tensors)', audit_suite('test_resume_prefill.py', resume), 0)
 
 # --- S5: offline production-shape plan and fail-closed evidence grading ---
 s5 = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_segment.py')],
                     capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
 if s5.returncode:
     print(s5.stdout + s5.stderr)
-check('S5 segment: CPU tests (GPU path not run)', s5.returncode, 0)
+check('S5 segment: CPU tests (GPU path not run)', audit_suite('test_s5_segment.py', s5), 0)
 clock_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_clock.py')],
                             capture_output=True, text=True)
 if clock_test.returncode:
     print(clock_test.stdout + clock_test.stderr)
-check('S5 clock: multi-window, coarse ordering, build and SM-probe rules (CPU)', clock_test.returncode, 0)
+check('S5 clock: multi-window, coarse ordering, build and SM-probe rules (CPU)', audit_suite('test_s5_clock.py', clock_test), 0)
 runtime_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_runtime.py')],
                               capture_output=True, text=True)
 if runtime_test.returncode:
     print(runtime_test.stdout + runtime_test.stderr)
-check('S5 runtime: progress, alarms and hard watchdog (CPU only)', runtime_test.returncode, 0)
+check('S5 runtime: progress, alarms and hard watchdog (CPU only)', audit_suite('test_s5_runtime.py', runtime_test), 0)
 from test_s5_segment import fixture as s5_fixture
 from s5_segment import combine as s5_combine
 check('S5 verdict GO: both pairs', s5_combine([s5_fixture(), s5_fixture('1,3')])['verdict'], 'GO')
@@ -791,17 +812,18 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                                    env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
     if identity_test.returncode:
         print(identity_test.stdout + identity_test.stderr)
-    check(label, identity_test.returncode, 0)
+    check(label, audit_suite(suite, identity_test), 0)
 
 pp_release_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_pp_release.py')],
                                  capture_output=True, text=True)
 if pp_release_test.returncode:
     print(pp_release_test.stdout + pp_release_test.stderr)
-check('PP release: strict coverage, handshake and canary regressions (offline)', pp_release_test.returncode, 0)
+check('PP release: strict coverage, handshake and canary regressions (offline)', audit_suite('test_pp_release.py', pp_release_test), 0)
 canary_relay_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_canary_relay.py')],
                                    capture_output=True, text=True)
 if canary_relay_test.returncode:
     print(canary_relay_test.stdout + canary_relay_test.stderr)
-check('Canary relay: unbuffered SSE, unchanged requests, terminal counting (loopback fake upstream)', canary_relay_test.returncode, 0)
+check('Canary relay: unbuffered SSE, unchanged requests, terminal counting (loopback fake upstream)', audit_suite('test_canary_relay.py', canary_relay_test), 0)
+print('selftest coverage: ' + json.dumps(dict(suites=len(unittest_observations), skipped=sum(r['skipped'] for r in unittest_observations)), sort_keys=True))
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)
