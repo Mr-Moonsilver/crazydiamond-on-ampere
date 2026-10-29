@@ -49,6 +49,22 @@ def utc_end(value):
     return dt.datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
 
 
+def resolve_revision(root, tool_commit=None):
+    """Resolve provenance before output/builds; archives use an explicit assertion."""
+    if tool_commit is not None:
+        require(bool(re.fullmatch('[0-9a-f]{40}', tool_commit)),
+                '--tool-commit must be a full lowercase 40-hex exported commit')
+        return {'commit': tool_commit, 'basis': 'caller-declared export commit; tool bytes hashed separately'}
+    result = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=root,
+                            capture_output=True, text=True)
+    require(result.returncode == 0 and Path(result.stdout.strip()).resolve() == root.resolve(),
+            'export requires --tool-commit <full-40-hex-commit>; no output or build created')
+    result = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=root, capture_output=True, text=True)
+    require(result.returncode == 0 and bool(re.fullmatch('[0-9a-f]{40}', result.stdout.strip())),
+            'cannot resolve checkout commit; no output or build created')
+    return {'commit': result.stdout.strip(), 'basis': 'checkout HEAD; tool bytes hashed separately'}
+
+
 def date_expression(end):
     return ('datetime.datetime(' + ','.join(str(x) for x in
             (end.year, end.month, end.day, end.hour, end.minute, end.second))
@@ -171,6 +187,7 @@ def guard_boundary_check(queue, runner, end):
 def prepare(args):
     started = time.monotonic()
     end = utc_end(args.hard_end)
+    revision = resolve_revision(ROOT, args.tool_commit)
     out = args.out.absolute()
     require(not out.exists() and not out.is_symlink(), 'fresh output directory required')
     require(not str(out).startswith(('/data/vllm/', '/home/<service-user>/s0/')), 'local hub output only')
@@ -284,8 +301,8 @@ print('OWNER_VERIFY PASS '+manifest)
         'dry_run': args.dry_run, 'hard_end_utc': args.hard_end,
         'latest_entry_utc': (end - dt.timedelta(seconds=TIMEOUT_S + KILL_MARGIN_S)).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'timeout_s': TIMEOUT_S, 'kill_margin_s': KILL_MARGIN_S,
-        'tool_sha256': sha(Path(__file__)), 'source_commit': subprocess.check_output(
-            ['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
+        'tool_sha256': sha(Path(__file__)), 'source_commit': revision['commit'],
+        'source_commit_basis': revision['basis'],
         'held_bundle_sha256': HELD_SHA, 'held_runner_sha256': RUNNER_SHA, 'held_unchanged': True,
         'bundle': str(bundle), 'manifest_sha256': digest, 'files': len(new_rows),
         'runner': str(runner), 'runner_sha256': sha(runner), 'runner_bytes': runner.stat().st_size,
@@ -327,6 +344,7 @@ def main():
     parser.add_argument('hard_end', help='UTC hard end including queue kill margin; excludes owner restore time')
     parser.add_argument('--out', required=True, type=Path, help='fresh hub-local scratch/delivery output')
     parser.add_argument('--dry-run', action='store_true', help='placeholder window, full CPU checks, no GO')
+    parser.add_argument('--tool-commit', help='full exported commit for git-archive trees; recorded as caller-declared')
     parser.add_argument('--held', type=Path, default=HELD, help='same pinned immutable bundle at another local path')
     parser.add_argument('--base', type=Path, default=BASE, help='local frozen E2 base with pinned manifest')
     args = parser.parse_args()

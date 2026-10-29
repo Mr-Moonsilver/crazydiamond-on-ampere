@@ -61,6 +61,16 @@ class RewindowTests(unittest.TestCase):
         self.assertEqual(len(m.inventory(m.HELD, m.HELD_SHA)), 889)
         self.assertEqual(m.sha(ROOT / 'tools/q18a_native18_owner_run.py'), m.RUNNER_SHA)
 
+    def test_export_revision_explicit_or_fail_fast(self):
+        with self.assertRaisesRegex(ValueError, 'export requires --tool-commit'):
+            m.resolve_revision(Path('/'))
+        for value in ('short', 'x' * 40, 'a' * 41):
+            with self.assertRaisesRegex(ValueError, 'full lowercase 40-hex'):
+                m.resolve_revision(Path('/'), value)
+        row = m.resolve_revision(Path('/'), 'a' * 40)
+        self.assertEqual(row['commit'], 'a' * 40)
+        self.assertIn('caller-declared', row['basis'])
+
 
 if __name__ == '__main__':
     unittest.main()
