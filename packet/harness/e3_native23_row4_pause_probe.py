@@ -131,7 +131,8 @@ def gpu_pause_resume():
         for _ in range(8):
             core.step_with_batch_queue()
             assert request.num_output_tokens == 0
-        assert core.is_scheduler_paused() and core.scheduler.has_requests()
+        assert (core.is_scheduler_paused()
+                and core.scheduler.requests.get(request.request_id) is request)
         core.resume_scheduler()
         assert not core.is_scheduler_paused()
         first = None
