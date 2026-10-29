@@ -114,7 +114,7 @@ class QsaControlCounters:
               'profile_polls', 'profile_retry_polls', 'profile_pending_rounds',
               'bucket_commands', 'bucket_pending_rounds', 'bucket_accepted_commands',
               'agreed_buckets', 'agreed_copy_waves', 'profile_mismatches',
-              'profile_timeouts')
+              'profile_timeouts', 'profile_worker_host_ns')
 
     def __init__(self, engine_epoch, stage_layers):
         self.engine_epoch = engine_epoch
@@ -135,7 +135,7 @@ class QsaControlCounters:
 
     def snapshot(self):
         return dict(schema='s5-qsa-control-counts/1', engine_epoch=self.engine_epoch,
-            basis='engine-lifetime monotonic all-rank RPC/cohort counts; subtract matching status snapshots for a window; queried plan counts are not completion evidence',
+            basis='engine-lifetime monotonic all-rank RPC/cohort counts and summed worker CPU profile-query nanoseconds; subtract matching status snapshots for a window; queried plan counts are not completion evidence or engine wall time',
             telemetry_faults=self.faults,
             layers=[dict(stage=stage, layer=layer, **values)
                     for (stage, layer), values in sorted(self.rows.items())])

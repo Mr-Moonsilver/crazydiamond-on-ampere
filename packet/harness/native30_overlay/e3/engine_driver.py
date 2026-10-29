@@ -833,6 +833,7 @@ class NativeSegmentDriver:
         # Engine-lifetime count, not a count inferred from the raw ring/window.
         self._profile_mismatches = 0
         self._profile_timeouts = 0
+        self._stock_steps_skipped = 0
         self._profile_failure = None
         self._profile_failed_request = None
         self._transition = None
@@ -1419,6 +1420,10 @@ class NativeSegmentDriver:
             raise DriverError('QSA profile reply has no current active-stage query')
         verdict, grant = qsa_profile_agreement(query, tuple(values), self.ranks)
         for item in values:
+            if item.worker_rank in query.ranks:
+                self.qsa_control.add(query.stage, query.layer,
+                                     profile_worker_host_ns=item.worker_host_ns)
+        for item in values:
             prior = self._profile_observed.get(item.worker_rank)
             if prior is not None and prior.status == 'ready' and prior != item:
                 raise DriverError('queried QSA schedule changed within its boundary')
@@ -1461,7 +1466,17 @@ class NativeSegmentDriver:
         self._record('schedule_profile_refused', transaction=self.tx.txn_seq,
                      stage=self._profile_query.stage,
                      layer=self._profile_query.layer, reason=reason,
-                     mismatch_count=self._profile_mismatches, timeout_count=self._profile_timeouts)
+                     mismatch_count=self._profile_mismatches, timeout_count=self._profile_timeouts,
+                     peer_profiles=[{
+                         'rank': rank,
+                         'status': getattr(self._profile_observed.get(rank), 'status', 'unobserved'),
+                         'route': (item.shape.route if item is not None and item.shape is not None else None),
+                         'bucket_count': (len(item.shape.bucket_waves) if item is not None and item.shape is not None else None),
+                         'bucket_waves': (list(item.shape.bucket_waves) if item is not None and item.shape is not None else None),
+                         'selected_count': getattr(item, 'selected_count', None),
+                         'worker_host_ns': getattr(item, 'worker_host_ns', None),
+                     } for rank in self._profile_query.ranks
+                       for item in (self._profile_observed.get(rank),)])
 
     def _ingest_report(self, report):
         if type(report) is not WorkerCompletionReport:
@@ -2841,6 +2856,10 @@ class NativeSegmentDriver:
         raise DriverError('native-control-read-action-not-implemented')
 
     # -- queried status and typed acknowledgments ------------------------
+    def note_stock_step_skipped(self):
+        """Engine hook bypassed one stock step; utility pumps do not count."""
+        self._stock_steps_skipped += 1
+
     def _status_record(self, now=None):
         now = int(self._monotonic_ns()) if now is None else now
         epochs = set(self._storage_epochs.values())
@@ -2849,6 +2868,7 @@ class NativeSegmentDriver:
             'schema': 1,
             'mode': 'native-overlap',
             'control_path': self.control_path.snapshot(),
+            'stock_steps_skipped': self._stock_steps_skipped,
             'engine_epoch': self.engine_epoch,
             'ranks': list(self.ranks),
             'route': 'split' if self._split_ready else 'full',
@@ -3544,6 +3564,9 @@ class NativeSegmentDriver:
             'mismatches': self._profile_mismatches, 'timeouts': self._profile_timeouts,
             'basis': 'engine-lifetime-monotonic-count'}
         record['measurement']['qsa_control'] = self.qsa_control.snapshot()
+        record['measurement']['stock_steps_skipped'] = {
+            'count': self._stock_steps_skipped,
+            'basis': 'engine-lifetime hook bypasses; subtract matching status snapshots'}
         reasons = []
         if not complete:
             reasons.append('journal-evicted-before-window')

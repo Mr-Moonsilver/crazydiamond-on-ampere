@@ -240,16 +240,21 @@ class QsaLayerDriver:
 
     def schedule_profile(self, query, rank):
         from wire_v1 import QsaProfileObservation
+        started = time.monotonic_ns()
         phase = self.phases.get(query.layer)
         if phase is None or phase.boundary is None or phase.grant is not None:
             raise QsaDriverError('QSA profile query is outside its submitted boundary')
         shape = self.operation.schedule_profile()
         if shape is None:
-            return QsaProfileObservation(query, rank, 'pending')
+            return QsaProfileObservation(query, rank, 'pending',
+                worker_host_ns=max(0, time.monotonic_ns() - started))
         run = self.operation._current_run()
         basis = ('queried-selection-copy' if run.sparse is not None
                  and run.sparse.selection is not None else 'bound-dense-host-plan')
-        return QsaProfileObservation(query, rank, 'ready', shape, basis)
+        selected = (run.sparse.selection_count if run.sparse is not None
+                    and run.sparse.selection is not None else run.valid_tokens)
+        return QsaProfileObservation(query, rank, 'ready', shape, basis,
+            selected_count=selected, worker_host_ns=max(0, time.monotonic_ns() - started))
 
     def authorize_profile(self, layer_idx, grant):
         from wire_v1 import QsaProfileGrant

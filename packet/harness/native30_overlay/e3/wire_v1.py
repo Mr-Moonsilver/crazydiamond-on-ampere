@@ -978,6 +978,9 @@ class QsaProfileObservation:
     status: str
     shape: QsaScheduleShape | None = None
     basis: str | None = None
+    # Receipt-only fields: not part of profile equality/grant authorization.
+    selected_count: int | None = field(default=None, compare=False)
+    worker_host_ns: int = field(default=0, compare=False)
 
     def __post_init__(self):
         if type(self.query) is not QsaProfileQuery:

@@ -744,7 +744,7 @@ def before_step_with_batch_queue(engine):
     """Bounded engine bypass: drive one typed step; never wait for a layer."""
     driver = _driver(engine)
     if driver is not None:
-        return driver.advance()
+        return _stock_step_bypass(driver, driver.advance())
     handoff = _handoff(engine)
     if handoff is None:
         return None
@@ -784,6 +784,14 @@ def native_work_pending(engine):
     return bool(getattr(driver, 'active', False)) or control_pending(engine)
 
 
+def _stock_step_bypass(driver, result):
+    if result is not None:
+        note = getattr(driver, 'note_stock_step_skipped', None)
+        if callable(note):
+            note()
+    return result
+
+
 def engine_idle_tick(engine):
     """Advance one bounded control/paused-native tick without a reply wait.
 
@@ -806,7 +814,7 @@ def engine_idle_tick(engine):
         # license a second native/stock submission in this same tick.
         if control_pending(engine):
             time.sleep(0.001)
-        return {}, False
+        return _stock_step_bypass(driver, ({}, False))
     scheduler = getattr(engine, 'scheduler', None)
     has_requests = getattr(scheduler, 'has_requests', None)
     if (getattr(driver, 'active', False)
@@ -820,7 +828,7 @@ def engine_idle_tick(engine):
             time.sleep(0.001)
         # A bounded native refusal may complete a parked request while stock
         # work is hidden. Preserve its normal EngineCore output for the client.
-        return output if output is not None else ({}, False)
+        return _stock_step_bypass(driver, output if output is not None else ({}, False))
     return None
 
 

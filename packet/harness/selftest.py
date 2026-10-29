@@ -704,6 +704,8 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_native_selection_asymmetry.py', 'Native17 known TP selection-copy ordering counterexample: unmodified source stack over explicitly synthetic CPU tensor/event/model leaves, not box evidence'),
                      ('test_e3_native_schedule_profile.py', 'Native18 canonical selection boundary, queried TP profile agreement, exact retries and coordinated refusal/drain over explicit CPU device/model leaves; not box evidence'),
                      ('test_e3_native_pp_stop_order.py', 'Native19 deferred PP receive and typed stop obligation: matching-send-gated events, partial acceptance, clean stage-zero refusal/abort (CPU leaves; not box evidence)'),
+                     ('test_e3_native_profile_observability.py', 'Native19 receipt-only peer profiles, worker host query time and actual stock-step bypass counts (CPU leaves)'),
+                     ('test_e3_native_speculation_gate.py', 'Native19 startup log gate: actual speculative config must be None, with missing or enabled evidence refused (CPU)'),
                      ('test_e3_native_startup_binding.py', 'Native generated-package startup: actual closure/relay/transport/admission/driver binding, namespace identity and pinned auth with no mocked ready/capability flag (CPU filesystem/OS fixtures)'),
                      ('test_e3_model_hooks.py', 'E3 lane forward: additive prefix/layer/suffix on the pinned model, exact inverse, segment driver scopes and pause (CPU only)'),
                      ('test_e3_native_observation.py', 'Native shared observer lifecycle: real ledgers, dynamic source pins, role drains and retained window before FULL handback (CPU only)'),
