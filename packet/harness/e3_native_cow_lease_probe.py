@@ -17,6 +17,23 @@ def config(device='cpu'):
         device_config=DeviceConfig(device=device),compilation_config=CompilationConfig(mode=0),load_config=LoadConfig(load_format='dummy'))
 
 
+def engine_request(name,tokens,salt,max_tokens):
+    from vllm.v1.engine import EngineCoreRequest
+    from vllm.sampling_params import SamplingParams
+    return EngineCoreRequest(request_id=name,prompt_token_ids=tokens,mm_features=None,
+        sampling_params=SamplingParams(max_tokens=max_tokens,temperature=0.,ignore_eos=True),
+        pooling_params=None,arrival_time=time.time(),lora_request=None,cache_salt=salt,data_parallel_rank=None)
+
+
+def host_preprocess(owner,request):
+    from vllm.v1.engine.core import EngineCore
+    actual,wave=EngineCore.preprocess_add_request(owner,request)
+    assert wave==0
+    expected=len(request.prompt_token_ids)//owner.hash_block_size if hasattr(owner,'hash_block_size') else None
+    if expected is not None:assert len(actual.block_hashes)==expected
+    return actual
+
+
 def snapshot(guard,out,scheduler):
     copies=[dict(type=type(c).__module__+'.'+type(c).__name__,
         src_block_id=c.src_block_id,dst_block_id=c.dst_block_id) for c in (out.kv_cache_block_copies or [])]
@@ -71,11 +88,12 @@ def cpu_composition():
         Scheduler=host.scheduler_config.get_scheduler_cls();scheduler=Scheduler(host,kv,StructuredOutputManager(host),block_size=block,hash_block_size=hash_block)
         guard=hooks.SchedulerLeases().attach(scheduler,scheduler.kv_cache_manager.block_pool)
         hash_fn=get_hash_fn_by_name('sha256');init_none_hash(hash_fn);hasher=get_request_block_hasher(hash_block,hash_fn)
-        def request(name,salt,tail):return Request(request_id=name,prompt_token_ids=[1+i%100 for i in range(176)]+[tail]*32,
-            sampling_params=SamplingParams(max_tokens=4,temperature=0.,ignore_eos=True),pooling_params=None,cache_salt=salt,block_hasher=hasher)
-        first=Request(request_id='cpu-completed-prior',prompt_token_ids=[1,2,3,4],
-            sampling_params=SamplingParams(max_tokens=4,temperature=0.,ignore_eos=True),pooling_params=None,
-            cache_salt='prior-salt',block_hasher=hasher);scheduler.add_request(first)
+        from types import SimpleNamespace
+        cpu_core=SimpleNamespace(mm_receiver_cache=None,request_block_hasher=hasher,hash_block_size=hash_block)
+        def request(name,salt,tail):
+            return host_preprocess(cpu_core,engine_request(name,[1+i%100 for i in range(176)]+[tail]*32,salt,4))
+        first=host_preprocess(cpu_core,engine_request('cpu-completed-prior',[1,2,3,4],'prior-salt',4))
+        scheduler.add_request(first)
         records=[];completed_first=False
         for step in range(200):
             try:out=scheduler.schedule(False)
@@ -141,7 +159,7 @@ def gpu_shape():
     assert callable(EngineCore.step_with_batch_queue) and callable(EngineCore.add_request)
     assert callable(EngineCore.shutdown) and len(req.prompt_token_ids)==208
     return dict(verdict='PASS',capacity=capacity,cuda_initialized=torch.cuda.is_initialized(),
-        executed=['config','actual Request/SamplingParams','cache spec capacity methods','EngineCore signature and method accesses','foreign lease guard'],
+        executed=['config','actual Request/SamplingParams','cache spec capacity methods','EngineCore signature and method accesses','foreign lease guard','actual EngineCoreRequest and Core.preprocess_add_request with real host hasher'],
         deferred=['EngineCore real MultiprocExecutor/worker device startup','real GPU forward and CoW kernels','physical native configure TP2PP2 green prefix (observed on native16 box)'])
 
 
@@ -179,15 +197,20 @@ def gpu_executor(progress):
                         records.append(dict(copies=copies,scheduled_tokens=dict(out.num_scheduled_tokens),held=len(guard._held)))
                 checkpoint('batch-step',iteration=iterations,credits=len(transport._calls),requests=len(core.scheduler.requests))
         retained_outputs=[]
-        prior=Request(request_id='actual-completed-prior',prompt_token_ids=[1,2,3,4],
-            sampling_params=SamplingParams(max_tokens=32,temperature=0.,ignore_eos=True),pooling_params=None,cache_salt='prior-salt')
-        core.add_request(prior);run();assert prior.num_output_tokens==32 and guard.shutdown()['clean']
+        def make(name,tokens,salt):
+            message=engine_request(name,tokens,salt,32)
+            request,wave=core.preprocess_add_request(message)
+            assert wave==0 and request._block_hasher is core.request_block_hasher
+            if len(tokens)>=176:assert request.block_hashes,'stock Core preprocessing did not hash shared prefix'
+            core.add_request(request)
+            checkpoint('stock-request-preprocessed',request_id=name,prompt_tokens=len(tokens),block_hashes=len(request.block_hashes))
+            return request
+        prior=make('actual-completed-prior',[1,2,3,4],'prior-salt')
+        run();assert prior.num_output_tokens==32 and guard.shutdown()['clean']
         checkpoint('prior-completed',tokens=32,lease_ledger=guard.shutdown())
         requests=[]
         for i in range(8):
-            request=Request(request_id='actual-control-'+str(i),prompt_token_ids=[1+j%100 for j in range(176)]+[120+i]*32,
-                sampling_params=SamplingParams(max_tokens=32,temperature=0.,ignore_eos=True),pooling_params=None,cache_salt='teacher-full-A1')
-            core.add_request(request);requests.append(request)
+            requests.append(make('actual-control-'+str(i),[1+j%100 for j in range(176)]+[120+i]*32,'teacher-full-A1'))
         checkpoint('eight-admissions',ids=[r.request_id for r in requests]);run()
         copies=[c for r in records for c in r['copies']]
         assert copies,'actual allocator CoW was not exercised'
@@ -200,7 +223,7 @@ def gpu_executor(progress):
             iterations=iterations,credit_high_water=high,max_calls=10,all_credits_returned=True,
             cow_copies=copies,cow_requested=guard.cow_requested,records=records,lease_ledger=guard.shutdown(),
             leases_ever_acquired=False,manual_retirement=False,methods_patched=False,kernels_patched=False,
-            gpu_execution=True,native_configure_prefix='observed-on-box native16; not constructed by this TP1 proof',
+            gpu_execution=True,actual_request_preprocessing=True,native_configure_prefix='observed-on-box native16; not constructed by this TP1 proof',
             full_model_numerics=False,hardware_qualified=False)
     finally:
         if core is not None:core.shutdown()
