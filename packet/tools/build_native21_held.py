@@ -205,6 +205,33 @@ def main():
             target = bundle / 'e3_builder' / path.relative_to(ROOT / 'patches/s5_engine')
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, target)
+    # The frozen base bundle also contains VM qualification source copies.
+    # Refresh them from the same committed inputs as e3_builder: otherwise a
+    # new engine overlay can be correct while vmid_sources still carries the
+    # previous candidate's QSA operation. This does not affect the mounted
+    # engine path, but a stale proof bundle misstates its own source closure.
+    vm_sources = bundle / 'vmid_sources'
+    vm_map = {
+        'ops_qsa.py': ROOT / 'patches/retain/ops_qsa.py.v8.1',
+        'sparse_stage/kernels.py': ROOT / 'patches/sparse_stage/kernels.py',
+    }
+    vm_map.update({
+        's5_engine/' + name + '.py': ROOT / 'patches/s5_engine' / (name + '.py')
+        for name in ('e3_types', 'sparse_history_dma', 'qsa_operation',
+                     'operation_source', 'arena_attention', 'resident_attention',
+                     'native_source', 'row1_oracle')
+    })
+    need({p.relative_to(vm_sources).as_posix() for p in vm_sources.rglob('*')
+          if p.is_file()} == set(vm_map), 'VM source inventory differs')
+    need(sha(vm_map['ops_qsa.py']) ==
+         '5a0d962022ec4e47809fa072d2b13745c84413de894048e67f10c3c10a45d51b',
+         'VM QSA reference source pin differs')
+    for name, source in vm_map.items():
+        need(source.is_file() and not source.is_symlink(),
+             'VM source is missing or linked: ' + name)
+        target = vm_sources / name
+        shutil.copyfile(source, target)
+        need(sha(target) == sha(source), 'VM source copy differs: ' + name)
     indexer_name = 'models/qwen4_exp/nvidia/ops/qsa_indexer.py'
     indexer_source = ROOT / 'reference/vllm-src' / indexer_name
     indexer_target = bundle / 'e3_reference' / indexer_name
