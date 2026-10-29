@@ -43,6 +43,7 @@ from e3_types import (
     TransactionId,
 )
 from lane_comm import PPConsumerReceipt
+from sparse_history_dma import ARENA_PAGES, ARENA_ROWS, MAX_DESCRIPTORS, MAX_LAYER_PAGES
 
 WIRE_VERSION = 1
 
@@ -902,6 +903,144 @@ class PPReceiptAck:
                 f'accepted={self.accepted})')
 
 
+@dataclass(frozen=True)
+class QsaScheduleShape:
+    """Queried local submission schedule; never token indices or completion.
+
+    Counts describe bounded host submissions, not CUDA API/activity counts.
+    Keeping these counts separate permits different local selections only
+    when their actual lockstep submission profiles agree.
+    """
+    route: str
+    bucket_submissions: tuple
+    bucket_waves: tuple
+
+    def __post_init__(self):
+        if type(self.route) is not str or self.route not in ('dense_dma', 'sparse_dma', 'empty'):
+            raise E3ContractError('unknown QSA schedule route')
+        _ints('bucket submissions', self.bucket_submissions, minimum=1, unique=False)
+        _ints('bucket waves', self.bucket_waves, minimum=1, unique=False)
+        if len(self.bucket_submissions) != len(self.bucket_waves):
+            raise E3ContractError('QSA schedule bucket vectors disagree')
+        maximum_buckets = (MAX_LAYER_PAGES + ARENA_PAGES - 1) // ARENA_PAGES
+        maximum_waves = (ARENA_ROWS + MAX_DESCRIPTORS - 1) // MAX_DESCRIPTORS
+        if len(self.bucket_waves) > maximum_buckets:
+            raise E3ContractError('QSA schedule exceeds existing layer page bound')
+        if self.route == 'empty':
+            if self.bucket_waves:
+                raise E3ContractError('empty QSA schedule carries bucket work')
+        elif not self.bucket_waves:
+            raise E3ContractError('nonempty QSA schedule needs bucket work')
+        if any(w > maximum_waves for w in self.bucket_waves):
+            raise E3ContractError('QSA schedule exceeds existing per-bucket wave bound')
+        if any(s not in ((1, 2) if w == 1 else (w + 1,))
+               for s, w in zip(self.bucket_submissions, self.bucket_waves)):
+            raise E3ContractError('QSA schedule differs from copy-wave plus attention submissions')
+        if self.route == 'dense_dma' and any(s != 1 or w != 1 for s, w in
+                zip(self.bucket_submissions, self.bucket_waves)):
+            raise E3ContractError('dense QSA bucket is one bounded submission')
+
+
+@dataclass(frozen=True, repr=False)
+class QsaProfileQuery:
+    """Read-only query for the exact submitted layer boundary."""
+    transaction: TransactionId
+    state_epoch: int
+    stage: int
+    layer: int
+    boundary_op_seq: int
+    ranks: tuple
+
+    def __post_init__(self):
+        if type(self.transaction) is not TransactionId:
+            raise E3ContractError('QSA profile query needs a TransactionId')
+        _int('state_epoch', self.state_epoch, 1)
+        _int('stage', self.stage, 0)
+        if self.stage not in (0, 1):
+            raise E3ContractError('QSA profile query names an unknown stage')
+        _int('layer', self.layer, 0)
+        _int('boundary_op_seq', self.boundary_op_seq, 0)
+        _ints('profile ranks', self.ranks, minimum=0, allow_empty=False)
+        if self.ranks != tuple(sorted(self.ranks)):
+            raise E3ContractError('QSA profile ranks must be ordered')
+
+    def __repr__(self):
+        return (f'QsaProfileQuery(txn_seq={self.transaction.txn_seq}, '
+                f'stage={self.stage}, layer={self.layer}, boundary={self.boundary_op_seq})')
+
+
+@dataclass(frozen=True, repr=False)
+class QsaProfileObservation:
+    """Worker observation: pending is not agreement or copy completion."""
+    query: QsaProfileQuery
+    worker_rank: int
+    status: str
+    shape: QsaScheduleShape | None = None
+    basis: str | None = None
+
+    def __post_init__(self):
+        if type(self.query) is not QsaProfileQuery:
+            raise E3ContractError('QSA profile observation needs its exact query')
+        _int('worker_rank', self.worker_rank, 0)
+        if type(self.status) is not str or self.status not in ('ready', 'pending', 'skipped'):
+            raise E3ContractError('unknown QSA profile observation status')
+        target = self.worker_rank in self.query.ranks
+        if (self.status == 'skipped') == target:
+            raise E3ContractError('QSA profile observation target status differs')
+        if self.status == 'ready':
+            if type(self.shape) is not QsaScheduleShape:
+                raise E3ContractError('ready QSA profile needs a bounded shape')
+            if self.basis not in ('queried-selection-copy', 'bound-dense-host-plan'):
+                raise E3ContractError('ready QSA profile needs a queried plan basis')
+            if self.basis == 'bound-dense-host-plan' and self.shape.route != 'dense_dma':
+                raise E3ContractError('dense host plan cannot certify a sparse selection')
+        elif self.shape is not None or self.basis is not None:
+            raise E3ContractError('pending/skipped QSA profile cannot supply a shape')
+
+    def __repr__(self):
+        return (f'QsaProfileObservation(rank={self.worker_rank}, status={self.status}, '
+                f'query={self.query!r})')
+
+
+@dataclass(frozen=True)
+class QsaProfileGrant:
+    """Engine agreement binding; worker still checks its own live profile."""
+    query: QsaProfileQuery
+    shape: QsaScheduleShape
+
+    def __post_init__(self):
+        if type(self.query) is not QsaProfileQuery or type(self.shape) is not QsaScheduleShape:
+            raise E3ContractError('QSA profile grant needs its exact query and shape')
+
+
+def qsa_profile_agreement(query, replies, ranks):
+    """Return pending/agreed/unsupported without manufacturing completion.
+
+    Malformed identities remain protocol errors. A valid profile mismatch is
+    a named supported refusal for the driver's coordinated stop path.
+    """
+    if type(query) is not QsaProfileQuery:
+        raise E3ContractError('QSA profile agreement needs a typed query')
+    _ints('engine profile ranks', ranks, allow_empty=False)
+    if ranks != tuple(sorted(ranks)):
+        raise E3ContractError('engine profile ranks must be ordered')
+    _tuple('profile replies', replies)
+    if (len(replies) != len(ranks) or any(type(r) is not QsaProfileObservation for r in replies)
+            or {r.worker_rank for r in replies} != set(ranks)):
+        raise E3ContractError('QSA profile replies do not cover every rank')
+    if any(r.query != query for r in replies):
+        raise E3ContractError('QSA profile reply belongs to another boundary')
+    if not set(query.ranks) <= set(ranks):
+        raise E3ContractError('QSA profile targets are outside the engine cohort')
+    targets = tuple(r for r in replies if r.worker_rank in query.ranks)
+    if any(r.status == 'pending' for r in targets):
+        return 'pending', None
+    shapes = {r.shape for r in targets}
+    if len(shapes) != 1:
+        return 'unsupported-native-schedule-profile', None
+    return 'agreed', QsaProfileGrant(query, next(iter(shapes)))
+
+
 @dataclass(frozen=True, repr=False)
 class PollRequest:
     """Typed bounded poll: it carries the epoch the query must still match."""
@@ -1309,6 +1448,7 @@ __all__ = [
     'PeerBinding', 'PeerBindingAck', 'PollRequest', 'ReleaseRequest', 'ReleaseAck',
     'ROUTE_BANKS', 'ROUTE_BANK_FULL', 'ROUTE_BANK_SPLIT',
     'SegmentAcceptance', 'SegmentCommand', 'SegmentDescriptor', 'SegmentKind',
-    'SourceLeaseDescriptor',
+    'SourceLeaseDescriptor', 'QsaScheduleShape', 'QsaProfileQuery',
+    'QsaProfileObservation', 'QsaProfileGrant', 'qsa_profile_agreement',
     'TransitionAck', 'TransitionCommand', 'TransitionPending', 'WIRE_VERSION', 'WorkerCompletionReport',
 ]

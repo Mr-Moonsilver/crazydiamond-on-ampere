@@ -623,5 +623,119 @@ class TerminalReleaseTests(unittest.TestCase):
             w.ReleaseAck(transaction, 0, 4, 3, released=False, request_closed=True)
 
 
+class QsaProfileProtocolTests(unittest.TestCase):
+    """Protocol evidence only: no event, lease retirement or box proof."""
+
+    def setUp(self):
+        self.query = w.QsaProfileQuery(txn(), 4, 1, 39, 3, (2, 3))
+
+    def replies(self, left, right=None, *, pending=False):
+        result = [w.QsaProfileObservation(self.query, rank, 'skipped')
+                  for rank in (0, 1)]
+        result.append(w.QsaProfileObservation(
+            self.query, 2, 'ready', left, 'queried-selection-copy'))
+        result.append(w.QsaProfileObservation(self.query, 3, 'pending') if pending
+                      else w.QsaProfileObservation(self.query, 3, 'ready',
+                                                  right or left, 'queried-selection-copy'))
+        return tuple(result)
+
+    def test_equal_actual_planner_profiles_agree_and_differing_profiles_refuse(self):
+        import sparse_history_dma as dma
+        shapes = []
+        for count in (4097, 97153):
+            plan = dma.make_sparse_plan(tuple(range(0, 2 * count, 2)),
+                tuple(range(1, 51)), tuple(range(1, 52)), 1,
+                valid_tokens=202400, null_page=0)
+            if plan.refused:
+                plan = dma.stream_sparse_plan(plan)
+            self.assertFalse(plan.refused)
+            waves = tuple((bucket.descriptors + dma.MAX_DESCRIPTORS - 1)
+                          // dma.MAX_DESCRIPTORS for bucket in plan.buckets)
+            shape = w.QsaScheduleShape('sparse_dma',
+                                       tuple(wave + 1 for wave in waves), waves)
+            shapes.append(shape)
+            verdict, grant = w.qsa_profile_agreement(
+                self.query, self.replies(shape), (0, 1, 2, 3))
+            self.assertEqual(verdict, 'agreed')
+            self.assertEqual(grant, w.QsaProfileGrant(self.query, shape))
+        self.assertEqual(shapes[0].bucket_waves, (17,))
+        self.assertEqual(shapes[1].bucket_waves, (380, 1))
+        self.assertEqual(w.qsa_profile_agreement(self.query,
+            self.replies(*shapes), (0, 1, 2, 3)),
+            ('unsupported-native-schedule-profile', None))
+
+    def test_pending_is_not_a_grant(self):
+        shape = w.QsaScheduleShape('dense_dma', (1,), (1,))
+        self.assertEqual(w.qsa_profile_agreement(self.query,
+            self.replies(shape, pending=True), (0, 1, 2, 3)), ('pending', None))
+
+    def test_route_and_submission_profile_both_participate_in_agreement(self):
+        cases = (
+            (w.QsaScheduleShape('dense_dma', (1,), (1,)),
+             w.QsaScheduleShape('sparse_dma', (1,), (1,))),
+            (w.QsaScheduleShape('sparse_dma', (1,), (1,)),
+             w.QsaScheduleShape('sparse_dma', (2,), (1,))),
+        )
+        for left, right in cases:
+            self.assertEqual(w.qsa_profile_agreement(self.query,
+                self.replies(left, right), (0, 1, 2, 3)),
+                ('unsupported-native-schedule-profile', None))
+
+    def test_empty_selection_is_an_explicit_profile(self):
+        shape = w.QsaScheduleShape('empty', (), ())
+        self.assertEqual(w.qsa_profile_agreement(self.query,
+            self.replies(shape), (0, 1, 2, 3))[0], 'agreed')
+
+    def test_stale_boundary_epoch_and_transaction_are_protocol_errors(self):
+        from dataclasses import replace
+        shape = w.QsaScheduleShape('dense_dma', (1,), (1,))
+        for query in (replace(self.query, boundary_op_seq=4),
+                      replace(self.query, state_epoch=5),
+                      replace(self.query, transaction=txn(txn_seq=2))):
+            replies = list(self.replies(shape))
+            replies[-1] = w.QsaProfileObservation(query, 3, 'ready', shape,
+                                                   'queried-selection-copy')
+            with self.assertRaises(E3ContractError):
+                w.qsa_profile_agreement(self.query, tuple(replies), (0, 1, 2, 3))
+
+    def test_missing_duplicate_unknown_and_boolean_ranks_are_protocol_errors(self):
+        shape = w.QsaScheduleShape('dense_dma', (1,), (1,))
+        replies = self.replies(shape)
+        for bad in (replies[:-1], replies[:-1] + (replies[-2],),
+                    replies[:-1] + (w.QsaProfileObservation(self.query, 9, 'skipped'),)):
+            with self.assertRaises(E3ContractError):
+                w.qsa_profile_agreement(self.query, bad, (0, 1, 2, 3))
+        with self.assertRaises(E3ContractError):
+            w.qsa_profile_agreement(self.query, replies, (False, 1, 2, 3))
+
+    def test_observation_cannot_claim_completion_or_skip_a_target(self):
+        shape = w.QsaScheduleShape('sparse_dma', (1,), (1,))
+        for args in ((self.query, 2, 'skipped'),
+                     (self.query, 0, 'pending'),
+                     (self.query, 2, 'pending', shape),
+                     (self.query, 2, 'ready', shape, 'bound-dense-host-plan'),
+                     (self.query, 2, 'ready', shape, 'rpc-returned')):
+            with self.assertRaises(E3ContractError):
+                w.QsaProfileObservation(*args)
+
+    def test_shapes_retain_existing_bounds_and_submission_semantics(self):
+        cases = (('empty', (1,), (1,)), ('dense_dma', (), ()),
+                 ('dense_dma', (2,), (1,)), ('sparse_dma', (17,), (17,)),
+                 ('sparse_dma', (382,), (381,)),
+                 ('sparse_dma', (1,) * 7, (1,) * 7),
+                 ('sparse_dma', (True,), (1,)),
+                 ('sparse_dma', [1], (1,)))
+        for args in cases:
+            with self.assertRaises(E3ContractError):
+                w.QsaScheduleShape(*args)
+
+    def test_repr_never_contains_request_identity(self):
+        shape = w.QsaScheduleShape('empty', (), ())
+        objects = (self.query, *self.replies(shape),
+                   w.QsaProfileGrant(self.query, shape))
+        for item in objects:
+            self.assertNotIn(UID, repr(item))
+
+
 if __name__ == '__main__':
     unittest.main()
