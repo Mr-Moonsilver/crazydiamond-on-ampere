@@ -764,10 +764,17 @@ class NativeWorkerBridge:
                              'quarantined', completed, pending, watermark,
                              report=report)
         if closed:
+            # drain() may first establish the cancelled receiver's consumer
+            # completion. Preserve that final queried PP proof before reset;
+            # the pre-drain report cannot release the remote sender's slot.
+            report = self._final_report or report
+            ack = CancelAck(transaction, self.rank, request.state_epoch,
+                            'released', report.completed_op_seqs,
+                            report.pending_op_seqs, report.completed_sequence,
+                            released=True, request_closed=True, report=report)
             self._forget()
-            return CancelAck(transaction, self.rank, request.state_epoch,
-                             'released', completed, pending, watermark,
-                             released=True, request_closed=True, report=report)
+            self._retained_cancel_ack = ack
+            return ack
         return CancelAck(transaction, self.rank, request.state_epoch,
                          disposition, completed, pending, watermark, report=report)
 

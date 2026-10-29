@@ -360,6 +360,8 @@ class CreditServer:
         if self.handoff is not None and self.handoff != transaction:
             raise AssertionError('clear_native for another transaction')
         self.calls.append(('clear', transaction))
+        self.handoff = None
+        self.operation = None
         return True
 
 

@@ -986,10 +986,11 @@ class DriverTests(unittest.TestCase):
             if self.driver.phase != 'segments':
                 break
         self.assertEqual(seen, [
-            w.SegmentKind.PREPARE, w.SegmentKind.PREPARE, w.SegmentKind.PP_RECEIVE,
+            w.SegmentKind.PREPARE, w.SegmentKind.PREPARE,
             w.SegmentKind.PREFIX,
             w.SegmentKind.LAYER, w.SegmentKind.LAYER, w.SegmentKind.SUFFIX,
-            w.SegmentKind.PP_SEND, w.SegmentKind.STATE_FINALIZE, w.SegmentKind.PREFIX,
+            w.SegmentKind.PP_SEND, w.SegmentKind.PP_RECEIVE,
+            w.SegmentKind.STATE_FINALIZE, w.SegmentKind.PREFIX,
             w.SegmentKind.LAYER, w.SegmentKind.LAYER, w.SegmentKind.SUFFIX,
             w.SegmentKind.STATE_FINALIZE])
         self.assertEqual(self.driver.phase, 'finalize')

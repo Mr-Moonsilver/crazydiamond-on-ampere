@@ -78,7 +78,7 @@ class ControllableEvent:
         self.stream = stream
 
     def query(self):
-        return self.complete
+        return self.complete and self.bus.permitted(self)
 
     def synchronize(self):
         # A real host wait blocks until the tail kernel completes.  The fake
@@ -93,6 +93,18 @@ class EventBus:
     def __init__(self):
         self.events = []
         self.syncs = []
+        self.pp_channel = None
+
+    def permitted(self, event):
+        channel = self.pp_channel
+        if channel is None or channel.peer is None:
+            return True
+        for ticket in channel.tickets:
+            if (ticket.state != 'retired'
+                    and not channel.matched(ticket)
+                    and self.events.index(event) >= self.events.index(ticket.event)):
+                return False
+        return True
 
     def event(self):
         return ControllableEvent(self)
@@ -192,6 +204,15 @@ class FakePPChannel:
         self.payload = 'hc-received'
         self.sends = 0
         self.release_send_calls = 0
+        self.peer = None
+        self.bus.pp_channel = self
+
+    def matched(self, ticket):
+        return self.peer is not None and any(
+            other.kind == ('recv' if self.is_sender else 'send')
+            and other.transaction == ticket.transaction
+            and other.stage == ticket.stage and other.seq == ticket.seq
+            for other in self.peer.tickets)
 
     def bind_consumer(self, lane, route_generation):
         if any(ticket.state != 'retired' for ticket in self.tickets):
@@ -213,8 +234,9 @@ class FakePPChannel:
     def poll_receive(self, ticket):
         if ticket.state == 'ready':
             return self.payload
-        if not self.ready:
+        if not self.ready or (self.peer is not None and not self.matched(ticket)):
             return None
+        ticket.event.complete = True
         ticket.state = 'ready'
         return self.payload
 
@@ -631,6 +653,8 @@ class Stack:
             channel = FakePPChannel(bus, is_sender=True)
         else:
             channel = FakePPChannel(bus, is_sender=False)
+            peer = self.workers[rank - 2].channel
+            channel.peer, peer.peer = peer, channel
         lane = FakeLane(layers=(0, 1) if stage == 0 else (2, 3))
         lane.is_sender = sender
         native = types.SimpleNamespace(
@@ -1157,45 +1181,29 @@ class CancellationTests(unittest.TestCase):
         self.assertTrue(all(worker.factory.released == 0
                             for worker in stack.workers.values()))
 
-    def test_preposted_receive_without_send_retains_the_receiver(self):
-        stack = Stack(stop_budget=2, stop_tick_budget=1)
-        for rank in (2, 3):
-            stack.worker(rank).channel.ready = False
-        # prepare stage0/stage1, pp_receive accepted; prefix stage1 then pends.
-        stack.drive(lambda: stack.driver.index >= 4)
-        stack.advance()
-        stack.advance()
-        self.assertEqual(stack.driver.phase, 'segments')
-        # Stage 0 has completed every accepted event and no PP transfer.  The
-        # receivers have completed prepare/receive work but their posted receive
-        # event is still unqueried, so their storage must stay owned.
-        for rank in (0, 1):
-            stack.worker(rank).bus.complete_all(True)
-        for rank in (2, 3):
-            worker = stack.worker(rank)
-            for op, (command, _ack) in worker.dispatcher.accepted.items():
-                if command.kind in ('prepare', 'pp_receive'):
-                    segment_record(worker, command.kind, op).event.complete = True
+    def test_stop_before_send_has_no_unmatched_receive(self):
+        stack = Stack(stop_budget=64, stop_tick_budget=1)
+        stack.drive(lambda: bool(stack.driver.plan) and stack.driver.index == 4)
+        stack.complete_everything()
         stack.driver.stop('abort')
-        with self.assertRaises(ed.DriverError):
-            for _ in range(4):
-                stack.driver.pump_stop(1)
-        # Stage 0 had no PP transfer and closed; stage 1 still owns the posted
-        # receive and the request row.
-        for rank in (0, 1):
-            self.assertIsNone(stack.worker(rank).dispatcher.transaction)
-            self.assertEqual(stack.worker(rank).factory.released, 1)
-        for rank in (2, 3):
-            self.assertIsNotNone(stack.worker(rank).dispatcher.transaction)
-            self.assertEqual(stack.worker(rank).factory.released, 0)
+        for _ in range(100):
+            stack.complete_everything()
+            stack.driver.pump_stop(1)
+            if not stack.driver.active:
+                break
+        self.assertFalse(stack.driver.active)
+        self.assertTrue(stack.all_dispatchers_reset())
+        self.assertFalse(stack.controller.leases.held_blocks())
+        self.assertEqual([len(stack.worker(r).channel.tickets) for r in (2, 3)], [0, 0])
         self.assertEqual(stack.controller.commits, 0)
-        self.assertEqual(stack.controller.cancels, 0)
-        self.assertTrue(stack.controller.leases.held_blocks())
+        self.assertEqual(stack.controller.cancels, 1)
 
     def test_partial_enqueue_quarantines_and_never_publishes(self):
         stack = Stack()
-        # Drive through suffix stage 0 (index 6), just before pp_send.
-        stack.drive(lambda: stack.driver.index >= 6)
+        # Stop before PP_SEND submission, independent of plan indices.
+        stack.drive(lambda: getattr(stack.driver, '_command', None) is not None
+                    and stack.driver._command.kind is w.SegmentKind.SUFFIX
+                    and stack.driver._command.stage == 0 and bool(stack.driver._inflight))
         for rank in (0, 1):
             worker = stack.worker(rank)
             def fail(*args, **kwargs):

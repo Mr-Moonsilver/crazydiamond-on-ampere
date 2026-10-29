@@ -715,6 +715,26 @@ _SEGMENT_ROLE = {
 }
 
 
+@dataclass
+class PPSubmissionObligation:
+    """Accepted sends require matching receive submissions even during stop.
+
+    Commands are the original typed, idempotent worker commands. Acceptance
+    does not imply device completion; the existing PP ledger owns that proof.
+    """
+    send: SegmentCommand
+    route_generation: int
+    receive: SegmentCommand | None = None
+    send_accepted: set = field(default_factory=set)
+    receive_accepted: set = field(default_factory=set)
+
+    def __post_init__(self):
+        if (type(self.send) is not SegmentCommand
+                or self.send.kind is not SegmentKind.PP_SEND or self.send.stage != 0
+                or type(self.route_generation) is not int or self.route_generation < 0):
+            raise DriverError('PP submission obligation requires its typed sender/route')
+
+
 class NativeSegmentDriver:
     """Wire-v1 bounded driver: one segment per tick, no whole-forward call.
 
@@ -822,6 +842,7 @@ class NativeSegmentDriver:
         self.pp_send_seq = None
         self.pp_receive_seq = None
         self.receiver_ticket = None
+        self._pp_submission = None
         self._bindings = {}
         self._bind_index = 0
         self._pending_binding = None
@@ -1254,7 +1275,6 @@ class NativeSegmentDriver:
         self.transfer_seq += 1
         plan = [dict(kind=SegmentKind.PREPARE, stage=0),
                 dict(kind=SegmentKind.PREPARE, stage=1),
-                dict(kind=SegmentKind.PP_RECEIVE, stage=1, seq=seq),
                 dict(kind=SegmentKind.PREFIX, stage=0)]
         for stage in (0, 1):
             if stage == 1:
@@ -1264,6 +1284,7 @@ class NativeSegmentDriver:
             plan.append(dict(kind=SegmentKind.SUFFIX, stage=stage))
             if stage == 0:
                 plan.append(dict(kind=SegmentKind.PP_SEND, stage=0, seq=seq))
+                plan.append(dict(kind=SegmentKind.PP_RECEIVE, stage=1, seq=seq))
             plan.append(dict(kind=SegmentKind.STATE_FINALIZE, stage=stage))
         return plan
 
@@ -1312,6 +1333,20 @@ class NativeSegmentDriver:
                 self.accepted_tickets[(rank, self._command.op_seq)] = self.tickets[rank]
                 self._accepted_descriptors[(rank, self._command.op_seq)] = descriptor
                 self._last_lane_sequences[rank] = (self.lanes[rank], self._command.op_seq)
+                if descriptor.kind is SegmentKind.PP_SEND:
+                    self.pp_ledgers[rank].note_sent(self.tx, descriptor.seq, rank)
+        if descriptor.kind in (SegmentKind.PP_SEND, SegmentKind.PP_RECEIVE):
+            obligation = self._pp_submission
+            if (obligation is None or obligation.send.transaction != self.tx
+                    or obligation.route_generation != self.route_generation):
+                raise DriverError('PP acceptance lacks its bound submission obligation')
+            expected = (obligation.send if descriptor.kind is SegmentKind.PP_SEND
+                        else obligation.receive)
+            if expected != self._command:
+                raise DriverError('PP acceptance differs from its retained command')
+            seen = (obligation.send_accepted if descriptor.kind is SegmentKind.PP_SEND
+                    else obligation.receive_accepted)
+            seen.update(accepted_ranks)
         if pending:
             if self._command.kind is SegmentKind.LAYER:
                 self.qsa_control.add(self._command.stage, self._command.descriptor.layer_start,
@@ -1335,8 +1370,6 @@ class NativeSegmentDriver:
             self.bound_ticket = self.tickets[representative]
         if descriptor.kind is SegmentKind.PP_SEND:
             self.controller.note_pp_send(self.tx, descriptor.seq)
-            for sender, ledger in self.pp_ledgers.items():
-                ledger.note_sent(self.tx, descriptor.seq, sender)
             self.pp_send_ticket = self.tickets[representative]
         if descriptor.kind is SegmentKind.PP_RECEIVE:
             self.receiver_ticket = self.tickets[targets[0]]
@@ -1865,6 +1898,7 @@ class NativeSegmentDriver:
         self.bound_ticket = None
         self.pp_send_ticket = None
         self.receiver_ticket = None
+        self._pp_submission = None
         self.pp_send_seq = None
         self.pp_receive_seq = None
         self.last_ticket = {0: None, 1: None}
@@ -1966,8 +2000,21 @@ class NativeSegmentDriver:
         command = SegmentCommand(descriptor, op_seq, targets, source=source, profile=profile)
         if kind is SegmentKind.PP_SEND:
             self.pp_send_seq = descriptor.seq
+            if self._pp_submission is None:
+                self._pp_submission = PPSubmissionObligation(command, self.route_generation)
+            elif self._pp_submission.send != command:
+                raise DriverError('PP send replaced a retained submission obligation')
         if kind is SegmentKind.PP_RECEIVE:
             self.pp_receive_seq = descriptor.seq
+            obligation = self._pp_submission
+            if (obligation is None or obligation.send.transaction != self.tx
+                    or obligation.send.descriptor.seq != descriptor.seq
+                    or obligation.route_generation != self.route_generation
+                    or obligation.send_accepted != set(self.stage_ranks[0])):
+                raise DriverError('PP receive requires matching accepted sends')
+            if obligation.receive is not None and obligation.receive != command:
+                raise DriverError('PP receive replaced a retained submission command')
+            obligation.receive = command
         self._send_segment(command, targets)
 
     def _prepare_source(self, targets):
@@ -2100,6 +2147,8 @@ class NativeSegmentDriver:
             # Nothing is owned and the full route is restored: stop is done.
             self.stop_kind = None
             return
+        if self._drive_pp_stop_submission():
+            return
         if self._receipts_pending():
             self._stop_round()
             self._next_receipt()
@@ -2120,6 +2169,33 @@ class NativeSegmentDriver:
                                 (CancelRequest(self.tx, self.admission.state_epoch,
                                                reason),), {}, None),
                      self.ranks)
+
+    def _drive_pp_stop_submission(self):
+        """Finish a partially accepted transfer before cancelling either end.
+
+        Never finish unrelated layers or wait for send completion before the
+        receive. Missing RPC replies remain transport failures. A responsive
+        pending peer is retried under the unchanged stop-round bound.
+        """
+        obligation = self._pp_submission
+        if obligation is None or not obligation.send_accepted:
+            return False
+        if (obligation.send.transaction != self.tx
+                or obligation.route_generation != self.route_generation):
+            raise DriverError('stop found a foreign PP submission obligation')
+        if obligation.send_accepted != set(self.stage_ranks[0]):
+            self._stop_round()
+            self._send_segment(obligation.send, self.stage_ranks[0])
+            return True
+        if obligation.receive_accepted != set(self.stage_ranks[1]):
+            self._stop_round()
+            if obligation.receive is None:
+                self._send_plan_entry(dict(kind=SegmentKind.PP_RECEIVE,
+                                           stage=1, seq=obligation.send.descriptor.seq))
+            else:
+                self._send_segment(obligation.receive, self.stage_ranks[1])
+            return True
+        return False
 
     def _drive_retained_cancel(self):
         """Close the exact retained request row through the typed worker path.
@@ -2427,6 +2503,7 @@ class NativeSegmentDriver:
         self.bound_ticket = None
         self.pp_send_ticket = None
         self.receiver_ticket = None
+        self._pp_submission = None
         self.pp_send_seq = None
         self.pp_receive_seq = None
         self._bindings = {}
