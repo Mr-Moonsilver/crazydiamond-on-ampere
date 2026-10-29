@@ -341,14 +341,16 @@ def run_scenario(cfg, scheduler, leases, owner, cache_record, *, graph, out, var
                 journal.write(json.dumps({'state': state, 'qsa_control': driver.qsa_control.snapshot(),
                     'control_path': driver.control_path.snapshot()}, default=str) + '\n');journal.flush()
                 last = state
-            if driver.tx is None and not controller.active:
+            if not driver.active and not driver._inflight:
                 break
             time.sleep(0.001)
         else:
             raise TimeoutError('connected coordinator deadline')
     workers = network.stats()
     assert driver.error is None
-    assert leases.shutdown()['clean'] and not network.transport._calls
+    assert leases.shutdown()['clean'] and not network.transport._calls, {
+        'leases': leases.shutdown(), 'calls': list(network.transport._calls),
+        'driver': driver.status()}
     # The actual ordinary scheduler advances the final prompt token and then
     # four tokens through an explicitly synthetic sampling-output leaf.
     for tick in range(40):
