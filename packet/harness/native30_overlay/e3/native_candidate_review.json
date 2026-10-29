@@ -2268,10 +2268,10 @@
     "unexercised request/cache/route boundaries; multi-rank paged cancellation/refill, reserve/lifetime/leak and authenticated canary"
   ],
   "mounted_runtime_import_audit": {
-    "graph": "reviews/codex-20261029-native17-mounted-import-edges.json",
-    "graph_sha256": "acd317ad8fe01411811a23b64c06e04d33b93c1d625b062cf0a7d0e903eadcbc",
+    "graph": "reviews/codex-20261029-native18-mounted-import-edges.json",
+    "graph_sha256": "f2b64624ae4630b4ad444e927d97bed6e55f6f358924156f286fc8a712f41540",
     "modules": 83,
-    "scope": "all83 active generated module source pins matched proof and actual bundled generation; scheduler_hooks only code delta. Proof diagnostic JSON declaration wrapper was not consumed by ordinary CoW scenario; actual generator emits correct evidence subobject and final owner validator checks it.",
+    "scope": "fresh source-only graph over actual generated native18 launcher mounts; all indexed source bytes must match held final generation. Actual-image CPU/GPU import proof checks81runtime modules; full deferred invocation audit not re-claimed. Code matches VM proof; inherited metadata replaced by actual final generator.",
     "tool_sha256": "b14408916e55983c9ec922926a4bdfac3c54d96db62eb5b7f8c265c98fed63d1"
   },
   "native15_box_regrade": {
