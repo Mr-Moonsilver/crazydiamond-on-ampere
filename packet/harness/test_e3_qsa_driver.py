@@ -191,11 +191,12 @@ class DriverTests(unittest.TestCase):
         lane.layer(0)
         kinds = []
         # pre -> paused; advance#1 bucket0 -> paused; advance#2 pending -> paused;
-        # advance#3 bucket1 -> paused; advance#4 StopIteration -> tail -> layer done.
-        for _ in range(5):
+        # advance#3 bucket1 -> paused; advance#4 StopIteration -> typed tail
+        # boundary; the next layer call executes tail after peer agreement.
+        for _ in range(6):
             record = lane.layer(1)
             kinds.append(record.kind)
-        self.assertEqual(kinds, ['layer-paused'] * 4 + ['layer'])
+        self.assertEqual(kinds, ['layer-paused'] * 5 + ['layer'])
         self.assertEqual(lane.cursor, 2)
         self.assertEqual(lane.hidden_states, 'h0>0+pre|o')
         self.assertEqual([c[0] for c in self.operation.calls], ['begin', 'producer', 'attach', 'end'])
@@ -353,7 +354,9 @@ class SparseDriverTests(unittest.TestCase):
         self.assertTrue(operation.has_sparse_source('qsa1'))
         self.assertEqual(lane.layer(1).kind, 'layer-paused')   # selection phase
         self.assertEqual(lane.layer(1).kind, 'layer-paused')   # compact bucket
-        lane.layer(1)                                          # StopIteration
+        lane.layer(1)                                          # StopIteration/boundary
+        self.assertTrue(driver.at_tail_boundary(1))
+        lane.layer(1)                                          # tail after boundary
         tags = [record[0] for record in driver.records]
         self.assertEqual(tags, ['pre', 'selection', 'bucket', 'attended', 'tail'])
         self.assertEqual(driver.phases, {})
@@ -365,6 +368,7 @@ class SparseDriverTests(unittest.TestCase):
         self.assertFalse(operation.has_sparse_source('qsa1'))
         self.assertEqual(operation.attached, [])
         self.assertNotIn(('hold', 'qsa1'), operation.calls)
+        lane.layer(1)
         lane.layer(1)
         lane.layer(1)
         self.assertEqual(driver.records[-1][0], 'tail')

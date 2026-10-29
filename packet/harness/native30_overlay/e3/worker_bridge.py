@@ -432,7 +432,8 @@ class NativeWorkerBridge:
             command.op_seq, accepted=True, cursor=report.cursor,
             host_submit_ns=self._host_ns[command.op_seq],
             paused=bool(result.get('paused')), report=report,
-            profile_boundary=bool(result.get('profile_boundary')))
+            profile_boundary=bool(result.get('profile_boundary')),
+            tail_boundary=bool(result.get('tail_boundary')))
 
     # -- peer binding / receipts ------------------------------------------
     def bind_pp(self, binding):

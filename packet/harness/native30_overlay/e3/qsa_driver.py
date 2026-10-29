@@ -215,6 +215,12 @@ class QsaLayerDriver:
             return self._pre(lane, layer_idx)
         if phase.phase == 'bucket':
             return self._bucket(lane, phase)
+        if phase.phase == 'tail-ready':
+            # The previous accepted layer command exposed a typed tail
+            # boundary. The engine starts this command only after both active
+            # TP peers accepted that boundary, so neither peer enters o_proj
+            # while the other still waits for its final consumer event.
+            return self._tail(lane, phase)
         raise QsaDriverError(f'layer {layer_idx} is in unexpected phase {phase.phase!r}')
 
     def submission_credit(self, layer_idx):
@@ -237,6 +243,10 @@ class QsaLayerDriver:
     def at_schedule_boundary(self, layer_idx):
         phase = self.phases.get(layer_idx)
         return phase is not None and phase.boundary is not None and phase.grant is None
+
+    def at_tail_boundary(self, layer_idx):
+        phase = self.phases.get(layer_idx)
+        return phase is not None and phase.phase == 'tail-ready'
 
     def schedule_profile(self, query, rank):
         from wire_v1 import QsaProfileObservation
@@ -344,7 +354,13 @@ class QsaLayerDriver:
         except StopIteration as stop:
             span = stop.value
             self.records.append(('attended', phase.layer_idx, span))
-            return self._tail(lane, phase)
+            # Do not call the potentially blocking TP o_proj collective from
+            # the same command that first observes this rank's final event.
+            # A paused typed acceptance lets the engine wait for its peer's
+            # corresponding boundary before issuing the next all-rank layer
+            # command. Stop before that command cancels both without a tail.
+            phase.phase = 'tail-ready'
+            return None
         except (SparsePlanRefused, SparseFallbackRequired) as exc:
             # Typed admission refusal: the arena was not filled beside decode.
             # Park this layer for the coordinated serial route; never count it

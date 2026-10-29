@@ -113,6 +113,8 @@ class QsaControlCounters:
     FIELDS = ('layer_commands', 'layer_pending_rounds', 'boundary_commands',
               'profile_polls', 'profile_retry_polls', 'profile_pending_rounds',
               'bucket_commands', 'bucket_pending_rounds', 'bucket_accepted_commands',
+              'tail_boundaries', 'tail_commands', 'tail_pending_rounds',
+              'tail_accepted_commands',
               'agreed_buckets', 'agreed_copy_waves', 'profile_mismatches',
               'profile_timeouts', 'profile_worker_host_ns')
 

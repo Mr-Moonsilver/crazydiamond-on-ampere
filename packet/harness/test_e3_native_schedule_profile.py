@@ -251,7 +251,9 @@ class ScheduleProfile(c.CreditHarness, unittest.TestCase):
         for tick in range(400):
             network.complete_everything()
             network.driver.advance(deliver_outputs=False)
-            if network.driver.qsa_control.snapshot()['layers'][0]['bucket_accepted_commands'] == 18:
+            layer = network.driver.qsa_control.snapshot()['layers'][0]
+            if (layer['bucket_accepted_commands'] == 18
+                    and layer['tail_accepted_commands'] == 1):
                 break
         else:
             self.fail('connected equal-profile layer did not complete')
@@ -266,11 +268,14 @@ class ScheduleProfile(c.CreditHarness, unittest.TestCase):
                      if method == 'flash_s5_poll' and type(args[0]) is w.QsaProfileQuery
                      and (args[0].stage, args[0].layer) == (row['stage'], row['layer'])]
             self.assertEqual(row['layer_commands'], len(commands))
-            self.assertEqual(row['bucket_commands'], sum(c.profile is not None for c in commands))
+            self.assertEqual(row['bucket_commands'] + row['tail_commands'],
+                             sum(c.profile is not None for c in commands))
             self.assertEqual(row['profile_polls'], len(polls))
             if (row['stage'], row['layer']) == (0, 0):
                 self.assertEqual((row['boundary_commands'], row['agreed_buckets'], row['agreed_copy_waves']), (1, 1, 17))
                 self.assertEqual(row['bucket_accepted_commands'], 18)
+                self.assertEqual((row['tail_boundaries'], row['tail_commands'],
+                                  row['tail_accepted_commands']), (1, 1, 1))
         receipt = network.driver.overlap_evidence(network.driver._journal[0]['observed_ns'],
                                                   network.driver._monotonic_ns())
         self.assertEqual(receipt['measurement']['qsa_control'], counters)
@@ -309,8 +314,9 @@ class ScheduleProfile(c.CreditHarness, unittest.TestCase):
             if not next(iter(acks.values())).paused:
                 break
         # Seventeen copy submissions, with the attention work on the final
-        # wave, then one host-credit pull to finish the layer after its event.
-        self.assertEqual(calls, 18)
+        # wave, one host-credit pull to bind the all-rank tail boundary, then
+        # one separate command that enters the TP output collective together.
+        self.assertEqual(calls, 19)
         self.assertEqual([s.operation.stats['copy_events'] for s in world.stacks], [17, 17])
         self.finish(world)
         self.complete_and_release(world)

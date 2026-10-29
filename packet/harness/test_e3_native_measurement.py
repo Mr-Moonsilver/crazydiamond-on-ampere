@@ -155,6 +155,9 @@ def make_long_stack(*, tokens, layers=nm.MODEL_LAYER_COUNT, chunk=1024,
 
     for rank, stage in ((0, 0), (1, 0), (2, 1), (3, 1)):
         add_worker(rank, stage)
+    for sender, receiver in ((0, 2), (1, 3)):
+        stack.workers[sender].channel.peer = stack.workers[receiver].channel
+        stack.workers[receiver].channel.peer = stack.workers[sender].channel
     stack.transport.network = types.SimpleNamespace(workers=stack.workers)
     stack.worker = stack.workers.__getitem__
     for rank in (2, 3):
@@ -164,6 +167,10 @@ def make_long_stack(*, tokens, layers=nm.MODEL_LAYER_COUNT, chunk=1024,
         for _ in range(limit):
             if until():
                 return
+            # The real PP receiver is gated by the sender's completion.  The
+            # CPU event bus has no device progress thread, so queryable event
+            # completion must advance between driver ticks.
+            complete_everything()
             stack.driver.advance()
         raise AssertionError(
             'driver did not reach the expected state; phase=%s index=%s'

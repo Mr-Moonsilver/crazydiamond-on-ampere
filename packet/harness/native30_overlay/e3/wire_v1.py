@@ -1148,6 +1148,7 @@ class SegmentAcceptance:
     # Host-queried completions ride along with the reply (piggybacked poll).
     report: WorkerCompletionReport | None = field(default=None, repr=False)
     profile_boundary: bool = False
+    tail_boundary: bool = False
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
@@ -1163,6 +1164,9 @@ class SegmentAcceptance:
         if (type(self.profile_boundary) is not bool or
                 (self.profile_boundary and not self.paused)):
             raise E3ContractError('QSA profile boundary must be an accepted paused layer')
+        if (type(self.tail_boundary) is not bool or
+                (self.tail_boundary and (not self.paused or self.profile_boundary))):
+            raise E3ContractError('QSA tail boundary must be a distinct accepted paused layer')
         flags = (self.accepted, self.pending, self.skipped)
         if any(type(flag) is not bool for flag in flags):
             raise E3ContractError('acceptance flags must be bool')

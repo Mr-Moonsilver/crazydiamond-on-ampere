@@ -735,6 +735,29 @@ class PPSubmissionObligation:
             raise DriverError('PP submission obligation requires its typed sender/route')
 
 
+@dataclass
+class TPTailSubmissionObligation:
+    """A partially accepted tail command must reach every active TP peer.
+
+    The preceding all-rank tail boundary proves both peers observed their
+    final consumer before this command is issued. The original command is
+    retained for exact idempotent retries during a stop.
+    """
+    command: SegmentCommand
+    boundary_op_seq: int
+    route_generation: int
+    accepted: set = field(default_factory=set)
+
+    def __post_init__(self):
+        if (type(self.command) is not SegmentCommand
+                or self.command.kind is not SegmentKind.LAYER
+                or type(self.boundary_op_seq) is not int
+                or self.boundary_op_seq >= self.command.op_seq
+                or type(self.route_generation) is not int
+                or self.route_generation < 0):
+            raise DriverError('TP tail obligation needs its typed boundary and route')
+
+
 class NativeSegmentDriver:
     """Wire-v1 bounded driver: one segment per tick, no whole-forward call.
 
@@ -828,6 +851,8 @@ class NativeSegmentDriver:
         self._profile_query = None
         self._profile_observed = {}
         self._profile_grants = {}
+        self._tail_boundary = None
+        self._tail_submission = None
         self._profile_deadline = None
         self._profile_poll_count = 0
         # Engine-lifetime count, not a count inferred from the raw ring/window.
@@ -1034,8 +1059,12 @@ class NativeSegmentDriver:
                                  profile_retry_polls=int(self._profile_poll_count > 0))
             self._profile_poll_count += 1
         elif kind == 'segment' and self._command.kind is SegmentKind.LAYER:
+            tail_command = (self._tail_submission is not None
+                            and self._tail_submission.command == self._command)
             self.qsa_control.add(self._command.stage, self._command.descriptor.layer_start,
-                layer_commands=1, bucket_commands=int(self._command.profile is not None))
+                layer_commands=1,
+                bucket_commands=int(self._command.profile is not None and not tail_command),
+                tail_commands=int(tail_command))
         self._inflight[sequence] = kind
         return sequence
 
@@ -1348,11 +1377,20 @@ class NativeSegmentDriver:
             seen = (obligation.send_accepted if descriptor.kind is SegmentKind.PP_SEND
                     else obligation.receive_accepted)
             seen.update(accepted_ranks)
+        tail_submission = self._tail_submission
+        if tail_submission is not None and tail_submission.command == self._command:
+            if (tail_submission.route_generation != self.route_generation
+                    or self._command.transaction != self.tx):
+                raise DriverError('TP tail acceptance differs from its route/transaction')
+            tail_submission.accepted.update(accepted_ranks)
         if pending:
             if self._command.kind is SegmentKind.LAYER:
+                tail_command = (tail_submission is not None
+                                and tail_submission.command == self._command)
                 self.qsa_control.add(self._command.stage, self._command.descriptor.layer_start,
                     layer_pending_rounds=1,
-                    bucket_pending_rounds=int(self._command.profile is not None))
+                    bucket_pending_rounds=int(self._command.profile is not None and not tail_command),
+                    tail_pending_rounds=int(tail_command))
             self._retry = self._command
             for report in reports:
                 self._ingest_report(report)
@@ -1364,6 +1402,9 @@ class NativeSegmentDriver:
         boundaries = {item.profile_boundary for item in accepted if item.accepted}
         if len(boundaries) != 1:
             raise DriverError('TP workers disagree on the QSA submission boundary')
+        tail_boundaries = {item.tail_boundary for item in accepted if item.accepted}
+        if len(tail_boundaries) != 1:
+            raise DriverError('TP workers disagree on the QSA tail boundary')
         representative = targets[0]
         self.last_ticket[descriptor.stage] = self.tickets[representative]
         if descriptor.kind is SegmentKind.PREPARE and self.bound_ticket is None:
@@ -1399,8 +1440,11 @@ class NativeSegmentDriver:
             self._ingest_report(report)
 
         if descriptor.kind is SegmentKind.LAYER and self._command.profile is not None:
+            tail_command = (tail_submission is not None
+                            and tail_submission.command == self._command)
             self.qsa_control.add(descriptor.stage, descriptor.layer_start,
-                                 bucket_accepted_commands=1)
+                                 bucket_accepted_commands=int(not tail_command),
+                                 tail_accepted_commands=int(tail_command))
         if boundaries == {True}:
             if self._command.profile is not None:
                 raise DriverError('QSA profile boundary repeated after its grant')
@@ -1412,6 +1456,24 @@ class NativeSegmentDriver:
             self._profile_poll_count = 0
             self._profile_deadline = self.clock() + self.reply_timeout_s
             self.phase = 'profile'
+        if tail_boundaries == {True}:
+            if descriptor.kind is not SegmentKind.LAYER or paused != {True}:
+                raise DriverError('QSA tail boundary is not a paused layer')
+            if self._tail_boundary is not None:
+                raise DriverError('QSA tail boundary repeated before its tail')
+            self._tail_boundary = (self.tx, descriptor.stage,
+                                   descriptor.layer_start, self._command.op_seq,
+                                   self.route_generation)
+            self.qsa_control.add(descriptor.stage, descriptor.layer_start,
+                                 tail_boundaries=1)
+            self._record('qsa_tail_boundary', transaction=self.tx.txn_seq,
+                         stage=descriptor.stage, layer=descriptor.layer_start,
+                         op_seq=self._command.op_seq, ranks=list(targets))
+        if tail_submission is not None and tail_submission.command == self._command:
+            if tail_submission.accepted != set(targets) or paused != {False}:
+                raise DriverError('TP tail did not finish on every active-stage peer')
+            self._tail_boundary = None
+            self._tail_submission = None
 
     def _apply_profile(self, values):
         query = self._profile_query
@@ -1905,6 +1967,8 @@ class NativeSegmentDriver:
         self._profile_query = None
         self._profile_observed = {}
         self._profile_grants = {}
+        self._tail_boundary = None
+        self._tail_submission = None
         self._profile_deadline = None
         self._profile_poll_count = 0
         self.reports = {}
@@ -2013,6 +2077,16 @@ class NativeSegmentDriver:
                   if kind is SegmentKind.PREPARE else None)
         profile = self._profile_grants.get((stage, layer)) if kind is SegmentKind.LAYER else None
         command = SegmentCommand(descriptor, op_seq, targets, source=source, profile=profile)
+        boundary = self._tail_boundary
+        if kind is SegmentKind.LAYER and boundary is not None:
+            if boundary != (self.tx, stage, layer, boundary[3], self.route_generation):
+                raise DriverError('TP tail boundary belongs to another layer or route')
+            if self._tail_submission is not None:
+                if self._tail_submission.command != command:
+                    raise DriverError('TP tail command replaced its retained obligation')
+            else:
+                self._tail_submission = TPTailSubmissionObligation(
+                    command, boundary[3], self.route_generation)
         if kind is SegmentKind.PP_SEND:
             self.pp_send_seq = descriptor.seq
             if self._pp_submission is None:
@@ -2162,6 +2236,8 @@ class NativeSegmentDriver:
             # Nothing is owned and the full route is restored: stop is done.
             self.stop_kind = None
             return
+        if self._drive_tail_stop_submission():
+            return
         if self._drive_pp_stop_submission():
             return
         if self._receipts_pending():
@@ -2209,6 +2285,29 @@ class NativeSegmentDriver:
                                            stage=1, seq=obligation.send.descriptor.seq))
             else:
                 self._send_segment(obligation.receive, self.stage_ranks[1])
+            return True
+        return False
+
+    def _drive_tail_stop_submission(self):
+        """Settle any accepted tail entry before cancelling its TP peer.
+
+        A stop before the all-rank tail command has no tail obligation. Once a
+        rank accepted that command, the exact same typed command is retried to
+        every active-stage peer until both accepted it. The normal cancellation
+        path then queries completion; a missing reply remains a transport
+        failure, never a fabricated clean close.
+        """
+        obligation = self._tail_submission
+        if obligation is None or not obligation.accepted:
+            return False
+        command = obligation.command
+        if (command.transaction != self.tx
+                or obligation.route_generation != self.route_generation):
+            raise DriverError('stop found a foreign TP tail obligation')
+        targets = self.stage_ranks[command.stage]
+        if obligation.accepted != set(targets):
+            self._stop_round()
+            self._send_segment(command, targets)
             return True
         return False
 
@@ -2504,6 +2603,8 @@ class NativeSegmentDriver:
         self._profile_query = None
         self._profile_observed = {}
         self._profile_grants = {}
+        self._tail_boundary = None
+        self._tail_submission = None
         self._profile_deadline = None
         self._profile_poll_count = 0
         self.stop_kind = None

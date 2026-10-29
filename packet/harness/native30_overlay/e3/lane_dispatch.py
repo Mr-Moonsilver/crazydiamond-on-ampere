@@ -409,9 +409,11 @@ class LaneDispatcher:
         self._partial = True
         record = self.lane.layer(command.layer_start)
         boundary = getattr(self.driver, 'at_schedule_boundary', None)
+        tail_boundary = getattr(self.driver, 'at_tail_boundary', None)
         return {'kind': record.kind, 'layer': command.layer_start,
                 'paused': record.kind == 'layer-paused',
-                'profile_boundary': bool(callable(boundary) and boundary(command.layer_start))}
+                'profile_boundary': bool(callable(boundary) and boundary(command.layer_start)),
+                'tail_boundary': bool(callable(tail_boundary) and tail_boundary(command.layer_start))}
 
     def _do_suffix(self, command):
         self._need_chunk()

@@ -792,6 +792,14 @@ class CreditHarness:
             self.assertEqual(world.trackers[rank].pending,
                              (command.op_seq, command.descriptor))
 
+    def complete_tail_after_boundary(self, world, command, acks):
+        self.expect_accepted(world, command, acks, paused=True)
+        self.assertTrue(all(acks[r].tail_boundary for r in world.ranks))
+        tail_command, tail_acks = world.send('layer', layer=command.descriptor.layer_start)
+        self.expect_accepted(world, tail_command, tail_acks, paused=False)
+        self.assertTrue(all(not tail_acks[r].tail_boundary for r in world.ranks))
+        return tail_command, tail_acks
+
     def do(self, world, kind, *, layer=None, source=None, paused=None):
         command, acks = world.send(kind, layer=layer, source=source)
         self.expect_accepted(world, command, acks, paused=paused)
@@ -902,8 +910,8 @@ class AttentionCreditTests(CreditHarness, unittest.TestCase):
         # the next submission.  It is still the same command and op_seq.
         stack.ready_attention()
         acks = world.deliver(command)
-        self.expect_accepted(world, command, acks, paused=False)
-        self.assertEqual(world.accepted[0], [0, 1, 2, 3, 4])
+        self.complete_tail_after_boundary(world, command, acks)
+        self.assertEqual(world.accepted[0], [0, 1, 2, 3, 4, 5])
         self.assertEqual(stack.attention.post_calls, 1)
         self.assertEqual(stack.attention.pre_calls, 1)
         self.assertEqual(stack.operation.stats['buckets'], 1)
@@ -920,7 +928,7 @@ class AttentionCreditTests(CreditHarness, unittest.TestCase):
                         'operation output tensor')
 
         self.finish(world)
-        self.assertEqual(world.accepted[0], [0, 1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual(world.accepted[0], [0, 1, 2, 3, 4, 5, 6, 7, 8])
         report = self.complete_and_release(world)[0]
         self.assertEqual(report.completed_op_seqs, tuple(world.accepted[0]))
         kinds = [proof.kind for proof in report.proofs]
@@ -976,7 +984,7 @@ class AttentionCreditTests(CreditHarness, unittest.TestCase):
         self.assertEqual(trap.calls, [])
         stack.ready_attention()
         acks = world.deliver(command)
-        self.expect_accepted(world, command, acks, paused=False)
+        self.complete_tail_after_boundary(world, command, acks)
         # The oracle runs only in advance(), once the queried consumer exists.
         self.assertEqual(trap.calls, ['bucket'])
 
@@ -1007,8 +1015,7 @@ class AttentionCreditTests(CreditHarness, unittest.TestCase):
         command, acks = world.send('layer', layer=0)
         self.expect_pending(world, command, acks)
         stack.ready_attention()
-        self.expect_accepted(world, command, world.deliver(command),
-                             paused=False)
+        self.complete_tail_after_boundary(world, command, world.deliver(command))
         self.finish(world)
         self.complete_and_release(world)
         self.assertEqual(stack.factory.released, 1)
@@ -1091,9 +1098,8 @@ class SparseSelectionCreditTests(CreditHarness, unittest.TestCase):
         self.assertEqual(world.accepted[0], [0, 1, 2, 3, 4])
 
         stack.ready_attention()
-        self.expect_accepted(world, command, world.deliver(command),
-                             paused=False)
-        self.assertEqual(world.accepted[0], [0, 1, 2, 3, 4, 5])
+        self.complete_tail_after_boundary(world, command, world.deliver(command))
+        self.assertEqual(world.accepted[0], [0, 1, 2, 3, 4, 5, 6])
         self.assertEqual(stack.operation.stats['sparse_buckets'], 1)
         self.assertEqual(stack.attention.post_calls, 1)
 
@@ -1178,7 +1184,8 @@ class PeerCreditTests(CreditHarness, unittest.TestCase):
         self.stack(world, 1).ready_attention()
         acks = world.deliver(command)
         self.assertTrue(acks[1].accepted)
-        self.assertFalse(acks[1].paused)
+        self.assertTrue(acks[1].paused)
+        self.assertTrue(acks[1].tail_boundary)
         self.assertTrue(acks[0].pending)
         self.assertEqual(world.accepted[1], [0, 1, 2, 3, 4])
         self.assertEqual(world.accepted[0], [0, 1, 2, 3])
@@ -1194,7 +1201,7 @@ class PeerCreditTests(CreditHarness, unittest.TestCase):
         self.assertTrue(acks[1].accepted)
         self.assertEqual(acks[1].op_seq, command.op_seq)
         self.assertTrue(acks[0].pending)
-        self.assertEqual(stack1.attention.post_calls, 1)
+        self.assertEqual(stack1.attention.post_calls, 0)
         self.assertEqual(len(stack1.dispatcher.events), 5)
 
         self.stack(world, 0).ready_attention()
@@ -1205,6 +1212,8 @@ class PeerCreditTests(CreditHarness, unittest.TestCase):
                          {0: [0, 1, 2, 3, 4], 1: [0, 1, 2, 3, 4]})
         self.assertEqual(world.trackers[0].last_accepted, command.op_seq)
         self.assertEqual(len(self.stack(world, 0).dispatcher.events), 5)
+        self.complete_tail_after_boundary(world, command, acks)
+        self.assertEqual([self.stack(world, r).attention.post_calls for r in world.ranks], [1, 1])
 
 
 class CancellationCreditTests(CreditHarness, unittest.TestCase):

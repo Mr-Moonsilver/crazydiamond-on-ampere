@@ -97,7 +97,7 @@ class EventBus:
 
     def permitted(self, event):
         channel = self.pp_channel
-        if channel is None or channel.peer is None:
+        if channel is None:
             return True
         for ticket in channel.tickets:
             if (ticket.state != 'retired'
@@ -234,7 +234,7 @@ class FakePPChannel:
     def poll_receive(self, ticket):
         if ticket.state == 'ready':
             return self.payload
-        if not self.ready or (self.peer is not None and not self.matched(ticket)):
+        if not self.ready or not self.matched(ticket):
             return None
         ticket.event.complete = True
         ticket.state = 'ready'
@@ -653,8 +653,9 @@ class Stack:
             channel = FakePPChannel(bus, is_sender=True)
         else:
             channel = FakePPChannel(bus, is_sender=False)
-            peer = self.workers[rank - 2].channel
-            channel.peer, peer.peer = peer, channel
+            if rank - 2 in self.workers:
+                peer = self.workers[rank - 2].channel
+                channel.peer, peer.peer = peer, channel
         lane = FakeLane(layers=(0, 1) if stage == 0 else (2, 3))
         lane.is_sender = sender
         native = types.SimpleNamespace(
