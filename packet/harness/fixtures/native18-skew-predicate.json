@@ -1,0 +1,373 @@
+{
+  "actual_helper": true,
+  "allocator_live": 0,
+  "arena_provider_unpatched": true,
+  "backend_sha256": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799",
+  "completion_proof_count": 4,
+  "completion_proofs": [
+    {
+      "completion_seq": 1,
+      "kind": "gpu_event",
+      "ticket": {
+        "dependency_role": "producer",
+        "lane": {
+          "context_id": 0,
+          "role": "prefill",
+          "storage_epoch": 2,
+          "worker_rank": 0
+        },
+        "op_seq": 0,
+        "transaction": {
+          "chunk_end": 101200,
+          "chunk_start": 101150,
+          "engine_epoch": 1,
+          "request_generation": 1,
+          "request_uid": "device-path",
+          "txn_seq": 2
+        },
+        "worker_rank": 0
+      }
+    },
+    {
+      "completion_seq": 2,
+      "kind": "copy_event",
+      "ticket": {
+        "dependency_role": "handoff",
+        "lane": {
+          "context_id": 0,
+          "role": "prefill",
+          "storage_epoch": 2,
+          "worker_rank": 0
+        },
+        "op_seq": 1,
+        "transaction": {
+          "chunk_end": 101200,
+          "chunk_start": 101150,
+          "engine_epoch": 1,
+          "request_generation": 1,
+          "request_uid": "device-path",
+          "txn_seq": 2
+        },
+        "worker_rank": 0
+      }
+    },
+    {
+      "completion_seq": 3,
+      "kind": "copy_event",
+      "ticket": {
+        "dependency_role": "producer",
+        "lane": {
+          "context_id": 0,
+          "role": "prefill",
+          "storage_epoch": 2,
+          "worker_rank": 0
+        },
+        "op_seq": 2,
+        "transaction": {
+          "chunk_end": 101200,
+          "chunk_start": 101150,
+          "engine_epoch": 1,
+          "request_generation": 1,
+          "request_uid": "device-path",
+          "txn_seq": 2
+        },
+        "worker_rank": 0
+      }
+    },
+    {
+      "completion_seq": 4,
+      "kind": "gpu_event",
+      "ticket": {
+        "dependency_role": "consumer",
+        "lane": {
+          "context_id": 0,
+          "role": "prefill",
+          "storage_epoch": 2,
+          "worker_rank": 0
+        },
+        "op_seq": 3,
+        "transaction": {
+          "chunk_end": 101200,
+          "chunk_start": 101150,
+          "engine_epoch": 1,
+          "request_generation": 1,
+          "request_uid": "device-path",
+          "txn_seq": 2
+        },
+        "worker_rank": 0
+      }
+    }
+  ],
+  "copy_event_joined": true,
+  "failure_records": [],
+  "finalized_state_bytes_exact": true,
+  "finish_state": true,
+  "fragmented": true,
+  "geometry": {
+    "arena_pages": 24,
+    "heads": 12,
+    "page_rows": 4048,
+    "pages": 25,
+    "pinned_host_bytes": 107773952,
+    "row_step": 2,
+    "rows": 50,
+    "selected": 4097,
+    "topk": 2051,
+    "width": 512
+  },
+  "host_plan_bound": true,
+  "kernel_executed": true,
+  "layer_records": [
+    {
+      "aborted": null,
+      "bucket_bytes": 99483648,
+      "bucket_checks": 1,
+      "bucket_rows": 4097,
+      "digest": "c1d125ad81f9146bd8ca09f88c947dc85cd5e37b5eb9932dcd42ec4f24a97e02",
+      "engine_epoch": 1,
+      "hold_released": true,
+      "hold_stats": [
+        [
+          "abandoned",
+          0
+        ],
+        [
+          "buckets",
+          1
+        ],
+        [
+          "consumed",
+          1
+        ],
+        [
+          "copied",
+          1
+        ],
+        [
+          "descriptors",
+          4097
+        ],
+        [
+          "nbytes",
+          4195328
+        ],
+        [
+          "published",
+          1
+        ],
+        [
+          "released",
+          1
+        ],
+        [
+          "rows",
+          4097
+        ]
+      ],
+      "layer": "probe.qsa",
+      "mapping_version": 1,
+      "operation": "layer_row1",
+      "output_bytes": 307200,
+      "output_checks": 1,
+      "output_rows": 50,
+      "passed": true,
+      "rank": 0,
+      "route": "sparse_dma",
+      "route_generation": 1,
+      "source_epoch": 1,
+      "state_epoch": 2,
+      "storage_epoch": 2,
+      "worker_incarnation": "device-path"
+    }
+  ],
+  "metadata_class": "vllm.v1.attention.backends.flash_attn.FlashAttentionMetadata",
+  "methods_unpatched": true,
+  "native10_negative_rejected": true,
+  "operation_drained": true,
+  "operation_released": true,
+  "operation_source_sha256": "30419e76e3471e1e6d9872fadece1c9b11e74116a837696bf958245893b64127",
+  "ops_sha256": "c98a74a33c22debc795d4d5b2f8abd3fee3b99595fd1a89de48d5c036a07deb4",
+  "ordinary_tables_unchanged": true,
+  "records": [
+    {
+      "bucket": 0,
+      "compact_start": 0,
+      "compared_bytes": 99483648,
+      "coverage_bytes": 99483648,
+      "coverage_rows": 4097,
+      "different_bytes": null,
+      "digest": "84e79d84179b4141e00414d9e4b1c4c070b96684c839409eccbd995a5994e486",
+      "engine_epoch": 1,
+      "equal": true,
+      "finite": null,
+      "layer": "probe.qsa",
+      "mapping_version": 1,
+      "observed_ns": 207535177,
+      "operation": "sparse_row_bucket",
+      "pieces": 4097,
+      "rank": 0,
+      "route": "sparse_dma",
+      "route_generation": 1,
+      "rows": 4097,
+      "source_epoch": 1,
+      "state_epoch": 2,
+      "storage_epoch": 2,
+      "worker_incarnation": "device-path"
+    },
+    {
+      "bucket": -1,
+      "compact_start": null,
+      "compared_bytes": 307200,
+      "coverage_bytes": 307200,
+      "coverage_rows": 50,
+      "different_bytes": null,
+      "digest": "0fc34470d0399d9574c580fdfe9196e328998b6d1e32fb9fa9fc7cba962cfbca",
+      "engine_epoch": 1,
+      "equal": true,
+      "finite": true,
+      "layer": "probe.qsa",
+      "mapping_version": 1,
+      "observed_ns": 1827554,
+      "operation": "qsa_output_before_moe",
+      "pieces": 0,
+      "rank": 0,
+      "route": "sparse_dma",
+      "route_generation": 1,
+      "rows": 64,
+      "source_epoch": 1,
+      "state_epoch": 2,
+      "storage_epoch": 2,
+      "worker_incarnation": "device-path"
+    }
+  ],
+  "route": "sparse_dma",
+  "source_registry_empty": true,
+  "source_sha256": "883ed12486acba8bd50212219b35de37d0051ef992c67f8977ead691fcd7bd05",
+  "sparse_stats": {
+    "buckets": 0,
+    "bytes": 0,
+    "consumer_events": 1,
+    "copy_events": 17,
+    "pieces": 0,
+    "producers": 1,
+    "selection_bytes": 404808,
+    "selection_copies": 1,
+    "sparse_buckets": 1,
+    "sparse_bytes": 4195328,
+    "sparse_descriptor_high_water": 256,
+    "sparse_descriptors": 4097,
+    "sparse_empty": 0,
+    "sparse_fallback": 0,
+    "sparse_fallback_bytes": 0,
+    "sparse_fallback_rows": 0,
+    "sparse_pieces": 4097,
+    "sparse_planned": 1,
+    "sparse_routes": 1,
+    "sparse_rows": 4097,
+    "sparse_source_released": 1,
+    "union_scratch_bytes": 1625600,
+    "waits": 3
+  },
+  "state_event_queried": true,
+  "uva_pointer_verified": true,
+  "verdict": "PASS",
+  "waves": [
+    {
+      "consumers": 0,
+      "descriptors": 256,
+      "published": 0,
+      "rows": 256
+    },
+    {
+      "consumers": 0,
+      "descriptors": 512,
+      "published": 0,
+      "rows": 512
+    },
+    {
+      "consumers": 0,
+      "descriptors": 768,
+      "published": 0,
+      "rows": 768
+    },
+    {
+      "consumers": 0,
+      "descriptors": 1024,
+      "published": 0,
+      "rows": 1024
+    },
+    {
+      "consumers": 0,
+      "descriptors": 1280,
+      "published": 0,
+      "rows": 1280
+    },
+    {
+      "consumers": 0,
+      "descriptors": 1536,
+      "published": 0,
+      "rows": 1536
+    },
+    {
+      "consumers": 0,
+      "descriptors": 1792,
+      "published": 0,
+      "rows": 1792
+    },
+    {
+      "consumers": 0,
+      "descriptors": 2048,
+      "published": 0,
+      "rows": 2048
+    },
+    {
+      "consumers": 0,
+      "descriptors": 2304,
+      "published": 0,
+      "rows": 2304
+    },
+    {
+      "consumers": 0,
+      "descriptors": 2560,
+      "published": 0,
+      "rows": 2560
+    },
+    {
+      "consumers": 0,
+      "descriptors": 2816,
+      "published": 0,
+      "rows": 2816
+    },
+    {
+      "consumers": 0,
+      "descriptors": 3072,
+      "published": 0,
+      "rows": 3072
+    },
+    {
+      "consumers": 0,
+      "descriptors": 3328,
+      "published": 0,
+      "rows": 3328
+    },
+    {
+      "consumers": 0,
+      "descriptors": 3584,
+      "published": 0,
+      "rows": 3584
+    },
+    {
+      "consumers": 0,
+      "descriptors": 3840,
+      "published": 0,
+      "rows": 3840
+    },
+    {
+      "consumers": 0,
+      "descriptors": 4096,
+      "published": 0,
+      "rows": 4096
+    }
+  ],
+  "synthetic_cpu_receipt": true
+}

@@ -1,0 +1,60 @@
+{
+  "schema": "native18-skew-fixture-leaves/1",
+  "scope": "one-card device mechanism, not TP2PP2/engine readiness",
+  "box_evidence": false,
+  "runtime_methods_patched": false,
+  "kernels_patched": false,
+  "leaves": [
+    {
+      "leaf": "two logical rank owners on one SM86 GPU with separate real compute/copy streams",
+      "replaces": "TP workers on distinct GPUs/green contexts",
+      "equivalence": "More convenient: genuine selection-copy skew and actual per-rank ownership checks; no NCCL/green-context or cross-process proof.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "serialized bucket execution after genuine two-stream selection agreement",
+      "replaces": "concurrent TP layer execution on separate devices",
+      "equivalence": "More convenient and required by the unmodified per-device staging-arena cache. Proves each local numerical oracle and lifetime, not concurrent TP execution.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "small real CUDA tensors, stock Mamba context/LaneChunk and constructed source/module owners",
+      "replaces": "full model projections, indexer, scheduler-produced KV allocation and model runner",
+      "equivalence": "More convenient reduced geometry; actual staged helper, source allocator/registry, stock state-finalization kernel and Row1Qualifier execute. Supplied legal 4097-row top-k is not model-generated.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "typed query boundary_op_seq=2 and direct pure profile agreement",
+      "replaces": "EngineCore all-rank transport/dispatcher coordinator",
+      "equivalence": "More convenient host input; GPU proof uses real queried plans and grant validation. Cached descriptor/idempotent reply/credit coverage is the separate CPU connected proof, not this GPU run.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "torch.cuda._sleep on one actual copy stream",
+      "replaces": "naturally variable rank selection-copy completion time",
+      "equivalence": "Intentional device delay; actual event query must show ready/pending or result is INCONCLUSIVE. No event/readiness method patched.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "synthetic CPU predicate receipt",
+      "replaces": "device receipt during CPU-shape self-run only",
+      "equivalence": "More convenient: exercises positive/negative grading branches, never GPU evidence. Owner GPU run grades its own raw bytes and layer digests.",
+      "box_evidence": false
+    }
+  ],
+  "actual_device_path": [
+    "_flash_s5_sparse_staged_operation",
+    "QsaPrefillOperation",
+    "NativeQsaDevice",
+    "NativeHostSourceAllocator/LocalSourceRegistry",
+    "TorchRow1Backend/Row1Qualifier",
+    "LaneChunk.finish_state",
+    "MambaSpecDecodeGPUContext.run_fused_postprocess_align"
+  ],
+  "deferred": [
+    "TP2PP2 green contexts and multiprocessing timing",
+    "full-model generated top-k schedule-profile agreement",
+    "full engine healthy request error and ordinary scheduling after hardware mismatch",
+    "full native18 row1/row2/row4 and performance gates"
+  ]
+}

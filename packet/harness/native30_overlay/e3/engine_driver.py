@@ -58,7 +58,7 @@ from e3_types import (
 from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
 from native_measurement import (NativeMeasurementCensus, encode_report_vector,
-                                decode_report_vector, ControlPathCounters)
+                                decode_report_vector, ControlPathCounters, QsaControlCounters)
 from reply_transport import Backpressure, TransportError
 from scheduler_hooks import (
     ADMISSION_PHASES,
@@ -809,8 +809,10 @@ class NativeSegmentDriver:
         self._profile_observed = {}
         self._profile_grants = {}
         self._profile_deadline = None
+        self._profile_poll_count = 0
         # Engine-lifetime count, not a count inferred from the raw ring/window.
         self._profile_mismatches = 0
+        self._profile_timeouts = 0
         self._profile_failure = None
         self._profile_failed_request = None
         self._transition = None
@@ -868,6 +870,7 @@ class NativeSegmentDriver:
         self._journal_dropped = 0
         self.clock_basis = CLOCK_BASIS
         self.control_path = ControlPathCounters(self.engine_epoch)
+        self.qsa_control = QsaControlCounters(self.engine_epoch, self.stage_layers)
         # One bounded control intent at a time.  The utility dispatch only
         # registers it; every submission/settlement happens on the engine tick.
         timeout = reply_timeout_s if control_timeout_s is None else control_timeout_s
@@ -1003,6 +1006,14 @@ class NativeSegmentDriver:
                                                else timeout_s), aggregate=None,
                                     precheck=precheck if callable(check) else None)
         self.control_path.values['ops_count'] += 1
+        if kind == 'profile':
+            query = envelope[1][0]
+            self.qsa_control.add(query.stage, query.layer, profile_polls=1,
+                                 profile_retry_polls=int(self._profile_poll_count > 0))
+            self._profile_poll_count += 1
+        elif kind == 'segment' and self._command.kind is SegmentKind.LAYER:
+            self.qsa_control.add(self._command.stage, self._command.descriptor.layer_start,
+                layer_commands=1, bucket_commands=int(self._command.profile is not None))
         self._inflight[sequence] = kind
         return sequence
 
@@ -1302,6 +1313,10 @@ class NativeSegmentDriver:
                 self._accepted_descriptors[(rank, self._command.op_seq)] = descriptor
                 self._last_lane_sequences[rank] = (self.lanes[rank], self._command.op_seq)
         if pending:
+            if self._command.kind is SegmentKind.LAYER:
+                self.qsa_control.add(self._command.stage, self._command.descriptor.layer_start,
+                    layer_pending_rounds=1,
+                    bucket_pending_rounds=int(self._command.profile is not None))
             self._retry = self._command
             for report in reports:
                 self._ingest_report(report)
@@ -1349,13 +1364,18 @@ class NativeSegmentDriver:
         for report in reports:
             self._ingest_report(report)
 
+        if descriptor.kind is SegmentKind.LAYER and self._command.profile is not None:
+            self.qsa_control.add(descriptor.stage, descriptor.layer_start,
+                                 bucket_accepted_commands=1)
         if boundaries == {True}:
             if self._command.profile is not None:
                 raise DriverError('QSA profile boundary repeated after its grant')
             self._profile_query = QsaProfileQuery(
                 self.tx, self.admission.state_epoch, descriptor.stage,
                 descriptor.layer_start, self._command.op_seq, tuple(targets))
+            self.qsa_control.add(descriptor.stage, descriptor.layer_start, boundary_commands=1)
             self._profile_observed = {}
+            self._profile_poll_count = 0
             self._profile_deadline = self.clock() + self.reply_timeout_s
             self.phase = 'profile'
 
@@ -1370,30 +1390,45 @@ class NativeSegmentDriver:
             if prior is not None and prior.status == 'ready' and prior != item:
                 raise DriverError('queried QSA schedule changed within its boundary')
             self._profile_observed[item.worker_rank] = item
+        # The deadline covers the whole agreement, including a late ready
+        # response. Each query gets only the remaining budget in _drive.
+        if self.clock() >= self._profile_deadline:
+            self._refuse_profile('native-schedule-profile-timeout')
+            return
         if verdict == 'pending':
-            if self.clock() >= self._profile_deadline:
-                self._refuse_profile('native-schedule-profile-timeout')
+            self.qsa_control.add(query.stage, query.layer, profile_pending_rounds=1)
             return
         if verdict == 'unsupported-native-schedule-profile':
             self._profile_mismatches += 1
             self._refuse_profile(verdict)
             return
+        self.qsa_control.add(query.stage, query.layer,
+            agreed_buckets=len(grant.shape.bucket_waves),
+            agreed_copy_waves=sum(grant.shape.bucket_waves))
         self._profile_grants[(query.stage, query.layer)] = grant
         self._profile_query = None
         self._profile_observed = {}
         self._profile_deadline = None
+        self._profile_poll_count = 0
         self.phase = 'segments'
 
     def _refuse_profile(self, reason):
         # No bucket has been submitted. The accepted producer/selection and
         # every source/PP owner still go through the existing typed stop path.
         self._profile_failure = (self.tx, reason)
+        if reason == 'native-schedule-profile-timeout':
+            self._profile_timeouts += 1
+            field = 'profile_timeouts'
+        else:
+            field = 'profile_mismatches'
+        self.qsa_control.add(self._profile_query.stage, self._profile_query.layer,
+                             **{field: 1})
         self.stop_kind = 'abort'
         self._return_pending = 'unsupported-profile'
         self._record('schedule_profile_refused', transaction=self.tx.txn_seq,
                      stage=self._profile_query.stage,
                      layer=self._profile_query.layer, reason=reason,
-                     mismatch_count=self._profile_mismatches)
+                     mismatch_count=self._profile_mismatches, timeout_count=self._profile_timeouts)
 
     def _ingest_report(self, report):
         if type(report) is not WorkerCompletionReport:
@@ -1823,6 +1858,7 @@ class NativeSegmentDriver:
         self._profile_observed = {}
         self._profile_grants = {}
         self._profile_deadline = None
+        self._profile_poll_count = 0
         self.reports = {}
         self.accepted_tickets = {}
         self._accepted_descriptors = {}
@@ -1850,8 +1886,12 @@ class NativeSegmentDriver:
     def _drive(self):
         if self.phase == 'profile':
             if not self._inflight:
+                remaining = self._profile_deadline - self.clock()
+                if remaining <= 0:
+                    self._refuse_profile('native-schedule-profile-timeout')
+                    return
                 self._submit('profile', ('flash_s5_poll',
-                    (self._profile_query,), {}, None), self.ranks)
+                    (self._profile_query,), {}, None), self.ranks, timeout_s=remaining)
             return
         if self.phase == 'open':
             if not self._inflight:
@@ -2374,6 +2414,7 @@ class NativeSegmentDriver:
         self._profile_observed = {}
         self._profile_grants = {}
         self._profile_deadline = None
+        self._profile_poll_count = 0
         self.stop_kind = None
         self._command = None
         self._targets = ()
@@ -2776,6 +2817,8 @@ class NativeSegmentDriver:
                                           for rank in sorted(self._decode_watermarks)},
             'reports': sorted(int(rank) for rank in self.reports),
             'schedule_profile_mismatches': self._profile_mismatches,
+            'schedule_profile_timeouts': self._profile_timeouts,
+            'qsa_control': self.qsa_control.snapshot(),
             'control_pending': None if self._control is None else self._control['action'],
             'admission_intent': self.admission_intent(),
             'control_route': (None if self._control_route is None
@@ -3421,7 +3464,9 @@ class NativeSegmentDriver:
             'native_owned': bool(self.active),
         }
         record['measurement']['schedule_profile'] = {
-            'mismatches': self._profile_mismatches, 'basis': 'engine-lifetime-monotonic-count'}
+            'mismatches': self._profile_mismatches, 'timeouts': self._profile_timeouts,
+            'basis': 'engine-lifetime-monotonic-count'}
+        record['measurement']['qsa_control'] = self.qsa_control.snapshot()
         reasons = []
         if not complete:
             reasons.append('journal-evicted-before-window')

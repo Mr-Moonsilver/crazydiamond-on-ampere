@@ -64,6 +64,11 @@ class OperationTests(f._GeneratedHarness, unittest.TestCase):
         rows = f.T((1,), dtype='torch.int64', values=[0])
         op.attach_continuation(self.attention(query, sources['qsa.0'], logical,
             self.table, rows, 24, self.arena, True, output, e3op=op))
+        # Component owner queries the real plan before starting the wave loop;
+        # the connected profile suite covers the multi-rank coordinator.
+        self.assertTrue(op.advance().qsa_schedule_boundary)
+        self.device.ready_all()
+        self.authorize_unit_profile(op)
         return op, hold
 
     def test_credit_waits_for_actual_wave_query(self):
@@ -165,7 +170,7 @@ class OperationTests(f._GeneratedHarness, unittest.TestCase):
         op,hold=self.start(1025)
         driver=qsa_driver.QsaLayerDriver(op,staged_operation=lambda:None,
                                          forward_context=lambda:None)
-        phase=types.SimpleNamespace(layer_idx=0,phase='bucket',selections=0,buckets=0,advances=0)
+        phase=qsa_driver.LayerPhase(0, None, None, None)
         driver.phases[0]=phase
         driver.run_layer(None,0)
         self.assertEqual(driver.records,[('copy_wave',0)])

@@ -12,6 +12,7 @@ p=argparse.ArgumentParser(description='Build a fresh CPU-only native18 host-cont
 p.add_argument('--base',type=Path,required=True)
 p.add_argument('--out',type=Path,required=True)
 p.add_argument('--container',required=True)
+p.add_argument('--probe',choices=('host','skew'),default='host')
 a=p.parse_args()
 repo=Path(__file__).resolve().parents[1]
 base=a.base.resolve();root=a.out.absolute();name=a.container
@@ -21,7 +22,7 @@ root.mkdir();shutil.copytree(base/'overlay',root/'overlay');shutil.copytree(base
 for p in root.rglob('*'):p.chmod(0o700 if p.is_dir() else 0o600)
 sys.path.insert(0,str(repo/'patches/s5_engine'))
 import make_s5_overlap
-for name0 in ['engine_driver','executor_hooks','wire_v1','qsa_operation','qsa_driver','lane_dispatch','worker_bridge','operation_source']:
+for name0 in ['native_measurement','engine_driver','executor_hooks','wire_v1','qsa_operation','qsa_driver','lane_dispatch','worker_bridge','operation_source']:
  (root/'overlay/e3'/f'{name0}.py').write_text(make_s5_overlap.package((repo/'patches/s5_engine'/f'{name0}.py').read_text()))
 sys.path.insert(0,str(repo/'patches/s5_engine'))
 import arena_attention,operation_source
@@ -54,7 +55,13 @@ for row in g['modules']:
  if p.is_file():row['sha256']=hashlib.sha256(p.read_bytes()).hexdigest()
 g['proof_scope']='host profile-refusal composition; import index inherited, module bytes re-pinned; no new full import-audit claim'
 (root/'proof/import-graph.json').write_text(json.dumps(g,indent=2)+'\n')
+if a.probe=='skew':
+ for file in ['e3_native_selection_skew_probe.py','e3_native_sparse_waves_device_probe.py','e3_native_row1_grade.py']:
+  shutil.copyfile(repo/'harness'/file,root/'proof'/file)
+ (root/'proof/fixtures').mkdir(exist_ok=True)
+ shutil.copyfile(repo/'harness/fixtures/native18-skew-predicate.json',root/'proof/fixtures/native18-skew-predicate.json')
 s=(base/'run_cpu.py').read_text().replace("NAME='flashnext-native17-cow-executor-b-hub-cpu'",f'NAME={name!r}').replace('e3_native_cow_lease_probe.py','e3_native_profile_cpu_probe.py')
+if a.probe=='skew':s=s.replace('e3_native_profile_cpu_probe.py','e3_native_selection_skew_probe.py')
 (root/'run_cpu.py').write_text(s)
 files=sorted(p for p in root.rglob('*') if p.is_file())
 (root/'SHA256SUMS').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root)}\n' for p in files))

@@ -144,7 +144,7 @@ class ScheduleProfile(c.CreditHarness, unittest.TestCase):
             raise RuntimeError('required reference absent; connected proof NOT_RUN')
         super().setUpClass()
 
-    def boundary(self, ready=(False, False)):
+    def boundary(self, ready=(False, False), **driver_options):
         world = self.world(route='sparse', ranks=(0, 1))
         self.do(world, 'prepare', source=world.lease)
         self.do(world, 'prefix', paused=False)
@@ -157,7 +157,7 @@ class ScheduleProfile(c.CreditHarness, unittest.TestCase):
         self.assertTrue(all(a.accepted and a.paused and a.profile_boundary for a in acks.values()))
         self.assertEqual({a.cursor.bucket for a in acks.values()}, {0})
         self.assertEqual([s.operation.stats['sparse_buckets'] for s in world.stacks], [0, 0])
-        driver = old.SelectionAsymmetry.driver(self, world, command, trackers)
+        driver = old.SelectionAsymmetry.driver(self, world, command, trackers, **driver_options)
         driver.admission = world.admission
         driver.plan = [{'kind': w.SegmentKind.LAYER, 'stage': 0, 'layer': 0}]
         skipped = tuple(w.SegmentAcceptance(world.txn, r, command.kind, command.stage,
@@ -195,6 +195,95 @@ class ScheduleProfile(c.CreditHarness, unittest.TestCase):
                 for _ in range(1100):
                     self.assertTrue(all(a.accepted for a in world.deliver(next_command).values()))
                 self.assertEqual(self.submission_state(world), before)
+
+    def test_absolute_deadline_refuses_pending_and_late_ready_separately_from_mismatch(self):
+        for ready in ((True, False), (True, True)):
+            now = [100.]
+            world, driver, command = self.boundary(ready, clock=lambda: now[0], reply_timeout_s=300.)
+            self.assertEqual(driver._profile_deadline, 400.)
+            observations = self.query(world, driver)
+            now[0] = 400.
+            driver._apply_profile(observations)
+            self.assertEqual(driver._profile_failure[1], 'native-schedule-profile-timeout')
+            self.assertEqual((driver._profile_timeouts, driver._profile_mismatches), (1, 0))
+            self.assertEqual(driver._profile_grants, {})
+            counters = driver.qsa_control.snapshot()['layers'][0]
+            self.assertEqual((counters['profile_timeouts'], counters['profile_mismatches']), (1, 0))
+            self.assertEqual([s.operation.stats['sparse_buckets'] for s in world.stacks], [0, 0])
+
+    def test_profile_retries_use_remaining_deadline_and_count_rpc_not_workers(self):
+        # Transport sink is an explicit convenient CPU envelope leaf. It does
+        # not synthesize replies or claim FIFO/device evidence.
+        class Sink:
+            def __init__(self): self.timeouts = []
+            def submit(self, kind, send, **kwargs):
+                self.timeouts.append(kwargs['timeout_s'])
+                send(len(self.timeouts))
+                return len(self.timeouts)
+        now = [100.]
+        world, driver, command = self.boundary((True, False), clock=lambda: now[0], reply_timeout_s=300.)
+        sink = Sink()
+        driver.executor = types.SimpleNamespace(_flash_s5_transport=sink,
+                                                _flash_s5_bounded_send=lambda envelope: None)
+        now[0] = 150.
+        driver._drive()
+        self.assertEqual(sink.timeouts, [250.])
+        driver._inflight.clear()  # projected arrival; real typed observations below
+        driver._apply_profile(self.query(world, driver))
+        now[0] = 399.
+        driver._drive()
+        self.assertEqual(sink.timeouts, [250., 1.])
+        driver._inflight.clear()
+        now[0] = 400.
+        driver._drive()
+        self.assertEqual(sink.timeouts, [250., 1.])
+        row = driver.qsa_control.snapshot()['layers'][0]
+        self.assertEqual((row['boundary_commands'], row['profile_polls'], row['profile_retry_polls'],
+                          row['profile_pending_rounds'], row['profile_timeouts']), (1, 2, 1, 1, 1))
+        self.assertEqual(driver._profile_mismatches, 0)
+        before = driver.qsa_control.snapshot()
+        driver._reset()
+        self.assertEqual(driver.qsa_control.snapshot(), before)
+        self.assertEqual(driver._profile_timeouts, 1)
+
+    def test_connected_layer_counts_match_actual_sent_envelopes(self):
+        network = ProfileNetwork(self)
+        for tick in range(400):
+            network.complete_everything()
+            network.driver.advance(deliver_outputs=False)
+            if network.driver.qsa_control.snapshot()['layers'][0]['bucket_accepted_commands'] == 18:
+                break
+        else:
+            self.fail('connected equal-profile layer did not complete')
+        counters = network.driver.qsa_control.snapshot()
+        self.assertEqual(counters['telemetry_faults'], 0)
+        envelopes = network.sender.envelopes
+        for row in counters['layers']:
+            commands = [args[0] for method, args, _, _ in envelopes
+                        if method == 'flash_s5_submit' and args[0].kind is w.SegmentKind.LAYER
+                        and (args[0].stage, args[0].descriptor.layer_start) == (row['stage'], row['layer'])]
+            polls = [args[0] for method, args, _, _ in envelopes
+                     if method == 'flash_s5_poll' and type(args[0]) is w.QsaProfileQuery
+                     and (args[0].stage, args[0].layer) == (row['stage'], row['layer'])]
+            self.assertEqual(row['layer_commands'], len(commands))
+            self.assertEqual(row['bucket_commands'], sum(c.profile is not None for c in commands))
+            self.assertEqual(row['profile_polls'], len(polls))
+            if (row['stage'], row['layer']) == (0, 0):
+                self.assertEqual((row['boundary_commands'], row['agreed_buckets'], row['agreed_copy_waves']), (1, 1, 17))
+                self.assertEqual(row['bucket_accepted_commands'], 18)
+        receipt = network.driver.overlap_evidence(network.driver._journal[0]['observed_ns'],
+                                                  network.driver._monotonic_ns())
+        self.assertEqual(receipt['measurement']['qsa_control'], counters)
+        self.assertEqual(receipt['measurement']['schedule_profile']['timeouts'], 0)
+        network.driver.stop('abort')
+        for tick in range(100):
+            network.complete_everything()
+            network.driver.advance(deliver_outputs=False)
+            if not network.driver.active:
+                break
+        self.assertFalse(network.driver.active)
+        self.assertTrue(network.controller.leases.shutdown()['clean'])
+        self.assertEqual(network.transport._calls, {})
 
     def test_missing_grant_is_pending_before_mutation_or_quarantine(self):
         world, driver, boundary = self.boundary((True, True))

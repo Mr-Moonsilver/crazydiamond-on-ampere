@@ -48,6 +48,10 @@ def run_host(cfg, scheduler, leases, owner, cache_record):
         network = proof.ProfileNetwork(case, scheduler, controller)
         ticks = network.drain_profile_refusal()
         assert network.driver._profile_failure[1] == 'unsupported-native-schedule-profile'
+        assert network.driver._profile_timeouts == 0
+        counter = network.driver.qsa_control.snapshot()['layers'][0]
+        assert counter['boundary_commands'] == counter['profile_polls'] == counter['profile_mismatches'] == 1
+        assert counter['bucket_commands'] == counter['profile_timeouts'] == 0
         assert network.driver._last_native_closure['complete']
         assert leases.shutdown()['clean'] and not network.transport._calls
         assert not network.driver._split_ready and not controller.active
@@ -86,7 +90,8 @@ def run_host(cfg, scheduler, leases, owner, cache_record):
         return dict(verdict='PASS', actual_scheduler=type(scheduler).__module__+'.'+type(scheduler).__name__,
             actual_request=type(request).__module__+'.'+type(request).__name__,
             drain_ticks=ticks, all_rank_close=network.driver._last_native_closure,
-            mismatch_count=network.driver._profile_mismatches, error_delivered_once=True,
+            mismatch_count=network.driver._profile_mismatches, timeout_count=network.driver._profile_timeouts,
+            qsa_control=network.driver.qsa_control.snapshot(), error_delivered_once=True,
             request_error_reason=message.stop_reason, driver_error=None,
             subsequent_request_completed=True, subsequent_tokens=next_request.num_output_tokens,
             leases_clean=True, credits_returned=True, cache_configuration=cache_record,
@@ -117,7 +122,7 @@ def main():
                 prior = sys.modules.setdefault(leaf, module)
                 assert prior is module, leaf
         pins = []
-        for name in ('engine_driver', 'executor_hooks', 'wire_v1', 'qsa_operation', 'qsa_driver', 'lane_dispatch', 'worker_bridge'):
+        for name in ('native_measurement', 'engine_driver', 'executor_hooks', 'wire_v1', 'qsa_operation', 'qsa_driver', 'lane_dispatch', 'worker_bridge'):
             module = importlib.import_module(name)
             path = Path(inspect.getfile(module))
             expected = next(x for x in graph['modules'] if x['destination'] == str(path))

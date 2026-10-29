@@ -100,6 +100,47 @@ class ControlPathCounters:
                     **self.values)
 
 
+
+class QsaControlCounters:
+    """Bounded per-layer engine-lifetime telemetry, never a control predicate.
+
+    A command/poll is one all-rank RPC, not one message per worker. Accepted
+    boundaries count once after all active-stage peers agree; bucket commands
+    include copy waves, pending retries and the host-only completion pull.
+    Agreed bucket/wave counts describe the queried plan, not GPU completions.
+    Rows are fixed by model geometry, so request/chunk count cannot grow storage.
+    """
+    FIELDS = ('layer_commands', 'layer_pending_rounds', 'boundary_commands',
+              'profile_polls', 'profile_retry_polls', 'profile_pending_rounds',
+              'bucket_commands', 'bucket_pending_rounds', 'bucket_accepted_commands',
+              'agreed_buckets', 'agreed_copy_waves', 'profile_mismatches',
+              'profile_timeouts')
+
+    def __init__(self, engine_epoch, stage_layers):
+        self.engine_epoch = engine_epoch
+        self.rows = {(stage, layer): dict.fromkeys(self.FIELDS, 0)
+                     for stage, span in stage_layers.items() for layer in range(*span)}
+        self.faults = 0
+
+    def add(self, stage, layer, **counts):
+        try:
+            row = self.rows[(stage, layer)]
+            if any(k not in row or type(v) is not int or v < 0 for k, v in counts.items()):
+                raise ValueError('invalid telemetry increment')
+            for key, value in counts.items():
+                row[key] += value
+        except Exception:
+            # Descriptive loss remains visible without changing engine behavior.
+            self.faults += 1
+
+    def snapshot(self):
+        return dict(schema='s5-qsa-control-counts/1', engine_epoch=self.engine_epoch,
+            basis='engine-lifetime monotonic all-rank RPC/cohort counts; subtract matching status snapshots for a window; queried plan counts are not completion evidence',
+            telemetry_faults=self.faults,
+            layers=[dict(stage=stage, layer=layer, **values)
+                    for (stage, layer), values in sorted(self.rows.items())])
+
+
 def control_path_delta(begin, end):
     """Descriptive status-snapshot delta; absent telemetry changes no gate."""
     if (type(begin) is not dict or type(end) is not dict

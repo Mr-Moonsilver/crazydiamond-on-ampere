@@ -43,7 +43,7 @@ class SelectionAsymmetry(c.CreditHarness,unittest.TestCase):
         for tracker in trackers.values():self.assertEqual(tracker.propose(command.descriptor),command.op_seq)
         return world,command,acks,trackers
 
-    def driver(self,world,command,trackers):
+    def driver(self,world,command,trackers,**driver_options):
         # These host-only owners are deliberately not an EngineCore/transport.
         # Neither is invoked on the negative reply-validation path below.
         scheduler=types.SimpleNamespace()
@@ -51,7 +51,7 @@ class SelectionAsymmetry(c.CreditHarness,unittest.TestCase):
             frontier=ah.CommittedFrontier(),engine_epoch=world.txn.engine_epoch,
             chunk_tokens=1024,minimum_stage_rows=64,ranks=(0,1,2,3))
         driver=ed.NativeSegmentDriver(controller,executor=object(),scheduler=scheduler,
-            layer_count=48,layer_split=24,stage_of=((0,0),(1,0),(2,1),(3,1)))
+            layer_count=48,layer_split=24,stage_of=((0,0),(1,0),(2,1),(3,1)), **driver_options)
         driver.tx=world.txn
         driver._command=command
         driver._targets=(0,1)

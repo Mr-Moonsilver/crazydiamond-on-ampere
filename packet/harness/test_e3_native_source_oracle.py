@@ -1908,6 +1908,11 @@ class GeneratedRow1Tests(sparse_test._GeneratedHarness, unittest.TestCase):
                 value = operation.advance()
             except StopIteration:
                 return sentinels, buckets
+            if getattr(value, 'qsa_schedule_boundary', False):
+                sentinels += 1
+                self.device.ready_all()
+                self.authorize_unit_profile(operation)
+                continue
             if getattr(value, 'sparse_selection_pending', False):
                 sentinels += 1
                 self.device.ready_all()
