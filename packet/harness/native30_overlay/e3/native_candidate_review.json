@@ -1492,12 +1492,12 @@
     "verdict": "PASS"
   },
   "cpu_regression": {
-    "basis": "native23 strict zero-skip regression on current committed source",
+    "basis": "native24 strict zero-skip regression on current committed source",
     "cases": 289,
-    "evidence_record_sha256": "09f6f89b7b0a43af6803572403451379638d44ca13981eb2ff93301f89267426",
+    "evidence_record_sha256": "94090951c8494c7af25f42765f434c3eef4d3909d9309f8d89f1128fcb7bd3cf",
     "exit_code": 0,
-    "log_sha256": "f035ac03f308015e4872c61351e307fb81377834ec598e327fd5fe6d6312b7a0",
-    "reported_tests": 3567,
+    "log_sha256": "8fd593b8949e6eba8c4e4c2c443f0ece700ee2cf52c5305b9eeede314e62bd1d",
+    "reported_tests": 3569,
     "required": 289,
     "skips": 0,
     "suites": 172,
@@ -1555,6 +1555,7 @@
     "e3_native19_vm_suite.py": "f94d995dd10e78881669a673a78d55ba157eed6ec9287b324c0352179f29e4a2",
     "e3_native21_rpc_device_probe.py": "b054a6c5ad1d8dbfc84efd29143c8f81eec1bb9c17e21dd0f61d68dd3875a9e7",
     "e3_native23_row4_pause_probe.py": "7383b815020ac5ad18ebbfc7b102a8f683fdffd6900f059f99bb00d8915036ea",
+    "e3_native24_graph_probe.py": "cc4688eaec16c033978ed2f4acb74299d510883d6dc6fefb393314e986892295",
     "e3_native_align_capacity_probe.py": "2e7ffd021eba1940aac657ba26995eb604beee593004df1e898e0abfc3c0045d",
     "e3_native_coordinator_slice.py": "33562112bc0b6ae63599e118e1556e13d7259a0a4e74d4a0794e0c7857efb99c",
     "e3_native_cow_lease_probe.py": "2492b5a31c437b5904b2435d3dbd780de5c508b5e19b304f40040a7c0a67ce8e",
@@ -1666,6 +1667,8 @@
     "native21_rpc_stream_fixture_leaves.json": "567a10aa49405cea41c1840a269fa6035e76c089259bb01de55c6cc7bd91536a",
     "native23_row4_pause_fixture_leaves.json": "39e4189d798fec56f62691a42cf8b219ac245352955abbd01c5547543c9ef838",
     "native23_vm_cpu_selfrun.py": "2af7d22bad706180ebc7c9537314d2cd3eb76bab5d08da9ff6576020493a365f",
+    "native24_graph_cpu_selfrun.py": "c5455b914a47ff5f0f9339f18955d34fddab604646e6785dc9647913cf29a75c",
+    "native24_graph_fixture_leaves.json": "8b5d8c6a93720644987008d7b52e60e7e747db8dfb68f5047b218f9b2f7663c1",
     "native_placement_evidence_support.py": "345d37090992a4400862e307a34aac1a5abe3d062153a8f183e38bd479aee1c9",
     "native_prefill_support.py": "00c704e8935eea94e3030a4003f979693540f0e28e86a6326dcbfc5fb4644064",
     "overlap_tp.py": "8bb4b344180927245f685bee45b8897aa0abbeb073a8ac11f76c139080da4e7c",
@@ -1863,9 +1866,12 @@
     "runs/q18a_native21.draft.sh": "86bb9d9e4132de4a0ea3a50bc34858e0b2b7fc313f97781d3cdc8c21872d8fe7",
     "runs/q18a_native21_declare.sh": "8afa466a39c1f691e51ac290fc2cb70c6f08de56a2654a4ad98a35b29a520867",
     "runs/q18a_native21_settings.sh": "c83b7a521d41034e9a8e63c15e5cf5da56e41a6d9292866a632af523f4a719d7",
-    "runs/q18a_native23.draft.sh": "9c53c691277e8ecd75c4b21c912d723970f616da396e408302abf9ab257d6d87",
+    "runs/q18a_native23.draft.sh": "9a423f3e183ff28a829991de5655e0fda0bb12c7b704fe3baa51dfbbf9804f75",
     "runs/q18a_native23_declare.sh": "fcf0caf6995175f124e9e5366f0af11b7b2f47ac082dfb114608b548352dc6f7",
     "runs/q18a_native23_settings.sh": "524544521e8ca31fab6cb351d89bdda32730178aa0a6cc2b60d9148f882604ee",
+    "runs/q18a_native24.draft.sh": "a8cc813abeb24effbf5d7cfc1175105fe89b1fe82cad005bce5d7d52a62b768d",
+    "runs/q18a_native24_declare.sh": "64120a46e7bd8ffc615a416fa710f38b47745a714dae0a4aa602085f184ecfba",
+    "runs/q18a_native24_settings.sh": "73ca69d8e032a5035a8dbfb7492fab79558f50e66931ecf0eb45a12a33ba551d",
     "runs/q18a_native2_declare.sh": "16e2062b0950b3f62ba692e345bd0a637347c8abf30e04454a1b4dc1af962600",
     "runs/q18a_native2_settings.sh": "eb32439c9073c442840164eb4ad5743a0e7fed2abc63539c7c5ef171612bcb0b",
     "runs/q18a_native3.draft.sh": "0a80c208d94db7b828a644284b39e7c572f274fbf1619311156a8b139ce98436",
@@ -2068,7 +2074,7 @@
     "test_e3_capture_streams.py": "be83c0dcbe0b59b68a99b6393cd6dbef9d2c2de04e3d2d49c75162dab96ca33d",
     "test_e3_control_observation.py": "e48f5a8b9a2d897f37ea62880818c0f219806eaba5191dcc40f6e2514bdc545d",
     "test_e3_decode_correctness.py": "cc989bd8ee61bf34d0bef67f298f80435520b2cace662f9b93332db04f08a74f",
-    "test_e3_decode_probe.py": "108cd446edfd45b4fff6959e90a1efa88f843378fcb33297ad087729949149cd",
+    "test_e3_decode_probe.py": "b1d4fbba4392de864a69ff4514425642329dd554abcd26ec81dea682e251500c",
     "test_e3_engine_offers.py": "98bddbab1b28de0772e4827e3fd1e7396ab25a6e5b48a04125593a3e22cc581b",
     "test_e3_executor_threads.py": "a1b6bf12cc8fc2e38320d291be03d681edbaf70b00f66591b0ca719616b49d7d",
     "test_e3_finalize_package.py": "a3519657a239232c7ba8c875e4719e14387772a9105ea8467471c62f52869678",
@@ -2490,6 +2496,18 @@
     "vm_input_manifest_sha256": "22046b2347e73f6ae7d9db5e41a50e1677ad9748c22d903ac3b2fc612b32d18d",
     "vm_probe_sha256": "47b7dbb1cd21edf801a61b79f22e331c0f7138165e0cd351703d65290a30a53d",
     "vm_result_sha256": "f23016f0cf79b3dc7976946b3f6fae053c7b6f4ca608f04713b90975887f20d7"
+  },
+  "native24_graph_capture": {
+    "box_qualified": false,
+    "fixture_leaves_sha256": "8b5d8c6a93720644987008d7b52e60e7e747db8dfb68f5047b218f9b2f7663c1",
+    "gpu_qualified": false,
+    "hub_probe_sha256": "1bb3d4f43c24105c43ad842da5fd4ff82e2f85557fbde174cfa55145675d2d97",
+    "hub_result_sha256": "93bd0c5ad1f0fa9cd3a6d5c7271dfbfce60b6886acac6d83076a11fcbc1ddf83",
+    "scope": "one-card real green-stream graph capture and native observer binding; TP2PP2/model graph remain box-only",
+    "source_commit": "510994b",
+    "vm_input_manifest_sha256": "963a7ef3c34403a0ef20b3782169d952a7b592cbe159163b88b32cde2083a59a",
+    "vm_probe_sha256": "9c9c9279c162960e809c68e3620b5c16f28e999701c4fce31b32a6f7a166e11e",
+    "vm_result_sha256": "0ce817d386cde307d7f445ce39a90dfa1e2650d3bf5e91b75cf5e34e890175b0"
   },
   "night_window": {
     "hard_end_utc": "2026-10-30T07:00:00Z",
@@ -3589,22 +3607,11 @@
   "schema": "e3-native-source-review/1",
   "scope": "implementation closure for owner test only",
   "source_delta": {
-    "basis": "native17 within-active-stage TP selection-copy completion timing changed continuation boundary; source counterexample reproduced, exact box tuples unavailable",
-    "builder_modules": [
-      "operation_source.py"
-    ],
-    "new_runtime_modules": [],
+    "basis": "native23 plus native observer split-bank graph retention",
+    "behaviour": "keep_graph and capture stream identity check only for an observer-enabled native split manager; no numeric, workload, setting or tolerance change",
     "runtime_modules": [
-      "wire_v1.py",
-      "qsa_operation.py",
-      "qsa_driver.py",
-      "lane_dispatch.py",
-      "worker_bridge.py",
-      "engine_driver.py",
-      "executor_hooks.py",
-      "native_measurement.py"
-    ],
-    "scope": "canonical selection-copy-submitted boundary; typed queried schedule-profile agreement/grant before buckets, cached exact retries unchanged, mismatch bounded typed abort/drain/FULL return/request ERROR; strict cursor agreement retained; per-layer counters and one absolute reply-timeout budget. No numeric, cap, setting, workload, tolerance or readiness relaxation. Native18 names and row1 digest stderr-only report fix."
+      "worker_hooks.py"
+    ]
   },
   "source_shas": {
     "activity_accounting.py": "3390bd7ace83abae039d7371947d79148899ae772a8ed75c6691b59aa5e9ffb3",
@@ -3667,7 +3674,7 @@
     "teacher_decode.py": "8ab74b57de7ea90f4a94154d9bd609ab748400e989f58eb5bc553d427faff05c",
     "wire_v1.py": "c53feeee04bb96c66753437c649f820ad2d230f7f45490c6be9e52b4b2023d0d",
     "worker_bridge.py": "9c56d43e94b020344de6e17cf5e3b651716013ad3ddcbc673e569a6b82323b2f",
-    "worker_hooks.py": "5fae77ec149f188ee298a4d1300f333531e18a46f918bf6e5778382fbc15099b"
+    "worker_hooks.py": "0de36c5384a3c0d61918d3eb62760d309817086d0d40f551e2f92f9d1672ba58"
   },
   "startup_guard_audit": {
     "affected_tests": 214,
