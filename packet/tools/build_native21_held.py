@@ -114,7 +114,7 @@ def main():
          and vm.get('cleanup_ok') is True and vm.get('container_retained') is True
          and vm.get('failures') == [] and vm.get('missing') == []
          and vm.get('manifest_sha256') ==
-             '2d5b100d841f5afab150d2b0422b3702aeb8b73e3c347e5ea4c9116ab57f4916'
+             '098fa54fc08cf86fdaa05aef521e577364d876bca90df60d13d8c58e6e278d00'
          and vm_probe.is_file() and sha(vm_probe) == vm.get('probe_sha256')
          and json.loads(vm_probe.read_text()).get('verdict') == 'PASS',
          'native21 real-CUDA RPC stream proof absent')
