@@ -559,6 +559,8 @@ Status: **HOLD**. The hard end alone is not a box GO.
 
 This is the native23 engine runtime plus one worker_hooks graph-retention repair. The native23 row-4 harness resume repair is retained. The native20 selection capture modules, transforms and receipt fields are absent. No grants, refusals, top-k, numerics, settings, workloads, W2 wait or speculative-config gate change. Four-rank row-4 placement, rule-4 numerical stability and performance remain box gates. The owner must pre-check and stage this candidate before any box action.
 
+Native23 rule 4 remains a real FAIL: one split-B/full-A1 winner disagreement at stream 0 position 320 exceeded the fixed envelope. Full-route control pairs were within the envelope. A single retained run cannot distinguish intermittent numerical variation from a repeatable split-route effect; native24 carries the same rule-4 settings, workload and grader, with no tolerance or result selection change.
+
 Full source pins and self-run metadata are in `provenance.json`; the fixture declaration is inside the bundle.
 '''
     (out / 'delivery-brief.md').write_text(brief)
