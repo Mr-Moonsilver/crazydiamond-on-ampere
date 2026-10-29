@@ -19,7 +19,11 @@ REPEATS = 8
 
 
 def digest(tensor):
-    return hashlib.sha256(tensor.contiguous().cpu().numpy().tobytes()).hexdigest()
+    # NumPy in the pinned image has no bf16 scalar dtype. Hash the exact
+    # storage bytes, without a value conversion or precision change.
+    import torch
+    host_bytes = tensor.contiguous().cpu().view(torch.uint8).numpy().tobytes()
+    return hashlib.sha256(host_bytes).hexdigest()
 
 
 def modules():
@@ -37,8 +41,12 @@ def modules():
 def cpu_shape():
     torch, _, _, _ = modules()
     assert not torch.cuda.is_initialized()
+    bf16 = torch.tensor((1.0, -2.0, 0.5), dtype=torch.bfloat16)
+    assert digest(bf16) == hashlib.sha256(
+        bf16.view(torch.uint8).numpy().tobytes()).hexdigest()
     return dict(verdict='PASS', actual_pinned_functions_accessed=6,
                 gpu_stages_deferred=True, cuda_initialized=False,
+                bf16_storage_hash_executed=True,
                 rows=ROWS, frontier=FRONTIER, repeats=REPEATS)
 
 
