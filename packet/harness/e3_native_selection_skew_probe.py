@@ -38,6 +38,33 @@ def host_shape():
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 exec(compile(ast.Module(body=[node], type_ignores=[]), '<gpu-branch-import>', 'exec'), namespace)
     assert qsa._QSA_STAGE_MIN_ROWS == 64
+    # Execute the unchanged alignment helper's non-device configuration
+    # constructors too; importing them alone would miss a setup contract.
+    from vllm.config import CacheConfig
+    from vllm.models.qwen4_exp.nvidia.model import Qwen4ExpForConditionalGeneration
+    from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum as Kind
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheGroupSpec, MambaSpec, FullAttentionSpec
+    from vllm.v1.flash_e3 import lane_chunk as lc
+    specs = [MambaSpec(block_size=PAGE, shapes=((4, 4), (2, 4)),
+                      dtypes=(torch.float32, torch.float32), mamba_type=Kind.GDN_ATTN,
+                      mamba_cache_mode='align'),
+             MambaSpec(block_size=PAGE, shapes=((4, 4),), dtypes=(torch.float32,),
+                      mamba_type=Kind.SHORT_CONV, mamba_cache_mode='align')]
+    groups = [KVCacheGroupSpec(layer_names=[name], kv_cache_spec=spec)
+              for name, spec in zip(('probe.gdn', 'probe.ple'), specs)]
+    groups.append(KVCacheGroupSpec(layer_names=['probe.qsa'],
+        kv_cache_spec=FullAttentionSpec(block_size=PAGE, num_kv_heads=1,
+                                        head_size=256, dtype=torch.bfloat16)))
+    config = KVCacheConfig(num_blocks=32, kv_cache_tensors=[], kv_cache_groups=groups)
+    assert len(config.kv_cache_groups) == 3
+    assert CacheConfig(mamba_cache_mode='align').mamba_cache_mode == 'align'
+    copy_funcs = Qwen4ExpForConditionalGeneration.get_mamba_state_copy_funcs(
+        {Kind.GDN_ATTN, Kind.SHORT_CONV})
+    assert copy_funcs
+    owners = torch.nn.ModuleList([torch.nn.Module() for _ in groups])
+    assert len(owners) == 3
+    ports = lc.PinnedPorts.load()
+    assert callable(ports.mamba_groups)
     tx = et.TransactionId(1, 'cpu-shape', 1, 0, 64, 1)
     query = wire.QsaProfileQuery(tx, 1, 0, 0, 2, (0, 1))
     shape = wire.QsaScheduleShape('sparse_dma', (17,), (17,))
@@ -86,13 +113,15 @@ def host_shape():
     assert grade(broken)['verdict'] != 'PASS'
     return dict(verdict='PASS', cuda_initialized=False, predicate_synthetic_positive_and_negatives=True,
         executed=['all imports from GPU scenario and alignment constructors',
-                  'actual stock minimum constant access', 'typed query/shape/observation/grant agreement',
+                  'actual stock minimum constant access', 'MambaSpec/FullAttentionSpec/KVCacheGroupSpec/KVCacheConfig/CacheConfig constructors',
+                  'stock Mamba copy-function registry; torch Module/ModuleList; PinnedPorts.load',
+                  'typed query/shape/observation/grant agreement',
                   'NativeQsaDevice, QsaPrefillOperation, LaneDispatcher constructors',
                   'Row1RecordStore, TorchRow1Backend, Row1Qualifier constructors',
                   'FlashAttentionMetadata constructor on CPU tensors',
                   'every directly used runtime method attribute accessed'],
         deferred=['CUDA streams/events/_sleep and allocations/pinning',
-                  'actual alignment owner construction on CUDA tensors',
+                  'RequestState, LaneTables, LaneAlign and LaneChunk construction requires CUDA allocation/pinning',
                   'UVA mapping and source registration', 'Triton kernels and device oracle',
                   'observed pending selection on each skew direction'],
         venue_preconditions=['one SM86 CUDA device', '3072 MiB cap / 2816 MiB stop / 2 GiB allocator',
@@ -263,7 +292,7 @@ class SkewUnavailable(RuntimeError):
     """A valid but non-deciding timing observation; never manufacture pending."""
 
 
-def skew_case(ready_rank):
+def skew_case(ready_rank, note=lambda phase, **fields: None):
     import torch
     from vllm.v1.flash_e3 import wire_v1 as wire, e3_types as et
     streams = [torch.cuda.Stream(), torch.cuda.Stream()]
@@ -280,6 +309,8 @@ def skew_case(ready_rank):
         row = resume(rank)
         assert row['phase'] == 'constructed'
         constructed.append(row)
+        note('peer_constructed', rank=rank, compute_stream=int(row['compute'].cuda_stream),
+             copy_stream=int(row['copy'].cuda_stream))
     assert constructed[0]['transaction'] == constructed[1]['transaction']
     assert streams[0].cuda_stream != streams[1].cuda_stream
     assert resume(ready_rank)['phase'] == 'boundary'
@@ -297,6 +328,8 @@ def skew_case(ready_rank):
             'pending' if shape is None else 'ready', shape,
             None if shape is None else 'queried-selection-copy'))
     statuses = [row.status for row in observations]
+    note('queried_selection_skew', statuses=statuses,
+         profiles=[asdict(row.shape) if row.shape else None for row in observations])
     if statuses != ['ready' if rank == ready_rank else 'pending' for rank in (0, 1)]:
         raise SkewUnavailable('real selection events did not expose the requested skew: '+repr(statuses))
     assert wire.qsa_profile_agreement(query, tuple(observations), (0, 1)) == ('pending', None)
@@ -311,11 +344,13 @@ def skew_case(ready_rank):
             else:
                 raise AssertionError('a ready peer advanced before TP agreement')
     assert (dict(ready_op.stats), len(ready_op._records)) == before
+    note('pregrant_retries', ready_rank=ready_rank, attempts=1100, unchanged=True)
     bounded_poll(lambda: profile(delayed_rank) is not None)
     observations = tuple(wire.QsaProfileObservation(query, rank, 'ready', profile(rank),
                           'queried-selection-copy') for rank in (0, 1))
     verdict, grant = wire.qsa_profile_agreement(query, observations, (0, 1))
     assert verdict == 'agreed' and grant.shape.bucket_waves == (17,)
+    note('profile_agreed', shape=asdict(grant.shape))
     for rank in (0, 1):
         with torch.cuda.stream(streams[rank]):
             constructed[rank]['operation'].authorize_schedule(grant)
@@ -327,6 +362,7 @@ def skew_case(ready_rank):
             resume(rank)
         except StopIteration as end:
             completed.append(end.value)
+            note('peer_numerical_and_lifetime', rank=rank, receipt=end.value)
         else:
             raise AssertionError('unexpected peer-program control yield')
     return dict(verdict='PASS', ready_rank=ready_rank, observed_statuses=statuses,
@@ -417,7 +453,7 @@ def main():
     p.add_argument('--mode', choices=('cpu-shape', 'gpu-all'), required=True)
     args = p.parse_args()
     record = dict(schema=SCHEMA, verdict='INCONCLUSIVE', rc=2, failure_class='NONE',
-                  cases={}, exceptions={}, imports_verified=False, box_evidence=False,
+                  cases={}, progress=[], exceptions={}, imports_verified=False, box_evidence=False,
                   engine_constructed=False, gpu_execution=False)
     def persist():
         args.out.write_text(json.dumps(record, indent=2)+'\n')
@@ -440,7 +476,11 @@ def main():
             for ready in (0, 1):
                 name = 'left_ready' if ready == 0 else 'right_ready'
                 print('BEGIN '+name, flush=True)
-                record['cases'][name] = skew_case(ready)
+                def note(phase, **fields):
+                    record['progress'].append(dict(case=name, phase=phase,
+                                                   elapsed_s=time.monotonic()-started, **fields))
+                    persist()
+                record['cases'][name] = skew_case(ready, note)
                 record['gpu_execution'] = True
                 persist()
                 print('END '+name+' PASS', flush=True)

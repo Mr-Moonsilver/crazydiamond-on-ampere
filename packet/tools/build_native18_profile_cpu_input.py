@@ -13,11 +13,15 @@ p.add_argument('--base',type=Path,required=True)
 p.add_argument('--out',type=Path,required=True)
 p.add_argument('--container',required=True)
 p.add_argument('--probe',choices=('host','skew'),default='host')
+p.add_argument('--gpu-owner-name',help='Package the owner GPU wrapper; never execute it')
 a=p.parse_args()
 repo=Path(__file__).resolve().parents[1]
 base=a.base.resolve();root=a.out.absolute();name=a.container
 assert base.is_dir() and not root.exists() and not root.is_symlink()
 assert name.startswith('flashnext-native18-') and all(c.isalnum() or c in '-_' for c in name)
+if a.gpu_owner_name:
+ assert a.probe == 'skew' and a.gpu_owner_name.startswith('flashnext-native18-')
+ assert all(c.isalnum() or c in '-_' for c in a.gpu_owner_name)
 root.mkdir();shutil.copytree(base/'overlay',root/'overlay');shutil.copytree(base/'proof',root/'proof')
 for p in root.rglob('*'):p.chmod(0o700 if p.is_dir() else 0o600)
 sys.path.insert(0,str(repo/'patches/s5_engine'))
@@ -63,6 +67,17 @@ if a.probe=='skew':
 s=(base/'run_cpu.py').read_text().replace("NAME='flashnext-native17-cow-executor-b-hub-cpu'",f'NAME={name!r}').replace('e3_native_cow_lease_probe.py','e3_native_profile_cpu_probe.py')
 if a.probe=='skew':s=s.replace('e3_native_profile_cpu_probe.py','e3_native_selection_skew_probe.py')
 (root/'run_cpu.py').write_text(s)
+if a.gpu_owner_name:
+ s=(base/'run_gpu.py').read_text()
+ assert "NAME='flashnext-native17-cow-executor-b'" in s
+ s=s.replace("NAME='flashnext-native17-cow-executor-b'",f'NAME={a.gpu_owner_name!r}')
+ s=s.replace('e3_native_cow_lease_probe.py','e3_native_selection_skew_probe.py')
+ s=s.replace("schema='native15-matrix-owner/1'","schema='native18-selection-skew-owner/1'")
+ s=s.replace('box_action=False,engine_constructed=False)',
+             "box_action=False,engine_constructed=probe.get('engine_constructed') if probe else None,"
+             "gpu_execution=probe.get('gpu_execution') if probe else None)")
+ (root/'run_gpu.py').write_text(s)
+ shutil.copyfile(repo/'harness/native18_skew_fixture_leaves.json',root/'proof/native18_skew_fixture_leaves.json')
 files=sorted(p for p in root.rglob('*') if p.is_file())
 (root/'SHA256SUMS').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root)}\n' for p in files))
 for p in root.rglob('*'):p.chmod(0o500 if p.is_dir() else 0o400)
