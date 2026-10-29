@@ -226,8 +226,11 @@ class NativeIdentity:
         if self.bank is None:
             raise NativeQualificationUnavailable(
                 'native-qualification-split-bank-unavailable')
-        # ``bind_bank`` reads only these two identity fields from the router;
-        # the native graph router keeps them on its lane handle/controller.
+        # The replay observer also reads a per-descriptor replay census from
+        # this view.  The native route controller does not own those counts:
+        # the retained split-bank handles do, and SplitDecodeBank.replay()
+        # increments them after each real graph enqueue.  Expose that exact
+        # bank ledger at drained observer boundaries, never an invented zero.
         identity = self
 
         class _RouterView:
@@ -238,6 +241,43 @@ class NativeIdentity:
             @property
             def route_generation(inner):
                 return identity.route_generation
+
+            def _counts(inner):
+                from split_bank import SplitGraphHandle
+
+                bank = identity.bank
+                pairs = getattr(bank, 'pairs', None)
+                handles = getattr(bank, 'handles', None)
+                if (type(pairs) not in (tuple, list) or not pairs
+                        or type(handles) is not dict or len(handles) != len(pairs)):
+                    return None
+                counts = {}
+                for pair in pairs:
+                    if type(pair) not in (tuple, list) or len(pair) != 2:
+                        return None
+                    descriptor, local = pair
+                    try:
+                        handle = handles.get(local)
+                        duplicate = local in counts
+                    except TypeError:
+                        return None
+                    if (duplicate or not isinstance(handle, SplitGraphHandle)
+                            or handle.bank is not bank or handle.local is not local
+                            or handle.descriptor is not descriptor
+                            or handle.destroyed is not False
+                            or type(handle.replays) is not int or handle.replays < 0):
+                        return None
+                    counts[local] = handle.replays
+                return counts
+
+            @property
+            def replays_by_descriptor(inner):
+                return inner._counts()
+
+            @property
+            def replays(inner):
+                counts = inner._counts()
+                return sum(counts.values()) if counts is not None else None
 
         self.router = _RouterView()
         self.controller = self

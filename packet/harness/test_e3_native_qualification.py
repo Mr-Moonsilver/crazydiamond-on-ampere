@@ -23,10 +23,12 @@ sys.path.insert(0, str(ROOT / 'harness'))
 
 import native_qualification as qualification                 # noqa: E402
 import observer_runtime                                       # noqa: E402
+import replay_observer                                        # noqa: E402
 import teacher_decode                                         # noqa: E402
 from native_overlap_control import NativeControlClient        # noqa: E402
 from native_startup import WorkerNative                       # noqa: E402
 from worker_bridge import NativeWorkerBridge                  # noqa: E402
+from split_bank import SplitDecodeBank, SplitGraphHandle       # noqa: E402
 EPOCH = 3
 STORAGE = 1
 
@@ -209,6 +211,36 @@ class WorkerChainTests(unittest.TestCase):
         self.assertTrue(result['native_route'])
         self.assertEqual(self.runner.controller.drains, 1)
         self.assertEqual(self.runner.native.prefill_streams.drains, 1)
+
+    def test_observer_census_uses_real_split_bank_replays_and_refuses_missing_counts(self):
+        # Native24 reached ObserverSession.bind_bank on the box, then its
+        # native router view lacked the counters read by replay_census().
+        # Exercise the actual SplitDecodeBank.replay counter and the unchanged
+        # observer reader, including a zero-replay descriptor.
+        bank = object.__new__(SplitDecodeBank)
+        first, second = object(), object()
+        local_first, local_second = object(), object()
+        bank.pairs = [(first, local_first), (second, local_second)]
+        bank.handles = {
+            local_first: SplitGraphHandle(first, local_first, bank),
+            local_second: SplitGraphHandle(second, local_second, bank),
+        }
+        bank.manager = types.SimpleNamespace(run_fullgraph=lambda descriptor: descriptor)
+        self.runner.native.bank = bank
+        identity = qualification.NativeIdentity(self.runner, self.runner.native)
+        session = object.__new__(replay_observer.ObserverSession)
+        session._router = identity.router
+        session._local_handles = (local_first, local_second)
+        self.assertEqual(session.replay_census(),
+                         {'total': 0, 'graphs': {'graph:0': 0, 'graph:1': 0}})
+        self.assertIs(bank.replay(bank.handles[local_first]), first)
+        self.assertEqual(session.replay_census(),
+                         {'total': 1, 'graphs': {'graph:0': 1, 'graph:1': 0}})
+        bank.handles[local_first].replays = -1
+        self.assertIsNone(session.replay_census())
+        bank.handles[local_first].replays = 1
+        bank.handles.pop(local_second)
+        self.assertIsNone(session.replay_census())
 
     def test_descriptor_shadow_retains_only_the_full_route(self):
         self.configure()
