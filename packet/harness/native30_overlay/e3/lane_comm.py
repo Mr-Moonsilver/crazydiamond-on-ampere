@@ -147,6 +147,8 @@ class PrefillTpCommunicator:
         ones = torch.ones((WARMUP_ELEMENTS,), dtype=torch.float32, device=self.device)
         with torch.cuda.stream(stream):
             out = self.all_reduce(ones)
+            # Warm the new collective before any native graph/overlap work.
+            self.pynccl_comm.broadcast(out, src=0, stream=stream)
         stream.synchronize()
         expected = float(self.world_size)
         values = out.cpu().tolist()
@@ -154,6 +156,48 @@ class PrefillTpCommunicator:
             raise LaneCommError('prefill TP warm-up all-reduce produced a wrong sum')
         self.warmed = True
         return True
+
+
+def canonical_selection(selection, *, group=None, torch_module=None):
+    """In-place TP-leader selection, ordered on the caller's current stream.
+
+    The native tp_scope selects its separate communicator; ordinary decode uses
+    the stock PyNccl communicator. No device readback, allocation or host wait.
+    Every peer must call once per indexer invocation, including graph capture.
+    """
+    if group is None:
+        from vllm.distributed.parallel_state import get_tp_group
+        group = get_tp_group()
+    if group.world_size == 1:
+        return
+    torch = torch_module if torch_module is not None else _torch()
+    if (len(selection.shape) != 2 or selection.dtype != torch.int32
+            or not selection.is_contiguous()):
+        raise LaneCommError('TP selection must be a contiguous int32 matrix')
+    communicator = group.device_communicator
+    pynccl = getattr(communicator, 'pynccl_comm', None)
+    if pynccl is None or pynccl.disabled or pynccl.world_size != group.world_size:
+        raise LaneCommError('TP selection requires enabled matching PyNccl')
+    stream = torch.cuda.current_stream(selection.device)
+    # PyNccl.broadcast mutates in place and returns None. src is group-local.
+    pynccl.broadcast(selection, src=0, stream=stream)
+
+
+def register_selection_op():
+    """Mutation schema keeps the collective opaque and ordered under compile."""
+    torch = _torch()
+    from vllm.utils.torch_utils import direct_register_custom_op
+
+    def flash_s5_selection(selection: torch.Tensor) -> None:
+        canonical_selection(selection)
+
+    def fake(selection: torch.Tensor) -> None:
+        return None
+
+    direct_register_custom_op(op_name='flash_s5_selection',
+                              op_func=flash_s5_selection,
+                              mutates_args=['selection'], fake_impl=fake)
+    return torch.ops.vllm.flash_s5_selection.default
 
 
 class _ScopeState:

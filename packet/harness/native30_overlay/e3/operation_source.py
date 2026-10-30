@@ -526,6 +526,11 @@ _FORWARD_QSA_ANCHOR = '''        impl.forward_qsa(
 '''
 
 
+_SELECTION_IMPORT = "from vllm.v1.flash_e3.lane_comm import register_selection_op\n_flash_s5_selection = register_selection_op()\n\n"
+_SELECTION_ANCHOR = '            raise RuntimeError("QSA indexer returned an invalid selection shape")\n'
+_SELECTION_CALL = '        _flash_s5_selection(selected)\n'
+
+
 def generate_layer(source):
     """Add the operation branch and producer/consumer call sites to QSA."""
     if _sha(source) != E2_QSA_SHA256:
@@ -538,6 +543,8 @@ def generate_layer(source):
                  + _LAYER_BRANCH)
     text = _once(text, '        selected = self.indexer(\n',
                  _LAYER_PRODUCER + '        selected = self.indexer(\n')
+    text = _once(text, _SELECTION_ANCHOR, _SELECTION_ANCHOR + _SELECTION_CALL)
+    text = _once(text, '__all__ = [', _SELECTION_IMPORT + '__all__ = [')
     text = _once(text, _STORED_ANCHOR, _STORED_ANCHOR + _LAYER_STORED)
     text = _once(text, _FORWARD_QSA_ANCHOR, _FORWARD_QSA_ANCHOR + _LAYER_CONSUMED)
     text = _once(text, '__all__ = [',
@@ -551,7 +558,9 @@ def revert_layer(source):
         raise ValueError('QSA module has no S5 operation')
     if '_flash_s5_sparse_staged_operation' not in source:
         raise ValueError('QSA module has no sparse S5 operation')
-    text = _once(source, _LAYER_BRANCH, '')
+    text = _once(source, _SELECTION_IMPORT, '')
+    text = _once(text, _SELECTION_CALL, '')
+    text = _once(text, _LAYER_BRANCH, '')
     text = _once(text, _LAYER_PRODUCER, '')
     text = _once(text, _LAYER_STORED, '')
     text = _once(text, _LAYER_CONSUMED, '')

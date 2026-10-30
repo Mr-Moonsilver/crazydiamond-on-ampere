@@ -44,7 +44,7 @@ from e3_types import E3ContractError, E3Pending
 # source. The E2 source pin, attention methods and every stock byte are unchanged.
 PINS = {
     'models/qwen4_exp/nvidia/qsa.py':
-        '7614ea785b05e50acd0f98b8f26801da9a6900c097e2ba63241b906bcb1b5f39',
+        'a0109b900e1389b2cdaa47ffb030f92b8d58d722119da69356069fcc71458a5d',
 }
 
 _ATTN_ANCHOR_OLD = '''        output, _ = self.o_proj(flat_output)
@@ -306,6 +306,8 @@ class QsaLayerDriver:
                                 attn.topk_indices_buffer[:num_tokens])
         if tuple(selected.shape) != (num_tokens, attn.indexer.packed_output_width):
             raise QsaDriverError('QSA indexer returned an invalid selection shape')
+        from lane_comm import canonical_selection
+        canonical_selection(selected)
         impl = attn.impl
         impl.do_kv_cache_update(attn, state['key'], state['value'], attn.kv_cache,
                                 main.slot_mapping)

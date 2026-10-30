@@ -693,6 +693,8 @@ class CreditHarness:
         cls.generated_qsa = operation_source.generate_layer(qsa)
 
     def setUp(self):
+        from native31_cpu_leaves import tp1_group
+        tp1_group(self)
         self.torch = sparse_test.FakeTorch()
         self.kernel = sparse_test.FakeKernel('gqa')
         self.union_kernels = sparse_test.union_kernels()

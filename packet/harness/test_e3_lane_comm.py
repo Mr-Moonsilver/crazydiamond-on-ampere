@@ -155,6 +155,9 @@ class FakePyNccl:
         self.calls.append(('all_reduce', in_tensor.numel(), stream.cuda_stream))
         return FakeTensor([v * self.world_size for v in in_tensor.values], in_tensor.shape)
 
+    def broadcast(self, tensor, src, stream=None):
+        self.calls.append(('broadcast', tensor.numel(), src, stream.cuda_stream))
+
     def send(self, tensor, dst, stream=None):
         self.calls.append(('send', tensor.numel(), dst, stream.cuda_stream))
         self.wire.messages.append(list(tensor.values))

@@ -1861,8 +1861,54 @@ class NativeSegmentDriver:
             self.error = 'native driver failed; ownership retained'
             raise
 
+    def _publish_profile_failure(self):
+        """Publish once after certified cancellation, independently of route return.
+
+        EngineCoreProc's existing output queue owns normal client delivery. The
+        FULL-return guards still own scheduling; a delayed route ack must not
+        keep an already closed failed request waiting for its first token.
+        """
+        if self._profile_failure is None:
+            return False
+        queue = getattr(self.engine, 'output_queue', None)
+        if queue is None:
+            return False  # Embedding EngineCore uses the step-result channel.
+        if self.tx is not None or self.controller.active or self._retained is not None:
+            return False
+        transaction, reason = self._profile_failure
+        request = self._profile_failed_request
+        if request is None:
+            return False
+        if request.request_id != transaction.request_uid:
+            raise DriverError('QSA refusal request identity changed')
+        if not self._last_native_closure or not self._last_native_closure.get('complete'):
+            raise DriverError('QSA refusal publication requires certified closure')
+        from vllm.v1.request import RequestStatus
+        from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs, FinishReason
+        packet = getattr(self, '_profile_failure_packet', None)
+        if packet is None:
+            self.scheduler.finish_requests([request.request_id], RequestStatus.FINISHED_ERROR)
+            output = EngineCoreOutput(request_id=request.request_id, new_token_ids=[],
+                                      finish_reason=FinishReason.ERROR, stop_reason=reason)
+            packet = (request.client_index, EngineCoreOutputs(outputs=[output]))
+            self._profile_failure_packet = packet
+        try:
+            queue.put_nowait(packet)
+        except __import__('queue').Full:
+            return False
+        self._record('profile_failure_published', transaction=transaction.txn_seq,
+                     reason=reason, channel='engine-output-queue',
+                     full_return_pending=self._return_pending is not None)
+        self._profile_failure = None
+        self._profile_failed_request = None
+        self._profile_failure_packet = None
+        return True
+
     def _finish_profile_failure(self):
-        """Emit a normal request ERROR only after certified drain/full return."""
+        """Embedding fallback; process mode publishes directly after closure."""
+        if getattr(self.engine, 'output_queue', None) is not None:
+            self._publish_profile_failure()
+            return None
         if (self.tx is not None or self.controller.active or self._retained is not None
                 or self._return_pending is not None or self._route_exchange() is not None
                 or self._inflight or self.stop_kind is not None):
@@ -2545,6 +2591,7 @@ class NativeSegmentDriver:
             self._remember_native_closure(self.tx, acks, self.reports, self.stop_kind)
             self._reset()
             self._note_terminal_route('cancel')
+            self._publish_profile_failure()
             return
         # Cancellation is its own retirement path: reports supply completion
         # identity, but state_written()/publication is never consulted here.
@@ -2570,6 +2617,7 @@ class NativeSegmentDriver:
         self._remember_native_closure(self.tx, acks, self.reports, self.stop_kind)
         self._reset()
         self._note_terminal_route('cancel')
+        self._publish_profile_failure()
 
     def _control_owns_route(self):
         """True while an explicit native-control intent owns the split route."""

@@ -172,6 +172,8 @@ def inputs():
 
 class DriverTests(unittest.TestCase):
     def setUp(self):
+        from native31_cpu_leaves import tp1_group
+        tp1_group(self)
         self.model = make_model()
         self.operation = FakeOperation(buckets=2, pending_before={2})
         self.driver = QsaLayerDriver(self.operation, staged_operation=staged_operation,
@@ -329,6 +331,10 @@ def refusing_staged_operation(operation, attn, query, kv_cache, logical, main,
 
 
 class SparseDriverTests(unittest.TestCase):
+    def setUp(self):
+        from native31_cpu_leaves import tp1_group
+        tp1_group(self)
+
     def build(self, operation, **kwargs):
         driver = QsaLayerDriver(
             operation, staged_operation=staged_operation,

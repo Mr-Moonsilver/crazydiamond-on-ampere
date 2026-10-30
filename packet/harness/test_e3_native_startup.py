@@ -32,6 +32,9 @@ class FakeNccl:
         self.calls.append('all_reduce')
         return types.SimpleNamespace(cpu=lambda: types.SimpleNamespace(tolist=lambda: [2.0] * t.numel()))
 
+    def broadcast(self, tensor, src, stream=None):
+        self.calls.append('broadcast')
+
     def send(self, tensor, dst, stream=None):
         self.calls.append('send')
 

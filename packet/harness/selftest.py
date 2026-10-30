@@ -709,6 +709,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_native_tp_tail_skew.py', 'Native19 TP tail barrier and exact stop retry: both peers clear the final event before collective entry (CPU model/communicator leaves, not hardware liveness)'),
                      ('test_e3_native_speculation_gate.py', 'Native19 startup log gate: actual speculative config must be None, with missing or enabled evidence refused (CPU)'),
                      ('test_e3_native26_host_observer.py', 'Native26 host Docker log follow, one-second disk samples, bounded shutdown markers and queue lifecycle (CPU fake Docker only)'),
+                     ('test_native31.py', 'Native31 TP canonical selection, real sparse wave boundary and certified prompt client error (CPU only)'),
                      ('test_native30_e.py', 'Native30-e exact native28 preconditioning, receipt activation/tail and coverage grading (CPU only)'),
                      ('test_native30_cli.py', 'Native30 exact short-CLI host validation to first HTTP send (CPU only)'),
                      ('test_native30_localize.py', 'Native30 per-rank flushed labels, scoped sync, PP deadlock guard, short queue restore and classification (CPU fixtures only)'),
