@@ -443,6 +443,8 @@ class PrivateBindingsTests(unittest.TestCase):
     req_index = 2
 
     def setUp(self):
+        from native31_cpu_leaves import tp1_group
+        tp1_group(self)
         self.torch = fake_torch()
         self.attn = FakeQsaAttention(self.width)
         self.original = self.attn.topk_indices_buffer

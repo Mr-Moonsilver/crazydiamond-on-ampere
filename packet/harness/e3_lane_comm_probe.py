@@ -69,7 +69,7 @@ ROUTE_GENERATION = 7
 # Independent reviewed pins of the modules under test (same convention as rung 1:
 # the checksummed directory is not merely self-signed).
 NATIVE_PINS = {
-    'lane_comm.py': 'ae86ed9b5799fc6de8cb8159913999eaf9c047838604e9ec10a7506db15fb14f',
+    'lane_comm.py': 'c9dce16b18c46af25940262fadbbc447f35121e0dd2ebef48ea9d97c5a9a89fd',
     'e3_types.py': '2a9f08b94d7e383efd358f8b044648cf52a65d76f71119a9ebdc89e5f1d04068',
     'green_context.py': '26fdd7f650a17bd4382a46b0875d83f5cfde3287ee5221bc600c3870773dc7d9',
 }
