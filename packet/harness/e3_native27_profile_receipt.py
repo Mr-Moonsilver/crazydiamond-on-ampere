@@ -31,7 +31,11 @@ def bounded_receipt(value):
         if any(type(peer) is not dict or type(peer.get('rank')) is not int
                for peer in peers):
             return None
-    if len(json.dumps(value, sort_keys=True).encode()) > MAX_RECEIPT_BYTES:
+    try:
+        encoded = json.dumps(value, sort_keys=True).encode()
+    except (TypeError, ValueError):
+        return None
+    if len(encoded) > MAX_RECEIPT_BYTES:
         return None
     return copy.deepcopy(value)
 
@@ -67,7 +71,7 @@ def queue_grade_receipts(run_dir):
         try:
             with path.open() as handle:
                 artifact = json.load(handle)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, TypeError) as exc:
             unavailable[phase] = type(exc).__name__
             continue
         if type(artifact) is not dict:
