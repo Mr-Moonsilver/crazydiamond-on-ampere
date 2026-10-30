@@ -51,7 +51,7 @@ def build(out,log):
         if name.startswith('harness/'):target=bundle/Path(name).relative_to('harness')
         else:target=bundle/'e3_builder'/Path(name).relative_to('patches/s5_engine')
         target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
-    tools=bundle/'native32_tools';tools.mkdir()
+    tools=bundle/'native32_tools';shutil.copytree(PARENT/'native30_tools',tools)
     for name in ('native32_selfrun.py','native32_cpu_probe.py','native31_cpu_check.py'):
         shutil.copyfile(ROOT/'tools'/name,tools/name)
     # Frozen oracle only; never mounted over a worker model module.
