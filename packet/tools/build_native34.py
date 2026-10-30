@@ -30,7 +30,7 @@ def prepare_review(log):
     review['source_shas']={n:sha(ROOT/'patches/s5_engine'/n) for n in review['source_shas']}
     review['harness_source_shas']={str(Path(n).relative_to('harness')):sha(ROOT/n) for n in tracked if (ROOT/n).is_file()}
     details=dict(parent_manifest=sha(PARENT/'SHA256SUMS'),native34=True,engine_byte_identical_to_native33=True,arms=['I','S','O'],diagnostic='I rank1 prior-work/indexer discriminator; S serialized prefix; O original overlap; bounded storage and phase receipts',owner_prelaunch_cpu_executed=True,vm_input='NONE',sync='none',not_before='2026-10-30T22:01:00Z',hard_end='2026-11-02T06:00:00Z',active_s=2100,cleanup_margin_s=420,phase_sequence=['startup','row1','rule4_controls','rule4_candidate','row4-control-A','bounded-native-prefix'],ple_repair=False,device_run='NOT_RUN',tp_score_identity='UNPROVEN',gpu_fault_mechanism='NOT_ESTABLISHED',rule4_causality='UNPROVEN',fixture_leaves='native31_fixture_leaves.json',numerical_fix=False)
-    focused=ROOT.parent/'tmp/native34-focused-g.log';focused_text=focused.read_text()
+    focused=ROOT.parent/'tmp/native34-focused-h.log';focused_text=focused.read_text()
     assert 'Ran 29 tests' in focused_text and focused_text.rstrip().endswith('OK')
     review['post_review_cpu']=dict(tests=29,skips=0,verdict='PASS',log_sha256=sha(focused),basis='rank-specific grading negative and all native34 focused tests rerun after review')
     review['native34']=details;review['cpu_regression']=regression
@@ -73,7 +73,7 @@ def build(out,log,arm):
     review['source_shas']={n:sha(bundle/'e3_builder'/n) for n in review['source_shas']}
     review['harness_source_shas']={str(Path(n).relative_to('harness')):sha(ROOT/n) for n in tracked if n.startswith('harness/') and (ROOT/n).is_file()}
     details=dict(parent_manifest=sha(PARENT/'SHA256SUMS'),native34=True,engine_byte_identical_to_native33=True,arms=['I','S','O'],diagnostic='I rank1 prior-work/indexer discriminator; S serialized prefix; O original overlap; bounded storage and phase receipts',owner_prelaunch_cpu_executed=True,vm_input='NONE',sync='none',not_before='2026-10-30T22:01:00Z',hard_end='2026-11-02T06:00:00Z',active_s=2100,cleanup_margin_s=420,phase_sequence=['startup','row1','rule4_controls','rule4_candidate','row4-control-A','bounded-native-prefix'],ple_repair=False,device_run='NOT_RUN',tp_score_identity='UNPROVEN',gpu_fault_mechanism='NOT_ESTABLISHED',rule4_causality='UNPROVEN',fixture_leaves='native31_fixture_leaves.json',numerical_fix=False)
-    focused=ROOT.parent/'tmp/native34-focused-g.log';focused_text=focused.read_text()
+    focused=ROOT.parent/'tmp/native34-focused-h.log';focused_text=focused.read_text()
     assert 'Ran 29 tests' in focused_text and focused_text.rstrip().endswith('OK')
     review['post_review_cpu']=dict(tests=29,skips=0,verdict='PASS',log_sha256=sha(focused),basis='rank-specific grading negative and all native34 focused tests rerun after review')
     review['native34']=details;review['cpu_regression']=regression
@@ -117,7 +117,7 @@ def build(out,log,arm):
     from test_native34_queue import normalize_queue
     assert normalize_queue((bundle/'runs'/(stem+'.draft.sh')).read_text(),arm)==(PARENT/'runs/q18a_native33.draft.sh').read_text()
     source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
-    provenance=json.loads((bundle/'native30-provenance.json').read_text());provenance.update(source=source,selftest=regression,native34=details,overlay_manifest=sha(overlay/'SHA256SUMS'),review_sha256=closure['review_sha256'])
+    provenance=json.loads((bundle/'native30-provenance.json').read_text());provenance.update(source=source,candidate=candidate,native34_arm=arm,operational_order=['I','S','O'],selftest=regression,native34=details,overlay_manifest=sha(overlay/'SHA256SUMS'),review_sha256=closure['review_sha256'])
     dump(bundle/'native30-provenance.json',provenance);manifest(bundle);pin=sha(bundle/'SHA256SUMS');held=out/(candidate+'-bundle-'+pin[:12]);bundle.rename(held)
     owner=PARENT_RUNNER.read_text().replace('q18a_native33',stem).replace('q18a-native33',candidate)
     owner=owner.replace('from native31_gate import window_ok','from native34_gate import window_ok')

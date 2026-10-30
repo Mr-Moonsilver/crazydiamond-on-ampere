@@ -87,6 +87,21 @@ class Runtime(unittest.TestCase):
         self.assertEqual({row['stream'] for row in proof['decode_stream_inventory']},{11,12,13,14,15,17})
         self.assertEqual({row['stream'] for row in proof['native_streams']},{88,89,90})
         self.assertEqual({row[1] for row in self.cuda.trace if row[0]=='event-sync'},{11,12,13,14,15,17,88,89,90})
+        token=MetadataTensor((4,),4)
+        w.TLS.phase_context=dict(runner=self.r,state=self.s,output_zero_id=id(token))
+        for arm in ('O','S'):
+            self.s.update(arm=arm,phases=[])
+            before=len([row for row in self.cuda.trace if row[0]=='event-sync'])
+            calls=[]
+            def original(*args,**kwargs):calls.append((args,kwargs));return token
+            for name in sorted(w.PHASES):
+                self.assertIs(w.phase(original,(token,),dict(flag=7),name),token)
+            self.assertEqual(calls,[((token,),dict(flag=7))]*8)
+            waits=len([row for row in self.cuda.trace if row[0]=='event-sync'])-before
+            self.assertEqual(waits,8 if arm=='S' else 0)
+            self.assertEqual({row['name'] for row in self.s['phases']},w.PHASES)
+            self.assertEqual({row['complete'] for row in self.s['phases']},{arm=='S'})
+            self.assertTrue(self.s['providers'])
 
     def target(self):
         fn,calls=host_body();fn(*inputs(),compress_ratio=4,mrope_section=None,rope_pos_offset=8)
