@@ -61,7 +61,7 @@ def main():
     (proof / 'import-graph.json').write_text(json.dumps(graph, sort_keys=True, indent=2) + '\n')
     # The connected CPU fixture suite runs from the exact pinned source tree,
     # while the mounted engine_driver method bodies are AST-compared in-probe.
-    for prefix in ('harness', 'patches/s5_engine'):
+    for prefix in ('harness', 'patches'):
         names = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '-z', '--', prefix])
         for raw in names.split(b'\0'):
             if not raw:
