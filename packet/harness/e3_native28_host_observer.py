@@ -164,13 +164,14 @@ def guard_requested(row, threshold=ROOT_FREE_GUARD_BYTES):
     return type(row.get('root_free_bytes')) is int and row['root_free_bytes'] < threshold
 
 
-def write_guard_intent(out, final_row, *, threshold=ROOT_FREE_GUARD_BYTES):
+def write_guard_intent(out, trigger_row, final_row, *, threshold=ROOT_FREE_GUARD_BYTES):
     """Commit the evidence pointer before the queue receives its stop signal."""
-    assert guard_requested(final_row, threshold)
+    assert guard_requested(trigger_row, threshold)
     canonical = json.dumps(final_row, sort_keys=True, separators=(',', ':')).encode()
     intent = dict(schema=1, reason='root-free-space-guard',
                   scope='host evidence first; queue-owned engine stop requested',
                   wall_ns=time.time_ns(), threshold_bytes=threshold,
+                  trigger_root_free_bytes=trigger_row['root_free_bytes'],
                   root_free_bytes=final_row['root_free_bytes'],
                   final_sample_sequence=final_row['sequence'],
                   final_sample_sha256=hashlib.sha256(canonical).hexdigest(),
@@ -256,7 +257,7 @@ def watch(container, out, exclude_id='', interval=1.0, *, queue_pid=None,
                     sequence += 1
                     samples.flush(force=True)
                     os.fsync(samples.fd)
-                    guard = write_guard_intent(out, final, threshold=threshold)
+                    guard = write_guard_intent(out, row, final, threshold=threshold)
                     if queue_pid is not None:
                         notify_queue(queue_pid)
                     break

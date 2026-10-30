@@ -17,13 +17,18 @@ class Native28HostGuard(unittest.TestCase):
             row = {'schema': 1, 'sequence': 8, 'root_free_bytes': 7*1024**3,
                    'writable_layer_bytes': 9000, 'final_root_free_guard_sample': True}
             self.assertTrue(observer.guard_requested(row))
-            intent = observer.write_guard_intent(out, row)
+            # Log rotation can replenish root space between trigger and final
+            # inspect; the first crossing still requires a queue-owned stop.
+            final = dict(row, sequence=9, root_free_bytes=9*1024**3)
+            intent = observer.write_guard_intent(out, row, final)
             self.assertEqual(intent['reason'], 'root-free-space-guard')
-            self.assertEqual(intent['final_sample_sequence'], 8)
+            self.assertEqual(intent['final_sample_sequence'], 9)
+            self.assertEqual(intent['trigger_root_free_bytes'], 7*1024**3)
+            self.assertEqual(intent['root_free_bytes'], 9*1024**3)
             self.assertEqual(intent['final_size_rw_bytes'], 9000)
             self.assertEqual(json.loads((out/'host-stop-intent.json').read_text()), intent)
             with self.assertRaises(FileExistsError):
-                observer.write_guard_intent(out, row)
+                observer.write_guard_intent(out, row, final)
 
     def test_queue_trap_runs_without_waiting_for_foreground_child(self):
         with tempfile.TemporaryDirectory() as tmp:
