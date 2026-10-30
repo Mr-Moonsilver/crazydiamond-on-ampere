@@ -131,6 +131,12 @@ class Passive(unittest.TestCase):
             for _ in range(5):host.emit(s,'fixture',value='x'*600)
         self.assertEqual(len([x for x in self.rows if x['event']=='host-receipt-limit']),1)
         p.copy_to_uva([1]);self.assertEqual(host.pool_state(p)['rotations'],1)
+        s.update(limit=False,bytes=0,records=0);self.rows.clear()
+        host.emit(s,'large-fixture',value='"'*5000)
+        self.assertTrue(all(x['event']=='host-fragment' for x in self.rows))
+        self.assertTrue(all(len(json.dumps(x,sort_keys=True,separators=(',',':')).encode())+512<=4096 for x in self.rows))
+        self.assertEqual(host.reassemble(self.rows)[0]['value'],'"'*5000)
+        self.assertEqual(host.reassemble(self.rows[:-1])[0]['event'],'host-fragments-incomplete')
 
     def test_plan_digest_is_canonical_and_payload_is_private(self):
         a=NS(transaction=NS(engine_epoch=1,request_uid='PRIVATE_REQUEST',request_generation=2,txn_seq=3,chunk_start=0,chunk_end=2),prompt_end=3,input_ids=(7,8),ngram_context=(9,),block_tables=((1,2),),new_block_ids_to_zero=(),cow_pairs=(),state_epoch=0)

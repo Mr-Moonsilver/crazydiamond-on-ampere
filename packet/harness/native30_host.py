@@ -2,6 +2,7 @@
 import contextlib
 import functools
 import hashlib
+import itertools
 import json
 import threading
 import weakref
@@ -9,6 +10,9 @@ import weakref
 MAX_POOLS=512
 MAX_ELEMENTS=262144
 MAX_RECORD_BYTES=128*1024
+MAX_LINE_BYTES=4096
+FRAGMENT_CHARS=1400
+_RECORD_IDS=itertools.count(1)
 MAX_BYTES_PER_RANK=16*1024*1024
 MAX_RECORDS_PER_RANK=20000
 _TLS=threading.local()
@@ -126,16 +130,51 @@ def emit(s,event,**fields):
     if s is None or _EMIT is None or s['limit']:return
     record=dict(rank=s['rank'],event=event,decode_step_window=s['step'],**fields)
     encoded=json.dumps(record,sort_keys=True,separators=(',',':'))
-    charge=len(encoded.encode('utf8'))+512  # Includes the emitter's fixed metadata overhead.
-    if (charge>MAX_RECORD_BYTES or s['bytes']+charge>MAX_BYTES_PER_RANK
-            or s['records']>=MAX_RECORDS_PER_RANK):
+    size=len(encoded.encode('utf8'))
+    bodies=[record]
+    if size+512>MAX_LINE_BYTES:
+        record_id=next(_RECORD_IDS)
+        pieces=[encoded[i:i+FRAGMENT_CHARS] for i in range(0,len(encoded),FRAGMENT_CHARS)] if size<=MAX_RECORD_BYTES else []
+        pin=hashlib.sha256(encoded.encode()).hexdigest()
+        bodies=[dict(event='host-fragment',rank=s['rank'],decode_step_window=s['step'],
+                     record_id=record_id,part=i,parts=len(pieces),logical_event=event,
+                     logical_sha256=pin,data=piece) for i,piece in enumerate(pieces)]
+    charges=[len(json.dumps(body,sort_keys=True,separators=(',',':')).encode())+512 for body in bodies]
+    if (size>MAX_RECORD_BYTES or not bodies or any(n>MAX_LINE_BYTES for n in charges)
+            or s['bytes']+sum(charges)>MAX_BYTES_PER_RANK
+            or s['records']+len(bodies)>MAX_RECORDS_PER_RANK):
         if not s['limit']:
             s['limit']=True
-            _EMIT('host-receipt-limit',rank=s['rank'],record_bytes=len(encoded),
+            _EMIT('host-receipt-limit',rank=s['rank'],record_bytes=size,logical_event=event,
                   bytes_emitted=s['bytes'],records_emitted=s['records'],coverage_complete=False)
         return
-    s['bytes']+=charge;s['records']+=1
-    _EMIT(event,**{k:v for k,v in record.items() if k!='event'})
+    for body,charge in zip(bodies,charges):
+        s['bytes']+=charge;s['records']+=1
+        _EMIT(body['event'],**{k:v for k,v in body.items() if k!='event'})
+
+
+def reassemble(rows):
+    """Offline reader for host-fragment rows; missing/corrupt groups are explicit."""
+    result=[];groups={}
+    for row in rows:
+        if row.get('event')!='host-fragment':result.append(row);continue
+        key=(row.get('pid'),row.get('rank'),row['record_id'])
+        groups.setdefault(key,{})[row['part']]=row
+    for key,parts in groups.items():
+        first=next(iter(parts.values()));n=first['parts']
+        try:
+            if set(parts)!=set(range(n)):raise ValueError('missing-parts')
+            data=''.join(parts[i]['data'] for i in range(n))
+            if any(x['parts']!=n or x['logical_sha256']!=first['logical_sha256'] for x in parts.values()):raise ValueError('fragment-identity')
+            if hashlib.sha256(data.encode()).hexdigest()!=first['logical_sha256']:raise ValueError('fragment-digest')
+            original=json.loads(data)
+            for name in ('pid','monotonic_ns'):
+                if name in first:original[name]=first[name]
+            result.append(original)
+        except (KeyError,ValueError,TypeError):
+            result.append(dict(event='host-fragments-incomplete',pid=key[0],rank=key[1],record_id=key[2],parts_seen=len(parts),parts_expected=n))
+    return result
+
 
 
 @contextlib.contextmanager
