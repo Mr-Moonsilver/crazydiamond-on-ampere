@@ -79,10 +79,25 @@
       "equivalence": "Exact frozen generated host capture body executes warmup/capture factory branches, real worker_hooks.capture_context/capture_graph/checked_capture_stream/finish_graph host checks and graph registration. CPU graph/stream/context leaves replace only device construction/query/join. Test proves FULL capture key, keep_graph instantiation and matched green stream checks. Pointer tests prove replacement detection, missing-capture reporting and no tensor retention/readback.",
       "name": "cpu-native33-real-host-capture",
       "replaces": "CUDA graph_capture context, torch.cuda.CUDAGraph/graph and current_stream, graph-pool setter and offloader device joins in the unchanged generated CudaGraphManager.capture host body; inference-mode decorator removed only for AST host execution; Tensor data_ptr allocation fixture"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "CUDA allocator lifetime, actual model storage, IPC mappings or harmful concurrent access; exact container gate must additionally execute real CPU Torch getters.",
+      "equivalence": "ctypes-backed host allocations provide real base/view addresses, byte extents and strides. The same compact() code checks differing-pointer overlap, empty and reverse views, out-of-range receipts and weak-reference non-retention. Value readback methods refuse.",
+      "name": "cpu-native34-storage-protocol",
+      "replaces": "torch.Tensor/untyped_storage metadata getters in native34 storage tests"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "CUDA alloc/free events, instrumentation cost, green-context progress or external/IPC allocation lifetimes; incomplete history cannot certify an incarnation.",
+      "equivalence": "Explicit host snapshots follow the pinned Torch 2.13 schema, including same-address reuse, pending free, unknown external range and bounded-ring loss. Tracking and incarnation logic execute unchanged.",
+      "name": "cpu-native34-allocator-history",
+      "replaces": "torch.cuda.memory._snapshot alloc/free trace records in AllocationWindow CPU tests"
     }
   ],
   "native32_scope": "receipt boundary resolves actual bridge.dispatcher.runner; engine and ordinary path byte-identical to native31; frozen owner source/package pre-launch assertions run on CPU",
   "native33_scope": "rank1 current-stream diagnostic fences only in existing row4 window; graph pointer metadata observed at capture and replay without tensor retention/readback; engine bytes unchanged",
+  "native34_scope": "causal diagnostic only; host alias and bounded allocator-history logic; no device witness or fix established",
   "schema": "native31-fixture-leaves/1",
   "scope": "CPU host/compile/exactness proofs only; no GPU, NCCL progress, model accuracy or box qualification"
 }
