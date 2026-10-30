@@ -101,6 +101,10 @@ def main():
     p.add_argument('--census-hub-result', required=True, type=Path)
     p.add_argument('--census-hub-input', required=True, type=Path)
     p.add_argument('--host-selfrun-record', required=True, type=Path)
+    p.add_argument('--profile-vm-result', required=True, type=Path)
+    p.add_argument('--profile-vm-input', required=True, type=Path)
+    p.add_argument('--profile-hub-result', required=True, type=Path)
+    p.add_argument('--profile-hub-input', required=True, type=Path)
     p.add_argument('--image-test-log', type=Path)
     p.add_argument('--image-test-container')
     p.add_argument('--disable-audit', action='store_true',
@@ -268,10 +272,13 @@ def main():
         ['git', '-C', str(ROOT), 'diff', '--name-only',
          str(source_commit) + '..HEAD', '--', 'patches/s5_engine', 'harness'],
         text=True).splitlines())
-    # The VM proof is inherited unchanged; the new host observer is registered.
+    # Strict runtime/harness coverage precedes the separate one-card receipt proof.
     need(record.get('schema') == 'native27-strict-regression/1'
          and source_commit == '334f0cd05c61456a20282d4210703c6506aa2406'
-         and changed_since <= {'patches/s5_engine/native_candidate_review.json'}
+         and changed_since <= {'patches/s5_engine/native_candidate_review.json',
+                               'harness/e3_native27_profile_vm_probe.py',
+                               'harness/native27_profile_cpu_selfrun.py',
+                               'harness/native27_profile_fixture_leaves.json'}
          and record.get('exit_code') == 0 and record.get('skipped') == 0
          and record.get('log_sha256') == sha(a.regression_log)
          and len(coverage) == 1
@@ -305,6 +312,44 @@ def main():
          and not host_container['HostConfig'].get('DeviceRequests')
          and not host_container['HostConfig'].get('Devices'),
          'host self-run image, exit or CPU-only venue differs')
+    profile_rows = inventory(a.profile_vm_input)
+    profile_hub_rows = inventory(a.profile_hub_input)
+    profile_manifest = '4e96ea483ce48e89cef96ee19f71e2999a40b35dd3a3b1612f334c0467fcce54'
+    need(sha(a.profile_vm_input / 'SHA256SUMS') == profile_manifest
+         and profile_rows == profile_hub_rows
+         and sha(a.profile_hub_input / 'SHA256SUMS') == profile_manifest
+         and profile_rows['proof/native27_profile_fixture_leaves.json']
+             == sha(ROOT / 'harness/native27_profile_fixture_leaves.json'),
+         'native27 profile VM input or fixture leaves differ')
+    profile_hub = json.loads(a.profile_hub_result.read_text())
+    profile_hub_probe = a.profile_hub_result.parent / 'probe.json'
+    need(profile_hub.get('verdict') == 'PASS' and profile_hub.get('rc') == 0
+         and profile_hub.get('manifest_sha256') == profile_manifest
+         and profile_hub.get('gpu_device_requests') == 0
+         and profile_hub_probe.is_file()
+         and sha(profile_hub_probe) == profile_hub.get('probe_sha256')
+         and json.loads(profile_hub_probe.read_text())['sections']['receipt_path']['verdict'] == 'PASS',
+         'native27 exact-input hub receipt proof absent')
+    profile_vm = json.loads(a.profile_vm_result.read_text())
+    profile_vm_probe = a.profile_vm_result.parent / 'probe.json'
+    need(profile_vm.get('verdict') == 'PASS' and profile_vm.get('rc') == 0
+         and profile_vm.get('process_rc') == 0
+         and profile_vm.get('manifest_sha256') == profile_manifest
+         and profile_vm.get('gpu_execution') is True
+         and profile_vm.get('cleanup_ok') is True
+         and profile_vm.get('failures') == [] and profile_vm.get('missing') == []
+         and profile_vm_probe.is_file()
+         and sha(profile_vm_probe) == profile_vm.get('probe_sha256'),
+         'native27 one-card receipt proof absent')
+    receipt_probe = json.loads(profile_vm_probe.read_text())
+    receipt_section = receipt_probe.get('sections', {}).get('receipt_path', {})
+    need(receipt_section.get('verdict') == 'PASS'
+         and receipt_section.get('journal_refusal_evicted') is True
+         and receipt_section.get('phase_receipt_exact') is True
+         and receipt_section.get('queue_grade_exact') is True
+         and receipt_section.get('status_peer_selected_counts') == [4097, 97153]
+         and receipt_section.get('status_peer_bucket_waves') == [[17], [380, 1]],
+         'native27 VM proof did not retain both peer profiles end to end')
     coordinator = json.loads(a.coordinator_result.read_text())
     need(coordinator.get('rc') == 0 and coordinator.get('verdict') == 'PASS'
          and coordinator.get('mode') == 'cpu-full', '12-scenario CPU-full proof absent')
@@ -446,6 +491,11 @@ def main():
             'selfrun_record_sha256': sha(a.host_selfrun_record),
             'selfrun_log_sha256': sha(host_log),
             'selfrun_container': host_selfrun['container'],
+            'profile_vm_result_sha256': sha(a.profile_vm_result),
+            'profile_vm_probe_sha256': sha(profile_vm_probe),
+            'profile_vm_input_manifest_sha256': profile_manifest,
+            'profile_hub_result_sha256': sha(a.profile_hub_result),
+            'profile_fixture_leaves_sha256': sha(bundle / 'native27_profile_fixture_leaves.json'),
             'box_regrade_sha256': sha(ROOT / 'reviews/codex-20261030-native26-regrade.md'),
             'scope': 'retain bounded first/latest peer profiles outside journal and lift into phase and queue receipts',
         }
@@ -519,12 +569,11 @@ def main():
                 for path in raw.rglob('*') if path.is_file() and
                 path.relative_to(raw).as_posix() not in
                 ('SHA256SUMS', 'S5-OVERLAP-GENERATION.json')}
-    proven_overlay = a.census_vm_input / 'overlay'
+    proven_overlay = a.profile_vm_input / 'overlay'
     runtime_compared = [name for name in expected
                         if (proven_overlay / name).is_file()
                         and name not in ('e3/decode-probe-evidence.json',
-                                         'e3/native-implementation-closure.json',
-                                         'e3/engine_driver.py')]
+                                         'e3/native-implementation-closure.json')]
     need(runtime_compared and all(expected[name] == sha(proven_overlay / name)
                                   for name in runtime_compared),
          'bundled generated runtime differs from connected self-run overlay')
@@ -600,6 +649,11 @@ print('OWNER_VERIFY PASS')
                'host_observer_sha256': sha(bundle / 'e3_native26_host_observer.py'),
                'profile_receipt_helper_sha256': sha(bundle / 'e3_native27_profile_receipt.py'),
                'engine_driver_sha256': sha(bundle / 'e3_builder/engine_driver.py'),
+               'profile_vm_result_sha256': sha(a.profile_vm_result),
+               'profile_vm_probe_sha256': sha(profile_vm_probe),
+               'profile_vm_input_manifest_sha256': profile_manifest,
+               'profile_hub_result_sha256': sha(a.profile_hub_result),
+               'profile_fixture_leaves_sha256': sha(bundle / 'native27_profile_fixture_leaves.json'),
                'row4_source_audit_sha256': sha(ROOT / 'reviews/codex-20261030-native26-row4-source-audit.md'),
                'regression_record_sha256': regression_record_sha,
                'graph_runtime_compared': len(runtime_compared),
@@ -655,6 +709,7 @@ Status: **HOLD**. The hard end alone is not a box GO.
 - Queue hard end: `{receipt['hard_end_utc']}` (placeholder={receipt['hard_end_is_placeholder']}); timeout {receipt['timeout_s']} s plus {receipt['kill_margin_s']} s kill margin
 - Strict regression: {counts[0][0]}/{counts[0][1]}, {len(suites)} suites, 0 skips; basis `{regression_basis}`; log SHA256 `{receipt['regression_log_sha256']}`; committed record SHA256 `{regression_record_sha}`
 - Profile-refusal pinned-image CPU self-run: 4/4 tests, 0 skips, runc/no GPU, container `{receipt['host_selfrun_container']}`, record SHA256 `{receipt['host_selfrun_record_sha256']}`; receipt helper SHA256 `{receipt['profile_receipt_helper_sha256']}`
+- Native27 one-card VM receipt proof: result SHA256 `{receipt['profile_vm_result_sha256']}`, probe SHA256 `{receipt['profile_vm_probe_sha256']}`, input manifest `{receipt['profile_vm_input_manifest_sha256']}`; exact-input hub CPU-shaped result SHA256 `{receipt['profile_hub_result_sha256']}`; fixture leaves SHA256 `{receipt['profile_fixture_leaves_sha256']}`
 - Native26 finalized runtime: {receipt['native26_runtime_files_byte_equal']} Python/native files byte-equal; only `engine_driver.py` differs, SHA256 `{receipt['engine_driver_sha256']}`
 - Row-4 source audit: `reviews/codex-20261030-native26-row4-source-audit.md` SHA256 `{receipt['row4_source_audit_sha256']}`. It found no direct 50 GB file/log emitter in the generated observer path; the Docker json log versus writable-layer cause remains open.
 - Coordinator: 12/12 PASS in pinned image, CPU-full; result SHA256 `{receipt['coordinator_result_sha256']}`; probe SHA256 `{receipt['coordinator_probe_sha256']}`; input manifest SHA256 `{receipt['coordinator_input_manifest_sha256']}`
