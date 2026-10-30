@@ -9,7 +9,7 @@ import time
 def run(args):
     from e3_native_qualification_driver import QualificationDriver,NativePlacementRunner,QualificationRefused
     from e3_q18a_qualification import _workload_object
-    placement=NativePlacementRunner(workload=_workload_object(args.workload),url=args.url,
+    placement=NativePlacementRunner(workload=_workload_object(json.loads(Path(args.workload).read_text())),url=args.url,
         prefill_plan=json.loads(Path(args.prefill_plan).read_text()),snapshot_max_bytes=args.snapshot_max_bytes)
     driver=QualificationDriver(args.store,run_id=args.run_id,model=args.model,
         engine_epoch=args.epoch,url=args.url,placement=placement,

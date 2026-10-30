@@ -125,8 +125,8 @@ class PlacementCLI(unittest.TestCase):
         import e3_native_qualification_driver as qd
         import e3_q18a_qualification as qual
         with tempfile.TemporaryDirectory() as d:
-            p=Path(d);(p/'plan.json').write_text('{}')
-            args=NS(workload='fixture',url='http://127.0.0.1:1',prefill_plan=str(p/'plan.json'),
+            p=Path(d);(p/'plan.json').write_text('{}');(p/'workload.json').write_text('{}')
+            args=NS(workload=str(p/'workload.json'),url='http://127.0.0.1:1',prefill_plan=str(p/'plan.json'),
                 snapshot_max_bytes=64*1024**2,store=str(p/'store'),run_id='native30-test',model='m',epoch=7,timeout_s=90,out=str(p/'out.json'))
             calls=[]
             class Placement:
