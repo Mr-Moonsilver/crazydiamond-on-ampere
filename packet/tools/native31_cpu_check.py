@@ -29,14 +29,14 @@ def run():
     values=torch.randn(128,32,generator=generator,dtype=torch.bfloat16)
     query=torch.randn(8,32,generator=generator,dtype=torch.bfloat16)
     def decode(selection):
-        chosen=values[selection.long()]
+        chosen=values[selection[:,:-1].long()]
         logits=(chosen.float()*query.float()[:,None,:]).sum(-1)
         return (torch.softmax(logits,-1)[...,None]*chosen.float()).sum(1)
     digests=[]
     with patch.object(lc,'canonical_selection',canonical):
         compiled=torch.compile(lambda selection: (op(selection),selection)[1],backend='eager',fullgraph=True)
         for step in range(32):
-            before=torch.stack([torch.randperm(128,generator=generator)[:16] for _ in range(8)]).to(torch.int32)
+            before=torch.cat((torch.stack([torch.randperm(128,generator=generator)[:16] for _ in range(8)]).to(torch.int32),torch.full((8,1),16,dtype=torch.int32)),dim=1)
             after=before.clone();authoritative['selection']=before
             expected=decode(before);compiled(after);actual=decode(after)
             assert torch.equal(after,before) and torch.equal(actual,expected)
@@ -59,13 +59,13 @@ def run():
         after_method=load_method(root/'native30_overlay/qsa.py')
         metadata={'layer':NS(num_actual_tokens=8,slot_mapping=None,max_query_len=1),'side':NS(num_actual_tokens=8,token_to_req=None)}
         class Indexer:
-            raw_key_cache=NS(prefix='side');packed_output_width=16
+            raw_key_cache=NS(prefix='side');packed_output_width=17
             def __call__(self,qk,positions,buffer):buffer.copy_(qk);return buffer
         def forward(layer,q,k,v,cache,main,out,**kwargs):out.copy_(decode(layer.topk_indices_buffer))
-        def layer():return NS(layer_name='layer',kv_cache=torch.ones(1),indexer=Indexer(),topk_indices_buffer=torch.empty((8,16),dtype=torch.int32),impl=NS(do_kv_cache_update=lambda *args:None,forward_qsa=forward),_max_decode_query_len=1)
+        def layer():return NS(layer_name='layer',kv_cache=torch.ones(1),indexer=Indexer(),topk_indices_buffer=torch.empty((8,17),dtype=torch.int32),impl=NS(do_kv_cache_update=lambda *args:None,forward_qsa=forward),_max_decode_query_len=1)
         with patch.object(lc,'canonical_selection',canonical):
             for step in range(32):
-                selected=torch.stack([torch.randperm(128,generator=generator)[:16] for _ in range(8)]).to(torch.int32)
+                selected=torch.cat((torch.stack([torch.randperm(128,generator=generator)[:16] for _ in range(8)]).to(torch.int32),torch.full((8,1),16,dtype=torch.int32)),dim=1)
                 authoritative['selection']=selected
                 expected=torch.empty((8,32));actual=torch.empty_like(expected)
                 before_method(layer(),selected,None,None,None,None,expected)
@@ -88,4 +88,4 @@ def run():
     else:
         raise AssertionError('real API failed to raise typed GenerationError')
     assert not torch.cuda.is_initialized()
-    return dict(verdict='PASS',ordinary_decode_exactness='PASS',steps=32,rows=8,output_sha256=digests,compiled_mutation_op='PASS',actual_run_qsa_exactness='PASS' if root.is_dir() else 'NOT_RUN',typed_client_error='PASS',typed_api_error='PASS',cuda_initialized=False,scope='CPU real Torch gather/softmax decode arithmetic and real OutputProcessor; synthetic selected indices and in-process PyNccl/stream leaf; not model/GPU/NCCL latency evidence')
+    return dict(verdict='PASS',ordinary_decode_exactness='PASS',steps=32,rows=8,packed_width=17,valid_count_column=16,output_sha256=digests,compiled_mutation_op='PASS',actual_run_qsa_exactness='PASS' if root.is_dir() else 'NOT_RUN',typed_client_error='PASS',typed_api_error='PASS',cuda_initialized=False,scope='CPU real Torch gather/softmax decode arithmetic and real OutputProcessor; synthetic selected indices and in-process PyNccl/stream leaf; not model/GPU/NCCL latency evidence')
