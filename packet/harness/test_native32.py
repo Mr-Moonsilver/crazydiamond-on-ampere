@@ -9,7 +9,11 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'patches/s5_engine'))
 import native30_host as host
 import native30_policy as policy
-from worker_bridge import NativeWorkerBridge
+from worker_bridge import NativeWorkerBridge as SourceBridge
+# The exact-container probe imports the mounted runtime before discovery.
+# Use that actual packaged class there; hub-only tests use its unmodified source.
+RuntimeBridgeModule=sys.modules.get('vllm.v1.flash_e3.worker_bridge')
+NativeWorkerBridge=RuntimeBridgeModule.NativeWorkerBridge if RuntimeBridgeModule is not None else SourceBridge
 
 class Runner:pass
 

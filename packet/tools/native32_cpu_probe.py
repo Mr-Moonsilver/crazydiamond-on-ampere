@@ -74,7 +74,9 @@ owner.verify_sources(overlay,built=True,final=True)
 owner.OVERLAY=overlay
 green,final_manifest,build_proof=owner.verify_final_build()
 assert final_manifest==hashlib.sha256((overlay/'SHA256SUMS').read_bytes()).hexdigest()
-owner_prelaunch=dict(verdict='PASS',methods_executed=['verify_sources(built=True,final=True)','verify_final_build'],runner_sha256=hashlib.sha256(Path('/source/owner.py').read_bytes()).hexdigest(),overlay_manifest=final_manifest,green_sha256=green,device_state_checks='DEFERRED to owner: stopped unit, current launcher/defaults, GPUs idle and real arm-time window',device_execution=False)
+actual_bridge=sys.modules['test_native32'].NativeWorkerBridge
+assert actual_bridge is sys.modules['vllm.v1.flash_e3.worker_bridge'].NativeWorkerBridge
+owner_prelaunch=dict(actual_bridge_class=actual_bridge.__module__+'.'+actual_bridge.__name__,verdict='PASS',methods_executed=['verify_sources(built=True,final=True)','verify_final_build'],runner_sha256=hashlib.sha256(Path('/source/owner.py').read_bytes()).hexdigest(),overlay_manifest=final_manifest,green_sha256=green,device_state_checks='DEFERRED to owner: stopped unit, current launcher/defaults, GPUs idle and real arm-time window',device_execution=False)
 Path('/out/owner-prelaunch.json').write_text(json.dumps(owner_prelaunch,sort_keys=True,indent=2)+'\n')
 import native31_cpu_check
 native31_receipt=native31_cpu_check.run()
