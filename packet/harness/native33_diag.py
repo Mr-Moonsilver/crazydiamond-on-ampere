@@ -26,7 +26,7 @@ _INSTALLED = False
 MAX_LAUNCH_RECORDS = 200000
 MAX_BYTES = 128*1024**2
 _BYTES = 0
-MAX_POINTERS = 2048
+MAX_POINTERS = 4096
 _RECORDS = 0
 _LIMIT = False
 _LIVE_METADATA = None
@@ -137,8 +137,22 @@ def pointers(roots):
 def runner_roots():
     runner = _RUNNER() if _RUNNER else None
     if runner is None:return {}
-    return {name: getattr(runner, name, None) for name in
-            ('block_tables', 'req_states', 'input_buffers', 'model_state')}
+    roots = {name: getattr(runner, name, None) for name in
+             ('block_tables', 'req_states', 'input_buffers', 'model_state')}
+    builders = {}
+    for i, groups in enumerate(getattr(runner, 'attn_groups', ())):
+        for j, group in enumerate(groups):
+            for k, builder in enumerate(getattr(group, 'metadata_builders', ())):
+                builders[f'{i}.{j}.{k}'] = builder
+    roots['attention_builders'] = builders
+    config = getattr(runner, 'vllm_config', None)
+    compilation = getattr(config, 'compilation_config', None)
+    qsa = {}
+    for name, layer in getattr(compilation, 'static_forward_context', {}).items():
+        if hasattr(layer, 'topk_indices_buffer'):
+            qsa[name] = dict(topk_indices_buffer=layer.topk_indices_buffer)
+    roots['qsa_persistent'] = qsa
+    return roots
 
 
 def descriptor(desc):
