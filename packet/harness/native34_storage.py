@@ -116,5 +116,25 @@ def compact(tensors,*,window=None,writer=None,reader=None,event=None,captured=No
         for b in valid[i+1:]:
             if overlap(a,b):aliases.append([a['name'],b['name']])
     return dict(storages=rows,overlapping_ranges=aliases,
-        tensors_complete=len(tensors)<=64,alias_kind='bounding intervals, not a proof of harmful access',
+        tensors_complete=getattr(tensors,'complete',True) and len(tensors)<=64,
+        alias_kind='bounding intervals, not a proof of harmful access',
         tensor_retention=False,device_readback=False)
+
+
+def compare_manifests(captured,live,limit=128):
+    """Bounded interval comparison, including differing subview pointers."""
+    rows=[];complete=True
+    for a in captured.get('storages',()):
+        if 'view_start' not in a:continue
+        for b in live.get('storages',()):
+            if 'view_start' not in b or not overlap(a,b):continue
+            if len(rows)>=limit:complete=False;continue
+            ai=a.get('allocation_incarnation') or {};bi=b.get('allocation_incarnation') or {}
+            rows.append(dict(captured=a['name'],live=b['name'],
+                captured_ptr=a['data_ptr'],live_ptr=b['data_ptr'],
+                same_storage_impl=a['storage_impl']==b['storage_impl'],
+                captured_incarnation=ai.get('incarnation'),live_incarnation=bi.get('incarnation'),
+                incarnation_comparable=bool(ai.get('lifecycle_complete') and bi.get('lifecycle_complete')),
+                scope='overlap only; not harmful access or writer proof'))
+    return dict(overlaps=rows,complete=complete and captured.get('tensors_complete',False)
+                and live.get('tensors_complete',False),device_readback=False)

@@ -4,7 +4,7 @@ import gc
 import unittest
 import weakref
 
-from native34_storage import AllocationWindow,compact,tensor_view,overlap,MAX_HISTORY
+from native34_storage import AllocationWindow,compact,tensor_view,overlap,MAX_HISTORY,compare_manifests
 
 
 class Storage:
@@ -40,6 +40,9 @@ class StorageReceipts(unittest.TestCase):
         self.assertFalse(overlap(a,c));self.assertEqual(a['allocation_base'],b['allocation_base'])
         r=compact(dict(a=View(s),b=View(s,4),c=View(s,16)))
         self.assertEqual(r['overlapping_ranges'],[['a','b']])
+        compared=compare_manifests(compact(dict(captured=View(s))),compact(dict(live=View(s,4))))
+        self.assertTrue(compared['complete']);self.assertEqual(len(compared['overlaps']),1)
+        self.assertFalse(compare_manifests(r,r,limit=0)['complete'])
 
     def test_bounds_violation_is_receipt_and_empty_has_no_access(self):
         s=Storage();bad=tensor_view(View(s,63,shape=(8,)))

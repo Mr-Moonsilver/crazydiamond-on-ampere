@@ -93,11 +93,78 @@
       "equivalence": "Explicit host snapshots follow the pinned Torch 2.13 schema, including same-address reuse, pending free, unknown external range and bounded-ring loss. Tracking and incarnation logic execute unchanged.",
       "name": "cpu-native34-allocator-history",
       "replaces": "torch.cuda.memory._snapshot alloc/free trace records in AllocationWindow CPU tests"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "CUDA/NCCL/PP progress, peer remote accesses, allocation safety, graph execution or hardware latency",
+      "equivalence": "Real GreenSplit, CaptureStreams, PrefillStreamOwners, RouteController and WorkerNative methods execute. CPU events expose ordering and deliberate prelaunch refusal. Actual frozen capture AST body runs unchanged except the inference decorator.",
+      "mocked_seams": [
+        "sys.modules.torch",
+        "w.emit",
+        "w.RUNNER",
+        "os.environ",
+        "torch.cuda.CUDAGraph/graph",
+        "graph_capture",
+        "get_offloader",
+        "set_graph_pool_id"
+      ],
+      "name": "cpu-native34-real-stream-providers",
+      "replaces": "CUDA events, green-context binding, ExternalStream/device properties and capture device contexts"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Device-valued indices, GPU validity, last device writer, kernel execution or access PC",
+      "equivalence": "Actual pinned body executes every assertion, branch, stride and launch argument with ctypes-backed allocations. Grid leaf captures all 15 pointer operands; no kernel or census method is substituted.",
+      "mocked_seams": [
+        "w.TLS.phase_context",
+        "w.emit",
+        "sys.modules.torch"
+      ],
+      "name": "cpu-native34-indexer-grid-and-tensor-protocol",
+      "replaces": "Triton grid launch and Tensor metadata in pinned qsa_pre_indexer host function"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Checkpoint numerical behavior, TP/PP traffic, allocator lifetime or late-hook graph break cost",
+      "equivalence": "Real local_text_model path and descriptor-preserving wrapper installation execute after real qualification schema validation. Constructor objects provide callable API shape only. Production constructors remain unchanged.",
+      "mocked_seams": [
+        "sys.modules",
+        "os.environ",
+        "torch.Tensor",
+        "w.emit"
+      ],
+      "name": "cpu-native34-worker-construction",
+      "replaces": "Model, Tensor and module constructor shape in late ARM hook test"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Shared-memory MQ atomicity, device completion, timing or NCCL liveness",
+      "equivalence": "Real BoundedSender, ReplyTransport receiver threads, driver submit/drain/validate/apply, worker_hooks RPC and native_overlap_worker census execute. One serialized envelope is staged for every peer before consumption; four typed rows required.",
+      "mocked_seams": [
+        "nw.handle",
+        "driver._apply_native_overlap",
+        "d.localize.emit",
+        "sys.modules.torch",
+        "w.emit"
+      ],
+      "name": "cpu-native34-owned-transport-backend",
+      "replaces": "MessageQueue physical broadcast/reply rings in connected checkpoint test"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Server behavior, live placement, remote auth or device work",
+      "equivalence": "Actual main parses I/S/O queue arguments with real workload and prefill-plan JSON, validation and request construction until prepare-full network call. Bad plans fail before HTTP. No success result manufactured.",
+      "mocked_seams": [
+        "HTTPConnection.request",
+        "os.environ"
+      ],
+      "name": "cpu-native34-exact-cli-network",
+      "replaces": "HTTPConnection.request and private auth fixture in exact main queue-argv tests"
     }
   ],
   "native32_scope": "receipt boundary resolves actual bridge.dispatcher.runner; engine and ordinary path byte-identical to native31; frozen owner source/package pre-launch assertions run on CPU",
   "native33_scope": "rank1 current-stream diagnostic fences only in existing row4 window; graph pointer metadata observed at capture and replay without tensor retention/readback; engine bytes unchanged",
-  "native34_scope": "causal diagnostic only; host alias and bounded allocator-history logic; no device witness or fix established",
+  "native34_scope": "I/S/O causal diagnostic only; host protocol and metadata gates, no device witness or fix established",
   "schema": "native31-fixture-leaves/1",
   "scope": "CPU host/compile/exactness proofs only; no GPU, NCCL progress, model accuracy or box qualification"
 }
