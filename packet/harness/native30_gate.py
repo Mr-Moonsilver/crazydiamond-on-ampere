@@ -6,9 +6,9 @@ import time
 SNAPSHOT_CAP = 512 * 1024**2
 MEASURED_SNAPSHOT_MAX = 52852723
 TRANSIENT_MARGIN = 5 * 1024**3
-NOT_BEFORE = datetime.datetime(2026,10,30,15,tzinfo=datetime.timezone.utc).timestamp()
+NOT_BEFORE = datetime.datetime(2026,10,30,16,tzinfo=datetime.timezone.utc).timestamp()
 HARD_END = datetime.datetime(2026,10,30,23,tzinfo=datetime.timezone.utc).timestamp()
-ACTIVE_AND_CLEANUP = 1200 + 420
+ACTIVE_AND_CLEANUP = 2100 + 420
 
 
 def window_ok(now):

@@ -47,7 +47,7 @@ def main(argv=None):
         result=json.loads(a.selfrun_record.read_text())
         require(result.get('bundle_manifest')==BUNDLE and result.get('verdict')=='PASS' and result.get('rc')==0
                 and result.get('gpu_device_requests')==0 and result.get('image')==IMAGE
-                and result.get('skips')==0 and result.get('tests_run',0)==29
+                and result.get('skips')==0 and result.get('tests_run',0)==35
                 and result.get('plugin_loader')=='PASS'
                 and result.get('identity_capture_check')=='PASS'
                 and result.get('identity_timeout_negative_rejected') is True,'exact-frozen-selfrun-required')

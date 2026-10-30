@@ -153,13 +153,14 @@ class Passive(unittest.TestCase):
 
     def test_placement_activation_and_native_index(self):
         p,r,s=fixture();s['active']=False
-        answer=object();self.assertIs(host.qualification(lambda *a:answer,r,dict(action='teacher_configure',enabled=True)),answer)
+        qualification=getattr(sys.modules.get('native30_policy'),'LEGACY_QUALIFICATION',host.qualification)
+        answer=object();self.assertIs(qualification(lambda *a:answer,r,dict(action='teacher_configure',enabled=True)),answer)
         self.assertTrue(s['active']);self.assertTrue(any(x['event']=='host-placement-baseline' for x in self.rows))
         obj=Obj();obj.runner=r;obj.events=[]
         with host.boundary(obj,dict(rank=1,label='PREPARE',call_id=1,op_seq=0)):
             def add(states,*a,**kw):states.req_id_to_index['private']=4
             host.request_added(add,r.req_states,(),dict(req_id='private'))
         self.assertEqual(s['native_index'],4)
-        host.qualification(lambda *a:answer,r,dict(action='teacher_configure',enabled=False));self.assertFalse(s['active'])
+        qualification(lambda *a:answer,r,dict(action='teacher_configure',enabled=False));self.assertFalse(s['active'])
 
 if __name__=='__main__':unittest.main()

@@ -20,12 +20,12 @@ class Gates(unittest.TestCase):
         self.assertGreater(gate.SNAPSHOT_CAP,10*gate.MEASURED_SNAPSHOT_MAX)
 
     def test_both_time_guards_reject_early_and_late_and_allow_boundaries(self):
-        text=(HERE/'runs/q18a_native30_localize_d3.draft.sh').read_text()
+        text=(HERE/'runs/q18a_native30_localize_e.draft.sh').read_text()
         body=text.split("<<'PY_SLOT'",1)[1].split("\n",1)[1].split('\nPY_SLOT',1)[0]
         owner=(HERE.parent/'tools/native30_owner_functions.py').read_text()
         fn=next(n for n in ast.parse(owner).body if isinstance(n,ast.FunctionDef) and n.name=='check_slot')
         import datetime
-        self.assertEqual(gate.NOT_BEFORE,datetime.datetime(2026,10,30,15,tzinfo=datetime.timezone.utc).timestamp())
+        self.assertEqual(gate.NOT_BEFORE,datetime.datetime(2026,10,30,16,tzinfo=datetime.timezone.utc).timestamp())
         import time
         def require(ok,reason):
             if not ok:raise AssertionError(reason)
@@ -66,12 +66,12 @@ class Gates(unittest.TestCase):
             a.write_text(b.read_text());self.assertEqual(grade.grade([a,b])['duplicate_receipts'],2)
 
     def test_c_queue_restores_unchanged_and_uses_both_logs_and_cap(self):
-        old=(HERE/'runs/q18a_native30_localize_b.draft.sh').read_text();new=(HERE/'runs/q18a_native30_localize_d3.draft.sh').read_text()
+        old=(HERE/'runs/q18a_native30_localize_b.draft.sh').read_text();new=(HERE/'runs/q18a_native30_localize_e.draft.sh').read_text()
         for name in ('stop_engine','restore_launcher','restore_defaults','write_cleanup'):
             body=lambda s:s.split(name+'() {',1)[1].split('\n}\n',1)[0]
             self.assertEqual(body(old),body(new))
         self.assertIn('--log "$Q/engine-stream.log" --log "$Q/engine-stream.err"',new)
         self.assertIn('record=host_receipt(cap)',new)
-        self.assertIn('cap==512*1024**2',(HERE/'runs/q18a_native30_localize_d3_declare.sh').read_text())
+        self.assertIn('cap==512*1024**2',(HERE/'runs/q18a_native30_localize_e_declare.sh').read_text())
 
 if __name__=='__main__':unittest.main()

@@ -35,11 +35,11 @@ def check(build_path,result_path):
     assert sha(overlay/'e3/native30_plugins/native30_localize.py')==sha(bundle/'native30_localize.py')
     assert sha(overlay/'e3/native30_plugins/native30_host.py')==sha(bundle/'native30_host.py')
     leaves=json.loads((bundle/'native30_fixture_leaves.json').read_text())['leaves']
-    assert len(leaves)==9 and all(x['replaces'] and x['equivalence'] and x['cannot_prove'] for x in leaves)
+    assert len(leaves)==10 and all(x['replaces'] and x['equivalence'] and x['cannot_prove'] for x in leaves)
     result=json.loads(result_path.read_text());assert result['verdict']=='PASS' and result['rc']==result['skips']==result['gpu_device_requests']==0
     assert result['bundle_manifest']==build['manifest'] and result['overlay_manifest']==build['overlay_manifest']
     assert result['identity_capture_check']=='PASS' and result['identity_timeout_negative_rejected'] is True
-    assert result['plugin_loader']=='PASS' and result['tests_run']==29 and result['cuda_initialized'] is False
+    assert result['plugin_loader']=='PASS' and result['tests_run']==35 and result['cuda_initialized'] is False
     assert result['image']=='sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b'
     sys.path.insert(0,str(bundle/'e3_builder'))
     from native_readiness import verify_finalized_package

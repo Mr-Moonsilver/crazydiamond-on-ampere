@@ -14,8 +14,8 @@ import engine_identity as identity
 import test_identity as fixtures
 
 HERE=Path(__file__).resolve().parent
-SETTINGS=HERE/'runs/q18a_native30_localize_d3_settings.sh'
-QUEUE=HERE/'runs/q18a_native30_localize_d3.draft.sh'
+SETTINGS=HERE/'runs/q18a_native30_localize_e_settings.sh'
+QUEUE=HERE/'runs/q18a_native30_localize_e.draft.sh'
 IDENTITY_RECEIPTS=[]
 OBSERVED_CAPTURE_S=170.5  # owner-reported; retained native28 queue also shows155.275s
 
@@ -66,7 +66,7 @@ class IdentityPath(unittest.TestCase):
         trap=source.split('on_exit() {',1)[1].split('\n}\n',1)[0]
         self.assertNotIn('capture_end ',trap)
         self.assertIn('capture_end "$Q18A_IDENTITY_TIMEOUT_S"',source)
-        self.assertIn('--kill-after=420s 1200s',source)
+        self.assertIn('--kill-after=420s 2100s',source)
         self.assertIn('EVIDENCE_DONE=1\nDONE=1\nexit "$rc"',source)
         original=(HERE/'runs/q18a_native28.draft.sh').read_text()
         for name in ('stop_engine','restore_launcher','restore_defaults','write_cleanup'):

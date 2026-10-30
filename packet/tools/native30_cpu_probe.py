@@ -18,10 +18,14 @@ sys.path.insert(0,'/source/harness/e3_builder')
 from importlib.metadata import entry_points
 found=[p for p in entry_points(group='vllm.general_plugins') if p.name=='native30_localize']
 assert len(found)==1 and found[0].value=='native30_localize:install'
+policies=[p for p in entry_points(group='vllm.general_plugins') if p.name=='native30_receipt_policy']
+assert len(policies)==1 and policies[0].value=='native30_policy:install'
 from vllm.plugins import load_general_plugins
 load_general_plugins()
 import native30_localize as plugin
 assert plugin._INSTALLED
+import native30_policy as policy
+assert policy._INSTALLED and policy.host.MAX_BYTES_PER_RANK==1024**3
 import torch
 assert not torch.cuda.is_initialized()
 modules={}
@@ -59,7 +63,7 @@ Path('/out/identity-check.json').write_text(json.dumps(identity_receipts,sort_ke
 cli_receipts=sys.modules['test_native30_cli'].CLI_RECEIPTS
 assert len(cli_receipts)==2 and cli_receipts[0]['first_network_call']=='prepare-full'
 Path('/out/cli-check.json').write_text(json.dumps(cli_receipts,sort_keys=True,indent=2)+'\n')
-record=dict(row4_cli_validation='PASS',cli_receipts=cli_receipts,identity_receipts=identity_receipts,verdict='PASS' if result.wasSuccessful() and not result.skipped and result.testsRun==29 else 'FAIL',tests_run=result.testsRun,skips=len(result.skipped),plugin_loader='PASS',identity_capture_check='PASS' if result.wasSuccessful() else 'FAIL',identity_timeout_negative_rejected=result.wasSuccessful(),mounted_modules=modules,cuda_initialized=False,gpu_execution=False,
+record=dict(receipt_policy='PASS',receipt_budget_bytes=policy.BYTES_PER_RANK,receipt_tail_s=policy.TAIL_S,row4_cli_validation='PASS',cli_receipts=cli_receipts,identity_receipts=identity_receipts,verdict='PASS' if result.wasSuccessful() and not result.skipped and result.testsRun==35 else 'FAIL',tests_run=result.testsRun,skips=len(result.skipped),plugin_loader='PASS',identity_capture_check='PASS' if result.wasSuccessful() else 'FAIL',identity_timeout_negative_rejected=result.wasSuccessful(),mounted_modules=modules,cuda_initialized=False,gpu_execution=False,
     fixture='CPU driver-registration stub, synthetic launch/sync/control objects; no GPU model forward, stream or memory query')
 Path('/out/probe.json').write_text(json.dumps(record,sort_keys=True,indent=2)+'\n')
 raise SystemExit(0 if record['verdict']=='PASS' else 1)
