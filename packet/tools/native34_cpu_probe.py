@@ -85,7 +85,7 @@ from unittest.mock import patch
 for instant in (weekend_gate.NOT_BEFORE-1,weekend_gate.HARD_END-weekend_gate.ACTIVE_AND_CLEANUP+1):
     with patch.object(owner.time,'time',lambda:instant):
         try:owner.check_slot()
-        except RuntimeError:pass
+        except owner.Refused:pass
         else:raise AssertionError('frozen-owner-window-negative-accepted')
 overlay=Path('/source/harness/native30_overlay')
 owner.verify_sources(overlay,built=True,final=True)
