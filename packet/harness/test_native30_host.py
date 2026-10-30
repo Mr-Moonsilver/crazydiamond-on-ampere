@@ -84,6 +84,17 @@ class Passive(unittest.TestCase):
         result=host.batch_after(lambda *a,**k:(calls.append(1) or expected),r,(),{})
         self.assertIs(result,expected);self.assertEqual(calls,[1]);self.assertTrue(s['last_idx']['bound_violation'])
         self.assertEqual((s['last_idx']['length'],s['last_idx']['min'],s['last_idx']['max']),(2,0,11))
+        class Worker:
+            rank=1
+            model_runner=r
+            def execute_model(self,value):return host.batch_after(lambda *a,**k:value,r,(),{})
+        plugin.wrap(Worker,'execute_model','DECODE_STEP')
+        self.rows.clear()
+        with patch.dict(os.environ,FLASH_NATIVE30_SYNC='none'),contextlib.redirect_stderr(io.StringIO()):
+            self.assertIs(Worker().execute_model(expected),expected)
+        boundaries=[x for x in self.rows if x['event']=='host-boundary']
+        self.assertEqual([x['boundary_position'] for x in boundaries],['before','after'])
+        self.assertTrue(all(x['phase']=='execute_model' for x in boundaries))
 
     def test_expanded_block_ids_use_expanded_capacity(self):
         p,r,s=fixture();t=Obj();t.gpu=View(1,(10,20));t._staged_write_indices=[1];t._staged_write_starts=[0];t._staged_write_cu_lens=[2];t._staged_write_contents=[22,23]

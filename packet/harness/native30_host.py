@@ -153,13 +153,13 @@ def boundary(obj,fields):
                 s['last_idx']=None
                 discover(runner,s)
                 s['last_step_counts']={name:pool_state(ref())['rotations'] for name,ref in s['pools'] if ref() is not None}
-            emit(s,'host-boundary',phase='before',**fields_without_rank(fields),snapshot=safe(snapshot,runner,s))
+            emit(s,'host-boundary',boundary_position='before',**fields_without_rank(fields),snapshot=safe(snapshot,runner,s))
     safe(before)
     try:yield
     finally:
         def after():
             if s is not None and s['active']:
-                emit(s,'host-boundary',phase='after',**fields_without_rank(fields),snapshot=safe(snapshot,runner,s))
+                emit(s,'host-boundary',boundary_position='after',**fields_without_rank(fields),snapshot=safe(snapshot,runner,s))
             dispatcher=context['dispatcher']
             if dispatcher is not None and context['uses']:
                 uses=getattr(dispatcher,'_native30_descriptor_uses',{})
