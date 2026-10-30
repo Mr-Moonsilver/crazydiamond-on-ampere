@@ -48,9 +48,39 @@
       "equivalence": "Synthetic dispatcher provides the real constructor-required open/submit callables and runner reference. The actual bridge has neither runner nor model_runner; dispatcher.runner is the only constructed path. Frozen native31 host/policy modules are loaded only as negative fixtures through a CPU sys.modules mapping. Receipt emitter collects dictionaries. Current methods prove activation and before/after snapshots on that same real bridge shape, plus unchanged TLS restoration and original exceptions.",
       "name": "cpu-actual-native-worker-bridge-boundary",
       "replaces": "GPU LaneDispatcher and model runner in NativeWorkerBridge receipt-boundary CPU conformance tests; real bridge constructor, policy and host resolver remain unpatched"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "GPU ordering, kernel coverage inside compiled graphs, fault source, CUDA/NCCL liveness or latency",
+      "equivalence": "Synthetic launch callables preserve exact argument/result/exception identity; CPU fence leaf records ordering and deliberate failure. Real wrapper code proves rank/window gating, PP exclusions, first inner failure attribution, compile-only warmup exclusion and explicit opaque graph handling. Exact-container ordinary exactness invokes the real CPU Torch control twice; on the second call only register_selection_op is a constructor leaf returning the already-registered real torch.ops.vllm.flash_s5_selection operator, avoiding duplicate schema definition. All operator execution and arithmetic remain real.",
+      "mocked_seams": [
+        "d.emit",
+        "d.fence",
+        "d._RUNNER",
+        "d._RANK",
+        "d._RECORDS",
+        "d._BYTES",
+        "d._LIMIT",
+        "d.MAX_LAUNCH_RECORDS",
+        "d.localize.emit",
+        "os.environ",
+        "lane_comm.register_selection_op",
+        "diagnostic.fence",
+        "diagnostic.emit"
+      ],
+      "name": "cpu-native33-current-stream-fence",
+      "replaces": "torch.cuda.current_stream().synchronize and GPU Triton/custom-op/replay launches in native33 wrapper tests"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Actual CUDA capture/read set, graph execution, real pointer lifetime, device values, piecewise compiled internals or graph safety",
+      "equivalence": "Exact frozen generated host capture body executes warmup/capture factory branches, real worker_hooks.capture_context/capture_graph/checked_capture_stream/finish_graph host checks and graph registration. CPU graph/stream/context leaves replace only device construction/query/join. Test proves FULL capture key, keep_graph instantiation and matched green stream checks. Pointer tests prove replacement detection, missing-capture reporting and no tensor retention/readback.",
+      "name": "cpu-native33-real-host-capture",
+      "replaces": "CUDA graph_capture context, torch.cuda.CUDAGraph/graph and current_stream, graph-pool setter and offloader device joins in the unchanged generated CudaGraphManager.capture host body; inference-mode decorator removed only for AST host execution; Tensor data_ptr allocation fixture"
     }
   ],
   "native32_scope": "receipt boundary resolves actual bridge.dispatcher.runner; engine and ordinary path byte-identical to native31; frozen owner source/package pre-launch assertions run on CPU",
+  "native33_scope": "rank1 current-stream diagnostic fences only in existing row4 window; graph pointer metadata observed at capture and replay without tensor retention/readback; engine bytes unchanged",
   "schema": "native31-fixture-leaves/1",
   "scope": "CPU host/compile/exactness proofs only; no GPU, NCCL progress, model accuracy or box qualification"
 }
