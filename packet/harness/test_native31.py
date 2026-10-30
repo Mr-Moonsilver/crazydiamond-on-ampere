@@ -61,15 +61,21 @@ class Selection(unittest.TestCase):
             ordinary=NS(pynccl_comm=Comm('decode'))
             native=lc.PrefillTpCommunicator(Comm('native'),'cuda:0',torch_module=torch)
             group=NS(world_size=2,device_communicator=ordinary)
-            for step in range(12):
-                current[0]='native'
-                with lc.tp_scope(group,native):
-                    lc.canonical_selection(Matrix([[0]*7]*8),group=group,torch_module=torch)
-                    native.all_reduce(Matrix([[0]*7]*8))
-                self.assertIs(group.device_communicator,ordinary)
+            def decode_step():
                 current[0]='decode'
                 lc.canonical_selection(Matrix([[0]*7]*8),group=group,torch_module=torch)
                 ordinary.pynccl_comm.all_reduce(None,stream=streams['decode'])
+            for chunk in range(4):
+                current[0]='native'
+                with lc.tp_scope(group,native):
+                    lc.canonical_selection(Matrix([[0]*7]*8),group=group,torch_module=torch)
+                self.assertIs(group.device_communicator,ordinary)
+                decode_step()  # after native _pre
+                for bucket in range(3):decode_step()  # sparse DMA/attention yields
+                current[0]='native'
+                with lc.tp_scope(group,native):native.all_reduce(Matrix([[0]*7]*8))
+                self.assertIs(group.device_communicator,ordinary)
+                decode_step()  # after native _tail's o_proj all-reduce
             traces.append(trace)
         self.assertEqual(traces[0],traces[1])
         self.assertEqual(len(traces[0]),48)
