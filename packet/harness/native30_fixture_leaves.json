@@ -30,6 +30,13 @@
       "equivalence": "Real Bash exit-trap ordering is exercised with local CPU command fixtures; actual restore functions are byte-equal to native28 and the complete inherited regression remains required. CLI tests verify direct one-shot placement, JSON prefill input and no fabricated qualification digest. Staging declaration drops the engine-stopped/idle prerequisite only; these checks move to explicit --arm. Existing launcher/defaults hashes and exact frozen self-run are checked during staging while production may serve.",
       "cannot_prove": "Cannot guarantee remote service stop or restoration; queue restores only after confirmed stopped state and retains failure evidence otherwise. Only owner runs the queue.",
       "box_evidence": false
+    },
+    {
+      "name": "cpu-driver-registration-only",
+      "replaces": "libcuda.so.1 resolution while importing real pinned-image Worker and native modules on the CPU hub",
+      "equivalence": "External CPU probe prepends the image CUDA stub directory in its own process only. It imports and wraps the real mounted modules and verifies torch.cuda.is_initialized remains false. No device operation is executed. The production plugin, launcher and worker environment do not reference this stub.",
+      "cannot_prove": "No CUDA driver or native device operation validation. This bootstrap is never invoked by the box queue.",
+      "box_evidence": false
     }
   ]
 }

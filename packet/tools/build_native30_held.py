@@ -52,6 +52,9 @@ def build(out,log):
         source=ROOT/name
         if source.is_file():
             target=bundle/Path(name).relative_to('harness');target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
+    tool_dir=bundle/'native30_tools';tool_dir.mkdir()
+    for name in ('native30_owner_functions.py','native30_cpu_probe.py','native30_selfrun.py'):
+        shutil.copyfile(ROOT/'tools'/name,tool_dir/name)
     overlay=bundle/'native30_overlay';shutil.copytree(BASE/'final',overlay)
     for p in overlay.rglob('*'):p.chmod(0o755 if p.is_dir() else 0o644)
     overlay.chmod(0o755)
