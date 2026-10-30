@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'tools'),str(ROOT/'patches/s5_engine')]
 from build_native30_held import sha,dump,manifest,verify
@@ -31,12 +32,19 @@ def build(bundle,out):
     # Existing proof sources, scenario and all constructor leaves remain B5's.
     shutil.copyfile(ROOT/'tools/native31_probe_archive.py',out/'proof/native31_probe_archive.py')
     p=out/'proof/e3_native29_overlap_probe.py';s=p.read_text();anchor='            args.out.write_text(json.dumps(record, indent=2, sort_keys=True, default=str)'
-    assert s.count(anchor)==1;s=s.replace(anchor,"            from native31_probe_archive import archive_observer\n            archive_observer(record,args.out.parent)\n"+anchor);p.write_text(s)
+    assert s.count(anchor)==1;s=s.replace(anchor,"            from native31_probe_archive import archive_observer\n            archive_observer(record,args.out.parent)\n"+anchor)
+    boundary='\n\n# --- configuration'
+    assert s.count(boundary)==1
+    s=s.replace(boundary,"\n    def broadcast(self, value, src, stream=None):\n        assert src==0 and stream is not None\n        self.calls += 1\n        return None\n"+boundary)
+    p.write_text(s)
     launcher=sha(overlay/'run-flash-s5-test.sh');assert launcher==sha(BASE/'overlay/run-flash-s5-test.sh')=='22473a909dad1a4cb8e9c22de88349e65ff1eb46b0fa05b281504afb21775f3c'
     graph=audit(overlay,ROOT,launcher_sha256=launcher);assert graph['verdict']=='PASS',graph['runtime_ownership_errors'];dump(out/'proof/import-graph.json',graph)
     provenance=json.loads((out/'provenance.json').read_text());provenance.update(name=candidate,commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),base_input=str(BASE),base_manifest_sha256=sha(BASE/'SHA256SUMS'),overlay_source=str(bundle/'native30_overlay'),engine_scope='native31 exact box engine Python/native bytes; plugins not mounted in VM; same B5 scenario',gpu_run=False,box_action=False)
+    provenance.update(builder_source_sha256=sha(Path(__file__)),harness_tools_dirty=bool(subprocess.check_output(['git','diff','--name-only','HEAD','--','tools/build_native31_vm.py'],cwd=ROOT,text=True).strip()),built_unix=int(time.time()))
+    for wrapper in provenance['wrappers'].values():wrapper['container']=wrapper['container'].replace('native29-overlap-codex-b5',candidate)
     dump(out/'provenance.json',provenance)
     leaf=json.loads((out/'fixture-leaves.json').read_text())
+    next(row for row in leaf['leaves'] if row['name']=='TP1Identity')['equivalence'] += ' Native31 broadcast warm-up is also the exact one-rank identity, returning None like real PyNccl.broadcast; no collective is qualified.'
     leaf['leaves'].append({'name':'native31-observer-archive','replaces':'primary probe embedding of full observer_end','equivalence':'lossless XZ archive plus original verdict and first 32 failure summaries, checksum and archive path','cannot_prove':'no placement/performance promotion; existing observer overflow remains visible','more_convenient':True,'box_evidence':False})
     dump(out/'fixture-leaves.json',leaf);dump(out/'proof/native29_overlap_fixture_leaves.json',leaf)
     manifest(out);verify(out)

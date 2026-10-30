@@ -12,7 +12,7 @@ PREV_RUNNER=PARENT.parent/'q18a-native30-localize-e-owner-run-9f94ea1a0142.py'
 
 def generate(build,vm,out):
     b=json.loads(build.read_text());text=(ROOT/'tools/owner-precheck/native-precheck.conf.native30-localize-e').read_text()
-    fields=dict(BUNDLE=b['bundle'],PREV_BUNDLE=str(PARENT),RUNNER=b['runner'],PREV_RUNNER=str(PREV_RUNNER),CODEX_WT=str(ROOT),CODEX_COMMIT=b['source'],GENERATION=b['overlay'],VM_OVERLAY=str(vm),EXPECTED_MANIFEST=b['manifest'],EXPECTED_RUNNER_SHA=b['runner_sha256'],EXPECTED_RUNNER_SIZE=str(b['runner_size']),EXPECTED_REVIEW_PIN=b['review_sha256'],SELFRUN_CONTAINER='native31-hub-cpu-b',WORK_ROOT='<hub-dir>/agents/flash-next/tmp/native31-owner-precheck-work',QUEUE_NAME_GLOB='q18a_native31[._]*')
+    fields=dict(BUNDLE=b['bundle'],PREV_BUNDLE=str(PARENT),RUNNER=b['runner'],PREV_RUNNER=str(PREV_RUNNER),CODEX_WT=str(ROOT),CODEX_COMMIT=b['source'],GENERATION=b['overlay'],VM_OVERLAY=str(vm),EXPECTED_MANIFEST=b['manifest'],EXPECTED_RUNNER_SHA=b['runner_sha256'],EXPECTED_RUNNER_SIZE=str(b['runner_size']),EXPECTED_REVIEW_PIN=b['review_sha256'],SELFRUN_CONTAINER='native31-hub-cpu-c',WORK_ROOT='<hub-dir>/agents/flash-next/tmp/native31-owner-precheck-work',QUEUE_NAME_GLOB='q18a_native31[._]*')
     for key,value in fields.items():
         text,n=re.subn(r'(?m)^'+key+r'=.*$',lambda m:key+'='+shlex.quote(value),text);assert n==1,key
     diff=difflib.ndiff(PREV_RUNNER.read_text().splitlines(),Path(b['runner']).read_text().splitlines())
