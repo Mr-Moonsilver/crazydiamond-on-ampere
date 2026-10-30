@@ -73,6 +73,7 @@ def build(out,log):
     gen=json.loads((overlay/'S5-OVERLAP-GENERATION.json').read_text());ready=json.loads((overlay/'e3/native-overlap-readiness.json').read_text())
     gen['implementation_review_sha256']=ready['review_sha256']=closure['review_sha256']
     gen['package_sha256']=ready['package_sha256']=payload_identity(overlay)
+    ready['receipt_sha256']=digest({k:v for k,v in ready.items() if k!='receipt_sha256'})
     dump(overlay/'S5-OVERLAP-GENERATION.json',gen);dump(overlay/'e3/native-overlap-readiness.json',ready);manifest(overlay)
     verify_finalized_package(overlay,closure['generated_source_shas'])
     old=verify(BASE/'final');new=verify(overlay)
