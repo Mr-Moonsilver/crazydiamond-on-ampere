@@ -37,7 +37,7 @@ def build(bundle,out):
     provenance=json.loads((out/'provenance.json').read_text());provenance.update(name=candidate,commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),base_input=str(BASE),base_manifest_sha256=sha(BASE/'SHA256SUMS'),overlay_source=str(bundle/'native30_overlay'),engine_scope='native31 exact box engine Python/native bytes; plugins not mounted in VM; same B5 scenario',gpu_run=False,box_action=False)
     dump(out/'provenance.json',provenance)
     leaf=json.loads((out/'fixture-leaves.json').read_text())
-    leaf['leaves'].append({'name':'native31-observer-archive','replaces':'primary probe embedding of full observer_end','equivalence':'lossless XZ archive plus original verdict and first 32 failure summaries, checksum and archive path','cannot_prove':'no placement/performance promotion; existing observer overflow remains visible','box_evidence':False})
+    leaf['leaves'].append({'name':'native31-observer-archive','replaces':'primary probe embedding of full observer_end','equivalence':'lossless XZ archive plus original verdict and first 32 failure summaries, checksum and archive path','cannot_prove':'no placement/performance promotion; existing observer overflow remains visible','more_convenient':True,'box_evidence':False})
     dump(out/'fixture-leaves.json',leaf);dump(out/'proof/native29_overlap_fixture_leaves.json',leaf)
     manifest(out);verify(out)
     result=dict(verdict='PASS',path=str(out),manifest=sha(out/'SHA256SUMS'),box_overlay=str(bundle/'native30_overlay'),engine_byte_identical=True,scenario_changes='none; output serialization only',cpu_fixture_manifest=provenance['cpu_fixture_manifest'],cpu_fixtures=provenance['cpu_fixtures'],gpu_execution=False)
