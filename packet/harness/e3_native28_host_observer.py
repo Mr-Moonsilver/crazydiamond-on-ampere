@@ -29,6 +29,11 @@ SHUTDOWN_MARKERS = (
     ('engine_fatal', re.compile(r'EngineCore encountered a fatal error', re.I)),
     ('api_shutdown', re.compile(r'INFO: +Shutting down', re.I)),
 )
+CRASH_MARKERS = (
+    ('nccl_dist_backend', re.compile(r'DistBackendError', re.I)),
+    ('cuda_illegal_access', re.compile(r'illegal memory access', re.I)),
+    ('worker_died', re.compile(r'Worker proc .* died unexpectedly', re.I)),
+)
 
 
 def stop(_signum, _frame):
@@ -134,6 +139,7 @@ class ShutdownScan:
     def __init__(self):
         self.remainder = b''
         self.first_by_kind = {}
+        self.first_crash_by_kind = {}
 
     def feed(self, data):
         lines = (self.remainder + data).split(b'\n')
@@ -149,13 +155,22 @@ class ShutdownScan:
                     self.first_by_kind[kind] = dict(kind=kind,
                                                     timestamp=timestamp,
                                                     observed_wall_ns=time.time_ns())
+            for kind, pattern in CRASH_MARKERS:
+                if kind not in self.first_crash_by_kind and pattern.search(line):
+                    self.first_crash_by_kind[kind] = dict(kind=kind,
+                                                          timestamp=timestamp,
+                                                          observed_wall_ns=time.time_ns())
 
     def report(self):
         events = list(self.first_by_kind.values())
         first = min(events, key=lambda x: x['observed_wall_ns']) if events else None
         explicit = self.first_by_kind.get('executor_teardown')
+        crashes = list(self.first_crash_by_kind.values())
         return dict(schema=1, first_shutdown_signal=first,
                     first_explicit_executor_teardown=explicit,
+                    crash=(min(crashes, key=lambda x: x['observed_wall_ns'])
+                           if crashes else None),
+                    crash_kinds=sorted(self.first_crash_by_kind),
                     initiating_reason_known=False,
                     note='Stream markers show observed order, not the caller or reason that initiated executor.shutdown.')
 
@@ -294,6 +309,16 @@ def watch(container, out, exclude_id='', interval=1.0, *, queue_pid=None,
                 pass
         if stderr:
             stderr.close()
+            # Docker sends container stderr through this separate pipe. Read
+            # the retained host file in bounded chunks before the summary;
+            # the crash marker may exist only here when `docker logs` fails.
+            try:
+                scan.remainder = b''
+                with (out / 'engine-stream.err').open('rb') as stream:
+                    for chunk in iter(lambda: stream.read(65536), b''):
+                        scan.feed(chunk)
+            except OSError:
+                pass
         summary = dict(schema=1, container_id=None if identity is None else identity['container_id'][:12],
                        samples=sequence, docker_logs_rc=None if process is None else process.returncode,
                        log_pending_bytes=logs.pending_bytes,

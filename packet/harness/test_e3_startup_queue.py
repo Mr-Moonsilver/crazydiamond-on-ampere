@@ -71,7 +71,7 @@ def without_native28_log_cap(text):
     text = text.replace(
         "  # Bound Docker's ephemeral json-file log; the queue follows the full stream\n"
         "  # into its own retained host artifact before engine startup.\n"
-        "  s5_log=(--log-opt max-size=512m --log-opt max-file=4)\n", '')
+        "  s5_log=(--log-opt max-size=512m --log-opt max-file=4 --ulimit core=0)\n", '')
     return text.replace('"${extra_env[@]}" "${s5_auth[@]}" "${s5_log[@]}" "${mps[@]}"',
                         '"${extra_env[@]}" "${s5_auth[@]}" "${mps[@]}"')
 

@@ -1,4 +1,4 @@
-"""The raw rule-4 result stays inconclusive while only a control cap can continue."""
+"""Continuation preserves the raw numerical verdict and refuses structural gaps."""
 import hashlib
 import json
 from pathlib import Path
@@ -11,15 +11,16 @@ import e3_teacher_decode_rule4 as rule4
 import test_e3_teacher_decode_rule4 as fixture
 
 
-def records():
+def records(split_failure=False):
     artifact = fixture.valid_evidence()
     fixture.set_all(artifact, 'full-A1')
     fixture.set_all(artifact, 'full-A2')
-    fixture.set_all(artifact, 'full-C', fixture.shifted(-1.3))
-    fixture.set_all(artifact, 'split-B')
+    fixture.set_all(artifact, 'full-C', None if split_failure else fixture.shifted(-1.3))
+    fixture.set_all(artifact, 'split-B', fixture.shifted(-1.3) if split_failure else None)
     fixture.bind(artifact)
     grade = rule4.grade(artifact)
-    assert continuation._hard_cap_only(grade), grade
+    assert (continuation._split_failure_only(grade) if split_failure
+            else continuation._hard_cap_only(grade)), grade
     digest = hashlib.sha256(json.dumps(
         artifact, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     result = []
@@ -30,16 +31,47 @@ def records():
                     'picked': False, 'model_settings_unchanged': True}
         if kind == 'candidate':
             evidence.update(selected_from_same_artifact=True, post_c_before_c=False)
-        result.append({'phase': name, 'verdict': 'INCONCLUSIVE', 'failures': [],
+        result.append({'phase': name, 'verdict': grade['verdict'],
+                       'failures': ['teacher:rule4-fail:' + reason
+                                    for reason in grade['failures']],
                        'missing': ['teacher:rule4-inc:' + reason
                                    for reason in grade['missing']],
-                       'checks': {'teacher:rule4-verdict': 'INCONCLUSIVE',
+                       'checks': {'teacher:rule4-verdict': grade['verdict'],
                                   'teacher:rule4-calibration': grade['calibration_sha256']},
                        'teacher_artifact_sha256': digest, 'evidence': evidence})
     return result
 
 
 class Rule4Continuation(unittest.TestCase):
+    def test_split_numerical_fail_runs_diagnostics_but_stays_fail(self):
+        controls, candidate = records(split_failure=True)
+        receipt = continuation.decision(controls, candidate)
+        self.assertTrue(receipt['eligible'], receipt)
+        self.assertEqual(receipt['mode'], 'split-comparison-fail')
+        self.assertEqual(receipt['raw_verdicts'], {
+            'rule4_controls': 'FAIL', 'rule4_candidate': 'FAIL'})
+        self.assertFalse(receipt['release_qualified'])
+        row = next(r for r in receipt['numerical_context']['exceedances']
+                   if r['metric'] == 'winners')
+        self.assertEqual(row['ratio'], row['observed'] / row['allowance'])
+        self.assertEqual(row['derivation']['allowance'], row['allowance'])
+        self.assertEqual(row['derivation']['formula'],
+                         'min(cap, max(floor, factor*control_max+offset))')
+        with tempfile.TemporaryDirectory() as temp:
+            encoded = json.dumps(receipt, sort_keys=True).encode()
+            path = Path(temp) / 'gates.json'
+            path.with_name('rule4-continuation.json').write_bytes(encoded)
+            outcomes = {name: 'PASS' for name in ('startup','row1','row4','w1_controls')}
+            outcomes.update(receipt['raw_verdicts'])
+            gates = {'outcomes': outcomes, 'rule4_control_continuation': True,
+                     'rule4_continuation_sha256': hashlib.sha256(encoded).hexdigest()}
+            self.assertTrue(performance.gates_allow_run(gates, path))
+            self.assertEqual(outcomes['rule4_candidate'], 'FAIL')
+            outcomes['row4'] = 'FAIL'
+            self.assertFalse(performance.gates_allow_run(gates, path))
+        candidate['failures'].append('collector:invalid-row-mapping')
+        self.assertFalse(continuation.decision(controls, candidate)['eligible'])
+
     def test_only_hard_cap_inconclusive_continues_and_raw_gates_remain(self):
         controls, candidate = records()
         receipt = continuation.decision(controls, candidate)

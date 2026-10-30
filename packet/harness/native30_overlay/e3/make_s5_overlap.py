@@ -224,7 +224,7 @@ if [[ -d $OVERLAY/e3 ]]; then
   s5_auth=(--env-file "$FLASH_S5_AUTH_ENV_FILE")
   # Bound Docker's ephemeral json-file log; the queue follows the full stream
   # into its own retained host artifact before engine startup.
-  s5_log=(--log-opt max-size=512m --log-opt max-file=4)
+  s5_log=(--log-opt max-size=512m --log-opt max-file=4 --ulimit core=0)
   for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/sampler.py e3_sources/async_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done

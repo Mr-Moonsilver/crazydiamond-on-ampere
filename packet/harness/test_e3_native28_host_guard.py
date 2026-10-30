@@ -1,6 +1,7 @@
 """Native28 host disk guard: evidence is committed before queue-owned stop."""
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import time
@@ -11,6 +12,29 @@ import e3_native_performance as performance
 
 
 class Native28HostGuard(unittest.TestCase):
+    def test_crash_survives_failed_docker_log_capture(self):
+        queue = (Path(__file__).parent / 'runs/q18a_native28.draft.sh').read_text()
+        function = queue.split('host_crash_detected() {\n', 1)[1].split('\n}\n', 1)[0]
+        function = 'host_crash_detected() {\n' + function + '\n}\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / 'engine-stream.err').write_text(
+                'PG Rank 0 watchdog: CUDA error: an illegal memory access was encountered\n')
+            script = (function + '\nQ=' + shlex.quote(tmp) +
+                      '; ENGINE_CRASHED=0; ENGINE_CRASH_SOURCE=; '
+                      'host_crash_detected; printf "%s|%s" "$ENGINE_CRASHED" "$ENGINE_CRASH_SOURCE"')
+            result = subprocess.run(['bash', '-c', script], capture_output=True,
+                                    text=True, check=True)
+            self.assertEqual(result.stdout, '1|host-engine-stream')
+            (out / 'host-observer-summary.json').write_text(json.dumps({
+                'shutdown': {'crash': {'kind': 'cuda_illegal_access'}}}))
+            result = subprocess.run(['bash', '-c', script], capture_output=True,
+                                    text=True, check=True)
+            self.assertEqual(result.stdout, '1|host-observer-summary')
+        scan = observer.ShutdownScan()
+        scan.feed(b'2026-10-30T01:48Z DistBackendError: NCCL watchdog\n')
+        self.assertEqual(scan.report()['crash']['kind'], 'nccl_dist_backend')
+
     def test_final_sample_and_intent_precede_queue_signal(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

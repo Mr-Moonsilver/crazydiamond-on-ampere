@@ -1,0 +1,24 @@
+{
+  "schema": "native28-host-fixture-leaves/1",
+  "scope": "host operational tooling only; no engine or GPU qualification",
+  "leaves": [
+    {
+      "name": "host disk sample",
+      "replaces": "statvfs plus Docker inspect --size result",
+      "equivalence": "The guard consumes the same integer byte counts and persists the trigger and final samples. The focused proof supplies boundary values and verifies the real file writer and queue notification; it does not prove Docker accounting accuracy.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue process",
+      "replaces": "q18a queue with a foreground qualification child",
+      "equivalence": "A real Bash process with a real foreground child exercises SIGUSR1 delivery and child interruption. The actual queue crash-detection function is executed from the committed script against retained-file fixtures.",
+      "box_evidence": false
+    },
+    {
+      "name": "rule4 teacher artifact",
+      "replaces": "model-generated teacher log-probability rows",
+      "equivalence": "Synthetic rows exercise the unchanged real rule-4 grader, artifact identity checks, allowance arithmetic and continuation gate. They establish host policy behavior only and make no model-numerics claim.",
+      "box_evidence": false
+    }
+  ]
+}

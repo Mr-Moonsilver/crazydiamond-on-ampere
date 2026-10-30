@@ -96,7 +96,7 @@ def gates_allow_run(gates, gate_path):
     if (gates.get('rule4_control_continuation') is not True
             or any(outcomes[name] != 'PASS'
                    for name in expected-{'rule4_controls','rule4_candidate'})
-            or any(outcomes[name] != 'INCONCLUSIVE'
+            or any(outcomes[name] not in ('INCONCLUSIVE', 'FAIL')
                    for name in ('rule4_controls','rule4_candidate'))):
         return False
     path=Path(gate_path).with_name('rule4-continuation.json')
@@ -105,10 +105,13 @@ def gates_allow_run(gates, gate_path):
         receipt=json.loads(data)
     except (OSError, ValueError):
         return False
-    return (hashlib.sha256(data).hexdigest() == gates.get('rule4_continuation_sha256')
+    raw = {name: outcomes[name] for name in ('rule4_controls', 'rule4_candidate')}
+    required = {'control-hard-cap-inconclusive': 'INCONCLUSIVE',
+                'split-comparison-fail': 'FAIL'}.get(receipt.get('mode'))
+    return (required is not None and all(value == required for value in raw.values())
+            and hashlib.sha256(data).hexdigest() == gates.get('rule4_continuation_sha256')
             and receipt.get('eligible') is True
-            and receipt.get('raw_verdicts') == {
-                'rule4_controls':'INCONCLUSIVE','rule4_candidate':'INCONCLUSIVE'})
+            and receipt.get('raw_verdicts') == raw)
 
 
 def prefill(cfg, client, url, model, lane, family, prompts, salt, *, decode_states=None):

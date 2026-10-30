@@ -463,8 +463,8 @@ def main():
     ]
     run(ops_selfrun_cmd, out / 'ops-selfrun-command.json')
     ops_log = (out / 'ops-selfrun-command.log').read_text()
-    need('Ran 5 tests' in ops_log and ops_log.rstrip().endswith('OK'),
-         'native28 host self-run did not exercise five tests')
+    need('Ran 7 tests' in ops_log and ops_log.rstrip().endswith('OK'),
+         'native28 host self-run did not exercise seven tests')
     ops_container = json.loads(subprocess.check_output(
         ['docker', 'inspect', ops_selfrun_container], text=True))[0]
     need(ops_container['State']['ExitCode'] == 0
@@ -475,7 +475,7 @@ def main():
     dump(out / 'ops-selfrun.json', {
         'schema': 'native28-ops-selfrun/1', 'verdict': 'PASS',
         'container': ops_selfrun_container, 'image': IMAGE,
-        'tests': 5, 'skipped': 0, 'log_sha256': sha(out / 'ops-selfrun-command.log'),
+        'tests': 7, 'skipped': 0, 'log_sha256': sha(out / 'ops-selfrun-command.log'),
         'source_shas': {name: sha(bundle / name) for name in (
             'e3_native28_host_observer.py', 'e3_native28_rule4_continuation.py',
             'e3_native_performance.py', 'test_e3_native28_host_guard.py',
@@ -511,7 +511,7 @@ def main():
         need('native25_replay_census' in review,
              'native25 replay-census proof pin absent from frozen review')
         review['native28_host_operations'] = {
-            'scope': 'Docker json-file cap, host disk guard, 1200 s client first-advance read bound, bounded rule-4 control continuation',
+            'scope': 'Docker json-file cap, core=0, host disk guard and crash evidence, 1200 s client first-advance read bound, bounded rule-4 diagnostic continuation',
             'launcher_source_sha256': sha(bundle / 'e3_builder/make_s5_overlap.py'),
             'queue_source_sha256': sha(queue_path),
             'host_observer_sha256': sha(bundle / 'e3_native28_host_observer.py'),
@@ -741,8 +741,8 @@ Status: **HOLD**. The hard end alone is not a box GO.
 - Profile-refusal pinned-image CPU self-run: 4/4 tests, 0 skips, runc/no GPU, container `{receipt['host_selfrun_container']}`, record SHA256 `{receipt['host_selfrun_record_sha256']}`; receipt helper SHA256 `{receipt['profile_receipt_helper_sha256']}`
 - Native27 one-card VM receipt proof: result SHA256 `{receipt['profile_vm_result_sha256']}`, probe SHA256 `{receipt['profile_vm_probe_sha256']}`, input manifest `{receipt['profile_vm_input_manifest_sha256']}`; exact-input hub CPU-shaped result SHA256 `{receipt['profile_hub_result_sha256']}`; fixture leaves SHA256 `{receipt['profile_fixture_leaves_sha256']}`
 - Native27 finalized engine runtime: {receipt['native27_runtime_files_byte_equal']} Python/native files byte-equal; only the generated S5 launcher changes
-- Native28 pinned-image hub self-run: five focused tests, zero skips, no GPU, container `{receipt['ops_selfrun_container']}`, record SHA256 `{receipt['ops_selfrun_record_sha256']}`; observer SHA256 `{receipt['host_observer_sha256']}`, rule-4 continuation SHA256 `{receipt['rule4_continuation_sha256']}`
-- Row-4 source audit: `reviews/codex-20261030-native26-row4-source-audit.md` SHA256 `{receipt['row4_source_audit_sha256']}`. It found no direct 50 GB file/log emitter in the generated observer path; the Docker json log versus writable-layer cause remains open.
+- Native28 pinned-image hub self-run: seven focused tests, zero skips, no GPU, container `{receipt['ops_selfrun_container']}`, record SHA256 `{receipt['ops_selfrun_record_sha256']}`; observer SHA256 `{receipt['host_observer_sha256']}`, rule-4 continuation SHA256 `{receipt['rule4_continuation_sha256']}`
+- Row-4 source audit: `reviews/codex-20261030-native26-row4-source-audit.md` SHA256 `{receipt['row4_source_audit_sha256']}`. Native27's owner receipt subsequently identifies a CUDA illegal-access crash followed by a roughly 50 GiB core dump in the writable layer; `core=0` addresses the disk exhaustion, while native29 investigates the CUDA fault.
 - Coordinator: 12/12 PASS in pinned image, CPU-full; result SHA256 `{receipt['coordinator_result_sha256']}`; probe SHA256 `{receipt['coordinator_probe_sha256']}`; input manifest SHA256 `{receipt['coordinator_input_manifest_sha256']}`
 - Fixture leaves: `native21_coordinator_fixture_leaves.json` SHA256 `{receipt['fixture_leaves_sha256']}`; row-4 seam leaves `native23_row4_pause_fixture_leaves.json` SHA256 `{receipt['row4_fixture_leaves_sha256']}`; graph leaves `native24_graph_fixture_leaves.json` SHA256 `{receipt['graph_fixture_leaves_sha256']}`; census leaves `native25_census_fixture_leaves.json` SHA256 `{receipt['census_fixture_leaves_sha256']}`
 - CPU helper build: `{helper_names[0]}`, runc, no device requests
@@ -750,13 +750,13 @@ Status: **HOLD**. The hard end alone is not a box GO.
 - Real graph/observer VM GPU proof: result SHA256 `{receipt['graph_vm_result_sha256']}`, probe SHA256 `{receipt['graph_vm_probe_sha256']}`, input manifest `{receipt['graph_vm_input_manifest_sha256']}`; exact hub CPU self-run SHA256 `{receipt['graph_hub_result_sha256']}`
 - Real split-bank replay-census VM GPU proof: result SHA256 `{receipt['census_vm_result_sha256']}`, probe SHA256 `{receipt['census_vm_probe_sha256']}`, input manifest `{receipt['census_vm_input_manifest_sha256']}`; exact hub CPU self-run SHA256 `{receipt['census_hub_result_sha256']}`
 
-This is native27 engine runtime with host queue changes only. The S5 launcher caps Docker's ephemeral json-file log at 512 MiB × 4; the queue retains the full followed stream. The host observer records a final root/SizeRw sample and stop intent below 8 GiB before asking the queue to stop. W2's first-advance wait and W1's socket-read bound are declared at 1200 s while TTFT remains the measured latency; W1's frozen 900 s cohort-open window is unchanged. A rule-4 control hard-cap result remains raw INCONCLUSIVE, but may allow later phases only after the frozen rule-4 grader reproduces that exact reason and all other gates pass. A rule-4 FAIL still withholds later phases. No cap, tolerance or workload value changes. The owner must pre-check and stage this candidate before any box action.
+This is native27 engine runtime with owner-authorized host queue changes. The S5 launcher caps Docker's ephemeral json-file log at 512 MiB × 4 and disables core dumps with `--ulimit core=0`; the queue retains the full followed stream. The host observer records a final root/SizeRw sample and stop intent below 8 GiB before asking the queue to stop. Host-stream NCCL/illegal-access/worker-death evidence sets `engine_crashed` even if the end-of-run Docker log capture fails. W2's first-advance wait and W1's socket-read bound are declared at 1200 s while TTFT remains the measured latency; W1's frozen 900 s cohort-open window is unchanged. Reproduced rule-4 control hard-cap INCONCLUSIVE and finite split-comparison FAIL may permit later performance/stability phases when all other gates pass. The raw numerical verdict, failures and queue FAIL remain; `release_qualified=false`. The grade retains allowance arithmetic and exceedance ratios. Structural or unrelated FAIL/INCONCLUSIVE still withholds. No numerical cap, tolerance or workload value changes. The owner must pre-check and stage this candidate before any box action.
 
-Native23 rule 4 had a real FAIL at stream 0 position 320; native24 passed both rule-4 gates with the same settings, workload and grader. The cause of the earlier outlier remains unproved. Native25 preserves the unchanged numerical gates and does not select between repeated runs.
+Native27's split-B|full-A1 winners 1.236814022064209 exceeds allowance 1.22409 (ratio 1.0103946785483169). It remains a numerical FAIL under the unchanged envelope method; D7 authorizes diagnostic continuation only. The cause remains unproved.
 
 The first executor-shutdown *marker* and host queue-stop intent are captured; the initiating reason is reported unknown unless the unchanged engine stream explicitly states it. The observer never calls an engine control API.
 
-ETA at delivery (CET): owner pre-check and staging 10–15 min; candidate ARM immediately after owner clearance if the queue's worst-case hard-end guard still admits entry. Native29 first one-card VM input is estimated 45–75 min after native27's retained real peer profiles identify the mismatch shape; it is a separate behavioral investigation and is not a prerequisite for native28.
+ETA at delivery (CET): owner pre-check and staging 10–15 min; candidate ARM immediately after owner clearance if the queue's worst-case hard-end guard still admits entry. Native29's first crash-lane VM input is estimated 60–90 min after native28 delivery, subject to the exact-input hub self-run. The row-4 CUDA illegal access has priority over the prompt-dependent profile disagreement; a one-card result cannot establish TP2PP2/NCCL liveness.
 
 Full source pins and self-run metadata are in `provenance.json`; the fixture declaration is inside the bundle.
 The exact local builder command is retained as `build_command` in `provenance.json`.

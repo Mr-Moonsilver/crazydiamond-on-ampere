@@ -21,7 +21,7 @@ HERE=Path(__file__).resolve().parent
 TASK='/data/vllm/flash-next-tp4'
 LAUNCHER_SHA='98d6d2a21927b8943f1ae9b0b43616757e80adac0c628e65f482e4332e3cf126'
 E2_LAUNCHER_SHA='2630f86c961c3c5ecff9b1be87b1602fca182f48484991ea1744071dea5f7d8b'
-S5_LAUNCHER_SHA='daccf0f82f4f894c096ba8d1a14d91ca41bd16cd5e0ca685768137791c0419ce'
+S5_LAUNCHER_SHA='22473a909dad1a4cb8e9c22de88349e65ff1eb46b0fa05b281504afb21775f3c'
 FOUND_SHA='45cc5d813dca6610dd871b99b095956f307f29ab5f8de4993400018c1ab80c88'
 SETCFG_SHA='f3cae1379fa9079785c03a5555dbf739c687c5dcde9b1c6e058b38e8849754fe'
 PP_SETTINGS=dict(OVERLAY=TASK+'/prod/overlay-v16g',PP_LAYER_PARTITION='24,24',MODEL_DIR='-',VISION='-',VISION_ARGS='-',
@@ -114,16 +114,19 @@ def render(launcher, values, image_id, scratch, mirror=None):
 
 def docker_spec(argv,image,mirror=None,private_envfile=None):
     identity.need(argv and argv[0]=='run')
-    env={};mounts=[];i=1;options={};envfile_seen=False;log_opts=[]
+    env={};mounts=[];i=1;options={};envfile_seen=False;log_opts=[];core_limit=False
     while i<len(argv) and argv[i].startswith('-'):
         opt,eq,attached=argv[i].partition('=');i+=1
         if opt in ('--rm','--init'):
             identity.need(opt not in options);options[opt]=True;continue
-        identity.need(opt in ('--name','--label','--gpus','--ipc','--network','-e','-v','--env-file','--log-opt'))
+        identity.need(opt in ('--name','--label','--gpus','--ipc','--network','-e','-v','--env-file','--log-opt','--ulimit'))
         if eq: val=attached
         else:
             identity.need(i<len(argv));val=argv[i];i+=1
-        if opt=='--log-opt':
+        if opt=='--ulimit':
+            identity.need(val=='core=0' and not core_limit)
+            core_limit=True
+        elif opt=='--log-opt':
             identity.need(val in ('max-size=512m','max-file=4') and val not in log_opts)
             log_opts.append(val)
         elif opt=='--env-file':
@@ -144,6 +147,7 @@ def docker_spec(argv,image,mirror=None,private_envfile=None):
             identity.need(opt not in options);options[opt]=val
     identity.need(envfile_seen == (private_envfile is not None))
     identity.need(log_opts in ([], ['max-size=512m','max-file=4']))
+    identity.need(core_limit == bool(log_opts))
     identity.need(options=={'--rm':True,'--init':True,'--name':'qwen-flash-prod',
         '--label':'qwen.flash-next-production=true','--gpus':'all','--ipc':'host','--network':'host'})
     identity.need(argv[i]==image['Id']);i+=1
