@@ -170,6 +170,10 @@ class Diagnostic(unittest.TestCase):
                 self.real_emit('launch-begin');self.real_emit('launch-begin')
             self.assertEqual(sum(r['event']=='native33-receipt-limit' for r in emitted),1)
             self.assertTrue(all(len(json.dumps(r))<4096 for r in emitted))
+            with patch.object(d,'_RECORDS',0),patch.object(d,'_BYTES',0),patch.object(d,'_LIMIT',False):
+                self.real_emit('bad-metadata',unserializable=object())
+                self.assertEqual(d._RECORDS,1)
+                self.assertEqual(emitted[-1]['event'],'native33-metadata-unavailable')
 
     def test_capture_exception_restores_state(self):
         d._TLS.capturing=object()

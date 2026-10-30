@@ -25,7 +25,7 @@ def grade(paths):
                  'OPAQUE_GRAPH_REPLAY' if first and first.get('launch_kind')=='cuda-graph-replay' else
                  'OPERATOR_OR_BOUNDARY_ONLY' if first else 'NO_FAULT_RECORDED')
     return dict(schema='native33-attribution/1',verdict='FAIL' if first else 'INCONCLUSIVE',
-                classification='ENGINE' if first else 'HARNESS' if limits or malformed else None,
+                classification='ENGINE' if first else 'HARNESS' if limits or malformed or unavailable else None,
                 attribution=attribution,first_exception=first,graph_identities=graphs,
                 pointer_changes=changes,launch_begins=begins,launch_ends=ends,
                 receipt_limits=limits,malformed=malformed,metadata_unavailable=unavailable,

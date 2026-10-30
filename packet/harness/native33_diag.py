@@ -60,8 +60,16 @@ def _emit_unchecked(event, **fields):
 def emit(event, **fields):
     try:return _emit_unchecked(event, **fields)
     except Exception as exc:
-        try:localize.emit('native33-metadata-unavailable',rank=1,where='receipt-encoding',error_type=type(exc).__name__,coverage_complete=False)
-        except Exception:pass
+        global _RECORDS, _BYTES, _LIMIT
+        if _LIMIT:return
+        try:
+            if _RECORDS>=MAX_LAUNCH_RECORDS or _BYTES+512>MAX_BYTES:
+                _LIMIT=True
+                localize.emit('native33-receipt-limit',rank=1,records=_RECORDS,coverage_complete=False)
+            else:
+                _RECORDS+=1;_BYTES+=512
+                localize.emit('native33-metadata-unavailable',rank=1,where='receipt-encoding',error_type=type(exc).__name__,coverage_complete=False)
+        except Exception:_LIMIT=True
 
 
 def observe(where, fn):
@@ -257,20 +265,21 @@ def compare_graph(graph):
          capture_complete=captured['complete'], forward_closure_available=captured.get('forward_closure_available',False),live_complete=live['complete'],
          live_metadata_step=(_LIVE_METADATA or {}).get('step'),
          coverage='opaque-captured-graph; inventoried references not proven kernel read-set')
-    changed = missing = matched = 0
+    changed = missing = matched = unavailable = 0
     for path, before in captured['values'].items():
         after = live['values'].get(path)
-        different = after is not None and before.get('data_ptr') != after.get('data_ptr')
-        missing += after is None; changed += different
-        matched += after is not None and not different
-        if not record['replay_seen'] or different or after is None:
+        valid=isinstance(before.get('data_ptr'),str) and after is not None and isinstance(after.get('data_ptr'),str)
+        different = valid and before['data_ptr'] != after['data_ptr']
+        missing += after is None; changed += different; unavailable += not valid
+        matched += valid and not different
+        if not record['replay_seen'] or different or not valid:
             emit('graph-pointer', capture_id=record['capture_id'], path=path,
-                 captured=before, live=after, pointer_changed=different if after else None,
+                 captured=before, live=after, pointer_changed=different if valid else None,
                  association='same inventory attribute path; no device readback',
                  binding_kind='forward-closure-reference' if path.startswith(('model_inputs.','attn_metadata.','slot_mappings.')) else 'runner-inventory-unproven-graph-read')
     record['replay_seen'] = True
     emit('graph-pointer-summary', capture_id=record['capture_id'], matched=matched,
-         changed=changed, missing_live=missing, captured_count=len(captured['values']))
+         changed=changed, missing_live=missing,unavailable=unavailable,captured_count=len(captured['values']))
 
 
 def graph_replay(original, args, kwargs):
