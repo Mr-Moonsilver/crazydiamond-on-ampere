@@ -234,10 +234,10 @@ class Edges(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def audit(overlay, root=None):
+def audit(overlay, root=None, *, launcher_sha256=None):
     overlay=Path(overlay).resolve();root=Path(root or Path(__file__).resolve().parents[1])
     launcher=overlay/'run-flash-s5-test.sh';raw=launcher.read_bytes()
-    if sha(raw)!=TRUSTED_LAUNCHER:raise ValueError('launcher differs from trusted concrete mount layout')
+    if sha(raw)!=(launcher_sha256 or TRUSTED_LAUNCHER):raise ValueError('launcher differs from trusted concrete mount layout')
     mount_rows,missing=mounts(overlay,raw.decode())
     records=[]
     for mount in mount_rows:

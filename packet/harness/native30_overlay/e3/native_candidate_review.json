@@ -1694,7 +1694,7 @@
     "native30_policy.py": "ce735058c911404886b59d91f474453df56122b2bb526f7bb89c3c03da5070e8",
     "native30_snapshot_basis.json": "a338d4c47c30cf8e37af73521d818ae39932bcaedb9be947d9fb2019b9ec97cf",
     "native31_cpu_leaves.py": "815af729539ab477560a97f89cd224e93ad7120233e9c06d79d281bb272b1cfc",
-    "native31_fixture_leaves.json": "497ec9bc0e148475fc44bb9ea94a0ed507861c127cbd70b3677a7be87eaaf38f",
+    "native31_fixture_leaves.json": "ce19645e04950c6a1db2db5548e3c49e809a872f542e487987f9d6bcc79b72d6",
     "native31_gate.py": "748bef811defbeb05a14bcb75faca1b41ad956de033c61b73bf6e259e9062538",
     "native_placement_evidence_support.py": "345d37090992a4400862e307a34aac1a5abe3d062153a8f183e38bd479aee1c9",
     "native_prefill_support.py": "00c704e8935eea94e3030a4003f979693540f0e28e86a6326dcbfc5fb4644064",

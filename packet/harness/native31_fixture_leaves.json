@@ -1,11 +1,48 @@
 {
-  "schema": "native31-fixture-leaves/1",
-  "scope": "CPU host/compile/exactness proofs only; no GPU, NCCL progress, model accuracy or box qualification",
   "leaves": [
-    {"name":"legacy-cpu-tp1-group", "replaces":"vllm.distributed.parallel_state.get_tp_group in legacy fake QsaLayerDriver tensor/model tests", "equivalence":"native31_cpu_leaves supplies world_size=1 to the unchanged canonical_selection, so its production TP1 branch executes. Dedicated TP2 tests exercise mutation, refusal, stream identity and peer order.", "cannot_prove":"TP2 NCCL transport, device execution, score identity or latency", "box_evidence":false},
-    {"name":"cpu-pynccl-and-current-stream", "replaces":"PyNcclCommunicator.broadcast/all_reduce and torch.cuda.current_stream in native31 CPU consensus tests", "equivalence":"In-process leader copy and per-lane stream tokens preserve mutation arguments and group-local root. Both peer traces assert identical native/decode order and restoration by real tp_scope.", "cannot_prove":"NCCL progress on green contexts, bandwidth, GPU graph replay or race absence", "box_evidence":false},
-    {"name":"cpu-valid-sparse-unions", "replaces":"real model QSA indexer selected unions in the root-cause reproduction", "equivalence":"Sorted valid rows within 98144 execute real make_sparse_plan/stream_sparse_plan, reproducing 63840/63848 counts and 12/13 waves. Neither planner nor profile comparison is patched.", "cannot_prove":"Actual e score identity, ties or copy-order race; no invalid index is injected", "box_evidence":false},
-    {"name":"cpu-model-indexer-and-attention", "replaces":"QSAIndexer, K/V update and QSA attention CUDA kernels in ordinary decode exactness check", "equivalence":"Actual before/after generated _run_qsa methods execute (only the eager_break_during_capture decorator is removed for direct CPU calls; no GPU capture claim) with identical seeded CPU Torch index buffers and gather/softmax attention. Full tensors compare exactly across 32 eight-row steps. Separate real Torch registration and fullgraph tracing test the mutation schema. Old source is an oracle fixture outside the engine overlay.", "cannot_prove":"Full checkpoint outputs, divergent-tie numerical equality, GPU kernels, NCCL timing or production rule4", "box_evidence":false},
-    {"name":"cpu-cancellation-network-and-client", "replaces":"CUDA events, PP/model tensors, RPC links and scheduler in connected ProfileNetwork; EngineCoreOutput constructors in host unit tests", "equivalence":"Real controller/bridge/lane/driver retire all four fake-event ranks before ERROR publication while FULL ack is pending. Tests cover exactly once, closure guard and queue-full retry. Pinned-image companion executes real OutputProcessor/RequestOutputCollector, ERROR packet and GenerateBaseServing._raise_if_error raising real GenerationError.", "cannot_prove":"Socket latency, exact lost publication point in e, GPU/PP completion or real model forward", "box_evidence":false}
-  ]
+    {
+      "box_evidence": false,
+      "cannot_prove": "TP2 NCCL transport, device execution, score identity or latency",
+      "equivalence": "native31_cpu_leaves supplies world_size=1 to the unchanged canonical_selection, so its production TP1 branch executes. Dedicated TP2 tests exercise mutation, refusal, stream identity and peer order.",
+      "name": "legacy-cpu-tp1-group",
+      "replaces": "vllm.distributed.parallel_state.get_tp_group in legacy fake QsaLayerDriver tensor/model tests"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "NCCL progress on green contexts, bandwidth, GPU graph replay or race absence",
+      "equivalence": "In-process leader copy and per-lane stream tokens preserve mutation arguments and group-local root. Both peer traces assert identical native/decode order and restoration by real tp_scope.",
+      "name": "cpu-pynccl-and-current-stream",
+      "replaces": "PyNcclCommunicator.broadcast/all_reduce and torch.cuda.current_stream in native31 CPU consensus tests"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Actual e score identity, ties or copy-order race; no invalid index is injected",
+      "equivalence": "Sorted valid rows within 98144 execute real make_sparse_plan/stream_sparse_plan, reproducing 63840/63848 counts and 12/13 waves. Neither planner nor profile comparison is patched.",
+      "name": "cpu-valid-sparse-unions",
+      "replaces": "real model QSA indexer selected unions in the root-cause reproduction"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Full checkpoint outputs, divergent-tie numerical equality, GPU kernels, NCCL timing or production rule4",
+      "equivalence": "Actual before/after generated _run_qsa methods execute (only the eager_break_during_capture decorator is removed for direct CPU calls; no GPU capture claim) with identical seeded CPU Torch index buffers and gather/softmax attention. Full tensors compare exactly across 32 eight-row steps. Separate real Torch registration and fullgraph tracing test the mutation schema. Old source is an oracle fixture outside the engine overlay.",
+      "name": "cpu-model-indexer-and-attention",
+      "replaces": "QSAIndexer, K/V update and QSA attention CUDA kernels in ordinary decode exactness check"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Socket latency, exact lost publication point in e, GPU/PP completion or real model forward",
+      "equivalence": "Real controller/bridge/lane/driver retire all four fake-event ranks before ERROR publication while FULL ack is pending. Tests cover exactly once, closure guard and queue-full retry. Pinned-image companion executes real OutputProcessor/RequestOutputCollector, ERROR packet and GenerateBaseServing._raise_if_error raising real GenerationError.",
+      "name": "cpu-cancellation-network-and-client",
+      "replaces": "CUDA events, PP/model tensors, RPC links and scheduler in connected ProfileNetwork; EngineCoreOutput constructors in host unit tests"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "No checkpoint forward, CUDA execution or device ownership; files are oracle inputs, never mounted over worker modules",
+      "equivalence": "Two frozen original qsa.py and ops/qsa.py files are mounted at the same CPU-only reference paths; hashes are checked against bundled original qsa source and resident_attention.BASE_SHA. No engine or census method is patched.",
+      "name": "cpu-reference-file-layout",
+      "replaces": "hub reference/vllm-src filesystem paths read by connected CPU generator fixtures"
+    }
+  ],
+  "schema": "native31-fixture-leaves/1",
+  "scope": "CPU host/compile/exactness proofs only; no GPU, NCCL progress, model accuracy or box qualification"
 }

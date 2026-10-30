@@ -55,6 +55,11 @@ def build(out,log):
         shutil.copyfile(ROOT/'tools'/name,bundle/'native30_tools'/name)
     # Frozen oracle only; never mounted over a worker model module.
     fixtures=bundle/'native31-fixtures';fixtures.mkdir();shutil.copyfile(PARENT/'native30_overlay/qsa.py',fixtures/'qsa-before.py')
+    for name in ('qsa.py','ops/qsa.py'):
+        source=ROOT/'reference/vllm-src/models/qwen4_exp/nvidia'/name
+        expected=__import__('resident_attention').BASE_SHA if name.startswith('ops/') else sha(bundle/'e3_reference/models/qwen4_exp/nvidia/qsa.py')
+        assert sha(source)==expected,'CPU generator reference pin differs'
+        target=fixtures/'reference/models/qwen4_exp/nvidia'/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
     review_path=bundle/'e3_builder/native_candidate_review.json';review=prepare_review(log)
     assert json.loads(review_path.read_text())==review,'prepare and commit the native31 source review before freeze'
     review['source_shas']={n:sha(bundle/'e3_builder'/n) for n in review['source_shas']}
