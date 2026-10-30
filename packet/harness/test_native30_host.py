@@ -51,11 +51,12 @@ class Passive(unittest.TestCase):
 
     def test_real_pool_rotation_growth_counts_without_reader_claim(self):
         p,r,s=fixture();obj=Obj();obj.runner=r;obj.events=[]
-        fields=dict(rank=1,label='LAYER',call_id=1,op_seq=0)
+        fields=dict(rank=1,label='DECODE_STEP',call_id=1,op_seq=0,step=1)
         with host.boundary(obj,fields):
             p.copy_to_uva([1]);p.copy_to_uva([2]);p.copy_to_uva([3,4,5])
         snap=host.snapshot(r,s);row=snap['pools'][0]
         self.assertEqual((row['slot'],row['depth'],row['rotations']),(1,2,3))
+        self.assertTrue(row['possible_step_wrap']);self.assertEqual(row['rotations_since_decode_begin'],3)
         self.assertTrue(row['constructor_observed']);self.assertEqual(p._uva_bufs[1].cpu.shape,(4,))
         self.assertEqual(snap['reader_coverage'],'coverage-incomplete')
         self.assertEqual(len([x for x in self.rows if x['event']=='host-pool-rotation']),3)

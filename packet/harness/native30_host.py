@@ -110,10 +110,10 @@ def snapshot(runner,s):
     for name,ref in s['pools']:
         pool=ref()
         if pool is None:continue
-        p=pool_state(pool);previous=s['last_step_counts'].get(name,p['rotations'])
-        depth=int(pool.max_concurrency);delta=p['rotations']-previous
+        p=pool_state(pool);previous=s['last_step_counts'].get(name)
+        depth=int(pool.max_concurrency);delta=p['rotations']-previous if previous is not None else None
         pools.append(dict(name=name,slot=int(pool._curr),depth=depth,rotations=p['rotations'],copy_attempts=p['attempts'],
-                          rotations_since_decode_begin=delta,possible_step_wrap=delta>=depth,
+                          rotations_since_decode_begin=delta,possible_step_wrap=(delta>=depth) if delta is not None else None,
                           constructor_observed=p['constructor_observed']))
     return dict(idx_mapping_np=s['last_idx'],native_idx_mapping_np=s['native_idx'],max_num_reqs=int(runner.req_states.max_num_reqs),
                 native_index_violation=(not 0<=s['native_index']<runner.req_states.max_num_reqs) if s['native_index'] is not None else None,
@@ -324,7 +324,10 @@ def qualification(original,runner,command):
     if command.get('action')=='teacher_configure':
         def observe():
             s=state(runner);s['active']=command['enabled']
-            if s['active']:emit(s,'host-placement-baseline',snapshot=snapshot(runner,s))
+            if s['active']:
+                discover(runner,s)
+                s['last_step_counts']={name:pool_state(ref())['rotations'] for name,ref in s['pools'] if ref() is not None}
+                emit(s,'host-placement-baseline',snapshot=snapshot(runner,s))
         safe(observe)
     return result
 
