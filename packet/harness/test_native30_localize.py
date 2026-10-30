@@ -24,12 +24,12 @@ class Instrumentation(unittest.TestCase):
                     self.before=json.loads(output.getvalue().splitlines()[-1][len(plugin.PREFIX):]);order.append('launch');return command
             plugin.wrap(Dispatch,'operation','LAYER')
             command=NS(op_seq=3,layer_start=2,layer_end=3,transaction=NS(chunk_start=0,chunk_end=1024,txn_seq=1))
-            fake=NS(cuda=NS(synchronize=lambda device:order.append('sync')))
+            fake=NS(cuda=NS(synchronize=lambda device:order.append('sync'),memory_reserved=lambda d:17,mem_get_info=lambda d:(23,100)))
             with patch.dict(os.environ,FLASH_NATIVE30_SYNC='native'),patch.dict(sys.modules,torch=fake),contextlib.redirect_stderr(output):
                 obj=Dispatch();self.assertIs(obj.operation(command),command)
             self.assertEqual(order,['launch','sync']);self.assertEqual(obj.before['event'],'begin');self.assertEqual(obj.before['rank'],rank)
             rows=[json.loads(s[len(plugin.PREFIX):]) for s in output.getvalue().splitlines()]
-            self.assertEqual([r['event'] for r in rows],['begin','sync-begin','sync-end','end'])
+            self.assertEqual([r['event'] for r in rows],['begin','sync-begin','barrier-memory','barrier-memory','sync-end','end'])
 
     def test_sync_failure_identifies_engine_boundary_without_exception_text(self):
         class Worker:
@@ -37,7 +37,7 @@ class Instrumentation(unittest.TestCase):
             def execute_model(self,*args,**kwargs):return 3
         plugin.wrap(Worker,'execute_model','DECODE_STEP')
         def bad(device):raise RuntimeError('PRIVATE_ERROR_TEXT')
-        fake=NS(cuda=NS(synchronize=bad));hooks=NS(decode_scope=lambda obj:contextlib.nullcontext())
+        fake=NS(cuda=NS(synchronize=bad,memory_reserved=lambda d:17,mem_get_info=lambda d:(23,100)));hooks=NS(decode_scope=lambda obj:contextlib.nullcontext())
         stream=io.StringIO()
         with patch.dict(os.environ,FLASH_NATIVE30_SYNC='decode'),patch.dict(sys.modules,{'torch':fake,'vllm.v1.flash_e3.worker_hooks':hooks}),contextlib.redirect_stderr(stream):
             with self.assertRaises(RuntimeError):Worker().execute_model(None)
@@ -87,10 +87,37 @@ class Queue(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'log';rows=[]
             for rank in range(4):
-                for label in ('FIRST_ADMISSION','DECODE_STEP'):rows.append(plugin.PREFIX+json.dumps(dict(rank=rank,event='begin',label=label)))
+                for label in ('FIRST_ADMISSION','DECODE_STEP'):
+                    for event in ('begin','end'):rows.append(plugin.PREFIX+json.dumps(dict(rank=rank,event=event,label=label,call_id=rank*10+len(label))))
             p.write_text('\n'.join(rows));self.assertEqual(grade.grade(p,{'verdict':'PASS'})['verdict'],'PASS')
-            p.write_text('\n'.join(rows[:-2]));self.assertEqual(grade.grade(p,{'verdict':'PASS'})['failure_class'],'HARNESS')
+            p.write_text('\n'.join(rows[:-4]));self.assertEqual(grade.grade(p,{'verdict':'PASS'})['failure_class'],'HARNESS')
             self.assertEqual(grade.grade(p,None,True)['failure_class'],'ENGINE')
+
+class StagingAndPairs(unittest.TestCase):
+    def test_last_unmatched_begin_and_memory_are_retained_per_rank(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'log'
+            rows=[dict(rank=1,event='begin',label='LAYER',call_id=10),
+                  dict(rank=1,event='barrier-memory',call_id=10,memory={'free_bytes':23,'reserved_bytes':17}),
+                  dict(rank=1,event='exception',call_id=10,error_type='RuntimeError'),
+                  dict(rank=1,event='begin',label='DECODE_STEP',call_id=11),
+                  dict(rank=1,event='end',label='DECODE_STEP',call_id=11)]
+            p.write_text('\n'.join(plugin.PREFIX+json.dumps(r) for r in rows))
+            row=grade.grade(p,None)['per_rank']['1']
+            self.assertEqual(row['last_unmatched_begin']['call_id'],10)
+            self.assertEqual(row['last_memory']['memory'],{'free_bytes':23,'reserved_bytes':17})
+
+    def test_staging_has_no_engine_stop_or_idle_dependency(self):
+        import ast
+        path=HERE.parent/'tools/native30_owner_functions.py'
+        tree=ast.parse(path.read_text());functions={n.name:n for n in tree.body if isinstance(n,ast.FunctionDef)}
+        source=ast.get_source_segment(path.read_text(),functions['preflight'])
+        self.assertNotIn('live_guards(',source);self.assertNotIn('systemctl',source);self.assertNotIn('nvidia-smi',source)
+        arm=ast.get_source_segment(path.read_text(),functions['live_guards'])
+        self.assertIn('stopped_unit(',arm);self.assertIn('nvidia-smi',arm);self.assertNotIn('manifest(',arm)
+        declaration=(HERE/'runs/q18a_native30_localize_declare.sh').read_text()
+        self.assertNotIn('systemctl is-active',declaration);self.assertNotIn('gpu_idle',declaration)
+        self.assertIn('f9fb82486ef3132ac3e6fa9c9ed12fb33225b08e1727727376d3e5ac1a678311',declaration)
 
 class PlacementCLI(unittest.TestCase):
     def test_direct_existing_placement_keeps_no_current_epoch_qualification_claim(self):

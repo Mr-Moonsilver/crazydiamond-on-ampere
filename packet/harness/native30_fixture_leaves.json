@@ -3,9 +3,33 @@
   "scope": "localization-only instrumentation and short queue; no new hardware or release qualification",
   "engine_basis": "native28 held-b; no PLE repair; existing runtime files and compiled libraries remain byte-identical",
   "leaves": [
-    {"name":"localization-wrappers","replaces":"Direct LaneDispatcher._do_prepare/_do_prefix/_do_layer/_do_suffix/_do_state_finalize/_do_pp_send/_do_pp_receive, NativeWorkerBridge.open, Worker.execute_model/sample_tokens calls","equivalence":"Separate general-plugin wrappers call the original once with identical arguments and return its exact result or re-raise its exception; prelaunch JSON goes to flushed stderr on each rank. Configurable none/native/decode/both barriers add torch.cuda.synchronize in the active native scope or re-entered real decode scope. PP transfers are labeled but never synchronized by this plugin.","cannot_prove":"Barriers change timing and can mask races. A sync failure identifies a boundary, not necessarily the original kernel; async cross-stream errors may surface later. No performance claim.","box_evidence":false},
-    {"name":"prior-qualification-diagnostic-skip","replaces":"Current-epoch row1/rule4 controls/candidate collection and full qualification grading before row4","equivalence":"Owner-authorized skip based on prior unchanged-engine receipts. The existing NativePlacementRunner runs exactly once with fresh current-epoch control, eight-stream cohort, native prefill, observer and cleanup. No old artifact is relabeled as current evidence.","cannot_prove":"No fresh correctness/rule4 qualification and no release qualification. Localization PASS only means the requested diagnostic completed with required receipts.","box_evidence":false},
-    {"name":"cpu-launch-and-sync-fixtures","replaces":"CUDA dispatch, event/stream/device synchronization and rank-local worker objects during hub tests","equivalence":"Deterministic CPU callees and CUDA adapters record prelaunch/write/flush/original/sync/return order, preserve result identity, inject a sync failure and check all four rank labels and PP exclusion. Actual image plugin discovery and mounted source targets are checked separately.","cannot_prove":"No GPU execution, green-context or NCCL behavior; no hardware timing or fault reproduction.","box_evidence":false},
-    {"name":"cpu-queue-and-control-fixtures","replaces":"Box systemctl/Docker/restore side effects and loopback placement transport during hub tests","equivalence":"Real Bash exit-trap ordering is exercised with local CPU command fixtures; actual restore functions are byte-equal to native28 and the complete inherited regression remains required. CLI tests verify direct one-shot placement, JSON prefill input and no fabricated qualification digest.","cannot_prove":"Cannot guarantee remote service stop or restoration; queue restores only after confirmed stopped state and retains failure evidence otherwise. Only owner runs the queue.","box_evidence":false}
+    {
+      "name": "localization-wrappers",
+      "replaces": "Direct LaneDispatcher._do_prepare/_do_prefix/_do_layer/_do_suffix/_do_state_finalize/_do_pp_send/_do_pp_receive, NativeWorkerBridge.open, Worker.execute_model/sample_tokens calls",
+      "equivalence": "Separate general-plugin wrappers call the original once with identical arguments and return its exact result or re-raise its exception; prelaunch JSON goes to flushed stderr on each rank. Configurable none/native/decode/both barriers add torch.cuda.synchronize in the active native scope or re-entered real decode scope. PP transfers are labeled but never synchronized by this plugin. Each call has a per-process call_id; end follows the barrier. Before/after barrier samples record torch.cuda.mem_get_info free/total and memory_reserved. Failures retain the last sample without querying CUDA again.",
+      "cannot_prove": "Barriers change timing and can mask races. A sync failure identifies a boundary, not necessarily the original kernel; async cross-stream errors may surface later. No performance claim.",
+      "box_evidence": false
+    },
+    {
+      "name": "prior-qualification-diagnostic-skip",
+      "replaces": "Current-epoch row1/rule4 controls/candidate collection and full qualification grading before row4",
+      "equivalence": "Owner-authorized skip based on prior unchanged-engine receipts. The existing NativePlacementRunner runs exactly once with fresh current-epoch control, eight-stream cohort, native prefill, observer and cleanup. No old artifact is relabeled as current evidence.",
+      "cannot_prove": "No fresh correctness/rule4 qualification and no release qualification. Localization PASS only means the requested diagnostic completed with required receipts.",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-launch-and-sync-fixtures",
+      "replaces": "CUDA dispatch, event/stream/device synchronization and rank-local worker objects during hub tests",
+      "equivalence": "Deterministic CPU callees and CUDA adapters record prelaunch/write/flush/original/sync/return order, preserve result identity, inject a sync failure and check all four rank labels and PP exclusion. Actual image plugin discovery and mounted source targets are checked separately.",
+      "cannot_prove": "No GPU execution, green-context or NCCL behavior; no hardware timing or fault reproduction.",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-queue-and-control-fixtures",
+      "replaces": "Box systemctl/Docker/restore side effects and loopback placement transport during hub tests",
+      "equivalence": "Real Bash exit-trap ordering is exercised with local CPU command fixtures; actual restore functions are byte-equal to native28 and the complete inherited regression remains required. CLI tests verify direct one-shot placement, JSON prefill input and no fabricated qualification digest. Staging declaration drops the engine-stopped/idle prerequisite only; these checks move to explicit --arm. Existing launcher/defaults hashes and exact frozen self-run are checked during staging while production may serve.",
+      "cannot_prove": "Cannot guarantee remote service stop or restoration; queue restores only after confirmed stopped state and retains failure evidence otherwise. Only owner runs the queue.",
+      "box_evidence": false
+    }
   ]
 }

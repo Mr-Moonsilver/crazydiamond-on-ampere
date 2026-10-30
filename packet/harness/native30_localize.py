@@ -1,5 +1,7 @@
 """Opt-in native30 diagnostic plugin; the mounted engine source stays unchanged."""
 import functools
+import contextlib
+import itertools
 import importlib.abc
 import importlib.machinery
 import json
@@ -11,6 +13,7 @@ import time
 PREFIX='NATIVE30 '
 _LOCK=threading.Lock()
 _INSTALLED=False
+_CALL_IDS=itertools.count(1)
 _TARGETS={'vllm.v1.flash_e3.lane_dispatch','vllm.v1.flash_e3.worker_bridge','vllm.v1.worker.gpu_worker'}
 
 
@@ -35,16 +38,37 @@ def rank(obj):
     return value
 
 
+def memory(torch,device):
+    sample=dict(reserved_bytes=int(torch.cuda.memory_reserved(device)))
+    try:
+        free,total=torch.cuda.mem_get_info(device)
+        sample.update(free_bytes=int(free),total_bytes=int(total))
+    except BaseException as exc:
+        sample.update(free_bytes=None,total_bytes=None,error_type=type(exc).__name__)
+        return sample,exc
+    return sample,None
+
+
 def sync(obj,side,fields):
     if mode() not in (side,'both'):return
     import torch
-    device=getattr(getattr(obj,'runner',None),'device',None) or getattr(getattr(obj,'model_runner',None),'device',None)
-    emit('sync-begin',side=side,**fields)
+    driver=getattr(obj,'dispatcher',obj)
+    device=getattr(getattr(driver,'runner',None),'device',None) or getattr(getattr(obj,'model_runner',None),'device',None)
     if side=='decode':
         from vllm.v1.flash_e3.worker_hooks import decode_scope
-        with decode_scope(obj):torch.cuda.synchronize(device)
-    else:torch.cuda.synchronize(device)
-    emit('sync-end',side=side,**fields)
+        scope=decode_scope(obj)
+    else:
+        scope=driver._scope() if driver is not obj else contextlib.nullcontext()
+    with scope:
+        emit('sync-begin',side=side,**fields)
+        sample,error=memory(torch,device);obj._native30_memory=sample
+        emit('barrier-memory',side=side,position='before',memory=sample,**fields)
+        if error is not None:raise error
+        torch.cuda.synchronize(device)
+        sample,error=memory(torch,device);obj._native30_memory=sample
+        emit('barrier-memory',side=side,position='after',memory=sample,**fields)
+        if error is not None:raise error
+        emit('sync-end',side=side,**fields)
 
 
 def wrap(cls,name,kind):
@@ -52,9 +76,10 @@ def wrap(cls,name,kind):
     if getattr(original,'_native30_wrapped',False):return
     @functools.wraps(original)
     def observed(self,*args,**kwargs):
-        fields=dict(rank=rank(self),label=kind)
+        fields=dict(rank=rank(self),label=kind,call_id=next(_CALL_IDS))
         side=None
         if kind=='FIRST_ADMISSION':
+            side='native'
             record=args[0].admission
             txn=record.transaction
             fields.update(chunk_start=txn.chunk_start,chunk_end=txn.chunk_end,transaction=txn.txn_seq,first_admission=txn.chunk_start==0)
@@ -76,9 +101,9 @@ def wrap(cls,name,kind):
             if side:sync(self,side,fields)
         except BaseException as exc:
             pending=type(exc).__name__=='E3Pending'
-            emit('pending' if pending else 'exception',classification=None if pending else 'ENGINE',error_type=type(exc).__name__,**fields)
+            emit('pending' if pending else 'exception',classification=None if pending else 'ENGINE',error_type=type(exc).__name__,last_memory=getattr(self,'_native30_memory',None),**fields)
             raise
-        emit('end',**fields)
+        emit('end',last_memory=getattr(self,'_native30_memory',None),**fields)
         return result
     observed._native30_wrapped=True
     setattr(cls,name,observed)

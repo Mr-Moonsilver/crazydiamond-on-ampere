@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def grade(log,placement=None,engine_crashed=False):
-    ranks={str(r):dict(begins=0,last_begin=None,last_end=None,exceptions=[],labels=[]) for r in range(4)}
+    ranks={str(r):dict(begins=0,last_begin=None,last_end=None,exceptions=[],labels=[],unmatched={},last_memory=None) for r in range(4)}
     malformed=0
     with Path(log).open(errors='replace') as f:
         for line in f:
@@ -17,17 +17,24 @@ def grade(log,placement=None,engine_crashed=False):
             if type(rank) is not int or str(rank) not in ranks:continue
             out=ranks[str(rank)]
             if row.get('event')=='begin':
-                out['begins']+=1;out['last_begin']=row
+                out['begins']+=1;out['last_begin']=row;out['unmatched'][str(row.get('call_id',out['begins']))]=row
                 if row['label'] not in out['labels']:out['labels'].append(row['label'])
-            elif row.get('event')=='end':out['last_end']=row
+            elif row.get('event')=='end':
+                out['last_end']=row;out['unmatched'].pop(str(row.get('call_id')),None)
+            elif row.get('event')=='barrier-memory':out['last_memory']=row
             elif row.get('event')=='exception':out['exceptions'].append(row)
+            elif row.get('event')=='pending':out['unmatched'].pop(str(row.get('call_id')),None)
+    for row in ranks.values():
+        row['last_unmatched_begin']=next(reversed(row['unmatched'].values()),None) if row['unmatched'] else None
+        row['unmatched']=list(row['unmatched'].values())
     fault=engine_crashed or any(v['exceptions'] for v in ranks.values())
     observed=all('FIRST_ADMISSION' in v['labels'] and 'DECODE_STEP' in v['labels'] for v in ranks.values())
     complete=bool(placement and placement.get('verdict')=='PASS')
-    return dict(schema='native30-localization-grade/1',verdict='FAIL' if fault or malformed else 'PASS' if observed and complete else 'INCONCLUSIVE',
-        failure_class='ENGINE' if fault else 'HARNESS' if malformed or not observed or not complete else 'NONE',
+    paired=all(not r['unmatched'] for r in ranks.values())
+    return dict(schema='native30-localization-grade/1',verdict='FAIL' if fault or malformed else 'PASS' if observed and complete and paired else 'INCONCLUSIVE',
+        failure_class='ENGINE' if fault else 'HARNESS' if malformed or not observed or not complete or not paired else 'NONE',
         per_rank=ranks,malformed_receipts=malformed,engine_crashed=engine_crashed,
-        all_rank_admission_and_decode=observed,placement_completed=complete,release_qualified=False,
+        all_rank_admission_and_decode=observed,all_begins_paired=paired,placement_completed=complete,release_qualified=False,
         scope='localization only; last begin is an attribution boundary, not proof of the originating kernel')
 
 

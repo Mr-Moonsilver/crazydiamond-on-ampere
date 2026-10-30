@@ -66,7 +66,7 @@ def build(out,log):
     review['native30_localization']=dict(engine_baseline_manifest=sha(BASE/'final/SHA256SUMS'),plugin_sha256=sha(plugins/'native30_localize.py'),scope='separate diagnostic wrappers and sync; no engine source/PLE repair',queue='startup then one row4 placement diagnostic, no fresh qualification claim',active_bound_s=1200,cleanup_margin_s=420,hard_end='2026-10-30T18:00:00Z',hardware_qualified=False,release_qualified=False)
     review['night_window']=dict(hard_end='2026-10-30T18:00:00Z',queue_timeout_s=1200,cleanup_margin_s=420,placeholder=False)
     closure['review_sha256']=digest(review);dump(overlay/'e3/native-implementation-closure.json',closure)
-    dump(bundle/'e3_build_closure.json',review)
+    dump(bundle/'native30-review.json',review)
     gen=json.loads((overlay/'S5-OVERLAP-GENERATION.json').read_text());ready=json.loads((overlay/'e3/native-overlap-readiness.json').read_text())
     gen['implementation_review_sha256']=ready['review_sha256']=closure['review_sha256']
     gen['package_sha256']=ready['package_sha256']=payload_identity(overlay)
@@ -101,9 +101,11 @@ def build(out,log):
     closure=json.loads((root/'e3/native-implementation-closure.json').read_text())
     require(closure['review_sha256']==REVIEW,'review-binding-differs')
     verify_finalized_package(root,closure['generated_source_shas'])'''}
+    template=ROOT/'tools/native30_owner_functions.py'
+    body=template.read_text();nodes=ast.parse(body)
+    for node in nodes.body:
+        if isinstance(node,ast.FunctionDef):functions[node.name]=ast.get_source_segment(body,node)
     owner=replace(original,dict(H="Path('/home/<service-user>/harness/"+pin[:12]+"')",BUNDLE=repr(pin),REVIEW=repr(closure['review_sha256']),EXPECTED_SOURCES=repr(new)),functions)
-    owner=owner.replace("    a=p.parse_args(argv)","    p.add_argument('--sync',choices=('none','native','decode','both'),default='both')\n    a=p.parse_args(argv)")
-    owner=owner.replace("    rc=phase('q18a_native30_localize_declare.sh'","    env['FLASH_NATIVE30_SYNC']=a.sync\n    rc=phase('q18a_native30_localize_declare.sh'")
     runner=out/('q18a-native30-localize-owner-run-'+pin[:12]+'.py');runner.write_text(owner);compile(owner,str(runner),'exec')
     for p in final.rglob('*'):p.chmod(0o555 if p.is_dir() else 0o444)
     final.chmod(0o555);runner.chmod(0o444)
