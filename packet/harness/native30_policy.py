@@ -41,7 +41,7 @@ def qualification(original,runner,command):
 
 @contextlib.contextmanager
 def boundary(obj,fields):
-    runner=getattr(obj,'model_runner',None) or getattr(obj,'runner',None)
+    runner=host.runner_for(obj)
     def observe():
         s=host.state(runner,fields.get('rank'))
         if s is None:return
@@ -51,6 +51,8 @@ def boundary(obj,fields):
             w['started']=True;s['active']=True
             host.emit(s,'host-policy-admission',bytes_per_rank=BYTES_PER_RANK,records_per_rank=RECORDS_PER_RANK,
                       tail_s=TAIL_S,counters='global since startup; never reset',
+                      receiver_type=type(obj).__name__,call_id=fields.get('call_id'),
+                      transaction=fields.get('transaction'),chunk_start=fields.get('chunk_start'),chunk_end=fields.get('chunk_end'),
                       activation='first native admission after row4 observer_begin')
         finish(s)
     host.safe(observe)

@@ -177,9 +177,16 @@ def reassemble(rows):
 
 
 
+def runner_for(obj):
+    """Resolve only the three real receipt receivers; no device operation."""
+    runner=getattr(obj,'model_runner',None) or getattr(obj,'runner',None)
+    if runner is not None:return runner
+    return getattr(getattr(obj,'dispatcher',None),'runner',None)
+
+
 @contextlib.contextmanager
 def boundary(obj,fields):
-    runner=getattr(obj,'model_runner',None) or getattr(obj,'runner',None)
+    runner=runner_for(obj)
     prior=getattr(_TLS,'context',None)
     s=safe(state,runner,fields.get('rank'))
     context=dict(runner=runner,state=s,fields=fields,dispatcher=obj if hasattr(obj,'events') else None,
