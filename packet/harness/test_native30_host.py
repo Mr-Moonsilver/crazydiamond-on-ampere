@@ -107,6 +107,8 @@ class Passive(unittest.TestCase):
             def fail(*a,**k):calls.append(2);raise error
             with self.assertRaises(RuntimeError) as caught:host.writer_apply(fail,Obj(),(),{})
             self.assertIs(caught.exception,error);self.assertEqual(calls,[1,2])
+        obj.events=[]
+        self.assertIs(host.submit_after(lambda *a,**k:marker,obj,(),dict(command=NS(op_seq=0))),marker)
 
     def test_bounded_output_emits_one_limit_and_keeps_execution(self):
         p,r,s=fixture()

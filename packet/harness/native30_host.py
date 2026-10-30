@@ -315,7 +315,7 @@ def request_added(original,states,args,kwargs):
 
 def submit_after(original,dispatcher,args,kwargs):
     result=original(dispatcher,*args,**kwargs)
-    safe(attach_event,dispatcher,args[0].op_seq)
+    safe(lambda:attach_event(dispatcher,(args[0] if args else kwargs['command']).op_seq))
     return result
 
 
