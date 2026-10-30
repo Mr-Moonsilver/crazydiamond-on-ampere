@@ -44,6 +44,13 @@
       "equivalence": "Actual engine_identity capture/check CLI and real identity_probe hash fixture active files through a fake Docker executable; active-source mutation must fail. An explicit elapsed-cost adapter raises the real subprocess.TimeoutExpired when the passed timeout is below the owner-reported170.5s capture cost, reproducing old120 refusal; configured360 must complete real fixture hashing/check. Safe failure phase/kind/time fields must exclude private canaries. The same frozen identity files run in the pinned image with the plugin environment.",
       "cannot_prove": "Fixture files do not reproduce181.95GB I/O bandwidth or future box contention;360s is measured-history headroom, not a performance guarantee. Fake Docker/cost adapters never run in the owner queue.",
       "box_evidence": false
+    },
+    {
+      "name": "snapshot-headroom-and-dual-log-fixtures",
+      "replaces": "Host MemAvailable/cgroup samples, operator clock, and per-rank stdout/stderr placement records during CPU tests",
+      "equivalence": "Real gate arithmetic and clock boundaries execute on explicit scalar fixtures; both real log parser inputs are graded together. The 512 MiB/worker snapshot cap exceeds the measured 52852723-byte worst retained full11/full12/teacher12 snapshot; unchanged 5 GiB transient margin yields a 7 GiB gate. Actual host sampling and snapshot cap enforcement remain active.",
+      "cannot_prove": "Older snapshot measurements do not bound the current engine. Snapshots exceeding 512 MiB refuse without truncation. Point headroom does not guarantee future peak. CPU logs and clocks do not prove box execution or cross-rank plan agreement.",
+      "box_evidence": false
     }
   ]
 }

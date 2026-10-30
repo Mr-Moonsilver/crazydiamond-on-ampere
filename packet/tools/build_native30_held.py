@@ -11,8 +11,8 @@ import subprocess
 import sys
 ROOT=Path(__file__).resolve().parents[1]
 BASE=Path('<hub-dir>/agents/flash-next/tmp/native28-held-b')
-BUNDLE=BASE/'q18a-native28-bundle-71571d7efbca'
-BASE_MANIFEST='71571d7efbca089f74c3093f484ee6c9236d2819b7a136914796ca08a2c58a78'
+BUNDLE=Path('<hub-dir>/agents/flash-next/tmp/native30-localize-b-held-a/q18a-native30-localize-b-bundle-86758402b137')
+BASE_MANIFEST='86758402b1378720c9723e379a586c227c52543581bf76eb4e5275f3f397968f'
 sys.path.insert(0,str(ROOT/'patches/s5_engine'))
 from native_readiness import digest,payload_identity,verify_finalized_package
 
@@ -38,13 +38,13 @@ def replace(source,names,functions={}):
     value=''.join(lines);compile(value,'native30-owner','exec');return value
 
 
-def build(out,log,candidate_name='q18a-native30-localize-b'):
-    assert candidate_name=='q18a-native30-localize-b'
+def build(out,log,candidate_name='q18a-native30-localize-c'):
+    assert candidate_name=='q18a-native30-localize-c'
     script_name=candidate_name.replace('-','_')
     assert not out.exists();assert sha(BUNDLE/'SHA256SUMS')==BASE_MANIFEST;verify(BUNDLE);verify(BASE/'final')
     dirty=subprocess.check_output(['git','status','--porcelain','--','harness','tools'],cwd=ROOT,text=True);assert not dirty,dirty
     text=log.read_text();summ=re.findall(r'^selftest: (\d+)/(\d+) cases as required$',text,re.M)
-    suites=[json.loads(s.split(': ',1)[1]) for s in text.splitlines() if s.startswith('selftest suite: ')]
+    suites=[json.JSONDecoder().raw_decode(text[m.end():])[0] for m in re.finditer('selftest suite: ',text)]
     assert len(summ)==1 and summ[0][0]==summ[0][1] and all(s['returncode']==0 and not s['skipped'] for s in suites)
     out.mkdir();bundle=out/'bundle';shutil.copytree(BUNDLE,bundle)
     for p in bundle.rglob('*'):p.chmod(0o755 if p.is_dir() else 0o644)
@@ -54,22 +54,23 @@ def build(out,log,candidate_name='q18a-native30-localize-b'):
         source=ROOT/name
         if source.is_file():
             target=bundle/Path(name).relative_to('harness');target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
-    tool_dir=bundle/'native30_tools';tool_dir.mkdir()
+    tool_dir=bundle/'native30_tools';tool_dir.mkdir(exist_ok=True)
     for name in ('native30_owner_functions.py','native30_cpu_probe.py','native30_selfrun.py'):
         shutil.copyfile(ROOT/'tools'/name,tool_dir/name)
-    overlay=bundle/'native30_overlay';shutil.copytree(BASE/'final',overlay)
+    overlay=bundle/'native30_overlay'
+    assert sha(overlay/'e3/native30_plugins/native30_localize.py')==sha(ROOT/'harness/native30_localize.py')
     for p in overlay.rglob('*'):p.chmod(0o755 if p.is_dir() else 0o644)
     overlay.chmod(0o755)
-    plugins=overlay/'e3/native30_plugins';plugins.mkdir()
+    plugins=overlay/'e3/native30_plugins';plugins.mkdir(exist_ok=True)
     shutil.copyfile(ROOT/'harness/native30_localize.py',plugins/'native30_localize.py')
-    dist=plugins/'flashnext_native30_localize-0.1.dist-info';dist.mkdir()
+    dist=plugins/'flashnext_native30_localize-0.1.dist-info';dist.mkdir(exist_ok=True)
     (dist/'METADATA').write_text('Metadata-Version: 2.1\nName: flashnext-native30-localize\nVersion: 0.1\n')
     (dist/'entry_points.txt').write_text('[vllm.general_plugins]\nnative30_localize = native30_localize:install\n')
     closure=json.loads((overlay/'e3/native-implementation-closure.json').read_text());review=closure['review']
     review['cpu_regression']=dict(basis='native30 current-source strict zero-skip regression',cases=int(summ[0][0]),required=int(summ[0][1]),exit_code=0,skips=0,suites=len(suites),reported_tests=sum(s['tests_run'] or 0 for s in suites),log_sha256=sha(log))
     review['harness_source_shas']={str(Path(n).relative_to('harness')):sha(ROOT/n) for n in tracked if (ROOT/n).is_file()}
-    review['native30_localization']=dict(engine_baseline_manifest=sha(BASE/'final/SHA256SUMS'),plugin_sha256=sha(plugins/'native30_localize.py'),scope='separate diagnostic wrappers and sync; identity budget repair; no engine source/PLE repair',queue='startup then one row4 placement diagnostic, no fresh qualification claim',active_bound_s=1200,cleanup_margin_s=420,hard_end='2026-10-30T18:00:00Z',hardware_qualified=False,release_qualified=False)
-    review['night_window']=dict(hard_end='2026-10-30T18:00:00Z',queue_timeout_s=1200,cleanup_margin_s=420,placeholder=False)
+    review['native30_localization']=dict(engine_baseline_manifest=sha(BASE/'final/SHA256SUMS'),plugin_sha256=sha(plugins/'native30_localize.py'),scope='unchanged native30-b diagnostics/engine; measured snapshot gate, dual-log grade and operator window',queue='startup then one row4 placement diagnostic, no fresh qualification claim',active_bound_s=1200,cleanup_margin_s=420,not_before='2026-10-30T17:00:00Z',hard_end='2026-10-30T23:00:00Z',hardware_qualified=False,release_qualified=False)
+    review['night_window']=dict(not_before='2026-10-30T17:00:00Z',hard_end='2026-10-30T23:00:00Z',queue_timeout_s=1200,cleanup_margin_s=420,placeholder=False)
     closure['review_sha256']=digest(review);dump(overlay/'e3/native-implementation-closure.json',closure)
     dump(bundle/'native30-review.json',review)
     gen=json.loads((overlay/'S5-OVERLAP-GENERATION.json').read_text());ready=json.loads((overlay/'e3/native-overlap-readiness.json').read_text())

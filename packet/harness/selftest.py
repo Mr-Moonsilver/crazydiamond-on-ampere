@@ -710,6 +710,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_native_speculation_gate.py', 'Native19 startup log gate: actual speculative config must be None, with missing or enabled evidence refused (CPU)'),
                      ('test_e3_native26_host_observer.py', 'Native26 host Docker log follow, one-second disk samples, bounded shutdown markers and queue lifecycle (CPU fake Docker only)'),
                      ('test_native30_localize.py', 'Native30 per-rank flushed labels, scoped sync, PP deadlock guard, short queue restore and classification (CPU fixtures only)'),
+                     ('test_native30_c.py', 'Native30-c measured snapshot gate, dual-log fault receipts and operator window (CPU only)'),
                      ('test_native30_identity.py', 'Native30 identity real capture/check/probe, old timeout refusal, content mismatch and cleanup budget (CPU fixtures only)'),
                      ('test_e3_native28_host_guard.py', 'Native28 root-space final evidence and prompt queue trap, declared first-advance read bound (CPU only)'),
                      ('test_e3_native28_rule4_continuation.py', 'Native28 control hard-cap continuation preserves raw INC and refuses split, structural and other gates (CPU only)'),

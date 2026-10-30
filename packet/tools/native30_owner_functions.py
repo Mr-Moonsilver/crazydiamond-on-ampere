@@ -17,7 +17,7 @@ def live_guards(cap):
 
 def preflight(cap):
     require(os.geteuid()==0,'owner-root-required')
-    require(type(cap) is int and 64*1024**2<=cap<=2*1024**3,'snapshot-cap-invalid')
+    require(type(cap) is int and cap==512*1024**2,'snapshot-cap-invalid')
     require(sha(H/'SHA256SUMS')==BUNDLE,'harness-manifest-pin')
     rows=manifest(H);require(inventory(H)==set(rows)|{'SHA256SUMS'},'harness-inventory')
     require(sha(BASE/'SHA256SUMS')==BASE_MANIFEST,'base-manifest-pin');manifest(BASE)
@@ -34,7 +34,7 @@ def main(argv=None):
     p=argparse.ArgumentParser(description='Native30: stage while production serves, arm only after owner stop')
     action=p.add_mutually_exclusive_group(required=True);action.add_argument('--staging',action='store_true');action.add_argument('--arm',action='store_true')
     p.add_argument('--auth-env-file',type=Path);p.add_argument('--selfrun-record',type=Path)
-    p.add_argument('--model',default='qwen38-w8a8-tp4');p.add_argument('--snapshot-max-bytes',type=int,default=2*1024**3)
+    p.add_argument('--model',default='qwen38-w8a8-tp4');p.add_argument('--snapshot-max-bytes',type=int,default=512*1024**2)
     p.add_argument('--sync',choices=('none','native','decode','both'),default='both')
     a=p.parse_args(argv)
     global GREEN,MANIFEST
@@ -47,7 +47,7 @@ def main(argv=None):
         result=json.loads(a.selfrun_record.read_text())
         require(result.get('bundle_manifest')==BUNDLE and result.get('verdict')=='PASS' and result.get('rc')==0
                 and result.get('gpu_device_requests')==0 and result.get('image')==IMAGE
-                and result.get('skips')==0 and result.get('tests_run',0)==13
+                and result.get('skips')==0 and result.get('tests_run',0)==18
                 and result.get('plugin_loader')=='PASS'
                 and result.get('identity_capture_check')=='PASS'
                 and result.get('identity_timeout_negative_rejected') is True,'exact-frozen-selfrun-required')
@@ -73,3 +73,8 @@ def main(argv=None):
     rc=phase('q18a_native30_localize.draft.sh',S0/(QNAME+'.log'),env)
     print('OWNER_CHAIN DONE rc='+str(rc)+' queue_started=true engine-stopped-before-restore production-never-started',flush=True)
     return rc
+
+
+def check_slot():
+    from native30_gate import window_ok
+    require(window_ok(time.time()),'operator-window-not-before-or-cleanup-margin')

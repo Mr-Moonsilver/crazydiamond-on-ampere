@@ -1,0 +1,313 @@
+{
+  "schema": 1,
+  "worst_snapshot_bytes": 52852723,
+  "basis": [
+    {
+      "source": "results/box/q17b-full11/q17b-full11/clients/data-invariant.json",
+      "sha256": "6db6a9a0b794afd1f28246a11338c1f1754b0a122d590b527afecb85d51ac10a",
+      "records": [
+        {
+          "rank": 0,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 1,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 2,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 3,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 0,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 1,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 2,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 3,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 0,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 1,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 2,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 3,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        }
+      ]
+    },
+    {
+      "source": "results/box/q17b-teacher12/q17b-teacher12/clients/data-invariant.json",
+      "sha256": "4ccca5fbeab9fa1eb49924e7ae28c81b8c075969674b6eafb27c60746f44943d",
+      "records": [
+        {
+          "rank": 0,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 1,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 2,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 3,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 0,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 1,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 2,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 3,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 0,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 1,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 2,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 3,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        }
+      ]
+    },
+    {
+      "source": "results/box/q17b-full12/q17b-full12/clients/data-invariant.json",
+      "sha256": "178031376ce1f9d7b68d4ffd3188070652f0df9f8cf25d465f18078cccec0bde",
+      "records": [
+        {
+          "rank": 0,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 1,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 2,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 3,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "entered",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 0,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 1,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 2,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 3,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "measured",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 0,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 1,
+          "snapshot_bytes": 52852723,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 2,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        },
+        {
+          "rank": 3,
+          "snapshot_bytes": 52836349,
+          "history_bytes": 48451584,
+          "graph_count": 7,
+          "phase": "returned",
+          "snapshot_cap_bytes": 2147483648
+        }
+      ]
+    }
+  ],
+  "limitation": "Historical short-cohort observations, not a bound on the current engine; runtime cap refusal remains active."
+}

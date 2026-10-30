@@ -14,8 +14,8 @@ import engine_identity as identity
 import test_identity as fixtures
 
 HERE=Path(__file__).resolve().parent
-SETTINGS=HERE/'runs/q18a_native30_localize_b_settings.sh'
-QUEUE=HERE/'runs/q18a_native30_localize_b.draft.sh'
+SETTINGS=HERE/'runs/q18a_native30_localize_c_settings.sh'
+QUEUE=HERE/'runs/q18a_native30_localize_c.draft.sh'
 IDENTITY_RECEIPTS=[]
 OBSERVED_CAPTURE_S=170.5  # owner-reported; retained native28 queue also shows155.275s
 
