@@ -32,6 +32,7 @@ import sys
 import time
 
 import e3_teacher_decode_rule4 as rule4
+from e3_native27_profile_receipt import from_cleanup as profile_refusals_from_cleanup
 
 _RUNTIME = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         'patches', 's5_engine')
@@ -658,14 +659,18 @@ def run(phase, url, model, run_id, epoch, out, artifact_sha256=None,
         except (QualificationRefused, PhaseUnavailable, PhaseConflict,
                 ValueError) as exc:
             code = getattr(exc, 'code', None) or str(exc)[:80] or type(exc).__name__
+            cleanup = copy.deepcopy(getattr(exc, 'cleanup', None))
             record.update({
                 'verdict': 'INCONCLUSIVE',
                 'missing': ['collect:' + str(code)],
                 'failures': [],
                 'refusal_evidence': copy.deepcopy(getattr(exc, 'evidence', None)),
-                'refusal_cleanup': copy.deepcopy(getattr(exc, 'cleanup', None)),
+                'refusal_cleanup': cleanup,
                 'finished_monotonic_ns': time.monotonic_ns(),
             })
+            profile_refusals = profile_refusals_from_cleanup(cleanup)
+            if profile_refusals is not None:
+                record['schedule_profile_refusals'] = profile_refusals
             _write_record(out, record)
             return 2
         evidence = _phase_grading_evidence(phase, collected, epoch)

@@ -858,6 +858,12 @@ class NativeSegmentDriver:
         # Engine-lifetime count, not a count inferred from the raw ring/window.
         self._profile_mismatches = 0
         self._profile_timeouts = 0
+        # The raw journal is a bounded recent-event ring. Preserve the first
+        # causal profile refusal and the latest one independently so cleanup
+        # status can identify both peers even after a long row evicts the ring.
+        self._profile_refusal_first = None
+        self._profile_refusal_latest = None
+        self._profile_refusal_count = 0
         self._stock_steps_skipped = 0
         self._profile_failure = None
         self._profile_failed_request = None
@@ -1525,7 +1531,7 @@ class NativeSegmentDriver:
                              **{field: 1})
         self.stop_kind = 'abort'
         self._return_pending = 'unsupported-profile'
-        self._record('schedule_profile_refused', transaction=self.tx.txn_seq,
+        entry = self._record('schedule_profile_refused', transaction=self.tx.txn_seq,
                      stage=self._profile_query.stage,
                      layer=self._profile_query.layer, reason=reason,
                      mismatch_count=self._profile_mismatches, timeout_count=self._profile_timeouts,
@@ -1539,6 +1545,19 @@ class NativeSegmentDriver:
                          'worker_host_ns': getattr(item, 'worker_host_ns', None),
                      } for rank in self._profile_query.ranks
                        for item in (self._profile_observed.get(rank),)])
+        self._profile_refusal_count += 1
+        if self._profile_refusal_first is None:
+            self._profile_refusal_first = copy.deepcopy(entry)
+        self._profile_refusal_latest = copy.deepcopy(entry)
+
+    def _profile_refusal_receipt(self):
+        return {
+            'schema': 's5-schedule-profile-refusal/1',
+            'count': self._profile_refusal_count,
+            'first': copy.deepcopy(self._profile_refusal_first),
+            'latest': copy.deepcopy(self._profile_refusal_latest),
+            'basis': 'engine-lifetime first/latest typed refusals; independent of the recent-event journal',
+        }
 
     def _ingest_report(self, report):
         if type(report) is not WorkerCompletionReport:
@@ -3017,6 +3036,7 @@ class NativeSegmentDriver:
             'reports': sorted(int(rank) for rank in self.reports),
             'schedule_profile_mismatches': self._profile_mismatches,
             'schedule_profile_timeouts': self._profile_timeouts,
+            'schedule_profile_refusals': self._profile_refusal_receipt(),
             'qsa_control': self.qsa_control.snapshot(),
             'control_pending': None if self._control is None else self._control['action'],
             'admission_intent': self.admission_intent(),
@@ -3664,6 +3684,7 @@ class NativeSegmentDriver:
         }
         record['measurement']['schedule_profile'] = {
             'mismatches': self._profile_mismatches, 'timeouts': self._profile_timeouts,
+            'refusals': self._profile_refusal_receipt(),
             'basis': 'engine-lifetime-monotonic-count'}
         record['measurement']['qsa_control'] = self.qsa_control.snapshot()
         record['measurement']['stock_steps_skipped'] = {

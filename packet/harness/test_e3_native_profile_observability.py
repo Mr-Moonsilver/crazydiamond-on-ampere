@@ -1,10 +1,14 @@
 """Receipt-only profile fields and actual engine-hook bypass accounting."""
 from dataclasses import replace
+import json
+from pathlib import Path
+import tempfile
 import types
 import unittest
 
 import test_e3_native_schedule_profile as p
 import executor_hooks as hooks
+import e3_native27_profile_receipt as receipt
 
 
 class ProfileObservability(unittest.TestCase):
@@ -43,6 +47,34 @@ class ProfileObservability(unittest.TestCase):
         self.assertEqual([r['selected_count'] for r in peers], [4097, 97153])
         self.assertEqual([r['bucket_waves'] for r in peers], [[17], [380, 1]])
         self.assertTrue(all(r['worker_host_ns'] > 0 for r in peers))
+
+    def test_refusal_survives_ring_eviction_and_reaches_phase_and_grade(self):
+        self.case.selection_counts = (4097, 97153)
+        world, driver, command = self.case.boundary((True, True))
+        driver._apply_profile(self.case.query(world, driver))
+        for index in range(driver.journal_limit + 1):
+            driver._record('receipt-test-padding', index=index)
+        self.assertFalse(any(row['kind'] == 'schedule_profile_refused'
+                             for row in driver._journal))
+        status = driver._status_record()
+        retained = status['schedule_profile_refusals']
+        self.assertEqual(retained['count'], 1)
+        self.assertEqual(retained['first'], retained['latest'])
+        self.assertEqual([peer['selected_count'] for peer in retained['first']['peer_profiles']],
+                         [4097, 97153])
+        self.assertEqual([peer['bucket_waves'] for peer in retained['first']['peer_profiles']],
+                         [[17], [380, 1]])
+        cleanup = {'steps': {'leave_full': {
+            'census_before_return': {'snapshot': status}}}}
+        phase_receipt = receipt.from_cleanup(cleanup)
+        self.assertEqual(phase_receipt, retained)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'qual-row1.json'
+            path.write_text(json.dumps({'verdict': 'INCONCLUSIVE',
+                                        'schedule_profile_refusals': phase_receipt}))
+            grade = receipt.queue_grade_receipts(tmp)
+        self.assertEqual(grade['phases']['row1'], retained)
+        self.assertEqual(grade['unavailable'], {})
 
     def test_actual_hook_counts_bypass_once_and_not_utility_pumps(self):
         network = p.ProfileNetwork(self.case)
