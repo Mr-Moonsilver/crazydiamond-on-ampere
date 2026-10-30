@@ -37,15 +37,15 @@ def stop(_signum, _frame):
 def inspect(container):
     result = subprocess.run(
         ['docker', 'inspect', '--format',
-         '{{.Id}}|{{.State.Running}}|{{.State.StartedAt}}|{{.LogPath}}|{{index .GraphDriver.Data "UpperDir"}}',
+         '{{.Id}}|{{.State.Running}}|{{.State.StartedAt}}|{{.LogPath}}',
          container], capture_output=True, text=True, timeout=2, check=False)
     if result.returncode:
         return None
     fields = result.stdout.strip().split('|')
-    if len(fields) != 5 or fields[1] != 'true':
+    if len(fields) != 4 or fields[1] != 'true':
         return None
     return dict(container_id=fields[0], started_at=fields[2],
-                log_path=fields[3], upper_dir=fields[4])
+                log_path=fields[3], name=container)
 
 
 def disk_sample(identity, sequence):
@@ -60,15 +60,18 @@ def disk_sample(identity, sequence):
     except (OSError, ValueError) as exc:
         row['errors'].append('log_stat:' + type(exc).__name__)
     try:
-        result = subprocess.run(['du', '-s', '-B1', '--', identity['upper_dir']],
+        # Docker's SizeRw is the same writable-layer accounting used by
+        # `docker ps -s`; current Docker no longer exposes GraphDriver.UpperDir.
+        result = subprocess.run(['docker', 'inspect', '--size', '--format',
+                                 '{{.SizeRw}}', identity['name']],
                                 capture_output=True, text=True, timeout=0.8,
                                 check=False)
         if result.returncode:
-            row['errors'].append('upper_du:rc' + str(result.returncode))
+            row['errors'].append('size_rw:rc' + str(result.returncode))
         else:
-            row['writable_layer_bytes'] = int(result.stdout.split()[0])
+            row['writable_layer_bytes'] = int(result.stdout.strip())
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        row['errors'].append('upper_du:' + type(exc).__name__)
+        row['errors'].append('size_rw:' + type(exc).__name__)
     return row
 
 

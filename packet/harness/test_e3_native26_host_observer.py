@@ -32,9 +32,6 @@ class HostObserver(unittest.TestCase):
             root = Path(temp)
             out = root / 'run'
             out.mkdir()
-            upper = root / 'upper'
-            upper.mkdir()
-            (upper / 'evidence').write_bytes(b'x' * 4096)
             json_log = root / 'container-json.log'
             json_log.write_bytes(b'x' * 137)
             fake = root / 'bin'
@@ -43,8 +40,10 @@ class HostObserver(unittest.TestCase):
             docker.write_text(
                 '#!/usr/bin/env python3\n'
                 'import sys,time\n'
-                "if sys.argv[1]=='inspect':\n"
-                f" print('abc123|true|2026-10-30T00:00:00Z|{json_log}|{upper}')\n"
+                "if sys.argv[1]=='inspect' and '--size' in sys.argv:\n"
+                " print('4096')\n"
+                "elif sys.argv[1]=='inspect':\n"
+                f" print('abc123|true|2026-10-30T00:00:00Z|{json_log}')\n"
                 "elif sys.argv[1]=='logs':\n"
                 " print('2026-10-30T00:01:00Z [shutdown] EngineCore: tearing down local resources',flush=True)\n"
                 " print('2026-10-30T00:01:01Z TransportError: transport closing',flush=True)\n"
