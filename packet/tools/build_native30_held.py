@@ -38,9 +38,9 @@ def replace(source,names,functions={}):
     value=''.join(lines);compile(value,'native30-owner','exec');return value
 
 
-def build(out,log,name='q18a-native30-localize-b'):
-    assert name=='q18a-native30-localize-b'
-    script_name=name.replace('-','_')
+def build(out,log,candidate_name='q18a-native30-localize-b'):
+    assert candidate_name=='q18a-native30-localize-b'
+    script_name=candidate_name.replace('-','_')
     assert not out.exists();assert sha(BUNDLE/'SHA256SUMS')==BASE_MANIFEST;verify(BUNDLE);verify(BASE/'final')
     dirty=subprocess.check_output(['git','status','--porcelain','--','harness','tools'],cwd=ROOT,text=True);assert not dirty,dirty
     text=log.read_text();summ=re.findall(r'^selftest: (\d+)/(\d+) cases as required$',text,re.M)
@@ -85,8 +85,8 @@ def build(out,log,name='q18a-native30-localize-b'):
     assert all(new[name]==old[name] for name in runtime)
     proof=dict(schema='native30-build/1',source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),baseline_bundle_manifest=BASE_MANIFEST,baseline_overlay_manifest=sha(BASE/'final/SHA256SUMS'),runtime_byte_equal=runtime,changed_metadata=changed,added=sorted(set(new)-set(old)),overlay_manifest=sha(overlay/'SHA256SUMS'),review_sha256=closure['review_sha256'],selftest=review['cpu_regression'],gpu_work=False,box_action=False)
     dump(bundle/'native30-provenance.json',proof);manifest(bundle);pin=sha(bundle/'SHA256SUMS')
-    final=out/(name+'-bundle-'+pin[:12]);bundle.rename(final);overlay=final/'native30_overlay'
-    original=(BASE/'q18a-native28-owner-run-71571d7efbca.py').read_text().replace('q18a_native28',script_name).replace('q18a-native28',name).replace('14400+900','1200+420')
+    final=out/(candidate_name+'-bundle-'+pin[:12]);bundle.rename(final);overlay=final/'native30_overlay'
+    original=(BASE/'q18a-native28-owner-run-71571d7efbca.py').read_text().replace('q18a_native28',script_name).replace('q18a-native28',candidate_name).replace('14400+900','1200+420')
     functions={
       'cpu_build':'''def cpu_build():
     # Already built/checked on hub: avoid compilation during the short outage.
@@ -112,10 +112,10 @@ def build(out,log,name='q18a-native30-localize-b'):
     for node in nodes.body:
         if isinstance(node,ast.FunctionDef):functions[node.name]=ast.get_source_segment(body,node)
     owner=replace(original,dict(H="Path('/home/<service-user>/harness/"+pin[:12]+"')",BUNDLE=repr(pin),REVIEW=repr(closure['review_sha256']),EXPECTED_SOURCES=repr(new)),functions)
-    runner=out/(name+'-owner-run-'+pin[:12]+'.py');runner.write_text(owner);compile(owner,str(runner),'exec')
+    runner=out/(candidate_name+'-owner-run-'+pin[:12]+'.py');runner.write_text(owner);compile(owner,str(runner),'exec')
     for p in final.rglob('*'):p.chmod(0o555 if p.is_dir() else 0o444)
     final.chmod(0o555);runner.chmod(0o444)
-    result=dict(bundle=str(final),manifest=pin,overlay=str(overlay),overlay_manifest=sha(overlay/'SHA256SUMS'),runner=str(runner),runner_sha256=sha(runner),runner_size=runner.stat().st_size,review_sha256=closure['review_sha256'],runtime_files_unchanged=len(runtime),checksummed_files=len(verify(final)),held=True,name=name,identity_timeout_s=360)
+    result=dict(bundle=str(final),manifest=pin,overlay=str(overlay),overlay_manifest=sha(overlay/'SHA256SUMS'),runner=str(runner),runner_sha256=sha(runner),runner_size=runner.stat().st_size,review_sha256=closure['review_sha256'],runtime_files_unchanged=len(runtime),checksummed_files=len(verify(final)),held=True,name=candidate_name,identity_timeout_s=360)
     dump(out/'build.json',result);return result
 
 if __name__=='__main__':
