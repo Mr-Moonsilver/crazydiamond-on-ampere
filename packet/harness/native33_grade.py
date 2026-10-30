@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def grade(paths):
-    first=None;graphs=[];changes=[];limits=malformed=begins=ends=0
+    first=None;graphs=[];changes=[];limits=malformed=begins=ends=unavailable=0
     for path in paths:
         with Path(path).open(errors='replace') as f:
             for line in f:
@@ -16,6 +16,7 @@ def grade(paths):
                 event=r.get('event','')
                 begins+=event=='native33-launch-begin';ends+=event=='native33-launch-end'
                 limits+=event=='native33-receipt-limit'
+                unavailable+=event=='native33-metadata-unavailable'
                 if event in ('native33-launch-exception','native33-boundary-exception'):
                     if first is None or r.get('monotonic_ns',0)<first.get('monotonic_ns',0):first=r
                 if event=='native33-graph-identity' and len(graphs)<16:graphs.append(r)
@@ -27,7 +28,7 @@ def grade(paths):
                 classification='ENGINE' if first else 'HARNESS' if limits or malformed else None,
                 attribution=attribution,first_exception=first,graph_identities=graphs,
                 pointer_changes=changes,launch_begins=begins,launch_ends=ends,
-                receipt_limits=limits,malformed=malformed,
+                receipt_limits=limits,malformed=malformed,metadata_unavailable=unavailable,
                 scope='Diagnostic window only. Named Triton site is not an access-PC proof; '
                       'opaque graph internal kernel stays UNKNOWN. Pointer inventory differences '
                       'do not prove the graph read set or causality. No fault under fences does '

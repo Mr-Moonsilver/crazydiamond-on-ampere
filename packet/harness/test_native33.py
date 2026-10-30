@@ -91,6 +91,10 @@ class Diagnostic(unittest.TestCase):
         self.assertEqual(len(changed),1);self.assertEqual(changed[0]['captured']['data_ptr'],'0xc8')
         self.assertEqual(changed[0]['live']['data_ptr'],'0xc9')
         d.compare_graph(Graph());self.assertFalse(self.rows[-1]['capture_inventory_available'])
+        marker=object()
+        with patch.object(d,'compare_graph',side_effect=ValueError('PRIVATE_METADATA_ERROR')):
+            self.assertIs(d.graph_replay(lambda graph:marker,(graph,),{}),marker)
+        self.assertTrue(any(r['event']=='metadata-unavailable' for r in self.rows))
 
     def test_actual_pinned_host_capture_body_registers_graph_and_descriptor(self):
         root=Path(__file__).resolve().parent
@@ -144,6 +148,7 @@ class Diagnostic(unittest.TestCase):
         graph=owner.graphs[desc];record=d._GRAPHS[graph]
         self.assertTrue(graph.kept);self.assertTrue(graph.instantiated);self.assertEqual(len(owner._flash_s5_capture_stream_checks),1)
         self.assertEqual(record['key']['mode'],'FULL');self.assertEqual(record['key']['num_tokens'],4)
+        self.assertEqual(record['key']['bank'],'decode-split')
         self.assertEqual(record['snapshot']['values']['model_inputs.input_ids']['data_ptr'],'0x7b')
 
     def test_compile_only_triton_warmup_is_not_a_launch(self):

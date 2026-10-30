@@ -19,7 +19,7 @@ def generate(build,vm,out):
                 PREV_RUNNER=str(PREV_RUNNER),CODEX_WT=str(ROOT),CODEX_COMMIT=b['source'],
                 GENERATION=b['overlay'],VM_OVERLAY=str(vm),EXPECTED_MANIFEST=b['manifest'],
                 EXPECTED_RUNNER_SHA=b['runner_sha256'],EXPECTED_RUNNER_SIZE=str(b['runner_size']),
-                EXPECTED_REVIEW_PIN=b['review_sha256'],SELFRUN_CONTAINER='native33-hub-cpu-a',
+                EXPECTED_REVIEW_PIN=b['review_sha256'],SELFRUN_CONTAINER='native33-hub-cpu-'+b['manifest'][:12],
                 WORK_ROOT='<hub-dir>/agents/flash-next/tmp/native33-owner-precheck-work',
                 QUEUE_NAME_GLOB='q18a_native33[._]*')
     for key,value in fields.items():

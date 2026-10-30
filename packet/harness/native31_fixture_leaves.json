@@ -67,7 +67,8 @@
         "lane_comm.register_selection_op",
         "diagnostic.fence",
         "diagnostic.emit",
-        "localize.emit"
+        "localize.emit",
+        "d.compare_graph"
       ],
       "name": "cpu-native33-current-stream-fence",
       "replaces": "torch.cuda.current_stream().synchronize and GPU Triton/custom-op/replay launches in native33 wrapper tests"

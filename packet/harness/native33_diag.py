@@ -27,6 +27,7 @@ MAX_LAUNCH_RECORDS = 200000
 MAX_BYTES = 128*1024**2
 _BYTES = 0
 MAX_POINTERS = 4096
+MAX_CAPTURE_GRAPHS = 128
 _RECORDS = 0
 _LIMIT = False
 _LIVE_METADATA = None
@@ -43,7 +44,7 @@ def active():
     return ctx
 
 
-def emit(event, **fields):
+def _emit_unchecked(event, **fields):
     global _RECORDS, _LIMIT, _BYTES
     charge=len(json.dumps(fields,sort_keys=True).encode())+512
     if _RECORDS >= MAX_LAUNCH_RECORDS or _BYTES+charge>MAX_BYTES or charge>4096:
@@ -54,6 +55,20 @@ def emit(event, **fields):
         return
     _RECORDS += 1; _BYTES += charge
     localize.emit('native33-' + event, rank=1, **fields)
+
+
+def emit(event, **fields):
+    try:return _emit_unchecked(event, **fields)
+    except Exception as exc:
+        try:localize.emit('native33-metadata-unavailable',rank=1,where='receipt-encoding',error_type=type(exc).__name__,coverage_complete=False)
+        except Exception:pass
+
+
+def observe(where, fn):
+    try:return fn()
+    except Exception as exc:
+        emit('metadata-unavailable',where=where,error_type=type(exc).__name__,coverage_complete=False)
+        return None
 
 
 def frames(exc):
@@ -163,15 +178,29 @@ def descriptor(desc):
     return out
 
 
+def graph_key(desc, manager):
+    key=descriptor(desc)
+    key['manager_id']=hex(id(manager))
+    key['bank']='decode-split' if getattr(manager,'_flash_s5_capture_owner',None) is not None else 'stock-or-profile'
+    pool=getattr(manager,'pool',None)
+    key['pool_handle']=list(pool) if isinstance(pool,tuple) and all(type(v) is int for v in pool) else None
+    return key
+
+
 def capture_begin(original, args, kwargs):
     result = original(*args, **kwargs)
     graph = args[0]
-    _TLS.capturing = weakref.ref(graph)
-    if _RANK == 1:
-        roots = runner_roots()
-        roots.update(getattr(_TLS, 'forward_roots', {}))
-        _GRAPHS[graph] = dict(capture_id=next(_IDS), key=getattr(_TLS, 'capture_key', None),
-                              snapshot=pointers(roots), replay_seen=False)
+    _TLS.capturing = lambda:None
+    def register():
+        _TLS.capturing = weakref.ref(graph)
+        if _RANK == 1:
+            if len(_GRAPHS)>=MAX_CAPTURE_GRAPHS:
+                emit('metadata-unavailable',where='capture-registry-limit',coverage_complete=False);return
+            roots = runner_roots(); roots.update(getattr(_TLS, 'forward_roots', {}))
+            snapshot=pointers(roots);snapshot['forward_closure_available']=False
+            _GRAPHS[graph] = dict(capture_id=next(_IDS), key=getattr(_TLS, 'capture_key', None),
+                                  snapshot=snapshot, replay_seen=False)
+    observe('capture-begin-inventory',register)
     return result
 
 
@@ -189,15 +218,18 @@ def capture_factory(original, args, kwargs):
         def forward(*fa, **fk):
             prior_key = getattr(_TLS, 'capture_key', None)
             prior_roots = getattr(_TLS, 'forward_roots', {})
-            closure = inspect.getclosurevars(fn).nonlocals
-            _TLS.capture_key = descriptor(desc)
+            closure = observe('capture-forward-closure',lambda:inspect.getclosurevars(fn).nonlocals) or {}
+            _TLS.capture_key = graph_key(desc,args[0])
             _TLS.forward_roots = {name: closure[name] for name in
                                   ('model_inputs', 'attn_metadata', 'slot_mappings') if name in closure}
             ref = getattr(_TLS, 'capturing', None)
             graph = ref() if ref else None
-            if graph is not None and graph in _GRAPHS:
-                roots = runner_roots(); roots.update(_TLS.forward_roots)
-                _GRAPHS[graph].update(key=descriptor(desc), snapshot=pointers(roots))
+            def update():
+                if graph is not None and graph in _GRAPHS:
+                    roots = runner_roots(); roots.update(_TLS.forward_roots)
+                    snapshot=pointers(roots);snapshot['forward_closure_available']=bool(closure)
+                    _GRAPHS[graph].update(key=_TLS.capture_key,snapshot=snapshot)
+            observe('capture-forward-inventory',update)
             try:return fn(*fa, **fk)
             finally:_TLS.capture_key = prior_key; _TLS.forward_roots = prior_roots
         return forward
@@ -222,7 +254,7 @@ def compare_graph(graph):
     captured = record['snapshot']
     emit('graph-identity', graph_id=hex(id(graph)), capture_id=record['capture_id'],
          capture_key=record['key'], replay_key=key, capture_inventory_available=True,
-         capture_complete=captured['complete'], live_complete=live['complete'],
+         capture_complete=captured['complete'], forward_closure_available=captured.get('forward_closure_available',False),live_complete=live['complete'],
          live_metadata_step=(_LIVE_METADATA or {}).get('step'),
          coverage='opaque-captured-graph; inventoried references not proven kernel read-set')
     changed = missing = matched = 0
@@ -242,14 +274,14 @@ def compare_graph(graph):
 
 
 def graph_replay(original, args, kwargs):
-    if active():compare_graph(args[0])
+    if active():observe('replay-pointer-comparison',lambda:compare_graph(args[0]))
     return launch(original, 'torch.cuda.CUDAGraph.replay', 'cuda-graph-replay', args, kwargs)
 
 
 def full_replay(original, args, kwargs):
     if active() is None:return original(*args, **kwargs)
     old = getattr(_TLS, 'replay_key', None)
-    _TLS.replay_key = descriptor(args[1] if len(args) > 1 else kwargs['desc'])
+    _TLS.replay_key = observe('replay-key',lambda:graph_key(args[1] if len(args) > 1 else kwargs['desc'],args[0]))
     try:return original(*args, **kwargs)
     finally:_TLS.replay_key = old
 
@@ -269,8 +301,8 @@ def metadata(original, args, kwargs):
     result = original(*args, **kwargs)
     ctx = active()
     if ctx and ctx['fields'].get('label') == 'DECODE_STEP':
-        _LIVE_METADATA = pointers(dict(attn_metadata=result))
-        _LIVE_METADATA['step'] = ctx['fields'].get('step')
+        _LIVE_METADATA = observe('live-attention-metadata',lambda:pointers(dict(attn_metadata=result)))
+        if _LIVE_METADATA is not None:_LIVE_METADATA['step'] = ctx['fields'].get('step')
     return result
 
 
@@ -338,4 +370,4 @@ def install():
     _INSTALLED = True
     localize.emit('native33-installed', target_rank=1, activation='existing row4 admission window',
                   synchronization='current stream after named launches; PP transfers excluded',
-                  max_launch_records=MAX_LAUNCH_RECORDS, max_pointers=MAX_POINTERS)
+                  max_launch_records=MAX_LAUNCH_RECORDS, max_pointers=MAX_POINTERS,max_capture_graphs=MAX_CAPTURE_GRAPHS,max_bytes=MAX_BYTES)
