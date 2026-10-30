@@ -107,6 +107,10 @@ class Passive(unittest.TestCase):
             def fail(*a,**k):calls.append(2);raise error
             with self.assertRaises(RuntimeError) as caught:host.writer_apply(fail,Obj(),(),{})
             self.assertIs(caught.exception,error);self.assertEqual(calls,[1,2])
+        with patch.object(host,'pool_state',side_effect=RuntimeError('metadata-only')):
+            with host.boundary(obj,dict(rank=1,label='DECODE_STEP',call_id=3,step=2)):
+                calls.append(3)
+        self.assertEqual(calls,[1,2,3])
         obj.events=[]
         self.assertIs(host.submit_after(lambda *a,**k:marker,obj,(),dict(command=NS(op_seq=0))),marker)
 

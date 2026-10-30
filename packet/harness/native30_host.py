@@ -146,23 +146,27 @@ def boundary(obj,fields):
     context=dict(runner=runner,state=s,fields=fields,dispatcher=obj if hasattr(obj,'events') else None,
                  descriptor=False,uses=[])
     _TLS.context=context
-    if s is not None and s['active']:
-        if fields['label']=='DECODE_STEP':
-            s['step']=fields.get('step',0)
-            s['last_idx']=None
-            safe(discover,runner,s)
-            s['last_step_counts']={name:pool_state(ref())['rotations'] for name,ref in s['pools'] if ref() is not None}
-        safe(emit,s,'host-boundary',phase='before',**fields_without_rank(fields),snapshot=safe(snapshot,runner,s))
+    def before():
+        if s is not None and s['active']:
+            if fields['label']=='DECODE_STEP':
+                s['step']=fields.get('step',0)
+                s['last_idx']=None
+                discover(runner,s)
+                s['last_step_counts']={name:pool_state(ref())['rotations'] for name,ref in s['pools'] if ref() is not None}
+            emit(s,'host-boundary',phase='before',**fields_without_rank(fields),snapshot=safe(snapshot,runner,s))
+    safe(before)
     try:yield
     finally:
-        if s is not None and s['active']:
-            safe(emit,s,'host-boundary',phase='after',**fields_without_rank(fields),snapshot=safe(snapshot,runner,s))
-        dispatcher=context['dispatcher']
-        if dispatcher is not None and context['uses']:
-            uses=getattr(dispatcher,'_native30_descriptor_uses',{})
-            if len(uses)<32:
-                uses[fields.get('op_seq')]=context['uses']
-                dispatcher._native30_descriptor_uses=uses
+        def after():
+            if s is not None and s['active']:
+                emit(s,'host-boundary',phase='after',**fields_without_rank(fields),snapshot=safe(snapshot,runner,s))
+            dispatcher=context['dispatcher']
+            if dispatcher is not None and context['uses']:
+                uses=getattr(dispatcher,'_native30_descriptor_uses',{})
+                if len(uses)<32:
+                    uses[fields.get('op_seq')]=context['uses']
+                    dispatcher._native30_descriptor_uses=uses
+        safe(after)
         _TLS.context=prior
 
 
