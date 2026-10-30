@@ -451,6 +451,14 @@ def main():
         target = bundle / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+    queue_path = bundle / ('runs/q18a_' + variant + '.draft.sh')
+    queue_source = queue_path.read_text()
+    queue_anchor = ('datetime.datetime(2026,10,29,7,0,tzinfo=datetime.timezone.utc)'
+                    if a.disable_audit else PLACEHOLDER)
+    need(queue_source.count('end=' + queue_anchor) == 1,
+         variant + ' queue hard-end anchor differs')
+    queue_path.write_text(queue_source.replace('end=' + queue_anchor,
+                                              'end=' + end_expr))
     ops_selfrun_container = 'flashnext-native28-ops-' + str(time.time_ns())
     ops_selfrun_cmd = [
         'docker', 'run', '--name', ops_selfrun_container, '--network', 'none',
@@ -479,16 +487,8 @@ def main():
         'source_shas': {name: sha(bundle / name) for name in (
             'e3_native28_host_observer.py', 'e3_native28_rule4_continuation.py',
             'e3_native_performance.py', 'test_e3_native28_host_guard.py',
-            'test_e3_native28_rule4_continuation.py')},
+            'test_e3_native28_rule4_continuation.py', 'runs/q18a_native28.draft.sh')},
     })
-    queue_path = bundle / ('runs/q18a_' + variant + '.draft.sh')
-    queue_source = queue_path.read_text()
-    queue_anchor = ('datetime.datetime(2026,10,29,7,0,tzinfo=datetime.timezone.utc)'
-                    if a.disable_audit else PLACEHOLDER)
-    need(queue_source.count('end=' + queue_anchor) == 1,
-         variant + ' queue hard-end anchor differs')
-    queue_path.write_text(queue_source.replace('end=' + queue_anchor,
-                                              'end=' + end_expr))
     review['harness_source_shas'] = {name: sha(bundle / name) for name in sorted(harness_names)}
     review['cpu_regression'] = {
         'basis': regression_basis,
