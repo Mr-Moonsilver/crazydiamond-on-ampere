@@ -519,6 +519,7 @@ def main():
             'w2_client_sha256': sha(bundle / 'e3_native_performance.py'),
             'settings_sha256': sha(bundle / 'runs/q18a_native28_settings.sh'),
             'host_selfrun_record_sha256': sha(out / 'ops-selfrun.json'),
+            'fixture_leaves_sha256': sha(bundle / 'native28_host_fixture_leaves.json'),
             'profile_vm_result_sha256': sha(a.profile_vm_result),
             'note': 'no engine Python/native source change; profile proof inherited from native27',
         }
@@ -674,6 +675,7 @@ print('OWNER_VERIFY PASS')
                'ops_selfrun_container': ops_selfrun_container,
                'ops_selfrun_record_sha256': sha(out / 'ops-selfrun.json'),
                'ops_selfrun_log_sha256': sha(out / 'ops-selfrun-command.log'),
+               'host_operations_fixture_leaves_sha256': sha(bundle / 'native28_host_fixture_leaves.json'),
                'rule4_continuation_sha256': sha(bundle / 'e3_native28_rule4_continuation.py'),
                'w2_client_sha256': sha(bundle / 'e3_native_performance.py'),
                'identity_declare_sha256': sha(bundle / 'identity_declare.py'),
@@ -742,6 +744,7 @@ Status: **HOLD**. The hard end alone is not a box GO.
 - Native27 one-card VM receipt proof: result SHA256 `{receipt['profile_vm_result_sha256']}`, probe SHA256 `{receipt['profile_vm_probe_sha256']}`, input manifest `{receipt['profile_vm_input_manifest_sha256']}`; exact-input hub CPU-shaped result SHA256 `{receipt['profile_hub_result_sha256']}`; fixture leaves SHA256 `{receipt['profile_fixture_leaves_sha256']}`
 - Native27 finalized engine runtime: {receipt['native27_runtime_files_byte_equal']} Python/native files byte-equal; only the generated S5 launcher changes
 - Native28 pinned-image hub self-run: seven focused tests, zero skips, no GPU, container `{receipt['ops_selfrun_container']}`, record SHA256 `{receipt['ops_selfrun_record_sha256']}`; observer SHA256 `{receipt['host_observer_sha256']}`, rule-4 continuation SHA256 `{receipt['rule4_continuation_sha256']}`
+- Host tooling fixture leaves: `native28_host_fixture_leaves.json`, SHA256 `{receipt['host_operations_fixture_leaves_sha256']}`; synthetic disk/teacher data and a real Bash foreground process, no engine/GPU qualification claim
 - Row-4 source audit: `reviews/codex-20261030-native26-row4-source-audit.md` SHA256 `{receipt['row4_source_audit_sha256']}`. Native27's owner receipt subsequently identifies a CUDA illegal-access crash followed by a roughly 50 GiB core dump in the writable layer; `core=0` addresses the disk exhaustion, while native29 investigates the CUDA fault.
 - Coordinator: 12/12 PASS in pinned image, CPU-full; result SHA256 `{receipt['coordinator_result_sha256']}`; probe SHA256 `{receipt['coordinator_probe_sha256']}`; input manifest SHA256 `{receipt['coordinator_input_manifest_sha256']}`
 - Fixture leaves: `native21_coordinator_fixture_leaves.json` SHA256 `{receipt['fixture_leaves_sha256']}`; row-4 seam leaves `native23_row4_pause_fixture_leaves.json` SHA256 `{receipt['row4_fixture_leaves_sha256']}`; graph leaves `native24_graph_fixture_leaves.json` SHA256 `{receipt['graph_fixture_leaves_sha256']}`; census leaves `native25_census_fixture_leaves.json` SHA256 `{receipt['census_fixture_leaves_sha256']}`
