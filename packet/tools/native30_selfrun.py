@@ -17,7 +17,7 @@ def run(bundle,out,name):
     bundle=bundle.resolve();verify(bundle);overlay=bundle/'native30_overlay';verify(overlay)
     out=out.resolve();out.mkdir();out.chmod(0o777)
     command=['sudo','-n','docker','run','--pull=never','--name',name,'--runtime','runc','--network','none','--cpus','4','--memory','4g','--memory-swap','4g','--read-only','--tmpfs','/tmp:rw,exec,nosuid,nodev,size=512m','--ulimit','core=0']
-    for setting in ('NVIDIA_VISIBLE_DEVICES=none','CUDA_VISIBLE_DEVICES=','PYTHONDONTWRITEBYTECODE=1','FLASH_NATIVE30_LOCALIZE=1','FLASH_NATIVE30_SYNC=both','PYTHONPATH=/plugin:/source/harness:/source/harness/e3_builder'):
+    for setting in ('NVIDIA_VISIBLE_DEVICES=none','CUDA_VISIBLE_DEVICES=','PYTHONDONTWRITEBYTECODE=1','FLASH_NATIVE30_LOCALIZE=1','FLASH_NATIVE30_SYNC=none','PYTHONPATH=/plugin:/source/harness:/source/harness/e3_builder'):
         command+=['-e',setting]
     mounts={bundle:'/source/harness',bundle/'native30_tools':'/source/tools',overlay/'e3/native30_plugins':'/plugin',overlay/'e3':'/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3',overlay/'e2':'/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e2',overlay/'e3_sources/worker.py':'/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py'}
     for source,target in mounts.items():command+=['-v',f'{source}:{target}:ro']

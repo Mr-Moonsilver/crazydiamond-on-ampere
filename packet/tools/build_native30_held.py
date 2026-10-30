@@ -11,8 +11,8 @@ import subprocess
 import sys
 ROOT=Path(__file__).resolve().parents[1]
 BASE=Path('<hub-dir>/agents/flash-next/tmp/native28-held-b')
-BUNDLE=Path('<hub-dir>/agents/flash-next/tmp/native30-localize-b-held-a/q18a-native30-localize-b-bundle-86758402b137')
-BASE_MANIFEST='86758402b1378720c9723e379a586c227c52543581bf76eb4e5275f3f397968f'
+BUNDLE=Path('<hub-dir>/agents/flash-next/tmp/native30-localize-c-held-a/q18a-native30-localize-c-bundle-aec4a2a6bc92')
+BASE_MANIFEST='aec4a2a6bc922c67263356ca063099931ecb57bcfc2af790f2ffd8affab336f9'
 sys.path.insert(0,str(ROOT/'patches/s5_engine'))
 from native_readiness import digest,payload_identity,verify_finalized_package
 
@@ -38,10 +38,16 @@ def replace(source,names,functions={}):
     value=''.join(lines);compile(value,'native30-owner','exec');return value
 
 
-def build(out,log,candidate_name='q18a-native30-localize-c'):
-    assert candidate_name=='q18a-native30-localize-c'
+def build(out,log,candidate_name='q18a-native30-localize-d'):
+    assert candidate_name=='q18a-native30-localize-d'
     script_name=candidate_name.replace('-','_')
     assert not out.exists();assert sha(BUNDLE/'SHA256SUMS')==BASE_MANIFEST;verify(BUNDLE);verify(BASE/'final')
+    for name in ('native30_gate.py','e3_native30_grade.py','e3_native30_row4.py'):
+        assert sha(ROOT/'harness'/name)==sha(BUNDLE/name),name
+    for suffix in ('.draft.sh','_declare.sh','_settings.sh'):
+        old=(BUNDLE/'runs'/('q18a_native30_localize_c'+suffix)).read_text()
+        fresh=(ROOT/'harness/runs'/('q18a_native30_localize_d'+suffix)).read_text()
+        assert fresh.replace('localize_d','localize_c').replace('localize-d','localize-c').replace('FLASH_NATIVE30_SYNC:-none','FLASH_NATIVE30_SYNC:-both')==old,suffix
     dirty=subprocess.check_output(['git','status','--porcelain','--','harness','tools'],cwd=ROOT,text=True);assert not dirty,dirty
     text=log.read_text();summ=re.findall(r'^selftest: (\d+)/(\d+) cases as required$',text,re.M)
     suites=[json.JSONDecoder().raw_decode(text[m.end():])[0] for m in re.finditer('selftest suite: ',text)]
@@ -58,18 +64,19 @@ def build(out,log,candidate_name='q18a-native30-localize-c'):
     for name in ('native30_owner_functions.py','native30_cpu_probe.py','native30_selfrun.py'):
         shutil.copyfile(ROOT/'tools'/name,tool_dir/name)
     overlay=bundle/'native30_overlay'
-    assert sha(overlay/'e3/native30_plugins/native30_localize.py')==sha(ROOT/'harness/native30_localize.py')
+    assert sha(overlay/'e3/native30_plugins/native30_localize.py')=='66d875eb5dc7a698067a67ef2e9ec36f4f606f6e57f736c74ce731625c5bdcac'
     for p in overlay.rglob('*'):p.chmod(0o755 if p.is_dir() else 0o644)
     overlay.chmod(0o755)
     plugins=overlay/'e3/native30_plugins';plugins.mkdir(exist_ok=True)
-    shutil.copyfile(ROOT/'harness/native30_localize.py',plugins/'native30_localize.py')
+    for name in ('native30_localize.py','native30_host.py'):
+        shutil.copyfile(ROOT/'harness'/name,plugins/name)
     dist=plugins/'flashnext_native30_localize-0.1.dist-info';dist.mkdir(exist_ok=True)
     (dist/'METADATA').write_text('Metadata-Version: 2.1\nName: flashnext-native30-localize\nVersion: 0.1\n')
     (dist/'entry_points.txt').write_text('[vllm.general_plugins]\nnative30_localize = native30_localize:install\n')
     closure=json.loads((overlay/'e3/native-implementation-closure.json').read_text());review=closure['review']
     review['cpu_regression']=dict(basis='native30 current-source strict zero-skip regression',cases=int(summ[0][0]),required=int(summ[0][1]),exit_code=0,skips=0,suites=len(suites),reported_tests=sum(s['tests_run'] or 0 for s in suites),log_sha256=sha(log))
     review['harness_source_shas']={str(Path(n).relative_to('harness')):sha(ROOT/n) for n in tracked if (ROOT/n).is_file()}
-    review['native30_localization']=dict(engine_baseline_manifest=sha(BASE/'final/SHA256SUMS'),plugin_sha256=sha(plugins/'native30_localize.py'),scope='unchanged native30-b diagnostics/engine; measured snapshot gate, dual-log grade and operator window',queue='startup then one row4 placement diagnostic, no fresh qualification claim',active_bound_s=1200,cleanup_margin_s=420,not_before='2026-10-30T17:00:00Z',hard_end='2026-10-30T23:00:00Z',hardware_qualified=False,release_qualified=False)
+    review['native30_localization']=dict(engine_baseline_manifest=sha(BASE/'final/SHA256SUMS'),plugin_sha256=sha(plugins/'native30_localize.py'),scope='native30-c engine/gate/queue/window unchanged; passive host receipts; default sync none',queue='startup then one row4 placement diagnostic, no fresh qualification claim',active_bound_s=1200,cleanup_margin_s=420,not_before='2026-10-30T17:00:00Z',hard_end='2026-10-30T23:00:00Z',hardware_qualified=False,release_qualified=False)
     review['night_window']=dict(not_before='2026-10-30T17:00:00Z',hard_end='2026-10-30T23:00:00Z',queue_timeout_s=1200,cleanup_margin_s=420,placeholder=False)
     closure['review_sha256']=digest(review);dump(overlay/'e3/native-implementation-closure.json',closure)
     dump(bundle/'native30-review.json',review)

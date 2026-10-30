@@ -35,7 +35,7 @@ def main(argv=None):
     action=p.add_mutually_exclusive_group(required=True);action.add_argument('--staging',action='store_true');action.add_argument('--arm',action='store_true')
     p.add_argument('--auth-env-file',type=Path);p.add_argument('--selfrun-record',type=Path)
     p.add_argument('--model',default='qwen38-w8a8-tp4');p.add_argument('--snapshot-max-bytes',type=int,default=512*1024**2)
-    p.add_argument('--sync',choices=('none','native','decode','both'),default='both')
+    p.add_argument('--sync',choices=('none','native','decode','both'),default='none')
     a=p.parse_args(argv)
     global GREEN,MANIFEST
     receipt=S0/(QNAME+'-staging.json')
@@ -47,7 +47,7 @@ def main(argv=None):
         result=json.loads(a.selfrun_record.read_text())
         require(result.get('bundle_manifest')==BUNDLE and result.get('verdict')=='PASS' and result.get('rc')==0
                 and result.get('gpu_device_requests')==0 and result.get('image')==IMAGE
-                and result.get('skips')==0 and result.get('tests_run',0)==18
+                and result.get('skips')==0 and result.get('tests_run',0)==27
                 and result.get('plugin_loader')=='PASS'
                 and result.get('identity_capture_check')=='PASS'
                 and result.get('identity_timeout_negative_rejected') is True,'exact-frozen-selfrun-required')

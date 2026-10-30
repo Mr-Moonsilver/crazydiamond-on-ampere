@@ -9,12 +9,13 @@ import os
 import sys
 import threading
 import time
+import native30_host as host
 
 PREFIX='NATIVE30 '
 _LOCK=threading.Lock()
 _INSTALLED=False
 _CALL_IDS=itertools.count(1)
-_TARGETS={'vllm.v1.flash_e3.lane_dispatch','vllm.v1.flash_e3.worker_bridge','vllm.v1.worker.gpu_worker'}
+_TARGETS={'vllm.v1.flash_e3.lane_dispatch','vllm.v1.flash_e3.worker_bridge','vllm.v1.worker.gpu_worker','vllm.v1.flash_e3.native_qualification'} | set(host.HOOKS)
 
 
 def emit(event,**fields):
@@ -26,7 +27,7 @@ def emit(event,**fields):
 
 
 def mode():
-    value=os.environ.get('FLASH_NATIVE30_SYNC','both')
+    value=os.environ.get('FLASH_NATIVE30_SYNC','none')
     if value not in ('none','native','decode','both'):raise ValueError('invalid native30 sync mode')
     return value
 
@@ -97,8 +98,9 @@ def wrap(cls,name,kind):
             if kind not in ('PP_SEND','PP_RECEIVE'):side='native'
         emit('begin',**fields)
         try:
-            result=original(self,*args,**kwargs)
-            if side:sync(self,side,fields)
+            with host.boundary(self,fields):
+                result=original(self,*args,**kwargs)
+                if side:sync(self,side,fields)
         except BaseException as exc:
             pending=type(exc).__name__=='E3Pending'
             emit('pending' if pending else 'exception',classification=None if pending else 'ENGINE',error_type=type(exc).__name__,last_memory=getattr(self,'_native30_memory',None),**fields)
@@ -118,6 +120,7 @@ def instrument(module):
     elif name.endswith('.gpu_worker'):
         wrap(module.Worker,'execute_model','DECODE_STEP')
         wrap(module.Worker,'sample_tokens','DECODE_SAMPLE')
+    host.install(module,emit)
     emit('module-installed',module=name,sync_mode=mode())
 
 
