@@ -48,6 +48,7 @@ def full11_launcher_text():
     import make_e2_arena, make_s5_overlap
     text = make_s5_overlap._s5_launcher(make_e2_arena.launcher(
         (ROOT / 'deploy/run-flash-prod.sh').read_text()))
+    text = without_native28_log_cap(text)
     # The legacy full11/teacher12/startup launchers predate these engine-side
     # modules; strip them so the frozen queues still reconstruct byte-identically.
     for value in ('e3/activity_accounting.py ', 'e3/engine_offers.py ',
@@ -62,6 +63,17 @@ def full11_launcher_text():
     text = text.replace('      -v "$OVERLAY/e3_sources/sampler.py:$V/worker/gpu/sample/sampler.py:ro"\n', '')
     text = text.replace('      -v "$OVERLAY/e3_sources/async_utils.py:$V/worker/gpu/async_utils.py:ro"\n', '')
     return text
+
+
+def without_native28_log_cap(text):
+    """Rebuild immutable pre-native28 queue fixture bytes from the new generator."""
+    text = text.replace('s5=(); s5_auth=(); s5_log=()', 's5=(); s5_auth=()')
+    text = text.replace(
+        "  # Bound Docker's ephemeral json-file log; the queue follows the full stream\n"
+        "  # into its own retained host artifact before engine startup.\n"
+        "  s5_log=(--log-opt max-size=512m --log-opt max-file=4)\n", '')
+    return text.replace('"${extra_env[@]}" "${s5_auth[@]}" "${s5_log[@]}" "${mps[@]}"',
+                        '"${extra_env[@]}" "${s5_auth[@]}" "${mps[@]}"')
 
 def launcher_text():
     # Historical immutable queues pin the pre-teacher module inventory.

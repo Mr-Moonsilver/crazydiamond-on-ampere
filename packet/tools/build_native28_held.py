@@ -458,7 +458,7 @@ def main():
         '-v', str(bundle) + ':/bundle:ro', '-w', '/bundle',
         '-e', 'PYTHONDONTWRITEBYTECODE=1',
         '-e', 'PYTHONPATH=/bundle:/bundle/e3_builder:/bundle/e2_builder',
-        IMAGE, 'python3', '-B', '-m', 'unittest', '-v',
+        '--entrypoint', 'python3', IMAGE, '-B', '-m', 'unittest', '-v',
         'test_e3_native28_host_guard', 'test_e3_native28_rule4_continuation',
     ]
     run(ops_selfrun_cmd, out / 'ops-selfrun-command.json')

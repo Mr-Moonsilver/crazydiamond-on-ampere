@@ -250,7 +250,8 @@ class Full12Queue(ProtocolV2Queue):
         def current():
             # Full12 is an immutable executed identity. Later native modules
             # belong to a fresh candidate, not to a rewritten full12 queue.
-            text=make_s5_overlap._s5_launcher(make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text()))
+            text=old.without_native28_log_cap(make_s5_overlap._s5_launcher(
+                make_e2_arena.launcher((old.ROOT/'deploy/run-flash-prod.sh').read_text())))
             return (text.replace('e3/lane_private.py ', '').replace('e3/admission_metadata.py ', '').replace('e3/worker_bridge.py ', '').replace('e3/sparse_history_dma.py ', '').replace('e3/native_source.py ', '').replace('e3/row1_oracle.py ', '').replace('e3/row1_exactness.py ', '')
                     .replace('e3/native_overlap_metrics.py ', '').replace('e3/native_overlap_worker.py ', '')
                     .replace('e3/native_overlap_control.py ', '').replace('e3/native_overlap_session.py ', '')
