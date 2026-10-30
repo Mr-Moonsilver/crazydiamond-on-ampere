@@ -34,6 +34,7 @@ def generate(build,vm,out):
     text=text.replace('"native33_tools:tools:*.py")','"native33_tools:tools:*.py" "native34_tools:tools:*.py")')
     text=text.replace('native33_tools)$','native33_tools|native34_tools)$')
     text=text.replace('test_native33.py)','test_native33.py test_native34_storage.py test_native34_control.py test_native34_indexer.py test_native34_runtime.py test_native34_frontend.py test_native34_queue.py)')
+    text=text.replace('FIXTURE_FILES=(', 'FIXTURE_FILES=(\n  test_native34_frontend.py # synthetic CPU auth fixture only')
     additions=' '.join('"native30_overlay/e3/native30_plugins/'+n+':harness/'+n+'"' for n in ('native34_diag.py','native34_worker.py','native34_control.py','native34_storage.py','native34_indexer.py'))
     text=text.replace('SOURCE_FILE_MAP=(', 'SOURCE_FILE_MAP=('+additions+' ')
     out.write_text('# Native34 '+arm+' PREV=native33. I then S then O, fresh processes.\n'+text)

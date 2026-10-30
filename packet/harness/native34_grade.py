@@ -49,7 +49,7 @@ def grade(paths,arm_record=None):
     if first:
         attribution=('PRIOR_RANK1_WORK_BEFORE_TARGET' if first['event']=='native34-indexer-prior-work-exception'
                      else 'BRACKETED_INDEXER_LAUNCH_OR_FENCE' if first['event']=='native34-indexer-kernel-exception'
-                     and any(r.get('rank')==1 and r.get('monotonic_ns',0)<first.get('monotonic_ns',0) for r in prior)
+                     and first.get('rank')==1 and any(r.get('rank')==1 and r.get('monotonic_ns',0)<first.get('monotonic_ns',0) for r in prior)
                      else 'OVERLAPPED_PHASE_OR_BOUNDARY')
     if not first and arm.get('arm')=='I' and not any(r.get('rank')==1 and r.get('rank1_post_fence') is True for r in completed):
         verdict='INCONCLUSIVE';failure_class='HARNESS';attribution='I_DISCRIMINATOR_NOT_PROVED'

@@ -65,6 +65,8 @@ class Frontend(unittest.TestCase):
                 dict(event='native34-indexer-kernel-exception',rank=1,monotonic_ns=20)])+'\n')
             r=grade([other],arm);self.assertEqual(r['attribution'],'BRACKETED_INDEXER_LAUNCH_OR_FENCE')
             self.assertFalse(r['release_qualified'])
+            other.write_text(other.read_text().replace('\"rank\": 1, \"monotonic_ns\": 20','\"rank\": 0, \"monotonic_ns\": 20'))
+            self.assertEqual(grade([other],arm)['attribution'],'OVERLAPPED_PHASE_OR_BOUNDARY')
 
     def test_missing_discriminator_or_record_cannot_pass(self):
         with tempfile.TemporaryDirectory() as directory:

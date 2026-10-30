@@ -38,7 +38,7 @@
     {
       "box_evidence": false,
       "cannot_prove": "No checkpoint forward, CUDA execution or device ownership; files are oracle inputs, never mounted over worker modules",
-      "equivalence": "Two frozen original qsa.py and ops/qsa.py files are mounted at the same CPU-only reference paths; hashes are checked against bundled original qsa source and resident_attention.BASE_SHA. No engine or census method is patched.",
+      "equivalence": "Two frozen original qsa.py and ops/qsa.py files are mounted at the same CPU-only reference paths; hashes are checked against bundled original qsa source and resident_attention.BASE_SHA. No engine or census method is patched. Native34 also supplies the exact parent e3_reference/v1/engine/core.py at its CPU-only reference path so the connected host test executes the real generated control/pause methods; this source is never mounted over a running worker.",
       "name": "cpu-reference-file-layout",
       "replaces": "hub reference/vllm-src filesystem paths read by connected CPU generator fixtures"
     },
