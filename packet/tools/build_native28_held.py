@@ -769,5 +769,5 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as exc:
-        print('NATIVE25 HOLD FAIL ' + type(exc).__name__ + ': ' + str(exc), file=sys.stderr)
+        print('NATIVE28 HOLD FAIL ' + type(exc).__name__ + ': ' + str(exc), file=sys.stderr)
         raise
