@@ -38,7 +38,9 @@ def replace(source,names,functions={}):
     value=''.join(lines);compile(value,'native30-owner','exec');return value
 
 
-def build(out,log):
+def build(out,log,name='q18a-native30-localize-b'):
+    assert name=='q18a-native30-localize-b'
+    script_name=name.replace('-','_')
     assert not out.exists();assert sha(BUNDLE/'SHA256SUMS')==BASE_MANIFEST;verify(BUNDLE);verify(BASE/'final')
     dirty=subprocess.check_output(['git','status','--porcelain','--','harness','tools'],cwd=ROOT,text=True);assert not dirty,dirty
     text=log.read_text();summ=re.findall(r'^selftest: (\d+)/(\d+) cases as required$',text,re.M)
@@ -66,7 +68,7 @@ def build(out,log):
     closure=json.loads((overlay/'e3/native-implementation-closure.json').read_text());review=closure['review']
     review['cpu_regression']=dict(basis='native30 current-source strict zero-skip regression',cases=int(summ[0][0]),required=int(summ[0][1]),exit_code=0,skips=0,suites=len(suites),reported_tests=sum(s['tests_run'] or 0 for s in suites),log_sha256=sha(log))
     review['harness_source_shas']={str(Path(n).relative_to('harness')):sha(ROOT/n) for n in tracked if (ROOT/n).is_file()}
-    review['native30_localization']=dict(engine_baseline_manifest=sha(BASE/'final/SHA256SUMS'),plugin_sha256=sha(plugins/'native30_localize.py'),scope='separate diagnostic wrappers and sync; no engine source/PLE repair',queue='startup then one row4 placement diagnostic, no fresh qualification claim',active_bound_s=1200,cleanup_margin_s=420,hard_end='2026-10-30T18:00:00Z',hardware_qualified=False,release_qualified=False)
+    review['native30_localization']=dict(engine_baseline_manifest=sha(BASE/'final/SHA256SUMS'),plugin_sha256=sha(plugins/'native30_localize.py'),scope='separate diagnostic wrappers and sync; identity budget repair; no engine source/PLE repair',queue='startup then one row4 placement diagnostic, no fresh qualification claim',active_bound_s=1200,cleanup_margin_s=420,hard_end='2026-10-30T18:00:00Z',hardware_qualified=False,release_qualified=False)
     review['night_window']=dict(hard_end='2026-10-30T18:00:00Z',queue_timeout_s=1200,cleanup_margin_s=420,placeholder=False)
     closure['review_sha256']=digest(review);dump(overlay/'e3/native-implementation-closure.json',closure)
     dump(bundle/'native30-review.json',review)
@@ -83,8 +85,8 @@ def build(out,log):
     assert all(new[name]==old[name] for name in runtime)
     proof=dict(schema='native30-build/1',source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),baseline_bundle_manifest=BASE_MANIFEST,baseline_overlay_manifest=sha(BASE/'final/SHA256SUMS'),runtime_byte_equal=runtime,changed_metadata=changed,added=sorted(set(new)-set(old)),overlay_manifest=sha(overlay/'SHA256SUMS'),review_sha256=closure['review_sha256'],selftest=review['cpu_regression'],gpu_work=False,box_action=False)
     dump(bundle/'native30-provenance.json',proof);manifest(bundle);pin=sha(bundle/'SHA256SUMS')
-    final=out/('q18a-native30-localize-bundle-'+pin[:12]);bundle.rename(final);overlay=final/'native30_overlay'
-    original=(BASE/'q18a-native28-owner-run-71571d7efbca.py').read_text().replace('q18a_native28','q18a_native30_localize').replace('q18a-native28','q18a-native30-localize').replace('14400+900','1200+420')
+    final=out/(name+'-bundle-'+pin[:12]);bundle.rename(final);overlay=final/'native30_overlay'
+    original=(BASE/'q18a-native28-owner-run-71571d7efbca.py').read_text().replace('q18a_native28',script_name).replace('q18a-native28',name).replace('14400+900','1200+420')
     functions={
       'cpu_build':'''def cpu_build():
     # Already built/checked on hub: avoid compilation during the short outage.
@@ -106,14 +108,14 @@ def build(out,log):
     require(closure['review_sha256']==REVIEW,'review-binding-differs')
     verify_finalized_package(root,closure['generated_source_shas'])'''}
     template=ROOT/'tools/native30_owner_functions.py'
-    body=template.read_text();nodes=ast.parse(body)
+    body=template.read_text().replace('q18a_native30_localize',script_name);nodes=ast.parse(body)
     for node in nodes.body:
         if isinstance(node,ast.FunctionDef):functions[node.name]=ast.get_source_segment(body,node)
     owner=replace(original,dict(H="Path('/home/<service-user>/harness/"+pin[:12]+"')",BUNDLE=repr(pin),REVIEW=repr(closure['review_sha256']),EXPECTED_SOURCES=repr(new)),functions)
-    runner=out/('q18a-native30-localize-owner-run-'+pin[:12]+'.py');runner.write_text(owner);compile(owner,str(runner),'exec')
+    runner=out/(name+'-owner-run-'+pin[:12]+'.py');runner.write_text(owner);compile(owner,str(runner),'exec')
     for p in final.rglob('*'):p.chmod(0o555 if p.is_dir() else 0o444)
     final.chmod(0o555);runner.chmod(0o444)
-    result=dict(bundle=str(final),manifest=pin,overlay=str(overlay),overlay_manifest=sha(overlay/'SHA256SUMS'),runner=str(runner),runner_sha256=sha(runner),runner_size=runner.stat().st_size,review_sha256=closure['review_sha256'],runtime_files_unchanged=len(runtime),checksummed_files=len(verify(final)),held=True)
+    result=dict(bundle=str(final),manifest=pin,overlay=str(overlay),overlay_manifest=sha(overlay/'SHA256SUMS'),runner=str(runner),runner_sha256=sha(runner),runner_size=runner.stat().st_size,review_sha256=closure['review_sha256'],runtime_files_unchanged=len(runtime),checksummed_files=len(verify(final)),held=True,name=name,identity_timeout_s=360)
     dump(out/'build.json',result);return result
 
 if __name__=='__main__':

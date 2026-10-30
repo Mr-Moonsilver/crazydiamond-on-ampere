@@ -51,6 +51,12 @@ class EvidenceError(Exception):
     pass
 
 
+class CommandEvidenceError(EvidenceError):
+    def __init__(self, kind):
+        self.kind = kind
+        super().__init__(kind)
+
+
 def need(ok):
     if not ok:
         raise EvidenceError('invalid or incomplete evidence')
@@ -251,11 +257,17 @@ def load_request(path):
 def run(args, timeout, data=None):
     try:
         p = subprocess.run(args, input=data, capture_output=True, text=True, timeout=timeout)
-        need(p.returncode == 0)
+    except subprocess.TimeoutExpired:
+        raise CommandEvidenceError('timeout') from None
+    except Exception:
+        raise CommandEvidenceError('command-unavailable') from None
+    if p.returncode != 0:
+        raise CommandEvidenceError('command-failed')
+    try:
         return json.loads(p.stdout)
     except Exception:
-        # stderr, stdout, argv, exceptions can contain secrets. Not diagnostics.
-        raise EvidenceError('docker command failed or returned invalid JSON') from None
+        # Never retain stdout/stderr/argv or exception messages.
+        raise CommandEvidenceError('invalid-json') from None
 
 
 def inspect(container, timeout):
@@ -288,9 +300,12 @@ def descriptors(d):
 def capture(a, request):
     start = time.time_ns()
     wall_start = time.monotonic()
+    a._identity_phase = 'inspect-before'
     before = inspect(a.container, a.timeout)
+    a._identity_phase = 'defaults'
     raw_defaults = Path(a.defaults).read_bytes()
     snap = defaults_snapshot(raw_defaults)
+    a._identity_phase = 'image-inspect'
     img = run(['docker', 'image', 'inspect', before['Image']], a.timeout)
     need(isinstance(img, list) and len(img) == 1 and img[0]['Id'] == before['Image'])
     expected = {m['destination']: m for m in request['identity']['mounts']}
@@ -300,12 +315,14 @@ def capture(a, request):
     for m in mounts:
         want = expected.get(m['destination'], {})
         queries.append({'destination': m['destination'], 'exclusions': want.get('content', {}).get('exclusions', []), 'watch': [w['path'] for w in want.get('watch', [])]})
+    a._identity_phase = 'mount-hash'
     probe = run(['docker', 'exec', '-i', before['Id'], 'python3', '-c', (HERE / 'identity_probe.py').read_text()], a.timeout,
                 canonical({'mounts': queries, 'max_bytes': a.max_bytes, 'max_files': a.max_files}))
     need(set(probe) == {'mounts', 'bytes_read', 'files_read'} and len(probe['mounts']) == len(mounts))
     for m, observed in zip(mounts, probe['mounts']):
         need(set(observed) == {'destination', 'content', 'watch'} and observed['destination'] == m['destination'])
         m.update(content=observed['content'], watch=observed['watch'])
+    a._identity_phase = 'inspect-after'
     after = inspect(a.container, a.timeout)
     # Raw equality stays in RAM: detects even same-length secret changes while
     # capturing, without persisting raw secret values or their hashes.
@@ -428,6 +445,8 @@ def main():
             print('identity declaration diagnostic ' + canonical(declaration_failure(exc)), flush=True)
             return 2
     artifact = None
+    capture_started = time.monotonic()
+    a._identity_phase = 'request-load'
     try:
         request = load_request(a.request)
         if a.action == 'capture':
@@ -439,11 +458,16 @@ def main():
             result = compare(json.loads(Path(a.before).read_text()), request,
                              json.loads(Path(a.after).read_text()) if a.after else None)
         rc = {'PASS': 0, 'FAIL': 1, 'INCONCLUSIVE': 2}[result['verdict']]
-    except Exception:
+    except Exception as exc:
         # Never echo raw commands, file contents, docker stderr or parser errors.
         result = {'verdict': 'INCONCLUSIVE', 'differences': ['identity capture/check unavailable or malformed evidence']}
         rc = 2
-        artifact = {'schema': SCHEMA, 'complete': False, 'check': result}
+        diagnostic = dict(phase=a._identity_phase,
+                          kind=exc.kind if isinstance(exc, CommandEvidenceError) else 'invalid-evidence',
+                          elapsed_s=round(time.monotonic()-capture_started, 3),
+                          timeout_s=getattr(a, 'timeout', None))
+        result['diagnostic'] = diagnostic
+        artifact = {'schema': SCHEMA, 'complete': False, 'check': result, 'diagnostic': diagnostic}
     if a.action == 'capture':
         try:
             write(a.out, artifact)

@@ -47,8 +47,10 @@ def main(argv=None):
         result=json.loads(a.selfrun_record.read_text())
         require(result.get('bundle_manifest')==BUNDLE and result.get('verdict')=='PASS' and result.get('rc')==0
                 and result.get('gpu_device_requests')==0 and result.get('image')==IMAGE
-                and result.get('skips')==0 and result.get('tests_run',0)>=8
-                and result.get('plugin_loader')=='PASS','exact-frozen-selfrun-required')
+                and result.get('skips')==0 and result.get('tests_run',0)==13
+                and result.get('plugin_loader')=='PASS'
+                and result.get('identity_capture_check')=='PASS'
+                and result.get('identity_timeout_negative_rejected') is True,'exact-frozen-selfrun-required')
         GREEN,MANIFEST,proof=cpu_build()
         with (BUILD_LOGS/'owner-build-receipt.json').open('x') as f:json.dump(proof,f,sort_keys=True,indent=2);f.write('\n')
         env=environment(read_private(a.auth_env_file),a.model,a.snapshot_max_bytes);env['FLASH_NATIVE30_SYNC']=a.sync
