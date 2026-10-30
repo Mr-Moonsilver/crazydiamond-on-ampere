@@ -290,7 +290,9 @@ def main():
          and host_selfrun.get('rc') == 0
          and host_selfrun.get('tests') == 3
          and host_selfrun.get('skipped') == 0
+         and host_selfrun.get('source_commit') == 'df6ce38'
          and host_selfrun.get('image') == IMAGE
+         and host_selfrun.get('gpu_device_requests') == 0
          and host_log.is_file()
          and sha(host_log) == host_selfrun.get('log_sha256')
          and 'Ran 3 tests' in host_log.read_text()
@@ -300,7 +302,8 @@ def main():
         ['docker', 'inspect', host_selfrun['container']], text=True))[0]
     need(host_container['State']['ExitCode'] == 0
          and host_container['Config']['Image'] == IMAGE
-         and not host_container['HostConfig'].get('DeviceRequests'),
+         and not host_container['HostConfig'].get('DeviceRequests')
+         and not host_container['HostConfig'].get('Devices'),
          'host self-run image, exit or CPU-only venue differs')
     coordinator = json.loads(a.coordinator_result.read_text())
     need(coordinator.get('rc') == 0 and coordinator.get('verdict') == 'PASS'
@@ -629,6 +632,8 @@ print('OWNER_VERIFY PASS')
                'cpu_helper_device_requests': helper['HostConfig'].get('DeviceRequests'),
                'timeout_s': 14400, 'kill_margin_s': 900,
                'hardware_qualified': False, 'release_qualified': False}
+    receipt['build_command'] = ['python3', '-B', str(Path(__file__).resolve()),
+                                *sys.argv[1:]]
     dump(out / 'provenance.json', receipt)
     brief = f'''# {variant.title()} held delivery
 
@@ -659,6 +664,7 @@ Native23 rule 4 had a real FAIL at stream 0 position 320; native24 passed both r
 Operator decisions, excluded from this bundle: Docker `--log-opt max-size`, and a root-free-space abort guard. The first executor-shutdown *marker* and host queue-stop intent are captured; the initiating reason is reported unknown unless the unchanged engine stream explicitly states it. The observer never calls an engine control API.
 
 Full source pins and self-run metadata are in `provenance.json`; the fixture declaration is inside the bundle.
+The exact local builder command is retained as `build_command` in `provenance.json`.
 '''
     (out / 'delivery-brief.md').write_text(brief)
     print(variant.upper() + ' HOLD PASS ' + manifest)
