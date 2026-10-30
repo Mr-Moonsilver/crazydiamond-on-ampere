@@ -270,7 +270,7 @@ def main():
         text=True).splitlines())
     # The VM proof is inherited unchanged; the new host observer is registered.
     need(record.get('schema') == 'native26-strict-regression/1'
-         and source_commit == 'df6ce38'
+         and source_commit == '1dc7ecc'
          and changed_since <= {'patches/s5_engine/native_candidate_review.json'}
          and record.get('exit_code') == 0 and record.get('skipped') == 0
          and record.get('log_sha256') == sha(a.regression_log)
@@ -290,7 +290,7 @@ def main():
          and host_selfrun.get('rc') == 0
          and host_selfrun.get('tests') == 3
          and host_selfrun.get('skipped') == 0
-         and host_selfrun.get('source_commit') == 'df6ce38'
+         and host_selfrun.get('source_commit') == '1dc7ecc'
          and host_selfrun.get('image') == IMAGE
          and host_selfrun.get('gpu_device_requests') == 0
          and host_log.is_file()
