@@ -123,7 +123,7 @@ def snapshot(runner,s):
 
 
 def emit(s,event,**fields):
-    if s is None or _EMIT is None:return
+    if s is None or _EMIT is None or s['limit']:return
     record=dict(rank=s['rank'],event=event,decode_step_window=s['step'],**fields)
     encoded=json.dumps(record,sort_keys=True,separators=(',',':'))
     charge=len(encoded.encode('utf8'))+512  # Includes the emitter's fixed metadata overhead.
