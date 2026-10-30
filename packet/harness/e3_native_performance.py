@@ -7,6 +7,7 @@ No observer window spans the long performance run. Raw journal loss remains
 retained beside the independent source-joined measurement census.
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -74,6 +75,42 @@ def _stream_ok(state):
             and state.error is None and state.malformed is None and state.done_marker is True)
 
 
+def first_advance_read_timeout(cfg):
+    """Apply only the declared native28 client wait, never a timing allowance."""
+    frozen = cfg['timeouts']['read_s']
+    override = os.environ.get('Q18A_FIRST_ADVANCE_READ_TIMEOUT_S')
+    if override is None:
+        return frozen
+    if frozen != 180.0 or override != '1200':
+        raise ValueError('first-advance-read-timeout-declaration-invalid')
+    return 1200.0
+
+
+def gates_allow_run(gates, gate_path):
+    expected={'startup','row1','rule4_controls','rule4_candidate','row4','w1_controls'}
+    outcomes=gates.get('outcomes')
+    if type(outcomes) is not dict or set(outcomes) != expected:
+        return False
+    if all(value == 'PASS' for value in outcomes.values()):
+        return gates.get('rule4_control_continuation') in (None, False)
+    if (gates.get('rule4_control_continuation') is not True
+            or any(outcomes[name] != 'PASS'
+                   for name in expected-{'rule4_controls','rule4_candidate'})
+            or any(outcomes[name] != 'INCONCLUSIVE'
+                   for name in ('rule4_controls','rule4_candidate'))):
+        return False
+    path=Path(gate_path).with_name('rule4-continuation.json')
+    try:
+        data=path.read_bytes()
+        receipt=json.loads(data)
+    except (OSError, ValueError):
+        return False
+    return (hashlib.sha256(data).hexdigest() == gates.get('rule4_continuation_sha256')
+            and receipt.get('eligible') is True
+            and receipt.get('raw_verdicts') == {
+                'rule4_controls':'INCONCLUSIVE','rule4_candidate':'INCONCLUSIVE'})
+
+
 def prefill(cfg, client, url, model, lane, family, prompts, salt, *, decode_states=None):
     native = lane != 'prefill_full'
     phase = 'w2-overlap' if lane=='overlap' else 'split-prefill-solo'
@@ -94,7 +131,9 @@ def prefill(cfg, client, url, model, lane, family, prompts, salt, *, decode_stat
         spec = cfg['prefill'][family]
         state,workload = shared._send_prefill(url,model,cfg,lane,0 if family=='fresh' else 1,
             prompts[family],spec['generation_budget'],spec['seed'],salt)
-        first = shared._wait_first_advance(state,cfg['timeouts']['read_s'])
+        read_s = cfg['timeouts']['read_s']
+        record['first_advance_read_timeout_s'] = read_s
+        first = shared._wait_first_advance(state,read_s)
         record['client_finish'] = shared._finish_or_cancel([state],workload)
         if sampler:
             sampler.snapshot()
@@ -277,8 +316,7 @@ def main(argv=None):
     result={}
     try:
         gates=json.loads(Path(a.gates).read_text())
-        expected={'startup','row1','rule4_controls','rule4_candidate','row4','w1_controls'}
-        if set(gates.get('outcomes') or {})!=expected or any(v!='PASS' for v in gates['outcomes'].values()):
+        if not gates_allow_run(gates, a.gates):
             raise ValueError('same-queue-qualification-gates-not-pass')
         package=shared._package_gate(os.environ)
         if package.get('ok') is not True:
@@ -286,7 +324,10 @@ def main(argv=None):
         data=json.loads(Path(a.workload).read_text())
         problems,cfg=shared.validate_manifest(data)
         if problems or cfg['repeats']!=1:raise ValueError('frozen-native-workload-invalid')
+        effective_read_s = first_advance_read_timeout(cfg)
+        cfg = dict(cfg, timeouts=dict(cfg['timeouts'], read_s=effective_read_s))
         result=run(cfg,NativeRuntimeClient(a.url,a.run_id,epoch=a.epoch),a.url,a.model,json.loads(Path(a.w1).read_text()))
+        result['first_advance_read_timeout_s'] = effective_read_s
     except Exception as exc:
         result={'schema':'s5-native-performance/1','grade':{'verdict':'INCONCLUSIVE','missing':['run-refused'],
                  'failures':[]},'error':exception_details(exc)}

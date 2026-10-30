@@ -215,13 +215,16 @@ def _s5_launcher(source):
     # Keep the E2 branch and all its checks byte-identical; only add a guarded
     # mount set. e2 is still mounted when present; S5=1 does not imply E2.
     addition = '''# E3/S5 offline-unqualified payload. Inert unless S5=1.
-s5=(); s5_auth=()
+s5=(); s5_auth=(); s5_log=()
 if [[ -d $OVERLAY/e3 ]]; then
   [[ ${S5:-0} == 1 ]] || { echo "S5 needs the declared overlap launcher" >&2; exit 2; }
   [[ ${FLASH_S5_AUTH_ENV_FILE:-} == /* ]] || { echo "S5 needs private auth file" >&2; exit 2; }
   [[ ${EXTRA_ARGS:-} != *--api-key* ]] || { echo "S5 refuses argv authentication" >&2; exit 2; }
   [[ ${EXTRA_ENV:-} != *VLLM_API_KEY* ]] || { echo "S5 requires private-file authentication" >&2; exit 2; }
   s5_auth=(--env-file "$FLASH_S5_AUTH_ENV_FILE")
+  # Bound Docker's ephemeral json-file log; the queue follows the full stream
+  # into its own retained host artifact before engine startup.
+  s5_log=(--log-opt max-size=512m --log-opt max-file=4)
   for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/sampler.py e3_sources/async_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
@@ -241,7 +244,7 @@ fi
     text = _replace(text, '  "${runner[@]}" "${e2[@]}" \\\n',
                     '  "${runner[@]}" "${e2[@]}" "${s5[@]}" \\\n')
     text = _replace(text, '  "${extra_env[@]}" "${mps[@]}"',
-                    '  "${extra_env[@]}" "${s5_auth[@]}" "${mps[@]}"')
+                    '  "${extra_env[@]}" "${s5_auth[@]}" "${s5_log[@]}" "${mps[@]}"')
     return text
 
 
