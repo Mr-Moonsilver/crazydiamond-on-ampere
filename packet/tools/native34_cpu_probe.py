@@ -76,6 +76,17 @@ Path('/out/cli-check.json').write_text(json.dumps(cli_receipts,sort_keys=True,in
 # Execute the real frozen owner runner's pure pre-launch checks, not copies.
 spec=importlib.util.spec_from_file_location('native34_frozen_owner','/source/owner.py')
 owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(owner)
+role=os.environ['FLASH_NATIVE34_ARM']
+provenance=json.loads(Path('/source/harness/native30-provenance.json').read_text())
+assert provenance['native34_arm']==role and provenance['candidate']==owner.QNAME=='q18a-native34-'+role.lower()
+owner.check_slot()
+import native34_gate as weekend_gate
+from unittest.mock import patch
+for instant in (weekend_gate.NOT_BEFORE-1,weekend_gate.HARD_END-weekend_gate.ACTIVE_AND_CLEANUP+1):
+    with patch.object(owner.time,'time',lambda:instant):
+        try:owner.check_slot()
+        except RuntimeError:pass
+        else:raise AssertionError('frozen-owner-window-negative-accepted')
 overlay=Path('/source/harness/native30_overlay')
 owner.verify_sources(overlay,built=True,final=True)
 owner.OVERLAY=overlay
@@ -83,7 +94,7 @@ green,final_manifest,build_proof=owner.verify_final_build()
 assert final_manifest==hashlib.sha256((overlay/'SHA256SUMS').read_bytes()).hexdigest()
 actual_bridge=sys.modules['test_native32'].NativeWorkerBridge
 assert actual_bridge is sys.modules['vllm.v1.flash_e3.worker_bridge'].NativeWorkerBridge
-owner_prelaunch=dict(actual_bridge_class=actual_bridge.__module__+'.'+actual_bridge.__name__,verdict='PASS',methods_executed=['verify_sources(built=True,final=True)','verify_final_build'],runner_sha256=hashlib.sha256(Path('/source/owner.py').read_bytes()).hexdigest(),overlay_manifest=final_manifest,green_sha256=green,device_state_checks='DEFERRED to owner: stopped unit, current launcher/defaults, GPUs idle and real arm-time window',device_execution=False)
+owner_prelaunch=dict(actual_bridge_class=actual_bridge.__module__+'.'+actual_bridge.__name__,verdict='PASS',methods_executed=['check_slot (actual weekend gate, two negative boundaries)','verify_sources(built=True,final=True)','verify_final_build'],runner_sha256=hashlib.sha256(Path('/source/owner.py').read_bytes()).hexdigest(),overlay_manifest=final_manifest,green_sha256=green,device_state_checks='DEFERRED to owner: stopped unit, current launcher/defaults, GPUs idle and real arm-time window',device_execution=False)
 Path('/out/owner-prelaunch.json').write_text(json.dumps(owner_prelaunch,sort_keys=True,indent=2)+'\n')
 import native31_cpu_check
 native31_receipt=native31_cpu_check.run()
@@ -100,6 +111,7 @@ assert a['view_within_storage'] and b['view_within_storage']
 original_zero=torch.Tensor.zero_
 try:
     worker.patch(torch.Tensor,'zero_',lambda old,a,k:worker.phase(old,a,k,'OUTPUT_ZERO'))
+    ordinary_zero=torch.ones(4);assert ordinary_zero.zero_() is ordinary_zero and torch.equal(ordinary_zero,torch.zeros(4))
     with patch.object(__import__('lane_comm'),'register_selection_op',lambda:torch.ops.vllm.flash_s5_selection):
         instrumented=native31_cpu_check.run()
 finally:torch.Tensor.zero_=original_zero
@@ -113,7 +125,7 @@ causal_cli=sys.modules['test_native34_frontend'].CLI_RECEIPTS
 assert len(causal_cli)==3
 Path('/out/causal-cli-check.json').write_text(json.dumps(causal_cli,sort_keys=True,indent=2)+'\n')
 
-record=dict(final_input_proof=True,native34=native34_receipt,owner_prelaunch=owner_prelaunch,native31=native31_receipt,receipt_policy='PASS',receipt_budget_bytes=policy.BYTES_PER_RANK,receipt_tail_s=policy.TAIL_S,row4_cli_validation='PASS',cli_receipts=cli_receipts,identity_receipts=identity_receipts,verdict='PASS' if result.wasSuccessful() and not result.skipped and result.testsRun==90 else 'FAIL',tests_run=result.testsRun,skips=len(result.skipped),plugin_loader='PASS',identity_capture_check='PASS' if result.wasSuccessful() else 'FAIL',identity_timeout_negative_rejected=result.wasSuccessful(),mounted_modules=modules,cuda_initialized=False,gpu_execution=False,
+record=dict(arm=role,final_input_proof=True,native34=native34_receipt,owner_prelaunch=owner_prelaunch,native31=native31_receipt,receipt_policy='PASS',receipt_budget_bytes=policy.BYTES_PER_RANK,receipt_tail_s=policy.TAIL_S,row4_cli_validation='PASS',cli_receipts=cli_receipts,identity_receipts=identity_receipts,verdict='PASS' if result.wasSuccessful() and not result.skipped and result.testsRun==90 else 'FAIL',tests_run=result.testsRun,skips=len(result.skipped),plugin_loader='PASS',identity_capture_check='PASS' if result.wasSuccessful() else 'FAIL',identity_timeout_negative_rejected=result.wasSuccessful(),mounted_modules=modules,cuda_initialized=False,gpu_execution=False,
     fixture='CPU driver-registration stub, synthetic launch/sync/control objects; no GPU model forward, stream or memory query')
 Path('/out/probe.json').write_text(json.dumps(record,sort_keys=True,indent=2)+'\n')
 raise SystemExit(0 if record['verdict']=='PASS' else 1)
