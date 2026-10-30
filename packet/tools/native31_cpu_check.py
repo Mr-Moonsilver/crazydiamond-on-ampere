@@ -78,5 +78,14 @@ def run():
     error=EngineCoreOutput(request_id=request.request_id,new_token_ids=[],finish_reason=FinishReason.ERROR,stop_reason='unsupported-native-schedule-profile')
     processor.process_outputs([error]);output=collector.get_nowait()
     assert output.finished and output.outputs[0].finish_reason=='error'
+    from vllm.entrypoints.generate.base.serving import GenerateBaseServing
+    from vllm.exceptions import GenerationError
+    serving=GenerateBaseServing.__new__(GenerateBaseServing)
+    try:
+        serving._raise_if_error(output.outputs[0].finish_reason,request.request_id)
+    except GenerationError:
+        pass
+    else:
+        raise AssertionError('real API failed to raise typed GenerationError')
     assert not torch.cuda.is_initialized()
-    return dict(verdict='PASS',ordinary_decode_exactness='PASS',steps=32,rows=8,output_sha256=digests,compiled_mutation_op='PASS',actual_run_qsa_exactness='PASS' if root.is_dir() else 'NOT_RUN',typed_client_error='PASS',cuda_initialized=False,scope='CPU real Torch gather/softmax decode arithmetic and real OutputProcessor; synthetic selected indices and in-process PyNccl/stream leaf; not model/GPU/NCCL latency evidence')
+    return dict(verdict='PASS',ordinary_decode_exactness='PASS',steps=32,rows=8,output_sha256=digests,compiled_mutation_op='PASS',actual_run_qsa_exactness='PASS' if root.is_dir() else 'NOT_RUN',typed_client_error='PASS',typed_api_error='PASS',cuda_initialized=False,scope='CPU real Torch gather/softmax decode arithmetic and real OutputProcessor; synthetic selected indices and in-process PyNccl/stream leaf; not model/GPU/NCCL latency evidence')
