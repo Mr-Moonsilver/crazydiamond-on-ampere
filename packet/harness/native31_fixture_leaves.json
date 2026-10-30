@@ -41,8 +41,16 @@
       "equivalence": "Two frozen original qsa.py and ops/qsa.py files are mounted at the same CPU-only reference paths; hashes are checked against bundled original qsa source and resident_attention.BASE_SHA. No engine or census method is patched.",
       "name": "cpu-reference-file-layout",
       "replaces": "hub reference/vllm-src filesystem paths read by connected CPU generator fixtures"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "No device completion, real GPU pool safety, memory pressure, live service state, GPU idle state or fault origin. Frozen owner verify_sources and verify_final_build execute exactly; production state and arm-time device checks are operator-only and deferred.",
+      "equivalence": "Synthetic dispatcher provides the real constructor-required open/submit callables and runner reference. The actual bridge has neither runner nor model_runner; dispatcher.runner is the only constructed path. Frozen native31 host/policy modules are loaded only as negative fixtures through a CPU sys.modules mapping. Receipt emitter collects dictionaries. Current methods prove activation and before/after snapshots on that same real bridge shape, plus unchanged TLS restoration and original exceptions.",
+      "name": "cpu-actual-native-worker-bridge-boundary",
+      "replaces": "GPU LaneDispatcher and model runner in NativeWorkerBridge receipt-boundary CPU conformance tests; real bridge constructor, policy and host resolver remain unpatched"
     }
   ],
+  "native32_scope": "receipt boundary resolves actual bridge.dispatcher.runner; engine and ordinary path byte-identical to native31; frozen owner source/package pre-launch assertions run on CPU",
   "schema": "native31-fixture-leaves/1",
   "scope": "CPU host/compile/exactness proofs only; no GPU, NCCL progress, model accuracy or box qualification"
 }
