@@ -114,16 +114,19 @@ def render(launcher, values, image_id, scratch, mirror=None):
 
 def docker_spec(argv,image,mirror=None,private_envfile=None):
     identity.need(argv and argv[0]=='run')
-    env={};mounts=[];i=1;options={};envfile_seen=False
+    env={};mounts=[];i=1;options={};envfile_seen=False;log_opts=[]
     while i<len(argv) and argv[i].startswith('-'):
         opt,eq,attached=argv[i].partition('=');i+=1
         if opt in ('--rm','--init'):
             identity.need(opt not in options);options[opt]=True;continue
-        identity.need(opt in ('--name','--label','--gpus','--ipc','--network','-e','-v','--env-file'))
+        identity.need(opt in ('--name','--label','--gpus','--ipc','--network','-e','-v','--env-file','--log-opt'))
         if eq: val=attached
         else:
             identity.need(i<len(argv));val=argv[i];i+=1
-        if opt=='--env-file':
+        if opt=='--log-opt':
+            identity.need(val in ('max-size=512m','max-file=4') and val not in log_opts)
+            log_opts.append(val)
+        elif opt=='--env-file':
             identity.need(not envfile_seen and private_envfile is not None and val==private_envfile)
             identity.need('VLLM_API_KEY' not in env)
             from e3_private_auth import read_private
@@ -140,6 +143,7 @@ def docker_spec(argv,image,mirror=None,private_envfile=None):
         else:
             identity.need(opt not in options);options[opt]=val
     identity.need(envfile_seen == (private_envfile is not None))
+    identity.need(log_opts in ([], ['max-size=512m','max-file=4']))
     identity.need(options=={'--rm':True,'--init':True,'--name':'qwen-flash-prod',
         '--label':'qwen.flash-next-production=true','--gpus':'all','--ipc':'host','--network':'host'})
     identity.need(argv[i]==image['Id']);i+=1

@@ -123,7 +123,7 @@ def main():
     out = a.out.absolute()
     need(not out.exists() and not out.is_symlink(), 'fresh output required')
     need(sha(OLD / 'SHA256SUMS') == OLD_SHA and inventory(OLD), 'frozen source bundle')
-    need(OLD_FINAL.is_dir(), 'frozen native25 finalized runtime absent')
+    need(OLD_FINAL.is_dir(), 'frozen native27 finalized runtime absent')
     need(sha(BASE / 'SHA256SUMS') == BASE_SHA, 'frozen E2 base')
     vm = json.loads(a.vm_result.read_text())
     vm_probe = a.vm_result.parent / 'probe.json'
@@ -750,13 +750,13 @@ Status: **HOLD**. The hard end alone is not a box GO.
 - Real graph/observer VM GPU proof: result SHA256 `{receipt['graph_vm_result_sha256']}`, probe SHA256 `{receipt['graph_vm_probe_sha256']}`, input manifest `{receipt['graph_vm_input_manifest_sha256']}`; exact hub CPU self-run SHA256 `{receipt['graph_hub_result_sha256']}`
 - Real split-bank replay-census VM GPU proof: result SHA256 `{receipt['census_vm_result_sha256']}`, probe SHA256 `{receipt['census_vm_probe_sha256']}`, input manifest `{receipt['census_vm_input_manifest_sha256']}`; exact hub CPU self-run SHA256 `{receipt['census_hub_result_sha256']}`
 
-This is native27 engine runtime with host queue changes only. The S5 launcher caps Docker's ephemeral json-file log at 512 MiB × 4; the queue retains the full followed stream. The host observer records a final root/SizeRw sample and stop intent below 8 GiB before asking the queue to stop. W1/W2 first-advance reads use a declared 1200 s client wait while TTFT remains the measured latency. A rule-4 control hard-cap result remains raw INCONCLUSIVE, but may allow later phases only after the frozen rule-4 grader reproduces that exact reason and all other gates pass. A rule-4 FAIL still withholds later phases. No cap, tolerance or workload value changes. The owner must pre-check and stage this candidate before any box action.
+This is native27 engine runtime with host queue changes only. The S5 launcher caps Docker's ephemeral json-file log at 512 MiB × 4; the queue retains the full followed stream. The host observer records a final root/SizeRw sample and stop intent below 8 GiB before asking the queue to stop. W2's first-advance wait and W1's socket-read bound are declared at 1200 s while TTFT remains the measured latency; W1's frozen 900 s cohort-open window is unchanged. A rule-4 control hard-cap result remains raw INCONCLUSIVE, but may allow later phases only after the frozen rule-4 grader reproduces that exact reason and all other gates pass. A rule-4 FAIL still withholds later phases. No cap, tolerance or workload value changes. The owner must pre-check and stage this candidate before any box action.
 
 Native23 rule 4 had a real FAIL at stream 0 position 320; native24 passed both rule-4 gates with the same settings, workload and grader. The cause of the earlier outlier remains unproved. Native25 preserves the unchanged numerical gates and does not select between repeated runs.
 
 The first executor-shutdown *marker* and host queue-stop intent are captured; the initiating reason is reported unknown unless the unchanged engine stream explicitly states it. The observer never calls an engine control API.
 
-ETA at delivery (CET): owner pre-check and staging 10–15 min; candidate ARM immediately after owner clearance if the queue's worst-case hard-end guard still admits entry. Native29 is a separate VM-only behavioral investigation and is not a prerequisite for this observability/queue candidate.
+ETA at delivery (CET): owner pre-check and staging 10–15 min; candidate ARM immediately after owner clearance if the queue's worst-case hard-end guard still admits entry. Native29 first one-card VM input is estimated 45–75 min after native27's retained real peer profiles identify the mismatch shape; it is a separate behavioral investigation and is not a prerequisite for native28.
 
 Full source pins and self-run metadata are in `provenance.json`; the fixture declaration is inside the bundle.
 The exact local builder command is retained as `build_command` in `provenance.json`.

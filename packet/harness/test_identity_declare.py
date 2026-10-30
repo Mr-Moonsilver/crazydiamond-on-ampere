@@ -204,6 +204,8 @@ class DeclareTests(unittest.TestCase):
         raw_argv=dec.render(launch, dec.raw_defaults(dec.apply_setcfg(self.defaults.read_text(),over,self.a.setcfg)), IMAGE,self.root/'s5-argv',self.task)
         self.assertIn('--env-file',raw_argv)
         self.assertEqual(raw_argv[raw_argv.index('--env-file')+1],str(envfile))
+        self.assertEqual([raw_argv[i+1] for i, item in enumerate(raw_argv[:-1])
+                          if item == '--log-opt'], ['max-size=512m', 'max-file=4'])
         self.assertNotIn(DUMMY,json.dumps(raw_argv))
         self.assertEqual(identity['env']['FLASH_S5_GREEN_LIB_SHA256'], 'a' * 64)
         # The exact reviewed generated launcher mounts the split-bank package
