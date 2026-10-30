@@ -1,0 +1,49 @@
+{
+  "schema": "fixture-leaves/1",
+  "clears_box_hold": false,
+  "missing_contract_now_exercised": "Ordinary shared-prefix allocator CoW after a completed request with an empty E3 lease ledger; foreign uncommitted sources remain refused.",
+  "leaves": [
+    {
+      "leaf": "CPU synthetic ModelRunnerOutput",
+      "replaces": "GPU forward/sampling outputs",
+      "equivalence": "Real Scheduler and Request decide admission, token budget, prefix hits, allocation, CoW retention and completion; generated token 17 advances the host lifecycle. No numerical/device evidence.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "CPU model-derived cache owner metadata and CPU HMA support projection",
+      "replaces": "registered CUDA model cache-owner graph and platform capability",
+      "equivalence": "Actual spec constructors, stock layout resolver, scheduler config generator and recycling allocator. Metadata geometry reflects real block4048/hash176, but CPU projection is more convenient and is host negative/positive reproduction only.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "reduced real three-layer dummy-weight Qwen model TP1",
+      "replaces": "production48-layer TP2PP2 model",
+      "equivalence": "Real EngineCore, MultiprocExecutor, Worker, Scheduler, allocator CoW kernels and 32-token completion loop. No production numerical/placement/performance qualification.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "owned transport installed at idle and empty actual SchedulerLeases attached",
+      "replaces": "physical native green/multirank startup and row1 return",
+      "equivalence": "Uses actual installers and ledger, no fake ready flags or manual lease retirement. Native configure prefix and clean terminal FULL handback are observed-on-box native16, not CPU-constructed. VM starts from the identical observed empty-ledger state; does not independently prove that physical prefix.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "host-only source/destination fields in focused foreign-lease negative",
+      "replaces": "SchedulerOutput CoW descriptor",
+      "equivalence": "Actual typed transaction/ticket and real SchedulerLeases; unchanged predicate reads these exact two fields. No allocator or device mutation performed.",
+      "more_convenient": false,
+      "box_evidence": false
+    },
+    {
+      "leaf": "CPU Core preprocessing receiver without MM cache",
+      "replaces": "actual EngineCore language-model-only input receiver",
+      "equivalence": "Executes unmodified EngineCore.preprocess_add_request and actual EngineCoreRequest/Request conversion using the real request block hasher. CPU owner contains only actual no-multimodal cache and hash fields; GPU uses actual Core object end-to-end.",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}

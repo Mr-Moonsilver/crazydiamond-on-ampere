@@ -1,0 +1,31 @@
+{
+  "schema": "native21-rpc-stream-fixture-leaves/1",
+  "box_evidence": false,
+  "real_path": [
+    "NativeWorkerBridge.poll(QsaProfileQuery)",
+    "QsaLayerDriver.schedule_profile",
+    "QsaPrefillOperation.schedule_profile",
+    "QsaPrefillOperation.submission_credit",
+    "LaneDispatcher.submit scoped compute work"
+  ],
+  "leaves": [
+    {
+      "replaces": "NativeQsaDevice.validate_compute comparing torch.cuda.current_stream with the bound CUDA compute stream",
+      "substitute": "StreamCheckedDevice with one modelled current-stream token; LaneDispatcher._scope changes it only while the actual submit body runs",
+      "equivalent_for": "refusal of compute-bound methods on the RPC thread and acceptance of host-only profile/event queries there",
+      "more_convenient_than_engine": true
+    },
+    {
+      "replaces": "CUDA tensors, events, model, and the four-rank transport",
+      "substitute": "the existing ScheduleProfile controlled CPU tensor/event/model/transport leaves",
+      "equivalent_for": "typed operation and bridge call order, identities, pending/ready profile and exact accepted op credit",
+      "more_convenient_than_engine": true
+    }
+  ],
+  "claims_excluded": [
+    "CUDA thread-local stream identity",
+    "real GPU event ordering",
+    "TP2PP2 or NCCL progress",
+    "box engine qualification"
+  ]
+}

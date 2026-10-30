@@ -971,8 +971,9 @@ class HandoffDispatcher:
             raise HandoffError('transport is already installed')
         if not isinstance(transport, ReplyTransport):
             raise ConfigurationError('dispatcher needs the owned ReplyTransport')
-        if transport._owner_thread != self.owner_thread:
-            raise ConfigurationError('transport must be created by the dispatcher thread')
+        # The dispatcher remains thread-affine; the reply broker is owned by
+        # this process and also serves stock IO/health/shutdown callers.
+        transport._owner()
         self._transport = transport
         return transport
 
@@ -1410,7 +1411,7 @@ class LifetimeLedger:
 # --- prefix sharing ---------------------------------------------------------
 
 class CommittedFrontier:
-    """Offline frontier model; NOT wired to the native cache lookup/allocation epoch.
+    """Publication journal, retired by the installed native allocation hook.
 
     Blocks visible to a prefix-sharing request: committed bytes only.
 
@@ -1446,7 +1447,12 @@ class CommittedFrontier:
         return self._published[transaction]
 
     def retire_blocks(self, block_ids):
-        """Offline allocator callback model; not wired to native incarnations."""
+        """Retire prior publications at reallocation, never merely at free.
+
+        SchedulerLeases calls this after its whole-batch lease check. Validate
+        every unpublished conflict before removing any publication record.
+        This journal does not replace the stock prefix-cache lookup.
+        """
         ids = set(block_ids)
         if any(ids.intersection(blocks) for txn, blocks in self._epoch.items()
                if txn not in self._published):
@@ -1889,6 +1895,8 @@ def build_composition(env, *, transport, backend, lanes, transaction=None, alloc
     if transaction is not None:
         _check_transaction('build composition', transaction)
     if not allow_fixture:
+        if side == 'worker' and getattr(backend, 'engine_relay_only', False):
+            raise ConfigurationError('engine relay cannot serve as a worker event backend')
         require_native_backend(backend)
         if not native_allocations:
             raise ConfigurationError(

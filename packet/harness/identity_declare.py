@@ -21,6 +21,7 @@ HERE=Path(__file__).resolve().parent
 TASK='/data/vllm/flash-next-tp4'
 LAUNCHER_SHA='98d6d2a21927b8943f1ae9b0b43616757e80adac0c628e65f482e4332e3cf126'
 E2_LAUNCHER_SHA='2630f86c961c3c5ecff9b1be87b1602fca182f48484991ea1744071dea5f7d8b'
+S5_LAUNCHER_SHA='22473a909dad1a4cb8e9c22de88349e65ff1eb46b0fa05b281504afb21775f3c'
 FOUND_SHA='45cc5d813dca6610dd871b99b095956f307f29ab5f8de4993400018c1ab80c88'
 SETCFG_SHA='f3cae1379fa9079785c03a5555dbf739c687c5dcde9b1c6e058b38e8849754fe'
 PP_SETTINGS=dict(OVERLAY=TASK+'/prod/overlay-v16g',PP_LAYER_PARTITION='24,24',MODEL_DIR='-',VISION='-',VISION_ARGS='-',
@@ -78,7 +79,7 @@ def logical_path(path, mirror):
 
 
 def render(launcher, values, image_id, scratch, mirror=None):
-    identity.need(sha(launcher) in (LAUNCHER_SHA,E2_LAUNCHER_SHA))
+    identity.need(sha(launcher) in (LAUNCHER_SHA,E2_LAUNCHER_SHA,S5_LAUNCHER_SHA))
     scratch=Path(scratch);scratch.mkdir(mode=0o700)
     bindir=scratch/'bin';bindir.mkdir(mode=0o700)
     for name in ('docker','sudo','rm'):
@@ -111,18 +112,30 @@ def render(launcher, values, image_id, scratch, mirror=None):
     return json.loads(p.stdout)
 
 
-def docker_spec(argv,image,mirror=None):
+def docker_spec(argv,image,mirror=None,private_envfile=None):
     identity.need(argv and argv[0]=='run')
-    env={};mounts=[];i=1;options={}
+    env={};mounts=[];i=1;options={};envfile_seen=False;log_opts=[];core_limit=False
     while i<len(argv) and argv[i].startswith('-'):
         opt,eq,attached=argv[i].partition('=');i+=1
         if opt in ('--rm','--init'):
             identity.need(opt not in options);options[opt]=True;continue
-        identity.need(opt in ('--name','--label','--gpus','--ipc','--network','-e','-v'))
+        identity.need(opt in ('--name','--label','--gpus','--ipc','--network','-e','-v','--env-file','--log-opt','--ulimit'))
         if eq: val=attached
         else:
             identity.need(i<len(argv));val=argv[i];i+=1
-        if opt=='-e':
+        if opt=='--ulimit':
+            identity.need(val=='core=0' and not core_limit)
+            core_limit=True
+        elif opt=='--log-opt':
+            identity.need(val in ('max-size=512m','max-file=4') and val not in log_opts)
+            log_opts.append(val)
+        elif opt=='--env-file':
+            identity.need(not envfile_seen and private_envfile is not None and val==private_envfile)
+            identity.need('VLLM_API_KEY' not in env)
+            from e3_private_auth import read_private
+            env['VLLM_API_KEY']=read_private(val)
+            envfile_seen=True
+        elif opt=='-e':
             k,sep,v=val.partition('=');identity.need(sep and identity.NAME.fullmatch(k) and k not in env);env[k]=v
         elif opt=='-v':
             fields=val.split(':');identity.need(len(fields) in (2,3))
@@ -132,6 +145,9 @@ def docker_spec(argv,image,mirror=None):
                                rw=mode!='ro',propagation='rprivate'))
         else:
             identity.need(opt not in options);options[opt]=val
+    identity.need(envfile_seen == (private_envfile is not None))
+    identity.need(log_opts in ([], ['max-size=512m','max-file=4']))
+    identity.need(core_limit == bool(log_opts))
     identity.need(options=={'--rm':True,'--init':True,'--name':'qwen-flash-prod',
         '--label':'qwen.flash-next-production=true','--gpus':'all','--ipc':'host','--network':'host'})
     identity.need(argv[i]==image['Id']);i+=1
@@ -183,7 +199,7 @@ def project_launcher(spec, launcher):
     entry=next(e for e in work['content']['entries'] if e['path']=='prod/run-flash-prod.sh')
     identity.need(entry['kind']=='file' and entry['sha256'] in (FOUND_SHA,LAUNCHER_SHA,E2_LAUNCHER_SHA))
     future_sha=sha(launcher)
-    identity.need(future_sha in (LAUNCHER_SHA,E2_LAUNCHER_SHA))
+    identity.need(future_sha in (LAUNCHER_SHA,E2_LAUNCHER_SHA,S5_LAUNCHER_SHA))
     entry.update(bytes=Path(launcher).stat().st_size,sha256=future_sha)
 
 
@@ -192,7 +208,10 @@ def declare(a, overrides, image, policy, scratch, install_launcher=False, hash_r
     future=apply_setcfg(raw,overrides,a.setcfg)
     values=raw_defaults(future)
     args=render(a.launcher,values,image['Id'],scratch,a.source_mirror)
-    spec=docker_spec(args,image,a.source_mirror)
+    private_envfile=values.get('FLASH_S5_AUTH_ENV_FILE') if values.get('S5')=='1' else None
+    if private_envfile is not None:
+        identity.need(sha(a.launcher)==S5_LAUNCHER_SHA)
+    spec=docker_spec(args,image,a.source_mirror,private_envfile=private_envfile)
     spec['defaults']=identity.defaults_snapshot(future.encode())['values']
     if hash_reference is None:
         io=hash_sources(spec['mounts'],policy,a.source_mirror,a.max_bytes,a.max_files,a.timeout)

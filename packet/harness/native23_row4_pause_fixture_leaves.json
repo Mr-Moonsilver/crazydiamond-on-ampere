@@ -1,0 +1,78 @@
+{
+  "schema": "native23-row4-pause-fixture-leaves/1",
+  "scope": "CPU harness ordering; four-rank engine and GPU performance remain box gates",
+  "leaves": [
+    {
+      "leaf": "QualificationEngine",
+      "replaces": "AsyncLLM frontend plus EngineCore native-control utility",
+      "equivalence": "The actual NativeControlClient.qualification and NativeOverlapSession methods run unchanged; the fixture implements the pinned pause/resume and typed utility reply surfaces. It does not model GPU work or the four worker replies.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "PausingWorker._worker",
+      "replaces": "authenticated qualification_worker endpoint and four worker teacher_configure replies",
+      "equivalence": "It sets paused on teacher_configure exactly as the real NativeControlClient qualification intent does; the independent real-client test checks that side effect. Replies are fixture data, not worker evidence.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "FakeState stream emission",
+      "replaces": "eight live SSE /v1/completions readers and engine scheduler",
+      "equivalence": "No first-advance is emitted while paused; the first-advance event is emitted only after the explicit session resume. The real e3_decode_correctness._wait_open decides both the negative and positive. It does not reproduce token numerics or latency.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "placement window, observer and prefill fixture replies",
+      "replaces": "live TP2PP2 placement window and native prefill/observer receipts",
+      "equivalence": "Convenient typed reply fixtures isolate the before-window stock cohort and after-window return ordering. They cannot qualify placement, overlap or lifecycle.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "NativeTeacherSequence.run",
+      "replaces": "live rule-4 teacher control and candidate sequence",
+      "equivalence": "Some queue-phase tests replace the whole rule-4 sequence to isolate later gates. Those tests prove only harness wiring; native21 box rule-4 PASS supplies the live evidence.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "http.client.HTTPConnection",
+      "replaces": "authenticated loopback and engine HTTP transport",
+      "equivalence": "The fake returns declared HTTP replies and cannot establish scheduler progress, worker action, or live-route behavior.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "correctness._start_streams",
+      "replaces": "eight live SSE reader threads and their HTTP submissions",
+      "equivalence": "The row-4 ordering test creates eight FakeState readers while paused and emits first advance only after the checked resume. It does not prove live HTTP delivery or token values.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "correctness._stop_streams",
+      "replaces": "live SSE reader joins and cancellation",
+      "equivalence": "The fixture returns typed reader-join data; shutdown timing and live cancellation remain unproven.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "correctness._trajectory_rows",
+      "replaces": "live token trajectory measurement",
+      "equivalence": "The fixture supplies deterministic rows for harness routing tests; it does not prove numerical or timing evidence.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "correctness._wait_finish",
+      "replaces": "live completion wait on SSE readers",
+      "equivalence": "The fixture supplies a bounded completion result for ordering tests; actual retirement is a box gate.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "correctness._wait_open",
+      "replaces": "live first-token wait on eight SSE readers",
+      "equivalence": "Older tests replace open-wait with complete=True and are not box evidence. The new row-4 test runs the real _wait_open on FakeState readers that cannot advance while paused, proves the paused negative, and advances only after explicit resume.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "correctness._wait_window",
+      "replaces": "live declared-window wait and observer timing",
+      "equivalence": "The fixture supplies a typed window for harness ordering; it cannot qualify placement or overlap timing.",
+      "box_evidence": false
+    }
+  ]
+}

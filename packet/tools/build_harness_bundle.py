@@ -6,6 +6,7 @@ modifies a deployed bundle. OUT must not exist. No engine/box access.
 """
 import argparse
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -27,6 +28,12 @@ def build(out):
         if source.is_symlink() or not source.is_file(): raise ValueError('unsupported harness entry')
         dest.parent.mkdir(exist_ok=True,parents=True)
         shutil.copy2(source,dest)
+    # Immutable public QSA source for VM-only synthetic attention qualification.
+    qsa=ROOT/'patches/retain/ops_qsa.py.v8.1'
+    if sha(qsa)!='5a0d962022ec4e47809fa072d2b13745c84413de894048e67f10c3c10a45d51b':
+        raise ValueError('VM QSA source pin')
+    (out/'vmid_sources').mkdir()
+    shutil.copy2(qsa,out/'vmid_sources/ops_qsa.py')
     source=ROOT/'patches/ppgrouping/overlay/core'
     manifest={name:digest for digest,name in (line.split(maxsplit=1) for line in (source/'SHA256SUMS').read_text().splitlines())}
     (out/'ppg').mkdir()
@@ -52,7 +59,87 @@ def build(out):
         if sha(source)!=digest:raise ValueError('E2 image reference checksum mismatch: '+name)
         dest=out/'e2_reference'/name;dest.parent.mkdir(parents=True,exist_ok=True)
         shutil.copy2(source,dest)
-    needed=('identity_declare.py','identity_declare_stub.py','pp_release_mount_policy.json','pp_canary_bridge.py')
+    # The fixed-capacity sparse union is generated from these exact reviewed
+    # kernels. Both the standalone overlay generator and the VM operation
+    # probe resolve the input relative to their own s5_engine directory.
+    import operation_source
+    sparse_source=ROOT/'patches/sparse_stage/kernels.py'
+    if sha(sparse_source)!=operation_source.SPARSE_STAGE_SHA256:
+        raise ValueError('sparse union input checksum mismatch')
+    sparse_dest=out/'sparse_stage/kernels.py'
+    sparse_dest.parent.mkdir()
+    shutil.copy2(sparse_source,sparse_dest)
+    vm_sources=out/'vmid_sources'
+    (vm_sources/'sparse_stage').mkdir()
+    shutil.copy2(sparse_source,vm_sources/'sparse_stage/kernels.py')
+    (vm_sources/'s5_engine').mkdir()
+    for name in ('e3_types','sparse_history_dma','qsa_operation','operation_source',
+                 'arena_attention','resident_attention','native_source',
+                 'row1_oracle'):
+        shutil.copy2(ROOT/'patches/s5_engine'/(name+'.py'),
+                     vm_sources/'s5_engine'/(name+'.py'))
+    # E3 build closure: every tracked CPU-only generator/source module and the
+    # complete pinned image reference set make_s5_overlap compiles against.
+    # The runtime overlay is generated later from these bytes; the bundle never
+    # fetches a checkout or imports vLLM while building.
+    import executor_hooks, graph_hooks, model_hooks, probe_control_hooks, worker_hooks
+    import capture_streams, engine_offers
+    pins=dict(executor_hooks.PINS)
+    pins.update(engine_offers.PINS)
+    pins.update(capture_streams.PINS)
+    pins.update(worker_hooks.PINS)
+    pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
+    pins.update(model_hooks.PINS)
+    pins.update(probe_control_hooks.PINS)
+    pins['v1/worker/gpu/model_runner.py']=graph_hooks.PINNED_SHA256
+    tracked=subprocess.check_output(
+        ['git','ls-files','-z','patches/s5_engine'],cwd=ROOT).decode().split('\0')
+    tracked=[name for name in tracked if name and Path(name).suffix in ('.py','.cu','.cpp','.sh','.cuh','.h','.json')]
+    if not tracked:raise ValueError('E3 builder sources are not tracked')
+    e3_builder=out/'e3_builder';e3_builder.mkdir()
+    builder_sources={}
+    for name in tracked:
+        source=ROOT/name
+        if source.is_symlink() or not source.is_file():raise ValueError('unsupported E3 builder entry: '+name)
+        rel=Path(name).relative_to('patches/s5_engine').as_posix()
+        dest=e3_builder/rel;dest.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(source,dest)
+        builder_sources[rel]=sha(source)
+    pp_source=ROOT/'patches/ppgrouping/make_ppgrouping.py'
+    shutil.copy2(pp_source,e3_builder/'pool_stats_source.py')
+    builder_sources['pool_stats_source.py']=sha(pp_source)
+    qualification_pins={
+        'v1/executor/abstract.py':'97791426b549e4447c967f8b8e668c2e376c6a75fa7091fd9df11bc9dafb65f7',
+        'v1/engine/async_llm.py':'32ab1c7b43bfa7e5fcada335f49627d3c540a43bb8376b4845006792c3415fb4',
+        'v1/engine/core_client.py':'fd6ca0cb7499b3086eef2fc57674b7ace56ef1c648f09e92e144b255b79018f8',
+        'entrypoints/serve/middleware/authenticate.py':'0633540cb788738dfee5a69075fbdc30eb98a510e26f69a0b43c57c50d9ef5ab',
+        'entrypoints/serve/middleware/register.py':'cff2d2c00e16f45a942eb1c1ef591834cb58d34ec9eefb3269f9134c4b1087bf',
+        'v1/worker/gpu/model_states/mamba_hybrid.py':'573e130ac5587d4822fabf97adad1ad0fda02ff83c5e70df879a5bb175ae845c',
+        'v1/worker/mamba_utils.py':'7382bcc8a7b070eaec44339379ebce485777fe23b97e05ee108088faa707c7e6',
+        'v1/kv_cache_interface.py':'1cf202f1a44d5bc5c3832b70b41507687ecceea3784e67a4f003bc0210d6eecb',
+        'v1/attention/backends/registry.py':'77f41b9bff9b4a2f6417e8360ead3a5b560861a958ed26072d8c97f5e6b2af2b',
+        'model_executor/layers/mamba/mamba_utils.py':'ce9845b4a4ef4bc46577a33038ed69d59ceccb52f30e9c5bdaa36e48be3b2ca4',
+        'v1/utils.py':'4093f1c040a5f3def599bb044b72109301b970f70a5e5b622fd03a450a11e36a',
+        'models/qwen4_exp/nvidia/qsa.py':'4ad6e74fe6a6d2678f3944ca4780c61c32e56680da2456869a789d12ef860c69',
+        'v1/worker/gpu/input_batch.py':'abfbb9075a80354bd4bb59d2729fcdea3c62eed827067a823761c98356670ad1',
+        'entrypoints/openai/completion/protocol.py':'0be20e3d7f21ab6cbe0ba77cb50068aa39a35fc0369ef38de068ac38ca9800aa',
+        'entrypoints/openai/completion/serving.py':'75d05ddddf303734a078a3e42fcb173fef58ea56da09bc0b5c7525cb9bbbf527',
+    }
+    for name,digest in {**pins,**qualification_pins}.items():
+        source=reference/name
+        if sha(source)!=digest:raise ValueError('E3 image reference checksum mismatch: '+name)
+        dest=out/'e3_reference'/name;dest.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(source,dest)
+    closure={'schema':1,'builder_sources':dict(sorted(builder_sources.items())),
+             'external_source_pins':{'sparse_stage/kernels.py':sha(sparse_source)},
+             'reference_pins':dict(sorted(pins.items())),
+             'qualification_reference_pins':qualification_pins,
+             'basis':'tracked CPU-only generator/native/source bytes; reference tree verified against every transform pin',
+             'runtime_overlay':'generated separately by make_s5_overlap; not fetched on the box'}
+    (out/'e3_build_closure.json').write_text(json.dumps(closure,indent=2,sort_keys=True)+'\n')
+    needed=('identity_declare.py','identity_declare_stub.py','pp_release_mount_policy.json','pp_canary_bridge.py',
+            'e3_startup_mount_policy.json','e3_startup_grade.py','runs/q17_decode_startup.draft.sh',
+            'runs/q17_startup_settings.sh','runs/q17s_declare.sh')
     if not all((out/name).is_file() for name in needed):
         raise ValueError('required helper missing: commit new sources before building')
     with (out/'SHA256SUMS').open('x') as f:

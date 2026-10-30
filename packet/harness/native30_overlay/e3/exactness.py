@@ -51,6 +51,17 @@ class TorchExactBackend:
         physical=table[lo:hi].to(self.torch.int64)
         self.torch.index_select(kv,0,physical,out=staged)
 
+    def gather_rows(self,source,source_row,rows,staged,arena_row):
+        # Compact-row reference for the native sparse probe: the same selected
+        # rows from the original pinned view into the existing arena slice.
+        # No temporary GPU allocation and no second history buffer.
+        width=source.shape[-1]
+        flat=source.reshape(-1,width)
+        dst=staged.reshape(-1,width)
+        index=self.torch.arange(source_row,source_row+rows,
+                                device=flat.device,dtype=self.torch.int64)
+        self.torch.index_select(flat,0,index,out=dst[arena_row:arena_row+rows])
+
     def memory_stats(self):
         # Allocator bookkeeping only: no tensor, device query, peak reset,
         # empty_cache, or additional synchronization. External GPU sampling

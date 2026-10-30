@@ -36,14 +36,17 @@ import shutil
 import async_handoff
 import decode_probe
 import executor_hooks
+import engine_offers
 import graph_hooks
 import green_context
 import lane_hooks
+import make_e2_arena
 import model_hooks
 import operation_source
 import qsa_driver
 import scheduler_hooks
 import worker_hooks
+import probe_control_hooks
 
 
 HERE = Path(__file__).resolve().parent
@@ -52,11 +55,18 @@ ROOT = HERE.parents[1]
 E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend',
               'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver',
               'executor_hooks', 'scheduler_hooks', 's5_startup',
-              'graph_router', 'graph_hooks', 'qsa_operation',
+              'admission_metadata', 'worker_bridge',
+              'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma',
+              'native_source', 'row1_oracle', 'row1_exactness',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
               # lane forward/QSA driver, communicators, startup, chunk, dispatcher.
-              'green_context', 'split_bank', 'worker_hooks', 'model_hooks', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe')
-NATIVE_FILES = ('native/flash_s5_green.cu',)
+              'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers',
+              # Native control over the pinned EngineCore utility channel.
+              'native_overlap_metrics', 'native_overlap_worker',
+              'native_overlap_control', 'native_overlap_session',
+              'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement', 'native_readiness')
+NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
+                'native/build_q17_helpers.sh')
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
 CUDAGRAPH_PATH = 'v1/worker/gpu/cudagraph_utils.py'
 MODEL_DEST = '/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py'
@@ -95,10 +105,14 @@ E2_WORKER_INPUTS = {
     'qsa.py': operation_source.E2_QSA_SHA256,
     'ops_qsa.py': operation_source.E2_OPS_SHA256,
 }
+import capture_streams
 REFERENCE_INPUTS = dict(executor_hooks.PINS)
+REFERENCE_INPUTS.update(engine_offers.PINS)
+REFERENCE_INPUTS.update(capture_streams.PINS)
 REFERENCE_INPUTS.update(worker_hooks.PINS)
 REFERENCE_INPUTS.update(worker_hooks.CAPTURE_REFERENCE_PINS)
 REFERENCE_INPUTS.update(model_hooks.PINS)
+REFERENCE_INPUTS.update(probe_control_hooks.PINS)
 LAUNCHER_NAME = 'run-flash-e2-test.sh'
 S5_LAUNCHER_NAME = 'run-flash-s5-test.sh'
 
@@ -129,11 +143,34 @@ def manifest(folder):
 
 
 def package(source):
-    """Rewrite intra-package absolute imports for ``vllm.v1.flash_e3``."""
+    """Bind E3 peers and E2-owned dependencies to their mounted packages."""
+    e2_peers = set(make_e2_arena.RUNTIME) - set(E3_MODULES)
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in E3_MODULES:
             source = source.replace('from ' + node.module + ' import ',
                                     'from .' + node.module + ' import ')
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in e2_peers:
+            source = source.replace('from ' + node.module + ' import ',
+                                    'from ..flash_e2.' + node.module + ' import ')
+    # Local runtime imports inside methods need the same package identity as
+    # top-level ``from`` imports. Bare imports can appear to work in CPU tests
+    # whose sys.path contains the source folder, but fail in vllm.v1.flash_e3.
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    edits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(a.name in E3_MODULES or a.name in e2_peers for a in node.names):
+            parts = []
+            for alias in node.names:
+                text = alias.name + (' as ' + alias.asname if alias.asname else '')
+                prefix = ('from . import ' if alias.name in E3_MODULES else
+                          'from ..flash_e2 import ' if alias.name in e2_peers else 'import ')
+                parts.append(prefix + text)
+            edits.append((node.lineno - 1, node.col_offset, node.end_lineno - 1,
+                          node.end_col_offset, '; '.join(parts)))
+    for first, start, last, end, replacement in sorted(edits, reverse=True):
+        lines[first:last + 1] = [lines[first][:start] + replacement + lines[last][end:]]
+    source = ''.join(lines)
     ast.parse(source)
     return source
 
@@ -178,10 +215,17 @@ def _s5_launcher(source):
     # Keep the E2 branch and all its checks byte-identical; only add a guarded
     # mount set. e2 is still mounted when present; S5=1 does not imply E2.
     addition = '''# E3/S5 offline-unqualified payload. Inert unless S5=1.
-s5=()
+s5=(); s5_auth=(); s5_log=()
 if [[ -d $OVERLAY/e3 ]]; then
   [[ ${S5:-0} == 1 ]] || { echo "S5 needs the declared overlap launcher" >&2; exit 2; }
-  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/model.py qsa.py ops_qsa.py; do
+  [[ ${FLASH_S5_AUTH_ENV_FILE:-} == /* ]] || { echo "S5 needs private auth file" >&2; exit 2; }
+  [[ ${EXTRA_ARGS:-} != *--api-key* ]] || { echo "S5 refuses argv authentication" >&2; exit 2; }
+  [[ ${EXTRA_ENV:-} != *VLLM_API_KEY* ]] || { echo "S5 requires private-file authentication" >&2; exit 2; }
+  s5_auth=(--env-file "$FLASH_S5_AUTH_ENV_FILE")
+  # Bound Docker's ephemeral json-file log; the queue follows the full stream
+  # into its own retained host artifact before engine startup.
+  s5_log=(--log-opt max-size=512m --log-opt max-file=4 --ulimit core=0)
+  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/sampler.py e3_sources/async_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
   V=/usr/local/lib/python3.12/dist-packages/vllm/v1
@@ -190,12 +234,17 @@ if [[ -d $OVERLAY/e3 ]]; then
       -v "$OVERLAY/e3_sources/core.py:$V/engine/core.py:ro"
       -v "$OVERLAY/e3_sources/worker.py:$V/worker/gpu_worker.py:ro"
       -v "$OVERLAY/e3_sources/cudagraph_utils.py:$V/worker/gpu/cudagraph_utils.py:ro"
+      -v "$OVERLAY/e3_sources/sampler.py:$V/worker/gpu/sample/sampler.py:ro"
+      -v "$OVERLAY/e3_sources/async_utils.py:$V/worker/gpu/async_utils.py:ro"
+      -v "$OVERLAY/e3_sources/api_routers.py:/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/routers.py:ro"
       -v "$OVERLAY/e3_sources/model.py:''' + MODEL_DEST + ''':ro")
 fi
 '''
     text = _replace(source, '# VISION=1: image input', addition + '# VISION=1: image input')
     text = _replace(text, '  "${runner[@]}" "${e2[@]}" \\\n',
                     '  "${runner[@]}" "${e2[@]}" "${s5[@]}" \\\n')
+    text = _replace(text, '  "${extra_env[@]}" "${mps[@]}"',
+                    '  "${extra_env[@]}" "${s5_auth[@]}" "${s5_log[@]}" "${mps[@]}"')
     return text
 
 
@@ -249,10 +298,16 @@ def _decode_probe_declaration(files):
     It qualifies ``diagnostic_modes.decode_only`` for an explicitly requested
     GPU diagnostic; it does not qualify, arm or change the full package.
     """
-    if set(decode_probe.GENERATED_SOURCES) != set(E3_MODULES):
+    runtime_modules = tuple(name for name in E3_MODULES
+                            if name not in decode_probe.BUILD_ONLY_SOURCES)
+    if set(decode_probe.GENERATED_SOURCES) != set(runtime_modules):
         raise ValueError('diagnostic evidence module list drifted')
+    if not set(decode_probe.BUILD_ONLY_SOURCES) <= set(E3_MODULES):
+        raise ValueError('build-only module is not in the generated package')
     pins = dict(worker_hooks.PINS)
+    pins.update(engine_offers.PINS)
     pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
+    pins.update(probe_control_hooks.PINS)
     pins['v1/worker/gpu/model_runner.py'] = graph_hooks.PINNED_SHA256
     shas = {}
     for name in decode_probe.GENERATED_SOURCES:
@@ -260,6 +315,12 @@ def _decode_probe_declaration(files):
         if key not in files:
             raise ValueError('decode probe declaration lacks generated ' + key)
         shas[name] = _sha_text(files[key])
+    build_only = {}
+    for name in decode_probe.BUILD_ONLY_SOURCES:
+        key = 'e3/' + name + '.py'
+        if key not in files:
+            raise ValueError('decode probe declaration lacks generated ' + key)
+        build_only[name] = _sha_text(files[key])
     return {
         'declared': True,
         'qualifies': 'diagnostic_modes.decode_only',
@@ -282,17 +343,59 @@ def _decode_probe_declaration(files):
                        'split decode graph bank, own pool (split_bank)',
                        'drained RouteController'],
         'excluded': list(decode_probe.EXCLUDED),
+        'replay_observation': {
+            'opt_in': 'FLASH_S5_REPLAY_OBSERVER=1',
+            'helper_source': 'e3/native/flash_s5_replay_observer.cpp',
+            'helper_library': 'e3/native/flash_s5_replay_observer.so',
+            'library_pin_env': 'FLASH_S5_REPLAY_LIB_SHA256',
+            'cupti_library_sha256': 'e2f9ed861fe27c492b8bb52b5e3220ef5120f3edcda36312e96b7fd8a186be3e',
+            'scope': 'first split correctness window only; owned stop required before W1',
+            'build': 'e3/native/build_q17_helpers.sh; final manifest after e3_finalize_package.py',
+        },
+        'module_inventory': {
+            'runtime': list(runtime_modules),
+            'build_only': list(decode_probe.BUILD_ONLY_SOURCES),
+            'basis': ('build-only sources generate runtime text and are shipped/checksummed '
+                      'for the builder; they are not imported by the runtime package'),
+        },
         'evidence': {
             'pins': pins,
             'helper_source_sha256': green_context.helper_source_sha256(),
             'generated_source_shas': shas,
+            'build_only_source_shas': build_only,
             'tests': list(decode_probe.REQUIRED_TESTS),
         },
     }
 
 
+def _native_candidate_closure(files):
+    from native_readiness import check_review, digest, PROFILE, SCHEMA
+    path = HERE / 'native_candidate_review.json'
+    if not path.is_file() or path.is_symlink():
+        raise ValueError('reviewed native candidate source receipt is absent')
+    review = check_review(json.loads(path.read_text()))
+    required = {name + '.py' for name in E3_MODULES} | {'make_s5_overlap.py'} | set(NATIVE_FILES)
+    for name in required:
+        if review['source_shas'].get(name) != sha(HERE/name):
+            raise ValueError('native source changed after review: ' + name)
+    # The source review binds the actual client/queue implementation as well.
+    harness = ROOT / 'harness' if (ROOT/'harness').is_dir() else HERE.parent
+    for name, expected in (review.get('harness_source_shas') or {}).items():
+        if Path(name).is_absolute() or '..' in Path(name).parts or sha(harness/name) != expected:
+            raise ValueError('native harness source changed after review: ' + name)
+    closure = {'schema': SCHEMA, 'profile': PROFILE,
+               'review': review, 'review_sha256': digest(review),
+               'generated_source_shas': {name: _sha_text(files['e3/'+name+'.py'])
+                                         for name in decode_probe.GENERATED_SOURCES},
+               'native_source_shas': {Path(name).name: _sha_text(files['e3/'+name])
+                                      for name in NATIVE_FILES if Path(name).suffix in ('.cu','.cpp')}}
+    return closure
+
+
 def build(base, out, reference, base_manifest_sha256, graph=None,
-          settings=None):
+          settings=None, native_candidate=False):
+    if type(native_candidate) is not bool:
+        raise ValueError('native candidate selection must be boolean')
     base, out, reference = map(Path, (base, out, reference))
     if out.exists():
         raise ValueError('new output directory required; nothing overwritten')
@@ -374,6 +477,8 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         CUDAGRAPH_PATH, (reference / CUDAGRAPH_PATH).read_text())
     files['e3_sources/model.py'] = model_hooks.generate_one(
         MODEL_PATH, (reference / MODEL_PATH).read_text())
+    files['e3_sources/api_routers.py'] = probe_control_hooks.generate(
+        (reference / probe_control_hooks.PATH).read_text())
     for name in NATIVE_FILES:
         files['e3/' + name] = (HERE / name).read_text()
     files['e3/native/build_green_helper.sh'] = BUILD_GREEN_HELPER
@@ -387,11 +492,24 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         files = compose_graph(module, files)
         graph_record = {'module': Path(graph).name,
                         'source_pins': dict(module.SOURCE_PINS)}
+    # Reviewed source-owned offers compose last, after E2/A/B/D2 and capture
+    # stream transforms. Full-file input pins and exact inverses are enforced.
+    files['model_runner_v2.py'] = engine_offers.generate_one(
+        'v1/worker/gpu/model_runner.py', files['model_runner_v2.py'])
+    files['e3_sources/cudagraph_utils.py'] = engine_offers.generate_one(
+        CUDAGRAPH_PATH, files['e3_sources/cudagraph_utils.py'])
+    for relative, output in (
+            ('v1/worker/gpu/sample/sampler.py', 'e3_sources/sampler.py'),
+            ('v1/worker/gpu/async_utils.py', 'e3_sources/async_utils.py')):
+        files[output] = engine_offers.generate_one(relative, (reference / relative).read_text())
     probe_declaration = _decode_probe_declaration(files)
     files['e3/' + decode_probe.EVIDENCE_FILE] = json.dumps(probe_declaration['evidence'], sort_keys=True) + '\n'
     for name, text in files.items():
         if name.endswith('.py'):
             ast.parse(text, filename=name)
+    native_closure = _native_candidate_closure(files) if native_candidate else None
+    if native_closure is not None:
+        files['e3/native-implementation-closure.json'] = json.dumps(native_closure, sort_keys=True, indent=2)+'\n'
     changed = {name for name, text in files.items() if base_text.get(name) != text}
     changed |= {S5_LAUNCHER_NAME, 'S5-OVERLAP-GENERATION.json',
                 'SHA256SUMS', 'core/SHA256SUMS'}
@@ -433,6 +551,16 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         'e2_composed_pins': E2_INPUTS,
         'e2_worker_composed_pins': E2_WORKER_INPUTS,
         'reference_source_pins': REFERENCE_INPUTS,
+        'engine_offer_composition': {
+            'enabled_by': engine_offers.ENABLE_ENV,
+            'window': 'short placement window only; inactive before and after',
+            'reference_pins': dict(engine_offers.PINS),
+            'runner_input_sha256': engine_offers.MODEL_RUNNER_PACKAGE_SHA256,
+            'cudagraph_input_sha256': engine_offers.CUDAGRAPH_AFTER_WORKER_SHA256,
+            'outputs': {key: _sha_text(files[key]) for key in (
+                'model_runner_v2.py', 'e3_sources/cudagraph_utils.py',
+                'e3_sources/sampler.py', 'e3_sources/async_utils.py')},
+        },
         'generated_files': sorted(changed),
         'default_feature': 'FLASH_S5_OVERLAP=0',
         'installed_settings': installed,
@@ -463,6 +591,18 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
         ],
         'incremental_kv_bytes': 0,
     }
+    if native_closure is not None:
+        record.update(candidate_profile='q18a-native-performance',
+                      require_native_ready=True,
+                      implementation_review_sha256=native_closure['review_sha256'],
+                      status='reviewed native implementation candidate; CPU helper build/finalization and all same-queue hardware gates pending',
+                      native_gaps=[],
+                      qualification_pending=['row1 byte oracle', 'rule4 same-instrument numerics',
+                          'raw graph plus decode/prefill placement', 'W1 and W2 performance',
+                          'memory/pressure/lifetime/leak/real-route canary'],
+                      native_overlap={'enabled':True, 'sparse_dma_lease':True,
+                          'stock_forward_fallback_hidden':False,
+                          'scope':'implemented source path; not a hardware qualification'})
     # Diagnostic-only declaration, separate from the full package's armability.
     record['diagnostic_modes'] = {
         'decode_only': probe_declaration,
@@ -508,9 +648,11 @@ def main():
     parser.add_argument('--base-manifest-sha256', required=True)
     parser.add_argument('--graph', type=Path,
                         help='B graph transform module with SOURCE_PINS/generate')
+    parser.add_argument('--native-candidate', action='store_true',
+                        help='require the bundled reviewed native source closure; finalizer still requires compiled helpers')
     args = parser.parse_args()
     print(json.dumps(build(args.base, args.out, args.reference,
-                           args.base_manifest_sha256, args.graph),
+                           args.base_manifest_sha256, args.graph, native_candidate=args.native_candidate),
                      sort_keys=True))
 
 

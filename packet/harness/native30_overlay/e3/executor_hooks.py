@@ -18,6 +18,7 @@ transport and real engine timing are owner-run acceptance steps.
 import hashlib
 import math
 import time
+import threading
 
 from e3_types import E3ContractError, E3Pending
 from reply_transport import Backpressure, NotReady, ReplyTransport, TransportError
@@ -83,11 +84,23 @@ _WORKER_METHODS = '''    def flash_s5_open(self, message):
     def flash_s5_commit(self, message):
         return _flash_s5_hooks.worker_rpc(self, "commit", message)
 
+    def flash_s5_release(self, message):
+        return _flash_s5_hooks.worker_rpc(self, "release", message)
+
+    def flash_s5_bind(self, message):
+        return _flash_s5_hooks.worker_rpc(self, "bind", message)
+
+    def flash_s5_receipt(self, message):
+        return _flash_s5_hooks.worker_rpc(self, "receipt", message)
+
     def flash_s5_cancel(self, message):
         return _flash_s5_hooks.worker_rpc(self, "cancel", message)
 
     def flash_s5_transition(self, message):
         return _flash_s5_hooks.worker_rpc(self, "transition", message)
+
+    def flash_s5_bootstrap(self, message):
+        return _flash_s5_hooks.worker_rpc(self, "bootstrap", message)
 
 '''
 
@@ -123,12 +136,13 @@ _EXECUTOR_FORWARD = (
 ''', '''        """Returns single result if unique_reply_rank and/or an output
         aggregator is provided, otherwise list."""
 ''' + _EXECUTOR_GUARD),
-    ('''                for w in workers:
-                    # Shutdown response queues
-''', '''                _flash_s5_hooks.before_shutdown(self)
-                for w in workers:
-                    # Shutdown response queues
-'''),
+    ('    def shutdown(self):\n        """Properly shut down the executor and its workers"""\n',
+     '    def shutdown(self):\n'
+     '        return _flash_s5_hooks.executor_shutdown(self, self._flash_s5_stock_shutdown)\n\n'
+     '    def _flash_s5_stock_shutdown(self):\n        """Properly shut down the executor and its workers"""\n'
+     '        _flash_s5_hooks.before_shutdown(self)\n'),
+    ('        if rpc_broadcast_mq := getattr(self, "rpc_broadcast_mq", None):\n',
+     '        if (rpc_broadcast_mq := getattr(self, "rpc_broadcast_mq", None)) and not _flash_s5_hooks.retain_mq(self, None):\n'),
     ('''                for w in workers:
                     # Shutdown response queues
                     if w.worker_response_mq is not None:
@@ -142,7 +156,6 @@ _EXECUTOR_FORWARD = (
                         w.worker_response_mq = None
 '''),
     ('        if response_mqs := getattr(self, "response_mqs", None):\n',
-     '        _flash_s5_hooks.before_shutdown(self)\n'
      '        if (response_mqs := getattr(self, "response_mqs", None)) and not _flash_s5_hooks.retain_mq(self, None):\n'),
 )
 
@@ -170,19 +183,48 @@ def revert_executor(source, expected=None):
 
 # --- engine core ------------------------------------------------------------
 
+_NATIVE_CONTROL_METHOD = '''    def flash_s5_native_control(self, command):
+        """Bounded named utility: one typed native-control intent or query."""
+        return _flash_s5_hooks.native_control(self, command)
+
+'''
+
 _CORE_FORWARD = (
     ('logger = init_logger(__name__)\n', 'logger = init_logger(__name__)\n\n' + _IMPORT),
     ('''        self.is_ec_consumer = (
 ''', '''        _flash_s5_hooks.after_engine_startup(self)
         self.is_ec_consumer = (
 '''),
+    ('    def step(self) -> tuple[dict[int, EngineCoreOutputs], bool]:\n',
+     _NATIVE_CONTROL_METHOD + '    def step(self) -> tuple[dict[int, EngineCoreOutputs], bool]:\n'),
     ('''        batch_queue = self.batch_queue
         assert batch_queue is not None
 ''', '''        batch_queue = self.batch_queue
         assert batch_queue is not None
+        _flash_s5_tick = _flash_s5_hooks.engine_idle_tick(self)
+        if _flash_s5_tick is not None:
+            return _flash_s5_tick
         _flash_s5_ready = _flash_s5_hooks.before_step_with_batch_queue(self)
         if _flash_s5_ready is not None:
             return _flash_s5_ready
+'''),
+    ('''        # Check for any requests remaining in the scheduler - unfinished,
+        # or finished and not yet removed from the batch.
+        if not self.scheduler.has_requests():
+            return {}, False
+''', '''        _flash_s5_tick = _flash_s5_hooks.engine_idle_tick(self)
+        if _flash_s5_tick is not None:
+            return _flash_s5_tick
+        # Check for any requests remaining in the scheduler - unfinished,
+        # or finished and not yet removed from the batch.
+        if not self.scheduler.has_requests():
+            return {}, False
+'''),
+    ('''            or bool(self.batch_queue)
+        )
+''', '''            or bool(self.batch_queue)
+            or _flash_s5_hooks.native_work_pending(self)
+        )
 '''),
     ('''        if self.scheduler.has_requests():
             scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
@@ -207,6 +249,12 @@ _CORE_FORWARD = (
 ''', '''        _flash_s5_hooks.before_pause(self, mode)
         if mode == "abort":
             self.scheduler.finish_requests(None, RequestStatus.FINISHED_ABORTED)
+'''),
+    ('''        if mode == "abort":
+            aborted_reqs = self.scheduler.finish_requests(
+''', '''        _flash_s5_hooks.before_pause(self, mode)
+        if mode == "abort":
+            aborted_reqs = self.scheduler.finish_requests(
 '''),
     ('        self.model_executor.collective_rpc("synchronize_device")\n',
      '        _flash_s5_hooks.before_finish_pause(self)\n'
@@ -291,11 +339,13 @@ class LocalFuture:
         self.executor = executor
         self.sequence = sequence
         self.aggregate = aggregate
+        self._lock = threading.RLock()
         self._consumed = False
         self._taken = None
         self._taken_lag = None
         self._result_ready = False
         self._result = None
+        self._exception = None
 
     def _transport(self):
         transport = getattr(self.executor, '_flash_s5_transport', None)
@@ -304,46 +354,93 @@ class LocalFuture:
         return transport
 
     def poll(self, budget=1):
-        transport = self._transport()
-        transport.poll(budget)
-        call = transport._calls.get(self.sequence)
-        return bool(call is not None and call.ready)
+        with self._lock:
+            if self._consumed:
+                return True
+            transport = self._transport()
+            transport.poll(budget)
+            return transport.call_ready(self.sequence)
 
     def done(self):
-        if self._consumed:
-            return True
         return self.poll(1)
 
     def take(self):
-        if self._consumed:
-            raise NotReady('future result already consumed')
-        value, lag = self._transport().take(self.sequence)
-        self._consumed = True
-        self._taken, self._taken_lag = value, lag
-        return value
+        with self._lock:
+            if self._consumed:
+                raise NotReady('future result already consumed')
+            value, lag = self._transport().take(self.sequence)
+            self._consumed = True
+            self._taken, self._taken_lag = value, lag
+            return value
 
     def result(self, timeout=None):
-        if self._result_ready:
-            return self._result
-        if self._consumed:
-            self._result = self.aggregate(self._taken) if self.aggregate else self._taken
-            self._result_ready = True
-            return self._result
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            transport = self._transport()
-            transport.poll(1)
-            call = transport._calls.get(self.sequence)
-            if call is None:
-                raise TransportError('reply expectation disappeared')
-            if call.ready:
-                value = self.take()
-                self._result = self.aggregate(value) if self.aggregate else value
-                self._result_ready = True
-                return self._result
+            with self._lock:
+                if self._result_ready:
+                    if self._exception is not None:
+                        raise self._exception
+                    return self._result
+                if not self._consumed:
+                    transport = self._transport()
+                    transport.poll(1)
+                    if transport.call_ready(self.sequence):
+                        self.take()
+                if self._consumed:
+                    try:
+                        self._result = self.aggregate(self._taken) if self.aggregate else self._taken
+                    except Exception as exc:
+                        self._exception = exc
+                        raise
+                    finally:
+                        self._result_ready = True
+                    return self._result
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError('reply not ready before deadline')
             time.sleep(0.001)
+
+
+class StockLocalFuture(LocalFuture):
+    """Stock RPC lifecycle over the sole receiver, without a second MQ reader.
+
+    Stock EngineCore intentionally resolves the sampling future and discards
+    its earlier execute_model future on success. FutureWrapper.result claims
+    that earlier reply too. Preserve that contract for ordinary RPCs only;
+    native typed calls and LocalFuture.done/poll/take remain independent.
+    """
+
+    def __init__(self, executor, sequence, aggregate=None):
+        super().__init__(executor, sequence, aggregate)
+        with self._transport()._condition:
+            executor._flash_s5_stock_futures[sequence] = self
+
+    def take(self):
+        with self._lock:
+            value = super().take()
+            with self._transport()._condition:
+                self.executor._flash_s5_stock_futures.pop(self.sequence, None)
+            return value
+
+    def result(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        # Registration occurs inside submit's writer section, before enqueue.
+        # Snapshot only ordinary RPCs. Never claim a native operation's ACK.
+        with self._transport()._condition:
+            preceding = sorted((seq, future) for seq, future in
+                               self.executor._flash_s5_stock_futures.items()
+                               if seq < self.sequence)
+        for _seq, future in preceding:
+            remaining = None if deadline is None else max(0., deadline - time.monotonic())
+            try:
+                LocalFuture.result(future, remaining)
+            except Exception:
+                # Stock FutureWrapper stores an earlier future's exception;
+                # resolving a later successful future does not raise it. The
+                # transport still propagates global poison on our own result.
+                if not future._result_ready:
+                    raise
+        remaining = None if deadline is None else max(0., deadline - time.monotonic())
+        return super().result(remaining)
 
 
 def _reply_ranks(executor, unique_reply_rank):
@@ -429,7 +526,22 @@ class BoundedSender:
                 f'large={self.refused_large})')
 
 
+_INSTALL_LOCK = threading.RLock()
+
+
 def install(executor, *, config, success_status, clock=time.monotonic,
+            capacity=None):
+    current = getattr(executor, '_flash_s5_transport', None)
+    if current is not None:
+        current._owner()  # Refuse inherited parent resources before any lock.
+    with _INSTALL_LOCK:
+        if getattr(executor, '_flash_s5_shutdown_started', False):
+            raise E3ContractError('executor shutdown already started')
+        return _install_owned(executor, config=config, success_status=success_status,
+                              clock=clock, capacity=capacity)
+
+
+def _install_owned(executor, *, config, success_status, clock=time.monotonic,
             capacity=None):
     """Take sole receiver ownership at an idle executor handoff.
 
@@ -462,6 +574,7 @@ def install(executor, *, config, success_status, clock=time.monotonic,
     transport = ReplyTransport(dict(enumerate(queues)), success_status,
                                handoff_idle=True, max_calls=slots,
                                clock=clock)
+    executor._flash_s5_stock_futures = {}
     executor._flash_s5_transport = transport
     executor._flash_s5_bounded_send = BoundedSender(broadcast)
     executor._flash_s5_command_slots = slots
@@ -520,12 +633,16 @@ def collective_rpc(executor, stock, method, timeout=None, args=(), kwargs=None,
     effective_timeout = timeout if timeout is not None else config_reply_timeout(executor)
     if type(effective_timeout) not in (int, float) or not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise E3ContractError('executor RPC needs a positive finite timeout')
+    future = None
     def send(sequence):
+        nonlocal future
+        # Register in the same serialized section as the reply expectation and
+        # broadcast, so a second stock caller cannot omit an earlier future.
+        future = StockLocalFuture(executor, sequence, aggregate=aggregate)
         executor.rpc_broadcast_mq.enqueue((send_method, args, kwargs,
                                            broadcast_rank))
     sequence = transport.submit(kind, send, ranks=ranks,
                                 timeout_s=effective_timeout, aggregate=None)
-    future = LocalFuture(executor, sequence, aggregate=aggregate)
     return future if non_block else future.result(timeout=effective_timeout)
 
 
@@ -537,6 +654,25 @@ def config_reply_timeout(executor):
     return 300.0
 
 
+def executor_shutdown(executor, stock):
+    """Serialize the full stock teardown, not only the transport close call.
+
+    Otherwise a second monitor/finalizer can skip the worker-termination wait
+    and destroy MQs while the first shutdown still waits for live workers.
+    """
+    current = getattr(executor, '_flash_s5_transport', None)
+    if current is not None:
+        current._owner()
+    with _INSTALL_LOCK:
+        executor._flash_s5_shutdown_started = True
+        current = getattr(executor, '_flash_s5_transport', None)
+    if current is None:
+        return stock()
+    current._owner()
+    with current._shutdown_lock:
+        return stock()
+
+
 def before_shutdown(executor):
     """Close the owned receiver before response MQs are destroyed.
 
@@ -544,15 +680,24 @@ def before_shutdown(executor):
     MQs owned; ``retain_mq`` then refuses to tear those queues down. No forced
     thread cancellation or lease retirement is implied.
     """
-    transport = getattr(executor, '_flash_s5_transport', None)
+    current = getattr(executor, '_flash_s5_transport', None)
+    if current is not None:
+        current._owner()  # Forked processes cannot acquire parent lifecycle locks.
+    with _INSTALL_LOCK:
+        executor._flash_s5_shutdown_started = True
+        transport = getattr(executor, '_flash_s5_transport', None)
     if transport is None:
         return True, None
-    close = getattr(executor, '_flash_s5_close', None)
-    if close is not None:
-        return bool(close.get('clean')), close
-    report = transport.close(2.0)
-    executor._flash_s5_close = report
-    return bool(report.get('clean')), report
+    transport._owner()  # Same process, including IO/monitor/finalizer threads.
+    with transport._shutdown_lock:
+        close = getattr(executor, '_flash_s5_close', None)
+        if close is not None:
+            return bool(close.get('clean')), close
+        # Concurrent shutdown paths must retain MQs while close is in flight.
+        executor._flash_s5_close = {'clean': False, 'scope': 'transport close pending'}
+        report = transport.close(2.0)
+        executor._flash_s5_close = report
+        return bool(report.get('clean')), report
 
 
 def retain_mq(executor, worker):
@@ -599,7 +744,7 @@ def before_step_with_batch_queue(engine):
     """Bounded engine bypass: drive one typed step; never wait for a layer."""
     driver = _driver(engine)
     if driver is not None:
-        return driver.advance()
+        return _stock_step_bypass(driver, driver.advance())
     handoff = _handoff(engine)
     if handoff is None:
         return None
@@ -609,17 +754,102 @@ def before_step_with_batch_queue(engine):
     return None
 
 
+def native_control(engine, command):
+    """Generated ``EngineCore.flash_s5_native_control`` seam.
+
+    Returns the driver's ``concurrent.futures.Future`` for an intent so the
+    core defers the utility reply instead of pumping worker replies inline.
+    """
+    if type(command) is not dict:
+        raise E3ContractError('native control command must be a bounded dict')
+    driver = _driver(engine)
+    if driver is None:
+        raise E3ContractError('native control requires an installed driver')
+    submit = getattr(driver, 'submit_control', None)
+    if not callable(submit):
+        raise E3ContractError('native driver has no control-intent seam')
+    return submit(command)
+
+
+def control_pending(engine):
+    """True while one bounded control intent still needs engine ticks."""
+    driver = getattr(engine, '_flash_s5_driver', None)
+    pending = getattr(driver, 'control_pending', None)
+    return bool(pending()) if callable(pending) else False
+
+
+def native_work_pending(engine):
+    """Keep the process loop awake for native ownership, even while paused."""
+    driver = getattr(engine, '_flash_s5_driver', None)
+    return bool(getattr(driver, 'active', False)) or control_pending(engine)
+
+
+def _stock_step_bypass(driver, result):
+    if result is not None:
+        note = getattr(driver, 'note_stock_step_skipped', None)
+        if callable(note):
+            note()
+    return result
+
+
+def engine_idle_tick(engine):
+    """Advance one bounded control/paused-native tick without a reply wait.
+
+    PAUSED_ALL hides ordinary scheduler work. Native ownership must nevertheless
+    keep EngineCoreProc out of its blocking input wait and prevent an idle
+    callback from finishing pause before the queried stop/transition settles.
+    Normal active stock steps retain their existing driver seam and quantum.
+    """
+    driver = getattr(engine, '_flash_s5_driver', None)
+    tick = getattr(driver, 'control_tick', None)
+    pump = getattr(driver, 'pump_control', None)
+    if not callable(tick) and not callable(pump):
+        return None
+    if control_pending(engine):
+        if callable(tick):
+            tick()
+        elif callable(pump):
+            pump()
+        # One bounded control advance per engine tick; settlement does not
+        # license a second native/stock submission in this same tick.
+        if control_pending(engine):
+            time.sleep(0.001)
+        return _stock_step_bypass(driver, ({}, False))
+    scheduler = getattr(engine, 'scheduler', None)
+    has_requests = getattr(scheduler, 'has_requests', None)
+    if (getattr(driver, 'active', False)
+            and (getattr(driver, 'stop_kind', None) is not None
+                 or (callable(has_requests) and not has_requests()))):
+        # PAUSED_ALL hides scheduler requests. A native stop/partial transition
+        # still owns its reply and must settle before the process idle callback
+        # may finish pause or block waiting for a new client request.
+        output = driver.advance()
+        if getattr(driver, 'active', False):
+            time.sleep(0.001)
+        # A bounded native refusal may complete a parked request while stock
+        # work is hidden. Preserve its normal EngineCore output for the client.
+        return _stock_step_bypass(driver, output if output is not None else ({}, False))
+    return None
+
+
 def before_abort(engine, request_ids):
     driver = _driver(engine)
     if driver is not None:
         if hasattr(driver, 'tx'):
             # Native driver: abort may target a begun transaction or a chunk
             # that is only parked in the admission controller.
+            ids = tuple(request_ids)
             transaction = driver.tx
             if transaction is None and driver.controller.active:
                 transaction = driver.controller.admission().transaction
-            if (transaction is not None
-                    and transaction.request_uid in tuple(request_ids)):
+            if transaction is not None and transaction.request_uid in ids:
+                return driver.stop('abort', drain=False)
+            retained = getattr(driver, 'retained_request', None)
+            retained = retained() if callable(retained) else None
+            if retained is not None and retained.request_uid in ids:
+                # Between chunks the request row is owned with no chunk and no
+                # parked admission; abort must close it through the same typed
+                # worker cancellation, never leave it stranded.
                 return driver.stop('abort', drain=False)
             return None
         active = driver.dispatcher.active
@@ -692,9 +922,58 @@ def before_engine_shutdown(engine):
 
 # --- worker-side hook -------------------------------------------------------
 
+def _wire_method(message):
+    """Exact wire-v1 record -> generated method name; ``None`` for legacy RPCs."""
+    from wire_v1 import (BootstrapCommand, CancelRequest, OpenRequest,
+                         PPReceiptDelivery, PeerBinding, PollRequest, QsaProfileQuery,
+                         ReleaseRequest, SegmentCommand, TransitionCommand)
+    for record, name in ((BootstrapCommand, 'bootstrap'),
+                         (OpenRequest, 'open'), (SegmentCommand, 'submit'),
+                         (PollRequest, 'poll'), (ReleaseRequest, 'release'),
+                         (QsaProfileQuery, 'poll'),
+                         (CancelRequest, 'cancel'), (PeerBinding, 'bind'),
+                         (PPReceiptDelivery, 'receipt'),
+                         (TransitionCommand, 'transition')):
+        if type(message) is record:
+            return name
+    return None
+
+
+def _wire_bridge(worker):
+    for owner in (worker, getattr(worker, 'model_runner', None)):
+        if owner is None:
+            continue
+        bridge = getattr(owner, '_flash_s5_bridge', None)
+        if bridge is not None:
+            return bridge
+    raise E3ContractError('worker has no native LaneDispatcher bridge')
+
+
 def worker_rpc(worker, name, message):
     """Generated worker entry point for typed open/submit/poll/commit/cancel."""
-    if name not in ('open', 'submit', 'poll', 'commit', 'cancel', 'transition'):
+    wire_name = _wire_method(message)
+    if wire_name is not None:
+        # Wire-v1 records carry their own exact type; they have no legacy
+        # ``kind``/``validate`` adapter and never fall through to it.
+        if name != wire_name:
+            raise E3ContractError('S5 RPC method and wire record disagree')
+        bridge = _wire_bridge(worker)
+        attach = getattr(bridge, 'attach', None)
+        if callable(attach):
+            attach(worker)
+        if name in ('bind', 'receipt') and message.sender_rank != bridge.rank:
+            # The stock MQ executes every broadcast on every worker; selecting
+            # output_rank only selects the reply. Non-senders must do no work
+            # and return quietly instead of logging a spurious worker error.
+            return None
+        handler = getattr(bridge, wire_name, None)
+        if not callable(handler):
+            raise E3ContractError('native bridge lacks the requested S5 RPC')
+        return handler(message)
+    if name in ('bind', 'receipt', 'release', 'bootstrap'):
+        raise E3ContractError('S5 RPC requires its exact wire record')
+    if name not in ('open', 'submit', 'poll', 'commit', 'cancel', 'transition',
+                    'bootstrap'):
         raise E3ContractError('unknown S5 worker RPC')
     if not hasattr(message, 'validate'):
         raise E3ContractError('S5 worker RPC requires a typed message')
@@ -723,7 +1002,9 @@ __all__ = [
     'after_engine_startup', 'before_abort', 'before_engine_shutdown',
     'before_finish_pause', 'before_pause', 'before_reset_prefix',
     'before_shutdown', 'before_step_with_batch_queue', 'collective_rpc',
-    'config_reply_timeout', 'generate_core', 'generate_executor',
-    'generate_worker', 'install', 'park_prefill', 'retain_mq', 'revert_core',
+    'config_reply_timeout', 'control_pending', 'engine_idle_tick', 'executor_shutdown',
+    'generate_core', 'generate_executor',
+    'generate_worker', 'install', 'native_control', 'native_work_pending', 'park_prefill',
+    'retain_mq', 'revert_core',
     'revert_executor', 'revert_worker', 'worker_rpc',
 ]

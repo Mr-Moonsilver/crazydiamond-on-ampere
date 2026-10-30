@@ -58,6 +58,35 @@ def full_descriptors(stock_manager):
     return mode, tuple(pairs)
 
 
+class ReplayCompletion:
+    """One real CUDA event recorded after a split replay enqueue.
+
+    ``query()`` is the only completion evidence: a successful host enqueue is
+    not completion, and no RPC acknowledgement is invented.  The event is
+    recorded on the green decode stream so a subsequent drained route switch
+    (which records and synchronizes a tail event on that stream) also orders
+    this replay.
+    """
+
+    __slots__ = ('event', 'stream_token', 'basis')
+
+    def __init__(self, event, stream_token):
+        if not callable(getattr(event, 'query', None)):
+            raise SplitBankError('split replay completion needs a CUDA event with query()')
+        if type(stream_token) is not int:
+            raise SplitBankError('split replay event has no stream identity')
+        self.event = event
+        self.stream_token = stream_token
+        self.basis = 'cuda-event-on-green-decode-stream'
+
+    def query(self):
+        """True only when the device reports this replay complete."""
+        return self.event.query()
+
+    def synchronize(self):
+        return self.event.synchronize()
+
+
 class SplitGraphHandle:
     """Opaque handle for one captured FULL descriptor in the split bank."""
 
@@ -94,6 +123,8 @@ class SplitDecodeBank:
         self.capture_memory = None
         self.handles = {}
         self._context_factory = None
+        self.capture_streams = None
+        self.capture_failed = False
 
     # -- construction -----------------------------------------------------
     def build_manager(self):
@@ -145,8 +176,8 @@ class SplitDecodeBank:
 
     def capture(self, *, set_graph_pool_id=None, memory_info=None):
         """Capture every FULL descriptor once; measure the pool delta on this rank."""
-        if self.captured:
-            raise SplitBankError('split bank already captured')
+        if self.captured or self.capture_failed:
+            raise SplitBankError('split bank captured or quarantined')
         if self.manager is None:
             self.build_manager()
         torch = self.torch
@@ -156,11 +187,17 @@ class SplitDecodeBank:
         free_before = int(memory_info()[0])
         started = self.clock()
         try:
-            self.manager.capture(**self.capture_kwargs())
+            from capture_streams import for_runner
+            self.capture_streams = for_runner(self.runner, self.split)
+            with self.capture_streams.capture():
+                self.manager.capture(**self.capture_kwargs())
         except BaseException:
+            self.capture_failed = True
             self.captured = False
             raise
         finally:
+            if self.capture_streams is not None and self.capture_streams.retained:
+                for graph in self.manager.graphs.values(): self.capture_streams.attach_graph(graph)
             # The stock capture pointed the pynccl allocator at our pool;
             # the stock manager's pool must stay the process default afterwards.
             if set_graph_pool_id is not None:
@@ -200,14 +237,28 @@ class SplitDecodeBank:
         handle.replays += 1
         return output
 
+    def record_completion_event(self):
+        """Record a completion event after the replay on the green decode stream."""
+        stream = self.split.decode_stream
+        if stream is None:
+            raise SplitBankError('split replay completion needs the green decode stream')
+        event = self.torch.cuda.Event(enable_timing=False)
+        event.record(stream)
+        token = int(getattr(stream, 'cuda_stream', -1))
+        if token != self.split.decode_stream_token:
+            raise SplitBankError('completion event was recorded on another stream')
+        return ReplayCompletion(event, token)
+
     def destroy(self, handle):
         if not isinstance(handle, SplitGraphHandle) or handle.bank is not self:
             raise SplitBankError('destroy needs a handle of this split bank')
         if handle.destroyed:
             raise SplitBankError('split graph already destroyed')
+        if self.capture_streams is not None: self.capture_streams.drain()
         graph = self.manager.graphs.pop(handle.descriptor, None)
         if graph is not None and callable(getattr(graph, 'reset', None)):
             graph.reset()
+            if self.capture_streams is not None: self.capture_streams.retire_graph(graph)
         handle.destroyed = True
         del self.handles[handle.local]
         return True
@@ -274,6 +325,15 @@ class SplitCaptureBackend:
             raise SplitBankError('split replay must run with the green decode stream current')
         return bank.replay(handle)
 
+    def replay_with_event(self, handle, key, lane, context):
+        """Replay the actual split graph, then record this replay's real event.
+
+        The event is created only after the actual manager call so its query
+        names this enqueued replay, not the host's submission.
+        """
+        output = self.replay(handle, key, lane, context)
+        return output, self.bank.record_completion_event()
+
     def destroy_graph(self, handle):
         return self.bank.destroy(handle)
 
@@ -337,6 +397,8 @@ class RouteController:
     def consumer_streams(self):
         """Every stream that consumes decode work and must be drained."""
         streams = [self.runner.main_stream]
+        if self.bank.capture_streams is not None:
+            streams.extend(self.bank.capture_streams.consumer_streams())
         for name in ('output_copy_stream',):
             stream = getattr(self.runner, name, None)
             if stream is not None:
@@ -455,14 +517,24 @@ def install(runner, split, *, torch_module=None, set_graph_pool_id=None, clock=t
 
 
 def shutdown(runner):
-    """Destroy split graphs, then close the green split; refuse while in split."""
+    """Destroy graphs and logically close; exposed native contexts live to exit."""
     controller = getattr(runner, '_flash_s5_route', None)
     if controller is not None and controller.route != 'full':
         raise SplitBankError('shutdown requires the full route (leave split first)')
     bank = getattr(runner, '_flash_s5_split_bank', None)
     if bank is not None:
+        if controller is not None: controller.drain()
         for handle in list(bank.handles.values()):
             bank.destroy(handle)
+        # Also reset graphs retained by a manager whose capture failed before
+        # SplitGraphHandles were published. Never release auxiliary streams first.
+        if bank.capture_streams is not None: bank.capture_streams.drain()
+        if bank.manager is not None:
+            for graph in list(bank.manager.graphs.values()):
+                graph.reset()
+                if bank.capture_streams is not None: bank.capture_streams.retire_graph(graph)
+            bank.manager.graphs.clear()
+        if bank.capture_streams is not None: bank.capture_streams.close_after_graphs()
         bank.manager = None
         bank.pool = None
     split = getattr(runner, '_flash_s5_split', None)
@@ -471,6 +543,6 @@ def shutdown(runner):
     return True
 
 
-__all__ = ['RouteController', 'SplitBankError', 'SplitCaptureBackend', 'SplitDecodeBank',
-           'SplitGraphHandle', 'TransitionRecord', 'decode_scope', 'full_descriptors',
-           'install', 'prefill_scope', 'shutdown']
+__all__ = ['ReplayCompletion', 'RouteController', 'SplitBankError', 'SplitCaptureBackend',
+           'SplitDecodeBank', 'SplitGraphHandle', 'TransitionRecord', 'decode_scope',
+           'full_descriptors', 'install', 'prefill_scope', 'shutdown']

@@ -73,7 +73,7 @@ def fake_evidence(test):
     root = Path(tempfile.mkdtemp(prefix='probe-evidence-'))
     # Preserve fixture artifacts; no worktree/runtime manifest is mutated.
     source = ROOT / 'patches/s5_engine'
-    for name in decode_probe.GENERATED_SOURCES:
+    for name in (*decode_probe.GENERATED_SOURCES, *decode_probe.BUILD_ONLY_SOURCES):
         shutil.copyfile(source / (name + '.py'), root / (name + '.py'))
     (root / decode_probe.EVIDENCE_FILE).write_text(json.dumps(decode_probe.declared_evidence()))
     fixture = patch.object(decode_probe, '_module_dir', lambda: str(root))
@@ -108,10 +108,10 @@ class ProbeFixture(unittest.TestCase):
             self.runner, env=self.env, torch_module=self.torch)
 
     def tearDown(self):
+        remove_fake_vllm()
         for split in [self.split, *self.extra_splits]:
             if split.state == 'open':
                 split.close()
-        remove_fake_vllm()
 
     def new_split(self):
         split = green_context.open_split(
@@ -189,6 +189,9 @@ class GateTests(unittest.TestCase):
         self.assertEqual(evidence['helper_source_sha256'],
                          green_context.helper_source_sha256())
         self.assertIn('decode_probe', evidence['generated_source_shas'])
+        self.assertNotIn('operation_source', evidence['generated_source_shas'])
+        self.assertEqual(set(evidence['build_only_source_shas']),
+                         set(decode_probe.BUILD_ONLY_SOURCES))
         self.assertEqual(evidence['pins']['v1/worker/gpu_worker.py'],
                          worker_hooks.PINS['v1/worker/gpu_worker.py'])
         self.assertEqual(evidence['pins']['v1/worker/gpu/model_runner.py'],
@@ -215,6 +218,9 @@ class GateTests(unittest.TestCase):
         tamper('generated_source_shas',
                lambda shas: shas.update({'decode_probe': '0' * 64}) or shas)
         tamper('generated_source_shas', lambda shas: shas.pop('graph_hooks') and shas)
+        tamper('build_only_source_shas', lambda shas: shas.update({'operation_source': '0' * 64}) or shas)
+        tamper('build_only_source_shas', lambda shas: shas.pop('operation_source') and shas)
+        tamper('build_only_source_shas', lambda shas: shas.update({'decode_probe': '0' * 64}) or shas)
         tamper('tests', lambda _: ('other.Test',))
         with self.assertRaises(DecodeProbeNotReady):
             require_decode_probe_ready('not-a-mapping')
@@ -538,7 +544,9 @@ class ShutdownTests(ProbeFixture):
         self.assertNotIn('leave-split', record['order'])
         self.assertEqual(record['route'], 'full')
         self.assertEqual(self.split.state, 'closed')
-        self.assertEqual(self.binding.closed, self.binding.created)
+        self.assertEqual(self.binding.closed, [])
+        self.assertTrue(record['native_lifetime']['native_retained'])
+        self.assertEqual(record['native_lifetime']['native_release'], 'process-exit')
 
 
 # --- default-off byte path --------------------------------------------------
@@ -583,6 +591,14 @@ class BytePathTests(unittest.TestCase):
                          green_context.helper_source_sha256())
         self.assertEqual(set(evidence['generated_source_shas']),
                          set(decode_probe.GENERATED_SOURCES))
+        self.assertEqual(set(evidence['build_only_source_shas']),
+                         set(decode_probe.BUILD_ONLY_SOURCES))
+        self.assertNotIn('operation_source',
+                         declaration['module_inventory']['runtime'])
+        self.assertEqual(declaration['module_inventory']['build_only'],
+                         list(decode_probe.BUILD_ONLY_SOURCES))
+        self.assertIn('e3/operation_source.py',
+                      (out / 'run-flash-s5-test.sh').read_text())
 
         # The runtime seams are inert with both flags unset.
         self.assertIsNone(mode_settings(off))
@@ -686,12 +702,33 @@ class ReviewRegressions(ProbeFixture):
             stock = types.SimpleNamespace()
             handle = worker_hooks.capture_graph(stock, torch_module=torch)
             worker_hooks.finish_graph(stock, handle)
-        self.assertEqual(calls, [{'keep_graph':True}, 'instantiate', {}])
+        self.assertEqual(calls, [{'keep_graph':True}, 'instantiate', {'keep_graph':True}, 'instantiate'])
         calls.clear()
         with patch.dict(os.environ, {PROBE_ENV:'0'}):
             worker_hooks.capture_graph(types.SimpleNamespace(_flash_s5_capture_context=object()),
                                        torch_module=torch)
         self.assertEqual(calls,[{}])
+
+    def test_native_observer_retains_only_the_split_bank_graph(self):
+        calls = []
+        def graph(**kw):
+            calls.append(kw)
+            return types.SimpleNamespace(instantiate=lambda: calls.append('instantiate'))
+        torch = types.SimpleNamespace(cuda=types.SimpleNamespace(CUDAGraph=graph))
+        split = types.SimpleNamespace(_flash_s5_capture_context=object())
+        ordinary = types.SimpleNamespace()
+        env = {PROBE_ENV:'0', 'FLASH_S5_OVERLAP':'1',
+               'FLASH_S5_REPLAY_OBSERVER':'1'}
+        with patch.dict(os.environ, env):
+            worker_hooks.finish_graph(split, worker_hooks.capture_graph(split, torch_module=torch))
+            worker_hooks.finish_graph(ordinary, worker_hooks.capture_graph(ordinary, torch_module=torch))
+        self.assertEqual(calls, [{'keep_graph':True}, 'instantiate', {}])
+        self.assertIs(split._flash_s5_keep_graphs, True)
+        calls.clear()
+        with patch.dict(os.environ, dict(env, FLASH_S5_REPLAY_OBSERVER='0')):
+            worker_hooks.capture_graph(types.SimpleNamespace(_flash_s5_capture_context=object()),
+                                       torch_module=torch)
+        self.assertEqual(calls, [{}])
 
     def test_wrong_compiled_library_pin_refused_before_bank_creation(self):
         runner = fake_runner(self.torch)
@@ -756,6 +793,298 @@ class PersistedEvidenceTests(unittest.TestCase):
             s5_startup.install_builder(runner, None, env={PROBE_ENV:'1', DECODE_SMS_ENV:'44'})
         self.assertIn('no FULL', str(caught.exception))
 
+def noop_scheduler_output():
+    return types.SimpleNamespace(total_num_scheduled_tokens=0,
+        scheduled_new_reqs=[], num_scheduled_tokens={}, finished_req_ids=set(),
+        scheduled_spec_decode_tokens={}, scheduled_encoder_inputs={},
+        free_encoder_mm_hashes=[], preempted_req_ids=None,
+        new_block_ids_to_zero=None, kv_cache_block_copies=None,
+        block_table_updates=None, kv_connector_metadata=None,
+        kv_connector_block_state=None, ec_connector_metadata=None,
+        ec_manager_metadata=None, has_sync_kv_loads=False,
+        scheduled_cached_reqs=types.SimpleNamespace(req_ids=[], resumed_req_ids=set(),
+            new_token_ids=[], all_token_ids={}, new_block_ids=[],
+            num_computed_tokens=[], num_output_tokens=[]))
+
+
+def pinned_paused_scheduler():
+    """Real pinned schedule(), with only cache-manager boundaries faked on CPU."""
+    import ast
+    import itertools
+    import time
+    source = ROOT / 'reference/vllm-src/v1/core/sched/output.py'
+    tree = ast.parse(source.read_text())
+    classes = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name in ('CachedRequestData', 'SchedulerOutput'):
+            node.body = [part for part in node.body if isinstance(part, ast.AnnAssign)
+                         or isinstance(part, ast.FunctionDef) and part.name == 'make_empty']
+            classes.append(node)
+    module = ast.parse('from __future__ import annotations\nfrom dataclasses import dataclass, field\n')
+    module.body.extend(classes)
+    namespace = {'__name__': __name__, 'time': time, 'itertools': itertools,
+                 'record_function_or_nullcontext': lambda *a: contextlib.nullcontext(),
+                 'PauseState': types.SimpleNamespace(PAUSED_ALL=1, UNPAUSED=0)}
+    source = ROOT / 'reference/vllm-src/v1/core/sched/scheduler.py'
+    scheduler = next(n for n in ast.parse(source.read_text()).body
+                     if isinstance(n, ast.ClassDef) and n.name == 'Scheduler')
+    scheduler.bases = []; scheduler.decorator_list = []
+    scheduler.body = [n for n in scheduler.body if isinstance(n, ast.FunctionDef)
+                      and n.name in ('schedule', '_make_cached_request_data',
+                                     '_get_new_block_ids_to_zero', '_update_after_schedule')]
+    module.body.append(scheduler)
+    exec(compile(ast.fix_missing_locations(module), str(source), 'exec'), namespace)
+    obj = namespace['Scheduler']()
+    attrs = dict(current_step=0, max_num_scheduled_tokens=1024,
+        vllm_config=types.SimpleNamespace(speculative_config=None),
+        scheduler_config=types.SimpleNamespace(max_num_batched_tokens=1024, async_scheduling=True),
+        _pause_state=1, max_num_encoder_input_tokens=0,
+        running=[types.SimpleNamespace(request_id='fixture', is_prefill_chunk=False)],
+        waiting=[], skipped_waiting=[], pd_alternate=False, parity_balance=False,
+        _pd_share=None, _sf_max=0, lora_config=None, _sched_stats_every=0,
+        max_num_running_reqs=11, use_v2_model_runner=True, model_uses_mrope=False,
+        kv_cache_config=types.SimpleNamespace(kv_cache_groups=[object()]),
+        connector=None, ec_connector=None, num_spec_tokens=0, dynamic_sd_lookup=None,
+        log_stats=False, reset_preempted_req_ids=set(), finished_req_ids=set(),
+        needs_kv_cache_zeroing=False, defer_block_free=True, sched_step_seq=17,
+        enable_return_routed_experts=False)
+    for key, value in attrs.items():
+        setattr(obj, key, value)
+    obj.kv_cache_manager = types.SimpleNamespace(new_step_starts=lambda:None,
+        get_num_common_prefix_blocks=lambda rid:[0], take_boundary_state_offloads=lambda:{},
+        take_kv_cache_block_copies=lambda:([], []), take_new_block_ids=lambda:[])
+    obj.encoder_cache_manager = types.SimpleNamespace(get_freed_mm_hashes=lambda:[],
+                                                       get_manager_metadata=lambda:None)
+    return obj
+
+
+class BatchAndBarrierTests(ProbeFixture):
+    def test_partial_batch_requires_fresh_complete_live_rows(self):
+        ids = ['private-row-%d' % i for i in range(8)]
+        self.runner.req_states = types.SimpleNamespace(
+            req_id_to_index={key:i for i,key in enumerate(ids)},
+            prefill_len=types.SimpleNamespace(np=[1024]*8), num_computed_prefill_tokens=[1024]*8)
+        batch = batch_state(4); batch.req_ids = ids[:4]
+        self.probe.check_batch(4,4,1,batch); self.probe.check_route(desc())
+        live = self.probe.counters()['live_decode']
+        self.assertEqual(live, dict(basis='worker-cpu-live-decode-v1', available=True,
+            live_requests=8, prefill_requests=0, batch_is_live_subset=True, last_batch_member_count=4))
+        from probe_control import ProbeController, ProbeControlError
+        owner=types.SimpleNamespace(engine=types.SimpleNamespace(
+            get_num_unfinished_requests=lambda:8, get_num_queued_tokens=lambda:0))
+        snapshot=lambda:{'ranks':[{'rank':r,'counters':self.probe.counters()} for r in range(4)]}
+        self.assertTrue(ProbeController._eligibility(owner,snapshot(),8)['proved'])
+        self.runner.req_states.num_computed_prefill_tokens[7] = 1023
+        with self.assertRaises(ProbeControlError): ProbeController._eligibility(owner,snapshot(),8)
+        failure = owner.eligibility_failure
+        self.assertEqual(failure['batch']['num_reqs'],4)
+        self.assertEqual(failure['live_decode']['prefill_requests'],1)
+        self.runner.req_states.num_computed_prefill_tokens[7] = 1024
+        self.runner.req_states.req_id_to_index.pop(ids[0])
+        self.assertFalse(self.probe.counters()['live_decode']['batch_is_live_subset'])
+        with self.assertRaises(ProbeControlError): ProbeController._eligibility(owner,snapshot(),8)
+        self.probe.observe_empty(types.SimpleNamespace(total_num_scheduled_tokens=0))
+        self.assertEqual(failure['batch']['num_reqs'],4)
+        self.assertNotIn('private-row-',json.dumps(self.probe.counters()))
+
+    def test_live_census_missing_duplicate_or_foreign_metadata_refuses(self):
+        self.assertFalse(self.probe.live_decode_census()['available'])
+        self.runner.req_states = types.SimpleNamespace(req_id_to_index={'a':0,'b':0},
+            prefill_len=types.SimpleNamespace(np=[1]), num_computed_prefill_tokens=[1])
+        self.assertFalse(self.probe.live_decode_census()['available'])
+        self.runner.req_states.req_id_to_index={'a':0}
+        batch=batch_state(1);batch.req_ids=['foreign']
+        self.probe.check_batch(1,1,1,batch)
+        self.assertFalse(self.probe.live_decode_census()['batch_is_live_subset'])
+        self.runner.req_states.req_id_to_index={'a':True}
+        self.assertFalse(self.probe.live_decode_census()['available'])
+
+    def test_actual_paused_schedule_with_running_unscheduled_request(self):
+        scheduler = pinned_paused_scheduler()
+        self.probe.check_batch(8, 8, 1, batch_state(8)); self.probe.check_route(desc())
+        for _ in range(3):
+            output = scheduler.schedule()
+            self.assertEqual(output.total_num_scheduled_tokens, 0)
+            self.assertEqual(output.scheduled_cached_reqs.req_ids, [])
+            self.assertIsNone(decode_probe.DecodeProbe._empty_noop_rejection(output))
+            self.probe.observe_empty(output)
+        self.assertEqual(scheduler.sched_step_seq, 17)
+        self.assertTrue(self.probe.batch_observations['last']['full_graph'])
+        self.assertEqual(self.probe.batch_observations['noop_empty_batches'], 3)
+
+    def test_paused_schedule_finished_and_zeroing_rejections_are_identified(self):
+        scheduler = pinned_paused_scheduler()
+        scheduler.finished_req_ids = {'fixture-finished'}
+        self.probe.observe_empty(scheduler.schedule())
+        self.assertEqual(self.probe.batch_observations['noop_rejections'], {'finished_req_ids':1})
+        scheduler.needs_kv_cache_zeroing = True
+        scheduler._skip_zero_block_ids = set()
+        scheduler.kv_cache_manager.take_new_block_ids = lambda:[123]
+        self.probe.observe_empty(scheduler.schedule())
+        self.assertEqual(self.probe.batch_observations['last_noop_rejection'],
+                         {'field':'new_block_ids_to_zero', 'empty_sequence':2})
+
+    def test_rejections_are_bounded_first_fields_with_independent_snapshots(self):
+        output = noop_scheduler_output()
+        output.finished_req_ids = {'never-emit-this-id'}
+        output.new_block_ids_to_zero = [987654321]
+        self.probe.observe_empty(output)
+        saved = self.probe.counters()['batch_observations']
+        self.probe.observe_empty(output)
+        self.assertEqual(saved['noop_rejections'], {'finished_req_ids':1})
+        self.assertEqual(saved['last_noop_rejection']['empty_sequence'], 1)
+        self.assertEqual(self.probe.batch_observations['noop_rejections'], {'finished_req_ids':2})
+        output = noop_scheduler_output()
+        output.scheduled_cached_reqs.req_ids = ['never-emit-this-id']
+        self.probe.observe_empty(output)
+        self.assertEqual(self.probe.batch_observations['last_noop_rejection']['field'],
+                         'scheduled_cached_reqs.req_ids')
+        output = noop_scheduler_output()
+        del output.num_scheduled_tokens
+        self.probe.observe_empty(output)
+        self.assertEqual(self.probe.batch_observations['last_noop_rejection']['field'],
+                         'num_scheduled_tokens')
+        class DictSubclass(dict): pass
+        output = noop_scheduler_output(); output.num_scheduled_tokens = DictSubclass()
+        self.probe.observe_empty(output)
+        self.assertEqual(self.probe.batch_observations['noop_rejections']['num_scheduled_tokens'],2)
+        data = json.dumps(self.probe.counters())
+        self.assertNotIn('never-emit-this-id', data)
+        self.assertNotIn('987654321', data)
+
+    def test_noop_matches_pinned_scheduler_output_make_empty(self):
+        import ast
+        source=ROOT/'reference/vllm-src/v1/core/sched/output.py'
+        tree=ast.parse(source.read_text())
+        classes=[]
+        for node in tree.body:
+            if isinstance(node,ast.ClassDef) and node.name in ('CachedRequestData','SchedulerOutput'):
+                node.body=[part for part in node.body if isinstance(part,ast.AnnAssign)
+                           or isinstance(part,ast.FunctionDef) and part.name=='make_empty']
+                classes.append(node)
+        module=ast.parse('from __future__ import annotations\nfrom dataclasses import dataclass, field\n')
+        module.body.extend(classes)
+        namespace={'__name__':__name__}
+        exec(compile(ast.fix_missing_locations(module),str(source),'exec'),namespace)
+        output=namespace['SchedulerOutput'].make_empty()
+        self.assertTrue(decode_probe.DecodeProbe._empty_is_noop(output))
+        output.finished_req_ids.add('fixture')
+        self.assertFalse(decode_probe.DecodeProbe._empty_is_noop(output))
+
+    def test_keep_pause_noop_preserves_actual_decode_evidence(self):
+        self.probe.check_batch(8, 8, 1, batch_state(8))
+        self.probe.check_route(desc())
+        before = self.probe.counters()['batch_observations']['last']
+        for _ in range(4):
+            graph_hooks.check_empty(self.runner, noop_scheduler_output())
+        self.assertEqual(self.probe.counters()['batch_observations']['last'], before)
+        self.assertTrue(before['decode_only']); self.assertTrue(before['full_graph'])
+        self.assertEqual(self.probe.batch_observations['empty_batches'], 4)
+        from probe_control import ProbeController, ProbeControlError
+        owner=types.SimpleNamespace(engine=types.SimpleNamespace(
+            get_num_unfinished_requests=lambda:8, get_num_queued_tokens=lambda:0))
+        snapshot={'ranks':[{'rank':r,'counters':self.probe.counters()} for r in range(4)]}
+        self.assertTrue(ProbeController._eligibility(owner,snapshot,8)['proved'])
+        owner.engine.get_num_unfinished_requests=lambda:7
+        with self.assertRaises(ProbeControlError):
+            ProbeController._eligibility(owner,snapshot,8)
+
+    def test_empty_mutations_and_missing_fields_clear_evidence(self):
+        mutations = [('finished_req_ids', {'fixture'}), ('scheduled_new_reqs', [object()]),
+            ('preempted_req_ids', {'fixture'}), ('kv_cache_block_copies', [object()]),
+            ('new_block_ids_to_zero', [1]), ('block_table_updates', {'fixture': ()}),
+            ('kv_connector_metadata', object()), ('has_sync_kv_loads', True)]
+        for name, value in mutations:
+            with self.subTest(name=name):
+                self.probe.check_batch(8,8,1,batch_state(8)); self.probe.check_route(desc())
+                output=noop_scheduler_output();setattr(output,name,value)
+                graph_hooks.check_empty(self.runner,output)
+                self.assertIsNone(self.probe.batch_observations['last'])
+                graph_hooks.check_empty(self.runner,noop_scheduler_output())
+                self.assertIsNone(self.probe.batch_observations['last'])
+        self.probe.check_batch(8,8,1,batch_state(8))
+        output=noop_scheduler_output();del output.finished_req_ids
+        graph_hooks.check_empty(self.runner,output)
+        self.assertIsNone(self.probe.batch_observations['last'])
+
+    def test_noop_does_not_hide_prefill_or_nonfull_dispatch(self):
+        self.probe.check_batch(8,8,1,batch_state(8, prefill=True))
+        self.probe.check_route(desc())
+        graph_hooks.check_empty(self.runner,noop_scheduler_output())
+        self.assertFalse(self.probe.batch_observations['last']['decode_only'])
+        self.probe.check_batch(8,8,1,batch_state(8))
+        self.probe.check_route(desc(mode='none'))
+        graph_hooks.check_empty(self.runner,noop_scheduler_output())
+        self.assertFalse(self.probe.batch_observations['last']['full_graph'])
+
+    def test_split_empty_still_invalidates(self):
+        self.probe.transition('split')
+        with self.assertRaises(DecodeProbeInvalidated):
+            graph_hooks.check_empty(self.runner,noop_scheduler_output())
+        self.assertEqual(self.probe.last_invalidation,'empty_batch')
+
+    def test_scheduler_preemption_is_counted_on_full_and_refused_on_split(self):
+        worker = types.SimpleNamespace(model_runner=self.runner)
+        worker_hooks.observe_scheduler(worker, types.SimpleNamespace(preempted_req_ids={'opaque'}))
+        self.assertEqual(self.probe.batch_observations['preempted_requests'], 1)
+        self.probe.transition('split')
+        with self.assertRaises(DecodeProbeInvalidated):
+            worker_hooks.observe_scheduler(worker, types.SimpleNamespace(preempted_req_ids={'opaque'}))
+        self.assertEqual(self.probe.last_invalidation, 'preempted_request')
+
+    def test_missing_scheduler_metadata_is_unknown_not_zero(self):
+        self.probe.observe_scheduler(types.SimpleNamespace())
+        self.assertEqual(self.probe.batch_observations['unknown_preemption_observations'], 1)
+        self.probe.observe_scheduler(types.SimpleNamespace(preempted_req_ids=None))
+        self.assertEqual(self.probe.batch_observations['unknown_preemption_observations'], 1)
+        self.assertEqual(self.probe.batch_observations['scheduler_observations'], 2)
+
+    def test_full_route_records_prefill_and_decode_without_refusing_stock(self):
+        self.probe.check_batch(8, 8, 1, batch_state(8, prefill=True))
+        self.probe.check_route(desc())
+        before = self.probe.counters()['batch_observations']
+        self.assertEqual(before['non_decode_batches'], 1)
+        self.assertFalse(before['last']['decode_only'])
+        self.probe.check_batch(8, 8, 1, batch_state(8))
+        self.probe.check_route(desc())
+        after = self.probe.counters()['batch_observations']
+        self.assertEqual(after['decode_batches'], 1)
+        self.assertTrue(after['last']['decode_only'])
+        self.assertTrue(after['last']['full_graph'])
+        before['last']['decode_only'] = 'tampered'
+        self.assertTrue(self.probe.counters()['batch_observations']['last']['decode_only'])
+        self.assertEqual(self.probe.route, 'full')
+
+    def test_empty_full_batch_clears_stale_eligibility(self):
+        self.probe.check_batch(8, 8, 1, batch_state(8))
+        graph_hooks.check_empty(self.runner, types.SimpleNamespace(total_num_scheduled_tokens=0))
+        self.assertIsNone(self.probe.counters()['batch_observations']['last'])
+        self.assertEqual(self.probe.batch_observations['empty_batches'], 1)
+
+    def test_real_worker_barrier_binds_epoch_and_drains_without_transition(self):
+        worker = types.SimpleNamespace(model_runner=self.runner, rank=0)
+        with patch.dict(os.environ, self.env):
+            ack = worker_hooks.decode_probe_rpc(worker, {'action':'barrier','engine_epoch':9})
+            self.assertGreater(ack['drained_streams'], 0)
+            self.assertEqual(ack['ack'], 'flash_s5_probe_barrier')
+            self.assertEqual(ack['route_generation'], 0)
+            self.assertEqual(self.probe.route, 'full')
+            with self.assertRaises(native_startup.NativeStartupError):
+                worker_hooks.decode_probe_rpc(worker, {'action':'barrier','engine_epoch':10})
+
+    def test_barrier_pending_sampling_refuses_and_drain_failure_quarantines(self):
+        worker = types.SimpleNamespace(model_runner=self.runner, rank=0)
+        with patch.dict(os.environ, self.env):
+            self.runner.execute_model_state = object()
+            with self.assertRaises(native_startup.NativeStartupError):
+                worker_hooks.decode_probe_rpc(worker, {'action':'barrier','engine_epoch':9})
+            self.runner.execute_model_state = None
+            with patch.object(self.probe.controller, 'drain', side_effect=RuntimeError('drain failed')):
+                with self.assertRaises(RuntimeError):
+                    worker_hooks.decode_probe_rpc(worker, {'action':'barrier','engine_epoch':9})
+            self.assertEqual(self.probe.quarantined, 'diagnostic barrier failed')
+
+
 class CaptureObservationTests(unittest.TestCase):
     def setUp(self):
         self.env = {PROBE_ENV: '1'}
@@ -783,6 +1112,12 @@ class CaptureObservationTests(unittest.TestCase):
         self.assertNotIn(str(self.stream.cuda_stream), json.dumps(record))
         with self.assertRaisesRegex(DecodeProbeError, 'duplicate'):
             self.check()
+
+    def test_native_observer_checks_split_capture_stream(self):
+        self.env = {PROBE_ENV:'0', 'FLASH_S5_OVERLAP':'1',
+                    'FLASH_S5_REPLAY_OBSERVER':'1'}
+        self.assertIs(self.check(), self.stream)
+        self.assertEqual(len(self.manager._flash_s5_capture_stream_checks), 1)
 
     def test_each_observed_stream_must_match_the_owner(self):
         wrong = types.SimpleNamespace(cuda_stream=42)

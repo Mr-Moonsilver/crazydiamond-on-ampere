@@ -36,7 +36,7 @@ CAPTURE_REFERENCE_PINS = {
 
 # executor_hooks.generate_worker output (C's RPC methods); the worker seams
 # compose after C in the overlay, so that composition is an accepted input too.
-WORKER_AFTER_C_SHA256 = '237d6c700f240867adc22b714be4da4ee04d8dba3bbfc50ebc4d45502fbddecc'
+WORKER_AFTER_C_SHA256 = '4bda8ffb267e3f66874e7ffc13c35aeac23f738c0c5cf11a617e5a71f6b9bbca'
 ACCEPTED = {path: (digest,) for path, digest in PINS.items()}
 ACCEPTED['v1/worker/gpu_worker.py'] = (PINS['v1/worker/gpu_worker.py'], WORKER_AFTER_C_SHA256)
 
@@ -55,10 +55,14 @@ _W_RUNNER_NEW = _W_RUNNER_OLD + '            _flash_s5_worker.after_runner_init(
 
 _W_SAMPLE_OLD = '        return self.model_runner.sample_tokens(grammar_output)\n'
 _W_SAMPLE_NEW = ('        with _flash_s5_worker.decode_scope(self):\n'
+                 '            _flash_s5_worker.observe_sample(self)\n'
                  '            return self.model_runner.sample_tokens(grammar_output)\n'
                  '\n'
                  '    def flash_s5_decode_probe(self, command):\n'
-                 '        return _flash_s5_worker.decode_probe_rpc(self, command)\n')
+                 '        return _flash_s5_worker.decode_probe_rpc(self, command)\n'
+                 '\n'
+                 '    def flash_s5_native_overlap(self, command):\n'
+                 '        return _flash_s5_worker.native_overlap_rpc(self, command)\n')
 
 _W_EXEC_OLD = ('    @torch.inference_mode()\n'
                '    @with_gpu_sync_check\n'
@@ -66,6 +70,7 @@ _W_EXEC_OLD = ('    @torch.inference_mode()\n'
                '        self, scheduler_output: "SchedulerOutput"\n'
                '    ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:\n')
 _W_EXEC_NEW = (_W_EXEC_OLD +
+               '        _flash_s5_worker.observe_scheduler(self, scheduler_output)\n'
                '        with _flash_s5_worker.decode_scope(self):\n'
                '            return self._flash_s5_stock_execute_model(scheduler_output)\n'
                '\n'
@@ -253,6 +258,8 @@ def after_runner_init(worker, env=None):
         with open(lib, 'rb') as handle:
             if hashlib.sha256(handle.read()).hexdigest() != digest:
                 raise ValueError('decode probe helper library pin differs')
+    from observer_runtime import start_worker_observer
+    observer = start_worker_observer(worker, runner, env)
     from green_context import open_split
 
     device = getattr(worker, 'device', None)
@@ -261,15 +268,23 @@ def after_runner_init(worker, env=None):
         import torch
 
         index = torch.cuda.current_device()
-    split = open_split(int(index), env=env)
+    split = None
     try:
+        split = open_split(int(index), env=env)
         if not split.membership().ok:
             raise ValueError('green split membership failed')
     except BaseException:
-        split.close()
+        if split is not None:
+            split.close()
+        if observer is not None:
+            observer.shutdown()
         raise
     runner._flash_s5_split = split
     runner._flash_s5_native_identity = split.describe()
+    if _enabled(env):
+        from native_overlap_worker import install_census
+
+        install_census(runner)
     return split
 
 
@@ -302,7 +317,9 @@ def decode_scope(worker):
 
 __all__ = ['ACCEPTED', 'CUDAGRAPH_FORWARD', 'PINS', 'PROBE_ENV', 'WORKER_AFTER_C_SHA256', 'TRANSFORMS', 'WORKER_FORWARD', 'after_runner_init',
            'capture_context', 'decode_scope', 'generate', 'generate_one',
-           'install_split_bank', 'prefill_workspace_lane', 'revert_one', 'workspace_lanes']
+           'install_split_bank', 'native_overlap_rpc', 'observe_sample',
+           'observe_scheduler', 'prefill_workspace_lane', 'revert_one',
+           'workspace_lanes']
 
 
 def decode_probe_rpc(worker, command):
@@ -323,11 +340,140 @@ def decode_probe_rpc(worker, command):
     if type(getattr(worker, 'rank', None)) is not int:
         raise NativeStartupError('worker rank unavailable')
     action = command.get('action')
+    if action == 'route_invariant':
+        from route_invariant import Snapshot, InvariantUnavailable
+        if (set(command) != {'action','engine_epoch','phase'}
+                or command['engine_epoch'] != getattr(probe, '_rpc_engine_epoch', None)
+                or command['phase'] not in ('capture','entered','measured','returned')):
+            raise NativeStartupError('route invariant identity differs')
+        probe._require_not_down()
+        if (probe.in_flight or getattr(runner, 'execute_model_state', None) is not None
+                or not probe.controller.admitting):
+            raise NativeStartupError('route invariant requires completed sampling')
+        drained=probe.controller.drain()
+        if type(drained) is not int or drained<=0:
+            raise NativeStartupError('route invariant drain unproved')
+        phase=command['phase']
+        expected_route='full' if phase in ('capture','returned') else 'split'
+        if probe.route!=expected_route:
+            raise NativeStartupError('route invariant wrong boundary')
+        if phase=='capture':
+            if getattr(probe,'_byte_snapshot',None) is not None:
+                raise NativeStartupError('route snapshot already owned')
+            try:
+                probe._byte_snapshot=Snapshot(probe)
+                probe._byte_snapshot_missing=None
+            except (InvariantUnavailable, AttributeError) as exc:
+                probe._byte_snapshot=None
+                probe._byte_snapshot_missing=(str(exc) if isinstance(exc,InvariantUnavailable)
+                                              else 'route-invariant-source-unavailable')
+            result={'schema':1,'phase':phase,'verdict':'INCONCLUSIVE' if probe._byte_snapshot is None else 'PASS',
+                    'missing':probe._byte_snapshot_missing}
+        else:
+            snap=getattr(probe,'_byte_snapshot',None)
+            result=(snap.check(phase) if snap is not None else
+                    {'schema':1,'phase':phase,'verdict':'INCONCLUSIVE',
+                     'missing':getattr(probe,'_byte_snapshot_missing','snapshot-not-captured')})
+            if phase=='returned':probe._byte_snapshot=None
+        return dict(result,rank=worker.rank,ack='flash_s5_route_invariant',
+                    engine_epoch=command['engine_epoch'],storage_epoch=probe.storage_epoch,route_generation=probe.route_generation,
+                    route=probe.route,drained_streams=drained)
+    if action == 'teacher_evidence':
+        from teacher_decode import worker_evidence
+        if (set(command) != {'action', 'engine_epoch'}
+                or type(command['engine_epoch']) is not int or command['engine_epoch'] < 1
+                or command['engine_epoch'] != getattr(probe, '_rpc_engine_epoch', None)):
+            raise NativeStartupError('teacher evidence identity differs')
+        probe._require_not_down()
+        if (probe.in_flight or getattr(runner, 'execute_model_state', None) is not None
+                or not getattr(probe.controller, 'admitting', False)):
+            raise NativeStartupError('teacher evidence requires completed sampling')
+        drained = probe.controller.drain()
+        if type(drained) is not int or drained <= 0:
+            raise NativeStartupError('teacher evidence drain unproved')
+        return dict(worker_evidence(runner), rank=worker.rank,
+                    ack='flash_s5_teacher_evidence', engine_epoch=command['engine_epoch'],
+                    storage_epoch=probe.storage_epoch, route_generation=probe.route_generation,
+                    route=probe.route, drained_streams=drained)
+    if action == 'teacher_configure':
+        from teacher_decode import configure_worker
+        if (set(command) != {'action', 'engine_epoch', 'enabled', 'snapshot_max_bytes'}
+                or type(command['snapshot_max_bytes']) is not int
+                or not 64*1024**2<=command['snapshot_max_bytes']<=2*1024**3
+                or type(command['enabled']) is not bool
+                or type(command['engine_epoch']) is not int
+                or command['engine_epoch'] < 1
+                or command['engine_epoch'] != getattr(probe, '_rpc_engine_epoch', None)):
+            raise NativeStartupError('teacher configuration identity differs')
+        probe._require_not_down()
+        if (probe.route != 'full' or probe.in_flight
+                or getattr(runner, 'execute_model_state', None) is not None
+                or not getattr(probe.controller, 'admitting', False)
+                or getattr(getattr(runner, 'req_states', None), 'req_id_to_index', None) != {}):
+            raise NativeStartupError('teacher configuration needs empty full worker')
+        try:
+            drained = probe.controller.drain()
+            if type(drained) is not int or drained <= 0:
+                raise NativeStartupError('teacher configuration drain unproved')
+            result = configure_worker(runner, command['enabled'], rank=worker.rank)
+            probe._snapshot_max_bytes=command['snapshot_max_bytes']
+            result['snapshot_max_bytes']=command['snapshot_max_bytes']
+        except BaseException:
+            probe.quarantined = 'teacher configuration failed'
+            raise
+        return dict(result, rank=worker.rank, ack='flash_s5_teacher_configure',
+                    engine_epoch=command['engine_epoch'], drained_streams=drained)
     if action == 'status':
         if set(command) != {'action'}:
             raise NativeStartupError('status has unexpected fields')
         return {'rank': worker.rank, 'inventory': probe.inventory(),
                 'counters': probe.counters(), 'memory': probe.memory_snapshot()}
+    if action in ('observer_begin', 'observer_end','launch_begin','launch_end'):
+        fields = ({'action', 'engine_epoch', 'run_id', 'window_id'}
+                  if action in ('observer_begin', 'observer_end') else {'action', 'engine_epoch'})
+        if set(command) != fields:
+            raise NativeStartupError('observer fields differ')
+        owner = getattr(runner, '_flash_s5_replay_observer', None)
+        if owner is None:
+            raise NativeStartupError('observer is not declared')
+        epoch = command['engine_epoch']
+        bound = getattr(probe, '_rpc_engine_epoch', None)
+        if type(epoch) is not int or epoch < 1 or bound != epoch:
+            raise NativeStartupError('observer engine epoch is not bound by a prior barrier')
+        try:
+            if action=='launch_begin':return owner.launch_begin(probe,epoch)
+            if action=='launch_end':return owner.launch_end(probe,epoch)
+            if action == 'observer_begin':
+                return owner.begin(probe, epoch, run_id=command['run_id'], window_id=command['window_id'])
+            if owner.window_identity is not None and owner.window_identity != (command['run_id'], command['window_id']):
+                raise NativeStartupError('observer window identity changed')
+            return owner.end(probe, epoch)
+        except BaseException:
+            probe.quarantined = 'diagnostic observer operation failed'
+            raise
+    if action == 'barrier':
+        if set(command) != {'action', 'engine_epoch'}:
+            raise NativeStartupError('barrier fields differ')
+        epoch = command['engine_epoch']
+        if type(epoch) is not int or epoch < 1:
+            raise NativeStartupError('barrier needs positive engine epoch')
+        bound = getattr(probe, '_rpc_engine_epoch', None)
+        if bound is not None and epoch != bound:
+            raise NativeStartupError('barrier engine epoch changed')
+        probe._require_not_down()
+        if (probe.in_flight or getattr(runner, 'execute_model_state', None) is not None
+                or not getattr(probe.controller, 'admitting', False)):
+            raise NativeStartupError('barrier has unresolved worker work')
+        try:
+            drained = probe.controller.drain()
+        except BaseException:
+            probe.quarantined = 'diagnostic barrier failed'
+            raise
+        probe._rpc_engine_epoch = epoch
+        return {'rank': worker.rank, 'ack': 'flash_s5_probe_barrier',
+                'mode': 'decode-only-probe', 'engine_epoch': epoch,
+                'storage_epoch': probe.storage_epoch, 'route': probe.route,
+                'route_generation': probe.route_generation, 'drained_streams': drained}
     if action != 'transition':
         raise NativeStartupError('unknown decode probe RPC action')
     expected = {'action', 'engine_epoch', 'expected_route_generation', 'route_generation',
@@ -347,16 +493,55 @@ def decode_probe_rpc(worker, command):
     return ack
 
 
+def observe_scheduler(worker, scheduler_output):
+    runner = getattr(worker, 'model_runner', None)
+    probe = getattr(runner, '_flash_s5_decode_probe', None)
+    if probe is not None:
+        probe.observe_scheduler(scheduler_output)
+    # The native lane has its own dispatch census; it never reuses the probe's
+    # (the probe refuses a runner that carries the native lane).
+    census = getattr(runner, '_flash_s5_native_census', None)
+    if census is not None:
+        census.observe_scheduler(scheduler_output)
+
+
+def observe_sample(worker):
+    census = getattr(getattr(worker, 'model_runner', None),
+                     '_flash_s5_native_census', None)
+    if census is not None:
+        census.observe_sample()
+
+
+def native_overlap_rpc(worker, command):
+    """Typed native-control RPC at the worker's ordinary ordered RPC boundary.
+
+    All state stays on the worker: this handler only queries the worker's own
+    constructed lane and runner rows, or delegates an exact qualification
+    action to ``native_qualification.handle_worker``.  It owns no engine queue
+    and never reports a completion that was not queried.
+    """
+    from native_overlap_worker import handle
+
+    return handle(worker, command)
+
+
 def capture_graph(manager, *, torch_module=None):
-    """Retain raw split graphs for the diagnostic's required node audit only."""
+    """Retain raw graphs when a declared observer will bind the split bank."""
     if torch_module is None:
         import torch as torch_module
-    retained = (os.environ.get(PROBE_ENV, '0') == '1'
-                and getattr(manager, '_flash_s5_capture_context', None) is not None)
+    retained = _retained_graph_capture(manager)
     if retained:
         manager._flash_s5_keep_graphs = True
         return torch_module.cuda.CUDAGraph(keep_graph=True)
     return torch_module.cuda.CUDAGraph()
+
+
+def _retained_graph_capture(manager):
+    if os.environ.get(PROBE_ENV, '0') == '1':
+        return True
+    return (os.environ.get('FLASH_S5_OVERLAP', '0') == '1'
+            and os.environ.get('FLASH_S5_REPLAY_OBSERVER', '0') == '1'
+            and getattr(manager, '_flash_s5_capture_context', None) is not None)
 
 
 def finish_graph(manager, graph):
@@ -372,7 +557,7 @@ def checked_capture_stream(manager, vllm_stream, descriptor, *, torch_module=Non
     again, repair its cache or change streams here. Stock/default-off is an
     identity function with no torch/driver queries. Native handles stay private.
     """
-    if (os.environ.get(PROBE_ENV, '0') != '1'
+    if (not _retained_graph_capture(manager)
             or getattr(manager, '_flash_s5_capture_context', None) is None):
         return vllm_stream
     from decode_probe import DecodeProbeError

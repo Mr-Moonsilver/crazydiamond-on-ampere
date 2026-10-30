@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "version": 4,
+  "policy": "control-envelope-v4",
+  "authority": "operator authorization in the Worker A rule4 work package (27 Oct 2026)",
+  "scope": "full12 calibration only; never retroactive qualification",
+  "source_receipt": "q17b-full12-receipts/clients/teacher-forced.json",
+  "source_sha256": "a6d830af15d58598f8dd95e053214ca3511266048dec13ae8f5dd60f860901fc",
+  "source_bytes": 61742155,
+  "geometry": {
+    "N": 2048,
+    "streams": 8,
+    "positions": 256
+  },
+  "evidence_schema": "s5-teacher-decode/2",
+  "evidence_rule_version": 3,
+  "control_pairs": [
+    ["full-A1", "full-A2"],
+    ["full-A2", "full-C"]
+  ],
+  "controls": {
+    "full-A1|full-A2": {
+      "winners": 0.5495443940162659,
+      "top5": 0.7004556655883789,
+      "shared_info": 5.48369026184082,
+      "flip_margin": 0.4375,
+      "flips": 768
+    },
+    "full-A2|full-C": {
+      "winners": 0.38385462760925293,
+      "top5": 0.39290809631347656,
+      "shared_info": 4.618258476257324,
+      "flip_margin": 0.375,
+      "flips": 678
+    }
+  },
+  "envelope": {
+    "winners": 0.549545,
+    "top5": 0.700456,
+    "shared_info": 5.483691,
+    "flip_margin": 0.4375,
+    "flips": 768
+  },
+  "envelope_rounding": "ceil to 1e-6 for continuous metrics",
+  "floors": {
+    "winners": 0.375,
+    "top5": 0.5,
+    "shared_info": 0.5,
+    "flip_margin": 0.375
+  },
+  "caps": {
+    "winners": 1.22409,
+    "top5": 1.525912,
+    "shared_info": 11.092382,
+    "flip_margin": 1.0,
+    "flips": 1577
+  },
+  "factor": 2.0,
+  "offset": 0.125,
+  "flip_offset": 41,
+  "metric_definitions": {
+    "winners": "symmetric absolute delta over both greedy winners",
+    "top5": "max absolute delta over the union of both top-5 sets, v3 stable ascending selection over response insertion order",
+    "shared_info": "max absolute delta over the intersection of both top-20 sets",
+    "flip_margin": "maximum of both directional score margins of a greedy flip",
+    "flips": "count of coordinates whose greedy winner differs"
+  },
+  "extraction": {
+    "record_count": 2048,
+    "top5_selection": "sorted(seq, key=value)[-5:] over response insertion order (v3 semantics)",
+    "flip_margin": "max(left winner margin, right winner margin) over both directions",
+    "note": "recomputed directly from evidence.runs[*].positions[*].top/top_order in the pinned receipt; the client summary was not used"
+  }
+}

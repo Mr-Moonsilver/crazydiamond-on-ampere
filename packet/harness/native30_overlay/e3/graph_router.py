@@ -747,6 +747,102 @@ class ReplayResult:
         return f'ReplayResult(lease={self.lease!r})'
 
 
+@dataclass(frozen=True, repr=False)
+class NativeDecodeRoute:
+    """Typed decision for one ordinary decode step under the retained owner.
+
+    It carries no request transaction and no per-step OperationTicket: only the
+    engine epoch, worker incarnation, persistent decode storage epoch and the
+    route generation bound by E's bootstrap.  ``mode='ordinary'`` means the
+    stock full-GPU manager remains the exact route; ``mode='split'`` names the
+    actual split bank that must replay the descriptor.
+    """
+    mode: str
+    bank: str | None
+    descriptor: ExecutionDescriptor
+    context_id: int
+    pool_id: int
+    storage_epoch: int
+    route_generation: int
+    engine_epoch: int
+    worker_rank: int
+    incarnation: str = field(repr=False)
+    reason: str = ''
+
+    def __post_init__(self):
+        if self.mode not in ('split', 'ordinary'):
+            raise GraphRoutingError(f'unknown native decode route mode {self.mode!r}')
+        if type(self.descriptor) is not ExecutionDescriptor:
+            raise GraphRoutingError('native decode route needs an ExecutionDescriptor')
+        if self.mode == 'split':
+            if not isinstance(self.bank, str) or not self.bank:
+                raise GraphRoutingError('native split route names a bank')
+        elif self.bank is not None:
+            raise GraphRoutingError('native ordinary route names no bank')
+        _int('context_id', self.context_id)
+        _int('pool_id', self.pool_id)
+        _int('storage_epoch', self.storage_epoch, 1)
+        _int('route_generation', self.route_generation)
+        _int('engine_epoch', self.engine_epoch, 1)
+        _int('worker_rank', self.worker_rank)
+        _text('incarnation', self.incarnation)
+        if self.reason:
+            _text('reason', self.reason)
+
+    def __repr__(self):
+        return (f'NativeDecodeRoute(mode={self.mode!r}, bank={self.bank!r}, '
+                f'descriptor={descriptor_name(self.descriptor)!r}, '
+                f'storage_epoch={self.storage_epoch}, '
+                f'route_generation={self.route_generation}, '
+                f'engine_epoch={self.engine_epoch}, rank={self.worker_rank}, '
+                f'incarnation=<len {len(self.incarnation)}>)')
+
+
+@dataclass(frozen=True)
+class NativeReplayLease:
+    """One host-submitted native decode replay awaiting its queried event.
+
+    Unlike :class:`ReplayLease` it has no request transaction and no operation
+    ticket: the persistent decode storage owner is the identity.  Completion is
+    only ever a queried CUDA event (see :meth:`GraphRouter.poll_native_replays`).
+    """
+    lease_id: int
+    bank_name: str
+    key: GraphKey
+    context_id: int
+    stream_token: int
+    host_submit_seq: int
+    storage_epoch: int
+    engine_epoch: int
+    route_generation: int
+
+    def __post_init__(self):
+        _int('lease_id', self.lease_id, 1)
+        _text('bank_name', self.bank_name)
+        if type(self.key) is not GraphKey:
+            raise GraphRoutingError('native lease needs a GraphKey')
+        _int('context_id', self.context_id)
+        _int('stream_token', self.stream_token)
+        _int('host_submit_seq', self.host_submit_seq, 1)
+        _int('storage_epoch', self.storage_epoch, 1)
+        _int('engine_epoch', self.engine_epoch, 1)
+        _int('route_generation', self.route_generation)
+
+
+@dataclass(frozen=True, repr=False)
+class NativeReplayResult:
+    """A native replay enqueue plus its opaque engine output."""
+    lease: NativeReplayLease
+    output: object = field(compare=False, repr=False)
+
+    def __post_init__(self):
+        if type(self.lease) is not NativeReplayLease:
+            raise GraphRoutingError('native replay result needs a NativeReplayLease')
+
+    def __repr__(self):
+        return f'NativeReplayResult(lease={self.lease!r})'
+
+
 @dataclass(frozen=True)
 class TimingRecord:
     """Lane-local timing, created only after a recorded completion proof."""
@@ -964,7 +1060,7 @@ class GraphRouter:
                  backend=None, full_context_id, full_pool_id,
                  full_allocated_bytes=GRAPH_POOL_MEASURED_BYTES,
                  full_basis='measured', reserve_required_bytes=0,
-                 transport_release=None):
+                 transport_release=None, max_native_pending=8):
         if type(worker) is not WorkerState:
             raise GraphRoutingError('router needs A\'s WorkerState')
         if type(decode_handle) is not LaneHandle:
@@ -984,6 +1080,11 @@ class GraphRouter:
         self.compilation = compilation
         self.engine_epoch = (worker.engine_epoch if engine_epoch is None
                              else _int('engine_epoch', engine_epoch))
+        if engine_epoch is not None and worker.engine_bound and engine_epoch != worker.engine_epoch:
+            raise GraphRoutingError('router engine epoch differs from the bound worker')
+        # An unbound worker/router cannot authorise a route until the engine's
+        # bootstrap binds this incarnation exactly once.
+        self._engine_bound = bool(worker.engine_bound)
         if backend is not None:
             for method in _BACKEND_METHODS:
                 if not callable(getattr(backend, method, None)):
@@ -1015,6 +1116,44 @@ class GraphRouter:
         self._shutdown_pending = False
         self._shutdown_record = None
         self._pending_descriptors = {}
+        self._pending_context_factories = {}
+        # Native retained-storage replays: no transaction, no ticket, one real
+        # CUDA event each.  ``_native_pending`` is bounded so an unpolled worker
+        # applies backpressure instead of accumulating unknown work.
+        self._native_pending = {}
+        self._native_submitted = 0
+        self._native_completion_seq = 0
+        self.max_native_pending = _int('max_native_pending', max_native_pending, 1)
+        # The worker's queried census of actually completed split replays under
+        # its persistent decode storage.  Transitions are fenced on this value.
+        self.replay_watermark = 0
+
+    @property
+    def route_generation(self):
+        """Local route generation; every applied transition advances it by one."""
+        return self._transition_seq
+
+    # --- engine owner ----------------------------------------------------
+    @property
+    def engine_owner_bound(self):
+        return self._engine_bound
+
+    def bind_engine_owner(self, engine_epoch, *, incarnation=None):
+        """Bind this router to the engine owner once, after A bound the worker."""
+        _int('engine_epoch', engine_epoch, 1)
+        if incarnation is not None and incarnation != self.worker.incarnation:
+            raise GraphRoutingError('engine owner names a foreign worker incarnation')
+        if not self.worker.engine_bound:
+            raise GraphRoutingError('worker engine owner is not bound')
+        if engine_epoch != self.worker.engine_epoch:
+            raise GraphRoutingError('router engine epoch differs from the worker owner')
+        if self._engine_bound:
+            if engine_epoch == self.engine_epoch:
+                return self.engine_epoch
+            raise GraphRoutingError('router is already bound to another engine epoch')
+        self.engine_epoch = engine_epoch
+        self._engine_bound = True
+        return self.engine_epoch
 
     # --- inventory / capture --------------------------------------------
     @property
@@ -1026,14 +1165,21 @@ class GraphRouter:
         """'ordinary' (full GPU) or a registered split bank name."""
         return self.current_mode
 
-    def add_bank(self, name, context, descriptors=()):
-        """Declare and register one split bank before startup capture."""
+    def add_bank(self, name, context, descriptors=(), *, context_factory=None):
+        """Declare and register one split bank before startup capture.
+
+        ``context_factory`` (optional) returns the freshly measured context
+        after capture; the router validates that its identity/pool/stream agree
+        and records the measured bytes in place of the pre-capture estimate.
+        """
         self._require_ready()
         _text('name', name)
         if name == 'ordinary':
             raise GraphRoutingError("'ordinary' is reserved for the full-GPU route")
         if name in self.banks:
             raise GraphRoutingError('graph bank already registered')
+        if context_factory is not None and not callable(context_factory):
+            raise GraphRoutingError('bank context factory must be callable')
         if type(context) is not ExecutionContext:
             raise GraphRoutingError('bank needs an ExecutionContext')
         if self.calibrated:
@@ -1066,6 +1212,7 @@ class GraphRouter:
         self.banks[name] = bank
         self.pools[context.pool_id] = pool
         self._pending_descriptors[name] = descriptors
+        self._pending_context_factories[name] = context_factory
         return bank
 
     def capture_at_startup(self, descriptors=None):
@@ -1081,6 +1228,19 @@ class GraphRouter:
             declared = self._pending_descriptors[name]
             try:
                 bank.capture(declared)
+                factory = self._pending_context_factories.get(name)
+                if factory is not None:
+                    measured = factory()
+                    if type(measured) is not ExecutionContext:
+                        raise GraphRoutingError('bank context factory did not return an ExecutionContext')
+                    if (measured.context_id, measured.pool_id, measured.stream_token,
+                            measured.measured_sm) != (
+                            bank.context.context_id, bank.context.pool_id,
+                            bank.context.stream_token, bank.context.measured_sm):
+                        raise GraphRoutingError('measured split context changed identity')
+                    bank.context = measured
+                    bank.pool.context = measured
+                    bank.allocated_bytes = measured.reserved_bytes
             except BaseException:
                 self.state = 'quarantined'
                 self._quarantine = f'capture failed in bank {name!r}'
@@ -1177,6 +1337,166 @@ class GraphRouter:
         self._pending[lease_id] = (lease, bank)
         return ReplayResult(lease, output)
 
+    # --- native retained-storage decode ---------------------------------
+    def _require_native_owner(self):
+        """The persistent storage owner bound once by E's bootstrap."""
+        self._require_ready()
+        if not self._engine_bound or not getattr(self.worker, 'engine_bound', False):
+            raise E3Pending('native decode route before the engine owner is bound')
+        if self.engine_epoch != self.worker.engine_epoch:
+            raise GraphUnclean('router and worker name different engine epochs')
+        owner = getattr(self.worker, 'decode_owner', None)
+        if owner is None:
+            raise GraphUnclean('native decode route has no persistent storage owner')
+        if owner.lane_id != self.handle.lane_id:
+            raise GraphUnclean('persistent decode storage owner changed; graph storage is stale')
+        if self.worker.decode.state != 'retained':
+            raise GraphUnclean('decode storage is not persistently retained')
+        self._require_decode_lane()
+        return owner
+
+    def native_decode_route(self, descriptor):
+        """Typed, transaction-free route for one ordinary decode SchedulerOutput.
+
+        Returns ``None`` only for a declared no-op: a non-FULL descriptor while
+        the full route is restored and no prefill is parked (stock piecewise or
+        eager decode remains untouched).  Anything unsupported on the split
+        route raises; there is no silent stock fallback on a green stream.
+        """
+        owner = self._require_native_owner()
+        if type(descriptor) is not ExecutionDescriptor:
+            raise GraphRoutingError('native decode route needs an ExecutionDescriptor')
+        if descriptor.cg_mode != 'full':
+            if self.current_mode == 'ordinary' and self.worker.active_prefill is None:
+                return None
+            raise UnsupportedRoute(
+                'non-FULL descriptor cannot dispatch on the retained split route')
+        if descriptor.num_tokens == 0:
+            # Declared no-op: the stock engine returns before any graph dispatch.
+            return None
+        prefill_active = self.worker.active_prefill is not None
+        if self.current_mode == 'ordinary':
+            if prefill_active:
+                raise UnsupportedRoute(
+                    'full-GPU decode route is not allowed while prefill is active')
+            return NativeDecodeRoute(
+                'ordinary', None, descriptor, self.full_context_id, self.full_pool_id,
+                self.handle.storage_epoch, self._transition_seq, self.engine_epoch,
+                owner.worker_rank, owner.incarnation,
+                'full route restored; stock full-GPU decode')
+        bank = self.banks.get(self.current_mode)
+        if bank is None:
+            raise GraphUnclean('retained route names an unregistered bank')
+        if not bank.ready:
+            raise UnsupportedRoute(f'bank {bank.name!r} is {bank.state}')
+        if bank.graph_for(descriptor, storage_epoch=self.handle.storage_epoch,
+                          worker_rank=self.handle.worker_rank) is None:
+            raise UnsupportedRoute(
+                f'descriptor is not captured in split bank {bank.name!r}')
+        return NativeDecodeRoute(
+            'split', bank.name, descriptor, bank.context.context_id,
+            bank.context.pool_id, self.handle.storage_epoch, self._transition_seq,
+            self.engine_epoch, owner.worker_rank, owner.incarnation,
+            'retained split storage; exact captured descriptor')
+
+    def native_replay(self, descriptor, *, observed_context, observed_stream):
+        """Enqueue the actual split-bank replay and its per-replay event.
+
+        There is no ticket: the returned lease names the persistent storage
+        owner, engine epoch and route generation.  The lease stays pending
+        until :meth:`poll_native_replays` queries its event complete.
+        """
+        decision = self.native_decode_route(descriptor)
+        if decision is None or decision.mode != 'split':
+            raise GraphRoutingError('native split replay requested on the ordinary route')
+        # Retire any already-complete leases first; pending ones stay bounded.
+        self.poll_native_replays()
+        if len(self._native_pending) >= self.max_native_pending:
+            raise E3Pending(
+                f'{len(self._native_pending)} native replay(s) pending; backpressure')
+        bank = self.banks[decision.bank]
+        if type(observed_context) is not int or type(observed_stream) is not int:
+            raise GraphRoutingError('native replay needs C\'s observed context and stream')
+        if (observed_context != bank.context.context_id
+                or observed_stream != bank.context.stream_token):
+            raise GraphRoutingError('native replay would run on the wrong context or stream')
+        graph = bank.graph_for(descriptor, storage_epoch=self.handle.storage_epoch,
+                               worker_rank=self.handle.worker_rank)
+        if graph is None:
+            raise UnsupportedRoute('no captured graph for the dispatched descriptor')
+        backend = self.backend
+        enqueue = getattr(backend, 'replay_with_event', None)
+        if not callable(enqueue):
+            raise GraphRoutingError(
+                'split backend cannot record a per-replay completion event')
+        self._lease_seq += 1
+        self._host_seq += 1
+        lease = NativeReplayLease(
+            self._lease_seq, bank.name, graph.key, bank.context.context_id,
+            bank.context.stream_token, self._host_seq, self.handle.storage_epoch,
+            self.engine_epoch, self._transition_seq)
+        try:
+            output, event = enqueue(graph.handle, graph.key, bank.lane, bank.context)
+        except BaseException:
+            self._quarantine_bank(bank, 'native replay enqueue failed; completion unknown')
+            raise
+        if not callable(getattr(event, 'query', None)):
+            self._quarantine_bank(bank, 'native replay has no queried event')
+            raise GraphRoutingError('native replay needs a real CUDA event')
+        if getattr(event, 'stream_token', None) != bank.context.stream_token:
+            self._quarantine_bank(bank, 'native replay event names another stream')
+            raise GraphRoutingError('native replay event was recorded on another stream')
+        self._native_pending[lease.lease_id] = (lease, bank, event)
+        self._native_submitted += 1
+        return NativeReplayResult(lease, output)
+
+    def poll_native_replays(self, *, limit=None):
+        """Query pending replay events; advance the watermark only on completion."""
+        self._require_ready()
+        if limit is not None and (type(limit) is not int or limit < 1):
+            raise GraphRoutingError('poll limit must be a positive int')
+        completed = []
+        for lease_id in tuple(self._native_pending):
+            if limit is not None and len(completed) >= limit:
+                break
+            lease, bank, event = self._native_pending[lease_id]
+            try:
+                done = event.query()
+            except BaseException as exc:
+                self._quarantine_bank(bank, 'native replay event query failed')
+                raise GraphRoutingError('native replay completion query failed') from exc
+            if type(done) is not bool:
+                self._quarantine_bank(bank, 'native replay event query is not boolean')
+                raise GraphRoutingError('native replay completion query is not a boolean')
+            if not done:
+                continue
+            del self._native_pending[lease_id]
+            self._native_completion_seq += 1
+            self.replay_watermark += 1
+            self._timing.append(TimingRecord(
+                lease.lease_id, lease.context_id, lease.storage_epoch,
+                self.handle.worker_rank, lease.host_submit_seq,
+                self._native_completion_seq, None, 'unmeasured'))
+            completed.append(lease)
+        return tuple(completed)
+
+    @property
+    def native_pending(self):
+        """Unqueried native replay leases; never cleared without a completion."""
+        return len(self._native_pending)
+
+    def native_census(self):
+        """Queried-completion census G can read without a parallel wrapper."""
+        return {
+            'watermark': self.replay_watermark,
+            'pending': len(self._native_pending),
+            'submitted': self._native_submitted,
+            'max_pending': self.max_native_pending,
+            'storage_epoch': self.handle.storage_epoch,
+            'route_generation': self._transition_seq,
+            'engine_epoch': self.engine_epoch,
+        }
+
     def complete_replay(self, lease_or_result, proof, *, gpu_elapsed_ns=None):
         """Release a replay only after C's recorded GPU completion proof."""
         lease, bank = self._pending_lease(lease_or_result)
@@ -1196,6 +1516,7 @@ class GraphRouter:
             _int('gpu_elapsed_ns', gpu_elapsed_ns)
         bank.pool.release(lease.lease_id)
         del self._pending[lease.lease_id]
+        self.replay_watermark += 1
         record = TimingRecord(lease.lease_id, lease.context_id, lease.storage_epoch,
                               self.handle.worker_rank, lease.host_submit_seq,
                               proof.completion_seq, gpu_elapsed_ns,
@@ -1224,15 +1545,21 @@ class GraphRouter:
 
     @property
     def pending_replays(self):
-        return len(self._pending)
+        return len(self._pending) + len(self._native_pending)
 
     def descriptor_coverage(self):
         return {name: bank.coverage for name, bank in self.banks.items()}
 
     # --- transitions ----------------------------------------------------
-    def transition(self, target, authorization):
-        """Switch route only with C's explicit, completed authorization."""
+    def validate_transition(self, target, authorization):
+        """Non-mutating preflight for one route switch; returns ``target``.
+
+        The worker bridge proves the locally drained switch before it touches
+        the stream/bank, so a refused authorization never leaves a half-switch.
+        """
         self._require_ready()
+        if not self._engine_bound:
+            raise GraphRoutingError('route transition before the engine owner is bound')
         if type(authorization) is not TransitionAuthorization:
             raise GraphRoutingError('a transition needs C\'s TransitionAuthorization')
         if authorization.engine_epoch != self.engine_epoch:
@@ -1256,6 +1583,16 @@ class GraphRouter:
         if authorization.target_storage_epoch != self.handle.storage_epoch:
             raise GraphRoutingError('transition names a stale storage epoch')
         self._require_drained('transition')
+        if target == self.current_mode:
+            # The bridge must not acknowledge a switch that changed no bank;
+            # this is checked after the transient drain/capture conditions so
+            # an unquiesced router still reports "pending", not "stale".
+            raise GraphRoutingError('route transition would not change the bank')
+        return target
+
+    def transition(self, target, authorization):
+        """Switch route only with C's explicit, completed authorization."""
+        self.validate_transition(target, authorization)
         source = self.current_mode
         self.current_mode = target
         self._last_transition_seq = authorization.completion_seq
@@ -1357,11 +1694,13 @@ class GraphRouter:
             state = 'shutdown-pending'
         elif self.unclean:
             state = 'quarantined'
-        elif self.worker.decode.outstanding or self.worker.prefill.outstanding:
+        elif (self.worker.decode.outstanding or self.worker.prefill.outstanding
+              or self._native_pending):
             state = 'busy'
         else:
             state = self.state
-        return RouterStatus(state, self.current_mode, len(self._pending),
+        return RouterStatus(state, self.current_mode,
+                            len(self._pending) + len(self._native_pending),
                             len(self.external), bank_states,
                             self._shutdown_pending, self.unclean)
 
@@ -1384,6 +1723,23 @@ class GraphRouter:
         self._quarantine = reason
         self.state = 'quarantined'
 
+    def quarantine(self, reason):
+        """Poison this router's route ownership; never report a partial switch.
+
+        Used by the worker bridge when a transition cannot be proven complete
+        after it started mutating local route state.  Banks keep their graphs
+        and leases: recovery is an operator decision, not a silent fallback.
+        """
+        if self.state == 'destroyed':
+            raise GraphRoutingError('destroyed router cannot be quarantined')
+        reason = _text('reason', reason)
+        for bank in self.banks.values():
+            if bank.state not in ('destroyed', 'quarantined'):
+                bank.quarantine(reason)
+        self._quarantine = reason
+        self.state = 'quarantined'
+        return reason
+
     def _require_ready(self):
         if self.state == 'destroyed':
             raise GraphRoutingError('router is destroyed')
@@ -1395,7 +1751,8 @@ class GraphRouter:
     def _require_decode_lane(self):
         if self.worker.decode.handle is not self.handle:
             raise GraphUnclean('decode lane storage epoch/handle changed; graph storage is stale')
-        if not self.worker.decode.active or self.worker.decode.state not in ('ready', 'in_use'):
+        if not self.worker.decode.active or self.worker.decode.state not in (
+                'retained', 'ready', 'in_use'):
             raise GraphRoutingError('decode lane is not ready for graph replay')
         if self.worker.decode.failed:
             raise GraphUnclean('decode lane is quarantined')
@@ -1403,6 +1760,11 @@ class GraphRouter:
     def _require_drained(self, action):
         if self._pending:
             raise E3Pending(f'{len(self._pending)} replay(s) outstanding before {action}')
+        if self._native_pending:
+            # Native replays join the route's drain: a transition, shutdown or
+            # reuse may not cross an event that has not been queried complete.
+            raise E3Pending(
+                f'{len(self._native_pending)} native replay(s) outstanding before {action}')
         for bank in self.banks.values():
             if bank.pool.active:
                 raise E3Pending(f'graph pool {bank.name!r} still has a user before {action}')
@@ -1421,7 +1783,8 @@ __all__ = [
     'BankBudget', 'CG_MODES', 'CapturedGraph', 'CompilationIdentity', 'DecodeProbeRouter',
     'ExecutionDescriptor', 'ExecutionContext', 'ExternalUsers', 'GraphBank',
     'GraphBudgetReport', 'GraphKey', 'GraphPool', 'GraphRouter', 'GraphRoutingError',
-    'GraphUnclean', 'NoPrefillRoute', 'ProbeGraphKey', 'ReplayLease', 'ReplayResult',
+    'GraphUnclean', 'NativeDecodeRoute', 'NativeReplayLease', 'NativeReplayResult',
+    'NoPrefillRoute', 'ProbeGraphKey', 'ReplayLease', 'ReplayResult',
     'RouteDecision', 'RouterStatus', 'ShutdownRecord', 'TimingRecord',
     'TransitionAuthorization', 'TransitionRecord', 'UnsupportedRoute', 'descriptor_name',
 ]

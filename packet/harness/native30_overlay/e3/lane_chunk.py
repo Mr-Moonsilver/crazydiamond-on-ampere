@@ -128,7 +128,8 @@ class Ports:
     required = ('InputBatch', 'BatchDescriptor', 'MambaHybridAttnMetadata', 'build_attn_metadata',
                 'build_slot_mappings_by_layer', 'create_forward_context', 'override_forward_context',
                 'cudagraph_none', 'align_preprocess', 'mamba_context', 'copy_blocks_inplace',
-                'block_copy', 'new_request', 'pad_slot_id', 'make_buffer')
+                'block_copy', 'new_request', 'pad_slot_id', 'make_buffer',
+                'mamba_groups', 'validate_mamba_copy_funcs')
 
     def __init__(self, **values):
         missing = [name for name in self.required if name not in values]
@@ -152,7 +153,8 @@ class PinnedPorts:
         from vllm.v1.worker.gpu.model_states.mamba_hybrid import (
             MambaHybridAttnMetadata, preprocess_mamba_align_fused_kernel)
         from vllm.v1.utils import CpuGpuBuffer
-        from vllm.v1.worker.mamba_utils import MambaSpecDecodeGPUContext
+        from vllm.v1.worker.mamba_utils import (
+            MambaSpecDecodeGPUContext, get_mamba_groups, validate_mamba_state_copy_funcs)
         from vllm.v1.worker.utils import copy_kv_cache_blocks_inplace
 
         def make_buffer(device):
@@ -175,7 +177,9 @@ class PinnedPorts:
                      mamba_context=MambaSpecDecodeGPUContext,
                      copy_blocks_inplace=copy_kv_cache_blocks_inplace,
                      block_copy=KVCacheBlockCopy, new_request=NewRequestData,
-                     pad_slot_id=PAD_SLOT_ID, make_buffer=make_buffer)
+                     pad_slot_id=PAD_SLOT_ID, make_buffer=make_buffer,
+                     mamba_groups=get_mamba_groups,
+                     validate_mamba_copy_funcs=validate_mamba_state_copy_funcs)
 
 
 # --- persistent lane tables ----------------------------------------------------------
@@ -281,10 +285,30 @@ class LaneRequest:
         states.apply_staged_writes()
         runner.model_state.apply_staged_writes()
         runner.block_tables.apply_staged_writes()
+        # The first chunk is allocated exactly like a later one: its new pages
+        # must be zeroed and its CoW destinations copied before any layer reads
+        # them. Registration alone is not admission.
+        self._apply_allocated_pages(admission)
         self.req_id = admission.request_uid
         self.req_index = req_index
         self.generation = admission.request_generation
         return req_index
+
+    def _apply_allocated_pages(self, admission):
+        """Zero allocation-owned pages and apply CoW copies (shared by all chunks)."""
+        runner = self.runner
+        if admission.new_block_ids_to_zero:
+            zeroer = getattr(runner, 'kv_block_zeroer', None)
+            if zeroer is None:
+                raise LaneChunkError('runner has no KV block zeroer for the new blocks')
+            zeroer.zero_block_ids(list(admission.new_block_ids_to_zero))
+        if admission.cow_pairs:
+            copies = [self.ports.block_copy(src, dst) for src, dst in admission.cow_pairs]
+            self.ports.copy_blocks_inplace(runner.kv_caches, runner.kv_cache_config.num_blocks,
+                                           copies)
+            views = getattr(runner, '_qsa_host_views', None)
+            if views:
+                self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
 
     def update(self, admission):
         if self.req_id != admission.request_uid or self.generation != admission.request_generation:
@@ -299,17 +323,7 @@ class LaneRequest:
             index, tuple(list(row) for row in admission.block_tables), overwrite=True)
         states.apply_staged_writes()
         runner.block_tables.apply_staged_writes()
-        if admission.new_block_ids_to_zero:
-            zeroer = getattr(runner, 'kv_block_zeroer', None)
-            if zeroer is None:
-                raise LaneChunkError('runner has no KV block zeroer for the new blocks')
-            zeroer.zero_block_ids(list(admission.new_block_ids_to_zero))
-        if admission.cow_pairs:
-            copies = [self.ports.block_copy(src, dst) for src, dst in admission.cow_pairs]
-            self.ports.copy_blocks_inplace(runner.kv_caches, runner.kv_cache_config.num_blocks, copies)
-            views = getattr(runner, '_qsa_host_views', None)
-            if views:
-                self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
+        self._apply_allocated_pages(admission)
         self.chunks += 1
         return index
 
@@ -345,8 +359,32 @@ class LaneAlign:
         self.block_size = int(spec.block_size)
         copy_funcs = getattr(state, '_mamba_state_copy_funcs', None)
         if copy_funcs is None:
-            raise LaneChunkError('runner model state has no Mamba copy functions yet')
-        ctx = ports.mamba_context.create(max_num_reqs=1, kv_cache_config=runner.kv_cache_config,
+            # Stock MambaHybridModelState initializes this cache only in the
+            # first real preprocess_state, not initialize_kv_cache. Resolve
+            # the same model descriptors and run the same stock validator
+            # (mamba_hybrid.py:_ensure_align_ctx), but keep them lane-owned:
+            # never initialize/rebind the ordinary context to private tables
+            # and never populate its lazy cache on behalf of ordinary decode.
+            groups = ports.mamba_groups(runner.kv_cache_config)
+            copy_funcs = state.model.get_mamba_state_copy_funcs(
+                {group.mamba_type for group in groups})
+            ports.validate_mamba_copy_funcs(groups, copy_funcs)
+        # The block tables are batch ordered (one admitted row), but the
+        # decision arrays below are request-slot ordered. Stock V2 snapshots
+        # the *whole* accepted-token array before resolving idx_mapping; its
+        # private snapshot must have that same capacity even for one request.
+        # Narrowing only accepted tokens would misindex nonzero request slots.
+        shape = tuple(state.num_accepted_tokens_gpu.shape)
+        if len(shape) != 1 or type(shape[0]) is not int or shape[0] < 1:
+            raise LaneChunkError('Mamba accepted-token buffer has invalid request-slot capacity')
+        self.request_slot_capacity = shape[0]
+        for value in (state._mamba_state_idx_gpu, state._mamba_src_col_gpu,
+                      state._mamba_src_off_gpu,
+                      runner.req_states.num_computed_tokens.gpu):
+            if tuple(value.shape) != shape:
+                raise LaneChunkError('Mamba request-slot decision buffer capacities differ')
+        ctx = ports.mamba_context.create(max_num_reqs=self.request_slot_capacity,
+                                         kv_cache_config=runner.kv_cache_config,
                                          copy_funcs=copy_funcs, device=runner.device,
                                          make_buffer=ports.make_buffer(runner.device))
         forward_context = runner.vllm_config.compilation_config.static_forward_context
@@ -387,6 +425,38 @@ class LaneAlign:
         return True
 
 
+def attach_qsa_host_metadata(metadata, layer_names, query_start_loc_cpu,
+                             seq_lens_cpu, admission):
+    """Carry this admitted chunk's private CPU plan onto its QSA metadata.
+
+    Production QSA's builder copies these same CPU arrays to lists. Native
+    execution requires the plan independently of the ordinary-path opt-in.
+    Device arrays are inspected for shape only; never read back or substituted.
+    """
+    for value in (query_start_loc_cpu, seq_lens_cpu):
+        if value is None or str(getattr(value, 'device', None)) != 'cpu':
+            raise LaneChunkError('QSA host plan requires owned CPU metadata buffers')
+    host = (query_start_loc_cpu.tolist(), seq_lens_cpu.tolist())
+    expected = ([0, admission.num_tokens], [admission.chunk_end])
+    if host != expected or any(type(x) is not int for row in host for x in row):
+        raise LaneChunkError('QSA host plan differs from the admitted chunk')
+    if not isinstance(metadata, dict) or not layer_names:
+        raise LaneChunkError('QSA host plan needs the actual named layer metadata')
+    for name in layer_names:
+        md = metadata.get(name)
+        starts = getattr(md, 'query_start_loc', None)
+        lengths = getattr(md, 'seq_lens', None)
+        if (starts is None or lengths is None
+                or tuple(starts.shape) != (2,) or tuple(lengths.shape) != (1,)
+                or getattr(md, 'num_actual_tokens', None) != admission.num_tokens):
+            raise LaneChunkError('QSA main metadata does not describe the admitted chunk')
+        prior = getattr(md, '_qsa_host_meta', None)
+        if prior is not None and prior != host:
+            raise LaneChunkError('QSA main metadata already carries a different CPU plan')
+        md._qsa_host_meta = host
+    return host
+
+
 class LaneChunk:
     """Private inputs, metadata and forward context for one admitted chunk."""
 
@@ -403,13 +473,15 @@ class LaneChunk:
         self.positions = torch.arange(admission.chunk_start, admission.chunk_end, dtype=torch.int64,
                                       device=device)
         self.query_start_loc = torch.tensor([0, n], dtype=torch.int32, device=device)
-        self.query_start_loc_cpu = torch.tensor([0, n], dtype=torch.int32)
+        self.query_start_loc_cpu = torch.tensor([0, n], dtype=torch.int32, device='cpu')
         self.seq_lens = torch.tensor([admission.chunk_end], dtype=torch.int32, device=device)
-        self.seq_lens_cpu = torch.tensor([admission.chunk_end], dtype=torch.int32)
+        self.seq_lens_cpu = torch.tensor([admission.chunk_end], dtype=torch.int32, device='cpu')
         self.idx_mapping = torch.tensor([req_index], dtype=torch.int64, device=device)
         self.is_padding = torch.zeros((n,), dtype=torch.bool, device=device)
-        self.ngram_context = torch.tensor(list(admission.ngram_context), dtype=torch.int64,
-                                          device=device)
+        # The pinned PLE/ngram path consumes ``[num_reqs, context_len]`` and
+        # slices ``[:num_reqs]``; this private chunk carries exactly one row.
+        self.ngram_context = torch.tensor([list(admission.ngram_context)],
+                                          dtype=torch.int64, device=device)
         self.block_tables = tables.write(admission)
         mappings = tables.slot_mappings(admission, ports.pad_slot_id)
         self.slot_mappings = mappings.to(device) if hasattr(mappings, 'to') else mappings
@@ -471,6 +543,10 @@ class LaneChunk:
             kv_cache_config=runner.kv_cache_config, seq_lens_cpu_upper_bound=self.seq_lens_cpu,
             dcp_local_seq_lens=None, positions=self.positions, model_specific_attn_metadata=mamba,
             for_cudagraph_capture=False, rswa_prefix_lens=None)
+        from native_resources import _qsa_layers
+        self.qsa_host_plan = attach_qsa_host_metadata(
+            self.attn_metadata, tuple(name for name, _ in _qsa_layers(runner)),
+            self.query_start_loc_cpu, self.seq_lens_cpu, self.admission)
         self.forward_context = ports.create_forward_context(
             self.attn_metadata, runner.vllm_config, cudagraph_runtime_mode=ports.cudagraph_none,
             batch_descriptor=ports.BatchDescriptor(num_tokens=n, num_reqs=1, uniform=False),

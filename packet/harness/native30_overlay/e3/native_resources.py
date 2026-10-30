@@ -5,8 +5,9 @@ which the *generated* runner invokes immediately before A's ``init_lane`` at the
 end of model-runner construction.  It is the real worker startup path: it
 discovers the worker rank/device and the canonical QSA UID namespace, allocates
 the private prefill UID buffer and scratch inventory, installs the event
-completion backend and the typed worker RPC adapter, and installs B's graph
-builder before the engine's graph-capture call.
+completion backend and the typed worker RPC adapter.  The engine epoch stays
+unbound; ``install_worker_native`` later retains the persistent decode storage
+and installs B's real split-bank graph builder before the engine's capture call.
 
 It allocates storage, therefore it is only ever called with
 ``FLASH_S5_OVERLAP=1``.  Everything vLLM/torch specific is imported lazily so
@@ -25,6 +26,7 @@ Deliberately *not* here (see Open items in the pass report):
 import hashlib
 import importlib
 import time
+from dataclasses import dataclass
 
 from async_handoff import (
     CommitAck,
@@ -35,12 +37,7 @@ from async_handoff import (
     RuntimeWorkerHandoff,
 )
 from e3_types import E3ContractError, E3Pending
-from graph_router import (
-    CompilationIdentity,
-    ExecutionContext,
-    GraphRouter,
-    GraphRoutingError,
-)
+from graph_router import CompilationIdentity
 from lane_hooks import LaneRuntime
 from lane_state import (
     GRAPH_POOL_MEASURED_BYTES,
@@ -50,7 +47,6 @@ from lane_state import (
 from native_backend import (
     EventCompletionBackend,
     NativeDevice,
-    NativeGraphCaptureBackend,
 )
 from qsa_operation import (
     RUNNER_SEAM,
@@ -60,14 +56,29 @@ from qsa_operation import (
     metadata_plan_provider,
 )
 
-ENGINE_EPOCH = 1
+ENGINE_EPOCH = 1                   # legacy default; the native worker binds later
 PREFLIGHT_CONTEXT_ID = 1
 DECODE_CONTEXT_ID = 1          # B requires the split context to equal A's lane.
-FULL_CONTEXT_ID = 0            # placeholder; see Open items.
-FULL_POOL_ID = 0               # placeholder; see Open items.
-SPLIT_POOL_ID = 1
+FULL_CONTEXT_ID = 0            # the pinned stock decode execution context
 SPLIT_RESERVED_BYTES = GRAPH_POOL_MEASURED_BYTES
 WORKSPACE_LANE = 1
+
+
+@dataclass(frozen=True)
+class FullGraphIdentity:
+    """Identity of the stock full-GPU decode bank, with an honest basis.
+
+    The pool number comes from the stock manager that actually captured the
+    bank; it is never a placeholder.  ``allocated_bytes`` remains the reviewed
+    budget constant because this seam has no pre/post ``capture_model`` memory
+    observation to attribute; it is therefore an estimate, not a measured
+    allocation, and cannot supply qualification.  ``context_id`` is B's
+    declared primary-context scope label, not a CUPTI/CUDA context identity.
+    """
+    context_id: int
+    pool_id: int
+    allocated_bytes: int
+    basis: str = 'estimate'
 
 
 class NativeResourcesError(E3ContractError):
@@ -101,8 +112,13 @@ def _max_num_reqs(runner):
     return value
 
 
+def _import_forward_context():
+    """Pure import leaf; constructing/binding QSA state remains GPU-owned."""
+    return importlib.import_module('vllm.forward_context')
+
+
 def _forward_context_module():
-    module = importlib.import_module('vllm.forward_context')
+    module = _import_forward_context()
     if not hasattr(module, 'QSA_REQ_UID'):
         raise NativeResourcesError(
             'vllm.forward_context has no QSA_REQ_UID buffer; the pinned QSA '
@@ -145,7 +161,7 @@ def _weights(runner):
     return model, address, total
 
 
-def _compilation_identity(runner):
+def compilation_identity(runner):
     config = getattr(runner, 'compilation_config', None)
     if config is None:
         vllm_config = getattr(runner, 'vllm_config', None)
@@ -161,6 +177,33 @@ def _compilation_identity(runner):
     digest = hashlib.sha256(
         f'{mode_name}:{sorted(sizes)}:{query_len}'.encode()).hexdigest()
     return CompilationIdentity(digest, mode_name, sizes or (1,), query_len)
+
+
+def full_pool_id(runner):
+    """The stock full-GPU graph pool's actual numeric identity.
+
+    vLLM returns either an int or a two-int tuple; both are accepted, and
+    anything else is refused rather than guessed.  The split bank applies the
+    same formula to its separately allocated pool, so the two can never be
+    mistaken for one another.
+    """
+    manager = getattr(runner, 'cudagraph_manager', None)
+    if manager is None:
+        raise NativeResourcesError('runner has no stock cudagraph manager for the full pool')
+    pool = getattr(manager, 'pool', None)
+    if isinstance(pool, tuple):
+        if len(pool) != 2 or any(type(part) is not int for part in pool):
+            raise NativeResourcesError('stock graph pool identity is not a pair of ints')
+        return int(pool[0]) * 1000003 + int(pool[1])
+    if type(pool) is int:
+        return pool
+    raise NativeResourcesError('stock graph pool identity is unavailable')
+
+
+def full_graph_identity(runner):
+    """Identity of the stock full-GPU decode bank; bytes stay an estimate."""
+    return FullGraphIdentity(FULL_CONTEXT_ID, full_pool_id(runner),
+                             GRAPH_POOL_MEASURED_BYTES, 'estimate')
 
 
 class _ForwardContextAdapter:
@@ -250,7 +293,8 @@ class WorkerHandoffServer:
     """
 
     def __init__(self, runtime, *, bindings=(), private_attrs=None,
-                 operation_device=None, clock=time.monotonic):
+                 operation_device=None, clock=time.monotonic, row1_factory=None,
+                 row1_store=None):
         if not isinstance(runtime, LaneRuntime):
             raise NativeResourcesError('worker server needs A LaneRuntime')
         self.runtime = runtime
@@ -258,6 +302,11 @@ class WorkerHandoffServer:
         self.private_attrs = dict(private_attrs or {})
         self.operation_device = operation_device
         self.clock = clock
+        self.row1_factory = row1_factory
+        self.row1_store = row1_store
+        self.row1_provider = None
+        self._row1_scopes = {}
+        self._row1_run_id = None
         self.worker = None
         self.handoff = None
         self.operation = None
@@ -266,6 +315,10 @@ class WorkerHandoffServer:
         self.executions = 0
         self._operation_layers = ()
         self._deferred_proofs = []
+        # The exact metadata snapshot of the frame this worker opened; the
+        # source binding's per-layer tables are bound against it, never against
+        # a later or coalesced snapshot.
+        self._metadata_snapshot = None
 
     def attach_worker(self, worker):
         """The generated GPU worker attaches itself before any typed RPC."""
@@ -300,6 +353,7 @@ class WorkerHandoffServer:
         self.operation = QsaPrefillOperation(
             transaction, lane.lane_id, device=self.operation_device,
             plan_provider=provider, clock=self.clock)
+        self._metadata_snapshot = message.metadata
         self.last_output = None
         return ack
 
@@ -367,6 +421,26 @@ class WorkerHandoffServer:
         self._release_if_clean(message.transaction)
         return ack
 
+    def clear_native(self, transaction):
+        """Drop the old handoff/operation after the native bridge closed the row.
+
+        The legacy typed protocol keeps its ``commit``/``cancel`` behaviour; only
+        the native bridge calls this, and only after its dispatcher drained and
+        released. A terminal release has also closed the worker request row; a
+        nonterminal one leaves that row to the chunk factory for ``update()``.
+        """
+        if self.handoff is None or self.handoff.transaction != transaction:
+            raise HandoffError('no worker handoff for this transaction')
+        self.handoff = None
+        self.operation = None
+        self.last_output = None
+        self._deferred_proofs = []
+        self._operation_layers = ()
+        self._metadata_snapshot = None
+        # A row1 record store passed to this server survives clear_native: the
+        # raw qualification records must remain queryable after release.
+        return True
+
     # -- helpers ----------------------------------------------------------
     def _handoff(self, transaction):
         if self.handoff is None or self.handoff.transaction != transaction:
@@ -431,9 +505,18 @@ class WorkerHandoffServer:
         if transaction != operation.transaction:
             raise HandoffError('scheduler output does not carry the operation transaction')
         layers = _qsa_layers(runner)
+        binding = getattr(scheduler_output, 'flash_e3_source_binding', None)
         try:
-            for name, layer in layers:
-                operation.register_source(name, layer._qsa_host_kv)
+            if binding is not None:
+                # The bridge proved and retained this exact frame's pinned
+                # histories; bind their tables, epochs and versions explicitly.
+                bind_operation_sources(operation, layers, binding,
+                                       self._metadata_snapshot)
+                if self.row1_factory is not None:
+                    operation.qualification = self.row1_factory(operation)
+            else:
+                for name, layer in layers:
+                    operation.register_source(name, layer._qsa_host_kv)
             operation.begin_forward(layers=tuple(name for name, _ in layers))
         except BaseException:
             operation.cancel('operation layer binding failed')
@@ -500,6 +583,120 @@ class WorkerHandoffServer:
         inventory['pending_buckets'] = self.operation.pending_buckets
         return inventory
 
+    def configure_row1(self, *, enabled, run_id, engine_epoch, route_generation):
+        """Scope the serial oracle to a paused/drained qualification phase.
+
+        The native qualification action owns the collective pause/drain. This
+        second boundary checks the worker's actual idle prefill ownership and
+        bound epoch, and the installed provider queries its real route. Stores
+        remain retained after disable; an old run id is never recycled.
+        """
+        if (type(enabled) is not bool or type(run_id) is not str
+                or not 1 <= len(run_id) <= 128):
+            raise HandoffError('row1 scope needs a bounded run id and bool')
+        state = self.runtime.state
+        if (not state.engine_bound or engine_epoch != state.engine_epoch
+                or type(engine_epoch) is not int):
+            raise HandoffError('row1 scope has a stale engine epoch')
+        if type(route_generation) is not int or route_generation < 0:
+            raise HandoffError('row1 scope needs a route generation')
+        lane = state.prefill
+        dispatcher = getattr(self, '_flash_s5_dispatcher', None)
+        bridge = getattr(self, '_flash_s5_bridge', None)
+        if (self.runtime.prefill_execution is not None
+                or (bridge is not None and (bridge.active
+                    or bridge._retained is not None
+                    or bridge._source_binding is not None
+                    or bridge._source_close is not None))
+                or self.handoff is not None or self.operation is not None
+                or lane.handle is not None or lane.outstanding
+                or (dispatcher is not None and (
+                    dispatcher.transaction is not None
+                    or dispatcher.quarantined is not None))):
+            raise E3Pending('row1 scope waits for closed prefill ownership')
+        provider = self.row1_provider
+        if not callable(provider):
+            raise HandoffError('row1 scoped provider is unavailable')
+        if self._row1_run_id == run_id:
+            scope = self._row1_scopes[run_id]
+            if (scope['engine_epoch'] != engine_epoch
+                    or route_generation < scope['route_generation']
+                    or (enabled and route_generation != scope['route_generation'])):
+                raise HandoffError('row1 scope identity changed')
+            if scope['enabled'] is enabled:
+                return self.row1_evidence(run_id=run_id)
+            if enabled:
+                raise HandoffError('a disabled row1 scope cannot be reopened')
+            # Verify the native route is still the one that was qualified.
+            provider(None, engine_epoch, route_generation)
+            self.row1_factory = None
+            scope['enabled'] = False
+            scope['disabled_route_generation'] = route_generation
+            return self.row1_evidence(run_id=run_id)
+        if not enabled:
+            raise HandoffError('row1 disable names an unknown scope')
+        if run_id in self._row1_scopes:
+            raise HandoffError('a retained row1 scope cannot be reused')
+        if self.row1_factory is not None:
+            raise HandoffError('another row1 scope is still enabled')
+        if len(self._row1_scopes) >= 8:
+            raise HandoffError('row1 scope capacity reached; evidence retained')
+        from row1_oracle import Row1RecordStore
+        store = Row1RecordStore()
+        factory, layers = provider(store, engine_epoch, route_generation)
+        if (not callable(factory) or type(layers) is not tuple or not layers
+                or any(type(name) is not str or not name for name in layers)
+                or len(set(layers)) != len(layers)):
+            raise HandoffError('row1 provider has no exact local QSA census')
+        scope = dict(engine_epoch=engine_epoch, route_generation=route_generation,
+                     local_layers=layers, enabled=True, store=store)
+        self._row1_scopes[run_id] = scope
+        self._row1_run_id = run_id
+        self.row1_store, self.row1_factory = store, factory
+        return self.row1_evidence(run_id=run_id)
+
+    def row1_evidence(self, *, run_id):
+        scope = self._row1_scopes.get(run_id)
+        if scope is None:
+            raise HandoffError('row1 evidence names an unknown scope')
+        state = self.runtime.state
+        enabled = (scope['enabled'] and self._row1_run_id == run_id
+                   and self.row1_factory is not None)
+        return dict(schema='s5-native-row1-store/1', run_id=run_id,
+                    rank=state.worker_rank, worker_incarnation=state.incarnation,
+                    engine_epoch=scope['engine_epoch'],
+                    route_generation=scope['route_generation'],
+                    disabled_route_generation=scope.get('disabled_route_generation'),
+                    local_layers=list(scope['local_layers']),
+                    enabled=enabled,
+                    raw=self._query_row1_store(scope['store'], enabled=enabled))
+
+    def row1_records(self, *, layer=None, limit=None):
+        """The bounded raw comparison store, queryable after release."""
+        if self.row1_store is None:
+            return ()
+        return self.row1_store.records(layer=layer, limit=limit)
+
+    def query_row1(self, *, layer=None, limit=None):
+        """A bounded summary plus the raw records for one layer or all layers."""
+        return self._query_row1_store(self.row1_store,
+            enabled=self.row1_factory is not None, layer=layer, limit=limit)
+
+    @staticmethod
+    def _query_row1_store(store, *, enabled, layer=None, limit=None):
+        if store is None:
+            return dict(enabled=False, comparisons=0, layers=0, failures=0,
+                        capacity=0, records=(), layer_records=(),
+                        failure_records=())
+        summary = dict(store.summary(), enabled=enabled)
+        summary['records'] = tuple(r.as_dict() for r in
+                                   store.records(layer=layer, limit=limit))
+        summary['layer_records'] = tuple(r.as_dict() for r in
+                                         store.layer_records(layer=layer, limit=limit))
+        summary['failure_records'] = tuple(r.as_dict() for r in
+                                           store.failures(layer=layer, limit=limit))
+        return summary
+
     def _record_launch(self, ticket):
         recorder = getattr(self.runtime.backend, 'record_launch', None)
         if recorder is None:
@@ -522,6 +719,54 @@ class WorkerHandoffServer:
             return False
         self.handoff = None
         return True
+
+
+def bind_operation_sources(operation, layers, binding, snapshot):
+    """Bind the bridge's worker-local source lease to the QSA operation.
+
+    ``binding`` is produced by :func:`native_source.bind_local_sources` over the
+    exact frame this worker opened and the actual pinned ``_qsa_host_kv``
+    tensors. Every local QSA layer must appear exactly once, own that same
+    tensor, and carry its epoch/version census. Anything missing, extra or
+    foreign refuses before the first copy can be planned.
+    """
+    if operation is None:
+        raise HandoffError('source binding needs the open QSA operation')
+    if binding is None:
+        raise HandoffError('source binding needs the bridge-bound lease')
+    if binding.transaction != operation.transaction:
+        raise HandoffError('source binding belongs to another transaction')
+    if binding.rank != operation.lane.worker_rank:
+        raise HandoffError('source binding belongs to another worker rank')
+    if snapshot is None:
+        raise HandoffError('source binding needs the opened admission snapshot')
+    names = tuple(name for name, _ in layers)
+    if len(set(names)) != len(names):
+        raise HandoffError('a QSA layer appears twice in the operation binding')
+    if tuple(sorted(names)) != binding.layers:
+        raise HandoffError('source binding does not cover exactly the QSA layers')
+    for name, layer in layers:
+        source = binding.sources.get(name)
+        if source is None or source is not getattr(layer, '_qsa_host_kv', None):
+            raise HandoffError('source binding does not own this layer history')
+        if name not in binding.source_epochs or name not in binding.versions:
+            raise HandoffError('source binding has no epoch/version census')
+    operation.plan_provider = metadata_plan_provider(
+        snapshot, layer_tables=binding.layer_tables)
+    operation.state_epoch = binding.state_epoch
+    for name, _ in layers:
+        operation.register_source(
+            name, binding.sources[name],
+            source_epoch=binding.source_epochs[name],
+            versions=binding.versions[name])
+        # Attach the admitted hold now, not only when the layer driver first
+        # runs this layer: a cancel before that point still releases every
+        # retained history, so the lane can close its registry views.
+        hold = binding.holds.get(name)
+        if hold is None:
+            raise HandoffError('source binding has no hold for ' + name)
+        operation.attach_sparse_source(name, hold)
+    return operation
 
 
 def _qsa_layers(runner):
@@ -565,65 +810,6 @@ def _commit_role():
     return DependencyRole.COMMIT
 
 
-# --- graph builder ----------------------------------------------------------
-
-def _reserve_decode_anchor(state):
-    """Give B's router the stable decode lane handle it requires.
-
-    A reserves a lane per transaction; B captures once and needs the handle to
-    stay alive.  The anchor is an explicit startup identity, listed in Open
-    items because per-request decode lanes are not yet reconciled with it.
-    """
-    if state.decode.active:
-        return state.decode.handle
-    transaction = state.new_transaction('__flash_s5_decode_anchor__', 0, 0, 1)
-    handle = state.decode.reserve(transaction, context_id=DECODE_CONTEXT_ID)
-    state.decode.ready()
-    return handle
-
-
-def _split_descriptors(runner):
-    value = getattr(runner, '_flash_s5_split_descriptors', ()) or ()
-    return tuple(value)
-
-
-def install_graph_builder(runner, runtime, device, *, config, clock=time.monotonic):
-    """Install the graph-builder scaffold, never a native qualified split."""
-    from s5_startup import require_native_ready
-    require_native_ready()
-    state = runtime.state
-
-    def build(current):
-        if getattr(current, '_flash_e3_graph_builder_used', False):
-            raise GraphRoutingError('E3 graph builder was already used')
-        capture = getattr(current, '_flash_s5_graph_capture', None)
-        backend = NativeGraphCaptureBackend(device, capture_callable=capture,
-                                            clock=clock)
-        handle = _reserve_decode_anchor(state)
-        compilation = _compilation_identity(current)
-        router = GraphRouter(
-            state, handle, compilation, backend=backend,
-            full_context_id=FULL_CONTEXT_ID, full_pool_id=FULL_POOL_ID,
-            full_allocated_bytes=GRAPH_POOL_MEASURED_BYTES, full_basis='measured')
-        stream_token = device.current_stream_token()
-        setattr(router, 'probe',
-                lambda: (handle.context_id, device.current_stream_token()))
-        descriptors = _split_descriptors(current)
-        if descriptors:
-            context = ExecutionContext(
-                'decode-split', handle.context_id, requested_sm=device.sm_count(),
-                measured_sm=device.sm_count(), pool_id=SPLIT_POOL_ID,
-                stream_token=stream_token, reserved_bytes=SPLIT_RESERVED_BYTES,
-                basis='estimate')
-            router.add_bank('decode-split', context, descriptors)
-        current._flash_e3_graph_builder_used = True
-        current._flash_e3_graph_builder_stream = stream_token
-        return router
-
-    runner._flash_e3_graph_builder = build
-    return build
-
-
 # --- startup ----------------------------------------------------------------
 
 def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
@@ -645,7 +831,9 @@ def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
     _ensure_workspace_lanes(workspace, device, WORKSPACE_LANE)
 
     model, weights_address, weights_bytes = _weights(runner)
-    state = WorkerState(rank, engine_epoch=ENGINE_EPOCH, weights=model,
+    # No engine epoch is known at worker construction.  The engine's bootstrap
+    # binds this incarnation exactly once before any transaction is admitted.
+    state = WorkerState(rank, engine_epoch=0, engine_bound=False, weights=model,
                         weights_address=weights_address,
                         weights_bytes=weights_bytes,
                         max_outstanding=min(config.chunk_tokens, 16))
@@ -666,7 +854,9 @@ def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
     runner._flash_s5_worker = server
     runner._flash_s5_native = {
         'rank': rank,
-        'engine_epoch': ENGINE_EPOCH,
+        'engine_epoch': 0,
+        'engine_bound': False,
+        'incarnation': state.incarnation,
         'uid_bytes': uid_buffer.nbytes,
         'scratch': scratch_inventory,
         'workspace_lane': WORKSPACE_LANE,
@@ -674,13 +864,15 @@ def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
         'operation': 'qsa_dense_bounded',
         'native_qualified': False,
     }
-    install_graph_builder(runner, runtime, device, config=config, clock=clock)
+    # The real split-bank graph builder is installed by install_worker_native
+    # after the bank and the retained decode storage exist.
     return runtime
 
 
 __all__ = [
-    'DECODE_CONTEXT_ID', 'ENGINE_EPOCH', 'FULL_CONTEXT_ID', 'FULL_POOL_ID',
-    'NativeResourcesError', 'PREFLIGHT_CONTEXT_ID', 'SPLIT_POOL_ID',
+    'DECODE_CONTEXT_ID', 'ENGINE_EPOCH', 'FULL_CONTEXT_ID', 'FullGraphIdentity',
+    'NativeResourcesError', 'PREFLIGHT_CONTEXT_ID', 'SPLIT_RESERVED_BYTES',
     'WORKSPACE_LANE', 'WorkerHandoffServer', 'build_worker_runtime',
-    'install_graph_builder', 'response_success',
+    'compilation_identity', 'full_graph_identity', 'full_pool_id',
+    'response_success',
 ]

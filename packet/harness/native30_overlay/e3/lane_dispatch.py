@@ -64,12 +64,17 @@ class SegmentCommand:
 
     ``seq`` is the PP transfer sequence; it is mandatory for the two PP kinds
     and must be absent for all others (there is no implicit zero).
+
+    ``source`` is the wire-v1 :class:`SourceLeaseDescriptor` the engine attached
+    to a PREPARE command. It is carried unchanged so the worker bridge can
+    validate it against the frame it actually opened before any submission.
     """
 
-    __slots__ = ('transaction', 'stage', 'layer_start', 'layer_end', 'op_seq', 'kind', 'seq')
+    __slots__ = ('transaction', 'stage', 'layer_start', 'layer_end', 'op_seq',
+                 'kind', 'seq', 'source', 'profile')
 
     def __init__(self, transaction, stage, kind, op_seq, *, layer_start=None, layer_end=None,
-                 seq=_UNSET):
+                 seq=_UNSET, source=None, profile=None):
         if type(transaction) is not TransactionId:
             raise LaneDispatchError('canonical transaction required')
         if type(kind) is not str or kind not in KINDS:
@@ -97,6 +102,14 @@ class SegmentCommand:
                 raise LaneDispatchError('layer segment needs half-open global layer bounds')
             if layer_end != layer_start + 1:
                 raise LaneDispatchError('layer segment must cover exactly one layer for now')
+        if source is not None:
+            from wire_v1 import SourceLeaseDescriptor
+            if type(source) is not SourceLeaseDescriptor:
+                raise LaneDispatchError('segment source must be a wire source lease')
+            if kind != 'prepare':
+                raise LaneDispatchError('only prepare carries a source lease')
+            if source.transaction != transaction:
+                raise LaneDispatchError('source lease belongs to another transaction')
         self.transaction = transaction
         self.stage = stage
         self.kind = kind
@@ -104,6 +117,8 @@ class SegmentCommand:
         self.layer_start = layer_start
         self.layer_end = layer_end
         self.seq = None if seq is _UNSET else seq
+        self.source = source
+        self.profile = profile
 
     @classmethod
     def from_descriptor(cls, descriptor):
@@ -112,27 +127,30 @@ class SegmentCommand:
         if type(descriptor) is WireCommand:
             command, d = descriptor, descriptor.descriptor
             return cls(d.transaction, d.stage, d.kind.value, command.op_seq,
-                       layer_start=d.layer_start, layer_end=d.layer_end, seq=d.seq)
+                       layer_start=d.layer_start, layer_end=d.layer_end, seq=d.seq,
+                       source=command.source, profile=command.profile)
         kind = descriptor.kind
         if type(kind) is not str:
             raise LaneDispatchError('descriptor kind must be a str')
         layer_start = getattr(descriptor, 'layer_start', None)
         layer_end = getattr(descriptor, 'layer_end', None)
+        source = getattr(descriptor, 'source', None)
         if kind in PP_KINDS:
             seq = getattr(descriptor, 'seq', _UNSET)
             if seq is _UNSET:
                 raise LaneDispatchError(f'descriptor {kind} needs a transfer seq')
             return cls(descriptor.transaction, descriptor.stage, kind, descriptor.op_seq,
-                       layer_start=layer_start, layer_end=layer_end, seq=seq)
+                       layer_start=layer_start, layer_end=layer_end, seq=seq,
+                       source=source)
         if getattr(descriptor, 'seq', None) is not None:
             raise LaneDispatchError('non-PP descriptor carries transfer seq')
         return cls(descriptor.transaction, descriptor.stage, kind, descriptor.op_seq,
-                   layer_start=layer_start, layer_end=layer_end)
+                   layer_start=layer_start, layer_end=layer_end, source=source)
 
     def identity(self):
         """Everything that makes two submissions the same accepted command."""
         return (self.transaction, self.stage, self.kind, self.op_seq,
-                self.layer_start, self.layer_end, self.seq)
+                self.layer_start, self.layer_end, self.seq, self.source, self.profile)
 
 
 class SegmentEvent:
@@ -163,6 +181,11 @@ class LaneDispatcher:
             import torch as torch_module
         self.torch = torch_module
         self.clock = clock
+        # Worker-local pinned source ownership outlives one transaction: the
+        # bridge closes the opened registry only after release, and a stranded
+        # allocation stays visible until then.
+        self.source_registry = None
+        self.source_allocator = None
         self._reset_transaction()
 
     def _reset_transaction(self):
@@ -172,6 +195,7 @@ class LaneDispatcher:
         self.lane = None
         self.driver = None
         self.operation = None
+        self.source_binding = None
         self.admission = None
         self.events = []
         self.state_event = None
@@ -235,8 +259,19 @@ class LaneDispatcher:
         self.admission = admission
         return {'opened': True, 'stage': self._stage()}
 
+    @property
+    def stage(self):
+        """This worker's PP stage (0 sender, 1 receiver); never inferred by the engine."""
+        return self._stage()
+
     def _stage(self):
         return 0 if not self.native.comms.pp or self.native.comms.pp.is_sender else 1
+
+    def pp_consumer_complete(self):
+        """True only when the receiver's consumer event was host-queried complete."""
+        ticket = self.pp_ticket
+        event = getattr(ticket, 'consumer_event', None)
+        return event is not None and bool(event.query())
 
     def submit(self, command):
         """Run one bounded host operation; returns the accepted record."""
@@ -299,6 +334,11 @@ class LaneDispatcher:
     def _do_prepare(self, command):
         if self.chunk is not None:
             raise LaneDispatchError('chunk already prepared for this transaction')
+        if command.source is not None:
+            binding = self.source_binding
+            if binding is None or binding.descriptor != command.source:
+                raise LaneDispatchError(
+                    'prepare source lease was not bound for this command')
         self._partial = True
         chunk = self.factory.admit(self.admission)
         self.chunk = chunk
@@ -313,6 +353,9 @@ class LaneDispatcher:
         if self.server is not None:
             marker = type('Parked', (), {})()
             marker.flash_e3_transaction = command.transaction
+            # The bound source lease reaches the server through this marker;
+            # this dispatch never invents a lease of its own.
+            marker.flash_e3_source_binding = self.source_binding
             self.server.begin_prefill_operation(self.runner, marker)
         return {'prepared': True, 'req_index': chunk.req_index}
 
@@ -349,9 +392,28 @@ class LaneDispatcher:
         self._need_chunk()
         if command.layer_start != self.lane.cursor:
             raise LaneDispatchError(f'layer segment {command.layer_start} does not match cursor {self.lane.cursor}')
+        # Query the driver's source-owned credit *before* the partial-enqueue
+        # boundary: a credit-only attempt must stay typed pending for the
+        # unchanged command and must record no event or accepted operation.
+        query = getattr(self.driver, 'submission_credit', None)
+        credit = query(command.layer_start) if callable(query) else None
+        if credit is not None and getattr(credit, 'can_submit', None) is not True:
+            raise E3Pending(
+                'lane submission credit pending: '
+                + str(getattr(credit, 'reason', 'unspecified')))
+        authorize = getattr(self.driver, 'authorize_profile', None)
+        if callable(authorize):
+            authorize(command.layer_start, command.profile)
+        elif command.profile is not None:
+            raise LaneDispatchError('QSA profile grant without its constructed driver')
         self._partial = True
         record = self.lane.layer(command.layer_start)
-        return {'kind': record.kind, 'layer': command.layer_start, 'paused': record.kind == 'layer-paused'}
+        boundary = getattr(self.driver, 'at_schedule_boundary', None)
+        tail_boundary = getattr(self.driver, 'at_tail_boundary', None)
+        return {'kind': record.kind, 'layer': command.layer_start,
+                'paused': record.kind == 'layer-paused',
+                'profile_boundary': bool(callable(boundary) and boundary(command.layer_start)),
+                'tail_boundary': bool(callable(tail_boundary) and tail_boundary(command.layer_start))}
 
     def _do_suffix(self, command):
         self._need_chunk()

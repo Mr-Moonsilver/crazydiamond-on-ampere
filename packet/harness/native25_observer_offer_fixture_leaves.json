@@ -1,0 +1,37 @@
+{
+  "schema": "native25-observer-offer-fixture-leaves/1",
+  "scope": "one-card bound observer window and source-declared graph offer; native prefill and TP2PP2 remain box gates",
+  "leaves": [
+    {
+      "leaf": "SimpleNamespace manager and scalar FULL descriptor",
+      "replaces": "vLLM CudagraphManager and BatchExecutionDescriptor",
+      "equivalence": "The actual CUDA graph, capture hook, bank binding and descriptor identity are retained. The model and descriptor factory are absent, so graph-node topology is more convenient than production.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "SplitDecodeBank allocated without model constructor",
+      "replaces": "fully constructed model-owned SplitDecodeBank",
+      "equivalence": "Actual SplitGraphHandle and replay increment are used; bank pair identities match the observer reader. The Qwen capture population is absent.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "SimpleNamespace runner, probe and controller drain",
+      "replaces": "GPUModelRunner, WorkerNative, controller drain and qualification RPC",
+      "equivalence": "The observer, correlation bridge, ledger, native binding, install_census, end_window and census delta methods are actual classes. The drain count and route fields are asserted fixture inputs; this does not prove a four-rank drained handback.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "1024-element torch add graph and no placement cohort",
+      "replaces": "full Qwen graph, eight stock streams and native prefill offer window",
+      "equivalence": "The real graph replays inside the bounded native observer window under the actual EngineOfferLedger graph-replay offer scope. No native prefill offer or HTTP cohort is generated; compose_native_placement and frontend refusal cleanup remain box gates.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "one CUDA device",
+      "replaces": "four 3090 devices in TP2PP2",
+      "equivalence": "The observer and ledger construction are rank-local. Cross-rank offer agreement, PP transfer and all-rank FULL return are unproved.",
+      "box_evidence": false
+    }
+  ],
+  "not_constructed": ["Qwen model", "EngineCore", "TP2PP2", "eight-stream row-4 cohort", "NativePrefillLedger", "native placement composition"]
+}

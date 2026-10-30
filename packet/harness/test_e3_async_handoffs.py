@@ -335,6 +335,22 @@ class SchedulerLeaseTests(unittest.TestCase):
         self.guard.publish(self.t)
         sh.before_touch(self.pool, [self.blocks[0]])
 
+    def test_stock_cached_prefix_defers_only_uncommitted_held_blocks(self):
+        cached = type('Cached', (), {'blocks': ((self.blocks[0],),)})()
+        unrelated = type('Cached', (), {'blocks': ((self.blocks[1],),)})()
+        self.guard.lease_blocks(self.t, ah.LeaseCategory.ARENA, [1])
+        # The native18 counterexample remains live as the final guard: a
+        # direct touch still refuses, while the scheduler preflight defers.
+        with self.assertRaises(ah.E3Pending):
+            sh.before_touch(self.pool, [self.blocks[0]])
+        self.assertTrue(sh.defer_stock_prefix_hit(self.scheduler, cached))
+        self.assertEqual(self.guard.stock_prefix_deferrals, 1)
+        self.assertFalse(sh.defer_stock_prefix_hit(self.scheduler, unrelated))
+        self.assertEqual(self.guard.stock_prefix_deferrals, 1)
+        self.guard.publish(self.t)
+        self.assertFalse(sh.defer_stock_prefix_hit(self.scheduler, cached))
+        sh.before_touch(self.pool, [self.blocks[0]])
+
     def test_mutation_guard_refuses_other_leases_and_audits_copies(self):
         other_t = ticket(tx(seq=2))
         self.guard.lease_blocks(self.t, ah.LeaseCategory.ARENA, [1, 2])
@@ -353,6 +369,29 @@ class SchedulerLeaseTests(unittest.TestCase):
         self.assertEqual(self.guard.cow_requested, 1)
         self.assertEqual(self.guard.cow_completed, 0)
         self.assertEqual(self.guard.lease_caused_cow, 0)
+
+    def test_ordinary_cow_sources_do_not_need_an_e3_lease(self):
+        from types import SimpleNamespace as Row
+        out = Row(kv_cache_block_copies=(Row(src_block_id=7, dst_block_id=8),))
+        self.assertTrue(self.guard.mutation_guard(out, None))
+        self.assertEqual(self.guard.shutdown(), dict(clean=True, held=0, pending_free=0))
+        self.assertEqual(self.guard.cow_requested, 1)
+        self.assertEqual(self.guard.cow_completed, 0)
+
+    def test_mixed_cow_sources_preserve_foreign_lease_and_destination_guards(self):
+        from types import SimpleNamespace as Row
+        foreign = ticket(tx(seq=2))
+        self.guard.lease_blocks(foreign, ah.LeaseCategory.ARENA, [3])
+        out = Row(kv_cache_block_copies=(Row(src_block_id=7, dst_block_id=8),
+                                        Row(src_block_id=3, dst_block_id=9)))
+        self.assertFalse(self.guard.mutation_guard(out, self.transaction))
+        self.assertEqual(self.guard.cow_requested, 0)
+        self.guard.publish(foreign)
+        self.assertTrue(self.guard.mutation_guard(out, self.transaction))
+        out.kv_cache_block_copies = (Row(src_block_id=7, dst_block_id=3),)
+        self.assertFalse(self.guard.mutation_guard(out, self.transaction))
+        self.assertEqual(self.guard.cow_requested, 2)
+        self.assertEqual(self.guard.cow_completed, 0)
 
     def test_allocation_of_a_leased_block_and_unclean_shutdown_refused(self):
         self.guard.lease_blocks(self.t, ah.LeaseCategory.ARENA, [1])
@@ -416,6 +455,9 @@ class SourceTransformTests(unittest.TestCase):
 
             def poll(self, budget):
                 return 0
+
+            def call_ready(self, sequence):
+                return self._calls[sequence].ready
 
             def take(self, sequence):
                 self.taken.append(sequence)
@@ -716,6 +758,7 @@ class ReviewRegressions(unittest.TestCase):
             _calls = {0: type('Call', (), {'ready': True})()}
             count = 0
             def poll(self, budget): pass
+            def call_ready(self, sequence): return self._calls[sequence].ready
             def take(self, sequence):
                 self.count += 1
                 del self._calls[sequence]
@@ -737,7 +780,7 @@ class ReviewRegressions(unittest.TestCase):
         ref = ROOT / 'reference/vllm-src' / eh.EXECUTOR_PATH
         generated = eh.generate_executor(ref.read_text())
         tree = ast.parse(generated)
-        shutdown = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'shutdown')
+        shutdown = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == '_flash_s5_stock_shutdown')
         # Execute the actual transformed shutdown with an unclean receiver.
         events = []
         class MQ:
@@ -758,7 +801,7 @@ class ReviewRegressions(unittest.TestCase):
         executor.workers = []
         executor.rpc_broadcast_mq = None
         executor.response_mqs = [MQ()]
-        env['shutdown'](executor)
+        env['_flash_s5_stock_shutdown'](executor)
         self.assertEqual(events, ['close'])
         self.assertEqual(len(executor.response_mqs), 1)
 

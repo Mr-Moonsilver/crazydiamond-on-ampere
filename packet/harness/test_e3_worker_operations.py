@@ -22,6 +22,7 @@ import arena_attention
 import e3_types as et
 import operation_source
 import qsa_operation as qo
+import resident_attention
 import runner_hooks
 
 
@@ -33,6 +34,17 @@ QUERY_HEADS = 6
 SOURCE_PAGES = 64
 ARENA_ADDRESS = 0x9000
 TABLE_ADDRESS = 0x7000
+
+
+def authorize_component_profile(operation):
+    """Explicit one-rank component-test owner; not a TP/engine proof."""
+    import wire_v1 as wire
+    query = wire.QsaProfileQuery(operation.transaction, 1, 0, 0, 0,
+                                (operation.lane.worker_rank,))
+    shape = operation.schedule_profile()
+    if shape is None:
+        raise et.E3Pending('component selection is not queried ready')
+    operation.authorize_schedule(wire.QsaProfileGrant(query, shape))
 
 
 # --- fake tensors / device (clearly not CUDA) -------------------------------
@@ -841,15 +853,24 @@ class GeneratedCallSiteTests(unittest.TestCase):
         operation.attach_continuation(continuation)
         while True:
             try:
-                operation.advance()
+                value = operation.advance()
+                if getattr(value, 'qsa_schedule_boundary', False):
+                    authorize_component_profile(operation)
             except StopIteration as end:
                 return operation, end.value
 
     def test_generated_sites_are_present_exactly_once(self):
-        self.assertEqual(self.generated_ops.count('e3op.fill_bucket('), 1)
-        self.assertEqual(self.generated_ops.count('e3op.after_attention_bucket('), 1)
+        # Two overlays: the dense S5 function and the sparse-history one.  Each
+        # must contain its bounded fill and consumer yield exactly once.
+        for name in ('flash_s5_arena_attention', 'flash_s5_sparse_arena_attention'):
+            generated = resident_attention.function(self.generated_ops, name)
+            self.assertEqual(generated.count('e3op.fill_bucket('), 1)
+            self.assertEqual(generated.count('e3op.after_attention_bucket('), 1)
         self.assertEqual(self.generated_qsa.count('_flash_s5_staged_operation('), 1)
+        self.assertEqual(
+            self.generated_qsa.count('_flash_s5_sparse_staged_operation('), 1)
         self.assertIn('operation.bind_plan(', self.generated_qsa)
+        self.assertIn('operation.bind_sparse_context(', self.generated_qsa)
         self.assertIn('e3op=operation,', self.generated_qsa)
         # Producer boundary wraps index_and_store; consumer closes after the
         # pinned forward call.  Removing either site changes this ordering.
@@ -1136,6 +1157,8 @@ class ReviewContinuationTests(unittest.TestCase):
         op.attach_continuation(gen)
         # Global sparse and timer settings must not be read/mutated by this lane.
         with patch.dict(os.environ, {'VLLM_QSA_KVO_SPARSE_PREFILL': '1'}):
+            self.assertTrue(op.advance().qsa_schedule_boundary)
+            authorize_component_profile(op)
             for count in (1, 2, 3):
                 op.advance()
                 self.assertEqual(len(self.kernel.calls), count)
@@ -1153,6 +1176,8 @@ class ReviewContinuationTests(unittest.TestCase):
         gen = self.helper(op, layer, q, kv, FakeTensor((1, 4)), metadata,
                           q.shape[0], True, out)
         op.attach_continuation(gen)
+        self.assertTrue(op.advance().qsa_schedule_boundary)
+        authorize_component_profile(op)
         op.advance()
         copies = list(self.device.copies)
         for _ in range(3):
@@ -1184,6 +1209,8 @@ class ReviewContinuationTests(unittest.TestCase):
         self.attention.__globals__['_qsa_sparse_staged_gqa_kernel'] = BrokenKernel()
         op.attach_continuation(self.helper(op, layer, q, kv, FakeTensor((1, 4)),
                                          metadata, q.shape[0], True, out))
+        self.assertTrue(op.advance().qsa_schedule_boundary)
+        authorize_component_profile(op)
         with self.assertRaises(RuntimeError):
             op.advance()
         self.assertFalse(op.drain())

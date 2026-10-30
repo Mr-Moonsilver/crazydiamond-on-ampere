@@ -272,6 +272,33 @@ class IdentityTests(unittest.TestCase):
         self.assertNotIn(DUMMY, json.dumps([snap, args, env]))
         self.assertEqual(env['QSA_HOST_META'], '1')
 
+    def test_public_s5_selector_is_classified_but_unknowns_and_secrets_fail_closed(self):
+        # S5 is the generated S5 launcher's mount selector: an explicit public
+        # setting, like SPARSE_PREFILL, not a broad relaxation.
+        self.assertEqual(identity.defaults_snapshot(b'S5=1\n')['values'], {'S5': '1'})
+        self.assertEqual(identity.defaults_snapshot(b'S5=0\n')['values'], {'S5': '0'})
+        self.assertEqual(identity.clean_env({'S5': '1'}), {'S5': '1'})
+        unknown = identity.defaults_snapshot(b'UNKNOWN_SELECTOR=1\n')['values']['UNKNOWN_SELECTOR']
+        self.assertEqual(unknown, {'redacted_length': 1, 'unclassified': True})
+        secret = identity.defaults_snapshot(b'S5_TOKEN=abc\n')['values']['S5_TOKEN']
+        self.assertEqual(secret, {'redacted_length': 3})
+        self.assertEqual(identity.clean_env({'S5_API_KEY': DUMMY})['S5_API_KEY'],
+                         {'redacted_length': len(DUMMY)})
+
+        # Exercise the real capture/check classification path, not only the
+        # helpers: the selector is public in the defaults manifest and the
+        # container environment while secrets remain redacted.
+        self.defaults.write_text(self.defaults.read_text() + 'S5=1\n')
+        self.raw_env.append('S5=1')
+        self.request['identity']['env']['S5'] = '1'
+        self.request['identity']['defaults']['S5'] = '1'
+        before = self.capture()
+        self.check(before)
+        captured = json.loads(before.read_text())
+        self.assertEqual(captured['identity']['defaults']['S5'], '1')
+        self.assertEqual(captured['identity']['env']['S5'], '1')
+        self.assertNotIn(DUMMY, before.read_text())
+
     def test_unknown_length_only_operational_values_cannot_pass(self):
         self.state['inspect']['Config']['Env'].append('NEW_OPTION=1')
         self.request['identity']['env']['NEW_OPTION'] = {'redacted_length': 1, 'unclassified': True}

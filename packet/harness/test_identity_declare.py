@@ -155,6 +155,145 @@ class DeclareTests(unittest.TestCase):
         self.assertEqual(d['identity']['env']['FLASH_E2_DMA'],'1')
         self.assertNotIn(DUMMY,json.dumps(d))
 
+    def test_s5_pinned_launcher_declares_selectors_and_projected_swap(self):
+        sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
+        import make_e2_arena as e2g
+        import make_s5_overlap as s5g
+        launch = self.root / 's5-launcher'
+        launch.write_text(s5g._s5_launcher(
+            e2g.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text())))
+        self.assertEqual(dec.sha(launch), dec.S5_LAUNCHER_SHA)
+        found = self.task / 'prod/run-flash-prod.sh'
+        found.write_bytes((ROOT / 'deploy/run-flash-prod.sh').read_bytes())
+        found_before = found.read_bytes()
+        names = ['e3/__init__.py', 'e3/decode-probe-evidence.json',
+                 *[f'e3/{name}.py' for name in s5g.E3_MODULES],
+                 *[f'e3/{name}' for name in s5g.NATIVE_FILES],
+                 'e3/native/build_green_helper.sh',
+                 'e3_sources/executor.py', 'e3_sources/core.py',
+                 'e3_sources/worker.py', 'e3_sources/cudagraph_utils.py',
+                 'e3_sources/sampler.py', 'e3_sources/async_utils.py',
+                 'e3_sources/model.py', 'e3_sources/api_routers.py']
+        with (self.ovl / 'SHA256SUMS').open('a') as manifest:
+            for name in names:
+                p = self.ovl / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text('# fixture ' + name + '\n')
+                manifest.write(dec.sha(p) + '  ' + name + '\n')
+        self.a.launcher = str(launch)
+        policy = json.loads((HERE / 'e3_startup_mount_policy.json').read_text())
+        from e3_private_auth import prepare
+        private = self.root / 'auth'; private.mkdir(mode=0o700)
+        envfile = private / 'api.env'; prepare(envfile, {'VLLM_API_KEY': DUMMY})
+        over = dict(dec.PP_SETTINGS, S5='1', CORE_OVERLAY='1', FLASH_S5_AUTH_ENV_FILE=str(envfile),
+                    EXTRA_ENV=('QSA_STAGE_TIMING=1 FLASH_PP_GROUPING=1 FLASH_POOL_STATS=200 '
+                               'FLASH_S5_OVERLAP=0 FLASH_S5_DECODE_ONLY_PROBE=1 '
+                               'FLASH_S5_DECODE_SMS=44 FLASH_S5_GREEN_LIB_SHA256=' + 'a' * 64))
+        d, _ = dec.declare(self.a, over, self.image, policy,
+                           self.root / 's5-render', install_launcher=True)
+        identity = d['identity']
+        work = next(m for m in identity['mounts'] if m['destination'] == '/work')
+        entry = next(x for x in work['content']['entries']
+                     if x['path'] == 'prod/run-flash-prod.sh')
+        self.assertEqual(entry['sha256'], dec.S5_LAUNCHER_SHA)
+        self.assertEqual(found.read_bytes(), found_before)
+        self.assertEqual(identity['defaults']['S5'], '1')
+        self.assertEqual(identity['env']['FLASH_S5_DECODE_ONLY_PROBE'], '1')
+        self.assertEqual(identity['env']['FLASH_S5_DECODE_SMS'], '44')
+        self.assertEqual(identity['env']['VLLM_API_KEY'], {'redacted_length': len(DUMMY)})
+        raw_argv=dec.render(launch, dec.raw_defaults(dec.apply_setcfg(self.defaults.read_text(),over,self.a.setcfg)), IMAGE,self.root/'s5-argv',self.task)
+        self.assertIn('--env-file',raw_argv)
+        self.assertEqual(raw_argv[raw_argv.index('--env-file')+1],str(envfile))
+        self.assertEqual([raw_argv[i+1] for i, item in enumerate(raw_argv[:-1])
+                          if item == '--log-opt'], ['max-size=512m', 'max-file=4'])
+        self.assertEqual([raw_argv[i+1] for i, item in enumerate(raw_argv[:-1])
+                          if item == '--ulimit'], ['core=0'])
+        self.assertNotIn(DUMMY,json.dumps(raw_argv))
+        self.assertEqual(identity['env']['FLASH_S5_GREEN_LIB_SHA256'], 'a' * 64)
+        # The exact reviewed generated launcher mounts the split-bank package
+        # and the source transforms; no second E2 or S5 mount is fabricated.
+        destinations = {m['destination'] for m in identity['mounts']}
+        self.assertTrue(any(p.endswith('/vllm/v1/flash_e3') for p in destinations))
+        for suffix in ('/vllm/v1/engine/core.py', '/vllm/v1/worker/gpu_worker.py',
+                       '/vllm/v1/worker/gpu/cudagraph_utils.py',
+                       '/vllm/v1/executor/multiproc_executor.py',
+                       '/vllm/entrypoints/launchers/api_server/routers.py'):
+            self.assertTrue(any(p.endswith(suffix) for p in destinations), suffix)
+        self.assertNotIn(DUMMY, json.dumps(d))
+        # q18a-native1 stopped here in production before any GPU work: its
+        # public target label was absent from identity's exact vocabulary.
+        # Source the ACTUAL old and repaired settings, render the trusted
+        # launcher, hash fixture mounts and run no_unknown/validate_identity.
+        # No identity executable/success result is stubbed in this regression.
+        for attempt in ('q18a_native1', 'q18a_native2', 'q18a_native3'):
+            script = ('S5_OVERLAY=$2 S5_AUTH_ENV_FILE=$3 '
+                      'S5_GREEN_LIB_SHA256=$4 S5_REPLAY_LIB_SHA256=$5 '
+                      'Q18A_TARGET_LABEL=s5-overlap-80-80; '
+                      'source "$1"; printf "%s\\0" "${S5_SETTINGS[@]}"')
+            rendered = subprocess.run(
+                ['bash', '-uc', script, 'fixture',
+                 str(HERE/'runs'/(attempt+'_settings.sh')),
+                 dec.TASK+'/prod/overlay-v16g', str(envfile), 'a'*64, 'b'*64],
+                capture_output=True, check=True)
+            overrides = dec.settings(rendered.stdout.decode().rstrip('\0').split('\0'))
+            actual, _ = dec.declare(self.a, overrides, self.image, policy,
+                                    self.root/(attempt+'-actual-settings'), install_launcher=True)
+            self.assertEqual(actual['identity']['env']['Q18A_TARGET_LABEL'], 's5-overlap-80-80')
+            self.assertEqual(actual['identity']['defaults']['EXTRA_ENV']['Q18A_TARGET_LABEL'],
+                             's5-overlap-80-80')
+            self.assertTrue(dec.no_unknown(actual['identity']))
+            self.assertEqual(actual['identity']['env']['VLLM_API_KEY'],
+                             {'redacted_length': len(DUMMY)})
+            self.assertNotIn(DUMMY, json.dumps(actual))
+        # Unknown names still reach the unchanged strict no_unknown refusal.
+        overrides['EXTRA_ENV'] += ' Q18A_UNREVIEWED=1'
+        with self.assertRaises(ident.EvidenceError):
+            dec.declare(self.a, overrides, self.image, policy,
+                        self.root/'q18a-unknown-refused', install_launcher=True)
+        values = dec.raw_defaults(dec.apply_setcfg(
+            self.defaults.read_text(), over, self.a.setcfg))
+        for index, private_override in enumerate((
+                dict(values, EXTRA_ARGS='--api-key ' + DUMMY),
+                dict(values, EXTRA_ARGS='--api-key=' + DUMMY),
+                dict(values, EXTRA_ENV=values['EXTRA_ENV'] + ' VLLM_API_KEY=' + DUMMY))):
+            with self.subTest(auth_override=index), self.assertRaises(ident.EvidenceError):
+                dec.render(launch, private_override, IMAGE,
+                           self.root/('s5-private-refused-' + str(index)), self.task)
+        bad = self.root / 's5-launcher-modified'
+        bad.write_text(launch.read_text() + '\ntrue\n')
+        with self.assertRaises(ident.EvidenceError):
+            dec.render(bad, values, IMAGE, self.root / 's5-modified')
+
+    def test_target_policy_enum_is_exact_and_has_no_prefix_allowance(self):
+        import e3_overlap_grade
+        self.assertEqual(set(ident.PUBLIC_TARGET_LABELS), set(e3_overlap_grade.TARGET_POLICIES))
+        for label in ident.PUBLIC_TARGET_LABELS:
+            self.assertEqual(ident.clean_value('Q18A_TARGET_LABEL', label), label)
+        for label in ('unknown', 's5-overlap-80-80\n', DUMMY, 'https://private.invalid'):
+            with self.subTest(label_length=len(label)), self.assertRaises(ident.EvidenceError):
+                ident.clean_value('Q18A_TARGET_LABEL', label)
+        unknown = ident.clean_env({'Q18A_UNREVIEWED': '1'})
+        self.assertFalse(dec.no_unknown(unknown))
+        self.assertEqual(unknown['Q18A_UNREVIEWED'], {'redacted_length': 1, 'unclassified': True})
+
+    def test_declaration_cli_failure_retains_sites_without_exception_values(self):
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['engine_identity.py', 'declare', '/unused']), \
+                patch.object(dec, 'run', side_effect=ValueError(DUMMY+'\nprivate parser input')), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(ident.main(), 2)
+        text = output.getvalue()
+        self.assertNotIn(DUMMY, text)
+        self.assertNotIn('private parser input', text)
+        rows = text.splitlines()
+        self.assertEqual(len(rows), 2)
+        prefix = 'identity declaration diagnostic '
+        diagnostic = json.loads(rows[1].removeprefix(prefix))
+        self.assertEqual(diagnostic['error_type'], 'ValueError')
+        self.assertTrue(0 < len(diagnostic['error_stack']) <= 8)
+        self.assertTrue(all(set(row) == {'file', 'function', 'line'}
+                            for row in diagnostic['error_stack']))
+
     def test_q16_dense_and_other_configs_render_one_sparse_assignment(self):
         sys.path.insert(0,str(ROOT/'patches/s5_engine'))
         import make_e2_arena as g

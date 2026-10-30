@@ -1,4 +1,4 @@
-"""E3 receiver checkpoint; not installed in the engine overlay yet.
+"""E3 process-owned reply transport with serialized cross-thread RPC submission.
 
 One owned receiver thread per reply MQ. The dispatcher only polls local results;
 it never calls MessageQueue.dequeue or FutureWrapper.result. Each expected FIFO
@@ -15,6 +15,7 @@ establish ordering only. Worker async-output head-of-line blocking is unchanged.
 from collections import deque
 from dataclasses import dataclass, field
 import math
+import os
 from queue import Empty, Queue
 import threading
 import time
@@ -43,7 +44,7 @@ class _Call:
 
 
 class ReplyTransport:
-    """Dispatcher-owned submit/poll/take, with bounded per-worker receivers.
+    """Process-owned submit/poll/take, with bounded per-worker receivers.
 
     queues maps rank -> exclusively handed-off MessageQueue-compatible reader.
     success_status must be the actual WorkerProc.ResponseStatus.SUCCESS enum.
@@ -63,7 +64,13 @@ class ReplyTransport:
             raise ValueError('reply readers must implement dequeue')
         if type(max_calls) is not int or max_calls < 1:
             raise ValueError('positive credit budget required')
-        self._owner_thread = threading.get_ident()
+        self._owner_pid = os.getpid()
+        # One lock covers registration through the complete broadcast write:
+        # two submitting threads must not reverse the worker FIFO after assigning
+        # sequence ids. Receivers use only _condition and keep draining replies.
+        self._broker = threading.RLock()
+        self._shutdown_lock = threading.RLock()
+        self._sending_thread = None
         self._clock = clock
         self._status = success_status
         self._max_calls = max_calls
@@ -96,8 +103,8 @@ class ReplyTransport:
             t.start()
 
     def _owner(self):
-        if threading.get_ident() != self._owner_thread:
-            raise TransportError('dispatcher ownership violation')
+        if os.getpid() != self._owner_pid:
+            raise TransportError('transport process ownership violation')
 
     def _healthy(self):
         if self._failure is not None:
@@ -111,7 +118,7 @@ class ReplyTransport:
             self._failure = reason
         self._condition.notify_all()
 
-    def submit(self, kind, send, *, ranks=None, timeout_s=300.0, aggregate=None):
+    def submit(self, kind, send, *, ranks=None, timeout_s=300.0, aggregate=None, precheck=None):
         """Register before broadcasting, including unique-reply/aggregator ranks.
 
         send receives the local sequence solely for optional typed E3 envelopes.
@@ -128,25 +135,46 @@ class ReplyTransport:
             raise ValueError('positive finite reply timeout required')
         if not callable(send) or (aggregate is not None and not callable(aggregate)):
             raise ValueError('invalid callback')
-        with self._condition:
-            self._healthy()
-            if len(self._calls) >= self._max_calls:
-                raise Backpressure('unclaimed RPC credit budget')
-            sequence = self._next; self._next += 1
-            now = self._clock()
-            call = _Call(sequence, kind, ranks, now, now + timeout_s, aggregate)
-            self._calls[sequence] = call
-            for rank in ranks:
-                self._todo[rank].append((sequence, call.deadline_s))
-            self._condition.notify_all()
+        if precheck is not None and not callable(precheck):
+            raise ValueError('invalid submission precheck')
+        # Ordinary stock RPCs can submit from vLLM IO/health threads; this is
+        # process ownership, not permission for a second MQ reader or writer.
+        # Contention refuses before registration, with no retry or poisoning.
+        if not self._broker.acquire(timeout=0.0 if precheck is not None else timeout_s):
+            raise Backpressure('submission_serialization_busy')
         try:
-            send(sequence)
-        except BaseException:
-            # Broadcast may have partially succeeded. No rollback/reuse of IDs.
             with self._condition:
-                self._poison('broadcast_failed')
-            raise
-        return sequence
+                self._healthy()
+                if self._sending_thread is not None:
+                    raise TransportError('reentrant broadcast submission')
+                if len(self._calls) >= self._max_calls:
+                    raise Backpressure('unclaimed RPC credit budget')
+            if precheck is not None:
+                precheck()  # Same writer critical section, before registration.
+            with self._condition:
+                self._healthy()  # close may have begun during a precheck.
+                sequence = self._next; self._next += 1
+                now = self._clock()
+                call = _Call(sequence, kind, ranks, now, now + timeout_s, aggregate)
+                self._calls[sequence] = call
+                self._sending_thread = threading.get_ident()
+                for rank in ranks:
+                    self._todo[rank].append((sequence, call.deadline_s))
+                self._condition.notify_all()
+            try:
+                send(sequence)
+            except BaseException:
+                # Broadcast may have partially succeeded. No rollback/reuse.
+                with self._condition:
+                    self._poison('broadcast_failed')
+                raise
+            finally:
+                with self._condition:
+                    self._sending_thread = None
+                    self._condition.notify_all()
+            return sequence
+        finally:
+            self._broker.release()
 
     def _receive_loop(self, rank):
         while True:
@@ -189,39 +217,64 @@ class ReplyTransport:
     def poll(self, budget=8):
         """Bounded local processing. Aggregators run here, never in receivers.
 
-        This uses short Python locks/GIL and is not a realtime/wait-free promise.
+        A foreign writer/consumer makes this return zero, never wait for its
+        broadcast. Short state locks/GIL remain; this is not a realtime promise.
         Aggregate callbacks themselves must not perform blocking engine work.
         """
         self._owner()
         if type(budget) is not int or budget < 1:
             raise ValueError('positive poll budget required')
-        with self._condition:
-            self._healthy()
-        n = 0
-        while n < budget:
-            try:
-                sequence, rank, value, received = self._done.get_nowait()
-            except Empty:
-                break
-            call = self._calls[sequence]
-            if rank not in call.ranks or rank in call.replies:
-                with self._condition:
-                    self._poison('reply_correlation_failure')
-                raise TransportError('reply_correlation_failure')
-            call.replies[rank] = value; call.received_s[rank] = received
-            if len(call.replies) == len(call.ranks):
-                ordered = [call.replies[r] for r in call.ranks]
+        if not self._broker.acquire(blocking=False):
+            with self._condition:
+                self._healthy()
+            return 0
+        try:
+            with self._condition:
+                self._healthy()
+            n = 0
+            while n < budget:
                 try:
-                    call.value = call.aggregate(ordered) if call.aggregate else ordered
-                except BaseException:
+                    sequence, rank, value, received = self._done.get_nowait()
+                except Empty:
+                    break
+                with self._condition:
+                    self._healthy()
+                    call = self._calls.get(sequence)
+                    if call is None or rank not in call.ranks or rank in call.replies:
+                        self._poison('reply_correlation_failure')
+                        raise TransportError('reply_correlation_failure')
+                    call.replies[rank] = value; call.received_s[rank] = received
+                    complete = len(call.replies) == len(call.ranks)
+                    ordered = [call.replies[r] for r in call.ranks] if complete else None
+                if complete:
+                    try:
+                        # Serialized with other consumers, outside the receiver
+                        # condition: shutdown can still close/poison promptly.
+                        result = call.aggregate(ordered) if call.aggregate else ordered
+                    except BaseException:
+                        with self._condition:
+                            self._poison('aggregation_failed')
+                        raise
                     with self._condition:
-                        self._poison('aggregation_failed')
-                    raise
-                call.ready = True
-            n += 1
+                        self._healthy()
+                        call.value = result
+                        call.ready = True
+                n += 1
+            with self._condition:
+                self._healthy()
+            return n
+        finally:
+            self._broker.release()
+
+    def call_ready(self, sequence):
+        """Atomic local observation; no MQ read, implicit poll or claiming."""
+        self._owner()
         with self._condition:
             self._healthy()
-        return n
+            call = self._calls.get(sequence)
+            if call is None:
+                raise TransportError('reply expectation disappeared')
+            return call.ready
 
     def take(self, sequence):
         """Consume once; no implicit poll/drain/wait, free the payload credit.
@@ -236,7 +289,7 @@ class ReplyTransport:
             if not call.ready:
                 raise NotReady('reply pending')
             del self._calls[sequence]
-        return call.value, {r: call.received_s[r] - call.registered_s for r in call.ranks}
+            return call.value, {r: call.received_s[r] - call.registered_s for r in call.ranks}
 
     def close(self, timeout_s=0.0):
         """Bounded join, not forced cancellation or proof of GPU retirement.
@@ -254,10 +307,11 @@ class ReplyTransport:
             self._closing = True
             self._condition.notify_all()
         for t in self._threads.values():
-            t.join(max(0.0, deadline - time.monotonic()))
+            if t is not threading.current_thread():
+                t.join(max(0.0, deadline - time.monotonic()))
         with self._condition:
             live = [rank for rank, t in self._threads.items() if t.is_alive()]
-            clean = not (live or self._calls or self._failure)
+            clean = not (live or self._calls or self._failure or self._sending_thread is not None)
             if clean:
                 with _CLAIM_LOCK:
                     for q in self._queues.values():
@@ -266,4 +320,5 @@ class ReplyTransport:
             return dict(clean=clean,
                         live_receivers=live, outstanding_calls=len(self._calls),
                         inflight_receives=len(self._inflight), failure=self._failure,
+                        active_broadcast=self._sending_thread is not None,
                         scope='transport only; no GPU completion or source-lease release implied')

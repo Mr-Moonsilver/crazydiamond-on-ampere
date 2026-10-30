@@ -138,6 +138,40 @@ def fake_torch(total_sms=82, default_stream=None):
 
 
 class FakeBinding:
+    def decode_stream_check(self, handle, token):
+        return 0
+
+    def aux_create(self, handle):
+        self.decode_tokens = getattr(self, 'decode_tokens', set())
+        token = 1000 + len(self.decode_tokens)
+        self.decode_tokens.add(token)
+        return token
+
+    def aux_destroy(self, handle, token):
+        tokens = getattr(self, 'decode_tokens', set())
+        if token not in tokens:
+            return 1
+        tokens.remove(token)
+        return 0
+
+    def prefill_aux_create(self, handle):
+        self.prefill_tokens = getattr(self, 'prefill_tokens', set())
+        token = 2000 + len(self.prefill_tokens)
+        self.prefill_tokens.add(token)
+        return token
+
+    def prefill_aux_destroy(self, handle, token):
+        tokens = getattr(self, 'prefill_tokens', set())
+        if token not in tokens:
+            return 1
+        tokens.remove(token)
+        return 0
+
+    def prefill_stream_check(self, handle, token):
+        if getattr(self, 'wrong_prefill', False):
+            return 1
+        return token not in getattr(self, 'prefill_tokens', set())
+
     """Driver boundary: returns the split counts and marks probe SMs."""
 
     def __init__(self, total=82, overlap=False, alias=False, lie=False):
@@ -235,7 +269,9 @@ class FakeManager:
         self.decode_query_len = decode_query_len
         self.lora_capture_cases = lora_capture_cases
         self.varlen_decode = varlen_decode
-        self.pool = ('stock', 0)
+        # The pinned manager returns an int or a pair of ints; the native
+        # construction reads this identity instead of guessing a pool.
+        self.pool = (2, 0)
         self._capture_descs = {}
         self.graphs = {}
         self.capture_calls = []
@@ -279,7 +315,21 @@ def fake_runner(torch, stock_descs=None):
     return runner
 
 
+_owner_patches = []
+_fixture_capture_owners = []
+
 def install_fake_vllm(stream_marker):
+    # Old graph-bank tests have no model owners. Use the REAL scope with an
+    # explicitly empty CPU fixture; owner census is covered in its own suite.
+    from unittest.mock import patch
+    import capture_streams
+    def empty_owners(runner, split):
+        owner = capture_streams.CaptureStreams(split, [])
+        owner.prepare()
+        _fixture_capture_owners.append(owner)
+        return owner
+    p = patch('capture_streams.for_runner', side_effect=empty_owners)
+    p.start(); _owner_patches.append(p)
     module = types.ModuleType('vllm.distributed.parallel_state')
 
     class GraphCaptureContext:
@@ -296,6 +346,16 @@ def install_fake_vllm(stream_marker):
 
 
 def remove_fake_vllm():
+    # Explicitly reset leftover fake graphs before closing the new stream lease.
+    # Tests may deliberately leave a route/controller quarantined.
+    while _fixture_capture_owners:
+        owner = _fixture_capture_owners.pop()
+        for manager in FakeManager.instances:
+            for graph in list(manager.graphs.values()):
+                if id(graph) in owner.graphs:
+                    graph.reset(); owner.retire_graph(graph)
+        owner.close_after_graphs()
+    if _owner_patches: _owner_patches.pop().stop()
     for name in ('vllm.distributed.parallel_state', 'vllm.distributed', 'vllm'):
         sys.modules.pop(name, None)
 

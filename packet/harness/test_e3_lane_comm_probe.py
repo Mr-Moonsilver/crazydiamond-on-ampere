@@ -278,8 +278,14 @@ class VerdictRules(unittest.TestCase):
 
 class ArtifactIdentity(unittest.TestCase):
     def native_copy(self, root):
+        # q17c is an immutable older standalone receipt, not the current
+        # decode helper. Keep its declared source instead of moving its pin.
+        frozen = {'green_context.py': 'q17c_original_green_context.py',
+                  'e3_types.py': 'q17c_original_e3_types.py'}
         for name in NATIVE_PINS:
-            shutil.copyfile(HERE.parent / 'patches/s5_engine' / name, root / name)
+            source = (HERE / 'fixtures' / frozen[name] if name in frozen
+                      else HERE.parent / 'patches/s5_engine' / name)
+            shutil.copyfile(source, root / name)
         (root / 'SHA256SUMS').write_text(
             ''.join(f'{sha}  {name}\n' for name, sha in sorted(NATIVE_PINS.items())))
 

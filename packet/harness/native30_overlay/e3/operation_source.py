@@ -26,6 +26,7 @@ CPU host metadata are refused rather than approximated.
 """
 import ast
 import hashlib
+from pathlib import Path
 
 import qsa_operation
 from resident_attention import function
@@ -34,10 +35,23 @@ E2_QSA_SHA256 = '3dc7e447d174eaa0463865edfe978af08e75d1fd8bc5de86810c4aa914281ad
 E2_OPS_SHA256 = 'aab7f8d83426f9c7c097347330102dbef991fd5403916107d52cd4d883b8f190'
 S5_RUNNER_SHA256 = '0f5b40fd506beb42a46a70a97bb7784e538aa97b0227e7a64ba41366fe9b4535'
 
+# The fixed-capacity union kernels are copied verbatim from the reviewed
+# ``patches/sparse_stage/kernels.py``; its bytes are pinned here.  The old
+# ``_s6_gather`` UVA gather in that file is deliberately not emitted: the
+# sparse route uses only the qualified compact-row DMA below.
+SPARSE_STAGE_KERNELS = ('_s6_mark', '_s6_scan', '_s6_offsets', '_s6_pack',
+                        '_s6_remap')
+SPARSE_STAGE_SHA256 = '10d675e158465971cb7a7726055a4f55aa42c18a22baddd1a451104f3f827660'
+UNION_SOURCE_SHA256 = '87ab16989a02626d5e380e4607d0e411feb621d2435ff9c9a59d76b90d75057e'
+
 OPS_NAME = 'flash_s5_arena_attention'
+SPARSE_OPS_NAME = 'flash_s5_sparse_arena_attention'
 LAYER_HELPER = '_flash_s5_staged_operation'
+SPARSE_LAYER_HELPER = '_flash_s5_sparse_staged_operation'
 RUNNER_SEAM = qsa_operation.RUNNER_SEAM
-MARKERS = ('_flash_s5_operation', 'flash_s5_arena_attention', RUNNER_SEAM)
+MARKERS = ('_flash_s5_operation', 'flash_s5_arena_attention',
+           'flash_s5_sparse_arena_attention', '_flash_s5_sparse_staged_operation',
+           '_s6_union', RUNNER_SEAM)
 
 
 def _sha(source):
@@ -59,6 +73,74 @@ def _parsed(text):
     return text
 
 
+def _union_text(source):
+    """Five pinned kernels plus the fixed-capacity launch wrapper."""
+    if _sha(source) != SPARSE_STAGE_SHA256:
+        raise ValueError('unreviewed sparse-stage union kernels')
+    # resident_attention.function intentionally starts at ``def`` for ordinary
+    # wrappers. A Triton kernel must retain its decorator to be subscriptable.
+    # Preserve the pinned kernel's actual decorator/source bytes, not a guessed
+    # replacement, and refuse any unreviewed decorator shape.
+    nodes = {node.name: node for node in ast.parse(source).body
+             if isinstance(node, ast.FunctionDef)}
+    lines = source.splitlines(keepends=True)
+    parts = []
+    for name in SPARSE_STAGE_KERNELS:
+        node = nodes[name]
+        if ([ast.unparse(item) for item in node.decorator_list] != ['triton.jit']):
+            raise ValueError('sparse union kernel lost its pinned Triton decorator')
+        start = node.decorator_list[0].lineno - 1
+        parts.append(''.join(lines[start:node.end_lineno]).rstrip('\n'))
+    if '_s6_gather' in '\n\n'.join(parts):
+        raise ValueError('the sparse union overlay must not emit the UVA gather')
+    text = '\n\n'.join(parts) + '\n\n' + _S6_UNION.rstrip('\n')
+    if UNION_SOURCE_SHA256 and _sha(text) != UNION_SOURCE_SHA256:
+        raise ValueError('sparse union overlay bytes changed')
+    return text
+
+
+_S6_UNION = '''
+def _s6_union(logical_indices, rows, num_tokens, scratch):
+    # Fixed-capacity sorted union and inverse on the device.  Every buffer is
+    # the operation's explicit scratch, sized from host-known geometry; no
+    # device value selects a shape and no host scalar is read.  Sorted packing
+    # keeps the pinned sorted-distinct order; entries in [0, N) are selected,
+    # every other entry is padding (the pinned kernel contract).
+    b = 1024
+    groups = triton.cdiv(num_tokens, b)
+    flags = scratch.flags
+    ranks = scratch.ranks
+    tokens = scratch.tokens
+    totals = scratch.totals
+    offsets = scratch.offsets
+    info = scratch.info
+    width = logical_indices.shape[1] - 1
+    _s6_mark[(triton.cdiv(rows.numel() * width, b),)](
+        logical_indices, rows, flags, logical_indices.stride(0), width,
+        num_tokens, rows.numel(), b)
+    _s6_scan[(groups,)](flags, ranks, totals, num_tokens, b)
+    _s6_offsets[(1,)](totals, offsets, info, num_tokens, groups,
+                      triton.next_power_of_2(groups))
+    _s6_pack[(groups,)](flags, ranks, offsets, tokens, num_tokens, b)
+    remapped = scratch.remapped
+    _s6_remap[(triton.cdiv(rows.numel() * width, b),)](
+        logical_indices, rows, ranks, info, remapped,
+        logical_indices.stride(0), remapped.stride(0), width, rows.numel(),
+        num_tokens, b)
+    return tokens, info, remapped
+'''
+
+
+def _union_overlay():
+    """Pinned union text, read from the reviewed source file at build time."""
+    path = Path(__file__).resolve().parents[1] / 'sparse_stage' / 'kernels.py'
+    try:
+        source = path.read_text()
+    except OSError as exc:
+        raise ValueError('pinned sparse-stage kernels are unavailable') from exc
+    return _union_text(source)
+
+
 # --- attention function -----------------------------------------------------
 
 _OPS_FORWARD = (
@@ -74,7 +156,8 @@ _OPS_FORWARD = (
      '            raise RuntimeError("S5 operation received no selected rows")\n'),
     ('    e2.route("sparse_uva" if unique_tokens is not None else "dense_dma", num_pages)\n',
      '    if unique_tokens is not None:\n'
-     '        raise RuntimeError("S5 operation does not support sparse-UVA compaction")\n'),
+     '        raise RuntimeError("S5 operation does not support sparse-UVA compaction")\n'
+     '    yield e3op.schedule_boundary()\n'),
     ('            e2.fill(staged, page_lo, page_hi, block_table_row)\n',
      '            e3op.fill_bucket(staged, page_lo, page_hi, block_table_row)\n'),
     ('        if unique_tokens is None:\n            e2.consume_begin()\n', ''),
@@ -96,38 +179,166 @@ _OPS_FORWARD = (
 )
 
 
+_SPARSE_PRELUDE_OLD = '''    if (retained is None and num_pages > int(os.environ.get("QSA_SPARSE_MIN_PAGES", pages_in_arena))
+            and os.environ.get("VLLM_QSA_KVO_SPARSE_PREFILL", "1") == "1"):
+        selected_rows = logical_indices.index_select(0, rows)
+        unique, inverse = torch.unique(
+            selected_rows[:, :-1].reshape(-1), sorted=True, return_inverse=True
+        )
+        has_padding = unique.numel() > 0 and int(unique[0]) == -1
+        unique_valid = unique[1:] if has_padding else unique
+        if unique_valid.numel() == 0:
+            e2.route("empty", 0)
+            out[rows] = 0
+            return
+        if _t is not None:
+            _t["coverage"] = unique_valid.numel() / max(1, num_pages * page_size)
+        if unique_valid.numel() < 0.8 * num_pages * page_size:
+            remapped = logical_indices.clone()
+            compact = inverse.reshape(num_rows, -1).to(torch.int32)
+            if has_padding:
+                compact -= 1
+            remapped[rows, :-1] = compact
+            logical_indices = remapped
+            unique_tokens = unique_valid
+            num_pages = triton.cdiv(unique_tokens.numel(), page_size)
+'''
+
+_SPARSE_PRELUDE_NEW = '''    if retained is None and e3op.sparse_selection_eligible(num_pages, pages_in_arena):
+        # Fixed-capacity sorted union and exact inverse, entirely on the device.
+        # Capacity, row count and width are host-known; no CUDA scalar, list or
+        # shape-dependent allocation is read or created here.
+        capacity = num_pages * page_size
+        union = e3op.sparse_union_scratch(capacity, logical_indices, rows)
+        unique_tokens, union_info, remapped = _s6_union(
+            logical_indices, rows, capacity, union)
+        # Bounded D2H into pinned scratch on the copy stream, behind a compute
+        # event.  The generator yields until that copy event is host-queried;
+        # the count and selection prefix are read only from completed pinned
+        # memory.  Host slicing by an already-read count is not a device read.
+        _selection = e3op.stage_sparse_selection(unique_tokens, union_info)
+        yield e3op.schedule_boundary(_selection)
+        while not e3op.sparse_selection_ready(_selection):
+            yield e3op.sparse_selection_pending(_selection)
+        selected_count = e3op.sparse_selection_count(_selection)
+        if selected_count == 0:
+            e3op.sparse_empty()
+            out[rows] = 0
+            return
+        # Integer form of the pinned ``count < 0.8 * capacity`` threshold; it
+        # is exact for every integer count and capacity.
+        if selected_count * 5 < capacity * 4:
+            logical_indices = remapped
+            num_pages = triton.cdiv(selected_count, page_size)
+        else:
+            unique_tokens = None
+'''
+
+_SPARSE_FORWARD = (
+    ('def flash_e2_arena_attention(', 'def flash_s5_sparse_arena_attention('),
+    ('    *, e2,\n', '    *, e3op,\n'),
+    ('        raise RuntimeError("E2 arena rejects retained-bucket shortcut")\n',
+     '        raise RuntimeError("S5 sparse operation rejects retained-bucket shortcut")\n'),
+    ('    if num_rows == 0:\n        e2.route("empty", 0)\n        return\n',
+     '    if num_rows == 0:\n'
+     '        raise RuntimeError("S5 sparse operation received no attention rows")\n'),
+    (_SPARSE_PRELUDE_OLD, _SPARSE_PRELUDE_NEW),
+    ('    e2.route("sparse_uva" if unique_tokens is not None else "dense_dma", num_pages)\n',
+     '    e3op.declare_sparse_route("sparse_dma" if unique_tokens is not None else "dense_dma")\n'
+     '    if e3op._current_run().schedule_boundary is None:\n'
+     '        yield e3op.schedule_boundary()\n'),
+    ('            e2.fill(staged, page_lo, page_hi, block_table_row)\n',
+     '            e3op.fill_bucket(staged, page_lo, page_hi, block_table_row)\n'),
+    ('            selected = unique_tokens[page_lo * page_size:page_hi * page_size]\n'
+     '            _qsa_gather_selected_host_rows[(selected.numel(), num_kv_heads)](\n'
+     '                kv_cache, selected, block_table_row, staged,\n'
+     '                kv_cache.stride(0), kv_cache.stride(1), kv_cache.stride(2),\n'
+     '                staged.stride(0), staged.stride(1), staged.stride(2),\n'
+     '                selected.numel(), PAGE_SIZE=page_size, ROW_WIDTH=2 * head_dim,\n'
+     '                BLOCK_D=triton.next_power_of_2(2 * head_dim), num_warps=4,\n'
+     '            )\n',
+     '            selected = unique_tokens[\n'
+     '                page_lo * page_size:min(page_hi * page_size, selected_count)]\n'
+     '            while True:\n'
+     '                _copy = e3op.fill_sparse_bucket(\n'
+     '                    staged, selected, page_lo * page_size, block_table_row)\n'
+     '                if not getattr(_copy, "sparse_copy_pending", False):\n'
+     '                    break\n'
+     '                yield _copy\n'),
+    ('        if unique_tokens is None:\n            e2.consume_begin()\n', ''),
+    ('        if unique_tokens is None:\n            e2.consume_end()\n',
+     '        yield e3op.after_attention_bucket(\n'
+     '            staged, block_table_row, q, logical_indices, rows, acc, max_state, norm_state, out)\n'),
+    ('    _t = _STAGE_TIMER.begin(num_rows, num_pages) if _STAGE_TIMER is not None else None\n'
+     '    if _STAGE_TIMER is not None and _STAGE_TIMER.pre_retain is not None:\n'
+     '        if _t is not None:\n'
+     '            _t["ret"] = _STAGE_TIMER.pre_retain\n'
+     '        _STAGE_TIMER.pre_retain = None\n',
+     '    _t = None  # lane-local timing comes from the operation server\n'),
+)
+
+
 def generate_ops(source):
-    """Append ``flash_s5_arena_attention`` to the E2-composed attention module."""
+    """Append the dense and sparse ``flash_s5_*`` attention overlays."""
     if _sha(source) != E2_OPS_SHA256:
         raise ValueError('unreviewed E2 attention source for the S5 operation')
     if 'flash_s5_arena_attention' in source:
         raise ValueError('attention module already has the S5 operation')
-    candidate = function(source, 'flash_e2_arena_attention')
+    dense = function(source, 'flash_e2_arena_attention')
     for old, new in _OPS_FORWARD:
-        candidate = _once(candidate, old, new)
-    return _parsed(source + '\n\n' + candidate + '\n')
+        dense = _once(dense, old, new)
+    sparse = function(source, 'flash_e2_arena_attention')
+    for old, new in _SPARSE_FORWARD:
+        sparse = _once(sparse, old, new)
+    union = _union_overlay()
+    if 'torch.unique' in sparse or 'unique[' in sparse:
+        raise ValueError('sparse operation must not read the device union on the host')
+    if '_s6_gather' in union:
+        raise ValueError('sparse operation must not emit the UVA gather')
+    return _parsed(source + '\n\n' + dense + '\n\n' + sparse + '\n\n' + union + '\n')
 
 
 def revert_ops(source):
     """Recover the E2 attention module bytes; refuse anything else."""
     if 'flash_s5_arena_attention' not in source:
         raise ValueError('attention module has no S5 operation')
-    index = source.rfind('\n\ndef flash_s5_arena_attention(')
-    if index < 0:
-        raise ValueError('S5 attention function is not an appended overlay')
-    candidate = source[index + 2:].rstrip('\n') + '\n'
-    original = candidate
-    for old, new in reversed(_OPS_FORWARD):
+    if 'flash_s5_sparse_arena_attention' not in source:
+        raise ValueError('attention module has no sparse S5 operation')
+    union = _union_overlay()
+    suffix = '\n\n' + union + '\n'
+    if not source.endswith(suffix):
+        raise ValueError('S5 union kernels are not the pinned appended overlay')
+    head = source[:-len(suffix)]
+    sparse_index = head.rfind('\n\ndef flash_s5_sparse_arena_attention(')
+    if sparse_index < 0:
+        raise ValueError('S5 sparse attention function is not an appended overlay')
+    dense_index = head.rfind('\n\ndef flash_s5_arena_attention(')
+    if dense_index < 0 or dense_index > sparse_index:
+        raise ValueError('S5 dense attention function is not an appended overlay')
+    sparse_candidate = head[sparse_index + 2:].rstrip('\n') + '\n'
+    dense_candidate = head[dense_index + 2:sparse_index].rstrip('\n') + '\n'
+    recovered_sparse = sparse_candidate
+    for old, new in reversed(_SPARSE_FORWARD):
         if new:
-            original = _once(original, new, old)
+            recovered_sparse = _once(recovered_sparse, new, old)
         else:
             kernel = '        _qsa_sparse_staged_gqa_kernel[(num_rows, num_kv_heads)](\n'
-            original = _once(original, kernel, old + kernel)
-    recovered = source[:index]
+            recovered_sparse = _once(recovered_sparse, kernel, old + kernel)
+    recovered_dense = dense_candidate
+    for old, new in reversed(_OPS_FORWARD):
+        if new:
+            recovered_dense = _once(recovered_dense, new, old)
+        else:
+            kernel = '        _qsa_sparse_staged_gqa_kernel[(num_rows, num_kv_heads)](\n'
+            recovered_dense = _once(recovered_dense, kernel, old + kernel)
+    recovered = head[:dense_index]
     if _sha(recovered) != E2_OPS_SHA256:
         raise ValueError('S5 attention revert did not recover the E2 bytes')
-    if function(recovered, 'flash_e2_arena_attention') != original:
+    baseline = function(recovered, 'flash_e2_arena_attention')
+    if recovered_dense != baseline:
         raise ValueError('S5 attention arithmetic was not recovered')
+    if recovered_sparse != baseline:
+        raise ValueError('S5 sparse attention arithmetic was not recovered')
     return recovered
 
 
@@ -173,6 +384,9 @@ _HELPER = '''def _flash_s5_staged_operation(
     if not getattr(layer, "_qsa_kv_offload", False):
         raise RuntimeError("S5 operation requires the QSA host-KV path")
     min_rows = getattr(layer, "_qsa_stage_min_rows", 0)
+    _observe_shape = getattr(operation, "observe_chunk_shape", None)
+    if callable(_observe_shape):
+        _observe_shape(num_tokens, min_rows, "dense_staged")
     if min_rows <= 0 or num_tokens < min_rows:
         raise RuntimeError("S5 operation requires the staged dense row threshold")
     host = getattr(attn_metadata, "_qsa_host_meta", None)
@@ -224,6 +438,71 @@ _HELPER = '''def _flash_s5_staged_operation(
     return start, end
 '''
 
+_SPARSE_HELPER_ANCHOR = '''    operation.bind_plan(
+        layer.layer_name,
+        attn_metadata.block_table[best],
+        max_logical_page + 1,
+        int(lengths[best]),
+        arena,
+    )
+    yield from flash_s5_arena_attention(
+'''
+
+
+def _sparse_helper_text():
+    """Derive the compact-row helper from the dense one with exact anchors."""
+    text = _HELPER
+    for old, new in (
+        ('def _flash_s5_staged_operation(', 'def _flash_s5_sparse_staged_operation('),
+        ('_observe_shape(num_tokens, min_rows, "dense_staged")',
+         '_observe_shape(num_tokens, min_rows, "sparse_staged")'),
+        ('"""Dense staged rows driven by the worker\'s bounded prefill operation.',
+         '"""Compact-row staged rows driven by the worker\'s bounded prefill operation.'),
+        ('a missing/fragmented plan, sparse compaction or retained-bucket\n'
+         '    shortcut raises',
+         'a missing/fragmented plan, an unadmitted sparse route or a\n'
+         '    retained-bucket shortcut raises'),
+        (_SPARSE_HELPER_ANCHOR, _SPARSE_HELPER_ANCHOR.replace(
+            '    yield from flash_s5_arena_attention(\n',
+            '''    operation.bind_sparse_context(
+        layer.layer_name,
+        arena,
+        attn_metadata.block_table[best],
+        min_pages=arena.shape[0],
+    )
+    # Native row1 qualification binds the original UVA view and the original
+    # attention function; both are no-ops unless qualification is enabled.
+    operation.bind_row1_uva(layer.layer_name, kv_cache)
+    from .ops.qsa import flash_e2_arena_attention
+    operation.bind_row1_reference(layer.layer_name, flash_e2_arena_attention)
+    yield from flash_s5_arena_attention(
+''')),
+        ('    return start, end\n',
+         '''    operation.row1_output(
+        layer.layer_name,
+        query[:num_tokens],
+        kv_cache,
+        logical_indices,
+        attn_metadata.block_table[best],
+        rows,
+        max_logical_page,
+        arena,
+        use_prefill_config,
+        output[:num_tokens],
+    )
+    return start, end
+'''),
+    ):
+        if text.count(old) != 1:
+            raise ValueError('sparse helper anchor changed: ' + old[:60])
+        text = text.replace(old, new, 1)
+    if text.count('flash_s5_arena_attention') != 2:
+        raise ValueError('sparse helper call-site anchor changed')
+    return text.replace('flash_s5_arena_attention', 'flash_s5_sparse_arena_attention')
+
+
+SPARSE_HELPER = _sparse_helper_text()
+
 _STORED_ANCHOR = '''        impl.do_kv_cache_update(
             self,
             key,
@@ -261,7 +540,8 @@ def generate_layer(source):
                  _LAYER_PRODUCER + '        selected = self.indexer(\n')
     text = _once(text, _STORED_ANCHOR, _STORED_ANCHOR + _LAYER_STORED)
     text = _once(text, _FORWARD_QSA_ANCHOR, _FORWARD_QSA_ANCHOR + _LAYER_CONSUMED)
-    text = _once(text, '__all__ = [', _HELPER + '\n\n__all__ = [')
+    text = _once(text, '__all__ = [',
+                 _HELPER + '\n\n' + SPARSE_HELPER + '\n\n__all__ = [')
     return _parsed(text)
 
 
@@ -269,11 +549,13 @@ def revert_layer(source):
     """Recover the E2 QSA bytes; every inserted site must be present exactly once."""
     if '_flash_s5_operation' not in source:
         raise ValueError('QSA module has no S5 operation')
+    if '_flash_s5_sparse_staged_operation' not in source:
+        raise ValueError('QSA module has no sparse S5 operation')
     text = _once(source, _LAYER_BRANCH, '')
     text = _once(text, _LAYER_PRODUCER, '')
     text = _once(text, _LAYER_STORED, '')
     text = _once(text, _LAYER_CONSUMED, '')
-    text = _once(text, _HELPER + '\n\n', '')
+    text = _once(text, _HELPER + '\n\n' + SPARSE_HELPER + '\n\n', '')
     if _sha(text) != E2_QSA_SHA256:
         raise ValueError('S5 QSA revert did not recover the E2 bytes')
     return text
@@ -314,6 +596,8 @@ def revert_runner(source):
 
 __all__ = [
     'E2_OPS_SHA256', 'E2_QSA_SHA256', 'LAYER_HELPER', 'MARKERS', 'OPS_NAME',
-    'RUNNER_SEAM', 'S5_RUNNER_SHA256', 'generate_layer', 'generate_ops',
-    'generate_runner', 'revert_layer', 'revert_ops', 'revert_runner',
+    'RUNNER_SEAM', 'S5_RUNNER_SHA256', 'SPARSE_HELPER', 'SPARSE_LAYER_HELPER',
+    'SPARSE_OPS_NAME', 'SPARSE_STAGE_SHA256', 'UNION_SOURCE_SHA256',
+    'generate_layer', 'generate_ops', 'generate_runner', 'revert_layer',
+    'revert_ops', 'revert_runner',
 ]

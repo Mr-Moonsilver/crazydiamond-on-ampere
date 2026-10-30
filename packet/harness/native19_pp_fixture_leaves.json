@@ -1,0 +1,49 @@
+{
+  "schema": "native19-pp-fixture-leaves/1",
+  "box_evidence": false,
+  "runtime_methods_patched": false,
+  "leaves": [
+    {
+      "leaf": "Synthetic tensors/kernels/model/chunk factory",
+      "replaces": "GPU model, device state and real model runner",
+      "basis": "more-convenient; reduced CPU model, no numerical or hardware qualification",
+      "box_evidence": false
+    },
+    {
+      "leaf": "CPU queried events and PP channel",
+      "replaces": "CUDA prefill stream and PrefillPPChannel NCCL pair",
+      "basis": "matching transaction/stage/seq gates both sender/receiver and later stream events; no proof of NCCL host-call progress",
+      "box_evidence": false
+    },
+    {
+      "leaf": "DirectTransport and route/graph fixtures",
+      "replaces": "OS MQ, green contexts, retained decode graphs",
+      "basis": "more-convenient; scoped host proof excludes process races and native startup",
+      "box_evidence": false
+    },
+    {
+      "leaf": "ProfileServer/CreditServer",
+      "replaces": "NativeOperationServer",
+      "basis": "clears the handoff on actual bridge release; synthetic registration/resources remain more-convenient",
+      "box_evidence": false
+    },
+    {
+      "leaf": "Actual pinned AsyncScheduler/Request/KVCacheManager",
+      "replaces": "same stock classes",
+      "basis": "used without method patches in hub CPU-full; reduced CPU configuration/metadata leaves",
+      "box_evidence": false
+    },
+    {
+      "leaf": "Synthetic ModelRunnerOutput",
+      "replaces": "real model sampling",
+      "basis": "proves next Scheduler request lifecycle only; not numerical inference",
+      "box_evidence": false
+    },
+    {
+      "leaf": "DeferredEndpoint typed pending",
+      "replaces": "worker RPC admission delay",
+      "basis": "only partial-acceptance stress; actual bridge executes once after release; not a claim that NCCL returns pending",
+      "box_evidence": false
+    }
+  ]
+}

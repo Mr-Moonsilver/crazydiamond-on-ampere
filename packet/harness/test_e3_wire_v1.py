@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
 
 import wire_v1 as w
+from lane_chunk import ChunkAdmission
 from e3_types import (
     CompletionKind,
     CompletionProof,
@@ -133,6 +134,62 @@ class AdmissionRecordTests(unittest.TestCase):
         with self.assertRaises(E3ContractError):
             admission(transaction=t, prompt_end=6000, committed_end=5072,
                       input_ids=(3,) * 1024)
+
+
+class SourceLeaseDescriptorTests(unittest.TestCase):
+    """The transport half of the engine's source ownership, never a bool."""
+
+    def descriptor(self, **overrides):
+        values = dict(transaction=txn(), state_epoch=4,
+                      block_ids=(1, 2, 3, 5), consumer_ranks=(0, 1))
+        values.update(overrides)
+        return w.SourceLeaseDescriptor(**values)
+
+    def test_pages_and_ranks_are_canonical(self):
+        with self.assertRaises(E3ContractError):
+            self.descriptor(block_ids=(2, 1))
+        with self.assertRaises(E3ContractError):
+            self.descriptor(block_ids=())
+        with self.assertRaises(E3ContractError):
+            self.descriptor(block_ids=(0, 1))
+        with self.assertRaises(E3ContractError):
+            self.descriptor(consumer_ranks=(1, 0))
+        with self.assertRaises(E3ContractError):
+            self.descriptor(consumer_ranks=())
+
+    def test_frame_must_match_transaction_epoch_pages_and_ranks(self):
+        descriptor = self.descriptor()
+        self.assertTrue(descriptor.validate_frame(admission(), (0, 1)))
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(admission(state_epoch=5), (0, 1))
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(admission(transaction=txn(txn_seq=2)), (0, 1))
+        # Page 5 is the retained CoW source: it is absent from the rows and
+        # named only by cow_pairs. Dropping that pair must refuse the read.
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(
+                admission(cow_pairs=()), (0, 1))
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(admission(), (0, 2))
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(
+                admission(block_tables=((1, 2), (3,)), cow_pairs=((1, 4),)),
+                (0, 1))
+        with self.assertRaises(E3ContractError):
+            descriptor.validate_frame(object(), (0, 1))
+
+    def test_worker_lane_frame_is_the_same_proof(self):
+        frame = ChunkAdmission(
+            transaction=txn(), prompt_end=9, input_ids=tuple(range(8)),
+            ngram_context=(), block_tables=((1, 2), (3, 4)),
+            cow_pairs=((1, 5),), state_epoch=4)
+        self.assertTrue(self.descriptor().validate_frame(frame, (0, 1)))
+        stale = ChunkAdmission(
+            transaction=txn(), prompt_end=9, input_ids=tuple(range(8)),
+            ngram_context=(), block_tables=((1, 2), (3, 4)),
+            cow_pairs=((1, 5),), state_epoch=5)
+        with self.assertRaises(E3ContractError):
+            self.descriptor().validate_frame(stale, (0, 1))
 
 
 class SegmentDescriptorTests(unittest.TestCase):
@@ -275,6 +332,9 @@ class TransitionTests(unittest.TestCase):
         return w.TransitionCommand(**values)
 
     def ack(self, command, **overrides):
+        worker_rank = overrides.get('worker_rank', 0)
+        watermark = (command.decode_replay_watermarks[worker_rank]
+                     if worker_rank < len(command.decode_replay_watermarks) else 0)
         values = dict(engine_epoch=command.engine_epoch,
                       expected_route_generation=command.expected_route_generation,
                       route_generation=command.route_generation,
@@ -282,7 +342,9 @@ class TransitionTests(unittest.TestCase):
                       storage_epochs=command.storage_epochs,
                       applied_route_generation=command.route_generation,
                       applied_bank=command.target_bank,
-                      applied_storage_epochs=command.storage_epochs)
+                      applied_storage_epochs=command.storage_epochs,
+                      worker_rank=worker_rank,
+                      decode_replay_watermark=watermark)
         values.update(overrides)
         return w.TransitionAck(**values)
 
@@ -308,6 +370,60 @@ class TransitionTests(unittest.TestCase):
             self.ack(command, applied_storage_epochs=(5, 9))
         stale = self.ack(self.command(engine_epoch=3, expected_route_generation=2))
         self.assertFalse(stale.matches(command))
+
+    def test_ack_reports_its_queried_census_not_an_echo(self):
+        command = self.command()
+        # The commanded value is a floor: the worker's own queried census may
+        # have advanced while the split chunk ran.
+        self.assertTrue(self.ack(command, decode_replay_watermark=20).matches(command))
+        # A census behind the floor is a stale/storage-reuse answer.
+        self.assertFalse(self.ack(command, decode_replay_watermark=10).matches(command))
+        # A rank outside the command has no commanded floor to compare.
+        self.assertFalse(self.ack(command, worker_rank=2,
+                                  decode_replay_watermark=99).matches(command))
+
+
+class BootstrapTests(unittest.TestCase):
+    def command(self, **overrides):
+        values = dict(engine_epoch=4, ranks=(0, 1))
+        values.update(overrides)
+        return w.BootstrapCommand(**values)
+
+    def ack(self, command, **overrides):
+        values = dict(engine_epoch=command.engine_epoch, worker_rank=0,
+                      incarnation='worker-incarnation-a',
+                      lane=lane(0, LaneRole.DECODE, epoch=5, context=9),
+                      route_generation=0, decode_replay_watermark=3, bound=True)
+        values.update(overrides)
+        return w.BootstrapAck(**values)
+
+    def test_command_names_the_engine_owner_and_ordered_ranks(self):
+        command = self.command()
+        self.assertEqual(command.engine_epoch, 4)
+        with self.assertRaises(E3ContractError):
+            self.command(engine_epoch=0)
+        with self.assertRaises(E3ContractError):
+            self.command(ranks=(1, 0))
+        with self.assertRaises(E3ContractError):
+            self.command(ranks=())
+        self.assertNotIn('incarnation', repr(command))
+
+    def test_ack_carries_retained_decode_storage_identity(self):
+        command = self.command()
+        self.assertTrue(self.ack(command).matches(command))
+        self.assertFalse(self.ack(command, worker_rank=1,
+                                  lane=lane(1, LaneRole.DECODE)).matches(
+            self.command(ranks=(0,))))
+        self.assertFalse(self.ack(command, engine_epoch=3).matches(command))
+        with self.assertRaises(E3ContractError):
+            self.ack(command, lane=lane(0, LaneRole.PREFILL))
+        with self.assertRaises(E3ContractError):
+            self.ack(command, lane=lane(1, LaneRole.DECODE))
+        with self.assertRaises(E3ContractError):
+            self.ack(command, bound='yes')
+        # A refusal is representable but never a success.
+        self.assertFalse(self.ack(command, bound=False).bound)
+        self.assertNotIn('worker-incarnation-a', repr(self.ack(command)))
 
 
 class OpenAndCommandTests(unittest.TestCase):
@@ -465,6 +581,159 @@ class OpSeqTrackerTests(unittest.TestCase):
     def test_start_sequence(self):
         tracker = w.OpSeqTracker(4)
         self.assertEqual(tracker.propose(self.prepare), 5)
+
+
+class TerminalReleaseTests(unittest.TestCase):
+    """The typed terminal field and the request-row closure it certifies."""
+
+    def request(self, terminal, **overrides):
+        values = dict(transaction=txn(), state_epoch=4,
+                      completed_sequences=((0, 3), (1, 3)), terminal=terminal)
+        values.update(overrides)
+        return w.ReleaseRequest(**values)
+
+    def test_terminality_is_derived_from_the_admission_not_a_caller_flag(self):
+        self.assertTrue(admission().terminal)
+        self.assertFalse(admission(prompt_end=10).terminal)
+        self.assertTrue(admission(prompt_end=9, transaction=txn(chunk_end=8)).terminal)
+
+    def test_release_requires_an_explicit_boolean_terminal_field(self):
+        self.assertIs(self.request(False).terminal, False)
+        self.assertIs(self.request(True).terminal, True)
+        with self.assertRaises(E3ContractError):
+            self.request(1)
+        with self.assertRaises(E3ContractError):
+            self.request(None)
+
+    def test_repr_names_the_terminal_disposition(self):
+        self.assertIn('terminal=False', repr(self.request(False)))
+        self.assertIn('terminal=True', repr(self.request(True)))
+
+    def test_nonterminal_and_terminal_ack_closure_shapes(self):
+        transaction = txn()
+        nonterminal = w.ReleaseAck(transaction, 0, 4, 3, released=True,
+                                   request_closed=False)
+        self.assertTrue(nonterminal.released)
+        self.assertFalse(nonterminal.closed)
+        terminal = w.ReleaseAck(transaction, 0, 4, 3, released=True,
+                                request_closed=True)
+        self.assertTrue(terminal.closed)
+        # The row can never be closed without the storage release.
+        with self.assertRaises(E3ContractError):
+            w.ReleaseAck(transaction, 0, 4, 3, released=False, request_closed=True)
+
+
+class QsaProfileProtocolTests(unittest.TestCase):
+    """Protocol evidence only: no event, lease retirement or box proof."""
+
+    def setUp(self):
+        self.query = w.QsaProfileQuery(txn(), 4, 1, 39, 3, (2, 3))
+
+    def replies(self, left, right=None, *, pending=False):
+        result = [w.QsaProfileObservation(self.query, rank, 'skipped')
+                  for rank in (0, 1)]
+        result.append(w.QsaProfileObservation(
+            self.query, 2, 'ready', left, 'queried-selection-copy'))
+        result.append(w.QsaProfileObservation(self.query, 3, 'pending') if pending
+                      else w.QsaProfileObservation(self.query, 3, 'ready',
+                                                  right or left, 'queried-selection-copy'))
+        return tuple(result)
+
+    def test_equal_actual_planner_profiles_agree_and_differing_profiles_refuse(self):
+        import sparse_history_dma as dma
+        shapes = []
+        for count in (4097, 97153):
+            plan = dma.make_sparse_plan(tuple(range(0, 2 * count, 2)),
+                tuple(range(1, 51)), tuple(range(1, 52)), 1,
+                valid_tokens=202400, null_page=0)
+            if plan.refused:
+                plan = dma.stream_sparse_plan(plan)
+            self.assertFalse(plan.refused)
+            waves = tuple((bucket.descriptors + dma.MAX_DESCRIPTORS - 1)
+                          // dma.MAX_DESCRIPTORS for bucket in plan.buckets)
+            shape = w.QsaScheduleShape('sparse_dma', waves, waves)
+            shapes.append(shape)
+            verdict, grant = w.qsa_profile_agreement(
+                self.query, self.replies(shape), (0, 1, 2, 3))
+            self.assertEqual(verdict, 'agreed')
+            self.assertEqual(grant, w.QsaProfileGrant(self.query, shape))
+        self.assertEqual(shapes[0].bucket_waves, (17,))
+        self.assertEqual(shapes[1].bucket_waves, (380, 1))
+        self.assertEqual(w.qsa_profile_agreement(self.query,
+            self.replies(*shapes), (0, 1, 2, 3)),
+            ('unsupported-native-schedule-profile', None))
+
+    def test_pending_is_not_a_grant(self):
+        shape = w.QsaScheduleShape('dense_dma', (1,), (1,))
+        self.assertEqual(w.qsa_profile_agreement(self.query,
+            self.replies(shape, pending=True), (0, 1, 2, 3)), ('pending', None))
+
+    def test_route_and_submission_profile_both_participate_in_agreement(self):
+        cases = (
+            (w.QsaScheduleShape('dense_dma', (1,), (1,)),
+             w.QsaScheduleShape('sparse_dma', (1,), (1,))),
+            (w.QsaScheduleShape('sparse_dma', (1,), (1,)),
+             w.QsaScheduleShape('sparse_dma', (2,), (2,))),
+        )
+        for left, right in cases:
+            self.assertEqual(w.qsa_profile_agreement(self.query,
+                self.replies(left, right), (0, 1, 2, 3)),
+                ('unsupported-native-schedule-profile', None))
+
+    def test_empty_selection_is_an_explicit_profile(self):
+        shape = w.QsaScheduleShape('empty', (), ())
+        self.assertEqual(w.qsa_profile_agreement(self.query,
+            self.replies(shape), (0, 1, 2, 3))[0], 'agreed')
+
+    def test_stale_boundary_epoch_and_transaction_are_protocol_errors(self):
+        from dataclasses import replace
+        shape = w.QsaScheduleShape('dense_dma', (1,), (1,))
+        for query in (replace(self.query, boundary_op_seq=4),
+                      replace(self.query, state_epoch=5),
+                      replace(self.query, transaction=txn(txn_seq=2))):
+            replies = list(self.replies(shape))
+            replies[-1] = w.QsaProfileObservation(query, 3, 'ready', shape,
+                                                   'queried-selection-copy')
+            with self.assertRaises(E3ContractError):
+                w.qsa_profile_agreement(self.query, tuple(replies), (0, 1, 2, 3))
+
+    def test_missing_duplicate_unknown_and_boolean_ranks_are_protocol_errors(self):
+        shape = w.QsaScheduleShape('dense_dma', (1,), (1,))
+        replies = self.replies(shape)
+        for bad in (replies[:-1], replies[:-1] + (replies[-2],),
+                    replies[:-1] + (w.QsaProfileObservation(self.query, 9, 'skipped'),)):
+            with self.assertRaises(E3ContractError):
+                w.qsa_profile_agreement(self.query, bad, (0, 1, 2, 3))
+        with self.assertRaises(E3ContractError):
+            w.qsa_profile_agreement(self.query, replies, (False, 1, 2, 3))
+
+    def test_observation_cannot_claim_completion_or_skip_a_target(self):
+        shape = w.QsaScheduleShape('sparse_dma', (1,), (1,))
+        for args in ((self.query, 2, 'skipped'),
+                     (self.query, 0, 'pending'),
+                     (self.query, 2, 'pending', shape),
+                     (self.query, 2, 'ready', shape, 'bound-dense-host-plan'),
+                     (self.query, 2, 'ready', shape, 'rpc-returned')):
+            with self.assertRaises(E3ContractError):
+                w.QsaProfileObservation(*args)
+
+    def test_shapes_retain_existing_bounds_and_submission_semantics(self):
+        cases = (('empty', (1,), (1,)), ('dense_dma', (), ()),
+                 ('dense_dma', (2,), (1,)), ('sparse_dma', (18,), (17,)),
+                 ('sparse_dma', (382,), (381,)),
+                 ('sparse_dma', (1,) * 7, (1,) * 7),
+                 ('sparse_dma', (True,), (1,)),
+                 ('sparse_dma', [1], (1,)))
+        for args in cases:
+            with self.assertRaises(E3ContractError):
+                w.QsaScheduleShape(*args)
+
+    def test_repr_never_contains_request_identity(self):
+        shape = w.QsaScheduleShape('empty', (), ())
+        objects = (self.query, *self.replies(shape),
+                   w.QsaProfileGrant(self.query, shape))
+        for item in objects:
+            self.assertNotIn(UID, repr(item))
 
 
 if __name__ == '__main__':

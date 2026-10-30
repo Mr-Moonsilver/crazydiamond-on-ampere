@@ -1,0 +1,39 @@
+{
+  "schema": "fixture-leaves/1",
+  "clears_box_hold": false,
+  "leaves": [
+    {
+      "leaf": "CPU FIFO reply queues and deterministic worker output payload",
+      "replaces": "native shared-memory MessageQueue and GPU forward/sampling outputs",
+      "equivalence": "Same SUCCESS wire tuple, unique-reply rank, FIFO ordering and sole receiver. Output tensor bytes, device timing and IPC serialization are not proved.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "scheduler/output fixture with one scheduled token each step",
+      "replaces": "live request Scheduler and model output consumer",
+      "equivalence": "Executes actual mounted EngineCore.step_with_batch_queue including the discarded execute_model future, stock execute/sample methods and actual FutureWrapper control. Tests future/credit lifecycle only, not admission/model numerics.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "public owned receiver installed at idle handoff",
+      "replaces": "supported four-rank engine startup installer",
+      "equivalence": "Same unchanged 10-credit ReplyTransport and actual generated collective_rpc, no second reader; no green-context/TP2PP2 startup certificate claimed.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "reduced three-layer Qwen model with dummy weights and one rank",
+      "replaces": "full48-layer quantized production model and TP2PP2 green-context topology",
+      "equivalence": "real EngineCore/MultiprocExecutor worker startup and32-token forward/sampling loop exercise the same ordinary futures, reply queues and credit retirement; model bytes, native startup, multi-rank placement and speed are not equivalent",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "CPU cache-spec capacity projection",
+      "replaces": "registered CUDA model cache-owner graph for preflight arithmetic only",
+      "equivalence": "real model-derived GDN/PLE state spec shapes and real FullAttention/CircularBuffer/MLA spec methods count resident pages, table rows, null reserve and max request slots; not a substitute for stock Core grouping/layout/byte-budget checks",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ],
+  "missing_contract_now_exercised": "Stock FutureWrapper.result drains earlier ordinary futures before returning a sampling future; native ACK sequences remain independently owned."
+}

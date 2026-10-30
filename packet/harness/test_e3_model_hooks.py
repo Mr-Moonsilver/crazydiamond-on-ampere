@@ -27,6 +27,61 @@ from model_hooks import (  # noqa: E402
 REFERENCE = ROOT / 'reference/vllm-src'
 
 
+class ModelOwnershipTests(unittest.TestCase):
+    def backbone(self):
+        return types.SimpleNamespace(layers=[object()]*4, start_layer=0, end_layer=4)
+
+    def test_only_the_three_pinned_owner_paths_resolve_without_mutation(self):
+        backbone = self.backbone()
+        causal = types.SimpleNamespace(model=backbone)
+        conditional = types.SimpleNamespace(language_model=causal,
+                                             config=types.SimpleNamespace(text_config=object()))
+        for root in (backbone, causal, conditional):
+            self.assertIs(model_hooks.local_text_model(root), backbone)
+        self.assertIs(conditional.language_model, causal)
+        self.assertIs(causal.model, backbone)
+
+    def test_source_constructor_ownership_assignments_are_the_pinned_paths(self):
+        source = (REFERENCE/'models/qwen4_exp/nvidia/model.py').read_text()
+        self.assertEqual(model_hooks._sha(source), model_hooks.PINS['models/qwen4_exp/nvidia/model.py'])
+        tree = ast.parse(source)
+        expected = {'Qwen4ExpForCausalLM': ('model', 'Qwen4ExpModel'),
+                    'Qwen4ExpForConditionalGeneration': ('language_model', 'Qwen4ExpForCausalLM')}
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name in expected:
+                attr, constructor = expected[node.name]
+                init = next(n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == '__init__')
+                assignments = [n for n in ast.walk(init) if isinstance(n, ast.Assign)
+                    and any(isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
+                            and t.value.id == 'self' and t.attr == attr for t in n.targets)]
+                self.assertEqual(len(assignments), 1)
+                self.assertIsInstance(assignments[0].value, ast.Call)
+                self.assertEqual(assignments[0].value.func.id, constructor)
+                del expected[node.name]
+        self.assertFalse(expected)
+
+    def test_missing_or_arbitrary_recursive_owner_paths_refuse(self):
+        for root in (None, object(), types.SimpleNamespace(config=object()),
+                     types.SimpleNamespace(other=types.SimpleNamespace(model=self.backbone())),
+                     types.SimpleNamespace(model=types.SimpleNamespace(model=self.backbone()))):
+            with self.subTest(root_type=type(root).__name__), self.assertRaises(ModelHookError):
+                model_hooks.local_text_model(root)
+
+    def test_ambiguous_or_invalid_local_layer_owners_refuse(self):
+        first, second = self.backbone(), self.backbone()
+        first.model = second
+        with self.assertRaisesRegex(ModelHookError, 'one local text backbone'):
+            model_hooks.local_text_model(first)
+        for start, end in ((True, 4), (0, 0), (-1, 4), (0, 5)):
+            with self.subTest(start=start,end=end), self.assertRaises(ModelHookError):
+                model_hooks.local_text_model(types.SimpleNamespace(layers=[1]*4,
+                    start_layer=start,end_layer=end))
+
+    def test_alias_of_one_backbone_is_not_two_distinct_owners(self):
+        backbone = self.backbone();backbone.model = backbone
+        self.assertIs(model_hooks.local_text_model(backbone), backbone)
+
+
 class FakeStream:
     def __init__(self, token):
         self.cuda_stream = token

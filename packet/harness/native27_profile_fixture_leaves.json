@@ -1,0 +1,28 @@
+{
+  "schema": "native27-profile-fixture-leaves/1",
+  "box_evidence": false,
+  "scope": "Receipt retention and propagation only; no TP shape-cause or CUDA selection claim",
+  "leaves": [
+    {
+      "leaf": "ScheduleProfile CPU controller, request, reply transport, and four-rank endpoint model",
+      "replaces": "Production AsyncScheduler, Request, MultiprocExecutor, and TP2PP2 workers",
+      "basis": "The actual NativeSegmentDriver refusal, journal, status and measurement methods execute. The CPU leaves supply deterministic typed profile observations and do not prove production scheduling or transport timing.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "Selected counts 4097 and 97153 with ready CPU selection events",
+      "replaces": "Per-rank CUDA QSA top-k selection and copy events",
+      "basis": "These deliberately unequal shapes exercise refusal retention, not the origin of the native26 profile divergence. The one-card CUDA tensor verifies the VM venue only.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "leaf": "Synthetic cleanup census envelope",
+      "replaces": "QualificationRefused all-rank leave_full cleanup response",
+      "basis": "The envelope uses the exact nested fields observed in native26 and passes the real receipt extractor. It does not certify a real four-rank drain.",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}

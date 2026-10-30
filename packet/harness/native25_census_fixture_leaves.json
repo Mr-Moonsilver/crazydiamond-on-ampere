@@ -1,0 +1,37 @@
+{
+  "schema": "native25-census-fixture-leaves/1",
+  "scope": "one-card real graph bind and split-bank replay census; four-rank row-4 ledger remains a box gate",
+  "leaves": [
+    {
+      "leaf": "SimpleNamespace manager and FULL capture descriptor",
+      "replaces": "vLLM CudagraphManager and FULL CudagraphCaptureDesc created during the split-bank model capture",
+      "equivalence": "The fields read by the generated worker hook and real ObserverSession.bind_bank have the same identity and stream shape; the graph capture, CUDA handle and native observer binding themselves are real. Model descriptor generation is outside this proof.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "SplitDecodeBank allocated without its model-dependent constructor/capture",
+      "replaces": "fully constructed SplitDecodeBank",
+      "equivalence": "The bank, SplitGraphHandle and SplitDecodeBank.replay method are actual classes; their pairs/handles carry the same object identities used by NativeIdentity and ReplaySession. The fixture skips model graph capture and full bank setup, so it cannot qualify the box composition.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "SimpleNamespace native lane and probe shell",
+      "replaces": "WorkerNative, native qualification RPC identity and row-4 probe fields",
+      "equivalence": "The actual NativeIdentity router view is constructed against the real bank handle; the probe supplies only the epoch/generation/route fields checked by bind_bank. RPC ordering and engine-offer ledger setup are deferred.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "1024-element torch add graph",
+      "replaces": "captured full Qwen decode graph",
+      "equivalence": "It is a real PyTorch CUDAGraph on the declared green decode stream. The real SplitDecodeBank.replay enqueues it and increments the actual handle counter; graph node census and model numerics are not exercised.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "one CUDA device",
+      "replaces": "four 3090 devices in TP2PP2",
+      "equivalence": "The replay counter and observer reader are rank-local. Cross-rank offer agreement and placement require the box.",
+      "box_evidence": false
+    }
+  ],
+  "not_constructed": ["Qwen model", "EngineCore", "TP2PP2", "row-4 cohort", "EngineOfferLedger"]
+}

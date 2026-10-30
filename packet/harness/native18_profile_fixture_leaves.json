@@ -1,0 +1,67 @@
+{
+  "schema": "native18-profile-fixture-leaves/1",
+  "box_evidence": false,
+  "unpatched_runtime_methods": true,
+  "leaves": [
+    {
+      "leaf": "CPU tensor/event/kernel/indexer objects",
+      "replaces": "torch CUDA tensors/events, pinned QSA indexer and Triton kernels",
+      "equivalence": "More convenient: controlled completion and legal supplied fragmented selections; no device numerical or timing proof.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "Fake model, CreditChunk/Factory and PP channels",
+      "replaces": "full Qwen model, LaneChunkFactory, CUDA state finalization, NCCL PP",
+      "equivalence": "More convenient: validates host ownership/protocol, not model state or communication.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "r4 graph backend/streams",
+      "replaces": "green contexts and captured retained decode banks",
+      "equivalence": "More convenient: real WorkerState/GraphRouter/RouteController methods over synthetic handles/events; no hardware FULL certificate.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "DirectTransport/RoutingSender",
+      "replaces": "MultiprocExecutor MQ and process-owned reply receiver",
+      "equivalence": "Synchronous command delivery with real all-rank routing and later take/credit retirement; more convenient than asynchronous worker processes.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "CPU HMA configuration/model-spec names",
+      "replaces": "full-model GPU KV configuration",
+      "equivalence": "Explicit reduced CPU geometry; stock layout resolution, KV config projection, AsyncScheduler, Request, allocator and admission metadata methods execute.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "worker source backing / CreditBinding",
+      "replaces": "registered per-layer pinned host source derived from real admitted allocation",
+      "equivalence": "More convenient: 202400-row controlled sparse history independent of the 65-token host request; source holds and typed close are exercised, not allocation-to-model identity.",
+      "box_evidence": false
+    },
+    {
+      "leaf": "ModelRunnerOutput for the subsequent request",
+      "replaces": "GPU forward and sampler",
+      "equivalence": "Synthetic token IDs let actual Scheduler update and finish four tokens after refusal; engine health claim is limited to host scheduling.",
+      "box_evidence": false
+    }
+  ],
+  "actual_host_objects": [
+    "vllm.v1.core.sched.async_scheduler.AsyncScheduler",
+    "vllm.v1.request.Request",
+    "stock KV allocator",
+    "PrefillAdmissionController",
+    "NativeSegmentDriver",
+    "NativeWorkerBridge",
+    "LaneDispatcher",
+    "QsaLayerDriver",
+    "QsaPrefillOperation",
+    "WorkerState",
+    "EngineCoreOutput"
+  ],
+  "deferred": [
+    "two-stream GPU skew and numerical oracle",
+    "green-context TP2PP2 engine startup/route",
+    "full-model native row1 and performance gates"
+  ]
+}

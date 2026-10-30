@@ -1,8 +1,9 @@
 """C startup: native worker construction and engine-side composition.
 
-Production enabled startup is hard-refused before allocation or transport
-ownership: bounded native execution, admission and green capture are missing.
-The construction paths below are exercised only by explicitly marked CPU fixtures.
+Enabled startup requires a reviewed immutable source/build closure before
+allocation or transport ownership. Missing closure still refuses. Source
+construction and hardware qualification are separate; the owner queue grades
+exactness, numerics, placement, performance and lifetime on the actual engine.
 Two different processes, two different startup paths:
 
 * :func:`install_builder` is called from the generated model runner at the end
@@ -46,13 +47,17 @@ class StartupError(HandoffError):
 
 
 def require_native_ready():
-    """Hard refusal until the missing native mechanisms have been implemented.
+    """Require the reviewed immutable implementation/build closure, no bypass.
 
-    No environment escape hatch: tests may explicitly mock this function to
-    exercise controller scaffolding, which is not native integration evidence.
+    The returned capability is for the owner's candidate queue only. Hardware
+    exactness/numerics/placement/performance/lifetime are graded by that queue,
+    never asserted by this startup source check.
     """
-    raise StartupError('E3 native integration incomplete: admission, bounded execution, '
-                       'green graph capture and source/PP ownership are not implemented')
+    from native_readiness import require_implementation_closure, NativeReadinessError
+    try:
+        return require_implementation_closure()
+    except (NativeReadinessError, OSError, ValueError, TypeError, KeyError) as exc:
+        raise StartupError(str(exc)) from None
 
 
 def _enabled(env):
@@ -60,6 +65,17 @@ def _enabled(env):
     if value not in ('0', '1'):
         raise StartupError('invalid boolean setting: ' + OVERLAP_ENV)
     return value == '1'
+
+
+def row1_qualification_types():
+    """Actual provider import path, callable without constructing GPU owners.
+
+    Packaging binds the complete native row1 backend to its explicit E3 owner.
+    The live provider invokes this only after its existing pause/drain fences.
+    """
+    from row1_exactness import TorchRow1Backend
+    from row1_oracle import Row1Qualifier
+    return TorchRow1Backend, Row1Qualifier
 
 
 def install_builder(runner, kv_caches, is_profiling=False, *, env=None):
@@ -151,8 +167,15 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
     def driver_factory(operation, qsa_module, forward_context_getter):
         from qsa_driver import QsaLayerDriver
 
-        return QsaLayerDriver(operation, staged_operation=qsa_module._flash_s5_staged_operation,
-                              forward_context=forward_context_getter)
+        native.observe_prefill(operation, 'qsa_operation')
+        driver = QsaLayerDriver(
+            operation,
+            staged_operation=qsa_module._flash_s5_staged_operation,
+            sparse_staged_operation=getattr(
+                qsa_module, '_flash_s5_sparse_staged_operation', None),
+            source_holds=getattr(operation, 'native_source_holds', None),
+            forward_context=forward_context_getter)
+        return native.observe_prefill(driver, 'qsa_driver')
 
     def qsa_module():
         import vllm.models.qwen4_exp.nvidia.qsa as module
@@ -164,12 +187,63 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
 
         return get_forward_context()
 
+    # The oracle is always OFF at startup. Only the paused/drained native
+    # qualification action can install a fresh run-bound store and factory.
+    if env.get('FLASH_S5_ROW1_QUALIFY', '0') != '0':
+        raise StartupError('row1 qualification requires scoped native control')
+
+    def row1_provider(store, engine_epoch, route_generation):
+        state = server.runtime.state
+        controller = native.controller
+        if (not state.engine_bound or state.engine_epoch != engine_epoch
+                or controller.route_generation != route_generation):
+            raise StartupError('row1 qualification needs the current engine and route')
+        if store is not None and controller.route != 'split':
+            raise StartupError('row1 qualification enable needs the split route')
+        # Collective pause is the action owner's responsibility. This local
+        # fence independently queries every actual decode/prefill consumer.
+        drained = controller.drain()
+        if type(drained) is not int or drained <= 0:
+            raise StartupError('row1 qualification decode drain is unproved')
+        if native.prefill_streams is None:
+            raise StartupError('row1 qualification prefill owners are unavailable')
+        drained = native.drain_prefill_streams()
+        if type(drained) is not int or drained < 0:
+            raise StartupError('row1 qualification prefill drain is unproved')
+        from native_resources import _qsa_layers
+        layers = tuple(name for name, _ in _qsa_layers(runner))
+        if store is None:
+            return None, layers
+        TorchRow1Backend, Row1Qualifier = row1_qualification_types()
+
+        def row1_factory(operation):
+            def epochs():
+                if (state.engine_epoch != engine_epoch
+                        or controller.route_generation != route_generation):
+                    raise StartupError('row1 scope changed during qualification')
+                return dict(worker_incarnation=state.incarnation,
+                            engine_epoch=engine_epoch,
+                            route_generation=route_generation)
+            return Row1Qualifier(
+                store, transaction=operation.transaction,
+                lane=operation.lane, backend=TorchRow1Backend(), epochs=epochs)
+        return row1_factory, layers
+
+    server.row1_provider = row1_provider
+
     factory = LaneChunkFactory(runner)
     dispatcher = LaneDispatcher(runner, native, factory, server=server, qsa_module=qsa_module(),
                                 driver_factory=driver_factory,
                                 forward_context_getter=forward_context_getter)
     server._flash_s5_dispatcher = dispatcher
     runner._flash_s5_dispatcher = dispatcher
+    # The typed wire-v1 RPCs route to this bridge, which is the only adapter
+    # over the constructed dispatcher. It allocates no storage of its own.
+    from worker_bridge import NativeWorkerBridge
+
+    bridge = NativeWorkerBridge(dispatcher, server=server)
+    server._flash_s5_bridge = bridge
+    runner._flash_s5_bridge = bridge
     return dispatcher
 
 
@@ -206,7 +280,7 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     config = HandoffConfig.from_env(env)
     transport = install(executor, config=config, success_status=response_success(),
                         clock=clock)
-    backend = RemoteCompletionBackend(config)
+    backend = RemoteCompletionBackend(config, transport=transport)
     allocation = estimated_e3_inventory(chunk_tokens=config.chunk_tokens)
     composition = build_composition(
         env, transport=transport, backend=backend, lanes={},
@@ -217,23 +291,34 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     composition.attach(engine=engine, scheduler=scheduler, executor=executor)
 
     from engine_driver import NativeSegmentDriver
-    from scheduler_hooks import PrefillAdmissionController
+    from admission_metadata import install_admission_metadata
+    from scheduler_hooks import PrefillAdmissionController, QSA_STAGE_MIN_ROWS
 
     layer_count, layer_split, stage_of = shape
     # Created once by this EngineCore process, passed to all worker opens.
     # It is not a model/request attribute and cannot silently default to zero.
     import uuid
-    epoch = uuid.uuid4().int & ((1 << 63) - 1)
+    # Bootstrap/binding contracts require a positive owner epoch; the random
+    # draw is masked to 63 bits and must never land on the unbound sentinel 0.
+    epoch = (uuid.uuid4().int & ((1 << 63) - 1)) or 1
     engine._flash_s5_engine_epoch = epoch
     controller = PrefillAdmissionController(
         scheduler, leases=composition.scheduler_leases,
         frontier=composition.frontier,
         engine_epoch=epoch,
-        chunk_tokens=config.chunk_tokens, ranks=ranks, clock=clock).attach()
+        chunk_tokens=config.chunk_tokens, ranks=ranks, clock=clock,
+        minimum_stage_rows=QSA_STAGE_MIN_ROWS).attach()
+    # The only construction site of the production admission-metadata
+    # provider: it captures allocation side effects around the controller's
+    # allocate_slots call and owns CoW endpoint retention until commit/cancel.
+    install_admission_metadata(scheduler)
     driver = NativeSegmentDriver(
         controller, executor=executor, scheduler=scheduler, engine=engine,
         layer_count=layer_count, layer_split=layer_split, stage_of=stage_of,
-        clock=clock, reply_timeout_s=config.reply_timeout_s).install()
+        clock=clock, reply_timeout_s=config.reply_timeout_s,
+        # Host-monotonic observation clock for the control journal; the driver
+        # never substitutes a CUDA elapsed duration for a host timestamp.
+        monotonic_ns=time.monotonic_ns).install()
     engine._flash_s5_composition = composition
     engine._flash_s5_admission = controller
     engine._flash_s5_driver = driver
@@ -244,12 +329,16 @@ def settings(env=None):
     """Metadata-only settings echo; no secret or path is read."""
     env = os.environ if env is None else env
     config = HandoffConfig.from_env(env)
+    from native_readiness import implementation_status
+    ready = implementation_status() if config.enabled else {'native_ready': False}
     return dict(enabled=config.enabled, transport=config.transport,
                 command_slots=config.command_slots,
                 reply_timeout_s=config.reply_timeout_s,
                 ack_timeout_s=config.ack_timeout_s,
                 chunk_tokens=config.chunk_tokens,
-                sparse_overlap=False, backend='unimplemented' if config.enabled else 'inert')
+                sparse_overlap=bool(config.enabled and ready['native_ready']),
+                backend=('native-owner-test' if ready['native_ready'] else 'unimplemented')
+                        if config.enabled else 'inert')
 
 
 __all__ = ['OVERLAP_ENV', 'StartupError', 'install_builder', 'install_engine', 'install_native_lane',

@@ -7,7 +7,7 @@ cache path -- the J-inside case; recreated path all right / all wrong; missing r
 stall_trace2.py --recompute (good run; missing newcomer token; stopped stream; incomplete run).
 usage: selftest.py [REVIEW_FIXTURE_DIR]   exit 0 only if every case behaves as required
 """
-import json, os, subprocess, sys, tempfile
+import hashlib, json, os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -20,6 +20,27 @@ def check(name, got, want):
     ok = got == want
     results.append(ok)
     print(f"{'ok  ' if ok else 'FAIL'} {name}: got {got!r}, want {want!r}")
+
+
+unittest_observations = []
+
+
+def audit_suite(name, process):
+    """A skipped unittest is missing coverage, not a green child exit."""
+    output = (process.stdout or '') + (process.stderr or '')
+    summaries = re.findall(r'^(?:OK|FAILED)\s*\(([^\n]*)\)\s*$', output, re.MULTILINE)
+    skipped = sum(int(count) for summary in summaries
+                  for count in re.findall(r'\bskipped=(\d+)\b', summary))
+    ran = re.findall(r'^Ran (\d+) tests? in ', output, re.MULTILINE)
+    row = dict(suite=name, returncode=process.returncode, skipped=skipped,
+               tests_run=int(ran[-1]) if ran else None,
+               stdout_sha256=hashlib.sha256((process.stdout or '').encode()).hexdigest(),
+               stderr_sha256=hashlib.sha256((process.stderr or '').encode()).hexdigest())
+    unittest_observations.append(row)
+    print('selftest suite: ' + json.dumps(row, sort_keys=True))
+    if skipped:
+        print('selftest missing coverage: ' + name + ' skipped=' + str(skipped))
+    return process.returncode or (1 if skipped else 0)
 
 
 def canary_dir(sessions):
@@ -597,24 +618,24 @@ resume = subprocess.run([sys.executable, os.path.join(HERE, 'test_resume_prefill
                         capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
 if resume.returncode:
     print(resume.stdout + resume.stderr)
-check('resumable prefill: generated control flow + offline protocol (fake tensors)', resume.returncode, 0)
+check('resumable prefill: generated control flow + offline protocol (fake tensors)', audit_suite('test_resume_prefill.py', resume), 0)
 
 # --- S5: offline production-shape plan and fail-closed evidence grading ---
 s5 = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_segment.py')],
                     capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
 if s5.returncode:
     print(s5.stdout + s5.stderr)
-check('S5 segment: CPU tests (GPU path not run)', s5.returncode, 0)
+check('S5 segment: CPU tests (GPU path not run)', audit_suite('test_s5_segment.py', s5), 0)
 clock_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_clock.py')],
                             capture_output=True, text=True)
 if clock_test.returncode:
     print(clock_test.stdout + clock_test.stderr)
-check('S5 clock: multi-window, coarse ordering, build and SM-probe rules (CPU)', clock_test.returncode, 0)
+check('S5 clock: multi-window, coarse ordering, build and SM-probe rules (CPU)', audit_suite('test_s5_clock.py', clock_test), 0)
 runtime_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_s5_runtime.py')],
                               capture_output=True, text=True)
 if runtime_test.returncode:
     print(runtime_test.stdout + runtime_test.stderr)
-check('S5 runtime: progress, alarms and hard watchdog (CPU only)', runtime_test.returncode, 0)
+check('S5 runtime: progress, alarms and hard watchdog (CPU only)', audit_suite('test_s5_runtime.py', runtime_test), 0)
 from test_s5_segment import fixture as s5_fixture
 from s5_segment import combine as s5_combine
 check('S5 verdict GO: both pairs', s5_combine([s5_fixture(), s5_fixture('1,3')])['verdict'], 'GO')
@@ -652,22 +673,129 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_s5_reply_transport.py', 'S5 E3 owned receiver: FIFO, bounded credits, delayed overflow, quarantine, CPU process (offline)'),
                      ('test_e3_wire_v1.py', 'E3 wire-v1 schema and identities (CPU only)'),
                      ('test_e3_admission_native.py', 'E3 admission and bounded engine prototype (CPU only, no native bridge qualification)'),
+                     ('test_e3_frontier_retirement.py', 'E3 allocation-event frontier retirement: recycled pages, atomic refusals and prefix-hit preservation (CPU only)'),
+                     ('test_e3_admission_metadata.py', 'E3 production admission metadata: scoped allocator capture, CoW endpoint retention, PLE ngram context, boundary refusal (CPU only, fakes)'),
+                     ('test_e3_r4_worker_bridge.py', 'E3 typed worker bridge: open/segment/bind/receipt/release/cancel over the real dispatcher, terminal handback and stock broadcast fidelity (CPU only, fakes)'),
                      ('test_e3_lane_state.py', 'E3 execution state: transaction/lane identities, completion proofs, lane lifecycle and pinned runner seams (CPU only)'),
                      ('test_e3_async_handoffs.py', 'E3 async handoffs: parked transaction, owned replies, completion/publication split, lifetime leases, stop paths and pinned C seams (CPU only)'),
                      ('test_e3_package.py', 'E3 package: A+B+C composition, default-off mounts, manifest coverage, source drift and import identity (CPU only)'),
+                     ('test_e3_native_storage_replay.py', 'E3 retained decode storage: native graph replay events and exact-command all-rank transition retries (CPU)'),
+                     ('test_e3_native_overlap.py', 'E3 native-control completion: named engine utility dispatch, typed all-rank acks, worker census/drain, journaled overlap evidence and qualification delegation (CPU only, fakes)'),
                      ('test_e3_graph_routing.py', 'E3 graph routing: fixed-split graph keys, capture/replay/transition guards, budgets and pinned seam transforms (CPU only)'),
                      ('test_e3_lane_dispatch.py', 'E3 lane dispatcher: typed segment kinds to bounded host operations, pause/cursor, PP send/receive, STATE_WRITE event, cancel/drain/release (CPU only, fakes)'),
+    ('test_e3_native_submission_credit.py', 'E3 native submission credit: real dispatcher/bridge op identity under delayed selection/attention queries, unchanged pending retry, quarantine and pinned accepted-op bound (CPU only)'),
+                     ('test_e3_native_device_path_probe.py', 'E3 native device proof receipt/memory/owner guards (CPU only; actual GPU proof owner-run)'),
+                     ('test_e3_native_sparse_waves_device_probe.py', 'E3 native sparse waves device-proof receipts, cancellation and owner bounds (CPU only; GPU proof owner-run)'),
+                     ('test_e3_native_expanded_reports.py', 'E3 expanded native continuation reports: lossless pages, unchanged aggregate capacity and exact source joins (CPU)'),
+                     ('test_e3_report_validation_cost.py', 'E3 report validation: exact legacy acceptance/refusal equivalence, accepted-set construction once (CPU)'),
+                     ('test_e3_staged_chunk_plan.py', 'Native15 staged admission: unchanged minimum64/cap/alignment, complete short-tail plan before allocation, all-rank closure and source measurement (CPU fixtures)'),
+                     ('test_e3_staged_device_probe.py', 'Native15 device boundary receipts: unchanged stock minimum64, real operation body at balanced query shapes, raw source/output coverage and owner bounds (CPU guards only)'),
+                     ('test_e3_control_observation.py', 'Native15 observability: helper guard shape before failure, exclusive coordinator prepare/poll/validate/serialize counters, snapshot deltas without readiness authority (CPU)'),
+                     ('test_e3_transitions_matrix_probe.py', 'Native15 connected matrix receipt guards: numeric comparison mutation, complete raw row keys, fixture limitations and explicit box HOLD (CPU)'),
+                     ('test_e3_transitions_lifecycle_probe.py', 'Native15 connected lifecycle receipt guards: actual typed wire records, closed/nonterminal rows, state-write identity, cache/reuse coverage and scoped handoff (CPU synthetic receipt guards only)'),
                      ('test_e3_lane_chunk.py', 'E3 lane chunk: worker-side request registration/update, lane tables and CPU slot mappings, private align context, metadata and forward context (CPU only, fakes)'),
                      ('test_e3_qsa_driver.py', 'E3 QSA layer driver: additive attention pre/post on the D2-composed QSA source, producer -> one-bucket generator -> tail phases, pause/pending (CPU only)'),
                      ('test_e3_native_startup.py', 'E3 worker-native startup: split bank + lane communicators + PLE scratch composition, graph builder, transition RPC (CPU only, fakes)'),
+                     ('test_e3_native_imports.py', 'Native8 engine import ownership: E2/E3 package rewriting, actual pure provider path, preserved GPU-state guard and isolated exact namespace with no builder path (CPU source only; real image proof separately required)'),
+                     ('test_e3_row1_exactness.py', 'E3-owned row1 backend: frozen E2 counterexample, seven-method source provenance and explicit worker provider binding (CPU)'),
+                     ('test_e3_stock_api.py', 'Native7 stock API contract: exhaustive source roles, exact native6 frontend counterexample, signature refusals and pristine-vs-derived pins (AST only; actual real-class imports separately required)'),
+                     ('test_e3_executor_threads.py', 'Native6 process-owned executor: actual pinned ready-response/RPC methods on IO/monitor threads, FIFO serialization, shared futures, fork refusal and conservative close (CPU MQ leaves)'),
+                     ('test_e3_stock_rpc_credits.py', 'Native16 stock batch queue: claim earlier ordinary RPC futures without consuming native credits, unchanged capacity and cached failures (CPU MQ/output leaves)'),
+                     ('test_e3_native_selection_asymmetry.py', 'Native17 known TP selection-copy ordering counterexample: unmodified source stack over explicitly synthetic CPU tensor/event/model leaves, not box evidence'),
+                     ('test_e3_native_schedule_profile.py', 'Native18 canonical selection boundary, queried TP profile agreement, exact retries and coordinated refusal/drain over explicit CPU device/model leaves; not box evidence'),
+                     ('test_e3_native21_rpc_stream.py', 'Native21 RPC-thread QSA profile query against a stream-checking device leaf; stream-bound operations still refuse (CPU only)'),
+                     ('test_e3_native_pp_stop_order.py', 'Native19 deferred PP receive and typed stop obligation: matching-send-gated events, partial acceptance, clean stage-zero refusal/abort (CPU leaves; not box evidence)'),
+                     ('test_e3_native_profile_observability.py', 'Native19 receipt-only peer profiles, worker host query time and actual stock-step bypass counts (CPU leaves)'),
+                     ('test_e3_native_tp_tail_skew.py', 'Native19 TP tail barrier and exact stop retry: both peers clear the final event before collective entry (CPU model/communicator leaves, not hardware liveness)'),
+                     ('test_e3_native_speculation_gate.py', 'Native19 startup log gate: actual speculative config must be None, with missing or enabled evidence refused (CPU)'),
+                     ('test_e3_native26_host_observer.py', 'Native26 host Docker log follow, one-second disk samples, bounded shutdown markers and queue lifecycle (CPU fake Docker only)'),
+                     ('test_e3_native28_host_guard.py', 'Native28 root-space final evidence and prompt queue trap, declared first-advance read bound (CPU only)'),
+                     ('test_e3_native28_rule4_continuation.py', 'Native28 control hard-cap continuation preserves raw INC and refuses split, structural and other gates (CPU only)'),
+                     ('test_e3_native_startup_binding.py', 'Native generated-package startup: actual closure/relay/transport/admission/driver binding, namespace identity and pinned auth with no mocked ready/capability flag (CPU filesystem/OS fixtures)'),
                      ('test_e3_model_hooks.py', 'E3 lane forward: additive prefix/layer/suffix on the pinned model, exact inverse, segment driver scopes and pause (CPU only)'),
+                     ('test_e3_native_observation.py', 'Native shared observer lifecycle: real ledgers, dynamic source pins, role drains and retained window before FULL handback (CPU only)'),
+                     ('test_e3_native_qualification.py', 'Native qualification worker identity, source scope, teacher and observer ownership over actual modules (CPU only)'),
+                     ('test_e3_native_qualification_driver.py', 'Native qualification phase producer: immutable plans, actual control ownership, row1 source scope, retained teacher artifact and short-window proof (CPU loopback/fakes)'),
+                     ('test_e3_q18a_guards.py', 'Native raw qualification graders: producer-shaped row1, unchanged rule4, paired raw graph proof, immutable identities and refusal precedence (CPU only)'),
+                     ('test_e3_native_measurement_clients.py', 'Native measurement clients: actual session/ordered worker actions, unpadded batch census, typed cancellation reports, unchanged W1 requests, fixed row1 prefix/tail and source-joined window refusal (CPU loopback/fakes)'),
+                     ('test_e3_native_performance_queue.py', 'Fresh native performance queue: actual interface names and phase contracts, W1/W2 locked by qualification, unchanged hygiene shapes, reserve failure and exact owned restore (fake OS/phase executables only)'),
+                     ('test_e3_native_teacher_sequence.py', 'Native teacher lifecycle: actual native receipt bindings, physical rows unchanged, initial typed FULL certificate, bounded worker transport and no probe action relabelling (CPU only)'),
+                     ('test_e3_native_qualification_frontend.py', 'Native qualification API frontend: exact commands, authenticated loopback and actual teacher plan ownership (CPU only)'),
+                     ('test_e3_native_api_qualification_composition.py', 'Actual API NativeControlClient owns the input processor, distinct from EngineCore utility ownership (CPU only)'),
+                     ('test_e3_native_row1_grade.py', 'E3 native row1 raw grader: direct producer records, exact layer/route coverage, identity and release census (CPU only)'),
+                     ('test_e3_native_daytime_rehearsal.py', 'E3 daytime integration: full-prompt source-store/HTTP/grader lifecycle and exact held native12 queue refusal/restore (CPU fixtures only)'),
+                     ('test_e3_native_source_oracle.py', 'E3 native source ownership and serial QSA byte/output oracle: first-PREPARE binding, pinned host layout, source holds and cancellation (CPU only)'),
+    ('test_e3_native_measurement.py', 'E3 source-joined native measurement: stage-local expanded ops, actual queried completions, raw journal loss retained and exact session window binding (CPU only)'),
+                     ('test_e3_lane_private.py', 'E3 lane-private bindings: owned QSA top-k/UID views, extra workspace lane, interleaved decoder access, exact restoration and refusals (CPU only, fakes)'),
                      ('test_e3_lane_comm.py', 'E3 prefill-lane communicators: PyNccl-only TP scope, tagged PP channel credits/header/release order (CPU only, faked NCCL/torch)'),
                      ('test_e3_lane_comm_probe.py', 'E3 lane-comm probe: frozen verdict, import isolation and unarmed pair-1,3 queue (CPU only)'),
+                     ('test_e3_native_report_read.py', 'Actual bounded native JSON read: capacity vs bytes, successful parse/digest, failure freshness and thread-local identity (CPU ctypes only)'),
+                     ('test_e3_activity_accounting.py', 'Deferred CUPTI joins and conservation (CPU only)'),
+                     ('test_vmid_job9b.py', 'VM9b CUPTI thread identity and wrapper conservation (CPU only)'),
+                     ('test_e3_engine_offers.py', 'Engine offer ledger: pinned leaves and separate composition (CPU only)'),
+                     ('test_vmid_job13.py', 'VM13 native prefill probe: grading wiring, negative control, declared vocabulary and queue text (CPU only, never run)'),
+                     ('test_vmid_job13b.py', 'VM13b graph helper ABI: actual replay call sites use owner, raw graph reserved for serialization, retained progress (CPU only)'),
+                     ('test_vmid_job13c.py', 'VM13c pinned metadata/event API conservation, query failures/rogue work refused, scoped negative controls (CPU only)'),
+                     ('test_vmid_job13d.py', 'VM13d actual private initialization and exact pending query: source constructor, shared accounting and hardware-probe collection guards (CPU only)'),
+                     ('test_vmid_job13e.py', 'VM13e real owner-start lifecycle and standalone bundle finalizer: bounded fresh rerun, positive/private/graph guards unchanged (CPU only)'),
+                     ('test_vmid_job13f.py', 'VM13f exact header-backed library APIs: no GPU joins, no nonzero returns, raw retained hardware regrade and fresh queue (CPU only)'),
+                     ('test_vmid_job13g.py', 'VM13g model owner shells: wrapped backbone discovery, native startup/private/forward ownership and unchanged scope gates (CPU imported-class doubles; actual vLLM classes require VM)'),
+                     ('test_vmid_job13h.py', 'VM13h lazy Mamba startup: stock descriptor validation, private/ordinary context isolation and required hardware proof (CPU fixtures; actual context kernels require VM)'),
+    ('test_vmid_job14.py', 'VM<vm-id> native source/oracle: real holds, same-storage UVA, actual epoch rebind, cancellation, exact packed union and bounded queue (CPU only)'),
+    ('test_vmid_job14b.py', 'VM<vm-id> native oracle setup: actual operation/backend constructor, source registration and scoped abort, correct exactness module and fresh bounded rerun (CPU only)'),
+                     ('test_e3_native_graph_placement.py', 'Native raw graph + two-partition accounting: same bound window, per-node replay multiplicity, eager conservation and raw FAIL precedence (CPU only)'),
+                     ('test_e3_native_placement_evidence.py', 'Native worker packet proof: actual bounded report reads, paired raw graph regrade, exact retained/live generation distinction (CPU ctypes and fakes)'),
+                     ('test_e3_native_placement.py', 'Native overlap accounting: exact-id decode/prefill partition union, independent regrade, raw-loss retention and receipt refusals (CPU only)'),
+                     ('test_e3_native_prefill_offers.py', 'Native prefill offers: source-pinned lane vocabulary, auxiliary owner scopes, copy-only role, completion credit and fail-closed seams (CPU only)'),
+                     ('test_e3_native_accounting_source_closure.py', 'E3 native accounting source closure: exact pending event queries, private UID/lock leaves and original-operation failure ownership (CPU only)'),
+                     ('test_e3_teacher12_queue.py', 'Teacher12 diagnostic never runs W1; scope and cleanup (CPU only)'),
+                     ('test_vmid_job10b.py', 'VM10b pinned NumPy host mirrors in teacher collector (CPU only)'),
+                     ('test_vmid_job11.py', 'VM11 native-window-bound engine ledger composition (CPU only)'),
+                     ('test_vmid_job10.py', 'VM10 teacher sampler readback and digest qualification (CPU only)'),
+                     ('test_vmid_job9.py', 'VM9 bridge grading and ownership (CPU only)'),
+                     ('test_vmid_job8.py', 'VM8 positive eager activity accounting and negative controls (CPU only)'),
+                     ('test_vmid_job7b.py', 'VM7b late allocator release and native-crash veto (CPU only)'),
+                     ('test_vmid_job7.py', 'VM7 real-owner capture repair, frozen negative controls, exact native node join and pinned header compile (CPU only)'),
+                     ('test_e3_capture_streams.py', 'Pinned split capture side-stream ownership, sharing, restoration, graph leases and source pins (CPU only)'),
                      ('test_e3_green_native.py', 'E3 green-context split, split decode bank capture/replay/transition and worker/cudagraph seams (CPU only, faked driver/torch)'),
+                     ('test_e3_prefill_streams.py', 'E3 prefill side-stream owners: green-role isolation, exact owner restoration and allocator lifetime (CPU)'),
+                     ('test_vmid_job7f.py', 'VM<vm-id> prefill owners and decode canonical node/context/multiplicity proof (CPU)'),
+                     ('test_vmid_job7c.py', 'VM<vm-id> prefill owner qualification: raw eager/graph census, negative controls and retained context cleanup (CPU)'),
                      ('test_e3_green_probe.py', 'E3 green probe: frozen verdict rules, reviewed sm_86 build command and unarmed queue mounts/syntax (CPU only)'),
                      ('test_e3_native_integration.py', 'E3 native integration: generated worker/engine startup, typed RPC driving, completion/commit ordering, stop paths and record status (CPU only, faked device/transport)'),
                      ('test_e3_worker_operations.py', 'E3 D2 worker operations: bounded QSA buckets, generated call sites executed, delayed events, cancel/drain and stale-epoch refusal (CPU only, fake CUDA)'),
+                     ('test_e3_sparse_history_dma.py', 'E3 sparse transport: fixed-capacity union, deferred selection and lease-bound compact DMA (CPU)'),
+                     ('test_e3_sparse_copy_waves.py', 'E3 sparse descriptor overflow: bounded copy waves, queried credit, original attention boundaries and unpublished cancellation (CPU)'),
+                     ('test_vmid_job12.py', 'VM<vm-id> native sparse operation: real generated union and attention, delayed selection and cancellation (CPU)'),
+                     ('test_vmid_job12b.py', 'VM<vm-id> sparse qualification: inspectable pinned generated Triton module and bounded exception evidence (CPU)'),
+                     ('test_vmid_job12c.py', 'VM<vm-id> sparse qualification: preserved pinned JIT decorators and actual wrapper grid-launch protocol (CPU)'),
+                     ('test_e3_teacher_decode.py', 'E3 teacher forcing: private fixed cohort, pinned sampler, unchanged settings and temporary ownership (CPU only)'),
+                     ('test_e3_teacher_decode_rule4.py', 'E3 teacher forcing rule v4: frozen control-envelope allowances, symmetric metrics, tie order, calibration pinning and immutable evidence (CPU only)'),
+                     ('test_e3_route_invariant.py', 'E3 route invariants: deduplicated prompt bytes, mutation failures and native graph definition serialization (CPU only)'),
+                     ('test_e3_launch_diagnostic.py', 'E3 launch diagnostic: exact config fields, aliases, per-node counts and private pointer redaction (CPU only)'),
+                     ('test_e3_probe_session.py', 'E3 W1 controller composition: real client validator, awaited pause, all-rank receipts, stale proof refusal (CPU only)'),
+                     ('test_e3_probe_rpc.py', 'E3 diagnostic HTTP transport: scoped auth, loopback, fixed paths, bounded response, no retries/redirects (CPU only)'),
+                     ('test_e3_probe_control.py', 'E3 diagnostic control: actual awaited pause/ordered RPC, all-rank barriers, scoped auth, source inverse and fail-closed transitions (CPU only)'),
                      ('test_e3_decode_probe.py', 'E3 decode-only diagnostic probe: flag conflict before allocation, evidence gate, typed no-prefill routing/invalidation, split bank pool/bytes, drained transitions/quarantine, shutdown order and default-off bytes (CPU only, fakes)'),
+                     ('test_e3_finalize_package.py', 'E3 native final package: immutable source closure, exact library dependency/source hashes, no GPU qualification (CPU only)'),
+                     ('test_e3_native_readiness.py', 'Native implementation/build closure: immutable source and VM build pins, actual finalizer, payload mutation refusals, no environment bypass or hardware qualification (CPU only)'),
+                     ('test_e3_private_auth.py', 'E3 private auth: existing-key file, no value-bearing argv, strict immutable private file and source declaration (CPU only)'),
+                     ('test_e3_q17b_clients.py', 'Q17b composed clients: one controller owner, observer placement and stopped-before-W1 (CPU only)'),
+                     ('test_e3_q17b_full_queue.py', 'Q17b full queue: declared startup, actual clients aggregate and owned cleanup (CPU fake commands)'),
+                     ('test_e3_overlap_performance.py', 'Q18a real overlap: frozen target/denominator policy, accepted segment proofs, serialized refusal, invalid-interval retention and reviewed readiness (CPU fake SSE/controller)'),
+                     ('test_e3_overlap_performance_queue.py', 'Q18a overlap queue: armable refusal, all-gate gating, retained FAIL/INCONCLUSIVE, crash/stop cleanup, exact restore and no production start (CPU fake commands)'),
+                     ('test_e3_startup_grade.py', 'E3 startup/capture grade: frozen FAIL-over-INCONCLUSIVE verdict, requested 44 recorded apart from the measured split, no replay or speed claim (CPU only)'),
+                     ('test_e3_startup_queue.py', 'E3 startup/capture queue: offline fake-command lifecycle, owned cleanup on every failure, no production start and no printed auth (CPU only)'),
+                     ('test_e3_graph_audit.py', 'E3 raw retained-graph audit: exact descriptor inventory, expected green owners, bounded native node walk, FAIL-over-unknown verdicts and stub-CUDA compile (CPU only)'),
+                     ('test_vmid_job1.py', 'VM<vm-id> tiny graph diagnostic: exact multiplicity, resource ownership and fail-closed receipts (CPU only)'),
+                     ('test_vmid_job2.py', 'VM<vm-id> mixed nodes/capacity: exact counts, copy directions, explicit child limitation and pinned header syntax (CPU only)'),
+                     ('test_vmid_job3.py', 'VM<vm-id> sparse DMA: compact-row mapping, four-page pieces, whole-plan fragmentation refusal and exact byte coverage (CPU only)'),
+                     ('test_vmid_job4.py', 'VM<vm-id> actual QSA sparse DMA: pinned gather-only substitution, exact outputs and cancellation/reuse ownership (CPU only)'),
+                     ('test_vmid_job5.py', 'VM<vm-id> bank-scale observer: seven graph inventories, exact per-node windows and explicit capacity-loss failures (CPU only)'),
+                     ('test_vmid_job5b.py', 'VM<vm-id> bank census progress: real phase with exclusive writer, all 30 snapshots, refusal without overwrite (CPU fakes)'),
+                     ('test_vmid_job6.py', 'VM<vm-id> context isolation: real native node census, immutable replay subwindows, negative guard and bounded queue (CPU only)'),
+                     ('test_e3_observer_runtime.py', 'E3 replay observer integration: pre-context start, actual worker drain, one scoped window and stopped-before-performance (CPU only)'),
+                     ('test_e3_replay_observer.py', 'E3 actual replay context observer: bounded CUPTI activity collection, real green-context binding, clone/update mapping and FAIL-over-missing grading (CPU only, fake CUPTI)'),
                      ('test_s5_oracle_queue.py', 'S5 source oracle: strict subset controls, per-op diagnostics, cuBLAS binding (CPU)'),
                      ('test_s5_substitution.py', 'S5 exact host/resident trajectory oracle and payload-free differences (CPU)'),
                      ('test_s5_tail.py', 'S5 published tickets, workload-tail evidence and threaded eager-forward race (CPU)'),
@@ -685,23 +813,26 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_identity_declare.py', 'source-only identity declaration: inert launcher and exact setcfg'),
                      ('test_round7_review.py', 'round 7 review: offline q8/decode_ab counterexamples'),
                      ('test_agent_replay.py', 'agent_replay v2: cut-off streams, full reuse'),
+                     ('test_e3_w1_decode_driver.py', 'E3 W1 decode-only driver: live-cohort window after controller receipt, early-EOS invalidation, leave-before-drain, retained invalid repeats (loopback fakes)'),
+                     ('test_e3_decode_correctness.py', 'E3 W1 short live-cohort correctness: full/split/full exact token oracle, paused-route lifecycle and control-vs-split verdicts (loopback fakes)'),
                      ('test_prefix_capacity.py', 'prefix capacity: source shapes and conditional LRU model'),
                      ('test_pp_grouping.py', 'PP grouping, pool stats, warm/cold gates: offline checks')]:
     identity_test = subprocess.run([sys.executable, os.path.join(HERE, suite)], capture_output=True, text=True,
                                    env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
     if identity_test.returncode:
         print(identity_test.stdout + identity_test.stderr)
-    check(label, identity_test.returncode, 0)
+    check(label, audit_suite(suite, identity_test), 0)
 
 pp_release_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_pp_release.py')],
                                  capture_output=True, text=True)
 if pp_release_test.returncode:
     print(pp_release_test.stdout + pp_release_test.stderr)
-check('PP release: strict coverage, handshake and canary regressions (offline)', pp_release_test.returncode, 0)
+check('PP release: strict coverage, handshake and canary regressions (offline)', audit_suite('test_pp_release.py', pp_release_test), 0)
 canary_relay_test = subprocess.run([sys.executable, os.path.join(HERE, 'test_canary_relay.py')],
                                    capture_output=True, text=True)
 if canary_relay_test.returncode:
     print(canary_relay_test.stdout + canary_relay_test.stderr)
-check('Canary relay: unbuffered SSE, unchanged requests, terminal counting (loopback fake upstream)', canary_relay_test.returncode, 0)
+check('Canary relay: unbuffered SSE, unchanged requests, terminal counting (loopback fake upstream)', audit_suite('test_canary_relay.py', canary_relay_test), 0)
+print('selftest coverage: ' + json.dumps(dict(suites=len(unittest_observations), skipped=sum(r['skipped'] for r in unittest_observations)), sort_keys=True))
 print(f"selftest: {sum(results)}/{len(results)} cases as required")
 sys.exit(0 if all(results) else 1)

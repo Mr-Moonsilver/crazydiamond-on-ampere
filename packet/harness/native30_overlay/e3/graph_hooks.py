@@ -172,6 +172,18 @@ def _probe(runner):
     return probe
 
 
+def _native_decode(router):
+    """The real retained-storage decode route, installed by native startup.
+
+    It is distinguished from the separately named decode-only diagnostic by the
+    persistent storage owner E's bootstrap binds; no request transaction or
+    per-step ticket exists on this path.
+    """
+    return (isinstance(router, GraphRouter)
+            and getattr(getattr(router, 'worker', None), 'decode_owner', None) is not None
+            and callable(getattr(router, 'native_decode_route', None)))
+
+
 def _transaction(scheduler_output, router):
     if isinstance(router, DecodeProbeRouter):
         if getattr(scheduler_output, 'flash_e3_transaction', None) is not None:
@@ -179,8 +191,9 @@ def _transaction(scheduler_output, router):
         # Typed no-prefill guard in place of the anchor transaction.
         return router.no_prefill_guard()
     transaction = getattr(scheduler_output, 'flash_e3_transaction', None)
-    if transaction is None and (router.worker.active_prefill is not None
-                                or router.current_mode != 'ordinary'):
+    if (transaction is None and not _native_decode(router)
+            and (router.worker.active_prefill is not None
+                 or router.current_mode != 'ordinary')):
         raise GraphRoutingError('split/active prefill requires an explicit decode transaction')
     return transaction
 
@@ -201,10 +214,12 @@ def _is_prefill(router, transaction):
 
 def check_empty(runner, output):
     probe = _probe(runner)
-    if probe is not None and probe.route == 'split' and output.total_num_scheduled_tokens == 0:
-        probe.invalidate('empty_batch')
-        from decode_probe import DecodeProbeInvalidated
-        raise DecodeProbeInvalidated('empty batch invalidates split interval')
+    if probe is not None and output.total_num_scheduled_tokens == 0:
+        probe.observe_empty(output)
+        if probe.route == 'split':
+            probe.invalidate('empty_batch')
+            from decode_probe import DecodeProbeInvalidated
+            raise DecodeProbeInvalidated('empty batch invalidates split interval')
 
 
 def check_route(runner, scheduler_output, batch_desc,
@@ -222,9 +237,19 @@ def check_route(runner, scheduler_output, batch_desc,
         probe.check_batch(num_reqs, num_tokens, uniform_tokens, batch_state)
         descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
         return probe.check_route(descriptor, _transaction(scheduler_output, router))
+    census = getattr(runner, '_flash_s5_native_census', None)
+    if census is not None and _native_decode(router) and num_tokens > 0:
+        descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
+        census.observe_dispatch(num_reqs, num_tokens, uniform_tokens, batch_state,
+                                descriptor.cg_mode == 'full')
     transaction = _transaction(scheduler_output, router)
     if transaction is None:
-        return None
+        if not _native_decode(router):
+            return None
+        descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
+        # A zero-token descriptor is a declared no-op: the stock engine returns
+        # before dispatch, so no bank is touched and no watermark moves.
+        return router.native_decode_route(descriptor)
     if type(transaction) is not TransactionId:
         raise GraphRoutingError('scheduler output carries an invalid E3 transaction')
     descriptor = _descriptor(batch_desc, num_reqs, num_tokens, uniform_tokens)
@@ -261,7 +286,25 @@ def replay_fullgraph(runner, scheduler_output, batch_desc, stock):
         return probe.replay(ExecutionDescriptor.from_vllm(batch_desc))
     transaction = _transaction(scheduler_output, router)
     if transaction is None:
-        return stock(batch_desc)
+        if not _native_decode(router):
+            return stock(batch_desc)
+        descriptor = ExecutionDescriptor.from_vllm(batch_desc)
+        decision = router.native_decode_route(descriptor)
+        if decision is None or decision.mode == 'ordinary':
+            # The full route is restored (or this is a declared no-op); only
+            # the stock FULL manager may run, never a green-stream graph.
+            return stock(batch_desc)
+        probe = getattr(router, 'probe', None)
+        if not callable(probe):
+            raise GraphRoutingError('native split replay needs C\'s context/stream probe')
+        observed = probe()
+        if (type(observed) is not tuple or len(observed) != 2
+                or type(observed[0]) is not int or type(observed[1]) is not int):
+            raise GraphRoutingError('C context/stream probe returned an invalid pair')
+        result = router.native_replay(descriptor,
+                                      observed_context=observed[0],
+                                      observed_stream=observed[1])
+        return result.output
     if type(transaction) is not TransactionId:
         raise GraphRoutingError('scheduler output carries an invalid E3 transaction')
     descriptor = ExecutionDescriptor.from_vllm(batch_desc)
@@ -325,6 +368,12 @@ def capture_banks(runner, *, profile_only=False):
         return router
     if getattr(runner, '_flash_e3_graph_captured', False):
         raise GraphRoutingError('graph banks were already captured')
+    native = getattr(runner, '_flash_s5_native', None)
+    private = getattr(native, 'private_bindings', None)
+    if private is not None:
+        # Stock profile/warmup and ordinary capture established the real bound.
+        # Fund the extra lane before capture_model locks the workspace manager.
+        private.prepare_workspace()
     router.capture_at_startup()
     runner._flash_e3_graph_captured = True
     return router
