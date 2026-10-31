@@ -21,6 +21,7 @@ unmodified upstream scheduler is refused. No torch/vLLM import is needed here.
 """
 import hashlib
 import time
+import weakref
 
 from e3_types import (
     MAX_ACTIVE_PREFILL,
@@ -121,6 +122,41 @@ _SCHEDULER_FORWARD = (
                     request.shared_prefix_boundary = shared_prefix_boundary
 
                     # Get externally-cached tokens if using a KVConnector.
+'''),
+    # native39: a waiting request with a positive frontier is a stock prefill
+    # chunk too; the split route cannot run one.
+    ('''                    new_computed_blocks = self.kv_cache_manager.empty_kv_cache_blocks
+                    num_new_local_computed_tokens = 0
+                    num_computed_tokens = request.num_computed_tokens
+''', '''                    new_computed_blocks = self.kv_cache_manager.empty_kv_cache_blocks
+                    num_new_local_computed_tokens = 0
+                    num_computed_tokens = request.num_computed_tokens
+                    # A positive-frontier stock prefill (KV receive, streaming
+                    # resume, a native request between chunks) may not run on an
+                    # armed split route either.
+                    if _flash_s5_hooks.defer_stock_positive_frontier(self, request):
+                        request_queue.pop_request()
+                        step_skipped_waiting.prepend_request(request)
+                        continue
+'''),
+    # native39: an in-progress stock prefill chunk of a RUNNING request.
+    ('''            if defer_prefills and request.is_prefill_chunk:
+                # DP prefill balancing: defer this in-progress prefill chunk to a
+                # cadence-aligned step; decodes still run to fill this step.
+                req_index += 1
+                continue
+''', '''            if defer_prefills and request.is_prefill_chunk:
+                # DP prefill balancing: defer this in-progress prefill chunk to a
+                # cadence-aligned step; decodes still run to fill this step.
+                req_index += 1
+                continue
+
+            if request.is_prefill_chunk and _flash_s5_hooks.defer_stock_running_prefill(
+                    self, request):
+                # An in-progress stock prefill chunk waits while a native intent
+                # is armed on the split route; decodes still run.
+                req_index += 1
+                continue
 '''),
     ('''        if _e2_journal is not None:
             scheduler_output.flash_e2_frame = _e2_journal.frame(
@@ -229,6 +265,38 @@ _SCHEDULER_REVERSE = (
     ('''    def shutdown(self) -> None:
         _flash_s5_hooks.before_scheduler_shutdown(self)
 ''', '''    def shutdown(self) -> None:
+'''),
+    ('''            if defer_prefills and request.is_prefill_chunk:
+                # DP prefill balancing: defer this in-progress prefill chunk to a
+                # cadence-aligned step; decodes still run to fill this step.
+                req_index += 1
+                continue
+
+            if request.is_prefill_chunk and _flash_s5_hooks.defer_stock_running_prefill(
+                    self, request):
+                # An in-progress stock prefill chunk waits while a native intent
+                # is armed on the split route; decodes still run.
+                req_index += 1
+                continue
+''', '''            if defer_prefills and request.is_prefill_chunk:
+                # DP prefill balancing: defer this in-progress prefill chunk to a
+                # cadence-aligned step; decodes still run to fill this step.
+                req_index += 1
+                continue
+'''),
+    ('''                    new_computed_blocks = self.kv_cache_manager.empty_kv_cache_blocks
+                    num_new_local_computed_tokens = 0
+                    num_computed_tokens = request.num_computed_tokens
+                    # A positive-frontier stock prefill (KV receive, streaming
+                    # resume, a native request between chunks) may not run on an
+                    # armed split route either.
+                    if _flash_s5_hooks.defer_stock_positive_frontier(self, request):
+                        request_queue.pop_request()
+                        step_skipped_waiting.prepend_request(request)
+                        continue
+''', '''                    new_computed_blocks = self.kv_cache_manager.empty_kv_cache_blocks
+                    num_new_local_computed_tokens = 0
+                    num_computed_tokens = request.num_computed_tokens
 '''),
     ('''                        shared_prefix_boundary,
                         hit_diverged,
@@ -1130,6 +1198,13 @@ class ParkedPrefill:
 
 QSA_STAGE_MIN_ROWS = 64  # pinned qsa.py: _QSA_STAGE_MIN_ROWS; no setting override
 MAX_PLAN_REFUSAL_MEMO = 16  # refused-plan receipts kept per controller
+# native39: how long stock work may be held on an armed split route while no
+# native work is in flight before the engine returns FULL on its own (typed
+# 'split-hold-timeout').  A constant, not a setting.
+SPLIT_HOLD_BOUND_NS = 30_000_000_000
+SPLIT_HOLD_KINDS = ('fresh', 'positive-frontier', 'running-prefill')
+FURTHEST_BASIS = ('furthest end of any chunk the bounded search accepted, backtracked '
+                  'edges included; descriptive, not a certified stock-forced stop')
 
 
 class _ProjectedPrefillRequest:
@@ -1159,9 +1234,11 @@ def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536,
     stock owns it, on an armed split route it waits (``defer_stock_prefix_hit``).
 
     ``trace``, when a dict, receives the search receipt: split queries made,
-    whether the query bound ended the search, and the furthest chunk boundary
-    reached (for a refused plan, the last mandatory stop the search could
-    reach).  It never changes the search or its result.
+    whether the query bound ended the search, and the furthest end of any
+    chunk the search accepted.  That boundary is descriptive: it includes
+    edges the search later backtracked from and stops early when the query
+    bound is exhausted, so it is not certified as a stock-forced stop
+    (native39, Codex P2).  It never changes the search or its result.
     """
     if trace is not None and type(trace) is not dict:
         raise E3ContractError('staged chunk planning trace must be a dict')
@@ -1284,6 +1361,15 @@ class PrefillAdmissionController:
         self.refusal_seq = 0
         self.last_refusal = None
         self._plan_refusals = {}
+        # native39: holds on the armed split route are bounded.  A hold counts
+        # only while no native work is in flight (nothing parked, no retained
+        # worker row) and every schedule() call keeps holding; past the bound
+        # the driver returns FULL with a typed 'split-hold-timeout'.
+        self.split_hold_bound_ns = SPLIT_HOLD_BOUND_NS
+        self.split_hold_timeouts = 0
+        self.split_stock_deferrals_by_kind = dict.fromkeys(SPLIT_HOLD_KINDS, 0)
+        self._schedule_seq = 0
+        self._split_hold = None
 
     # -- installation -----------------------------------------------------
     def attach(self):
@@ -1400,6 +1486,7 @@ class PrefillAdmissionController:
         identity = self._request_identities.get(getattr(request, 'request_id', None))
         record = {'schema': 's5-native-admission-refusal/1', 'seq': self.refusal_seq,
                   'reason': reason, 'engine_epoch': self.engine_epoch,
+                  'request_uid': getattr(request, 'request_id', None),
                   'request_generation': (identity[1] if identity is not None
                                          and identity[0] is request else None),
                   'observed_ns': self._now_ns()}
@@ -1422,18 +1509,106 @@ class PrefillAdmissionController:
 
     def _memoised_plan_refusal(self, request, key):
         entry = self._plan_refusals.get(getattr(request, 'request_id', None))
-        if entry is None or entry[0] is not request or entry[1] != key:
+        if entry is None or entry[0]() is not request or entry[1] != key:
             return None
         return entry[2]
 
     def _remember_plan_refusal(self, request, key, receipt):
-        # Bounded: the object reference keeps identity exact (no id() reuse);
-        # a stale entry only ever fails to match.
+        # Bounded and weak (native39): the memo never keeps a finished request
+        # (its token lists, host state) alive.  Identity stays exact: a dead or
+        # foreign reference only ever fails to match.
         memo = self._plan_refusals
         memo.pop(request.request_id, None)
+        for uid in [uid for uid, entry in memo.items() if entry[0]() is None]:
+            memo.pop(uid)
         while len(memo) >= MAX_PLAN_REFUSAL_MEMO:
             memo.pop(next(iter(memo)))
-        memo[request.request_id] = (request, key, receipt)
+        memo[request.request_id] = (weakref.ref(request), key, receipt)
+
+    def forget_request(self, request):
+        """Drop the refusal memo for a finished or aborted request (native39)."""
+        uid = getattr(request, 'request_id', None)
+        entry = self._plan_refusals.get(uid)
+        if entry is not None and entry[0]() in (request, None):
+            self._plan_refusals.pop(uid)
+            return True
+        return False
+
+    # -- native39: bounded holds on the armed split route -------------------
+    def _note_split_hold(self, scheduler, kind):
+        """Count one held stock prefill and track whether the hold is idle."""
+        if kind not in SPLIT_HOLD_KINDS:
+            raise E3ContractError('unknown split hold kind')
+        self.split_stock_deferrals += 1
+        self.split_stock_deferrals_by_kind[kind] += 1
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        retained_query = getattr(owner, 'retained_request', None)
+        retained = retained_query() if callable(retained_query) else None
+        if self.parked is not None or retained is not None:
+            # Native work is in flight; the hold ends when that work does.
+            self._split_hold = None
+            return
+        intent = owner.admission_intent() if owner is not None else None
+        intent_seq = intent.get('seq') if type(intent) is dict else None
+        hold = self._split_hold
+        now = self._now_ns()
+        if (hold is None or hold['intent_seq'] != intent_seq
+                or hold['schedule_seq'] < self._schedule_seq - 1):
+            hold = self._split_hold = {
+                'since_ns': now, 'intent_seq': intent_seq,
+                'schedule_seq': self._schedule_seq, 'holds': 0,
+                'kinds': dict.fromkeys(SPLIT_HOLD_KINDS, 0)}
+        hold['schedule_seq'] = self._schedule_seq
+        hold['holds'] += 1
+        hold['kinds'][kind] += 1
+        hold['last_ns'] = now
+
+    def expired_split_hold(self, now_ns, intent_seq):
+        """The idle hold past its bound, or ``None``.
+
+        Only a hold the latest schedule() call kept (a request that left, for
+        example an aborted client, ends it) and only with nothing parked.
+        """
+        hold = self._split_hold
+        if (hold is None or self.parked is not None or hold['intent_seq'] != intent_seq
+                or hold['schedule_seq'] != self._schedule_seq):
+            return None
+        if now_ns - hold['since_ns'] < self.split_hold_bound_ns:
+            return None
+        return dict(hold, kinds=dict(hold['kinds']))
+
+    def note_split_hold_timeout(self, scheduler, hold, now_ns):
+        """The typed receipt for a hold the driver ends by returning FULL."""
+        self.split_hold_timeouts += 1
+        self._split_hold = None
+        queue = self._queue(scheduler)
+        head = queue.peek_request() if queue else None
+        return self._refuse(head, 'split-hold-timeout',
+                            held_since_ns=hold['since_ns'], held_ns=now_ns - hold['since_ns'],
+                            bound_ns=self.split_hold_bound_ns, holds=hold['holds'],
+                            kinds=dict(hold['kinds']), intent_seq=hold['intent_seq'],
+                            action='return-full')
+
+    def _retained_waiting(self, scheduler, queue, retained):
+        """The retained request and the queue holding it, wherever it waits.
+
+        A worker row is owned by exactly one request object; that request
+        continues first even when a held or refused request sits ahead of it
+        (native39: a held head must not strand a retained row).
+        """
+        identity = self._request_identities.get(retained.request_uid)
+        if identity is None or identity[1] != retained.request_generation:
+            return None
+        target = identity[0]
+        if queue.peek_request() is target:
+            return queue, target
+        for candidate in (queue, getattr(scheduler, 'skipped_waiting', None),
+                          getattr(scheduler, 'waiting', None)):
+            if candidate is None or not hasattr(candidate, '__iter__'):
+                continue
+            if any(item is target for item in candidate):
+                return candidate, target
+        return None
 
     def native_admission_record(self):
         """Engine-lifetime admission counts and the newest typed refusal."""
@@ -1443,6 +1618,12 @@ class PrefillAdmissionController:
                 'plan_searches': self.plan_searches,
                 'plan_memo_hits': self.plan_memo_hits,
                 'split_stock_deferrals': self.split_stock_deferrals,
+                'split_stock_deferrals_by_kind': dict(self.split_stock_deferrals_by_kind),
+                'split_hold_timeouts': self.split_hold_timeouts,
+                'split_hold_bound_ns': self.split_hold_bound_ns,
+                'split_hold': (None if self._split_hold is None
+                               else dict(self._split_hold,
+                                         kinds=dict(self._split_hold['kinds']))),
                 'refusal_seq': self.refusal_seq,
                 'last_refusal': (None if self.last_refusal is None
                                  else dict(self.last_refusal)),
@@ -1506,13 +1687,13 @@ class PrefillAdmissionController:
         retained_query = getattr(owner, 'retained_request', None)
         retained = retained_query() if callable(retained_query) else None
         if retained is not None:
-            identity = self._request_identities.get(request.request_id)
-            if (request.request_id != retained.request_uid
-                    or identity is None or identity[0] is not request
-                    or identity[1] != retained.request_generation):
-                # No allocation/parking/UID generation change for a request
-                # whose worker row is still owned by another request frame.
+            # No allocation/parking/UID generation change for a request whose
+            # worker row is still owned by another request frame: only the
+            # retained request itself may continue, from whichever queue holds it.
+            found = self._retained_waiting(scheduler, queue, retained)
+            if found is None:
                 return None
+            queue, request = found
         if self._request_refuses(scheduler, request):
             return self._refuse(request, 'request-refused')
         manager = scheduler.kv_cache_manager
@@ -1528,7 +1709,11 @@ class PrefillAdmissionController:
             return self._refuse(request, 'prompt-geometry',
                                 prompt_tokens=prompt_end if type(prompt_end) is int else None)
         if getattr(request, 'num_output_tokens', 0) != 0:
-            return None
+            # A resumed (preempted) request recomputes prompt and output; native
+            # admission plans prompts only.  Typed, so a hold on it is visible.
+            return self._refuse(request, 'resumed-with-output', prompt_tokens=prompt_end,
+                                start=start,
+                                output_tokens=getattr(request, 'num_output_tokens', None))
         if prompt_end - start <= 1:
             return None
 
@@ -1539,8 +1724,10 @@ class PrefillAdmissionController:
                 manager.get_computed_blocks(request))
             start = num_new_computed
             if prompt_end - start <= 1:
-                # Everything except the final token is cached: stock handback.
-                return None
+                # Everything except the final token is cached: stock handback,
+                # which only the FULL route can run.  Typed (native39).
+                return self._refuse(request, 'full-prefix-hit', prompt_tokens=prompt_end,
+                                    cached_tokens=num_new_computed)
         budget = getattr(scheduler, 'max_num_scheduled_tokens', None)
         if type(budget) is not int or budget < 1:
             raise E3ContractError('scheduler token budget is not declared')
@@ -1576,6 +1763,7 @@ class PrefillAdmissionController:
                            'native_end': prompt_end - 1, 'cap': cap,
                            'minimum_rows': self.minimum_stage_rows,
                            'furthest_boundary': furthest,
+                           'furthest_basis': FURTHEST_BASIS,
                            'gap': (prompt_end - 1 - furthest
                                    if type(furthest) is int else None),
                            'queries': trace.get('queries'),
@@ -1701,6 +1889,7 @@ class PrefillAdmissionController:
                 # raises) instead of quarantining without the obligations.
                 self.parked.capture = metadata.abort()
             raise
+        self._split_hold = None
         self.admitted += 1
         return record
 
@@ -1973,6 +2162,8 @@ def flash_s5_admit(scheduler):
         raise E3ContractError('scheduler E3 admission controller is invalid')
     if controller._native_admission_disabled(scheduler):
         return None
+    # One count per armed schedule() call: holds are tracked against it.
+    controller._schedule_seq += 1
     return controller.admit(scheduler)
 
 
@@ -2019,6 +2210,10 @@ def after_schedule(scheduler, scheduler_output):
 
 
 def defer_request_free(scheduler, request):
+    controller = getattr(scheduler, '_flash_s5_admission', None)
+    if isinstance(controller, PrefillAdmissionController):
+        # A finished or aborted request leaves the refusal memo (native39).
+        controller.forget_request(request)
     guard = _guard(scheduler)
     return False if guard is None else guard.defer_request_free(scheduler, request)
 
@@ -2069,10 +2264,32 @@ def defer_stock_prefix_hit(scheduler, computed_blocks):
     if guard is not None and guard.defer_stock_prefix_hit(computed_blocks):
         return True
     # Independent of the lease guard: the intent alone decides the hold.
-    return _defer_stock_while_split_armed(scheduler)
+    return _defer_stock_while_split_armed(scheduler, 'fresh')
 
 
-def _defer_stock_while_split_armed(scheduler):
+def defer_stock_positive_frontier(scheduler, request):
+    """Generated stock-loop seam for a waiting request with ``num_computed_tokens > 0``.
+
+    native39 (Codex P1): KV receives, streaming resumes and a native request
+    between chunks take this branch, past the fresh-request seam.  Their stock
+    chunk is a prefill as well, so it is held on an armed split route too.
+    The native one-token handback never needs an exception: the driver skips
+    every stock step from the terminal commit until the FULL ack, and that
+    ack clears the intent (engine_driver ``_drive_route``/transition ack).
+    """
+    return _defer_stock_while_split_armed(scheduler, 'positive-frontier')
+
+
+def defer_stock_running_prefill(scheduler, request):
+    """Generated running-loop seam for an in-progress stock prefill chunk.
+
+    A request that was mid-prefill on FULL when the split was armed would
+    otherwise schedule its next chunk on the split route (native39).
+    """
+    return _defer_stock_while_split_armed(scheduler, 'running-prefill')
+
+
+def _defer_stock_while_split_armed(scheduler, kind):
     controller = getattr(scheduler, '_flash_s5_admission', None)
     if controller is None:
         return False
@@ -2082,7 +2299,7 @@ def _defer_stock_while_split_armed(scheduler):
     # this schedule() call: absent intent -> stock as before.
     if controller._native_admission_disabled(scheduler):
         return False
-    controller.split_stock_deferrals += 1
+    controller._note_split_hold(scheduler, kind)
     return True
 
 
@@ -2102,7 +2319,8 @@ __all__ = [
     'SCHEDULER_E2_SHA256', 'SCHEDULER_PATH', 'SCHEDULER_PINNED_SHA256',
     'SchedulerLeases', 'SourceHold', 'after_schedule',
     'before_scheduler_shutdown', 'before_touch', 'block_held',
-    'blocked_deferred', 'defer_request_free', 'defer_stock_prefix_hit',
+    'blocked_deferred', 'defer_request_free', 'defer_stock_positive_frontier',
+    'defer_stock_prefix_hit', 'defer_stock_running_prefill',
     'flash_s5_admit',
     'generate_block_pool', 'generate_scheduler', 'hold_leased_blocks',
     'note_allocated', 'note_cow_retained', 'note_source_owners',

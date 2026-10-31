@@ -1846,6 +1846,10 @@ class NativeSegmentDriver:
                 # switching streams/banks, so no stock work may be launched
                 # into the old route.  The engine skips this step instead.
                 return (None, False)
+            if self._split_hold_timeout():
+                # native39: stock work held past the bound with no native work
+                # in flight; the FULL return has started, skip this step.
+                return (None, False)
             if self.tx is None:
                 if not self.controller.active:
                     return None
@@ -2625,6 +2629,45 @@ class NativeSegmentDriver:
         return (record is not None and self._split_ready
                 and record.get('engine_epoch') == self.engine_epoch
                 and record.get('route_generation') == self.route_generation)
+
+    def _split_hold_timeout(self):
+        """End an idle armed-split hold past its bound by returning FULL (native39).
+
+        The held stock work then runs on FULL, as after a terminal handback;
+        the intent closes on the FULL ack ('route-returned-full').  Only with
+        nothing owned: no chunk, no parked admission, no retained worker row,
+        no route exchange or pending return.
+        """
+        intent = self._admission_intent
+        if (intent is None or not self._split_ready or self.tx is not None
+                or self.controller.active or self._retained is not None
+                or self._return_pending is not None or self._route_exchange() is not None):
+            return False
+        query = getattr(self.controller, 'expired_split_hold', None)
+        if not callable(query) or self._engine_paused() or not self._scheduler_holds_requests():
+            # Paused, or every held request left (finished/aborted client):
+            # nothing is stranded, the armed route stays as the harness set it.
+            return False
+        now = int(self._monotonic_ns())
+        hold = query(now, intent['seq'])
+        if hold is None:
+            return False
+        self.controller.note_split_hold_timeout(self.scheduler, hold, now)
+        self._record('admission_hold_timeout', phase=intent['phase'], seq=intent['seq'],
+                     held_since_ns=hold['since_ns'], held_ns=now - hold['since_ns'],
+                     bound_ns=self.controller.split_hold_bound_ns, holds=hold['holds'],
+                     route_generation=self.route_generation)
+        self._note_terminal_route('split-hold-timeout')
+        self._drive_return()
+        return True
+
+    def _scheduler_holds_requests(self):
+        scheduler = self.scheduler
+        requests = getattr(scheduler, 'requests', None)
+        if type(requests) is dict:
+            return bool(requests)
+        unfinished = getattr(scheduler, 'get_num_unfinished_requests', None)
+        return callable(unfinished) and unfinished() > 0
 
     def _note_terminal_route(self, reason):
         """A chunk retired for good: the split route now owes a full return."""
