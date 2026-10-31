@@ -1,0 +1,70 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "native37 robustness: T1/T2 (e3_native37_admission_probe.py, pinned CPU container, network none) and the hub suite test_native37_robust.py (PlannerTrace, RefusalDeltas, SessionRefusal, HarnessCleanup = T3). Every leaf replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
+ "leaves": [
+  {
+   "name": "t2-reduced-model-config",
+   "test": "e3_native37_admission_probe.production_config / production_host (T1, T2)",
+   "replaces": "The production model checkpoint config (Qwen3.8-Flash-Next) and the VllmConfig the box engine builds from the launcher flags",
+   "equivalence": "The scheduler and admission paths read geometry, not weights. The reduced Qwen4Exp family is e3_native_transitions_lifecycle_probe.config's (same layer kinds: GDN, QSA full attention with the two indexer caches, PLE short conv), with max_position_embeddings raised to 262144. Every field the paths under test read equals production: block_size = mamba_block_size = 4048, prefix_match_unit 176 (hash block 176, mamba_partial_cache_hit on), mamba_cache_mode align, prefix caching on, chunked prefill on, max_num_batched_tokens 1024 (PREFILL_CHUNK=1024), max_num_seqs 8 (launcher default), max_model_len 262144 (launcher default), async scheduling on (the pinned VllmConfig default with the mp executor and no speculative config), scheduler_reserve_full_isl True (pinned default), controller chunk 1024 (FLASH_S5_CHUNK_TOKENS default) and minimum staged rows 64. The probe records the resolved geometry from the constructed scheduler (block 4048, hash 176, partial hit True, budget 1024, 8 running, AsyncScheduler). The scheduler config is set after VllmConfig validation as native18_scheduler_fixture does, because the CPU platform refuses the hybrid KV manager at validation while the CUDA engine runs it; the scheduler only reads the fields. num_gpu_blocks_override 4096 makes the block-id pool large enough for full_sequence_must_fit on 262k prompts (block ids only, no tensors).",
+   "cannot_prove": "Real KV capacity on the box, pipeline-parallel scheduling (use_pp False: FLASH_PD_ALTERNATE/FLASH_PARITY_BALANCE are inert here), MTP, any model output",
+   "box_evidence": false
+  },
+  {
+   "name": "t2-enginecore-pause-and-scheduler",
+   "test": "e3_native37_admission_probe.Stack.engine (T1, T2)",
+   "replaces": "vllm.v1.engine.core.EngineCore (generated e3_sources/core.py) as the driver's engine object",
+   "equivalence": "NativeSegmentDriver reads two engine attributes on the paths exercised: is_scheduler_paused() (_arm_admission/_disarm_admission require a paused engine, as the session pauses before arming) and engine.scheduler (status record). The leaf answers True only around the real submit_control arm/disarm calls, which is what the session's pause -> arm -> resume order produces; schedule() is then called on the real scheduler exactly as EngineCore.step calls it, with the scheduler's own pause state UNPAUSED.",
+   "cannot_prove": "The generated EngineCore step loop, utility dispatch or batch queue",
+   "box_evidence": false
+  },
+  {
+   "name": "t2-executor-never-called",
+   "test": "e3_native37_admission_probe.NoExecutor (T1, T2)",
+   "replaces": "The E3 executor wrapper (executor_hooks) passed to NativeSegmentDriver",
+   "equivalence": "T1/T2 never advance the driver: admission, the stock hold, status and evidence reads are scheduler/engine-side. Any attribute access on the leaf raises, so a worker dispatch would fail the probe instead of being faked.",
+   "cannot_prove": "Worker-side behaviour of an admitted chunk",
+   "box_evidence": false
+  },
+  {
+   "name": "t2-split-route-transition-outcome",
+   "test": "e3_native37_admission_probe.Stack.split_route (T1, T2)",
+   "replaces": "The all-rank split/FULL TransitionAck exchange (_drive_route with four workers) that sets NativeSegmentDriver._split_ready and advances route_generation",
+   "equivalence": "The paths under test read only the transition's outcome: _arm_admission requires _split_ready and records route_generation in the intent; PrefillAdmissionController._native_admission_disabled checks the intent's route_generation against the driver's and _split_ready. The leaf sets exactly these two fields, as a completed transition does (split on before arm; FULL with a new generation after disarm, as leave_full's return does). The real submit_control arm_admission/disarm_admission run on top of it.",
+   "cannot_prove": "Worker route acknowledgment, drain or the FULL return's own timing",
+   "box_evidence": false
+  },
+  {
+   "name": "t2-empty-sampler-output",
+   "test": "e3_native37_admission_probe.Stack.step (T1, T2)",
+   "replaces": "The worker ModelRunnerOutput that EngineCore passes to update_from_output after each schedule()",
+   "equivalence": "Nothing is sampled: refused requests are held unscheduled, and a scheduled 1024-token chunk of a 197315/201306-token prompt is mid-prefill, so the real output carries no token for it. The leaf lists the scheduled request ids with empty sampled_token_ids.",
+   "cannot_prove": "Any decode output",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-cold-stack-session",
+   "test": "test_native37_robust.SessionRefusal",
+   "replaces": "The engine's scheduler and KV manager (test_e3_admission_native fakes, through test_e3_native_overlap.cold_stack), and the four workers (test_e3_r4_worker_bridge fakes)",
+   "equivalence": "The real NativeOverlapSession, NativeControlClient, generated utility dispatch, NativeSegmentDriver and PrefillAdmissionController (the same stack test_e3_native_measurement_clients.NativeActions uses). The test sets controller.minimum_stage_rows to the production 64 so the fixture's 12-token request (chunk 4) gets a typed no-staged-plan refusal through the real _admit_observed (cap 4 < 64); flash_s5_admit and defer_stock_prefix_hit are the generated scheduler's own seams, called as schedule() calls them. The pinned-scheduler version of this composition is T2.",
+   "cannot_prove": "Pinned scheduler alignment or allocation (T1/T2 do that in the container)",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-geometry-split",
+   "test": "test_native37_robust.PlannerTrace.geometry_split",
+   "replaces": "vllm.v1.core.sched.scheduler.Scheduler._mamba_block_aligned_split at production geometry",
+   "equivalence": "The stop rule of the pinned method (4048-aligned stops, the last 176 boundary with partial mamba cache hits, budget 1024), used only to show that the trace receipt never changes staged_chunk_plan's result. T1 runs the pinned method itself over 333 lengths and checks the same stop/gap rule with 0 mismatches.",
+   "cannot_prove": "Anything about the pinned method beyond what T1 records",
+   "box_evidence": false
+  },
+  {
+   "name": "t3-loopback-apiserver-end-variants",
+   "test": "test_native37_robust.HarnessCleanup (T3)",
+   "replaces": "The engine APIServer (native session route and /v1/completions SSE) for one W2 round",
+   "equivalence": "test_native35_performance.LoopbackAPIServer (declared in native35_p_fixture_leaves.json) with prefill_begin accepted (typed identity reply, as the real session gives on an armed split route) and prefill_end answering one of three real failure shapes: HTTP 500 (what P-c's dead engine returned), a typed refusal (the native37 session's prefill_end on a refused window), or a dead peer (listener closed, request dropped). The round runs through the exact W2 argv, real main(argv), the real NativeRuntimeClient and LoopbackControl.",
+   "cannot_prove": "Engine-side pause/leave_full behaviour after a refusal on the box (the hub SessionRefusal and T2 cover the engine side on CPU)",
+   "box_evidence": false
+  }
+ ]
+}
