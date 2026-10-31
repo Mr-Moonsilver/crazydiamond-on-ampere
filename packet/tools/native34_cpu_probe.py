@@ -78,7 +78,7 @@ spec=importlib.util.spec_from_file_location('native34_frozen_owner','/source/own
 owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(owner)
 role=os.environ['FLASH_NATIVE34_ARM']
 provenance=json.loads(Path('/source/harness/native30-provenance.json').read_text())
-assert provenance['native34_arm']==role and provenance['candidate']==owner.QNAME=='q18a-native34-'+role.lower()+'2'
+assert provenance['native34_arm']==role and provenance['candidate']==owner.QNAME=='q18a-native34-'+role.lower()+'3'
 owner.check_slot()
 import native34_gate as weekend_gate
 from unittest.mock import patch
@@ -126,9 +126,12 @@ assert len(causal_cli)==3
 Path('/out/causal-cli-check.json').write_text(json.dumps(causal_cli,sort_keys=True,indent=2)+'\n')
 
 slot_receipts=sys.modules['test_native34_queue'].SLOT_RECEIPTS
-assert len(slot_receipts)==7 and all(r['real_wall_clock'] for r in slot_receipts)
+assert len(slot_receipts)==10 and all(r['real_wall_clock'] for r in slot_receipts)
 Path('/out/draft-window-check.json').write_text(json.dumps(slot_receipts,sort_keys=True,indent=2)+'\n')
-record=dict(draft_window_slots='PASS',draft_window_receipts=slot_receipts,arm=role,final_input_proof=True,native34=native34_receipt,owner_prelaunch=owner_prelaunch,native31=native31_receipt,receipt_policy='PASS',receipt_budget_bytes=policy.BYTES_PER_RANK,receipt_tail_s=policy.TAIL_S,row4_cli_validation='PASS',cli_receipts=cli_receipts,identity_receipts=identity_receipts,verdict='PASS' if result.wasSuccessful() and not result.skipped and result.testsRun==91 else 'FAIL',tests_run=result.testsRun,skips=len(result.skipped),plugin_loader='PASS',identity_capture_check='PASS' if result.wasSuccessful() else 'FAIL',identity_timeout_negative_rejected=result.wasSuccessful(),mounted_modules=modules,cuda_initialized=False,gpu_execution=False,
+protocol_receipts=sys.modules['test_native34_runtime'].PROTOCOL_RECEIPTS
+assert len(protocol_receipts)==1 and protocol_receipts[0]['verdict']=='PASS' and protocol_receipts[0]['hand_built_marker'] is False
+Path('/out/protocol-check.json').write_text(json.dumps(protocol_receipts,sort_keys=True,indent=2)+'\n')
+record=dict(native34_protocol='PASS',protocol_receipts=protocol_receipts,draft_window_slots='PASS',draft_window_receipts=slot_receipts,arm=role,final_input_proof=True,native34=native34_receipt,owner_prelaunch=owner_prelaunch,native31=native31_receipt,receipt_policy='PASS',receipt_budget_bytes=policy.BYTES_PER_RANK,receipt_tail_s=policy.TAIL_S,row4_cli_validation='PASS',cli_receipts=cli_receipts,identity_receipts=identity_receipts,verdict='PASS' if result.wasSuccessful() and not result.skipped and result.testsRun==91 else 'FAIL',tests_run=result.testsRun,skips=len(result.skipped),plugin_loader='PASS',identity_capture_check='PASS' if result.wasSuccessful() else 'FAIL',identity_timeout_negative_rejected=result.wasSuccessful(),mounted_modules=modules,cuda_initialized=False,gpu_execution=False,
     fixture='CPU driver-registration stub, synthetic launch/sync/control objects; no GPU model forward, stream or memory query')
 Path('/out/probe.json').write_text(json.dumps(record,sort_keys=True,indent=2)+'\n')
 raise SystemExit(0 if record['verdict']=='PASS' else 1)

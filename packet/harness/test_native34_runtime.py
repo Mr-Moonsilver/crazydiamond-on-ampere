@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import patch
 import weakref
 
+PROTOCOL_RECEIPTS=[]
+
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'patches/s5_engine'))
 import native34_worker as w
@@ -290,7 +292,7 @@ class Runtime(unittest.TestCase):
         self.assertEqual(record['key']['bank'],'decode-split')
         self.assertEqual(record['storage']['storages'][0]['data_ptr'],runner.input_buffers.input_ids.data_ptr())
 
-    def test_real_owned_transport_and_bounded_sender_deliver_all_rank_checkpoint(self):
+    def test_real_driver_qualification_and_checkpoint_through_real_worker_entry(self):
         import pickle,time,queue
         import test_e3_native_overlap as connected
         import native_overlap_worker as nw
@@ -298,21 +300,25 @@ class Runtime(unittest.TestCase):
         from reply_transport import ReplyTransport
         from executor_hooks import BoundedSender
         stack=connected.idle_stack(rows={str(i):i for i in range(8)})
-        connected.core_for(stack,paused=False)
+        core,_=connected.core_for(stack,paused=True)
         driver=stack.driver;epoch=driver.engine_epoch
-        class Runner:pass
+        import native_qualification as nq
         for rank,worker in stack.workers.items():
-            r=Runner();r.__dict__.update(vars(worker.model_runner));worker.model_runner=r
-            n=r._flash_s5_native
-            n.comms.pp.stream=n.split.prefill_stream
-            n.drain_prefill_streams=WorkerNative.drain_prefill_streams.__get__(n)
-            state=w.state(r,rank);state.update(mode='PREFIX',arm='S',epoch=epoch)
+            r=runner(self.cuda,rank);worker.model_runner=r
+            r.native.state.engine_epoch=epoch
+            r.controller.route_generation=driver.route_generation
+            r.controller.route='full'
+            r.req_states.max_num_reqs=10
+            r.req_states.prefill_len=NS(np=[8]*10)
+            r.req_states.num_computed_prefill_tokens=[8]*10
+            nw.install_census(r)
+            w.state(r,rank).update(mode='OFF')
         class Reader:
             def __init__(self):self.queue=queue.Queue();self.reads=0
             def dequeue(self,timeout):self.reads+=1;return self.queue.get(timeout=timeout)
         readers={r:Reader() for r in range(4)}
         transport=ReplyTransport(readers,'ok',handoff_idle=True)
-        calls=[]
+        calls=[];published=[]
         class Broadcast:
             current_idx=0;n_remote_reader=0
             buffer=NS(max_chunk_bytes=131072,n_reader=4,
@@ -320,6 +326,7 @@ class Runtime(unittest.TestCase):
             def enqueue(self,envelope):
                 # One atomic publication seam: every peer receives the same
                 # serialized command before any worker consumes it.
+                published.append(pickle.loads(pickle.dumps(envelope)))
                 packets={r:pickle.loads(pickle.dumps(envelope)) for r in range(4)}
                 for rank,worker in stack.workers.items():
                     name,args,kwargs,_=packets[rank];calls.append((rank,name))
@@ -328,23 +335,81 @@ class Runtime(unittest.TestCase):
         sender=BoundedSender(Broadcast())
         driver.executor._flash_s5_transport=transport
         driver.executor._flash_s5_bounded_send=sender
-        arm=Arm('S',epoch);arm.stage='BEFORE_DRAIN';driver._native34_arm=arm
-        original=nw.handle;apply=driver._apply_native_overlap
-        def patched(worker,command):return w.checkpoint(original,(worker,command),{})
+        # Real frontend marker producer -> real driver's command builder,
+        # submit/control state machine -> real bounded FIFO -> outer checkpoint
+        # -> real worker handler -> inner qualification. No marker is fabricated.
+        from e3_native34_causal import Native34PlacementRunner
+        path=Path(__file__).parent/'native34_protocol_before.txt'
+        scope=dict(vars(w));exec(compile(path.read_text(),str(path),'exec'),scope)
+        old_checkpoint=scope['checkpoint'];captured=[]
+        original_handle=nw.handle;original_qualification=nq.handle_worker
+        driver_type=type(driver)
+        saved=[(owner,name,inspect.getattr_static(owner,name)) for owner,name in
+               ((driver_type,'advance'),(driver_type,'_apply_native_overlap'),(nw,'handle'),(nq,'handle_worker'))]
+        class ClientDriver:
+            def _worker(client,phase,action,payload):
+                intent=dict(action='qualification',engine_epoch=epoch,
+                            worker_action=action,payload=payload)
+                command=driver._worker_command(dict(action='qualification',command=intent))
+                captured.append(command)
+                if command.get('native34',{}).get('action')=='A_START':
+                    refused=[]
+                    for rank,worker in stack.workers.items():
+                        try:old_checkpoint(original_handle,(worker,command),{})
+                        except ValueError as exc:
+                            if str(exc)!='native34-checkpoint-marker-invalid':raise
+                            refused.append(rank)
+                    self.assertEqual(refused,list(range(4)))
+                future=driver.submit_control(intent)
+                deadline=time.monotonic()+3
+                while not future.done() and time.monotonic()<deadline:
+                    driver.advance();time.sleep(.001)
+                self.assertTrue(future.done())
+                return future.result()
         try:
-            with patch.object(nw,'handle',patched),patch.object(driver,'_apply_native_overlap',
-                    lambda values,seq:d.checkpoint_reply(apply,(driver,values,seq),{})), \
-                 patch.object(d.localize,'emit',lambda *a,**k:None):
-                d.advance(lambda owner:owner._drain(),(driver,),{})
+            w.patch(nw,'handle',w.checkpoint)
+            w.patch(nq,'handle_worker',w.qualification)
+            w.patch(driver_type,'advance',d.advance)
+            w.patch(driver_type,'_apply_native_overlap',d.checkpoint_reply)
+            client=ClientDriver()
+            client._worker('row4','teacher_configure',dict(enabled=True,snapshot_max_bytes=64*1024**2))
+            for worker in stack.workers.values():worker.model_runner.controller.route='split'
+            proofs=Native34PlacementRunner.marker(object.__new__(Native34PlacementRunner),client,'A_START',epoch)
+            self.assertEqual(set(proofs),set(range(4)))
+            self.assertTrue(all(row['verdict']=='STARTED' for row in proofs.values()))
+            self.assertEqual(captured[-1]['action'],'teacher_evidence')
+            self.assertEqual(captured[-1]['native34'],dict(action='A_START'))
+            core.paused=False
+            for rank,worker in stack.workers.items():
+                r=worker.model_runner;r.req_states.req_id_to_index={str(i):i for i in range(8)}
+                w.state(r,rank).update(mode='PREFIX',arm='S',epoch=epoch)
+            arm=Arm('S',epoch);arm.stage='BEFORE_DRAIN';driver._native34_arm=arm
+            with patch.object(d.localize,'emit',lambda *a,**k:None):
+                driver.advance()
                 deadline=time.monotonic()+3
                 while arm.stage!='PREFIX' and time.monotonic()<deadline:
-                    driver._drain();time.sleep(.001)
-            self.assertEqual(arm.stage,'PREFIX');self.assertEqual(sender.sent,1)
-            self.assertEqual(calls,[(r,'flash_s5_native_overlap') for r in range(4)])
-            self.assertEqual([r.reads for r in readers.values()],[1]*4)
+                    driver.advance();time.sleep(.001)
+            self.assertEqual(arm.stage,'PREFIX');self.assertEqual(sender.sent,3)
+            self.assertEqual(calls,[(r,'flash_s5_native_overlap') for _ in range(3) for r in range(4)])
+            self.assertEqual([r.reads for r in readers.values()],[3]*4)
             self.assertFalse(driver._inflight);self.assertFalse(transport._calls)
             self.assertEqual(len(arm.records[0]['workers']),4)
-        finally:self.assertTrue(transport.close(1)['clean'])
+            census=published[-1][1][0]
+            self.assertEqual(census['action'],'census')
+            self.assertEqual(census['native34'],dict(action='CHECKPOINT',arm='S',phase='before-prefix'))
+            self.assertEqual(census['engine_epoch'],epoch)
+            bad=pickle.loads(pickle.dumps(census));bad['native34']['phase']='invalid'
+            with self.assertRaisesRegex(ValueError,'native34-checkpoint-marker-invalid'):
+                worker_hooks.native_overlap_rpc(stack.workers[0],bad)
+            PROTOCOL_RECEIPTS.append(dict(census_command=census,verdict='PASS',ranks=list(range(4)),
+                real_driver_advance=True,real_worker_entry=True,hand_built_marker=False,
+                qualification_marker=captured[-1]['native34'],
+                census_phase=arm.records[0]['phase'],legacy_refusal_all_ranks=True,
+                sender_calls=sender.sent,reply_reads=[r.reads for r in readers.values()],
+                device_execution=False))
+        finally:
+            for owner,name,value in saved:setattr(owner,name,value)
+            self.assertTrue(transport.close(1)['clean'])
 
 
 if __name__=='__main__':unittest.main()

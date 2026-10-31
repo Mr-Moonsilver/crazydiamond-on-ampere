@@ -12,7 +12,7 @@ ROOT=Path(__file__).resolve().parent
 
 
 def normalize_queue(text,arm):
-    for revision in ('2',''):
+    for revision in ('3','2',''):
         text=text.replace('q18a-native34-'+arm.lower()+revision,'q18a-native33').replace('q18a_native34_'+arm.lower()+revision,'q18a_native33')
     text=text.replace('from native34_gate import','from native31_gate import')
     begin=text.index('  if [[ $name == row4 ]]; then\n',text.index('qualification_phase()'))
@@ -45,7 +45,7 @@ class FrozenProtocol(unittest.TestCase):
     def test_every_draft_window_slot_executes_at_real_wall_clock(self):
         env=dict(os.environ,HARNESS_DIR=str(ROOT),PYTHONDONTWRITEBYTECODE='1')
         for arm in ('i','s','o'):
-            for revision in ('','2'):
+            for revision in ('','2','3'):
                 path=ROOT/'runs'/('q18a_native34_'+arm+revision+'.draft.sh')
                 source=path.read_text();begin=source.index("python3 - <<'PY_SLOT'")
                 end=source.index('\nPY_SLOT',begin)+len('\nPY_SLOT')

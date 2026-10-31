@@ -139,13 +139,16 @@
     {
       "box_evidence": false,
       "cannot_prove": "Shared-memory MQ atomicity, device completion, timing or NCCL liveness",
-      "equivalence": "Real BoundedSender, ReplyTransport receiver threads, driver submit/drain/validate/apply, worker_hooks RPC and native_overlap_worker census execute. One serialized envelope is staged for every peer before consumption; four typed rows required.",
+      "equivalence": "Real BoundedSender, ReplyTransport receiver threads, driver submit/drain/validate/apply, worker_hooks RPC and native_overlap_worker census execute. One serialized envelope is staged for every peer before consumption; four typed rows required. Protocol3 additionally runs real NativeSegmentDriver.submit_control/advance/_worker_command/_settle_worker_control, the frontend marker producer, real worker RPC, outer checkpoint and inner qualification wrappers. Worker construction uses the already declared real WorkerNative/green-stream CPU fixture; physical queue/events remain leaves. No CHECKPOINT marker is hand-built.",
       "mocked_seams": [
         "nw.handle",
         "driver._apply_native_overlap",
         "d.localize.emit",
         "sys.modules.torch",
-        "w.emit"
+        "w.emit",
+        "driver_type.advance",
+        "driver_type._apply_native_overlap",
+        "nq.handle_worker"
       ],
       "name": "cpu-native34-owned-transport-backend",
       "replaces": "MessageQueue physical broadcast/reply rings in connected checkpoint test"
@@ -167,6 +170,13 @@
       "equivalence": "Executes the exact shell command and Python heredoc from each of the six native34 draft variants, importing the actual native34_gate module and reading the real OS wall clock in a fresh Python process. The frozen pre-repair slot is also executed on the real clock and refuses. No clock or gate is patched.",
       "name": "cpu-native34-draft-window-entry",
       "replaces": "Only fail_early shell function when executing the isolated draft PY_SLOT entry; the surrounding queue engine/timeout path is not run"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "GPU execution, live pause/transition completeness, graph/device ownership, fault origin or latency",
+      "equivalence": "Exact function source extracted from frozen I2 executes against the real driver-built A_START command on all four CPU worker fixtures and reproduces native34-checkpoint-marker-invalid. The repaired production function is exercised through the real driver/RPC/worker chain; the oracle is never mounted into the worker plugin.",
+      "name": "cpu-native34-frozen-checkpoint-negative",
+      "replaces": "Only old frozen native34_worker.checkpoint function body as a CPU regression oracle"
     }
   ],
   "native32_scope": "receipt boundary resolves actual bridge.dispatcher.runner; engine and ordinary path byte-identical to native31; frozen owner source/package pre-launch assertions run on CPU",

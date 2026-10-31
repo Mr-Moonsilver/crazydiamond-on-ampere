@@ -235,7 +235,10 @@ def qualification(original,args,kwargs):
 
 def checkpoint(original,args,kwargs):
     worker,command=args;marker=command.get('native34')
-    if marker is None:return original(*args,**kwargs)
+    # Qualification markers belong to qualification(), reached through the
+    # real native_overlap_worker handler; only census owns CHECKPOINT.
+    if marker is None or command.get('action')=='teacher_evidence':
+        return original(*args,**kwargs)
     if (command.get('action')!='census' or type(marker) is not dict
             or set(marker)!={'action','arm','phase'} or marker['action']!='CHECKPOINT'
             or marker['phase'] not in ('before-prefix','after-prefix','post-decode')):

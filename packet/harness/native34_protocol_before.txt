@@ -1,0 +1,25 @@
+def checkpoint(original,args,kwargs):
+    worker,command=args;marker=command.get('native34')
+    if marker is None:return original(*args,**kwargs)
+    if (command.get('action')!='census' or type(marker) is not dict
+            or set(marker)!={'action','arm','phase'} or marker['action']!='CHECKPOINT'
+            or marker['phase'] not in ('before-prefix','after-prefix','post-decode')):
+        raise ValueError('native34-checkpoint-marker-invalid')
+    runner=worker.model_runner;s=state(runner,worker.rank)
+    if marker['arm']!=s['arm'] or command['engine_epoch']!=s['epoch']:
+        raise ValueError('native34-checkpoint-identity')
+    emit(s,'checkpoint-begin',phase=marker['phase'],arm=s['arm'])
+    drain=drain_all(runner,s);update_history(runner,s)
+    phase_names={p['name'] for p in s['phases'] if p['complete']}
+    cohorts=cohort_proof(s,post_prefix=True) if marker['phase']=='post-decode' else None
+    proof=dict(phase=marker['phase'],arm=s['arm'],engine_epoch=s['epoch'],
+        drain_complete=drain['complete'],drain=drain,
+        prefix_complete=PHASES<=phase_names if s['rank'] in (0,1) else None,
+        completed_phases=sorted(phase_names),
+        both_post_prefix_cohorts_complete=cohorts is not None and cohorts['verdict']=='PASS',
+        cohorts=cohorts,metadata_complete=s['metadata_complete'])
+    plain={key:value for key,value in command.items() if key!='native34'}
+    result=original(worker,plain,*args[2:],**kwargs)
+    result=dict(result,qualification=dict(native34=proof))
+    emit(s,'checkpoint-complete',**proof)
+    return result
