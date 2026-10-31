@@ -71,8 +71,21 @@ def inner_script(label, suites):
     return '\n'.join(lines) + '\n'
 
 
-def run(tree, overlay, out, name, label, suites):
+def source_mounts(tree, bundle):
+    """The sources at /source: a frozen bundle (as earlier self-runs mount it) or a git tree."""
+    if bundle is not None:
+        return {bundle: '/source/harness', bundle/'e3_builder': '/source/patches/s5_engine',
+                bundle/'native35_tools': '/source/tools',
+                bundle/'native31-fixtures/reference': '/source/reference/vllm-src'}
+    return {tree/'harness': '/source/harness', tree/'patches': '/source/patches',
+            tree/'tools': '/source/tools', tree/'reference/vllm-src': '/source/reference/vllm-src'}
+
+
+def run(tree, overlay, out, name, label, suites, bundle=None):
     tree, overlay, out = Path(tree).resolve(), Path(overlay).resolve(), Path(out).resolve()
+    bundle = None if bundle is None else Path(bundle).resolve()
+    if bundle is not None:
+        assert overlay == bundle/'native30_overlay', 'a bundle self-run mounts its own overlay'
     out.mkdir()
     out.chmod(0o777)
     (out/'inner.sh').write_text(inner_script(label, suites))
@@ -82,8 +95,7 @@ def run(tree, overlay, out, name, label, suites):
                '-e', 'NVIDIA_VISIBLE_DEVICES=none', '-e', 'CUDA_VISIBLE_DEVICES=', '-e', 'PYTHONDONTWRITEBYTECODE=1',
                '-e', 'PYTHONPATH=/source/harness']
     mounts = dict(overlay_mounts(overlay))
-    mounts.update({tree/'harness': '/source/harness', tree/'patches': '/source/patches',
-                   tree/'tools': '/source/tools', tree/'reference/vllm-src': '/source/reference/vllm-src'})
+    mounts.update(source_mounts(tree, bundle))
     for source, target in mounts.items():
         command += ['-v', '%s:%s:ro' % (source, target)]
     command += ['-v', '%s:/out' % out, '--entrypoint', 'bash', IMAGE, '/out/inner.sh']
@@ -116,6 +128,8 @@ def run(tree, overlay, out, name, label, suites):
                                   and compile_log.rstrip().endswith('rc=0'), files=len(COMPILED)),
                   suites=suites_view, probe_sha256=sha(out/'probe.json') if (out/'probe.json').exists() else None,
                   overlay=str(overlay), overlay_manifest=sha(overlay/'SHA256SUMS'),
+                  bundle=None if bundle is None else str(bundle),
+                  bundle_manifest=None if bundle is None else sha(bundle/'SHA256SUMS'),
                   tree_head=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=tree, text=True).strip(),
                   tree_dirty=bool(subprocess.check_output(['git', 'status', '--porcelain', '--', 'harness', 'patches', 'tools'],
                                                           cwd=tree, text=True).strip()),
@@ -136,5 +150,6 @@ if __name__ == '__main__':
     p.add_argument('--name', required=True)
     p.add_argument('--label', required=True)
     p.add_argument('--suites', action='store_true')
+    p.add_argument('--bundle', type=Path)
     a = p.parse_args()
-    raise SystemExit(run(a.tree, a.overlay, a.out, a.name, a.label, a.suites))
+    raise SystemExit(run(a.tree, a.overlay, a.out, a.name, a.label, a.suites, a.bundle))
