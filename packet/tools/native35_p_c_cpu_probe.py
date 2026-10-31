@@ -7,7 +7,7 @@ arm-O/readback configuration so the inherited plugin checks still run. The P-c
 queue itself runs with FLASH_NATIVE30_LOCALIZE=0, FLASH_NATIVE33_DIAG=0 and
 FLASH_NATIVE34_DIAG=0.
 
-P-c adds four things to P-b's receipts:
+P-c adds five things to P-b's receipts:
 - native35_p_c_inert_check, which loads the plugins in fresh processes under
   the exact P-c settings env (nothing installs, nothing is wrapped, no
   NATIVE30 line) and under the P-b settings env (positive control);
@@ -16,7 +16,11 @@ P-c adds four things to P-b's receipts:
 - the P-c row4 receipts (test_native35_p_c_window): the decode stop at the
   20-token window, the observer_end spool over real loopback HTTP (>112 MiB
   collected, >512 MiB refused with bytes and sha), the generated decode abort
-  with a native chunk in flight, and the exact P-c row4 argv.
+  with a native chunk in flight, and the exact P-c row4 argv;
+- the row4 capacity continuation receipts (test_native35_p_c_continuation):
+  capacity-only INCONCLUSIVE records from the real graders continue, mixed or
+  other ones withhold, the >512 MiB refusal continues, and the queue's own gates
+  and both W2 rounds run under bash with the real classifier and W2 gate.
 """
 import hashlib
 import importlib
@@ -87,7 +91,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native33.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native34_*.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native35_*.py'))
-EXPECTED_TESTS=173  # 98 native30-34, 27 native35 R/O/L, 17 native35 P, 11 native35 L2, 3 native35 P-b, 5 native35 P-c and 12 native35 P-c row4 cases; pinned into the frozen runner gate
+EXPECTED_TESTS=183  # 98 native30-34, 27 native35 R/O/L, 17 native35 P, 11 native35 L2, 3 native35 P-b, 5 native35 P-c, 12 native35 P-c row4 and 10 P-c capacity continuation cases; pinned into the frozen runner gate
 result=unittest.TextTestRunner(verbosity=2).run(suite)
 assert not torch.cuda.is_initialized()
 identity_receipts=sys.modules['test_native30_identity'].IDENTITY_RECEIPTS
@@ -232,7 +236,17 @@ assert len(pc_cli)==1 and pc_cli[0]['runner']=='StoppedWindowPlacementRunner' an
 assert pc_cli[0]['runner_sha256']==hashlib.sha256(Path('/source/harness/e3_native35_p_c_placement.py').read_bytes()).hexdigest()
 pc_row4=dict(timing=pc_timing,spool=pc_spool,abort=pc_abort,cli=pc_cli)
 Path('/out/native35-p-c-row4-check.json').write_text(json.dumps(pc_row4,sort_keys=True,indent=2)+'\n')
-record=dict(native35_p_c_row4='PASS',native35_p_c_row4_receipts=pc_row4,native35_localize_off='PASS',native35_p_c_inert=inert_receipt,native35_p_c_cleanup_receipts=cleanup,native35_row4_l2='PASS',native35_p_b_row4_receipts=row4,native35_l2_cli_receipts=l2_cli,native35_l2_timing_receipts=l2_timing,
+# Native35 P-c row4 capacity continuation: both ways over the real graders, the refusal path and the queue's own bytes.
+cont_suite=sys.modules['test_native35_p_c_continuation']
+cont_composition=cont_suite.COMPOSITION_RECEIPTS;cont_refusal=cont_suite.REFUSAL_RECEIPTS;cont_queue=cont_suite.QUEUE_RECEIPTS
+assert sorted((r['case'],r['eligible']) for r in cont_composition)==[('both',True),('clean-pass',False),('correlation',True),('correlation-errors',False),('kernel',True),('kernel-raw-fail',False),('kernel-replays-60',False),('kernel-unknown-node',False)]
+assert all(r['verdict']=='PASS' for r in cont_composition+cont_refusal+cont_queue)
+assert [(r['case'],r['eligible'],r['body_bytes']>512*1024**2) for r in cont_refusal]==[('observer-end-over-spool-ceiling',True,True)]
+assert sorted(r['case'] for r in cont_queue)==['capacity-only-continues','error-marker-withheld','mixed-withheld']
+assert [r['w2_gate_passed'] for r in cont_queue if r['case']=='capacity-only-continues']==[[0,1]] and not any(r['w1_run'] for r in cont_queue if r['case']!='capacity-only-continues')
+pc_continuation=dict(composition=cont_composition,refusal=cont_refusal,queue=cont_queue)
+Path('/out/native35-p-c-continuation-check.json').write_text(json.dumps(pc_continuation,sort_keys=True,indent=2)+'\n')
+record=dict(native35_p_c_continuation='PASS',native35_p_c_continuation_receipts=pc_continuation,native35_p_c_row4='PASS',native35_p_c_row4_receipts=pc_row4,native35_localize_off='PASS',native35_p_c_inert=inert_receipt,native35_p_c_cleanup_receipts=cleanup,native35_row4_l2='PASS',native35_p_b_row4_receipts=row4,native35_l2_cli_receipts=l2_cli,native35_l2_timing_receipts=l2_timing,
     native35_arm=role,native35_performance='PASS',native35_performance_receipts=perf_receipts,native35_builder='PASS',native35_builder_view=builder_view,native35_cli_receipts=native35_cli,native35_o_arm_readback=native35_readback,native35_window_active_and_cleanup_s=active_and_cleanup,probe_environment={k:os.environ[k] for k in ('FLASH_NATIVE34_DIAG','FLASH_NATIVE34_ARM','FLASH_NATIVE34_READBACK','FLASH_NATIVE35_ARM')},native34_readback='PASS',readback_check=readback_check,native34_protocol='PASS',protocol_receipts=protocol_receipts,draft_window_slots='PASS',draft_window_receipts=slot_receipts,arm=role,final_input_proof=True,native34=native34_receipt,owner_prelaunch=owner_prelaunch,native31=native31_receipt,receipt_policy='PASS',receipt_budget_bytes=policy.BYTES_PER_RANK,receipt_tail_s=policy.TAIL_S,row4_cli_validation='PASS',cli_receipts=cli_receipts,identity_receipts=identity_receipts,verdict='PASS' if result.wasSuccessful() and not result.skipped and result.testsRun==EXPECTED_TESTS else 'FAIL',tests_run=result.testsRun,skips=len(result.skipped),plugin_loader='PASS',identity_capture_check='PASS' if result.wasSuccessful() else 'FAIL',identity_timeout_negative_rejected=result.wasSuccessful(),mounted_modules=modules,cuda_initialized=False,gpu_execution=False,
     fixture='CPU driver-registration stub, synthetic launch/sync/control objects; no GPU model forward, stream or memory query')
 Path('/out/probe.json').write_text(json.dumps(record,sort_keys=True,indent=2)+'\n')

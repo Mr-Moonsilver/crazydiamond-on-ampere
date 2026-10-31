@@ -12,6 +12,11 @@ the shared driver's PLACEMENT_WINDOW_TOKENS is 20 (2 cohorts x 20 = the declared
 40 replays), observed replays are checked against [40, 56], the observer_end
 reply is read through a bounded 512 MiB spool with bytes/sha256 always kept,
 and ring/list overflows are explicit row4 missing reasons (e3_observer_census).
+Lead decision 31 Oct 2026 (gate design, P-c only): a declared row4 capacity
+continuation (e3_native35_p_c_continuation) lets W1/W2 run on a row4
+INCONCLUSIVE whose every missing reason is observer capacity, with a complete
+client window, no failures, no crash/error marker, unchanged NRestarts and a
+typed full cleanup; row4 stays INCONCLUSIVE and gates.json records it.
 
 Nothing in the engine changes: the overlay (SHA256SUMS 32673c37...), both review
 JSONs, every compiled library and every parent plugin stay byte-identical to O
@@ -53,7 +58,9 @@ ADDED_HARNESS={'e3_native35_performance.py','native35_performance_grade.py','nat
                'e3_native35_l2_placement.py','test_native35_l2.py','native35_l2_fixture_leaves.json',
                'runs/q18a_native35_l2.draft.sh','runs/q18a_native35_l2_settings.sh','runs/q18a_native35_l2_declare.sh',
                # P-c row4 (option A + spool): the stop-at-window runner, the observer census, their suite and leaves
-               'e3_native35_p_c_placement.py','e3_observer_census.py','test_native35_p_c_window.py','native35_p_c_fixture_leaves.json'}
+               'e3_native35_p_c_placement.py','e3_observer_census.py','test_native35_p_c_window.py','native35_p_c_fixture_leaves.json',
+               # P-c row4 capacity continuation (lead decision 31 Oct 2026): the classifier and its suite
+               'e3_native35_p_c_continuation.py','test_native35_p_c_continuation.py'}
 # The shared driver (window tokens 20, replay bound, observer_end spool, census in the row4 evidence) and the
 # three suites whose fixtures pinned the 40-token window or the exact row4 missing list.
 CHANGED_HARNESS={'selftest.py','e3_native_qualification_driver.py','test_e3_native_qualification_driver.py','test_native30_e.py'}
@@ -77,7 +84,7 @@ def expected_tests():
 
 
 def p_gate():
-    return O_GATE.replace('==125','==%d'%expected_tests()).replace("result.get('native35_arm')=='O'","result.get('native35_arm')=='P-C' and result.get('native35_performance')=='PASS' and result.get('native35_row4_l2')=='PASS' and result.get('native35_localize_off')=='PASS' and result.get('native35_p_c_row4')=='PASS'")
+    return O_GATE.replace('==125','==%d'%expected_tests()).replace("result.get('native35_arm')=='O'","result.get('native35_arm')=='P-C' and result.get('native35_performance')=='PASS' and result.get('native35_row4_l2')=='PASS' and result.get('native35_localize_off')=='PASS' and result.get('native35_p_c_row4')=='PASS' and result.get('native35_p_c_continuation')=='PASS'")
 
 
 def regression_from(log):
@@ -126,6 +133,15 @@ def details(regression,focused):
               'budgets and grader; the qualification phase is the L2 queue phase with only the runner name swapped'),
         row4_window=dict(window_tokens=20,replays_declared=40,replays_low=40,replays_high=56,
                          derivation='lead decision 31 Oct 2026, option A: the observer is declared for 40 replays (PLACEMENT_REPLAYS, the ~60k-node window); 8 streams decode as 2 parity cohorts, so 2 x 20 tokens restores it; P-b let ~125 replays in'),
+        row4_capacity_continuation=dict(module='e3_native35_p_c_continuation.py',scope='P-c only; lead decision 31 Oct 2026 (gate design)',
+            rule='W1/W2 run when row4 is PASS, or INCONCLUSIVE with: a complete client window (token_bound, 8/8 opened, every stream >= +20, no early finish or stream error); '
+                 'every missing reason an observer-capacity reason (a ring/list overflow on a rank plus the per-rank and run-level consequences the unchanged graders produce for it, or the observer_end reply over the 512 MiB spool ceiling with its transport receipt); '
+                 'row4 failures empty; no engine crash, no current-run engine error marker, unchanged NRestarts, a healthy engine, and the row4 cleanup restored route full with typed acks; rule4 and row1 PASS as now',
+            record='row4 stays INCONCLUSIVE in queue-grade and its record; gates.json records row4_capacity_continuation true, the receipt sha256 and the matched reasons; the W2 gate re-derives the receipt from the retained qual-row4.json',
+            withholds='any other row4 outcome withholds W1/W2 exactly as before: the replay bound, unavailable census/report, unattributed correlation overflow, report errors/open scopes/boundary records, any non-capacity native reason, any failure, a crash or error marker',
+            rationale="row4's correctness proof for native35 is R and O (2/2 PASS with the O3-form collector); in the speed arm row4 is the overlap health check, and observer capacity is not a correctness signal",
+            w2_observer='W2 (e3_native_performance via e3_native35_performance) opens no observer window: no observer_begin/end; its completeness is the native_measurement census; native35_performance_grade reads gates outcomes only to report them',
+            w1_row4_reads='none: e3_native_w1 reads its workload, env and the live session; the queue gate is its only row4 dependence'),
         observer_end_spool=dict(ceiling_bytes=512*1024**2,drain_max_bytes=4*1024**3,default_cap_bytes=112*1024**2,
                                 derivation='client peak ~8x body (parse 3.2x, deep copies 2.1x, dump 2.2x) -> 4 GiB inside the 5 GiB observer transient margin (native30_gate TRANSIENT_MARGIN); caveat: workers and API server hold completed_reply and its encoded body at the same time, outside that margin'),
         phase_sequence=['startup','native35-ledger','row1','rule4_controls','rule4_candidate','row4-placement','native30-receipt-tail','w1_controls (six fixed repeats)',

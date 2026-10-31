@@ -30,7 +30,7 @@ def precheck_summary(log):
 def record(build,freeze,freeze_check,selfrun,compile_proof,precheck_conf,precheck_log,strict_log,focused_log,note,out):
     b=json.loads(Path(build).read_text());s=json.loads(Path(selfrun).read_text());c=json.loads(Path(compile_proof).read_text());f=json.loads(Path(freeze_check).read_text())
     assert b['arm']=='P-C' and s['verdict']=='PASS' and s['rc']==0 and s['bundle_manifest']==b['manifest'] and s['frozen_runner_sha256']==b['runner_sha256']
-    assert s['tests_run']==b['expected_selfrun_tests'] and s['skips']==0 and s['native35_arm']=='P-C' and s['native35_performance']=='PASS' and s['native35_row4_l2']=='PASS' and s['native35_localize_off']=='PASS' and s['native35_p_c_row4']=='PASS' and s['gpu_device_requests']==0
+    assert s['tests_run']==b['expected_selfrun_tests'] and s['skips']==0 and s['native35_arm']=='P-C' and s['native35_performance']=='PASS' and s['native35_row4_l2']=='PASS' and s['native35_localize_off']=='PASS' and s['native35_p_c_row4']=='PASS' and s['native35_p_c_continuation']=='PASS' and s['gpu_device_requests']==0
     assert s['overlay_manifest']==b['overlay_manifest'] and s['owner_prelaunch']['verdict']=='PASS' and s['image']==b['image']
     assert c['verdict']=='PASS' and c['manifest']==b['manifest'] and c['runner_sha256']==b['runner_sha256']
     assert f['verdict']=='PASS' and f['manifest']==b['manifest'] and f['freeze_proof_sha256']==sha(freeze)
@@ -42,6 +42,8 @@ def record(build,freeze,freeze_check,selfrun,compile_proof,precheck_conf,prechec
     row4=Path(selfrun).with_name('native35-p-b-row4-check.json')  # the inherited L2/P-b row4 receipts
     pc_row4=Path(selfrun).with_name('native35-p-c-row4-check.json')  # P-c: window stop, observer_end spool, abort, exact argv
     pc_rows=s['native35_p_c_row4_receipts']
+    pc_continuation=Path(selfrun).with_name('native35-p-c-continuation-check.json')  # P-c: the declared row4 capacity continuation, both ways
+    cont_rows=s['native35_p_c_continuation_receipts']
     inert=Path(selfrun).with_name('native35-p-c-inert-check.json');cleanup=Path(selfrun).with_name('native35-p-c-cleanup-check.json')
     inert_row=json.loads(inert.read_text());assert inert_row['verdict']=='PASS' and inert_row['localize_off']['wrapped']==[] and inert_row['positive_control']['wrapped']
     row=dict(name=b['name'],arm='P-C',source=b['source'],predecessor=details['predecessor'],row4=details['row4'],
@@ -53,6 +55,9 @@ def record(build,freeze,freeze_check,selfrun,compile_proof,precheck_conf,prechec
         row4_window=details['row4_window'],observer_end_spool=details['observer_end_spool'],
         p_c_row4_check=str(pc_row4),p_c_row4_check_sha256=sha(pc_row4),
         p_c_row4_cases={k:sorted(r['case'] for r in pc_rows[k]) for k in ('timing','spool','abort')},
+        row4_capacity_continuation=details['row4_capacity_continuation'],
+        p_c_continuation_check=str(pc_continuation),p_c_continuation_check_sha256=sha(pc_continuation),
+        p_c_continuation_cases={k:sorted('%s:%s'%(r['case'],'continue' if r.get('eligible',r.get('w1_run')) else 'withhold') for r in cont_rows[k]) for k in ('composition','refusal','queue')},
         row4_check=str(row4),row4_check_sha256=sha(row4),row4_cases=[r['case'] for r in s['native35_p_b_row4_receipts']]+sorted(r['case'] for r in s['native35_l2_timing_receipts']),bundle=b['bundle'],manifest=b['manifest'],overlay_manifest=b['overlay_manifest'],overlay_unchanged_from_o=True,
         coverage=b['checksummed_files'],runner=b['runner'],runner_sha256=b['runner_sha256'],runner_size=b['runner_size'],review_sha256=b['review_sha256'],image=b['image'],
         parent=dict(name='q18a-native35-o',manifest=b['parent_manifest'],runner_sha256=b['parent_runner_sha256']),
@@ -68,7 +73,8 @@ def record(build,freeze,freeze_check,selfrun,compile_proof,precheck_conf,prechec
                     source=details['window_source'],active_derivation=details['active_derivation'],cleanup_derivation=details['cleanup_derivation'],
                     latest_arm_utc='2026-11-02T01:45:00Z'),
         expected_runtime_s=details['expected_runtime_s'],
-        w2_prefill_evidence='As of the P-c build (P-b running, no result yet): '+W2_EVIDENCE,
+        w2_prefill_evidence=('As of the P-c build (P-b run 1, 31 Oct 15:11-15:40Z: row4 INCONCLUSIVE collect:response-too-large, W1/W2 NOT_RUN; '
+            'its row4 native prefill of 4167 prompt tokens took 84.856 s to its first token with a 48.6 s terminal return stall): '+W2_EVIDENCE),
         owner_commands=['sudo python3 %s --staging --auth-env-file PRIVATE_AUTH_FILE --selfrun-record EXACT_RESULT_JSON --snapshot-max-bytes 536870912 --sync none'%Path(b['runner']).name,
                         'owner stops production (vllm-flash inactive/failed, four idle GPUs), then: sudo python3 %s --arm'%Path(b['runner']).name],
         note=str(note),note_sha256=sha(note),strict=strict,focused=focused,verdict='PASS',classification=None,gpu_execution=False,box_action=False,
