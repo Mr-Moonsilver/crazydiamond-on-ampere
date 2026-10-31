@@ -51,6 +51,14 @@ class NativeOverlapSessionError(RuntimeError):
     pass
 
 
+REFUSAL_POLICY = ('conservative: any native-admission refusal counted between begin and end '
+                  'marks the window incomplete (engine-global counters, newest receipt)')
+# The driver's refusal of an evidence window that journaled no native work
+# (engine_driver.overlap_evidence).  The only evidence failure prefill_end may
+# type as an admission refusal (native39, Codex P2).
+EMPTY_WINDOW_ERROR = 'overlap-journal-empty-window'
+
+
 class NativeOverlapSession:
     def __init__(self, engine, *, control=None, clock=time.monotonic_ns,
                  timeout_s=120.0):
@@ -411,8 +419,12 @@ class NativeOverlapSession:
         except Exception as error:
             # native37: a request native admission refused leaves no journaled
             # native work, so the evidence read refuses the empty window.  Type
-            # that refusal from the queried admission record; any other evidence
-            # failure is raised unchanged.
+            # that refusal from the queried admission record.  native39: only
+            # that exact refusal, and only for a refusal receipt observed inside
+            # this window on this engine; every other evidence failure (transport,
+            # identity, evidence defects) is raised unchanged.
+            if EMPTY_WINDOW_ERROR not in str(error):
+                raise
             refused = await self._refused_prefill_end(end_ns, error)
             if refused is None:
                 raise error
@@ -431,8 +443,12 @@ class NativeOverlapSession:
                                            raw.get('native_admission'))
         if refusal is not None:
             # Typed: native admission refused work inside this window (the
-            # request waited unallocated on the armed split route).
+            # request waited unallocated on the armed split route).  The policy
+            # is conservative: the counters are engine-global, so ANY refusal
+            # counted in the window marks it incomplete, also when the measured
+            # request itself ran; it is never read as "the request never ran".
             result['refusal'] = refusal
+            result['refusal_policy'] = REFUSAL_POLICY
             result['complete'] = False
         self.measure_start_ns, self.begin_receipt, self.begin_proof = None, None, None
         return result
@@ -443,16 +459,29 @@ class NativeOverlapSession:
             status = await self.control.status()
         except Exception:  # noqa: BLE001 - the original evidence error is raised
             return None
+        if status.get('engine_epoch') != self.begin_receipt.get('engine_epoch'):
+            return None
         refusal = native_admission_refusal(self.begin_receipt.get('native_admission'),
                                            status.get('native_admission'))
         if refusal is None:
             return None
+        # Correlated to this window: the newest typed receipt was observed
+        # between begin and end on the same engine.  The untyped
+        # stock-deferred-without-admission case has no receipt and is kept as
+        # before (counts after begin, nothing admitted).
+        last = refusal.get('last_refusal')
+        if last is not None:
+            observed = last.get('observed_ns')
+            if (type(observed) is not int or last.get('engine_epoch') != status.get('engine_epoch')
+                    or not self.measure_start_ns <= observed <= end_ns):
+                return None
         result = {'engine_epoch': status.get('engine_epoch'), 'route': status.get('route'),
                   'begin': self.begin_receipt, 'clock': {'begin': self.begin_proof, 'end': None},
                   'measure_start_ns': self.measure_start_ns, 'measure_end_ns': end_ns,
                   'measurement_binding': None, 'measurement': None, 'raw_journal_evidence': None,
                   'evidence_error': {'type': type(error).__name__, 'message': str(error)[:512]},
-                  'end_status': status, 'refusal': refusal, 'complete': False}
+                  'end_status': status, 'refusal': refusal, 'refusal_policy': REFUSAL_POLICY,
+                  'complete': False}
         self.measure_start_ns, self.begin_receipt, self.begin_proof = None, None, None
         return result
 
