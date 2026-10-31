@@ -719,6 +719,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_native35_queue.py', 'Native35 R/O/L queue derivation from frozen O3/I4/native28 texts, real-clock slots and unchanged weekend bounds (CPU only)'),
                      ('test_native35_readback.py', 'Native35 arm-O evidence readback: current-stream copies before launch, no drain, no fence; I bracket unchanged (CPU only)'),
                      ('test_native35_grade.py', 'Native35 native-private writer catalogue, startup ledger, lifetime consolidation and exact R/O queue argv (CPU only)'),
+                     ('test_native35_dispatch_lifetime.py', 'Native35 metadata-generation lease through the real LaneDispatcher and LaneChunkFactory: release, cancel/drain/reuse, premature reuse and quarantine fail-closed (CPU only)'),
                      ('test_native33.py', 'Native33 rank1 launch fences, PP exclusion and real pinned graph host capture/pointer conformance (CPU only)'),
                      ('test_native32.py', 'Native32 real Bridge receipt receiver conformance, frozen native31 negative and scope preservation (CPU only)'),
                      ('test_native31.py', 'Native31 TP canonical selection, real sparse wave boundary and certified prompt client error (CPU only)'),

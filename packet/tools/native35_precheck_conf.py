@@ -23,7 +23,7 @@ def generate(build,out):
     text,n=re.subn(r'EXPECTED_QUEUE_SHAS=\(\n.*?\n\)',lambda m:pins,text,flags=re.S);assert n==1
     text,n=re.subn(r'"native34_tools:tools:\*\.py"\)',r'"native34_tools:tools:*.py" "native35_tools:tools:*.py")',text);assert n==1
     text,n=re.subn(r'\|native34_tools\)\$',r'|native34_tools|native35_tools)$',text);assert n==1
-    text,n=re.subn(r'SEAM_TESTS=\(',r'SEAM_TESTS=(test_native35_queue.py test_native35_readback.py test_native35_grade.py native35_tools/native35_builder_view_cpu_check.py ',text);assert n==1
+    text,n=re.subn(r'SEAM_TESTS=\(',r'SEAM_TESTS=(test_native35_queue.py test_native35_readback.py test_native35_grade.py test_native35_dispatch_lifetime.py native35_tools/native35_builder_view_cpu_check.py ',text);assert n==1
     text,n=re.subn(r'FIXTURE_FILES=\(\n',r'FIXTURE_FILES=(\n  test_native35_grade.py # synthetic CPU auth fixture only\n',text);assert n==1
     # The VM comparison overlay predates the fix; its four engine files differ by design.
     text,n=re.subn(r'^VM_OVERLAY_EXCLUSIONS=\((.*)\)$',lambda m:'VM_OVERLAY_EXCLUSIONS=('+m.group(1)+' e3/lane_chunk.py e3/lane_dispatch.py e3/native_startup.py e3/s5_startup.py)',text,flags=re.M);assert n==1

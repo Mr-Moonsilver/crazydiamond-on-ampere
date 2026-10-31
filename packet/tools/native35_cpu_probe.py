@@ -73,7 +73,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native33.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native34_*.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native35_*.py'))
-EXPECTED_TESTS=118  # 98 native30-34 cases plus 20 native35 cases; pinned into the frozen runner gate
+EXPECTED_TESTS=125  # 98 native30-34 cases plus 27 native35 cases; pinned into the frozen runner gate
 result=unittest.TextTestRunner(verbosity=2).run(suite)
 assert not torch.cuda.is_initialized()
 identity_receipts=sys.modules['test_native30_identity'].IDENTITY_RECEIPTS

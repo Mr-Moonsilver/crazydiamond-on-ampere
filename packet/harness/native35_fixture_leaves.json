@@ -36,6 +36,13 @@
       "equivalence": "The real pinned QSAMetadataBuilder.__init__ runs on CPU with real CircularBufferSpec/MLAAttentionSpec objects, producing its actual persistent buffers and field set; the shipped lane_chunk.private_attention_groups then clones that real builder. Disjoint storage, byte ledger, fail-closed classification and the pinned CPU metadata kernel writing native rows into the private view while an ordinary four-request build writes the stock view are checked on real CPU tensors.",
       "cannot_prove": "GPU allocation placement, the box VllmConfig values, device headroom, or any kernel reading the private buffers",
       "box_evidence": false
+    },
+    {
+      "name": "cpu-native35-dispatcher-lease",
+      "replaces": "The GPU worker beneath the real LaneDispatcher and LaneChunkFactory: test_e3_lane_dispatch fakes (FakeLane for LaneForward, FakeChannel for the tagged PP channel, FakeOperation for the QSA host operation, FakeDriver for QsaLayerDriver, SimpleNamespace server for the worker handoff server, fake torch.cuda.Event/Stream) and test_e3_lane_chunk fakes (fake runner with input batch/request/block tables/model state, list-backed T tensors, fake pinned Ports incl. build_attn_metadata and the Mamba align context)",
+      "equivalence": "LaneDispatcher, LaneChunkFactory, LaneChunk, ChunkAdmission, private_attention_groups and the complete_chunk lease are the shipped patches/s5_engine code; the fakes only answer the same calls the GPU owners answer (event query, channel post/send, operation drain) and never decide the lease. The seven cases exercise prepare/prefix/layer/suffix/pp_send/state_finalize/drain/release, cancel->drain->release, a refused second open/prepare/admit while the lease is held, a partial-enqueue quarantine and a refused foreign admission on both PP stages.",
+      "cannot_prove": "Device completion itself (events are fakes), the real QsaLayerDriver segment bodies, and the bridge RPC layer above the dispatcher; the box lifetime arm (L) grades cancel/drain/reuse end to end",
+      "box_evidence": false
     }
   ]
 }
