@@ -15,7 +15,7 @@ sys.path.insert(0,str(ROOT/'tools'))
 from build_native30_held import sha,verify,replace,dump
 import build_native35 as b35
 
-METADATA={'S5-OVERLAP-GENERATION.json','e3/native-implementation-closure.json','e3/native-overlap-readiness.json'}
+METADATA={'S5-OVERLAP-GENERATION.json','e3/native-implementation-closure.json','e3/native-overlap-readiness.json','e3/decode-probe-evidence.json'}
 
 
 def source_delta(parent_source,source):

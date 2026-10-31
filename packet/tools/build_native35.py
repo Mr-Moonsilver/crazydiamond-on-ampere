@@ -154,7 +154,12 @@ def build(out,strict_log,focused_log,arm):
     assert set(engine_changed)==EXPECTED_ENGINE_CHANGED|EXPECTED_PLUGIN_CHANGED,engine_changed
     assert not any(n.endswith('.so') for n in changed)
     metadata_changed=sorted(set(changed)-set(engine_changed))
-    assert set(metadata_changed)<={'S5-OVERLAP-GENERATION.json','e3/native-implementation-closure.json','e3/native-overlap-readiness.json'},metadata_changed
+    assert set(metadata_changed)<={'S5-OVERLAP-GENERATION.json','e3/native-implementation-closure.json','e3/native-overlap-readiness.json','e3/decode-probe-evidence.json'},metadata_changed
+    # The decode-probe evidence lists generated module shas; only the four fix modules may move.
+    old_probe=json.loads((PARENT/'native30_overlay/e3/decode-probe-evidence.json').read_text());new_probe=json.loads((overlay/'e3/decode-probe-evidence.json').read_text())
+    assert {k for k in set(old_probe)|set(new_probe) if old_probe.get(k)!=new_probe.get(k)}<={'generated_source_shas'},'decode-probe evidence changed outside generated_source_shas'
+    probe_moved={k for k in set(old_probe['generated_source_shas'])|set(new_probe['generated_source_shas']) if old_probe['generated_source_shas'].get(k)!=new_probe['generated_source_shas'].get(k)}
+    assert probe_moved=={Path(n).stem for n in EXPECTED_ENGINE_CHANGED},probe_moved
     fix_files=subprocess.check_output(['git','diff','--name-only',parent_source(),'HEAD','--','patches/s5_engine'],cwd=ROOT,text=True).split()
     assert {'e3/'+Path(n).name for n in fix_files if n.endswith('.py') and Path(n).name!='native_candidate_review.json'}==EXPECTED_ENGINE_CHANGED,fix_files
     for name in ('e3/lane_chunk.py','e3/lane_dispatch.py','e3/native_startup.py','e3/s5_startup.py'):
