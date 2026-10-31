@@ -39,7 +39,13 @@ class LaneChunkError(E3ContractError):
     pass
 
 
-_SHARED_CONFIG_FIELDS = {'kv_cache_spec', 'vllm_config', 'device', 'backend'}
+MAX_NATIVE_BUILDER_BYTES = 256 * 1024 * 1024
+_SHARED_CONFIG_FIELDS = {
+    'kv_cache_spec', 'vllm_config', 'device', 'backend',
+    'model_config', 'parallel_config', 'cache_config', 'compilation_config',
+    'attention_config', 'speculative_config',
+}
+_NUMPY_ALIAS_FIELDS = ('mm_prefix_query_ranges_cpu', 'mm_prefix_query_ranges_np')
 _MAMBA_CONTEXT_BUFFER_FIELDS = (
     'state_base_addrs', 'state_block_strides', 'state_elem_sizes', 'state_inner_sizes',
     'state_conv_widths', 'state_group_indices', 'state_dim_row_count',
@@ -54,7 +60,16 @@ def _torch_immutable(value):
             and type(value).__name__ in ('device', 'dtype', 'layout', 'memory_format', 'qscheme'))
 
 
-def _clone_builder_value(value, torch_module, copied, field):
+def _is_vllm_config(value):
+    return type(value).__module__ == 'vllm.config' or type(value).__module__.startswith('vllm.config.')
+
+
+def _is_numpy_array(value):
+    return (type(value).__module__.split('.', 1)[0] == 'numpy'
+            and hasattr(value, '__array_interface__'))
+
+
+def _clone_builder_value(value, torch_module, copied, field, max_bytes):
     """Copy builder-owned mutable storage while retaining immutable config.
 
     Attention metadata builders are long-lived and may own GPU scratch. The
@@ -62,20 +77,30 @@ def _clone_builder_value(value, torch_module, copied, field):
     builder view must own its tensor scratch and Python containers. Config
     objects (for example VllmConfig/KVCacheSpec) remain shared read-only.
     """
+    if _is_vllm_config(value) or field.rsplit('.', 1)[-1] in _SHARED_CONFIG_FIELDS:
+        return value
+    if _is_numpy_array(value):
+        raise LaneChunkError('unclassified native metadata builder NumPy array: ' + field)
     if isinstance(value, torch_module.Tensor):
+        nbytes = int(value.numel()) * int(value.element_size())
+        copied_bytes = sum(size for size, _ in copied)
+        if copied_bytes + nbytes > max_bytes:
+            raise LaneChunkError(
+                f'native metadata builder storage exceeds {max_bytes} byte per-rank cap '
+                f'(would require {copied_bytes + nbytes} bytes)')
         result = value.clone()
-        if result.data_ptr() == value.data_ptr():
+        if int(value.numel()) and result.data_ptr() == value.data_ptr():
             raise LaneChunkError('native metadata tensor clone aliases source')
         copied.append((int(value.numel()) * int(value.element_size()), value))
         return result
     if type(value) is list:
-        return [_clone_builder_value(item, torch_module, copied, field+'[]') for item in value]
+        return [_clone_builder_value(item, torch_module, copied, field+'[]', max_bytes) for item in value]
     if type(value) is tuple:
-        return tuple(_clone_builder_value(item, torch_module, copied, field+'()') for item in value)
+        return tuple(_clone_builder_value(item, torch_module, copied, field+'()', max_bytes) for item in value)
     if type(value) is dict:
         if any(type(key) not in (str, bytes, int, float, bool, tuple) for key in value):
             raise LaneChunkError('unclassified native metadata builder key: ' + field)
-        return {key: _clone_builder_value(item, torch_module, copied, field+'.value')
+        return {key: _clone_builder_value(item, torch_module, copied, field+'.value', max_bytes)
                 for key, item in value.items()}
     if type(value) is set:
         if any(type(item) not in (str, bytes, int, float, bool, tuple) for item in value):
@@ -89,19 +114,24 @@ def _clone_builder_value(value, torch_module, copied, field):
 
 
 def _builder_field_class(name, value, torch_module):
+    if _is_vllm_config(value) or name in _SHARED_CONFIG_FIELDS:
+        return 'shared-read-only'
+    if name in _NUMPY_ALIAS_FIELDS and _is_numpy_array(value):
+        return 'shared-read-only-numpy-alias'
+    if _is_numpy_array(value):
+        raise LaneChunkError('unclassified native metadata builder NumPy array: ' + name)
     if isinstance(value, torch_module.Tensor):
         return 'private-tensor'
     if type(value) in (list, tuple, dict, set):
         return 'private-container'
     if (value is None or type(value) in (str, bytes, int, float, bool)
             or isinstance(value, enum.Enum) or isinstance(value, type)
-            or callable(value) or _torch_immutable(value)
-            or name in _SHARED_CONFIG_FIELDS):
+            or callable(value) or _torch_immutable(value)):
         return 'shared-read-only'
     raise LaneChunkError('unclassified native metadata builder field: ' + name)
 
 
-def private_attention_groups(attn_groups, *, torch_module):
+def private_attention_groups(attn_groups, *, torch_module, max_bytes=MAX_NATIVE_BUILDER_BYTES):
     """Create a native-only builder view; stock groups/builders are untouched.
 
     Every builder tensor and container is copied once per LaneChunkFactory,
@@ -121,11 +151,24 @@ def private_attention_groups(attn_groups, *, torch_module):
             for builder in group.metadata_builders:
                 private_builder = copy.copy(builder)
                 fields = []
-                for name, value in vars(builder).items():
+                builder_fields = vars(builder)
+                present_numpy_aliases = [name for name in _NUMPY_ALIAS_FIELDS if name in builder_fields]
+                alias_values = [builder_fields[name] for name in present_numpy_aliases]
+                if any(value is not None for value in alias_values):
+                    if len(present_numpy_aliases) != 2 or not all(
+                            _is_numpy_array(builder_fields[name]) for name in _NUMPY_ALIAS_FIELDS):
+                        raise LaneChunkError('incomplete native metadata builder NumPy alias pair: '
+                                             +type(builder).__name__+' '
+                                             +','.join(present_numpy_aliases))
+                    import numpy as np
+                    if not np.shares_memory(builder_fields[_NUMPY_ALIAS_FIELDS[0]],
+                                            builder_fields[_NUMPY_ALIAS_FIELDS[1]]):
+                        raise LaneChunkError('native metadata builder NumPy fields do not alias')
+                for name, value in builder_fields.items():
                     field_class = _builder_field_class(name, value, torch_module)
                     bytes_before = sum(size for size, _ in copied)
-                    cloned = (value if name in _SHARED_CONFIG_FIELDS else
-                              _clone_builder_value(value, torch_module, copied, name))
+                    cloned = (value if field_class.startswith('shared-read-only') else
+                              _clone_builder_value(value, torch_module, copied, name, max_bytes))
                     setattr(private_builder, name, cloned)
                     copied_bytes = sum(size for size, _ in copied) - bytes_before
                     fields.append(dict(name=name, classification=field_class,
