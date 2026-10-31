@@ -51,10 +51,21 @@ P_C_SHA = {'q18a_native35_p_c.draft.sh': '1bc7dd61a36462d0bd040299a4b24e29e5630a
 W1_TRACE_SHA = '7960fd3784f023e74896580f117751d3d4f4bb03d82848d79ac14deb9823c06c'
 EXTRACT = json.loads((HERE / 'fixtures/native39_box_extract.json').read_text())
 PROD_EXTRA = '--prefix-match-unit 176 --enable-prompt-tokens-details'
+PROD_LAUNCHER_SHA = '98d6d2a21927b8943f1ae9b0b43616757e80adac0c628e65f482e4332e3cf126'  # deploy/run-flash-prod.sh
 L_ENDING = ('stop_pressure || true\nstop_sampler || true\ncapture_logs || true\ncapture_end "$Q18A_IDENTITY_TIMEOUT_S" || true\n'
             'stop_engine || true\nrestore_launcher || true\nrestore_defaults || true\narchive_owned_next || true\nwrite_cleanup\nDONE=1\n'
             '[[ $FAILS == 0 ]] || exit 1\n[[ $INCS == 0 ]] || exit 2\nexit 0\n')
 SLOT_RECEIPTS = []
+QUEUE_RECEIPTS = []  # one row per connected case, appended only after its assertions (the bundle probe asserts the set)
+
+
+def declare_sha():
+    import identity_declare
+    return identity_declare.S5_LAUNCHER_SHA
+
+
+def record_case(case, **fields):
+    QUEUE_RECEIPTS.append(dict(case=case, verdict='PASS', **fields))
 OLD_ID, NEW_ID, OTHER_ID = 'a' * 64, 'b' * 64, 'c' * 64
 PROXY = ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY')
 
@@ -308,6 +319,7 @@ class RestartBind(unittest.TestCase):
         self.assertLess(receipt['bind_t'], receipt['first_200']['sent'])
         self.assertGreaterEqual(receipt['bind_t'], receipt['restart_begin'])
         self.assertGreater(len(codes), 1)
+        record_case('bind-before-first-200', bind=receipt['verdict'], health_samples=len(codes), real_host_observer=True)
 
     def test_bind_line_after_the_first_200_returned_fails(self):
         done, pv, receipt, health, summary, codes = self.run_restart('late')
@@ -315,18 +327,21 @@ class RestartBind(unittest.TestCase):
         self.assertEqual(pv['bind-receipt'], 'FAIL', receipt)
         self.assertGreater(receipt['bind_t'], receipt['first_200']['returned'])
         self.assertIn('STEP bind-receipt FAIL', done.stdout)
+        record_case('bind-after-first-200', bind=receipt['verdict'], health_samples=len(codes), real_host_observer=True)
 
     def test_no_bind_line_is_inconclusive(self):
         done, pv, receipt, health, summary, codes = self.run_restart('none')
         self.common(done, health, summary, codes)
         self.assertEqual(pv['bind-receipt'], 'INCONCLUSIVE', receipt)
         self.assertEqual(receipt['bind_lines'], [])
+        record_case('bind-absent', bind=receipt['verdict'], health_samples=len(codes), real_host_observer=True)
 
     def test_a_log_of_another_container_is_inconclusive(self):
         done, pv, receipt, health, summary, codes = self.run_restart('other')
         self.common(done, health, summary, codes)
         self.assertEqual(pv['bind-receipt'], 'INCONCLUSIVE', receipt)
         self.assertEqual((receipt['current_container'], receipt['observed_containers']), (OTHER_ID[:12], [NEW_ID[:12]]))
+        record_case('bind-other-container', bind=receipt['verdict'], health_samples=len(codes), real_host_observer=True)
 
     def test_health_deadline_stops_the_loop_and_the_queue(self):
         done, pv, receipt, health, summary, codes = self.run_restart('never-ready', deadline_s=2)
@@ -335,6 +350,7 @@ class RestartBind(unittest.TestCase):
         self.assertNotIn('bind-receipt', pv)
         self.assertTrue(codes and set(codes) == {503})
         self.assertEqual(len(health) - 2, len(codes))
+        record_case('health-deadline', bind=None, health_samples=len(codes), real_host_observer=True)
 
 
 FAKE_PHASE = r'''
@@ -427,6 +443,8 @@ class Tail(unittest.TestCase):
         self.assertEqual([r['round'] for r in summary['rounds']], [0, 1])
         self.assertFalse(summary['target_is_gate'])
         self.assertNotIn('w2-idle-precondition', done.stdout)
+        record_case('tail-plain-w1-idle-w2', calls=calls, plain_w1=plain['verdict'], idle='PASS', rounds=[0, 1],
+                    plain_requests=len(leaf.completions), real_client=True)
 
     def test_engine_not_idle_after_the_plain_w1_withholds_w2(self):
         done, pv, calls, arts, leaf = self.run_tail(QUALIFIED, stuck=True)
@@ -436,6 +454,7 @@ class Tail(unittest.TestCase):
         self.assertIn('STEP overlap-gates PASS', done.stdout)
         self.assertEqual([r['verdict'] for r in arts['native35-performance-grade.json']['rounds']], ['NOT_RUN', 'NOT_RUN'])
         self.assertEqual(arts['trunk-summary.json']['w1_plain_idle']['verdict'], 'INCONCLUSIVE')
+        record_case('tail-not-idle-withholds-w2', calls=calls, idle='INCONCLUSIVE', rounds=[])
 
     def test_unqualified_row4_withholds_both_w1_clients_and_w2(self):
         done, pv, calls, arts, leaf = self.run_tail(dict(QUALIFIED, row4='FAIL'))
@@ -445,6 +464,7 @@ class Tail(unittest.TestCase):
         self.assertNotIn('w1-plain-idle', pv)
         self.assertEqual(arts['gates.json']['outcomes']['row4'], 'FAIL')
         self.assertIn('trunk-summary.json', arts)
+        record_case('tail-unqualified-withholds-all', calls=calls, rounds=[])
 
 
 def model_count(prompt):
@@ -488,11 +508,13 @@ class Guard(unittest.TestCase):
         self.assertEqual([t['tokens'] for t in leaf.tokenized], [manifest['fresh']['tokens'], manifest['append']['tokens']])
         self.assertEqual(leaf.auth, {'Bearer fixture-bearer-value'})
         self.assertNotIn('fixture-bearer-value', text)
+        record_case('guard-declared-counts', guard=receipt['verdict'], tokens={k: receipt['observed'][k]['tokens'] for k in ('fresh', 'append')})
 
     def test_a_count_off_by_one_fails(self):
         pv, receipt, _, _ = self.run_guard(tokens=lambda prompt: model_count(prompt) + 1)
         self.assertEqual(pv['w2-length'], 'FAIL')
         self.assertEqual(receipt['failures'], ['fresh-count-differs-from-declaration', 'append-count-differs-from-declaration'])
+        record_case('guard-count-differs', guard=receipt['verdict'])
 
     def test_a_count_in_the_refused_band_fails(self):
         manifest = json.loads((HERE / 'workloads/q18a-w2-overlap-native39.json').read_text())['length_declaration']
@@ -500,6 +522,7 @@ class Guard(unittest.TestCase):
         pv, receipt, _, _ = self.run_guard(tokens=lambda prompt: model_count(prompt) + shift)
         self.assertEqual(pv['w2-length'], 'FAIL')
         self.assertIn('fresh-has-no-native-plan', receipt['failures'])
+        record_case('guard-refused-band', guard=receipt['verdict'], shift=shift)
 
     def test_a_tampered_declaration_fails_before_any_request(self):
         data = json.loads((HERE / 'workloads/q18a-w2-overlap-native39.json').read_text())
@@ -507,10 +530,12 @@ class Guard(unittest.TestCase):
         pv, receipt, _, leaf = self.run_guard(workload=data)
         self.assertEqual((pv['w2-length'], receipt['failures']), ('FAIL', ['manifest-length-declaration-differs-from-derivation']))
         self.assertEqual(leaf.tokenized, [])
+        record_case('guard-tampered-declaration', guard=receipt['verdict'])
 
     def test_no_engine_is_inconclusive(self):
         pv, receipt, _, _ = self.run_guard(url='http://127.0.0.1:9')
         self.assertEqual((pv['w2-length'], receipt['rc']), ('INCONCLUSIVE', 2))
+        record_case('guard-no-engine', guard=receipt['verdict'])
 
 
 class Launcher(unittest.TestCase):
@@ -528,10 +553,15 @@ class Launcher(unittest.TestCase):
         self.addCleanup(shutil.rmtree, fixture.root, True)
         with fixture.defaults.open('a') as f:  # the found production EXTRA_ARGS (P-c capture)
             f.write('EXTRA_ARGS="%s"\n' % PROD_EXTRA)
+        # deploy/ in a git tree; a bundle carries the same bytes as run-flash-prod.sh.q9 and setcfg.reference.py.
+        prod = next(p for p in (ROOT / 'deploy/run-flash-prod.sh', HERE / 'run-flash-prod.sh.q9') if p.is_file())
+        self.assertEqual(dec.sha(prod), PROD_LAUNCHER_SHA)
+        fixture.a.setcfg = str(next(p for p in (ROOT / 'deploy/setcfg.py', HERE / 'setcfg.reference.py') if p.is_file()))
+        self.assertEqual(dec.sha(fixture.a.setcfg), dec.SETCFG_SHA)
         launch = fixture.root / 's5-launcher'
-        launch.write_text(s5g._s5_launcher(e2g.launcher((ROOT / 'deploy/run-flash-prod.sh').read_text())))
+        launch.write_text(s5g._s5_launcher(e2g.launcher(prod.read_text())))
         self.assertEqual(dec.sha(launch), dec.S5_LAUNCHER_SHA)
-        (fixture.task / 'prod/run-flash-prod.sh').write_bytes((ROOT / 'deploy/run-flash-prod.sh').read_bytes())  # the found launcher
+        (fixture.task / 'prod/run-flash-prod.sh').write_bytes(prod.read_bytes())  # the found launcher
         names = ['e3/__init__.py', 'e3/decode-probe-evidence.json', *['e3/%s.py' % n for n in s5g.E3_MODULES],
                  *['e3/' + n for n in s5g.NATIVE_FILES], 'e3/native/build_green_helper.sh',
                  *['e3_sources/' + n for n in ('executor.py', 'core.py', 'worker.py', 'cudagraph_utils.py', 'sampler.py',
@@ -584,6 +614,7 @@ class Launcher(unittest.TestCase):
         self.assertEqual((rc, receipt['identities'][0]['effective_host']), (1, '0.0.0.0'))
         with self.assertRaises(AssertionError):
             exec(compile(code, 'declare-host', 'exec'), {'d': json.loads(pc_path.read_text())})
+        record_case('launcher-loopback-host', trunk_hosts=hosts, p_c_effective_host='0.0.0.0', launcher_sha256=declare_sha())
 
 
 class BoxFormats(unittest.TestCase):
