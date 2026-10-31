@@ -1,0 +1,41 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "native35 L2 row4 window-order gates (test_native35_l2.py). Every leaf below replaces a real engine/box object only on the hub CPU; none is box evidence. The real e3_decode_correctness._wait_open, _wait_window and NativePlacementRunner._prefill_progress run unpatched in every timing case.",
+  "leaves": [
+    {
+      "name": "cpu-native35-l2-placement-streams",
+      "replaces": "correctness._start_streams and correctness._stop_streams: the eight real loopback /v1/completions SSE decode streams and the one native prefill stream (e3_decode_correctness stream readers) are replaced by test_e3_native_qualification_driver.FakeState objects; a declared Timeline thread advances them after the in-window resume (decode: one token per 5 ms tick to the 64-token budget, finish_reason length; prefill: first_advance_ns set at a declared tick or a declared delay after the decode cohort ends). Initial decode counts 1..8 stand for the tokens produced between the stock resume and pause_enter_split.",
+      "equivalence": "_wait_open, _wait_window and _prefill_progress read only the attributes the real stream reader writes under its lock (count(), first_advance_ns, finish_at_ns, finish_reason, error_at_ns, malformed, send_at_ns, prompt_tokens, prompt_token_ids_len, the progress Event); the fixture writes the same attributes in the same order the reader does (token count then finish). The prefill prompt length 4167 is the token count the box handback step carried for the frozen 4096-token plan.",
+      "cannot_prove": "Real SSE parsing, real engine scheduling or the real decode/prefill speeds; the box ordering (prefill first token 83 s after resume, decode finished within 8 s) is reproduced as an ordering, not as timing.",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native35-l2-window-recorder",
+      "replaces": "correctness._wait_window is wrapped by a recorder that calls the real function with the same arguments and returns its result unchanged",
+      "equivalence": "Pass-through: the recorder only appends the real window dict to a list so the test can read a successful window that the runner does not return verbatim.",
+      "cannot_prove": "Nothing beyond the real function's own behaviour",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native35-l2-placement-driver",
+      "replaces": "The real QualificationDriver control surface (_session over the authenticated native overlap control endpoint, _worker over the worker qualification RPC, _frontend, route_banks, command_keys) is test_e3_native_qualification_driver.PlacementDriver with typed TransitionAck rows for ranks 0-3; TimelineDriver only starts the Timeline thread when the second resume (the in-window resume) is accepted",
+      "equivalence": "Same fixture the parent NativePlacementRunner tests use; replies carry the field shapes the runner validates (route, typed acks, admission intent, measure_start_ns/measure_end_ns, observer packets). The parent and L2 runners issue the identical call sequence against it, asserted call for call.",
+      "cannot_prove": "Engine reply contents, typed-ack truth, observer receipts or any device behaviour",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native35-l2-queue-argv",
+      "replaces": "http.client.HTTPConnection.request (refused at the first network call), the VLLM_API_KEY private auth fixture, the retained rule4_controls teacher record in the real ImmutableStore and the $Q/private/row1-plan.json file that the box row1 phase freezes before row4",
+      "equivalence": "e3_native35_l2_placement.main parses the exact L2 queue row4 argv (real workload, real prefill plan, real teacher workload and baseline paths) through the real e3_q18a_qualification.main/run and QualificationDriver up to the prepare-full network call, which is refused at the socket boundary; the stack at that call holds ResumeWindowPlacementRunner.run. row4 parses the row1 plan as JSON and never passes it to the collector (only phase row1 receives request_plan). No success result is manufactured.",
+      "cannot_prove": "Engine reachability, admission, the real row1 plan or teacher artifact content, or any device behaviour",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native35-l2-draft-window-entry",
+      "replaces": "Only the fail_early shell function and the box HARNESS_DIR path in the PY_SLOT entry of the L2 draft",
+      "equivalence": "The extracted PY_SLOT block runs unchanged at the real wall clock with the real native35_gate.lifetime_window_ok; fail_early only returns 2 instead of writing box records.",
+      "cannot_prove": "The box clock or the owner's arm time",
+      "box_evidence": false
+    }
+  ]
+}
