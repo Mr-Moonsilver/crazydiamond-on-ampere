@@ -28,6 +28,9 @@ COMPILED = ('patches/s5_engine/scheduler_hooks.py', 'patches/s5_engine/engine_dr
             'harness/test_native35_performance.py', 'harness/selftest.py',
             'tools/native37_robust_selfrun.py', 'tools/native37_robust_freeze.py',
             'tools/build_native37_robust.py')
+# Pinned vLLM reference files the suites read from /source/reference/vllm-src.
+REFERENCE_READS = ('v1/core/sched/scheduler.py', 'v1/core/block_pool.py', 'v1/engine/core.py',
+                   'v1/worker/gpu_worker.py', 'models/qwen4_exp/nvidia/qsa.py')
 SUITES = ('test_native37_robust', 'test_native35_performance', 'test_e3_staged_chunk_plan',
           'test_e3_admission_native', 'test_e3_native_overlap', 'test_e3_native_measurement_clients')
 
@@ -72,13 +75,35 @@ def inner_script(label, suites):
 
 
 def source_mounts(tree, bundle):
-    """The sources at /source: a frozen bundle (as earlier self-runs mount it) or a git tree."""
+    """The sources at /source: a frozen bundle or a git tree.
+
+    A bundle does not ship the full pinned vLLM reference (no v1/core/sched/scheduler.py or
+    block_pool.py), so the suites read it from the tree's pinned reference, the same files the
+    hub strict regression reads; reference_pins() records each file read and checks every copy
+    the bundle does carry (e3_reference, native31-fixtures/reference) is byte-identical.
+    """
     if bundle is not None:
         return {bundle: '/source/harness', bundle/'e3_builder': '/source/patches/s5_engine',
                 bundle/'native35_tools': '/source/tools',
-                bundle/'native31-fixtures/reference': '/source/reference/vllm-src'}
+                (tree/'reference/vllm-src').resolve(): '/source/reference/vllm-src'}
     return {tree/'harness': '/source/harness', tree/'patches': '/source/patches',
             tree/'tools': '/source/tools', tree/'reference/vllm-src': '/source/reference/vllm-src'}
+
+
+def reference_pins(tree, bundle):
+    ref = (tree/'reference/vllm-src').resolve()
+    rows = {}
+    for name in REFERENCE_READS:
+        row = dict(sha256=sha(ref/name))
+        if bundle is not None:
+            for copy in ('e3_reference', 'native31-fixtures/reference'):
+                if (bundle/copy/name).is_file():
+                    assert sha(bundle/copy/name) == row['sha256'], 'bundle reference copy differs: %s/%s' % (copy, name)
+                    row[copy] = 'identical'
+                else:
+                    row[copy] = 'absent'
+        rows[name] = row
+    return dict(root=str(ref), files=rows)
 
 
 def run(tree, overlay, out, name, label, suites, bundle=None):
@@ -86,6 +111,7 @@ def run(tree, overlay, out, name, label, suites, bundle=None):
     bundle = None if bundle is None else Path(bundle).resolve()
     if bundle is not None:
         assert overlay == bundle/'native30_overlay', 'a bundle self-run mounts its own overlay'
+    pins = reference_pins(tree, bundle)
     out.mkdir()
     out.chmod(0o777)
     (out/'inner.sh').write_text(inner_script(label, suites))
@@ -128,7 +154,7 @@ def run(tree, overlay, out, name, label, suites, bundle=None):
                                   and compile_log.rstrip().endswith('rc=0'), files=len(COMPILED)),
                   suites=suites_view, probe_sha256=sha(out/'probe.json') if (out/'probe.json').exists() else None,
                   overlay=str(overlay), overlay_manifest=sha(overlay/'SHA256SUMS'),
-                  bundle=None if bundle is None else str(bundle),
+                  reference=pins, bundle=None if bundle is None else str(bundle),
                   bundle_manifest=None if bundle is None else sha(bundle/'SHA256SUMS'),
                   tree_head=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=tree, text=True).strip(),
                   tree_dirty=bool(subprocess.check_output(['git', 'status', '--porcelain', '--', 'harness', 'patches', 'tools'],
