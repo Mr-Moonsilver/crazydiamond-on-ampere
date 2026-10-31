@@ -8,7 +8,7 @@ declared native35 fix set; compiled libraries and every other parent plugin
 stay byte-identical. The runner may differ from the I4 runner only by names,
 pins, the self-run gate and (L only) the lifetime window import.
 """
-import argparse,ast,json,subprocess,sys
+import argparse,ast,hashlib,json,subprocess,sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tools'))
@@ -36,6 +36,8 @@ def bundle_paths(name):
         rel=name[len('patches/s5_engine/'):];paths={'e3_builder/'+rel}
         if rel.endswith('.py') and rel!='native_candidate_review.json':paths.add('e3/'+rel);paths.add('native30_overlay/e3/'+rel)
         return paths
+    if name.startswith('tools/owner-precheck/'):
+        return set()  # hub-side precheck confs/scripts are never shipped in a bundle
     if name.startswith('tools/'):
         return {d+'/'+name[len('tools/'):] for d in ('native30_tools','native32_tools','native33_tools','native34_tools','native35_tools')}
     raise AssertionError(name)
@@ -52,8 +54,14 @@ def check(build,out):
     for plugin in (old/'native30_overlay/e3/native30_plugins').rglob('*'):
         rel='e3/native30_plugins/'+plugin.relative_to(old/'native30_overlay/e3/native30_plugins').as_posix()
         if plugin.is_file() and rel not in b35.EXPECTED_PLUGIN_CHANGED:assert prev[rel]==ov[rel],rel
+    # The overlay form carries the generator's relative-import rewrite, so the
+    # overlay file is pinned to the generation record and the builder copy to
+    # the committed source blob; the generator ran from that builder copy.
+    probe=json.loads((new/'native30_overlay/e3/decode-probe-evidence.json').read_text())['generated_source_shas']
     for p in ('e3/lane_chunk.py','e3/lane_dispatch.py','e3/native_startup.py','e3/s5_startup.py'):
-        assert sha(new/'native30_overlay'/p)==sha(new/'e3_builder'/p[3:]),p
+        assert sha(new/'native30_overlay'/p)==probe[Path(p).stem],p
+        blob=subprocess.check_output(['git','show',b['source']+':patches/s5_engine/'+p[3:]],cwd=ROOT)
+        assert sha(new/'e3_builder'/p[3:])==hashlib.sha256(blob).hexdigest(),p
     for p in b35.EXPECTED_PLUGIN_CHANGED:
         assert sha(new/'native30_overlay'/p)==sha(new/Path(p).name)==sha(ROOT/'harness'/Path(p).name),p
     parent_source=json.loads((old/'native30-provenance.json').read_text())['source']
@@ -66,8 +74,12 @@ def check(build,out):
     changed={p for p in before if p in after and before[p]!=after[p]}
     assert changed<=allowed,changed-allowed
     added=set(after)-set(before)
-    expected_added={p for p in allowed_added if not p.startswith(('native30_tools/','native32_tools/','native33_tools/','native34_tools/'))}
+    # A tool added in git lands in the bundle only when the build ships it
+    # (the probe, self-run and CPU checks); hub-only tools stay on the hub.
+    expected_added={p for p in allowed_added if not p.startswith(('native30_tools/','native32_tools/','native33_tools/','native34_tools/'))
+                    and (not p.startswith('native35_tools/') or (new/p).is_file())}
     expected_added|={'native35_tools/'+p.name for p in (old/'native34_tools').glob('*.py')}
+    unshipped_tools=sorted(p for p in allowed_added if p.startswith('native35_tools/') and not (new/p).is_file())
     assert added==expected_added,added^expected_added
     assert not set(before)-set(after)
     for p in ('native34_gate.py','native30_gate.py','e3_native34_causal.py','native34_control.py','native34_indexer.py','native34_storage.py','native34_diag.py','native34_grade.py'):
@@ -81,7 +93,7 @@ def check(build,out):
     else:assert 'from native34_gate import window_ok' in actual
     drafts={'runs/q18a_native35_'+arm.lower()+s for s in ('.draft.sh','_declare.sh','_settings.sh')}
     assert drafts<=added
-    result=dict(verdict='PASS',classification=None,arm=arm,parent_manifest=b35.PARENT_MANIFEST,parent_source=parent_source,source=b['source'],manifest=b['manifest'],
+    result=dict(verdict='PASS',classification=None,arm=arm,parent_manifest=b35.PARENT_MANIFEST,parent_source=parent_source,source=b['source'],manifest=b['manifest'],unshipped_hub_tools=unshipped_tools,
         engine_changed=sorted(engine&b35.EXPECTED_ENGINE_CHANGED),plugins_changed=sorted(engine&b35.EXPECTED_PLUGIN_CHANGED),compiled_libraries_byte_identical=True,
         other_parent_plugins_byte_identical=True,gate_row4_and_native34_grade_byte_identical=True,
         new_device_behavior='engine: native-only metadata-builder view with private storage and a one-generation reuse lease; plugins: arm-O evidence readback without drain or fence',
