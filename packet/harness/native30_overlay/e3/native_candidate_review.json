@@ -1492,7 +1492,7 @@
     "verdict": "PASS"
   },
   "cpu_regression": {
-    "basis": "fresh native34 strict regression, real review fixture supplied",
+    "basis": "retained native34 B strict baseline; window-only repair separately qualified; fresh full regression recorded externally",
     "cases": 308,
     "exit_code": 0,
     "log_sha256": "60c7700ae0cc1e13b8a701a3bff617c92e8c85c570f19397596ae68e4bafd6a1",
@@ -1697,7 +1697,7 @@
     "native30_policy.py": "2317be9eb49d22a2dd60ecbe66937c8d3177deb67880978d84ccef4c10e93e49",
     "native30_snapshot_basis.json": "a338d4c47c30cf8e37af73521d818ae39932bcaedb9be947d9fb2019b9ec97cf",
     "native31_cpu_leaves.py": "815af729539ab477560a97f89cd224e93ad7120233e9c06d79d281bb272b1cfc",
-    "native31_fixture_leaves.json": "c4603b35eb008b78de5e2662221af6d0e9f9b51658c7b3025832425dedfd85ff",
+    "native31_fixture_leaves.json": "debfbed8ef3d84488f384a453798385af91e8ce24dc930f7f703af87c1372980",
     "native31_gate.py": "748bef811defbeb05a14bcb75faca1b41ad956de033c61b73bf6e259e9062538",
     "native33_diag.py": "edd5c90a5de221378c22a286c6510f35917f68752d8ecbb574c94ddfc4604169",
     "native33_grade.py": "974ec0e64f203f107a6a162ddc2d58f8b9581e907b4d06a170e8ee06270bce38",
@@ -1707,6 +1707,7 @@
     "native34_grade.py": "f88a1b4c34e4c1494fe6b5d18b4733aff490ca0f929f559fa226ab153de393be",
     "native34_indexer.py": "6b12bbc0e1f95f5c68cc023f4d6344a70a0ac0f50ec207a35be11b03c920cf85",
     "native34_storage.py": "5784c38fa00aa64046490d093f4211f41aff138c11c1bcc5a73d0791a89729e9",
+    "native34_window_before.txt": "f8ac5e08b4eab00e1da53ec35b8637387aa039309b8cc226f86bb6ff44e6138b",
     "native34_worker.py": "03c4481262a5959614e64656f9c3b5a55a64fc54873ec17990c64288a578e117",
     "native_placement_evidence_support.py": "345d37090992a4400862e307a34aac1a5abe3d062153a8f183e38bd479aee1c9",
     "native_prefill_support.py": "00c704e8935eea94e3030a4003f979693540f0e28e86a6326dcbfc5fb4644064",
@@ -1956,13 +1957,22 @@
     "runs/q18a_native33.draft.sh": "4a88c7b779ae11e4e9fb9a512f0ae0c63a8aa8fa5f3a1c2e24543963604bd530",
     "runs/q18a_native33_declare.sh": "2cffa888a58d5efd85ecf6e0f72e2bf4153bd342239ab0ffee9892af846dc9f5",
     "runs/q18a_native33_settings.sh": "cd4571ca335b70e5263eba2e2470ed3cd40ba484e148dd47ca6fdff8a2318a52",
-    "runs/q18a_native34_i.draft.sh": "8fa74840a862abd56dba30030397ee9fe64acce910fb13f59bffc546096b82b6",
+    "runs/q18a_native34_i.draft.sh": "6f7f36593c9d66abde2bf81b35da1a588814333ef54d4805f69cf365f4a0babb",
+    "runs/q18a_native34_i2.draft.sh": "751b8aeb411e75c95bacc752de87377e76a7de455fc0fd9f57184696a76c1859",
+    "runs/q18a_native34_i2_declare.sh": "3c0216a203226f24c1818f851661e2d1f6b56f9bd3c2750f43fe1a882cb16bb4",
+    "runs/q18a_native34_i2_settings.sh": "109c11f1f577ac4b32429fd6abb8b97a6c0e327732b46c30d7451b444197d6b3",
     "runs/q18a_native34_i_declare.sh": "16c2366d6a02dc3d785d6c872cd24ff5a961da29a6f9ca48afd5ad881ae03203",
     "runs/q18a_native34_i_settings.sh": "1fa430e06ab3a1f411149355ad50a9e24e86f7a5592717db3fee7f7302a6c6c2",
-    "runs/q18a_native34_o.draft.sh": "7e8ad881cf2e969f8d794ff5b6686cfe5f59b2bd5ab68a14e91915468b60374b",
+    "runs/q18a_native34_o.draft.sh": "1ac0bba991ae140ef06130dd18ac3b4e4233f3105f0631839c6951dea0a5a806",
+    "runs/q18a_native34_o2.draft.sh": "817b70c9667ba863df7168bd61bd37ff5f83dadde1e4ad380a1eca1c0f6dfefb",
+    "runs/q18a_native34_o2_declare.sh": "5904c69a8132ec3e1ad92cbe1de8468118470d18e2f4a64784149240800adec2",
+    "runs/q18a_native34_o2_settings.sh": "83864ae9afd8de2fced730afc16da244eb7fecd6cf1bf325902b36f32519d816",
     "runs/q18a_native34_o_declare.sh": "114fc5f875f8366920153b60a37a73788889b61112cb1ae8dd693e5b60d1176f",
     "runs/q18a_native34_o_settings.sh": "25b94038bf94d7ecf183da25da5a9f119750be0d2823aacd57a335cb9ddde8f6",
-    "runs/q18a_native34_s.draft.sh": "7ec6477ef3c47b7a9b73e7d861e6e682139879c7cce8750d026b8992a4267a8c",
+    "runs/q18a_native34_s.draft.sh": "560c4c8681dc66c21c28432dc82d293edc882b2866fae44b8ef60823c966fbcd",
+    "runs/q18a_native34_s2.draft.sh": "e14a9cb98d37bc575bf70f5844867cea2d36e50f9490fa6d32d22afbcd59df79",
+    "runs/q18a_native34_s2_declare.sh": "c6db84f79cd5295349ab06094204dfa8a50698eeb94ef11064e1d46b6a4fb954",
+    "runs/q18a_native34_s2_settings.sh": "a7e059b1b6979f297516fd4c650e436d5535106f6ba0305e2755bb1d84ed4ab3",
     "runs/q18a_native34_s_declare.sh": "7c1f671caad30c1dd6109b2e0af5aab326bb28d800302d2f38006faeffa7d104",
     "runs/q18a_native34_s_settings.sh": "83db6f212e5224088d04dab6d943ab64e45711946dd1ad2ee300e410c0ba777d",
     "runs/q18a_native3_declare.sh": "ebfbb85ec1ba75bd59936bf119ce65803cbed77ddce9567ec3aedf2b85213fbc",
@@ -2270,7 +2280,7 @@
     "test_native34_control.py": "8e2bcca8e1623b8de789abe5a9aa9cd0382e818aaf01f4a31e9d6439c9681795",
     "test_native34_frontend.py": "4aa7af1b1b7c93868025bb0460dd057dcf6f6b79fbdcb423602d9b8e2dcf4846",
     "test_native34_indexer.py": "3571bf66b087aae83eddc564ec76f107d8ac9e10aa586de10bd910549ea1ddc5",
-    "test_native34_queue.py": "316780e42324164b42a32b9da8f640f1faad75c1aea944ffd2de4d779baf6e56",
+    "test_native34_queue.py": "039c83b2a8d85b071f2a22592acd48baa099a2f790c7c68ca5b4f3c76275e2c9",
     "test_native34_runtime.py": "6d23ce1695f4519f6cc8bf236db974b5f4a9e4f250d8fb108c127d86a15af62c",
     "test_native34_storage.py": "54b5e50249a12be3912967b54ba82242a4c7ad0cdbe5fa5cadacb77599470cb1",
     "test_partial_tail_cov.py": "b5f8bbf6cb9e6e34347eb24a38f5c113b0ea556b4365ea8899b8682e133a0c8c",
@@ -2774,6 +2784,17 @@
     "tp_score_identity": "UNPROVEN",
     "vm_input": "NONE"
   },
+  "native34_window2": {
+    "base_manifest": "3994294be0f011a07ab856ed329ea851f943b6dbf9cb799cf5e8f2c845cb70aa",
+    "engine_plugin_scenario_unchanged": true,
+    "fresh_names": [
+      "q18a-native34-i2",
+      "q18a-native34-s2",
+      "q18a-native34-o2"
+    ],
+    "inline_dates": false,
+    "window_source": "native34_gate.window_ok(time.time())"
+  },
   "night_window": {
     "cleanup_margin_s": 420,
     "hard_end": "2026-11-02T06:00:00Z",
@@ -2782,10 +2803,10 @@
     "queue_timeout_s": 2100
   },
   "post_review_cpu": {
-    "basis": "rank-specific grading negative and all native34 focused tests rerun after review",
-    "log_sha256": "1e2e1b292ee94530fb6208d898d1f0a34453a49112e1163476d1eeedbc56161f",
+    "basis": "real-clock draft entries, exact frozen stale-slot refusal and all30 focused native34 cases",
+    "log_sha256": "ed217fa170d0152a8dedeaf5b44792ec8ea73ec0f8a66f68773e34d54a452ace",
     "skips": 0,
-    "tests": 29,
+    "tests": 30,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
