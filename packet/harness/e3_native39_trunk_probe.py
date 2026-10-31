@@ -25,6 +25,14 @@ W  positive-frontier waiting request (pinned scheduler.py:1145 else branch).
    refuses its plan (typed no-staged-plan: a 9-token tail after the 176
    stop), and the stock loop must hold it, not schedule its chunk on split.
    After disarm + FULL stock schedules the chunk.
+P  the trunk W2 lengths (workloads/q18a-w2-overlap-native39.json
+   length_declaration: fresh 197270, append 201261 tokens).  On the armed split
+   route the fresh request is admitted natively from 0.  After disarm it runs
+   stock on FULL to its one-token end (one-token sampler leaf), so its blocks
+   are cached; the append (the fresh token ids plus 3991 more, the same cache
+   salt) then gets its prefix hit from the real
+   Scheduler._get_local_prefix_cache_hit and is admitted natively from that
+   hit on the armed split route.  The hit must be a positive multiple of 176.
 """
 import argparse
 import hashlib
@@ -40,6 +48,8 @@ import e3_native37_admission_probe as base
 R_TOKENS = 10000
 W_FIRST, W_NEXT = 2048, 74
 BUDGET = base.BUDGET
+HERE = Path(__file__).resolve().parent
+W2_MANIFEST = HERE / 'workloads/q18a-w2-overlap-native39.json'
 
 
 class _Stop(Exception):
@@ -79,6 +89,13 @@ def streaming_request(stack, name, tokens):
     actual = host_preprocess(stack.core, request)
     stack.scheduler.add_request(actual)
     return actual
+
+
+def salted_request(stack, name, tokens, salt):
+    from e3_native_cow_lease_probe import engine_request, host_preprocess
+    request = host_preprocess(stack.core, engine_request(name, tokens, salt, 1))
+    stack.scheduler.add_request(request)
+    return request
 
 
 def scenario(stack, body):
@@ -171,6 +188,49 @@ def w_body(stack, check):
     stack.abort(s)
 
 
+def p_body(stack, check):
+    import dataclasses
+    S, controller = stack.scheduler, stack.controller
+    declared = json.loads(W2_MANIFEST.read_text())['length_declaration']
+    nf, na = declared['fresh']['tokens'], declared['append']['tokens']
+    fresh_ids = [(i * 7 + 3) % 251 for i in range(nf)]
+    append_ids = fresh_ids + [(i * 13 + 5) % 251 for i in range(na - nf)]
+    f = salted_request(stack, 'p-fresh', fresh_ids, 'native39-p')
+    stack.arm()
+    out, _ = stack.step()
+    parked = controller.parked
+    txn = None if parked is None else parked.transaction
+    check('fresh-admitted-natively-from-0', txn is not None and txn.request_uid == f.request_id
+          and txn.chunk_start == 0 and f.request_id not in out.num_scheduled_tokens,
+          transaction=None if txn is None else dataclasses.asdict(txn), tokens=nf,
+          last_refusal=(base.typed(controller) or {}).get('last_refusal'))
+    S.waiting.prepend_request(controller.cancel(txn, never_submitted=True))
+    stack.disarm()
+    steps = 0
+    while f.request_id in S.requests and steps < nf // BUDGET + 16:
+        sampled_step(stack, f, 7)
+        steps += 1
+    check('fresh-ran-stock-on-full-to-its-end', f.request_id not in S.requests and f.num_computed_tokens >= nf,
+          steps=steps, computed=f.num_computed_tokens, status=str(f.status))
+    a = salted_request(stack, 'p-append', append_ids, 'native39-p')
+    stack.arm()
+    out, _ = stack.step()
+    parked = controller.parked
+    txn = None if parked is None else parked.transaction
+    hit = None if txn is None else txn.chunk_start
+    check('append-admitted-natively-from-its-prefix-hit', txn is not None and txn.request_uid == a.request_id
+          and type(hit) is int and hit > 0 and hit % HASH == 0 and hit <= nf
+          and a.request_id not in out.num_scheduled_tokens,
+          transaction=None if txn is None else dataclasses.asdict(txn), tokens=na, prefix_hit=hit,
+          last_refusal=(base.typed(controller) or {}).get('last_refusal'))
+    S.waiting.prepend_request(controller.cancel(txn, never_submitted=True))
+    stack.abort(a)
+    stack.disarm()
+
+
+HASH = base.HASH
+
+
 def mounted():
     rows = base.mounted()
     from vllm.v1.flash_e3 import scheduler_hooks
@@ -194,9 +254,10 @@ def main():
         record['geometry'] = stack.geometry
         record['r'] = scenario(stack, r_body)
         record['w'] = scenario(stack, w_body)
+        record['p'] = scenario(stack, p_body)
         assert not torch.cuda.is_initialized()
         record['cuda_initialized'] = False
-        failed = [name for name in ('r', 'w') if record[name]['verdict'] != 'PASS']
+        failed = [name for name in ('r', 'w', 'p') if record[name]['verdict'] != 'PASS']
         record.update(verdict='FAIL' if failed else 'PASS', rc=1 if failed else 0, failed=failed)
     except Exception as exc:  # noqa: BLE001 - classified, never retried
         record.update(verdict='FAIL', rc=1, failure_class='HARNESS-OR-ENGINE-UNCLASSIFIED',
@@ -207,7 +268,7 @@ def main():
         json.dump(record, f, indent=2, sort_keys=True, default=str)
         f.write('\n')
     summary = {k: record.get(k) for k in ('label', 'verdict', 'rc', 'failed', 'error_type', 'error')}
-    for name in ('r', 'w'):
+    for name in ('r', 'w', 'p'):
         if name in record:
             summary[name] = {k: record[name].get(k) for k in ('verdict', 'first_failure')}
     print(json.dumps(summary, sort_keys=True))

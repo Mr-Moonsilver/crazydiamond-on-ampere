@@ -1,6 +1,6 @@
 {
  "schema": "fixture-leaves/1",
- "scope": "native39 trunk robustness (Codex native37 P1/P2): R/W (e3_native39_trunk_probe.py, pinned CPU container, network none) and the hub suite test_native39_trunk.py. Every leaf replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
+ "scope": "native39 trunk robustness (Codex native37 P1/P2): R/W/P (e3_native39_trunk_probe.py, pinned CPU container, network none) and the hub suite test_native39_trunk.py. Every leaf replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
  "leaves": [
   {
    "name": "w-one-token-sampler-output",
@@ -88,6 +88,22 @@
    "replaces": "vllm.logger.init_logger for the native38 startup receipt line",
    "equivalence": "As cpu-native38-startup-logger: logging.getLogger replaces only logger construction; the startup info call is the real one.",
    "cannot_prove": "vLLM log formatting and box log collection",
+   "box_evidence": false
+  },
+  {
+   "name": "p-one-token-sampler-and-salted-requests",
+   "test": "e3_native39_trunk_probe P (sampled_step, salted_request)",
+   "replaces": "The worker ModelRunnerOutput for the W2 fresh request on FULL, and the API server's request construction for the W2 fresh and append under one cache salt",
+   "equivalence": "As w-one-token-sampler-output: one sampled token on the step that scheduled the end of the 197270-token prompt, so the pinned update_from_output finishes it at max_tokens=1 (FINISHED_LENGTH_CAPPED) and frees its blocks into the prefix cache. The append is the fresh token ids plus 3991 more under the same cache_salt, as e3_overlap_performance._prefill_prompts builds it (fresh text + newline + suffix, one salt); the ids are synthetic, the lengths are the declared box counts. Requests go through the real EngineCore.preprocess_add_request (real block hasher), and the prefix hit is the pinned Scheduler._get_local_prefix_cache_hit result.",
+   "cannot_prove": "Box tokenization (the queue guard e3_native39_w2_length checks the two counts against the engine's /tokenize before row1), model output, KV contents",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-w2-length-geometry-split",
+   "test": "tools/native39_w2_length.py --receipt",
+   "replaces": "The pinned Scheduler._mamba_block_aligned_split inside the controller's projected split",
+   "equivalence": "native37 leaf hub-geometry-split (test_native37_robust.geometry_split), unchanged; staged_chunk_plan is the real one. The pinned-image probes check the rule it implies against the pinned method: native37 T1 (300+ lengths) and native39 P (the two declared lengths, the append from its real prefix hit).",
+   "cannot_prove": "Anything outside the split arithmetic",
    "box_evidence": false
   }
  ]

@@ -5,7 +5,7 @@ Mounts an overlay exactly as run-flash-s5-test.sh does with CORE_OVERLAY=1 and
 S5=1 (native37_robust_selfrun.overlay_mounts, unchanged), plus the harness and
 engine sources read-only, then runs inside one container:
   1. py_compile of every declared changed/added file (from the mounted tree),
-  2. the native39 R/W probe against the mounted overlay,
+  2. the native39 R/W/P probe against the mounted overlay,
   3. the native37 T1/T2 probe against the same overlay (regression),
   4. the hub suites the change touches under the image's python, with --suites.
 ``--label native38-held-b`` runs the probes against the native38 held-b overlay
@@ -91,7 +91,7 @@ def run(tree, overlay, out, name, label, suites, bundle=None, compiled=COMPILED)
                                               checks=[(c['name'], c['verdict']) for c in view.get('checks', [])])
     result = dict(schema='native39-trunk-selfrun/1', label=label, container_rc=rc,
                   probe39=dict(verdict=p39.get('verdict'), rc=p39.get('rc'), error=p39.get('error'),
-                               r=checks(p39.get('r')), w=checks(p39.get('w')),
+                               r=checks(p39.get('r')), w=checks(p39.get('w')), p=checks(p39.get('p')),
                                sha256=sha(out / 'probe39.json') if (out / 'probe39.json').exists() else None),
                   probe37=dict(verdict=p37.get('verdict'), rc=p37.get('rc'), error=p37.get('error'),
                                t1=None if 't1' not in p37 else {k: p37['t1'].get(k) for k in (
