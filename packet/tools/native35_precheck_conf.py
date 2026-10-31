@@ -26,7 +26,7 @@ def generate(build,out):
     text,n=re.subn(r'SEAM_TESTS=\(',r'SEAM_TESTS=(test_native35_queue.py test_native35_readback.py test_native35_grade.py test_native35_dispatch_lifetime.py native35_tools/native35_builder_view_cpu_check.py ',text);assert n==1
     text,n=re.subn(r'FIXTURE_FILES=\(\n',r'FIXTURE_FILES=(\n  test_native35_grade.py # synthetic CPU auth fixture only\n',text);assert n==1
     # The VM comparison overlay predates the fix; its four engine files differ by design.
-    text,n=re.subn(r'^VM_OVERLAY_EXCLUSIONS=\((.*)\)$',lambda m:'VM_OVERLAY_EXCLUSIONS=('+m.group(1)+' e3/lane_chunk.py e3/lane_dispatch.py e3/native_startup.py e3/s5_startup.py)',text,flags=re.M);assert n==1
+    text,n=re.subn(r'^VM_OVERLAY_EXCLUSIONS=\((.*)\)$',lambda m:'VM_OVERLAY_EXCLUSIONS=('+m.group(1)+' e3/decode-probe-evidence.json e3/lane_chunk.py e3/lane_dispatch.py e3/native_startup.py e3/s5_startup.py)',text,flags=re.M);assert n==1
     out.write_text('# Native35 '+arm.upper()+' (R then O then L, fresh processes); PREV is the frozen native34 I4 held-a bundle for every arm.\n'
         '# Engine delta vs PREV: lane_chunk/lane_dispatch/native_startup/s5_startup (Codex native35 fix) plus native34_worker/native34_readback plugins (arm-O evidence readback).\n'+text)
 
