@@ -67,16 +67,21 @@ def without_o_row4_branch(o):
     return once(o[:b]+o[e:],'  fi\n  rc=$?\n','  rc=$?\n')
 
 
-def native28_gates_block():
+def native28_gates_block(draft=None):
     text=(RUNS/'q18a_native28.draft.sh').read_text()
     start=text.index('RULE4_CONTINUATION=0\n');end=text.index(GATES_END,start)+len(GATES_END)
-    return text[start:end]
+    block=text[start:end]
+    if draft==PC_DRAFT:  # P-c delta 5: the declared row4 capacity continuation (test_native35_p_c)
+        import test_native35_p_c as pc
+        for old,new in ((pc.PB_READY,pc.PC_READY),(pc.PB_GATES_VALID,pc.PC_GATES_VALID),(pc.PB_GATES_DUMP,pc.PC_GATES_DUMP)):
+            block=once(block,old,new)
+    return block
 
 
 def p_parts(draft=P_DRAFT):
     p=draft.read_text();tail=p[p.index(TAIL_START):]
     receipt=tail[:tail.index('RULE4_CONTINUATION=0\n')]
-    gates=native28_gates_block();assert tail.count(gates)==1
+    gates=native28_gates_block(draft);assert tail.count(gates)==1
     measurement=tail[len(receipt)+len(gates):len(tail)-len(L_ENDING)]
     assert tail.endswith(L_ENDING)
     return p[:p.index(TAIL_START)],receipt,gates,measurement
@@ -96,7 +101,9 @@ class Derivation(unittest.TestCase):
 
     def test_tail_is_native28_gates_w1_block_then_two_rounds_then_the_l_ending(self):
         self.assertEqual(p_parts(PB_DRAFT)[1:],p_parts(P_DRAFT)[1:])  # P-b tail = P-a tail, byte for byte
-        self.assertEqual(p_parts(PC_DRAFT)[2:],p_parts(PB_DRAFT)[2:])  # P-c gates + measurement = P-b's; its receipt-tail note differs (test_native35_p_c)
+        self.assertEqual(p_parts(PC_DRAFT)[3],p_parts(PB_DRAFT)[3])  # P-c measurement = P-b's; its receipt-tail note differs (test_native35_p_c)
+        self.assertEqual(p_parts(PC_DRAFT)[2],native28_gates_block(PC_DRAFT))  # P-c gates = native28 + the declared capacity continuation only
+        self.assertEqual(p_parts(PB_DRAFT)[2],native28_gates_block())
         _,_,gates,measurement=p_parts()
         self.assertIn('python3 "$H/e3_native_w1.py" "$PROBE_URL" "$MODEL" "$Q/w1.json"',gates)
         self.assertIn('for _gate in startup row1 rule4_controls rule4_candidate row4 w1_controls; do',gates)
