@@ -1,0 +1,41 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "native35 P speed arm packaging gates: W1/W2 queue argv, the round salt namespace, the two-round composition, the aggregate grade and the queue measurement tail. Every leaf below replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
+ "leaves": [
+  {
+   "name": "cpu-native35-p-first-network-boundary",
+   "replaces": "http.client.HTTPConnection.request for the native session POST (/v1/flash_s5_native_overlap) in test_native35_performance.QueueArgvBoundary: the first command send of e3_native_w1.main and e3_native35_performance.main",
+   "equivalence": "The exact W1 and W2 invocations are cut from the P draft text and run through the real main(argv): real workload manifests, real gates.json written by the queue's own PY_GATES heredoc, the real reviewed package gate over the frozen overlay (verify_finalized_package included), the real first-advance read-timeout declaration from the P settings, the real NativeRuntimeClient and LoopbackControl. The replaced send asserts host/port/timeout, path, auth header and the command (action, route, phase, run_id, engine_epoch, command_seq) and then refuses, as a dead engine port would.",
+   "cannot_prove": "Any engine reply, native admission, decode or prefill behaviour, or that the box engine accepts these commands",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-loopback-apiserver",
+   "replaces": "The engine APIServer's two routes in test_native35_performance.TwoRoundComposition (LoopbackAPIServer): the native overlap session (native_overlap_session.NativeOverlapSession behind /v1/flash_s5_native_overlap) and the OpenAI /v1/completions SSE stream",
+   "equivalence": "Real main(argv) for both declared rounds, the real NativeRuntimeClient/LoopbackControl and the real decode-correctness stream readers talk to one loopback server. Session replies carry the exact typed shapes the client validates (four TransitionAcks with the FULL/SPLIT bank and route generation, awaited keep pause with a clean four-rank barrier); prefill_begin is refused with 409 as the real session refuses it without armed native admission (test_e3_native_measurement_clients.NativeActions). The SSE stream carries token_ids, prompt_token_ids, usage and [DONE]; prompt_tokens is a declared 4096 for every request. Every request body (cache_salt, prompt bytes) and session command is recorded as sent.",
+   "cannot_prove": "Native prefill/decode behaviour, real TTFT, prefix-cache reuse on the engine, the split or overlap lanes of either round, or memory under pressure",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-source-packets",
+   "replaces": "The engine's prefill_begin/prefill_end session replies in test_native35_performance.AggregateGrade: the source packet (raw_journal_evidence, begin snapshot, clock proof, client bracket) of the split and overlap lanes, and the client-visible decode SSE counts inside the overlap window",
+   "equivalence": "Fresh and append packets come from the actual CPU NativeSegmentDriver journal (test_e3_native_measurement.make_long_stack/run_journal, driver.overlap_evidence): a fresh-only 2050-token request, and a uid-append 300-token suffix over a 2050-token computed prefix after its own route transition. The frozen e3_native_performance.native_window and grade recheck them unchanged. The decode window spans exactly the packet's group start..end; its eight per-stream counts and rates are declared numbers (client SSE is not produced by the CPU driver). FULL-solo rows are declared serving rows with the frozen field names.",
+   "cannot_prove": "Any device rate, the real decode share or prefill share, eight standing decoders outlasting a 200k native prefill, or allocator/physical memory",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-queue-tail",
+   "replaces": "The W1, W2-round, memory-grade and rule4-continuation phase executables (FAKE_PHASE in test_native35_performance_queue), and the shell probes systemctl, health_ok and host_crash_detected",
+   "equivalence": "The queue's own bytes run under bash: record/step cut from the P draft, the native28 rule4-continuation -> qualification-ready -> W1 -> PY_GATES block, the two-round loop with its health/NRestarts withholding, and the real native35_performance_grade.py. Fakes assert their argv/env (round index, run id, read bound, readiness/package paths, per-round output and memory pairing) and write minimal artifacts. The real PY_FINAL writes queue-grade.json from the aggregate grade or an explicit NOT_RUN.",
+   "cannot_prove": "Engine startup, the earlier qualification phases, the measured values, or owned cleanup/restore (inherited unchanged from O and covered by its suites)",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-draft-window-entry",
+   "replaces": "Only the fail_early shell function and the box HARNESS_DIR path in the P draft's PY_SLOT entry; the owner's live arm-time check",
+   "equivalence": "Executes the exact shell command and Python heredoc of the P draft, importing the actual native35p_gate (bounds from native34_gate, unchanged) and reading the real OS wall clock in a fresh Python process. No clock or gate is patched.",
+   "cannot_prove": "Remaining wall-clock budget at a future arm; the owner re-executes the slot at gate/arm time",
+   "box_evidence": false
+  }
+ ]
+}
