@@ -1,6 +1,6 @@
 {
  "schema": "fixture-leaves/1",
- "scope": "native35 P-c row4 window stop, observer_end spool, observer census and the decode-abort path (test_native35_p_c_window.py). Every leaf below replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence. The real e3_decode_correctness._wait_open, _wait_window and NativePlacementRunner._prefill_progress, the real QualificationDriver row4 collection, the real LoopbackControl and the real P-c runner run unpatched wherever they appear.",
+ "scope": "native35 P-c row4 window stop, observer_end spool, observer census and the decode-abort path (test_native35_p_c_window.py) and the row4 capacity continuation (test_native35_p_c_continuation.py). Every leaf below replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence. The real e3_decode_correctness._wait_open, _wait_window and NativePlacementRunner._prefill_progress, the real QualificationDriver row4 collection, the real LoopbackControl and the real P-c runner run unpatched wherever they appear.",
  "leaves": [
   {
    "name": "cpu-native35-p-c-placement-streams",
@@ -42,6 +42,34 @@
    "replaces": "http.client.HTTPConnection.request for the first native session POST in test_native35_p_c_window.QueueCLI, the VLLM_API_KEY private auth fixture, and the frozen row1 plan and retained rule4_controls teacher artifact that row1 and rule4_controls leave in the queue store before row4",
    "equivalence": "The exact P-c row4 invocation is cut from the P-c draft and runs through the real e3_native35_p_c_placement.main and e3_q18a_qualification.main with the P-c StoppedWindowPlacementRunner bound for the call and restored afterwards; the replaced send records path, auth header and command and refuses, as a dead engine port would",
    "cannot_prove": "Any engine reply or a row4 PASS",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-continuation-packets",
+   "replaces": "The four ranks' observer packets for the continuation composition cases: native_placement_evidence_support.packet(rank) (producer-shaped activity/correlation ledgers through the real offer grading and the real ctypes report read). Capacity cases change one producer input each: test_e3_engine_offers.raw_receipt for the kernel-overflow rank returns the observer's own INC shape (native_reasons ring_overflow + unattributed_expected_context, replay.ring_overflows.kernel 1200, flags.permanent_overflow); native_prefill_support.FakeBridge for the correlation rank is OverflowBridge (overflow 7, complete False, capacity = the longest list), and ErrorBridge adds errors 1. Counterfactuals add unknown_node or known_wrong_context with verdict FAIL to the native reasons, or set observed replays to 60.",
+   "equivalence": "The overflowed receipt is what flash_s5_replay_observer reports when its kernel ring fills (ring_overflow joins the native reasons and the flag is permanent); the overflowed report is the s5ro-correlation/2 report at capacity (overflow counted, complete false). Everything downstream is unpatched: the observer census, the driver's native read and prefill regrade, native_graph_placement, the row4 composer and e3_q18a_qualification.run's grading write the qual-row4.json the classifier reads, so the reason strings are the graders' own.",
+   "cannot_prove": "That a box overflow produces only these reasons, or that W1/W2 numbers are valid under a real ring overflow; the box receipt and the classifier's unmatched list are the box-side check",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-continuation-placement-return",
+   "replaces": "The P-c runner's collected return for those cases: test_e3_native_qualification_driver.placement_result (the established row4 FakePlacement) with the window ids/route generation of the packets, the real e3_decode_correctness._wait_window record over eight FakeState streams that each gained the P-c runner's window_tokens, the open record {complete, opened_streams 8, reasons []} and the P-b box refusal cleanup shape {attempted, owner engine-leave-split, restored, route full, typed_acks} (results/box/q18a-native35-p-b-run-1 qual-row4)",
+   "equivalence": "The window record is produced by the unpatched _wait_window; the open and cleanup records carry the keys the P-c runner returns (client_open, cleanup) and the shape the box wrote for P-b's refusal cleanup",
+   "cannot_prove": "Real stream timing or the real cleanup on a collected (non-refused) row4",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-continuation-refusal",
+   "replaces": "The refusal-path case reuses cpu-native35-p-c-placement-streams and cpu-native35-p-c-loopback-peer (an observer_end body of 513 MiB streamed with Content-Length) and collects through e3_q18a_qualification.run instead of QualificationDriver.collect_phase",
+   "equivalence": "The unpatched 512 MiB ceiling, real LoopbackControl, real P-c runner and real qualification record; the classifier reads that record",
+   "cannot_prove": "The box reply size",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-continuation-queue",
+   "replaces": "In the queue-bytes cases: e3_native_w1, e3_native_memory_grade and e3_native28_rule4_continuation are test_native35_performance_queue.FAKE_PHASE; health_ok, host_crash_detected and systemctl are shell functions (healthy, no crash, NRestarts 4 = N0); engine-stream.log/.err are short text files with or without a Traceback line",
+   "equivalence": "The P-c gates block and measurement tail are the queue's own bytes; the continuation CLI, the W2 round CLI (e3_native35_performance, real same-queue gate and package gate) and native35_performance_grade are the real files. The W2 rounds stop at the package gate because the CPU fixture has no overlay, after the same-queue gate passed",
+   "cannot_prove": "A W2 measurement, the real health probe or the real crash detection",
    "box_evidence": false
   }
  ]

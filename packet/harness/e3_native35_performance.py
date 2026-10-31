@@ -97,6 +97,23 @@ def round_record(a, cfg, client):
     return record
 
 
+def gates_allow_run(gates, gate_path):
+    """The unchanged same-queue gate, plus the declared native35 P-c row4
+    capacity continuation.
+
+    Only the P-c queue writes ``row4_capacity_continuation``; without it (P-a,
+    P-b, and P-c whenever row4 is not a capacity-only INCONCLUSIVE) this is
+    ``e3_native_performance.gates_allow_run`` itself.  With it, the retained
+    receipt and qual-row4.json are re-proved (e3_native35_p_c_continuation) and
+    the unchanged gate judges every other outcome with row4 read as PASS.
+    """
+    if type(gates) is not dict or gates.get('row4_capacity_continuation') is not True:
+        return perf.gates_allow_run(gates, gate_path)
+    from e3_native35_p_c_continuation import continuation_view
+    view = continuation_view(gates, gate_path)
+    return view is not None and perf.gates_allow_run(view, gate_path)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--url', required=True); p.add_argument('--model', required=True)
@@ -110,7 +127,7 @@ def main(argv=None):
     result, cfg, client = {}, None, None
     try:
         gates = json.loads(Path(a.gates).read_text())
-        if not perf.gates_allow_run(gates, a.gates):
+        if not gates_allow_run(gates, a.gates):
             raise ValueError('same-queue-qualification-gates-not-pass')
         package = shared._package_gate(os.environ)
         if package.get('ok') is not True:

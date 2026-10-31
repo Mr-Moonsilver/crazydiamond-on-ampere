@@ -1465,6 +1465,11 @@ class QualificationDriver:
             'teacher_trace_receipt': raw.get('teacher_trace_receipt'),
             'observer_census': census,
             'observer_end_transport': transport,
+            # Retained as returned (None for runners that do not supply them):
+            # the client window/open records and the runner's typed cleanup.
+            'client_window': raw.get('client_window'),
+            'client_open': raw.get('client_open'),
+            'placement_cleanup': raw.get('cleanup'),
         }
         record = self._retain('row4', 'placement', evidence,
                               extra={'window_id': window_id,

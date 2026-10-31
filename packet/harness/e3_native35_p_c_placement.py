@@ -11,10 +11,13 @@ per rank into it, enough to overflow the 131072-record kernel ring, and the
 observer_end reply exceeded the 112 MiB transport cap.
 
 ``StoppedWindowPlacementRunner.run`` is ``ResumeWindowPlacementRunner.run``
-(e3_native35_l2_placement, unchanged) byte for byte plus one inserted block
-directly after the ``placement-window-incomplete`` refusal: the owned decode
+(e3_native35_l2_placement, unchanged) byte for byte plus two inserted blocks.
+Directly after the ``placement-window-incomplete`` refusal the owned decode
 cohort is stopped (client close, engine abort) and a surviving reader refuses
-``placement-readers-alive``, before the prefill open-wait.  With the driver's
+``placement-readers-alive``, before the prefill open-wait.  The collected
+return also carries the client window and open records (``client_window``,
+``client_open``), which the refusal path already retains, for the P-c row4
+capacity continuation (e3_native35_p_c_continuation).  With the driver's
 ``PLACEMENT_WINDOW_TOKENS`` = 20 the window is two parity cohorts x 20 tokens =
 the declared 40 replays; the driver checks the observed per-rank replays
 against [``PLACEMENT_REPLAYS_LOW``, ``PLACEMENT_REPLAYS_HIGH``].  Workload,
@@ -330,6 +333,11 @@ class StoppedWindowPlacementRunner(ResumeWindowPlacementRunner):
                 },
                 'frontend': {'before': frontend_before, 'after': frontend_after},
                 'overlap_end': end, 'leave_full': left,
+                # P-c: a collected row4 also carries the client window and open
+                # records (the refusal path already does), so the capacity
+                # continuation reads them instead of inferring them.
+                'client_window': copy.deepcopy(record.get('window')),
+                'client_open': copy.deepcopy(record.get('open')),
                 'calls': record.get('calls'),
             }
         except BaseException as exc:  # noqa: BLE001 - preserve the first failure

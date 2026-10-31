@@ -89,12 +89,22 @@ STOP_BLOCK = ("            # P-c: stop the owned decode cohort at the window bou
               "                raise QualificationRefused('placement-readers-alive')\n")
 
 
+RETURN_ANCHOR = "                'calls': record.get('calls'),\n"
+RETURN_BLOCK = ("                # P-c: a collected row4 also carries the client window and open\n"
+                "                # records (the refusal path already does), so the capacity\n"
+                "                # continuation reads them instead of inferring them.\n"
+                "                'client_window': copy.deepcopy(record.get('window')),\n"
+                "                'client_open': copy.deepcopy(record.get('open')),\n")
+
+
 class SourceRelation(unittest.TestCase):
-    def test_run_is_the_l2_run_plus_only_the_stop_block(self):
+    def test_run_is_the_l2_run_plus_only_the_stop_and_return_blocks(self):
         parent = inspect.getsource(l2.ResumeWindowPlacementRunner.run)
         child = inspect.getsource(pc.StoppedWindowPlacementRunner.run)
         self.assertEqual(parent.count(WINDOW_BLOCK), 1)
-        self.assertEqual(child, parent.replace(WINDOW_BLOCK, WINDOW_BLOCK + STOP_BLOCK))
+        self.assertEqual(parent.count(RETURN_ANCHOR), 1)
+        self.assertEqual(child, parent.replace(WINDOW_BLOCK, WINDOW_BLOCK + STOP_BLOCK)
+                         .replace(RETURN_ANCHOR, RETURN_BLOCK + RETURN_ANCHOR))
         # The stop comes before the prefill open-wait and its refusal.
         self.assertEqual(child.count(STOP_BLOCK + l2_suite.OPEN_BLOCK), 1)
         own = set(vars(pc.StoppedWindowPlacementRunner)) - {
