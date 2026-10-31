@@ -5,17 +5,20 @@ import json
 from pathlib import Path
 
 
-def grade(paths,arm_record=None):
-    first=None;prior=[];inputs=[];completed=[];malformed=lost=limits=unavailable=0;pending={}
+def grade(paths,arm_record=None,require_readback=False):
+    first=None;prior=[];inputs=[];completed=[];readbacks=[];values=[];copies=[];malformed=lost=limits=unavailable=0;pending={}
     def consume(row):
         nonlocal first,limits,unavailable
         event=row.get('event','')
         if event in ('native34-indexer-prior-work-exception','native34-indexer-kernel-exception',
-                     'native34-phase-exception','native34-phase-completion-exception','exception'):
+                     'native34-phase-exception','native34-phase-completion-exception','native34-indexer-readback-exception','exception'):
             if first is None or row.get('monotonic_ns',0)<first.get('monotonic_ns',0):first=row
         if event=='native34-indexer-prior-work-drain-complete' and len(prior)<4:prior.append(row)
         if event=='native34-indexer-launch-inputs' and len(inputs)<4:inputs.append(row)
         if event=='native34-indexer-kernel-end' and len(completed)<4:completed.append(row)
+        if event in ('native34-indexer-readback-copy-begin','native34-indexer-readback-copy-end') and len(copies)<128:copies.append(row)
+        if event=='native34-indexer-readback-complete' and len(readbacks)<4:readbacks.append(row)
+        if event=='native34-indexer-indirect-value' and len(values)<16:values.append(row)
         limits+=event in ('native34-receipt-limit','host-receipt-limit')
         unavailable+=event=='native34-unavailable'
     for name in paths:
@@ -49,12 +52,25 @@ def grade(paths,arm_record=None):
     if first:
         attribution=('PRIOR_RANK1_WORK_BEFORE_TARGET' if first['event']=='native34-indexer-prior-work-exception'
                      else 'BRACKETED_INDEXER_LAUNCH_OR_FENCE' if first['event']=='native34-indexer-kernel-exception'
-                     and first.get('rank')==1 and any(r.get('rank')==1 and r.get('monotonic_ns',0)<first.get('monotonic_ns',0) for r in prior)
+                     and first.get('rank') in (0,1) and any(r.get('rank')==first.get('rank') and r.get('monotonic_ns',0)<first.get('monotonic_ns',0) for r in prior)
                      else 'OVERLAPPED_PHASE_OR_BOUNDARY')
     if not first and arm.get('arm')=='I' and not any(r.get('rank')==1 and r.get('rank1_post_fence') is True for r in completed):
         verdict='INCONCLUSIVE';failure_class='HARNESS';attribution='I_DISCRIMINATOR_NOT_PROVED'
-    return dict(schema='native34-causal-reading/1',verdict=verdict,failure_class=failure_class,
+    if require_readback:
+        from native34_readback import KEYS
+        coverage=all(any(r.get('rank')==rank and r.get('device_values_observed') is True
+                         and r.get('arguments')==7 and r.get('verdict') in ('PASS','VIOLATION') for r in readbacks)
+                     and {r.get('argument') for r in values if r.get('rank')==rank}==set(KEYS) for rank in (0,1))
+        if first and first['event']=='native34-indexer-readback-exception':attribution='POST_DRAIN_READBACK_BEFORE_INDEXER'
+        elif any(r.get('verdict')=='VIOLATION' for r in readbacks+values):
+            verdict='FAIL';failure_class='ENGINE'
+            if first is None:attribution='INDIRECT_VALUE_OR_HOST_INTENT_VIOLATION'
+        elif not coverage and first is None:
+            verdict='INCONCLUSIVE';failure_class='HARNESS';attribution='INDIRECT_READBACK_NOT_PROVED'
+    else:coverage=None
+    return dict(schema='native34-causal-reading/1' ,verdict=verdict,failure_class=failure_class,
         arm=arm.get('arm'),release_qualified=False,attribution=attribution,first_exception=first,
+        readback_required=require_readback,readback_coverage=coverage,readback_copy_receipts=copies,indirect_readbacks=readbacks,indirect_values=values,
         prior_work_drain_receipts=prior,indexer_inputs=inputs,indexer_completed=completed,
         malformed=malformed,missing_fragments=lost,receipt_limits=limits,metadata_unavailable=unavailable,
         arm_record_verdict=arm.get('verdict'),arm_record_reason=arm.get('reason'),
@@ -64,7 +80,7 @@ def grade(paths,arm_record=None):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--log',action='append',required=True)
-    p.add_argument('--arm-record');p.add_argument('--out',required=True);a=p.parse_args()
-    r=grade(a.log,a.arm_record)
+    p.add_argument('--require-readback',action='store_true');p.add_argument('--arm-record');p.add_argument('--out',required=True);a=p.parse_args()
+    r=grade(a.log,a.arm_record,a.require_readback)
     with Path(a.out).open('x') as f:json.dump(r,f,sort_keys=True,indent=2);f.write('\n')
     raise SystemExit(0 if r['verdict']=='PASS' else 1 if r['verdict']=='FAIL' else 2)

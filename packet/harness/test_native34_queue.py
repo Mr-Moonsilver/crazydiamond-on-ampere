@@ -12,7 +12,7 @@ ROOT=Path(__file__).resolve().parent
 
 
 def normalize_queue(text,arm):
-    for revision in ('3','2',''):
+    for revision in ('4','3','2',''):
         text=text.replace('q18a-native34-'+arm.lower()+revision,'q18a-native33').replace('q18a_native34_'+arm.lower()+revision,'q18a_native33')
     text=text.replace('from native34_gate import','from native31_gate import')
     begin=text.index('  if [[ $name == row4 ]]; then\n',text.index('qualification_phase()'))
@@ -45,7 +45,7 @@ class FrozenProtocol(unittest.TestCase):
     def test_every_draft_window_slot_executes_at_real_wall_clock(self):
         env=dict(os.environ,HARNESS_DIR=str(ROOT),PYTHONDONTWRITEBYTECODE='1')
         for arm in ('i','s','o'):
-            for revision in ('','2','3'):
+            for revision in ('','2','3')+ (('4',) if arm in ('i','s') else ()):
                 path=ROOT/'runs'/('q18a_native34_'+arm+revision+'.draft.sh')
                 source=path.read_text();begin=source.index("python3 - <<'PY_SLOT'")
                 end=source.index('\nPY_SLOT',begin)+len('\nPY_SLOT')
@@ -69,6 +69,15 @@ class FrozenProtocol(unittest.TestCase):
             rc=rejected.returncode,real_wall_clock=True,engine_contact=False,
             source_sha256=hashlib.sha256(previous.encode()).hexdigest(),
             refusal='queue worst case exceeds owner hard end'))
+
+    def test_readback_roles_only_add_readback_and_grade_requirement(self):
+        for arm in ('i','s'):
+            for suffix in ('.draft.sh','_settings.sh','_declare.sh'):
+                old=(ROOT/'runs'/('q18a_native34_'+arm+'3'+suffix)).read_text()
+                new=(ROOT/'runs'/('q18a_native34_'+arm+'4'+suffix)).read_text()
+                normalized=new.replace('q18a_native34_'+arm+'4','q18a_native34_'+arm+'3').replace('q18a-native34-'+arm+'4','q18a-native34-'+arm+'3')
+                normalized=normalized.replace(' FLASH_NATIVE34_READBACK=1','').replace(' --require-readback','')
+                self.assertEqual(normalized,old)
 
     def test_weekend_bounds_keep_full_cleanup_margin(self):
         self.assertEqual(gate.HARD_END,datetime.datetime(2026,11,2,6,tzinfo=datetime.timezone.utc).timestamp())

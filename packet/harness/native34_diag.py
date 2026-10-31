@@ -10,6 +10,7 @@ from native34_control import Arm,ProtocolRefused
 
 INSTALLED=False
 TARGETS={
+ 'vllm.models.qwen4_exp.common.qsa_cache','vllm.v1.flash_e3.lane_chunk',
  'vllm.v1.flash_e3.engine_driver','vllm.v1.flash_e3.executor_hooks',
  'vllm.v1.flash_e3.native_overlap_worker','vllm.v1.flash_e3.native_qualification',
  'vllm.v1.worker.gpu_worker','vllm.v1.worker.gpu.model_runner',
@@ -138,4 +139,4 @@ def install():
     localize.emit('native34-installed',arm=os.environ['FLASH_NATIVE34_ARM'],
         ordinary_capture='shared model-method hooks deferred until after control A',
         interventions='S serialized prefix; O original overlap; I rank1 pre-indexer local-stream drain',
-        storage_values_read=False)
+        storage_values_read=worker.readback.enabled())

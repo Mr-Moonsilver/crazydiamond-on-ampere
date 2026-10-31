@@ -5,6 +5,7 @@ import os
 import threading
 import weakref
 
+import native34_readback as readback
 import native30_host as host
 import native30_localize as localize
 from native34_storage import AllocationWindow,MAX_HISTORY,compact,compare_manifests
@@ -483,25 +484,64 @@ def instrument(module):
     elif name.endswith('.native_qualification'):patch(module,'handle_worker',qualification)
     elif name.endswith('.native_overlap_worker'):patch(module,'handle',checkpoint)
     elif name.endswith('.cudagraph_utils'):patch(module.CudaGraphManager,'capture',graph_capture_factory)
+    elif name.endswith('.qsa_cache'):patch(module.QSAMetadataBuilder,'build',readback_builder)
+    elif name.endswith('.lane_chunk'):patch(module.LaneChunk,'__init__',readback_chunk)
+
+
+def readback_builder(original,args,kwargs):
+    runner=RUNNER() if RUNNER else None
+    s=state(runner) if runner is not None else None
+    if not readback.enabled() or s is None or s['rank'] not in (0,1) or s['mode'] not in ('A','ARMED','PREFIX'):
+        return original(*args,**kwargs)
+    builder=args[0];common=args[2] if len(args)>2 else kwargs['common_attn_metadata']
+    import torch
+    context=observe(s,'readback-builder-owner',lambda:readback.builder_context(builder,common,s,int(torch.cuda.current_stream().cuda_stream)))
+    previous=getattr(TLS,'metadata_writer',None);TLS.metadata_writer=(s,context) if context else None
+    try:return original(*args,**kwargs)
+    finally:TLS.metadata_writer=previous
+
+
+def readback_chunk(original,args,kwargs):
+    result=original(*args,**kwargs)
+    if not readback.enabled():return result
+    chunk,runner=args[:2];s=state(runner)
+    if s['rank'] not in (0,1) or s['mode'] not in ('ARMED','PREFIX'):return result
+    def record():
+        import torch
+        stream=torch.cuda.current_stream();event=torch.cuda.Event(enable_timing=False);event.record(stream)
+        readback.chunk_written(chunk,s,int(stream.cuda_stream),event)
+    observe(s,'readback-chunk-owner',record)
+    return result
 
 
 def indexer_launch(original,args,kwargs):
     jit=args[0];fn=jit.fn
+    writer=getattr(TLS,'metadata_writer',None)
+    if readback.enabled() and writer is not None and not kwargs.get('warmup') and getattr(fn,'__name__',None)=='_build_qsa_metadata_kernel':
+        result=original(*args,**kwargs)
+        def written():
+            import torch
+            names=tuple(jit.arg_names);bound=dict(zip(names,args[1:]));bound.update({n:kwargs[n] for n in names if n in kwargs})
+            event=torch.cuda.Event(enable_timing=False);event.record(torch.cuda.current_stream())
+            readback.metadata_written(writer[0],bound,writer[1],event)
+        observe(writer[0],'readback-metadata-writer',written)
+        return result
     ctx=getattr(TLS,'phase_context',None)
     if (ctx is None or kwargs.get('warmup')
             or getattr(fn,'__name__',None)!='_qsa_pre_indexer_kernel'):
         return original(*args,**kwargs)
     runner,s=ctx['runner'],ctx['state']
     import torch
-    if s['rank']==1 and s['arm'] in ('S','I'):
+    bracket=s['arm'] in ('S','I') and (s['rank']==1 or readback.enabled() and s['rank']==0)
+    if bracket:
         emit(s,'indexer-prior-work-drain-begin',arm=s['arm'],kernel='_qsa_pre_indexer_kernel',
-             scope='all registered rank1 local consumers; peer remote accesses not certified')
+             scope='all registered local consumers; peer remote accesses not certified')
         try:
             drain=drain_all(runner,s)
         except BaseException as exc:
             emit(s,'indexer-prior-work-exception',error_type=type(exc).__name__,
                  target_launched=False,classification='ENGINE',
-                 discriminator='prior rank1 work surfaced an error before the indexer launch')
+                 discriminator='prior local work surfaced an error before the indexer launch')
             raise
         emit(s,'indexer-prior-work-drain-complete',drain=drain,target_launched=False)
     def metadata():
@@ -523,17 +563,27 @@ def indexer_launch(original,args,kwargs):
             slot_contract=slot_contract(runner,with_native=True),
             arm=s['arm'],allocation_owner_scope='actual storage metadata plus source-declared owners; last device writer not presumed')
     observe(s,'indexer-inputs',metadata)
-    emit(s,'indexer-kernel-begin',kernel='_qsa_pre_indexer_kernel',arm=s['arm'],rank1_priors_drained=s['rank']==1 and s['arm'] in ('S','I'))
+    if readback.enabled() and s['rank'] in (0,1) and bracket:
+        names=tuple(jit.arg_names);bound=dict(zip(names,args[1:]));bound.update({n:kwargs[n] for n in names if n in kwargs})
+        emit(s,'indexer-readback-begin',target_launched=False,arm=s['arm'])
+        try:readback.snapshot(runner,s,bound,emit)
+        except (ValueError,KeyError,AttributeError,TypeError,IndexError) as exc:
+            s['metadata_complete']=False
+            emit(s,'unavailable',where='indexer-readback',error_type=type(exc).__name__,coverage_complete=False)
+        except BaseException as exc:
+            emit(s,'indexer-readback-exception',target_launched=False,error_type=type(exc).__name__,classification='ENGINE')
+            raise
+    emit(s,'indexer-kernel-begin',kernel='_qsa_pre_indexer_kernel',arm=s['arm'],rank1_priors_drained=s['rank']==1 and s['arm'] in ('S','I'),local_priors_drained=bracket)
     try:
         result=original(*args,**kwargs)
-        if s['rank']==1 and s['arm'] in ('S','I'):
+        if bracket:
             torch.cuda.current_stream().synchronize()
     except BaseException as exc:
         emit(s,'indexer-kernel-exception',kernel='_qsa_pre_indexer_kernel',
             error_type=type(exc).__name__,classification='ENGINE',
-            discriminator='first bracketed indexer launch/fence after registered local streams drained' if s['arm'] in ('S','I') and s['rank']==1 else 'unfenced overlapped launch; sticky errors remain possible',
+            discriminator='first bracketed indexer launch/fence after registered local streams drained' if bracket else 'unfenced overlapped launch; sticky errors remain possible',
             peer_remote_access_coverage='unproved; no access-PC claim')
         raise
     emit(s,'indexer-kernel-end',kernel='_qsa_pre_indexer_kernel',
-         rank1_post_fence=s['rank']==1 and s['arm'] in ('S','I'))
+         rank1_post_fence=s['rank']==1 and s['arm'] in ('S','I'),post_fence=bracket)
     return result

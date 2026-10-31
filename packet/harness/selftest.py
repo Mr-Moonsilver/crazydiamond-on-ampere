@@ -713,6 +713,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_native34_storage.py', 'Native34 host storage aliases and bounded allocator incarnation coverage (CPU only)'),
                      ('test_native34_control.py', 'Native34 I/S/O checkpoint identity, completion and exact-cohort guards (CPU only)'),
                      ('test_native34_indexer.py', 'Native34 actual pinned indexer host launch and operand range negatives (CPU only)'),
+                     ('test_native34_readback.py', 'Native34 bounded indirect readback, real bracket order and host-intent negatives (CPU only)'),
                      ('test_native34_runtime.py', 'Native34 actual stream providers, capture host body, discriminator and cleanup (CPU only)'),
                      ('test_native34_frontend.py', 'Native34 exact queue CLI validation and dual-log diagnostic grading (CPU only)'),
                      ('test_native33.py', 'Native33 rank1 launch fences, PP exclusion and real pinned graph host capture/pointer conformance (CPU only)'),

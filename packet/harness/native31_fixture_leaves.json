@@ -167,7 +167,7 @@
     {
       "box_evidence": false,
       "cannot_prove": "Actual box engine startup, device execution or remaining wall-clock budget at a future arm; the owner re-executes the slot at gate/arm time",
-      "equivalence": "Executes the exact shell command and Python heredoc from each of the nine native34 draft variants, importing the actual native34_gate module and reading the real OS wall clock in a fresh Python process. The frozen pre-repair slot is also executed on the real clock and refuses. No clock or gate is patched.",
+      "equivalence": "Executes the exact shell command and Python heredoc from each of the eleven native34 draft variants, importing the actual native34_gate module and reading the real OS wall clock in a fresh Python process. The frozen pre-repair slot is also executed on the real clock and refuses. No clock or gate is patched.",
       "name": "cpu-native34-draft-window-entry",
       "replaces": "Only fail_early shell function when executing the isolated draft PY_SLOT entry; the surrounding queue engine/timeout path is not run"
     },
@@ -177,6 +177,19 @@
       "equivalence": "Exact function source extracted from frozen I2 executes against the real driver-built A_START command on all four CPU worker fixtures and reproduces native34-checkpoint-marker-invalid. The repaired production function is exercised through the real driver/RPC/worker chain; the oracle is never mounted into the worker plugin.",
       "name": "cpu-native34-frozen-checkpoint-negative",
       "replaces": "Only old frozen native34_worker.checkpoint function body as a CPU regression oracle"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "CUDA readback correctness, external/peer writes, GPU kernel access PC, complete device last-writer coverage or absence of a timing perturbation",
+      "equivalence": "Production snapshot, host-plan derivation using real ChunkAdmission/LaneTables.expanded/model owner resolver, bounds checks and grading execute unchanged. Values.cpu copies bounded synthetic integer arrays only; real drain providers and unchanged pinned pre-indexer host body execute to a launch leaf. The pinned QSA CPU metadata builder and helpers execute with actual CPU Torch tensors in the exact image (annotations removed only). Real CommonAttentionMetadata consumes a precomputed CPU repeat of query lengths through its existing cached token-map branch. Native1024 then ordinary four-request writes reproduce an invalid request index in the native view; all seven expected arrays match the clean CPU builder. Real CPU Tensor copies and cached int64 position-tail reinterpretation execute.",
+      "mocked_seams": [
+        "sys.modules",
+        "os.environ",
+        "w.emit",
+        "w.RUNNER"
+      ],
+      "name": "cpu-native34-indirect-readback",
+      "replaces": "CUDA D2H transfer and device completion in the post-drain readback tests; live model/cache constructors; CommonAttentionMetadata token-map device constructor"
     }
   ],
   "native32_scope": "receipt boundary resolves actual bridge.dispatcher.runner; engine and ordinary path byte-identical to native31; frozen owner source/package pre-launch assertions run on CPU",
