@@ -1,0 +1,119 @@
+{
+ "definitions": {
+  "harness/selftest.py": [
+   "module:For#12"
+  ],
+  "patches/s5_engine/engine_driver.py": [
+   "NativeSegmentDriver._scheduler_holds_requests",
+   "NativeSegmentDriver._split_hold_timeout",
+   "NativeSegmentDriver.advance"
+  ],
+  "patches/s5_engine/native_overlap_session.py": [
+   "NativeOverlapSession._action_prefill_end",
+   "NativeOverlapSession._refused_prefill_end",
+   "module:EMPTY_WINDOW_ERROR",
+   "module:REFUSAL_POLICY"
+  ],
+  "patches/s5_engine/scheduler_hooks.py": [
+   "PrefillAdmissionController.__init__",
+   "PrefillAdmissionController._admit_observed",
+   "PrefillAdmissionController._memoised_plan_refusal",
+   "PrefillAdmissionController._note_split_hold",
+   "PrefillAdmissionController._refuse",
+   "PrefillAdmissionController._remember_plan_refusal",
+   "PrefillAdmissionController._retained_waiting",
+   "PrefillAdmissionController.expired_split_hold",
+   "PrefillAdmissionController.forget_request",
+   "PrefillAdmissionController.native_admission_record",
+   "PrefillAdmissionController.note_split_hold_timeout",
+   "_defer_stock_while_split_armed",
+   "defer_request_free",
+   "defer_stock_positive_frontier",
+   "defer_stock_prefix_hit",
+   "defer_stock_running_prefill",
+   "flash_s5_admit",
+   "module:FURTHEST_BASIS",
+   "module:SPLIT_HOLD_BOUND_NS",
+   "module:SPLIT_HOLD_KINDS",
+   "module:_SCHEDULER_FORWARD",
+   "module:_SCHEDULER_REVERSE",
+   "module:__all__",
+   "module:import weakref",
+   "staged_chunk_plan"
+  ]
+ },
+ "overlay_definitions": {
+  "core/scheduler.py": [
+   "Scheduler.schedule"
+  ],
+  "e3/engine_driver.py": [
+   "NativeSegmentDriver._scheduler_holds_requests",
+   "NativeSegmentDriver._split_hold_timeout",
+   "NativeSegmentDriver.advance"
+  ],
+  "e3/native_overlap_session.py": [
+   "NativeOverlapSession._action_prefill_end",
+   "NativeOverlapSession._refused_prefill_end",
+   "module:EMPTY_WINDOW_ERROR",
+   "module:REFUSAL_POLICY"
+  ],
+  "e3/scheduler_hooks.py": [
+   "PrefillAdmissionController.__init__",
+   "PrefillAdmissionController._admit_observed",
+   "PrefillAdmissionController._memoised_plan_refusal",
+   "PrefillAdmissionController._note_split_hold",
+   "PrefillAdmissionController._refuse",
+   "PrefillAdmissionController._remember_plan_refusal",
+   "PrefillAdmissionController._retained_waiting",
+   "PrefillAdmissionController.expired_split_hold",
+   "PrefillAdmissionController.forget_request",
+   "PrefillAdmissionController.native_admission_record",
+   "PrefillAdmissionController.note_split_hold_timeout",
+   "_defer_stock_while_split_armed",
+   "defer_request_free",
+   "defer_stock_positive_frontier",
+   "defer_stock_prefix_hit",
+   "defer_stock_running_prefill",
+   "flash_s5_admit",
+   "module:FURTHEST_BASIS",
+   "module:SPLIT_HOLD_BOUND_NS",
+   "module:SPLIT_HOLD_KINDS",
+   "module:_SCHEDULER_FORWARD",
+   "module:_SCHEDULER_REVERSE",
+   "module:__all__",
+   "module:import weakref",
+   "staged_chunk_plan"
+  ]
+ },
+ "parent": "72ea0baa208e1cfc04446898bbd58a0f3c4f84b8",
+ "paths": [
+  "A\tharness/e3_native39_trunk_checks.py",
+  "A\tharness/e3_native39_trunk_probe.py",
+  "A\tharness/e3_native39_w2_length.py",
+  "A\tharness/fixtures/native39_box_extract.json",
+  "A\tharness/native39_fixture_leaves.json",
+  "A\tharness/native39_trunk_gate.py",
+  "A\tharness/runs/q18a_native39_trunk.draft.sh",
+  "A\tharness/runs/q18a_native39_trunk_declare.sh",
+  "A\tharness/runs/q18a_native39_trunk_settings.sh",
+  "M\tharness/selftest.py",
+  "A\tharness/test_native39_trunk.py",
+  "A\tharness/test_native39_trunk_queue.py",
+  "A\tharness/w1_trace.py",
+  "A\tharness/workloads/q18a-w2-overlap-native39.json",
+  "M\tpatches/s5_engine/engine_driver.py",
+  "M\tpatches/s5_engine/native_candidate_review.json",
+  "M\tpatches/s5_engine/native_overlap_session.py",
+  "M\tpatches/s5_engine/scheduler_hooks.py",
+  "A\ttools/build_native39_trunk.py",
+  "A\ttools/native39_box_extract.py",
+  "A\ttools/native39_trunk_bundle_selfrun.py",
+  "A\ttools/native39_trunk_cpu_probe.py",
+  "A\ttools/native39_trunk_declarations.json",
+  "A\ttools/native39_trunk_freeze.py",
+  "A\ttools/native39_trunk_queue_drafts.py",
+  "A\ttools/native39_trunk_selfrun.py",
+  "A\ttools/native39_trunk_tools_derive.py",
+  "A\ttools/native39_w2_length.py"
+ ]
+}
