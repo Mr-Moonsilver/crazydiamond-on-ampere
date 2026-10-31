@@ -14,8 +14,11 @@ def check(build,out):
     plugin='e3/native30_plugins/native34_worker.py'
     changed_overlay={p for p in prev if prev[p]!=ov[p]};assert changed_overlay==metadata|{plugin},changed_overlay
     source=(ROOT/'harness/native34_worker.py').read_text();prior=(old/'native34_worker.py').read_text()
-    expected=prior.replace("    if marker is None:return original(*args,**kwargs)","    # Qualification markers belong to qualification(), reached through the\n    # real native_overlap_worker handler; only census owns CHECKPOINT.\n    if marker is None or command.get('action')=='teacher_evidence':\n        return original(*args,**kwargs)")
+    head,body=prior.split('def checkpoint(original,args,kwargs):',1)
+    expected=head+'def checkpoint(original,args,kwargs):'+body.replace("    if marker is None:return original(*args,**kwargs)","    # Qualification markers belong to qualification(), reached through the\n    # real native_overlap_worker handler; only census owns CHECKPOINT.\n    if marker is None or command.get('action')=='teacher_evidence':\n        return original(*args,**kwargs)")
     assert source==expected,'unexpected diagnostic worker delta'
+    node=next(n for n in ast.parse(prior).body if isinstance(n,ast.FunctionDef) and n.name=='checkpoint')
+    assert (new/'native34_protocol_before.txt').read_text().rstrip()==ast.get_source_segment(prior,node),'negative oracle differs from real I2 checkpoint'
     assert (new/plugin.replace('e3/','native30_overlay/e3/',1)).read_text()==source
     for role in ('i','s','o'):
         base='q18a_native34_'+role
@@ -33,7 +36,7 @@ def check(build,out):
     added=set(after)-set(before);expected_added={'native34_protocol_before.txt'}|{'runs/q18a_native34_'+r+'3'+s for r in ('i','s','o') for s in ('.draft.sh','_declare.sh','_settings.sh')}
     assert added==expected_added,added^expected_added;assert not set(before)-set(after)
     assert sha(new/'SHA256SUMS')==b['manifest']
-    result=dict(verdict='PASS',classification=None,arm=b['arm'],parent_manifest=parent['manifest'],manifest=b['manifest'],engine_ordinary_gate_driver_byte_identical=True,plugin_only_qualification_marker_routing=True,queue_only_names=True,runner_only_names_pins_protocol_gate=True,changed=sorted(changed),added=sorted(added),removed=[],overlay_changed=sorted(changed_overlay),gpu_execution=False,box_action=False)
+    result=dict(verdict='PASS',classification=None,arm=b['arm'],parent_manifest=parent['manifest'],manifest=b['manifest'],engine_ordinary_gate_driver_byte_identical=True,plugin_only_qualification_marker_routing=True,negative_oracle_exact_parent_checkpoint=True,queue_only_names=True,runner_only_names_pins_protocol_gate=True,changed=sorted(changed),added=sorted(added),removed=[],overlay_changed=sorted(changed_overlay),gpu_execution=False,box_action=False)
     assert not out.exists();dump(out,result);print(json.dumps(dict(verdict='PASS',arm=b['arm'],out=str(out),sha256=sha(out))))
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--build',type=Path,required=True);p.add_argument('--out',type=Path,required=True);a=p.parse_args();check(a.build,a.out)
