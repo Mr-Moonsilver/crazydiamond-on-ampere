@@ -1,0 +1,70 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "native39 trunk robustness (Codex native37 P1/P2): R/W (e3_native39_trunk_probe.py, pinned CPU container, network none) and the hub suite test_native39_trunk.py. Every leaf replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
+ "leaves": [
+  {
+   "name": "w-one-token-sampler-output",
+   "test": "e3_native39_trunk_probe.sampled_step (W)",
+   "replaces": "The worker ModelRunnerOutput that EngineCore passes to update_from_output after each schedule()",
+   "equivalence": "As native37's t2-empty-sampler-output, plus one sampled token for the streaming session on the step that scheduled the end of its 2048-token input (the pinned _update_after_schedule has just set is_prefill_chunk False there; a mid-prefill chunk samples nothing, as on the box). With max_tokens=1 and resumable=True the pinned update_from_output -> _handle_stopped_request puts the session in WAITING_FOR_STREAMING_REQ, and the next input arrives through the real Scheduler.add_request -> _update_request_as_session, which discards that sampled token and sets WAITING with num_computed_tokens 2048. The token value (7) is never read by the paths under test.",
+   "cannot_prove": "Model output, MTP, the async-scheduling output race between steps (Stack.step updates synchronously)",
+   "box_evidence": false
+  },
+  {
+   "name": "r-w-native37-stack",
+   "test": "e3_native39_trunk_probe (R, W)",
+   "replaces": "The box EngineCore scheduler composition",
+   "equivalence": "e3_native37_admission_probe.Stack reused unchanged, with its declared leaves (native37_fixture_leaves.json: t2-reduced-model-config, t2-enginecore-pause-and-scheduler, t2-executor-never-called, t2-split-route-transition-outcome, t2-empty-sampler-output). R and W never advance the driver: the stock holds and native admission run inside the real AsyncScheduler.schedule() of the mounted generated core/scheduler.py. Stack.arm pauses the engine leaf, as prepare does on the box before arm_admission.",
+   "cannot_prove": "Worker-side UnsupportedRoute on the box (the negative control shows the stock chunk being scheduled on the armed split route, which the split-route worker guard refuses)",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-cold-stack-session",
+   "test": "test_native39_trunk.Session subclasses (HeldKinds, RefusalMemo, TypedRefusals, HoldBound, EvidenceFallback)",
+   "replaces": "The engine's scheduler and KV manager (test_e3_admission_native fakes, through test_e3_native_overlap.cold_stack), and the four workers (test_e3_r4_worker_bridge fakes)",
+   "equivalence": "native37's hub-cold-stack-session leaf, unchanged: the real NativeOverlapSession, NativeControlClient, generated utility dispatch, NativeSegmentDriver, PrefillAdmissionController and R4 worker bridges. TickCore.step runs the generated engine idle tick and driver.advance but not schedule(); Session.schedule_pass calls the generated scheduler's own seams in schedule() order (flash_s5_admit at the top, then the stock holds in loop order) \u2014 GeneratedSeams proves that placement in the generated source and R/W run the real schedule() in the container.",
+   "cannot_prove": "Pinned scheduler alignment or allocation (R/W and native37 T1/T2 do that in the container)",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-scheduler-requests",
+   "test": "test_native39_trunk.HoldBound.register",
+   "replaces": "Pinned Scheduler.requests (every unfinished request by id; finished/aborted requests are removed by _free_request)",
+   "equivalence": "The driver's hold bound reads only whether the dict is non-empty (NativeSegmentDriver._scheduler_holds_requests, the same read _engine_quiescent makes). The test registers the held requests, and clears the dict to model an aborted client.",
+   "cannot_prove": "The pinned abort path itself (native37 T2 abort-while-held runs it in the container)",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-fcfs-iterable-queues",
+   "test": "test_native39_trunk.RetainedRow (IterQueue, fcfs)",
+   "replaces": "Pinned FCFSRequestQueue (request_queue.py:75, a deque subclass) for waiting and skipped_waiting, and Scheduler._select_waiting_queue_for_scheduling under FCFS (scheduler.py:2492-2494)",
+   "equivalence": "IterQueue is the admission fake Queue with deque iteration (same objects, same order); fcfs() installs the pinned expression 'skipped_waiting or waiting or None'. The controller only peeks, removes by identity, prepends and iterates; the retained request is the fixture's own native request after its first committed chunk (real driver, bridges and controller).",
+   "cannot_prove": "Pinned queue ordering under the PRIORITY policy (production runs FCFS)",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-request-fields",
+   "test": "test_native39_trunk.TypedRefusals, HoldBound (num_output_tokens, KV Manager.cached)",
+   "replaces": "vllm.v1.request.Request.num_output_tokens after a preemption with output, and KVCacheManager.get_computed_blocks returning a prefix hit",
+   "equivalence": "The controller reads num_output_tokens and the hit length (num_new_computed) only. The pinned get_computed_blocks caps a hit at num_tokens-1 (the last token is always recomputed), so cached = n-1 is the full-prefix-hit case the review names; num_output_tokens > 0 is what a preempted request that had produced output carries when it re-enters waiting with num_computed_tokens 0 (pinned _preempt_request, scheduler.py:1650-1678).",
+   "cannot_prove": "The pinned prefix-cache lookup and preemption themselves",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-receipt-clock-and-evidence-failure",
+   "test": "test_native39_trunk.EvidenceFallback",
+   "replaces": "CLOCK_MONOTONIC for one refusal receipt (controller._now_ns), and a transport/identity failure of NativeControlClient.overlap_evidence",
+   "equivalence": "observed_ns=1 is a receipt observed before the window opened (an earlier window's refusal still being the newest receipt); the patched evidence call raises a typed NativeControlError other than the driver's empty-window refusal, the class of failure Codex P2 #5 names. Everything else is the real session and driver.",
+   "cannot_prove": "A real transport failure",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-pause-state",
+   "test": "test_native39_trunk.HoldBound (core.paused)",
+   "replaces": "EngineCore.is_scheduler_paused during a harness route change",
+   "equivalence": "TickCore.is_scheduler_paused is the attribute the driver's _engine_paused reads; toggling it is what pause/resume do.",
+   "cannot_prove": "Pause timing on the box",
+   "box_evidence": false
+  }
+ ]
+}
