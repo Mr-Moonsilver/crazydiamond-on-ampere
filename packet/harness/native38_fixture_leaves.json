@@ -49,6 +49,14 @@
       "equivalence": "Actual pinned stock health router and real FastAPI/Starlette ASGI execute. The client implements errored/check_health and returns the real driver status through call_utility_async; no owner binding or readiness is faked.",
       "cannot_prove": "Live Core socket readiness, model accuracy or actual CUDA/NCCL teardown.",
       "box_evidence": false
+    },
+    {
+      "name": "cpu-native38-startup-logger",
+      "test": "test_native38_plain_bind and test_e3_native_startup_binding.generated_package",
+      "replaces": "vllm.logger.init_logger in host-only startup fixtures",
+      "equivalence": "Standard logging.getLogger replaces only logger construction; receipt test observes the real startup info call and injects failures across every startup exit. Pinned-image ASGI probe uses real vLLM init_logger.",
+      "cannot_prove": "Host fixture does not prove vLLM log formatting or box log collection.",
+      "box_evidence": false
     }
   ]
 }

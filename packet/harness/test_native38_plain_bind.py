@@ -4,6 +4,7 @@ import asyncio
 from enum import StrEnum
 from functools import partial
 import multiprocessing
+import logging
 import os
 from pathlib import Path
 import sys
@@ -13,7 +14,7 @@ import time
 from types import SimpleNamespace
 from typing import Any
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'patches/s5_engine'), str(ROOT/'harness')]
@@ -22,6 +23,19 @@ from reply_transport import ReplyTransport, WorkerRPCError
 from s5_startup import bootstrap_full_startup, StartupError
 import test_e3_native_overlap as native
 from test_s5_reply_transport import Reader, Status
+
+
+def setUpModule():
+    global _logging_leaf_previous
+    _logging_leaf_previous = sys.modules.get('vllm.logger')
+    sys.modules['vllm.logger'] = SimpleNamespace(init_logger=logging.getLogger)
+
+
+def tearDownModule():
+    if _logging_leaf_previous is None:
+        sys.modules.pop('vllm.logger', None)
+    else:
+        sys.modules['vllm.logger'] = _logging_leaf_previous
 
 
 class Pause(StrEnum):
@@ -88,6 +102,58 @@ class OwnerStartup(unittest.TestCase):
         self.assertEqual(stack.scheduler.pause_state, Pause.UNPAUSED)
         self.assertFalse(core.paused)
         self.assertTrue(all(w._flash_s5_bridge.engine_epoch == stack.driver.engine_epoch for w in stack.workers.values()))
+
+    def test_startup_bound_receipt_once_after_proof_is_latched(self):
+        stack, core = self.stack()
+        logger = Mock()
+        def init_logger(name):
+            self.assertIsNotNone(core._flash_s5_startup_ready)
+            self.assertEqual(stack.scheduler.pause_state, Pause.UNPAUSED)
+            return logger
+        with patch.dict(sys.modules, {'vllm.logger': SimpleNamespace(init_logger=init_logger)}):
+            ready = bootstrap_full_startup(core, stack.driver, timeout_s=2)
+            with self.assertRaises(StartupError):
+                bootstrap_full_startup(core, stack.driver, timeout_s=2)
+        logger.info.assert_called_once_with(
+            'flash-s5 startup owner bound engine_epoch=%s ranks=%s route_after=%s route_generation_after=%s',
+            stack.driver.engine_epoch, list(stack.driver.ranks), 'full',
+            ready['full_transition']['route_generation_after'])
+
+    def test_startup_bound_receipt_absent_on_failure_paths(self):
+        cases = ('published', 'nonempty', 'queued', 'pause', 'deadline',
+                 'future', 'barrier', 'proof', 'acks', 'resume')
+        for case in cases:
+            with self.subTest(case=case):
+                stack, core = self.stack()
+                core.model_executor = SimpleNamespace(shutdown=lambda: None)
+                init_logger = Mock()
+                if case == 'published': core._flash_s5_startup_ready = {'fixture': True}
+                if case == 'nonempty': stack.scheduler.requests = {'fixture': object()}
+                if case == 'queued': core.batch_queue = [object()]
+                if case == 'acks': stack.driver.bootstrap_ack_rows = Mock(side_effect=ValueError('fixture'))
+                pause = stack.scheduler.set_pause_state
+                if case in ('pause', 'resume'):
+                    def set_pause(state):
+                        if case == 'pause' or state == Pause.UNPAUSED: raise ValueError('fixture')
+                        return pause(state)
+                    stack.scheduler.set_pause_state = set_pause
+                submit = stack.driver.submit_control
+                def submit_control(command):
+                    future = submit(command)
+                    def result():
+                        row = future.result()
+                        if case == 'future': raise ValueError('fixture')
+                        if case == 'barrier' and command['action'] == 'barrier':
+                            row = dict(row, workers=[])
+                        if case == 'proof' and command['action'] == 'leave_split':
+                            row = dict(row, typed_acks=False)
+                        return row
+                    return SimpleNamespace(done=future.done, result=result)
+                stack.driver.submit_control = submit_control
+                with patch.dict(sys.modules, {'vllm.logger': SimpleNamespace(init_logger=init_logger)}):
+                    with self.assertRaises((StartupError, ValueError)):
+                        bootstrap_full_startup(core, stack.driver, timeout_s=0 if case == 'deadline' else 2)
+                init_logger.assert_not_called()
 
     def test_second_owner_startup_refuses(self):
         stack, core = self.stack()

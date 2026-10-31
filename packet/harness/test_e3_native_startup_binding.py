@@ -14,6 +14,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -63,7 +64,8 @@ def generated_package():
         sys.modules[name] = module
         spec.loader.exec_module(module)
         try:
-            yield name, final, closure
+            with patch.dict(sys.modules, {'vllm.logger': types.SimpleNamespace(init_logger=logging.getLogger)}):
+                yield name, final, closure
         finally:
             for key in tuple(sys.modules):
                 if key == name or key.startswith(name+'.'):

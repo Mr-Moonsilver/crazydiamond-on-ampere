@@ -12,9 +12,11 @@
     "harness/test_e3_native_startup_binding.py": [
       "ActualStartupBindingTests.test_real_generated_engine_startup_uses_real_closure_transport_backend_and_driver",
       "ActualStartupBindingTests.test_relay_refuses_foreign_transport_lost_claim_and_worker_use",
+      "generated_package",
       "make_engine",
       "module:import dataclasses",
-      "module:import enum"
+      "module:import enum",
+      "module:import logging"
     ],
     "patches/s5_engine/engine_driver.py": [
       "NativeSegmentDriver._settle_route_control",

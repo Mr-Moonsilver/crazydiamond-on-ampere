@@ -386,6 +386,10 @@ def bootstrap_full_startup(engine, driver, *, timeout_s, clock=time.monotonic):
         raise
     else:
         scheduler.set_pause_state(old_pause)
+    from vllm.logger import init_logger
+    init_logger(__name__).info(
+        'flash-s5 startup owner bound engine_epoch=%s ranks=%s route_after=%s route_generation_after=%s',
+        driver.engine_epoch, list(driver.ranks), final['route_after'], final['route_generation_after'])
     return engine._flash_s5_startup_ready
 
 
