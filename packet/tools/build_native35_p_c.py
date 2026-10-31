@@ -3,8 +3,15 @@
 P-b, P-c and L2 row4 (claude/native35-l2, taken unchanged) harness files.
 
 P-c is P-b with FLASH_NATIVE30_LOCALIZE=0, the second declared diagnostic switch
-vs O. Its only queue deltas from P-b are that setting, native35-diagnostic as an
-explicit NOT_RUN record, the post-row4 step note and the header comment.
+vs O. Its queue deltas from P-b are that setting, native35-diagnostic as an
+explicit NOT_RUN record, the post-row4 step note, the row4 runner
+(e3_native35_p_c_placement.py: the L2 runner with the decode cohort stopped at
+the 20-token window boundary) and the header comment.  Lead decision 31 Oct
+2026 (option A + spool), after P-b's row4 refused collect:response-too-large:
+the shared driver's PLACEMENT_WINDOW_TOKENS is 20 (2 cohorts x 20 = the declared
+40 replays), observed replays are checked against [40, 56], the observer_end
+reply is read through a bounded 512 MiB spool with bytes/sha256 always kept,
+and ring/list overflows are explicit row4 missing reasons (e3_observer_census).
 
 Nothing in the engine changes: the overlay (SHA256SUMS 32673c37...), both review
 JSONs, every compiled library and every parent plugin stay byte-identical to O
@@ -44,8 +51,12 @@ ADDED_HARNESS={'e3_native35_performance.py','native35_performance_grade.py','nat
                'runs/q18a_native35_p_c.draft.sh','runs/q18a_native35_p_c_settings.sh','runs/q18a_native35_p_c_declare.sh','test_native35_p_c.py',
                # claude/native35-l2 (merged unchanged): the row4 runner, its suite and leaves, and the L2 queue texts that suite derives
                'e3_native35_l2_placement.py','test_native35_l2.py','native35_l2_fixture_leaves.json',
-               'runs/q18a_native35_l2.draft.sh','runs/q18a_native35_l2_settings.sh','runs/q18a_native35_l2_declare.sh'}
-CHANGED_HARNESS={'selftest.py'}
+               'runs/q18a_native35_l2.draft.sh','runs/q18a_native35_l2_settings.sh','runs/q18a_native35_l2_declare.sh',
+               # P-c row4 (option A + spool): the stop-at-window runner, the observer census, their suite and leaves
+               'e3_native35_p_c_placement.py','e3_observer_census.py','test_native35_p_c_window.py','native35_p_c_fixture_leaves.json'}
+# The shared driver (window tokens 20, replay bound, observer_end spool, census in the row4 evidence) and the
+# three suites whose fixtures pinned the 40-token window or the exact row4 missing list.
+CHANGED_HARNESS={'selftest.py','e3_native_qualification_driver.py','test_e3_native_qualification_driver.py','test_native30_e.py'}
 # The P-c self-run tools (probe, self-run, inert check), and the L2 tools that test_native35_l2.Tools reads from /source/tools.
 SHIPPED_TOOLS=('native35_p_c_cpu_probe.py','native35_p_c_selfrun.py','native35_p_c_inert_check.py','native35_l2_tools_derive.py','native35_l2_cpu_probe.py','native35_l2_selfrun.py')
 REGENERATED={'native30-provenance.json'}
@@ -66,7 +77,7 @@ def expected_tests():
 
 
 def p_gate():
-    return O_GATE.replace('==125','==%d'%expected_tests()).replace("result.get('native35_arm')=='O'","result.get('native35_arm')=='P-C' and result.get('native35_performance')=='PASS' and result.get('native35_row4_l2')=='PASS' and result.get('native35_localize_off')=='PASS'")
+    return O_GATE.replace('==125','==%d'%expected_tests()).replace("result.get('native35_arm')=='O'","result.get('native35_arm')=='P-C' and result.get('native35_performance')=='PASS' and result.get('native35_row4_l2')=='PASS' and result.get('native35_localize_off')=='PASS' and result.get('native35_p_c_row4')=='PASS'")
 
 
 def regression_from(log):
@@ -110,7 +121,13 @@ def details(regression,focused):
         native35_diagnostic='explicit NOT_RUN record, rc 2: LOCALIZE=0 leaves no receipts; native35_grade.py would read zero rows and print a vacuous PASS',
         native30_localize='kept unchanged: per_rank begins 0 on all four ranks is the box-side proof the switch was off',
         receipt_tail='the 30 s post-row4 gap kept, so W1 starts at the same offset as in P-b; only the step note changed',
-        row4='native33-form real placement through the L2 collector: e3_native35_l2_placement.py (ResumeWindowPlacementRunner, client window at the accepted resume receipt; claude/native35-l2 29f8265, sha256 '+L2_RUNNER_SHA+'), same argv, workload, bounds and grader; qualification phase byte-identical to the L2 queue',
+        row4=('native33-form real placement through e3_native35_p_c_placement.py (StoppedWindowPlacementRunner = the L2 ResumeWindowPlacementRunner, '
+              'claude/native35-l2 29f8265 sha256 '+L2_RUNNER_SHA+', plus the decode-cohort stop directly after the client window); same argv, workload, '
+              'budgets and grader; the qualification phase is the L2 queue phase with only the runner name swapped'),
+        row4_window=dict(window_tokens=20,replays_declared=40,replays_low=40,replays_high=56,
+                         derivation='lead decision 31 Oct 2026, option A: the observer is declared for 40 replays (PLACEMENT_REPLAYS, the ~60k-node window); 8 streams decode as 2 parity cohorts, so 2 x 20 tokens restores it; P-b let ~125 replays in'),
+        observer_end_spool=dict(ceiling_bytes=512*1024**2,drain_max_bytes=4*1024**3,default_cap_bytes=112*1024**2,
+                                derivation='client peak ~8x body (parse 3.2x, deep copies 2.1x, dump 2.2x) -> 4 GiB inside the 5 GiB observer transient margin (native30_gate TRANSIENT_MARGIN); caveat: workers and API server hold completed_reply and its encoded body at the same time, outside that margin'),
         phase_sequence=['startup','native35-ledger','row1','rule4_controls','rule4_candidate','row4-placement','native30-receipt-tail','w1_controls (six fixed repeats)',
                         'overlap-gates','overlap-round-0','memory-round-0','overlap-round-1','memory-round-1','overlap-engine','native35-performance'],
         w1='workloads/q17b-w1.json unchanged: 8x153537 prompts, 8192 gen, 20 s windows, FULL/split/FULL/FULL/split/FULL',
@@ -119,7 +136,7 @@ def details(regression,focused):
         not_before='2026-10-30T22:01:00Z',hard_end='2026-11-02T06:00:00Z',active_s=window.SPEED_ACTIVE_S,cleanup_margin_s=window.SPEED_CLEANUP_MARGIN_S,
         window_source='native35p_gate.speed_window_ok(time.time())',active_derivation=[list(r) for r in window.ACTIVE_DERIVATION],
         cleanup_derivation=[list(r) for r in window.CLEANUP_DERIVATION],expected_runtime_s=window.EXPECTED_RUNTIME_S,
-        fixture_leaves=['native35_p_fixture_leaves.json','native35_l2_fixture_leaves.json'],regression=regression,focused=focused,device_run='NOT_RUN',owner_prelaunch_cpu_executed=True,vm_input='NONE')
+        fixture_leaves=['native35_p_fixture_leaves.json','native35_l2_fixture_leaves.json','native35_p_c_fixture_leaves.json'],regression=regression,focused=focused,device_run='NOT_RUN',owner_prelaunch_cpu_executed=True,vm_input='NONE')
 
 
 def queue_differences():

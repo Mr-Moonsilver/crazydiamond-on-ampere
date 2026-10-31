@@ -14,7 +14,7 @@ W2_EVIDENCE=('No box W2 run of q18a-w2-overlap.json exists in results/box: all 1
 
 
 L2_WINDOW_TIMING=('The L2 row4 client window is token-bound, not time-bound (e3_decode_correctness.py:902-938). Starting at the accepted resume, it closes on token_bound '
-    'when every stream has +40 tokens over its count at the resume. early_finish is checked first, against a 64-token budget, and the wall bound is 10 s. '
+    'when every stream has +PLACEMENT_WINDOW_TOKENS over its count at the resume (40 in L2 and P-b; 20 in P-c, which halves the in-window decode the margin below must cover). early_finish is checked first, against a 64-token budget, and the wall bound is 10 s. '
     'L2\'s feasibility (claude/native35-l2 6380d57, L receipts) puts the bound 3.69 s after the resume, at least 21 sampling calls before the first possible finisher. '
     'That margin is counted in steps, so a faster host (LOCALIZE=0) only shortens it in wall time. The one host-speed-sensitive input is the count at the resume, which must be <= 24. '
     'L had 24 sampling calls from the decode sends to the resume and parity bounds <= 13 per stream. Before the resume only the basic begin/end lines were on, about 1 k lines/s; '
@@ -30,7 +30,7 @@ def precheck_summary(log):
 def record(build,freeze,freeze_check,selfrun,compile_proof,precheck_conf,precheck_log,strict_log,focused_log,note,out):
     b=json.loads(Path(build).read_text());s=json.loads(Path(selfrun).read_text());c=json.loads(Path(compile_proof).read_text());f=json.loads(Path(freeze_check).read_text())
     assert b['arm']=='P-C' and s['verdict']=='PASS' and s['rc']==0 and s['bundle_manifest']==b['manifest'] and s['frozen_runner_sha256']==b['runner_sha256']
-    assert s['tests_run']==b['expected_selfrun_tests'] and s['skips']==0 and s['native35_arm']=='P-C' and s['native35_performance']=='PASS' and s['native35_row4_l2']=='PASS' and s['native35_localize_off']=='PASS' and s['gpu_device_requests']==0
+    assert s['tests_run']==b['expected_selfrun_tests'] and s['skips']==0 and s['native35_arm']=='P-C' and s['native35_performance']=='PASS' and s['native35_row4_l2']=='PASS' and s['native35_localize_off']=='PASS' and s['native35_p_c_row4']=='PASS' and s['gpu_device_requests']==0
     assert s['overlay_manifest']==b['overlay_manifest'] and s['owner_prelaunch']['verdict']=='PASS' and s['image']==b['image']
     assert c['verdict']=='PASS' and c['manifest']==b['manifest'] and c['runner_sha256']==b['runner_sha256']
     assert f['verdict']=='PASS' and f['manifest']==b['manifest'] and f['freeze_proof_sha256']==sha(freeze)
@@ -39,7 +39,9 @@ def record(build,freeze,freeze_check,selfrun,compile_proof,precheck_conf,prechec
     focused=dict(b['focused'],log=str(focused_log));assert focused['log_sha256']==sha(focused_log)
     perf=Path(selfrun).with_name('native35-p-performance-check.json');slots=Path(selfrun).with_name('draft-window-check.json')
     details=json.loads((Path(b['bundle'])/'native30-provenance.json').read_text())['native35_p_c']
-    row4=Path(selfrun).with_name('native35-p-b-row4-check.json')  # P-c's row4 is P-b's (test_native35_p_c.Derivation)
+    row4=Path(selfrun).with_name('native35-p-b-row4-check.json')  # the inherited L2/P-b row4 receipts
+    pc_row4=Path(selfrun).with_name('native35-p-c-row4-check.json')  # P-c: window stop, observer_end spool, abort, exact argv
+    pc_rows=s['native35_p_c_row4_receipts']
     inert=Path(selfrun).with_name('native35-p-c-inert-check.json');cleanup=Path(selfrun).with_name('native35-p-c-cleanup-check.json')
     inert_row=json.loads(inert.read_text());assert inert_row['verdict']=='PASS' and inert_row['localize_off']['wrapped']==[] and inert_row['positive_control']['wrapped']
     row=dict(name=b['name'],arm='P-C',source=b['source'],predecessor=details['predecessor'],row4=details['row4'],
@@ -48,6 +50,9 @@ def record(build,freeze,freeze_check,selfrun,compile_proof,precheck_conf,prechec
         inert_positive_wrappers=len(inert_row['positive_control']['wrapped']),inert_positive_native30_lines=inert_row['positive_control']['native30_stderr_lines'],
         cleanup_check=str(cleanup),cleanup_check_sha256=sha(cleanup),cleanup_cases=sorted(r['case'] for r in s['native35_p_c_cleanup_receipts']),
         l2_window_timing=L2_WINDOW_TIMING,l2_runner_sha256=b['l2_runner_sha256'],
+        row4_window=details['row4_window'],observer_end_spool=details['observer_end_spool'],
+        p_c_row4_check=str(pc_row4),p_c_row4_check_sha256=sha(pc_row4),
+        p_c_row4_cases={k:sorted(r['case'] for r in pc_rows[k]) for k in ('timing','spool','abort')},
         row4_check=str(row4),row4_check_sha256=sha(row4),row4_cases=[r['case'] for r in s['native35_p_b_row4_receipts']]+sorted(r['case'] for r in s['native35_l2_timing_receipts']),bundle=b['bundle'],manifest=b['manifest'],overlay_manifest=b['overlay_manifest'],overlay_unchanged_from_o=True,
         coverage=b['checksummed_files'],runner=b['runner'],runner_sha256=b['runner_sha256'],runner_size=b['runner_size'],review_sha256=b['review_sha256'],image=b['image'],
         parent=dict(name='q18a-native35-o',manifest=b['parent_manifest'],runner_sha256=b['parent_runner_sha256']),

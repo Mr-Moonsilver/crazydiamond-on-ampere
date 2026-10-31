@@ -54,12 +54,12 @@ def check(build,proof_path,out):
     assert mine['H']=="Path('/home/<service-user>/harness/%s')"%b['manifest'][:12] and mine['BUNDLE']==repr(b['manifest'])
     for key in ('REVIEW','LAUNCHER','EXPECTED_SOURCES','IMAGE','BASE_MANIFEST','OBSERVER'):assert mine[key]==values[key],key
     assert mine['QNAME']=="'q18a-native35-p-c'" and mine['OVERLAY']=="Path('/data/vllm/flash-next-tp4/prod/overlay-v16s5-q18a-native35-p-c')"
-    assert "result.get('tests_run',0)==%d"%b['expected_selfrun_tests'] in runner and "result.get('native35_arm')=='P-C' and result.get('native35_performance')=='PASS' and result.get('native35_row4_l2')=='PASS' and result.get('native35_localize_off')=='PASS'" in runner
+    assert "result.get('tests_run',0)==%d"%b['expected_selfrun_tests'] in runner and "result.get('native35_arm')=='P-C' and result.get('native35_performance')=='PASS' and result.get('native35_row4_l2')=='PASS' and result.get('native35_localize_off')=='PASS' and result.get('native35_p_c_row4')=='PASS'" in runner
     result=dict(verdict='PASS',classification=None,manifest=b['manifest'],parent_manifest=bp.PARENT_MANIFEST,source=b['source'],parent_source=bp.PARENT_SOURCE,
         bundle_changed=changed,bundle_added=added,bundle_removed=removed,overlay_byte_identical=True,overlay_manifest=bp.PARENT_OVERLAY_MANIFEST,
         reviews_byte_identical=True,provenance_keys_changed=sorted(differ),queue_scripts=queue,runner_sha256=b['runner_sha256'],
         runner_declared_differences=['names q18a-native35-o -> q18a-native35-p-c (QNAME, OVERLAY, proof schema, declare/draft phase scripts)','H and BUNDLE pins',
-            'self-run gate: tests_run 125 -> %d, native35_arm O -> P-C, plus native35_performance PASS, native35_row4_l2 PASS and native35_localize_off PASS'%b['expected_selfrun_tests'],'check_slot window: native34_gate.window_ok -> native35p_gate.speed_window_ok'],
+            'self-run gate: tests_run 125 -> %d, native35_arm O -> P-C, plus native35_performance PASS, native35_row4_l2 PASS, native35_localize_off PASS and native35_p_c_row4 PASS'%b['expected_selfrun_tests'],'check_slot window: native34_gate.window_ok -> native35p_gate.speed_window_ok'],
         runner_unchanged=['REVIEW','LAUNCHER','EXPECTED_SOURCES','IMAGE','BASE_MANIFEST','OBSERVER','preflight/staging/arm/cleanup bodies'],
         l2_runner_sha256=bp.L2_RUNNER_SHA,freeze_proof_sha256=sha(proof_path),gpu_execution=False,box_action=False)
     with out.open('x') as f:json.dump(result,f,sort_keys=True,indent=2);f.write('\n')
