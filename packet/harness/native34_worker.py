@@ -563,10 +563,13 @@ def indexer_launch(original,args,kwargs):
             slot_contract=slot_contract(runner,with_native=True),
             arm=s['arm'],allocation_owner_scope='actual storage metadata plus source-declared owners; last device writer not presumed')
     observe(s,'indexer-inputs',metadata)
-    if readback.enabled() and s['rank'] in (0,1) and bracket:
+    # Native35 R: arm O keeps its original unfenced overlap; the bounded D2H
+    # copies are evidence only (current-stream copies, no drain, no fence).
+    evidence=readback.enabled() and s['rank'] in (0,1) and (bracket or s['arm']=='O')
+    if evidence:
         names=tuple(jit.arg_names);bound=dict(zip(names,args[1:]));bound.update({n:kwargs[n] for n in names if n in kwargs})
-        emit(s,'indexer-readback-begin',target_launched=False,arm=s['arm'])
-        try:readback.snapshot(runner,s,bound,emit)
+        emit(s,'indexer-readback-begin',target_launched=False,arm=s['arm'],after_registered_drain=bracket)
+        try:readback.snapshot(runner,s,bound,emit,drained=bracket)
         except (ValueError,KeyError,AttributeError,TypeError,IndexError) as exc:
             s['metadata_complete']=False
             emit(s,'unavailable',where='indexer-readback',error_type=type(exc).__name__,coverage_complete=False)

@@ -1,0 +1,41 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "native35 packaging gates: queue derivation, arm-O evidence readback, grades and the pinned-image builder-view check. Every leaf below replaces a real engine/box object only on the hub CPU; none is box evidence.",
+  "leaves": [
+    {
+      "name": "cpu-native35-draft-window-entry",
+      "replaces": "Only fail_early shell function and the box HARNESS_DIR path in the PY_SLOT entry of the R, O and L drafts; the owner's live arm-time check",
+      "equivalence": "Executes the exact shell command and Python heredoc of each native35 draft, importing the actual native34_gate/native35_gate modules and reading the real OS wall clock in a fresh Python process. The frozen pre-repair inline slot is executed on the real clock and refuses. No clock or gate is patched.",
+      "cannot_prove": "Actual box engine startup, device execution or remaining wall-clock budget at a future arm; the owner re-executes the slot at gate/arm time",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native35-o-arm-evidence-readback",
+      "replaces": "torch.cuda (test_native34_runtime.Cuda), the model/dispatcher/kv-cache owners (test_native34_readback.fixture), the JIT target launch and w.emit in test_native35_readback; vllm.v1.flash_e3.model_hooks aliased to the bundled model_hooks",
+      "equivalence": "The real native34_worker.indexer_launch and native34_readback.snapshot execute with arm O and FLASH_NATIVE34_READBACK=1: seven current-stream copies happen before the unchanged target launch, no event-sync (drain) precedes them and no stream synchronize follows the launch; the emitted records carry after_registered_drain=False. The I bracket path and the arm-O no-readback path are asserted byte-for-byte native34 behaviour on the same fixtures.",
+      "cannot_prove": "Device copy timing, the values an overlapped decode lane would leave in private storage, GPU fault absence or any ordering between the native prefill stream and the decode stream",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native35-grade-fixtures",
+      "replaces": "NATIVE30 host receipt rows (indexer-readback-complete, indexer-indirect-value with writer_chain, indexer-kernel-end), the retained startup-grade.json workers record and the L-arm phase records (lifecycle.json, hygiene-full.json, cross-session-leak.log, partial-leak.grade.json, pressure.completion.json, pressure.coverage.json)",
+      "equivalence": "Synthetic records with the exact field names the plugins and tools emit (native34_readback.writer_chain, LaneChunkFactory.inventory, e3_q18a_lifecycle, leaktest, pp_release_grade, pressure_wait); the graders native35_grade, native35_ledger_grade and native35_lifetime_grade execute unchanged on them. Negatives (ordinary writer in native storage history, unclassified builder field, in-flight generation, leak line, engine crash marker) must refuse PASS.",
+      "cannot_prove": "That the box emits these records; the box records are graded by the same unchanged code",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native35-queue-argv",
+      "replaces": "HTTPConnection.request and the VLLM_API_KEY private auth fixture in the exact R/O queue-argv tests (test_native35_grade.Frontend)",
+      "equivalence": "The actual e3_native34_causal.main parses the R and O drafts' real argv with the real workload and prefill-plan JSON until the prepare-full network call, which is refused at the socket boundary. No success result is manufactured; the device arm is asserted to be O.",
+      "cannot_prove": "Engine reachability, admission or any device behaviour",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native35-builder-view",
+      "replaces": "VllmConfig (scheduler_config, speculative_config, parallel_config stand-in), CUDA device (torch.device('cpu')) and the runner's AttentionGroup construction for the real pinned QSAMetadataBuilder in native35_builder_view_cpu_check",
+      "equivalence": "The real pinned QSAMetadataBuilder.__init__ runs on CPU with real CircularBufferSpec/MLAAttentionSpec objects, producing its actual persistent buffers and field set; the shipped lane_chunk.private_attention_groups then clones that real builder. Disjoint storage, byte ledger, fail-closed classification and the pinned CPU metadata kernel writing native rows into the private view while an ordinary four-request build writes the stock view are checked on real CPU tensors.",
+      "cannot_prove": "GPU allocation placement, the box VllmConfig values, device headroom, or any kernel reading the private buffers",
+      "box_evidence": false
+    }
+  ]
+}
