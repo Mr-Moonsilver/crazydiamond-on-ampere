@@ -160,6 +160,13 @@
       ],
       "name": "cpu-native34-exact-cli-network",
       "replaces": "HTTPConnection.request and private auth fixture in exact main queue-argv tests"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Actual box engine startup, device execution or remaining wall-clock budget at a future arm; the owner re-executes the slot at gate/arm time",
+      "equivalence": "Executes the exact shell command and Python heredoc from each of the six native34 draft variants, importing the actual native34_gate module and reading the real OS wall clock in a fresh Python process. The frozen pre-repair slot is also executed on the real clock and refuses. No clock or gate is patched.",
+      "name": "cpu-native34-draft-window-entry",
+      "replaces": "Only fail_early shell function when executing the isolated draft PY_SLOT entry; the surrounding queue engine/timeout path is not run"
     }
   ],
   "native32_scope": "receipt boundary resolves actual bridge.dispatcher.runner; engine and ordinary path byte-identical to native31; frozen owner source/package pre-launch assertions run on CPU",

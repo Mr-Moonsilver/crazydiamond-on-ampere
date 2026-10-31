@@ -1,0 +1,5 @@
+import datetime,time
+start=datetime.datetime(2026,10,30,17,30,tzinfo=datetime.timezone.utc).timestamp()
+end=datetime.datetime(2026,10,30,23,0,tzinfo=datetime.timezone.utc).timestamp()
+assert time.time() >= start, 'queue before operator not-before'
+assert time.time()+2100+420 <= end, 'queue worst case exceeds owner hard end'
