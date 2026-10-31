@@ -99,7 +99,7 @@ def focused_from(log):
     text=log.read_text();ran=re.findall(r'^Ran (\d+) tests? in ',text,re.M)
     assert ran and text.rstrip().endswith('OK') and 'skipped' not in text.rsplit('OK',1)[-1]
     return dict(tests=sum(int(n) for n in ran),skips=0,verdict='PASS',log_sha256=sha(log),
-                basis='native35 P-c, P-b, L2 and P suites plus the native35 R/O/L queue/grade, native28 host guard and rule4 continuation, native qualification driver, native measurement client/source and overlap performance suites on the final tree')
+                basis='native35 P-c (with the row4 capacity continuation), P-b, L2 and P suites plus the native35 R/O/L queue/grade, native28 host guard and rule4 continuation, native qualification driver, native measurement client/source and overlap performance suites on the final tree')
 
 
 def source_head():

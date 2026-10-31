@@ -24,9 +24,9 @@ def generate(build,out):
     names=[stem+s for s in ('.draft.sh','_declare.sh','_settings.sh')]
     pins='EXPECTED_QUEUE_SHAS=(\n'+''.join('  '+name+':'+hashlib.sha256((Path(b['bundle'])/'runs'/name).read_bytes()).hexdigest()+'\n' for name in names)+')'
     text,n=re.subn(r'EXPECTED_QUEUE_SHAS=\(\n.*?\n\)',lambda m:pins,text,flags=re.S);assert n==1
-    text,n=re.subn(r'SEAM_TESTS=\(',r'SEAM_TESTS=(test_native35_p_c.py test_native35_p_c_window.py test_native35_p_b.py test_native35_l2.py test_native35_performance.py test_native35_performance_queue.py ',text);assert n==1
+    text,n=re.subn(r'SEAM_TESTS=\(',r'SEAM_TESTS=(test_native35_p_c.py test_native35_p_c_window.py test_native35_p_c_continuation.py test_native35_p_b.py test_native35_l2.py test_native35_performance.py test_native35_performance_queue.py ',text);assert n==1
     out.write_text('# Native35 P-c (P-b with FLASH_NATIVE30_LOCALIZE=0, the headline speed run; P-b and P-a held unchanged); PREV is the frozen native35 O held-a bundle and runner.\n'
-        '# Engine delta vs PREV: none (overlay, reviews and compiled libraries byte-identical); harness adds the P/P-b/P-c queues, round CLI, aggregate grade, window, the L2 row4 runner, the P-c stop-at-window runner, observer census and the observer_end spool in the shared driver, and suites.\n'+text)
+        '# Engine delta vs PREV: none (overlay, reviews and compiled libraries byte-identical); harness adds the P/P-b/P-c queues, round CLI, aggregate grade, window, the L2 row4 runner, the P-c stop-at-window runner, observer census and the observer_end spool in the shared driver, the declared P-c row4 capacity continuation (classifier + W2 gate re-proof), and suites.\n'+text)
 
 
 if __name__=='__main__':
