@@ -406,7 +406,17 @@ class NativeOverlapSession:
         if self.measure_start_ns is None or self.begin_receipt is None:
             raise NativeOverlapSessionError('prefill-end-without-begin')
         end_ns = int(self.clock())
-        raw = await self.control.overlap_evidence(self.measure_start_ns, end_ns)
+        try:
+            raw = await self.control.overlap_evidence(self.measure_start_ns, end_ns)
+        except Exception as error:
+            # native37: a request native admission refused leaves no journaled
+            # native work, so the evidence read refuses the empty window.  Type
+            # that refusal from the queried admission record; any other evidence
+            # failure is raised unchanged.
+            refused = await self._refused_prefill_end(end_ns, error)
+            if refused is None:
+                raise error
+            return refused
         proof = self.control.history[-1].get('clock_proof') if self.control.history else None
         measured, binding = select_window_evidence(raw, self.begin_receipt,
                                                    self.measure_start_ns, end_ns)
@@ -424,6 +434,25 @@ class NativeOverlapSession:
             # request waited unallocated on the armed split route).
             result['refusal'] = refusal
             result['complete'] = False
+        self.measure_start_ns, self.begin_receipt, self.begin_proof = None, None, None
+        return result
+
+    async def _refused_prefill_end(self, end_ns, error):
+        """The typed refusal result when the evidence read failed, else ``None``."""
+        try:
+            status = await self.control.status()
+        except Exception:  # noqa: BLE001 - the original evidence error is raised
+            return None
+        refusal = native_admission_refusal(self.begin_receipt.get('native_admission'),
+                                           status.get('native_admission'))
+        if refusal is None:
+            return None
+        result = {'engine_epoch': status.get('engine_epoch'), 'route': status.get('route'),
+                  'begin': self.begin_receipt, 'clock': {'begin': self.begin_proof, 'end': None},
+                  'measure_start_ns': self.measure_start_ns, 'measure_end_ns': end_ns,
+                  'measurement_binding': None, 'measurement': None, 'raw_journal_evidence': None,
+                  'evidence_error': {'type': type(error).__name__, 'message': str(error)[:512]},
+                  'end_status': status, 'refusal': refusal, 'complete': False}
         self.measure_start_ns, self.begin_receipt, self.begin_proof = None, None, None
         return result
 

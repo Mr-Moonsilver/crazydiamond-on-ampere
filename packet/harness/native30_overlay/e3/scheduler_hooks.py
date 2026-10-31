@@ -2066,10 +2066,9 @@ def defer_stock_prefix_hit(scheduler, computed_blocks):
     route is FULL again instead of reaching the workers.
     """
     guard = _guard(scheduler)
-    if guard is None:
-        return False
-    if guard.defer_stock_prefix_hit(computed_blocks):
+    if guard is not None and guard.defer_stock_prefix_hit(computed_blocks):
         return True
+    # Independent of the lease guard: the intent alone decides the hold.
     return _defer_stock_while_split_armed(scheduler)
 
 
