@@ -23,6 +23,12 @@ Each class names the finding it closes and fails on the 72ea0ba engine:
   never while native work is in flight, never after the held requests left.
 * EvidenceFallback (P2 #5): prefill_end types only the empty-window evidence
   refusal, only for a receipt observed inside the window on the same engine.
+* StartupStep (speed queue b): P-c's startup step (e3_native_startup_grade:
+  prepare('full', 'full-prefill-solo'), identity, grade, resume) still works on
+  an engine native38 bound at startup: the prepare reuses the startup owner and
+  FULL fence (no second cold fence, no transition), carries the startup's four
+  TransitionAcks, and the grade's prepare rows pass exactly as they do after the
+  cold fence P-c took.  So the trunk queue keeps the step unchanged.
 
 Real objects: PrefillAdmissionController, SchedulerLeases, NativeSegmentDriver,
 the R4 worker bridges and native route objects (test_e3_native_overlap's cold
@@ -33,9 +39,13 @@ import ast
 import asyncio
 import gc
 import hashlib
+import json
+import logging
 from pathlib import Path
 import sys
+import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 import weakref
@@ -52,6 +62,8 @@ import telemetry_hooks  # noqa: E402
 import test_e3_admission_native as adm  # noqa: E402
 import test_e3_native_overlap as native  # noqa: E402
 import test_e3_native_storage_replay as replay  # noqa: E402
+import e3_native_startup_grade as startup_grade  # noqa: E402
+import test_native38_plain_bind as native38  # noqa: E402
 
 
 def e2_scheduler_source():
@@ -481,6 +493,97 @@ class EvidenceFallback(Session):
         self.assertEqual(end['refusal']['reason'], 'native-admission-refused:no-staged-plan')
         self.assertEqual(end['refusal_policy'], ns.REFUSAL_POLICY)
         self.assertIn(ns.EMPTY_WINDOW_ERROR, end['evidence_error']['message'])
+
+
+
+class ThreadControl:
+    """Leaf: the API server's native route (probe_control endpoint) over loopback HTTP.
+
+    The endpoint JSON-decodes the command, awaits NativeOverlapSession.execute
+    on the API event loop and JSON-encodes the reply; this does the same on a
+    loop thread that also runs the engine ticks.
+    """
+
+    def __init__(self, core, frontend):
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+
+        async def setup():
+            pump = native.Pump(core).start()
+            control = nc.NativeControlClient(frontend, timeout_s=5)
+            return pump, ns.NativeOverlapSession(frontend, control=control)
+        self.pump, self.native_session = asyncio.run_coroutine_threadsafe(setup(), self.loop).result(5)
+
+    def session(self, command, timeout_s):
+        future = asyncio.run_coroutine_threadsafe(
+            self.native_session.execute(json.loads(json.dumps(command))), self.loop)
+        return json.loads(json.dumps(future.result(timeout_s)))
+
+    def close(self):
+        asyncio.run_coroutine_threadsafe(self.pump.stop(), self.loop).result(5)
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(5)
+        if self.pump.failure:
+            raise self.pump.failure
+
+
+class StartupStep(unittest.TestCase):
+    def setUp(self):
+        # Leaf (as test_native38_plain_bind): vllm.logger for the startup receipt line.
+        self._logger = sys.modules.get('vllm.logger')
+        sys.modules['vllm.logger'] = SimpleNamespace(init_logger=logging.getLogger)
+
+    def tearDown(self):
+        if self._logger is None:
+            sys.modules.pop('vllm.logger', None)
+        else:
+            sys.modules['vllm.logger'] = self._logger
+
+    def startup_step(self, core):
+        """e3_native_startup_grade.main's engine calls, in its order (package check aside)."""
+        control = ThreadControl(core, native.Frontend(core))
+        try:
+            client = startup_grade.NativeRuntimeClient('http://127.0.0.1:9', 'native39-startup', control=control)
+            prepare = client.prepare('full', 'full-prefill-solo')
+            identity = client.call('identity')
+            record = startup_grade.grade(prepare, identity, epoch=client.epoch)
+            resume = client.resume()
+        finally:
+            control.close()
+        return client, prepare, record, resume
+
+    def test_the_p_c_startup_step_reuses_the_native38_startup_fence(self):
+        stack, core = native38.OwnerStartup().stack()
+        ready = native38.bootstrap_full_startup(core, stack.driver, timeout_s=2)
+        generation, journal = stack.driver.route_generation, len(stack.driver._journal)
+        self.assertEqual((generation, stack.driver._split_ready), (2, False))
+        client, prepare, record, resume = self.startup_step(core)
+        self.assertEqual(client.epoch, ready['engine_epoch'])
+        self.assertIsNone(prepare['initial_full_fence'])  # no second cold fence
+        self.assertFalse(prepare['changed'])
+        self.assertEqual(prepare['route'], 'full')
+        self.assertEqual(sorted(a['worker_rank'] for a in prepare['transition_acks']), [0, 1, 2, 3])
+        self.assertEqual({a['applied_route_generation'] for a in prepare['transition_acks']}, {generation})
+        self.assertEqual(stack.driver.route_generation, generation)
+        self.assertNotIn('transition', [e['kind'] for e in list(stack.driver._journal)[journal:]])
+        self.assertNotIn('actual-typed-full-prepare', record['missing'])
+        self.assertNotIn('prepare-route', record['failures'])
+        self.assertTrue(resume.get('resumed') or resume.get('already_running'))
+        self.assertIsNone(stack.driver.admission_intent())
+
+        # Counterfactual: the same step on an engine without the startup fence
+        # (P-c's case) takes the cold fence itself.  The grade rows the bind
+        # could change are identical; what differs is only the CPU fixture's
+        # absent worker inventory, the same in both.
+        cold = native.cold_stack()
+        cold.scheduler.waiting.items.clear()
+        cold_core, _ = native.core_for(cold, paused=False)
+        cold.scheduler.pause_state = native38.Pause.UNPAUSED
+        _, cold_prepare, cold_record, _ = self.startup_step(cold_core)
+        self.assertIsNotNone(cold_prepare['initial_full_fence'])
+        self.assertEqual((record['failures'], record['missing']),
+                         (cold_record['failures'], cold_record['missing']))
 
 
 if __name__ == '__main__':

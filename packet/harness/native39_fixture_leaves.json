@@ -65,6 +65,30 @@
    "equivalence": "TickCore.is_scheduler_paused is the attribute the driver's _engine_paused reads; toggling it is what pause/resume do.",
    "cannot_prove": "Pause timing on the box",
    "box_evidence": false
+  },
+  {
+   "name": "hub-startup-api-native-route",
+   "test": "test_native39_trunk.ThreadControl (StartupStep)",
+   "replaces": "The API server's native route: probe_control endpoint (loopback client host + bearer) that JSON-decodes the command, awaits NativeOverlapSession.execute on the API event loop and JSON-encodes the reply, reached by e3_native_startup_grade.NativeRuntimeClient over HTTP",
+   "equivalence": "NativeRuntimeClient is the real queue client, constructed with its control= seam; ThreadControl JSON round-trips each command and reply and awaits the real NativeOverlapSession.execute (real NativeControlClient, real generated utility dispatch) on one event-loop thread that also runs the engine ticks (native.Pump), as the API process awaits the engine core. Only the HTTP hop, the bearer and the loopback-host check are absent; the command and reply bytes are what the endpoint would encode.",
+   "cannot_prove": "HTTP/ASGI registration of the native route, bearer check, loopback host check, and real cross-process engine-core latency",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-startup-owner-bound-stack",
+   "test": "test_native39_trunk.StartupStep (native38 OwnerStartup.stack + bootstrap_full_startup)",
+   "replaces": "The box engine bound at startup by the native38 owner startup (EngineCore + four workers)",
+   "equivalence": "native38 leaves cpu-native38-storage-and-transport and cpu-native38-startup-logger, unchanged: real bootstrap_full_startup on the real NativeSegmentDriver and R4 worker bridges of test_e3_native_overlap.cold_stack. The counterfactual (P-c's engine) is the same cold_stack without the bootstrap.",
+   "cannot_prove": "GPU graph capture, NCCL, and the real worker native inventory (grade rows rank*:native-inventory and one-retained-storage-epoch are missing in both paths and four-distinct-incarnations fails in both: CPU fixture workers report no inventory)",
+   "box_evidence": false
+  },
+  {
+   "name": "hub-startup-logger",
+   "test": "test_native39_trunk.StartupStep.setUp",
+   "replaces": "vllm.logger.init_logger for the native38 startup receipt line",
+   "equivalence": "As cpu-native38-startup-logger: logging.getLogger replaces only logger construction; the startup info call is the real one.",
+   "cannot_prove": "vLLM log formatting and box log collection",
+   "box_evidence": false
   }
  ]
 }
