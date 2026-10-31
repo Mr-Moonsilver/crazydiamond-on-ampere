@@ -1,11 +1,11 @@
 {
  "schema": "fixture-leaves/1",
- "scope": "native35 P speed arm packaging gates (P-a and the P-b candidate): W1/W2 queue argv, the round salt namespace, the two-round composition, the aggregate grade and the queue measurement tail. Every leaf below replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
+ "scope": "native35 P speed arm packaging gates (P-a, P-b and the P-c candidate): W1/W2 queue argv, the round salt namespace, the two-round composition, the aggregate grade and the queue measurement tail. Every leaf below replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
  "leaves": [
   {
    "name": "cpu-native35-p-first-network-boundary",
    "replaces": "http.client.HTTPConnection.request for the native session POST (/v1/flash_s5_native_overlap) in test_native35_performance.QueueArgvBoundary: the first command send of e3_native_w1.main and e3_native35_performance.main",
-   "equivalence": "The exact W1 and W2 invocations are cut from the P-b candidate draft text (its tail is P-a's byte for byte, test_native35_performance_queue) and run through the real main(argv): real workload manifests, real gates.json written by the queue's own PY_GATES heredoc, the real reviewed package gate over the frozen overlay (verify_finalized_package included), the real first-advance read-timeout declaration from the P settings, the real NativeRuntimeClient and LoopbackControl. The replaced send asserts host/port/timeout, path, auth header and the command (action, route, phase, run_id, engine_epoch, command_seq) and then refuses, as a dead engine port would.",
+   "equivalence": "The exact W1 and W2 invocations are cut from the P-c candidate draft text (its gates and measurement tail are P-b's and P-a's byte for byte, test_native35_performance_queue and test_native35_p_c) and run through the real main(argv): real workload manifests, real gates.json written by the queue's own PY_GATES heredoc, the real reviewed package gate over the frozen overlay (verify_finalized_package included), the real first-advance read-timeout declaration from the P settings, the real NativeRuntimeClient and LoopbackControl. The replaced send asserts host/port/timeout, path, auth header and the command (action, route, phase, run_id, engine_epoch, command_seq) and then refuses, as a dead engine port would.",
    "cannot_prove": "Any engine reply, native admission, decode or prefill behaviour, or that the box engine accepts these commands",
    "box_evidence": false
   },
@@ -26,22 +26,36 @@
   {
    "name": "cpu-native35-p-queue-tail",
    "replaces": "The W1, W2-round, memory-grade and rule4-continuation phase executables (FAKE_PHASE in test_native35_performance_queue), and the shell probes systemctl, health_ok and host_crash_detected",
-   "equivalence": "The queue's own bytes run under bash: record/step cut from the P-b candidate draft, the native28 rule4-continuation -> qualification-ready -> W1 -> PY_GATES block, the two-round loop with its health/NRestarts withholding, and the real native35_performance_grade.py. Fakes assert their argv/env (round index, run id, read bound, readiness/package paths, per-round output and memory pairing) and write minimal artifacts. The real PY_FINAL writes queue-grade.json from the aggregate grade or an explicit NOT_RUN.",
+   "equivalence": "The queue's own bytes run under bash: record/step cut from the P-c candidate draft, the native28 rule4-continuation -> qualification-ready -> W1 -> PY_GATES block, the two-round loop with its health/NRestarts withholding, and the real native35_performance_grade.py. Fakes assert their argv/env (round index, run id, read bound, readiness/package paths, per-round output and memory pairing) and write minimal artifacts. The real PY_FINAL writes queue-grade.json from the aggregate grade or an explicit NOT_RUN.",
    "cannot_prove": "Engine startup, the earlier qualification phases, the measured values, or owned cleanup/restore (inherited unchanged from O and covered by its suites)",
    "box_evidence": false
   },
   {
    "name": "cpu-native35-p-draft-window-entry",
-   "replaces": "Only the fail_early shell function and the box HARNESS_DIR path in the P-a and P-b drafts' PY_SLOT entry; the owner's live arm-time check",
-   "equivalence": "Executes the exact shell command and Python heredoc of each P draft (P-a and P-b), importing the actual native35p_gate (bounds from native34_gate, unchanged) and reading the real OS wall clock in a fresh Python process. No clock or gate is patched.",
+   "replaces": "Only the fail_early shell function and the box HARNESS_DIR path in the P-a, P-b and P-c drafts' PY_SLOT entry; the owner's live arm-time check",
+   "equivalence": "Executes the exact shell command and Python heredoc of each P draft (P-a, P-b and P-c), importing the actual native35p_gate (bounds from native34_gate, unchanged) and reading the real OS wall clock in a fresh Python process. No clock or gate is patched.",
    "cannot_prove": "Remaining wall-clock budget at a future arm; the owner re-executes the slot at gate/arm time",
    "box_evidence": false
   },
   {
    "name": "cpu-native35-p-b-row4-argv",
    "replaces": "http.client.HTTPConnection.request for the first native session POST in test_native35_p_b.Row4CLI, the VLLM_API_KEY private auth fixture, and the frozen row1 plan and retained rule4_controls teacher artifact (test_e3_native_qualification_driver.retained_teacher) that row1 and rule4_controls leave in the queue store on the box before row4",
-   "equivalence": "The exact P-b row4 invocation is cut from the P-b draft qualification phase, which is byte-identical to the L2 queue phase (test_native35_p_b.Derivation), and runs through the real e3_native35_l2_placement.main and e3_q18a_qualification.main: the real QualificationDriver and ImmutableStore, the frozen q17b-correctness-precontrols workload and q18a-native-placement-prefill plan, and the L2 ResumeWindowPlacementRunner bound for the call and restored afterwards. The replaced send records host, port, path, auth header and the command and then refuses, as a dead engine port would.",
+   "equivalence": "The exact P-b row4 invocation is cut from the P-b draft qualification phase, which is byte-identical to the L2 queue phase (test_native35_p_b.Derivation), and runs through the real e3_native35_l2_placement.main and e3_q18a_qualification.main: the real QualificationDriver and ImmutableStore, the frozen q17b-correctness-precontrols workload and q18a-native-placement-prefill plan, and the L2 ResumeWindowPlacementRunner bound for the call and restored afterwards. The replaced send records host, port, path, auth header and the command and then refuses, as a dead engine port would. P-c runs the same row4: its qualification phase is byte-identical to P-b's and L2's (test_native35_p_c.Derivation).",
    "cannot_prove": "Any engine reply, the client window timing on the box, the cause of the 83 s native prefill TTFT seen in L, or a row4 PASS",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-cleanup-logs",
+   "replaces": "The engine-stream.log/.err of a LOCALIZE=0 box run and the qual-row4.json of a passed row4, in test_native35_p_c.Cleanup (ordinary engine lines and a {verdict: PASS} row4 record)",
+   "equivalence": "The P-c cleanup lines for native30-localize and native35-diagnostic are cut from the P-c draft and run under bash with the queue's own record/step and the real e3_native30_e_grade.py, e3_native30_grade.py and native35_grade.py. Both graders read only lines containing \"NATIVE30 \" (e3_native30_grade.py:17-18, e3_native30_e_grade.py:14, native34_grade.py:27) and only the verdict/arm/reason of the row4 record (e3_native30_grade.py:46, native34_grade.py:42-56), so ordinary lines stand for any LOCALIZE=0 log. The LOCALIZE=1 counterfactual rows are written by the real native30_localize.emit.",
+   "cannot_prove": "That the box engine emitted no NATIVE30 line (that is the box run's own localize-grade per_rank begins), or any engine fault outcome",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-inert-env",
+   "replaces": "The box engine processes' environment and plugin loading, in tools/native35_p_c_inert_check.py: a fresh python3 in the pinned image, the overlay mounted at the box paths, the CPU libcuda stub for the driver, and from the settings EXTRA_ENV only the plugin switches and PYTHONPATH",
+   "equivalence": "The four plugin modules read only FLASH_NATIVE30_LOCALIZE, FLASH_NATIVE30_SYNC, FLASH_NATIVE33_DIAG, FLASH_NATIVE34_DIAG, FLASH_NATIVE34_ARM, FLASH_NATIVE34_READBACK and CUDA_LAUNCH_BLOCKING (every os.environ read in native30_plugins/*.py). They act only in install(), which vLLM's real load_general_plugins() calls. The child takes those tokens from the exact settings bytes, removes every inherited FLASH_*, CUDA_LAUNCH_BLOCKING and PYTHONPATH, runs load_general_plugins() and scans every target module the plugins declare. The identical child under the P-b settings finds the 21 native30 wrappers, the meta_path finder and NATIVE30 lines (positive control).",
+   "cannot_prove": "GPU-time behaviour of the engine, or plugins loaded through a path other than vllm.general_plugins entry points",
    "box_evidence": false
   }
  ]

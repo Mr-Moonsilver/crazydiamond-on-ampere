@@ -23,7 +23,8 @@ import native35p_gate as gate
 SLOT_RECEIPTS=[]
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parent;RUNS=HERE/'runs'
 P_DRAFT=RUNS/'q18a_native35_p.draft.sh'
-PB_DRAFT=RUNS/'q18a_native35_p_b.draft.sh'  # the candidate; executed by the window and tail tests
+PB_DRAFT=RUNS/'q18a_native35_p_b.draft.sh'
+PC_DRAFT=RUNS/'q18a_native35_p_c.draft.sh'  # the candidate; executed by the window and tail tests
 TAIL_START='\n# The real phase producer has joined/stopped its owned clients before returning.\n'
 O_STOP_HEAD="# Stop after native28 row4; no W1/performance/lifecycle queue follows.\n"
 GATES_END='gate_rc=$?;step overlap-gates "$gate_rc"\n'
@@ -95,6 +96,7 @@ class Derivation(unittest.TestCase):
 
     def test_tail_is_native28_gates_w1_block_then_two_rounds_then_the_l_ending(self):
         self.assertEqual(p_parts(PB_DRAFT)[1:],p_parts(P_DRAFT)[1:])  # P-b tail = P-a tail, byte for byte
+        self.assertEqual(p_parts(PC_DRAFT)[2:],p_parts(PB_DRAFT)[2:])  # P-c gates + measurement = P-b's; its receipt-tail note differs (test_native35_p_c)
         _,_,gates,measurement=p_parts()
         self.assertIn('python3 "$H/e3_native_w1.py" "$PROBE_URL" "$MODEL" "$Q/w1.json"',gates)
         self.assertIn('for _gate in startup row1 rule4_controls rule4_candidate row4 w1_controls; do',gates)
@@ -110,7 +112,9 @@ class Derivation(unittest.TestCase):
     def test_settings_are_o_with_diagnostics_off_and_the_native28_read_bound(self):
         p=as_o((RUNS/'q18a_native35_p_settings.sh').read_text());o=(RUNS/'q18a_native35_o_settings.sh').read_text()
         self.assertIn(' FLASH_NATIVE33_DIAG=0 FLASH_NATIVE34_DIAG=0 FLASH_NATIVE30_SYNC=',p);self.assertNotIn('FLASH_NATIVE34_ARM',p)
-        self.assertIn('FLASH_NATIVE30_LOCALIZE=1',p)  # inherited, unchanged
+        self.assertIn('FLASH_NATIVE30_LOCALIZE=1',p)  # P-a: inherited, unchanged
+        self.assertIn(' FLASH_NATIVE30_LOCALIZE=0 ',(RUNS/'q18a_native35_p_c_settings.sh').read_text())  # P-c: the second declared switch
+        self.assertNotIn('FLASH_NATIVE30_LOCALIZE=1',(RUNS/'q18a_native35_p_c_settings.sh').read_text())
         p=once(p,' FLASH_NATIVE33_DIAG=0 FLASH_NATIVE34_DIAG=0 ',' FLASH_NATIVE33_DIAG=0 FLASH_NATIVE34_DIAG=1 FLASH_NATIVE34_ARM=O ')
         p=once(p,'Q18A_FIRST_ADVANCE_READ_TIMEOUT_S=1200\n','Q18A_FIRST_ADVANCE_READ_TIMEOUT_S=480\n')
         self.assertEqual(p,o)
@@ -138,14 +142,14 @@ class Window(unittest.TestCase):
         self.assertEqual((gate.SPEED_ACTIVE_S,gate.SPEED_CLEANUP_MARGIN_S,gate.SPEED_ACTIVE_AND_CLEANUP),(14400,900,15300))
         self.assertLessEqual(sum(s for _,s,_ in gate.ACTIVE_DERIVATION),gate.SPEED_ACTIVE_S)
         self.assertLessEqual(sum(s for _,s,_ in gate.CLEANUP_DERIVATION),gate.SPEED_CLEANUP_MARGIN_S)
-        for draft in (P_DRAFT,PB_DRAFT):self.assertIn('--kill-after=%ds %ds env'%(gate.SPEED_CLEANUP_MARGIN_S,gate.SPEED_ACTIVE_S),draft.read_text())
+        for draft in (P_DRAFT,PB_DRAFT,PC_DRAFT):self.assertIn('--kill-after=%ds %ds env'%(gate.SPEED_CLEANUP_MARGIN_S,gate.SPEED_ACTIVE_S),draft.read_text())
         self.assertFalse(gate.speed_window_ok(gate.NOT_BEFORE-1));self.assertTrue(gate.speed_window_ok(gate.NOT_BEFORE))
         self.assertTrue(gate.speed_window_ok(gate.HARD_END-15300));self.assertFalse(gate.speed_window_ok(gate.HARD_END-15300+1))
         self.assertLess(gate.EXPECTED_RUNTIME_S['conservative'],gate.SPEED_ACTIVE_S)
 
     def test_p_draft_window_slot_executes_at_real_wall_clock(self):
         env=dict(os.environ,HARNESS_DIR=str(HERE),PYTHONDONTWRITEBYTECODE='1')
-        for draft in (P_DRAFT,PB_DRAFT):
+        for draft in (P_DRAFT,PB_DRAFT,PC_DRAFT):
             source=draft.read_text();begin=source.index("python3 - <<'PY_SLOT'");end=source.index('\nPY_SLOT',begin)+len('\nPY_SLOT');actual=source[begin:end]
             self.assertIn('from native35p_gate import speed_window_ok as window_ok',actual);self.assertNotIn('datetime',actual)
             completed=subprocess.run(['bash','-c','fail_early() { return 2; }\n'+actual],env=env,capture_output=True,text=True)
@@ -179,9 +183,9 @@ class MeasurementTail(unittest.TestCase):
     """The queue's own tail bytes, from the rule4 continuation through the aggregate grade."""
 
     def run_tail(self,fake,verdicts,rounds=('INCONCLUSIVE','PASS'),unhealthy_after=None):
-        p=PB_DRAFT.read_text()
+        p=PC_DRAFT.read_text()
         functions=''.join(p[p.index(name+'() {\n'):p.index('\n}\n',p.index(name+'() {\n'))+3] for name in ('step','record'))
-        _,_,gates,measurement=p_parts(PB_DRAFT)
+        _,_,gates,measurement=p_parts(PC_DRAFT)
         h=fake/'h';h.mkdir()
         for name in ('e3_native_w1','e3_native35_performance','e3_native_memory_grade','e3_native28_rule4_continuation'):
             (h/(name+'.py')).write_text(FAKE_PHASE)
@@ -245,7 +249,7 @@ class MeasurementTail(unittest.TestCase):
 
     def final_grade(self,q,graded):
         """The queue's PY_FINAL writes measured_performance from the aggregate, or an explicit NOT_RUN."""
-        p=PB_DRAFT.read_text();begin=p.index("<<'PY_FINAL' 2>/dev/null || true\n")
+        p=PC_DRAFT.read_text();begin=p.index("<<'PY_FINAL' 2>/dev/null || true\n")
         code=p[p.index('\n',begin)+1:p.index('\nPY_FINAL\n',begin)]
         env=dict(os.environ,Q18A_TERMINAL_PHASES=json.dumps({'row4':'PASS'}),PYTHONDONTWRITEBYTECODE='1')
         for directory,expected in ((q,graded),(q.parent/'empty',{'verdict':'NOT_RUN','missing':['native35-performance-grade-absent'],'target_is_gate':False})):

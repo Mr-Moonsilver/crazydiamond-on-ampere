@@ -724,6 +724,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_native35_performance_queue.py', 'Native35 P queue derivation from frozen O/native28 texts, declared speed window at real clock, measurement tail with the real aggregate grade and PY_FINAL measured_performance (CPU only)'),
                      ('test_native35_l2.py', 'Native35 L2 row4: client window at the accepted resume receipt (claude/native35-l2), parent run source relation, box-shaped timing with the real window/open waits, exact L2 row4 argv (CPU only)'),
                      ('test_native35_p_b.py', 'Native35 P-b: P-a under fresh names plus the exact L2 row4 qualification phase, pinned L2 runner bytes, exact P-b row4 argv to the first send with the L2 runner (CPU only)'),
+                     ('test_native35_p_c.py', 'Native35 P-c: P-b under fresh names with FLASH_NATIVE30_LOCALIZE=0, native35-diagnostic NOT_RUN and the post-row4 note as the only deltas; real cleanup graders over a LOCALIZE=0 log with the P-b and emitter counterfactuals (CPU only)'),
                      ('test_native33.py', 'Native33 rank1 launch fences, PP exclusion and real pinned graph host capture/pointer conformance (CPU only)'),
                      ('test_native32.py', 'Native32 real Bridge receipt receiver conformance, frozen native31 negative and scope preservation (CPU only)'),
                      ('test_native31.py', 'Native31 TP canonical selection, real sparse wave boundary and certified prompt client error (CPU only)'),
