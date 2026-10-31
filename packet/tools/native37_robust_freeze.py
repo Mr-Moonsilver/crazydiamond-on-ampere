@@ -52,6 +52,11 @@ SOURCE_PATHS = ({'M\tpatches/s5_engine/' + n for n in ENGINE} | {'M\tpatches/s5_
                                                'native37_fixture_leaves.json')}
                 | {'A\ttools/' + n for n in ('native37_robust_selfrun.py', 'native37_robust_freeze.py',
                                              'build_native37_robust.py')})
+# The held-c delivery commit (cc56b7f, after the 720b123 build source) added the
+# owner precheck config; native37 branches off that delivery (6ea3d37) and must
+# leave it byte-identical.
+BRANCH_BASE = '6ea3d37a962fe2c58c27ac54fa1fea84579f3170'
+INHERITED = {'A\ttools/owner-precheck/native-precheck.conf.native35-p-c'}
 OVERLAY_METADATA = {'S5-OVERLAP-GENERATION.json', 'e3/native-implementation-closure.json',
                     'e3/native-overlap-readiness.json', 'e3/decode-probe-evidence.json', 'SHA256SUMS'}
 
@@ -117,7 +122,14 @@ def source_level():
     rows = [line for line in subprocess.check_output(
         ['git', 'diff', '--name-status', PARENT_SOURCE, 'HEAD', '--', 'patches/s5_engine', 'harness', 'tools'],
         cwd=ROOT, text=True).splitlines() if line]
-    assert set(rows) == SOURCE_PATHS, ('undeclared paths', sorted(set(rows) ^ SOURCE_PATHS))
+    assert set(rows) == SOURCE_PATHS | INHERITED, ('undeclared paths', sorted(set(rows) ^ (SOURCE_PATHS | INHERITED)))
+    delivery = {line for line in subprocess.check_output(
+        ['git', 'diff', '--name-status', PARENT_SOURCE, BRANCH_BASE, '--', 'patches/s5_engine', 'harness', 'tools'],
+        cwd=ROOT, text=True).splitlines() if line}
+    assert delivery == INHERITED, ('held-c delivery paths', sorted(delivery ^ INHERITED))
+    untouched = subprocess.check_output(['git', 'diff', '--name-only', BRANCH_BASE, 'HEAD', '--']
+                                        + [row.split('\t', 1)[1] for row in INHERITED], cwd=ROOT, text=True)
+    assert not untouched, 'native37 changed an inherited delivery path: ' + untouched
     proofs = {}
     for name, declared in ENGINE.items():
         path = 'patches/s5_engine/' + name
@@ -128,7 +140,8 @@ def source_level():
         proofs[path] = prove(old, new, path, declared)
         if name == 'selftest.py':
             proofs[path]['added_row'] = selftest_rows(old, new)
-    return dict(paths=sorted(rows), definitions=proofs)
+    return dict(paths=sorted(set(rows) - INHERITED), inherited_from_held_c_delivery=sorted(INHERITED),
+                branch_base=BRANCH_BASE, definitions=proofs)
 
 
 def manifest(root):
