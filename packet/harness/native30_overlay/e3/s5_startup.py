@@ -232,6 +232,10 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
     server.row1_provider = row1_provider
 
     factory = LaneChunkFactory(runner)
+    # One per-worker private metadata generation, allocated once at startup.
+    # Its byte count and full builder-field classification are included in
+    # the existing native inventory/ledger; no per-chunk storage is retained.
+    native.native_builder_inventory = factory.inventory
     dispatcher = LaneDispatcher(runner, native, factory, server=server, qsa_module=qsa_module(),
                                 driver_factory=driver_factory,
                                 forward_context_getter=forward_context_getter)

@@ -186,7 +186,10 @@ def make(is_sender=True, torch=None, operation='op', drained=True):
     chunk = types.SimpleNamespace(req_index=2, lane_inputs=lambda: {'positions': 'p'},
                                   forward_scope=lambda: contextlib.nullcontext(),
                                   finish_state=lambda: True)
-    factory = types.SimpleNamespace(admit=lambda adm: chunk, release=lambda: 'req-a', calls=[])
+    factory = types.SimpleNamespace(admit=lambda adm: chunk, release=lambda: 'req-a', calls=[],
+                                    complete_chunk=lambda value, *, consumers_complete:
+                                    factory.calls.append(('metadata-complete', value,
+                                                          consumers_complete)))
     channel = FakeChannel(is_sender)
     native = types.SimpleNamespace(
         split=types.SimpleNamespace(prefill_stream=FakeStream(7)),
@@ -314,12 +317,15 @@ class DispatcherStage0Tests(unittest.TestCase):
         self.assertFalse(d.drain())
         with self.assertRaises(E3Pending):
             d.release()
+        self.assertFalse(any(row[0] == 'metadata-complete' for row in d.factory.calls))
         ticket = d.pp_send_ticket
         with self.assertRaises(LaneDispatchError):
             d.accept_pp_consumer_proof(proof_for(ticket, seq=99))
         self.assertTrue(d.accept_pp_consumer_proof(proof_for(ticket)))
         self.assertTrue(d.drain())
         self.assertTrue(d.release())
+        self.assertTrue(any(row[0] == 'metadata-complete' and row[2] is True
+                            for row in d.factory.calls))
         self.assertIn(('release_send', 3), self.channel.calls)
         self.assertIsNone(d.transaction)
         self.assertEqual(d.close_request(), 'req-a')

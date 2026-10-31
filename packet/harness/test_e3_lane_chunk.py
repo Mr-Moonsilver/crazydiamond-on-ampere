@@ -48,6 +48,12 @@ class T:
     def element_size(self):
         return 4
 
+    def data_ptr(self):
+        return id(self)
+
+    def clone(self):
+        return T(list(self.values), self.shape, self.dtype, self.device)
+
     def to(self, device):
         self.device = device
         return self
@@ -105,6 +111,7 @@ class T:
 
 def fake_torch():
     torch = types.SimpleNamespace(int32='i32', int64='i64', bool='bool')
+    torch.Tensor = T
 
     def _numel(shape):
         n = 1
@@ -156,6 +163,14 @@ class FakeBlockTables:
         self.calls.append(('apply-tables',))
 
 
+class FakeAttentionGroup:
+    def __init__(self, builders):
+        self.metadata_builders = builders
+
+    def get_metadata_builder(self, index=0):
+        return self.metadata_builders[index]
+
+
 class FakeCtx:
     def __init__(self):
         self.calls = []
@@ -195,8 +210,10 @@ class FakeMambaContext:
 
 
 def fake_runner(torch, calls):
-    builder = types.SimpleNamespace(mamba_aligned_state_indices=None)
-    group = types.SimpleNamespace(get_metadata_builder=lambda i: builder)
+    builder = types.SimpleNamespace(mamba_aligned_state_indices=None,
+                                    persistent_scratch=T([1, 2]),
+                                    output_buffers=[T([3, 4])])
+    group = FakeAttentionGroup([builder])
     state = types.SimpleNamespace(
         _align_mode=True, _mamba_state_copy_funcs={'gdn': 1},
         _get_mamba_group_info=lambda cfg: ([0, 1], types.SimpleNamespace(block_size=4)),
@@ -231,7 +248,8 @@ def fake_ports(calls):
         MambaHybridAttnMetadata=lambda **kw: ('mamba', kw['is_prefilling'].values),
         build_attn_metadata=lambda **kw: calls.append(('build', kw['num_tokens'], kw['max_seq_len'])) or {'layer': types.SimpleNamespace(query_start_loc=kw['query_start_loc_gpu'], seq_lens=kw['seq_lens'], num_actual_tokens=kw['num_tokens'])},
         build_slot_mappings_by_layer=lambda m, cfg: {'layer': m},
-        create_forward_context=lambda md, cfg, **kw: ('fc', md, kw['batch_descriptor']),
+        create_forward_context=lambda md, cfg, **kw: ('fc', md, kw['batch_descriptor'],
+                                                     kw['cudagraph_runtime_mode']),
         override_forward_context=override, cudagraph_none='NONE',
         align_preprocess=lambda *a, **kw: calls.append(('align-pre', a[7], a[8])),
         mamba_context=FakeMambaContext,
@@ -398,11 +416,20 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(chunk.req_index, 2)
         self.assertIn('align-pre', tags)
         self.assertLess(tags.index('align-pre'), tags.index('build'), 'pre-copy before metadata')
-        self.assertEqual(self.runner.builder.mamba_aligned_state_indices, 'idx-g1')
+        native_builder = self.factory.native_attn_groups[0][0].get_metadata_builder(0)
+        self.assertEqual(native_builder.mamba_aligned_state_indices, 'idx-g0')
+        self.assertIsNone(self.runner.builder.mamba_aligned_state_indices,
+                          'native lane must not mutate the stock builder field')
+        self.assertIsNot(native_builder.persistent_scratch, self.runner.builder.persistent_scratch)
+        self.assertIsNot(native_builder.output_buffers[0], self.runner.builder.output_buffers[0])
         self.assertEqual(FakeMambaContext.instances[0].calls, [('precopy', 1), ('aligned', 1)])
         self.assertIs(chunk.attn_metadata['layer']._qsa_host_meta, chunk.qsa_host_plan)
         self.assertEqual(chunk.qsa_host_plan, ([0, 8], [8]))
         self.assertEqual(chunk.forward_context[2], ('desc', 8, 1))
+        self.assertEqual(chunk.forward_context[3], 'NONE',
+                         'native metadata is consumed eagerly, outside stock decode graphs')
+        self.assertIs(self.runner.attn_groups[0][0].get_metadata_builder(0), self.runner.builder,
+                      'ordinary captured decode keeps the original stock builder')
         self.assertEqual(chunk.batch.num_tokens, 8)
         self.assertEqual(chunk.batch.idx_mapping.values, [2])
         self.assertTrue(bool(chunk.batch.is_prefilling_np[0]))
@@ -418,8 +445,59 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(self.runner.model_state.num_accepted_tokens_gpu.values[2], 1)
         self.assertTrue(self.factory.inventory()['registered'])
 
+    def test_native_builder_view_is_stable_and_stock_mutation_is_isolated(self):
+        private = self.factory.native_attn_groups[0][0].get_metadata_builder(0)
+        original = self.runner.builder
+        view_id = id(private)
+        original.persistent_scratch.values[:] = [8, 9]
+        original.output_buffers[0].values[:] = [7, 6]
+        self.assertEqual(private.persistent_scratch.values, [1, 2])
+        self.assertEqual(private.output_buffers[0].values, [3, 4])
+        self.assertEqual(id(self.factory.native_attn_groups[0][0].get_metadata_builder(0)), view_id)
+        inventory = self.factory.inventory()
+        self.assertEqual(inventory['native_builder_tensor_count'], 4)
+        self.assertGreater(inventory['native_builder_bytes'], 0)
+
+    def test_builder_inventory_fails_closed_on_unclassified_mutable_field(self):
+        self.runner.builder.undocumented_state = bytearray(b'live')
+        with self.assertRaisesRegex(LaneChunkError, 'unclassified native metadata builder field'):
+            LaneChunkFactory(self.runner, ports=self.ports, torch_module=self.torch)
+
+    def test_second_chunk_reuse_waits_for_consumer_completion(self):
+        first = self.factory.admit(admission())
+        generation = first.native_metadata_generation
+        native_group_id = id(self.factory.native_attn_groups[0][0])
+        with self.assertRaisesRegex(LaneChunkError, 'live consumers'):
+            self.factory.admit(admission(chunk_start=8, chunk_end=11, txn_seq=2))
+        with self.assertRaisesRegex(LaneChunkError, 'not complete'):
+            self.factory.complete_chunk(first, consumers_complete=False)
+        self.assertTrue(self.factory.complete_chunk(first, consumers_complete=True))
+        second_admission = admission(chunk_start=8, chunk_end=11, txn_seq=2,
+                                    block_tables=((5, 6, 7), (9, 10, 11), ()))
+        second = self.factory.admit(second_admission)
+        self.assertEqual(second.native_metadata_generation, generation + 1)
+        self.assertEqual(id(self.factory.native_attn_groups[0][0]), native_group_id,
+                         'private storage is allocated once and reused after completion')
+
+    def test_repeated_completed_chunks_do_not_allocate_or_retain_generations(self):
+        first = self.factory.admit(admission())
+        self.factory.complete_chunk(first, consumers_complete=True)
+        bytes_at_start = self.factory.inventory()['native_builder_bytes']
+        view = self.factory.native_attn_groups
+        for index in range(8):
+            chunk_start = 8
+            chunk = self.factory.admit(admission(
+                chunk_start=chunk_start, chunk_end=11, txn_seq=index + 2,
+                block_tables=((5, 6, 7, 8), (9, 10, 11), ())))
+            self.factory.complete_chunk(chunk, consumers_complete=True)
+            self.assertIs(self.factory.native_attn_groups, view)
+            self.assertEqual(self.factory.inventory()['native_builder_bytes'], bytes_at_start)
+            self.assertIsNone(self.factory._active_metadata_chunk)
+        self.assertEqual(self.factory.chunks, 9)
+
     def test_later_chunk_updates_zeroes_and_copies(self):
-        self.factory.admit(admission())
+        first = self.factory.admit(admission())
+        self.factory.complete_chunk(first, consumers_complete=True)
         self.calls.clear()
         second = admission(chunk_start=8, chunk_end=11, input_ids=(8, 9, 10),
                            block_tables=((5, 6, 7, 8), (9, 10, 11), ()), new_block_ids_to_zero=(8, 11),
@@ -436,6 +514,7 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(self.factory.chunks, 2)
         with self.assertRaises(LaneChunkError):
             self.factory.admit(admission(request_uid='other'))
+        self.factory.complete_chunk(chunk, consumers_complete=True)
         self.assertEqual(self.factory.release(), 'req-a')
         self.assertEqual(self.calls[-1], ('remove', 'req-a'))
         self.assertIsNone(self.factory.release())
