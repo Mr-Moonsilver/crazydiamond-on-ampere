@@ -15,18 +15,20 @@ buffer privately:
 * a lane-private Mamba align context bound to those lane tables, so the align
   pre-copy, aligned state indices and post-process touch only this request's
   rows (``MambaSpecDecodeGPUContext`` created once per worker);
-* the per-layer attention metadata through the pinned ``build_attn_metadata``
+* the per-layer attention metadata through a native-only view of the pinned
+  ``build_attn_metadata`` groups, with private persistent builder storage,
   and a ``ForwardContext`` the lane installs per segment.
 
 All pinned vLLM entry points come through a ``Ports`` object so the control
 flow is CPU-testable with fakes; ``PinnedPorts.load()`` binds the real ones in
-the worker. Nothing here synchronizes. The metadata builders are the shared
-group builders (used synchronously inside one host operation, as decode uses
-them inside its RPC); whether any builder keeps device scratch that a captured
-decode graph still reads is an open audit item for the GPU smoke.
+the worker. Nothing here synchronizes. The stock groups/builders remain
+unchanged for ordinary decode. The native factory owns a shallow group view
+whose builders have private mutable tensor buffers and container state.
 """
 from contextlib import contextmanager
+import copy
 from dataclasses import dataclass
+import enum
 
 from e3_types import E3ContractError, TransactionId
 
@@ -35,6 +37,106 @@ PAD_SLOT_ID_DEFAULT = -1
 
 class LaneChunkError(E3ContractError):
     pass
+
+
+_SHARED_CONFIG_FIELDS = {'kv_cache_spec', 'vllm_config', 'device', 'backend'}
+_MAMBA_CONTEXT_BUFFER_FIELDS = (
+    'state_base_addrs', 'state_block_strides', 'state_elem_sizes', 'state_inner_sizes',
+    'state_conv_widths', 'state_group_indices', 'state_dim_row_count',
+    'state_dim_row_stride', 'block_table_ptrs', 'aligned_state_indices',
+    'num_accepted_tokens_out', 'mamba_state_idx_buf', 'num_scheduled_tokens_buf',
+    'num_computed_tokens_buf', 'num_draft_tokens_buf', 'precopy_src_col_buf',
+    'precopy_token_bias_buf')
+
+
+def _torch_immutable(value):
+    return (type(value).__module__ == 'torch'
+            and type(value).__name__ in ('device', 'dtype', 'layout', 'memory_format', 'qscheme'))
+
+
+def _clone_builder_value(value, torch_module, copied, field):
+    """Copy builder-owned mutable storage while retaining immutable config.
+
+    Attention metadata builders are long-lived and may own GPU scratch. The
+    native lane calls the same metadata dispatcher as decode, so each native
+    builder view must own its tensor scratch and Python containers. Config
+    objects (for example VllmConfig/KVCacheSpec) remain shared read-only.
+    """
+    if isinstance(value, torch_module.Tensor):
+        result = value.clone()
+        if result.data_ptr() == value.data_ptr():
+            raise LaneChunkError('native metadata tensor clone aliases source')
+        copied.append((int(value.numel()) * int(value.element_size()), value))
+        return result
+    if type(value) is list:
+        return [_clone_builder_value(item, torch_module, copied, field+'[]') for item in value]
+    if type(value) is tuple:
+        return tuple(_clone_builder_value(item, torch_module, copied, field+'()') for item in value)
+    if type(value) is dict:
+        if any(type(key) not in (str, bytes, int, float, bool, tuple) for key in value):
+            raise LaneChunkError('unclassified native metadata builder key: ' + field)
+        return {key: _clone_builder_value(item, torch_module, copied, field+'.value')
+                for key, item in value.items()}
+    if type(value) is set:
+        if any(type(item) not in (str, bytes, int, float, bool, tuple) for item in value):
+            raise LaneChunkError('unclassified native metadata builder set: ' + field)
+        return set(value)
+    if (value is None or type(value) in (str, bytes, int, float, bool)
+            or isinstance(value, enum.Enum) or isinstance(value, type)
+            or callable(value) or _torch_immutable(value)):
+        return value
+    raise LaneChunkError('unclassified native metadata builder value: ' + field)
+
+
+def _builder_field_class(name, value, torch_module):
+    if isinstance(value, torch_module.Tensor):
+        return 'private-tensor'
+    if type(value) in (list, tuple, dict, set):
+        return 'private-container'
+    if (value is None or type(value) in (str, bytes, int, float, bool)
+            or isinstance(value, enum.Enum) or isinstance(value, type)
+            or callable(value) or _torch_immutable(value)
+            or name in _SHARED_CONFIG_FIELDS):
+        return 'shared-read-only'
+    raise LaneChunkError('unclassified native metadata builder field: ' + name)
+
+
+def private_attention_groups(attn_groups, *, torch_module):
+    """Create a native-only builder view; stock groups/builders are untouched.
+
+    Every builder tensor and container is copied once per LaneChunkFactory,
+    not once per chunk. This isolates persistent output/work buffers (including
+    QSA's token map, logical positions, visible blocks, slot mapping and
+    k-work rows) as well as mutable builder fields such as Mamba-aligned state
+    indices. Non-container configuration objects are shared read-only.
+    """
+    copied = []
+    result = []
+    inventory = []
+    for group_row in attn_groups:
+        private_row = []
+        for group in group_row:
+            private_group = copy.copy(group)
+            private_builders = []
+            for builder in group.metadata_builders:
+                private_builder = copy.copy(builder)
+                fields = []
+                for name, value in vars(builder).items():
+                    field_class = _builder_field_class(name, value, torch_module)
+                    bytes_before = sum(size for size, _ in copied)
+                    cloned = (value if name in _SHARED_CONFIG_FIELDS else
+                              _clone_builder_value(value, torch_module, copied, name))
+                    setattr(private_builder, name, cloned)
+                    copied_bytes = sum(size for size, _ in copied) - bytes_before
+                    fields.append(dict(name=name, classification=field_class,
+                                       tensor_bytes=copied_bytes))
+                private_builders.append(private_builder)
+                inventory.append(dict(builder=type(builder).__module__+'.'+type(builder).__name__,
+                                      layers=list(getattr(group, 'layer_names', ())),fields=fields))
+            private_group.metadata_builders = private_builders
+            private_row.append(private_group)
+        result.append(private_row)
+    return result, sum(size for size, _ in copied), len(copied), inventory
 
 
 def _ints(name, values, *, allow_empty=False):
@@ -460,7 +562,8 @@ def attach_qsa_host_metadata(metadata, layer_names, query_start_loc_cpu,
 class LaneChunk:
     """Private inputs, metadata and forward context for one admitted chunk."""
 
-    def __init__(self, runner, ports, tables, align, admission, req_index, *, torch_module):
+    def __init__(self, runner, ports, tables, align, admission, req_index, *, torch_module,
+                 attn_groups=None):
         torch = torch_module
         device = runner.device
         n = admission.num_tokens
@@ -468,6 +571,7 @@ class LaneChunk:
         self.ports = ports
         self.admission = admission
         self.req_index = req_index
+        self.attn_groups = runner.attn_groups if attn_groups is None else attn_groups
         self.torch = torch
         self.input_ids = torch.tensor(list(admission.input_ids), dtype=torch.int32, device=device)
         self.positions = torch.arange(admission.chunk_start, admission.chunk_end, dtype=torch.int64,
@@ -530,13 +634,13 @@ class LaneChunk:
         indices = self.align.aligned_indices(self)
         if indices is not None:
             for group_idx, gid in enumerate(self.align.group_ids):
-                for group in runner.attn_groups[gid]:
+                for group in self.attn_groups[gid]:
                     builder = group.get_metadata_builder(0)
                     if hasattr(builder, 'mamba_aligned_state_indices'):
                         builder.mamba_aligned_state_indices = indices[group_idx]
         n = self.admission.num_tokens
         self.attn_metadata = ports.build_attn_metadata(
-            attn_groups=runner.attn_groups, num_reqs=1, num_tokens=n,
+            attn_groups=self.attn_groups, num_reqs=1, num_tokens=n,
             query_start_loc_gpu=self.query_start_loc, query_start_loc_cpu=self.query_start_loc_cpu,
             max_query_len=n, seq_lens=self.seq_lens, max_seq_len=self.admission.chunk_end,
             block_tables=self.block_tables, slot_mappings=self.slot_mappings,
@@ -582,29 +686,124 @@ class LaneChunkFactory:
         self.tables = LaneTables(runner, torch_module=torch_module)
         self.align = LaneAlign(runner, self.ports, self.tables, torch_module=torch_module)
         self.request = LaneRequest(runner, self.ports, torch_module=torch_module)
+        (self.native_attn_groups, self.native_builder_bytes,
+         self.native_builder_tensor_count, self.native_builder_fields) = (
+            private_attention_groups(runner.attn_groups, torch_module=torch_module)
+        )
         self.chunks = 0
+        self._active_metadata_chunk = None
+        self._metadata_generation = 0
 
     def admit(self, admission):
         """Register (first chunk) or update the request, then build the private chunk."""
         if type(admission) is not ChunkAdmission:
             raise LaneChunkError('admit needs a ChunkAdmission')
+        if self._active_metadata_chunk is not None:
+            raise LaneChunkError('native metadata generation still has live consumers')
         if self.request.req_id is None:
             index = self.request.register(admission)
         else:
             index = self.request.update(admission)
         chunk = LaneChunk(self.runner, self.ports, self.tables, self.align, admission, index,
-                          torch_module=self.torch)
+                          torch_module=self.torch, attn_groups=self.native_attn_groups)
+        self._active_metadata_chunk = chunk
+        self._metadata_generation += 1
+        chunk.native_metadata_generation = self._metadata_generation
         chunk.input_batch()
         chunk.build_metadata()
         self.chunks += 1
         return chunk
 
+    def complete_chunk(self, chunk, *, consumers_complete):
+        """Release the single-generation reuse gate after dispatcher drain.
+
+        LaneDispatcher calls this only after all operation events and the
+        operation's own consumer frontier have been queried complete.
+        """
+        if chunk is not self._active_metadata_chunk:
+            raise LaneChunkError('native metadata completion does not match active generation')
+        if consumers_complete is not True:
+            raise LaneChunkError('native metadata consumers are not complete')
+        self._active_metadata_chunk = None
+        return True
+
     def release(self):
+        if self._active_metadata_chunk is not None:
+            raise LaneChunkError('cannot release request with live metadata consumers')
         return self.request.release()
+
+    def _align_inventory(self):
+        ctx = self.align.ctx
+        if ctx is None:
+            return dict(enabled=False, gpu_bytes=0, host_bytes=0, buffers=[])
+        known = set(_MAMBA_CONTEXT_BUFFER_FIELDS) | {
+            'block_size', 'num_states', 'mamba_group_ids', 'num_groups',
+            'block_table_stride_req', 'max_num_reqs', 'is_initialized',
+            # Names used only by the CPU FakeMambaContext seam.
+            'calls', 'tables'}
+        buffers = []
+        gpu_bytes = host_bytes = 0
+        for name, value in vars(ctx).items():
+            if name not in known:
+                raise LaneChunkError('unclassified native GDN/linear state: ' + name)
+            if value is None:
+                continue
+            tensors = []
+            if isinstance(value, self.torch.Tensor):
+                tensors.append(('gpu', value))
+            else:
+                for side in ('gpu', 'np'):
+                    tensor = getattr(value, side, None)
+                    if tensor is not None:
+                        tensors.append((side, tensor))
+            for side, tensor in tensors:
+                nbytes = (int(tensor.numel()) * int(tensor.element_size())
+                          if callable(getattr(tensor, 'numel', None)) else int(tensor.nbytes))
+                if side == 'gpu':
+                    gpu_bytes += nbytes
+                else:
+                    host_bytes += nbytes
+                buffers.append(dict(field=name,side=side,bytes=nbytes,
+                                    shape=list(getattr(tensor,'shape',()))))
+        stock = getattr(self.runner.model_state, '_mamba_ctx', None)
+        stock_ptrs = set()
+        if stock is not None:
+            for name in _MAMBA_CONTEXT_BUFFER_FIELDS:
+                value = getattr(stock, name, None)
+                for side in ('', 'gpu'):
+                    tensor = value if not side else getattr(value, side, None)
+                    if callable(getattr(tensor, 'data_ptr', None)):
+                        stock_ptrs.add(int(tensor.data_ptr()))
+        for row in buffers:
+            if row['side'] == 'gpu':
+                value = getattr(ctx, row['field'])
+                if not callable(getattr(value, 'data_ptr', None)):
+                    value = getattr(value, 'gpu')
+                if int(value.data_ptr()) in stock_ptrs:
+                    raise LaneChunkError('native GDN context aliases stock alignment storage')
+        shared_state = []
+        for name, tensor in (
+                ('num_accepted_tokens_gpu', self.runner.model_state.num_accepted_tokens_gpu),
+                ('_mamba_state_idx_gpu', self.runner.model_state._mamba_state_idx_gpu),
+                ('_mamba_src_col_gpu', self.runner.model_state._mamba_src_col_gpu),
+                ('_mamba_src_off_gpu', self.runner.model_state._mamba_src_off_gpu),
+                ('num_computed_tokens_gpu', self.runner.req_states.num_computed_tokens.gpu)):
+            shared_state.append(dict(field=name,shape=list(tensor.shape),
+                bytes=int(tensor.numel())*int(tensor.element_size()),data_ptr=int(tensor.data_ptr()),
+                ownership='existing request-slot state; lane writes only its admitted row'))
+        return dict(enabled=True,gpu_bytes=gpu_bytes,host_bytes=host_bytes,buffers=buffers,
+                    shared_request_state_buffers=shared_state,
+                    stock_context_present=stock is not None,stock_aliases=0)
 
     def inventory(self):
         return {'lane_tables_bytes': self.tables.bytes, 'align': self.align.enabled,
-                'chunks': self.chunks, 'registered': self.request.req_id is not None}
+                'chunks': self.chunks, 'registered': self.request.req_id is not None,
+                'native_builder_bytes': self.native_builder_bytes,
+                'native_builder_tensor_count': self.native_builder_tensor_count,
+                'native_builder_fields': self.native_builder_fields,
+                'gdn_linear_alignment': self._align_inventory(),
+                'metadata_generation_in_flight': self._active_metadata_chunk is not None,
+                'metadata_generation': self._metadata_generation}
 
 
 __all__ = ['ChunkAdmission', 'LaneAlign', 'LaneChunk', 'LaneChunkError', 'LaneChunkFactory',

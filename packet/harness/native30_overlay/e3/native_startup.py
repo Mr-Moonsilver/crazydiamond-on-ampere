@@ -181,6 +181,9 @@ class WorkerNative:
             'route': self.controller.route,
             'route_generation': self.controller.route_generation,
         }
+        native_builder_inventory = getattr(self, 'native_builder_inventory', None)
+        if native_builder_inventory is not None:
+            record['native_attention_builder_storage'] = native_builder_inventory()
         return record
 
     def graph_builder(self, *, router_class=None, full_context_id, full_pool_id,

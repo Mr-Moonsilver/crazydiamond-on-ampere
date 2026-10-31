@@ -587,6 +587,10 @@ class LaneDispatcher:
                 if self.pp_send_ticket is not None:
                     channel.release_send(self.pp_send_ticket, self.pp_consumer_proof)
             self.operation.release()
+            if self.chunk is not None:
+                # drain() above queried every segment/state/PP consumer event
+                # and operation.drain() proved its internal readers complete.
+                self.factory.complete_chunk(self.chunk, consumers_complete=True)
         except BaseException as exc:
             self.quarantined = 'release: ' + type(exc).__name__
             raise
