@@ -286,7 +286,8 @@ def retained_teacher(store, artifact):
 def short_window(run_id='run-1', epoch=3):
     return {'kind': 'short', 'run_id': run_id, 'window_id': 'window-1',
             'engine_epoch': epoch, 'start_ns': 1_000, 'end_ns': 2_000,
-            'window_tokens': 40, 'replays': 40, 'observed_replays': {0: 40, 1: 40, 2: 40, 3: 40},
+            'window_tokens': driver_module.PLACEMENT_WINDOW_TOKENS, 'replays': 40,
+            'observed_replays': {0: 40, 1: 40, 2: 40, 3: 40},
             'teacher_overlap': False, 'teacher_window_end_ns': None,
             'cohort_id': 'placement-x', 'decode_progress': 40,
             'native_phase': 'w2-overlap',
@@ -1127,8 +1128,13 @@ class Row4Test(unittest.TestCase):
                 'row4', artifact_sha256=sha(artifact),
                 row1_sha256=digest_char('e'), window_id='window-1')
             self.assertEqual(result['complete'], False)
+            # Fixture packets carry no observer receipt/report: the census names
+            # that per rank instead of a generic incomplete.
             self.assertEqual(result['missing'],
-                             ['native-report-read-unavailable', 'native-prefill-ledger-unproved'])
+                             ['native-report-read-unavailable', 'native-prefill-ledger-unproved']
+                             + [reason % rank for rank in (0, 1, 2, 3) for reason in
+                                ('observer:ring-census-unavailable:%d',
+                                 'observer:native-report-unavailable:%d')])
             evidence = result['evidence']
             self.assertEqual(set(evidence['raw_placement']), {0, 1, 2, 3})
             self.assertEqual(set(evidence['engine_accounting']), {0, 1, 2, 3})

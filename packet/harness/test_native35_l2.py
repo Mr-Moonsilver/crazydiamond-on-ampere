@@ -30,7 +30,7 @@ import e3_decode_correctness as correctness
 import e3_native_qualification_driver as driver_module
 from e3_native_qualification_driver import (
     ImmutableStore, NativePlacementRunner, QualificationRefused,
-    PLACEMENT_GENERATION_BUDGET, canonical_sha)
+    PLACEMENT_GENERATION_BUDGET, PLACEMENT_WINDOW_TOKENS, canonical_sha)
 import e3_native35_l2_placement as l2
 import test_e3_native_qualification_driver as base
 
@@ -215,8 +215,9 @@ class Timing(unittest.TestCase):
         self.assertEqual(len(windows), 1)
         window = windows[0]
         self.assertEqual((window['complete'], window['reason'], window['early_finish']), (True, 'token_bound', []))
-        self.assertTrue(all(r['completion_delta'] >= 40 for r in window['streams']))
-        self.assertTrue(all(r['start_completion'] <= PLACEMENT_GENERATION_BUDGET - 40 for r in window['streams']))
+        self.assertTrue(all(r['completion_delta'] >= PLACEMENT_WINDOW_TOKENS for r in window['streams']))
+        self.assertTrue(all(r['start_completion'] <= PLACEMENT_GENERATION_BUDGET - PLACEMENT_WINDOW_TOKENS
+                            for r in window['streams']))
         opened = child['native_prefill_request']['open']
         self.assertTrue(opened['complete'])
         # Window first, then the prefill's first token, which arrived after the cohort ended.
@@ -246,9 +247,10 @@ class Timing(unittest.TestCase):
         TIMING_RECEIPTS.append(dict(case='fast-prefill', parent='COMPLETE', l2='COMPLETE'))
 
     def test_l2_still_refuses_an_early_finished_stream(self):
-        # Stream 0 already holds 30 tokens: it ends before the others gain 40.
+        # Stream 0 already holds 50 tokens: it ends (64) before the others gain
+        # PLACEMENT_WINDOW_TOKENS (20 since native35 P-c; 30 of 40 before).
         outcome, _, windows, _ = run_case(l2.ResumeWindowPlacementRunner,
-                                          initial=(30, 1, 2, 3, 4, 5, 6, 7), open_tick=1)
+                                          initial=(50, 1, 2, 3, 4, 5, 6, 7), open_tick=1)
         self.assertIsInstance(outcome, QualificationRefused)
         self.assertEqual(outcome.code, 'placement-window-incomplete')
         window = outcome.evidence['client_window']

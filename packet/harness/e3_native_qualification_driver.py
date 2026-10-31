@@ -84,9 +84,41 @@ STREAMS = 8
 MEASURED = 256
 NATIVE_READ_BYTES = 64 * 1024 * 1024
 PLACEMENT_STREAMS = 8
+# The replay observer is sized for this decode window (replay_observer.py
+# ObserverLimits: "the declared ~60k-node replay window"; q17b-full12 held 40
+# decode-split replays and 61 400 kernel records per rank).
 PLACEMENT_REPLAYS = 40
-PLACEMENT_WINDOW_TOKENS = 40
+# Lead decision 31 Oct 2026 (native35 P-c, option A): the 8 placement streams
+# decode as two parity cohorts of 4, one decode-split replay per cohort step, so
+# 2 cohorts x 20 tokens restores the declared 40 replays.  At 40 tokens with the
+# cohort left running (P-b) the window held ~125 replays and the kernel ring
+# (131072) would overflow.
+PLACEMENT_WINDOW_TOKENS = 20
+# Declared tolerance on the observed per-rank decode replays.  Low: each stream
+# gains >= PLACEMENT_WINDOW_TOKENS after the accepted resume, i.e. >= 20 replays
+# per cohort.  High: per cohort <= 8 steps beyond the client token bound (q17b
+# split-B: a 16-token client window held 40 replays, +4 per cohort under a typed
+# pause; the client close adds the HTTP-disconnect/abort hop and up to two PP
+# batches in flight).  56 x ~1 535 kernel records stays under 66 % of the ring.
+PLACEMENT_REPLAYS_LOW = PLACEMENT_REPLAYS
+PLACEMENT_REPLAYS_HIGH = PLACEMENT_REPLAYS + 2 * 8
 PLACEMENT_GENERATION_BUDGET = 64
+# observer_end only: one reply carries all four ranks' full observer packets
+# (receipt <= 8 MiB, native report <= 64 MiB read cap, five unbounded fields).
+# The ceiling is a client-memory bound, not a content bound: the collector peaks
+# near 8x the body (parse 3.2x, deep copies 2.1x, evidence dump 2.2x; CPU probe
+# with the native row format), so 512 MiB -> ~4 GiB, inside the 5 GiB observer
+# transient margin the host-headroom gate requires (native30_gate
+# TRANSIENT_MARGIN).  Caveat: the workers and the API server still hold
+# completed_reply and its encoded body at the same time; that is not inside
+# the 5 GiB and relies on the measured surplus (P-b host-headroom: 15.13 GB
+# available against 7.52 GB required).  Every other call keeps
+# e3_probe_rpc.MAX_RESPONSE.
+OBSERVER_END_RESPONSE_MAX = 512 * 1024 * 1024
+# Past the ceiling the body is still read (not stored) to count and hash it.
+OBSERVER_END_DRAIN_MAX = 4 * 1024 ** 3
+OBSERVER_END_SPOOL_CHUNK = 1024 * 1024
+OBSERVER_END_TRANSPORT_SCHEMA = 'q18a-observer-end-transport/1'
 # The placement split is its own declared native phase; stock preparation and
 # ordinary decode phases keep the admission intent off.
 PLACEMENT_PHASE = 'w2-overlap'
@@ -369,7 +401,7 @@ class LoopbackControl:
     argv or log.
     """
 
-    def __init__(self, url, *, key=None, timeout_s=120.0):
+    def __init__(self, url, *, key=None, timeout_s=120.0, spool_dir=None):
         import e3_probe_rpc as rpc
         scheme, host, port = rpc.target(url)
         self.scheme, self.host, self.port = scheme, host, port
@@ -381,6 +413,90 @@ class LoopbackControl:
         if type(timeout_s) not in (int, float) or not float(timeout_s) > 0:
             raise QualificationError('native-qualification-timeout-invalid')
         self.timeout_s: float = float(timeout_s)
+        # observer_end replies are spooled here (the qualification store); one
+        # transport receipt per spooled call, kept in call order.
+        self.spool_dir = spool_dir
+        self.transport_receipts = []
+
+    @staticmethod
+    def _spooled(path, command):
+        return (path == WORKER_PATH and type(command) is dict
+                and command.get('worker_action') == 'observer_end')
+
+    def _spool_read(self, response, command):
+        """Bounded spool read of one observer_end body; bytes and sha always kept.
+
+        The body streams in 1 MiB chunks into a write-once 0600 spool file in the
+        qualification store while it is hashed.  A body over the ceiling is
+        still drained (counted and hashed, not stored) up to the drain bound and
+        then refused.  The receipt is appended before the first byte, so a
+        transport failure or refusal leaves bytes-so-far and their digest.
+        """
+        import hashlib
+        import tempfile
+        import e3_probe_rpc as rpc
+        length = response.getheader('Content-Length') if hasattr(response, 'getheader') else None
+        try:
+            declared = int(length) if length is not None else None
+        except ValueError:
+            declared = None
+        receipt = {'schema': OBSERVER_END_TRANSPORT_SCHEMA, 'worker_action': 'observer_end',
+                   'command_seq': command.get('command_seq'),
+                   'ceiling_bytes': OBSERVER_END_RESPONSE_MAX,
+                   'drain_max_bytes': OBSERVER_END_DRAIN_MAX,
+                   'default_cap_bytes': rpc.MAX_RESPONSE,
+                   'http_status': getattr(response, 'status', None),
+                   'content_length': declared, 'body_bytes': 0, 'body_sha256': None,
+                   'drained_to_eof': False, 'spool': None, 'spool_bytes': 0,
+                   'state': 'reading'}
+        self.transport_receipts.append(receipt)
+        if not _text(self.spool_dir) or not os.path.isdir(self.spool_dir):
+            receipt['state'] = 'refused:spool-unavailable'
+            raise QualificationRefused('observer-end-spool-unavailable')
+        # A body declared over the ceiling is drained without being stored.
+        store = declared is None or declared <= OBSERVER_END_RESPONSE_MAX
+        digest = hashlib.sha256()
+        handle = None
+        if store:
+            descriptor, path = tempfile.mkstemp(prefix='observer_end.', suffix='.spool',
+                                                dir=self.spool_dir)
+            receipt['spool'] = os.path.basename(path)
+            handle = os.fdopen(descriptor, 'wb')
+        try:
+            while True:
+                chunk = response.read(OBSERVER_END_SPOOL_CHUNK)
+                if not chunk:
+                    receipt['drained_to_eof'] = True
+                    break
+                digest.update(chunk)
+                receipt['body_bytes'] += len(chunk)
+                if handle is not None and receipt['spool_bytes'] < OBSERVER_END_RESPONSE_MAX:
+                    part = chunk[:OBSERVER_END_RESPONSE_MAX - receipt['spool_bytes']]
+                    handle.write(part)
+                    receipt['spool_bytes'] += len(part)
+                if receipt['body_bytes'] >= OBSERVER_END_DRAIN_MAX:
+                    break
+        finally:
+            receipt['body_sha256'] = digest.hexdigest()
+            if handle is not None:
+                # Kept, never deleted (store convention): on success it is the
+                # exact reply body; on refusal, its first spool_bytes.
+                handle.flush()
+                os.fsync(handle.fileno())
+                handle.close()
+            if receipt['state'] == 'reading' and not receipt['drained_to_eof']:
+                receipt['state'] = 'interrupted'
+        if not receipt['drained_to_eof'] or receipt['body_bytes'] > OBSERVER_END_RESPONSE_MAX:
+            receipt['state'] = 'refused:too-large'
+            raise QualificationRefused('observer-end-response-too-large')
+        with open(os.path.join(self.spool_dir, receipt['spool']), 'rb') as spool:
+            body = spool.read()
+        if (len(body) != receipt['body_bytes']
+                or hashlib.sha256(body).hexdigest() != receipt['body_sha256']):
+            receipt['state'] = 'refused:spool-differs'
+            raise QualificationRefused('observer-end-spool-differs')
+        receipt['state'] = 'read'
+        return body
 
     @property
     def controller(self):
@@ -399,6 +515,7 @@ class LoopbackControl:
         session = path == 'session'
         request_path = '/v1/flash_s5_native_overlap' if session else path
         response_max = rpc.MAX_RESPONSE if session or path == WORKER_PATH else 65536
+        spooled = self._spooled(path, command)
         data = json.dumps(command, allow_nan=False).encode()
         if len(data) > rpc.MAX_COMMAND:
             raise QualificationRefused('command-too-large')
@@ -413,20 +530,27 @@ class LoopbackControl:
                                headers={'Content-Type': 'application/json',
                                         'Authorization': 'Bearer ' + self.key})
             response = connection.getresponse()
-            body = response.read(response_max + 1)
-            if len(body) > response_max:
-                raise QualificationRefused('response-too-large')
+            if spooled:
+                body = self._spool_read(response, command)
+            else:
+                body = response.read(response_max + 1)
+                if len(body) > response_max:
+                    raise QualificationRefused('response-too-large')
             if response.status == 409:
                 raise QualificationRefused('controller-refusal')
             if response.status != 200:
                 raise QualificationRefused('http-status-' + str(response.status))
             result = json.loads(body)
+            del body
         except QualificationRefused:
             raise
         except Exception as exc:  # noqa: BLE001 - transport, never a verdict
             raise QualificationRefused('transport-failed:' + type(exc).__name__) from None
         finally:
             connection.close()
+        if spooled:
+            from e3_observer_census import field_sizes
+            self.transport_receipts[-1]['field_sizes'] = field_sizes(result)
         if (type(result) is not dict or result.get('schema') != 1
                 or result.get('action') != command.get('action')
                 or result.get('run_id') != command.get('run_id')):
@@ -504,7 +628,8 @@ class QualificationDriver:
         if self.control is None:
             if url is None:
                 raise QualificationError('control-or-loopback-url-required')
-            self.control = LoopbackControl(url, key=key, timeout_s=timeout_s)
+            self.control = LoopbackControl(url, key=key, timeout_s=timeout_s,
+                                           spool_dir=self.store.root)
         elif self.url is None:
             self.url = getattr(self.control, 'base_url', None)
         self.teacher_baseline = teacher_baseline
@@ -1208,21 +1333,57 @@ class QualificationDriver:
             # teacher sequence is still running.
             _require(self._teacher_window.get('ended_ns') is not None,
                      'teacher-window-not-ended')
+        receipts = getattr(self.control, 'transport_receipts', None)
+        first_receipt = len(receipts) if type(receipts) is list else 0
         try:
             raw = self.placement.run(self, window_id=window_id,
                                      run_id=self.run_id,
                                      engine_epoch=self.engine_epoch,
                                      model=self.model)
-        except QualificationRefused:
+        except QualificationRefused as exc:
+            # Bytes and sha256 of the observer_end body stay with any refusal.
+            self._attach_transport(exc, first_receipt)
             raise
         except BaseException as exc:  # noqa: BLE001 - keep partial evidence
-            raise QualificationRefused(
+            refusal = QualificationRefused(
                 'placement-exception:' + type(exc).__name__,
-                evidence={'collector_error': exception_details(exc, self.control)}) from None
+                evidence={'collector_error': exception_details(exc, self.control)})
+            self._attach_transport(refusal, first_receipt)
+            raise refusal from None
         if type(raw) is not dict:
             raise QualificationRefused('placement-provider-returned-no-record')
+        transport = self._observer_end_transport(first_receipt)
+        try:
+            row4 = self._collect_row4_checked(raw, window_id, row1_sha256,
+                                              artifact_sha256, transport)
+        except QualificationRefused as exc:
+            self._attach_transport(exc, first_receipt)
+            raise
+        return row4
+
+    def _observer_end_transport(self, first):
+        receipts = getattr(self.control, 'transport_receipts', None)
+        if type(receipts) is not list:
+            return {'state': 'not-spooled', 'receipts': []}
+        rows = [copy.deepcopy(row) for row in receipts[first:]]
+        return {'state': 'spooled' if rows else 'no-observer-end-call', 'receipts': rows}
+
+    def _attach_transport(self, exc, first):
+        transport = self._observer_end_transport(first)
+        if exc.evidence is None:
+            exc.evidence = {}
+        if type(exc.evidence) is dict and 'observer_end_transport' not in exc.evidence:
+            exc.evidence['observer_end_transport'] = transport
+
+    def _collect_row4_checked(self, raw, window_id, row1_sha256, artifact_sha256,
+                              transport):
+        from e3_observer_census import census as observer_census
         window = raw.get('window')
         self._validate_placement_window(window, window_id)
+        census = observer_census(
+            raw.get('native_observer_packets'), window.get('observed_replays'),
+            ranks=RANKS, declared=PLACEMENT_REPLAYS, low=PLACEMENT_REPLAYS_LOW,
+            high=PLACEMENT_REPLAYS_HIGH)
         if raw.get('window_route_generation') != window.get('route_generation'):
             raise QualificationRefused('placement-window-generation-differs')
         raw_rows = raw.get('raw_placement')
@@ -1279,6 +1440,9 @@ class QualificationDriver:
             missing.append('placement-teacher-trace-overlapped')
         if raw.get('shipping_path_instrument_disabled') is not True:
             missing.append('shipping-path-instrument-not-proved-disabled')
+        # Explicit capacity/window reasons: ring overflows, correlation-list
+        # overflows and the declared replay bound, never a generic INC.
+        missing.extend(census['missing'])
         evidence = {
             'phase': 'row4', 'engine_epoch': self.engine_epoch,
             'model_settings_unchanged': True,
@@ -1299,6 +1463,8 @@ class QualificationDriver:
             'shipping_path_instrument_disabled':
                 raw.get('shipping_path_instrument_disabled') is True,
             'teacher_trace_receipt': raw.get('teacher_trace_receipt'),
+            'observer_census': census,
+            'observer_end_transport': transport,
         }
         record = self._retain('row4', 'placement', evidence,
                               extra={'window_id': window_id,

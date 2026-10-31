@@ -77,7 +77,7 @@ class Queue(unittest.TestCase):
         workload=_workload_object(json.loads((HERE/'workloads/q17b-correctness-precontrols.json').read_text()))
         runner=NativePlacementRunner(workload=workload,url='http://127.0.0.1:1')
         self.assertEqual(workload.generation_budget,256);self.assertEqual(runner.workload.generation_budget,64)
-        self.assertEqual(runner.workload.window_tokens,40)
+        self.assertEqual(runner.workload.window_tokens,20)  # native35 P-c: 2 cohorts x 20 = PLACEMENT_REPLAYS 40
 
     def test_grade_cannot_pass_without_complete_host_tail_and_engine_fault_wins(self):
         from e3_native30_e_grade import evaluate
