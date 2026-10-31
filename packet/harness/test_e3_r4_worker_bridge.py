@@ -160,10 +160,14 @@ class FakeFactory:
         self.registered = None
         self.registers = 0
         self.updates = 0
+        self._active_metadata_chunk = None
+        self.completion_calls = []
 
     def admit(self, admission):
         if not isinstance(admission, ChunkAdmission):
             raise AssertionError('bridge passed a non-local admission')
+        if self._active_metadata_chunk is not None:
+            raise lane_chunk.LaneChunkError('native metadata generation still has live consumers')
         self.admissions.append(admission)
         if self.registered is None:
             self.registered = admission.request_uid
@@ -174,11 +178,24 @@ class FakeFactory:
             self.updates += 1
         chunk = FakeChunk(admission, self.rank)
         self.chunks.append(chunk)
+        self._active_metadata_chunk = chunk
         return chunk
+
+    def complete_chunk(self, chunk, *, consumers_complete):
+        if (chunk is not self._active_metadata_chunk or not self.chunks
+                or chunk is not self.chunks[-1]):
+            raise lane_chunk.LaneChunkError('native metadata completion does not match active chunk')
+        if consumers_complete is not True:
+            raise lane_chunk.LaneChunkError('native metadata consumers are not complete')
+        self.completion_calls.append((chunk, consumers_complete))
+        self._active_metadata_chunk = None
+        return True
 
     def release(self):
         # ``LaneChunkFactory.release`` is a no-op when prepare never registered
         # a row (open only leases the server-side operation).
+        if self._active_metadata_chunk is not None:
+            raise lane_chunk.LaneChunkError('cannot release request with live metadata consumers')
         if self.registered is None:
             return None
         self.registered = None
@@ -786,6 +803,7 @@ class ConversionTests(unittest.TestCase):
         self.assertEqual(chunk.ngram_context.shape, (1, 3),
                          'the pinned ngram path consumes [num_reqs, context_len]')
         self.assertEqual(chunk.ngram_context.values, [70, 71, 72])
+        factory.complete_chunk(chunk, consumers_complete=True)
         calls.clear()
         from e3_types import TransactionId
         second_txn = TransactionId(1, UID, 0, 8, 11, 2)
@@ -801,6 +819,20 @@ class ConversionTests(unittest.TestCase):
         self.assertNotIn('cow', [c[0] for c in calls],
                          'a later chunk must not redo an older copy')
         self.assertEqual(factory.chunks, 2)
+
+    def test_fake_factory_reuses_metadata_only_after_consumer_completion(self):
+        from worker_bridge import admission_to_chunk
+        factory = FakeFactory(0)
+        first = factory.admit(admission_to_chunk(self.record()))
+        with self.assertRaisesRegex(lane_chunk.LaneChunkError, 'live consumers'):
+            factory.admit(admission_to_chunk(self.record()))
+        with self.assertRaisesRegex(lane_chunk.LaneChunkError, 'not complete'):
+            factory.complete_chunk(first, consumers_complete=False)
+        self.assertIs(factory._active_metadata_chunk, first)
+        self.assertTrue(factory.complete_chunk(first, consumers_complete=True))
+        second = factory.admit(admission_to_chunk(self.record()))
+        self.assertIs(factory._active_metadata_chunk, second)
+        self.assertEqual(factory.completion_calls, [(first, True)])
 
 
 class FullPlanTests(unittest.TestCase):
@@ -1880,6 +1912,8 @@ class ConstructionTests(unittest.TestCase):
             def submit(self, command):
                 return {'op_seq': command.op_seq}
 
+        fake_factory = types.SimpleNamespace(inventory=lambda: {})
+
         modules = {
             'vllm': types.ModuleType('vllm'),
             'vllm.models': types.ModuleType('vllm.models'),
@@ -1890,7 +1924,7 @@ class ConstructionTests(unittest.TestCase):
         }
         with patch.object(native_startup, 'install_worker_native',
                           lambda *a, **kw: native), \
-             patch.object(lane_chunk, 'LaneChunkFactory', lambda runner: 'factory'), \
+             patch.object(lane_chunk, 'LaneChunkFactory', lambda runner: fake_factory), \
              patch('lane_dispatch.LaneDispatcher', StartupDispatcher), \
              patch.dict(sys.modules, modules):
             dispatcher = s5_startup.install_native_lane(
@@ -1902,7 +1936,7 @@ class ConstructionTests(unittest.TestCase):
         self.assertIsInstance(server._flash_s5_bridge, NativeWorkerBridge)
         self.assertIs(created['args'][0], runner)
         self.assertEqual(created['args'][1], native)
-        self.assertEqual(created['args'][2], 'factory')
+        self.assertIs(created['args'][2], fake_factory)
 
 
 class SourceHoldIntegrationTests(unittest.TestCase):

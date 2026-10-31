@@ -463,6 +463,51 @@ class FactoryTests(unittest.TestCase):
         with self.assertRaisesRegex(LaneChunkError, 'unclassified native metadata builder field'):
             LaneChunkFactory(self.runner, ports=self.ports, torch_module=self.torch)
 
+    def test_vllm_config_fields_are_shared_read_only(self):
+        class Config:
+            pass
+        Config.__module__ = 'vllm.config.fake'
+        config = Config()
+        builder = self.runner.builder
+        builder.model_config = config
+        builder.parallel_config = object()
+        group = self.runner.attn_groups[0][0]
+        (groups, _, _, inventory) = lane_chunk.private_attention_groups(
+            [[group]], torch_module=self.torch)
+        cloned = groups[0][0].get_metadata_builder(0)
+        self.assertIs(cloned.model_config, config)
+        self.assertIs(cloned.parallel_config, builder.parallel_config)
+        fields = {field['name']: field['classification'] for field in inventory[0]['fields']}
+        self.assertEqual(fields['model_config'], 'shared-read-only')
+        self.assertEqual(fields['parallel_config'], 'shared-read-only')
+
+    def test_numpy_prefix_alias_is_shared_only_when_explicitly_aliased(self):
+        base = np.arange(12, dtype=np.int64)
+        self.runner.builder.mm_prefix_query_ranges_cpu = base
+        self.runner.builder.mm_prefix_query_ranges_np = base.view()
+        group = self.runner.attn_groups[0][0]
+        groups, _, _, inventory = lane_chunk.private_attention_groups(
+            [[group]], torch_module=self.torch)
+        cloned = groups[0][0].get_metadata_builder(0)
+        self.assertIs(cloned.mm_prefix_query_ranges_cpu, base)
+        self.assertIs(cloned.mm_prefix_query_ranges_np, self.runner.builder.mm_prefix_query_ranges_np)
+        classifications = {field['name']: field['classification'] for field in inventory[0]['fields']}
+        self.assertEqual(classifications['mm_prefix_query_ranges_np'], 'shared-read-only-numpy-alias')
+        self.runner.builder.mm_prefix_query_ranges_np = base.copy()
+        with self.assertRaisesRegex(LaneChunkError, 'do not alias'):
+            lane_chunk.private_attention_groups([[group]], torch_module=self.torch)
+        del self.runner.builder.mm_prefix_query_ranges_np
+        with self.assertRaisesRegex(LaneChunkError, 'incomplete.*NumPy alias pair'):
+            lane_chunk.private_attention_groups([[group]], torch_module=self.torch)
+
+    def test_builder_storage_cap_refuses_before_oversized_clone(self):
+        builder = self.runner.builder
+        oversized = T([0], shape=(lane_chunk.MAX_NATIVE_BUILDER_BYTES // 4 + 1,))
+        builder.oversized = oversized
+        with self.assertRaisesRegex(LaneChunkError, 'exceeds 268435456 byte per-rank cap'):
+            lane_chunk.private_attention_groups(
+                self.runner.attn_groups, torch_module=self.torch)
+
     def test_second_chunk_reuse_waits_for_consumer_completion(self):
         first = self.factory.admit(admission())
         generation = first.native_metadata_generation

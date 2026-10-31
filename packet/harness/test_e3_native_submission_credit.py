@@ -291,11 +291,25 @@ class CreditFactory:
         self.stack = stack
         self.chunks = []
         self.released = 0
+        self._active_chunk = None
+        self.completion_calls = []
 
     def admit(self, admission):
+        if self._active_chunk is not None:
+            raise et.E3ContractError('native metadata generation still has live consumers')
         chunk = CreditChunk(self.stack, admission)
         self.chunks.append(chunk)
+        self._active_chunk = chunk
         return chunk
+
+    def complete_chunk(self, chunk, *, consumers_complete):
+        if chunk is not self._active_chunk or not self.chunks or chunk is not self.chunks[-1]:
+            raise et.E3ContractError('native metadata completion does not match active chunk')
+        if consumers_complete is not True:
+            raise et.E3ContractError('native metadata consumers are not complete')
+        self.completion_calls.append((chunk, consumers_complete))
+        self._active_chunk = None
+        return True
 
     def release(self):
         self.released += 1
