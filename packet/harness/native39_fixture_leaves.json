@@ -1,6 +1,6 @@
 {
  "schema": "fixture-leaves/1",
- "scope": "native39 trunk robustness (Codex native37 P1/P2): R/W/P (e3_native39_trunk_probe.py, pinned CPU container, network none) and the hub suite test_native39_trunk.py. Every leaf replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
+ "scope": "native39 trunk robustness (Codex native37 P1/P2): R/W/P (e3_native39_trunk_probe.py, pinned CPU container, network none) the hub suite test_native39_trunk.py, and the trunk queue suite test_native39_trunk_queue.py (queue-* leaves; the queue segments, checks, guard, client, host observer, grade, settings, setcfg algorithm and S5 launcher render are real). Every leaf replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
  "leaves": [
   {
    "name": "w-one-token-sampler-output",
@@ -105,6 +105,70 @@
    "equivalence": "native37 leaf hub-geometry-split (test_native37_robust.geometry_split), unchanged; staged_chunk_plan is the real one. The pinned-image probes check the rule it implies against the pinned method: native37 T1 (300+ lengths) and native39 P (the two declared lengths, the append from its real prefix hit).",
    "cannot_prove": "Anything outside the split arithmetic",
    "box_evidence": false
+  },
+  {
+   "name": "queue-docker-cli",
+   "test": "test_native39_trunk_queue.RestartBind",
+   "replaces": "The docker CLI and json-file log driver for qwen-flash-prod: `docker inspect --format` ({{.Id}}, {{.State.StartedAt}}, {{.SizeRw}}, the observer's Id|Running|StartedAt|LogPath) and `docker logs --follow --timestamps --since`",
+   "equivalence": "The queue and e3_native28_host_observer (real, unchanged) use only these calls. The container id changes from the old to the new incarnation at restart, as with --rm. Lines are stamped when the fake reads them, as the json-file driver stamps a line when the daemon reads it from the container pipe, so a stamp is never earlier than the emission; the RFC3339 nanosecond form is the box's (BoxFormats parses the P-c run-1 lines).",
+   "cannot_prove": "Daemon-side buffering or log-driver delays, real container lifecycle and --rm removal timing, the engine actually emitting the bind line (native38 startup receipt and the box run)",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-systemctl",
+   "test": "test_native39_trunk_queue.RestartBind, test_native39_trunk_queue.Tail",
+   "replaces": "systemctl restart/is-failed/show NRestarts for vllm-flash",
+   "equivalence": "An executable on PATH (the queue calls it through timeout(1)): restart flips the fake container to the new incarnation and returns 0, is-failed returns 1, show prints a constant NRestarts. The segment reads only these exit codes and the count; the auto-restart and failed-unit branches are P-c's, unchanged.",
+   "cannot_prove": "systemd behaviour, unit failure, auto-restart",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-health-leaf",
+   "test": "test_native39_trunk_queue.RestartBind",
+   "replaces": "The vLLM API server /health route during engine startup",
+   "equivalence": "Loopback HTTP: 503 until the scenario marks ready, then 200; the queue's loop (real curl) reads only the status code and its own EPOCHREALTIME before and after each request.",
+   "cannot_prove": "Real readiness timing; whether /health turns 200 before or after the owner bind on the box (that is what the receipt measures there)",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-engine-leaf",
+   "test": "test_native39_trunk_queue.Tail",
+   "replaces": "The engine's /tokenize, streamed /v1/completions and /metrics for the plain W1 client (w1_trace.py, real) and the idle check (real)",
+   "equivalence": "w1_trace reads only len(tokens) of /tokenize and usage.completion_tokens of `data: {` SSE lines; the leaf streams one usage line per 10 ms per request and ends a stream when the client disconnects (the engine aborts a request on disconnect; q18b-w1ab2 relied on the same). /metrics carries vllm:num_requests_running/waiting with labels in the engine's exposition form; running counts the open streams, plus one when the scenario holds the engine busy.",
+   "cannot_prove": "Real decode rates, prefill time of 8 x 153537 cold prompts, the engine's abort latency (the idle check waits for it on the box)",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-tokenize-model",
+   "test": "test_native39_trunk_queue.Guard",
+   "replaces": "The engine tokenizer behind /tokenize for the W2 length guard",
+   "equivalence": "Counts with the declared token model (one token per word plus one per digit; newline one token), which reproduced P-c run 1 exactly (197315 / 201306). The guard, its manifest re-derivation and the queue lines are real; off-by-one and refused-band counts check its refusals.",
+   "cannot_prove": "The box tokenizer's counts for the native39 manifest (the guard measures them before row1 and stops the queue if they differ)",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-phase-executables",
+   "test": "test_native39_trunk_queue.Tail",
+   "replaces": "e3_native_w1.py, e3_native35_performance.py, e3_native_memory_grade.py, e3_native28_rule4_continuation.py",
+   "equivalence": "As test_native35_performance_queue.FAKE_PHASE (native35_p leaves): argv recorded, minimal artifacts written; each has its own suite. The gates producer, record/step, w1_trace, the idle check, native35_performance_grade and the trunk summary are real.",
+   "cannot_prove": "Native W1 and W2 measurements",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-declare-fixture-tree",
+   "test": "test_native39_trunk_queue.Launcher",
+   "replaces": "The box task tree and S5 overlay mounted by the launcher (file stubs with SHA256SUMS)",
+   "equivalence": "test_identity_declare.DeclareTests.setUp plus its S5 overlay names, unchanged; the trunk and P-c settings files are sourced, and the real setcfg algorithm (f3cae137), the S5 launcher (22473a90, rendered from deploy/run-flash-prod.sh) and identity_declare.declare produce the command whose last --host is checked.",
+   "cannot_prove": "Mount content hashes of the real overlay (the bundle declaration on the hub)",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-box-extract",
+   "test": "test_native39_trunk_queue.BoxFormats",
+   "replaces": "Nothing: retained box records (harness/fixtures/native39_box_extract.json, tools/native39_box_extract.py, source sha256 per file)",
+   "equivalence": "P-c run 1 (docker --timestamps lines, served-host line, host-disk ids, captured --host, defaults EXTRA_ARGS, performance grade, startup epoch) and q18b-w1ab2 B0 (duplicate --host warning, served http://127.0.0.1:8000, health rows, w1_trace output) are read as recorded.",
+   "cannot_prove": "A bind line on the box: neither record has one (P-c predates native38; w1ab2 ran the held-a overlay)",
+   "box_evidence": true
   }
  ]
 }
