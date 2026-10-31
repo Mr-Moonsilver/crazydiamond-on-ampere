@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $# == 1 && $1 == strict ]] || { echo "usage: tools/selftest strict" >&2; exit 2; }
+exec python3 "$(dirname "$0")/../harness/selftest.py"

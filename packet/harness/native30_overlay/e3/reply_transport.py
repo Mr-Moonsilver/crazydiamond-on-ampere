@@ -23,6 +23,14 @@ import time
 
 class NotReady(RuntimeError): pass
 class TransportError(RuntimeError): pass
+class WorkerRPCError(TransportError):
+    """Bounded metadata only; never serializes worker exception payloads."""
+    def __init__(self, record):
+        self.record = dict(record)
+        super().__init__('worker-fatal rank=%s method=%s error=%s code=%s' % (
+            record.get('rank'), record.get('method'), record.get('error_type'), record.get('code')))
+
+
 class Backpressure(RuntimeError): pass
 
 
@@ -108,6 +116,8 @@ class ReplyTransport:
 
     def _healthy(self):
         if self._failure is not None:
+            if isinstance(self._failure, BaseException):
+                raise self._failure
             raise TransportError(self._failure)
         if self._closing:
             raise TransportError('transport closing')
@@ -117,6 +127,13 @@ class ReplyTransport:
         if self._failure is None:
             self._failure = reason
         self._condition.notify_all()
+
+    def fail(self, failure):
+        """Latch an out-of-band worker failure before executor teardown."""
+        if not isinstance(failure, TransportError):
+            raise TypeError('typed transport failure required')
+        with self._condition:
+            self._poison(failure)
 
     def submit(self, kind, send, *, ranks=None, timeout_s=300.0, aggregate=None, precheck=None):
         """Register before broadcasting, including unique-reply/aggregator ranks.

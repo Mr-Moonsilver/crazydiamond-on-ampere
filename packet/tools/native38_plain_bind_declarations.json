@@ -1,0 +1,132 @@
+{
+  "definitions": {
+    "harness/selftest.py": [
+      "module:For#12"
+    ],
+    "harness/test_e3_admission_metadata.py": [
+      "StartupSeamTests.test_enabled_startup_installs_the_provider_before_the_driver"
+    ],
+    "harness/test_e3_native_qualification_frontend.py": [
+      "FakeApp.middleware"
+    ],
+    "harness/test_e3_native_startup_binding.py": [
+      "ActualStartupBindingTests.test_real_generated_engine_startup_uses_real_closure_transport_backend_and_driver",
+      "ActualStartupBindingTests.test_relay_refuses_foreign_transport_lost_claim_and_worker_use",
+      "make_engine",
+      "module:import dataclasses",
+      "module:import enum"
+    ],
+    "patches/s5_engine/engine_driver.py": [
+      "NativeSegmentDriver._settle_route_control",
+      "NativeSegmentDriver._status_record"
+    ],
+    "patches/s5_engine/executor_hooks.py": [
+      "_install_owned",
+      "make_fatal_pipe",
+      "module:AugAssign#1",
+      "module:AugAssign#2",
+      "module:_FATAL_LOCK",
+      "module:_FATAL_SENT",
+      "module:_FATAL_WRITER",
+      "module:from reply_transport import Backpressure, NotReady, ReplyTransport, TransportError",
+      "module:from reply_transport import Backpressure, NotReady, ReplyTransport, TransportError, WorkerRPCError",
+      "module:import json",
+      "module:import os",
+      "monitor_fatal_workers",
+      "notify_worker_failure",
+      "raise_worker_failure",
+      "report_worker_failure",
+      "require_startup_owner",
+      "set_fatal_writer"
+    ],
+    "patches/s5_engine/probe_control.py": [
+      "attach_native_router",
+      "install_owner_health"
+    ],
+    "patches/s5_engine/reply_transport.py": [
+      "ReplyTransport._healthy",
+      "ReplyTransport.fail",
+      "WorkerRPCError.__init__",
+      "class:WorkerRPCError"
+    ],
+    "patches/s5_engine/s5_startup.py": [
+      "bootstrap_full_startup",
+      "install_engine"
+    ]
+  },
+  "overlay_definitions": {
+    "e3/engine_driver.py": [
+      "NativeSegmentDriver._settle_route_control",
+      "NativeSegmentDriver._status_record"
+    ],
+    "e3/executor_hooks.py": [
+      "_install_owned",
+      "make_fatal_pipe",
+      "module:AugAssign#1",
+      "module:AugAssign#2",
+      "module:_FATAL_LOCK",
+      "module:_FATAL_SENT",
+      "module:_FATAL_WRITER",
+      "module:from .reply_transport import Backpressure, NotReady, ReplyTransport, TransportError",
+      "module:from .reply_transport import Backpressure, NotReady, ReplyTransport, TransportError, WorkerRPCError",
+      "module:import json",
+      "module:import os",
+      "monitor_fatal_workers",
+      "notify_worker_failure",
+      "raise_worker_failure",
+      "report_worker_failure",
+      "require_startup_owner",
+      "set_fatal_writer"
+    ],
+    "e3/probe_control.py": [
+      "attach_native_router",
+      "install_owner_health"
+    ],
+    "e3/reply_transport.py": [
+      "ReplyTransport._healthy",
+      "ReplyTransport.fail",
+      "WorkerRPCError.__init__",
+      "class:WorkerRPCError"
+    ],
+    "e3/s5_startup.py": [
+      "bootstrap_full_startup",
+      "install_engine"
+    ],
+    "e3_sources/core.py": [
+      "EngineCoreProc._handle_client_request",
+      "EngineCoreProc._make_ready_response"
+    ],
+    "e3_sources/executor.py": [
+      "MultiprocExecutor._init_executor",
+      "MultiprocExecutor.start_worker_monitor",
+      "WorkerProc._execute_worker_rpc",
+      "WorkerProc.async_output_busy_loop",
+      "WorkerProc.make_worker_process",
+      "WorkerProc.worker_main",
+      "WorkerProcHandle.from_unready_handle",
+      "class:UnreadyWorkerProcHandle",
+      "class:WorkerProcHandle"
+    ]
+  },
+  "parent": "ce6deb1",
+  "paths": [
+    "A\tharness/e3_native38_cpu_probe.py",
+    "A\tharness/native38_fixture_leaves.json",
+    "A\tharness/test_native38_plain_bind.py",
+    "A\ttools/build_native38_plain_bind.py",
+    "A\ttools/native38_plain_bind_declarations.json",
+    "A\ttools/native38_plain_bind_freeze.py",
+    "A\ttools/native38_plain_bind_selfrun.py",
+    "A\ttools/selftest",
+    "M\tharness/selftest.py",
+    "M\tharness/test_e3_admission_metadata.py",
+    "M\tharness/test_e3_native_qualification_frontend.py",
+    "M\tharness/test_e3_native_startup_binding.py",
+    "M\tpatches/s5_engine/engine_driver.py",
+    "M\tpatches/s5_engine/executor_hooks.py",
+    "M\tpatches/s5_engine/native_candidate_review.json",
+    "M\tpatches/s5_engine/probe_control.py",
+    "M\tpatches/s5_engine/reply_transport.py",
+    "M\tpatches/s5_engine/s5_startup.py"
+  ]
+}

@@ -326,7 +326,67 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     engine._flash_s5_composition = composition
     engine._flash_s5_admission = controller
     engine._flash_s5_driver = driver
+    bootstrap_full_startup(engine, driver, timeout_s=config.reply_timeout_s)
     return composition
+
+
+def bootstrap_full_startup(engine, driver, *, timeout_s, clock=time.monotonic):
+    """Engine-owned cold FULL fence; completes before EngineCore's ready message.
+
+    There is no request/client or main-loop reentry here. The same driver and
+    sole reply receiver pump the existing bounded control state machine.
+    """
+    if getattr(engine, '_flash_s5_startup_ready', None) is not None:
+        raise StartupError('startup owner already published')
+    scheduler = engine.scheduler
+    if getattr(scheduler, 'requests', None) or getattr(engine, 'batch_queue', None):
+        raise StartupError('startup owner requires an empty engine')
+    old_pause = scheduler.pause_state
+    scheduler.set_pause_state(type(old_pause).PAUSED_ALL)
+    deadline = clock() + timeout_s
+    records = {}
+    try:
+        for action in ('bootstrap_engine_owner', 'barrier', 'enter_split', 'leave_split'):
+            future = driver.submit_control({'action': action, 'engine_epoch': driver.engine_epoch})
+            while not future.done():
+                if clock() >= deadline:
+                    raise StartupError('startup FULL owner fence timed out')
+                driver.control_tick()
+                if not future.done():
+                    time.sleep(0.001)
+            records[action] = future.result()
+            if action == 'barrier':
+                rows = records[action].get('workers')
+                zeros = ('live_decode_requests', 'running_requests', 'prefill_requests',
+                         'retained_rows', 'pending_native_replays',
+                         'pending_prefill_streams', 'pending_output_copies')
+                if (type(rows) is not list or len(rows) != len(driver.ranks)
+                        or {row.get('worker_rank') for row in rows} != set(driver.ranks)
+                        or any(row.get('engine_epoch') != driver.engine_epoch
+                               or row.get('route') != 'full'
+                               or row.get('route_generation') != 0
+                               or row.get('barrier_clean') is not True
+                               or (row.get('live_decode') or {}).get('available') is not True
+                               or any(type(row.get(k)) is not int or row[k] != 0 for k in zeros)
+                               for row in rows)):
+                    raise StartupError('startup FULL owner fence needs empty drained workers')
+        final = records['leave_split']
+        if (not driver._bootstrapped or final.get('route_after') != 'full'
+                or final.get('typed_acks') is not True
+                or len(final.get('transition_acks', ())) != len(driver.ranks)
+                or driver.admission_intent() is not None):
+            raise StartupError('startup FULL owner proof incomplete')
+        engine._flash_s5_startup_ready = dict(engine_epoch=driver.engine_epoch,
+            bootstrap_acks=driver.bootstrap_ack_rows(),
+            full_transition={key: final[key] for key in ('engine_epoch', 'route_after',
+                'route_generation_after', 'typed_acks', 'transition_acks')})
+    except BaseException:
+        # Do not resume an incompletely bound generation; init must fail closed.
+        engine.model_executor.shutdown()
+        raise
+    else:
+        scheduler.set_pause_state(old_pause)
+    return engine._flash_s5_startup_ready
 
 
 def settings(env=None):

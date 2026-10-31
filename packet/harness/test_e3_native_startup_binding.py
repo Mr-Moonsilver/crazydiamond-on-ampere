@@ -6,6 +6,8 @@ bytes are hashed but never loaded. Only external vLLM types and engine queues /
 scheduler stand in for the unavailable running process. No GPU/release claim.
 """
 import ast
+import dataclasses
+import enum
 import asyncio
 import contextlib
 import hashlib
@@ -68,14 +70,59 @@ def generated_package():
                     del sys.modules[key]
 
 
-def make_engine():
+def make_engine(prefix=None):
     success = object()
-    workers = [types.SimpleNamespace(rank=i) for i in range(4)]
+    if prefix is None:
+        workers = [types.SimpleNamespace(rank=i) for i in range(4)]
+    else:
+        import test_e3_native_overlap as connected
+        rig = connected.cold_stack()
+        rig.scheduler.waiting.items.clear()
+        def translate(value, packaged):
+            cls = type(value)
+            module = cls.__module__
+            if dataclasses.is_dataclass(value) or isinstance(value, enum.Enum):
+                name = module.rsplit('.', 1)[-1]
+                target_module = prefix+'.'+name if packaged else name
+                target = getattr(importlib.import_module(target_module), cls.__name__)
+                if isinstance(value, enum.Enum):
+                    return target(value.value)
+                return target(**{f.name: translate(getattr(value, f.name), packaged)
+                                 for f in dataclasses.fields(value) if f.init})
+            if type(value) is dict:
+                return {k: translate(v, packaged) for k,v in value.items()}
+            if type(value) in (tuple,list):
+                return type(value)(translate(v, packaged) for v in value)
+            return value
+        workers = []
+        for rank, worker in rig.workers.items():
+            def invoke(method, command, worker=worker):
+                cmd = translate(command, False)
+                fn = (worker.flash_s5_native_overlap if method == 'native_overlap'
+                      else getattr(worker._flash_s5_bridge, method))
+                return translate(fn(cmd), True)
+            workers.append(types.SimpleNamespace(rank=rank,
+                flash_s5_bootstrap=lambda c, invoke=invoke: invoke('bootstrap', c),
+                flash_s5_transition=lambda c, invoke=invoke: invoke('transition', c),
+                flash_s5_native_overlap=lambda c, invoke=invoke: invoke('native_overlap', c)))
     executor = boundary.FakeExecutor(workers, success)
     pool = allocator_boundary.FixturePool()
     manager = allocator_boundary.FixtureManager(pool, [allocator_boundary.FixtureGroup(pool)])
     scheduler = allocator_boundary.FixtureScheduler(manager)
     engine = boundary.FakeEngine(executor, scheduler)
+    if prefix is not None:
+        class Pause(enum.StrEnum):
+            UNPAUSED = 'UNPAUSED'
+            PAUSED_ALL = 'PAUSED_ALL'
+        scheduler.pause_state = Pause.UNPAUSED
+        scheduler.set_pause_state = lambda state: setattr(scheduler, 'pause_state', state)
+        engine.is_scheduler_paused = lambda: scheduler.pause_state != Pause.UNPAUSED
+        enqueue = executor.enqueue
+        def delivered(item):
+            enqueue(item)
+            executor.deliver()
+        executor.enqueue = delivered
+        executor.shutdown = lambda: getattr(executor, '_flash_s5_transport', None).close(.1)
     engine.vllm_config = types.SimpleNamespace(
         model_config=types.SimpleNamespace(hf_text_config=types.SimpleNamespace(num_hidden_layers=48)),
         parallel_config=types.SimpleNamespace(pipeline_parallel_size=2))
@@ -91,13 +138,16 @@ class ActualStartupBindingTests(unittest.TestCase):
             handoff = importlib.import_module(prefix+'.async_handoff')
             ready = importlib.import_module(prefix+'.native_readiness')
             driver_module = importlib.import_module(prefix+'.engine_driver')
-            engine, success = make_engine()
+            engine, success = make_engine(prefix)
             vllm = boundary.fake_vllm(boundary.FakeForwardContext(),
                                     boundary.FakeWorkspaceModule(), success)
             env = {'FLASH_S5_OVERLAP':'1', 'VLLM_PP_LAYER_PARTITION':'24,24'}
             with patch.dict(sys.modules, vllm), patch.dict(os.environ, env):
                 # Run the actual generated EngineCore hook, no install/guard mocks.
                 result = hooks.after_engine_startup(engine)
+            self.assertTrue(engine._flash_s5_driver._bootstrapped)
+            self.assertIsNotNone(engine._flash_s5_startup_ready)
+            self.assertFalse(engine._flash_s5_driver._split_ready)
             self.assertIs(result, engine._flash_s5_composition)
             self.assertIsInstance(result, handoff.Composition)
             self.assertIsInstance(result.dispatcher.backend, backend.RemoteCompletionBackend)
@@ -151,7 +201,7 @@ class ActualStartupBindingTests(unittest.TestCase):
             config = handoff.HandoffConfig.from_env({'FLASH_S5_OVERLAP':'1'})
             with self.assertRaises(handoff.ConfigurationError):
                 backend.RemoteCompletionBackend(config, transport=object())
-            engine, success = make_engine()
+            engine, success = make_engine(prefix)
             transport = hooks.install(engine.model_executor, config=config, success_status=success)
             try:
                 relay = backend.RemoteCompletionBackend(config, transport=transport)

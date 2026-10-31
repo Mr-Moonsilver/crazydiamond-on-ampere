@@ -19,9 +19,11 @@ import hashlib
 import math
 import time
 import threading
+import os
+import json
 
 from e3_types import E3ContractError, E3Pending
-from reply_transport import Backpressure, NotReady, ReplyTransport, TransportError
+from reply_transport import Backpressure, NotReady, ReplyTransport, TransportError, WorkerRPCError
 
 
 EXECUTOR_PATH = 'v1/executor/multiproc_executor.py'
@@ -189,6 +191,38 @@ _NATIVE_CONTROL_METHOD = '''    def flash_s5_native_control(self, command):
 
 '''
 
+# Native38: fatal pipes are independent of output-rank FIFO replies.
+_EXECUTOR_FORWARD += (
+    ('    ready_pipe: Connection\n    death_writer: Connection | None = None\n',
+     '    ready_pipe: Connection\n    death_writer: Connection | None = None\n    fatal_reader: Connection | None = None\n'),
+    ('    peer_worker_response_mqs: list[MessageQueue | None]\n    death_writer: Connection | None = None\n',
+     '    peer_worker_response_mqs: list[MessageQueue | None]\n    death_writer: Connection | None = None\n    fatal_reader: Connection | None = None\n'),
+    ('            death_writer=unready_handle.death_writer,\n',
+     '            death_writer=unready_handle.death_writer,\n            fatal_reader=unready_handle.fatal_reader,\n'),
+    ('        death_reader, death_writer = context.Pipe(duplex=False)\n',
+     '        death_reader, death_writer = context.Pipe(duplex=False)\n        fatal_reader, fatal_writer = _flash_s5_hooks.make_fatal_pipe(context)\n'),
+    ('            inherited_fds.extend((ready_reader.fileno(), death_writer.fileno()))\n',
+     '            inherited_fds.extend((ready_reader.fileno(), death_writer.fileno()))\n            if fatal_reader is not None: inherited_fds.append(fatal_reader.fileno())\n'),
+    ('            "death_pipe": death_reader,\n',
+     '            "death_pipe": death_reader,\n            "fatal_writer": fatal_writer,\n'),
+    ('        death_reader.close()\n',
+     '        death_reader.close()\n        if fatal_writer is not None: fatal_writer.close()\n'),
+    ('        return UnreadyWorkerProcHandle(proc, rank, ready_reader, death_writer)\n',
+     '        return UnreadyWorkerProcHandle(proc, rank, ready_reader, death_writer, fatal_reader)\n'),
+    ('                    inherited_fds.append(unready_worker_handle.ready_pipe.fileno())\n',
+     '                    inherited_fds.append(unready_worker_handle.ready_pipe.fileno())\n                    if unready_worker_handle.fatal_reader is not None:\n                        inherited_fds.append(unready_worker_handle.fatal_reader.fileno())\n'),
+    ('            self.workers = WorkerProc.wait_for_ready(unready_workers)\n',
+     '            self.workers = WorkerProc.wait_for_ready(unready_workers)\n            _flash_s5_hooks.monitor_fatal_workers(self)\n'),
+    ('        death_pipe = kwargs.pop("death_pipe", None)\n',
+     '        death_pipe = kwargs.pop("death_pipe", None)\n        _flash_s5_hooks.set_fatal_writer(kwargs.pop("fatal_writer", None))\n'),
+    ('            logger.exception("WorkerProc hit an exception.")\n',
+     '            _flash_s5_hooks.report_worker_failure(self.rank, method, e)\n            logger.exception("WorkerProc hit an exception.")\n'),
+    ('            output = self.async_output_queue.get()\n            self.enqueue_output(output)\n',
+     '            output = self.async_output_queue.get()\n            try:\n                self.enqueue_output(output)\n            except Exception as error:\n                _flash_s5_hooks.report_worker_failure(self.rank, "async_output", error)\n                raise\n'),
+    ('            _self.shutdown()\n            callback = _self.failure_callback\n',
+     '            _flash_s5_hooks.notify_worker_failure(_self, None)\n            _self.shutdown()\n            callback = _self.failure_callback\n'),
+)
+
 _CORE_FORWARD = (
     ('logger = init_logger(__name__)\n', 'logger = init_logger(__name__)\n\n' + _IMPORT),
     ('''        self.is_ec_consumer = (
@@ -272,6 +306,14 @@ _CORE_FORWARD = (
     ('        logger.debug_once("[shutdown] EngineCore: tearing down local resources")\n',
      '        _flash_s5_hooks.before_engine_shutdown(self)\n'
      '        logger.debug_once("[shutdown] EngineCore: tearing down local resources")\n'),
+)
+
+
+_CORE_FORWARD += (
+    ('        elif request_type == EngineCoreRequestType.EXECUTOR_FAILED:\n            raise RuntimeError("Executor failed.")\n',
+     '        elif request_type == EngineCoreRequestType.EXECUTOR_FAILED:\n            _flash_s5_hooks.raise_worker_failure(self)\n            raise RuntimeError("Executor failed.")\n'),
+    ('    def _make_ready_response(self) -> EngineCoreReadyResponse:\n',
+     '    def _make_ready_response(self) -> EngineCoreReadyResponse:\n        _flash_s5_hooks.require_startup_owner(self)\n'),
 )
 
 
@@ -554,6 +596,8 @@ def _install_owned(executor, *, config, success_status, clock=time.monotonic,
         raise E3ContractError('overlap is disabled')
     if executor is None:
         raise E3ContractError('executor is required')
+    if getattr(executor, '_flash_s5_fatal_failure', None) is not None:
+        raise executor._flash_s5_fatal_failure
     if success_status is None:
         raise E3ContractError('actual WorkerProc.ResponseStatus.SUCCESS is required')
     if getattr(executor, '_flash_s5_transport', None) is not None:
@@ -1008,3 +1052,128 @@ __all__ = [
     'retain_mq', 'revert_core',
     'revert_executor', 'revert_worker', 'worker_rpc',
 ]
+
+
+_FATAL_WRITER = None
+_FATAL_LOCK = threading.Lock()
+_FATAL_SENT = False
+
+
+def make_fatal_pipe(context):
+    if os.environ.get('FLASH_S5_OVERLAP') != '1':
+        return None, None
+    return context.Pipe(duplex=False)
+
+
+def set_fatal_writer(writer):
+    global _FATAL_WRITER, _FATAL_SENT
+    _FATAL_WRITER, _FATAL_SENT = writer, False
+
+
+def report_worker_failure(rank, method, error):
+    """First fatal notification precedes logging and normal FIFO output.
+
+    A notified worker parks until its supervisor retires the generation. It
+    cannot continue or report success after a partly executed PP forward.
+    """
+    global _FATAL_SENT
+    if _FATAL_WRITER is None:
+        return
+    with _FATAL_LOCK:
+        if not _FATAL_SENT:
+            _FATAL_SENT = True
+            record = dict(schema='s5-worker-fatal/1', rank=rank, pid=os.getpid(),
+                          method=method[:80] if type(method) is str else 'callable',
+                          error_type=type(error).__name__[:80], code='worker-rpc-exception')
+            try:
+                _FATAL_WRITER.send_bytes(json.dumps(record).encode())
+            except (OSError, EOFError):
+                raise SystemExit(1) from None
+    # No queue/log/device work after publication. Parent death monitoring or
+    # supervisor termination also retires this worker if the reader dies.
+    threading.Event().wait()
+    raise SystemExit(1)
+
+
+def notify_worker_failure(executor, record):
+    """Poison futures and notify Core BEFORE potentially blocking teardown."""
+    lock = getattr(executor, '_flash_s5_fatal_lock', None)
+    if lock is None:
+        # The default-off worker monitor is left to its stock callback path.
+        return
+    with lock:
+        if getattr(executor, '_flash_s5_fatal_failure', None) is not None:
+            return
+        if record is None:
+            record = dict(schema='s5-worker-fatal/1', rank=-1, pid=0,
+                          method='unknown', error_type='WorkerDied', code='worker-died')
+        failure = WorkerRPCError(record)
+        executor._flash_s5_fatal_failure = failure
+        executor.is_failed = True
+        transport = getattr(executor, '_flash_s5_transport', None)
+        if transport is not None:
+            transport.fail(failure)
+        callback = getattr(executor, 'failure_callback', None)
+        executor.failure_callback = None
+    if callback is not None:
+        callback()
+
+
+def monitor_fatal_workers(executor):
+    if os.environ.get('FLASH_S5_OVERLAP') != '1':
+        return
+    if hasattr(executor, '_flash_s5_fatal_lock'):
+        raise E3ContractError('worker fatal monitor already installed')
+    workers = tuple(executor.workers)
+    if len(workers) != getattr(executor, 'world_size', len(workers)):
+        raise E3ContractError('native fatal channels require all ranks local')
+    if any(getattr(w, 'fatal_reader', None) is None for w in workers):
+        raise E3ContractError('enabled executor requires every worker fatal channel')
+    executor._flash_s5_fatal_lock = threading.Lock()
+    executor._flash_s5_fatal_failure = None
+    def receive(worker):
+        try:
+            raw = worker.fatal_reader.recv_bytes(1024)
+            record = json.loads(raw)
+            if (type(record) is not dict or record.get('schema') != 's5-worker-fatal/1'
+                    or record.get('rank') != worker.rank
+                    or type(record.get('pid')) is not int
+                    or record['pid'] != worker.proc.pid
+                    or any(type(record.get(k)) is not str or len(record[k]) > 80
+                           for k in ('method', 'error_type', 'code'))):
+                raise ValueError('invalid worker fatal record')
+        except (OSError, EOFError, ValueError):
+            record = None
+        if getattr(executor, 'shutting_down', False):
+            return
+        try:
+            notify_worker_failure(executor, record)
+        finally:
+            worker.fatal_reader.close()
+            # Death pipes/signals, never an RPC to peers blocked in PP/NCCL.
+            executor.shutdown()
+    for worker in workers:
+        threading.Thread(target=receive, args=(worker,), daemon=True,
+                         name='flash-s5-fatal-%d' % worker.rank).start()
+
+
+def raise_worker_failure(engine):
+    """Keep the first typed cause when the idle Core consumes its failure notice."""
+    failure = getattr(engine.model_executor, '_flash_s5_fatal_failure', None)
+    if failure is not None:
+        raise failure
+
+
+def require_startup_owner(engine):
+    """Ready publication must follow the completed engine-owned FULL fence."""
+    if os.environ.get('FLASH_S5_OVERLAP') != '1':
+        return
+    from decode_probe import mode_settings
+    if mode_settings(os.environ) is not None:
+        return
+    driver = getattr(engine, '_flash_s5_driver', None)
+    proof = getattr(engine, '_flash_s5_startup_ready', None)
+    if (driver is None or type(proof) is not dict or not driver._bootstrapped
+            or proof.get('engine_epoch') != driver.engine_epoch
+            or driver._split_ready or driver.admission_intent() is not None):
+        raise E3ContractError('engine owner is not ready for publication')

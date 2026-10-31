@@ -369,6 +369,12 @@ class FakeAPIRouter:
 
 
 class FakeApp:
+    def middleware(self, kind):
+        def register(fn):
+            self.native38_health = fn
+            return fn
+        return register
+
     def __init__(self):
         self.routers = []
         self.state = types.SimpleNamespace(engine_client=object())

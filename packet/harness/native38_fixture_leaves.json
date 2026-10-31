@@ -1,0 +1,54 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "CPU-only native38 ownership/error paths; not box evidence",
+  "leaves": [
+    {
+      "name": "cpu-native38-storage-and-transport",
+      "test": "test_e3_native_overlap.cold_stack, test_native38_plain_bind.OwnerStartup",
+      "replaces": "GPU model, graph resources and process transport below real driver/worker bridge/router",
+      "equivalence": "Real binding types, route state machine and empty barrier; controlled CPU graph/event/network resources preserve ack ordering.",
+      "cannot_prove": "Does not prove CUDA graph numerical exactness, real NCCL termination or device performance.",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native38-namespace-wire-adapter",
+      "test": "test_e3_native_startup_binding.make_engine(prefix)",
+      "replaces": "CPU transport serialization between generated-package and hub-fixture wire namespaces",
+      "equivalence": "Copies dataclass fields/enums into exact destination wire classes; real packaged install_engine, driver, bootstrap and bridge transitions run without replacing their methods.",
+      "cannot_prove": "Does not prove pickle/native MQ ABI; preserves types/values, not actual interprocess serialization.",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native38-non-output-peer",
+      "test": "test_native38_plain_bind.FatalReplies",
+      "replaces": "PP1 blocked in irecv_tensor_dict and GPU rank0 failure",
+      "equivalence": "Real generated RPC exception body runs in spawned CPU process; output-rank receiver stays blocked while a real fatal pipe and ReplyTransport fail the pending call.",
+      "cannot_prove": "Cannot interrupt actual NCCL or validate CUDA completion; peer termination is a CPU process fixture.",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native38-http-response",
+      "test": "test_native38_plain_bind.Health",
+      "replaces": "FastAPI response and middleware decorator on host without FastAPI",
+      "equivalence": "Only HTTP response shape is substituted; real health middleware reads the real driver status/proof and never binds. Exact ASGI mapping is additionally required in pinned-image self-run.",
+      "cannot_prove": "Host check cannot prove actual FastAPI registration/HTTP ABI.",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native38-constructor-order-only",
+      "test": "test_e3_admission_metadata.StartupSeamTests",
+      "replaces": "bootstrap_full_startup and existing constructor/device leaves",
+      "equivalence": "This older isolated unit test already substitutes NativeSegmentDriver; it checks only provider installation before driver construction. Full real bootstrap is tested in test_native38_plain_bind and test_e3_native_startup_binding.",
+      "cannot_prove": "Startup binding, FULL fence or readiness; no claim from this isolated test.",
+      "box_evidence": false
+    },
+    {
+      "name": "cpu-native38-asgi-client",
+      "test": "e3_native38_cpu_probe",
+      "replaces": "AsyncLLM health client plus device/transport leaves of OwnerStartup.stack",
+      "equivalence": "Actual pinned stock health router and real FastAPI/Starlette ASGI execute. The client implements errored/check_health and returns the real driver status through call_utility_async; no owner binding or readiness is faked.",
+      "cannot_prove": "Live Core socket readiness, model accuracy or actual CUDA/NCCL teardown.",
+      "box_evidence": false
+    }
+  ]
+}

@@ -709,6 +709,7 @@ def attach_native_router(args, app, env=None):
     router = APIRouter()
     state = {'engine': None, 'control': None, 'session': None,
              'mode': 'native-overlap'}
+    install_owner_health(app)
 
     async def endpoint(request):
         host = getattr(getattr(request, 'client', None), 'host', '')
@@ -759,3 +760,41 @@ def attach_native_router(args, app, env=None):
     router.add_api_route(NATIVE_PATH, endpoint, methods=['POST'])
     app.include_router(router)
     return state
+
+
+def install_owner_health(app):
+    """Read-only startup proof latch; never binds an owner or starts a lane.
+
+    The EngineCore ready handshake is already withheld by synchronous startup.
+    Query its latched proof once per EngineClient identity. Stock error health
+    still runs on every scrape; a replacement client must prove its own owner.
+    """
+    from fastapi.responses import JSONResponse
+    import asyncio
+    proved = None
+    lock = asyncio.Lock()
+
+    @app.middleware('http')
+    async def owner_health(request, call_next):
+        nonlocal proved
+        if request.url.path != '/health':
+            return await call_next(request)
+        engine = getattr(request.app.state, 'engine_client', None)
+        if engine is None or getattr(engine, 'errored', True):
+            proved = None
+            return JSONResponse({'error': 'engine-not-ready'}, status_code=503)
+        if proved is not engine:
+            async with lock:
+                if proved is not engine:
+                    try:
+                        row = await asyncio.wait_for(engine.engine_core.call_utility_async(
+                            'flash_s5_native_control', {'action': 'status'}), timeout=1.0)
+                        proof = row.get('startup_owner_ready')
+                        if (type(proof) is not dict or proof.get('engine_epoch') != row.get('engine_epoch')
+                                or row.get('bootstrapped') is not True
+                                or proof.get('full_transition', {}).get('route_after') != 'full'):
+                            raise ValueError('startup owner proof absent')
+                        proved = engine
+                    except Exception:
+                        return JSONResponse({'error': 'engine-owner-not-ready'}, status_code=503)
+        return await call_next(request)
