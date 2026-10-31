@@ -54,9 +54,10 @@ def regression_from(log):
 
 
 def focused_from(log):
-    text=log.read_text();ran=re.findall(r'^Ran (\d+) tests? in ',text,re.M)
-    assert ran and text.rstrip().endswith('OK') and 'skipped' not in text.rsplit('OK',1)[-1]
-    return dict(tests=sum(int(n) for n in ran),skips=0,verdict='PASS',log_sha256=sha(log),basis='test_native35_l2 plus the placement-driver, decode-correctness, native35 queue and native30 CLI suites on the final tree')
+    # One unittest run: its 'Ran N tests' / 'OK' block, no skip/failure lines, then the shell rc line.
+    text=log.read_text();ran=re.findall(r'^Ran (\d+) tests? in [0-9.]+s\n\nOK$',text,re.M)
+    assert len(ran)==1 and not re.search(r'\.\.\. skipped|^FAILED|^FAIL:|^ERROR:',text,re.M) and text.rstrip().endswith('rc=0'),'focused log must be one all-pass run with zero skips'
+    return dict(tests=int(ran[0]),skips=0,verdict='PASS',log_sha256=sha(log),basis='test_native35_l2 plus the placement-driver, decode-correctness, native35 queue and native30 CLI suites on the final tree')
 
 
 def source_head():
