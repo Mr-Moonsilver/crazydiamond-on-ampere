@@ -31,11 +31,13 @@ import e3_native_w1 as native_w1
 import e3_overlap_performance as shared
 from wire_v1 import ROUTE_BANK_FULL,ROUTE_BANK_SPLIT
 
-QUEUE=HERE/'runs/q18a_native35_p.draft.sh'
-SETTINGS=HERE/'runs/q18a_native35_p_settings.sh'
+# The candidate queue: P-b (P-a plus the L2 row4 window fix under fresh names;
+# test_native35_p_b proves its measurement tail is P-a's byte for byte).
+QUEUE=HERE/'runs/q18a_native35_p_b.draft.sh'
+SETTINGS=HERE/'runs/q18a_native35_p_b_settings.sh'
 PERF_RECEIPTS=[]
 KEY='native35-p-cpu-transport-fixture'
-RUN_ID='q18a-native35-p-20261031T120000Z-4242'
+RUN_ID='q18a-native35-p-b-20261031T120000Z-4242'
 EPOCH=7
 # The reviewed package: inside the frozen bundle it is the bundle's own overlay;
 # on the hub tree it is the byte-identical frozen O overlay P inherits.
