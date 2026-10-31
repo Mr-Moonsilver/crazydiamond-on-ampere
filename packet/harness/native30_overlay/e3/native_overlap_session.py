@@ -417,6 +417,13 @@ class NativeOverlapSession:
                   'raw_journal_evidence': raw,
                   'complete': binding.get('valid') is True
                               and type(proof) is dict and proof.get('proved') is True}
+        refusal = native_admission_refusal(self.begin_receipt.get('native_admission'),
+                                           raw.get('native_admission'))
+        if refusal is not None:
+            # Typed: native admission refused work inside this window (the
+            # request waited unallocated on the armed split route).
+            result['refusal'] = refusal
+            result['complete'] = False
         self.measure_start_ns, self.begin_receipt, self.begin_proof = None, None, None
         return result
 
@@ -469,6 +476,38 @@ class NativeOverlapSession:
         status = await self.control.status()
         status.pop('native_ready', None)
         return status
+
+
+def native_admission_refusal(begin, end):
+    """Typed refusal between two engine admission records, or ``None``.
+
+    ``begin``/``end`` are the driver's ``native_admission`` records at the
+    window's begin and end (status and overlap evidence).  A refusal counted
+    after begin is reported with the newest typed receipt; nothing is inferred
+    when either record is missing (an older engine has none).
+    """
+    if type(begin) is not dict or type(end) is not dict:
+        return None
+    counts = {}
+    for key in ('refused', 'alloc_failures', 'admitted', 'plan_searches',
+                'plan_memo_hits', 'split_stock_deferrals', 'refusal_seq'):
+        a, b = begin.get(key), end.get(key)
+        if type(a) is not int or type(b) is not int or b < a:
+            return {'reason': 'native-admission-record-invalid', 'field': key}
+        counts[key] = b - a
+    if counts['refused'] == 0 and counts['alloc_failures'] == 0:
+        if counts['split_stock_deferrals'] > 0 and counts['admitted'] == 0:
+            # Stock prefill held on the armed split route and nothing admitted
+            # natively: the window's request never ran (e.g. an untyped
+            # environment refusal such as a speculative config).
+            return {'reason': 'native-admission-refused:stock-deferred-without-admission',
+                    'deltas': counts, 'last_refusal': None}
+        return None
+    last = end.get('last_refusal')
+    reason = last.get('reason') if type(last) is dict else None
+    return {'reason': 'native-admission-refused:' + (reason if type(reason) is str else 'untyped'),
+            'deltas': counts,
+            'last_refusal': dict(last) if type(last) is dict else None}
 
 
 def _allocator_peaks(workers):

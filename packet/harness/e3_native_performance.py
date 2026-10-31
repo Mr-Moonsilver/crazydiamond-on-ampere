@@ -143,6 +143,7 @@ def prefill(cfg, client, url, model, lane, family, prompts, salt, *, decode_stat
         if native:
             record['end'] = client.call('prefill_end')
         local_end = time.monotonic_ns()
+        refusal = (record.get('end') or {}).get('refusal') if native else None
         record['client_bracket'] = {'start_ns':local_start,'end_ns':local_end}
         record['request'] = {'prompt_sha256':prompts[family+'_sha256'],
             'prompt_tokens_declared':prompts[family+'_tokens'],
@@ -152,6 +153,10 @@ def prefill(cfg, client, url, model, lane, family, prompts, salt, *, decode_stat
             'first_at_ns':first,'finish_at_ns':state.finish_at_ns,
             'ttft_s':(first-state.send_at_ns)/1e9 if first and state.send_at_ns else None,
             'output_completion':state.count(),'error':state.error,'malformed':state.malformed}
+        if type(refusal) is dict:
+            # Typed engine refusal (native37): the request waited unallocated on
+            # the armed split route; name it instead of a generic client failure.
+            raise ValueError(str(refusal.get('reason') or 'native-admission-refused:untyped'))
         if not _stream_ok(state) or record['client_finish'].get('timed_out'):
             raise ValueError('prefill-client-completion-unproved')
         if (type(state.prompt_tokens) is not int or state.prompt_tokens < 1
@@ -192,12 +197,33 @@ def prefill(cfg, client, url, model, lane, family, prompts, salt, *, decode_stat
     except Exception as exc:
         record['error'] = exception_details(exc,client.control)
         record['complete'] = False
+        if native:
+            record['cleanup'] = return_full_after_error(client)
     finally:
         if sampler:
             sampler.close()
         if state is not None:
             streams._stop_streams({},[state],shared._workload_view(cfg,streams=1))
     return record
+
+
+def return_full_after_error(client):
+    """Best-effort return to FULL after a native lane error (native37 H1).
+
+    pause and leave_full each run in their own try: a pause whose drain proof
+    fails must not skip leave_full.  The lane's own error, completeness and the
+    run's first_error are never changed here; only this record is added.
+    """
+    cleanup = {'attempted': True, 'basis': 'best-effort pause then leave_full after a native lane error'}
+    for key,call in (('pause',client.pause),('leave_full',client.leave)):
+        try:
+            cleanup[key] = call()
+            cleanup[key+'_error'] = None
+        except Exception as exc:  # noqa: BLE001 - recorded, never raised
+            cleanup[key] = None
+            cleanup[key+'_error'] = exception_details(exc,client.control)
+    cleanup['route_after'] = (cleanup['leave_full'] or {}).get('route')
+    return cleanup
 
 
 def grade(record):

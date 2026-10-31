@@ -300,11 +300,14 @@ class TwoRoundComposition(unittest.TestCase):
             records=[json.loads((directory/('overlap-round-%d.json'%i)).read_text()) for i in (0,1)]
             for index,(record,(commands,completions)) in enumerate(zip(records,seen)):
                 meta=record['native35_round']
-                self.assertEqual([c['action'] for c in commands],['prepare','pause','leave_full','prepare','pause','leave_full','prepare','prefill_begin'])
+                # native37 H1: the refused split lane returns the route to FULL (best-effort pause, leave_full).
+                self.assertEqual([c['action'] for c in commands],['prepare','pause','leave_full','prepare','pause','leave_full','prepare','prefill_begin','pause','leave_full'])
                 self.assertEqual({c['run_id'] for c in commands},{RUN_ID})
-                self.assertEqual([c['command_seq'] for c in commands],list(range(1,9)))
+                self.assertEqual([c['command_seq'] for c in commands],list(range(1,11)))
                 self.assertEqual(len({c['client_id'] for c in commands}),1)
-                self.assertEqual(meta['session_client'],{'run_id':RUN_ID,'client_id':commands[0]['client_id'],'commands_sent':8,'replies_retained':7})
+                self.assertEqual(meta['session_client'],{'run_id':RUN_ID,'client_id':commands[0]['client_id'],'commands_sent':10,'replies_retained':9})
+                cleanup=record['lanes']['prefill_split']['fresh']['cleanup']
+                self.assertEqual((cleanup['pause_error'],cleanup['leave_full_error'],cleanup['route_after']),(None,None,'full'))
                 lane=meta['salts']['prefill_salt_by_lane']['prefill_full']
                 self.assertEqual([c['cache_salt'] for c in completions],[lane,lane])  # fresh -> append share the lane salt
                 self.assertEqual([c['prompt_sha256'] for c in completions],[meta['prompts']['fresh']['prompt_sha256'],meta['prompts']['append']['prompt_sha256']])

@@ -3024,6 +3024,11 @@ class NativeSegmentDriver:
         raise DriverError('native-control-read-action-not-implemented')
 
     # -- queried status and typed acknowledgments ------------------------
+    def _native_admission_record(self):
+        """The admission controller's typed counts and newest refusal (native37)."""
+        query = getattr(self.controller, 'native_admission_record', None)
+        return query() if callable(query) else None
+
     def note_stock_step_skipped(self):
         """Engine hook bypassed one stock step; utility pumps do not count."""
         self._stock_steps_skipped += 1
@@ -3038,6 +3043,7 @@ class NativeSegmentDriver:
             'control_path': self.control_path.snapshot(),
             'stock_steps_skipped': self._stock_steps_skipped,
             'stock_prefix_deferrals': self.controller.leases.stock_prefix_deferrals,
+            'native_admission': self._native_admission_record(),
             'engine_epoch': self.engine_epoch,
             'ranks': list(self.ranks),
             'route': 'split' if self._split_ready else 'full',
@@ -3741,6 +3747,8 @@ class NativeSegmentDriver:
         record['measurement']['stock_prefix_deferrals'] = {
             'count': self.controller.leases.stock_prefix_deferrals,
             'basis': 'engine-lifetime stock cached-prefix request deferrals; subtract matching status snapshots'}
+        record['native_admission'] = self._native_admission_record()
+        record['measurement']['native_admission'] = record['native_admission']
         reasons = []
         if not complete:
             reasons.append('journal-evicted-before-window')

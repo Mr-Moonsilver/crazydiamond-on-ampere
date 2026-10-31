@@ -20,6 +20,7 @@ The transforms target the E2-composed ``core/scheduler.py`` and
 unmodified upstream scheduler is refused. No torch/vLLM import is needed here.
 """
 import hashlib
+import time
 
 from e3_types import (
     MAX_ACTIVE_PREFILL,
@@ -1128,6 +1129,7 @@ class ParkedPrefill:
 
 
 QSA_STAGE_MIN_ROWS = 64  # pinned qsa.py: _QSA_STAGE_MIN_ROWS; no setting override
+MAX_PLAN_REFUSAL_MEMO = 16  # refused-plan receipts kept per controller
 
 
 class _ProjectedPrefillRequest:
@@ -1145,25 +1147,35 @@ class _ProjectedPrefillRequest:
         raise E3ContractError('projected prefill request is read-only')
 
 
-def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536):
+def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536,
+                      trace=None):
     """Find a complete native prefix partition before allocating any chunk.
 
     ``split(position, limit)`` is the stock alignment calculation, not an
     allocator. Search largest permitted chunks first, backtracking only when
     a later short tail cannot execute the unchanged staged attention path.
     Every returned chunk is an exact stock split, within the unchanged cap.
-    A bounded search refusal leaves the request entirely stock-owned.
+    A bounded search refusal leaves the request unallocated; on the FULL route
+    stock owns it, on an armed split route it waits (``defer_stock_prefix_hit``).
+
+    ``trace``, when a dict, receives the search receipt: split queries made,
+    whether the query bound ended the search, and the furthest chunk boundary
+    reached (for a refused plan, the last mandatory stop the search could
+    reach).  It never changes the search or its result.
     """
+    if trace is not None and type(trace) is not dict:
+        raise E3ContractError('staged chunk planning trace must be a dict')
     if any(type(v) is not int for v in (start, end, cap, minimum, query_limit)):
         raise E3ContractError('staged chunk planning needs integer bounds')
     if start < 0 or end <= start or minimum < 1 or cap < 1 or query_limit < 1:
         raise E3ContractError('invalid staged chunk planning bounds')
     if cap < minimum or end - start < minimum:
-        return ()
+        return _plan_result((), trace, 0, False, start)
     # Stack frames retain the next smaller candidate, so Python recursion and
     # per-token allocation are unnecessary even for a long context.
     stack = [[start, min(cap, end - start)]]
     path, impossible, queries = [], set(), 0
+    furthest = start
     while stack:
         position, limit = stack[-1]
         if limit < minimum:
@@ -1174,7 +1186,7 @@ def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536):
             continue
         queries += 1
         if queries > query_limit:
-            return ()
+            return _plan_result((), trace, query_limit, True, furthest)
         size = split(position, limit)
         if type(size) is not int or not 0 <= size <= limit:
             raise E3ContractError('invalid projected aligned chunk size')
@@ -1182,13 +1194,21 @@ def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536):
         if size < minimum:
             continue
         following = position + size
+        if following > furthest:
+            furthest = following
         if following == end:
-            return tuple(path + [size])
+            return _plan_result(tuple(path + [size]), trace, queries, False, following)
         if following in impossible or end - following < minimum:
             continue
         path.append(size)
         stack.append([following, min(cap, end - following)])
-    return ()
+    return _plan_result((), trace, queries, False, furthest)
+
+
+def _plan_result(plan, trace, queries, exhausted, furthest):
+    if trace is not None:
+        trace.update(queries=queries, exhausted=exhausted, furthest_boundary=furthest)
+    return plan
 
 
 class PrefillAdmissionController:
@@ -1254,6 +1274,16 @@ class PrefillAdmissionController:
         self._request_identities = {}
         self._next_generation = 0
         self._next_state_epoch = 0
+        # Typed refusal receipts (native37).  ``refused`` keeps its meaning:
+        # one count per refused admission attempt.  A refused staged plan is
+        # memoised per request object and planning inputs, so a request that
+        # waits on an armed split route is not re-searched on every schedule().
+        self.plan_searches = 0
+        self.plan_memo_hits = 0
+        self.split_stock_deferrals = 0
+        self.refusal_seq = 0
+        self.last_refusal = None
+        self._plan_refusals = {}
 
     # -- installation -----------------------------------------------------
     def attach(self):
@@ -1358,6 +1388,67 @@ class PrefillAdmissionController:
             raise E3ContractError('native admission intent has a foreign driver owner')
         return False
 
+    def _refuse(self, request, reason, *, counted=True, **fields):
+        """Count one refused attempt and keep its typed receipt; never raises.
+
+        ``counted=False`` keeps the receipt for an outcome counted elsewhere
+        (``alloc_failures``) without changing ``refused``.
+        """
+        if counted:
+            self.refused += 1
+        self.refusal_seq += 1
+        identity = self._request_identities.get(getattr(request, 'request_id', None))
+        record = {'schema': 's5-native-admission-refusal/1', 'seq': self.refusal_seq,
+                  'reason': reason, 'engine_epoch': self.engine_epoch,
+                  'request_generation': (identity[1] if identity is not None
+                                         and identity[0] is request else None),
+                  'observed_ns': self._now_ns()}
+        record.update(fields)
+        self.last_refusal = record
+        return None
+
+    @staticmethod
+    def _now_ns():
+        # The driver journal's basis (CLOCK_MONOTONIC, ns).  ``self.clock`` is
+        # the controller's seconds clock and is not used for receipts.
+        return time.monotonic_ns()
+
+    def _plan_key(self, scheduler, request, start, prompt_end, cap):
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        return (start, prompt_end, cap, self.minimum_stage_rows,
+                getattr(request, 'num_prompt_tokens', None),
+                getattr(request, 'shared_prefix_boundary', None),
+                getattr(owner, 'route_generation', None))
+
+    def _memoised_plan_refusal(self, request, key):
+        entry = self._plan_refusals.get(getattr(request, 'request_id', None))
+        if entry is None or entry[0] is not request or entry[1] != key:
+            return None
+        return entry[2]
+
+    def _remember_plan_refusal(self, request, key, receipt):
+        # Bounded: the object reference keeps identity exact (no id() reuse);
+        # a stale entry only ever fails to match.
+        memo = self._plan_refusals
+        memo.pop(request.request_id, None)
+        while len(memo) >= MAX_PLAN_REFUSAL_MEMO:
+            memo.pop(next(iter(memo)))
+        memo[request.request_id] = (request, key, receipt)
+
+    def native_admission_record(self):
+        """Engine-lifetime admission counts and the newest typed refusal."""
+        return {'schema': 's5-native-admission/1',
+                'admitted': self.admitted, 'refused': self.refused,
+                'alloc_failures': self.alloc_failures,
+                'plan_searches': self.plan_searches,
+                'plan_memo_hits': self.plan_memo_hits,
+                'split_stock_deferrals': self.split_stock_deferrals,
+                'refusal_seq': self.refusal_seq,
+                'last_refusal': (None if self.last_refusal is None
+                                 else dict(self.last_refusal)),
+                'basis': ('engine-lifetime monotonic counts; subtract matching status '
+                          'snapshots for a window')}
+
     def _next_transaction(self, request, start, chunk_end):
         self.txn_seq += 1
         # Object identity distinguishes reuse of a request UID in this engine.
@@ -1423,8 +1514,7 @@ class PrefillAdmissionController:
                 # whose worker row is still owned by another request frame.
                 return None
         if self._request_refuses(scheduler, request):
-            self.refused += 1
-            return None
+            return self._refuse(request, 'request-refused')
         manager = scheduler.kv_cache_manager
         # Native allocation also owns CoW endpoints, zeroing and boundary
         # state work. No fabricated empty defaults: the pinned allocation
@@ -1435,8 +1525,8 @@ class PrefillAdmissionController:
         prompt_end = getattr(request, 'num_tokens', None)
         start = getattr(request, 'num_computed_tokens', 0)
         if type(prompt_end) is not int or type(start) is not int or prompt_end < 2:
-            self.refused += 1
-            return None
+            return self._refuse(request, 'prompt-geometry',
+                                prompt_tokens=prompt_end if type(prompt_end) is int else None)
         if getattr(request, 'num_output_tokens', 0) != 0:
             return None
         if prompt_end - start <= 1:
@@ -1463,35 +1553,54 @@ class PrefillAdmissionController:
                         num_new_local_computed_tokens=num_new_computed)
                 return self._aligned_split(
                     scheduler, _ProjectedPrefillRequest(request, position), limit)
+            key = self._plan_key(scheduler, request, start, prompt_end, cap)
+            receipt = (None if retained is not None
+                       else self._memoised_plan_refusal(request, key))
+            if receipt is not None:
+                # Same request object, same planning inputs: the bounded search
+                # is deterministic, so its refusal is reused, not repeated.
+                self.plan_memo_hits += 1
+                return self._refuse(request, 'no-staged-plan', memoised=True, **receipt)
+            trace = {}
+            self.plan_searches += 1
             plan = staged_chunk_plan(start, prompt_end - 1, cap,
-                                     self.minimum_stage_rows, projected_split)
+                                     self.minimum_stage_rows, projected_split,
+                                     trace=trace)
             if not plan:
                 if retained is not None:
                     # Returning None here would let stock touch a still-owned
                     # private row. Keep the existing ownership refusal instead.
                     raise E3ContractError('retained native request has no staged chunk plan')
-                self.refused += 1
-                return None
+                furthest = trace.get('furthest_boundary')
+                receipt = {'prompt_tokens': prompt_end, 'start': start,
+                           'native_end': prompt_end - 1, 'cap': cap,
+                           'minimum_rows': self.minimum_stage_rows,
+                           'furthest_boundary': furthest,
+                           'gap': (prompt_end - 1 - furthest
+                                   if type(furthest) is int else None),
+                           'queries': trace.get('queries'),
+                           'exhausted': trace.get('exhausted'),
+                           'route_generation': key[-1]}
+                self._remember_plan_refusal(request, key, receipt)
+                return self._refuse(request, 'no-staged-plan', memoised=False, **receipt)
             num_new = plan[0]
         else:
             num_new = self._aligned_split(
                 scheduler, request, min(cap, prompt_end - 1 - start),
                 num_new_local_computed_tokens=num_new_computed)
         if num_new < 1:
-            self.refused += 1
-            return None
+            return self._refuse(request, 'no-aligned-chunk', prompt_tokens=prompt_end,
+                                start=start, cap=cap)
         chunk_end = start + num_new
 
         tokens = getattr(request, 'all_token_ids', None)
         if tokens is None:
             tokens = getattr(request, 'prompt_token_ids', None)
         if tokens is None:
-            self.refused += 1
-            return None
+            return self._refuse(request, 'token-ids-unavailable')
         input_ids = tuple(tokens[start:chunk_end])
         if len(input_ids) != num_new or any(type(t) is not int for t in input_ids):
-            self.refused += 1
-            return None
+            return self._refuse(request, 'token-ids-invalid')
 
         # A source-backed provider scopes the global manager queues around
         # exactly this allocation; a legacy callable keeps the old contract.
@@ -1524,7 +1633,9 @@ class PrefillAdmissionController:
                 raise E3ContractError(
                     'allocation failed after recording allocator side effects')
             self.alloc_failures += 1
-            return None
+            return self._refuse(request, 'allocation-failed', counted=False,
+                                prompt_tokens=prompt_end, start=start,
+                                chunk_tokens=num_new)
 
         transaction = self._next_transaction(request, start, chunk_end)
         # Park BEFORE any post-allocation validation can fail. Allocation is
@@ -1945,8 +2056,35 @@ def before_touch(block_pool, blocks):
 
 
 def defer_stock_prefix_hit(scheduler, computed_blocks):
+    """Generated stock-loop seam for a new request (``num_computed_tokens == 0``).
+
+    True keeps the request in skipped-waiting for this step, unallocated.  It
+    defers a stock prefix hit on a still-leased native page, and (native37)
+    every new stock prefill while an EngineCore native intent is armed on the
+    split route: stock cannot dispatch a non-FULL batch there (the worker's
+    route guard raises), so a request native admission refused waits until the
+    route is FULL again instead of reaching the workers.
+    """
     guard = _guard(scheduler)
-    return False if guard is None else guard.defer_stock_prefix_hit(computed_blocks)
+    if guard is None:
+        return False
+    if guard.defer_stock_prefix_hit(computed_blocks):
+        return True
+    return _defer_stock_while_split_armed(scheduler)
+
+
+def _defer_stock_while_split_armed(scheduler):
+    controller = getattr(scheduler, '_flash_s5_admission', None)
+    if controller is None:
+        return False
+    if not isinstance(controller, PrefillAdmissionController):
+        raise E3ContractError('scheduler E3 admission controller is invalid')
+    # The same EngineCore-owned intent check as flash_s5_admit at the top of
+    # this schedule() call: absent intent -> stock as before.
+    if controller._native_admission_disabled(scheduler):
+        return False
+    controller.split_stock_deferrals += 1
+    return True
 
 
 def block_held(block_pool, block):
