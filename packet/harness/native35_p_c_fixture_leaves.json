@@ -1,0 +1,48 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "native35 P-c row4 window stop, observer_end spool, observer census and the decode-abort path (test_native35_p_c_window.py). Every leaf below replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence. The real e3_decode_correctness._wait_open, _wait_window and NativePlacementRunner._prefill_progress, the real QualificationDriver row4 collection, the real LoopbackControl and the real P-c runner run unpatched wherever they appear.",
+ "leaves": [
+  {
+   "name": "cpu-native35-p-c-placement-streams",
+   "replaces": "correctness._start_streams and correctness._stop_streams: the eight loopback /v1/completions decode streams and the native prefill stream are test_e3_native_qualification_driver.FakeState objects advanced by test_native35_l2's Timeline (one decode token per 5 ms tick to the 64-token budget; prefill first token at a declared tick). The stop fake records the counts and the prefill-open state at each stop and ends each stopped decode stream (finish_at_ns set), standing for client close -> engine abort -> no further tokens.",
+   "equivalence": "Same attributes the real stream reader writes (the L2 leaf cpu-native35-l2-placement-streams). The real _stop_streams cancels each reader (socket shutdown, join) and records readers_alive_after_join; the fake writes the same record key. Ending the stream mirrors the engine: an aborted request produces no further token deltas.",
+   "cannot_prove": "Real SSE parsing, the box abort latency (HTTP disconnect -> AsyncLLM.abort -> EngineCore), or how many decode steps the engine runs after the client window closes; the observed per-rank replay count against [40, 56] is the box-side check",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-loopback-peer",
+   "replaces": "The API server's three adapter routes (native session /v1/flash_s5_native_overlap, qualification worker and frontend) are a loopback ThreadingHTTPServer whose replies are the established row4 control fake (test_e3_native_qualification_driver.PlacementDriver) with the identity echo the transport requires (schema, action, run_id, command_seq, client_id, engine_epoch)",
+   "equivalence": "The real LoopbackControl, real http.client and the real bounded reads run over a real socket; the reply bodies are compact JSON with Content-Length, the form the real JSONResponse sends (native_qualification_frontend.py:345). Session/worker/frontend reply contents are the PlacementDriver fake's, which the L2 and driver suites already declare.",
+   "cannot_prove": "Any engine-side behaviour, the real reply sizes or the API server's own memory",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-observer-end-reply",
+   "replaces": "The four ranks' observer_end completed_reply + native_accounting: the PlacementDriver observer_end rows plus a receipt replay/limits block with the observer's own key sets (replay_observer._COUNT_KEYS, _FLAG_KEYS, ObserverLimits.as_record), a correlation report in the s5ro-correlation/2 shape (flash_s5_replay_observer.cpp s5ro_correlation_report keys; rank 1: 131072 apis rows and overflow 7; rank 2: kernel ring overflow 1200), decode_window.binding.router_census.total 44+rank, and a 29 MiB string per rank in launch_config standing in for the bulk of the unbounded fields",
+   "equivalence": "The transport, spool and census read only bytes, the parsed key structure and list lengths; a string carries the bytes of row lists at a fraction of the parse cost (the 8x parse/copy factor of real rows was measured separately with the native row format and is the basis of the 512 MiB ceiling). Over-ceiling and close-delimited bodies are streamed JSON-string bytes with and without Content-Length.",
+   "cannot_prove": "The real reply size for P-c's window, real row parse memory on the box, or that the box receipt/report values are within their caps; those are the box run's own transport receipt and census",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-patched-ceiling",
+   "replaces": "OBSERVER_END_RESPONSE_MAX is patched to 4 MiB in one unit case (close-delimited body, no Content-Length)",
+   "equivalence": "Exercises the store-up-to-ceiling-then-drain branch with the real _spool_read and LoopbackControl without writing 512 MiB; the 512 MiB constant itself is exercised unpatched by the over-ceiling composition case",
+   "cannot_prove": "Nothing beyond that branch",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-abort-stack",
+   "replaces": "The engine owner for the decode-abort path: the generated EngineCore.abort_requests (pinned core.py through executor_hooks.generate_core, compiled alone) on test_e3_native_overlap's TickCore, with the real NativeSegmentDriver and four real NativeWorkerBridge/LaneDispatcher/GraphRouter workers over CPU event fakes (test_e3_native_storage_replay.make_native_stack). The stock Scheduler.finish_requests(FINISHED_ABORTED) is a recorder on the admission-fake scheduler.",
+   "equivalence": "before_abort reads only the driver's tx/controller admission/retained request; the generated method then calls the stock finish path, which is the same _free_request path a natural finish takes (fenced KV free; native-leased blocks deferred by scheduler_hooks), proven on the box by every run's natural decode finishes and by P-b's abort of the handed-back prefill request.",
+   "cannot_prove": "The real vLLM scheduler's KV free under an in-flight PP batch, GPU replay-lease completion timing, or the box abort latency",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-native35-p-c-row4-argv",
+   "replaces": "http.client.HTTPConnection.request for the first native session POST in test_native35_p_c_window.QueueCLI, the VLLM_API_KEY private auth fixture, and the frozen row1 plan and retained rule4_controls teacher artifact that row1 and rule4_controls leave in the queue store before row4",
+   "equivalence": "The exact P-c row4 invocation is cut from the P-c draft and runs through the real e3_native35_p_c_placement.main and e3_q18a_qualification.main with the P-c StoppedWindowPlacementRunner bound for the call and restored afterwards; the replaced send records path, auth header and command and refuses, as a dead engine port would",
+   "cannot_prove": "Any engine reply or a row4 PASS",
+   "box_evidence": false
+  }
+ ]
+}

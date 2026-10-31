@@ -6,9 +6,13 @@ Proves, on CPU:
     - settings LOCALIZE 1 -> 0;
     - native35-diagnostic as an explicit NOT_RUN record;
     - the post-row4 step note;
+    - row4 through e3_native35_p_c_placement.py (decode cohort stopped at the
+      window boundary; its suite is test_native35_p_c_window.py), named in the
+      preflight interface list with e3_observer_census.py;
     - the header comment.
-    The row4 phase, the gates and the whole W1/W2 measurement tail are P-b's,
-    byte for byte. native30-localize still runs, unchanged.
+    Apart from that one runner name and its comment, the row4 phase is P-b's;
+    the gates and the whole W1/W2 measurement tail are P-b's, byte for byte.
+    native30-localize still runs, unchanged.
 (2) Every P-c script parses.
 (3) The P-c cleanup lines run under bash with the queue's own record/step and
     the real graders, over an engine log shaped like a LOCALIZE=0 run.
@@ -40,8 +44,15 @@ CLEANUP_RECEIPTS = []
 PB_HEADER = ('# Native35-p-b: native28 startup -> row1 -> rule4_controls -> rule4_candidate -> row4 '
              '(L2 client window at the accepted resume receipt) -> W1 -> two retained W2 rounds -> owned restore.\n')
 PC_HEADER = ('# Native35-p-c: P-b with FLASH_NATIVE30_LOCALIZE=0 (plugins present, inert): native28 startup -> row1 -> '
-             'rule4_controls -> rule4_candidate -> row4 (L2 client window at the accepted resume receipt) -> W1 -> '
-             'two retained W2 rounds -> owned restore.\n')
+             'rule4_controls -> rule4_candidate -> row4 (L2 client window at the accepted resume receipt; decode cohort '
+             'stopped at the window boundary) -> W1 -> two retained W2 rounds -> owned restore.\n')
+PB_INTERFACES = '  e3_native35_l2_placement.py; do\n'
+PC_INTERFACES = '  e3_native35_l2_placement.py e3_native35_p_c_placement.py e3_observer_census.py; do\n'
+PB_ROW4 = ('  # L2: row4 uses the resume-receipt window collector; argv and record are unchanged.\n'
+           '  if [[ $name == row4 ]]; then cli=e3_native35_l2_placement.py; fi\n')
+PC_ROW4 = ('  # P-c: row4 uses the L2 collector with the decode cohort stopped at the window boundary; '
+           'argv and record are unchanged.\n'
+           '  if [[ $name == row4 ]]; then cli=e3_native35_p_c_placement.py; fi\n')
 PB_DIAGNOSTIC = ('  python3 "$H/native35_grade.py" --log "$Q/engine-stream.err" --log "$Q/engine-stream.log" '
                  '--arm-record "$Q/qual-row4.json" --out "$Q/native35-grade.json" > "$Q/native35-grade.log" 2>&1\n'
                  "  record native35-diagnostic \"$?\" 'unfenced O-style arm; no qualification claim'\n")
@@ -81,16 +92,18 @@ class Derivation(unittest.TestCase):
     def test_pc_is_pb_under_fresh_names_with_exactly_the_declared_deltas(self):
         pb, pc = text('q18a_native35_p_b.draft.sh'), text('q18a_native35_p_c.draft.sh')
         expected = pb
-        for old, new in ((PB_HEADER, PC_HEADER), (PB_DIAGNOSTIC, PC_DIAGNOSTIC), (PB_TAIL_NOTE, PC_TAIL_NOTE)):
+        for old, new in ((PB_HEADER, PC_HEADER), (PB_DIAGNOSTIC, PC_DIAGNOSTIC), (PB_TAIL_NOTE, PC_TAIL_NOTE),
+                         (PB_INTERFACES, PC_INTERFACES), (PB_ROW4, PC_ROW4)):
             expected = once(expected, old, new)
         self.assertEqual(pc, fresh_names(expected))
         settings = text('q18a_native35_p_c_settings.sh')
         self.assertEqual(settings, fresh_names(once(text('q18a_native35_p_b_settings.sh'),
                                                     ' FLASH_NATIVE30_LOCALIZE=1 ', ' FLASH_NATIVE30_LOCALIZE=0 ')))
         self.assertEqual(text('q18a_native35_p_c_declare.sh'), fresh_names(text('q18a_native35_p_b_declare.sh')))
-        # Row4 is still the L2 collector; native30-localize still runs, unchanged.
-        self.assertEqual(phase(pc), phase(pb))
-        self.assertEqual(phase(pc), phase(text('q18a_native35_l2.draft.sh')))
+        # Row4 is the L2 phase with only the P-c runner swapped in; native30-localize still runs, unchanged.
+        self.assertEqual(phase(pc), once(phase(pb), PB_ROW4, PC_ROW4))
+        self.assertEqual(phase(pb), phase(text('q18a_native35_l2.draft.sh')))
+        self.assertEqual((pc.count('e3_native35_p_c_placement.py'), pc.count('e3_native35_l2_placement.py')), (2, 1))
         self.assertEqual((pb.count(LOCALIZE_GRADE), pc.count(LOCALIZE_GRADE)), (1, 1))
         self.assertNotIn('native35_grade.py', pc)
         self.assertEqual(pc.count('  sleep 30\n'), 1)
