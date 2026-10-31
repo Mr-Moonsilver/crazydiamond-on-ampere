@@ -133,7 +133,7 @@ def _post(url, path, body, timeout):
         return json.loads(reply.read())
 
 
-def guard(url, model, workload, timeout=300):
+def guard(url, model, workload, timeout=120):
     data = json.loads(Path(workload).read_bytes())
     record = dict(schema=SCHEMA + '/guard', workload=str(workload),
                   workload_sha256=hashlib.sha256(Path(workload).read_bytes()).hexdigest(),
