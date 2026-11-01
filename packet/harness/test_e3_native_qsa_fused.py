@@ -5,6 +5,7 @@ and generated attention over the declared CPU leaves of
 harness/step_a_fixture_leaves.json. Not a hardware certificate: real-GPU event
 order and bytes are the V3 check.
 """
+import ctypes
 from dataclasses import replace
 from pathlib import Path
 import sys
@@ -23,6 +24,7 @@ import engine_driver as ed
 import lane_comm
 import qsa_driver
 import qsa_operation as qo
+import s5_startup
 import wire_v1 as w
 
 # Chunk end 202,400 is 50 pages of history: three dense buckets, the arena
@@ -37,19 +39,34 @@ class NoQsaDriver(r4.FakeDriver):
         return ()
 
 
+class LeafUniqueId(ctypes.Structure):
+    """Leaf: pynccl_wrapper.ncclUniqueId, same layout (Commitment reads the reference)."""
+    _fields_ = [('internal', ctypes.c_byte * 128)]
+
+
+def unique_id(tag):
+    value = LeafUniqueId()
+    value.internal[0] = tag
+    return value
+
+
 class LeafPynccl:
     """Leaf: the PyNccl object under the real PrefillTpCommunicator."""
     disabled = False
     world_size = 2
-    unique_name = 'tp-lane'
 
-    def __init__(self, rank):
+    def __init__(self, rank, tag=7):
         self.rank = rank
         self.calls = 0
+        self.unique_id = unique_id(tag)
+        self.broadcasts = []
 
     def all_reduce(self, tensor, stream=None):
         self.calls += 1
         return tensor
+
+    def broadcast(self, tensor, src=0, stream=None):
+        self.broadcasts.append((tensor, src, stream))
 
 
 # Leaf: the torch surface the communicator reads, the lane's current stream.
@@ -466,6 +483,103 @@ class Commitment(FusedCase):
         self.assertIn('fused-profile-differs-from-the-admission', str(refused.exception))
         self.assertEqual(network.sent(w.SegmentKind.LAYER), [])
 
+    def test_ledger_reads_what_real_pynccl_has(self):
+        root = Path(__file__).resolve().parents[1] / 'reference/vllm-src/distributed/device_communicators'
+        self.assertIn('self.unique_id = ', (root / 'pynccl.py').read_text())
+        wrapper = (root / 'pynccl_wrapper.py').read_text()
+        self.assertRegex(wrapper, r'class ncclUniqueId\(ctypes\.Structure\):\s+_fields_ = \[\("internal", ctypes\.c_byte \* 128\)\]')
+        with self.assertRaises(AttributeError):
+            lane_comm.CollectiveLedger().note('all_reduce', types.SimpleNamespace(world_size=2),
+                                              types.SimpleNamespace(shape=(1,), dtype='x'))
+
+    def test_every_digest_field_separates_two_peers(self):
+        tensor = types.SimpleNamespace(shape=(8, 4), dtype='torch.bfloat16')
+        same = LeafPynccl(0)
+        base_row = ('all_reduce', same, tensor, None)
+        other_size = LeafPynccl(0)
+        other_size.world_size = 4
+        rows = dict(
+            base=base_row,
+            communicator=('all_reduce', LeafPynccl(0, tag=8), tensor, None),
+            world=('all_reduce', other_size, tensor, None),
+            op=('broadcast', same, tensor, None),
+            shape=('all_reduce', same, types.SimpleNamespace(shape=(8, 5), dtype='torch.bfloat16'), None),
+            dtype=('all_reduce', same, types.SimpleNamespace(shape=(8, 4), dtype='torch.float32'), None),
+            root=('all_reduce', same, tensor, 0))
+        digests = {}
+        for name, row in rows.items():
+            ledger = lane_comm.CollectiveLedger()
+            ledger.note(*row)
+            digests[name] = ledger.take()
+        self.assertEqual(len(set(digests.values())), len(rows), digests)
+        peer = lane_comm.CollectiveLedger()
+        peer.note('all_reduce', LeafPynccl(1), tensor)
+        self.assertEqual(peer.take(), digests['base'], 'one communicator on both peers')
+
+    def test_selection_broadcast_enters_the_ledger(self):
+        torch = types.SimpleNamespace(int32='int32', cuda=TP_TORCH.cuda)
+        def peer(rows):
+            leaf = LeafPynccl(0)
+            comm = lane_comm.PrefillTpCommunicator(leaf, 'cuda:0', torch_module=TP_TORCH)
+            comm.ledger = lane_comm.CollectiveLedger()
+            selection = types.SimpleNamespace(shape=(rows, 5), dtype='int32', device='cuda:0',
+                                              is_contiguous=lambda: True)
+            group = types.SimpleNamespace(world_size=2, device_communicator=comm)
+            lane_comm.canonical_selection(selection, group=group, torch_module=torch)
+            self.assertEqual(leaf.broadcasts, [(selection, 0, 'lane')])
+            return comm.ledger.take()
+        self.assertEqual(peer(8)[0], 1)
+        self.assertEqual(peer(8), peer(8))
+        self.assertNotEqual(peer(8), peer(9))
+
+    def test_expected_shape_at_page_and_arena_boundaries(self):
+        page, arena = et.PAGE_TOKENS, et.ARENA_PAGES
+        # Written out from the arena geometry, not from the function under test.
+        table = ((1, 1), (page, 1), (page + 1, 1), (arena * page, 1), (arena * page + 1, 2),
+                 (2 * arena * page, 2), (2 * arena * page + 1, 3), (3 * arena * page, 3),
+                 (3 * arena * page + 1, 4))
+        for tokens, buckets in table:
+            with self.subTest(tokens=tokens):
+                shape = ed.fused_expected_shape(tokens)
+                self.assertEqual((shape.route, shape.bucket_submissions, shape.bucket_waves),
+                                 ('dense_dma', (1,) * buckets, (1,) * buckets))
+
+    def test_run_ahead_hold_reads_every_peer_in_either_direction(self):
+        driver = FusedNetwork(self).driver
+        limit = driver.qsa_fused.run_ahead
+        entry = dict(kind=w.SegmentKind.LAYER, stage=0, layer=0)
+        def report(pending):
+            return types.SimpleNamespace(pending_op_seqs=tuple(range(pending)))
+        for first, second, held in ((limit, 0, True), (0, limit, True), (limit - 1, limit - 1, False)):
+            with self.subTest(first=first, second=second):
+                driver.reports = {0: report(first), 1: report(second)}
+                self.assertEqual(driver._fused_hold(entry), held)
+        driver.reports = {0: report(limit), 1: report(limit)}
+        self.assertFalse(driver._fused_hold(dict(entry, kind=w.SegmentKind.SUFFIX)))
+        self.assertFalse(driver._fused_hold(dict(entry, stage=1)), 'the other stage is not held')
+
+    def test_watchdog_counts_a_completion_as_progress(self):
+        network = FusedNetwork(self)
+        network.run_until(lambda: network.driver.tx is not None, ready=())
+        driver = network.driver
+        now = [100.]
+        driver.clock = lambda: now[0]
+        stall = driver.qsa_fused.stall_s
+        driver._fused_mark = driver._fused_mark_at = None
+        def at(completed):
+            driver.reports = {0: types.SimpleNamespace(completed_sequence=completed)}
+            driver._fused_watchdog()
+        # A slow, live queue: only completions move, for many stall periods.
+        for completed in range(1, 8):
+            at(completed)
+            now[0] += stall - 1
+            at(completed)
+            now[0] += 1
+        now[0] += stall + 1
+        with self.assertRaises(ed.DriverError) as refused:
+            at(7)
+        self.assertIn('tp-collective-stall', str(refused.exception))
+
     def test_watchdog_fails_closed_and_never_releases(self):
         network = FusedNetwork(self)
         now = [100.]
@@ -603,6 +717,133 @@ class Control(unittest.TestCase):
             self.d.install_qsa_fused()
 
 
+class StopBound(FusedCase):
+    def stopped(self, fused=True, clock=None):
+        network = FusedNetwork(self, fused=fused)
+        if clock is not None:
+            network.driver.clock = clock
+        network.run_until(lambda: network.layer_accepted(0) and network.layer_accepted(1), ready=())
+        self.assertFalse(any(event.ready for event in network.qsa[0].device.events))
+        network.driver.stop('abort')
+        return network
+
+    def rounds(self, network, count):
+        for _ in range(count):
+            r4.Stack.complete_everything(network)  # replies flow; the QSA device events do not
+            network.driver.pump_stop(1)
+
+    def test_a_stop_outlasts_the_round_budget_while_device_work_drains(self):
+        network = self.stopped()
+        budget = network.driver.stop_budget
+        self.rounds(network, 3 * budget)
+        driver = network.driver
+        self.assertIsNone(driver.error)
+        self.assertGreater(driver._stop_ticks, budget)
+        for stack in network.qsa.values():
+            self.assertFalse(any(hold.released for hold in stack.holds), 'held until the drain')
+        network.pump_stop()
+        self.assert_closed(network)
+        snapshot = network.fused.snapshot()
+        self.assertEqual(snapshot['stops'], 1)
+        self.assertGreater(snapshot['stop_rounds_max'], budget)
+
+    def test_a_stop_past_the_stall_bound_retains_ownership(self):
+        now = [100.]
+        network = self.stopped(clock=lambda: now[0])
+        self.rounds(network, 8)
+        now[0] += network.fused.stall_s + 1
+        with self.assertRaises(ed.DriverError) as refused:
+            self.rounds(network, 8)
+        self.assertIn('within the bound', str(refused.exception))
+        self.assertEqual([a[0] for a in network.sender.envelopes].count('flash_s5_release'), 0)
+        for stack in network.qsa.values():
+            self.assertFalse(stack.operation._released)
+            self.assertFalse(any(hold.released for hold in stack.holds))
+
+    def test_a_stepped_stop_keeps_its_round_budget(self):
+        network = self.stopped(fused=False)
+        with self.assertRaises(ed.DriverError) as refused:
+            self.rounds(network, 3 * network.driver.stop_budget)
+        self.assertIn('within the bound', str(refused.exception))
+        self.assertEqual(network.fused.snapshot()['stops'], 0)
+
+
+class Burst(FusedCase):
+    """The real held-f progress object: a fused poll may be in flight during an owner wait."""
+    def network(self, fused=True):
+        network = FusedNetwork(self, fused=fused)
+        network.fused.run_ahead = 1
+        driver = network.driver
+        progress = driver.install_progress('burst')
+        progress.mode = 'burst'
+        # Leaf: the worker seam pops the meta key before dispatch (executor_hooks); no worker seam here.
+        patcher = mock.patch.object(ed.NativeProgress, 'with_meta', staticmethod(lambda envelope, meta: envelope))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Leaf: direct replies change the wire path only (test_e3_native_reply_hol proves them).
+        submit = network.transport.submit
+        network.transport.submit = lambda *args, direct=False, **kwargs: submit(*args, **kwargs)
+        return network, driver
+
+    def test_a_fused_poll_in_flight_keeps_the_wait_permit(self):
+        network, driver = self.network()
+        network.run_until(lambda: network.fused.snapshot()['run_ahead_polls'] > 0, ready=())
+        network.transport.hold = True
+        for _ in range(4):
+            network.tick(ready=())
+            if tuple(driver._inflight.values()) == ('poll',):
+                break
+        self.assertEqual(tuple(driver._inflight.values()), ('poll',))
+        self.assertTrue(driver.progress.burst())
+        self.assertTrue(driver._wait_permit())
+        network.transport.deliver_held()
+        network.transport.hold = False
+        network.finish()
+        self.assertIsNone(driver.error)
+
+    def test_a_stepped_poll_does_not_get_it(self):
+        network, driver = self.network(fused=False)
+        network.run_until(lambda: driver.phase == 'segments', ready=())
+        self.assertTrue(driver.progress.burst())
+        driver._inflight = {'x': 'poll'}
+        self.assertFalse(driver._wait_permit())
+        driver._inflight = {}
+
+    def test_a_whole_chunk_advances_inside_owner_waits(self):
+        network, driver = self.network()
+        network.fused.run_ahead = 2
+        sent, started = [0], [False]
+        def done():
+            started[0] = started[0] or driver.tx is not None
+            driver.progress.last_stock_kind = 'sample_tokens'
+            sent[0] += driver.progress_in_wait() or 0
+            return started[0] and driver.tx is None
+        network.run_until(done, limit=400)
+        self.assertIsNone(driver.error)
+        self.assertGreater(sent[0], 0)
+        self.assertEqual(network.fused.snapshot()['chunks'], 1)
+
+
+class Startup(unittest.TestCase):
+    ON = dict(FLASH_S5_QSA_FUSED='1', FLASH_S5_AUTO_ARM='1', FLASH_S5_NATIVE_QSA_POLICY='dense')
+
+    def refused(self, env, text):
+        # Leaf: _enabled reads the overlap composition's settings, which these guards come after.
+        with mock.patch.object(s5_startup, '_enabled', lambda env: True), \
+                self.assertRaises(s5_startup.StartupError) as refused:
+            s5_startup.install_engine(types.SimpleNamespace(), env=env)
+        self.assertIn(text, str(refused.exception))
+
+    def test_readback_diagnostics_refuse_at_startup_not_at_the_first_chunk(self):
+        self.refused(dict(self.ON, FLASH_S5_NATIVE_QSA_TRACE='1'), 'readback diagnostics')
+        self.refused(dict(self.ON, FLASH_S5_NATIVE_QSA_TRACE='1',
+                          FLASH_S5_NATIVE_QSA_STOP_AFTER='101200'), 'readback diagnostics')
+
+    def test_needs_auto_arm_and_dense(self):
+        self.refused(dict(self.ON, FLASH_S5_AUTO_ARM='0'), 'needs FLASH_S5_AUTO_ARM')
+        self.refused(dict(self.ON, FLASH_S5_NATIVE_QSA_POLICY='current'), 'needs FLASH_S5_AUTO_ARM')
+
+
 class Mutants(FusedCase):
     """The scenarios above discriminate: each mutant makes its scenario fail."""
     def fails(self, target, name, replacement, scenario):
@@ -694,6 +935,37 @@ class ConsecutiveLayers(base._GeneratedHarness, unittest.TestCase):
                             for t, e in later))
         self.assertFalse(any(e.ready for e in self.device.events))
         self.assertEqual(self.device.synchronized, 0)
+
+    def test_worker_shape_matches_the_engine_at_exact_page_and_arena_ends(self):
+        self.device.native_qsa_policy = 'dense'
+        self.device.auto_ready = False
+        for pages, buckets in ((24, 1), (25, 2), (48, 2), (49, 3)):
+            with self.subTest(pages=pages):
+                mapping = tuple(range(1, pages + 1))
+                operation, lane, tx, sources = self.prepare({'qsa.0': mapping})
+                self.open_layer(operation, lane, tx, 'qsa.0', sources['qsa.0'], mapping, min_pages=24)
+                worker = operation.fused_shape('qsa.0', pages * c.PAGE_TOKENS, c.PAGE_TOKENS)
+                self.assertEqual(worker, ed.fused_expected_shape(pages * c.PAGE_TOKENS))
+                self.assertEqual(len(worker.bucket_submissions), buckets)
+                self.assertEqual(self.fused_layer(operation, sources['qsa.0'], 'qsa.0', mapping), buckets)
+
+    def test_each_fused_bucket_validates_the_source_lease(self):
+        self.device.native_qsa_policy = 'dense'
+        self.device.auto_ready = False
+        mapping = tuple(range(1, 51))
+        operation, lane, tx, sources = self.prepare({'qsa.0': mapping})
+        hold = self.open_layer(operation, lane, tx, 'qsa.0', sources['qsa.0'], mapping, min_pages=24)
+        calls = []
+        real = hold.validate
+        def validate(*args):
+            calls.append(args)
+            if len(calls) == 2:
+                raise qo.OperationError('source lease lost')
+            return real(*args)
+        hold.validate = validate
+        with self.assertRaisesRegex(qo.OperationError, 'source lease lost'):
+            self.fused_layer(operation, sources['qsa.0'], 'qsa.0', mapping)
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == '__main__':

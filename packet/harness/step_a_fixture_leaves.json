@@ -37,8 +37,8 @@
   {
    "name": "step-a-tp-pynccl",
    "test": "test_e3_native_qsa_fused.LeafPynccl",
-   "replaces": "PyNccl under the real PrefillTpCommunicator",
-   "equivalence": "the real communicator and ledger see the same object fields (unique_name, world_size) and tensor shapes",
+   "replaces": "PyNcclCommunicator: unique_id, world_size, disabled, all_reduce and broadcast",
+   "equivalence": "The leaf carries a ncclUniqueId-shaped ctypes structure and world_size, the fields the real ledger reads. test_ledger_reads_what_real_pynccl_has reads the reference source for both, and a missing attribute raises instead of hashing None.",
    "cannot_prove": "a real NCCL collective, its order on the device, or its liveness",
    "more_convenient": true,
    "box_evidence": false
@@ -105,6 +105,33 @@
    "cannot_prove": "anything beyond discrimination",
    "more_convenient": true,
    "box_evidence": false
+  },
+  {
+   "name": "LeafUniqueId",
+   "test": "Commitment",
+   "replaces": "pynccl_wrapper.ncclUniqueId",
+   "equivalence": "Same ctypes layout (internal: c_byte * 128); the test compares it with the reference source. PyNccl broadcasts the id at init, so peers hold equal bytes, which the leaf models with one tag.",
+   "cannot_prove": "That the box lane communicators hold equal ids: the first box fused chunk shows it, a difference fails closed as tp-ledger-mismatch.",
+   "more_convenient": "No NCCL library on the hub.",
+   "box_evidence": "ledger_checks in the fused arms with 0 tp-ledger-mismatch."
+  },
+  {
+   "name": "Burst progress meta and direct submit",
+   "test": "Burst",
+   "replaces": "NativeProgress.with_meta wire key and the owned transport direct flag",
+   "equivalence": "The worker seam pops the key before dispatch (executor_hooks) and direct changes only the reply path, which test_e3_native_reply_hol proves. The permit, drain and drive are the real ones.",
+   "cannot_prove": "Burst pacing against a real decode loop.",
+   "more_convenient": "The fixture has no worker seam or reply thread.",
+   "box_evidence": "Fused live arms: progress lines, commands per chunk, capped waits."
+  },
+  {
+   "name": "s5_startup._enabled",
+   "test": "Startup",
+   "replaces": "The overlap composition settings the guards come after",
+   "equivalence": "The refusals under test are the real guards in install_engine; only the unrelated composition precondition is answered.",
+   "cannot_prove": "Full engine install with fused on: the engine self-run covers it.",
+   "more_convenient": "The composition needs many settings unrelated to the refusals.",
+   "box_evidence": "The queue engine starts with the fused settings."
   },
   {
    "name": "connected-layer-driver",

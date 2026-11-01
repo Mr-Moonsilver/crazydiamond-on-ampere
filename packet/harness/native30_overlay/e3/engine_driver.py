@@ -851,7 +851,9 @@ class FusedQsa:
     per transaction before OPEN. A selected transaction has no stepped fallback.
     """
     # At most this many accepted commands not yet host-queried complete, per peer.
-    RUN_AHEAD = 8
+    # Held-g R1: a command takes about 4 ms of device time (12 ms on a QSA layer) against a
+    # cadence of 14 ms live and 5 ms solo, so a deeper queue only lengthens a stop's drain.
+    RUN_AHEAD = 4
     # No accepted op and no completion on any rank for this long fails closed.
     # The reply timeout's value: a worker command may legitimately take a while.
     STALL_S = 300.
@@ -861,7 +863,8 @@ class FusedQsa:
         self.run_ahead = run_ahead
         self.stall_s = stall_s
         self.counters = dict(selections=0, chunks=0, grants=0, fused_commands=0,
-                             run_ahead_polls=0, ledger_checks=0)
+                             run_ahead_polls=0, ledger_checks=0, stops=0,
+                             stop_rounds_max=0, stop_ms_max=0)
 
     def snapshot(self):
         return dict(selected=self.selected, run_ahead=self.run_ahead, stall_s=self.stall_s,
@@ -1192,6 +1195,7 @@ class NativeSegmentDriver:
         self._tx_fused = False
         self._fused_mark = None
         self._fused_mark_at = None
+        self._fused_stop_at = None
 
     def install_qsa_fused(self):
         """Step A startup seam; the per-arm choice is the native_qsa_fused control."""
@@ -2531,7 +2535,7 @@ class NativeSegmentDriver:
         self.admission = admission
         self._tx_fused = (self.qsa_fused is not None and self.qsa_fused.selected
                           and self._progress_owned())
-        self._fused_mark = self._fused_mark_at = None
+        self._fused_mark = self._fused_mark_at = self._fused_stop_at = None
         if self._tx_fused:
             self.qsa_fused.counters['chunks'] += 1
         self.open_request = OpenRequest(admission, self.ranks,
@@ -3012,9 +3016,25 @@ class NativeSegmentDriver:
         self._retained_cancel_request = None
         self._retained_cancel_acks = {}
 
+    def _fused_stop_round(self):
+        """A fused stop waits for queued device work, and rounds run about every millisecond,
+        so a round count cannot bound it. The stall bound does, with ownership retained."""
+        now = self.clock()
+        if self._fused_stop_at is None:
+            self._fused_stop_at = now
+            self.qsa_fused.counters['stops'] += 1
+        counters = self.qsa_fused.counters
+        elapsed = now - self._fused_stop_at
+        counters['stop_rounds_max'] = max(counters['stop_rounds_max'], self._stop_ticks)
+        counters['stop_ms_max'] = max(counters['stop_ms_max'], int(elapsed * 1e3))
+        if elapsed > self.qsa_fused.stall_s:
+            raise DriverError('cancellation did not close worker ownership within the bound')
+
     def _stop_round(self):
         """Count one submitted stop round; refuse past the bound, keep ownership."""
         self._stop_ticks += 1
+        if self._tx_fused:
+            return self._fused_stop_round()
         if self._stop_ticks > self.stop_budget:
             raise DriverError('cancellation did not close worker ownership within the bound')
 

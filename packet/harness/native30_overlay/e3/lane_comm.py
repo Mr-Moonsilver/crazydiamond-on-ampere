@@ -97,9 +97,9 @@ class CollectiveLedger:
 
     def note(self, op, pynccl, tensor, root=None):
         self.count += 1
-        self._hash.update(repr((op, getattr(pynccl, 'unique_name', None),
-                                int(getattr(pynccl, 'world_size', 0)), tuple(tensor.shape),
-                                str(tensor.dtype), root)).encode())
+        # PyNccl's unique id is broadcast at init, so it names one communicator on every peer.
+        self._hash.update(repr((op, bytes(pynccl.unique_id.internal), int(pynccl.world_size),
+                                tuple(tensor.shape), str(tensor.dtype), root)).encode())
 
     def take(self):
         return self.count, self._hash.hexdigest()

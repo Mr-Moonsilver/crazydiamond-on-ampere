@@ -6,7 +6,7 @@ Per chunk, from the progress rows the engine and workers already flush:
   stage own time    command submitted -> last reply of the stage's own ranks, merged;
   inactive tax      own ranks replied -> last reply of any rank, merged (M1);
   main thread       per worker rank, merged time in native handlers and in stock handlers inside the chunk;
-  handler           per command and rank, native handler enter -> exit, QSA layers apart from the rest;
+  handler           per command on its target ranks, native handler enter -> exit, QSA layers apart from the rest;
   decode delay      per stock RPC, engine submit -> worker handler enter (A2's ready-to-submit delay), the slowest
                     rank per RPC, and the part of it spent behind a native handler on that same rank;
   service model     chunk interval against max(stage 0, stage 1, owner), scaled to 1,024 rows, beside 256 and 183 ms.
@@ -146,13 +146,19 @@ def chunk_report(chunk, workers, by_rank):
                                     idle_s=max(0.0, out['wall_s'] - seconds(spans['native'] + spans['stock'])))
     out['main_thread'] = occupancy
 
+    # Target ranks only for a stage-local command: the other stage answers with a no-op.
     handlers = dict(qsa=[], other=[])
+    by_kind = {}
     for r in rows:
-        for rank in range(4):
+        qsa = is_qsa_layer(r['layer'])
+        for rank in TARGETS.get(r['stage'], range(4)):
             w = workers.get((r['seq'], rank))
             if w and type(w['t_enter']) is int and type(w['t_exit']) is int:
-                handlers['qsa' if is_qsa_layer(r['layer']) else 'other'].append((w['t_exit'] - w['t_enter']) / 1e9)
+                took = (w['t_exit'] - w['t_enter']) / 1e9
+                handlers['qsa' if qsa else 'other'].append(took)
+                by_kind.setdefault(r['kind'] + ('-qsa' if qsa else ''), []).append(took)
     out['handler_s'] = handlers
+    out['handler_by_kind_s'] = by_kind
 
     delays, behind = [], {str(rank): 0.0 for rank in range(4)}
     for s in chunk['rows'].get('s', []):
@@ -241,7 +247,9 @@ def group_summary(chunks):
         main_thread_share={r: {k: round(sum(c['main_thread'][r][k] for c in chunks) / wall, 4)
                                for k in ('native_s', 'stock_s', 'idle_s')} for r in ranks},
         handler_ms=dict(qsa=dist([1e3 * h for h in qsa]), other=dist([1e3 * h for h in other]),
-                        longest_per_chunk=dist([1e3 * h for h in per_chunk_max])),
+                        longest_per_chunk=dist([1e3 * h for h in per_chunk_max]),
+                        by_kind={k: dist([1e3 * h for c in chunks for h in c['handler_by_kind_s'].get(k, [])])
+                                 for k in sorted({k for c in chunks for k in c['handler_by_kind_s']})}),
         decode_delay_ms=dist(delays),
         decode_delay_behind_native_s_per_chunk={r: round(sum(c['decode_delay_behind_native_s'][r] for c in chunks) / n, 4)
                                                 for r in ranks},
