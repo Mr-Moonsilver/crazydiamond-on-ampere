@@ -1,0 +1,137 @@
+{
+  "arm": "TRUNK",
+  "bundle_selfrun": {
+    "arm": "TRUNK",
+    "probe": "native39_trunk_cpu_probe.py"
+  },
+  "candidate": "q18a-native39-trunk",
+  "checks": [
+    [
+      "tools/native39_trunk_queue_drafts.py",
+      "--check"
+    ],
+    [
+      "tools/native39_trunk_tools_derive.py",
+      "--check"
+    ],
+    [
+      "tools/native39_w2_length.py",
+      "--check"
+    ]
+  ],
+  "clock_split": {
+    "expect": {
+      "bracket": "proved",
+      "identity_equality": "refused",
+      "native_window_clock": "refused",
+      "prove_clock_domain": "refused"
+    },
+    "modules": [],
+    "note": "held-b clients compare clock identities for equality; under the CT/container split all three refuse, as native40 did on the box; the bracket relation itself holds (one CLOCK_MONOTONIC, zero offsets)"
+  },
+  "definitions": {},
+  "details": {
+    "model_settings_changed": false,
+    "queue": "q18a-native39-trunk texts unchanged (never staged; box_ready false)",
+    "scope": "HARNESS proof of the native43 packaging: held-b's unchanged source (1ffc394) rebuilt through tools/build_native43.py; the regenerated overlay must equal held-b's byte for byte, the runner differs from held-b's only in H/BUNDLE, and the self-runs add the CT-vs-container clock split",
+    "tail_handback": false
+  },
+  "dry_run": true,
+  "engine_changed": [],
+  "engine_selfrun": {
+    "compiled": [
+      "patches/s5_engine/scheduler_hooks.py",
+      "patches/s5_engine/engine_driver.py",
+      "patches/s5_engine/native_overlap_session.py",
+      "harness/e3_native39_trunk_probe.py",
+      "harness/test_native39_trunk.py",
+      "harness/selftest.py",
+      "tools/native39_trunk_selfrun.py",
+      "tools/native39_trunk_freeze.py",
+      "tools/build_native39_trunk.py",
+      "tools/build_native43.py",
+      "tools/native43_bundle_selfrun.py",
+      "tools/native43_clock_split.py",
+      "tools/native43_precheck_conf.py",
+      "tools/native43_selfrun.py"
+    ],
+    "schema": "native39-trunk-selfrun/1",
+    "suites": [
+      "test_native39_trunk",
+      "test_native37_robust",
+      "test_native38_plain_bind",
+      "test_e3_admission_native",
+      "test_e3_staged_chunk_plan",
+      "test_e3_native_overlap",
+      "test_e3_native_storage_replay",
+      "test_e3_r4_worker_bridge",
+      "test_e3_admission_metadata"
+    ]
+  },
+  "expected_tests": 218,
+  "label": "heldb-dryrun",
+  "overlay_definitions": {},
+  "precheck": {
+    "fixture_rows": [
+      "  test_native39_trunk_queue.py # synthetic CPU auth fixture only (VLLM_API_KEY/Bearer fixture-bearer-value)\n"
+    ],
+    "header": [
+      "Native43 packaging dry run: held-b's unchanged source (1ffc394) rebuilt by tools/build_native43.py; PREV is the frozen native39 trunk held-b bundle and runner.",
+      "Engine delta vs PREV: none (regenerated overlay byte-identical, review and compiled libraries unchanged); the bundle adds the native43 packaging tools.",
+      "HARNESS proof only: box_ready false, never staged."
+    ],
+    "seams": "test_native39_trunk_queue.py test_native39_trunk.py "
+  },
+  "queue": [
+    "q18a_native39_trunk.draft.sh",
+    "q18a_native39_trunk_declare.sh",
+    "q18a_native39_trunk_settings.sh"
+  ],
+  "rehearsal": {
+    "candidate": "q18a-native43-dense-boundary",
+    "expected_tests": 230,
+    "runner_swaps": [
+      [
+        "result.get('native35_arm')=='TRUNK'",
+        "result.get('native35_arm')=='NATIVE43'"
+      ],
+      [
+        "result.get('native39_trunk_queue')=='PASS'",
+        "result.get('native39_trunk_queue')=='PASS' and result.get('native43_queue')=='PASS'"
+      ],
+      [
+        "    from native39_trunk_gate import trunk_window_ok as window_ok\n",
+        "    from native43_box_gate import window_ok\n"
+      ],
+      [
+        "engine.get('schema')=='native39-trunk-selfrun/1'",
+        "engine.get('schema')=='native43-selfrun/1'"
+      ],
+      [
+        "and engine.get('image')==IMAGE and engine.get('box_action') is False,'exact-engine-selfrun-required')",
+        "and engine.get('image')==IMAGE and engine.get('box_action') is False\n                and (engine.get('clock_split') or {}).get('verdict')=='PASS','exact-engine-selfrun-required')"
+      ]
+    ]
+  },
+  "review": "inherit",
+  "review_key": null,
+  "runner_swaps": [],
+  "schema": "native43-packaging-spec/1",
+  "source_commit": "1ffc394783d3d67e140056868b50ca2f74c88b3b",
+  "source_paths": [
+    "A\ttools/build_native43.py",
+    "A\ttools/native43_bundle_selfrun.py",
+    "A\ttools/native43_clock_split.py",
+    "A\ttools/native43_precheck_conf.py",
+    "A\ttools/native43_selfrun.py",
+    "A\ttools/native43_spec.heldb-dryrun.json"
+  ],
+  "tools": [
+    "build_native43.py",
+    "native43_bundle_selfrun.py",
+    "native43_clock_split.py",
+    "native43_precheck_conf.py",
+    "native43_selfrun.py",
+    "native43_spec.heldb-dryrun.json"
+  ]
+}
