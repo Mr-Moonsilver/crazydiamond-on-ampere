@@ -21,6 +21,9 @@
     "harness/test_native37_robust.py": [
       "HarnessCleanup.run_round"
     ],
+    "harness/test_native40_box_queue.py": [
+      "Queue.test_regression_real_cli_through_package_and_native_client_refusal"
+    ],
     "patches/s5_engine/decode_probe.py": [
       "module:GENERATED_SOURCES"
     ],
@@ -124,6 +127,7 @@
     "M\tharness/test_e3_package.py",
     "M\tharness/test_native35_performance.py",
     "M\tharness/test_native37_robust.py",
+    "M\tharness/test_native40_box_queue.py",
     "A\tharness/test_native41_autoarm.py",
     "A\tharness/test_native41_box_queue.py",
     "M\tpatches/s5_engine/decode_probe.py",
