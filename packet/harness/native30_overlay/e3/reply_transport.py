@@ -77,7 +77,7 @@ class ReplyTransport:
     No stock FutureWrapper may retain access to these queues after handoff.
     """
     def __init__(self, queues, success_status, *, handoff_idle, max_calls=16,
-                 clock=time.monotonic):
+                 clock=time.monotonic, direct_replies=False):
         if handoff_idle is not True:
             raise ValueError('idle executor handoff required')
         if not queues or any(type(r) is not int or r < 0 for r in queues):
@@ -100,6 +100,12 @@ class ReplyTransport:
         self._max_calls = max_calls
         self._condition = threading.Condition()
         self._todo = {r: deque() for r in queues}
+        if direct_replies not in (False, True):
+            raise ValueError('direct_replies must be a bool')
+        # Held-f burst only: a second per-rank expectation FIFO for replies the
+        # worker writes from its RPC thread (DirectReply). Off, it does not exist
+        # and the receiver below is the unchanged single-FIFO loop.
+        self._direct = {r: deque() for r in queues} if direct_replies else None
         self._queues = dict(queues)  # Retained even after unclean close.
         self._done = Queue()
         self._calls = {}
@@ -120,8 +126,9 @@ class ReplyTransport:
                 for q in claimed:
                     q._flash_s5_receiver_owner = None
                 raise
+        loop = self._receive_loop if self._direct is None else self._receive_demux_loop
         for rank in queues:
-            t = threading.Thread(target=self._receive_loop, args=(rank,),
+            t = threading.Thread(target=loop, args=(rank,),
                                  name=f'flash-s5-reply-{rank}', daemon=True)
             self._threads[rank] = t
             t.start()
@@ -151,14 +158,20 @@ class ReplyTransport:
         with self._condition:
             self._poison(failure)
 
-    def submit(self, kind, send, *, ranks=None, timeout_s=300.0, aggregate=None, precheck=None):
+    def submit(self, kind, send, *, ranks=None, timeout_s=300.0, aggregate=None, precheck=None,
+               direct=False):
         """Register before broadcasting, including unique-reply/aggregator ranks.
 
         send receives the local sequence solely for optional typed E3 envelopes.
         Stock wire replies lack IDs; FIFO is the only correlation until the E3
         worker methods carry/validate a transaction generation in their payload.
+        ``direct`` registers in the direct FIFO (the worker writes that reply
+        from its RPC thread); it exists only on a transport built with
+        ``direct_replies=True``.
         """
         self._owner()
+        if direct is not False and (direct is not True or self._direct is None):
+            raise ValueError('direct replies are not enabled on this transport')
         if not isinstance(kind, str) or not kind:
             raise ValueError('reply kind required')
         ranks = tuple(self._queues) if ranks is None else tuple(ranks)
@@ -191,8 +204,9 @@ class ReplyTransport:
                 call = _Call(sequence, kind, ranks, now, now + timeout_s, aggregate)
                 self._calls[sequence] = call
                 self._sending_thread = threading.get_ident()
+                fifo = self._direct if direct else self._todo
                 for rank in ranks:
-                    self._todo[rank].append((sequence, call.deadline_s))
+                    fifo[rank].append((sequence, call.deadline_s))
                 self._condition.notify_all()
             try:
                 send(sequence)
@@ -245,6 +259,61 @@ class ReplyTransport:
             finally:
                 with self._condition:
                     self._inflight.discard((rank, sequence))
+                    self._condition.notify_all()
+
+    def _receive_demux_loop(self, rank):
+        """Two expectation FIFOs per rank, one dequeue per wire (held-f burst).
+
+        The worker writes ordered replies in RPC order through its async output
+        thread and DirectReply replies in RPC order from its RPC thread, so each
+        class is FIFO on the wire. A wire matches the head of its own class;
+        a wire with no expectation in its class poisons, as does any
+        non-SUCCESS status (before matching). The wait is bounded by the
+        earlier head deadline; each match is checked against its own deadline.
+        """
+        ordered, direct = self._todo[rank], self._direct[rank]
+        while True:
+            with self._condition:
+                while (not ordered and not direct and not self._closing
+                       and self._failure is None):
+                    self._condition.wait()
+                if self._closing or self._failure is not None:
+                    return
+                deadline = min(fifo[0][1] for fifo in (ordered, direct) if fifo)
+                marker = (rank, None)
+                self._inflight.add(marker)
+            try:
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise TimeoutError
+                wire = self._queues[rank].dequeue(timeout=remaining)
+                received = self._clock()
+                if not isinstance(wire, tuple) or len(wire) != 2:
+                    raise ValueError
+                status, value = wire
+                if status != self._status:
+                    with self._condition:
+                        self._poison('worker_failure')
+                    return
+                with self._condition:
+                    fifo = direct if isinstance(value, DirectReply) else ordered
+                    if not fifo:
+                        self._poison('reply_correlation_failure')
+                        return
+                    sequence, call_deadline = fifo.popleft()
+                    if received > call_deadline:
+                        raise TimeoutError
+                    if fifo is direct:
+                        value = value.value
+                    if not self._closing and self._failure is None:
+                        self._done.put_nowait((sequence, rank, value, received))
+            except BaseException as exc:
+                with self._condition:
+                    self._poison('reply_timeout' if isinstance(exc, TimeoutError) else 'reply_transport_failure')
+                return
+            finally:
+                with self._condition:
+                    self._inflight.discard(marker)
                     self._condition.notify_all()
 
     def poll(self, budget=8):

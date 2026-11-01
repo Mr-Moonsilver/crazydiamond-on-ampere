@@ -511,12 +511,25 @@ class StockLocalFuture(LocalFuture):
         if progress is None:
             return self._stock_result(timeout)
         started = time.monotonic_ns()
+        sends = capped = 0
         try:
+            if progress[1] == 'sample_tokens' and progress[0].wait_allowed():
+                transport = self._transport()
+
+                def ready():
+                    with self._lock:
+                        if self._consumed or self._result_ready:
+                            return True
+                    transport.poll(1)
+                    return transport.call_ready(self.sequence)
+                deadline = None if timeout is None else time.monotonic() + timeout
+                sends, capped = native_progress_wait(progress[0], ready, deadline)
+                timeout = None if deadline is None else max(0., deadline - time.monotonic())
             return self._stock_result(timeout)
         finally:
             progress[0].counters['waits'] += 1
             progress[0].trace.record('w', self.sequence, progress[1], started,
-                                     time.monotonic_ns(), 0, 0)
+                                     time.monotonic_ns(), sends, capped)
 
     def _stock_result(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -538,6 +551,36 @@ class StockLocalFuture(LocalFuture):
                     raise
         remaining = None if deadline is None else max(0., deadline - time.monotonic())
         return super().result(remaining)
+
+
+def native_progress_wait(progress, ready, deadline):
+    """Held-f burst: bounded native progress while the owner waits on a sample.
+
+    ``ready()`` reports the stock result; until it is ready, each round asks
+    the driver for one permitted native advance (``progress_in_wait``) and
+    sleeps the stock 1 ms when nothing was sent. Ends on ready, the deadline,
+    a refused permit or ``WAIT_SEND_LIMIT`` sends (counted as capped). The
+    stock resolution path then runs unchanged. Returns ``(sends, capped)``.
+    """
+    driver = progress.driver
+    sends = capped = 0
+    try:
+        while not ready():
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            if sends >= progress.WAIT_SEND_LIMIT:
+                capped = 1
+                break
+            sent = driver.progress_in_wait()
+            if sent is None:
+                break
+            sends += sent
+            if not sent:
+                time.sleep(0.001)
+    finally:
+        progress.counters['wait_sends'] += sends
+        progress.counters['wait_capped'] += capped
+    return sends, capped
 
 
 def _reply_ranks(executor, unique_reply_rank):
@@ -627,7 +670,7 @@ _INSTALL_LOCK = threading.RLock()
 
 
 def install(executor, *, config, success_status, clock=time.monotonic,
-            capacity=None):
+            capacity=None, direct_replies=False):
     current = getattr(executor, '_flash_s5_transport', None)
     if current is not None:
         current._owner()  # Refuse inherited parent resources before any lock.
@@ -635,11 +678,11 @@ def install(executor, *, config, success_status, clock=time.monotonic,
         if getattr(executor, '_flash_s5_shutdown_started', False):
             raise E3ContractError('executor shutdown already started')
         return _install_owned(executor, config=config, success_status=success_status,
-                              clock=clock, capacity=capacity)
+                              clock=clock, capacity=capacity, direct_replies=direct_replies)
 
 
 def _install_owned(executor, *, config, success_status, clock=time.monotonic,
-            capacity=None):
+            capacity=None, direct_replies=False):
     """Take sole receiver ownership at an idle executor handoff.
 
     The caller must pass the actual ``WorkerProc.ResponseStatus.SUCCESS`` enum.
@@ -670,9 +713,10 @@ def _install_owned(executor, *, config, success_status, clock=time.monotonic,
         raise E3ContractError('executor has no broadcast queue')
     from async_handoff import derive_command_capacity
     slots = derive_command_capacity(broadcast, capacity or config.command_slots)
+    extra = {'direct_replies': True} if direct_replies else {}
     transport = ReplyTransport(dict(enumerate(queues)), success_status,
                                handoff_idle=True, max_calls=slots,
-                               clock=clock)
+                               clock=clock, **extra)
     executor._flash_s5_stock_futures = {}
     executor._flash_s5_transport = transport
     executor._flash_s5_bounded_send = BoundedSender(broadcast)
@@ -746,6 +790,9 @@ def collective_rpc(executor, stock, method, timeout=None, args=(), kwargs=None,
             wire_kwargs[PROGRESS_META_KEY] = encode_progress_meta(sequence, False)
             future._progress = (progress, kind, time.monotonic_ns())
             progress.counters['stock_rpcs'] += 1
+            # Ring position for in-wait progress: native commands may follow a
+            # sample_tokens, never sit between an execute_model and its sample.
+            progress.last_stock_kind = kind
         executor.rpc_broadcast_mq.enqueue((send_method, args, wire_kwargs,
                                            broadcast_rank))
     sequence = transport.submit(kind, send, ranks=ranks,
@@ -1242,6 +1289,7 @@ __all__ = [
     'before_finish_pause', 'before_pause', 'before_reset_prefix',
     'before_shutdown', 'before_step_with_batch_queue', 'collective_rpc',
     'config_reply_timeout', 'control_pending', 'engine_idle_tick', 'executor_shutdown',
+    'native_progress_wait',
     'generate_core', 'generate_executor',
     'generate_worker', 'install', 'native_control', 'native_work_pending', 'park_prefill',
     'retain_mq', 'revert_core',

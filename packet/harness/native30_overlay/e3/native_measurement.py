@@ -183,7 +183,7 @@ PROGRESS_META_KEY = '_flash_s5'
 PROGRESS_META_BYTES = 9
 PROGRESS_ROWS = {
     # engine: one native command, transport sequence through owner apply
-    'n': ('seq', 'kind', 'op_seq', 'stage', 'layer', 'origin', 't_submit', 't_sent',
+    'n': ('seq', 'kind', 'segment', 'op_seq', 'stage', 'layer', 'origin', 't_submit', 't_sent',
           't_recv0', 't_recv1', 't_recv2', 't_recv3', 't_apply', 'outcome', 'direct'),
     # engine: one ordinary RPC (execute_model, sample_tokens, ...)
     's': ('seq', 'kind', 't_submit', 't_recv', 't_take'),
@@ -192,6 +192,10 @@ PROGRESS_ROWS = {
     # worker: one RPC on this rank, handler enter/exit and the response-MQ write
     'r': ('seq', 'kind', 't_enter', 't_exit', 't_emit', 'direct', 'replied'),
 }
+
+
+# Positions in an 'n' row (the engine fills it across submit, drain and apply).
+PROGRESS_N = {name: index for index, name in enumerate(PROGRESS_ROWS['n'])}
 
 
 def progress_mode(env):

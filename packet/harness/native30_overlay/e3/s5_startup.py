@@ -292,8 +292,10 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     from native_resources import response_success
 
     config = HandoffConfig.from_env(env)
+    # The two-FIFO reply receiver exists only when the burst candidate is installed.
+    extra = {'direct_replies': True} if progress == 'burst' else {}
     transport = install(executor, config=config, success_status=response_success(),
-                        clock=clock)
+                        clock=clock, **extra)
     backend = RemoteCompletionBackend(config, transport=transport)
     allocation = estimated_e3_inventory(chunk_tokens=config.chunk_tokens)
     composition = build_composition(

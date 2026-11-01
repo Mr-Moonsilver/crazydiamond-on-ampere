@@ -86,6 +86,10 @@ class NativeOverlapSession:
         handler = getattr(self, '_action_' + str(action), None)
         if action == 'release_auto_arm' and os.environ.get('FLASH_S5_AUTO_ARM', '0') != '1':
             handler = None
+        if action == 'native_progress' and not (
+                os.environ.get('FLASH_S5_NATIVE_PROGRESS', '') == 'burst'
+                and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'):
+            handler = None
         if handler is None:
             raise NativeOverlapSessionError('session-action-not-exposed')
         if self.run_id is not None and run_id is not None and run_id != self.run_id:
@@ -112,6 +116,11 @@ class NativeOverlapSession:
         if self.measure_start_ns is not None:
             raise NativeOverlapSessionError('release-with-open-measurement')
         return await self.control.release_auto_arm()
+
+    async def _action_native_progress(self, command):
+        if self.measure_start_ns is not None:
+            raise NativeOverlapSessionError('native-progress-with-open-measurement')
+        return await self.control.native_progress(command.get('mode'))
 
     async def _action_prepare(self, command):
         target = command.get('target_route')

@@ -158,6 +158,10 @@ class GPUWorkerLeaf:
         self.ran.append((self.clock(), 'flash_s5_submit', message))
         return ('accepted', self.rank, message, 'skipped' if STAGE_OF[self.rank] != message[1] else 'target')
 
+    def flash_s5_fail(self, message):
+        self.ran.append((self.clock(), 'flash_s5_fail', message))
+        raise RuntimeError('fixture worker refusal')
+
 
 class Broadcast:
     """The engine's one broadcast ring, fanned out to every worker inbox."""
@@ -185,7 +189,7 @@ class Broadcast:
 class Network:
     """Four generated WorkerProc reply paths behind the real owned transport."""
 
-    def __init__(self, test, generated=None, clock=time.monotonic):
+    def __init__(self, test, generated=None, clock=time.monotonic, direct=False):
         self.clock = clock
         proc_class = worker_proc_class(generated)
         self.readers = [Reader() for _ in range(4)]
@@ -225,8 +229,9 @@ class Network:
         def stock_reader(*args, **kwargs):
             raise AssertionError('stock reply reader forbidden under the owned transport')
         self.executor._flash_s5_stock_collective_rpc = stock_reader
+        extra = {'direct_replies': True} if direct else {}
         self.transport = eh.install(self.executor, config=ah.HandoffConfig.from_env({'FLASH_S5_OVERLAP': '1'}),
-                                    success_status=Status.SUCCESS)
+                                    success_status=Status.SUCCESS, **extra)
         test.addCleanup(self.close)
 
     @staticmethod
@@ -247,9 +252,9 @@ class Network:
             thread.join(2)
         self.transport.close(1)
 
-    def native_submit(self, op_seq, stage, meta=False, direct=False):
+    def native_submit(self, op_seq, stage, meta=False, direct=False, method='flash_s5_submit'):
         """What NativeSegmentDriver._submit does: all-rank replies, one broadcast."""
-        envelope = ('flash_s5_submit', ((op_seq, stage),), {}, None)
+        envelope = (method, ((op_seq, stage),), {}, None)
 
         def send(sequence):
             wire = (ed.NativeProgress.with_meta(envelope, nm.encode_progress_meta(sequence, direct))
@@ -454,7 +459,7 @@ class ProgressReceipts(unittest.TestCase):
     def test_line_parts_stay_below_the_docker_split_and_reassemble(self):
         trace = nm.ProgressTrace('engine', limit=nm.PROGRESS_MAX_ROWS)
         for seq in range(1500):
-            trace.record('n', seq, 'segment', seq, seq % 2, seq % 48, 'tick', 10**15 + seq * 1000,
+            trace.record('n', seq, 'segment', 'layer', seq, seq % 2, seq % 48, 'tick', 10**15 + seq * 1000,
                          10**15 + seq * 1000 + 5, None, None, 10**15 + seq * 1000 + 900, None,
                          10**15 + seq * 1000 + 990, 'accepted', 0)
         for seq in range(5000):
@@ -471,7 +476,8 @@ class ProgressReceipts(unittest.TestCase):
         self.assertTrue(all('fields' not in b and 'dropped' not in b for b in bodies[1:]))
         joined = [r for b in bodies for r in b['rows'].get('n', [])]
         self.assertEqual([r[0] for r in joined], list(range(1500)))
-        self.assertEqual(joined[1][6:8], [1, 1])  # microsecond offsets from base_ns
+        at = nm.PROGRESS_N
+        self.assertEqual(joined[1][at['t_submit']:at['t_sent'] + 1], [1, 1])  # µs offsets from base_ns
         self.assertEqual(sum(len(b['rows'].get('s', [])) for b in bodies), nm.PROGRESS_MAX_ROWS - 1500)
         self.assertEqual(trace.lines(), [])
 
@@ -491,6 +497,183 @@ class ProgressReceipts(unittest.TestCase):
         for bad in (b'', bytes(8), bytes(8) + b'\x02', 'x' * 9):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 nm.decode_progress_meta(bad)
+
+
+class DirectReplies(unittest.TestCase):
+    """Held-f burst piece (a): worker RPC-thread replies and the two-FIFO receiver."""
+    HOLD_S = 0.25
+
+    def wait_failure(self, net, timeout):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            with net.transport._condition:
+                if net.transport._failure is not None:
+                    return net.transport._failure
+            time.sleep(0.002)
+        return None
+
+    def test_direct_reply_passes_the_pending_decode_output(self):
+        net = Network(self, direct=True)
+        states = net.worker_traces(self)
+        decode = net.executor.collective_rpc('sample_tokens', args=('b1',), non_block=True,
+                                             unique_reply_rank=OUTPUT_RANK, timeout=10)
+        start = net.clock()
+        native = net.native_submit(op_seq=7, stage=0, meta=True, direct=True)
+        self.assertTrue(net.wait_ready(native, self.HOLD_S / 2))
+        self.assertLess(net.clock() - start, self.HOLD_S / 2)
+        values, lag = net.transport.take(native)
+        self.assertEqual([v[1] for v in values], [0, 1, 2, 3])
+        self.assertTrue(all(lag[r] < self.HOLD_S / 2 for r in range(4)), lag)
+        self.assertFalse(decode.done())
+        net.procs[OUTPUT_RANK].worker.decode_done.setdefault('b1', threading.Event()).set()
+        self.assertEqual(decode.result(5), ('decode', 'b1'))
+        # On rank 2 the native ACK left first, then the decode output it overtook.
+        emitted = [value for _, value in net.procs[OUTPUT_RANK].worker_response_mq.emitted]
+        self.assertIsInstance(emitted[0], eh.DirectReply)
+        self.assertEqual(emitted[0].value[0], 'accepted')
+        self.assertEqual(emitted[1], ('decode', 'b1'))
+        submit = next(r for r in rows(states[OUTPUT_RANK][0], 'r') if r['kind'] == 'flash_s5_submit')
+        self.assertEqual((submit['direct'], submit['replied']), (1, 1))
+        self.assertLess(submit['t_emit'] - submit['t_exit'], int(self.HOLD_S * 0.5e9))
+        self.assertEqual(list(states[OUTPUT_RANK][1]), [])
+
+    def test_each_class_stays_fifo_under_a_decode_stream(self):
+        net = Network(self, direct=True)
+        period, commands = 0.04, 12
+        worker = net.procs[OUTPUT_RANK].worker
+        stop = threading.Event()
+        decodes, labels = [], []
+
+        def decode_stream():
+            index, pending = 0, []
+            while not stop.is_set():
+                label = 'b%d' % index
+                labels.append(label)
+                pending.append((label, net.executor.collective_rpc(
+                    'sample_tokens', args=(label,), non_block=True,
+                    unique_reply_rank=OUTPUT_RANK, timeout=10)))
+                if len(pending) >= 2:
+                    time.sleep(period)
+                    done, future = pending.pop(0)
+                    worker.decode_done.setdefault(done, threading.Event()).set()
+                    decodes.append(future.result(5))
+                index += 1
+            for done, future in pending:
+                worker.decode_done.setdefault(done, threading.Event()).set()
+                decodes.append(future.result(5))
+        engine = threading.Thread(target=decode_stream, daemon=True)
+        engine.start()
+        try:
+            time.sleep(period / 2)
+            start = net.clock()
+            got = []
+            for op_seq in range(commands):
+                native = net.native_submit(op_seq=op_seq, stage=op_seq % 2, meta=True, direct=True)
+                self.assertTrue(net.wait_ready(native, 5))
+                values, _lag = net.transport.take(native)
+                got.append([v[2] for v in values])
+            elapsed = net.clock() - start
+        finally:
+            stop.set()
+            engine.join(5)
+        # Every native reply matched its own command on every rank, in order,
+        # and the commands no longer pay one decode period each.
+        self.assertEqual(got, [[(op, op % 2)] * 4 for op in range(commands)])
+        self.assertLess(elapsed, commands * period * 0.5)
+        self.assertEqual(decodes, [('decode', label) for label in labels[:len(decodes)]])
+        self.assertIsNone(net.transport._failure)
+
+    def test_wire_with_no_expectation_in_its_class_poisons(self):
+        for injected, expect_direct in ((eh.DirectReply(('accepted', 0, None, 'x')), False),
+                                        (('decode', 'stray'), True)):
+            with self.subTest(injected=type(injected).__name__):
+                net = Network(self, direct=True)
+                if expect_direct:
+                    net.native_submit(op_seq=1, stage=1, meta=True, direct=True)
+                else:
+                    net.executor.collective_rpc('sample_tokens', args=('held',), non_block=True,
+                                                unique_reply_rank=0, timeout=10)
+                # Rank 0's receiver sees a wire of the other class first.
+                net.readers[0].q.put((Status.SUCCESS, injected))
+                self.assertEqual(self.wait_failure(net, 2), 'reply_correlation_failure')
+
+    def test_direct_command_failure_poisons_at_once_ahead_of_decode(self):
+        net = Network(self, direct=True)
+        net.executor.collective_rpc('sample_tokens', args=('b1',), non_block=True,
+                                    unique_reply_rank=OUTPUT_RANK, timeout=10)
+        start = time.monotonic()
+        net.native_submit(op_seq=3, stage=0, meta=True, direct=True, method='flash_s5_fail')
+        self.assertEqual(self.wait_failure(net, self.HOLD_S), 'worker_failure')
+        self.assertLess(time.monotonic() - start, self.HOLD_S)
+
+    def test_off_has_no_direct_fifo_and_refuses_a_direct_submission(self):
+        net = Network(self)
+        self.assertIsNone(net.transport._direct)
+        # Off, every receiver runs the unchanged single-FIFO loop.
+        self.assertTrue(all(t._target == net.transport._receive_loop for t in net.transport._threads.values()))
+        with self.assertRaises(ValueError):
+            net.native_submit(op_seq=1, stage=0, meta=True, direct=True)
+        with self.assertRaises(ValueError):
+            net.transport.submit('segment', lambda _seq: None, ranks=(0,), timeout_s=1, direct=1)
+        self.assertEqual(net.transport._calls, {})
+
+
+class InWaitLoop(unittest.TestCase):
+    """executor_hooks.native_progress_wait edges; the driver is a declared leaf
+    (its permit and advance are proven on the connected probe, not here)."""
+
+    class Driver:
+        def __init__(self, answers):
+            self.answers, self.calls = list(answers), 0
+
+        def progress_in_wait(self):
+            self.calls += 1
+            return self.answers.pop(0) if self.answers else 1
+
+    def progress(self, answers):
+        progress = ed.NativeProgress('burst', types.SimpleNamespace(), driver=self.Driver(answers))
+        return progress
+
+    def test_cap_bounds_sends_and_is_counted(self):
+        progress = self.progress([])
+        self.assertEqual(eh.native_progress_wait(progress, lambda: False, None),
+                         (progress.WAIT_SEND_LIMIT, 1))
+        self.assertEqual(progress.driver.calls, progress.WAIT_SEND_LIMIT)
+        self.assertEqual((progress.counters['wait_sends'], progress.counters['wait_capped']),
+                         (progress.WAIT_SEND_LIMIT, 1))
+
+    def test_refused_permit_and_ready_end_the_loop(self):
+        progress = self.progress([1, 0, None])
+        self.assertEqual(eh.native_progress_wait(progress, lambda: False, None), (1, 0))
+        self.assertEqual(progress.driver.calls, 3)
+        ready = iter((False, False, True))
+        progress = self.progress([1, 1, 1])
+        self.assertEqual(eh.native_progress_wait(progress, lambda: next(ready), None), (2, 0))
+
+    def test_deadline_ends_the_loop_without_a_send(self):
+        progress = self.progress([0] * 1000)
+        start = time.monotonic()
+        self.assertEqual(eh.native_progress_wait(progress, lambda: False, start + 0.02), (0, 0))
+        self.assertLess(time.monotonic() - start, 1.0)
+        self.assertGreater(progress.driver.calls, 1)
+
+    def test_wait_needs_burst_owner_thread_and_a_sample_last(self):
+        progress = self.progress([])
+        progress.begin(dict(txn=1))
+        progress.last_stock_kind = 'sample_tokens'
+        self.assertFalse(progress.wait_allowed())  # mode current
+        progress.mode = 'burst'
+        self.assertTrue(progress.wait_allowed())
+        progress.last_stock_kind = 'execute_model'
+        self.assertFalse(progress.wait_allowed())
+        progress.last_stock_kind = 'sample_tokens'
+        other = []
+        thread = threading.Thread(target=lambda: other.append(progress.wait_allowed()))
+        thread.start()
+        thread.join(2)
+        self.assertEqual(other, [False])
+        progress.end(types.SimpleNamespace(info=lambda text: None))
+        self.assertFalse(progress.wait_allowed())
 
 
 if __name__ == '__main__':
