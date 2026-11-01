@@ -10,7 +10,9 @@ from build_native30_held import verify
 ROOT=Path(__file__).resolve().parents[1]
 PARENT='f6d1db9c90e7bffa5423945a7148a5bb800e247c'
 DECLARATION=ROOT/'tools/native41_autoarm_declarations.json'
-RUNTIME={'e3/scheduler_hooks.py','e3/engine_driver.py','e3/executor_hooks.py','e3/s5_startup.py','e3/native_overlap_worker.py','e3/decode_probe.py','e3/native_overlap_control.py','e3/native_overlap_session.py','e3/probe_control.py'}
+RUNTIME={'e3/scheduler_hooks.py','e3/engine_driver.py','e3/executor_hooks.py','e3/s5_startup.py','e3/native_overlap_worker.py','e3/decode_probe.py','e3/native_overlap_control.py','e3/native_overlap_session.py','e3/probe_control.py',
+         # Held-e: auto-arm-only per-chunk allocator receipts.
+         'e3/worker_bridge.py'}
 ADDED={'e3/native_auto_arm.py'}
 META={'SHA256SUMS','S5-OVERLAP-GENERATION.json','e3/native-implementation-closure.json',
       'e3/native-overlap-readiness.json','e3/decode-probe-evidence.json'}

@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Bind the native41 box delivery to both exact-byte CPU self-runs, the native40 negative, default-off and the client-clock scan."""
+"""Bind the native41 box delivery to both exact-byte CPU self-runs, the native40 negative, the held-d prior-candidate
+negative, default-off and the client-clock scan."""
 import argparse
 import hashlib
 import json
 import re
 from pathlib import Path
+
+
+# Held-d's delivered overlay (bundle 2224909057e6): the engine box run 1's fatal
+# TP agreement refusal came from, before the held-e STATE_FINALIZE fix.
+PRIOR_OVERLAY_MANIFEST = 'a7b73bdf211362a690212902db7b2cd48103578e723fda4b4233334719a045ea'
 
 
 def sha(path):
@@ -13,7 +19,8 @@ def sha(path):
 
 def main():
     p = argparse.ArgumentParser()
-    for name in ('build', 'engine', 'queue', 'negative', 'default_off', 'clock_scan', 'precheck', 'conf', 'note', 'out'):
+    for name in ('build', 'engine', 'queue', 'negative', 'prior_negative', 'default_off', 'clock_scan', 'precheck', 'conf',
+                 'note', 'out'):
         p.add_argument('--' + name.replace('_', '-'), dest=name, type=Path, required=True)
     a = p.parse_args()
     b, e, q, n, off = [json.loads(path.read_text()) for path in (a.build, a.engine, a.queue, a.negative, a.default_off)]
@@ -31,6 +38,13 @@ def main():
     assert (n['cases']['auto']['error'], n['cases']['receipts-auto']['error']) == (
         'ordinary-requests-trigger-native-cycle', 'auto-receipts-complete')
     assert off['candidate_sha256'] == e['cases']['off']['sha256']
+    pn = json.loads(a.prior_negative.read_text())
+    assert pn['schema'] == 'native41-selfrun/1' and pn['verdict'] == 'PASS' and pn['negative_kind'] == 'prior-candidate'
+    assert pn['manifest'] == b['manifest'] and pn['overlay_manifest'] == PRIOR_OVERLAY_MANIFEST
+    assert pn['cases']['auto']['verdict'] == 'PASS' and pn['cases']['tp-skew']['verdict'] == 'FAIL'
+    assert pn['cases']['tp-skew']['error_type'] == 'DriverError'
+    assert pn['cases']['tp-skew']['error'].startswith('TP workers disagree on the layer continuation')
+    assert e['cases']['tp-skew']['verdict'] == 'PASS'
     k = json.loads(a.clock_scan.read_text())
     assert k['schema'] == 'native41-clock-scan/1' and k['verdict'] == 'PASS' and not k['scan']['problems']
     assert k['bundle_manifest'] == b['manifest'] and k['bundle'] == str(Path(b['bundle']).resolve())
@@ -52,6 +66,10 @@ def main():
         negative=dict(path=str(a.negative), sha256=sha(a.negative), verdict=n['verdict'], tests=n['suites']['tests'],
                       failures=n['suites']['failures'],
                       cases={k: dict(verdict=v['verdict'], error=v['error']) for k, v in sorted(n['cases'].items())}),
+        prior_negative=dict(path=str(a.prior_negative), sha256=sha(a.prior_negative), verdict=pn['verdict'],
+                            overlay_manifest=pn['overlay_manifest'],
+                            cases={k: dict(verdict=v['verdict'], error_type=v['error_type'], error=v['error'])
+                                   for k, v in sorted(pn['cases'].items())}),
         default_off=dict(path=str(a.default_off), sha256=sha(a.default_off), canonical_trace_sha256=off['canonical_trace_sha256']),
         clock_scan=dict(path=str(a.clock_scan), sha256=sha(a.clock_scan), verdict=k['verdict'],
                         closure=len(k['scan']['closure']), roots=k['scan']['roots'],

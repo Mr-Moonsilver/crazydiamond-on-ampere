@@ -20,15 +20,20 @@ ROOT=Path(__file__).resolve().parents[1]
 SUITES=('test_native41_box_queue','test_native41_unarmed_box','test_native41_autoarm','test_native40_unarmed_hold','test_native39_trunk','test_native37_robust','test_native38_plain_bind',
         'test_e3_admission_native','test_e3_admission_metadata','test_e3_staged_chunk_plan',
         'test_e3_native_overlap','test_e3_native_storage_replay','test_e3_r4_worker_bridge')
-MODES=('auto','off','abort-before','abort-live','reuse','foreign','bad-graph','refuse','pending-split','pending-full','running-prefill','below-threshold','long-id')
+MODES=('auto','off','abort-before','abort-live','reuse','foreign','bad-graph','refuse','pending-split','pending-full','running-prefill','below-threshold','long-id','tp-skew')
 RECEIPT_MODES=('auto','latched','below-threshold','off')
 CASES=MODES+tuple('receipts-'+m for m in RECEIPT_MODES)
 NEGATIVES=('test_native41_autoarm.SettingAndStartup.test_auto_is_bound_after_real_startup_fence',
            'test_native41_box_queue.Router.test_switch_on_forwards_release_auto_arm_only_to_the_real_session',
            'test_native41_box_queue.Arm.test_plain_w2_stock_then_auto_arm_through_the_exact_cli')
 NEGATIVE_CASES=('auto','off','receipts-auto','receipts-off')
+# Held-e prior-candidate negative: this harness over held-d's engine. The
+# all-at-once auto case still passes there; the asynchronous TP completion
+# case reproduces box run 1's fatal agreement refusal.
+PRIOR_CASES=('auto','tp-skew')
+PRIOR_ERROR='TP workers disagree on the layer continuation'
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
-def run(bundle,out,name,overlay=None,sources=None,negative=False):
+def run(bundle,out,name,overlay=None,sources=None,negative=False,prior=False):
     from build_native30_held import verify
     bundle=bundle.resolve();verify(bundle);overlay=overlay.resolve() if overlay else bundle/'native30_overlay';verify(overlay)
     sources=sources.resolve() if sources else bundle/'e3_builder'
@@ -45,8 +50,11 @@ if __name__ == '__main__':
     raise SystemExit(0 if r.wasSuccessful() and not r.skipped else 1)
 '''
     (out/'suites.py').write_text(script)
-    modes=NEGATIVE_CASES if negative else CASES
-    lines=['cd /source/harness', 'python3 -B /out/suites.py '+' '.join(NEGATIVES if negative else SUITES)+' > /out/suites.log 2>&1','echo $? > /out/suites.rc']
+    assert not (negative and prior)
+    modes=PRIOR_CASES if prior else NEGATIVE_CASES if negative else CASES
+    lines=['cd /source/harness']
+    if not prior:
+        lines+=['python3 -B /out/suites.py '+' '.join(NEGATIVES if negative else SUITES)+' > /out/suites.log 2>&1','echo $? > /out/suites.rc']
     for mode in modes:
         probe,arg=('e3_native41_receipts_probe.py',mode[len('receipts-'):]) if mode.startswith('receipts-') else ('e3_native41_auto_probe.py',mode)
         lines+=['FLASH_S5_AUTO_ARM='+('0' if arg=='off' else '1')+' python3 -B '+probe+' --mode '+arg+' --out /out/'+mode+'.json > /out/'+mode+'.log 2>&1','echo $? > /out/'+mode+'.rc']
@@ -62,7 +70,11 @@ if __name__ == '__main__':
     assert not inspected.get('DeviceRequests') and not inspected.get('Devices') and inspected['NetworkMode']=='none'
     def read(n):return json.loads((out/n).read_text()) if (out/n).exists() else {}
     suites=read('suites.json');cases={mode:read(mode+'.json') for mode in modes}
-    if negative:
+    if prior:
+        skew=cases['tp-skew']
+        ok=(not suites and cases['auto'].get('verdict')=='PASS' and skew.get('verdict')=='FAIL'
+            and skew.get('error_type')=='DriverError' and str(skew.get('error','')).startswith(PRIOR_ERROR))
+    elif negative:
         ok=(suites.get('tests')==len(NEGATIVES) and suites.get('failures')==len(NEGATIVES) and not suites.get('errors')
             and suites.get('skips')==0
             and cases['auto'].get('verdict')=='FAIL' and cases['auto'].get('error_type')=='AssertionError'
@@ -70,7 +82,8 @@ if __name__ == '__main__':
             and cases['receipts-auto'].get('verdict')=='FAIL' and cases['receipts-auto'].get('error_type')=='AssertionError'
             and cases['receipts-auto'].get('error')=='auto-receipts-complete' and cases['receipts-off'].get('verdict')=='PASS')
     else:ok=suites.get('ok') is True and suites.get('skips')==0 and all(v.get('verdict')=='PASS' for v in cases.values())
-    record=dict(schema='native41-selfrun/1',verdict='PASS' if rc==0 and ok else 'FAIL',negative_control=negative,
+    record=dict(schema='native41-selfrun/1',verdict='PASS' if rc==0 and ok else 'FAIL',negative_control=negative or prior,
+        negative_kind='prior-candidate' if prior else 'native40-parent' if negative else None,
         classification=None if rc==0 and ok else 'HARNESS-OR-ENGINE-UNCLASSIFIED',container_rc=rc,suites=suites,
         cases={m:dict(verdict=r.get('verdict'),checks=len(r.get('checks',[])),error_type=r.get('error_type'),error=r.get('error'),sha256=sha(out/(m+'.json')) if r else None) for m,r in cases.items()},
         bundle=str(bundle),manifest=sha(bundle/'SHA256SUMS'),overlay=str(overlay),overlay_manifest=sha(overlay/'SHA256SUMS'),
@@ -89,6 +102,6 @@ def compare_off(candidate,parent,out):
     with out.open('x') as f:json.dump(result,f,sort_keys=True,indent=2);f.write('\n')
     return result
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--bundle',type=Path);p.add_argument('--out',type=Path,required=True);p.add_argument('--name');p.add_argument('--overlay',type=Path);p.add_argument('--sources',type=Path);p.add_argument('--negative',action='store_true');p.add_argument('--compare-candidate',type=Path);p.add_argument('--compare-parent',type=Path);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--bundle',type=Path);p.add_argument('--out',type=Path,required=True);p.add_argument('--name');p.add_argument('--overlay',type=Path);p.add_argument('--sources',type=Path);p.add_argument('--negative',action='store_true');p.add_argument('--prior',action='store_true');p.add_argument('--compare-candidate',type=Path);p.add_argument('--compare-parent',type=Path);a=p.parse_args()
     if a.compare_candidate:print(compare_off(a.compare_candidate,a.compare_parent,a.out))
-    else:raise SystemExit(run(a.bundle,a.out,a.name,a.overlay,a.sources,a.negative))
+    else:raise SystemExit(run(a.bundle,a.out,a.name,a.overlay,a.sources,a.negative,a.prior))

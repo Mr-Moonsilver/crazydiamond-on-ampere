@@ -33,7 +33,9 @@ TOOLS=('build_native41_autoarm.py','native41_autoarm_freeze.py','native41_autoar
 SCOPE=('Opt-in engine-owned FCFS automatic native cycles for plain requests (request binding, real drain, typed route '
        'ACKs, one-request FULL handback, manual lease exclusion), the auto-arm actions on the native router only with '
        'FLASH_S5_AUTO_ARM=1 (release_auto_arm only), status-receipt proof and client-basis speed in the box arms, '
-       'and the unarmed check\'s CT-side container clock proof; default-off unchanged')
+       'the unarmed check\'s CT-side container clock proof, the held-e STATE_FINALIZE TP completion-skew '
+       'agreement fix with a bounded refusal diagnostic, and auto-arm-only per-chunk allocator receipts; '
+       'default-off unchanged')
 TARGETED=['startup','bind','unarmed-stock-prefill','plain-W2 stock-0','auto-0','stock-1','auto-1','typed-FULL']
 META={'core/SHA256SUMS','S5-OVERLAP-GENERATION.json','e3/native-implementation-closure.json',
       'e3/native-overlap-readiness.json','e3/decode-probe-evidence.json'}
