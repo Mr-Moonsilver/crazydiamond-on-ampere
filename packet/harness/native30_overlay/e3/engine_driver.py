@@ -2702,6 +2702,8 @@ class NativeSegmentDriver:
             self._stop_round()
             self._next_receipt()
             return
+        if self._drive_partial_stop_submission():
+            return
         closed = self._closed_rows()
         if set(closed) == set(self.ranks):
             self._retire_cancel(closed)
@@ -2718,6 +2720,38 @@ class NativeSegmentDriver:
                                 (CancelRequest(self.tx, self.admission.state_epoch,
                                                reason),), {}, None),
                      self.ranks)
+
+    def _drive_partial_stop_submission(self):
+        """Finish a segment one TP peer accepted while another answered pending.
+
+        The exact retained command (same transaction, op_seq and descriptor) is
+        replayed to its targets under the stop-round bound, as the tail and PP
+        obligations above are, so every target holds it before the cancel.
+        Never a new command.  A rank that already accepted it answers from its
+        existing record.  Without this, a stop after a partial PREPARE closed
+        every rank and then refused retirement (accepted operations without a
+        bound producer), keeping ownership.
+        """
+        command = self._retry
+        if command is None:
+            return False
+        targets = self._targets
+        # op_seq numbering is per lane, so another stage may hold the same number.
+        accepted = {rank for rank, op_seq in self.accepted_tickets
+                    if op_seq == command.op_seq and rank in targets}
+        if not accepted or set(targets) <= accepted:
+            return False
+        if command.transaction != self.tx or self._command != command:
+            raise DriverError('stop found a foreign partially accepted command')
+        self._stop_round()
+        self._record('stop_partial_replay', transaction=self.tx.txn_seq,
+                     op_seq=command.op_seq,
+                     segment_kind=getattr(command.kind, 'value', str(command.kind)),
+                     accepted_ranks=sorted(accepted),
+                     pending_ranks=sorted(set(targets) - accepted),
+                     reason=self.stop_kind)
+        self._send_segment(command, targets)
+        return True
 
     def _drive_pp_stop_submission(self):
         """Finish a partially accepted transfer before cancelling either end.
