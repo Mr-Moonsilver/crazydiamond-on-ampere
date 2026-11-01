@@ -24,14 +24,17 @@ def run(bundle,out,name,overlay=None,sources=None,negative=False):
     verify(overlay)
     out=out.resolve();out.mkdir();out.chmod(0o777)
     sources=sources.resolve() if sources else bundle/'e3_builder'
-    script='''import json,sys,unittest,torch
+    script='''import json,sys,unittest
 from pathlib import Path
-files=list(Path('/source/harness').rglob('*.py'))
-for p in files: compile(p.read_bytes(),str(p),'exec')
-r=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromNames(sys.argv[1:]))
-assert not torch.cuda.is_initialized()
-Path('/out/suites.json').write_text(json.dumps(dict(tests=r.testsRun,skips=len(r.skipped),failures=len(r.failures),errors=len(r.errors),ok=r.wasSuccessful(),compiled=len(files),cuda_initialized=False)))
-raise SystemExit(0 if r.wasSuccessful() and not r.skipped else 1)
+
+if __name__ == '__main__':
+    import torch
+    files=list(Path('/source/harness').rglob('*.py'))
+    for p in files: compile(p.read_bytes(),str(p),'exec')
+    r=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromNames(sys.argv[1:]))
+    assert not torch.cuda.is_initialized()
+    Path('/out/suites.json').write_text(json.dumps(dict(tests=r.testsRun,skips=len(r.skipped),failures=len(r.failures),errors=len(r.errors),ok=r.wasSuccessful(),compiled=len(files),cuda_initialized=False)))
+    raise SystemExit(0 if r.wasSuccessful() and not r.skipped else 1)
 '''
     (out/'suites.py').write_text(script)
     (out/'inner.sh').write_text('cd /source/harness\npython3 -B /out/suites.py '+ ' '.join(NEGATIVES if negative else SUITES)+' > /out/suites.log 2>&1\necho $? > /out/suites.rc\npython3 -B e3_native40_unarmed_probe.py --out /out/connected.json > /out/connected.log 2>&1\necho $? > /out/connected.rc\n')
