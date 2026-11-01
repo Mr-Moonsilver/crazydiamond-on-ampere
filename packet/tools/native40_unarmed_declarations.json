@@ -3,7 +3,8 @@
     "A\treviews/codex-20261101-native40-unarmed-hold.md",
     "A\tresults/hub/native40-unarmed-hold-a/delivery.json",
     "A\treviews/codex-20261101-native40-box-heldb.md",
-    "A\tresults/hub/native40-unarmed-hold-b/delivery.json"
+    "A\tresults/hub/native40-unarmed-hold-b/delivery.json",
+    "A\tresults/hub/native40-unarmed-hold-b/native-precheck.conf"
   ],
   "definitions": {
     "harness/selftest.py": [
