@@ -827,7 +827,6 @@ class BindingTests(unittest.TestCase):
         if shutil.which('g++') is None:
             raise unittest.SkipTest('g++ is not installed')
         cls.tmp = tempfile.mkdtemp(prefix='q17b-graph-audit-')
-        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         source = ROOT / 'patches/s5_engine/native/flash_s5_graph_audit.cu'
         stub_header = Path(cls.tmp) / 'cuda.h'
         stub_source = Path(cls.tmp) / 'driver_stub.cpp'
@@ -883,7 +882,7 @@ class BindingTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        # CPU compiler artifacts under cls.tmp are removed by the class cleanup registered in setUpClass.
+        # Preserve CPU compiler artifacts under the operator's no-delete rule.
         pass
 
     @classmethod
