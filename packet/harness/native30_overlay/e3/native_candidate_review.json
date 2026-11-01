@@ -1495,7 +1495,7 @@
     "basis": "fresh full strict registered CPU regression on the packaged tree",
     "cases": 325,
     "exit_code": 0,
-    "log_sha256": "5e747af13aad4c414c05015a8ce70c5a5ab8b8bd20c6583249b4599fe69e5604",
+    "log_sha256": "20220de35b45b029e2df03f0224a86b05c6abb608c154faa0d3310e449d9cc91",
     "reported_tests": 3873,
     "required": 325,
     "skips": 0,
@@ -3243,7 +3243,7 @@
     "parent": "q18a-native39-trunk",
     "parent_commit": "1ffc394783d3d67e140056868b50ca2f74c88b3b",
     "parent_manifest": "756f826c221c026440d7955a9f834fe72db83581439fed9bb69d07d314ea4264",
-    "queue": "q18a-native43-dense-boundary pair: current then dense, fresh process, fresh key and own request directory per arm; held-b prefix through startup/bind/identity/ledger/length guard, one boundary client per arm, held-b crash/stop/restore; never starts production",
+    "queue": "q18a-native43-dense-boundary pair: current then dense, fresh process and own request directory per arm, one fresh key per pair queue shared by both arms; held-b prefix through startup/bind/identity/ledger/length guard, one boundary client per arm, held-b crash/stop/restore; never starts production",
     "scope": "native43 bounded dense transport diagnostic at the 24-page arena boundary (Codex d9fb80ec3ccd): paired current/dense boundary hashes at 101200, timed chunks 97152-100224; no speed claim, not a release candidate",
     "source_commit": "d9fb80ec3ccd4c3be3c1dc40f575cf12c9383b76",
     "tail_handback": false
@@ -3258,7 +3258,7 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "67cae1c44ea30f252f721bb03c5272ac6196d3d19ab7d0029b5495ecdc2336d4",
+    "log_sha256": "efba3244a72ca9f120cb8e7310cddca757bfc5542b153ef85f186343611ff3c5",
     "skips": 0,
     "tests": 550,
     "verdict": "PASS"
