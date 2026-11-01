@@ -6,6 +6,9 @@
     "A\tresults/hub/native41-autoarm-d/clock-scan.json",
     "A\tresults/hub/native41-autoarm-d/delivery.json",
     "A\tresults/hub/native41-autoarm-d/native-precheck.conf",
+    "A\tresults/hub/native41-autoarm-e/clock-scan.json",
+    "A\tresults/hub/native41-autoarm-e/delivery.json",
+    "A\tresults/hub/native41-autoarm-e/native-precheck.conf",
     "A\tresults/hub/native41-autoarm/delivery.json",
     "A\tresults/hub/native41-autoarm/native-precheck.conf",
     "A\treviews/codex-20261101-native41-autoarm.md"
@@ -33,11 +36,14 @@
       "module:GENERATED_SOURCES"
     ],
     "patches/s5_engine/engine_driver.py": [
+      "NativeSegmentDriver._apply_segments",
       "NativeSegmentDriver._arm_admission",
       "NativeSegmentDriver._status_record",
       "NativeSegmentDriver._status_record_base",
       "NativeSegmentDriver._submit_control",
-      "NativeSegmentDriver.submit_control"
+      "NativeSegmentDriver.submit_control",
+      "_agreement_detail",
+      "_continuation"
     ],
     "patches/s5_engine/executor_hooks.py": [
       "before_pause",
@@ -71,6 +77,15 @@
     "patches/s5_engine/scheduler_hooks.py": [
       "PrefillAdmissionController._admit_observed",
       "PrefillAdmissionController._native_admission_disabled"
+    ],
+    "patches/s5_engine/worker_bridge.py": [
+      "NativeWorkerBridge.__init__",
+      "NativeWorkerBridge._memory_receipt",
+      "NativeWorkerBridge._release_lane",
+      "NativeWorkerBridge.open",
+      "memory_receipt",
+      "module:_MEMORY_FIELDS",
+      "module:import os"
     ]
   },
   "overlay_definitions": {
@@ -78,11 +93,14 @@
       "module:GENERATED_SOURCES"
     ],
     "e3/engine_driver.py": [
+      "NativeSegmentDriver._apply_segments",
       "NativeSegmentDriver._arm_admission",
       "NativeSegmentDriver._status_record",
       "NativeSegmentDriver._status_record_base",
       "NativeSegmentDriver._submit_control",
-      "NativeSegmentDriver.submit_control"
+      "NativeSegmentDriver.submit_control",
+      "_agreement_detail",
+      "_continuation"
     ],
     "e3/executor_hooks.py": [
       "before_pause",
@@ -111,6 +129,15 @@
     "e3/scheduler_hooks.py": [
       "PrefillAdmissionController._admit_observed",
       "PrefillAdmissionController._native_admission_disabled"
+    ],
+    "e3/worker_bridge.py": [
+      "NativeWorkerBridge.__init__",
+      "NativeWorkerBridge._memory_receipt",
+      "NativeWorkerBridge._release_lane",
+      "NativeWorkerBridge.open",
+      "memory_receipt",
+      "module:_MEMORY_FIELDS",
+      "module:import os"
     ]
   },
   "paths": [
@@ -131,6 +158,7 @@
     "M\tharness/test_native40_box_queue.py",
     "A\tharness/test_native41_autoarm.py",
     "A\tharness/test_native41_box_queue.py",
+    "A\tharness/test_native41_tp_skew.py",
     "A\tharness/test_native41_unarmed_box.py",
     "M\tpatches/s5_engine/decode_probe.py",
     "M\tpatches/s5_engine/engine_driver.py",
@@ -144,6 +172,7 @@
     "M\tpatches/s5_engine/probe_control.py",
     "M\tpatches/s5_engine/s5_startup.py",
     "M\tpatches/s5_engine/scheduler_hooks.py",
+    "M\tpatches/s5_engine/worker_bridge.py",
     "A\ttools/build_native41_autoarm.py",
     "A\ttools/native41_autoarm_declarations.json",
     "A\ttools/native41_autoarm_freeze.py",
