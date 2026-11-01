@@ -1579,6 +1579,9 @@ class StreamState:
         self.last_usage = None
         self.finish = None
         self.finish_at_ns = None
+        # The first SSE event's 'id' (the API server's request id); the
+        # native39 W1 seals its cohort against the engine's live ids with it.
+        self.response_id = None
         self.error = None
         self.error_at_ns = None
         self.done_marker = False
@@ -1703,6 +1706,8 @@ def stream_reader(state, cfg, url, stop):
                 raise StreamProtocolError('malformed_sse_json') from None
             if type(event) is not dict:
                 raise StreamProtocolError('malformed_sse_event')
+            if state.response_id is None and type(event.get('id')) is str:
+                state.response_id = event['id']
             now = time.monotonic_ns()
             usage = _sanitize_usage(event.get('usage'))
             completion = usage.get('completion_tokens') if usage else None
