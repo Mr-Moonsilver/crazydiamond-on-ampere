@@ -1,6 +1,8 @@
 {
   "ancillary_paths": [
     "A\tdocs/e3-briefs/q18a-native41-autoarm-delivery.md",
+    "A\tresults/hub/native41-autoarm-c/delivery.json",
+    "A\tresults/hub/native41-autoarm-c/native-precheck.conf",
     "A\tresults/hub/native41-autoarm/delivery.json",
     "A\tresults/hub/native41-autoarm/native-precheck.conf",
     "A\treviews/codex-20261101-native41-autoarm.md"
