@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Derive native41's box scripts from the committed native40 box texts.
+"""Derive native41's box scripts from the committed native40 (f6d1db9) box texts.
 
 Kept from native40: pins, preflight, startup, bind, W2 length guard, host
-headroom, the unarmed-hold check and the whole owned cleanup/restore tail.
-Changed: names, the budget-derived window (native41_box_gate), the auto-arm
-switch FLASH_S5_AUTO_ARM=1 in EXTRA_ENV (asserted in declaration and preflight),
-and the body after the unarmed check: native40's row1/rule4/W1/W2 trunk is
-replaced by four plain W2 arms (stock, auto, stock, auto) with instruments,
-idle/typed-FULL entries, per-arm ingress, a typed FULL at the end and the
-native41 grade. No model setting, workload, gate threshold or restore change.
+headroom, the unarmed-hold check, the end identity and the whole owned
+cleanup/restore tail. Changed: names, the one phase budget (native41_box_gate
+PHASES via native41_budget), the auto-arm switch FLASH_S5_AUTO_ARM=1 in
+EXTRA_ENV (asserted in declaration and preflight), and the body after the
+unarmed check: native40's row1 and fresh-W2 regression are replaced by four
+plain W2 arms (stock, auto, stock, auto) with instruments, idle/typed-FULL
+entries, per-arm ingress, a typed FULL at the end and the native41 grade. No
+model setting, workload, gate threshold or restore change.
 """
 import argparse
 from pathlib import Path
@@ -20,21 +21,23 @@ NEW = 'q18a_native41_autoarm'
 OLD_Q = 'q18a-native40-unarmed-hold'
 NEW_Q = 'q18a-native41-autoarm'
 SWITCH = 'FLASH_S5_AUTO_ARM=1'
-BODY_START = 'python3 "$H/e3_native_request_plans.py"'
-BODY_END = ("step trunk-summary \"$?\" 'descriptive: W2 beside the native W1 FULL and plain W1 baselines; "
-            "80/80 is a marker'\n")
+BODY_START = 'timeout "$(native40_budget row1_plan)s" python3 "$H/e3_native_request_plans.py"'
+BODY_END = ("record native40-regression \"$?\" 'descriptive raw rates against held-b manifest; "
+            "no denominator or speed claim'\n")
 HEADER = '''# q18a-native41-autoarm: native40's startup, bind and unarmed-hold check with FLASH_S5_AUTO_ARM=1,
 # then plain W2 traffic in four arms (stock, auto, stock, auto) and a typed FULL. Unrun, no GO from this file.
 #
 # Native41: ordinary plain-client W2 requests (no native client, no prepare) must auto-arm the native
 # lane. The startup identity and the unarmed check take the manual lease; stock arms keep it (auto-arm
 # suppressed, same engine), auto arms pause/release/resume once with their standing cohort open.
-# The inherited native39/native40 description below covers the kept startup and owned cleanup; its
-# row1 -> rule4 -> W1 -> W2 trunk body is replaced by the native41 arms.
+# The inherited native40 description below covers the kept startup and owned cleanup; its row1 and
+# fresh-W2 regression are replaced by the native41 arms. Every cap is native41_box_gate.PHASES.
 '''
 BODY = r'''# Native41: plain W2 arms beside the auto-arm switch. Receipts only; speed is descriptive, never a gate.
+# Every timeout below is one native41_box_gate.PHASES entry (instruments, arm_entries, w2_arms, ingress,
+# end_full_idle, grade).
 _cid=$(docker inspect --format '{{.Id}}' "$CONTAINER" 2>/dev/null) || _cid=''
-python3 "$H/e3_native39_trunk_checks.py" instruments --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
+timeout 120s python3 "$H/e3_native39_trunk_checks.py" instruments --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
   --container-id "${_cid:-none}" --control-timeout-s 30 --exec-timeout-s 10 \
   --out "$Q/instruments-start.json" > "$Q/instruments-start.log" 2>&1
 INSTRUMENTS_START=$?
@@ -51,11 +54,11 @@ if [[ $INSTRUMENTS_START == 0 ]]; then
       fi
       if [[ $_label == stock-1 ]]; then
         # The typed FULL re-takes the manual lease that auto-0 released.
-        python3 "$H/e3_native39_trunk_checks.py" full-idle --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
+        timeout 450s python3 "$H/e3_native39_trunk_checks.py" full-idle --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
           --control-timeout-s 60 --timeout-s "$IDLE_TIMEOUT_S" --out "$Q/entry-$_label.json" > "$Q/entry-$_label.log" 2>&1
         _entry_rc=$?; record "entry-$_label" "$_entry_rc" 'typed all-rank FULL, resumed, idle, workers empty; lease taken'
       else
-        python3 "$H/e3_native39_trunk_checks.py" idle --url "$PROBE_URL" --timeout-s "$IDLE_TIMEOUT_S" \
+        timeout 150s python3 "$H/e3_native39_trunk_checks.py" idle --url "$PROBE_URL" --timeout-s "$IDLE_TIMEOUT_S" \
           --out "$Q/entry-$_label.json" > "$Q/entry-$_label.log" 2>&1
         _entry_rc=$?; record "entry-$_label" "$_entry_rc" 'engine idle (running 0, waiting 0) before the arm'
       fi
@@ -82,7 +85,7 @@ PY_SPAN
 )
       if [[ -n $_span ]]; then
         read -r _s _e <<< "$_span"
-        python3 "$H/e3_native39_trunk_checks.py" ingress --q "$Q" --label "$_label" --start "$_s" --end "$_e" \
+        timeout 60s python3 "$H/e3_native39_trunk_checks.py" ingress --q "$Q" --label "$_label" --start "$_s" --end "$_e" \
           --generation 10 --out "$Q/ingress-$_label.json" > "$Q/ingress-$_label.log" 2>&1
         record "ingress-$_label" "$?" 'access log: every request in the arm span is the arm (8 standing, fresh, append), else INVALID'
       else
@@ -101,16 +104,16 @@ else
   record arms 2 'NOT_RUN: observer and offers off not proven on every rank process (instruments-start)'
 fi
 if [[ $INSTRUMENTS_START == 0 ]] && health_ok; then
-  python3 "$H/e3_native39_trunk_checks.py" instruments --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
+  timeout 120s python3 "$H/e3_native39_trunk_checks.py" instruments --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
     --container-id "${_cid:-none}" --control-timeout-s 30 --exec-timeout-s 10 --same-as "$Q/instruments-start.json" \
     --out "$Q/instruments-end.json" > "$Q/instruments-end.log" 2>&1
   record instruments-end "$?" 'after the arms: the same rank processes, replay observer mapped in none'
-  python3 "$H/e3_native39_trunk_checks.py" full-idle --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
+  timeout 450s python3 "$H/e3_native39_trunk_checks.py" full-idle --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
     --control-timeout-s 60 --timeout-s "$IDLE_TIMEOUT_S" --out "$Q/end-full-idle.json" > "$Q/end-full-idle.log" 2>&1
   record end-full-idle "$?" 'typed all-rank FULL at the end: resumed, idle, workers empty'
 fi
 [[ ${#GRADE_ARGS[@]} -gt 0 ]] || GRADE_ARGS=(--arm "$Q/arm-none.json")
-python3 "$H/e3_native41_autoarm_box.py" grade "${GRADE_ARGS[@]}" \
+timeout 60s python3 "$H/e3_native41_autoarm_box.py" grade "${GRADE_ARGS[@]}" \
   --check "instruments-start=$Q/instruments-start.json" --check "instruments-end=$Q/instruments-end.json" \
   --check "end-full-idle=$Q/end-full-idle.json" --check "unarmed-stock-prefill=$Q/unarmed-stock-prefill.json" \
   --out "$Q/native41-autoarm-grade.json" > "$Q/native41-autoarm-grade.log" 2>&1
@@ -129,20 +132,22 @@ def derive():
             line2 = rest.split('\n', 1)[0]
             assert line2.startswith('# ' + NEW_Q + ': ')
             text = first + '\n' + HEADER + rest.split('\n', 1)[1]
-            old = 'exec timeout --signal=TERM --kill-after=900s 2400s'
-            assert text.count(old) == 1
-            text = text.replace(old, 'exec timeout --signal=TERM --kill-after=900s 10860s')
-            text = text.replace('its 2400 s timeout', 'its 10860 s timeout')
-            old = 'from native40_box_gate import window_ok'
-            assert text.count(old) == 1
-            text = text.replace(old, 'from native41_box_gate import window_ok')
-            interface = ' e3_native40_unarmed_box.py native40_box_gate.py; do'
-            assert text.count(interface) == 1
-            text = text.replace(interface, ' e3_native40_unarmed_box.py native40_box_gate.py \\\n'
-                                           '  e3_native41_autoarm_box.py native41_box_gate.py; do')
             start, end = text.index(BODY_START), text.index(BODY_END)
             assert text.count(BODY_START) == 1 and text.count(BODY_END) == 1 and start < end
             text = text[:start] + BODY + text[end + len(BODY_END):]
+            # One phase budget: native40_budget reads native41_box_gate (same function, new gate).
+            old = 'from native40_box_gate import ACTIVE_S,CLEANUP_S,PHASES'
+            assert text.count(old) == 1
+            text = text.replace(old, 'from native41_box_gate import ACTIVE_S,CLEANUP_S,PHASES')
+            assert text.count('PY_NATIVE40_BUDGET') == 2
+            text = text.replace('PY_NATIVE40_BUDGET', 'PY_NATIVE41_BUDGET').replace('native40_budget', 'native41_budget')
+            old = 'from native40_box_gate import window_ok'
+            assert text.count(old) == 1
+            text = text.replace(old, 'from native41_box_gate import window_ok')
+            interface = ' e3_native40_unarmed_box.py e3_native40_regression.py native40_box_gate.py; do'
+            assert text.count(interface) == 1
+            text = text.replace(interface, ' e3_native40_unarmed_box.py e3_native40_regression.py native40_box_gate.py \\\n'
+                                           '  e3_native41_autoarm_box.py native41_box_gate.py; do')
             old = "assert env.get('FLASH_S5_ENGINE_OFFERS') == '0'\n"
             assert text.count(old) == 1
             text = text.replace(old, old + "assert env.get('FLASH_S5_AUTO_ARM') == '1', 'native41 auto-arm switch'\n")

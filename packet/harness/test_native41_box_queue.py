@@ -607,7 +607,9 @@ class Derivation(unittest.TestCase):
         draft = derived[DRAFT]
         self.assertIn("assert env.get('FLASH_S5_AUTO_ARM') == '1'", draft)
         self.assertIn("assert env.get('FLASH_S5_AUTO_ARM')=='1'", derived['harness/runs/q18a_native41_autoarm_declare.sh'])
-        self.assertIn('exec timeout --signal=TERM --kill-after=900s %ds' % gate.ACTIVE_S, draft)
+        self.assertIn('exec timeout --signal=TERM --kill-after="$(native41_budget cleanup)s" '
+                      '"$(native41_budget active)s"', draft)
+        self.assertNotIn('native40_budget', draft)
         self.assertIn('from native41_box_gate import window_ok', draft)
         self.assertNotIn('native40_box_gate import window_ok', draft)
         # The grade's unarmed check is the inherited native40 step's own receipt.
@@ -621,19 +623,45 @@ class Derivation(unittest.TestCase):
 
 
 class Window(unittest.TestCase):
-    def test_active_cap_is_the_declared_derivation_and_the_last_arm_is_before_the_hard_end(self):
-        total = sum(seconds for _, seconds, _ in gate.ACTIVE_DERIVATION)
-        self.assertLessEqual(total, gate.ACTIVE_S)
-        self.assertLess(gate.ACTIVE_S - total, 60)
-        self.assertEqual(dict((n, s) for n, s, _ in gate.ACTIVE_DERIVATION)['w2-arms'],
-                         gate.ARMS * (gate.ARM_TIMEOUT_S + gate.ARM_KILL_AFTER_S))
-        draft = queue.derive()[DRAFT]
-        self.assertIn('timeout --signal=TERM --kill-after=%ds %ds python3 "$H/e3_native41_autoarm_box.py" arm'
-                      % (gate.ARM_KILL_AFTER_S, gate.ARM_TIMEOUT_S), draft)
+    def test_one_phase_budget_caps_every_native41_step_and_keeps_native40_caps(self):
+        import native40_box_gate as n40
+        self.assertEqual(gate.ACTIVE_S, sum(gate.PHASES.values()))
+        self.assertEqual(gate.CLEANUP_S, n40.CLEANUP_S)
+        self.assertEqual((gate.NOT_BEFORE, gate.HARD_END), (n40.NOT_BEFORE, n40.HARD_END))
+        for name in gate.KEPT:
+            self.assertEqual(gate.PHASES[name], n40.PHASES[name], name)
+        self.assertFalse(set(gate.DROPPED) & set(gate.PHASES))
+        body = queue.BODY
+        caps = {'instruments': ('timeout 120s python3 "$H/e3_native39_trunk_checks.py" instruments', 2, 2),
+                'idle': ('timeout 150s python3 "$H/e3_native39_trunk_checks.py" idle', 1, 3),
+                'full-idle': ('timeout 450s python3 "$H/e3_native39_trunk_checks.py" full-idle', 2, 2),
+                'arm': ('timeout --signal=TERM --kill-after=30s 1500s python3 "$H/e3_native41_autoarm_box.py" arm', 1, 4),
+                'ingress': ('timeout 60s python3 "$H/e3_native39_trunk_checks.py" ingress', 1, 4),
+                'grade': ('timeout 60s python3 "$H/e3_native41_autoarm_box.py" grade', 1, 1)}
+        for name, (text, lines, _) in caps.items():
+            self.assertEqual(body.count(text), lines, name)
+        self.assertEqual(len(re.findall(r'^\s*python3 "\$H/', body, flags=re.M)), 0)  # every tool call is capped
+        self.assertEqual((gate.PHASES['instruments'], gate.INSTRUMENTS_CAP_S), (2 * 120, 120))
+        self.assertEqual(gate.PHASES['arm_entries'], 3 * gate.IDLE_CAP_S + gate.FULL_IDLE_CAP_S)
+        self.assertEqual((gate.IDLE_CAP_S, gate.FULL_IDLE_CAP_S, gate.INGRESS_CAP_S, gate.GRADE_CAP_S),
+                         (150, 450, 60, 60))
+        self.assertEqual(gate.PHASES['w2_arms'], gate.ARMS * (gate.ARM_TIMEOUT_S + gate.ARM_KILL_AFTER_S))
+        self.assertEqual((gate.ARM_TIMEOUT_S, gate.ARM_KILL_AFTER_S), (1500, 30))
+        self.assertEqual(gate.PHASES['ingress'], gate.ARMS * gate.INGRESS_CAP_S)
+        self.assertEqual(gate.PHASES['end_full_idle'], gate.FULL_IDLE_CAP_S)
         self.assertEqual(gate.latest_arm(), gate.HARD_END - gate.ACTIVE_S - gate.CLEANUP_S)
         self.assertTrue(gate.window_ok(gate.latest_arm()))
         self.assertFalse(gate.window_ok(gate.latest_arm() + 1))
         self.assertFalse(gate.window_ok(gate.NOT_BEFORE - 1))
+        # The draft's budget function prints exactly these values.
+        draft = queue.derive()[DRAFT]
+        start = draft.index('native41_budget() {')
+        func = draft[start:draft.index('\n}\n', start) + 3]
+        for key, value in (('active', gate.ACTIVE_S), ('cleanup', gate.CLEANUP_S), ('health', gate.PHASES['health']),
+                           ('end_identity', gate.PHASES['end_identity'])):
+            done = subprocess.run(['bash', '-c', func + 'native41_budget ' + key],
+                                  env=dict(os.environ, HARNESS_DIR=str(HERE)), capture_output=True, text=True)
+            self.assertEqual((done.returncode, done.stdout.strip()), (0, str(value)), done.stderr)
 
     def test_draft_window_slot_executes_at_real_wall_clock(self):
         draft = queue.derive()[DRAFT]

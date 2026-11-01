@@ -1,48 +1,42 @@
-"""Native41 auto-arm box queue: budget-derived active cap and the Monday hard end.
+"""Native41 auto-arm box queue: one phase budget for the watchdog, the owner window and the draft.
 
-The queue is native40's startup, bind and unarmed check, then four plain W2
-arms (stock, auto, stock, auto) with their idle/typed-FULL entries, instruments
-and ingress receipts, then a typed FULL and the inherited owned cleanup. The
-active cap is the sum of the declared phase caps below; the cleanup margin is
-the trunk's unchanged CLEANUP_DERIVATION. ``window_ok(time.time())`` is the
-single executable entry check used by the draft and the owner runner: the last
-arm is HARD_END minus active plus cleanup.
+The queue is native40's startup, bind and unarmed check (native40's phase caps,
+unchanged), then four plain W2 arms (stock, auto, stock, auto) with their entries,
+instruments and ingress receipts, a typed FULL and the native41 grade, then
+native40's end identity and owned cleanup. Each native41 cap below is the
+timeout the draft wraps that step in. ACTIVE_S is their sum; CLEANUP_S is
+native40's. ``window_ok(time.time())`` is the single entry check used by the
+draft and the owner runner: the last arm is HARD_END minus active plus cleanup.
 """
-from native35p_gate import ACTIVE_DERIVATION as P_ACTIVE_DERIVATION, CLEANUP_DERIVATION, HARD_END, NOT_BEFORE
-from native39_trunk_gate import TRUNK_DERIVATION
+from native40_box_gate import CLEANUP_S, HARD_END, NOT_BEFORE, PHASES as NATIVE40_PHASES
 
 # Lead, 1 Nov 2026: last arm before Mon 06:00Z minus budget (HARD_END is native34's 2026-11-02T06:00Z).
 ARMS = 4
 ARM_TIMEOUT_S = 1500
 ARM_KILL_AFTER_S = 30
-_P = {name: (seconds, why) for name, seconds, why in P_ACTIVE_DERIVATION}
-_T = {name: (seconds, why) for name, seconds, why in TRUNK_DERIVATION}
-ACTIVE_DERIVATION = (
-    ('restart-to-health',) + _P['restart-to-health'],
-    ('speculation-and-sampler',) + _P['speculation-and-sampler'],
-    ('identity-start',) + _P['identity-start'],
-    ('startup-ledger-headroom-plan',) + _P['startup-ledger-headroom-plan'],
-    ('bind-receipt',) + _T['bind-receipt'],
-    ('w2-length-guard',) + _T['w2-length-guard'],
-    ('unarmed-stock-prefill', 195, 'cap: native40 check timeout 180 s + 15 s kill-after'),
-    ('instruments-x2', 210, 'cap: 2 x (pause + resume at --control-timeout-s 30, 4 x docker exec at 10 s, 5 s start)'),
-    ('arm-entries', 1080, 'cap: 2 x idle --timeout-s 120 + 2 x typed full-idle 420 (prepare, status, pause, resume '
-                          'at 60 s plus 120 s idle); the second full-idle re-takes the lease before stock-1'),
-    ('w2-arms', ARMS * (ARM_TIMEOUT_S + ARM_KILL_AFTER_S),
-     'cap: 4 arms x (1500 s timeout + 30 s kill-after); one arm nominal ~250-550 s: 8 x 153,537 open '
-     '(cold 250-410 s, q18a P) + 5 s settle + 20 s window + fresh 70-140 s + close <= 60 s + append ~10 s'),
-    ('ingress-x4', 240, 'budget: 4 x 60 s, one pass over the followed log each'),
-    ('end-full-idle', 420, 'cap: typed all-rank FULL at the end (prepare, status, pause, resume at 60 s plus 120 s idle)'),
-    ('grade', 5, 'pure CPU over retained artifacts'),
-    ('identity-end',) + _P['identity-end'],
-    ('normal-path-cleanup',) + _P['normal-path-cleanup'],
-)
-ACTIVE_S = 10860
-CLEANUP_S = 900
-assert sum(seconds for _, seconds, _ in ACTIVE_DERIVATION) <= ACTIVE_S
-assert sum(seconds for _, seconds, _ in CLEANUP_DERIVATION) <= CLEANUP_S
-EXPECTED_RUNTIME_S = {'nominal': 2400, 'basis': 'restart ~320 s, identities ~320 s, four arms ~1300 s, entries, '
-                                                 'receipts and cleanup ~460 s'}
+IDLE_CAP_S = 150        # idle --timeout-s 120 plus its /metrics reads
+FULL_IDLE_CAP_S = 450   # full-idle: prepare, status, pause, resume at --control-timeout-s 60 plus idle 120
+INSTRUMENTS_CAP_S = 120  # native40's instruments cap (pause + resume at 30 s, 4 docker exec at 10 s)
+INGRESS_CAP_S = 60      # one pass over the followed access log
+GRADE_CAP_S = 60
+KEPT = ('preflight_admin', 'restart', 'health', 'startup_logs_sampler', 'identity', 'bootstrap', 'guards',
+        'unarmed', 'report', 'end_identity')
+PHASES = {name: NATIVE40_PHASES[name] for name in KEPT}
+PHASES.update({
+    'instruments': 2 * INSTRUMENTS_CAP_S,                 # start and end
+    'arm_entries': 3 * IDLE_CAP_S + FULL_IDLE_CAP_S,      # stock-0, auto-0, auto-1 idle; stock-1 typed FULL
+    'w2_arms': ARMS * (ARM_TIMEOUT_S + ARM_KILL_AFTER_S),
+    'ingress': ARMS * INGRESS_CAP_S,
+    'end_full_idle': FULL_IDLE_CAP_S,
+    'grade': GRADE_CAP_S,
+})
+DROPPED = ('row1_plan', 'row1', 'w2_fresh', 'idle_before_w2')  # native40's row1 and fresh-W2 regression
+assert set(PHASES) | set(DROPPED) == set(NATIVE40_PHASES) | {
+    'arm_entries', 'w2_arms', 'ingress', 'end_full_idle', 'grade'}
+ACTIVE_S = sum(PHASES.values())
+EXPECTED_RUNTIME_S = {'nominal': 3600, 'basis': 'native40 startup through the unarmed check ~15-20 min; four arms '
+                                                 '~6-9 min each (8 x 153,537 open, 25 s decode-only, fresh, close, '
+                                                 'append); receipts, typed FULL, end identity ~5 min'}
 
 
 def latest_arm():
