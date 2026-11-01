@@ -188,11 +188,6 @@ def chunk_report(chunk, workers, by_rank):
     return out
 
 
-def touches_lost(chunk, gaps):
-    seqs = [r['seq'] for tag in ('n', 's') for r in chunk['rows'].get(tag, [])]
-    return any(torn_lines.seq_is_lost(seq, rank, gaps) for seq in seqs for rank in range(4))
-
-
 def load(path):
     with (lzma.open(path, 'rt') if path.endswith('.xz') else open(path)) as handle:
         return json.load(handle)
@@ -205,10 +200,11 @@ def band(start):
 def analyse(root):
     logs = [p for p in (os.path.join(root, 'engine-current.log'), os.path.join(root, 'engine-current.log.xz'))
             if os.path.exists(p)][:1]
-    records, errors, torn = torn_lines.read_lines(logs)
+    records, errors = box.read_lines(logs)
+    torn = torn_lines.read_torn(logs)
+    records, errors, _ = torn_lines.whole_records(records, errors, torn['progress'])
     flushes, problems = box.assemble(records)
-    lost = torn_lines.lost_flushes(records, torn)
-    gaps = torn_lines.worker_gaps(flushes, lost)
+    ledger = torn_lines.flush_ledger(records, torn['progress'])
     workers, per_rank = {}, {rank: [] for rank in range(4)}
     for flush in flushes:
         if flush['side'] == 'worker':
@@ -227,12 +223,14 @@ def analyse(root):
                       key=lambda f: f['identity'].get('chunk_start', -1))
         counted = [f for f in mine if box.chunk_label(f['identity'].get('decode_live'), 8) == want]
         # The torn-line rule: a chunk with rows in a lost flush drops out of the breakdown.
-        whole = [f for f in counted if not touches_lost(f, gaps)]
+        whole = [f for f in counted if not any(torn_lines.touches(loss, torn_lines.chunk_seqs(f), ledger['rank_seqs'])
+                                               for loss in ledger['lost'])]
         chunks = [chunk_report(f, workers, by_rank) for f in whole]
         arms[name] = dict(mode=arm.get('mode'), cohort=arm.get('cohort'), band=arm.get('band'),
                           chunks_dropped_torn=len(counted) - len(whole),
                           chunks=[c for c in chunks if 'wall_s' in c])
-    return dict(errors=errors, problems=problems, arms=arms, torn_lines=len(torn), lost_flushes=len(lost))
+    return dict(errors=errors, problems=problems, arms=arms, torn_lines=len(torn['progress']) + len(torn['memory']),
+                lost_flushes=len(ledger['lost']))
 
 
 def group_summary(chunks):
