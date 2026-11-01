@@ -31,7 +31,7 @@
    "native-control-unknown-action"
   ]
  },
- "discovery": "candidate harness over alpha-perf build-d overlay and e3_builder, byte-identical to the regenerated c3f1f64 overlay; dev run neg-2, 1 Nov 2026 21:35 CET over merge 4724ade: 89 tests run, the rows below do not pass",
+ "discovery": "candidate harness over alpha-perf build-d overlay and e3_builder, byte-identical to the regenerated c3f1f64 overlay; dev run neg-2, 1 Nov 2026 21:35 CET over merge 4724ade: 89 tests run, the rows below do not pass; Mutants rows rediscovered over the parent after the kill check (8265cb3), hub CPU run tmp/step-a/pack/dev/neg-parent-a, 54 rows",
  "frozen_record_sha256": "7deafeee87603fef3d987b64af3218fb053fd28bfb670440ce5d9473194099a4",
  "schema": "step-a-negative-pins/1",
  "tests": {
@@ -143,7 +143,7 @@
    "error",
    "AttributeError: type object 'QsaPrefillOperation' has no attribute 'advance_fused'"
   ],
-  "test_e3_native_qsa_fused.Mutants.test_no_ledger_comparison": [
+  "test_e3_native_qsa_fused.Mutants.test_no_agreement_step": [
    "error",
    "AttributeError: <class 'engine_driver.NativeSegmentDriver'> does not have the attribute '_fused_agree'"
   ],
@@ -151,9 +151,17 @@
    "error",
    "AttributeError: <class 'engine_driver.NativeSegmentDriver'> does not have the attribute '_fused_hold'"
   ],
+  "test_e3_native_qsa_fused.Mutants.test_no_tp_obligation": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
   "test_e3_native_qsa_fused.Mutants.test_no_watchdog": [
    "error",
    "AttributeError: <class 'engine_driver.NativeSegmentDriver'> does not have the attribute '_fused_watchdog'"
+  ],
+  "test_e3_native_qsa_fused.Mutants.test_selection_ignores_ownership": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
   ],
   "test_e3_native_qsa_fused.OneBoundedCommand.test_default_off_replies_carry_nothing_new": [
    "error",
