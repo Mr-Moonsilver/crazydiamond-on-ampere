@@ -27,6 +27,11 @@
    "fixture": "first.sparse.selection_count = None",
    "replaces": "a layer whose selection readback the host has not observed",
    "why_equivalent": "sparse_selection_ready sets selection_count only after the copy event completed; a finished layer always has it, so this is a guard check on the retirement condition."
+  },
+  {
+   "fixture": "device.native_union_retire = True/False, or absent",
+   "replaces": "NativeQsaDevice.native_union_retire, latched from FLASH_S5_UNION_RETIRE at construction",
+   "why_equivalent": "The operation reads only this attribute with getattr and 'is True', the same read for both devices. test_union_retire_is_latched_only_by_the_declared_value runs the real NativeQsaDevice constructor for the latch itself (its torch import is the only thing replaced; the constructor stores the module and calls nothing on it)."
   }
  ]
 }

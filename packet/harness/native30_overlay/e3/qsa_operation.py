@@ -402,6 +402,8 @@ class NativeQsaDevice:
         self.native_qsa_boundary = declared.get('FLASH_S5_NATIVE_QSA_STOP_AFTER', '0') == '101200'
         # M3: per-chunk allocation receipts, on the worker bridge's existing receipt gate.
         self.native_memory_receipts = declared.get('FLASH_S5_AUTO_ARM', '0') == '1'
+        # S1: retirement frees device buffers and has no box evidence yet; off unless declared.
+        self.native_union_retire = declared.get('FLASH_S5_UNION_RETIRE', '0') == '1'
         # Accept the string/device forms the runner reports; constructing a
         # torch.device on a string is unnecessary and would make the CPU
         # fixtures' minimal torch module part of the contract.
@@ -717,6 +719,7 @@ class QsaPrefillOperation:
             raise OperationError('invalid latched native QSA policy')
         self.trace = NativeQsaTrace(self) if getattr(device, 'native_qsa_trace', False) else None
         self.memory_receipts = getattr(device, 'native_memory_receipts', False) is True
+        self.union_retire = getattr(device, 'native_union_retire', False) is True
         self.clock = clock
         self.plan_provider = plan_provider
         self.allocation_epoch = (lane.storage_epoch if allocation_epoch is None
@@ -792,11 +795,12 @@ class QsaPrefillOperation:
         try:
             stats, tx = self.stats, self.transaction
             logging.getLogger(__name__).info(
-                'flash-s5 native-alloc rank=%d txn_seq=%d chunk=%d-%d union_sets=%d union_retired=%d '
-                'union_single=%d union_live_max=%d indexer_layers=%d indexer_rows=%d indexer_width=%d '
+                'flash-s5 native-alloc rank=%d txn_seq=%d chunk=%d-%d union_retire=%d union_sets=%d '
+                'union_retired=%d union_single=%d union_live_max=%d indexer_layers=%d '
+                'indexer_rows=%d indexer_width=%d '
                 'indexer_chunks=%d indexer_peak=%d indexer_total=%d indexer_errors=%d',
                 self.lane.worker_rank, tx.txn_seq, tx.chunk_start, tx.chunk_end,
-                stats['union_scratch_sets'], stats['union_scratch_retired'],
+                self.union_retire, stats['union_scratch_sets'], stats['union_scratch_retired'],
                 stats['union_scratch_bytes'], stats['union_scratch_live_max_bytes'],
                 stats['indexer_layers'], stats['indexer_rows'], stats['indexer_width'],
                 stats['indexer_chunks'], stats['indexer_peak_bytes'],
@@ -1351,8 +1355,9 @@ class QsaPrefillOperation:
         device value.  A layer gets a fresh zeroed set; the operation drops its
         own reference to the previous layer's set only after that layer
         finished.  The previous layer's ``sparse.union`` still holds that set
-        until ``_retire_union_scratch`` sees its last consumer device-complete
-        (S1); ``union_scratch_bytes`` is the largest single set and
+        until release, or with ``FLASH_S5_UNION_RETIRE=1`` until
+        ``_retire_union_scratch`` sees its last consumer device-complete (S1).
+        ``union_scratch_bytes`` is the largest single set and
         ``union_scratch_live_max_bytes`` the largest live aggregate.
         """
         run, sparse = self._sparse_state()
@@ -1451,6 +1456,9 @@ class QsaPrefillOperation:
     def _retire_union_scratch(self):
         """S1: drop finished layers' union sets whose last reader is complete.
 
+        Off unless ``FLASH_S5_UNION_RETIRE=1`` was latched: unset, this drops
+        nothing and every set stays until ``release``.
+
         A set is read by its layer's union kernels and attention buckets
         (compute stream) and by the selection readback (copy stream).  It is
         retired only when the layer finished, the readback was host-observed
@@ -1460,6 +1468,8 @@ class QsaPrefillOperation:
         a later call or ``release``.  With row1 qualification every set stays
         until release, after the oracle ran.
         """
+        if not self.union_retire:
+            return
         if self.qualification is not None or self._failed or self._released:
             return
         kept = []

@@ -18,6 +18,7 @@ import struct
 import sys
 import types
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
@@ -1368,7 +1369,57 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
         self.device.events.remove(event)
         return event
 
+    def test_union_retire_is_latched_only_by_the_declared_value(self):
+        fake_torch = types.SimpleNamespace()
+        for env, latched in (({}, False), ({'FLASH_S5_UNION_RETIRE': '0'}, False),
+                             ({'FLASH_S5_UNION_RETIRE': 'true'}, False),
+                             ({'FLASH_S5_UNION_RETIRE': '1'}, True)):
+            with self.subTest(env=env), mock.patch.dict(sys.modules, torch=fake_torch):
+                self.assertIs(qo.NativeQsaDevice('cuda:0', env=env).native_union_retire, latched)
+
+    def test_union_retire_unset_drops_nothing_and_release_still_clears(self):
+        # The fixture device carries no latch at all, as a device built before the switch would not;
+        # False is what NativeQsaDevice latches with the variable unset.
+        for label, latch in (('absent', None), ('false', False)):
+            with self.subTest(latch=label):
+                if latch is not None:
+                    self.device.native_union_retire = latch
+                operation, run = self.union_layers(4)
+                self.assertIs(operation.union_retire, False)
+                layers, kept, single = [], [], None
+                for index in range(4):
+                    layers.append(run(index))
+                    kept.append(layers[-1].sparse.union)
+                    single = single or operation.stats['union_scratch_bytes']
+                    # The accounting stays accurate: every set is counted and live.
+                    self.assertEqual(operation.stats['union_scratch_sets'], index + 1)
+                    self.assertEqual(operation.stats['union_scratch_retired'], 0)
+                    self.assertEqual(operation.stats['union_scratch_live_bytes'], (index + 1) * single)
+                    self.assertEqual(operation.stats['union_scratch_live_max_bytes'], (index + 1) * single)
+                self.assertEqual(operation.stats['union_scratch_bytes'], single)
+                for layer, union in zip(layers, kept):
+                    self.assertIs(layer.sparse.union, union)
+                # Off means no event query either: ready events would still not retire anything.
+                self.device.ready_all()
+                queries = self.device.queries
+                operation._retire_union_scratch()
+                self.assertEqual(self.device.queries, queries)
+                for layer, union in zip(layers, kept):
+                    self.assertIs(layer.sparse.union, union)
+                inventory = operation.inventory()
+                self.assertEqual((inventory['union_scratch_sets'], inventory['union_scratch_retired'],
+                                  inventory['union_scratch_live_max_bytes']), (4, 0, 4 * single))
+                operation.end_forward()
+                self.device.ready_all()
+                self.assertTrue(operation.drain())
+                operation.release()
+                self.assertEqual(operation._union_sets, [])
+                for layer in layers:
+                    self.assertIsNone(layer.sparse.union)
+                self.assertEqual(operation.stats['union_scratch_retired'], 0)
+
     def test_union_sets_retire_once_their_last_consumer_is_complete(self):
+        self.device.native_union_retire = True
         operation, run = self.union_layers(4)
         layers, single = [], None
         for index in range(4):
@@ -1392,6 +1443,7 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
         self.assertEqual(operation._union_sets, [])
 
     def test_union_set_stays_while_its_last_consumer_is_incomplete(self):
+        self.device.native_union_retire = True
         operation, run = self.union_layers(3)
         first = run(0)
         single = operation.stats['union_scratch_bytes']
@@ -1415,6 +1467,7 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
         self.assertEqual(operation.stats['union_scratch_live_max_bytes'], 2 * single)
 
     def test_union_set_stays_before_its_readback_and_under_row1_qualification(self):
+        self.device.native_union_retire = True
         operation, run = self.union_layers(2)
         first = run(0)
         event = self.hold_incomplete(first)
@@ -1436,6 +1489,7 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
         self.assertEqual(operation.stats['union_scratch_retired'], 1)
 
     def test_alloc_receipt_is_one_line_per_release_behind_the_receipt_gate(self):
+        self.device.native_union_retire = True
         for gate, lines in ((True, 1), (False, 0)):
             with self.subTest(gate=gate):
                 self.device.native_memory_receipts = gate
@@ -1454,9 +1508,26 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
                 self.assertEqual(operation.stats['alloc_receipt_errors'], 0)
                 if lines:
                     single = operation.stats['union_scratch_bytes']
-                    self.assertIn(f"union_sets=2 union_retired=1 union_single={single} union_live_max={single} ", rows[0])
+                    self.assertIn(f"union_retire=1 union_sets=2 union_retired=1 union_single={single} "
+                                  f"union_live_max={single} ", rows[0])
                     self.assertIn('indexer_layers=1 indexer_rows=1024 indexer_width=12544 ', rows[0])
                     self.assertLess(len(rows[0]), 400)
+
+    def test_alloc_receipt_reports_the_switch_off_with_every_set_live(self):
+        self.device.native_memory_receipts = True
+        operation, run = self.union_layers(2)
+        run(0)
+        run(1)
+        operation.end_forward()
+        self.device.ready_all()
+        self.assertTrue(operation.drain())
+        with self.assertLogs('qsa_operation', level='INFO') as logs:
+            operation.release()
+        rows = [line for line in logs.output if 'flash-s5 native-alloc ' in line]
+        self.assertEqual(len(rows), 1)
+        single = operation.stats['union_scratch_bytes']
+        self.assertIn(f"union_retire=0 union_sets=2 union_retired=0 union_single={single} "
+                      f"union_live_max={2 * single} ", rows[0])
 
     def test_descriptor_cap_uses_bounded_waves_before_one_attention(self):
         mapping = (5, 7)
