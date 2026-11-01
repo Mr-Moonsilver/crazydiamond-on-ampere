@@ -1529,7 +1529,7 @@
     "basis": "fresh full strict registered CPU regression on the packaged tree",
     "cases": 349,
     "exit_code": 0,
-    "log_sha256": "38e93c5d1807bd0a8c5774d187d44615e25c9606f78a4796a7528e8ac3806ee4",
+    "log_sha256": "52599c2302b31589b50d1ffc94508cb46e7fde11378f6a03dba483ed882c25c0",
     "reported_tests": 4250,
     "required": 349,
     "skips": 0,
@@ -3672,7 +3672,7 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "6e978093ff89cd3d33db77c28c43c2af5f6e73ebbd557db8e1056122e4fc7cd7",
+    "log_sha256": "3482ac19979e6e7da0365f6c0017e853db5a5765daa0a687f6b21b8261c4e2d6",
     "skips": 0,
     "tests": 1148,
     "verdict": "PASS"
@@ -4881,7 +4881,7 @@
     "parent_manifest": "d6b0f69ead0b7d602f5caf879d938ec111162fb3d38fb79e3960b0a6846465f7",
     "queue": "q18a-step-a: alpha-perf's queue with the fused switch and twelve matched arms over its two bands; validity and engagement gated, speed and memory reported; 9,000 s box budget",
     "scope": "one bounded worker command per dense QSA layer against the stepped protocol; not a release assessment",
-    "source_commit": "1e25065c1d5054d2b6e61a145f35f37458ba4ae5",
+    "source_commit": "1c08526c93fec1a801467502613c75e15f1e2d59",
     "step_a_settings": {
       "FLASH_S5_AUTO_ARM": "1",
       "FLASH_S5_NATIVE_PROGRESS": "burst",
