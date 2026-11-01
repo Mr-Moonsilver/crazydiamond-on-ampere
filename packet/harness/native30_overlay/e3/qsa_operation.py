@@ -400,6 +400,8 @@ class NativeQsaDevice:
         self.native_qsa_policy, self.native_qsa_trace = native_qsa_settings(env)
         declared = os.environ if env is None else env
         self.native_qsa_boundary = declared.get('FLASH_S5_NATIVE_QSA_STOP_AFTER', '0') == '101200'
+        # M3: per-chunk allocation receipts, on the worker bridge's existing receipt gate.
+        self.native_memory_receipts = declared.get('FLASH_S5_AUTO_ARM', '0') == '1'
         # Accept the string/device forms the runner reports; constructing a
         # torch.device on a string is unnecessary and would make the CPU
         # fixtures' minimal torch module part of the contract.
@@ -677,6 +679,22 @@ def trace_cpu(field):
         return wrapped
     return decorate
 
+def indexer_score_shape(rows, max_seq_len, compress_ratio, table_columns, page_size, max_logits_mb):
+    """The FP32 score allocations one qsa_select_paged_prefill call makes.
+
+    Same inputs and arithmetic as the reference's sizing in ops/qsa_indexer.py
+    (test_alpha_m3_receipts runs that source against this).  Returns
+    (logits_width, rows_per_chunk, chunks, peak_bytes, total_bytes).
+    """
+    def cdiv(a, b):
+        return -(-a // b)
+    width = cdiv(cdiv(max_seq_len, compress_ratio), 64) * 64
+    width = min(max(64, width), table_columns * page_size)
+    rows_per_chunk = max(1, max_logits_mb * 1024 * 1024 // (width * 4))
+    return (width, rows_per_chunk, cdiv(rows, rows_per_chunk),
+            min(rows, rows_per_chunk) * width * 4, rows * width * 4)
+
+
 class QsaPrefillOperation:
     """One transaction's bounded QSA work, driven by generated call sites."""
 
@@ -698,6 +716,7 @@ class QsaPrefillOperation:
         if self.transport_policy not in ('current', 'dense'):
             raise OperationError('invalid latched native QSA policy')
         self.trace = NativeQsaTrace(self) if getattr(device, 'native_qsa_trace', False) else None
+        self.memory_receipts = getattr(device, 'native_memory_receipts', False) is True
         self.clock = clock
         self.plan_provider = plan_provider
         self.allocation_epoch = (lane.storage_epoch if allocation_epoch is None
@@ -750,7 +769,40 @@ class QsaPrefillOperation:
                           sparse_routes=0, sparse_source_released=0,
                           union_scratch_bytes=0, union_scratch_sets=0,
                           union_scratch_retired=0, union_scratch_live_bytes=0,
-                          union_scratch_live_max_bytes=0)
+                          union_scratch_live_max_bytes=0, indexer_layers=0,
+                          indexer_rows=0, indexer_width=0, indexer_chunks=0,
+                          indexer_peak_bytes=0, indexer_total_bytes=0,
+                          indexer_errors=0, alloc_receipt_errors=0)
+
+    def note_indexer_scores(self, rows, max_seq_len, compress_ratio, table_columns, page_size,
+                            max_logits_mb):
+        """M3 receipt only, from host-known sizes; no device work, read by no control path."""
+        width, _, chunks, peak, total = indexer_score_shape(
+            rows, max_seq_len, compress_ratio, table_columns, page_size, max_logits_mb)
+        stats = self.stats
+        stats['indexer_layers'] += 1
+        stats['indexer_rows'] += rows
+        stats['indexer_width'] = max(stats['indexer_width'], width)
+        stats['indexer_chunks'] += chunks
+        stats['indexer_peak_bytes'] = max(stats['indexer_peak_bytes'], peak)
+        stats['indexer_total_bytes'] += total
+
+    def _alloc_receipt(self):
+        """M3: one bounded line per chunk and rank.  A failure is counted, never raised."""
+        try:
+            stats, tx = self.stats, self.transaction
+            logging.getLogger(__name__).info(
+                'flash-s5 native-alloc rank=%d txn_seq=%d chunk=%d-%d union_sets=%d union_retired=%d '
+                'union_single=%d union_live_max=%d indexer_layers=%d indexer_rows=%d indexer_width=%d '
+                'indexer_chunks=%d indexer_peak=%d indexer_total=%d indexer_errors=%d',
+                self.lane.worker_rank, tx.txn_seq, tx.chunk_start, tx.chunk_end,
+                stats['union_scratch_sets'], stats['union_scratch_retired'],
+                stats['union_scratch_bytes'], stats['union_scratch_live_max_bytes'],
+                stats['indexer_layers'], stats['indexer_rows'], stats['indexer_width'],
+                stats['indexer_chunks'], stats['indexer_peak_bytes'],
+                stats['indexer_total_bytes'], stats['indexer_errors'])
+        except Exception:
+            self.stats['alloc_receipt_errors'] += 1
 
     def boundary_evidence(self, tensor, *, selection=False):
         if (self.trace is None or self.transaction.chunk_end != 101200
@@ -2329,6 +2381,8 @@ class QsaPrefillOperation:
                 self.stats['trace_emit_errors'] = self.stats.get('trace_emit_errors', 0) + 1
             finally:
                 self.trace = None
+        if self.memory_receipts:
+            self._alloc_receipt()
         dropped = len(self._owners)
         self._released = True
         if self._continuation is not None:

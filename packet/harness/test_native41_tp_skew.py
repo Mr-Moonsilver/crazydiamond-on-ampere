@@ -99,7 +99,8 @@ class AutoArmMemoryReceipts(credit.CreditHarness, unittest.TestCase):
                                  (rank, tx.txn_seq, tx.chunk_start, tx.chunk_end))
                 self.assertEqual(set(row), {'point', 'rank', 'txn_seq', 'chunk_start', 'chunk_end',
                                             'allocated', 'reserved', 'inactive_split',
-                                            'alloc_retries', 'ooms', 'free', 'total'})
+                                            'alloc_retries', 'ooms', 'free', 'total',
+                                            'sync_all_streams', 'device_allocs', 'device_frees'})
                 self.assertEqual((row['free'], row['total']), (300 + rank, 24 * 1024))
                 self.assertEqual(row['inactive_split'], 7 + rank)
             self.assertEqual(fakes[rank].calls, 2)

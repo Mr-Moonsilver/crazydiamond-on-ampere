@@ -9,6 +9,7 @@ device/tensor/event objects only at the device boundary.  Recorded copies are
 accounting and lifecycle; they do not prove native H2D transport or bitwise
 QSA output equality, which require the pinned GPU kernel.
 """
+import logging
 import ast
 import dataclasses
 from pathlib import Path
@@ -1433,6 +1434,29 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
         operation._retire_union_scratch()
         self.assertIsNone(first.sparse.union)
         self.assertEqual(operation.stats['union_scratch_retired'], 1)
+
+    def test_alloc_receipt_is_one_line_per_release_behind_the_receipt_gate(self):
+        for gate, lines in ((True, 1), (False, 0)):
+            with self.subTest(gate=gate):
+                self.device.native_memory_receipts = gate
+                operation, run = self.union_layers(2)
+                run(0)
+                run(1)
+                operation.note_indexer_scores(1024, 100000, 8, 4096, 64, 512)
+                operation.end_forward()
+                self.device.ready_all()
+                self.assertTrue(operation.drain())
+                with self.assertLogs('qsa_operation', level='DEBUG') as logs:
+                    logging.getLogger('qsa_operation').debug('anchor')
+                    operation.release()
+                rows = [line for line in logs.output if 'flash-s5 native-alloc ' in line]
+                self.assertEqual(len(rows), lines)
+                self.assertEqual(operation.stats['alloc_receipt_errors'], 0)
+                if lines:
+                    single = operation.stats['union_scratch_bytes']
+                    self.assertIn(f"union_sets=2 union_retired=1 union_single={single} union_live_max={single} ", rows[0])
+                    self.assertIn('indexer_layers=1 indexer_rows=1024 indexer_width=12544 ', rows[0])
+                    self.assertLess(len(rows[0]), 400)
 
     def test_descriptor_cap_uses_bounded_waves_before_one_attention(self):
         mapping = (5, 7)

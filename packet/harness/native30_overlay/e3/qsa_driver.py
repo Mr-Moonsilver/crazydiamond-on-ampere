@@ -25,6 +25,7 @@ The decode row cache is bypassed entirely (the lane never claims rows). The
 QSA attention module gets two additive methods (``_flash_e3_attention_pre``/
 ``_post``) on the D2-composed source, pinned with an exact inverse.
 """
+import os
 import ast
 import hashlib
 import time
@@ -150,6 +151,31 @@ class LayerPhase:
         self.started_ns = 0
         self.boundary = None
         self.grant = None
+
+
+def _note_indexer_scores(operation, forward_context, attn, num_tokens):
+    """M3 receipt: the sizes of the indexer's FP32 score allocations for this layer.
+
+    Reads the same host-known values the reference's qsa_select_paged_prefill
+    sizes from.  No device work.  A failure is counted, never raised.
+    """
+    try:
+        indexer = attn.indexer
+        if getattr(indexer, 'skip_topk', False):
+            return
+        metadata = forward_context().attn_metadata
+        if isinstance(metadata, list):
+            metadata = metadata[0]
+        compressed = metadata[indexer.compressed_key_cache.prefix]
+        rows = num_tokens - compressed.num_decode_tokens
+        if rows <= 0:
+            return
+        operation.note_indexer_scores(
+            rows, compressed.max_seq_len, indexer.compress_ratio,
+            compressed.block_table.shape[1], indexer.compressed_key_cache.kv_cache.shape[1],
+            int(os.environ.get('VLLM_SPARSE_INDEXER_MAX_LOGITS_MB', '512')))
+    except Exception:
+        operation.stats['indexer_errors'] += 1
 
 
 def _metadata_for(forward_context, attn):
@@ -306,6 +332,8 @@ class QsaLayerDriver:
                                 attn.topk_indices_buffer[:num_tokens])
         if tuple(selected.shape) != (num_tokens, attn.indexer.packed_output_width):
             raise QsaDriverError('QSA indexer returned an invalid selection shape')
+        if getattr(operation, 'memory_receipts', False):
+            _note_indexer_scores(operation, self.forward_context, attn, num_tokens)
         from lane_comm import canonical_selection
         canonical_selection(selected)
         operation.boundary_evidence(selected, selection=True)
