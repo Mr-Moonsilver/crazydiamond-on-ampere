@@ -7,6 +7,8 @@
 2. tools/native43_clock_split.py: the bundle's client clock checks across a physical
    CT-vs-container identity split (LXC-style boot id, separate time namespaces, zero
    timens offsets), with a shared-view positive control; outcomes as the spec declares.
+   In bundle mode the bundle's own sparse_stage/ is also mounted at /source/patches/sparse_stage: operation_source
+   resolves the pinned sparse-stage kernels one level above e3_builder, as the box layout has them.
 3. The spec's extra harness probes (engine_selfrun.probes, e.g. native43_scheduler_tick_probe.py) in the
    same container after probe39/probe37; each must report PASS, exit 0 and the spec's required fields.
 The record keeps the engine self-run fields the owner runner gates on and adds
@@ -27,6 +29,17 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def bundle_mounts(original):
+    """native37_robust_selfrun.source_mounts plus the bundle's sparse_stage/ beside e3_builder (box layout)."""
+    def source_mounts(tree, bundle):
+        rows = original(tree, bundle)
+        if bundle is not None:
+            assert (bundle / 'sparse_stage/kernels.py').is_file(), 'bundle without sparse_stage/kernels.py'
+            rows[bundle / 'sparse_stage'] = '/source/patches/sparse_stage'
+        return rows
+    return source_mounts
+
+
 def run(spec_path, tree, bundle, out, name):
     spec = json.loads(Path(spec_path).read_text())
     selfrun, split = spec['engine_selfrun'], spec['clock_split']
@@ -42,6 +55,7 @@ def run(spec_path, tree, bundle, out, name):
             'python3 -B %s --out /out/%s > /out/%s.log 2>&1; echo "%s rc=$?" >> /out/%s.log\n'
             % (row['script'], row['out'], row['out'], row['field'], row['out']) for row in probes)
     base.inner_script = inner_script
+    base.source_mounts = bundle_mounts(base.source_mounts)
     base.run(tree, bundle / 'native30_overlay', out / 'engine', name, spec['candidate'], True, bundle,
              tuple(selfrun['compiled']))
     engine = json.loads((out / 'engine/result.json').read_text())
@@ -64,6 +78,8 @@ def run(spec_path, tree, bundle, out, name):
                  and engine['suites']['ok'] is True and engine['suites']['skipped'] == 0 and probes_ok)
     record = dict(engine, **extra, schema=selfrun['schema'], spec=str(spec_path), spec_sha256=sha(spec_path),
                   engine_record_sha256=sha(out / 'engine/result.json'),
+                  extra_mounts={'/source/patches/sparse_stage': dict(source=str(bundle / 'sparse_stage'),
+                                                                     kernels_sha256=sha(bundle / 'sparse_stage/kernels.py'))},
                   clock_split=dict(verdict=clock['verdict'], reasons=clock['reasons'], outcomes=clock['outcomes'],
                                    expected=clock['expected'], control_outcomes=clock.get('control_outcomes'),
                                    split=clock['split'], method=clock.get('method'), rc=split_rc, record_sha256=sha(out / 'clock-split/result.json'), side=clock['side'],

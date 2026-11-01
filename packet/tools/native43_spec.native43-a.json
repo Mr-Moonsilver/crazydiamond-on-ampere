@@ -17,7 +17,7 @@
       "FLASH_S5_NATIVE_QSA_TRACE": "1",
       "FLASH_S5_NATIVE_QSA_STOP_AFTER": "101200"
     },
-    "queue": "q18a-native43-dense-boundary pair: current then dense, fresh process, fresh key and own request directory per arm; held-b prefix through startup/bind/identity/ledger/length guard, one boundary client per arm, held-b crash/stop/restore; never starts production",
+    "queue": "q18a-native43-dense-boundary pair: current then dense, fresh process and own request directory per arm, one fresh key per pair queue shared by both arms; held-b prefix through startup/bind/identity/ledger/length guard, one boundary client per arm, held-b crash/stop/restore; never starts production",
     "scope": "native43 bounded dense transport diagnostic at the 24-page arena boundary (Codex d9fb80ec3ccd): paired current/dense boundary hashes at 101200, timed chunks 97152-100224; no speed claim, not a release candidate",
     "tail_handback": false
   },
@@ -268,7 +268,6 @@
       "tools/native43_bundle_selfrun.py",
       "tools/native43_clock_split.py",
       "tools/native43_cpu_probe.py",
-      "tools/native43_delivery_record.py",
       "tools/native43_owner_seam.py",
       "tools/native43_precheck_conf.py",
       "tools/native43_queue_drafts.py",
