@@ -184,7 +184,10 @@ class Queue(unittest.TestCase):
             root = Path(td)
             (root / 'row1.json').write_text('{"verdict":"PASS"}')
             env = fixture.round_env(fixture.w2_argv(root, server.url, 0)[0])
-            with mock.patch.dict(os.environ, env), \
+            # native41: the fixture overlay is the frozen native35 O package, which predates
+            # native_auto_arm; bind its module inventory as test_native37_robust does
+            # (leaf historical-package-inventory). Every other package check is unchanged.
+            with fixture.package_inventory(), mock.patch.dict(os.environ, env), \
                     mock.patch.object(regression.perf.streams, '_start_streams', return_value=[]), \
                     mock.patch.object(regression.perf.streams, '_wait_open', return_value={'complete': True}):
                 rc = regression.main(['--url', server.url, '--model', 'fixture', '--run-id', fixture.RUN_ID,

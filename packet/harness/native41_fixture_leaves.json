@@ -81,7 +81,7 @@
       "equivalence": "Only native_auto_arm is omitted, only when testing the historical O overlay without that file. All historical modules, native libraries, file hashes, readiness and package closure remain checked by the unmodified validator. The frozen native41 container uses its own overlay, includes native_auto_arm and keeps the full expected inventory.",
       "name": "historical-package-inventory",
       "replaces": "Current decode_probe.GENERATED_SOURCES as the expected module inventory for the frozen native35 O package used by hub tests",
-      "test": "test_native35_performance package_inventory and native37 T3"
+      "test": "test_native35_performance package_inventory and native37 T3 and test_native40_box_queue.Queue.test_regression_real_cli_through_package_and_native_client_refusal"
     },
     {
       "name": "window-probe-front",
