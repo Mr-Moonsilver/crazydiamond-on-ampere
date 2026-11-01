@@ -17,7 +17,6 @@ import time
 import traceback
 
 import e3_native41_auto_probe as probe
-import e3_native41_autoarm_box as box
 
 MODES = ('auto', 'latched', 'below-threshold', 'off')
 
@@ -45,6 +44,8 @@ class Front:
 
 def run(mode):
     _, failures = probe.overlay_aliases()
+    # After the aliases: the box reader imports harness modules that import e3_types.
+    import e3_native41_autoarm_box as box
     conn = probe.Connected('0' if mode == 'off' else '1')
     conn.dispatched = set()
     import executor_hooks as eh
@@ -123,6 +124,11 @@ def run(mode):
             check('group-is-the-whole-prompt', (proof.get('group') or {}).get('prompt_end') == tokens)
             check('native-window-rate', type(proof.get('prefill_tokens_per_s')) in (int, float)
                   and proof['prefill_tokens_per_s'] > 0)
+            span = proof.get('group') or {}
+            # The arm's engine-basis decode window reads exactly these fields.
+            check('engine-basis-span', type(span.get('start_ns')) is int and type(span.get('end_ns')) is int
+                  and start <= span['start_ns'] < span['end_ns'] <= stop
+                  and type(proof.get('headline_basis')) is str, group_keys=sorted(span))
             check('return-ms-measured', type(ret.get('final_commit_to_all_rank_full_ack_ms')) in (int, float)
                   and ret['final_commit_to_all_rank_full_ack_ms'] >= 0, returns=ret)
             check('closed-full-tail', snap['last_close']['reason'] == 'full-tail-completed')
