@@ -212,6 +212,24 @@ class NativeWindowSource(unittest.TestCase):
                        lambda r:r['client_bracket'].update(start_ns=r['client_bracket']['start_ns']-11*10**9)):
             record=copy.deepcopy(self.record);mutate(record)
             self.assertFalse(perf.native_window(record,'fresh',self.epoch)['complete'])
+        # Non-int stamps or samples are unproved, never coerced.
+        for mutate,name in ((lambda r:r['client_bracket'].update(begin_recv_ns=float(r['client_bracket']['begin_recv_ns'])),'begin'),
+                            (lambda r:r['client_bracket'].update(end_send_ns=str(r['client_bracket']['end_send_ns'])),'end'),
+                            (lambda r:r['begin']['snapshot'].update(observed_clock_ns=str(r['begin']['snapshot']['observed_clock_ns'])),'begin'),
+                            (lambda r:r['end']['raw_journal_evidence'].update(observed_clock_ns=float(r['end']['raw_journal_evidence']['observed_clock_ns'])),'end')):
+            record=copy.deepcopy(self.record);mutate(record)
+            result=perf.native_window(record,'fresh',self.epoch)
+            self.assertFalse(result['complete']);self.assertIn('client-engine-clock:'+name,result['reasons'])
+        # A missing engine sample is unproved too.
+        for name in ('begin','end'):
+            record=copy.deepcopy(self.record)
+            (record['begin']['snapshot'] if name=='begin' else record['end']['raw_journal_evidence']).pop('observed_clock_ns')
+            result=perf.native_window(record,'fresh',self.epoch)
+            self.assertFalse(result['complete']);self.assertIn('client-engine-clock:'+name,result['reasons'])
+        # The measured window must lie inside the client's outer bracket.
+        record=copy.deepcopy(self.record);record['client_bracket']['end_ns']=record['end']['measure_end_ns']-1
+        result=perf.native_window(record,'fresh',self.epoch)
+        self.assertFalse(result['complete']);self.assertIn('client-engine-bracket',result['reasons'])
     def test_foreign_client_proc_view_is_provenance_only(self):
         # The box case (native40/native43): the client's boot_id and time namespace differ from the
         # engine container's.  Identity strings are provenance; the per-call brackets decide.

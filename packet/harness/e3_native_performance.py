@@ -43,7 +43,9 @@ def native_window(record, family, epoch):
     # (container boot_id and time namespace), so identity strings are
     # provenance only.  Each boundary is proved by the engine's own monotonic
     # sample lying inside this client's bracket of that same call; the
-    # engine-internal proof of its control reply is still required.
+    # engine-internal proof of its control reply is still required.  One
+    # implementation: harness/native43_boundary_clock.py, Codex 109313a bytes
+    # (sha256 7337558ab350f786f9b3ec77264a03983efe02d219b2af0b6ec801687b8efcda).
     bracket = record.get('client_bracket') or {}
     calls = (('begin', snapshot, bracket.get('start_ns'), bracket.get('begin_recv_ns')),
              ('end', raw, bracket.get('end_send_ns'), bracket.get('end_ns')))
