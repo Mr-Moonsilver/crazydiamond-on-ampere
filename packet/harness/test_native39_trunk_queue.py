@@ -4,15 +4,22 @@ and the queue's own new segments executed under bash against loopback leaves.  C
 Connected compositions (the queue's bytes with the real checks, guard, client, observer and grade):
   RestartBind  restart -> /health loop -> bind receipt: the queue segment, the real host observer
                following a fake docker CLI, real curl against a loopback /health leaf.
-  Tail         native W1 -> plain W1 -> idle -> gates -> W2 rounds -> grade -> trunk summary: the queue
-               segment, the real w1_trace client and idle check against a loopback engine leaf, the
-               real native35 grade and trunk summary, fake W1/W2/memory phase executables.
+  Tail         row4 declared NOT_RUN -> instruments (per-rank maps) -> sealed native W1 -> ingress ->
+               typed FULL + idle -> plain W1 -> route check -> ingress -> gates -> per round idle,
+               instruments, W2 round, ingress -> grade -> instruments end -> returns -> trunk summary: the
+               queue segment with the real sealed native W1 (e3_native39_w1 over e3_w1_decode_driver and
+               the real session client), checks, w1_trace client and grade against a loopback engine leaf
+               (native session, chat and completion streams, access log); fake W2 round and memory grade.
+  RoundWrapper the real e3_native39_round CLI over the unchanged same-queue gate: only the declared row4
+               NOT_RUN shape reaches it as PASS.
   Guard        the queue's w2-length lines with the real guard against a loopback /tokenize leaf.
   Launcher     the trunk settings file sourced, the real setcfg algorithm, the real S5 launcher render
                and declaration projection, then the queue's host check on the declared identity.
   BoxFormats   the checks on retained box extracts (harness/fixtures/native39_box_extract.json,
                tools/native39_box_extract.py): docker --timestamps lines, host-disk rows, the P-c
-               capture's --host, the w1ab2 served-host line, the P-c grade and the w1ab2 client output.
+               capture's --host, the w1ab2 served-host line, the P-c grade and the w1ab2 client output;
+               real uvicorn access lines (native39_box_access_extract.json,
+               tools/native39_box_access_extract.py): the w1ab2 loopback plain run and the P-c 0.0.0.0 log.
 Fixture leaves: native39_fixture_leaves.json (the queue-* entries).
 """
 import contextlib
@@ -50,6 +57,7 @@ P_C_SHA = {'q18a_native35_p_c.draft.sh': '1bc7dd61a36462d0bd040299a4b24e29e5630a
 # q18b-w1ab2's client as committed in fn-main 199ef23 and run on the box.
 W1_TRACE_SHA = '7960fd3784f023e74896580f117751d3d4f4bb03d82848d79ac14deb9823c06c'
 EXTRACT = json.loads((HERE / 'fixtures/native39_box_extract.json').read_text())
+ACCESS = json.loads((HERE / 'fixtures/native39_box_access_extract.json').read_text())
 PROD_EXTRA = '--prefix-match-unit 176 --enable-prompt-tokens-details'
 PROD_LAUNCHER_SHA = '98d6d2a21927b8943f1ae9b0b43616757e80adac0c628e65f482e4332e3cf126'  # deploy/run-flash-prod.sh
 L_ENDING = ('stop_pressure || true\nstop_sampler || true\ncapture_logs || true\ncapture_end "$Q18A_IDENTITY_TIMEOUT_S" || true\n'
@@ -101,19 +109,183 @@ def utc(t):
     return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f') + '000Z'
 
 
-class Leaf:
-    """Loopback engine leaf: /health, /metrics, /tokenize and streamed /v1/completions."""
+class NativeSession:
+    """Engine double for the native session endpoint and the chat cohort (fixture leaf queue-native-session).
 
-    def __init__(self, tokens=None, stuck=False):
+    Replaces NativeOverlapSession (patches/s5_engine/native_overlap_session.py) over the engine driver's
+    status record (engine_driver._status_record) and the worker rows (native_overlap_worker: row fields and
+    live_decode census).  Equivalent for the queue because it answers the same actions with the same field
+    names the harness reads: typed TransitionAck rows (engine_driver.transition_ack_rows), the keep-pause
+    barrier rows with live_request_uids = the engine ids of the open chat streams (SSE id + '-<8 hex>', as
+    the pinned input processor assigns them), scheduler_requests = live + waiting while running and 0 under
+    pause (the pinned PAUSED_ALL behaviour, engine_driver.py:2994), and route generations that advance on
+    every transition.  Census counters advance only while resumed with live decoders.
+    """
+
+    def __init__(self, mode=''):
+        import wire_v1
+        self.full_bank, self.split_bank = wire_v1.ROUTE_BANK_FULL, wire_v1.ROUTE_BANK_SPLIT
+        self.mode, self.lock = mode, threading.Lock()
+        self.epoch, self.route, self.generation, self.paused = 7, 'full', 1, False
+        self.live, self.hidden, self.foreign = {}, [], set()
+        self.dispatches, self.ran, self.ack_ns = 0, False, time.monotonic_ns()
+        self.calls, self.prepares, self.split_entries, self.stuck, self.chats = [], 0, 0, False, 0
+        self.injected = False
+        self.log = None
+        clock = {'basis': 'CLOCK_MONOTONIC', 'proc': 'engine'}
+        clock['boot_id'] = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        clock['time_namespace'] = os.readlink('/proc/self/ns/time')
+        self.clock = clock
+
+    def foreign_line(self):
+        if self.log:
+            self.log('127.0.0.1', 1, 'POST', '/v1/chat/completions', 200)
+
+    def rows(self, now):
+        uids = sorted(self.live)
+        c = self.dispatches
+        census = {'dispatches': c, 'decode_dispatches': c, 'non_decode_dispatches': 0, 'full_graph_dispatches': c,
+                  'dispatch_errors': 0, 'rejected': 0}
+        return [{'schema': 1, 'action': 'barrier', 'worker_rank': r, 'pid': 1001 + r, 'engine_epoch': self.epoch,
+                 'engine_epoch_ok': True, 'storage_epoch': 1, 'worker_incarnation': 'worker-%d' % r, 'route': self.route,
+                 'route_generation': self.generation, 'observed_clock_ns': now, 'clock_basis': 'CLOCK_MONOTONIC',
+                 'prefill_requests': 0, 'decode_eligible': len(uids), 'live_decode_requests': len(uids),
+                 'running_requests': len(uids), 'barrier_clean': True, 'drained_streams': 1, 'pending_native_replays': 0,
+                 'retained_rows': 0, 'pending_prefill_streams': 0, 'pending_output_copies': 0,
+                 'live_decode': {'basis': 'worker-native-live-decode-v1', 'available': True, 'live_requests': len(uids),
+                                 'prefill_requests': 0, 'decode_eligible': len(uids), 'live_request_uids': uids[:64],
+                                 'census': dict(census)}} for r in range(4)]
+
+    def acks(self, bank):
+        self.ack_ns = time.monotonic_ns()
+        return [{'typed': 'TransitionAck', 'worker_rank': r, 'engine_epoch': self.epoch,
+                 'expected_route_generation': self.generation, 'route_generation': self.generation,
+                 'applied_route_generation': self.generation, 'target_bank': bank, 'applied_bank': bank,
+                 'applied_storage_epochs': [1], 'decode_replay_watermark': 0, 'drained_streams': 1,
+                 'observed_ns': self.ack_ns, 'clock_basis': 'CLOCK_MONOTONIC'} for r in range(4)]
+
+    def status(self, now):
+        unfinished = 0 if self.paused else len(self.live) + len(self.hidden)
+        return {'schema': 1, 'mode': 'native-overlap', 'engine_epoch': self.epoch, 'route': self.route,
+                'route_generation': self.generation, 'paused': self.paused, 'transition_pending': False,
+                'control_pending': None, 'return_pending': None, 'scheduler_requests': unfinished,
+                'observed_clock_ns': now, 'clock': dict(self.clock, sample_ns=now), 'workers': self.rows(now)}
+
+    def pause(self):
+        if not self.paused and self.ran:
+            self.dispatches += 10
+        self.paused, self.ran = True, False
+        return {'paused': True, 'mode': 'keep', 'clear_cache': False}
+
+    def resume(self):
+        self.paused = False
+        self.live.update((uid, True) for uid in self.hidden)
+        self.hidden = []
+        self.ran = bool(self.live)
+        return {'resumed': True}
+
+    def transition(self, route):
+        if self.route != route:
+            self.route, self.generation = route, self.generation + 1
+        return self.acks(self.full_bank if route == 'full' else self.split_bank)
+
+    def act(self, command):
+        """One session action; returns (http status, reply)."""
+        with self.lock:
+            action, now = command.get('action'), time.monotonic_ns()
+            self.calls.append(action)
+            base = {'schema': 1, 'action': action, 'run_id': command.get('run_id'), 'engine_epoch': self.epoch}
+            if self.stuck and action in ('prepare', 'leave_full'):
+                return 409, {'error': 'stuck-split'}
+            entry = self.prepares == 2 and len(self.live) >= 8 and self.route == 'full' and not self.injected
+            if action == 'status':
+                if 'foreign-entry' in self.mode and entry:  # a foreign decoder registered just before the entry read
+                    uid = 'chatcmpl-f0f0f0f0f0f0f0f0-0badc0de'
+                    self.live[uid], self.injected = True, True
+                    self.foreign.add(uid)
+                    self.foreign_line()
+                return 200, dict(self.status(now), **base)
+            if action == 'pause':
+                pause = self.pause()
+                if 'hidden-arrival' in self.mode and entry:
+                    uid = 'chatcmpl-e0e0e0e0e0e0e0e0-0badf00d'
+                    self.hidden.append(uid)  # admitted after the status read: waiting, invisible under PAUSED_ALL
+                    self.foreign.add(uid)
+                    self.injected = True
+                    self.foreign_line()
+                return 200, dict(base, pause=pause, barrier={'workers': self.rows(now)}, snapshot=self.status(now),
+                                 route=self.route, route_generation=self.generation)
+            if action == 'resume':
+                if 'transient-foreign' in self.mode and self.route == 'split' and not self.injected:
+                    self.injected = True  # a foreign request inside the split window that ends before the end barrier
+                    self.foreign_line()
+                return 200, dict(base, **self.resume())
+            if action == 'prepare':
+                self.prepares += 1
+                pause = self.pause()
+                acks = self.transition(command.get('target_route'))
+                return 200, dict(base, target_route=command.get('target_route'), route=self.route, phase=command.get('phase'),
+                                 paused=pause, typed_acks=True, transition_acks=acks, resumed=self.resume())
+            if action == 'pause_enter_split':
+                pause = self.pause()
+                acks = self.transition('split')
+                self.split_entries += 1
+                if 'stuck-split' in self.mode:
+                    self.stuck = True
+                return 200, dict(base, route='split', pause=pause, phase=command.get('phase'), typed_acks=True,
+                                 transition_acks=acks)
+            if action == 'leave_full':
+                pause = self.pause()
+                census = {'workers': self.rows(time.monotonic_ns())}
+                acks = self.transition('full')
+                for uid in list(self.foreign):  # the foreign requests end with the cohort's window
+                    self.live.pop(uid, None)
+                self.foreign = set()
+                drain = [{'worker_rank': a['worker_rank'], 'drained_streams': 1,
+                          'applied_route_generation': a['applied_route_generation'], 'decode_replay_watermark': 0}
+                         for a in acks]
+                return 200, dict(base, route='full', pause=pause, census_before_return=census, transition_acks=acks,
+                                 worker_drain=drain, typed_acks=True, resume=self.resume())
+            return 404, {'error': 'action-not-exposed'}
+
+    def open_chat(self):
+        with self.lock:
+            sid = 'chatcmpl-%s' % os.urandom(8).hex()
+            uid = '%s-%s' % (sid, os.urandom(4).hex())
+            self.live[uid] = False
+            self.chats += 1
+            if not self.paused:
+                self.ran = True
+            return sid, uid
+
+    def close_chat(self, uid):
+        with self.lock:
+            self.live.pop(uid, None)
+
+
+class Leaf:
+    """Loopback engine leaf: /health, /metrics, /tokenize, streamed /v1/completions; with a NativeSession also
+    the native session endpoint and streamed /v1/chat/completions with SSE ids (fixture leaf queue-chat-stream);
+    with a log path the uvicorn
+    access lines docker would stamp (fixture leaf queue-access-log: streaming lines at response start,
+    others at completion, as uvicorn logs them)."""
+
+    def __init__(self, tokens=None, stuck=False, session=None, log=None):
         self.ready, self.stuck, self.tokens = False, stuck, tokens
+        self.session, self.log_path = session, log
         self.first_200 = threading.Event()
         self.lock = threading.Lock()
         self.active, self.health, self.completions, self.tokenized, self.auth = 0, [], [], [], set()
         leaf = self
+        if session is not None:
+            session.log = self.access
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
+
+            def access(self, code):
+                leaf.access(self.client_address[0], self.client_address[1], self.command, self.path, code)
 
             def reply(self, code, body=b'', kind='application/json'):
                 self.send_response(code)
@@ -122,6 +294,7 @@ class Leaf:
                 self.end_headers()
                 self.wfile.write(body)
                 self.wfile.flush()
+                self.access(code)
 
             def body(self):
                 leaf.auth.add(self.headers.get('Authorization'))
@@ -135,9 +308,11 @@ class Leaf:
                     if code == 200:
                         leaf.first_200.set()
                 elif self.path == '/metrics':
-                    running = leaf.active + (1 if leaf.stuck else 0)
+                    live = len(leaf.session.live) if leaf.session else 0
+                    waiting = len(leaf.session.hidden) if leaf.session else 0
+                    running = leaf.active + live + (1 if leaf.stuck else 0)
                     text = ('vllm:num_requests_running{engine="0",model_name="m"} %d.0\n'
-                            'vllm:num_requests_waiting{engine="0",model_name="m"} 0.0\n' % running)
+                            'vllm:num_requests_waiting{engine="0",model_name="m"} %d.0\n' % (running, waiting))
                     self.reply(200, text.encode(), 'text/plain')
                 else:
                     self.reply(404)
@@ -149,6 +324,13 @@ class Leaf:
                     leaf.tokenized.append(dict(model=data.get('model'), chars=len(data['prompt']), tokens=n))
                     self.reply(200, json.dumps({'count': n, 'max_model_len': 262144, 'tokens': [0] * n}).encode())
                     return
+                if self.path == '/v1/flash_s5_native_overlap' and leaf.session is not None:
+                    code, reply = leaf.session.act(data)
+                    self.reply(code, json.dumps(reply).encode())
+                    return
+                if self.path == '/v1/chat/completions' and leaf.session is not None:
+                    self.chat()
+                    return
                 if self.path != '/v1/completions':
                     self.reply(404)
                     return
@@ -156,6 +338,7 @@ class Leaf:
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
                 self.end_headers()
+                self.access(200)
                 with leaf.lock:
                     leaf.active += 1
                 try:
@@ -169,9 +352,43 @@ class Leaf:
                     with leaf.lock:
                         leaf.active -= 1
 
+            def chat(self):
+                session = leaf.session
+                sid, uid = session.open_chat()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.end_headers()
+                self.access(200)
+                k = 0
+                try:
+                    while True:
+                        if session.paused:
+                            self.wfile.write(b': paused\n\n')  # no token under a keep-pause; detects disconnect
+                        else:
+                            k += 1
+                            event = {'id': sid, 'object': 'chat.completion.chunk',
+                                     'choices': [{'index': 0, 'delta': {'content': 't'}, 'finish_reason': None}],
+                                     'usage': {'prompt_tokens': 40, 'completion_tokens': k, 'total_tokens': 40 + k}}
+                            self.wfile.write(b'data: ' + json.dumps(event).encode() + b'\n\n')
+                        self.wfile.flush()
+                        time.sleep(0.01)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                finally:
+                    session.close_chat(uid)
+
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.server.daemon_threads = True
+        self.server.request_queue_size = 64
         self.url = 'http://127.0.0.1:%d' % self.server.server_address[1]
+
+    def access(self, addr, port, method, path, code):
+        if self.log_path is None:
+            return
+        line = '%s (APIServer pid=52) INFO:     %s:%d - "%s %s HTTP/1.1" %d OK\n' % (
+            utc(time.time()), addr, port, method, path, code)
+        with self.lock, open(self.log_path, 'a') as f:
+            f.write(line)
 
     def __enter__(self):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -180,7 +397,6 @@ class Leaf:
     def __exit__(self, *exc):
         self.server.shutdown()
         self.server.server_close()
-
 
 FAKE_DOCKER = r'''
 import datetime, os, sys, time
@@ -199,6 +415,11 @@ if argv[0] == 'inspect':
     elif fmt.startswith('{{.Id}}|'): print('%s|true|%s|%s' % (cid, (fake / 'started-at').read_text().strip(), fake / 'json.log'))
     else: sys.exit(2)
     sys.exit(0)
+if argv[0] == 'exec':
+    # Fixture leaf queue-docker-exec-maps: `docker exec <id> cat /proc/<pid>/maps` reads FAKE/maps/<pid>.
+    p = fake / 'maps' / argv[-1].split('/')[2]
+    if argv[2:4] != ['cat', argv[-1]] or argv[1] != current() or not p.exists(): sys.exit(1)
+    sys.stdout.write(p.read_text()); sys.exit(0)
 if argv[0] == 'logs':
     # The json-file driver stamps a line when the daemon reads it: stamp at read time.
     raw, done = fake / 'engine.raw', 0
@@ -354,118 +575,314 @@ class RestartBind(unittest.TestCase):
 
 
 FAKE_PHASE = r'''
-import json,os,sys
+import json,os,sys,time,urllib.request
 from pathlib import Path
 fake=Path(os.environ['FAKE']);name=Path(__file__).stem
 with open(fake/'calls.jsonl','a') as f:f.write(json.dumps({'name':name,'argv':sys.argv[1:]})+'\n')
 def arg(key):return sys.argv[sys.argv.index(key)+1]
-if name=='e3_native_w1':
-    Path(sys.argv[3]).write_text(json.dumps({'schema':2,'summary':{'verdict':'COMPLETE'}}));sys.exit(0)
-if name=='e3_native35_performance':
-    r=int(arg('--round'))
-    Path(arg('--out')).write_text(json.dumps({'grade':{'verdict':'PASS'},'native35_round':{'round':r}}));sys.exit(0)
+if name=='e3_native39_round':
+    # Fixture leaf queue-phase-executables: the round's 14 generation requests (3 lanes x fresh/append + 8 standing
+    # decoders), each opened and closed, inside the record's wall span; record shape as e3_native_performance.run.
+    r=int(arg('--round'));t0=time.time();url=os.environ['PROBE_URL']
+    for i in range(14):
+        req=urllib.request.Request(url+'/v1/chat/completions',data=json.dumps({'model':'m','messages':[],'stream':True}).encode(),
+            headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ['VLLM_API_KEY']})
+        with urllib.request.urlopen(req,timeout=10) as resp:resp.readline()
+    lanes={lane:{family:{'request':{'send_at_ns':time.monotonic_ns()},'complete':True} for family in ('fresh','append')}
+           for lane in ('prefill_full','prefill_split','overlap')}
+    for family in ('fresh','append'):lanes['overlap'][family]['decode_window']={'streams':[{'stream':i} for i in range(8)]}
+    Path(arg('--out')).write_text(json.dumps({'grade':{'verdict':'PASS'},'native35_round':{'round':r},'lanes':lanes,
+        'wall_anchor_s':t0,'wall_end_s':time.time()}));sys.exit(0)
 if name=='e3_native_memory_grade':
     Path(arg('--out')).write_text(json.dumps({'verdict':'PASS'}));sys.exit(0)
 sys.exit(2)
 '''
-QUALIFIED = {'startup': 'PASS', 'row1': 'PASS', 'rule4_controls': 'PASS', 'rule4_candidate': 'PASS', 'row4': 'PASS'}
+QUALIFIED = {'startup': 'PASS', 'row1': 'PASS', 'rule4_controls': 'PASS', 'rule4_candidate': 'PASS'}
+# Fixture leaf queue-w1-test-workload: the q17b-w1 manifest's shape with 8 streams, full then split, 0.4 s
+# windows and 40-token prompts (test_e3_w1_decode_driver.BASE_MANIFEST counts); the driver code path is the same.
+TEST_W1 = {'schema': 1, 'workload': 'test-small', 'streams': 8, 'prompt_tokens': 40, 'seed': 1, 'generation_budget': 100000,
+           'repeats': 2, 'route_plan': ['full', 'split'],
+           'request_shape': {'temperature': 0.7, 'min_tokens': 'equal_max', 'include_usage': True,
+                             'continuous_usage_stats': True, 'enable_thinking': False},
+           'window_s': 0.4, 'open_timeout_s': 10.0, 'pause_timeout_s': 5.0, 'cache_preparation': False,
+           'completion_policy': {'per_request_delta_min': 1, 'per_request_delta_max': 100000, 'per_request_start_min': 0,
+                                 'per_request_start_max': 100000, 'matched_across_routes': True},
+           'context_position_policy': 'same prompt, seed and context position per stream across routes', 'block_size': 16}
+CLEAN_MAPS = '7f00-7f01 r-xp 0 00:00 0 /usr/lib/x86_64-linux-gnu/libcuda.so.580.95.05\n7f02-7f03 r-xp 0 00:00 0 /usr/lib/libcupti.so.13\n'
+OBSERVER_MAPS = CLEAN_MAPS + ('7f04-7f05 r-xp 0 00:00 0 /usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3/native/'
+                              'flash_s5_replay_observer.so\n')
+ARTS = ('gates.json', 'w1.json', 'w1-plain.json', 'w1-plain-idle.json', 'w1-plain-full-idle.json', 'w1-plain-route.json',
+        'instruments-w1.json', 'instruments-round-0.json', 'instruments-round-1.json', 'instruments-end.json',
+        'ingress-w1.json', 'ingress-plain.json', 'ingress-round-0.json', 'ingress-round-1.json', 'returns.json',
+        'trunk-summary.json', 'native35-performance-grade.json')
 
 
 class Tail(unittest.TestCase):
-    """From the rule4 continuation through the trunk summary: the queue's own bytes."""
+    """From the row4 declaration through the trunk summary: the queue's own bytes, with the real sealed native
+    W1, checks (instruments, ingress, full-idle, route-check, idle, returns, summary), plain client and grade
+    against the loopback engine leaf (native session, chat and completion streams, access log)."""
 
-    def run_tail(self, verdicts, stuck=False):
+    def run_tail(self, verdicts=QUALIFIED, mode='', maps=CLEAN_MAPS, mapped_rank=None, stuck=False):
         trunk = TRUNK.read_text()
+        declared = segment(trunk, 'ROW4_DECLARED_NOT_RUN=1\n', 'export ROW4_DECLARED_NOT_RUN\n')
         tail = trunk[trunk.index('RULE4_CONTINUATION=0\n'):]
         self.assertTrue(tail.endswith(L_ENDING))
         tail = tail[:-len(L_ENDING)]
-        with tempfile.TemporaryDirectory() as d, Leaf(tokens=lambda prompt: 200000, stuck=stuck) as leaf:
+        with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            fake, h, q = d / 'fake', d / 'h', d / 'q'
-            for p in (fake, h, q):
+            fake, h, q, bindir = d / 'fake', d / 'h', d / 'q', d / 'bin'
+            for p in (fake, h, q, bindir, fake / 'maps', h / 'workloads'):
                 p.mkdir()
-            for name in ('e3_native_w1', 'e3_native35_performance', 'e3_native_memory_grade', 'e3_native28_rule4_continuation'):
-                (h / (name + '.py')).write_text(FAKE_PHASE)
-            for name in ('w1_trace.py', 'e3_native39_trunk_checks.py', 'native35_performance_grade.py'):
-                shutil.copyfile(HERE / name, h / name)  # the real client, checks and grade
-            bindir = d / 'bin'
-            bindir.mkdir()
-            (bindir / 'systemctl').write_text(FAKE_SYSTEMCTL)
-            (bindir / 'systemctl').chmod(0o755)
-            corpus = d / 'corpus.txt'
-            corpus.write_text('fixture corpus text ' * 64)
-            script = ('set -uo pipefail\nFAILS=0; INCS=0; ENGINE_CRASHED=0; N0=4; SERVICE=vllm-flash\ndeclare -A PHASE_VERDICT=()\n'
-                      + functions(trunk, ('step', 'record'))
-                      + 'health_ok() { return 0; }\nhost_crash_detected() { return 1; }\nsystemctl() { echo 4; }\n'
-                      + ''.join('PHASE_VERDICT[%s]=%s\n' % item for item in verdicts.items())
-                      + tail + 'for k in "${!PHASE_VERDICT[@]}"; do echo "PV $k=${PHASE_VERDICT[$k]}"; done\n'
-                        'echo "TOTAL FAILS=$FAILS INCS=$INCS"\n')
-            done = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=300, cwd=str(d),
-                                  env=env(PATH=str(bindir) + os.pathsep + os.environ['PATH'], NEW_ID=NEW_ID,
-                                          FAKE=str(fake), H=str(h), Q=str(q), PROBE_URL=leaf.url, MODEL='m',
-                                          RUN_ID='q18a-native39-trunk-cpu-1', EPOCH='7', Q18A_FIRST_ADVANCE_READ_TIMEOUT_S='1200',
-                                          Q18A_READINESS='/overlay/e3/native-overlap-readiness.json', S5_OVERLAY='/overlay',
-                                          S5_LAUNCHER_NAME='run-flash-s5-test.sh', CORPUS=str(corpus),
-                                          W1_PLAIN_WINDOW_S='1', W1_PLAIN_SETTLE_S='0.2', W1_PLAIN_START_DEADLINE_S='20',
-                                          W1_PLAIN_TIMEOUT_S='60', IDLE_TIMEOUT_S='5',
-                                          PYTHONPATH=os.pathsep.join((str(HERE), str(ROOT / 'patches/s5_engine')))))
+            session = NativeSession(mode)
+            with Leaf(tokens=lambda prompt: 200000, stuck=stuck, session=session, log=q / 'engine-stream.log') as leaf:
+                for name in ('e3_native39_round', 'e3_native_memory_grade', 'e3_native28_rule4_continuation'):
+                    (h / (name + '.py')).write_text(FAKE_PHASE)
+                for name in ('w1_trace.py', 'e3_native39_trunk_checks.py', 'native35_performance_grade.py', 'e3_native39_w1.py'):
+                    shutil.copyfile(HERE / name, h / name)  # the real sealed W1, client, checks and grade
+                (h / 'workloads/q17b-w1.json').write_text(json.dumps(TEST_W1))
+                (fake / 'current-id').write_text(NEW_ID)
+                for rank in range(4):
+                    text = maps if mapped_rank is None or rank != mapped_rank else OBSERVER_MAPS
+                    if text is not None:
+                        (fake / 'maps' / str(1001 + rank)).write_text(text)
+                (bindir / 'docker').write_text('#!' + sys.executable + '\n' + FAKE_DOCKER)
+                (bindir / 'systemctl').write_text(FAKE_SYSTEMCTL)
+                for name in ('docker', 'systemctl'):
+                    (bindir / name).chmod(0o755)
+                corpus = d / 'corpus.txt'
+                corpus.write_text('fixture corpus text ' * 64)
+                script = ('set -uo pipefail\nFAILS=0; INCS=0; ENGINE_CRASHED=0; N0=4; SERVICE=vllm-flash\ndeclare -A PHASE_VERDICT=()\n'
+                          + functions(trunk, ('step', 'record'))
+                          + 'health_ok() { return 0; }\nhost_crash_detected() { return 1; }\nsystemctl() { echo 4; }\n'
+                          + ''.join('PHASE_VERDICT[%s]=%s\n' % item for item in verdicts.items())
+                          + declared + tail + 'for k in "${!PHASE_VERDICT[@]}"; do echo "PV $k=${PHASE_VERDICT[$k]}"; done\n'
+                            'echo "TOTAL FAILS=$FAILS INCS=$INCS"\n')
+                done = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=300, cwd=str(d),
+                                      env=env(PATH=str(bindir) + os.pathsep + os.environ['PATH'], NEW_ID=NEW_ID,
+                                              FAKE=str(fake), H=str(h), Q=str(q), PROBE_URL=leaf.url, MODEL='m',
+                                              CONTAINER='qwen-flash-prod', VLLM_API_KEY='fixture-key-not-a-secret',
+                                              RUN_ID='q18a-native39-trunk-cpu-1', EPOCH='7', Q18A_FIRST_ADVANCE_READ_TIMEOUT_S='1200',
+                                              Q18A_READINESS='/overlay/e3/native-overlap-readiness.json', S5_OVERLAY='/overlay',
+                                              S5_LAUNCHER_NAME='run-flash-s5-test.sh', CORPUS=str(corpus),
+                                              W1_PLAIN_WINDOW_S='1', W1_PLAIN_SETTLE_S='0.2', W1_PLAIN_START_DEADLINE_S='20',
+                                              W1_PLAIN_TIMEOUT_S='60', IDLE_TIMEOUT_S='5',
+                                              PYTHONPATH=os.pathsep.join((str(HERE), str(ROOT / 'patches/s5_engine')))))
             calls = [json.loads(line)['name'] for line in (fake / 'calls.jsonl').read_text().splitlines()] \
                 if (fake / 'calls.jsonl').exists() else []
-            arts = {name: json.loads((q / name).read_text()) for name in
-                    ('gates.json', 'w1-plain.json', 'w1-plain-idle.json', 'trunk-summary.json', 'native35-performance-grade.json')
-                    if (q / name).exists()}
-            return done, phases(done.stdout), calls, arts, leaf
+            arts = {name: json.loads((q / name).read_text()) for name in ARTS if (q / name).exists()}
+            arts['_q'] = str(q)
+            return done, phases(done.stdout), calls, arts, leaf, session
 
-    def test_plain_w1_beside_native_w1_then_idle_then_both_rounds_and_the_summary(self):
-        done, pv, calls, arts, leaf = self.run_tail(QUALIFIED)
+    def test_observer_off_sealed_w1_plain_on_typed_full_ingress_rounds_returns_and_summary(self):
+        done, pv, calls, arts, leaf, session = self.run_tail()
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(calls, ['e3_native_w1', 'e3_native35_performance', 'e3_native_memory_grade',
-                                 'e3_native35_performance', 'e3_native_memory_grade'])
-        self.assertEqual({k: pv[k] for k in ('w1_controls', 'w1_plain', 'w1-plain-idle', 'overlap-round-0', 'overlap-round-1')},
-                         dict.fromkeys(('w1_controls', 'w1_plain', 'w1-plain-idle', 'overlap-round-0', 'overlap-round-1'), 'PASS'))
-        # The 24 Oct client's own requests: 8 streams of 153537 tokens, fresh salts, one /tokenize.
-        self.assertEqual(len(leaf.tokenized), 1)
+        self.assertEqual(calls, ['e3_native39_round', 'e3_native_memory_grade', 'e3_native39_round', 'e3_native_memory_grade'])
+        names = ('instruments-w1', 'w1_controls', 'ingress-w1', 'w1-plain-full-idle', 'w1_plain', 'w1-plain-route',
+                 'ingress-plain', 'w1-plain-idle', 'w2-idle-round-0', 'instruments-round-0', 'overlap-round-0',
+                 'ingress-round-0', 'w2-idle-round-1', 'instruments-round-1', 'overlap-round-1', 'ingress-round-1',
+                 'instruments-end')
+        self.assertEqual({k: pv.get(k) for k in names}, dict.fromkeys(names, 'PASS'), done.stdout)
+        self.assertEqual(pv['row4'], 'NOT_RUN')
+        self.assertIn('STEP row4 NOT_RUN declared', done.stdout)
+        self.assertIn('STEP returns PASS', done.stdout)
+        # Observer and offers off on the actual rank processes, the same four throughout.
+        for name in ('instruments-w1', 'instruments-round-0', 'instruments-round-1', 'instruments-end'):
+            ranks = arts[name + '.json']['ranks']
+            self.assertEqual({r['observer_mapped'] for r in ranks.values()}, {False}, name)
+            self.assertEqual(sorted(r['pid'] for r in ranks.values()), [1001, 1002, 1003, 1004])
+        # The sealed W1: exact cohort ids at entry, begin and end of both repeats; split entered once.
+        w1 = arts['w1.json']
+        self.assertEqual(w1['summary']['verdict'], 'COMPLETE', [r['reasons'] for r in w1['repeats']])
+        self.assertEqual([r['seal'] for r in w1['repeats']], [{'entry': [], 'begin': [], 'end': []}] * 2)
+        self.assertEqual(session.split_entries, 1)
+        self.assertEqual([len(set(r['cohort']['client_ports'])) for r in w1['repeats']], [8, 8])
+        self.assertEqual(arts['ingress-w1.json']['measurement'], 'VALID')
+        # The plain W1 ran on a typed FULL that stayed at one generation; 8 x 153537 from the real client.
+        full = arts['w1-plain-full-idle.json']
+        self.assertEqual((full['prepare']['typed_acks'], full['status']['route'], full['status']['scheduler_requests']),
+                         (True, 'full', 0))
+        self.assertEqual(arts['w1-plain-route.json']['status']['route_generation'], full['route_generation'])
         self.assertEqual(len(leaf.completions), 8)
         self.assertEqual({c['prompt'] for c in leaf.completions}, {153537})
-        self.assertEqual(len({c['cache_salt'] for c in leaf.completions}), 8)
-        self.assertEqual({(c['max_tokens'], c['min_tokens'], c['ignore_eos'], c['stream']) for c in leaf.completions},
-                         {(16384, 16384, True, True)})
         plain = arts['w1-plain.json']
-        self.assertEqual((plain['verdict'], plain['streams'], plain['stream_prompt'], len(plain['windows'])), ('PASS', 8, 153537, 3))
-        self.assertEqual(leaf.active, 0)  # the client's requests ended on disconnect
-        self.assertEqual(arts['w1-plain-idle.json']['verdict'], 'PASS')
-        # The gates producer keeps P-c's exact outcome keys (perf.gates_allow_run requires them).
-        self.assertEqual(set(arts['gates.json']['outcomes']), {'startup', 'row1', 'rule4_controls', 'rule4_candidate', 'row4', 'w1_controls'})
+        self.assertEqual((plain['verdict'], plain['streams'], len(plain['windows'])), ('PASS', 8, 3))
+        self.assertEqual(arts['ingress-plain.json']['spans'][0]['generation_lines'], 8)
+        self.assertEqual([arts['ingress-round-%d.json' % i]['spans'][0]['generation_lines'] for i in (0, 1)], [14, 14])
+        # Gates carry the declared row4 NOT_RUN; the round wrapper reads exactly that shape.
+        gates = arts['gates.json']
+        self.assertEqual(set(gates['outcomes']), {'startup', 'row1', 'rule4_controls', 'rule4_candidate', 'row4', 'w1_controls'})
+        self.assertEqual((gates['outcomes']['row4'], gates['row4_declared_not_run']), ('NOT_RUN', True))
+        import e3_native39_round as round39
+        self.assertEqual(gates['row4_not_run_reason'], round39.ROW4_NOT_RUN_REASON)
+        self.assertTrue(round39.gates_allow_run(gates, arts['_q'] + '/gates.json'))
+        # Return timing: the split repeat's FULL return, per-rank acks, missing stamps named, no observation window.
+        ret = arts['returns.json']
+        self.assertEqual([r['source'] for r in ret['rows']], ['w1:repeat1'])
+        row = ret['rows'][0]
+        self.assertEqual(sorted(row['ranks']), ['0', '1', '2', '3'])
+        self.assertTrue(row['clock_shared'])
+        self.assertGreater(row['client_send_to_all_rank_ack_ms'], 0)
+        self.assertIn(row['band'], ('at-or-below-row1-1.5ms', 'between-row1-and-row4'))
+        self.assertEqual(row['missing_per_rank'], ['full_send', 'arrival', 'before_route_change_done', 'applied'])
+        self.assertTrue(ret['no_observation_window_at_every_return'])
+        # The summary's plain ratios exist because every validity condition holds.
         summary = arts['trunk-summary.json']
+        self.assertTrue(summary['plain_w1']['accepted'], summary['plain_w1'])
         windows = [w['agg_tps'] for w in plain['windows']]
-        self.assertEqual(summary['plain_w1']['window_agg_tps'], windows)
         self.assertEqual(summary['plain_w1']['median'], sorted(windows)[1])
-        self.assertEqual([r['round'] for r in summary['rounds']], [0, 1])
+        self.assertTrue(summary['native_w1_full']['instruments_off_and_sealed'])
+        self.assertEqual([r['instruments_off_and_sealed'] for r in summary['rounds']], [True, True])
+        self.assertTrue(summary['clean_speed_reading'])
         self.assertFalse(summary['target_is_gate'])
-        self.assertNotIn('w2-idle-precondition', done.stdout)
-        record_case('tail-plain-w1-idle-w2', calls=calls, plain_w1=plain['verdict'], idle='PASS', rounds=[0, 1],
-                    plain_requests=len(leaf.completions), real_client=True)
+        record_case('tail-observer-off-sealed-w1-plain-on-full-rounds', calls=calls, rounds=[0, 1],
+                    split_entries=session.split_entries, plain_requests=len(leaf.completions), real_sealed_w1=True,
+                    real_client=True, returns=len(ret['rows']))
+
+    def test_observer_mapped_on_one_rank_withholds_w1_plain_and_w2(self):
+        done, pv, calls, arts, leaf, session = self.run_tail(mapped_rank=2)
+        self.assertEqual(pv['instruments-w1'], 'FAIL')
+        self.assertTrue(arts['instruments-w1.json']['ranks']['2']['observer_mapped'])
+        self.assertEqual((pv['w1_controls'], pv['w1_plain'], pv['overlap']), ('INCONCLUSIVE',) * 3)
+        self.assertEqual((calls, session.chats, leaf.completions, leaf.tokenized), ([], 0, [], []))
+        self.assertNotIn('instruments-end', pv)
+        self.assertFalse(arts['trunk-summary.json']['plain_w1']['accepted'])
+        record_case('tail-observer-mapped-withholds', calls=calls, instruments='FAIL', rounds=[])
+
+    def test_unreadable_maps_are_inconclusive_and_withhold(self):
+        done, pv, calls, arts, leaf, session = self.run_tail(maps=None)
+        self.assertEqual(pv['instruments-w1'], 'INCONCLUSIVE')
+        self.assertEqual((pv['w1_controls'], pv['w1_plain'], pv['overlap']), ('INCONCLUSIVE',) * 3)
+        self.assertEqual((calls, session.chats, leaf.completions), ([], 0, []))
+        record_case('tail-maps-unreadable-withholds', calls=calls, instruments='INCONCLUSIVE', rounds=[])
+
+    def test_split_left_unrestorable_withholds_the_plain_w1(self):
+        done, pv, calls, arts, leaf, session = self.run_tail(mode='stuck-split')
+        w1 = arts['w1.json']
+        self.assertEqual(w1['summary']['verdict'], 'INCONCLUSIVE')
+        cleanup = w1['repeats'][1]['cleanup']
+        self.assertEqual((cleanup['route_after'], cleanup['full_restored'], cleanup['resume']), ('split', False, None))
+        self.assertEqual(pv['w1-plain-full-idle'], 'INCONCLUSIVE')
+        self.assertEqual((pv['w1_plain'], pv['overlap']), ('INCONCLUSIVE', 'INCONCLUSIVE'))
+        self.assertEqual((leaf.completions, leaf.tokenized), ([], []))  # no plain request reached the engine
+        self.assertNotIn('w1-plain.json', arts)
+        self.assertEqual(calls, [])
+        record_case('tail-unrestored-split-withholds-plain', calls=calls, full_idle='INCONCLUSIVE', plain_requests=0)
+
+    def test_foreign_request_at_split_entry_never_enters_split(self):
+        done, pv, calls, arts, leaf, session = self.run_tail(mode='foreign-entry')
+        w1 = arts['w1.json']
+        seal = w1['repeats'][1]['seal']['entry']
+        self.assertIn('entry-status:scheduler-requests', seal)
+        self.assertTrue(any(r.endswith(':foreign-live-uid') for r in seal), seal)
+        self.assertEqual(session.split_entries, 0)
+        self.assertIn('native-w1-unsealed:unsealed-entry', w1['repeats'][1]['reasons'])
+        self.assertTrue(w1['repeats'][1]['cleanup']['full_restored'])
+        self.assertEqual((pv['w1_controls'], pv['ingress-w1']), ('INCONCLUSIVE', 'FAIL'))
+        self.assertEqual(arts['ingress-w1.json']['measurement'], 'INVALID')
+        self.assertEqual(pv['overlap'], 'INCONCLUSIVE')
+        self.assertEqual(calls, [])
+        record_case('tail-foreign-at-entry-no-split', split_entries=0, ingress='FAIL', rounds=[])
+
+    def test_hidden_arrival_after_the_entry_read_is_invalid_and_withholds_w2(self):
+        done, pv, calls, arts, leaf, session = self.run_tail(mode='hidden-arrival')
+        w1 = arts['w1.json']
+        repeat = w1['repeats'][1]
+        # The stated residual: invisible under PAUSED_ALL at the entry seal, caught afterwards.
+        self.assertEqual((repeat['seal']['entry'], repeat['seal']['begin']), ([], []))
+        self.assertTrue(any(r.endswith(':foreign-live-uid') for r in repeat['seal']['end']), repeat['seal'])
+        self.assertFalse(repeat['valid'])
+        self.assertEqual((pv['w1_controls'], pv['ingress-w1']), ('INCONCLUSIVE', 'FAIL'))
+        self.assertIn('repeat1:generation-count 9 != 8', arts['ingress-w1.json']['invalid'])
+        self.assertIn('STEP overlap-gates INCONCLUSIVE', done.stdout)
+        self.assertEqual(calls, [])
+        record_case('tail-hidden-arrival-invalid', seal_entry='PASS', seal_end='FAIL', ingress='FAIL', rounds=[])
+
+    def test_a_foreign_request_inside_a_sealed_window_is_invalid_by_the_access_log_alone(self):
+        done, pv, calls, arts, leaf, session = self.run_tail(mode='transient-foreign')
+        self.assertEqual(arts['w1.json']['summary']['verdict'], 'COMPLETE')  # every barrier was clean
+        self.assertEqual((pv['w1_controls'], pv['ingress-w1']), ('PASS', 'FAIL'))
+        self.assertEqual(arts['ingress-w1.json']['measurement'], 'INVALID')
+        self.assertIn('repeat1:generation-count 9 != 8', arts['ingress-w1.json']['invalid'])
+        self.assertIn('STEP overlap-gates PASS', done.stdout)
+        self.assertIn('STEP w2-ingress-precondition INCONCLUSIVE', done.stdout)
+        self.assertEqual(calls, [])
+        self.assertFalse(arts['trunk-summary.json']['native_w1_full']['instruments_off_and_sealed'])
+        record_case('tail-transient-foreign-ingress-invalid', w1='COMPLETE', ingress='FAIL', rounds=[])
 
     def test_engine_not_idle_after_the_plain_w1_withholds_w2(self):
-        done, pv, calls, arts, leaf = self.run_tail(QUALIFIED, stuck=True)
-        self.assertEqual(calls, ['e3_native_w1'])
-        self.assertEqual((pv['w1_plain'], pv['w1-plain-idle'], pv['overlap']), ('PASS', 'INCONCLUSIVE', 'INCONCLUSIVE'))
+        done, pv, calls, arts, leaf, session = self.run_tail(stuck=True)
+        self.assertEqual(calls, [])
+        self.assertEqual(pv['w1-plain-full-idle'], 'INCONCLUSIVE')  # the stuck request is visible before the plain W1
+        self.assertEqual((pv['w1_plain'], pv['overlap']), ('INCONCLUSIVE', 'INCONCLUSIVE'))
+        self.assertEqual(leaf.completions, [])
         self.assertIn('STEP w2-idle-precondition INCONCLUSIVE', done.stdout)
-        self.assertIn('STEP overlap-gates PASS', done.stdout)
         self.assertEqual([r['verdict'] for r in arts['native35-performance-grade.json']['rounds']], ['NOT_RUN', 'NOT_RUN'])
-        self.assertEqual(arts['trunk-summary.json']['w1_plain_idle']['verdict'], 'INCONCLUSIVE')
         record_case('tail-not-idle-withholds-w2', calls=calls, idle='INCONCLUSIVE', rounds=[])
 
-    def test_unqualified_row4_withholds_both_w1_clients_and_w2(self):
-        done, pv, calls, arts, leaf = self.run_tail(dict(QUALIFIED, row4='FAIL'))
+    def test_unqualified_rule4_withholds_both_w1_clients_and_w2(self):
+        done, pv, calls, arts, leaf, session = self.run_tail(dict(QUALIFIED, rule4_candidate='FAIL'))
         self.assertEqual(calls, [])
-        self.assertEqual((leaf.completions, leaf.tokenized), ([], []))
+        self.assertEqual((leaf.completions, leaf.tokenized, session.chats), ([], [], 0))
         self.assertEqual((pv['w1_controls'], pv['w1_plain'], pv['overlap']), ('INCONCLUSIVE', 'INCONCLUSIVE', 'INCONCLUSIVE'))
-        self.assertNotIn('w1-plain-idle', pv)
-        self.assertEqual(arts['gates.json']['outcomes']['row4'], 'FAIL')
+        self.assertNotIn('instruments-w1', pv)
+        self.assertEqual(arts['gates.json']['outcomes']['row4'], 'NOT_RUN')
         self.assertIn('trunk-summary.json', arts)
         record_case('tail-unqualified-withholds-all', calls=calls, rounds=[])
 
+
+class RoundWrapper(unittest.TestCase):
+    """The real W2 round CLI behind e3_native39_round: the declared row4 NOT_RUN passes the unchanged gate and
+    nothing else does.  Gates as the queue's PY_GATES writes them."""
+
+    def gates(self, **change):
+        import e3_native39_round as round39
+        base = {'schema': 1, 'outcomes': {'startup': 'PASS', 'row1': 'PASS', 'rule4_controls': 'PASS',
+                                          'rule4_candidate': 'PASS', 'row4': 'NOT_RUN', 'w1_controls': 'PASS'},
+                'no_retry': True, 'calibration_frozen': True, 'rule4_control_continuation': False,
+                'rule4_continuation_sha256': None, 'row4_capacity_continuation': False,
+                'row4_capacity_continuation_sha256': None, 'row4_capacity_matched': [],
+                'row4_declared_not_run': True, 'row4_not_run_reason': round39.ROW4_NOT_RUN_REASON}
+        outcomes = change.pop('outcomes', {})
+        base.update(change)
+        base['outcomes'].update(outcomes)
+        return base
+
+    def run_round(self, gates):
+        import e3_native39_round as round39
+        import e3_native35_performance as round35
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / 'gates.json').write_text(json.dumps(gates))
+            for name in ('w', 'w1'):
+                (d / (name + '.json')).write_text('{}')
+            argv = ['--url', 'http://127.0.0.1:9', '--model', 'm', '--run-id', 'r', '--epoch', '7', '--round', '0',
+                    '--workload', str(d / 'w.json'), '--w1', str(d / 'w1.json'), '--gates', str(d / 'gates.json'),
+                    '--out', str(d / 'out.json')]
+            saved = round35.gates_allow_run
+            try:
+                with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink):
+                    rc = round39.main(argv)
+            finally:
+                round35.gates_allow_run = saved
+            return rc, json.loads((d / 'out.json').read_text())
+
+    def test_only_the_declared_not_run_view_passes_the_unchanged_gate(self):
+        import e3_native39_round as round39
+        rc, out = self.run_round(self.gates())
+        self.assertEqual((rc, out['error']['error_message']), (2, 'reviewed-package-readiness-not-pass'))  # past the gate
+        refused = {'undeclared': self.gates(row4_declared_not_run=False, row4_not_run_reason=None),
+                   'reason-differs': self.gates(row4_not_run_reason='other'),
+                   'row4-fail-declared': self.gates(outcomes={'row4': 'FAIL'}),
+                   'with-capacity-continuation': self.gates(row4_capacity_continuation=True),
+                   'w1-not-pass': self.gates(outcomes={'w1_controls': 'INCONCLUSIVE'})}
+        for label, gates in refused.items():
+            with self.subTest(label=label):
+                self.assertFalse(round39.gates_allow_run(gates, '/nonexistent/gates.json'))
+                rc, out = self.run_round(gates)
+                self.assertEqual((rc, out['error']['error_message']), (2, 'same-queue-qualification-gates-not-pass'))
+        self.assertTrue(round39.gates_allow_run(self.gates(row4_declared_not_run=False, row4_not_run_reason=None,
+                                                           outcomes={'row4': 'PASS'}), '/nonexistent/gates.json'))
+        record_case('round-wrapper-declared-not-run-only', accepted=['declared'], refused=sorted(refused))
 
 def model_count(prompt):
     return length.model_tokens(prompt) if '\n' not in prompt else sum(
@@ -665,15 +1082,85 @@ class BoxFormats(unittest.TestCase):
             q = Path(d)
             (q / 'native35-performance-grade.json').write_text(json.dumps(EXTRACT['p_c']['grade']))
             (q / 'w1-plain.json').write_text(json.dumps(EXTRACT['w1ab2_b0']['w1']))
-            self.assertEqual(checks.main(['summary', '--q', str(q), '--out', str(q / 's.json')]), 0)
-            s = json.loads((q / 's.json').read_text())
-        self.assertEqual(s['plain_w1']['window_agg_tps'], [391.8, 384.0, 394.4])
-        self.assertEqual(s['plain_w1']['median'], 391.8)
-        self.assertEqual((s['native_w1_full']['median'], s['native_w1_full']['denominator']), (227.049, 227.199))
-        self.assertAlmostEqual(s['native_w1_full_over_plain_w1'], 227.199 / 391.8)
-        self.assertEqual([r['verdict'] for r in s['rounds']], ['INCONCLUSIVE', 'NOT_RUN'])
-        self.assertIsNone(s['rounds'][0]['decode_tokens_per_s_during_fresh_prefill'])  # P-c fresh had no native plan
-        self.assertEqual(s['bind_receipt'], None)
+            reads = []
+
+            def read():
+                out = q / ('s%d.json' % len(reads))  # the checks never overwrite a record
+                reads.append(out)
+                self.assertEqual(checks.main(['summary', '--q', str(q), '--out', str(out)]), 0)
+                return json.loads(out.read_text())
+            # The w1ab2 B0 client output alone, without the trunk's FULL, route, ingress and instrument receipts:
+            # its numbers stay visible as raw samples and are never a denominator (Codex item 4).
+            s = read()
+            self.assertEqual((s['plain_w1']['accepted'], s['plain_w1']['median'], s['plain_w1']['window_agg_tps']),
+                             (False, None, None))
+            self.assertEqual(s['plain_w1']['raw_invalid_samples']['window_agg_tps'], [391.8, 384.0, 394.4])
+            self.assertEqual(s['plain_w1']['invalid_reasons'], ['w1-plain-full-idle-missing', 'w1-plain-route-missing',
+                                                                'ingress-plain-missing', 'instruments-w1-missing'])
+            self.assertIsNone(s['native_w1_full_over_plain_w1'])
+            for name in ('w1-plain-full-idle', 'w1-plain-route', 'ingress-plain', 'instruments-w1'):
+                (q / (name + '.json')).write_text(json.dumps({'verdict': 'PASS'}))
+            s = read()
+            self.assertEqual((s['plain_w1']['accepted'], s['plain_w1']['invalid_reasons']), (True, []))
+            self.assertEqual(s['plain_w1']['window_agg_tps'], [391.8, 384.0, 394.4])
+            self.assertEqual(s['plain_w1']['median'], 391.8)
+            self.assertIsNone(s['plain_w1']['raw_invalid_samples'])
+            self.assertEqual((s['native_w1_full']['median'], s['native_w1_full']['denominator']), (227.049, 227.199))
+            self.assertAlmostEqual(s['native_w1_full_over_plain_w1'], 227.199 / 391.8)
+            self.assertEqual([r['verdict'] for r in s['rounds']], ['INCONCLUSIVE', 'NOT_RUN'])
+            self.assertIsNone(s['rounds'][0]['decode_tokens_per_s_during_fresh_prefill'])  # P-c fresh had no native plan
+            self.assertEqual(s['bind_receipt'], None)
+            # Every receipt PASS but the client verdict, a window or a stream not valid: never a denominator.
+            plain = EXTRACT['w1ab2_b0']['w1']
+            for change, reason in ((dict(verdict='INCONCLUSIVE'), 'plain-verdict-INCONCLUSIVE'),
+                                   (dict(errors=['reader: stream 3 ended']), 'plain-errors'),
+                                   (dict(windows=plain['windows'][:2]), 'windows-2-of-3'),
+                                   (dict(windows=[dict(plain['windows'][0], per_stream=plain['windows'][0]['per_stream'][:7])]
+                                         + plain['windows'][1:]), 'window0-eight-live-streams')):
+                (q / 'w1-plain.json').write_text(json.dumps(dict(plain, **change)))
+                s = read()
+                self.assertEqual((s['plain_w1']['accepted'], s['plain_w1']['median']), (False, None), reason)
+                self.assertIn(reason, s['plain_w1']['invalid_reasons'])
+                self.assertIsNone(s['native_w1_full_over_plain_w1'])
+                self.assertTrue(all(r['decode_share_of_plain_w1_median'] is None for r in s['rounds']))
+
+    def test_real_access_lines_parse_and_only_the_loopback_plain_run_is_the_harness_s_own(self):
+        self.assertEqual(ACCESS['schema'], 'native39-box-access-extract/1')
+        for source in ACCESS['sources'].values():
+            self.assertRegex(source['sha256'], '^[0-9a-f]{64}$')
+        self.assertEqual(ACCESS['access_re'], checks.ACCESS_RE.pattern)  # the recorded counts are this parser's
+        b0, pc = ACCESS['w1ab2_b0'], ACCESS['p_c']
+        self.assertEqual((b0['parsed_lines'], pc['parsed_lines']), (b0['shaped_lines'], pc['shaped_lines']))
+        self.assertEqual((b0['parsed_lines'], pc['parsed_lines']), (10, 6174))
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / 'b0').mkdir()
+            q = self.write_q(d / 'b0', b0['lines'], ['x'])
+            rows = checks.access_lines(q)
+            self.assertEqual(len(rows), 10)
+            self.assertTrue(all(r['t'] is not None and r['addr'] == checks.LOOPBACK for r in rows))
+            start, end = b0['wall_anchor_s'], b0['windows'][-1]['wall_t1'] + checks.INGRESS_LAG_S
+            for expect, rc in ((b0['streams'], 0), (b0['streams'] + 1, 1)):
+                out = d / ('plain-%d.json' % expect)
+                self.assertEqual(checks.main(['ingress', '--q', str(q), '--label', 'plain', '--start', repr(start),
+                                              '--end', repr(end), '--generation', str(expect), '--out', str(out)]), rc)
+            plain = json.loads((d / 'plain-8.json').read_text())
+            self.assertEqual((plain['measurement'], plain['spans'][0]['generation_lines']), ('VALID', 8))
+            # The P-c log (--host 0.0.0.0): every path the engine logged during the queue is classified, and
+            # its LAN scrapes and unauthenticated LAN requests make any span holding them INVALID.
+            (d / 'pc').mkdir()
+            q = self.write_q(d / 'pc', pc['first_of_kind'], ['x'])
+            rows = checks.access_lines(q)
+            self.assertEqual(len(rows), len(pc['kinds']))
+            self.assertNotIn('other', {r['kind'] for r in rows})
+            generation = sum(n for k, n in pc['kinds'].items() if k.split()[2] in checks.GENERATION_PATHS)
+            self.assertEqual(generation, 48 + 45 + 10)
+            whole = checks.span(rows, min(r['t'] for r in rows), max(r['t'] for r in rows), 3)
+            self.assertEqual(whole['invalid'], ['non-loopback-client', 'unauthenticated-request', 'generation-not-200'])
+            loop = [r for r in rows if r['addr'] == checks.LOOPBACK]
+            only = checks.span(loop, min(r['t'] for r in loop), max(r['t'] for r in loop), 2)
+            self.assertEqual((only['invalid'], only['unknown']), ([], []))  # the control path's 500 is not ingress
+        record_case('box-access-lines', b0_parsed=10, p_c_parsed=6174, plain='VALID', p_c_lan='INVALID')
 
     def test_bind_epoch_against_the_p_c_startup_epoch(self):
         epoch = EXTRACT['p_c']['startup_engine_epoch']
@@ -715,7 +1202,23 @@ class Derivation(unittest.TestCase):
         pc, trunk = names((RUNS / 'q18a_native35_p_c.draft.sh').read_text()), names(TRUNK.read_text())
         self.assertLessEqual(pc, trunk)
         self.assertEqual(trunk - pc, {'bind-receipt', 'effective-host', 'bind-epoch', 'w2-length', 'w1_plain', 'w1-plain-idle',
-                                      'w2-idle-precondition', 'trunk-summary'})
+                                      'w2-idle-precondition', 'trunk-summary',
+                                      # Codex queue review (1c334bc) items 1-3 and the lead's return timing
+                                      'instruments-w1', 'ingress-w1', 'w1-plain-full-idle', 'w1-plain-route', 'ingress-plain',
+                                      'w2-ingress-precondition', 'w2-idle-round-$_round', 'instruments-round-$_round',
+                                      'ingress-round-$_round', 'instruments-end', 'returns'})
+
+    def test_every_leaf_this_suite_names_is_declared_with_its_test(self):
+        import re
+        declared = {l['name']: l for l in json.loads((HERE / 'native39_fixture_leaves.json').read_text())['leaves']}
+        named = set(re.findall(r'[Ff]ixture leaf (queue-[a-z0-9-]+)', Path(__file__).read_text()))
+        self.assertLessEqual(named, set(declared))
+        for name, leaf in declared.items():
+            if not name.startswith('queue-'):
+                continue
+            self.assertTrue(leaf['replaces'] and leaf['equivalence'] and leaf['cannot_prove'], name)
+            for test in re.findall(r'test_native39_trunk_queue\.(\w+)', leaf['test']):
+                self.assertIn(test, globals(), name)
 
     def test_scripts_parse_and_name_only_the_trunk(self):
         for path in (TRUNK, SETTINGS, DECLARE):

@@ -1,6 +1,6 @@
 {
  "schema": "fixture-leaves/1",
- "scope": "native39 trunk robustness (Codex native37 P1/P2): R/W/P (e3_native39_trunk_probe.py, pinned CPU container, network none) the hub suite test_native39_trunk.py, and the trunk queue suite test_native39_trunk_queue.py (queue-* leaves; the queue segments, checks, guard, client, host observer, grade, settings, setcfg algorithm and S5 launcher render are real). Every leaf replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
+ "scope": "native39 trunk robustness (Codex native37 P1/P2): R/W/P (e3_native39_trunk_probe.py, pinned CPU container, network none) the hub suite test_native39_trunk.py, and the trunk queue suite test_native39_trunk_queue.py (queue-* leaves; the queue segments, checks, guard, sealed native W1, W1 decode driver, session client, plain client, host observer, grade, round wrapper, settings, setcfg algorithm and S5 launcher render are real). Every leaf replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence.",
  "leaves": [
   {
    "name": "w-one-token-sampler-output",
@@ -133,8 +133,8 @@
   {
    "name": "queue-engine-leaf",
    "test": "test_native39_trunk_queue.Tail",
-   "replaces": "The engine's /tokenize, streamed /v1/completions and /metrics for the plain W1 client (w1_trace.py, real) and the idle check (real)",
-   "equivalence": "w1_trace reads only len(tokens) of /tokenize and usage.completion_tokens of `data: {` SSE lines; the leaf streams one usage line per 10 ms per request and ends a stream when the client disconnects (the engine aborts a request on disconnect; q18b-w1ab2 relied on the same). /metrics carries vllm:num_requests_running/waiting with labels in the engine's exposition form; running counts the open streams, plus one when the scenario holds the engine busy.",
+   "replaces": "The engine's /tokenize, streamed /v1/completions and /metrics for the plain W1 client (w1_trace.py, real), the idle and full-idle checks (real) and the ingress span of the plain W1",
+   "equivalence": "w1_trace reads only len(tokens) of /tokenize and usage.completion_tokens of `data: {` SSE lines; the leaf streams one usage line per 10 ms per request and ends a stream when the client disconnects (the engine aborts a request on disconnect; q18b-w1ab2 relied on the same). /metrics carries vllm:num_requests_running/waiting with labels in the engine's exposition form; running counts the open completion and chat streams, plus one when the scenario holds the engine busy; waiting counts requests the session double admitted under a pause (the hidden-arrival case).",
    "cannot_prove": "Real decode rates, prefill time of 8 x 153537 cold prompts, the engine's abort latency (the idle check waits for it on the box)",
    "box_evidence": false
   },
@@ -149,8 +149,8 @@
   {
    "name": "queue-phase-executables",
    "test": "test_native39_trunk_queue.Tail",
-   "replaces": "e3_native_w1.py, e3_native35_performance.py, e3_native_memory_grade.py, e3_native28_rule4_continuation.py",
-   "equivalence": "As test_native35_performance_queue.FAKE_PHASE (native35_p leaves): argv recorded, minimal artifacts written; each has its own suite. The gates producer, record/step, w1_trace, the idle check, native35_performance_grade and the trunk summary are real.",
+   "replaces": "e3_native39_round.py (the W2 round), e3_native_memory_grade.py, e3_native28_rule4_continuation.py",
+   "equivalence": "As test_native35_performance_queue.FAKE_PHASE (native35_p leaves): argv recorded, minimal artifacts written; each has its own suite. The fake round sends the round's 14 generation requests (three lanes x fresh/append and 8 standing decoders) inside its record's wall span and writes the lanes shape e3_native_performance writes, so the per-round ingress and returns readers see a round. The real e3_native39_round over the unchanged gate is RoundWrapper's. The row4 declaration, gates producer, record/step, sealed native W1, checks, w1_trace, native35_performance_grade and the trunk summary are real.",
    "cannot_prove": "Native W1 and W2 measurements",
    "box_evidence": false
   },
@@ -169,6 +169,46 @@
    "equivalence": "P-c run 1 (docker --timestamps lines, served-host line, host-disk ids, captured --host, defaults EXTRA_ARGS, performance grade, startup epoch) and q18b-w1ab2 B0 (duplicate --host warning, served http://127.0.0.1:8000, health rows, w1_trace output) are read as recorded.",
    "cannot_prove": "A bind line on the box: neither record has one (P-c predates native38; w1ab2 ran the held-a overlay)",
    "box_evidence": true
+  },
+  {
+   "name": "queue-native-session",
+   "test": "test_native39_trunk_queue.Tail",
+   "replaces": "NativeOverlapSession behind POST /v1/flash_s5_native_overlap (patches/s5_engine/native_overlap_session.py: status, pause, resume, prepare, pause_enter_split, leave_full) over the engine driver's status record (engine_driver._status_record), its typed acks (engine_driver.transition_ack_rows) and the worker barrier rows and live_decode census (native_overlap_worker)",
+   "equivalence": "The test double NativeSession answers the same actions with the field names the harness reads: route, route_generation (advanced on every transition), paused, transition_pending, control_pending, return_pending, scheduler_requests (live plus waiting while running, 0 under a pause: the pinned PAUSED_ALL behaviour, engine_driver.py:2994-2996), workers with pid, worker_incarnation, route, route_generation, prefill_requests, decode_eligible and live_decode.live_request_uids (the engine ids of the open chat streams, SSE id + '-' + 8 hex, sorted, at most 64, as the pinned input processor and worker census give them), typed TransitionAck rows per rank, census_before_return and worker_drain on leave_full. The real e3_native39_w1 and checks drive it through the real NativeRuntimeClient. Scenario modes inject a foreign live decoder before the entry read, a request admitted after the entry read and invisible under the pause (the residual the access log catches), a foreign request inside the split window that ends before the end barrier, and a split that refuses to leave.",
+   "cannot_prove": "Real transition latency and the per-rank FULL send/arrival/before_route_change/applied stamps (not exposed by the engine); worker-side UnsupportedRoute; the engine's own refusal paths; whether a request admitted between the unpaused entry read and the pause is held (native40)",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-chat-stream",
+   "test": "test_native39_trunk_queue.Tail",
+   "replaces": "The engine's streamed /v1/chat/completions for the native W1 cohort (e3_w1_decode_driver, real) and the W2 round's requests",
+   "equivalence": "One OpenAI chat.completion.chunk per 10 ms with a per-response id ('chatcmpl-' + 16 hex), choices[0].delta.content and usage.completion_tokens increasing by one, as the pinned engine streams with continuous_usage_stats; under a keep-pause the stream sends SSE comments only (no token), as the engine sends nothing while paused. The driver reads only the event id, usage and the stream state; closing the socket ends the stream and the session double forgets the request, as the engine aborts on disconnect.",
+   "cannot_prove": "Real decode rates, the engine's abort latency, prefill of the box W1 prompts",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-access-log",
+   "test": "test_native39_trunk_queue.Tail",
+   "replaces": "The uvicorn access lines in the followed container log (Q/engine-stream.log, docker logs --follow --timestamps of qwen-flash-prod)",
+   "equivalence": "The leaf appends one line per request in the box form `<RFC3339 ns>Z (APIServer pid=N) INFO:     <addr>:<port> - \"<METHOD> <path> HTTP/1.1\" <code> OK` (native39_box_access_extract.json keeps real ones: the w1ab2 loopback run and the P-c 0.0.0.0 log, all 6184 parsed by ACCESS_RE), streaming responses at response start and others at completion, as uvicorn logs them (the w1ab2 lines: 8 completion lines 0.1-0.3 s after the client start, first tokens 21-42 s later). The leaf writes the file directly with its own stamp, never earlier than the request; the checks read only the stamp, address, port, method, path and code.",
+   "cannot_prove": "Docker's read delay on the box (INGRESS_LAG_S 0.25 s allows it), uvicorn's access logger being enabled on the trunk engine (the checks return INCONCLUSIVE on a span with no lines)",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-docker-exec-maps",
+   "test": "test_native39_trunk_queue.Tail",
+   "replaces": "`docker exec <container id> cat /proc/<worker pid>/maps` for each rank's worker process in qwen-flash-prod",
+   "equivalence": "The fake docker CLI prints FAKE/maps/<pid> when the id is the current container and the command is exactly `cat /proc/<pid>/maps`, and fails otherwise; the instruments check reads only the mapped paths (flash_s5_replay_observer.so, libcuda, libcupti). Clean maps carry libcuda and libcupti only; the observer case adds the observer .so on one rank; the unreadable case has no maps file.",
+   "cannot_prove": "That docker exec as the queue's user may read a worker's maps on the box (untested: a refusal gives INCONCLUSIVE and withholds W1 and W2), the real mapped paths of the pinned image (the observer library name is the one native/build_q17_helpers.sh builds and make_s5_overlap.py mounts: e3/native/flash_s5_replay_observer.so; the check looks for the name flash_s5_replay_observer anywhere in the maps)",
+   "box_evidence": false
+  },
+  {
+   "name": "queue-w1-test-workload",
+   "test": "test_native39_trunk_queue.Tail",
+   "replaces": "workloads/q17b-w1.json (8 streams, the box W1 prompt, 20 s windows)",
+   "equivalence": "The same manifest schema the real driver validates: 8 streams, route plan full then split, two repeats, 40-token prompts, 0.4 s windows, the q17b request shape and completion policy (test_e3_w1_decode_driver.BASE_MANIFEST counts); the driver and e3_native39_w1 take the same code path, only shorter.",
+   "cannot_prove": "Box W1 timing and rates",
+   "box_evidence": false
   }
  ]
 }
