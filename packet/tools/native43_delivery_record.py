@@ -2,7 +2,8 @@
 """Assemble the machine delivery records for a native43 packaging build (results/hub/native43-<label>/).
 
 Reads the build, freeze proof, the bundle self-run (frozen-runner probe), the engine self-run (with the
-CT-vs-container clock split), the owner-chain seam self-run, the compile proof, the precheck conf and log,
+CT-vs-container clock split), the owner-chain seam self-run, the client-clock scan, the compile proof, the
+precheck conf and log,
 the strict and focused logs and the delivery note; checks they bind to one bundle and one runner; writes
 delivery.json, frozen-gates.json and strict.json (refusing to overwrite).  Every verdict is copied, never set.
 """
@@ -58,6 +59,11 @@ def record(a):
     assert o['verdict'] == 'PASS' and o['rc'] == 0 and o['runner_sha256'] == b['runner_sha256'] and o['bundle_manifest'] == b['manifest']
     assert o['network'] == 'none' and o['gpu_device_requests'] == 0 and not o['problems']
     assert c['verdict'] == 'PASS' and not c['failures'] and c['manifest'] == b['manifest'] and c['runner_sha256'] == b['runner_sha256']
+    k = load(a.clock_scan)
+    assert k['schema'] == 'native43-clock-scan/1' and k['verdict'] == 'PASS' and not k['scan']['problems']
+    assert k['bundle_manifest'] == b['manifest'] and k['bundle'] == str(Path(b['bundle']).resolve())
+    assert k['runner']['sha256'] == b['runner_sha256'] and k['setcfg_reference'] and k['scan']['boundary_client_uses_native43_prove']
+    assert k['negative_controls'] and all(k['negative_controls'].values()) and not k['scan']['direct_references']
     precheck = precheck_summary(a.precheck_log)
     strict = dict(b['regression'], log=str(a.strict_log), verdict='PASS', gpu_execution=False,
                   scope='full strict registered CPU regression on the merged frozen native43 build tree')
@@ -102,6 +108,13 @@ def record(a):
         owner_seam_view=dict(verdict=o['verdict'], negatives=o['negatives'], fixture_leaves=o['fixture_leaves'],
                              real_draft_client_foreground=o['real_draft_client_foreground'],
                              owner_decision=o['owner_decision'], container=o['container'], wall_s=o['wall_s']),
+        clock_scan=str(a.clock_scan), clock_scan_sha256=sha(a.clock_scan),
+        clock_scan_view=dict(verdict=k['verdict'], client_units=len(k['scan']['client_units']), roots=k['scan']['roots'],
+                             closure=len(k['scan']['closure']), reachable_identity_calls=k['scan']['reachable_identity_calls'],
+                             controller_constructions=k['scan']['controller_constructions'],
+                             clock_identity_readers=k['scan']['clock_identity_readers'],
+                             uncalled_function_lines=k['scan']['uncalled_function_lines'],
+                             negative_controls=sorted(k['negative_controls'])),
         compile_proof=str(a.compile_proof), compile_proof_sha256=sha(a.compile_proof), compile_files=c['files'],
         compile_failures=len(c['failures']),
         precheck=precheck, precheck_conf=str(a.precheck_conf), precheck_conf_sha256=sha(a.precheck_conf),
@@ -116,7 +129,7 @@ def record(a):
         note=str(a.note), note_sha256=sha(a.note), strict=strict, focused=focused, verdict='PASS', classification=None,
         gpu_execution=False, box_action=False,
         scope='frozen input gates, the fresh strict regression, the pinned-image CPU self-runs (bundle probe, engine + '
-              'clock split, owner-chain seam); no device run; boundary and timing evidence come only from the box run')
+              'clock split, owner-chain seam), the static client-clock scan; no device run; boundary and timing evidence come only from the box run')
     out = a.out
     out.mkdir(parents=True, exist_ok=True)
     for name, value in (('delivery.json', row), ('frozen-gates.json', {k: v for k, v in row.items() if k not in ('strict', 'focused')}),
@@ -130,7 +143,7 @@ def record(a):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
-    for name in ('spec', 'build', 'freeze', 'bundle-selfrun', 'engine-selfrun', 'owner-seam', 'compile-proof',
+    for name in ('spec', 'build', 'freeze', 'bundle-selfrun', 'engine-selfrun', 'owner-seam', 'clock-scan', 'compile-proof',
                  'precheck-conf', 'precheck-log', 'strict-log', 'focused-log', 'note', 'out'):
         p.add_argument('--' + name, type=Path, required=True)
     record(p.parse_args())
