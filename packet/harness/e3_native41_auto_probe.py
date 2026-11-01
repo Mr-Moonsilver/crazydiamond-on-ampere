@@ -195,12 +195,22 @@ class Skew:
     def __init__(self,conn,seed=4141):
         self.conn=conn;self.rnd=random.Random(seed)
         self.finalize=0;self.mixed=0;self.refused=[]
+        # Completion guard: per transaction, the ranks whose own state event
+        # has completed; a worker release of that transaction, or the next
+        # transaction's open (its PREPARE copy follows), needs all four.
+        self.done={};self.opened=[];self.violations=[];self.opens_checked=0;self.releases_checked=0
+    def observe(self):
+        for rank,w in self.conn.workers.items():
+            b=w._flash_s5_bridge;tx=b.transaction;ev=b.dispatcher.state_event
+            if tx is not None and ev is not None and ev.complete:
+                self.done.setdefault(tx.txn_seq,set()).add(rank)
     def progress(self,rank):
         events=[e for e in self.conn.workers[rank].bus.events if not e.complete]
         count=sum(self.rnd.random()<self.RATES[rank] for _ in events)
         for e in events[:count]:e.complete=True
     def tick(self):
         for rank in sorted(self.conn.workers):self.progress(rank)
+        self.observe()
     @contextlib.contextmanager
     def installed(self):
         import test_e3_r4_worker_bridge as r4
@@ -211,6 +221,27 @@ class Skew:
             original(event,stream)
             earlier=event.bus.events[:event.bus.events.index(event)]
             if all(e.complete for e in earlier) and skew.rnd.random()<0.5:event.complete=True
+        ranks=set(conn.workers)
+        for rank,w in conn.workers.items():
+            bridge=w._flash_s5_bridge
+            real_open=w.flash_s5_open;real_release=w.flash_s5_release
+            def guarded_open(message,_real=real_open,_rank=rank,_bridge=bridge):
+                skew.observe();before={s:set(v) for s,v in skew.done.items()};prior=list(skew.opened)
+                result=_real(message);tx=_bridge.transaction
+                if tx is not None:
+                    earlier=[s for s in prior if s<tx.txn_seq]
+                    if earlier:
+                        skew.opens_checked+=1;missing=ranks-before.get(max(earlier),set())
+                        if missing:skew.violations.append(('open-before-prior-state',_rank,tx.txn_seq,sorted(missing)))
+                    if tx.txn_seq not in skew.opened:skew.opened.append(tx.txn_seq)
+                return result
+            def guarded_release(message,_real=real_release,_rank=rank,_bridge=bridge):
+                skew.observe();tx=_bridge.transaction
+                if tx is not None:
+                    skew.releases_checked+=1;missing=ranks-skew.done.get(tx.txn_seq,set())
+                    if missing:skew.violations.append(('release-before-state',_rank,tx.txn_seq,sorted(missing)))
+                return _real(message)
+            w.flash_s5_open=guarded_open;w.flash_s5_release=guarded_release
         for w in conn.workers.values():
             for name in ('flash_s5_submit','flash_s5_poll','flash_s5_release'):
                 real=getattr(w,name)
@@ -297,6 +328,13 @@ def _run(mode,conn,root,failures):
         check('tp-skew-no-refusal',not skew.refused,refused=skew.refused)
         check('tp-skew-finalize-commit-beside-state-finalize',skew.mixed>=1,
               finalize_agreements=skew.finalize,mixed=skew.mixed)
+        # Every worker release, and every next chunk's open (its PREPARE copy
+        # follows the open), waited for all four ranks' own state events.
+        check('tp-skew-no-completion-dependent-action-early',
+              not skew.violations and skew.opens_checked>=4*(len(skew.opened)-1)>0
+              and skew.releases_checked>=4*len(skew.opened),
+              violations=skew.violations[:8],opens_checked=skew.opens_checked,
+              releases_checked=skew.releases_checked,transactions=len(skew.opened))
     if mode in ('auto','foreign','pending-split','pending-full','tp-skew'):
         check('ordinary-requests-trigger-native-cycle',len(conn.native)>1 and all(r['uid']==req.request_id for r in conn.native))
         check('native-covers-0-through-n-minus-1',conn.native[0]['start']==0 and conn.native[-1]['end']==32800

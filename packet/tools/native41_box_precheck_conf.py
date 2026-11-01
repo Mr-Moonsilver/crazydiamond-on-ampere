@@ -48,7 +48,7 @@ def generate(build, parent, out, container):
     fixtures = ['test_native39_trunk_queue.py'] + ['test_q18a_native%d_owner_run.py' % n for n in range(5, 18)]
     text = text.replace('FIXTURE_FILES=(\n', 'FIXTURE_FILES=(\n' + ''.join('  ' + n + ' # declared synthetic unit-test credential literal only\n' for n in fixtures))
     assert text.count('SEAM_TESTS=(') == 1
-    text = text.replace('SEAM_TESTS=(', 'SEAM_TESTS=(test_native41_box_queue.py test_native41_autoarm.py e3_native41_auto_probe.py test_native41_tp_skew.py '
+    text = text.replace('SEAM_TESTS=(', 'SEAM_TESTS=(test_native41_box_queue.py test_native41_autoarm.py e3_native41_auto_probe.py test_native41_tp_skew.py test_e3_tp_finalize_skew.py '
                         'e3_native41_receipts_probe.py e3_native41_autoarm_box.py test_native41_unarmed_box.py '
                         'e3_native41_unarmed_box.py test_native40_box_queue.py '
                         'test_native40_unarmed_hold.py e3_native40_unarmed_probe.py test_native39_trunk_queue.py ')

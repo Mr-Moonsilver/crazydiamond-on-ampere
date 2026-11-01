@@ -178,28 +178,36 @@
       "name": "tp-skew-completion",
       "test": "e3_native41_auto_probe.Skew",
       "replaces": "CUDA event completion timing of each rank's streams (the r4 ControllableEvent query answer), in the connected auto cycle",
-      "equivalence": "A real CUDA event completes in stream order and asynchronously to the host, and an event recorded on an idle stream completes at once. The leaf completes each rank's recorded events in order at a fixed per-rank rate after every Core tick and, with probability 1/2, before each per-rank submit/poll/release delivery of one round; an event recorded while every earlier event on its bus is complete completes at record with probability 1/2 (ControllableEvent.record). Startup, Core, scheduler, auto-arm policy, driver, bridges, dispatchers, RPC schema and validators are the real ones; the probe only counts STATE_FINALIZE agreements around the real driver._apply_segments call.",
+      "equivalence": "A real CUDA event completes in stream order and asynchronously to the host, and an event recorded on an idle stream completes at once. The leaf completes each rank's recorded events in order at a fixed per-rank rate after every Core tick and, with probability 1/2, before each per-rank submit/poll/release delivery of one round; an event recorded while every earlier event on its bus is complete completes at record with probability 1/2 (ControllableEvent.record). Startup, Core, scheduler, auto-arm policy, driver, bridges, dispatchers, RPC schema and validators are the real ones; the probe only counts STATE_FINALIZE agreements around the real driver._apply_segments call, and it guards each worker's flash_s5_open and flash_s5_release: it observes every rank's own state event and calls the real method.",
       "cannot_prove": "GPU timings, the box frequency of the skew, NCCL collectives, device memory or model exactness.",
       "seams": [
         "ControllableEvent.record",
         "flash_s5_submit",
         "flash_s5_poll",
         "flash_s5_release",
+        "flash_s5_open",
         "_apply_segments"
       ],
       "box_evidence": false
     },
     {
       "name": "tp-skew-network",
-      "test": "test_native41_tp_skew.SkewNetwork",
+      "test": "test_e3_tp_finalize_skew.SkewNetwork",
       "replaces": "CUDA event/stream completion on the four ranks and the stage-0 model's PP last-stage flag in the connected ProfileNetwork composition",
-      "equivalence": "Real NativeSegmentDriver, NativeWorkerBridge, LaneDispatcher, QsaLayerDriver and QsaPrefillOperation on stage 0 (r4 lanes on stage 1), as in test_e3_native_schedule_profile. Completion is controlled per rank (held events stay incomplete; ControllableEvent.record completes an event recorded on an idle stream, as a GPU does). _flash_e3_is_last_stage is False on stage 0, which the real stage-0 model of a two-stage pipeline is. Test wrappers observe bridge.submit and driver._apply_segments and call the real methods; the divergence cases replace one accepted reply's cursor or pause to prove the agreement still refuses.",
+      "equivalence": "Real NativeSegmentDriver, NativeWorkerBridge, LaneDispatcher, QsaLayerDriver and QsaPrefillOperation on stage 0 (r4 lanes on stage 1), as in test_e3_native_schedule_profile. Completion is controlled per rank: held events stay incomplete, and ControllableEvent.record completes an event recorded on an idle stream, as a GPU does. _flash_e3_is_last_stage is False on stage 0, which the real stage-0 model of a two-stage pipeline is. CompletionGuard wraps bridge.submit, bridge.release, dispatcher.drain, dispatcher.release, driver._send_release, driver._note_terminal_route and the RoutingSender envelope list. Each wrapper observes and then calls the real method. The (c) probes call the real driver._apply_segments with one or both accepted replies' cursor, pause or boundary replaced, and the run must still finish clean. PARENT_KEY patched over engine_driver._continuation is the pre-fix full-cursor key, used only as a negative control. The file is the trunk-named standalone test that ships with the engine fix (claude/tp-finalize-skew).",
       "cannot_prove": "GPU timings, NCCL collectives, real TP o_proj, the dense box route, model exactness.",
       "seams": [
         "ControllableEvent.record",
         "_flash_e3_is_last_stage",
         "bridge.submit",
-        "_apply_segments"
+        "bridge.release",
+        "dispatcher.drain",
+        "dispatcher.release",
+        "_send_release",
+        "_note_terminal_route",
+        "sender.envelopes",
+        "_apply_segments",
+        "_continuation"
       ],
       "box_evidence": false
     },
