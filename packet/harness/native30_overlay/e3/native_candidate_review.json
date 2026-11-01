@@ -1,4 +1,38 @@
 {
+  "alpha_perf": {
+    "alpha_perf_settings": {
+      "FLASH_S5_AUTO_ARM": "1",
+      "FLASH_S5_NATIVE_PROGRESS": "burst",
+      "FLASH_S5_NATIVE_QSA_POLICY": "dense",
+      "FLASH_S5_NATIVE_QSA_STOP_AFTER": null,
+      "FLASH_S5_NATIVE_QSA_TRACE": null
+    },
+    "arm": "TRUNK",
+    "candidate": "q18a-alpha-perf",
+    "device_run": "NOT_RUN",
+    "dry_run": false,
+    "engine_delta": {
+      "focused_suites": [],
+      "lineage_rows": []
+    },
+    "engine_files": [
+      "e3/engine_driver.py",
+      "e3/executor_hooks.py",
+      "e3/native_resources.py",
+      "e3/qsa_driver.py",
+      "e3/qsa_operation.py",
+      "e3/row1_oracle.py",
+      "e3/worker_bridge.py",
+      "e3_sources/executor.py"
+    ],
+    "model_settings_changed": false,
+    "parent": "q18a-native41-progress",
+    "parent_commit": "6e36495a19b81e2cad7919cc0a6a6123cabdb04e",
+    "parent_manifest": "15dffe62e5d425c66c06f90a3387f624ebe618ab181d71141f60c881b192c7c8",
+    "queue": "q18a-alpha-perf: held-f's queue with the dense policy, band 1 unchanged and band 2 past the arena; speed reported, validity gated; 2.5 h box budget",
+    "scope": "prefill speed and decode-during-prefill on the composed alpha engine; no engine source change",
+    "source_commit": "8f15e3705051d53f595e635d67e2ee7db1d69fe2"
+  },
   "backend_semantics_provenance": {
     "constructor_and_method_ASTs_equal": true,
     "methods": 7,
@@ -1493,13 +1527,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict registered CPU regression on the packaged tree",
-    "cases": 343,
+    "cases": 345,
     "exit_code": 0,
-    "log_sha256": "0ec99d4382c667cc33fbbd693e458d081e1b4389d7c2b81de68894961ec2272d",
-    "reported_tests": 4091,
-    "required": 343,
+    "log_sha256": "66a3209fe8102f68fe77989293ca55060619d5b38dfaaf0322a96dd2b3181ab9",
+    "reported_tests": 4131,
+    "required": 345,
     "skips": 0,
-    "suites": 226
+    "suites": 228
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -1513,6 +1547,8 @@
   "harness_source_shas": {
     "agent_replay.py": "b448663bca93fdac24d2f0d36e11e7a5d74ce645014c2561deae74ce4e3c63ee",
     "alpha_m3_fixture_leaves.json": "5b198646158c248c7adcdf9e75a068a06c596346855e1966e205302b187dfea2",
+    "alpha_perf_fixture_leaves.json": "297540e49726959ddc3e551c87fbbe0e25ff5a5c61d06b2a86c0586a0b561649",
+    "alpha_perf_gate.py": "1a9e65923e2c9705fb7d1f9abb914de106c4610196c6e4a7e5e7f3fdfa4af942",
     "alpha_s1_fixture_leaves.json": "07bbb7daed0d0772627579ec382d1b2f76826fdba73d517d0e625db7cc69af73",
     "baselines/q15-teacher-forced-rule3.json": "1f1d7c23c66bf6d71aba3baef5e9f89f9fd12c297a70641f7cb397b100a2eae3",
     "baselines/q15-warmcold.json": "c1d7ceb90e753335c7b50de775167698cb54ce6cb2b79447e6db31d023f05f26",
@@ -1543,6 +1579,7 @@
     "e2_memory_attribution.py": "6c832cfcc48645959491ec085aed2c60c7599e3f5af8cceefbbe3532a35c0839",
     "e2_mount_policy.json": "99e5296299e195edf306695d4e803d05c6df2a2f1885b97d86ebdf3b0c5b4825",
     "e2_state_grade.py": "e6a0e6576f39ee21fe73221df42121d1cd8ba23221299939b32829a686069030",
+    "e3_alpha_perf_box.py": "eaebfdaff1d221f865214e43cd4284a166fa6da4ead639d5468d1d6f2170ca2b",
     "e3_auth_exec.py": "e51a61db7c3f06de60d2b36043199265900548dce1e7c798340ae58f37979909",
     "e3_decode_correctness.py": "4c27130495f86576f125bbc6f66c1f9c1bddca44b442f1dd202e9aeb07f6e5a4",
     "e3_finalize_package.py": "ae14c5937cf899a76b9edf6aee572bb552c9b5b02e21b17de878e6a788a6db23",
@@ -1947,6 +1984,9 @@
     "runs/q17b_teacher12.draft.sh": "a2c3527f85310b11765a9055635228ea563367cf4796496639a8c181608d71ac",
     "runs/q17b_teacher12_declare.sh": "3dc6d17990232d642da49d83f2a52dd1e45b44e0a1c5dda3fe0a804d3da42320",
     "runs/q17s_declare.sh": "a91a4762b2cecc4266b30b2edc8389013d3bcaef525034a65c66bfb73e3fcfe0",
+    "runs/q18a_alpha_perf.draft.sh": "a2a38aabf688faa2a7f9fdfdf5014639eda26613aeada4de187ad4753957a8a1",
+    "runs/q18a_alpha_perf_declare.sh": "bcf0d63bf61ab05639d6b0036651c3cd33ac111cd992f2d2db984257144d3ca7",
+    "runs/q18a_alpha_perf_settings.sh": "048c10b5644de7e8150d981814dfa258ff9115f27645d6e48e772f2cca1768e0",
     "runs/q18a_native1.draft.sh": "8cd64883cdbeac74d486f963154d5678a51c957303c13150b663436e21d18b45",
     "runs/q18a_native10.draft.sh": "976cc1a9dcd58b6e5e5c55e208ff2ba44c097ae8d1d3b327dcdf7da29f1b5285",
     "runs/q18a_native10_declare.sh": "89d07d8ee4d6b46a0bbbd83fd7b337febb2663806e5c3590fcec51568f1b1655",
@@ -2269,7 +2309,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "8ac9fc55aa21a46fe1e9f2a631fe4081a89cce710249e32b2986dbc67daba881",
+    "selftest.py": "cfafc934b5621c85ac86046b5b14b66e0212f711eaf7d486ed3201720a9afa80",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -2295,6 +2335,7 @@
     "teacher_forced.py": "7d3b3fdf82061df20603513724ee8dcd60d43af9aacacc916969c3f333615656",
     "test_agent_replay.py": "8d0c944c3552ee49a6db4b13fe658ad3f064faa03a083017bb6459d1f8d60453",
     "test_alpha_m3_receipts.py": "0629e7b152085824beefc7a42ce6ba751998f1bc7a24fc6fe1e010c75122c288",
+    "test_alpha_perf_queue.py": "d00dd460d3d52fb3f71ad386319e54de270847081ba47fef543d4e0d90e95c27",
     "test_canary_relay.py": "29d9e0c6b628297d8836d17fd7f12db91e99bf08f44a4d0b971927ee2b056d1b",
     "test_cost_budget.py": "6861edc6c77b25186d1425c21f349a7783d868872a6e51aa019911dfd660d238",
     "test_e2_arena.py": "42b5e5dd7ba736fd23e7e88953b6d76113a42ec7549c10764e9beb4575c07d05",
@@ -2581,6 +2622,7 @@
     "workloads/q17b-correctness.json": "603e5a78a3a4efddd82988a468dd27c9f1593d1389ed10ba2b61882bf5ee9446",
     "workloads/q17b-teacher-decode-v3.json": "c0aaa8d9d6c5326a322304604ddd42aafaaf5fc7ae3c138f893e75d931c0d119",
     "workloads/q17b-w1.json": "0f8ca842c75d602536eb0abc638bfe71987923f0cee37aeb808b150fc30efbdd",
+    "workloads/q18a-alpha-perf-band2.json": "69cdf06b75e0e2ef82296626e7404710f3583244e64c9e9de2b4e49705484c2a",
     "workloads/q18a-native-placement-prefill.json": "4924771797b65564456539984e0769066332cba092f1223f35144ce6ec34e711",
     "workloads/q18a-native-row1-template.json": "3c9b69c5541649f2c5cefd3b79b3fdced640e716544dd411185c4f9e75ea04eb",
     "workloads/q18a-native41-progress.json": "0209e119c6a41619b37178cb5c4f73d6e93bf0c3b39d67233073bd2fc5c9297c",
@@ -3615,10 +3657,10 @@
     "queue_timeout_s": 2100
   },
   "post_review_cpu": {
-    "basis": "the l-f focused suites plus the held-f suites (42) over the alpha trunk merge dd6d977",
-    "log_sha256": "5f6c13768fac6fffbe4e60b628cebd994451dcc1d7190fefce63b3c1dfd3c0c1",
+    "basis": "the spec's focused suites over the packaged tree",
+    "log_sha256": "f07e1c22387a16c32d3d56f57ca9fa28bdd5125bca4c97e357f4e57eb9bc181c",
     "skips": 0,
-    "tests": 906,
+    "tests": 767,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
