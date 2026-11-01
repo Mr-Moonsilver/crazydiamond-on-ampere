@@ -847,13 +847,19 @@ class Startup(unittest.TestCase):
 class Mutants(FusedCase):
     """The scenarios above discriminate: each mutant makes its scenario fail."""
     def fails(self, target, name, replacement, scenario):
+        # A scenario class later in the file has not had its class setup yet.
+        type(scenario).setUpClass()
         with mock.patch.object(target, name, replacement):
             result = unittest.TestResult()
             scenario.run(result)
         self.assertEqual(result.testsRun, 1)
         self.assertTrue(result.failures or result.errors, 'mutant survived: ' + name)
+        # A mutant must die on the rule, not because the scenario or the mutant is broken.
+        for _, trace in result.failures + result.errors:
+            self.assertNotRegex(trace.strip().splitlines()[-1], r'^(TypeError|AttributeError|NameError)', trace)
 
-    def test_no_ledger_comparison(self):
+    def test_no_agreement_step(self):
+        # This removes the PREPARE grants too. The digest tests in Commitment cover the ledger itself.
         self.fails(ed.NativeSegmentDriver, '_fused_agree', lambda *a, **k: None,
                    Commitment('test_equal_counts_with_a_different_shape_fail_closed_without_release'))
 
