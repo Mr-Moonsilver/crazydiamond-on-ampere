@@ -1,0 +1,46 @@
+{
+  "schema": "native43-fixture-leaves/1",
+  "box_evidence": false,
+  "leaves": [
+    {
+      "name": "generated-attention-device-port",
+      "tests": "test_native43_dense_boundary.DenseBoundaryTests",
+      "replaces": "NativeQsaDevice, CUDA tensors/streams/events, and generated QSA Triton union/attention kernels",
+      "implementation": "Existing test_e3_sparse_history_dma _GeneratedHarness/FakeSparseDevice/FakeTorch/T/FakeKernel; real generated attention, real QsaPrefillOperation, actual SparseSourceHold, planner and profile authorization execute",
+      "equivalence": "Host geometry/address/pinned facts, deterministic selected-index values, source row signatures and controlled event readiness exercise copy bounds, original-index preservation, source ownership and consumer retirement; fake timing events return a declared 0.25ms solely to check receipt accounting",
+      "cannot_prove": "CUDA/NCCL/H2D behavior, numerical QSA equality or device elapsed performance. Actual box boundary hashes are a separate mandatory check."
+    },
+    {
+      "name": "four-rank-boundary-geometry-and-device",
+      "tests": "test_native43_dense_boundary.BoundaryStopTests; native43_clock_probe.engine_packet",
+      "replaces": "vLLM request/model/CUDA/PP transport at engine-driver/worker-bridge boundaries",
+      "implementation": "Existing test_e3_r4_worker_bridge.Stack; its real controller, NativeSegmentDriver, four NativeWorkerBridge/LaneDispatcher workers, retained-row close, source leases and typed FULL route ACKs execute; 101200-row cutoff shrunk to the fixture's 4-row committed chunk",
+      "equivalence": "Only row geometry/device/model/transport leaves are synthetic. The all-rank release, existing certified cancel, source/PP retirement, no-next-chunk hold and FULL-ACK ordering are real. A separate real staged_chunk_plan test checks exact production endpoints [98176,99200,100224,101200] for 197270 tokens.",
+      "cannot_prove": "Real allocator/cache pressure, TP/PP transport ordering on devices, or GPU correctness."
+    },
+    {
+      "name": "client-first-network-boundary",
+      "tests": "test_native43_boundary_queue.QueueTests.test_real_cli_exact_queue_args_reach_tokenize_after_real_manifest_validation",
+      "replaces": "The API server /tokenize HTTP response",
+      "implementation": "Refuse the first real guard._post after parsing exact queue argv and actual frozen workload/declaration/planner geometry",
+      "equivalence": "The client main, manifest parsing, prompt construction and guard run unchanged through the first network call; no hand-built workload object",
+      "cannot_prove": "Box tokenizer, auth, native-control or request execution. The queue requires the real /tokenize guard and native session."
+    },
+    {
+      "name": "paired-grade-packets",
+      "tests": "test_native43_boundary_queue.GradeTests",
+      "replaces": "Retained client and worker JSON records",
+      "implementation": "Explicit 24-layer synthetic packets and one-field corruptions",
+      "equivalence": "Exercise exact evidence pairing, missing/duplicate coverage, policy/overrun/prompt mismatch and timing exclusion refusal logic; no model result invented as box evidence",
+      "cannot_prove": "Any engine output, timing or placement."
+    },
+    {
+      "name": "separate-proc-clock-view",
+      "tests": "Packaging exact-container self-run using native43_clock_probe --serve and native43_boundary_clock.prove",
+      "replaces": "Only engine container /proc/sys/kernel/random/boot_id, if natural client and engine views are equal",
+      "implementation": "Packaging may bind a declared alternate UUID fixture read-only at that proc file in the engine CPU container; actual host client remains outside; neither Python clock nor identity readers are patched; real driver status samples CLOCK_MONOTONIC",
+      "equivalence": "Recreates distinct LXC/container boot-id views while preserving kernel monotonic clocks and observed zero time-namespace offsets; actual packet must fall within host send/receive bracket. Identities are retained but never compared for equality.",
+      "cannot_prove": "Arbitrary machines or nonzero clock offsets. This is a CPU fixture only and must not ship into box runtime mounts."
+    }
+  ]
+}

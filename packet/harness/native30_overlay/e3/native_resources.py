@@ -847,7 +847,7 @@ def build_worker_runtime(runner, kv_caches, *, env=None, clock=time.monotonic):
         uid_namespace=forward_context, prefill_uid_buffer=uid_buffer.tensor)
     # Address tuples are not owners: keep every tensor alive for the runtime.
     runtime._native_owned_buffers = (uid_buffer, *scratch_buffers)
-    operation_device = NativeQsaDevice(_runner_device(runner), clock=clock)
+    operation_device = NativeQsaDevice(_runner_device(runner), clock=clock, env=env)
     server = WorkerHandoffServer(runtime, bindings=bindings,
                                  operation_device=operation_device, clock=clock)
 

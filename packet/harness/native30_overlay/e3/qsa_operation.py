@@ -42,6 +42,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 import math
 import time
+import os
+import json
+import hashlib
+import logging
+from functools import wraps
 
 from sparse_history_dma import (
     MAX_DESCRIPTORS,
@@ -389,9 +394,12 @@ class NativeQsaDevice:
     compute = 'compute'
     copy = 'copy'
 
-    def __init__(self, device, *, clock=time.monotonic):
+    def __init__(self, device, *, clock=time.monotonic, env=None):
         import torch
         self.torch = torch
+        self.native_qsa_policy, self.native_qsa_trace = native_qsa_settings(env)
+        declared = os.environ if env is None else env
+        self.native_qsa_boundary = declared.get('FLASH_S5_NATIVE_QSA_STOP_AFTER', '0') == '101200'
         # Accept the string/device forms the runner reports; constructing a
         # torch.device on a string is unnecessary and would make the CPU
         # fixtures' minimal torch module part of the contract.
@@ -455,6 +463,30 @@ class NativeQsaDevice:
         if str(event.device) != self.device:
             raise OperationError('stream wait on a foreign-device event')
         self._stream(token).wait_event(event)
+
+    def boundary_digest(self, tensor, *, selection=False):
+        # Diagnostic-only D2H at the final test chunk. No device-wide fence.
+        # These hashes are kept outside timed chunks and contain no payloads.
+        if tensor.numel() * tensor.element_size() > 64 * 1024 * 1024:
+            raise OperationError('native43 boundary tensor exceeds declared 64MiB readback cap')
+        started = time.monotonic_ns()
+        host = tensor.detach().to(device='cpu').contiguous()
+        raw = host.view(self.torch.uint8).numpy()
+        result = dict(sha256=hashlib.sha256(memoryview(raw)).hexdigest(),
+                      shape=list(host.shape), dtype=str(host.dtype),
+                      bytes=host.numel() * host.element_size())
+        if selection:
+            import numpy as np
+            values = host.numpy()[:, :-1]
+            valid = values[values >= 0]
+            result['selected_count'] = int(np.unique(valid).size)
+        result['readback_cpu_ns'] = time.monotonic_ns() - started
+        return result
+
+    def timing_event(self, token):
+        event = self.torch.cuda.Event(enable_timing=True)
+        event.record(self._stream(token))
+        return event
 
     def copy_pages(self, source, arena, source_page, arena_page, pages):
         if type(pages) is not int or not 1 <= pages <= MAX_PAGES_PER_COPY:
@@ -537,6 +569,108 @@ class NativeQsaDevice:
                 src[source_row:source_row + rows], non_blocking=True)
 
 
+
+NATIVE_QSA_POLICY_ENV = 'FLASH_S5_NATIVE_QSA_POLICY'
+NATIVE_QSA_TRACE_ENV = 'FLASH_S5_NATIVE_QSA_TRACE'
+
+
+def native_qsa_settings(env=None):
+    """Latch an explicit policy once at worker construction, before ready."""
+    env = os.environ if env is None else env
+    policy = env.get(NATIVE_QSA_POLICY_ENV, 'current')
+    trace = env.get(NATIVE_QSA_TRACE_ENV, '0')
+    if policy not in ('current', 'dense') or trace not in ('0', '1'):
+        raise OperationError('invalid native QSA startup policy/trace declaration')
+    return policy, trace == '1'
+
+
+class NativeQsaTrace:
+    """Bounded per-operation receipts; event elapsed times only after query.
+
+    No CUDA synchronize, scalar readback or wall/device clock conversion.
+    Event spans include the stream's submitted work between markers. CPU
+    times are method costs, inclusive of validation; they are not GPU time.
+    """
+    MAX_MARKERS = 512
+
+    def __init__(self, operation):
+        self.operation = operation
+        self.open_ns = time.monotonic_ns()
+        self.rows = {}
+        self.pairs = []
+        self.opened = {}
+        self.markers = 0
+        self.dropped = 0
+
+    def row(self):
+        name = self.operation._current_run().layer_name
+        return self.rows.setdefault(name, dict(layer=name, cpu_plan_ns=0,
+            cpu_submit_ns=0, descriptors=0, waves=0, bytes=0,
+            union_ms=0.0, copy_ms=0.0, attention_ms=0.0))
+
+    def begin(self, phase, stream):
+        if self.markers + 2 > self.MAX_MARKERS:
+            self.dropped += 1
+            return None
+        event = self.operation.device.timing_event(stream)
+        self.markers += 2  # Reserve both endpoints, so an end cannot overflow.
+        return self.row()['layer'], phase, stream, event
+
+    def end(self, token):
+        if token is not None:
+            name, phase, stream, start = token
+            end = self.operation.device.timing_event(stream)
+            self.pairs.append((name, phase, start, end))
+
+    def emit(self):
+        incomplete = self.dropped + len(self.opened)
+        for name, phase, start, end in self.pairs:
+            if self.operation.device.query(end):
+                self.rows[name][phase + '_ms'] += float(start.elapsed_time(end))
+            else:
+                incomplete += 1
+        op = self.operation
+        released_ns = time.monotonic_ns()
+        for name, row in self.rows.items():
+            run = op._layers[name]
+            sparse = run.sparse
+            row.update(schema='native43-qsa-layer/1', rank=op.lane.worker_rank,
+                transaction=op.transaction.txn_seq,
+                chunk_start=op.transaction.chunk_start,
+                chunk_end=op.transaction.chunk_end, history=run.valid_tokens,
+                policy=op.transport_policy, operation_open_ns=self.open_ns,
+                operation_released_ns=released_ns,
+                route=sparse.route if sparse is not None else 'dense_dma',
+                selected_count=sparse.selection_count if sparse is not None else None,
+                selected_count_basis='union-readback' if sparse is not None
+                    and sparse.selection_count is not None else 'NOT_OBSERVED:no-union',
+                gpu_timing_complete=incomplete == 0,
+                timing_markers=self.markers, dropped_markers=self.dropped,
+                timing_basis='stream-event brackets include host launch/idle gaps; not GPU busy time',
+                counters_basis='operation-cumulative', counters=dict(op.stats))
+            logging.getLogger(__name__).info('flash-s5 native43_qsa %s',
+                json.dumps(row, sort_keys=True, separators=(',', ':')))
+
+
+def sparse_active_for_trace(run):
+    return run.sparse is not None and run.sparse.route == 'sparse_dma'
+
+
+def trace_cpu(field):
+    def decorate(method):
+        @wraps(method)
+        def wrapped(self, *args, **kwargs):
+            if self.trace is None:
+                return method(self, *args, **kwargs)
+            row = self.trace.row()
+            started = time.monotonic_ns()
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                row[field] += time.monotonic_ns() - started
+        return wrapped
+    return decorate
+
 class QsaPrefillOperation:
     """One transaction's bounded QSA work, driven by generated call sites."""
 
@@ -554,6 +688,10 @@ class QsaPrefillOperation:
         self.transaction = transaction
         self.lane = lane
         self.device = device
+        self.transport_policy = getattr(device, 'native_qsa_policy', 'current')
+        if self.transport_policy not in ('current', 'dense'):
+            raise OperationError('invalid latched native QSA policy')
+        self.trace = NativeQsaTrace(self) if getattr(device, 'native_qsa_trace', False) else None
         self.clock = clock
         self.plan_provider = plan_provider
         self.allocation_epoch = (lane.storage_epoch if allocation_epoch is None
@@ -603,6 +741,17 @@ class QsaPrefillOperation:
                           sparse_fallback_rows=0, sparse_fallback_bytes=0,
                           sparse_routes=0, sparse_source_released=0,
                           union_scratch_bytes=0)
+
+    def boundary_evidence(self, tensor, *, selection=False):
+        if (self.trace is None or self.transaction.chunk_end != 101200
+                or not getattr(self.device, 'native_qsa_boundary', False)):
+            return
+        row = self.trace.row()
+        key = 'selection_evidence' if selection else 'output_evidence'
+        if key in row:
+            raise OperationError('native43 boundary evidence repeated')
+        row[key] = self.device.boundary_digest(tensor, selection=selection)
+        row['timing_excluded'] = 'final-chunk-boundary-readback'
 
     def _check_versions(self, layer_name, versions):
         if (not isinstance(layer_name, str) or not layer_name
@@ -781,6 +930,7 @@ class QsaPrefillOperation:
         self.stats['producers'] += 1
         return run.producer.ticket
 
+    @trace_cpu('cpu_plan_ns')
     def bind_plan(self, layer_name, block_table_row, num_pages, valid_tokens,
                   arena, *, lane=None, allocation_epoch=None, source_epoch=None,
                   versions=None):
@@ -1093,7 +1243,7 @@ class QsaPrefillOperation:
             self.stats['sparse_fallback_bytes'] += refusal.nbytes
             self._fallback = refusal
             raise SparseFallbackRequired(refusal)
-        return True
+        return not (self.transport_policy == 'dense' and num_pages > pages_in_arena)
 
     def declare_sparse_route(self, route):
         """Generated-code route claim; the plan must already be built."""
@@ -1206,6 +1356,8 @@ class QsaPrefillOperation:
             self._owners[('union_scratch', run.layer_name)] = tuple(buffers.values())
             self.stats['union_scratch_bytes'] = max(
                 self.stats['union_scratch_bytes'], nbytes)
+        if self.trace is not None:
+            self.trace.opened['union'] = self.trace.begin('union', self.device.compute)
         sparse.union = self._union_scratch
         return sparse.union
 
@@ -1217,6 +1369,8 @@ class QsaPrefillOperation:
         yields until :meth:`sparse_selection_ready` observes that copy event.
         """
         run, sparse = self._sparse_state()
+        if self.trace is not None:
+            self.trace.end(self.trace.opened.pop('union', None))
         if self._cancelled is not None:
             raise OperationCancelled('cancelled operation cannot stage a selection')
         if sparse.union is None:
@@ -1367,6 +1521,7 @@ class QsaPrefillOperation:
             raise OperationError('pending marker for a foreign selection token')
         return SparseSelectionPending(token.ticket)
 
+    @trace_cpu('cpu_plan_ns')
     def sparse_selection_ready(self, token):
         """Poll the readback copy; build the CPU row plan exactly once.
 
@@ -1443,6 +1598,7 @@ class QsaPrefillOperation:
             raise OperationError('selection count requested before completion')
         return sparse.selection_count
 
+    @trace_cpu('cpu_submit_ns')
     def fill_sparse_bucket(self, staged, selected, compact_start, block_table_row):
         """Enqueue one bounded compact-row bucket; never synchronizes.
 
@@ -1533,12 +1689,17 @@ class QsaPrefillOperation:
             else:
                 self.device.wait_event(self.device.copy, run.consumed[-1].event)
                 self.stats['waits'] += 1
+            timing = self.trace.begin('copy', self.device.copy) if self.trace is not None else None
             for source_row, arena_row, rows in copy.pieces:
                 self.device.copy_rows(run.source, run.arena, source_row,
                                       arena_row, rows)
+            if self.trace is not None:
+                self.trace.end(timing)
             copy.event = self.device.record(self.device.copy)
             sparse.hold.copy_recorded(index)
             sparse.hold.publish(index)
+            if self.trace is not None and sparse.wave_copy is None:
+                self.trace.row()['waves'] += 1
             self.stats['sparse_buckets'] += 1
             self.stats['sparse_rows'] += bucket.rows
             self.stats['sparse_pieces'] += bucket.descriptors
@@ -1547,6 +1708,12 @@ class QsaPrefillOperation:
             self.stats['copy_events'] += 1
             self.device.wait_event(self.device.compute, copy.event)
             self.stats['waits'] += 1
+            if self.trace is not None:
+                row = self.trace.row()
+                row['descriptors'] += copy.descriptors if sparse_active_for_trace(run) else len(copy.pieces)
+                row['waves'] += 1 if not sparse_active_for_trace(run) else 0
+                row['bytes'] += copy.nbytes if sparse_active_for_trace(run) else copy.bytes
+                self.trace.opened['attention'] = self.trace.begin('attention', self.device.compute)
         except BaseException:
             self._failed = True
             raise
@@ -1582,13 +1749,18 @@ class QsaPrefillOperation:
                     self.stats['waits'] += 1
             copy = sparse.wave_copy
             wave = next(sparse.wave_iterator)
+            timing = self.trace.begin('copy', self.device.copy) if self.trace is not None else None
             for piece in wave:
                 self.device.copy_rows(run.source, run.arena, piece.source_row,
                                       piece.arena_row, piece.rows)
+            if self.trace is not None:
+                self.trace.end(timing)
             sparse.wave_event = self.device.record(self.device.copy)
             sparse.wave_ready = False
             rows = sum(piece.rows for piece in wave)
             sparse.hold.stream_wave_recorded(index, rows, len(wave))
+            if self.trace is not None:
+                self.trace.row()['waves'] += 1
             sparse.wave_rows += rows
             sparse.wave_descriptors += len(wave)
             self.stats['copy_events'] += 1
@@ -1618,6 +1790,12 @@ class QsaPrefillOperation:
             self.stats['sparse_descriptors'] += bucket.descriptors
             self.device.wait_event(self.device.compute, copy.event)
             self.stats['waits'] += 1
+            if self.trace is not None:
+                row = self.trace.row()
+                row['descriptors'] += copy.descriptors if sparse_active_for_trace(run) else len(copy.pieces)
+                row['waves'] += 1 if not sparse_active_for_trace(run) else 0
+                row['bytes'] += copy.nbytes if sparse_active_for_trace(run) else copy.bytes
+                self.trace.opened['attention'] = self.trace.begin('attention', self.device.compute)
             sparse.wave_copy = sparse.wave_iterator = sparse.wave_event = None
             return copy.ticket
         except BaseException:
@@ -1629,6 +1807,7 @@ class QsaPrefillOperation:
         return self._fallback
 
     # --- bounded DMA / attention boundaries -------------------------------
+    @trace_cpu('cpu_submit_ns')
     def fill_bucket(self, staged, page_lo, page_hi, block_table_row):
         """Enqueue one bounded bucket of <=4-page copies; never synchronizes.
 
@@ -1643,6 +1822,8 @@ class QsaPrefillOperation:
             raise OperationError("source storage changed after binding")
         if not run.producer_submitted:
             raise OperationError('bucket fill before the producer boundary')
+        if run.sparse_hold is not None:
+            run.sparse_hold.validate(run.sparse_hold.owner, run.layer_name, run.pages)
         # Only one bucket may be outstanding per rank: the next fill is a
         # retry-after-completion, not a host wait or an unbounded queue.
         self._refresh()
@@ -1696,9 +1877,12 @@ class QsaPrefillOperation:
             else:
                 self.device.wait_event(self.device.copy, run.consumed[-1].event)
                 self.stats['waits'] += 1
+            timing = self.trace.begin('copy', self.device.copy) if self.trace is not None else None
             for source_page, arena_page, pages in bucket.pieces:
                 self.device.copy_pages(run.source, run.arena, source_page,
                                        arena_page, pages)
+            if self.trace is not None:
+                self.trace.end(timing)
             copy.event = self.device.record(self.device.copy)
             self.stats['buckets'] += 1
             self.stats['pieces'] += len(bucket.pieces)
@@ -1706,6 +1890,12 @@ class QsaPrefillOperation:
             self.stats['copy_events'] += 1
             self.device.wait_event(self.device.compute, copy.event)
             self.stats['waits'] += 1
+            if self.trace is not None:
+                row = self.trace.row()
+                row['descriptors'] += copy.descriptors if sparse_active_for_trace(run) else len(copy.pieces)
+                row['waves'] += 1 if not sparse_active_for_trace(run) else 0
+                row['bytes'] += copy.nbytes if sparse_active_for_trace(run) else copy.bytes
+                self.trace.opened['attention'] = self.trace.begin('attention', self.device.compute)
         except BaseException:
             self._failed = True
             raise
@@ -1731,6 +1921,8 @@ class QsaPrefillOperation:
         elif run._pending_consumer is None:
             raise OperationCancelled(
                 'cancelled operation cannot submit another attention bucket')
+        if self.trace is not None:
+            self.trace.end(self.trace.opened.pop('attention', None))
         consumer = run._pending_consumer
         sparse_active = (run.sparse is not None
                          and run.sparse.active_bucket is not None)
@@ -2054,6 +2246,9 @@ class QsaPrefillOperation:
                 self.stats['sparse_source_released'] += 1
                 if qualifier is not None:
                     qualifier.finish_layer(run, hold_stats=info)
+        if self.trace is not None:
+            self.trace.emit()
+            self.trace = None
         dropped = len(self._owners)
         self._released = True
         if self._continuation is not None:

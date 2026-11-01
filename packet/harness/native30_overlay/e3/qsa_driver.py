@@ -308,6 +308,7 @@ class QsaLayerDriver:
             raise QsaDriverError('QSA indexer returned an invalid selection shape')
         from lane_comm import canonical_selection
         canonical_selection(selected)
+        operation.boundary_evidence(selected, selection=True)
         impl = attn.impl
         impl.do_kv_cache_update(attn, state['key'], state['value'], attn.kv_cache,
                                 main.slot_mapping)
@@ -402,6 +403,7 @@ class QsaLayerDriver:
     def _tail(self, lane, phase):
         layer = lane.model.layers[phase.layer_idx]
         attn = layer.self_attn
+        self.operation.boundary_evidence(phase.attn_state['attn_output'])
         attn_out = attn._flash_e3_attention_post(phase.attn_state)
         self.operation.end_layer(attn.layer_name)
         result = layer._flash_e3_layer_post(phase.hidden, attn_out, phase.injection)

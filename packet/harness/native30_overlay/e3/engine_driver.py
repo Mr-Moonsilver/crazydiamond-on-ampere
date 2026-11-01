@@ -828,6 +828,14 @@ class NativeSegmentDriver:
             stage_ranks=self.stage_ranks, pp_senders=self.stage_ranks[0],
             pool_chunk_capacity=True)
         self.route_generation = 0
+        import os
+        stop_at = os.environ.get('FLASH_S5_NATIVE_QSA_STOP_AFTER', '0')
+        if stop_at not in ('0', '101200'):
+            raise DriverError('native43-stop-frontier-invalid')
+        if stop_at != '0' and os.environ.get('FLASH_S5_NATIVE_QSA_TRACE', '0') != '1':
+            raise DriverError('native43-stop-needs-trace')
+        self._native43 = (None if stop_at == '0' else
+            dict(stop_at=int(stop_at), checkpoint=None, cancel_started=False))
         self.tx = None
         self.admission = None
         self.lanes = {}
@@ -1705,6 +1713,12 @@ class NativeSegmentDriver:
                              self._retained['completed_sequences'][rank]
                              for rank in self.ranks])
         self._reset()
+        if self._native43 is not None and transaction.chunk_end >= self._native43['stop_at']:
+            self._native43['checkpoint'] = dict(transaction=transaction.txn_seq,
+                exact=not terminal and transaction.chunk_end == self._native43['stop_at'],
+                chunk_start=transaction.chunk_start, chunk_end=transaction.chunk_end,
+                engine_observed_ns=self._monotonic_ns(), worker_releases=released,
+                state_epoch=admission.state_epoch)
         if terminal:
             # The chunk left the final prompt token for stock decode.  Stock
             # work on the full bank may not start before every rank drained
@@ -1834,6 +1848,10 @@ class NativeSegmentDriver:
         try:
             self._drain()
             self.pump_control()
+            if (self._native43 is not None and self._native43['checkpoint'] is not None
+                    and not self._native43['cancel_started']):
+                self._native43['cancel_started'] = True
+                self.stop('cancel')
             if self._profile_failure is not None and deliver_outputs:
                 output = self._finish_profile_failure()
                 if output is not None:
@@ -1845,6 +1863,10 @@ class NativeSegmentDriver:
                 # A route command is outstanding: the worker is draining or
                 # switching streams/banks, so no stock work may be launched
                 # into the old route.  The engine skips this step instead.
+                return (None, False)
+            if self._native43 is not None and self._native43['checkpoint'] is not None:
+                # Certified stop progresses above, but no chunk N+1 or stock
+                # continuation may run while the diagnostic client inspects it.
                 return (None, False)
             if self._split_hold_timeout():
                 # native39: stock work held past the bound with no native work
@@ -3136,6 +3158,7 @@ class NativeSegmentDriver:
             'schedule_profile_timeouts': self._profile_timeouts,
             'schedule_profile_refusals': self._profile_refusal_receipt(),
             'qsa_control': self.qsa_control.snapshot(),
+            'native43_boundary': copy.deepcopy(self._native43),
             'control_pending': None if self._control is None else self._control['action'],
             'admission_intent': self.admission_intent(),
             'control_route': (None if self._control_route is None
