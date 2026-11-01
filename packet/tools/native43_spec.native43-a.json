@@ -1,0 +1,373 @@
+{
+  "schema": "native43-packaging-spec/1",
+  "label": "native43-a",
+  "dry_run": false,
+  "source_commit": "d9fb80ec3ccd4c3be3c1dc40f575cf12c9383b76",
+  "candidate": "q18a-native43-dense-boundary",
+  "arm": "NATIVE43",
+  "review": "prepare",
+  "review_key": "native43",
+  "details": {
+    "model_settings_changed": false,
+    "native43_settings": {
+      "FLASH_S5_NATIVE_QSA_POLICY": [
+        "current",
+        "dense"
+      ],
+      "FLASH_S5_NATIVE_QSA_TRACE": "1",
+      "FLASH_S5_NATIVE_QSA_STOP_AFTER": "101200"
+    },
+    "queue": "q18a-native43-dense-boundary pair: current then dense, fresh process and own request directory per arm, one fresh key per pair queue shared by both arms; held-b prefix through startup/bind/identity/ledger/length guard, one boundary client per arm, held-b crash/stop/restore; never starts production",
+    "scope": "native43 bounded dense transport diagnostic at the 24-page arena boundary (Codex d9fb80ec3ccd): paired current/dense boundary hashes at 101200, timed chunks 97152-100224; no speed claim, not a release candidate",
+    "tail_handback": false
+  },
+  "source_paths": [
+    "A\tharness/native43_boundary_client.py",
+    "A\tharness/native43_boundary_clock.py",
+    "A\tharness/native43_boundary_gate.py",
+    "A\tharness/native43_clock_probe.py",
+    "A\tharness/native43_dense_grade.py",
+    "A\tharness/native43_fixture_leaves.json",
+    "A\tharness/native43_scheduler_tick_probe.py",
+    "A\tharness/runs/q18a_native43_current.draft.sh",
+    "A\tharness/runs/q18a_native43_current_declare.sh",
+    "A\tharness/runs/q18a_native43_current_settings.sh",
+    "A\tharness/runs/q18a_native43_dense.draft.sh",
+    "A\tharness/runs/q18a_native43_dense_boundary.draft.sh",
+    "A\tharness/runs/q18a_native43_dense_declare.sh",
+    "A\tharness/runs/q18a_native43_dense_settings.sh",
+    "A\tharness/test_native43_boundary_queue.py",
+    "A\tharness/test_native43_dense_boundary.py",
+    "A\ttools/build_native43.py",
+    "A\ttools/native43_bundle_selfrun.py",
+    "A\ttools/native43_clock_split.py",
+    "A\ttools/native43_cpu_probe.py",
+    "A\ttools/native43_delivery_record.py",
+    "A\ttools/native43_owner_seam.py",
+    "A\ttools/native43_precheck_conf.py",
+    "A\ttools/native43_queue_drafts.py",
+    "A\ttools/native43_selfrun.py",
+    "A\ttools/native43_spec.heldb-dryrun.json",
+    "A\ttools/native43_spec.native43-a.json",
+    "A\ttools/native43_tools_derive.py",
+    "M\tharness/selftest.py",
+    "M\tharness/test_e3_lane_private.py",
+    "M\tharness/test_e3_qsa_driver.py",
+    "M\tpatches/s5_engine/engine_driver.py",
+    "M\tpatches/s5_engine/native_candidate_review.json",
+    "M\tpatches/s5_engine/native_resources.py",
+    "M\tpatches/s5_engine/qsa_driver.py",
+    "M\tpatches/s5_engine/qsa_operation.py"
+  ],
+  "definitions": {
+    "harness/selftest.py": [
+      "module:For#12"
+    ],
+    "harness/test_e3_lane_private.py": [
+      "FakeOperation.boundary_evidence"
+    ],
+    "harness/test_e3_qsa_driver.py": [
+      "FakeOperation.boundary_evidence"
+    ],
+    "patches/s5_engine/engine_driver.py": [
+      "NativeSegmentDriver.__init__",
+      "NativeSegmentDriver._apply_release",
+      "NativeSegmentDriver._status_record",
+      "NativeSegmentDriver.advance"
+    ],
+    "patches/s5_engine/native_resources.py": [
+      "build_worker_runtime"
+    ],
+    "patches/s5_engine/qsa_driver.py": [
+      "QsaLayerDriver._pre",
+      "QsaLayerDriver._tail"
+    ],
+    "patches/s5_engine/qsa_operation.py": [
+      "NativeQsaDevice.__init__",
+      "NativeQsaDevice.boundary_digest",
+      "NativeQsaDevice.timing_event",
+      "NativeQsaTrace.__init__",
+      "NativeQsaTrace.begin",
+      "NativeQsaTrace.emit",
+      "NativeQsaTrace.end",
+      "NativeQsaTrace.row",
+      "QsaPrefillOperation.__init__",
+      "QsaPrefillOperation._fill_sparse_wave",
+      "QsaPrefillOperation.after_attention_bucket",
+      "QsaPrefillOperation.bind_plan",
+      "QsaPrefillOperation.boundary_evidence",
+      "QsaPrefillOperation.fill_bucket",
+      "QsaPrefillOperation.fill_sparse_bucket",
+      "QsaPrefillOperation.release",
+      "QsaPrefillOperation.sparse_selection_eligible",
+      "QsaPrefillOperation.sparse_selection_ready",
+      "QsaPrefillOperation.sparse_union_scratch",
+      "QsaPrefillOperation.stage_sparse_selection",
+      "class:NativeQsaTrace",
+      "module:NATIVE_QSA_POLICY_ENV",
+      "module:NATIVE_QSA_TRACE_ENV",
+      "module:from functools import wraps",
+      "module:import hashlib",
+      "module:import json",
+      "module:import logging",
+      "module:import os",
+      "native_qsa_settings",
+      "sparse_active_for_trace",
+      "trace_cpu"
+    ]
+  },
+  "engine_changed": [
+    "e3/engine_driver.py",
+    "e3/native_resources.py",
+    "e3/qsa_driver.py",
+    "e3/qsa_operation.py"
+  ],
+  "overlay_definitions": {
+    "e3/engine_driver.py": [
+      "NativeSegmentDriver.__init__",
+      "NativeSegmentDriver._apply_release",
+      "NativeSegmentDriver._status_record",
+      "NativeSegmentDriver.advance"
+    ],
+    "e3/native_resources.py": [
+      "build_worker_runtime"
+    ],
+    "e3/qsa_driver.py": [
+      "QsaLayerDriver._pre",
+      "QsaLayerDriver._tail"
+    ],
+    "e3/qsa_operation.py": [
+      "NativeQsaDevice.__init__",
+      "NativeQsaDevice.boundary_digest",
+      "NativeQsaDevice.timing_event",
+      "NativeQsaTrace.__init__",
+      "NativeQsaTrace.begin",
+      "NativeQsaTrace.emit",
+      "NativeQsaTrace.end",
+      "NativeQsaTrace.row",
+      "QsaPrefillOperation.__init__",
+      "QsaPrefillOperation._fill_sparse_wave",
+      "QsaPrefillOperation.after_attention_bucket",
+      "QsaPrefillOperation.bind_plan",
+      "QsaPrefillOperation.boundary_evidence",
+      "QsaPrefillOperation.fill_bucket",
+      "QsaPrefillOperation.fill_sparse_bucket",
+      "QsaPrefillOperation.release",
+      "QsaPrefillOperation.sparse_selection_eligible",
+      "QsaPrefillOperation.sparse_selection_ready",
+      "QsaPrefillOperation.sparse_union_scratch",
+      "QsaPrefillOperation.stage_sparse_selection",
+      "class:NativeQsaTrace",
+      "module:NATIVE_QSA_POLICY_ENV",
+      "module:NATIVE_QSA_TRACE_ENV",
+      "module:from functools import wraps",
+      "module:import hashlib",
+      "module:import json",
+      "module:import logging",
+      "module:import os",
+      "native_qsa_settings",
+      "sparse_active_for_trace",
+      "trace_cpu"
+    ]
+  },
+  "tools": [
+    "build_native43.py",
+    "native43_bundle_selfrun.py",
+    "native43_clock_split.py",
+    "native43_cpu_probe.py",
+    "native43_owner_seam.py",
+    "native43_precheck_conf.py",
+    "native43_selfrun.py",
+    "native43_tools_derive.py",
+    "native43_queue_drafts.py",
+    "native43_spec.native43-a.json"
+  ],
+  "queue": [
+    "q18a_native43_dense_boundary.draft.sh",
+    "q18a_native43_current.draft.sh",
+    "q18a_native43_dense.draft.sh",
+    "q18a_native43_current_declare.sh",
+    "q18a_native43_dense_declare.sh",
+    "q18a_native43_current_settings.sh",
+    "q18a_native43_dense_settings.sh"
+  ],
+  "expected_tests": 231,
+  "runner_swaps": [
+    [
+      "result.get('native35_arm')=='TRUNK'",
+      "result.get('native35_arm')=='NATIVE43'"
+    ],
+    [
+      "result.get('native39_trunk_queue')=='PASS'",
+      "result.get('native39_trunk_queue')=='PASS' and result.get('native43_queue')=='PASS'"
+    ],
+    [
+      "    from native39_trunk_gate import trunk_window_ok as window_ok\n",
+      "    from native43_boundary_gate import window_ok\n"
+    ],
+    [
+      "engine.get('schema')=='native39-trunk-selfrun/1'",
+      "engine.get('schema')=='native43-selfrun/1'"
+    ],
+    [
+      "and engine.get('image')==IMAGE and engine.get('box_action') is False,'exact-engine-selfrun-required')",
+      "and engine.get('image')==IMAGE and engine.get('box_action') is False\n                and (engine.get('clock_split') or {}).get('verdict')=='PASS'\n                and (engine.get('scheduler_tick_probe') or {}).get('verdict')=='PASS' and (engine.get('scheduler_tick_probe') or {}).get('required_ok') is True,'exact-engine-selfrun-required')"
+    ],
+    [
+      "    for suffix in ('','-requests','.log','-declare.log','-declare-chain.log','-staging.json'):\n",
+      "    for suffix in ('','.log','-staging.json','-pair-grade.json',\n                   *(arm+part for arm in ('-current','-dense') for part in ('','-requests','-declare.log','-declare-chain.log'))):\n"
+    ],
+    [
+      "def phase(script,log,env):\n",
+      "def phase(script,log,env,*args):\n"
+    ],
+    [
+      "        return subprocess.run(['bash',str(H/'runs'/script)],env=env,\n",
+      "        return subprocess.run(['bash',str(H/'runs'/script),*args],env=env,\n"
+    ],
+    [
+      "        rc=phase('q18a_native43_dense_boundary_declare.sh',S0/(QNAME+'-declare-chain.log'),env)\n        require(rc==0,'staging-declaration-refused')\n",
+      "        # Native43: both request directories (O_EXCL-fresh, own private/) from the one queue key.\n        for policy,script in (('current','q18a_native43_current_declare.sh'),('dense','q18a_native43_dense_declare.sh')):\n            rc=phase(script,S0/(QNAME+'-'+policy+'-declare-chain.log'),dict(env,QNAME=QNAME+'-'+policy))\n            require(rc==0,'staging-declaration-refused:'+policy)\n"
+    ],
+    [
+      "declaration_sha256=sha(S0/(QNAME+'-requests')/'startup.json'),",
+      "declaration_sha256={p:sha(S0/(QNAME+'-'+p+'-requests')/'startup.json') for p in ('current','dense')},"
+    ],
+    [
+      "    env=environment(read_private(S0/(QNAME+'-requests')/'private/vllm-api.env'),stage['model'],stage['snapshot_max_bytes'])\n    env.update(FLASH_NATIVE30_SYNC=stage['sync'],REQUESTS=str(S0/(QNAME+'-requests')),Q=str(S0/QNAME))\n    rc=phase('q18a_native43_dense_boundary.draft.sh',S0/(QNAME+'.log'),env)\n",
+      "    # Native43: one queue key for both arms; the pair wrapper sets REQUESTS per arm.\n    key=read_private(S0/(QNAME+'-current-requests')/'private/vllm-api.env')\n    require(read_private(S0/(QNAME+'-dense-requests')/'private/vllm-api.env')==key,'one-queue-key-required')\n    env=environment(key,stage['model'],stage['snapshot_max_bytes'])\n    for name in ('REQUESTS','Q'):env.pop(name,None)\n    env.update(FLASH_NATIVE30_SYNC=stage['sync'])\n    rc=phase('q18a_native43_dense_boundary.draft.sh',S0/(QNAME+'.log'),env,str(S0/QNAME))\n"
+    ]
+  ],
+  "rehearsal": null,
+  "engine_selfrun": {
+    "schema": "native43-selfrun/1",
+    "compiled": [
+      "patches/s5_engine/scheduler_hooks.py",
+      "patches/s5_engine/engine_driver.py",
+      "patches/s5_engine/native_overlap_session.py",
+      "harness/e3_native39_trunk_probe.py",
+      "harness/test_native39_trunk.py",
+      "harness/selftest.py",
+      "tools/native39_trunk_selfrun.py",
+      "tools/native39_trunk_freeze.py",
+      "tools/build_native39_trunk.py",
+      "harness/native43_boundary_client.py",
+      "harness/native43_boundary_clock.py",
+      "harness/native43_boundary_gate.py",
+      "harness/native43_clock_probe.py",
+      "harness/native43_dense_grade.py",
+      "harness/native43_scheduler_tick_probe.py",
+      "harness/test_e3_lane_private.py",
+      "harness/test_e3_qsa_driver.py",
+      "harness/test_native43_boundary_queue.py",
+      "harness/test_native43_dense_boundary.py",
+      "patches/s5_engine/native_resources.py",
+      "patches/s5_engine/qsa_driver.py",
+      "patches/s5_engine/qsa_operation.py",
+      "tools/build_native43.py",
+      "tools/native43_bundle_selfrun.py",
+      "tools/native43_clock_split.py",
+      "tools/native43_cpu_probe.py",
+      "tools/native43_owner_seam.py",
+      "tools/native43_precheck_conf.py",
+      "tools/native43_queue_drafts.py",
+      "tools/native43_selfrun.py",
+      "tools/native43_tools_derive.py"
+    ],
+    "suites": [
+      "test_native39_trunk",
+      "test_native37_robust",
+      "test_native38_plain_bind",
+      "test_e3_admission_native",
+      "test_e3_staged_chunk_plan",
+      "test_e3_native_overlap",
+      "test_e3_native_storage_replay",
+      "test_e3_r4_worker_bridge",
+      "test_e3_admission_metadata",
+      "test_native43_dense_boundary",
+      "test_native43_boundary_queue",
+      "test_e3_qsa_driver",
+      "test_e3_lane_private",
+      "test_e3_sparse_history_dma",
+      "test_e3_worker_operations"
+    ],
+    "probes": [
+      {
+        "script": "native43_scheduler_tick_probe.py",
+        "out": "native43-scheduler-probe.json",
+        "field": "scheduler_tick_probe",
+        "keep": [
+          "schema",
+          "real_scheduler",
+          "baseline_scheduler_ticks",
+          "unexpected_scheduler_ticks",
+          "admitted_after_cutoff",
+          "source_leases_clean",
+          "stop_calls",
+          "cuda_initialized"
+        ],
+        "require": {
+          "schema": "native43-real-scheduler-cutoff/1",
+          "unexpected_scheduler_ticks": 0,
+          "admitted_after_cutoff": 0,
+          "source_leases_clean": true,
+          "stop_calls": [
+            "cancel"
+          ],
+          "cuda_initialized": false
+        }
+      }
+    ]
+  },
+  "bundle_selfrun": {
+    "arm": "NATIVE43",
+    "probe": "native43_cpu_probe.py"
+  },
+  "clock_split": {
+    "side": "native43-clock-probe",
+    "modules": [
+      "native43_boundary_clock.prove"
+    ],
+    "expect": {
+      "identity_equality": "refused",
+      "prove_clock_domain": "refused",
+      "native_window_clock": "refused",
+      "bracket": "proved",
+      "module:native43_boundary_clock.prove": "proved"
+    },
+    "note": "Codex's native43_clock_probe --serve in the engine container, its prove() in the client container across the CT-vs-container split: the bracket proof holds; the identity-equality checks refuse there, as on the box (native40)"
+  },
+  "precheck": {
+    "seams": "test_native43_boundary_queue.py test_native43_dense_boundary.py test_native39_trunk_queue.py test_native39_trunk.py ",
+    "fixture_rows": [
+      "  test_native39_trunk_queue.py # synthetic CPU auth fixture only (VLLM_API_KEY / bearer fixture value)\n"
+    ],
+    "header": [
+      "Native43 dense-boundary diagnostic (Codex d9fb80ec3ccd) packaged by tools/build_native43.py; PREV is the frozen native39 trunk held-b bundle and runner.",
+      "Engine delta vs PREV: e3/{engine_driver,native_resources,qsa_driver,qsa_operation}.py plus generation metadata; compiled libraries unchanged; review prepared (native43).",
+      "Queue: current then dense pair, fresh key per arm; no production start."
+    ]
+  },
+  "checks": [
+    [
+      "tools/native39_trunk_queue_drafts.py",
+      "--check"
+    ],
+    [
+      "tools/native39_trunk_tools_derive.py",
+      "--check"
+    ],
+    [
+      "tools/native39_w2_length.py",
+      "--check"
+    ],
+    [
+      "tools/native43_queue_drafts.py",
+      "--check"
+    ],
+    [
+      "tools/native43_tools_derive.py",
+      "--check"
+    ]
+  ]
+}

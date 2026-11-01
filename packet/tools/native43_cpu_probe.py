@@ -95,7 +95,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native35_*.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native39_trunk_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native43_boundary_queue.py'))
-EXPECTED_TESTS=229  # the 218 trunk probe cases plus the 11 native43 boundary queue cases; pinned into the frozen runner gate
+EXPECTED_TESTS=231  # the 218 trunk probe cases plus the 13 native43 boundary queue cases; pinned into the frozen runner gate
 # Native43 queue case ids are taken before the run (TestSuite.run releases its tests).
 def _cases(tests):
     for test in tests:
@@ -285,7 +285,7 @@ Path('/out/native39-trunk-queue-check.json').write_text(json.dumps(dict(cases=tr
 # Native43: the boundary queue suite (exact drafts, real CLI/tokenize seam, bracket across clock views,
 # strict pair-grade negatives, real window budgets), bound by test id.
 native43_bad=sorted({t.id() for t,_ in result.failures+result.errors+result.skipped}&set(native43_cases))
-assert len(native43_cases)==11 and not native43_bad,(native43_cases,native43_bad)
+assert len(native43_cases)==13 and not native43_bad,(native43_cases,native43_bad)
 Path('/out/native43-queue-check.json').write_text(json.dumps(dict(cases=native43_cases,window_active_and_cleanup_s=active_and_cleanup),sort_keys=True,indent=2)+'\n')
 record=dict(native43_queue='PASS',native43_queue_cases=native43_cases,native43_window_active_and_cleanup_s=active_and_cleanup,native39_trunk_queue='PASS',native39_trunk_queue_receipts=trunk_cases,native39_trunk_window_active_and_cleanup_s=trunk_active_and_cleanup,native35_p_c_continuation='PASS',native35_p_c_continuation_receipts=pc_continuation,native35_p_c_row4='PASS',native35_p_c_row4_receipts=pc_row4,native35_localize_off='PASS',native35_p_c_inert=inert_receipt,native35_p_c_cleanup_receipts=cleanup,native35_row4_l2='PASS',native35_p_b_row4_receipts=row4,native35_l2_cli_receipts=l2_cli,native35_l2_timing_receipts=l2_timing,
     native35_arm=role,native35_performance='PASS',native35_performance_receipts=perf_receipts,native35_builder='PASS',native35_builder_view=builder_view,native35_cli_receipts=native35_cli,native35_o_arm_readback=native35_readback,native35_window_active_and_cleanup_s=active_and_cleanup,probe_environment={k:os.environ[k] for k in ('FLASH_NATIVE34_DIAG','FLASH_NATIVE34_ARM','FLASH_NATIVE34_READBACK','FLASH_NATIVE35_ARM')},native34_readback='PASS',readback_check=readback_check,native34_protocol='PASS',protocol_receipts=protocol_receipts,draft_window_slots='PASS',draft_window_receipts=slot_receipts,arm=role,final_input_proof=True,native34=native34_receipt,owner_prelaunch=owner_prelaunch,native31=native31_receipt,receipt_policy='PASS',receipt_budget_bytes=policy.BYTES_PER_RANK,receipt_tail_s=policy.TAIL_S,row4_cli_validation='PASS',cli_receipts=cli_receipts,identity_receipts=identity_receipts,verdict='PASS' if result.wasSuccessful() and not result.skipped and result.testsRun==EXPECTED_TESTS else 'FAIL',tests_run=result.testsRun,skips=len(result.skipped),plugin_loader='PASS',identity_capture_check='PASS' if result.wasSuccessful() else 'FAIL',identity_timeout_negative_rejected=result.wasSuccessful(),mounted_modules=modules,cuda_initialized=False,gpu_execution=False,
