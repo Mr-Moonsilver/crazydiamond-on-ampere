@@ -3,6 +3,7 @@
 Scheduling remains paused until existing output Futures, the worker barrier,
 and typed split acks settle. No new transport, CUDA operation or model setting.
 """
+import copy
 import weakref
 
 from e3_types import E3ContractError, _text
@@ -82,6 +83,13 @@ class AutoArmPolicy:
         self.schedule_before = 0
         self.external_pause = False
         self.cooldown = False
+        # Native41 measurement: the driver's own status at the armed split
+        # (route split, auto intent set, no chunk yet), kept per cycle so a
+        # read-only window binds exactly like a manual prefill_begin.
+        self.last_armed = None
+        self.last_refusal = None
+        self.last_close = None
+        self.last_unselected = None
 
     @property
     def active(self):
@@ -93,7 +101,9 @@ class AutoArmPolicy:
                     manual_owned=self.manual_owned, selection_seq=self.selection_seq,
                     request_uid=None if request is None else request.request_id,
                     completed=self.completed, minimum_native_rows=max(MIN_NATIVE_ROWS, self.controller.chunk_tokens),
-                    max_cohort=MAX_COHORT)
+                    max_cohort=MAX_COHORT, last_armed=copy.deepcopy(self.last_armed),
+                    last_refusal=copy.deepcopy(self.last_refusal), last_close=copy.deepcopy(self.last_close),
+                    last_unselected=copy.deepcopy(self.last_unselected))
 
     def manual_control(self, command, submit):
         if self._internal:
@@ -220,12 +230,15 @@ class AutoArmPolicy:
         cohort = self._cohort()
         queue = self.controller._queue(s)
         if cohort is None or not queue:
+            if queue:
+                self._unselected(queue.peek_request(), 'cohort')
             return False
         request = queue.peek_request()
         if self.rejected.get(request.request_id, lambda: None)() is request:
             return False
         plan = self._plan(request)
         if plan is None:
+            self._unselected(request, 'plan')
             return False
         self.request_ref = weakref.ref(request)
         self.plan, self.cohort = plan, cohort
@@ -240,11 +253,18 @@ class AutoArmPolicy:
         s.set_pause_state(type(self.old_pause).PAUSED_ALL)
         return True
 
+    def _unselected(self, request, reason):
+        # Diagnostic only: why the FCFS head was last left to stock.
+        self.last_unselected = dict(request_uid=getattr(request, 'request_id', None), reason=reason,
+                                    num_tokens=getattr(request, 'num_tokens', None),
+                                    running=len(self.scheduler.running))
+
     def _restore(self, reason):
         d = self.driver
         if d._split_ready or d.active or d.admission_intent() is not None:
             raise E3ContractError('auto-arm-close-with-owned-route-or-work')
         self._note('closed', reason=reason)
+        self.last_close = dict(selection_seq=self.selection_seq, reason=reason)
         self._remember()
         self.phase = 'idle'
         self.pending = None
@@ -259,6 +279,7 @@ class AutoArmPolicy:
 
     def _rollback(self, reason):
         self._note('refused', reason=reason)
+        self.last_refusal = dict(selection_seq=self.selection_seq, reason=reason)
         if self.driver._split_ready:
             self.deadline = self.driver.clock() + self.driver._control_timeout_s
             self.phase = 'return'
@@ -375,6 +396,8 @@ class AutoArmPolicy:
             self.admitted_before = self.controller.admitted
             self.pending = None
             self._note('armed', route_generation=d.route_generation)
+            self.last_armed = dict(selection_seq=self.selection_seq,
+                                   status=copy.deepcopy(d._status_record_base()))
             self.scheduler.set_pause_state(self.old_pause)
         elif self.phase == 'return':
             if result.get('typed_acks') is not True or result.get('route_after') != 'full':
