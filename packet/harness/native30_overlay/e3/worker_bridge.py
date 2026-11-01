@@ -89,7 +89,11 @@ _MEMORY_FIELDS = (('allocated', 'allocated_bytes.all.current'),
                   ('reserved', 'reserved_bytes.all.current'),
                   ('inactive_split', 'inactive_split_bytes.all.current'),
                   ('alloc_retries', 'num_alloc_retries'),
-                  ('ooms', 'num_ooms'))
+                  ('ooms', 'num_ooms'),
+                  # M3: allocator pressure as a source of device-wide synchronization.
+                  ('sync_all_streams', 'num_sync_all_streams'),
+                  ('device_allocs', 'num_device_alloc'),
+                  ('device_frees', 'num_device_free'))
 
 
 def memory_receipt(point, rank, transaction, cuda=None):
@@ -624,10 +628,12 @@ class NativeWorkerBridge:
             import logging
             logging.getLogger(__name__).info(
                 'flash-s5 memory point=%s rank=%d txn_seq=%d chunk=%d-%d allocated=%d '
-                'reserved=%d inactive_split=%d alloc_retries=%d ooms=%d free=%d total=%d',
+                'reserved=%d inactive_split=%d alloc_retries=%d ooms=%d free=%d total=%d '
+                'sync_all_streams=%d device_allocs=%d device_frees=%d',
                 row['point'], row['rank'], row['txn_seq'], row['chunk_start'],
                 row['chunk_end'], row['allocated'], row['reserved'], row['inactive_split'],
-                row['alloc_retries'], row['ooms'], row['free'], row['total'])
+                row['alloc_retries'], row['ooms'], row['free'], row['total'],
+                row['sync_all_streams'], row['device_allocs'], row['device_frees'])
         except Exception:
             self.memory_receipt_errors += 1
 
