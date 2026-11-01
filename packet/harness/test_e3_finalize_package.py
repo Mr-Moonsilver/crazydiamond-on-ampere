@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 import tempfile
@@ -13,6 +14,7 @@ import e3_finalize_package as f
 class FinalizeTests(unittest.TestCase):
     def fixture(self):
         root = Path(tempfile.mkdtemp(prefix='q17-finalize-'))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         source = root/'source'
         native = source/'e3/native'
         native.mkdir(parents=True)

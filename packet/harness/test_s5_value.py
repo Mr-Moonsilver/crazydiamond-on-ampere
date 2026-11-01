@@ -1,5 +1,6 @@
 import copy
 from pathlib import Path
+import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -53,6 +54,7 @@ class Value(unittest.TestCase):
     def test_all_six_cases_visible_when_missing(self):
         root=Path(__file__).resolve().parents[2]/'tmp';root.mkdir(exist_ok=True)
         d=Path(tempfile.mkdtemp(prefix='s5-value-',dir=root))
+        self.addCleanup(shutil.rmtree,d,ignore_errors=True)
         r=summarize(d);self.assertEqual(len(r['cases']),6);self.assertEqual(r['verdict'],'INCONCLUSIVE')
 
 if __name__=='__main__':unittest.main()

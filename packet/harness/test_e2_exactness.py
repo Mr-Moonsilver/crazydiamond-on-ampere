@@ -1,6 +1,7 @@
 """Byte-oracle/failure-artifact integration on CPU fakes; no CUDA claim."""
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -39,9 +40,10 @@ class OracleBackend:
         if self.gather_bad:dst[arena_row]^=1
 
 
-def oracle_fixture():
+def oracle_fixture(test):
     j,m,t,b,d,lines,switch,x,o,args=fixture()
     root=Path(tempfile.mkdtemp(prefix='e2-exactness-',dir=ROOT.parent/"tmp"))
+    test.addCleanup(shutil.rmtree,root,ignore_errors=True)
     backend=OracleBackend(d.hosts)
     oracle=Exactness(root,'PP0_TP0',m.layer_groups,backend,lines.append,page_tokens=4,arena_pages=23)
     x.exactness=oracle;d.verify_bucket=oracle.bucket
@@ -61,7 +63,7 @@ class ExactnessTests(unittest.TestCase):
                      gpu_metadata=metadata if metadata is not None else (np.array([0,4]),np.array([4])))
 
     def test_actual_lifecycle_byte_bucket_output_and_completed_sidecar(self):
-        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self)
         self.run_layer(x,o,t,a)
         saved=json.loads(v.progress.read_text());s=saved['layers']['qsa0']
         self.assertEqual((s['calls'],s['dense_dma'],s['buckets'],s['bucket_bytes'],s['output_bytes']),(1,1,1,4096,32))
@@ -70,7 +72,7 @@ class ExactnessTests(unittest.TestCase):
         self.assertFalse(any(word in v.progress.read_text() for word in ('address','request_id','token_ids')))
 
     def test_inflight_progress_cannot_resemble_prior_completed_proof(self):
-        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self)
         def observing(*a,e2):
             self.assertTrue(json.loads(v.progress.read_text())['active'])
             staged(*a,e2=e2)
@@ -78,7 +80,7 @@ class ExactnessTests(unittest.TestCase):
         self.assertFalse(json.loads(v.progress.read_text())['active'])
 
     def test_bad_dma_bytes_leave_immutable_primary_and_quarantine(self):
-        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture();backend.gather_bad=True
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self);backend.gather_bad=True
         with self.assertRaises(ExactnessError):self.run_layer(x,o,t,a)
         primary=v.primary.read_bytes();e=json.loads(primary)
         self.assertEqual(e['kind'],'arena_bytes');self.assertEqual(e['evidence']['different_bytes'],1)
@@ -88,7 +90,7 @@ class ExactnessTests(unittest.TestCase):
         with self.assertRaises(ExactnessError):v.completed()
 
     def test_output_byte_mismatch_not_waived_by_model_noise(self):
-        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self)
         def wrong(*a,e2):staged(*a,e2=e2);a[8][0,0]=np.nextafter(np.float32(0),np.float32(1))
         with self.assertRaises(ExactnessError):self.run_layer(x,o,t,a,wrong)
         e=json.loads(v.primary.read_text())
@@ -97,7 +99,7 @@ class ExactnessTests(unittest.TestCase):
 
     def test_gpu_metadata_and_mapping_mismatches_rejected_before_dma(self):
         for kind in ('offset','length','table','rows'):
-            j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture();md=(np.array([0,4]),np.array([4]))
+            j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self);md=(np.array([0,4]),np.array([4]))
             if kind=='offset':md=(np.array([0,3]),np.array([4]))
             if kind=='length':md=(np.array([0,4]),np.array([5]))
             if kind=='table':a[3].values[0]=2
@@ -106,14 +108,14 @@ class ExactnessTests(unittest.TestCase):
             self.assertFalse(b.events);self.assertTrue(v.primary.exists())
 
     def test_off_does_not_run_oracle_or_read_gpu_metadata(self):
-        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture();switch[0]=False
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self);switch[0]=False
         with x.rpc(o):
             x.updated({'a':0},t);x.batch(batch())
             x.staged('qsa0',0,0,4,4,a,baseline,staged)
         self.assertEqual(v.stats['qsa0']['calls'],0);self.assertFalse(b.events)
 
     def test_sparse_fallback_output_checked_without_claiming_dma_coverage(self):
-        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self)
         def sparse(*a,e2):e2.route('sparse_uva',1);baseline(*a)
         self.run_layer(x,o,t,a,sparse)
         self.assertEqual(v.stats['qsa0']['sparse_uva'],1)
@@ -121,11 +123,11 @@ class ExactnessTests(unittest.TestCase):
         self.assertFalse(b.events)
 
     def test_existing_evidence_cannot_be_reused_as_new_worker(self):
-        *_,v,backend,root=oracle_fixture()
+        *_,v,backend,root=oracle_fixture(self)
         with self.assertRaises(Exception):Exactness(root,'PP0_TP0',v.stats,backend,lambda _:None)
 
     def test_memory_opt_in_keeps_exact_oracle_and_reports_observation_boundaries(self):
-        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self)
         v.memory_enabled=True
         calls=[]
         def memory():
@@ -151,14 +153,14 @@ class ExactnessTests(unittest.TestCase):
         self.assertNotIn('request_id',json.dumps(logs));self.assertNotIn('address',json.dumps(logs))
 
     def test_memory_disabled_does_not_call_backend_or_add_sidecar_fields(self):
-        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self)
         backend.memory_stats=lambda:self.fail('disabled memory probe called')
         self.run_layer(x,o,t,a)
         self.assertNotIn('memory',json.loads(v.progress.read_text()))
         self.assertFalse(any(s.startswith('FLASH_E2_MEMORY ') for s in lines))
 
     def test_memory_missing_counters_are_unknown_not_zero(self):
-        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self)
         v.memory_enabled=True
         backend.memory_stats=lambda:{'num_alloc_retries':3,'num_ooms':-1}
         self.run_layer(x,o,t,a)
@@ -179,7 +181,7 @@ class ExactnessTests(unittest.TestCase):
         self.assertIsNone(record['allocated_bytes.all.current'])
 
     def test_memory_enabled_does_not_waive_exactness_failure(self):
-        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture()
+        j,m,t,b,d,lines,switch,x,o,a,v,backend,root=oracle_fixture(self)
         v.memory_enabled=True
         backend.memory_stats=lambda:{key:0 for key in MEMORY_KEYS}
         backend.gather_bad=True
@@ -188,8 +190,9 @@ class ExactnessTests(unittest.TestCase):
         self.assertTrue(m.failed)
 
 
-def grade_fixture():
+def grade_fixture(test):
     root=Path(tempfile.mkdtemp(prefix='e2-exact-grade-',dir=ROOT.parent/"tmp"))
+    test.addCleanup(shutil.rmtree,root,ignore_errors=True)
     for pp in (0,1):
         for tp in (0,1):
             rank=f'PP{pp}_TP{tp}'
@@ -203,7 +206,7 @@ def grade_fixture():
 
 class GraderTests(unittest.TestCase):
     def test_dense_only_phase_rejects_sparse_and_still_requires_dense_coverage(self):
-        root=grade_fixture()
+        root=grade_fixture(self)
         self.assertEqual(e2_exact_grade.grade(root,require_dense_only=True)['verdict'],'FAIL')
         for p in root.glob('*.exact.json'):
             d=json.loads(p.read_text())
@@ -216,15 +219,15 @@ class GraderTests(unittest.TestCase):
         self.assertEqual(e2_exact_grade.grade(root,require_dense_only=True)['verdict'],'INCONCLUSIVE')
 
     def test_complete_four_rank_six_layer_proof(self):
-        self.assertEqual(e2_exact_grade.grade(grade_fixture())['verdict'],'PASS')
+        self.assertEqual(e2_exact_grade.grade(grade_fixture(self))['verdict'],'PASS')
 
     def test_immutable_failure_wins_over_successful_progress(self):
-        root=grade_fixture();(root/'PP1_TP0.failure.json').write_text('{}')
+        root=grade_fixture(self);(root/'PP1_TP0.failure.json').write_text('{}')
         self.assertEqual(e2_exact_grade.grade(root)['verdict'],'FAIL')
 
     def test_sparse_only_or_no_long_dense_or_no_prefix_inconclusive(self):
         for kind in ('sparse','short','prefix'):
-            root=grade_fixture();p=root/'PP0_TP0.exact.json';d=json.loads(p.read_text());s=next(iter(d['layers'].values()))
+            root=grade_fixture(self);p=root/'PP0_TP0.exact.json';d=json.loads(p.read_text());s=next(iter(d['layers'].values()))
             if kind=='sparse':s.update(dense_dma=0,sparse_uva=2,buckets=0,bucket_bytes=0,dense_multibucket_calls=0,dense_max_length=0)
             if kind=='short':s['dense_max_length']=10000
             if kind=='prefix':s['prefix_hit_calls']=0
@@ -233,7 +236,7 @@ class GraderTests(unittest.TestCase):
 
     def test_malformed_missing_counter_wrong_placement_and_partial_write_fail(self):
         for kind in ('counter','layer','geometry','active','route-count','nan','bool','bytes'):
-            root=grade_fixture();p=root/'PP0_TP0.exact.json';d=json.loads(p.read_text());s=next(iter(d['layers'].values()))
+            root=grade_fixture(self);p=root/'PP0_TP0.exact.json';d=json.loads(p.read_text());s=next(iter(d['layers'].values()))
             if kind=='counter':s.pop('bucket_bytes')
             elif kind=='layer':d['layers']['model.layers.47.attn']=d['layers'].pop('model.layers.3.attn')
             elif kind=='geometry':d['arena_pages']=23
@@ -247,6 +250,7 @@ class GraderTests(unittest.TestCase):
 
     def test_missing_workers_is_inconclusive_not_pass(self):
         root=Path(tempfile.mkdtemp(prefix='e2-exact-empty-',dir=ROOT.parent/"tmp"))
+        self.addCleanup(shutil.rmtree,root,ignore_errors=True)
         self.assertEqual(e2_exact_grade.grade(root)['verdict'],'INCONCLUSIVE')
 
 

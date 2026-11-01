@@ -106,6 +106,7 @@ class ObserverTestBase(unittest.TestCase):
         if compiler is None:
             raise unittest.SkipTest('g++ is required for the CPU fixture')
         cls.build_dir = tempfile.mkdtemp(prefix='s5ro-build-')
+        cls.addClassCleanup(shutil.rmtree, cls.build_dir, ignore_errors=True)
         cls.library_path = os.path.join(cls.build_dir, 'libobserver.so')
         command = [
             compiler, '-std=c++17', '-O1', '-g', '-shared', '-fPIC',

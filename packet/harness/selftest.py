@@ -7,7 +7,7 @@ cache path -- the J-inside case; recreated path all right / all wrong; missing r
 stall_trace2.py --recompute (good run; missing newcomer token; stopped stream; incomplete run).
 usage: selftest.py [REVIEW_FIXTURE_DIR]   exit 0 only if every case behaves as required
 """
-import hashlib, json, os, re, subprocess, sys, tempfile
+import atexit, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -45,6 +45,7 @@ def audit_suite(name, process):
 
 def canary_dir(sessions):
     d = tempfile.mkdtemp(prefix='canary-fixture-')
+    atexit.register(shutil.rmtree, d, True)
     with open(os.path.join(d, 'expected.txt'), 'w') as f:
         for i, (code, note, out) in enumerate(sessions, 1):
             f.write(f'1 {i} {code} {note} /synthetic/{i}\n')
@@ -74,6 +75,7 @@ check('canary: duplicate codes', canary_grade.grade(canary_dir([good, ('AMBER-11
 def transcripts_for(d, sessions, stale=False):
     # a Claude Code projects dir with one transcript per synthetic workdir: (code, tools)
     t = tempfile.mkdtemp(prefix='canary-transcripts-')
+    atexit.register(shutil.rmtree, t, True)
     for i, (code, tools) in enumerate(sessions, 1):
         p = os.path.join(t, f'-synthetic-{i}'); os.makedirs(p)
         f = os.path.join(p, 's.jsonl')
@@ -91,7 +93,9 @@ TOOLS = ['Read', 'Bash', 'Bash']
 d = canary_dir([good, other])
 check('canary: transcripts present', canary_grade.grade(d, transcripts_for(d, [(good[0], TOOLS), (other[0], TOOLS)]))['verdict'], 'PASS')
 d = canary_dir([good, other])
-check('canary: requested transcript missing (review fixture)', canary_grade.grade(d, tempfile.mkdtemp())['verdict'], 'FAIL')
+empty_transcripts = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, empty_transcripts, True)
+check('canary: requested transcript missing (review fixture)', canary_grade.grade(d, empty_transcripts)['verdict'], 'FAIL')
 d = canary_dir([good, other])
 check('canary: transcript older than this run', canary_grade.grade(
     d, transcripts_for(d, [(good[0], TOOLS), (other[0], TOOLS)], stale=True))['verdict'], 'FAIL')
@@ -279,6 +283,7 @@ MANIFEST = ('## mounted overlay files\naaaa /o/qsa.py\nbbbb /o/ops_qsa.py\n## se
 
 def release_fixture(v_rows, p_rows, steps, end=(True, True), same_id=False, profile=None):
     d = tempfile.mkdtemp(prefix='release-fixture-')
+    atexit.register(shutil.rmtree, d, True)
     for ph, rows, verify, e, rid in (('V', v_rows, '1', end[0], 'run-v'), ('P', p_rows, '-', end[1], 'run-v' if same_id else 'run-p')):
         os.makedirs(f'{d}/{ph}')
         open(f'{d}/{ph}/verdicts.txt', 'w').write(''.join(f'{k} {v}\n' for k, v in rows) + (f'END {rid}\n' if e else ''))
@@ -554,6 +559,7 @@ def mock_quality_engine(fault):
 
 import zlib  # noqa: E402
 qd = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, qd, True)
 qcorpus = os.path.join(qd, 'corpus.txt')
 QTOK = {n: zlib.crc32(f'w{n}'.encode()) % 5000 for n in range(401)}
 QCHAIN = {QTOK[n]: QTOK[(7 * n + 3) % 401] for n in range(401)}

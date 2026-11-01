@@ -9,6 +9,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,7 @@ def manifest(folder):
 class PackageTests(unittest.TestCase):
     def fixture(self):
         root=Path(tempfile.mkdtemp(prefix='e2-package-',dir=ROOT.parent/"tmp"));base=root/'base';ref=root/'reference'
+        self.addCleanup(shutil.rmtree,root,ignore_errors=True)
         for name in g.PINS:
             p=base/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('# fake '+name+'\n')
         for name in g.REFERENCE_PINS:
@@ -143,6 +145,7 @@ class PackageTests(unittest.TestCase):
         import identity_declare
         self.assertEqual(hashlib.sha256(new.encode()).hexdigest(),identity_declare.E2_LAUNCHER_SHA)
         root=Path(tempfile.mkdtemp(prefix='e2-launcher-',dir=ROOT.parent/"tmp"));p=root/'launcher';p.write_text(new)
+        self.addCleanup(shutil.rmtree,root,ignore_errors=True)
         subprocess.run(['bash','-n',str(p)],check=True)
         for name in g.RUNTIME:self.assertIn('e2/'+name+'.py',new)
         for dest in ('flash_e2','core/sched/output.py','worker/gpu/block_table.py'):
@@ -171,6 +174,7 @@ class PackageTests(unittest.TestCase):
         if not all((ref/n).is_file() for n in (*mapping.values(),*g.REFERENCE_PINS)):
             self.skipTest('read-only image reference absent; full-source integration NOT verified')
         root=Path(tempfile.mkdtemp(prefix='e2-pinned-package-',dir=ROOT.parent/"tmp"));base=root/'base'
+        self.addCleanup(shutil.rmtree,root,ignore_errors=True)
         for name,source in mapping.items():
             p=base/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes((ref/source).read_bytes())
         c=manifest(base/'core');w=manifest(base)

@@ -12,6 +12,7 @@ import json
 from itertools import islice
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import textwrap
@@ -581,8 +582,9 @@ class GeneratorTests(unittest.TestCase):
                     ns["guard"]()
 
     def test_generator_cli_output_directory_is_never_overwritten(self):
-        # Keep artifacts in the agent home. No cleanup/deletion of fixtures.
+        # The fixture lives under the agent tmp directory and is removed when the test ends.
         parent = Path(tempfile.mkdtemp(prefix="resume-test-", dir=ROOT.parent / "tmp"))
+        self.addCleanup(shutil.rmtree, parent, ignore_errors=True)
         output = parent / "generated"
         generated = generate(REF, output)
         self.assertEqual(generated, json.loads((GENERATED / "manifest.json").read_text()))

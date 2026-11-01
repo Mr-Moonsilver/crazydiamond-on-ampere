@@ -47,6 +47,7 @@ def manifest(folder, skip=()):
 class SyntheticTests(unittest.TestCase):
     def fixture(self):
         root = Path(tempfile.mkdtemp(prefix='s5-package-', dir=ROOT.parent / 'tmp'))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         base, ref = root / 'base', root / 'reference'
         for name, text in (('model_runner_v2.py', '# runner\n'),
                            ('core/scheduler.py', '# scheduler\n'),
@@ -355,6 +356,7 @@ class GraphCompositionTests(unittest.TestCase):
 
     def test_graph_module_requires_the_declared_interface(self):
         root = Path(tempfile.mkdtemp(prefix='s5-graph-', dir=ROOT.parent / 'tmp'))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         for text in ('def generate(files): return files\n',
                      'SOURCE_PINS={"x.py": "0"*64}\n',
                      'SOURCE_PINS={}\ndef generate(files): return files\n'):
@@ -380,6 +382,7 @@ class FullPinnedTests(unittest.TestCase):
         if not all(path.is_file() for path in needed):
             raise unittest.SkipTest('pinned reference tree absent')
         root = Path(tempfile.mkdtemp(prefix='s5-full-', dir=ROOT.parent / 'tmp'))
+        cls.addClassCleanup(shutil.rmtree, root, ignore_errors=True)
         base = root / 'base'
         sources = {'model_runner_v2.py': 'v1/worker/gpu/model_runner.py',
                    'qsa.py': 'models/qwen4_exp/nvidia/qsa.py',
@@ -558,6 +561,7 @@ class FullPinnedTests(unittest.TestCase):
 
     def test_e2_composed_source_drift_is_refused(self):
         root = Path(tempfile.mkdtemp(prefix='s5-drift-', dir=ROOT.parent / 'tmp'))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         base = root / 'base'
         shutil.copytree(self.base, base)
         (base / 'core/scheduler.py').write_text(

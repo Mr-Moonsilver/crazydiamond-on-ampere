@@ -2,6 +2,7 @@
 import copy
 import json
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -88,6 +89,7 @@ class AttributionTests(unittest.TestCase):
 
     def test_sampler_same_query_writes_legacy_csv_and_time_brackets_then_exits_on_term(self):
         out=Path(tempfile.mkdtemp(prefix='e2-clock-',dir=ROOT.parent/'tmp'))
+        self.addCleanup(shutil.rmtree,out,ignore_errors=True)
         handlers={}
         text='\n'.join(f'{i}, 100, 200' for i in range(4))+'\n'
         def fake_run(cmd,**kwargs):
@@ -121,6 +123,7 @@ class AttributionTests(unittest.TestCase):
         source=(ROOT/'harness/runs/q16_e2_serial_v3e.draft.sh').read_text()
         code=source.split("<<'PYS'\n",1)[1].split('\nPYS',1)[0]
         out=Path(tempfile.mkdtemp(prefix='e2-peak-',dir=ROOT.parent/'tmp'))
+        self.addCleanup(shutil.rmtree,out,ignore_errors=True)
         raw=out/'raw.csv';raw.write_text(''.join(f'{i}, 100, 200\n' for i in range(4)))
         timed=out/'timed.jsonl'
         sample=dict(start_s=1,end_s=1.01,gpus=m.parse_gpu(raw.read_text()))
