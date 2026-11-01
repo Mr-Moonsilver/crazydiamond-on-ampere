@@ -3,10 +3,10 @@
 
 Three parts, one record (CPU only, no box, no GPU):
   merge  alpha_trunk_composition's source and overlay levels and alpha_trunk_default_off's two directions and negatives,
-         re-run unchanged on the merge commit.  Every tree comes from `git archive`, so moved worktrees cannot matter.
+         re-run unchanged on the merge commit.  Every tree is a scratch clone at its commit, so moved worktrees cannot matter.
   tip    every path changed since the merge is classified.  In the engine only qsa_operation.py, qsa_driver.py,
          worker_bridge.py and the review changed.  The overlay regenerated from the tip differs from the merge's overlay
-         only in those three files (plus generation metadata), each byte-identical to its source.
+         only in those three files (plus generation metadata), each by exactly its source delta.
   off    with FLASH_S5_UNION_RETIRE unset the tip reduces to the merge plus three named unswitched deltas:
            m3-receipts       host-side counters and log fields, no device work (scanned);
            s1-accounting     the union set list and its live statistics;
@@ -16,6 +16,7 @@ Three parts, one record (CPU only, no box, no GPU):
 """
 import argparse
 import ast
+import difflib
 import hashlib
 import json
 from pathlib import Path
@@ -220,9 +221,10 @@ def negatives(tip, merge, files):
 
 
 def export(rev, into):
-    into.mkdir(parents=True)
-    archive = subprocess.run(['git', '-C', str(ROOT), 'archive', rev], check=True, capture_output=True).stdout
-    subprocess.run(['tar', '-x', '-C', str(into)], input=archive, check=True)
+    """A scratch clone at REV: build_native43's stage needs a git tree, and no worktree of this repo is touched."""
+    into.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['git', 'clone', '-q', '--shared', '--no-checkout', str(ROOT), str(into)], check=True)
+    subprocess.run(['git', '-C', str(into), 'checkout', '-q', '--detach', rev], check=True)
     return into
 
 
@@ -248,7 +250,12 @@ def classify_paths(merge_rev, tip_rev):
     return out
 
 
-def tip_overlay(merged, tip, tip_tree):
+def delta(old, new):
+    return [line for line in difflib.unified_diff(old.splitlines(True), new.splitlines(True), n=0)
+            if line[0] in '+-' and line[:3] not in ('+++', '---')]
+
+
+def tip_overlay(merged, tip, tip_tree, merged_tree):
     mr, tr = C.rows(merged), C.rows(tip)
     assert set(mr) == set(tr), sorted(set(mr) ^ set(tr))
     moved = sorted(n for n in mr if mr[n] != tr[n])
@@ -256,8 +263,12 @@ def tip_overlay(merged, tip, tip_tree):
     code = set(moved) - C.METADATA
     assert code == OVERLAY_CHANGED, ('overlay code differs', sorted(code))
     for name in sorted(code):
-        source = tip_tree / 'patches/s5_engine' / Path(name).name
-        assert (tip / name).read_bytes() == source.read_bytes(), ('overlay file is not its source', name)
+        # The generator rewrites imports, so the claim is the delta: the lines added and removed in the overlay file are
+        # exactly the lines added and removed in its source, in order.
+        short = 'patches/s5_engine/' + Path(name).name
+        source = delta((merged_tree / short).read_text(), (tip_tree / short).read_text())
+        assert source and delta((merged / name).read_text(), (tip / name).read_text()) == source, (
+            'overlay delta is not the source delta', name)
     return dict(code=sorted(code), metadata=metadata, merged_manifest=C.sha((merged / 'SHA256SUMS').read_bytes()),
                 tip_manifest=C.sha((tip / 'SHA256SUMS').read_bytes()), files=len(tr))
 
@@ -275,6 +286,7 @@ def run(a):
     repo = C.Repo(ROOT)
     trees = {k: export(rev, work / 'tree' / k) for k, rev in (
         ('merged', D.REV['merge']), ('dense', D.REV['dense']), ('heldf', D.REV['heldf']), ('tip', tip_rev))}
+    (work / 'overlay').mkdir()
     overlays = {k: C.regenerate(v, work / 'overlay' / k, a.tools) for k, v in trees.items()}
     base = Path(a.base_overlay)
     merge = dict(
@@ -289,7 +301,7 @@ def run(a):
         schema='alpha-trunk-tip-proof/1', verdict='PASS', tip=tip_rev, merge=D.REV['merge'], base=D.REV['base'],
         parents=dict(dense=D.REV['dense'], heldf=D.REV['heldf']), merge_proofs=merge,
         tip_paths=classify_paths(D.REV['merge'], tip_rev),
-        tip_overlay=tip_overlay(overlays['merged'], overlays['tip'], trees['tip']),
+        tip_overlay=tip_overlay(overlays['merged'], overlays['tip'], trees['tip'], trees['merged']),
         union_retire_unset_is_merge=tip_off(tip, merged, files), tip_negative_controls=negatives(tip, merged, files),
         level='source and regenerated overlay; receipts and retirement have no box evidence',
         gpu_execution=False, box_action=False)
