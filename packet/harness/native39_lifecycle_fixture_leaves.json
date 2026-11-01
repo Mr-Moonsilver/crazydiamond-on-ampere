@@ -1,0 +1,78 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "test_native39_lifecycle_queue: the native39 lifecycle queue's lifecycle region and on_exit grade lines under bash, the lifecycle CLI's input step and the sourced lifecycle settings. Every object below stands in for the real engine object named in 'replaces'; everything else in those tests is the queue's own bytes or the real harness tool.",
+  "leaves": [
+    {
+      "name": "queue-native-session",
+      "test": "test_native39_lifecycle_queue.Tail",
+      "replaces": "NativeOverlapSession behind POST /v1/flash_s5_native_overlap (patches/s5_engine/native_overlap_session.py) over engine_driver._status_record, engine_driver.transition_ack_rows and the worker barrier rows (native_overlap_worker)",
+      "equivalence": "The trunk's double (test_native39_trunk_queue.NativeSession, declared there under the same name) unchanged. The lifecycle region calls only pause and resume (the instruments check's all-rank barrier) and prepare full + resume (PY_HYGIENE with the real NativeRuntimeClient, which checks the typed TransitionAck rows, the full bank and the route); the double answers with the field names those clients read. stuck=True answers prepare with HTTP 409 as the engine refuses a transition it cannot take.",
+      "cannot_prove": "The engine's own pause/prepare behaviour after a native disconnect and drained reuse (e3_q18a_lifecycle is a leaf here); typed-ack timing",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-docker-exec-maps",
+      "test": "test_native39_lifecycle_queue.Tail",
+      "replaces": "`docker exec <container id> cat /proc/<worker pid>/maps` for each rank's worker process in qwen-flash-prod",
+      "equivalence": "The trunk's leaf of the same name, same semantics: FAKE/maps/<pid> is printed when the id is the current container and the command is exactly `cat /proc/<pid>/maps`; clean maps carry libcuda and libcupti only, the mapped case adds flash_s5_replay_observer.so on one rank. The real e3_native39_trunk_checks instruments check reads only the mapped paths.",
+      "cannot_prove": "That docker exec as the queue's user may read a worker's maps on the box (the trunk's first box run measures it before W1)",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-declare-fixture-tree",
+      "test": "test_native39_lifecycle_queue.Settings",
+      "replaces": "The box task tree and S5 overlay mounted by the launcher (file stubs with SHA256SUMS)",
+      "equivalence": "The trunk's Launcher.declared, called unchanged: test_identity_declare.DeclareTests.setUp plus its S5 overlay names, the real setcfg algorithm, the S5 launcher rendered from deploy/run-flash-prod.sh and identity_declare.declare. The lifecycle, trunk and P-c settings files are sourced as they are.",
+      "cannot_prove": "Mount content hashes of the real overlay (the bundle declaration on the hub)",
+      "box_evidence": false
+    },
+    {
+      "name": "lifecycle-engine-leaf",
+      "test": "test_native39_lifecycle_queue.Tail",
+      "replaces": "The vLLM API server's /health, /metrics and /tokenize on the loopback bind",
+      "equivalence": "health_ok (the queue's own curl line) reads only the status code; the fake pressure2 and partial-tail drivers POST /tokenize once each as their real tools do first and read nothing back; /metrics is not read by the region. Every POST records its Authorization header, so the test sees the bearer the real e3_auth_exec hook, NativeRuntimeClient and the instruments check send.",
+      "cannot_prove": "Engine token counts (the w2-length guard measures them before row1), metrics content under pressure",
+      "box_evidence": false
+    },
+    {
+      "name": "lifecycle-chat-answer",
+      "test": "test_native39_lifecycle_queue.Tail",
+      "replaces": "The engine's non-streamed /v1/chat/completions behind the cross-session leak test (leaktest.py, real, under the real e3_auth_exec)",
+      "equivalence": "leaktest reads only choices[0].message.content and usage.prompt_tokens(_details.cached_tokens); the leaf answers each session with the private code in its first user message ('Your private session code is X.'), which is what a correct engine without a cross-session leak returns. leak=True answers one request with another session's code, the incident shape leaktest exists to catch. The real leaktest builds the 8 x 3 conversations (seed 7, GAP 20 from the queue line) and the queue's PY_LEAK_RESULT and native35_lifetime_grade read its real output.",
+      "cannot_prove": "Whether the native39 engine leaks: that is the box measurement this queue exists for",
+      "box_evidence": false
+    },
+    {
+      "name": "lifecycle-docker-cli",
+      "test": "test_native39_lifecycle_queue.Tail",
+      "replaces": "The docker CLI for qwen-flash-prod as the lifecycle region uses it: `docker inspect --format '{{.Id}}'`, `docker exec <id> cat /proc/<pid>/maps` and the one-shot `docker logs --timestamps qwen-flash-prod` before and after the pressure interval",
+      "equivalence": "An executable on PATH answering exactly those argv forms and failing any other. docker logs (no --follow) prints the retained container log once with an RFC3339 nanosecond stamp per line and exits, as the json-file driver does; pp_release_grade lifetime reads only FLASH_PP_LAYOUT / FLASH_POOL_STATS lines from it.",
+      "cannot_prove": "docker logs size and duration on the box (the pressure-before-log row budgets 120 s for <= 2 GiB)",
+      "box_evidence": false
+    },
+    {
+      "name": "lifecycle-engine-log",
+      "test": "test_native39_lifecycle_queue.Tail",
+      "replaces": "The container log of the lifecycle engine (Q/pressure.before-engine.log, Q/pressure.after-engine.log) and the followed stream Q/engine-stream.log",
+      "equivalence": "The bind and served lines of the trunk test (box forms) and no FLASH_PP_LAYOUT or FLASH_POOL_STATS line: the trunk engine's declared env has no FLASH_POOL_STATS (Settings asserts it), and the S5 overlay's pool telemetry (telemetry_hooks block_pool/scheduler) logs those lines only when FLASH_POOL_STATS > 0; none of the retained native36-wd, native35-L or P-c engine logs carries one. The crash case adds one DistBackendError line, a pattern native35_lifetime_grade scans for.",
+      "cannot_prove": "What else the box log carries; whether a box log could carry pool lines without the env (the source says it cannot)",
+      "box_evidence": false
+    },
+    {
+      "name": "lifecycle-phase-executables",
+      "test": "test_native39_lifecycle_queue.Tail",
+      "replaces": "e3_q18a_lifecycle.py (one owned native disconnect, typed close, drained reuse on the engine), pressure2.py (2 x 200000-token streams for up to 1800 s) and leak_partial_tail.py (10 sessions x 4 rounds of partial-tail CoW leak checks at 30 % cancels)",
+      "equivalence": "argv and the queue-set environment are recorded and asserted exactly. The lifecycle fake writes the record fields native35_lifetime_grade reads (verdict, cancel_grade.verdict, reuse.complete); its real grade_close against the real driver's certified close is test_e3_native_measurement_clients.ActualCertifiedClosure, and its real input step is test_native39_lifecycle_queue.Workload. The pressure fake keeps pressure2's progress file (first/last token times, completed and issued per stream, max_tokens) current until the STOP file exists and writes pressure2's record keys; the queue's real ready wait, pressure_wait and pp_release_grade lifetime read them. The partial-tail fake writes leak_partial_tail's record (MODE, B, N, ROUNDS, GEN, identity_start/end, run with cancelled, 40 results with own codes, lockers and partial hits); the real pp_release_grade leak grades it. Both drivers make their tool's first engine call through the real e3_auth_exec hook.",
+      "cannot_prove": "Any engine behaviour under native cancellation, KV pressure or partial-tail copies: those are what the box run measures",
+      "box_evidence": false
+    },
+    {
+      "name": "lifecycle-refused-port",
+      "test": "test_native39_lifecycle_queue.Workload",
+      "replaces": "The engine's loopback API server for the lifecycle CLI's first control call",
+      "equivalence": "A freshly bound and closed loopback port: the real CLI parses the queue's argv, loads and validates the trunk W2 manifest and builds its client; the refused connection is caught by run() as a native-lifetime refusal, which shows the inputs passed.",
+      "cannot_prove": "Anything after the first control call",
+      "box_evidence": false
+    }
+  ]
+}
