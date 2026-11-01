@@ -26,6 +26,7 @@ clear_cache=False)`` and ``resume_generation()``.
 """
 import asyncio
 import math
+import os
 import time
 
 from native_overlap_metrics import clock_identity, prove_clock_domain
@@ -50,6 +51,12 @@ QUALIFICATION_ACTIONS = ('teacher_configure', 'teacher_evidence',
 
 class NativeControlError(RuntimeError):
     pass
+
+
+def _progress_burst():
+    """The held-f switch is exposed only where the engine installed burst."""
+    return (os.environ.get('FLASH_S5_NATIVE_PROGRESS', '') == 'burst'
+            and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')
 
 
 def _positive(value):
@@ -125,7 +132,9 @@ class NativeControlClient:
             raise NativeControlError('native-control-command-not-an-object')
         action = command.get('action')
         if action not in ACTIONS:
-            raise NativeControlError('native-control-unknown-action')
+            if not (action == 'release_auto_arm' and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'
+                    or action == 'native_progress' and _progress_burst()):
+                raise NativeControlError('native-control-unknown-action')
         if self.pending is not None and action not in READ_ACTIONS:
             # Reads stay available while an abandoned intent is registered so
             # this client can observe the engine's settlement; a new intent may
@@ -201,6 +210,22 @@ class NativeControlClient:
 
     async def cancel(self):
         return await self._call({'action': 'cancel'})
+
+    async def release_auto_arm(self):
+        if self.engine_epoch is None:
+            await self.status()
+        return await self._call({'action': 'release_auto_arm'})
+
+    async def native_progress(self, mode):
+        """Held-f per-arm switch (installed burst only); the engine re-checks idle FULL."""
+        if mode not in ('current', 'burst'):
+            raise NativeControlError('native-control-progress-mode-invalid')
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call({'action': 'native_progress', 'mode': mode})
+        if reply.get('mode') != mode:
+            raise NativeControlError('native-control-progress-mode-not-set')
+        return reply
 
     # -- reads -----------------------------------------------------------
     async def status(self):

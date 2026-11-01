@@ -23,6 +23,7 @@ class IdentityPath(unittest.TestCase):
     def setUp(self):
         self.f=fixtures.IdentityTests('test_capture_before_after_through_qlib')
         with patch.object(fixtures,'TMP',Path(tempfile.gettempdir())):self.f.setUp()
+        self.addCleanup(self.f.doCleanups)  # removes the temp tree IdentityTests.setUp registers on this never-run case
         self.budget=int(re.search(r'^Q18A_IDENTITY_TIMEOUT_S=(\d+)$',SETTINGS.read_text(),re.M)[1])
 
     def test_actual_capture_check_and_active_file_mismatch(self):

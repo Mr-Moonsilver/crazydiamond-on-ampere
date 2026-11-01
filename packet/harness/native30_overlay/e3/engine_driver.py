@@ -57,8 +57,10 @@ from e3_types import (
 )
 from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
-from native_measurement import (NativeMeasurementCensus, encode_report_vector,
-                                decode_report_vector, ControlPathCounters, QsaControlCounters)
+from native_measurement import (PROGRESS_N,NativeMeasurementCensus, encode_report_vector,
+                                decode_report_vector, ControlPathCounters, QsaControlCounters,
+                                PROGRESS_DIRECT_METHODS, PROGRESS_META_BYTES, PROGRESS_META_KEY, PROGRESS_MODES,
+                                ProgressTrace, encode_progress_meta)
 from reply_transport import Backpressure, TransportError
 from scheduler_hooks import (
     ADMISSION_PHASES,
@@ -715,6 +717,43 @@ _SEGMENT_ROLE = {
 }
 
 
+def _continuation(kind, cursor):
+    """The host continuation position a TP peer's accepted cursor names.
+
+    After STATE_FINALIZE a worker reports 'commit' once its own state event
+    already completed and 'state_finalize' until then. That difference is
+    rank-local device completion, not a later host position, so both are the
+    same continuation for that command. Every other field and phase is kept.
+    """
+    if cursor is None:
+        return None
+    phase = cursor.phase
+    if kind is SegmentKind.STATE_FINALIZE and phase == 'commit':
+        phase = 'state_finalize'
+    return (phase, cursor.layer, cursor.bucket)
+
+
+def _agreement_detail(command, targets, accepted):
+    """One bounded diagnostic for a refused TP agreement; built only on raise."""
+    def flag(value):
+        return int(bool(value))
+    tx = command.transaction
+    rows = []
+    for item in accepted:
+        if item.worker_rank not in targets:
+            continue
+        cursor = item.cursor
+        rows.append('r%d:acc=%d,pend=%d,paused=%d,cursor=%s,profile=%d,tail=%d' % (
+            item.worker_rank, flag(item.accepted), flag(item.pending), flag(item.paused),
+            'none' if cursor is None else '%s/%d/%d' % (cursor.phase, cursor.layer, cursor.bucket),
+            flag(item.profile_boundary), flag(item.tail_boundary)))
+    uid = hashlib.sha256(str(tx.request_uid).encode()).hexdigest()[:16]
+    return (' [command=%s stage=%d layer=%s op_seq=%d txn_seq=%d chunk=%d-%d uid_sha=%s %s]' % (
+        getattr(command.kind, 'value', str(command.kind)), command.stage,
+        command.descriptor.layer_start, command.op_seq, tx.txn_seq, tx.chunk_start,
+        tx.chunk_end, uid, ' '.join(rows)))[:1024]
+
+
 @dataclass
 class PPSubmissionObligation:
     """Accepted sends require matching receive submissions even during stop.
@@ -756,6 +795,153 @@ class TPTailSubmissionObligation:
                 or type(self.route_generation) is not int
                 or self.route_generation < 0):
             raise DriverError('TP tail obligation needs its typed boundary and route')
+
+
+_PROGRESS_LOG = None
+# Plan entries a burst owner wait may advance; every other kind stays on the tick.
+_WAIT_SEGMENT_KINDS = frozenset((SegmentKind.PREFIX, SegmentKind.LAYER, SegmentKind.SUFFIX))
+
+
+def _progress_logger():
+    global _PROGRESS_LOG
+    if _PROGRESS_LOG is None:
+        # vLLM's init_logger is the path s5_startup's INFO line is proven on.
+        try:
+            from vllm.logger import init_logger
+        except ImportError:
+            import logging
+            _PROGRESS_LOG = logging.getLogger(__name__)
+        else:
+            _PROGRESS_LOG = init_logger(__name__)
+    return _PROGRESS_LOG
+
+
+def _progress_outcome(kind, value):
+    """Descriptive reply class for a receipt; never consulted by the driver."""
+    try:
+        items = tuple(value)
+        if kind == 'segment':
+            if any(getattr(item, 'pending', False) for item in items):
+                return 'pending'
+            accepted = [item for item in items if getattr(item, 'accepted', False)]
+            if any(item.profile_boundary for item in accepted):
+                return 'boundary'
+            if any(item.tail_boundary for item in accepted):
+                return 'tail-ready'
+            if any(item.paused for item in accepted):
+                return 'paused'
+            return 'accepted'
+        if kind == 'profile':
+            states = {getattr(item, 'status', None) for item in items} - {'skipped'}
+            return 'pending' if 'pending' in states else 'ready'
+        return kind
+    except Exception:
+        return 'unknown'
+
+
+class NativeProgress:
+    """Held-f: native progress receipts and the switchable candidate (owner thread only).
+
+    ``installed`` is the startup setting (``trace`` or ``burst``); ``mode`` is
+    the per-arm selection, ``current`` until a typed ``native_progress`` control
+    sets ``burst`` (only when installed ``burst``). Recording happens only while
+    an auto-arm-owned native chunk is open; a manual cycle is never recorded and
+    never changed. Receipts are host CLOCK_MONOTONIC stamps, one line per chunk.
+    """
+    WAIT_SEND_LIMIT = 8
+    DIRECT_KINDS = frozenset(('segment', 'profile', 'poll'))
+    MODES = ('current', 'burst')
+
+    def __init__(self, installed, executor, *, driver=None, clock_ns=time.monotonic_ns):
+        if installed not in PROGRESS_MODES:
+            raise DriverError('invalid native progress setting')
+        self.installed = installed
+        self.mode = 'current'
+        self.executor = executor
+        self.driver = driver
+        self.clock_ns = clock_ns
+        # Engine owner thread of the open chunk (begin runs inside advance) and
+        # the kind of the last stock RPC submitted while recording.
+        self.owner = None
+        self.last_stock_kind = None
+        self.trace = ProgressTrace('engine')
+        self.recording = False
+        self.identity = None
+        self.native = {}
+        # The row whose reply is being applied: the apply that ends the chunk
+        # (release) is recorded at the flush, inside its own line.
+        self.applying = None
+        self.counters = dict.fromkeys((
+            'chunks', 'commands', 'direct_commands', 'stock_rpcs', 'waits',
+            'wait_sends', 'wait_capped', 'line_errors', 'mode_changes'), 0)
+
+    def snapshot(self):
+        return dict(schema='s5-native-progress-status/1', installed=self.installed,
+                    mode=self.mode, recording=self.recording,
+                    wait_send_limit=self.WAIT_SEND_LIMIT,
+                    direct_kinds=sorted(self.DIRECT_KINDS),
+                    trace_lines=self.trace.lines_out, trace_dropped=self.trace.dropped_total,
+                    **self.counters)
+
+    def burst(self):
+        return self.recording and self.mode == 'burst'
+
+    def wait_allowed(self):
+        """Owner thread, burst chunk open, and the ring's last stock RPC is a sample."""
+        import threading
+        return (self.burst() and self.driver is not None
+                and threading.get_ident() == self.owner
+                and self.last_stock_kind == 'sample_tokens')
+
+    def meta(self, sequence, direct):
+        return encode_progress_meta(sequence, direct)
+
+    @staticmethod
+    def with_meta(envelope, meta):
+        method, args, kwargs, rank = envelope
+        merged = dict(kwargs or {})
+        merged[PROGRESS_META_KEY] = meta
+        return (method, args, merged, rank)
+
+    def begin(self, identity):
+        import threading
+        self.recording = True
+        self.identity = identity
+        self.native = {}
+        self.applying = None
+        self.owner = threading.get_ident()
+        self.last_stock_kind = None
+        self.executor._flash_s5_progress_recording = self
+
+    def applied(self, row):
+        """Record a native row after its apply, unless the chunk flush took it."""
+        if self.applying is row:
+            self.applying = None
+            row[PROGRESS_N['t_apply']] = self.clock_ns()
+            self.trace.record('n', *row)
+
+    def end(self, logger):
+        """Flush this chunk's lines and stop recording; never raises."""
+        was = self.recording
+        self.recording = False
+        self.executor._flash_s5_progress_recording = None
+        if not was:
+            return
+        self.counters['chunks'] += 1
+        self.owner = None
+        self.last_stock_kind = None
+        row, self.applying = self.applying, None
+        try:
+            if row is not None:
+                row[PROGRESS_N['t_apply']] = self.clock_ns()
+                self.trace.record('n', *row)
+            for text in self.trace.lines(**(self.identity or {}), mode=self.mode,
+                                         open_rows=len(self.native)):
+                logger.info(text)
+        except Exception:
+            self.counters['line_errors'] += 1
+        self.identity = None
+        self.native = {}
 
 
 class NativeSegmentDriver:
@@ -953,6 +1139,125 @@ class NativeSegmentDriver:
         # to park a native chunk.  It outlives chunk reset by design.
         self._admission_intent = None
         self._admission_seq = 0
+        # Held-f: absent unless FLASH_S5_NATIVE_PROGRESS installed it.
+        self.progress = None
+        self._progress_origin = 'tick'
+        self._in_wait = False
+
+    def install_progress(self, installed):
+        """Held-f startup seam: receipts (``trace``) or receipts + candidate (``burst``)."""
+        if self.progress is not None:
+            raise DriverError('native progress is already installed')
+        if getattr(self, 'auto_arm', None) is None:
+            raise DriverError('native progress requires the auto-arm policy')
+        self.progress = NativeProgress(installed, self.executor, driver=self)
+        self.executor._flash_s5_progress_recording = None
+        return self.progress
+
+    def _wait_permit(self, nested=False):
+        """The burst in-wait permit: everything advance() does besides _drain +
+        _drive is a no-op, the chunk is policy-owned, and only an in-chunk
+        PREFIX/LAYER/SUFFIX segment or a QSA profile query is in flight or next.
+        PREPARE (controller.bind), PP, STATE_FINALIZE, finalize polls, receipts,
+        release, open and bind stay on the tick, before schedule()."""
+        progress = self.progress
+        if (progress is None or not progress.burst() or (self._in_wait and not nested)
+                or self.error is not None or self.stop_kind is not None
+                or self._profile_failure is not None or self._control is not None
+                or self._control_orphans or self._route_exchange() is not None
+                or self._return_pending is not None or not self._bootstrapped
+                or not self._split_ready or self.tx is None or not self._progress_owned()):
+            return False
+        inflight = tuple(self._inflight.values())
+        if self.phase == 'profile':
+            return inflight in ((), ('profile',))
+        if self.phase != 'segments' or len(inflight) > 1:
+            return False
+        if inflight:
+            return (inflight == ('segment',) and self._command is not None
+                    and self._command.kind in _WAIT_SEGMENT_KINDS)
+        if self._retry is not None:
+            return self._retry.kind in _WAIT_SEGMENT_KINDS
+        return (self.index < len(self.plan)
+                and self.plan[self.index]['kind'] in _WAIT_SEGMENT_KINDS)
+
+    def progress_in_wait(self):
+        """One permitted native advance inside an owner stock wait (held-f burst).
+
+        The same _drain + _drive that advance() reaches under the permit, on the
+        owner thread. Returns the commands sent (0 or 1), or None when the
+        permit does not hold or the ring refused (the caller then waits as
+        stock does). Error semantics are advance()'s.
+        """
+        # The pair-boundary condition (owner thread, last stock RPC a sample)
+        # is re-read before the drain and again before the send: only the
+        # owner thread submits execute_model/sample_tokens, and it is here.
+        if not self._wait_permit() or not self.progress.wait_allowed():
+            return None
+        self._in_wait = True
+        self._progress_origin = 'wait'
+        try:
+            self._drain()
+            if (self._inflight or not self._wait_permit(nested=True)
+                    or not self.progress.wait_allowed()):
+                return 0
+            self._drive()
+            return int(bool(self._inflight))
+        except Backpressure:
+            return None
+        except E3Pending:
+            raise
+        except BaseException:
+            self.error = 'native driver failed; ownership retained'
+            raise
+        finally:
+            self._in_wait = False
+            self._progress_origin = 'tick'
+
+    def _progress_control(self, command):
+        """Typed per-arm mode switch; only installed burst, only paused idle FULL."""
+        progress = self.progress
+        if progress is None or progress.installed != 'burst':
+            raise DriverError('native-control-unknown-action')
+        if self.error is not None:
+            raise DriverError(self.error)
+        if set(command) - {'action', 'mode', 'engine_epoch'}:
+            raise DriverError('native-progress-command-fields-differ')
+        epoch = command.get('engine_epoch')
+        if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
+            raise DriverError('native-control-engine-epoch-differs')
+        mode = command.get('mode')
+        if mode not in NativeProgress.MODES:
+            raise DriverError('native-progress-mode-unknown')
+        policy = getattr(self, 'auto_arm', None)
+        if (not self._engine_paused() or self._split_ready or self.tx is not None
+                or self.controller.active or self._inflight or self._control is not None
+                or self._route_exchange() is not None or self._return_pending is not None
+                or self._retained is not None or self._admission_intent is not None
+                or policy is None or policy.active or progress.recording):
+            raise DriverError('native-progress-requires-paused-idle-full')
+        previous = progress.mode
+        progress.mode = mode
+        progress.counters['mode_changes'] += int(previous != mode)
+        now = int(self._monotonic_ns())
+        return {'schema': 1, 'action': 'native_progress', 'mode': mode, 'previous': previous,
+                'installed': progress.installed, 'engine_epoch': self.engine_epoch,
+                'route': 'full', 'route_generation': self.route_generation,
+                'observed_clock_ns': now, 'clock': self._clock_record(now)}
+
+    def _progress_owned(self):
+        """True only while the auto-arm policy owns the open native chunk."""
+        policy = getattr(self, 'auto_arm', None)
+        intent = self._admission_intent
+        return (policy is not None and not policy.manual_owned and policy.phase == 'native'
+                and type(intent) is dict and intent.get('origin') == 'auto-arm')
+
+    def _progress_decode_live(self):
+        try:
+            return sum(1 for r in self.scheduler.running
+                       if r.num_computed_tokens >= r.num_prompt_tokens)
+        except Exception:
+            return None
 
     def install(self):
         engine, scheduler = self.engine, self.scheduler
@@ -1047,18 +1352,45 @@ class NativeSegmentDriver:
             raise DriverError('owned reply transport is not installed')
         sender = self._bounded()
         check = getattr(sender, 'check', None)
+        progress = self.progress if self.progress is not None and self.progress.recording else None
+        direct = progress is not None and progress.burst() and kind in progress.DIRECT_KINDS
+        if direct and envelope[0] not in PROGRESS_DIRECT_METHODS:
+            raise DriverError('native-progress-direct-method-not-eligible')
+        if progress is not None:
+            submitted_ns = time.monotonic_ns()
+            # Same pickled size as the real meta: the size precheck stays exact.
+            checked = NativeProgress.with_meta(envelope, bytes(PROGRESS_META_BYTES))
+        else:
+            checked = envelope
         def precheck():
             with self.control_path.span('serialize_ns'):
-                return check(envelope)
+                return check(checked)
         def send(_sequence):
             with self.control_path.span('serialize_ns'):
-                return sender(envelope)
+                if progress is None:
+                    return sender(envelope)
+                return sender(NativeProgress.with_meta(envelope, progress.meta(_sequence, direct)))
+        extra = {'direct': True} if direct else {}
         sequence = transport.submit(kind, send,
                                     ranks=tuple(ranks),
                                     timeout_s=(self.reply_timeout_s if timeout_s is None
                                                else timeout_s), aggregate=None,
-                                    precheck=precheck if callable(check) else None)
+                                    precheck=precheck if callable(check) else None, **extra)
         self.control_path.values['ops_count'] += 1
+        if progress is not None:
+            segment = op_seq = stage = layer = None
+            if kind == 'segment' and self._command is not None:
+                segment = self._command.kind.value
+                op_seq, stage = self._command.op_seq, self._command.stage
+                layer = self._command.descriptor.layer_start
+            elif kind == 'profile':
+                query = envelope[1][0]
+                op_seq, stage, layer = query.boundary_op_seq, query.stage, query.layer
+            progress.native[sequence] = [sequence, kind, segment, op_seq, stage, layer,
+                                         self._progress_origin, submitted_ns, time.monotonic_ns(),
+                                         None, None, None, None, None, None, int(direct)]
+            progress.counters['commands'] += 1
+            progress.counters['direct_commands'] += int(direct)
         if kind == 'profile':
             query = envelope[1][0]
             self.qsa_control.add(query.stage, query.layer, profile_polls=1,
@@ -1084,15 +1416,27 @@ class NativeSegmentDriver:
             return 0
         transport.poll(self.poll_budget)
         applied = 0
+        progress = self.progress
         for sequence, kind in list(self._inflight.items()):
             call = transport._calls.get(sequence)
             if call is None or not call.ready:
                 continue
+            row = None if progress is None else progress.native.pop(sequence, None)
+            registered = None if row is None else getattr(call, 'registered_s', None)
             value, _lag = transport.take(sequence)
             del self._inflight[sequence]
+            if row is not None:
+                for index, rank in enumerate(self.ranks[:4]):
+                    lag = _lag.get(rank) if type(_lag) is dict else None
+                    if type(lag) in (int, float) and type(registered) is float:
+                        row[PROGRESS_N['t_recv0'] + index] = int((registered + lag) * 1e9)
+                row[PROGRESS_N['outcome']] = _progress_outcome(kind, value)
+                progress.applying = row
             with self.control_path.span('validate_ns'):
                 self._apply(kind, value, sequence)
             applied += 1
+            if row is not None:
+                progress.applied(row)
         return applied
 
     def _apply(self, kind, values, sequence=None):
@@ -1402,15 +1746,19 @@ class NativeSegmentDriver:
                 self._ingest_report(report)
             return
         paused = {item.paused for item in accepted if item.accepted}
-        cursors = {item.cursor for item in accepted if item.accepted}
+        cursors = {_continuation(descriptor.kind, item.cursor)
+                   for item in accepted if item.accepted}
         if len(paused) != 1 or len(cursors) != 1:
-            raise DriverError('TP workers disagree on the layer continuation')
+            raise DriverError('TP workers disagree on the layer continuation'
+                              + _agreement_detail(self._command, targets, accepted))
         boundaries = {item.profile_boundary for item in accepted if item.accepted}
         if len(boundaries) != 1:
-            raise DriverError('TP workers disagree on the QSA submission boundary')
+            raise DriverError('TP workers disagree on the QSA submission boundary'
+                              + _agreement_detail(self._command, targets, accepted))
         tail_boundaries = {item.tail_boundary for item in accepted if item.accepted}
         if len(tail_boundaries) != 1:
-            raise DriverError('TP workers disagree on the QSA tail boundary')
+            raise DriverError('TP workers disagree on the QSA tail boundary'
+                              + _agreement_detail(self._command, targets, accepted))
         representative = targets[0]
         self.last_ticket[descriptor.stage] = self.tickets[representative]
         if descriptor.kind is SegmentKind.PREPARE and self.bound_ticket is None:
@@ -2031,6 +2379,13 @@ class NativeSegmentDriver:
         self.open_request = OpenRequest(admission, self.ranks,
                                         admission.state_epoch, 1)
         self.phase = 'open'
+        if self.progress is not None and self._progress_owned():
+            transaction = admission.transaction
+            self.progress.begin(dict(txn=transaction.txn_seq,
+                                     request_generation=transaction.request_generation,
+                                     chunk_start=transaction.chunk_start,
+                                     chunk_end=transaction.chunk_end,
+                                     decode_live=self._progress_decode_live()))
         self.plan = []
         self.index = 0
         self._profile_query = None
@@ -2631,7 +2986,7 @@ class NativeSegmentDriver:
                 and record.get('route_generation') == self.route_generation)
 
     def _split_hold_timeout(self):
-        """End an idle armed-split hold past its bound by returning FULL (native39).
+        """End an idle physical-split stock hold by returning FULL (native40).
 
         The held stock work then runs on FULL, as after a terminal handback;
         the intent closes on the FULL ack ('route-returned-full').  Only with
@@ -2639,25 +2994,28 @@ class NativeSegmentDriver:
         no route exchange or pending return.
         """
         intent = self._admission_intent
-        if (intent is None or not self._split_ready or self.tx is not None
+        if (not self._split_ready or self.tx is not None
                 or self.controller.active or self._retained is not None
+                or self.stop_kind is not None or self._control is not None or self._inflight
                 or self._return_pending is not None or self._route_exchange() is not None):
             return False
         query = getattr(self.controller, 'expired_split_hold', None)
         if not callable(query) or self._engine_paused() or not self._scheduler_holds_requests():
             # Paused, or every held request left (finished/aborted client):
-            # nothing is stranded, the armed route stays as the harness set it.
+            # nothing is stranded, the applied route stays as its owner set it.
             return False
         now = int(self._monotonic_ns())
-        hold = query(now, intent['seq'])
+        hold = query(now, self.engine_epoch, self.route_generation)
         if hold is None:
             return False
-        self.controller.note_split_hold_timeout(self.scheduler, hold, now)
-        self._record('admission_hold_timeout', phase=intent['phase'], seq=intent['seq'],
+        receipt = self.controller.note_split_hold_timeout(self.scheduler, hold, now, intent)
+        self._record('admission_hold_timeout', phase=None if intent is None else intent['phase'],
+                     seq=None if intent is None else intent['seq'],
+                     admission_armed=intent is not None, reason=receipt['reason'],
                      held_since_ns=hold['since_ns'], held_ns=now - hold['since_ns'],
                      bound_ns=self.controller.split_hold_bound_ns, holds=hold['holds'],
                      route_generation=self.route_generation)
-        self._note_terminal_route('split-hold-timeout')
+        self._note_terminal_route(receipt['reason'])
         self._drive_return()
         return True
 
@@ -2704,6 +3062,8 @@ class NativeSegmentDriver:
         nonterminal release leaves the worker request row owned by the request,
         and only a same-request reopen or a typed all-rank close clears it.
         """
+        if self.progress is not None:
+            self.progress.end(_progress_logger())
         self.tx = None
         self.admission = None
         self.phase = 'idle'
@@ -2829,10 +3189,14 @@ class NativeSegmentDriver:
                 'clock_basis': self.clock_basis}
 
     def _arm_admission(self, phase):
-        if phase not in ADMISSION_PHASES:
-            raise DriverError('native-admission-phase-unknown')
-        if phase not in NATIVE_ADMISSION_PHASES:
-            raise DriverError('native-admission-phase-not-native')
+        policy = getattr(self, 'auto_arm', None)
+        auto = (phase == 'auto-prefill' and policy is not None
+                and policy.active and policy._internal)
+        if not auto:
+            if phase not in ADMISSION_PHASES:
+                raise DriverError('native-admission-phase-unknown')
+            if phase not in NATIVE_ADMISSION_PHASES:
+                raise DriverError('native-admission-phase-not-native')
         if not self._engine_paused():
             # The phase is chosen on a frozen engine and takes effect when the
             # caller resumes; arming mid-step would park into live sampling.
@@ -2866,6 +3230,9 @@ class NativeSegmentDriver:
                   'armed': True,
                   'seq': self._admission_seq,
                   'armed_ns': int(self._monotonic_ns())}
+        if auto:
+            intent.update(origin='auto-arm', selection_seq=policy.selection_seq,
+                          request_uid=policy._request().request_id)
         self._admission_intent = intent
         self._record('admission_armed', phase=phase, seq=intent['seq'],
                      route_generation=self.route_generation)
@@ -2892,9 +3259,17 @@ class NativeSegmentDriver:
         return dict(intent)
 
     def submit_control(self, command):
+        policy = getattr(self, 'auto_arm', None)
+        if policy is not None:
+            return policy.manual_control(command, self._submit_control)
+        return self._submit_control(command)
+
+    def _submit_control(self, command):
         if type(command) is not dict:
             raise DriverError('native-control-command-not-an-object')
         action = command.get('action')
+        if action == 'native_progress' and self.progress is not None:
+            return self._progress_control(command)
         if action not in CONTROL_ACTIONS:
             raise DriverError('native-control-unknown-action')
         if action == 'cancel':
@@ -3077,6 +3452,15 @@ class NativeSegmentDriver:
         self._stock_steps_skipped += 1
 
     def _status_record(self, now=None):
+        result = self._status_record_base(now)
+        policy = getattr(self, 'auto_arm', None)
+        if policy is not None:
+            result['auto_arm'] = policy.snapshot()
+        if self.progress is not None:
+            result['native_progress'] = self.progress.snapshot()
+        return result
+
+    def _status_record_base(self, now=None):
         now = int(self._monotonic_ns()) if now is None else now
         epochs = set(self._storage_epochs.values())
         census = self._last_census

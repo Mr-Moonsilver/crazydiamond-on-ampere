@@ -1,6 +1,7 @@
 """Offline report fixtures. Retained scratch evidence; no GPU or box access."""
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,7 @@ def w2(gain=1):
 class MorningTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix='morning-summary-', dir=HERE.parent.parent/'tmp'))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.q10 = self.root/'q10-20261025T010000Z'; self.q10.mkdir()
         self.q11 = self.root/'q11-20261025T030000Z'; self.q11.mkdir(); make_q11(self.q11)
         self.q12 = self.root/'q12b-gate'; self.q12.mkdir()

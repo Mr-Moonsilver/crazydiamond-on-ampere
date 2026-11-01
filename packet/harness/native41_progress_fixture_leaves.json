@@ -1,0 +1,135 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "Held-f (native progress receipts and the burst candidate) hub and exact pinned-container CPU tests; no box or GPU evidence",
+  "inherits": [
+    "native41_fixture_leaves.json",
+    "native40_fixture_leaves.json",
+    "native39_fixture_leaves.json",
+    "native38_fixture_leaves.json",
+    "native37_fixture_leaves.json"
+  ],
+  "leaves": [
+    {
+      "name": "hol-message-queues",
+      "test": "test_e3_native_reply_hol.Inbox/Reader/Writer/Broadcast/Network",
+      "replaces": "vLLM MessageQueue broadcast and per-rank response shm rings between EngineCore and the four WorkerProc processes",
+      "equivalence": "The question is reply order and which thread writes a reply. The broadcast ring is FIFO per reader and each reader unpickles its own copy; the response ring is a FIFO with one reader. queue.Queue FIFOs with a pickle round trip per reader reproduce both. The generated WorkerProc methods (_execute_worker_rpc, handle_output, enqueue_output, async_output_busy_loop, worker_busy_loop) run from the pinned vLLM source through executor_hooks.generate_executor, so every write goes through the real worker_enqueue_reply and its per-worker lock.",
+      "cannot_prove": "Shared-memory ring behaviour under two concurrent writers (overflow, chunked writes). The lock serializes every writer by source; a real pinned MessageQueue two-writer stress test is an open SHOULD.",
+      "box_evidence": false
+    },
+    {
+      "name": "hol-worker-methods",
+      "test": "test_e3_native_reply_hol.GPUWorkerLeaf/DecodeOutput/AsyncModelRunnerOutput/StopOutput",
+      "replaces": "GPUWorker.sample_tokens, flash_s5_submit, flash_s5_poll, flash_s5_fail and the device AsyncOutput",
+      "equivalence": "sample_tokens returns an async output whose get_output blocks on an Event, standing for AsyncOutput.get_output's copy_event.synchronize() (the decode batch's device completion). flash_s5_submit returns a typed tuple at once, as lane_dispatch.submit enqueues kernels without a device wait. flash_s5_poll and flash_s5_fail raise at once: a refused native command, direct-eligible or not. Only the reply path is under test.",
+      "cannot_prove": "Device timing of the decode batch and of native kernels.",
+      "box_evidence": false
+    },
+    {
+      "name": "hol-process-leaves",
+      "test": "test_e3_native_reply_hol (module setup)",
+      "replaces": "vllm.platforms.current_platform, WorkerProc.ResponseStatus, and the process-global worker trace (executor_hooks._worker_progress)",
+      "equivalence": "set_device is a no-op (no CUDA). ResponseStatus is two sentinels: the transport only compares identity with the SUCCESS value it was given. One ProgressTrace per rank stands for one per worker process in this single test process; the trace object and its record/lines code are real.",
+      "cannot_prove": "Process boundaries.",
+      "box_evidence": false
+    },
+    {
+      "name": "hol-in-wait-driver",
+      "test": "test_e3_native_reply_hol.InWaitLoop.Driver",
+      "replaces": "NativeSegmentDriver.progress_in_wait inside executor_hooks.native_progress_wait",
+      "equivalence": "Returns scripted send counts so the loop's cap, deadline, ready and refusal edges run in the real native_progress_wait. The driver's permit and advance are proven on the connected probe (e3_native41_progress_probe), not here.",
+      "cannot_prove": "Which driver states grant the permit (connected probe).",
+      "box_evidence": false
+    },
+    {
+      "name": "probe-progress-meta-pop",
+      "test": "e3_native41_progress_probe.PopMeta",
+      "replaces": "The generated WorkerProc._execute_worker_rpc popping the reserved progress kwarg before dispatch",
+      "equivalence": "DirectTransport calls each worker method directly. This leaf calls the same real executor_hooks.worker_rpc_begin on a per-rank copy of the kwargs, so the worker method never sees the key and the popped (sequence, direct) meta is recorded per rank.",
+      "cannot_prove": "The generated worker loop (proven in test_e3_native_reply_hol).",
+      "box_evidence": false,
+      "seams": ["executor_hooks.worker_rpc_begin"]
+    },
+    {
+      "name": "probe-direct-flag-record",
+      "test": "e3_native41_progress_probe.run (transport.submit wrapper)",
+      "replaces": "ReplyTransport's two-FIFO receiver threads",
+      "equivalence": "DirectTransport has no receiver threads, so the direct registration flag of each submit is recorded and checked against the worker-side meta bit. The exact-sequence two-FIFO receiver is proven in test_e3_native_reply_hol.DirectReplies.",
+      "cannot_prove": "Receiver ordering (HOL test).",
+      "box_evidence": false
+    },
+    {
+      "name": "probe-sample-wait",
+      "test": "e3_native41_progress_probe.SampleWait",
+      "replaces": "StockLocalFuture for sample_tokens and the decode batch completion it waits on",
+      "equivalence": "result applies the same gate (sample future, wait_allowed) and runs the real executor_hooks.native_progress_wait; ready turns true after WAIT_ROUNDS rounds, standing for the decode batch completion. The execute and sample fixtures set last_stock_kind as collective_rpc does while recording.",
+      "cannot_prove": "Real decode batch durations.",
+      "box_evidence": false,
+      "seams": ["executor_hooks.native_progress_wait"]
+    },
+    {
+      "name": "probe-no-receive-stamps",
+      "test": "e3_native41_progress_probe (DirectTransport)",
+      "replaces": "Receive lag stamps and the stock RPC receipts of collective_rpc",
+      "equivalence": "DirectTransport carries no registered_s or lag and no stock RPC goes through collective_rpc, so engine receive times and the 's'/'w' rows are absent here by construction. They are produced over the generated worker loop in test_e3_native_reply_hol and parsed by the grade in test_native41_progress_queue.Receipts.",
+      "cannot_prove": "Box receive-time values.",
+      "box_evidence": false
+    },
+    {
+      "name": "progress-queue-inherited",
+      "test": "test_native41_progress_queue (through test_native41_box_queue)",
+      "replaces": "Held-e's queue-fastapi, queue-api-server, queue-serving, queue-scheduler-reads, queue-package-gate, queue-shell, queue-argparse-capture and queue-argparse leaves, reused unchanged",
+      "equivalence": "The held-f test imports held-e's leaf objects (App, APIRouter, Request, JSONResponse, Server, EngineLoop, pinned_reads, expand, queue_python_calls, real_parse, setcfg_parse) and applies them to the held-f texts and the held-f arm runner. bash_words is held-e's with the held-f settings file sourced. Their declarations in native41_fixture_leaves.json hold as written.",
+      "cannot_prove": "As held-e's entries.",
+      "box_evidence": false
+    },
+    {
+      "name": "progress-queue-scale",
+      "test": "test_native41_progress_queue.workload / Arm.setUp",
+      "replaces": "The frozen held-f manifest sizes and times (8 x 153,537 standing with a 16,384 standing budget, 65,445 fresh, 4,096 append suffix, 20 s window, 120-180 s timeouts) and the startup fence wait",
+      "equivalence": "The same manifest file, validated by shared.validate_manifest and standing_budget, with only sizes and times reduced; the standing budget (3000) differs from decode.generation_budget (2000), so the serving leaf shows the arm sends the declared progress budget. SETTLE_S and CLOSE_TIMEOUT_S are patched to 0.2 s and 1 s; POLL_S keeps its box value. The startup fence wait is 10 s instead of 2 s: a fixture hang bound for the first, cold, fence in a process; no gate reads it.",
+      "cannot_prove": "Box-scale timing and memory.",
+      "box_evidence": false
+    },
+    {
+      "name": "progress-metrics-exposition",
+      "test": "test_native41_progress_queue.ProgressServer (GET /metrics)",
+      "replaces": "vLLM's /metrics endpoint (prometheus_client exposition of vllm:num_preemptions_total and vllm:kv_cache_usage_perc)",
+      "equivalence": "The text is the pinned image's exposition format, taken from prometheus_client.generate_latest for the image's Counter vllm:num_preemptions (exposed as _total with a _created gauge sample) and the kv_cache_usage_perc gauge (vllm/v1/metrics/loggers.py:563,663 in the image). The arm's real preemption_metrics parses it; a raised counter between the two reads is the negative.",
+      "cannot_prove": "Whether the box engine preempts.",
+      "box_evidence": false
+    },
+    {
+      "name": "progress-native-work-identity",
+      "test": "test_native41_progress_queue.ProgressServer.endpoint_leaf",
+      "replaces": "The native_work_identity field the real driver status carries while a native chunk is open",
+      "equivalence": "Nothing in this stack links the HTTP prompt to the scheduler (held-e queue-serving), so no chunk opens. When a fresh prompt arrives, exactly the next status reply gets the field (chunk 0..1024 of transaction 1) and the prompt's prefill waits until it was served. The arm's real SoloPoller sees it, starts the real solo cancel thread and the real stream readers cancel against the serving leaf. The engine side of a solo cycle (abort with a chunk open, later chunks with no live decoder, FULL close) is e3_native41_progress_probe burst-solo/current-solo on the connected Core.",
+      "cannot_prove": "When the box poller first sees a native chunk.",
+      "box_evidence": false
+    },
+    {
+      "name": "progress-log-lines",
+      "test": "test_native41_progress_queue.Emit / synthetic_run",
+      "replaces": "The box engine's and workers' progress lines as the host observer's docker logs --follow --timestamps writes them to engine-stream.log and engine-stream.err",
+      "equivalence": "The lines come from the real nm.ProgressTrace emitters (record and lines): one engine trace flushed per chunk after its release apply with NativeProgress.begin's identity plus mode and open_rows, one worker trace per rank flushed at each flash_s5_release begin as executor_hooks.worker_rpc_begin does. Native commands reply on all four ranks; stock RPCs reply on output rank 2 with the other ranks' rows unreplied, as worker_rpc_returned records them. Only the stamps are synthetic: whole microseconds of a fixed command shape, so each grade component is exact. Each line gets the docker RFC 3339 nanosecond prefix and the vLLM process prefix and record header; rank 3 goes to stderr so both streams are read.",
+      "cannot_prove": "Box stamp values, the real vLLM logging configuration and docker's own line splitting (every line here stays below 16 KiB).",
+      "box_evidence": false
+    },
+    {
+      "name": "hol-pair-boundary-driver",
+      "test": "test_e3_native_reply_hol.PairLeaf/pair_driver (InWaitPairBoundary)",
+      "replaces": "NativeSegmentDriver state around one in-wait round: the fields read by progress_in_wait, _wait_permit, _progress_owned and _route_exchange, and the driver's _drain and _drive",
+      "equivalence": "The four real driver functions run unchanged on the leaf; the leaf holds every self field they read (the test checks that set against their AST) in the open, auto-owned, mid-chunk state with a real NativeProgress in burst. _drain applies one reply with the real bookkeeping (the replied command leaves _inflight and the plan index advances, as _apply_segment does) or none; _drive records the send for plan[index] and puts it in flight. The flips between them are real state changes: the next descriptor becomes a tick-only PP_SEND/STATE_FINALIZE, a stock execute_model becomes the last stock RPC, or the reply has not arrived.",
+      "cannot_prove": "The transport poll and segment validation inside the real _drain and the command construction inside the real _drive (connected probe e3_native41_progress_probe and the DirectReplies tests).",
+      "box_evidence": false
+    },
+    {
+      "name": "handoff-held-completions",
+      "test": "test_e3_async_handoffs.HeldCompletionBackend (DispatcherTests)",
+      "replaces": "The device-event CompletionBackend behind HandoffDispatcher (through the existing FixtureCompletionBackend leaf)",
+      "equivalence": "FixtureCompletionBackend with a hold: while held, poll returns no completions, as a device event that has not fired; released, it is the fixture backend unchanged. Only test_four_rank_ack_ordering_and_no_publication_from_acks holds it, so the ack-only state is reached by construction instead of racing poll counts against the transport's receiver threads. The reverse order (completions before acks) is the lease test test_completions_before_acks_publish_only_after_every_ack.",
+      "cannot_prove": "Device completion timing.",
+      "box_evidence": false
+    }
+  ]
+}

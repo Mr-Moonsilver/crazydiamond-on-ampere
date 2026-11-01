@@ -3,6 +3,7 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -17,6 +18,7 @@ VALUE = 'offline-' + 'auth-fixture-' * 3  # Deliberate fixture, not a credential
 class PrivateAuthTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix='q17-auth-'))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.root.chmod(0o700)
         self.path = self.root / 'api.env'
         self.env = {auth.KEY: VALUE}

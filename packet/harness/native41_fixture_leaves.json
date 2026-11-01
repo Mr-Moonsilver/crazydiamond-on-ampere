@@ -1,0 +1,246 @@
+{
+  "inherits": [
+    "native40_fixture_leaves.json",
+    "native39_fixture_leaves.json",
+    "native38_fixture_leaves.json",
+    "native37_fixture_leaves.json"
+  ],
+  "leaves": [
+    {
+      "box_evidence": false,
+      "cannot_prove": "Native implementation hardware readiness, actual multiprocess transport and TP/PP collectives. Startup shape is the existing four-worker/four-layer fixture; production shape/config remains unchanged.",
+      "equivalence": "The mounted s5_startup.install_engine executes, creates the actual leases/frontier/admission provider/controller/driver, and runs its actual startup FULL fence before policy install. Only device/process construction is substituted: CPUComposition inherits the real attach, the two legacy dispatcher/backend objects are never used (the driver uses the real bridges through DirectTransport). A driver subclass only attaches four CPU bridge workers at install. No route, policy, validator, RPC schema, source hold, scheduler or acknowledgement is mocked.",
+      "name": "connected-startup-resources",
+      "replaces": "Device-ready closure, four-rank model execution shape, handoff dispatcher/remote-backend constructors, multiprocessing reply queues",
+      "test": "e3_native41_auto_probe.Connected",
+      "seams": [
+        "startup.require_native_ready",
+        "startup._native_execution_shape",
+        "startup.build_composition",
+        "eh.install",
+        "nb.RemoteCompletionBackend",
+        "nr.response_success",
+        "ed.NativeSegmentDriver",
+        "bridge.route_objects"
+      ]
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "GPU model tree/output exactness, device capacity or topology timing.",
+      "equivalence": "Inherited native37 reduced-config leaf, production block/hash/chunk geometry, actual KV specs/arithmetic/AsyncScheduler. The initially unused controller/metadata/leases are unbound before actual install_engine creates its own, with no requests or native ownership. Real world-1 gloo gets a fresh file rendezvous per probe subprocess.",
+      "name": "actual-scheduler-cpu",
+      "replaces": "Production model/config and distributed host initialization",
+      "test": "base.Stack plus fresh CPU rendezvous",
+      "seams": [
+        "distributed.init_distributed_environment"
+      ]
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "GPU values, physical KV layout or a device-level race. These are unchanged engine paths, not a new qualification of their hardware.",
+      "equivalence": "Real NativeWorkerBridge/LaneDispatcher/WorkerState/GraphRouter/SplitDecodeBank/RouteController and actual SourceHold validation over real scheduler blocks. Existing FakeFactory/FakeSourceBinding replace tensors and device launches (descriptor frame checks remain real). Event completion is controlled, including an unretired rank1 replay for the FULL-ACK test. ModelRunnerOutput is one token 7 only when the actual schedule reaches the prompt end.",
+      "name": "device-bridge-model",
+      "replaces": "CUDA context/events, forward ops, source-binding memory, GPU request state and model outputs",
+      "test": "R4 bridge/replay fixtures"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Real worker async host/device visibility timing.",
+      "equivalence": "Mirrors change only at the declared GPU execute leaf, from requests actually dispatched by real SchedulerOutput; no between-tick cleanup fabricated. Real native_overlap_worker.live_census/barrier/identity and graph capability read these mirrors. Finished rows are removed at the next stock dispatch, as worker updates are.",
+      "name": "worker-host-mirrors",
+      "replaces": "GPU runner req_states host mirrors and NativeCensus feeds",
+      "test": "Connected.execute and sync_rows"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Real CUDA capture/storage or graph pointer exactness.",
+      "equivalence": "Actual pinned ModelCudaGraphManager.dispatch and compatibility predicate execute over fixture capture keys matching the real fake-device native bank. Only construction/capture storage is substituted; worker_capability performs real bank graph lookup, and an uncaptured rank is refused.",
+      "name": "graph-manager-construction",
+      "replaces": "ModelCudaGraphManager CUDA constructor/capture",
+      "test": "Connected.dispatch_manager"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Network/ASGI client transport, logits or wall-clock performance.",
+      "equivalence": "Complete mounted Core.step_with_batch_queue and EngineCoreProc._process_engine_step/has_work execute. Immediate CPU Futures replace device execution/sampling. Output sink, post-step and log contexts are inert; the actual scheduler consumes Futures, and real PAUSED_ALL and typed worker barriers/acks govern entry/handback. API-shaped adds use real preprocess_add_request and Scheduler.add_request; aborts use generated Core.abort_requests.",
+      "name": "core-ancillary-resources",
+      "replaces": "EngineCore executor/model, output-queue/process-loop resources, log/iteration contexts",
+      "test": "Connected Core attributes"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Native NCCL/CUDA latency or process death. Parent-negative probes mount exact 681030c source/overlay; new policy helper source may be on the fixture import path but the old startup never installs or calls it.",
+      "equivalence": "Actual API-shaped request construction, real abort/free hooks and real typed RPCs. Pending replies use the existing DirectTransport hold; rank1 replay completion is held false. Uncaptured manager is constructor state. No policy/validation predicate is patched to create success.",
+      "name": "counterfactuals",
+      "replaces": "Ordinary client abort/new add and asynchronous worker reply/event timing",
+      "test": "probe abort/reuse/foreign/bad-graph/refuse/pending-*"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Qualification of a native41 overlay missing its new module; that is rejected by source/freeze/container gates. This input-version leaf is only for existing HTTP/error-cleanup fixtures.",
+      "equivalence": "Only native_auto_arm is omitted, only when testing the historical O overlay without that file. All historical modules, native libraries, file hashes, readiness and package closure remain checked by the unmodified validator. The frozen native41 container uses its own overlay, includes native_auto_arm and keeps the full expected inventory.",
+      "name": "historical-package-inventory",
+      "replaces": "Current decode_probe.GENERATED_SOURCES as the expected module inventory for the frozen native35 O package used by hub tests",
+      "test": "test_native35_performance package_inventory and native37 T3 and test_native40_box_queue.Queue.test_regression_real_cli_through_package_and_native_client_refusal"
+    },
+    {
+      "name": "receipts-probe-front",
+      "test": "e3_native41_receipts_probe.Front",
+      "replaces": "The API AsyncLLM in front of the generated EngineCore utility (engine_core.call_utility_async)",
+      "equivalence": "test_e3_native_overlap.UtilityClient calls the bound generated EngineCore.flash_s5_native_control (executor_hooks.native_control) exactly as the pinned utility channel does; the probe sends status only (and release_auto_arm in the default-off case, which the session refuses), so pause_generation/resume_generation are never called and fail the probe if they are.",
+      "cannot_prove": "ZMQ utility transport and AsyncLLM process boundary.",
+      "box_evidence": false
+    },
+    {
+      "name": "receipts-probe-latched-lease",
+      "test": "e3_native41_receipts_probe.run(latched)",
+      "replaces": "A manual non-READ command (prepare, pause, identity) that latches AutoArmPolicy.manual_owned",
+      "equivalence": "Sets the same policy field AutoArmPolicy.manual_control sets after any non-READ command, then clears it as release_auto_arm does; the router and arm tests take and release the lease through the real commands.",
+      "cannot_prove": "Nothing beyond the field the receipts read.",
+      "box_evidence": false
+    },
+    {
+      "name": "receipts-probe-poll-spacing",
+      "test": "e3_native41_receipts_probe.run (status after every Core step)",
+      "replaces": "e3_native41_autoarm_box.Poller.run: a second NativeRuntimeClient reading status every 0.25 s (0.02 s once the shrinking tail stages are in flight) on its own thread",
+      "equivalence": "The probe feeds the same compact() views through the same Poller.keep dedup into the same receipt_proof; one read per Core step is the densest spacing the box poller can reach. The thread, the spacing and the loopback client are exercised by the Arm test over HTTP.",
+      "cannot_prove": "That a 0.25 s box spacing observes every native chunk (the proof needs only the last chunk and the engagement, each seconds long at box scale; the probe checks every chunk).",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-fastapi",
+      "test": "test_native41_box_queue.APIRouter/App/Request/JSONResponse/fastapi_leaf",
+      "replaces": "fastapi APIRouter, FastAPI app (state.engine_client, include_router, http middleware), starlette Request and JSONResponse used by probe_control.attach_native_router",
+      "equivalence": "The real attach_native_router builds its real endpoint coroutine; the leaves carry exactly what it reads (client host, Authorization header, body stream, app.state.engine_client) and what it returns (content, status_code). Auth, JSON decoding, action routing, error mapping and the session are the real code.",
+      "cannot_prove": "uvicorn/starlette request parsing and the owner-health middleware at runtime.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-api-server",
+      "test": "test_native41_box_queue.Server/EngineLoop",
+      "replaces": "The uvicorn API server process: HTTP framing to the native endpoint and the API event loop that also drives the engine ticks",
+      "equivalence": "A loopback ThreadingHTTPServer hands each POST body, client host and Authorization header to the real endpoint coroutine on one event loop that also runs the engine ticks (test_e3_native_overlap.Pump), as test_native39_trunk.ThreadControl does; the client side is the real NativeRuntimeClient and LoopbackControl over real HTTP.",
+      "cannot_prove": "Separate API and EngineCore processes and their ZMQ channel.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-serving",
+      "test": "test_native41_box_queue.Server (/v1/completions)",
+      "replaces": "vLLM OpenAI completions serving and the model",
+      "equivalence": "Streams the pinned completion chunk shape the W2 readers parse (choices[0].token_ids, prompt_token_ids on the first chunk, cumulative usage with prompt_tokens, finish_reason length at max_tokens, [DONE]); prompt tokens follow the W2 token model (one per word plus one per digit). Nothing in this stack links the HTTP prompt to the scheduler, so no automatic cycle runs here; the real cycle through the same window is e3_native41_window_probe (container).",
+      "cannot_prove": "Model output, token timing, prefix caching and any link from HTTP traffic to the engine.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-scheduler-reads",
+      "test": "test_native41_box_queue.pinned_reads",
+      "replaces": "Scheduler.policy (scheduler.py:199) and Scheduler.get_num_unfinished_requests (scheduler.py:2825), absent on the cold-stack scheduler",
+      "equivalence": "policy.name is FCFS (the box default; AutoArmPolicy._select reads only the name). The count is the pinned rule: 0 under PAUSED_ALL, else waiting + skipped_waiting + running (no streaming input in this stack).",
+      "cannot_prove": "Other scheduling policies.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-w2-scale",
+      "test": "test_native41_box_queue.workload",
+      "replaces": "The frozen q18a W2 manifest sizes and times (8 x 153,537 standing, 199,934 fresh, 4,096 append, 20 s window, 120-180 s timeouts)",
+      "equivalence": "The same manifest file validated by shared.validate_manifest, only sizes and times reduced; the arm reads the same fields. SETTLE_S and CLOSE_TIMEOUT_S are patched to 0.2 s and 1 s; POLL_S keeps its box value.",
+      "cannot_prove": "Box-scale timing and memory.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-package-gate",
+      "test": "test_native41_box_queue.Arm.run_arm",
+      "replaces": "e3_overlap_performance._package_gate over the queue overlay, readiness and manifest",
+      "equivalence": "The arm reads only .ok; both values are exercised (False refuses before any engine call). The queue runs the real gate with the env the draft sets.",
+      "cannot_prove": "Overlay/readiness content.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-shell",
+      "test": "test_native41_box_queue.body_commands/expand",
+      "replaces": "bash expansion of the queue variables in the native41 body",
+      "equivalence": "Joins continuation lines, drops redirections and substitutes the same variables; each command then parses with its own module argparse. bash -n parses the whole derived drafts.",
+      "cannot_prove": "Runtime values of the queue variables.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-argparse-capture",
+      "test": "test_native41_box_queue.Commands",
+      "replaces": "argparse.ArgumentParser.parse_args, wrapped so that each module main stops right after parsing its argv",
+      "equivalence": "The original parse_args runs on the exact expanded body argv with each module's own parser (e3_native41_autoarm_box, e3_native39_trunk_checks); only its return is raised as Parsed, so main never performs the step (no HTTP, docker or file I/O).",
+      "cannot_prove": "What each step does after parsing; the Arm and Grade tests, the window probe and the box run cover that.",
+      "box_evidence": false,
+      "seams": [
+        "ArgumentParser.parse_args"
+      ]
+    },
+    {
+      "name": "tp-skew-completion",
+      "test": "e3_native41_auto_probe.Skew",
+      "replaces": "CUDA event completion timing of each rank's streams (the r4 ControllableEvent query answer), in the connected auto cycle",
+      "equivalence": "A real CUDA event completes in stream order and asynchronously to the host, and an event recorded on an idle stream completes at once. The leaf completes each rank's recorded events in order at a fixed per-rank rate after every Core tick and, with probability 1/2, before each per-rank submit/poll/release delivery of one round; an event recorded while every earlier event on its bus is complete completes at record with probability 1/2 (ControllableEvent.record). Startup, Core, scheduler, auto-arm policy, driver, bridges, dispatchers, RPC schema and validators are the real ones; the probe only counts STATE_FINALIZE agreements around the real driver._apply_segments call, and it guards each worker's flash_s5_open and flash_s5_release: it observes every rank's own state event and calls the real method.",
+      "cannot_prove": "GPU timings, the box frequency of the skew, NCCL collectives, device memory or model exactness.",
+      "seams": [
+        "ControllableEvent.record",
+        "flash_s5_submit",
+        "flash_s5_poll",
+        "flash_s5_release",
+        "flash_s5_open",
+        "_apply_segments"
+      ],
+      "box_evidence": false
+    },
+    {
+      "name": "tp-skew-network",
+      "test": "test_e3_tp_finalize_skew.SkewNetwork",
+      "replaces": "CUDA event/stream completion on the four ranks and the stage-0 model's PP last-stage flag in the connected ProfileNetwork composition",
+      "equivalence": "Real NativeSegmentDriver, NativeWorkerBridge, LaneDispatcher, QsaLayerDriver and QsaPrefillOperation on stage 0 (r4 lanes on stage 1), as in test_e3_native_schedule_profile. Completion is controlled per rank: held events stay incomplete, and ControllableEvent.record completes an event recorded on an idle stream, as a GPU does. _flash_e3_is_last_stage is False on stage 0, which the real stage-0 model of a two-stage pipeline is. CompletionGuard wraps bridge.submit, bridge.release, dispatcher.drain, dispatcher.release, driver._send_release, driver._note_terminal_route and the RoutingSender envelope list. Each wrapper observes and then calls the real method. The (c) probes call the real driver._apply_segments with one or both accepted replies' cursor, pause or boundary replaced, and the run must still finish clean. PARENT_KEY patched over engine_driver._continuation is the pre-fix full-cursor key, used only as a negative control. The file is the trunk-named standalone test that ships with the engine fix (claude/tp-finalize-skew).",
+      "cannot_prove": "GPU timings, NCCL collectives, real TP o_proj, the dense box route, model exactness.",
+      "seams": [
+        "ControllableEvent.record",
+        "_flash_e3_is_last_stage",
+        "bridge.submit",
+        "bridge.release",
+        "dispatcher.drain",
+        "dispatcher.release",
+        "_send_release",
+        "_note_terminal_route",
+        "sender.envelopes",
+        "_apply_segments",
+        "_continuation"
+      ],
+      "box_evidence": false
+    },
+    {
+      "name": "memory-receipt-cuda",
+      "test": "test_native41_tp_skew.FakeCuda",
+      "replaces": "torch.cuda.is_initialized, torch.cuda.memory_stats and torch.cuda.mem_get_info on each worker (bridge._memory_cuda)",
+      "equivalence": "The bridge reads the same five caching-allocator keys and the driver free/total pair from the injected object that it reads from torch.cuda on a worker; FLASH_S5_AUTO_ARM is set through os.environ before the real bridges are constructed. The receipt is never a control input, so the fake values change no command (asserted).",
+      "cannot_prove": "Real allocator values, fragmentation, the working-set admission term.",
+      "seams": [
+        "os.environ",
+        "memory_stats",
+        "mem_get_info",
+        "_memory_cuda"
+      ],
+      "box_evidence": false
+    },
+    {
+      "name": "queue-argparse",
+      "test": "test_native41_box_queue.QueueArgparse",
+      "replaces": "The box-only values of the queue's shell variables (ARGPARSE_VALUES: run paths, container ids, the live URL, the auth file path, the library pins) and the GRADE_ARGS array that the arms build at run time.",
+      "equivalence": "Each call's argument text is copied verbatim from the derived queue text: continuations are joined, here-documents removed, and the text is cut at the first unquoted redirection or control operator. The real bash expands it with set -u, after sourcing the real native41 settings file and defining the draft's own native41_budget function. The words are then parsed by running the bundle's own script as __main__ until its real ArgumentParser.parse_args or parse_known_args returns. Those are patched only to stop there, so nothing after parsing runs. qlib.sh's identity and identity_check forward their words as pinned against qlib's text. The real setcfg has no argparse, so its own argv expression is evaluated from its AST. Negative controls go through the same path: bind without --container-id (the n43-f shape), the unarmed check without --epoch, an unknown option, an undeclared variable, and a setcfg word without '='.",
+      "cannot_prove": "Values that exist only on the box (real paths, ids, the live engine), behaviour after parsing, and python run through heredocs or other shells.",
+      "seams": [
+        "ArgumentParser.parse_args",
+        "parse_known_args",
+        "sys.argv",
+        "ARGPARSE_VALUES",
+        "GRADE_ARGS"
+      ],
+      "box_evidence": false
+    }
+  ],
+  "schema": "fixture-leaves/1",
+  "scope": "Native41 hub and exact pinned-container CPU tests; no box or GPU evidence"
+}

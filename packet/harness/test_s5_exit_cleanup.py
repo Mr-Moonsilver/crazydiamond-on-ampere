@@ -1,6 +1,7 @@
 import copy
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -80,6 +81,7 @@ class ExitRegrade(unittest.TestCase):
     def setUp(self):
         root=Path(__file__).resolve().parents[2]/'tmp';root.mkdir(exist_ok=True)
         self.path=Path(tempfile.mkdtemp(prefix='s5-exit-',dir=root))
+        self.addCleanup(shutil.rmtree,self.path,ignore_errors=True)
         self.raw=Value().fixture();self.raw['rung']='profile-terminal'
         for rank in self.raw['ranks']:
             for name in ('correctness','noop_correctness','resident_correctness'):

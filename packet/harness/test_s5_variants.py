@@ -2,6 +2,7 @@ import copy
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -72,6 +73,7 @@ class Frontier(unittest.TestCase):
         from s5_bisect_summary import summarize,CASES
         h=Path(__file__).resolve().parent;tmp=h.parent.parent/'tmp';tmp.mkdir(exist_ok=True)
         d=Path(tempfile.mkdtemp(prefix='s5-summary-',dir=tmp))
+        self.addCleanup(shutil.rmtree,d,ignore_errors=True)
         r=summarize(d);self.assertEqual(len(r['cases']),7);self.assertEqual(r['verdict'],'INCONCLUSIVE')
         for name in CASES[:-1]:
             p=d/name/'model-terminal';p.mkdir(parents=True)
@@ -102,6 +104,7 @@ class Cap(unittest.TestCase):
         h=Path(__file__).resolve().parent
         tmp=h.parent.parent/'tmp';tmp.mkdir(exist_ok=True)
         d=Path(tempfile.mkdtemp(prefix='s5-cap-cpu-',dir=tmp))
+        self.addCleanup(shutil.rmtree,d,ignore_errors=True)
         (d/'cuda.h').write_text('''#pragma once
 #include <stdint.h>
 typedef void* CUstream; typedef void* CUgreenCtx; typedef int CUresult;
@@ -169,6 +172,7 @@ int main(){
         import json
         h=Path(__file__).resolve().parent;tmp=h.parent.parent/'tmp';tmp.mkdir(exist_ok=True)
         d=Path(tempfile.mkdtemp(prefix='s5-grade-cpu-',dir=tmp));out=d/'result.json'
+        self.addCleanup(shutil.rmtree,d,ignore_errors=True)
         Path(str(out)+'.rank0.error.json').write_text(json.dumps(dict(fatal_correctness=True)))
         p=subprocess.run(['python3',str(h/'s5_variants.py'),'--grade',str(out)],capture_output=True,text=True)
         self.assertEqual(p.returncode,1);self.assertEqual(json.loads(p.stdout)['verdict'],'FAIL')

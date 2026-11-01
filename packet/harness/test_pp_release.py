@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,10 @@ HERE=Path(__file__).resolve().parent
 
 
 class ReleaseTests(unittest.TestCase):
-    def temp(self): return Path(tempfile.mkdtemp(prefix='pp-release-',dir=os.environ.get('TMPDIR',str(HERE.parents[1]/'tmp'))))
+    def temp(self):
+        path=Path(tempfile.mkdtemp(prefix='pp-release-',dir=os.environ.get('TMPDIR',str(HERE.parents[1]/'tmp'))))
+        self.addCleanup(shutil.rmtree,path,ignore_errors=True)
+        return path
 
     def canary_fixture(self):
         return dict(verdict='PASS',expected=2,partial_hits=1,sessions=[

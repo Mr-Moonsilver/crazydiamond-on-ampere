@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import threading
 import time
@@ -46,6 +47,7 @@ class RelayTests(unittest.TestCase):
         upstream=ThreadingHTTPServer(('127.0.0.1',0),Upstream)
         thread=threading.Thread(target=upstream.serve_forever,daemon=True);thread.start()
         root=Path(tempfile.mkdtemp(prefix='relay-',dir=HERE.parents[1]/'tmp'))
+        self.addCleanup(shutil.rmtree,root,ignore_errors=True)
         relay=Relay(f'http://127.0.0.1:{upstream.server_port}',{'test-r1-s1'},root/'journal.jsonl');relay.start()
         body=b'{"model":"test","messages":[],"private":"fixture-body"}'
         conn=http.client.HTTPConnection('127.0.0.1',relay.server.server_port,timeout=5)

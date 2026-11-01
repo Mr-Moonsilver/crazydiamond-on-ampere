@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ class ReviewTests(unittest.TestCase):
     def setUp(self):
         TMP.mkdir(exist_ok=True)
         self.root = Path(tempfile.mkdtemp(prefix='round7-review-', dir=TMP))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         spec = importlib.util.spec_from_file_location('review_decode_ab', HERE / 'decode_ab.py')
         self.m = importlib.util.module_from_spec(spec); spec.loader.exec_module(self.m)
         self.m.N, self.m.LEN, self.m.PLEN, self.m.LONG, self.m.MIN_MIXED = 2, 70, 1, 1, 1

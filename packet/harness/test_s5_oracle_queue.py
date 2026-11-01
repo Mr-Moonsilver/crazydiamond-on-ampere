@@ -2,6 +2,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -18,8 +19,10 @@ from test_s5_resident import Resident
 H=Path(__file__).resolve().parent
 
 
-def fresh():
-    return Path(tempfile.mkdtemp(prefix='s5-oracle-',dir=H.parents[1]/'tmp'))
+def fresh(test):
+    root=Path(tempfile.mkdtemp(prefix='s5-oracle-',dir=H.parents[1]/'tmp'))
+    test.addCleanup(shutil.rmtree,root,ignore_errors=True)
+    return root
 
 
 class OracleQueue(unittest.TestCase):
@@ -30,7 +33,7 @@ class OracleQueue(unittest.TestCase):
         import io,hashlib
         class CorrectnessError(RuntimeError):pass
         for existing in (False,True):
-            root=fresh();path=root/'result.json.rank0.error.json'
+            root=fresh(self);path=root/'result.json.rank0.error.json'
             primary=dict(fatal_correctness=True,error='primary mismatch',evidence={'immutable':True})
             if existing:write_json(path,primary)
             calls=[]
@@ -55,7 +58,7 @@ class OracleQueue(unittest.TestCase):
         from s5_segment import write_json
         from contextlib import redirect_stderr
         import io
-        root=fresh();path=root/'result.json.rank1.error.json'
+        root=fresh(self);path=root/'result.json.rank1.error.json'
         write_json(path,dict(fatal_correctness=True,error='primary'))
         original=path.read_bytes()
         def fail():raise RuntimeError('trace failure')
@@ -78,7 +81,7 @@ class OracleQueue(unittest.TestCase):
             with self.assertRaises(ValueError):validate(names,'0,2','on',6,1)
         for settings in [('0,1','on',6,1),('0,2','ON',6,1),('0,2','on',5,1),('0,2','on',6,2)]:
             with self.assertRaises(ValueError):validate(['mixed-resident34'],*settings)
-        root=fresh()
+        root=fresh(self)
         for i,names in enumerate(['*','mixed-resident34 mixed-resident34','qsa-resident24\nmixed-resident34','   ']):
             q=root/str(i)
             p=subprocess.run(['bash',str(H/'runs/q_s5_resident_oracle.draft.sh')],capture_output=True,
@@ -87,7 +90,7 @@ class OracleQueue(unittest.TestCase):
             self.assertEqual(p.returncode,2);self.assertFalse(q.exists())
 
     def test_quoted_subset_forwarding_missing_case_stays_visible(self):
-        root=fresh();bundle=root/'bundle';bundle.mkdir();(bundle/'runs').mkdir()
+        root=fresh(self);bundle=root/'bundle';bundle.mkdir();(bundle/'runs').mkdir()
         # No Docker/GPU command exists in this fake child. Run the real parent
         # driver to check order, bounded input forwarding and missing results.
         for name in ('s5_oracle_queue.py','s5_value.py'):(bundle/name).write_text((H/name).read_text())
@@ -119,7 +122,7 @@ exit 2
             self.assertEqual(d['S5_RESIDENT_DMA'],'0' if name in ('mixed-resident34','arena-direct34') else '1')
 
     def test_artifact_binding_and_fail_precedence(self):
-        root=fresh();f=root/'qsa-resident24';(f/'profile-terminal').mkdir(parents=True)
+        root=fresh(self);f=root/'qsa-resident24';(f/'profile-terminal').mkdir(parents=True)
         config=validate(['qsa-resident24'],'0,2','off',6,1)
         d=Resident().fixture();d['pair']='0,2'
         for r in d['ranks']:

@@ -13,6 +13,7 @@ import io
 import json
 import math
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -165,6 +166,7 @@ class VerdictTests(unittest.TestCase):
 
     def test_failure_file_wins_even_if_other_pair_missing(self):
         directory = Path(tempfile.mkdtemp(prefix="s5-failure-",dir=ROOT.parent/"tmp"))
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
         x,y = directory/"x.json",directory/"y.json"
         (directory/"x.json.rank0.error.json").write_text(json.dumps({"fatal_correctness":True}))
         p = subprocess.run([sys.executable,str(HERE/"s5_segment.py"),"--combine",str(x),str(y)],capture_output=True,text=True)
@@ -228,6 +230,7 @@ class DecodeReviewReproductions(unittest.TestCase):
 
     def finish(self,runs):
         directory = Path(tempfile.mkdtemp(prefix="s5-review-",dir=ROOT.parent/"tmp"))
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
         out = directory/"record.json"
         with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as ex:
             self.m.finish(runs,self.pre,True,str(out))

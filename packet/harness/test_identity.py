@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,6 +62,7 @@ class IdentityTests(unittest.TestCase):
     def setUp(self):
         TMP.mkdir(exist_ok=True)
         self.root = Path(tempfile.mkdtemp(prefix='identity-test-', dir=TMP))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.bin = self.root / 'bin'; self.bin.mkdir()
         mock = self.bin / 'docker'; mock.write_text(MOCK); mock.chmod(0o700)
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ['PATH'],

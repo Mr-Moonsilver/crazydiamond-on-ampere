@@ -1,6 +1,7 @@
 import copy
 import math
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -85,6 +86,7 @@ class Resident(unittest.TestCase):
     def test_matrix_missing_cases_and_lifecycle(self):
         h=Path(__file__).resolve().parent;root=h.parent.parent/'tmp';root.mkdir(exist_ok=True)
         out=Path(tempfile.mkdtemp(prefix='s5-resident-',dir=root))
+        self.addCleanup(shutil.rmtree,out,ignore_errors=True)
         r=summarize(out,CASES);self.assertEqual([x['case'] for x in r['cases']],list(CASES))
         self.assertEqual(r['verdict'],'INCONCLUSIVE')
         s=(h/'runs/q_s5_resident.draft.sh').read_text()

@@ -2110,6 +2110,10 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         # Refused until settlement is observed, never silently re-issued.
         with self.assertRaises(nc.NativeControlError):
             await control.census()
+        # Only the held census above is a deadline test. Settlement and the new
+        # census use the suite's 5 s deadline: under host load a full census
+        # round trip outlasts 50 ms and timed out at the final task.result().
+        control.timeout_s = 5.0
         self.stack.transport.deliver_held()
         await pump_until(lambda: self.stack.driver._control is None, self.core)
         status = await control.status()

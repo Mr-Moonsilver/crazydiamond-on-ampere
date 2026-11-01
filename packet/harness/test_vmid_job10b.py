@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,7 @@ class VM10BTests(unittest.TestCase):
                                    (0,dict(own_samples=0,errors=0),'INCONCLUSIVE'),
                                    (0,dict(own_samples=3,errors=0),'PASS')]:
             out=Path(tempfile.mkdtemp(prefix='vm10-finalize-'))
+            self.addCleanup(shutil.rmtree,out,ignore_errors=True)
             j.s.write(out/'probe.json',fixture());j.s.write(out/'monitor.json',monitor)
             j.finalize(out,rc)
             r=json.loads((out/'result.json').read_text());self.assertEqual(r['verdict'],expected)

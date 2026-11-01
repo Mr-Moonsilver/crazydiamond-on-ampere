@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,7 @@ class KeepBuffer(io.StringIO):
 class DeclareTests(unittest.TestCase):
     def setUp(self):
         self.root=Path(tempfile.mkdtemp(prefix='declare-',dir=TMP));self.task=self.root/'task';self.task.mkdir()
+        self.addCleanup(shutil.rmtree,self.root,ignore_errors=True)
         self.ovl=self.task/'prod/overlay-v16g';self.ovl.mkdir(parents=True)
         for folder,names in ((self.ovl,['qsa.py','ops_qsa.py','model_runner_v2.py']),
             (self.ovl/'core',['block_pool.py','single_type_kv_cache_manager.py','scheduler.py','kv_cache_utils.py','kv_cache_manager.py'])):

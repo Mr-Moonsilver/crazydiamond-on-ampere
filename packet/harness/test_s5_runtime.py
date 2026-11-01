@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -18,7 +19,9 @@ HERE = Path(__file__).resolve().parent
 
 class RuntimeTests(unittest.TestCase):
     def directory(self):
-        return Path(tempfile.mkdtemp(prefix='s5-runtime-', dir=os.environ.get('TMPDIR')))
+        path = Path(tempfile.mkdtemp(prefix='s5-runtime-', dir=os.environ.get('TMPDIR')))
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        return path
 
     def test_issue_order_and_phase_survive(self):
         out = self.directory()/'pair.json'

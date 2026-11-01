@@ -1,5 +1,6 @@
 """Real q17b observer orchestration; only native work and AsyncLLM are faked."""
 import hashlib
+import shutil
 import tempfile
 import types
 import unittest
@@ -90,6 +91,7 @@ class WorkerTests(unittest.TestCase):
             runtime.start_worker_observer(worker,types.SimpleNamespace(_flash_s5_split=object()),env)
     def test_worker_hook_starts_observer_before_split(self):
         events=[]; root=Path(tempfile.mkdtemp(prefix='observer-runtime-')); lib=root/'green.so'
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         lib.write_bytes(b'CPU fixture never loaded')
         env={'FLASH_S5_DECODE_ONLY_PROBE':'1','FLASH_S5_OVERLAP':'0','FLASH_S5_DECODE_SMS':'44',
              'FLASH_S5_GREEN_LIB':str(lib),'FLASH_S5_GREEN_LIB_SHA256':hashlib.sha256(lib.read_bytes()).hexdigest()}

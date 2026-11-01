@@ -52,6 +52,7 @@ def make_q11(root):
 class FollowupTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix='s5-followup-', dir=ROOT.parent / 'tmp'))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         make_q11(self.root)
         self.pair = self.root / 's5-20261025T030000Z-prio/pair-0-2.json'
 
