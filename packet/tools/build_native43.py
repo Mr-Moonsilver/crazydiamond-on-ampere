@@ -233,6 +233,11 @@ def derive_runner(candidate, tests, swaps_spec, pin, review_sha, sources, expect
     return owner, diff
 
 
+def runner_phases(owner):
+    """Every queue script the runner names: its quoted q18a_*.draft.sh / q18a_*_declare.sh literals."""
+    return set(re.findall(r"'(q18a_[a-z0-9_]+(?:\.draft|_declare)\.sh)'", owner))
+
+
 # ---------------------------------------------------------------- bundle and overlay
 def stage(spec, bundle):
     """held-b bundle + the build tree's harness/engine sources + the spec's packaging tools."""
@@ -401,8 +406,6 @@ def build(spec_path, out, strict_log, focused_log):
         (sorted(set(added) ^ want_added), sorted(set(replaced) ^ want_replaced))
     for name in spec['queue']:
         assert (bundle / 'runs' / name).is_file(), 'queue text missing: ' + name
-    for suffix in ('.draft.sh', '_declare.sh'):
-        assert stem(spec['candidate']) + suffix in spec['queue'], 'the runner phases need ' + suffix
     closure, digest = regenerate_overlay(out, bundle)
     assert closure['review'] == review
     overlay = bundle / 'native30_overlay'
@@ -438,6 +441,9 @@ def build(spec_path, out, strict_log, focused_log):
     unchanged_engine = not overlay_proof['moved']
     owner, runner_diff = derive_runner(spec['candidate'], spec['expected_tests'], spec['runner_swaps'], pin,
                                        closure['review_sha256'], overlay_rows, unchanged_engine)
+    phases = runner_phases(owner)
+    assert stem(spec['candidate']) + '.draft.sh' in phases and any(p.endswith('_declare.sh') for p in phases) \
+        and phases <= set(spec['queue']), ('every runner phase must be a declared queue text', sorted(phases))
     runner = out / (spec['candidate'] + '-owner-run-' + pin[:12] + '.py')
     runner.write_text(owner)
     rehearsal = None
@@ -456,7 +462,7 @@ def build(spec_path, out, strict_log, focused_log):
                  freeze=dict(source=source_proof, negative_controls=negatives),
                  review_sha256=closure['review_sha256'], parent_review_sha256=PARENT_REVIEW,
                  runner=dict(path=str(runner), sha256=sha(runner), parent=str(PARENT_RUNNER), parent_sha256=PARENT_RUNNER_SHA,
-                             differences=runner_diff, expected_selfrun_tests=spec['expected_tests'],
+                             differences=runner_diff, expected_selfrun_tests=spec['expected_tests'], phases=sorted(phases),
                              swaps=[list(s) for s in runner_swaps(spec, spec['expected_tests'])],
                              only_names_pins_and_declared_swaps_changed=True),
                  rehearsal=rehearsal, spec=str(spec_path), spec_sha256=sha(spec_path),
