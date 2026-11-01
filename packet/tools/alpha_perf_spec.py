@@ -40,8 +40,8 @@ EXTRA_COMPILED = ['harness/alpha_perf_gate.py', 'harness/e3_alpha_perf_box.py', 
                   'tools/alpha_perf_spec.py', 'tools/alpha_perf_overlay_propose.py', 'tools/build_alpha_perf.py',
                   'tools/alpha_perf_delivery.py', 'tools/alpha_m3_queue_deltas.py']
 EXTRA_SUITES = ['test_alpha_m3_receipts']
-# Declared in source_paths, not bundled: nothing imports it, and its fixture text 'Bearer fixture-bearer-value' is a
-# credential-shaped line outside the precheck's declared fixtures (l-f did not bundle it either).
+# Declared in source_paths, not bundled: nothing imports it, and it holds a credential-shaped fixture line outside the
+# precheck's declared fixtures (l-f did not bundle it either). Do not quote that line here: this file is bundled.
 NOT_BUNDLED = {'native39_lifecycle_precheck_conf.py'}
 
 
