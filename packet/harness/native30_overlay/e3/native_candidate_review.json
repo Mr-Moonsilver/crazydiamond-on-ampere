@@ -1493,13 +1493,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict registered CPU regression on the packaged tree",
-    "cases": 327,
+    "cases": 328,
     "exit_code": 0,
-    "log_sha256": "3811b09f52e6783fb2810fe2393530c18cacd9aefdf7847a510394504d517dbd",
-    "reported_tests": 3907,
-    "required": 327,
+    "log_sha256": "e5b612810a25c5f9f9d80dd8989a2ddbe15ffb0c9325942431c4f8f057bf3296",
+    "reported_tests": 3912,
+    "required": 328,
     "skips": 0,
-    "suites": 210
+    "suites": 211
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -1587,7 +1587,7 @@
     "e3_native_host_plan_probe.py": "a598bbc9221cd479a0fb0e0d6da6ef62fbfb7ed8cd1535dfb6b1192040160041",
     "e3_native_import_probe.py": "7643e5c7d8ae8bbf8202c918472e33e5fd774cbdf94dbbbcde2e0963b4127bbb",
     "e3_native_memory_grade.py": "f3778b4c2153a06c6eff4136206c30c937d153a971b2228ef518ae511f3e7c86",
-    "e3_native_performance.py": "b51738b7d708de6ff8bc347924a01fd9def6fbcfb8acc4c799df3508100936b3",
+    "e3_native_performance.py": "b995e1985f7076690e7c8a236ef0895de6edaeed2f535e5acc19cd0a759a35cf",
     "e3_native_placement_evidence.py": "29605a3afbfc9b73ef8ca221220173c3f0e7598c8f9367509dcf3f9d3775a74b",
     "e3_native_profile_cpu_probe.py": "a086abaa449ac9ab0be0fd1a00d72ebb9f9cdc266000000dd03b492d0f04d661",
     "e3_native_qualification_driver.py": "41c8853d60ad90a7640082e3e82865f33f0619cb25fd5099821ee1e7d2f4d513",
@@ -1747,7 +1747,7 @@
     "native43_clock_probe.py": "6a298922a5fd2fb5cab9d60df20bc80a87441f8c0e30b51c7f6e15e1f2bad843",
     "native43_dense_grade.py": "7b4480d9fccc86280afd1973f2f54b7d9872928e117806def3afa40d328ea36e",
     "native43_fixture_leaves.json": "bfdc3ff9791f1752f7e64b00b4a2a6a2f92e39c3e1088b69f8d97c4f7e047592",
-    "native43_lifecycle_fixture_leaves.json": "e8c5ceca0f4ba09a15d5b708aa565d89856a27ac41bece9691b12a02f8955230",
+    "native43_lifecycle_fixture_leaves.json": "12680c9ba11f40b82c696bee056afc1afef6449d2c1512ea90ed79bb74d14034",
     "native43_lifecycle_gate.py": "a1f4efce62ce3f838e5dce679958892481096f9caad5630c8acbf6232b0fb822",
     "native43_lifecycle_grade.py": "e788ba28e1f36781fa39fcd8da4a13ed569c5561ef58a483b8217457bc1c6de3",
     "native43_scheduler_tick_probe.py": "31824a5fb640c4b142af991673b2ab342933b98894ca15fe580921a1bd9c0326",
@@ -1785,6 +1785,7 @@
     "render_pairs.py": "bdbd1accd6b2aad61600eefdc193f3466e5987ba252f0ef9a45cab48f0f56fda",
     "retain_ab.py": "c6b97cb7caf45a9de5aef426362c8c0cdddac0ecc378c5f8c85ae65c85ca57c9",
     "retention_probe.py": "76964b2b7a0fa8d140a9ddf5bc9368a81c6cdb8d237fbbb647f4b394230e97c2",
+    "reuse_clock_fixture_leaves.json": "77904c0b161b2bda4f7fc140887bb9200a9ac4ef365bbab51d49a4a91b4bdf21",
     "run-awq-bf16.sh": "c39266e5147bfe4a0a7888170134fa5beec3ef1446e6613f84a5778fe32a0200",
     "run_flash_tuning.orig.sh": "d1019df3b2804ffd4b1ae91c991f77ed643dd30f60225fe03eea59d2f1fe6e0b",
     "run_flash_tuning.sh": "372248e598d3ce9cc60697f7f34f16933e23a4a403e5d1000a692b1053637ee3",
@@ -2221,7 +2222,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "68833c62113043f616ab76e17673c986d94be92670375d69b974595065d4a7a6",
+    "selftest.py": "9d60d860319ef8e78bb5fcd66bdd082a1e575f14ed5c88eb69dbf5313b630c74",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -2298,7 +2299,7 @@
     "test_e3_native_imports.py": "6e19fe29661ecf9a447800100ec733df2961b4d5122dee1c4e98ea839303577f",
     "test_e3_native_integration.py": "fed4775b6f8d141e9c7a1026d949b2145499fbc319b2ea68af827e09a9d67b47",
     "test_e3_native_measurement.py": "6b1d3730b92b834c4cd12c253067a33ee03b0db691b4b30125c36154ce2850de",
-    "test_e3_native_measurement_clients.py": "a40fd83b57dfdea445529f1b265c0717c01bf94af47b7171c73d14497ca96f63",
+    "test_e3_native_measurement_clients.py": "826eb0641f4e91c6ee29c2214308e1a9abd5d1602dfecb36f0ea6ed3e3715325",
     "test_e3_native_observation.py": "bacd82bddaac107cd99e83e45d9e755d3060b11435644d24b37412cd068602e7",
     "test_e3_native_overlap.py": "19778bf42a5a581a3da31964a53aee8ad8c316971cb2c25218606024b7e0db2b",
     "test_e3_native_performance_queue.py": "81b528b5bb6866c1a987c003fa4a84512882d8b26b3b7c3926e047420df56bd8",
@@ -2353,6 +2354,7 @@
     "test_e3_teacher12_queue.py": "c885a94bb0b5899f261b88a6189e29a486df83dc5760a27981a0924bcee80be7",
     "test_e3_teacher_decode.py": "de927c390220c8dbffc8fef989dad02ea82cab81786502c25060751f1fe75dfe",
     "test_e3_teacher_decode_rule4.py": "ef11bd7c4834e29a837769d615ea1f3c60256a5491638908f73f1a11467e7ab0",
+    "test_e3_tp_finalize_skew.py": "1b0019ee5633110e40c7597db4ade0411ad1aeb98e4202789418dc54f7278e4e",
     "test_e3_transitions_lifecycle_probe.py": "a87ad325fc735efdec5075e312347484b293d574ae2a58a1ea44199cc3e33734",
     "test_e3_transitions_matrix_probe.py": "9faa3eebf9d429c634e111452bdd8459592d02258353e4bc682767612a7f7ca2",
     "test_e3_w1_decode_driver.py": "346f28adf1c572a873a5bf3fed4ed545f279ae9c2f5dc8a4e1ebc9ba89da6259",
@@ -3266,6 +3268,30 @@
     "candidate": "q18a-native43-lifecycle",
     "device_run": "NOT_RUN",
     "dry_run": false,
+    "engine_delta": {
+      "branch": "claude/tp-finalize-skew",
+      "commit": "cfffffcda2ec96e504a462f9504d026b8af0863c",
+      "definitions": [
+        "NativeSegmentDriver._apply_segments",
+        "_agreement_detail",
+        "_continuation"
+      ],
+      "file": "e3/engine_driver.py",
+      "focused_suites": [
+        "test_e3_tp_finalize_skew",
+        "test_e3_native_measurement_clients",
+        "test_native35_performance"
+      ],
+      "hunks_identical_to": "3af0048be4d2d16c4123d642fab99a22a1af683b (claude/native41-autoarm, Codex-reviewed)",
+      "lineage_rows": [
+        "e3/engine_driver.py"
+      ],
+      "merge": "clean three-way merge of the 109313a driver and cfffffc over 1ffc394",
+      "reason": "q18a-native41-autoarm run 1 fatal DriverError(TP workers disagree on the layer continuation): commit beside state_finalize at a STATE_FINALIZE acceptance is one continuation; every other difference still refuses; completion-dependent actions still wait for each rank",
+      "tests": [
+        "harness/test_e3_tp_finalize_skew.py"
+      ]
+    },
     "engine_files": [
       "e3/engine_driver.py",
       "e3/native_resources.py",
@@ -3282,9 +3308,9 @@
     "parent_commit": "1ffc394783d3d67e140056868b50ca2f74c88b3b",
     "parent_manifest": "756f826c221c026440d7955a9f834fe72db83581439fed9bb69d07d314ea4264",
     "queue": "q18a-native43-lifecycle (short scope): the box-run q18a-native39-lifecycle queue (held-a run 1 bytes) on the native43 dense engine: startup, bind receipt, W2 length guard, row1 (lane proof), lifetime gates, instruments, native cancel/drain/reuse (e3_q18a_lifecycle on the trunk W2 manifest), typed FULL hygiene, instruments end; no pool telemetry, leaktest, pressure2/partial-tail leak or pressure lifetime; native43 lifecycle grade at exit; one fresh key; never starts production",
-    "reuse_clock": "e3_native_performance.native_window client-side identity equality: replaced by per-call client brackets proved with native43_boundary_clock.prove (d57ed99; clock split native_window_clock proved)",
-    "scope": "native43 lifecycle short scope over Codex 109313a39828 engine bytes (the n43-f overlay engine files): does cancel/drain/reuse complete on the dense policy; EXTRA_ENV = the dense arm without TRACE=1 and STOP_AFTER=101200; no leak, pressure or speed claim; not a release candidate",
-    "source_commit": "6b334f857de27ac6f97d467e5143a68b48dea86a",
+    "reuse_clock": "e3_native_performance.native_window client-side identity equality: replaced by per-call client brackets proved with native43_boundary_clock.prove (standalone commit 1594bd0d92aa, = d57ed99 code plus negatives; clock split: new native_window_clock proved, pre-fix native_window_clock_pre_fix refused on the same records)",
+    "scope": "native43 lifecycle short scope over Codex 109313a39828 engine bytes (the n43-f overlay engine files) plus the declared TP finalize-skew delta (cfffffc) in e3/engine_driver.py: does cancel/drain/reuse complete on the dense policy; EXTRA_ENV = the dense arm without TRACE=1 and STOP_AFTER=101200; no leak, pressure or speed claim; not a release candidate",
+    "source_commit": "e2826cac2c6ed966ac5b51219bffba3b37bcf629",
     "tail_handback": false
   },
   "night_window": {
@@ -3297,9 +3323,9 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "9f9b0d763e6c2b6ddd406cd997e03a5dbc8ae9e342522b65c751307177e7510c",
+    "log_sha256": "b59aed194e121ea194e5352e6c08786f4f9c20c37e4cc2e589a16b700b05f720",
     "skips": 0,
-    "tests": 583,
+    "tests": 637,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
@@ -4404,7 +4430,7 @@
     "capture_streams.py": "76944d3416a9635cbecd81c70c1d538d5e0efc25d4fed4a3f2cf200ec3f4bd2b",
     "decode_probe.py": "7e27045eeec2d3ed02263db1496727e27d732d724b192d1a7e0e50261e7d1f4b",
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
-    "engine_driver.py": "8acbb41068bf979f321fc3e035cb0b380190b414bfe116c2b80ff2a2958305c3",
+    "engine_driver.py": "cf9893364b4288566a85ee74c9b191f4557fa97cfdedca33113c80b086bca970",
     "engine_offers.py": "16e2775ba04461ad953e83eedd1ebb951a43b3d134789c225c6e6a1e5a721d2f",
     "executor_hooks.py": "64eecdc77337d89ac2c4391d1f1f8ea39ff8058bdb2618ee3c2ca68edd1875d7",
     "graph_hooks.py": "12ad7e3500b559f2d398a6676292094e4d455df12d4c6951803dbac9f38663c5",
