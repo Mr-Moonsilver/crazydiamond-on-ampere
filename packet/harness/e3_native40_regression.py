@@ -56,6 +56,10 @@ def grade(record, expected_tokens):
     streams = (row.get('decode_window') or {}).get('streams') or []
     if len(streams) != 8 or any(s.get('completion_delta', 0) < 1 or s.get('error_before_window_end') for s in streams):
         reasons.append('eight-live-decoders-unproved')
+    window = row.get('decode_window') or {}
+    group = proof.get('group') or {}
+    if window.get('start_ns') != group.get('start_ns') or window.get('end_ns') != group.get('end_ns'):
+        reasons.append('decode-window-not-native-window')
     if (record.get('cleanup') or {}).get('full_restored') is not True:
         reasons.append('full-restoration-unproved')
     return dict(verdict='INCONCLUSIVE' if reasons else 'PASS', missing=sorted(set(reasons)),
@@ -101,21 +105,22 @@ def main(argv=None):
     return 0 if record['grade']['verdict'] == 'PASS' else 2
 
 
-def final_grade(root):
+def final_grade(root, expected_tokens=197270):
     def load(name):
         try:
             return json.loads((root / name).read_text())
         except (OSError, ValueError):
             return {}
     run = load('w2-fresh.json')
-    grade = run.get('grade') or {}
+    # Recompute from the serialized source journal, never accept cached PASS.
+    graded = grade(run, expected_tokens)
     required = ['unarmed-stock-prefill.json', 'qual-row1.json', 'instruments-begin.json',
                 'instruments-end.json', 'ingress-fresh.json', 'engine-alive.json']
     missing = [name for name in required if load(name).get('verdict') != 'PASS']
-    if grade.get('verdict') != 'PASS' or grade.get('speed_claim') is not False:
+    if graded.get('verdict') != 'PASS':
         missing.append('fresh-source-joined-regression')
     return dict(schema='native40-regression-grade/1', verdict='INCONCLUSIVE' if missing else 'PASS',
-                missing=missing, speed_claim=False, descriptive=True, measured=grade,
+                missing=missing, speed_claim=False, descriptive=True, measured=graded,
                 comparison='raw single fresh overlap against held-b; no baseline/repeat speed conclusion')
 
 

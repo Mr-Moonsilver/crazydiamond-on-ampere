@@ -148,6 +148,8 @@ class Queue(unittest.TestCase):
         row = copy.deepcopy(NativeWindowSource.record)
         row.update(complete=True, request={'prompt_tokens_observed': 2050, 'ttft_s': 1},
                    decode_window={'streams': [{'completion_delta': 1} for _ in range(8)]})
+        group = regression.perf.native_window(row, 'fresh', NativeWindowSource.epoch)['group']
+        row['decode_window'].update(start_ns=group['start_ns'], end_ns=group['end_ns'])
         data = dict(row=row, engine_epoch=NativeWindowSource.epoch, cleanup={'full_restored': True})
         self.assertEqual(regression.grade(data, 2050)['verdict'], 'PASS')
         row['end']['raw_journal_evidence'] = {}
@@ -159,9 +161,19 @@ class Queue(unittest.TestCase):
             for name in ('unarmed-stock-prefill', 'qual-row1', 'instruments-begin', 'instruments-end', 'ingress-fresh', 'engine-alive'):
                 (root / (name + '.json')).write_text(json.dumps({'verdict': 'PASS'}))
             path = root / 'w2-fresh.json'
-            path.write_text(json.dumps({'grade': {'verdict': 'PASS', 'speed_claim': False}}))
-            self.assertEqual(regression.final_grade(root)['verdict'], 'PASS')
+            from test_e3_native_measurement_clients import NativeWindowSource
+            NativeWindowSource.setUpClass()
+            row = copy.deepcopy(NativeWindowSource.record)
+            group = regression.perf.native_window(row, 'fresh', NativeWindowSource.epoch)['group']
+            row.update(complete=True, request={'prompt_tokens_observed': 2050}, decode_window=dict(
+                start_ns=group['start_ns'], end_ns=group['end_ns'], streams=[{'completion_delta': 1} for _ in range(8)]))
+            data = dict(row=row, engine_epoch=NativeWindowSource.epoch, cleanup={'full_restored': True})
+            path.write_text(json.dumps(data))
+            self.assertEqual(regression.final_grade(root, 2050)['verdict'], 'PASS')
             (root / 'ingress-fresh.json').write_text('{"verdict":"FAIL"}')
+            self.assertEqual(regression.final_grade(root, 2050)['verdict'], 'INCONCLUSIVE')
+            (root / 'ingress-fresh.json').write_text('{"verdict":"PASS"}')
+            path.write_text(json.dumps({'grade': {'verdict': 'PASS', 'speed_claim': False}}))
             self.assertEqual(regression.final_grade(root)['verdict'], 'INCONCLUSIVE')
 
     def test_regression_real_cli_through_package_and_native_client_refusal(self):
