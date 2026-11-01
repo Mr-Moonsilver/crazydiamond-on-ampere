@@ -259,6 +259,11 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
         raise StartupError('invalid boolean setting: FLASH_S5_AUTO_ARM')
     if auto == '1' and (mode_settings(env) is not None or not _enabled(env)):
         raise StartupError('auto-arm requires the native overlap composition')
+    from native_measurement import progress_mode
+    try:
+        progress = progress_mode(env)
+    except ValueError as exc:
+        raise StartupError(str(exc)) from None
     if mode_settings(env) is not None:
         # The decode-only probe has no engine-side lane composition.
         return None
@@ -335,6 +340,9 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     if auto == '1':
         from native_auto_arm import install
         install(engine, driver, env)
+    if progress is not None:
+        # Held-f receipts (and the burst candidate) attach to the auto policy only.
+        driver.install_progress(progress)
     return composition
 
 

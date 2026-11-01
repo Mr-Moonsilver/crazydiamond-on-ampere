@@ -58,7 +58,9 @@ from e3_types import (
 from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
 from native_measurement import (NativeMeasurementCensus, encode_report_vector,
-                                decode_report_vector, ControlPathCounters, QsaControlCounters)
+                                decode_report_vector, ControlPathCounters, QsaControlCounters,
+                                PROGRESS_META_BYTES, PROGRESS_META_KEY, PROGRESS_MODES,
+                                ProgressTrace, encode_progress_meta)
 from reply_transport import Backpressure, TransportError
 from scheduler_hooks import (
     ADMISSION_PHASES,
@@ -795,6 +797,134 @@ class TPTailSubmissionObligation:
             raise DriverError('TP tail obligation needs its typed boundary and route')
 
 
+_PROGRESS_LOG = None
+
+
+def _progress_logger():
+    global _PROGRESS_LOG
+    if _PROGRESS_LOG is None:
+        # vLLM's init_logger is the path s5_startup's INFO line is proven on.
+        try:
+            from vllm.logger import init_logger
+        except ImportError:
+            import logging
+            _PROGRESS_LOG = logging.getLogger(__name__)
+        else:
+            _PROGRESS_LOG = init_logger(__name__)
+    return _PROGRESS_LOG
+
+
+def _progress_outcome(kind, value):
+    """Descriptive reply class for a receipt; never consulted by the driver."""
+    try:
+        items = tuple(value)
+        if kind == 'segment':
+            if any(getattr(item, 'pending', False) for item in items):
+                return 'pending'
+            accepted = [item for item in items if getattr(item, 'accepted', False)]
+            if any(item.profile_boundary for item in accepted):
+                return 'boundary'
+            if any(item.tail_boundary for item in accepted):
+                return 'tail-ready'
+            if any(item.paused for item in accepted):
+                return 'paused'
+            return 'accepted'
+        if kind == 'profile':
+            states = {getattr(item, 'status', None) for item in items} - {'skipped'}
+            return 'pending' if 'pending' in states else 'ready'
+        return kind
+    except Exception:
+        return 'unknown'
+
+
+class NativeProgress:
+    """Held-f: native progress receipts and the switchable candidate (owner thread only).
+
+    ``installed`` is the startup setting (``trace`` or ``burst``); ``mode`` is
+    the per-arm selection, ``current`` until a typed ``native_progress`` control
+    sets ``burst`` (only when installed ``burst``). Recording happens only while
+    an auto-arm-owned native chunk is open; a manual cycle is never recorded and
+    never changed. Receipts are host CLOCK_MONOTONIC stamps, one line per chunk.
+    """
+    WAIT_SEND_LIMIT = 8
+    DIRECT_KINDS = frozenset(('segment', 'profile', 'poll'))
+    MODES = ('current', 'burst')
+
+    def __init__(self, installed, executor, *, clock_ns=time.monotonic_ns):
+        if installed not in PROGRESS_MODES:
+            raise DriverError('invalid native progress setting')
+        self.installed = installed
+        self.mode = 'current'
+        self.executor = executor
+        self.clock_ns = clock_ns
+        self.trace = ProgressTrace('engine')
+        self.recording = False
+        self.identity = None
+        self.native = {}
+        # The row whose reply is being applied: the apply that ends the chunk
+        # (release) is recorded at the flush, inside its own line.
+        self.applying = None
+        self.counters = dict.fromkeys((
+            'chunks', 'commands', 'direct_commands', 'stock_rpcs', 'waits',
+            'wait_sends', 'wait_capped', 'line_errors', 'mode_changes'), 0)
+
+    def snapshot(self):
+        return dict(schema='s5-native-progress-status/1', installed=self.installed,
+                    mode=self.mode, recording=self.recording,
+                    wait_send_limit=self.WAIT_SEND_LIMIT,
+                    direct_kinds=sorted(self.DIRECT_KINDS),
+                    trace_lines=self.trace.lines_out, trace_dropped=self.trace.dropped_total,
+                    **self.counters)
+
+    def burst(self):
+        return self.recording and self.mode == 'burst'
+
+    def meta(self, sequence, direct):
+        return encode_progress_meta(sequence, direct)
+
+    @staticmethod
+    def with_meta(envelope, meta):
+        method, args, kwargs, rank = envelope
+        merged = dict(kwargs or {})
+        merged[PROGRESS_META_KEY] = meta
+        return (method, args, merged, rank)
+
+    def begin(self, identity):
+        self.recording = True
+        self.identity = identity
+        self.native = {}
+        self.applying = None
+        self.executor._flash_s5_progress_recording = self
+
+    def applied(self, row):
+        """Record a native row after its apply, unless the chunk flush took it."""
+        if self.applying is row:
+            self.applying = None
+            row[12] = self.clock_ns()
+            self.trace.record('n', *row)
+
+    def end(self, logger):
+        """Flush this chunk's lines and stop recording; never raises."""
+        was = self.recording
+        self.recording = False
+        self.executor._flash_s5_progress_recording = None
+        if not was:
+            return
+        self.counters['chunks'] += 1
+        row, self.applying = self.applying, None
+        try:
+            if row is not None:
+                row[12] = self.clock_ns()
+                self.trace.record('n', *row)
+            for text in self.trace.lines(**(self.identity or {}), mode=self.mode,
+                                         open_rows=len(self.native)):
+                logger.info(text)
+        except Exception:
+            self.counters['line_errors'] += 1
+        self.identity = None
+        self.native = {}
+
+
 class NativeSegmentDriver:
     """Wire-v1 bounded driver: one segment per tick, no whole-forward call.
 
@@ -990,6 +1120,33 @@ class NativeSegmentDriver:
         # to park a native chunk.  It outlives chunk reset by design.
         self._admission_intent = None
         self._admission_seq = 0
+        # Held-f: absent unless FLASH_S5_NATIVE_PROGRESS installed it.
+        self.progress = None
+        self._progress_origin = 'tick'
+
+    def install_progress(self, installed):
+        """Held-f startup seam: receipts (``trace``) or receipts + candidate (``burst``)."""
+        if self.progress is not None:
+            raise DriverError('native progress is already installed')
+        if getattr(self, 'auto_arm', None) is None:
+            raise DriverError('native progress requires the auto-arm policy')
+        self.progress = NativeProgress(installed, self.executor)
+        self.executor._flash_s5_progress_recording = None
+        return self.progress
+
+    def _progress_owned(self):
+        """True only while the auto-arm policy owns the open native chunk."""
+        policy = getattr(self, 'auto_arm', None)
+        intent = self._admission_intent
+        return (policy is not None and not policy.manual_owned and policy.phase == 'native'
+                and type(intent) is dict and intent.get('origin') == 'auto-arm')
+
+    def _progress_decode_live(self):
+        try:
+            return sum(1 for r in self.scheduler.running
+                       if r.num_computed_tokens >= r.num_prompt_tokens)
+        except Exception:
+            return None
 
     def install(self):
         engine, scheduler = self.engine, self.scheduler
@@ -1084,18 +1241,42 @@ class NativeSegmentDriver:
             raise DriverError('owned reply transport is not installed')
         sender = self._bounded()
         check = getattr(sender, 'check', None)
+        progress = self.progress if self.progress is not None and self.progress.recording else None
+        direct = progress is not None and progress.burst() and kind in progress.DIRECT_KINDS
+        if progress is not None:
+            submitted_ns = time.monotonic_ns()
+            # Same pickled size as the real meta: the size precheck stays exact.
+            checked = NativeProgress.with_meta(envelope, bytes(PROGRESS_META_BYTES))
+        else:
+            checked = envelope
         def precheck():
             with self.control_path.span('serialize_ns'):
-                return check(envelope)
+                return check(checked)
         def send(_sequence):
             with self.control_path.span('serialize_ns'):
-                return sender(envelope)
+                if progress is None:
+                    return sender(envelope)
+                return sender(NativeProgress.with_meta(envelope, progress.meta(_sequence, direct)))
+        extra = {'direct': True} if direct else {}
         sequence = transport.submit(kind, send,
                                     ranks=tuple(ranks),
                                     timeout_s=(self.reply_timeout_s if timeout_s is None
                                                else timeout_s), aggregate=None,
-                                    precheck=precheck if callable(check) else None)
+                                    precheck=precheck if callable(check) else None, **extra)
         self.control_path.values['ops_count'] += 1
+        if progress is not None:
+            op_seq = stage = layer = None
+            if kind == 'segment' and self._command is not None:
+                op_seq, stage = self._command.op_seq, self._command.stage
+                layer = self._command.descriptor.layer_start
+            elif kind == 'profile':
+                query = envelope[1][0]
+                op_seq, stage, layer = query.boundary_op_seq, query.stage, query.layer
+            progress.native[sequence] = [sequence, kind, op_seq, stage, layer, self._progress_origin,
+                                         submitted_ns, time.monotonic_ns(), None, None, None, None,
+                                         None, None, int(direct)]
+            progress.counters['commands'] += 1
+            progress.counters['direct_commands'] += int(direct)
         if kind == 'profile':
             query = envelope[1][0]
             self.qsa_control.add(query.stage, query.layer, profile_polls=1,
@@ -1121,15 +1302,27 @@ class NativeSegmentDriver:
             return 0
         transport.poll(self.poll_budget)
         applied = 0
+        progress = self.progress
         for sequence, kind in list(self._inflight.items()):
             call = transport._calls.get(sequence)
             if call is None or not call.ready:
                 continue
+            row = None if progress is None else progress.native.pop(sequence, None)
+            registered = None if row is None else getattr(call, 'registered_s', None)
             value, _lag = transport.take(sequence)
             del self._inflight[sequence]
+            if row is not None:
+                for index, rank in enumerate(self.ranks[:4]):
+                    lag = _lag.get(rank) if type(_lag) is dict else None
+                    if type(lag) in (int, float) and type(registered) is float:
+                        row[8 + index] = int((registered + lag) * 1e9)
+                row[13] = _progress_outcome(kind, value)
+                progress.applying = row
             with self.control_path.span('validate_ns'):
                 self._apply(kind, value, sequence)
             applied += 1
+            if row is not None:
+                progress.applied(row)
         return applied
 
     def _apply(self, kind, values, sequence=None):
@@ -2072,6 +2265,13 @@ class NativeSegmentDriver:
         self.open_request = OpenRequest(admission, self.ranks,
                                         admission.state_epoch, 1)
         self.phase = 'open'
+        if self.progress is not None and self._progress_owned():
+            transaction = admission.transaction
+            self.progress.begin(dict(txn=transaction.txn_seq,
+                                     request_generation=transaction.request_generation,
+                                     chunk_start=transaction.chunk_start,
+                                     chunk_end=transaction.chunk_end,
+                                     decode_live=self._progress_decode_live()))
         self.plan = []
         self.index = 0
         self._profile_query = None
@@ -2748,6 +2948,8 @@ class NativeSegmentDriver:
         nonterminal release leaves the worker request row owned by the request,
         and only a same-request reopen or a typed all-rank close clears it.
         """
+        if self.progress is not None:
+            self.progress.end(_progress_logger())
         self.tx = None
         self.admission = None
         self.phase = 'idle'
@@ -3138,6 +3340,8 @@ class NativeSegmentDriver:
         policy = getattr(self, 'auto_arm', None)
         if policy is not None:
             result['auto_arm'] = policy.snapshot()
+        if self.progress is not None:
+            result['native_progress'] = self.progress.snapshot()
         return result
 
     def _status_record_base(self, now=None):

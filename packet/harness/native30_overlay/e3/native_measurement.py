@@ -162,6 +162,146 @@ def control_path_delta(begin, end):
                 **result)
 
 
+# --- native progress receipts (held-f) ---------------------------------------
+# ``FLASH_S5_NATIVE_PROGRESS`` unset/0 installs nothing.  ``trace`` records host
+# timing receipts of native commands and stock RPCs while an auto-arm-owned
+# native episode is active; ``burst`` additionally installs the switchable
+# progress candidate.  Receipts never decide anything and read only
+# ``time.monotonic_ns`` (one CLOCK_MONOTONIC domain for every process of the
+# engine container); no CUDA call is made.
+
+PROGRESS_ENV = 'FLASH_S5_NATIVE_PROGRESS'
+PROGRESS_MODES = ('trace', 'burst')
+PROGRESS_SCHEMA = 's5-native-progress/1'
+PROGRESS_LINE = 'flash-s5 progress '
+PROGRESS_MAX_ROWS = 4096
+# Below docker's 16 KiB json-file entry split, with room for the log prefix.
+PROGRESS_LINE_BYTES = 12000
+PROGRESS_META_KEY = '_flash_s5'
+# Fixed-width wire meta: transport sequence (u64) and the direct-reply bit.  The
+# pickled size never depends on the value, so a size precheck is exact.
+PROGRESS_META_BYTES = 9
+PROGRESS_ROWS = {
+    # engine: one native command, transport sequence through owner apply
+    'n': ('seq', 'kind', 'op_seq', 'stage', 'layer', 'origin', 't_submit', 't_sent',
+          't_recv0', 't_recv1', 't_recv2', 't_recv3', 't_apply', 'outcome', 'direct'),
+    # engine: one ordinary RPC (execute_model, sample_tokens, ...)
+    's': ('seq', 'kind', 't_submit', 't_recv', 't_take'),
+    # engine: one owner wait on an ordinary future
+    'w': ('seq', 'kind', 't_start', 't_end', 'sends', 'capped'),
+    # worker: one RPC on this rank, handler enter/exit and the response-MQ write
+    'r': ('seq', 'kind', 't_enter', 't_exit', 't_emit', 'direct', 'replied'),
+}
+
+
+def progress_mode(env):
+    """None, 'trace' or 'burst'; refuses a value it does not know."""
+    value = env.get(PROGRESS_ENV, '')
+    if value in ('', '0'):
+        return None
+    if value not in PROGRESS_MODES:
+        raise ValueError('invalid setting: ' + PROGRESS_ENV)
+    if env.get('FLASH_S5_AUTO_ARM', '0') != '1':
+        raise ValueError(PROGRESS_ENV + ' requires FLASH_S5_AUTO_ARM=1')
+    return value
+
+
+def encode_progress_meta(sequence, direct):
+    if type(sequence) is not int or not 0 <= sequence < 1 << 64:
+        raise ValueError('progress meta sequence out of range')
+    return sequence.to_bytes(8, 'little') + (b'\x01' if direct else b'\x00')
+
+
+def decode_progress_meta(meta):
+    if type(meta) is not bytes or len(meta) != PROGRESS_META_BYTES or meta[8] not in (0, 1):
+        raise ValueError('malformed progress meta')
+    return int.from_bytes(meta[:8], 'little'), meta[8] == 1
+
+
+class ProgressTrace:
+    """Bounded per-process progress receipts, flushed as one log line per chunk.
+
+    Rows are fixed tuples (``PROGRESS_ROWS``); time fields are absolute
+    ``CLOCK_MONOTONIC`` ns and are written as microsecond offsets from the
+    line's ``base_ns``.  A full buffer drops and counts, never blocks or grows.
+    Workers record from two threads (RPC loop and async output), hence the lock.
+    """
+
+    def __init__(self, side, rank=None, *, limit=PROGRESS_MAX_ROWS):
+        import threading
+        if side not in ('engine', 'worker'):
+            raise ValueError('progress side must be engine or worker')
+        if type(limit) is not int or limit < 1:
+            raise ValueError('progress row limit must be positive')
+        self.side, self.rank, self.limit = side, rank, limit
+        self._lock = threading.Lock()
+        self.rows = []
+        self.dropped = 0
+        self.lines_out = 0
+        self.dropped_total = 0
+
+    def record(self, tag, *fields):
+        if len(fields) != len(PROGRESS_ROWS[tag]):
+            raise ValueError('progress row shape differs from its schema')
+        with self._lock:
+            if len(self.rows) >= self.limit:
+                self.dropped += 1
+                self.dropped_total += 1
+                return False
+            self.rows.append((tag,) + fields)
+            return True
+
+    def take(self):
+        with self._lock:
+            rows, dropped = self.rows, self.dropped
+            self.rows, self.dropped = [], 0
+            return rows, dropped
+
+    def lines(self, **identity):
+        """This flush as compact log lines; [] when nothing was recorded or dropped.
+
+        Each line stays below ``PROGRESS_LINE_BYTES`` so the box's log path
+        (``docker logs --timestamps``, which splits entries at 16 KiB) keeps it
+        whole. Parts share ``line``/``base_ns`` and carry ``part``/``parts``;
+        ``fields`` and ``dropped`` ride on part 0 only.
+        """
+        rows, dropped = self.take()
+        if not rows and not dropped:
+            return []
+        times = [value for row in rows for name, value in zip(PROGRESS_ROWS[row[0]], row[1:])
+                 if name.startswith('t_') and type(value) is int]
+        base = min(times) if times else 0
+        encoded = []
+        for row in rows:
+            item = [((value - base) // 1000 if type(value) is int else None)
+                    if name.startswith('t_') else value
+                    for name, value in zip(PROGRESS_ROWS[row[0]], row[1:])]
+            encoded.append((row[0], json.dumps(item, separators=(',', ':'), sort_keys=True)))
+        head = dict(schema=PROGRESS_SCHEMA, side=self.side, rank=self.rank, line=self.lines_out,
+                    base_ns=base, **identity)
+        budget = PROGRESS_LINE_BYTES - len(PROGRESS_LINE) - len(json.dumps(head)) - 256
+        first = len(json.dumps(PROGRESS_ROWS, separators=(',', ':'))) + 32
+        parts, current, size = [], {}, first
+        for tag, text in encoded:
+            if current and size + len(text) + 8 > budget:
+                parts.append(current)
+                current, size = {}, 0
+            current.setdefault(tag, []).append(text)
+            size += len(text) + 1
+        parts.append(current)
+        out = []
+        for index, part in enumerate(parts):
+            body = dict(head, part=index, parts=len(parts), rows='@ROWS@')
+            if index == 0:
+                body.update(fields=PROGRESS_ROWS, dropped=dropped)
+            text = json.dumps(body, separators=(',', ':'), sort_keys=True)
+            rows_text = '{' + ','.join('"%s":[%s]' % (tag, ','.join(items))
+                                       for tag, items in sorted(part.items())) + '}'
+            out.append(PROGRESS_LINE + text.replace('"@ROWS@"', rows_text, 1))
+        self.lines_out += 1
+        return out
+
+
 JOURNAL_VECTOR_SCHEMA = 's5-journal-vector/1'
 JOURNAL_VECTOR_WIDTH = 64
 MAX_JOURNAL_VECTOR_ITEMS = JOURNAL_VECTOR_WIDTH ** 3

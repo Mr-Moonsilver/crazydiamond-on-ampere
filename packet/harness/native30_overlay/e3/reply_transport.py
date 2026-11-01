@@ -34,6 +34,22 @@ class WorkerRPCError(TransportError):
 class Backpressure(RuntimeError): pass
 
 
+class DirectReply:
+    """A worker reply written by its RPC thread ahead of pending async output.
+
+    Only command-flow native kinds the engine registered as direct are ever
+    wrapped. The receiver matches it to that rank's direct FIFO; any other
+    wire matches the ordered FIFO. Pickles by reference to this module.
+    """
+    __slots__ = ('value',)
+
+    def __init__(self, value):
+        self.value = value
+
+    def __reduce__(self):
+        return (DirectReply, (self.value,))
+
+
 _CLAIM_LOCK = threading.Lock()
 
 

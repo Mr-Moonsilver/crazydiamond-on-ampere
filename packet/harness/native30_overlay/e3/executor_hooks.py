@@ -23,7 +23,10 @@ import os
 import json
 
 from e3_types import E3ContractError, E3Pending
-from reply_transport import Backpressure, NotReady, ReplyTransport, TransportError, WorkerRPCError
+from reply_transport import (Backpressure, DirectReply, NotReady, ReplyTransport, TransportError,
+                             WorkerRPCError)
+from native_measurement import (PROGRESS_META_KEY, ProgressTrace, decode_progress_meta,
+                                encode_progress_meta, progress_mode)
 
 
 EXECUTOR_PATH = 'v1/executor/multiproc_executor.py'
@@ -221,6 +224,31 @@ _EXECUTOR_FORWARD += (
      '            output = self.async_output_queue.get()\n            try:\n                self.enqueue_output(output)\n            except Exception as error:\n                _flash_s5_hooks.report_worker_failure(self.rank, "async_output", error)\n                raise\n'),
     ('            _self.shutdown()\n            callback = _self.failure_callback\n',
      '            _flash_s5_hooks.notify_worker_failure(_self, None)\n            _self.shutdown()\n            callback = _self.failure_callback\n'),
+)
+
+# Held-f: the worker reply seam.  With no progress meta on the envelope and
+# FLASH_S5_NATIVE_PROGRESS unset, every hook takes exactly the stock branch
+# (``handle_output`` and the one response-MQ write, now under a per-worker lock).
+_EXECUTOR_FORWARD += (
+    ('        method, args, kwargs, output_rank = rpc_request\n        try:\n',
+     '        method, args, kwargs, output_rank = rpc_request\n'
+     '        _flash_s5_rpc = None\n'
+     '        try:\n'
+     '            _flash_s5_rpc = _flash_s5_hooks.worker_rpc_begin(self, method, kwargs)\n'),
+    ('            output = func(*args, **kwargs)\n\n'
+     '            if output_rank is None or self.rank == output_rank:\n'
+     '                self.handle_output(output)\n',
+     '            output = func(*args, **kwargs)\n'
+     '            _flash_s5_hooks.worker_rpc_returned(self, _flash_s5_rpc, output_rank)\n\n'
+     '            if output_rank is None or self.rank == output_rank:\n'
+     '                _flash_s5_hooks.worker_handle_output(self, _flash_s5_rpc, output)\n'),
+    ('            if output_rank is None or self.rank == output_rank:\n'
+     '                self.handle_output(e)\n',
+     '            if output_rank is None or self.rank == output_rank:\n'
+     '                _flash_s5_hooks.worker_handle_output(self, _flash_s5_rpc, e)\n'),
+    ('        if (response_mq := self.worker_response_mq) is not None:\n'
+     '            response_mq.enqueue(result)\n',
+     '        _flash_s5_hooks.worker_enqueue_reply(self, result)\n'),
 )
 
 _CORE_FORWARD = (
@@ -453,17 +481,44 @@ class StockLocalFuture(LocalFuture):
 
     def __init__(self, executor, sequence, aggregate=None):
         super().__init__(executor, sequence, aggregate)
+        # Held-f receipts: (trace, kind, submit ns) while an auto-owned native
+        # chunk records, else None. Never read by the RPC lifecycle itself.
+        self._progress = None
         with self._transport()._condition:
             executor._flash_s5_stock_futures[sequence] = self
 
     def take(self):
         with self._lock:
+            progress = self._progress
+            registered = None
+            if progress is not None:
+                call = self._transport()._calls.get(self.sequence)
+                registered = None if call is None else call.registered_s
             value = super().take()
             with self._transport()._condition:
                 self.executor._flash_s5_stock_futures.pop(self.sequence, None)
+            if progress is not None:
+                lags = [lag for lag in (self._taken_lag or {}).values()
+                        if type(lag) in (int, float)]
+                received = (None if registered is None or not lags
+                            else int((registered + max(lags)) * 1e9))
+                progress[0].trace.record('s', self.sequence, progress[1], progress[2],
+                                         received, time.monotonic_ns())
             return value
 
     def result(self, timeout=None):
+        progress = self._progress
+        if progress is None:
+            return self._stock_result(timeout)
+        started = time.monotonic_ns()
+        try:
+            return self._stock_result(timeout)
+        finally:
+            progress[0].counters['waits'] += 1
+            progress[0].trace.record('w', self.sequence, progress[1], started,
+                                     time.monotonic_ns(), 0, 0)
+
+    def _stock_result(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
         # Registration occurs inside submit's writer section, before enqueue.
         # Snapshot only ordinary RPCs. Never claim a native operation's ACK.
@@ -678,12 +733,20 @@ def collective_rpc(executor, stock, method, timeout=None, args=(), kwargs=None,
     if type(effective_timeout) not in (int, float) or not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise E3ContractError('executor RPC needs a positive finite timeout')
     future = None
+    progress = getattr(executor, '_flash_s5_progress_recording', None)
     def send(sequence):
         nonlocal future
         # Register in the same serialized section as the reply expectation and
         # broadcast, so a second stock caller cannot omit an earlier future.
         future = StockLocalFuture(executor, sequence, aggregate=aggregate)
-        executor.rpc_broadcast_mq.enqueue((send_method, args, kwargs,
+        wire_kwargs = kwargs
+        if progress is not None:
+            # Held-f receipts only: the worker pops this before dispatch.
+            wire_kwargs = dict(kwargs)
+            wire_kwargs[PROGRESS_META_KEY] = encode_progress_meta(sequence, False)
+            future._progress = (progress, kind, time.monotonic_ns())
+            progress.counters['stock_rpcs'] += 1
+        executor.rpc_broadcast_mq.enqueue((send_method, args, wire_kwargs,
                                            broadcast_rank))
     sequence = transport.submit(kind, send, ranks=ranks,
                                 timeout_s=effective_timeout, aggregate=None)
@@ -1048,6 +1111,128 @@ def worker_rpc(worker, name, message):
     if handler is None:
         raise E3ContractError('worker adapter lacks the requested S5 RPC')
     return handler(message)
+
+
+# --- held-f worker reply seam ------------------------------------------------
+# Runs in WorkerProc's RPC loop and async output thread.  Default (no envelope
+# meta, progress unset): ``worker_handle_output`` is ``handle_output`` and
+# ``worker_enqueue_reply`` is the stock single response-MQ write under a lock.
+
+_WORKER_PROGRESS = None
+_WORKER_PROGRESS_LOCK = threading.Lock()
+_REPLY_LOCKS_LOCK = threading.Lock()
+_progress_log = None
+
+
+def _progress_logger():
+    global _progress_log
+    if _progress_log is None:
+        # vLLM's init_logger is the path s5_startup's INFO line is proven on.
+        try:
+            from vllm.logger import init_logger
+        except ImportError:
+            import logging
+            _progress_log = logging.getLogger(__name__)
+        else:
+            _progress_log = init_logger(__name__)
+    return _progress_log
+
+
+def _worker_progress(rank):
+    """(trace, pending ordered emits) for this worker process, or None."""
+    global _WORKER_PROGRESS
+    state = _WORKER_PROGRESS
+    if state is None:
+        with _WORKER_PROGRESS_LOCK:
+            if _WORKER_PROGRESS is None:
+                from collections import deque
+                mode = progress_mode(os.environ)
+                _WORKER_PROGRESS = ((ProgressTrace('worker', rank), deque())
+                                    if mode is not None else False)
+            state = _WORKER_PROGRESS
+    return state or None
+
+
+def _reply_lock(proc):
+    lock = proc.__dict__.get('_flash_s5_reply_lock')
+    if lock is None:
+        with _REPLY_LOCKS_LOCK:
+            lock = proc.__dict__.get('_flash_s5_reply_lock')
+            if lock is None:
+                lock = threading.Lock()
+                proc._flash_s5_reply_lock = lock
+    return lock
+
+
+def worker_rpc_begin(proc, method, kwargs):
+    """Pop the engine's progress meta before dispatch; stock methods never see it."""
+    if type(kwargs) is not dict or PROGRESS_META_KEY not in kwargs:
+        return None
+    sequence, direct = decode_progress_meta(kwargs.pop(PROGRESS_META_KEY))
+    name = method if type(method) is str else 'callable'
+    state = _worker_progress(proc.rank)
+    if state is not None and name == 'flash_s5_release':
+        # One receipt line per chunk: everything this rank recorded before the
+        # chunk's release. Logging failures are counted by the trace, never raised.
+        try:
+            for text in state[0].lines():
+                _progress_logger().info(text)
+        except Exception:
+            state[0].dropped_total += 1
+    return [sequence, name, time.monotonic_ns(), None, direct]
+
+
+def worker_rpc_returned(proc, rpc, output_rank):
+    if rpc is None:
+        return
+    rpc[3] = time.monotonic_ns()
+    if output_rank is None or proc.rank == output_rank:
+        return
+    state = _worker_progress(proc.rank)
+    if state is not None:
+        state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], None, int(rpc[4]), 0)
+
+
+_DIRECT_WRITE = threading.local()
+
+
+def worker_handle_output(proc, rpc, output):
+    """Route one reply: direct (typed native command flow) or stock-ordered."""
+    if rpc is not None and rpc[4]:
+        # Written by this RPC thread now, not queued behind async decode output.
+        # A raised command still goes through stock enqueue_output, which turns
+        # it into a FAILURE wire; the engine receiver poisons on any non-SUCCESS
+        # status before matching, so the failure is prompt and never correlated.
+        _DIRECT_WRITE.active = True
+        try:
+            proc.enqueue_output(output if isinstance(output, Exception) else DirectReply(output))
+        finally:
+            _DIRECT_WRITE.active = False
+        state = _worker_progress(proc.rank)
+        if state is not None:
+            state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], time.monotonic_ns(), 1, 1)
+        return
+    state = _worker_progress(proc.rank)
+    if state is not None:
+        # Ordered replies leave in exactly handle_output order (async FIFO).
+        state[1].append(rpc)
+    proc.handle_output(output)
+
+
+def worker_enqueue_reply(proc, result):
+    """The stock response-MQ write, serialized against a direct writer thread."""
+    with _reply_lock(proc):
+        if (response_mq := proc.worker_response_mq) is not None:
+            response_mq.enqueue(result)
+    state = _worker_progress(proc.rank)
+    if state is None or getattr(_DIRECT_WRITE, 'active', False):
+        return
+    try:
+        rpc = state[1].popleft()
+    except IndexError:
+        return
+    if rpc is not None:
+        state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], time.monotonic_ns(), 0, 1)
 
 
 __all__ = [
