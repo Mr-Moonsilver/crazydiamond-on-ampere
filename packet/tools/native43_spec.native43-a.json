@@ -2,7 +2,7 @@
   "schema": "native43-packaging-spec/1",
   "label": "native43-a",
   "dry_run": false,
-  "source_commit": "d9fb80ec3ccd4c3be3c1dc40f575cf12c9383b76",
+  "source_commit": "109313a398281153cd019b70816a5b6c5a5edd59",
   "candidate": "q18a-native43-dense-boundary",
   "arm": "NATIVE43",
   "review": "prepare",
@@ -18,7 +18,7 @@
       "FLASH_S5_NATIVE_QSA_STOP_AFTER": "101200"
     },
     "queue": "q18a-native43-dense-boundary pair: current then dense, fresh process and own request directory per arm, one fresh key per pair queue shared by both arms; held-b prefix through startup/bind/identity/ledger/length guard, one boundary client per arm, held-b crash/stop/restore; never starts production",
-    "scope": "native43 bounded dense transport diagnostic at the 24-page arena boundary (Codex d9fb80ec3ccd): paired current/dense boundary hashes at 101200, timed chunks 97152-100224; no speed claim, not a release candidate",
+    "scope": "native43 bounded dense transport diagnostic at the 24-page arena boundary (Codex 109313a39828): paired current/dense boundary hashes at 101200, timed chunks 97152-100224; no speed claim, not a release candidate",
     "tail_handback": false
   },
   "source_paths": [
@@ -343,7 +343,7 @@
       "  test_native39_trunk_queue.py # synthetic CPU auth fixture only (VLLM_API_KEY / bearer fixture value)\n"
     ],
     "header": [
-      "Native43 dense-boundary diagnostic (Codex d9fb80ec3ccd) packaged by tools/build_native43.py; PREV is the frozen native39 trunk held-b bundle and runner.",
+      "Native43 dense-boundary diagnostic (Codex 109313a39828) packaged by tools/build_native43.py; PREV is the frozen native39 trunk held-b bundle and runner.",
       "Engine delta vs PREV: e3/{engine_driver,native_resources,qsa_driver,qsa_operation}.py plus generation metadata; compiled libraries unchanged; review prepared (native43).",
       "Queue: current then dense pair, fresh key per arm; no production start."
     ]
