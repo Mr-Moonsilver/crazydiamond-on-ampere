@@ -731,6 +731,8 @@ class QsaPrefillOperation:
         self._union_scratch = None
         self._union_scratch_layer = None
         self._union_scratch_key = None
+        # S1: every union set this operation allocated and still references, (layer, set).
+        self._union_sets = []
         self._fallback = None
         self._source_release = []
         # The opt-in native row1 byte oracle. ``None`` means qualification is
@@ -746,7 +748,9 @@ class QsaPrefillOperation:
                           sparse_empty=0, sparse_fallback=0,
                           sparse_fallback_rows=0, sparse_fallback_bytes=0,
                           sparse_routes=0, sparse_source_released=0,
-                          union_scratch_bytes=0)
+                          union_scratch_bytes=0, union_scratch_sets=0,
+                          union_scratch_retired=0, union_scratch_live_bytes=0,
+                          union_scratch_live_max_bytes=0)
 
     def boundary_evidence(self, tensor, *, selection=False):
         if (self.trace is None or self.transaction.chunk_end != 101200
@@ -1292,8 +1296,12 @@ class QsaPrefillOperation:
         """Return the operation-owned fixed-capacity union buffers.
 
         Capacity, row count and width are host-known; nothing is sized by a
-        device value.  One buffer set is reused across layers with the same
-        geometry and replaced only after the previous layer finished.
+        device value.  A layer gets a fresh zeroed set; the operation drops its
+        own reference to the previous layer's set only after that layer
+        finished.  The previous layer's ``sparse.union`` still holds that set
+        until ``_retire_union_scratch`` sees its last consumer device-complete
+        (S1); ``union_scratch_bytes`` is the largest single set and
+        ``union_scratch_live_max_bytes`` the largest live aggregate.
         """
         run, sparse = self._sparse_state()
         self._check_identity(layer_name=run.layer_name)
@@ -1343,6 +1351,7 @@ class QsaPrefillOperation:
         if self._union_scratch is not None and self._union_scratch_key != key:
             raise OperationError('union scratch geometry changed within the layer')
         if self._union_scratch is None:
+            self._retire_union_scratch()
             buffers = self.device.alloc_union_scratch(
                 capacity, index_rows, width, index_facts.dtype, logical_indices)
             expected = dict(
@@ -1373,10 +1382,54 @@ class QsaPrefillOperation:
             self._owners[('union_scratch', run.layer_name)] = tuple(buffers.values())
             self.stats['union_scratch_bytes'] = max(
                 self.stats['union_scratch_bytes'], nbytes)
+            self._union_sets.append((run.layer_name, self._union_scratch))
+            self.stats['union_scratch_sets'] += 1
+            self._union_live()
         if self.trace is not None:
             self.trace.opened['union'] = self.trace.begin('union', self.device.compute)
         sparse.union = self._union_scratch
         return sparse.union
+
+    def _union_live(self):
+        live = sum(union.nbytes for _, union in self._union_sets)
+        self.stats['union_scratch_live_bytes'] = live
+        self.stats['union_scratch_live_max_bytes'] = max(
+            self.stats['union_scratch_live_max_bytes'], live)
+
+    def _retire_union_scratch(self):
+        """S1: drop finished layers' union sets whose last reader is complete.
+
+        A set is read by its layer's union kernels and attention buckets
+        (compute stream) and by the selection readback (copy stream).  It is
+        retired only when the layer finished, the readback was host-observed
+        (``selection_count`` is set only after its copy event completed) and
+        the layer's last attention consumer event has completed, by one
+        nonblocking query each.  Nothing waits: an incomplete set stays until
+        a later call or ``release``.  With row1 qualification every set stays
+        until release, after the oracle ran.
+        """
+        if self.qualification is not None or self._failed or self._released:
+            return
+        kept = []
+        for layer_name, union in self._union_sets:
+            run = self._layers.get(layer_name)
+            sparse = None if run is None else run.sparse
+            done = (run is not None and run.finished and sparse is not None
+                    and sparse.union is union and union is not self._union_scratch
+                    and sparse.selection_count is not None)
+            if done and run.consumed:
+                try:
+                    done = bool(self.device.query(run.consumed[-1].event))
+                except BaseException:
+                    self._failed = True
+                    raise
+            if done:
+                sparse.union = None
+                self.stats['union_scratch_retired'] += 1
+            else:
+                kept.append((layer_name, union))
+        self._union_sets = kept
+        self._union_live()
 
     def stage_sparse_selection(self, tokens, info):
         """Enqueue the bounded D2H of the device count and sorted token union.
@@ -2286,12 +2339,15 @@ class QsaPrefillOperation:
         self._union_scratch = None
         self._union_scratch_layer = None
         self._union_scratch_key = None
+        self._union_sets = []
         for record in self._records:
             record.owners = ()
         for run in self._layers.values():
             run.source = run.arena = run.table = None
             run.uva = None
             run.row1_reference = None
+            if run.sparse is not None:
+                run.sparse.union = None
         return dropped
 
     # --- inventory --------------------------------------------------------
@@ -2334,6 +2390,9 @@ class QsaPrefillOperation:
             selection_scratch_bound=SELECTION_HOST_BYTES,
             union_scratch_bytes=self.stats['union_scratch_bytes'],
             union_scratch_bound=MAX_UNION_SCRATCH_BYTES,
+            union_scratch_sets=self.stats['union_scratch_sets'],
+            union_scratch_retired=self.stats['union_scratch_retired'],
+            union_scratch_live_max_bytes=self.stats['union_scratch_live_max_bytes'],
             sparse_source_released=self.stats['sparse_source_released'],
             sparse_fallback_reason=(None if self._fallback is None
                                     else self._fallback.reason),

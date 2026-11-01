@@ -1,0 +1,32 @@
+{
+ "schema": "fixture-leaves/1",
+ "suite": "test_e3_sparse_history_dma.py (S1 union scratch retention)",
+ "seams": [],
+ "leaves": [
+  {
+   "fixture": "FakeSparseDevice.record/query/wait_event",
+   "replaces": "qsa_operation.NativeQsaDevice.record/query/wait_event (torch.cuda.Event on the lane's streams)",
+   "why_equivalent": "The retirement reads only query(event) -> bool, the same nonblocking call _refresh uses. The fixture's ready flag stands for event.query(); device.queries and device.waits show that nothing waited."
+  },
+  {
+   "fixture": "FakeSparseDevice.alloc_union_scratch and T tensors",
+   "replaces": "qsa_operation.NativeQsaDevice.alloc_union_scratch (torch.zeros/empty on the compute stream)",
+   "why_equivalent": "The operation validates the same facts on both and sizes the set from them. Whether the caching allocator really reuses a freed block is not shown here: that needs the box receipts (union_scratch_live_max_bytes, allocator counters)."
+  },
+  {
+   "fixture": "hold_incomplete: last consumer event removed from device.events, ready False",
+   "replaces": "a real attention consumer event still running on the compute stream",
+   "why_equivalent": "query() returns False exactly as Event.query() does for unfinished work; the event object is the one after_attention_bucket recorded."
+  },
+  {
+   "fixture": "operation.qualification = object()",
+   "replaces": "native_qualification's row1 session on the operation",
+   "why_equivalent": "_retire_union_scratch reads only whether it is None; no method of the session is called on this path."
+  },
+  {
+   "fixture": "first.sparse.selection_count = None",
+   "replaces": "a layer whose selection readback the host has not observed",
+   "why_equivalent": "sparse_selection_ready sets selection_count only after the copy event completed; a finished layer always has it, so this is a guard check on the retirement condition."
+  }
+ ]
+}
