@@ -1493,13 +1493,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict registered CPU regression on the packaged tree",
-    "cases": 328,
+    "cases": 335,
     "exit_code": 0,
-    "log_sha256": "e5b612810a25c5f9f9d80dd8989a2ddbe15ffb0c9325942431c4f8f057bf3296",
-    "reported_tests": 3912,
-    "required": 328,
+    "log_sha256": "34b26b2d989588069c7484fdb2a5dfd1e5bff343591adc2fdc6be2587df5c16f",
+    "reported_tests": 3996,
+    "required": 335,
     "skips": 0,
-    "suites": 211
+    "suites": 218
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -1642,6 +1642,14 @@
     "fixtures/native31_before_native30_policy.py": "ce735058c911404886b59d91f474453df56122b2bb526f7bb89c3c03da5070e8",
     "fixtures/native39_box_access_extract.json": "6befb6c18a0fe5f34fabe7a16b0c880387e1bb7333858ecc23aa018a59dc9afc",
     "fixtures/native39_box_extract.json": "6afc9fbf789632f88fc5ec0ad7d578330bda1ed9a1b7366801a9472ce88f420a",
+    "fixtures/native43_engine_death/PROVENANCE.json": "7089adbe33b67d7791aa9a54b214d6c7bf3b402a91c09ad16039ad8b5af919a0",
+    "fixtures/native43_engine_death/le-engine-stream.err": "b8dd0a93a4656ffecdcb5774d1bbbfbe680e48b55c06d0f420077afeccf6be5c",
+    "fixtures/native43_engine_death/le-engine-stream.log": "91841be79e852b0f2fdce84c831c58f0652fff4fe1adde5c338c4a46c7ec53ba",
+    "fixtures/native43_engine_death/le-host-stop-intent.json": "a09429adfe2d48503b128badec1de9652879d291e3e928b4baaec436320c8125",
+    "fixtures/native43_engine_death/n33-engine-stream.log": "6dbd7d00f822a3b5d834261e9ec7460752accde1ea73a5ccd6a3d5b9588f2981",
+    "fixtures/native43_engine_death/pc-engine-stream.log": "9b2d2f544a730a257da6b50047243b431ca7810231ad9ff9148963ad32e0b0a1",
+    "fixtures/native43_engine_death/trunk-engine-stream.log": "794d05660c0082d88e3f0a42c63d5301584374faaac1fec3d831ea6766a4fd89",
+    "fixtures/native43_engine_death/trunk-host-stop-intent.json": "0cd487f2678b96346451dcdb94ddcd7c9a3d239012b3e7d9dc7401b037075980",
     "fixtures/q17a_original_flash_s5_green.cu": "731d31d10c69bd8f4e9cb302e46d8dc65564d974fe9480c2e1c290e0f385c598",
     "fixtures/q17c_original_e3_types.py": "2a9f08b94d7e383efd358f8b044648cf52a65d76f71119a9ebdc89e5f1d04068",
     "fixtures/q17c_original_green_context.py": "26fdd7f650a17bd4382a46b0875d83f5cfde3287ee5221bc600c3870773dc7d9",
@@ -1746,10 +1754,18 @@
     "native43_boundary_gate.py": "daa40826c98bd39260032e87bf30a335c3eb2c483500dafdcf4eba3d2226aa43",
     "native43_clock_probe.py": "6a298922a5fd2fb5cab9d60df20bc80a87441f8c0e30b51c7f6e15e1f2bad843",
     "native43_dense_grade.py": "7b4480d9fccc86280afd1973f2f54b7d9872928e117806def3afa40d328ea36e",
+    "native43_engine_death.py": "f44373419825530def90b0ca0aea8f14545b5be0a0b62a317279d49820c73a15",
+    "native43_engine_death_fixture_leaves.json": "4aaa6966669bdadafc484f8e3288441b65ea98c1bd24ed7fa22c260d4f575e4c",
     "native43_fixture_leaves.json": "bfdc3ff9791f1752f7e64b00b4a2a6a2f92e39c3e1088b69f8d97c4f7e047592",
+    "native43_le_bounded_enqueue_fixture_leaves.json": "6a5274c7618db89e7f92b453990c7fc10071eb55cd02dbfdbbf84b6743d67269",
+    "native43_le_fatal_log_fixture_leaves.json": "7073441bf81338011a2103f3acfaa121f1f8ce3e14518b69b8a405d1a465263e",
+    "native43_le_fix_queue_fixture_leaves.json": "2cf616b23f48f3ffca5542bc9505bb4db6438b94a6605184581eecfa3d0066e5",
     "native43_lifecycle_fixture_leaves.json": "12680c9ba11f40b82c696bee056afc1afef6449d2c1512ea90ed79bb74d14034",
     "native43_lifecycle_gate.py": "a1f4efce62ce3f838e5dce679958892481096f9caad5630c8acbf6232b0fb822",
     "native43_lifecycle_grade.py": "e788ba28e1f36781fa39fcd8da4a13ed569c5561ef58a483b8217457bc1c6de3",
+    "native43_row1_dense_fixture_leaves.json": "ae081ad96a218c7aa4c494229fe3605e9f614d856f36020efc8fdbf9f6954727",
+    "native43_row1_grade.py": "b2e5673d97ce9820ffbd4db012a3ad65cfefc328186f97a513d8559072a4e22d",
+    "native43_row1_qualification.py": "c2ceda8d0169ae6e6a7a3746dead7dfbe29dc82438b3f0e9d0f6fd913b5c088a",
     "native43_scheduler_tick_probe.py": "31824a5fb640c4b142af991673b2ab342933b98894ca15fe580921a1bd9c0326",
     "native_placement_evidence_support.py": "345d37090992a4400862e307a34aac1a5abe3d062153a8f183e38bd479aee1c9",
     "native_prefill_support.py": "00c704e8935eea94e3030a4003f979693540f0e28e86a6326dcbfc5fb4644064",
@@ -2072,6 +2088,9 @@
     "runs/q18a_native43_dense_settings.sh": "dcb3f78efe86c7996115cfed1d2cb072a615c59d0dd41dd4eb0cc6bfc5b1667d",
     "runs/q18a_native43_lifecycle.draft.sh": "b5a20401f677cae0cc48e5ab026e52c7aab9f456c4ebddd63d597cae7bda072c",
     "runs/q18a_native43_lifecycle_declare.sh": "b1daded8d3d61812f86d79515878cf439bf7112f3a39a5ee0b75715967187f9d",
+    "runs/q18a_native43_lifecycle_f.draft.sh": "9315a404cf1f97916cfd90d4e8325c99d9ca8284797558d261821fbecfe418cc",
+    "runs/q18a_native43_lifecycle_f_declare.sh": "254b92927438375a8c4c1c4fe85a24a002461a2ab53949e51ed1b672656c0484",
+    "runs/q18a_native43_lifecycle_f_settings.sh": "8bd8fe8927a4c9954cb01ddf50f2104257b65040268ae766ae77f343d4fd2e73",
     "runs/q18a_native43_lifecycle_settings.sh": "b01060b41d425e34f3543fc9bf6bbc34db8191af2d68da262da09e28761389f4",
     "runs/q18a_native4_declare.sh": "eae6d3d7f60e65e8630cab1e0a70318cb3ab3f060f95d80cea2ec871210c5000",
     "runs/q18a_native4_settings.sh": "b8bc0865a6bad1e788489707791fa4355a656b2d0f4000b3f4f4de98dac52b45",
@@ -2222,7 +2241,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "9d60d860319ef8e78bb5fcd66bdd082a1e575f14ed5c88eb69dbf5313b630c74",
+    "selftest.py": "5229c684793fa403b347b8d0f4e88e4b2645a70121b55d1c4821da03b92717aa",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -2398,7 +2417,14 @@
     "test_native39_trunk_queue.py": "7b36eb39eced175036a8ffa18d706e78824ecb58383d5a0025c8b93411804627",
     "test_native43_boundary_queue.py": "0c9ae4afe1c63f9004672432a8cc303efaea61cce7cc326aa54c5e7094c19040",
     "test_native43_dense_boundary.py": "483cca13050d69f48386c11f1f711948aad0a9e5e0a7cdc2dce2d315806393c1",
+    "test_native43_engine_death.py": "3a497a60a45c75f0665964c9c0c7ac2a4f236a66e134b8071563bb93c2a6a03f",
+    "test_native43_le_bounded_enqueue.py": "a273fc04ce08608d052515345c5cb3b801caad6a6d4a72de7f67b6575d9311cd",
+    "test_native43_le_fatal_log.py": "b093e32604f43288a1e18d5c260d44b42c2af189cd8ed7283a0286e7fec8aace",
+    "test_native43_le_fix_queue_deltas.py": "ce8b27c5ce468499b11c0999f217939b65ec4f43d9e6a545753ccb53bab7801d",
+    "test_native43_lf_queue.py": "6f3643918ea075430cf3f1bed93fba27e066d90470e20fa357d1b83815210be1",
     "test_native43_lifecycle_queue.py": "a1b2ec836a432572d6be69da9d16913a78f19708dbb36941b8d0a3720da1d24d",
+    "test_native43_row1_dense.py": "209a17de3f149857f035cd380b51fcadc90dec5fb3bb29d1115516792d03fcdd",
+    "test_native43_row1_grade.py": "2738399dc0b3d5e538669c1ed55266c68bb09ec74a08d588801911cad19a5b0e",
     "test_partial_tail_cov.py": "b5f8bbf6cb9e6e34347eb24a38f5c113b0ea556b4365ea8899b8682e133a0c8c",
     "test_pp_grouping.py": "2af0255e9e2f34098678ab6b7cdf83c49c03a20aab7eadb361db2fbd86b07e1a",
     "test_pp_release.py": "9b0a2f760a408ca6f7c088e31fbbf92ebdc876634ba6cf67bd38ca3aa49d8a35",
@@ -3313,6 +3339,174 @@
     "source_commit": "e2826cac2c6ed966ac5b51219bffba3b37bcf629",
     "tail_handback": false
   },
+  "native43_lifecycle_f": {
+    "arm": "NATIVE43L",
+    "candidate": "q18a-native43-lifecycle-f",
+    "device_run": "NOT_RUN",
+    "dry_run": false,
+    "engine_delta": {
+      "branch": "claude/native43-le-fix",
+      "commits": {
+        "02585c77148ea96f2981c090e33a33bf7770be77": "l-f row1 option (a): expected_reference + dense_branch, policy-aware row1 grade",
+        "77d27718b2de411b6b1ae414c1eabf176a8ea3c4": "le-fix (b): worker fatal record logged by the parent before the executor teardown",
+        "c9d099a47bf1f4e2f389907013a74808a4943c5e": "le-fix: bounded broadcast enqueue (stock and owned collective_rpc writes)"
+      },
+      "evidence": {
+        "bounded_enqueue_selfrun": "results/hub/native43-le-fix/selfrun-enqueue/result.json (PASS at c9d099a, pinned image, enqueueprobe stock/owned prefix-blocks and fixed-raises; fixed_executor_hooks_sha256 371b4875261bdbc1a64694c2d6caab93110040081e3b40948a6bd5f8da82d52b = this overlay e3/executor_hooks.py)",
+        "fatal_log_selfrun": "results/hub/native43-le-fix/selfrun (PASS at f8e9c31, pinned image, vLLM-logging probe)",
+        "generated_executor": "e3_sources/executor.py: MultiprocExecutor._flash_s5_stock_collective_rpc, exactly one _flash_s5_hooks.bounded_enqueue( site"
+      },
+      "files": [
+        "patches/s5_engine/executor_hooks.py",
+        "patches/s5_engine/row1_oracle.py",
+        "patches/s5_engine/qsa_operation.py"
+      ],
+      "focused_suites": [
+        "test_e3_tp_finalize_skew",
+        "test_e3_native_measurement_clients",
+        "test_native35_performance",
+        "test_native43_engine_death",
+        "test_native43_le_fix_queue_deltas",
+        "test_native43_le_fatal_log",
+        "test_native43_le_bounded_enqueue",
+        "test_native43_row1_dense",
+        "test_native43_row1_grade",
+        "test_native43_lf_queue",
+        "test_e3_native_source_oracle",
+        "test_e3_native_row1_grade"
+      ],
+      "inherited": {
+        "branch": "claude/tp-finalize-skew",
+        "commit": "cfffffcda2ec96e504a462f9504d026b8af0863c",
+        "definitions": [
+          "NativeSegmentDriver._apply_segments",
+          "_agreement_detail",
+          "_continuation"
+        ],
+        "file": "e3/engine_driver.py",
+        "focused_suites": [
+          "test_e3_tp_finalize_skew",
+          "test_e3_native_measurement_clients",
+          "test_native35_performance"
+        ],
+        "hunks_identical_to": "3af0048be4d2d16c4123d642fab99a22a1af683b (claude/native41-autoarm, Codex-reviewed)",
+        "lineage_rows": [
+          "e3/engine_driver.py"
+        ],
+        "merge": "clean three-way merge of the 109313a driver and cfffffc over 1ffc394",
+        "reason": "q18a-native41-autoarm run 1 fatal DriverError(TP workers disagree on the layer continuation): commit beside state_finalize at a STATE_FINALIZE acceptance is one continuation; every other difference still refuses; completion-dependent actions still wait for each rank",
+        "tests": [
+          "harness/test_e3_tp_finalize_skew.py"
+        ]
+      },
+      "lineage_rows": [
+        "e3/executor_hooks.py",
+        "e3/qsa_operation.py",
+        "e3/row1_oracle.py",
+        "e3_sources/executor.py"
+      ],
+      "overlay_rows_vs_le": [
+        "e3/executor_hooks.py",
+        "e3/qsa_operation.py",
+        "e3/row1_oracle.py",
+        "e3_sources/executor.py"
+      ],
+      "parent": "q18a-native43-lifecycle (l-e) bundle 296adc0886b6 (runner 8644b753...), the TP finalize-skew delta it carried is inherited unchanged (e3/engine_driver.py equals l-e)",
+      "reasons": [
+        "l-e 11:03:06Z: EngineCore busy loop blocked in MessageQueue.acquire_write (timeout=None) while the fatal channel marked the executor failed; no ENGINE_CORE_DEAD, the API and the row1 client hung ~25 min",
+        "l-e row1 route_mismatch: under FLASH_S5_NATIVE_QSA_POLICY=dense the native takes dense_dma beyond the arena, the reference its sparse branch"
+      ],
+      "tests": [
+        "harness/test_native43_le_bounded_enqueue.py",
+        "harness/test_native43_le_fatal_log.py",
+        "harness/test_native43_engine_death.py",
+        "harness/test_native43_le_fix_queue_deltas.py",
+        "harness/test_native43_row1_dense.py",
+        "harness/test_native43_row1_grade.py",
+        "harness/test_native43_lf_queue.py"
+      ]
+    },
+    "engine_files": [
+      "e3/engine_driver.py",
+      "e3/executor_hooks.py",
+      "e3/native_resources.py",
+      "e3/qsa_driver.py",
+      "e3/qsa_operation.py",
+      "e3/row1_oracle.py",
+      "e3_sources/executor.py"
+    ],
+    "model_settings_changed": false,
+    "native43_settings": {
+      "FLASH_S5_NATIVE_QSA_POLICY": "dense",
+      "FLASH_S5_NATIVE_QSA_STOP_AFTER": null,
+      "FLASH_S5_NATIVE_QSA_TRACE": null
+    },
+    "parent": "q18a-native39-trunk",
+    "parent_commit": "1ffc394783d3d67e140056868b50ca2f74c88b3b",
+    "parent_manifest": "756f826c221c026440d7955a9f834fe72db83581439fed9bb69d07d314ea4264",
+    "queue": "q18a-native43-lifecycle-f (short scope): the box-run q18a-native43-lifecycle queue (l-e run 1 texts, bundle 296adc0886b6) with the le-fix queue deltas D1-D7 (engine-death scan in host_crash_detected; row1, lifecycle and typed FULL hygiene clients under engine_watched) and D8/D9 (row1 runs native43_row1_qualification.py --qsa-policy dense: e3_q18a_qualification with the dense policy's route coverage); same phases, window (native43_lifecycle_gate, 5000 s + 900 s, last entry 2026-11-02T04:21:40Z) and EXTRA_ENV as l-e; one fresh key; never starts production",
+    "reuse_clock": "e3_native_performance.native_window client-side identity equality: replaced by per-call client brackets proved with native43_boundary_clock.prove (standalone commit 1594bd0d92aa, = d57ed99 code plus negatives; clock split: new native_window_clock proved, pre-fix native_window_clock_pre_fix refused on the same records)",
+    "row1_policy": {
+      "dense_branch": "the generated flash_e2_arena_attention's own code object, defaults, kwdefaults and closure over a copied globals dict where only os is a read-only shim answering VLLM_QSA_KVO_SPARSE_PREFILL with '0' (the reference's own sparse switch); no new reference math; os.environ never written",
+      "expected_route": {
+        "columns": [
+          "policy",
+          "pages vs arena",
+          "native route",
+          "expected reference route",
+          "reference called"
+        ],
+        "rule": "row1_oracle.expected_reference(policy, native route, pages, arena pages): force_dense = policy == dense and pages > arena pages; the expected reference route is the pinned map of the native route; under force_dense the native route must be dense_dma (else Row1OracleError)",
+        "table": [
+          [
+            "current",
+            "any",
+            "native route",
+            "pinned map (unchanged)",
+            "reference as generated"
+          ],
+          [
+            "dense",
+            "<= arena",
+            "native route",
+            "pinned map (unchanged)",
+            "reference as generated (dense, 0 extra bytes)"
+          ],
+          [
+            "dense",
+            "> arena",
+            "dense_dma",
+            "dense_dma",
+            "dense_branch(reference)"
+          ],
+          [
+            "dense",
+            "> arena",
+            "not dense_dma",
+            "refused",
+            "Row1OracleError"
+          ]
+        ]
+      },
+      "grade": "native43_row1_grade (via native43_row1_qualification --qsa-policy dense): the base row1 grade with only layer_route_cartesian_coverage replaced by dense_policy_route_coverage and dense_policy_beyond_arena_coverage per rank; any sparse route under dense FAILs; policy current = the base grade",
+      "leaves": "harness/native43_row1_dense_fixture_leaves.json",
+      "memory_bound": {
+        "acc_bytes": 12582912,
+        "at_or_below_arena_extra_bytes": 0,
+        "basis": "analytic, no GPU measurement; R <= PREFILL_CHUNK 1024 query rows, 12 local query heads x head_dim 256 per TP rank",
+        "context": "row1 runs with decode drained, not during W2; the native has just freed same-size blocks; the l-e sparse reference (>= ~42 MB temporaries) completed at the same call site on rank 0 before route_mismatch",
+        "max_norm_bytes": 98304,
+        "pages_dependence": "none: spans of pages_in_arena reuse the arena; acc/max/norm are allocated only when buckets > 1",
+        "table_slice_bytes_max": 192,
+        "tensor_bytes": 12681728,
+        "worst_case_new_reservation_bytes": 14680064
+      },
+      "policy": "dense (FLASH_S5_NATIVE_QSA_POLICY, latched at QsaPrefillOperation.__init__; asserted by the queue preflight)"
+    },
+    "scope": "native43 lifecycle short scope on the l-e engine bytes plus the declared le-fix engine delta (worker fatal record logged before the executor teardown; bounded broadcast enqueue) and row1 option (a) (under the dense policy the row1 reference runs its own dense branch beyond the arena): does row1 PASS under dense, do cancel/drain/reuse complete, and does an engine death fail the queue loudly; no leak, pressure or speed claim; not a release candidate",
+    "source_commit": "1b6b30b982801e2d70edae2dbef19c0a115c96f0",
+    "tail_handback": false
+  },
   "night_window": {
     "cleanup_margin_s": 420,
     "hard_end": "2026-11-02T06:00:00Z",
@@ -3323,9 +3517,9 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "b59aed194e121ea194e5352e6c08786f4f9c20c37e4cc2e589a16b700b05f720",
+    "log_sha256": "7d98b1eed7cf075406f26e7a84fbfb180c14862e3b8dd89e7d37c34fd7c8ad9b",
     "skips": 0,
-    "tests": 637,
+    "tests": 812,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
@@ -4432,7 +4626,7 @@
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
     "engine_driver.py": "cf9893364b4288566a85ee74c9b191f4557fa97cfdedca33113c80b086bca970",
     "engine_offers.py": "16e2775ba04461ad953e83eedd1ebb951a43b3d134789c225c6e6a1e5a721d2f",
-    "executor_hooks.py": "64eecdc77337d89ac2c4391d1f1f8ea39ff8058bdb2618ee3c2ca68edd1875d7",
+    "executor_hooks.py": "273f80d970048cb18b5e88862a66421ceac4b75740a142be988dc9dd47bd1e99",
     "graph_hooks.py": "12ad7e3500b559f2d398a6676292094e4d455df12d4c6951803dbac9f38663c5",
     "graph_router.py": "5d19c0a2ee7c291ba910916ae3fefc652117a4efa2c8d7d235241e8902272a71",
     "green_context.py": "f0b9e48e536c120946235490829295a3941c9f93b89df4d8be231172b1f6f0fe",
@@ -4471,12 +4665,12 @@
     "probe_control_hooks.py": "4e3f298a67d013a74822d1e6a1c3e84c807a5e6eef8e2c8f861f19afbe154301",
     "probe_session.py": "0faf61f5b265377ebebf59866787fcc250e7f321ca6913b76e8b2a07104ce1b4",
     "qsa_driver.py": "745bb5f3ce0f8ebaf0a45a31eb9c6a78c5ea718cd44ed01b8e5e1c10b1afd6f4",
-    "qsa_operation.py": "d6db13c8df9d10c9cbcc7773cdc672f8506a3c50080edad58ae2b2083b63b38f",
+    "qsa_operation.py": "414a6f6f4315a453773448c0da6552995aaa4700f917b27b32fea93fd8e820d7",
     "replay_observer.py": "7b331d0eb55130b8def8b51c651b95b2d0aa9981cbc2329a06990b0d6ebc257c",
     "reply_transport.py": "d5c349e1fbefff404427f3f200295e2481db097f1e10072b68d57dc7445bcac4",
     "route_invariant.py": "e20333e2a4e104cf2fe24aad2b3ef1d91a75effc2ee47b7a763f595a66ff6884",
     "row1_exactness.py": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799",
-    "row1_oracle.py": "222daf40526971511997aac1c8a5b485bae1b095ea0e0b7839d97d795e19ef12",
+    "row1_oracle.py": "f6b7c97b1d6a2e4513ae9b210cbd83d731aca349f0f2f75aac99cedb54a1ebc0",
     "s5_startup.py": "7e2366715922626c5b136deba089a4b23c8e61de59ec7d3444b227a59ad203a4",
     "scheduler_hooks.py": "8726968291de2b0e897234bf9caa6fa4aac64fdf414301111bbc9ec2b864b8d2",
     "sparse_history_dma.py": "8d797043b9f077906e93cc32f13f2ba54e56197ba4ce701405951446cc843287",
