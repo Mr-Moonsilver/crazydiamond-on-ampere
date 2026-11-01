@@ -9,6 +9,7 @@ Classes:
 * Grade: eight arms of lines written by the real nm.ProgressTrace emitters (StageEmit), memory and stage receipts in the
   engine's format: verdict per arm and overall, HARNESS and ENGINE, engagement both ways, numerics, the memory comparison, the
   report's sections.
+* Tears: the pre-registered rule for torn lines and lost flushes, in the shapes of the two real tears.
 * ArmLoop: the derived body under real bash with the draft's own functions, the real death watch and the real grade, over stub
   arm and check clients.
 * Commands / QueueArgparse: every python3 call of the derived texts parses with its own module's real parser.
@@ -516,7 +517,7 @@ class Grade(unittest.TestCase):
         self.assertEqual({v['verdict'] for v in result['validity'].values()}, {'PASS'})
 
     def test_the_stage_line_and_progress_rows_are_no_signature(self):
-        self.assertIsNone(box.signature_of(progress.PROGRESS_LINE + 'stage-local commit without'))
+        self.assertIsNone(box.signature_of(progress.PROGRESS_LINE + '{"note":"stage-local commit without"}'))
         self.assertIsNone(box.signature_of('flash-s5 stage-local txn=1 chunk=0-1024 commands=1,1 both_stages_ns=0'))
         self.assertEqual(box.signature_of('x stage-local commit without y'), 'stage-commit')
 
@@ -560,15 +561,19 @@ class Grade(unittest.TestCase):
         chunks = result['progress']['arms']['local-solo-1']['chunks']
         self.assertEqual(chunks[-1]['late_receipt_rows'], 1)
         self.assertEqual(sum(c['late_receipt_rows'] for c in chunks[:-1]), 0)
-        # Any other flush lost still fails: the rule is for the last line only.
+        # A required row missing with no lost flush to explain it still fails the join: Tears holds the explained case.
         span = next(a for a in arms if a['label'] == 'local-solo-0')
         inside = [i for i, (s, t) in enumerate(emit.lines) if s == 'err' and progress.PROGRESS_LINE in t
-                  and span['wall_start_s'] <= progress.docker_stamp(t) <= span['wall_end_s']]
-        # A chunk's first flush on a stage 1 rank: it carries that rank's stage 1 command rows, which the join requires.
-        lines = [x for i, x in enumerate(emit.lines) if i != inside[0]]
+                  and span['wall_start_s'] <= progress.docker_stamp(t) <= span['wall_end_s'] and '"side":"worker"' in t]
+        lines = list(emit.lines)
+        at = inside[0]
+        body = json.loads(lines[at][1][lines[at][1].index(progress.PROGRESS_LINE) + len(progress.PROGRESS_LINE):])
+        body['rows']['r'] = body['rows']['r'][1:]
+        lines[at] = (lines[at][0], lines[at][1][:lines[at][1].index(progress.PROGRESS_LINE)] + progress.PROGRESS_LINE
+                     + json.dumps(body, separators=(',', ':'), sort_keys=True) + '\n')
         result = self.grade(emit, arms, lines=lines)
-        self.assertEqual(result['verdict'], 'INC')
-        self.assertIn('progress-local-solo-0:worker-rows-missing', result['missing'])
+        self.assertEqual(result['verdict'], 'INC', result['missing'])
+        self.assertTrue(any(x.startswith('progress-') and x.endswith(':worker-rows-missing') for x in result['missing']), result['missing'])
 
     def test_held_f_completeness_defects_hold(self):
         emit, arms = synthetic_run()
@@ -645,6 +650,287 @@ class Grade(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(box.main(['grade'] + args + ['--out', str(q / 'grade-2.json')]), 2)
         self.assertIn('declared-arm-missing:local-solo-1', json.loads((q / 'grade-2.json').read_text())['missing'])
+
+
+class Tears(unittest.TestCase):
+    """The pre-registered rule, over the real emitters' lines damaged the way q18a-alpha-perf's box log was.
+
+    The two shapes are that log's lines 3832 with 3835 (bytes moved to a later line, a foreign line in their place) and 34985
+    (a header landing inside the JSON).
+    """
+    FOREIGN = '(Worker_PP1_TP0_EP0 pid=124) INFO 11-01 20:06:28 [qsa_operation.py:797] flash-s5 native-alloc rank=2 txn_seq=64 chunk=1-2'
+
+    def setUp(self):
+        self.helper = Grade(methodName='grade')
+        self.helper.setUp()
+        self.addCleanup(self.helper.tmp.cleanup)
+        # Enough chunks to lose some: the band's prompt in sixteen pieces, against band_cuts' few.
+        real = tap.band_cuts
+
+        def cuts(band):
+            ends = real(band)
+            step = (ends[-1] - ends[0]) // 16
+            return [ends[0] + k * step for k in range(16)] + [ends[-1]]
+        with mock.patch.object(tap, 'band_cuts', cuts):
+            self.emit, self.arms = synthetic_run()
+
+    def grade(self, lines=None, arms=None):
+        return self.helper.grade(self.emit, arms or self.arms, lines=self.emit.lines if lines is None else lines)
+
+    def span(self, name):
+        return next(a for a in self.arms if a['label'] == name)
+
+    def inside(self, name, mark):
+        span = self.span(name)
+        return [i for i, (_, t) in enumerate(self.emit.lines) if mark in t
+                and span['wall_start_s'] <= progress.docker_stamp(t) <= span['wall_end_s']]
+
+    @staticmethod
+    def moved(line, foreign):
+        """3832's shape: the body stops inside a row, a foreign line follows; the rest is returned as a line of its own."""
+        stream, text = line
+        at = text.index('"rows":')
+        cut = at + min(200, (len(text) - at) // 2)
+        stamp = text.split(' ', 1)[0]
+        return (stream, text[:cut] + foreign + '\n'), (stream, stamp + ' ' + text[cut:])
+
+    @staticmethod
+    def spliced(line):
+        """34985's shape: a header inside a row; nothing else moved."""
+        stream, text = line
+        at = text.index('"rows":')
+        cut = at + min(200, (len(text) - at) // 2)
+        return stream, text[:cut] + '(Worker_PP0_TP1_EP1 pid=102) ' + text[cut:]
+
+    def tear(self, indexes, shape='spliced'):
+        lines = list(self.emit.lines)
+        for i in sorted(indexes, reverse=True):
+            if shape == 'spliced':
+                lines[i] = self.spliced(lines[i])
+            else:
+                lines[i:i + 1] = self.moved(lines[i], self.FOREIGN)
+        return lines
+
+    def worker_lines(self, name, rank=None):
+        mark = '"rank":%d,' % rank if rank is not None else '"side":"worker"'
+        return [i for i in self.inside(name, progress.PROGRESS_LINE) if mark in self.emit.lines[i][1] and '"side":"worker"' in self.emit.lines[i][1]]
+
+    def test_a_clean_run_counts_nothing_and_the_recount_equals_the_joins_medians(self):
+        result = self.grade()
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        tears = result['progress']['tears']
+        self.assertEqual((tears['torn_progress_lines'], tears['lost_flushes'], tears['lost_flushes_outside_every_arm']), (0, 0, []))
+        for name, row in result['progress']['arms'].items():
+            self.assertEqual(row['tears']['lost_records'], 0)
+            self.assertTrue(row['tears']['within_limits'])
+            self.assertFalse(any('_seqs' in c for c in row['chunks']))
+            before = json.dumps(dict(bands=row['bands'], all=row['all_counted'], n=row['counted_chunks']), sort_keys=True)
+            box.recount(row)
+            self.assertEqual(json.dumps(dict(bands=row['bands'], all=row['all_counted'], n=row['counted_chunks']), sort_keys=True), before)
+
+    def test_one_torn_worker_line_of_either_real_shape_is_counted_and_its_chunks_drop_out(self):
+        clean = self.grade()['progress']['arms']['local-solo-0']
+        for shape in ('spliced', 'moved'):
+            i = self.worker_lines('local-solo-0', 3)[2]
+            result = self.grade(self.tear([i], shape))
+            self.assertEqual(result['verdict'], 'PASS', (shape, result['missing']))
+            row = result['progress']['arms']['local-solo-0']
+            tears = row['tears']
+            self.assertEqual((tears['torn_progress_lines'], tears['lost_records'], tears['within_limits']), (1, 1, True), shape)
+            self.assertEqual([x['rank'] for x in tears['lost_flushes']], [3])
+            self.assertTrue(1 <= len(tears['dropped_chunk_starts']) <= 2, tears)
+            self.assertEqual(row['reasons'], [])
+            gone = [c for c in row['chunks'] if c.get('dropped_out') and c['label'] == row['counted_label']]
+            self.assertEqual(row['counted_chunks'], clean['counted_chunks'] - len(gone))
+            self.assertEqual(sum(b['chunks'] for b in row['bands'].values()), row['counted_chunks'])
+            self.assertEqual({c['chunk_start'] for c in row['chunks'] if c.get('dropped_out')}, set(tears['dropped_chunk_starts']))
+            self.assertEqual(len(row['chunks']), len(clean['chunks']), 'a dropped chunk stays listed')
+            self.assertEqual(result['validity']['local-solo-0']['verdict'], 'PASS')
+            self.assertEqual(result['progress']['arms']['serial-solo-0']['tears']['lost_records'], 0)
+            self.assertIn('### Torn lines and lost records', box.report(result))
+
+    def test_the_same_tear_on_a_serial_arm(self):
+        result = self.grade(self.tear([self.worker_lines('serial-live-1', 2)[1]]))
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        self.assertEqual(result['progress']['arms']['serial-live-1']['tears']['lost_records'], 1)
+
+    def test_two_lost_flushes_in_one_arm_go_inc_and_one_in_each_of_two_arms_does_not(self):
+        a, b = self.worker_lines('local-live-0', 1)[1], self.worker_lines('local-live-0', 3)[5]
+        result = self.grade(self.tear([a, b]))
+        self.assertEqual(result['verdict'], 'INC')
+        self.assertIn('progress-local-live-0:lost-records-above-the-declared-limit:2>1', result['missing'])
+        self.assertEqual(result['validity']['local-live-0']['verdict'], 'INC')
+        self.assertEqual(result['validity']['local-solo-0']['verdict'], 'PASS')
+        self.assertFalse(result['progress']['arms']['local-live-0']['tears']['within_limits'])
+        result = self.grade(self.tear([a, self.worker_lines('serial-live-0', 3)[5]]))
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+
+    def test_a_flush_gone_with_no_torn_text_is_found_by_its_writers_line_gap(self):
+        # A tear can destroy the marker itself: nothing unparsable is left, the gap still shows.
+        i = self.worker_lines('local-solo-1', 0)[2]
+        result = self.grade([x for k, x in enumerate(self.emit.lines) if k != i])
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        tears = result['progress']['arms']['local-solo-1']['tears']
+        self.assertEqual((tears['torn_progress_lines'], tears['lost_records']), (0, 1))
+        self.assertEqual(tears['lost_flushes'][0]['evidence'], ['line-gap'])
+        self.assertTrue(tears['dropped_chunk_starts'])
+
+    def test_a_lost_engine_flush_drops_its_chunk_and_clears_only_what_it_explains(self):
+        engine = [i for i in self.inside('local-live-1', progress.PROGRESS_LINE) if '"side":"engine"' in self.emit.lines[i][1]]
+        result = self.grade(self.tear([engine[3]]))
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        row = result['progress']['arms']['local-live-1']
+        self.assertEqual((row['tears']['lost_records'], len(row['tears']['dropped_chunk_starts'])), (1, 1))
+        self.assertEqual(row['reasons'], [])
+        self.assertEqual(row['counted_chunks'], len(row['chunks']))
+        hole = row['tears']['dropped_chunk_starts'][0]
+        self.assertNotIn(hole, [c['chunk_start'] for c in row['chunks']])
+        before = next(c for c in row['chunks'] if c['chunk_end'] == hole)
+        self.assertNotIn('open_interval_s', before)
+        # The same missing line with a counter that also disagrees stays INC: the shortfall is not the loss.
+        arms = [dict(a, progress_delta=dict(a['progress_delta'], chunks=a['progress_delta']['chunks'] + 1)) if a['label'] == 'local-live-1' else a
+                for a in self.arms]
+        result = self.grade(self.tear([engine[3]]), arms)
+        self.assertEqual(result['verdict'], 'INC')
+        self.assertIn('progress-local-live-1:progress-lines-differ-from-the-chunk-counter', result['missing'])
+
+    def test_the_first_and_the_last_engine_flush_of_a_solo_arm(self):
+        for pick in (0, -1):
+            engine = [i for i in self.inside('serial-solo-1', progress.PROGRESS_LINE) if '"side":"engine"' in self.emit.lines[i][1]]
+            result = self.grade(self.tear([engine[pick]]))
+            row = result['progress']['arms']['serial-solo-1']
+            self.assertEqual(row['reasons'], [], pick)
+            self.assertEqual(row['tears']['lost_records'], 1)
+
+    def test_a_torn_stage_line_is_treated_the_same(self):
+        i = self.inside('local-live-0', box.STAGE_LINE)[4]
+        lines = list(self.emit.lines)
+        stream, text = lines[i]
+        cut = text.index('both_stages_ns=') + 17
+        lines[i] = (stream, text[:cut] + '(Worker_PP0_TP1_EP1 pid=102) ' + text[cut:])
+        result = self.grade(lines)
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        tears = result['validity']['local-live-0']['tears']
+        self.assertEqual((tears['torn_stage_lines'], tears['lost_records'], len(tears['dropped_chunk_starts'])), (1, 1, 1))
+        engaged = result['validity']['local-live-0']['engagement']
+        self.assertEqual((engaged['engaged'], engaged['lost_stage_lines']), (True, 1))
+        table = result['table']['local-live-0']['stage']
+        self.assertEqual(table['lines'], len(self.inside('local-live-0', box.STAGE_LINE)) - 1)
+        row = result['progress']['arms']['local-live-0']
+        self.assertEqual(row['counted_chunks'], len(row['chunks']) - 1)
+
+    def test_a_torn_stage_line_on_a_serial_arm_is_still_a_stage_line(self):
+        emit, arms = synthetic_run(extra={'serial-solo-0': 'flash-s5 stage-local txn=1 chunk=(Worker_PP0_TP0_EP0 pid=96) 0-1024'})
+        result = self.helper.grade(emit, arms)
+        self.assertEqual(result['verdict'], 'INC')
+        self.assertIn('serial-arm-logged-a-stage-line', result['validity']['serial-solo-0']['reasons'])
+
+    def test_two_missing_stage_lines_with_one_torn_stay_unexplained(self):
+        at = self.inside('local-solo-1', box.STAGE_LINE)
+        lines = list(self.emit.lines)
+        stream, text = lines[at[1]]
+        lines[at[1]] = (stream, text.replace('commands=', 'comm(Worker_PP0_TP0_EP0 pid=96) ands='))
+        del lines[at[4]]
+        result = self.grade(lines)
+        self.assertEqual(result['verdict'], 'INC')
+        self.assertIn('stage-lines-differ-from-the-auto-owned-chunks', result['validity']['local-solo-1']['reasons'])
+
+    def test_a_torn_memory_line_is_counted_against_the_limit(self):
+        at = self.inside('local-solo-0', 'flash-s5 memory ')
+        lines = list(self.emit.lines)
+        for i in at[:1]:
+            lines[i] = (lines[i][0], lines[i][1].replace('allocated=', 'alloc(Worker_PP0_TP0_EP0 pid=96) ated='))
+        result = self.grade(lines)
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        self.assertEqual(result['validity']['local-solo-0']['tears']['torn_memory_lines'], 1)
+        self.assertEqual(result['validity']['local-solo-0']['tears']['dropped_chunk_starts'], [])
+        lines[at[1]] = (lines[at[1]][0], lines[at[1]][1].replace('allocated=', 'alloc(Worker_PP0_TP0_EP0 pid=96) ated='))
+        result = self.grade(lines)
+        self.assertEqual(result['validity']['local-solo-0']['verdict'], 'INC')
+
+    def test_a_header_inside_a_json_string_still_parses_and_is_still_a_tear(self):
+        # The line reads and carries a mangled row kind: a parse check alone would feed it to the join.
+        i = next(k for k in self.worker_lines('local-solo-0', 3)[2:] if '"flash_s5_' in self.emit.lines[k][1])
+        lines = list(self.emit.lines)
+        stream, text = lines[i]
+        lines[i] = (stream, text.replace('"flash_s5_', '"flash_(Worker_PP0_TP1_EP1 pid=102) s5_', 1))
+        at = lines[i][1].index(progress.PROGRESS_LINE) + len(progress.PROGRESS_LINE)
+        json.loads(lines[i][1][at:])
+        result = self.grade(lines)
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        tears = result['validity']['local-solo-0']['tears']
+        self.assertEqual((tears['torn_progress_lines'], tears['lost_records'], [x['rank'] for x in tears['lost_flushes']]), (1, 1, [3]))
+        self.assertTrue(tears['dropped_chunk_starts'])
+        self.assertLess(result['progress']['worker_rows'], self.grade()['progress']['worker_rows'])
+        # In the schema word the join lists it as off-schema; it is the same tear, and clears from that list only.
+        lines[i] = (stream, text.replace('"schema":"s5-native', '"schema":"s5-(Worker_PP0_TP1_EP1 pid=102) native', 1))
+        result = self.grade(lines)
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        self.assertEqual(result['validity']['local-solo-0']['tears']['torn_progress_lines'], 1)
+
+    def test_a_line_off_schema_with_no_header_stays_a_problem(self):
+        i = self.worker_lines('local-solo-0', 3)[2]
+        lines = list(self.emit.lines)
+        lines[i] = (lines[i][0], lines[i][1].replace('"schema":"s5-native', '"schema":"other-native', 1))
+        self.assertIn('progress:progress-line-schema', self.grade(lines)['missing'])
+
+    def test_a_header_alone_is_not_a_tear(self):
+        # 525 such lines in q18a-alpha-perf, 2 tears: a doubled or absent header leaves the body whole.
+        lines = [(s, t.replace(' INFO ', ' (Worker_PP0_TP0_EP0 pid=96) INFO ', 1)) for s, t in self.emit.lines]
+        result = self.grade(lines)
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        self.assertEqual(result['progress']['tears']['torn_progress_lines'], 0)
+
+    def test_a_signature_inside_a_torn_line_still_fails_the_arm(self):
+        i = self.worker_lines('local-solo-0', 3)[2]
+        for foreign, name in ((' ERROR stage-local commit without a release', 'stage-commit'),
+                              (' ERROR tp disagree on rank 3', 'tp-disagree-in-a-torn-line')):
+            lines = list(self.emit.lines)
+            lines[i:i + 1] = self.moved(lines[i], self.FOREIGN[:29] + foreign)
+            result = self.grade(lines)
+            self.assertEqual(result['verdict'], 'FAIL', foreign)
+            self.assertEqual(result['validity']['local-solo-0']['classification'], 'ENGINE')
+            self.assertIn(name, result['validity']['local-solo-0']['signatures'])
+        split = 'stage-local comm(Worker_PP0_TP0_EP0 pid=96) it without'
+        self.assertEqual(box.signature_of('x ' + split), 'stage-commit')
+        self.assertIsNone(box.signature_of('x ' + progress.PROGRESS_LINE + '{"schema":"s","note":"stage-local commit without"}'))
+
+    def test_a_lost_flush_between_the_arms_is_reported_at_run_level_only(self):
+        # A flush outside every span cannot touch a chunk: no arm pays for it.
+        ledger = box.flush_ledger([], [(1.0, 'x ' + progress.PROGRESS_LINE + '{"line":7,"rank":2,"rows":[')])
+        self.assertEqual(ledger['lost'][0]['line'], 7)
+        arm = dict(label='a', wall_start_s=5.0, wall_end_s=6.0)
+        row = dict(reasons=[], chunks=[])
+        tears = box.settle_arm(arm, row, ledger, dict(progress=[], stage=[], memory=[]), [], None)
+        self.assertEqual(tears['lost_records'], 0)
+
+    def test_an_unreadable_identity_counts_as_its_own_loss(self):
+        ledger = box.flush_ledger([], [(5.5, 'x ' + progress.PROGRESS_LINE + '{"base_ns":12(Worker_PP0_TP0_EP0 pid=96) 3,')])
+        self.assertEqual((ledger['lost'], ledger['unidentified_torn_stamps']), ([], [5.5]))
+        arm = dict(label='a', wall_start_s=5.0, wall_end_s=6.0)
+        row = dict(reasons=[], chunks=[])
+        self.assertEqual(box.settle_arm(arm, row, ledger, dict(progress=[], stage=[], memory=[]), [], None)['lost_records'], 1)
+
+    def test_the_report_tool_drops_the_chunks_the_grade_drops(self):
+        import alpha_c0_report as report
+        i = self.worker_lines('local-solo-0', 3)[2]
+        lines = self.tear([i], 'moved')
+        result = self.grade(lines)
+        root = Path(tempfile.mkdtemp(dir=self.helper.tmp.name))
+        (root / 'engine-current.log').write_text(''.join(t for _, t in lines))
+        for arm in self.arms:
+            (root / ('arm-%s.json' % arm['label'])).write_text(json.dumps(arm))
+        out = report.analyse(str(root))
+        self.assertEqual(out['torn_progress_lines'], 1)
+        self.assertEqual([x['rank'] for x in out['lost_flushes']], [3])
+        self.assertEqual((out['errors'], out['problems']), ([], []))
+        self.assertEqual(out['arms']['local-solo-0']['dropped_chunk_starts'], result['validity']['local-solo-0']['tears']['dropped_chunk_starts'])
+        kept = {c['chunk_start'] for c in out['arms']['local-solo-0']['chunks']}
+        self.assertFalse(kept & set(out['arms']['local-solo-0']['dropped_chunk_starts']))
+        self.assertEqual(out['arms']['serial-solo-0']['dropped_chunk_starts'], [])
+
+    def test_the_limits_are_the_declared_ones(self):
+        self.assertEqual((box.LOST_RECORD_LIMIT, box.DROPPED_CHUNK_LIMIT), (1, 2))
 
 
 class RealLines(unittest.TestCase):

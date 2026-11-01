@@ -24,6 +24,7 @@ import statistics
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'harness'))
+import e3_alpha_c0_box as tears  # noqa: E402  (the grade's rule for torn lines and lost flushes, not a second one)
 import e3_native41_progress_box as box  # noqa: E402
 
 TARGETS = {0: (0, 1), 1: (2, 3)}
@@ -194,7 +195,11 @@ def analyse(root):
     logs = [p for p in (os.path.join(root, 'engine-current.log'), os.path.join(root, 'engine-current.log.xz'))
             if os.path.exists(p)][:1]
     records, errors = box.read_lines(logs)
+    torn = tears.torn_lines(logs)
+    records, errors, _ = tears.whole_records(records, errors, torn['progress'])
+    ledger = tears.flush_ledger(records, torn['progress'])
     flushes, problems = box.assemble(records)
+    problems = [x for x in problems if not tears.INCOMPLETE.fullmatch(x)]
     workers, per_rank = {}, {rank: [] for rank in range(4)}
     for flush in flushes:
         if flush['side'] == 'worker':
@@ -211,11 +216,16 @@ def analyse(root):
         start, end = arm['wall_start_s'], arm['wall_end_s']
         mine = sorted((f for f in engine if f['stamp'] is not None and start <= f['stamp'] <= end + box.LOG_LAG_S),
                       key=lambda f: f['identity'].get('chunk_start', -1))
+        # A chunk a lost flush touched has no reliable per-rank spans: out of these figures, as out of the grade's medians.
+        hit = {id(f) for f in mine if any(tears._touches(loss, [r['seq'] for tag in ('n', 's') for r in f['rows'].get(tag, [])],
+                                                         ledger['rank_seqs']) for loss in ledger['lost'])}
         chunks = [chunk_report(f, workers, by_rank) for f in mine
-                  if box.chunk_label(f['identity'].get('decode_live'), 8) == want]
+                  if id(f) not in hit and box.chunk_label(f['identity'].get('decode_live'), 8) == want]
         arms[name] = dict(mode=arm.get('selection') or arm.get('mode'), cohort=arm.get('cohort'), band=arm.get('band'),
-                          chunks=[c for c in chunks if 'wall_s' in c])
-    return dict(errors=errors, problems=problems, arms=arms)
+                          chunks=[c for c in chunks if 'wall_s' in c],
+                          dropped_chunk_starts=sorted(f['identity'].get('chunk_start') for f in mine if id(f) in hit))
+    return dict(errors=errors, problems=problems, arms=arms, torn_progress_lines=len(torn['progress']),
+                lost_flushes=[{k: x[k] for k in ('side', 'rank', 'line', 'evidence')} for x in ledger['lost']])
 
 
 def group_summary(chunks):
@@ -304,6 +314,8 @@ def main(argv=None):
     result = analyse(args.root)
     summary = summarise(result)
     report = dict(schema='alpha-c0-report/1', errors=result['errors'], problems=result['problems'],
+                  torn_progress_lines=result['torn_progress_lines'], lost_flushes=result['lost_flushes'],
+                  dropped_chunk_starts={k: v['dropped_chunk_starts'] for k, v in result['arms'].items()},
                   summary=summary, compare=compare(summary, args.old, args.new))
     with open(args.out, 'w') as handle:
         json.dump(report, handle, indent=1, sort_keys=True)

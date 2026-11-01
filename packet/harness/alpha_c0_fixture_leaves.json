@@ -86,6 +86,15 @@
    "cannot_prove": "Real arm durations",
    "more_convenient": true,
    "box_evidence": false
+  },
+  {
+   "name": "torn-log-lines",
+   "test": "test_alpha_c0_queue.Tears",
+   "replaces": "Docker log lines spliced by a second writer on the box",
+   "equivalence": "The two shapes are q18a-alpha-perf's engine-stream.log lines 3832 with 3835 (bytes moved to a later stamped line, a foreign line in their place) and 34985 (a header inside the JSON), applied to the real emitters' lines. The whole rule was also replayed over that real log and its 16 arm records, on the hub.",
+   "cannot_prove": "How often the C0 path tears: the rate is estimated from one alpha-perf run. A signature whose bytes moved to another physical line stays unseen by the text scan; the engine watch and arm completion remain.",
+   "more_convenient": true,
+   "box_evidence": false
   }
  ]
 }
