@@ -4,7 +4,7 @@
 native39_trunk_cpu_probe.py = native35_p_c_cpu_probe.py with:
   * FLASH_NATIVE35_ARM=TRUNK, candidate q18a-native39-trunk;
   * test_native39_trunk_queue added to the discovered suites, EXPECTED_TESTS
-    183 -> 217 (its 34 cases);
+    183 -> 218 (its 35 cases);
   * the owner window boundaries of native39_trunk_gate (16200 s + 900 s) for the
     frozen runner's check_slot negatives;
   * the trunk draft's real-clock slot receipt appended to the 20 inherited ones;
@@ -25,7 +25,8 @@ TRUNK_CASES = sorted(['bind-absent', 'bind-after-first-200', 'bind-before-first-
                       'guard-tampered-declaration', 'health-deadline', 'launcher-loopback-host',
                       'round-wrapper-declared-not-run-only', 'tail-foreign-at-entry-no-split', 'tail-hidden-arrival-invalid',
                       'tail-maps-unreadable-withholds', 'tail-not-idle-withholds-w2', 'tail-observer-mapped-withholds',
-                      'tail-observer-off-sealed-w1-plain-on-full-rounds', 'tail-transient-foreign-ingress-invalid',
+                      'tail-observer-off-sealed-w1-plain-on-full-rounds', 'tail-swapped-member-no-split',
+                      'tail-transient-foreign-ingress-invalid',
                       'tail-unqualified-withholds-all', 'tail-unrestored-split-withholds-plain'])
 
 PROBE_SWAPS = (
@@ -42,7 +43,7 @@ PROBE_SWAPS = (
      "suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native35_*.py'))\n"
      "suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native39_trunk_queue.py'))\n"),
     ('EXPECTED_TESTS=183  # 98 native30-34, 27 native35 R/O/L, 17 native35 P, 11 native35 L2, 3 native35 P-b, 5 native35 P-c, 12 native35 P-c row4 and 10 P-c capacity continuation cases; pinned into the frozen runner gate',
-     'EXPECTED_TESTS=217  # the 183 P-c probe cases plus the 34 native39 trunk queue cases; pinned into the frozen runner gate'),
+     'EXPECTED_TESTS=218  # the 183 P-c probe cases plus the 35 native39 trunk queue cases; pinned into the frozen runner gate'),
     ("role=os.environ['FLASH_NATIVE35_ARM'];assert role=='P-C' and os.environ['FLASH_NATIVE34_ARM']=='O'",
      "role=os.environ['FLASH_NATIVE35_ARM'];assert role=='TRUNK' and os.environ['FLASH_NATIVE34_ARM']=='O'"),
     ("provenance['candidate']==owner.QNAME=='q18a-native35-'+role.lower()",
@@ -70,7 +71,7 @@ PROBE_SWAPS = (
      "assert [r['plain_requests'] for r in trunk_cases if r['case']=='tail-observer-off-sealed-w1-plain-on-full-rounds']==[8]\n"
      "assert {r['case']:r['instruments'] for r in trunk_cases if 'instruments' in r}=={'tail-observer-mapped-withholds':'FAIL','tail-maps-unreadable-withholds':'INCONCLUSIVE'}\n"
      "assert [(r['full_idle'],r['plain_requests']) for r in trunk_cases if r['case']=='tail-unrestored-split-withholds-plain']==[('INCONCLUSIVE',0)]\n"
-     "assert [r['split_entries'] for r in trunk_cases if r['case']=='tail-foreign-at-entry-no-split']==[0]\n"
+     "assert [r['split_entries'] for r in trunk_cases if r['case'] in ('tail-foreign-at-entry-no-split','tail-swapped-member-no-split')]==[0,0]\n"
      "assert [r['accepted'] for r in trunk_cases if r['case']=='round-wrapper-declared-not-run-only']==[['declared']]\n"
      "Path('/out/native39-trunk-queue-check.json').write_text(json.dumps(dict(cases=trunk_cases,slots=trunk_slots),sort_keys=True,indent=2)+'\\n')\n"
      "record=dict(native39_trunk_queue='PASS',native39_trunk_queue_receipts=trunk_cases,native39_trunk_window_active_and_cleanup_s=active_and_cleanup,"

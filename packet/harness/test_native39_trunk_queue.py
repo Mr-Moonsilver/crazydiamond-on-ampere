@@ -204,6 +204,12 @@ class NativeSession:
                     self.live[uid], self.injected = True, True
                     self.foreign.add(uid)
                     self.foreign_line()
+                if 'swap-entry' in self.mode and entry:  # one cohort request gone engine-side, a foreign one in its place
+                    self.live.pop(sorted(self.live)[0])
+                    uid = 'chatcmpl-d0d0d0d0d0d0d0d0-0badbeef'
+                    self.live[uid], self.injected = True, True
+                    self.foreign.add(uid)
+                    self.foreign_line()
                 return 200, dict(self.status(now), **base)
             if action == 'pause':
                 pause = self.pause()
@@ -782,6 +788,22 @@ class Tail(unittest.TestCase):
         self.assertEqual(pv['overlap'], 'INCONCLUSIVE')
         self.assertEqual(calls, [])
         record_case('tail-foreign-at-entry-no-split', split_entries=0, ingress='FAIL', rounds=[])
+
+    def test_a_swapped_cohort_member_at_the_same_count_never_enters_split(self):
+        # A count-only census sees 8; the identity seal sees a foreign request and a missing cohort member.
+        done, pv, calls, arts, leaf, session = self.run_tail(mode='swap-entry')
+        w1 = arts['w1.json']
+        seal = w1['repeats'][1]['seal']['entry']
+        self.assertNotIn('entry-status:scheduler-requests', seal)
+        self.assertTrue(any(r.endswith(':foreign-live-uid') for r in seal), seal)
+        self.assertTrue(any(r.endswith(':cohort-uids-not-exact') for r in seal), seal)
+        self.assertEqual(session.split_entries, 0)
+        self.assertIn('native-w1-unsealed:unsealed-entry', w1['repeats'][1]['reasons'])
+        self.assertTrue(w1['repeats'][1]['cleanup']['full_restored'])
+        self.assertEqual(pv['w1_controls'], 'INCONCLUSIVE')
+        self.assertEqual(pv['overlap'], 'INCONCLUSIVE')
+        self.assertEqual(calls, [])
+        record_case('tail-swapped-member-no-split', split_entries=0, rounds=[])
 
     def test_hidden_arrival_after_the_entry_read_is_invalid_and_withholds_w2(self):
         done, pv, calls, arts, leaf, session = self.run_tail(mode='hidden-arrival')
