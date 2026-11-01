@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Plain API prefill on unarmed split with a CT-side container clock proof.
 
-Native40's flow (e3_native40_unarmed_box.py, frozen: a box queue ran it):
-real 30 s hold -> applied FULL -> completion. No native prefill_begin or
-admission action is sent. Every native40 check is kept. Only the clock test is
-replaced.
+Native40's unarmed flow (frozen: a box queue ran it): real 30 s hold ->
+applied FULL -> completion. No native prefill_begin or admission action is
+sent. Every native40 check is kept. Only the clock test is replaced. The
+native40 module is not imported: its plain request and the reviewed FULL
+restoration are copied here verbatim, so its identity comparison cannot be
+reached from this client (native41_clock_scan refuses it in the closure).
 
 Native40 compared the engine status clock (boot_id, time namespace) with the
-client process's own identity. On the box the client is plain python3 in the
+client process's own identity view. On the box the client is plain python3 in the
 LXC CT, with an lxcfs boot_id and the init time namespace. The engine is in a
 docker container, with the kernel boot_id and its own time namespace. The test
 refused although CLOCK_MONOTONIC is one clock (q18a-native40-unarmed-hold
@@ -20,7 +22,10 @@ Native41 proves the domain from the CT side:
    /proc/sys/kernel/random/boot_id).
 2. Declared zero offsets: the container init's and the client's own
    /proc/self/timens_offsets parse to exactly monotonic 0 0 and boottime 0 0.
-   A missing or unparsable file is unproved.
+   A missing or unparsable file is unproved. The client's own boot_id and
+   time namespace are never read.
+   The docker calls are read-only: inspect of the init pid, and exec of cat on
+   the boot_id file. Nothing else runs in the container.
 3. The engine status clock names the container's boot_id and time namespace.
 4. native_overlap_metrics.prove_clock_domain: the engine sample of one status
    call lies inside the client's time.monotonic_ns() send/receive bracket.
@@ -40,10 +45,11 @@ import threading
 import time
 import urllib.parse
 
-import e3_native39_w1
+import urllib.request
+
+from e3_native_qualification_driver import exception_details
 from e3_native_runtime_client import NativeRuntimeClient
 from e3_native39_trunk_checks import full_idle
-from e3_native40_unarmed_box import plain_request
 from native_overlap_metrics import prove_clock_domain
 
 SCHEMA = 'native41-unarmed-box/1'
@@ -144,12 +150,73 @@ def container_identity(container_id, *, docker=None, proc='/proc', timeout_s=DOC
 
 
 def client_identity(proc='/proc'):
-    """The client's own offsets (checked) and its boot_id/time namespace view (descriptive only)."""
+    """The client's own offsets (checked). Its boot_id and time namespace view is never read."""
     offsets, reasons = offsets_receipt(os.path.join(proc, 'self/timens_offsets'), 'client')
-    view = e3_native39_w1.clock_identity()
     return dict(timens_offsets=offsets, reasons=reasons,
-                view={k: view.get(k) for k in ('boot_id', 'time_namespace')},
-                view_basis='descriptive: an LXC CT shows an lxcfs boot_id and its own time namespace; not compared')
+                view_basis='not read: an LXC CT shows an lxcfs boot_id and its own time namespace')
+
+
+# Copied verbatim from native40's unarmed client (plain_request) and from
+# e3_native39_w1 (STATUS_KEYS, status_view, restore_full), so neither module is
+# imported by this client.
+STATUS_KEYS = ('route', 'route_generation', 'paused', 'transition_pending', 'control_pending',
+               'return_pending', 'scheduler_requests', 'observed_clock_ns', 'clock')
+
+
+def status_view(status):
+    return {k: status.get(k) for k in STATUS_KEYS} if type(status) is dict else None
+
+
+def restore_full(client):
+    """Best-effort FULL return after a W1 error; resumes only on a proven FULL route."""
+    out = {'attempted': True, 'basis': 'pause, leave_full, status; resume only when route full and no transition pending'}
+    for key, call in (('pause', client.pause), ('leave_full', client.leave)):
+        try:
+            out[key] = call()
+            out[key + '_error'] = None
+        except Exception as exc:  # noqa: BLE001 - recorded, never raised
+            out[key] = None
+            out[key + '_error'] = exception_details(exc, client.control)
+    try:
+        out['status'] = status_view(client.call('status'))
+        out['status_error'] = None
+    except Exception as exc:  # noqa: BLE001
+        out['status'] = None
+        out['status_error'] = exception_details(exc, client.control)
+    status = out['status'] or {}
+    full = status.get('route') == 'full' and status.get('transition_pending') is False
+    out['resume'] = None
+    if full and status.get('paused') is True:
+        try:
+            out['resume'] = client.resume()
+        except Exception as exc:  # noqa: BLE001
+            out['resume_error'] = exception_details(exc, client.control)
+            full = False
+    out['route_after'] = status.get('route')
+    out['full_restored'] = bool(full)
+    return out
+
+
+def plain_request(url, model, result, timeout_s):
+    started = time.monotonic_ns()
+    try:
+        headers = {'Content-Type': 'application/json'}
+        key = os.environ.get('VLLM_API_KEY')
+        if key:
+            headers['Authorization'] = 'Bearer ' + key
+        body = dict(model=model, prompt=[17] * 256, max_tokens=1,
+                    temperature=0, ignore_eos=True, stream=False)
+        req = urllib.request.Request(url.rstrip('/') + '/v1/completions',
+                                     data=json.dumps(body).encode(), headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout_s) as reply:
+            data = json.load(reply)
+            result.update(http_status=reply.status, completion_tokens=(data.get('usage') or {}).get('completion_tokens'),
+                          choices=len(data.get('choices') or []))
+    except Exception as exc:
+        # Exception messages may echo a URL/payload. Type only.
+        result['error_type'] = type(exc).__name__
+    finally:
+        result.update(sent_ns=started, completed_ns=time.monotonic_ns())
 
 
 def clock_proof(phase, client, container_id, *, docker=None, proc='/proc', begin=None):
@@ -276,7 +343,6 @@ def run(a, *, client=None, send=None, clock=time.monotonic, sleep=time.sleep, id
     finally:
         if record['verdict'] != 'PASS':
             # Never resume an unknown/split route; use the reviewed restoration.
-            from e3_native39_w1 import restore_full
             record['cleanup'] = restore_full(client)
         if thread:
             thread.join(1)

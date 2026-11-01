@@ -27,7 +27,7 @@ Classes:
 Real objects: e3_native41_unarmed_box (run, main, clock_proof, container_identity, client_identity,
 the offsets parser), e3_native40_unarmed_box.run (parent), native_overlap_metrics.prove_clock_domain,
 engine_driver._clock_record, the native38 stack, attach_native_router endpoint, NativeOverlapSession,
-NativeRuntimeClient, LoopbackControl, e3_native39_w1.restore_full, /proc reads (os.readlink,
+NativeRuntimeClient, LoopbackControl, the copied restore_full, /proc reads (os.readlink,
 timens_offsets) in Connected.
 Fixture leaves (native41_clock_fixture_leaves.json): the CT client view, the docker CLI, the unarmed
 hold/return sequence (test_native40_box_queue.Client), full_idle, procfs-shaped trees for refusals,
@@ -194,7 +194,7 @@ class Connected(unittest.TestCase):
         self.assertEqual(proof['container']['init_pid'], os.getpid())
         self.assertEqual(proof['container']['timens_offsets'], box.ZERO_OFFSETS)
         self.assertEqual(proof['client']['timens_offsets'], box.ZERO_OFFSETS)
-        self.assertEqual(proof['client']['view'], {k: CT_VIEW[k] for k in ('boot_id', 'time_namespace')})
+        self.assertNotIn('view', proof['client'])  # the client's own identity view is never read
         self.assertEqual(proof['expected'], {'proved': True, 'boot_id': engine[0], 'time_namespace': engine[1]})
         domain = proof['domain']
         self.assertEqual((domain['boot_id'], domain['time_namespace'], domain['engine_basis']),
@@ -207,9 +207,20 @@ class Connected(unittest.TestCase):
         engine = real_engine_identity()
         self.assertNotEqual(engine[0], CT_VIEW['boot_id'])  # the CT/container split
         parent, child, docker = Held(self.real), Held(self.real), Docker()
-        with mock.patch.object(e3_native39_w1, 'clock_identity', return_value=dict(CT_VIEW)):
+        callers = []
+
+        def view():
+            # The calling module: the clients, or the Held leaf's own status rows.
+            callers.append(sys._getframe(1).f_globals.get('__name__'))
+            return dict(CT_VIEW)
+        with mock.patch.object(e3_native39_w1, 'clock_identity', view):
             old = self.run_box(n40box, parent)
             new = self.run_box(box, child, docker=docker)
+        # Native40 compares the client's own (CT) view; native41 never reads it.
+        self.assertGreaterEqual(callers.count(n40box.__name__), 1)
+        self.assertEqual(callers.count(box.__name__), 0)
+        self.assertNotIn('e3_native40_unarmed_box', set(box.__dict__) | {
+            getattr(v, '__name__', '') for v in vars(box).values()})
         # Parent: the engine side passed and the identity comparison refused, exactly as on the box.
         self.assertEqual((old['verdict'], old['failure_class'], old['cause']),
                          ('INCONCLUSIVE', 'HARNESS', 'client-engine-clock-unproved'))
