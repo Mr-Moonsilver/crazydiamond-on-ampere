@@ -44,7 +44,13 @@ def sha(path):
 
 
 def assignments(text):
-    return {n.targets[0].id: (ast.get_source_segment(text, n.value), ast.literal_eval(n.value))
+    """PIN name -> (source text, value); the value is the literal, or the source text for a call (H=Path(...))."""
+    def value(node):
+        try:
+            return ast.literal_eval(node)
+        except ValueError:
+            return ast.get_source_segment(text, node)
+    return {n.targets[0].id: (ast.get_source_segment(text, n.value), value(n.value))
             for n in ast.parse(text).body if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
             and n.targets[0].id in PINS}
 
