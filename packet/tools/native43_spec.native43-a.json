@@ -191,7 +191,7 @@
     "q18a_native43_current_settings.sh",
     "q18a_native43_dense_settings.sh"
   ],
-  "expected_tests": 229,
+  "expected_tests": 231,
   "runner_swaps": [
     [
       "result.get('native35_arm')=='TRUNK'",

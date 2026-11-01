@@ -22,7 +22,7 @@ import sys
 
 TOOLS = Path(__file__).resolve().parent
 PARENT_TESTS = 218
-NATIVE43_QUEUE_TESTS = 11  # test_native43_boundary_queue: 5 QueueTests + 6 GradeTests
+NATIVE43_QUEUE_TESTS = 13  # test_native43_boundary_queue at d9fb80e: 5 QueueTests + 8 GradeTests
 CANDIDATE = 'q18a-native43-dense-boundary'
 
 PROBE_SWAPS = (
