@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import copy
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
@@ -19,6 +20,7 @@ import e3_native40_unarmed_box as box
 import e3_native39_w1 as w1
 import native40_box_gate as gate
 import native40_box_queue as queue
+import e3_native40_regression as regression
 SLOT_RECEIPTS = []
 
 
@@ -128,7 +130,10 @@ class Queue(unittest.TestCase):
         self.assertFalse(gate.window_ok(gate.HARD_END - gate.ACTIVE_S - gate.CLEANUP_S + 1))
         draft = queue.derive()['harness/runs/q18a_native40_unarmed_hold.draft.sh']
         self.assertLess(draft.index('unarmed-stock-prefill "$rc"'), draft.index('qualification_phase row1'))
-        self.assertIn('exec timeout --signal=TERM --kill-after=900s 2400s', draft)
+        self.assertIn('"$(native40_budget active)s"', draft)
+        self.assertEqual(gate.ACTIVE_S, sum(gate.PHASES.values()))
+        self.assertNotIn('qualification_phase rule4_controls\n', draft)
+        self.assertEqual(draft.count('--row1 "$Q/qual-row1.json"'), 1)
         start = draft.index("python3 - <<'PY_SLOT'")
         slot = draft[start:draft.index('\nPY_SLOT\n', start) + len('\nPY_SLOT\n')]
         done = subprocess.run(['bash', '-c', 'fail_early() { return 2; }\n' + slot],
@@ -136,6 +141,48 @@ class Queue(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         SLOT_RECEIPTS.append(dict(draft='q18a_native40_unarmed_hold.draft.sh', real_wall_clock=True,
                                   verdict='PASS', active_s=gate.ACTIVE_S, cleanup_margin_s=gate.CLEANUP_S))
+
+    def test_regression_regrades_real_driver_source_and_rejects_cached_complete(self):
+        from test_e3_native_measurement_clients import NativeWindowSource
+        NativeWindowSource.setUpClass()
+        row = copy.deepcopy(NativeWindowSource.record)
+        row.update(complete=True, request={'prompt_tokens_observed': 2050, 'ttft_s': 1},
+                   decode_window={'streams': [{'completion_delta': 1} for _ in range(8)]})
+        data = dict(row=row, engine_epoch=NativeWindowSource.epoch, cleanup={'full_restored': True})
+        self.assertEqual(regression.grade(data, 2050)['verdict'], 'PASS')
+        row['end']['raw_journal_evidence'] = {}
+        self.assertNotEqual(regression.grade(data, 2050)['verdict'], 'PASS')
+
+    def test_regression_final_grade_requires_instruments_ingress_and_no_speed_claim(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for name in ('unarmed-stock-prefill', 'qual-row1', 'instruments-begin', 'instruments-end', 'ingress-fresh', 'engine-alive'):
+                (root / (name + '.json')).write_text(json.dumps({'verdict': 'PASS'}))
+            path = root / 'w2-fresh.json'
+            path.write_text(json.dumps({'grade': {'verdict': 'PASS', 'speed_claim': False}}))
+            self.assertEqual(regression.final_grade(root)['verdict'], 'PASS')
+            (root / 'ingress-fresh.json').write_text('{"verdict":"FAIL"}')
+            self.assertEqual(regression.final_grade(root)['verdict'], 'INCONCLUSIVE')
+
+    def test_regression_real_cli_through_package_and_native_client_refusal(self):
+        import test_native35_performance as fixture
+        server = fixture.LoopbackAPIServer()
+        self.addCleanup(server.close)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / 'row1.json').write_text('{"verdict":"PASS"}')
+            env = fixture.round_env(fixture.w2_argv(root, server.url, 0)[0])
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(regression.perf.streams, '_start_streams', return_value=[]), \
+                    mock.patch.object(regression.perf.streams, '_wait_open', return_value={'complete': True}):
+                rc = regression.main(['--url', server.url, '--model', 'fixture', '--run-id', fixture.RUN_ID,
+                    '--epoch', '7', '--workload', str(HERE / 'workloads/q18a-w2-overlap-native39.json'),
+                    '--row1', str(root / 'row1.json'), '--out', str(root / 'regression.json')])
+            data = json.loads((root / 'regression.json').read_text())
+            self.assertEqual(rc, 2)
+            self.assertIn('prefill_begin', [r['action'] for r in server.commands])
+            self.assertIn('leave_full', [r['action'] for r in server.commands])
+            self.assertEqual(data['grade']['verdict'], 'INCONCLUSIVE')
 
 
 if __name__ == '__main__':

@@ -66,6 +66,7 @@
     ]
   },
   "paths": [
+    "A\tharness/e3_native40_regression.py",
     "A\tharness/e3_native40_unarmed_box.py",
     "A\tharness/e3_native40_unarmed_probe.py",
     "A\tharness/native40_box_gate.py",

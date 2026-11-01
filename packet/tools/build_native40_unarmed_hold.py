@@ -17,9 +17,9 @@ sys.path[:0]=[str(ROOT/'tools'),str(ROOT/'patches/s5_engine')]
 from build_native30_held import sha,dump,manifest,verify
 from build_native38_plain_bind import regression_from,focused_from
 from native_readiness import digest,payload_identity,verify_finalized_package
-PARENT='0b41fed'
-SHELL=Path('<hub-dir>/agents/flash-next/tmp/native38-plain-bind-held-b/q18a-native38-plain-bind-bundle-d7a0943b90ab')
-SHELL_SHA='d7a0943b90ab9dac43ef206b4d160e27e74db39c0a07685a87728435a4f98468'
+PARENT='1ffc394783d3d67e140056868b50ca2f74c88b3b'
+SHELL=Path('<hub-dir>/agents/flash-next/tmp/native39-trunk-held-b/q18a-native39-trunk-bundle-756f826c221c')
+SHELL_SHA='756f826c221c026440d7955a9f834fe72db83581439fed9bb69d07d314ea4264'
 BASE=Path('<hub-dir>/agents/flash-next/tmp/e2f-native-offline-base-20261027T211405Z')
 BASE_SHA='da561411fadbb82922eeb8eafbe9424bc9703aaf8c2030bd813743c692b641a5'
 TOOLS=('build_native40_unarmed_hold.py','native40_unarmed_freeze.py','native40_unarmed_declarations.json','native40_unarmed_selfrun.py',
@@ -138,7 +138,7 @@ def build(out,strict,focused):
     runner_text=runner_text.replace('from native39_trunk_gate import trunk_window_ok as window_ok',
                                     'from native40_box_gate import window_ok')
     runner_text=runner_text.replace('==%d and result.get'%parent_build.expected_tests(),
-                                    '==%d and result.get'%(parent_build.expected_tests()+6),1)
+                                    '==%d and result.get'%(parent_build.expected_tests()+native40_box_queue.TEST_CASES),1)
     begin=runner_text.index('        # Native39: the engine self-run')
     end=runner_text.index("'exact-engine-selfrun-required')",begin)+len("'exact-engine-selfrun-required')")
     runner_text=runner_text[:begin]+'''        # Native40: exact frozen Core/hold/typed-ACK proof, distinct from queue-leaf tests.
@@ -165,15 +165,15 @@ def build(out,strict,focused):
         bundle_removed=[],runner=dict(parent=str(parent_runner),parent_sha256=sha(parent_runner),sha256=sha(runner),
             differences=[line for line in difflib.ndiff(old_runner.splitlines(),runner_text.splitlines())
                          if line.startswith(('- ','+ ')) and not line[2:].startswith('EXPECTED_SOURCES=')]),
-        queue_derivation='native40_box_queue.derive(): names, 2400s active watchdog/shared window, pre-row1 unarmed check',
-        active_s=2400,cleanup_margin_s=900)
+        queue_derivation='native40_box_queue.derive(): targeted startup/bind/unarmed/row1/single-fresh-W2, shared phase budget',
+        active_s=__import__('native40_box_gate').ACTIVE_S,cleanup_margin_s=__import__('native40_box_gate').CLEANUP_S)
     dump(out/'freeze-proof.json',proof)
     result=dict(schema='native40-build/1',name='q18a-native40-unarmed-hold',arm='TRUNK',verdict='PASS',source=git('rev-parse','HEAD').strip(),branch_base=git('rev-parse',PARENT).strip(),
         bundle=str(held),manifest=pin,overlay=str(held/'native30_overlay'),overlay_manifest=sha(held/'native30_overlay/SHA256SUMS'),
         reference_bundle=str(parent),reference_overlay_manifest=sha(parent/'native30_overlay/SHA256SUMS'),
         regression=reg,focused=focus,files=len(verify(held)),freeze_proof_sha256=sha(out/'freeze-proof.json'),
         held=True,box_ready=True,runner=str(runner),runner_sha256=sha(runner),runner_size=runner.stat().st_size,
-        expected_selfrun_tests=parent_build.expected_tests()+6,
+        expected_selfrun_tests=parent_build.expected_tests()+native40_box_queue.TEST_CASES,
         review_sha256=json.loads((held/'native30_overlay/e3/native-implementation-closure.json').read_text())['review_sha256'],
         image=parent_build.IMAGE,checksummed_files=len(verify(held)),
         queue=str(held/'runs/q18a_native40_unarmed_hold.draft.sh'),gpu_execution=False)

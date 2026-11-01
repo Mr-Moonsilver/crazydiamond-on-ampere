@@ -8,7 +8,7 @@ import subprocess
 from native37_robust_freeze import prove
 from build_native30_held import verify
 ROOT=Path(__file__).resolve().parents[1]
-PARENT='0b41fed'
+PARENT='1ffc394783d3d67e140056868b50ca2f74c88b3b'
 DECLARATION=ROOT/'tools/native40_unarmed_declarations.json'
 RUNTIME={'core/scheduler.py','e3/scheduler_hooks.py','e3/engine_driver.py'}
 META={'SHA256SUMS','core/SHA256SUMS','S5-OVERLAP-GENERATION.json','e3/native-implementation-closure.json',

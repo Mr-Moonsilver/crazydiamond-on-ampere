@@ -35,7 +35,7 @@ def main():
                             container=q['container'], owner_prelaunch=q['owner_prelaunch']),
         negative=dict(path=str(a.negative), sha256=sha(a.negative), verdict=n['verdict']),
         precheck=dict(conf=str(a.conf), conf_sha256=sha(a.conf), log=str(a.precheck), sha256=sha(a.precheck)),
-        note=str(a.note), note_sha256=sha(a.note), expected_box_minutes='30–40 active; 40min TERM watchdog + up to 15min owned cleanup',
+        note=str(a.note), note_sha256=sha(a.note), expected_box_minutes='45–50 nominal; watchdog/window derive from native40_box_gate.PHASES, plus existing cleanup allowance',
         model_settings_changed=False, automatic_native_admission=False,
         owner_commands=['sudo -n python3 ' + b['runner'] + ' --staging --auth-env-file PRIVATE_AUTH_FILE '
                         '--selfrun-record ' + str(a.queue) + ' --engine-selfrun-record ' + str(a.engine)

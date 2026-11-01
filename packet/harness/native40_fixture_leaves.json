@@ -68,6 +68,14 @@
       "name": "box-cli-cpu-leaves",
       "replaces": "HTTP model response, live NativeRuntimeClient endpoint and wall-clock wait in test_native40_box_queue only",
       "test": "test_native40_box_queue"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "GPU execution, timing, production output tokens or successful live standing streams. No census, source join or native_window predicate is patched.",
+      "equivalence": "Real targeted main validates the frozen workload/package then uses the real native session client and unchanged perf.prefill through its typed refusal and FULL cleanup over loopback HTTP. Standing stream startup/open are constructor/transport leaves in that refusal test. Separately NativeWindowSource constructs real driver journal evidence, regraded by the unchanged native_window; decode counts/client completion are declared CPU values.",
+      "name": "targeted-regression-cpu-seams",
+      "replaces": "Live APIServer/model output and standing SSE cohort only in CPU tests",
+      "test": "test_native40_box_queue last three tests"
     }
   ],
   "schema": "fixture-leaves/1",
