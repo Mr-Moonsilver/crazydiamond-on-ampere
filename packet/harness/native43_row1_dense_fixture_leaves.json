@@ -52,6 +52,9 @@
    "implementation": "mock.patch.object(qualification, \"main\", ...) records the argv it receives and the _grade_row1 bound during the call",
    "name": "qualification-main",
    "replaces": "e3_q18a_qualification.main (the row1 client against the engine) inside native43_row1_qualification.main",
+   "seams": [
+    "qualification.main"
+   ],
    "test": "test_native43_row1_grade.WrapperTests"
   }
  ]
