@@ -94,7 +94,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native35_*.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native39_trunk_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native40_box_queue.py'))
-EXPECTED_TESTS=223  # inherited native39 cases plus 6 native40 queue CLI/window cases
+EXPECTED_TESTS=224  # inherited native39 cases plus 6 native40 queue CLI/window cases
 result=unittest.TextTestRunner(verbosity=2).run(suite)
 assert not torch.cuda.is_initialized()
 identity_receipts=sys.modules['test_native30_identity'].IDENTITY_RECEIPTS
@@ -260,13 +260,13 @@ Path('/out/native35-p-c-continuation-check.json').write_text(json.dumps(pc_conti
 # returns and summary with the real checks, client and grade; W2 length guard; sourced settings through the real
 # launcher render; real box access lines).
 trunk_cases=sys.modules['test_native39_trunk_queue'].QUEUE_RECEIPTS
-assert sorted(r['case'] for r in trunk_cases)==['bind-absent', 'bind-after-first-200', 'bind-before-first-200', 'bind-other-container', 'box-access-lines', 'guard-count-differs', 'guard-declared-counts', 'guard-no-engine', 'guard-refused-band', 'guard-tampered-declaration', 'health-deadline', 'launcher-loopback-host', 'round-wrapper-declared-not-run-only', 'tail-foreign-at-entry-no-split', 'tail-hidden-arrival-invalid', 'tail-maps-unreadable-withholds', 'tail-not-idle-withholds-w2', 'tail-observer-mapped-withholds', 'tail-observer-off-sealed-w1-plain-on-full-rounds', 'tail-transient-foreign-ingress-invalid', 'tail-unqualified-withholds-all', 'tail-unrestored-split-withholds-plain'] and all(r['verdict']=='PASS' for r in trunk_cases)
+assert sorted(r['case'] for r in trunk_cases)==['bind-absent', 'bind-after-first-200', 'bind-before-first-200', 'bind-other-container', 'box-access-lines', 'guard-count-differs', 'guard-declared-counts', 'guard-no-engine', 'guard-refused-band', 'guard-tampered-declaration', 'health-deadline', 'launcher-loopback-host', 'round-wrapper-declared-not-run-only', 'tail-foreign-at-entry-no-split', 'tail-hidden-arrival-invalid', 'tail-maps-unreadable-withholds', 'tail-not-idle-withholds-w2', 'tail-observer-mapped-withholds', 'tail-observer-off-sealed-w1-plain-on-full-rounds', 'tail-swapped-member-no-split', 'tail-transient-foreign-ingress-invalid', 'tail-unqualified-withholds-all', 'tail-unrestored-split-withholds-plain'] and all(r['verdict']=='PASS' for r in trunk_cases)
 assert {r['case']:r['bind'] for r in trunk_cases if r['case'].startswith('bind-')}=={'bind-absent':'INCONCLUSIVE','bind-after-first-200':'FAIL','bind-before-first-200':'PASS','bind-other-container':'INCONCLUSIVE'}
 assert [r['trunk_hosts'] for r in trunk_cases if r['case']=='launcher-loopback-host']==[['0.0.0.0','127.0.0.1']]
 assert [r['plain_requests'] for r in trunk_cases if r['case']=='tail-observer-off-sealed-w1-plain-on-full-rounds']==[8]
 assert {r['case']:r['instruments'] for r in trunk_cases if 'instruments' in r}=={'tail-observer-mapped-withholds':'FAIL','tail-maps-unreadable-withholds':'INCONCLUSIVE'}
 assert [(r['full_idle'],r['plain_requests']) for r in trunk_cases if r['case']=='tail-unrestored-split-withholds-plain']==[('INCONCLUSIVE',0)]
-assert [r['split_entries'] for r in trunk_cases if r['case']=='tail-foreign-at-entry-no-split']==[0]
+assert [r['split_entries'] for r in trunk_cases if r['case'] in ('tail-foreign-at-entry-no-split','tail-swapped-member-no-split')]==[0,0]
 assert [r['accepted'] for r in trunk_cases if r['case']=='round-wrapper-declared-not-run-only']==[['declared']]
 Path('/out/native39-trunk-queue-check.json').write_text(json.dumps(dict(cases=trunk_cases,slots=trunk_slots),sort_keys=True,indent=2)+'\n')
 record=dict(native39_trunk_queue='PASS',native39_trunk_queue_receipts=trunk_cases,native39_trunk_window_active_and_cleanup_s=active_and_cleanup,native35_p_c_continuation='PASS',native35_p_c_continuation_receipts=pc_continuation,native35_p_c_row4='PASS',native35_p_c_row4_receipts=pc_row4,native35_localize_off='PASS',native35_p_c_inert=inert_receipt,native35_p_c_cleanup_receipts=cleanup,native35_row4_l2='PASS',native35_p_b_row4_receipts=row4,native35_l2_cli_receipts=l2_cli,native35_l2_timing_receipts=l2_timing,
