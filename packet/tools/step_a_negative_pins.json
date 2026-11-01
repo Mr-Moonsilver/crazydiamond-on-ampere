@@ -1,0 +1,260 @@
+{
+ "cases": {
+  "step-a-fused-burst": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-a-fused-burst-skew": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-a-fused-burst-solo": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-a-stepped-burst": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-a-stepped-burst-skew": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-a-stepped-burst-solo": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ]
+ },
+ "discovery": "candidate harness over alpha-perf build-d overlay and e3_builder, byte-identical to the regenerated c3f1f64 overlay; dev run neg-2, 1 Nov 2026 21:35 CET over merge 4724ade: 89 tests run, the rows below do not pass; Mutants rows rediscovered over the parent after the kill check (8265cb3), hub CPU run tmp/step-a/pack/dev/neg-parent-a, 54 rows",
+ "frozen_record_sha256": "7deafeee87603fef3d987b64af3218fb053fd28bfb670440ce5d9473194099a4",
+ "schema": "step-a-negative-pins/1",
+ "tests": {
+  "test_e3_native_qsa_fused.Burst.test_a_fused_poll_in_flight_keeps_the_wait_permit": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Burst.test_a_stepped_poll_does_not_get_it": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Burst.test_a_whole_chunk_advances_inside_owner_waits": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Cancel.test_cancel_at_every_internal_boundary_with_one_peer_unresolved": [
+   "fail",
+   "AssertionError: 0 not greater than or equal to 10"
+  ],
+  "test_e3_native_qsa_fused.Cancel.test_cancel_between_the_peers_acceptances_replays_the_exact_command": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Cancel.test_failure_in_one_peer_after_partial_submission_retains_ownership": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Cancel.test_stop_with_the_layer_reply_in_flight_waits_for_it": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_equal_counts_in_a_different_order_fail_closed": [
+   "error",
+   "AttributeError: module 'lane_comm' has no attribute 'CollectiveLedger'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_equal_counts_with_a_different_shape_fail_closed_without_release": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_every_digest_field_separates_two_peers": [
+   "error",
+   "AttributeError: module 'lane_comm' has no attribute 'CollectiveLedger'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_expected_shape_at_page_and_arena_boundaries": [
+   "error",
+   "AttributeError: module 'engine_driver' has no attribute 'fused_expected_shape'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_peer_plan_disagreement_refuses_before_any_layer": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_plan_differing_from_the_admission_refuses_before_any_layer": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_real_ledger_agrees_on_order_communicator_and_shape": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_run_ahead_hold_reads_every_peer_in_either_direction": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_selection_broadcast_enters_the_ledger": [
+   "error",
+   "AttributeError: module 'lane_comm' has no attribute 'CollectiveLedger'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_watchdog_counts_a_completion_as_progress": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Commitment.test_watchdog_fails_closed_and_never_releases": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.ConsecutiveLayers.test_each_fused_bucket_validates_the_source_lease": [
+   "error",
+   "AttributeError: 'QsaPrefillOperation' object has no attribute 'fused_shape'"
+  ],
+  "test_e3_native_qsa_fused.ConsecutiveLayers.test_second_layer_first_copy_waits_on_the_first_layers_last_consumer": [
+   "error",
+   "AttributeError: 'QsaPrefillOperation' object has no attribute 'fused_shape'"
+  ],
+  "test_e3_native_qsa_fused.ConsecutiveLayers.test_worker_shape_matches_the_engine_at_exact_page_and_arena_ends": [
+   "error",
+   "AttributeError: 'QsaPrefillOperation' object has no attribute 'fused_shape'"
+  ],
+  "test_e3_native_qsa_fused.Control.test_needs_the_auto_arm_policy_and_installs_once": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Control.test_not_a_control_unless_installed": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Control.test_refused_during_an_owned_cycle": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Control.test_refused_while_running_or_with_bad_fields": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Control.test_selected_only_paused_idle_full_and_taken_under_the_manual_lease": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Mutants.test_host_waits_between_buckets": [
+   "error",
+   "AttributeError: type object 'QsaPrefillOperation' has no attribute 'advance_fused'"
+  ],
+  "test_e3_native_qsa_fused.Mutants.test_no_agreement_step": [
+   "error",
+   "AttributeError: <class 'engine_driver.NativeSegmentDriver'> does not have the attribute '_fused_agree'"
+  ],
+  "test_e3_native_qsa_fused.Mutants.test_no_run_ahead_bound": [
+   "error",
+   "AttributeError: <class 'engine_driver.NativeSegmentDriver'> does not have the attribute '_fused_hold'"
+  ],
+  "test_e3_native_qsa_fused.Mutants.test_no_tp_obligation": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Mutants.test_no_watchdog": [
+   "error",
+   "AttributeError: <class 'engine_driver.NativeSegmentDriver'> does not have the attribute '_fused_watchdog'"
+  ],
+  "test_e3_native_qsa_fused.Mutants.test_selection_ignores_ownership": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.OneBoundedCommand.test_default_off_replies_carry_nothing_new": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.OneBoundedCommand.test_duplicate_delivery_replays_without_new_device_work": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.OneBoundedCommand.test_manual_cycles_never_run_fused": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.OneBoundedCommand.test_multi_bucket_layer_is_one_command_with_every_device_event_unresolved": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.OneBoundedCommand.test_same_device_work_as_the_stepped_path_with_far_fewer_commands": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.PeerSkew.test_one_peers_events_held_in_either_direction": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.PeerSkew.test_run_ahead_bound_polls_without_a_host_wait": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Refusal.test_policy_row1_and_diagnostics_refuse_at_prepare": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Selection.test_fused_flag_needs_dense_route": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Selection.test_grant_for_a_stepped_transaction_is_refused": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.Startup.test_needs_auto_arm_and_dense": [
+   "fail",
+   "AssertionError: 'needs FLASH_S5_AUTO_ARM' not found in 'require_native_ready: reviewed implementation closure missing'"
+  ],
+  "test_e3_native_qsa_fused.Startup.test_readback_diagnostics_refuse_at_startup_not_at_the_first_chunk": [
+   "fail",
+   "AssertionError: 'readback diagnostics' not found in 'require_native_ready: reviewed implementation closure missing'"
+  ],
+  "test_e3_native_qsa_fused.StopBound.test_a_stepped_stop_keeps_its_round_budget": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.StopBound.test_a_stop_outlasts_the_round_budget_while_device_work_drains": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_e3_native_qsa_fused.StopBound.test_a_stop_past_the_stall_bound_retains_ownership": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_step_a_queue.Arm.test_both_selections_in_both_bands_through_the_exact_cli": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_step_a_queue.Arm.test_rounds_and_selections_outside_the_declared_set_do_not_parse": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_step_a_queue.Arm.test_the_wrong_manifest_for_the_round_is_refused_before_any_traffic": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_step_a_queue.Router.test_all_settings_forward_the_control_to_the_real_session": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_step_a_queue.Router.test_every_other_setting_refuses_with_409": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_qsa_fused'"
+  ],
+  "test_step_a_queue.RouterNotInstalled.test_an_engine_without_the_switch_refuses_and_its_status_has_no_block": [
+   "fail",
+   "+ (400, {'error': 'invalid-command-json'})"
+  ],
+  "test_step_a_queue.Startup.test_the_switch_needs_auto_arm_and_the_dense_policy": [
+   "fail",
+   "AssertionError: \"FLASH_S5_QSA_FUSED needs FLASH_S5_AUTO_ARM=1 and the dense QSA policy\" does not match \"require_native_ready: reviewed implementation closure missing\""
+  ]
+ },
+ "why": {
+  "cases": "every probe mode calls native_qsa_fused in the arm control sequence, which c3f1f64 refuses as an unknown action",
+  "engine": "each row needs a Step A engine name the parent lacks: install_qsa_fused, CollectiveLedger, fused_shape, advance_fused and the driver seams",
+  "queue": "the router and startup rows need the Step A control and the startup refusal; the other queue tests read harness texts or the leaf control plane and pass on the parent"
+ }
+}

@@ -1,7 +1,8 @@
 {
  "schema": "fixture-leaves/1",
- "scope": "Step A: engine tests and device proof; the queue leaves are added by its packaging",
+ "scope": "Step A: engine tests, device proof, connected CPU probe and queue (arms, grade, arm loop); hub and exact pinned-container CPU tests; no box or GPU evidence",
  "inherits": [
+  "alpha_perf_fixture_leaves.json",
   "native41_progress_fixture_leaves.json",
   "native43_le_fix_queue_fixture_leaves.json"
  ],
@@ -131,6 +132,73 @@
    "cannot_prove": "Full engine install with fused on: the engine self-run covers it.",
    "more_convenient": "The composition needs many settings unrelated to the refusals.",
    "box_evidence": "The queue engine starts with the fused settings."
+  },
+  {
+   "name": "connected-layer-driver",
+   "test": "e3_step_a_probe (cases step-a-*)",
+   "replaces": "QsaLayerDriver and QsaPrefillOperation under a fused grant, through the dispatcher driver_factory",
+   "equivalence": "The dispatcher's fused path calls exactly fused_profiles and arm_fused on its driver. LeafQsaDriver answers fused_profiles with engine_driver.fused_expected_shape, the shape test_e3_native_qsa_fused proves the real QsaPrefillOperation.fused_shape returns, and asserts the grant's layer and fused bit in arm_fused as QsaLayerDriver.arm_fused does.",
+   "cannot_prove": "The real QSA layer under a real Core step: its events, buckets, tail and device work. Those run in test_e3_native_qsa_fused (FusedNetwork) and the V3 device probe; the box is the first place the whole stack is live.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "connected-tp-leaf",
+   "test": "e3_step_a_probe (cases step-a-*)",
+   "replaces": "PyNccl under the prefill TP communicator, the torch stream call, and the layer forward that issues the all-reduce",
+   "equivalence": "The real PrefillTpCommunicator and CollectiveLedger run over LeafPynccl. FakeLane.layer enters comm.all_reduce once per layer with one fixed message shape on every peer, so the real driver's ledger agreement sees equal, real digests.",
+   "cannot_prove": "NCCL behaviour, real message order and shape in the layer; a peer that truly diverges is test_e3_native_qsa_fused.Commitment.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "connected-stepped-layer",
+   "test": "e3_step_a_probe (stepped-burst*)",
+   "replaces": "The stepped QSA protocol (profile polls, pause, tail-ready, tail) on this leaf path",
+   "equivalence": "The parent probe's FakeLane has no dense schedule, so a stepped layer on this path is a plain layer: the stepped modes prove that installing the switch and selecting stepped changes nothing byte for byte against the frozen progress-burst* records, not that the stepped protocol runs.",
+   "cannot_prove": "The stepped dense protocol itself, which test_native43_dense_boundary and test_e3_native_qsa_fused drive.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-control-replies",
+   "test": "test_step_a_queue.Selection",
+   "replaces": "The serving router and engine replies to the arm's control sequence, for the refusal and ordering cases",
+   "equivalence": "The reply rows are the shapes the real router, session and driver produce, and the positive shapes are compared with them in Router and Arm over the real control plane.",
+   "cannot_prove": "A reply shape the real engine stops producing: Router and Arm hold that.",
+   "box_evidence": false
+  },
+  {
+   "name": "arm-http-no-scheduler",
+   "test": "test_step_a_queue.Arm, test_step_a_queue.ArmNotInstalled",
+   "replaces": "The link from the HTTP prompt to the scheduler (inherited from held-f's Arm)",
+   "equivalence": "The exact arm CLI drives real NativeRuntimeClients over loopback HTTP into the real endpoint, session, control client, driver, AutoArmPolicy, NativeProgress and FusedQsa of a startup-bound stack. No native chunk runs; a fused chunk on a connected Core is e3_step_a_probe.",
+   "cannot_prove": "A real chunk under the arm command line; only the box has that.",
+   "box_evidence": false
+  },
+  {
+   "name": "grade-synthetic-run",
+   "test": "test_step_a_queue.Grade, test_step_a_queue.ArmLoop",
+   "replaces": "Twelve arms' engine streams, client logs, watch records and ingress receipts",
+   "equivalence": "Progress lines are written by the real nm.ProgressTrace emitters (StepEmit), row kinds and profile rows as the held-f run's engine stream had them (12 profile rows per chunk on the stepped path); memory receipts in the engine's flash-s5 memory format. Grade code is real.",
+   "cannot_prove": "Real values; that the box's stream has the profile rows the stepped rule counts (it has on the parent, run 2 of held-f, and the rule is stated in the report).",
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clients",
+   "test": "test_step_a_queue.ArmLoop",
+   "replaces": "The arm client and the FULL-entry and health clients inside the derived arm loop",
+   "equivalence": "Stubs print or exit as the real clients do; the bash body, draft functions, death watch and grade are real.",
+   "cannot_prove": "The clients themselves, which Arm and alpha-perf's suites hold.",
+   "box_evidence": false
+  },
+  {
+   "name": "test-scale-workloads",
+   "test": "test_step_a_queue.Arm",
+   "replaces": "Band 1 and band 2 prompts at their real length",
+   "equivalence": "Same manifest schema and refusal checks with test-scale token ids; the real manifests are alpha-perf's, by name, in the frozen bundle.",
+   "cannot_prove": "Real tokenization and chunk counts on the box.",
+   "box_evidence": false
   },
   {
    "name": "hol-pair-boundary-driver._tx_fused",
