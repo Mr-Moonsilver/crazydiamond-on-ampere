@@ -117,8 +117,9 @@ class Router(RouterCase):
             self.assertEqual((self.fused.selected, self.fused.counters['selections']), (True, 1))
             code, status = await self.post(endpoint, app, 'status')
             self.assertEqual(code, 200, status)
-            self.assertEqual(box.fused_view(status), dict(selected=True, run_ahead=8, stall_s=300.0, selections=1, chunks=0,
-                                                          grants=0, fused_commands=0, run_ahead_polls=0, ledger_checks=0))
+            self.assertEqual(box.fused_view(status), dict(selected=True, run_ahead=4, stall_s=300.0, selections=1, chunks=0,
+                                                          grants=0, fused_commands=0, run_ahead_polls=0, ledger_checks=0,
+                                                          stops=0, stop_rounds_max=0, stop_ms_max=0))
             # A manual control: the lease stays taken until the explicit release, and the same value counts no selection.
             self.assertIs(self.policy.manual_owned, True)
             code, reply = await self.post(endpoint, app, 'native_qsa_fused', fused=True)

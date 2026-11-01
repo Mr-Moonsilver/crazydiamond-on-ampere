@@ -46,6 +46,8 @@ ARM_ORDER = BAND1 + BAND2
 INDEXES = (0, 1, 2)
 QSA_LAYERS_PER_CHUNK = 12
 FUSED_COUNTERS = ('selections', 'chunks', 'grants', 'fused_commands', 'run_ahead_polls', 'ledger_checks')
+# Recorded in every status view for the report; not part of the engagement rule. The two maxima have no meaningful delta.
+STOP_COUNTERS = ('stops', 'stop_rounds_max', 'stop_ms_max')
 CONTROL_SEQUENCE = ['status', 'pause', 'native_progress', 'native_qsa_fused', 'release_auto_arm', 'resume']
 # Engine signatures in the followed log. Each stops the arm row at FAIL, classification ENGINE.
 SIGNATURES = (('tp-ledger-mismatch', 'tp-ledger-mismatch'), ('tp-collective-stall', 'tp-collective-stall'),
@@ -71,7 +73,7 @@ def fused_view(status):
     block = status.get('native_qsa_fused') if type(status) is dict else None
     if type(block) is not dict:
         return None
-    return {k: block.get(k) for k in ('selected', 'run_ahead', 'stall_s') + FUSED_COUNTERS}
+    return {k: block.get(k) for k in ('selected', 'run_ahead', 'stall_s') + FUSED_COUNTERS + STOP_COUNTERS}
 
 
 def fused_delta(after, before):
