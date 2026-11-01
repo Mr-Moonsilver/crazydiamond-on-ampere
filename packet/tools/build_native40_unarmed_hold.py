@@ -90,6 +90,9 @@ def stage(out,label,regression,focused):
     assert set(before)==set(after)
     changed={n for n in before if before[n]!=after[n]}
     assert changed<=allowed,sorted(changed-allowed)
+    if parent:
+        assert not changed & {'e3/engine_driver.py','e3/scheduler_hooks.py','core/scheduler.py'}, \
+            'regenerated reference must have the exact held-b engine bytes'
     ancestry=json.loads((bundle/'native30-provenance.json').read_text())
     provenance=dict(schema='native40-provenance/1',
         candidate='q18a-native40-unarmed-hold' if not parent else 'native39-1c334bc-reference',
