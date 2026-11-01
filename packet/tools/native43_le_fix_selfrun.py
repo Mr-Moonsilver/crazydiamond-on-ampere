@@ -34,8 +34,10 @@ PARENT = '299f27e'
 COMPILED = ('harness/native43_engine_death.py', 'harness/test_native43_engine_death.py',
             'harness/test_native43_le_fatal_log.py', 'harness/test_native43_le_fix_queue_deltas.py',
             'patches/s5_engine/executor_hooks.py', 'tools/native43_le_fix_queue_deltas.py',
-            'tools/native43_le_fix_logprobe.py', 'tools/native43_le_fix_selfrun.py')
-SUITES = ('test_native43_engine_death', 'test_native43_le_fix_queue_deltas', 'test_native43_le_fatal_log')
+            'tools/native43_le_fix_logprobe.py', 'tools/native43_le_fix_selfrun.py',
+            'harness/test_native43_le_bounded_enqueue.py', 'tools/native43_le_fix_enqueueprobe.py')
+SUITES = ('test_native43_engine_death', 'test_native43_le_fix_queue_deltas', 'test_native43_le_fatal_log',
+          'test_native43_le_bounded_enqueue')
 PARITY = 'test_native38_plain_bind'
 OUTCOMES = '''import json, sys, unittest
 class R(unittest.TextTestResult):
@@ -102,6 +104,8 @@ def inner_script():
         '> /out/parity-parent.log 2>&1; cd /source/harness' % PARITY,
         'python3 -B /source/tools/native43_le_fix_logprobe.py --out /out/logprobe.json > /out/logprobe.log 2>&1; '
         'echo "logprobe rc=$?" >> /out/logprobe.log',
+        'python3 -B /source/tools/native43_le_fix_enqueueprobe.py --out /out/enqueueprobe.json > /out/enqueueprobe.log 2>&1; '
+        'echo "enqueueprobe rc=$?" >> /out/enqueueprobe.log',
     ]) + '\n'
 
 
@@ -142,6 +146,7 @@ def run(tree, overlay, out, name):
     ran = [line for line in text.splitlines() if line.startswith('Ran ')]
     compile_log = (out / 'py-compile.log').read_text() if (out / 'py-compile.log').exists() else ''
     probe = json.loads((out / 'logprobe.json').read_text()) if (out / 'logprobe.json').exists() else {}
+    enqueue = json.loads((out / 'enqueueprobe.json').read_text()) if (out / 'enqueueprobe.json').exists() else {}
     views = {}
     for side in ('fixed', 'parent'):
         path = out / ('parity-%s.json' % side)
@@ -163,6 +168,8 @@ def run(tree, overlay, out, name):
                   parity=parity,
                   logprobe=dict(verdict=probe.get('verdict'), checks=probe.get('checks'),
                                 sha256=sha(out / 'logprobe.json') if probe else None),
+                  enqueueprobe=dict(verdict=enqueue.get('verdict'), checks=enqueue.get('checks'),
+                                    sha256=sha(out / 'enqueueprobe.json') if enqueue else None),
                   packages=pins, overlay=str(overlay),
                   reference=dict(root=str((tree / 'reference/vllm-src').resolve()),
                                  multiproc_executor_sha256=sha(tree / 'reference/vllm-src/v1/executor/multiproc_executor.py')),
@@ -171,11 +178,13 @@ def run(tree, overlay, out, name):
                                                            'tools'], cwd=tree, text=True).strip()),
                   wall_s=round(time.monotonic() - started, 3), command=command)
     result['verdict'] = 'PASS' if (rc == 0 and result['py_compile']['ok'] and result['suites']['ok']
-                                   and probe.get('verdict') == 'PASS' and parity['identical']
+                                   and probe.get('verdict') == 'PASS' and enqueue.get('verdict') == 'PASS'
+                                   and parity['identical']
                                    and network == 'none' and not devices
                                    and not result['tree_dirty']) else 'FAIL'
     (out / 'result.json').write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
     print(json.dumps({k: result[k] for k in ('verdict', 'container_rc', 'py_compile', 'suites', 'parity', 'logprobe',
+                                              'enqueueprobe',
                                               'tree_head', 'tree_dirty', 'wall_s')}, sort_keys=True))
     print('result_sha256', sha(out / 'result.json'))
     return 0 if result['verdict'] == 'PASS' else 1

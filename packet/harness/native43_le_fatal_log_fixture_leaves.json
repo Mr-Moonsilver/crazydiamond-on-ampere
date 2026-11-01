@@ -11,7 +11,7 @@
   },
   {
    "box_evidence": false,
-   "cannot_prove": "The real executor.shutdown and the EngineCore busy loop's handling of EXECUTOR_FAILED. The l-e hang after the teardown (main thread in shm_broadcast acquire_write, timeout None) is not fixed here; see the note",
+   "cannot_prove": "The real executor.shutdown and the EngineCore busy loop's handling of EXECUTOR_FAILED. The l-e hang after the teardown (main thread in shm_broadcast acquire_write, timeout None) is fixed separately: executor_hooks.bounded_enqueue, test_native43_le_bounded_enqueue and tools/native43_le_fix_enqueueprobe.py",
    "equivalence": "monitor_fatal_workers, notify_worker_failure and log_worker_failure read exactly these attributes (_flash_s5_transport is absent, as in the native38 case)",
    "implementation": "SimpleNamespace(workers=[SimpleNamespace(rank, proc=<real Process>, fatal_reader=<real Connection>)], is_failed, shutting_down, failure_callback, shutdown). shutdown records the order and terminates the worker. FLASH_S5_OVERLAP=1 is set in os.environ for the install only, the box value. Same shape as test_native38_plain_bind.FatalReplies",
    "name": "fatal-executor-namespace",

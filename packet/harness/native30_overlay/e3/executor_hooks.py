@@ -161,6 +161,11 @@ _EXECUTOR_FORWARD = (
 '''),
     ('        if response_mqs := getattr(self, "response_mqs", None):\n',
      '        if (response_mqs := getattr(self, "response_mqs", None)) and not _flash_s5_hooks.retain_mq(self, None):\n'),
+    # Native43 le-fix: the stock broadcast write (timeout=None) through the bounded hook; with the
+    # fatal channel absent (overlap off) the hook makes the identical unbounded call.
+    ('        self.rpc_broadcast_mq.enqueue((send_method, args, kwargs, output_rank))\n',
+     '        _flash_s5_hooks.bounded_enqueue(self, self.rpc_broadcast_mq,\n'
+     '                                        (send_method, args, kwargs, output_rank))\n'),
 )
 
 
@@ -685,11 +690,77 @@ def collective_rpc(executor, stock, method, timeout=None, args=(), kwargs=None,
         # Register in the same serialized section as the reply expectation and
         # broadcast, so a second stock caller cannot omit an earlier future.
         future = StockLocalFuture(executor, sequence, aggregate=aggregate)
-        executor.rpc_broadcast_mq.enqueue((send_method, args, kwargs,
-                                           broadcast_rank))
+        bounded_enqueue(executor, executor.rpc_broadcast_mq,
+                        (send_method, args, kwargs, broadcast_rank))
     sequence = transport.submit(kind, send, ranks=ranks,
                                 timeout_s=effective_timeout, aggregate=None)
     return future if non_block else future.result(timeout=effective_timeout)
+
+
+# Native43 le-fix: one bounded slice of the broadcast write.  acquire_write raises TimeoutError
+# before it claims a block, so a timed-out slice has written nothing and the next slice is the
+# same single write.
+ENQUEUE_SLICE_S = 1.0
+LONG_WAIT_FALLBACK = (60, 'No available shared memory broadcast block found in %d seconds. This '
+                          'typically happens when some processes are hanging or doing some '
+                          'time-consuming work (e.g. compilation, weight/kv cache quantization).')
+
+
+def _long_wait(queue):
+    """The stock long-wait warning of the queue's own module (vLLM's shm_broadcast): interval, text, logger.
+
+    Read from the already-imported module of the queue's class; no import happens here.  A queue from
+    another module (CPU fixtures) gets the same text at the stock 60 s on this module's logger."""
+    module = sys.modules.get(getattr(type(queue), '__module__', None))
+    interval = getattr(module, 'VLLM_RINGBUFFER_WARNING_INTERVAL', None)
+    message = getattr(module, 'LONG_WAIT_TIME_LOG_MSG', None)
+    log = getattr(getattr(module, 'logger', None), 'info', None)
+    if type(interval) in (int, float) and interval > 0 and type(message) is str and callable(log):
+        return interval, message, log
+    return LONG_WAIT_FALLBACK[0], LONG_WAIT_FALLBACK[1], logging.getLogger(__name__).info
+
+
+def _enqueue_abandoned(executor, queue):
+    """The typed reason a blocked broadcast write must stop, or None while the executor lives."""
+    failure = getattr(executor, '_flash_s5_fatal_failure', None)
+    if failure is not None:
+        return failure  # the stored WorkerRPCError (fatal channel or worker death)
+    if getattr(executor, 'is_failed', False):
+        return RuntimeError('Executor failed.')
+    if getattr(executor, 'shutting_down', False) or getattr(queue, 'shutting_down', False):
+        return TransportError('broadcast write abandoned: executor shutting down')
+    return None
+
+
+def bounded_enqueue(executor, queue, envelope, *, slice_s=ENQUEUE_SLICE_S, clock=time.monotonic,
+                    long_wait=None):
+    """Native43 le-fix: a broadcast write cannot outlive a failed executor.
+
+    l-e (1 Nov 2026): the EngineCore busy loop sat in ``acquire_write`` (``enqueue`` with
+    ``timeout=None``) while the fatal channel marked the executor failed and shut it down, so
+    ``EXECUTOR_FAILED`` was never processed and no ``ENGINE_CORE_DEAD`` was sent.  With the fatal
+    channel installed (overlap on), the write waits in slices of ``slice_s``; after a timed-out
+    slice a failed executor raises its stored typed failure, a shutting-down executor or queue
+    raises, and a live but full ring keeps waiting with the stock long-wait warning.  The busy
+    loop then dies loudly ("EngineCore encountered a fatal error") and sends ENGINE_CORE_DEAD.
+    Without the fatal channel (overlap off) this is the stock unbounded call, unchanged.
+    """
+    if getattr(executor, '_flash_s5_fatal_lock', None) is None:
+        return queue.enqueue(envelope)
+    started = clock()
+    warnings = 1
+    while True:
+        try:
+            return queue.enqueue(envelope, timeout=slice_s)
+        except TimeoutError:
+            pass
+        reason = _enqueue_abandoned(executor, queue)
+        if reason is not None:
+            raise reason
+        interval, message, log = long_wait if long_wait is not None else _long_wait(queue)
+        if clock() - started > interval * warnings:
+            log(message, interval)
+            warnings += 1
 
 
 def config_reply_timeout(executor):
