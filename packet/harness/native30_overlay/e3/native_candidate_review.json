@@ -1492,14 +1492,14 @@
     "verdict": "PASS"
   },
   "cpu_regression": {
-    "basis": "fresh full strict registered CPU regression on the native38 plain-bind final tree",
-    "cases": 321,
+    "basis": "fresh full strict registered CPU regression on the native39 trunk final tree",
+    "cases": 323,
     "exit_code": 0,
-    "log_sha256": "c3c077f6bb5c952a75265b5aee1acfdb38f46b05a52ddb61d56ed417101286cd",
-    "reported_tests": 3792,
-    "required": 321,
+    "log_sha256": "3796c61d97e5e77dcb182a1905722cbfef4ee5ebf141e120c88189cb099778a6",
+    "reported_tests": 3834,
+    "required": 323,
     "skips": 0,
-    "suites": 204
+    "suites": 206
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -1572,6 +1572,9 @@
     "e3_native35_performance.py": "cfe56996d4d120f2a2c6d41fb1369f9010452091a648a8079025c546eab9eee4",
     "e3_native37_admission_probe.py": "2417f126ed939de7e1ecd9eaa5f60a6349f5430805dad877c9dc3d715c407408",
     "e3_native38_cpu_probe.py": "09b6d4ee782414cc7af9c26edc34940dbe21d123fde539eaafe6fe9d35053646",
+    "e3_native39_trunk_checks.py": "a89d04bef32b18b15a917fd67bac34f36a02ce01a62cea638c79f006d33d7dad",
+    "e3_native39_trunk_probe.py": "0178562a93e262927b2374d4896e3c572a369a7962fe8025246c8a206d940323",
+    "e3_native39_w2_length.py": "ca64dd4eefd1e5d2fc2f23776cad6decb9abf2da57379fbe8c65de1f57d8c585",
     "e3_native_align_capacity_probe.py": "2e7ffd021eba1940aac657ba26995eb604beee593004df1e898e0abfc3c0045d",
     "e3_native_coordinator_slice.py": "33562112bc0b6ae63599e118e1556e13d7259a0a4e74d4a0794e0c7857efb99c",
     "e3_native_cow_lease_probe.py": "2492b5a31c437b5904b2435d3dbd780de5c508b5e19b304f40040a7c0a67ce8e",
@@ -1635,6 +1638,7 @@
     "fixtures/native18-skew-predicate.json": "623e839c4eff3341a2992088bc648ced4a3a98d994d8d5124715e503907edbb3",
     "fixtures/native31_before_native30_host.py": "c8d5abbd446b6a7cd675211e9805120f6045da565dddf7fbf78e33b4722cf387",
     "fixtures/native31_before_native30_policy.py": "ce735058c911404886b59d91f474453df56122b2bb526f7bb89c3c03da5070e8",
+    "fixtures/native39_box_extract.json": "6afc9fbf789632f88fc5ec0ad7d578330bda1ed9a1b7366801a9472ce88f420a",
     "fixtures/q17a_original_flash_s5_green.cu": "731d31d10c69bd8f4e9cb302e46d8dc65564d974fe9480c2e1c290e0f385c598",
     "fixtures/q17c_original_e3_types.py": "2a9f08b94d7e383efd358f8b044648cf52a65d76f71119a9ebdc89e5f1d04068",
     "fixtures/q17c_original_green_context.py": "26fdd7f650a17bd4382a46b0875d83f5cfde3287ee5221bc600c3870773dc7d9",
@@ -1730,6 +1734,8 @@
     "native35p_gate.py": "7103a97cf9f569ecd570d2fcf6572fcb59637a3868856fec7d5ee7bbc7b1f7ea",
     "native37_fixture_leaves.json": "1dcf78b2b889b527bf91bfbee2b766e7b8301acdc297b6cb96db1e0cb0105096",
     "native38_fixture_leaves.json": "56fdc261738c2a0bfcd65ba2f690b9cabd20040e2759c87ab45a38ef2a0a131c",
+    "native39_fixture_leaves.json": "8e46aa6719aa14560df4b9b1777fe56239fed785e941e136ea7754a51e286f24",
+    "native39_trunk_gate.py": "55efb793a456134740f8ced05929099e22d5d7652ea9ef29585dfe82c6bb79c6",
     "native_placement_evidence_support.py": "345d37090992a4400862e307a34aac1a5abe3d062153a8f183e38bd479aee1c9",
     "native_prefill_support.py": "00c704e8935eea94e3030a4003f979693540f0e28e86a6326dcbfc5fb4644064",
     "overlap_tp.py": "8bb4b344180927245f685bee45b8897aa0abbeb073a8ac11f76c139080da4e7c",
@@ -2032,6 +2038,9 @@
     "runs/q18a_native35_r.draft.sh": "0bdf0e46d5fb9e56a79885b81f0193b52b2fae624fea78b752459dacaa46be97",
     "runs/q18a_native35_r_declare.sh": "f42362029c3913a4a4e6c729d49eed6f894c7df9fe230ed6d478c593049ce2d5",
     "runs/q18a_native35_r_settings.sh": "ef4f21fa4ab7ea9b30261ecbab21f39424ef222d8c06cb4dedf2db7270a9aa8e",
+    "runs/q18a_native39_trunk.draft.sh": "22a0ca7b836fa13fdecf99c59e546964169bfd350a9b08b42b9f683d18eeb6b4",
+    "runs/q18a_native39_trunk_declare.sh": "f27fbb9cb60f477e02c8f688f0eb6408b61f5f1436fe04e97f759e77ce68959c",
+    "runs/q18a_native39_trunk_settings.sh": "6dca196d596a6e44c8de8e89e1ccc3274287e0ac00827967685b3c52bb153626",
     "runs/q18a_native3_declare.sh": "ebfbb85ec1ba75bd59936bf119ce65803cbed77ddce9567ec3aedf2b85213fbc",
     "runs/q18a_native3_settings.sh": "60c978820686b346a59360c04d5b9aa1140765b24c417cdc6aa41931b5554cd3",
     "runs/q18a_native4.draft.sh": "d45c2fe153e785ee8563a55e1c7d0bcc31145ea027250501eac4bb9aca3c5b2e",
@@ -2184,7 +2193,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "165ed128e152d11943917e11848fa272a18d49d9d07c53dc2622e40fd32f1364",
+    "selftest.py": "79de55c38abec21363ed7159a12512fbd60c82981e933e36d6d7df02c394783f",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -2354,6 +2363,8 @@
     "test_native35_readback.py": "e381ee5622703b9d33e742d3ab092a4968c6d62fc739a8e1654dc5621c12a56e",
     "test_native37_robust.py": "2194184989e5c85af8e0f3f0b4c39ca98480e09c424fdc355d567742e154874a",
     "test_native38_plain_bind.py": "cb500939b5cce6905f912afd15ec4231cab0b4629c5731fc158f84c2e79b0287",
+    "test_native39_trunk.py": "2171d9652fa41190575894f0ef0a26f715996ca86f22159f9c73696ec14fb4eb",
+    "test_native39_trunk_queue.py": "e69de12bec4edc091861315cdf32f609a8a0419fe5719cfbf5cff6dbe0a4eb99",
     "test_partial_tail_cov.py": "b5f8bbf6cb9e6e34347eb24a38f5c113b0ea556b4365ea8899b8682e133a0c8c",
     "test_pp_grouping.py": "2af0255e9e2f34098678ab6b7cdf83c49c03a20aab7eadb361db2fbd86b07e1a",
     "test_pp_release.py": "9b0a2f760a408ca6f7c088e31fbbf92ebdc876634ba6cf67bd38ca3aa49d8a35",
@@ -2466,6 +2477,7 @@
     "vmid_qsa_dma.py": "63c69acb8d6a5ebe36208ad7fb51420240f6869ea694aca88be5b4434ee7a883",
     "vmid_sparse_plan.py": "0e93e63c8f7db6d3606feec166e8722dcc725fd168c96e005c7d2ce17f267869",
     "vmid_support.py": "c4658690db46e3c86d6ad817f06393cb7eedf31e9f7920a5dadbdffefb8ebee2",
+    "w1_trace.py": "7960fd3784f023e74896580f117751d3d4f4bb03d82848d79ac14deb9823c06c",
     "w3_queue.py": "7663550efa6357beb5a6a64a5859450264dd0ba05b3ccfec2a941149826bdd4e",
     "window_report.py": "70d3ba0d43d1c82b9ca6f2ef4b5541b660b4266bc4c878fcced30d2144250ca9",
     "workloads/q17b-correctness-precontrols.json": "0b6bd5bf0d40f04803b65cdf70f706b266682dd04a5a4ac82cb7160f4bbb76d8",
@@ -2474,6 +2486,7 @@
     "workloads/q17b-w1.json": "0f8ca842c75d602536eb0abc638bfe71987923f0cee37aeb808b150fc30efbdd",
     "workloads/q18a-native-placement-prefill.json": "4924771797b65564456539984e0769066332cba092f1223f35144ce6ec34e711",
     "workloads/q18a-native-row1-template.json": "3c9b69c5541649f2c5cefd3b79b3fdced640e716544dd411185c4f9e75ea04eb",
+    "workloads/q18a-w2-overlap-native39.json": "f17e3c0045b9e11c00407ea6a3f91aed0e35c9487dbb1a51d07236c70fa05d32",
     "workloads/q18a-w2-overlap.json": "e6dd96cadf82c0c7786bca2f561f159d0d0590329b3630d21918dae8f429fbb1"
   },
   "launcher_delta": {
@@ -3005,6 +3018,149 @@
     "scope": "Engine-owned startup bootstrap and empty FULL fence, independent fatal PP channels, readiness proof health latch",
     "tail_handback": false
   },
+  "native39_trunk": {
+    "arm": "TRUNK",
+    "branch_base": "72ea0baa208e1cfc04446898bbd58a0f3c4f84b8",
+    "candidate": "q18a-native39-trunk",
+    "device_run": "NOT_RUN",
+    "engine_files": [
+      "core/scheduler.py",
+      "e3/engine_driver.py",
+      "e3/native_overlap_session.py",
+      "e3/scheduler_hooks.py"
+    ],
+    "fixture_leaves": "native39_fixture_leaves.json",
+    "limitations": "CPU fixture resources do not establish CUDA exactness, device timing or the bind line on the box",
+    "model_settings_changed": false,
+    "owner_runner": "q18a-native39-trunk-owner-run-<bundle12>.py",
+    "parent": "q18a-native38-plain-bind",
+    "parent_manifest": "d7a0943b90ab9dac43ef206b4d160e27e74db39c0a07685a87728435a4f98468",
+    "queue": "q18a-native39-trunk: P-c with a plannable W2 length (guard before row1), loopback API server, bind receipt, plain W1 control with an idle precondition for W2 and a descriptive trunk summary",
+    "scope": "native37 robust + native38 plain bind + native39 P1/P2 (positive-frontier and running stock prefills held on an armed split route, typed empty-window prefill_end refusal) under the P-c speed queue",
+    "tail_handback": false,
+    "w2": {
+      "append": {
+        "gap": 92,
+        "plans": true,
+        "prompt_tokens_declared": 4096,
+        "residue": 93,
+        "tokens": 201261
+      },
+      "fresh": {
+        "gap": 149,
+        "plans": true,
+        "prompt_tokens_declared": 199934,
+        "residue": 150,
+        "tokens": 197270
+      },
+      "manifest": "workloads/q18a-w2-overlap-native39.json",
+      "max_prompt_tokens": 200000,
+      "rule": "2 <= tokens % 176 <= 64"
+    },
+    "window": {
+      "active_derivation": [
+        [
+          "restart-to-health",
+          780,
+          "cap: systemctl restart 240 s + 36 health tries x (5 s curl + 10 s sleep); O measured 321 s"
+        ],
+        [
+          "speculation-and-sampler",
+          60,
+          "cap: docker logs 30 s + sampler start 30 s"
+        ],
+        [
+          "identity-start",
+          360,
+          "cap: Q18A_IDENTITY_TIMEOUT_S; O measured 137 s"
+        ],
+        [
+          "startup-ledger-headroom-plan",
+          30,
+          "measured ~2 s in O"
+        ],
+        [
+          "row1",
+          876,
+          "2x O measured 438 s"
+        ],
+        [
+          "rule4_controls",
+          252,
+          "2x O measured 126 s"
+        ],
+        [
+          "rule4_candidate",
+          28,
+          "2x O measured 14 s"
+        ],
+        [
+          "row4-placement",
+          900,
+          "cap: --timeout-s 900; native33-form real placement not yet measured with native35"
+        ],
+        [
+          "receipt-tail",
+          30,
+          "fixed sleep"
+        ],
+        [
+          "w1-six-repeats",
+          6060,
+          "cap: 6 x (900 s cohort open_timeout + 20 s window + 60 s drain + 30 s controller); cold 8x153,537 open ~250-410 s"
+        ],
+        [
+          "w2-two-rounds",
+          3080,
+          "2 rounds x 2x conservative 770 s: full 70 + split 140 + overlap open 410 + fresh 140 + append/stop 10"
+        ],
+        [
+          "memory-and-aggregate-grades",
+          30,
+          "pure CPU over retained artifacts"
+        ],
+        [
+          "identity-end",
+          360,
+          "cap: Q18A_IDENTITY_TIMEOUT_S; O measured 184 s"
+        ],
+        [
+          "normal-path-cleanup",
+          716,
+          "same worst case as the timeout cleanup below"
+        ],
+        [
+          "bind-receipt",
+          30,
+          "cap: --wait-s 30 for the followed log line"
+        ],
+        [
+          "w2-length-guard",
+          240,
+          "cap: 2 x 120 s /tokenize timeout (fresh and append prompt texts)"
+        ],
+        [
+          "w1-plain-control",
+          1530,
+          "cap: client timeout 1500 s + 30 s kill-after (q18b-w1ab2 box values; 8 x 153,537 cold opens took 21.5-172.5 s there)"
+        ],
+        [
+          "w1-plain-idle",
+          120,
+          "cap: --timeout-s 120 for running + waiting to reach 0"
+        ],
+        [
+          "trunk-summary",
+          5,
+          "pure CPU over retained artifacts"
+        ]
+      ],
+      "active_s": 16200,
+      "cleanup_margin_s": 900,
+      "hard_end": 1793599200.0,
+      "not_before": 1793397660.0
+    }
+  },
   "night_window": {
     "cleanup_margin_s": 420,
     "hard_end": "2026-11-02T06:00:00Z",
@@ -3014,10 +3170,10 @@
     "queue_timeout_s": 2100
   },
   "post_review_cpu": {
-    "basis": "native38 connected tests plus startup, overlap, probe control, frontend, executor-thread, reply-transport and robust/performance affected suites",
-    "log_sha256": "cf8f4dc7ff735585405c6d17a89e4dac1132ce7656023f394c362a5cfbb97124",
+    "basis": "native39 trunk and queue suites plus native37/native38 and the admission, staged-plan, overlap, storage-replay, worker-bridge, metadata, P-c queue/continuation, host-guard and identity suites",
+    "log_sha256": "49e3ee3b5c8f0e04782b3f53b5021c343381959007115b894643f4bc41c0f3fe",
     "skips": 0,
-    "tests": 210,
+    "tests": 991,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
@@ -4122,7 +4278,7 @@
     "capture_streams.py": "76944d3416a9635cbecd81c70c1d538d5e0efc25d4fed4a3f2cf200ec3f4bd2b",
     "decode_probe.py": "7e27045eeec2d3ed02263db1496727e27d732d724b192d1a7e0e50261e7d1f4b",
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
-    "engine_driver.py": "5b7b0e892f7ab5e38d19a357a29f666b811a7b550e905faf821a8ca5c9f94963",
+    "engine_driver.py": "e2ab493deadbbaea6fe8d37eb218d0b915316eba328e007de856ac7754a0c33f",
     "engine_offers.py": "16e2775ba04461ad953e83eedd1ebb951a43b3d134789c225c6e6a1e5a721d2f",
     "executor_hooks.py": "64eecdc77337d89ac2c4391d1f1f8ea39ff8058bdb2618ee3c2ca68edd1875d7",
     "graph_hooks.py": "12ad7e3500b559f2d398a6676292094e4d455df12d4c6951803dbac9f38663c5",
@@ -4147,7 +4303,7 @@
     "native_observation.py": "714fadc6841cf5441134879039aaa776c81dd5f8d24af0130d4fabe237bc0a7a",
     "native_overlap_control.py": "3f50f5866c3cb01fd16e4e6b72c870b18a273f09c428c54c18d3442f10790975",
     "native_overlap_metrics.py": "17d3f5de2db7db8acc4cb5a130351ce169d7b5b76f052a03fd9a0315430827fa",
-    "native_overlap_session.py": "0001f6bf650f55ac37ad1285754871a0f36b70adc8ad002e93f6f8ea7ee75189",
+    "native_overlap_session.py": "ce0f419443ed2d2242b27b5fbae8668c59748e2b51e0426cd33d43e0aa433763",
     "native_overlap_worker.py": "b0b582508d4510a3e12b75c0c9d13095094dc8d362c10bb82be132579592968a",
     "native_placement.py": "e719fd61dd43d02160618b850d062a020121c027fcf83645c44e64c6058ebc45",
     "native_prefill_offers.py": "093004b2dff6db665670d2c97e42dd9608b1ba37d42ee32c9bbf20476088191d",
@@ -4170,7 +4326,7 @@
     "row1_exactness.py": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799",
     "row1_oracle.py": "222daf40526971511997aac1c8a5b485bae1b095ea0e0b7839d97d795e19ef12",
     "s5_startup.py": "7e2366715922626c5b136deba089a4b23c8e61de59ec7d3444b227a59ad203a4",
-    "scheduler_hooks.py": "cd071c6e0e62c9c16501d6e3924a0252101e9ae20aff48b3e8ae8f1ae60a6f9f",
+    "scheduler_hooks.py": "8726968291de2b0e897234bf9caa6fa4aac64fdf414301111bbc9ec2b864b8d2",
     "sparse_history_dma.py": "8d797043b9f077906e93cc32f13f2ba54e56197ba4ce701405951446cc843287",
     "split_bank.py": "ef8222d57888c8103936dffe4f3643edc5ba437b96fb1cab3c8341f97c1d19b4",
     "teacher_decode.py": "8ab74b57de7ea90f4a94154d9bd609ab748400e989f58eb5bc553d427faff05c",
