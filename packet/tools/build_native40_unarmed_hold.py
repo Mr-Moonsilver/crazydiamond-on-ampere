@@ -17,7 +17,7 @@ sys.path[:0]=[str(ROOT/'tools'),str(ROOT/'patches/s5_engine')]
 from build_native30_held import sha,dump,manifest,verify
 from build_native38_plain_bind import regression_from,focused_from
 from native_readiness import digest,payload_identity,verify_finalized_package
-PARENT='1c334bc'
+PARENT='0b41fed'
 SHELL=Path('<hub-dir>/agents/flash-next/tmp/native38-plain-bind-held-b/q18a-native38-plain-bind-bundle-d7a0943b90ab')
 SHELL_SHA='d7a0943b90ab9dac43ef206b4d160e27e74db39c0a07685a87728435a4f98468'
 BASE=Path('<hub-dir>/agents/flash-next/tmp/e2f-native-offline-base-20261027T211405Z')

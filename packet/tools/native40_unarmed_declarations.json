@@ -1,7 +1,9 @@
 {
   "ancillary_paths": [
     "A\treviews/codex-20261101-native40-unarmed-hold.md",
-    "A\tresults/hub/native40-unarmed-hold-a/delivery.json"
+    "A\tresults/hub/native40-unarmed-hold-a/delivery.json",
+    "A\treviews/codex-20261101-native40-box-heldb.md",
+    "A\tresults/hub/native40-unarmed-hold-b/delivery.json"
   ],
   "definitions": {
     "harness/selftest.py": [
@@ -63,19 +65,33 @@
     ]
   },
   "paths": [
+    "A\tharness/e3_native40_unarmed_box.py",
     "A\tharness/e3_native40_unarmed_probe.py",
+    "M\tharness/native39_fixture_leaves.json",
+    "A\tharness/native40_box_gate.py",
     "A\tharness/native40_fixture_leaves.json",
-    "A\tharness/test_native40_unarmed_hold.py",
-    "A\ttools/build_native40_unarmed_hold.py",
-    "A\ttools/native40_unarmed_declarations.json",
-    "A\ttools/native40_unarmed_freeze.py",
-    "A\ttools/native40_unarmed_selfrun.py",
+    "A\tharness/runs/q18a_native40_unarmed_hold.draft.sh",
+    "A\tharness/runs/q18a_native40_unarmed_hold_declare.sh",
+    "A\tharness/runs/q18a_native40_unarmed_hold_settings.sh",
     "M\tharness/selftest.py",
     "M\tharness/test_native37_robust.py",
     "M\tharness/test_native39_trunk.py",
+    "M\tharness/test_native39_trunk_queue.py",
+    "A\tharness/test_native40_box_queue.py",
+    "A\tharness/test_native40_unarmed_hold.py",
     "M\tpatches/s5_engine/engine_driver.py",
-    "M\tpatches/s5_engine/native_candidate_review.json",
-    "M\tpatches/s5_engine/scheduler_hooks.py"
+    "M\tpatches/s5_engine/scheduler_hooks.py",
+    "A\ttools/build_native40_unarmed_hold.py",
+    "M\ttools/native39_trunk_cpu_probe.py",
+    "M\ttools/native39_trunk_tools_derive.py",
+    "A\ttools/native40_box_cpu_probe.py",
+    "A\ttools/native40_box_delivery.py",
+    "A\ttools/native40_box_precheck_conf.py",
+    "A\ttools/native40_box_queue.py",
+    "A\ttools/native40_box_selfrun.py",
+    "A\ttools/native40_unarmed_declarations.json",
+    "A\ttools/native40_unarmed_freeze.py",
+    "A\ttools/native40_unarmed_selfrun.py"
   ],
   "schema": "native40-fixed-freeze-declaration/1"
 }
