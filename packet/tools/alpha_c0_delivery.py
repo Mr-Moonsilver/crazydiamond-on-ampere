@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Bind the C0 delivery to both exact-byte CPU self-runs, the freezes, the comparison, the negative, the tamper control, the
-clock scan, the compile proof, the precheck and the engine diff against c3f1f64. Writes one record; asserts, never repairs.
+clock scan, the compile proof, the precheck, the engine diff against c3f1f64 and the staging check (the frozen runner's own
+staging requires evaluated over the same two self-run records, tools/runner_staging_check.py). Writes one record; asserts, never
+repairs.
 """
 import argparse
 import hashlib
@@ -39,7 +41,7 @@ def engine_diff(modules, added):
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     for name in ('build', 'freeze', 'engine', 'compare', 'negative', 'tamper', 'queue', 'clock_scan', 'compile_proof', 'precheck',
-                 'conf', 'note', 'out'):
+                 'conf', 'staging_check', 'note', 'out'):
         p.add_argument('--' + name.replace('_', '-'), dest=name, type=Path, required=True)
     p.add_argument('--vm', type=Path, help='the VM record, when the lead has run it')
     a = p.parse_args()
@@ -69,6 +71,11 @@ def main():
     assert sha(Path(b['bundle']) / 'SHA256SUMS') == b['manifest']
     summary = re.findall(r'^SUMMARY checks=(\d+) pass=(\d+) fail=(\d+)$', a.precheck.read_text(), re.M)
     assert len(summary) == 1 and summary[0][0] == summary[0][1] and summary[0][2] == '0', summary
+    # The frozen runner's own staging requires over these exact records (tools/runner_staging_check.py; the lead, 2 Nov 2026).
+    st = json.loads(a.staging_check.read_text())
+    assert st['schema'] == 'runner-staging-check/1' and st['verdict'] == 'PASS' and st['rc'] == 0 and not st['reasons_missing']
+    assert st['runner_sha256'] == b['runner_sha256'] == sha(b['runner'])
+    assert st['selfrun_sha256'] == sha(a.queue) and st['engine_selfrun_sha256'] == sha(a.engine)
     leaves = json.loads((ROOT / 'harness/alpha_c0_fixture_leaves.json').read_text())
     vm = json.loads(a.vm.read_text()) if a.vm else None
     assert vm is None or (vm.get('verdict') == 'PASS' and vm.get('bundle_manifest', b['manifest']) == b['manifest'])
@@ -102,6 +109,8 @@ def main():
                compile_proof=dict(path=str(a.compile_proof), sha256=sha(a.compile_proof), **{x: c.get(x) for x in ('verdict', 'files', 'count', 'failed')}),
                precheck=dict(conf=str(a.conf), conf_sha256=sha(a.conf), log=str(a.precheck), log_sha256=sha(a.precheck),
                              checks=int(summary[0][0]), passed=int(summary[0][1]), failed=0),
+               staging_check=dict(path=str(a.staging_check), sha256=sha(a.staging_check), verdict=st['verdict'],
+                                  reasons=st['reasons_found'], case_lists=[c2 for blk in st['blocks'] for c2 in blk['case_lists']]),
                vm=dict(path=str(a.vm), sha256=sha(a.vm), verdict=vm.get('verdict'), rc=vm.get('rc'), scope=vm.get('scope')) if vm
                else dict(verdict='NOT_RUN', why='no VM record was given'),
                fixture_leaves=dict(path='harness/alpha_c0_fixture_leaves.json', sha256=sha(ROOT / 'harness/alpha_c0_fixture_leaves.json'),
