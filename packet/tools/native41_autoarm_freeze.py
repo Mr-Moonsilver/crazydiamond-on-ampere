@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed path and AST freeze vs native39 1c334bc, source and generated overlay."""
+"""Fail-closed path and AST freeze vs native40 final f6d1db9, source and generated overlay."""
 import argparse
 import hashlib
 import json
@@ -8,9 +8,9 @@ import subprocess
 from native37_robust_freeze import prove
 from build_native30_held import verify
 ROOT=Path(__file__).resolve().parents[1]
-PARENT='681030c'
+PARENT='f6d1db9c90e7bffa5423945a7148a5bb800e247c'
 DECLARATION=ROOT/'tools/native41_autoarm_declarations.json'
-RUNTIME={'e3/scheduler_hooks.py','e3/engine_driver.py','e3/executor_hooks.py','e3/s5_startup.py','e3/native_overlap_worker.py','e3/decode_probe.py','e3/native_overlap_control.py','e3/native_overlap_session.py','run-flash-s5-test.sh'}
+RUNTIME={'e3/scheduler_hooks.py','e3/engine_driver.py','e3/executor_hooks.py','e3/s5_startup.py','e3/native_overlap_worker.py','e3/decode_probe.py','e3/native_overlap_control.py','e3/native_overlap_session.py','e3/probe_control.py'}
 ADDED={'e3/native_auto_arm.py'}
 META={'SHA256SUMS','S5-OVERLAP-GENERATION.json','e3/native-implementation-closure.json',
       'e3/native-overlap-readiness.json','e3/decode-probe-evidence.json'}
@@ -37,11 +37,10 @@ def overlay_level(parent,candidate):
     changed={n for n in before if before[n]!=after[n]}|{'SHA256SUMS'}|ADDED
     assert changed==RUNTIME|META|ADDED,sorted(changed^(RUNTIME|META|ADDED))
     d=json.loads(DECLARATION.read_text())['overlay_definitions']
-    assert set(d)==RUNTIME-{'run-flash-s5-test.sh'}
+    assert set(d)==RUNTIME
     defs={p:prove((parent/p).read_text(),(candidate/p).read_text(),p,d[p]) for p in sorted(d)}
-    launcher=(parent/'run-flash-s5-test.sh').read_text()
-    assert launcher.count('e3/s5_startup.py ')==1
-    assert (candidate/'run-flash-s5-test.sh').read_text()==launcher.replace('e3/s5_startup.py ','e3/s5_startup.py e3/native_auto_arm.py ',1),'launcher changed beyond forced module declaration'
+    # The launcher stays byte-identical (native_auto_arm is exempt from its name-only module list).
+    assert (candidate/'run-flash-s5-test.sh').read_bytes()==(parent/'run-flash-s5-test.sh').read_bytes(),'launcher changed'
     native=[p for p in before if p.endswith('.so') or '/native30_plugins/' in p or p=='qsa.py']
     assert native and all(before[n]==after[n] for n in native)
     return dict(parent=str(parent),changed=sorted(changed),definitions=defs,
@@ -98,7 +97,7 @@ def default_off():
                     if mode=='policy' and condition.startswith('policy is not None'):continue
                     if mode=='startup' and condition.startswith('auto '):continue
                     if mode=='worker' and 'FLASH_S5_AUTO_ARM' in condition:continue
-                    if mode=='session' and 'release_auto_arm' in condition:continue
+                    if mode=='session' and condition.startswith('action in AUTO_ARM_ACTIONS and '):continue
                     if mode=='client' and condition=='action not in ACTIONS':
                         assert len(n.body)==1 and isinstance(n.body[0],ast.If)
                         n.body=n.body[0].body
@@ -112,8 +111,25 @@ def default_off():
             result[file+':'+current]=hashlib.sha256(key(before).encode()).hexdigest()
     # No graph/model/worker-forward source is changed; overlay whitelist
     # separately enforces its exact bytes and compiled-library identity.
+    result['probe_control.py:attach_native_router']=router_off()
     return dict(verdict='PASS',legacy_function_bodies=result,functions=len(result),
                 meaning='source projection with policy absent/AUTO_ARM=0; canonical connected traces checked separately')
+def router_off():
+    """attach_native_router with FLASH_S5_AUTO_ARM unset/0 is the parent body: removing the import name, the
+    switch-derived tuple and its membership test (both empty when off) gives the parent's exact AST."""
+    import ast
+    def node(text):
+        return next(n for n in ast.parse(text).body if isinstance(n,ast.FunctionDef) and n.name=='attach_native_router')
+    old=ast.unparse(node(show('patches/s5_engine/probe_control.py')))
+    new=ast.unparse(node((ROOT/'patches/s5_engine/probe_control.py').read_text()))
+    for a,b in (('from native_overlap_session import AUTO_ARM_ACTIONS, NativeOverlapSession, NativeOverlapSessionError',
+                 'from native_overlap_session import NativeOverlapSession, NativeOverlapSessionError'),
+                ("\n    auto_actions = AUTO_ARM_ACTIONS if env.get('FLASH_S5_AUTO_ARM', '0') == '1' else ()",''),
+                (' or action in auto_actions','')):
+        assert new.count(a)==1,a
+        new=new.replace(a,b)
+    assert new==old,'default-off router body changed'
+    return hashlib.sha256(old.encode()).hexdigest()
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--parent',type=Path);p.add_argument('--overlay',type=Path);p.add_argument('--out',type=Path,required=True);a=p.parse_args()
     r=dict(verdict='PASS',source=source_level(),negative_controls=negative_controls())
