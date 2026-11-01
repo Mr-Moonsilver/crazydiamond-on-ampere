@@ -216,26 +216,33 @@ class NativeControlClient:
             await self.status()
         return await self._call({'action': 'release_auto_arm'})
 
-    async def native_progress(self, mode, idle=None):
+    async def native_progress(self, mode, idle=None, replies=None):
         """Held-f per-arm switch (installed burst only); the engine re-checks idle FULL.
 
         Held-g: ``idle`` (``step`` or ``wait``) also selects the arm's idle
-        pacing; left out, the command is held-f's and the engine applies ``step``.
+        pacing, and ``replies`` (``full`` or ``lean``) its reply format; a
+        field left out is not sent and the engine applies ``step``/``full``.
         """
         if mode not in ('current', 'burst'):
             raise NativeControlError('native-control-progress-mode-invalid')
         if idle is not None and idle not in ('step', 'wait'):
             raise NativeControlError('native-control-progress-idle-invalid')
+        if replies is not None and replies not in ('full', 'lean'):
+            raise NativeControlError('native-control-progress-replies-invalid')
         if self.engine_epoch is None:
             await self.status()
         command = {'action': 'native_progress', 'mode': mode}
         if idle is not None:
             command['idle'] = idle
+        if replies is not None:
+            command['replies'] = replies
         reply = await self._call(command)
         if reply.get('mode') != mode:
             raise NativeControlError('native-control-progress-mode-not-set')
         if idle is not None and reply.get('idle') != idle:
             raise NativeControlError('native-control-progress-idle-not-set')
+        if replies is not None and reply.get('replies') != replies:
+            raise NativeControlError('native-control-progress-replies-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------

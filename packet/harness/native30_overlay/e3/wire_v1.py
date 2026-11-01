@@ -31,6 +31,7 @@ Request UIDs, token ids and physical block tables never appear in ``repr``.
 """
 from dataclasses import dataclass, field
 from enum import Enum
+import hashlib
 
 from e3_types import (
     CompletionKind,
@@ -503,6 +504,235 @@ class WorkerCompletionReport:
                 f'state_epoch={self.state_epoch}, failed_code={self.failed_code})')
 
 
+# -- held-g L4: lean completion reports -------------------------------------
+#: The per-transaction reply format, chosen by the engine at OPEN. ``full`` is
+#: the earlier behaviour: every reply carries the rank's whole report.
+REPLIES = ('full', 'lean')
+LEAN_DIGEST_SIZE = 32
+LEAN_DIGEST_START = bytes(LEAN_DIGEST_SIZE)
+
+
+def lean_digest(prior, bases, completed_op_seqs, proofs, host_submit_ns):
+    """The next link of one rank's lean report chain; both sides compute it.
+
+    It covers the delta's bases (completed, proof and submit-time counts), its
+    op_seqs, each proof's (op_seq, kind, completion_seq) and its submit times,
+    in the order sent. The engine re-derives the chain from what it applied,
+    so a gap, replay, reorder or substitution changes it.
+    """
+    if type(prior) is not bytes or len(prior) != LEAN_DIGEST_SIZE:
+        raise E3ContractError('lean digest link must be 32 bytes')
+    body = repr((tuple(bases), completed_op_seqs,
+                 tuple((p.ticket.op_seq, p.kind.value, p.completion_seq) for p in proofs),
+                 host_submit_ns))
+    return hashlib.sha256(prior + body.encode()).digest()
+
+
+@dataclass(frozen=True, repr=False)
+class LeanCompletionReport:
+    """One rank's completion delta in a ``replies='lean'`` transaction (held-g L4).
+
+    ``completed_op_seqs``, ``proofs`` and ``host_submit_ns`` hold only what the
+    rank had not reported before in this transaction. ``pending_op_seqs``,
+    ``completed_sequence``, ``cursor`` and ``failed_code`` are its whole current
+    values, as in a :class:`WorkerCompletionReport`. ``base_completed``,
+    ``base_proofs`` and ``base_hosts`` count what it reported before, and
+    ``digest`` is the chain end after this delta (:func:`lean_digest`). The
+    engine extends its own accumulated report with :class:`LeanStream`.
+    """
+    transaction: TransactionId
+    worker_rank: int
+    base_completed: int
+    base_proofs: int
+    base_hosts: int
+    completed_op_seqs: tuple
+    pending_op_seqs: tuple
+    completed_sequence: int
+    proofs: tuple
+    cursor: CompletionCursor
+    state_epoch: int
+    digest: bytes
+    host_submit_ns: tuple = ()
+    failed_code: str | None = None
+
+    def __post_init__(self):
+        transaction = self.transaction
+        if type(transaction) is not TransactionId:
+            raise E3ContractError('lean report needs a TransactionId')
+        _int('worker_rank', self.worker_rank, 0)
+        _int('base_completed', self.base_completed, 0)
+        _int('base_proofs', self.base_proofs, 0)
+        _int('base_hosts', self.base_hosts, 0)
+        _ints('completed_op_seqs', self.completed_op_seqs, minimum=0)
+        _ints('pending_op_seqs', self.pending_op_seqs, minimum=0)
+        if self.completed_op_seqs != tuple(sorted(self.completed_op_seqs)):
+            raise E3ContractError('completed_op_seqs must be ordered')
+        if self.pending_op_seqs != tuple(sorted(self.pending_op_seqs)):
+            raise E3ContractError('pending_op_seqs must be ordered')
+        if set(self.completed_op_seqs).intersection(self.pending_op_seqs):
+            raise E3ContractError('an op_seq cannot be both complete and pending')
+        _int('completed_sequence', self.completed_sequence, 0)
+        _tuple('proofs', self.proofs)
+        keys = set()
+        for proof in self.proofs:
+            if type(proof) is not CompletionProof:
+                raise E3ContractError('proofs must be CompletionProof records')
+            if proof.completion_seq > self.completed_sequence:
+                raise E3ContractError('watermark is behind a completion proof')
+            ticket = proof.ticket
+            if ticket.transaction != transaction:
+                raise E3ContractError('proof belongs to another transaction')
+            if ticket.worker_rank != self.worker_rank:
+                raise E3ContractError('proof belongs to another worker')
+            key = (ticket.op_seq, proof.kind)
+            if key in keys:
+                raise E3ContractError('duplicate completion proof')
+            keys.add(key)
+        if type(self.cursor) is not CompletionCursor:
+            raise E3ContractError('report needs a CompletionCursor')
+        _int('state_epoch', self.state_epoch, 1)
+        if type(self.digest) is not bytes or len(self.digest) != LEAN_DIGEST_SIZE:
+            raise E3ContractError('lean report digest must be 32 bytes')
+        _tuple('host_submit_ns', self.host_submit_ns)
+        last = -1
+        for entry in self.host_submit_ns:
+            _tuple('host_submit_ns entry', entry)
+            if len(entry) != 2:
+                raise E3ContractError('host_submit_ns entries are (op_seq, ns)')
+            _int('host op_seq', entry[0], 0)
+            _int('host_submit_ns', entry[1], 0)
+            if entry[0] <= last:
+                raise E3ContractError('host submit times must be ordered')
+            last = entry[0]
+        if self.failed_code is not None:
+            if type(self.failed_code) is not str or self.failed_code not in FAILED_CODES:
+                raise E3ContractError('unknown failed_code')
+
+    def bases(self):
+        return self.base_completed, self.base_proofs, self.base_hosts
+
+    def empty(self):
+        """No new completion, proof or submit time."""
+        return not (self.completed_op_seqs or self.proofs or self.host_submit_ns)
+
+    def __repr__(self):
+        return (f'LeanCompletionReport(txn_seq={self.transaction.txn_seq}, '
+                f'rank={self.worker_rank}, '
+                f'base={self.base_completed}/{self.base_proofs}/{self.base_hosts}, '
+                f'completed=+{len(self.completed_op_seqs)}, '
+                f'pending={len(self.pending_op_seqs)}, '
+                f'watermark={self.completed_sequence}, proofs=+{len(self.proofs)}, '
+                f'state_epoch={self.state_epoch}, failed_code={self.failed_code})')
+
+
+def _accumulated(**fields):
+    """A WorkerCompletionReport built from fields LeanStream.extend has checked.
+
+    ``__post_init__`` walks the whole report; the stream instead checked each
+    new item against everything applied before, which keeps the same
+    invariants (the held-g tests run the lean probes with the validating
+    constructor in its place and compare).
+    """
+    report = object.__new__(WorkerCompletionReport)
+    for name in WorkerCompletionReport.__dataclass_fields__:
+        object.__setattr__(report, name, fields[name])
+    return report
+
+
+class LeanStream:
+    """The engine's accumulated view of one rank's lean reports in one transaction.
+
+    :meth:`extend` checks one delta in O(delta) against everything applied
+    before and returns the cumulative :class:`WorkerCompletionReport`, which is
+    what every consumer of a full report keeps reading. A refused delta leaves
+    the stream unchanged.
+    """
+    __slots__ = ('report', 'completed', 'proof_keys', 'hosts', 'digest', 'state_written',
+                 'closed')
+
+    def __init__(self):
+        self.report = None
+        self.completed = set()
+        self.proof_keys = set()
+        self.hosts = 0
+        self.digest = LEAN_DIGEST_START
+        self.state_written = False
+        self.closed = False
+
+    def end(self):
+        """(completed, proof and submit-time counts, chain end): what the release compares."""
+        return len(self.completed), len(self.proof_keys), self.hosts, self.digest
+
+    def extend(self, lean):
+        if type(lean) is not LeanCompletionReport:
+            raise E3ContractError('lean stream needs a LeanCompletionReport')
+        if self.closed:
+            raise E3ContractError('a full report closed this lean stream')
+        # The delta's own invariants again on this side of the wire (O(delta)).
+        lean.__post_init__()
+        prior = self.report
+        if prior is not None and (lean.transaction != prior.transaction
+                                  or lean.worker_rank != prior.worker_rank
+                                  or lean.state_epoch != prior.state_epoch):
+            raise E3ContractError('lean report changes the stream identity')
+        if lean.bases() != (len(self.completed), len(self.proof_keys), self.hosts):
+            raise E3ContractError('lean report does not continue the applied stream')
+        digest = lean_digest(self.digest, lean.bases(), lean.completed_op_seqs, lean.proofs,
+                             lean.host_submit_ns)
+        if digest != lean.digest:
+            raise E3ContractError('lean report chain differs from the applied stream')
+        completed = self.completed
+        new = lean.completed_op_seqs
+        if not completed.isdisjoint(new):
+            raise E3ContractError('lean report repeats a reported completion')
+        if prior is not None and lean.completed_sequence < prior.completed_sequence:
+            raise E3ContractError('completion report regressed')
+        pending = lean.pending_op_seqs
+        new_set = set(new)
+        if not completed.isdisjoint(pending):
+            raise E3ContractError('an op_seq cannot be both complete and pending')
+        if prior is not None:
+            for op in prior.pending_op_seqs:
+                if op not in completed and op not in new_set and op not in pending:
+                    raise E3ContractError('a pending operation left the report')
+        state = self.state_written
+        keys = []
+        for proof in lean.proofs:
+            op = proof.ticket.op_seq
+            if op not in completed and op not in new_set:
+                raise E3ContractError('proof without a completed op_seq')
+            key = (op, proof.kind)
+            if key in self.proof_keys:
+                raise E3ContractError('duplicate completion proof')
+            keys.append(key)
+            if (proof.kind is CompletionKind.STATE_WRITE
+                    and proof.ticket.dependency_role is DependencyRole.COMMIT):
+                state = True
+        hosts = lean.host_submit_ns
+        if hosts:
+            if prior is not None and prior.host_submit_ns and hosts[0][0] <= prior.host_submit_ns[-1][0]:
+                raise E3ContractError('host submit times must be ordered')
+            for op, _ns in hosts:
+                if op not in completed and op not in new_set and op not in pending:
+                    raise E3ContractError('submit time for an unaccepted operation')
+        base = () if prior is None else prior.completed_op_seqs
+        merged = _accumulated(
+            transaction=lean.transaction, worker_rank=lean.worker_rank,
+            completed_op_seqs=tuple(sorted(base + new)) if new else base,
+            pending_op_seqs=pending, completed_sequence=lean.completed_sequence,
+            proofs=(() if prior is None else prior.proofs) + lean.proofs,
+            cursor=lean.cursor, state_epoch=lean.state_epoch,
+            host_submit_ns=(() if prior is None else prior.host_submit_ns) + hosts,
+            failed_code=lean.failed_code)
+        completed.update(new)
+        self.proof_keys.update(keys)
+        self.hosts += len(hosts)
+        self.digest = digest
+        self.state_written = state
+        self.report = merged
+        return merged
+
+
 @dataclass(frozen=True, repr=False)
 class BootstrapCommand:
     """Bind every worker incarnation to the engine owner, exactly once.
@@ -706,10 +936,14 @@ class OpenRequest:
     ranks: tuple
     expected_state_epoch: int
     max_outstanding: int
+    # Held-g L4: the reply format of this transaction (REPLIES).
+    replies: str = 'full'
 
     def __post_init__(self):
         if type(self.admission) is not AdmissionRecord:
             raise E3ContractError('open needs an AdmissionRecord')
+        if type(self.replies) is not str or self.replies not in REPLIES:
+            raise E3ContractError('unknown open reply format')
         _ints('ranks', self.ranks, minimum=0, allow_empty=False)
         if self.ranks != tuple(sorted(self.ranks)):
             raise E3ContractError('open ranks must be ordered')
@@ -1176,7 +1410,7 @@ class SegmentAcceptance:
             raise E3ContractError('cursor must be a CompletionCursor')
         _int('host_submit_ns', self.host_submit_ns, 0)
         if self.report is not None:
-            if type(self.report) is not WorkerCompletionReport:
+            if type(self.report) not in (WorkerCompletionReport, LeanCompletionReport):
                 raise E3ContractError('acceptance report must be a completion report')
             if self.report.transaction != self.transaction:
                 raise E3ContractError('acceptance report belongs to another transaction')
@@ -1220,10 +1454,29 @@ class ReleaseRequest:
     state_epoch: int
     completed_sequences: tuple
     terminal: bool
+    # Held-g L4, a lean transaction only: per rank (rank, completed, proof and
+    # submit-time counts, chain end) of the engine's applied stream. The worker
+    # releases only when it equals what it sent and nothing is left unsent.
+    lean_streams: tuple = ()
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
             raise E3ContractError('release needs a TransactionId')
+        _tuple('lean_streams', self.lean_streams)
+        last = -1
+        for entry in self.lean_streams:
+            _tuple('lean stream entry', entry)
+            if len(entry) != 5:
+                raise E3ContractError('lean stream entry is (rank, completed, proofs, hosts, digest)')
+            _int('rank', entry[0])
+            _int('lean completed count', entry[1])
+            _int('lean proof count', entry[2])
+            _int('lean submit-time count', entry[3])
+            if type(entry[4]) is not bytes or len(entry[4]) != LEAN_DIGEST_SIZE:
+                raise E3ContractError('lean stream digest must be 32 bytes')
+            if entry[0] <= last:
+                raise E3ContractError('lean stream ranks must be unique and ordered')
+            last = entry[0]
         _int('state_epoch', self.state_epoch, 1)
         _tuple('completed_sequences', self.completed_sequences)
         if type(self.terminal) is not bool:
@@ -1241,6 +1494,8 @@ class ReleaseRequest:
             ranks.append(rank)
         if ranks != sorted(set(ranks)):
             raise E3ContractError('release ranks must be unique and ordered')
+        if self.lean_streams and [entry[0] for entry in self.lean_streams] != ranks:
+            raise E3ContractError('lean streams must cover the release ranks')
 
     def __repr__(self):
         return (f'ReleaseRequest(txn_seq={self.transaction.txn_seq}, '
@@ -1472,4 +1727,5 @@ __all__ = [
     'SourceLeaseDescriptor', 'QsaScheduleShape', 'QsaProfileQuery',
     'QsaProfileObservation', 'QsaProfileGrant', 'qsa_profile_agreement',
     'TransitionAck', 'TransitionCommand', 'TransitionPending', 'WIRE_VERSION', 'WorkerCompletionReport',
+    'LEAN_DIGEST_START', 'LeanCompletionReport', 'LeanStream', 'REPLIES', 'lean_digest',
 ]

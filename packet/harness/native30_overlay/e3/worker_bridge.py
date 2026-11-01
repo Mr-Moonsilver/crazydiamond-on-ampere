@@ -67,11 +67,32 @@ from wire_v1 import (
     TransitionCommand,
     TransitionPending,
     WorkerCompletionReport,
+    LEAN_DIGEST_START,
+    LeanCompletionReport,
+    lean_digest,
 )
 
 
 class WorkerBridgeError(E3ContractError):
     pass
+
+
+class _LeanSent:
+    """Held-g L4: what this rank already sent in its lean transaction."""
+    __slots__ = ('completed', 'proof_keys', 'hosts', 'due', 'digest', 'last')
+
+    def __init__(self):
+        self.completed = set()
+        self.proof_keys = set()
+        self.hosts = set()
+        # Sent completions whose STATE_WRITE / PP_CONSUMER proof is still owed.
+        self.due = set()
+        self.digest = LEAN_DIGEST_START
+        # (pending, watermark, cursor, failed_code) of the last sent report.
+        self.last = None
+
+    def end(self):
+        return len(self.completed), len(self.proof_keys), len(self.hosts), self.digest
 
 
 _SEGMENT_ROLE = {
@@ -199,6 +220,7 @@ class NativeWorkerBridge:
         self._proofs = {}
         self._completion_seq = -1
         self._reported_seq = -1
+        self._lean = None
         self._released = False
         self._runtime_released = False
         self._request_closed = False
@@ -260,6 +282,7 @@ class NativeWorkerBridge:
         self._proofs = {}
         self._completion_seq = -1
         self._reported_seq = -1
+        self._lean = None
         self._released = False
         self._runtime_released = False
         self._request_closed = False
@@ -430,6 +453,7 @@ class NativeWorkerBridge:
         self.lane = lane
         self.state_epoch = record.state_epoch
         self.stage = stage
+        self._lean = _LeanSent() if request.replies == 'lean' else None
         # The open moved the retained row into the active transaction; the row
         # is now released/closed through the normal paths below.
         self._retained = None
@@ -443,11 +467,11 @@ class NativeWorkerBridge:
         if type(command) is not SegmentCommand:
             raise WorkerBridgeError('submit needs a typed SegmentCommand')
         self._require_open(command.transaction)
-        report = self._build_report()
+        report, cursor = self._reply_report()
         if self.rank not in command.ranks:
             return SegmentAcceptance(
                 command.transaction, self.rank, command.kind, command.stage,
-                command.op_seq, skipped=True, cursor=report.cursor, report=report)
+                command.op_seq, skipped=True, cursor=cursor, report=self._sent(report))
         if command.kind is SegmentKind.PREPARE:
             self._bind_prepare_source(command)
         if command.profile is not None:
@@ -457,7 +481,7 @@ class NativeWorkerBridge:
         except E3Pending:
             return SegmentAcceptance(
                 command.transaction, self.rank, command.kind, command.stage,
-                command.op_seq, pending=True, cursor=report.cursor, report=report)
+                command.op_seq, pending=True, cursor=cursor, report=self._sent(report))
         except BaseException as exc:
             if getattr(self.dispatcher, 'quarantined', None) is not None:
                 self._last_error = type(exc).__name__
@@ -468,12 +492,12 @@ class NativeWorkerBridge:
                                          if type(elapsed) in (int, float) and elapsed >= 0
                                          else 0)
         result = acknowledgement.get('result') or {}
-        report = self._build_report()
+        report, cursor = self._reply_report()
         return SegmentAcceptance(
             command.transaction, self.rank, command.kind, command.stage,
-            command.op_seq, accepted=True, cursor=report.cursor,
+            command.op_seq, accepted=True, cursor=cursor,
             host_submit_ns=self._host_ns[command.op_seq],
-            paused=bool(result.get('paused')), report=report,
+            paused=bool(result.get('paused')), report=self._sent(report),
             profile_boundary=bool(result.get('profile_boundary')),
             tail_boundary=bool(result.get('tail_boundary')))
 
@@ -527,6 +551,9 @@ class NativeWorkerBridge:
         if type(request) is not PollRequest:
             raise WorkerBridgeError('poll needs a typed PollRequest')
         self._require_open(request.transaction, request.state_epoch)
+        if self._lean is not None:
+            # A poll reply is the report itself: always a typed lean report.
+            return self._sent(self._lean_report(token=False)[0])
         return self._build_report()
 
     def _profile_boundary_command(self, query):
@@ -600,6 +627,88 @@ class NativeWorkerBridge:
             tuple(proofs), self._cursor(), self.state_epoch, host_submit_ns=hosts,
             failed_code=None if getattr(self.dispatcher, 'quarantined', None) is None
             else 'quarantined')
+
+    def _reply_report(self):
+        """(report, cursor) a reply carries now; a lean report is sent only through _sent."""
+        if self._lean is None:
+            report = self._build_report()
+            return report, report.cursor
+        return self._lean_report()
+
+    def _lean_report(self, token=True):
+        """Held-g L4: the delta since this rank's last sent lean report, not yet sent.
+
+        Proofs come in a full report's order (completed op_seq, then GPU_EVENT,
+        STATE_WRITE, PP_CONSUMER) over the new and the owed completions, so
+        ``_proof`` assigns the same completion_seq a full build would. With
+        ``token`` and nothing changed since the last sent report, the reply
+        carries no report (None).
+        """
+        sent = self._lean
+        query = self.dispatcher.poll()
+        done = sent.completed
+        new = tuple(sorted(op for op in query['completed_op_seqs'] if op not in done))
+        pending = tuple(sorted(query['pending_op_seqs']))
+        keys = sent.proof_keys
+        proofs = []
+        for op_seq in sorted(sent.due.union(new)) if sent.due else new:
+            kind = self._accepted.get(op_seq)
+            if kind is None:
+                # A completion from an earlier transaction is never exported
+                # under this report's identity.
+                continue
+            wanted = [CompletionKind.GPU_EVENT]
+            if kind is SegmentKind.STATE_FINALIZE and query['state_written']:
+                wanted.append(CompletionKind.STATE_WRITE)
+            if kind is SegmentKind.PP_RECEIVE and self.dispatcher.pp_consumer_complete():
+                wanted.append(CompletionKind.PP_CONSUMER)
+            for proof_kind in wanted:
+                proof = self._proof(op_seq, proof_kind)
+                if (op_seq, proof_kind) not in keys:
+                    proofs.append(proof)
+        hosts = tuple(entry for entry in sorted(self._host_ns.items())
+                      if entry[0] not in sent.hosts)
+        watermark = max(0, self._reported_seq, self._completion_seq)
+        cursor = self._cursor()
+        failed = (None if getattr(self.dispatcher, 'quarantined', None) is None
+                  else 'quarantined')
+        proofs = tuple(proofs)
+        if token and not new and not proofs and not hosts and sent.last == (
+                pending, watermark, cursor, failed):
+            return None, cursor
+        bases = (len(done), len(keys), len(sent.hosts))
+        return LeanCompletionReport(
+            self.transaction, self.rank, *bases, new, pending,
+            watermark, proofs, cursor, self.state_epoch,
+            lean_digest(sent.digest, bases, new, proofs, hosts),
+            host_submit_ns=hosts, failed_code=failed), cursor
+
+    def _sent(self, report):
+        """Mark a lean report as sent (the reply carrying it is being returned)."""
+        if type(report) is not LeanCompletionReport:
+            return report
+        sent = self._lean
+        if report.bases() != (len(sent.completed), len(sent.proof_keys), len(sent.hosts)):
+            raise WorkerBridgeError('lean report was built on another sent state')
+        sent.completed.update(report.completed_op_seqs)
+        for proof in report.proofs:
+            sent.proof_keys.add((proof.ticket.op_seq, proof.kind))
+        for op_seq in report.completed_op_seqs:
+            kind = self._accepted.get(op_seq)
+            if kind is SegmentKind.STATE_FINALIZE or kind is SegmentKind.PP_RECEIVE:
+                sent.due.add(op_seq)
+        for op_seq in tuple(sent.due):
+            owed = (CompletionKind.STATE_WRITE
+                    if self._accepted.get(op_seq) is SegmentKind.STATE_FINALIZE
+                    else CompletionKind.PP_CONSUMER)
+            if (op_seq, owed) in sent.proof_keys:
+                sent.due.discard(op_seq)
+        sent.hosts.update(op_seq for op_seq, _ns in report.host_submit_ns)
+        sent.digest = report.digest
+        sent.last = (report.pending_op_seqs, report.completed_sequence, report.cursor,
+                     report.failed_code)
+        self._reported_seq = max(self._reported_seq, report.completed_sequence)
+        return report
 
     # -- closure -----------------------------------------------------------
     def _drain_prefill_streams(self):
@@ -712,6 +821,17 @@ class NativeWorkerBridge:
             raise WorkerBridgeError('release does not cover this rank')
         if expected[self.rank] != max(0, self._reported_seq):
             raise WorkerBridgeError('release watermark differs from the final report')
+        if self._lean is not None:
+            # Held-g L4: the engine applied exactly the stream this rank sent,
+            # and the drained lane has nothing left to report.
+            streams = {entry[0]: tuple(entry[1:]) for entry in request.lean_streams}
+            if streams.get(self.rank) != self._lean.end():
+                raise WorkerBridgeError('lean release differs from the sent report stream')
+            rest, _cursor = self._lean_report(token=False)
+            if not rest.empty():
+                raise WorkerBridgeError('lean release leaves completions unreported')
+        elif request.lean_streams:
+            raise WorkerBridgeError('lean release streams on a full-reply transaction')
         try:
             closed = self._release_lane(request.transaction, request.terminal)
         except E3Pending:

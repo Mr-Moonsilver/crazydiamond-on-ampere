@@ -36,6 +36,20 @@ L3 modes (``-wait``): the same held-f mode with the arm's idle selection
 * the non-empty scheduled rows of the stock trace are reported as a hash,
   which the held-g self-run compares with the ``-step`` run of the same mode.
 
+L4 modes (``-lean``): the arm's replies selection ``lean`` (the native_progress
+control carries ``replies``). They add:
+
+* the control reply and status carry replies ``lean``, every chunk opened
+  lean (status lean_chunks), lean reports and token replies were applied;
+  every other mode ``full`` with none;
+* every cumulative report the engine built from a lean delta equals the
+  report the validating WorkerCompletionReport constructor builds from the
+  same fields (counted at wire_v1._accumulated);
+* the journal holds lean report entries only in lean modes, and the
+  measurement census has no conflict in any chunk;
+* the self-run compares the scheduled hash and the native chunks with the
+  same mode's full run.
+
 Fixture leaves are e3_native41_progress_probe's, plus:
 
 * rpc-counter: its execute and sample fixtures do not go through
@@ -64,7 +78,8 @@ from unittest import mock
 import e3_native41_progress_probe as pp
 
 WAIT_MODES = ('burst-solo-wait', 'current-solo-wait', 'burst-wait')
-MODES = pp.MODES + WAIT_MODES
+LEAN_MODES = ('burst-solo-lean', 'burst-lean', 'burst-solo-wait-lean')
+MODES = pp.MODES + WAIT_MODES + LEAN_MODES
 ANATOMY_LINE = 'flash-s5 anatomy '
 PROGRESS_LINE = 'flash-s5 progress '
 
@@ -100,15 +115,19 @@ def flushes(lines, prefix):
     return joined
 
 
-def set_mode(conn, mode, idle):
-    """pp.set_mode with the arm's idle selection in the native_progress control."""
+def set_mode(conn, mode, idle, replies=None):
+    """pp.set_mode with the arm's idle/replies selections in the native_progress control."""
     from vllm.v1.core.sched.interface import PauseState
     scheduler = conn.scheduler
     old = scheduler.pause_state
     scheduler.set_pause_state(PauseState.PAUSED_ALL)
+    command = dict(action='native_progress', mode=mode, engine_epoch=conn.driver.engine_epoch)
+    if idle is not None:
+        command['idle'] = idle
+    if replies is not None:
+        command['replies'] = replies
     try:
-        reply = conn.driver.submit_control(dict(action='native_progress', mode=mode, idle=idle,
-                                                engine_epoch=conn.driver.engine_epoch))
+        reply = conn.driver.submit_control(command)
         leased = conn.driver.auto_arm.manual_owned
         release = conn.driver.submit_control(dict(action='release_auto_arm',
                                                   engine_epoch=conn.driver.engine_epoch))
@@ -116,6 +135,12 @@ def set_mode(conn, mode, idle):
         scheduler.set_pause_state(old)
     Idle.reply = reply
     return reply, leased, release
+
+
+class Lean:
+    """L4 observation: every cumulative report the lean stream built, re-validated."""
+    checked = 0
+    mismatches = []
 
 
 class Idle:
@@ -176,8 +201,11 @@ def flip_checks(engine, hooks):
 def run(mode):
     Capture.anatomy, Capture.progress = [], []
     Idle.reply, Idle.landed, Idle.flips, Idle.conn, Idle.refusals = None, [], None, None, []
-    wait = mode in WAIT_MODES
-    base = mode[:-len('-wait')] if wait else mode
+    Lean.checked, Lean.mismatches = 0, []
+    lean = mode in LEAN_MODES
+    rest = mode[:-len('-lean')] if lean else mode
+    wait = rest.endswith('-wait')
+    base = rest[:-len('-wait')] if wait else rest
     real_connected = pp.connected
     restore = []
 
@@ -201,7 +229,18 @@ def run(mode):
                     queued=[e[1].total_num_scheduled_tokens for e in engine.batch_queue]))
             return answer
         hooks._stock_step_idle = stock_step_idle
-        restore.append((hooks, real_idle))
+        restore.append((hooks, '_stock_step_idle', real_idle))
+        import wire_v1 as wire
+        real_accumulated = wire._accumulated
+
+        def accumulated(**fields):
+            report = real_accumulated(**fields)
+            Lean.checked += 1
+            if wire.WorkerCompletionReport(**fields) != report:
+                Lean.mismatches.append(repr(report))
+            return report
+        wire._accumulated = accumulated
+        restore.append((wire, '_accumulated', real_accumulated))
         conn = real_connected(setting)
         Idle.conn = conn
 
@@ -211,16 +250,17 @@ def run(mode):
         conn.transport.wait_landed = wait_landed
         return conn
     patches = [mock.patch.object(pp, 'Capture', Capture), mock.patch.object(pp, 'connected', connected)]
-    if wait:
-        patches.append(mock.patch.object(pp, 'set_mode', lambda conn, m: set_mode(conn, m, 'wait')))
+    if wait or lean:
+        patches.append(mock.patch.object(pp, 'set_mode', lambda conn, m: set_mode(
+            conn, m, 'wait' if wait else None, 'lean' if lean else None)))
     try:
         with contextlib.ExitStack() as scope:
             for patch in patches:
                 scope.enter_context(patch)
             result = pp.run(base)
     finally:
-        for hooks, real_idle in restore:
-            hooks._stock_step_idle = real_idle
+        for module, name, real in restore:
+            setattr(module, name, real)
     import native_measurement as nm
     import engine_driver as ed
     checks = result['checks']
@@ -325,9 +365,34 @@ def run(mode):
     else:
         check('no-idle-state-without-a-solo-wait-arm', Idle.flips is None or wait,
               flips=Idle.flips)
+    check('arm-replies-selection', snapshot['replies'] == ('lean' if lean else 'full')
+          and all(head['replies'] == snapshot['replies'] for head, _ in anatomy),
+          replies=snapshot['replies'])
+    if lean:
+        check('replies-control-reply', Idle.reply is not None and Idle.reply['replies'] == 'lean'
+              and Idle.reply['previous_replies'] == 'full',
+              reply={k: (Idle.reply or {}).get(k) for k in ('replies', 'previous_replies', 'mode')})
+        check('every-native-chunk-opened-lean', snapshot['lean_chunks'] == len(native)
+              and snapshot['lean_reports'] > 0 and snapshot['lean_tokens'] > 0,
+              **{k: snapshot[k] for k in ('lean_chunks', 'lean_reports', 'lean_tokens')})
+        check('lean-reports-equal-the-validated-report', Lean.checked == snapshot['lean_reports']
+              and not Lean.mismatches, checked=Lean.checked, mismatches=Lean.mismatches[:2])
+    else:
+        check('full-replies-only', snapshot['lean_chunks'] == snapshot['lean_reports']
+              == snapshot['lean_tokens'] == Lean.checked == 0,
+              **{k: snapshot[k] for k in ('lean_chunks', 'lean_reports', 'lean_tokens')})
+    driver = Idle.conn.driver
+    journal = [e for e in driver._journal if e['kind'] == 'report']
+    check('journal-lean-entries-only-when-lean', journal and all(('lean' in e) == lean for e in journal),
+          reports=len(journal), lean=sum('lean' in e for e in journal))
+    conflicts = {txn: list(chunk['conflicts'])
+                 for txn, chunk in driver.measurement_census._chunks.items() if chunk['conflicts']}
+    check('census-has-no-conflict', not conflicts, conflicts=conflicts)
     rows = [row['scheduled'] for row in result.get('trace', ()) if row['scheduled']]
     result.update(anatomy_lines=len(lines), anatomy_flushes=len(anatomy), anatomy=summary,
                   idle_flips=Idle.flips, idle_landed=len(Idle.landed), idle_refusals=Idle.refusals,
+                  lean_checked=Lean.checked,
+                  lean_counters={k: snapshot[k] for k in ('lean_chunks', 'lean_reports', 'lean_tokens')},
                   scheduled_nonempty=len(rows),
                   scheduled_nonempty_sha256=hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest(),
                   anatomy_line_sha256=hashlib.sha256('\n'.join(lines).encode()).hexdigest())

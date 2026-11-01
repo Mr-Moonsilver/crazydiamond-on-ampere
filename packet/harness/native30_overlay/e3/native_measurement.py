@@ -1486,6 +1486,15 @@ class NativeMeasurementCensus:
         except ValueError:
             self._conflict(chunk['conflicts'], 'report-vector-invalid')
             return {'accepted': False, 'reason': 'report-vector-invalid'}
+        # Held-g L4: a lean entry's completed/proof vectors are the rank's new
+        # items only; its header counts what the rank reported before.
+        lean = entry.get('lean')
+        if lean is not None and not (
+                type(lean) is dict
+                and all(_is_int(lean.get(key)) and lean[key] >= 0
+                        for key in ('base_completed', 'base_proofs', 'completed', 'proofs'))):
+            self._conflict(chunk['conflicts'], 'report-lean-header-invalid')
+            return {'accepted': False, 'reason': 'report-lean-header-invalid'}
         if type(completed) is not list:
             self._conflict(chunk['conflicts'], 'report-completed-not-a-list')
             completed_set = None
@@ -1501,6 +1510,16 @@ class NativeMeasurementCensus:
                 self._conflict(chunk['conflicts'],
                                'report-completed-set-unproved')
                 completed_set = None
+            elif lean is not None:
+                prior = record['completed_ops'] or frozenset()
+                if lean['base_completed'] != len(prior) or lean['base_proofs'] != len(record['proofs']):
+                    self._conflict(chunk['conflicts'], 'report-lean-gap')
+                if not prior.isdisjoint(completed_set):
+                    self._conflict(chunk['conflicts'], 'report-lean-replay')
+                # The rank's cumulative set: what every check below compares.
+                completed_set = prior.union(completed_set)
+                if lean['completed'] != len(completed_set):
+                    self._conflict(chunk['conflicts'], 'report-lean-count-differs')
         pending_set = set()
         if type(pending) is not list:
             self._conflict(chunk['conflicts'], 'report-pending-not-a-list')
@@ -1612,6 +1631,11 @@ class NativeMeasurementCensus:
                         'completion_seq': completion_seq,
                         'observed_ns': observed_ns,
                     }
+        if lean is not None:
+            # A lean entry carries the STATE_WRITE proof once, in its delta.
+            saw_state_proof = record['state_write'] is not None
+            if lean['proofs'] != len(record['proofs']):
+                self._conflict(chunk['conflicts'], 'report-lean-count-differs')
         if state_written and not saw_state_proof:
             # Cumulative reports repeat their proofs; a true state_written
             # report always carries the STATE_WRITE proof in the same list.

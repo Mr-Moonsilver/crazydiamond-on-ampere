@@ -95,6 +95,8 @@ from wire_v1 import (
     TransitionCommand,
     TransitionPending,
     WorkerCompletionReport,
+    LeanCompletionReport,
+    LeanStream,
 )
 
 
@@ -856,6 +858,9 @@ class NativeProgress:
     # wait at most IDLE_WAIT_S for a native reply instead (see idle_wait).
     IDLE = ('step', 'wait')
     IDLE_WAIT_S = 0.001
+    # Held-g L4, the per-arm ``replies`` selection, applied at each chunk's
+    # OPEN: ``full`` is every earlier reply; ``lean`` sends completion deltas.
+    REPLIES = ('full', 'lean')
 
     def __init__(self, installed, executor, *, driver=None, clock_ns=time.monotonic_ns):
         if installed not in PROGRESS_MODES:
@@ -863,6 +868,7 @@ class NativeProgress:
         self.installed = installed
         self.mode = 'current'
         self.idle = 'step'
+        self.replies = 'full'
         self.executor = executor
         self.driver = driver
         self.clock_ns = clock_ns
@@ -880,13 +886,15 @@ class NativeProgress:
         self.counters = dict.fromkeys((
             'chunks', 'commands', 'direct_commands', 'stock_rpcs', 'waits',
             'wait_sends', 'wait_capped', 'line_errors', 'mode_changes',
-            'idle_steps', 'idle_timeouts'), 0)
+            'idle_steps', 'idle_timeouts', 'lean_chunks', 'lean_reports',
+            'lean_tokens'), 0)
         # Held-g R5: the engine step loop of the recording chunk.
         self.steps = StepAnatomy(self.counters, clock_ns=clock_ns)
 
     def snapshot(self):
         return dict(schema='s5-native-progress-status/1', installed=self.installed,
-                    mode=self.mode, idle=self.idle, recording=self.recording,
+                    mode=self.mode, idle=self.idle, replies=self.replies,
+                    recording=self.recording,
                     wait_send_limit=self.WAIT_SEND_LIMIT,
                     direct_kinds=sorted(self.DIRECT_KINDS),
                     trace_lines=self.trace.lines_out, trace_dropped=self.trace.dropped_total,
@@ -952,7 +960,8 @@ class NativeProgress:
             self.counters['line_errors'] += 1
         try:
             # Held-g R5: the chunk's step anatomy, on its own schema.
-            for text in self.steps.lines(**(self.identity or {}), mode=self.mode, idle=self.idle):
+            for text in self.steps.lines(**(self.identity or {}), mode=self.mode, idle=self.idle,
+                                         replies=self.replies):
                 logger.info(text)
         except Exception:
             self.counters['line_errors'] += 1
@@ -1054,6 +1063,9 @@ class NativeSegmentDriver:
         self.last_ticket = {0: None, 1: None}
         self.transfer_seq = 0
         self.reports = {}
+        # Held-g L4: this transaction's reply format and the per-rank streams.
+        self._replies = 'full'
+        self._lean_streams = {}
         self.stop_kind = None
         self.error = None
         self._inflight = {}
@@ -1272,7 +1284,7 @@ class NativeSegmentDriver:
             raise DriverError('native-control-unknown-action')
         if self.error is not None:
             raise DriverError(self.error)
-        if set(command) - {'action', 'mode', 'engine_epoch', 'idle'}:
+        if set(command) - {'action', 'mode', 'engine_epoch', 'idle', 'replies'}:
             raise DriverError('native-progress-command-fields-differ')
         epoch = command.get('engine_epoch')
         if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
@@ -1284,6 +1296,9 @@ class NativeSegmentDriver:
         idle = command.get('idle', 'step')
         if idle not in NativeProgress.IDLE:
             raise DriverError('native-progress-idle-unknown')
+        replies = command.get('replies', 'full')
+        if replies not in NativeProgress.REPLIES:
+            raise DriverError('native-progress-replies-unknown')
         policy = getattr(self, 'auto_arm', None)
         if (not self._engine_paused() or self._split_ready or self.tx is not None
                 or self.controller.active or self._inflight or self._control is not None
@@ -1295,9 +1310,11 @@ class NativeSegmentDriver:
         progress.mode = mode
         progress.counters['mode_changes'] += int(previous != mode)
         previous_idle, progress.idle = progress.idle, idle
+        previous_replies, progress.replies = progress.replies, replies
         now = int(self._monotonic_ns())
         return {'schema': 1, 'action': 'native_progress', 'mode': mode, 'previous': previous,
                 'idle': idle, 'previous_idle': previous_idle,
+                'replies': replies, 'previous_replies': previous_replies,
                 'installed': progress.installed, 'engine_epoch': self.engine_epoch,
                 'route': 'full', 'route_generation': self.route_generation,
                 'observed_clock_ns': now, 'clock': self._clock_record(now)}
@@ -1308,6 +1325,14 @@ class NativeSegmentDriver:
         intent = self._admission_intent
         return (policy is not None and not policy.manual_owned and policy.phase == 'native'
                 and type(intent) is dict and intent.get('origin') == 'auto-arm')
+
+    def _open_replies(self):
+        """Held-g L4: the opening chunk's reply format; lean only when the arm
+        selected it and the auto-arm policy owns the chunk."""
+        if (self.progress is not None and self.progress.replies == 'lean'
+                and self._progress_owned()):
+            return 'lean'
+        return 'full'
 
     def _progress_decode_live(self):
         try:
@@ -1743,6 +1768,9 @@ class NativeSegmentDriver:
                 raise DriverError('reply identity differs from the outstanding command')
             if item.report is not None:
                 reports.append(item.report)
+            elif self._replies == 'lean' and self.progress is not None:
+                # Held-g L4: nothing changed on that rank since its last report.
+                self.progress.counters['lean_tokens'] += 1
             if item.worker_rank not in targets:
                 if not item.skipped:
                     raise DriverError('a non-target lane executed the segment')
@@ -1965,6 +1993,8 @@ class NativeSegmentDriver:
         }
 
     def _ingest_report(self, report):
+        if type(report) is LeanCompletionReport:
+            return self._ingest_lean(report)
         if type(report) is not WorkerCompletionReport:
             raise DriverError('completion report is mistyped')
         if report.transaction != self.tx:
@@ -1988,6 +2018,9 @@ class NativeSegmentDriver:
                 raise DriverError('proof role is impossible for the issued operation')
         self.controller.note_report(report)
         self.reports[report.worker_rank] = report
+        if self._replies == 'lean':
+            # A full report (a cancel ack) ends this rank's lean stream.
+            self._lean_streams.setdefault(report.worker_rank, LeanStream()).closed = True
         self._record('report', transaction=report.transaction.txn_seq,
                      worker_rank=report.worker_rank,
                      completed_sequence=report.completed_sequence,
@@ -2001,6 +2034,68 @@ class NativeSegmentDriver:
                               'op_seq': proof.ticket.op_seq,
                               'completion_seq': proof.completion_seq}
                              for proof in report.proofs])
+        self._collect_pp_proofs(report)
+
+    def _ingest_lean(self, report):
+        """Held-g L4: check one rank's delta in O(delta) and extend its accumulated report.
+
+        The issued-ticket checks are the full report's, over the new items; the
+        stream checks the delta against everything applied before. Every
+        consumer of ``self.reports`` and the controller reads the cumulative
+        report the stream returns. The journal records the delta and its
+        stream header; the census merges it into the same per-rank sets.
+        """
+        if self._replies != 'lean':
+            raise DriverError('lean report in a full-reply transaction')
+        if report.transaction != self.tx:
+            raise DriverError('completion report belongs to another transaction')
+        rank = report.worker_rank
+        if rank not in self.lanes:
+            raise DriverError('report rank has no opened lane')
+        for op in report.completed_op_seqs + report.pending_op_seqs:
+            if (rank, op) not in self.accepted_tickets:
+                raise DriverError('report names an unaccepted operation')
+        for proof in report.proofs:
+            key = (rank, proof.ticket.op_seq)
+            if proof.ticket != self.accepted_tickets.get(key):
+                raise DriverError('proof differs from the issued ticket or lane epoch')
+            kind = self._accepted_descriptors[key].kind
+            allowed = {CompletionKind.GPU_EVENT}
+            if kind is SegmentKind.STATE_FINALIZE:
+                allowed.add(CompletionKind.STATE_WRITE)
+            if kind is SegmentKind.PP_RECEIVE:
+                allowed.add(CompletionKind.PP_CONSUMER)
+            if proof.kind not in allowed:
+                raise DriverError('proof role is impossible for the issued operation')
+        stream = self._lean_streams.get(rank)
+        if stream is None:
+            stream = self._lean_streams[rank] = LeanStream()
+        try:
+            merged = stream.extend(report)
+        except E3ContractError as exc:
+            raise DriverError('lean report refused: ' + str(exc)) from exc
+        self.controller.note_report(merged)
+        self.reports[rank] = merged
+        if self.progress is not None:
+            self.progress.counters['lean_reports'] += 1
+        completed, proofs, hosts, digest = stream.end()
+        self._record('report', transaction=report.transaction.txn_seq,
+                     worker_rank=rank,
+                     completed_sequence=merged.completed_sequence,
+                     completed_op_seqs=list(report.completed_op_seqs),
+                     pending_op_seqs=list(report.pending_op_seqs),
+                     failed_code=report.failed_code,
+                     state_written=stream.state_written,
+                     proofs=[{'kind': getattr(proof.kind, 'value', str(proof.kind)),
+                              'op_seq': proof.ticket.op_seq,
+                              'completion_seq': proof.completion_seq}
+                             for proof in report.proofs],
+                     # The vectors above are this delta; the census merges it.
+                     lean={'base_completed': report.base_completed,
+                           'base_proofs': report.base_proofs,
+                           'base_hosts': report.base_hosts,
+                           'completed': completed, 'proofs': proofs, 'hosts': hosts,
+                           'digest': digest.hex()[:16]})
         self._collect_pp_proofs(report)
 
     def _apply_poll(self, values):
@@ -2133,10 +2228,13 @@ class NativeSegmentDriver:
         # Terminality is the scheduler's admission fact, never inferred from a
         # reply: the chunk that leaves the final prompt token for stock must
         # close the worker request row before it acknowledges.
+        lean_streams = ()
+        if self._replies == 'lean':
+            lean_streams = tuple((r,) + self._lean_streams[r].end() for r in self.ranks)
         self.release_request = ReleaseRequest(
             self.tx, self.admission.state_epoch,
             tuple((r, self.reports[r].completed_sequence) for r in self.ranks),
-            self.admission.terminal)
+            self.admission.terminal, lean_streams)
         self._submit('release', ('flash_s5_release', (self.release_request,), {}, None),
                      self.ranks)
 
@@ -2450,8 +2548,12 @@ class NativeSegmentDriver:
                 raise DriverError('a retained request row has no newer state epoch')
         self.tx = admission.transaction
         self.admission = admission
+        self._replies = self._open_replies()
+        self._lean_streams = {}
         self.open_request = OpenRequest(admission, self.ranks,
-                                        admission.state_epoch, 1)
+                                        admission.state_epoch, 1, self._replies)
+        if self._replies == 'lean' and self.progress is not None:
+            self.progress.counters['lean_chunks'] += 1
         self.phase = 'open'
         if self.progress is not None and self._progress_owned():
             transaction = admission.transaction
@@ -3203,6 +3305,8 @@ class NativeSegmentDriver:
         self.accepted_tickets = {}
         self._accepted_descriptors = {}
         self.reports = {}
+        self._replies = 'full'
+        self._lean_streams = {}
         self.bound_ticket = None
         self.pp_send_ticket = None
         self.receiver_ticket = None
