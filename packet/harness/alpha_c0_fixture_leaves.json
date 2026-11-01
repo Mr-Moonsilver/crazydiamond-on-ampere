@@ -1,0 +1,91 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "C0 queue (arms, grade, arm loop) hub and exact pinned-container CPU tests; no box or GPU evidence",
+ "inherits": [
+  "stage_fixture_leaves.json",
+  "alpha_perf_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "arm-control-replies",
+   "test": "test_alpha_c0_queue.Selection",
+   "replaces": "The engine control client replies to native_progress, native_stage_local and release_auto_arm",
+   "equivalence": "The question is what the arm does with each reply: order, resume on refusal, refusal of a reply that does not prove the selection. The reply fields are the real _stage_control and release replies; test_alpha_c0_queue.Arm reads the same fields through the real endpoint, session and driver.",
+   "cannot_prove": "Engine behaviour under the selection",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-scale-workload",
+   "test": "test_alpha_c0_queue.Arm",
+   "replaces": "harness/workloads/q18a-native41-progress.json sizes and times",
+   "equivalence": "The question is which manifest, selection and declared standing budget the exact arm command sends through the real client and control plane. Only sizes and times are reduced, as held-f's workload() does.",
+   "cannot_prove": "A 65,445-token prompt end to end; a real stage chunk (e3_alpha_c0_probe.py runs that on a connected Core; the box runs it for real)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage-arm-grade-synthetic-run",
+   "test": "test_alpha_c0_queue.Grade, test_alpha_c0_queue.ArmLoop",
+   "replaces": "A real box run: eight arm records with spans, stage counters and output digests, and the engine log those spans select",
+   "equivalence": "Progress lines come from the real nm.ProgressTrace emitters through StageEmit, which writes each path's reply pattern: serial, four ranks answer every command; local, a command's own stage ranks answer, a non-target rank's row has replied 0 as executor_hooks writes it. e3_alpha_c0_probe.py runs the real driver's lines through the same join.",
+   "cannot_prove": "The real speed, decode ratio, memory or numerics",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage-line-format",
+   "test": "test_alpha_c0_queue.Grade",
+   "replaces": "flash-s5 stage-local lines in the followed engine log",
+   "equivalence": "The test line has the fields stage_progress._stage_line logs. test_e3_stage_local and e3_alpha_c0_probe.py read the real line with the same parser.",
+   "cannot_prove": "That the docker log path keeps the line whole; the box run does",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "memory-lines",
+   "test": "test_alpha_c0_queue.Grade",
+   "replaces": "flash-s5 memory receipts from the workers",
+   "equivalence": "The format is the recorded held-f line, pinned verbatim by test_memory_receipts_read_the_recorded_line.",
+   "cannot_prove": "That C0 stays within the free-memory margin; that is the box gate, reported, proposed as 0 OOMs and min free >= base - 2 MiB",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "numerics-output-rows",
+   "test": "test_alpha_c0_queue.Numerics, test_alpha_c0_queue.Digests",
+   "replaces": "Sampled tokens of the fresh and append requests and standing stream digests of a real run",
+   "equivalence": "The comparison is over declared token lists and digests built by the real stream_digests; identity is structural.",
+   "cannot_prove": "That equal sampled tokens mean equal tensors; the box compares tokens only (logprobs are refused native). The per-rank work proof is tools/c0_bit_identity.py, on CPU",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clients",
+   "test": "test_alpha_c0_queue.ArmLoop",
+   "replaces": "e3_alpha_c0_box.py arm and e3_native39_trunk_checks.py at the bash seam",
+   "equivalence": "alpha-perf's stubs (test_alpha_perf_queue.STUB_BOX, STUB_CHECKS) with the module name changed: the question is the loop's control flow; the watch and the grade are real.",
+   "cannot_prove": "Anything about the clients' behaviour against an engine",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-box-tools",
+   "test": "test_alpha_c0_queue.ArmLoop",
+   "replaces": "nvidia-smi, docker, systemctl and health_ok on the box",
+   "equivalence": "Same leaf as test_alpha_perf_queue.ArmLoop.",
+   "cannot_prove": "Real tool output formats",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clock",
+   "test": "test_alpha_c0_queue.ArmLoop",
+   "replaces": "Box time before the arm entry guard",
+   "equivalence": "The guard compares bash SECONDS with the real LAST_ARM_ENTRY_S. Assigning SECONDS after a named step moves the variable the guard reads.",
+   "cannot_prove": "Real arm durations",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}
