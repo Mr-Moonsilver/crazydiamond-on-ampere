@@ -46,6 +46,7 @@ from async_handoff import (
     TransactionLease,
 )
 from e3_types import (
+    ARENA_PAGES,
     CompletionKind,
     CompletionProof,
     DependencyRole,
@@ -53,6 +54,7 @@ from e3_types import (
     E3Pending,
     LaneRole,
     OperationTicket,
+    PAGE_TOKENS,
     TransactionId,
 )
 from lane_comm import PPConsumerReceipt
@@ -78,7 +80,9 @@ from wire_v1 import (
     PeerBinding,
     PeerBindingAck,
     PollRequest,
+    QsaProfileGrant,
     QsaProfileQuery,
+    QsaScheduleShape,
     qsa_profile_agreement,
     ReleaseRequest,
     ReleaseAck,
@@ -839,6 +843,38 @@ def _progress_outcome(kind, value):
         return 'unknown'
 
 
+class FusedQsa:
+    """Step A: one bounded worker command per dense QSA layer.
+
+    Installed at startup by FLASH_S5_QSA_FUSED=1, off otherwise. ``selected`` is
+    the per-arm choice, changed only while paused, idle and FULL, and read once
+    per transaction before OPEN. A selected transaction has no stepped fallback.
+    """
+    # At most this many accepted commands not yet host-queried complete, per peer.
+    RUN_AHEAD = 8
+    # No accepted op and no completion on any rank for this long fails closed.
+    # The reply timeout's value: a worker command may legitimately take a while.
+    STALL_S = 300.
+
+    def __init__(self, run_ahead=RUN_AHEAD, stall_s=STALL_S):
+        self.selected = False
+        self.run_ahead = run_ahead
+        self.stall_s = stall_s
+        self.counters = dict(selections=0, chunks=0, grants=0, fused_commands=0,
+                             run_ahead_polls=0, ledger_checks=0)
+
+    def snapshot(self):
+        return dict(selected=self.selected, run_ahead=self.run_ahead, stall_s=self.stall_s,
+                    **self.counters)
+
+
+def fused_expected_shape(valid_tokens):
+    """The engine's own expectation, from the admission alone."""
+    pages = (max(valid_tokens, 1) - 1) // PAGE_TOKENS + 1
+    counts = (1,) * ((pages + ARENA_PAGES - 1) // ARENA_PAGES)
+    return QsaScheduleShape('dense_dma', counts, counts)
+
+
 class NativeProgress:
     """Held-f: native progress receipts and the switchable candidate (owner thread only).
 
@@ -1151,6 +1187,94 @@ class NativeSegmentDriver:
         self.progress = None
         self._progress_origin = 'tick'
         self._in_wait = False
+        # Step A: absent unless FLASH_S5_QSA_FUSED installed it.
+        self.qsa_fused = None
+        self._tx_fused = False
+        self._fused_mark = None
+        self._fused_mark_at = None
+
+    def install_qsa_fused(self):
+        """Step A startup seam; the per-arm choice is the native_qsa_fused control."""
+        if self.qsa_fused is not None:
+            raise DriverError('fused QSA is already installed')
+        if getattr(self, 'auto_arm', None) is None:
+            raise DriverError('fused QSA requires the auto-arm policy')
+        self.qsa_fused = FusedQsa()
+        return self.qsa_fused
+
+    def _fused_control(self, command):
+        """Typed per-arm selection; only installed, only paused idle FULL."""
+        if self.error is not None:
+            raise DriverError(self.error)
+        if set(command) - {'action', 'fused', 'engine_epoch'}:
+            raise DriverError('native-qsa-fused-command-fields-differ')
+        epoch = command.get('engine_epoch')
+        if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
+            raise DriverError('native-control-engine-epoch-differs')
+        fused = command.get('fused')
+        if type(fused) is not bool:
+            raise DriverError('native-qsa-fused-invalid')
+        policy = getattr(self, 'auto_arm', None)
+        recording = self.progress is not None and self.progress.recording
+        if (not self._engine_paused() or self._split_ready or self.tx is not None
+                or self.controller.active or self._inflight or self._control is not None
+                or self._route_exchange() is not None or self._return_pending is not None
+                or self._retained is not None or self._admission_intent is not None
+                or policy is None or policy.active or recording):
+            raise DriverError('native-qsa-fused-requires-paused-idle-full')
+        previous = self.qsa_fused.selected
+        self.qsa_fused.selected = fused
+        self.qsa_fused.counters['selections'] += int(previous != fused)
+        now = int(self._monotonic_ns())
+        return {'schema': 1, 'action': 'native_qsa_fused', 'fused': fused, 'previous': previous,
+                'engine_epoch': self.engine_epoch, 'route': 'full',
+                'route_generation': self.route_generation,
+                'observed_clock_ns': now, 'clock': self._clock_record(now)}
+
+    def _fused_agree(self, descriptor, targets, accepted):
+        """Both stage peers' commitment for this command. PREPARE also grants the layers."""
+        items = [item for item in accepted if item.worker_rank in targets]
+        self.qsa_fused.counters['ledger_checks'] += 1
+        if len({item.collectives for item in items}) != 1 or items[0].collectives is None:
+            raise DriverError('tp-ledger-mismatch' + _agreement_detail(self._command, targets, accepted))
+        if descriptor.kind is SegmentKind.LAYER and self._command.profile is not None:
+            self.qsa_fused.counters['fused_commands'] += 1
+        if descriptor.kind is not SegmentKind.PREPARE:
+            return
+        profiles = {item.dense_profiles for item in items}
+        if len(profiles) != 1 or None in profiles:
+            raise DriverError('fused-profile-disagreement' + _agreement_detail(self._command, targets, accepted))
+        expected = fused_expected_shape(self.tx.chunk_end)
+        low, high = self.stage_layers[descriptor.stage]
+        for layer, shape in profiles.pop():
+            if not low <= layer < high or shape != expected:
+                raise DriverError('fused-profile-differs-from-the-admission')
+            query = QsaProfileQuery(self.tx, self.admission.state_epoch, descriptor.stage, layer,
+                                    self._command.op_seq, tuple(targets))
+            self._profile_grants[(descriptor.stage, layer)] = QsaProfileGrant(query, shape, fused=True)
+            self.qsa_fused.counters['grants'] += 1
+
+    def _fused_hold(self, entry):
+        """Run-ahead bound without worker pending: a LAYER waits on the peers' reports."""
+        if entry['kind'] is not SegmentKind.LAYER:
+            return False
+        limit = self.qsa_fused.run_ahead
+        return any(rank in self.reports and len(self.reports[rank].pending_op_seqs) >= limit
+                   for rank in self.stage_ranks[entry['stage']])
+
+    def _fused_watchdog(self):
+        """Fail closed on no progress anywhere. A collective stuck on the device has
+        no safe release: ownership stays retained and no device wait is issued."""
+        mark = (len(self.accepted_tickets),
+                tuple(sorted((rank, report.completed_sequence) for rank, report in self.reports.items())))
+        now = self.clock()
+        if mark != self._fused_mark or self._fused_mark_at is None:
+            self._fused_mark, self._fused_mark_at = mark, now
+            return
+        if now - self._fused_mark_at > self.qsa_fused.stall_s:
+            self._record('tp_collective_stall', transaction=self.tx.txn_seq,
+                         accepted=mark[0], completed=[list(row) for row in mark[1]])
+            raise DriverError('tp-collective-stall')
 
     def install_progress(self, installed):
         """Held-f startup seam: receipts (``trace``) or receipts + candidate (``burst``)."""
@@ -1182,6 +1306,8 @@ class NativeSegmentDriver:
         if self.phase != 'segments' or len(inflight) > 1:
             return False
         if inflight:
+            if self._tx_fused and inflight == ('poll',):
+                return True
             return (inflight == ('segment',) and self._command is not None
                     and self._command.kind in _WAIT_SEGMENT_KINDS)
         if self._retry is not None:
@@ -1782,6 +1908,8 @@ class NativeSegmentDriver:
             self.index += 1
         if self.index == len(self.plan):
             self.phase = 'finalize'
+        if self._tx_fused:
+            self._fused_agree(descriptor, targets, accepted)
         self._record('segment', transaction=self.tx.txn_seq,
                      op_seq=self._command.op_seq,
                      # Never ``kind``: that field carries the journal entry
@@ -2401,8 +2529,13 @@ class NativeSegmentDriver:
                 raise DriverError('a retained request row has no newer state epoch')
         self.tx = admission.transaction
         self.admission = admission
+        self._tx_fused = (self.qsa_fused is not None and self.qsa_fused.selected
+                          and self._progress_owned())
+        self._fused_mark = self._fused_mark_at = None
+        if self._tx_fused:
+            self.qsa_fused.counters['chunks'] += 1
         self.open_request = OpenRequest(admission, self.ranks,
-                                        admission.state_epoch, 1)
+                                        admission.state_epoch, 1, qsa_fused=self._tx_fused)
         self.phase = 'open'
         if self.progress is not None and self._progress_owned():
             transaction = admission.transaction
@@ -2446,6 +2579,8 @@ class NativeSegmentDriver:
         self._stop_ticks = 0
 
     def _drive(self):
+        if self._tx_fused:
+            self._fused_watchdog()
         if self.phase == 'profile':
             if not self._inflight:
                 remaining = self._profile_deadline - self.clock()
@@ -2473,6 +2608,13 @@ class NativeSegmentDriver:
                 return
             if self.index >= len(self.plan):
                 self.phase = 'finalize'
+                return
+            if self._tx_fused and self._fused_hold(self.plan[self.index]):
+                self.qsa_fused.counters['run_ahead_polls'] += 1
+                self._submit('poll', ('flash_s5_poll',
+                                      (PollRequest(self.tx, self.admission.state_epoch,
+                                                   self.poll_budget),), {}, None),
+                             self.ranks)
                 return
             self._send_plan_entry(self.plan[self.index])
             return
@@ -2536,6 +2678,14 @@ class NativeSegmentDriver:
             else:
                 self._tail_submission = TPTailSubmissionObligation(
                     command, boundary[3], self.route_generation)
+        if self._tx_fused and profile is not None:
+            # A fused layer contains its TP tail: an accepted peer waits in the
+            # collective, so the same command reaches every peer before any cancel.
+            if self._tail_submission is None:
+                self._tail_submission = TPTailSubmissionObligation(
+                    command, profile.query.boundary_op_seq, self.route_generation)
+            elif self._tail_submission.command != command:
+                raise DriverError('fused layer replaced its retained TP obligation')
         if kind is SegmentKind.PP_SEND:
             self.pp_send_seq = descriptor.seq
             if self._pp_submission is None:
@@ -3089,6 +3239,7 @@ class NativeSegmentDriver:
         """
         if self.progress is not None:
             self.progress.end(_progress_logger())
+        self._tx_fused = False
         self.tx = None
         self.admission = None
         self.phase = 'idle'
@@ -3295,6 +3446,8 @@ class NativeSegmentDriver:
         action = command.get('action')
         if action == 'native_progress' and self.progress is not None:
             return self._progress_control(command)
+        if action == 'native_qsa_fused' and self.qsa_fused is not None:
+            return self._fused_control(command)
         if action not in CONTROL_ACTIONS:
             raise DriverError('native-control-unknown-action')
         if action == 'cancel':
@@ -3483,6 +3636,8 @@ class NativeSegmentDriver:
             result['auto_arm'] = policy.snapshot()
         if self.progress is not None:
             result['native_progress'] = self.progress.snapshot()
+        if self.qsa_fused is not None:
+            result['native_qsa_fused'] = self.qsa_fused.snapshot()
         return result
 
     def _status_record_base(self, now=None):

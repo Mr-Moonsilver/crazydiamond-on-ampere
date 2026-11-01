@@ -48,7 +48,7 @@ from copy import deepcopy
 from contextlib import ExitStack, nullcontext
 
 from e3_types import E3ContractError, E3Pending, TransactionId
-from lane_comm import LaneCommError
+from lane_comm import CollectiveLedger, LaneCommError
 
 KINDS = ('prepare', 'pp_receive', 'prefix', 'layer', 'suffix', 'pp_send', 'state_finalize')
 PP_KINDS = ('pp_receive', 'pp_send')
@@ -190,6 +190,10 @@ class LaneDispatcher:
 
     def _reset_transaction(self):
         """Clear every per-transaction field (open/release share this)."""
+        if getattr(self, 'qsa_fused', False):
+            self._set_ledger(None)
+        self.qsa_fused = False
+        self.fused_profiles = None
         self.transaction = None
         self.chunk = None
         self.lane = None
@@ -259,6 +263,22 @@ class LaneDispatcher:
         self.admission = admission
         return {'opened': True, 'stage': self._stage()}
 
+    # -- Step A: selected at OPEN, before admission; no fallback once selected ----
+    def select_fused(self):
+        """This open transaction runs each dense QSA layer as one bounded command."""
+        if self.transaction is None or self.chunk is not None:
+            raise LaneDispatchError('fused QSA is selected at open, before PREPARE')
+        self.qsa_fused = True
+        self._set_ledger(CollectiveLedger())
+
+    def _set_ledger(self, ledger):
+        communicator = getattr(self.native.comms, 'tp', None)
+        if communicator is not None:
+            communicator.ledger = ledger
+
+    def _ledger(self):
+        return getattr(getattr(self.native.comms, 'tp', None), 'ledger', None)
+
     @property
     def stage(self):
         """This worker's PP stage (0 sender, 1 receiver); never inferred by the engine."""
@@ -296,6 +316,9 @@ class LaneDispatcher:
                 f'op_seq {command.op_seq} is not strictly increasing')
         started = self.clock()
         self._partial = False
+        ledger = self._ledger() if self.qsa_fused else None
+        if ledger is not None:
+            ledger.begin()
         try:
             with self._scope():
                 handler = getattr(self, '_do_' + command.kind)
@@ -319,6 +342,8 @@ class LaneDispatcher:
             raise
         acknowledgement = {'op_seq': command.op_seq, 'kind': command.kind, 'result': result,
                             'cursor': self.cursor(), 'host_submit_ns': self.last_ns}
+        if self.qsa_fused:
+            acknowledgement['collectives'] = ledger.take() if ledger is not None else (0, '')
         self.accepted[command.op_seq] = (deepcopy(command), deepcopy(acknowledgement))
         return deepcopy(acknowledgement)
 
@@ -357,6 +382,13 @@ class LaneDispatcher:
             # this dispatch never invents a lease of its own.
             marker.flash_e3_source_binding = self.source_binding
             self.server.begin_prefill_operation(self.runner, marker)
+        if self.qsa_fused:
+            # Host plan only: the peers agree on these before the stage's first collective.
+            if driver is None:
+                raise LaneDispatchError('fused QSA needs the constructed layer driver')
+            self.fused_profiles = driver.fused_profiles(self.lane, self.admission.chunk_end)
+            return {'prepared': True, 'req_index': chunk.req_index,
+                    'dense_profiles': self.fused_profiles}
         return {'prepared': True, 'req_index': chunk.req_index}
 
     def _do_pp_receive(self, command):
@@ -392,6 +424,8 @@ class LaneDispatcher:
         self._need_chunk()
         if command.layer_start != self.lane.cursor:
             raise LaneDispatchError(f'layer segment {command.layer_start} does not match cursor {self.lane.cursor}')
+        if self.qsa_fused:
+            return self._do_layer_fused(command)
         # Query the driver's source-owned credit *before* the partial-enqueue
         # boundary: a credit-only attempt must stay typed pending for the
         # unchanged command and must record no event or accepted operation.
@@ -414,6 +448,26 @@ class LaneDispatcher:
                 'paused': record.kind == 'layer-paused',
                 'profile_boundary': bool(callable(boundary) and boundary(command.layer_start)),
                 'tail_boundary': bool(callable(tail_boundary) and tail_boundary(command.layer_start))}
+
+    def _do_layer_fused(self, command):
+        """A QSA layer of a fused transaction: its grant or nothing, never the stepped path."""
+        grant = command.profile
+        owned = dict(self.fused_profiles).get(command.layer_start)
+        if grant is None:
+            if owned is not None:
+                raise LaneDispatchError('a fused transaction refuses a stepped QSA layer')
+            self._partial = True
+            record = self.lane.layer(command.layer_start)
+        else:
+            if grant.fused is not True or owned != grant.shape:
+                raise LaneDispatchError('fused grant differs from this PREPARE plan')
+            self.driver.arm_fused(command.layer_start, grant)
+            self._partial = True
+            record = self.lane.layer(command.layer_start)
+        if record.kind != 'layer':
+            raise LaneDispatchError('a fused transaction layer did not finish in its command')
+        return {'kind': record.kind, 'layer': command.layer_start, 'paused': False,
+                'profile_boundary': False, 'tail_boundary': False}
 
     def _do_suffix(self, command):
         self._need_chunk()

@@ -264,6 +264,11 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
         progress = progress_mode(env)
     except ValueError as exc:
         raise StartupError(str(exc)) from None
+    fused = env.get('FLASH_S5_QSA_FUSED', '0')
+    if fused not in ('0', '1'):
+        raise StartupError('invalid boolean setting: FLASH_S5_QSA_FUSED')
+    if fused == '1' and (auto != '1' or env.get('FLASH_S5_NATIVE_QSA_POLICY', 'current') != 'dense'):
+        raise StartupError('FLASH_S5_QSA_FUSED needs FLASH_S5_AUTO_ARM=1 and the dense QSA policy')
     if mode_settings(env) is not None:
         # The decode-only probe has no engine-side lane composition.
         return None
@@ -345,6 +350,8 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     if progress is not None:
         # Held-f receipts (and the burst candidate) attach to the auto policy only.
         driver.install_progress(progress)
+    if fused == '1':
+        driver.install_qsa_fused()
     return composition
 
 

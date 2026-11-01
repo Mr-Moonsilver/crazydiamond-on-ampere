@@ -706,10 +706,14 @@ class OpenRequest:
     ranks: tuple
     expected_state_epoch: int
     max_outstanding: int
+    # Step A: this transaction runs each dense QSA layer as one bounded command.
+    qsa_fused: bool = False
 
     def __post_init__(self):
         if type(self.admission) is not AdmissionRecord:
             raise E3ContractError('open needs an AdmissionRecord')
+        if type(self.qsa_fused) is not bool:
+            raise E3ContractError('open qsa_fused must be bool')
         _ints('ranks', self.ranks, minimum=0, allow_empty=False)
         if self.ranks != tuple(sorted(self.ranks)):
             raise E3ContractError('open ranks must be ordered')
@@ -1011,10 +1015,15 @@ class QsaProfileGrant:
     """Engine agreement binding; worker still checks its own live profile."""
     query: QsaProfileQuery
     shape: QsaScheduleShape
+    # Step A: agreed at PREPARE (the query's boundary op) before the stage's
+    # first collective; the layer runs as one command and never pauses.
+    fused: bool = False
 
     def __post_init__(self):
         if type(self.query) is not QsaProfileQuery or type(self.shape) is not QsaScheduleShape:
             raise E3ContractError('QSA profile grant needs its exact query and shape')
+        if type(self.fused) is not bool or (self.fused and self.shape.route != 'dense_dma'):
+            raise E3ContractError('a fused QSA grant needs the dense route')
 
 
 def qsa_profile_agreement(query, replies, ranks):
@@ -1149,10 +1158,29 @@ class SegmentAcceptance:
     report: WorkerCompletionReport | None = field(default=None, repr=False)
     profile_boundary: bool = False
     tail_boundary: bool = False
+    # Step A: a PREPARE's per-layer dense schedule, ((layer, shape), ...).
+    dense_profiles: tuple | None = field(default=None, repr=False)
+    # Step A: this command's collectives on the lane TP communicator: (count, digest
+    # over order, communicator and message shape). Peers must report the same value.
+    collectives: tuple | None = field(default=None, repr=False)
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
             raise E3ContractError('acceptance needs a TransactionId')
+        if self.dense_profiles is not None:
+            if self.kind is not SegmentKind.PREPARE or not self.accepted:
+                raise E3ContractError('only an accepted PREPARE carries dense profiles')
+            _tuple('dense_profiles', self.dense_profiles)
+            if (any(type(row) is not tuple or len(row) != 2 or type(row[0]) is not int
+                    or type(row[1]) is not QsaScheduleShape for row in self.dense_profiles)
+                    or [row[0] for row in self.dense_profiles]
+                    != sorted({row[0] for row in self.dense_profiles})):
+                raise E3ContractError('dense profiles must be ordered (layer, shape) rows')
+        if self.collectives is not None:
+            if (not self.accepted or type(self.collectives) is not tuple
+                    or len(self.collectives) != 2 or type(self.collectives[0]) is not int
+                    or self.collectives[0] < 0 or type(self.collectives[1]) is not str):
+                raise E3ContractError('collective ledger must be an accepted (count, digest)')
         _int('worker_rank', self.worker_rank, 0)
         _kind('kind', self.kind, SegmentKind)
         _int('stage', self.stage, 0)

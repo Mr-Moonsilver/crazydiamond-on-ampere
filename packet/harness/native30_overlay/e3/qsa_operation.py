@@ -1961,8 +1961,10 @@ class QsaPrefillOperation:
             run.sparse_hold.validate(run.sparse_hold.owner, run.layer_name, run.pages)
         # Only one bucket may be outstanding per rank: the next fill is a
         # retry-after-completion, not a host wait or an unbounded queue.
+        # A fused layer (Step A) orders its buckets by stream events only.
         self._refresh()
-        if self.pending_buckets >= MAX_OUTSTANDING_BUCKETS:
+        if (self.pending_buckets >= MAX_OUTSTANDING_BUCKETS
+                and not getattr(run.schedule_grant, 'fused', False)):
             raise E3Pending('one arena bucket is still outstanding')
         index = run.next_bucket
         if index >= len(run.buckets):
@@ -2247,6 +2249,51 @@ class QsaPrefillOperation:
         except (SparsePlanRefused, SparseFallbackRequired):
             # Typed admission refusal: the layer parks for the serial route.
             # This is not a transport failure and never counts as overlap.
+            self._continuation = None
+            raise
+        except BaseException:
+            self._failed = True
+            raise
+
+    # --- Step A: one bounded operation per dense QSA layer ----------------
+    def fused_refusal(self):
+        """Why this transaction cannot run fused, or None; asked at PREPARE.
+
+        The rule is no data-dependent selection or readback inside the fused
+        command: the dense policy never selects (sparse_selection_eligible), and
+        the source lease stays attached. The row1 byte oracle and the boundary
+        digests need host-observed completions, so they refuse fused too.
+        """
+        if self.transport_policy != 'dense':
+            return 'native-qsa-policy-not-dense'
+        if self.qualification is not None:
+            return 'row1-qualifier-attached'
+        if self.trace is not None or getattr(self.device, 'native_qsa_boundary', False):
+            return 'diagnostic-readback-attached'
+        return None
+
+    def fused_shape(self, layer_name, valid_tokens, page_size):
+        """This layer's dense schedule from the host plan alone; no device work."""
+        from wire_v1 import QsaScheduleShape
+        num_pages = (max(valid_tokens, 1) - 1) // page_size + 1
+        counts = (1,) * len(plan_buckets(self._plan(layer_name, num_pages)))
+        return QsaScheduleShape('dense_dma', counts, counts)
+
+    def advance_fused(self):
+        """advance() for a fused layer: no host wait on any earlier consumer.
+
+        Copies wait on stream events (fill_bucket), compute waits on the copy.
+        """
+        self._check_identity()
+        self._refresh()
+        if self._continuation is None:
+            raise OperationError('no generated continuation attached')
+        try:
+            return next(self._continuation)
+        except StopIteration:
+            self._continuation = None
+            raise
+        except (SparsePlanRefused, SparseFallbackRequired):
             self._continuation = None
             raise
         except BaseException:

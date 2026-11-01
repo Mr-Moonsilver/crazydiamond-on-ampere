@@ -59,6 +59,12 @@ def _progress_burst():
             and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')
 
 
+def _qsa_fused():
+    """The Step A switch is exposed only where the engine installed it."""
+    return (os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'
+            and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')
+
+
 def _positive(value):
     return type(value) is int and value > 0
 
@@ -133,7 +139,8 @@ class NativeControlClient:
         action = command.get('action')
         if action not in ACTIONS:
             if not (action == 'release_auto_arm' and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'
-                    or action == 'native_progress' and _progress_burst()):
+                    or action == 'native_progress' and _progress_burst()
+                    or action == 'native_qsa_fused' and _qsa_fused()):
                 raise NativeControlError('native-control-unknown-action')
         if self.pending is not None and action not in READ_ACTIONS:
             # Reads stay available while an abandoned intent is registered so
@@ -225,6 +232,17 @@ class NativeControlClient:
         reply = await self._call({'action': 'native_progress', 'mode': mode})
         if reply.get('mode') != mode:
             raise NativeControlError('native-control-progress-mode-not-set')
+        return reply
+
+    async def native_qsa_fused(self, fused):
+        """Step A per-arm switch (installed only); the engine re-checks idle FULL."""
+        if type(fused) is not bool:
+            raise NativeControlError('native-control-qsa-fused-invalid')
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call({'action': 'native_qsa_fused', 'fused': fused})
+        if reply.get('fused') is not fused:
+            raise NativeControlError('native-control-qsa-fused-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------

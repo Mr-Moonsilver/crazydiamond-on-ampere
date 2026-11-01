@@ -423,6 +423,8 @@ class NativeWorkerBridge:
         if operation is None:
             raise WorkerBridgeError('worker open produced no native operation')
         self.dispatcher.open(record.transaction, chunk_admission, operation)
+        if request.qsa_fused:
+            self.dispatcher.select_fused()
         stage = self.dispatcher.stage
         if stage not in (0, 1):
             raise WorkerBridgeError('dispatcher stage is outside the two-stage split')
@@ -451,7 +453,10 @@ class NativeWorkerBridge:
         if command.kind is SegmentKind.PREPARE:
             self._bind_prepare_source(command)
         if command.profile is not None:
-            self._profile_boundary_command(command.profile.query)
+            if command.profile.fused:
+                self._fused_prepare_command(command.profile)
+            else:
+                self._profile_boundary_command(command.profile.query)
         try:
             acknowledgement = self.dispatcher.submit(command)
         except E3Pending:
@@ -475,7 +480,9 @@ class NativeWorkerBridge:
             host_submit_ns=self._host_ns[command.op_seq],
             paused=bool(result.get('paused')), report=report,
             profile_boundary=bool(result.get('profile_boundary')),
-            tail_boundary=bool(result.get('tail_boundary')))
+            tail_boundary=bool(result.get('tail_boundary')),
+            dense_profiles=result.get('dense_profiles'),
+            collectives=acknowledgement.get('collectives'))
 
     # -- peer binding / receipts ------------------------------------------
     def bind_pp(self, binding):
@@ -540,6 +547,19 @@ class NativeWorkerBridge:
         if (command.kind != 'layer' or command.layer_start != query.layer
                 or not (ack.get('result') or {}).get('profile_boundary')):
             raise WorkerBridgeError('QSA profile does not name its accepted layer boundary')
+
+    def _fused_prepare_command(self, grant):
+        """A fused grant names this worker's own accepted PREPARE and its reported plan."""
+        query = grant.query
+        self._require_open(query.transaction, query.state_epoch)
+        if query.stage != self.stage or self.rank not in query.ranks:
+            raise WorkerBridgeError('fused grant belongs to another stage')
+        stored = self.dispatcher.accepted.get(query.boundary_op_seq)
+        if stored is None or stored[0].kind != 'prepare':
+            raise WorkerBridgeError('fused grant has no accepted PREPARE')
+        reported = (stored[1].get('result') or {}).get('dense_profiles')
+        if reported is None or dict(reported).get(query.layer) != grant.shape:
+            raise WorkerBridgeError('fused grant differs from the reported PREPARE plan')
 
     def _proof(self, op_seq, kind):
         key = (op_seq, kind)
