@@ -647,6 +647,80 @@ class Grade(unittest.TestCase):
         self.assertIn('declared-arm-missing:local-solo-1', json.loads((q / 'grade-2.json').read_text())['missing'])
 
 
+class RealLines(unittest.TestCase):
+    """The real stage driver, worker hooks and emitters on the per-rank ring (stage_net), their lines through the grade's own readers."""
+
+    class Log:
+        def __init__(self):
+            self.lines = []
+
+        def info(self, text, *args):
+            self.lines.append(text % args if args else text)
+
+    def run_stack(self, *, tokens=13):
+        import collections
+        import executor_hooks as eh
+        import native_measurement as nm
+        import stage_net
+        import stage_progress as sp
+        log, states = self.Log(), {rank: (nm.ProgressTrace('worker', rank), collections.deque()) for rank in range(4)}
+        with mock.patch.object(eh, '_worker_progress', lambda rank: states[rank]), mock.patch.object(eh, '_progress_logger', lambda: log), \
+                mock.patch.object(ed, '_progress_logger', lambda: log), mock.patch.object(sp, '_progress_logger', lambda: log):
+            network = stage_net.RingStack(direct=True, tokens=tokens)
+            self.addCleanup(network.close_network)
+            driver = network.driver
+            driver.auto_arm = SimpleNamespace(manual_owned=False, phase='native', active=False)
+            driver._admission_intent = dict(origin='auto-arm', phase='native', seq=1)
+            driver.install_progress('burst')
+            driver.progress.mode = 'burst'
+            network.run_request()
+        return network, log.lines
+
+    def records(self, lines):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        path = Path(directory) / 'engine-stream.err'
+        path.write_text(''.join('2026-11-01T11:00:%02d.%06dZ x %s\n' % (i // 1000000, i % 1000000, text) for i, text in enumerate(lines)))
+        return progress.read_lines([path])
+
+    def test_a_real_stage_run_reads_through_the_join(self):
+        network, lines = self.run_stack()
+        chunks = network.expected_commits
+        self.assertGreater(chunks, 1)
+        records, errors = self.records(lines)
+        self.assertEqual(errors, [])
+        flushes, problems = progress.assemble(records)
+        self.assertEqual(problems, [])
+        workers = {}
+        for flush in flushes:
+            if flush['side'] == 'worker':
+                for row in flush['rows'].get('r', []):
+                    workers[(row['seq'], flush['rank'])] = row
+        engine = sorted((f for f in flushes if f['side'] == 'engine'), key=lambda f: f['line'])
+        self.assertEqual(len(engine), chunks)
+        for index, chunk in enumerate(engine):
+            info = progress.chunk_breakdown(chunk, workers)
+            with self.subTest(chunk=index):
+                self.assertEqual(info['foreign_replies'], 0)
+                self.assertGreater(info['short_replies'], 0)
+                self.assertEqual(info['kinds']['open'], 2)
+                self.assertEqual(info['kinds']['release'], 2)
+                if index < chunks - 1:
+                    self.assertFalse(info['missing_worker_rows'], info['missing_worker_rows'])
+                else:
+                    # The run's last line: only the rows after the last flush may ride past it.
+                    self.assertTrue({row['kind'] for row in info['missing_worker_rows']} <= {'release'}, info['missing_worker_rows'])
+        rows = box.stage_lines([(None, text) for text in lines])
+        self.assertEqual(len(rows), chunks)
+        summary = box.stage_summary(rows)
+        self.assertEqual(summary['lines'], chunks)
+        self.assertEqual(len(summary['commands_per_chunk']), 2)
+        self.assertGreater(min(summary['commands_per_chunk']), 0)
+        # Each rank wrote a row for each command it read, a non-target's with replied 0 (the grade's foreign count reads these).
+        skipped = [r for (seq, rank), r in workers.items() if r.get('replied') == 0]
+        self.assertTrue(skipped)
+
+
 class Numerics(unittest.TestCase):
     def arms(self, **changes):
         rows = []
