@@ -24,7 +24,10 @@
       "replaces": "The /tokenize HTTP POST via length._post, i.e. e3_native39_w2_length._post, refused at the first network call",
       "implementation": "Refuse the first real guard._post (patched as length._post, i.e. e3_native39_w2_length._post) after parsing exact queue argv and actual frozen workload/declaration/planner geometry",
       "equivalence": "The client main, manifest parsing, prompt construction and guard run unchanged through the first network call; no hand-built workload object",
-      "cannot_prove": "Box tokenizer, auth, native-control or request execution. The queue requires the real /tokenize guard and native session."
+      "cannot_prove": "Box tokenizer, auth, native-control or request execution. The queue requires the real /tokenize guard and native session.",
+      "seams": [
+        "length._post"
+      ]
     },
     {
       "name": "paired-grade-packets",
@@ -57,7 +60,14 @@
       "implementation": "clock.view returns client provenance while prove() runs unchanged. The 'json' subtest makes qo.json.dumps raise ValueError; the 'logger' subtest makes the named logger's info raise OSError. The 'elapsed' subtest faults the fake CUDA event's elapsed_time under the existing generated-attention-device-port leaf and uses patch.object(qo, 'MAX_OUTSTANDING_BUCKETS', 1) only as a no-op context.",
       "equivalence": "view() is provenance only; prove() never compares identities (identity_equality_required False). Serialisation/logger replacements inject faults only: real release, source-hold retirement and owner cleanup execute, and trace_emit_errors is counted. qo.MAX_OUTSTANDING_BUCKETS remains 1 throughout, so no production credit/bucket bound is relaxed.",
       "cannot_prove": "Real proc views (the packaging separate-container clock split covers those), real logging-handler failure modes, or CUDA elapsed-time behavior. CPU fault injection only; no box evidence.",
-      "box_evidence": false
+      "box_evidence": false,
+      "seams": [
+        "clock.view",
+        "json.dumps",
+        "MAX_OUTSTANDING_BUCKETS",
+        "logging.getLogger(qo.__name__).info"
+      ],
+      "logger_fault": "logging.getLogger(qo.__name__).info raises OSError at qsa_operation.py:657 (owner-review source reference); this is fault injection only."
     }
   ]
 }
