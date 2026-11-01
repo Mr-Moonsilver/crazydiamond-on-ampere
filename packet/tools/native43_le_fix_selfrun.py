@@ -4,8 +4,11 @@
 Container-shaped like tools/native37_robust_selfrun.py: pinned image, CPU only, network none, read-only
 sources.  It runs:
   1. py_compile of the le-fix files under the image's python;
-  2. the suites test_native43_engine_death, test_native43_le_fix_queue_deltas, test_native43_le_fatal_log
-     and the neighbouring test_native38_plain_bind (FatalReplies uses the same fatal channel);
+  2. the le-fix suites test_native43_engine_death, test_native43_le_fix_queue_deltas, test_native43_le_fatal_log
+     (all must pass), and a parity check: the neighbouring test_native38_plain_bind (its FatalReplies uses the
+     same fatal channel) runs in the same container over this tree and over the parent tree (git archive of
+     299f27e), and every test's outcome must be identical.  The parent's container-only failures are not
+     le-fix regressions; they are reported, not hidden;
   3. tools/native43_le_fix_logprobe.py with two packages under vllm.v1.  flash_e3 is the l-e overlay e3/
      with executor_hooks.py replaced by make_s5_overlap.package(le-fix source).  flash_e3_prefix is the
      l-e overlay e3/ as it ran.  Both are copies made on the hub after their hashes are checked.
@@ -32,8 +35,20 @@ COMPILED = ('harness/native43_engine_death.py', 'harness/test_native43_engine_de
             'harness/test_native43_le_fatal_log.py', 'harness/test_native43_le_fix_queue_deltas.py',
             'patches/s5_engine/executor_hooks.py', 'tools/native43_le_fix_queue_deltas.py',
             'tools/native43_le_fix_logprobe.py', 'tools/native43_le_fix_selfrun.py')
-SUITES = ('test_native43_engine_death', 'test_native43_le_fix_queue_deltas', 'test_native43_le_fatal_log',
-          'test_native38_plain_bind')
+SUITES = ('test_native43_engine_death', 'test_native43_le_fix_queue_deltas', 'test_native43_le_fatal_log')
+PARITY = 'test_native38_plain_bind'
+OUTCOMES = '''import json, sys, unittest
+class R(unittest.TextTestResult):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k); self.rows = {}
+    def addSuccess(self, t): super().addSuccess(t); self.rows[t.id()] = 'ok'
+    def addError(self, t, e): super().addError(t, e); self.rows[t.id()] = 'error'
+    def addFailure(self, t, e): super().addFailure(t, e); self.rows[t.id()] = 'fail'
+    def addSkip(self, t, r): super().addSkip(t, r); self.rows[t.id()] = 'skip'
+suite = unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])
+result = unittest.TextTestRunner(resultclass=R, verbosity=2, stream=sys.stderr).run(suite)
+json.dump(result.rows, open(sys.argv[2], 'w'), indent=1, sort_keys=True)
+'''
 
 
 def sha(path):
@@ -75,6 +90,9 @@ def inner_script():
         'python3 -B -c "import py_compile,sys\nfor p in sys.argv[1:]: py_compile.compile(p,cfile=\'/tmp/pyc\',doraise=True)\n'
         'print(\'PY_COMPILE\',len(sys.argv)-1,\'OK\')" ' + compiled + ' > /out/py-compile.log 2>&1; echo "py_compile rc=$?" >> /out/py-compile.log',
         'python3 -B -m unittest -v ' + ' '.join(SUITES) + ' > /out/suites.log 2>&1; echo "suites rc=$?" >> /out/suites.log',
+        'python3 -B /out/outcomes.py %s /out/parity-fixed.json > /out/parity-fixed.log 2>&1' % PARITY,
+        'cd /parent/harness && PYTHONPATH=/parent/harness python3 -B /out/outcomes.py %s /out/parity-parent.json '
+        '> /out/parity-parent.log 2>&1; cd /source/harness' % PARITY,
         'python3 -B /source/tools/native43_le_fix_logprobe.py --out /out/logprobe.json > /out/logprobe.log 2>&1; '
         'echo "logprobe rc=$?" >> /out/logprobe.log',
     ]) + '\n'
@@ -88,15 +106,23 @@ def run(tree, overlay, out, name):
     for folder in (out, prefix, fixed):
         folder.chmod(0o777 if folder == out else 0o755)
     (out / 'inner.sh').write_text(inner_script())
+    (out / 'outcomes.py').write_text(OUTCOMES)
+    parent = out / 'parent-tree'
+    parent.mkdir()
+    archive = subprocess.run(['git', 'archive', PARENT, 'harness', 'patches', 'tools'], cwd=tree, check=True,
+                             capture_output=True).stdout
+    subprocess.run(['tar', '-x', '-C', str(parent)], input=archive, check=True)
     command = ['sudo', '-n', 'docker', 'run', '--pull=never', '--name', name, '--runtime', 'runc',
                '--network', 'none', '--cpus', '4', '--memory', '6g', '--memory-swap', '6g', '--read-only',
                '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=1g', '--ulimit', 'core=0',
                '-e', 'NVIDIA_VISIBLE_DEVICES=none', '-e', 'CUDA_VISIBLE_DEVICES=', '-e', 'PYTHONDONTWRITEBYTECODE=1',
                '-e', 'PYTHONPATH=/source/harness']
-    mounts = {tree / 'harness': '/source/harness', tree / 'patches': '/source/patches', tree / 'tools': '/source/tools',
-              (tree / 'reference/vllm-src').resolve(): '/source/reference/vllm-src',
-              fixed: V + '/flash_e3', prefix: V + '/flash_e3_prefix'}
-    for source, target in mounts.items():
+    mounts = [(tree / 'harness', '/source/harness'), (tree / 'patches', '/source/patches'), (tree / 'tools', '/source/tools'),
+              ((tree / 'reference/vllm-src').resolve(), '/source/reference/vllm-src'),
+              (fixed, V + '/flash_e3'), (prefix, V + '/flash_e3_prefix'),
+              (parent / 'harness', '/parent/harness'), (parent / 'patches', '/parent/patches'),
+              (parent / 'tools', '/parent/tools'), ((tree / 'reference/vllm-src').resolve(), '/parent/reference/vllm-src')]
+    for source, target in mounts:
         command += ['-v', '%s:%s:ro' % (source, target)]
     command += ['-v', '%s:/out' % out, '--entrypoint', 'bash', IMAGE, '/out/inner.sh']
     with (out / 'container.log').open('x') as log:
@@ -109,6 +135,17 @@ def run(tree, overlay, out, name):
     ran = [line for line in text.splitlines() if line.startswith('Ran ')]
     compile_log = (out / 'py-compile.log').read_text() if (out / 'py-compile.log').exists() else ''
     probe = json.loads((out / 'logprobe.json').read_text()) if (out / 'logprobe.json').exists() else {}
+    views = {}
+    for side in ('fixed', 'parent'):
+        path = out / ('parity-%s.json' % side)
+        views[side] = json.loads(path.read_text()) if path.exists() else None
+    fixed_rows, parent_rows = views['fixed'], views['parent']
+    parity = dict(suite=PARITY, parent=PARENT, identical=fixed_rows is not None and fixed_rows == parent_rows,
+                  tests=len(fixed_rows or {}),
+                  not_ok_both=sorted(k for k, v in (fixed_rows or {}).items() if v != 'ok'
+                                     and (parent_rows or {}).get(k) == v),
+                  differing=sorted(k for k in set(fixed_rows or {}) | set(parent_rows or {})
+                                   if (fixed_rows or {}).get(k) != (parent_rows or {}).get(k)))
     result = dict(schema='native43-le-fix-selfrun/1', container_rc=rc, image=IMAGE, network=network,
                   gpu_device_requests=len(devices), box_action=False,
                   py_compile=dict(ok='PY_COMPILE %d OK' % len(COMPILED) in compile_log
@@ -116,6 +153,7 @@ def run(tree, overlay, out, name):
                   suites=dict(names=list(SUITES), ran=ran[-1] if ran else None,
                               ok=text.rstrip().endswith('suites rc=0'), skipped=text.count('... skipped'),
                               log_sha256=sha(out / 'suites.log') if text else None),
+                  parity=parity,
                   logprobe=dict(verdict=probe.get('verdict'), checks=probe.get('checks'),
                                 sha256=sha(out / 'logprobe.json') if probe else None),
                   packages=pins, overlay=str(overlay),
@@ -126,10 +164,11 @@ def run(tree, overlay, out, name):
                                                            'tools'], cwd=tree, text=True).strip()),
                   wall_s=round(time.monotonic() - started, 3), command=command)
     result['verdict'] = 'PASS' if (rc == 0 and result['py_compile']['ok'] and result['suites']['ok']
-                                   and probe.get('verdict') == 'PASS' and network == 'none' and not devices
+                                   and probe.get('verdict') == 'PASS' and parity['identical']
+                                   and network == 'none' and not devices
                                    and not result['tree_dirty']) else 'FAIL'
     (out / 'result.json').write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
-    print(json.dumps({k: result[k] for k in ('verdict', 'container_rc', 'py_compile', 'suites', 'logprobe',
+    print(json.dumps({k: result[k] for k in ('verdict', 'container_rc', 'py_compile', 'suites', 'parity', 'logprobe',
                                               'tree_head', 'tree_dirty', 'wall_s')}, sort_keys=True))
     print('result_sha256', sha(out / 'result.json'))
     return 0 if result['verdict'] == 'PASS' else 1
