@@ -1,0 +1,109 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "Step A: engine tests and device proof; the queue leaves are added by its packaging",
+ "inherits": [
+  "native41_progress_fixture_leaves.json",
+  "native43_le_fix_queue_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "step-a-connected-network",
+   "test": "test_e3_native_qsa_fused.FusedNetwork",
+   "replaces": "CUDA devices, streams, event buses, the model forward and the MQ transport around NativeSegmentDriver, NativeWorkerBridge, LaneDispatcher, QsaLayerDriver and QsaPrefillOperation",
+   "equivalence": "ProfileNetwork's declared CPU leaves; events resolve only when the test completes them, so a host wait or a wrong order shows as a stuck or refused command",
+   "cannot_prove": "device order, bytes, NCCL behaviour, real timing",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-a-auto-arm-state",
+   "test": "test_e3_native_qsa_fused.FusedNetwork",
+   "replaces": "AutoArmPolicy.manual_owned/phase/active and the armed admission intent",
+   "equivalence": "the real _progress_owned predicate reads these fields; the real policy and latch are in test_e3_native_qsa_fused.Control and test_native41_autoarm",
+   "cannot_prove": "the auto-arm cycle itself",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-a-no-qsa-driver",
+   "test": "test_e3_native_qsa_fused.NoQsaDriver",
+   "replaces": "QsaLayerDriver on stage 1 of the connected model",
+   "equivalence": "r4.FakeDriver plus an empty schedule list: this fixture's stage 1 owns no QSA layer; both stages' real drivers run on the box",
+   "cannot_prove": "a stage 1 QSA layer in the connected test",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-a-tp-pynccl",
+   "test": "test_e3_native_qsa_fused.LeafPynccl",
+   "replaces": "PyNccl under the real PrefillTpCommunicator",
+   "equivalence": "the real communicator and ledger see the same object fields (unique_name, world_size) and tensor shapes",
+   "cannot_prove": "a real NCCL collective, its order on the device, or its liveness",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-a-tp-torch",
+   "test": "test_e3_native_qsa_fused.TP_TORCH",
+   "replaces": "torch.cuda.current_stream read by the communicator",
+   "equivalence": "returns the lane stream token the leaf PyNccl ignores",
+   "cannot_prove": "stream scope",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-a-post-seam",
+   "test": "test_e3_native_qsa_fused.FusedNetwork.install_tp",
+   "replaces": "RowParallelLinear.o_proj entering the TP group from _flash_e3_attention_post",
+   "equivalence": "wraps only a synthetic attention instance to enter the real communicator at the production seam",
+   "cannot_prove": "the generated post path",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-a-pending-peer",
+   "test": "test_e3_native_qsa_fused.Cancel.PendingPeer",
+   "replaces": "a peer that has not yet accepted the broadcast",
+   "equivalence": "typed pending in front of the real peer bridge, as test_e3_native_tp_tail_skew; the fused path itself never returns pending",
+   "cannot_prove": "MQ delivery order",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-a-mutants",
+   "test": "test_e3_native_qsa_fused.Mutants",
+   "replaces": "_fused_agree, _fused_watchdog, _fused_hold, _progress_owned, _send_plan_entry, advance_fused",
+   "equivalence": "named negative controls: each patched for one scenario, which must fail; no pass depends on them",
+   "cannot_prove": "anything beyond discrimination",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-a-device-admitted",
+   "test": "e3_native_qsa_fused_device_probe.admitted",
+   "replaces": "LaneChunk's admission and metadata fields",
+   "equivalence": "the same fields written directly because make_alignment's lane tables hold 32 pages and the proof needs 73; the operation, plan and sources are real",
+   "cannot_prove": "LaneTables above 32 pages in this probe (the B5 scenario runs the real one)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-a-device-delays",
+   "test": "e3_native_qsa_fused_device_probe.delay_compute/delay_copy",
+   "replaces": "a decode step ahead on the stream, a busy DMA engine",
+   "equivalence": "real GPU matmuls and real DMA queued ahead of the first kernel or copy, checked live with their own event",
+   "cannot_prove": "the box's contention pattern",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "step-a-device-mutant",
+   "test": "e3_native_qsa_fused_device_probe.run.Device",
+   "replaces": "NativeQsaDevice.wait_event",
+   "equivalence": "named negative controls that skip one wait type; the bytes must differ; no pass depends on them",
+   "cannot_prove": "anything beyond discrimination",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}

@@ -544,6 +544,65 @@ class Selection(FusedCase):
         self.assertIn('dense', str(refused.exception))
 
 
+class Control(unittest.TestCase):
+    """The per-arm switch and its latch over the real AutoArmPolicy and driver."""
+    def setUp(self):
+        import native_auto_arm as auto
+        import test_e3_native_overlap as native
+        self.auto = auto
+        self.stack = native.cold_stack()
+        self.core, self.frontend = native.core_for(self.stack, paused=True)
+        self.d = self.stack.driver
+        self.policy = auto.AutoArmPolicy(self.core, self.d)
+        self.d.auto_arm = self.policy
+        self.fused = self.d.install_qsa_fused()
+
+    def test_selected_only_paused_idle_full_and_taken_under_the_manual_lease(self):
+        reply = self.d.submit_control({'action': 'native_qsa_fused', 'fused': True})
+        self.assertEqual((reply['fused'], reply['previous'], reply['route']), (True, False, 'full'))
+        self.assertTrue(self.fused.selected)
+        self.assertTrue(self.policy.manual_owned)
+        self.assertEqual(self.fused.counters['selections'], 1)
+        status = self.d.submit_control({'action': 'status'})
+        self.assertEqual(status['native_qsa_fused']['selected'], True)
+        released = self.d.submit_control({'action': self.auto.RELEASE, 'engine_epoch': self.d.engine_epoch})
+        self.assertTrue(released['released'])
+        self.assertFalse(self.policy.manual_owned)
+
+    def test_refused_while_running_or_with_bad_fields(self):
+        for command, text in (({'action': 'native_qsa_fused', 'fused': 1}, 'native-qsa-fused-invalid'),
+                              ({'action': 'native_qsa_fused'}, 'native-qsa-fused-invalid'),
+                              ({'action': 'native_qsa_fused', 'fused': True, 'extra': 1},
+                               'native-qsa-fused-command-fields-differ'),
+                              ({'action': 'native_qsa_fused', 'fused': True, 'engine_epoch': -1},
+                               'native-control-engine-epoch-differs')):
+            with self.subTest(command=command), self.assertRaisesRegex(Exception, text):
+                self.d.submit_control(command)
+        self.core.paused = False
+        with self.assertRaisesRegex(Exception, 'native-qsa-fused-requires-paused-idle-full'):
+            self.d.submit_control({'action': 'native_qsa_fused', 'fused': True})
+        self.assertFalse(self.fused.selected)
+
+    def test_refused_during_an_owned_cycle(self):
+        self.policy.phase = 'native'
+        with self.assertRaisesRegex(Exception, 'cycle-owned'):
+            self.d.submit_control({'action': 'native_qsa_fused', 'fused': True})
+        self.assertFalse(self.fused.selected)
+
+    def test_not_a_control_unless_installed(self):
+        self.d.qsa_fused = None
+        with self.assertRaisesRegex(Exception, 'native-control-unknown-action'):
+            self.d.submit_control({'action': 'native_qsa_fused', 'fused': True})
+
+    def test_needs_the_auto_arm_policy_and_installs_once(self):
+        with self.assertRaisesRegex(ed.DriverError, 'already installed'):
+            self.d.install_qsa_fused()
+        self.d.qsa_fused = None
+        self.d.auto_arm = None
+        with self.assertRaisesRegex(ed.DriverError, 'auto-arm'):
+            self.d.install_qsa_fused()
+
+
 class Mutants(FusedCase):
     """The scenarios above discriminate: each mutant makes its scenario fail."""
     def fails(self, target, name, replacement, scenario):
