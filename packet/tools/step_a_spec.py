@@ -53,6 +53,10 @@ def generate(scratch, expected_tests):
     me = 'A\ttools/' + NAME
     if me not in paths:
         paths = sorted(paths + [me])
+    # The chain's prepare-review commit moves the review pin after this spec is written; the alpha-perf spec declares it too.
+    review = 'M\tpatches/s5_engine/native_candidate_review.json'
+    if review not in paths:
+        paths = sorted(paths + [review])
     tools = sorted(row.split('\t', 1)[1][len('tools/'):] for row in paths
                    if row.startswith('A\ttools/') and row.count('/') == 1 and row.endswith(('.py', '.json')))
     moved = overlay.propose(scratch)
