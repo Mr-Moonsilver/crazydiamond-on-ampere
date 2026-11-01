@@ -25,6 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'harness'))
 import e3_native41_progress_box as box  # noqa: E402
+import step_a_torn_lines as torn_lines  # noqa: E402
 
 TARGETS = {0: (0, 1), 1: (2, 3)}
 ARENA_ROWS = 97152
@@ -187,6 +188,11 @@ def chunk_report(chunk, workers, by_rank):
     return out
 
 
+def touches_lost(chunk, gaps):
+    seqs = [r['seq'] for tag in ('n', 's') for r in chunk['rows'].get(tag, [])]
+    return any(torn_lines.seq_is_lost(seq, rank, gaps) for seq in seqs for rank in range(4))
+
+
 def load(path):
     with (lzma.open(path, 'rt') if path.endswith('.xz') else open(path)) as handle:
         return json.load(handle)
@@ -199,8 +205,10 @@ def band(start):
 def analyse(root):
     logs = [p for p in (os.path.join(root, 'engine-current.log'), os.path.join(root, 'engine-current.log.xz'))
             if os.path.exists(p)][:1]
-    records, errors = box.read_lines(logs)
+    records, errors, torn = torn_lines.read_lines(logs)
     flushes, problems = box.assemble(records)
+    lost = torn_lines.lost_flushes(records, torn)
+    gaps = torn_lines.worker_gaps(flushes, lost)
     workers, per_rank = {}, {rank: [] for rank in range(4)}
     for flush in flushes:
         if flush['side'] == 'worker':
@@ -217,11 +225,14 @@ def analyse(root):
         start, end = arm['wall_start_s'], arm['wall_end_s']
         mine = sorted((f for f in engine if f['stamp'] is not None and start <= f['stamp'] <= end + box.LOG_LAG_S),
                       key=lambda f: f['identity'].get('chunk_start', -1))
-        chunks = [chunk_report(f, workers, by_rank) for f in mine
-                  if box.chunk_label(f['identity'].get('decode_live'), 8) == want]
+        counted = [f for f in mine if box.chunk_label(f['identity'].get('decode_live'), 8) == want]
+        # The torn-line rule: a chunk with rows in a lost flush drops out of the breakdown.
+        whole = [f for f in counted if not touches_lost(f, gaps)]
+        chunks = [chunk_report(f, workers, by_rank) for f in whole]
         arms[name] = dict(mode=arm.get('mode'), cohort=arm.get('cohort'), band=arm.get('band'),
+                          chunks_dropped_torn=len(counted) - len(whole),
                           chunks=[c for c in chunks if 'wall_s' in c])
-    return dict(errors=errors, problems=problems, arms=arms)
+    return dict(errors=errors, problems=problems, arms=arms, torn_lines=len(torn), lost_flushes=len(lost))
 
 
 def group_summary(chunks):
@@ -312,6 +323,9 @@ def main(argv=None):
     result = analyse(args.root)
     summary = summarise(result)
     report = dict(schema='step-a-report/1', errors=result['errors'], problems=result['problems'],
+                  torn_lines=result['torn_lines'], lost_flushes=result['lost_flushes'],
+                  chunks_dropped_torn={k: v['chunks_dropped_torn'] for k, v in result['arms'].items()
+                                       if v['chunks_dropped_torn']},
                   summary=summary, compare=compare(summary, args.old, args.new))
     with open(args.out, 'w') as handle:
         json.dump(report, handle, indent=1, sort_keys=True)
