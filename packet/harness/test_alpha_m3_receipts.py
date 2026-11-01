@@ -153,7 +153,7 @@ class RealFormatsThroughTheTool(unittest.TestCase):
                    alloc_receipt_errors=0)
         row.update(stats)
         op = SimpleNamespace(stats=row, transaction=SimpleNamespace(txn_seq=1, chunk_start=0, chunk_end=1024),
-                             lane=SimpleNamespace(worker_rank=rank))
+                             lane=SimpleNamespace(worker_rank=rank), union_retire=True)
         with self.assertLogs('qsa_operation', level='INFO') as logs:
             qo.QsaPrefillOperation._alloc_receipt(op)
         self.assertEqual(row['alloc_receipt_errors'], 0)
