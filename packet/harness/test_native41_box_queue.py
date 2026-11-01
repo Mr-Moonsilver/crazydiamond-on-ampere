@@ -459,6 +459,9 @@ class Arm(unittest.TestCase):
         metrics = box.arm_metrics(stock)
         self.assertGreater(metrics['decode_only_tokens_per_s'], 0)
         self.assertGreater(metrics['client']['decode_share'], 0)
+        # No standing stream finished inside this span: the all-open sub-window is the whole span.
+        self.assertEqual(metrics['client']['all_open_share_of_span'], 1.0)
+        self.assertGreater(metrics['client']['all_open_decode_share'], 0)
 
         receipts = stock['receipts']
         self.assertIs(receipts['complete'], True, receipts['reasons'])

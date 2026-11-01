@@ -354,6 +354,17 @@ def arm(a, cfg, client, *, poll_client=None, sleep=time.sleep):
             'decode_basis': 'standing streams, fresh send -> fresh first token'}
         record['notes'] += ['client-window:' + r for r in
                             stream_reasons(record['client_basis']['decode_window'], standing, first)]
+        # The frozen W2 budget (8,192 per standing stream) can run out inside a long
+        # prefill span; this sub-window ends at the first standing finish, so all
+        # eight streams are open throughout (descriptive, client clock).
+        finishes = [s.finish_at_ns for s in standing if type(s.finish_at_ns) is int]
+        cut = min([first] + finishes) if type(first) is int else None
+        record['client_basis']['decode_window_all_open'] = (
+            shared._stream_window(standing, sampler, state.send_at_ns, cut)
+            if type(cut) is int and type(state.send_at_ns) is int and cut > state.send_at_ns else None)
+        record['client_basis']['all_open_share_of_span'] = (
+            (cut - state.send_at_ns) / (first - state.send_at_ns)
+            if record['client_basis']['decode_window_all_open'] and first > state.send_at_ns else None)
         if record['receipts']['complete'] is not True:
             label = 'auto-not-proven:' if kind == 'auto' else 'stock-receipts:'
             record['reasons'] += [label + r for r in record['receipts']['reasons']]
@@ -403,11 +414,14 @@ def arm_metrics(row):
     only = (row.get('decode_only') or {}).get('aggregate_tokens_per_s')
     client = row.get('client_basis') or {}
     during = (client.get('decode_window') or {}).get('aggregate_tokens_per_s')
+    all_open = (client.get('decode_window_all_open') or {}).get('aggregate_tokens_per_s')
     receipts = row.get('receipts') or {}
     return {'kind': row.get('kind'), 'index': row.get('index'), 'complete': row.get('complete'),
             'decode_only_tokens_per_s': only,
             'client': {'prefill_tokens_per_s': client.get('prefill_tokens_per_s'),
                        'decode_during_prefill_tokens_per_s': during, 'decode_share': ratio(during, only),
+                       'all_open_decode_tokens_per_s': all_open, 'all_open_decode_share': ratio(all_open, only),
+                       'all_open_share_of_span': client.get('all_open_share_of_span'),
                        'ttft_s': (row.get('fresh') or {}).get('ttft_s')},
             'engine': None,
             'auto_receipts_complete': receipts.get('complete') if row.get('kind') == 'auto' else None,
@@ -455,6 +469,8 @@ def grade(arms, ingress, checks):
                       'client_decode_during_prefill_tokens_per_s': median(
                           kind, ('client', 'decode_during_prefill_tokens_per_s')),
                       'client_decode_share': median(kind, ('client', 'decode_share')),
+                      'client_all_open_decode_share': median(kind, ('client', 'all_open_decode_share')),
+                      'client_all_open_share_of_span': median(kind, ('client', 'all_open_share_of_span')),
                       'decode_only_tokens_per_s': median(kind, ('decode_only_tokens_per_s',)),
                       'ttft_s': median(kind, ('client', 'ttft_s'))} for kind in KINDS}
     summary['auto']['return_upper_bound_ms'] = median('auto', ('return_upper_bound_ms',))
