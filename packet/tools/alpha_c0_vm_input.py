@@ -94,7 +94,7 @@ ALPHA_C0_CALLS = dict(skips=0, scoped=0, local_releases=0)
 
 
 def alpha_call(bridge, name, message, local=False):
-    \"\"\"The plain bridge call, or the worker's stage path: a non-target must skip, the target unwraps.\"\"\"
+    # The plain bridge call, or the worker's stage path: a non-target must skip, the target unwraps.
     if not ALPHA_C0_STAGE:
         return getattr(bridge, name)(message)
     from vllm.v1.flash_e3.stage_wire import STAGE_SKIP, StageScoped, stage_rpc

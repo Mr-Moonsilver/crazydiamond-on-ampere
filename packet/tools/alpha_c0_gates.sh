@@ -4,6 +4,8 @@
 # self-run with its comparison, negative and the overlay tamper control; one heavy job at a time (the hub is shared), so nothing
 # runs in parallel here. The runner lineage is build_native43's own normalise-back proof over the alpha-perf runner.
 # usage: alpha_c0_gates.sh WT SPEC OUT EVID TAG NOTE [DELIVERY]
+#   The VM run needs the built bundle, so with no VM_RECORD in the environment the chain stops after the precheck; the delivery tool
+#   is then run by hand with --vm. The chain stops there on purpose and logs it.
 #   strict -> focused -> prepare review + commit -> build (with alpha-c0-freeze.json) -> bundle self-run
 #   -> engine self-run -> comparison -> negative -> tamper -> clock scan -> compile proof -> precheck conf -> precheck -> delivery.
 # Stops at the first failing step; every rc is logged in $EVID/gates-$TAG.steps.
@@ -95,7 +97,8 @@ step precheck-conf $?
 bash tools/owner-precheck/native-precheck.sh "$OUT/native-precheck.conf" >"$OUT/precheck-$TAG.log" 2>&1
 step precheck $?
 
-python3 -B tools/alpha_c0_delivery.py --build "$OUT/build.json" --freeze "$OUT/alpha-c0-freeze.json" \
+if [[ -z ${VM_RECORD:-} ]]; then echo 'stopped-before-delivery: VM run pending' >>"$STEPS"; exit 0; fi
+python3 -B tools/alpha_c0_delivery.py --vm "$VM_RECORD" --build "$OUT/build.json" --freeze "$OUT/alpha-c0-freeze.json" \
     --engine "$OUT/engine-selfrun/result.json" --compare "$OUT/engine-comparison.json" \
     --negative "$OUT/engine-negative/result.json" --tamper "$OUT/overlay-tamper.json" --queue "$OUT/selfrun/result.json" \
     --clock-scan "$OUT/clock-scan.json" --compile-proof "$OUT/compile-proof.json" --precheck "$OUT/precheck-$TAG.log" \

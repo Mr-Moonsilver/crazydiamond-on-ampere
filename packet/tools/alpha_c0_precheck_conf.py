@@ -51,7 +51,7 @@ def generate(build, out, selfrun=None):
                   CODEX_WT=str(ROOT), CODEX_COMMIT=b['source'], GENERATION=b['overlay'], VM_OVERLAY=prev['bundle'],
                   VM_OVERLAY_SUBDIR='native30_overlay', EXPECTED_MANIFEST=b['manifest'], EXPECTED_RUNNER_SHA=b['runner_sha256'],
                   EXPECTED_RUNNER_SIZE=str(b['runner_size']), EXPECTED_REVIEW_PIN=b['review_sha256'],
-                  SELFRUN_CONTAINER=container, WORK_ROOT='<hub-dir>/agents/flash-next/tmp/alpha-c0/pack/precheck-work',
+                  SELFRUN_CONTAINER=container, WORK_ROOT='<hub-dir>/agents/flash-next/tmp/c0c1/pack/precheck-work',
                   QUEUE_NAME_GLOB=STEM + '[._]*')
     for key, value in fields.items():
         text, n = re.subn(r'(?m)^' + key + '=.*$', lambda _: key + '=' + shlex.quote(value), text)
@@ -67,8 +67,9 @@ def generate(build, out, selfrun=None):
     text, n = re.subn(r'EXPECTED_QUEUE_SHAS=\(\n.*?\n\)', lambda _: pins, text, flags=re.S)
     assert n == 1
     ours, parent = rows(Path(b['overlay']) / 'SHA256SUMS'), rows(Path(prev['overlay']) / 'SHA256SUMS')
-    assert set(ours) == set(parent), sorted(set(ours) ^ set(parent))
-    moved = sorted(k for k in ours if ours[k] != parent[k])
+    # The two new overlay modules have no parent bytes to compare with, so they count as moved.
+    assert not set(parent) - set(ours) and set(ours) - set(parent) == {'e3/stage_progress.py', 'e3/stage_wire.py'}, sorted(set(ours) ^ set(parent))
+    moved = sorted(k for k in ours if ours[k] != parent.get(k))
     excluded = sorted(set(METADATA) | set(moved))
     text, n = re.subn(r'^VM_OVERLAY_EXCLUSIONS=.*$', lambda _: 'VM_OVERLAY_EXCLUSIONS=(' + ' '.join(excluded) + ')', text, flags=re.M)
     assert n == 1

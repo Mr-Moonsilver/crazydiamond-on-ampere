@@ -42,7 +42,7 @@ EXTRA_COMPILED = ['harness/alpha_c0_gate.py', 'harness/e3_alpha_c0_box.py', 'har
                   'harness/test_e3_stage_local_qsa.py', 'harness/stage_net.py', 'tools/build_alpha_c0.py', 'tools/alpha_c0_clock_scan.py',
                   'tools/alpha_c0_cpu_probe.py', 'tools/alpha_c0_delivery.py', 'tools/alpha_c0_engine_selfrun.py', 'tools/alpha_c0_freeze.py',
                   'tools/alpha_c0_overlay_propose.py', 'tools/alpha_c0_overlay_tamper.py', 'tools/alpha_c0_precheck_conf.py',
-                  'tools/alpha_c0_queue.py', 'tools/alpha_c0_report.py', 'tools/alpha_c0_spec.py', 'tools/alpha_c0_tools_derive.py',
+                  'tools/alpha_c0_queue.py', 'tools/alpha_c0_report.py', 'tools/alpha_c0_vm_compare.py', 'tools/alpha_c0_vm_input.py', 'tools/alpha_c0_spec.py', 'tools/alpha_c0_tools_derive.py',
                   'tools/stage_default_off.py', 'tools/c0_bit_identity.py']
 
 

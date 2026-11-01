@@ -24,10 +24,11 @@ def git(*args):
     return subprocess.check_output(['git', *args], cwd=ROOT, text=True)
 
 
-def engine_diff(modules):
-    """Every path under patches/ that differs from c3f1f64: the declared engine modules and the review pin, nothing else."""
+def engine_diff(modules, added):
+    """Every path under patches/ that differs from c3f1f64: the declared engine modules, the two new ones and the review pin, nothing else."""
     rows = git('diff', '--name-status', PARENT, 'HEAD', '--', 'patches').splitlines()
-    declared = {'M\tpatches/s5_engine/' + name for name in modules} | {'M\t' + REVIEW}
+    declared = ({'M\tpatches/s5_engine/' + name for name in modules} | {'A\tpatches/s5_engine/' + name for name in added}
+                | {'M\t' + REVIEW})
     assert set(rows) == declared, sorted(set(rows) ^ declared)
     text = git('diff', PARENT, 'HEAD', '--', 'patches/s5_engine', ':!' + REVIEW)
     return dict(parent_commit=git('rev-parse', PARENT).strip(), head=git('rev-parse', 'HEAD').strip(), paths_differing=rows,
@@ -78,10 +79,11 @@ def main():
                source_commit=b['source_commit'], build_commit=b['source'], parent_bundle=b['parent_bundle'],
                parent_manifest=b['parent_manifest'], freeze_proof_sha256=b['freeze_proof_sha256'],
                engine_changed_vs_parent=b['engine_changed'], regression=b['regression'], focused=b['focused'],
-               engine_sources_vs_c3f1f64=engine_diff(freeze_tool.ENGINE),
+               engine_sources_vs_c3f1f64=engine_diff(freeze_tool.off.PROJECTIONS, freeze_tool.off.NEW_MODULES),
                alpha_c0_freeze=dict(path=str(a.freeze), sha256=sha(a.freeze), verdict=fz['verdict'],
-                                  projected_functions=source['default_off']['functions'],
-                                  not_projected=source.get('not_projected'), reference=fz['reference']),
+                                  identical_files=source['identical_files'], new_modules=source['new_modules'],
+                                  projected_files=sorted(source['projected']), negative_controls=sorted(fz['negative_controls']),
+                                  reference=fz['reference']),
                engine_selfrun=dict(path=str(a.engine), sha256=sha(a.engine), verdict=e['verdict'], tests=e['tests'], skips=e['skips'],
                                    cases=sorted(e['cases']), connected_checks=e['connected_checks'],
                                    clock_split=e['clock_split']['verdict'], scheduler_tick_probe=(e.get('scheduler_tick_probe') or {}).get('verdict'),
@@ -101,12 +103,12 @@ def main():
                precheck=dict(conf=str(a.conf), conf_sha256=sha(a.conf), log=str(a.precheck), log_sha256=sha(a.precheck),
                              checks=int(summary[0][0]), passed=int(summary[0][1]), failed=0),
                vm=dict(path=str(a.vm), sha256=sha(a.vm), verdict=vm.get('verdict'), rc=vm.get('rc'), scope=vm.get('scope')) if vm
-               else dict(verdict='NOT_RUN', why='the lead does the VM runs'),
+               else dict(verdict='NOT_RUN', why='no VM record was given'),
                fixture_leaves=dict(path='harness/alpha_c0_fixture_leaves.json', sha256=sha(ROOT / 'harness/alpha_c0_fixture_leaves.json'),
                                    inherits=leaves['inherits'], names=[x['name'] for x in leaves['leaves']]),
                expected_runtime=gate.EXPECTED_RUNTIME_S, box_budget_s=gate.BOX_BUDGET_S, active_s=gate.ACTIVE_S, cleanup_s=gate.CLEANUP_S,
                last_arm_entry_s=gate.LAST_ARM_ENTRY_S, latest_start_unix=gate.latest_arm(),
-               note=str(a.note), note_sha256=sha(a.note), model_settings_changed=False, device_run='NOT_RUN')
+               note=str(a.note), note_sha256=sha(a.note), model_settings_changed=False, box_device_run='NOT_RUN')
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with a.out.open('x') as handle:
         handle.write(json.dumps(row, sort_keys=True, indent=1) + '\n')
