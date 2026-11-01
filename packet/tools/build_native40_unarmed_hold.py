@@ -165,12 +165,14 @@ def build(out,strict,focused):
         queue_derivation='native40_box_queue.derive(): names, 2400s active watchdog/shared window, pre-row1 unarmed check',
         active_s=2400,cleanup_margin_s=900)
     dump(out/'freeze-proof.json',proof)
-    result=dict(schema='native40-build/1',verdict='PASS',source=git('rev-parse','HEAD').strip(),branch_base=git('rev-parse',PARENT).strip(),
+    result=dict(schema='native40-build/1',name='q18a-native40-unarmed-hold',arm='TRUNK',verdict='PASS',source=git('rev-parse','HEAD').strip(),branch_base=git('rev-parse',PARENT).strip(),
         bundle=str(held),manifest=pin,overlay=str(held/'native30_overlay'),overlay_manifest=sha(held/'native30_overlay/SHA256SUMS'),
         reference_bundle=str(parent),reference_overlay_manifest=sha(parent/'native30_overlay/SHA256SUMS'),
         regression=reg,focused=focus,files=len(verify(held)),freeze_proof_sha256=sha(out/'freeze-proof.json'),
         held=True,box_ready=True,runner=str(runner),runner_sha256=sha(runner),runner_size=runner.stat().st_size,
         expected_selfrun_tests=parent_build.expected_tests()+6,
+        review_sha256=json.loads((held/'native30_overlay/e3/native-implementation-closure.json').read_text())['review_sha256'],
+        image=parent_build.IMAGE,checksummed_files=len(verify(held)),
         queue=str(held/'runs/q18a_native40_unarmed_hold.draft.sh'),gpu_execution=False)
     dump(out/'build.json',result)
     for d in (held,parent):
