@@ -27,7 +27,8 @@
       "prove_clock_domain": "refused"
     },
     "modules": [],
-    "note": "held-b clients compare clock identities for equality; under the CT/container split all three refuse, as native40 did on the box; the bracket relation itself holds (one CLOCK_MONOTONIC, zero offsets)"
+    "note": "held-b clients compare clock identities for equality; under the CT/container split all three refuse, as native40 did on the box; the bracket relation itself holds (one CLOCK_MONOTONIC, zero offsets)",
+    "side": "driver-clock-record"
   },
   "definitions": {},
   "details": {

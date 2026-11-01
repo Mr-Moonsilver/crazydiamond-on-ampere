@@ -34,7 +34,8 @@ def run(spec_path, tree, bundle, out, name):
     base.run(tree, bundle / 'native30_overlay', out / 'engine', name, spec['candidate'], True, bundle,
              tuple(selfrun['compiled']))
     engine = json.loads((out / 'engine/result.json').read_text())
-    split_rc = clock_split.run(bundle, out / 'clock-split', name + '-clock', split['expect'], split['modules'])
+    split_rc = clock_split.run(bundle, tree, out / 'clock-split', name + '-clock', split['side'], split['expect'],
+                               split['modules'])
     clock = json.loads((out / 'clock-split/result.json').read_text())
     engine_ok = (engine['container_rc'] == 0 and engine['probe39']['verdict'] == 'PASS'
                  and engine['probe37']['verdict'] == 'PASS' and engine['py_compile']['ok'] is True
@@ -43,7 +44,7 @@ def run(spec_path, tree, bundle, out, name):
                   engine_record_sha256=sha(out / 'engine/result.json'),
                   clock_split=dict(verdict=clock['verdict'], reasons=clock['reasons'], outcomes=clock['outcomes'],
                                    expected=clock['expected'], control_outcomes=clock.get('control_outcomes'),
-                                   split=clock['split'], rc=split_rc, record_sha256=sha(out / 'clock-split/result.json'),
+                                   split=clock['split'], rc=split_rc, record_sha256=sha(out / 'clock-split/result.json'), side=clock['side'],
                                    gpu_device_requests=clock.get('gpu_device_requests')),
                   verdict='PASS' if engine_ok and clock['verdict'] == 'PASS' else 'FAIL',
                   classification=None if engine_ok and clock['verdict'] == 'PASS' else 'HARNESS')
