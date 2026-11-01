@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Exact pinned-container CPU gates; no GPU, network or container removal."""
+"""Exact pinned-container CPU gates; no GPU, network or container removal.
+
+Cases: Codex's connected auto-arm probe modes (e3_native41_auto_probe) and the
+read-only auto window over a real automatic cycle (e3_native41_window_probe,
+cases named window-<mode>). The negative control runs the candidate harness
+over native40's overlay and sources: the three named tests fail, the auto
+probe finds no native cycle, the window action is not exposed, and both
+default-off cases pass.
+"""
 import argparse
 import hashlib
 import json
@@ -8,11 +16,16 @@ import subprocess
 import time
 from native37_robust_selfrun import IMAGE,overlay_mounts
 ROOT=Path(__file__).resolve().parents[1]
-SUITES=('test_native41_autoarm','test_native40_unarmed_hold','test_native39_trunk','test_native37_robust','test_native38_plain_bind',
+SUITES=('test_native41_box_queue','test_native41_autoarm','test_native40_unarmed_hold','test_native39_trunk','test_native37_robust','test_native38_plain_bind',
         'test_e3_admission_native','test_e3_admission_metadata','test_e3_staged_chunk_plan',
         'test_e3_native_overlap','test_e3_native_storage_replay','test_e3_r4_worker_bridge')
 MODES=('auto','off','abort-before','abort-live','reuse','foreign','bad-graph','refuse','pending-split','pending-full','running-prefill','below-threshold','long-id')
-NEGATIVE_TEST='test_native41_autoarm.SettingAndStartup.test_auto_is_bound_after_real_startup_fence'
+WINDOW_MODES=('auto','latched','below-threshold','off')
+CASES=MODES+tuple('window-'+m for m in WINDOW_MODES)
+NEGATIVES=('test_native41_autoarm.SettingAndStartup.test_auto_is_bound_after_real_startup_fence',
+           'test_native41_box_queue.Router.test_switch_on_forwards_release_and_the_auto_window_to_the_real_session',
+           'test_native41_box_queue.Arm.test_plain_w2_stock_then_auto_arm_through_the_exact_cli')
+NEGATIVE_CASES=('auto','off','window-auto','window-off')
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def run(bundle,out,name,overlay=None,sources=None,negative=False):
     from build_native30_held import verify
@@ -31,10 +44,11 @@ if __name__ == '__main__':
     raise SystemExit(0 if r.wasSuccessful() and not r.skipped else 1)
 '''
     (out/'suites.py').write_text(script)
-    modes=('auto','off') if negative else MODES
-    lines=['cd /source/harness', 'python3 -B /out/suites.py '+' '.join((NEGATIVE_TEST,) if negative else SUITES)+' > /out/suites.log 2>&1','echo $? > /out/suites.rc']
+    modes=NEGATIVE_CASES if negative else CASES
+    lines=['cd /source/harness', 'python3 -B /out/suites.py '+' '.join(NEGATIVES if negative else SUITES)+' > /out/suites.log 2>&1','echo $? > /out/suites.rc']
     for mode in modes:
-        lines+=['FLASH_S5_AUTO_ARM='+('0' if mode=='off' else '1')+' python3 -B e3_native41_auto_probe.py --mode '+mode+' --out /out/'+mode+'.json > /out/'+mode+'.log 2>&1','echo $? > /out/'+mode+'.rc']
+        probe,arg=('e3_native41_window_probe.py',mode[len('window-'):]) if mode.startswith('window-') else ('e3_native41_auto_probe.py',mode)
+        lines+=['FLASH_S5_AUTO_ARM='+('0' if arg=='off' else '1')+' python3 -B '+probe+' --mode '+arg+' --out /out/'+mode+'.json > /out/'+mode+'.log 2>&1','echo $? > /out/'+mode+'.rc']
     (out/'inner.sh').write_text('\n'.join(lines)+'\n')
     c=['sudo','-n','docker','run','--pull=never','--name',name,'--runtime','runc','--network','none','--cpus','4','--memory','6g','--memory-swap','6g','--read-only','--tmpfs','/tmp:rw,exec,nosuid,nodev,size=1g','--ulimit','core=0',
        '-e','VLLM_CACHE_ROOT=/tmp/vllm-cache','-e','NVIDIA_VISIBLE_DEVICES=none','-e','CUDA_VISIBLE_DEVICES=','-e','PYTHONDONTWRITEBYTECODE=1','-e','PYTHONPATH=/source/harness:/source/harness/e3_builder']
@@ -48,9 +62,12 @@ if __name__ == '__main__':
     def read(n):return json.loads((out/n).read_text()) if (out/n).exists() else {}
     suites=read('suites.json');cases={mode:read(mode+'.json') for mode in modes}
     if negative:
-        ok=(suites.get('tests')==1 and suites.get('failures')==1 and not suites.get('errors') and suites.get('skips')==0
+        ok=(suites.get('tests')==len(NEGATIVES) and suites.get('failures')==len(NEGATIVES) and not suites.get('errors')
+            and suites.get('skips')==0
             and cases['auto'].get('verdict')=='FAIL' and cases['auto'].get('error_type')=='AssertionError'
-            and cases['auto'].get('error')=='ordinary-requests-trigger-native-cycle' and cases['off'].get('verdict')=='PASS')
+            and cases['auto'].get('error')=='ordinary-requests-trigger-native-cycle' and cases['off'].get('verdict')=='PASS'
+            and cases['window-auto'].get('verdict')=='FAIL' and cases['window-auto'].get('error_type')=='NativeOverlapSessionError'
+            and cases['window-auto'].get('error')=='session-action-not-exposed' and cases['window-off'].get('verdict')=='PASS')
     else:ok=suites.get('ok') is True and suites.get('skips')==0 and all(v.get('verdict')=='PASS' for v in cases.values())
     record=dict(schema='native41-selfrun/1',verdict='PASS' if rc==0 and ok else 'FAIL',negative_control=negative,
         classification=None if rc==0 and ok else 'HARNESS-OR-ENGINE-UNCLASSIFIED',container_rc=rc,suites=suites,
