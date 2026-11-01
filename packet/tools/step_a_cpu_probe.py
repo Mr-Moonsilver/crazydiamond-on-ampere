@@ -99,7 +99,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native41_progress_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_alpha_perf_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_step_a_queue.py'))
-EXPECTED_TESTS=327  # the 287 alpha-perf probe cases plus the 40 Step A queue cases; pinned into the frozen runner gate
+EXPECTED_TESTS=333  # the 287 alpha-perf probe cases plus the 46 Step A queue cases; pinned into the frozen runner gate
 result=unittest.TextTestRunner(verbosity=2).run(suite)
 assert not torch.cuda.is_initialized()
 identity_receipts=sys.modules['test_native30_identity'].IDENTITY_RECEIPTS

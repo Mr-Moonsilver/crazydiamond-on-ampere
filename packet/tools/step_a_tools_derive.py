@@ -16,7 +16,7 @@ import sys
 
 TOOLS = Path(__file__).resolve().parent
 PARENT_TESTS = 287
-STEP_A_TESTS = 40  # test_step_a_queue
+STEP_A_TESTS = 46  # test_step_a_queue
 CANDIDATE = 'q18a-step-a'
 PARENT_CANDIDATE = 'q18a-alpha-perf'
 
