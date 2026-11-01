@@ -525,8 +525,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
 
     def _stage_line(self, transaction, stats, both_ns):
         super()._stage_line(transaction, stats, both_ns)
-        if self.progress is None:
-            return
+        if self.progress is None or not self.overlap_selected:
+            return   # a local or serial arm logs exactly C0's lines
         try:
             _progress_logger().info('flash-s5 stage-overlap txn=%d seqs=%s successor=%s',
                                     transaction.txn_seq, _ranges(stats.get('seqs', ())),

@@ -207,6 +207,7 @@ def run(mode):
         check('native-chunks-contiguous', all(a['end'] == b['start'] for a, b in zip(conn.native, conn.native[1:])))
         result['overlap'] = over
     elif local:
+        check('no-overlap-lines-when-unselected', not lines.lines, lines=len(lines.lines))
         check('overlap-counters-all-zero', not any(over['counters'].values())
               and not any(over['controller'].values()) and not any(over['refusals'].values()), overlap=over)
     result.update(native_stage_local=counters, selection=dict(local=selection.get('local'), overlap=selection.get('overlap')),
