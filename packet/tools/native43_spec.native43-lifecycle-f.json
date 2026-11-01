@@ -602,9 +602,7 @@
    "tools/native43_le_fix_queue_deltas.py",
    "tools/native43_lf_queue_drafts.py",
    "tools/native43_lf_tools_derive.py",
-   "tools/native43_lf_cpu_probe.py",
-   "tools/native43_lf_runner_lineage.py",
-   "tools/native43_lf_clock_scan.py"
+   "tools/native43_lf_cpu_probe.py"
   ],
   "suites": [
    "test_native39_trunk",
