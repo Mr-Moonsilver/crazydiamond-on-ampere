@@ -44,7 +44,7 @@ class LeafPynccl:
     """Leaf connected-tp-leaf: the PyNccl object under the real communicator."""
     disabled = False
     world_size = 2
-    unique_name = 'tp-lane'
+    unique_id = NS(internal=b'tp-lane')   # what the ledger names a communicator by
 
     def __init__(self, rank):
         self.rank = rank

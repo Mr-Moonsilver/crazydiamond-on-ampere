@@ -179,17 +179,19 @@ TX_FUSED = 'if self._tx_fused:'
 PROJECTIONS = {
     'engine_driver.py': {
         'NativeSegmentDriver.__init__': dict(drop={'self.qsa_fused = None': 1, 'self._tx_fused = False': 1,
-                                                   'self._fused_mark = None': 1, 'self._fused_mark_at = None': 1}),
+                                                   'self._fused_mark = None': 1, 'self._fused_mark_at = None': 1,
+                                                   'self._fused_stop_at = None': 1}),
         'NativeSegmentDriver._wait_permit': dict(off={"if self._tx_fused and inflight == ('poll',):": 1}),
         'NativeSegmentDriver._apply_segments': dict(off={TX_FUSED: 1}),
         # qsa_fused None: _tx_fused is False, _progress_owned is not called; OpenRequest's qsa_fused field defaults to False.
         'NativeSegmentDriver._begin': dict(
             drop={'self._tx_fused = self.qsa_fused is not None and self.qsa_fused.selected and self._progress_owned()': 1,
-                  'self._fused_mark = self._fused_mark_at = None': 1},
+                  'self._fused_mark = self._fused_mark_at = self._fused_stop_at = None': 1},
             off={TX_FUSED: 1}, subs=(('admission.state_epoch, 1, qsa_fused=self._tx_fused)', 'admission.state_epoch, 1)'),)),
         'NativeSegmentDriver._drive': dict(off={TX_FUSED: 1, 'if self._tx_fused and self._fused_hold(self.plan[self.index]):': 1}),
         'NativeSegmentDriver._send_plan_entry': dict(off={'if self._tx_fused and profile is not None:': 1}),
         'NativeSegmentDriver._reset': dict(drop={'self._tx_fused = False': 1}),
+        'NativeSegmentDriver._stop_round': dict(off={TX_FUSED: 1}),
         'NativeSegmentDriver._submit_control': dict(off={"if action == 'native_qsa_fused' and self.qsa_fused is not None:": 1}),
         'NativeSegmentDriver._status_record': dict(off={'if self.qsa_fused is not None:': 1}),
     },
@@ -238,6 +240,7 @@ PROJECTIONS = {
             drop={"fused = env.get('FLASH_S5_QSA_FUSED', '0')": 1},
             off={"if fused not in ('0', '1'):": 1,
                  "if fused == '1' and (auto != '1' or env.get('FLASH_S5_NATIVE_QSA_POLICY', 'current') != 'dense'):": 1,
+                 "if fused == '1' and (env.get('FLASH_S5_NATIVE_QSA_TRACE', '0') != '0' or env.get('FLASH_S5_NATIVE_QSA_STOP_AFTER', '0') != '0'):": 1,
                  "if fused == '1':": 1}),
     },
     'wire_v1.py': {
@@ -277,6 +280,7 @@ NEW_HELPERS = {
         'NativeSegmentDriver._fused_agree': 'guarded by _tx_fused in _apply_segments',
         'NativeSegmentDriver._fused_hold': 'guarded by _tx_fused in _drive',
         'NativeSegmentDriver._fused_watchdog': 'guarded by _tx_fused in _drive',
+        'NativeSegmentDriver._fused_stop_round': 'guarded by _tx_fused in _stop_round',
     },
     'lane_comm.py': {
         'CollectiveLedger.__init__': 'never constructed: only select_fused constructs it',
@@ -315,7 +319,8 @@ NEW_HELPERS = {
 UNREACHED = {
     'engine_driver.py': ('class:FusedQsa', 'fused_expected_shape', 'NativeSegmentDriver.install_qsa_fused',
                          'NativeSegmentDriver._fused_control', 'NativeSegmentDriver._fused_agree',
-                         'NativeSegmentDriver._fused_hold', 'NativeSegmentDriver._fused_watchdog'),
+                         'NativeSegmentDriver._fused_hold', 'NativeSegmentDriver._fused_watchdog',
+                         'NativeSegmentDriver._fused_stop_round'),
     'lane_comm.py': ('class:CollectiveLedger',),
     'lane_dispatch.py': ('LaneDispatcher.select_fused', 'LaneDispatcher._set_ledger', 'LaneDispatcher._ledger',
                          'LaneDispatcher._do_layer_fused'),
