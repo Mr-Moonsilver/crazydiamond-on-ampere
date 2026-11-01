@@ -178,6 +178,7 @@ def tip_off(tip, merge, files, *, pins=True):
     step = D.coverage('T', tip, merge, set(bodies), files)
     want_added = sorted(ADDED)
     assert step['added'] == want_added, ('added definitions differ', step['added'], want_added)
+    scan = no_device_work(tip)
     hashes = added_bodies(tip)
     if pins:
         for key, (_, pin) in ADDED.items():
@@ -185,7 +186,7 @@ def tip_off(tip, merge, files, *, pins=True):
     return dict(switch_unset=SWITCH, target='the merge ' + D.REV['merge'], preconditions=pre, bodies=bodies,
                 functions=len(bodies), delta_names=NAMES, unswitched=UNSWITCHED,
                 added={k: dict(name=ADDED[k][0], body_sha256=hashes[k]) for k in ADDED},
-                no_device_work=no_device_work(tip), coverage=step)
+                no_device_work=scan, coverage=step)
 
 
 NEGATIVES = (
