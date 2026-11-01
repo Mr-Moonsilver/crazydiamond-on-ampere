@@ -1,6 +1,6 @@
 {
  "schema": "fixture-leaves/1",
- "scope": "Step B: engine tests and the VM record; the queue leaves are added by its packaging",
+ "scope": "Step B: engine tests, the connected CPU probe, the queue suite and the VM record",
  "inherits": [
   "step_a_fixture_leaves.json",
   "native41_progress_fixture_leaves.json"
@@ -112,6 +112,64 @@
    "equivalence": "The same tensor forms on the same device kind and image, with the brief's measured forms as positive and negative controls",
    "cannot_prove": "that the engine's real queue behaves as matmul kernels do: the record's host_submit_ns reads that",
    "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "connected-group-driver",
+   "test": "e3_step_b_probe (cases step-b-*)",
+   "replaces": "QsaLayerDriver and QsaPrefillOperation in a group, through the dispatcher driver_factory",
+   "equivalence": "Step A's declared LeafQsaDriver, granting QSA only on each stage's last layer instead of on every layer: with a grant on every layer every group would close at one layer. The dispatcher's group path calls exactly fused_profiles and arm_fused on it. test_e3_native_layer_groups runs the real driver and operation in a group",
+   "cannot_prove": "The real QSA driver under the real Core step, or size 4: this model has 2 layers per stage, so size 4 forms the same groups as size 2 here (group_layers_max 2). The suite and the VM hold size 4",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "connected-lane-end",
+   "test": "e3_step_b_probe (cases step-b-*)",
+   "replaces": "LaneForward.end_layer, which the real dispatcher's group path reads and the parent probe's FakeLane does not have",
+   "equivalence": "The stage end the connected fixture's plan uses (2 layers on stage 0, 4 on stage 1): the same value the real lane's end_layer has for that stage",
+   "cannot_prove": "The real lane geometry: test_e3_native_layer_groups and the VM use it",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-control-replies",
+   "test": "test_step_b_queue.Selection",
+   "replaces": "The serving router and engine replies to the arm's control sequence, for the refusal and ordering cases",
+   "equivalence": "The reply rows are the shapes the real router, session and driver produce, and the positive shapes are compared with them over the real control plane in test_step_b_queue.Arm and test_e3_native_layer_groups.Router",
+   "cannot_prove": "A reply shape the real engine stops producing: Router and Arm hold that",
+   "box_evidence": false
+  },
+  {
+   "name": "arm-http-no-scheduler",
+   "test": "test_step_b_queue.Arm",
+   "replaces": "The scheduler behind the real router, and the fresh request and append clients",
+   "equivalence": "Step A's declared arm leaf: the real router, session, control client and driver answer the arm's typed control over HTTP on loopback",
+   "cannot_prove": "A real prefill behind the control plane: the box",
+   "box_evidence": false
+  },
+  {
+   "name": "grade-synthetic-run",
+   "test": "test_step_b_queue.Grade, test_step_b_queue.Tears, test_step_b_queue.ArmLoop",
+   "replaces": "Sixteen arms' engine streams, client logs, watch records and ingress receipts",
+   "equivalence": "Step A's synthetic run over Step B's labels. Progress lines are written by the real nm.ProgressTrace emitters, memory receipts in the engine's format, group commands in the rows the real worker writes for a group. Grade code is real",
+   "cannot_prove": "Real values; that the box's lines have this shape: the connected probe and the first box run read that",
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clients",
+   "test": "test_step_b_queue.ArmLoop",
+   "replaces": "The arm client and the FULL-entry and health clients inside the derived arm loop",
+   "equivalence": "Stubs print or exit as the real clients do; the bash body, draft functions, death watch and grade are real",
+   "cannot_prove": "The clients themselves, which Arm and alpha-perf's suites hold",
+   "box_evidence": false
+  },
+  {
+   "name": "test-scale-workloads",
+   "test": "test_step_b_queue.Arm",
+   "replaces": "Band 1 and band 2 prompts at their real length",
+   "equivalence": "Same manifest schema and refusal checks with test-scale token ids; the real manifests are alpha-perf's, by name, in the frozen bundle",
+   "cannot_prove": "Real tokenization and chunk counts on the box",
    "box_evidence": false
   }
  ]
