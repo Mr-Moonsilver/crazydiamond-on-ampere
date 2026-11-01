@@ -22,7 +22,7 @@ printf 'priority nice 0 (normal); loadavg %s\n' "$(cut -d' ' -f1-3 /proc/loadavg
 cd "$WT/harness"
 { python3 -u selftest.py 2>&1; echo "rc=$?"; } >"$EVID/strict-$TAG.log"
 step strict "$(tail -n 1 "$EVID/strict-$TAG.log" | sed 's/^rc=//')"
-{ echo "# head $HEAD focused"; python3 -B -m unittest test_step_a_queue test_e3_native_qsa_fused test_step_a_report \
+{ echo "# head $HEAD focused"; python3 -B -m unittest test_step_a_queue test_e3_native_qsa_fused test_step_a_report test_step_a_torn_lines \
     test_alpha_perf_queue test_native41_progress_queue test_e3_native_reply_hol test_native41_box_queue test_native41_autoarm \
     test_native41_unarmed_box test_native41_tp_skew test_alpha_m3_receipts test_native39_trunk test_native39_trunk_queue \
     test_native37_robust test_native38_plain_bind test_e3_admission_native test_e3_staged_chunk_plan test_e3_native_overlap \

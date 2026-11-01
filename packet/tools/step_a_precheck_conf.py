@@ -19,7 +19,7 @@ PARENT_BUILD = Path('<hub-dir>/agents/flash-next/tmp/alpha-perf/build-d/build.js
 STEM = 'q18a_step_a'
 METADATA = ('S5-OVERLAP-GENERATION.json', 'e3/native-overlap-readiness.json', 'e3/native-implementation-closure.json',
             'e3/decode-probe-evidence.json')
-SEAMS = ('test_step_a_queue.py test_step_a_report.py test_e3_native_qsa_fused.py e3_step_a_box.py e3_step_a_probe.py '
+SEAMS = ('test_step_a_queue.py test_step_a_report.py test_step_a_torn_lines.py test_e3_native_qsa_fused.py e3_step_a_box.py e3_step_a_probe.py '
          'e3_native_qsa_fused_device_probe.py test_alpha_perf_queue.py test_alpha_m3_receipts.py e3_alpha_perf_box.py test_native41_progress_queue.py '
          'test_e3_native_reply_hol.py e3_native41_progress_probe.py e3_native41_progress_box.py test_native41_box_queue.py '
          'test_native41_autoarm.py e3_native41_auto_probe.py e3_native41_receipts_probe.py e3_native41_autoarm_box.py '

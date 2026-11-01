@@ -38,7 +38,7 @@ HEADER = [
     'fused and stepped by the typed native_qsa_fused selection; no production start.',
 ]
 EXTRA_COMPILED = ['harness/step_a_gate.py', 'harness/e3_step_a_box.py', 'harness/e3_step_a_probe.py', 'harness/test_step_a_queue.py',
-                  'harness/test_step_a_report.py', 'harness/test_e3_native_qsa_fused.py', 'harness/e3_native_qsa_fused_device_probe.py',
+                  'harness/test_step_a_report.py', 'harness/step_a_torn_lines.py', 'harness/test_step_a_torn_lines.py', 'harness/test_e3_native_qsa_fused.py', 'harness/e3_native_qsa_fused_device_probe.py',
                   'tools/build_step_a.py', 'tools/step_a_clock_scan.py', 'tools/step_a_cpu_probe.py', 'tools/step_a_delivery.py',
                   'tools/step_a_engine_selfrun.py', 'tools/step_a_freeze.py', 'tools/step_a_overlay_propose.py',
                   'tools/step_a_overlay_tamper.py', 'tools/step_a_precheck_conf.py', 'tools/step_a_queue.py', 'tools/step_a_report.py',
