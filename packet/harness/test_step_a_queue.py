@@ -579,7 +579,7 @@ class Grade(unittest.TestCase):
         self.assertEqual({v['verdict'] for v in result['validity'].values()}, {'PASS'})
 
     def test_a_signature_inside_a_progress_row_is_no_signature(self):
-        self.assertIsNone(box.signature_of(progress.PROGRESS_LINE + 'tp-ledger-mismatch'))
+        self.assertIsNone(box.signature_of('x ' + progress.PROGRESS_LINE + '{"schema":"s","note":"tp-ledger-mismatch"}'))
         self.assertEqual(box.signature_of('x fused-profile-disagreement y'), 'fused-profile')
 
     def test_the_error_of_an_arm_counts_its_signature(self):
@@ -623,9 +623,9 @@ class Grade(unittest.TestCase):
                   and span['wall_start_s'] <= progress.docker_stamp(t) <= span['wall_end_s']]
         lines = [x for i, x in enumerate(emit.lines) if i != inside[1]]
         result = self.grade(emit, arms, lines=lines)
-        self.assertEqual(result['verdict'], 'INC')
-        self.assertIn('progress-fused-solo-2:worker-rows-missing', result['missing'])
-        self.assertIn('progress:worker-rows-missing', result['validity']['fused-solo-2']['reasons'])
+        # One whole flush missing is one lost record under the declared rule: counted, within the limit.
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        self.assertEqual(result['validity']['fused-solo-2']['tears']['lost_records'], 1)
         changed = self.edited(arms, 'fused-live-2', band=1)
         self.assertIn('fused-live-2:band-not-the-round-index-band', self.grade(emit, changed)['missing'])
         result = self.grade(emit, self.edited(arms, 'fused-live-2', progress_delta={'chunks': 6}))
@@ -695,6 +695,118 @@ class Grade(unittest.TestCase):
 # --- the derived arm loop under real bash ------------------------------------------------------------
 
 STUB_BOX = tap.STUB_BOX.replace('e3_alpha_perf_box', 'e3_step_a_box')
+
+
+class Tears(unittest.TestCase):
+    """The pre-registered rule through the real grade, over the two shapes of q18a-alpha-perf's box log:
+    lines 3832 with 3835 (bytes moved to a later line) and 34985 (a header landing inside the JSON)."""
+    FOREIGN = '(Worker_PP1_TP0_EP0 pid=124) INFO 11-01 20:06:28 [qsa_operation.py:797] flash-s5 native-alloc rank=2\n'
+
+    def setUp(self):
+        self.helper = Grade(methodName='grade')
+        self.helper.setUp()
+        self.addCleanup(self.helper.tmp.cleanup)
+        real = tap.band_cuts
+
+        def cuts(band):
+            ends = real(band)
+            step = (ends[-1] - ends[0]) // 16
+            return [ends[0] + k * step for k in range(16)] + [ends[-1]]
+        with mock.patch.object(tap, 'band_cuts', cuts):
+            self.emit, self.arms = synthetic_run()
+
+    def grade(self, lines=None, arms=None):
+        return self.helper.grade(self.emit, arms or self.arms, lines=self.emit.lines if lines is None else lines)
+
+    def worker_lines(self, name, rank):
+        span = next(a for a in self.arms if a['label'] == name)
+        return [i for i, (_, t) in enumerate(self.emit.lines)
+                if progress.PROGRESS_LINE in t and '"side":"worker"' in t and '"rank":%d,' % rank in t
+                and span['wall_start_s'] <= progress.docker_stamp(t) <= span['wall_end_s']]
+
+    @staticmethod
+    def cut(text):
+        at = text.index('"rows":')
+        return at + min(200, (len(text) - at) // 2)
+
+    def spliced(self, line):
+        stream, text = line
+        at = self.cut(text)
+        return stream, text[:at] + '(Worker_PP0_TP1_EP1 pid=102) ' + text[at:]
+
+    def moved(self, line):
+        stream, text = line
+        at = self.cut(text)
+        return (stream, text[:at] + self.FOREIGN), (stream, text.split(' ', 1)[0] + ' ' + text[at:])
+
+    def tear(self, indexes, shape='spliced'):
+        lines = list(self.emit.lines)
+        for i in sorted(indexes, reverse=True):
+            if shape == 'spliced':
+                lines[i] = self.spliced(lines[i])
+            else:
+                lines[i:i + 1] = self.moved(lines[i])
+        return lines
+
+    def test_a_clean_run_counts_nothing(self):
+        result = self.grade()
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        tears = result['progress']['tears']
+        self.assertEqual((tears['torn_progress_lines'], tears['lost_flushes'], tears['lost_flushes_outside_every_arm']),
+                         (0, 0, []))
+        self.assertEqual((tears['lost_record_limit'], tears['dropped_chunk_limit']), (1, 2))
+        for name in result['required_arms']:
+            self.assertEqual(result['validity'][name]['tears']['lost_records'], 0)
+
+    def test_one_torn_line_of_either_shape_is_counted_and_its_chunks_drop_out(self):
+        clean = self.grade()['progress']['arms']['fused-solo-0']
+        for shape in ('spliced', 'moved'):
+            result = self.grade(self.tear([self.worker_lines('fused-solo-0', 3)[2]], shape))
+            self.assertEqual(result['verdict'], 'PASS', (shape, result['missing']))
+            row = result['progress']['arms']['fused-solo-0']
+            tears = row['tears']
+            self.assertEqual((tears['torn_progress_lines'], tears['lost_records'], tears['within_limits']), (1, 1, True), shape)
+            self.assertTrue(1 <= len(tears['dropped_chunk_starts']) <= 2, tears)
+            self.assertEqual({c['chunk_start'] for c in row['chunks'] if c.get('dropped_out')},
+                             set(tears['dropped_chunk_starts']))
+            self.assertEqual(len(row['chunks']), len(clean['chunks']), 'a dropped chunk stays listed')
+            self.assertLess(row['counted_chunks'], clean['counted_chunks'])
+            self.assertEqual(result['validity']['fused-solo-0']['verdict'], 'PASS')
+            self.assertEqual(result['progress']['arms']['stepped-solo-0']['tears']['lost_records'], 0)
+            self.assertIn('### Torn lines and lost records', box.report(result))
+
+    def test_two_lost_records_in_one_arm_go_inc_and_one_in_each_of_two_arms_does_not(self):
+        a, b = self.worker_lines('fused-live-0', 1)[1], self.worker_lines('fused-live-0', 3)[5]
+        result = self.grade(self.tear([a, b]))
+        self.assertEqual(result['verdict'], 'INC')
+        self.assertIn('progress-fused-live-0:lost-records-above-the-declared-limit:2>1', result['missing'])
+        self.assertEqual(result['validity']['fused-live-0']['verdict'], 'INC')
+        self.assertEqual(result['validity']['fused-solo-0']['verdict'], 'PASS')
+        result = self.grade(self.tear([a, self.worker_lines('stepped-live-0', 3)[5]]))
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+
+    def test_a_contract_error_spliced_into_a_torn_line_fails_engine(self):
+        for mark, name in (('tp-ledger-mismatch', 'tp-ledger-mismatch'), ('disagree', 'tp-disagree-in-a-torn-line')):
+            i = self.worker_lines('fused-live-1', 2)[3]
+            lines = list(self.emit.lines)
+            stream, text = lines[i]
+            at = self.cut(text)
+            lines[i] = (stream, text[:at] + '(Worker_PP0_TP1_EP1 pid=102) ' + mark + ' ' + text[at:])
+            result = self.grade(lines)
+            self.assertEqual(result['verdict'], 'FAIL', mark)
+            self.assertEqual(result['validity']['fused-live-1']['classification'], 'ENGINE', mark)
+            self.assertIn(name, result['validity']['fused-live-1']['signatures'], mark)
+
+    def test_a_stray_header_with_an_intact_body_is_not_a_tear(self):
+        i = self.worker_lines('fused-solo-1', 0)[1]
+        lines = list(self.emit.lines)
+        stream, text = lines[i]
+        at = text.index(progress.PROGRESS_LINE)
+        lines[i] = (stream, text[:at] + '(Worker_PP0_TP1_EP1 pid=102) ' + text[at:])
+        result = self.grade(lines)
+        self.assertEqual(result['verdict'], 'PASS', result['missing'])
+        self.assertEqual(result['progress']['tears']['torn_progress_lines'], 0)
+        self.assertEqual(result['progress']['arms']['fused-solo-1']['tears']['lost_records'], 0)
 
 
 class ArmLoop(unittest.TestCase):

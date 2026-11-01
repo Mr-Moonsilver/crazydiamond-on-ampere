@@ -32,6 +32,7 @@ import re
 import statistics
 
 import e3_alpha_perf_box as ap
+import step_a_torn_lines as torn_lines
 from e3_native_qualification_driver import exception_details
 from e3_native_runtime_client import NativeRuntimeClient
 
@@ -206,12 +207,8 @@ def run_arm(a):
 # --- engine log ----------------------------------------------------------------------------------------
 
 def signature_of(line):
-    if progress.PROGRESS_LINE in line:
-        return None
-    for name, text in SIGNATURES:
-        if text in line:
-            return name
-    return None
+    """Whole progress lines hold no signature; torn ones are scanned, so a contract error spliced into one still fails."""
+    return torn_lines.signature_of(line, SIGNATURES)
 
 
 def is_tracked(line):
@@ -425,9 +422,10 @@ def grade(arms, ingress, checks, logs, watches=None):
             failures.append(name + ':FAIL')
         elif (data or {}).get('verdict') != 'PASS':
             missing.append(name + ':' + str((data or {}).get('verdict')))
-    records, errors = progress.read_lines(logs)
     known = [a for a in arms if a.get('label')]
-    receipts = progress.progress_receipts(known, records, errors)
+    # The pre-registered torn-line rule, the C0 grade's: at most 1 lost record and 2 dropped chunks per arm.
+    records, receipts, extra = torn_lines.receipts_for(known, logs)
+    missing.extend(extra)
     if not records:
         missing.append('no-progress-lines-in-the-engine-log')
     for problem in receipts['problems']:
@@ -458,7 +456,7 @@ def grade(arms, ingress, checks, logs, watches=None):
                            crash_free=arm.get('complete') is True and (watches.get(name) or {}).get('verdict') != 'DEAD',
                            disagree_lines=view['disagree_lines'], signatures=sorted(signatures),
                            engine_watch=(watches.get(name) or {}).get('verdict'), ingress=(ingress.get(name) or {}).get('verdict'),
-                           engagement=engaged, selection_switch=arm.get('selection_switch'))
+                           engagement=engaged, selection_switch=arm.get('selection_switch'), tears=(row or {}).get('tears'))
         if verdict == 'FAIL':
             failures.append('%s:%s' % (name, ','.join(reasons[:3])))
         elif verdict == 'INC':
@@ -542,7 +540,21 @@ def report(result):
         lines += ['Failures: ' + '; '.join(result['failures']), '']
     if result['missing']:
         lines += ['Inconclusive items: ' + '; '.join(result['missing']), '']
-    lines += ['## Performance', '', 'Reported, never gated.', '']
+    tears = result['progress']['tears']
+    lines += ['### Torn lines and lost records', '',
+              'Limits declared before the run, per arm: at most %d lost record and %d dropped chunks. Over the run: %d torn progress '
+              'and %d torn memory lines, %d lost flushes, %d outside every arm.' % (
+                  tears['lost_record_limit'], tears['dropped_chunk_limit'], tears['torn_progress_lines'],
+                  tears['torn_memory_lines'], tears['lost_flushes'], len(tears['lost_flushes_outside_every_arm'])), '',
+              '| arm | torn progress | torn memory | lost flushes | lost records | dropped chunks | within limits |',
+              '|---|---|---|---|---|---|---|']
+    for name in result['required_arms']:
+        t = (result['validity'].get(name) or {}).get('tears')
+        if t:
+            lines.append('| %s | %s | %s | %s | %s | %s | %s |' % (
+                name, t['torn_progress_lines'], t['torn_memory_lines'], len(t['lost_flushes']), t['lost_records'],
+                ','.join(str(x) for x in t['dropped_chunk_starts']) or '0', t['within_limits']))
+    lines += ['', '## Performance', '', 'Reported, never gated.', '']
     for band in (1, 2):
         lines += ['### Band %d' % band, '', '| arm | TTFT s | prefill tok/s | s/chunk | decode during | decode only | ratio | '
                   'min stream ratio | p10 stream ratio | gap p99 ms | gap max ms | cmds/chunk |',
