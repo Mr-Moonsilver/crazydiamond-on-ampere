@@ -40,6 +40,12 @@
   "harness/selftest.py": [
    "module:For#12"
   ],
+  "harness/test_e3_lane_comm_probe.py": [
+   "ArtifactIdentity.native_copy"
+  ],
+  "harness/test_e3_native_reply_hol.py": [
+   "PairLeaf.__init__"
+  ],
   "patches/s5_engine/engine_driver.py": [
    "FusedQsa.__init__",
    "FusedQsa.snapshot",
@@ -50,10 +56,12 @@
    "NativeSegmentDriver._fused_agree",
    "NativeSegmentDriver._fused_control",
    "NativeSegmentDriver._fused_hold",
+   "NativeSegmentDriver._fused_stop_round",
    "NativeSegmentDriver._fused_watchdog",
    "NativeSegmentDriver._reset",
    "NativeSegmentDriver._send_plan_entry",
    "NativeSegmentDriver._status_record",
+   "NativeSegmentDriver._stop_round",
    "NativeSegmentDriver._submit_control",
    "NativeSegmentDriver._wait_permit",
    "NativeSegmentDriver.install_qsa_fused",
@@ -246,6 +254,8 @@
    "harness/e3_step_a_probe.py",
    "harness/test_step_a_queue.py",
    "harness/test_step_a_report.py",
+   "harness/step_a_torn_lines.py",
+   "harness/test_step_a_torn_lines.py",
    "harness/test_e3_native_qsa_fused.py",
    "harness/e3_native_qsa_fused_device_probe.py",
    "tools/build_step_a.py",
@@ -320,7 +330,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 327,
+ "expected_tests": 333,
  "label": "step-a",
  "overlay_definitions": {
   "e3/engine_driver.py": [
@@ -333,10 +343,12 @@
    "NativeSegmentDriver._fused_agree",
    "NativeSegmentDriver._fused_control",
    "NativeSegmentDriver._fused_hold",
+   "NativeSegmentDriver._fused_stop_round",
    "NativeSegmentDriver._fused_watchdog",
    "NativeSegmentDriver._reset",
    "NativeSegmentDriver._send_plan_entry",
    "NativeSegmentDriver._status_record",
+   "NativeSegmentDriver._stop_round",
    "NativeSegmentDriver._submit_control",
    "NativeSegmentDriver._wait_permit",
    "NativeSegmentDriver.install_qsa_fused",
@@ -449,19 +461,36 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "9d8ee77b85f92554b78fe02b8ce54d7f82708481",
+ "source_commit": "c03cd8d2582d22445711ae2ca8f65ab830728506",
  "source_paths": [
   "A\tharness/e3_native_qsa_fused_device_probe.py",
   "A\tharness/e3_step_a_box.py",
   "A\tharness/e3_step_a_probe.py",
+  "A\tharness/fixtures/q17c_original_lane_comm.py",
   "A\tharness/runs/q18a_step_a.draft.sh",
   "A\tharness/runs/q18a_step_a_declare.sh",
   "A\tharness/runs/q18a_step_a_settings.sh",
+  "M\tharness/selftest.py",
   "A\tharness/step_a_fixture_leaves.json",
   "A\tharness/step_a_gate.py",
+  "A\tharness/step_a_torn_lines.py",
+  "M\tharness/test_e3_lane_comm_probe.py",
   "A\tharness/test_e3_native_qsa_fused.py",
+  "M\tharness/test_e3_native_reply_hol.py",
   "A\tharness/test_step_a_queue.py",
   "A\tharness/test_step_a_report.py",
+  "A\tharness/test_step_a_torn_lines.py",
+  "M\tpatches/s5_engine/engine_driver.py",
+  "M\tpatches/s5_engine/lane_comm.py",
+  "M\tpatches/s5_engine/lane_dispatch.py",
+  "M\tpatches/s5_engine/native_overlap_control.py",
+  "M\tpatches/s5_engine/native_overlap_session.py",
+  "M\tpatches/s5_engine/probe_control.py",
+  "M\tpatches/s5_engine/qsa_driver.py",
+  "M\tpatches/s5_engine/qsa_operation.py",
+  "M\tpatches/s5_engine/s5_startup.py",
+  "M\tpatches/s5_engine/wire_v1.py",
+  "M\tpatches/s5_engine/worker_bridge.py",
   "A\ttools/build_step_a.py",
   "A\ttools/native43_spec.step-a.json",
   "A\ttools/step_a_clock_scan.py",
@@ -479,19 +508,7 @@
   "A\ttools/step_a_report.py",
   "A\ttools/step_a_spec.py",
   "A\ttools/step_a_tools_derive.py",
-  "A\ttools/step_a_vm_input.py",
-  "M\tharness/selftest.py",
-  "M\tpatches/s5_engine/engine_driver.py",
-  "M\tpatches/s5_engine/lane_comm.py",
-  "M\tpatches/s5_engine/lane_dispatch.py",
-  "M\tpatches/s5_engine/native_overlap_control.py",
-  "M\tpatches/s5_engine/native_overlap_session.py",
-  "M\tpatches/s5_engine/probe_control.py",
-  "M\tpatches/s5_engine/qsa_driver.py",
-  "M\tpatches/s5_engine/qsa_operation.py",
-  "M\tpatches/s5_engine/s5_startup.py",
-  "M\tpatches/s5_engine/wire_v1.py",
-  "M\tpatches/s5_engine/worker_bridge.py"
+  "A\ttools/step_a_vm_input.py"
  ],
  "tools": [
   "build_step_a.py",
