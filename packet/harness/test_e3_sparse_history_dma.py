@@ -1338,6 +1338,102 @@ class GeneratedSparseTests(_GeneratedHarness, unittest.TestCase):
         self.assertTrue(operation.drain())
         operation.release()
 
+    # -- S1: union scratch retention (leaves: harness/alpha_s1_fixture_leaves.json) ---------------
+    def union_layers(self, count):
+        """The real generated attention through the real operation, one layer at a time."""
+        names = [f'qsa.{i}' for i in range(count)]
+        mappings = {name: (3 + i, 7 + i, 9 + i) for i, name in enumerate(names)}
+        operation, lane, transaction, sources = self.prepare(mappings)
+
+        def run(index):
+            name = names[index]
+            self.arena.storage.clear()
+            self.open_layer(operation, lane, transaction, name, sources[name], mappings[name])
+            logical = T((2, 4), device='cuda:0', dtype='torch.int32',
+                        values=[index * 4, 4090 + index, 50, -1, 900 + index, 8100, 51, -1])
+            query = T((2, QUERY_HEADS, HEAD_DIM), device='cuda:0', dtype='torch.bfloat16')
+            output = T((2, QUERY_HEADS, HEAD_DIM), device='cuda:0', dtype='torch.bfloat16')
+            rows = T((2,), device='cuda:0', dtype='torch.int64', values=[0, 1])
+            self.run_generator(operation, self.attention(query, sources[name], logical, self.table, rows, 2,
+                                                         self.arena, True, output, e3op=operation))
+            operation.end_layer(name)
+            return operation._layers[name]
+        return operation, run
+
+    def hold_incomplete(self, run):
+        """Keep the layer's last consumer event incomplete: out of ready_all's reach."""
+        event = run.consumed[-1].event
+        event.ready = False
+        self.device.events.remove(event)
+        return event
+
+    def test_union_sets_retire_once_their_last_consumer_is_complete(self):
+        operation, run = self.union_layers(4)
+        layers, single = [], None
+        for index in range(4):
+            layers.append(run(index))
+            single = single or operation.stats['union_scratch_bytes']
+            self.assertEqual(operation.stats['union_scratch_sets'], index + 1)
+            self.assertEqual(operation.stats['union_scratch_retired'], index)
+            self.assertEqual(operation.stats['union_scratch_live_bytes'], single)
+            self.assertEqual([r.sparse.union is None for r in layers], [True] * index + [False])
+        # The largest single set keeps its meaning; the aggregate never held two sets.
+        self.assertEqual(operation.stats['union_scratch_bytes'], single)
+        self.assertEqual(operation.stats['union_scratch_live_max_bytes'], single)
+        inventory = operation.inventory()
+        self.assertEqual((inventory['union_scratch_sets'], inventory['union_scratch_retired'],
+                          inventory['union_scratch_live_max_bytes']), (4, 3, single))
+        operation.end_forward()
+        self.device.ready_all()
+        self.assertTrue(operation.drain())
+        operation.release()
+        self.assertIsNone(layers[-1].sparse.union)
+        self.assertEqual(operation._union_sets, [])
+
+    def test_union_set_stays_while_its_last_consumer_is_incomplete(self):
+        operation, run = self.union_layers(3)
+        first = run(0)
+        single = operation.stats['union_scratch_bytes']
+        kept = first.sparse.union
+        event = self.hold_incomplete(first)
+        queries = self.device.queries
+        second = run(1)
+        # Never waited for: one nonblocking query, the set stays, the aggregate shows both.
+        self.assertGreater(self.device.queries, queries)
+        self.assertEqual(self.device.waits.count(event), 0)
+        self.assertIs(first.sparse.union, kept)
+        self.assertEqual(operation.stats['union_scratch_retired'], 0)
+        self.assertEqual(operation.stats['union_scratch_live_max_bytes'], 2 * single)
+        event.ready = True
+        third = run(2)
+        self.assertIsNone(first.sparse.union)
+        self.assertIsNone(second.sparse.union)
+        self.assertIsNotNone(third.sparse.union)
+        self.assertEqual(operation.stats['union_scratch_retired'], 2)
+        self.assertEqual(operation.stats['union_scratch_live_bytes'], single)
+        self.assertEqual(operation.stats['union_scratch_live_max_bytes'], 2 * single)
+
+    def test_union_set_stays_before_its_readback_and_under_row1_qualification(self):
+        operation, run = self.union_layers(2)
+        first = run(0)
+        event = self.hold_incomplete(first)
+        run(1)
+        event.ready = True
+        kept = first.sparse.union
+        # The row1 oracle reads the layer at release: every set stays until then.
+        operation.qualification = object()
+        operation._retire_union_scratch()
+        self.assertIs(first.sparse.union, kept)
+        operation.qualification = None
+        # A set whose selection readback was never host-observed stays too.
+        count, first.sparse.selection_count = first.sparse.selection_count, None
+        operation._retire_union_scratch()
+        self.assertIs(first.sparse.union, kept)
+        first.sparse.selection_count = count
+        operation._retire_union_scratch()
+        self.assertIsNone(first.sparse.union)
+        self.assertEqual(operation.stats['union_scratch_retired'], 1)
+
     def test_descriptor_cap_uses_bounded_waves_before_one_attention(self):
         mapping = (5, 7)
         tokens = len(mapping) * PAGE_TOKENS
