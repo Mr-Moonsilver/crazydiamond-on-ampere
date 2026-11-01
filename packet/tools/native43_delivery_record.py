@@ -13,6 +13,43 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
+import sys
+
+
+def gate_window(bundle):
+    """The pair window from the bundle's own gate modules, in an isolated interpreter (-I -B: nothing is written)."""
+    code = ('import json,sys; sys.path.insert(0, sys.argv[1]); import native43_boundary_gate as g, native34_gate as w; '
+            'print(json.dumps(dict(active=g.PAIR_ACTIVE_S, margin=g.PAIR_KILL_MARGIN_S, hard_end=w.HARD_END, '
+            'same=(g.HARD_END == w.HARD_END and g.NOT_BEFORE == w.NOT_BEFORE))))')
+    out = json.loads(subprocess.run([sys.executable, '-I', '-B', '-c', code, str(bundle)], check=True,
+                                    capture_output=True, text=True).stdout)
+    assert out['same'], out
+    return out
+
+
+ENGINE_FILES = ('engine_driver.py', 'native_resources.py', 'qsa_driver.py', 'qsa_operation.py')
+
+
+def identity(bundle, repo, engine_base, source):
+    """The four engine files byte-identical to Codex engine_base and source; the native43 queue texts to source."""
+    def show(rev, path):
+        return subprocess.run(['git', '-C', str(repo), 'show', '%s:%s' % (rev, path)], check=True, capture_output=True).stdout
+    engine = {}
+    for name in ENGINE_FILES:
+        data = (bundle / 'e3_builder' / name).read_bytes()
+        assert data == show(engine_base, 'patches/s5_engine/' + name) == show(source, 'patches/s5_engine/' + name), name
+        engine[name] = hashlib.sha256(data).hexdigest()
+    queue = {}
+    for path in sorted((bundle / 'runs').glob('q18a_native43_*')):
+        assert path.read_bytes() == show(source, 'harness/runs/' + path.name), path.name
+        queue[path.name] = sha(path)
+    assert len(queue) == 7, sorted(queue)
+    moved = subprocess.run(['git', '-C', str(repo), 'diff', '--name-only', engine_base, source], check=True,
+                           capture_output=True, text=True).stdout.split()
+    assert not [m for m in moved if m.startswith(('patches/', 'harness/runs/'))], moved
+    return dict(engine_base=engine_base, source=source, engine_files=engine, queue_texts=queue,
+                source_paths_since_engine_base=moved, verdict='PASS')
 
 
 def sha(p):
@@ -39,6 +76,7 @@ def precheck_summary(log):
 
 def record(a):
     b, f, spec = load(a.build), load(a.freeze), load(a.spec)
+    ident = identity(Path(b['bundle']), a.codex_repo, a.engine_base, spec['source_commit'])
     s, e, o, c = load(a.bundle_selfrun), load(a.engine_selfrun), load(a.owner_seam), load(a.compile_proof)
     assert not spec['dry_run'] and b['name'] == spec['candidate'] and b['arm'] == spec['arm'] == 'NATIVE43'
     assert f['verdict'] == 'PASS' and f['manifest'] == b['manifest'] and f['spec_sha256'] == sha(a.spec)
@@ -71,14 +109,9 @@ def record(a):
     focused = dict(b['focused'], log=str(a.focused_log))
     assert focused['log_sha256'] == sha(a.focused_log)
     provenance = load(Path(b['bundle']) / 'native30-provenance.json')
-    gate = Path(b['bundle']) / 'native43_boundary_gate.py'
-    namespace = {}
-    exec(compile(gate.read_text().replace('from native34_gate import NOT_BEFORE, HARD_END',
-                                          'NOT_BEFORE = HARD_END = None'), str(gate), 'exec'), namespace)
-    weekend = {}
-    exec(compile((Path(b['bundle']) / 'native34_gate.py').read_text(), 'native34_gate.py', 'exec'), weekend)
-    pair_bound = namespace['PAIR_ACTIVE_S'] + namespace['PAIR_KILL_MARGIN_S']
-    latest = datetime.datetime.fromtimestamp(weekend['HARD_END'] - pair_bound, datetime.timezone.utc)
+    window = gate_window(Path(b['bundle']))
+    pair_bound = window['active'] + window['margin']
+    latest = datetime.datetime.fromtimestamp(window['hard_end'] - pair_bound, datetime.timezone.utc)
     queue_check = Path(a.bundle_selfrun).with_name('native43-queue-check.json')
     runner = Path(b['runner']).name
     row = dict(
@@ -108,6 +141,7 @@ def record(a):
         owner_seam_view=dict(verdict=o['verdict'], negatives=o['negatives'], fixture_leaves=o['fixture_leaves'],
                              real_draft_client_foreground=o['real_draft_client_foreground'],
                              owner_decision=o['owner_decision'], container=o['container'], wall_s=o['wall_s']),
+        engine_queue_identity=ident,
         clock_scan=str(a.clock_scan), clock_scan_sha256=sha(a.clock_scan),
         clock_scan_view=dict(verdict=k['verdict'], client_units=len(k['scan']['client_units']), roots=k['scan']['roots'],
                              closure=len(k['scan']['closure']), reachable_identity_calls=k['scan']['reachable_identity_calls'],
@@ -146,4 +180,6 @@ if __name__ == '__main__':
     for name in ('spec', 'build', 'freeze', 'bundle-selfrun', 'engine-selfrun', 'owner-seam', 'clock-scan', 'compile-proof',
                  'precheck-conf', 'precheck-log', 'strict-log', 'focused-log', 'note', 'out'):
         p.add_argument('--' + name, type=Path, required=True)
+    p.add_argument('--codex-repo', type=Path, required=True)
+    p.add_argument('--engine-base', required=True, help='Codex commit the four engine files must equal (d9fb80e)')
     record(p.parse_args())
