@@ -22,6 +22,7 @@ worker log lines; the grade's join over real engine and worker lines is test_alp
 text runs with the WAIVED checks recorded instead of fatal, and each has a stand-in below.
 """
 import argparse
+import contextlib
 import hashlib
 import json
 from pathlib import Path
@@ -91,6 +92,50 @@ def stage_checks(check, lines, wait_segments):
         check('stage-wait-sends-%d' % number, all(
             (r[at['kind']] == 'segment' and r[at['segment']] in wait_segments) or r[at['kind']] == 'profile' for r in waits),
             kinds=sorted({(r[at['kind']], r[at['segment']]) for r in waits}, key=str))
+
+
+def stage_skew(ap):
+    """The parent's tp-skew leaf with the release rule of a local arm; the rule on the next chunk's open is untouched.
+
+    The parent asks that any worker release finds all four ranks' state events done. A local release is the design's change: a target
+    rank's release needs its own stage's state events done, and a non-target only reads the slot. The next chunk's open still needs all
+    four, which is the parent's guard as written. What the parent's rule would have flagged is kept in ``parent_rule_flags``, each row
+    with the release's scope, so the result shows the only relaxed cases are a stage ahead of the other stage.
+    """
+    from vllm.v1.flash_e3.stage_wire import StageScoped
+
+    class StageSkew(ap.Skew):
+        def __init__(self, conn, seed=4141):
+            super().__init__(conn, seed)
+            self.parent_rule_flags = []
+            self.stage_releases = 0
+
+        @contextlib.contextmanager
+        def installed(self):
+            with super().installed() as skew:
+                conn = skew.conn
+                for rank, worker in conn.workers.items():
+                    bridge = worker._flash_s5_bridge
+
+                    def release(message, _real=worker.flash_s5_release, _rank=rank, _bridge=bridge):
+                        assert type(message) is StageScoped, 'a local arm sends scoped releases only'
+                        skew.observe()
+                        own, tx = set(message.ranks), _bridge.transaction
+                        if _rank in own and tx is not None:
+                            skew.stage_releases += 1
+                            missing = own - skew.done.get(tx.txn_seq, set())
+                            if missing:
+                                skew.violations.append(('stage-release-before-own-state', _rank, tx.txn_seq, sorted(missing)))
+                        mark, counted = len(skew.violations), skew.releases_checked
+                        try:
+                            return _real(message)
+                        finally:
+                            skew.parent_rule_flags += [row + (sorted(own),) for row in skew.violations[mark:]]
+                            del skew.violations[mark:]
+                            skew.releases_checked = counted + int(_rank in own and tx is not None)
+                    worker.flash_s5_release = release
+                yield skew
+    return StageSkew
 
 
 def scoped_submit(transport):
@@ -190,12 +235,14 @@ def run(mode):
         return reply, leased, release
 
     parent, waived = local_parent() if local else (pp, [])
-    with mock.patch.object(parent, 'connected', connected), mock.patch.object(parent, 'set_mode', set_mode):
+    with mock.patch.object(parent, 'connected', connected), mock.patch.object(parent, 'set_mode', set_mode), \
+            mock.patch.object(pp.ap, 'Skew', stage_skew(pp.ap) if local else pp.ap.Skew):
         result = parent.run(mode.split('-', 1)[1])
     # After the parent's overlay aliases: the class the installed driver wraps its commands in.
     from vllm.v1.flash_e3.stage_wire import StageScoped
     conn = state['conn']
     checks = result['checks']
+    skew = conn.skew if local and mode.endswith('-skew') else None
 
     def check(name, ok, **details):
         checks.append(dict(name=name, ok=bool(ok), **details))
@@ -215,6 +262,16 @@ def run(mode):
         stage_checks(check, result.pop('alpha_c0_lines'), parent.WAIT_SEGMENTS)
         result['waived_parent_checks'] = sorted({row['name'] for row in waived})
         result['waiver_reasons'] = WAIVED
+        if skew is not None:
+            flags = skew.parent_rule_flags
+            check('stage-skew-release-rule', skew.stage_releases >= 4 * len(skew.opened) > 0 and not skew.violations,
+                  stage_releases=skew.stage_releases, violations=skew.violations[:8])
+            # A local arm only relaxes the rule across stages: a flagged rank's own stage was done, only the other stage may be missing.
+            other = {0: {2, 3}, 1: {2, 3}, 2: {0, 1}, 3: {0, 1}}
+            check('stage-skew-parent-flags-are-other-stage-only',
+                  all(row[0] == 'release-before-state' and (row[1] not in row[4] or set(row[3]) <= other[row[1]]) for row in flags),
+                  flags=len(flags), sample=[list(row) for row in flags[:8]])
+            result['parent_rule_flags'] = len(flags)
         check('stage-counters', status['selected'] is True and counters['chunks'] == chunks
               and counters['local_releases'] == 2 * chunks, counters=counters, chunks=chunks)
         check('every-chunk-command-names-its-stage', chunk_envelopes and len(scoped) == len(chunk_envelopes),
