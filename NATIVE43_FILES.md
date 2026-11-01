@@ -24,7 +24,7 @@ Harness additions:
 - `native43_boundary_gate.py`: shared phase budgets and inherited owner weekend window.
 - `native43_fixture_leaves.json`: exact synthetic objects and limitations; none is box evidence.
 - `test_native43_boundary_queue.py`: queue derivation/argv/grade and real-clock packet seams.
-- `test_native43_dense_boundary.py`: generated-attention transport tests and real four-rank cutoff/cancel/FULL CPU gate; clock negatives. Existing `test_e3_qsa_driver.py` adds the new diagnostic method to its no-device fixture. `selftest.py` registers both new suites.
+- `test_native43_dense_boundary.py`: generated-attention transport tests and real four-rank cutoff/cancel/FULL CPU gate; clock negatives. Existing `test_e3_qsa_driver.py` and `test_e3_lane_private.py` add the new diagnostic method to their no-device fixtures. `selftest.py` registers both new suites.
 
 Queue derivation: `tools/native43_queue_drafts.py` writes/checks:
 
@@ -39,3 +39,5 @@ Packaging owns builder, review closure, freeze, exact-container self-runs, prech
 CPU results so far: new suites 24/24 (0 skips), existing worker operations 43/43, sparse transport 34/34, QSA driver 10/10, four-rank bridge 42/42. Full strict is running at `tmp/native43-strict-a.log`; packaging should run strict again on the merged final freeze. Expected actual box time is about 20–30 minutes for two startup/identity/boundary/cleanup arms; the shared worst-case phase caps reserve substantially more. No speed claim.
 
 Harness follow-up: pair grading independently revalidates raw checkpoint, exact four typed CancelAck/report rows, source/PP closure, FULL status and the real request bracket; a cached client PASS does not suffice. Timed pre-threshold (97152) and first three post-threshold chunks (98176/99200/100224) must be present for every rank; final 101200 evidence chunk remains excluded.
+
+Development strict run finished 324/325, 208 suites, zero skips: sole failure was test_e3_lane_private.py (three errors from its separate FakeOperation lacking boundary_evidence). That fixture is now updated; its focused rerun passed 29/29, zero skips. Final new suites passed 24/24, zero skips (`tmp/native43-focused-final.log`). No engine changes after bd51de8. Packaging owns the fresh full strict run on merged/frozen bytes.

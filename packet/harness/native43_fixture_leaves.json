@@ -6,7 +6,7 @@
       "name": "generated-attention-device-port",
       "tests": "test_native43_dense_boundary.DenseBoundaryTests",
       "replaces": "NativeQsaDevice, CUDA tensors/streams/events, and generated QSA Triton union/attention kernels",
-      "implementation": "Existing test_e3_sparse_history_dma _GeneratedHarness/FakeSparseDevice/FakeTorch/T/FakeKernel; real generated attention, real QsaPrefillOperation, actual SparseSourceHold, planner and profile authorization execute",
+      "implementation": "Existing test_e3_sparse_history_dma _GeneratedHarness/FakeSparseDevice/FakeTorch/T/FakeKernel; real generated attention, real QsaPrefillOperation, actual SparseSourceHold, planner and profile authorization execute; test_e3_qsa_driver.FakeOperation and test_e3_lane_private.FakeOperation implement boundary_evidence as a no-op, matching the real method with diagnostics disabled in those fixtures",
       "equivalence": "Host geometry/address/pinned facts, deterministic selected-index values, source row signatures and controlled event readiness exercise copy bounds, original-index preservation, source ownership and consumer retirement; fake timing events return a declared 0.25ms solely to check receipt accounting",
       "cannot_prove": "CUDA/NCCL/H2D behavior, numerical QSA equality or device elapsed performance. Actual box boundary hashes are a separate mandatory check."
     },
