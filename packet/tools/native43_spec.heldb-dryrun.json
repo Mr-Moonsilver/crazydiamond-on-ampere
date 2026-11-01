@@ -1,0 +1,176 @@
+{
+  "schema": "native43-packaging-spec/1",
+  "label": "heldb-dryrun",
+  "dry_run": true,
+  "source_commit": "1ffc394783d3d67e140056868b50ca2f74c88b3b",
+  "candidate": "q18a-native39-trunk",
+  "arm": "TRUNK",
+  "review": "inherit",
+  "review_key": null,
+  "details": {
+    "model_settings_changed": false,
+    "queue": "q18a-native39-trunk texts unchanged (never staged; box_ready false)",
+    "scope": "HARNESS proof of the native43 packaging: held-b's unchanged source (1ffc394) rebuilt through tools/build_native43.py; the regenerated overlay must equal held-b's byte for byte, the runner differs from held-b's only in H/BUNDLE, and the self-runs add the CT-vs-container clock split",
+    "tail_handback": false
+  },
+  "source_paths": [
+    "A\ttools/build_native43.py",
+    "A\ttools/native43_bundle_selfrun.py",
+    "A\ttools/native43_clock_split.py",
+    "A\ttools/native43_cpu_probe.py",
+    "A\ttools/native43_delivery_record.py",
+    "A\ttools/native43_owner_seam.py",
+    "A\ttools/native43_precheck_conf.py",
+    "A\ttools/native43_selfrun.py",
+    "A\ttools/native43_spec.heldb-dryrun.json",
+    "A\ttools/native43_tools_derive.py"
+  ],
+  "definitions": {},
+  "engine_changed": [],
+  "overlay_definitions": {},
+  "tools": [
+    "build_native43.py",
+    "native43_bundle_selfrun.py",
+    "native43_clock_split.py",
+    "native43_cpu_probe.py",
+    "native43_owner_seam.py",
+    "native43_precheck_conf.py",
+    "native43_selfrun.py",
+    "native43_tools_derive.py",
+    "native43_spec.heldb-dryrun.json"
+  ],
+  "queue": [
+    "q18a_native39_trunk.draft.sh",
+    "q18a_native39_trunk_declare.sh",
+    "q18a_native39_trunk_settings.sh"
+  ],
+  "expected_tests": 218,
+  "runner_swaps": [],
+  "rehearsal": {
+    "candidate": "q18a-native43-dense-boundary",
+    "expected_tests": 229,
+    "runner_swaps": [
+      [
+        "result.get('native35_arm')=='TRUNK'",
+        "result.get('native35_arm')=='NATIVE43'"
+      ],
+      [
+        "result.get('native39_trunk_queue')=='PASS'",
+        "result.get('native39_trunk_queue')=='PASS' and result.get('native43_queue')=='PASS'"
+      ],
+      [
+        "    from native39_trunk_gate import trunk_window_ok as window_ok\n",
+        "    from native43_boundary_gate import window_ok\n"
+      ],
+      [
+        "engine.get('schema')=='native39-trunk-selfrun/1'",
+        "engine.get('schema')=='native43-selfrun/1'"
+      ],
+      [
+        "and engine.get('image')==IMAGE and engine.get('box_action') is False,'exact-engine-selfrun-required')",
+        "and engine.get('image')==IMAGE and engine.get('box_action') is False\n                and (engine.get('clock_split') or {}).get('verdict')=='PASS'\n                and (engine.get('scheduler_tick_probe') or {}).get('verdict')=='PASS' and (engine.get('scheduler_tick_probe') or {}).get('required_ok') is True,'exact-engine-selfrun-required')"
+      ],
+      [
+        "    for suffix in ('','-requests','.log','-declare.log','-declare-chain.log','-staging.json'):\n",
+        "    for suffix in ('','.log','-staging.json','-pair-grade.json',\n                   *(arm+part for arm in ('-current','-dense') for part in ('','-requests','-declare.log','-declare-chain.log'))):\n"
+      ],
+      [
+        "def phase(script,log,env):\n",
+        "def phase(script,log,env,*args):\n"
+      ],
+      [
+        "        return subprocess.run(['bash',str(H/'runs'/script)],env=env,\n",
+        "        return subprocess.run(['bash',str(H/'runs'/script),*args],env=env,\n"
+      ],
+      [
+        "        rc=phase('q18a_native43_dense_boundary_declare.sh',S0/(QNAME+'-declare-chain.log'),env)\n        require(rc==0,'staging-declaration-refused')\n",
+        "        # Native43: both request directories (O_EXCL-fresh, own private/) from the one queue key.\n        for policy,script in (('current','q18a_native43_current_declare.sh'),('dense','q18a_native43_dense_declare.sh')):\n            rc=phase(script,S0/(QNAME+'-'+policy+'-declare-chain.log'),dict(env,QNAME=QNAME+'-'+policy))\n            require(rc==0,'staging-declaration-refused:'+policy)\n"
+      ],
+      [
+        "declaration_sha256=sha(S0/(QNAME+'-requests')/'startup.json'),",
+        "declaration_sha256={p:sha(S0/(QNAME+'-'+p+'-requests')/'startup.json') for p in ('current','dense')},"
+      ],
+      [
+        "    env=environment(read_private(S0/(QNAME+'-requests')/'private/vllm-api.env'),stage['model'],stage['snapshot_max_bytes'])\n    env.update(FLASH_NATIVE30_SYNC=stage['sync'],REQUESTS=str(S0/(QNAME+'-requests')),Q=str(S0/QNAME))\n    rc=phase('q18a_native43_dense_boundary.draft.sh',S0/(QNAME+'.log'),env)\n",
+        "    # Native43: one queue key for both arms; the pair wrapper sets REQUESTS per arm.\n    key=read_private(S0/(QNAME+'-current-requests')/'private/vllm-api.env')\n    require(read_private(S0/(QNAME+'-dense-requests')/'private/vllm-api.env')==key,'one-queue-key-required')\n    env=environment(key,stage['model'],stage['snapshot_max_bytes'])\n    for name in ('REQUESTS','Q'):env.pop(name,None)\n    env.update(FLASH_NATIVE30_SYNC=stage['sync'])\n    rc=phase('q18a_native43_dense_boundary.draft.sh',S0/(QNAME+'.log'),env,str(S0/QNAME))\n"
+      ]
+    ]
+  },
+  "engine_selfrun": {
+    "schema": "native39-trunk-selfrun/1",
+    "compiled": [
+      "patches/s5_engine/scheduler_hooks.py",
+      "patches/s5_engine/engine_driver.py",
+      "patches/s5_engine/native_overlap_session.py",
+      "harness/e3_native39_trunk_probe.py",
+      "harness/test_native39_trunk.py",
+      "harness/selftest.py",
+      "tools/native39_trunk_selfrun.py",
+      "tools/native39_trunk_freeze.py",
+      "tools/build_native39_trunk.py",
+      "tools/build_native43.py",
+      "tools/native43_bundle_selfrun.py",
+      "tools/native43_clock_split.py",
+      "tools/native43_cpu_probe.py",
+      "tools/native43_owner_seam.py",
+      "tools/native43_precheck_conf.py",
+      "tools/native43_selfrun.py",
+      "tools/native43_tools_derive.py"
+    ],
+    "suites": [
+      "test_native39_trunk",
+      "test_native37_robust",
+      "test_native38_plain_bind",
+      "test_e3_admission_native",
+      "test_e3_staged_chunk_plan",
+      "test_e3_native_overlap",
+      "test_e3_native_storage_replay",
+      "test_e3_r4_worker_bridge",
+      "test_e3_admission_metadata"
+    ]
+  },
+  "bundle_selfrun": {
+    "arm": "TRUNK",
+    "probe": "native39_trunk_cpu_probe.py"
+  },
+  "clock_split": {
+    "side": "driver-clock-record",
+    "modules": [],
+    "expect": {
+      "identity_equality": "refused",
+      "prove_clock_domain": "refused",
+      "native_window_clock": "refused",
+      "bracket": "proved"
+    },
+    "note": "held-b clients compare clock identities for equality; under the CT/container split all three refuse, as native40 did on the box; the bracket relation itself holds (one CLOCK_MONOTONIC, zero offsets)"
+  },
+  "precheck": {
+    "seams": "test_native39_trunk_queue.py test_native39_trunk.py ",
+    "fixture_rows": [
+      "  test_native39_trunk_queue.py # synthetic CPU auth fixture only (VLLM_API_KEY / bearer fixture value)\n"
+    ],
+    "header": [
+      "Native43 packaging dry run: held-b's unchanged source (1ffc394) rebuilt by tools/build_native43.py; PREV is the frozen native39 trunk held-b bundle and runner.",
+      "Engine delta vs PREV: none (regenerated overlay byte-identical, review and compiled libraries unchanged); the bundle adds the native43 packaging tools.",
+      "HARNESS proof only: box_ready false, never staged."
+    ]
+  },
+  "checks": [
+    [
+      "tools/native39_trunk_queue_drafts.py",
+      "--check"
+    ],
+    [
+      "tools/native39_trunk_tools_derive.py",
+      "--check"
+    ],
+    [
+      "tools/native39_w2_length.py",
+      "--check"
+    ],
+    [
+      "tools/native43_tools_derive.py",
+      "--check"
+    ]
+  ]
+}
