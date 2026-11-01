@@ -1,0 +1,200 @@
+{
+ "definitions": {
+  "patches/s5_engine/engine_driver.py": [
+   "FusedQsa.__init__",
+   "FusedQsa.snapshot",
+   "NativeSegmentDriver.__init__",
+   "NativeSegmentDriver._apply_segments",
+   "NativeSegmentDriver._begin",
+   "NativeSegmentDriver._drive",
+   "NativeSegmentDriver._fused_agree",
+   "NativeSegmentDriver._fused_control",
+   "NativeSegmentDriver._fused_hold",
+   "NativeSegmentDriver._fused_watchdog",
+   "NativeSegmentDriver._reset",
+   "NativeSegmentDriver._send_plan_entry",
+   "NativeSegmentDriver._status_record",
+   "NativeSegmentDriver._submit_control",
+   "NativeSegmentDriver._wait_permit",
+   "NativeSegmentDriver.install_qsa_fused",
+   "class:FusedQsa",
+   "fused_expected_shape",
+   "module:from e3_types import ARENA_PAGES, CompletionKind, CompletionProof, DependencyRole, E3ContractError, E3Pending, LaneRole, OperationTicket, PAGE_TOKENS, TransactionId",
+   "module:from e3_types import CompletionKind, CompletionProof, DependencyRole, E3ContractError, E3Pending, LaneRole, OperationTicket, TransactionId",
+   "module:from wire_v1 import BootstrapAck, BootstrapCommand, CancelAck, CancelRequest, PPReceiptAck, PPReceiptDelivery, PeerBinding, PeerBindingAck, PollRequest, QsaProfileGrant, QsaProfileQuery, QsaScheduleShape, qsa_profile_agreement, ReleaseRequest, ReleaseAck, OpenAck, OpenRequest, OpSeqTracker, ROUTE_BANK_FULL, ROUTE_BANK_SPLIT, SegmentAcceptance, SegmentCommand, SegmentDescriptor, SegmentKind, TransitionAck, TransitionCommand, TransitionPending, WorkerCompletionReport",
+   "module:from wire_v1 import BootstrapAck, BootstrapCommand, CancelAck, CancelRequest, PPReceiptAck, PPReceiptDelivery, PeerBinding, PeerBindingAck, PollRequest, QsaProfileQuery, qsa_profile_agreement, ReleaseRequest, ReleaseAck, OpenAck, OpenRequest, OpSeqTracker, ROUTE_BANK_FULL, ROUTE_BANK_SPLIT, SegmentAcceptance, SegmentCommand, SegmentDescriptor, SegmentKind, TransitionAck, TransitionCommand, TransitionPending, WorkerCompletionReport"
+  ],
+  "patches/s5_engine/lane_comm.py": [
+   "CollectiveLedger.__init__",
+   "CollectiveLedger.begin",
+   "CollectiveLedger.note",
+   "CollectiveLedger.take",
+   "PrefillTpCommunicator.__init__",
+   "PrefillTpCommunicator.all_reduce",
+   "canonical_selection",
+   "class:CollectiveLedger",
+   "module:__all__",
+   "module:import hashlib"
+  ],
+  "patches/s5_engine/lane_dispatch.py": [
+   "LaneDispatcher._do_layer",
+   "LaneDispatcher._do_layer_fused",
+   "LaneDispatcher._do_prepare",
+   "LaneDispatcher._ledger",
+   "LaneDispatcher._reset_transaction",
+   "LaneDispatcher._set_ledger",
+   "LaneDispatcher.select_fused",
+   "LaneDispatcher.submit",
+   "module:from lane_comm import CollectiveLedger, LaneCommError",
+   "module:from lane_comm import LaneCommError"
+  ],
+  "patches/s5_engine/native_overlap_control.py": [
+   "NativeControlClient._call",
+   "NativeControlClient.native_qsa_fused",
+   "_qsa_fused"
+  ],
+  "patches/s5_engine/native_overlap_session.py": [
+   "NativeOverlapSession._action_native_qsa_fused",
+   "NativeOverlapSession.execute"
+  ],
+  "patches/s5_engine/probe_control.py": [
+   "attach_native_router"
+  ],
+  "patches/s5_engine/qsa_driver.py": [
+   "QsaLayerDriver.__init__",
+   "QsaLayerDriver._fused",
+   "QsaLayerDriver.arm_fused",
+   "QsaLayerDriver.fused_profiles",
+   "QsaLayerDriver.run_layer"
+  ],
+  "patches/s5_engine/qsa_operation.py": [
+   "QsaPrefillOperation.advance_fused",
+   "QsaPrefillOperation.fill_bucket",
+   "QsaPrefillOperation.fused_refusal",
+   "QsaPrefillOperation.fused_shape"
+  ],
+  "patches/s5_engine/s5_startup.py": [
+   "install_engine"
+  ],
+  "patches/s5_engine/wire_v1.py": [
+   "OpenRequest.__post_init__",
+   "QsaProfileGrant.__post_init__",
+   "SegmentAcceptance.__post_init__",
+   "class:OpenRequest",
+   "class:QsaProfileGrant",
+   "class:SegmentAcceptance"
+  ],
+  "patches/s5_engine/worker_bridge.py": [
+   "NativeWorkerBridge._fused_prepare_command",
+   "NativeWorkerBridge.open",
+   "NativeWorkerBridge.submit"
+  ]
+ },
+ "overlay_definitions": {
+  "e3/engine_driver.py": [
+   "FusedQsa.__init__",
+   "FusedQsa.snapshot",
+   "NativeSegmentDriver.__init__",
+   "NativeSegmentDriver._apply_segments",
+   "NativeSegmentDriver._begin",
+   "NativeSegmentDriver._drive",
+   "NativeSegmentDriver._fused_agree",
+   "NativeSegmentDriver._fused_control",
+   "NativeSegmentDriver._fused_hold",
+   "NativeSegmentDriver._fused_watchdog",
+   "NativeSegmentDriver._reset",
+   "NativeSegmentDriver._send_plan_entry",
+   "NativeSegmentDriver._status_record",
+   "NativeSegmentDriver._submit_control",
+   "NativeSegmentDriver._wait_permit",
+   "NativeSegmentDriver.install_qsa_fused",
+   "class:FusedQsa",
+   "fused_expected_shape",
+   "module:from .e3_types import ARENA_PAGES, CompletionKind, CompletionProof, DependencyRole, E3ContractError, E3Pending, LaneRole, OperationTicket, PAGE_TOKENS, TransactionId",
+   "module:from .e3_types import CompletionKind, CompletionProof, DependencyRole, E3ContractError, E3Pending, LaneRole, OperationTicket, TransactionId",
+   "module:from .wire_v1 import BootstrapAck, BootstrapCommand, CancelAck, CancelRequest, PPReceiptAck, PPReceiptDelivery, PeerBinding, PeerBindingAck, PollRequest, QsaProfileGrant, QsaProfileQuery, QsaScheduleShape, qsa_profile_agreement, ReleaseRequest, ReleaseAck, OpenAck, OpenRequest, OpSeqTracker, ROUTE_BANK_FULL, ROUTE_BANK_SPLIT, SegmentAcceptance, SegmentCommand, SegmentDescriptor, SegmentKind, TransitionAck, TransitionCommand, TransitionPending, WorkerCompletionReport",
+   "module:from .wire_v1 import BootstrapAck, BootstrapCommand, CancelAck, CancelRequest, PPReceiptAck, PPReceiptDelivery, PeerBinding, PeerBindingAck, PollRequest, QsaProfileQuery, qsa_profile_agreement, ReleaseRequest, ReleaseAck, OpenAck, OpenRequest, OpSeqTracker, ROUTE_BANK_FULL, ROUTE_BANK_SPLIT, SegmentAcceptance, SegmentCommand, SegmentDescriptor, SegmentKind, TransitionAck, TransitionCommand, TransitionPending, WorkerCompletionReport"
+  ],
+  "e3/lane_comm.py": [
+   "CollectiveLedger.__init__",
+   "CollectiveLedger.begin",
+   "CollectiveLedger.note",
+   "CollectiveLedger.take",
+   "PrefillTpCommunicator.__init__",
+   "PrefillTpCommunicator.all_reduce",
+   "canonical_selection",
+   "class:CollectiveLedger",
+   "module:__all__",
+   "module:import hashlib"
+  ],
+  "e3/lane_dispatch.py": [
+   "LaneDispatcher._do_layer",
+   "LaneDispatcher._do_layer_fused",
+   "LaneDispatcher._do_prepare",
+   "LaneDispatcher._ledger",
+   "LaneDispatcher._reset_transaction",
+   "LaneDispatcher._set_ledger",
+   "LaneDispatcher.select_fused",
+   "LaneDispatcher.submit",
+   "module:from .lane_comm import CollectiveLedger, LaneCommError",
+   "module:from .lane_comm import LaneCommError"
+  ],
+  "e3/native_overlap_control.py": [
+   "NativeControlClient._call",
+   "NativeControlClient.native_qsa_fused",
+   "_qsa_fused"
+  ],
+  "e3/native_overlap_session.py": [
+   "NativeOverlapSession._action_native_qsa_fused",
+   "NativeOverlapSession.execute"
+  ],
+  "e3/probe_control.py": [
+   "attach_native_router"
+  ],
+  "e3/qsa_driver.py": [
+   "QsaLayerDriver.__init__",
+   "QsaLayerDriver._fused",
+   "QsaLayerDriver.arm_fused",
+   "QsaLayerDriver.fused_profiles",
+   "QsaLayerDriver.run_layer"
+  ],
+  "e3/qsa_operation.py": [
+   "QsaPrefillOperation.advance_fused",
+   "QsaPrefillOperation.fill_bucket",
+   "QsaPrefillOperation.fused_refusal",
+   "QsaPrefillOperation.fused_shape"
+  ],
+  "e3/s5_startup.py": [
+   "install_engine"
+  ],
+  "e3/wire_v1.py": [
+   "OpenRequest.__post_init__",
+   "QsaProfileGrant.__post_init__",
+   "SegmentAcceptance.__post_init__",
+   "class:OpenRequest",
+   "class:QsaProfileGrant",
+   "class:SegmentAcceptance"
+  ],
+  "e3/worker_bridge.py": [
+   "NativeWorkerBridge._fused_prepare_command",
+   "NativeWorkerBridge.open",
+   "NativeWorkerBridge.submit"
+  ]
+ },
+ "parent": "c3f1f64",
+ "paths": [
+  "M\tpatches/s5_engine/engine_driver.py",
+  "M\tpatches/s5_engine/lane_comm.py",
+  "M\tpatches/s5_engine/lane_dispatch.py",
+  "M\tpatches/s5_engine/native_candidate_review.json",
+  "M\tpatches/s5_engine/native_overlap_control.py",
+  "M\tpatches/s5_engine/native_overlap_session.py",
+  "M\tpatches/s5_engine/probe_control.py",
+  "M\tpatches/s5_engine/qsa_driver.py",
+  "M\tpatches/s5_engine/qsa_operation.py",
+  "M\tpatches/s5_engine/s5_startup.py",
+  "M\tpatches/s5_engine/wire_v1.py",
+  "M\tpatches/s5_engine/worker_bridge.py"
+ ],
+ "schema": "step-a-freeze-declaration/1"
+}
