@@ -462,6 +462,8 @@ class Arm(unittest.TestCase):
         # No standing stream finished inside this span: the all-open sub-window is the whole span.
         self.assertEqual(metrics['client']['all_open_share_of_span'], 1.0)
         self.assertGreater(metrics['client']['all_open_decode_share'], 0)
+        self.assertEqual(len(metrics['per_stream_decode_tokens_per_s']), 8)
+        self.assertTrue(all(r > 0 for r in metrics['per_stream_decode_tokens_per_s']))
 
         receipts = stock['receipts']
         self.assertIs(receipts['complete'], True, receipts['reasons'])

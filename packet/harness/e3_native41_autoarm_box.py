@@ -31,7 +31,6 @@ import threading
 import time
 
 import e3_decode_correctness as streams
-import e3_native_performance as perf
 import e3_overlap_performance as shared
 from e3_native_qualification_driver import exception_details
 from e3_native_runtime_client import NativeRuntimeClient
@@ -78,6 +77,23 @@ def compact(status):
             'admitted': admission.get('admitted'), 'refused': admission.get('refused'),
             'native_work': None if work is None else {k: work.get(k) for k in (
                 'request_uid_sha256', 'request_generation', 'transaction', 'chunk_start', 'chunk_end')}}
+
+
+def stream_ok(state):
+    """Copied from native35's performance client (_stream_ok); that module is not imported here."""
+    return (state.first_advance_ns is not None and state.finish_at_ns is not None
+            and state.error is None and state.malformed is None and state.done_marker is True)
+
+
+def first_advance_read_timeout(cfg):
+    """Copied from native35's performance client: only the declared native28 client wait."""
+    frozen = cfg['timeouts']['read_s']
+    override = os.environ.get('Q18A_FIRST_ADVANCE_READ_TIMEOUT_S')
+    if override is None:
+        return frozen
+    if frozen != 180.0 or override != '1200':
+        raise ValueError('first-advance-read-timeout-declaration-invalid')
+    return 1200.0
 
 
 def status_view(label, status):
@@ -349,7 +365,7 @@ def arm(a, cfg, client, *, poll_client=None, sleep=time.sleep):
         actions = [h.get('action') for h in list(getattr(client, 'history', ()))[mark:]] + polled['actions']
         record['receipts'] = receipt_proof(kind, before, polled, after, state.prompt_tokens, actions)
         record['polled'] = polled
-        if not perf._stream_ok(state) or record['fresh_finish'].get('timed_out'):
+        if not stream_ok(state) or record['fresh_finish'].get('timed_out'):
             raise ValueError('fresh-client-completion-unproved')
         if not geometry_ok(state):
             raise ValueError('fresh-prompt-token-geometry-unproven')
@@ -385,7 +401,7 @@ def arm(a, cfg, client, *, poll_client=None, sleep=time.sleep):
         app_first = shared._wait_first_advance(app_state, cfg['timeouts']['read_s'])
         record['append_finish'] = shared._finish_or_cancel([app_state], app_workload)
         record['append'] = request_row(app_state, app_first, prompts, 'append')
-        if not perf._stream_ok(app_state) or record['append_finish'].get('timed_out'):
+        if not stream_ok(app_state) or record['append_finish'].get('timed_out'):
             record['reasons'].append('append-client-completion-unproved')
         tail = client.call('status')
         record['statuses'].append(status_view('after-append', tail))
@@ -431,6 +447,12 @@ def arm_metrics(row):
                        'all_open_share_of_span': client.get('all_open_share_of_span'),
                        'ttft_s': (row.get('fresh') or {}).get('ttft_s')},
             'engine': None,
+            'per_stream_decode_tokens_per_s': [r.get('rate_tokens_per_s') for r in
+                                               (client.get('decode_window') or {}).get('streams') or []],
+            'per_stream_all_open_decode_tokens_per_s': [r.get('rate_tokens_per_s') for r in
+                                                        (client.get('decode_window_all_open') or {}).get('streams') or []],
+            'per_stream_decode_only_tokens_per_s': [r.get('rate_tokens_per_s') for r in
+                                                    (row.get('decode_only') or {}).get('streams') or []],
             'auto_receipts_complete': receipts.get('complete') if row.get('kind') == 'auto' else None,
             'return_upper_bound_ms': (receipts.get('return') or {}).get('upper_bound_ms'),
             'native_chunks_observed': receipts.get('native_chunks_observed'),
@@ -531,7 +553,7 @@ def main(argv=None):
             problems, cfg = shared.validate_manifest(data)
             if problems or cfg['repeats'] != 1:
                 raise ValueError('frozen-native-workload-invalid')
-            cfg = dict(cfg, timeouts=dict(cfg['timeouts'], read_s=perf.first_advance_read_timeout(cfg)))
+            cfg = dict(cfg, timeouts=dict(cfg['timeouts'], read_s=first_advance_read_timeout(cfg)))
             client = NativeRuntimeClient(a.url, a.run_id, epoch=a.epoch, timeout_s=a.control_timeout_s)
             # The receipt poller's own loopback client: status only, same run and epoch.
             poll = NativeRuntimeClient(a.url, a.run_id, epoch=a.epoch, timeout_s=a.control_timeout_s)
