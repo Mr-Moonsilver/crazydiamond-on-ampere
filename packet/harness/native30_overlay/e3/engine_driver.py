@@ -2685,6 +2685,15 @@ class NativeSegmentDriver:
             # Nothing is owned and the full route is restored: stop is done.
             self.stop_kind = None
             return
+        if self.phase == 'open' and self._retained is not None:
+            # The ring refused this continuation's open, so no worker saw this
+            # chunk: a sent open is still in _inflight above, and its reply moves
+            # the row.  The workers hold the previous chunk's row and would
+            # quarantine a cancel for a chunk they never opened.  Close that row
+            # first; a later tick retires this chunk as never submitted, through
+            # the ordinary all-rank cancel below (every rank answers never_open).
+            self._drive_retained_cancel()
+            return
         if self._drive_tail_stop_submission():
             return
         if self._drive_pp_stop_submission():
