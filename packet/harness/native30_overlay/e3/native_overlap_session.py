@@ -37,9 +37,6 @@ RUN_ID_CHARS = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01
 ADMISSION_PHASES = ('full-prefill-solo', 'split-prefill-solo',
                     'split-w1-decode', 'row1-native', 'w2-overlap')
 NATIVE_ADMISSION_PHASES = ('split-prefill-solo', 'row1-native', 'w2-overlap')
-# Native41: exposed only with FLASH_S5_AUTO_ARM=1. The two window actions use
-# driver reads only (status, overlap_evidence), so they never take the lease.
-AUTO_ARM_ACTIONS = ('release_auto_arm', 'auto_window_begin', 'auto_window_end')
 NATIVE_READY_REASON = (
     'native readiness is refused: require_native_ready() still raises and the '
     'reviewed construction gaps (private QSA scratch/UID binding, source/oracle '
@@ -87,7 +84,7 @@ class NativeOverlapSession:
         if run_id is not None and not _label(run_id):
             raise NativeOverlapSessionError('session-run-id-invalid')
         handler = getattr(self, '_action_' + str(action), None)
-        if action in AUTO_ARM_ACTIONS and os.environ.get('FLASH_S5_AUTO_ARM', '0') != '1':
+        if action == 'release_auto_arm' and os.environ.get('FLASH_S5_AUTO_ARM', '0') != '1':
             handler = None
         if handler is None:
             raise NativeOverlapSessionError('session-action-not-exposed')
@@ -115,99 +112,6 @@ class NativeOverlapSession:
         if self.measure_start_ns is not None:
             raise NativeOverlapSessionError('release-with-open-measurement')
         return await self.control.release_auto_arm()
-
-    async def _action_auto_window_begin(self, command):
-        """Open a read-only window over an automatic native cycle.
-
-        Same record shape as prefill_begin, but it neither prepares, pauses
-        nor arms: the engine policy alone decides whether the next plain
-        request runs natively. Requires the released lease on FULL.
-        """
-        if self.measure_start_ns is not None or getattr(self, '_auto_window', None) is not None:
-            raise NativeOverlapSessionError('auto-window-already-open')
-        status = await self.control.status()
-        auto = status.get('auto_arm')
-        if (type(auto) is not dict or auto.get('manual_owned') is not False
-                or auto.get('active') is not False or status.get('route') != 'full'):
-            raise NativeOverlapSessionError('auto-window-requires-released-idle-full')
-        proof = self.control.history[-1].get('clock_proof') if self.control.history else None
-        if type(proof) is not dict or proof.get('proved') is not True:
-            raise NativeOverlapSessionError('auto-window-begin-clock-unproved')
-        start_ns = int(self.clock())
-        self._auto_window = (start_ns, status, proof)
-        return {'engine_epoch': status.get('engine_epoch'), 'route': status.get('route'),
-                'phase': 'auto-prefill', 'snapshot': status, 'clock_proof': proof,
-                'measure_start_ns': start_ns}
-
-    async def _action_auto_window_end(self, command):
-        """Close the auto window with prefill_end's evidence join.
-
-        The binding snapshot is the policy's own status at the armed split
-        (``auto_arm.last_armed``), read here after the cycle closed. The window
-        must hold exactly one armed, closed cycle; otherwise it is incomplete.
-        """
-        window = getattr(self, '_auto_window', None)
-        if window is None:
-            raise NativeOverlapSessionError('auto-window-end-without-begin')
-        start_ns, full_begin, begin_proof = window
-        self._auto_window = None
-        end_ns = int(self.clock())
-        try:
-            raw = await self.control.overlap_evidence(start_ns, end_ns)
-        except Exception as error:
-            # The driver refuses a window that journaled nothing
-            # (engine_driver.overlap_evidence). Here that is the answer "no
-            # automatic native work in this window", typed below; every other
-            # evidence failure is raised unchanged.
-            if EMPTY_WINDOW_ERROR not in str(error):
-                raise
-            raw = None
-        # The closing read's clock proof: the evidence read, or the status read
-        # when the driver refused an empty window.
-        proof = self.control.history[-1].get('clock_proof') if self.control.history else None
-        status = await self.control.status()
-        if raw is None:
-            proof = self.control.history[-1].get('clock_proof') if self.control.history else None
-        before, after = full_begin.get('auto_arm') or {}, status.get('auto_arm') or {}
-        armed = after.get('last_armed') if type(after) is dict else None
-        reasons = [] if raw is not None else ['auto-window-journaled-no-native-work']
-        seq, done = before.get('selection_seq'), before.get('completed')
-        if (type(seq) is not int or type(done) is not int or after.get('active') is not False
-                or after.get('manual_owned') is not False or after.get('selection_seq') != seq + 1
-                or after.get('completed') != done + 1):
-            reasons.append('auto-window-not-exactly-one-closed-cycle')
-        snapshot = armed.get('status') if type(armed) is dict else None
-        if type(snapshot) is not dict or armed.get('selection_seq') != after.get('selection_seq'):
-            reasons.append('auto-window-armed-status-missing')
-            snapshot = None
-        else:
-            observed, generation = snapshot.get('observed_clock_ns'), full_begin.get('route_generation')
-            if type(observed) is not int or not start_ns <= observed <= end_ns:
-                reasons.append('auto-window-armed-status-outside-window')
-            if (snapshot.get('route') != 'split' or type(generation) is not int
-                    or snapshot.get('route_generation') != generation + 1
-                    or snapshot.get('engine_epoch') != full_begin.get('engine_epoch')
-                    or (snapshot.get('admission_intent') or {}).get('phase') != 'auto-prefill'):
-                reasons.append('auto-window-armed-route-unproved')
-        measured, binding = select_window_evidence(raw, snapshot, start_ns, end_ns)
-        evidence = raw if raw is not None else status
-        result = {'engine_epoch': evidence.get('engine_epoch'), 'route': evidence.get('route'),
-                  'begin': snapshot, 'full_begin': full_begin, 'end_status': status,
-                  'clock': {'begin': begin_proof, 'end': proof},
-                  'measure_start_ns': start_ns, 'measure_end_ns': end_ns,
-                  'measurement_binding': binding,
-                  'measurement': None if raw is None else raw.get('measurement'),
-                  'raw_journal_evidence': raw, 'auto_reasons': reasons,
-                  'complete': not reasons and binding.get('valid') is True
-                              and type(proof) is dict and proof.get('proved') is True}
-        # Without a journal the queried end status carries the admission record.
-        refusal = native_admission_refusal(full_begin.get('native_admission'),
-                                           evidence.get('native_admission'))
-        if refusal is not None:
-            result['refusal'] = refusal
-            result['refusal_policy'] = REFUSAL_POLICY
-            result['complete'] = False
-        return result
 
     async def _action_prepare(self, command):
         target = command.get('target_route')

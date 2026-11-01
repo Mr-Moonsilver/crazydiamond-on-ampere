@@ -705,14 +705,13 @@ def attach_native_router(args, app, env=None):
         NativeControlClient,
         NativeControlError,
     )
-    from native_overlap_session import (AUTO_ARM_ACTIONS, NativeOverlapSession,
-                                        NativeOverlapSessionError)
+    from native_overlap_session import NativeOverlapSession, NativeOverlapSessionError
     router = APIRouter()
     state = {'engine': None, 'control': None, 'session': None,
              'mode': 'native-overlap'}
-    # Native41: the auto-arm session actions are forwarded only when the
-    # switch is on; with it off the endpoint refuses them exactly as before.
-    auto_actions = AUTO_ARM_ACTIONS if env.get('FLASH_S5_AUTO_ARM', '0') == '1' else ()
+    # Native41: release_auto_arm is forwarded only when the switch is on; with
+    # it off the endpoint refuses it exactly as before (409 not exposed).
+    auto_actions = ('release_auto_arm',) if env.get('FLASH_S5_AUTO_ARM', '0') == '1' else ()
     install_owner_health(app)
 
     async def endpoint(request):

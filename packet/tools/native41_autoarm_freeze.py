@@ -97,7 +97,7 @@ def default_off():
                     if mode=='policy' and condition.startswith('policy is not None'):continue
                     if mode=='startup' and condition.startswith('auto '):continue
                     if mode=='worker' and 'FLASH_S5_AUTO_ARM' in condition:continue
-                    if mode=='session' and condition.startswith('action in AUTO_ARM_ACTIONS and '):continue
+                    if mode=='session' and 'release_auto_arm' in condition:continue
                     if mode=='client' and condition=='action not in ACTIONS':
                         assert len(n.body)==1 and isinstance(n.body[0],ast.If)
                         n.body=n.body[0].body
@@ -115,16 +115,14 @@ def default_off():
     return dict(verdict='PASS',legacy_function_bodies=result,functions=len(result),
                 meaning='source projection with policy absent/AUTO_ARM=0; canonical connected traces checked separately')
 def router_off():
-    """attach_native_router with FLASH_S5_AUTO_ARM unset/0 is the parent body: removing the import name, the
+    """attach_native_router with FLASH_S5_AUTO_ARM unset/0 is the parent body: removing the
     switch-derived tuple and its membership test (both empty when off) gives the parent's exact AST."""
     import ast
     def node(text):
         return next(n for n in ast.parse(text).body if isinstance(n,ast.FunctionDef) and n.name=='attach_native_router')
     old=ast.unparse(node(show('patches/s5_engine/probe_control.py')))
     new=ast.unparse(node((ROOT/'patches/s5_engine/probe_control.py').read_text()))
-    for a,b in (('from native_overlap_session import AUTO_ARM_ACTIONS, NativeOverlapSession, NativeOverlapSessionError',
-                 'from native_overlap_session import NativeOverlapSession, NativeOverlapSessionError'),
-                ("\n    auto_actions = AUTO_ARM_ACTIONS if env.get('FLASH_S5_AUTO_ARM', '0') == '1' else ()",''),
+    for a,b in (("\n    auto_actions = ('release_auto_arm',) if env.get('FLASH_S5_AUTO_ARM', '0') == '1' else ()",''),
                 (' or action in auto_actions','')):
         assert new.count(a)==1,a
         new=new.replace(a,b)
