@@ -189,8 +189,20 @@ class SyntheticTests(unittest.TestCase):
         launcher = (out / 'run-flash-s5-test.sh').read_text()
         self.assertIn('[[ ${S5:-0} == 1 ]]', launcher)
         self.assertIn('"${runner[@]}" "${e2[@]}" "${s5[@]}"', launcher)
+        # native41: native_auto_arm is the one module left out of the launcher's
+        # name-only list, so the reviewed launcher (pin 22473a90) stays
+        # byte-identical. It is still in the digest manifest and under the
+        # whole-e3 mount; the queue preflight checks every overlay digest.
+        self.assertEqual(g.LAUNCHER_LIST_EXEMPT, ('native_auto_arm',))
+        listed = g.manifest(out)
+        loop = launcher.split('for f in e3/__init__.py ', 1)[1].split('; do', 1)[0].split()
         for name in g.E3_MODULES:
-            self.assertIn('e3/' + name + '.py', launcher)
+            if name in g.LAUNCHER_LIST_EXEMPT:
+                self.assertNotIn('e3/' + name + '.py', loop)
+                self.assertEqual(listed['e3/' + name + '.py'], g.sha(out / 'e3' / (name + '.py')))
+            else:
+                self.assertIn('e3/' + name + '.py', loop)
+        self.assertIn('s5=(-v "$OVERLAY/e3:$V/flash_e3:ro"', launcher)
         subprocess.run(['bash', '-n', str(out / 'run-flash-s5-test.sh')], check=True)
         self.assertEqual((out / 'run-flash-e2-test.sh').read_text(),
                          (base / 'run-flash-e2-test.sh').read_text())

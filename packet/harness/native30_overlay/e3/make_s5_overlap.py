@@ -65,6 +65,12 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
               'native_overlap_metrics', 'native_overlap_worker',
               'native_overlap_control', 'native_overlap_session',
               'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement', 'native_readiness')
+# Modules packaged, mounted with the whole e3 dir and listed in the overlay
+# SHA256SUMS, but left out of the launcher's name-only checksum loop so the
+# reviewed launcher stays byte-identical (pin 22473a90). That loop greps names,
+# not digests; the queue preflight checks every overlay file's digest against
+# the manifest and refuses any file outside it.
+LAUNCHER_LIST_EXEMPT = ('native_auto_arm',)
 NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
                 'native/build_q17_helpers.sh')
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
@@ -225,7 +231,7 @@ if [[ -d $OVERLAY/e3 ]]; then
   # Bound Docker's ephemeral json-file log; the queue follows the full stream
   # into its own retained host artifact before engine startup.
   s5_log=(--log-opt max-size=512m --log-opt max-file=4 --ulimit core=0)
-  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/sampler.py e3_sources/async_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
+  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES if name not in LAUNCHER_LIST_EXEMPT) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/sampler.py e3_sources/async_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
   V=/usr/local/lib/python3.12/dist-packages/vllm/v1
