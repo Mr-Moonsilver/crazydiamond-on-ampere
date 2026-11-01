@@ -28,13 +28,21 @@ Declared leaves (real engine object -> leaf, why equivalent for this question):
   compares identity with the SUCCESS value it was given).
 * The process-global worker progress trace (``executor_hooks._worker_progress``,
   one per worker process) -> one trace per rank in this single test process.
+* ``NativeSegmentDriver`` state for the pair-boundary round -> ``PairLeaf``. The
+  real ``progress_in_wait``/``_wait_permit``/``_progress_owned``/``_route_exchange``
+  run on it unchanged; it holds every field they read (checked against their
+  AST). Its ``_drain``/``_drive`` apply one reply / record one send with the
+  real index and in-flight bookkeeping; the transport and worker behind them
+  are what the other classes here and the connected probe cover.
 """
 import ast
 from contextlib import nullcontext
 from functools import partial
 import hashlib
+import inspect
 from pathlib import Path
 import pickle
+import textwrap
 from queue import Empty, Queue
 import sys
 import threading
@@ -737,6 +745,154 @@ class InWaitLoop(unittest.TestCase):
         self.assertEqual(other, [False])
         progress.end(types.SimpleNamespace(info=lambda text: None))
         self.assertFalse(progress.wait_allowed())
+
+
+class PairLeaf:
+    """NativeSegmentDriver state leaf for one in-wait round.
+
+    ``pair_driver`` adds the real driver functions ``progress_in_wait``,
+    ``_wait_permit``, ``_progress_owned`` and ``_route_exchange``. The leaf holds the
+    driver fields they read (``InWaitPairBoundary`` checks that set against
+    their AST) in the open, auto-owned, mid-chunk state: phase ``segments``, the
+    LAYER at ``plan[0]`` in flight, ``plan[1]`` next. Two methods are leaves.
+    ``_drain`` applies one scripted reply the way the real ``_drain`` does
+    (the replied command leaves ``_inflight`` and ``_apply_segment`` advances
+    the plan index), or applies nothing (the reply has not arrived). ``_drive``
+    records the send the real one would make for ``plan[index]`` and puts it in
+    flight; the index advances only when that reply is applied.
+    """
+    def __init__(self, upcoming, during_drain=None):
+        self.calls = []
+        self.during_drain = during_drain
+        self.progress = ed.NativeProgress('burst', types.SimpleNamespace(), driver=self)
+        self.progress.begin(dict(txn=1))
+        self.progress.mode = 'burst'
+        self.progress.last_stock_kind = 'sample_tokens'
+        self.plan = [dict(kind=ed.SegmentKind.LAYER), dict(kind=upcoming)]
+        self.index = 0
+        self.phase = 'segments'
+        self._command = types.SimpleNamespace(kind=ed.SegmentKind.LAYER)
+        self._inflight = {7: 'segment'}
+        self._retry = None
+        self._in_wait = False
+        self._progress_origin = 'tick'
+        self.error = self.stop_kind = self._profile_failure = None
+        self._control = None
+        self._control_orphans = ()
+        self._bootstrap_command = self._transition = None
+        self._return_pending = None
+        self._bootstrapped = self._split_ready = True
+        self.tx = object()
+        self.auto_arm = types.SimpleNamespace(manual_owned=False, phase='native')
+        self._admission_intent = dict(origin='auto-arm')
+
+    def _drain(self):
+        self.calls.append(('drain', self._in_wait, self._progress_origin))
+        if self.during_drain == 'no-reply':
+            return
+        self._inflight.pop(7)
+        self.index += 1
+        if self.during_drain == 'stock-execute':
+            self.progress.last_stock_kind = 'execute_model'
+
+    def _drive(self):
+        kind = self.plan[self.index]['kind']
+        self.calls.append(('send', kind))
+        self._inflight[8] = 'segment'
+        self._command = types.SimpleNamespace(kind=kind)
+
+
+PAIR_REAL = ('progress_in_wait', '_wait_permit', '_progress_owned', '_route_exchange')
+
+
+def pair_driver(upcoming, during_drain=None, wait=None):
+    """A PairLeaf with the real driver functions, read at call time."""
+    real = {name: getattr(ed.NativeSegmentDriver, name) for name in PAIR_REAL}
+    if wait is not None:
+        real['progress_in_wait'] = wait
+    return type('PairDriver', (PairLeaf,), real)(upcoming, during_drain)
+
+
+class InWaitPairBoundary(unittest.TestCase):
+    """The permit and wait_allowed are re-read after _drain and before _drive in
+    every in-wait round: a flip between them stops the send.
+
+    Runs the real ``progress_in_wait`` with the real ``_wait_permit`` on
+    ``PairLeaf``. The structural flip is the one each chunk makes: the drain
+    applies the last LAYER's reply and the next descriptor is a tick-only
+    PP_SEND or STATE_FINALIZE. A mutant without the post-drain recheck sends
+    there, so the test discriminates.
+    """
+
+    def round(self, upcoming, during_drain=None, wait=None):
+        leaf = pair_driver(upcoming, during_drain, wait)
+        self.assertTrue(leaf._wait_permit())
+        self.assertTrue(leaf.progress.wait_allowed())
+        out = leaf.progress_in_wait()
+        self.assertEqual((leaf._in_wait, leaf._progress_origin), (False, 'tick'))
+        return out, leaf
+
+    def test_a_reply_that_ends_the_layers_stops_the_send(self):
+        for upcoming in (ed.SegmentKind.PP_SEND, ed.SegmentKind.STATE_FINALIZE):
+            with self.subTest(upcoming=upcoming.value):
+                out, leaf = self.round(upcoming)
+                self.assertEqual(out, 0)
+                self.assertEqual(leaf.calls, [('drain', True, 'wait')])
+                self.assertFalse(leaf._wait_permit())
+                self.assertEqual((leaf._inflight, leaf.index), ({}, 1))
+
+    def test_a_stock_execute_after_the_drain_stops_the_send(self):
+        out, leaf = self.round(ed.SegmentKind.LAYER, 'stock-execute')
+        self.assertTrue(leaf._wait_permit())
+        self.assertFalse(leaf.progress.wait_allowed())
+        self.assertEqual((out, leaf.calls), (0, [('drain', True, 'wait')]))
+
+    def test_a_reply_not_yet_arrived_stops_the_send(self):
+        out, leaf = self.round(ed.SegmentKind.LAYER, 'no-reply')
+        self.assertEqual((out, leaf.calls), (0, [('drain', True, 'wait')]))
+        self.assertEqual((leaf._inflight, leaf.index), ({7: 'segment'}, 0))
+
+    def test_a_permit_that_holds_after_the_drain_sends_once(self):
+        out, leaf = self.round(ed.SegmentKind.LAYER)
+        self.assertEqual(out, 1)
+        self.assertEqual(leaf.calls, [('drain', True, 'wait'), ('send', ed.SegmentKind.LAYER)])
+
+    def test_a_refused_permit_never_drains(self):
+        leaf = pair_driver(ed.SegmentKind.LAYER)
+        leaf._inflight = {7: 'segment', 9: 'segment'}
+        self.assertIsNone(leaf.progress_in_wait())
+        leaf = pair_driver(ed.SegmentKind.LAYER)
+        leaf.progress.last_stock_kind = 'execute_model'
+        self.assertIsNone(leaf.progress_in_wait())
+        self.assertEqual(leaf.calls, [])
+
+    def test_the_mutant_without_the_post_drain_recheck_sends(self):
+        source = textwrap.dedent(inspect.getsource(ed.NativeSegmentDriver.progress_in_wait))
+        tree = ast.parse(source)
+        body = tree.body[0].body[-1].body  # the try body
+        recheck = [node for node in body if isinstance(node, ast.If)
+                   and 'nested=True' in ast.unparse(node.test)]
+        self.assertEqual(len(recheck), 1)
+        body.remove(recheck[0])
+        scope = dict(vars(ed))
+        exec(compile(ast.fix_missing_locations(tree), 'mutant', 'exec'), scope)
+        mutant = scope['progress_in_wait']
+        for upcoming in (ed.SegmentKind.PP_SEND, ed.SegmentKind.STATE_FINALIZE):
+            out, leaf = self.round(upcoming, wait=mutant)
+            self.assertEqual(leaf.calls[-1], ('send', upcoming))
+        out, leaf = self.round(ed.SegmentKind.LAYER, 'stock-execute', wait=mutant)
+        self.assertEqual(leaf.calls[-1], ('send', ed.SegmentKind.LAYER))
+
+    def test_the_leaf_holds_every_field_the_real_functions_read(self):
+        read = set()
+        for name in PAIR_REAL:
+            tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(ed.NativeSegmentDriver, name))))
+            read |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+                     and isinstance(node.value, ast.Name) and node.value.id == 'self'}
+        leaf = pair_driver(ed.SegmentKind.LAYER)
+        missing = sorted(name for name in read if not hasattr(leaf, name))
+        self.assertEqual(missing, [])
+        self.assertTrue({'_drain', '_drive', '_wait_permit', 'progress'} <= read)
 
 
 if __name__ == '__main__':
