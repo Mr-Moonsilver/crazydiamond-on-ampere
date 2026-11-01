@@ -1493,13 +1493,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict native41 CPU regression",
-    "cases": 328,
+    "cases": 329,
     "exit_code": 0,
-    "log_sha256": "7f8af15f7f8e64b7f897ba07dd0d3cf02e8218c6912facbc324f65e0b61217d2",
-    "reported_tests": 3890,
-    "required": 328,
+    "log_sha256": "b522f960aa91c11239bd818422749fe5b659ce78d763b5536d2f0f62b1f62877",
+    "reported_tests": 3898,
+    "required": 329,
     "skips": 0,
-    "suites": 211
+    "suites": 212
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -1580,7 +1580,7 @@
     "e3_native40_regression.py": "d18363eed0527d5554e10a20dc635707b8861e9ee7b2d994529292dc983a3a94",
     "e3_native40_unarmed_box.py": "08f9845de36cb3b188cd4140fac7840f44e8297f5435190524685a31bbe8a74a",
     "e3_native40_unarmed_probe.py": "d1bbd38cf51caa1c5bc2a972c6e02d78885392e17b5c602652d05ee7639a5494",
-    "e3_native41_auto_probe.py": "715b255e66fffbbf81344f3c80bab481245d6f3c0489c18caec363effc8657ec",
+    "e3_native41_auto_probe.py": "f87fd526461472793a223cf362397f7d97bf16451c26874831160b1fd50061d0",
     "e3_native41_autoarm_box.py": "0b04b2130e294d219ac33c3756b8a27f0f027cc138069b3081f70da9347f6bd8",
     "e3_native41_receipts_probe.py": "43bd46c03be110abc22498c0166bdaa72fccc9df3d7e448e5e67b5b920f53a28",
     "e3_native41_unarmed_box.py": "23635a1fc9799c4bfefb3fdf9b5434d5caeb9668f51269f6db694627516b677f",
@@ -1750,7 +1750,7 @@
     "native40_fixture_leaves.json": "0a9a09cea7a0b00d698459f4e2c0fb0ded15ac56bea182c8af532a9d13c2bcec",
     "native41_box_gate.py": "5ef6e7ab1f25f21925f110a3de40fbe6a493c66ae9f3d66947672001f254f07b",
     "native41_clock_fixture_leaves.json": "fb146e46164ed3d01935b8a02dbae811ab315374bd00daab7864779372c35269",
-    "native41_fixture_leaves.json": "ebd3496f25cb0b84fa67285a5a533861cdf39a5e4945cea34740b7f9df37f0ed",
+    "native41_fixture_leaves.json": "8126e7f268113b4ade152d29b8a06a7c8117652a2e8f0119e285bff2ff85fe24",
     "native_placement_evidence_support.py": "345d37090992a4400862e307a34aac1a5abe3d062153a8f183e38bd479aee1c9",
     "native_prefill_support.py": "00c704e8935eea94e3030a4003f979693540f0e28e86a6326dcbfc5fb4644064",
     "overlap_tp.py": "8bb4b344180927245f685bee45b8897aa0abbeb073a8ac11f76c139080da4e7c",
@@ -2214,7 +2214,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "0566355f5b72085e2c5e80526df54f5163d0ead0258570dda99b8f72f3bccf81",
+    "selftest.py": "14adc389d2789adef471172db32e45c2dcb5192cbd7380596d2dba028e4b9326",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -2390,6 +2390,7 @@
     "test_native40_unarmed_hold.py": "25fc510d1845791873d771e72ef01e825b9966fe4d68df0255549acaa8f5e11f",
     "test_native41_autoarm.py": "4e50d177b3b8503a0aede36d90ad2757193b7aec50d8d3fa815c19d2d80380c2",
     "test_native41_box_queue.py": "0800b0be14f5dc79d97aff326c684559a2c59879749f9a9d619704b666add649",
+    "test_native41_tp_skew.py": "278fedc9d566212c54a828ba79825ded2bf73e93e161124308ed568582a9fb3d",
     "test_native41_unarmed_box.py": "b935ff8308a4d0499483b8672d3e01e8dc2949539994cef60edc1fc976239cde",
     "test_partial_tail_cov.py": "b5f8bbf6cb9e6e34347eb24a38f5c113b0ea556b4365ea8899b8682e133a0c8c",
     "test_pp_grouping.py": "2af0255e9e2f34098678ab6b7cdf83c49c03a20aab7eadb361db2fbd86b07e1a",
@@ -3249,7 +3250,7 @@
     "fixture_leaves": "native41_fixture_leaves.json",
     "launcher_changed": false,
     "model_settings_changed": false,
-    "scope": "Opt-in engine-owned FCFS automatic native cycles for plain requests (request binding, real drain, typed route ACKs, one-request FULL handback, manual lease exclusion), the auto-arm actions on the native router only with FLASH_S5_AUTO_ARM=1 (release_auto_arm only), status-receipt proof and client-basis speed in the box arms, and the unarmed check's CT-side container clock proof; default-off unchanged",
+    "scope": "Opt-in engine-owned FCFS automatic native cycles for plain requests (request binding, real drain, typed route ACKs, one-request FULL handback, manual lease exclusion), the auto-arm actions on the native router only with FLASH_S5_AUTO_ARM=1 (release_auto_arm only), status-receipt proof and client-basis speed in the box arms, the unarmed check's CT-side container clock proof, the held-e STATE_FINALIZE TP completion-skew agreement fix with a bounded refusal diagnostic, and auto-arm-only per-chunk allocator receipts; default-off unchanged",
     "speed_claim": false,
     "tail_handback": false,
     "targeted_queue": [
@@ -3273,9 +3274,9 @@
   },
   "post_review_cpu": {
     "basis": "native41 and affected native40/native39/native38/admission/driver/bridge/storage/router suites",
-    "log_sha256": "fda21032a19a2b64b92090c1b0f20f704d026ad7ed0c6de91d41692dd0e85a46",
+    "log_sha256": "9f00d25cc914ad39d91586fc9d51b225de2616da1172d51e40243ab95b38248f",
     "skips": 0,
-    "tests": 363,
+    "tests": 402,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
@@ -4380,7 +4381,7 @@
     "capture_streams.py": "76944d3416a9635cbecd81c70c1d538d5e0efc25d4fed4a3f2cf200ec3f4bd2b",
     "decode_probe.py": "7fbe70d884f21a8213ea43d4e01f20a488c4e553bc7711f03980a50e4685ed94",
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
-    "engine_driver.py": "7e3bdffbd8187227c0f3f2186544a27643d4d2c329c6ee0cfb877d8aefb5d25f",
+    "engine_driver.py": "76f2b5aa1b7843f3194db2ad74ee6ef6adab2bb1060a7cfb716f78cb1b79b28a",
     "engine_offers.py": "16e2775ba04461ad953e83eedd1ebb951a43b3d134789c225c6e6a1e5a721d2f",
     "executor_hooks.py": "3f2d84a554babdc90881c9f24fc859e639c11af0cc653a2aaa890e3f97a8400f",
     "graph_hooks.py": "12ad7e3500b559f2d398a6676292094e4d455df12d4c6951803dbac9f38663c5",
@@ -4434,7 +4435,7 @@
     "split_bank.py": "ef8222d57888c8103936dffe4f3643edc5ba437b96fb1cab3c8341f97c1d19b4",
     "teacher_decode.py": "8ab74b57de7ea90f4a94154d9bd609ab748400e989f58eb5bc553d427faff05c",
     "wire_v1.py": "c53feeee04bb96c66753437c649f820ad2d230f7f45490c6be9e52b4b2023d0d",
-    "worker_bridge.py": "9c56d43e94b020344de6e17cf5e3b651716013ad3ddcbc673e569a6b82323b2f",
+    "worker_bridge.py": "90bf2bbbc93b05fbdb414ad55ecb4bcfb31c19496d729af37832a26e2a83d8dc",
     "worker_hooks.py": "0de36c5384a3c0d61918d3eb62760d309817086d0d40f551e2f92f9d1672ba58"
   },
   "startup_guard_audit": {
