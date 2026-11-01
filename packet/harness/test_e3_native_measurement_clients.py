@@ -159,22 +159,34 @@ class NativeActions(unittest.IsolatedAsyncioTestCase):
 class NativeWindowSource(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        import time
         stack=source.make_long_stack(tokens=2050,layers=4)
+        # native43 per-call brackets.  Fixture leaf: the prefill_begin status read is the real
+        # driver's own _monotonic_ns()/_clock_record() (engine_driver._status_record's
+        # observed_clock_ns/clock), bracketed by this process's monotonic clock before the journal
+        # runs; prefill_end's evidence read is the real driver's overlap_evidence, bracketed alike.
+        send=time.monotonic_ns();now=int(stack.driver._monotonic_ns())
+        sample={'observed_clock_ns':now,'clock':stack.driver._clock_record(now)}
+        begin_recv=time.monotonic_ns()
         entries=source.run_journal(stack)
         start,stop=source.window_of(entries)
+        end_send=time.monotonic_ns()
         raw=stack.driver.overlap_evidence(start,stop)
+        end_recv=time.monotonic_ns()
         measurement=raw['measurement']
         generation=measurement['route_generations'][0]
         begin={'schema':1,'engine_epoch':stack.driver.engine_epoch,'route':'split',
                'route_generation':generation,'ranks':list(stack.driver.ranks),
-               'storage_epochs_by_rank':{r:stack.worker(r).state.decode_owner.storage_epoch for r in stack.driver.ranks}}
+               'storage_epochs_by_rank':{r:stack.worker(r).state.decode_owner.storage_epoch for r in stack.driver.ranks},
+               **sample}
         # The fixture's final typed FULL return is the actual driver's proof.
         raw['start_ns'],raw['end_ns']=start,stop
         identity=metrics.clock_identity()
         proof=dict(identity,proved=True)
         cls.record={'begin':{'engine_epoch':stack.driver.engine_epoch,'snapshot':begin,'measure_start_ns':start},
             'end':{'engine_epoch':stack.driver.engine_epoch,'measure_end_ns':stop,'raw_journal_evidence':raw,
-                   'clock':{'begin':proof,'end':proof}},'client_bracket':{'start_ns':start-1,'end_ns':stop+1}}
+                   'clock':{'begin':proof,'end':proof}},
+            'client_bracket':{'start_ns':send,'begin_recv_ns':begin_recv,'end_send_ns':end_send,'end_ns':end_recv}}
         cls.epoch=stack.driver.engine_epoch
     def test_actual_driver_source_packet_regrades_without_cached_flags(self):
         result=perf.native_window(self.record,'fresh',self.epoch)
@@ -182,8 +194,35 @@ class NativeWindowSource(unittest.TestCase):
         self.assertGreater(result['prefill_tokens_per_s'],0)
     def test_clock_or_family_mismatch_stays_inconclusive(self):
         self.assertFalse(perf.native_window(self.record,'append',self.epoch)['complete'])
-        record=copy.deepcopy(self.record);record['end']['clock']['end']['time_namespace']='foreign'
-        self.assertFalse(perf.native_window(record,'fresh',self.epoch)['complete'])
+        # native43: the engine's own control-reply proof must still hold.
+        record=copy.deepcopy(self.record);record['end']['clock']['end']['proved']=False
+        self.assertIn('client-engine-clock:end',perf.native_window(record,'fresh',self.epoch)['reasons'])
+        # An engine sample outside this client's bracket of the same call is unproved.
+        for name,field,shift in (('begin','begin_recv_ns',-10**9),('end','end_send_ns',10**9)):
+            record=copy.deepcopy(self.record)
+            sample=record['begin']['snapshot'] if name=='begin' else record['end']['raw_journal_evidence']
+            sample['observed_clock_ns']+=shift
+            result=perf.native_window(record,'fresh',self.epoch)
+            self.assertFalse(result['complete'])
+            self.assertIn('client-engine-clock:'+name,result['reasons'])
+        # A missing per-call stamp, a non-monotonic basis or a bracket over 10 s is unproved.
+        for mutate in (lambda r:r['client_bracket'].pop('begin_recv_ns'),
+                       lambda r:r['client_bracket'].pop('end_send_ns'),
+                       lambda r:r['end']['raw_journal_evidence']['clock'].update(basis='wall'),
+                       lambda r:r['client_bracket'].update(start_ns=r['client_bracket']['start_ns']-11*10**9)):
+            record=copy.deepcopy(self.record);mutate(record)
+            self.assertFalse(perf.native_window(record,'fresh',self.epoch)['complete'])
+    def test_foreign_client_proc_view_is_provenance_only(self):
+        # The box case (native40/native43): the client's boot_id and time namespace differ from the
+        # engine container's.  Identity strings are provenance; the per-call brackets decide.
+        record=copy.deepcopy(self.record)
+        for proof in record['end']['clock'].values():
+            proof.update(boot_id='foreign-boot-id',time_namespace='time:[1]')
+        record['begin']['snapshot']['clock'].update(boot_id='foreign-boot-id',time_namespace='time:[1]')
+        result=perf.native_window(record,'fresh',self.epoch)
+        self.assertTrue(result['complete'],result['reasons'])
+        self.assertTrue(all(result['client_clock'][n]['proved'] for n in ('begin','end')))
+        self.assertFalse(result['client_clock']['begin']['identity_equality_required'])
     def test_changed_window_or_source_proof_is_refused(self):
         record=copy.deepcopy(self.record);record['begin']['measure_start_ns']+=1
         self.assertFalse(perf.native_window(record,'fresh',self.epoch)['complete'])

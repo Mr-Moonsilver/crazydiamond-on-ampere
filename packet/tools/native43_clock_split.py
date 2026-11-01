@@ -36,7 +36,9 @@ Client checks (each runs the bundle's real code; the spec declares the outcome):
   prove_clock_domain   native_overlap_metrics.prove_clock_domain(status clock, client
                        clock_identity(), send, recv)
   native_window_clock  e3_native_performance.native_window over a record carrying the
-                       engine-side proofs; outcome is whether it names client-engine-clock
+                       engine-side proofs, the status sample as begin snapshot and end
+                       evidence and the call's bracket as both per-call brackets; outcome is
+                       whether it names client-engine-clock
   bracket              every engine sample lies inside its client request bracket
   module:<m>.<f>       a bundle module's bracket proof f(status, send, recv) and its
                        'proved' field (native43_boundary_clock.prove)
@@ -141,10 +143,13 @@ def client(side, out, modules, fifo=None):
         identity = (bool(local.get('boot_id')) and clock.get('boot_id') == local['boot_id']
                     and clock.get('time_namespace') == local.get('time_namespace'))
         domain = prove_clock_domain(clock, local, send, recv)
-        record = dict(begin=dict(engine_epoch=1, measure_start_ns=send, snapshot={}),
-                      end=dict(engine_epoch=1, measure_end_ns=recv, raw_journal_evidence=None,
+        # One status call stands for both boundary calls: its engine sample is the begin snapshot
+        # and the end evidence read, and its client bracket is each call's per-call bracket
+        # (e3_native_performance.prefill: start_ns..begin_recv_ns, end_send_ns..end_ns).
+        record = dict(begin=dict(engine_epoch=1, measure_start_ns=send, snapshot=status),
+                      end=dict(engine_epoch=1, measure_end_ns=recv, raw_journal_evidence=status,
                                clock=dict(begin=engine_proof, end=engine_proof)),
-                      client_bracket=dict(start_ns=send - 1, end_ns=recv + 1))
+                      client_bracket=dict(start_ns=send, begin_recv_ns=recv, end_send_ns=send, end_ns=recv))
         named = sorted(r for r in performance.native_window(record, 'fresh', 1)['reasons']
                        if r.startswith('client-engine-clock'))
         stamp = status.get('observed_clock_ns')
