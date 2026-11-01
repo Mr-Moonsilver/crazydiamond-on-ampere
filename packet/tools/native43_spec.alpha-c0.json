@@ -330,7 +330,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "f1ed8a69b048ae2f84f981428fc6eb9c179fb568",
+ "source_commit": "21a162266c43f2524c7996e88cfa0a2100636de7",
  "source_paths": [
   "A\tharness/alpha_c0_fixture_leaves.json",
   "A\tharness/alpha_c0_gate.py",
@@ -378,8 +378,10 @@
   "A\ttools/build_alpha_c0.py",
   "A\ttools/c0_bit_identity.py",
   "A\ttools/native43_spec.alpha-c0.json",
+  "A\ttools/runner_staging_check.py",
   "A\ttools/stage_default_off.py",
-  "A\ttools/stage_review_pins.py"
+  "A\ttools/stage_review_pins.py",
+  "A\ttools/test_runner_staging_check.py"
  ],
  "tools": [
   "alpha_c0_clock_scan.py",
@@ -400,7 +402,9 @@
   "build_alpha_c0.py",
   "c0_bit_identity.py",
   "native43_spec.alpha-c0.json",
+  "runner_staging_check.py",
   "stage_default_off.py",
-  "stage_review_pins.py"
+  "stage_review_pins.py",
+  "test_runner_staging_check.py"
  ]
 }
