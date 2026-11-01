@@ -29,14 +29,16 @@ class Base(unittest.TestCase):
         """The target rank answers typed pending to the first ``limit`` submits of ``kind`` in the first chunk."""
         dispatcher = network.workers[rank].dispatcher
         real = dispatcher.submit
-        state = dict(tx=None, pending=0)
+        state = dict(tx=None, pending=0, took=[])
 
         def submit(command):
             if state['tx'] is None:
                 state['tx'] = command.transaction
-            if command.transaction == state['tx'] and command.kind.value == kind and state['pending'] < limit:
-                state['pending'] += 1
-                raise E3Pending('test: peer busy')
+            if command.transaction == state['tx'] and command.kind.value == kind:
+                if state['pending'] < limit:
+                    state['pending'] += 1
+                    raise E3Pending('test: peer busy')
+                state['took'].append((command.op_seq, command.kind, command.descriptor))
             return real(command)
         dispatcher.submit = submit
         return state
@@ -102,6 +104,10 @@ class Fix(Base):
             with self.subTest(stop=kind):
                 network, command, state = self.partial('prepare')
                 driver = network.driver
+                # C1's checks: no producer bound yet, only rank 0 holds the command, the peer has not taken it.
+                self.assertIsNone(driver.bound_ticket)
+                self.assertEqual({r for r, op in driver.accepted_tickets if op == command.op_seq}, {0})
+                self.assertEqual(state['took'], [])
                 mark = len(network.ring.history)
                 driver.stop(kind)
                 self.finish(network)
@@ -120,6 +126,8 @@ class Fix(Base):
                 cancels = self.journal(network, 'cancel')
                 self.assertEqual([c['never_submitted'] for c in cancels], [False])
                 self.assertEqual(state['pending'], 3)
+                # The peer took the retained command itself: same op_seq, kind and descriptor.
+                self.assertIn((command.op_seq, command.kind, command.descriptor), state['took'])
 
     def test_each_partially_accepted_kind_replays_before_the_cancel(self):
         for kind, rank in REPLAYED:

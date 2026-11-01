@@ -2402,7 +2402,7 @@
     "test_e3_startup_queue.py": "951eb5afdb8a8fabebe9c2e80e9e30d51e949ba544a933567e3dd97571008c9d",
     "test_e3_stock_api.py": "754ae93eda5fe6e15efa72c297ea07207390b983d0b8d45be6ee94a602f786ce",
     "test_e3_stock_rpc_credits.py": "878d3bb831aef4fc7c3f0255a23135b0e6cf01adad0150587a2a1002b92a80d3",
-    "test_e3_stopfix_partial_segment.py": "7ee21b3dcfd447775f73f31de4108782378aec62e79bd44fbe633b00bb793e35",
+    "test_e3_stopfix_partial_segment.py": "6d1b9624124b01cb5ebff2d5cfb909dd880729ff9699dab0bf7947778edd1ab1",
     "test_e3_stopfix_refused_open.py": "0bc270305e9a8237183e57acfb3a430c23021a67885475f838a7289045f98dd6",
     "test_e3_teacher12_queue.py": "c885a94bb0b5899f261b88a6189e29a486df83dc5760a27981a0924bcee80be7",
     "test_e3_teacher_decode.py": "de927c390220c8dbffc8fef989dad02ea82cab81786502c25060751f1fe75dfe",
