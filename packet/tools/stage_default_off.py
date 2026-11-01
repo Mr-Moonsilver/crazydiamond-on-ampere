@@ -114,13 +114,15 @@ def git(*args, binary=False):
     return out if binary else out.decode()
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--out')
-    options = parser.parse_args()
+def frozen_commit():
+    return git('rev-parse', FROZEN).strip()
+
+
+def prove(engine):
+    """The receipt for the engine directory ``engine``; the negative controls pass mutated copies."""
     faults = []
-    frozen_commit = git('rev-parse', FROZEN).strip()
-    names = sorted(p.name for p in (ROOT / ENGINE).iterdir() if p.is_file())
+    engine = Path(engine)
+    names = sorted(p.name for p in engine.iterdir() if p.is_file())
     frozen_names = sorted(line[len(ENGINE):] for line in
                           git('ls-tree', '-r', '--name-only', FROZEN, ENGINE).splitlines()
                           if '/' not in line[len(ENGINE):])
@@ -134,7 +136,7 @@ def main():
     for name in frozen_names:
         if name in removed:
             continue
-        tip = (ROOT / ENGINE / name).read_bytes()
+        tip = (engine / name).read_bytes()
         parent = git('show', '%s:%s%s' % (FROZEN, ENGINE, name), binary=True)
         if tip == parent:
             identical.append(name)
@@ -159,7 +161,7 @@ def main():
         projected[name] = dict(tip=sha(tip), frozen=sha(parent), rows=len(rows), ast_identical=same)
     # Unreachable with the switch off: the new surface appears only on the declared lines.
     references = {}
-    for path in sorted((ROOT / ENGINE).glob('*.py')):
+    for path in sorted(engine.glob('*.py')):
         if path.name in NEW_MODULES:
             continue
         count = sum(bool(NAMES.search(line)) for line in path.read_text().splitlines())
@@ -168,18 +170,26 @@ def main():
     if references != REFERENCES:
         faults.append('references to the new surface differ: %r' % (references,))
     # The only constructor of the wire record and the only importer of the driver.
-    driver_text = (ROOT / ENGINE / 'stage_progress.py').read_text()
-    constructors = [path.name for path in (ROOT / ENGINE).glob('*.py')
+    driver_text = (engine / 'stage_progress.py').read_text()
+    constructors = [path.name for path in engine.glob('*.py')
                     if re.search(r'\bStageScoped\(', path.read_text())
                     and path.name not in ('stage_wire.py',)]
     if constructors != ['stage_progress.py'] or 'StageScoped(' not in driver_text:
         faults.append('the wire record has another constructor: %r' % (constructors,))
-    receipt = dict(schema='stage-default-off/1', verdict='FAIL' if faults else 'PASS',
-                   frozen=frozen_commit, tip=git('rev-parse', 'HEAD').strip(),
+    return dict(schema='stage-default-off/1', verdict='FAIL' if faults else 'PASS',
+                   frozen=frozen_commit(), tip=git('rev-parse', 'HEAD').strip(),
                    dirty=bool(git('status', '--porcelain', '--', ENGINE).strip()),
                    identical_files=len(identical), new_modules={
-                       name: sha((ROOT / ENGINE / name).read_bytes()) for name in added},
+                       name: sha((engine / name).read_bytes()) for name in added},
                    projected=projected, references=references, faults=faults)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--out')
+    options = parser.parse_args()
+    receipt = prove(ROOT / ENGINE)
+    faults = receipt['faults']
     text = json.dumps(receipt, indent=1, sort_keys=True)
     print(text)
     if options.out:
