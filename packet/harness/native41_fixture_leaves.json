@@ -12,7 +12,17 @@
       "equivalence": "The mounted s5_startup.install_engine executes, creates the actual leases/frontier/admission provider/controller/driver, and runs its actual startup FULL fence before policy install. Only device/process construction is substituted: CPUComposition inherits the real attach, the two legacy dispatcher/backend objects are never used (the driver uses the real bridges through DirectTransport). A driver subclass only attaches four CPU bridge workers at install. No route, policy, validator, RPC schema, source hold, scheduler or acknowledgement is mocked.",
       "name": "connected-startup-resources",
       "replaces": "Device-ready closure, four-rank model execution shape, handoff dispatcher/remote-backend constructors, multiprocessing reply queues",
-      "test": "e3_native41_auto_probe.Connected"
+      "test": "e3_native41_auto_probe.Connected",
+      "seams": [
+        "startup.require_native_ready",
+        "startup._native_execution_shape",
+        "startup.build_composition",
+        "eh.install",
+        "nb.RemoteCompletionBackend",
+        "nr.response_success",
+        "ed.NativeSegmentDriver",
+        "bridge.route_objects"
+      ]
     },
     {
       "box_evidence": false,
@@ -20,7 +30,10 @@
       "equivalence": "Inherited native37 reduced-config leaf, production block/hash/chunk geometry, actual KV specs/arithmetic/AsyncScheduler. The initially unused controller/metadata/leases are unbound before actual install_engine creates its own, with no requests or native ownership. Real world-1 gloo gets a fresh file rendezvous per probe subprocess.",
       "name": "actual-scheduler-cpu",
       "replaces": "Production model/config and distributed host initialization",
-      "test": "base.Stack plus fresh CPU rendezvous"
+      "test": "base.Stack plus fresh CPU rendezvous",
+      "seams": [
+        "distributed.init_distributed_environment"
+      ]
     },
     {
       "box_evidence": false,
@@ -141,6 +154,17 @@
       "equivalence": "Joins continuation lines, drops redirections and substitutes the same variables; each command then parses with its own module argparse. bash -n parses the whole derived drafts.",
       "cannot_prove": "Runtime values of the queue variables.",
       "box_evidence": false
+    },
+    {
+      "name": "queue-argparse-capture",
+      "test": "test_native41_box_queue.Commands",
+      "replaces": "argparse.ArgumentParser.parse_args, wrapped so that each module main stops right after parsing its argv",
+      "equivalence": "The original parse_args runs on the exact expanded body argv with each module's own parser (e3_native41_autoarm_box, e3_native39_trunk_checks); only its return is raised as Parsed, so main never performs the step (no HTTP, docker or file I/O).",
+      "cannot_prove": "What each step does after parsing; the Arm and Grade tests, the window probe and the box run cover that.",
+      "box_evidence": false,
+      "seams": [
+        "ArgumentParser.parse_args"
+      ]
     }
   ],
   "schema": "fixture-leaves/1",

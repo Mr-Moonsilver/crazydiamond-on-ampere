@@ -1,6 +1,10 @@
 """Native41 queue: router, plain-W2 arms over the real control plane, grade, commands, derivation. CPU only.
 
-Parent = 9838f54 (Codex's checkpoint d9899cb with the byte-identical launcher). Classes:
+Parents: 9838f54 (Codex's checkpoint d9899cb with the byte-identical launcher)
+and native40 f6d1db9 (the frozen negative control: candidate harness over
+native40's overlay and sources). On native40, Router fails at the missing
+AUTO_ARM_ACTIONS in the session and Arm at the latch (native40 has no manual
+lease, so prepare never sets manual_owned). Classes:
 
 * Router (fails on the parent: release_auto_arm reached the box as 409
   native-action-not-exposed): the API route probe_control.attach_native_router
