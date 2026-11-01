@@ -461,7 +461,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "1e25065c1d5054d2b6e61a145f35f37458ba4ae5",
+ "source_commit": "1c08526c93fec1a801467502613c75e15f1e2d59",
  "source_paths": [
   "A\tharness/e3_native_qsa_fused_device_probe.py",
   "A\tharness/e3_step_a_box.py",
@@ -483,6 +483,7 @@
   "M\tpatches/s5_engine/engine_driver.py",
   "M\tpatches/s5_engine/lane_comm.py",
   "M\tpatches/s5_engine/lane_dispatch.py",
+  "M\tpatches/s5_engine/native_candidate_review.json",
   "M\tpatches/s5_engine/native_overlap_control.py",
   "M\tpatches/s5_engine/native_overlap_session.py",
   "M\tpatches/s5_engine/probe_control.py",
