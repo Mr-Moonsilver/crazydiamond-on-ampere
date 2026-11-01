@@ -9,6 +9,7 @@ import contextlib
 import hashlib
 import json
 from pathlib import Path
+import random
 import sys
 import time
 import tempfile
@@ -114,7 +115,7 @@ class Connected:
         self.process_step=lambda:EngineCoreProc._process_engine_step.__wrapped__(self.engine) if hasattr(EngineCoreProc._process_engine_step,'__wrapped__') else EngineCoreProc._process_engine_step(self.engine)
         self.has_work=lambda:EngineCoreProc.has_work(self.engine)
         self.engine.engines_running=False
-        self.traces=[];self.native=[];self.seen_tx=set();self.ticks=0;self.blocked_event=None
+        self.traces=[];self.native=[];self.seen_tx=set();self.ticks=0;self.blocked_event=None;self.skew=None
 
     def dispatch_manager(self,worker):
         from vllm.v1.worker.gpu.cudagraph_utils import ModelCudaGraphManager, BatchExecutionDescriptor
@@ -178,15 +179,71 @@ class Connected:
             tx=parked.transaction;self.seen_tx.add(tx)
             self.native.append(dict(uid=tx.request_uid,start=tx.chunk_start,end=tx.chunk_end,
                                     terminal=parked.admission.terminal,split=self.driver._split_ready))
-        for w in self.workers.values():w.bus.complete_all(True)
+        if self.skew is not None:self.skew.tick()
+        else:
+            for w in self.workers.values():w.bus.complete_all(True)
         if self.blocked_event is not None:self.blocked_event.complete=False
         self.ticks+=1
+
+
+class Skew:
+    """tp-skew leaf: asynchronous per-rank GPU completion (fixture leaf
+    tp-skew-completion). In-order partial completion per rank and Core tick,
+    progress between the per-rank deliveries of one round, and an event
+    recorded on an idle stream (every earlier event done) completing at once."""
+    RATES={0:1.0,1:0.3,2:0.6,3:0.3}
+    def __init__(self,conn,seed=4141):
+        self.conn=conn;self.rnd=random.Random(seed)
+        self.finalize=0;self.mixed=0;self.refused=[]
+    def progress(self,rank):
+        events=[e for e in self.conn.workers[rank].bus.events if not e.complete]
+        count=sum(self.rnd.random()<self.RATES[rank] for _ in events)
+        for e in events[:count]:e.complete=True
+    def tick(self):
+        for rank in sorted(self.conn.workers):self.progress(rank)
+    @contextlib.contextmanager
+    def installed(self):
+        import test_e3_r4_worker_bridge as r4
+        import wire_v1 as wire
+        skew=self;conn=self.conn
+        original=r4.ControllableEvent.record
+        def record(event,stream=None):
+            original(event,stream)
+            earlier=event.bus.events[:event.bus.events.index(event)]
+            if all(e.complete for e in earlier) and skew.rnd.random()<0.5:event.complete=True
+        for w in conn.workers.values():
+            for name in ('flash_s5_submit','flash_s5_poll','flash_s5_release'):
+                real=getattr(w,name)
+                def wrapped(message,_real=real):
+                    for rank in sorted(conn.workers):
+                        if skew.rnd.random()<0.5:skew.progress(rank)
+                    return _real(message)
+                setattr(w,name,wrapped)
+        driver=conn.driver;real_apply=driver._apply_segments
+        def apply(values):
+            values=tuple(values);command=driver._command
+            if command.kind is wire.SegmentKind.STATE_FINALIZE:
+                phases={v.cursor.phase for v in values if v.accepted}
+                skew.finalize+=1;skew.mixed+=len(phases)>1
+            try:return real_apply(values)
+            except Exception as exc:
+                skew.refused.append(str(exc)[:300]);raise
+        driver._apply_segments=apply
+        with mock.patch.object(r4.ControllableEvent,'record',record):
+            yield self
 
 
 def run(mode):
     root,failures=overlay_aliases()
     conn=Connected('0' if mode=='off' else '1')
     conn.dispatched=set()
+    with contextlib.ExitStack() as scope:
+        if mode=='tp-skew':
+            conn.skew=scope.enter_context(Skew(conn).installed())
+        return _run(mode,conn,root,failures)
+
+
+def _run(mode,conn,root,failures):
     checks=[]
     def check(name,ok,**details):
         checks.append(dict(name=name,ok=bool(ok),**details));assert ok,name
@@ -235,7 +292,12 @@ def run(mode):
         conn.step()
         policy=getattr(conn.driver,'auto_arm',None)
         if (req.num_output_tokens or (injected and mode in ('abort-before','abort-live','reuse'))) and not conn.driver.active and not getattr(policy,'active',False):break
-    if mode in ('auto','foreign','pending-split','pending-full'):
+    if mode=='tp-skew':
+        skew=conn.skew
+        check('tp-skew-no-refusal',not skew.refused,refused=skew.refused)
+        check('tp-skew-finalize-commit-beside-state-finalize',skew.mixed>=1,
+              finalize_agreements=skew.finalize,mixed=skew.mixed)
+    if mode in ('auto','foreign','pending-split','pending-full','tp-skew'):
         check('ordinary-requests-trigger-native-cycle',len(conn.native)>1 and all(r['uid']==req.request_id for r in conn.native))
         check('native-covers-0-through-n-minus-1',conn.native[0]['start']==0 and conn.native[-1]['end']==32800
               and all(a['end']==b['start'] for a,b in zip(conn.native,conn.native[1:])))
@@ -280,7 +342,7 @@ def run(mode):
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--out',type=Path,required=True);p.add_argument('--mode',choices=('auto','off','abort-before','abort-live','reuse','foreign','bad-graph','refuse','pending-split','pending-full','running-prefill','below-threshold','long-id'),default='auto');a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--out',type=Path,required=True);p.add_argument('--mode',choices=('auto','off','abort-before','abort-live','reuse','foreign','bad-graph','refuse','pending-split','pending-full','running-prefill','below-threshold','long-id','tp-skew'),default='auto');a=p.parse_args()
     try:r=run(a.mode);rc=0
     except Exception as exc:r=dict(verdict='FAIL',mode=a.mode,error_type=type(exc).__name__,error=str(exc),traceback=traceback.format_exc());rc=1
     r.update(schema='native41-connected-cpu/1',gpu_execution=False,box_evidence=False,probe_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
