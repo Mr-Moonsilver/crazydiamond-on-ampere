@@ -21,6 +21,8 @@ import time
 import threading
 import os
 import json
+import logging
+import sys
 
 from e3_types import E3ContractError, E3Pending
 from reply_transport import Backpressure, NotReady, ReplyTransport, TransportError, WorkerRPCError
@@ -1048,7 +1050,7 @@ __all__ = [
     'before_shutdown', 'before_step_with_batch_queue', 'collective_rpc',
     'config_reply_timeout', 'control_pending', 'engine_idle_tick', 'executor_shutdown',
     'generate_core', 'generate_executor',
-    'generate_worker', 'install', 'native_control', 'native_work_pending', 'park_prefill',
+    'generate_worker', 'install', 'log_worker_failure', 'native_control', 'native_work_pending', 'park_prefill',
     'retain_mq', 'revert_core',
     'revert_executor', 'revert_worker', 'worker_rpc',
 ]
@@ -1057,6 +1059,38 @@ __all__ = [
 _FATAL_WRITER = None
 _FATAL_LOCK = threading.Lock()
 _FATAL_SENT = False
+FATAL_RECORD_MAX = 1024  # monitor_fatal_workers reads one record with recv_bytes(1024)
+# Native43 le-fix (b): bounded metadata that lets the parent log the cause.  ``where`` and ``cause`` are code
+# locations and type names; ``detail`` is the message of this package's own typed errors only (foreign exception
+# payloads, e.g. torch or vLLM messages, are never serialized: WorkerRPCError's contract).
+FATAL_OPTIONAL = {'detail': 160, 'where': 100, 'cause': 80}
+
+
+def _fatal_own_error(error):
+    module = sys.modules.get(type(error).__module__)
+    path = getattr(module, '__file__', None)
+    return bool(path) and os.path.dirname(os.path.abspath(path)) == os.path.dirname(os.path.abspath(__file__))
+
+
+def _fatal_metadata(error):
+    """CPU-only cause metadata for the fatal record; never raises."""
+    rows = {}
+    try:
+        tb, last = error.__traceback__, None
+        while tb is not None:
+            last, tb = tb, tb.tb_next
+        if last is not None:
+            code = last.tb_frame.f_code
+            rows['where'] = '%s:%d:%s' % (os.path.basename(code.co_filename), last.tb_lineno, code.co_name)
+        linked = error.__cause__ if error.__cause__ is not None else error.__context__
+        if linked is not None:
+            rows['cause'] = type(linked).__name__
+        if _fatal_own_error(error):
+            rows['detail'] = str(error)
+    except Exception:  # noqa: BLE001 - metadata is best effort; the record itself must go out
+        pass
+    return {k: v.encode('ascii', 'backslashreplace').decode('ascii')[:FATAL_OPTIONAL[k]]
+            for k, v in rows.items() if type(v) is str}
 
 
 def make_fatal_pipe(context):
@@ -1085,14 +1119,44 @@ def report_worker_failure(rank, method, error):
             record = dict(schema='s5-worker-fatal/1', rank=rank, pid=os.getpid(),
                           method=method[:80] if type(method) is str else 'callable',
                           error_type=type(error).__name__[:80], code='worker-rpc-exception')
+            record.update(_fatal_metadata(error))
+            data = json.dumps(record).encode()
+            for key in ('detail', 'where', 'cause'):
+                if len(data) <= FATAL_RECORD_MAX:
+                    break
+                record.pop(key, None)
+                data = json.dumps(record).encode()
             try:
-                _FATAL_WRITER.send_bytes(json.dumps(record).encode())
+                _FATAL_WRITER.send_bytes(data)
             except (OSError, EOFError):
                 raise SystemExit(1) from None
     # No queue/log/device work after publication. Parent death monitoring or
     # supervisor termination also retires this worker if the reader dies.
     threading.Event().wait()
     raise SystemExit(1)
+
+
+def log_worker_failure(worker, record, unreadable=None):
+    """Native43 le-fix (b): the parent names the shutdown cause before the teardown it starts.
+
+    l-e (1 Nov 2026) shut the executor down from this channel and no process logged why: the worker parks
+    without logging (report_worker_failure) and the parent stored the record silently.  One ERROR line,
+    after the futures are poisoned and Core is notified, before executor.shutdown(); it never raises.
+    """
+    try:
+        logger = logging.getLogger(__name__)
+        if record is None:
+            logger.error('FLASH_S5_WORKER_FAILURE rank=%s pid=%s record=unavailable (%s); '
+                         'executor shutdown follows (worker fatal channel)',
+                         getattr(worker, 'rank', '?'), getattr(getattr(worker, 'proc', None), 'pid', '?'),
+                         unreadable or 'unknown')
+        else:
+            logger.error('FLASH_S5_WORKER_FAILURE rank=%s pid=%s method=%s error_type=%s code=%s cause=%s '
+                         'where=%s detail=%r; executor shutdown follows (worker fatal channel)',
+                         record.get('rank'), record.get('pid'), record.get('method'), record.get('error_type'),
+                         record.get('code'), record.get('cause'), record.get('where'), record.get('detail'))
+    except Exception:  # noqa: BLE001 - logging must never stop the teardown
+        pass
 
 
 def notify_worker_failure(executor, record):
@@ -1132,23 +1196,27 @@ def monitor_fatal_workers(executor):
     executor._flash_s5_fatal_lock = threading.Lock()
     executor._flash_s5_fatal_failure = None
     def receive(worker):
+        unreadable = None
         try:
-            raw = worker.fatal_reader.recv_bytes(1024)
+            raw = worker.fatal_reader.recv_bytes(FATAL_RECORD_MAX)
             record = json.loads(raw)
             if (type(record) is not dict or record.get('schema') != 's5-worker-fatal/1'
                     or record.get('rank') != worker.rank
                     or type(record.get('pid')) is not int
                     or record['pid'] != worker.proc.pid
                     or any(type(record.get(k)) is not str or len(record[k]) > 80
-                           for k in ('method', 'error_type', 'code'))):
+                           for k in ('method', 'error_type', 'code'))
+                    or any(k in record and (type(record[k]) is not str or len(record[k]) > n)
+                           for k, n in FATAL_OPTIONAL.items())):
                 raise ValueError('invalid worker fatal record')
-        except (OSError, EOFError, ValueError):
-            record = None
+        except (OSError, EOFError, ValueError) as exc:
+            record, unreadable = None, type(exc).__name__
         if getattr(executor, 'shutting_down', False):
             return
         try:
             notify_worker_failure(executor, record)
         finally:
+            log_worker_failure(worker, record, unreadable)
             worker.fatal_reader.close()
             # Death pipes/signals, never an RPC to peers blocked in PP/NCCL.
             executor.shutdown()
