@@ -1,0 +1,513 @@
+{
+ "schema": "native43-packaging-spec/1",
+ "label": "native43-lifecycle-f",
+ "dry_run": false,
+ "source_commit": "1b6b30b982801e2d70edae2dbef19c0a115c96f0",
+ "candidate": "q18a-native43-lifecycle-f",
+ "arm": "NATIVE43L",
+ "review": "prepare",
+ "review_key": "native43_lifecycle_f",
+ "details": {
+  "model_settings_changed": false,
+  "native43_settings": {
+   "FLASH_S5_NATIVE_QSA_POLICY": "dense",
+   "FLASH_S5_NATIVE_QSA_TRACE": null,
+   "FLASH_S5_NATIVE_QSA_STOP_AFTER": null
+  },
+  "queue": "q18a-native43-lifecycle-f (short scope): the box-run q18a-native43-lifecycle queue (l-e run 1 texts, bundle 296adc0886b6) with the le-fix queue deltas D1-D7 (engine-death scan in host_crash_detected; row1, lifecycle and typed FULL hygiene clients under engine_watched) and D8/D9 (row1 runs native43_row1_qualification.py --qsa-policy dense: e3_q18a_qualification with the dense policy's route coverage); same phases, window (native43_lifecycle_gate, 5000 s + 900 s, last entry 2026-11-02T04:21:40Z) and EXTRA_ENV as l-e; one fresh key; never starts production",
+  "scope": "native43 lifecycle short scope on the l-e engine bytes plus the declared le-fix engine delta (worker fatal record logged before the executor teardown; bounded broadcast enqueue) and row1 option (a) (under the dense policy the row1 reference runs its own dense branch beyond the arena): does row1 PASS under dense, do cancel/drain/reuse complete, and does an engine death fail the queue loudly; no leak, pressure or speed claim; not a release candidate",
+  "tail_handback": false,
+  "reuse_clock": "e3_native_performance.native_window client-side identity equality: replaced by per-call client brackets proved with native43_boundary_clock.prove (standalone commit 1594bd0d92aa, = d57ed99 code plus negatives; clock split: new native_window_clock proved, pre-fix native_window_clock_pre_fix refused on the same records)",
+  "engine_delta": {
+   "parent": "q18a-native43-lifecycle (l-e) bundle 296adc0886b6 (runner 8644b753...), the TP finalize-skew delta it carried is inherited unchanged (e3/engine_driver.py equals l-e)",
+   "branch": "claude/native43-le-fix",
+   "commits": {
+    "77d27718b2de411b6b1ae414c1eabf176a8ea3c4": "le-fix (b): worker fatal record logged by the parent before the executor teardown",
+    "c9d099a47bf1f4e2f389907013a74808a4943c5e": "le-fix: bounded broadcast enqueue (stock and owned collective_rpc writes)",
+    "02585c77148ea96f2981c090e33a33bf7770be77": "l-f row1 option (a): expected_reference + dense_branch, policy-aware row1 grade"
+   },
+   "files": [
+    "patches/s5_engine/executor_hooks.py",
+    "patches/s5_engine/row1_oracle.py",
+    "patches/s5_engine/qsa_operation.py"
+   ],
+   "overlay_rows_vs_le": [
+    "e3/executor_hooks.py",
+    "e3/qsa_operation.py",
+    "e3/row1_oracle.py",
+    "e3_sources/executor.py"
+   ],
+   "evidence": {
+    "bounded_enqueue_selfrun": "results/hub/native43-le-fix/selfrun-enqueue/result.json (PASS at c9d099a, pinned image, enqueueprobe stock/owned prefix-blocks and fixed-raises; fixed_executor_hooks_sha256 371b4875261bdbc1a64694c2d6caab93110040081e3b40948a6bd5f8da82d52b = this overlay e3/executor_hooks.py)",
+    "fatal_log_selfrun": "results/hub/native43-le-fix/selfrun (PASS at f8e9c31, pinned image, vLLM-logging probe)",
+    "generated_executor": "e3_sources/executor.py: MultiprocExecutor._flash_s5_stock_collective_rpc, exactly one _flash_s5_hooks.bounded_enqueue( site"
+   },
+   "reasons": [
+    "l-e 11:03:06Z: EngineCore busy loop blocked in MessageQueue.acquire_write (timeout=None) while the fatal channel marked the executor failed; no ENGINE_CORE_DEAD, the API and the row1 client hung ~25 min",
+    "l-e row1 route_mismatch: under FLASH_S5_NATIVE_QSA_POLICY=dense the native takes dense_dma beyond the arena, the reference its sparse branch"
+   ],
+   "tests": [
+    "harness/test_native43_le_bounded_enqueue.py",
+    "harness/test_native43_le_fatal_log.py",
+    "harness/test_native43_engine_death.py",
+    "harness/test_native43_le_fix_queue_deltas.py",
+    "harness/test_native43_row1_dense.py",
+    "harness/test_native43_row1_grade.py",
+    "harness/test_native43_lf_queue.py"
+   ],
+   "lineage_rows": [
+    "e3/executor_hooks.py",
+    "e3/qsa_operation.py",
+    "e3/row1_oracle.py",
+    "e3_sources/executor.py"
+   ],
+   "focused_suites": [
+    "test_e3_tp_finalize_skew",
+    "test_e3_native_measurement_clients",
+    "test_native35_performance",
+    "test_native43_engine_death",
+    "test_native43_le_fix_queue_deltas",
+    "test_native43_le_fatal_log",
+    "test_native43_le_bounded_enqueue",
+    "test_native43_row1_dense",
+    "test_native43_row1_grade",
+    "test_native43_lf_queue",
+    "test_e3_native_source_oracle",
+    "test_e3_native_row1_grade"
+   ],
+   "inherited": {
+    "commit": "cfffffcda2ec96e504a462f9504d026b8af0863c",
+    "branch": "claude/tp-finalize-skew",
+    "file": "e3/engine_driver.py",
+    "definitions": [
+     "NativeSegmentDriver._apply_segments",
+     "_agreement_detail",
+     "_continuation"
+    ],
+    "hunks_identical_to": "3af0048be4d2d16c4123d642fab99a22a1af683b (claude/native41-autoarm, Codex-reviewed)",
+    "merge": "clean three-way merge of the 109313a driver and cfffffc over 1ffc394",
+    "reason": "q18a-native41-autoarm run 1 fatal DriverError(TP workers disagree on the layer continuation): commit beside state_finalize at a STATE_FINALIZE acceptance is one continuation; every other difference still refuses; completion-dependent actions still wait for each rank",
+    "tests": [
+     "harness/test_e3_tp_finalize_skew.py"
+    ],
+    "lineage_rows": [
+     "e3/engine_driver.py"
+    ],
+    "focused_suites": [
+     "test_e3_tp_finalize_skew",
+     "test_e3_native_measurement_clients",
+     "test_native35_performance"
+    ]
+   }
+  },
+  "row1_policy": {
+   "policy": "dense (FLASH_S5_NATIVE_QSA_POLICY, latched at QsaPrefillOperation.__init__; asserted by the queue preflight)",
+   "expected_route": {
+    "rule": "row1_oracle.expected_reference(policy, native route, pages, arena pages): force_dense = policy == dense and pages > arena pages; the expected reference route is the pinned map of the native route; under force_dense the native route must be dense_dma (else Row1OracleError)",
+    "table": [
+     [
+      "current",
+      "any",
+      "native route",
+      "pinned map (unchanged)",
+      "reference as generated"
+     ],
+     [
+      "dense",
+      "<= arena",
+      "native route",
+      "pinned map (unchanged)",
+      "reference as generated (dense, 0 extra bytes)"
+     ],
+     [
+      "dense",
+      "> arena",
+      "dense_dma",
+      "dense_dma",
+      "dense_branch(reference)"
+     ],
+     [
+      "dense",
+      "> arena",
+      "not dense_dma",
+      "refused",
+      "Row1OracleError"
+     ]
+    ],
+    "columns": [
+     "policy",
+     "pages vs arena",
+     "native route",
+     "expected reference route",
+     "reference called"
+    ]
+   },
+   "dense_branch": "the generated flash_e2_arena_attention's own code object, defaults, kwdefaults and closure over a copied globals dict where only os is a read-only shim answering VLLM_QSA_KVO_SPARSE_PREFILL with '0' (the reference's own sparse switch); no new reference math; os.environ never written",
+   "memory_bound": {
+    "basis": "analytic, no GPU measurement; R <= PREFILL_CHUNK 1024 query rows, 12 local query heads x head_dim 256 per TP rank",
+    "acc_bytes": 12582912,
+    "max_norm_bytes": 98304,
+    "table_slice_bytes_max": 192,
+    "tensor_bytes": 12681728,
+    "worst_case_new_reservation_bytes": 14680064,
+    "pages_dependence": "none: spans of pages_in_arena reuse the arena; acc/max/norm are allocated only when buckets > 1",
+    "at_or_below_arena_extra_bytes": 0,
+    "context": "row1 runs with decode drained, not during W2; the native has just freed same-size blocks; the l-e sparse reference (>= ~42 MB temporaries) completed at the same call site on rank 0 before route_mismatch"
+   },
+   "grade": "native43_row1_grade (via native43_row1_qualification --qsa-policy dense): the base row1 grade with only layer_route_cartesian_coverage replaced by dense_policy_route_coverage and dense_policy_beyond_arena_coverage per rank; any sparse route under dense FAILs; policy current = the base grade",
+   "leaves": "harness/native43_row1_dense_fixture_leaves.json"
+  }
+ },
+ "source_paths": [],
+ "definitions": {},
+ "engine_changed": [
+  "e3/engine_driver.py",
+  "e3/executor_hooks.py",
+  "e3/native_resources.py",
+  "e3/qsa_driver.py",
+  "e3/qsa_operation.py",
+  "e3/row1_oracle.py",
+  "e3_sources/executor.py"
+ ],
+ "overlay_definitions": {
+  "e3/engine_driver.py": [
+   "NativeSegmentDriver.__init__",
+   "NativeSegmentDriver._apply_release",
+   "NativeSegmentDriver._apply_segments",
+   "NativeSegmentDriver._status_record",
+   "NativeSegmentDriver.advance",
+   "_agreement_detail",
+   "_continuation"
+  ],
+  "e3/executor_hooks.py": [
+   "_enqueue_abandoned",
+   "_fatal_metadata",
+   "_fatal_own_error",
+   "_long_wait",
+   "bounded_enqueue",
+   "collective_rpc",
+   "log_worker_failure",
+   "module:ENQUEUE_SLICE_S",
+   "module:FATAL_OPTIONAL",
+   "module:FATAL_RECORD_MAX",
+   "module:LONG_WAIT_FALLBACK",
+   "module:_EXECUTOR_FORWARD",
+   "module:__all__",
+   "module:import logging",
+   "module:import sys",
+   "monitor_fatal_workers",
+   "report_worker_failure"
+  ],
+  "e3/native_resources.py": [
+   "build_worker_runtime"
+  ],
+  "e3/qsa_driver.py": [
+   "QsaLayerDriver._pre",
+   "QsaLayerDriver._tail"
+  ],
+  "e3/qsa_operation.py": [
+   "NativeQsaDevice.__init__",
+   "NativeQsaDevice.boundary_digest",
+   "NativeQsaDevice.timing_event",
+   "NativeQsaTrace.__init__",
+   "NativeQsaTrace.begin",
+   "NativeQsaTrace.emit",
+   "NativeQsaTrace.end",
+   "NativeQsaTrace.row",
+   "QsaPrefillOperation.__init__",
+   "QsaPrefillOperation._fill_sparse_wave",
+   "QsaPrefillOperation.after_attention_bucket",
+   "QsaPrefillOperation.bind_plan",
+   "QsaPrefillOperation.boundary_evidence",
+   "QsaPrefillOperation.fill_bucket",
+   "QsaPrefillOperation.fill_sparse_bucket",
+   "QsaPrefillOperation.release",
+   "QsaPrefillOperation.row1_output",
+   "QsaPrefillOperation.sparse_selection_eligible",
+   "QsaPrefillOperation.sparse_selection_ready",
+   "QsaPrefillOperation.sparse_union_scratch",
+   "QsaPrefillOperation.stage_sparse_selection",
+   "class:NativeQsaTrace",
+   "module:NATIVE_QSA_POLICY_ENV",
+   "module:NATIVE_QSA_TRACE_ENV",
+   "module:from .row1_oracle import Row1Bucket, Row1OracleError",
+   "module:from .row1_oracle import Row1Bucket, Row1OracleError, dense_branch, expected_reference",
+   "module:from functools import wraps",
+   "module:import hashlib",
+   "module:import json",
+   "module:import logging",
+   "module:import os",
+   "native_qsa_settings",
+   "sparse_active_for_trace",
+   "trace_cpu"
+  ],
+  "e3/row1_oracle.py": [
+   "_DenseEnviron.get",
+   "class:_DenseEnviron",
+   "class:_DenseOs",
+   "dense_branch",
+   "expected_reference",
+   "module:DENSE_SWITCH",
+   "module:TRANSPORT_POLICIES",
+   "module:_PINNED_EXPECTED",
+   "module:__all__",
+   "module:import os",
+   "module:import types"
+  ],
+  "e3_sources/executor.py": [
+   "MultiprocExecutor._flash_s5_stock_collective_rpc"
+  ]
+ },
+ "tools": [
+  "build_native43.py",
+  "native43_bundle_selfrun.py",
+  "native43_clock_split.py",
+  "native43_cpu_probe.py",
+  "native43_owner_seam.py",
+  "native43_precheck_conf.py",
+  "native43_selfrun.py",
+  "native43_tools_derive.py",
+  "native43_queue_drafts.py",
+  "native43_lifecycle_queue_drafts.py",
+  "native39_lifecycle_queue_drafts.py",
+  "native43_lifecycle_cpu_probe.py",
+  "native43_lifecycle_tools_derive.py",
+  "native43_le_fix_queue_deltas.py",
+  "native43_lf_queue_drafts.py",
+  "native43_lf_cpu_probe.py",
+  "native43_lf_tools_derive.py",
+  "native43_spec.native43-lifecycle-f.json"
+ ],
+ "queue": [
+  "q18a_native43_lifecycle_f.draft.sh",
+  "q18a_native43_lifecycle_f_declare.sh",
+  "q18a_native43_lifecycle_f_settings.sh"
+ ],
+ "expected_tests": 258,
+ "runner_swaps": [
+  [
+   "result.get('native35_arm')=='TRUNK'",
+   "result.get('native35_arm')=='NATIVE43L'"
+  ],
+  [
+   "result.get('native39_trunk_queue')=='PASS'",
+   "result.get('native39_trunk_queue')=='PASS' and result.get('native43_queue')=='PASS' and result.get('native43_lifecycle_queue')=='PASS' and result.get('native43_lf_queue')=='PASS'"
+  ],
+  [
+   "    from native39_trunk_gate import trunk_window_ok as window_ok\n",
+   "    from native43_lifecycle_gate import lifecycle_window_ok as window_ok\n"
+  ],
+  [
+   "engine.get('schema')=='native39-trunk-selfrun/1'",
+   "engine.get('schema')=='native43-selfrun/1'"
+  ],
+  [
+   "and engine.get('image')==IMAGE and engine.get('box_action') is False,'exact-engine-selfrun-required')",
+   "and engine.get('image')==IMAGE and engine.get('box_action') is False\n                and (engine.get('clock_split') or {}).get('verdict')=='PASS'\n                and (engine.get('scheduler_tick_probe') or {}).get('verdict')=='PASS' and (engine.get('scheduler_tick_probe') or {}).get('required_ok') is True,'exact-engine-selfrun-required')"
+  ]
+ ],
+ "rehearsal": null,
+ "engine_selfrun": {
+  "schema": "native43-selfrun/1",
+  "compiled": [
+   "patches/s5_engine/scheduler_hooks.py",
+   "patches/s5_engine/engine_driver.py",
+   "patches/s5_engine/native_overlap_session.py",
+   "harness/e3_native39_trunk_probe.py",
+   "harness/test_native39_trunk.py",
+   "harness/selftest.py",
+   "tools/native39_trunk_selfrun.py",
+   "tools/native39_trunk_freeze.py",
+   "tools/build_native39_trunk.py",
+   "harness/native43_boundary_client.py",
+   "harness/native43_boundary_clock.py",
+   "harness/native43_boundary_gate.py",
+   "harness/native43_clock_probe.py",
+   "harness/native43_dense_grade.py",
+   "harness/native43_scheduler_tick_probe.py",
+   "harness/test_e3_lane_private.py",
+   "harness/test_e3_qsa_driver.py",
+   "harness/test_native43_boundary_queue.py",
+   "harness/test_native43_dense_boundary.py",
+   "patches/s5_engine/native_resources.py",
+   "patches/s5_engine/qsa_driver.py",
+   "patches/s5_engine/qsa_operation.py",
+   "tools/build_native43.py",
+   "tools/native43_bundle_selfrun.py",
+   "tools/native43_clock_split.py",
+   "tools/native43_cpu_probe.py",
+   "tools/native43_owner_seam.py",
+   "tools/native43_precheck_conf.py",
+   "tools/native43_queue_drafts.py",
+   "tools/native43_selfrun.py",
+   "tools/native43_tools_derive.py",
+   "harness/native43_lifecycle_gate.py",
+   "harness/native43_lifecycle_grade.py",
+   "harness/native39_lifecycle_gate.py",
+   "harness/test_native43_lifecycle_queue.py",
+   "harness/e3_native_performance.py",
+   "harness/e3_q18a_lifecycle.py",
+   "tools/native43_lifecycle_queue_drafts.py",
+   "tools/native43_lifecycle_cpu_probe.py",
+   "tools/native43_lifecycle_tools_derive.py",
+   "harness/test_e3_tp_finalize_skew.py",
+   "harness/test_e3_native_measurement_clients.py",
+   "harness/test_native35_performance.py",
+   "patches/s5_engine/executor_hooks.py",
+   "patches/s5_engine/row1_oracle.py",
+   "harness/native43_engine_death.py",
+   "harness/native43_row1_grade.py",
+   "harness/native43_row1_qualification.py",
+   "harness/test_native43_engine_death.py",
+   "harness/test_native43_le_fatal_log.py",
+   "harness/test_native43_le_bounded_enqueue.py",
+   "harness/test_native43_le_fix_queue_deltas.py",
+   "harness/test_native43_row1_dense.py",
+   "harness/test_native43_row1_grade.py",
+   "harness/test_native43_lf_queue.py",
+   "tools/native43_le_fix_queue_deltas.py",
+   "tools/native43_lf_queue_drafts.py",
+   "tools/native43_lf_tools_derive.py",
+   "tools/native43_lf_cpu_probe.py",
+   "tools/native43_lf_runner_lineage.py",
+   "tools/native43_lf_clock_scan.py"
+  ],
+  "suites": [
+   "test_native39_trunk",
+   "test_native37_robust",
+   "test_native38_plain_bind",
+   "test_e3_admission_native",
+   "test_e3_staged_chunk_plan",
+   "test_e3_native_overlap",
+   "test_e3_native_storage_replay",
+   "test_e3_r4_worker_bridge",
+   "test_e3_admission_metadata",
+   "test_native43_dense_boundary",
+   "test_native43_boundary_queue",
+   "test_e3_qsa_driver",
+   "test_e3_lane_private",
+   "test_e3_sparse_history_dma",
+   "test_e3_worker_operations",
+   "test_e3_tp_finalize_skew",
+   "test_e3_native_measurement_clients",
+   "test_native35_performance",
+   "test_native43_engine_death",
+   "test_native43_le_fatal_log",
+   "test_native43_le_bounded_enqueue",
+   "test_native43_le_fix_queue_deltas",
+   "test_native43_row1_dense",
+   "test_native43_row1_grade",
+   "test_e3_native_source_oracle",
+   "test_e3_native_row1_grade"
+  ],
+  "probes": [
+   {
+    "script": "native43_scheduler_tick_probe.py",
+    "out": "native43-scheduler-probe.json",
+    "field": "scheduler_tick_probe",
+    "keep": [
+     "schema",
+     "real_scheduler",
+     "baseline_scheduler_ticks",
+     "unexpected_scheduler_ticks",
+     "admitted_after_cutoff",
+     "source_leases_clean",
+     "stop_calls",
+     "cuda_initialized"
+    ],
+    "require": {
+     "schema": "native43-real-scheduler-cutoff/1",
+     "unexpected_scheduler_ticks": 0,
+     "admitted_after_cutoff": 0,
+     "source_leases_clean": true,
+     "stop_calls": [
+      "cancel"
+     ],
+     "cuda_initialized": false
+    }
+   }
+  ]
+ },
+ "bundle_selfrun": {
+  "arm": "NATIVE43L",
+  "probe": "native43_lf_cpu_probe.py"
+ },
+ "clock_split": {
+  "side": "native43-clock-probe",
+  "modules": [
+   "native43_boundary_clock.prove"
+  ],
+  "expect": {
+   "identity_equality": "refused",
+   "prove_clock_domain": "refused",
+   "native_window_clock": "proved",
+   "bracket": "proved",
+   "module:native43_boundary_clock.prove": "proved",
+   "native_window_clock_pre_fix": "refused"
+  },
+  "note": "Codex's native43_clock_probe --serve in the engine container, its prove() in the client container across the CT-vs-container split: the bracket proof holds; the identity-equality checks refuse there, as on the box (native40). Native43 lifecycle: the reuse grade path is e3_native_performance.native_window (the lifecycle client prefill); its expectation is proved. The pre-fix native_window (n43-f bytes) grades the same records: refused across the split, proved in the shared-view control.",
+  "pre_fix": {
+   "commit": "2a4917b7df6e6e264b0eefe8f9287d3a4fb915d6",
+   "path": "harness/e3_native_performance.py",
+   "sha256": "27055ae0b444d43ecdf16351584a6221994e82b2bdd55330d2b1c874dd4b90e1",
+   "note": "the n43-f build source native_window (identity equality; = 109313a and 1ffc394 bytes)"
+  }
+ },
+ "precheck": {
+  "seams": "test_native43_lf_queue.py test_native43_row1_dense.py test_native43_row1_grade.py test_native43_le_fix_queue_deltas.py test_native43_engine_death.py test_native43_le_fatal_log.py test_native43_le_bounded_enqueue.py test_native43_lifecycle_queue.py test_native39_lifecycle_queue.py test_native43_boundary_queue.py test_native43_dense_boundary.py test_native39_trunk_queue.py test_native39_trunk.py ",
+  "fixture_rows": [
+   "  test_native39_trunk_queue.py # synthetic CPU auth fixture only (VLLM_API_KEY / bearer fixture value)\n"
+  ],
+  "header": [
+   "Native43 l-f lifecycle short scope packaged by tools/build_native43.py (spec native43-lifecycle-f); PREV is the frozen native39 trunk held-b bundle and runner.",
+   "Engine delta vs PREV: the l-e engine files e3/{engine_driver,native_resources,qsa_driver,qsa_operation}.py (TP finalize-skew included) plus the le-fix and row1 delta e3/{executor_hooks,row1_oracle,qsa_operation}.py and the generated e3_sources/executor.py, plus generation metadata; review prepared (native43_lifecycle_f).",
+   "Queue: the box-run l-e queue with the le-fix deltas (engine death scan and watch) and row1 graded with the dense policy (native43_row1_qualification); FLASH_S5_NATIVE_QSA_POLICY=dense; one fresh key; no production start."
+  ]
+ },
+ "checks": [
+  [
+   "tools/native39_trunk_queue_drafts.py",
+   "--check"
+  ],
+  [
+   "tools/native39_trunk_tools_derive.py",
+   "--check"
+  ],
+  [
+   "tools/native39_w2_length.py",
+   "--check"
+  ],
+  [
+   "tools/native43_queue_drafts.py",
+   "--check"
+  ],
+  [
+   "tools/native43_tools_derive.py",
+   "--check"
+  ],
+  [
+   "tools/native39_lifecycle_queue_drafts.py",
+   "--check"
+  ],
+  [
+   "tools/native39_lifecycle_tools_derive.py",
+   "--check"
+  ],
+  [
+   "tools/native43_lifecycle_queue_drafts.py",
+   "--check"
+  ],
+  [
+   "tools/native43_lifecycle_tools_derive.py",
+   "--check"
+  ],
+  [
+   "tools/native43_lf_queue_drafts.py",
+   "--check"
+  ],
+  [
+   "tools/native43_lf_tools_derive.py",
+   "--check"
+  ]
+ ]
+}
