@@ -2,6 +2,8 @@
 # native43 lifecycle packaging gate chain (CPU only, hub; no box/VM/GPU action, no push).
 # tools/native43_gates.sh (as run for n43-f) with: the lifecycle suites in focused; normal priority (lead approval,
 # 1 Nov 2026); the owner seam replaced by the runner lineage proof (single-queue runner); the lifecycle clock scan.
+# l-e: focused adds the declared deltas' suites (TP finalize skew, reuse clock); the runner lineage takes the
+# spec's declared engine-delta rows (details.engine_delta.lineage_rows; none before l-e).
 # usage: native43-lifecycle-gates.sh WT SPEC OUT EVID TAG
 #   focused || strict -> prepare review + commit -> build -> bundle self-run || engine self-run (+ clock split)
 #   -> runner lineage -> lifecycle clock scan -> compile proof -> precheck conf -> precheck.
@@ -25,13 +27,17 @@ DRY=$(python3 -I -c "import json,sys;print(json.load(open(sys.argv[1]))['dry_run
 # The two native43 suites exist only in the native43 source; the held-b dry run (dry_run true) has the other 18.
 N43_SUITES="test_native43_dense_boundary test_native43_boundary_queue"
 [[ $DRY == True ]] && N43_SUITES=
+# Declared-delta suites and lineage rows from the spec (empty before l-e).
+DELTA_SUITES=$(python3 -I -c "import json,sys;d=json.load(open(sys.argv[1]))['details'].get('engine_delta') or {};print(' '.join(d.get('focused_suites',[])))" "$SPEC")
+DELTA_ROWS=$(python3 -I -c "import json,sys;d=json.load(open(sys.argv[1]))['details'].get('engine_delta') or {};print(' '.join('--engine-delta '+r for r in d.get('lineage_rows',[])))" "$SPEC")
+printf 'delta suites [%s] lineage [%s]\n' "$DELTA_SUITES" "$DELTA_ROWS" >>"$STEPS"
 cd "$WT/harness"
 { echo "# head $HEAD focused (dry_run $DRY)"; $NI python3 -B -m unittest test_native39_trunk test_native39_trunk_queue test_native37_robust \
     test_native38_plain_bind test_e3_admission_native test_e3_staged_chunk_plan test_e3_native_overlap \
     test_e3_native_storage_replay test_e3_r4_worker_bridge test_e3_admission_metadata test_native35_p_c_continuation \
     test_e3_native28_host_guard test_identity_declare test_e3_native_measurement \
     $N43_SUITES test_native43_lifecycle_queue test_native39_lifecycle_queue test_e3_qsa_driver test_e3_lane_private \
-    test_e3_sparse_history_dma test_e3_worker_operations 2>&1; echo "rc=$?"; } >"$EVID/focused-$TAG.log" &
+    test_e3_sparse_history_dma test_e3_worker_operations $DELTA_SUITES 2>&1; echo "rc=$?"; } >"$EVID/focused-$TAG.log" &
 FOCUSED=$!
 { $NI python3 -u selftest.py 2>&1; echo "rc=$?"; } >"$EVID/strict-$TAG.log"
 wait $FOCUSED
@@ -76,7 +82,7 @@ wait $BUNDLE_SR
 step bundle-selfrun $?
 step engine-selfrun $ENGINE_RC
 
-python3 -B tools/native43_lifecycle_runner_lineage.py --runner "$RUNNER" --build "$OUT/build.json" \
+python3 -B tools/native43_lifecycle_runner_lineage.py --runner "$RUNNER" --build "$OUT/build.json" $DELTA_ROWS \
     --out "$OUT/runner-lineage.json" >"$OUT/runner-lineage-stdout.log" 2>&1
 step runner-lineage $?
 

@@ -7,6 +7,9 @@
 2. tools/native43_clock_split.py: the bundle's client clock checks across a physical
    CT-vs-container identity split (LXC-style boot id, separate time namespaces, zero
    timens offsets), with a shared-view positive control; outcomes as the spec declares.
+   With clock_split.pre_fix {commit, path, sha256} the file at that commit of --tree's repository is written
+   under the out dir, its sha256 checked, and graded beside the bundle's module on the same records
+   (native_window_clock_pre_fix).
    In bundle mode the bundle's own sparse_stage/ is also mounted at /source/patches/sparse_stage: operation_source
    resolves the pinned sparse-stage kernels one level above e3_builder, as the box layout has them.
 3. The spec's extra harness probes (engine_selfrun.probes, e.g. native43_scheduler_tick_probe.py) in the
@@ -18,6 +21,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -70,8 +74,17 @@ def run(spec_path, tree, bundle, out, name):
                                    required=row.get('require', {}),
                                    required_ok=all(view.get(k) == v for k, v in row.get('require', {}).items()))
     probes_ok = all(v['verdict'] == 'PASS' and v['rc_line'] == '%s rc=0' % k and v['required_ok'] for k, v in extra.items())
+    pre_fix, pre_fix_path = split.get('pre_fix'), None
+    if pre_fix:
+        data = subprocess.run(['git', '-C', str(tree), 'show', '%s:%s' % (pre_fix['commit'], pre_fix['path'])],
+                              check=True, capture_output=True).stdout
+        assert hashlib.sha256(data).hexdigest() == pre_fix['sha256'], 'pre-fix module sha256 differs from the spec'
+        (out / 'pre-fix').mkdir()
+        pre_fix_path = out / 'pre-fix' / 'e3_native_performance.py'
+        pre_fix_path.write_bytes(data)
+        pre_fix_path.chmod(0o444)
     split_rc = clock_split.run(bundle, tree, out / 'clock-split', name + '-clock', split['side'], split['expect'],
-                               split['modules'])
+                               split['modules'], pre_fix_path)
     clock = json.loads((out / 'clock-split/result.json').read_text())
     engine_ok = (engine['container_rc'] == 0 and engine['probe39']['verdict'] == 'PASS'
                  and engine['probe37']['verdict'] == 'PASS' and engine['py_compile']['ok'] is True
@@ -83,6 +96,7 @@ def run(spec_path, tree, bundle, out, name):
                   clock_split=dict(verdict=clock['verdict'], reasons=clock['reasons'], outcomes=clock['outcomes'],
                                    expected=clock['expected'], control_outcomes=clock.get('control_outcomes'),
                                    split=clock['split'], method=clock.get('method'), rc=split_rc, record_sha256=sha(out / 'clock-split/result.json'), side=clock['side'],
+                                   pre_fix=None if not pre_fix else dict(pre_fix, mounted=clock.get('pre_fix')),
                                    gpu_device_requests=clock.get('gpu_device_requests')),
                   verdict='PASS' if engine_ok and clock['verdict'] == 'PASS' else 'FAIL',
                   classification=None if engine_ok and clock['verdict'] == 'PASS' else 'HARNESS')

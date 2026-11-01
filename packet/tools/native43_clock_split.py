@@ -39,6 +39,10 @@ Client checks (each runs the bundle's real code; the spec declares the outcome):
                        engine-side proofs, the status sample as begin snapshot and end
                        evidence and the call's bracket as both per-call brackets; outcome is
                        whether it names client-engine-clock
+  native_window_clock_pre_fix  (only with --pre-fix) the same record graded by the pre-fix
+                       e3_native_performance.native_window (proc-view identity equality), loaded
+                       from a declared file: on one record the old code refuses where the new
+                       one proves
   bracket              every engine sample lies inside its client request bracket
   module:<m>.<f>       a bundle module's bracket proof f(status, send, recv) and its
                        'proved' field (native43_boundary_clock.prove)
@@ -49,6 +53,7 @@ offset zero), every check has its declared outcome, and the control proves them 
 No GPU, no box action, no network.
 """
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -111,10 +116,24 @@ def serve():
 
 
 # ------------------------------------------------------------------ client side
-def client(side, out, modules, fifo=None):
+PRE_FIX_KEY = 'native_window_clock_pre_fix'
+PRE_FIX_MOUNT = '/n43/pre_fix/e3_native_performance_pre_fix.py'
+
+
+def checks(pre_fix):
+    return CHECKS + ((PRE_FIX_KEY,) if pre_fix else ())
+
+
+def client(side, out, modules, fifo=None, pre_fix=None):
     sys.path[:0] = CLIENT_PATH
     from native_overlap_metrics import clock_identity, prove_clock_domain
     import e3_native_performance as performance
+    old = None
+    if pre_fix:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('e3_native_performance_pre_fix', pre_fix)
+        old = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(old)
     child = None
     if fifo is not None:
         request = open(os.path.join(fifo, 'req.fifo'), 'w')
@@ -150,7 +169,7 @@ def client(side, out, modules, fifo=None):
                       end=dict(engine_epoch=1, measure_end_ns=recv, raw_journal_evidence=status,
                                clock=dict(begin=engine_proof, end=engine_proof)),
                       client_bracket=dict(start_ns=send, begin_recv_ns=recv, end_send_ns=send, end_ns=recv))
-        named = sorted(r for r in performance.native_window(record, 'fresh', 1)['reasons']
+        named = sorted(r for r in performance.native_window(copy.deepcopy(record), 'fresh', 1)['reasons']
                        if r.startswith('client-engine-clock'))
         stamp = status.get('observed_clock_ns')
         row = dict(send_ns=send, recv_ns=recv, engine_ns=stamp,
@@ -161,6 +180,10 @@ def client(side, out, modules, fifo=None):
                    bracket=dict(proved=type(stamp) is int and send <= stamp <= recv),
                    engine_clock=clock, engine_view=engine_view,
                    engine_source=packet.get('source') or packet.get('fixture'))
+        if old is not None:
+            named_old = sorted(r for r in old.native_window(copy.deepcopy(record), 'fresh', 1)['reasons']
+                               if r.startswith('client-engine-clock'))
+            row[PRE_FIX_KEY] = dict(proved=not named_old, reasons=named_old)
         for name in modules:
             module, function = name.rsplit('.', 1)
             proof = getattr(__import__(module), function)(status, send, recv)
@@ -170,8 +193,9 @@ def client(side, out, modules, fifo=None):
     request.close()
     if child is not None:
         child.wait(timeout=60)
-    keys = list(CHECKS) + ['module:' + m for m in modules]
+    keys = list(checks(pre_fix)) + ['module:' + m for m in modules]
     result = dict(side=side, client_view=view(), client_clock_identity=local, samples=rows,
+                  pre_fix=None if old is None else dict(path=pre_fix, sha256=hashlib.sha256(Path(pre_fix).read_bytes()).hexdigest()),
                   outcomes={k: ('proved' if all(r[k]['proved'] for r in rows) else
                                 'refused' if not any(r[k]['proved'] for r in rows) else 'mixed') for k in keys})
     Path(out).write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
@@ -191,11 +215,14 @@ def inspect(name):
                 exit_code=row['State'].get('ExitCode'), image=row.get('Image'))
 
 
-def run(bundle, tree, out, name, side, expect, modules):
+def run(bundle, tree, out, name, side, expect, modules, pre_fix=None):
+    """pre_fix: optional host path of a pre-fix e3_native_performance.py, mounted read-only at PRE_FIX_MOUNT in
+    both containers (CT-view client and the shared-view control) and graded as native_window_clock_pre_fix."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from native37_robust_selfrun import overlay_mounts, source_mounts
     bundle, out = Path(bundle).resolve(), Path(out).resolve()
-    assert side in SIDES and set(expect) == set(CHECKS) | {'module:' + m for m in modules}, (side, sorted(expect))
+    assert side in SIDES and set(expect) == set(checks(pre_fix)) | {'module:' + m for m in modules}, (side, sorted(expect))
+    pre_mount = ['-v', '%s:%s:ro' % (Path(pre_fix).resolve(), PRE_FIX_MOUNT)] if pre_fix else []
     tool = Path(__file__).resolve()
     out.mkdir()
     for d in ('engine', 'client', 'pipe'):
@@ -211,7 +238,7 @@ def run(bundle, tree, out, name, side, expect, modules):
               '--memory-swap', '3g', '--read-only', '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=256m', '--ulimit', 'core=0',
               '-e', 'NVIDIA_VISIBLE_DEVICES=none', '-e', 'CUDA_VISIBLE_DEVICES=', '-e', 'PYTHONDONTWRITEBYTECODE=1',
               '-e', 'PYTHONPATH=' + os.pathsep.join(CLIENT_PATH),
-              '-v', '%s:/n43/clock_split.py:ro' % tool, '-v', '%s:/pipe' % (out / 'pipe')]
+              '-v', '%s:/n43/clock_split.py:ro' % tool, '-v', '%s:/pipe' % (out / 'pipe'), *pre_mount]
     engine_mounts = dict(overlay_mounts(bundle / 'native30_overlay'))
     engine_mounts.update(source_mounts(Path(tree).resolve(), bundle))
     engine_name, client_name = name + '-engine', name + '-client'
@@ -221,7 +248,8 @@ def run(bundle, tree, out, name, side, expect, modules):
                             '-v', '%s:/out' % (out / 'engine'), '--entrypoint', 'sh', IMAGE, '-c',
                             'exec %s < /pipe/req.fifo > /pipe/resp.fifo 2> /out/engine-side.err' % ' '.join(SIDES[side])])
     docker(*commands['engine'], check=True, stdout=subprocess.DEVNULL)
-    client_args = ['/n43/clock_split.py', 'client', '--side', side] + sum((['--module', m] for m in modules), [])
+    client_args = (['/n43/clock_split.py', 'client', '--side', side] + sum((['--module', m] for m in modules), [])
+                   + (['--pre-fix', PRE_FIX_MOUNT] if pre_fix else []))
     # Positive control first: the FIFO-side engine process waits until the CT-view client opens the pipes.
     commands['control'] = ['exec', engine_name, 'python3', '-B', *client_args, '--out', '/out/control.json']
     with (out / 'control.log').open('x') as log:
@@ -241,6 +269,8 @@ def run(bundle, tree, out, name, side, expect, modules):
     docker('rm', engine_name, client_name, stdout=subprocess.DEVNULL)
     result = assemble(out, side, expect, client_rc, control_rc, info, commands, ct_boot)
     result['wall_s'] = round(time.monotonic() - started, 3)
+    result['pre_fix'] = None if not pre_fix else dict(host_path=str(Path(pre_fix).resolve()), mount=PRE_FIX_MOUNT,
+                                                       sha256=hashlib.sha256(Path(pre_fix).read_bytes()).hexdigest())
     (out / 'result.json').write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
     print(json.dumps({k: result[k] for k in ('verdict', 'reasons', 'outcomes', 'split')}, sort_keys=True))
     return 0 if result['verdict'] == 'PASS' else 1
@@ -305,6 +335,7 @@ if __name__ == '__main__':
     c.add_argument('--out', required=True)
     c.add_argument('--module', action='append', default=[])
     c.add_argument('--fifo')
+    c.add_argument('--pre-fix')
     r = sub.add_parser('run')
     r.add_argument('--bundle', required=True)
     r.add_argument('--tree', required=True)
@@ -313,9 +344,10 @@ if __name__ == '__main__':
     r.add_argument('--side', choices=sorted(SIDES), required=True)
     r.add_argument('--expect', required=True, help='JSON {check: proved|refused}')
     r.add_argument('--module', action='append', default=[])
+    r.add_argument('--pre-fix', help='host path of a pre-fix e3_native_performance.py (adds native_window_clock_pre_fix)')
     a = p.parse_args()
     if a.mode == 'serve':
         raise SystemExit(serve())
     if a.mode == 'client':
-        raise SystemExit(client(a.side, a.out, a.module, a.fifo))
-    raise SystemExit(run(a.bundle, a.tree, a.out, a.name, a.side, json.loads(a.expect), a.module))
+        raise SystemExit(client(a.side, a.out, a.module, a.fifo, a.pre_fix))
+    raise SystemExit(run(a.bundle, a.tree, a.out, a.name, a.side, json.loads(a.expect), a.module, a.pre_fix))

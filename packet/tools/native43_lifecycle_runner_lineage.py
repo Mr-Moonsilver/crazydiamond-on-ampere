@@ -10,7 +10,8 @@ runner file, that
   2. those engine self-run gate lines are byte-identical to the frozen n43-f runner's (9130d18d...);
   3. its EXPECTED_SOURCES engine rows equal the n43-f runner's, and the rows that differ are generation metadata
      only (the prepared review moves them), while REVIEW and EXPECTED_SOURCES equal the build's own review and
-     overlay rows.
+     overlay rows.  A declared engine delta (--engine-delta ROW, e.g. l-e's e3/engine_driver.py = n43-f + the
+     cfffffc TP finalize-skew hunks) may also differ and must differ; its bytes are bound by the delivery identity.
 So the staging/declare/arm code paths are the single-queue runner's that ran on the box twice (native39 trunk run 1,
 native39 lifecycle run 1); the native43 owner seam (pair wrapper, one key across two arms) does not apply.
 No box action.
@@ -62,7 +63,7 @@ def gate_block(text):
     return text[start:end]
 
 
-def check(runner, build):
+def check(runner, build, engine_delta=()):
     assert sha(BOX_RUNNER) == BOX_RUNNER_SHA and sha(ENGINE_RUNNER) == ENGINE_RUNNER_SHA
     text, box, engine = Path(runner).read_text(), BOX_RUNNER.read_text(), ENGINE_RUNNER.read_text()
     built = json.loads(Path(build).read_text())
@@ -75,8 +76,10 @@ def check(runner, build):
     a, b = mine['EXPECTED_SOURCES'][1], n43f['EXPECTED_SOURCES'][1]
     assert set(a) == set(b)
     moved = sorted(k for k in a if a[k] != b[k])
-    assert set(moved) <= METADATA, moved
-    engine_rows = sorted(k for k in a if k.startswith('e3/') and k.endswith('.py') and k not in METADATA)
+    delta = set(engine_delta)
+    assert not delta & METADATA and set(moved) <= METADATA | delta, moved
+    assert delta <= set(moved), ('declared engine delta did not move', sorted(delta - set(moved)))
+    engine_rows = sorted(k for k in a if k.startswith('e3/') and k.endswith('.py') and k not in METADATA | delta)
     # 2. the engine self-run gate lines are the n43-f runner's, byte for byte.
     assert gate_block(text) == gate_block(engine)
     # 1. normalised to the native39 lifecycle names and pins, the box-run runner but for the declared lines.
@@ -93,7 +96,9 @@ def check(runner, build):
     return dict(schema='native43-lifecycle-runner-lineage/1', verdict='PASS', runner=str(runner), runner_sha256=sha(runner),
                 box_runner=str(BOX_RUNNER), box_runner_sha256=BOX_RUNNER_SHA, engine_runner=str(ENGINE_RUNNER),
                 engine_runner_sha256=ENGINE_RUNNER_SHA, declared_differences=[list(r) for r in DECLARED],
-                engine_gate_from_n43f=True, expected_sources_rows=len(a), metadata_rows_moved_vs_n43f=moved,
+                engine_gate_from_n43f=True, expected_sources_rows=len(a),
+                metadata_rows_moved_vs_n43f=sorted(set(moved) - delta),
+                declared_engine_delta_vs_n43f={k: a[k] for k in sorted(delta)},
                 engine_rows_equal_n43f=sorted(set(engine_rows)), review_sha256=mine['REVIEW'][1],
                 n43f_review_sha256=n43f['REVIEW'][1], owner_seam='not applicable: single-queue runner; staging, '
                 'declare and arm bytes are the box-run native39 lifecycle runner\'s', box_action=False)
@@ -104,8 +109,10 @@ if __name__ == '__main__':
     p.add_argument('--runner', required=True)
     p.add_argument('--build', required=True)
     p.add_argument('--out', type=Path, required=True)
+    p.add_argument('--engine-delta', action='append', default=[],
+                   help='EXPECTED_SOURCES row declared to differ from the n43-f runner (engine delta)')
     a = p.parse_args()
-    record = check(a.runner, a.build)
+    record = check(a.runner, a.build, a.engine_delta)
     with a.out.open('x') as f:
         json.dump(record, f, indent=2, sort_keys=True)
         f.write('\n')

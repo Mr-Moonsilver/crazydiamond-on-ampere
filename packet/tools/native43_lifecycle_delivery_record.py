@@ -8,6 +8,13 @@ runner); the lifecycle client-clock scan replaces the pair's; the identity check
 Codex d9fb80e/109313a (the n43-f engine) and the three lifecycle queue texts to the source commit and their
 derivation.  Writes delivery.json, frozen-gates.json and strict.json (refusing to overwrite).  Every verdict is
 copied, never set.
+
+Declared deltas (l-e onwards, optional flags):
+  --engine-delta COMMIT  e3/engine_driver.py is the clean three-way merge of the engine base's driver and COMMIT's
+                         over their common base (cfffffc: TP completion skew at STATE_FINALIZE); its test
+                         harness/test_e3_tp_finalize_skew.py is COMMIT's bytes and ran in the engine self-run.
+  --bracket COMMIT       the reuse-clock files are COMMIT's bytes (1594bd0: per-call client brackets); the clock
+                         split also grades the pre-fix native_window on the same records (refused split, proved control).
 """
 import argparse
 import hashlib
@@ -50,14 +57,53 @@ def gate_window(bundle):
     return out
 
 
-def identity(bundle, repo, engine_base, source):
+DELTA_FILE = 'engine_driver.py'
+DELTA_TEST = 'test_e3_tp_finalize_skew.py'
+BRACKET_FILES = ('e3_native_performance.py', 'native43_boundary_clock.py', 'test_e3_native_measurement_clients.py',
+                 'test_native35_performance.py', 'reuse_clock_fixture_leaves.json')
+
+
+def merged(repo, show, ours, theirs, path, scratch):
+    """git merge-file of path: ours and theirs over their merge base; (bytes, clean)."""
+    base = subprocess.run(['git', '-C', str(repo), 'merge-base', ours, theirs], check=True, capture_output=True,
+                          text=True).stdout.strip()
+    files = []
+    for rev in (ours, base, theirs):
+        f = scratch / rev
+        f.write_bytes(show(rev, path))
+        files.append(str(f))
+    run = subprocess.run(['git', 'merge-file', '-p', *files], capture_output=True)
+    return run.stdout, run.returncode == 0, base
+
+
+def identity(bundle, repo, engine_base, source, engine_delta=None, bracket=None):
+    import tempfile
     def show(rev, path):
         return subprocess.run(['git', '-C', str(repo), 'show', '%s:%s' % (rev, path)], check=True, capture_output=True).stdout
-    engine = {}
+    engine, delta = {}, None
     for name in ENGINE_FILES:
         data = (bundle / 'e3_builder' / name).read_bytes()
-        assert data == show(engine_base, 'patches/s5_engine/' + name) == show(source, 'patches/s5_engine/' + name), name
+        if engine_delta and name == DELTA_FILE:
+            with tempfile.TemporaryDirectory() as scratch:
+                expect, clean, base = merged(repo, show, engine_base, engine_delta, 'patches/s5_engine/' + name, Path(scratch))
+            assert clean and data == expect == show(source, 'patches/s5_engine/' + name), name
+            test = (bundle / DELTA_TEST).read_bytes()
+            assert test == show(engine_delta, 'harness/' + DELTA_TEST) == show(source, 'harness/' + DELTA_TEST)
+            delta = dict(file=name, commit=engine_delta, merge_base=base, clean_three_way_merge=True,
+                         sha256=hashlib.sha256(data).hexdigest(),
+                         engine_base_sha256=hashlib.sha256(show(engine_base, 'patches/s5_engine/' + name)).hexdigest(),
+                         test=DELTA_TEST, test_sha256=hashlib.sha256(test).hexdigest())
+        else:
+            assert data == show(engine_base, 'patches/s5_engine/' + name) == show(source, 'patches/s5_engine/' + name), name
         engine[name] = hashlib.sha256(data).hexdigest()
+    reuse_clock = None
+    if bracket:
+        reuse_clock = {}
+        for name in BRACKET_FILES:
+            data = (bundle / name).read_bytes()
+            assert data == show(bracket, 'harness/' + name) == show(source, 'harness/' + name), name
+            reuse_clock[name] = hashlib.sha256(data).hexdigest()
+        reuse_clock = dict(commit=bracket, files=reuse_clock)
     queue = {}
     for name in LIFECYCLE_TEXTS:
         path = bundle / 'runs' / name
@@ -72,7 +118,8 @@ def identity(bundle, repo, engine_base, source):
                            capture_output=True, text=True).stdout.split()
     engine_moved = [m for m in moved if m.startswith('patches/')]
     runs_moved = [m for m in moved if m.startswith('harness/runs/')]
-    assert set(engine_moved) <= {REVIEW}, engine_moved
+    declared = {'patches/s5_engine/' + DELTA_FILE} if engine_delta else set()
+    assert set(engine_moved) <= {REVIEW} | declared and declared <= set(engine_moved), engine_moved
     assert set(runs_moved) == {'harness/runs/' + n for n in LIFECYCLE_TEXTS + N39L_TEXTS}, runs_moved
     box_run = {}
     for name in N39L_TEXTS:
@@ -85,12 +132,13 @@ def identity(bundle, repo, engine_base, source):
     return dict(engine_base=engine_base, source=source, engine_files=engine, lifecycle_queue_texts=queue,
                 pair_queue_texts_equal_engine_base=pair, lifecycle_queue_derivation=derived.stdout.strip(),
                 derivation_source_texts_equal_n39l_box_run=dict(bundle=str(N39L_BUNDLE), texts=box_run),
-                source_paths_since_engine_base=moved, verdict='PASS')
+                source_paths_since_engine_base=moved, declared_engine_delta=delta, reuse_clock=reuse_clock,
+                verdict='PASS')
 
 
 def record(a):
     b, f, spec = load(a.build), load(a.freeze), load(a.spec)
-    ident = identity(Path(b['bundle']), a.repo, a.engine_base, spec['source_commit'])
+    ident = identity(Path(b['bundle']), a.repo, a.engine_base, spec['source_commit'], a.engine_delta, a.bracket)
     s, e, c = load(a.bundle_selfrun), load(a.engine_selfrun), load(a.compile_proof)
     lineage, k = load(a.runner_lineage), load(a.clock_scan)
     assert not spec['dry_run'] and b['name'] == spec['candidate'] == NAME and b['arm'] == spec['arm'] == 'NATIVE43L'
@@ -109,6 +157,14 @@ def record(a):
     assert clock['verdict'] == 'PASS' and clock['outcomes'] == spec['clock_split']['expect'] and clock['side'] == spec['clock_split']['side']
     assert clock['outcomes']['native_window_clock'] == 'proved'
     assert clock['method'] and clock['split']['boot_ids_differ'] and clock['split']['time_namespaces_differ']
+    # The engine self-run ran the spec's suites (its record binds the spec by sha256).
+    assert e['spec_sha256'] == sha(a.spec)
+    if a.engine_delta:
+        assert 'test_e3_tp_finalize_skew' in spec['engine_selfrun']['suites']
+    if a.bracket:
+        assert {'test_e3_native_measurement_clients', 'test_native35_performance'} <= set(spec['engine_selfrun']['suites'])
+        assert clock['outcomes']['native_window_clock_pre_fix'] == 'refused'
+        assert clock['control_outcomes']['native_window_clock_pre_fix'] == 'proved' and clock['pre_fix']
     probes = {row['field']: e[row['field']] for row in spec['engine_selfrun'].get('probes', [])}
     assert all(v['verdict'] == 'PASS' and v['required_ok'] is True for v in probes.values()), probes
     assert lineage['schema'] == 'native43-lifecycle-runner-lineage/1' and lineage['verdict'] == 'PASS'
@@ -156,7 +212,9 @@ def record(a):
         clock_split=clock, engine_selfrun_probes=probes,
         runner_lineage=str(a.runner_lineage), runner_lineage_sha256=sha(a.runner_lineage),
         runner_lineage_view={k2: lineage[k2] for k2 in ('box_runner', 'box_runner_sha256', 'engine_runner', 'engine_runner_sha256',
-                                                        'declared_differences', 'metadata_rows_moved_vs_n43f', 'owner_seam')},
+                                                        'declared_differences', 'metadata_rows_moved_vs_n43f', 'owner_seam')
+                            if k2 in lineage},
+        runner_lineage_engine_delta=lineage.get('declared_engine_delta_vs_n43f'),
         engine_queue_identity=ident,
         clock_scan=str(a.clock_scan), clock_scan_sha256=sha(a.clock_scan),
         clock_scan_view=dict(verdict=k['verdict'], client_units=len(k['scan']['client_units']), roots=len(k['scan']['roots']),
@@ -196,4 +254,6 @@ if __name__ == '__main__':
         p.add_argument('--' + name, type=Path, required=True)
     p.add_argument('--repo', type=Path, required=True)
     p.add_argument('--engine-base', required=True, help='Codex commit the four engine files must equal (109313a)')
+    p.add_argument('--engine-delta', help='commit whose engine_driver.py hunks are the declared engine delta (cfffffc)')
+    p.add_argument('--bracket', help='commit whose reuse-clock files the bundle carries (1594bd0)')
     record(p.parse_args())
