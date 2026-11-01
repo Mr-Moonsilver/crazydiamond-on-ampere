@@ -204,7 +204,7 @@ def derive_tools():
     return {'tools/native41_progress_cpu_probe.py': text, 'tools/native41_progress_selfrun.py': wrapper}
 
 
-PROGRESS_QUEUE_TESTS = 0  # set from test_native41_progress_queue's testsRun once the suite is final
+PROGRESS_QUEUE_TESTS = 19  # test_native41_progress_queue testsRun
 
 
 def main():

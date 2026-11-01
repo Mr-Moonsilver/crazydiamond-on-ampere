@@ -97,7 +97,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native41_box_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native41_unarmed_box.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native41_progress_queue.py'))
-EXPECTED_TESTS=244  # held-e cases plus 0 held-f progress queue cases
+EXPECTED_TESTS=263  # held-e cases plus 19 held-f progress queue cases
 result=unittest.TextTestRunner(verbosity=2).run(suite)
 assert not torch.cuda.is_initialized()
 identity_receipts=sys.modules['test_native30_identity'].IDENTITY_RECEIPTS

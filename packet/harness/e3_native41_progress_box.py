@@ -528,7 +528,7 @@ def progress_receipts(arms, records, parse_errors, streams_count=8):
             workers[key] = r
     engine = sorted((f for f in flushes if f['side'] == 'engine'), key=lambda f: f['line'])
     dropped = sum(f['dropped'] or 0 for f in flushes)
-    out = {}
+    out, owners = {}, {}
     last_line = engine[-1]['line'] if engine else None
     for arm in arms:
         name = arm.get('label')
@@ -539,6 +539,8 @@ def progress_receipts(arms, records, parse_errors, streams_count=8):
             row['reasons'].append('arm-span-missing')
             continue
         mine = [f for f in engine if f['stamp'] is not None and start <= f['stamp'] <= end + LOG_LAG_S]
+        for f in mine:
+            owners.setdefault(id(f), []).append(name)
         row['chunks_logged'] = len(mine)
         expected = (arm.get('progress_delta') or {}).get('chunks')
         if not mine:
@@ -611,8 +613,13 @@ def progress_receipts(arms, records, parse_errors, streams_count=8):
                                   residual_s=median([c['residual_s'] for c in counted]),
                                   components_s={k: median([c['components_s'][k] for c in counted])
                                                 for k in COMPONENTS})
+    # Every engine line belongs to exactly one arm: native work outside the arms
+    # (or a line docker did not stamp) is not this run's declared traffic.
     return dict(flushes=len(flushes), engine_flushes=len(engine), worker_rows=len(workers),
-                duplicate_worker_rows=duplicate, dropped_rows=dropped, problems=problems, arms=out)
+                duplicate_worker_rows=duplicate, dropped_rows=dropped, problems=problems,
+                unstamped_engine_flushes=sum(1 for f in engine if f['stamp'] is None),
+                engine_flushes_outside_every_arm=sum(1 for f in engine if id(f) not in owners),
+                engine_flushes_in_two_arms=sum(1 for names in owners.values() if len(names) > 1), arms=out)
 
 
 def ratio(a, b):
@@ -648,6 +655,10 @@ def grade(arms, ingress, checks, logs):
         missing.append('progress:' + problem)
     if receipts['dropped_rows'] or receipts['duplicate_worker_rows']:
         missing.append('progress:rows-dropped-or-duplicated')
+    if receipts['unstamped_engine_flushes'] or receipts['engine_flushes_outside_every_arm']:
+        missing.append('progress:engine-lines-outside-every-arm-span')
+    if receipts['engine_flushes_in_two_arms']:
+        missing.append('progress:engine-line-in-two-arm-spans')
     for name, row in sorted(receipts['arms'].items()):
         missing.extend('progress-%s:%s' % (name, x) for x in row['reasons'])
     summary = {}
