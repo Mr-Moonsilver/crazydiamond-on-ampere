@@ -45,8 +45,9 @@ STANDING = 'native41-standing'
 SETTLE_S = 5.0
 CLOSE_TIMEOUT_S = 60.0
 POLL_S = 0.25
-# Once the plan's shrinking tail stages are in flight (a native chunk smaller
-# than the largest one seen), the poller tightens so the FULL return is bounded
+# Once the plan's shrinking tail stages are in flight (a native chunk at most
+# half the largest one seen; alignment trims full chunks by tens of rows only),
+# the poller tightens so the FULL return is bounded
 # by milliseconds of sample spacing. Both arms run the same poller; the stock
 # arm never has native work, so it stays at POLL_S.
 POLL_FAST_S = 0.02
@@ -96,7 +97,7 @@ class Poller:
         self.widest = 0
         self.samples, self.actions, self.count, self.errors = [], [], 0, []
         self.stop, self.closed = threading.Event(), threading.Event()
-        self.baseline, self.thread = None, None
+        self.baseline, self.thread, self.fast_after_ns = None, None, None
         self._last = None
 
     def start(self, baseline):
@@ -131,11 +132,14 @@ class Poller:
                 continue
             self.count += 1
             self.keep(view)
+            was_fast = fast
             work = view.get('native_work') or {}
             if type(work.get('chunk_start')) is int and type(work.get('chunk_end')) is int:
                 rows = work['chunk_end'] - work['chunk_start']
-                fast = fast or 0 < rows < self.widest
+                fast = fast or 0 < 2 * rows <= self.widest
                 self.widest = max(self.widest, rows)
+            if fast and not was_fast:
+                self.fast_after_ns = view.get('observed_clock_ns')
             auto = view.get('auto_arm') or {}
             base = (self.baseline or {}).get('auto_arm') or {}
             if (type(auto.get('completed')) is int and type(base.get('completed')) is int
@@ -150,6 +154,7 @@ class Poller:
         return {'samples_read': self.count, 'samples_kept': len(self.samples), 'samples': self.samples,
                 'actions': sorted(set(self.actions)), 'errors': self.errors[:16],
                 'alive_after_join': bool(self.thread and self.thread.is_alive()),
+                'fast_after_ns': self.fast_after_ns,
                 'poll_s': POLL_S, 'poll_fast_s': POLL_FAST_S}
 
 
@@ -167,6 +172,8 @@ def receipt_proof(kind, before, polled, after, prompt_tokens, actions):
               'control_actions': sorted(set(actions)), 'poller_errors': polled.get('errors') or []}
     if polled.get('errors'):
         reasons.append('poller-error')
+    if polled.get('alive_after_join'):
+        reasons.append('poller-still-running')
     if not set(actions) <= ARM_ACTIONS[kind]:
         reasons.append('arm-sent-a-non-receipt-action')
     if any(type(r.get('engine_epoch')) is not int or r.get('engine_epoch') != b.get('engine_epoch') for r in rows):
