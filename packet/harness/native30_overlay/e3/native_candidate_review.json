@@ -1495,7 +1495,7 @@
     "basis": "fresh full strict registered CPU regression on the packaged tree",
     "cases": 327,
     "exit_code": 0,
-    "log_sha256": "11b345d1fcfaf50e3d01e7915856eab2ec65a5d8fdaeeefd910efca281243e05",
+    "log_sha256": "3811b09f52e6783fb2810fe2393530c18cacd9aefdf7847a510394504d517dbd",
     "reported_tests": 3907,
     "required": 327,
     "skips": 0,
@@ -3284,7 +3284,7 @@
     "queue": "q18a-native43-lifecycle (short scope): the box-run q18a-native39-lifecycle queue (held-a run 1 bytes) on the native43 dense engine: startup, bind receipt, W2 length guard, row1 (lane proof), lifetime gates, instruments, native cancel/drain/reuse (e3_q18a_lifecycle on the trunk W2 manifest), typed FULL hygiene, instruments end; no pool telemetry, leaktest, pressure2/partial-tail leak or pressure lifetime; native43 lifecycle grade at exit; one fresh key; never starts production",
     "reuse_clock": "e3_native_performance.native_window client-side identity equality: replaced by per-call client brackets proved with native43_boundary_clock.prove (d57ed99; clock split native_window_clock proved)",
     "scope": "native43 lifecycle short scope over Codex 109313a39828 engine bytes (the n43-f overlay engine files): does cancel/drain/reuse complete on the dense policy; EXTRA_ENV = the dense arm without TRACE=1 and STOP_AFTER=101200; no leak, pressure or speed claim; not a release candidate",
-    "source_commit": "a7799d0571f15148793240a9eee1e9985d172634",
+    "source_commit": "6b334f857de27ac6f97d467e5143a68b48dea86a",
     "tail_handback": false
   },
   "night_window": {
@@ -3297,7 +3297,7 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "9fdd082685f0de0e90e995c200cb287fe5c541c121310d442468787b993cc6a0",
+    "log_sha256": "9f9b0d763e6c2b6ddd406cd997e03a5dbc8ae9e342522b65c751307177e7510c",
     "skips": 0,
     "tests": 583,
     "verdict": "PASS"
