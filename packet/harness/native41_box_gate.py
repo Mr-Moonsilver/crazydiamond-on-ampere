@@ -34,9 +34,11 @@ DROPPED = ('row1_plan', 'row1', 'w2_fresh', 'idle_before_w2')  # native40's row1
 assert set(PHASES) | set(DROPPED) == set(NATIVE40_PHASES) | {
     'arm_entries', 'w2_arms', 'ingress', 'end_full_idle', 'grade'}
 ACTIVE_S = sum(PHASES.values())
-EXPECTED_RUNTIME_S = {'nominal': 3600, 'basis': 'native40 startup through the unarmed check ~15-20 min; four arms '
-                                                 '~6-9 min each (8 x 153,537 open, 25 s decode-only, fresh, close, '
-                                                 'append); receipts, typed FULL, end identity ~5 min'}
+EXPECTED_RUNTIME_S = {'nominal': 4800, 'basis': 'native40 startup through the unarmed check ~15-20 min; stock arms '
+                                                 '~5-7 min each (8 x 153,537 open, 25 s decode-only, stock fresh ~25-30 s, '
+                                                 'close, append); auto arms ~16-19 min each (same, but the native split '
+                                                 'fresh runs ~13.3 min past the 96 Ki history cliff, q18a-native39-trunk '
+                                                 'run 1); receipts, typed FULL, end identity ~5 min'}
 
 
 def latest_arm():
