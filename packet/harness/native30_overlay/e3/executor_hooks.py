@@ -25,7 +25,7 @@ import json
 from e3_types import E3ContractError, E3Pending
 from reply_transport import (Backpressure, DirectReply, NotReady, ReplyTransport, TransportError,
                              WorkerRPCError)
-from native_measurement import (PROGRESS_META_KEY, ProgressTrace, decode_progress_meta,
+from native_measurement import (PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta,
                                 encode_progress_meta, progress_mode)
 
 
@@ -1217,6 +1217,10 @@ def worker_rpc_begin(proc, method, kwargs):
         return None
     sequence, direct = decode_progress_meta(kwargs.pop(PROGRESS_META_KEY))
     name = method if type(method) is str else 'callable'
+    if direct and name not in PROGRESS_DIRECT_METHODS:
+        # Raised inside the RPC's try: the monitored worker-failure report and a
+        # FAILURE wire, which the engine receiver poisons on before matching.
+        raise ValueError('flash-s5 direct reply refused for this method')
     state = _worker_progress(proc.rank)
     if state is not None and name == 'flash_s5_release':
         # One receipt line per chunk: everything this rank recorded before the
@@ -1252,7 +1256,7 @@ def worker_handle_output(proc, rpc, output):
         # status before matching, so the failure is prompt and never correlated.
         _DIRECT_WRITE.active = True
         try:
-            proc.enqueue_output(output if isinstance(output, Exception) else DirectReply(output))
+            proc.enqueue_output(output if isinstance(output, Exception) else DirectReply(rpc[0], output))
         finally:
             _DIRECT_WRITE.active = False
         state = _worker_progress(proc.rank)

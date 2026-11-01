@@ -59,7 +59,7 @@ from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
 from native_measurement import (PROGRESS_N,NativeMeasurementCensus, encode_report_vector,
                                 decode_report_vector, ControlPathCounters, QsaControlCounters,
-                                PROGRESS_META_BYTES, PROGRESS_META_KEY, PROGRESS_MODES,
+                                PROGRESS_DIRECT_METHODS, PROGRESS_META_BYTES, PROGRESS_META_KEY, PROGRESS_MODES,
                                 ProgressTrace, encode_progress_meta)
 from reply_transport import Backpressure, TransportError
 from scheduler_hooks import (
@@ -1189,13 +1189,17 @@ class NativeSegmentDriver:
         permit does not hold or the ring refused (the caller then waits as
         stock does). Error semantics are advance()'s.
         """
-        if not self._wait_permit():
+        # The pair-boundary condition (owner thread, last stock RPC a sample)
+        # is re-read before the drain and again before the send: only the
+        # owner thread submits execute_model/sample_tokens, and it is here.
+        if not self._wait_permit() or not self.progress.wait_allowed():
             return None
         self._in_wait = True
         self._progress_origin = 'wait'
         try:
             self._drain()
-            if self._inflight or not self._wait_permit(nested=True):
+            if (self._inflight or not self._wait_permit(nested=True)
+                    or not self.progress.wait_allowed()):
                 return 0
             self._drive()
             return int(bool(self._inflight))
@@ -1350,6 +1354,8 @@ class NativeSegmentDriver:
         check = getattr(sender, 'check', None)
         progress = self.progress if self.progress is not None and self.progress.recording else None
         direct = progress is not None and progress.burst() and kind in progress.DIRECT_KINDS
+        if direct and envelope[0] not in PROGRESS_DIRECT_METHODS:
+            raise DriverError('native-progress-direct-method-not-eligible')
         if progress is not None:
             submitted_ns = time.monotonic_ns()
             # Same pickled size as the real meta: the size precheck stays exact.

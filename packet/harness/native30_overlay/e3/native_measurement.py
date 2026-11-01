@@ -181,6 +181,10 @@ PROGRESS_META_KEY = '_flash_s5'
 # Fixed-width wire meta: transport sequence (u64) and the direct-reply bit.  The
 # pickled size never depends on the value, so a size precheck is exact.
 PROGRESS_META_BYTES = 9
+# Worker methods whose reply may be written direct (the engine's segment,
+# profile and poll kinds). Checked when the engine builds the envelope and
+# again by the worker before dispatch; any other method refuses a direct bit.
+PROGRESS_DIRECT_METHODS = frozenset(('flash_s5_submit', 'flash_s5_poll'))
 PROGRESS_ROWS = {
     # engine: one native command, transport sequence through owner apply
     'n': ('seq', 'kind', 'segment', 'op_seq', 'stage', 'layer', 'origin', 't_submit', 't_sent',

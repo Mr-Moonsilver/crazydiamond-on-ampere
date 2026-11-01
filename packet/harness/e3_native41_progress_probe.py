@@ -5,8 +5,13 @@ Same composition as e3_native41_auto_probe (production install_engine, real
 EngineCore.step_with_batch_queue, scheduler, controller, driver, worker bridges
 and dispatchers, the auto-arm policy). The setting reaches install_engine
 through its env argument. Modes: unset, trace, trace-skew, burst, burst-skew
-(the -skew modes add the tp-skew asynchronous per-rank completion leaf) and
-burst-current (burst installed, the arm switched to mode current).
+(the -skew modes add the tp-skew asynchronous per-rank completion leaf),
+burst-current (burst installed, the arm switched to mode current), and
+burst-solo / current-solo (burst installed, the arm in that mode): the box
+solo arms' shrinking cohort, its only decoder aborted through the real
+EngineCore.abort_requests once the cycle's first native chunk is open, so later
+chunks begin with no live decoder and the cycle still closes on FULL (abort with the
+second chunk open).
 
 Fixture leaves, beyond native41_fixture_leaves.json:
 
@@ -40,7 +45,8 @@ from unittest import mock
 import e3_native41_auto_probe as ap
 from e3_native40_unarmed_probe import overlay_aliases
 
-MODES = ('unset', 'trace', 'trace-skew', 'burst', 'burst-skew', 'burst-current')
+MODES = ('unset', 'trace', 'trace-skew', 'burst', 'burst-skew', 'burst-current',
+         'burst-solo', 'current-solo')
 WAIT_ROUNDS = 5
 WAIT_SEGMENTS = ('prefix', 'layer', 'suffix')
 
@@ -128,15 +134,78 @@ def set_mode(conn, mode):
     return reply, leased, release
 
 
+def _run_solo(conn, failures):
+    """e3_native41_auto_probe._run('auto') with the cohort aborted mid-native (the solo arms)."""
+    from vllm.v1.engine.core import EngineCore
+    checks = []
+
+    def check(name, ok, **details):
+        checks.append(dict(name=name, ok=bool(ok), **details))
+        assert ok, name + ' ' + json.dumps(details, sort_keys=True, default=str)[:2000]
+    driver = conn.driver
+    check('startup-full-owner-bound', driver._bootstrapped and not driver._split_ready
+          and driver.admission_intent() is None and conn.engine._flash_s5_startup_ready is not None)
+    cohort = conn.request('cohort', 40, outputs=2048)
+    for _ in range(4):
+        conn.step()
+    before = cohort.num_output_tokens
+    req = conn.request('long', 32801, outputs=8)
+    aborted = None
+    for _ in range(2500):
+        policy = driver.auto_arm
+        # The second chunk open: the first ran whole with the decoder (its waits
+        # are the burst evidence); every chunk after the abort runs without one.
+        if aborted is None and len(conn.native) >= 2 and driver.active and policy.phase == 'native':
+            # The API server's disconnect abort as it reaches Core (input queue -> abort_requests).
+            EngineCore.abort_requests(conn.engine, [cohort.request_id])
+            aborted = dict(chunks_open=len(conn.native), tokens=cohort.num_output_tokens,
+                           ticks=conn.ticks, phase=policy.phase)
+        conn.step()
+        if req.num_output_tokens and not driver.active and not policy.active:
+            break
+    check('cohort-aborted-mid-native', aborted is not None and aborted['chunks_open'] >= 2, aborted=aborted)
+    check('cohort-gone', cohort.request_id not in conn.scheduler.requests
+          and all(r.request_id != cohort.request_id for r in conn.scheduler.running))
+    check('decoder-advanced-before-the-abort', aborted['tokens'] > before)
+    check('chunks-after-the-abort', len(conn.native) > aborted['chunks_open'],
+          chunks=len(conn.native), open_at_abort=aborted['chunks_open'])
+    check('ordinary-requests-trigger-native-cycle', len(conn.native) > 1
+          and all(r['uid'] == req.request_id for r in conn.native))
+    check('native-covers-0-through-n-minus-1', conn.native[0]['start'] == 0 and conn.native[-1]['end'] == 32800
+          and all(a['end'] == b['start'] for a, b in zip(conn.native, conn.native[1:])))
+    check('terminal-only-last', sum(r['terminal'] for r in conn.native) == 1 and conn.native[-1]['terminal'])
+    check('all-rank-full-handback', not driver._split_ready
+          and all(w.controller.route == 'full' for w in conn.workers.values()))
+    check('no-stock-prefill-on-split', not any(row['split'] and (row['prefill'] or req.request_id in row['scheduled'])
+                                                for row in conn.traces))
+    check('one-native-request-per-cycle', driver.auto_arm.completed == 1 and driver.admission_intent() is None)
+    check('no-native-control-client', conn.external_controls == 0)
+    check('stock-first-token-produced', req.num_output_tokens > 0
+          and list(req.output_token_ids) == [7] * req.num_output_tokens)
+    if req.request_id in conn.scheduler.requests:
+        conn.stack.abort(conn.scheduler.requests[req.request_id])
+    for _ in range(8):
+        conn.step()
+    check('clean-owned-state', not conn.scheduler.requests and not conn.controller.active
+          and not conn.stack.leases.held_blocks() and not driver.active)
+    import torch
+    check('no-cuda-initialized', not torch.cuda.is_initialized())
+    return dict(verdict='PASS', checks=checks, mode='solo', native=conn.native, ticks=conn.ticks,
+                trace=conn.traces, cohort_tokens=cohort.num_output_tokens, request_tokens=list(req.output_token_ids),
+                rpc_methods=[e[0] for e in conn.sender.envelopes], geometry=conn.stack.geometry,
+                alias_failures=failures, cuda_initialized=False, aborted=aborted)
+
+
 def run(mode):
     # Overlay modules are aliased first, exactly as e3_native41_auto_probe.run.
     root, failures = overlay_aliases()
     import engine_driver as ed
     import executor_hooks as eh
     import native_measurement as nm
-    setting = None if mode == 'unset' else mode.split('-')[0]
+    solo = mode.endswith('-solo')
+    setting = None if mode == 'unset' else 'burst' if solo else mode.split('-')[0]
     skew = mode.endswith('-skew')
-    selected = 'burst' if mode in ('burst', 'burst-skew') else 'current'
+    selected = 'burst' if mode in ('burst', 'burst-skew', 'burst-solo') else 'current'
     conn = connected(setting)
     conn.dispatched = set()
     popped, flags, waits, violations = [], {}, [], []
@@ -243,7 +312,8 @@ def run(mode):
         with contextlib.ExitStack() as scope:
             if skew:
                 conn.skew = scope.enter_context(ap.Skew(conn).installed())
-            result = ap._run('tp-skew' if skew else 'auto', conn, root, failures)
+            result = (_run_solo(conn, failures) if solo
+                      else ap._run('tp-skew' if skew else 'auto', conn, root, failures))
     finally:
         for lg, level in zip(loggers, levels):
             lg.removeHandler(capture)
@@ -296,15 +366,24 @@ def run(mode):
           flushes=len(joined), chunks=len(native))
     at = nm.PROGRESS_N
     seqs, wait_rows = [], []
-    for head, rows in joined:
+    # Live chunks begin with the decoder running. In the solo modes the chunks
+    # are a live prefix then decoder-free ones (decode_live 0 at their begin,
+    # the box grade's solo label), which receive no in-wait send.
+    live_heads = sum(1 for h, _ in joined if type(h['decode_live']) is int and h['decode_live'] >= 1)
+    for index, (head, rows) in enumerate(joined):
         kinds = [r[at['kind']] for r in rows]
         seqs += [r[at['seq']] for r in rows]
         wait_rows += [r for r in rows if r[at['origin']] == 'wait']
+        live = index < live_heads
         check('chunk-%d-command-flow' % head['txn'],
               kinds and kinds[0] == 'open' and kinds[-1] == 'release' and 'segment' in kinds
               and head['open_rows'] == 0 and head['mode'] == ('burst' if burst else 'current')
-              and type(head['decode_live']) is int and head['decode_live'] >= 1,
-              kinds=sorted(set(kinds)), decode_live=head['decode_live'])
+              and type(head['decode_live']) is int
+              and (head['decode_live'] >= 1 if live else head['decode_live'] == 0),
+              kinds=sorted(set(kinds)), decode_live=head['decode_live'], live=live)
+        if not live:
+            check('chunk-%d-no-wait-send-without-a-decoder' % head['txn'],
+                  not any(r[at['origin']] == 'wait' for r in rows))
         check('chunk-%d-stamps-ordered' % head['txn'], all(
             r[at['t_submit']] <= r[at['t_sent']] <= r[at['t_apply']]
             and r[at['outcome']] is not None
@@ -363,6 +442,13 @@ def run(mode):
         check('current-never-progresses-in-a-wait', not waits and not wait_rows and not permits
               and snapshot['wait_sends'] == 0)
     check('not-recording-after-cycle', recording() is None)
+    if solo:
+        check('solo-live-prefix-then-chunks-without-a-decoder', 1 <= live_heads < len(joined)
+              and live_heads <= result['aborted']['chunks_open'] + 1
+              and [h['decode_live'] for h, _ in joined[live_heads:]] == [0] * (len(joined) - live_heads),
+              decode_live=[h['decode_live'] for h, _ in joined], open_at_abort=result['aborted']['chunks_open'])
+    else:
+        check('every-chunk-live', live_heads == len(joined))
     result.update(progress_lines=len(lines), progress_rows=len(seqs), wait_rows=len(wait_rows),
                   waits=len(waits), progress_snapshot=snapshot,
                   progress_line_sha256=hashlib.sha256('\n'.join(lines).encode()).hexdigest())

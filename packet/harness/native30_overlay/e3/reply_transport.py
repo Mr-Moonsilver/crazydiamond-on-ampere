@@ -38,16 +38,19 @@ class DirectReply:
     """A worker reply written by its RPC thread ahead of pending async output.
 
     Only command-flow native kinds the engine registered as direct are ever
-    wrapped. The receiver matches it to that rank's direct FIFO; any other
-    wire matches the ordered FIFO. Pickles by reference to this module.
+    wrapped. It carries the transport sequence the engine registered (the
+    worker's progress meta): the receiver accepts it only as the exact head of
+    that rank's direct FIFO and poisons on anything else. Any other wire
+    matches the ordered FIFO. Pickles by reference to this module.
     """
-    __slots__ = ('value',)
+    __slots__ = ('sequence', 'value')
 
-    def __init__(self, value):
+    def __init__(self, sequence, value):
+        self.sequence = sequence
         self.value = value
 
     def __reduce__(self):
-        return (DirectReply, (self.value,))
+        return (DirectReply, (self.sequence, self.value))
 
 
 _CLAIM_LOCK = threading.Lock()
@@ -266,10 +269,13 @@ class ReplyTransport:
 
         The worker writes ordered replies in RPC order through its async output
         thread and DirectReply replies in RPC order from its RPC thread, so each
-        class is FIFO on the wire. A wire matches the head of its own class;
-        a wire with no expectation in its class poisons, as does any
-        non-SUCCESS status (before matching). The wait is bounded by the
-        earlier head deadline; each match is checked against its own deadline.
+        class is FIFO on the wire. A DirectReply matches only when its carried
+        sequence is exactly the head of this rank's direct FIFO; an ordered
+        wire (stock replies carry no ID) matches the ordered head. A
+        duplicate, stale, reordered or unexpected wire, or any non-SUCCESS
+        status (before matching), poisons every pending call. The wait is
+        bounded by the earlier head deadline; each match is checked against
+        its own deadline.
         """
         ordered, direct = self._todo[rank], self._direct[rank]
         while True:
@@ -296,8 +302,15 @@ class ReplyTransport:
                         self._poison('worker_failure')
                     return
                 with self._condition:
-                    fifo = direct if isinstance(value, DirectReply) else ordered
-                    if not fifo:
+                    if isinstance(value, DirectReply):
+                        tagged = value.sequence
+                        if type(tagged) is not int or not direct or direct[0][0] != tagged:
+                            self._poison('reply_correlation_failure')
+                            return
+                        fifo = direct
+                    elif ordered:
+                        fifo = ordered
+                    else:
                         self._poison('reply_correlation_failure')
                         return
                     sequence, call_deadline = fifo.popleft()

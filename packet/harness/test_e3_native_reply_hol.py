@@ -20,6 +20,9 @@ Declared leaves (real engine object -> leaf, why equivalent for this question):
 * ``GPUWorker.flash_s5_submit`` -> returns a typed tuple at once, stamping the
   host time it ran. The real handler enqueues kernels and returns without a
   device wait (``lane_dispatch.submit``); only its reply path is under test.
+* ``GPUWorker.flash_s5_poll`` / ``flash_s5_fail`` -> raise at once: a refused
+  native command (direct-eligible / not eligible); only the failure wire and
+  the refusal before dispatch are under test.
 * ``vllm.platforms.current_platform`` -> a no-op ``set_device`` (no CUDA here).
 * ``WorkerProc.ResponseStatus`` -> two sentinel objects (the transport only
   compares identity with the SUCCESS value it was given).
@@ -157,6 +160,10 @@ class GPUWorkerLeaf:
     def flash_s5_submit(self, message):
         self.ran.append((self.clock(), 'flash_s5_submit', message))
         return ('accepted', self.rank, message, 'skipped' if STAGE_OF[self.rank] != message[1] else 'target')
+
+    def flash_s5_poll(self, message):
+        self.ran.append((self.clock(), 'flash_s5_poll', message))
+        raise RuntimeError('fixture worker refusal')
 
     def flash_s5_fail(self, message):
         self.ran.append((self.clock(), 'flash_s5_fail', message))
@@ -584,7 +591,7 @@ class DirectReplies(unittest.TestCase):
         self.assertIsNone(net.transport._failure)
 
     def test_wire_with_no_expectation_in_its_class_poisons(self):
-        for injected, expect_direct in ((eh.DirectReply(('accepted', 0, None, 'x')), False),
+        for injected, expect_direct in ((eh.DirectReply(0, ('accepted', 0, None, 'x')), False),
                                         (('decode', 'stray'), True)):
             with self.subTest(injected=type(injected).__name__):
                 net = Network(self, direct=True)
@@ -597,14 +604,70 @@ class DirectReplies(unittest.TestCase):
                 net.readers[0].q.put((Status.SUCCESS, injected))
                 self.assertEqual(self.wait_failure(net, 2), 'reply_correlation_failure')
 
+    def direct_calls(self, net, count):
+        """Direct expectations on rank 0 whose broadcast is withheld (the wire is injected)."""
+        return [net.transport.submit('segment', lambda _seq: None, ranks=(0,), timeout_s=10, direct=True)
+                for _ in range(count)]
+
+    def test_direct_reply_is_accepted_only_as_the_exact_direct_head(self):
+        # Codex conformance (85a3098): reordered same-class replies were swapped
+        # silently. Each DirectReply carries its registered sequence.
+        net = Network(self, direct=True)
+        s1, s2 = self.direct_calls(net, 2)
+        net.readers[0].q.put((Status.SUCCESS, eh.DirectReply(s1, 'one')))
+        net.readers[0].q.put((Status.SUCCESS, eh.DirectReply(s2, 'two')))
+        self.assertTrue(net.wait_ready(s1, 2) and net.wait_ready(s2, 2))
+        self.assertEqual((net.transport.take(s1)[0], net.transport.take(s2)[0]), (['one'], ['two']))
+        self.assertIsNone(net.transport._failure)
+        for label, wires in (
+                ('reordered', lambda a, b: [eh.DirectReply(b, 'two'), eh.DirectReply(a, 'one')]),
+                ('delayed-duplicate', lambda a, b: [eh.DirectReply(a, 'one'), eh.DirectReply(a, 'one')]),
+                ('unregistered', lambda a, b: [eh.DirectReply(b + 7, 'x')]),
+                ('untyped-sequence', lambda a, b: [eh.DirectReply(str(a), 'one')])):
+            with self.subTest(case=label):
+                net = Network(self, direct=True)
+                a, b = self.direct_calls(net, 2)
+                for wire in wires(a, b):
+                    net.readers[0].q.put((Status.SUCCESS, wire))
+                self.assertEqual(self.wait_failure(net, 2), 'reply_correlation_failure')
+                # Nothing was delivered under a wrong sequence, and every pending call is poisoned.
+                call = net.transport._calls.get(b)
+                self.assertTrue(call is not None and not call.ready)
+                with self.assertRaises(eh.TransportError):
+                    net.transport.take(b)
+
+    def test_direct_reply_pickles_with_its_sequence(self):
+        net = Network(self, direct=True)
+        native = net.native_submit(op_seq=4, stage=1, meta=True, direct=True)
+        self.assertTrue(net.wait_ready(native, 2))
+        wires = [value for proc in net.procs for _, value in proc.worker_response_mq.emitted]
+        self.assertEqual(len(wires), 4)
+        self.assertTrue(all(isinstance(w, eh.DirectReply) and w.sequence == native for w in wires))
+        copy = pickle.loads(pickle.dumps(wires[0]))
+        self.assertEqual((type(copy), copy.sequence, copy.value), (eh.DirectReply, native, wires[0].value))
+
     def test_direct_command_failure_poisons_at_once_ahead_of_decode(self):
         net = Network(self, direct=True)
         net.executor.collective_rpc('sample_tokens', args=('b1',), non_block=True,
                                     unique_reply_rank=OUTPUT_RANK, timeout=10)
         start = time.monotonic()
-        net.native_submit(op_seq=3, stage=0, meta=True, direct=True, method='flash_s5_fail')
+        net.native_submit(op_seq=3, stage=0, meta=True, direct=True, method='flash_s5_poll')
         self.assertEqual(self.wait_failure(net, self.HOLD_S), 'worker_failure')
         self.assertLess(time.monotonic() - start, self.HOLD_S)
+        self.assertTrue(any(name == 'flash_s5_poll' for _, name, _ in net.procs[0].worker.ran))
+
+    def test_worker_refuses_a_direct_bit_on_an_ineligible_method(self):
+        net = Network(self, direct=True)
+        failures = []
+        original = eh.report_worker_failure
+        eh.report_worker_failure = lambda rank, method, exc: failures.append((rank, method, str(exc)))
+        self.addCleanup(setattr, eh, 'report_worker_failure', original)
+        net.native_submit(op_seq=5, stage=0, meta=True, direct=True, method='flash_s5_fail')
+        self.assertEqual(self.wait_failure(net, 2), 'worker_failure')
+        # Refused before dispatch: the handler never ran, and the refusal took the monitored report.
+        self.assertFalse(any(name == 'flash_s5_fail' for p in net.procs for _, name, _ in p.worker.ran))
+        self.assertIn('direct reply refused', ' '.join(f[2] for f in failures))
+        self.assertEqual(nm.PROGRESS_DIRECT_METHODS, frozenset(('flash_s5_submit', 'flash_s5_poll')))
 
     def test_off_has_no_direct_fifo_and_refuses_a_direct_submission(self):
         net = Network(self)
