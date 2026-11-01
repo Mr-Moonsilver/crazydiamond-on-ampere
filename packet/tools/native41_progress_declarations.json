@@ -1,13 +1,264 @@
 {
   "ancillary_paths": [
     "A\tdocs/e3-briefs/q18a-native41-progress-delivery.md",
+    "A\tresults/hub/native41-progress-f-b/clock-scan.json",
+    "A\tresults/hub/native41-progress-f-b/delivery.json",
+    "A\tresults/hub/native41-progress-f-b/native-precheck.conf",
     "A\tresults/hub/native41-progress-f/clock-scan.json",
     "A\tresults/hub/native41-progress-f/delivery.json",
     "A\tresults/hub/native41-progress-f/native-precheck.conf"
   ],
   "definitions": {
     "harness/selftest.py": [
-      "module:For#12"
+      "canary_dir",
+      "module:Expr#11",
+      "module:Expr#12",
+      "module:Expr#13",
+      "module:Expr#14",
+      "module:Expr#15",
+      "module:Expr#16",
+      "module:Expr#17",
+      "module:Expr#18",
+      "module:Expr#19",
+      "module:Expr#20",
+      "module:Expr#21",
+      "module:Expr#22",
+      "module:Expr#23",
+      "module:Expr#24",
+      "module:Expr#25",
+      "module:Expr#26",
+      "module:Expr#27",
+      "module:Expr#28",
+      "module:Expr#29",
+      "module:Expr#30",
+      "module:Expr#31",
+      "module:Expr#32",
+      "module:Expr#33",
+      "module:Expr#34",
+      "module:Expr#35",
+      "module:Expr#36",
+      "module:Expr#37",
+      "module:Expr#38",
+      "module:Expr#39",
+      "module:Expr#40",
+      "module:Expr#41",
+      "module:Expr#42",
+      "module:Expr#43",
+      "module:Expr#44",
+      "module:Expr#45",
+      "module:Expr#46",
+      "module:Expr#47",
+      "module:Expr#48",
+      "module:Expr#49",
+      "module:Expr#50",
+      "module:Expr#51",
+      "module:Expr#52",
+      "module:Expr#53",
+      "module:Expr#54",
+      "module:Expr#55",
+      "module:Expr#56",
+      "module:Expr#57",
+      "module:Expr#58",
+      "module:Expr#59",
+      "module:Expr#60",
+      "module:Expr#61",
+      "module:Expr#62",
+      "module:Expr#63",
+      "module:Expr#64",
+      "module:Expr#65",
+      "module:Expr#66",
+      "module:Expr#67",
+      "module:Expr#68",
+      "module:Expr#69",
+      "module:Expr#70",
+      "module:Expr#71",
+      "module:Expr#72",
+      "module:Expr#73",
+      "module:Expr#74",
+      "module:Expr#75",
+      "module:Expr#76",
+      "module:Expr#77",
+      "module:Expr#78",
+      "module:Expr#79",
+      "module:Expr#80",
+      "module:Expr#81",
+      "module:Expr#82",
+      "module:Expr#83",
+      "module:Expr#84",
+      "module:Expr#85",
+      "module:Expr#86",
+      "module:Expr#87",
+      "module:Expr#88",
+      "module:Expr#89",
+      "module:Expr#90",
+      "module:Expr#91",
+      "module:Expr#92",
+      "module:Expr#93",
+      "module:Expr#94",
+      "module:Expr#95",
+      "module:Expr#96",
+      "module:Expr#97",
+      "module:For#12",
+      "module:empty_transcripts",
+      "module:import atexit, hashlib, json, os, re, shutil, subprocess, sys, tempfile",
+      "module:import hashlib, json, os, re, subprocess, sys, tempfile",
+      "release_fixture",
+      "transcripts_for"
+    ],
+    "harness/test_canary_relay.py": [
+      "RelayTests.exchange",
+      "module:import shutil"
+    ],
+    "harness/test_e2_exactness.py": [
+      "ExactnessTests.test_actual_lifecycle_byte_bucket_output_and_completed_sidecar",
+      "ExactnessTests.test_bad_dma_bytes_leave_immutable_primary_and_quarantine",
+      "ExactnessTests.test_existing_evidence_cannot_be_reused_as_new_worker",
+      "ExactnessTests.test_gpu_metadata_and_mapping_mismatches_rejected_before_dma",
+      "ExactnessTests.test_inflight_progress_cannot_resemble_prior_completed_proof",
+      "ExactnessTests.test_memory_disabled_does_not_call_backend_or_add_sidecar_fields",
+      "ExactnessTests.test_memory_enabled_does_not_waive_exactness_failure",
+      "ExactnessTests.test_memory_missing_counters_are_unknown_not_zero",
+      "ExactnessTests.test_memory_opt_in_keeps_exact_oracle_and_reports_observation_boundaries",
+      "ExactnessTests.test_off_does_not_run_oracle_or_read_gpu_metadata",
+      "ExactnessTests.test_output_byte_mismatch_not_waived_by_model_noise",
+      "ExactnessTests.test_sparse_fallback_output_checked_without_claiming_dma_coverage",
+      "GraderTests.test_complete_four_rank_six_layer_proof",
+      "GraderTests.test_dense_only_phase_rejects_sparse_and_still_requires_dense_coverage",
+      "GraderTests.test_immutable_failure_wins_over_successful_progress",
+      "GraderTests.test_malformed_missing_counter_wrong_placement_and_partial_write_fail",
+      "GraderTests.test_missing_workers_is_inconclusive_not_pass",
+      "GraderTests.test_sparse_only_or_no_long_dense_or_no_prefix_inconclusive",
+      "grade_fixture",
+      "module:import shutil",
+      "oracle_fixture"
+    ],
+    "harness/test_e2_memory_attribution.py": [
+      "AttributionTests.test_gate_peak_parser_requires_clean_stop_and_preserves_legacy_peak_format",
+      "AttributionTests.test_sampler_same_query_writes_legacy_csv_and_time_brackets_then_exits_on_term",
+      "module:import shutil"
+    ],
+    "harness/test_e2_package.py": [
+      "PackageTests.fixture",
+      "PackageTests.test_full_pinned_source_transform_and_real_config_enums",
+      "PackageTests.test_launcher_mounts_package_and_sources_without_installing",
+      "module:import shutil"
+    ],
+    "harness/test_e3_async_handoffs.py": [
+      "DispatcherTests.setUp",
+      "DispatcherTests.test_four_rank_ack_ordering_and_no_publication_from_acks",
+      "HeldCompletionBackend.poll",
+      "LeaseTests.test_completions_before_acks_publish_only_after_every_ack",
+      "class:HeldCompletionBackend"
+    ],
+    "harness/test_e3_decode_probe.py": [
+      "BytePathTests.test_default_off_generated_sources_are_probe_free",
+      "fake_evidence"
+    ],
+    "harness/test_e3_finalize_package.py": [
+      "FinalizeTests.fixture",
+      "module:import shutil"
+    ],
+    "harness/test_e3_native_overlap.py": [
+      "SessionTests.test_client_timeout_retains_engine_ownership_until_observed"
+    ],
+    "harness/test_e3_observer_runtime.py": [
+      "WorkerTests.test_worker_hook_starts_observer_before_split",
+      "module:import shutil"
+    ],
+    "harness/test_e3_package.py": [
+      "FullPinnedTests.setUpClass",
+      "FullPinnedTests.test_e2_composed_source_drift_is_refused",
+      "GraphCompositionTests.test_graph_module_requires_the_declared_interface",
+      "SyntheticTests.fixture"
+    ],
+    "harness/test_e3_private_auth.py": [
+      "PrivateAuthTests.setUp",
+      "module:import shutil"
+    ],
+    "harness/test_e3_replay_observer.py": [
+      "ObserverTestBase.setUpClass"
+    ],
+    "harness/test_identity.py": [
+      "IdentityTests.setUp",
+      "module:import shutil"
+    ],
+    "harness/test_identity_declare.py": [
+      "DeclareTests.setUp",
+      "module:import shutil"
+    ],
+    "harness/test_morning_summary.py": [
+      "MorningTests.setUp",
+      "module:import shutil"
+    ],
+    "harness/test_native30_identity.py": [
+      "IdentityPath.setUp"
+    ],
+    "harness/test_pp_release.py": [
+      "ReleaseTests.temp",
+      "module:import shutil"
+    ],
+    "harness/test_round7_review.py": [
+      "ReviewTests.setUp",
+      "module:import shutil"
+    ],
+    "harness/test_s5_clock.py": [
+      "BuildRules.test_actual_builder_with_mock_compiler_and_no_gpu",
+      "module:import shutil"
+    ],
+    "harness/test_s5_exit_cleanup.py": [
+      "ExitRegrade.setUp",
+      "module:import shutil"
+    ],
+    "harness/test_s5_followup.py": [
+      "FollowupTests.setUp"
+    ],
+    "harness/test_s5_onepair.py": [
+      "Grade.test_strict_rank_completion_and_counts",
+      "module:import shutil"
+    ],
+    "harness/test_s5_oracle_queue.py": [
+      "OracleQueue.test_artifact_binding_and_fail_precedence",
+      "OracleQueue.test_failure_trace_after_existing_primary_uses_real_exclusive_writer",
+      "OracleQueue.test_quoted_subset_forwarding_missing_case_stays_visible",
+      "OracleQueue.test_reject_bad_inputs_before_any_launch",
+      "OracleQueue.test_trace_exception_is_additive_and_cannot_clear_primary",
+      "fresh",
+      "module:import shutil"
+    ],
+    "harness/test_s5_resident.py": [
+      "Resident.test_matrix_missing_cases_and_lifecycle",
+      "module:import shutil"
+    ],
+    "harness/test_s5_runtime.py": [
+      "RuntimeTests.directory",
+      "module:import shutil"
+    ],
+    "harness/test_s5_segment.py": [
+      "DecodeReviewReproductions.finish",
+      "VerdictTests.test_failure_file_wins_even_if_other_pair_missing",
+      "module:import shutil"
+    ],
+    "harness/test_s5_value.py": [
+      "Value.test_all_six_cases_visible_when_missing",
+      "module:import shutil"
+    ],
+    "harness/test_s5_variants.py": [
+      "Cap.test_fatal_without_result_is_fail",
+      "Cap.test_native_interposer_on_cpu_mock",
+      "Frontier.test_missing_grade_case_is_kept_and_cannot_pass",
+      "module:import shutil"
+    ],
+    "harness/test_vmid_job10.py": [
+      "VM10Tests.test_finalizer_crash_and_monitor_remain_binding",
+      "module:import shutil"
+    ],
+    "harness/test_vmid_job10b.py": [
+      "VM10BTests.test_finalizer_crash_and_monitor_remain_binding",
+      "module:import shutil"
+    ],
+    "harness/test_vmid_job7f.py": [
+      "module:import atexit",
+      "native_window_fixture"
     ],
     "patches/s5_engine/engine_driver.py": [
       "NativeProgress.__init__",
@@ -111,6 +362,21 @@
     ],
     "patches/s5_engine/s5_startup.py": [
       "install_engine"
+    ],
+    "tools/test_ple_fp8_convert.py": [
+      "module:Expr#10",
+      "module:Expr#11",
+      "module:Expr#12",
+      "module:Expr#2",
+      "module:Expr#3",
+      "module:Expr#4",
+      "module:Expr#5",
+      "module:Expr#6",
+      "module:Expr#7",
+      "module:Expr#8",
+      "module:Expr#9",
+      "module:import atexit, hashlib, json, os, shutil, subprocess, sys, tempfile",
+      "module:import hashlib, json, os, subprocess, sys, tempfile"
     ]
   },
   "overlay_definitions": {
@@ -231,8 +497,39 @@
     "A\tharness/runs/q18a_native41_progress_declare.sh",
     "A\tharness/runs/q18a_native41_progress_settings.sh",
     "M\tharness/selftest.py",
+    "M\tharness/test_canary_relay.py",
+    "M\tharness/test_e2_exactness.py",
+    "M\tharness/test_e2_memory_attribution.py",
+    "M\tharness/test_e2_package.py",
+    "M\tharness/test_e3_async_handoffs.py",
+    "M\tharness/test_e3_decode_probe.py",
+    "M\tharness/test_e3_finalize_package.py",
+    "M\tharness/test_e3_native_overlap.py",
     "A\tharness/test_e3_native_reply_hol.py",
+    "M\tharness/test_e3_observer_runtime.py",
+    "M\tharness/test_e3_package.py",
+    "M\tharness/test_e3_private_auth.py",
+    "M\tharness/test_e3_replay_observer.py",
+    "M\tharness/test_identity.py",
+    "M\tharness/test_identity_declare.py",
+    "M\tharness/test_morning_summary.py",
+    "M\tharness/test_native30_identity.py",
     "A\tharness/test_native41_progress_queue.py",
+    "M\tharness/test_pp_release.py",
+    "M\tharness/test_round7_review.py",
+    "M\tharness/test_s5_clock.py",
+    "M\tharness/test_s5_exit_cleanup.py",
+    "M\tharness/test_s5_followup.py",
+    "M\tharness/test_s5_onepair.py",
+    "M\tharness/test_s5_oracle_queue.py",
+    "M\tharness/test_s5_resident.py",
+    "M\tharness/test_s5_runtime.py",
+    "M\tharness/test_s5_segment.py",
+    "M\tharness/test_s5_value.py",
+    "M\tharness/test_s5_variants.py",
+    "M\tharness/test_vmid_job10.py",
+    "M\tharness/test_vmid_job10b.py",
+    "M\tharness/test_vmid_job7f.py",
     "A\tharness/workloads/q18a-native41-progress.json",
     "M\tpatches/s5_engine/engine_driver.py",
     "M\tpatches/s5_engine/executor_hooks.py",
@@ -252,7 +549,8 @@
     "A\ttools/native41_progress_freeze.py",
     "A\ttools/native41_progress_precheck_conf.py",
     "A\ttools/native41_progress_queue.py",
-    "A\ttools/native41_progress_selfrun.py"
+    "A\ttools/native41_progress_selfrun.py",
+    "M\ttools/test_ple_fp8_convert.py"
   ],
   "schema": "native41-progress-freeze-declaration/1"
 }

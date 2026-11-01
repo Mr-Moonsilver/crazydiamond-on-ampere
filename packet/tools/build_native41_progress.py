@@ -34,7 +34,8 @@ SCOPE = ('Held-f: per-command native progress receipts (engine and worker Progre
          'native progress inside the sample_tokens wait), the per-arm native_progress switch on the native router '
          'only with FLASH_S5_AUTO_ARM=1 and FLASH_S5_NATIVE_PROGRESS=burst, and the eight-arm matched timing queue '
          '(current/burst x live/solo, 65,445-token fresh prompt below the 97,152 threshold, eight 16,384-token '
-         'decoders); default-off unchanged')
+         'decoders); default-off: old receive loop and wait body preserved (AST-identical); new wrapper and shared '
+         'worker-output lock overhead declared')
 TARGETED = ['startup', 'bind', 'unarmed-stock-prefill', 'current-solo-0', 'burst-solo-0', 'burst-live-0', 'current-live-0',
             'current-live-1', 'burst-live-1', 'burst-solo-1', 'current-solo-1', 'typed-FULL']
 META = {'core/SHA256SUMS', 'S5-OVERLAP-GENERATION.json', 'e3/native-implementation-closure.json',

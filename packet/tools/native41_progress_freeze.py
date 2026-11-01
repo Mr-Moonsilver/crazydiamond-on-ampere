@@ -330,10 +330,10 @@ def default_off():
     worker = ast.unparse(function(hooks, '_worker_progress'))
     assert "if mode is not None else False" in worker and 'return state or None' in worker
     return dict(verdict='PASS', legacy_function_bodies=result, functions=len(result),
-                meaning='source projection with FLASH_S5_NATIVE_PROGRESS unset: the old receive loop, submit, sample '
-                        'wait and router bodies are preserved; the worker reply hooks reduce to the stock call plus a '
-                        'declared per-worker reply lock (wrapper and shared-lock overhead); canonical connected traces '
-                        'are checked separately against held-e2')
+                meaning='source projection with FLASH_S5_NATIVE_PROGRESS unset: old receive loop and wait body '
+                        'preserved (AST-identical), as are the submit and router bodies; new wrapper and shared '
+                        'worker-output lock overhead declared (the worker reply hooks reduce to the stock call plus '
+                        'the per-worker reply lock); canonical connected traces are checked separately against held-e2')
 
 
 if __name__ == '__main__':

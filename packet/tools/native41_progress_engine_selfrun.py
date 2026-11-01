@@ -53,7 +53,9 @@ HELD_E2_BUNDLE = Path('<hub-dir>/agents/flash-next/tmp/native41-autoarm-held-e2/
 # tests do not pass, each with its pinned outcome and reason, and every other test passes.
 NEGATIVE_SUITES = ('test_native41_progress_queue', 'test_e3_native_reply_hol')
 # Pinned from the first negative run over held-e2's engine (dev bundle e3f22438e21e, run neg-discovery-1):
-# each test needs a held-f engine name or argument the parent lacks.
+# each test needs a held-f engine name or argument the parent lacks. The InWaitPairBoundary pins (build-b)
+# come from the same suite run over build-a's regenerated held-e2 parent.
+NO_PAIR = "AttributeError: type object 'NativeSegmentDriver' has no attribute 'progress_in_wait'"
 NEGATIVE_TESTS = {
     'test_e3_native_reply_hol.DirectReplies.test_direct_command_failure_poisons_at_once_ahead_of_decode':
         ('error', "TypeError: install() got an unexpected keyword argument 'direct_replies'"),
@@ -79,6 +81,20 @@ NEGATIVE_TESTS = {
         ('error', "AttributeError: module 'engine_driver' has no attribute 'NativeProgress'"),
     'test_e3_native_reply_hol.InWaitLoop.test_wait_needs_burst_owner_thread_and_a_sample_last':
         ('error', "AttributeError: module 'engine_driver' has no attribute 'NativeProgress'"),
+    'test_e3_native_reply_hol.InWaitPairBoundary.test_a_permit_that_holds_after_the_drain_sends_once':
+        ('error', NO_PAIR),
+    'test_e3_native_reply_hol.InWaitPairBoundary.test_a_refused_permit_never_drains':
+        ('error', NO_PAIR),
+    'test_e3_native_reply_hol.InWaitPairBoundary.test_a_reply_not_yet_arrived_stops_the_send':
+        ('error', NO_PAIR),
+    'test_e3_native_reply_hol.InWaitPairBoundary.test_a_reply_that_ends_the_layers_stops_the_send':
+        ('error', NO_PAIR),
+    'test_e3_native_reply_hol.InWaitPairBoundary.test_a_stock_execute_after_the_drain_stops_the_send':
+        ('error', NO_PAIR),
+    'test_e3_native_reply_hol.InWaitPairBoundary.test_the_leaf_holds_every_field_the_real_functions_read':
+        ('error', NO_PAIR),
+    'test_e3_native_reply_hol.InWaitPairBoundary.test_the_mutant_without_the_post_drain_recheck_sends':
+        ('error', NO_PAIR),
     'test_e3_native_reply_hol.ProgressReceipts.test_line_parts_stay_below_the_docker_split_and_reassemble':
         ('error', "AttributeError: module 'native_measurement' has no attribute 'ProgressTrace'"),
     'test_e3_native_reply_hol.ProgressReceipts.test_setting_and_meta_contract':
