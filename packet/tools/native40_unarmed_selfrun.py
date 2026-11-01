@@ -10,7 +10,7 @@ import time
 from native37_robust_selfrun import IMAGE,overlay_mounts
 
 ROOT=Path(__file__).resolve().parents[1]
-SUITES=('test_native40_unarmed_hold','test_native39_trunk','test_native37_robust','test_native38_plain_bind',
+SUITES=('test_native40_box_queue','test_native39_trunk_queue','test_native40_unarmed_hold','test_native39_trunk','test_native37_robust','test_native38_plain_bind',
         'test_e3_admission_native','test_e3_admission_metadata','test_e3_staged_chunk_plan',
         'test_e3_native_overlap','test_e3_native_storage_replay','test_e3_r4_worker_bridge')
 NEGATIVES=('test_native40_unarmed_hold.UnarmedHold.test_all_stock_prefill_branches_hold_without_native_admission',

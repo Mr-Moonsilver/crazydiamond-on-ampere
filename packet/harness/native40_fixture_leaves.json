@@ -60,6 +60,14 @@
       "name": "connected-preemption-streaming",
       "replaces": "External KV receiver, streaming input delivery and cached final-token request",
       "test": "Additional scheduler scenarios"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Actual client response ordering or device behavior. These replacements never run on the box.",
+      "equivalence": "Real CLI parser, receipt writer, timeout/bounds/intent verdict, exact script derivation and real-clock window execute. Fixture status sequences include rejected early, armed and stale returns; real generated Core/scheduler/4-worker timeout ordering is independently executed by e3_native40_unarmed_probe.",
+      "name": "box-cli-cpu-leaves",
+      "replaces": "HTTP model response, live NativeRuntimeClient endpoint and wall-clock wait in test_native40_box_queue only",
+      "test": "test_native40_box_queue"
     }
   ],
   "schema": "fixture-leaves/1",
