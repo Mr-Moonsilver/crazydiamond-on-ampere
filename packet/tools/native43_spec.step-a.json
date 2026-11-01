@@ -1,0 +1,515 @@
+{
+ "arm": "TRUNK",
+ "bundle_selfrun": {
+  "arm": "TRUNK",
+  "probe": "step_a_cpu_probe.py"
+ },
+ "candidate": "q18a-step-a",
+ "checks": [
+  [
+   "tools/step_a_queue.py",
+   "--check"
+  ],
+  [
+   "tools/step_a_tools_derive.py",
+   "--check"
+  ]
+ ],
+ "clock_split": {
+  "expect": {
+   "bracket": "proved",
+   "identity_equality": "refused",
+   "module:native43_boundary_clock.prove": "proved",
+   "native_window_clock": "proved",
+   "native_window_clock_pre_fix": "refused",
+   "prove_clock_domain": "refused"
+  },
+  "modules": [
+   "native43_boundary_clock.prove"
+  ],
+  "note": "Codex's native43_clock_probe --serve in the engine container, its prove() in the client container across the CT-vs-container split: the bracket proof holds; the identity-equality checks refuse there, as on the box (native40). Native43 lifecycle: the reuse grade path is e3_native_performance.native_window (the lifecycle client prefill); its expectation is proved. The pre-fix native_window (n43-f bytes) grades the same records: refused across the split, proved in the shared-view control.",
+  "pre_fix": {
+   "commit": "2a4917b7df6e6e264b0eefe8f9287d3a4fb915d6",
+   "note": "the n43-f build source native_window (identity equality; = 109313a and 1ffc394 bytes)",
+   "path": "harness/e3_native_performance.py",
+   "sha256": "27055ae0b444d43ecdf16351584a6221994e82b2bdd55330d2b1c874dd4b90e1"
+  },
+  "side": "native43-clock-probe"
+ },
+ "definitions": {
+  "harness/selftest.py": [
+   "module:For#12"
+  ],
+  "patches/s5_engine/engine_driver.py": [
+   "FusedQsa.__init__",
+   "FusedQsa.snapshot",
+   "NativeSegmentDriver.__init__",
+   "NativeSegmentDriver._apply_segments",
+   "NativeSegmentDriver._begin",
+   "NativeSegmentDriver._drive",
+   "NativeSegmentDriver._fused_agree",
+   "NativeSegmentDriver._fused_control",
+   "NativeSegmentDriver._fused_hold",
+   "NativeSegmentDriver._fused_watchdog",
+   "NativeSegmentDriver._reset",
+   "NativeSegmentDriver._send_plan_entry",
+   "NativeSegmentDriver._status_record",
+   "NativeSegmentDriver._submit_control",
+   "NativeSegmentDriver._wait_permit",
+   "NativeSegmentDriver.install_qsa_fused",
+   "class:FusedQsa",
+   "fused_expected_shape",
+   "module:from e3_types import ARENA_PAGES, CompletionKind, CompletionProof, DependencyRole, E3ContractError, E3Pending, LaneRole, OperationTicket, PAGE_TOKENS, TransactionId",
+   "module:from e3_types import CompletionKind, CompletionProof, DependencyRole, E3ContractError, E3Pending, LaneRole, OperationTicket, TransactionId",
+   "module:from wire_v1 import BootstrapAck, BootstrapCommand, CancelAck, CancelRequest, PPReceiptAck, PPReceiptDelivery, PeerBinding, PeerBindingAck, PollRequest, QsaProfileGrant, QsaProfileQuery, QsaScheduleShape, qsa_profile_agreement, ReleaseRequest, ReleaseAck, OpenAck, OpenRequest, OpSeqTracker, ROUTE_BANK_FULL, ROUTE_BANK_SPLIT, SegmentAcceptance, SegmentCommand, SegmentDescriptor, SegmentKind, TransitionAck, TransitionCommand, TransitionPending, WorkerCompletionReport",
+   "module:from wire_v1 import BootstrapAck, BootstrapCommand, CancelAck, CancelRequest, PPReceiptAck, PPReceiptDelivery, PeerBinding, PeerBindingAck, PollRequest, QsaProfileQuery, qsa_profile_agreement, ReleaseRequest, ReleaseAck, OpenAck, OpenRequest, OpSeqTracker, ROUTE_BANK_FULL, ROUTE_BANK_SPLIT, SegmentAcceptance, SegmentCommand, SegmentDescriptor, SegmentKind, TransitionAck, TransitionCommand, TransitionPending, WorkerCompletionReport"
+  ],
+  "patches/s5_engine/lane_comm.py": [
+   "CollectiveLedger.__init__",
+   "CollectiveLedger.begin",
+   "CollectiveLedger.note",
+   "CollectiveLedger.take",
+   "PrefillTpCommunicator.__init__",
+   "PrefillTpCommunicator.all_reduce",
+   "canonical_selection",
+   "class:CollectiveLedger",
+   "module:__all__",
+   "module:import hashlib"
+  ],
+  "patches/s5_engine/lane_dispatch.py": [
+   "LaneDispatcher._do_layer",
+   "LaneDispatcher._do_layer_fused",
+   "LaneDispatcher._do_prepare",
+   "LaneDispatcher._ledger",
+   "LaneDispatcher._reset_transaction",
+   "LaneDispatcher._set_ledger",
+   "LaneDispatcher.select_fused",
+   "LaneDispatcher.submit",
+   "module:from lane_comm import CollectiveLedger, LaneCommError",
+   "module:from lane_comm import LaneCommError"
+  ],
+  "patches/s5_engine/native_overlap_control.py": [
+   "NativeControlClient._call",
+   "NativeControlClient.native_qsa_fused",
+   "_qsa_fused"
+  ],
+  "patches/s5_engine/native_overlap_session.py": [
+   "NativeOverlapSession._action_native_qsa_fused",
+   "NativeOverlapSession.execute"
+  ],
+  "patches/s5_engine/probe_control.py": [
+   "attach_native_router"
+  ],
+  "patches/s5_engine/qsa_driver.py": [
+   "QsaLayerDriver.__init__",
+   "QsaLayerDriver._fused",
+   "QsaLayerDriver.arm_fused",
+   "QsaLayerDriver.fused_profiles",
+   "QsaLayerDriver.run_layer"
+  ],
+  "patches/s5_engine/qsa_operation.py": [
+   "QsaPrefillOperation.advance_fused",
+   "QsaPrefillOperation.fill_bucket",
+   "QsaPrefillOperation.fused_refusal",
+   "QsaPrefillOperation.fused_shape"
+  ],
+  "patches/s5_engine/s5_startup.py": [
+   "install_engine"
+  ],
+  "patches/s5_engine/wire_v1.py": [
+   "OpenRequest.__post_init__",
+   "QsaProfileGrant.__post_init__",
+   "SegmentAcceptance.__post_init__",
+   "class:OpenRequest",
+   "class:QsaProfileGrant",
+   "class:SegmentAcceptance"
+  ],
+  "patches/s5_engine/worker_bridge.py": [
+   "NativeWorkerBridge._fused_prepare_command",
+   "NativeWorkerBridge.open",
+   "NativeWorkerBridge.submit"
+  ]
+ },
+ "details": {
+  "engine_delta": {
+   "focused_suites": [
+    "test_e3_native_qsa_fused"
+   ],
+   "lineage_rows": []
+  },
+  "model_settings_changed": false,
+  "queue": "q18a-step-a: alpha-perf's queue with the fused switch and twelve matched arms over its two bands; validity and engagement gated, speed and memory reported; 9,000 s box budget",
+  "scope": "one bounded worker command per dense QSA layer against the stepped protocol; not a release assessment",
+  "step_a_settings": {
+   "FLASH_S5_AUTO_ARM": "1",
+   "FLASH_S5_NATIVE_PROGRESS": "burst",
+   "FLASH_S5_NATIVE_QSA_POLICY": "dense",
+   "FLASH_S5_NATIVE_QSA_STOP_AFTER": null,
+   "FLASH_S5_NATIVE_QSA_TRACE": null,
+   "FLASH_S5_QSA_FUSED": "1",
+   "FLASH_S5_UNION_RETIRE": null
+  }
+ },
+ "dry_run": false,
+ "engine_changed": [
+  "e3/engine_driver.py",
+  "e3/lane_comm.py",
+  "e3/lane_dispatch.py",
+  "e3/native_overlap_control.py",
+  "e3/native_overlap_session.py",
+  "e3/probe_control.py",
+  "e3/qsa_driver.py",
+  "e3/qsa_operation.py",
+  "e3/s5_startup.py",
+  "e3/wire_v1.py",
+  "e3/worker_bridge.py"
+ ],
+ "engine_selfrun": {
+  "compiled": [
+   "patches/s5_engine/scheduler_hooks.py",
+   "patches/s5_engine/engine_driver.py",
+   "patches/s5_engine/native_overlap_session.py",
+   "harness/e3_native39_trunk_probe.py",
+   "harness/test_native39_trunk.py",
+   "harness/selftest.py",
+   "tools/native39_trunk_selfrun.py",
+   "tools/native39_trunk_freeze.py",
+   "tools/build_native39_trunk.py",
+   "harness/native43_boundary_client.py",
+   "harness/native43_boundary_clock.py",
+   "harness/native43_boundary_gate.py",
+   "harness/native43_clock_probe.py",
+   "harness/native43_dense_grade.py",
+   "harness/native43_scheduler_tick_probe.py",
+   "harness/test_e3_lane_private.py",
+   "harness/test_e3_qsa_driver.py",
+   "harness/test_native43_boundary_queue.py",
+   "harness/test_native43_dense_boundary.py",
+   "patches/s5_engine/native_resources.py",
+   "patches/s5_engine/qsa_driver.py",
+   "patches/s5_engine/qsa_operation.py",
+   "tools/build_native43.py",
+   "tools/native43_bundle_selfrun.py",
+   "tools/native43_clock_split.py",
+   "tools/native43_cpu_probe.py",
+   "tools/native43_owner_seam.py",
+   "tools/native43_precheck_conf.py",
+   "tools/native43_queue_drafts.py",
+   "tools/native43_selfrun.py",
+   "tools/native43_tools_derive.py",
+   "harness/native43_lifecycle_gate.py",
+   "harness/native43_lifecycle_grade.py",
+   "harness/native39_lifecycle_gate.py",
+   "harness/test_native43_lifecycle_queue.py",
+   "harness/e3_native_performance.py",
+   "harness/e3_q18a_lifecycle.py",
+   "tools/native43_lifecycle_queue_drafts.py",
+   "tools/native43_lifecycle_cpu_probe.py",
+   "tools/native43_lifecycle_tools_derive.py",
+   "harness/test_e3_tp_finalize_skew.py",
+   "harness/test_e3_native_measurement_clients.py",
+   "harness/test_native35_performance.py",
+   "patches/s5_engine/executor_hooks.py",
+   "patches/s5_engine/row1_oracle.py",
+   "harness/native43_engine_death.py",
+   "harness/native43_row1_grade.py",
+   "harness/native43_row1_qualification.py",
+   "harness/test_native43_engine_death.py",
+   "harness/test_native43_le_fatal_log.py",
+   "harness/test_native43_le_bounded_enqueue.py",
+   "harness/test_native43_le_fix_queue_deltas.py",
+   "harness/test_native43_row1_dense.py",
+   "harness/test_native43_row1_grade.py",
+   "harness/test_native43_lf_queue.py",
+   "tools/native43_le_fix_queue_deltas.py",
+   "tools/native43_lf_queue_drafts.py",
+   "tools/native43_lf_tools_derive.py",
+   "tools/native43_lf_cpu_probe.py",
+   "harness/alpha_perf_gate.py",
+   "harness/e3_alpha_perf_box.py",
+   "harness/test_alpha_perf_queue.py",
+   "harness/native43_allocator_phase_deltas.py",
+   "harness/test_alpha_m3_receipts.py",
+   "tools/alpha_perf_queue.py",
+   "tools/alpha_perf_tools_derive.py",
+   "tools/alpha_perf_cpu_probe.py",
+   "tools/alpha_perf_clock_scan.py",
+   "tools/alpha_perf_precheck_conf.py",
+   "tools/alpha_perf_engine_selfrun.py",
+   "tools/alpha_perf_spec.py",
+   "tools/alpha_perf_overlay_propose.py",
+   "tools/build_alpha_perf.py",
+   "tools/alpha_perf_delivery.py",
+   "tools/alpha_m3_queue_deltas.py",
+   "harness/step_a_gate.py",
+   "harness/e3_step_a_box.py",
+   "harness/e3_step_a_probe.py",
+   "harness/test_step_a_queue.py",
+   "harness/test_step_a_report.py",
+   "harness/test_e3_native_qsa_fused.py",
+   "harness/e3_native_qsa_fused_device_probe.py",
+   "tools/build_step_a.py",
+   "tools/step_a_clock_scan.py",
+   "tools/step_a_cpu_probe.py",
+   "tools/step_a_delivery.py",
+   "tools/step_a_engine_selfrun.py",
+   "tools/step_a_freeze.py",
+   "tools/step_a_overlay_propose.py",
+   "tools/step_a_overlay_tamper.py",
+   "tools/step_a_precheck_conf.py",
+   "tools/step_a_queue.py",
+   "tools/step_a_report.py",
+   "tools/step_a_spec.py",
+   "tools/step_a_tools_derive.py"
+  ],
+  "probes": [
+   {
+    "field": "scheduler_tick_probe",
+    "keep": [
+     "schema",
+     "real_scheduler",
+     "baseline_scheduler_ticks",
+     "unexpected_scheduler_ticks",
+     "admitted_after_cutoff",
+     "source_leases_clean",
+     "stop_calls",
+     "cuda_initialized"
+    ],
+    "out": "native43-scheduler-probe.json",
+    "require": {
+     "admitted_after_cutoff": 0,
+     "cuda_initialized": false,
+     "schema": "native43-real-scheduler-cutoff/1",
+     "source_leases_clean": true,
+     "stop_calls": [
+      "cancel"
+     ],
+     "unexpected_scheduler_ticks": 0
+    },
+    "script": "native43_scheduler_tick_probe.py"
+   }
+  ],
+  "schema": "step-a-selfrun-dense-part/1",
+  "suites": [
+   "test_native39_trunk",
+   "test_native37_robust",
+   "test_native38_plain_bind",
+   "test_e3_admission_native",
+   "test_e3_staged_chunk_plan",
+   "test_e3_native_overlap",
+   "test_e3_native_storage_replay",
+   "test_e3_r4_worker_bridge",
+   "test_e3_admission_metadata",
+   "test_native43_dense_boundary",
+   "test_native43_boundary_queue",
+   "test_e3_qsa_driver",
+   "test_e3_lane_private",
+   "test_e3_sparse_history_dma",
+   "test_e3_worker_operations",
+   "test_e3_tp_finalize_skew",
+   "test_e3_native_measurement_clients",
+   "test_native35_performance",
+   "test_native43_engine_death",
+   "test_native43_le_fatal_log",
+   "test_native43_le_bounded_enqueue",
+   "test_native43_le_fix_queue_deltas",
+   "test_native43_row1_dense",
+   "test_native43_row1_grade",
+   "test_e3_native_source_oracle",
+   "test_e3_native_row1_grade",
+   "test_alpha_m3_receipts"
+  ]
+ },
+ "expected_tests": 327,
+ "label": "step-a",
+ "overlay_definitions": {
+  "e3/engine_driver.py": [
+   "FusedQsa.__init__",
+   "FusedQsa.snapshot",
+   "NativeSegmentDriver.__init__",
+   "NativeSegmentDriver._apply_segments",
+   "NativeSegmentDriver._begin",
+   "NativeSegmentDriver._drive",
+   "NativeSegmentDriver._fused_agree",
+   "NativeSegmentDriver._fused_control",
+   "NativeSegmentDriver._fused_hold",
+   "NativeSegmentDriver._fused_watchdog",
+   "NativeSegmentDriver._reset",
+   "NativeSegmentDriver._send_plan_entry",
+   "NativeSegmentDriver._status_record",
+   "NativeSegmentDriver._submit_control",
+   "NativeSegmentDriver._wait_permit",
+   "NativeSegmentDriver.install_qsa_fused",
+   "class:FusedQsa",
+   "fused_expected_shape",
+   "module:from .e3_types import ARENA_PAGES, CompletionKind, CompletionProof, DependencyRole, E3ContractError, E3Pending, LaneRole, OperationTicket, PAGE_TOKENS, TransactionId",
+   "module:from .e3_types import CompletionKind, CompletionProof, DependencyRole, E3ContractError, E3Pending, LaneRole, OperationTicket, TransactionId",
+   "module:from .wire_v1 import BootstrapAck, BootstrapCommand, CancelAck, CancelRequest, PPReceiptAck, PPReceiptDelivery, PeerBinding, PeerBindingAck, PollRequest, QsaProfileGrant, QsaProfileQuery, QsaScheduleShape, qsa_profile_agreement, ReleaseRequest, ReleaseAck, OpenAck, OpenRequest, OpSeqTracker, ROUTE_BANK_FULL, ROUTE_BANK_SPLIT, SegmentAcceptance, SegmentCommand, SegmentDescriptor, SegmentKind, TransitionAck, TransitionCommand, TransitionPending, WorkerCompletionReport",
+   "module:from .wire_v1 import BootstrapAck, BootstrapCommand, CancelAck, CancelRequest, PPReceiptAck, PPReceiptDelivery, PeerBinding, PeerBindingAck, PollRequest, QsaProfileQuery, qsa_profile_agreement, ReleaseRequest, ReleaseAck, OpenAck, OpenRequest, OpSeqTracker, ROUTE_BANK_FULL, ROUTE_BANK_SPLIT, SegmentAcceptance, SegmentCommand, SegmentDescriptor, SegmentKind, TransitionAck, TransitionCommand, TransitionPending, WorkerCompletionReport"
+  ],
+  "e3/lane_comm.py": [
+   "CollectiveLedger.__init__",
+   "CollectiveLedger.begin",
+   "CollectiveLedger.note",
+   "CollectiveLedger.take",
+   "PrefillTpCommunicator.__init__",
+   "PrefillTpCommunicator.all_reduce",
+   "canonical_selection",
+   "class:CollectiveLedger",
+   "module:__all__",
+   "module:import hashlib"
+  ],
+  "e3/lane_dispatch.py": [
+   "LaneDispatcher._do_layer",
+   "LaneDispatcher._do_layer_fused",
+   "LaneDispatcher._do_prepare",
+   "LaneDispatcher._ledger",
+   "LaneDispatcher._reset_transaction",
+   "LaneDispatcher._set_ledger",
+   "LaneDispatcher.select_fused",
+   "LaneDispatcher.submit",
+   "module:from .lane_comm import CollectiveLedger, LaneCommError",
+   "module:from .lane_comm import LaneCommError"
+  ],
+  "e3/native_overlap_control.py": [
+   "NativeControlClient._call",
+   "NativeControlClient.native_qsa_fused",
+   "_qsa_fused"
+  ],
+  "e3/native_overlap_session.py": [
+   "NativeOverlapSession._action_native_qsa_fused",
+   "NativeOverlapSession.execute"
+  ],
+  "e3/probe_control.py": [
+   "attach_native_router"
+  ],
+  "e3/qsa_driver.py": [
+   "QsaLayerDriver.__init__",
+   "QsaLayerDriver._fused",
+   "QsaLayerDriver.arm_fused",
+   "QsaLayerDriver.fused_profiles",
+   "QsaLayerDriver.run_layer"
+  ],
+  "e3/qsa_operation.py": [
+   "QsaPrefillOperation.advance_fused",
+   "QsaPrefillOperation.fill_bucket",
+   "QsaPrefillOperation.fused_refusal",
+   "QsaPrefillOperation.fused_shape"
+  ],
+  "e3/s5_startup.py": [
+   "install_engine"
+  ],
+  "e3/wire_v1.py": [
+   "OpenRequest.__post_init__",
+   "QsaProfileGrant.__post_init__",
+   "SegmentAcceptance.__post_init__",
+   "class:OpenRequest",
+   "class:QsaProfileGrant",
+   "class:SegmentAcceptance"
+  ],
+  "e3/worker_bridge.py": [
+   "NativeWorkerBridge._fused_prepare_command",
+   "NativeWorkerBridge.open",
+   "NativeWorkerBridge.submit"
+  ]
+ },
+ "precheck": {
+  "fixture_rows": [],
+  "header": [
+   "Step A packaged by tools/build_step_a.py (spec step-a); PREV is the alpha-perf build-d bundle and runner.",
+   "Engine: claude/step-a, each dense QSA layer as one bounded worker command, default off; c3f1f64 (the alpha-perf engine) plus the eleven engine modules; default-off projections in step-a-freeze.json; the overlay files moved vs PREV are recomputed by the conf tool.",
+   "Queue: alpha-perf's startup and cleanup with FLASH_S5_QSA_FUSED=1 added; band 1 eight arms and band 2 four arms, matched fused and stepped by the typed native_qsa_fused selection; no production start."
+  ],
+  "seams": ""
+ },
+ "queue": [
+  "q18a_step_a.draft.sh",
+  "q18a_step_a_declare.sh",
+  "q18a_step_a_settings.sh"
+ ],
+ "rehearsal": null,
+ "review": "prepare",
+ "review_key": "step_a",
+ "runner_swaps": [
+  [
+   "    from alpha_perf_gate import window_ok\n",
+   "    from step_a_gate import window_ok\n"
+  ],
+  [
+   "engine.get('schema')=='alpha-perf-selfrun/1'",
+   "engine.get('schema')=='step-a-selfrun/1'"
+  ],
+  [
+   "result.get('alpha_perf_queue')=='PASS'",
+   "result.get('alpha_perf_queue')=='PASS' and result.get('step_a_queue')=='PASS'"
+  ],
+  [
+   "sorted(engine.get('cases') or {})==['abort-before', 'abort-live', 'auto', 'bad-graph', 'below-threshold', 'foreign', 'long-id', 'off', 'pending-full', 'pending-split', 'progress-burst', 'progress-burst-current', 'progress-burst-skew', 'progress-burst-solo', 'progress-current-solo', 'progress-trace', 'progress-trace-skew', 'progress-unset', 'receipts-auto', 'receipts-below-threshold', 'receipts-latched', 'receipts-off', 'refuse', 'reuse', 'running-prefill', 'tp-skew']",
+   "sorted(engine.get('cases') or {})==['abort-before', 'abort-live', 'auto', 'bad-graph', 'below-threshold', 'foreign', 'long-id', 'off', 'pending-full', 'pending-split', 'progress-burst', 'progress-burst-current', 'progress-burst-skew', 'progress-burst-solo', 'progress-current-solo', 'progress-trace', 'progress-trace-skew', 'progress-unset', 'receipts-auto', 'receipts-below-threshold', 'receipts-latched', 'receipts-off', 'refuse', 'reuse', 'running-prefill', 'step-a-fused-burst', 'step-a-fused-burst-skew', 'step-a-fused-burst-solo', 'step-a-stepped-burst', 'step-a-stepped-burst-skew', 'step-a-stepped-burst-solo', 'tp-skew']"
+  ]
+ ],
+ "schema": "native43-packaging-spec/1",
+ "source_commit": "9d8ee77b85f92554b78fe02b8ce54d7f82708481",
+ "source_paths": [
+  "A\tharness/e3_native_qsa_fused_device_probe.py",
+  "A\tharness/e3_step_a_box.py",
+  "A\tharness/e3_step_a_probe.py",
+  "A\tharness/runs/q18a_step_a.draft.sh",
+  "A\tharness/runs/q18a_step_a_declare.sh",
+  "A\tharness/runs/q18a_step_a_settings.sh",
+  "A\tharness/step_a_fixture_leaves.json",
+  "A\tharness/step_a_gate.py",
+  "A\tharness/test_e3_native_qsa_fused.py",
+  "A\tharness/test_step_a_queue.py",
+  "A\tharness/test_step_a_report.py",
+  "A\ttools/build_step_a.py",
+  "A\ttools/native43_spec.step-a.json",
+  "A\ttools/step_a_clock_scan.py",
+  "A\ttools/step_a_cpu_probe.py",
+  "A\ttools/step_a_declarations.json",
+  "A\ttools/step_a_delivery.py",
+  "A\ttools/step_a_engine_selfrun.py",
+  "A\ttools/step_a_freeze.py",
+  "A\ttools/step_a_gates.sh",
+  "A\ttools/step_a_negative_pins.json",
+  "A\ttools/step_a_overlay_propose.py",
+  "A\ttools/step_a_overlay_tamper.py",
+  "A\ttools/step_a_precheck_conf.py",
+  "A\ttools/step_a_queue.py",
+  "A\ttools/step_a_report.py",
+  "A\ttools/step_a_spec.py",
+  "A\ttools/step_a_tools_derive.py",
+  "A\ttools/step_a_vm_input.py",
+  "M\tharness/selftest.py",
+  "M\tpatches/s5_engine/engine_driver.py",
+  "M\tpatches/s5_engine/lane_comm.py",
+  "M\tpatches/s5_engine/lane_dispatch.py",
+  "M\tpatches/s5_engine/native_overlap_control.py",
+  "M\tpatches/s5_engine/native_overlap_session.py",
+  "M\tpatches/s5_engine/probe_control.py",
+  "M\tpatches/s5_engine/qsa_driver.py",
+  "M\tpatches/s5_engine/qsa_operation.py",
+  "M\tpatches/s5_engine/s5_startup.py",
+  "M\tpatches/s5_engine/wire_v1.py",
+  "M\tpatches/s5_engine/worker_bridge.py"
+ ],
+ "tools": [
+  "build_step_a.py",
+  "native43_spec.step-a.json",
+  "step_a_clock_scan.py",
+  "step_a_cpu_probe.py",
+  "step_a_declarations.json",
+  "step_a_delivery.py",
+  "step_a_engine_selfrun.py",
+  "step_a_freeze.py",
+  "step_a_negative_pins.json",
+  "step_a_overlay_propose.py",
+  "step_a_overlay_tamper.py",
+  "step_a_precheck_conf.py",
+  "step_a_queue.py",
+  "step_a_report.py",
+  "step_a_spec.py",
+  "step_a_tools_derive.py",
+  "step_a_vm_input.py"
+ ]
+}
