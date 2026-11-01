@@ -1493,13 +1493,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict registered CPU regression on the packaged tree",
-    "cases": 343,
+    "cases": 344,
     "exit_code": 0,
-    "log_sha256": "0ec99d4382c667cc33fbbd693e458d081e1b4389d7c2b81de68894961ec2272d",
-    "reported_tests": 4091,
-    "required": 343,
+    "log_sha256": "ebd528715181ffad8a3262c2bf5244d3b8da20912d5427d260fda0d686c3f815",
+    "reported_tests": 4107,
+    "required": 344,
     "skips": 0,
-    "suites": 226
+    "suites": 227
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -3615,10 +3615,10 @@
     "queue_timeout_s": 2100
   },
   "post_review_cpu": {
-    "basis": "the l-f focused suites plus the held-f suites (42) over the alpha trunk merge dd6d977",
-    "log_sha256": "5f6c13768fac6fffbe4e60b628cebd994451dcc1d7190fefce63b3c1dfd3c0c1",
+    "basis": "the T1 focused suites plus test_alpha_m3_receipts over the alpha trunk head a61289f (S1 + M3); 960 test runs, 922 unique: the sparse suite was listed twice",
+    "log_sha256": "2f4b2fb44f35d2d67f5f88cd7e419039fdec013efa9989d2e24d619dd20d52e5",
     "skips": 0,
-    "tests": 906,
+    "tests": 960,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
