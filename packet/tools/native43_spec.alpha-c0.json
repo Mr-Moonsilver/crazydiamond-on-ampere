@@ -267,7 +267,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 332,
+ "expected_tests": 351,
  "label": "alpha-c0",
  "overlay_definitions": {
   "e3/decode_probe.py": [
@@ -330,7 +330,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "40c77565f9f234573239121a26821f8db12c71f2",
+ "source_commit": "f1ed8a69b048ae2f84f981428fc6eb9c179fb568",
  "source_paths": [
   "A\tharness/alpha_c0_fixture_leaves.json",
   "A\tharness/alpha_c0_gate.py",
@@ -339,13 +339,24 @@
   "A\tharness/runs/q18a_alpha_c0.draft.sh",
   "A\tharness/runs/q18a_alpha_c0_declare.sh",
   "A\tharness/runs/q18a_alpha_c0_settings.sh",
+  "M\tharness/selftest.py",
   "A\tharness/stage_fixture_leaves.json",
   "A\tharness/stage_net.py",
   "A\tharness/test_alpha_c0_queue.py",
   "A\tharness/test_alpha_c0_report.py",
+  "M\tharness/test_e3_package.py",
   "A\tharness/test_e3_stage_local.py",
   "A\tharness/test_e3_stage_local_control.py",
   "A\tharness/test_e3_stage_local_qsa.py",
+  "M\tharness/test_native35_performance.py",
+  "M\tpatches/s5_engine/decode_probe.py",
+  "M\tpatches/s5_engine/executor_hooks.py",
+  "M\tpatches/s5_engine/make_s5_overlap.py",
+  "M\tpatches/s5_engine/native_candidate_review.json",
+  "M\tpatches/s5_engine/native_overlap_control.py",
+  "M\tpatches/s5_engine/native_overlap_session.py",
+  "M\tpatches/s5_engine/probe_control.py",
+  "M\tpatches/s5_engine/s5_startup.py",
   "A\tpatches/s5_engine/stage_progress.py",
   "A\tpatches/s5_engine/stage_wire.py",
   "A\ttools/alpha_c0_clock_scan.py",
@@ -368,18 +379,7 @@
   "A\ttools/c0_bit_identity.py",
   "A\ttools/native43_spec.alpha-c0.json",
   "A\ttools/stage_default_off.py",
-  "A\ttools/stage_review_pins.py",
-  "M\tharness/selftest.py",
-  "M\tharness/test_e3_package.py",
-  "M\tharness/test_native35_performance.py",
-  "M\tpatches/s5_engine/decode_probe.py",
-  "M\tpatches/s5_engine/executor_hooks.py",
-  "M\tpatches/s5_engine/make_s5_overlap.py",
-  "M\tpatches/s5_engine/native_candidate_review.json",
-  "M\tpatches/s5_engine/native_overlap_control.py",
-  "M\tpatches/s5_engine/native_overlap_session.py",
-  "M\tpatches/s5_engine/probe_control.py",
-  "M\tpatches/s5_engine/s5_startup.py"
+  "A\ttools/stage_review_pins.py"
  ],
  "tools": [
   "alpha_c0_clock_scan.py",
