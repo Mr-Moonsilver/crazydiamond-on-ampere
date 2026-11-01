@@ -76,6 +76,14 @@
       "name": "targeted-regression-cpu-seams",
       "replaces": "Live APIServer/model output and standing SSE cohort only in CPU tests",
       "test": "test_native40_box_queue last three tests"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Natural device timing or model output; these constructor/transport/negative field injections occur only in CPU tests, never in the box path.",
+      "equivalence": "box.full_idle and box.plain_request replace only HTTP/model completion and queried idle receipts in CLI tests; actual typed FULL/Core behavior executes in the separate connected gate. bridge.route_objects selects CPU green/bank resources with the real bridge/router state machines. controller.parked and scheduler._flash_s5_driver inject parked-admission/no-driver states to exercise refusal branches, then restore fields. No hold predicate, census, native_window or transition validator is patched.",
+      "name": "exact-cpu-seam-names",
+      "replaces": "box.full_idle; box.plain_request; bridge.route_objects; controller.parked; scheduler._flash_s5_driver",
+      "test": "test_native40_box_queue; test_native40_unarmed_hold; e3_native40_unarmed_probe"
     }
   ],
   "schema": "fixture-leaves/1",

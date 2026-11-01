@@ -16,8 +16,8 @@ def generate(build, parent, out, container):
     text = (ROOT / 'tools/owner-precheck/native-precheck.conf.native35-p-c').read_text()
     text = text[text.index('FT='):]
     fields = dict(BUNDLE=b['bundle'], PREV_BUNDLE=prev['bundle'], RUNNER=b['runner'], PREV_RUNNER=prev['runner'],
-        CODEX_WT=str(ROOT), CODEX_COMMIT=b['source'], GENERATION=b['overlay'], VM_OVERLAY=prev['overlay'],
-        VM_OVERLAY_SUBDIR='', EXPECTED_MANIFEST=b['manifest'], EXPECTED_RUNNER_SHA=b['runner_sha256'],
+        CODEX_WT=str(ROOT), CODEX_COMMIT=b['source'], GENERATION=b['overlay'], VM_OVERLAY=prev['bundle'],
+        VM_OVERLAY_SUBDIR='native30_overlay', EXPECTED_MANIFEST=b['manifest'], EXPECTED_RUNNER_SHA=b['runner_sha256'],
         EXPECTED_RUNNER_SIZE=str(b['runner_size']), EXPECTED_REVIEW_PIN=b['review_sha256'],
         SELFRUN_CONTAINER=container, WORK_ROOT='<hub-dir>/agents/flash-next/tmp/native40-box-precheck-work-b',
         QUEUE_NAME_GLOB='q18a_native40_unarmed_hold[._]*')
@@ -37,6 +37,8 @@ def generate(build, parent, out, container):
     text = re.sub(r'^VM_OVERLAY_EXCLUSIONS=.*$', 'VM_OVERLAY_EXCLUSIONS=(S5-OVERLAP-GENERATION.json '
         'e3/native-overlap-readiness.json e3/native-implementation-closure.json e3/decode-probe-evidence.json '
         'core/SHA256SUMS core/scheduler.py e3/scheduler_hooks.py e3/engine_driver.py)', text, flags=re.M)
+    fixtures = ['test_native39_trunk_queue.py'] + ['native35_tools/test_q18a_native%d_owner_run.py' % n for n in range(5, 18)]
+    text = text.replace('FIXTURE_FILES=(\n', 'FIXTURE_FILES=(\n' + ''.join('  ' + n + ' # declared synthetic unit-test credential literal only\n' for n in fixtures))
     text = text.replace('SEAM_TESTS=(', 'SEAM_TESTS=(test_native40_box_queue.py test_native40_unarmed_hold.py '
                         'e3_native40_unarmed_probe.py test_native39_trunk_queue.py ')
     with out.open('x') as handle:
