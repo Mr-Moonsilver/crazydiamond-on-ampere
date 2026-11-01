@@ -94,6 +94,11 @@ class NativeOverlapSession:
                 os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'
                 and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'):
             handler = None
+        if action == 'native_layer_group' and not (
+                os.environ.get('FLASH_S5_LAYER_GROUPS', '0') == '1'
+                and os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'
+                and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'):
+            handler = None
         if handler is None:
             raise NativeOverlapSessionError('session-action-not-exposed')
         if self.run_id is not None and run_id is not None and run_id != self.run_id:
@@ -130,6 +135,11 @@ class NativeOverlapSession:
         if self.measure_start_ns is not None:
             raise NativeOverlapSessionError('native-qsa-fused-with-open-measurement')
         return await self.control.native_qsa_fused(command.get('fused'))
+
+    async def _action_native_layer_group(self, command):
+        if self.measure_start_ns is not None:
+            raise NativeOverlapSessionError('native-layer-group-with-open-measurement')
+        return await self.control.native_layer_group(command.get('size'))
 
     async def _action_prepare(self, command):
         target = command.get('target_route')

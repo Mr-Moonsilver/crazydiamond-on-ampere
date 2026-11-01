@@ -321,6 +321,10 @@ class SourceLeaseDescriptor:
                 f'ranks={len(self.consumer_ranks)})')
 
 
+# Step B: the group sizes a transaction can latch; 1 is Step A's command stream.
+LAYER_GROUP_SIZES = (1, 2, 4)
+
+
 @dataclass(frozen=True, repr=False)
 class SegmentDescriptor:
     """One bounded worker operation. No transaction-wide forward exists.
@@ -336,6 +340,8 @@ class SegmentDescriptor:
     layer_start: int | None = None
     layer_end: int | None = None
     seq: int | None = None
+    # Step B: the transaction's latched group size; 1 is Step A's one layer per segment.
+    layer_group: int = 1
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
@@ -359,7 +365,10 @@ class SegmentDescriptor:
         if self.kind is SegmentKind.LAYER:
             start = _int('layer_start', self.layer_start, 0)
             end = _int('layer_end', self.layer_end, 1)
-            if end != start + 1:
+            if self.layer_group != 1:
+                if not start < end <= start + self.layer_group:
+                    raise E3ContractError('a layer group covers 1..size consecutive layers')
+            elif end != start + 1:
                 raise E3ContractError('one layer per segment in the first cut')
         else:
             if self.layer_start is not None or self.layer_end is not None:
@@ -368,6 +377,10 @@ class SegmentDescriptor:
             _int('seq', self.seq, 0)
         elif self.seq is not None:
             raise E3ContractError('only PP segments carry a transfer seq')
+        if self.layer_group != 1 and (self.kind is not SegmentKind.LAYER
+                                      or type(self.layer_group) is not int
+                                      or self.layer_group not in LAYER_GROUP_SIZES):
+            raise E3ContractError('only a layer segment carries a known group size')
 
     @property
     def is_pp(self):
@@ -375,7 +388,7 @@ class SegmentDescriptor:
 
     @property
     def layers(self):
-        return () if self.kind is not SegmentKind.LAYER else (self.layer_start,)
+        return () if self.kind is not SegmentKind.LAYER else tuple(range(self.layer_start, self.layer_end))
 
     def satisfied(self, completed_tickets):
         """True when every dependency is present in the completed set."""
@@ -708,12 +721,17 @@ class OpenRequest:
     max_outstanding: int
     # Step A: this transaction runs each dense QSA layer as one bounded command.
     qsa_fused: bool = False
+    # Step B: this transaction's group size; above 1 only with qsa_fused.
+    layer_group: int = 1
 
     def __post_init__(self):
         if type(self.admission) is not AdmissionRecord:
             raise E3ContractError('open needs an AdmissionRecord')
         if type(self.qsa_fused) is not bool:
             raise E3ContractError('open qsa_fused must be bool')
+        if self.layer_group != 1 and (type(self.layer_group) is not int or not self.qsa_fused
+                                      or self.layer_group not in LAYER_GROUP_SIZES):
+            raise E3ContractError('open layer_group needs a known size and the fused selection')
         _ints('ranks', self.ranks, minimum=0, allow_empty=False)
         if self.ranks != tuple(sorted(self.ranks)):
             raise E3ContractError('open ranks must be ordered')
@@ -1112,7 +1130,7 @@ class SegmentCommand:
                 raise E3ContractError('only a layer carries a typed QSA profile grant')
             query = self.profile.query
             if (query.transaction != self.transaction or query.stage != self.stage
-                    or query.layer != self.descriptor.layer_start
+                    or query.layer != self.descriptor.layer_end - 1
                     or query.ranks != self.ranks or query.boundary_op_seq >= self.op_seq):
                 raise E3ContractError('QSA profile grant differs from the layer command')
 

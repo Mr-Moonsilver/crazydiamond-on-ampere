@@ -65,6 +65,11 @@ def _qsa_fused():
             and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')
 
 
+def _layer_groups():
+    """The Step B switch is exposed only where the engine installed it."""
+    return os.environ.get('FLASH_S5_LAYER_GROUPS', '0') == '1' and _qsa_fused()
+
+
 def _positive(value):
     return type(value) is int and value > 0
 
@@ -140,7 +145,8 @@ class NativeControlClient:
         if action not in ACTIONS:
             if not (action == 'release_auto_arm' and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'
                     or action == 'native_progress' and _progress_burst()
-                    or action == 'native_qsa_fused' and _qsa_fused()):
+                    or action == 'native_qsa_fused' and _qsa_fused()
+                    or action == 'native_layer_group' and _layer_groups()):
                 raise NativeControlError('native-control-unknown-action')
         if self.pending is not None and action not in READ_ACTIONS:
             # Reads stay available while an abandoned intent is registered so
@@ -243,6 +249,17 @@ class NativeControlClient:
         reply = await self._call({'action': 'native_qsa_fused', 'fused': fused})
         if reply.get('fused') is not fused:
             raise NativeControlError('native-control-qsa-fused-not-set')
+        return reply
+
+    async def native_layer_group(self, size):
+        """Step B per-arm size (installed only); the engine re-checks idle FULL and fused."""
+        if type(size) is not int or size not in (1, 2, 4):
+            raise NativeControlError('native-control-layer-group-invalid')
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call({'action': 'native_layer_group', 'size': size})
+        if reply.get('size') != size:
+            raise NativeControlError('native-control-layer-group-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------

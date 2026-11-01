@@ -83,6 +83,7 @@ from wire_v1 import (
     QsaProfileGrant,
     QsaProfileQuery,
     QsaScheduleShape,
+    LAYER_GROUP_SIZES,
     qsa_profile_agreement,
     ReleaseRequest,
     ReleaseAck,
@@ -878,6 +879,45 @@ def fused_expected_shape(valid_tokens):
     return QsaScheduleShape('dense_dma', counts, counts)
 
 
+class LayerGroups:
+    """Step B: consecutive LAYER entries of a stage as one bounded worker command.
+
+    Installed at startup by FLASH_S5_LAYER_GROUPS=1, off otherwise. ``size`` is the per-arm
+    choice, changed only while paused, idle and FULL, read once per transaction before OPEN.
+    Size 1 is Step A's command stream.
+    """
+    # At most this many accepted commands not yet host-queried complete, per peer. The bound
+    # is in commands, so a larger group needs a shallower queue to keep a stop's drain where
+    # Step A has it. Held-g R1 device time per command: about 4 ms a GDN layer, 12 ms a QSA
+    # layer. Worst queue: size 1, 4 commands = 4 layers (up to about 24 ms for 3 GDN + 1 QSA);
+    # size 2, 3 commands = 6 layers (about 40 ms); size 4, 2 commands = 8 layers (about 48 ms).
+    RUN_AHEAD = {1: FusedQsa.RUN_AHEAD, 2: 3, 4: 2}
+
+    def __init__(self):
+        self.size = 1
+        self.counters = dict(selections=0, chunks=0, plan_commands=0, group_commands=0,
+                             group_layers=0, group_layers_max=0)
+
+    def snapshot(self):
+        return dict(size=self.size, run_ahead=self.RUN_AHEAD[self.size], **self.counters)
+
+
+def layer_group_plan(low, high, qsa_layers, size):
+    """[(start, end), ...] over one stage's layers [low, high).
+
+    A group closes at ``size`` or right after a QSA layer, so a group holds at most one QSA
+    layer, last, and the stage end closes whatever is left. QSA positions come from the
+    PREPARE plan, never from the layer number.
+    """
+    groups = []
+    start = low
+    for layer in range(low, high):
+        if layer + 1 - start == size or layer in qsa_layers or layer + 1 == high:
+            groups.append((start, layer + 1))
+            start = layer + 1
+    return groups
+
+
 class NativeProgress:
     """Held-f: native progress receipts and the switchable candidate (owner thread only).
 
@@ -1196,6 +1236,63 @@ class NativeSegmentDriver:
         self._fused_mark = None
         self._fused_mark_at = None
         self._fused_stop_at = None
+        # Step B: absent unless FLASH_S5_LAYER_GROUPS installed it.
+        self.layer_groups = None
+        self._tx_group = 1
+
+    def install_layer_groups(self):
+        """Step B startup seam; the per-arm choice is the native_layer_group control."""
+        if self.layer_groups is not None:
+            raise DriverError('layer groups are already installed')
+        if self.qsa_fused is None:
+            raise DriverError('layer groups require the fused QSA switch')
+        self.layer_groups = LayerGroups()
+        return self.layer_groups
+
+    def _layer_group_control(self, command):
+        """Typed per-arm size; only installed, only paused idle FULL, above 1 only fused."""
+        if self.error is not None:
+            raise DriverError(self.error)
+        if set(command) - {'action', 'size', 'engine_epoch'}:
+            raise DriverError('native-layer-group-command-fields-differ')
+        epoch = command.get('engine_epoch')
+        if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
+            raise DriverError('native-control-engine-epoch-differs')
+        size = command.get('size')
+        if type(size) is not int or size not in LAYER_GROUP_SIZES:
+            raise DriverError('native-layer-group-invalid')
+        if size != 1 and not self.qsa_fused.selected:
+            raise DriverError('native-layer-group-requires-fused')
+        policy = getattr(self, 'auto_arm', None)
+        recording = self.progress is not None and self.progress.recording
+        if (not self._engine_paused() or self._split_ready or self.tx is not None
+                or self.controller.active or self._inflight or self._control is not None
+                or self._route_exchange() is not None or self._return_pending is not None
+                or self._retained is not None or self._admission_intent is not None
+                or policy is None or policy.active or recording):
+            raise DriverError('native-layer-group-requires-paused-idle-full')
+        previous = self.layer_groups.size
+        self.layer_groups.size = size
+        self.layer_groups.counters['selections'] += int(previous != size)
+        now = int(self._monotonic_ns())
+        return {'schema': 1, 'action': 'native_layer_group', 'size': size, 'previous': previous,
+                'engine_epoch': self.engine_epoch, 'route': 'full',
+                'route_generation': self.route_generation,
+                'observed_clock_ns': now, 'clock': self._clock_record(now)}
+
+    def _group_stage_plan(self, stage, qsa_layers):
+        """Replace one stage's LAYER entries by its groups, once its peers agreed at PREPARE."""
+        low, high = self.stage_layers[stage]
+        at = [index for index, entry in enumerate(self.plan)
+              if entry['kind'] is SegmentKind.LAYER and entry['stage'] == stage]
+        if at != list(range(at[0], at[0] + high - low)) or at[0] < self.index:
+            raise DriverError('a layer group plan needs the stage whole and unsent')
+        size = self._tx_group
+        groups = layer_group_plan(low, high, qsa_layers, size)
+        self.plan[at[0]:at[-1] + 1] = [
+            dict(kind=SegmentKind.LAYER, stage=stage, layer=start, layer_end=end, group=size)
+            for start, end in groups]
+        self.layer_groups.counters['plan_commands'] += len(groups)
 
     def install_qsa_fused(self):
         """Step A startup seam; the per-arm choice is the native_qsa_fused control."""
@@ -1218,6 +1315,8 @@ class NativeSegmentDriver:
         fused = command.get('fused')
         if type(fused) is not bool:
             raise DriverError('native-qsa-fused-invalid')
+        if not fused and self.layer_groups is not None and self.layer_groups.size != 1:
+            raise DriverError('native-layer-group-requires-fused')
         policy = getattr(self, 'auto_arm', None)
         recording = self.progress is not None and self.progress.recording
         if (not self._engine_paused() or self._split_ready or self.tx is not None
@@ -1243,6 +1342,12 @@ class NativeSegmentDriver:
             raise DriverError('tp-ledger-mismatch' + _agreement_detail(self._command, targets, accepted))
         if descriptor.kind is SegmentKind.LAYER and self._command.profile is not None:
             self.qsa_fused.counters['fused_commands'] += 1
+        if self._tx_group != 1 and descriptor.kind is SegmentKind.LAYER:
+            layers = descriptor.layer_end - descriptor.layer_start
+            counters = self.layer_groups.counters
+            counters['group_commands'] += 1
+            counters['group_layers'] += layers
+            counters['group_layers_max'] = max(counters['group_layers_max'], layers)
         if descriptor.kind is not SegmentKind.PREPARE:
             return
         profiles = {item.dense_profiles for item in items}
@@ -1250,19 +1355,24 @@ class NativeSegmentDriver:
             raise DriverError('fused-profile-disagreement' + _agreement_detail(self._command, targets, accepted))
         expected = fused_expected_shape(self.tx.chunk_end)
         low, high = self.stage_layers[descriptor.stage]
-        for layer, shape in profiles.pop():
+        rows = profiles.pop()
+        for layer, shape in rows:
             if not low <= layer < high or shape != expected:
                 raise DriverError('fused-profile-differs-from-the-admission')
             query = QsaProfileQuery(self.tx, self.admission.state_epoch, descriptor.stage, layer,
                                     self._command.op_seq, tuple(targets))
             self._profile_grants[(descriptor.stage, layer)] = QsaProfileGrant(query, shape, fused=True)
             self.qsa_fused.counters['grants'] += 1
+        if self._tx_group != 1:
+            self._group_stage_plan(descriptor.stage, {layer for layer, _ in rows})
 
     def _fused_hold(self, entry):
         """Run-ahead bound without worker pending: a LAYER waits on the peers' reports."""
         if entry['kind'] is not SegmentKind.LAYER:
             return False
         limit = self.qsa_fused.run_ahead
+        if self._tx_group != 1:
+            limit = LayerGroups.RUN_AHEAD[self._tx_group]
         return any(rank in self.reports and len(self.reports[rank].pending_op_seqs) >= limit
                    for rank in self.stage_ranks[entry['stage']])
 
@@ -1923,6 +2033,7 @@ class NativeSegmentDriver:
                      stage=descriptor.stage,
                      layer_start=descriptor.layer_start,
                      layer_end=descriptor.layer_end,
+                     **({'layer_group': descriptor.layer_group} if self._tx_group != 1 else {}),
                      targets=list(targets),
                      # The route is checked by the engine at this reply; it is
                      # descriptive of where the operation actually ran, never a
@@ -2538,8 +2649,13 @@ class NativeSegmentDriver:
         self._fused_mark = self._fused_mark_at = self._fused_stop_at = None
         if self._tx_fused:
             self.qsa_fused.counters['chunks'] += 1
+        self._tx_group = (self.layer_groups.size
+                          if self._tx_fused and self.layer_groups is not None else 1)
+        if self._tx_group != 1:
+            self.layer_groups.counters['chunks'] += 1
         self.open_request = OpenRequest(admission, self.ranks,
-                                        admission.state_epoch, 1, qsa_fused=self._tx_fused)
+                                        admission.state_epoch, 1, qsa_fused=self._tx_fused,
+                                        layer_group=self._tx_group)
         self.phase = 'open'
         if self.progress is not None and self._progress_owned():
             transaction = admission.transaction
@@ -2658,8 +2774,8 @@ class NativeSegmentDriver:
         layer = entry.get('layer')
         descriptor = SegmentDescriptor(
             self.tx, kind, stage, depends_on=depends,
-            layer_start=layer, layer_end=None if layer is None else layer + 1,
-            seq=entry.get('seq'))
+            layer_start=layer, layer_end=entry.get('layer_end', None if layer is None else layer + 1),
+            seq=entry.get('seq'), layer_group=entry.get('group', 1))
         targets = self.stage_ranks[stage]
         tracker = self.trackers[targets[0]]
         op_seq = tracker.propose(descriptor)
@@ -2670,7 +2786,8 @@ class NativeSegmentDriver:
         # a missing/stale/foreign hold refuses before any GPU submission.
         source = (self._prepare_source(targets)
                   if kind is SegmentKind.PREPARE else None)
-        profile = self._profile_grants.get((stage, layer)) if kind is SegmentKind.LAYER else None
+        profile = (self._profile_grants.get((stage, descriptor.layer_end - 1))
+                   if kind is SegmentKind.LAYER else None)
         command = SegmentCommand(descriptor, op_seq, targets, source=source, profile=profile)
         boundary = self._tail_boundary
         if kind is SegmentKind.LAYER and boundary is not None:
@@ -2690,6 +2807,14 @@ class NativeSegmentDriver:
                     command, profile.query.boundary_op_seq, self.route_generation)
             elif self._tail_submission.command != command:
                 raise DriverError('fused layer replaced its retained TP obligation')
+        elif self._tx_group != 1 and kind is SegmentKind.LAYER:
+            # A group without a QSA layer still holds collectives, so it carries the same
+            # obligation. Its boundary is this stage's last accepted command (PREPARE at least).
+            if self._tail_submission is None:
+                self._tail_submission = TPTailSubmissionObligation(
+                    command, self.tickets[targets[0]].op_seq, self.route_generation)
+            elif self._tail_submission.command != command:
+                raise DriverError('layer group replaced its retained TP obligation')
         if kind is SegmentKind.PP_SEND:
             self.pp_send_seq = descriptor.seq
             if self._pp_submission is None:
@@ -3260,6 +3385,7 @@ class NativeSegmentDriver:
         if self.progress is not None:
             self.progress.end(_progress_logger())
         self._tx_fused = False
+        self._tx_group = 1
         self.tx = None
         self.admission = None
         self.phase = 'idle'
@@ -3468,6 +3594,8 @@ class NativeSegmentDriver:
             return self._progress_control(command)
         if action == 'native_qsa_fused' and self.qsa_fused is not None:
             return self._fused_control(command)
+        if action == 'native_layer_group' and self.layer_groups is not None:
+            return self._layer_group_control(command)
         if action not in CONTROL_ACTIONS:
             raise DriverError('native-control-unknown-action')
         if action == 'cancel':
@@ -3658,6 +3786,8 @@ class NativeSegmentDriver:
             result['native_progress'] = self.progress.snapshot()
         if self.qsa_fused is not None:
             result['native_qsa_fused'] = self.qsa_fused.snapshot()
+        if self.layer_groups is not None:
+            result['native_layer_groups'] = self.layer_groups.snapshot()
         return result
 
     def _status_record_base(self, now=None):

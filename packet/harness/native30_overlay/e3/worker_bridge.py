@@ -425,6 +425,8 @@ class NativeWorkerBridge:
         self.dispatcher.open(record.transaction, chunk_admission, operation)
         if request.qsa_fused:
             self.dispatcher.select_fused()
+        if request.layer_group != 1:
+            self.dispatcher.select_layer_group(request.layer_group)
         stage = self.dispatcher.stage
         if stage not in (0, 1):
             raise WorkerBridgeError('dispatcher stage is outside the two-stage split')

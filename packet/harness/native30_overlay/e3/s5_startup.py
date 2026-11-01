@@ -272,6 +272,11 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     if fused == '1' and (env.get('FLASH_S5_NATIVE_QSA_TRACE', '0') != '0'
                          or env.get('FLASH_S5_NATIVE_QSA_STOP_AFTER', '0') != '0'):
         raise StartupError('FLASH_S5_QSA_FUSED refuses the QSA readback diagnostics')
+    groups = env.get('FLASH_S5_LAYER_GROUPS', '0')
+    if groups not in ('0', '1'):
+        raise StartupError('invalid boolean setting: FLASH_S5_LAYER_GROUPS')
+    if groups == '1' and fused != '1':
+        raise StartupError('FLASH_S5_LAYER_GROUPS needs FLASH_S5_QSA_FUSED=1')
     if mode_settings(env) is not None:
         # The decode-only probe has no engine-side lane composition.
         return None
@@ -355,6 +360,8 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
         driver.install_progress(progress)
     if fused == '1':
         driver.install_qsa_fused()
+    if groups == '1':
+        driver.install_layer_groups()
     return composition
 
 

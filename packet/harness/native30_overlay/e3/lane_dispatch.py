@@ -71,10 +71,10 @@ class SegmentCommand:
     """
 
     __slots__ = ('transaction', 'stage', 'layer_start', 'layer_end', 'op_seq',
-                 'kind', 'seq', 'source', 'profile')
+                 'kind', 'seq', 'source', 'profile', 'layer_group')
 
     def __init__(self, transaction, stage, kind, op_seq, *, layer_start=None, layer_end=None,
-                 seq=_UNSET, source=None, profile=None):
+                 seq=_UNSET, source=None, profile=None, layer_group=1):
         if type(transaction) is not TransactionId:
             raise LaneDispatchError('canonical transaction required')
         if type(kind) is not str or kind not in KINDS:
@@ -100,7 +100,11 @@ class SegmentCommand:
             if (type(layer_start) is not int or type(layer_end) is not int
                     or not (0 <= layer_start < layer_end)):
                 raise LaneDispatchError('layer segment needs half-open global layer bounds')
-            if layer_end != layer_start + 1:
+            if layer_group != 1:
+                # Step B: a group names its transaction's size; _do_layer checks that latch.
+                if layer_end > layer_start + layer_group:
+                    raise LaneDispatchError('layer group is longer than its size')
+            elif layer_end != layer_start + 1:
                 raise LaneDispatchError('layer segment must cover exactly one layer for now')
         if source is not None:
             from wire_v1 import SourceLeaseDescriptor
@@ -119,6 +123,7 @@ class SegmentCommand:
         self.seq = None if seq is _UNSET else seq
         self.source = source
         self.profile = profile
+        self.layer_group = layer_group
 
     @classmethod
     def from_descriptor(cls, descriptor):
@@ -128,7 +133,7 @@ class SegmentCommand:
             command, d = descriptor, descriptor.descriptor
             return cls(d.transaction, d.stage, d.kind.value, command.op_seq,
                        layer_start=d.layer_start, layer_end=d.layer_end, seq=d.seq,
-                       source=command.source, profile=command.profile)
+                       source=command.source, profile=command.profile, layer_group=d.layer_group)
         kind = descriptor.kind
         if type(kind) is not str:
             raise LaneDispatchError('descriptor kind must be a str')
@@ -194,6 +199,7 @@ class LaneDispatcher:
             self._set_ledger(None)
         self.qsa_fused = False
         self.fused_profiles = None
+        self.layer_group = 1
         self.transaction = None
         self.chunk = None
         self.lane = None
@@ -270,6 +276,13 @@ class LaneDispatcher:
             raise LaneDispatchError('fused QSA is selected at open, before PREPARE')
         self.qsa_fused = True
         self._set_ledger(CollectiveLedger())
+
+    # -- Step B: latched at OPEN with the fused selection -------------------------
+    def select_layer_group(self, size):
+        """This open transaction runs its LAYER entries as groups of up to ``size``."""
+        if self.transaction is None or self.chunk is not None or not self.qsa_fused:
+            raise LaneDispatchError('a layer group is selected at open, with the fused selection')
+        self.layer_group = size
 
     def _set_ledger(self, ledger):
         communicator = getattr(self.native.comms, 'tp', None)
@@ -424,6 +437,10 @@ class LaneDispatcher:
         self._need_chunk()
         if command.layer_start != self.lane.cursor:
             raise LaneDispatchError(f'layer segment {command.layer_start} does not match cursor {self.lane.cursor}')
+        if command.layer_group != self.layer_group:
+            raise LaneDispatchError('layer group differs from this transaction')
+        if self.layer_group != 1:
+            return self._do_layer_group(command)
         if self.qsa_fused:
             return self._do_layer_fused(command)
         # Query the driver's source-owned credit *before* the partial-enqueue
@@ -467,6 +484,33 @@ class LaneDispatcher:
         if record.kind != 'layer':
             raise LaneDispatchError('a fused transaction layer did not finish in its command')
         return {'kind': record.kind, 'layer': command.layer_start, 'paused': False,
+                'profile_boundary': False, 'tail_boundary': False}
+
+    def _do_layer_group(self, command):
+        """Step B: consecutive layers of this stage as one bounded command.
+
+        Everything is refused before the first enqueue. From the first layer on, anything but
+        a finished layer quarantines: the peer may be inside a later collective already.
+        """
+        start, end, grant = command.layer_start, command.layer_end, command.profile
+        owned = dict(self.fused_profiles)
+        if end > self.lane.end_layer:
+            raise LaneDispatchError('a layer group crosses its stage')
+        qsa = [layer for layer in range(start, end) if layer in owned]
+        if qsa not in ([], [end - 1]):
+            raise LaneDispatchError('a layer group holds its QSA layer last, and only one')
+        if (grant is None) != (not qsa):
+            raise LaneDispatchError('a layer group carries the grant of its QSA layer, or none')
+        if grant is not None and (grant.fused is not True or owned[end - 1] != grant.shape):
+            raise LaneDispatchError('fused grant differs from this PREPARE plan')
+        self._partial = True
+        for layer in range(start, end):
+            if layer in owned:
+                self.driver.arm_fused(layer, grant)
+            record = self.lane.layer(layer)
+            if record.kind != 'layer':
+                raise LaneDispatchError('a layer group layer did not finish in its command')
+        return {'kind': record.kind, 'layer': end - 1, 'paused': False,
                 'profile_boundary': False, 'tail_boundary': False}
 
     def _do_suffix(self, command):
