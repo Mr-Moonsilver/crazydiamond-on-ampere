@@ -95,7 +95,7 @@ GROUP_TYPES = "layer_types=['linear_attention', 'linear_attention', 'linear_atte
 SEED = 20261101
 
 
-def patch_probe(out, fused, group):
+def patch_probe(out, fused, group, ticks=None):
     """Same two output/identity patches as tools/build_native31_vm.py."""
     shutil.copyfile(ROOT / 'tools/native31_probe_archive.py', out / 'proof/native31_probe_archive.py')
     path = out / 'proof/e3_native29_overlap_probe.py'
@@ -143,6 +143,14 @@ def patch_probe(out, fused, group):
                         "            state['group_end'] = state['groups'].get(layer, layer + 1)\n"
                         "            state['profile'] = state['grants'].get(state['group_end'] - 1)\n"
                         "            while command(kind_name, layer).paused:")
+    if ticks is not None:
+        # A matched decode interleave: the tick follows the boundaries of size `ticks`, whatever this run's size is.
+        text = replace_once(text, "        decode_step('after-' + kind_name)\n",
+                            "        if kind_name != 'layer' or state['group_end'] in state['tick_ends']:\n"
+                            "            decode_step('after-' + kind_name)\n")
+        text = replace_once(text, "            state['groups'] = dict(layer_group_plan(0, LAYERS, set(state['grants']), STEP_B_SIZE))\n",
+                            "            state['groups'] = dict(layer_group_plan(0, LAYERS, set(state['grants']), STEP_B_SIZE))\n"
+                            "            state['tick_ends'] = {end for _, end in layer_group_plan(0, LAYERS, set(state['grants']), %d)}\n" % ticks)
     # After the completion poll, so this read cannot be the sync that makes the chunk pass.
     text = replace_once(text, "    report = wait(complete, 'completion')\n",
                         "    report = wait(complete, 'completion')\n"
@@ -209,7 +217,7 @@ def supersede_cpu_fixtures(out, source):
     return target
 
 
-def build(overlay_src, bundle_manifest, out, fused, group):
+def build(overlay_src, bundle_manifest, out, fused, group, ticks=None):
     candidate = out.name.removesuffix('-input')
     if not candidate.startswith('step-b-') or candidate == out.name or out.exists():
         raise ValueError('need a fresh --work/<step-b-*>-input')
@@ -239,7 +247,7 @@ def build(overlay_src, bundle_manifest, out, fused, group):
     if graph['verdict'] != 'PASS':
         raise ValueError('import graph: ' + str(graph['runtime_ownership_errors']))
     dump(out / 'proof/import-graph.json', graph)
-    patch_probe(out, fused, group)
+    patch_probe(out, fused, group, ticks)
     patch_wrappers(out, candidate, launcher)
     path = out / 'run_cpu.py'
     path.write_text(replace_once(path.read_text(), "refusal['line']!=1474", "refusal['line']!=%d" % refusal_line(overlay)))
@@ -333,6 +341,9 @@ def main():
     parser.add_argument('--cpu-selfrun', action='store_true')
     parser.add_argument('--vm-run', action='store_true')
     parser.add_argument('--group', type=int, choices=(1, 2, 4), default=1, help='layer group size; always fused')
+    parser.add_argument('--ticks', type=int, choices=(2, 4), default=None,
+                        help='one decode tick per this group size instead of one per command, so runs of different sizes '
+                             'interleave decode the same way; a tick after every command otherwise')
     # Launch blocking off: the fused path's stream order must hold with real overlap.
     parser.add_argument('--wrapper', default='run_gpu_async.py', choices=WRAPPERS)
     parser.add_argument('--record', type=Path, help='fresh local directory for the fetched VM run')
@@ -341,7 +352,7 @@ def main():
         parser.error('--vm-run needs --record')
     out = args.work.resolve() / (args.name + '-input')
     overlay, bundle_manifest = resolve_overlay(args.bundle, args.overlay)
-    build(overlay.resolve(), bundle_manifest, out, True, args.group)
+    build(overlay.resolve(), bundle_manifest, out, True, args.group, args.ticks)
     if args.cpu_selfrun:
         rc, target = cpu_selfrun(out, args.cpu_fixtures)
         print(json.dumps(dict(cpu_selfrun_rc=rc, cpu_record=str(target))), flush=True)
