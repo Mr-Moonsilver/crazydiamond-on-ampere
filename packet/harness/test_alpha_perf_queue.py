@@ -382,6 +382,13 @@ class Grade(unittest.TestCase):
         self.assertEqual(out.getvalue().strip(), 'ALPHA_PERF_GRADE PASS')
         self.assertEqual(json.loads((q / 'grade.json').read_text())['schema'], ap.GRADE_SCHEMA)
         self.assertEqual(ap.main(['grade'] + args + ['--out', str(q / 'grade.json')]), 2)
+        # A retained xz stream reads the same: progress lines and the memory receipts both.
+        import lzma
+        with lzma.open(q / 'engine-stream.log.xz', 'wt') as handle:
+            handle.write((q / 'engine-stream.log').read_text())
+        view = ap.read_stamped([q / 'engine-stream.log.xz'], ap.is_tracked)
+        self.assertEqual(view, ap.read_stamped([q / 'engine-stream.log'], ap.is_tracked))
+        self.assertTrue(view)
         # An unreadable arm record stays a row.
         (q / 'arm-burst-solo-5.json').write_text('{not json')
         with contextlib.redirect_stdout(io.StringIO()):
@@ -693,6 +700,7 @@ class Derivation(unittest.TestCase):
             self.assertEqual(words.count(flag), 1, flag)
         self.assertNotIn('FLASH_S5_NATIVE_QSA_TRACE', extra[0])
         self.assertNotIn('FLASH_S5_NATIVE_QSA_STOP_AFTER', extra[0])
+        self.assertNotIn('FLASH_S5_UNION_RETIRE', extra[0])      # S1 retirement stays off in every arm
         # The dense spelling is the engine's own name and value.
         import qsa_operation as qo
         self.assertEqual(qo.native_qsa_settings({queue.DENSE.split('=')[0]: queue.DENSE.split('=')[1]}), ('dense', False))
@@ -707,6 +715,7 @@ class Derivation(unittest.TestCase):
         for text, spacing in ((draft, " == "), (declare, "==")):
             self.assertIn("assert env.get('FLASH_S5_NATIVE_QSA_POLICY')%s'dense'" % spacing, text)
             self.assertIn("'FLASH_S5_NATIVE_QSA_TRACE' not in env", text)
+            self.assertIn("'FLASH_S5_UNION_RETIRE' not in env", text)
             self.assertIn("assert env.get('FLASH_S5_NATIVE_PROGRESS')%s'burst'" % spacing, text)
         self.assertIn('from alpha_perf_gate import window_ok', draft)
         self.assertIn('from alpha_perf_gate import ACTIVE_S,CLEANUP_S,LAST_ARM_ENTRY_S,PHASES', draft)

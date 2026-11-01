@@ -27,6 +27,7 @@ s/chunk per history band beside the known 4.3-4.4 s/chunk of the current policy 
 """
 import argparse
 import json
+import lzma
 from pathlib import Path
 import re
 
@@ -91,7 +92,8 @@ def read_stamped(paths, keep):
         path = Path(path)
         if not path.is_file():
             continue
-        with path.open('r', errors='replace') as handle:
+        opener = lzma.open if path.suffix == '.xz' else open     # as progress.read_lines: retained logs may be xz
+        with opener(path, 'rt', errors='replace') as handle:
             for line in handle:
                 if keep(line):
                     rows.append((progress.docker_stamp(line), line))

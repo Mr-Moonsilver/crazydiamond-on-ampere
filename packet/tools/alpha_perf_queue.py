@@ -152,9 +152,11 @@ NOTE_OLD = '# Held-f: FLASH_S5_NATIVE_PROGRESS=burst below, the only setting '
 SETTINGS_NOTE = ('# Alpha-perf: FLASH_S5_NATIVE_QSA_POLICY=dense below, the dense policy as q18a-native43-lifecycle-f configures it '
                  '(no trace,\n# no stop frontier), the only setting added to held-f.\n')
 DRAFT_DENSE = ("assert env.get('FLASH_S5_NATIVE_QSA_POLICY') == 'dense', 'alpha-perf dense policy'\n"
+               "assert 'FLASH_S5_UNION_RETIRE' not in env, 'alpha-perf: S1 retirement stays off'\n"
                "assert 'FLASH_S5_NATIVE_QSA_TRACE' not in env and 'FLASH_S5_NATIVE_QSA_STOP_AFTER' not in env, "
                "'alpha-perf: no trace and no stop frontier, the prefill must complete'\n")
 DECLARE_DENSE = ("assert env.get('FLASH_S5_NATIVE_QSA_POLICY')=='dense', 'alpha-perf runs the dense policy'\n"
+                 "assert 'FLASH_S5_UNION_RETIRE' not in env, 'alpha-perf: S1 retirement stays off'\n"
                  "assert 'FLASH_S5_NATIVE_QSA_TRACE' not in env and 'FLASH_S5_NATIVE_QSA_STOP_AFTER' not in env, "
                  "'alpha-perf: no trace and no stop frontier, the prefill must complete'\n")
 BAND2_NOTES = ('Alpha-perf band 2: held-f\'s manifest (corpus, seeds, decode streams and prompt, timeouts, reserve, route plan, '

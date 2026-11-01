@@ -75,11 +75,12 @@ python3 -B tools/native35_compile_proof.py --bundle "$HELD" --runner "$RUNNER" -
     >"$OUT/compile-proof-stdout.log" 2>&1
 step compile-proof $?
 
+# The conf stays with its build; the delivery tool copies the delivered one to tools/owner-precheck/.
 python3 -B tools/alpha_perf_precheck_conf.py --build "$OUT/build.json" --selfrun "$OUT/selfrun/result.json" \
-    --out "$WT/tools/owner-precheck/native-precheck.conf.alpha-perf-$TAG" >"$OUT/precheck-conf.log" 2>&1
+    --out "$OUT/native-precheck.conf" >"$OUT/precheck-conf.log" 2>&1
 step precheck-conf $?
 
-bash tools/owner-precheck/native-precheck.sh "$WT/tools/owner-precheck/native-precheck.conf.alpha-perf-$TAG" \
+bash tools/owner-precheck/native-precheck.sh "$OUT/native-precheck.conf" \
     >"$OUT/precheck-$TAG.log" 2>&1
 step precheck $?
 echo DONE >>"$STEPS"

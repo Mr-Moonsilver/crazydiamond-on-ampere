@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -42,7 +43,10 @@ def run(spec, tree, bundle, out, name):
     d = json.loads((out / 'dense/result.json').read_text())
     ok = rc_progress == 0 and rc_dense == 0 and p['verdict'] == d['verdict'] == 'PASS'
     pieces = p['suites'], d['suites']
-    tests = [(x.get('tests') if x.get('tests') is not None else x.get('ran')) or 0 for x in pieces]
+    # The progress record counts in 'tests'; the dense one keeps unittest's own line in 'ran' ("Ran 671 tests in 91.577s").
+    ran = re.fullmatch(r'Ran (\d+) tests? in [0-9.]+s', pieces[1].get('ran') or '')
+    tests = [pieces[0].get('tests') or 0, int(ran.group(1)) if ran else 0]
+    ok = ok and ran is not None
     skips = [(x.get('skips') if x.get('skips') is not None else x.get('skipped')) or 0 for x in pieces]
     connected = {k: v for k, v in p['cases'].items()}
     record = dict(schema=SCHEMA, verdict='PASS' if ok else 'FAIL', classification=None if ok else 'HARNESS',

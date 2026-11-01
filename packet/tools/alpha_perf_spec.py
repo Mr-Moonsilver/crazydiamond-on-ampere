@@ -40,6 +40,9 @@ EXTRA_COMPILED = ['harness/alpha_perf_gate.py', 'harness/e3_alpha_perf_box.py', 
                   'tools/alpha_perf_spec.py', 'tools/alpha_perf_overlay_propose.py', 'tools/build_alpha_perf.py',
                   'tools/alpha_perf_delivery.py', 'tools/alpha_m3_queue_deltas.py']
 EXTRA_SUITES = ['test_alpha_m3_receipts']
+# Declared in source_paths, not bundled: nothing imports it, and its fixture text 'Bearer fixture-bearer-value' is a
+# credential-shaped line outside the precheck's declared fixtures (l-f did not bundle it either).
+NOT_BUNDLED = {'native39_lifecycle_precheck_conf.py'}
 
 
 def generate(scratch, expected_tests):
@@ -51,7 +54,8 @@ def generate(scratch, expected_tests):
     if me not in paths:
         paths = sorted(paths + [me])
     tools = sorted(row.split('\t', 1)[1][len('tools/'):] for row in paths
-                   if row.startswith('A\ttools/') and row.count('/') == 1 and row.endswith(('.py', '.json')))
+                   if row.startswith('A\ttools/') and row.count('/') == 1 and row.endswith(('.py', '.json'))
+                   and row.split('/', 1)[1] not in NOT_BUNDLED)
     moved = overlay.propose(scratch)
     assert not moved['added'] and not moved['removed'], moved
     lf_selfrun = LF['engine_selfrun']
