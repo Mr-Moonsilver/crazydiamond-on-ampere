@@ -1,0 +1,88 @@
+{
+  "inherits": [
+    "native41_fixture_leaves.json",
+    "native40_fixture_leaves.json",
+    "native39_fixture_leaves.json",
+    "native38_fixture_leaves.json",
+    "native37_fixture_leaves.json"
+  ],
+  "leaves": [
+    {
+      "box_evidence": false,
+      "cannot_prove": "The real lxcfs view in CT <ct-id>, and that the CT's own offsets are zero there. That comes from the lead's owner probe on the box (CT, dockerd, containerd and a throwaway container all at monotonic 0 0 / boottime 0 0), not from this test.",
+      "equivalence": "e3_native39_w1.clock_identity returns basis, proc, boot_id and time_namespace. The leaf returns the same shape with the values recorded for the CT client in results/box/q18a-native40-unarmed-hold-run-1/README.md: lxcfs boot_id d7ebe876 and init time namespace time:[4026531834]. Only those 8 hex chars are recorded. The rest of the UUID (d7ebe876-0000-4000-8000-000000000000) is synthetic, and it only has to differ from the real engine boot_id, which the test asserts. Native40's run (lines 113-118) refused on exactly this input. Native41 records it as descriptive only. The client's own /proc/self/timens_offsets stays the real file in Connected.",
+      "name": "ct-client-clock-view",
+      "replaces": "e3_native39_w1.clock_identity() as read by plain python3 in the LXC CT on the box (the client side of the identity split)",
+      "seams": [
+        "e3_native39_w1.clock_identity"
+      ],
+      "test": "test_native41_unarmed_box.Connected (CT_VIEW)"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Docker CLI and daemon behaviour, that .State.Pid names the engine container's init in the CT's pid namespace, CT root's ptrace-read access to /proc/<pid>/ns/time and timens_offsets of a container process, and the real subprocess timeout. The box run is the first evidence for these.",
+      "equivalence": "The leaf checks the exact argv (inspect --format {{.State.Pid}} <cid>; exec <cid> cat /proc/sys/kernel/random/boot_id) and the 10 s timeout. It answers inspect with this process's pid. The real reader then reads that pid's real /proc/<pid>/ns/time and /proc/<pid>/timens_offsets. In Connected that pid is the engine's own process, because the driver's _clock_record reads /proc/self in the same process. In the self-run container it is the container-side view. Exec is answered with the real /proc/sys/kernel/random/boot_id file, which is what cat prints inside the container. The failure variants raise the same OSError('docker-rc-N') that docker_cli raises on a nonzero rc. Refusal cases answer inspect with a synthetic pid that resolves in a procfs-shaped tree (leaf procfs-shaped-tree), or exec with the CT-shaped boot id.",
+      "name": "docker-cli",
+      "replaces": "e3_native41_unarmed_box.docker_cli: subprocess docker inspect/exec in the CT (run's docker= parameter, and box.docker_cli through main)",
+      "seams": [
+        "box.docker_cli",
+        "docker_cli"
+      ],
+      "test": "test_native41_unarmed_box.Docker"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "The engine's split hold and the automatic FULL return. Those are box evidence from q18a-native40-unarmed-hold run 1: held 30.000 s, typed FULL return at generation 4, HTTP 200 with 1 token. e3_native40_unarmed_probe covers them for the real generated Core. Not covered here either: HTTP completion serving, or a real enter/pause/leave transition.",
+      "equivalence": "Held subclasses test_native40_box_queue.Client (native40's declared box-cli-cpu-leaves sequence: split rows with growing deferrals, then FULL with the typed unarmed-stock-prefill-hold-timeout receipt, and the plain completion reply after FULL). Every Held status also goes over the real control plane: NativeRuntimeClient and LoopbackControl over loopback HTTP to the real endpoint, session and driver. Before the split entry the real reply is returned unchanged. After it, the fake rows carry the real reply's clock record, observed_clock_ns and engine_epoch, the receipt included. So the no-reply-on-split comparison and both clock proofs use real engine samples on the real monotonic clock. In main the patched NativeRuntimeClient is a factory that builds the real NativeRuntimeClient from the CLI's url, run-id, epoch and control timeout and wraps it in Held. plain_request is Held.send.",
+      "name": "unarmed-hold-sequence",
+      "replaces": "Engine status rows after the split entry, client.enter/resume/pause/leave transitions and the plain /v1/completions reply",
+      "seams": [
+        "box.NativeRuntimeClient",
+        "box.plain_request"
+      ],
+      "test": "test_native41_unarmed_box.Held"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "/metrics idle and the paused-barrier worker rows that full_idle reads.",
+      "equivalence": "run reads only full_idle's verdict, before and after. Connected.setUp runs the real typed FULL entry over the real control plane (prepare full, full-prefill-solo, then resume). That also binds the session run, as full_idle's prepare does on the box. The loopback Server leaf serves no /metrics. Native40's leaf exact-cpu-seam-names declares the same substitution.",
+      "name": "full-idle-receipt",
+      "replaces": "e3_native39_trunk_checks.full_idle (typed all-rank FULL, /metrics idle, paused barrier)",
+      "seams": [
+        "box.full_idle"
+      ],
+      "test": "test_native41_unarmed_box.Connected.run_box (idle=) and test_exact_queue_cli_through_main"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Kernel nsfs and procfs permissions and contents. Connected's passing and boot-id/bracket cases read the real /proc.",
+      "equivalence": "The tree uses the same relative paths and the same calls: os.readlink of <pid>/ns/time (a symlink whose target text is the nsfs name, as procfs returns it), Path.read_text of <pid>/timens_offsets and self/timens_offsets. The offsets use the kernel's two-line monotonic/boottime format. The namespace is the real engine's, the boot_id the real one, and the offsets zero. Each case changes exactly one of these, so exactly the intended reason fires (nonzero, missing, unparsable, other namespace, a second pid for a restarted container).",
+      "name": "procfs-shaped-tree",
+      "replaces": "/proc as the root of the container-init and client offset/namespace reads (the run proc= parameter)",
+      "seams": [],
+      "test": "test_native41_unarmed_box.proc_tree (refusal and end-proof cases)"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Which real transport fault would produce a stale sample.",
+      "equivalence": "The swapped clock record is a real engine_driver._clock_record from this engine's own earlier status (Connected.setUp). Its sample predates the proof's send stamp, the shape of a cached or replayed reply. Only the clock field of that phase's status reply is replaced.",
+      "name": "stale-engine-sample",
+      "replaces": "The status clock record of the begin or end proof call (Held stale=)",
+      "seams": [],
+      "test": "test_native41_unarmed_box.Connected sample-outside-bracket and end-proof cases"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "vLLM log formatting and box log collection.",
+      "equivalence": "As hub-startup-logger and test_native41_box_queue.Arm.setUp: logging.getLogger replaces only logger construction for the native38 startup receipt line. The key is saved and restored. Nothing else in sys.modules changes.",
+      "name": "startup-logger",
+      "replaces": "vllm.logger.init_logger for bootstrap_full_startup's receipt line",
+      "seams": [
+        "vllm.logger"
+      ],
+      "test": "test_native41_unarmed_box.Connected.setUp"
+    }
+  ],
+  "schema": "fixture-leaves/1",
+  "scope": "Native41 unarmed-hold clock proof (e3_native41_unarmed_box) hub and CPU-container tests, test_native41_unarmed_box.py. The native41 queue leaves are inherited (Server, EngineLoop, attach, pinned_reads, queue-fastapi). No box or GPU evidence."
+}

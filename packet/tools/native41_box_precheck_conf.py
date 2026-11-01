@@ -49,7 +49,8 @@ def generate(build, parent, out, container):
     text = text.replace('FIXTURE_FILES=(\n', 'FIXTURE_FILES=(\n' + ''.join('  ' + n + ' # declared synthetic unit-test credential literal only\n' for n in fixtures))
     assert text.count('SEAM_TESTS=(') == 1
     text = text.replace('SEAM_TESTS=(', 'SEAM_TESTS=(test_native41_box_queue.py test_native41_autoarm.py e3_native41_auto_probe.py '
-                        'e3_native41_window_probe.py e3_native41_autoarm_box.py test_native40_box_queue.py '
+                        'e3_native41_receipts_probe.py e3_native41_autoarm_box.py test_native41_unarmed_box.py '
+                        'e3_native41_unarmed_box.py test_native40_box_queue.py '
                         'test_native40_unarmed_hold.py e3_native40_unarmed_probe.py test_native39_trunk_queue.py ')
     with out.open('x') as handle:
         handle.write('# Native41 auto-arm. PREV = exact delivered native40 (rebuild-b); VM_OVERLAY is source comparison only.\n' + text)

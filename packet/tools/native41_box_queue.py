@@ -2,7 +2,9 @@
 """Derive native41's box scripts from the committed native40 (f6d1db9) box texts.
 
 Kept from native40: pins, preflight, startup, bind, W2 length guard, host
-headroom, the unarmed-hold check, the end identity and the whole owned
+headroom, the unarmed-hold check (its client now e3_native41_unarmed_box with
+the CT-side container clock proof: native40 run 1 was HARNESS
+client-engine-clock-unproved), the end identity and the whole owned
 cleanup/restore tail. Changed: names, the one phase budget (native41_box_gate
 PHASES via native41_budget), the auto-arm switch FLASH_S5_AUTO_ARM=1 in
 EXTRA_ENV (asserted in declaration and preflight), and the body after the
@@ -33,10 +35,21 @@ HEADER = '''# q18a-native41-autoarm: native40's startup, bind and unarmed-hold c
 # The inherited native40 description below covers the kept startup and owned cleanup; its row1 and
 # fresh-W2 regression are replaced by the native41 arms. Every cap is native41_box_gate.PHASES.
 '''
+UNARMED_OLD = '''timeout --signal=TERM --kill-after=15s 180s python3 "$H/e3_native40_unarmed_box.py" \\
+  --url "$PROBE_URL" --model "$MODEL" --run-id "$RUN_ID" --epoch "$EPOCH" \\
+  --timeout-s 100 --control-timeout-s 30 --out "$Q/unarmed-stock-prefill.json" \\
+'''
+UNARMED_NEW = '''# Native41: the same check, its client proving the clock domain from the CT side (container init
+# time namespace and offsets, kernel boot_id via docker, bracketed status sample). Native40 run 1 was
+# HARNESS client-engine-clock-unproved: the CT and the engine container read different identities.
+_cid=$(docker inspect --format '{{.Id}}' "$CONTAINER" 2>/dev/null) || _cid=''
+timeout --signal=TERM --kill-after=15s 180s python3 "$H/e3_native41_unarmed_box.py" \\
+  --url "$PROBE_URL" --model "$MODEL" --run-id "$RUN_ID" --epoch "$EPOCH" --container-id "${_cid:-none}" \\
+  --timeout-s 100 --control-timeout-s 30 --out "$Q/unarmed-stock-prefill.json" \\
+'''
 BODY = r'''# Native41: plain W2 arms beside the auto-arm switch. Receipts only; speed is descriptive, never a gate.
 # Every timeout below is one native41_box_gate.PHASES entry (instruments, arm_entries, w2_arms, ingress,
-# end_full_idle, grade).
-_cid=$(docker inspect --format '{{.Id}}' "$CONTAINER" 2>/dev/null) || _cid=''
+# end_full_idle, grade). _cid is the engine container id read before the unarmed check.
 timeout 120s python3 "$H/e3_native39_trunk_checks.py" instruments --url "$PROBE_URL" --run-id "$RUN_ID" --epoch "$EPOCH" \
   --container-id "${_cid:-none}" --control-timeout-s 30 --exec-timeout-s 10 \
   --out "$Q/instruments-start.json" > "$Q/instruments-start.log" 2>&1
@@ -135,6 +148,8 @@ def derive():
             start, end = text.index(BODY_START), text.index(BODY_END)
             assert text.count(BODY_START) == 1 and text.count(BODY_END) == 1 and start < end
             text = text[:start] + BODY + text[end + len(BODY_END):]
+            assert text.count(UNARMED_OLD) == 1
+            text = text.replace(UNARMED_OLD, UNARMED_NEW)
             # One phase budget: native40_budget reads native41_box_gate (same function, new gate).
             old = 'from native40_box_gate import ACTIVE_S,CLEANUP_S,PHASES'
             assert text.count(old) == 1
@@ -147,7 +162,7 @@ def derive():
             interface = ' e3_native40_unarmed_box.py e3_native40_regression.py native40_box_gate.py; do'
             assert text.count(interface) == 1
             text = text.replace(interface, ' e3_native40_unarmed_box.py e3_native40_regression.py native40_box_gate.py \\\n'
-                                           '  e3_native41_autoarm_box.py native41_box_gate.py; do')
+                                           '  e3_native41_unarmed_box.py e3_native41_autoarm_box.py native41_box_gate.py; do')
             old = "assert env.get('FLASH_S5_ENGINE_OFFERS') == '0'\n"
             assert text.count(old) == 1
             text = text.replace(old, old + "assert env.get('FLASH_S5_AUTO_ARM') == '1', 'native41 auto-arm switch'\n")
@@ -176,9 +191,11 @@ def derive_tools():
     text = (ROOT / 'tools/native40_box_cpu_probe.py').read_text()
     line = "suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native40_box_queue.py'))"
     assert text.count(line) == 1
-    text = text.replace(line, line + "\nsuite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native41_box_queue.py'))")
+    text = text.replace(line, line + "\nsuite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native41_box_queue.py'))"
+                        "\nsuite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native41_unarmed_box.py'))")
     text = re.sub(r'^EXPECTED_TESTS=(\d+).*$', lambda m: 'EXPECTED_TESTS=' + str(int(m.group(1)) + NATIVE41_QUEUE_TESTS)
-                  + '  # inherited native40 cases plus %d native41 queue cases' % NATIVE41_QUEUE_TESTS, text, flags=re.M)
+                  + '  # inherited native40 cases plus %d native41 queue and unarmed-clock cases' % NATIVE41_QUEUE_TESTS,
+                  text, flags=re.M)
     text = text.replace("owner.QNAME=='q18a-native40-unarmed-hold'", "owner.QNAME=='q18a-native41-autoarm'")
     text = text.replace('q18a_native40_unarmed_hold_settings.sh', 'q18a_native41_autoarm_settings.sh')
     text = text.replace('import native40_box_gate\nactive_and_cleanup=native40_box_gate.ACTIVE_S+native40_box_gate.CLEANUP_S',
@@ -191,7 +208,7 @@ def derive_tools():
     return {'tools/native41_box_cpu_probe.py': text, 'tools/native41_box_selfrun.py': wrapper}
 
 
-NATIVE41_QUEUE_TESTS = 10  # test_native41_box_queue cases (testsRun)
+NATIVE41_QUEUE_TESTS = 11 + 5  # test_native41_box_queue + test_native41_unarmed_box cases (testsRun)
 
 
 def main():
