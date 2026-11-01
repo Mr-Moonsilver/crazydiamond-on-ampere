@@ -31,7 +31,7 @@
     "parent_manifest": "15dffe62e5d425c66c06f90a3387f624ebe618ab181d71141f60c881b192c7c8",
     "queue": "q18a-alpha-perf: held-f's queue with the dense policy, band 1 unchanged and band 2 past the arena; speed reported, validity gated; 2.5 h box budget",
     "scope": "prefill speed and decode-during-prefill on the composed alpha engine; no engine source change",
-    "source_commit": "feadad4d6c7ad63e3f8c57d4804f5264d0c3a3c3"
+    "source_commit": "d43ccf4ffdefff71ef65643b2476eaa3b5a839c7"
   },
   "backend_semantics_provenance": {
     "constructor_and_method_ASTs_equal": true,
@@ -1529,7 +1529,7 @@
     "basis": "fresh full strict registered CPU regression on the packaged tree",
     "cases": 345,
     "exit_code": 0,
-    "log_sha256": "ce1a85b3ad344da5f5f572fb9f59c11fc2a8146995d890372ff8dbf439bfb411",
+    "log_sha256": "48f1b66da068a44c57e1985a6f9a84772cde6559ecf5e15f3b5ae19b930405ab",
     "reported_tests": 4134,
     "required": 345,
     "skips": 0,
@@ -3658,7 +3658,7 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "e06057c1138f43e7184025539fb9da52d3c209f609bb41be01e3b633aef06d6b",
+    "log_sha256": "dbb6c5f1756068573a8aaec444b201ddb6a439e6050f297ae2b0e99822aa2e62",
     "skips": 0,
     "tests": 770,
     "verdict": "PASS"
