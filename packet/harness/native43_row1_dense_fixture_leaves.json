@@ -1,0 +1,58 @@
+{
+ "leaves": [
+  {
+   "box_evidence": false,
+   "cannot_prove": "That the box engine was started with the dense policy; the l-f queue preflight and declaration assert FLASH_S5_NATIVE_QSA_POLICY=dense in EXTRA_ENV, and the wrapper is given the same value",
+   "equivalence": "expected_reference is the engine function itself (no fixture logic); native_qsa_settings returns exactly 'current' or 'dense' and refuses anything else (test_native43_dense_boundary.StartupPolicyTests), and QsaPrefillOperation reads getattr(device, 'native_qsa_policy', 'current') once at construction, which the tests exercise",
+   "implementation": "ExpectedReferenceTests pass the policy string directly to row1_oracle.expected_reference; DensePolicyRow1Tests set device.native_qsa_policy='dense' (or 'current') before the operation is constructed",
+   "name": "expected-route-policy",
+   "replaces": "FLASH_S5_NATIVE_QSA_POLICY as parsed at worker startup (qsa_operation.native_qsa_settings) and latched by QsaPrefillOperation.__init__ as transport_policy",
+   "test": "test_native43_row1_dense.ExpectedReferenceTests; test_native43_row1_dense.DensePolicyRow1Tests"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "Kernel numerics and output byte equality: the fake attention kernel writes no output, so the qsa_output_before_moe comparison proves the oracle mechanism only. Byte equality of native dense versus reference dense is proved by the box row1 run",
+   "equivalence": "The branch decision is the reference code reading os.environ exactly as on the box (VLLM_QSA_KVO_SPARSE_PREFILL=1 at identity start, QSA_SPARSE_MIN_PAGES unset); dense_branch and the route/fill/consume sequence act on the same code object; only tensor ops and kernel launches are fakes",
+   "implementation": "The actual generated function text (arena_attention.generate over reference/vllm-src/.../ops/qsa.py, BASE_SHA pinned, the text the overlay ships) compiled with module globals like ops/qsa.py: torch=FakeTorch, triton=FakeTriton, _STAGE_TIMER=None, _select_config=stub, both kernels FakeKernel (recording launches, writing nothing) and os=the real os module",
+   "name": "reference-under-fakes",
+   "replaces": "The pinned ops/qsa.py flash_e2_arena_attention in the box overlay (torch, Triton kernels, _select_config) that row1_output re-runs as the byte oracle",
+   "test": "test_native43_row1_dense.DenseBranchTests; test_native43_row1_dense.DensePolicyRow1Tests.test_dense_policy_25_pages_passes_dense_against_the_real_reference"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "H2D DMA timing and stream ordering",
+   "equivalence": "The same rows the real copy moves (source[source_page:source_page+pages] -> arena[arena_page:arena_page+pages]); the dense_page_bucket comparison gathers the same rows from the UVA view through the bucket's segments, as on the box",
+   "implementation": "DenseRows(FakeSparseDevice).copy_pages records the call as the parent fake does and also writes source.row_bytes for each of the pages x PAGE_ROWS rows into the arena row storage at arena_page x PAGE_ROWS",
+   "name": "dense-copy-device",
+   "replaces": "NativeQsaDevice.copy_pages (dst.copy_(src) of up to four pages on the copy stream) for the dense route in the generated sparse helper",
+   "test": "test_native43_row1_dense.DensePolicyRow1Tests"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "The reference's own sparse-branch UVA gather (never reached under the forced dense branch)",
+   "equivalence": "The routing condition and the dense span arithmetic are the pinned function's text; the l-e failure is exactly this route decision (reference sparse_uva at 25 pages while the native is dense_dma)",
+   "implementation": "route_stub(q, kv_cache, logical_indices, block_table_row, rows, max_logical_page, arena, use_prefill_config, out, retained=None, retained_copied=0, *, e2): the pinned switch expression (num_pages > int(os.environ.get('QSA_SPARSE_MIN_PAGES', pages_in_arena)) and os.environ.get('VLLM_QSA_KVO_SPARSE_PREFILL', '1') == '1') declares sparse_uva without fills, else dense_dma with one e2.fill per arena span; it records the process value of the switch at call time",
+   "name": "route-stub",
+   "replaces": "The pinned reference in the pre-fix composition and in the at-arena/current-policy cases",
+   "test": "test_native43_row1_dense.DensePolicyRow1Tests"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "The real box census (24 local QSA layers per rank, one layer record per chunk) and real byte equality",
+   "equivalence": "The grade reads only these packet and record fields; the records, digests and layer records are the producer\u2019s own",
+   "implementation": "Records from the actual Row1Qualifier/Row1RecordStore over the Row1QualifierTests rig (RowBackend byte fakes), as test_e3_native_row1_grade.evidence: per rank two layers, each a dense chunk at the arena (one bucket, one reference fill) and one beyond it (two buckets, two reference fills by a reference closure calling session.fill twice); the packets go through a JSON round trip",
+   "name": "row1-evidence-producer",
+   "replaces": "The four box workers\u2019 s5-native-row1-store/1 packets (Row1RecordStore after the row1 scope is disabled)",
+   "test": "test_native43_row1_grade.PolicyGradeTests"
+  },
+  {
+   "box_evidence": false,
+   "cannot_prove": "The real row1 client run; it runs on the box",
+   "equivalence": "The wrapper only strips --qsa-policy, checks the phase and rebinds the module global _grade_row1 that grade_evidence calls for the row1 phase (e3_q18a_qualification.py 474-476); the real main is unchanged",
+   "implementation": "mock.patch.object(qualification, \"main\", ...) records the argv it receives and the _grade_row1 bound during the call",
+   "name": "qualification-main",
+   "replaces": "e3_q18a_qualification.main (the row1 client against the engine) inside native43_row1_qualification.main",
+   "test": "test_native43_row1_grade.WrapperTests"
+  }
+ ]
+}

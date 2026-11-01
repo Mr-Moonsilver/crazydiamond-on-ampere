@@ -64,7 +64,7 @@ from sparse_history_dma import (
     make_sparse_plan,
     stream_sparse_plan,
 )
-from row1_oracle import Row1Bucket, Row1OracleError
+from row1_oracle import Row1Bucket, Row1OracleError, dense_branch, expected_reference
 from e3_types import (
     ARENA_PAGES,
     CompletionKind,
@@ -1183,6 +1183,12 @@ class QsaPrefillOperation:
         The original runs on the same query/arena/output storage; it may use
         its own bulk UVA gather. This is serial qualification, never shipping
         performance, and it writes no second history GPU buffer.
+
+        The expected reference route is a function of the latched transport
+        policy (row1_oracle.expected_reference): where the dense policy put a
+        layer beyond the arena on dense_dma, the original runs on its own
+        dense branch (row1_oracle.dense_branch) and dense is compared with
+        dense.
         """
         if self.qualification is None:
             return None
@@ -1201,11 +1207,16 @@ class QsaPrefillOperation:
             raise OperationError('row1 output before a declared route')
         if run.qualification_bucket is not None:
             raise OperationError('row1 output with an uncompared bucket')
-        expected = {'sparse_dma': 'sparse_uva', 'dense_dma': 'dense_dma',
-                    'empty': 'empty'}[sparse.route]
+        if type(max_logical_page) is not int or max_logical_page < 0:
+            raise OperationError('row1 output has an invalid page count')
+        expected, force_dense = expected_reference(
+            self.transport_policy, sparse.route, max_logical_page + 1,
+            int(arena.shape[0]))
         expected_fills = len(run.buckets) if expected == 'dense_dma' else 0
         session = self.qualification.reference_session(run)
         reference = run.row1_reference
+        if force_dense:
+            reference = dense_branch(reference)
 
         def original():
             reference(q, kv_cache, logical_indices, block_table_row, rows,
