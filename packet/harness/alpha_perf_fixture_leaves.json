@@ -1,0 +1,63 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "Alpha-perf queue (band arms, grade, arm loop) hub and exact pinned-container CPU tests; no box or GPU evidence",
+ "inherits": ["native41_progress_fixture_leaves.json", "native43_le_fix_queue_fixture_leaves.json"],
+ "leaves": [
+  {
+   "name": "band-2-test-scale-manifest",
+   "test": "test_alpha_perf_queue.Arm",
+   "replaces": "harness/workloads/q18a-alpha-perf-band2.json and q18a-native41-progress.json sizes and times: decode prompt, decode budget, fresh and append prompt sizes, timeouts, window_s",
+   "equivalence": "The question is which manifest and which declared standing budget the exact arm command sends through the real client and control plane. Only sizes and times are reduced, as held-f's workload() does; the workload name and the standing budget stay the frozen values, and those are what the arm checks and sends.",
+   "cannot_prove": "A 131,094-token prompt end to end, tokenization of it (the queue's /tokenize guard does that on the box), real cohort behaviour past the arena",
+   "box_evidence": false
+  },
+  {
+   "name": "arm-grade-synthetic-run",
+   "test": "test_alpha_perf_queue.Grade, test_alpha_perf_queue.ArmLoop",
+   "replaces": "A real box run: 16 arm records with their spans, and the engine log those spans select",
+   "equivalence": "The progress lines come from the real nm.ProgressTrace emitters through held-f's Emit (leaf progress-log-lines, inherited). Chunk rows are wide test-scale spans at the real row numbers, so every history band past the arena is reported through the real band_of. Arm records hold exactly the fields the grade reads, as the arm writes them.",
+   "cannot_prove": "The real speed, cohort or memory numbers; that real band 2 chunks are 1024 rows wide",
+   "box_evidence": false
+  },
+  {
+   "name": "memory-and-retry-lines",
+   "test": "test_alpha_perf_queue.Grade",
+   "replaces": "flash-s5 memory receipts from the worker and the allocator's recovered-OOM warning in the followed engine log",
+   "equivalence": "The memory line format is pinned verbatim from held-f run 2's engine stream by test_memory_receipt_regex_reads_the_recorded_line; the retry line carries the recorded words 'memory allocation failed with OOM on device N while trying to allocate B bytes'.",
+   "cannot_prove": "That dense past the boundary with eight live decoders stays within the transient budget; that is the band 2 question",
+   "box_evidence": false
+  },
+  {
+   "name": "disagree-line-words",
+   "test": "test_alpha_perf_queue.Grade",
+   "replaces": "A real TP disagreement in the engine log",
+   "equivalence": "The test lines are real ContractError and QsaDriverError texts of the engine ('local QSA layers disagree on the packed selection width', 'cached request arrays disagree'). The grade counts the substring 'disagree' outside progress lines; held-f run 2's and l-f3's streams hold 0 such lines, so the count is not polluted by a benign line.",
+   "cannot_prove": "That every possible TP disagreement logs that word; the crash-free watch and the arm's own receipts cover a disagreement that kills or hangs the engine",
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clients",
+   "test": "test_alpha_perf_queue.ArmLoop",
+   "replaces": "e3_alpha_perf_box.py arm and e3_native39_trunk_checks.py (instruments, full-idle, ingress) at the bash seam",
+   "equivalence": "The question is the loop's control flow: order, band to manifest choice, the env prefix reaching the client through engine_watched and timeout, the budget guard, GRADE_ARGS, what a dead engine does. The stubs write the records the real clients write; the real arm is proved in Arm, the check clients in their own suites, and every command line parses with the real parsers in Commands and QueueArgparse. The watch, host_crash_detected, record and the grade are the real ones.",
+   "cannot_prove": "Anything about the clients' behaviour against an engine",
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-box-tools",
+   "test": "test_alpha_perf_queue.ArmLoop",
+   "replaces": "nvidia-smi, docker, systemctl and health_ok on the box",
+   "equivalence": "Same leaf as test_native43_le_fix_queue_deltas.Bash: fixed four-rank memory rows, container running; systemctl reports the unchanged NRestarts; health_ok is true, and a dead engine is signalled by the log line the real death scan reads.",
+   "cannot_prove": "Real tool output formats (pinned by the le-fix fixtures and l-f3's box records)",
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clock",
+   "test": "test_alpha_perf_queue.ArmLoop",
+   "replaces": "Hours of box time before the arm entry guard",
+   "equivalence": "The guard compares bash SECONDS with the real LAST_ARM_ENTRY_S. Assigning SECONDS right after a named step moves the same variable the guard reads, with no change to the body text.",
+   "cannot_prove": "Real arm durations",
+   "box_evidence": false
+  }
+ ]
+}
