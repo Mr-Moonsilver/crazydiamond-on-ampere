@@ -18,6 +18,7 @@
     "A\ttools/native43_bundle_selfrun.py",
     "A\ttools/native43_clock_split.py",
     "A\ttools/native43_cpu_probe.py",
+    "A\ttools/native43_delivery_record.py",
     "A\ttools/native43_owner_seam.py",
     "A\ttools/native43_precheck_conf.py",
     "A\ttools/native43_selfrun.py",
