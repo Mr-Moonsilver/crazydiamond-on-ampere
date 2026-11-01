@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate native40 and its exact 1c334bc reference from the pinned BASE.
+"""Regenerate native40 and its exact held-b reference from the pinned BASE.
 Native39 held-b supplies the unchanged compiled libraries/packaging shell.
 Adds the short box queue and owner runner; no model settings or device action.
 """
@@ -97,10 +97,10 @@ def stage(out,label,regression,focused):
         review_sha256=closure['review_sha256'],parent_source=PARENT,
         owner_runner='q18a-native40-unarmed-hold-owner-run-<SUMS12>.py' if not parent else None,box_ready=not parent,
         native35_arm='TRUNK',
-        native38_shell_manifest=SHELL_SHA,ancestral_native38_provenance=ancestry,
-        engine_changed_vs_native38=sorted(changed-{'core/SHA256SUMS','S5-OVERLAP-GENERATION.json',
+        parent_bundle_manifest=SHELL_SHA,ancestral_parent_provenance=ancestry,
+        overlay_engine_changed_vs_parent=sorted(changed-{'core/SHA256SUMS','S5-OVERLAP-GENERATION.json',
             'e3/native-implementation-closure.json','e3/native-overlap-readiness.json','e3/decode-probe-evidence.json'}),
-        engine_changed_vs_1c334bc=[] if parent else ['core/scheduler.py','e3/engine_driver.py','e3/scheduler_hooks.py'],
+        engine_changed_vs_parent=[] if parent else ['core/scheduler.py','e3/engine_driver.py','e3/scheduler_hooks.py'],
         selftest=None if parent else regression,post_review_cpu=None if parent else focused,
         model_settings_changed=False,tail_handback=False,
         queue='runs/q18a_native40_unarmed_hold.draft.sh' if not parent else None,gpu_work=False,box_action=False)
@@ -124,7 +124,7 @@ def build(out,strict,focused):
     source_proof=freeze.source_level()
     overlay_proof=freeze.overlay_level(parent/'native30_overlay',bundle/'native30_overlay')
     proof=dict(verdict='PASS',source=source_proof,overlay=overlay_proof,negative_controls=freeze.negative_controls(),
-        branch_base=git('rev-parse',PARENT).strip(),native38_shell_sha256=SHELL_SHA,compiled_libraries_and_plugins_byte_identical=True,
+        branch_base=git('rev-parse',PARENT).strip(),parent_bundle_sha256=SHELL_SHA,compiled_libraries_and_plugins_byte_identical=True,
         parent_overlay_regenerated_from_exact_base=True,model_settings_changed=False,tail_handback=False)
     pin=sha(bundle/'SHA256SUMS');held=out/('q18a-native40-unarmed-hold-bundle-'+pin[:12]);bundle.rename(held)
     import build_native39_trunk as parent_build

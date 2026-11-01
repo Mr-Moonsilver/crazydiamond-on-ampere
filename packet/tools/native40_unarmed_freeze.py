@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed path and AST freeze vs native39 1c334bc, source and generated overlay."""
+"""Fail-closed path and AST freeze vs the pinned native39 held-b source, source and generated overlay."""
 import argparse
 import hashlib
 import json
