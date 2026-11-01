@@ -6,6 +6,7 @@ FusedNetwork, this network has several QSA layers per stage and a real QSA stage
 real-GPU event order and bytes are the VM's check, TP and PP on real NCCL are the box's.
 """
 import asyncio
+import contextlib
 from dataclasses import replace
 import os
 from pathlib import Path
@@ -28,6 +29,8 @@ s5_startup = f.s5_startup
 import lane_dispatch as ld
 import native_measurement as nm
 import native_overlap_control as control
+import probe_control
+import test_native41_progress_queue as hf
 import native_overlap_session as session
 import sparse_history_dma as shd
 import worker_bridge as wb
@@ -1224,6 +1227,23 @@ class Exposure(unittest.TestCase):
             with self.subTest(size=size), self.assertRaisesRegex(Exception, 'native-control-layer-group-invalid'):
                 asyncio.run(client.native_layer_group(size))
 
+    def test_client_call_refuses_before_the_utility_with_any_switch_off(self):
+        """The client's own guard, behind the session's: nothing reaches the utility channel."""
+        for env in (dict(self.ON, FLASH_S5_LAYER_GROUPS='0'), dict(self.ON, FLASH_S5_QSA_FUSED='0'),
+                    dict(self.ON, FLASH_S5_AUTO_ARM='0'), {}):
+            sent = []
+            async def call_utility_async(utility, payload):
+                sent.append(payload)
+                return {'size': 2}
+            client = control.NativeControlClient.__new__(control.NativeControlClient)
+            client.core = types.SimpleNamespace(call_utility_async=call_utility_async)
+            client.pending = None
+            client.engine_epoch = 7
+            with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=True):
+                with self.assertRaisesRegex(Exception, 'native-control-unknown-action'):
+                    asyncio.run(client._call({'action': 'native_layer_group', 'size': 2}))
+                self.assertEqual(sent, [])
+
     def session_call(self, env, command):
         with mock.patch.dict(os.environ, env, clear=True):
             sess = session.NativeOverlapSession.__new__(session.NativeOverlapSession)
@@ -1252,19 +1272,119 @@ class Exposure(unittest.TestCase):
         _, seen, reply = self.session_call(self.ON, {'size': 4})
         self.assertEqual((seen, reply), ([4], {'size': 4}))
 
-    def test_session_guard_text_needs_all_three_switches(self):
-        source = (ROOT / 'patches/s5_engine/native_overlap_session.py').read_text()
-        guard = source[source.index("if action == 'native_layer_group' and not ("):]
-        guard = guard[:guard.index('handler = None')]
-        for name in ('FLASH_S5_LAYER_GROUPS', 'FLASH_S5_QSA_FUSED', 'FLASH_S5_AUTO_ARM'):
-            self.assertIn(name, guard)
 
-    def test_router_exposes_it_only_with_both_switches(self):
-        source = (ROOT / 'patches/s5_engine/probe_control.py').read_text()
-        line = next(row for row in source.splitlines() if "auto_actions and env.get('FLASH_S5_LAYER_GROUPS'" in row
-                    or ("FLASH_S5_LAYER_GROUPS" in row and row.strip().startswith('if ')))
-        self.assertIn("FLASH_S5_QSA_FUSED", line)
-        self.assertIn("auto_actions", line)
+ROUTER_ALL = {'FLASH_S5_AUTO_ARM': '1', 'FLASH_S5_NATIVE_PROGRESS': 'burst', 'FLASH_S5_QSA_FUSED': '1',
+              'FLASH_S5_LAYER_GROUPS': '1'}
+
+
+def router_attach(engine_client, values):
+    """The real attach_native_router as the API server calls it (its env is the server's)."""
+    env = {'FLASH_S5_OVERLAP': '1', 'VLLM_API_KEY': hf.held.KEY}
+    env.update(values)
+    app = hf.held.App(engine_client)
+    with hf.held.fastapi_leaf():
+        state = probe_control.attach_native_router(types.SimpleNamespace(api_key=None), app, env=env)
+    (path, endpoint, methods), = app.routers[0].routes
+    assert (path, methods) == (probe_control.NATIVE_PATH, ('POST',))
+    return app, endpoint, state
+
+
+@contextlib.contextmanager
+def process_env(values):
+    with mock.patch.dict(os.environ, values):
+        for name in ROUTER_ALL:
+            if name not in values:
+                os.environ.pop(name, None)
+        yield
+
+
+class RouterCase(hf.RouterBase):
+    """The real router, session, control client and driver. Leaves are test_native41_progress_queue's, as declared there."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.fused = self.driver.install_qsa_fused()
+        self.groups = self.driver.install_layer_groups()
+
+    def unset(self):
+        self.assertEqual((self.groups.size, self.groups.counters['selections']), (1, 0))
+
+
+class Router(RouterCase):
+    async def test_all_settings_forward_the_control_to_the_real_session(self):
+        with process_env(ROUTER_ALL):
+            app, endpoint, _ = router_attach(self.frontend, ROUTER_ALL)
+            # A running engine: the engine refuses. Its DriverError is a ValueError, which this router maps to its 400.
+            self.fused.selected = True
+            self.assertEqual(await self.post(endpoint, app, 'native_layer_group', size=2),
+                             (400, {'error': 'invalid-command-json'}))
+            self.unset()
+            self.fused.selected = False
+            self.assertEqual((await self.post(endpoint, app, 'pause'))[0], 200)
+            for bad in (0, 3, '2', True, None):
+                self.assertEqual(await self.post(endpoint, app, 'native_layer_group', size=bad),
+                                 (409, {'error': 'native-control-layer-group-invalid'}))
+            self.unset()
+            # Fused not selected: size above 1 is refused, size 1 stays allowed.
+            self.assertEqual(await self.post(endpoint, app, 'native_layer_group', size=2),
+                             (400, {'error': 'invalid-command-json'}))
+            self.unset()
+            code, reply = await self.post(endpoint, app, 'native_layer_group', size=1)
+            self.assertEqual((code, reply.get('previous')), (200, 1), reply)
+            self.unset()
+            self.assertEqual((await self.post(endpoint, app, 'native_qsa_fused', fused=True))[0], 200)
+            code, reply = await self.post(endpoint, app, 'native_layer_group', size=2)
+            self.assertEqual(code, 200, reply)
+            self.assertEqual({k: reply[k] for k in ('action', 'size', 'previous', 'route')},
+                             dict(action='native_layer_group', size=2, previous=1, route='full'))
+            self.assertEqual(reply['engine_epoch'], self.driver.engine_epoch)
+            self.assertEqual((self.groups.size, self.groups.counters['selections']), (2, 1))
+            code, status = await self.post(endpoint, app, 'status')
+            self.assertEqual(code, 200, status)
+            self.assertEqual({k: status['native_layer_groups'][k] for k in ('size', 'run_ahead', 'selections', 'chunks')},
+                             dict(size=2, run_ahead=3, selections=1, chunks=0))
+            # Deselecting fused under a group size would leave a size no OPEN can honour.
+            self.assertEqual(await self.post(endpoint, app, 'native_qsa_fused', fused=False),
+                             (400, {'error': 'invalid-command-json'}))
+            self.assertIs(self.fused.selected, True)
+            # A manual control: the lease stays taken, and the same value counts no selection.
+            self.assertIs(self.policy.manual_owned, True)
+            code, reply = await self.post(endpoint, app, 'native_layer_group', size=2)
+            self.assertEqual((code, reply.get('previous')), (200, 2))
+            self.assertEqual(self.groups.counters['selections'], 1)
+
+    async def test_every_other_setting_refuses_with_409(self):
+        router_off = 'native-action-not-exposed'
+        session_off = 'session-action-not-exposed'
+        for router, process, error in (
+                (dict(ROUTER_ALL, FLASH_S5_LAYER_GROUPS='0'), ROUTER_ALL, router_off),   # step A's own settings
+                (dict(ROUTER_ALL, FLASH_S5_QSA_FUSED='0'), ROUTER_ALL, router_off),
+                (dict(ROUTER_ALL, FLASH_S5_AUTO_ARM='0'), ROUTER_ALL, router_off),
+                ({'FLASH_S5_LAYER_GROUPS': '1'}, ROUTER_ALL, router_off),
+                (ROUTER_ALL, dict(ROUTER_ALL, FLASH_S5_LAYER_GROUPS='0'), session_off),  # the session reads its own process
+                (ROUTER_ALL, dict(ROUTER_ALL, FLASH_S5_QSA_FUSED='0'), session_off),
+                (ROUTER_ALL, dict(ROUTER_ALL, FLASH_S5_AUTO_ARM='0'), session_off)):
+            with self.subTest(router=router, process=process), process_env(process):
+                app, endpoint, _ = router_attach(self.frontend, router)
+                self.assertEqual((await self.post(endpoint, app, 'pause'))[0], 200)
+                self.assertEqual(await self.post(endpoint, app, 'native_layer_group', size=2),
+                                 (409, {'error': error}))
+                self.assertEqual((await self.post(endpoint, app, 'resume'))[0], 200)
+                self.unset()
+
+
+class RouterNotInstalled(hf.RouterBase):
+    async def test_an_engine_without_the_switch_refuses_and_its_status_has_no_block(self):
+        self.driver.install_qsa_fused()
+        with process_env(ROUTER_ALL):
+            app, endpoint, _ = router_attach(self.frontend, ROUTER_ALL)
+            self.assertEqual((await self.post(endpoint, app, 'pause'))[0], 200)
+            self.assertEqual(await self.post(endpoint, app, 'native_layer_group', size=2),
+                             (400, {'error': 'invalid-command-json'}))
+            self.assertEqual((await self.post(endpoint, app, 'resume'))[0], 200)
+            code, status = await self.post(endpoint, app, 'status')
+            self.assertEqual(code, 200)
+            self.assertNotIn('native_layer_groups', status)
 
 
 class Startup(unittest.TestCase):
