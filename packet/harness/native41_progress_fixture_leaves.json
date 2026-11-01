@@ -114,6 +114,22 @@
       "equivalence": "The lines come from the real nm.ProgressTrace emitters (record and lines): one engine trace flushed per chunk after its release apply with NativeProgress.begin's identity plus mode and open_rows, one worker trace per rank flushed at each flash_s5_release begin as executor_hooks.worker_rpc_begin does. Native commands reply on all four ranks; stock RPCs reply on output rank 2 with the other ranks' rows unreplied, as worker_rpc_returned records them. Only the stamps are synthetic: whole microseconds of a fixed command shape, so each grade component is exact. Each line gets the docker RFC 3339 nanosecond prefix and the vLLM process prefix and record header; rank 3 goes to stderr so both streams are read.",
       "cannot_prove": "Box stamp values, the real vLLM logging configuration and docker's own line splitting (every line here stays below 16 KiB).",
       "box_evidence": false
+    },
+    {
+      "name": "hol-pair-boundary-driver",
+      "test": "test_e3_native_reply_hol.PairLeaf/pair_driver (InWaitPairBoundary)",
+      "replaces": "NativeSegmentDriver state around one in-wait round: the fields read by progress_in_wait, _wait_permit, _progress_owned and _route_exchange, and the driver's _drain and _drive",
+      "equivalence": "The four real driver functions run unchanged on the leaf; the leaf holds every self field they read (the test checks that set against their AST) in the open, auto-owned, mid-chunk state with a real NativeProgress in burst. _drain applies one reply with the real bookkeeping (the replied command leaves _inflight and the plan index advances, as _apply_segment does) or none; _drive records the send for plan[index] and puts it in flight. The flips between them are real state changes: the next descriptor becomes a tick-only PP_SEND/STATE_FINALIZE, a stock execute_model becomes the last stock RPC, or the reply has not arrived.",
+      "cannot_prove": "The transport poll and segment validation inside the real _drain and the command construction inside the real _drive (connected probe e3_native41_progress_probe and the DirectReplies tests).",
+      "box_evidence": false
+    },
+    {
+      "name": "handoff-held-completions",
+      "test": "test_e3_async_handoffs.HeldCompletionBackend (DispatcherTests)",
+      "replaces": "The device-event CompletionBackend behind HandoffDispatcher (through the existing FixtureCompletionBackend leaf)",
+      "equivalence": "FixtureCompletionBackend with a hold: while held, poll returns no completions, as a device event that has not fired; released, it is the fixture backend unchanged. Only test_four_rank_ack_ordering_and_no_publication_from_acks holds it, so the ack-only state is reached by construction instead of racing poll counts against the transport's receiver threads. The reverse order (completions before acks) is the lease test test_completions_before_acks_publish_only_after_every_ack.",
+      "cannot_prove": "Device completion timing.",
+      "box_evidence": false
     }
   ]
 }
