@@ -19,6 +19,14 @@ def propose(out):
     out.mkdir()
     bundle = out / 'bundle'
     b.stage(dict(tools=[]), bundle)
+    # Scratch only: the source pins of the review the gate chain prepares later (prepare_review's rule), so the generator's
+    # review check sees this tree's harness. Its receipts are not read here, and the moved engine files do not depend on it.
+    review_path = bundle / 'e3_builder/native_candidate_review.json'
+    review = json.loads(review_path.read_text())
+    review['source_shas'] = {n: b.sha(b.ROOT / 'patches/s5_engine' / n) for n in review['source_shas']}
+    review['harness_source_shas'] = {str(Path(n).relative_to('harness')): b.sha(b.ROOT / n)
+                                     for n in b.git('ls-files', 'harness').splitlines() if (b.ROOT / n).is_file()}
+    b.dump(review_path, review)
     b.regenerate_overlay(out, bundle)
     overlay = bundle / 'native30_overlay'
     rows, parent = b.verify(overlay), b.verify(b.PARENT / 'native30_overlay')
