@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 ROOT=Path(__file__).resolve().parents[1]
-sys.path[:0]=[str(ROOT/'tools'),str(ROOT/'patches/s5_engine')]
+sys.path[:0]=[str(ROOT/'tools'),str(ROOT/'patches/s5_engine'),str(ROOT/'harness')]
 from build_native30_held import sha,dump,manifest,verify
 from build_native38_plain_bind import regression_from,focused_from
 from native_readiness import digest,payload_identity,verify_finalized_package
@@ -37,7 +37,8 @@ def review_for(bundle,regression,focused,label):
     if label!='parent':
         r['cpu_regression']=regression;r['post_review_cpu']=focused
         r['native40_unarmed_hold']=dict(base=PARENT,scope='Physical split-bank stock-prefill exclusion, no automatic native admission; existing 30s idle FULL return covers unarmed holds',
-            fixture_leaves='native40_fixture_leaves.json',device_execution='NOT_RUN',model_settings_changed=False,tail_handback=False)
+            fixture_leaves='native40_fixture_leaves.json',device_execution='NOT_RUN',model_settings_changed=False,tail_handback=False,
+            targeted_queue=['startup','bind','unarmed-stock-prefill','row1','one-fresh-W2'],speed_claim=False)
     dump(p,r);dump(bundle/'native30-review.json',r)
     return r
 
@@ -49,7 +50,8 @@ def prepare_review(strict,focused):
     reg['basis']='fresh full strict native40 CPU regression';focus['basis']='native40 and affected native39/native38/admission/driver/bridge/storage suites'
     review['cpu_regression']=reg;review['post_review_cpu']=focus
     review['native40_unarmed_hold']=dict(base=PARENT,scope='Physical split-bank stock-prefill exclusion, no automatic native admission; existing 30s idle FULL return covers unarmed holds',
-        fixture_leaves='native40_fixture_leaves.json',device_execution='NOT_RUN',model_settings_changed=False,tail_handback=False)
+        fixture_leaves='native40_fixture_leaves.json',device_execution='NOT_RUN',model_settings_changed=False,tail_handback=False,
+            targeted_queue=['startup','bind','unarmed-stock-prefill','row1','one-fresh-W2'],speed_claim=False)
     return review
 
 def stage(out,label,regression,focused):

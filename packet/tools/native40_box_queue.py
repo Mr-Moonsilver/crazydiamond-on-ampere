@@ -86,6 +86,7 @@ def derive():
             start = text.index('qualification_phase rule4_controls\n')
             end = text.index('stop_pressure || true\nstop_sampler || true\n', start)
             text = text[:start] + TARGET + text[end:]
+            text = '\n'.join('# Native40 targeted: startup/bind -> unarmed stock hold -> row1 -> one fresh W2 -> owned cleanup; no speed claim.' if line.startswith('# Native39 trunk:') else line for line in text.split('\n'))
             text = text.replace('240s systemctl restart', '"$(native40_budget restart)s" systemctl restart')
             text = text.replace('python3 "$H/e3_native_startup_grade.py"',
                                 'timeout "$(native40_budget bootstrap)s" python3 "$H/e3_native_startup_grade.py"')
