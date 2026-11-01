@@ -1,5 +1,9 @@
 {
  "definitions": {
+  "harness/e3_w1_decode_driver.py": [
+   "StreamState.__init__",
+   "stream_reader"
+  ],
   "harness/selftest.py": [
    "module:For#12"
   ],
@@ -87,9 +91,13 @@
  },
  "parent": "72ea0baa208e1cfc04446898bbd58a0f3c4f84b8",
  "paths": [
+  "A\tharness/e3_native39_round.py",
   "A\tharness/e3_native39_trunk_checks.py",
   "A\tharness/e3_native39_trunk_probe.py",
+  "A\tharness/e3_native39_w1.py",
   "A\tharness/e3_native39_w2_length.py",
+  "M\tharness/e3_w1_decode_driver.py",
+  "A\tharness/fixtures/native39_box_access_extract.json",
   "A\tharness/fixtures/native39_box_extract.json",
   "A\tharness/native39_fixture_leaves.json",
   "A\tharness/native39_trunk_gate.py",
@@ -106,10 +114,12 @@
   "M\tpatches/s5_engine/native_overlap_session.py",
   "M\tpatches/s5_engine/scheduler_hooks.py",
   "A\ttools/build_native39_trunk.py",
+  "A\ttools/native39_box_access_extract.py",
   "A\ttools/native39_box_extract.py",
   "A\ttools/native39_trunk_bundle_selfrun.py",
   "A\ttools/native39_trunk_cpu_probe.py",
   "A\ttools/native39_trunk_declarations.json",
+  "A\ttools/native39_trunk_delivery_record.py",
   "A\ttools/native39_trunk_freeze.py",
   "A\ttools/native39_trunk_queue_drafts.py",
   "A\ttools/native39_trunk_selfrun.py",

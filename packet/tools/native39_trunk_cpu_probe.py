@@ -93,7 +93,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native34_*.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native35_*.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native39_trunk_queue.py'))
-EXPECTED_TESTS=208  # the 183 P-c probe cases plus the 25 native39 trunk queue cases; pinned into the frozen runner gate
+EXPECTED_TESTS=217  # the 183 P-c probe cases plus the 34 native39 trunk queue cases; pinned into the frozen runner gate
 result=unittest.TextTestRunner(verbosity=2).run(suite)
 assert not torch.cuda.is_initialized()
 identity_receipts=sys.modules['test_native30_identity'].IDENTITY_RECEIPTS
@@ -253,13 +253,19 @@ assert sorted(r['case'] for r in cont_queue)==['capacity-only-continues','error-
 assert [r['w2_gate_passed'] for r in cont_queue if r['case']=='capacity-only-continues']==[[0,1]] and not any(r['w1_run'] for r in cont_queue if r['case']!='capacity-only-continues')
 pc_continuation=dict(composition=cont_composition,refusal=cont_refusal,queue=cont_queue)
 Path('/out/native35-p-c-continuation-check.json').write_text(json.dumps(pc_continuation,sort_keys=True,indent=2)+'\n')
-# Native39 trunk: the queue's own segments under bash (bind receipt with the real host observer, plain W1 + idle + W2
-# with the real client and grade, W2 length guard, sourced settings through the real launcher render).
+# Native39 trunk: the queue's own segments under bash (bind receipt with the real host observer; row4 declared
+# NOT_RUN, per-rank instruments, sealed native W1, ingress, typed FULL + idle before the plain W1, W2 rounds,
+# returns and summary with the real checks, client and grade; W2 length guard; sourced settings through the real
+# launcher render; real box access lines).
 trunk_cases=sys.modules['test_native39_trunk_queue'].QUEUE_RECEIPTS
-assert sorted(r['case'] for r in trunk_cases)==['bind-absent', 'bind-after-first-200', 'bind-before-first-200', 'bind-other-container', 'guard-count-differs', 'guard-declared-counts', 'guard-no-engine', 'guard-refused-band', 'guard-tampered-declaration', 'health-deadline', 'launcher-loopback-host', 'tail-not-idle-withholds-w2', 'tail-plain-w1-idle-w2', 'tail-unqualified-withholds-all'] and all(r['verdict']=='PASS' for r in trunk_cases)
+assert sorted(r['case'] for r in trunk_cases)==['bind-absent', 'bind-after-first-200', 'bind-before-first-200', 'bind-other-container', 'box-access-lines', 'guard-count-differs', 'guard-declared-counts', 'guard-no-engine', 'guard-refused-band', 'guard-tampered-declaration', 'health-deadline', 'launcher-loopback-host', 'round-wrapper-declared-not-run-only', 'tail-foreign-at-entry-no-split', 'tail-hidden-arrival-invalid', 'tail-maps-unreadable-withholds', 'tail-not-idle-withholds-w2', 'tail-observer-mapped-withholds', 'tail-observer-off-sealed-w1-plain-on-full-rounds', 'tail-transient-foreign-ingress-invalid', 'tail-unqualified-withholds-all', 'tail-unrestored-split-withholds-plain'] and all(r['verdict']=='PASS' for r in trunk_cases)
 assert {r['case']:r['bind'] for r in trunk_cases if r['case'].startswith('bind-')}=={'bind-absent':'INCONCLUSIVE','bind-after-first-200':'FAIL','bind-before-first-200':'PASS','bind-other-container':'INCONCLUSIVE'}
 assert [r['trunk_hosts'] for r in trunk_cases if r['case']=='launcher-loopback-host']==[['0.0.0.0','127.0.0.1']]
-assert [r['plain_requests'] for r in trunk_cases if r['case']=='tail-plain-w1-idle-w2']==[8]
+assert [r['plain_requests'] for r in trunk_cases if r['case']=='tail-observer-off-sealed-w1-plain-on-full-rounds']==[8]
+assert {r['case']:r['instruments'] for r in trunk_cases if 'instruments' in r}=={'tail-observer-mapped-withholds':'FAIL','tail-maps-unreadable-withholds':'INCONCLUSIVE'}
+assert [(r['full_idle'],r['plain_requests']) for r in trunk_cases if r['case']=='tail-unrestored-split-withholds-plain']==[('INCONCLUSIVE',0)]
+assert [r['split_entries'] for r in trunk_cases if r['case']=='tail-foreign-at-entry-no-split']==[0]
+assert [r['accepted'] for r in trunk_cases if r['case']=='round-wrapper-declared-not-run-only']==[['declared']]
 Path('/out/native39-trunk-queue-check.json').write_text(json.dumps(dict(cases=trunk_cases,slots=trunk_slots),sort_keys=True,indent=2)+'\n')
 record=dict(native39_trunk_queue='PASS',native39_trunk_queue_receipts=trunk_cases,native39_trunk_window_active_and_cleanup_s=active_and_cleanup,native35_p_c_continuation='PASS',native35_p_c_continuation_receipts=pc_continuation,native35_p_c_row4='PASS',native35_p_c_row4_receipts=pc_row4,native35_localize_off='PASS',native35_p_c_inert=inert_receipt,native35_p_c_cleanup_receipts=cleanup,native35_row4_l2='PASS',native35_p_b_row4_receipts=row4,native35_l2_cli_receipts=l2_cli,native35_l2_timing_receipts=l2_timing,
     native35_arm=role,native35_performance='PASS',native35_performance_receipts=perf_receipts,native35_builder='PASS',native35_builder_view=builder_view,native35_cli_receipts=native35_cli,native35_o_arm_readback=native35_readback,native35_window_active_and_cleanup_s=active_and_cleanup,probe_environment={k:os.environ[k] for k in ('FLASH_NATIVE34_DIAG','FLASH_NATIVE34_ARM','FLASH_NATIVE34_READBACK','FLASH_NATIVE35_ARM')},native34_readback='PASS',readback_check=readback_check,native34_protocol='PASS',protocol_receipts=protocol_receipts,draft_window_slots='PASS',draft_window_receipts=slot_receipts,arm=role,final_input_proof=True,native34=native34_receipt,owner_prelaunch=owner_prelaunch,native31=native31_receipt,receipt_policy='PASS',receipt_budget_bytes=policy.BYTES_PER_RANK,receipt_tail_s=policy.TAIL_S,row4_cli_validation='PASS',cli_receipts=cli_receipts,identity_receipts=identity_receipts,verdict='PASS' if result.wasSuccessful() and not result.skipped and result.testsRun==EXPECTED_TESTS else 'FAIL',tests_run=result.testsRun,skips=len(result.skipped),plugin_loader='PASS',identity_capture_check='PASS' if result.wasSuccessful() else 'FAIL',identity_timeout_negative_rejected=result.wasSuccessful(),mounted_modules=modules,cuda_initialized=False,gpu_execution=False,

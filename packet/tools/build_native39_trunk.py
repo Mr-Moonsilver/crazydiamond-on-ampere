@@ -50,15 +50,17 @@ ENGINE_CHANGED = {'core/scheduler.py', 'e3/engine_driver.py', 'e3/native_overlap
 METADATA = {'S5-OVERLAP-GENERATION.json', 'e3/native-implementation-closure.json', 'e3/native-overlap-readiness.json',
             'e3/decode-probe-evidence.json', 'core/SHA256SUMS'}
 SOURCE_CHANGED = {'engine_driver.py', 'native_overlap_session.py', 'scheduler_hooks.py', 'native_candidate_review.json'}
-HARNESS_CHANGED = {'selftest.py'}
+HARNESS_CHANGED = {'selftest.py', 'e3_w1_decode_driver.py'}
 HARNESS_ADDED = {'e3_native39_trunk_checks.py', 'e3_native39_trunk_probe.py', 'e3_native39_w2_length.py',
+                 'e3_native39_w1.py', 'e3_native39_round.py', 'fixtures/native39_box_access_extract.json',
                  'fixtures/native39_box_extract.json', 'native39_fixture_leaves.json', 'native39_trunk_gate.py',
                  'runs/q18a_native39_trunk.draft.sh', 'runs/q18a_native39_trunk_declare.sh',
                  'runs/q18a_native39_trunk_settings.sh', 'test_native39_trunk.py', 'test_native39_trunk_queue.py',
                  'w1_trace.py', 'workloads/q18a-w2-overlap-native39.json'}
 TOOLS = ('build_native39_trunk.py', 'native39_trunk_freeze.py', 'native39_trunk_declarations.json',
          'native39_trunk_cpu_probe.py', 'native39_trunk_bundle_selfrun.py', 'native39_trunk_tools_derive.py',
-         'native39_trunk_selfrun.py', 'native39_trunk_queue_drafts.py', 'native39_w2_length.py', 'native39_box_extract.py')
+         'native39_trunk_selfrun.py', 'native39_trunk_queue_drafts.py', 'native39_w2_length.py', 'native39_box_extract.py',
+         'native39_box_access_extract.py')
 PLUGINS = ('native30_host.py', 'native30_policy.py', 'native34_diag.py', 'native34_worker.py', 'native34_control.py',
            'native34_storage.py', 'native34_indexer.py', 'native34_readback.py')
 BUNDLE_CHANGED = ({'native30-provenance.json', 'native30-review.json', 'e3_builder/native_candidate_review.json'}
@@ -154,7 +156,11 @@ def details():
         scope='native37 robust + native38 plain bind + native39 P1/P2 (positive-frontier and running stock prefills held on '
               'an armed split route, typed empty-window prefill_end refusal) under the P-c speed queue',
         queue='q18a-native39-trunk: P-c with a plannable W2 length (guard before row1), loopback API server, bind receipt, '
-              'plain W1 control with an idle precondition for W2 and a descriptive trunk summary',
+              'observer and offers off (FLASH_S5_REPLAY_OBSERVER=0, FLASH_S5_ENGINE_OFFERS=0) gated on per-rank worker maps, '
+              'row4 declared NOT_RUN, a sealed native W1 (drained, exact cohort ids at split entry/begin/end) with run-scoped '
+              'ingress, the plain W1 control only on proven typed FULL + idle with its route and ingress checked, W2 only on '
+              'W1 and plain ingress PASS with per-round idle/instruments/ingress, descriptive return timing and a descriptive '
+              'trunk summary whose plain ratios exist only for a valid plain W1',
         w2=dict(manifest='workloads/q18a-w2-overlap-native39.json',
                 fresh={k: manifest_decl['fresh'][k] for k in ('prompt_tokens_declared', 'tokens', 'residue', 'gap', 'plans')},
                 append={k: manifest_decl['append'][k] for k in ('prompt_tokens_declared', 'tokens', 'residue', 'gap', 'plans')},
