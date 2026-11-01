@@ -254,6 +254,11 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
 def install_engine(engine, *, env=None, clock=time.monotonic):
     """Install the engine-side composition at the generated ``__init__`` seam."""
     env = os.environ if env is None else env
+    auto = env.get('FLASH_S5_AUTO_ARM', '0')
+    if auto not in ('0', '1'):
+        raise StartupError('invalid boolean setting: FLASH_S5_AUTO_ARM')
+    if auto == '1' and (mode_settings(env) is not None or not _enabled(env)):
+        raise StartupError('auto-arm requires the native overlap composition')
     if mode_settings(env) is not None:
         # The decode-only probe has no engine-side lane composition.
         return None
@@ -327,6 +332,9 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     engine._flash_s5_admission = controller
     engine._flash_s5_driver = driver
     bootstrap_full_startup(engine, driver, timeout_s=config.reply_timeout_s)
+    if auto == '1':
+        from native_auto_arm import install
+        install(engine, driver, env)
     return composition
 
 

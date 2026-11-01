@@ -17,6 +17,7 @@ closure only. Missing closure remains refused; hardware/release qualification
 is never supplied by this session's status metadata.
 """
 import time
+import os
 
 from native_overlap_control import NativeControlClient
 from native_measurement import select_window_evidence, control_path_delta
@@ -83,6 +84,8 @@ class NativeOverlapSession:
         if run_id is not None and not _label(run_id):
             raise NativeOverlapSessionError('session-run-id-invalid')
         handler = getattr(self, '_action_' + str(action), None)
+        if action == 'release_auto_arm' and os.environ.get('FLASH_S5_AUTO_ARM', '0') != '1':
+            handler = None
         if handler is None:
             raise NativeOverlapSessionError('session-action-not-exposed')
         if self.run_id is not None and run_id is not None and run_id != self.run_id:
@@ -105,6 +108,11 @@ class NativeOverlapSession:
         return result
 
     # -- prepare ---------------------------------------------------------
+    async def _action_release_auto_arm(self, command):
+        if self.measure_start_ns is not None:
+            raise NativeOverlapSessionError('release-with-open-measurement')
+        return await self.control.release_auto_arm()
+
     async def _action_prepare(self, command):
         target = command.get('target_route')
         if target not in ('full', 'split'):

@@ -54,7 +54,7 @@ ROOT = HERE.parents[1]
 
 E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend',
               'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver',
-              'executor_hooks', 'scheduler_hooks', 's5_startup',
+              'executor_hooks', 'scheduler_hooks', 's5_startup', 'native_auto_arm',
               'admission_metadata', 'worker_bridge',
               'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma',
               'native_source', 'row1_oracle', 'row1_exactness',

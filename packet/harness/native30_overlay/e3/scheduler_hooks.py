@@ -1460,7 +1460,11 @@ class PrefillAdmissionController:
             raise E3ContractError('native admission intent is not armed')
         if intent.get('owner') != 'engine-core':
             raise E3ContractError('native admission intent has no engine owner')
-        if intent.get('phase') not in NATIVE_ADMISSION_PHASES:
+        policy = getattr(owner, 'auto_arm', None)
+        if intent.get('phase') == 'auto-prefill' and policy is not None:
+            if not policy.bound_intent(intent):
+                raise E3ContractError('auto admission intent lost its exact request scope')
+        elif intent.get('phase') not in NATIVE_ADMISSION_PHASES:
             raise E3ContractError('native admission intent names no native phase')
         if intent.get('engine_epoch') != self.engine_epoch:
             raise E3ContractError('native admission intent names another engine epoch')
@@ -1767,6 +1771,9 @@ class PrefillAdmissionController:
             if found is None:
                 return None
             queue, request = found
+        policy = getattr(owner, 'auto_arm', None)
+        if policy is not None and policy.active and not policy.permits(request):
+            return None
         if self._request_refuses(scheduler, request):
             return self._refuse(request, 'request-refused')
         manager = scheduler.kv_cache_manager

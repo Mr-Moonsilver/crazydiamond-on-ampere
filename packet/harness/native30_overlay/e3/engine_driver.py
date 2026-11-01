@@ -2832,10 +2832,14 @@ class NativeSegmentDriver:
                 'clock_basis': self.clock_basis}
 
     def _arm_admission(self, phase):
-        if phase not in ADMISSION_PHASES:
-            raise DriverError('native-admission-phase-unknown')
-        if phase not in NATIVE_ADMISSION_PHASES:
-            raise DriverError('native-admission-phase-not-native')
+        policy = getattr(self, 'auto_arm', None)
+        auto = (phase == 'auto-prefill' and policy is not None
+                and policy.active and policy._internal)
+        if not auto:
+            if phase not in ADMISSION_PHASES:
+                raise DriverError('native-admission-phase-unknown')
+            if phase not in NATIVE_ADMISSION_PHASES:
+                raise DriverError('native-admission-phase-not-native')
         if not self._engine_paused():
             # The phase is chosen on a frozen engine and takes effect when the
             # caller resumes; arming mid-step would park into live sampling.
@@ -2869,6 +2873,9 @@ class NativeSegmentDriver:
                   'armed': True,
                   'seq': self._admission_seq,
                   'armed_ns': int(self._monotonic_ns())}
+        if auto:
+            intent.update(origin='auto-arm', selection_seq=policy.selection_seq,
+                          request_uid=policy._request().request_id)
         self._admission_intent = intent
         self._record('admission_armed', phase=phase, seq=intent['seq'],
                      route_generation=self.route_generation)
@@ -2895,6 +2902,12 @@ class NativeSegmentDriver:
         return dict(intent)
 
     def submit_control(self, command):
+        policy = getattr(self, 'auto_arm', None)
+        if policy is not None:
+            return policy.manual_control(command, self._submit_control)
+        return self._submit_control(command)
+
+    def _submit_control(self, command):
         if type(command) is not dict:
             raise DriverError('native-control-command-not-an-object')
         action = command.get('action')
@@ -3080,6 +3093,13 @@ class NativeSegmentDriver:
         self._stock_steps_skipped += 1
 
     def _status_record(self, now=None):
+        result = self._status_record_base(now)
+        policy = getattr(self, 'auto_arm', None)
+        if policy is not None:
+            result['auto_arm'] = policy.snapshot()
+        return result
+
+    def _status_record_base(self, now=None):
         now = int(self._monotonic_ns()) if now is None else now
         epochs = set(self._storage_epochs.values())
         census = self._last_census

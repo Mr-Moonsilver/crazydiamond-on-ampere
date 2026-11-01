@@ -825,7 +825,9 @@ def control_pending(engine):
 def native_work_pending(engine):
     """Keep the process loop awake for native ownership, even while paused."""
     driver = getattr(engine, '_flash_s5_driver', None)
-    return bool(getattr(driver, 'active', False)) or control_pending(engine)
+    policy = getattr(driver, 'auto_arm', None)
+    return (bool(getattr(policy, 'active', False))
+            or bool(getattr(driver, 'active', False)) or control_pending(engine))
 
 
 def _stock_step_bypass(driver, result):
@@ -845,6 +847,9 @@ def engine_idle_tick(engine):
     Normal active stock steps retain their existing driver seam and quantum.
     """
     driver = getattr(engine, '_flash_s5_driver', None)
+    policy = getattr(driver, 'auto_arm', None)
+    if policy is not None and policy.tick():
+        return _stock_step_bypass(driver, ({}, False))
     tick = getattr(driver, 'control_tick', None)
     pump = getattr(driver, 'pump_control', None)
     if not callable(tick) and not callable(pump):
@@ -910,6 +915,11 @@ def before_abort(engine, request_ids):
 
 
 def before_pause(engine, mode):
+    policy = getattr(getattr(engine, '_flash_s5_driver', None), 'auto_arm', None)
+    if policy is not None:
+        if policy.active:
+            raise E3ContractError('pause-refused:auto-arm-cycle-owned')
+        policy.manual_owned = True
     driver = _driver(engine)
     if driver is not None:
         return driver.stop('pause', drain=False)

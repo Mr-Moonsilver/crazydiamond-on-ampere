@@ -254,7 +254,7 @@ class HarnessCleanup(unittest.TestCase):
             (directory / 'w1.json').write_text(json.dumps(
                 {'schema': 2, 'mode': 'native-overlap', 'summary': {'verdict': 'INCONCLUSIVE', 'routes': {}}, 'repeats': []}))
             extra, argv = w2.w2_argv(directory, server.url, 0)
-            with patch.dict(os.environ, w2.round_env(extra)), patch.object(rounds, 'perf', t3_subject()):
+            with w2.package_inventory(), patch.dict(os.environ, w2.round_env(extra)), patch.object(rounds, 'perf', t3_subject()):
                 self.assertEqual(rounds.main(argv), 2)
             record = json.loads((directory / 'overlap-round-0.json').read_text())
         return record, [c['action'] for c in server.commands]
