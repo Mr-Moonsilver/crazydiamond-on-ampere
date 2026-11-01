@@ -1,0 +1,20 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "Reuse clock bracket (claude/reuse-clock-bracket): e3_native_performance.native_window proves each native boundary by the engine's own monotonic sample lying inside this client's bracket of the same call (harness/native43_boundary_clock.prove, Codex 109313a bytes, sha256 7337558ab350f786f9b3ec77264a03983efe02d219b2af0b6ec801687b8efcda), instead of requiring the client's boot_id/time namespace to equal the engine's. Tests: test_e3_native_measurement_clients.NativeWindowSource and test_native35_performance (source_packets, AggregateGrade, TwoRoundComposition). Every leaf below replaces a real engine/box object only on the hub CPU or in the pinned CPU container; none is box evidence. The reuse grade logic (native35_lifetime_grade, e3_q18a_lifecycle) is unchanged.",
+ "leaves": [
+  {
+   "name": "cpu-reuse-clock-begin-sample",
+   "replaces": "The engine status record inside the native session's prefill_begin reply (engine_driver._status_record: observed_clock_ns and clock), read over HTTP POST /v1/flash_s5_native_overlap by e3_native_performance.prefill, in test_native35_performance.begin_call and test_e3_native_measurement_clients.NativeWindowSource.setUpClass",
+   "equivalence": "The sample is the actual CPU NativeSegmentDriver's own _monotonic_ns() and _clock_record(now), the two calls engine_driver._status_record makes for observed_clock_ns and clock, so the field names, int type and 'clock-monotonic' basis are the driver's. It is taken between two time.monotonic_ns() reads of this process, at the same place e3_native_performance.prefill takes local_start and begin_recv_ns around client.call('prefill_begin'), and before the journal runs, as the real prefill_begin precedes the fresh request. The frozen native_window and native43_boundary_clock.prove grade it unchanged.",
+   "cannot_prove": "That the box CT's monotonic clock and the engine container's monotonic clock are the same clock (the hub clock split and the box run decide), the HTTP round-trip time on the box, or that the box bracket stays under the 10 s bound",
+   "box_evidence": false
+  },
+  {
+   "name": "cpu-reuse-clock-end-bracket",
+   "replaces": "The client's per-call bracket of the native session's prefill_end reply (time.monotonic_ns() before client.call('prefill_end') and after it returns, e3_native_performance.prefill end_send_ns/end_ns) around the engine's raw_journal_evidence sample, in test_native35_performance.packet and test_e3_native_measurement_clients.NativeWindowSource.setUpClass",
+   "equivalence": "raw_journal_evidence is the actual CPU driver's overlap_evidence(start, stop) reply, which carries the driver's own observed_clock_ns/clock; the bracket is two time.monotonic_ns() reads of this process immediately around that call, as prefill brackets the HTTP call. client_bracket has exactly the four fields prefill writes (start_ns, begin_recv_ns, end_send_ns, end_ns). Negatives mutate only these recorded values: proved False, sample outside its bracket (begin and end), missing begin_recv_ns/end_send_ns (a missing client stamp), missing engine sample, basis 'wall', a bracket over 10 s, float/str stamps or samples, and a measured window outside client_bracket; the boot_id/time-namespace mismatch case proves on the new code and is refused by the pre-fix identity equality.",
+   "cannot_prove": "Any box transport latency, a non-monotonic or stepped clock on the box, or the engine's real prefill_end timing under a 197k reuse",
+   "box_evidence": false
+  }
+ ]
+}
