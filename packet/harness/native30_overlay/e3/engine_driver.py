@@ -715,6 +715,43 @@ _SEGMENT_ROLE = {
 }
 
 
+def _continuation(kind, cursor):
+    """The host continuation position a TP peer's accepted cursor names.
+
+    After STATE_FINALIZE a worker reports 'commit' once its own state event
+    already completed and 'state_finalize' until then. That difference is
+    rank-local device completion, not a later host position, so both are the
+    same continuation for that command. Every other field and phase is kept.
+    """
+    if cursor is None:
+        return None
+    phase = cursor.phase
+    if kind is SegmentKind.STATE_FINALIZE and phase == 'commit':
+        phase = 'state_finalize'
+    return (phase, cursor.layer, cursor.bucket)
+
+
+def _agreement_detail(command, targets, accepted):
+    """One bounded diagnostic for a refused TP agreement; built only on raise."""
+    def flag(value):
+        return int(bool(value))
+    tx = command.transaction
+    rows = []
+    for item in accepted:
+        if item.worker_rank not in targets:
+            continue
+        cursor = item.cursor
+        rows.append('r%d:acc=%d,pend=%d,paused=%d,cursor=%s,profile=%d,tail=%d' % (
+            item.worker_rank, flag(item.accepted), flag(item.pending), flag(item.paused),
+            'none' if cursor is None else '%s/%d/%d' % (cursor.phase, cursor.layer, cursor.bucket),
+            flag(item.profile_boundary), flag(item.tail_boundary)))
+    uid = hashlib.sha256(str(tx.request_uid).encode()).hexdigest()[:16]
+    return (' [command=%s stage=%d layer=%s op_seq=%d txn_seq=%d chunk=%d-%d uid_sha=%s %s]' % (
+        getattr(command.kind, 'value', str(command.kind)), command.stage,
+        command.descriptor.layer_start, command.op_seq, tx.txn_seq, tx.chunk_start,
+        tx.chunk_end, uid, ' '.join(rows)))[:1024]
+
+
 @dataclass
 class PPSubmissionObligation:
     """Accepted sends require matching receive submissions even during stop.
@@ -1410,15 +1447,19 @@ class NativeSegmentDriver:
                 self._ingest_report(report)
             return
         paused = {item.paused for item in accepted if item.accepted}
-        cursors = {item.cursor for item in accepted if item.accepted}
+        cursors = {_continuation(descriptor.kind, item.cursor)
+                   for item in accepted if item.accepted}
         if len(paused) != 1 or len(cursors) != 1:
-            raise DriverError('TP workers disagree on the layer continuation')
+            raise DriverError('TP workers disagree on the layer continuation'
+                              + _agreement_detail(self._command, targets, accepted))
         boundaries = {item.profile_boundary for item in accepted if item.accepted}
         if len(boundaries) != 1:
-            raise DriverError('TP workers disagree on the QSA submission boundary')
+            raise DriverError('TP workers disagree on the QSA submission boundary'
+                              + _agreement_detail(self._command, targets, accepted))
         tail_boundaries = {item.tail_boundary for item in accepted if item.accepted}
         if len(tail_boundaries) != 1:
-            raise DriverError('TP workers disagree on the QSA tail boundary')
+            raise DriverError('TP workers disagree on the QSA tail boundary'
+                              + _agreement_detail(self._command, targets, accepted))
         representative = targets[0]
         self.last_ticket[descriptor.stage] = self.tickets[representative]
         if descriptor.kind is SegmentKind.PREPARE and self.bound_ticket is None:
