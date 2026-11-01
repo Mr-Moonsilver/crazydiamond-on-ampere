@@ -32,7 +32,8 @@ TOOLS=('build_native41_autoarm.py','native41_autoarm_freeze.py','native41_autoar
        'native41_box_queue.py','native41_box_cpu_probe.py','native41_box_selfrun.py')
 SCOPE=('Opt-in engine-owned FCFS automatic native cycles for plain requests (request binding, real drain, typed route '
        'ACKs, one-request FULL handback, manual lease exclusion), the auto-arm actions on the native router only with '
-       'FLASH_S5_AUTO_ARM=1, and a read-only auto window; default-off unchanged')
+       'FLASH_S5_AUTO_ARM=1 (release_auto_arm only), status-receipt proof and client-basis speed in the box arms, '
+       'and the unarmed check\'s CT-side container clock proof; default-off unchanged')
 TARGETED=['startup','bind','unarmed-stock-prefill','plain-W2 stock-0','auto-0','stock-1','auto-1','typed-FULL']
 META={'core/SHA256SUMS','S5-OVERLAP-GENERATION.json','e3/native-implementation-closure.json',
       'e3/native-overlap-readiness.json','e3/decode-probe-evidence.json'}
@@ -113,7 +114,7 @@ def runner_swaps():
             ('from native40_box_gate import window_ok','from native41_box_gate import window_ok'),
             ("tests_run',0)==%d and"%n40,"tests_run',0)==%d and"%expected_tests()),
             ('        # Native40: exact frozen Core/hold/typed-ACK proof, distinct from queue-leaf tests.',
-             '        # Native41: exact frozen connected auto-arm and read-only window cases, distinct from queue-leaf tests.'),
+             '        # Native41: exact frozen connected auto-arm and status-receipt cases, distinct from queue-leaf tests.'),
             ("engine.get('schema')=='native40-selfrun/1'","engine.get('schema')=='native41-selfrun/1'"),
             ("(engine.get('connected') or {}).get('verdict')=='PASS'",
              "sorted(engine.get('cases') or {})==%r\n                and all((c or {}).get('verdict')=='PASS' for c in engine['cases'].values())"%engine_cases()))

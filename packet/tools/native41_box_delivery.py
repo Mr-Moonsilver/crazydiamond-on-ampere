@@ -28,8 +28,8 @@ def main():
     assert q['frozen_runner_sha256'] == b['runner_sha256']
     assert q['tests_run'] == b['expected_selfrun_tests'] and q['owner_prelaunch']['verdict'] == 'PASS'
     assert n['negative_control'] is True
-    assert (n['cases']['auto']['error'], n['cases']['window-auto']['error']) == (
-        'ordinary-requests-trigger-native-cycle', 'session-action-not-exposed')
+    assert (n['cases']['auto']['error'], n['cases']['receipts-auto']['error']) == (
+        'ordinary-requests-trigger-native-cycle', 'auto-receipts-complete')
     assert off['candidate_sha256'] == e['cases']['off']['sha256']
     assert re.search(r'^SUMMARY checks=15 pass=15 fail=0$', a.precheck.read_text(), re.M)
     assert sha(Path(b['bundle']) / 'SHA256SUMS') == b['manifest']

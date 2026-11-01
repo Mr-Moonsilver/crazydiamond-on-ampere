@@ -196,6 +196,7 @@ def run(mode):
     for _ in range(4):conn.step()
     before=cohort.num_output_tokens
     req=conn.request('x'*257 if mode=='long-id' else 'long',197315 if mode=='refuse' else (32721 if mode=='below-threshold' else 32801),outputs=8)
+    cohort_prefilling=cohort.num_computed_tokens<cohort.num_prompt_tokens
     injected=False
     pending_checks=0
     reuse=None
@@ -247,10 +248,11 @@ def run(mode):
     elif mode=='running-prefill':
         # native_auto_arm._cohort refuses a cohort whose member is still prefilling
         # (num_computed_tokens < num_prompt_tokens), so stock starts the long head
-        # beside it: never selected, never on split, and the policy names why.
+        # beside it: never selected and never on split. The engine records no
+        # reason field; the rule's precondition is checked at the head's arrival.
         snap=policy.snapshot()
-        check('running-prefill-cohort-not-selected',snap['selection_seq']==0 and not conn.native
-              and (snap['last_unselected'] or {}).get('reason')=='cohort',last=snap['last_unselected'])
+        check('running-prefill-head-arrived-during-cohort-prefill',cohort_prefilling)
+        check('running-prefill-cohort-not-selected',snap['selection_seq']==0 and not conn.native)
         check('running-prefill-never-split',not conn.driver._split_ready and all(not r['split'] for r in conn.traces))
         check('running-prefill-decoder-continues',cohort.num_output_tokens>before)
     elif mode=='off':

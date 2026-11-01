@@ -7,9 +7,19 @@ append. No prepare, admission, prefill_begin or other native command is sent
 around the measured prefill. The stock arm keeps the manual lease (auto-arm
 suppressed). The auto arm pauses, releases and resumes once while the standing
 cohort is open, before its decode-only window. The engine policy alone then
-decides whether the fresh prompt runs natively; the arm reads only status and
-the read-only auto window. Receipts hold counts, hashes and identities, never
-prompts or auth.
+decides whether the fresh prompt runs natively.
+
+Proof is receipts only: a second loopback client reads status (and nothing
+else) through the fresh prefill in both arms. The auto cycle is proved from
+those status records: a split lane armed by the policy (intent origin
+auto-arm, its own selection), the policy's native chunks bound to the selected
+request up to this prompt's last native row, no manual lease at any sample,
+one closed cycle back on FULL, and the return bounded in ms on the engine
+clock. Speed is the client basis for both arms on the same engine: decode
+tok/s of the standing streams from fresh send to its first token, prompt
+tokens / TTFT, each over the arm's own pre-prefill decode-only window. The
+engine native-window basis is not available for auto cycles. Receipts hold
+counts, hashes and identities, never prompts or auth.
 """
 import argparse
 import hashlib
@@ -17,6 +27,7 @@ import json
 import math
 import os
 from pathlib import Path
+import threading
 import time
 
 import e3_decode_correctness as streams
@@ -26,44 +37,203 @@ from e3_native_qualification_driver import exception_details
 from e3_native_runtime_client import NativeRuntimeClient
 from native_overlap_metrics import throughput
 
-ARM_SCHEMA = 'native41-autoarm-arm/1'
-GRADE_SCHEMA = 'native41-autoarm-grade/1'
+ARM_SCHEMA = 'native41-autoarm-arm/2'
+GRADE_SCHEMA = 'native41-autoarm-grade/2'
+PROOF_SCHEMA = 'native41-auto-receipts/1'
 KINDS = ('stock', 'auto')
 STANDING = 'native41-standing'
 SETTLE_S = 5.0
 CLOSE_TIMEOUT_S = 60.0
-CLOSE_POLL_S = 0.5
+POLL_S = 0.25
+# Once the plan's shrinking tail stages are in flight (a native chunk smaller
+# than the largest one seen), the poller tightens so the FULL return is bounded
+# by milliseconds of sample spacing. Both arms run the same poller; the stock
+# arm never has native work, so it stays at POLL_S.
+POLL_FAST_S = 0.02
+MAX_SAMPLES = 2048
 # Generation requests one arm sends: eight standing decoders, fresh, append.
 ARM_GENERATIONS = 10
+ARM_ACTIONS = {'stock': frozenset(('status',)),
+               'auto': frozenset(('status', 'pause', 'release_auto_arm', 'resume'))}
+NO_ENGINE_BASIS = 'engine native-window basis not available for auto cycles (no window action on this engine)'
 
 
-def auto_view(status):
-    auto = status.get('auto_arm') if type(status) is dict else None
-    if type(auto) is not dict:
+def compact(status):
+    """The status fields the receipt proof reads (engine records, never prompts)."""
+    if type(status) is not dict:
         return None
-    armed = auto.get('last_armed')
-    armed_status = armed.get('status') if type(armed) is dict else None
-    return {k: auto.get(k) for k in ('phase', 'active', 'manual_owned', 'selection_seq', 'completed',
-                                     'request_uid', 'minimum_native_rows', 'max_cohort')} | {
-        'last_armed': None if type(armed) is not dict else {
-            'selection_seq': armed.get('selection_seq'),
-            'route': (armed_status or {}).get('route'),
-            'route_generation': (armed_status or {}).get('route_generation'),
-            'observed_clock_ns': (armed_status or {}).get('observed_clock_ns')},
-        'last_refusal': auto.get('last_refusal'), 'last_close': auto.get('last_close'),
-        'last_unselected': auto.get('last_unselected')}
+    auto = status.get('auto_arm') if type(status.get('auto_arm')) is dict else None
+    intent = status.get('admission_intent') if type(status.get('admission_intent')) is dict else None
+    admission = status.get('native_admission') if type(status.get('native_admission')) is dict else {}
+    work = status.get('native_work_identity') if type(status.get('native_work_identity')) is dict else None
+    return {'route': status.get('route'), 'route_generation': status.get('route_generation'),
+            'engine_epoch': status.get('engine_epoch'), 'paused': status.get('paused'),
+            'scheduler_requests': status.get('scheduler_requests'),
+            'observed_clock_ns': status.get('observed_clock_ns'),
+            'auto_arm': None if auto is None else {k: auto.get(k) for k in (
+                'phase', 'active', 'manual_owned', 'selection_seq', 'completed', 'request_uid')},
+            'admission_intent': None if intent is None else {k: intent.get(k) for k in (
+                'origin', 'phase', 'route', 'route_generation', 'selection_seq', 'request_uid', 'seq')},
+            'admitted': admission.get('admitted'), 'refused': admission.get('refused'),
+            'native_work': None if work is None else {k: work.get(k) for k in (
+                'request_uid_sha256', 'request_generation', 'transaction', 'chunk_start', 'chunk_end')}}
 
 
 def status_view(label, status):
-    admission = status.get('native_admission') or {}
-    return {'label': label, 'route': status.get('route'), 'route_generation': status.get('route_generation'),
-            'paused': status.get('paused'), 'scheduler_requests': status.get('scheduler_requests'),
-            'transition_pending': status.get('transition_pending'),
-            'admission_intent': status.get('admission_intent'),
-            'observed_clock_ns': status.get('observed_clock_ns'),
-            'native_admission': {k: admission.get(k) for k in ('admitted', 'refused', 'alloc_failures',
-                                                               'split_stock_deferrals', 'refusal_seq')},
-            'auto_arm': auto_view(status)}
+    return dict(compact(status) or {}, label=label)
+
+
+class Poller:
+    """Status-only reader on its own loopback client, through the fresh prefill of either arm.
+
+    Keeps every sample whose proof fields changed (bounded), the count of all
+    samples and its own action log. Polling spacing only: the proof never reads
+    the fast switch.
+    """
+
+    def __init__(self, client, *, clock=time.monotonic_ns):
+        self.client, self.clock = client, clock
+        self.widest = 0
+        self.samples, self.actions, self.count, self.errors = [], [], 0, []
+        self.stop, self.closed = threading.Event(), threading.Event()
+        self.baseline, self.thread = None, None
+        self._last = None
+
+    def start(self, baseline):
+        self.baseline = baseline
+        self.thread = threading.Thread(target=self.run, name='native41-status-poller', daemon=True)
+        self.thread.start()
+
+    def keep(self, view):
+        key = json.dumps({k: v for k, v in view.items() if k not in ('observed_clock_ns', 'client_ns')},
+                         sort_keys=True, default=str)
+        if key == self._last:
+            if self.samples:
+                self.samples[-1]['last_observed_clock_ns'] = view.get('observed_clock_ns')
+                self.samples[-1]['repeats'] = self.samples[-1].get('repeats', 0) + 1
+            return
+        self._last = key
+        if len(self.samples) < MAX_SAMPLES:
+            self.samples.append(view)
+        else:
+            self.errors.append('samples-truncated')
+
+    def run(self):
+        fast = False
+        while not self.stop.is_set():
+            try:
+                self.actions.append('status')
+                view = compact(self.client.call('status'))
+                view['client_ns'] = self.clock()
+            except Exception as exc:  # noqa: BLE001 - recorded; the proof reads it
+                self.errors.append(type(exc).__name__ + ':' + str(exc)[:120])
+                self.stop.wait(POLL_S)
+                continue
+            self.count += 1
+            self.keep(view)
+            work = view.get('native_work') or {}
+            if type(work.get('chunk_start')) is int and type(work.get('chunk_end')) is int:
+                rows = work['chunk_end'] - work['chunk_start']
+                fast = fast or 0 < rows < self.widest
+                self.widest = max(self.widest, rows)
+            auto = view.get('auto_arm') or {}
+            base = (self.baseline or {}).get('auto_arm') or {}
+            if (type(auto.get('completed')) is int and type(base.get('completed')) is int
+                    and auto['completed'] > base['completed'] and auto.get('active') is False):
+                self.closed.set()
+            self.stop.wait(POLL_FAST_S if fast and not self.closed.is_set() else POLL_S)
+
+    def finish(self, timeout_s):
+        self.stop.set()
+        if self.thread is not None:
+            self.thread.join(timeout_s)
+        return {'samples_read': self.count, 'samples_kept': len(self.samples), 'samples': self.samples,
+                'actions': sorted(set(self.actions)), 'errors': self.errors[:16],
+                'alive_after_join': bool(self.thread and self.thread.is_alive()),
+                'poll_s': POLL_S, 'poll_fast_s': POLL_FAST_S}
+
+
+def receipt_proof(kind, before, polled, after, prompt_tokens, actions):
+    """The auto cycle (or its absence for stock) from status receipts alone."""
+    reasons = []
+    b, z = compact(before) or {}, compact(after) or {}
+    samples = list(polled.get('samples') or [])
+    rows = [b] + samples + [z]
+    b_auto, z_auto = b.get('auto_arm') or {}, z.get('auto_arm') or {}
+    final_row = prompt_tokens - 1 if type(prompt_tokens) is int else None
+    g0, s0, c0 = b.get('route_generation'), b_auto.get('selection_seq'), b_auto.get('completed')
+    record = {'schema': PROOF_SCHEMA, 'kind': kind, 'final_native_row': final_row,
+              'samples_read': polled.get('samples_read'), 'samples_kept': polled.get('samples_kept'),
+              'control_actions': sorted(set(actions)), 'poller_errors': polled.get('errors') or []}
+    if polled.get('errors'):
+        reasons.append('poller-error')
+    if not set(actions) <= ARM_ACTIONS[kind]:
+        reasons.append('arm-sent-a-non-receipt-action')
+    if any(type(r.get('engine_epoch')) is not int or r.get('engine_epoch') != b.get('engine_epoch') for r in rows):
+        reasons.append('engine-epoch-changed')
+    if type(g0) is not int or type(s0) is not int or type(c0) is not int:
+        reasons.append('before-status-incomplete')
+        return dict(record, reasons=sorted(set(reasons)), complete=False)
+    admitted = (z.get('admitted') - b.get('admitted') if type(z.get('admitted')) is int
+                and type(b.get('admitted')) is int else None)
+    record['admitted_delta'] = admitted
+    if kind == 'stock':
+        if any((r.get('auto_arm') or {}).get('manual_owned') is not True for r in rows):
+            reasons.append('stock-lease-not-held-at-every-sample')
+        if (any(r.get('route') != 'full' or r.get('route_generation') != g0 for r in rows)
+                or z_auto.get('selection_seq') != s0 or z_auto.get('completed') != c0 or admitted != 0):
+            reasons.append('stock-arm-auto-selection-or-native-work-observed')
+        return dict(record, reasons=sorted(set(reasons)), complete=not reasons)
+    if any((r.get('auto_arm') or {}).get('manual_owned') is not False for r in rows):
+        reasons.append('manual-lease-at-some-sample')
+    if b.get('route') != 'full' or b_auto.get('active') is not False:
+        reasons.append('before-not-released-idle-full')
+    engaged = [r for r in samples if r.get('route') == 'split'
+               and (r.get('admission_intent') or {}).get('origin') == 'auto-arm']
+    intent = (engaged[0].get('admission_intent') or {}) if engaged else {}
+    uid = intent.get('request_uid')
+    record['engaged'] = None if not engaged else {
+        'route_generation': engaged[0].get('route_generation'), 'phase': intent.get('phase'),
+        'selection_seq': intent.get('selection_seq'), 'observed_clock_ns': engaged[0].get('observed_clock_ns'),
+        'request_uid_sha256': hashlib.sha256(uid.encode()).hexdigest() if type(uid) is str else None}
+    if not engaged:
+        reasons.append('auto-lane-engagement-not-observed')
+    elif (intent.get('phase') != 'auto-prefill' or intent.get('selection_seq') != s0 + 1
+          or intent.get('route_generation') != g0 + 1 or engaged[0].get('route_generation') != g0 + 1
+          or type(uid) is not str or (engaged[0].get('auto_arm') or {}).get('request_uid') != uid
+          or any((r.get('admission_intent') or {}).get('request_uid') not in (None, uid) for r in samples)):
+        reasons.append('auto-intent-not-this-policy-selection')
+    digest = hashlib.sha256(uid.encode()).hexdigest() if type(uid) is str else None
+    work = [r for r in samples if r.get('native_work')]
+    ends = [r['native_work'].get('chunk_end') for r in work]
+    record['native_chunks_observed'] = len({r['native_work'].get('transaction') for r in work})
+    record['max_native_row_observed'] = max([e for e in ends if type(e) is int], default=None)
+    if not work:
+        reasons.append('native-chunk-not-observed')
+    elif any(r['native_work'].get('request_uid_sha256') != digest for r in work):
+        reasons.append('native-chunk-of-another-request')
+    elif final_row is None or record['max_native_row_observed'] != final_row:
+        reasons.append('native-rows-not-this-prompt')
+    if type(admitted) is not int or admitted < 1:
+        reasons.append('no-native-admission-counted')
+    if (z.get('route') != 'full' or z.get('route_generation') != g0 + 2 or z_auto.get('active') is not False
+            or z_auto.get('selection_seq') != s0 + 1 or z_auto.get('completed') != c0 + 1
+            or z.get('admission_intent') is not None):
+        reasons.append('auto-cycle-not-closed-once-on-full')
+    # Return: last sample with the prompt's native work open -> first FULL sample
+    # at the cycle's return generation (engine clock, sample spacing included).
+    open_at = [r.get('last_observed_clock_ns') or r.get('observed_clock_ns') for r in work]
+    full = [r for r in samples + [z] if r.get('route') == 'full' and r.get('route_generation') == g0 + 2]
+    if work and full and all(type(n) is int for n in open_at) and type(full[0].get('observed_clock_ns')) is int:
+        record['return'] = {'upper_bound_ms': (full[0]['observed_clock_ns'] - max(open_at)) / 1e6,
+                            'basis': 'engine status clock: last sample with native work open -> first FULL '
+                                     'sample at the return generation; includes poll spacing'}
+        if record['return']['upper_bound_ms'] < 0:
+            reasons.append('return-order-inverted')
+    else:
+        record['return'] = {'upper_bound_ms': None, 'basis': 'return samples unavailable'}
+        reasons.append('return-not-bracketed')
+    return dict(record, reasons=sorted(set(reasons)), complete=not reasons)
 
 
 def release(client, record):
@@ -77,22 +247,6 @@ def release(client, record):
         record['release_resume'] = client.resume().get('resumed')
     if record['release'].get('released') is not True:
         raise ValueError('auto-arm-release-unproved')
-
-
-def wait_closed(client, before, record, *, clock=time.monotonic, sleep=time.sleep):
-    """After the fresh first token: status reads until the cycle that started after `before` closed."""
-    deadline = clock() + CLOSE_TIMEOUT_S
-    while True:
-        status = client.call('status')
-        auto = status.get('auto_arm') or {}
-        if (auto.get('active') is False and type(auto.get('completed')) is int
-                and auto['completed'] > before.get('completed', 0)):
-            record['statuses'].append(status_view('cycle-closed', status))
-            return status
-        if clock() >= deadline:
-            record['statuses'].append(status_view('cycle-not-closed', status))
-            return status
-        sleep(CLOSE_POLL_S)
 
 
 def stream_reasons(window, states, end_ns):
@@ -118,67 +272,18 @@ def geometry_ok(state):
             and state.prompt_tokens == state.prompt_token_ids_len)
 
 
-def auto_proof(window_end, bracket, epoch, prompt_tokens):
-    """perf.native_window over the auto window, plus the binding to this plain request."""
-    record = {'begin': {'engine_epoch': (window_end.get('begin') or {}).get('engine_epoch'),
-                        'measure_start_ns': window_end.get('measure_start_ns'),
-                        'snapshot': window_end.get('begin')},
-              'end': {'engine_epoch': window_end.get('engine_epoch'),
-                      'measure_end_ns': window_end.get('measure_end_ns'),
-                      'raw_journal_evidence': window_end.get('raw_journal_evidence'),
-                      'clock': window_end.get('clock')},
-              'client_bracket': bracket}
-    proof = perf.native_window(record, 'fresh', epoch)
-    reasons = list(proof['reasons']) + list(window_end.get('auto_reasons') or [])
-    if window_end.get('complete') is not True:
-        reasons.append('auto-window-incomplete')
-    group = proof.get('group') or {}
-    view = proof.get('view') or {}
-    segments = view.get('segments') or []
-    uids = {s.get('request') for s in segments}
-    intent = ((window_end.get('begin') or {}).get('admission_intent') or {})
-    if len(uids) != 1 or intent.get('request_uid') not in uids:
-        reasons.append('auto-segments-not-the-armed-request')
-    # The driver's prompt_end is request.num_tokens (scheduler_hooks), so the
-    # whole fresh prompt, as the client's usage counts it.
-    if type(prompt_tokens) is not int or group.get('prompt_end') != prompt_tokens:
-        reasons.append('auto-group-not-this-prompt')
-    if not segments or any(s.get('transport') != 'native-split' for s in segments):
-        reasons.append('auto-segments-not-native-split')
-    if sum(1 for s in segments if s.get('terminal')) != 1:
-        reasons.append('auto-terminal-chunk-not-unique')
-    return {k: v for k, v in proof.items() if k != 'view'} | {
-        'reasons': sorted(set(reasons)), 'complete': not reasons, 'segments': len(segments),
-        'request_uid_sha256': (hashlib.sha256(intent['request_uid'].encode()).hexdigest()
-                               if type(intent.get('request_uid')) is str else None),
-        'origin': intent.get('origin'), 'selection_seq': intent.get('selection_seq')}
-
-
-def returns_ms(window_end):
-    """Last native STATE_WRITE (final commit) to the all-rank FULL ack, engine clock."""
-    raw = window_end.get('raw_journal_evidence') or {}
-    segments = (raw.get('measurement') or {}).get('segments') or []
-    acks = raw.get('transition_acks') or []
-    ends = [s.get('end_monotonic_ns') for s in segments]
-    seen = {a.get('observed_ns') for a in acks}
-    if not ends or not all(type(n) is int for n in ends) or len(seen) != 1 or type(next(iter(seen))) is not int:
-        return {'final_commit_to_all_rank_full_ack_ms': None, 'reason': 'return-stamps-unavailable'}
-    ack = seen.pop()
-    return {'final_commit_to_all_rank_full_ack_ms': (ack - max(ends)) / 1e6, 'acks': len(acks),
-            'basis': 'engine host-monotonic: max segment end_monotonic_ns -> shared all-rank FULL ack observed_ns'}
-
-
-def arm(a, cfg, client, *, sleep=time.sleep):
+def arm(a, cfg, client, *, poll_client=None, sleep=time.sleep):
     kind, index = a.kind, a.index
     record = {'schema': ARM_SCHEMA, 'kind': kind, 'index': index, 'complete': False, 'reasons': [],
               'statuses': [], 'run_id': a.run_id, 'engine_epoch': client.epoch,
               'generation_requests_expected': ARM_GENERATIONS, 'manifest_sha256': cfg['manifest_sha256'],
-              'native_commands_around_prefill': [] if kind == 'stock' else ['auto_window_begin', 'auto_window_end']}
+              'native_commands_around_prefill': [], 'engine_basis': NO_ENGINE_BASIS}
     workload = shared._workload_view(cfg)
     prompts = shared._prefill_prompts(cfg)
     salt = shared._cache_salt(a.run_id, 'native41-%s-%d' % (kind, index), 0)
     record['salt_sha256'] = hashlib.sha256(salt.encode()).hexdigest()
-    standing, sampler, state = [], None, None
+    standing, sampler, state, poller = [], None, None, None
+    mark = len(getattr(client, 'history', ()))
     record['wall_start_s'] = time.time()
     try:
         package = shared._package_gate(os.environ)
@@ -211,34 +316,32 @@ def arm(a, cfg, client, *, sleep=time.sleep):
         sleep(cfg['window_s'])
         b1 = sampler.snapshot()
         record['decode_only'] = shared._stream_window(standing, sampler, b0, b1)
-        record['reasons'] += ['decode-only:' + r for r in stream_reasons(record['decode_only'], standing, b1)]
+        # Standing-stream problems are notes: the client basis is descriptive.
+        record['notes'] = ['decode-only:' + r for r in stream_reasons(record['decode_only'], standing, b1)]
         before = client.call('status')
         record['statuses'].append(status_view('before-fresh', before))
         before_auto = before.get('auto_arm') or {}
         if before_auto.get('manual_owned') is not (kind == 'stock') or before_auto.get('active') is not False:
             raise ValueError('arm-lease-state-before-fresh-differs')
-        local_start = time.monotonic_ns()
-        if kind == 'auto':
-            record['window_begin'] = {k: v for k, v in client.call('auto_window_begin').items() if k != 'snapshot'}
-        sampler.snapshot()
         spec = cfg['prefill']['fresh']
+        poller = Poller(poll_client)
+        poller.start(compact(before))
+        sampler.snapshot()
         state, fresh_workload = shared._send_prefill(a.url, a.model, cfg, 'native41-' + kind, 0, prompts['fresh'],
                                                      spec['generation_budget'], spec['seed'], salt)
         first = shared._wait_first_advance(state, cfg['timeouts']['read_s'])
         record['fresh_finish'] = shared._finish_or_cancel([state], fresh_workload)
         sampler.snapshot()
-        closed = wait_closed(client, before_auto, record, sleep=sleep) if kind == 'auto' else None
         if kind == 'auto':
-            window_end = client.call('auto_window_end')
-            local_end = time.monotonic_ns()
-            record['window_end'] = window_end
-        else:
-            local_end = time.monotonic_ns()
-            after = client.call('status')
-            record['statuses'].append(status_view('after-fresh', after))
-        bracket = {'start_ns': local_start, 'end_ns': local_end}
-        record['client_bracket'] = bracket
+            poller.closed.wait(CLOSE_TIMEOUT_S)
+        polled = poller.finish(CLOSE_TIMEOUT_S)
+        poller = None
+        after = client.call('status')
+        record['statuses'].append(status_view('after-fresh', after))
         record['fresh'] = request_row(state, first, prompts, 'fresh')
+        actions = [h.get('action') for h in list(getattr(client, 'history', ()))[mark:]] + polled['actions']
+        record['receipts'] = receipt_proof(kind, before, polled, after, state.prompt_tokens, actions)
+        record['polled'] = polled
         if not perf._stream_ok(state) or record['fresh_finish'].get('timed_out'):
             raise ValueError('fresh-client-completion-unproved')
         if not geometry_ok(state):
@@ -247,33 +350,17 @@ def arm(a, cfg, client, *, sleep=time.sleep):
         record['client_basis'] = {
             'prefill_tokens_per_s': throughput(state.prompt_tokens, ttft),
             'basis': 'observed fresh prompt tokens / client TTFT (held-b serving basis)',
-            'decode_window': shared._stream_window(standing, sampler, state.send_at_ns, first)}
-        record['reasons'] += ['client-window:' + r for r in
-                              stream_reasons(record['client_basis']['decode_window'], standing, first)]
-        if kind == 'auto':
-            proof = auto_proof(window_end, bracket, client.epoch, state.prompt_tokens)
-            record['auto_proof'] = proof
-            group = proof.get('group') or {}
-            if proof['complete'] and type(group.get('start_ns')) is int and type(group.get('end_ns')) is int:
-                window = shared._stream_window(standing, sampler, group['start_ns'], group['end_ns'])
-                record['engine_basis'] = {'prefill_tokens_per_s': proof.get('prefill_tokens_per_s'),
-                                          'basis': proof.get('headline_basis'), 'decode_window': window}
-                record['reasons'] += ['engine-window:' + r for r in stream_reasons(window, standing, group['end_ns'])]
-            else:
-                record['reasons'] += ['auto-not-proven:' + r for r in proof['reasons']] or ['auto-not-proven']
-            record['returns'] = returns_ms(window_end)
-            closed_auto = (closed or {}).get('auto_arm') or {}
-            if closed_auto.get('completed') != before_auto.get('completed', -2) + 1:
-                record['reasons'].append('auto-cycle-not-closed-once')
-        else:
-            after_auto = (after.get('auto_arm') or {})
-            if (after_auto.get('selection_seq') != before_auto.get('selection_seq')
-                    or after_auto.get('manual_owned') is not True):
-                record['reasons'].append('stock-arm-auto-selection-or-release-observed')
+            'decode_window': shared._stream_window(standing, sampler, state.send_at_ns, first),
+            'decode_basis': 'standing streams, fresh send -> fresh first token'}
+        record['notes'] += ['client-window:' + r for r in
+                            stream_reasons(record['client_basis']['decode_window'], standing, first)]
+        if record['receipts']['complete'] is not True:
+            label = 'auto-not-proven:' if kind == 'auto' else 'stock-receipts:'
+            record['reasons'] += [label + r for r in record['receipts']['reasons']]
         # The append is the same conversation; its remaining prefill is below the
         # policy minimum, so it stays stock in both arms by design.
-        mark = client.call('status')
-        record['statuses'].append(status_view('before-append', mark))
+        mark_status = client.call('status')
+        record['statuses'].append(status_view('before-append', mark_status))
         spec = cfg['prefill']['append']
         app_state, app_workload = shared._send_prefill(a.url, a.model, cfg, 'native41-' + kind, 1, prompts['append'],
                                                        spec['generation_budget'], spec['seed'], salt)
@@ -284,21 +371,20 @@ def arm(a, cfg, client, *, sleep=time.sleep):
             record['reasons'].append('append-client-completion-unproved')
         tail = client.call('status')
         record['statuses'].append(status_view('after-append', tail))
-        if ((tail.get('auto_arm') or {}).get('selection_seq') != (mark.get('auto_arm') or {}).get('selection_seq')):
+        if ((tail.get('auto_arm') or {}).get('selection_seq')
+                != (mark_status.get('auto_arm') or {}).get('selection_seq')):
             record['reasons'].append('append-was-selected')
+        record['control_actions'] = sorted({h.get('action') for h in list(getattr(client, 'history', ()))[mark:]})
+        if not set(record['control_actions']) <= ARM_ACTIONS[kind]:
+            record['reasons'].append('arm-sent-a-non-receipt-action')
         record['complete'] = not record['reasons']
     except Exception as exc:  # noqa: BLE001 - retained, never retried
         record['error'] = exception_details(exc, getattr(client, 'control', None))
         record['reasons'].append('arm-error')
         record['complete'] = False
-        if 'window_begin' in record and 'window_end' not in record:
-            # Close the read-only window so the session does not keep it open.
-            try:
-                record['window_end_after_error'] = {k: v for k, v in client.call('auto_window_end').items()
-                                                    if k in ('complete', 'auto_reasons', 'route')}
-            except Exception as close:  # noqa: BLE001 - recorded only
-                record['window_end_after_error'] = {'error': exception_details(close, getattr(client, 'control', None))}
     finally:
+        if poller is not None:
+            record['polled_after_error'] = {k: v for k, v in poller.finish(5.0).items() if k != 'samples'}
         if sampler:
             sampler.close()
         if state is not None:
@@ -316,30 +402,29 @@ def ratio(a, b):
 def arm_metrics(row):
     only = (row.get('decode_only') or {}).get('aggregate_tokens_per_s')
     client = row.get('client_basis') or {}
-    engine = row.get('engine_basis') or {}
-    during_c = (client.get('decode_window') or {}).get('aggregate_tokens_per_s')
-    during_e = (engine.get('decode_window') or {}).get('aggregate_tokens_per_s')
+    during = (client.get('decode_window') or {}).get('aggregate_tokens_per_s')
+    receipts = row.get('receipts') or {}
     return {'kind': row.get('kind'), 'index': row.get('index'), 'complete': row.get('complete'),
             'decode_only_tokens_per_s': only,
             'client': {'prefill_tokens_per_s': client.get('prefill_tokens_per_s'),
-                       'decode_during_prefill_tokens_per_s': during_c, 'decode_share': ratio(during_c, only),
+                       'decode_during_prefill_tokens_per_s': during, 'decode_share': ratio(during, only),
                        'ttft_s': (row.get('fresh') or {}).get('ttft_s')},
-            'engine': None if not engine else {
-                'prefill_tokens_per_s': engine.get('prefill_tokens_per_s'),
-                'decode_during_prefill_tokens_per_s': during_e, 'decode_share': ratio(during_e, only)},
-            'returns_ms': (row.get('returns') or {}).get('final_commit_to_all_rank_full_ack_ms'),
-            'append_ttft_s': (row.get('append') or {}).get('ttft_s')}
+            'engine': None,
+            'auto_receipts_complete': receipts.get('complete') if row.get('kind') == 'auto' else None,
+            'return_upper_bound_ms': (receipts.get('return') or {}).get('upper_bound_ms'),
+            'native_chunks_observed': receipts.get('native_chunks_observed'),
+            'append_ttft_s': (row.get('append') or {}).get('ttft_s'), 'notes': row.get('notes') or []}
 
 
 def grade(arms, ingress, checks):
-    """Auto engagement is graded; speed is reported beside the same-queue stock arms, never a gate."""
+    """Auto engagement is graded from receipts; client-basis speed is reported beside stock, never a gate."""
     missing, failures = [], []
     rows = [arm_metrics(r) for r in arms]
     for r in arms:
         label = '%s-%s' % (r.get('kind'), r.get('index'))
         if r.get('complete') is not True:
             missing.extend(label + ':' + x for x in (r.get('reasons') or ['incomplete']))
-        if r.get('kind') == 'auto' and (r.get('auto_proof') or {}).get('complete') is not True:
+        if r.get('kind') == 'auto' and (r.get('receipts') or {}).get('complete') is not True:
             missing.append(label + ':auto-engagement-unproven')
     for label, data in sorted(ingress.items()):
         if (data or {}).get('verdict') == 'FAIL':
@@ -367,21 +452,26 @@ def grade(arms, ingress, checks):
         return None if not values else (values[len(values) // 2] if len(values) % 2
                                          else (values[len(values) // 2 - 1] + values[len(values) // 2]) / 2)
     summary = {kind: {'client_prefill_tokens_per_s': median(kind, ('client', 'prefill_tokens_per_s')),
+                      'client_decode_during_prefill_tokens_per_s': median(
+                          kind, ('client', 'decode_during_prefill_tokens_per_s')),
                       'client_decode_share': median(kind, ('client', 'decode_share')),
                       'decode_only_tokens_per_s': median(kind, ('decode_only_tokens_per_s',)),
                       'ttft_s': median(kind, ('client', 'ttft_s'))} for kind in KINDS}
-    summary['auto']['engine_prefill_tokens_per_s'] = median('auto', ('engine', 'prefill_tokens_per_s'))
-    summary['auto']['engine_decode_share'] = median('auto', ('engine', 'decode_share'))
+    summary['auto']['return_upper_bound_ms'] = median('auto', ('return_upper_bound_ms',))
     summary['auto_over_stock'] = {
         'client_prefill': ratio(summary['auto']['client_prefill_tokens_per_s'], summary['stock']['client_prefill_tokens_per_s']),
         'client_decode_share': ratio(summary['auto']['client_decode_share'], summary['stock']['client_decode_share'])}
     verdict = 'FAIL' if failures else 'INCONCLUSIVE' if missing else 'PASS'
     return {'schema': GRADE_SCHEMA, 'verdict': verdict, 'failures': failures, 'missing': sorted(set(missing)),
-            'auto_engaged': [bool((r.get('auto_proof') or {}).get('complete')) for r in arms if r.get('kind') == 'auto'],
+            'auto_engaged': [bool((r.get('receipts') or {}).get('complete')) for r in arms if r.get('kind') == 'auto'],
             'arms': rows, 'summary': summary, 'speed_is_gate': False, 'target_is_gate': False,
             'all_declared_arms_retained': True, 'retry_selected': False, 'picked': False,
-            'held_b_comparison': 'hub-side: held-b overlap-round native windows and serving TTFT beside these arms',
-            'scope': 'auto-arm engagement from plain W2 traffic; descriptive speed beside same-queue stock arms'}
+            'basis': 'client: standing decode tok/s fresh send -> first token over each arm\'s own decode-only '
+                     'window; prefill = prompt tokens / TTFT. ' + NO_ENGINE_BASIS,
+            'held_b_comparison': 'hub-side: held-b W2 client basis (stock fresh TTFT 25.3 s, 7,797 tok/s; '
+                                 'native split 13.3 min) beside these arms',
+            'scope': 'auto-arm engagement from plain W2 traffic, proved from status receipts; '
+                     'descriptive client-basis speed beside same-queue stock arms'}
 
 
 def load(path):
@@ -420,7 +510,9 @@ def main(argv=None):
                 raise ValueError('frozen-native-workload-invalid')
             cfg = dict(cfg, timeouts=dict(cfg['timeouts'], read_s=perf.first_advance_read_timeout(cfg)))
             client = NativeRuntimeClient(a.url, a.run_id, epoch=a.epoch, timeout_s=a.control_timeout_s)
-            result = arm(a, cfg, client)
+            # The receipt poller's own loopback client: status only, same run and epoch.
+            poll = NativeRuntimeClient(a.url, a.run_id, epoch=a.epoch, timeout_s=a.control_timeout_s)
+            result = arm(a, cfg, client, poll_client=poll)
         except Exception as exc:  # noqa: BLE001
             result = {'schema': ARM_SCHEMA, 'kind': a.kind, 'index': a.index, 'complete': False,
                       'reasons': ['arm-refused'], 'error': exception_details(exc)}

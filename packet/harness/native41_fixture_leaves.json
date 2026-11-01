@@ -84,19 +84,27 @@
       "test": "test_native35_performance package_inventory and native37 T3 and test_native40_box_queue.Queue.test_regression_real_cli_through_package_and_native_client_refusal"
     },
     {
-      "name": "window-probe-front",
-      "test": "e3_native41_window_probe.Front",
+      "name": "receipts-probe-front",
+      "test": "e3_native41_receipts_probe.Front",
       "replaces": "The API AsyncLLM in front of the generated EngineCore utility (engine_core.call_utility_async)",
-      "equivalence": "test_e3_native_overlap.UtilityClient calls the bound generated EngineCore.flash_s5_native_control (executor_hooks.native_control) exactly as the pinned utility channel does; the window actions are reads (status, overlap_evidence), so pause_generation/resume_generation are never called and fail the probe if they are.",
+      "equivalence": "test_e3_native_overlap.UtilityClient calls the bound generated EngineCore.flash_s5_native_control (executor_hooks.native_control) exactly as the pinned utility channel does; the probe sends status only (and release_auto_arm in the default-off case, which the session refuses), so pause_generation/resume_generation are never called and fail the probe if they are.",
       "cannot_prove": "ZMQ utility transport and AsyncLLM process boundary.",
       "box_evidence": false
     },
     {
-      "name": "window-probe-latched-lease",
-      "test": "e3_native41_window_probe.run(latched)",
+      "name": "receipts-probe-latched-lease",
+      "test": "e3_native41_receipts_probe.run(latched)",
       "replaces": "A manual non-READ command (prepare, pause, identity) that latches AutoArmPolicy.manual_owned",
       "equivalence": "Sets the same policy field AutoArmPolicy.manual_control sets after any non-READ command, then clears it as release_auto_arm does; the router and arm tests take and release the lease through the real commands.",
-      "cannot_prove": "Nothing beyond the field the window reads.",
+      "cannot_prove": "Nothing beyond the field the receipts read.",
+      "box_evidence": false
+    },
+    {
+      "name": "receipts-probe-poll-spacing",
+      "test": "e3_native41_receipts_probe.run (status after every Core step)",
+      "replaces": "e3_native41_autoarm_box.Poller.run: a second NativeRuntimeClient reading status every 0.25 s (0.02 s once the shrinking tail stages are in flight) on its own thread",
+      "equivalence": "The probe feeds the same compact() views through the same Poller.keep dedup into the same receipt_proof; one read per Core step is the densest spacing the box poller can reach. The thread, the spacing and the loopback client are exercised by the Arm test over HTTP.",
+      "cannot_prove": "That a 0.25 s box spacing observes every native chunk (the proof needs only the last chunk and the engagement, each seconds long at box scale; the probe checks every chunk).",
       "box_evidence": false
     },
     {
@@ -135,7 +143,7 @@
       "name": "queue-w2-scale",
       "test": "test_native41_box_queue.workload",
       "replaces": "The frozen q18a W2 manifest sizes and times (8 x 153,537 standing, 199,934 fresh, 4,096 append, 20 s window, 120-180 s timeouts)",
-      "equivalence": "The same manifest file validated by shared.validate_manifest, only sizes and times reduced; the arm reads the same fields. SETTLE_S and CLOSE_TIMEOUT_S are patched to 0.2 s and 1 s.",
+      "equivalence": "The same manifest file validated by shared.validate_manifest, only sizes and times reduced; the arm reads the same fields. SETTLE_S and CLOSE_TIMEOUT_S are patched to 0.2 s and 1 s; POLL_S keeps its box value.",
       "cannot_prove": "Box-scale timing and memory.",
       "box_evidence": false
     },

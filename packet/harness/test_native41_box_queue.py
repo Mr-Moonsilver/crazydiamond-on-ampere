@@ -2,27 +2,29 @@
 
 Parents: 9838f54 (Codex's checkpoint d9899cb with the byte-identical launcher)
 and native40 f6d1db9 (the frozen negative control: candidate harness over
-native40's overlay and sources). On native40, Router fails at the missing
-AUTO_ARM_ACTIONS in the session and Arm at the latch (native40 has no manual
-lease, so prepare never sets manual_owned). Classes:
+native40's overlay and sources). On native40, Router fails at the 409
+native-action-not-exposed for release_auto_arm and Arm at the latch (native40
+has no manual lease, so prepare never sets manual_owned). Classes:
 
 * Router (fails on the parent: release_auto_arm reached the box as 409
   native-action-not-exposed): the API route probe_control.attach_native_router
-  forwards release_auto_arm and the read-only auto window to the real
-  NativeOverlapSession only with FLASH_S5_AUTO_ARM=1; off, the same three
-  actions get exactly that 409 and the lease stays latched.
+  forwards release_auto_arm, and nothing else new, to the real
+  NativeOverlapSession only with FLASH_S5_AUTO_ARM=1; off, release gets exactly
+  that 409 and the lease stays latched. The old auto-window names stay
+  unexposed either way.
 * Arm (fails on the parent: the same 409 through the router): the queue's exact
-  arm command line runs e3_native41_autoarm_box.main through NativeRuntimeClient
-  and LoopbackControl over loopback HTTP into the real endpoint, session,
-  control client, driver and policy of a native38 startup-bound stack. The
-  stock arm completes and never releases; the auto arm sends only status,
-  pause, release_auto_arm, resume and the auto window (no prepare, no
-  prefill_begin, no split entry) and, because nothing in this stack links the
-  HTTP prompt to the scheduler, is incomplete with auto-not-proven. A real
-  automatic cycle through the same window is e3_native41_window_probe.py on the
+  arm command line runs e3_native41_autoarm_box.main through two
+  NativeRuntimeClients (arm and status poller) and LoopbackControl over
+  loopback HTTP into the real endpoint, session, control client, driver and
+  policy of a native38 startup-bound stack. The stock arm completes with
+  complete stock receipts and never releases; the auto arm sends only status,
+  pause, release_auto_arm and resume (no prepare, no prefill_begin, no split
+  entry, no window) and, because nothing in this stack links the HTTP prompt to
+  the scheduler, its receipts see no cycle (auto-not-proven). A real automatic
+  cycle through the same receipt reader is e3_native41_receipts_probe.py on the
   connected Core (container).
 * Grade: an INVALID ingress fails, an unproven auto arm is INCONCLUSIVE, speed
-  never gates.
+  (client basis) never gates, the engine basis is declared unavailable.
 * Commands: every python3 command of the native41 body parses with its own
   module's argparse.
 * Derivation/Window: the derived texts are on disk and parse; the switch is in
@@ -344,40 +346,32 @@ class Router(prior.Session):
         reply = await endpoint(Request(app, body, 'Bearer ' + KEY))
         return reply.status_code, reply.content
 
-    async def test_switch_on_forwards_release_and_the_auto_window_to_the_real_session(self):
-        import native_overlap_session as ns
-        self.assertEqual(getattr(ns, 'AUTO_ARM_ACTIONS', None), box_actions())
+    async def test_switch_on_forwards_release_auto_arm_only_to_the_real_session(self):
         with mock.patch.dict(os.environ, {'FLASH_S5_AUTO_ARM': '1'}):
             app, endpoint, _ = attach(self.frontend, '1')
-            code, reply = await self.post(endpoint, app, 'auto_window_begin')
-            self.assertEqual((code, reply), (409, {'error': 'auto-window-requires-released-idle-full'}))
+            # No window or other new native action: the old auto-window names stay unexposed.
+            for action in ('auto_window_begin', 'auto_window_end'):
+                self.assertEqual(await self.post(endpoint, app, action), (409, {'error': 'native-action-not-exposed'}))
+            # Release needs the paused, idle FULL engine the arm's pause gives it. The
+            # policy's refusal is an E3ContractError (a ValueError), which this router
+            # maps to its generic 400; the lease is unchanged.
+            self.assertEqual(await self.post(endpoint, app, 'release_auto_arm'),
+                             (400, {'error': 'invalid-command-json'}))
+            self.assertIs(self.policy.manual_owned, True)
             self.assertEqual((await self.post(endpoint, app, 'pause'))[0], 200)
             code, reply = await self.post(endpoint, app, 'release_auto_arm')
             self.assertEqual(code, 200, reply)
             self.assertIs(reply['released'], True)
+            self.assertEqual(reply['engine_epoch'], self.driver.engine_epoch)
             self.assertIs(self.policy.manual_owned, False)
             self.assertEqual((await self.post(endpoint, app, 'resume'))[0], 200)
             self.assertIs(self.policy.manual_owned, False)  # resume never re-takes the lease
-            code, begin = await self.post(endpoint, app, 'auto_window_begin')
-            self.assertEqual(code, 200, begin)
-            self.assertEqual((begin['phase'], begin['route']), ('auto-prefill', 'full'))
-            self.assertIs(begin['snapshot']['auto_arm']['manual_owned'], False)
-            self.assertEqual(await self.post(endpoint, app, 'auto_window_begin'),
-                             (409, {'error': 'auto-window-already-open'}))
-            code, end = await self.post(endpoint, app, 'auto_window_end')
-            self.assertEqual(code, 200, end)
-            self.assertEqual(end['auto_reasons'], ['auto-window-journaled-no-native-work',
-                                                   'auto-window-not-exactly-one-closed-cycle',
-                                                   'auto-window-armed-status-missing'])
-            self.assertIs(end['complete'], False)
-            self.assertIsNone(end['raw_journal_evidence'])
-            self.assertEqual(end['route'], 'full')
-            self.assertEqual(await self.post(endpoint, app, 'auto_window_end'),
-                             (409, {'error': 'auto-window-end-without-begin'}))
-            self.assertIs(self.policy.manual_owned, False)  # window reads never take the lease
-            self.assertEqual(self.policy.selection_seq, 0)
+            code, status = await self.post(endpoint, app, 'status')
+            self.assertEqual(code, 200, status)
+            self.assertIs(status['auto_arm']['manual_owned'], False)  # status reads never take it either
+            self.assertEqual((status['route'], status['auto_arm']['selection_seq']), ('full', 0))
 
-    async def test_switch_off_refuses_the_three_actions_exactly_and_keeps_the_lease(self):
+    async def test_switch_off_refuses_release_exactly_and_keeps_the_lease(self):
         for router, process, error in (('0', '0', 'native-action-not-exposed'),
                                        ('1', '0', 'session-action-not-exposed')):
             with self.subTest(router=router, process=process), \
@@ -391,8 +385,8 @@ class Router(prior.Session):
 
 
 def box_actions():
-    """The three actions the native41 arm sends besides status/pause/resume."""
-    return ('release_auto_arm', 'auto_window_begin', 'auto_window_end')
+    """The one action the native41 arm sends besides status/pause/resume."""
+    return ('release_auto_arm',)
 
 
 # --- arms over the real control plane -----------------------------------------
@@ -466,23 +460,35 @@ class Arm(unittest.TestCase):
         self.assertGreater(metrics['decode_only_tokens_per_s'], 0)
         self.assertGreater(metrics['client']['decode_share'], 0)
 
+        receipts = stock['receipts']
+        self.assertIs(receipts['complete'], True, receipts['reasons'])
+        self.assertEqual(receipts['control_actions'], ['status'])
+        self.assertGreaterEqual(receipts['samples_read'], 1)
+        self.assertEqual(receipts['admitted_delta'], 0)
+
         rc, auto_arm, actions = self.run_arm('auto')
         self.assertEqual(rc, 2)
         self.assertIs(auto_arm['complete'], False)
         self.assertNotIn('error', auto_arm, auto_arm.get('error'))
         self.assertFalse(FORBIDDEN & set(actions), actions)
-        self.assertEqual(actions[:5], ['status', 'pause', 'release_auto_arm', 'resume', 'status'])
-        self.assertEqual(actions.count('auto_window_begin'), 1)
-        self.assertEqual(actions.count('auto_window_end'), 1)
-        self.assertLess(actions.index('auto_window_begin'), actions.index('auto_window_end'))
+        # Main client then the status poller: no window, prepare, admission or split command.
+        self.assertEqual(set(actions), {'status', 'pause', 'release_auto_arm', 'resume'})
+        self.assertEqual(actions[:4], ['status', 'pause', 'release_auto_arm', 'resume'])
+        self.assertEqual((actions.count('pause'), actions.count('release_auto_arm'), actions.count('resume')),
+                         (1, 1, 1))
         self.assertIs(auto_arm['release']['released'], True)
         self.assertIs(self.policy.manual_owned, False)
         self.assertEqual(self.policy.selection_seq, 0)
-        self.assertIn('auto-cycle-not-closed-once', auto_arm['reasons'])
-        self.assertIn('auto-not-proven:auto-window-not-exactly-one-closed-cycle', auto_arm['reasons'])
-        self.assertIs(auto_arm['auto_proof']['complete'], False)
+        # Nothing in this stack links the HTTP prompt to the scheduler, so the
+        # receipts see no cycle; the connected Core proves one (receipts probe).
+        self.assertIn('auto-not-proven:auto-lane-engagement-not-observed', auto_arm['reasons'])
+        self.assertIn('auto-not-proven:auto-cycle-not-closed-once-on-full', auto_arm['reasons'])
+        self.assertIs(auto_arm['receipts']['complete'], False)
+        self.assertEqual(auto_arm['receipts']['control_actions'], ['pause', 'release_auto_arm', 'resume', 'status'])
+        self.assertEqual(auto_arm['engine_basis'], box.NO_ENGINE_BASIS)
+        self.assertGreater(auto_arm['client_basis']['prefill_tokens_per_s'], 0)
         self.assertEqual([s['label'] for s in auto_arm['statuses']],
-                         ['entry', 'before-fresh', 'cycle-not-closed', 'before-append', 'after-append'])
+                         ['entry', 'before-fresh', 'after-fresh', 'before-append', 'after-append'])
 
         grade = box.grade([stock, auto_arm], {'stock-0': {'verdict': 'PASS'}, 'auto-0': {'verdict': 'PASS'}},
                           {'end-full-idle': {'verdict': 'PASS'}})
@@ -490,6 +496,7 @@ class Arm(unittest.TestCase):
         self.assertIn('auto-0:auto-engagement-unproven', grade['missing'])
         self.assertEqual(grade['auto_engaged'], [False])
         self.assertIsNotNone(grade['summary']['stock']['client_prefill_tokens_per_s'])
+        self.assertIn(box.NO_ENGINE_BASIS, grade['basis'])
 
     def test_entries_that_are_not_the_declared_lease_state_are_refused(self):
         # Released lease at a stock entry: the startup prepare bound the session run, then an
@@ -520,11 +527,9 @@ def row(kind, index, complete=True, proof=True, prefill=1000.0, share=0.9):
     r = {'kind': kind, 'index': index, 'complete': complete, 'reasons': [] if complete else ['x'],
          'decode_only': {'aggregate_tokens_per_s': 100.0},
          'client_basis': {'prefill_tokens_per_s': prefill, 'decode_window': {'aggregate_tokens_per_s': 100.0 * share}},
-         'fresh': {'ttft_s': 2.0}, 'append': {'ttft_s': 0.1}}
+         'fresh': {'ttft_s': 2.0}, 'append': {'ttft_s': 0.1}, 'receipts': {'complete': True}}
     if kind == 'auto':
-        r['auto_proof'] = {'complete': proof}
-        r['engine_basis'] = {'prefill_tokens_per_s': prefill * 1.1, 'decode_window': {'aggregate_tokens_per_s': 95.0}}
-        r['returns'] = {'final_commit_to_all_rank_full_ack_ms': 3.0}
+        r['receipts'] = {'complete': proof, 'return': {'upper_bound_ms': 3.0}, 'native_chunks_observed': 196}
     return r
 
 
@@ -542,6 +547,8 @@ class Grade(unittest.TestCase):
         self.assertEqual(result['verdict'], 'PASS')
         self.assertEqual(result['auto_engaged'], [True, True])
         self.assertAlmostEqual(result['summary']['auto_over_stock']['client_prefill'], 0.01)
+        self.assertEqual(result['summary']['auto']['return_upper_bound_ms'], 3.0)
+        self.assertIsNone(result['arms'][1]['engine'])
         self.assertIs(result['speed_is_gate'], False)
 
     def test_invalid_ingress_or_failed_check_fails_and_unproven_auto_is_inconclusive(self):
@@ -592,6 +599,31 @@ class Commands(unittest.TestCase):
         grade = actions[-1][2]
         self.assertEqual(sorted(c.split('=')[0] for c in grade['check']),
                          ['end-full-idle', 'instruments-end', 'instruments-start', 'unarmed-stock-prefill'])
+
+    def test_unarmed_check_runs_the_native41_clock_proof_client(self):
+        # Native40 run 1: HARNESS client-engine-clock-unproved (CT vs container identities).
+        import e3_native41_unarmed_box as unarmed
+        draft = re.sub(r'\\\n\s*', ' ', queue.derive()[DRAFT])
+        calls = [line for line in draft.splitlines() if re.search(r'python3 "\$H/e3_native4[01]_unarmed_box\.py"', line)]
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn('python3 "$H/e3_native41_unarmed_box.py"', calls[0])
+        head = draft[:draft.index(calls[0])]
+        self.assertIn("_cid=$(docker inspect --format '{{.Id}}' \"$CONTAINER\" 2>/dev/null) || _cid=''",
+                      head.splitlines()[-1])
+        args = re.split(r'\s+>\s*"', calls[0].split('e3_native41_unarmed_box.py"', 1)[1])[0]
+        argv = expand(args, dict(QUEUE_VALUES, _cid='a' * 64))
+        original = argparse.ArgumentParser.parse_args
+
+        def capture(parser, args=None, namespace=None):
+            raise Parsed(original(parser, args, namespace))
+        with mock.patch.object(argparse.ArgumentParser, 'parse_args', capture), \
+                self.assertRaises(Parsed) as parsed, contextlib.redirect_stderr(io.StringIO()):
+            unarmed.main(argv)
+        ns = vars(parsed.exception.args[0])
+        self.assertEqual((ns['timeout_s'], ns['control_timeout_s'], ns['container_id']), (100.0, 30.0, 'none'))
+        self.assertTrue(str(ns['out']).endswith('/unarmed-stock-prefill.json'))
+        # The interface pin hashes the module the queue runs.
+        self.assertIn('e3_native41_unarmed_box.py e3_native41_autoarm_box.py native41_box_gate.py; do', draft)
 
 
 class Derivation(unittest.TestCase):
