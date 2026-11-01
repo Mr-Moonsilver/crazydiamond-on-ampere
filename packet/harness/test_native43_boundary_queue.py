@@ -26,6 +26,15 @@ def derived():
 
 def evidence(policy):
     view=dict(verdict='PASS',cohort_streams=0,fresh=True,prompt_sha256='prompt',paired_salt_id='pair')
+    checkpoint = dict(exact=True,transaction=100,chunk_end=101200,
+        worker_releases=[dict(worker_rank=r,released=True) for r in range(4)])
+    closure = dict(complete=True,transaction=100,chunk_end=101200,source_leases=dict(clean=True),
+        pp_receipts_pending=False,rows=[dict(worker_rank=r,typed='CancelAck',closed=True,
+            request_closed=True,disposition='released',report=dict(pending_op_seqs=[])) for r in range(4)])
+    view.update(checkpoint=checkpoint,closure=closure,
+        final_status=dict(route='full',clock=dict(basis='clock-monotonic'),observed_clock_ns=15,
+            native43_boundary=dict(stop_at=101200,cancel_started=True,checkpoint=checkpoint),
+            last_native_closure=closure),final_clock=dict(send_ns=10,recv_ns=20))
     rows=[]
     for rank in range(4):
         for layer in range(6):
@@ -34,6 +43,13 @@ def evidence(policy):
                 timing_excluded='final-chunk-boundary-readback',gpu_timing_complete=True,
                 selection_evidence=dict(sha256='selection',dtype='torch.int32',shape=[976,5],bytes=19520),
                 output_evidence=dict(sha256='output',dtype='torch.bfloat16',shape=[976,6,256],bytes=2998272)))
+    boundary = rows[:]
+    for end in (97152,98176,99200,100224):
+        for row in boundary:
+            row = dict(row,chunk_end=end,chunk_start=end-1024,transaction=end,
+                       operation_open_ns=1000,operation_released_ns=2000)
+            row.pop('timing_excluded')
+            rows.append(row)
     return view,rows
 
 
@@ -102,6 +118,21 @@ class GradeTests(unittest.TestCase):
         self.assertEqual(grade.grade(a,b,ar,br)['verdict'],'PASS')
         self.assertFalse(grade.grade(a,b,ar,br)['speed_claim'])
 
+    def test_cached_pass_cannot_hide_missing_closure_or_bad_bracket(self):
+        for kind in ('closure','bracket','rank','typed','pending'):
+            a,ar=evidence('current');b,br=evidence('dense')
+            if kind=='closure':b['closure']={}
+            elif kind=='bracket':b['final_clock']['send_ns']=16
+            elif kind=='rank':b['closure']['rows'][0]['worker_rank']=1
+            elif kind=='typed':b['closure']['rows'][0]['typed']='plain-dict'
+            else:b['closure']['rows'][0]['report']['pending_op_seqs']=[1]
+            self.assertEqual(grade.grade(a,b,ar,br)['verdict'],'INCONCLUSIVE')
+
+    def test_boundary_hashes_without_timed_before_and_after_samples_cannot_pass(self):
+        a,ar=evidence('current');b,br=evidence('dense')
+        br=[row for row in br if row['chunk_end']==101200]
+        self.assertEqual(grade.grade(a,b,ar,br)['verdict'],'INCONCLUSIVE')
+
     def test_each_selection_or_output_difference_is_retained_failure(self):
         for field in ('selection_evidence','output_evidence'):
             a,ar=evidence('current');b,br=evidence('dense')
@@ -113,7 +144,7 @@ class GradeTests(unittest.TestCase):
     def test_missing_layer_or_timing_or_client_cannot_pass(self):
         for kind in ('layer','timing','client'):
             a,ar=evidence('current');b,br=evidence('dense')
-            if kind=='layer':br.pop()
+            if kind=='layer':br.pop(0)
             elif kind=='timing':br[0]['gpu_timing_complete']=False
             else:b['verdict']='INCONCLUSIVE'
             self.assertEqual(grade.grade(a,b,ar,br)['verdict'],'INCONCLUSIVE')

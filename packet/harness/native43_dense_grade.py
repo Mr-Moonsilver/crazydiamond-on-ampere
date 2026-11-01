@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+from native43_boundary_clock import prove
 
 PREFIX = 'flash-s5 native43_qsa '
 FRONTIER = 101200
@@ -23,10 +24,43 @@ def read_layers(paths):
     return rows
 
 
+
+def certified_client(client):
+    """Recheck source packets; a cached PASS flag is not the stop proof."""
+    checkpoint = client.get('checkpoint') or {}
+    closure = client.get('closure') or {}
+    status = client.get('final_status') or {}
+    bracket = client.get('final_clock') or {}
+    diagnostic = status.get('native43_boundary') or {}
+    releases, closed = checkpoint.get('worker_releases'), closure.get('rows')
+    if not (checkpoint.get('exact') is True and checkpoint.get('chunk_end') == FRONTIER
+            and closure.get('complete') is True and closure.get('chunk_end') == FRONTIER
+            and closure.get('transaction') == checkpoint.get('transaction')
+            and (closure.get('source_leases') or {}).get('clean') is True
+            and not closure.get('pp_receipts_pending')
+            and diagnostic.get('stop_at') == FRONTIER and diagnostic.get('cancel_started') is True
+            and diagnostic.get('checkpoint') == checkpoint and status.get('last_native_closure') == closure
+            and status.get('route') == 'full' and not status.get('transition_pending')
+            and not status.get('return_pending')
+            and type(releases) is list and len(releases) == 4
+            and type(closed) is list and len(closed) == 4):
+        return False
+    if (any(type(r) is not dict for r in releases + closed)
+            or {r.get('worker_rank') for r in releases} != {0,1,2,3}
+            or {r.get('worker_rank') for r in closed} != {0,1,2,3}
+            or any(r.get('released') is not True for r in releases)
+            or any(r.get('typed') != 'CancelAck' or r.get('closed') is not True
+                   or r.get('request_closed') is not True or r.get('disposition') != 'released'
+                   or type(r.get('report')) is not dict or r['report'].get('pending_op_seqs') != []
+                   for r in closed)):
+        return False
+    return prove(status, bracket.get('send_ns'), bracket.get('recv_ns'))['proved']
+
+
 def grade(current, dense, current_layers, dense_layers):
     missing, failures, timings = [], [], {}
     for policy, client, layers in [('current', current, current_layers), ('dense', dense, dense_layers)]:
-        if client.get('verdict') != 'PASS':
+        if client.get('verdict') != 'PASS' or not certified_client(client):
             missing.append(policy + ':client-cutoff-or-cleanup-unproved')
         if client.get('cohort_streams') != 0 or client.get('fresh') is not True:
             failures.append(policy + ':not-fresh-no-cohort')
@@ -52,6 +86,10 @@ def grade(current, dense, current_layers, dense_layers):
                 key = (row.get('rank'), row.get('transaction'))
                 by_chunk.setdefault(key, dict(chunk_start=row['chunk_start'], chunk_end=row['chunk_end'],
                     operation_elapsed_s=(row['operation_released_ns']-row['operation_open_ns'])/1e9))
+        for rank in range(4):
+            ends = {row['chunk_end'] for key,row in by_chunk.items() if key[0] == rank}
+            if not {97152,98176,99200,100224} <= ends:
+                missing.append(policy + ':rank%d:timed-boundary-chunks' % rank)
         if len(boundary) != 24 or any(sum(k[0] == rank for k in boundary) != 6 for rank in range(4)):
             missing.append(policy + ':six-sparse-layers-per-rank-boundary')
         for row in boundary.values():
@@ -73,7 +111,8 @@ def grade(current, dense, current_layers, dense_layers):
                 failures.append('pair:%s:rank%d:%s' % (name, key[0], key[1]))
     return dict(schema='native43-dense-boundary-grade/1',
         verdict='FAIL' if failures else 'INCONCLUSIVE' if missing else 'PASS',
-        failure_class='ENGINE' if failures else 'HARNESS' if missing else None,
+        failure_class=('ENGINE' if any(x.startswith(('pair:selection_evidence:', 'pair:output_evidence:'))
+                                      for x in failures) else 'HARNESS') if failures or missing else None,
         failures=sorted(set(failures)), missing=sorted(set(missing)), speed_claim=False,
         exact_boundary_evidence=not failures and not missing,
         performance_basis='operation-open-to-release per rank; final readback chunk excluded; no client/engine clock subtraction',

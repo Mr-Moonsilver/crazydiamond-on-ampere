@@ -36,4 +36,6 @@ Receipts: INFO `flash-s5 native43_qsa JSON`, per layer, emitted at operation rel
 
 Packaging owns builder, review closure, freeze, exact-container self-runs, precheck and runner. Source-final SHA and fresh test results follow here when stable. No box/device action by Codex.
 
-CPU results so far: new suites 22/22 (0 skips), existing worker operations 43/43, sparse transport 34/34, QSA driver 10/10, four-rank bridge 42/42. Full strict is running at `tmp/native43-strict-a.log`; packaging should run strict again on the merged final freeze. Expected actual box time is about 20–30 minutes for two startup/identity/boundary/cleanup arms; the shared worst-case phase caps reserve substantially more. No speed claim.
+CPU results so far: new suites 24/24 (0 skips), existing worker operations 43/43, sparse transport 34/34, QSA driver 10/10, four-rank bridge 42/42. Full strict is running at `tmp/native43-strict-a.log`; packaging should run strict again on the merged final freeze. Expected actual box time is about 20–30 minutes for two startup/identity/boundary/cleanup arms; the shared worst-case phase caps reserve substantially more. No speed claim.
+
+Harness follow-up: pair grading independently revalidates raw checkpoint, exact four typed CancelAck/report rows, source/PP closure, FULL status and the real request bracket; a cached client PASS does not suffice. Timed pre-threshold (97152) and first three post-threshold chunks (98176/99200/100224) must be present for every rank; final 101200 evidence chunk remains excluded.
