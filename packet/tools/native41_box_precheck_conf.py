@@ -43,7 +43,9 @@ def generate(build, parent, out, container):
                 'e3/decode-probe-evidence.json'] + sorted(RUNTIME)
     text, n = re.subn(r'^VM_OVERLAY_EXCLUSIONS=.*$', lambda _: 'VM_OVERLAY_EXCLUSIONS=(' + ' '.join(excluded) + ')', text, flags=re.M)
     assert n == 1
-    fixtures = ['test_native39_trunk_queue.py'] + ['native35_tools/test_q18a_native%d_owner_run.py' % n for n in range(5, 18)]
+    # The precheck matches fixture names by basename (native-precheck.sh check_credscan), so the
+    # native35_tools owner-run tests are named without their directory, as native40's delivered conf is.
+    fixtures = ['test_native39_trunk_queue.py'] + ['test_q18a_native%d_owner_run.py' % n for n in range(5, 18)]
     text = text.replace('FIXTURE_FILES=(\n', 'FIXTURE_FILES=(\n' + ''.join('  ' + n + ' # declared synthetic unit-test credential literal only\n' for n in fixtures))
     assert text.count('SEAM_TESTS=(') == 1
     text = text.replace('SEAM_TESTS=(', 'SEAM_TESTS=(test_native41_box_queue.py test_native41_autoarm.py e3_native41_auto_probe.py '
