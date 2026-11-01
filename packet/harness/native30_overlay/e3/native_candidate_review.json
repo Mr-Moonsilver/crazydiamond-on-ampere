@@ -1495,8 +1495,8 @@
     "basis": "fresh full strict registered CPU regression on the native39 trunk final tree",
     "cases": 323,
     "exit_code": 0,
-    "log_sha256": "3796c61d97e5e77dcb182a1905722cbfef4ee5ebf141e120c88189cb099778a6",
-    "reported_tests": 3834,
+    "log_sha256": "0425893458b917e996b7607496d983fa8bd8f1416d40b6b0d62b9dcd5de14ae2",
+    "reported_tests": 3844,
     "required": 323,
     "skips": 0,
     "suites": 206
@@ -1572,8 +1572,10 @@
     "e3_native35_performance.py": "cfe56996d4d120f2a2c6d41fb1369f9010452091a648a8079025c546eab9eee4",
     "e3_native37_admission_probe.py": "2417f126ed939de7e1ecd9eaa5f60a6349f5430805dad877c9dc3d715c407408",
     "e3_native38_cpu_probe.py": "09b6d4ee782414cc7af9c26edc34940dbe21d123fde539eaafe6fe9d35053646",
-    "e3_native39_trunk_checks.py": "a89d04bef32b18b15a917fd67bac34f36a02ce01a62cea638c79f006d33d7dad",
+    "e3_native39_round.py": "a01ecf75b637d1626be7be2473cdba22d48ed67b7cd58ed83c8726e7f4a39e45",
+    "e3_native39_trunk_checks.py": "f1c040eb9451b145498b686f747e0e79e91b0d31db0e4007855b82ac6a9fd169",
     "e3_native39_trunk_probe.py": "0178562a93e262927b2374d4896e3c572a369a7962fe8025246c8a206d940323",
+    "e3_native39_w1.py": "0afa8f28eb9b54ef350c036d0463783c5c424cc1d7b8b3b04a677545541f8c9b",
     "e3_native39_w2_length.py": "ca64dd4eefd1e5d2fc2f23776cad6decb9abf2da57379fbe8c65de1f57d8c585",
     "e3_native_align_capacity_probe.py": "2e7ffd021eba1940aac657ba26995eb604beee593004df1e898e0abfc3c0045d",
     "e3_native_coordinator_slice.py": "33562112bc0b6ae63599e118e1556e13d7259a0a4e74d4a0794e0c7857efb99c",
@@ -1623,7 +1625,7 @@
     "e3_teacher_decode_grade.py": "972987710c969aaf65d26369056b19bf67a58b305a729fa981d6818519f54357",
     "e3_teacher_decode_rule4.py": "73ebd444ecba35a939802f7533f48d53daca76406d5c3e9fc2f0b6bee1d56a0b",
     "e3_teacher_decode_rule4_calibration.json": "c3d16b6fc4fbcdcf0b613765d494596fe123816e81b98ef71e675b2746b6d24d",
-    "e3_w1_decode_driver.py": "645e42b5ddfd1bcc5bcb650766e30c8e47518c9f706adc7b99364eac11a22a0e",
+    "e3_w1_decode_driver.py": "baba5d144a93bc76b5eb9315b1faf0c29ec292e3702b7b6127ae7a10e251b861",
     "engine_identity.py": "605109f72d2370cd4e0483e18476aa67aefceecb4d14344f63e0b64c234479dd",
     "exposure_compare.py": "ddb5a0d192560cb56159c322862a692e3aff889a735f2f517c3b2a5dad44c8c8",
     "fixtures/e3_replay_observer/cuda.h": "dc747e10e919fc5c8b898bd138eeb1df9dd887a39cd7840240b42dcf69b4e594",
@@ -1638,6 +1640,7 @@
     "fixtures/native18-skew-predicate.json": "623e839c4eff3341a2992088bc648ced4a3a98d994d8d5124715e503907edbb3",
     "fixtures/native31_before_native30_host.py": "c8d5abbd446b6a7cd675211e9805120f6045da565dddf7fbf78e33b4722cf387",
     "fixtures/native31_before_native30_policy.py": "ce735058c911404886b59d91f474453df56122b2bb526f7bb89c3c03da5070e8",
+    "fixtures/native39_box_access_extract.json": "6befb6c18a0fe5f34fabe7a16b0c880387e1bb7333858ecc23aa018a59dc9afc",
     "fixtures/native39_box_extract.json": "6afc9fbf789632f88fc5ec0ad7d578330bda1ed9a1b7366801a9472ce88f420a",
     "fixtures/q17a_original_flash_s5_green.cu": "731d31d10c69bd8f4e9cb302e46d8dc65564d974fe9480c2e1c290e0f385c598",
     "fixtures/q17c_original_e3_types.py": "2a9f08b94d7e383efd358f8b044648cf52a65d76f71119a9ebdc89e5f1d04068",
@@ -1734,8 +1737,8 @@
     "native35p_gate.py": "7103a97cf9f569ecd570d2fcf6572fcb59637a3868856fec7d5ee7bbc7b1f7ea",
     "native37_fixture_leaves.json": "1dcf78b2b889b527bf91bfbee2b766e7b8301acdc297b6cb96db1e0cb0105096",
     "native38_fixture_leaves.json": "56fdc261738c2a0bfcd65ba2f690b9cabd20040e2759c87ab45a38ef2a0a131c",
-    "native39_fixture_leaves.json": "8e46aa6719aa14560df4b9b1777fe56239fed785e941e136ea7754a51e286f24",
-    "native39_trunk_gate.py": "55efb793a456134740f8ced05929099e22d5d7652ea9ef29585dfe82c6bb79c6",
+    "native39_fixture_leaves.json": "fe5062d43be3337b25538de85d560e3895dc5d5da58931266088630095c119d3",
+    "native39_trunk_gate.py": "b78afa0f8b25a832b2b2cd0e16c3c0adb95642fd1a32b227eebb88e4fe5bd41f",
     "native_placement_evidence_support.py": "345d37090992a4400862e307a34aac1a5abe3d062153a8f183e38bd479aee1c9",
     "native_prefill_support.py": "00c704e8935eea94e3030a4003f979693540f0e28e86a6326dcbfc5fb4644064",
     "overlap_tp.py": "8bb4b344180927245f685bee45b8897aa0abbeb073a8ac11f76c139080da4e7c",
@@ -2038,9 +2041,9 @@
     "runs/q18a_native35_r.draft.sh": "0bdf0e46d5fb9e56a79885b81f0193b52b2fae624fea78b752459dacaa46be97",
     "runs/q18a_native35_r_declare.sh": "f42362029c3913a4a4e6c729d49eed6f894c7df9fe230ed6d478c593049ce2d5",
     "runs/q18a_native35_r_settings.sh": "ef4f21fa4ab7ea9b30261ecbab21f39424ef222d8c06cb4dedf2db7270a9aa8e",
-    "runs/q18a_native39_trunk.draft.sh": "22a0ca7b836fa13fdecf99c59e546964169bfd350a9b08b42b9f683d18eeb6b4",
-    "runs/q18a_native39_trunk_declare.sh": "f27fbb9cb60f477e02c8f688f0eb6408b61f5f1436fe04e97f759e77ce68959c",
-    "runs/q18a_native39_trunk_settings.sh": "6dca196d596a6e44c8de8e89e1ccc3274287e0ac00827967685b3c52bb153626",
+    "runs/q18a_native39_trunk.draft.sh": "e6c54accdb54090659ddc86b2615e520e2d1aa81d238dd78900da7675360013f",
+    "runs/q18a_native39_trunk_declare.sh": "f756563dfae0514b9f2babd4a961afc5984cb1214d6194b57da346301abe7215",
+    "runs/q18a_native39_trunk_settings.sh": "8f0d5afae84cee747c4e7e6b051b492aa63634dfe8b6ec93992b2643c3dff59e",
     "runs/q18a_native3_declare.sh": "ebfbb85ec1ba75bd59936bf119ce65803cbed77ddce9567ec3aedf2b85213fbc",
     "runs/q18a_native3_settings.sh": "60c978820686b346a59360c04d5b9aa1140765b24c417cdc6aa41931b5554cd3",
     "runs/q18a_native4.draft.sh": "d45c2fe153e785ee8563a55e1c7d0bcc31145ea027250501eac4bb9aca3c5b2e",
@@ -2364,7 +2367,7 @@
     "test_native37_robust.py": "2194184989e5c85af8e0f3f0b4c39ca98480e09c424fdc355d567742e154874a",
     "test_native38_plain_bind.py": "cb500939b5cce6905f912afd15ec4231cab0b4629c5731fc158f84c2e79b0287",
     "test_native39_trunk.py": "2171d9652fa41190575894f0ef0a26f715996ca86f22159f9c73696ec14fb4eb",
-    "test_native39_trunk_queue.py": "e69de12bec4edc091861315cdf32f609a8a0419fe5719cfbf5cff6dbe0a4eb99",
+    "test_native39_trunk_queue.py": "7b36eb39eced175036a8ffa18d706e78824ecb58383d5a0025c8b93411804627",
     "test_partial_tail_cov.py": "b5f8bbf6cb9e6e34347eb24a38f5c113b0ea556b4365ea8899b8682e133a0c8c",
     "test_pp_grouping.py": "2af0255e9e2f34098678ab6b7cdf83c49c03a20aab7eadb361db2fbd86b07e1a",
     "test_pp_release.py": "9b0a2f760a408ca6f7c088e31fbbf92ebdc876634ba6cf67bd38ca3aa49d8a35",
@@ -3035,7 +3038,7 @@
     "owner_runner": "q18a-native39-trunk-owner-run-<bundle12>.py",
     "parent": "q18a-native38-plain-bind",
     "parent_manifest": "d7a0943b90ab9dac43ef206b4d160e27e74db39c0a07685a87728435a4f98468",
-    "queue": "q18a-native39-trunk: P-c with a plannable W2 length (guard before row1), loopback API server, bind receipt, plain W1 control with an idle precondition for W2 and a descriptive trunk summary",
+    "queue": "q18a-native39-trunk: P-c with a plannable W2 length (guard before row1), loopback API server, bind receipt, observer and offers off (FLASH_S5_REPLAY_OBSERVER=0, FLASH_S5_ENGINE_OFFERS=0) gated on per-rank worker maps, row4 declared NOT_RUN, a sealed native W1 (drained, exact cohort ids at split entry/begin/end) with run-scoped ingress, the plain W1 control only on proven typed FULL + idle with its route and ingress checked, W2 only on W1 and plain ingress PASS with per-round idle/instruments/ingress, descriptive return timing and a descriptive trunk summary whose plain ratios exist only for a valid plain W1",
     "scope": "native37 robust + native38 plain bind + native39 P1/P2 (positive-frontier and running stock prefills held on an armed split route, typed empty-window prefill_end refusal) under the P-c speed queue",
     "tail_handback": false,
     "w2": {
@@ -3153,6 +3156,46 @@
           "trunk-summary",
           5,
           "pure CPU over retained artifacts"
+        ],
+        [
+          "row4-declared-not-run",
+          -900,
+          "P row4-placement 900 s released: row4 is declared NOT_RUN (observer and offers off)"
+        ],
+        [
+          "instruments-x4",
+          420,
+          "cap: 4 x (pause + resume at --control-timeout-s 30, 4 x docker exec at --exec-timeout-s 10, 5 s start)"
+        ],
+        [
+          "w1-plain-full-idle",
+          420,
+          "cap: prepare, 2 status, pause, resume at --control-timeout-s 60 plus --timeout-s 120 idle"
+        ],
+        [
+          "w1-plain-route-check",
+          60,
+          "cap: one status at --control-timeout-s 60"
+        ],
+        [
+          "ingress-x4",
+          240,
+          "budget: 4 x 60 s, one pass over the followed log each (no inner timeout; the outer one bounds it)"
+        ],
+        [
+          "w2-idle-x2",
+          240,
+          "cap: 2 x --timeout-s 120 for running + waiting to reach 0 before each round"
+        ],
+        [
+          "returns",
+          5,
+          "pure CPU over retained artifacts"
+        ],
+        [
+          "w1-drain-waits",
+          180,
+          "cap: 6 repeats x e3_native39_w1.DRAIN_TIMEOUT_S 30 s for the previous cohort to leave"
         ]
       ],
       "active_s": 16200,
@@ -3171,9 +3214,9 @@
   },
   "post_review_cpu": {
     "basis": "native39 trunk and queue suites plus native37/native38 and the admission, staged-plan, overlap, storage-replay, worker-bridge, metadata, P-c queue/continuation, host-guard and identity suites",
-    "log_sha256": "49e3ee3b5c8f0e04782b3f53b5021c343381959007115b894643f4bc41c0f3fe",
+    "log_sha256": "a611cc7f2017c16f9518efe9d2bf8b25107c1936d711862d8174a2ff474b4239",
     "skips": 0,
-    "tests": 991,
+    "tests": 1096,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
