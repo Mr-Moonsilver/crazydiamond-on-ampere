@@ -69,6 +69,78 @@
       "name": "historical-package-inventory",
       "replaces": "Current decode_probe.GENERATED_SOURCES as the expected module inventory for the frozen native35 O package used by hub tests",
       "test": "test_native35_performance package_inventory and native37 T3"
+    },
+    {
+      "name": "window-probe-front",
+      "test": "e3_native41_window_probe.Front",
+      "replaces": "The API AsyncLLM in front of the generated EngineCore utility (engine_core.call_utility_async)",
+      "equivalence": "test_e3_native_overlap.UtilityClient calls the bound generated EngineCore.flash_s5_native_control (executor_hooks.native_control) exactly as the pinned utility channel does; the window actions are reads (status, overlap_evidence), so pause_generation/resume_generation are never called and fail the probe if they are.",
+      "cannot_prove": "ZMQ utility transport and AsyncLLM process boundary.",
+      "box_evidence": false
+    },
+    {
+      "name": "window-probe-latched-lease",
+      "test": "e3_native41_window_probe.run(latched)",
+      "replaces": "A manual non-READ command (prepare, pause, identity) that latches AutoArmPolicy.manual_owned",
+      "equivalence": "Sets the same policy field AutoArmPolicy.manual_control sets after any non-READ command, then clears it as release_auto_arm does; the router and arm tests take and release the lease through the real commands.",
+      "cannot_prove": "Nothing beyond the field the window reads.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-fastapi",
+      "test": "test_native41_box_queue.APIRouter/App/Request/JSONResponse/fastapi_leaf",
+      "replaces": "fastapi APIRouter, FastAPI app (state.engine_client, include_router, http middleware), starlette Request and JSONResponse used by probe_control.attach_native_router",
+      "equivalence": "The real attach_native_router builds its real endpoint coroutine; the leaves carry exactly what it reads (client host, Authorization header, body stream, app.state.engine_client) and what it returns (content, status_code). Auth, JSON decoding, action routing, error mapping and the session are the real code.",
+      "cannot_prove": "uvicorn/starlette request parsing and the owner-health middleware at runtime.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-api-server",
+      "test": "test_native41_box_queue.Server/EngineLoop",
+      "replaces": "The uvicorn API server process: HTTP framing to the native endpoint and the API event loop that also drives the engine ticks",
+      "equivalence": "A loopback ThreadingHTTPServer hands each POST body, client host and Authorization header to the real endpoint coroutine on one event loop that also runs the engine ticks (test_e3_native_overlap.Pump), as test_native39_trunk.ThreadControl does; the client side is the real NativeRuntimeClient and LoopbackControl over real HTTP.",
+      "cannot_prove": "Separate API and EngineCore processes and their ZMQ channel.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-serving",
+      "test": "test_native41_box_queue.Server (/v1/completions)",
+      "replaces": "vLLM OpenAI completions serving and the model",
+      "equivalence": "Streams the pinned completion chunk shape the W2 readers parse (choices[0].token_ids, prompt_token_ids on the first chunk, cumulative usage with prompt_tokens, finish_reason length at max_tokens, [DONE]); prompt tokens follow the W2 token model (one per word plus one per digit). Nothing in this stack links the HTTP prompt to the scheduler, so no automatic cycle runs here; the real cycle through the same window is e3_native41_window_probe (container).",
+      "cannot_prove": "Model output, token timing, prefix caching and any link from HTTP traffic to the engine.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-scheduler-reads",
+      "test": "test_native41_box_queue.pinned_reads",
+      "replaces": "Scheduler.policy (scheduler.py:199) and Scheduler.get_num_unfinished_requests (scheduler.py:2825), absent on the cold-stack scheduler",
+      "equivalence": "policy.name is FCFS (the box default; AutoArmPolicy._select reads only the name). The count is the pinned rule: 0 under PAUSED_ALL, else waiting + skipped_waiting + running (no streaming input in this stack).",
+      "cannot_prove": "Other scheduling policies.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-w2-scale",
+      "test": "test_native41_box_queue.workload",
+      "replaces": "The frozen q18a W2 manifest sizes and times (8 x 153,537 standing, 199,934 fresh, 4,096 append, 20 s window, 120-180 s timeouts)",
+      "equivalence": "The same manifest file validated by shared.validate_manifest, only sizes and times reduced; the arm reads the same fields. SETTLE_S and CLOSE_TIMEOUT_S are patched to 0.2 s and 1 s.",
+      "cannot_prove": "Box-scale timing and memory.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-package-gate",
+      "test": "test_native41_box_queue.Arm.run_arm",
+      "replaces": "e3_overlap_performance._package_gate over the queue overlay, readiness and manifest",
+      "equivalence": "The arm reads only .ok; both values are exercised (False refuses before any engine call). The queue runs the real gate with the env the draft sets.",
+      "cannot_prove": "Overlay/readiness content.",
+      "box_evidence": false
+    },
+    {
+      "name": "queue-shell",
+      "test": "test_native41_box_queue.body_commands/expand",
+      "replaces": "bash expansion of the queue variables in the native41 body",
+      "equivalence": "Joins continuation lines, drops redirections and substitutes the same variables; each command then parses with its own module argparse. bash -n parses the whole derived drafts.",
+      "cannot_prove": "Runtime values of the queue variables.",
+      "box_evidence": false
     }
   ],
   "schema": "fixture-leaves/1",
