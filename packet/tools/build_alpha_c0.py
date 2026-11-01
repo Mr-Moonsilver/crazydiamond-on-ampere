@@ -6,10 +6,13 @@ tools/build_alpha_perf.py does: parent = alpha-perf build-d (bundle d6b0f69ead0b
 c3f1f64's byte for byte. Candidate name q18a-alpha-c0 is admitted by a load_spec with the wider name rule; every other assertion, the
 source freeze, the overlay regeneration, its negative controls and the runner normalisation are build_native43's.
 
-Two declared wrappers, because this is the first candidate to add overlay files on an unchanged parent set (e3/stage_wire.py and
+Three declared wrappers, because this is the first candidate to add overlay files on an unchanged parent set (e3/stage_wire.py and
 e3/stage_progress.py, both default-off modules):
   overlay_level    build_native43's rules on the files the parent has, with exactly those two added and nothing else;
-  expected_staging build_native43's rows plus the same two files under native30_overlay.
+  expected_staging build_native43's rows plus the same two files under native30_overlay;
+  stage            build_native43's staging, which also reports those two overlay rows as rows the overlay regeneration adds. It
+                   asserts they are absent when staged; the final bundle comparison (the same expected set) asserts they appear.
+                   build_native43 checks one expected set twice, before and after the regeneration; chain c stopped on the first.
 
 Added after that build, in the same OUT:
   parent/         the c3f1f64 reference: a copy of the parent bundle whose e3_builder sources are asserted equal to c3f1f64's, its
@@ -82,8 +85,19 @@ def expected_staging(spec):
     return added | {'native30_overlay/' + name for name in NEW_OVERLAY}, replaced
 
 
+_stage = b.stage
+
+
+def stage(spec, bundle):
+    added, replaced = _stage(spec, bundle)
+    rows = ['native30_overlay/' + name for name in NEW_OVERLAY]
+    assert not any((bundle / row).exists() for row in rows), 'an added overlay file is present before the regeneration'
+    return sorted(added + rows), replaced
+
+
 b.overlay_level = overlay_level
 b.expected_staging = expected_staging
+b.stage = stage
 
 
 def reference(out):
