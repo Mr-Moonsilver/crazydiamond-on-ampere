@@ -95,6 +95,51 @@
    "cannot_prove": "How often the C0 path tears: the rate is estimated from one alpha-perf run. A signature whose bytes moved to another physical line stays unseen by the text scan; the engine watch and arm completion remain.",
    "more_convenient": true,
    "box_evidence": false
+  },
+  {
+   "name": "probe-staged-cpu-worker-driver",
+   "test": "e3_alpha_c0_probe (alpha-c0-local-* engine self-run cases)",
+   "replaces": "sp.StagedSegmentDriver, the class real s5_startup installs when FLASH_S5_STAGE_LOCAL=1, by StagedWithCPUWorkers(sp.StagedSegmentDriver, ed.NativeSegmentDriver) for one install; and sp.ring_has_headroom, the broadcast-ring reserve rule, by a function returning True",
+   "equivalence": "The real StagedSegmentDriver is first in the MRO with every method unchanged; below it is only the parent connected fixture's CPU-worker NativeSegmentDriver patch, as on the parent's own self-run. Real startup still makes the choice from the switch. The composition's transport has no broadcast ring, so its reserve cannot be measured here.",
+   "cannot_prove": "Ring headroom on a real slot layout (test_e3_stage_local proves the rule; the box reports headroom_refused); real collectives on two GPUs per stage",
+   "more_convenient": false,
+   "box_evidence": false
+  },
+  {
+   "name": "probe-parent-connection-and-control",
+   "test": "e3_alpha_c0_probe (all alpha-c0-* engine self-run cases)",
+   "replaces": "parent.connected and parent.set_mode, the parent progress probe's connection and control sequence, by the same connection installed with the C0 settings and the box arm's sequence (pause, native_progress, native_stage_local, release_auto_arm, resume)",
+   "equivalence": "Real install_engine through real s5_startup, and real submit_control on the installed driver: the controls the box arm sends, in its order, through the same driver entry point. The parent run() and its checks are called unchanged.",
+   "cannot_prove": "The HTTP control route and router (test_e3_stage_local_control and the box arm cover them)",
+   "more_convenient": false,
+   "box_evidence": false
+  },
+  {
+   "name": "probe-stage-skew",
+   "test": "e3_alpha_c0_probe (alpha-c0-local-burst-skew)",
+   "replaces": "ap.Skew, the parent tp-skew injector, by stage_skew(ap) on local modes: the same delays and seed, with the release rule of a local arm (a target rank's release needs its own stage's state events)",
+   "equivalence": "Subclass of the parent Skew with the parent's schedule; the next chunk's open still needs all four ranks. Every case the parent rule would have flagged is kept in parent_rule_flags with its scope and must be the other stage only. Serial modes keep ap.Skew itself.",
+   "cannot_prove": "Device-level skew between two real GPUs of a stage",
+   "more_convenient": false,
+   "box_evidence": false
+  },
+  {
+   "name": "real-lines-progress-loggers",
+   "test": "test_alpha_c0_queue.RealLines",
+   "replaces": "ed._progress_logger, eh._progress_logger and sp._progress_logger (the engine, worker-hook and stage-progress logging.Logger) and eh._worker_progress, by one in-memory logger and per-rank traces",
+   "equivalence": "The real emitters format every line; the test keeps the exact text each logger.info call receives, stamps it as the docker log does, and reads it through the grade's own readers (progress.read_lines, assemble, chunk_breakdown, stage_lines).",
+   "cannot_prove": "Docker log interleaving and tears between writers (the torn-log-lines leaf and its tests cover the grade's rule for them)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "torn-line-band-cuts",
+   "test": "test_alpha_c0_queue (torn-line tests)",
+   "replaces": "tap.band_cuts, band 1's chunk ends for the synthetic run, by sixteen equal pieces between the same first and last ends",
+   "equivalence": "Same band, same first and last ends; only more chunks, so a lost flush can drop chunks within the limits. The grade reads chunk identities from the lines, not from band_cuts.",
+   "cannot_prove": "Band 1's real chunk sizes (the arm-scale-workload and box arms use them)",
+   "more_convenient": true,
+   "box_evidence": false
   }
  ]
 }
