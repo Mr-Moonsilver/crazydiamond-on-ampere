@@ -6,6 +6,7 @@ plain-client check change. No settings, model, grading or restore-body change.
 """
 import argparse
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 OLD = 'q18a_native39_trunk'
@@ -44,11 +45,29 @@ def derive():
     return out
 
 
+def derive_tools():
+    text = (ROOT / 'tools/native39_trunk_cpu_probe.py').read_text()
+    line = "suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native39_trunk_queue.py'))"
+    assert text.count(line) == 1
+    text = text.replace(line, line + "\nsuite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native40_box_queue.py'))")
+    text = re.sub(r'^EXPECTED_TESTS=(\d+).*$', lambda m: 'EXPECTED_TESTS=' + str(int(m.group(1)) + 6)
+                  + '  # inherited native39 cases plus 6 native40 queue CLI/window cases', text, flags=re.M)
+    text = text.replace("owner.QNAME=='q18a-native39-trunk'", "owner.QNAME=='q18a-native40-unarmed-hold'")
+    text = text.replace('active_and_cleanup=native39_trunk_gate.TRUNK_ACTIVE_AND_CLEANUP',
+                        'import native40_box_gate\nactive_and_cleanup=native40_box_gate.ACTIVE_S+native40_box_gate.CLEANUP_S')
+    text = text.replace('slot_receipts=slot_receipts+trunk_slots',
+                        "slot_receipts=slot_receipts+trunk_slots+sys.modules['test_native40_box_queue'].SLOT_RECEIPTS")
+    wrapper = (ROOT / 'tools/native39_trunk_bundle_selfrun.py').read_text().replace(
+        'native39_trunk_cpu_probe.py', 'native40_box_cpu_probe.py').replace(
+        "schema='native39-trunk-bundle-selfrun/1'", "schema='native40-box-bundle-selfrun/1'")
+    return {'tools/native40_box_cpu_probe.py': text, 'tools/native40_box_selfrun.py': wrapper}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--rewrite', action='store_true')
     a = p.parse_args()
-    for name, text in derive().items():
+    for name, text in (derive() | derive_tools()).items():
         path = ROOT / name
         if a.rewrite:
             path.write_text(text)

@@ -131,6 +131,25 @@ def run():
     conn.paused=True
     conn.control({'action':'bootstrap_engine_owner'})
     conn.paused=False
+    # Exact box pre-row1 scenario: zero decoders, no native admission intent,
+    # and an ordinary API-shaped prompt after the applied split ACK.
+    conn.paused=True
+    conn.control({'action':'enter_split'})
+    conn.paused=False
+    empty=req('empty-split-plain',256,outputs=1)
+    for i in range(3):
+        scheduled,_=conn.step()
+        check('empty-split-plain-held-%d'%i,empty.num_computed_tokens==0
+              and (not scheduled or empty.request_id not in scheduled)
+              and conn.driver.admission_intent() is None)
+    clock[0]+=31_000_000_000
+    for _ in range(500):
+        conn.step()
+        if empty.request_id not in stack.scheduler.requests:break
+    check('empty-split-plain-completes-after-full',not conn.driver._split_ready
+          and all(w.controller.route=='full' for w in conn.workers.values())
+          and list(empty.output_token_ids)==[7]
+          and stack.controller.last_split_hold_timeout['admission_armed'] is False)
     decode=req('live-decode',40)
     conn.step()
     running=req('running-prefill',10000)

@@ -3,6 +3,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -18,6 +19,7 @@ import e3_native40_unarmed_box as box
 import e3_native39_w1 as w1
 import native40_box_gate as gate
 import native40_box_queue as queue
+SLOT_RECEIPTS = []
 
 
 class Client:
@@ -127,6 +129,13 @@ class Queue(unittest.TestCase):
         draft = queue.derive()['harness/runs/q18a_native40_unarmed_hold.draft.sh']
         self.assertLess(draft.index('unarmed-stock-prefill "$rc"'), draft.index('qualification_phase row1'))
         self.assertIn('exec timeout --signal=TERM --kill-after=900s 2400s', draft)
+        start = draft.index("python3 - <<'PY_SLOT'")
+        slot = draft[start:draft.index('\nPY_SLOT\n', start) + len('\nPY_SLOT\n')]
+        done = subprocess.run(['bash', '-c', 'fail_early() { return 2; }\n' + slot],
+                              env=dict(os.environ, HARNESS_DIR=str(HERE)), capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        SLOT_RECEIPTS.append(dict(draft='q18a_native40_unarmed_hold.draft.sh', real_wall_clock=True,
+                                  verdict='PASS', active_s=gate.ACTIVE_S, cleanup_margin_s=gate.CLEANUP_S))
 
 
 if __name__ == '__main__':
