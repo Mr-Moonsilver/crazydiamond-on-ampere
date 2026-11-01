@@ -461,7 +461,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "d64a4c1fcabe6017004fa566b65a1879dff2ccf5",
+ "source_commit": "ba170cbdf1859bbfdf338a05976c6f0515c9e7fb",
  "source_paths": [
   "A\tharness/e3_native_qsa_fused_device_probe.py",
   "A\tharness/e3_step_a_box.py",

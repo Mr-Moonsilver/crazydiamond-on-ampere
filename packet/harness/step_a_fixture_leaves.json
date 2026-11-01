@@ -199,6 +199,24 @@
    "equivalence": "Same manifest schema and refusal checks with test-scale token ids; the real manifests are alpha-perf's, by name, in the frozen bundle.",
    "cannot_prove": "Real tokenization and chunk counts on the box.",
    "box_evidence": false
+  },
+  {
+   "name": "hol-pair-boundary-driver._tx_fused",
+   "test": "test_e3_native_reply_hol.PairLeaf/pair_driver (InWaitPairBoundary)",
+   "replaces": "NativeSegmentDriver._tx_fused, the field Step A adds to the state read by _wait_permit; extends the inherited leaf hol-pair-boundary-driver",
+   "equivalence": "False is the real value on the stepped path that leaf models: the real driver starts with False and sets it only when a fused selection is granted. The test's check of the leaf against the AST of the real functions keeps the field declared.",
+   "cannot_prove": "The fused in-wait permit on a poll: test_e3_native_qsa_fused.Burst covers it with the real driver.",
+   "more_convenient": "The inherited leaf stays one object for the stepped boundary.",
+   "box_evidence": "Stepped arms of q18a-step-a run _wait_permit with the real field."
+  },
+  {
+   "name": "torn-log-lines",
+   "test": "test_step_a_queue.Tears, test_step_a_torn_lines",
+   "replaces": "Docker log lines spliced by a second writer on the box",
+   "equivalence": "The two shapes are q18a-alpha-perf's engine-stream.log lines 3832 with 3835 (bytes moved to a later stamped line, a foreign line in their place) and 34985 (a header inside the JSON), applied to the real emitters' lines and read by the real grade.",
+   "cannot_prove": "How often the fused path tears: the rate is estimated from one alpha-perf run. A signature whose bytes moved to another physical line stays unseen by the text scan; the engine watch and the arm record still see a dead engine.",
+   "more_convenient": true,
+   "box_evidence": false
   }
  ]
 }
