@@ -71,6 +71,7 @@ def desc(num_tokens=8, num_reqs=None, uniform=1, mode='full', ubatches=1):
 
 def fake_evidence(test):
     root = Path(tempfile.mkdtemp(prefix='probe-evidence-'))
+    test.addCleanup(shutil.rmtree, root, ignore_errors=True)
     # Preserve fixture artifacts; no worktree/runtime manifest is mutated.
     source = ROOT / 'patches/s5_engine'
     for name in (*decode_probe.GENERATED_SOURCES, *decode_probe.BUILD_ONLY_SOURCES):
@@ -558,6 +559,7 @@ class BytePathTests(unittest.TestCase):
         import make_s5_overlap as g
 
         case = SyntheticTests('test_composes_new_package_and_preserves_baseline_bytes')
+        self.addCleanup(case.doCleanups)  # removes the temp tree fixture() registers on this never-run case
         root, base, ref, whole, _core = case.fixture()
         with case.stubs(base, ref):
             g.build(base, root / 'out', ref, whole)

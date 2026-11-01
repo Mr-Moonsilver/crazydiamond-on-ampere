@@ -25,6 +25,7 @@ Adapter responsibilities (all CPU-visible):
 * ``cancel`` is one bounded tick: abort, one host query, and release only when
   the dispatcher actually drained. Otherwise every owner stays on the worker.
 """
+import os
 import time
 
 from async_handoff import OpenPrefill
@@ -82,6 +83,35 @@ _SEGMENT_ROLE = {
     SegmentKind.PP_SEND: DependencyRole.HANDOFF,
     SegmentKind.PP_RECEIVE: DependencyRole.HANDOFF,
 }
+
+
+_MEMORY_FIELDS = (('allocated', 'allocated_bytes.all.current'),
+                  ('reserved', 'reserved_bytes.all.current'),
+                  ('inactive_split', 'inactive_split_bytes.all.current'),
+                  ('alloc_retries', 'num_alloc_retries'),
+                  ('ooms', 'num_ooms'))
+
+
+def memory_receipt(point, rank, transaction, cuda=None):
+    """One rank's caching-allocator counters and driver free/total bytes.
+
+    Receipt only (auto-arm runs): host queries of the current device, never a
+    CUDA initialization, a synchronization or a control-flow input. Returns
+    ``None`` when CUDA is not initialized in this process.
+    """
+    if cuda is None:
+        import torch
+        cuda = torch.cuda
+    if not cuda.is_initialized():
+        return None
+    stats = cuda.memory_stats()
+    free, total = cuda.mem_get_info()
+    row = dict(point=point, rank=int(rank), txn_seq=int(transaction.txn_seq),
+               chunk_start=int(transaction.chunk_start), chunk_end=int(transaction.chunk_end))
+    for name, key in _MEMORY_FIELDS:
+        row[name] = int(stats.get(key, -1))
+    row['free'], row['total'] = int(free), int(total)
+    return row
 
 
 def _rank(server, dispatcher):
@@ -196,6 +226,12 @@ class NativeWorkerBridge:
         # One exact-command ACK, retained across partial all-rank retries.
         # A same-target command with different identity is never idempotent.
         self._transition_cache = None
+        # Auto-arm runs only: per-chunk allocator receipts (open, and after
+        # the drained release). Never read by any control decision.
+        self._memory_receipts = os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'
+        self._memory_cuda = None
+        self.memory_rows = []
+        self.memory_receipt_errors = 0
 
     # -- lifecycle ---------------------------------------------------------
     def attach(self, worker):
@@ -366,6 +402,8 @@ class NativeWorkerBridge:
             # or overwrite the lane row of a request that never closed.
             raise WorkerBridgeError('a retained request row belongs to another request')
         self._retained_cancel_ack = None
+        if self._memory_receipts:
+            self._memory_receipt('open', record.transaction)
         chunk_admission = admission_to_chunk(record)
         snapshot = admission_metadata(record)
         ack = self.server.open(OpenPrefill(record.transaction, chunk_admission.num_tokens,
@@ -576,6 +614,23 @@ class NativeWorkerBridge:
             return 0
         return drain()
 
+    def _memory_receipt(self, point, transaction):
+        """Bounded receipt: one log line; a failure is counted, never raised."""
+        try:
+            row = memory_receipt(point, self.rank, transaction, cuda=self._memory_cuda)
+            if row is None:
+                return
+            self.memory_rows = (self.memory_rows + [row])[-16:]
+            import logging
+            logging.getLogger(__name__).info(
+                'flash-s5 memory point=%s rank=%d txn_seq=%d chunk=%d-%d allocated=%d '
+                'reserved=%d inactive_split=%d alloc_retries=%d ooms=%d free=%d total=%d',
+                row['point'], row['rank'], row['txn_seq'], row['chunk_start'],
+                row['chunk_end'], row['allocated'], row['reserved'], row['inactive_split'],
+                row['alloc_retries'], row['ooms'], row['free'], row['total'])
+        except Exception:
+            self.memory_receipt_errors += 1
+
     def _route_fail(self, reason):
         self._route_failure = reason
         router = getattr(self._native(), 'router', None)
@@ -611,6 +666,8 @@ class NativeWorkerBridge:
             self._source_close = binding
             self._close_source_binding()
             self._released = True
+            if self._memory_receipts:
+                self._memory_receipt('released', transaction)
         if not self._runtime_released:
             runtime = getattr(self.server, 'runtime', None)
             release = getattr(runtime, 'release', None)

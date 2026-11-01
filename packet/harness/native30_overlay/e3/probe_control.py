@@ -709,6 +709,13 @@ def attach_native_router(args, app, env=None):
     router = APIRouter()
     state = {'engine': None, 'control': None, 'session': None,
              'mode': 'native-overlap'}
+    # Native41: release_auto_arm is forwarded only when the switch is on; with
+    # it off the endpoint refuses it exactly as before (409 not exposed).
+    auto_actions = ('release_auto_arm',) if env.get('FLASH_S5_AUTO_ARM', '0') == '1' else ()
+    # Held-f: the per-arm native_progress switch, only with the burst candidate
+    # installed (FLASH_S5_NATIVE_PROGRESS=burst, which requires the auto-arm switch).
+    if auto_actions and env.get('FLASH_S5_NATIVE_PROGRESS', '') == 'burst':
+        auto_actions += ('native_progress',)
     install_owner_health(app)
 
     async def endpoint(request):
@@ -746,7 +753,7 @@ def attach_native_router(args, app, env=None):
             if action in QUALIFICATION_ACTIONS:
                 result = await state['control'].qualification(
                     action, command.get('payload'))
-            elif action in NATIVE_SESSION_ACTIONS:
+            elif action in NATIVE_SESSION_ACTIONS or action in auto_actions:
                 result = await state['session'].execute(command)
             else:
                 raise ProbeControlError('native-action-not-exposed')

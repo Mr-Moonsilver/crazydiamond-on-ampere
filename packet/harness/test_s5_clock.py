@@ -3,6 +3,7 @@
 import copy
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -111,6 +112,7 @@ class BuildRules(unittest.TestCase):
 
     def test_actual_builder_with_mock_compiler_and_no_gpu(self):
         root = Path(tempfile.mkdtemp(prefix='s5-clock-', dir=HERE.parent.parent/'tmp'))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         library = root/'fake.so'
         seen = []
         def compiler(command, **kwargs):

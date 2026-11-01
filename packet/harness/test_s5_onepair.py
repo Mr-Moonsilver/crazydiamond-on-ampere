@@ -1,6 +1,7 @@
 import copy
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ class Grade(unittest.TestCase):
         self.assertEqual(d.audit_grade([dict(good,context_known=False)])['verdict'],'INCONCLUSIVE')
     def test_strict_rank_completion_and_counts(self):
         folder=Path(tempfile.mkdtemp(prefix='s5one-',dir=TMP));p=folder/'r.json'
+        self.addCleanup(shutil.rmtree,folder,ignore_errors=True)
         ranks=[dict(rank=i,pci_bus_id=str(i),case='collectives',context='green24',max_connections='8',
                     source_sha256={'module':'hash'},completed=True,durations_ms={'decode':[1.]*30,'prefill':[2.]*30}) for i in range(2)]
         doc=dict(pair='1,3',case='collectives',ranks=ranks)

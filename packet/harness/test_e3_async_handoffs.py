@@ -213,6 +213,31 @@ class LeaseTests(unittest.TestCase):
         with self.assertRaises(ah.HandoffError):
             lease.commit(states[0])
 
+    def test_completions_before_acks_publish_only_after_every_ack(self):
+        # The reverse of the ack-first order: a completion is observed before
+        # its RPC acknowledgment (under host load the dispatcher reaches this
+        # order when the receiver threads run late).
+        lease = ah.TransactionLease(self.transaction, lanes(), max_outstanding=4,
+                                    clock=lambda: 0.0)
+        commit_tickets = [ticket(self.transaction, rank=r, seq=1,
+                                 role=DependencyRole.COMMIT) for r in range(4)]
+        states = [proof(t, CompletionKind.STATE_WRITE, seq=1) for t in commit_tickets]
+        for item, state in zip(commit_tickets, states):
+            lease.submit(item)
+            lease.complete(state)
+        self.assertEqual((lease.pending, lease.acked), (0, 0))
+        with self.assertRaises(ah.E3Pending) as caught:
+            lease.commit(states[0])
+        self.assertIn('without acknowledgment', str(caught.exception))
+        for item in commit_tickets[:3]:
+            lease.acknowledge(self.transaction, 1, True, worker_rank=item.worker_rank)
+        with self.assertRaises(ah.E3Pending):
+            lease.commit(states[0])
+        self.assertIsNot(lease.phase, ah.Phase.COMMITTED)
+        lease.acknowledge(self.transaction, 1, True, worker_rank=3)
+        self.assertEqual(lease.commit(states[0]), 1)
+        self.assertIs(lease.phase, ah.Phase.COMMITTED)
+
     def test_stale_duplicate_and_late_proofs_quarantine_without_mutation(self):
         lease = ah.TransactionLease(self.transaction, lanes(), max_outstanding=4,
                                     clock=lambda: 0.0)
@@ -501,6 +526,20 @@ class WorkerAdapterTests(unittest.TestCase):
             handoff.apply(ah.PollOperations(transaction, 0))
 
 
+class HeldCompletionBackend(ah.FixtureCompletionBackend):
+    """The fixture backend whose completions a test can hold back.
+
+    Completions count dispatcher polls, while acks arrive on the transport's
+    receiver threads; a test that needs the ack-only state holds the
+    completions instead of racing the polls against the threads. Not held,
+    it is the fixture backend.
+    """
+    held = False
+
+    def poll(self, transaction):
+        return () if self.held else super().poll(transaction)
+
+
 class DispatcherTests(unittest.TestCase):
     def setUp(self):
         self.queues = {rank: FakeQueue() for rank in range(4)}
@@ -509,7 +548,7 @@ class DispatcherTests(unittest.TestCase):
         self.transport = reply_transport.ReplyTransport(
             self.queues, SUCCESS.OK, handoff_idle=True, max_calls=8)
         self.dispatcher.install_transport(self.transport)
-        self.backend = ah.FixtureCompletionBackend(delay=3)
+        self.backend = HeldCompletionBackend(delay=3)
         self.dispatcher.install_backend(self.backend)
         self.transaction = tx()
 
@@ -538,12 +577,18 @@ class DispatcherTests(unittest.TestCase):
         return tickets
 
     def test_four_rank_ack_ordering_and_no_publication_from_acks(self):
+        # The ack-only state is held by construction: with delay=3 polls and
+        # free completions, a loaded host let all four completions land before
+        # the fourth ack (pending 0 != 4). The reverse order is the lease test
+        # test_completions_before_acks_publish_only_after_every_ack.
+        self.backend.held = True
         self.dispatcher.open(self.transaction, lanes())
         tickets = self.operation()
         self.pump(lambda report: self.dispatcher.active.acked == 4)
         self.assertEqual(self.dispatcher.active.pending, 4)
         with self.assertRaises(ah.HandoffError):
             self.dispatcher.commit(proof(tickets[0], CompletionKind.STATE_WRITE))
+        self.backend.held = False
         self.pump(lambda report: self.dispatcher.active.pending == 0)
         self.assertEqual(self.dispatcher.active.pending, 0)
         self.assertIsNot(self.dispatcher.active.phase, ah.Phase.COMMITTED)

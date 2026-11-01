@@ -4,6 +4,7 @@ CPU only. No torch, no CUDA, no vLLM import: the run itself is an unarmed draft.
 These tests prove the draft's grading is fail-closed and that the queue stays
 fresh, bounded and explicitly unauthorized.
 """
+import atexit
 import copy
 import ctypes as C
 from functools import lru_cache
@@ -50,6 +51,7 @@ def native_window_fixture(variant="clean"):
         class Fixture(ObserverTestBase):
             pass
         Fixture.setUpClass()
+        atexit.register(Fixture.doClassCleanups)  # the build dir must outlive every cached fixture, so remove it at exit
         native_window_fixture.compiled = Fixture
     Fixture = native_window_fixture.compiled
     fixture = Fixture('runTest')

@@ -8,7 +8,7 @@ Each class names the finding it closes and fails on the 72ea0ba engine:
   route, in the exact branches the pinned schedule() takes for them, with an
   exact revert.  The pinned-image probe (e3_native39_trunk_probe.py) drives
   both branches through the real AsyncScheduler.
-* HeldKinds (P1 #1): the seams hold only while a native intent is armed,
+* HeldKinds (P1 #1, native40): the seams hold on applied split even unarmed,
   count per kind, and the native one-token handback is never held: from the
   terminal commit to the FULL ack the driver skips every stock step, and the
   ack closes the intent.
@@ -188,15 +188,19 @@ class Session(unittest.IsolatedAsyncioTestCase):
 
 
 class HeldKinds(Session):
-    async def test_positive_frontier_and_running_prefill_hold_only_while_armed(self):
+    async def test_positive_frontier_and_running_prefill_hold_on_split_even_unarmed(self):
         running = adm.Request(uid='req-n39-running', tokens=40, computed=8)
         resumed = adm.Request(uid='req-n39-resumed', tokens=40, computed=8)
+        running.is_prefill_chunk = True
+        self.scheduler.running.append(running)
+        self.scheduler.requests = {r.request_id: r for r in (self.request, resumed, running)}
+        self.scheduler.waiting.items.append(resumed)
         self.assertFalse(sh.defer_stock_positive_frontier(self.scheduler, resumed))
         self.assertFalse(sh.defer_stock_running_prefill(self.scheduler, running))
-        await self.call('prepare', target_route='split')  # split route, no admission intent
-        self.assertFalse(sh.defer_stock_positive_frontier(self.scheduler, resumed))
-        self.assertFalse(sh.defer_stock_running_prefill(self.scheduler, running))
-        self.assertEqual(self.controller.split_stock_deferrals, 0)
+        await self.call('prepare', target_route='split')  # physical safety is independent of intent
+        self.assertTrue(sh.defer_stock_positive_frontier(self.scheduler, resumed))
+        self.assertTrue(sh.defer_stock_running_prefill(self.scheduler, running))
+        self.assertEqual(self.controller.split_stock_deferrals, 2)
 
         armed = await self.call('prepare', target_route='split', phase='split-prefill-solo')
         self.assertEqual(armed['route'], 'split')
@@ -207,10 +211,10 @@ class HeldKinds(Session):
             self.assertIsNone(record)
             self.assertEqual(held, [True, True, True])
         status = self.status()
-        self.assertEqual(status['split_stock_deferrals'], 6)
+        self.assertEqual(status['split_stock_deferrals'], 8)
         self.assertEqual(status['split_stock_deferrals_by_kind'],
-                         {'fresh': 2, 'positive-frontier': 2, 'running-prefill': 2})
-        self.assertEqual(status['split_hold']['holds'], 6)
+                         {'fresh': 2, 'positive-frontier': 3, 'running-prefill': 3})
+        self.assertEqual(status['split_hold']['holds'], 8)
         self.assertEqual(status['split_hold']['schedule_seq'], 2)
         self.assertEqual(status['split_hold_bound_ns'], sh.SPLIT_HOLD_BOUND_NS)
         self.assertEqual(status['split_hold_timeouts'], 0)
@@ -218,7 +222,7 @@ class HeldKinds(Session):
         self.assertEqual(returned['route'], 'full')
         self.assertFalse(sh.defer_stock_positive_frontier(self.scheduler, resumed))
         self.assertFalse(sh.defer_stock_running_prefill(self.scheduler, running))
-        self.assertEqual(self.controller.split_stock_deferrals, 6)
+        self.assertEqual(self.controller.split_stock_deferrals, 8)
 
     async def test_the_native_one_token_handback_is_never_held(self):
         await self.pump.stop()  # this test owns every tick

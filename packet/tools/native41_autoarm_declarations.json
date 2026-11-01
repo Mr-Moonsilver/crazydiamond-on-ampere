@@ -1,0 +1,192 @@
+{
+  "ancillary_paths": [
+    "A\tdocs/e3-briefs/q18a-native41-autoarm-delivery.md",
+    "A\tresults/hub/native41-autoarm-c/delivery.json",
+    "A\tresults/hub/native41-autoarm-c/native-precheck.conf",
+    "A\tresults/hub/native41-autoarm-d/clock-scan.json",
+    "A\tresults/hub/native41-autoarm-d/delivery.json",
+    "A\tresults/hub/native41-autoarm-d/native-precheck.conf",
+    "A\tresults/hub/native41-autoarm-e/clock-scan.json",
+    "A\tresults/hub/native41-autoarm-e/delivery.json",
+    "A\tresults/hub/native41-autoarm-e/native-precheck.conf",
+    "A\tresults/hub/native41-autoarm-e2/clock-scan.json",
+    "A\tresults/hub/native41-autoarm-e2/delivery.json",
+    "A\tresults/hub/native41-autoarm-e2/native-precheck.conf",
+    "A\tresults/hub/native41-autoarm/delivery.json",
+    "A\tresults/hub/native41-autoarm/native-precheck.conf",
+    "A\treviews/codex-20261101-native41-autoarm.md"
+  ],
+  "definitions": {
+    "harness/selftest.py": [
+      "module:For#12"
+    ],
+    "harness/test_e3_package.py": [
+      "SyntheticTests.test_default_off_settings_budget_and_launcher_guard"
+    ],
+    "harness/test_native35_performance.py": [
+      "module:import contextlib",
+      "package_inventory",
+      "setUpModule",
+      "tearDownModule"
+    ],
+    "harness/test_native37_robust.py": [
+      "HarnessCleanup.run_round"
+    ],
+    "harness/test_native40_box_queue.py": [
+      "Queue.test_regression_real_cli_through_package_and_native_client_refusal"
+    ],
+    "patches/s5_engine/decode_probe.py": [
+      "module:GENERATED_SOURCES"
+    ],
+    "patches/s5_engine/engine_driver.py": [
+      "NativeSegmentDriver._apply_segments",
+      "NativeSegmentDriver._arm_admission",
+      "NativeSegmentDriver._status_record",
+      "NativeSegmentDriver._status_record_base",
+      "NativeSegmentDriver._submit_control",
+      "NativeSegmentDriver.submit_control",
+      "_agreement_detail",
+      "_continuation"
+    ],
+    "patches/s5_engine/executor_hooks.py": [
+      "before_pause",
+      "engine_idle_tick",
+      "native_work_pending"
+    ],
+    "patches/s5_engine/make_s5_overlap.py": [
+      "_s5_launcher",
+      "module:E3_MODULES",
+      "module:LAUNCHER_LIST_EXEMPT"
+    ],
+    "patches/s5_engine/native_overlap_control.py": [
+      "NativeControlClient._call",
+      "NativeControlClient.release_auto_arm",
+      "module:import os"
+    ],
+    "patches/s5_engine/native_overlap_session.py": [
+      "NativeOverlapSession._action_release_auto_arm",
+      "NativeOverlapSession.execute",
+      "module:import os"
+    ],
+    "patches/s5_engine/native_overlap_worker.py": [
+      "_native_inventory"
+    ],
+    "patches/s5_engine/probe_control.py": [
+      "attach_native_router"
+    ],
+    "patches/s5_engine/s5_startup.py": [
+      "install_engine"
+    ],
+    "patches/s5_engine/scheduler_hooks.py": [
+      "PrefillAdmissionController._admit_observed",
+      "PrefillAdmissionController._native_admission_disabled"
+    ],
+    "patches/s5_engine/worker_bridge.py": [
+      "NativeWorkerBridge.__init__",
+      "NativeWorkerBridge._memory_receipt",
+      "NativeWorkerBridge._release_lane",
+      "NativeWorkerBridge.open",
+      "memory_receipt",
+      "module:_MEMORY_FIELDS",
+      "module:import os"
+    ]
+  },
+  "overlay_definitions": {
+    "e3/decode_probe.py": [
+      "module:GENERATED_SOURCES"
+    ],
+    "e3/engine_driver.py": [
+      "NativeSegmentDriver._apply_segments",
+      "NativeSegmentDriver._arm_admission",
+      "NativeSegmentDriver._status_record",
+      "NativeSegmentDriver._status_record_base",
+      "NativeSegmentDriver._submit_control",
+      "NativeSegmentDriver.submit_control",
+      "_agreement_detail",
+      "_continuation"
+    ],
+    "e3/executor_hooks.py": [
+      "before_pause",
+      "engine_idle_tick",
+      "native_work_pending"
+    ],
+    "e3/native_overlap_control.py": [
+      "NativeControlClient._call",
+      "NativeControlClient.release_auto_arm",
+      "module:import os"
+    ],
+    "e3/native_overlap_session.py": [
+      "NativeOverlapSession._action_release_auto_arm",
+      "NativeOverlapSession.execute",
+      "module:import os"
+    ],
+    "e3/native_overlap_worker.py": [
+      "_native_inventory"
+    ],
+    "e3/probe_control.py": [
+      "attach_native_router"
+    ],
+    "e3/s5_startup.py": [
+      "install_engine"
+    ],
+    "e3/scheduler_hooks.py": [
+      "PrefillAdmissionController._admit_observed",
+      "PrefillAdmissionController._native_admission_disabled"
+    ],
+    "e3/worker_bridge.py": [
+      "NativeWorkerBridge.__init__",
+      "NativeWorkerBridge._memory_receipt",
+      "NativeWorkerBridge._release_lane",
+      "NativeWorkerBridge.open",
+      "memory_receipt",
+      "module:_MEMORY_FIELDS",
+      "module:import os"
+    ]
+  },
+  "paths": [
+    "A\tharness/e3_native41_auto_probe.py",
+    "A\tharness/e3_native41_autoarm_box.py",
+    "A\tharness/e3_native41_receipts_probe.py",
+    "A\tharness/e3_native41_unarmed_box.py",
+    "A\tharness/native41_box_gate.py",
+    "A\tharness/native41_clock_fixture_leaves.json",
+    "A\tharness/native41_fixture_leaves.json",
+    "A\tharness/runs/q18a_native41_autoarm.draft.sh",
+    "A\tharness/runs/q18a_native41_autoarm_declare.sh",
+    "A\tharness/runs/q18a_native41_autoarm_settings.sh",
+    "M\tharness/selftest.py",
+    "M\tharness/test_e3_package.py",
+    "A\tharness/test_e3_tp_finalize_skew.py",
+    "M\tharness/test_native35_performance.py",
+    "M\tharness/test_native37_robust.py",
+    "M\tharness/test_native40_box_queue.py",
+    "A\tharness/test_native41_autoarm.py",
+    "A\tharness/test_native41_box_queue.py",
+    "A\tharness/test_native41_tp_skew.py",
+    "A\tharness/test_native41_unarmed_box.py",
+    "M\tpatches/s5_engine/decode_probe.py",
+    "M\tpatches/s5_engine/engine_driver.py",
+    "M\tpatches/s5_engine/executor_hooks.py",
+    "M\tpatches/s5_engine/make_s5_overlap.py",
+    "A\tpatches/s5_engine/native_auto_arm.py",
+    "M\tpatches/s5_engine/native_candidate_review.json",
+    "M\tpatches/s5_engine/native_overlap_control.py",
+    "M\tpatches/s5_engine/native_overlap_session.py",
+    "M\tpatches/s5_engine/native_overlap_worker.py",
+    "M\tpatches/s5_engine/probe_control.py",
+    "M\tpatches/s5_engine/s5_startup.py",
+    "M\tpatches/s5_engine/scheduler_hooks.py",
+    "M\tpatches/s5_engine/worker_bridge.py",
+    "A\ttools/build_native41_autoarm.py",
+    "A\ttools/native41_autoarm_declarations.json",
+    "A\ttools/native41_autoarm_freeze.py",
+    "A\ttools/native41_autoarm_selfrun.py",
+    "A\ttools/native41_box_cpu_probe.py",
+    "A\ttools/native41_box_delivery.py",
+    "A\ttools/native41_box_precheck_conf.py",
+    "A\ttools/native41_box_queue.py",
+    "A\ttools/native41_box_selfrun.py",
+    "A\ttools/native41_clock_scan.py"
+  ],
+  "schema": "native41-autoarm-freeze-declaration/1"
+}

@@ -7,7 +7,7 @@ cache path -- the J-inside case; recreated path all right / all wrong; missing r
 stall_trace2.py --recompute (good run; missing newcomer token; stopped stream; incomplete run).
 usage: selftest.py [REVIEW_FIXTURE_DIR]   exit 0 only if every case behaves as required
 """
-import hashlib, json, os, re, subprocess, sys, tempfile
+import atexit, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -45,6 +45,7 @@ def audit_suite(name, process):
 
 def canary_dir(sessions):
     d = tempfile.mkdtemp(prefix='canary-fixture-')
+    atexit.register(shutil.rmtree, d, True)
     with open(os.path.join(d, 'expected.txt'), 'w') as f:
         for i, (code, note, out) in enumerate(sessions, 1):
             f.write(f'1 {i} {code} {note} /synthetic/{i}\n')
@@ -74,6 +75,7 @@ check('canary: duplicate codes', canary_grade.grade(canary_dir([good, ('AMBER-11
 def transcripts_for(d, sessions, stale=False):
     # a Claude Code projects dir with one transcript per synthetic workdir: (code, tools)
     t = tempfile.mkdtemp(prefix='canary-transcripts-')
+    atexit.register(shutil.rmtree, t, True)
     for i, (code, tools) in enumerate(sessions, 1):
         p = os.path.join(t, f'-synthetic-{i}'); os.makedirs(p)
         f = os.path.join(p, 's.jsonl')
@@ -91,7 +93,9 @@ TOOLS = ['Read', 'Bash', 'Bash']
 d = canary_dir([good, other])
 check('canary: transcripts present', canary_grade.grade(d, transcripts_for(d, [(good[0], TOOLS), (other[0], TOOLS)]))['verdict'], 'PASS')
 d = canary_dir([good, other])
-check('canary: requested transcript missing (review fixture)', canary_grade.grade(d, tempfile.mkdtemp())['verdict'], 'FAIL')
+empty_transcripts = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, empty_transcripts, True)
+check('canary: requested transcript missing (review fixture)', canary_grade.grade(d, empty_transcripts)['verdict'], 'FAIL')
 d = canary_dir([good, other])
 check('canary: transcript older than this run', canary_grade.grade(
     d, transcripts_for(d, [(good[0], TOOLS), (other[0], TOOLS)], stale=True))['verdict'], 'FAIL')
@@ -279,6 +283,7 @@ MANIFEST = ('## mounted overlay files\naaaa /o/qsa.py\nbbbb /o/ops_qsa.py\n## se
 
 def release_fixture(v_rows, p_rows, steps, end=(True, True), same_id=False, profile=None):
     d = tempfile.mkdtemp(prefix='release-fixture-')
+    atexit.register(shutil.rmtree, d, True)
     for ph, rows, verify, e, rid in (('V', v_rows, '1', end[0], 'run-v'), ('P', p_rows, '-', end[1], 'run-v' if same_id else 'run-p')):
         os.makedirs(f'{d}/{ph}')
         open(f'{d}/{ph}/verdicts.txt', 'w').write(''.join(f'{k} {v}\n' for k, v in rows) + (f'END {rid}\n' if e else ''))
@@ -554,6 +559,7 @@ def mock_quality_engine(fault):
 
 import zlib  # noqa: E402
 qd = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, qd, True)
 qcorpus = os.path.join(qd, 'corpus.txt')
 QTOK = {n: zlib.crc32(f'w{n}'.encode()) % 5000 for n in range(401)}
 QCHAIN = {QTOK[n]: QTOK[(7 * n + 3) % 401] for n in range(401)}
@@ -703,6 +709,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_stock_rpc_credits.py', 'Native16 stock batch queue: claim earlier ordinary RPC futures without consuming native credits, unchanged capacity and cached failures (CPU MQ/output leaves)'),
                      ('test_e3_native_selection_asymmetry.py', 'Native17 known TP selection-copy ordering counterexample: unmodified source stack over explicitly synthetic CPU tensor/event/model leaves, not box evidence'),
                      ('test_e3_native_schedule_profile.py', 'Native18 canonical selection boundary, queried TP profile agreement, exact retries and coordinated refusal/drain over explicit CPU device/model leaves; not box evidence'),
+                     ('test_e3_native_reply_hol.py', 'Held-f native reply head-of-line: over the generated WorkerProc reply path and the real ReplyTransport, a native reply on the output rank waits behind pending async decode output (repro); with burst, flash_s5_submit/poll replies leave directly with their transport sequence and are accepted only as the exact head of that rank\'s direct FIFO (reordered, duplicate, unregistered or untyped poisons every pending call), ineligible methods refused at both ends, serialized response writes, the worker progress rows and the bounded in-wait loop (CPU; leaves declared in the module docstring)'),
                      ('test_e3_tp_finalize_skew.py', 'TP completion skew at STATE_FINALIZE through the real driver/bridge/dispatcher/QSA composition: commit beside state_finalize is one continuation, and no completion-dependent action (release, drain, handback, transition/open, later stage submit) runs before both ranks\' own state events; a delayed peer never repeats or enters the TP tail early; every phase pair at every (kind, stage) and every layer/bucket/paused/profile/tail difference still refuses; a random sweep against the parent full-cursor key (CPU only; leaves declared in the module docstring)'),
                      ('test_e3_native21_rpc_stream.py', 'Native21 RPC-thread QSA profile query against a stream-checking device leaf; stream-bound operations still refuse (CPU only)'),
                      ('test_e3_native_pp_stop_order.py', 'Native19 deferred PP receive and typed stop obligation: matching-send-gated events, partial acceptance, clean stage-zero refusal/abort (CPU leaves; not box evidence)'),
@@ -727,7 +734,14 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_native35_p_b.py', 'Native35 P-b: P-a under fresh names plus the exact L2 row4 qualification phase, pinned L2 runner bytes, exact P-b row4 argv to the first send with the L2 runner (CPU only)'),
                      ('test_native35_p_c.py', 'Native35 P-c: P-b under fresh names with FLASH_NATIVE30_LOCALIZE=0, native35-diagnostic NOT_RUN, the post-row4 note and the row4 runner swap as the only deltas; real cleanup graders over a LOCALIZE=0 log with the P-b and emitter counterfactuals (CPU only)'),
                      ('test_native35_p_c_window.py', 'Native35 P-c row4: L2 runner plus the decode stop at the 20-token window, real window/open waits; observer_end spool over real loopback HTTP through the real driver and runner (>112 MiB collected, >512 MiB refused with bytes and sha); observer census reasons; generated decode abort with a native chunk in flight; exact P-c row4 argv (CPU only)'),
-                     ('test_native39_trunk.py', 'Native39 trunk robustness (Codex native37 P1/P2): generated positive-frontier and running-prefill seams with exact revert, holds only under an armed intent and never on the native one-token handback, a held head no longer strands the retained row, weak refusal memo with free-seam eviction, typed full-prefix-hit/resumed-with-output refusals and furthest-boundary basis, bounded idle hold returning FULL with a typed split-hold-timeout, narrowed and window-correlated prefill_end fallback (CPU only; R/W run in the pinned-image self-run; native39 fixture leaves)'),
+                     ('test_native40_box_queue.py', 'Native40 short box queue, exact plain-client CLI, unarmed timeout receipts, invalid recovery rejection and executable window (CPU leaves; real Core gate separately)'),
+                     ('test_native41_autoarm.py', 'Native41 opt-in automatic FCFS prefill policy: startup ordering, default-off inertness, request-bound intents, manual/pause exclusion, epoch-bound lease release and weak ownership (CPU; connected plain-request cycles in pinned container; native41 fixture leaves)'),
+                     ('test_native41_box_queue.py', 'Native41 auto-arm queue: the native router forwards release_auto_arm (and no other new action) only with FLASH_S5_AUTO_ARM=1 (exact 409 off), the exact arm CLI over loopback HTTP with a status-only receipt poller into the real endpoint/session/driver/policy of a startup-bound stack (stock completes with stock receipts, auto sends only status/pause/release_auto_arm/resume), client-basis grade with the engine basis declared unavailable, every body command and the native41 unarmed clock-proof command through their own argparse, and every python3 call of the queue texts that names a script (draft, declare, settings, qlib identity functions, setcfg) expanded by the real bash against the real parser of that script, with the n43-f missing --container-id as a negative control, derivation from the native40 texts and one phase budget at real clock (CPU; real automatic cycle through the same receipt reader in e3_native41_receipts_probe; native41 fixture leaves)'),
+                     ('test_native41_progress_queue.py', 'Held-f native progress queue: the native router forwards native_progress only with FLASH_S5_AUTO_ARM=1 and FLASH_S5_NATIVE_PROGRESS=burst (held-e 409 otherwise) and the engine only when burst is installed and paused idle FULL, the exact arm CLI for current|burst x live|solo over loopback HTTP into the real endpoint/session/driver/policy/NativeProgress (status, pause, native_progress, release_auto_arm, resume only; solo cancel at the first observed native chunk; /metrics preemption reads), the receipts grade over lines from the real engine and worker ProgressTrace emitters in docker log form with each completeness defect INCONCLUSIVE, every queue python call against its real parser, derivation from the held-e texts and one phase budget at real clock (CPU; native chunk receipts on the connected Core in e3_native41_progress_probe; native41 progress fixture leaves)'),
+                     ('test_native41_tp_skew.py', 'Native41 held-e auto-arm-only per-chunk allocator receipts on each worker over the connected SkewNetwork composition: open and released rows per rank with FLASH_S5_AUTO_ARM=1, no query and the same RPC method sequence with it off, uninitialized or failing CUDA counted and never raised (CPU; native41 fixture leaves; the TP skew tests are test_e3_tp_finalize_skew)'),
+                     ('test_native41_unarmed_box.py', 'Native41 unarmed-hold clock proof across the CT/container identity split: native40 refuses the CT view exactly as on the box (client-engine-clock-unproved, HARNESS), native41 proves the domain from container init time namespace, zero offsets, kernel boot_id and a bracketed engine sample over the real stack; refusals for offsets, identities, stale samples and docker failure (CPU; native41 clock fixture leaves)'),
+                     ('test_native40_unarmed_hold.py', 'Native40 unarmed stock-prefill physical split exclusion, weak exact request identity and 30s FULL return across disarm; no native-work interruption (CPU only; native40 fixture leaves)'),
+                     ('test_native39_trunk.py', 'Native39 trunk robustness (Codex native37 P1/P2): generated positive-frontier and running-prefill seams with exact revert, physical split holds even without an admission intent and never on the native one-token handback, a held head no longer strands the retained row, weak refusal memo with free-seam eviction, typed full-prefix-hit/resumed-with-output refusals and furthest-boundary basis, bounded idle hold returning FULL with a typed split-hold-timeout, narrowed and window-correlated prefill_end fallback (CPU only; R/W run in the pinned-image self-run; native39 fixture leaves)'),
                      ('test_native43_dense_boundary.py', 'Native43 explicit dense policy: real generated transport, bounds, source holds, trace cap, four-rank certified cutoff/cancel/FULL (CPU leaves)'),
                      ('test_native43_boundary_queue.py', 'Native43 paired diagnostic: exact drafts, real CLI/tokenize seam, bracket across clock views, strict boundary evidence and real window budgets (CPU leaves)'),
                      ('test_native39_trunk_queue.py', 'Native39 trunk queue: exact derivation from the P-c texts, trunk window at real clock; restart/health/bind receipt under bash with the real host observer (bind before the first 200 request PASS, after FAIL, absent or another container INC, health deadline stops); native W1 then the real plain 24 Oct client, idle check and W2 rounds with the real grade and trunk summary; W2 length guard against /tokenize; sourced trunk settings through the real setcfg and S5 launcher render to a loopback --host; checks over retained box records (CPU only; native39 queue-* fixture leaves)'),

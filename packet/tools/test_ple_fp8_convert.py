@@ -10,7 +10,7 @@ weight_scale is [1] float32 = amax / 448; dequantized shards match the source wi
 PLE_FP8.json digests match the written tensors. Exit 0 when every check holds.
 usage: test_ple_fp8_convert.py [PYTHON]   (PYTHON runs the converter; default: this interpreter)
 """
-import hashlib, json, os, subprocess, sys, tempfile
+import atexit, hashlib, json, os, shutil, subprocess, sys, tempfile
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
@@ -32,6 +32,7 @@ def digest(path):
 
 
 tmp = tempfile.mkdtemp(prefix="plefp8-", dir=os.environ.get("TMPDIR"))
+atexit.register(shutil.rmtree, tmp, True)
 src, dst = f"{tmp}/src", f"{tmp}/dst"
 os.makedirs(src)
 torch.manual_seed(1)

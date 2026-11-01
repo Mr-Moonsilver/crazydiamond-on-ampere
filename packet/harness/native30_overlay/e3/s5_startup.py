@@ -254,6 +254,16 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
 def install_engine(engine, *, env=None, clock=time.monotonic):
     """Install the engine-side composition at the generated ``__init__`` seam."""
     env = os.environ if env is None else env
+    auto = env.get('FLASH_S5_AUTO_ARM', '0')
+    if auto not in ('0', '1'):
+        raise StartupError('invalid boolean setting: FLASH_S5_AUTO_ARM')
+    if auto == '1' and (mode_settings(env) is not None or not _enabled(env)):
+        raise StartupError('auto-arm requires the native overlap composition')
+    from native_measurement import progress_mode
+    try:
+        progress = progress_mode(env)
+    except ValueError as exc:
+        raise StartupError(str(exc)) from None
     if mode_settings(env) is not None:
         # The decode-only probe has no engine-side lane composition.
         return None
@@ -282,8 +292,10 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     from native_resources import response_success
 
     config = HandoffConfig.from_env(env)
+    # The two-FIFO reply receiver exists only when the burst candidate is installed.
+    extra = {'direct_replies': True} if progress == 'burst' else {}
     transport = install(executor, config=config, success_status=response_success(),
-                        clock=clock)
+                        clock=clock, **extra)
     backend = RemoteCompletionBackend(config, transport=transport)
     allocation = estimated_e3_inventory(chunk_tokens=config.chunk_tokens)
     composition = build_composition(
@@ -327,6 +339,12 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     engine._flash_s5_admission = controller
     engine._flash_s5_driver = driver
     bootstrap_full_startup(engine, driver, timeout_s=config.reply_timeout_s)
+    if auto == '1':
+        from native_auto_arm import install
+        install(engine, driver, env)
+    if progress is not None:
+        # Held-f receipts (and the burst candidate) attach to the auto policy only.
+        driver.install_progress(progress)
     return composition
 
 

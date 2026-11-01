@@ -7,6 +7,7 @@ http.client.HTTPConnection.request is replaced only where a test stops at the fi
 the decode SSE counts inside an otherwise real source packet window are declared numbers.
 """
 import copy
+import contextlib
 import hashlib
 import http.client
 import json
@@ -44,6 +45,31 @@ EPOCH=7
 OVERLAY=HERE/'native30_overlay'
 if not OVERLAY.is_dir():
     OVERLAY=Path('<hub-dir>/agents/flash-next/tmp/native35-o-held-a/q18a-native35-o-bundle-188f4d5ca79a/native30_overlay')
+
+
+@contextlib.contextmanager
+def package_inventory():
+    """Bind the historical O fixture's version, without changing validation.
+
+    Hub tests intentionally use frozen native35 O; it predates native41's
+    opt-in module. Frozen native41 bundle tests use their own complete overlay.
+    Every historical module/library/hash is still checked by the real gate.
+    """
+    import decode_probe
+    expected=tuple(name for name in decode_probe.GENERATED_SOURCES
+                   if name!='native_auto_arm' or (OVERLAY/'e3/native_auto_arm.py').is_file())
+    with patch.object(decode_probe,'GENERATED_SOURCES',expected):
+        yield
+
+
+def setUpModule():
+    global _package_inventory_scope
+    _package_inventory_scope=package_inventory()
+    _package_inventory_scope.__enter__()
+
+
+def tearDownModule():
+    _package_inventory_scope.__exit__(None,None,None)
 
 
 def settings_read_timeout():

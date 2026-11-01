@@ -445,6 +445,9 @@ def _native_inventory(native):
     if not callable(getattr(native, 'inventory', None)):
         return None
     inventory = native.inventory()
+    if os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1':
+        from native_auto_arm import worker_capability
+        inventory['auto_arm_decode'] = worker_capability(native)
     state = native.state
     owner = native.decode_owner
     inventory.update({
