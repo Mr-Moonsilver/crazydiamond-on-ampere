@@ -17,18 +17,21 @@ Fixture leaves (each replaces a box-only object; declared in the record):
   L4 the per-arm declares and drafts (box queues: docker identity, systemd, GPUs) are stubs that run only
      the real queues' auth steps: the declare's `e3_private_auth.py prepare` into $S0/$QNAME-requests/private
      and the draft's `e3_private_auth.py check` (q18a_native43_current.draft.sh line 508).  They record the
-     sha256 of the synthetic key they saw and which per-arm key variables were visible.  phase() children
-     run from a fixture harness F (symlinks to the bundle, runs/ = the wrapper copy + the stubs) with
-     HARNESS_DIR=F.
+     sha256 of the synthetic key they saw and which per-arm key variables were visible.  Each stub arm also
+     starts a background reader and waits for it, as the real draft waits for its foreground boundary client
+     (checked statically on the real drafts); at start it records any process of the other arm still alive.
+     phase() children run from a fixture harness F (symlinks to the bundle, runs/ = the wrapper copy + the
+     stubs) with HARNESS_DIR=F.
   L5 the stub arms write the queue-grade.json/cleanup.json fields the wrapper's cleanup check reads; the
      pair grade then runs for real and must refuse (no client records exist).
-Keys are synthetic (secrets.token_hex), never box keys; only their sha256 appear in the record.
+Owner decision (1 Nov 2026): one fresh key per pair queue, shared by both arms; --staging declares both request
+directories from the one --auth-env-file key (CLI unchanged).  Keys here are synthetic (secrets.token_hex), never
+box keys; only their sha256 appear in the record.
 """
 import argparse
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
 import re
 import secrets
@@ -51,12 +54,12 @@ R=$S0/$QNAME-requests
 mkdir -m 0700 "$R" && mkdir -m 0700 "$R/private" || exit 3
 python3 "$H/e3_private_auth.py" prepare "$R/private/vllm-api.env" > "$R/auth-prepare.log" 2>&1 || exit 4
 printf '{"fixture": "native43-owner-seam", "qname": "%s"}\n' "$QNAME" > "$R/startup.json"
-python3 - "$R/seam-declare.json" <<'PY'
+python3 - "$R/seam-declare.json" <<'SEAM_PY'
 import hashlib, json, os, sys
 key = os.environ.get('VLLM_API_KEY', '')
 json.dump(dict(qname=os.environ['QNAME'], key_sha256=hashlib.sha256(key.encode()).hexdigest(),
                other_key_vars=sorted(n for n in os.environ if n.startswith('VLLM_API_KEY_'))), open(sys.argv[1], 'x'))
-PY
+SEAM_PY
 '''
 
 STUB_DRAFT = r'''#!/usr/bin/env bash
@@ -65,21 +68,39 @@ set -uo pipefail
 H=${HARNESS_DIR:?}; R=${REQUESTS:?}; Q=${1:?}
 [[ ! -e $Q && ! -L $Q ]] || exit 3
 mkdir -m 0700 "$Q" || exit 3
+export NATIVE43_SEAM_ARM=${Q##*-}
+python3 - "$Q" <<'SEAM_PY'
+import json, os, sys, time
+start, me, alive = time.monotonic_ns(), os.environ['NATIVE43_SEAM_ARM'], []
+for pid in filter(str.isdigit, os.listdir('/proc')):
+    try:
+        env = open('/proc/%s/environ' % pid, 'rb').read().split(b'\0')
+    except OSError:
+        continue
+    if any(e.startswith(b'NATIVE43_SEAM_ARM=') and e.split(b'=', 1)[1].decode() != me for e in env):
+        alive.append(int(pid))
+json.dump(dict(start_ns=start, other_arm_alive=alive), open(sys.argv[1] + '/seam-start.json', 'x'))
+SEAM_PY
+python3 -c 'import time; time.sleep(0.5)' &
+reader=$!
 rc=0
 python3 "$H/e3_private_auth.py" check "$R/private/vllm-api.env" > "$Q/auth-check.log" 2>&1 || rc=$?
-python3 - "$Q" "$R" "$rc" <<'PY'
-import hashlib, json, os, sys
+wait "$reader"
+python3 - "$Q" "$R" "$rc" <<'SEAM_PY'
+import hashlib, json, os, sys, time
+end = time.monotonic_ns()
 q, r, rc = sys.argv[1], sys.argv[2], int(sys.argv[3])
 key = os.environ.get('VLLM_API_KEY', '')
 json.dump(dict(output=q, requests=r, auth_check_rc=rc, key_sha256=hashlib.sha256(key.encode()).hexdigest(),
                other_key_vars=sorted(n for n in os.environ if n.startswith('VLLM_API_KEY_')),
-               bounded=os.environ.get('NATIVE43_PAIR_BOUNDED'), pair_id=os.environ.get('NATIVE43_PAIR_ID')),
+               bounded=os.environ.get('NATIVE43_PAIR_BOUNDED'), pair_id=os.environ.get('NATIVE43_PAIR_ID'),
+               end_ns=end, **json.load(open(q + '/seam-start.json'))),
           open(q + '/seam-arm.json', 'x'))
 json.dump(dict(engine_crashed=False, engine_state='inactive', fixture='native43-owner-seam'), open(q + '/queue-grade.json', 'x'))
 json.dump(dict(engine_stopped=True, restore_withheld=False, fixture='native43-owner-seam',
                **{k + s: 'fixture-' + k for k in ('launcher', 'defaults') for s in ('_found_sha256', '_restored_sha256')}),
           open(q + '/cleanup.json', 'x'))
-PY
+SEAM_PY
 exit $rc
 '''
 
@@ -160,46 +181,79 @@ def private_env(directory, key):
     return path
 
 
-def scenario(name, work_root, keys, records, base):
+def scenario(name, work_root, key, records, base, before_staging=None, before_arm=None):
     work = work_root / name
     work.mkdir()
     fixture = fixture_harness(Path('/source/harness'), work / 'F')
     owner = load_owner('/source/owner.py')
     calls = install_leaves(owner, work, base, fixture)
-    current = private_env(work / 'auth-current', keys['current'])
-    dense = private_env(work / 'auth-dense', keys['dense'])
+    auth = private_env(work / 'auth', key)
     out = dict(name=name, calls=calls)
-    argv = ['--staging', '--auth-env-file', str(current), '--dense-auth-env-file', str(dense),
+    argv = ['--staging', '--auth-env-file', str(auth),
             '--selfrun-record', records['bundle'], '--engine-selfrun-record', records['engine']]
+    if before_staging:
+        before_staging(owner)
     try:
         out['staging_rc'] = owner.main(argv)
-    except owner.Refused as exc:
-        out['staging_refused'] = str(exc)
+    except Exception as exc:
+        out['staging_refused'] = str(exc) if isinstance(exc, owner.Refused) else type(exc).__name__
         return out, owner
     stage = json.loads((owner.S0 / (owner.QNAME + '-staging.json')).read_text())
     out['staging_receipt'] = {k: stage.get(k) for k in ('verdict', 'declaration_sha256', 'engine_untouched')}
     out['declares'] = {p: json.loads((owner.S0 / (owner.QNAME + '-' + p + '-requests') / 'seam-declare.json').read_text())
                        for p in POLICIES}
+    if before_arm:
+        before_arm(owner)
     try:
         out['arm_rc'] = owner.main(['--arm'])
-    except owner.Refused as exc:
-        out['arm_refused'] = str(exc)
+    except Exception as exc:
+        out['arm_refused'] = str(exc) if isinstance(exc, owner.Refused) else type(exc).__name__
         return out, owner
-    prefix = owner.S0 / owner.QNAME
-    out['arms'] = {p: (json.loads((Path(str(prefix) + '-' + p) / 'seam-arm.json').read_text())
-                       if (Path(str(prefix) + '-' + p) / 'seam-arm.json').is_file() else None) for p in POLICIES}
-    grade = Path(str(prefix) + '-pair-grade.json')
+    prefix = str(owner.S0 / owner.QNAME)
+    out['arms'] = {p: (json.loads((Path(prefix + '-' + p) / 'seam-arm.json').read_text())
+                       if (Path(prefix + '-' + p) / 'seam-arm.json').is_file() else None) for p in POLICIES}
+    grade = Path(prefix + '-pair-grade.json')
     out['pair_grade'] = json.loads(grade.read_text()).get('verdict') if grade.is_file() else 'ABSENT'
     out['pair_log_tail'] = (owner.S0 / (owner.QNAME + '.log')).read_text()[-1500:]
     return out, owner
+
+
+def client_foreground(draft):
+    """The real arm runs its boundary client in the foreground: the command ends without '&' and rc=$? follows."""
+    lines = Path(draft).read_text().splitlines()
+    i = next(j for j, line in enumerate(lines) if 'native43_boundary_client.py' in line)
+    while lines[i].rstrip().endswith('\\'):
+        i += 1
+    return not lines[i].rstrip().endswith('&') and lines[i + 1].startswith('rc=$?')
+
+
+def existing_dense(owner):
+    (owner.S0 / (owner.QNAME + '-dense-requests')).mkdir(mode=0o700)
+
+
+def other_dense_key(owner):
+    path = owner.S0 / (owner.QNAME + '-dense-requests') / 'private/vllm-api.env'
+    path.rename(path.with_name('vllm-api.env.seam-original'))
+    from e3_private_auth import prepare
+    prepare(path, {'VLLM_API_KEY': secrets.token_hex(32)})
+
+
+def missing_dense(owner):
+    requests = owner.S0 / (owner.QNAME + '-dense-requests')
+    requests.rename(requests.with_name(requests.name + '.seam-moved'))
+
+
+NEGATIVES = (('pre-existing-request-dir', dict(before_staging=existing_dense), ('staging_refused', 'fresh-output-path-required')),
+             ('arm-key-mismatch', dict(before_arm=other_dense_key), ('arm_refused', 'one-queue-key-required')),
+             ('arm-request-dir-missing', dict(before_arm=missing_dense), ('arm_refused', 'FileNotFoundError')))
 
 
 def inner(records):
     work = Path('/out/work')
     work.mkdir()
     base = Path('/base')
-    keys = {p: secrets.token_hex(32) for p in POLICIES}
-    main, owner = scenario('fresh-key-per-arm', work, keys, records, base)
+    key = secrets.token_hex(32)
+    main, owner = scenario('one-queue-key', work, key, records, base)
     prefix = str(owner.S0 / owner.QNAME)
     problems = []
     declares, arms = main.get('declares') or {}, main.get('arms') or {}
@@ -207,31 +261,40 @@ def inner(records):
         problems.append('staging-not-0:%r' % main.get('staging_rc', main.get('staging_refused')))
     for p in POLICIES:
         d, a = declares.get(p) or {}, arms.get(p) or {}
-        if d.get('qname') != owner.QNAME + '-' + p or d.get('key_sha256') != key_sha(keys[p]) or d.get('other_key_vars'):
+        if d.get('qname') != owner.QNAME + '-' + p or d.get('key_sha256') != key_sha(key) or d.get('other_key_vars'):
             problems.append('declare-' + p)
-        if (a.get('auth_check_rc') != 0 or a.get('key_sha256') != key_sha(keys[p]) or a.get('other_key_vars')
+        if (a.get('auth_check_rc') != 0 or a.get('key_sha256') != key_sha(key) or a.get('other_key_vars')
                 or a.get('output') != prefix + '-' + p or a.get('requests') != prefix + '-' + p + '-requests'
-                or a.get('bounded') != '1'):
+                or a.get('bounded') != '1' or a.get('other_arm_alive')):
             problems.append('arm-' + p)
+    if not (arms.get('current') and arms.get('dense') and arms['current']['end_ns'] <= arms['dense']['start_ns']):
+        problems.append('arm-2-not-after-arm-1-joined')
+    if len({(a or {}).get('pair_id') for a in arms.values()}) != 1:
+        problems.append('pair-id-differs')
     pair_calls = [c for c in main['calls'] if c['script'] == WRAPPER]
-    if [c['args'] for c in pair_calls] != [[prefix]]:
-        problems.append('pair-wrapper-argument')
-    if 'VLLM_API_KEY' in sum((c['key_vars'] for c in pair_calls), []):
-        problems.append('pair-wrapper-got-a-shared-key')
+    if [c['args'] for c in pair_calls] != [[prefix]] or [c['key_vars'] for c in pair_calls] != [['VLLM_API_KEY']]:
+        problems.append('pair-wrapper-argument-or-key')
     if main.get('pair_grade') == 'PASS':
         problems.append('pair-grade-passed-on-fixture-arms')
-    same = {p: keys['current'] for p in POLICIES}
-    negative, _ = scenario('same-key-both-arms', work, same, records, base)
-    if negative.get('staging_refused') != 'fresh-key-per-arm-required':
-        problems.append('same-key-negative-not-refused')
+    foreground = {p: client_foreground('/source/harness/runs/q18a_native43_%s.draft.sh' % p) for p in POLICIES}
+    if not all(foreground.values()):
+        problems.append('real-draft-client-not-foreground')
+    negatives = {}
+    for name, hooks, (field, want) in NEGATIVES:
+        row, _ = scenario(name, work, key, records, base, **hooks)
+        negatives[name] = {k: row.get(k) for k in ('staging_rc', 'staging_refused', 'arm_rc', 'arm_refused')}
+        if row.get(field) != want or [c for c in row['calls'] if c['script'] == WRAPPER]:
+            problems.append('negative-not-refused:' + name)
     record = dict(schema='native43-owner-seam/1', verdict='FAIL' if problems else 'PASS', problems=problems,
-                  scenario=main, negative=dict(name=negative['name'], staging_refused=negative.get('staging_refused')),
-                  key_sha256={p: key_sha(k) for p, k in keys.items()}, runner_sha256=sha('/source/owner.py'),
+                  scenario=main, negatives=negatives, real_draft_client_foreground=foreground,
+                  key_sha256=key_sha(key), runner_sha256=sha('/source/owner.py'),
                   wrapper_sha256=sha('/source/harness/runs/' + WRAPPER),
+                  owner_decision='one fresh key per pair queue, shared by both arms (1 Nov 2026)',
                   fixture_leaves=['L1 box launcher/defaults pins answered for exactly those two paths',
                                   'L2 BASE/OVERLAY/RAW/BUILD_LOGS/S0 in a fresh work root (hub base copy)',
                                   'L3 systemctl/nvidia-smi answers: stopped unit, four idle GPUs',
-                                  'L4 per-arm declares/drafts: stubs running only the real auth prepare/check',
+                                  'L4 per-arm declares/drafts: stubs running only the real auth prepare/check, '
+                                  'each with a joined background reader',
                                   'L5 stub arm queue-grade/cleanup fields; the real pair grade must refuse'])
     Path('/out/seam.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
     print(json.dumps(dict(verdict=record['verdict'], problems=problems)))
@@ -261,16 +324,16 @@ def outer(bundle, runner, base, bundle_record, engine_record, out, name):
     host = inspect['HostConfig']
     devices = host.get('DeviceRequests') or []
     seam = json.loads((out / 'seam.json').read_text()) if (out / 'seam.json').is_file() else {}
-    result = dict(seam, schema='native43-owner-seam/1', verdict='PASS' if rc == 0 and seam.get('verdict') == 'PASS' else 'FAIL',
-                  classification=None if rc == 0 and seam.get('verdict') == 'PASS' else 'HARNESS', rc=rc,
+    ok = rc == 0 and seam.get('verdict') == 'PASS' and not devices and not host.get('Devices') and host.get('NetworkMode') == 'none'
+    result = dict(seam, schema='native43-owner-seam/1', verdict='PASS' if ok else 'FAIL',
+                  classification=None if ok else 'HARNESS', rc=rc,
                   bundle_manifest=sha(bundle / 'SHA256SUMS'), runner_sha256=sha(runner), image=IMAGE,
                   network=host.get('NetworkMode'), gpu_device_requests=len(devices), box_action=False, container=name,
                   wall_s=round(time.monotonic() - started, 3), command=command)
-    assert not devices and not host.get('Devices')
     subprocess.run(['sudo', '-n', 'docker', 'rm', name], check=True, capture_output=True)
     (out / 'result.json').write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
     print(json.dumps({k: result.get(k) for k in ('verdict', 'problems', 'rc', 'wall_s')}))
-    return 0 if result['verdict'] == 'PASS' else 1
+    return 0 if ok else 1
 
 
 if __name__ == '__main__':

@@ -82,16 +82,8 @@
         "        return subprocess.run(['bash',str(H/'runs'/script),*args],env=env,\n"
       ],
       [
-        "p.add_argument('--auth-env-file',type=Path);",
-        "p.add_argument('--auth-env-file',type=Path);p.add_argument('--dense-auth-env-file',type=Path);"
-      ],
-      [
-        "require(a.auth_env_file is not None and a.selfrun_record is not None",
-        "require(a.auth_env_file is not None and a.dense_auth_env_file is not None and a.selfrun_record is not None"
-      ],
-      [
-        "        env=environment(read_private(a.auth_env_file),a.model,a.snapshot_max_bytes);env['FLASH_NATIVE30_SYNC']=a.sync\n        rc=phase('q18a_native43_dense_boundary_declare.sh',S0/(QNAME+'-declare-chain.log'),env)\n        require(rc==0,'staging-declaration-refused')\n",
-        "        # Native43: one fresh owner-minted key per arm, declared into that arm's own request directory.\n        keys=dict(current=read_private(a.auth_env_file),dense=read_private(a.dense_auth_env_file))\n        require(keys['current']!=keys['dense'],'fresh-key-per-arm-required')\n        for policy,script in (('current','q18a_native43_current_declare.sh'),('dense','q18a_native43_dense_declare.sh')):\n            env=environment(keys[policy],a.model,a.snapshot_max_bytes);env.update(FLASH_NATIVE30_SYNC=a.sync,QNAME=QNAME+'-'+policy)\n            rc=phase(script,S0/(QNAME+'-'+policy+'-declare-chain.log'),env)\n            require(rc==0,'staging-declaration-refused:'+policy)\n"
+        "        rc=phase('q18a_native43_dense_boundary_declare.sh',S0/(QNAME+'-declare-chain.log'),env)\n        require(rc==0,'staging-declaration-refused')\n",
+        "        # Native43: both request directories (O_EXCL-fresh, own private/) from the one queue key.\n        for policy,script in (('current','q18a_native43_current_declare.sh'),('dense','q18a_native43_dense_declare.sh')):\n            rc=phase(script,S0/(QNAME+'-'+policy+'-declare-chain.log'),dict(env,QNAME=QNAME+'-'+policy))\n            require(rc==0,'staging-declaration-refused:'+policy)\n"
       ],
       [
         "declaration_sha256=sha(S0/(QNAME+'-requests')/'startup.json'),",
@@ -99,7 +91,7 @@
       ],
       [
         "    env=environment(read_private(S0/(QNAME+'-requests')/'private/vllm-api.env'),stage['model'],stage['snapshot_max_bytes'])\n    env.update(FLASH_NATIVE30_SYNC=stage['sync'],REQUESTS=str(S0/(QNAME+'-requests')),Q=str(S0/QNAME))\n    rc=phase('q18a_native43_dense_boundary.draft.sh',S0/(QNAME+'.log'),env)\n",
-        "    # Native43: the pair wrapper runs current then dense; it hands each arm only that arm's key.\n    keys={p:read_private(S0/(QNAME+'-'+p+'-requests')/'private/vllm-api.env') for p in ('current','dense')}\n    require(keys['current']!=keys['dense'],'fresh-key-per-arm-required')\n    environment(keys['dense'],stage['model'],stage['snapshot_max_bytes'])  # format check + redaction\n    env=environment(keys['current'],stage['model'],stage['snapshot_max_bytes']);env.pop('VLLM_API_KEY')\n    env.update(FLASH_NATIVE30_SYNC=stage['sync'],VLLM_API_KEY_CURRENT=keys['current'],VLLM_API_KEY_DENSE=keys['dense'])\n    rc=phase('q18a_native43_dense_boundary.draft.sh',S0/(QNAME+'.log'),env,str(S0/QNAME))\n"
+        "    # Native43: one queue key for both arms; the pair wrapper sets REQUESTS per arm.\n    key=read_private(S0/(QNAME+'-current-requests')/'private/vllm-api.env')\n    require(read_private(S0/(QNAME+'-dense-requests')/'private/vllm-api.env')==key,'one-queue-key-required')\n    env=environment(key,stage['model'],stage['snapshot_max_bytes'])\n    for name in ('REQUESTS','Q'):env.pop(name,None)\n    env.update(FLASH_NATIVE30_SYNC=stage['sync'])\n    rc=phase('q18a_native43_dense_boundary.draft.sh',S0/(QNAME+'.log'),env,str(S0/QNAME))\n"
       ]
     ]
   },
