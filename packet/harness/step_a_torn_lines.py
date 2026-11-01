@@ -1,228 +1,316 @@
 #!/usr/bin/env python3
-"""Torn progress lines, the rule pre-registered before any q18a-step-a run.
+"""Torn log lines, the rule registered before any q18a-step-a or q18a-step-b run.
 
-Why it exists: other writers' log lines can land inside a long `flash-s5 progress` line. q18a-alpha-perf
-tore 2 lines of 22,063 (2 of its 7,878 flushes), and each one failed its whole arm through
-`line-parts-incomplete` and `worker-rows-missing`.
+This is the rule of the C0 grader (`harness/e3_alpha_c0_box.py`, claude/c0-c1), so that the queues agree.
+
+The docker log can splice one writer's bytes into another's line. q18a-alpha-perf tore 2 of its 22,063 progress
+lines, and each one failed a whole arm through `line-parts-incomplete` and `worker-rows-missing`.
 
 The rule:
-- A torn progress line or an incomplete flush is a lost flush. Each is counted and reported per arm.
-- A chunk whose missing rows all lie in a lost flush drops out of the arm's breakdown. A missing row no lost
-  flush explains still fails the arm, as does every other progress problem.
-- An arm is INCONCLUSIVE only when it loses more than LOST_FLUSH_LIMIT flushes.
+- A progress line is torn when its body no longer reads, or when it reads with another writer's header inside: a
+  splice inside a JSON string still parses and may have changed a value. A stray header with an intact body after
+  it is not a tear (525 such lines in q18a-alpha-perf). A memory line that no longer reads is torn too.
+- A lost flush is found from a torn line, a flush short of parts, or a gap in its writer's line numbers.
+- Each is counted per arm. The chunks a lost flush touches drop out of the breakdown and stay listed.
+- An arm is INCONCLUSIVE above LOST_RECORD_LIMIT lost records (lost flushes, unreadable torn lines and torn memory
+  lines) or DROPPED_CHUNK_LIMIT dropped chunks.
+- A missing row no lost flush explains still fails the arm, as does every other progress problem.
+- A contract error or `disagree` inside a torn line still counts, as ENGINE. Lines are never repaired.
 
-Why 2: at the rate seen (1 flush in 3,939), an arm of 330 to 650 flushes loses 3 or more with probability below
-0.1 %, while 2 in one arm happens about 1 % of the time, too often to fail a run on. More than 2 therefore points
-at something other than chance. A lost worker flush takes at most 2 chunks out (its own and the one whose release
-reply rode on it), so 2 lost flushes leave at least 62 of 66 chunks and move a median by at most 2 ranks. A
-percentage limit does not work here: 0.1 % of an arm's flushes is less than one flush.
+Client-side speed and decode numbers do not read these rows, so the rule never touches them.
 
-Client-side speed and decode numbers do not read these rows, so this rule never touches them.
+Why these limits (q18a-alpha-perf: 2 lost of 7,878 flushes): an arm of about 330 to 640 flushes expects 0.08 to 0.16
+lost flushes. Limit 0 would turn many runs INC for a log artefact, and a share of flushes means limit 0 at this size.
+The two real losses touched 1 and 2 chunks, so 2 chunks is what one lost flush may cost.
 """
 import json
-import lzma
 import re
-from pathlib import Path
 
 import e3_native41_progress_box as progress
 
-LOST_FLUSH_LIMIT = 2
-TORN_PROBLEMS = ('unparsable-progress-line',)
-INCOMPLETE = 'line-parts-incomplete:'
-FIELD = {name: re.compile(r'"%s":(\d+)' % name) for name in ('base_ns', 'line', 'part', 'parts', 'rank')}
+LOST_RECORD_LIMIT = 1
+DROPPED_CHUNK_LIMIT = 2
+INNER_HEADER = re.compile(r'\((?:Worker_\w+|EngineCore\w*) pid=\d+\) ?')
+INCOMPLETE = re.compile(r'line-parts-incomplete:(\w+):(\w+):(\d+)')
+MEMORY_MARK = 'flash-s5 memory '
+MEMORY_LINE = re.compile(r'flash-s5 memory point=(\w+) rank=(\d+) txn_seq=(\d+) chunk=(\d+)-(\d+) allocated=(-?\d+) '
+                         r'reserved=(-?\d+) inactive_split=(-?\d+) alloc_retries=(-?\d+) ooms=(-?\d+) free=(-?\d+)')
 
 
-def torn_head(line, at):
-    """What a torn line still says about its flush: rank and line come before the rows."""
-    text = line[at:]
-    cut = text.find('"rows":')
-    head = text if cut < 0 else text[:cut]
-    found = {name: pattern.search(head) for name, pattern in FIELD.items()}
-    row = {name: int(match.group(1)) if match else None for name, match in found.items()}
-    row['side'] = 'worker' if '(Worker_' in line[:at] else 'engine'
-    row['stamp'] = progress.docker_stamp(line)
-    row['bytes'] = len(line)
-    return row
+def is_torn_progress(line):
+    """The body no longer reads, or reads with another writer's header in it."""
+    at = line.find(progress.PROGRESS_LINE)
+    if at < 0:
+        return False
+    body = line[at + len(progress.PROGRESS_LINE):]
+    if INNER_HEADER.search(body):
+        return True
+    try:
+        json.loads(body)
+    except ValueError:
+        return True
+    return False
 
 
-def read_lines(paths):
-    """progress.read_lines, also keeping what each torn line still says."""
-    out, errors, torn = [], [], []
-    for path in paths:
-        path = Path(path)
-        if not path.is_file():
-            continue
-        opener = lzma.open if path.suffix == '.xz' else open
-        with opener(path, 'rt', errors='replace') as handle:
-            for line in handle:
-                at = line.find(progress.PROGRESS_LINE)
-                if at < 0:
-                    continue
-                try:
-                    body = json.loads(line[at + len(progress.PROGRESS_LINE):])
-                except ValueError:
-                    errors.append('unparsable-progress-line')
-                    torn.append(torn_head(line, at))
-                    continue
-                if type(body) is not dict or body.get('schema') != progress.PROGRESS_SCHEMA:
-                    errors.append('progress-line-schema')
-                    continue
-                out.append((progress.docker_stamp(line), body))
-    return out, errors, torn
+def is_torn_memory(line):
+    return MEMORY_MARK in line and not MEMORY_LINE.search(line)
 
 
-def lost_flushes(records, torn):
-    """Every lost flush: parts missing from a group, or a torn line with no group left."""
-    groups = {}
-    for stamp, body in records:
-        key = (body.get('side'), body.get('rank'), body.get('line'))
-        groups.setdefault(key, []).append((stamp, body))
-    lost = {}
-    for key, parts in groups.items():
-        bodies = sorted((b for _, b in parts), key=lambda b: b.get('part', -1))
-        count = bodies[0].get('parts')
-        if [b.get('part') for b in bodies] != list(range(count or 0)) or any(b.get('parts') != count for b in bodies):
-            lost[key] = dict(side=key[0], rank=key[1], line=key[2], stamp=parts[0][0], torn_lines=0)
-    unattributed = 0
-    for row in torn:
-        key = (row['side'], row['rank'], row['line'])
-        if row['line'] is None or (row['side'] == 'worker' and row['rank'] is None):
-            unattributed += 1
-            key = ('unattributed', unattributed, row['stamp'])
-        entry = lost.setdefault(key, dict(side=key[0], rank=row['rank'], line=row['line'], stamp=row['stamp'], torn_lines=0))
-        entry['torn_lines'] += 1
-    return lost
-
-
-def worker_gaps(flushes, lost):
-    """The seq interval each lost worker flush covered: between its rank's neighbouring whole flushes."""
-    ranges = {}
-    for flush in flushes:
-        seqs = [row['seq'] for row in flush['rows'].get('r', [])]
-        if flush['side'] == 'worker' and seqs:
-            ranges.setdefault(flush['rank'], []).append((flush['line'], min(seqs), max(seqs)))
-    gaps = {}
-    for key, entry in lost.items():
-        if entry['side'] != 'worker' or entry['rank'] is None or entry['line'] is None:
-            continue
-        rows = ranges.get(entry['rank'], [])
-        below = [hi for line, _, hi in rows if line < entry['line']]
-        above = [lo for line, lo, _ in rows if line > entry['line']]
-        gaps[key] = (entry['rank'], max(below) if below else float('-inf'), min(above) if above else float('inf'))
-    return gaps
-
-
-def explaining(row, gaps):
-    """The lost flush holding this missing row, or None."""
-    for key, (rank, low, high) in gaps.items():
-        if row['rank'] == rank and low < row['seq'] < high:
-            return key
+def signature_of(line, signatures):
+    """A contract error in a followed line. A whole progress line holds none; a torn one can hold another writer's bytes."""
+    marked = progress.PROGRESS_LINE in line
+    if marked and not is_torn_progress(line):
+        return None
+    whole = INNER_HEADER.sub('', line)
+    for name, text in signatures:
+        if text in whole:
+            return name
+    # A plain disagreement scan sees neither a marked line nor a word a header split.
+    if 'disagree' in whole and (marked or 'disagree' not in line):
+        return 'tp-disagree-in-a-torn-line'
     return None
 
 
-def seq_is_lost(seq, rank, gaps):
-    return any(rank == r and low < seq < high for r, low, high in gaps.values())
+def read_torn(paths):
+    """The followed lines that no longer read, by what they were: (stamp, text) lists."""
+    rows = dict(progress=[], memory=[])
+    for path, line in _lines(paths):
+        if is_torn_progress(line):
+            rows['progress'].append((progress.docker_stamp(line), line))
+        elif is_torn_memory(line):
+            rows['memory'].append((progress.docker_stamp(line), line))
+    return rows
 
 
-def aggregate(row, counted):
-    """The arm's breakdown, as progress_receipts builds it, over the chunks that remain."""
-    median = progress.median
-    row['counted_chunks'] = len(counted)
-    row['bands'] = {}
-    for band in sorted({c['band'] for c in counted}):
-        rows = [c for c in counted if c['band'] == band]
-        row['bands'][band] = dict(chunks=len(rows), wall_s=median([c['wall_s'] for c in rows]),
-                                  open_interval_s=median([c.get('open_interval_s') for c in rows]),
-                                  gap_before_s=median([c.get('gap_before_s') for c in rows]),
-                                  residual_s=median([c['residual_s'] for c in rows]),
-                                  components_s={k: median([c['components_s'][k] for c in rows])
-                                                for k in progress.COMPONENTS},
-                                  stock_rpcs=median([c['stock_rpcs'] for c in rows]),
-                                  wait_s=median([c['wait_s'] for c in rows]),
-                                  wait_sends=median([c['wait_sends'] for c in rows]),
-                                  commands=median([c['commands'] for c in rows]))
-    row['all_counted'] = dict(chunks=len(counted), wall_s=median([c['wall_s'] for c in counted]),
-                              open_interval_s=median([c.get('open_interval_s') for c in counted]),
-                              gap_before_s=median([c.get('gap_before_s') for c in counted]),
-                              residual_s=median([c['residual_s'] for c in counted]),
-                              components_s={k: median([c['components_s'][k] for c in counted])
-                                            for k in progress.COMPONENTS})
+def _lines(paths):
+    import lzma
+    from pathlib import Path
+    for path in paths:
+        path = Path(path)
+        if path.is_file():
+            with (lzma.open if path.suffix == '.xz' else open)(path, 'rt', errors='replace') as handle:
+                for line in handle:
+                    yield path, line
 
 
-def _in_span(entry, arm):
-    start, end = arm.get('wall_start_s'), arm.get('wall_end_s')
-    return (type(start) in (int, float) and type(end) in (int, float) and entry['stamp'] is not None
-            and start <= entry['stamp'] <= end + progress.LOG_LAG_S)
-
-
-def _discontinuities(starts, ends, prompt):
-    breaks = sum(1 for end, start in zip(ends, starts[1:]) if end != start)
-    return breaks + int(starts[:1] != [0]) + int(ends[-1:] != [prompt - 1])
-
-
-def apply_rule(arms, receipts, records, torn, *, limit=LOST_FLUSH_LIMIT):
-    """Apply the rule to progress_receipts' result, in place. Other problems stay as they were."""
-    flushes, _ = progress.assemble(records)
-    lost = lost_flushes(records, torn)
-    gaps = worker_gaps(flushes, lost)
-    engine_lines = [f['line'] for f in flushes if f['side'] == 'engine']
-    last_line = max(engine_lines) if engine_lines else None
-    receipts['problems'] = [p for p in receipts['problems']
-                            if p not in TORN_PROBLEMS and not p.startswith(INCOMPLETE)]
-    claimed = set()
-    for arm in arms:
-        row = receipts['arms'].get(arm.get('label'))
-        if row is None or 'chunks' not in row:
+def whole_records(records, errors, torn):
+    """The join's input without the torn lines. Returns (records, other errors, torn lines that failed to parse)."""
+    spliced, off_schema, unparsable = set(), 0, 0
+    for _, text in torn:
+        try:
+            body = json.loads(text[text.find(progress.PROGRESS_LINE) + len(progress.PROGRESS_LINE):])
+        except ValueError:
+            unparsable += 1
             continue
-        mine = {key for key, entry in lost.items() if _in_span(entry, arm)}
-        kept, dropped, unexplained = [], 0, 0
-        for chunk in row['chunks']:
-            rows = [m for m in chunk['missing_worker_rows']
-                    if not (chunk['line'] == last_line and m['kind'] == 'release')]
-            keys = [explaining(m, gaps) for m in rows]
-            unexplained += sum(1 for key in keys if key is None)
-            if rows and all(key is not None for key in keys):
-                dropped += 1
-                mine.update(keys)
-            else:
-                kept.append(chunk)
-        engine_lost = sum(1 for key in mine if lost[key]['side'] == 'engine')
-        expected = (arm.get('progress_delta') or {}).get('chunks')
-        absent = expected - row['chunks_logged'] if type(expected) is int else None
-        if engine_lost and absent is not None and 0 < absent <= engine_lost:
-            dropped += absent
-            if 'progress-lines-differ-from-the-chunk-counter' in row['reasons']:
-                row['reasons'].remove('progress-lines-differ-from-the-chunk-counter')
-            ordered = sorted(row['chunks'], key=lambda c: c['chunk_start'])
-            prompt = (arm.get('fresh') or {}).get('prompt_tokens_observed')
-            if ('native-chunks-not-row-0-through-n-minus-1' in row['reasons'] and type(prompt) is int
-                    and _discontinuities([c['chunk_start'] for c in ordered],
-                                         [c['chunk_end'] for c in ordered], prompt) <= absent):
-                row['reasons'].remove('native-chunks-not-row-0-through-n-minus-1')
-            # An interval that spans a lost chunk is not one chunk's interval.
-            for chunk, following in zip(ordered, ordered[1:]):
-                if chunk['chunk_end'] != following['chunk_start']:
-                    chunk.pop('open_interval_s', None)
-                    following.pop('gap_before_s', None)
-        row['chunks'] = kept
-        row['missing_worker_rows'] = unexplained
-        if not unexplained and 'worker-rows-missing' in row['reasons']:
-            row['reasons'].remove('worker-rows-missing')
-        aggregate(row, [c for c in kept if c['label'] == row['counted_label']])
-        claimed |= mine
-        row['torn'] = dict(lost_flushes=len(mine), torn_lines=sum(lost[key]['torn_lines'] for key in mine),
-                           chunks_dropped=dropped, limit=limit, over_limit=len(mine) > limit)
-        if len(mine) > limit:
-            row['reasons'].append('torn-progress-flushes-over-limit')
-    receipts['torn'] = dict(limit=limit, torn_lines=len(torn), lost_flushes=len(lost),
-                            lost_outside_every_arm=len(set(lost) - claimed),
-                            detail=[{k: entry[k] for k in ('side', 'rank', 'line', 'stamp', 'torn_lines')}
-                                    for _, entry in sorted(lost.items(), key=lambda kv: str(kv[0]))])
-    return receipts
+        if type(body) is dict and body.get('schema') == progress.PROGRESS_SCHEMA:
+            spliced.add(tuple(str(body.get(k)) for k in ('side', 'rank', 'line', 'part', 'base_ns')))
+        else:
+            off_schema += 1
+    kept = [r for r in records if tuple(str(r[1].get(k)) for k in ('side', 'rank', 'line', 'part', 'base_ns')) not in spliced]
+    others = [e for e in errors if e != 'unparsable-progress-line']
+    for _ in range(off_schema):
+        others.remove('progress-line-schema')
+    return kept, others, unparsable
+
+
+def torn_identity(line):
+    """(side, rank, line) from the text before the rows, which a tear may have left readable; else None."""
+    head, found, _ = line[line.find(progress.PROGRESS_LINE):].partition('"rows":')
+    number = re.search(r'"line":(\d+)', head) if found else None
+    if not number:
+        return None
+    rank = re.search(r'"rank":(\d+)', head)
+    return ('worker', int(rank.group(1)), int(number.group(1))) if rank else ('engine', None, int(number.group(1)))
+
+
+def flush_ledger(records, torn):
+    """Every flush the log lost, from a torn line, a flush short of parts, or a gap in a writer's lines.
+
+    A torn line whose identity does not read, or reads as a flush that is present, counts as its own lost record:
+    that can count one loss twice and only ever errs toward INC.
+    """
+    flushes, problems = progress.assemble(records)
+    present = {}
+    for f in flushes:
+        present.setdefault((f['side'], f['rank']), {})[f['line']] = f
+    survivors = {}
+    for stamp, body in records:
+        if stamp is not None:
+            survivors.setdefault((body.get('side'), body.get('rank'), body.get('line')), stamp)
+    lost, unidentified = {}, []
+
+    def note(key, stamps, evidence, exact):
+        row = lost.setdefault(key, dict(side=key[0], rank=key[1], line=key[2], stamps=[], evidence=[], exact=False))
+        row['stamps'] = sorted(set(row['stamps']) | {x for x in stamps if x is not None})
+        row['evidence'] = sorted(set(row['evidence']) | {evidence})
+        row['exact'] = row['exact'] or exact
+    for stamp, text in torn:
+        key = torn_identity(text)
+        if key is None or key[2] in present.get(key[:2], {}):
+            unidentified.append(stamp)
+        else:
+            note(key, [stamp], 'torn-line', True)
+    for problem in problems:
+        m = INCOMPLETE.fullmatch(problem)
+        if m:
+            key = (m.group(1), None if m.group(2) == 'None' else int(m.group(2)), int(m.group(3)))
+            note(key, [survivors.get(key)], 'parts-incomplete', True)
+    for who, lines in present.items():
+        numbers = sorted(lines)
+        for a, b in zip(numbers, numbers[1:]):
+            for number in range(a + 1, b):
+                note(who + (number,), [lines[a]['stamp'], lines[b]['stamp']], 'line-gap', False)
+    seqs = {}
+    for (side, rank), lines in present.items():
+        if side == 'worker':
+            seqs[rank] = {r['seq'] for f in lines.values() for r in f['rows'].get('r', [])}
+    for row in lost.values():
+        if row['side'] != 'worker':
+            continue
+        # The neighbours' whole seq ranges: rows finish out of seq order across a flush boundary. Only a seq the
+        # rank does not hold can be blamed on this loss.
+        lines = present.get(('worker', row['rank']), {})
+        below = [n for n in lines if n < row['line'] and lines[n]['rows'].get('r')]
+        above = [n for n in lines if n > row['line'] and lines[n]['rows'].get('r')]
+        row['seq_low'] = min(r['seq'] for r in lines[max(below)]['rows']['r']) if below else None
+        row['seq_high'] = max(r['seq'] for r in lines[min(above)]['rows']['r']) if above else None
+    return dict(lost=[lost[k] for k in sorted(lost, key=str)], unidentified_torn_stamps=unidentified, rank_seqs=seqs)
+
+
+def touches(loss, seqs, rank_seqs):
+    """Whether this lost flush holds one of these seqs: only a seq its rank holds nowhere else can be blamed on it."""
+    if loss['side'] != 'worker':
+        return False
+    low, high = loss.get('seq_low'), loss.get('seq_high')
+    held = rank_seqs.get(loss['rank'], ())
+    return any(s not in held and (low is None or s >= low) and (high is None or s <= high) for s in seqs)
+
+
+def chunk_seqs(flush):
+    return [row['seq'] for tag in ('n', 's') for row in flush['rows'].get(tag, [])]
+
+
+def _medians(rows, *, band):
+    median = progress.median
+    out = dict(chunks=len(rows), wall_s=median([c['wall_s'] for c in rows]),
+               open_interval_s=median([c.get('open_interval_s') for c in rows]),
+               gap_before_s=median([c.get('gap_before_s') for c in rows]),
+               residual_s=median([c['residual_s'] for c in rows]),
+               components_s={k: median([c['components_s'][k] for c in rows]) for k in progress.COMPONENTS})
+    if band:
+        out.update(stock_rpcs=median([c['stock_rpcs'] for c in rows]), wait_s=median([c['wait_s'] for c in rows]),
+                   wait_sends=median([c['wait_sends'] for c in rows]), commands=median([c['commands'] for c in rows]))
+    return out
+
+
+def recount(row):
+    """The join's per-band and whole-arm medians over the chunks still counted (a test pins the equality)."""
+    counted = [c for c in row['chunks'] if c['label'] == row['counted_label'] and not c.get('dropped_out')]
+    row['counted_chunks'] = len(counted)
+    row['bands'] = {band: _medians([c for c in counted if c['band'] == band], band=True)
+                    for band in sorted({c['band'] for c in counted})}
+    row['all_counted'] = _medians(counted, band=False)
+
+
+def _forgive(row, reason):
+    row['reasons'] = [x for x in row['reasons'] if x != reason]
+
+
+def in_span(stamp, arm):
+    start, end = arm.get('wall_start_s'), arm.get('wall_end_s')
+    if type(start) not in (int, float) or type(end) not in (int, float) or stamp is None:
+        return False
+    return start <= stamp <= end + progress.LOG_LAG_S
+
+
+def settle_arm(arm, row, ledger, torn, last_line, seqs_by_line):
+    """Count this arm's torn lines and lost records, drop the chunks they touch, and clear only the reasons they explain."""
+    chunks = row.get('chunks') or []
+    in_arm = lambda rows: [t for s, t in rows if in_span(s, arm)]
+    torn_progress, torn_memory = in_arm(torn['progress']), in_arm(torn['memory'])
+    expected = (arm.get('progress_delta') or {}).get('chunks')
+    shortfall = expected - len(chunks) if type(expected) is int and chunks else 0
+    mine, engine_lost = [], 0
+    for loss in ledger['lost']:
+        if loss['side'] == 'engine':
+            if engine_lost < shortfall and any(in_span(s, arm) for s in loss['stamps']):
+                engine_lost += 1
+                mine.append(loss)
+            continue
+        touched = False
+        for chunk in chunks:
+            if touches(loss, seqs_by_line.get(chunk['line'], ()), ledger['rank_seqs']):
+                touched = True
+                chunk.setdefault('dropped_out', []).append('worker-flush-lost:%s:%s' % (loss['rank'], loss['line']))
+        if touched or (loss['exact'] and any(in_span(s, arm) for s in loss['stamps'])):
+            mine.append(loss)
+    unidentified = sum(1 for s in ledger['unidentified_torn_stamps'] if in_span(s, arm))
+    dropped = [c for c in chunks if c.get('dropped_out')]
+    starts = sorted(c['chunk_start'] for c in dropped)
+    # What a lost engine flush leaves: a hole in the chain, which must be exactly as many chunks as were lost.
+    ordered = sorted(chunks, key=lambda c: c.get('chunk_start') or 0)
+    prompt = (arm.get('fresh') or {}).get('prompt_tokens_observed')
+    holes = [a['chunk_end'] for a, b in zip(ordered, ordered[1:]) if a['chunk_end'] != b['chunk_start']]
+    if ordered and ordered[0].get('chunk_start') != 0:
+        holes.insert(0, 0)
+    if ordered and type(prompt) is int and ordered[-1].get('chunk_end') != prompt - 1:
+        holes.append(ordered[-1].get('chunk_end'))
+    if engine_lost:
+        if shortfall == engine_lost:
+            _forgive(row, 'progress-lines-differ-from-the-chunk-counter')
+        if len(holes) == engine_lost:
+            _forgive(row, 'native-chunks-not-row-0-through-n-minus-1')
+            starts = sorted(starts + holes)
+        if arm.get('cohort') == 'solo' and 0 in holes and all(c['label'] == 'solo' for c in ordered):
+            _forgive(row, 'solo-arm-not-a-live-prefix-then-decoder-free-chunks')
+        for a, b in zip(ordered, ordered[1:]):
+            if a['chunk_end'] != b['chunk_start']:       # The join's neighbours span the hole.
+                a.pop('open_interval_s', None)
+                b.pop('gap_before_s', None)
+    explained = sum(1 for c in dropped for m in c['missing_worker_rows']
+                    if not (c['line'] == last_line and m['kind'] == 'release'))
+    if explained and 'missing_worker_rows' in row:
+        row['missing_worker_rows'] -= explained
+        row['missing_worker_rows_in_dropped_chunks'] = explained
+        if not row['missing_worker_rows']:
+            _forgive(row, 'worker-rows-missing')
+    if chunks and (dropped or engine_lost):
+        recount(row)
+    records = len(mine) + unidentified + len(torn_memory)
+    chunk_cost = len(starts)
+    if records > LOST_RECORD_LIMIT:
+        row['reasons'].append('lost-records-above-the-declared-limit:%d>%d' % (records, LOST_RECORD_LIMIT))
+    if chunk_cost > DROPPED_CHUNK_LIMIT:
+        row['reasons'].append('dropped-chunks-above-the-declared-limit:%d>%d' % (chunk_cost, DROPPED_CHUNK_LIMIT))
+    row['tears'] = dict(torn_progress_lines=len(torn_progress), torn_memory_lines=len(torn_memory),
+                        lost_flushes=[{k: x[k] for k in ('side', 'rank', 'line', 'evidence')} for x in mine],
+                        unidentified_torn_lines=unidentified, lost_records=records, dropped_chunk_starts=starts,
+                        within_limits=records <= LOST_RECORD_LIMIT and chunk_cost <= DROPPED_CHUNK_LIMIT)
+    return row['tears']
 
 
 def receipts_for(arms, logs, streams_count=8):
-    """The grader's one call: progress receipts with the rule applied."""
-    records, errors, torn = read_lines(logs)
+    """The grader's one call: (records, progress receipts with the rule applied, problems for the missing list)."""
+    records, errors = progress.read_lines(logs)
+    torn = read_torn(logs)
+    unparsable = errors.count('unparsable-progress-line')
+    records, errors, failed = whole_records(records, errors, torn['progress'])
+    extra = [] if unparsable == failed else ['progress:torn-lines-differ-from-the-unparsable-lines']
+    ledger = flush_ledger(records, torn['progress'])
     receipts = progress.progress_receipts(arms, records, errors, streams_count)
-    return records, apply_rule(arms, receipts, records, torn)
+    receipts['problems'] = [x for x in receipts['problems'] if not INCOMPLETE.fullmatch(x)]
+    flushes, _ = progress.assemble(records)
+    engine = [f for f in flushes if f['side'] == 'engine']
+    last_line = max((f['line'] for f in engine), default=None)
+    seqs_by_line = {f['line']: chunk_seqs(f) for f in engine}
+    claimed = set()
+    for arm in arms:
+        tears = settle_arm(arm, receipts['arms'][arm['label']], ledger, torn, last_line, seqs_by_line)
+        claimed.update((x['side'], x['rank'], x['line']) for x in tears['lost_flushes'])
+    receipts['tears'] = dict(lost_record_limit=LOST_RECORD_LIMIT, dropped_chunk_limit=DROPPED_CHUNK_LIMIT,
+                             torn_progress_lines=len(torn['progress']), torn_memory_lines=len(torn['memory']),
+                             lost_flushes=len(ledger['lost']), unidentified_torn_lines=len(ledger['unidentified_torn_stamps']),
+                             lost_flushes_outside_every_arm=[{k: x[k] for k in ('side', 'rank', 'line', 'evidence')}
+                                                             for x in ledger['lost']
+                                                             if (x['side'], x['rank'], x['line']) not in claimed])
+    return records, receipts, extra
