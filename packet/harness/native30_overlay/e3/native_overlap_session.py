@@ -120,7 +120,10 @@ class NativeOverlapSession:
     async def _action_native_progress(self, command):
         if self.measure_start_ns is not None:
             raise NativeOverlapSessionError('native-progress-with-open-measurement')
-        return await self.control.native_progress(command.get('mode'))
+        idle = command.get('idle')
+        if idle is None:
+            return await self.control.native_progress(command.get('mode'))
+        return await self.control.native_progress(command.get('mode'), idle)
 
     async def _action_prepare(self, command):
         target = command.get('target_route')

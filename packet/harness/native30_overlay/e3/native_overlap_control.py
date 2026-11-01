@@ -216,15 +216,26 @@ class NativeControlClient:
             await self.status()
         return await self._call({'action': 'release_auto_arm'})
 
-    async def native_progress(self, mode):
-        """Held-f per-arm switch (installed burst only); the engine re-checks idle FULL."""
+    async def native_progress(self, mode, idle=None):
+        """Held-f per-arm switch (installed burst only); the engine re-checks idle FULL.
+
+        Held-g: ``idle`` (``step`` or ``wait``) also selects the arm's idle
+        pacing; left out, the command is held-f's and the engine applies ``step``.
+        """
         if mode not in ('current', 'burst'):
             raise NativeControlError('native-control-progress-mode-invalid')
+        if idle is not None and idle not in ('step', 'wait'):
+            raise NativeControlError('native-control-progress-idle-invalid')
         if self.engine_epoch is None:
             await self.status()
-        reply = await self._call({'action': 'native_progress', 'mode': mode})
+        command = {'action': 'native_progress', 'mode': mode}
+        if idle is not None:
+            command['idle'] = idle
+        reply = await self._call(command)
         if reply.get('mode') != mode:
             raise NativeControlError('native-control-progress-mode-not-set')
+        if idle is not None and reply.get('idle') != idle:
+            raise NativeControlError('native-control-progress-idle-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------

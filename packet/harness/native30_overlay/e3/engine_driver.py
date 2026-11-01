@@ -851,12 +851,18 @@ class NativeProgress:
     WAIT_SEND_LIMIT = 8
     DIRECT_KINDS = frozenset(('segment', 'profile', 'poll'))
     MODES = ('current', 'burst')
+    # Held-g L3, the per-arm ``idle`` selection: ``step`` is held-f's engine
+    # step pacing; ``wait`` lets an owner step that stock work could not use
+    # wait at most IDLE_WAIT_S for a native reply instead (see idle_wait).
+    IDLE = ('step', 'wait')
+    IDLE_WAIT_S = 0.001
 
     def __init__(self, installed, executor, *, driver=None, clock_ns=time.monotonic_ns):
         if installed not in PROGRESS_MODES:
             raise DriverError('invalid native progress setting')
         self.installed = installed
         self.mode = 'current'
+        self.idle = 'step'
         self.executor = executor
         self.driver = driver
         self.clock_ns = clock_ns
@@ -873,13 +879,14 @@ class NativeProgress:
         self.applying = None
         self.counters = dict.fromkeys((
             'chunks', 'commands', 'direct_commands', 'stock_rpcs', 'waits',
-            'wait_sends', 'wait_capped', 'line_errors', 'mode_changes'), 0)
+            'wait_sends', 'wait_capped', 'line_errors', 'mode_changes',
+            'idle_steps', 'idle_timeouts'), 0)
         # Held-g R5: the engine step loop of the recording chunk.
         self.steps = StepAnatomy(self.counters, clock_ns=clock_ns)
 
     def snapshot(self):
         return dict(schema='s5-native-progress-status/1', installed=self.installed,
-                    mode=self.mode, recording=self.recording,
+                    mode=self.mode, idle=self.idle, recording=self.recording,
                     wait_send_limit=self.WAIT_SEND_LIMIT,
                     direct_kinds=sorted(self.DIRECT_KINDS),
                     trace_lines=self.trace.lines_out, trace_dropped=self.trace.dropped_total,
@@ -945,7 +952,7 @@ class NativeProgress:
             self.counters['line_errors'] += 1
         try:
             # Held-g R5: the chunk's step anatomy, on its own schema.
-            for text in self.steps.lines(**(self.identity or {}), mode=self.mode):
+            for text in self.steps.lines(**(self.identity or {}), mode=self.mode, idle=self.idle):
                 logger.info(text)
         except Exception:
             self.counters['line_errors'] += 1
@@ -1231,6 +1238,33 @@ class NativeSegmentDriver:
             self._in_wait = False
             self._progress_origin = 'tick'
 
+    def idle_wait_permit(self):
+        """Held-g L3, driver side: an idle-wait arm's open auto-owned chunk owes a reply.
+
+        Everything advance() could do this step is done: no control, route,
+        return, stop or startup exchange is pending, the engine is not paused,
+        and a native reply is owed (the next advance needs it). The engine
+        side (executor_hooks._stock_step_idle) proves a stock step would
+        schedule and send nothing.
+        """
+        progress = self.progress
+        return (progress is not None and progress.idle == 'wait' and progress.recording
+                and self.error is None and self.stop_kind is None
+                and self._profile_failure is None and self._control is None
+                and not self._control_orphans and self._route_exchange() is None
+                and self._return_pending is None and self._bootstrapped
+                and self._split_ready and self.tx is not None and self._progress_owned()
+                and bool(self._inflight) and not self._engine_paused())
+
+    def idle_wait(self):
+        """Held-g L3: block at most IDLE_WAIT_S for any reply to land; never polls."""
+        progress = self.progress
+        transport = getattr(self.executor, '_flash_s5_transport', None)
+        landed = transport.wait_landed(NativeProgress.IDLE_WAIT_S)
+        progress.counters['idle_steps'] += 1
+        progress.counters['idle_timeouts'] += int(not landed)
+        return landed
+
     def _progress_control(self, command):
         """Typed per-arm mode switch; only installed burst, only paused idle FULL."""
         progress = self.progress
@@ -1238,7 +1272,7 @@ class NativeSegmentDriver:
             raise DriverError('native-control-unknown-action')
         if self.error is not None:
             raise DriverError(self.error)
-        if set(command) - {'action', 'mode', 'engine_epoch'}:
+        if set(command) - {'action', 'mode', 'engine_epoch', 'idle'}:
             raise DriverError('native-progress-command-fields-differ')
         epoch = command.get('engine_epoch')
         if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
@@ -1246,6 +1280,10 @@ class NativeSegmentDriver:
         mode = command.get('mode')
         if mode not in NativeProgress.MODES:
             raise DriverError('native-progress-mode-unknown')
+        # Held-g: an arm that names no idle selection gets held-f's step pacing.
+        idle = command.get('idle', 'step')
+        if idle not in NativeProgress.IDLE:
+            raise DriverError('native-progress-idle-unknown')
         policy = getattr(self, 'auto_arm', None)
         if (not self._engine_paused() or self._split_ready or self.tx is not None
                 or self.controller.active or self._inflight or self._control is not None
@@ -1256,8 +1294,10 @@ class NativeSegmentDriver:
         previous = progress.mode
         progress.mode = mode
         progress.counters['mode_changes'] += int(previous != mode)
+        previous_idle, progress.idle = progress.idle, idle
         now = int(self._monotonic_ns())
         return {'schema': 1, 'action': 'native_progress', 'mode': mode, 'previous': previous,
+                'idle': idle, 'previous_idle': previous_idle,
                 'installed': progress.installed, 'engine_epoch': self.engine_epoch,
                 'route': 'full', 'route_generation': self.route_generation,
                 'observed_clock_ns': now, 'clock': self._clock_record(now)}

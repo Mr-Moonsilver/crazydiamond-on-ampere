@@ -983,6 +983,13 @@ def before_step_with_batch_queue(engine):
         if steps is not None:
             # Held-g R5: read after the advance, which may have begun the chunk.
             steps.advanced(started, result is not None)
+            if result is None and driver.idle_wait_permit() and _stock_step_idle(engine):
+                # Held-g L3 (arm idle=wait): this step's schedule() and
+                # execute_model would carry nothing; wait for the owed native
+                # reply instead (bounded), then return as the idle tick does.
+                driver.idle_wait()
+                steps.bypass('idle')
+                result = _stock_step_bypass(driver, ({}, False))
         return result
     handoff = _handoff(engine)
     if handoff is None:
@@ -1047,6 +1054,40 @@ def engine_idle_tick(engine):
     if result is not None:
         steps.bypass('tick')
     return result
+
+
+def _stock_step_idle(engine):
+    """Held-g L3, engine side: a stock step now would schedule and send nothing.
+
+    The scheduler holds no running, waiting or skipped request (a parked
+    native request sits outside them) and nothing its next SchedulerOutput
+    would hand the workers: no finished or preempted request id, new block to
+    zero, pending CoW copy or freed encoder entry, and no KV/EC connector. No
+    abort is pending. A stock future still queued must be an empty batch: its
+    SchedulerOutput already reached the workers and only its empty update is
+    left, which the next stock step performs as before (with two queue slots
+    the stock loop always keeps one such future). Read-only peeks; an unknown
+    shape answers False, so the stock step runs.
+    """
+    try:
+        scheduler = engine.scheduler
+        if any(entry[1].total_num_scheduled_tokens != 0 for entry in engine.batch_queue):
+            return False
+        if (scheduler.running or len(scheduler.waiting)
+                or len(scheduler.skipped_waiting) or scheduler.finished_req_ids
+                or scheduler.reset_preempted_req_ids or scheduler.connector is not None
+                or getattr(scheduler, 'ec_connector', None) is not None):
+            return False
+        aborts = getattr(engine, 'aborts_queue', None)
+        if aborts is not None and not aborts.empty():
+            return False
+        for manager in scheduler.kv_cache_manager.coordinator.single_type_managers:
+            if getattr(manager, 'new_block_ids', None) or getattr(manager, '_pending_cow_copies', None):
+                return False
+        cache = scheduler.encoder_cache_manager
+        return not any(getattr(cache, name, None) for name in ('freed', 'to_free', 'allocated'))
+    except (AttributeError, TypeError, IndexError):
+        return False
 
 
 def _steps(engine):

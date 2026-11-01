@@ -312,6 +312,101 @@ class Steps(unittest.TestCase):
         self.assertEqual(steps.trace.lines(), [])
 
 
+class IdleWaitTransport(unittest.TestCase):
+    """ReplyTransport.wait_landed over real receiver threads (CPU reader doubles)."""
+
+    def setUp(self):
+        import threading
+        from enum import Enum
+        from reply_transport import ReplyTransport
+        import test_s5_reply_transport as rt
+        self.rt, self.threading = rt, threading
+        self.Status = rt.Status
+        self.readers = {r: rt.Reader() for r in range(2)}
+        self.t = ReplyTransport(self.readers, self.Status.SUCCESS, handoff_idle=True, max_calls=4)
+
+    def tearDown(self):
+        for reader in self.readers.values():
+            reader.q.put((self.Status.SUCCESS, None))
+        self.t.close(3)
+
+    def test_returns_on_landing_and_never_reads_or_polls(self):
+        import time
+        sequence = self.t.submit('native', lambda _: None, ranks=(0, 1), timeout_s=5)
+        self.assertTrue(self.readers[0].entered.wait(1) and self.readers[1].entered.wait(1))
+        started = time.monotonic()
+        self.assertFalse(self.t.wait_landed(0.02))        # nothing landed: the bound
+        self.assertGreaterEqual(time.monotonic() - started, 0.015)
+        landed = []
+        waiter = self.threading.Thread(target=lambda: landed.append(self.t.wait_landed(5)))
+        waiter.start()
+        time.sleep(0.05)
+        self.readers[1].q.put((self.Status.SUCCESS, 'one'))
+        waiter.join(2)
+        self.assertEqual(landed, [True])
+        # The waiter consumed nothing: the reply is still for poll, the call not ready.
+        self.assertEqual(self.t._done.qsize(), 1)
+        self.assertFalse(self.t._calls[sequence].ready)
+        self.assertTrue(self.t.wait_landed(0))            # still landed, no wait
+        self.readers[0].q.put((self.Status.SUCCESS, 'zero'))
+        self.rt.await_condition(self, lambda: self.t.poll(8) >= 0 and self.t._calls[sequence].ready)
+        self.assertEqual(self.t.take(sequence)[0], ['zero', 'one'])
+        self.assertFalse(self.t.wait_landed(0))
+
+    def test_a_failed_transport_returns_at_once(self):
+        import time
+        self.t.submit('native', lambda _: None, ranks=(0,), timeout_s=5)
+        self.assertTrue(self.readers[0].entered.wait(1))
+        self.readers[0].q.put((self.Status.FAILURE, None))
+        self.rt.await_condition(self, lambda: self.t._failure is not None)
+        started = time.monotonic()
+        self.assertFalse(self.t.wait_landed(5))
+        self.assertLess(time.monotonic() - started, 1)
+
+    def test_refuses_an_unbounded_wait(self):
+        for value in (None, -1, float('inf'), '1'):
+            with self.assertRaises(ValueError):
+                self.t.wait_landed(value)
+
+
+class IdleSourceNames(unittest.TestCase):
+    """Every scheduler/engine name the L3 predicate reads exists in the pinned vLLM source."""
+
+    def test_names_exist_in_the_pinned_source(self):
+        import ast
+        import executor_hooks as eh
+        source = ast.unparse(ast.parse(Path(eh.__file__).read_text()).body[[
+            i for i, n in enumerate(ast.parse(Path(eh.__file__).read_text()).body)
+            if getattr(n, 'name', None) == '_stock_step_idle'][0]])
+        ref = ROOT / 'reference/vllm-src/v1'
+        if not ref.is_dir():
+            self.skipTest('reference/vllm-src is not available on this host')
+        scheduler = (ref / 'core/sched/scheduler.py').read_text()
+        core = (ref / 'engine/core.py').read_text()
+        managers = (ref / 'core/single_type_kv_cache_manager.py').read_text()
+        encoder = (ref / 'core/encoder_cache_manager.py').read_text()
+        coordinator = (ref / 'core/kv_cache_coordinator.py').read_text()
+        expect = {
+            'scheduler.running': ('self.running', scheduler), 'scheduler.waiting': ('self.waiting =', scheduler),
+            'scheduler.skipped_waiting': ('self.skipped_waiting =', scheduler),
+            'scheduler.finished_req_ids': ('self.finished_req_ids: set', scheduler),
+            'scheduler.reset_preempted_req_ids': ('self.reset_preempted_req_ids', scheduler),
+            'scheduler.connector': ('self.connector = None', scheduler),
+            "'ec_connector'": ('self.ec_connector = None', scheduler),
+            'scheduler.kv_cache_manager.coordinator.single_type_managers': ('self.single_type_managers', coordinator),
+            "'new_block_ids'": ('self.new_block_ids', managers),
+            "'_pending_cow_copies'": ('self._pending_cow_copies', managers),
+            'scheduler.encoder_cache_manager': ('self.encoder_cache_manager', scheduler),
+            "'freed'": ('self.freed', encoder), "'to_free'": ('self.to_free', encoder),
+            "'allocated'": ('self.allocated', encoder),
+            "'aborts_queue'": ('self.aborts_queue', core), 'engine.batch_queue': ('self.batch_queue', core),
+            'total_num_scheduled_tokens': ('total_num_scheduled_tokens', scheduler),
+        }
+        for name, (needle, text) in expect.items():
+            self.assertIn(name, source, name)
+            self.assertIn(needle, text, needle)
+
+
 class ConnectedSpans(credit.CreditHarness, unittest.TestCase):
     """R1 on the real driver/lane/dispatcher/bridge: classes, refusals and the only sync."""
 
