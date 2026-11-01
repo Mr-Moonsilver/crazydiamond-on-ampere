@@ -6,6 +6,7 @@ EngineCore.step_with_batch_queue, scheduler with the real KV manager, controller
 auto-arm policy) with FLASH_S5_STAGE_OVERLAP=1 installed beside FLASH_S5_STAGE_LOCAL=1. Modes:
 
   overlap-burst, overlap-burst-solo, overlap-burst-skew   selection local + overlap
+  overlap-burst-slow1                                      the same under a slow stage 1 (tp-skew leaf, stage 1 ranks slow)
   local-burst, serial-burst                                the overlap switch installed, overlap not selected
 
 A local or serial mode must reproduce C0's record of the same mode (the self-run compares them): installing the overlap switch
@@ -17,12 +18,16 @@ What an overlap mode adds over C0's checks, over the same run:
 - each rank received the same device commands in the same order as the serial path: the per-rank list of accepted segment
   commands (chunk range, kind, stage, layer) equals the serial mode's list, and the request's outputs are the same;
 - both stages had commands in flight at once (both_stages_ns), and never two commands on one stage;
-- every progress row is attributed to exactly one chunk by the stage-overlap lines, and per chunk the C0 stand-in flow holds.
+- every progress row is attributed to exactly one chunk by the stage-overlap lines, and per chunk the C0 stand-in flow holds;
+- under -skew and -slow1: stage-local release and open rules (C0's release rule; the open of n+1 on a stage needs that stage's
+  own state events of n done). What the parent's all-four-ranks rule would have flagged is kept and must be other-stage only;
+- under -slow1: stage 0 opened n+1 before stage 1 finished n (early_opens > 0), the path the fast composition never takes.
 
 Fixture leaves: C0's (declared there), unchanged. The CPU-worker driver class goes under the real OverlapSegmentDriver the same
 way C0's goes under StagedSegmentDriver. Declared limit, as C0: no device stream, no real QSA layer, no real collective.
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -34,7 +39,56 @@ from unittest import mock
 import e3_alpha_c0_probe as c0
 import e3_native41_progress_probe as pp
 
-MODES = ('overlap-burst', 'overlap-burst-solo', 'overlap-burst-skew', 'local-burst', 'serial-burst')
+MODES = ('overlap-burst', 'overlap-burst-solo', 'overlap-burst-skew', 'overlap-burst-slow1', 'local-burst', 'serial-burst')
+PARENT_MODE = {'overlap-burst-slow1': 'burst-skew'}
+# Leaf tp-skew-completion with stage 1 slow: per Core tick a stage 1 rank completes each pending device event with
+# probability 0.2, a stage 0 rank with 1.0 and 0.9 (the parent's leaf, other rates).
+SLOW1_RATES = {0: 1.0, 1: 0.9, 2: 0.2, 3: 0.2}
+STAGE_RANKS = {0: (0, 1), 1: (0, 1), 2: (2, 3), 3: (2, 3)}
+
+
+def overlap_skew(ap, rates=None):
+    """C0's stage skew plus the stage-local open rule of an overlap arm.
+
+    The parent's open guard asks that the next chunk's open finds all four ranks' state events of the prior chunk done. Under
+    overlap stage 0 opens n+1 while stage 1 is still on n, by design: an open on a rank needs that rank's own stage's state
+    events of n done (its stage released n). Stage 1's GPUs hold stage 1's layers; stage 0's PREPARE reads only its own.
+    Each parent flag is kept in ``parent_rule_flags`` with the opening rank's stage; the check is that only the other stage
+    was missing.
+    """
+    base = c0.stage_skew(ap)
+
+    class OverlapSkew(base):
+        RATES = dict(rates or base.RATES)
+
+        def __init__(self, conn, seed=4141):
+            super().__init__(conn, seed)
+            self.stage_opens = 0
+            self.open_flags = []
+
+        @contextlib.contextmanager
+        def installed(self):
+            with super().installed() as skew:
+                for rank, worker in skew.conn.workers.items():
+                    def guarded(message, _real=worker.flash_s5_open, _rank=rank):
+                        mark = len(skew.violations)
+                        try:
+                            return _real(message)
+                        finally:
+                            own = set(STAGE_RANKS[_rank])
+                            for row in skew.violations[mark:]:
+                                if row[0] != 'open-before-prior-state':
+                                    continue
+                                skew.open_flags.append(row + (sorted(own),))
+                                if set(row[3]) & own:
+                                    skew.violations.append(('stage-open-before-own-prior-state', _rank, row[2],
+                                                            sorted(set(row[3]) & own)))
+                            skew.violations[mark:] = [row for row in skew.violations[mark:]
+                                                      if row[0] != 'open-before-prior-state']
+                            skew.stage_opens += 1
+                    worker.flash_s5_open = guarded
+                yield skew
+    return OverlapSkew
 ENV = dict(c0.ENV, FLASH_S5_STAGE_OVERLAP='1')
 OVERLAP_LINE = re.compile(r'^flash-s5 stage-overlap txn=(\d+) seqs=(\S+) successor=(\S+)$')
 
@@ -143,9 +197,11 @@ def run(mode):
         watch(conn)
         return conn
     try:
+        skew_class = (overlap_skew(pp.ap, SLOW1_RATES if mode.endswith('-slow1') else None) if overlap
+                      else c0.stage_skew(pp.ap) if local else pp.ap.Skew)
         with mock.patch.object(parent, 'connected', connected_and_watched), mock.patch.object(parent, 'set_mode', set_mode), \
-                mock.patch.object(pp.ap, 'Skew', c0.stage_skew(pp.ap) if local else pp.ap.Skew):
-            result = parent.run(mode.split('-', 1)[1])
+                mock.patch.object(pp.ap, 'Skew', skew_class):
+            result = parent.run(PARENT_MODE.get(mode, mode.split('-', 1)[1]))
     finally:
         if 'logger' in state:
             state['logger'].removeHandler(lines)
@@ -205,6 +261,21 @@ def run(mode):
               overlap=over['counters'])
         check('both-stages-in-flight', counters['both_stages_ns'] > 0, counters=counters)
         check('native-chunks-contiguous', all(a['end'] == b['start'] for a, b in zip(conn.native, conn.native[1:])))
+        skew = getattr(conn, 'skew', None) if mode.endswith(('-skew', '-slow1')) else None
+        if skew is not None:
+            other = {0: {2, 3}, 1: {2, 3}, 2: {0, 1}, 3: {0, 1}}
+            check('overlap-skew-stage-rules', skew.stage_releases > 0 and skew.stage_opens > 0 and not skew.violations,
+                  stage_releases=skew.stage_releases, stage_opens=skew.stage_opens, violations=skew.violations[:8])
+            check('overlap-skew-parent-flags-are-other-stage-only',
+                  all(row[0] == 'release-before-state' and (row[1] not in row[4] or set(row[3]) <= other[row[1]])
+                      for row in skew.parent_rule_flags)
+                  and all(set(row[3]) <= other[row[1]] for row in skew.open_flags),
+                  release_flags=len(skew.parent_rule_flags), open_flags=len(skew.open_flags),
+                  sample=[list(row) for row in (skew.open_flags + skew.parent_rule_flags)[:8]])
+            result.update(parent_release_flags=len(skew.parent_rule_flags), parent_open_flags=len(skew.open_flags))
+        if mode.endswith('-slow1'):
+            check('stage0-opened-the-successor-before-stage1-finished', over['counters']['early_opens'] > 0
+                  and len(skew.open_flags) > 0, early_opens=over['counters']['early_opens'], open_flags=len(skew.open_flags))
         result['overlap'] = over
     elif local:
         check('no-overlap-lines-when-unselected', not lines.lines, lines=len(lines.lines))
