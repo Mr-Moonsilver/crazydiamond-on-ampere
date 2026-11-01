@@ -248,7 +248,24 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
     bridge = NativeWorkerBridge(dispatcher, server=server)
     server._flash_s5_bridge = bridge
     runner._flash_s5_bridge = bridge
+    from native_measurement import progress_mode
+    try:
+        progress = progress_mode(env)
+    except ValueError as exc:
+        raise StartupError(str(exc)) from None
+    if progress is not None:
+        # Held-g R1: device spans of this worker's lane commands (receipts only).
+        dispatcher.spans = _device_spans(bridge.rank)
     return dispatcher
+
+
+def _device_spans(rank):
+    import torch
+    from executor_hooks import _progress_logger
+    from native_measurement import DeviceSpans
+
+    return DeviceSpans(lambda: torch.cuda.Event(enable_timing=True), rank=rank,
+                       emit=lambda text: _progress_logger().info(text))
 
 
 def install_engine(engine, *, env=None, clock=time.monotonic):

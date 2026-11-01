@@ -535,8 +535,10 @@ class StockLocalFuture(LocalFuture):
             return self._stock_result(timeout)
         finally:
             progress[0].counters['waits'] += 1
+            ended = time.monotonic_ns()
             progress[0].trace.record('w', self.sequence, progress[1], started,
-                                     time.monotonic_ns(), sends, capped)
+                                     ended, sends, capped)
+            progress[0].steps.waited(started, ended)
 
     def _stock_result(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -963,6 +965,10 @@ def park_prefill(engine, scheduler_output):
     driver = _driver(engine)
     if driver is None:
         return False
+    steps = _steps(engine)
+    if steps is not None:
+        # Held-g R5: scheduler.schedule returned (an empty batch or tokens).
+        steps.scheduled(scheduler_output)
     parked = driver.park(scheduler_output)
     return parked is not None and parked is not False
 
@@ -971,7 +977,13 @@ def before_step_with_batch_queue(engine):
     """Bounded engine bypass: drive one typed step; never wait for a layer."""
     driver = _driver(engine)
     if driver is not None:
-        return _stock_step_bypass(driver, driver.advance())
+        started = time.monotonic_ns()
+        result = _stock_step_bypass(driver, driver.advance())
+        steps = _steps(engine)
+        if steps is not None:
+            # Held-g R5: read after the advance, which may have begun the chunk.
+            steps.advanced(started, result is not None)
+        return result
     handoff = _handoff(engine)
     if handoff is None:
         return None
@@ -1022,6 +1034,30 @@ def _stock_step_bypass(driver, result):
 
 
 def engine_idle_tick(engine):
+    """The first seam of every engine step; held-g R5 starts a step here.
+
+    With no auto-owned native chunk recording (always, with the progress
+    setting unset) this is exactly ``_idle_tick``.
+    """
+    steps = _steps(engine)
+    if steps is None:
+        return _idle_tick(engine)
+    steps.begin()
+    result = _idle_tick(engine)
+    if result is not None:
+        steps.bypass('tick')
+    return result
+
+
+def _steps(engine):
+    """Held-g R5: the recording chunk's step anatomy, else None."""
+    progress = getattr(getattr(engine, '_flash_s5_driver', None), 'progress', None)
+    if progress is None or not progress.recording:
+        return None
+    return progress.steps
+
+
+def _idle_tick(engine):
     """Advance one bounded control/paused-native tick without a reply wait.
 
     PAUSED_ALL hides ordinary scheduler work. Native ownership must nevertheless

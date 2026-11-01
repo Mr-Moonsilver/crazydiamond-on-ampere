@@ -60,7 +60,7 @@ from lane_state import BatchRow, MetadataSnapshot, _freeze
 from native_measurement import (PROGRESS_N,NativeMeasurementCensus, encode_report_vector,
                                 decode_report_vector, ControlPathCounters, QsaControlCounters,
                                 PROGRESS_DIRECT_METHODS, PROGRESS_META_BYTES, PROGRESS_META_KEY, PROGRESS_MODES,
-                                ProgressTrace, encode_progress_meta)
+                                ProgressTrace, StepAnatomy, encode_progress_meta)
 from reply_transport import Backpressure, TransportError
 from scheduler_hooks import (
     ADMISSION_PHASES,
@@ -874,6 +874,8 @@ class NativeProgress:
         self.counters = dict.fromkeys((
             'chunks', 'commands', 'direct_commands', 'stock_rpcs', 'waits',
             'wait_sends', 'wait_capped', 'line_errors', 'mode_changes'), 0)
+        # Held-g R5: the engine step loop of the recording chunk.
+        self.steps = StepAnatomy(self.counters, clock_ns=clock_ns)
 
     def snapshot(self):
         return dict(schema='s5-native-progress-status/1', installed=self.installed,
@@ -912,6 +914,7 @@ class NativeProgress:
         self.owner = threading.get_ident()
         self.last_stock_kind = None
         self.executor._flash_s5_progress_recording = self
+        self.steps.reset()
 
     def applied(self, row):
         """Record a native row after its apply, unless the chunk flush took it."""
@@ -937,6 +940,12 @@ class NativeProgress:
                 self.trace.record('n', *row)
             for text in self.trace.lines(**(self.identity or {}), mode=self.mode,
                                          open_rows=len(self.native)):
+                logger.info(text)
+        except Exception:
+            self.counters['line_errors'] += 1
+        try:
+            # Held-g R5: the chunk's step anatomy, on its own schema.
+            for text in self.steps.lines(**(self.identity or {}), mode=self.mode):
                 logger.info(text)
         except Exception:
             self.counters['line_errors'] += 1

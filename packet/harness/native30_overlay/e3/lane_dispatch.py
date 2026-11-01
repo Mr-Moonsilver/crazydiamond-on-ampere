@@ -186,6 +186,9 @@ class LaneDispatcher:
         # allocation stays visible until then.
         self.source_registry = None
         self.source_allocator = None
+        # Held-g device spans (native_measurement.DeviceSpans): installed only
+        # with FLASH_S5_NATIVE_PROGRESS set; receipts, never a decision.
+        self.spans = None
         self._reset_transaction()
 
     def _reset_transaction(self):
@@ -257,6 +260,8 @@ class LaneDispatcher:
         self.transaction = transaction
         self.operation = operation
         self.admission = admission
+        if self.spans is not None:
+            self.spans.begin(transaction, self._stage())
         return {'opened': True, 'stage': self._stage()}
 
     @property
@@ -296,8 +301,13 @@ class LaneDispatcher:
                 f'op_seq {command.op_seq} is not strictly increasing')
         started = self.clock()
         self._partial = False
+        spans = self.spans
+        mark = None
         try:
             with self._scope():
+                if spans is not None:
+                    # Held-g: the command's start event, before its first launch.
+                    mark = spans.start(self.native.split.prefill_stream, self.driver)
                 handler = getattr(self, '_do_' + command.kind)
                 result = handler(command)
             self.last_ns = self.clock() - started
@@ -305,14 +315,20 @@ class LaneDispatcher:
             # same partial-enqueue exposure.
             self._partial = True
             record = self._record(command)
+            if spans is not None:
+                spans.end(mark, self.native.split.prefill_stream, command, self.driver)
             self._after_record(command, record)
-        except E3Pending:
+        except E3Pending as exc:
+            if spans is not None:
+                spans.refused(None if self._partial else mark, command, exc)
             # Known credit checks occur before submission. Other pending
             # exceptions after mutation have an unknown enqueue frontier.
             if self._partial:
                 self.quarantined = command.kind + ': pending after possible enqueue'
             raise
         except BaseException as exc:
+            if spans is not None:
+                spans.abandon(mark)
             if self._partial:
                 self.quarantined = f'{command.kind}: {type(exc).__name__}'
                 raise LaneDispatchError('dispatcher quarantined: ' + self.quarantined) from exc
@@ -579,6 +595,9 @@ class LaneDispatcher:
             raise LaneDispatchError('dispatcher is quarantined: ' + self.quarantined)
         if not self.drain():
             raise E3Pending('lane transaction still has outstanding work')
+        if self.spans is not None:
+            # Held-g: every command event is complete; read and log the spans.
+            self.spans.release(self.native.split.prefill_stream, self.cancelled)
         try:
             channel = self.native.comms.pp
             if channel is not None:
