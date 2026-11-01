@@ -33,11 +33,51 @@ found-extra-args  /etc/default/vllm-flash EXTRA_ARGS (engine_identity's
              compared silently (no defaults value is written or printed).
 idle         /metrics running + waiting requests reach 0 within --timeout-s
              (after the plain W1 client, whose requests end on disconnect).
+instruments  Actual observer/offers state per rank (the speed engine runs with
+             FLASH_S5_REPLAY_OBSERVER=0 and FLASH_S5_ENGINE_OFFERS=0): rank
+             pids from a paused all-rank barrier (then resumed), and
+             `docker exec <container> cat /proc/<pid>/maps` must not map
+             flash_s5_replay_observer on any rank (FAIL if it does), must map
+             libcuda (else INCONCLUSIVE: not the worker); unreadable maps are
+             INCONCLUSIVE.  --same-as: the same pids and incarnations as an
+             earlier receipt (FAIL if not).
+full-idle    Before the plain W1: a typed all-rank FULL (session prepare full,
+             full-prefill-solo, typed TransitionAcks), resumed; /metrics
+             running + waiting 0; status route full, unpaused, no transition
+             or control pending, scheduler_requests 0; a paused barrier with
+             every rank on full with no live or prefill request, then resumed.
+             Unproven is INCONCLUSIVE, a contradiction FAIL.  The plain W1 runs
+             only on PASS.
+route-check  After the plain W1: status route full at the full-idle receipt's
+             route generation (no transition inside the plain W1), unpaused.
+ingress-w1   The followed access log (uvicorn lines, docker-stamped) over each
+             native W1 repeat's wall span: every line from 127.0.0.1, only
+             generation or accounted quiet/control paths, no 401, and the
+             generation lines' client ports exactly the repeat's 8 cohort
+             ports; no generation line between repeats.  Any breach: FAIL
+             (measurement INVALID).
+ingress      The same for one span: the plain W1 (--start/--end from the queue,
+             --generation 8) or a W2 round (--round: its wall span, and the
+             generation requests the record shows it sent; unknown count:
+             INCONCLUSIVE).
+returns      Every split->FULL return (W1 split repeats, W2 native lanes, and
+             cleanups): per-rank typed acks (applied generation/bank, drained
+             streams, watermark), the all-rank ack time, the census-to-ack and
+             (W1) client-send-to-ack intervals, graded descriptively against
+             row1 1.5 ms and row4 42.76 s.  Per-rank send/arrival/
+             before_route_change/applied stamps are not exposed by this engine
+             and are listed as missing.  No observation window at a return:
+             every instruments receipt PASS with the same rank pids, and the
+             return's census names those pids.
 summary      Trunk reading beside native35_performance_grade: per W2 round the
              decode tok/s during the fresh prefill, its share of the native W1
-             FULL median (the grade's denominator) and of the plain W1 median
-             (descriptive), the prefill share, plus the checks above.  Never a
-             gate; 80/80 stays a marker; always rc 0 once written.
+             FULL median (the grade's denominator) and of the plain W1 median,
+             the prefill share, plus the checks above.  The plain median and
+             its ratios exist only when the plain W1 is valid: verdict PASS, no
+             errors, 3 windows each with 8 live streams, full-idle, route-check,
+             ingress-plain and instruments-w1 PASS; otherwise the raw windows
+             are kept under raw_invalid_samples and every plain ratio is None.
+             Never a gate; 80/80 stays a marker; always rc 0 once written.
 """
 import argparse
 import datetime
@@ -228,6 +268,397 @@ def idle(a):
         time.sleep(1)
 
 
+# -- native39 blockers (Codex queue review of 1c334bc) -------------------------
+
+OBSERVER_SO = 'flash_s5_replay_observer'
+RANKS = (0, 1, 2, 3)
+ROW1_RETURN_MS = 1.5          # row1 FULL return, descriptive band edge (lead)
+ROW4_RETURN_MS = 42760.0      # row4 FULL return 42.76 s, descriptive band edge (lead)
+ACCESS_RE = re.compile(r'INFO:\s+(\[?[0-9A-Fa-f.:]+\]?):(\d+) - "(\w+) (\S+) HTTP/[\d.]+" (\d{3})')
+GENERATION_PATHS = ('/v1/chat/completions', '/v1/completions', '/v1/responses', '/v1/embeddings',
+                    '/pooling', '/classify', '/score', '/v1/score', '/rerank', '/v1/rerank', '/v2/rerank',
+                    '/invocations', '/v1/audio/transcriptions', '/v1/audio/translations')
+QUIET_PATHS = ('/health', '/metrics', '/tokenize', '/detokenize', '/v1/models', '/version', '/ping')
+INGRESS_LAG_S = 0.25          # docker stamps a line when it reads it: late, never early
+
+
+def session_client(a):
+    from e3_native_runtime_client import NativeRuntimeClient
+    return NativeRuntimeClient(a.url, a.run_id, epoch=a.epoch, timeout_s=a.control_timeout_s)
+
+
+def exc_text(exc):
+    return '%s: %s' % (type(exc).__name__, str(exc)[:200])
+
+
+def docker_maps(container, pid, timeout_s):
+    import subprocess
+    done = subprocess.run(['docker', 'exec', container, 'cat', '/proc/%d/maps' % pid],
+                          capture_output=True, text=True, timeout=timeout_s)
+    if done.returncode != 0:
+        raise OSError('docker exec rc=%d' % done.returncode)
+    return done.stdout
+
+
+def instruments(a):
+    """Actual per-rank observer/offers state: the replay observer library is not mapped in any rank.
+
+    start_worker_observer returns None when FLASH_S5_REPLAY_OBSERVER=0 (observer_runtime.py) and
+    ReplayBinding is the only loader of the library; an engine offers ledger is built only by
+    an observer (WorkerObserver._begin_ledger) or with an observer session.  So a rank process
+    without the library mapped has no observer, no ledger and no observation window.
+    """
+    record = dict(check='instruments-off', schema='native39-trunk-checks/1', ranks={},
+                  basis='docker exec <container> cat /proc/<rank pid>/maps; rank pids from a paused all-rank barrier')
+    client = session_client(a)
+    try:
+        rows = client.workers(client.pause().get('barrier'))
+    finally:
+        try:
+            record['resume'] = client.resume().get('resumed')
+        except Exception as exc:  # noqa: BLE001 - recorded; the verdict below stays unproven
+            record['resume_error'] = exc_text(exc)
+    if 'resume_error' in record:
+        return verdict(record, 2, 'engine not resumed after the instrument barrier')
+    if set(rows) != set(RANKS):
+        return verdict(record, 2, 'rank coverage')
+    mapped, unread = [], []
+    for rank in RANKS:
+        row = rows[rank]
+        pid = row.get('pid')
+        out = dict(pid=pid, worker_incarnation=row.get('worker_incarnation'), route=row.get('route'))
+        try:
+            if type(pid) is not int or pid < 1:
+                raise ValueError('pid unavailable')
+            text = docker_maps(a.container_id, pid, a.exec_timeout_s)
+            out.update(maps_sha256=hashlib.sha256(text.encode()).hexdigest(), maps_lines=text.count('\n'),
+                       observer_mapped=OBSERVER_SO in text, cuda_mapped='libcuda.so' in text,
+                       cupti_mapped='libcupti' in text)
+            if not out['cuda_mapped']:
+                unread.append(rank)  # not proven to be the CUDA worker
+            if out['observer_mapped']:
+                mapped.append(rank)
+        except Exception as exc:  # noqa: BLE001
+            out['error'] = exc_text(exc)
+            unread.append(rank)
+        record['ranks'][str(rank)] = out
+    if a.same_as:
+        prior = json.loads(Path(a.same_as).read_text())
+        same = all((prior.get('ranks') or {}).get(str(r), {}).get(k) == record['ranks'][str(r)].get(k)
+                   for r in RANKS for k in ('pid', 'worker_incarnation'))
+        record.update(same_as=str(a.same_as), same_processes=same, same_as_verdict=prior.get('verdict'))
+        if not same:
+            return verdict(record, 1, 'rank pids or incarnations differ from ' + Path(a.same_as).name)
+        if prior.get('verdict') != 'PASS':
+            return verdict(record, 2, 'the reference instruments receipt is not PASS')
+    if mapped:
+        return verdict(record, 1, 'replay observer mapped on rank(s) %s' % ','.join(map(str, mapped)))
+    if unread:
+        return verdict(record, 2, 'maps unreadable or not a CUDA worker on rank(s) %s' % ','.join(map(str, unread)))
+    return verdict(record, 0, 'replay observer not mapped on ranks 0-3 (libcupti mapped: %s; descriptive)'
+                   % ','.join(str(r) for r in RANKS if record['ranks'][str(r)]['cupti_mapped']))
+
+
+def status_view(status):
+    keys = ('route', 'route_generation', 'paused', 'transition_pending', 'control_pending',
+            'return_pending', 'scheduler_requests', 'observed_clock_ns')
+    return {k: status.get(k) for k in keys} if type(status) is dict else None
+
+
+def full_idle(a):
+    """Typed all-rank FULL, resumed, idle and empty before the plain W1 (Codex blocker 1)."""
+    record = dict(check='full-idle', schema='native39-trunk-checks/1', samples=[])
+    client = session_client(a)
+    try:
+        prep = client.prepare('full', 'full-prefill-solo')
+    except Exception as exc:  # noqa: BLE001 - the typed FULL is not proven
+        record['prepare_error'] = exc_text(exc)
+        return verdict(record, 2, 'typed all-rank FULL not proven: ' + record['prepare_error'])
+    record['prepare'] = dict(route=prep.get('route'), typed_acks=prep.get('typed_acks'),
+                             transition_acks=prep.get('transition_acks'), resumed=prep.get('resumed'))
+    deadline = time.monotonic() + a.timeout_s
+    while True:
+        try:
+            m = metrics(a.url)
+            record['samples'].append(dict(t=time.time(), **m))
+            if m['num_requests_running'] == 0 and m['num_requests_waiting'] == 0:
+                break
+        except (OSError, ValueError) as exc:
+            record['samples'].append(dict(t=time.time(), error=type(exc).__name__))
+        if time.monotonic() >= deadline:
+            return verdict(record, 2, 'engine not idle within %s s after the typed FULL' % a.timeout_s)
+        time.sleep(1)
+    status = status_view(client.call('status'))
+    record['status'] = status
+    try:
+        rows = client.workers(client.pause().get('barrier'))
+    finally:
+        record['resume'] = client.resume().get('resumed')
+    record['workers'] = {str(r): {k: rows[r].get(k) for k in ('route', 'route_generation', 'live_decode_requests',
+                                                              'prefill_requests', 'running_requests', 'pid',
+                                                              'worker_incarnation')} for r in sorted(rows)}
+    after = status_view(client.call('status'))
+    record['status_after'] = after
+    contradictions = []
+    if status.get('route') != 'full' or after.get('route') != 'full':
+        contradictions.append('route-not-full')
+    if status.get('transition_pending') is not False or status.get('control_pending') is not None:
+        contradictions.append('transition-or-control-pending')
+    if status.get('route_generation') != after.get('route_generation'):
+        contradictions.append('route-generation-moved')
+    if status.get('scheduler_requests') != 0 or status.get('paused') is not False:
+        contradictions.append('scheduler-not-empty-or-paused')
+    if any(w['route'] != 'full' or w['live_decode_requests'] != 0 or w['prefill_requests'] != 0
+           for w in record['workers'].values()) or set(record['workers']) != {str(r) for r in RANKS}:
+        contradictions.append('workers-not-empty-full')
+    if after.get('paused') is not False:
+        contradictions.append('not-resumed')
+    record['route_generation'] = after.get('route_generation')
+    if contradictions:
+        return verdict(record, 1, 'typed FULL acked but ' + ','.join(contradictions))
+    return verdict(record, 0, 'typed all-rank FULL (generation %s), resumed, running 0 waiting 0, workers empty'
+                   % record['route_generation'])
+
+
+def route_check(a):
+    """The route stayed FULL at the same generation across the plain W1 (no transition inside it)."""
+    record = dict(check='route-check', schema='native39-trunk-checks/1')
+    ref = json.loads(Path(a.full_idle).read_text())
+    record.update(full_idle_verdict=ref.get('verdict'), expected_generation=ref.get('route_generation'))
+    if ref.get('verdict') != 'PASS' or type(ref.get('route_generation')) is not int:
+        return verdict(record, 2, 'no PASS full-idle reference')
+    status = status_view(session_client(a).call('status'))
+    record['status'] = status
+    ok = (status.get('route') == 'full' and status.get('route_generation') == ref['route_generation']
+          and status.get('transition_pending') is False and status.get('paused') is False)
+    return verdict(record, 0 if ok else 1, 'route %s generation %s (expected full %s)' % (
+        status.get('route'), status.get('route_generation'), ref['route_generation']))
+
+
+def access_lines(q):
+    rows = []
+    for name, line, m in log_matches(q, ACCESS_RE):
+        path = m.group(4).split('?', 1)[0]
+        kind = ('generation' if path in GENERATION_PATHS else
+                'quiet' if path in QUIET_PATHS or path.startswith('/v1/flash_s5') else 'other')
+        rows.append(dict(t=stamp(line), addr=m.group(1), port=int(m.group(2)), method=m.group(3),
+                         path=path, code=m.group(5), kind=kind))
+    return rows
+
+
+def span(lines, start, end, expect, ports=None):
+    """One harness span: every line loopback and accounted for; generation lines exactly the harness's."""
+    sel = [r for r in lines if r['t'] is not None and start <= r['t'] <= end]
+    gen = [r for r in sel if r['kind'] == 'generation']
+    out = dict(start=start, end=end, access_lines=len(sel), generation_lines=len(gen), expected_generation=expect,
+               by_path={}, invalid=[], unknown=[])
+    for r in sel:
+        out['by_path'][r['path']] = out['by_path'].get(r['path'], 0) + 1
+    if any(r['addr'] != LOOPBACK for r in sel):
+        out['invalid'].append('non-loopback-client')
+    if any(r['kind'] == 'other' for r in sel):
+        out['invalid'].append('unaccounted-path')
+    if any(r['code'] == '401' for r in sel):
+        out['invalid'].append('unauthenticated-request')
+    if any(r['code'] != '200' for r in gen):
+        out['invalid'].append('generation-not-200')
+    if expect is None:
+        out['unknown'].append('expected-generation-count-unknown')
+    elif len(gen) != expect:
+        out['invalid'].append('generation-count %d != %d' % (len(gen), expect))
+    if ports is not None:
+        from collections import Counter
+        if any(p is None for p in ports):
+            out['unknown'].append('harness-client-ports-unknown')
+        elif Counter(r['port'] for r in gen) != Counter(ports):
+            out['invalid'].append('generation-client-ports-differ')
+    if not sel:
+        out['unknown'].append('no-access-lines')  # the harness's own control lines are missing: not observable
+    return out
+
+
+def ingress_verdict(record, spans, lines_present):
+    record['spans'] = spans
+    if not lines_present:
+        return verdict(record, 2, 'no followed engine log')
+    invalid = sorted({'%s:%s' % (s['label'], r) for s in spans for r in s['invalid']})
+    unknown = sorted({'%s:%s' % (s['label'], r) for s in spans for r in s['unknown']})
+    record.update(measurement='INVALID' if invalid else 'UNPROVEN' if unknown else 'VALID',
+                  invalid=invalid, unknown=unknown)
+    if invalid:
+        return verdict(record, 1, 'INVALID: ' + '; '.join(invalid))
+    if unknown:
+        return verdict(record, 2, 'unproven: ' + '; '.join(unknown))
+    return verdict(record, 0, 'every request in %d span(s) is the harness\'s own (loopback, accounted paths, '
+                   'exact generation lines)' % len(spans))
+
+
+def followed(q):
+    return any((q / n).is_file() for n in ('engine-stream.log', 'engine-stream.err'))
+
+
+def ingress_w1(a):
+    """Native W1: per repeat the 8 cohort client ports exactly, and no generation line between repeats."""
+    q = Path(a.q)
+    record = dict(check='ingress-w1', schema='native39-trunk-checks/1', log='Q/engine-stream.log + .err',
+                  lag_s=INGRESS_LAG_S)
+    data = json.loads(Path(a.w1).read_text())
+    lines = access_lines(q)
+    spans, repeats = [], [r for r in data.get('repeats') or [] if not r.get('not_run')]
+    for i, row in enumerate(repeats):
+        wall = row.get('wall') or {}
+        start, end = wall.get('open_s'), wall.get('end_s')
+        if type(start) not in (int, float) or type(end) not in (int, float):
+            spans.append(dict(label='repeat%s' % row.get('repeat'), invalid=[], unknown=['wall-span-missing']))
+            continue
+        nxt = ((repeats[i + 1].get('wall') or {}).get('open_s') if i + 1 < len(repeats) else None)
+        stop = end + INGRESS_LAG_S if type(nxt) not in (int, float) else min(end + INGRESS_LAG_S, nxt)
+        ports = (row.get('cohort') or {}).get('client_ports')
+        s = span(lines, start, stop, len(ports) if ports else None, ports)
+        s['label'] = 'repeat%s' % row.get('repeat')
+        spans.append(s)
+    if repeats and all(type((r.get('wall') or {}).get(k)) in (int, float) for r in repeats for k in ('open_s', 'end_s')):
+        whole = span(lines, repeats[0]['wall']['open_s'], repeats[-1]['wall']['end_s'] + INGRESS_LAG_S,
+                     sum(s.get('generation_lines', 0) for s in spans))
+        whole['label'] = 'w1-whole'
+        whole['unknown'] = [u for u in whole['unknown'] if u != 'expected-generation-count-unknown']
+        spans.append(whole)
+    elif not repeats:
+        spans.append(dict(label='w1', invalid=[], unknown=['no-attempted-repeat']))
+    return ingress_verdict(record, spans, followed(q))
+
+
+def round_expected(data):
+    """Generation requests a W2 round sent: 2 per lane plus its standing decoders, when the record shows all."""
+    lanes = data.get('lanes') or {}
+    if data.get('first_error') or set(lanes) != {'prefill_full', 'prefill_split', 'overlap'}:
+        return None
+    sent = 0
+    for lane, rows in lanes.items():
+        for family in ('fresh', 'append'):
+            row = rows.get(family) or {}
+            if row.get('error') or type((row.get('request') or {}).get('send_at_ns')) is not int:
+                return None
+            sent += 1
+    standing = {len(((lanes['overlap'].get(f) or {}).get('decode_window') or {}).get('streams') or [])
+                for f in ('fresh', 'append')}
+    if len(standing) != 1 or 0 in standing:
+        return None
+    return sent + standing.pop()
+
+
+def ingress(a):
+    """A plain W1 or W2 round span: loopback, accounted paths, exactly the harness's generation count."""
+    q = Path(a.q)
+    record = dict(check='ingress', label=a.label, schema='native39-trunk-checks/1', lag_s=INGRESS_LAG_S)
+    start, end, expect = a.start, a.end, a.generation
+    if a.round:
+        data = json.loads(Path(a.round).read_text())
+        start, end, expect = data.get('wall_anchor_s'), data.get('wall_end_s'), round_expected(data)
+    if type(start) not in (int, float) or type(end) not in (int, float):
+        return ingress_verdict(record, [dict(label=a.label, invalid=[], unknown=['span-missing'])], followed(q))
+    s = span(access_lines(q), start, end + INGRESS_LAG_S, expect)
+    s['label'] = a.label
+    return ingress_verdict(record, [s], followed(q))
+
+
+def band(ms):
+    if type(ms) not in (int, float):
+        return None
+    if ms <= ROW1_RETURN_MS:
+        return 'at-or-below-row1-1.5ms'
+    return 'between-row1-and-row4' if ms <= ROW4_RETURN_MS else 'above-row4-42.76s'
+
+
+MISSING_STAMPS = ('full_send', 'arrival', 'before_route_change_done', 'applied')
+MISSING_WHY = ('per-rank FULL send/arrival/before_route_change/applied stamps are not exposed by this engine '
+               '(they exist only in the native36-w witness branch, 50a4fed); adding them is an engine change')
+
+
+def return_row(source, reply, clock=None, bracket=None):
+    acks = (reply or {}).get('transition_acks') or []
+    census = (((reply or {}).get('census_before_return') or {}).get('workers')) or []
+    ack_ns = {a.get('observed_ns') for a in acks}
+    ack_ns = ack_ns.pop() if len(ack_ns) == 1 else None
+    census_ns = [w.get('observed_clock_ns') for w in census if type(w) is dict]
+    last_census = max(census_ns) if census_ns and all(type(n) is int for n in census_ns) else None
+    row = dict(source=source, route_after=(reply or {}).get('route'), typed_acks=(reply or {}).get('typed_acks'),
+               ranks={str(a.get('worker_rank')): dict(applied_route_generation=a.get('applied_route_generation'),
+                                                       applied_bank=a.get('applied_bank'),
+                                                       drained_streams=a.get('drained_streams'),
+                                                       decode_replay_watermark=a.get('decode_replay_watermark'),
+                                                       **{k: None for k in MISSING_STAMPS}) for a in acks},
+               all_rank_ack_observed_ns=ack_ns, census_before_return_last_ns=last_census,
+               census_pids={str(w.get('worker_rank')): w.get('pid') for w in census if type(w) is dict},
+               missing_per_rank=list(MISSING_STAMPS), missing_why=MISSING_WHY)
+    row['census_to_all_rank_ack_ms'] = ((ack_ns - last_census) / 1e6 if type(ack_ns) is int
+                                        and type(last_census) is int else None)
+    if bracket:
+        row['client_round_trip_ms'] = (bracket['reply_ns'] - bracket['send_ns']) / 1e6
+        same = (type(clock) is dict and type(bracket.get('clock')) is dict
+                and clock.get('boot_id') and clock.get('boot_id') == bracket['clock'].get('boot_id')
+                and clock.get('time_namespace') == bracket['clock'].get('time_namespace'))
+        row['clock_shared'] = bool(same)
+        row['client_send_to_all_rank_ack_ms'] = ((ack_ns - bracket['send_ns']) / 1e6
+                                                 if same and type(ack_ns) is int else None)
+    graded = row.get('client_send_to_all_rank_ack_ms')
+    if graded is None:
+        graded = row['census_to_all_rank_ack_ms']
+    row.update(graded_ms=graded, band=band(graded))
+    return row
+
+
+def returns(a):
+    """Every split->FULL return: per-rank typed acks and the all-rank ack, graded descriptively."""
+    q = Path(a.q)
+    record = dict(check='returns', schema='native39-trunk-returns/1', descriptive=True,
+                  bands_ms=dict(row1=ROW1_RETURN_MS, row4=ROW4_RETURN_MS), rows=[])
+    w1, _ = load(q / 'w1.json')
+    for row in (w1 or {}).get('repeats') or []:
+        rec = row.get('native_receipts') or {}
+        if row.get('route') == 'split' and rec.get('leave_full'):
+            clock = ((rec.get('end') or {}).get('snapshot') or {}).get('clock')
+            record['rows'].append(return_row('w1:repeat%s' % row.get('repeat'), rec['leave_full'], clock,
+                                             row.get('return_bracket')))
+        cleanup = (row.get('cleanup') or {}).get('leave_full')
+        if cleanup:
+            record['rows'].append(return_row('w1:repeat%s:cleanup' % row.get('repeat'), cleanup))
+    for index in (0, 1):
+        data, _ = load(q / ('overlap-round-%d.json' % index))
+        for lane, rows in sorted(((data or {}).get('lanes') or {}).items()):
+            for family, rec in sorted((rows or {}).items()):
+                if lane == 'prefill_full' or type(rec) is not dict:
+                    continue
+                for key, reply in (('return', rec.get('return_full')),
+                                   ('cleanup', (rec.get('cleanup') or {}).get('leave_full'))):
+                    if reply:
+                        record['rows'].append(return_row('round%d:%s:%s:%s' % (index, lane, family, key), reply))
+    # No observation window at any return: the rank processes had no observer (instrument receipts),
+    # and each return's census names those same pids.
+    receipts = {}
+    for path in sorted(q.glob('instruments-*.json')):
+        data, _ = load(path)
+        receipts[path.stem] = data or {}
+    record['instruments'] = {k: v.get('verdict') for k, v in receipts.items()}
+    pids = {json.dumps({r: (v.get('ranks') or {}).get(r, {}).get('pid') for r in map(str, RANKS)}, sort_keys=True)
+            for v in receipts.values()}
+    ok = bool(receipts) and all(v.get('verdict') == 'PASS' for v in receipts.values()) and len(pids) == 1
+    ref = json.loads(pids.pop()) if ok else {}
+    for row in record['rows']:
+        same = not row['census_pids'] or all(ref.get(r) == p for r, p in row['census_pids'].items())
+        row['no_observation_window'] = bool(ok and same)
+    record['no_observation_window_at_every_return'] = all(r['no_observation_window'] for r in record['rows'])
+    if not record['rows']:
+        return verdict(record, 2, 'no split->FULL return recorded')
+    if any(v.get('verdict') == 'FAIL' for v in receipts.values()):
+        return verdict(record, 1, 'an instruments receipt FAILed: an observer was mapped or the ranks changed')
+    if not record['no_observation_window_at_every_return']:
+        return verdict(record, 2, 'no-observation-window not proven at every return')
+    graded = [r['graded_ms'] for r in record['rows'] if type(r['graded_ms']) in (int, float)]
+    return verdict(record, 0, '%d returns, no observation window at any; graded ms min %s max %s (descriptive)' % (
+        len(record['rows']), min(graded) if graded else None, max(graded) if graded else None))
+
+
 def load(path):
     p = Path(path)
     if not p.is_file():
@@ -244,39 +675,80 @@ def ratio(a, b):
     return a / b if ok and b > 0 else None
 
 
+def plain_validity(q, plain):
+    """The plain W1 is an accepted denominator only when every condition holds (Codex item 4)."""
+    reasons = []
+    if (plain or {}).get('verdict') != 'PASS':
+        reasons.append('plain-verdict-%s' % (plain or {}).get('verdict'))
+    if (plain or {}).get('errors') or (plain or {}).get('fails'):
+        reasons.append('plain-errors')
+    windows = (plain or {}).get('windows') or []
+    if len(windows) != 3:
+        reasons.append('windows-%d-of-3' % len(windows))
+    for w in windows:
+        tps, per = w.get('agg_tps'), w.get('per_stream') or []
+        if type(tps) not in (int, float) or isinstance(tps, bool) or tps <= 0:
+            reasons.append('window%s-agg-tps' % w.get('repeat'))
+        if len(per) != 8 or any(type(r.get('tps')) not in (int, float) or r['tps'] <= 0 for r in per):
+            reasons.append('window%s-eight-live-streams' % w.get('repeat'))
+    if (plain or {}).get('streams') != 8:
+        reasons.append('streams')
+    for name in ('w1-plain-full-idle', 'w1-plain-route', 'ingress-plain', 'instruments-w1'):
+        data, _ = load(q / (name + '.json'))
+        if (data or {}).get('verdict') != 'PASS':
+            reasons.append('%s-%s' % (name, (data or {}).get('verdict', 'missing')))
+    return reasons
+
+
 def summary(a):
     q = Path(a.q)
     grade, grade_ref = load(q / 'native35-performance-grade.json')
     plain, plain_ref = load(q / 'w1-plain.json')
-    record = dict(check='trunk-summary', schema='native39-trunk-summary/1', target_is_gate=False,
+    record = dict(check='trunk-summary', schema='native39-trunk-summary/2', target_is_gate=False,
                   inputs=dict(grade=grade_ref, plain_w1=plain_ref))
-    for name in ('bind-receipt', 'bind-epoch', 'effective-host', 'w2-length', 'w1-plain-idle'):
+    receipts = ('bind-receipt', 'bind-epoch', 'effective-host', 'w2-length', 'w1-plain-idle', 'w1-plain-full-idle',
+                'w1-plain-route', 'instruments-w1', 'instruments-round-0', 'instruments-round-1', 'instruments-end',
+                'ingress-w1', 'ingress-plain', 'ingress-round-0', 'ingress-round-1', 'returns')
+    for name in receipts:
         data, _ = load(q / (name + '.json'))
         record[name.replace('-', '_')] = None if data is None else {k: data.get(k) for k in ('verdict', 'detail', 'failures')}
+    def ok(name):
+        return (record.get(name.replace('-', '_')) or {}).get('verdict') == 'PASS'
     windows = [w.get('agg_tps') for w in (plain or {}).get('windows') or []]
-    plain_median = statistics.median(windows) if windows and all(type(v) in (int, float) for v in windows) else None
-    record['plain_w1'] = dict(verdict=(plain or {}).get('verdict'), window_agg_tps=windows, median=plain_median,
+    invalid = plain_validity(q, plain)
+    accepted = not invalid
+    plain_median = statistics.median(windows) if accepted else None
+    record['plain_w1'] = dict(accepted=accepted, invalid_reasons=invalid, median=plain_median,
+                              window_agg_tps=windows if accepted else None,
+                              raw_invalid_samples=None if accepted else dict(
+                                  verdict=(plain or {}).get('verdict'), window_agg_tps=windows,
+                                  note='raw samples of an invalid plain W1; never a denominator'),
                               client='w1_trace.py (q18b-w1ab2), 8 x 153537, 3 x 20 s')
     native_full = (((grade or {}).get('w1') or {}).get('routes') or {}).get('full') or {}
+    w1_clean = ok('instruments-w1') and ok('ingress-w1')
     record['native_w1_full'] = dict(by_repeat=native_full.get('aggregate_tokens_per_s_by_repeat'),
-                                    median=native_full.get('median'),
+                                    median=native_full.get('median'), instruments_off_and_sealed=w1_clean,
                                     denominator=(native_full.get('grade_denominator') or {}).get('decode_tokens_per_s'))
     record['native_w1_full_over_plain_w1'] = ratio(record['native_w1_full']['denominator'], plain_median)
     rounds = []
     for index, view in enumerate((grade or {}).get('rounds') or []):
         raw = (view or {}).get('raw') or {}
         decode = (((raw.get('decode_during_prefill') or {}).get('fresh')) or {}).get('aggregate_tokens_per_s')
+        clean = w1_clean and ok('instruments-round-%d' % index) and ok('ingress-round-%d' % index)
         rounds.append(dict(round=index, verdict=(view or {}).get('verdict'), headline=(view or {}).get('headline'),
+                           instruments_off_and_sealed=clean,
                            decode_tokens_per_s_during_fresh_prefill=decode,
                            decode_share_of_native_w1_full=raw.get('decode_share_of_w1_full_median'),
                            decode_share_of_plain_w1_median=ratio(decode, plain_median),
                            prefill_share_overlap_over_split_solo=raw.get('prefill_share_overlap_over_split_solo'),
                            missing=(view or {}).get('missing')))
     record['rounds'] = rounds
+    record['clean_speed_reading'] = bool(rounds) and all(r['instruments_off_and_sealed'] for r in rounds) \
+        and ok('instruments-end')
     record['grade_verdict'] = (grade or {}).get('verdict')
     # A report, never a verdict of its own: absent inputs are visible above and in their own phases.
-    return verdict(record, 0, 'descriptive trunk reading; grade %s' % record['grade_verdict'])
-
+    return verdict(record, 0, 'descriptive trunk reading; grade %s; plain W1 %s; clean %s' % (
+        record['grade_verdict'], 'accepted' if accepted else 'not accepted', record['clean_speed_reading']))
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -306,10 +778,44 @@ def main(argv=None):
     s = sub.add_parser('summary')
     s.add_argument('--q', required=True)
     s.add_argument('--out', required=True)
+    for name in ('instruments', 'full-idle', 'route-check'):
+        c = sub.add_parser(name)
+        c.add_argument('--url', required=True)
+        c.add_argument('--run-id', required=True)
+        c.add_argument('--epoch', type=int, required=True)
+        c.add_argument('--control-timeout-s', type=float, default=120.0)
+        c.add_argument('--out', required=True)
+        if name == 'instruments':
+            c.add_argument('--container-id', required=True)
+            c.add_argument('--same-as')
+            c.add_argument('--exec-timeout-s', type=float, default=30.0)
+        elif name == 'full-idle':
+            c.add_argument('--timeout-s', type=float, default=120.0)
+        else:
+            c.add_argument('--full-idle', required=True)
+    g = sub.add_parser('ingress-w1')
+    g.add_argument('--q', required=True)
+    g.add_argument('--w1', required=True)
+    g.add_argument('--out', required=True)
+    g = sub.add_parser('ingress')
+    g.add_argument('--q', required=True)
+    g.add_argument('--label', required=True)
+    g.add_argument('--start', type=float)
+    g.add_argument('--end', type=float)
+    g.add_argument('--generation', type=int)
+    g.add_argument('--round', help='a W2 round record: its wall span and the generation requests it sent')
+    g.add_argument('--out', required=True)
+    r = sub.add_parser('returns')
+    r.add_argument('--q', required=True)
+    r.add_argument('--out', required=True)
     a = p.parse_args(argv)
-    action = dict(bind=bind, host=host, idle=idle, summary=summary)
+    action = dict(bind=bind, host=host, idle=idle, summary=summary, instruments=instruments, ingress=ingress,
+                  returns=returns)
     action['bind-epoch'] = bind_epoch
     action['found-extra-args'] = found_extra_args
+    action['full-idle'] = full_idle
+    action['route-check'] = route_check
+    action['ingress-w1'] = ingress_w1
     try:
         record = action[a.action](a)
     except Exception as exc:  # noqa: BLE001 - classified HARNESS, never retried
