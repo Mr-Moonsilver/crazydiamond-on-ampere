@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind the native41 box delivery to both exact-byte CPU self-runs, the native40 negative and default-off."""
+"""Bind the native41 box delivery to both exact-byte CPU self-runs, the native40 negative, default-off and the client-clock scan."""
 import argparse
 import hashlib
 import json
@@ -13,7 +13,7 @@ def sha(path):
 
 def main():
     p = argparse.ArgumentParser()
-    for name in ('build', 'engine', 'queue', 'negative', 'default_off', 'precheck', 'conf', 'note', 'out'):
+    for name in ('build', 'engine', 'queue', 'negative', 'default_off', 'clock_scan', 'precheck', 'conf', 'note', 'out'):
         p.add_argument('--' + name.replace('_', '-'), dest=name, type=Path, required=True)
     a = p.parse_args()
     b, e, q, n, off = [json.loads(path.read_text()) for path in (a.build, a.engine, a.queue, a.negative, a.default_off)]
@@ -31,6 +31,14 @@ def main():
     assert (n['cases']['auto']['error'], n['cases']['receipts-auto']['error']) == (
         'ordinary-requests-trigger-native-cycle', 'auto-receipts-complete')
     assert off['candidate_sha256'] == e['cases']['off']['sha256']
+    k = json.loads(a.clock_scan.read_text())
+    assert k['schema'] == 'native41-clock-scan/1' and k['verdict'] == 'PASS' and not k['scan']['problems']
+    assert k['bundle_manifest'] == b['manifest'] and k['bundle'] == str(Path(b['bundle']).resolve())
+    assert k['runner']['sha256'] == b['runner_sha256'] and k['setcfg_reference']
+    assert k['scan']['unarmed_client_uses_container_bracket'] is True and not k['scan']['direct_references']
+    assert not k['scan']['window_or_evidence_references']
+    assert k['negative_controls'] and all(k['negative_controls'].values())
+    assert {'e3_native40_unarmed_box', 'e3_native_performance'}.isdisjoint(k['scan']['closure'])
     assert re.search(r'^SUMMARY checks=15 pass=15 fail=0$', a.precheck.read_text(), re.M)
     assert sha(Path(b['bundle']) / 'SHA256SUMS') == b['manifest']
     import sys
@@ -45,6 +53,14 @@ def main():
                       failures=n['suites']['failures'],
                       cases={k: dict(verdict=v['verdict'], error=v['error']) for k, v in sorted(n['cases'].items())}),
         default_off=dict(path=str(a.default_off), sha256=sha(a.default_off), canonical_trace_sha256=off['canonical_trace_sha256']),
+        clock_scan=dict(path=str(a.clock_scan), sha256=sha(a.clock_scan), verdict=k['verdict'],
+                        closure=len(k['scan']['closure']), roots=k['scan']['roots'],
+                        reachable_identity_calls=k['scan']['reachable_identity_calls'],
+                        clock_identity_readers=k['scan']['clock_identity_readers'],
+                        container_proof=k['scan']['container_proof'], negative_controls=sorted(k['negative_controls'])),
+        box_actions_beyond_native40=['docker inspect --format {{.State.Pid}} <engine container id> (read-only)',
+                                     'docker exec <engine container id> cat /proc/sys/kernel/random/boot_id (read-only)',
+                                     'readlink /proc/<init pid>/ns/time and read /proc/<init pid>/timens_offsets (read-only)'],
         precheck=dict(conf=str(a.conf), conf_sha256=sha(a.conf), log=str(a.precheck), sha256=sha(a.precheck)),
         note=str(a.note), note_sha256=sha(a.note),
         expected_box_minutes='%d nominal; watchdog/window: native41_box_gate.ACTIVE_S=%d s plus CLEANUP_S=%d s, '

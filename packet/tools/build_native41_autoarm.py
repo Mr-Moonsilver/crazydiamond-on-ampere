@@ -28,7 +28,7 @@ BASE=Path('<hub-dir>/agents/flash-next/tmp/e2f-native-offline-base-20261027T2114
 BASE_SHA='da561411fadbb82922eeb8eafbe9424bc9703aaf8c2030bd813743c692b641a5'
 CANDIDATE='q18a-native41-autoarm'
 STEM='q18a_native41_autoarm'
-TOOLS=('build_native41_autoarm.py','native41_autoarm_freeze.py','native41_autoarm_declarations.json','native41_autoarm_selfrun.py',
+TOOLS=('build_native41_autoarm.py','native41_autoarm_freeze.py','native41_autoarm_declarations.json','native41_autoarm_selfrun.py','native41_clock_scan.py',
        'native41_box_queue.py','native41_box_cpu_probe.py','native41_box_selfrun.py')
 SCOPE=('Opt-in engine-owned FCFS automatic native cycles for plain requests (request binding, real drain, typed route '
        'ACKs, one-request FULL handback, manual lease exclusion), the auto-arm actions on the native router only with '
