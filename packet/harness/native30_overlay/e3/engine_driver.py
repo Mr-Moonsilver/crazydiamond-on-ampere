@@ -2631,7 +2631,7 @@ class NativeSegmentDriver:
                 and record.get('route_generation') == self.route_generation)
 
     def _split_hold_timeout(self):
-        """End an idle armed-split hold past its bound by returning FULL (native39).
+        """End an idle physical-split stock hold by returning FULL (native40).
 
         The held stock work then runs on FULL, as after a terminal handback;
         the intent closes on the FULL ack ('route-returned-full').  Only with
@@ -2639,25 +2639,28 @@ class NativeSegmentDriver:
         no route exchange or pending return.
         """
         intent = self._admission_intent
-        if (intent is None or not self._split_ready or self.tx is not None
+        if (not self._split_ready or self.tx is not None
                 or self.controller.active or self._retained is not None
+                or self.stop_kind is not None or self._control is not None or self._inflight
                 or self._return_pending is not None or self._route_exchange() is not None):
             return False
         query = getattr(self.controller, 'expired_split_hold', None)
         if not callable(query) or self._engine_paused() or not self._scheduler_holds_requests():
             # Paused, or every held request left (finished/aborted client):
-            # nothing is stranded, the armed route stays as the harness set it.
+            # nothing is stranded, the applied route stays as its owner set it.
             return False
         now = int(self._monotonic_ns())
-        hold = query(now, intent['seq'])
+        hold = query(now, self.engine_epoch, self.route_generation)
         if hold is None:
             return False
-        self.controller.note_split_hold_timeout(self.scheduler, hold, now)
-        self._record('admission_hold_timeout', phase=intent['phase'], seq=intent['seq'],
+        receipt = self.controller.note_split_hold_timeout(self.scheduler, hold, now, intent)
+        self._record('admission_hold_timeout', phase=None if intent is None else intent['phase'],
+                     seq=None if intent is None else intent['seq'],
+                     admission_armed=intent is not None, reason=receipt['reason'],
                      held_since_ns=hold['since_ns'], held_ns=now - hold['since_ns'],
                      bound_ns=self.controller.split_hold_bound_ns, holds=hold['holds'],
                      route_generation=self.route_generation)
-        self._note_terminal_route('split-hold-timeout')
+        self._note_terminal_route(receipt['reason'])
         self._drive_return()
         return True
 

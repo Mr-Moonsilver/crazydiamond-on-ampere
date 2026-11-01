@@ -178,12 +178,12 @@ class SessionRefusal(unittest.IsolatedAsyncioTestCase):
         self.assertIn('overlap-journal-empty-window', str(caught.exception))
         self.assertIsNotNone(self.session.measure_start_ns)  # unchanged: the window stays open
 
-    async def test_no_hold_without_an_armed_intent(self):
+    async def test_full_is_stock_but_unarmed_split_still_holds(self):
         self.assertFalse(sh.defer_stock_prefix_hit(self.stack.scheduler, None))
         await self.call('prepare', target_route='split')  # split route, no admission phase
         self.assertIsNone(self.stack.driver.admission_intent())
-        self.assertFalse(sh.defer_stock_prefix_hit(self.stack.scheduler, None))
-        self.assertEqual(self.stack.controller.split_stock_deferrals, 0)
+        self.assertTrue(sh.defer_stock_prefix_hit(self.stack.scheduler, None))
+        self.assertEqual(self.stack.controller.split_stock_deferrals, 1)
 
 
 def t3_subject():

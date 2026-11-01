@@ -115,7 +115,7 @@ _SCHEDULER_FORWARD = (
                     # the waiting request intact until that source is committed
                     # or released; touching it during allocate_slots would
                     # raise after the scheduler has begun this admission.
-                    if _flash_s5_hooks.defer_stock_prefix_hit(self, new_computed_blocks):
+                    if _flash_s5_hooks.defer_stock_prefix_hit(self, new_computed_blocks, request=request):
                         request_queue.pop_request()
                         step_skipped_waiting.prepend_request(request)
                         continue
@@ -305,7 +305,7 @@ _SCHEDULER_REVERSE = (
                     # the waiting request intact until that source is committed
                     # or released; touching it during allocate_slots would
                     # raise after the scheduler has begun this admission.
-                    if _flash_s5_hooks.defer_stock_prefix_hit(self, new_computed_blocks):
+                    if _flash_s5_hooks.defer_stock_prefix_hit(self, new_computed_blocks, request=request):
                         request_queue.pop_request()
                         step_skipped_waiting.prepend_request(request)
                         continue
@@ -1370,6 +1370,8 @@ class PrefillAdmissionController:
         self.split_stock_deferrals_by_kind = dict.fromkeys(SPLIT_HOLD_KINDS, 0)
         self._schedule_seq = 0
         self._split_hold = None
+        self._split_hold_requests = {}
+        self.last_split_hold_timeout = None
 
     # -- installation -----------------------------------------------------
     def attach(self):
@@ -1534,60 +1536,129 @@ class PrefillAdmissionController:
             return True
         return False
 
-    # -- native39: bounded holds on the armed split route -------------------
-    def _note_split_hold(self, scheduler, kind):
-        """Count one held stock prefill and track whether the hold is idle."""
+    # -- native40: bounded holds on the physical split route -------------------
+    def _stock_hold_owner(self, scheduler):
+        """Stock prefill safety follows the applied bank, independently of admission."""
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        if owner is None:
+            return None
+        if (getattr(owner, 'controller', None) is not self
+                or getattr(owner, 'scheduler', None) is not scheduler
+                or getattr(owner, 'engine_epoch', None) != self.engine_epoch
+                or type(getattr(owner, '_split_ready', None)) is not bool
+                or type(getattr(owner, 'route_generation', None)) is not int):
+            raise E3ContractError('stock prefill hold has a foreign route owner')
+        if not owner._split_ready:
+            return None
+        # Keep strict validation for an existing intent; absence is safe to
+        # observe, but no longer authorizes stock prefill on a split bank.
+        if owner.admission_intent() is not None:
+            self._native_admission_disabled(scheduler)
+        return owner
+
+    def _note_split_hold(self, scheduler, kind, request=None):
+        """Count held stock work, with a clock owned by the physical route."""
         if kind not in SPLIT_HOLD_KINDS:
             raise E3ContractError('unknown split hold kind')
+        owner = self._stock_hold_owner(scheduler)
+        if owner is None:
+            return
         self.split_stock_deferrals += 1
         self.split_stock_deferrals_by_kind[kind] += 1
-        owner = getattr(scheduler, '_flash_s5_driver', None)
-        retained_query = getattr(owner, 'retained_request', None)
-        retained = retained_query() if callable(retained_query) else None
-        if self.parked is not None or retained is not None:
-            # Native work is in flight; the hold ends when that work does.
+        if self.parked is not None or owner.tx is not None or owner.retained_request() is not None:
             self._split_hold = None
+            self._split_hold_requests.clear()
             return
-        intent = owner.admission_intent() if owner is not None else None
-        intent_seq = intent.get('seq') if type(intent) is dict else None
+        if request is None:
+            queue = self._queue(scheduler)
+            request = queue.peek_request() if queue else None
+        if request is None:
+            return
+        intent = owner.admission_intent()
         hold = self._split_hold
         now = self._now_ns()
-        if (hold is None or hold['intent_seq'] != intent_seq
-                or hold['schedule_seq'] < self._schedule_seq - 1):
+        if (hold is None or hold['engine_epoch'] != owner.engine_epoch
+                or hold['route_generation'] != owner.route_generation
+                or hold['schedule_seq'] < self._schedule_seq - 1
+                or (hold['schedule_seq'] != self._schedule_seq
+                    and not self._current_stock_holds(scheduler))):
             hold = self._split_hold = {
-                'since_ns': now, 'intent_seq': intent_seq,
+                'since_ns': now, 'engine_epoch': owner.engine_epoch,
+                'route_generation': owner.route_generation,
                 'schedule_seq': self._schedule_seq, 'holds': 0,
                 'kinds': dict.fromkeys(SPLIT_HOLD_KINDS, 0)}
-        hold['schedule_seq'] = self._schedule_seq
+            self._split_hold_requests.clear()
+        elif hold['schedule_seq'] != self._schedule_seq:
+            self._split_hold_requests.clear()
+        self._split_hold_requests[id(request)] = (weakref.ref(request), kind)
+        hold.update(schedule_seq=self._schedule_seq,
+                    intent_seq=None if intent is None else intent['seq'],
+                    admission_armed=intent is not None, last_ns=now)
         hold['holds'] += 1
         hold['kinds'][kind] += 1
-        hold['last_ns'] = now
 
-    def expired_split_hold(self, now_ns, intent_seq):
-        """The idle hold past its bound, or ``None``.
+    def _current_stock_holds(self, scheduler):
+        """Only the same live request objects still in a held scheduling branch."""
+        requests = getattr(scheduler, 'requests', None)
+        if type(requests) is not dict:
+            return []
+        def contains(queue, request):
+            if queue is None:
+                return False
+            if hasattr(queue, '__iter__'):
+                return any(item is request for item in queue)
+            # RequestQueue's head interface is sufficient for head-only ports.
+            return bool(queue) and queue.peek_request() is request
+        out = []
+        for ref, kind in self._split_hold_requests.values():
+            request = ref()
+            if request is None or requests.get(request.request_id) is not request:
+                continue
+            if kind == 'running-prefill':
+                live = (contains(getattr(scheduler, 'running', None), request)
+                        and getattr(request, 'is_prefill_chunk', False) is True)
+            else:
+                live = any(contains(getattr(scheduler, name, None), request)
+                           for name in ('waiting', 'skipped_waiting'))
+            if live:
+                out.append(request)
+        return out
 
-        Only a hold the latest schedule() call kept (a request that left, for
-        example an aborted client, ends it) and only with nothing parked.
-        """
+    def expired_split_hold(self, now_ns, engine_epoch, route_generation):
+        """An expired, still-current physical-route hold, armed or unarmed."""
         hold = self._split_hold
-        if (hold is None or self.parked is not None or hold['intent_seq'] != intent_seq
+        if (hold is None or self.parked is not None
+                or hold['engine_epoch'] != engine_epoch
+                or hold['route_generation'] != route_generation
                 or hold['schedule_seq'] != self._schedule_seq):
+            return None
+        if not self._current_stock_holds(self._scheduler):
+            self._split_hold = None
+            self._split_hold_requests.clear()
             return None
         if now_ns - hold['since_ns'] < self.split_hold_bound_ns:
             return None
         return dict(hold, kinds=dict(hold['kinds']))
 
-    def note_split_hold_timeout(self, scheduler, hold, now_ns):
-        """The typed receipt for a hold the driver ends by returning FULL."""
+    def note_split_hold_timeout(self, scheduler, hold, now_ns, intent):
+        """Record policy recovery; unarmed stock work is not a native refusal."""
+        requests = self._current_stock_holds(scheduler)
+        request = requests[0] if requests else None
         self.split_hold_timeouts += 1
         self._split_hold = None
-        queue = self._queue(scheduler)
-        head = queue.peek_request() if queue else None
-        return self._refuse(head, 'split-hold-timeout',
-                            held_since_ns=hold['since_ns'], held_ns=now_ns - hold['since_ns'],
-                            bound_ns=self.split_hold_bound_ns, holds=hold['holds'],
-                            kinds=dict(hold['kinds']), intent_seq=hold['intent_seq'],
-                            action='return-full')
+        self._split_hold_requests.clear()
+        fields = dict(held_since_ns=hold['since_ns'], held_ns=now_ns - hold['since_ns'],
+                      bound_ns=self.split_hold_bound_ns, holds=hold['holds'],
+                      kinds=dict(hold['kinds']), engine_epoch=hold['engine_epoch'],
+                      route_generation=hold['route_generation'],
+                      intent_seq=None if intent is None else intent['seq'],
+                      admission_armed=intent is not None, action='return-full')
+        reason = 'split-hold-timeout' if intent is not None else 'unarmed-stock-prefill-hold-timeout'
+        self.last_split_hold_timeout = dict(schema='s5-stock-prefill-hold-timeout/1',
+                                           reason=reason, observed_ns=now_ns, **fields)
+        if intent is not None:
+            self._refuse(request, reason, **fields)
+        return dict(self.last_split_hold_timeout)
 
     def _retained_waiting(self, scheduler, queue, retained):
         """The retained request and the queue holding it, wherever it waits.
@@ -1620,6 +1691,8 @@ class PrefillAdmissionController:
                 'split_stock_deferrals': self.split_stock_deferrals,
                 'split_stock_deferrals_by_kind': dict(self.split_stock_deferrals_by_kind),
                 'split_hold_timeouts': self.split_hold_timeouts,
+                'last_split_hold_timeout': (None if self.last_split_hold_timeout is None
+                                            else dict(self.last_split_hold_timeout)),
                 'split_hold_bound_ns': self.split_hold_bound_ns,
                 'split_hold': (None if self._split_hold is None
                                else dict(self._split_hold,
@@ -1890,6 +1963,7 @@ class PrefillAdmissionController:
                 self.parked.capture = metadata.abort()
             raise
         self._split_hold = None
+        self._split_hold_requests.clear()
         self.admitted += 1
         return record
 
@@ -2160,10 +2234,10 @@ def flash_s5_admit(scheduler):
         return None
     if not isinstance(controller, PrefillAdmissionController):
         raise E3ContractError('scheduler E3 admission controller is invalid')
+    # Every schedule visit counts, even when native admission is disarmed.
+    controller._schedule_seq += 1
     if controller._native_admission_disabled(scheduler):
         return None
-    # One count per armed schedule() call: holds are tracked against it.
-    controller._schedule_seq += 1
     return controller.admit(scheduler)
 
 
@@ -2250,21 +2324,20 @@ def before_touch(block_pool, blocks):
         guard.before_touch(blocks)
 
 
-def defer_stock_prefix_hit(scheduler, computed_blocks):
+def defer_stock_prefix_hit(scheduler, computed_blocks, *, request=None):
     """Generated stock-loop seam for a new request (``num_computed_tokens == 0``).
 
     True keeps the request in skipped-waiting for this step, unallocated.  It
     defers a stock prefix hit on a still-leased native page, and (native37)
-    every new stock prefill while an EngineCore native intent is armed on the
-    split route: stock cannot dispatch a non-FULL batch there (the worker's
+    every new stock prefill while the physical engine route is split: stock cannot dispatch a non-FULL batch there (the worker's
     route guard raises), so a request native admission refused waits until the
     route is FULL again instead of reaching the workers.
     """
     guard = _guard(scheduler)
     if guard is not None and guard.defer_stock_prefix_hit(computed_blocks):
         return True
-    # Independent of the lease guard: the intent alone decides the hold.
-    return _defer_stock_while_split_armed(scheduler, 'fresh')
+    # Independent of the lease guard: the applied route decides the hold.
+    return _defer_stock_while_split_armed(scheduler, 'fresh', request)
 
 
 def defer_stock_positive_frontier(scheduler, request):
@@ -2272,12 +2345,12 @@ def defer_stock_positive_frontier(scheduler, request):
 
     native39 (Codex P1): KV receives, streaming resumes and a native request
     between chunks take this branch, past the fresh-request seam.  Their stock
-    chunk is a prefill as well, so it is held on an armed split route too.
+    chunk is a prefill as well, so it is held on a physical split route too.
     The native one-token handback never needs an exception: the driver skips
     every stock step from the terminal commit until the FULL ack, and that
     ack clears the intent (engine_driver ``_drive_route``/transition ack).
     """
-    return _defer_stock_while_split_armed(scheduler, 'positive-frontier')
+    return _defer_stock_while_split_armed(scheduler, 'positive-frontier', request)
 
 
 def defer_stock_running_prefill(scheduler, request):
@@ -2286,20 +2359,19 @@ def defer_stock_running_prefill(scheduler, request):
     A request that was mid-prefill on FULL when the split was armed would
     otherwise schedule its next chunk on the split route (native39).
     """
-    return _defer_stock_while_split_armed(scheduler, 'running-prefill')
+    return _defer_stock_while_split_armed(scheduler, 'running-prefill', request)
 
 
-def _defer_stock_while_split_armed(scheduler, kind):
+def _defer_stock_while_split_armed(scheduler, kind, request=None):
     controller = getattr(scheduler, '_flash_s5_admission', None)
     if controller is None:
         return False
     if not isinstance(controller, PrefillAdmissionController):
         raise E3ContractError('scheduler E3 admission controller is invalid')
-    # The same EngineCore-owned intent check as flash_s5_admit at the top of
-    # this schedule() call: absent intent -> stock as before.
-    if controller._native_admission_disabled(scheduler):
+    # Historical helper name; stock safety is independent of admission policy.
+    if controller._stock_hold_owner(scheduler) is None:
         return False
-    controller._note_split_hold(scheduler, kind)
+    controller._note_split_hold(scheduler, kind, request)
     return True
 
 

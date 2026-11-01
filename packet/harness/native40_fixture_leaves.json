@@ -1,0 +1,67 @@
+{
+  "inherits": [
+    "native39_fixture_leaves.json",
+    "native38_fixture_leaves.json",
+    "native37_fixture_leaves.json"
+  ],
+  "leaves": [
+    {
+      "box_evidence": false,
+      "cannot_prove": "Pinned allocation and AsyncScheduler behavior (executed separately by connected gate).",
+      "equivalence": "The existing native39 Session cold_stack uses the real controller, driver, control client and worker bridges; Request objects expose only host fields used by holds. Queues mirror FCFS identity. Exact requests dict and weak identity are now checked, not just nonempty scheduler state.",
+      "name": "host-cold-stack",
+      "replaces": "EngineCore, RequestQueue/KV manager and four CUDA workers",
+      "test": "test_native40_unarmed_hold.UnarmedHold"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Device timing/transition latency or a 30s TTFT bound.",
+      "equivalence": "A deterministic monotonic clock crosses the unchanged 30-second bound, no sleep. Every hold and return predicate is real.",
+      "name": "clock",
+      "replaces": "CLOCK_MONOTONIC",
+      "test": "UnarmedHold and e3_native40_unarmed_probe hold-age tests"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Model outputs, actual memory pressure, CUDA or NCCL.",
+      "equivalence": "Native37 production-geometry CPU constructor with declared reduced text model and CPU hybrid-policy pick; actual host KV arithmetic and AsyncScheduler constructor execute. Geometry 4048/176/1024 and max_seqs8 are unchanged.",
+      "name": "connected-config",
+      "replaces": "Production model and KV-cache config",
+      "test": "e3_native40_unarmed_probe, base.Stack"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Native PP/NCCL or device execution and timing.",
+      "equivalence": "Four R4 bridge workers retain their real NativeWorkerBridge, WorkerState, LaneDispatcher, GraphRouter, SplitDecodeBank and RouteController; routing sender/transport only deliver exact typed commands and acks. Events are controllable device leaves. One pending real replay lease holds a rank ack.",
+      "name": "connected-workers",
+      "replaces": "MultiprocExecutor transport, CUDA resources and worker model forward",
+      "test": "Connected.__init__"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Token/model exactness. Output token equality with FULL control is only scheduler continuation under the same synthetic sampler.",
+      "equivalence": "The complete mounted generated EngineCore.step_with_batch_queue executes against the real scheduler, driver and graph route guard. Only ancillary EngineCore contexts/pause/throttle/process-abort callbacks are inert. GPU result is an immediate Future with one dummy token after each actual prompt end, passed to real update_from_output. No bypass, hold, validator or ack is mocked.",
+      "name": "connected-engine-and-sampler",
+      "replaces": "EngineCore construction, GPU execute_model and sampler Future",
+      "test": "Connected engine attributes / execute"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Other namespace/import packaging absent from this container.",
+      "equivalence": "Bare names alias the exact mounted package module objects before fixtures import. Identity assertions bind both driver and controller to the overlay. No runtime method changes.",
+      "name": "connected-import-identity",
+      "replaces": "Hub fixtures import bare e3 module names, production uses vllm.v1.flash_e3",
+      "test": "overlay_aliases"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "External connector transport, state tensor values or model output.",
+      "equivalence": "Streaming uses real add_request/_update_request_as_session; preempted recompute uses the real scheduler preemption hook; cached-prefix request uses real block hasher/cache lookup. Only input bytes/token values are synthetic.",
+      "name": "connected-preemption-streaming",
+      "replaces": "External KV receiver, streaming input delivery and cached final-token request",
+      "test": "Additional scheduler scenarios"
+    }
+  ],
+  "schema": "fixture-leaves/1",
+  "scope": "Native40 CPU host and connected pinned-container gate; no device or box evidence"
+}
