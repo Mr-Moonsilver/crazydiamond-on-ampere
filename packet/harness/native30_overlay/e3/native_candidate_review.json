@@ -1495,7 +1495,7 @@
     "basis": "fresh full strict registered CPU regression on the packaged tree",
     "cases": 325,
     "exit_code": 0,
-    "log_sha256": "20220de35b45b029e2df03f0224a86b05c6abb608c154faa0d3310e449d9cc91",
+    "log_sha256": "5b4366dc33fc47ed462b03814fe192e898b3e8a5cc9d26fbd462c37f28e637f7",
     "reported_tests": 3873,
     "required": 325,
     "skips": 0,
@@ -1744,7 +1744,7 @@
     "native43_boundary_gate.py": "daa40826c98bd39260032e87bf30a335c3eb2c483500dafdcf4eba3d2226aa43",
     "native43_clock_probe.py": "6a298922a5fd2fb5cab9d60df20bc80a87441f8c0e30b51c7f6e15e1f2bad843",
     "native43_dense_grade.py": "7b4480d9fccc86280afd1973f2f54b7d9872928e117806def3afa40d328ea36e",
-    "native43_fixture_leaves.json": "a3740d223d75077bf26973bcf021896731f1aa37146f1b24a42c797a8d4a4328",
+    "native43_fixture_leaves.json": "bfdc3ff9791f1752f7e64b00b4a2a6a2f92e39c3e1088b69f8d97c4f7e047592",
     "native43_scheduler_tick_probe.py": "31824a5fb640c4b142af991673b2ab342933b98894ca15fe580921a1bd9c0326",
     "native_placement_evidence_support.py": "345d37090992a4400862e307a34aac1a5abe3d062153a8f183e38bd479aee1c9",
     "native_prefill_support.py": "00c704e8935eea94e3030a4003f979693540f0e28e86a6326dcbfc5fb4644064",
@@ -3244,8 +3244,8 @@
     "parent_commit": "1ffc394783d3d67e140056868b50ca2f74c88b3b",
     "parent_manifest": "756f826c221c026440d7955a9f834fe72db83581439fed9bb69d07d314ea4264",
     "queue": "q18a-native43-dense-boundary pair: current then dense, fresh process and own request directory per arm, one fresh key per pair queue shared by both arms; held-b prefix through startup/bind/identity/ledger/length guard, one boundary client per arm, held-b crash/stop/restore; never starts production",
-    "scope": "native43 bounded dense transport diagnostic at the 24-page arena boundary (Codex d9fb80ec3ccd): paired current/dense boundary hashes at 101200, timed chunks 97152-100224; no speed claim, not a release candidate",
-    "source_commit": "d9fb80ec3ccd4c3be3c1dc40f575cf12c9383b76",
+    "scope": "native43 bounded dense transport diagnostic at the 24-page arena boundary (Codex 109313a39828): paired current/dense boundary hashes at 101200, timed chunks 97152-100224; no speed claim, not a release candidate",
+    "source_commit": "109313a398281153cd019b70816a5b6c5a5edd59",
     "tail_handback": false
   },
   "night_window": {
@@ -3258,7 +3258,7 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "efba3244a72ca9f120cb8e7310cddca757bfc5542b153ef85f186343611ff3c5",
+    "log_sha256": "05cc8e9bc64ceac0c50aa29198a3df273c1ceb15341d4a6cbf1fc521554594c4",
     "skips": 0,
     "tests": 550,
     "verdict": "PASS"
