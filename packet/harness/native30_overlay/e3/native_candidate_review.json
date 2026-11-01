@@ -1493,13 +1493,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict registered CPU regression on the packaged tree",
-    "cases": 335,
+    "cases": 343,
     "exit_code": 0,
-    "log_sha256": "d766bb27a9351391fd5670f3d817980b616e2bfb36afd8d850284ef6c0e6c0ef",
-    "reported_tests": 3996,
-    "required": 335,
+    "log_sha256": "0ec99d4382c667cc33fbbd693e458d081e1b4389d7c2b81de68894961ec2272d",
+    "reported_tests": 4091,
+    "required": 343,
     "skips": 0,
-    "suites": 218
+    "suites": 226
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -3611,10 +3611,10 @@
     "queue_timeout_s": 2100
   },
   "post_review_cpu": {
-    "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "f3a8d266c63e301dd4016dc1fcef0d0dd7e5cc50d24a49f20a71b2176ebaa8ca",
+    "basis": "the l-f focused suites plus the held-f suites (42) over the alpha trunk merge dd6d977",
+    "log_sha256": "5f6c13768fac6fffbe4e60b628cebd994451dcc1d7190fefce63b3c1dfd3c0c1",
     "skips": 0,
-    "tests": 812,
+    "tests": 906,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
