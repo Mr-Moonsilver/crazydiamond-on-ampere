@@ -216,7 +216,7 @@ expected_wrapped=sorted([('vllm.v1.flash_e3.lane_dispatch.LaneDispatcher',n) for
     +[('vllm.v1.worker.gpu_worker.Worker',n) for n in ('execute_model','sample_tokens','init_device','load_model')]
     +[(module+'.'+cls,method) for module,classes in host_mod.HOOKS.items() for cls,methods in classes.items() for method in methods])
 positive=inert.run('/source/harness/runs/q18a_native35_p_b_settings.sh','P-B settings (LOCALIZE=1, positive control)')
-negative=inert.run('/source/harness/runs/q18a_native39_trunk_settings.sh','TRUNK settings (LOCALIZE=0)')
+negative=inert.run('/source/harness/runs/q18a_native40_unarmed_hold_settings.sh','TRUNK settings (LOCALIZE=0)')
 for row in (positive,negative):
     assert row['entry_points']==inert.PLUGINS and row['cuda_initialized'] is False and row['sync_mode']=='none'
     assert all(f.startswith('/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3/native30_plugins/') for f in row['plugin_files'].values())

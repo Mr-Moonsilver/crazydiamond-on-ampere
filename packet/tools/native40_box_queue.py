@@ -53,6 +53,7 @@ def derive_tools():
     text = re.sub(r'^EXPECTED_TESTS=(\d+).*$', lambda m: 'EXPECTED_TESTS=' + str(int(m.group(1)) + 6)
                   + '  # inherited native39 cases plus 6 native40 queue CLI/window cases', text, flags=re.M)
     text = text.replace("owner.QNAME=='q18a-native39-trunk'", "owner.QNAME=='q18a-native40-unarmed-hold'")
+    text = text.replace('q18a_native39_trunk_settings.sh', 'q18a_native40_unarmed_hold_settings.sh')
     text = text.replace('active_and_cleanup=native39_trunk_gate.TRUNK_ACTIVE_AND_CLEANUP',
                         'import native40_box_gate\nactive_and_cleanup=native40_box_gate.ACTIVE_S+native40_box_gate.CLEANUP_S')
     text = text.replace('slot_receipts=slot_receipts+trunk_slots',
