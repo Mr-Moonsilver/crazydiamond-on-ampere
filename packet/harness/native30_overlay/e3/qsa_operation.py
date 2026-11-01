@@ -480,6 +480,11 @@ class NativeQsaDevice:
             values = host.numpy()[:, :-1]
             valid = values[values >= 0]
             result['selected_count'] = int(np.unique(valid).size)
+        if not selection:
+            sample = host.reshape(-1)[:256].to(dtype=self.torch.float32)
+            result['sample_values'] = sample.tolist()
+            result['sample_scope'] = 'first min(256,numel) flattened elements'
+            result['full_tensor_coverage'] = host.numel() <= 256
         result['readback_cpu_ns'] = time.monotonic_ns() - started
         return result
 
@@ -639,6 +644,7 @@ class NativeQsaTrace:
                 chunk_start=op.transaction.chunk_start,
                 chunk_end=op.transaction.chunk_end, history=run.valid_tokens,
                 policy=op.transport_policy, operation_open_ns=self.open_ns,
+                first_qsa_in_stage=bool(op._forward_layers and op._forward_layers[0] == name),
                 operation_released_ns=released_ns,
                 route=sparse.route if sparse is not None else 'dense_dma',
                 selected_count=sparse.selection_count if sparse is not None else None,
@@ -1748,13 +1754,14 @@ class QsaPrefillOperation:
                     self.device.wait_event(self.device.copy, previous)
                     self.stats['waits'] += 1
             copy = sparse.wave_copy
+            if self.trace is not None and sparse.wave_rows == 0:
+                # One logical-bucket span, including host credit gaps between
+                # waves. Descriptor count never controls marker allocation.
+                self.trace.opened['copy'] = self.trace.begin('copy', self.device.copy)
             wave = next(sparse.wave_iterator)
-            timing = self.trace.begin('copy', self.device.copy) if self.trace is not None else None
             for piece in wave:
                 self.device.copy_rows(run.source, run.arena, piece.source_row,
                                       piece.arena_row, piece.rows)
-            if self.trace is not None:
-                self.trace.end(timing)
             sparse.wave_event = self.device.record(self.device.copy)
             sparse.wave_ready = False
             rows = sum(piece.rows for piece in wave)
@@ -1769,6 +1776,8 @@ class QsaPrefillOperation:
             if (sparse.wave_rows != bucket.rows
                     or sparse.wave_descriptors != bucket.descriptors):
                 raise OperationError('streamed sparse bucket accounting disagrees')
+            if self.trace is not None:
+                self.trace.end(self.trace.opened.pop('copy', None))
             copy.event = sparse.wave_event
             copy.sparse = True
             consumer = self._new_ticket(Stage.ATTENTION, run.layer_name, index)
@@ -2247,8 +2256,15 @@ class QsaPrefillOperation:
                 if qualifier is not None:
                     qualifier.finish_layer(run, hold_stats=info)
         if self.trace is not None:
-            self.trace.emit()
-            self.trace = None
+            try:
+                self.trace.emit()
+            except Exception:
+                # Telemetry cannot strand already-released source holds or
+                # turn a healthy release into a repeated source release.
+                # Missing records remain an INCONCLUSIVE evidence result.
+                self.stats['trace_emit_errors'] = self.stats.get('trace_emit_errors', 0) + 1
+            finally:
+                self.trace = None
         dropped = len(self._owners)
         self._released = True
         if self._continuation is not None:

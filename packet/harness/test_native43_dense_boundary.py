@@ -129,6 +129,49 @@ class DenseBoundaryTests(base._GeneratedHarness, unittest.TestCase):
         self.assertGreater(row['cpu_submit_ns'], 0)
         self.assertEqual(self.device.synchronized, 0)
 
+    def test_many_sparse_waves_use_only_one_copy_marker_pair_per_bucket(self):
+        self.device.native_qsa_policy='current'
+        self.device.native_qsa_trace=True
+        def event(stream):
+            e=self.device.record(stream);e.elapsed_time=lambda other:0.25;return e
+        self.device.timing_event=event
+        mapping=tuple(range(1,26))
+        names=['qsa.'+str(i) for i in range(6)]
+        op,lane,tx,sources=self.prepare({name:mapping for name in names})
+        logical=base.T((1,12001),device='cuda:0',dtype='torch.int32',
+                       values=[2*i for i in range(12000)]+[-1])
+        query=base.T((1,6,256),device='cuda:0');output=base.T((1,6,256),device='cuda:0')
+        rows=base.T((1,),device='cuda:0',dtype='torch.int64',values=[0])
+        for name in names:
+            self.open_layer(op,lane,tx,name,sources[name],mapping,min_pages=24)
+            generator=self.attention(query,sources[name],logical,self.table,rows,24,
+                                     self.arena,True,output,e3op=op)
+            self.run_generator(op,generator);op.end_layer(name)
+        op.end_forward();self.device.ready_all()
+        self.assertEqual(op.trace.markers,36)  # 6 * (union/copy/attention) * 2
+        self.assertEqual(op.trace.dropped,0)
+        with self.assertLogs(qo.__name__,level='INFO') as log:op.release()
+        receipts=[json.loads(line.split('flash-s5 native43_qsa ',1)[1]) for line in log.output]
+        self.assertEqual(len(receipts),6)
+        self.assertTrue(all(r['waves']==47 and r['copy_ms']==0.25 and r['gpu_timing_complete'] for r in receipts))
+
+    def test_emit_failure_cannot_interrupt_source_release_or_owner_cleanup(self):
+        for where in ('elapsed','json','logger'):
+            with self.subTest(where=where):
+                self.setUp();op,hold=self.execute(25,'dense',trace=True)
+                if where=='elapsed':
+                    op.trace.pairs[0][2].elapsed_time=lambda other:(_ for _ in ()).throw(RuntimeError('fixture'))
+                    context=patch.object(qo,'MAX_OUTSTANDING_BUCKETS',1)
+                elif where=='json':context=patch.object(qo.json,'dumps',side_effect=ValueError('fixture'))
+                else:context=patch.object(qo.logging.getLogger(qo.__name__),'info',side_effect=OSError('fixture'))
+                with context:op.release()
+                self.assertTrue(hold.released)
+                self.assertEqual(len(hold._allocator.released),1)
+                self.assertTrue(op._released)
+                self.assertFalse(op._owners)
+                self.assertIsNone(op.trace)
+                self.assertEqual(op.stats['trace_emit_errors'],1)
+
     def test_trace_current_and_marker_limit(self):
         op, hold = self.execute(25, 'current', trace=True)
         op.trace.MAX_MARKERS = op.trace.markers
@@ -181,6 +224,44 @@ class BoundaryStopTests(unittest.TestCase):
         self.assertEqual(set(stack.driver._last_transition_acks), {0,1,2,3})
         self.assertTrue(all(a.applied_bank == 0 for a in stack.driver._last_transition_acks.values()))
         self.assertEqual(stack.controller.commits, 1)
+
+    def test_core_tick_after_cutoff_cannot_admit_a_followup_frame(self):
+        import os
+        import executor_hooks as hooks
+        from test_e3_r4_worker_bridge import Stack
+        with patch.dict(os.environ, FLASH_S5_NATIVE_QSA_STOP_AFTER='101200',
+                        FLASH_S5_NATIVE_QSA_TRACE='1'):
+            stack=Stack()
+        stack.driver._native43['stop_at']=4
+        admitted_after_cutoff=[]
+        original_stop=stack.driver.stop
+        def delayed_stop(*args,**kwargs):
+            # Preserve real typed replies, but keep the cancel reply in flight
+            # across this scheduler opportunity, as on the box.
+            stack.transport.hold=True
+            return original_stop(*args,**kwargs)
+        stack.driver.stop=delayed_stop
+        def scheduler_tick():
+            # Host component leaf for schedule()'s admission entry; the pinned
+            # container probe additionally runs the actual AsyncScheduler.
+            record=stack.controller.admit(stack.scheduler)
+            if record is not None and stack.driver._native43['checkpoint'] is not None:
+                admitted_after_cutoff.append(record.transaction)
+        for _ in range(800):
+            stack.complete_everything()
+            # Active request goes through Core's main step; only pending
+            # stops use its idle-tick bypass (as on the real scheduler).
+            bypass=(hooks.engine_idle_tick(stack.driver.engine) if stack.driver.stop_kind is not None
+                    else hooks.before_step_with_batch_queue(stack.driver.engine))
+            if bypass is None:scheduler_tick()
+            stack.transport.deliver_held()
+            if admitted_after_cutoff:break
+            if stack.driver._last_native_closure is not None and not stack.driver._split_ready:
+                break
+        self.assertEqual(admitted_after_cutoff,[])
+        self.assertEqual(stack.controller.admitted,1)
+        self.assertTrue(stack.driver._last_native_closure['source_leases']['clean'])
+        self.assertTrue(stack.all_dispatchers_reset())
 
     def test_real_planner_has_exactly_four_chunks_after_arena_to_cutoff(self):
         from scheduler_hooks import staged_chunk_plan

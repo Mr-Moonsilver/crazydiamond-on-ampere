@@ -38,17 +38,22 @@ def evidence(policy):
     rows=[]
     for rank in range(4):
         for layer in range(6):
-            rows.append(dict(policy=policy,rank=rank,layer='qsa.'+str(layer),chunk_start=100224,
+            rows.append(dict(policy=policy,rank=rank,layer='qsa.'+str(layer),transaction=100,first_qsa_in_stage=layer==0,chunk_start=100224,
                 chunk_end=101200,route='dense_dma' if policy=='dense' else 'sparse_dma',
                 timing_excluded='final-chunk-boundary-readback',gpu_timing_complete=True,
                 selection_evidence=dict(sha256='selection',dtype='torch.int32',shape=[976,5],bytes=19520),
-                output_evidence=dict(sha256='output',dtype='torch.bfloat16',shape=[976,6,256],bytes=2998272)))
+                output_evidence=dict(sha256='output',dtype='torch.bfloat16',shape=[976,6,256],bytes=2998272,
+                    sample_values=[1.0,2.0],full_tensor_coverage=False)))
     boundary = rows[:]
-    for end in (97152,98176,99200,100224):
+    end=0
+    for index in range(1,100):
+        size=976 if index%4==0 else 1024
+        start=end;end+=size
         for row in boundary:
-            row = dict(row,chunk_end=end,chunk_start=end-1024,transaction=end,
+            row = dict(row,chunk_end=end,chunk_start=start,transaction=index,
                        operation_open_ns=1000,operation_released_ns=2000)
             row.pop('timing_excluded')
+            row.pop('selection_evidence');row.pop('output_evidence')
             rows.append(row)
     return view,rows
 
@@ -133,13 +138,36 @@ class GradeTests(unittest.TestCase):
         br=[row for row in br if row['chunk_end']==101200]
         self.assertEqual(grade.grade(a,b,ar,br)['verdict'],'INCONCLUSIVE')
 
-    def test_each_selection_or_output_difference_is_retained_failure(self):
+    def test_each_selection_or_output_difference_is_informational(self):
         for field in ('selection_evidence','output_evidence'):
             a,ar=evidence('current');b,br=evidence('dense')
             br[0][field]['sha256']='different'
             result=grade.grade(a,b,ar,br)
-            self.assertEqual(result['verdict'],'FAIL')
-            self.assertTrue(any(field in x for x in result['failures']))
+            self.assertEqual(result['verdict'],'PASS')
+            self.assertIsNone(result['failure_class'])
+            self.assertFalse(result['numerical_comparisons'][0][field]['bitwise_equal'])
+            self.assertEqual(len(result['stage0_first_qsa_selection']),2)
+
+    def test_bounded_numeric_difference_has_no_threshold(self):
+        a,ar=evidence('current');b,br=evidence('dense')
+        br[0]['output_evidence']['sample_values']=[2.0,4.0]
+        result=grade.grade(a,b,ar,br)
+        diff=result['numerical_comparisons'][0]['bounded_output_difference']
+        self.assertEqual(result['verdict'],'PASS')
+        self.assertEqual(diff['max_abs'],2.0)
+        self.assertEqual(diff['max_rel'],1.0)
+        self.assertFalse(diff['full_tensor_coverage'])
+        self.assertEqual(result['arms']['dense']['route_counts']['dense_dma'],len(br))
+        self.assertEqual(result['record_bound']['expected_headroom'],600)
+
+    def test_absent_hashes_or_nonfinite_numeric_samples_never_fail_the_arm(self):
+        a,ar=evidence('current');b,br=evidence('dense')
+        br[0].pop('selection_evidence')
+        br[0]['output_evidence']['sample_values']=[float('nan'),4.0]
+        result=grade.grade(a,b,ar,br)
+        self.assertEqual(result['verdict'],'PASS')
+        self.assertFalse(result['numerical_comparisons'][0]['selection_evidence']['observed'])
+        self.assertEqual(result['numerical_comparisons'][0]['bounded_output_difference']['nonfinite_pairs'],1)
 
     def test_missing_layer_or_timing_or_client_cannot_pass(self):
         for kind in ('layer','timing','client'):

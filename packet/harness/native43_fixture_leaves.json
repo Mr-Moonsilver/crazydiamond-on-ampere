@@ -41,6 +41,14 @@
       "implementation": "Packaging may bind a declared alternate UUID fixture read-only at that proc file in the engine CPU container; actual host client remains outside; neither Python clock nor identity readers are patched; real driver status samples CLOCK_MONOTONIC",
       "equivalence": "Recreates distinct LXC/container boot-id views while preserving kernel monotonic clocks and observed zero time-namespace offsets; actual packet must fall within host send/receive bracket. Identities are retained but never compared for equality.",
       "cannot_prove": "Arbitrary machines or nonzero clock offsets. This is a CPU fixture only and must not ship into box runtime mounts."
+    },
+    {
+      "name": "real-scheduler-cutoff-with-pending-stop",
+      "tests": "native43_scheduler_tick_probe.py; test_native43_dense_boundary.BoundaryStopTests.test_core_tick_after_cutoff_cannot_admit_a_followup_frame",
+      "replaces": "Previously completed native checkpoint and still-pending worker stop replies; no replacement of the pinned AsyncScheduler.schedule, KV allocator, admission controller or Core bypass hooks in the container probe",
+      "implementation": "Container probe reuses e3_native37_admission_probe.Stack (same declared reduced constructor config, real production 4048/176/1024 scheduler geometry). It projects the checkpoint/retained-request identity and replaces stop plus _drive_stop only at the absent-worker handshake, with an empty owned reply channel. Its queued request is fresh: erroneous next scheduling reserves a real initial 1024-row frame rather than simulating 101200 tokens of model execution. One actual empty scheduler tick precedes the cutoff, then real Core hooks decide each pending-stop tick. Host four-bridge component separately holds real typed cancel replies across a Core scheduling opportunity and executes the real admission entry.",
+      "equivalence": "Exposes the exact None-versus-(None,False) scheduler admission seam. Negative 5c1873a source admits one unexpected frame and dirties real source leases; fixed source admits zero with clean leases. The separate four-bridge test proves certified cancel/FULL ordering without stubbing stop.",
+      "cannot_prove": "Full 100-chunk model computation, GPU execution, or native TP/PP transport. CPU-only, no box evidence."
     }
   ]
 }

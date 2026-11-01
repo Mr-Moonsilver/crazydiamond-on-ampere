@@ -1852,6 +1852,9 @@ class NativeSegmentDriver:
                     and not self._native43['cancel_started']):
                 self._native43['cancel_started'] = True
                 self.stop('cancel')
+                # Keep this very tick out of schedule(): stop_kind is not
+                # itself a stock-step bypass result. Idle ticks finish stop.
+                return (None, False)
             if self._profile_failure is not None and deliver_outputs:
                 output = self._finish_profile_failure()
                 if output is not None:

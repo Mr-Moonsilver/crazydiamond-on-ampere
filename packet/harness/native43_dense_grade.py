@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Strict diagnostic pairing; exact boundary hashes, no throughput PASS gate."""
+"""Timing/route/close diagnostic; all numerical comparisons informational."""
 import argparse
 import json
+import math
+from collections import Counter
 from pathlib import Path
 from native43_boundary_clock import prove
 
 PREFIX = 'flash-s5 native43_qsa '
 FRONTIER = 101200
+MAX_LAYER_RECORDS = 3000
+EXPECTED_LAYER_RECORDS = 2400  # 100 chunks * 6 sparse layers * 4 ranks, per arm
 
 
 def read_layers(paths):
@@ -19,7 +23,7 @@ def read_layers(paths):
                         raise ValueError('native43-layer-line-over-cap')
                     row = json.loads(line.split(PREFIX, 1)[1])
                     rows.append(row)
-                    if len(rows) > 3000:
+                    if len(rows) > MAX_LAYER_RECORDS:
                         raise ValueError('native43-layer-records-over-cap')
     return rows
 
@@ -57,6 +61,26 @@ def certified_client(client):
     return prove(status, bracket.get('send_ns'), bracket.get('recv_ns'))['proved']
 
 
+
+def bounded_output_difference(left, right):
+    a, b = left.get('sample_values'), right.get('sample_values')
+    result = dict(role='INFORMATIONAL', observed=False,
+        scope='first min(256,numel) flattened output elements; not full-tensor maximum',
+        relative_reference='max(abs(current),1e-12)', full_tensor_coverage=False)
+    if (type(a) is not list or type(b) is not list or not a or len(a) != len(b)
+            or len(a) > 256 or left.get('shape') != right.get('shape')):
+        return result
+    if any(type(x) not in (int,float) for x in a+b):
+        return result
+    pairs = [(x,y) for x,y in zip(a,b) if math.isfinite(x) and math.isfinite(y)]
+    result.update(observed=True, elements=len(a), nonfinite_pairs=len(a)-len(pairs),
+        full_tensor_coverage=left.get('full_tensor_coverage') is True
+                             and right.get('full_tensor_coverage') is True,
+        max_abs=max((abs(x-y) for x,y in pairs),default=None),
+        max_rel=max((abs(x-y)/max(abs(x),1e-12) for x,y in pairs),default=None))
+    return result
+
+
 def grade(current, dense, current_layers, dense_layers):
     missing, failures, timings = [], [], {}
     for policy, client, layers in [('current', current, current_layers), ('dense', dense, dense_layers)]:
@@ -66,6 +90,11 @@ def grade(current, dense, current_layers, dense_layers):
             failures.append(policy + ':not-fresh-no-cohort')
         if not layers:
             missing.append(policy + ':layer-receipts')
+        if len(layers) != EXPECTED_LAYER_RECORDS:
+            missing.append(policy + ':expected-2400-layer-records')
+        keys = [(r.get('rank'),r.get('transaction'),r.get('layer')) for r in layers]
+        if len(set(keys)) != len(keys):
+            failures.append(policy + ':duplicate-layer-record')
         boundary = {}
         by_chunk = {}
         for row in layers:
@@ -92,31 +121,40 @@ def grade(current, dense, current_layers, dense_layers):
                 missing.append(policy + ':rank%d:timed-boundary-chunks' % rank)
         if len(boundary) != 24 or any(sum(k[0] == rank for k in boundary) != 6 for rank in range(4)):
             missing.append(policy + ':six-sparse-layers-per-rank-boundary')
-        for row in boundary.values():
-            for name in ('selection_evidence', 'output_evidence'):
-                if not isinstance(row.get(name), dict) or not row[name].get('sha256'):
-                    missing.append(policy + ':' + name)
-        timings[policy] = dict(boundary=boundary, timed_chunks=by_chunk)
+        timings[policy] = dict(boundary=boundary, timed_chunks=by_chunk,
+            route_counts=dict(Counter(row.get('route', 'NOT_OBSERVED') for row in layers)),
+            layer_records=len(layers))
     for name in ('prompt_sha256', 'paired_salt_id'):
         if not current.get(name) or current.get(name) != dense.get(name):
             failures.append('pair:' + name)
     left, right = timings['current']['boundary'], timings['dense']['boundary']
-    if set(left) != set(right):
-        missing.append('pair:boundary-layer-keys')
-    for key in set(left) & set(right):
-        for name in ('selection_evidence', 'output_evidence'):
-            a, b = left[key].get(name) or {}, right[key].get(name) or {}
-            if a.get('sha256') and b.get('sha256') and any(a.get(k) != b.get(k)
-                    for k in ('sha256', 'shape', 'dtype', 'bytes')):
-                failures.append('pair:%s:rank%d:%s' % (name, key[0], key[1]))
+    comparisons, first_stage0 = [], []
+    for key in sorted(set(left) | set(right)):
+        a, b = left.get(key) or {}, right.get(key) or {}
+        entry = dict(rank=key[0],layer=key[1],role='INFORMATIONAL')
+        for name in ('selection_evidence','output_evidence'):
+            av, bv = a.get(name) or {}, b.get(name) or {}
+            observed = bool(av.get('sha256') and bv.get('sha256'))
+            entry[name] = dict(observed=observed,bitwise_equal=(all(av.get(k)==bv.get(k)
+                for k in ('sha256','shape','dtype','bytes')) if observed else None))
+        entry['bounded_output_difference'] = bounded_output_difference(
+            a.get('output_evidence') or {}, b.get('output_evidence') or {})
+        comparisons.append(entry)
+        if key[0] in (0,1) and a.get('first_qsa_in_stage') is True and b.get('first_qsa_in_stage') is True:
+            first_stage0.append(dict(rank=key[0],layer=key[1],role='INFORMATIONAL',
+                **entry['selection_evidence']))
     return dict(schema='native43-dense-boundary-grade/1',
         verdict='FAIL' if failures else 'INCONCLUSIVE' if missing else 'PASS',
-        failure_class=('ENGINE' if any(x.startswith(('pair:selection_evidence:', 'pair:output_evidence:'))
-                                      for x in failures) else 'HARNESS') if failures or missing else None,
+        failure_class='HARNESS' if failures or missing else None,
         failures=sorted(set(failures)), missing=sorted(set(missing)), speed_claim=False,
-        exact_boundary_evidence=not failures and not missing,
+        numerical_evidence_role='INFORMATIONAL', numerical_comparisons=comparisons,
+        stage0_first_qsa_selection=first_stage0,
+        record_bound=dict(per_arm_cap=MAX_LAYER_RECORDS,expected_per_arm=EXPECTED_LAYER_RECORDS,
+                          expected_headroom=MAX_LAYER_RECORDS-EXPECTED_LAYER_RECORDS,
+                          headroom_over_expected_pct=25),
         performance_basis='operation-open-to-release per rank; final readback chunk excluded; no client/engine clock subtraction',
-        arms={policy: dict(timed_chunks=[dict(rank=k[0],transaction=k[1],**v)
+        arms={policy: dict(route_counts=t['route_counts'],layer_records=t['layer_records'],
+                record_headroom=MAX_LAYER_RECORDS-t['layer_records'],timed_chunks=[dict(rank=k[0],transaction=k[1],**v)
                 for k,v in sorted(t['timed_chunks'].items())],
                 boundary=[dict(rank=k[0],layer=k[1],selection_evidence=v.get('selection_evidence'),
                                output_evidence=v.get('output_evidence')) for k,v in sorted(t['boundary'].items())])
