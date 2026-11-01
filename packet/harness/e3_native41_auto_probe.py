@@ -234,7 +234,7 @@ def run(mode):
         conn.step()
         policy=getattr(conn.driver,'auto_arm',None)
         if (req.num_output_tokens or (injected and mode in ('abort-before','abort-live','reuse'))) and not conn.driver.active and not getattr(policy,'active',False):break
-    if mode in ('auto','foreign','pending-split','pending-full','running-prefill'):
+    if mode in ('auto','foreign','pending-split','pending-full'):
         check('ordinary-requests-trigger-native-cycle',len(conn.native)>1 and all(r['uid']==req.request_id for r in conn.native))
         check('native-covers-0-through-n-minus-1',conn.native[0]['start']==0 and conn.native[-1]['end']==32800
               and all(a['end']==b['start'] for a,b in zip(conn.native,conn.native[1:])))
@@ -244,6 +244,15 @@ def run(mode):
         check('no-stock-prefill-on-split',not any(row['split'] and (row['prefill'] or req.request_id in row['scheduled']) for row in conn.traces))
         check('one-native-request-per-cycle',getattr(policy,'completed',0)==1 and conn.driver.admission_intent() is None)
         check('no-native-control-client',conn.external_controls==0)
+    elif mode=='running-prefill':
+        # native_auto_arm._cohort refuses a cohort whose member is still prefilling
+        # (num_computed_tokens < num_prompt_tokens), so stock starts the long head
+        # beside it: never selected, never on split, and the policy names why.
+        snap=policy.snapshot()
+        check('running-prefill-cohort-not-selected',snap['selection_seq']==0 and not conn.native
+              and (snap['last_unselected'] or {}).get('reason')=='cohort',last=snap['last_unselected'])
+        check('running-prefill-never-split',not conn.driver._split_ready and all(not r['split'] for r in conn.traces))
+        check('running-prefill-decoder-continues',cohort.num_output_tokens>before)
     elif mode=='off':
         check('default-off-no-auto-or-native',getattr(conn.driver,'auto_arm',None) is None and not conn.native)
         check('default-off-full',not conn.driver._split_ready and all(not r['split'] for r in conn.traces))
