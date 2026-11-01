@@ -4,6 +4,7 @@ Native39 held-b supplies the unchanged compiled libraries/packaging shell.
 Adds the short box queue and owner runner; no model settings or device action.
 """
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -125,7 +126,6 @@ def build(out,strict,focused):
     proof=dict(verdict='PASS',source=source_proof,overlay=overlay_proof,negative_controls=freeze.negative_controls(),
         branch_base=git('rev-parse',PARENT).strip(),native38_shell_sha256=SHELL_SHA,compiled_libraries_and_plugins_byte_identical=True,
         parent_overlay_regenerated_from_exact_base=True,model_settings_changed=False,tail_handback=False)
-    dump(out/'freeze-proof.json',proof)
     pin=sha(bundle/'SHA256SUMS');held=out/('q18a-native40-unarmed-hold-bundle-'+pin[:12]);bundle.rename(held)
     import build_native39_trunk as parent_build
     runner_text,_=parent_build.derive_runner(pin,
@@ -149,6 +149,22 @@ def build(out,strict,focused):
                 and engine.get('image')==IMAGE and engine.get('box_action') is False,'exact-engine-selfrun-required')'''+runner_text[end:]
     compile(runner_text,'native40-owner','exec')
     runner=out/('q18a-native40-unarmed-hold-owner-run-'+pin[:12]+'.py');runner.write_text(runner_text)
+    parent_runner=SHELL.parent/('q18a-native39-trunk-owner-run-'+SHELL_SHA[:12]+'.py')
+    assert parent_runner.is_file(),'held-b owner runner required'
+    old_runner,_=parent_build.derive_runner(SHELL_SHA,
+        json.loads((SHELL/'native30_overlay/e3/native-implementation-closure.json').read_text())['review_sha256'],
+        dict(sorted(verify(SHELL/'native30_overlay').items())))
+    assert old_runner==parent_runner.read_text(),'held-b runner derivation differs'
+    before,after=verify(SHELL),verify(held)
+    assert set(before)<=set(after),'no parent files may be removed'
+    proof.update(manifest=pin,parent_manifest=SHELL_SHA,parent_bundle=str(SHELL),
+        bundle_changed=sorted(n for n in before if before[n]!=after[n]),bundle_added=sorted(set(after)-set(before)),
+        bundle_removed=[],runner=dict(parent=str(parent_runner),parent_sha256=sha(parent_runner),sha256=sha(runner),
+            differences=[line for line in difflib.ndiff(old_runner.splitlines(),runner_text.splitlines())
+                         if line.startswith(('- ','+ ')) and not line[2:].startswith('EXPECTED_SOURCES=')]),
+        queue_derivation='native40_box_queue.derive(): names, 2400s active watchdog/shared window, pre-row1 unarmed check',
+        active_s=2400,cleanup_margin_s=900)
+    dump(out/'freeze-proof.json',proof)
     result=dict(schema='native40-build/1',verdict='PASS',source=git('rev-parse','HEAD').strip(),branch_base=git('rev-parse',PARENT).strip(),
         bundle=str(held),manifest=pin,overlay=str(held/'native30_overlay'),overlay_manifest=sha(held/'native30_overlay/SHA256SUMS'),
         reference_bundle=str(parent),reference_overlay_manifest=sha(parent/'native30_overlay/SHA256SUMS'),
