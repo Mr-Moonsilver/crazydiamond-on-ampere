@@ -21,12 +21,12 @@ ROOT = Path(__file__).resolve().parents[1]
 OLD = 'q18a_native40_unarmed_hold'
 NEW = 'q18a_native41_autoarm'
 OLD_Q = 'q18a-native40-unarmed-hold'
-NEW_Q = 'q18a-native41-autoarm'
+NEW_Q = 'q18a-native41-autoarm-e'  # held-e: fresh box paths (held-c's q18a-native41-autoarm outputs exist)
 SWITCH = 'FLASH_S5_AUTO_ARM=1'
 BODY_START = 'timeout "$(native40_budget row1_plan)s" python3 "$H/e3_native_request_plans.py"'
 BODY_END = ("record native40-regression \"$?\" 'descriptive raw rates against held-b manifest; "
             "no denominator or speed claim'\n")
-HEADER = '''# q18a-native41-autoarm: native40's startup, bind and unarmed-hold check with FLASH_S5_AUTO_ARM=1,
+HEADER = '''# q18a-native41-autoarm-e: native40's startup, bind and unarmed-hold check with FLASH_S5_AUTO_ARM=1,
 # then plain W2 traffic in four arms (stock, auto, stock, auto) and a typed FULL. Unrun, no GO from this file.
 #
 # Native41: ordinary plain-client W2 requests (no native client, no prepare) must auto-arm the native
@@ -196,7 +196,7 @@ def derive_tools():
     text = re.sub(r'^EXPECTED_TESTS=(\d+).*$', lambda m: 'EXPECTED_TESTS=' + str(int(m.group(1)) + NATIVE41_QUEUE_TESTS)
                   + '  # inherited native40 cases plus %d native41 queue and unarmed-clock cases' % NATIVE41_QUEUE_TESTS,
                   text, flags=re.M)
-    text = text.replace("owner.QNAME=='q18a-native40-unarmed-hold'", "owner.QNAME=='q18a-native41-autoarm'")
+    text = text.replace("owner.QNAME=='q18a-native40-unarmed-hold'", "owner.QNAME==%r" % NEW_Q)
     text = text.replace('q18a_native40_unarmed_hold_settings.sh', 'q18a_native41_autoarm_settings.sh')
     text = text.replace('import native40_box_gate\nactive_and_cleanup=native40_box_gate.ACTIVE_S+native40_box_gate.CLEANUP_S',
                         'import native41_box_gate\nactive_and_cleanup=native41_box_gate.ACTIVE_S+native41_box_gate.CLEANUP_S')
@@ -208,7 +208,7 @@ def derive_tools():
     return {'tools/native41_box_cpu_probe.py': text, 'tools/native41_box_selfrun.py': wrapper}
 
 
-NATIVE41_QUEUE_TESTS = 11 + 5  # test_native41_box_queue + test_native41_unarmed_box cases (testsRun)
+NATIVE41_QUEUE_TESTS = 12 + 5  # test_native41_box_queue + test_native41_unarmed_box cases (testsRun)
 
 
 def main():

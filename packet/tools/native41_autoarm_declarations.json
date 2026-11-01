@@ -9,6 +9,9 @@
     "A\tresults/hub/native41-autoarm-e/clock-scan.json",
     "A\tresults/hub/native41-autoarm-e/delivery.json",
     "A\tresults/hub/native41-autoarm-e/native-precheck.conf",
+    "A\tresults/hub/native41-autoarm-e2/clock-scan.json",
+    "A\tresults/hub/native41-autoarm-e2/delivery.json",
+    "A\tresults/hub/native41-autoarm-e2/native-precheck.conf",
     "A\tresults/hub/native41-autoarm/delivery.json",
     "A\tresults/hub/native41-autoarm/native-precheck.conf",
     "A\treviews/codex-20261101-native41-autoarm.md"
@@ -153,6 +156,7 @@
     "A\tharness/runs/q18a_native41_autoarm_settings.sh",
     "M\tharness/selftest.py",
     "M\tharness/test_e3_package.py",
+    "A\tharness/test_e3_tp_finalize_skew.py",
     "M\tharness/test_native35_performance.py",
     "M\tharness/test_native37_robust.py",
     "M\tharness/test_native40_box_queue.py",

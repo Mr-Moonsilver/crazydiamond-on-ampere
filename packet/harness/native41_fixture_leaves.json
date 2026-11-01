@@ -224,6 +224,21 @@
         "_memory_cuda"
       ],
       "box_evidence": false
+    },
+    {
+      "name": "queue-argparse",
+      "test": "test_native41_box_queue.QueueArgparse",
+      "replaces": "The box-only values of the queue's shell variables (ARGPARSE_VALUES: run paths, container ids, the live URL, the auth file path, the library pins) and the GRADE_ARGS array that the arms build at run time.",
+      "equivalence": "Each call's argument text is copied verbatim from the derived queue text: continuations are joined, here-documents removed, and the text is cut at the first unquoted redirection or control operator. The real bash expands it with set -u, after sourcing the real native41 settings file and defining the draft's own native41_budget function. The words are then parsed by running the bundle's own script as __main__ until its real ArgumentParser.parse_args or parse_known_args returns. Those are patched only to stop there, so nothing after parsing runs. qlib.sh's identity and identity_check forward their words as pinned against qlib's text. The real setcfg has no argparse, so its own argv expression is evaluated from its AST. Negative controls go through the same path: bind without --container-id (the n43-f shape), the unarmed check without --epoch, an unknown option, an undeclared variable, and a setcfg word without '='.",
+      "cannot_prove": "Values that exist only on the box (real paths, ids, the live engine), behaviour after parsing, and python run through heredocs or other shells.",
+      "seams": [
+        "ArgumentParser.parse_args",
+        "parse_known_args",
+        "sys.argv",
+        "ARGPARSE_VALUES",
+        "GRADE_ARGS"
+      ],
+      "box_evidence": false
     }
   ],
   "schema": "fixture-leaves/1",

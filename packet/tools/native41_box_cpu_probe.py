@@ -96,7 +96,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native40_box_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native41_box_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native41_unarmed_box.py'))
-EXPECTED_TESTS=243  # inherited native40 cases plus 16 native41 queue and unarmed-clock cases
+EXPECTED_TESTS=244  # inherited native40 cases plus 17 native41 queue and unarmed-clock cases
 result=unittest.TextTestRunner(verbosity=2).run(suite)
 assert not torch.cuda.is_initialized()
 identity_receipts=sys.modules['test_native30_identity'].IDENTITY_RECEIPTS
@@ -110,7 +110,7 @@ spec=importlib.util.spec_from_file_location('native34_frozen_owner','/source/own
 owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(owner)
 role=os.environ['FLASH_NATIVE35_ARM'];assert role=='TRUNK' and os.environ['FLASH_NATIVE34_ARM']=='O'
 provenance=json.loads(Path('/source/harness/native30-provenance.json').read_text())
-assert provenance['native35_arm']==role and provenance['candidate']==owner.QNAME=='q18a-native41-autoarm'
+assert provenance['native35_arm']==role and provenance['candidate']==owner.QNAME=='q18a-native41-autoarm-e'
 owner.check_slot()
 import native34_gate as weekend_gate
 import native35p_gate

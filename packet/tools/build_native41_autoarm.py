@@ -26,7 +26,7 @@ SHELL_SHA='d2ae6c8b07f131b51c3d112b9fae1082080199a64159085d64cabac51693b685'
 SHELL_RUNNER_SHA='baeca063c937431b3dcdcf2a9d84849a1c78deab95026c4bddb1abe10880ad10'
 BASE=Path('<hub-dir>/agents/flash-next/tmp/e2f-native-offline-base-20261027T211405Z')
 BASE_SHA='da561411fadbb82922eeb8eafbe9424bc9703aaf8c2030bd813743c692b641a5'
-CANDIDATE='q18a-native41-autoarm'
+CANDIDATE='q18a-native41-autoarm-e'  # held-e: fresh QNAME/overlay/build-log paths on the box
 STEM='q18a_native41_autoarm'
 TOOLS=('build_native41_autoarm.py','native41_autoarm_freeze.py','native41_autoarm_declarations.json','native41_autoarm_selfrun.py','native41_clock_scan.py',
        'native41_box_queue.py','native41_box_cpu_probe.py','native41_box_selfrun.py')

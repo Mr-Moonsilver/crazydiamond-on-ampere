@@ -46,6 +46,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import runpy
 import shlex
 import subprocess
 import sys
@@ -629,6 +630,224 @@ class Commands(unittest.TestCase):
         self.assertTrue(str(ns['out']).endswith('/unarmed-stock-prefill.json'))
         # The interface pin hashes the module the queue runs.
         self.assertIn('e3_native41_unarmed_box.py e3_native41_autoarm_box.py native41_box_gate.py; do', draft)
+
+
+# --- every queue python call against its real parser (n43-f class) ------------
+
+def _strip_heredocs(text):
+    """Shell text with every here-document body removed (those lines are data)."""
+    out, tag = [], None
+    for line in text.splitlines():
+        if tag is not None:
+            if line.strip() == tag:
+                tag = None
+            continue
+        out.append(line)
+        match = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", line)
+        if match:
+            tag = match.group(1)
+    return '\n'.join(out)
+
+
+def _args_text(rest):
+    """The argument text up to the first unquoted redirection or control operator."""
+    i, quote, depth = 0, None, 0
+    while i < len(rest):
+        c = rest[i]
+        if quote == "'":
+            quote = None if c == "'" else quote
+        elif rest.startswith('$(', i):
+            depth += 1
+            i += 1
+        elif c == ')' and depth:
+            depth -= 1
+        elif c == '\\':
+            i += 1
+        elif quote == '"':
+            quote = None if c == '"' and not depth else quote
+        elif c in '\'"':
+            quote = c
+        elif not depth and c in '<>|&;':
+            head = rest[:i]
+            if c in '<>' and re.search(r'(?:^|\s)\d+$', head):
+                head = re.sub(r'\d+$', '', head)  # a file descriptor written against it: 2>
+            return head.strip()
+        i += 1
+    return rest.strip()
+
+
+QLIB_CALLS = {
+    # qlib.sh function -> how it forwards its words to engine_identity.py (pinned to qlib's text below).
+    'identity': ('python3 "$_QLIB_IDENTITY_DIR/engine_identity.py" capture "$out" --request "$request" "$@"',
+                 lambda words: ['capture', words[0], '--request', words[1]] + words[2:]),
+    'identity_check': ('python3 "$_QLIB_IDENTITY_DIR/engine_identity.py" check "$@"',
+                       lambda words: ['check'] + words),
+}
+
+
+def queue_python_calls(texts, qlib_text):
+    """Every python3 call of the queue texts that names a script: (file, script, args text, form)."""
+    for form, _ in QLIB_CALLS.values():
+        assert form in qlib_text, form
+    calls = []
+    for name, text in texts.items():
+        joined = _strip_heredocs(re.sub(r'\\\n\s*', ' ', text))
+        for line in joined.splitlines():
+            if line.lstrip().startswith('#'):
+                continue
+            for match in re.finditer(r'(?:^|(?<=[\s;&|(!]))python3(?:\s+-B)?\s+"\$(?:H/([A-Za-z0-9_]+\.py)|(SETCFG))"',
+                                     line):
+                calls.append((name, match.group(1) or 'SETCFG', _args_text(line[match.end():]), 'python3'))
+            for match in re.finditer(r'(?:^|(?<=[\s;&|(!]))(identity_check|identity)\s+(?=")', line):
+                calls.append((name, 'engine_identity.py', _args_text(line[match.end():]), match.group(1)))
+    return calls
+
+
+# Declared leaf values for what only the box run knows (paths, ids, the live URL).
+# Everything else comes from the real texts: the sourced native41 settings file,
+# the draft's own native41_budget function and the bundle harness directory.
+ARGPARSE_VALUES = {
+    'R': '/run/native41/r', 'Q': '/run/native41/q', 'S0': '/run/native41/s0', 'QNAME': 'q18a-native41-autoarm-e',
+    'PROBE_URL': 'http://127.0.0.1:8000', 'MODEL': 'qwen3.8-flash-next', 'RUN_ID': 'q18a-native41-autoarm-e-fixture',
+    'EPOCH': '7', 'CONTAINER': 'qwen-flash-prod', 'OLD_CONTAINER_ID': 'b' * 64, '_cid': 'a' * 64,
+    'BIND_WAIT_S': '30', 'IDLE_TIMEOUT_S': '120', 'DEFAULTS': '/etc/default/vllm-flash', 'ENGINE_CRASHED': '0',
+    'S5_AUTH_ENV_FILE': '/run/native41/private/auth.env', 'S5_OVERLAY': '/run/native41/overlay',
+    'S5_LAUNCHER_NAME': 'run-flash-s5-test.sh', 'TASK': '/data/vllm/flash-next-tp4/prod',
+    'SETCFG': '/tmp/setcfg.py', 'IMAGE_FILE': '/tmp/flash-image.txt', '_kind': 'stock', '_pair': '0',
+    '_label': 'stock-0', '_s': '1.5', '_e': '2.5', 'budget': '300',
+    'S5_GREEN_LIB_SHA256': 'c' * 64, 'S5_REPLAY_LIB_SHA256': 'd' * 64, 'S5_REQUESTED_DECODE_SMS': '44',
+    'Q18A_TARGET_LABEL': 's5-overlap-80-80', 'Q18A_READINESS': '/run/native41/readiness.json',
+}
+
+
+def bash_words(args, harness, draft, values=None):
+    """Expand one call's argument text with the real bash (set -u)."""
+    values = dict(ARGPARSE_VALUES, **(values or {}))
+    budget = draft[draft.index('native41_budget() {'):]
+    budget = budget[:budget.index('\n}\n') + 3]
+    lines = ['set -u', 'fail_early() { :; }', 'fail() { :; }', 'H=%s' % shlex.quote(str(harness))]
+    lines += ['%s=%s' % (k, shlex.quote(v)) for k, v in values.items()]
+    lines += ['GRADE_ARGS=(--arm "$Q/arm-stock-0.json" --ingress "stock-0=$Q/ingress-stock-0.json")',
+              'source "$H/runs/q18a_native41_autoarm_settings.sh" || exit 97', budget,
+              "printf '%s\\0' " + args]
+    done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
+    return done.returncode, done.stdout.decode().split('\0')[:-1], done.stderr.decode()[-400:]
+
+
+def real_parse(path, argv):
+    """Run the script as __main__ until its own parser returns; nothing after it runs."""
+    original_args = argparse.ArgumentParser.parse_args
+    original_known = argparse.ArgumentParser.parse_known_args
+    depth = [0]
+
+    def parse_args(parser, args=None, namespace=None):
+        depth[0] += 1
+        try:
+            namespace = original_args(parser, args, namespace)
+        finally:
+            depth[0] -= 1
+        raise Parsed(vars(namespace))
+
+    def parse_known_args(parser, args=None, namespace=None):
+        result = original_known(parser, args, namespace)
+        if not depth[0]:
+            raise Parsed(vars(result[0]), result[1])
+        return result
+    err = io.StringIO()
+    with mock.patch.object(sys, 'argv', [str(path)] + list(argv)), \
+            mock.patch.object(argparse.ArgumentParser, 'parse_args', parse_args), \
+            mock.patch.object(argparse.ArgumentParser, 'parse_known_args', parse_known_args), \
+            contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        try:
+            runpy.run_path(str(path), run_name='__main__')
+        except Parsed as parsed:
+            extra = parsed.args[1] if len(parsed.args) > 1 else []
+            return ('parsed', parsed.args[0]) if not extra else ('unrecognized', extra)
+        except SystemExit as stop:
+            return 'refused', '%s %s' % (stop.code, err.getvalue().strip().splitlines()[-1:] or '')
+    return 'no-parser', None
+
+
+def setcfg_parse(path, argv):
+    """The real setcfg has no argparse: evaluate its own argv expression from its AST."""
+    import ast
+    tree = ast.parse(Path(path).read_text())
+    (node,) = [n for n in tree.body if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+               and n.targets[0].id == 'over']
+    expression = compile(ast.Expression(node.value), str(path), 'eval')
+    try:
+        with mock.patch.object(sys, 'argv', [str(path)] + list(argv)):
+            return 'parsed', eval(expression, {'sys': sys})
+    except ValueError as exc:
+        return 'refused', str(exc)
+
+
+ARGPARSE_RECEIPTS = []
+
+
+class QueueArgparse(unittest.TestCase):
+    """Native43 n43-f went INCONCLUSIVE on the box: one queue call lacked a
+    required --container-id and no self-run caught it. Every python3 call of the
+    native41 queue texts that names a script runs here, expanded by the real bash
+    (set -u, the sourced settings, the draft's own budget function), against
+    that script's real parser in the bundle."""
+
+    def test_every_queue_python_call_parses_with_its_real_parser(self):
+        texts = queue.derive()
+        draft = texts[DRAFT]
+        calls = queue_python_calls(texts, (HERE / 'qlib.sh').read_text())
+        scripts = sorted({c[1] for c in calls})
+        self.assertEqual(scripts, sorted([
+            'SETCFG', 'e2_memory_attribution.py', 'e3_native28_host_observer.py', 'e3_native30_e_grade.py',
+            'e3_native39_trunk_checks.py', 'e3_native39_w2_length.py', 'e3_native41_autoarm_box.py',
+            'e3_native41_unarmed_box.py', 'e3_native_speculation_gate.py', 'e3_native_startup_grade.py',
+            'e3_private_auth.py', 'engine_identity.py', 'native35_ledger_grade.py']))
+        setcfg = next(p for p in (ROOT / 'deploy/setcfg.py', HERE / 'setcfg.reference.py') if p.is_file())
+        rows = []
+        for name, script, args, form in calls:
+            with self.subTest(file=name.split('/')[-1], script=script, args=args[:60]):
+                rc, words, err = bash_words(args, HERE, draft)
+                self.assertEqual(rc, 0, err)
+                if form != 'python3':
+                    words = QLIB_CALLS[form][1](words)
+                if script == 'SETCFG':
+                    verdict, detail = setcfg_parse(setcfg, words)
+                else:
+                    verdict, detail = real_parse(HERE / script, words)
+                self.assertEqual(verdict, 'parsed', (script, words[:4], detail))
+                rows.append(dict(file=name.split('/')[-1], script=script, form=form,
+                                 action=words[0] if words and not words[0].startswith('-') else None,
+                                 words=len(words), verdict=verdict))
+        self.assertEqual(len(rows), len(calls))
+        self.assertGreaterEqual(len(rows), 28)
+        ARGPARSE_RECEIPTS[:] = rows
+
+        # Negative controls through the same path: the n43-f shape, a missing
+        # required option, an unknown option and an undeclared variable.
+        def first(script, action):
+            return next(a for n, s, a, f in calls if s == script and a.split()[0] == action)
+        bind = first('e3_native39_trunk_checks.py', 'bind')
+        self.assertIn('--container-id "${_cid:-none}"', bind)
+        controls = (
+            ('bind-without-container-id', 'e3_native39_trunk_checks.py',
+             bind.replace('--container-id "${_cid:-none}"', ''), 'refused'),
+            ('unarmed-without-epoch', 'e3_native41_unarmed_box.py',
+             next(a for n, s, a, f in calls if s == 'e3_native41_unarmed_box.py').replace('--epoch "$EPOCH"', ''),
+             'refused'),
+            ('arm-unknown-option', 'e3_native41_autoarm_box.py', first('e3_native41_autoarm_box.py', 'arm')
+             .replace('--control-timeout-s', '--control-timeout-sec'), 'refused'),
+        )
+        for label, script, args, expected in controls:
+            with self.subTest(control=label):
+                rc, words, err = bash_words(args, HERE, draft)
+                self.assertEqual(rc, 0, err)
+                verdict, detail = real_parse(HERE / script, words)
+                self.assertEqual(verdict, expected, (label, detail))
+        rc, _, err = bash_words('--out "$NOT_DECLARED_ANYWHERE"', HERE, draft)
+        self.assertNotEqual(rc, 0)
+        self.assertIn('NOT_DECLARED_ANYWHERE', err)
+        verdict, _ = setcfg_parse(setcfg, ['NO_EQUALS_SIGN'])
+        self.assertEqual(verdict, 'refused')
 
 
 class Derivation(unittest.TestCase):
