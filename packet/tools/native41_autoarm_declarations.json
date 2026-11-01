@@ -3,6 +3,9 @@
     "A\tdocs/e3-briefs/q18a-native41-autoarm-delivery.md",
     "A\tresults/hub/native41-autoarm-c/delivery.json",
     "A\tresults/hub/native41-autoarm-c/native-precheck.conf",
+    "A\tresults/hub/native41-autoarm-d/clock-scan.json",
+    "A\tresults/hub/native41-autoarm-d/delivery.json",
+    "A\tresults/hub/native41-autoarm-d/native-precheck.conf",
     "A\tresults/hub/native41-autoarm/delivery.json",
     "A\tresults/hub/native41-autoarm/native-precheck.conf",
     "A\treviews/codex-20261101-native41-autoarm.md"
@@ -149,7 +152,8 @@
     "A\ttools/native41_box_delivery.py",
     "A\ttools/native41_box_precheck_conf.py",
     "A\ttools/native41_box_queue.py",
-    "A\ttools/native41_box_selfrun.py"
+    "A\ttools/native41_box_selfrun.py",
+    "A\ttools/native41_clock_scan.py"
   ],
   "schema": "native41-autoarm-freeze-declaration/1"
 }
