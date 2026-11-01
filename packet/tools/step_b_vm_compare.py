@@ -76,11 +76,28 @@ def summarize(name, run):
                 abs_max=max(row['abs_max'] for row in digests), launch=launch(run))
 
 
+NOISE_FACTOR = 2  # declared before the fingerprint runs: a size is within noise up to twice the size 1 repeat's largest difference
+
+
+def numeric(reference, other):
+    """Largest per-row difference of the hidden state's row sums and row maxima over all chunks, or None without fingerprints."""
+    sums, maxes = [], []
+    for a, b in zip(reference['section']['chunks'], other['section']['chunks']):
+        x, y = a['output_digest'], b['output_digest']
+        if 'row_sums' not in x or 'row_sums' not in y:
+            return None
+        sums.append(max(abs(p - q) for p, q in zip(x['row_sums'], y['row_sums'])))
+        maxes.append(max(abs(p - q) for p, q in zip(x['row_abs_max'], y['row_abs_max'])))
+    return dict(row_sum_max_diff=max(sums), row_abs_max_max_diff=max(maxes),
+                first_chunk_with_a_difference=next((i for i, v in enumerate(sums) if v), None))
+
+
 def compare(reference, other):
     left = [row['output_digest']['sha256'] for row in reference['section']['chunks']]
     right = [row['output_digest']['sha256'] for row in other['section']['chunks']]
     differing = [i for i, (a, b) in enumerate(zip(left, right)) if a != b]
     return dict(chunks=(len(left), len(right)), hidden_differing_chunks=len(differing), first_differing=differing[:5],
+                numeric=numeric(reference, other),
                 prefill_tokens_equal=reference['section']['prefill_output_ids'] == other['section']['prefill_output_ids'],
                 cohort_tokens_equal=reference['section']['cohort_output_ids'] == other['section']['cohort_output_ids'])
 
@@ -106,15 +123,26 @@ def main(argv=None):
         bytes_verdict = 'INC'
     else:
         bytes_verdict = 'PASS' if same else 'FAIL'
+    noise = pairs[repeat]['numeric'] if repeat else None
+    if noise is None or not other_sizes or any(pairs[name]['numeric'] is None for name in other_sizes):
+        numeric_verdict = 'INC'
+    else:
+        bound = NOISE_FACTOR * noise['row_sum_max_diff']
+        numeric_verdict = 'WITHIN_NOISE' if all(pairs[name]['numeric']['row_sum_max_diff'] <= bound and pairs[name]['cohort_tokens_equal']
+                                                and pairs[name]['prefill_tokens_equal'] for name in other_sizes) else 'OUTSIDE_NOISE'
     report = dict(schema='step-b-vm-compare/1', reference=names[0], repeat=repeat, deterministic=deterministic, bytes_verdict=bytes_verdict,
+                  numeric_verdict=numeric_verdict, noise_factor=NOISE_FACTOR,
+                  numeric_meaning='bytes differ between two identical size 1 runs from chunk 2 on, so equality of bytes cannot be '
+                                  'required; a size is WITHIN_NOISE when its largest row-sum difference to the reference is at most '
+                                  'NOISE_FACTOR times the size 1 repeat\'s, with equal tokens. That is numerical, not bytewise',
                   runs={name: summarize(name, run) for name, run in runs.items()}, pairs=pairs,
                   cannot_show=['real weights: seeded dummy weights', 'TP and PP: one rank, no collective, no ledger',
                                'the engine driver: the tool drives the bridge', 'decode under load on the real model'])
     Path(args.out).write_text(json.dumps(report, indent=1) + '\n')
-    print(json.dumps(dict(bytes_verdict=bytes_verdict, deterministic=deterministic, pairs=pairs,
+    print(json.dumps(dict(bytes_verdict=bytes_verdict, numeric_verdict=numeric_verdict, deterministic=deterministic, pairs=pairs,
                           runs={name: {k: row[k] for k in ('size', 'verdict', 'ops_per_chunk', 'own_peak_mib', 'distinct_digests', 'nonfinite', 'launch')}
                                 for name, row in report['runs'].items()}), indent=1))
-    return 0 if bytes_verdict == 'PASS' else 1
+    return 0 if bytes_verdict == 'PASS' or numeric_verdict == 'WITHIN_NOISE' else 1
 
 
 if __name__ == '__main__':

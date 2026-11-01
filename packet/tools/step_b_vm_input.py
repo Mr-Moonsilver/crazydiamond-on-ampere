@@ -95,7 +95,12 @@ GROUP_TYPES = "layer_types=['linear_attention', 'linear_attention', 'linear_atte
 SEED = 20261101
 
 
-def patch_probe(out, fused, group, ticks=None):
+PERIODIC_PROMPT = 'prompt_token_ids=[i % 200 + 1 for i in range(PROMPT_TOKENS)],'
+SEEDED_PROMPT = ("prompt_token_ids=[int.from_bytes(hashlib.sha256(b'%d:%%d' %% i).digest()[:4], 'big') %% 200 + 1 "
+                 "for i in range(PROMPT_TOKENS)],")
+
+
+def patch_probe(out, fused, group, ticks=None, prompt_seed=None):
     """Same two output/identity patches as tools/build_native31_vm.py."""
     shutil.copyfile(ROOT / 'tools/native31_probe_archive.py', out / 'proof/native31_probe_archive.py')
     path = out / 'proof/e3_native29_overlap_probe.py'
@@ -151,6 +156,12 @@ def patch_probe(out, fused, group, ticks=None):
         text = replace_once(text, "            state['groups'] = dict(layer_group_plan(0, LAYERS, set(state['grants']), STEP_B_SIZE))\n",
                             "            state['groups'] = dict(layer_group_plan(0, LAYERS, set(state['grants']), STEP_B_SIZE))\n"
                             "            state['tick_ends'] = {end for _, end in layer_group_plan(0, LAYERS, set(state['grants']), %d)}\n" % ticks)
+    if prompt_seed is not None:
+        # The B5 prompt repeats every 200 tokens, so rows tie exactly once a selection is narrower than the history. A prompt
+        # that does not repeat tests whether those ties are what makes two identical runs differ from chunk 2 on.
+        # The GPU branch's prefill only: the CPU-shape branch has the same line and never reaches a device.
+        head = "        controller.attach()\n        prefill = Request(request_id='native29-prefill',\n                          "
+        text = replace_once(text, head + PERIODIC_PROMPT, head + SEEDED_PROMPT % prompt_seed)
     # After the completion poll, so this read cannot be the sync that makes the chunk pass.
     text = replace_once(text, "    report = wait(complete, 'completion')\n",
                         "    report = wait(complete, 'completion')\n"
@@ -158,7 +169,9 @@ def patch_probe(out, fused, group, ticks=None):
                         "    hidden = stack.dispatcher.lane.hidden_states.detach().cpu().to(torch.float32)\n"
                         "    output_digest = dict(sha256=hashlib.sha256(hidden.numpy().tobytes()).hexdigest(),\n"
                         "                         shape=list(hidden.shape), abs_max=float(hidden.abs().max()),\n"
-                        "                         nonfinite=int((~torch.isfinite(hidden)).sum()))\n")
+                        "                         nonfinite=int((~torch.isfinite(hidden)).sum()),\n"
+                        "                         row_sums=[float(x) for x in hidden.to(torch.float64).sum(dim=1)],\n"
+                        "                         row_abs_max=[float(x) for x in hidden.abs().max(dim=1).values])\n")
     text = replace_once(text, "    return dict(chunk=chunk_index, start=record.transaction.chunk_start,",
                         "    return dict(output_digest=output_digest, chunk=chunk_index, start=record.transaction.chunk_start,")
     text = replace_once(text, "        return dict(verdict='PASS', gpu_execution=True, engine_constructed=False,",
@@ -217,7 +230,7 @@ def supersede_cpu_fixtures(out, source):
     return target
 
 
-def build(overlay_src, bundle_manifest, out, fused, group, ticks=None):
+def build(overlay_src, bundle_manifest, out, fused, group, ticks=None, prompt_seed=None):
     candidate = out.name.removesuffix('-input')
     if not candidate.startswith('step-b-') or candidate == out.name or out.exists():
         raise ValueError('need a fresh --work/<step-b-*>-input')
@@ -247,7 +260,7 @@ def build(overlay_src, bundle_manifest, out, fused, group, ticks=None):
     if graph['verdict'] != 'PASS':
         raise ValueError('import graph: ' + str(graph['runtime_ownership_errors']))
     dump(out / 'proof/import-graph.json', graph)
-    patch_probe(out, fused, group, ticks)
+    patch_probe(out, fused, group, ticks, prompt_seed)
     patch_wrappers(out, candidate, launcher)
     path = out / 'run_cpu.py'
     path.write_text(replace_once(path.read_text(), "refusal['line']!=1474", "refusal['line']!=%d" % refusal_line(overlay)))
@@ -344,6 +357,8 @@ def main():
     parser.add_argument('--ticks', type=int, choices=(2, 4), default=None,
                         help='one decode tick per this group size instead of one per command, so runs of different sizes '
                              'interleave decode the same way; a tick after every command otherwise')
+    parser.add_argument('--prompt-seed', type=int, default=None,
+                        help='a prompt that does not repeat, from this seed, instead of the B5 prompt with period 200')
     # Launch blocking off: the fused path's stream order must hold with real overlap.
     parser.add_argument('--wrapper', default='run_gpu_async.py', choices=WRAPPERS)
     parser.add_argument('--record', type=Path, help='fresh local directory for the fetched VM run')
@@ -352,7 +367,7 @@ def main():
         parser.error('--vm-run needs --record')
     out = args.work.resolve() / (args.name + '-input')
     overlay, bundle_manifest = resolve_overlay(args.bundle, args.overlay)
-    build(overlay.resolve(), bundle_manifest, out, True, args.group, args.ticks)
+    build(overlay.resolve(), bundle_manifest, out, True, args.group, args.ticks, args.prompt_seed)
     if args.cpu_selfrun:
         rc, target = cpu_selfrun(out, args.cpu_fixtures)
         print(json.dumps(dict(cpu_selfrun_rc=rc, cpu_record=str(target))), flush=True)
