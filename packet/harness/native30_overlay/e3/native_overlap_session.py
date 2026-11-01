@@ -152,12 +152,25 @@ class NativeOverlapSession:
         start_ns, full_begin, begin_proof = window
         self._auto_window = None
         end_ns = int(self.clock())
-        raw = await self.control.overlap_evidence(start_ns, end_ns)
+        try:
+            raw = await self.control.overlap_evidence(start_ns, end_ns)
+        except Exception as error:
+            # The driver refuses a window that journaled nothing
+            # (engine_driver.overlap_evidence). Here that is the answer "no
+            # automatic native work in this window", typed below; every other
+            # evidence failure is raised unchanged.
+            if EMPTY_WINDOW_ERROR not in str(error):
+                raise
+            raw = None
+        # The closing read's clock proof: the evidence read, or the status read
+        # when the driver refused an empty window.
         proof = self.control.history[-1].get('clock_proof') if self.control.history else None
         status = await self.control.status()
+        if raw is None:
+            proof = self.control.history[-1].get('clock_proof') if self.control.history else None
         before, after = full_begin.get('auto_arm') or {}, status.get('auto_arm') or {}
         armed = after.get('last_armed') if type(after) is dict else None
-        reasons = []
+        reasons = [] if raw is not None else ['auto-window-journaled-no-native-work']
         seq, done = before.get('selection_seq'), before.get('completed')
         if (type(seq) is not int or type(done) is not int or after.get('active') is not False
                 or after.get('manual_owned') is not False or after.get('selection_seq') != seq + 1
@@ -177,16 +190,19 @@ class NativeOverlapSession:
                     or (snapshot.get('admission_intent') or {}).get('phase') != 'auto-prefill'):
                 reasons.append('auto-window-armed-route-unproved')
         measured, binding = select_window_evidence(raw, snapshot, start_ns, end_ns)
-        result = {'engine_epoch': raw.get('engine_epoch'), 'route': raw.get('route'),
+        evidence = raw if raw is not None else status
+        result = {'engine_epoch': evidence.get('engine_epoch'), 'route': evidence.get('route'),
                   'begin': snapshot, 'full_begin': full_begin, 'end_status': status,
                   'clock': {'begin': begin_proof, 'end': proof},
                   'measure_start_ns': start_ns, 'measure_end_ns': end_ns,
-                  'measurement_binding': binding, 'measurement': raw.get('measurement'),
+                  'measurement_binding': binding,
+                  'measurement': None if raw is None else raw.get('measurement'),
                   'raw_journal_evidence': raw, 'auto_reasons': reasons,
                   'complete': not reasons and binding.get('valid') is True
                               and type(proof) is dict and proof.get('proved') is True}
+        # Without a journal the queried end status carries the admission record.
         refusal = native_admission_refusal(full_begin.get('native_admission'),
-                                           raw.get('native_admission'))
+                                           evidence.get('native_admission'))
         if refusal is not None:
             result['refusal'] = refusal
             result['refusal_policy'] = REFUSAL_POLICY
