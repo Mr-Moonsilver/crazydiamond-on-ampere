@@ -51,13 +51,14 @@ if not OVERLAY.is_dir():
 def package_inventory():
     """Bind the historical O fixture's version, without changing validation.
 
-    Hub tests intentionally use frozen native35 O; it predates native41's
-    opt-in module. Frozen native41 bundle tests use their own complete overlay.
+    Hub tests intentionally use frozen native35 O; it predates native41's and
+    C0's opt-in modules. Frozen native41 bundle tests use their own complete overlay.
     Every historical module/library/hash is still checked by the real gate.
     """
     import decode_probe
     expected=tuple(name for name in decode_probe.GENERATED_SOURCES
-                   if name!='native_auto_arm' or (OVERLAY/'e3/native_auto_arm.py').is_file())
+                   if name not in ('native_auto_arm','stage_wire','stage_progress')
+                   or (OVERLAY/('e3/%s.py'%name)).is_file())
     with patch.object(decode_probe,'GENERATED_SOURCES',expected):
         yield
 

@@ -716,6 +716,9 @@ def attach_native_router(args, app, env=None):
     # installed (FLASH_S5_NATIVE_PROGRESS=burst, which requires the auto-arm switch).
     if auto_actions and env.get('FLASH_S5_NATIVE_PROGRESS', '') == 'burst':
         auto_actions += ('native_progress',)
+    # C0: the per-arm native_stage_local switch, only where it is installed.
+    if auto_actions and env.get('FLASH_S5_STAGE_LOCAL', '0') == '1':
+        auto_actions += ('native_stage_local',)
     install_owner_health(app)
 
     async def endpoint(request):
