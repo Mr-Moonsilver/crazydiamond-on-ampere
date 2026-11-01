@@ -52,6 +52,9 @@ def record(a):
     assert e['network'] == 'none' and e['gpu_device_requests'] == 0 and e['image'] == b['image']
     clock = e['clock_split']
     assert clock['verdict'] == 'PASS' and clock['outcomes'] == spec['clock_split']['expect'] and clock['side'] == spec['clock_split']['side']
+    assert clock['method'] and clock['split']['boot_ids_differ'] and clock['split']['time_namespaces_differ']
+    probes = {row['field']: e[row['field']] for row in spec['engine_selfrun'].get('probes', [])}
+    assert all(v['verdict'] == 'PASS' and v['required_ok'] is True for v in probes.values()), probes
     assert o['verdict'] == 'PASS' and o['rc'] == 0 and o['runner_sha256'] == b['runner_sha256'] and o['bundle_manifest'] == b['manifest']
     assert o['network'] == 'none' and o['gpu_device_requests'] == 0 and not o['problems']
     assert c['verdict'] == 'PASS' and not c['failures'] and c['manifest'] == b['manifest'] and c['runner_sha256'] == b['runner_sha256']
@@ -94,7 +97,7 @@ def record(a):
         engine_selfrun=str(a.engine_selfrun), engine_selfrun_sha256=sha(a.engine_selfrun),
         engine_selfrun_view=dict(probe39=e['probe39']['verdict'], probe37=e['probe37']['verdict'], py_compile=e['py_compile'],
                                  suites=e['suites'], network=e['network'], gpu_device_requests=e['gpu_device_requests']),
-        clock_split=clock,
+        clock_split=clock, engine_selfrun_probes=probes,
         owner_seam=str(a.owner_seam), owner_seam_sha256=sha(a.owner_seam),
         owner_seam_view=dict(verdict=o['verdict'], negatives=o['negatives'], fixture_leaves=o['fixture_leaves'],
                              real_draft_client_foreground=o['real_draft_client_foreground'],

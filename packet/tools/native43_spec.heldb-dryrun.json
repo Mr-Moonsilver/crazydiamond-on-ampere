@@ -68,7 +68,7 @@
       ],
       [
         "and engine.get('image')==IMAGE and engine.get('box_action') is False,'exact-engine-selfrun-required')",
-        "and engine.get('image')==IMAGE and engine.get('box_action') is False\n                and (engine.get('clock_split') or {}).get('verdict')=='PASS','exact-engine-selfrun-required')"
+        "and engine.get('image')==IMAGE and engine.get('box_action') is False\n                and (engine.get('clock_split') or {}).get('verdict')=='PASS'\n                and (engine.get('scheduler_tick_probe') or {}).get('verdict')=='PASS' and (engine.get('scheduler_tick_probe') or {}).get('required_ok') is True,'exact-engine-selfrun-required')"
       ],
       [
         "    for suffix in ('','-requests','.log','-declare.log','-declare-chain.log','-staging.json'):\n",

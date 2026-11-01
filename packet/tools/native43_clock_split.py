@@ -58,6 +58,10 @@ import uuid
 
 IMAGE = 'sha256:ad067db5d64ed30b52f5aa9ae88d7645e71ff1842c876d7db116fed617a5cd0b'
 SAMPLES = 8
+METHOD = ('declared alternate boot_id bind mount: the client container (CT view) gets a fresh UUID file bound onto '
+          '/proc/sys/kernel/random/boot_id (as lxcfs gives the CT), then drops all capabilities (setpriv); the engine '
+          'container keeps the real kernel boot_id; each container has its own time namespace; both timens_offsets '
+          'are read and must be zero; transport is a FIFO pair, both containers --network none, no devices')
 CHECKS = ('identity_equality', 'prove_clock_domain', 'native_window_clock', 'bracket')
 SIDES = {'native43-clock-probe': ['python3', '-B', '/source/harness/native43_clock_probe.py', '--serve'],
          'driver-clock-record': ['python3', '-B', '/n43/clock_split.py', 'serve']}
@@ -278,7 +282,7 @@ def assemble(out, side, expect, client_rc, control_rc, info, commands, ct_boot):
         reasons.append('network-not-none')
     if any(info[k]['device_requests'] or info[k]['devices'] for k in info):
         reasons.append('device-request')
-    return dict(schema='native43-clock-split/1', side=side, verdict='FAIL' if reasons else 'PASS',
+    return dict(schema='native43-clock-split/1', side=side, verdict='FAIL' if reasons else 'PASS', method=METHOD,
                 classification='HARNESS' if reasons else None, reasons=reasons, outcomes=client['outcomes'],
                 expected=expect, control_outcomes=control_outcomes, split=split, client_rc=client_rc,
                 control_rc=control_rc, containers=info, commands=commands,
