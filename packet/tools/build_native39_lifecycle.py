@@ -3,8 +3,10 @@
 
 Bundle: the native39 trunk held-b bundle (756f826c221c, source 75f7189) with
 its engine overlay (native30_overlay), engine sources (e3_builder) and review
-(native30-review.json) byte-identical, so the lifecycle runs the trunk engine
-bit for bit; added are the lifecycle queue texts, window, suite, fixture leaves
+(native30-review.json) byte-identical, so the lifecycle runs the trunk engine's
+code bit for bit; its settings add one declared telemetry env delta,
+FLASH_POOL_STATS=200 (lead, 1 Nov 2026), read only by the overlay's pool
+telemetry.  Added are the lifecycle queue texts, window, suite, fixture leaves
 and tools; changed are selftest.py (one registry row) and the provenance
 (candidate, arm, sources, regression).  No overlay is regenerated.
 
@@ -108,22 +110,45 @@ def source_head():
 def details():
     return dict(candidate=CANDIDATE, arm=ARM, parent=PARENT_CANDIDATE, parent_manifest=PARENT_MANIFEST,
         parent_bundle_source=PARENT_BUNDLE_SOURCE, engine_files=[],
-        scope='the trunk held-b engine byte for byte (overlay, engine sources and review identical) under a lifecycle/leak '
-              'queue; observer and offers off as on the trunk',
+        scope='the trunk held-b engine code byte for byte (overlay, engine sources and review identical) under a '
+              'lifecycle/leak queue; observer and offers off as on the trunk; one declared telemetry env delta '
+              '(FLASH_POOL_STATS=200)',
+        telemetry_delta=dict(
+            env={'FLASH_POOL_STATS': '200'}, against='q18a-native39-trunk settings (held-b)', speed_claim=False,
+            reason='the unchanged pressure-lifetime oracle (pp_release_grade lifetime) needs the FLASH_PP_LAYOUT '
+                   'state-group layout and the FLASH_POOL_STATS state-group eviction counters',
+            code_path=['patches/s5_engine/telemetry_hooks.py: block_pool() applies the reviewed make_ppgrouping pool '
+                       'counters (pool_stats_source.py, sha 2c227099...); LAYOUT and STEP insert the startup layout log '
+                       'and one flash_pool_step() per Scheduler.schedule',
+                       'native30_overlay/core/block_pool.py: __init__ reads FLASH_POOL_STATS (the only reader of the '
+                       'env in the overlay); _flash_count, _flash_pool_snapshot and flash_pool_step only count, read '
+                       'blocks/ref counts/hash maps and log; get_cached_block and _maybe_evict_cached_block add counting '
+                       'under the flag and return the same values',
+                       'native30_overlay/core/scheduler.py: the FLASH_PP_LAYOUT block in Scheduler.__init__ and the '
+                       'flash_pool_step() call in schedule'],
+            asserted=['settings EXTRA_ENV (comment names the reason)', 'declare PY_DECL',
+                      'preflight PY_PREFLIGHT', 'identity-start capture compared to the declaration',
+                      'pool-telemetry record (captured env + startup FLASH_PP_LAYOUT line)'],
+            box_precedent='E2 gate runs with FLASH_POOL_STATS=200 (harness/runs/q16_settings.sh E2_ENV_BASE): '
+                          'q16c control lifetime coverage PASS, 12222 evictions / 10663 state evictions '
+                          '(tmp/q16c-sample/q16c-gate/control-lifetime.coverage.json); q16j PASS, 12514 / 10901 '
+                          '(tmp/q16j-managed-result/summary.json); on the E2 engine, not yet on an S5 native engine',
+            cost='an O(blocks) snapshot scan on the scheduler thread every 200 scheduler steps plus per-lookup '
+                 'counters; not measured on the S5 engine'),
         queue='q18a-native39-lifecycle: the trunk queue through startup, bind receipt, W2 length guard and row1 (the lane '
               'proof), then native35-L\'s gates (startup, row1) and its native28 lifecycle block between two instruments '
               'receipts: native cancel/drain/reuse on the trunk W2 manifest, typed FULL hygiene, leaktest 8 x 3, pressure2 '
               '2 x 200000 beside the 7568 partial-tail leak at 30 % cancels, pressure completion and lifetime; native35 '
               'lifetime grade at exit; rule4, row4, W1, the plain W1 and the W2 speed rounds are absent',
-        known_inconclusive=['pressure-lifetime and therefore native35-lifetime: the trunk engine env has no FLASH_POOL_STATS, so '
-                            'no FLASH_PP_LAYOUT / FLASH_POOL_STATS line reaches the unchanged pp_release_grade lifetime oracle',
-                            'native30-localize: no row4 placement to read (INCONCLUSIVE HARNESS, as on native36-wd and native35-L)'],
+        known_inconclusive=['native30-localize: no row4 placement to read (INCONCLUSIVE HARNESS, as on native36-wd and '
+                            'native35-L); the queue rc is therefore 2 at best and the verdict is native35-lifetime-grade.json'],
         window=dict(not_before=window.NOT_BEFORE, hard_end=window.HARD_END, active_s=window.LIFECYCLE_ACTIVE_S,
                     cleanup_margin_s=window.LIFECYCLE_CLEANUP_MARGIN_S, latest_entry_utc=window.LATEST_ENTRY_UTC,
                     active_derivation=[list(r) for r in window.ACTIVE_DERIVATION],
                     cleanup_derivation=[list(r) for r in window.CLEANUP_DERIVATION],
                     expected_runtime_s=window.EXPECTED_RUNTIME_S),
-        model_settings_changed=False, tail_handback=False, device_run='NOT_RUN',
+        model_settings_changed=False, engine_env_delta={'FLASH_POOL_STATS': '200'}, tail_handback=False,
+        device_run='NOT_RUN',
         fixture_leaves='native39_lifecycle_fixture_leaves.json', owner_runner=CANDIDATE + '-owner-run-<bundle12>.py',
         limitations='CPU fixture resources do not establish native cancellation, KV pressure, partial-tail copies or leak '
                     'behaviour on the device; the lifecycle block has not run on a native engine')
@@ -208,6 +233,7 @@ def build(out, strict_log, focused_log):
     provenance.update(source=source, candidate=CANDIDATE, native35_arm=ARM, native39_lifecycle=details(), selftest=regression,
                       post_review_cpu=focused, parent_bundle_manifest=PARENT_MANIFEST, parent_candidate=PARENT_CANDIDATE,
                       parent_bundle_source=PARENT_BUNDLE_SOURCE, engine_changed=[], engine_changed_vs_native39_trunk=[],
+                      engine_env_delta_vs_native39_trunk={'FLASH_POOL_STATS': '200'},
                       overlay_byte_identical_to_parent=True, review_byte_identical_to_parent=True)
     dump(bundle / 'native30-provenance.json', provenance)
     manifest(bundle)
@@ -244,7 +270,7 @@ def build(out, strict_log, focused_log):
                   checksummed_files=len(rows), source=source, held=True, regression=regression, focused=focused,
                   expected_selfrun_tests=expected_tests(), image=IMAGE, parent_manifest=PARENT_MANIFEST,
                   parent_runner=str(PARENT_RUNNER), parent_runner_sha256=PARENT_RUNNER_SHA, parent_bundle=str(PARENT),
-                  engine_changed=[], latest_entry_utc=window.LATEST_ENTRY_UTC,
+                  engine_changed=[], engine_env_delta={'FLASH_POOL_STATS': '200'}, latest_entry_utc=window.LATEST_ENTRY_UTC,
                   freeze_proof_sha256=sha(out / 'freeze-proof.json'))
     dump(out / 'build.json', result)
     for path in [held, *held.rglob('*'), runner]:

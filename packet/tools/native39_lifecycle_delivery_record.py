@@ -46,6 +46,7 @@ def record(build, freeze, bundle_selfrun, engine_selfrun, compile_proof, prechec
     s, e = load(bundle_selfrun), load(engine_selfrun)
     assert f['verdict'] == 'PASS' and f['manifest'] == b['manifest'] and b['freeze_proof_sha256'] == sha(freeze)
     assert f['engine_changed'] == [] and f['overlay_byte_identical'] is True and f['overlay_regenerated'] is False
+    assert b['engine_env_delta'] == {'FLASH_POOL_STATS': '200'}
     assert s['verdict'] == 'PASS' and s['rc'] == 0 and s['bundle_manifest'] == b['manifest']
     assert s['frozen_runner_sha256'] == b['runner_sha256'] and s['tests_run'] == b['expected_selfrun_tests'] and s['skips'] == 0
     assert s['native35_arm'] == 'LIFECYCLE' and s['native39_lifecycle_queue'] == 'PASS' and s['native39_trunk_queue'] == 'PASS'
@@ -77,6 +78,7 @@ def record(build, freeze, bundle_selfrun, engine_selfrun, compile_proof, prechec
         coverage=b['checksummed_files'], review_sha256=b['review_sha256'], image=b['image'],
         runner=b['runner'], runner_sha256=b['runner_sha256'], runner_size=b['runner_size'],
         latest_entry_utc=b['latest_entry_utc'],
+        engine_env_delta=b['engine_env_delta'], telemetry_delta=details['telemetry_delta'],
         parent=dict(name='q18a-native39-trunk', manifest=b['parent_manifest'], bundle=b['parent_bundle'],
                     overlay_manifest=f['parent_overlay_manifest'], review_sha256=f['review_sha256']),
         runner_parent=dict(path=f['runner']['parent'], sha256=f['runner']['parent_sha256']),
@@ -112,7 +114,8 @@ def record(build, freeze, bundle_selfrun, engine_selfrun, compile_proof, prechec
         gpu_execution=False, box_action=False,
         scope='frozen input gates, the fresh strict regression, both pinned-image CPU self-runs, the compile proof and the '
               'owner precheck; no device run; cancellation, KV pressure, partial-tail and leak behaviour come only from the '
-              'box run')
+              'box run; the engine is the trunk engine in code with one declared telemetry env delta '
+              '(FLASH_POOL_STATS=200), which makes no speed claim')
     out.mkdir(parents=True, exist_ok=True)
     for name, value in (('delivery.json', row), ('frozen-gates.json', {k: v for k, v in row.items() if k not in ('strict', 'focused')}),
                         ('strict.json', strict)):

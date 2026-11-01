@@ -6,8 +6,9 @@ W2 length guard), row1 as the lane proof, then the native28/native35-L lifecycle
 block (native cancel/drain/reuse, typed FULL hygiene, leaktest 8 x 3, pressure2
 2 x 200000 beside the 7568 partial-tail leak at 30 % cancels, pressure completion
 and lifetime) between two of the trunk's instruments receipts (observer and offers
-off on the actual rank processes, before the block and at its end), and the
-trunk's unchanged ending.  The active budget is derived row
+off on the actual rank processes, before the block and at its end), after a
+pool-telemetry record (the declared FLASH_POOL_STATS=200 delta as the engine runs it),
+and the trunk's unchanged ending.  The active budget is derived row
 by row: the startup and row1 rows are P's (native35p_gate.ACTIVE_DERIVATION) and
 the trunk's (native39_trunk_gate.TRUNK_DERIVATION), taken by name with their values
 unchanged; the lifecycle rows are the tools' own caps or a stated 2x estimate (no
@@ -34,6 +35,8 @@ STARTUP_DERIVATION = (_rows(P_ACTIVE_DERIVATION, ('restart-to-health', 'speculat
                       + _rows(TRUNK_DERIVATION, ('bind-receipt', 'w2-length-guard'))
                       + _rows(P_ACTIVE_DERIVATION, ('row1',)))
 LIFECYCLE_DERIVATION = (
+    ('pool-telemetry', 30, 'cap: one read of the identity-start capture and the followed engine log so far (startup and '
+                           'row1); the declared FLASH_POOL_STATS=200 telemetry delta, record only'),
     ('lifetime-gates', 5, 'pure CPU: gates.json from the startup and row1 verdicts'),
     ('instruments-x2', 210, "cap: 2 x the trunk's instruments row (pause + resume at --control-timeout-s 30, 4 x docker "
                             'exec at --exec-timeout-s 10, 5 s start): before the lifecycle block and at its end'),

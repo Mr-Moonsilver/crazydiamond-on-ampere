@@ -4,7 +4,7 @@
 native39_lifecycle_cpu_probe.py = native39_trunk_cpu_probe.py with:
   * FLASH_NATIVE35_ARM=LIFECYCLE, candidate q18a-native39-lifecycle;
   * test_native39_lifecycle_queue added to the discovered suites, EXPECTED_TESTS
-    218 -> 233 (its 15 cases);
+    218 -> 235 (its 17 cases);
   * the owner window boundaries of native39_lifecycle_gate (9600 s + 900 s) for the
     frozen runner's check_slot negatives;
   * the lifecycle draft's real-clock slot receipt appended to the 21 inherited ones;
@@ -20,11 +20,12 @@ from pathlib import Path
 import sys
 
 TOOLS = Path(__file__).resolve().parent
-LIFECYCLE_CASES = sorted(['settings-trunk-engine-observer-offers-off', 'tail-engine-crash-withholds',
-                          'tail-hygiene-refused-stops-leak-and-pressure', 'tail-lifecycle-connected-pool-telemetry-absent',
+LIFECYCLE_CASES = sorted(['settings-trunk-engine-plus-pool-telemetry', 'pool-telemetry-trunk-code-off-inc-on-pass',
+                          'tail-engine-crash-withholds', 'tail-hygiene-refused-stops-leak-and-pressure',
+                          'tail-lifecycle-connected-pool-telemetry-on', 'tail-lifecycle-connected-pool-telemetry-absent',
                           'tail-observer-mapped-withholds', 'tail-real-leak-detected-fails', 'tail-row1-not-pass-withholds',
                           'workload-lifecycle-cli-native39-manifest'])
-LIFECYCLE_TESTS = 15
+LIFECYCLE_TESTS = 17
 
 PROBE_SWAPS = (
     ('"""Native39 trunk CPU-only plugin discovery/source, wrapper, grade, builder-view, speed-arm, L2 row4, LOCALIZE=0 and trunk queue checks; never used by box workers.\n\n'
@@ -60,15 +61,18 @@ PROBE_SWAPS = (
     ("negative=inert.run('/source/harness/runs/q18a_native39_trunk_settings.sh','TRUNK settings (LOCALIZE=0)')",
      "negative=inert.run('/source/harness/runs/q18a_native39_lifecycle_settings.sh','LIFECYCLE settings (LOCALIZE=0)')"),
     ('record=dict(native39_trunk_queue=',
-     '# Native39 lifecycle: the lifecycle region under bash (instruments, real session client, auth hook, leaktest,\n'
-     '# pressure wait, pp_release and native35 lifetime grades), the lifecycle CLI on the trunk W2 manifest and the\n'
-     '# sourced lifecycle settings through the real launcher render.\n'
+     '# Native39 lifecycle: the pool-telemetry record and lifecycle region under bash (instruments, real session client,\n'
+     '# auth hook, leaktest, pressure wait, pp_release and native35 lifetime grades), the trunk engine\'s own pool\n'
+     '# telemetry bytes under each declared env, the lifecycle CLI on the trunk W2 manifest and the sourced lifecycle\n'
+     '# settings through the real launcher render (FLASH_POOL_STATS=200 the only env delta against the trunk).\n'
      "life_cases=sys.modules['test_native39_lifecycle_queue'].QUEUE_RECEIPTS\n"
      'assert sorted(r[\'case\'] for r in life_cases)==' + repr(LIFECYCLE_CASES) + " and all(r['verdict']=='PASS' for r in life_cases)\n"
-     "assert {r['case']:r['lifetime_grade'] for r in life_cases if 'lifetime_grade' in r}=={'tail-lifecycle-connected-pool-telemetry-absent':'INCONCLUSIVE','tail-row1-not-pass-withholds':'INCONCLUSIVE','tail-engine-crash-withholds':'FAIL','tail-real-leak-detected-fails':'FAIL'}\n"
-     "assert [(r['leak_requests'],r['pressure_lifetime'],r['lifetime_missing']) for r in life_cases if r['case']=='tail-lifecycle-connected-pool-telemetry-absent']==[(24,'INCONCLUSIVE',['pressure-lifetime:INCONCLUSIVE'])]\n"
+     "assert {r['case']:r['lifetime_grade'] for r in life_cases if 'lifetime_grade' in r}=={'tail-lifecycle-connected-pool-telemetry-on':'PASS','tail-lifecycle-connected-pool-telemetry-absent':'INCONCLUSIVE','tail-row1-not-pass-withholds':'INCONCLUSIVE','tail-engine-crash-withholds':'FAIL','tail-real-leak-detected-fails':'FAIL'}\n"
+     "assert [(r['leak_requests'],r['pool_telemetry'],r['pressure_lifetime'],r['state_evictions'],r['lifetime_missing']) for r in life_cases if r['case']=='tail-lifecycle-connected-pool-telemetry-on']==[(24,'PASS','PASS',80,[])]\n"
+     "assert [(r['leak_requests'],r['pool_telemetry'],r['pressure_lifetime'],r['lifetime_missing']) for r in life_cases if r['case']=='tail-lifecycle-connected-pool-telemetry-absent']==[(24,'FAIL','INCONCLUSIVE',['pressure-lifetime:INCONCLUSIVE'])]\n"
+     "assert [(r['off_verdict'],r['on_verdict'],r['state_evictions'],r['behaviour_identical']) for r in life_cases if r['case']=='pool-telemetry-trunk-code-off-inc-on-pass']==[('INCONCLUSIVE','PASS',80,True)]\n"
      "assert [r['instruments'] for r in life_cases if r['case']=='tail-observer-mapped-withholds']==['FAIL']\n"
-     "assert [(r['hosts'],r['same_as_trunk'],r['pool_stats']) for r in life_cases if r['case']=='settings-trunk-engine-observer-offers-off']==[(['0.0.0.0','127.0.0.1'],True,False)]\n"
+     "assert [(r['hosts'],r['env_delta_vs_trunk'],r['trunk_refused'],r['p_c_refused'],r['preflight_env_lines']) for r in life_cases if r['case']=='settings-trunk-engine-plus-pool-telemetry']==[(['0.0.0.0','127.0.0.1'],{'FLASH_POOL_STATS':'200'},True,True,True)]\n"
      "Path('/out/native39-lifecycle-queue-check.json').write_text(json.dumps(dict(cases=life_cases,slots=lifecycle_slots),sort_keys=True,indent=2)+'\\n')\n"
      "record=dict(native39_lifecycle_queue='PASS',native39_lifecycle_queue_receipts=life_cases,native39_lifecycle_window_active_and_cleanup_s=active_and_cleanup,"
      'native39_trunk_queue='),

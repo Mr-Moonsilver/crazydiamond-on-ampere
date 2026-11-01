@@ -30,6 +30,14 @@ rule4, row4, W1, the plain W1 control and the W2 speed rounds.  Declared deltas 
      the trunk's 900 s kill margin;
   5. interfaces/pins: native39_lifecycle_gate.py and native35_lifetime_grade.py
      checked at preflight and pinned at declaration;
+  6. declared telemetry delta against the trunk engine (lead, 1 Nov 2026, option a):
+     FLASH_POOL_STATS=200 in EXTRA_ENV, so the S5 core overlay logs the startup
+     FLASH_PP_LAYOUT line and the FLASH_POOL_STATS counters the unchanged
+     pressure-lifetime oracle (pp_release_grade lifetime) reads; asserted in the
+     declaration's PY_DECL and the preflight, and from the engine's own view by a
+     pool-telemetry record (the identity-start capture of the container env and the
+     startup FLASH_PP_LAYOUT line in the followed engine log) before the gates;
+     the settings comment names the reason.  No speed claim;
   plus names, the title line and the header comment.  Every replacement must match exactly once.
 """
 from pathlib import Path
@@ -44,7 +52,7 @@ TRUNK_TITLE = '# q18a-native39-trunk: fresh native performance queue; unrun, no 
 LIFECYCLE_TITLE = '# q18a-native39-trunk: fresh native lifecycle/leak queue; unrun, no GO from this file.\n'  # names() renames it
 TRUNK_HEADER_PREFIX = '# Native39 trunk: '
 TRUNK_HEADER_NEXT = '# Inherited cleanup machinery below; lifecycle/leak (L) and canary phases are absent.\n'
-LIFECYCLE_HEADER = ('# Native39 lifecycle: the trunk queue and engine with the replay observer and engine offers off: native28 startup -> bind receipt -> W2 length guard -> row1 (lane proof) -> lifetime gates (startup, row1) -> native lifetime (cancel/drain/reuse) -> hygiene FULL -> cross-session leak -> pressure + partial-leak tail -> pressure completion/lifetime -> owned restore.\n'
+LIFECYCLE_HEADER = ('# Native39 lifecycle: the trunk queue and engine with the replay observer and engine offers off, pool telemetry on: native28 startup -> bind receipt -> W2 length guard -> row1 (lane proof) -> lifetime gates (startup, row1) -> native lifetime (cancel/drain/reuse) -> hygiene FULL -> cross-session leak -> pressure + partial-leak tail -> pressure completion/lifetime -> owned restore.\n'
                     '# Inherited cleanup machinery below; rule4, row4, W1/W2 performance and canary phases are absent.\n')
 TRUNK_TIMEOUT = '  exec timeout --signal=TERM --kill-after=900s 16200s env Q18A_OVERLAP_BOUNDED=1 bash "$0" "$@"\n'
 LIFECYCLE_TIMEOUT = '  exec timeout --signal=TERM --kill-after=900s 9600s env Q18A_OVERLAP_BOUNDED=1 bash "$0" "$@"\n'
@@ -101,12 +109,54 @@ LIFECYCLE_PREAMBLE = (
     '# w2-length guard checked against this engine\'s /tokenize.  No rule4 continuation exists here.\n'
     'RULE4_CONTINUATION=0\n'
     'export RULE4_CONTINUATION\n')
+# Declared telemetry delta (lead, 1 Nov 2026): the engine as it runs, not only as declared.  The identity-start capture
+# is the container env (engine_identity compares it to the declaration); the startup FLASH_PP_LAYOUT line is logged
+# only by a block pool that read FLASH_POOL_STATS > 0 (core/scheduler.py, telemetry_hooks.LAYOUT).
+POOL_TELEMETRY = (
+    "python3 - \"$Q/engine.identity-start.json\" \"$Q/engine-stream.log\" \"$Q/engine-stream.err\" > \"$Q/pool-telemetry.log\" 2>&1 <<'PY_POOL_TELEMETRY'\n"
+    'import json, sys\n'
+    "env = json.load(open(sys.argv[1]))['identity']['env']\n"
+    "if env.get('FLASH_POOL_STATS') != '200':\n"
+    "    print('engine env FLASH_POOL_STATS %r, declared 200' % (env.get('FLASH_POOL_STATS'),)); raise SystemExit(1)\n"
+    'layouts, bad = [], 0\n'
+    'for name in sys.argv[2:]:\n'
+    '    try:\n'
+    "        text = open(name, errors='replace').read()\n"
+    '    except OSError:\n'
+    '        continue\n'
+    '    for line in text.splitlines():\n'
+    "        if 'FLASH_PP_LAYOUT ' in line:\n"
+    '            try:\n'
+    "                layouts.append(json.loads(line.split('FLASH_PP_LAYOUT ', 1)[1]))\n"
+    '            except ValueError:\n'
+    '                bad += 1\n'
+    "kinds = sorted({str(g.get('kind')) for row in layouts for g in row.get('groups', [])})\n"
+    "print(json.dumps({'flash_pool_stats': env['FLASH_POOL_STATS'], 'layout_lines': len(layouts), 'malformed': bad,\n"
+    "                  'kinds': kinds}, sort_keys=True))\n"
+    "raise SystemExit(0 if layouts and not bad and 'MambaSpec' in kinds else 2)\n"
+    'PY_POOL_TELEMETRY\n'
+    "record pool-telemetry \"$?\" 'engine env FLASH_POOL_STATS=200 as captured at identity-start; the startup FLASH_PP_LAYOUT "
+    "line with a MambaSpec group in the followed engine log'\n")
 
 TRUNK_SETTINGS_NOTE = ('# Native39 speed engine: FLASH_S5_REPLAY_OBSERVER=0 and FLASH_S5_ENGINE_OFFERS=0 below (q18b-w1ab2\n'
                        '# measured ~5 % decode for the two together); row4 placement needs both and is declared NOT_RUN.\n')
 LIFECYCLE_SETTINGS_NOTE = ('# Native39 lifecycle: FLASH_S5_REPLAY_OBSERVER=0 and FLASH_S5_ENGINE_OFFERS=0 below, as on the trunk.\n'
                            '# Synchronous replay-observer grading inside before_route_change froze every observed split->FULL\n'
-                           '# return (fn-main results/box/q18a-native36-wd-run-1); the lifecycle block reads neither.\n')
+                           '# return (fn-main results/box/q18a-native36-wd-run-1); the lifecycle block reads neither.\n'
+                           '# Native39 lifecycle telemetry delta (lead, 1 Nov 2026): FLASH_POOL_STATS=200 below. The pressure-lifetime\n'
+                           '# oracle (pp_release_grade lifetime) needs the FLASH_PP_LAYOUT state-group layout and the FLASH_POOL_STATS\n'
+                           '# state-group eviction counters; the S5 core overlay logs both only when FLASH_POOL_STATS > 0\n'
+                           '# (patches/s5_engine/telemetry_hooks.py: counters read and logged every 200 scheduler steps, no allocation or\n'
+                           '# eviction change). The E2 gate value (q16_settings.sh); no speed claim.\n')
+TRUNK_PREFLIGHT_OFFERS = "assert env.get('FLASH_S5_ENGINE_OFFERS') == '0'\n"
+LIFECYCLE_PREFLIGHT_OFFERS = (TRUNK_PREFLIGHT_OFFERS
+                              + "# Native39 lifecycle telemetry delta: the pressure-lifetime oracle's pool counters (lead, 1 Nov 2026).\n"
+                                "assert env.get('FLASH_POOL_STATS') == '200'\n")
+TRUNK_DECL_OFFERS = "assert env.get('FLASH_S5_ENGINE_OFFERS')=='0', 'engine offers must be off for the speed engine'\n"
+LIFECYCLE_DECL_OFFERS = (TRUNK_DECL_OFFERS
+                         + "assert env.get('FLASH_POOL_STATS')=='200', 'pool telemetry (FLASH_POOL_STATS=200) must be on for the pressure-lifetime oracle'\n")
+TRUNK_EXTRA_ENV = ' FLASH_S5_ENGINE_OFFERS=0 FLASH_S5_REPLAY_LIB='
+LIFECYCLE_EXTRA_ENV = ' FLASH_S5_ENGINE_OFFERS=0 FLASH_POOL_STATS=200 FLASH_S5_REPLAY_LIB='
 TRUNK_DECL_NATIVE = '      e3_native39_w2_length.py e3_native39_trunk_checks.py native39_trunk_gate.py w1_trace.py \\\n'
 LIFECYCLE_DECL_NATIVE = TRUNK_DECL_NATIVE + '      native39_lifecycle_gate.py native35_lifetime_grade.py \\\n'
 
@@ -136,7 +186,7 @@ def lifecycle_region():
                      (L_NOT_RUN, LIFECYCLE_NOT_RUN), (L_GATES_STEP, L_GATES_STEP + INSTRUMENTS_BEFORE)):
         block = swap(block, old, new)
     assert MANIFEST_L not in block and block.endswith('fi\n')
-    return LIFECYCLE_PREAMBLE + block + INSTRUMENTS_AFTER
+    return LIFECYCLE_PREAMBLE + POOL_TELEMETRY + block + INSTRUMENTS_AFTER
 
 
 def cut(text):
@@ -156,7 +206,8 @@ def derive_draft():
     text = (RUNS / (TRUNK + '.draft.sh')).read_text()
     text = swap_header(text)
     for old, new in ((TRUNK_TITLE, LIFECYCLE_TITLE), (TRUNK_TIMEOUT, LIFECYCLE_TIMEOUT), (TRUNK_SLOT_NOTE, LIFECYCLE_SLOT_NOTE), (TRUNK_SLOT, LIFECYCLE_SLOT),
-                     (TRUNK_INTERFACES, LIFECYCLE_INTERFACES), (TRUNK_DIAGNOSTIC, L_GRADE)):
+                     (TRUNK_INTERFACES, LIFECYCLE_INTERFACES), (TRUNK_DIAGNOSTIC, L_GRADE),
+                     (TRUNK_PREFLIGHT_OFFERS, LIFECYCLE_PREFLIGHT_OFFERS)):
         text = swap(text, old, new)
     text = names(cut(text))
     for gone in ('qualification_phase rule4', 'qualification_phase row4', 'e3_native_w1.py "$PROBE_URL"',
@@ -175,8 +226,10 @@ def derive(name, swaps):
 
 def generate():
     return {RUNS / (LIFECYCLE + '.draft.sh'): derive_draft(),
-            RUNS / (LIFECYCLE + '_settings.sh'): derive('_settings.sh', ((TRUNK_SETTINGS_NOTE, LIFECYCLE_SETTINGS_NOTE),)),
-            RUNS / (LIFECYCLE + '_declare.sh'): derive('_declare.sh', ((TRUNK_DECL_NATIVE, LIFECYCLE_DECL_NATIVE),))}
+            RUNS / (LIFECYCLE + '_settings.sh'): derive('_settings.sh', ((TRUNK_SETTINGS_NOTE, LIFECYCLE_SETTINGS_NOTE),
+                                                                         (TRUNK_EXTRA_ENV, LIFECYCLE_EXTRA_ENV))),
+            RUNS / (LIFECYCLE + '_declare.sh'): derive('_declare.sh', ((TRUNK_DECL_NATIVE, LIFECYCLE_DECL_NATIVE),
+                                                                       (TRUNK_DECL_OFFERS, LIFECYCLE_DECL_OFFERS)))}
 
 
 if __name__ == '__main__':

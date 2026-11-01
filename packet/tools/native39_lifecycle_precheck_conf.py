@@ -51,7 +51,7 @@ def generate(build, out, selfrun=None):
     previous = json.loads(PARENT_BUILD.read_text())
     assert previous['manifest'] == b['parent_manifest'] and previous['runner_sha256'] == b['parent_runner_sha256']
     assert b['overlay_manifest'] == previous['overlay_manifest'] and b['review_sha256'] == previous['review_sha256']
-    assert b['engine_changed'] == []
+    assert b['engine_changed'] == [] and b['engine_env_delta'] == {'FLASH_POOL_STATS': '200'}
     container = selfrun_container(b)
     assert container == 'native39-lifecycle-hub-cpu-' + b['manifest'][:12]
     if selfrun is not None:
@@ -93,7 +93,8 @@ def generate(build, out, selfrun=None):
     text = text.replace(PC_EXCLUSIONS, PC_EXCLUSIONS[:-1] + ' ' + ' '.join(TRUNK_DELTA) + ')')
     out.write_text(
         '# Native39 lifecycle (trunk engine byte for byte, lifecycle/leak queue); PREV is the frozen native39 trunk held-b bundle and runner.\n'
-        '# Engine delta vs PREV: none (overlay, engine sources, review and compiled libraries byte-identical). VM-overlay exclusions\n'
+        '# Engine delta vs PREV: none in code (overlay, engine sources, review and compiled libraries byte-identical); one declared\n'
+        '# telemetry env delta in the settings, FLASH_POOL_STATS=200 (pool counters for the pressure-lifetime oracle; no speed claim). VM-overlay exclusions\n'
         '# add the trunk engine delta since P-c (%s).\n'
         '# The lifecycle adds its queue under fresh names, the lifecycle window, suite, fixture leaves and tools.\n'
         % ' '.join(TRUNK_DELTA) + text)

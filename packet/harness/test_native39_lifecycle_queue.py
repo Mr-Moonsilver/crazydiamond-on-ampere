@@ -12,9 +12,12 @@ Connected compositions (the queue's bytes with the real checks, clients, tools a
             call through the real auth hook) and a fake docker CLI.
   Workload  the real e3_q18a_lifecycle CLI with the queue's argv on the trunk W2 manifest: it validates the
             manifest and reaches its first control call; its fresh prompt is the one the w2-length guard checks.
+  PoolTelemetry  the trunk engine's own pool telemetry bytes (core/block_pool.py, core/scheduler.py, sha-pinned)
+            under each declared env, graded by the real pressure-lifetime oracle: INCONCLUSIVE without
+            FLASH_POOL_STATS, PASS with 200, the pool's lookups/evictions identical either way.
   Settings  the lifecycle settings sourced through the real setcfg algorithm, the S5 launcher render and the
             declaration projection (test_native39_trunk_queue.Launcher.declared), then the lifecycle declare
-            script's own PY_DECL on that identity.
+            script's own PY_DECL and the preflight's env assertion lines on that identity.
 Fixture leaves: native39_lifecycle_fixture_leaves.json.
 """
 import datetime
@@ -71,7 +74,7 @@ def drafts_tool():
 
 # Fixture leaf lifecycle-docker-cli: `docker inspect --format {{.Id}}`, `docker exec <id> cat /proc/<pid>/maps` (the
 # trunk's fixture leaf queue-docker-exec-maps, same semantics) and a one-shot `docker logs --timestamps <container>`
-# that stamps FAKE/engine.raw (fixture leaf lifecycle-engine-log).
+# that stamps the retained log so far: FAKE/engine.raw.<n> on the n-th call (fixture leaf lifecycle-engine-log).
 FAKE_DOCKER = r'''
 import datetime, json, os, sys
 from pathlib import Path
@@ -84,8 +87,10 @@ if argv[0] == 'exec':
     if argv[1] != cid or argv[2:4] != ['cat', argv[-1]] or not p.exists(): sys.exit(1)
     sys.stdout.write(p.read_text()); sys.exit(0)
 if argv == ['logs', '--timestamps', 'qwen-flash-prod']:
+    calls = (fake / 'calls.jsonl').read_text() if (fake / 'calls.jsonl').exists() else ''
+    n = calls.count('"docker-logs"')
     with open(fake / 'calls.jsonl', 'a') as f: f.write(json.dumps({'name': 'docker-logs', 'argv': argv}) + '\n')
-    for line in (fake / 'engine.raw').read_text().splitlines(True):
+    for line in (fake / ('engine.raw.%d' % n)).read_text().splitlines(True):
         t = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f') + '000Z '
         sys.stdout.write(t + line)
     sys.exit(0)
@@ -144,6 +149,177 @@ if name == 'leak_partial_tail':
     sys.exit(0)
 sys.exit(2)
 '''
+# The box engine's core overlay (the trunk runner's EXPECTED_SOURCES rows; the lifecycle bundle's overlay is the
+# trunk's byte for byte): the bundle's own native30_overlay when this suite runs from a bundle (the self-run), else
+# the frozen trunk held-b overlay on the hub.
+TRUNK_CORE_PINS = {'block_pool.py': '540bb7bec14b0dfc6106e3a02d1853fa842f951b70ccab79c77bb9e729f3fe39',
+                   'scheduler.py': '33fcd566b649619776488bb59266d6620cf6b347fc750e020c3525a02c823dc9'}
+TRUNK_HELD_OVERLAY = Path('<hub-dir>/agents/flash-next/tmp/native39-trunk-held-b/'
+                          'q18a-native39-trunk-bundle-756f826c221c/native30_overlay')
+TELEMETRY_METHODS = ('_flash_count', '_flash_pool_snapshot', 'flash_pool_step', 'get_cached_block',
+                     '_maybe_evict_cached_block', '_remove_cached_block_hashes')
+
+
+def trunk_core():
+    base = next(b for b in (HERE / 'native30_overlay', TRUNK_HELD_OVERLAY) if (b / 'core/block_pool.py').is_file())
+    texts = {}
+    for name, pin in TRUNK_CORE_PINS.items():
+        data = (base / 'core' / name).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == pin, name
+        texts[name] = data.decode()
+    return texts
+
+
+def _bare(node):
+    """A function node without annotations (they name vLLM types; evaluation order only, no behaviour)."""
+    for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs:
+        arg.annotation = None
+    node.returns = None
+    return node
+
+
+class _Capture:
+    """vLLM's init_logger(__name__) as the telemetry calls it: logger.info(fmt, *args)."""
+
+    def __init__(self, sink, where):
+        self.sink, self.where = sink, where
+
+    def info(self, fmt, *args):
+        self.sink.append('(EngineCore_DP0 pid=212) INFO 11-01 00:00:00 [%s] %s\n' % (self.where, fmt % args))
+
+
+class _Block:
+    """Fixture leaf lifecycle-pool-core: the KVCacheBlock fields the telemetry reads."""
+
+    def __init__(self, block_id):
+        self.block_id, self.ref_cnt, self.block_hash, self.is_null = block_id, 0, None, block_id == 0
+
+    def reset_hash(self):
+        self.block_hash = None
+
+
+class _HashMap:
+    """Fixture leaf lifecycle-pool-core: BlockHashToBlockMap (get_one_block, pop(key, block_id))."""
+
+    def __init__(self):
+        self.rows = {}
+
+    def get_one_block(self, key):
+        blocks = self.rows.get(key) or {}
+        return next(iter(blocks.values()), None)
+
+    def pop(self, key, block_id):
+        return (self.rows.get(key) or {}).pop(block_id, None)
+
+
+def telemetry_run(env):
+    """The trunk engine's pool telemetry executed from its own bytes under ``env`` (the declared EXTRA_ENV as the
+    container sees it): BlockPool.__init__'s FLASH_POOL_STATS statements and the six telemetry/bookkeeping methods
+    from core/block_pool.py, the Scheduler.__init__ layout block from core/scheduler.py, and one
+    ``flash_pool_step()`` per scheduler step as Scheduler.schedule calls it.  Returns the startup, before-pressure and
+    after-pressure engine log lines (fixture leaf lifecycle-pool-core)."""
+    import ast
+    import types
+    sys.path.insert(0, str(ROOT / 'patches/s5_engine'))
+    import telemetry_hooks
+    core = trunk_core()
+    pool_src, sched_src = core['block_pool.py'], core['scheduler.py']
+    # The overlay bytes are telemetry_hooks' output: its layout and step insertions appear verbatim.
+    assert sched_src.count(telemetry_hooks.LAYOUT) == 1 and sched_src.count(telemetry_hooks.STEP) == 1
+    tree = ast.parse(pool_src)
+    pool_cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'BlockPool')
+    methods = {f.name: f for f in pool_cls.body if isinstance(f, ast.FunctionDef)}
+    init = methods['__init__'].body
+    first = next(i for i, s in enumerate(init) if 'self.num_gpu_blocks =' in ast.get_source_segment(pool_src, s))
+    flash_init = [s for s in init[:first] if '_flash_pool' in ast.get_source_segment(pool_src, s)]
+    assert len(flash_init) == 4, [ast.get_source_segment(pool_src, s) for s in flash_init]
+    init_fn = ast.FunctionDef(name='_flash_init', args=ast.arguments(posonlyargs=[], args=[ast.arg('self')], kwonlyargs=[],
+                              kw_defaults=[], defaults=[]), body=flash_init, decorator_list=[], returns=None, type_params=[])
+    sched_cls = next(n for n in ast.parse(sched_src).body if isinstance(n, ast.ClassDef) and n.name == 'Scheduler')
+    sched_methods = {f.name: f for f in sched_cls.body if isinstance(f, ast.FunctionDef)}
+    layout = [n for n in ast.walk(sched_methods['__init__']) if isinstance(n, ast.If)
+              and ast.unparse(n.test) == 'self.kv_cache_manager.block_pool._flash_pool_stats_every']
+    steps = [n for n in ast.walk(sched_methods['schedule']) if isinstance(n, ast.Expr)
+             and ast.unparse(n) == 'self.kv_cache_manager.block_pool.flash_pool_step()']
+    assert len(layout) == 1 and len(steps) == 1
+    layout_fn = ast.FunctionDef(name='_layout', args=init_fn.args, body=layout, decorator_list=[], returns=None,
+                                type_params=[])
+    lines = []
+    pool_ns = dict(_flash_os=types.SimpleNamespace(environ=dict(env)), _flash_json=json,
+                   logger=_Capture(lines, 'block_pool.py'), get_group_id=lambda key: key[1],
+                   make_block_hash_with_group_id=lambda block_hash, gid: (block_hash, gid))
+    module = ast.Module(body=[_bare(init_fn)] + [_bare(methods[m]) for m in TELEMETRY_METHODS], type_ignores=[])
+    exec(compile(ast.fix_missing_locations(module), 'core/block_pool.py', 'exec'), pool_ns)
+    sched_ns = dict(logger=_Capture(lines, 'scheduler.py'))
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[layout_fn], type_ignores=[])), 'core/scheduler.py', 'exec'),
+         sched_ns)
+
+    class Pool:
+        def __init__(self, n):
+            self.num_gpu_blocks, self.metrics_collector = n, None
+            self.blocks = [_Block(i) for i in range(n)]
+            self.cached_block_hash_to_block, self.cached_block_hashes_by_block = _HashMap(), {}
+            self.removed = []
+            self._flash_init()
+
+        def get_num_free_blocks(self):
+            return sum(1 for b in self.blocks if not b.is_null and b.ref_cnt == 0)
+
+        def _emit_block_removed_events(self, hashes):
+            self.removed.extend(hashes)
+
+        def cache(self, block, block_hash, gids):
+            keys = [(block_hash, gid) for gid in gids]
+            block.block_hash = keys[0]
+            self.cached_block_hashes_by_block.setdefault(block.block_id, set()).update(keys[1:])
+            for key in keys:
+                self.cached_block_hash_to_block.rows.setdefault(key, {})[block.block_id] = block
+
+    for name in ('_flash_init',) + TELEMETRY_METHODS:
+        setattr(Pool, name, pool_ns[name])
+    groups = [('FullAttentionSpec', ['model.layers.3.self_attn.attn']), ('MambaSpec', ['model.layers.0.linear_attn']),
+              ('MambaSpec', ['model.layers.1.linear_attn'])]
+    pool = Pool(64)
+    sched = types.SimpleNamespace(
+        kv_cache_manager=types.SimpleNamespace(block_pool=pool),
+        kv_cache_config=types.SimpleNamespace(num_blocks=64, kv_cache_groups=[
+            types.SimpleNamespace(kv_cache_spec=type(kind, (), {'block_size': 176})(), layer_names=layers)
+            for kind, layers in groups]))
+    sched_ns['_layout'](sched)
+    startup = list(lines)
+    behaviour = dict(lookups=[], evicted=[])
+    for i in range(1, 41):  # 40 free cached blocks, each holding one hash per group
+        pool.cache(pool.blocks[i], 'h%d' % i, [0, 1, 2])
+    for step in range(200):  # serving: prefix lookups, one flash_pool_step per scheduler step
+        found = pool.get_cached_block('h%d' % (1 + step % 50), [0, 1, 2])
+        behaviour['lookups'].append(None if found is None else [b.block_id for b in found])
+        pool.flash_pool_step()
+    before = list(lines)
+    for step in range(400):  # pressure: cached blocks evicted for reuse
+        if step % 10 == 0 and step // 10 + 1 <= 40:
+            behaviour['evicted'].append(pool._maybe_evict_cached_block(pool.blocks[step // 10 + 1]))
+        pool.flash_pool_step()
+    behaviour.update(free=pool.get_num_free_blocks(), removed=list(pool.removed),
+                     hashes={str(k): sorted(v) for k, v in pool.cached_block_hash_to_block.rows.items() if v},
+                     block_hashes=[b.block_hash for b in pool.blocks])
+    return startup, before, list(lines), behaviour
+
+
+def lifetime_grade(before, after):
+    """The real pp_release_grade lifetime CLI with the queue's argv shape over a bracketing pressure record."""
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / 'before.log').write_text(''.join(before))
+        (d / 'after.log').write_text(''.join(after))
+        (d / 'pressure.json').write_text(json.dumps({'streams': 2, 'first_tokens': [1.0, 1.0], 'last_tokens': [9.0, 9.0],
+                                                     'completed_requests': [3, 3], 'errors': [], 'preemptions': 0}))
+        (d / 'interval.json').write_text(json.dumps([2.0, 8.0]))
+        done = subprocess.run([sys.executable, str(HERE / 'pp_release_grade.py'), 'lifetime', str(d / 'before.log'),
+                               str(d / 'after.log'), str(d / 'pressure.json'), str(d / 'interval.json'), '0'],
+                              capture_output=True, text=True)
+        return done.returncode, json.loads(done.stdout)
+
+
 SECRET = re.compile(r'Your private session code is (\S+)\.')
 CRASH_LINE = '(Worker_PP1_TP0 pid=310) ERROR 11-01 00:00:00 torch.distributed.DistBackendError: NCCL error\n'
 ARTS = ('gates.json', 'instruments-lifecycle.json', 'instruments-end.json', 'lifecycle.json', 'hygiene-full.json',
@@ -230,7 +406,14 @@ class Tail(unittest.TestCase):
     on_exit native35 lifetime grade lines: the queue's own bytes under bash with the real step/record/stop_pressure
     and health_ok, against the loopback leaf."""
 
-    def run_tail(self, verdicts=QUALIFIED, crashed=0, mapped_rank=None, stuck=False, leak=False, crash_stream=False):
+    def run_tail(self, verdicts=QUALIFIED, crashed=0, mapped_rank=None, stuck=False, leak=False, crash_stream=False,
+                 telemetry=True):
+        # The engine as declared: the lifecycle settings (FLASH_POOL_STATS=200) or, for the negative, the trunk's
+        # (no FLASH_POOL_STATS), through the real launcher render; identity-start captures exactly that identity when
+        # it passes (fixture leaf lifecycle-identity-capture), and the engine's telemetry is the trunk overlay's own
+        # code under that env (telemetry_run).
+        declared, _ = trunkq.Launcher.declared(self, SETTINGS if telemetry else trunkq.SETTINGS)
+        startup, before, after, _ = telemetry_run(declared['identity']['env'])
         draft = LIFECYCLE.read_text()
         drafts = drafts_tool()
         start, end = draft.index(drafts.LIFECYCLE_PREAMBLE), draft.index(drafts.ENDING)
@@ -253,8 +436,11 @@ class Tail(unittest.TestCase):
                     (h / (name + '.py')).write_text(FAKE_TOOL)
                 shutil.copyfile(MANIFEST, h / 'workloads' / MANIFEST.name)
                 (fake / 'current-id').write_text(trunkq.NEW_ID)
-                (fake / 'engine.raw').write_text(trunkq.BIND_LINE + trunkq.SERVED_LINE)
-                (q / 'engine-stream.log').write_text(trunkq.BIND_LINE + (CRASH_LINE if crash_stream else ''))
+                served = trunkq.BIND_LINE + ''.join(startup) + trunkq.SERVED_LINE
+                (fake / 'engine.raw.0').write_text(served + ''.join(before[len(startup):]))
+                (fake / 'engine.raw.1').write_text(served + ''.join(after[len(startup):]))
+                (q / 'engine-stream.log').write_text(trunkq.BIND_LINE + ''.join(startup) + (CRASH_LINE if crash_stream else ''))
+                (q / 'engine.identity-start.json').write_text(json.dumps({'identity': declared['identity']}))
                 for rank in range(4):
                     text = trunkq.OBSERVER_MAPS if rank == mapped_rank else trunkq.CLEAN_MAPS
                     (fake / 'maps' / str(1001 + rank)).write_text(text)
@@ -278,27 +464,17 @@ class Tail(unittest.TestCase):
                 if (fake / 'calls.jsonl').exists() else []
             arts = {name: json.loads((q / name).read_text()) for name in ARTS if (q / name).exists()}
             leak_log = (q / 'cross-session-leak.log').read_text() if (q / 'cross-session-leak.log').exists() else None
-            paths = dict(h=str(h), q=str(q))
+            paths = dict(h=str(h), q=str(q), pool_telemetry=(q / 'pool-telemetry.log').read_text())
             return done, trunkq.phases(done.stdout), rows, arts, leaf, session, leak_log, paths
 
-    def test_connected_lifecycle_block_and_pressure_lifetime_without_pool_telemetry(self):
-        done, pv, rows, arts, leaf, session, leak_log, paths = self.run_tail()
-        self.assertEqual(done.returncode, 0, done.stderr)
+    def connected(self, done, pv, rows, arts, leaf, session, leak_log, paths):
+        """The connected block's common shape: every phase before pressure-lifetime PASS, the exact tool calls."""
         passed = ('instruments-lifecycle', 'lifecycle', 'hygiene-full', 'cross-session-leak', 'pressure-ready',
                   'partial-leak-driver', 'partial-leak', 'pressure-completed', 'instruments-end')
         self.assertEqual({k: pv.get(k) for k in passed}, dict.fromkeys(passed, 'PASS'), done.stdout)
         for line in ('STEP lifetime-gates PASS', 'STEP pressure-driver PASS'):
             self.assertIn(line, done.stdout)
-        # The trunk engine env has no FLASH_POOL_STATS (Settings below): no FLASH_PP_LAYOUT / FLASH_POOL_STATS lines,
-        # so the unchanged pressure-lifetime oracle cannot see a state-group eviction and the lifetime grade cannot pass.
-        self.assertEqual((pv['pressure-lifetime'], pv['native35-lifetime']), ('INCONCLUSIVE', 'INCONCLUSIVE'))
-        self.assertEqual(arts['pressure.coverage.json']['missing'],
-                         ['no state-group layout evidence', 'no state-group eviction observed during lifetime interval'])
         self.assertEqual(arts['pressure.coverage.json']['fails'], [])
-        grade = arts['native35-lifetime-grade.json']
-        self.assertEqual((grade['verdict'], grade['failures'], grade['missing']),
-                         ('INCONCLUSIVE', [], ['pressure-lifetime:INCONCLUSIVE']))
-        self.assertIn('TOTAL FAILS=0 INCS=2', done.stdout)
         # Gates read startup and row1 only; no rule4 continuation.
         gates = arts['gates.json']
         self.assertEqual((gates['outcomes'], gates['rule4_control_continuation']), (QUALIFIED, False))
@@ -337,9 +513,50 @@ class Tail(unittest.TestCase):
         self.assertLess(interval[0], interval[1])
         self.assertLessEqual(max(arts['pressure.json']['first_tokens']), interval[0])
         self.assertGreaterEqual(min(arts['pressure.json']['last_tokens']), interval[1])
+
+    def test_connected_lifecycle_block_with_the_declared_pool_telemetry_passes_pressure_lifetime(self):
+        out = self.run_tail()
+        done, pv, rows, arts, leaf, session, leak_log, paths = out
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.connected(*out)
+        # The declared FLASH_POOL_STATS=200, as identity-start captures it, and the startup layout line the trunk
+        # overlay's own code logs under it: the pool-telemetry record passes.
+        self.assertEqual(pv['pool-telemetry'], 'PASS')
+        self.assertEqual(json.loads(paths['pool_telemetry'].splitlines()[-1]),
+                         {'flash_pool_stats': '200', 'layout_lines': 1, 'malformed': 0,
+                          'kinds': ['FullAttentionSpec', 'MambaSpec']})
+        # The unchanged pressure-lifetime oracle reads the state-group layout and the evictions between the two logs.
+        coverage = arts['pressure.coverage.json']
+        self.assertEqual((pv['pressure-lifetime'], coverage['verdict'], coverage['missing']), ('PASS', 'PASS', []))
+        self.assertEqual((coverage['state_evictions'], coverage['evictions']), (80, 120))
+        grade = arts['native35-lifetime-grade.json']
+        self.assertEqual((grade['verdict'], grade['failures'], grade['missing']), ('PASS', [], []))
+        self.assertEqual(pv['native35-lifetime'], 'PASS')
+        self.assertIn('TOTAL FAILS=0 INCS=0', done.stdout)
+        record_case('tail-lifecycle-connected-pool-telemetry-on', calls=[r['name'] for r in rows], session_calls=session.calls,
+                    leak_requests=leaf.chats, pool_telemetry='PASS', pressure_lifetime='PASS',
+                    state_evictions=coverage['state_evictions'], lifetime_grade='PASS', lifetime_missing=grade['missing'])
+
+    def test_connected_lifecycle_block_without_pool_telemetry_stays_inconclusive(self):
+        # Negative: the trunk engine as declared (no FLASH_POOL_STATS).  Its block pool logs no FLASH_PP_LAYOUT /
+        # FLASH_POOL_STATS line, so the unchanged oracle cannot see a state-group eviction and the grade cannot pass;
+        # the pool-telemetry record names the engine env.
+        out = self.run_tail(telemetry=False)
+        done, pv, rows, arts, leaf, session, leak_log, paths = out
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.connected(*out)
+        self.assertEqual(pv['pool-telemetry'], 'FAIL')
+        self.assertIn('engine env FLASH_POOL_STATS None, declared 200', paths['pool_telemetry'])
+        self.assertEqual((pv['pressure-lifetime'], pv['native35-lifetime']), ('INCONCLUSIVE', 'INCONCLUSIVE'))
+        self.assertEqual(arts['pressure.coverage.json']['missing'],
+                         ['no state-group layout evidence', 'no state-group eviction observed during lifetime interval'])
+        grade = arts['native35-lifetime-grade.json']
+        self.assertEqual((grade['verdict'], grade['failures'], grade['missing']),
+                         ('INCONCLUSIVE', [], ['pressure-lifetime:INCONCLUSIVE']))
+        self.assertIn('TOTAL FAILS=1 INCS=2', done.stdout)
         record_case('tail-lifecycle-connected-pool-telemetry-absent', calls=[r['name'] for r in rows],
-                    session_calls=session.calls, leak_requests=leaf.chats, pressure_lifetime='INCONCLUSIVE',
-                    lifetime_grade='INCONCLUSIVE', lifetime_missing=grade['missing'])
+                    session_calls=session.calls, leak_requests=leaf.chats, pool_telemetry='FAIL',
+                    pressure_lifetime='INCONCLUSIVE', lifetime_grade='INCONCLUSIVE', lifetime_missing=grade['missing'])
 
     def test_row1_not_pass_withholds_instruments_and_the_block(self):
         done, pv, rows, arts, leaf, session, leak_log, paths = self.run_tail(dict(QUALIFIED, row1='INCONCLUSIVE'))
@@ -403,6 +620,39 @@ class Tail(unittest.TestCase):
         record_case('tail-real-leak-detected-fails', leak='FAIL', lifetime_grade='FAIL')
 
 
+class PoolTelemetry(unittest.TestCase):
+    """The trunk engine's own pool telemetry bytes under the env each settings file declares, graded by the unchanged
+    pressure-lifetime oracle (pp_release_grade lifetime, the queue's argv shape)."""
+
+    def test_the_oracle_stays_inconclusive_without_the_env_and_passes_with_it_and_the_pool_behaves_the_same(self):
+        lifecycle, _ = trunkq.Launcher.declared(self, SETTINGS)
+        trunk, _ = trunkq.Launcher.declared(self, trunkq.SETTINGS)
+        on = telemetry_run(lifecycle['identity']['env'])
+        off = telemetry_run(trunk['identity']['env'])
+        # Without the env (the trunk engine): the block pool logs nothing and the oracle stays INCONCLUSIVE.
+        self.assertEqual(off[:3], ([], [], []))
+        rc, coverage = lifetime_grade(off[1], off[2])
+        self.assertEqual((rc, coverage['verdict'], coverage['missing']),
+                         (2, 'INCONCLUSIVE', ['no state-group layout evidence',
+                                              'no state-group eviction observed during lifetime interval']))
+        # With FLASH_POOL_STATS=200: one startup layout line, one counter line every 200 scheduler steps.
+        startup, before, after, _ = on
+        kinds = [line.split('] ', 1)[1].split(' ', 1)[0] for line in after]
+        self.assertEqual((len(startup), len(before), kinds),
+                         (1, 2, ['FLASH_PP_LAYOUT', 'FLASH_POOL_STATS', 'FLASH_POOL_STATS', 'FLASH_POOL_STATS']))
+        steps = [json.loads(line.split('FLASH_POOL_STATS ', 1)[1])['step'] for line in after[1:]]
+        self.assertEqual(steps, [200, 400, 600])
+        rc, coverage = lifetime_grade(before, after)
+        self.assertEqual((rc, coverage['verdict'], coverage['missing'], coverage['state_evictions'], coverage['evictions']),
+                         (0, 'PASS', [], 80, 120))
+        # Read-only: the same lookups, evictions, removal events, free count and hash maps with and without it.
+        self.assertEqual(on[3], off[3])
+        self.assertEqual(len(on[3]['evicted']), 40)
+        record_case('pool-telemetry-trunk-code-off-inc-on-pass', off_verdict='INCONCLUSIVE', on_verdict='PASS',
+                    state_evictions=coverage['state_evictions'], behaviour_identical=True,
+                    core_pins=dict(TRUNK_CORE_PINS))
+
+
 class Workload(unittest.TestCase):
     """The lifecycle's W2 manifest through the real lifecycle CLI and the w2-length guard's prompt."""
 
@@ -455,28 +705,45 @@ class Settings(unittest.TestCase):
         body = code.split('\n', 1)[1].rsplit('\nPY_DECL\n', 1)[0]
         return subprocess.run([sys.executable, '-I', '-c', body, str(path), 's5-overlap-80-80'], capture_output=True, text=True)
 
-    def test_lifecycle_settings_declare_the_trunk_engine_with_observer_and_offers_off(self):
+    def test_lifecycle_settings_declare_the_trunk_engine_plus_pool_telemetry(self):
         declared, path = trunkq.Launcher.declared(self, SETTINGS)
         env = declared['identity']['env']
-        self.assertEqual({k: env.get(k) for k in ('FLASH_S5_REPLAY_OBSERVER', 'FLASH_S5_ENGINE_OFFERS', 'FLASH_NATIVE30_LOCALIZE')},
-                         {'FLASH_S5_REPLAY_OBSERVER': '0', 'FLASH_S5_ENGINE_OFFERS': '0', 'FLASH_NATIVE30_LOCALIZE': '0'})
-        self.assertNotIn('FLASH_POOL_STATS', env)  # the pressure-lifetime oracle's pool telemetry is off (Tail)
+        self.assertEqual({k: env.get(k) for k in ('FLASH_S5_REPLAY_OBSERVER', 'FLASH_S5_ENGINE_OFFERS', 'FLASH_NATIVE30_LOCALIZE',
+                                                  'FLASH_POOL_STATS')},
+                         {'FLASH_S5_REPLAY_OBSERVER': '0', 'FLASH_S5_ENGINE_OFFERS': '0', 'FLASH_NATIVE30_LOCALIZE': '0',
+                          'FLASH_POOL_STATS': '200'})
         args = declared['identity']['command']['args']
         hosts = [args[j + 1] for j, x in enumerate(args[:-1]) if x == '--host']
         self.assertEqual(hosts, ['0.0.0.0', '127.0.0.1'])
         done = self.py_decl(path)
         self.assertEqual(done.returncode, 0, done.stderr)
-        # The same projection of the trunk settings is the same engine: identical env and args.
-        trunk, _ = trunkq.Launcher.declared(self, trunkq.SETTINGS)
-        self.assertEqual(trunk['identity']['env'], env)
+        # Against the trunk engine: the declared env differs by FLASH_POOL_STATS=200 only; the args are identical.
+        trunk, trunk_path = trunkq.Launcher.declared(self, trunkq.SETTINGS)
+        tenv = trunk['identity']['env']
+        delta = {k: (tenv.get(k), env.get(k)) for k in set(tenv) | set(env) if tenv.get(k) != env.get(k)}
+        self.assertEqual(delta, {'FLASH_POOL_STATS': (None, '200')})
         self.assertEqual(trunk['identity']['command']['args'], args)
-        # P-c's settings (observer and offers on) fail the lifecycle declaration.
+        # The lifecycle declaration refuses the trunk engine (no pool telemetry) and P-c's (observer and offers on).
+        refused = self.py_decl(trunk_path)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('pool telemetry (FLASH_POOL_STATS=200) must be on', refused.stderr)
         _, pc_path = trunkq.Launcher.declared(self, RUNS / 'q18a_native35_p_c_settings.sh')
         refused = self.py_decl(pc_path)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn('observer must be off', refused.stderr)
-        record_case('settings-trunk-engine-observer-offers-off', hosts=hosts, same_as_trunk=True, pool_stats=False,
-                    p_c_refused=True)
+        # The preflight's own env assertion lines (lifecycle draft, PY_PREFLIGHT) over both declared envs.
+        draft, drafts = LIFECYCLE.read_text(), drafts_tool()
+        body = trunkq.segment(draft, "<<'PY_PREFLIGHT' > \"$Q/preflight.log\" 2>&1\n", '\nPY_PREFLIGHT\n')
+        first = "assert env.get('FLASH_S5_REPLAY_OBSERVER') == '0'\n"
+        self.assertEqual((body.count(first), body.count(drafts.LIFECYCLE_PREFLIGHT_OFFERS)), (1, 1))
+        lines = body[body.index(first):body.index(drafts.LIFECYCLE_PREFLIGHT_OFFERS) + len(drafts.LIFECYCLE_PREFLIGHT_OFFERS)]
+        self.assertTrue(lines.endswith("assert env.get('FLASH_POOL_STATS') == '200'\n"))
+        exec(lines, {'env': env})
+        exec(lines[:lines.rindex('assert ')], {'env': tenv})
+        with self.assertRaises(AssertionError):
+            exec(lines, {'env': tenv})
+        record_case('settings-trunk-engine-plus-pool-telemetry', hosts=hosts, env_delta_vs_trunk={'FLASH_POOL_STATS': '200'},
+                    trunk_refused=True, p_c_refused=True, preflight_env_lines=True)
 
 
 class Derivation(unittest.TestCase):
@@ -499,17 +766,19 @@ class Derivation(unittest.TestCase):
                                                                                         'q18a_native39_trunk')
         for old, new in ((drafts.TRUNK_TIMEOUT, drafts.LIFECYCLE_TIMEOUT), (drafts.TRUNK_SLOT_NOTE, drafts.LIFECYCLE_SLOT_NOTE),
                          (drafts.TRUNK_SLOT, drafts.LIFECYCLE_SLOT), (drafts.TRUNK_INTERFACES, drafts.LIFECYCLE_INTERFACES),
-                         (drafts.TRUNK_DIAGNOSTIC, drafts.L_GRADE), (drafts.TRUNK_TITLE, drafts.LIFECYCLE_TITLE)):
+                         (drafts.TRUNK_DIAGNOSTIC, drafts.L_GRADE), (drafts.TRUNK_TITLE, drafts.LIFECYCLE_TITLE),
+                         (drafts.TRUNK_PREFLIGHT_OFFERS, drafts.LIFECYCLE_PREFLIGHT_OFFERS)):
             self.assertEqual(undo.count(new), 1, new[:60])
             undo = undo.replace(new, old)
         self.assertEqual(undo.count(drafts.LIFECYCLE_HEADER), 1)
         trunk_prefix = trunk[:trunk.index(drafts.TRUNK_CUT_BEGIN)]
         header = [line for line in trunk_prefix.splitlines(True) if line.startswith(drafts.TRUNK_HEADER_PREFIX)]
         self.assertEqual(undo.replace(drafts.LIFECYCLE_HEADER, header[0] + drafts.TRUNK_HEADER_NEXT), trunk_prefix)
-        # The region: L's gates and block with the five declared changes, then the end instruments receipt.
+        # The region: the pool-telemetry record, L's gates and block with the five declared changes, then the end
+        # instruments receipt.
         block = l_text[l_text.index(drafts.L_BLOCK_BEGIN):l_text.index(drafts.ENDING)]
-        self.assertTrue(region.endswith(drafts.INSTRUMENTS_AFTER))
-        undo = region[:-len(drafts.INSTRUMENTS_AFTER)]
+        self.assertTrue(region.startswith(drafts.POOL_TELEMETRY) and region.endswith(drafts.INSTRUMENTS_AFTER))
+        undo = region[len(drafts.POOL_TELEMETRY):-len(drafts.INSTRUMENTS_AFTER)]
         for old, new in ((drafts.L_GATES_STEP, drafts.L_GATES_STEP + drafts.INSTRUMENTS_BEFORE),
                          (drafts.L_NOT_RUN, drafts.LIFECYCLE_NOT_RUN), (drafts.L_CONDITION, drafts.LIFECYCLE_CONDITION),
                          (drafts.L_WORKLOAD, drafts.LIFECYCLE_WORKLOAD), (drafts.L_GATES_LOOP, drafts.LIFECYCLE_GATES_LOOP)):
@@ -521,12 +790,24 @@ class Derivation(unittest.TestCase):
                      "  _cid=$(docker inspect --format '{{.Id}}' \"$CONTAINER\" 2>/dev/null) || _cid=''\n"):
             self.assertIn(line, trunk)
             self.assertEqual(life.count(line), 2 if 'instruments --url' in line else 1)
+        # Settings and declaration: the trunk's texts with the declared swaps (comment, EXTRA_ENV, PY_DECL, pins).
+        for suffix, swaps in (('_settings.sh', ((drafts.TRUNK_SETTINGS_NOTE, drafts.LIFECYCLE_SETTINGS_NOTE),
+                                                (drafts.TRUNK_EXTRA_ENV, drafts.LIFECYCLE_EXTRA_ENV))),
+                              ('_declare.sh', ((drafts.TRUNK_DECL_NATIVE, drafts.LIFECYCLE_DECL_NATIVE),
+                                               (drafts.TRUNK_DECL_OFFERS, drafts.LIFECYCLE_DECL_OFFERS)))):
+            undo = (RUNS / ('q18a_native39_lifecycle' + suffix)).read_text()
+            undo = undo.replace('q18a-native39-lifecycle', 'q18a-native39-trunk').replace('q18a_native39_lifecycle',
+                                                                                        'q18a_native39_trunk')
+            for old, new in swaps:
+                self.assertEqual(undo.count(new), 1, new[:60])
+                undo = undo.replace(new, old)
+            self.assertEqual(undo, (RUNS / ('q18a_native39_trunk' + suffix)).read_text(), suffix)
 
     def test_phase_names_are_the_trunk_startup_row1_and_the_l_block(self):
         def names(text):
             return set(re.findall(r'(?:^|[;\s])(?:record|step) "?([A-Za-z0-9_.$\-{}]+)"? ', text, re.M))
         trunk, life = names((RUNS / 'q18a_native39_trunk.draft.sh').read_text()), names(LIFECYCLE.read_text())
-        self.assertEqual(life - trunk, {'lifetime-gates', 'lifecycle', 'hygiene-full', 'cross-session-leak', 'pressure-ready',
+        self.assertEqual(life - trunk, {'pool-telemetry', 'lifetime-gates', 'lifecycle', 'hygiene-full', 'cross-session-leak', 'pressure-ready',
                                         'partial-leak-driver', 'partial-leak', 'pressure-completed', 'pressure-lifetime',
                                         'instruments-lifecycle', 'native35-lifetime'})
         self.assertEqual(trunk - life, {'native35-diagnostic', 'overlap-gates', 'w1_controls', 'w1_plain', 'w1-plain-idle',
@@ -578,7 +859,7 @@ class Window(unittest.TestCase):
         self.assertEqual([n for n, _, _ in gate.STARTUP_DERIVATION],
                          ['restart-to-health', 'speculation-and-sampler', 'identity-start', 'startup-ledger-headroom-plan',
                           'bind-receipt', 'w2-length-guard', 'row1'])
-        self.assertEqual(sum(s for _, s, _ in gate.ACTIVE_DERIVATION), 9517)
+        self.assertEqual(sum(s for _, s, _ in gate.ACTIVE_DERIVATION), 9547)
         self.assertEqual(sum(s for _, s, _ in gate.CLEANUP_DERIVATION), 866)
         self.assertEqual(gate.CLEANUP_DERIVATION[:len(native35p_gate.CLEANUP_DERIVATION)], native35p_gate.CLEANUP_DERIVATION)
         self.assertFalse(gate.lifecycle_window_ok(gate.NOT_BEFORE - 1))
