@@ -45,9 +45,16 @@ class R(unittest.TextTestResult):
     def addError(self, t, e): super().addError(t, e); self.rows[t.id()] = 'error'
     def addFailure(self, t, e): super().addFailure(t, e); self.rows[t.id()] = 'fail'
     def addSkip(self, t, r): super().addSkip(t, r); self.rows[t.id()] = 'skip'
-suite = unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])
-result = unittest.TextTestRunner(resultclass=R, verbosity=2, stream=sys.stderr).run(suite)
-json.dump(result.rows, open(sys.argv[2], 'w'), indent=1, sort_keys=True)
+    def addSubTest(self, t, s, e):
+        super().addSubTest(t, s, e)
+        if e is not None:
+            self.rows[s.id()] = 'fail' if issubclass(e[0], t.failureException) else 'error'
+            self.rows[t.id()] = 'subtest-not-ok'
+# Guarded: spawn-context workers (FatalReplies) re-import this main module as __mp_main__.
+if __name__ == '__main__':
+    suite = unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])
+    result = unittest.TextTestRunner(resultclass=R, verbosity=2, stream=sys.stderr).run(suite)
+    json.dump(result.rows, open(sys.argv[2], 'w'), indent=1, sort_keys=True)
 '''
 
 
