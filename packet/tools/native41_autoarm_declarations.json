@@ -50,11 +50,8 @@
       "module:import os"
     ],
     "patches/s5_engine/native_overlap_session.py": [
-      "NativeOverlapSession._action_auto_window_begin",
-      "NativeOverlapSession._action_auto_window_end",
       "NativeOverlapSession._action_release_auto_arm",
       "NativeOverlapSession.execute",
-      "module:AUTO_ARM_ACTIONS",
       "module:import os"
     ],
     "patches/s5_engine/native_overlap_worker.py": [
@@ -93,11 +90,8 @@
       "module:import os"
     ],
     "e3/native_overlap_session.py": [
-      "NativeOverlapSession._action_auto_window_begin",
-      "NativeOverlapSession._action_auto_window_end",
       "NativeOverlapSession._action_release_auto_arm",
       "NativeOverlapSession.execute",
-      "module:AUTO_ARM_ACTIONS",
       "module:import os"
     ],
     "e3/native_overlap_worker.py": [
@@ -117,8 +111,10 @@
   "paths": [
     "A\tharness/e3_native41_auto_probe.py",
     "A\tharness/e3_native41_autoarm_box.py",
-    "A\tharness/e3_native41_window_probe.py",
+    "A\tharness/e3_native41_receipts_probe.py",
+    "A\tharness/e3_native41_unarmed_box.py",
     "A\tharness/native41_box_gate.py",
+    "A\tharness/native41_clock_fixture_leaves.json",
     "A\tharness/native41_fixture_leaves.json",
     "A\tharness/runs/q18a_native41_autoarm.draft.sh",
     "A\tharness/runs/q18a_native41_autoarm_declare.sh",
@@ -130,6 +126,7 @@
     "M\tharness/test_native40_box_queue.py",
     "A\tharness/test_native41_autoarm.py",
     "A\tharness/test_native41_box_queue.py",
+    "A\tharness/test_native41_unarmed_box.py",
     "M\tpatches/s5_engine/decode_probe.py",
     "M\tpatches/s5_engine/engine_driver.py",
     "M\tpatches/s5_engine/executor_hooks.py",
