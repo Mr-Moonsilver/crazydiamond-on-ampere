@@ -38,7 +38,14 @@
  },
  "definitions": {
   "harness/selftest.py": [
-   "module:For#12"
+   "module:Expr#93",
+   "module:Expr#94",
+   "module:Expr#95",
+   "module:Expr#96",
+   "module:Expr#97",
+   "module:Expr#98",
+   "module:For#12",
+   "module:from step_b_clock_bound import MODULES as STEP_B_CLOCK_BOUND_MODULES"
   ],
   "patches/s5_engine/engine_driver.py": [
    "LayerGroups.__init__",
@@ -234,6 +241,7 @@
    "tools/step_a_spec.py",
    "tools/step_a_tools_derive.py",
    "harness/step_b_gate.py",
+   "harness/step_b_clock_bound.py",
    "harness/e3_step_b_box.py",
    "harness/e3_step_b_probe.py",
    "harness/test_step_b_queue.py",
@@ -314,7 +322,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 384,
+ "expected_tests": 374,
  "label": "step-b",
  "overlay_definitions": {
   "e3/engine_driver.py": [
@@ -411,16 +419,21 @@
   [
    "sorted(engine.get('cases') or {})==['abort-before', 'abort-live', 'auto', 'bad-graph', 'below-threshold', 'foreign', 'long-id', 'off', 'pending-full', 'pending-split', 'progress-burst', 'progress-burst-current', 'progress-burst-skew', 'progress-burst-solo', 'progress-current-solo', 'progress-trace', 'progress-trace-skew', 'progress-unset', 'receipts-auto', 'receipts-below-threshold', 'receipts-latched', 'receipts-off', 'refuse', 'reuse', 'running-prefill', 'step-a-fused-burst', 'step-a-fused-burst-skew', 'step-a-fused-burst-solo', 'step-a-stepped-burst', 'step-a-stepped-burst-skew', 'step-a-stepped-burst-solo', 'tp-skew']",
    "sorted(engine.get('cases') or {})==['abort-before', 'abort-live', 'auto', 'bad-graph', 'below-threshold', 'foreign', 'long-id', 'off', 'pending-full', 'pending-split', 'progress-burst', 'progress-burst-current', 'progress-burst-skew', 'progress-burst-solo', 'progress-current-solo', 'progress-trace', 'progress-trace-skew', 'progress-unset', 'receipts-auto', 'receipts-below-threshold', 'receipts-latched', 'receipts-off', 'refuse', 'reuse', 'running-prefill', 'step-a-fused-burst', 'step-a-fused-burst-skew', 'step-a-fused-burst-solo', 'step-a-stepped-burst', 'step-a-stepped-burst-skew', 'step-a-stepped-burst-solo', 'step-b-g1-burst', 'step-b-g1-burst-skew', 'step-b-g1-burst-solo', 'step-b-g2-burst', 'step-b-g2-burst-skew', 'step-b-g2-burst-solo', 'step-b-g4-burst', 'tp-skew']"
+  ],
+  [
+   "result.get('native35_p_c_continuation')=='PASS' and result.get('native39_trunk_queue')=='PASS'",
+   "result.get('native35_p_c_continuation')=='PASS'"
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "d37e98cd35fcb8f1ddf16f344b3f95e0d6438880",
+ "source_commit": "66d402c80bb7574e3d468d2be73b835931ed4061",
  "source_paths": [
   "A\tharness/e3_step_b_box.py",
   "A\tharness/e3_step_b_probe.py",
   "A\tharness/runs/q18a_step_b.draft.sh",
   "A\tharness/runs/q18a_step_b_declare.sh",
   "A\tharness/runs/q18a_step_b_settings.sh",
+  "A\tharness/step_b_clock_bound.py",
   "A\tharness/step_b_fixture_leaves.json",
   "A\tharness/step_b_gate.py",
   "A\tharness/test_e3_native_layer_groups.py",
@@ -434,6 +447,7 @@
   "A\ttools/step_b_engine_selfrun.py",
   "A\ttools/step_b_freeze.py",
   "A\ttools/step_b_gates.sh",
+  "A\ttools/step_b_gates_c.sh",
   "A\ttools/step_b_overlay_propose.py",
   "A\ttools/step_b_overlay_tamper.py",
   "A\ttools/step_b_parent.json",
