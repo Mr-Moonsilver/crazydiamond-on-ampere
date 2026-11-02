@@ -658,6 +658,7 @@ check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdi
 # --- Full engine identity: mocked docker, actual destination-side hashing; no GPU ---
 sys.path.insert(0, HERE)
 from step_b_clock_bound import MODULES as STEP_B_CLOCK_BOUND_MODULES  # noqa: E402
+from alpha_next_robust_swap import MODULES as ROBUST_SWAP_MODULES  # noqa: E402
 for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithmetic, bucket bytes, fragmentation and no extra window (CPU)'),
                      ('test_s5_dma_window.py', 'S5 repeated DMA: every layer/chunk, bounded CPU copies, strict oracle, solo/overlap accounting (CPU)'),
                      ('test_e2_arena.py', 'E2 single arena: owner epochs, bounded fills, completion and retirement (CPU only)'),
@@ -775,6 +776,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_native43_le_fix_queue_deltas.py', 'Native43 le-fix queue deltas D1-D7 over the l-e texts: each applied once, bash syntax, only the declared lines change; host_crash_detected and engine_watched under bash with the real death tool (CPU only; native43 le-fix queue fixture leaves)'),
                      ('test_native43_le_fatal_log.py', 'Native43 le-fix worker-fatal log: the parent logs the fatal record before executor shutdown, on the actual generated WorkerProc RPC path in a spawned worker, including the l-e Row1OracleError chain (CPU only; native43 le-fix fatal-log fixture leaves)'),
                      ('test_native43_le_bounded_enqueue.py', 'Native43 le-fix bounded broadcast enqueue: the generated stock and owned collective_rpc writes raise the stored WorkerRPCError once the executor is marked failed (pre-fix blocks), live writes complete and keep the long-wait warning (CPU only; vLLM real MessageQueue in the pinned-image probe; native43 bounded-enqueue fixture leaves)'),
+                     ('test_native43_le_bounded_enqueue_stepped.py', 'Alpha-next PLAN 5b: load-robust twin of the frozen le-chain bound (swapped in by alpha_next_robust_swap): a SteppedRing releases each bounded slice, the stored WorkerRPCError is raised within the slice in progress at the hand-off (no new slice after it, exact in slices, no clock), nothing written, one teardown (CPU only; alpha_next_robust fixture leaves)'),
                      ('test_native43_row1_dense.py', 'Native43 l-f row1 under the dense policy: the declared expected-route table, the real generated flash_e2_arena_attention entered on its own dense branch with os.environ unchanged, the generated sparse helper passing dense against it at 25 pages, and the pre-fix route_mismatch (CPU only; native43 row1-dense fixture leaves)'),
                      ('test_native43_row1_grade.py', 'Native43 l-f policy-aware row1 grade: the base grade with only the cartesian route rule replaced under the dense policy (dense and beyond-arena coverage, sparse FAIL), current policy identical to the base, and the qualification wrapper binding/restoring _grade_row1 (CPU only; native43 row1-dense fixture leaves)'),
                      ('test_native43_lf_queue.py', 'Native43 l-f queue: exact derivation from the box-run l-e texts (le-fix deltas, row1 policy client, names), row1 under bash with the --qsa-policy dense argv and the engine watch, the connected l-f lifecycle tail healthy and on the l-e teardown line, and the l-f window slot at real wall clock (CPU only; le-fix queue and native43 lifecycle fixture leaves)'),
@@ -898,12 +900,16 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_round7_review.py', 'round 7 review: offline q8/decode_ab counterexamples'),
                      ('test_agent_replay.py', 'agent_replay v2: cut-off streams, full reuse'),
                      ('test_e3_w1_decode_driver.py', 'E3 W1 decode-only driver: live-cohort window after controller receipt, early-EOS invalidation, leave-before-drain, retained invalid repeats (loopback fakes)'),
+                     ('test_e3_w1_decode_driver_ordered.py', 'Alpha-next PLAN 5a: load-robust twin of the frozen out-of-order open (swapped in by alpha_next_robust_swap): gated fake server opens streams 1, 2, 0 on the driver\'s own opened events; rc 0, advance order [1, 2, 0], all three opened (loopback fakes; alpha_next_robust fixture leaves)'),
                      ('test_e3_decode_correctness.py', 'E3 W1 short live-cohort correctness: full/split/full exact token oracle, paused-route lifecycle and control-vs-split verdicts (loopback fakes)'),
                      ('test_prefix_capacity.py', 'prefix capacity: source shapes and conditional LRU model'),
                      ('test_pp_grouping.py', 'PP grouping, pool stats, warm/cold gates: offline checks')]:
     # Step B / C0: a module holding a declared clock-bound frozen window test runs through step_b_clock_bound, which leaves out
     # only those ids (CLOCK_BOUND_FROZEN, each with its reason; a superset of C0's clock_bound list); the test files are unchanged.
-    command = ([sys.executable, os.path.join(HERE, 'step_b_clock_bound.py'), suite] if suite[:-3] in STEP_B_CLOCK_BOUND_MODULES
+    # Alpha-next PLAN 5: a module holding a declared load-flaky frozen method runs through alpha_next_robust_swap, which leaves
+    # out only that id (ROBUST_SWAP, with its reason and its twin; it also applies CLOCK_BOUND_FROZEN); the twin is its own row.
+    command = ([sys.executable, os.path.join(HERE, 'alpha_next_robust_swap.py'), suite] if suite[:-3] in ROBUST_SWAP_MODULES
+               else [sys.executable, os.path.join(HERE, 'step_b_clock_bound.py'), suite] if suite[:-3] in STEP_B_CLOCK_BOUND_MODULES
                else [sys.executable, os.path.join(HERE, suite)])
     identity_test = subprocess.run(command, capture_output=True, text=True,
                                    env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
