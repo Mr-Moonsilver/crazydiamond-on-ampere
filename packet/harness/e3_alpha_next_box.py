@@ -26,7 +26,8 @@ C0-off arms of its band, rule v4 row 2 style (NUMERICS_* below). Two readings ar
   the other  (NUMERICS_IS_GATE = True; lead 13:28 read as a gate): OUTSIDE fails the queue as ENGINE and UNPROVEN makes it INC.
 The coordinator asked the lead to confirm (2 Nov); flipping the one constant is the whole change.
 Reads, never verdict inputs (operator, 2 Nov): decode per arm as the per-stream minimum and mean ratio against the 0.8 and 0.9
-lines, over the sampled standing streams (STANDING_SAMPLED) and over all 8; speed; memory (the min-free read and the per-chunk ``flash-s5 memory-peak`` receipt); the C0 ring reading (headroom
+lines (4C.7), split by the sampled standing streams (STANDING_SAMPLED), the greedy ones and all 8, with each stream's ratio;
+speed; memory (the min-free read and the per-chunk ``flash-s5 memory-peak`` receipt); the C0 ring reading (headroom
 refusals, ``headroom_blocked_ns`` on the stage line, status ``ring``: blocked_ns, episodes, blocked_max_ns, limiting and
 limiting_sole per rank); the item-1 stop receipts (``flash-s5 stop`` lines, schema s5-stop-receipt/1, status ``stop_receipts``);
 the stage-1 handler anatomy line count (tools/stage1_anatomy_report.py reads the lines).
@@ -47,6 +48,7 @@ import statistics
 
 import alpha_next_arms as T
 import e3_step_b_box as b
+import receipt_lines
 from e3_native_qualification_driver import exception_details
 from e3_native_runtime_client import NativeRuntimeClient
 
@@ -644,13 +646,19 @@ def _ratio_read(ratios):
 
 
 def decode_read(arm):
-    """Per-stream decode ratio (during the prefill over decode only), minimum and mean, against the 0.8 and 0.9 lines: over the
-    sampled standing streams (the reading the lead declared, 13:35) and over all 8. Stream i is the i-th rate (held-f's order)."""
+    """4C.7: each standing stream's decode ratio (its rate in the live arm's decode window during the prefill over its own
+    decode-only rate, held-f's stream_ratios), and the minimum and mean of those ratios against the 0.8 and 0.9 lines, split by
+    stream kind: the sampled streams (the declared decode reading, lead 13:35; the top-level fields), the greedy streams (they
+    carry the numerics check; a read here too) and all 8. Stream i is the i-th rate (held-f's order). A read, never a gate."""
     client = arm.get('client_basis') or {}
     ratios = ap.stream_ratios(client.get('decode_window'), arm.get('decode_only')) or []
-    sampled = [ratios[i] for i in T.STANDING_SAMPLED if i < len(ratios)] if len(ratios) == T.STANDING_DECODERS else []
+    whole = len(ratios) == T.STANDING_DECODERS
+    sampled = [ratios[i] for i in T.STANDING_SAMPLED] if whole else []
+    greedy = [ratios[i] for i in T.STANDING_GREEDY] if whole else []
     out = _ratio_read(sampled)
-    out.update(sampled_streams=list(T.STANDING_SAMPLED), all_streams=_ratio_read(ratios), is_gate=False)
+    out.update(sampled_streams=list(T.STANDING_SAMPLED), greedy_streams=list(T.STANDING_GREEDY), greedy=_ratio_read(greedy),
+               all_streams=_ratio_read(ratios), per_stream={str(i): r for i, r in enumerate(ratios)} if whole else {},
+               is_gate=False)
     return out
 
 
@@ -682,6 +690,20 @@ def peak_read(lines):
             cell[field] = value if cell[field] is None else max(cell[field], value)
     return dict(ranks=ranks, receipts=len(lines['peaks']), torn=lines['torn_peaks'],
                 peak_allocated_mib=max((c['peak_allocated_mib'] for c in ranks.values()), default=None), is_gate=False)
+
+
+def receipt_read(logs):
+    """PLAN 2 receipt record integrity (harness/receipt_lines.py, merged from claude/alpha-next 32e7cc63) over the followed
+    logs: missing seq, bad sha, incomplete records, unsafe path, per process. Reported here as a read; receipt_lines' rule for
+    new queues (every read fed by an INC process is INC) is not wired into the verdict until the lead says so."""
+    try:
+        report = receipt_lines.check(receipt_lines.read(logs), require_start=False)
+    except (OSError, ValueError) as exc:
+        return dict(verdict='UNAVAILABLE', error=type(exc).__name__, is_gate=False)
+    out = receipt_lines.verdict(report)
+    out.update(records=report['records'], processes=report['processes'], is_gate=False,
+               counts={k: len(report[k]) for k in ('missing_seq', 'bad_sha', 'incomplete', 'unsafe_path')})
+    return out
 
 
 # --- the grade ----------------------------------------------------------------------------------------
@@ -756,12 +778,20 @@ def grade(arms, ingress, checks, logs, watches=None, part='core'):
     elif NUMERICS_IS_GATE and compared['verdict'] == 'UNPROVEN':
         missing.update('numerics:' + x for x in compared['unproven'])
     verdict = 'FAIL' if failures else 'INC' if missing else 'PASS'
+    # Lead, 14:29: OUTSIDE is shown prominently in the grade and the report, and changes no verdict while NUMERICS_IS_GATE is
+    # False; this run establishes the envelope (the graded C0-off greedy arms against each other, per band and stream).
+    headline = None
+    if compared['verdict'] != 'WITHIN':
+        headline = 'NUMERICS %s (%s): %s' % (
+            compared['verdict'], 'a gate' if NUMERICS_IS_GATE else 'a read this run, the verdict does not change',
+            ', '.join(compared['outside'] + compared['unproven']))
     if verdict != 'FAIL':
         classes = set()
     result.update(failures=sorted(failures), missing=sorted(missing), verdict=verdict,
                   classification=sorted(classes) or (['HARNESS'] if verdict == 'FAIL' else None))
     result.update(schema=GRADE_SCHEMA if part == 'core' else READ_SCHEMA, part=part, is_queue_verdict=part == 'core',
-                  numerics=compared, decode_read=decode, decode_lines=list(DECODE_LINES), decode_is_gate=False, c0_ring=ring,
+                  numerics=compared, numerics_verdict=compared['verdict'], numerics_outside=list(compared['outside']),
+                  numerics_headline=headline, receipt_integrity=receipt_read(logs), decode_read=decode, decode_lines=list(DECODE_LINES), decode_is_gate=False, c0_ring=ring,
                   stop_receipts=dict(arms=stops, schema=STOP_SCHEMA, **run_lines), memory_peak=peaks, anatomy_lines=anatomy,
                   arm_table=dict(band_size=T.BAND_SIZE, arms=rows, standing_decoders=T.STANDING_DECODERS,
                                  band1_rounds=T.BAND1_ROUNDS, band1_required_rounds=T.BAND1_REQUIRED_ROUNDS,
@@ -794,7 +824,14 @@ def report(result):
         result['verdict'], ' (%s)' % ', '.join(result['classification']) if result['classification'] else ''), '']
     if not core:
         lines += [result['read_only'], '']
-    lines += ['## Mechanism', '', '| arm | part | verdict | class | crash-free | disagree | signatures | engaged | owned chunks | '
+    headline = result.get('numerics_headline')
+    if headline:
+        lines += ['**%s**' % headline, '']
+    receipts = result.get('receipt_integrity') or {}
+    lines += ['## Mechanism', '', 'Receipt integrity (receipt_lines, a read, not a verdict input): %s, counts %s, INC processes %s.' % (
+        receipts.get('verdict'), json.dumps(receipts.get('counts'), sort_keys=True),
+        json.dumps(receipts.get('inc_processes'), sort_keys=True)), '']
+    lines += ['| arm | part | verdict | class | crash-free | disagree | signatures | engaged | owned chunks | '
               'fused cmds | group chunks | group cmds | layer cmds per chunk | stage chunks | releases | stage lines | foreign '
               'replies | reasons |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for name in result['required_arms']:
@@ -869,19 +906,24 @@ def report(result):
             result['anatomy_lines'].get(name, 0)))
     lines += ['', '## Performance', '', 'Reported, never gated: speed, decode and memory are reads (operator, 2 Nov).', '',
               '### Decode per arm, per-stream ratio against the %s lines' % ' and '.join(str(x) for x in result['decode_lines']), '',
-              'Over the sampled standing streams (the declared decode reading; the greedy streams carry the numerics check), and '
-              'the minimum and mean over all 8.', '',
-              '| arm | sampled streams | min stream ratio | mean stream ratio | min < 0.8 | mean < 0.8 | streams < 0.8 | min < 0.9 | '
-              'mean < 0.9 | streams < 0.9 | all-8 min | all-8 mean |', '|---|---|---|---|---|---|---|---|---|---|---|---|']
+              'Each standing stream\'s ratio is its decode rate during the prefill over its own decode-only rate. Sampled: the '
+              'declared decode reading; greedy: the streams that carry the numerics check; then the minimum and mean over all 8. '
+              'Reads, never gates.', '',
+              '| arm | sampled streams | sampled min | sampled mean | min < 0.8 | mean < 0.8 | streams < 0.8 | min < 0.9 | '
+              'mean < 0.9 | streams < 0.9 | greedy min | greedy mean | greedy < 0.8 | greedy < 0.9 | all-8 min | all-8 mean |',
+              '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for name in result['required_arms']:
         d = result['decode_read'].get(name)
         if not d:
             continue
         a, c = d['lines'].get('0.8') or {}, d['lines'].get('0.9') or {}
-        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (
+        g = d.get('greedy') or _ratio_read([])
+        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (
             name, d['streams'], cell(d['min_stream_ratio'], 3), cell(d['mean_stream_ratio'], 3), a.get('min_below', '-'),
             a.get('mean_below', '-'), a.get('streams_below', '-'), c.get('min_below', '-'), c.get('mean_below', '-'),
-            c.get('streams_below', '-'), cell(d['all_streams']['min_stream_ratio'], 3),
+            c.get('streams_below', '-'), cell(g['min_stream_ratio'], 3), cell(g['mean_stream_ratio'], 3),
+            (g['lines'].get('0.8') or {}).get('streams_below', '-'), (g['lines'].get('0.9') or {}).get('streams_below', '-'),
+            cell(d['all_streams']['min_stream_ratio'], 3),
             cell(d['all_streams']['mean_stream_ratio'], 3)))
     lines += ['', 'Live decode ratio, C0-on minus its matched C0-off arm: %s (a read).' % json.dumps(
         result['c0_decode_delta']['on_minus_off'], sort_keys=True), '']

@@ -1,0 +1,82 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "alpha-next queue (arm table, arms, grade, numerics, STOP_RACE, arm loop, derived texts) hub CPU tests; no box or GPU evidence",
+ "inherits": [
+  "step_b_fixture_leaves.json",
+  "alpha_c0_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "arm-control-replies",
+   "test": "test_alpha_next_queue.Selection",
+   "replaces": "The engine control client replies to native_progress, native_qsa_fused, native_layer_group, native_stage_local and release_auto_arm",
+   "equivalence": "The question is what the arm does with each reply: order, resume on refusal, refusal of a reply that does not prove the selection. The reply fields are the real ones; test_alpha_next_queue.Arm reads the same fields through the real endpoint, session and driver.",
+   "cannot_prove": "Engine behaviour under the selection",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-http-no-scheduler",
+   "test": "test_alpha_next_queue.Arm, test_alpha_next_queue.ArmNotInstalled, test_alpha_next_queue.ArmGroupsNotInstalled, test_alpha_next_queue.ArmNotForwarded",
+   "replaces": "A served engine: the HTTP prompts reach no scheduler, so no native chunk runs",
+   "equivalence": "The question is which typed controls, in which order, the exact arm command line sends through two real NativeRuntimeClients, the real endpoint, session, control client and startup-bound stack (C0's StagedSegmentDriver, fused QSA, layer groups), and which temperature the greedy streams' request bodies carry. As in Step B's and C0's Arm.",
+   "cannot_prove": "A real chunk under any selection (the box runs that)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "test-scale-workloads",
+   "test": "test_alpha_next_queue.Arm",
+   "replaces": "The band manifests sizes and times",
+   "equivalence": "Only sizes and times are reduced, as held-f's workload() does; the cohort (8 standing decoders), the salts and the manifest choice are the real ones.",
+   "cannot_prove": "A 65,445- or 131,094-token prompt end to end",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "grade-synthetic-run",
+   "test": "test_alpha_next_queue.Grade, test_alpha_next_queue.Numerics, test_alpha_next_queue.ArmLoop, test_alpha_next_queue.Report",
+   "replaces": "A real box run: arm records with spans, fused, group and stage counters, outputs and the engine log those spans select",
+   "equivalence": "Progress lines come from the real nm.ProgressTrace emitters through AlphaEmit (Step B's group commands, C0's per-stage reply pattern, the stage line with headroom_blocked_ns as stage_progress logs it); memory and memory-peak receipts in the engine's formats.",
+   "cannot_prove": "The real speed, decode ratio, memory, peak or numerics",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "greedy-token-ids",
+   "test": "test_alpha_next_queue.Numerics",
+   "replaces": "The greedy standing streams' first 256 token ids as the arm records them",
+   "equivalence": "Synthetic id lists with declared common prefixes; the envelope arithmetic is the question, not the ids.",
+   "cannot_prove": "Whether C0 changes greedy outputs on the box",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stop-race-lines",
+   "test": "test_alpha_next_queue.StopRace",
+   "replaces": "The engine log at the queue stop",
+   "equivalence": "Verbatim stop lines of q18a-step-b-e (2 Nov) and q18a-native26 (30 Oct) with their stop intents; negatives are those lines edited one declared way each.",
+   "cannot_prove": "A stop race in an alpha-next run",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clients",
+   "test": "test_alpha_next_queue.ArmLoop",
+   "replaces": "The arm client (e3_alpha_next_box arm), the check client (e3_native39_trunk_checks), nvidia-smi, docker and systemctl",
+   "equivalence": "Stubs that copy prepared records and log their argv; the body, the draft functions, the death watch, the grade and the read are real, under real bash.",
+   "cannot_prove": "Box timing; real checks",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clock",
+   "test": "test_alpha_next_queue.ArmLoop",
+   "replaces": "The run's elapsed time at an entry limit",
+   "equivalence": "bash SECONDS (relative, writable) is set past a limit right after a named step; the budget is the gate's relative LAST_ARM_ENTRY_S and LAST_TAIL_ENTRY_S. No real clock is read.",
+   "cannot_prove": "The real arm durations",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}
