@@ -155,6 +155,9 @@ class NativeOverlapSession:
     async def _action_native_stage_local(self, command):
         if self.measure_start_ns is not None:
             raise NativeOverlapSessionError('native-stage-local-with-open-measurement')
+        if 'overlap' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP', '0') == '1':
+            # C1 only; with the switch off the command is C0's, field and all, as before.
+            return await self.control.native_stage_overlap(command.get('local'), command['overlap'])
         return await self.control.native_stage_local(command.get('local'))
 
     async def _action_prepare(self, command):

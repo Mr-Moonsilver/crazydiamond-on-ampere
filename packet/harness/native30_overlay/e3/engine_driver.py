@@ -1063,6 +1063,8 @@ class NativeSegmentDriver:
     publication after every rank's host-queried ``STATE_WRITE`` and every PP
     consumer proof; the final token is then handed back to stock decode.
     """
+    # The exact controller type this driver accepts (FLASH_S5_STAGE_OVERLAP names its subclass).
+    CONTROLLER_CLASS = PrefillAdmissionController
 
     def __init__(self, controller, *, executor, scheduler, engine=None,
                  layer_count, layer_split, stage_of, clock=time.monotonic,
@@ -1070,7 +1072,7 @@ class NativeSegmentDriver:
                  stop_tick_budget=8, monotonic_ns=None, journal_limit=1024,
                  control_timeout_s=None):
         _wire_ready()
-        if type(controller) is not PrefillAdmissionController:
+        if type(controller) is not self.CONTROLLER_CLASS:
             raise DriverError('native driver needs the admission controller')
         if executor is None or scheduler is None:
             raise DriverError('native driver needs the executor and scheduler')

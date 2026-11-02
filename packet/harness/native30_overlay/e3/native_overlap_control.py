@@ -76,6 +76,11 @@ def _stage_local():
             and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')
 
 
+def _stage_overlap():
+    """C1's field is exposed only where the engine installed it beside C0 (FLASH_S5_STAGE_OVERLAP)."""
+    return _stage_local() and os.environ.get('FLASH_S5_STAGE_OVERLAP', '0') == '1'
+
+
 def _positive(value):
     return type(value) is int and value > 0
 
@@ -296,6 +301,21 @@ class NativeControlClient:
         reply = await self._call({'action': 'native_stage_local', 'local': local})
         if reply.get('local') is not local:
             raise NativeControlError('native-control-stage-local-not-set')
+        return reply
+
+    async def native_stage_overlap(self, local, overlap):
+        """C1 per-arm switch (installed only): C0's command with ``overlap``; the engine re-checks idle FULL."""
+        if not _stage_overlap():
+            raise NativeControlError('native-control-stage-overlap-not-installed')
+        if type(local) is not bool:
+            raise NativeControlError('native-control-stage-local-invalid')
+        if type(overlap) is not bool:
+            raise NativeControlError('native-control-stage-overlap-invalid')
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call({'action': 'native_stage_local', 'local': local, 'overlap': overlap})
+        if reply.get('local') is not local or reply.get('overlap') is not overlap:
+            raise NativeControlError('native-control-stage-overlap-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------

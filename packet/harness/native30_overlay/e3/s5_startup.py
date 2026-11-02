@@ -354,7 +354,15 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     # draw is masked to 63 bits and must never land on the unbound sentinel 0.
     epoch = (uuid.uuid4().int & ((1 << 63) - 1)) or 1
     engine._flash_s5_engine_epoch = epoch
-    controller = PrefillAdmissionController(
+    # FLASH_S5_STAGE_OVERLAP: unset or 0 constructs the frozen controller, unchanged.
+    controller_class = PrefillAdmissionController
+    overlap = False
+    if env.get('FLASH_S5_STAGE_OVERLAP', '0') != '0':
+        from stage_overlap import StagedAdmissionController, stage_overlap_enabled
+        overlap = stage_overlap_enabled(env)
+        if overlap:
+            controller_class = StagedAdmissionController
+    controller = controller_class(
         scheduler, leases=composition.scheduler_leases,
         frontier=composition.frontier,
         engine_epoch=epoch,
@@ -370,6 +378,9 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
         from stage_progress import StagedSegmentDriver, stage_local_enabled
         if stage_local_enabled(env):
             driver_class = StagedSegmentDriver
+    if overlap:
+        from stage_overlap import OverlapSegmentDriver
+        driver_class = OverlapSegmentDriver
     driver = driver_class(
         controller, executor=executor, scheduler=scheduler, engine=engine,
         layer_count=layer_count, layer_split=layer_split, stage_of=stage_of,

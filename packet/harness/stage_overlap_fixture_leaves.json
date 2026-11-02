@@ -1,0 +1,99 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "C1 two-chunks-in-flight proofs: test_e3_stage_overlap (CPU ring fixture), e3_alpha_c1_probe (connected CPU probe) and test_alpha_c1_box (the C1 grade over the ring fixture's own lines); no box or GPU evidence",
+  "inherits": [
+    "stage_fixture_leaves.json"
+  ],
+  "leaves": [
+    {
+      "name": "fake-request-overlap-fields",
+      "test": "test_e3_stage_overlap.OverlapStack.__init__",
+      "replaces": "vllm Request fields num_in_flight_tokens and num_prompt_tokens, and the KV manager surface the eligibility rule reads (coordinator.single_type_managers, block_pool.hash_block_size), on r4's fake request and manager",
+      "equivalence": "the fields carry the values the real objects carry for a fresh, text-only, single-group request: no tokens in flight before admission, the prompt length, no hybrid group with partial hits or checkpoints, hash block 1; overlap_refusal and provisional_fields read and write exactly these, so the rule's only active clause here is successor-may-be-terminal",
+      "cannot_prove": "real block allocation, prefix-cache hits, CoW and Mamba chaining under provisional fields; those run with the real KV manager in c1/alloc_diff.py and in e3_alpha_c1_probe",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "admission-every-tick",
+      "test": "test_e3_stage_overlap.OverlapStack.tick, OverlapStack.admit_next, OverlapBase.slow_tick",
+      "replaces": "the scheduler's admission seam, which calls the controller's admit on every schedule() of an engine step",
+      "equivalence": "one controller.admit(scheduler) per tick before the driver's advance, the same order as schedule() before step_with_batch_queue's driver tick; the controller alone decides (parked, successor, eligibility), as on the real seam",
+      "cannot_prove": "the scheduler's other work in the same step (decode batches, stock requests); the connected probe runs the real EngineCore step",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "slow-stage-one",
+      "test": "test_e3_stage_overlap.OverlapBase.slow_tick, OverlapBase.stage_one_held",
+      "replaces": "stage 1's workers taking longer per command than stage 0 (long layer commands on a stream shared with decode)",
+      "equivalence": "stage 1's workers read the ring every sixth tick instead of every tick; device completions stay prompt, so each accepted command's report carries what has finished, the PP consumer proof among them, as each acceptance does on the box; nothing is reordered within a rank",
+      "cannot_prove": "real stage timing; the per-chunk both-stages-in-flight seconds are a box receipt",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "peer-pending-injection",
+      "test": "test_e3_stage_overlap.StopStates.test_one_tp_peer_accepted_the_successor_command, StopStates.first_frame_partial_prepare",
+      "replaces": "a worker dispatcher answering typed pending (E3Pending) under backpressure for one command while its TP peer accepted it",
+      "equivalence": "rank 1's real dispatcher.submit raises the real E3Pending type for the named command a bounded number of times, then calls the real submit; the bridge turns it into the same pending SegmentAcceptance the real path sends; rank 0 is untouched",
+      "cannot_prove": "when a real dispatcher answers pending on the box; reach is not established",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "probe-cpu-worker-driver",
+      "test": "e3_alpha_c1_probe.run (OverlapWithCPUWorkers)",
+      "replaces": "the overlap driver class the startup installs, given C0's CPU-worker composition beneath it",
+      "equivalence": "the real OverlapSegmentDriver is patched by a subclass that adds nothing, so the parent's CPU-worker driver methods resolve beneath it exactly as C0's probe does under StagedSegmentDriver; ring_has_headroom is C0's declared leaf, unchanged",
+      "cannot_prove": "a device stream, a real QSA layer and a real collective, as C0",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "one-engine-numbering",
+      "test": "test_alpha_c1_box.run_arm (transport._next, progress.trace.lines_out)",
+      "replaces": "one engine process serving every arm: one reply transport and one engine progress trace for the incarnation's life",
+      "equivalence": "each arm's stack starts its transport's command sequence and its engine trace's line number where the previous arm's ended, so sequences and engine line numbers are unique and gap-free over the run, as on the box; the worker traces are one object per rank across arms, as the worker processes are; nothing else of the stack is carried",
+      "cannot_prove": "transaction numbers continuing across arms (each stack's controller starts at 1; the grade reads transactions per arm span only), and state left by one request for the next",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "decode-live-count",
+      "test": "test_alpha_c1_box.run_arm (driver._progress_decode_live)",
+      "replaces": "NativeSegmentDriver._progress_decode_live, the count of running requests past their prompt, read only into the progress line's identity at progress.begin",
+      "equivalence": "returns 8 for every chunk of a live arm and 8 then 0 for a solo arm, the counts the box's standing decoders give; the value is written into the identity and read by nothing that decides (two callers, both writing the identity at progress.begin: engine_driver._begin and stage_overlap._reset for the successor's line)",
+      "cannot_prove": "decoders actually running beside the prefill; the ring fixture has no decode batch",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "fake-cuda-allocator",
+      "test": "test_alpha_c1_box.FakeCuda (worker_bridge._memory_cuda)",
+      "replaces": "torch.cuda as read by worker_bridge.memory_receipt: is_initialized, memory_stats, mem_get_info",
+      "equivalence": "memory_receipt reads exactly these three host queries and nothing else; the bridge's own _memory_receipt builds and logs the real line at the real open and released points (FLASH_S5_AUTO_ARM=1 sets _memory_receipts at construction; set here directly), so the grade reads the emitter's own text; values are constant per selection",
+      "cannot_prove": "real allocator behaviour, transient peaks, retries or OOMs; the damaged-receipt cases edit these lines the way the box log can",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "selection-by-attribute",
+      "test": "test_alpha_c1_box.run_arm (driver.stage_selected), test_e3_stage_overlap.OverlapStack (overlap_selected)",
+      "replaces": "the typed native_stage_local {local, overlap} control, which sets the same two driver attributes when the engine is paused idle FULL",
+      "equivalence": "the control's only effect on the chunk path is these two attributes (stage_overlap._stage_control, stage_progress._stage_control); the stack is built with its request admitted, so the paused-idle condition cannot hold; the control itself runs through the real router, session and client in test_e3_stage_overlap_control and the arm's release in test_alpha_c1_box.Selection",
+      "cannot_prove": "the control's paused-idle refusal on a running engine",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "arm-record-box-fields",
+      "test": "test_alpha_c1_box.build_run",
+      "replaces": "the client-side fields of a box arm record: TTFT, client rates, decode windows, append, metrics, sampled outputs",
+      "equivalence": "the grade reads them only for the performance table and the numerics comparison, which test_alpha_c0_queue covers on the same shapes (q0.outputs, synthetic_run's fields); the selection, status deltas (the driver's own stage_status through the grade's stage_view and stage_delta), wall spans and chunk counts are the run's own",
+      "cannot_prove": "client timing or token values; those are box receipts",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}
