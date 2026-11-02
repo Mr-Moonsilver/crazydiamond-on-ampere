@@ -31,13 +31,16 @@ Commit stays the frozen commit, in chunk order, once per chunk.  Stop: see
 """
 from contextlib import contextmanager
 from dataclasses import replace
+import json
 import logging
+import os
+import time
 
 from e3_types import E3ContractError
 from engine_driver import DriverError, NativeSegmentDriver, _progress_logger
 from scheduler_hooks import PrefillAdmissionController
 from stage_progress import StagedSegmentDriver, stage_local_enabled
-from wire_v1 import CancelRequest, PollRequest, ReleaseAck
+from wire_v1 import CancelRequest, PollRequest, ReleaseAck, SegmentKind
 
 STAGE_OVERLAP_ENV = 'FLASH_S5_STAGE_OVERLAP'
 REFUSALS = ('older-terminal', 'successor-may-be-terminal', 'older-at-last-hash-boundary',
@@ -75,6 +78,124 @@ def stage_overlap_enabled(env):
     if value == '1' and not stage_local_enabled(env):
         raise DriverError(STAGE_OVERLAP_ENV + ' needs FLASH_S5_STAGE_LOCAL=1')
     return value == '1'
+
+
+# C1 rebind (review 2 Nov, section 2, option (a)): stage 0 binds n+1's PP consumer just before n+1's PP_SEND,
+# not at its early open, so n+1's PREPARE/PREFIX/layers/SUFFIX need not wait for n's consumer proof.  Default off.
+DEFER_BIND_ENV = 'FLASH_S5_STAGE_OVERLAP_DEFER_BIND'
+
+
+def stage_overlap_defer_bind_enabled(env):
+    value = env.get(DEFER_BIND_ENV, '0')
+    if value not in ('0', '1'):
+        raise DriverError(DEFER_BIND_ENV + ' must be 0 or 1')
+    if value == '1' and not stage_overlap_enabled(env):
+        raise DriverError(DEFER_BIND_ENV + ' needs FLASH_S5_STAGE_OVERLAP=1')
+    return value == '1'
+
+
+# C1 overlap observation (default off): per chunk command, device-completion bounds read from the reports the
+# engine already ingests (no extra RPC, poll or event query), on the engine's CLOCK_MONOTONIC.  A read, never a gate.
+OBSERVE_ENV = 'FLASH_S5_STAGE_OVERLAP_OBSERVE'
+OBSERVE_LINE = 'flash-s5 overlap-observe '
+OBSERVE_SCHEMA = 's5-overlap-observe/1'
+OBSERVE_OPS_PER_LINE = 64
+OBSERVE_SUBMITS_MAX = 16
+
+
+def stage_overlap_observe_enabled(env):
+    value = env.get(OBSERVE_ENV, '0')
+    if value not in ('0', '1'):
+        raise DriverError(OBSERVE_ENV + ' must be 0 or 1')
+    if value == '1' and not stage_overlap_enabled(env):
+        raise DriverError(OBSERVE_ENV + ' needs FLASH_S5_STAGE_OVERLAP=1')
+    return value == '1'
+
+
+class OverlapObserver:
+    """Device-completion bounds per (rank, op_seq) of each chunk, from ingested reports only.
+
+    For a reply applied at ``t_apply`` to a command submitted at ``t_submit``, the reply's
+    report was built by the worker in between.  An op the report lists pending completed
+    after ``t_submit`` (``lo`` keeps the latest such time); an op it lists completed first
+    completed before ``t_apply`` (``hi``).  Both are host CLOCK_MONOTONIC ns, the clock of
+    the 'n' progress rows.  The PP consumer marker names the reply (transport sequence) whose
+    report first carried a sender's PP_CONSUMER proof.  Storage lives on the chunk's frame
+    (``stats['obs']``) and leaves with it: ops are the chunk's accepted ops, at most two
+    consumer marks.
+    """
+
+    def __init__(self, clock=time.monotonic_ns):
+        self.clock = clock
+        self.current = None     # (sequence, t_submit, t_apply) of the reply being applied
+        self.submits = {}       # sequence -> t_submit, for chunk commands in flight only
+        self.counters = dict(reports=0, ops=0, consumer_marks=0, lines=0, line_bytes=0,
+                             submits_dropped=0, host_ns=0)
+
+    def note_submit(self, sequence):
+        self.submits[sequence] = self.clock()
+        while len(self.submits) > OBSERVE_SUBMITS_MAX:
+            # One command in flight per stage, two frames: more is a reply that never applied.
+            self.submits.pop(next(iter(self.submits)))
+            self.counters['submits_dropped'] += 1
+
+    def begin_apply(self, sequence):
+        self.current = (sequence, self.submits.pop(sequence, None), self.clock())
+
+    def end_apply(self):
+        self.current = None
+
+    def note_report(self, frame, report, descriptors, consumer_before, consumer_after):
+        started = time.perf_counter_ns()
+        current = self.current
+        if current is None or current[1] is None:
+            return
+        sequence, t_submit, t_apply = current
+        obs = frame.stats.setdefault('obs', dict(ops={}, consumer=[]))
+        ops = obs['ops']
+        rank = report.worker_rank
+        for op in report.pending_op_seqs:
+            row = ops.get((rank, op))
+            if row is None:
+                descriptor = descriptors.get((rank, op))
+                row = ops[(rank, op)] = [getattr(getattr(descriptor, 'kind', None), 'value', None),
+                                         getattr(descriptor, 'layer_start', None), None, None]
+                self.counters['ops'] += 1
+            if row[3] is None and (row[2] is None or t_submit > row[2]):
+                row[2] = t_submit
+        for op in report.completed_op_seqs:
+            row = ops.get((rank, op))
+            if row is None:
+                descriptor = descriptors.get((rank, op))
+                row = ops[(rank, op)] = [getattr(getattr(descriptor, 'kind', None), 'value', None),
+                                         getattr(descriptor, 'layer_start', None), None, None]
+                self.counters['ops'] += 1
+            if row[3] is None:
+                row[3] = t_apply
+        for sender in sorted(set(consumer_after) - set(consumer_before)):
+            obs['consumer'].append([sequence, sender, rank, t_apply])
+            self.counters['consumer_marks'] += 1
+        self.counters['reports'] += 1
+        self.counters['host_ns'] += time.perf_counter_ns() - started
+
+    def lines(self, transaction, stats, frame_info):
+        """The chunk's observation as bounded log lines (parts of at most OBSERVE_OPS_PER_LINE ops)."""
+        obs = stats.get('obs') or dict(ops={}, consumer=[])
+        ops = [[rank, op] + row for (rank, op), row in sorted(obs['ops'].items())]
+        parts = [ops[i:i + OBSERVE_OPS_PER_LINE] for i in range(0, len(ops), OBSERVE_OPS_PER_LINE)] or [[]]
+        out = []
+        for index, part in enumerate(parts):
+            body = dict(schema=OBSERVE_SCHEMA, txn=transaction.txn_seq,
+                        chunk=[transaction.chunk_start, transaction.chunk_end],
+                        part=index, parts=len(parts),
+                        fields=['rank', 'op_seq', 'kind', 'layer', 'lo_ns', 'hi_ns'], ops=part)
+            if index == 0:
+                body.update(frame_info, seqs=_ranges(stats.get('seqs', ())), consumer=obs['consumer'])
+            text = OBSERVE_LINE + json.dumps(body, separators=(',', ':'), sort_keys=True)
+            self.counters['lines'] += 1
+            self.counters['line_bytes'] += len(text)
+            out.append(text)
+        return out
 
 
 def overlap_refusal(manager, request, older_end, older_terminal, cap):
@@ -360,6 +481,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         self.overlap_counters = dict(successor_frames=0, overlapped_commits=0, early_opens=0,
                                      lane_checks=0, closed_by_successor=0, successor_retires=0,
                                      unbegun_successor_cancels=0, partial_replays=0)
+        self.defer_bind = stage_overlap_defer_bind_enabled(os.environ)
+        self.defer_counters = dict(deferred_opens=0, deferred_binds=0)
+        self.overlap_observer = OverlapObserver() if stage_overlap_observe_enabled(os.environ) else None
 
     # -- the composed per-chunk fields, per frame -------------------------------
     def _new_frame(self):
@@ -421,6 +545,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         frame = self._new_frame()
         frame.successor_of = older
         frame.early = False
+        if self.overlap_observer is not None:
+            frame.stats['obs_successor_of'] = older.chunk['tx'].txn_seq
         frame.expected_lanes = {rank: replace(older.chunk['lanes'][rank],
                                               storage_epoch=older.chunk['lanes'][rank].storage_epoch + 1)
                                 for rank in self.stage_ranks[1]}
@@ -438,6 +564,7 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             return False
         if stage == 0 and frame.stage[0]['phase'] == 'bind':
             # The sender's PP channel may be rebound only after n's tickets retired.
+            # With the deferred bind this is the same gate, reached just before n+1's PP_SEND.
             chunk = older.chunk
             return (chunk['_receipt_inflight'] is None
                     and set(chunk['_receipt_acked']) == set(self.pp_peers))
@@ -453,6 +580,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         if (controller.successor is not None and self._frames
                 and not any(frame.chunk['tx'] == controller.successor.transaction for frame in self._frames)):
             self._begin_successor()
+        if self.defer_bind:
+            for frame in tuple(self._frames):
+                self._deferred_bind_due(frame)
         polls = []
         for frame in tuple(self._frames):
             for stage in (0, 1):
@@ -473,7 +603,29 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         frame = self._scoped_frame
         if frame is not None:
             frame.stats.setdefault('seqs', []).append(sequence)
+            if self.overlap_observer is not None and self._scoped_stage is not None:
+                self.overlap_observer.note_submit(sequence)
         return sequence
+
+    # -- overlap observation (FLASH_S5_STAGE_OVERLAP_OBSERVE) ---------------------
+    def _apply(self, kind, values, sequence=None):
+        observer = self.overlap_observer
+        if observer is None:
+            return super()._apply(kind, values, sequence)
+        observer.begin_apply(sequence)
+        try:
+            return super()._apply(kind, values, sequence)
+        finally:
+            observer.end_apply()
+
+    def _ingest_report(self, report):
+        observer = self.overlap_observer
+        if observer is None or self._scoped_frame is None:
+            return super()._ingest_report(report)
+        before = tuple(self._consumer_proofs)
+        super()._ingest_report(report)
+        observer.note_report(self._scoped_frame, report, self._accepted_descriptors,
+                             before, tuple(self._consumer_proofs))
 
     # -- open -----------------------------------------------------------------
     def _apply_stage_open(self, values):
@@ -502,15 +654,55 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         self._bind_index = 0
         self._pending_binding = None
         self.plan, self.index, self.phase = plans[0], 0, 'bind'
+        if self.defer_bind:
+            # n+1's own compute needs no PP binding; the bind waits in front of its PP_SEND.
+            self.phase = 'segments'
+            frame.deferred_bind = True
+            self.defer_counters['deferred_opens'] += 1
         other = frame.stage[1]
         other['plan'], other['index'] = plans[1], 0
         frame.early = True
         self.overlap_counters['early_opens'] += 1
+        if self.overlap_observer is not None:
+            frame.stats['obs_early'] = True
+            frame.stats['obs_deferred'] = bool(getattr(frame, 'deferred_bind', False))
         self._record('chunk_open_stage0', transaction=self.tx.txn_seq,
                      chunk_start=self.tx.chunk_start, chunk_end=self.tx.chunk_end,
                      state_epoch=frame.open_state_epoch,
                      expected_lanes=[[rank, lane.storage_epoch, lane.context_id]
                                      for rank, lane in sorted(frame.expected_lanes.items())])
+
+    # -- deferred PP binding (FLASH_S5_STAGE_OVERLAP_DEFER_BIND) -----------------
+    def _deferred_send_next(self, cursor, chunk):
+        """Stage 0's next command is the PP_SEND and this frame's senders are not all bound."""
+        return (cursor['_retry'] is None and cursor['index'] < len(cursor['plan'])
+                and cursor['plan'][cursor['index']]['kind'] is SegmentKind.PP_SEND
+                and len(chunk['_bindings']) < len(self.stage_ranks[0]))
+
+    def _segment_gate(self, frame, stage):
+        """A deferred frame's PP_SEND never leaves before its own binding (tick or in-wait)."""
+        if (stage == 0 and getattr(frame, 'deferred_bind', False)
+                and self._deferred_send_next(self.__dict__, self.__dict__)):
+            return True
+        return super()._segment_gate(frame, stage)
+
+    def _deferred_bind_due(self, frame):
+        """Move a deferred frame's stage 0 into ``bind`` once its PP_SEND is next.
+
+        From there the frozen bind path runs unchanged: ``_frame_ready`` holds it until n's
+        receipts are all acked (n's retained send retired under n's own binding), then
+        ``_next_binding`` binds n+1's receiver lanes and ``_apply_bind`` returns to segments.
+        """
+        if frame.dead or not getattr(frame, 'deferred_bind', False) or self._scoped_frame is not None:
+            return False
+        cursor = frame.stage[0]
+        if cursor['phase'] != 'segments' or not self._deferred_send_next(cursor, frame.chunk):
+            return False
+        if any(route == (frame, 0) for route in self._seq_route.values()):
+            return False
+        cursor['phase'] = 'bind'
+        self.defer_counters['deferred_binds'] += 1
+        return True
 
     def _chunk_opened(self, frame):
         if not getattr(frame, 'early', False):
@@ -577,6 +769,17 @@ class OverlapSegmentDriver(StagedSegmentDriver):
 
     def _stage_line(self, transaction, stats, both_ns):
         super()._stage_line(transaction, stats, both_ns)
+        observer = self.overlap_observer
+        if observer is not None:
+            info = dict(successor_of=stats.get('obs_successor_of'), early=stats.get('obs_early'),
+                        deferred_bind=stats.get('obs_deferred'), stage_ranks=[list(self.stage_ranks[0]),
+                                                                             list(self.stage_ranks[1])])
+            try:
+                logger = _progress_logger()
+                for line in observer.lines(transaction, stats, info):
+                    logger.info('%s', line)
+            except Exception:
+                logging.getLogger(__name__).debug('overlap observation line failed', exc_info=True)
         if self.progress is None or not self.overlap_selected:
             return   # a local or serial arm logs exactly C0's lines
         try:
@@ -770,6 +973,10 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         result['overlap'] = dict(selected=self.overlap_selected, counters=dict(self.overlap_counters),
                                  controller=dict(self.controller.overlap_counters),
                                  refusals=dict(self.controller.overlap_refusals))
+        if self.defer_bind:
+            result['overlap']['defer_bind'] = dict(counters=dict(self.defer_counters))
+        if self.overlap_observer is not None:
+            result['overlap']['observe'] = dict(counters=dict(self.overlap_observer.counters))
         return result
 
 
@@ -788,5 +995,6 @@ def _ranges(values):
     return ','.join(str(a) if a == b else '%d-%d' % (a, b) for a, b in out) or '-'
 
 
-__all__ = ['OverlapSegmentDriver', 'REFUSALS', 'STAGE_OVERLAP_ENV', 'StagedAdmissionController',
-           'overlap_refusal', 'provisional_fields', 'stage_overlap_enabled']
+__all__ = ['DEFER_BIND_ENV', 'OBSERVE_ENV', 'OBSERVE_LINE', 'OBSERVE_SCHEMA', 'OverlapObserver', 'OverlapSegmentDriver', 'REFUSALS', 'STAGE_OVERLAP_ENV', 'StagedAdmissionController',
+           'overlap_refusal', 'provisional_fields', 'stage_overlap_defer_bind_enabled', 'stage_overlap_enabled',
+           'stage_overlap_observe_enabled']
