@@ -43,6 +43,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import alpha_next_engine_selfrun as an  # noqa: E402  (installs alpha-next's lines, writer resets and dense line)
+# alpha-next's g4 fix (HARNESS, PLAN 2 receipts): every probe line through harness/alpha_next_probe_launch.py. Importing the _b
+# tool wraps the base tool's command-line builders in place; C1's own probe lines go through the same launcher below.
+import alpha_next_engine_selfrun_b as anb  # noqa: E402
 import alpha_c1_engine_selfrun as c1  # noqa: E402  (C1's constants and helpers; installs nothing)
 
 ROOT = an.ROOT
@@ -64,7 +67,8 @@ DECLARED_LIMIT = an.DECLARED_LIMIT + '; ' + c1.DECLARED_LIMIT
 
 # ---------------------------------------------------------------- command lines: alpha-next's, plus C1's cases in C1's form
 _an_lines = step_a.command_lines
-assert _an_lines is an.command_lines, 'alpha-next command lines not installed'
+assert _an_lines is anb.command_lines and getattr(_an_lines, 'alpha_next_probe_launch', False), \
+    'alpha-next command lines (with the probe launcher) not installed'
 
 
 def command_lines(modes, suites):
@@ -75,7 +79,7 @@ def command_lines(modes, suites):
         if mode.startswith('alpha-c1-'):
             own = c1.command_lines((mode,), ())
             assert own[0] == lines[0] == 'cd /source/harness', (own[0], lines[0])
-            lines += own[1:]
+            lines += anb.probe_launch(own[1:])
     return lines
 
 
