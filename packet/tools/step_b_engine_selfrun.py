@@ -44,10 +44,11 @@ import native39_trunk_selfrun as dense_base  # noqa: E402
 # The dense container's suites run through the declared real-clock window-slot list (harness/step_b_clock_bound.py, reason "box timing
 # is governed by the lead at launch (operator, 2 Nov)"), as strict and the bundle self-run do: the same suites, same verbosity, minus
 # those ids. Chain d's first engine self-run failed only on test_native43_boundary_queue's window test past its 03:57Z close
-# (HARNESS; the lead's pre-approval, 2 Nov). Tools only; the bundle and its harness are unchanged.
+# (HARNESS; the lead's pre-approval, 2 Nov). Tools only; the bundle and its harness are unchanged. The unfiltered suite is dropped
+# before the run (del s), so unittest frees each test after it runs as it does under -m unittest (attempt 2 was killed without it).
 _DENSE_UNITTEST = 'python3 -B -m unittest -v '
 _DENSE_FILTERED = ('python3 -B -c "import sys,unittest; sys.path.insert(0,\'.\'); import step_b_clock_bound as c; names=sys.argv[1:]; '
-                   's=unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName(n) for n in names); k,r=c.filtered(s); '
+                   's=unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName(n) for n in names); k,r=c.filtered(s); del s; '
                    'assert r==c.expected_removed(names),r; [print(\'clock-bound, excluded (declared):\',x,file=sys.stderr) for x in r]; '
                    'sys.exit(0 if unittest.TextTestRunner(verbosity=2).run(k).wasSuccessful() else 1)" ')
 _dense_original = dense_base.inner_script
