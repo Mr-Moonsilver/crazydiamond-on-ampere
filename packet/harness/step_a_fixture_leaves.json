@@ -217,6 +217,24 @@
    "cannot_prove": "How often the fused path tears: the rate is estimated from one alpha-perf run. A signature whose bytes moved to another physical line stays unseen by the text scan; the engine watch and the arm record still see a dead engine.",
    "more_convenient": true,
    "box_evidence": false
+  },
+  {
+   "name": "connected-arm-control-sequence",
+   "test": "e3_step_a_probe (cases step-a-*)",
+   "replaces": "pp.set_mode, e3_native41_progress_probe's control sequence (pause, native_progress, release_auto_arm, resume), by the q18a-step-a arm's sequence with native_qsa_fused after native_progress",
+   "equivalence": "The replacement drives the real driver's submit_control with the arm's actions in the arm's order, under the real scheduler's PAUSED_ALL state, and restores the pause state as the parent does; only the fused selection is added.",
+   "cannot_prove": "The HTTP router and session path of the control (test_step_a_queue.Router covers it; the box arms send it through the router).",
+   "more_convenient": true,
+   "box_evidence": "Each box arm sends the same control sequence through the router."
+  },
+  {
+   "name": "torn-line-band-cuts",
+   "test": "test_step_a_queue.Tears",
+   "replaces": "tap.band_cuts, band 1's chunk ends for the synthetic run, by sixteen equal pieces between the same first and last ends (the C0 grade's leaf of the same name)",
+   "equivalence": "Same band, same first and last ends; only more chunks, so a lost flush can drop chunks within the limits. The grade reads chunk identities from the lines, not from band_cuts.",
+   "cannot_prove": "Band 1's real chunk sizes (the test-scale workloads and the box arms use them).",
+   "more_convenient": true,
+   "box_evidence": false
   }
  ]
 }
