@@ -39,6 +39,29 @@ from native37_robust_selfrun import IMAGE  # noqa: E402
 import native41_progress_engine_selfrun as held_f  # noqa: E402
 import native43_selfrun as dense  # noqa: E402
 import step_a_engine_selfrun as step_a  # noqa: E402
+import native39_trunk_selfrun as dense_base  # noqa: E402
+
+# The dense container's suites run through the declared real-clock window-slot list (harness/step_b_clock_bound.py, reason "box timing
+# is governed by the lead at launch (operator, 2 Nov)"), as strict and the bundle self-run do: the same suites, same verbosity, minus
+# those ids. Chain d's first engine self-run failed only on test_native43_boundary_queue's window test past its 03:57Z close
+# (HARNESS; the lead's pre-approval, 2 Nov). Tools only; the bundle and its harness are unchanged.
+_DENSE_UNITTEST = 'python3 -B -m unittest -v '
+_DENSE_FILTERED = ('python3 -B -c "import sys,unittest; sys.path.insert(0,\'.\'); import step_b_clock_bound as c; names=sys.argv[1:]; '
+                   's=unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName(n) for n in names); k,r=c.filtered(s); '
+                   'assert r==c.expected_removed(names),r; [print(\'clock-bound, excluded (declared):\',x,file=sys.stderr) for x in r]; '
+                   'sys.exit(0 if unittest.TextTestRunner(verbosity=2).run(k).wasSuccessful() else 1)" ')
+_dense_original = dense_base.inner_script
+
+
+def _dense_inner_script(label, suites, compiled):
+    text = _dense_original(label, suites, compiled)
+    if suites:
+        assert text.count(_DENSE_UNITTEST) == 1, 'dense suite line'
+        text = text.replace(_DENSE_UNITTEST, _DENSE_FILTERED)
+    return text
+
+
+dense_base.inner_script = _dense_inner_script
 
 ROOT = Path(__file__).resolve().parents[1]
 PARENT_FILE = ROOT / 'tools/step_b_parent.json'
