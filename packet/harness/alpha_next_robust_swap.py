@@ -12,6 +12,9 @@ step_b_clock_bound's declared real-clock window-slot ids (so a gate chain's focu
 `filtered(suite)` for a bundle probe.  Both refuse unless every listed id of the loaded modules was found and removed exactly
 once, and unless each removed id's robust twin loads.
 
+SUPERSEDED (alpha-next composition): the stage-1 anatomy FreezeProof method, pinned to its own parent tree; superseded by
+tools/alpha_next_freeze.py, which pins that feature's record and limits the engine delta after it.
+
 Coverage note: modules are loaded by name (as step_b_clock_bound does), not run as scripts.  test_e3_w1_decode_driver.py has
 a first `if __name__ == '__main__': unittest.main()` at line 1508, before ReviewRegressionTests (5 tests) is defined, so its
 script-mode selftest row ran 52 tests; through this runner the row runs 56 (52 - 1 swapped + those 5, all green).
@@ -32,12 +35,20 @@ ROBUST_SWAP = {
         'test_native43_le_bounded_enqueue_stepped.SteppedBoundedEnqueueTests.'
         'test_the_le_chain_raises_the_stored_worker_rpc_error_within_the_bound',
 }
-MODULES = sorted({name.split('.', 1)[0] for name in ROBUST_SWAP})
+# A frozen method whose proof is pinned to a parent tree the composition moved past: left out by id, superseded by the named
+# proof, which the build and the gate chain run (no twin test; the superseding record carries the feature's own record by sha).
+SUPERSEDED = {
+    'test_stage1_handler_anatomy.FreezeProof.test_source_proof_and_negative_controls':
+        'stage-1 anatomy freeze proof diffs the working tree against its own parent step-b 5f46c07, so any composed tree fails it by '
+        'construction; superseded by tools/alpha_next_freeze.py (composition proof, the stage-1 record freeze-f708f082.json pinned '
+        'by sha with its PASS, the post-freeze engine delta limited to the new module handler_anatomy.py)',
+}
+MODULES = sorted({name.split('.', 1)[0] for name in ROBUST_SWAP} | {name.split('.', 1)[0] for name in SUPERSEDED})
 ROBUST_MODULES = sorted({name.split('.', 1)[0] for name in ROBUST_SWAP.values()})
 
 
 def reason(frozen_id):
-    return REASON % ROBUST_SWAP[frozen_id]
+    return SUPERSEDED[frozen_id] if frozen_id in SUPERSEDED else REASON % ROBUST_SWAP[frozen_id]
 
 
 def _flatten(suite):
@@ -51,16 +62,19 @@ def _flatten(suite):
 def filtered(suite):
     """The suite without the swapped frozen ids, and the ids removed; refuses an id found twice or a twin that does not load."""
     tests = list(_flatten(suite))
-    removed = sorted(t.id() for t in tests if t.id() in ROBUST_SWAP)
+    gone = set(ROBUST_SWAP) | set(SUPERSEDED)
+    removed = sorted(t.id() for t in tests if t.id() in gone)
     assert len(removed) == len(set(removed)), ('swapped id loaded twice', removed)
     for name in removed:
+        if name in SUPERSEDED:
+            continue
         twin = list(_flatten(unittest.defaultTestLoader.loadTestsFromName(ROBUST_SWAP[name])))
         assert [t.id() for t in twin] == [ROBUST_SWAP[name]], ('robust twin does not load', name, [t.id() for t in twin])
-    return unittest.TestSuite(t for t in tests if t.id() not in ROBUST_SWAP), removed
+    return unittest.TestSuite(t for t in tests if t.id() not in gone), removed
 
 
 def expected_removed(modules):
-    return sorted(name for name in ROBUST_SWAP if name.split('.', 1)[0] in modules)
+    return sorted(name for name in list(ROBUST_SWAP) + list(SUPERSEDED) if name.split('.', 1)[0] in modules)
 
 
 def main(modules):
@@ -74,7 +88,8 @@ def main(modules):
     for name in clock_removed:
         print('clock-bound frozen, excluded (declared): %s: %s' % (name, step_b_clock_bound.CLOCK_BOUND_FROZEN[name]))
     for name in removed:
-        print('load-flaky frozen, swapped (declared): %s: %s' % (name, reason(name)))
+        kind = 'pinned-parent frozen, superseded (declared)' if name in SUPERSEDED else 'load-flaky frozen, swapped (declared)'
+        print('%s: %s: %s' % (kind, name, reason(name)))
     result = unittest.TextTestRunner(verbosity=1).run(kept)
     return 0 if result.wasSuccessful() else 1
 
