@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import select
+import subprocess
 import sys
 import tempfile
 import types
@@ -617,6 +618,19 @@ class Witness(unittest.TestCase):
         for proc in result['per_process'].values():
             self.assertEqual(proc['first_seq'], 0)
             self.assertEqual(proc['last_seq'] + 1, proc['records'])
+
+    def test_a_writer_that_dies_before_reporting_ends_the_run(self):
+        """Over a native_measurement without the PLAN 2 writer (Step B's, in the negative control) every writer dies before it
+        reports; the run must return short (and the new-path test fail), not wait on the noise writer forever (g5's negative
+        observation hung here, HARNESS). In a subprocess with a deadline, so a regression fails instead of hanging."""
+        code = ('import json, sys; sys.path[:0] = %r; import native_measurement as nm; del nm.install_receipt_writer; '
+                'import alpha_next_receipts_witness as w; r = w.run("new", writers=4, records=2000, seed=7); '
+                'print(json.dumps(dict(records_read=r["records_read"], reported=len(r["writer_stats"]))))'
+                % (([MUTANT_ENGINE] if MUTANT_ENGINE else []) + [str(ENGINE), str(ROOT / 'harness')]))
+        done = subprocess.run([sys.executable, '-B', '-c', code], capture_output=True, text=True, timeout=300)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        self.assertEqual(json.loads(done.stdout.strip().splitlines()[-1]), dict(records_read=0, reported=0))
+        self.assertIn("has no attribute 'install_receipt_writer'", done.stderr)
 
     def test_old_path_leaves_a_long_record_in_several_writes(self):
         """Structural half of the witness: through the decorated buffered stream one 12000-byte record is >1 write(2)."""

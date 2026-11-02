@@ -62,7 +62,8 @@ HUB_SIDE = ('tools/alpha_next_queue_pins.json',)
 FOCUSED_DELTA = ['test_e3_stage_local', 'test_e3_stage_local_control', 'test_e3_stage_local_qsa', 'test_stage1_handler_anatomy',
                  'test_e3_native_anatomy', 'test_e3_native_lean_replies', 'test_alpha_next_stopfix_matrix', 'test_alpha_next_c0_ring',
                  'test_alpha_next_peak_receipt', 'test_alpha_next_receipts', 'test_alpha_next_receipts_mutants',
-                 'test_alpha_next_stage1_slow_rank', 'test_alpha_next_path_qualification', 'test_alpha_next_probe_launch']
+                 'test_alpha_next_stage1_slow_rank', 'test_alpha_next_path_qualification', 'test_alpha_next_probe_launch',
+                 'test_alpha_next_wall_guard']
 
 
 def queue_settings():

@@ -22,6 +22,7 @@ import json
 import logging
 import multiprocessing
 import os
+import queue
 import random
 import re
 import sys
@@ -176,11 +177,19 @@ def run(mode, *, writers=4, records=100_000, seed=1, noise=True, keep=None):
     stats = []
 
     def finisher():
-        for _ in procs:
-            stats.append(done.get())
-        for p in procs:
-            p.join()
-        stop.set()
+        # A writer that dies before reporting (e.g. a native_measurement without the PLAN 2 writer) must end the run, not
+        # leave the noise writer holding the pipe open forever: the run then reads short and the caller's checks fail.
+        try:
+            while len(stats) < len(procs):
+                try:
+                    stats.append(done.get(timeout=1))
+                except queue.Empty:
+                    if any(p.exitcode not in (None, 0) for p in procs):
+                        break
+            for p in procs:
+                p.join()
+        finally:
+            stop.set()
     t = threading.Thread(target=finisher, daemon=True)
     t.start()
     counts = dict(lines=0, bytes=0, spliced=0)
