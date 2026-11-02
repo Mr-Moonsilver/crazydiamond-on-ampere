@@ -7,13 +7,18 @@ receipts, a typed FULL at the end and the grade, then native40's end identity an
 ACTIVE_S is the outer watchdog: the box budget is 9,000 s including cleanup. An arm starts only inside LAST_ARM_ENTRY_S, Step A's
 number, since each arm's worst case and the tail are unchanged. TRIM_G4_REPEAT_S is the lead's order of what goes first: a size 4
 repeat enters only while band 2's nominal time still fits, so a slow run gives up those two arms before it gives up a band 2
-arm. A trimmed arm is NOT_RUN and the run is INC, never PASS. The hard end is inherited from native40_box_gate and not moved here.
+arm. A trimmed arm is NOT_RUN and the run is INC, never PASS. HARD_END is Step B's own: 2026-11-02T07:00Z, the operator's move of
+2 Nov (production comes back at 08:00 CET); native40_box_gate's 06:00Z and every other gate stay as they are. NOT_BEFORE and CLEANUP_S
+stay native40's.
 ``window_ok(time.time())`` is the single entry check used by the draft and the owner runner.
 """
 from native41_box_gate import ARM_KILL_AFTER_S, ARM_TIMEOUT_S, FULL_IDLE_CAP_S, INGRESS_CAP_S, INSTRUMENTS_CAP_S, KEPT
-from native40_box_gate import CLEANUP_S, HARD_END, NOT_BEFORE, PHASES as NATIVE40_PHASES
+import datetime
+
+from native40_box_gate import CLEANUP_S, NOT_BEFORE, PHASES as NATIVE40_PHASES
 from step_a_gate import ACTIVE_S, BOX_BUDGET_S, GRADE_CAP_S, LAST_ARM_ENTRY_S
 
+HARD_END = datetime.datetime(2026, 11, 2, 7, tzinfo=datetime.timezone.utc).timestamp()   # operator, 2 Nov: production at 08:00 CET
 BAND1_ARMS = 12
 BAND2_ARMS = 4
 ARMS = BAND1_ARMS + BAND2_ARMS

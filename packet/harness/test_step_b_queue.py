@@ -1159,8 +1159,9 @@ class Window(unittest.TestCase):
     def test_the_box_budget_and_the_arm_entry_rule(self):
         import native40_box_gate as n40
         import native41_box_gate as n41
-        self.assertEqual((gate.CLEANUP_S, gate.NOT_BEFORE, gate.HARD_END), (n40.CLEANUP_S, n40.NOT_BEFORE, n40.HARD_END))
-        self.assertEqual(gate.HARD_END, 1793599200.0)      # 2026-11-02T06:00Z, inherited, not moved
+        self.assertEqual((gate.CLEANUP_S, gate.NOT_BEFORE), (n40.CLEANUP_S, n40.NOT_BEFORE))
+        self.assertEqual(gate.HARD_END, 1793602800.0)      # 2026-11-02T07:00Z, Step B's own (operator, 2 Nov)
+        self.assertEqual(n40.HARD_END, 1793599200.0)       # native40's 06:00Z is not moved
         for name in n41.KEPT:
             self.assertEqual(gate.PHASES[name], n40.PHASES[name], name)
         self.assertEqual((gate.ACTIVE_S, gate.BOX_BUDGET_S, gate.LAST_ARM_ENTRY_S), (a_gate.ACTIVE_S, 9000, a_gate.LAST_ARM_ENTRY_S))
@@ -1182,7 +1183,7 @@ class Window(unittest.TestCase):
                             ('timeout 600s python3 "$H/e3_step_b_box.py" grade', 1)):
             self.assertEqual(body.count(text), count, text)
         self.assertEqual(gate.latest_arm(), gate.HARD_END - gate.BOX_BUDGET_S)
-        self.assertEqual(time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(gate.latest_arm())), '2026-11-02T03:30Z')
+        self.assertEqual(time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(gate.latest_arm())), '2026-11-02T04:30Z')
         self.assertTrue(gate.window_ok(gate.latest_arm()))
         self.assertFalse(gate.window_ok(gate.latest_arm() + 1))
         self.assertFalse(gate.window_ok(gate.NOT_BEFORE - 1))
@@ -1207,6 +1208,24 @@ class Window(unittest.TestCase):
                                   verdict='PASS' if done.returncode == 0 else 'OUTSIDE-WINDOW',
                                   active_s=gate.ACTIVE_S, cleanup_margin_s=gate.CLEANUP_S))
 
+    def test_clock_bound_list_is_exact(self):
+        """Every declared real-clock window-slot id exists once in its module; the filter leaves out exactly those."""
+        import step_b_clock_bound as cb
+        self.assertEqual(len(cb.CLOCK_BOUND_FROZEN), 15)
+        self.assertEqual(set(cb.CLOCK_BOUND_FROZEN.values()), {'box timing is governed by the lead at launch (operator, 2 Nov)'})
+        import ast
+        found = []
+        for name in cb.MODULES:      # by AST: every declared id is a test method of its frozen file, once
+            tree = ast.parse((HERE / (name + '.py')).read_text())
+            found += ['%s.%s.%s' % (name, c.name, f.name) for c in tree.body if isinstance(c, ast.ClassDef)
+                      for f in c.body if isinstance(f, ast.FunctionDef) and name + '.' + c.name + '.' + f.name in cb.CLOCK_BOUND_FROZEN]
+        self.assertEqual(sorted(found), sorted(cb.CLOCK_BOUND_FROZEN))
+        self.assertEqual(len(cb.IN_PROBE), 11)
+        own = 'test_step_b_queue.Window.test_draft_window_slot_executes_at_real_wall_clock'
+        suite = unittest.TestSuite([self, Window('test_the_box_budget_and_the_arm_entry_rule'),
+                                    Window('test_draft_window_slot_executes_at_real_wall_clock')])
+        kept, removed = cb.filtered(suite)
+        self.assertEqual((kept.countTestCases(), removed), (2, [own]))
 
 if __name__ == '__main__':
     unittest.main()

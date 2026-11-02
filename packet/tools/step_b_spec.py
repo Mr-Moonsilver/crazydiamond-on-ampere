@@ -33,6 +33,9 @@ RUNNER_SWAPS = [
     [_step_a_swap("result.get('step_a_queue')=='PASS'"),
      _step_a_swap("result.get('step_a_queue')=='PASS'") + " and result.get('step_b_queue')=='PASS'"],
     [STEP_A_CASES_TEXT, "sorted(engine.get('cases') or {})==" + repr(selfrun.expected_cases())],
+    # Removed, not replaced: box timing is governed by the lead at launch (operator, 2 Nov); see harness/step_b_clock_bound.py.
+    ["result.get('native35_p_c_continuation')=='PASS' and result.get('native39_trunk_queue')=='PASS'",
+     "result.get('native35_p_c_continuation')=='PASS'"],
 ]
 HEADER = [
     'Step B packaged by tools/build_step_b.py (spec step-b); PREV is the Step A bundle and runner.',
@@ -42,7 +45,7 @@ HEADER = [
     'Queue: Step A\'s startup and cleanup with FLASH_S5_LAYER_GROUPS=1 added; band 1 twelve arms at sizes 1, 2 and 4 and band 2 four arms '
     'at sizes 1 and 2, matched by the typed native_layer_group selection, fused selected in every arm; no production start.',
 ]
-EXTRA_COMPILED = ['harness/step_b_gate.py', 'harness/e3_step_b_box.py', 'harness/e3_step_b_probe.py', 'harness/test_step_b_queue.py',
+EXTRA_COMPILED = ['harness/step_b_gate.py', 'harness/step_b_clock_bound.py', 'harness/e3_step_b_box.py', 'harness/e3_step_b_probe.py', 'harness/test_step_b_queue.py',
                   'harness/test_e3_native_layer_groups.py', 'tools/build_step_b.py', 'tools/step_b_clock_scan.py', 'tools/step_b_cpu_probe.py',
                   'tools/step_b_delivery.py', 'tools/step_b_engine_selfrun.py', 'tools/step_b_freeze.py', 'tools/step_b_overlay_propose.py',
                   'tools/step_b_overlay_tamper.py', 'tools/step_b_precheck_conf.py', 'tools/step_b_queue.py', 'tools/step_b_spec.py',
@@ -50,10 +53,13 @@ EXTRA_COMPILED = ['harness/step_b_gate.py', 'harness/e3_step_b_box.py', 'harness
 
 
 def expected_tests_from_sources():
-    """The bundle self-run's test count: the derived CPU probe's EXPECTED_TESTS, whose parent part is Step A's spec's count."""
+    """The bundle self-run's test count: the derived CPU probe's EXPECTED_TESTS: Step A's spec's count less the declared clock-bound tests, plus Step B's."""
     import step_b_tools_derive as derive
     assert derive.PARENT_TESTS == STEP_A['expected_tests'], (derive.PARENT_TESTS, STEP_A['expected_tests'])
-    return derive.PARENT_TESTS + derive.STEP_B_TESTS
+    sys.path.insert(0, str(TOOLS.parent / 'harness'))
+    import step_b_clock_bound as cb
+    assert derive.CLOCK_BOUND_IN_PROBE == len(cb.IN_PROBE), (derive.CLOCK_BOUND_IN_PROBE, cb.IN_PROBE)
+    return derive.PARENT_TESTS - derive.CLOCK_BOUND_IN_PROBE + derive.STEP_B_TESTS
 
 
 def generate(scratch, expected_tests):

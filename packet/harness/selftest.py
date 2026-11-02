@@ -654,6 +654,8 @@ check('S5 verdict NO-GO: prefill floor', s5_combine([s5_fixture(), s5_bad])['ver
 check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdict'], 'INCONCLUSIVE')
 
 # --- Full engine identity: mocked docker, actual destination-side hashing; no GPU ---
+sys.path.insert(0, HERE)
+from step_b_clock_bound import MODULES as STEP_B_CLOCK_BOUND_MODULES  # noqa: E402
 for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithmetic, bucket bytes, fragmentation and no extra window (CPU)'),
                      ('test_s5_dma_window.py', 'S5 repeated DMA: every layer/chunk, bounded CPU copies, strict oracle, solo/overlap accounting (CPU)'),
                      ('test_e2_arena.py', 'E2 single arena: owner epochs, bounded fills, completion and retirement (CPU only)'),
@@ -882,7 +884,11 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_decode_correctness.py', 'E3 W1 short live-cohort correctness: full/split/full exact token oracle, paused-route lifecycle and control-vs-split verdicts (loopback fakes)'),
                      ('test_prefix_capacity.py', 'prefix capacity: source shapes and conditional LRU model'),
                      ('test_pp_grouping.py', 'PP grouping, pool stats, warm/cold gates: offline checks')]:
-    identity_test = subprocess.run([sys.executable, os.path.join(HERE, suite)], capture_output=True, text=True,
+    # Step B: a module holding a declared clock-bound frozen window test runs through step_b_clock_bound, which leaves out only
+    # those ids (CLOCK_BOUND_FROZEN, each with its reason); the test files are unchanged.
+    command = ([sys.executable, os.path.join(HERE, 'step_b_clock_bound.py'), suite] if suite[:-3] in STEP_B_CLOCK_BOUND_MODULES
+               else [sys.executable, os.path.join(HERE, suite)])
+    identity_test = subprocess.run(command, capture_output=True, text=True,
                                    env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
     if identity_test.returncode:
         print(identity_test.stdout + identity_test.stderr)

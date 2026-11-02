@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PARENT_PINS = json.loads((ROOT / 'tools/step_b_parent.json').read_text())
@@ -59,6 +60,7 @@ def main():
     sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'harness')]
     import step_b_freeze as freeze_tool
     import step_b_gate as gate
+    import step_b_clock_bound as clock_bound
     b, fz, e, cmp_, neg, tam, q, k, c = [json.loads(path.read_text()) for path in (
         a.build, a.freeze, a.engine, a.compare, a.negative, a.tamper, a.queue, a.clock_scan, a.compile_proof)]
     assert b['schema'] == 'native43-build/1' and b['name'] == 'q18a-step-b' and b['parent_manifest'] == STEP_A_MANIFEST
@@ -75,6 +77,7 @@ def main():
     assert tam['candidate_manifest'] == b['overlay_manifest'] and all(x['ok'] for x in tam['cases'])
     assert q['frozen_runner_sha256'] == b['runner_sha256'] and q['tests_run'] == b['expected_selfrun_tests']
     assert q['step_b_queue'] == 'PASS' and q['owner_prelaunch']['verdict'] == 'PASS'
+    assert q['clock_bound_frozen_excluded'] == clock_bound.IN_PROBE
     assert k['schema'] == 'step-b-clock-scan/1' and not k['scan']['problems'] and k['bundle_manifest'] == b['manifest']
     assert k['runner']['sha256'] == b['runner_sha256'] and k['negative_controls'] and all(k['negative_controls'].values())
     st = json.loads(a.staging_check.read_text())
@@ -131,6 +134,12 @@ def main():
                vm=vm_record(a.vm, a.vm_compare, b['manifest']),
                fixture_leaves=dict(path='harness/step_b_fixture_leaves.json', sha256=sha(ROOT / 'harness/step_b_fixture_leaves.json'),
                                    inherits=leaves['inherits'], names=[x['name'] for x in leaves['leaves']]),
+               clock_bound_frozen=dict(reason=clock_bound.REASON, ids=sorted(clock_bound.CLOCK_BOUND_FROZEN),
+                                       left_out_of_bundle_selfrun=q['clock_bound_frozen_excluded'],
+                                       runner_requirement_removed="result.get('native39_trunk_queue')=='PASS'",
+                                       approval='operator, 2 Nov 2026 about 03:05 CET, through the lead'),
+               hard_end_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(gate.HARD_END)),
+               latest_start_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(gate.latest_arm())),
                expected_runtime=gate.EXPECTED_RUNTIME_S, box_budget_s=gate.BOX_BUDGET_S, active_s=gate.ACTIVE_S, cleanup_s=gate.CLEANUP_S,
                last_arm_entry_s=gate.LAST_ARM_ENTRY_S, latest_start_unix=gate.latest_arm(),
                note=str(a.note), note_sha256=sha(a.note), model_settings_changed=False, device_run='NOT_RUN')
