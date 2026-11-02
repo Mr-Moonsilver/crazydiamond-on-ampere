@@ -87,6 +87,13 @@ def main():
     assert sp['schema'] == 'staging-predicates/1' and sp['verdict'] == 'PASS' and not sp['missing_blocks'] and not sp['repeated_blocks']
     assert sp['runner_sha256'] == b['runner_sha256'] and sp['selfrun_sha256'] == sha(a.queue) and sp['engine_selfrun_sha256'] == sha(a.engine)
     pins = json.loads((ROOT / 'tools/step_b_negative_pins.json').read_text())
+    # The ids the engine self-run's dense container left out, from its own suites.log (sha-bound in the dense record), checked
+    # against the declared list and its reason.
+    dense_log = a.engine.parent / 'dense' / 'engine' / 'suites.log'
+    dense_rec = json.loads((a.engine.parent / 'dense' / 'result.json').read_text())
+    assert sha(dense_log) == dense_rec['suites']['log_sha256'], 'dense suites log differs from its record'
+    left_out = sorted(re.findall(r'^clock-bound, excluded \(declared\): (\S+)$', dense_log.read_text(), re.M))
+    assert left_out and all(x in clock_bound.CLOCK_BOUND_FROZEN for x in left_out), left_out
     assert neg['pinned_tests'] == len(pins['tests']) and sha(pins['observation']['observed_json']) == pins['observation']['observed_sha256']
     proof = json.loads((Path(b['bundle']).parent / 'freeze-proof.json').read_text())
     assert sha(Path(b['bundle']).parent / 'freeze-proof.json') == b['freeze_proof_sha256'] and proof['verdict'] == 'PASS'
@@ -111,7 +118,9 @@ def main():
                                    cases=sorted(e['cases']), connected_checks=e['connected_checks'],
                                    clock_split=e['clock_split']['verdict'], scheduler_tick_probe=(e.get('scheduler_tick_probe') or {}).get('verdict'),
                                    probe39=e['probe39']['verdict'], probe37=e['probe37']['verdict'], pairs=e['pairs'],
-                                   declared_limit=e['declared_limit']),
+                                   declared_limit=e['declared_limit'],
+                                   dense_left_out={x: clock_bound.CLOCK_BOUND_FROZEN[x] for x in left_out},
+                                   dense_suites_log=str(dense_log), dense_suites_log_sha256=sha(dense_log)),
                comparison=dict(path=str(a.compare), sha256=sha(a.compare), verdict=cmp_['verdict'], compared=cmp_['compared'],
                                parent_record=cmp_['parent_record'], parent_record_sha256=cmp_['parent_record_sha256']),
                negative=dict(path=str(a.negative), sha256=sha(a.negative), verdict=neg['verdict'], pinned_tests=neg['pinned_tests'],
