@@ -8,6 +8,7 @@ C0 l's committed spec's (tools/native43_spec.alpha-c0.json), with C1's files add
 HEAD, so run it with harness/ and patches/ complete and committed. Only tools/ may change after it. No GPU, no box action.
 """
 import argparse
+import ast
 import json
 from pathlib import Path
 import sys
@@ -17,17 +18,19 @@ sys.path.insert(0, str(TOOLS))
 from build_alpha_c1 import NEW_OVERLAY, b  # noqa: E402
 import alpha_c1_engine_selfrun as selfrun  # noqa: E402
 import alpha_c1_overlay_propose as overlay  # noqa: E402
-import alpha_c0_spec as c0_spec  # noqa: E402
 
 NAME = 'native43_spec.alpha-c1.json'
 C0 = json.loads((TOOLS / 'native43_spec.alpha-c0.json').read_text())
-C0_CASES = sorted(c0_spec.PARENT_CASES + list(selfrun.c0.CASES))
+# C0 l's runner case list, read from C0 l's committed spec (its last runner swap's new text). alpha_c0_spec is not imported: it
+# imports build_alpha_c0, whose module-level parent (alpha-perf build-d) would replace build_alpha_c1's in the shared module b.
+CASES_TEXT = "sorted(engine.get('cases') or {})=="
+C0_CASES = ast.literal_eval(next(new for _old, new in C0['runner_swaps'] if new.startswith(CASES_TEXT))[len(CASES_TEXT):])
+assert C0_CASES == sorted(C0_CASES) and set(selfrun.c0.CASES) <= set(C0_CASES), C0_CASES
 RUNNER_SWAPS = [
     # C0 l's runner already has the window-free check_slot (operator, 2 Nov): nothing to swap there.
     ["engine.get('schema')=='alpha-c0-selfrun/1'", "engine.get('schema')=='alpha-c1-selfrun/1'"],
     ["result.get('alpha_c0_queue')=='PASS'", "result.get('alpha_c0_queue')=='PASS' and result.get('alpha_c1_queue')=='PASS'"],
-    ["sorted(engine.get('cases') or {})==" + repr(C0_CASES),
-     "sorted(engine.get('cases') or {})==" + repr(sorted(C0_CASES + list(selfrun.CASES)))],
+    [CASES_TEXT + repr(C0_CASES), CASES_TEXT + repr(sorted(C0_CASES + list(selfrun.CASES)))],
 ]
 HEADER = [
     'C1 packaged by tools/build_alpha_c1.py (spec alpha-c1); PREV is the C0 l build-l bundle (a1526e066c6a) and runner.',
@@ -49,6 +52,7 @@ EXTRA_COMPILED = ['harness/alpha_c1_gate.py', 'harness/e3_alpha_c1_box.py', 'har
 
 
 def generate(scratch, expected_tests):
+    assert b.PARENT_MANIFEST.startswith('a1526e066c6a') and b.PARENT_COMMIT.startswith('cf0e301'), 'parent is not C0 l'
     head = b.git('rev-parse', 'HEAD').strip()
     spec = dict(source_commit=head, tools=[])
     proposed = b.propose(spec)
