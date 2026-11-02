@@ -20,6 +20,7 @@ import glob
 import json
 import lzma
 import os
+import re
 import statistics
 import sys
 
@@ -197,9 +198,34 @@ def band(start):
     return 'beyond-arena' if (start or 0) >= ARENA_ROWS else 'below-arena'
 
 
-def analyse(root):
-    logs = [p for p in (os.path.join(root, 'engine-current.log'), os.path.join(root, 'engine-current.log.xz'))
-            if os.path.exists(p)][:1]
+ENGINE_LOGS = ('engine-current.log', 'engine-current.log.xz', 'engine-stream.log', 'engine-stream.log.xz')
+
+
+def engine_logs(root):
+    """The first engine log the record holds, in ENGINE_LOGS order."""
+    return [p for p in (os.path.join(root, name) for name in ENGINE_LOGS) if os.path.exists(p)][:1]
+
+
+def arm_group(name, arm):
+    """(token, QSA mode, group size) from the arm's selection or label.
+
+    ``mode`` is the progress mode (``burst``) for every arm, so it cannot group. Step A labels ``fused-live-0`` /
+    ``stepped-solo-1`` (selection fused|stepped, size 1); Step B labels ``g2-live-0`` (selection g1|g2|g4, the fused
+    path in every arm, size = int(selection[1:]); ``s2`` is read the same way). The token holds no '-', so ``compare``
+    can split keys: ``fused``, ``stepped``, ``fused.g2``.
+    """
+    selection = arm.get('selection') or name.split('-')[0]
+    if selection in ('fused', 'stepped'):
+        return selection, selection, 1
+    m = re.fullmatch(r'[gs](\d+)', str(selection))
+    if m:
+        size = int(m.group(1))
+        return 'fused.g%d' % size, 'fused', size
+    return str(selection).replace('-', '_'), str(selection), arm.get('size')
+
+
+def analyse(root, logs=None):
+    logs = logs if logs is not None else engine_logs(root)
     records, errors = box.read_lines(logs)
     torn = torn_lines.read_torn(logs)
     records, errors, _ = torn_lines.whole_records(records, errors, torn['progress'])
@@ -226,7 +252,9 @@ def analyse(root):
         whole = [f for f in counted if not any(torn_lines.touches(loss, torn_lines.chunk_seqs(f), ledger['rank_seqs'])
                                                for loss in ledger['lost'])]
         chunks = [chunk_report(f, workers, by_rank) for f in whole]
-        arms[name] = dict(mode=arm.get('mode'), cohort=arm.get('cohort'), band=arm.get('band'),
+        token, qsa, size = arm_group(name, arm)
+        arms[name] = dict(mode=arm.get('mode'), group=token, qsa_mode=qsa, group_size=size,
+                          cohort=arm.get('cohort'), band=arm.get('band'),
                           chunks_dropped_torn=len(counted) - len(whole),
                           chunks=[c for c in chunks if 'wall_s' in c])
     return dict(errors=errors, problems=problems, arms=arms, torn_lines=len(torn['progress']) + len(torn['memory']),
@@ -275,12 +303,19 @@ def group_summary(chunks):
 
 
 def summarise(result):
-    groups = {}
-    for arm in result['arms'].values():
+    """Groups by QSA mode and group size (``arm_group``), cohort and band; never by the progress mode."""
+    groups, meta = {}, {}
+    for name, arm in result['arms'].items():
+        token, qsa, size = (arm['group'], arm['qsa_mode'], arm['group_size']) if 'group' in arm else arm_group(name, arm)
         for chunk in arm['chunks']:
-            key = '%s-%s-%s' % (arm['mode'], arm['cohort'], band(chunk.get('chunk_start')))
+            key = '%s-%s-%s' % (token, arm['cohort'], band(chunk.get('chunk_start')))
             groups.setdefault(key, []).append(chunk)
-    return {key: group_summary(chunks) for key, chunks in sorted(groups.items())}
+            meta[key] = dict(qsa_mode=qsa, group_size=size)
+    out = {}
+    for key, chunks in sorted(groups.items()):
+        out[key] = group_summary(chunks)
+        out[key].update(meta[key])
+    return out
 
 
 def compare(summary, old, new):
@@ -313,8 +348,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('root', help='directory holding arm-*.json and engine-current.log')
     parser.add_argument('out', help='fresh output JSON')
-    parser.add_argument('--old', default='stepped')
-    parser.add_argument('--new', default='fused')
+    parser.add_argument('--old', default='stepped', help="group token: stepped, fused, or fused.g1 (Step B)")
+    parser.add_argument('--new', default='fused', help="group token: fused, or fused.g2 / fused.g4 (Step B)")
     args = parser.parse_args(argv)
     if os.path.exists(args.out):
         parser.error('output exists: ' + args.out)
