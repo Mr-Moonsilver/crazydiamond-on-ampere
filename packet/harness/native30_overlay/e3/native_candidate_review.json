@@ -35,7 +35,7 @@
     "parent_manifest": "d6b0f69ead0b7d602f5caf879d938ec111162fb3d38fb79e3960b0a6846465f7",
     "queue": "q18a-alpha-c0: alpha-perf's queue with the stage-local switch and eight matched arms over band 1; validity, engagement and generated tokens gated, speed and memory reported; 9,000 s box budget",
     "scope": "stage-local native progress with overlap off, against the frozen serial path; not a release assessment",
-    "source_commit": "3d8e5f82135f1b4323c2044187f7cda7991b1c31"
+    "source_commit": "095bac9295aaa4de43e973dff23f8fdc9b76f248"
   },
   "backend_semantics_provenance": {
     "constructor_and_method_ASTs_equal": true,
@@ -1533,8 +1533,8 @@
     "basis": "fresh full strict registered CPU regression on the packaged tree",
     "cases": 350,
     "exit_code": 0,
-    "log_sha256": "2b577665a071ef8c0f769d575dd64fd1d323d3aa6d4dd9586fa997b55b986878",
-    "reported_tests": 4242,
+    "log_sha256": "2365b9728f0a0154dfc9bbd3781bbfe617fee3753fbf5a8c1408f8cee94d2239",
+    "reported_tests": 4241,
     "required": 350,
     "skips": 0,
     "suites": 233
@@ -1571,7 +1571,7 @@
     "canary_relay.py": "8e60a60ab2832a768d0177e4b5f4a3b548b172a0eb751d50f92e1aade4a49019",
     "churn_probe.py": "9b3ea3edc3dbc055f70bff6a3e58c3f9e48077ab9047f823eeb3b44e4d5cc6b0",
     "churn_test.py": "6eafb731c10d8f56ce0b693ea51dc3cd550a6ccebfa735096b347fcd592810dd",
-    "clock_bound.py": "b9558eea5182b9fcd4407c31650c46d798760952f9240d769ddb27849dffecc3",
+    "clock_bound.py": "c6478e2c426230fed4e9311f71d43e2ee7f7e2c59d247d3b95b29ab89095bbec",
     "cost_budget_grade.py": "e0c57ff457df6aeb237e64dadbd3c65472f772f39c448010807d8ec6c5c234bd",
     "cov_gate.py": "3afd39313dd4d6e84e3e4dc0fa5ae2c511b2e4a30426684acb682d8c2decab40",
     "cow_invariants.py": "d2f4357856c9bbc754918f446920c83e7a961661e2690855ffbaa1a2c90db0e6",
@@ -3677,9 +3677,9 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "b74abecdbc960e817591a3ebb690fb9f4589f24dc60d7851f9a971d30bc2b82f",
+    "log_sha256": "ba8e82c06e4183f4f811d8bee727d4d3ec9cacd19b7d5ab3579a09b63ccd231a",
     "skips": 0,
-    "tests": 1147,
+    "tests": 1146,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
