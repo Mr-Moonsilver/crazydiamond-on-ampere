@@ -9,7 +9,9 @@ to alpha-next's own steps and would have to be re-derived; C1's projection is al
   c1_off_is_alpha_next  stage_default_off_c1.project(engine, parent source) with COMPOSED_PROJECTIONS: C1's own rows, of which
                         exactly two (decode_probe's GENERATED_SOURCES tail and make_s5_overlap's module list and launcher
                         exemption) are re-based on alpha-next's text, where 'handler_anatomy' sits before 'stage_overlap'
-                        (COMPOSED_SWAPS, each applied exactly once to C1's row). Every other engine file is byte-identical to
+                        (COMPOSED_SWAPS, each applied exactly once to C1's row), preceded in s5_startup, native_overlap_session
+                        and native_overlap_control by the per-arm deferred bind's rows (DEFER_ROWS: the OTHERS of
+                        tools/alpha_next_c1_rebind_default_off.py, reused). Every other engine file is byte-identical to
                         the parent's; each declared file, after its projection, has the parent's exact AST; the one new module
                         is stage_overlap.py; the new names appear outside it only on the declared lines (REFERENCES, the counts
                         the merged tree holds). stage_overlap.py's sha256 is recorded, never pinned here (it is still edited).
@@ -40,6 +42,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 from build_native30_held import verify  # noqa: E402
 import alpha_next_c1_parent_pin as parent_pin  # noqa: E402
 import stage_default_off_c1 as off  # noqa: E402
+import alpha_next_c1_rebind_default_off as defer_off  # noqa: E402  (its OTHERS: the defer_bind rows, reused unchanged)
 
 PIN = parent_pin.load()
 PARENT_SOURCE = PIN['source']
@@ -73,8 +76,14 @@ COMPOSED_SWAPS = {
                            ("'native_auto_arm', 'stage_wire', 'stage_progress')\n",
                             "'native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy')\n")),
 }
-# The merged tree's counts of lines naming the C1 surface (C1's own counts: no alpha-next line names it).
-REFERENCES = dict(off.REFERENCES)
+# The per-arm deferred bind (e656ee81) in the three non-new files that carry it: tools/alpha_next_c1_rebind_default_off.py's
+# OTHERS, reused unchanged. Each row takes the file back to C1's text before the defer_bind work (its default-off proof checks
+# that against 844dfe8d), so they run first and C1's own rows follow. stage_overlap.py needs none here: it is the new module,
+# recorded by sha256, never projected (its PER_ARM rows are that tool's own proof).
+DEFER_ROWS = {name: [tuple(row) for row in rows] for name, rows in defer_off.OTHERS.items()}
+# The merged tree's counts of lines naming the C1 surface (no alpha-next line names it); the defer_bind rows add lines naming
+# FLASH_S5_STAGE_OVERLAP_* and native_stage_overlap in s5_startup (+3), native_overlap_control (+7) and native_overlap_session (+4).
+REFERENCES = dict(off.REFERENCES, **{'s5_startup.py': 12, 'native_overlap_control.py': 15, 'native_overlap_session.py': 6})
 
 
 def composed_projections(base=None):
@@ -100,7 +109,13 @@ def composed_projections(base=None):
     return out
 
 
-COMPOSED_PROJECTIONS = composed_projections()
+def with_defer(projections):
+    """DEFER_ROWS ahead of each file's composed rows; every defer file must already be one C1 projects."""
+    assert set(DEFER_ROWS) <= set(projections), 'a defer row names a file C1 does not project'
+    return {name: DEFER_ROWS.get(name, []) + list(rows) for name, rows in projections.items()}
+
+
+COMPOSED_PROJECTIONS = with_defer(composed_projections())
 CHANGED = {'e3/' + name for name in COMPOSED_PROJECTIONS}   # the overlay tamper control's declared set
 
 

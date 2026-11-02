@@ -97,7 +97,11 @@ class Freeze(DevParent, unittest.TestCase):
         self.assertEqual(set(freeze.COMPOSED_PROJECTIONS), set(off.PROJECTIONS))
         for name, rows in off.PROJECTIONS.items():
             if name not in freeze.COMPOSED_SWAPS:
-                self.assertEqual([tuple(r) for r in rows], freeze.COMPOSED_PROJECTIONS[name])
+                self.assertEqual(freeze.DEFER_ROWS.get(name, []) + [tuple(r) for r in rows], freeze.COMPOSED_PROJECTIONS[name])
+        self.assertEqual(set(freeze.DEFER_ROWS), {'s5_startup.py', 'native_overlap_session.py', 'native_overlap_control.py'})
+        self.assertNotIn('stage_overlap.py', freeze.COMPOSED_PROJECTIONS)
+        with self.assertRaisesRegex(AssertionError, 'does not project'):
+            freeze.with_defer({'decode_probe.py': []})
         self.assertIn("'handler_anatomy', 'stage_overlap')\n", freeze.COMPOSED_PROJECTIONS['decode_probe.py'][0][0])
         with self.assertRaisesRegex(AssertionError, 'exactly once'):
             freeze.composed_projections({'decode_probe.py': [('x', 'y')]})
