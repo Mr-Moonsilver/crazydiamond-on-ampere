@@ -1,0 +1,18 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "C1 bind-gate witness and the deferred-rebind repair: test_c1_rebind_witness (CPU ring fixture); no box or GPU evidence",
+  "inherits": [
+    "stage_overlap_fixture_leaves.json"
+  ],
+  "leaves": [
+    {
+      "name": "held-receiver-device-events",
+      "test": "test_c1_rebind_witness.ReceiverHold",
+      "replaces": "the CUDA events LaneDispatcher._record records on the receiving stage's prefill stream for chunk n's last LAYER, its SUFFIX and its STATE_FINALIZE, and the state_event _do_state_finalize records, while those kernels are still running",
+      "equivalence": "the events are r4's ControllableEvent objects the real dispatcher created and recorded; only their host query differs: it answers False (cudaEventQuery's cudaErrorNotReady) until the test releases the hold, by undoing the network's complete_all for exactly these events. The STATE_FINALIZE record's event is the one _after_record hands to channel.consumer_done, so pp_consumer_complete() is False for its real reason and the bridge's report carries no PP_CONSUMER proof. No RPC, reply, RELEASE, receipt or logical acknowledgement is delayed; every other event (stage 0's, the PP receive's, stage 1's PREPARE/PREFIX/first layer) completes at the network's normal rate",
+      "cannot_prove": "device timing or that kernels of two chunks run concurrently on the box; the witness shows only which host submissions the engine and workers make while stage 1's late work is incomplete",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}
