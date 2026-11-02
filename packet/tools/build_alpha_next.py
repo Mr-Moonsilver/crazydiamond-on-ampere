@@ -7,7 +7,8 @@ does: the parent is read from Step B's own build.json (chain e, bundle 4b1eccb86
 every other assertion, the source freeze, the overlay regeneration, its negative controls and the runner normalisation are
 build_native43's.
 
-Three declared wrappers, as tools/build_alpha_c0.py (C0 was the first candidate to add overlay files), because alpha-next adds
+One bundled tool replaced (TOOLS_REPLACED: tools/step_a_report.py, as tools/build_stage1_sweep.py declares it), and three declared
+wrappers, as tools/build_alpha_c0.py (C0 was the first candidate to add overlay files), because alpha-next adds
 three default-off modules to Step B's overlay set: e3/stage_progress.py and e3/stage_wire.py (C0, FLASH_S5_STAGE_LOCAL) and
 e3/handler_anatomy.py (stage-1 anatomy, FLASH_S5_HANDLER_ANATOMY):
   overlay_level    build_native43's rules on the files the parent has, with exactly those three added and nothing else;
@@ -65,6 +66,55 @@ def load_spec(path):
 
 
 b.load_spec = load_spec
+
+# The one bundled packaging tool the composition changes: tools/step_a_report.py (stage-1 anatomy c33b8e18's grouping by qsa mode
+# and group size, assessment 4C.3). build_native43.stage asserts every bundled tool equals the committed one and has no rule to
+# refresh one. As tools/build_stage1_sweep.py does (claude/stage1-sweep), stage and expected_staging are derived from
+# build_native43's own text by exact-once swaps: stage replaces exactly TOOLS_REPLACED in native35_tools, each asserted byte-equal to
+# Step B's source before (the parent's copy) and different after; expected_staging counts it as replaced, declared as an 'M' row of
+# the spec. Any other differing bundled tool is still refused (the undeclared-replaced-tool negative control in build()).
+TOOLS_REPLACED = {n: subprocess.check_output(['git', 'show', STEP_B['source'] + ':tools/' + n], cwd=b.ROOT)
+                  for n in ('step_a_report.py',)}
+b.TOOLS_REPLACED = TOOLS_REPLACED
+DERIVED_SWAPS = {
+    'stage': (
+        ("            if (ROOT / 'tools' / path.name).is_file():\n",
+         "            if directory.name == 'native35_tools' and path.name in TOOLS_REPLACED:\n"
+         "                assert path.read_bytes() == TOOLS_REPLACED[path.name], 'replaced tool is not the parent\\'s: ' + path.name\n"
+         "                assert sha(path) != sha(ROOT / 'tools' / path.name), 'declared replaced tool unchanged: ' + path.name\n"
+         "                shutil.copyfile(ROOT / 'tools' / path.name, path)\n"
+         "                replaced.append('native35_tools/' + path.name)\n"
+         "            elif (ROOT / 'tools' / path.name).is_file():\n"),
+        ("    for name in spec['tools']:\n",
+         "    assert {'native35_tools/' + n for n in TOOLS_REPLACED} <= set(replaced), ('declared replaced tool not bundled', "
+         "sorted(TOOLS_REPLACED))\n"
+         "    for name in spec['tools']:\n"),
+    ),
+    'expected_staging': (
+        ("    return added | {'native35_tools/' + n for n in spec['tools']}, replaced\n",
+         "    assert {'M\\ttools/' + n for n in TOOLS_REPLACED} <= set(spec['source_paths']), ('replaced tool not declared', "
+         "sorted(TOOLS_REPLACED))\n"
+         "    return added | {'native35_tools/' + n for n in spec['tools']}, replaced | {'native35_tools/' + n for n in TOOLS_REPLACED}\n"),
+    ),
+}
+
+
+def derive_functions(module=b):
+    """build_native43's stage and expected_staging with DERIVED_SWAPS, each matching exactly once; returns their texts."""
+    import inspect
+    texts = {}
+    for name, swaps in DERIVED_SWAPS.items():
+        text = inspect.getsource(getattr(module, name))
+        for old, new in swaps:
+            assert text.count(old) == 1, (name, old[:80], text.count(old))
+            text = text.replace(old, new)
+        texts[name] = text
+    return texts
+
+
+DERIVED_TEXTS = derive_functions()
+for _name, _text in DERIVED_TEXTS.items():
+    exec(compile(_text, 'build_alpha_next:' + _name, 'exec'), b.__dict__)
 _expected_staging = b.expected_staging
 _stage = b.stage
 
@@ -133,7 +183,15 @@ def build(spec_path, out, strict_log, focused_log):
     source = freeze.source_level()
     result = b.build(spec_path, out, strict_log, focused_log)
     ref = reference(out)
-    proof = dict(schema='alpha-next-freeze/1', verdict='PASS', source=source, negative_controls=freeze.negative_controls(),
+    declared, b.TOOLS_REPLACED = b.TOOLS_REPLACED, {}
+    try:
+        tool_control = b.refused(lambda: _stage(dict(tools=[]), out / 'negative-replaced-tool'))
+    finally:
+        b.TOOLS_REPLACED = declared
+    controls = dict(freeze.negative_controls(), **{'undeclared-replaced-tool': tool_control})
+    proof = dict(schema='alpha-next-freeze/1', verdict='PASS', source=source, negative_controls=controls,
+                 tools_replaced=dict(declared=sorted(TOOLS_REPLACED), derived_functions_sha256={
+                     k: b.hashlib.sha256(v.encode()).hexdigest() for k, v in DERIVED_TEXTS.items()}),
                  overlay=freeze.overlay_level(out / 'parent/native30_overlay', Path(result['overlay'])), reference=ref,
                  candidate_manifest=result['manifest'], candidate_overlay_manifest=result['overlay_manifest'],
                  parent_manifest=b.PARENT_MANIFEST, gpu_execution=False, box_action=False)
