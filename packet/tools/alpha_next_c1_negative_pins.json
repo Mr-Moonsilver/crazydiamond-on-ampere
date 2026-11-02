@@ -1,0 +1,42 @@
+{
+ "cases": {
+  "alpha-c1-local-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ],
+  "alpha-c1-overlap-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ],
+  "alpha-c1-overlap-burst-skew": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ],
+  "alpha-c1-overlap-burst-slow1": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ],
+  "alpha-c1-overlap-burst-solo": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ],
+  "alpha-c1-serial-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_overlap'"
+  ]
+ },
+ "cases_from": "tools/alpha_c1_negative_pins.json",
+ "discovery": null,
+ "frozen_record_sha256": null,
+ "observation": null,
+ "reasons": {},
+ "schema": "alpha-next-c1-negative-pins/1",
+ "status": "AWAITING-OBSERVATION: the alpha-c1 case rows are carried from C1's pins (tools/alpha_c1_negative_pins.json, its observation over C0 l) as the expected refusals over alpha-next's overlay, which has no stage_overlap module; frozen_record_sha256 is null until the parent is pinned (the writer fills it from alpha-next's pinned engine record); the test rows are empty until one alpha_next_c1_engine_selfrun.py --negative --observe over the chain's own build is reviewed and pinned with tools/alpha_next_c1_negative_pins_write.py. With no test rows the negative refuses (negative-suites-not-run), so the chain observes and stops at engine-negative until then.",
+ "tests": {}
+}
