@@ -81,6 +81,11 @@ def _stage_overlap():
     return _stage_local() and os.environ.get('FLASH_S5_STAGE_OVERLAP', '0') == '1'
 
 
+def _stage_overlap_defer():
+    """alpha-next-c1: the deferred-bind field is exposed only where the engine installed it (FLASH_S5_STAGE_OVERLAP_DEFER_BIND)."""
+    return _stage_overlap() and os.environ.get('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', '0') == '1'
+
+
 def _positive(value):
     return type(value) is int and value > 0
 
@@ -303,19 +308,29 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-local-not-set')
         return reply
 
-    async def native_stage_overlap(self, local, overlap):
-        """C1 per-arm switch (installed only): C0's command with ``overlap``; the engine re-checks idle FULL."""
+    async def native_stage_overlap(self, local, overlap, defer_bind=None):
+        """C1 per-arm switch (installed only): C0's command with ``overlap``; the engine re-checks idle FULL.
+        alpha-next-c1: ``defer_bind`` (installed only) rides on the same command; the reply must acknowledge it."""
         if not _stage_overlap():
             raise NativeControlError('native-control-stage-overlap-not-installed')
         if type(local) is not bool:
             raise NativeControlError('native-control-stage-local-invalid')
         if type(overlap) is not bool:
             raise NativeControlError('native-control-stage-overlap-invalid')
+        command = {'action': 'native_stage_local', 'local': local, 'overlap': overlap}
+        if defer_bind is not None:
+            if not _stage_overlap_defer():
+                raise NativeControlError('native-control-stage-overlap-defer-bind-not-installed')
+            if type(defer_bind) is not bool:
+                raise NativeControlError('native-control-stage-overlap-defer-bind-invalid')
+            command['defer_bind'] = defer_bind
         if self.engine_epoch is None:
             await self.status()
-        reply = await self._call({'action': 'native_stage_local', 'local': local, 'overlap': overlap})
+        reply = await self._call(command)
         if reply.get('local') is not local or reply.get('overlap') is not overlap:
             raise NativeControlError('native-control-stage-overlap-not-set')
+        if defer_bind is not None and reply.get('defer_bind') is not defer_bind:
+            raise NativeControlError('native-control-stage-overlap-defer-bind-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------

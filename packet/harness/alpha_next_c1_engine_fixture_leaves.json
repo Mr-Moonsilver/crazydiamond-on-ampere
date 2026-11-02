@@ -1,10 +1,11 @@
 {
   "schema": "fixture-leaves/1",
-  "scope": "alpha-next-c1 composition fixes in stage_overlap.py (per-frame composed fields; the successor's recorder view): test_alpha_next_c1_composed_fields on C1's ring fixture with alpha-next's fused, grouped and lean selections installed on the real driver and latched by the real dispatchers; CPU only, no box or GPU evidence",
+  "scope": "alpha-next-c1 composition fixes in stage_overlap.py (per-frame composed fields; the successor's recorder view): test_alpha_next_c1_composed_fields on C1's ring fixture with alpha-next's fused, grouped and lean selections installed on the real driver and latched by the real dispatchers; CPU only, no box or GPU evidence; and the per-arm deferred bind (test_alpha_next_c1_defer_control on the same ring fixture, C0's and C1's control router fixtures) with its default-off proof (test_alpha_next_c1_rebind_default_off over tools/alpha_next_c1_rebind_default_off.py)",
   "inherits": [
     "stage_overlap_fixture_leaves.json",
     "step_a_fixture_leaves.json",
-    "step_b_fixture_leaves.json"
+    "step_b_fixture_leaves.json",
+    "c1_rebind_fixture_leaves.json"
   ],
   "leaves": [
     {
@@ -67,6 +68,78 @@
       "replaces": "stage_overlap's fixes reverted in memory for the mutant tests only: so.COMPOSED_CHUNK_FIELDS with one field dropped, so._ProgressNoBegin replaced by a function returning None (C1's form), and OverlapSegmentDriver._new_frame/_scope/_show_rest by C0's",
       "equivalence": "each patch is exactly the code before the fix (C0's frame swap, C1's set-aside recorder) or the fix minus one field; the Composed tests run the unpatched module",
       "cannot_prove": "nothing about the shipped engine; the mutants only show the witness fails without each fix",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "paused-engine",
+      "test": "test_alpha_next_c1_defer_control.Fixture.control",
+      "replaces": "the engine's scheduler pause, as seen by the driver's control path: driver.engine is a namespace whose is_scheduler_paused() answers True for that one call",
+      "equivalence": "C0's _stage_control reads exactly engine.is_scheduler_paused() for its paused condition; every other condition of the paused idle FULL rule (no frame, no retained row, no live chunk or PP ticket) is read from the real driver and dispatchers, so the idle part of the rule runs unchanged",
+      "cannot_prove": "the real router pause/resume sequence; that runs in the Router tests (C0's control router fixture) and in C0's control suites",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "second-request",
+      "test": "test_alpha_next_c1_defer_control.Fixture.add_request (Switch)",
+      "replaces": "a client admitting a further request into a running engine: test_e3_admission_native.Request(uid, tokens) prepended to the real scheduler's waiting queue, then OverlapStack.run_request again",
+      "equivalence": "the real StagedAdmissionController admits it through the same scheduler queue the first request used; driver, workers, dispatchers and PP channel are the same objects (one incarnation), so the per-arm switch is applied between two requests of one engine as on the box",
+      "cannot_prove": "the HTTP front end's request intake and the box's request mix; those are the queue's arms",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "installed-by-env",
+      "test": "test_alpha_next_c1_defer_control.Fixture.network; RouterBase.asyncSetUp/env; Startup",
+      "replaces": "the startup environment of the engine process: FLASH_S5_STAGE_OVERLAP(_DEFER_BIND) set or removed with mock.patch.dict(os.environ) around the driver's construction and the router's calls; Startup patches s5_startup._enabled to True (test_e3_native_layer_groups.Startup's leaf) so the early guards are reached",
+      "equivalence": "the driver, the session and the control client read these names from os.environ exactly where the patch sets them; the startup guards read the env mapping install_engine is given",
+      "cannot_prove": "the VM/box launcher's own environment; the queue's settings env and the arm record's acknowledged defer_bind cover that (the grade refuses a mismatch)",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "held-finalize",
+      "test": "test_alpha_next_c1_defer_control.Switch",
+      "replaces": "a slow receiver finalize on the device: stage 1's (ranks 2, 3) STATE_FINALIZE ControllableEvent of the arm's first chunk is held incomplete (event.complete False) for a fixed number of ticks, every other event completes promptly (as scratch/c1_finalize_hold.py, the lead's 18:4x witness)",
+      "equivalence": "the workers read completion only through event.query(), as r4's ControllableEvent fixture declares; holding it is what a device still running that finalize answers",
+      "cannot_prove": "real device timing or whether the box ever holds a finalize this long; the grade's per-op device bounds read that from the box records",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "unacknowledging-control-call",
+      "test": "test_alpha_next_c1_defer_control.Router.test_an_unacknowledged_value_is_refused_by_the_client",
+      "replaces": "a router or engine that drops the defer_bind field: control._call is wrapped to forward the command without it",
+      "equivalence": "the wrapper calls the real _call with exactly the command minus defer_bind; the client then reads the real reply, which lacks the acknowledgement",
+      "cannot_prove": "nothing about the shipped path, which forwards the field (Router.test_field_reaches_the_driver_and_is_acknowledged); the patch only shows the client refuses an unacknowledged value",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "defer-mutants",
+      "test": "test_alpha_next_c1_defer_control.Mutants",
+      "replaces": "the per-arm rules faulted in memory for the mutant tests only: StagedSegmentDriver._stage_control without its paused idle FULL rule; OverlapSegmentDriver._stage_control recompiled from its own source with the install check or the overlap check removed (as a method of a subclass body, so super() resolves); install_engine without the rebind guard; the session's _action_native_stage_local without its refusal",
+      "equivalence": "each mutant is the shipped source with exactly one rule removed; the other tests run the unpatched modules",
+      "cannot_prove": "nothing about the shipped engine; the mutants only show the suite fails without each rule",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "rebind-event-query-counter",
+      "test": "test_c1_rebind_witness (run_counted: ControllableEvent.query)",
+      "replaces": "r4.ControllableEvent.query wrapped by a counter that calls the real query and returns its answer",
+      "equivalence": "the answer is the real one; only the number of host event queries is recorded, to show observation adds none",
+      "cannot_prove": "the cost of cudaEventQuery on the device; the box's observe log bytes per arm are recorded by the queue",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "default-off-proof-faults",
+      "test": "test_alpha_next_c1_rebind_default_off.Live",
+      "replaces": "the proof tool's own tables and readers patched for the fault tests only: PER_ARM/OTHERS with one projection dropped or turned into an added statement, git_show returning an engine file with one extra byte, REFUSAL_TESTS naming a missing test, subprocess.run returning a fixed result (to read the child's environment)",
+      "equivalence": "Holds runs the unpatched tool on this tree (exit 0, receipt written once); each fault is one table entry or one reader changed",
+      "cannot_prove": "nothing about the engine; the faults only show each check in the proof is live",
       "more_convenient": true,
       "box_evidence": false
     }

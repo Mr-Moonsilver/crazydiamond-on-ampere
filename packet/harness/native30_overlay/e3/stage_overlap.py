@@ -483,6 +483,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                                      unbegun_successor_cancels=0, partial_replays=0)
         self.defer_bind = stage_overlap_defer_bind_enabled(os.environ)
         self.defer_counters = dict(deferred_opens=0, deferred_binds=0)
+        # alpha-next-c1: the startup flag installs the deferred bind (selected, as the rebind has it); the typed per-arm field
+        # ``defer_bind`` of native_stage_local selects it per arm while paused idle FULL, as fused and layer groups are.
+        self.defer_bind_installed = self.defer_bind
         self.overlap_observer = OverlapObserver() if stage_overlap_observe_enabled(os.environ) else None
 
     # -- the composed per-chunk fields, per frame -------------------------------
@@ -958,7 +961,17 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-overlap-invalid')
             if overlap and command.get('local') is not True:
                 raise DriverError('native-stage-overlap-needs-local')
-        reply = super()._stage_control({k: v for k, v in command.items() if k != 'overlap'})
+        # alpha-next-c1: ``defer_bind`` (installed only) is checked before anything is applied; it needs overlap in the
+        # same command, and C0's paused idle FULL rule (super()) refuses it mid-chunk like the other fields.
+        defer = command.get('defer_bind', None)
+        if 'defer_bind' in command:
+            if type(defer) is not bool:
+                raise DriverError('native-stage-overlap-defer-bind-invalid')
+            if not self.defer_bind_installed:
+                raise DriverError('native-stage-overlap-defer-bind-not-installed')
+            if defer and overlap is not True:
+                raise DriverError('native-stage-overlap-defer-bind-needs-overlap')
+        reply = super()._stage_control({k: v for k, v in command.items() if k not in ('overlap', 'defer_bind')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -966,6 +979,14 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             overlap = previous
         self.overlap_selected = overlap
         reply.update(overlap=overlap, previous_overlap=previous)
+        if self.defer_bind_installed:
+            previous_defer = self.defer_bind
+            if not overlap:
+                defer = False
+            elif defer is None:
+                defer = previous_defer
+            self.defer_bind = defer
+            reply.update(defer_bind=defer, previous_defer_bind=previous_defer)
         return reply
 
     def stage_status(self):
@@ -973,8 +994,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         result['overlap'] = dict(selected=self.overlap_selected, counters=dict(self.overlap_counters),
                                  controller=dict(self.controller.overlap_counters),
                                  refusals=dict(self.controller.overlap_refusals))
-        if self.defer_bind:
-            result['overlap']['defer_bind'] = dict(counters=dict(self.defer_counters))
+        if self.defer_bind_installed:
+            result['overlap']['defer_bind'] = dict(installed=True, selected=self.defer_bind,
+                                                   counters=dict(self.defer_counters))
         if self.overlap_observer is not None:
             result['overlap']['observe'] = dict(counters=dict(self.overlap_observer.counters))
         return result
