@@ -20,8 +20,11 @@ the pre-registered rule, and engagement:
   An arm that did not engage is INC. Added to Step B's signatures: the C0 stage path's contract errors (C0's SIGNATURES), ENGINE.
 Numerics, declared before the run (lead, 2 Nov 13:28 and 13:35): the greedy standing streams (alpha_next_arms.STANDING_GREEDY,
 temperature 0 on those request bodies only) and the fresh and append tokens of each C0-on arm against the spread of the graded
-C0-off arms of its band, rule v4 row 2 style (NUMERICS_* below). A read: NUMERICS_IS_GATE is False (13:35, "still classed as a
-read under the v4-style envelope"); with it True, OUTSIDE fails ENGINE and UNPROVEN is INC.
+C0-off arms of its band, rule v4 row 2 style (NUMERICS_* below). Two readings are declared, one constant apart:
+  in force (NUMERICS_IS_GATE = False; lead 13:35, the later note: "still classed as a read under the v4-style envelope"): the
+             envelope verdict WITHIN, OUTSIDE or UNPROVEN is reported and is never a verdict input;
+  the other  (NUMERICS_IS_GATE = True; lead 13:28 read as a gate): OUTSIDE fails the queue as ENGINE and UNPROVEN makes it INC.
+The coordinator asked the lead to confirm (2 Nov); flipping the one constant is the whole change.
 Reads, never verdict inputs (operator, 2 Nov): decode per arm as the per-stream minimum and mean ratio against the 0.8 and 0.9
 lines, over the sampled standing streams (STANDING_SAMPLED) and over all 8; speed; memory (the min-free read and the per-chunk ``flash-s5 memory-peak`` receipt); the C0 ring reading (headroom
 refusals, ``headroom_blocked_ns`` on the stage line, status ``ring``: blocked_ns, episodes, blocked_max_ns, limiting and

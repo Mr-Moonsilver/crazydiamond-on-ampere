@@ -45,6 +45,7 @@ TAIL_RESERVE_S = PHASES['core_full_idle'] + PHASES['grade'] + END_RESERVE_S
 LAST_ARM_ENTRY_S = ACTIVE_S - ARM_RESERVE_S - TAIL_RESERVE_S        # core arms
 LAST_TAIL_ENTRY_S = ACTIVE_S - ARM_RESERVE_S - END_RESERVE_S        # tail arms: the core grade is already written
 assert 0 < LAST_ARM_ENTRY_S < LAST_TAIL_ENTRY_S
+ENTRY_LIMIT_S = {name: globals()[name] for name, _ in table.ENTRY_LIMIT.values()}     # the arm table's limits, in seconds
 
 # Descriptive only. Step B's box times (2 Nov, q18a-step-b-e): first arm about 680 s after the start, band 1 arms about 119 s,
 # band 2 about 166 s. The lead's per-arm planning figures: Step B about 1.6 min, C0 about 3.6 min (stepped base).
@@ -62,7 +63,7 @@ def _estimate(per_arm):
         if row['part'] == 'tail' and not tail_started:
             clock += BETWEEN_S
             tail_started = True
-        if clock > (LAST_TAIL_ENTRY_S if row['part'] == 'tail' else LAST_ARM_ENTRY_S):
+        if clock > ENTRY_LIMIT_S[row['entry_limit']]:
             continue
         entered.append(dict(label=row['label'], part=row['part'], enters_s=clock))
         clock += per_arm(row)
@@ -89,4 +90,4 @@ EXPECTED_RUNTIME_S = {
 
 def arm_fits(elapsed_s, part='core'):
     """The draft's arm entry rule (bash SECONDS against LAST_ARM_ENTRY_S or LAST_TAIL_ENTRY_S), for the tests."""
-    return elapsed_s <= (LAST_TAIL_ENTRY_S if part == 'tail' else LAST_ARM_ENTRY_S)
+    return elapsed_s <= ENTRY_LIMIT_S[table.ENTRY_LIMIT[part][0]]

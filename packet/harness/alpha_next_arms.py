@@ -62,6 +62,10 @@ def _table():
 ARM_TABLE = _table()
 
 PARTS = ('core', 'extra', 'tail')
+# Each part's arm entry limit, relative to the run's own start (bash SECONDS), never a clock: the alpha_next_gate name and the
+# draft's native41_budget key. Core and extra arms reserve the core FULL, the core grade and the end; tail arms only the end.
+ENTRY_LIMIT = {'core': ('LAST_ARM_ENTRY_S', 'last_arm_entry'), 'extra': ('LAST_ARM_ENTRY_S', 'last_arm_entry'),
+               'tail': ('LAST_TAIL_ENTRY_S', 'last_tail_entry')}
 GRADED = ('core', 'extra')                # the parts the core grade (the queue verdict) covers
 C0 = {'on': True, 'off': False}
 COHORTS = ('live', 'solo')
@@ -101,7 +105,8 @@ def arms(part=None):
         band = band_of_index(index)
         size = BAND_SIZE[row_part][band]
         rows.append(dict(label=label(c0, size, cohort, index), selection=selection(c0, size), part=row_part, c0=c0,
-                         stage_local=C0[c0], size=size, cohort=cohort, index=index, band=band, extra=row_part == 'extra'))
+                         stage_local=C0[c0], size=size, cohort=cohort, index=index, band=band, extra=row_part == 'extra',
+                         entry_limit=ENTRY_LIMIT[row_part][0]))
     return rows
 
 
@@ -126,7 +131,7 @@ def band1_glob():
 
 def check():
     """The table's own invariants; raises on a malformed table so no queue text is generated from one."""
-    assert set(BAND_SIZE) == set(PARTS), BAND_SIZE
+    assert set(BAND_SIZE) == set(PARTS) == set(ENTRY_LIMIT), BAND_SIZE
     for sizes in BAND_SIZE.values():
         assert set(sizes) == {1, 2} and all(size in SIZES for size in sizes.values()), BAND_SIZE
     assert 1 <= BAND1_REQUIRED_ROUNDS <= BAND1_ROUNDS <= 5 and BAND2_INDEX not in BAND1_INDEXES

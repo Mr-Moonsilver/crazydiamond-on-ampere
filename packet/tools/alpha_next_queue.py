@@ -333,10 +333,36 @@ def derive():
     return out
 
 
+def table_text():
+    """The arm table as the draft runs it, with each part's relative entry limit and the expected runtime (descriptive)."""
+    import alpha_next_gate as gate
+    lines = ['q18a-alpha-next arm table (harness/alpha_next_arms.py); entry limits relative to the run start, never a clock',
+             '%-3s %-16s %-5s %-6s %-4s %-5s %-4s %-5s %s' % ('#', 'label', 'part', 'c0', 'size', 'cohort', 'band', 'round',
+                                                            'enters while SECONDS <=')]
+    for k, row in enumerate(table.arms(), 1):
+        lines.append('%-3d %-16s %-5s %-6s %-4d %-6s %-4d %-5d %s %d s' % (
+            k, row['label'], row['part'], row['c0'], row['size'], row['cohort'], row['band'], row['index'], row['entry_limit'],
+            gate.ENTRY_LIMIT_S[row['entry_limit']]))
+    exp = gate.EXPECTED_RUNTIME_S
+    lines.append('arms %d (core %d, extra %d, tail %d); standing decoders %d: greedy %s at temperature %s, sampled %s; box budget '
+                 '%d s, cleanup included' % (exp['arms'], exp['core_arms'], exp['extra_arms'], exp['tail_arms'],
+                                             table.STANDING_DECODERS, list(table.STANDING_GREEDY), table.GREEDY_TEMPERATURE,
+                                             list(table.STANDING_SAMPLED), gate.BOX_BUDGET_S))
+    for key in ('by_band', 'at_step_b_rate', 'at_c0_rate'):
+        e = exp[key]
+        lines.append('expected %-14s arms entering %d (core %d, extra %d, tail %d), about %.1f min' % (
+            key, e['arms_entering'], e['core_arms_entering'], e['extra_arms_entering'], e['tail_arms_entering'], e['total_min']))
+    return '\n'.join(lines)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--check', action='store_true')
+    p.add_argument('--table', action='store_true', help='print the arm table with its entry limits; write nothing')
     a = p.parse_args(argv)
+    if a.table:
+        print(table_text())
+        return
     for name, text in derive().items():
         path = ROOT / name
         if a.check:
