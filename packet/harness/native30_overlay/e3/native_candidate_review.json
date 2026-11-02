@@ -1529,7 +1529,7 @@
     "basis": "fresh full strict registered CPU regression on the packaged tree",
     "cases": 351,
     "exit_code": 0,
-    "log_sha256": "aa8e2bb2040591ae3453b2f035480dc49b6091f7e14cb346d7757fd920335771",
+    "log_sha256": "551a23062cf7ee2488f37bca3cebb0026c639e8103750cee90cd022e9be2ead7",
     "reported_tests": 4381,
     "required": 351,
     "skips": 0,
@@ -2347,7 +2347,7 @@
     "step_a_gate.py": "eb74679b40ad0562833b14814ab7fbf0a23336f8c8fb8bb7852df7973beaaceb",
     "step_a_torn_lines.py": "24561c6d1739e3c983c66604343edebfa669fdd40576777073f0f1d37f1f1fd7",
     "step_b_clock_bound.py": "f3fbe2b8d3fd7ebee191119ec23dcb18cb58442980f9598ca0d14149a915ad32",
-    "step_b_fixture_leaves.json": "e4eb05c68e2b07af656e5e774f74ba5629d4a6f13c9c8733defb728f96f46e07",
+    "step_b_fixture_leaves.json": "f338a296244272e024b9c25ed9602191963b753bef14512f53d00184ea8a9ec5",
     "step_b_gate.py": "f4e513cb4f4b1123e288b6cd72aaa75baf01740b711a8de9bbc778621c8fbe1e",
     "swap-w6-for-w7.sh": "d16f3be9201dc3cecf25007f59e89831e95f1dfd33c74b9e61d56622254eb4a2",
     "teacher_forced.py": "7d3b3fdf82061df20603513724ee8dcd60d43af9aacacc916969c3f333615656",
@@ -3682,7 +3682,7 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "9535a1c7d0337f349646f7afa95c97b422294c852e1d29476317c3f8dd8131b7",
+    "log_sha256": "4bc0996a32979b6a82b8eb03c305720a8ca8501389b89ca4231fb29ccfe5b067",
     "skips": 0,
     "tests": 1286,
     "verdict": "PASS"
@@ -4930,7 +4930,7 @@
     "parent_manifest": "090a02111567669e9346e0be9b1e0e72d44f74a8eef3fdb6917723ebcaf44043",
     "queue": "q18a-step-b: Step A's queue with the group switch and sixteen matched arms over its two bands, fused selected in all; validity and engagement gated, speed, decode and memory reported; 9,000 s box budget",
     "scope": "consecutive layers of one stage as one bounded worker command against size 1; not a release assessment",
-    "source_commit": "66d402c80bb7574e3d468d2be73b835931ed4061",
+    "source_commit": "9402d426f7d0d14278d778645208f36008f42e4b",
     "step_b_settings": {
       "FLASH_S5_AUTO_ARM": "1",
       "FLASH_S5_LAYER_GROUPS": "1",
