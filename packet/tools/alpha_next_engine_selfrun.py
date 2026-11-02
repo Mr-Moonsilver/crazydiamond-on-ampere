@@ -11,37 +11,47 @@ Six containers over one frozen bundle, the composed engine in each, all results 
     the dense suites.log and must equal the declared ids of the spec's suites (dense_left_out in the merged record);
   * stage/: tools/alpha_c0_engine_selfrun.py run_stage(), called unchanged: one case per mode of harness/e3_alpha_c0_probe.py
     (local and serial selections with the switch installed) and the C0 suites, its local-against-serial pairs;
-  * composed/: the suites the composition adds and that no inherited container runs (stage-1 anatomy, held-g anatomy and lean
+  * composed/: held-g's connected probe cases (tools/native41_held_g_engine_selfrun.py's, claude/native41-held-g-pack: one case per
+    mode of harness/e3_native41_held_g_probe.py, cases held-g-<mode>: held-f's eight progress modes with idle step and replies full
+    and the R5 anatomy checks, the three L3 -wait and three L4 -lean modes, read from the probe's MODES/WAIT_MODES/LEAN_MODES; the
+    same command line form) with held-g's pairs (each -wait mode against its step mode, each -lean mode against its full mode, on
+    scheduled_nonempty_sha256, request tokens and native chunks), and the suites the composition adds and that no inherited
+    container runs (stage-1 anatomy, held-g anatomy and lean
     replies, the stop-fix trunk's two suites, the alpha-next stop-fix matrix, C0 ring, peak receipt, receipt writer (PLAN 2) and
-    stage-1 slow-rank suites, the two load-robust twins, the alpha-next queue
+    stage-1 slow-rank suites, the 4C.5 path qualification suite, the two load-robust twins, the alpha-next queue
     suite, and test_step_a_report for the replaced tools/step_a_report.py), in one unittest process with per-test outcomes. No
-    connected case: FLASH_S5_HANDLER_ANATOMY is default off, and the held-g receipts ride FLASH_S5_NATIVE_PROGRESS, which the
-    inherited connected cases already run. Declared exclusions (CONTAINER_EXCLUDED, tools/stage1_sweep_git_bound.py's rule on
+    connected case runs FLASH_S5_HANDLER_ANATOMY on (default off; its CUDA event pairs have no CPU composition). Declared exclusions (CONTAINER_EXCLUDED, tools/stage1_sweep_git_bound.py's rule on
     claude/stage1-sweep): the stage-1 FreezeProof method (superseded by tools/alpha_next_freeze.py, alpha_next_robust_swap
     .SUPERSEDED) and the stage-1 Off byte-identity test, which reads its git base by `git show`; the containers mount no
     repository. Both run on the hub (the focused list through alpha_next_robust_swap; strict). test_alpha_next_receipts_mutants
     is not here: it copies the writer and reruns test_alpha_next_receipts in subprocesses (about 3 min); it runs on the hub in the
     focused list and strict.
+Receipt writer slot (PLAN 2): every shared-process suite runner here (held-f's Record, which the progress, fused, groups, stage and
+composed containers and the negative use, and the dense line) calls harness/alpha_next_robust_swap.reset_receipt_writer after each
+test, so a test that installs the process ReceiptWriter cannot blind a later module's logger captures; each container record
+carries receipt_writer_resets (the dense count read back from its suites.log), and the merged record lists them per part.
 OUT/result.json is the merged record (schema alpha-next-selfrun/1) the frozen runner reads; its connected cases are exactly
-expected_cases() (Step B's plus C0's stage cases). Verdict PASS only when all six are PASS. A failure keeps all records,
+expected_cases() (Step B's, C0's stage cases and held-g's probe cases). Verdict PASS only when all six are PASS. A failure keeps all records,
 classified HARNESS-OR-ENGINE-UNCLASSIFIED.
 
 Comparison (--compare): against Step B's frozen engine record (tools/alpha_next_parent.json), byte for byte on the canonical trace:
-every connected case Step B's record holds (progress, fused and groups), and each C0 serial mode against Step B's progress mode of
-the same name (C0's SAME_AS rule): with the C0 and anatomy switches unset nothing moves, and with C0 installed and the arm on serial
-nothing moves either.
+every connected case Step B's record holds (progress, fused and groups), each C0 serial mode against Step B's progress mode of
+the same name (C0's SAME_AS rule), and each held-g step/full probe mode against Step B's progress mode of the same name (held-g's
+SAME_AS rule): with the C0 and anatomy switches unset nothing moves, with C0 installed and the arm on serial nothing moves, and
+with the held-g selections at step/full the R1/R5 receipts change no scheduling, tick or token.
 
 Negative control (--negative): the candidate harness over the regenerated Step B overlay and sources (build_alpha_next's OUT/parent,
 byte-identical to the parent). C0's suites and the composed suites run in full: exactly the pinned tests in
-alpha_next_negative_pins.json do not pass, each with its pinned outcome and reason, and every other test passes. Each alpha-c0 probe
-mode fails with its pinned error; Step B's group cases and Step A's parent modes pass with Step B's frozen traces.
+alpha_next_negative_pins.json do not pass, each with its pinned outcome and reason, and every other test passes. Each alpha-c0 and
+held-g probe mode fails with its pinned error; Step B's group cases and Step A's parent modes pass with Step B's frozen traces.
 --negative --observe records the outcomes once (verdict OBSERVED, rc 1, never a pass) for the pins file, Step B's and stage-1
-sweep's precedent; the pins are written from that one observation and reviewed, never by this tool.
+sweep's precedent; the pins are written from that one observation, after review, by tools/alpha_next_negative_pins_write.py.
 
 Declared limit: the stage and group connected cases use declared device leaves (see Step B's and C0's tools); the anatomy switch on
 runs in test_stage1_handler_anatomy and on the VM, never in a connected CPU case. The box is the first place the whole stack is live.
 """
 import argparse
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -63,11 +73,35 @@ SCHEMA = 'alpha-next-selfrun/1'
 SUITES = ('test_stage1_handler_anatomy', 'test_stage1_anatomy_report', 'test_step_a_report', 'test_e3_native_anatomy',
           'test_e3_native_lean_replies', 'test_alpha_next_stopfix_matrix', 'test_alpha_next_c0_ring', 'test_alpha_next_peak_receipt',
           'test_e3_stopfix_partial_segment', 'test_e3_stopfix_refused_open', 'test_alpha_next_receipts',
-          'test_alpha_next_stage1_slow_rank', 'test_e3_w1_decode_driver_ordered',
+          'test_alpha_next_stage1_slow_rank', 'test_alpha_next_path_qualification', 'test_e3_w1_decode_driver_ordered',
           'test_native43_le_bounded_enqueue_stepped', 'test_alpha_next_queue')
 NEGATIVE_SUITES = c0.SUITES + SUITES
 PARENT_PASS = step_b.PARENT_PASS + step_b.CASES
 SAME_AS = c0.SAME_AS
+
+
+def _held_g_modes():
+    """held-f's progress MODES and held-g's WAIT_MODES and LEAN_MODES, read from the probes' text (held-g's _probe_modes)."""
+    def literals(path, *names):
+        values = {}
+        for node in ast.parse((ROOT / 'harness' / path).read_text()).body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and getattr(node.targets[0], 'id', None) in names:
+                values[node.targets[0].id] = ast.literal_eval(node.value)
+        assert set(values) == set(names), (path, names)
+        return values
+    base = literals('e3_native41_progress_probe.py', 'MODES')['MODES']
+    held_g = literals('e3_native41_held_g_probe.py', 'WAIT_MODES', 'LEAN_MODES')
+    assert base == held_f.PROGRESS_MODES, 'held-f progress probe modes changed'
+    return base, held_g['WAIT_MODES'], held_g['LEAN_MODES']
+
+
+HELD_G_STEP, HELD_G_WAIT, HELD_G_LEAN = _held_g_modes()
+HELD_G_CASES = tuple('held-g-' + m for m in HELD_G_STEP + HELD_G_WAIT + HELD_G_LEAN)
+HELD_G_PAIRS = dict([('held-g-' + m, 'held-g-' + m[:-len('-wait')]) for m in HELD_G_WAIT]
+                    + [('held-g-' + m, 'held-g-' + m[:-len('-lean')]) for m in HELD_G_LEAN])
+assert all(v in HELD_G_CASES for v in HELD_G_PAIRS.values()), HELD_G_PAIRS
+HELD_G_PAIR_FIELDS = ('scheduled_nonempty_sha256', 'request_tokens', 'native')
+HELD_G_SAME_AS = {'held-g-' + m: 'progress-' + m for m in HELD_G_STEP}
 PINS = Path(__file__).resolve().with_name('alpha_next_negative_pins.json')
 sha = held_f.sha
 canonical = held_f.canonical
@@ -129,16 +163,54 @@ def left_out_of(log):
     return sorted(re.findall('^' + re.escape(EXCLUDED_LINE) + r'(\S+)$', log.read_text(), re.M)) if log.is_file() else []
 
 
+# ---------------------------------------------------------------- receipt writer reset in every shared-process runner
+# PLAN 2: a test that runs s5_startup.install_engine or install_native_lane installs the process-global ReceiptWriter
+# (native_measurement._RECEIPT_WRITER); in one shared unittest process every later module's frozen logger captures would then see
+# nothing. harness/alpha_next_robust_swap.reset_receipt_writer puts the slot back to None after each test (claude/alpha-next
+# 4152b220). held-f's SUITES_PY is the one suite runner the progress, fused, groups, stage and composed containers and the negative
+# write (step_a's and C0's runner swaps read it at call time), so its Record gets the stopTest reset and suites.json the count; each
+# part's record keeps suites.json minus the outcomes, so the count lands in every container record. The dense line is below.
+_RECORD_INIT = "        super().__init__(*a,**k);self.rows={}\n"
+_RECORD_RESET = (_RECORD_INIT + "    def stopTest(self,test):\n"
+                 "        super().stopTest(test);_w.reset_receipt_writer(test.id())\n")
+_MAIN_LINE = "if __name__ == '__main__':\n    import torch\n"
+_MAIN_RESET = "if __name__ == '__main__':\n    import alpha_next_robust_swap as _w\n    import torch\n"
+_COUNT_LINE = "errors=len(r.errors),"
+_COUNT_RESET = ("errors=len(r.errors),receipt_writer_resets=len(_w.WRITER_RESETS),"
+                "receipt_writer_reset_tests=list(_w.WRITER_RESETS),")
+
+
+def _reset_suites_py(text):
+    for old, new in ((_RECORD_INIT, _RECORD_RESET), (_MAIN_LINE, _MAIN_RESET), (_COUNT_LINE, _COUNT_RESET)):
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
+    return text
+
+
+_HELD_F_SUITES_PY = held_f.SUITES_PY
+held_f.SUITES_PY = _reset_suites_py(_HELD_F_SUITES_PY)
+
+
+def writer_resets(result):
+    """The reset count a container's suites.json (or its record's suites) carries; None if the runner did not count."""
+    return (result or {}).get('receipt_writer_resets')
+
+
 # ---------------------------------------------------------------- command lines: Step B's, plus C0's stage cases
 _step_b_lines = step_a.command_lines
 
 
 def command_lines(modes, suites):
     """Step B's lines (installed in step_a); alpha-c0 cases in C0's exact form."""
-    lines = _step_b_lines([m for m in modes if not m.startswith('alpha-c0-')], suites)
+    lines = _step_b_lines([m for m in modes if not m.startswith(('alpha-c0-', 'held-g-'))], suites)
     for mode in modes:
         if mode.startswith('alpha-c0-'):
             lines += c0.command_lines((mode,), ())[1:]
+        elif mode.startswith('held-g-'):
+            # held-g's form (tools/native41_held_g_engine_selfrun.py): the probe passes its setting to install_engine itself.
+            arg = mode[len('held-g-'):]
+            lines += ['env -u FLASH_S5_NATIVE_PROGRESS FLASH_S5_AUTO_ARM=1 python3 -B e3_native41_held_g_probe.py '
+                      '--mode %s --out /out/%s.json > /out/%s.log 2>&1' % (arg, mode, mode), 'echo $? > /out/%s.rc' % mode]
     return lines
 
 
@@ -159,13 +231,15 @@ def filtered_container(*args, **kwargs):
 _DENSE_UNITTEST = 'python3 -B -m unittest -v '
 DENSE_CLOCK_LINE = 'clock-bound, excluded (declared): '
 DENSE_SWAP_LINE = 'robust-swap, excluded (declared): '
+DENSE_RESET_LINE = 'receipt writer slot resets (declared, PLAN 2): '
 _DENSE_FILTERED = ('python3 -B -c "import sys,unittest; sys.path.insert(0,\'.\'); import step_b_clock_bound as c; '
                    'import alpha_next_robust_swap as w; names=sys.argv[1:]; '
                    's=unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName(n) for n in names); k,r=c.filtered(s); del s; '
                    'assert r==c.expected_removed(names),r; k,q=w.filtered(k); assert q==w.expected_removed(names),q; '
                    '[print(\'%s\'+x,file=sys.stderr) for x in r]; [print(\'%s\'+x,file=sys.stderr) for x in q]; '
-                   'sys.exit(0 if unittest.TextTestRunner(verbosity=2).run(k).wasSuccessful() else 1)" '
-                   % (DENSE_CLOCK_LINE, DENSE_SWAP_LINE))
+                   'res=unittest.TextTestRunner(verbosity=2,resultclass=w._WriterResetResult).run(k); '
+                   'print(\'%s\'+str(len(w.WRITER_RESETS)),file=sys.stderr); sys.exit(0 if res.wasSuccessful() else 1)" '
+                   % (DENSE_CLOCK_LINE, DENSE_SWAP_LINE, DENSE_RESET_LINE))
 _dense_original = step_b._dense_original
 
 
@@ -190,17 +264,20 @@ def dense_left_out(spec, out):
     text = log.read_text() if log.is_file() else ''
     clock = sorted(re.findall('^' + re.escape(DENSE_CLOCK_LINE) + r'(\S+)$', text, re.M))
     swapped = sorted(re.findall('^' + re.escape(DENSE_SWAP_LINE) + r'(\S+)$', text, re.M))
+    resets = re.findall('^' + re.escape(DENSE_RESET_LINE) + r'(\d+)$', text, re.M)
     want_clock, want_swap = cb.expected_removed(suites), swap.expected_removed(suites)
     return dict(clock_bound=clock, clock_bound_expected=want_clock, robust_swap=swapped, robust_swap_expected=want_swap,
-                ok=clock == want_clock and swapped == want_swap, clock_bound_reason=cb.REASON,
+                receipt_writer_resets=int(resets[-1]) if len(resets) == 1 else None,
+                ok=clock == want_clock and swapped == want_swap and len(resets) == 1, clock_bound_reason=cb.REASON,
                 robust_swap_reasons={x: swap.reason(x) for x in swapped if x in swap.ROBUST_SWAP or x in swap.SUPERSEDED},
                 suites_log=str(log), suites_log_sha256=sha(log) if log.is_file() else None)
 
 
 # ---------------------------------------------------------------- records
 def expected_cases():
-    """The connected cases this record holds: Step B's and C0's stage cases. The one source for the spec's runner swap."""
-    return sorted(step_b.expected_cases() + list(c0.CASES))
+    """The connected cases this record holds: Step B's, C0's stage cases and held-g's probe cases. The one source for the spec's
+    runner swap."""
+    return sorted(step_b.expected_cases() + list(c0.CASES) + list(HELD_G_CASES))
 
 
 def frozen():
@@ -211,18 +288,38 @@ def frozen():
     return place
 
 
+def held_g_pairs(cases):
+    """Every L3/L4 mode against its step/full counterpart on held-g's pair fields (held-g's pairs())."""
+    rows, problems = {}, []
+    for mode, against in sorted(HELD_G_PAIRS.items()):
+        ours, theirs = cases.get(mode) or {}, cases.get(against) or {}
+        same = {f: f in ours and f in theirs and ours[f] == theirs[f] for f in HELD_G_PAIR_FIELDS}
+        ok = ours.get('verdict') == theirs.get('verdict') == 'PASS' and all(same.values())
+        rows[mode] = dict(against=against, same=ok, fields=same,
+                          scheduled_nonempty_sha256=ours.get('scheduled_nonempty_sha256') if ok else None)
+        if not ok:
+            problems.append(mode)
+    return rows, problems
+
+
 def run_composed(bundle, out, name):
-    """The sixth container: the composed suites; its own record in OUT/composed/result.json."""
-    rc, result, cases, c, wall = filtered_container(bundle, bundle / 'native30_overlay', bundle / 'e3_builder', out, name, (), SUITES)
+    """The sixth container: held-g's probe cases and the composed suites; its own record in OUT/composed/result.json."""
+    rc, result, cases, c, wall = filtered_container(bundle, bundle / 'native30_overlay', bundle / 'e3_builder', out, name,
+                                                    HELD_G_CASES, SUITES)
     log = out / 'suites.log'
     left_out = left_out_of(log)
+    rows, differ = held_g_pairs(cases)
     ok = rc == 0 and result.get('ok') is True and result.get('skips') == 0 and (result.get('tests') or 0) > 0 \
-        and applied(left_out, result.get('outcomes') or {}, candidate=True)
+        and applied(left_out, result.get('outcomes') or {}, candidate=True) and not differ and writer_resets(result) is not None \
+        and all(v.get('verdict') == 'PASS' for v in cases.values())
     record = dict(schema='alpha-next-composed-selfrun/1', verdict='PASS' if ok else 'FAIL', container_rc=rc,
                   suites={k: v for k, v in result.items() if k != 'outcomes'}, suite_names=list(SUITES),
                   outcomes_sha256=hashlib.sha256(json.dumps(result.get('outcomes'), sort_keys=True).encode()).hexdigest(),
                   left_out={x: CONTAINER_EXCLUDED[x] for x in left_out}, suites_log_sha256=sha(log) if log.is_file() else None,
-                  cases={}, manifest=sha(bundle / 'SHA256SUMS'), image=IMAGE, network='none', gpu_device_requests=0,
+                  receipt_writer_resets=writer_resets(result),
+                  cases={m: step_a.case_row(out, m, r) for m, r in cases.items()}, pairs=rows,
+                  pair_fields=list(HELD_G_PAIR_FIELDS), differs=differ,
+                  manifest=sha(bundle / 'SHA256SUMS'), image=IMAGE, network='none', gpu_device_requests=0,
                   gpu_execution=False, box_action=False, container=name, wall_s=wall, command=c,
                   log_shas={p.name: sha(p) for p in sorted(out.glob('*.log'))})
     (out / 'result.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
@@ -252,8 +349,11 @@ def run(spec, tree, bundle, out, name):
     tests = [pieces[0].get('tests') or 0, int(ran.group(1)) if ran else 0] + [x.get('tests') or 0 for x in pieces[2:]]
     ok = ok and ran is not None
     skips = [(x.get('skips') if x.get('skips') is not None else x.get('skipped')) or 0 for x in pieces]
-    connected = dict(p['cases'], **f['cases'], **g['cases'], **s['cases'])
+    connected = dict(p['cases'], **f['cases'], **g['cases'], **s['cases'], **n['cases'])
     ok = ok and sorted(connected) == expected_cases()
+    resets = dict({x: writer_resets(r['suites']) for x, r in zip(PARTS, (p, d, f, g, s, n)) if x != 'dense'},
+                  dense=left['receipt_writer_resets'])
+    ok = ok and all(v is not None for v in resets.values())
     record = dict(schema=SCHEMA, verdict='PASS' if ok else 'FAIL',
                   classification=None if ok else 'HARNESS-OR-ENGINE-UNCLASSIFIED', negative_control=False,
                   container_rc=max(x['container_rc'] for x in (p, d, f, g, s, n)),
@@ -266,10 +366,12 @@ def run(spec, tree, bundle, out, name):
                   tests=sum(tests) + len(connected), skips=sum(skips), connected_checks=sum(v['checks'] for v in connected.values()),
                   suites=dict(ok=all(x.get('ok') is True for x in pieces), skips=sum(skips), tests=sum(tests),
                               **dict(zip(PARTS, pieces))),
-                  cases=connected, pairs=dict(f['pairs'], **g['pairs'], **s['pairs']), pair_fields=g['pair_fields'],
+                  cases=connected, pairs=dict(f['pairs'], **g['pairs'], **s['pairs'], **n['pairs']), pair_fields=g['pair_fields'],
+                  held_g_pair_fields=n['pair_fields'],
                   probe39=d['probe39'], probe37=d['probe37'], py_compile=d['py_compile'],
                   scheduler_tick_probe=d.get('scheduler_tick_probe'), clock_split=d['clock_split'], dense_left_out=left,
                   composed_suites=list(SUITES), composed_left_out=n['left_out'],
+                  receipt_writer_resets=resets,
                   **{x + '_record_sha256': sha(out / x / 'result.json') for x in PARTS},
                   spec=str(spec), spec_sha256=sha(spec), declared_limit=DECLARED_LIMIT)
     (out / 'result.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
@@ -292,7 +394,7 @@ def judge(pins, outcomes, cases, left_out, place, observe=False):
         reasons.append('negative-suites-not-run')
     if not applied(left_out, outcomes, candidate=False):
         reasons.append('composed-exclusions-not-applied')
-    for mode in c0.CASES:
+    for mode in c0.CASES + HELD_G_CASES:
         got = [(cases.get(mode) or {}).get(k) for k in ('verdict', 'error_type', 'error')]
         if got != pins['cases'].get(mode):
             reasons.append('negative-case-differs:%s:%s' % (mode, got))
@@ -314,7 +416,7 @@ def negative(bundle, overlay, sources, out, name, observe=False):
         pins = dict(pins, tests={})
     place = frozen()
     assert sha(place / 'result.json') == pins['frozen_record_sha256'], 'pins were taken against another frozen record'
-    modes = PARENT_PASS + c0.CASES
+    modes = PARENT_PASS + c0.CASES + HELD_G_CASES
     rc, result, cases, c, wall = filtered_container(bundle, overlay, sources, out, name, modes, NEGATIVE_SUITES, hide_candidate=True)
     outcomes = result.get('outcomes') or {}
     left_out = left_out_of(out / 'suites.log')
@@ -326,7 +428,8 @@ def negative(bundle, overlay, sources, out, name, observe=False):
                   suite_names=list(NEGATIVE_SUITES),
                   outcomes_sha256=hashlib.sha256(json.dumps(outcomes, sort_keys=True).encode()).hexdigest(),
                   left_out={x: CONTAINER_EXCLUDED[x] for x in left_out if x in CONTAINER_EXCLUDED},
-                  pinned_tests=len(pins['tests']), cases={m: step_a.case_row(out, m, r) for m, r in cases.items()},
+                  pinned_tests=len(pins['tests']), receipt_writer_resets=writer_resets(result),
+                  cases={m: step_a.case_row(out, m, r) for m, r in cases.items()},
                   bundle=str(bundle), manifest=sha(bundle / 'SHA256SUMS'), overlay=str(overlay),
                   overlay_manifest=sha(overlay / 'SHA256SUMS'), sources=str(sources),
                   pins_sha256=None if observe else sha(PINS), image=IMAGE,
@@ -340,14 +443,16 @@ def negative(bundle, overlay, sources, out, name, observe=False):
 
 
 def compare(candidate, out):
-    """Every Step B connected case's canonical trace equals Step B's frozen record; each C0 serial mode equals Step B's progress mode."""
+    """Every Step B connected case's canonical trace equals Step B's frozen record; each C0 serial and held-g step/full mode equals
+    Step B's progress mode of the same name."""
     candidate, place = Path(candidate).resolve(), frozen()
     rows, problems = {}, []
     inherited = ([('progress', m, m) for m in held_f.CASES] + [('fused', m, m) for m in step_a.CASES]
                  + [('groups', m, m) for m in step_b.CASES])
     assert sorted(m for _, m, _ in inherited) == step_b.expected_cases()
     rules = [(part, mode, part, against) for part, mode, against in inherited] + \
-            [('stage', mode, 'progress', against) for mode, against in sorted(SAME_AS.items())]
+            [('stage', mode, 'progress', against) for mode, against in sorted(SAME_AS.items())] + \
+            [('composed', mode, 'progress', against) for mode, against in sorted(HELD_G_SAME_AS.items())]
     for part, mode, their_part, against in rules:
         ours = json.loads((candidate / part / (mode + '.json')).read_text())
         theirs = json.loads((place / their_part / (against + '.json')).read_text())
@@ -365,7 +470,8 @@ def compare(candidate, out):
                   parent_record=str(place / 'result.json'), parent_record_sha256=sha(place / 'result.json'),
                   candidate=str(candidate), candidate_record_sha256=sha(candidate / 'result.json'),
                   meaning='with the C0 and anatomy switches unset every Step B connected case has its exact canonical trace; with C0 '
-                          'installed and the arm on serial, each serial mode equals Step B\'s progress mode of the same name')
+                          'installed and the arm on serial, each serial mode equals Step B\'s progress mode of the same name; each held-g '
+                          'step/full probe mode equals Step B\'s progress mode of the same name')
     with Path(out).open('x') as f:
         json.dump(result, f, sort_keys=True, indent=2)
         f.write('\n')

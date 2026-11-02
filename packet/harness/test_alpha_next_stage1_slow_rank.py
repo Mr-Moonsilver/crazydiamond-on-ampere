@@ -31,9 +31,10 @@ class SlowerRankPerChunk(unittest.TestCase):
         # A sequence only rank 2 logged: not counted.
         rows.append(row(2, 4, 99))
         w[4] = dict(arm='g2-live-0', chunk_start=1024, chunk_end=2048)
-        # Chunk B (beyond the arena): a tie.
+        # Chunk B (beyond the last band, whatever band table is loaded: e3_alpha_perf_box widens it at import): a tie.
+        self.beyond = rep.box.BANDS[-1][1] + 1000
         rows += [row(2, 5, 7, handle_ms=1), row(3, 5, 8)]
-        w[5] = dict(arm='g2-live-0', chunk_start=100000, chunk_end=101024)
+        w[5] = dict(arm='g2-live-0', chunk_start=self.beyond, chunk_end=self.beyond + 1024)
         # Chunk C (band 16384-32768), another arm: rank 2 slower, carried by handle_output-free 'execute'.
         rows += [row(2, 6, 30, {'execute': 25}), row(3, 6, 12, {'execute': 7})]
         w[6] = dict(arm='g2-solo-0', chunk_start=20000, chunk_end=21024)
@@ -44,15 +45,15 @@ class SlowerRankPerChunk(unittest.TestCase):
 
     def test_chunk_table(self):
         table = {(c['arm'], c['chunk_start']): c for c in self.out['chunks']}
-        self.assertEqual(set(table), {('g2-live-0', 1024), ('g2-live-0', 100000), ('g2-solo-0', 20000)})
+        self.assertEqual(set(table), {('g2-live-0', 1024), ('g2-live-0', self.beyond), ('g2-solo-0', 20000)})
         a = table[('g2-live-0', 1024)]
         self.assertEqual((a['sequences'], a['slower_rank'], a['band']), (3, 3, rep.box.band_of(1024)))
         self.assertAlmostEqual(a['handler_ms']['2'], 32.0)
         self.assertAlmostEqual(a['handler_ms']['3'], 40.0)
         self.assertAlmostEqual(a['difference_ms'], 8.0)
         self.assertEqual(a['carrier'], 'pp_recv_wait')
-        b = table[('g2-live-0', 100000)]
-        self.assertEqual((b['slower_rank'], b['carrier'], b['band']), (None, None, 'beyond-97152'))
+        b = table[('g2-live-0', self.beyond)]
+        self.assertEqual((b['slower_rank'], b['carrier'], b['band']), (None, None, 'beyond-%d' % rep.box.BANDS[-1][1]))
         c = table[('g2-solo-0', 20000)]
         self.assertEqual((c['slower_rank'], c['carrier']), (2, 'execute'))
 
@@ -65,7 +66,7 @@ class SlowerRankPerChunk(unittest.TestCase):
     def test_per_band_and_arm_rollups(self):
         bands = self.out['per_band']
         self.assertEqual(sum(b['chunks'] for b in bands.values()), 3)
-        self.assertEqual(bands['beyond-97152']['slower_rank_counts']['tie'], 1)
+        self.assertEqual(bands['beyond-%d' % rep.box.BANDS[-1][1]]['slower_rank_counts']['tie'], 1)
         self.assertEqual(self.out['per_arm']['g2-solo-0']['slower_rank_counts'], {'2': 1, '3': 0, 'tie': 0})
         self.assertEqual(self.out['per_arm']['g2-solo-0']['carrier_counts'], {'execute': 1})
         self.assertEqual(self.out['ranks'], [2, 3])
@@ -75,7 +76,7 @@ class SlowerRankPerChunk(unittest.TestCase):
         self.assertEqual((out['chunks'], out['per_band']), ([], {}))
 
     def test_band_names_follow_bands(self):
-        self.assertEqual(rep.band_name(100000), 'beyond-97152')
+        self.assertEqual(rep.band_name(self.beyond), 'beyond-%d' % rep.box.BANDS[-1][1])
         self.assertEqual(rep.band_name(20000), rep.box.band_of(20000))
         self.assertIsNone(rep.band_name(None))
 

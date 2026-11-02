@@ -77,6 +77,32 @@ def expected_removed(modules):
     return sorted(name for name in list(ROBUST_SWAP) + list(SUPERSEDED) if name.split('.', 1)[0] in modules)
 
 
+class _WriterResetResult(unittest.TextTestResult):
+    """After every test, the process receipt writer slot goes back to the parent's None (alpha-next PLAN 2).
+
+    A test that runs s5_startup.install_engine or install_native_lane installs the process ReceiptWriter, which in a real engine or
+    worker process lives for the process. In one shared runner process it would redirect every later module's receipts away from
+    the logger their frozen captures read. Strict runs each suite in its own process and needs no reset.
+    """
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        reset_receipt_writer(test.id())
+
+
+WRITER_RESETS = []
+
+
+def reset_receipt_writer(test_id=''):
+    """Put the process receipt writer slot back to None (see _WriterResetResult); for any shared-process runner. True if it reset."""
+    measurement = sys.modules.get('native_measurement')
+    if measurement is not None and getattr(measurement, '_RECEIPT_WRITER', None) is not None:
+        measurement._RECEIPT_WRITER = None
+        WRITER_RESETS.append(test_id)
+        return True
+    return False
+
+
 def main(modules):
     loader = unittest.defaultTestLoader
     suite = unittest.TestSuite(loader.loadTestsFromName(name) for name in modules)
@@ -90,7 +116,8 @@ def main(modules):
     for name in removed:
         kind = 'pinned-parent frozen, superseded (declared)' if name in SUPERSEDED else 'load-flaky frozen, swapped (declared)'
         print('%s: %s: %s' % (kind, name, reason(name)))
-    result = unittest.TextTestRunner(verbosity=1).run(kept)
+    result = unittest.TextTestRunner(verbosity=1, resultclass=_WriterResetResult).run(kept)
+    print('receipt writer slot reset after %d tests (declared, PLAN 2)' % len(WRITER_RESETS))
     return 0 if result.wasSuccessful() else 1
 
 
