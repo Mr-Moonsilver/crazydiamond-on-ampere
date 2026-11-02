@@ -93,6 +93,34 @@ FROZEN = ('harness/e3_step_a_box.py', 'harness/e3_step_b_box.py', 'harness/e3_al
           'harness/runs/q18a_step_b.draft.sh', 'harness/runs/q18a_step_b_declare.sh', 'harness/runs/q18a_step_b_settings.sh',
           'harness/runs/q18a_alpha_c0.draft.sh')
 FROZEN_AT = '68c5c63b'
+# The frozen files' bytes at FROZEN_AT, so the check needs no git (the bundle self-run's container has none). On the hub the map
+# itself is checked against git; in the bundle the files are compared to the map. Either way the same files are checked, no skip.
+FROZEN_SHA256 = {
+    'harness/e3_step_a_box.py': 'fb41b1ca09b15db6ee948b5073cf6e00bd7ddb02f551235f653e08329040c323',
+    'harness/e3_step_b_box.py': '2ec79f4b30cbcd5fc9636834ef112b4ed6514ee9fe22b44eedcc25a3f7d244e3',
+    'harness/e3_alpha_c0_box.py': '00bb0875629d79c9fc073f7cbf8423e44dabd36d5c7952420d602566e322dc14',
+    'harness/e3_alpha_perf_box.py': '6db09b3a1b776180a1915a5b46655255f967a9d57e05e4d4e1d13c79cb2c1b4b',
+    'harness/step_a_gate.py': 'eb74679b40ad0562833b14814ab7fbf0a23336f8c8fb8bb7852df7973beaaceb',
+    'harness/step_b_gate.py': 'a8a0ace7732e509a159613572930830e455e4e55f381a28b8bbde4124861fdab',
+    'harness/alpha_c0_gate.py': '28d57e83a809470e2cdb2e6cf5751d52dab516e717efd78d4922c2cfeb419207',
+    'tools/step_a_report.py': '6ebe37c9bc82d37819de6c6e05a6cdbcfbfd177bb91097ff1606a6fd53a37f77',
+    'harness/native43_engine_death.py': 'f44373419825530def90b0ca0aea8f14545b5be0a0b62a317279d49820c73a15',
+    'tools/step_b_queue.py': '8cfe729c015091bcd6aa368772c3e19f6247f6a6c922b5423f52e72376abfc73',
+    'tools/alpha_c0_queue.py': '718f3ee5d4cedfe8f219658b73adce91ee8dc6479bfe0353d9d5648d473cfa87',
+    'harness/runs/q18a_step_b.draft.sh': 'b7449f487daa7b61f75094492dca817e3e0af2c3c74903b9ffd3fe93bbf0ee39',
+    'harness/runs/q18a_step_b_declare.sh': '3684c03807be6a90ff18335dbc715fa6d55c351a000ac2768bdb01ccc1bbbc17',
+    'harness/runs/q18a_step_b_settings.sh': '0150c90c4d951d72874c8c9ed65147e76bd02bbfc049c97b0d1a709801ba5a27',
+    'harness/runs/q18a_alpha_c0.draft.sh': '0108c188875f8c9b8a1b6c529f22e54b77b6d4f170cb189ccce51529f9c2fb14',
+}
+
+
+def in_bundle():
+    """Where this suite runs: the hub tree (a git checkout with git on PATH) or the built harness bundle (its SHA256SUMS at the
+    bundle root, no git). Exactly one must hold; anything else refuses."""
+    hub = (ROOT / '.git').exists() and shutil.which('git') is not None
+    bundle = (HERE / 'SHA256SUMS').is_file()
+    assert hub != bundle, ('neither or both of hub tree and harness bundle', hub, bundle)
+    return bundle
 
 
 def attach(engine_client, values):
@@ -1563,16 +1591,23 @@ class Derivation(unittest.TestCase):
         hexes = lambda text: set(re.findall(r'(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])', text))
         self.assertLessEqual(hexes(new), hexes(old))
         name = ('alpha_next_queue' + '_pins').encode()        # built here so this file does not hold the literal either
+        # In the bundle, harness/ also holds the bundled hub tools (native35_tools/, the hub's tools/, which name the pins
+        # writer) and SHA256SUMS (which lists them); neither exists under the hub's harness/, so both trees scan the same files.
         readers = [str(f.relative_to(ROOT)) for f in sorted(HERE.rglob('*'))
-                   if f.is_file() and '__pycache__' not in f.parts and name in f.read_bytes()]
+                   if f.is_file() and '__pycache__' not in f.parts and 'native35_tools' not in f.relative_to(HERE).parts
+                   and f != HERE / 'SHA256SUMS' and name in f.read_bytes()]
         self.assertEqual(readers, [])
         for text in queue.derive().values():
             self.assertNotIn(name.decode(), text)
         # The hub-side record keeps its schema and three keys; the packaging chain's writer (the pack branch pins writer
         # in tools/) owns the values and may add keys, so neither the values nor an exact key set are asserted.
-        pins = json.loads(queue.PINS_FILE.read_text())
-        self.assertEqual(pins['schema'], 'alpha-next-queue-pins/1')
-        self.assertLessEqual({'overlay_manifest_sha256', 'package_sha256', 'harness_bundle_sha256', 'status'}, set(pins))
+        if in_bundle():
+            # The pins file is hub-side only: the build never bundles it (the bundle self-run proves that here).
+            self.assertFalse(queue.PINS_FILE.exists(), queue.PINS_FILE)
+        else:
+            pins = json.loads(queue.PINS_FILE.read_text())
+            self.assertEqual(pins['schema'], 'alpha-next-queue-pins/1')
+            self.assertLessEqual({'overlay_manifest_sha256', 'package_sha256', 'harness_bundle_sha256', 'status'}, set(pins))
 
     def test_everything_kept_is_step_b_line_for_line(self):
         old = queue.rename((ROOT / 'harness/runs/q18a_step_b.draft.sh').read_text())
@@ -1615,10 +1650,15 @@ class Derivation(unittest.TestCase):
         self.assertEqual(queue.body().count('engine_watched '), 4)
 
     def test_frozen_files_are_byte_identical(self):
+        self.assertEqual(sorted(FROZEN_SHA256), sorted(FROZEN))
+        bundle = in_bundle()
         for name in FROZEN:
             with self.subTest(file=name):
-                done = subprocess.run(['git', '-C', str(ROOT), 'diff', '--quiet', FROZEN_AT, '--', name], capture_output=True)
-                self.assertEqual(done.returncode, 0, name)
+                self.assertEqual(hashlib.sha256((ROOT / name).read_bytes()).hexdigest(), FROZEN_SHA256[name], name)
+                if not bundle:
+                    done = subprocess.run(['git', '-C', str(ROOT), 'show', FROZEN_AT + ':' + name], capture_output=True)
+                    self.assertEqual(done.returncode, 0, name)
+                    self.assertEqual(hashlib.sha256(done.stdout).hexdigest(), FROZEN_SHA256[name], name)
 
 
 class Window(unittest.TestCase):
