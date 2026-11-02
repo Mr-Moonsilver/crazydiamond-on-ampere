@@ -219,10 +219,11 @@ class Delivery(DevParent, unittest.TestCase):
             selfrun_sha256=sha(queue), engine_selfrun_sha256=sha(engine), requires={'r': dict(holds=True)}))
         note = out / 'note.md'
         note.write_text('note\n')
+        rebind = dump(out / 'rebind-default-off.json', dict(schema='alpha-next-c1-rebind-default-off/1', verdict='PASS'))
         vm = dump(out / 'vm-compare.json', dict(schema='alpha-next-c1-vm-compare/1', verdict='PASS', rc=0, scope={}, selection={}))
         args = types.SimpleNamespace(build=build, freeze=freeze, engine=engine, compare=compare, negative=negative, tamper=tamper,
                                      queue=queue, clock_scan=clock, compile_proof=compile_proof, precheck=precheck, conf=conf,
-                                     staging_check=staging, note=note, out=out / 'delivery.json', vm=vm)
+                                     staging_check=staging, rebind_default_off=rebind, note=note, out=out / 'delivery.json', vm=vm)
         return args, pins, manifest, overlay_manifest
 
     def run_delivery(self, mutate=None):
@@ -267,6 +268,12 @@ class Delivery(DevParent, unittest.TestCase):
             del record['source']['both_off_reaches_alpha_next_freeze']
             dump(args.freeze, record)
         with self.assertRaises(KeyError):
+            self.run_delivery(mutate)
+
+    def test_a_rebind_proof_that_does_not_hold_refuses(self):
+        def mutate(args):
+            dump(args.rebind_default_off, dict(schema='c1-rebind-default-off/1', passed=False))
+        with self.assertRaisesRegex(AssertionError, 'rebind default-off'):
             self.run_delivery(mutate)
 
     def test_an_engine_record_without_early_open_refuses(self):
