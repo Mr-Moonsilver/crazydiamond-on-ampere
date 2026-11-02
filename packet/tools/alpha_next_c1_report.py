@@ -5,8 +5,8 @@ alpha-next's report (tools/alpha_next_report.py, which wraps Step A's analyser) 
 bindings for its one call: Step A's analyser assembles the engine flushes with each arm's flushes regrouped by that arm's
 ``flash-s5 stage-overlap`` lines (the grade's rule, harness/e3_alpha_next_c1_box.regroup and overlap_owners, not a second one), so
 a C1-on chunk holds its own rows and not its successor's early ones; and the grouping key holds the C1 selection instead of C0's:
-``fused.g2.c1on``, ``fused.g2.c1off``, ``fused.g4.c1on`` (no '-', so ``compare`` can split keys). C1-off arms log no overlap line,
-so their chunks are alpha-next's, unchanged. Also read, never a verdict: the per-chunk ``flash-s5 memory-peak`` receipt per key.
+``fused.g2.c1on``, ``fused.g2.c1off``, ``fused.g2.c1defer``, ``fused.g4.c1on`` (no '-', so ``compare`` can split keys; C1 defer
+keeps its own key, never merged with C1 on). C1-off arms log no overlap line, so their chunks are alpha-next's, unchanged. Also read, never a verdict: the per-chunk ``flash-s5 memory-peak`` receipt per key.
 """
 import argparse
 import json
@@ -23,19 +23,19 @@ SCHEMA = 'alpha-next-c1-report/1'
 sar, ap = anr.sar, box.ap
 
 
-def group_key(size, overlap):
-    """The grouping token: QSA mode (fused in every arm), group size and C1 selection; no '-'."""
-    return 'fused.g%d.c1%s' % (size, 'on' if overlap else 'off')
+def group_key(size, c1):
+    """The grouping token: QSA mode (fused in every arm), group size and C1 selection (on, off or defer); no '-'."""
+    return 'fused.g%d.c1%s' % (size, c1)
 
 
 def arm_key(name, arm):
     """(token, qsa_mode, group_size, overlap) from the declared table by label (the record's selection names it too)."""
     row = table.by_label().get(name) or {}
     parsed = table.parse_selection(arm.get('selection')) if arm.get('selection') else None
-    size, overlap = (parsed[1], parsed[0] == 'on') if parsed else (row.get('size'), row.get('overlap'))
-    if type(size) is not int or type(overlap) is not bool:
+    size, c1 = parsed[::-1] if parsed else (row.get('size'), row.get('c1'))
+    if type(size) is not int or c1 not in table.C1:
         return None
-    return group_key(size, overlap), 'fused', size, overlap
+    return group_key(size, c1), 'fused', size, table.C1[c1]
 
 
 def regrouping(root, logs):
@@ -84,15 +84,15 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('root', help='directory holding arm-*.json and engine-current.log')
     parser.add_argument('out', help='fresh output JSON')
-    parser.add_argument('--old', default=group_key(2, False), help='group token, e.g. fused.g2.c1off')
-    parser.add_argument('--new', default=group_key(2, True), help='group token, e.g. fused.g2.c1on or fused.g4.c1on')
+    parser.add_argument('--old', default=group_key(2, 'off'), help='group token, e.g. fused.g2.c1off or fused.g2.c1on')
+    parser.add_argument('--new', default=group_key(2, 'on'), help='group token, e.g. fused.g2.c1on, fused.g2.c1defer or fused.g4.c1on')
     args = parser.parse_args(argv)
     if os.path.exists(args.out):
         parser.error('output exists: ' + args.out)
     result = analyse(args.root)
     summary = sar.summarise(result)
     for key, row in summary.items():
-        row['overlap'] = key.partition('-')[0].endswith('.c1on')
+        row['overlap'] = key.partition('-')[0].rpartition('.c1')[2] in ('on', 'defer')
     report = dict(schema=SCHEMA, errors=result['errors'], problems=result['problems'], torn_lines=result['torn_lines'],
                   lost_flushes=result['lost_flushes'], unkeyed_arms=result['unkeyed_arms'],
                   chunks_dropped_torn={k: v['chunks_dropped_torn'] for k, v in result['arms'].items() if v['chunks_dropped_torn']},
