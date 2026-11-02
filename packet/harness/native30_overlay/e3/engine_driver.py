@@ -3183,16 +3183,26 @@ class NativeSegmentDriver:
         if command.transaction != self.tx or self._command != command:
             raise DriverError('stop found a foreign partially accepted command')
         self._stop_round()
-        row = dict(transaction=self.tx.txn_seq, op_seq=command.op_seq,
-                   segment_kind=getattr(command.kind, 'value', str(command.kind)),
-                   accepted_ranks=sorted(accepted),
-                   pending_ranks=sorted(set(targets) - accepted),
-                   reason=self.stop_kind)
-        self._record('stop_partial_replay', **row)
-        self._stop_partial_replays += 1
-        self._stop_receipt('stop_partial_replay', row)
+        self._record('stop_partial_replay', transaction=self.tx.txn_seq,
+                     op_seq=command.op_seq,
+                     segment_kind=getattr(command.kind, 'value', str(command.kind)),
+                     accepted_ranks=sorted(accepted),
+                     pending_ranks=sorted(set(targets) - accepted),
+                     reason=self.stop_kind)
+        self._note_stop_partial_replay()
         self._send_segment(command, targets)
         return True
+
+    _STOP_ROW_KEYS = ('transaction', 'op_seq', 'segment_kind', 'accepted_ranks', 'pending_ranks', 'reason')
+
+    def _note_stop_partial_replay(self):
+        """alpha-next item 1: count the replay just journalled and write its receipt line; never raises."""
+        try:
+            self._stop_partial_replays += 1
+            entry = self._journal[-1]
+            self._stop_receipt('stop_partial_replay', {k: entry.get(k) for k in self._STOP_ROW_KEYS})
+        except Exception:
+            pass
 
     def _partial_stop_state(self):
         """(command, accepted, pending) of a partially accepted retry, or None; reads only."""
