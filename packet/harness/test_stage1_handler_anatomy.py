@@ -1039,6 +1039,20 @@ class LeafNames(unittest.TestCase):
         self.assertEqual(order, sorted(order))
 
 
+class FreezeProof(unittest.TestCase):
+    """tools/stage1_anatomy_freeze.py over this tree: the source proof passes and every negative control refuses."""
+
+    def test_source_proof_and_negative_controls(self):
+        base_hooks_source()
+        import stage1_anatomy_freeze as freeze
+        source = freeze.source_level()
+        self.assertEqual(source['default_off']['verdict'], 'PASS')
+        self.assertEqual(source['default_off']['functions'], 5)
+        self.assertEqual(source['default_off']['removal_count'], 6)
+        self.assertEqual(source['imports']['site'], 'executor_hooks.py:_anatomy')
+        self.assertEqual(set(freeze.negative_controls().values()), {'REFUSED'})
+
+
 class Mutants(unittest.TestCase):
     """The scenarios discriminate: each mutant makes its scenario fail on the rule (not by a broken fixture)."""
 
