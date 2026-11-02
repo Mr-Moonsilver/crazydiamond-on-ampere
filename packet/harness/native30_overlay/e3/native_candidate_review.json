@@ -1553,7 +1553,7 @@
     "basis": "fresh full strict registered CPU regression on the packaged tree",
     "cases": 373,
     "exit_code": 0,
-    "log_sha256": "ab670e4cdc410686fab7d2b180c27cfb5b99c89f550dca426efe153a72040833",
+    "log_sha256": "2405bfae449cd5dd8b113a31bc00e0ae325d649f6a69b338148a22ee291b3558",
     "reported_tests": 4758,
     "required": 373,
     "skips": 0,
@@ -3758,7 +3758,7 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "497c244df2c0b78c99b93284d54ef2fd66878ecd5cea3443114e5e23b4bc8377",
+    "log_sha256": "9a18897c3cecaa14468de92bb87aa5ef24baad2ad8d5998594bc3a6b756f45b5",
     "skips": 0,
     "tests": 1626,
     "verdict": "PASS"
