@@ -365,7 +365,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 341,
+ "expected_tests": 342,
  "label": "alpha-c0",
  "overlay_definitions": {
   "e3/decode_probe.py": [
@@ -411,8 +411,8 @@
  "review_key": "alpha_c0",
  "runner_swaps": [
   [
-   "    from alpha_perf_gate import window_ok\n",
-   "    from alpha_c0_gate import window_ok\n"
+   "    from alpha_perf_gate import window_ok\n    require(window_ok(time.time()),'operator-window-not-before-or-cleanup-margin')\n",
+   "    # C0: no absolute-time window (operator, 2 Nov); launch time is the lead's, the relative budget is the draft's.\n    return None\n"
   ],
   [
    "engine.get('schema')=='alpha-perf-selfrun/1'",
@@ -432,7 +432,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "095bac9295aaa4de43e973dff23f8fdc9b76f248",
+ "source_commit": "11a22b919231ffc3c122c19b003c4e3b86ef97e7",
  "source_paths": [
   "A\tharness/alpha_c0_fixture_leaves.json",
   "A\tharness/alpha_c0_gate.py",
