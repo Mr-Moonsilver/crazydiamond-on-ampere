@@ -358,7 +358,13 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     # provider: it captures allocation side effects around the controller's
     # allocate_slots call and owns CoW endpoint retention until commit/cancel.
     install_admission_metadata(scheduler)
-    driver = NativeSegmentDriver(
+    # FLASH_S5_STAGE_LOCAL: unset or 0 constructs the frozen driver, unchanged.
+    driver_class = NativeSegmentDriver
+    if env.get('FLASH_S5_STAGE_LOCAL', '0') != '0':
+        from stage_progress import StagedSegmentDriver, stage_local_enabled
+        if stage_local_enabled(env):
+            driver_class = StagedSegmentDriver
+    driver = driver_class(
         controller, executor=executor, scheduler=scheduler, engine=engine,
         layer_count=layer_count, layer_split=layer_split, stage_of=stage_of,
         clock=clock, reply_timeout_s=config.reply_timeout_s,

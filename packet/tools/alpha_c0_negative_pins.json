@@ -1,0 +1,53 @@
+{
+ "cases": {
+  "alpha-c0-local-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_wire'"
+  ],
+  "alpha-c0-local-burst-skew": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_wire'"
+  ],
+  "alpha-c0-local-burst-solo": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_wire'"
+  ],
+  "alpha-c0-serial-burst": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_progress'"
+  ],
+  "alpha-c0-serial-burst-skew": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_progress'"
+  ],
+  "alpha-c0-serial-burst-solo": [
+   "FAIL",
+   "ModuleNotFoundError",
+   "No module named 'vllm.v1.flash_e3.stage_progress'"
+  ]
+ },
+ "frozen_record_sha256": "488b6cfc424c923a0270e7b5d961109344e6e41f37cfef3dde15f9a81ac885ed",
+ "tests": {
+  "unittest.loader._FailedTest.test_alpha_c0_queue": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ],
+  "unittest.loader._FailedTest.test_e3_stage_local": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ],
+  "unittest.loader._FailedTest.test_e3_stage_local_control": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ],
+  "unittest.loader._FailedTest.test_e3_stage_local_qsa": [
+   "error",
+   "ModuleNotFoundError: No module named 'stage_progress'"
+  ]
+ }
+}

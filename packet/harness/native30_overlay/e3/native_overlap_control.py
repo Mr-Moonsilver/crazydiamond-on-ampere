@@ -70,6 +70,12 @@ def _layer_groups():
     return os.environ.get('FLASH_S5_LAYER_GROUPS', '0') == '1' and _qsa_fused()
 
 
+def _stage_local():
+    """The C0 switch is exposed only where the engine installed it."""
+    return (os.environ.get('FLASH_S5_STAGE_LOCAL', '0') == '1'
+            and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')
+
+
 def _positive(value):
     return type(value) is int and value > 0
 
@@ -146,7 +152,8 @@ class NativeControlClient:
             if not (action == 'release_auto_arm' and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'
                     or action == 'native_progress' and _progress_burst()
                     or action == 'native_qsa_fused' and _qsa_fused()
-                    or action == 'native_layer_group' and _layer_groups()):
+                    or action == 'native_layer_group' and _layer_groups()
+                    or action == 'native_stage_local' and _stage_local()):
                 raise NativeControlError('native-control-unknown-action')
         if self.pending is not None and action not in READ_ACTIONS:
             # Reads stay available while an abandoned intent is registered so
@@ -278,6 +285,17 @@ class NativeControlClient:
         reply = await self._call({'action': 'native_layer_group', 'size': size})
         if reply.get('size') != size:
             raise NativeControlError('native-control-layer-group-not-set')
+        return reply
+
+    async def native_stage_local(self, local):
+        """C0 per-arm switch (installed only); the engine re-checks idle FULL."""
+        if type(local) is not bool:
+            raise NativeControlError('native-control-stage-local-invalid')
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call({'action': 'native_stage_local', 'local': local})
+        if reply.get('local') is not local:
+            raise NativeControlError('native-control-stage-local-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------

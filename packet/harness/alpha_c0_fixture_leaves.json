@@ -1,0 +1,145 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "C0 queue (arms, grade, arm loop) hub and exact pinned-container CPU tests; no box or GPU evidence",
+ "inherits": [
+  "stage_fixture_leaves.json",
+  "alpha_perf_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "arm-control-replies",
+   "test": "test_alpha_c0_queue.Selection",
+   "replaces": "The engine control client replies to native_progress, native_stage_local and release_auto_arm",
+   "equivalence": "The question is what the arm does with each reply: order, resume on refusal, refusal of a reply that does not prove the selection. The reply fields are the real _stage_control and release replies; test_alpha_c0_queue.Arm reads the same fields through the real endpoint, session and driver.",
+   "cannot_prove": "Engine behaviour under the selection",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-scale-workload",
+   "test": "test_alpha_c0_queue.Arm",
+   "replaces": "harness/workloads/q18a-native41-progress.json sizes and times",
+   "equivalence": "The question is which manifest, selection and declared standing budget the exact arm command sends through the real client and control plane. Only sizes and times are reduced, as held-f's workload() does.",
+   "cannot_prove": "A 65,445-token prompt end to end; a real stage chunk (e3_alpha_c0_probe.py runs that on a connected Core; the box runs it for real)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage-arm-grade-synthetic-run",
+   "test": "test_alpha_c0_queue.Grade, test_alpha_c0_queue.ArmLoop",
+   "replaces": "A real box run: eight arm records with spans, stage counters and output digests, and the engine log those spans select",
+   "equivalence": "Progress lines come from the real nm.ProgressTrace emitters through StageEmit, which writes each path's reply pattern: serial, four ranks answer every command; local, a command's own stage ranks answer, a non-target rank's row has replied 0 as executor_hooks writes it. e3_alpha_c0_probe.py runs the real driver's lines through the same join.",
+   "cannot_prove": "The real speed, decode ratio, memory or numerics",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage-line-format",
+   "test": "test_alpha_c0_queue.Grade",
+   "replaces": "flash-s5 stage-local lines in the followed engine log",
+   "equivalence": "The test line has the fields stage_progress._stage_line logs. test_e3_stage_local and e3_alpha_c0_probe.py read the real line with the same parser.",
+   "cannot_prove": "That the docker log path keeps the line whole; the box run does",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "memory-lines",
+   "test": "test_alpha_c0_queue.Grade",
+   "replaces": "flash-s5 memory receipts from the workers",
+   "equivalence": "The format is the recorded held-f line, pinned verbatim by test_memory_receipts_read_the_recorded_line.",
+   "cannot_prove": "That C0 stays within the free-memory margin; that is the box gate, reported, proposed as 0 OOMs and min free >= base - 2 MiB",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "numerics-output-rows",
+   "test": "test_alpha_c0_queue.Numerics, test_alpha_c0_queue.Digests",
+   "replaces": "Sampled tokens of the fresh and append requests and standing stream digests of a real run",
+   "equivalence": "The comparison is over declared token lists and digests built by the real stream_digests; identity is structural.",
+   "cannot_prove": "That equal sampled tokens mean equal tensors; the box compares tokens only (logprobs are refused native). The per-rank work proof is tools/c0_bit_identity.py, on CPU",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clients",
+   "test": "test_alpha_c0_queue.ArmLoop",
+   "replaces": "e3_alpha_c0_box.py arm and e3_native39_trunk_checks.py at the bash seam",
+   "equivalence": "alpha-perf's stubs (test_alpha_perf_queue.STUB_BOX, STUB_CHECKS) with the module name changed: the question is the loop's control flow; the watch and the grade are real.",
+   "cannot_prove": "Anything about the clients' behaviour against an engine",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-box-tools",
+   "test": "test_alpha_c0_queue.ArmLoop",
+   "replaces": "nvidia-smi, docker, systemctl and health_ok on the box",
+   "equivalence": "Same leaf as test_alpha_perf_queue.ArmLoop.",
+   "cannot_prove": "Real tool output formats",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "arm-loop-clock",
+   "test": "test_alpha_c0_queue.ArmLoop",
+   "replaces": "Box time before the arm entry guard",
+   "equivalence": "The guard compares bash SECONDS with the real LAST_ARM_ENTRY_S. Assigning SECONDS after a named step moves the variable the guard reads.",
+   "cannot_prove": "Real arm durations",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "torn-log-lines",
+   "test": "test_alpha_c0_queue.Tears",
+   "replaces": "Docker log lines spliced by a second writer on the box",
+   "equivalence": "The two shapes are q18a-alpha-perf's engine-stream.log lines 3832 with 3835 (bytes moved to a later stamped line, a foreign line in their place) and 34985 (a header inside the JSON), applied to the real emitters' lines. The whole rule was also replayed over that real log and its 16 arm records, on the hub.",
+   "cannot_prove": "How often the C0 path tears: the rate is estimated from one alpha-perf run. A signature whose bytes moved to another physical line stays unseen by the text scan; the engine watch and arm completion remain.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "probe-staged-cpu-worker-driver",
+   "test": "e3_alpha_c0_probe (alpha-c0-local-* engine self-run cases)",
+   "replaces": "sp.StagedSegmentDriver, the class real s5_startup installs when FLASH_S5_STAGE_LOCAL=1, by StagedWithCPUWorkers(sp.StagedSegmentDriver, ed.NativeSegmentDriver) for one install; and sp.ring_has_headroom, the broadcast-ring reserve rule, by a function returning True",
+   "equivalence": "The real StagedSegmentDriver is first in the MRO with every method unchanged; below it is only the parent connected fixture's CPU-worker NativeSegmentDriver patch, as on the parent's own self-run. Real startup still makes the choice from the switch. The composition's transport has no broadcast ring, so its reserve cannot be measured here.",
+   "cannot_prove": "Ring headroom on a real slot layout (test_e3_stage_local proves the rule; the box reports headroom_refused); real collectives on two GPUs per stage",
+   "more_convenient": false,
+   "box_evidence": false
+  },
+  {
+   "name": "probe-parent-connection-and-control",
+   "test": "e3_alpha_c0_probe (all alpha-c0-* engine self-run cases)",
+   "replaces": "parent.connected and parent.set_mode, the parent progress probe's connection and control sequence, by the same connection installed with the C0 settings and the box arm's sequence (pause, native_progress, native_stage_local, release_auto_arm, resume)",
+   "equivalence": "Real install_engine through real s5_startup, and real submit_control on the installed driver: the controls the box arm sends, in its order, through the same driver entry point. The parent run() and its checks are called unchanged.",
+   "cannot_prove": "The HTTP control route and router (test_e3_stage_local_control and the box arm cover them)",
+   "more_convenient": false,
+   "box_evidence": false
+  },
+  {
+   "name": "probe-stage-skew",
+   "test": "e3_alpha_c0_probe (alpha-c0-local-burst-skew)",
+   "replaces": "ap.Skew, the parent tp-skew injector, by stage_skew(ap) on local modes: the same delays and seed, with the release rule of a local arm (a target rank's release needs its own stage's state events)",
+   "equivalence": "Subclass of the parent Skew with the parent's schedule; the next chunk's open still needs all four ranks. Every case the parent rule would have flagged is kept in parent_rule_flags with its scope and must be the other stage only. Serial modes keep ap.Skew itself.",
+   "cannot_prove": "Device-level skew between two real GPUs of a stage",
+   "more_convenient": false,
+   "box_evidence": false
+  },
+  {
+   "name": "real-lines-progress-loggers",
+   "test": "test_alpha_c0_queue.RealLines",
+   "replaces": "ed._progress_logger, eh._progress_logger and sp._progress_logger (the engine, worker-hook and stage-progress logging.Logger) and eh._worker_progress, by one in-memory logger and per-rank traces",
+   "equivalence": "The real emitters format every line; the test keeps the exact text each logger.info call receives, stamps it as the docker log does, and reads it through the grade's own readers (progress.read_lines, assemble, chunk_breakdown, stage_lines).",
+   "cannot_prove": "Docker log interleaving and tears between writers (the torn-log-lines leaf and its tests cover the grade's rule for them)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "torn-line-band-cuts",
+   "test": "test_alpha_c0_queue (torn-line tests)",
+   "replaces": "tap.band_cuts, band 1's chunk ends for the synthetic run, by sixteen equal pieces between the same first and last ends",
+   "equivalence": "Same band, same first and last ends; only more chunks, so a lost flush can drop chunks within the limits. The grade reads chunk identities from the lines, not from band_cuts.",
+   "cannot_prove": "Band 1's real chunk sizes (the arm-scale-workload and box arms use them)",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}

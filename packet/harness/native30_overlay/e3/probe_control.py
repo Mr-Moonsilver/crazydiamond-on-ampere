@@ -722,6 +722,9 @@ def attach_native_router(args, app, env=None):
     # Step B: the per-arm native_layer_group size, only where it is installed.
     if auto_actions and env.get('FLASH_S5_QSA_FUSED', '0') == '1' and env.get('FLASH_S5_LAYER_GROUPS', '0') == '1':
         auto_actions += ('native_layer_group',)
+    # C0: the per-arm native_stage_local switch, only where it is installed.
+    if auto_actions and env.get('FLASH_S5_STAGE_LOCAL', '0') == '1':
+        auto_actions += ('native_stage_local',)
     install_owner_health(app)
 
     async def endpoint(request):

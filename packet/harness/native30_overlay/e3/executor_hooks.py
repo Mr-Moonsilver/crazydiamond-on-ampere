@@ -27,6 +27,7 @@ import sys
 from e3_types import E3ContractError, E3Pending
 from reply_transport import (Backpressure, DirectReply, NotReady, ReplyTransport, TransportError,
                              WorkerRPCError)
+from stage_wire import STAGE_SKIP, StageScoped, stage_rpc
 from native_measurement import (PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta,
                                 encode_progress_meta, progress_mode)
 
@@ -1265,6 +1266,12 @@ def _wire_bridge(worker):
 
 def worker_rpc(worker, name, message):
     """Generated worker entry point for typed open/submit/poll/commit/cancel."""
+    if type(message) is StageScoped:
+        # FLASH_S5_STAGE_LOCAL only: the engine never sends this record otherwise.
+        if _wire_method(message.message) != name:
+            raise E3ContractError('S5 RPC method and wire record disagree')
+        return stage_rpc(_wire_bridge(worker), name, message,
+                         lambda inner: worker_rpc(worker, name, inner))
     wire_name = _wire_method(message)
     if wire_name is not None:
         # Wire-v1 records carry their own exact type; they have no legacy
@@ -1399,6 +1406,12 @@ _DIRECT_WRITE = threading.local()
 
 def worker_handle_output(proc, rpc, output):
     """Route one reply: direct (typed native command flow) or stock-ordered."""
+    if output is STAGE_SKIP:
+        # A stage-scoped command for other ranks: no reply is expected or written.
+        state = None if rpc is None else _worker_progress(proc.rank)
+        if state is not None:
+            state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], None, int(rpc[4]), 0)
+        return
     if rpc is not None and rpc[4]:
         # Written by this RPC thread now, not queued behind async decode output.
         # A raised command still goes through stock enqueue_output, which turns
