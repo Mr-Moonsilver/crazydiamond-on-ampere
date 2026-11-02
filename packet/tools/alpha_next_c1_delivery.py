@@ -28,12 +28,13 @@ import alpha_next_c1_parent_pin as parent_pin  # noqa: E402
 REVIEW = 'patches/s5_engine/native_candidate_review.json'
 PINS = ROOT / 'tools/alpha_next_c1_negative_pins.json'
 CANDIDATE = 'q18a-alpha-next-c1'
-# Every fixture-leaves file the composed harness's connected and queue tests read: alpha-next's, C1's engine and queue leaves, the
-# composition fix's (382ed704) and the queue helper's.
+# Every fixture-leaves file the composed harness's connected and queue tests read: alpha-next's (seams leaves of 48aca6b2 included),
+# C1's engine and queue leaves, the composition fix's (382ed704), the queue helper's and the C1 rebind's (70b0896d).
 LEAVES = ('step_b_fixture_leaves.json', 'alpha_c0_fixture_leaves.json', 'stage1_anatomy_fixture_leaves.json',
           'native41_held_g_fixture_leaves.json', 'alpha_next_stopfix_fixture_leaves.json', 'alpha_next_robust_fixture_leaves.json',
           'alpha_next_receipts_fixture_leaves.json', 'alpha_next_queue_fixture_leaves.json', 'stage_overlap_fixture_leaves.json',
-          'alpha_c1_fixture_leaves.json', 'alpha_next_c1_engine_fixture_leaves.json', 'alpha_next_c1_queue_fixture_leaves.json')
+          'alpha_c1_fixture_leaves.json', 'alpha_next_c1_engine_fixture_leaves.json', 'alpha_next_c1_queue_fixture_leaves.json',
+          'alpha_next_seams_fixture_leaves.json', 'c1_rebind_fixture_leaves.json')
 ARGS = ('build', 'freeze', 'engine', 'compare', 'negative', 'tamper', 'queue', 'clock_scan', 'compile_proof', 'precheck', 'conf',
         'staging_check', 'note', 'out')
 

@@ -37,9 +37,12 @@ def _alpha_next_seams():
     raise AssertionError('alpha_next_precheck_conf.SEAMS not found')
 
 
-# The queue helper's, the composition fix's (382ed704) and C1's seam tests, then alpha-next's (which end with a space).
+# The queue helper's, the composition fix's (382ed704), the C1 rebind's (70b0896d) and defer_bind control's and C1's seam tests, then
+# alpha-next's (which end with a space). Their leaves (c1_rebind_fixture_leaves.json, the defer control's) are harness files, so
+# build_native43.stage bundles them and FIXTURE_LEAVES_REGEX ('fixture[-_]leaves.*\.json$') matches them.
 SEAMS = ('test_alpha_next_c1_queue.py e3_alpha_next_c1_box.py alpha_next_c1_arms.py alpha_next_c1_gate.py '
          'test_alpha_next_c1_composed_fields.py test_e3_stage_overlap.py test_e3_stage_overlap_control.py e3_alpha_c1_probe.py '
+         'test_c1_rebind_witness.py test_c1_rebind_on.py c1_overlap_read.py test_alpha_next_c1_defer_control.py '
          'test_alpha_c1_queue.py test_alpha_c1_report.py test_alpha_c1_box.py e3_alpha_c1_box.py ' + _alpha_next_seams())
 assert SEAMS.endswith(' ') and len(SEAMS.split()) == len(set(SEAMS.split())), 'seam list'
 

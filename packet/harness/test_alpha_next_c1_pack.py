@@ -247,7 +247,8 @@ class Delivery(DevParent, unittest.TestCase):
     def test_the_declared_leaves_name_c1s_and_the_composition_fixs(self):
         delivery = self.fresh('alpha_next_c1_delivery')
         for name in ('alpha_next_c1_engine_fixture_leaves.json', 'stage_overlap_fixture_leaves.json',
-                     'alpha_next_c1_queue_fixture_leaves.json', 'alpha_next_queue_fixture_leaves.json'):
+                     'alpha_next_c1_queue_fixture_leaves.json', 'alpha_next_queue_fixture_leaves.json',
+                     'c1_rebind_fixture_leaves.json', 'alpha_next_seams_fixture_leaves.json'):
             self.assertIn(name, delivery.LEAVES)
 
     def test_end_to_end_on_the_dev_build_record_shape(self):
