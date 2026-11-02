@@ -28,6 +28,9 @@ Torn lines (harness/step_a_torn_lines.py's rule, descriptive here): a handler li
 with another writer's header inside, is counted and its rows dropped; a flush short of parts or a gap in a rank's line
 numbers is counted as lost. Nothing is repaired.
 
+Per chunk (assessment 4C.2): each stage's slower TP rank per chunk by summed stock-handler time, with the carrying seam, in each
+group's ``slower_tp_rank_per_chunk`` (the chunk table) and the report's own roll-up per arm and per band. Descriptive.
+
 Decision readout (pre-registered, docs/e3-briefs/stage1-handler-anatomy-design.md): on the slower stage-1 rank, live
 arms, median over chunks below the arena (and repeated beyond it), shares of the stock-handler wall.
 """
@@ -306,6 +309,66 @@ def slower_rank(rows, stage):
                        seam_difference_ms={s: dist(v) for s, v in sorted(diffs.items())})
 
 
+def band_name(start):
+    """The alpha-perf band of a chunk's history rows (the bands() naming)."""
+    if start is None:
+        return None
+    return box.band_of(start) if start < box.BANDS[-1][1] else 'beyond-%d' % box.BANDS[-1][1]
+
+
+def slower_rank_per_chunk(rows, where, stage):
+    """Assessment 4C.2: per chunk, the stage's slower TP rank by summed stock-handler time, and its roll-up per arm and per band.
+
+    A TP stage advances at its slower rank, so the per-sequence view (slower_rank) is summed per chunk: for each chunk (arm,
+    chunk_start, chunk_end) only sequences both ranks logged count; the slower rank is the one with the larger sum of total()
+    (ties go to neither and are counted). The carrier is the seam whose summed exclusive difference is largest. Descriptive,
+    never a grade input.
+    """
+    a, b = STAGES[stage]
+    pairs, _ = slower_rank(rows, stage)
+    chunks = {}
+    for p in pairs:
+        ctx = where.get(p['seq'])
+        if ctx is None:
+            continue
+        key = (ctx['arm'], ctx['chunk_start'], ctx['chunk_end'])
+        c = chunks.setdefault(key, dict(sums={a: 0, b: 0}, seams={}, seqs=0))
+        c['seqs'] += 1
+        for row in (p['slow'], p['fast']):
+            c['sums'][row['rank']] += total(row)
+            for seam in row['seams']:
+                c['seams'].setdefault(seam, {a: 0, b: 0})[row['rank']] += excl(row, seam)
+    table, per_arm, per_band = [], {}, {}
+    for (arm, start, end), c in sorted(chunks.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
+        sa, sb = c['sums'][a], c['sums'][b]
+        slow = a if sa > sb else b if sb > sa else None
+        fast = None if slow is None else (b if slow == a else a)
+        carrier = None
+        if slow is not None and c['seams']:
+            carrier = max(c['seams'], key=lambda seam: c['seams'][seam][slow] - c['seams'][seam][fast])
+        name = band_name(start)
+        row = dict(arm=arm, chunk_start=start, chunk_end=end, band=name, sequences=c['seqs'],
+                   handler_ms={str(a): sa / 1e6, str(b): sb / 1e6}, slower_rank=slow,
+                   difference_ms=abs(sa - sb) / 1e6, carrier=carrier)
+        table.append(row)
+        for bucket in (per_arm.setdefault(arm, []), per_band.setdefault(name, [])):
+            bucket.append(row)
+
+    def roll(rows_):
+        counts = {str(a): 0, str(b): 0, 'tie': 0}
+        carriers = {}
+        for r in rows_:
+            counts[str(r['slower_rank']) if r['slower_rank'] is not None else 'tie'] += 1
+            if r['carrier'] is not None:
+                carriers[r['carrier']] = carriers.get(r['carrier'], 0) + 1
+        return dict(chunks=len(rows_), slower_rank_counts=counts, difference_ms=dist([r['difference_ms'] for r in rows_]),
+                    carrier_counts=dict(sorted(carriers.items(), key=lambda kv: (-kv[1], kv[0]))))
+    return dict(stage=stage, ranks=[a, b], chunks=table, per_arm={k: roll(v) for k, v in sorted(per_arm.items())},
+                per_band={k: roll(v) for k, v in sorted(per_band.items(), key=lambda kv: str(kv[0]))},
+                basis='per chunk, summed stock-handler time (RPC wall + handle_output) over sequences both ranks logged; '
+                      'descriptive, never graded')
+
+
 def decision(pairs, outs, where):
     """The pre-registered readout over the slower stage-1 rank, live arms, per chunk then median across chunks."""
     per_chunk = {}
@@ -467,6 +530,7 @@ def analyse(root, native=True):
     for key, group in sorted(groups.items()):
         entry = dict(per_rank_kind=per_rank_kind(group, outs), bands=bands(group, where))
         entry['slower_tp_rank'] = {name: slower_rank(group, name)[1] for name in ('1', '0')}
+        entry['slower_tp_rank_per_chunk'] = {name: slower_rank_per_chunk(group, where, name) for name in ('1', '0')}
         report['groups'][key] = entry
     # The decision: per QSA group, live arms, both bands (the rule reads each band on its own).
     by_token = {}
@@ -476,6 +540,10 @@ def analyse(root, native=True):
             by_token.setdefault(arms[ctx['arm']]['group'], []).append(r)
     report['decision'] = {token: decision(slower_rank(group, '1')[0], outs, where)
                           for token, group in sorted(by_token.items())}
+    # 4C.2 across groups: stage 1's slower rank per chunk, per arm and per band over every assigned row.
+    assigned = [r for r in rows if r['seq'] in where]
+    report['slower_tp_rank_per_chunk'] = {name: {k: v for k, v in slower_rank_per_chunk(assigned, where, name).items()
+                                                 if k != 'chunks'} for name in ('1', '0')}
     if native:
         summary = sar.summarise(sar.analyse(root, logs))
         for key, entry in report['groups'].items():
@@ -503,6 +571,10 @@ def text(report):
     lines = ['stage-1 anatomy: %d handler lines (%d torn, %d incomplete flushes, %d line gaps), %d main rows, %d output rows'
              % (report['handler_lines'], report['torn_handler_lines'], len(report['incomplete_flushes']),
                 len(report['line_gaps']), report['rows']['main'], report['rows']['output'])]
+    for stage, entry in sorted((report.get('slower_tp_rank_per_chunk') or {}).items()):
+        for band_name_, r in entry['per_band'].items():
+            lines.append('stage %s %s: slower rank per chunk %s over %d chunks' % (stage, band_name_, r['slower_rank_counts'],
+                                                                                  r['chunks']))
     for key, entry in report['decision'].items():
         for band_name, d in entry.items():
             lines.append('%s %s: %s' % (key, band_name, d.get('verdict')))
