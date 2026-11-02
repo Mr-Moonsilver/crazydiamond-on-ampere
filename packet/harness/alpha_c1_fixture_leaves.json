@@ -1,0 +1,55 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "C1 queue (derived texts, arm loop over the real C1 grade, parsers, budget) hub and exact pinned-container CPU tests; no box or GPU evidence",
+ "inherits": [
+  "stage_overlap_fixture_leaves.json",
+  "alpha_c0_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "c1-arm-loop-clients",
+   "test": "test_alpha_c1_queue.ArmLoop",
+   "replaces": "e3_alpha_c1_box.py arm and e3_native39_trunk_checks.py at the bash seam",
+   "equivalence": "C0's stubs (test_alpha_perf_queue.STUB_BOX, STUB_CHECKS) with the module name changed to e3_alpha_c1_box: the question is the loop's control flow (order, band manifest per round, budget skip, death watch); the watch and the C1 grade are real.",
+   "cannot_prove": "Anything about the clients' behaviour against an engine",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "c1-arm-loop-connected-run",
+   "test": "test_alpha_c1_queue.ArmLoop",
+   "replaces": "The arm records and the followed engine logs of a box run",
+   "equivalence": "test_alpha_c1_box's connected run (one OverlapStack per declared arm, the real overlap driver, controller, bridges and emitters) with that file's declared leaves (stage_overlap_fixture_leaves.json: one-engine-numbering, decode-live-count, fake-cuda-allocator, selection-by-attribute, arm-record-box-fields); its records are copied by the stub arm client and its lines written as engine-stream.log/err. A cut run keeps the arms that ran and the lines up to the last one's end.",
+   "cannot_prove": "Real arm records, real box log interleaving and real timings",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "c1-arm-loop-box-tools",
+   "test": "test_alpha_c1_queue.ArmLoop",
+   "replaces": "nvidia-smi, docker, systemctl and health_ok on the box",
+   "equivalence": "Same leaf as test_alpha_perf_queue.ArmLoop and test_alpha_c0_queue.ArmLoop.",
+   "cannot_prove": "Real tool output formats",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "c1-arm-loop-clock",
+   "test": "test_alpha_c1_queue.ArmLoop",
+   "replaces": "Box time before the arm entry guard",
+   "equivalence": "The guard compares bash SECONDS with the real alpha_c1_gate.LAST_ARM_ENTRY_S. Assigning SECONDS after a named step moves the variable the guard reads.",
+   "cannot_prove": "Real arm durations; the expected offsets come from alpha-perf box walls (alpha_c1_gate.BOX_WALLS_S), not from C1 arms",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "c1-argparse-capture",
+   "test": "test_alpha_c1_queue.Commands",
+   "replaces": "argparse.ArgumentParser.parse_args (patched to stop after parsing)",
+   "equivalence": "As test_alpha_c0_queue.Commands: the real parser parses the derived command line, then the capture raises before main acts.",
+   "cannot_prove": "What the module does with the parsed arguments",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}

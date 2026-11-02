@@ -5,8 +5,10 @@ Derived from e3_alpha_c0_box (imported as ``c0``, unchanged): every name not def
 code with the names below bound in its place for the duration of one call (``_bound``), and nothing else of C0 is changed.
 
 Arms (one incarnation with FLASH_S5_STAGE_LOCAL=1 and FLASH_S5_STAGE_OVERLAP=1; each arm selects by typed control):
-  band 1  65,445 fresh then the append, 8 standing decoders, rounds 0 and 1 in ABBA over serial and overlap, solo and live, with a
-          local-live arm in both rounds (C0's effect apart from C1's): the selections read S O O L S | S L O O S.
+  band 1  65,445 fresh then the append, 8 standing decoders, rounds 0 and 1 mirrored over serial, local (C0) and overlap (C1),
+          solo and live (lead, 2 Nov: C1 against C0 and serial, ABBA, live and solo): the selections read
+          S-solo L-solo O-solo O-live L-live S-live | S-live L-live O-live O-solo L-solo S-solo, so each local and overlap arm
+          has its matched serial arm at the same cohort and round, and the two rounds mirror each other against linear drift.
   band 2  alpha-perf's band 2 (131,094 tokens, workloads/q18a-alpha-perf-band2.json), past the 97,152-row arena: serial-solo-2,
           overlap-solo-2, overlap-live-3, serial-live-3. Each candidate arm has its matched serial arm at the same cohort and index.
   control pause, native_progress {burst}, native_stage_local {local, overlap}, release_auto_arm, resume; the reply must carry both
@@ -67,8 +69,9 @@ import e3_alpha_c0_box as c0
 ap, progress, base = c0.ap, c0.progress, c0.base
 GRADE_SCHEMA = 'alpha-c1-grade/1'
 SELECTIONS = ('serial', 'local', 'overlap')
-BAND1_ORDER = (('serial', 'solo', 0), ('overlap', 'solo', 0), ('overlap', 'live', 0), ('local', 'live', 0), ('serial', 'live', 0),
-               ('serial', 'live', 1), ('local', 'live', 1), ('overlap', 'live', 1), ('overlap', 'solo', 1), ('serial', 'solo', 1))
+BAND1_ORDER = (('serial', 'solo', 0), ('local', 'solo', 0), ('overlap', 'solo', 0), ('overlap', 'live', 0), ('local', 'live', 0),
+               ('serial', 'live', 0), ('serial', 'live', 1), ('local', 'live', 1), ('overlap', 'live', 1), ('overlap', 'solo', 1),
+               ('local', 'solo', 1), ('serial', 'solo', 1))
 BAND2_ORDER = (('serial', 'solo', 2), ('overlap', 'solo', 2), ('overlap', 'live', 3), ('serial', 'live', 3))
 ARM_ORDER = BAND1_ORDER + BAND2_ORDER
 INDEXES = (0, 1, 2, 3)
@@ -659,7 +662,7 @@ def grade(arms, ingress, checks, logs, watches=None):
                   missing=sorted(set(missing)), summary=summary, memory_vs_serial=result.pop('memory_local_vs_serial'),
                   oom_outside_every_arm=outside, oom_is_gate=True, memory_is_gate=False, declared_limits=LIMITS,
                   basis='one engine, one selection per arm by typed control (local and overlap); band 1 ABBA at 65,445 tokens '
-                        'with local-live in both rounds; band 2 at 131,094 tokens past the 97,152-row arena; per chunk, the '
+                        'with local solo and live in both rounds; band 2 at 131,094 tokens past the 97,152-row arena; per chunk, the '
                         'critical rank of each native command, rows regrouped by chunk on overlap arms',
                   scope='C1 mechanism (two chunks in flight, one command in flight per stage) on the composed alpha engine, with '
                         'speed and memory reported; gains from separate experiments are never multiplied')

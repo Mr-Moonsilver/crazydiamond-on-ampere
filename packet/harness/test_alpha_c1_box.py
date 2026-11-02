@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """C1 grade (harness/e3_alpha_c1_box.py) over the real overlap composition's own lines. CPU only; no pass here is box evidence.
 
-One connected run, built once: the fourteen declared arms in order, each one ``OverlapStack`` (the real overlap driver, staged
+One connected run, built once: the sixteen declared arms in order, each one ``OverlapStack`` (the real overlap driver, staged
 admission controller, worker bridges and emitters on the per-rank ring, harness/test_e3_stage_overlap.py) with the arm's
 selection, stage 1 slow (so stage 0 opens n+1 early), and every line the run logs: engine and worker progress, stage-local,
 stage-overlap, and the bridge's own ``flash-s5 memory`` receipts. The lines are stamped into the box's followed-log format and
@@ -222,12 +222,16 @@ class Base(unittest.TestCase):
 
 
 class Connected(Base):
-    def test_fourteen_real_arms_pass(self):
+    def test_sixteen_real_arms_pass(self):
         result = self.grade()
         self.assertEqual((result['verdict'], result['failures'], result['missing'], result['classification']),
                          ('PASS', [], [], None), result['missing'])
         self.assertEqual(result['required_arms'], [box.label(*x) for x in box.ARM_ORDER])
-        self.assertEqual(len(result['required_arms']), 14)
+        self.assertEqual(len(result['required_arms']), 16)
+        self.assertEqual([box.label(*x) for x in box.BAND1_ORDER],
+                         ['serial-solo-0', 'local-solo-0', 'overlap-solo-0', 'overlap-live-0', 'local-live-0', 'serial-live-0',
+                          'serial-live-1', 'local-live-1', 'overlap-live-1', 'overlap-solo-1', 'local-solo-1', 'serial-solo-1'])
+        self.assertEqual(box.BAND1_ORDER[6:], tuple((s, c, 1) for s, c, _ in reversed(box.BAND1_ORDER[:6])))  # mirrored rounds
         self.assertEqual(result['schema'], 'alpha-c1-grade/1')
         for name, v in result['validity'].items():
             e, f = v['engagement'], v['in_flight']
@@ -252,6 +256,11 @@ class Connected(Base):
         self.assertEqual((pair['transient']['max_reserved_delta_mib'], pair['transient']['min_free_delta_mib']), (1.0, -1.0))
         self.assertEqual(pair['transient']['chunks'], 8)
         self.assertEqual(result['memory_vs_serial']['local-live-1']['transient']['max_reserved_delta_mib'], 0.0)
+        # Local solo arms (lead, 2 Nov) have their matched serial arm and their speed group against serial.
+        self.assertEqual([result['memory_vs_serial'][x]['serial'] for x in ('local-solo-0', 'local-solo-1')],
+                         ['serial-solo-0', 'serial-solo-1'])
+        self.assertEqual(result['memory_vs_serial']['local-solo-1']['read'], 'MET')
+        self.assertIn('local-solo-1', result['summary']['over_serial'])
         self.assertEqual(sorted(result['memory_vs_serial']),
                          sorted(box.label(*x) for x in box.ARM_ORDER if x[0] != 'serial'))
         slow = result['table']['overlap-live-0']['slow_rank']
