@@ -300,6 +300,13 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
         raise StartupError('invalid boolean setting: FLASH_S5_LAYER_GROUPS')
     if groups == '1' and fused != '1':
         raise StartupError('FLASH_S5_LAYER_GROUPS needs FLASH_S5_QSA_FUSED=1')
+    # alpha-next-c1: the C1 rebind switches are refused unless C1 is on (fail closed, never silently ignored).
+    for name in ('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', 'FLASH_S5_STAGE_OVERLAP_OBSERVE'):
+        value = env.get(name, '0')
+        if value not in ('0', '1'):
+            raise StartupError('invalid boolean setting: ' + name)
+        if value == '1' and env.get('FLASH_S5_STAGE_OVERLAP', '0') != '1':
+            raise StartupError(name + ' needs FLASH_S5_STAGE_OVERLAP=1')
     if mode_settings(env) is not None:
         # The decode-only probe has no engine-side lane composition.
         return None

@@ -155,8 +155,15 @@ class NativeOverlapSession:
     async def _action_native_stage_local(self, command):
         if self.measure_start_ns is not None:
             raise NativeOverlapSessionError('native-stage-local-with-open-measurement')
+        if 'defer_bind' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', '0') != '1':
+            # alpha-next-c1: a requested deferred bind is never dropped silently where it is not installed.
+            raise NativeOverlapSessionError('native-stage-overlap-defer-bind-not-installed')
         if 'overlap' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP', '0') == '1':
             # C1 only; with the switch off the command is C0's, field and all, as before.
+            if 'defer_bind' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', '0') == '1':
+                # alpha-next-c1: the deferred bind rides on C1's command only where it is installed.
+                return await self.control.native_stage_overlap(command.get('local'), command['overlap'],
+                                                               command['defer_bind'])
             return await self.control.native_stage_overlap(command.get('local'), command['overlap'])
         return await self.control.native_stage_local(command.get('local'))
 
