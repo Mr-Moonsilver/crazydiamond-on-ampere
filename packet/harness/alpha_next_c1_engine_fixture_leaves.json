@@ -55,9 +55,18 @@
     {
       "name": "peak-allocator",
       "test": "test_alpha_next_c1_composed_fields.Composed.test_overlap_arms_emit_one_peak_receipt_per_chunk_per_rank",
-      "replaces": "torch.cuda's allocator counters on each rank (the bridge's _memory_cuda), and FLASH_S5_AUTO_ARM's receipt flag set on each bridge after construction",
-      "equivalence": "the peak test's PeakCuda (test_alpha_next_peak_receipt) has the reset/peak/allocated surface peak_reset and peak_receipt read; the flag is the attribute the bridge sets from the environment at construction; open and release ordering per rank is the real bridge's",
+      "replaces": "torch.cuda's allocator counters on each rank (the bridge's _memory_cuda), and FLASH_S5_AUTO_ARM's receipt flag set on each bridge after construction; the receipt writer's emit (native_measurement.emit_receipt_kv) captured into a list instead of the process ReceiptWriter",
+      "equivalence": "the peak test's PeakCuda (test_alpha_next_peak_receipt) has the reset/peak/allocated surface peak_reset and peak_receipt read; the flag is the attribute the bridge sets from the environment at construction; open and release ordering per rank is the real bridge's; the captured argument is the exact line the bridge passes to the writer, which writes it unchanged (alpha-next PLAN 2, tested in test_alpha_next_receipts)",
       "cannot_prove": "real allocator peaks and stage 1's margin at 131k under overlap; those are the box's per-chunk receipt read against the matched off arm. The inherited flash-s5 memory receipt counts errors here because PeakCuda refuses memory_stats; only the peak line is read",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "composed-fix-mutants",
+      "test": "test_alpha_next_c1_composed_fields.Mutants",
+      "replaces": "stage_overlap's fixes reverted in memory for the mutant tests only: so.COMPOSED_CHUNK_FIELDS with one field dropped, so._ProgressNoBegin replaced by a function returning None (C1's form), and OverlapSegmentDriver._new_frame/_scope/_show_rest by C0's",
+      "equivalence": "each patch is exactly the code before the fix (C0's frame swap, C1's set-aside recorder) or the fix minus one field; the Composed tests run the unpatched module",
+      "cannot_prove": "nothing about the shipped engine; the mutants only show the witness fails without each fix",
       "more_convenient": true,
       "box_evidence": false
     }
