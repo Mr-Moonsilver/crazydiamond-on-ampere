@@ -140,8 +140,13 @@ class AdmissionTests(unittest.TestCase):
             if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='_QSA_STAGE_MIN_ROWS' for t in n.targets))
         self.assertEqual(sh.QSA_STAGE_MIN_ROWS,value)
         startup=ast.parse((ROOT/'patches/s5_engine/s5_startup.py').read_text())
+        # C1 (FLASH_S5_STAGE_OVERLAP) constructs through ``controller_class``, which is bound to the frozen
+        # PrefillAdmissionController unless the switch selects its subclass; either form is the one construction site.
+        defaults=[n for n in ast.walk(startup) if isinstance(n,ast.Assign) and isinstance(n.value,ast.Name)
+            and n.value.id=='PrefillAdmissionController' and [ast.unparse(t) for t in n.targets]==['controller_class']]
+        names=('PrefillAdmissionController','controller_class') if len(defaults)==1 else ('PrefillAdmissionController',)
         calls=[n for n in ast.walk(startup) if isinstance(n,ast.Call)
-            and isinstance(n.func,ast.Name) and n.func.id=='PrefillAdmissionController']
+            and isinstance(n.func,ast.Name) and n.func.id in names]
         self.assertEqual(len(calls),1)
         self.assertEqual(ast.unparse(next(k.value for k in calls[0].keywords if k.arg=='minimum_stage_rows')),'QSA_STAGE_MIN_ROWS')
 
