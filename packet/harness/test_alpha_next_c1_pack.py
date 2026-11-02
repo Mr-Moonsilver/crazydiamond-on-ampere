@@ -97,7 +97,11 @@ class Freeze(DevParent, unittest.TestCase):
         self.assertEqual(set(freeze.COMPOSED_PROJECTIONS), set(off.PROJECTIONS))
         for name, rows in off.PROJECTIONS.items():
             if name not in freeze.COMPOSED_SWAPS:
-                self.assertEqual([tuple(r) for r in rows], freeze.COMPOSED_PROJECTIONS[name])
+                self.assertEqual(freeze.DEFER_ROWS.get(name, []) + [tuple(r) for r in rows], freeze.COMPOSED_PROJECTIONS[name])
+        self.assertEqual(set(freeze.DEFER_ROWS), {'s5_startup.py', 'native_overlap_session.py', 'native_overlap_control.py'})
+        self.assertNotIn('stage_overlap.py', freeze.COMPOSED_PROJECTIONS)
+        with self.assertRaisesRegex(AssertionError, 'does not project'):
+            freeze.with_defer({'decode_probe.py': []})
         self.assertIn("'handler_anatomy', 'stage_overlap')\n", freeze.COMPOSED_PROJECTIONS['decode_probe.py'][0][0])
         with self.assertRaisesRegex(AssertionError, 'exactly once'):
             freeze.composed_projections({'decode_probe.py': [('x', 'y')]})
@@ -219,10 +223,11 @@ class Delivery(DevParent, unittest.TestCase):
             selfrun_sha256=sha(queue), engine_selfrun_sha256=sha(engine), requires={'r': dict(holds=True)}))
         note = out / 'note.md'
         note.write_text('note\n')
+        rebind = dump(out / 'rebind-default-off.json', dict(schema='alpha-next-c1-rebind-default-off/1', verdict='PASS'))
         vm = dump(out / 'vm-compare.json', dict(schema='alpha-next-c1-vm-compare/1', verdict='PASS', rc=0, scope={}, selection={}))
         args = types.SimpleNamespace(build=build, freeze=freeze, engine=engine, compare=compare, negative=negative, tamper=tamper,
                                      queue=queue, clock_scan=clock, compile_proof=compile_proof, precheck=precheck, conf=conf,
-                                     staging_check=staging, note=note, out=out / 'delivery.json', vm=vm)
+                                     staging_check=staging, rebind_default_off=rebind, note=note, out=out / 'delivery.json', vm=vm)
         return args, pins, manifest, overlay_manifest
 
     def run_delivery(self, mutate=None):
@@ -247,7 +252,8 @@ class Delivery(DevParent, unittest.TestCase):
     def test_the_declared_leaves_name_c1s_and_the_composition_fixs(self):
         delivery = self.fresh('alpha_next_c1_delivery')
         for name in ('alpha_next_c1_engine_fixture_leaves.json', 'stage_overlap_fixture_leaves.json',
-                     'alpha_next_c1_queue_fixture_leaves.json', 'alpha_next_queue_fixture_leaves.json'):
+                     'alpha_next_c1_queue_fixture_leaves.json', 'alpha_next_queue_fixture_leaves.json',
+                     'c1_rebind_fixture_leaves.json', 'alpha_next_seams_fixture_leaves.json'):
             self.assertIn(name, delivery.LEAVES)
 
     def test_end_to_end_on_the_dev_build_record_shape(self):
@@ -266,6 +272,12 @@ class Delivery(DevParent, unittest.TestCase):
             del record['source']['both_off_reaches_alpha_next_freeze']
             dump(args.freeze, record)
         with self.assertRaises(KeyError):
+            self.run_delivery(mutate)
+
+    def test_a_rebind_proof_that_does_not_hold_refuses(self):
+        def mutate(args):
+            dump(args.rebind_default_off, dict(schema='c1-rebind-default-off/1', passed=False))
+        with self.assertRaisesRegex(AssertionError, 'rebind default-off'):
             self.run_delivery(mutate)
 
     def test_an_engine_record_without_early_open_refuses(self):

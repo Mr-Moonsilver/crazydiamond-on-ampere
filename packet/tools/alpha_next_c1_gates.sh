@@ -7,8 +7,9 @@
 # methods are swapped by harness/alpha_next_robust_swap.py) finds every parsed failure of the attempt in that list. Both logs are kept
 # (NAME and NAME-2), both rc's are in the steps file, later steps read the passing attempt.
 #   parent pin (tools/alpha_next_c1_parent.json; the placeholder refuses: rc 3, 'parent not pinned')
-#   -> composition (tools/alpha_next_c1_composition.py) -> review pins --check -> strict -> focused (alpha-next's list plus C1's,
-#   the composition fix's and the alpha-next-c1 queue suite, through alpha_next_robust_swap) -> composition tests -> prepare review
+#   -> composition (tools/alpha_next_c1_composition.py) -> rebind default-off (tools/alpha_next_c1_rebind_default_off.py) -> review pins --check -> strict -> focused (alpha-next's list plus C1's,
+#   the composition fix's, the C1 rebind's (test_c1_rebind_witness, test_c1_rebind_on), the defer_bind control's, alpha-next's
+#   b-chain test_alpha_next_probe_launch and the alpha-next-c1 queue suite, through alpha_next_robust_swap) -> composition tests -> prepare review
 #   + commit -> build (with alpha-next-c1-freeze.json) -> bundle self-run -> queue pins write + check -> engine self-run (alpha-next's
 #   six containers + C1's overlap container) -> comparison (against alpha-next's pinned frozen record) -> negative (two-phase: while
 #   tools/alpha_next_c1_negative_pins.json is the AWAITING-OBSERVATION stub, one --observe and stop, rc 5) -> tamper -> clock scan
@@ -39,6 +40,11 @@ RC=$?; [[ $RC == 0 ]] || echo 'parent not pinned' >>"$STEPS"
 step parent-pin "$RC"
 python3 -B tools/alpha_next_c1_composition.py --out "$EVID/composition-$TAG.json" >"$EVID/composition-$TAG.log" 2>&1
 step composition $?
+# The C1 rebind's default-off proof (FLASH_S5_STAGE_OVERLAP_DEFER_BIND / _OBSERVE unset: the engine is C1's), the coordinator's tool
+# tools/alpha_next_c1_rebind_default_off.py: --out FILE (written once), exit 0 only when it holds. Its record goes to the delivery.
+python3 -B tools/alpha_next_c1_rebind_default_off.py --out "$EVID/rebind-default-off-$TAG.json" \
+    >"$EVID/rebind-default-off-$TAG.log" 2>&1
+step rebind-default-off $?
 python3 -B tools/alpha_next_c1_review_pins.py --check >"$EVID/review-pins-$TAG.log" 2>&1
 step review-pins $?
 
@@ -51,6 +57,7 @@ if [[ $RC != 0 ]] && flaky strict "$STRICT_LOG"; then
 else step strict "$RC"; fi
 focused() { { echo "# head $HEAD focused"; python3 -B alpha_next_robust_swap.py \
     test_alpha_next_c1_queue test_e3_stage_overlap test_alpha_next_c1_composed_fields test_e3_stage_overlap_control \
+    test_c1_rebind_witness test_c1_rebind_on test_alpha_next_c1_defer_control test_alpha_next_probe_launch \
     test_alpha_c1_queue test_alpha_c1_box test_alpha_c1_report \
     test_alpha_next_queue test_alpha_next_receipts test_alpha_next_receipts_mutants test_alpha_next_stage1_slow_rank \
     test_alpha_next_path_qualification test_alpha_next_stopfix_matrix test_alpha_next_c0_ring test_alpha_next_peak_receipt \
@@ -173,7 +180,8 @@ python3 -B tools/alpha_next_c1_delivery.py --vm "$VM_RECORD" --build "$OUT/build
     --engine "$ENGINE/result.json" --compare "$OUT/engine-comparison.json" \
     --negative "$OUT/engine-negative/result.json" --tamper "$OUT/overlay-tamper.json" --queue "$OUT/selfrun/result.json" \
     --clock-scan "$OUT/clock-scan.json" --compile-proof "$OUT/compile-proof.json" --precheck "$OUT/precheck-$TAG.log" \
-    --conf "$OUT/native-precheck.conf" --staging-check "$OUT/staging-check.json" --note "$NOTE" --out "$DELIVERY" \
+    --conf "$OUT/native-precheck.conf" --staging-check "$OUT/staging-check.json" \
+    --rebind-default-off "$EVID/rebind-default-off-$TAG.json" --note "$NOTE" --out "$DELIVERY" \
     >"$OUT/delivery-stdout.log" 2>&1
 step delivery $?
 echo DONE >>"$STEPS"

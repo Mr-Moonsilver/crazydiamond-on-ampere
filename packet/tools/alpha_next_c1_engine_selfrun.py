@@ -9,8 +9,11 @@ Seven containers over one frozen bundle, the composed engine in each, all result
     alpha-c1-<mode>, C1's exact command line form: FLASH_S5_STAGE_OVERLAP=1 installed by the probe beside FLASH_S5_STAGE_LOCAL=1,
     overlap-burst-slow1 included) and the suites C1, the composition fix and this queue add (OVERLAP_SUITES: test_e3_stage_overlap,
     test_alpha_next_c1_composed_fields (382ed704: alpha-next's per-chunk fields kept per frame, lean successors; leaves in
-    alpha_next_c1_engine_fixture_leaves.json), test_e3_stage_overlap_control, test_alpha_next_c1_queue), in one unittest process
-    with per-test outcomes (held-f's runner with alpha-next's writer reset).
+    alpha_next_c1_engine_fixture_leaves.json), test_e3_stage_overlap_control, the C1 rebind's test_c1_rebind_witness and
+    test_c1_rebind_on (c1_rebind_fixture_leaves.json), the per-arm defer_bind control test_alpha_next_c1_defer_control, and
+    test_alpha_next_c1_queue), in one unittest process with per-test outcomes (held-f's runner with alpha-next's writer reset).
+    Over alpha-next's overlay (the negative) every one of these but the queue suite imports stage_overlap (directly or through
+    test_e3_stage_overlap), so each fails to import there: pinned HARNESS rows at the one observation, the control biting.
 OUT/result.json is the merged record (schema alpha-next-c1-selfrun/1) the frozen runner reads; its connected cases are exactly
 expected_cases() (alpha-next's and C1's). Verdict PASS only when all seven are PASS, C1's pairs hold and the slow-stage-1 case opened
 early. A failure keeps all records, classified HARNESS-OR-ENGINE-UNCLASSIFIED.
@@ -52,7 +55,7 @@ ROOT = an.ROOT
 SCHEMA = 'alpha-next-c1-selfrun/1'
 held_f, dense, step_a, step_b, c0 = an.held_f, an.dense, an.step_a, an.step_b, an.c0
 OVERLAP_SUITES = ('test_e3_stage_overlap', 'test_alpha_next_c1_composed_fields', 'test_e3_stage_overlap_control',
-                  'test_alpha_next_c1_queue')
+                  'test_c1_rebind_witness', 'test_c1_rebind_on', 'test_alpha_next_c1_defer_control', 'test_alpha_next_c1_queue')
 NEGATIVE_SUITES = OVERLAP_SUITES
 CASES = c1.CASES
 C1_PAIRS = c1.C1_PAIRS

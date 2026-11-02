@@ -7,7 +7,8 @@ tools/alpha_next_delivery.py's assertions over the alpha-next-c1 records: the pa
 (tools/alpha_next_c1_parent.json through alpha_next_c1_parent_pin.load(); rc 3 while it is the placeholder); the freeze is
 alpha_next_c1_freeze's record ('alpha-next-c1-freeze/1', its source receipt nested as written by build_alpha_next_c1: c1_off_is_alpha_next
 and both_off_reaches_alpha_next_freeze, each read with its exact key); the engine record adds the overlap container, C1's pairs and the
-early open; the VM record is optional (--vm, tools/alpha_next_c1_vm_compare.py's; absent means NOT_RUN). The hub-side queue pins
+early open; the C1 rebind's default-off record (tools/alpha_next_c1_rebind_default_off.py, the gate step after composition;
+'verdict' PASS or 'passed' true) is bound by sha; the VM record is optional (--vm, tools/alpha_next_c1_vm_compare.py's; absent means NOT_RUN). The hub-side queue pins
 (tools/alpha_next_c1_queue_pins.json) must hold exactly this build's bundle, overlay and package identity.
 
 deliver(args) builds the row and is what tools/test_alpha_next_c1_delivery.py runs end to end on a dev build record shape (C1's
@@ -28,14 +29,15 @@ import alpha_next_c1_parent_pin as parent_pin  # noqa: E402
 REVIEW = 'patches/s5_engine/native_candidate_review.json'
 PINS = ROOT / 'tools/alpha_next_c1_negative_pins.json'
 CANDIDATE = 'q18a-alpha-next-c1'
-# Every fixture-leaves file the composed harness's connected and queue tests read: alpha-next's, C1's engine and queue leaves, the
-# composition fix's (382ed704) and the queue helper's.
+# Every fixture-leaves file the composed harness's connected and queue tests read: alpha-next's (seams leaves of 48aca6b2 included),
+# C1's engine and queue leaves, the composition fix's (382ed704), the queue helper's and the C1 rebind's (70b0896d).
 LEAVES = ('step_b_fixture_leaves.json', 'alpha_c0_fixture_leaves.json', 'stage1_anatomy_fixture_leaves.json',
           'native41_held_g_fixture_leaves.json', 'alpha_next_stopfix_fixture_leaves.json', 'alpha_next_robust_fixture_leaves.json',
           'alpha_next_receipts_fixture_leaves.json', 'alpha_next_queue_fixture_leaves.json', 'stage_overlap_fixture_leaves.json',
-          'alpha_c1_fixture_leaves.json', 'alpha_next_c1_engine_fixture_leaves.json', 'alpha_next_c1_queue_fixture_leaves.json')
+          'alpha_c1_fixture_leaves.json', 'alpha_next_c1_engine_fixture_leaves.json', 'alpha_next_c1_queue_fixture_leaves.json',
+          'alpha_next_seams_fixture_leaves.json', 'c1_rebind_fixture_leaves.json')
 ARGS = ('build', 'freeze', 'engine', 'compare', 'negative', 'tamper', 'queue', 'clock_scan', 'compile_proof', 'precheck', 'conf',
-        'staging_check', 'note', 'out')
+        'staging_check', 'rebind_default_off', 'note', 'out')
 
 
 def sha(path):
@@ -120,6 +122,8 @@ def deliver(a):
     vm = json.loads(Path(a.vm).read_text()) if a.vm else None
     assert vm is None or (vm.get('schema') == 'alpha-next-c1-vm-compare/1' and vm.get('verdict') == 'PASS'
                           and vm.get('bundle_manifest', b['manifest']) == b['manifest'])
+    rebind = json.loads(Path(a.rebind_default_off).read_text())
+    assert rebind.get('verdict') == 'PASS' or rebind.get('passed') is True, 'C1 rebind default-off proof does not hold'
     leaves = {n: json.loads((ROOT / 'harness' / n).read_text()) for n in LEAVES}
     return dict(schema='alpha-next-c1-delivery/1', verdict='PASS', classification=None, box_action=False, gpu_execution=False,
                 name=b['name'], bundle=b['bundle'], manifest=b['manifest'], overlay_manifest=b['overlay_manifest'],
@@ -139,6 +143,9 @@ def deliver(a):
                                               'proved_commit', 'projected_files', 'projected_byte_identical')),
                                           negative_controls=sorted(fz['negative_controls']), tools_replaced=fz.get('tools_replaced'),
                                           reference=fz['reference']),
+                rebind_default_off=dict(path=str(a.rebind_default_off), sha256=sha(a.rebind_default_off),
+                                        schema=rebind.get('schema'), holds=True,
+                                        tool='tools/alpha_next_c1_rebind_default_off.py'),
                 engine_selfrun=dict(path=str(a.engine), sha256=sha(a.engine), verdict=e['verdict'], tests=e['tests'], skips=e['skips'],
                                     cases=sorted(e['cases']), connected_checks=e['connected_checks'],
                                     clock_split=e['clock_split']['verdict'],

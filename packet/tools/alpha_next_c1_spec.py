@@ -62,7 +62,8 @@ HEADER = [
 # Hub-side files the gate chain writes after the build: never bundled, so writing them cannot move the bundle it pins
 # (tools/alpha_next_c1_queue_pins_write.py proves the same over each build OUT).
 HUB_SIDE = ('tools/alpha_next_c1_queue_pins.json',)
-FOCUSED_DELTA = ['test_e3_stage_overlap', 'test_alpha_next_c1_composed_fields', 'test_e3_stage_overlap_control']
+FOCUSED_DELTA = ['test_e3_stage_overlap', 'test_alpha_next_c1_composed_fields', 'test_e3_stage_overlap_control',
+                 'test_c1_rebind_witness', 'test_c1_rebind_on', 'test_alpha_next_c1_defer_control']
 
 
 def queue_settings():
