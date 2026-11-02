@@ -1,0 +1,8 @@
+{
+  "schema": "alpha-next-queue-pins/1",
+  "status": "PLACEHOLDER: filled by the packaging step",
+  "overlay_manifest_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
+  "package_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
+  "harness_bundle_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
+  "note": "overlay_manifest_sha256 is sha256 of the overlay's SHA256SUMS and package_sha256 is S5-OVERLAP-GENERATION.json package_sha256; tools/alpha_next_queue.py writes both into q18a_alpha_next_declare.sh, where a placeholder refuses the declaration. harness_bundle_sha256 is held here only: the harness SHA256SUMS covers the declare text, so the declare cannot hold it; the packaging step and the waiter compare it."
+}
