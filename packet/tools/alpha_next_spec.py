@@ -88,22 +88,22 @@ def queue_landed():
 
 
 def compiled(paths, tools):
-    """Step B's compiled list plus every added or modified python file under harness/ and tools/ (one level), each present where the
-    dense container mounts it: harness/ is the bundle, tools/ the bundle's native35_tools (the parent's tools, the spec's tools and
-    the replaced ones)."""
+    """Step B's compiled list plus every added or modified python file under harness/, tools/ (one level) and patches/s5_engine/,
+    each present where the dense container mounts it: harness/ is the bundle, patches/s5_engine/ its e3_builder, tools/ the bundle's
+    native35_tools (the parent's tools, the spec's tools and the replaced ones)."""
     out = list(STEP_B['engine_selfrun']['compiled'])
     bundled = {p.name for p in (b.PARENT / 'native35_tools').glob('*.py')} | set(tools) | set(TOOLS_REPLACED)
     for row in paths:
         status, path = row.split('\t', 1)
         if status not in 'AM' or not path.endswith('.py') or path in out:
             continue
-        if path.startswith('harness/') and path.count('/') == 1:
+        if (path.startswith('harness/') and path.count('/') == 1) or (path.startswith('patches/s5_engine/') and path.count('/') == 2):
             out.append(path)
         elif path.startswith('tools/') and path.count('/') == 1:
             assert path[len('tools/'):] in bundled, ('compiled tool not bundled', path)
             out.append(path)
     for path in out:
-        assert path.startswith(('harness/', 'tools/')), path
+        assert path.startswith(('harness/', 'tools/', 'patches/s5_engine/')), path
         if path.startswith('tools/'):
             assert path[len('tools/'):] in bundled, ('compiled tool not bundled', path)
     return out
