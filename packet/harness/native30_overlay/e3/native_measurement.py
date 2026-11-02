@@ -58,6 +58,7 @@ entry; no duration is converted or invented.
 """
 
 import json
+import os
 import sys
 import time
 from contextlib import contextmanager
@@ -175,8 +176,9 @@ PROGRESS_MODES = ('trace', 'burst')
 PROGRESS_SCHEMA = 's5-native-progress/1'
 PROGRESS_LINE = 'flash-s5 progress '
 PROGRESS_MAX_ROWS = 4096
-# Below docker's 16 KiB json-file entry split, with room for the log prefix.
-PROGRESS_LINE_BYTES = 12000
+# One receipt record (one part) per atomic pipe write: at most this many bytes
+# including the pid/seq/sha identity and the trailing newline (alpha-next PLAN 2).
+PROGRESS_LINE_BYTES = 3968
 PROGRESS_META_KEY = '_flash_s5'
 # Fixed-width wire meta: transport sequence (u64) and the direct-reply bit.  The
 # pickled size never depends on the value, so a size precheck is exact.
@@ -200,6 +202,229 @@ PROGRESS_ROWS = {
 
 # Positions in an 'n' row (the engine fills it across submit, drain and apply).
 PROGRESS_N = {name: index for index, name in enumerate(PROGRESS_ROWS['n'])}
+
+
+# --- receipt writer (alpha-next PLAN 2: producer-side log fix) ------------------
+# Every worker process and the engine share one container stdout pipe. A receipt
+# line that went through ``logging`` -> vLLM's ``decorate_logs`` stdout wrapper
+# -> the buffered ``sys.stdout`` left the process in several ``write(2)`` calls
+# once it was longer than the buffer or ``PIPE_BUF``, and another process's line
+# could land between them (alpha-perf ``engine-stream.log`` line 3832).
+#
+# ``ReceiptWriter`` writes each receipt record (one progress/anatomy/handler
+# part, one ``native-alloc``, ``memory`` or ``stage-local`` line) with exactly
+# one ``os.write`` on a private ``dup(1)``, at most ``RECEIPT_RECORD_BYTES``
+# including the newline. POSIX makes a FIFO write of at most ``PIPE_BUF`` bytes
+# atomic, so no other process's bytes can land inside a record. A short or
+# failed write is counted, never raised and never retried (a retry would be a
+# second, non-atomic write). Each record carries its identity:
+#
+# * ``pid``;
+# * ``seq``: per process, strictly +1 across every record of every kind,
+#   starting at 0 with the process's ``flash-s5 receipts`` path record;
+# * ``sha``: sha256[:16] of the whole record before identity (all its parts,
+#   joined by newlines), on every part.
+#
+# JSON records get ``"pid":..,"seq":..,"sha":"..",`` inserted after the opening
+# brace; ``k=v`` records get `` pid=.. seq=.. sha=..`` appended. The prefixes
+# are unchanged, so existing parsers still read every part.
+#
+# The writer is installed per process by the startup seams (``s5_startup``).
+# A process where it was never installed (CPU tests that drive the emitters
+# directly) keeps the old logger lines byte for byte; they carry no identity,
+# and ``harness/receipt_lines.py`` reports them as ``unsafe_path`` legacy.
+
+RECEIPT_RECORD_BYTES = 3968
+# Room ``ProgressTrace.lines`` leaves for the identity and the newline.
+RECEIPT_IDENTITY_BYTES = 96
+RECEIPT_PATH_LINE = 'flash-s5 receipts '
+RECEIPT_JSON_PREFIXES = (PROGRESS_LINE, 'flash-s5 anatomy ', 'flash-s5 handler ')
+RECEIPT_KV_PREFIXES = (RECEIPT_PATH_LINE, 'flash-s5 native-alloc ', 'flash-s5 memory ',
+                       'flash-s5 stage-local ')
+RECEIPT_PIPE_BUF_MIN = 4096
+
+
+def receipt_sha(texts):
+    """sha256[:16] of one whole record: its pre-identity parts joined by newlines."""
+    import hashlib
+    return hashlib.sha256('\n'.join(texts).encode()).hexdigest()[:16]
+
+
+def receipt_path(fd=1, *, limit=RECEIPT_RECORD_BYTES):
+    """``atomic-fifo pipe_buf=<n>`` or ``unsafe:<reason>``; reads only fstat and PIPE_BUF."""
+    import select
+    import stat
+    try:
+        mode = os.fstat(fd).st_mode
+    except OSError as exc:
+        return 'unsafe:fstat-%s' % (exc.errno,)
+    pipe_buf = getattr(select, 'PIPE_BUF', None)
+    if not stat.S_ISFIFO(mode):
+        return 'unsafe:not-fifo'
+    if type(pipe_buf) is not int or pipe_buf < RECEIPT_PIPE_BUF_MIN:
+        return 'unsafe:pipe-buf-%s' % (pipe_buf,)
+    if limit > pipe_buf:
+        return 'unsafe:record-%d-over-pipe-buf-%d' % (limit, pipe_buf)
+    return 'atomic-fifo pipe_buf=%d' % pipe_buf
+
+
+class ReceiptWriter:
+    """One atomic ``os.write`` per receipt record on a private ``dup(1)``; never raises.
+
+    ``fd`` defaults to a private duplicate of fd 1 made at the first write, so
+    nothing is opened or written while receipts are off. ``write`` is
+    ``os.write`` (a test seam). Records stay in ``seq`` order on the pipe: the
+    lock covers numbering and writing. After a fork the child starts its own
+    numbering (and its own path record) at 0.
+    """
+
+    def __init__(self, fd=None, *, write=os.write, limit=RECEIPT_RECORD_BYTES, getpid=os.getpid):
+        import threading
+        if type(limit) is not int or not 128 <= limit <= RECEIPT_RECORD_BYTES:
+            raise ValueError('receipt record limit must be within the atomic budget')
+        self._fd_given = fd
+        self._write = write
+        self._getpid = getpid
+        self.limit = limit
+        self._lock = threading.Lock()
+        self.pid = None
+        self.fd = None
+        self.path = None
+        self.seq = 0
+        self.records = 0
+        self.short_writes = 0
+        self.write_errors = 0
+        self.oversize = 0
+        self.faults = 0
+
+    def _start(self):
+        """First write in this process: the private fd, the path check, record seq 0."""
+        pid = self._getpid()
+        if self.pid == pid:
+            return
+        self.pid = pid
+        self.seq = 0
+        self.fd = self._fd_given
+        if self.fd is None:
+            try:
+                self.fd = os.dup(1)
+            except OSError:
+                self.fd = None
+                self.write_errors += 1
+        self.path = (receipt_path(self.fd, limit=self.limit) if self.fd is not None
+                     else 'unsafe:no-fd')
+        self._emit_kv(RECEIPT_PATH_LINE + 'receipt_path=' + self.path)
+
+    def _next(self):
+        seq = self.seq
+        self.seq += 1
+        return seq
+
+    def _put(self, data):
+        if len(data) > self.limit:
+            self.oversize += 1
+            return False
+        if self.fd is None:
+            self.write_errors += 1
+            return False
+        try:
+            written = self._write(self.fd, data)
+        except OSError:
+            self.write_errors += 1
+            return False
+        if written != len(data):
+            self.short_writes += 1
+            return False
+        self.records += 1
+        return True
+
+    def _emit_kv(self, text):
+        seq = self._next()
+        data = ('%s pid=%d seq=%d sha=%s\n' % (text, self.pid, seq, receipt_sha([text]))).encode()
+        return self._put(data)
+
+    def write_kv(self, text):
+        """One ``k=v`` record (one line, no newline inside); False when not written whole."""
+        try:
+            with self._lock:
+                self._start()
+                if type(text) is not str or '\n' in text or not text.startswith(RECEIPT_KV_PREFIXES):
+                    self._next()
+                    self.faults += 1
+                    return False
+                return self._emit_kv(text)
+        except Exception:
+            self.faults += 1
+            return False
+
+    def write_lines(self, texts):
+        """One JSON record of one or more parts (``ProgressTrace.lines`` output); one write per part."""
+        try:
+            texts = list(texts)
+            if not texts:
+                return True
+            with self._lock:
+                self._start()
+                prefix = next((p for p in RECEIPT_JSON_PREFIXES if texts[0].startswith(p)), None)
+                if (prefix is None or any(type(t) is not str or not t.startswith(prefix + '{')
+                                          or '\n' in t for t in texts)):
+                    for _ in texts:
+                        self._next()
+                    self.faults += 1
+                    return False
+                sha = receipt_sha(texts)
+                ok = True
+                cut = len(prefix) + 1
+                for text in texts:
+                    seq = self._next()
+                    data = ('%s"pid":%d,"seq":%d,"sha":"%s",%s\n'
+                            % (text[:cut], self.pid, seq, sha, text[cut:])).encode()
+                    ok = self._put(data) and ok
+                return ok
+        except Exception:
+            self.faults += 1
+            return False
+
+    def stats(self):
+        return dict(pid=self.pid, path=self.path, seq=self.seq, records=self.records,
+                    short_writes=self.short_writes, write_errors=self.write_errors,
+                    oversize=self.oversize, faults=self.faults)
+
+
+_RECEIPT_WRITER = None
+
+
+def install_receipt_writer(writer=None):
+    """This process's receipt writer (idempotent). Opens and writes nothing until a receipt."""
+    global _RECEIPT_WRITER
+    if writer is not None:
+        _RECEIPT_WRITER = writer
+    elif _RECEIPT_WRITER is None:
+        _RECEIPT_WRITER = ReceiptWriter()
+    return _RECEIPT_WRITER
+
+
+def installed_receipt_writer():
+    return _RECEIPT_WRITER
+
+
+def emit_receipt_lines(texts, logger):
+    """Every JSON receipt emit site: the installed writer, else the old logger lines."""
+    writer = _RECEIPT_WRITER
+    if writer is not None:
+        return writer.write_lines(texts)
+    for text in texts:
+        logger.info(text)
+    return True
+
+
+def emit_receipt_kv(text, logger):
+    """Every ``k=v`` receipt emit site: the installed writer, else the old logger line."""
+    writer = _RECEIPT_WRITER
+    if writer is not None:
+        return writer.write_kv(text)
+    logger.info(text)
+    return True
 
 
 def progress_mode(env):
@@ -273,10 +498,11 @@ class ProgressTrace:
     def lines(self, **identity):
         """This flush as compact log lines; [] when nothing was recorded or dropped.
 
-        Each line stays below ``PROGRESS_LINE_BYTES`` so the box's log path
-        (``docker logs --timestamps``, which splits entries at 16 KiB) keeps it
-        whole. Parts share ``line``/``base_ns`` and carry ``part``/``parts``;
-        ``fields`` and ``dropped`` ride on part 0 only.
+        Each line leaves ``RECEIPT_IDENTITY_BYTES`` free below
+        ``PROGRESS_LINE_BYTES``, so with the writer's pid/seq/sha and newline a
+        part is one ``ReceiptWriter`` record below ``PIPE_BUF``. Parts share
+        ``line``/``base_ns`` and carry ``part``/``parts``; ``fields`` and
+        ``dropped`` ride on part 0 only.
         """
         rows, dropped = self.take()
         if not rows and not dropped:
@@ -292,7 +518,8 @@ class ProgressTrace:
             encoded.append((row[0], json.dumps(item, separators=(',', ':'), sort_keys=True)))
         head = dict(schema=self.SCHEMA, side=self.side, rank=self.rank, line=self.lines_out,
                     base_ns=base, **identity)
-        budget = PROGRESS_LINE_BYTES - len(self.LINE) - len(json.dumps(head)) - 256
+        budget = (PROGRESS_LINE_BYTES - RECEIPT_IDENTITY_BYTES - len(self.LINE)
+                  - len(json.dumps(head)) - 256)
         first = len(json.dumps(self.ROWS, separators=(',', ':'))) + 32
         parts, current, size = [], {}, first
         for tag, text in encoded:
@@ -400,9 +627,14 @@ class DeviceSpans:
     """
 
     def __init__(self, event, *, rank, emit, clock=time.monotonic_ns, pool=ANATOMY_POOL,
-                 detail_every=ANATOMY_DETAIL_EVERY):
+                 detail_every=ANATOMY_DETAIL_EVERY, emit_lines=None):
         if not callable(event) or not callable(emit) or not callable(clock):
             raise ValueError('device spans need event, emit and clock callables')
+        if emit_lines is not None and not callable(emit_lines):
+            raise ValueError('device spans emit_lines must be callable')
+        # Alpha-next PLAN 2: given, one chunk's parts go out together as one
+        # receipt record (``emit_receipt_lines``); else one ``emit`` per part.
+        self.emit_lines = emit_lines
         if type(pool) is not int or pool < 1 or type(detail_every) is not int or detail_every < 1:
             raise ValueError('device span pool and detail cadence must be positive')
         self.event, self.emit, self.clock = event, emit, clock
@@ -513,12 +745,17 @@ class DeviceSpans:
                                    base - round(last.elapsed_time(anchor) * 1e6))
             self._rows(times, self.clock() - began, cancelled)
             transaction = self.transaction
-            for text in self.trace.lines(txn=transaction.txn_seq,
-                                         request_generation=transaction.request_generation,
-                                         chunk_start=transaction.chunk_start,
-                                         chunk_end=transaction.chunk_end, stage=self.stage):
-                self.emit(text)
-                self.lines_emitted += 1
+            texts = self.trace.lines(txn=transaction.txn_seq,
+                                     request_generation=transaction.request_generation,
+                                     chunk_start=transaction.chunk_start,
+                                     chunk_end=transaction.chunk_end, stage=self.stage)
+            if self.emit_lines is not None:
+                self.emit_lines(texts)
+                self.lines_emitted += len(texts)
+            else:
+                for text in texts:
+                    self.emit(text)
+                    self.lines_emitted += 1
         except Exception:
             self.errors += 1
             self.trace.take()

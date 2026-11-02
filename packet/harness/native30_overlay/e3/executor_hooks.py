@@ -29,6 +29,7 @@ from reply_transport import (Backpressure, DirectReply, NotReady, ReplyTransport
                              WorkerRPCError)
 from stage_wire import STAGE_SKIP, StageScoped, stage_rpc
 from native_measurement import (PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta,
+                                emit_receipt_lines,
                                 encode_progress_meta, progress_mode)
 
 
@@ -1407,9 +1408,9 @@ def worker_rpc_begin(proc, method, kwargs):
     if state is not None and name == 'flash_s5_release':
         # One receipt line per chunk: everything this rank recorded before the
         # chunk's release. Logging failures are counted by the trace, never raised.
+        # Alpha-next PLAN 2: one atomic write per part through the process receipt writer.
         try:
-            for text in state[0].lines():
-                _progress_logger().info(text)
+            emit_receipt_lines(state[0].lines(), _progress_logger())
         except Exception:
             state[0].dropped_total += 1
         if (anatomy := _anatomy(proc)) is not None:

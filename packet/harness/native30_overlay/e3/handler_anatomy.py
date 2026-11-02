@@ -40,7 +40,8 @@ from collections import deque
 ANATOMY_ENV = 'FLASH_S5_HANDLER_ANATOMY'
 SCHEMA = 's5-handler-anatomy/1'
 LINE_PREFIX = 'flash-s5 handler '
-LINE_BYTES = 12000            # == native_measurement.PROGRESS_LINE_BYTES
+LINE_BYTES = 3968             # == native_measurement.PROGRESS_LINE_BYTES (alpha-next PLAN 2)
+IDENTITY_BYTES = 96           # == native_measurement.RECEIPT_IDENTITY_BYTES: the writer's pid/seq/sha
 MAX_ROWS = 4096
 EVENT_PAIRS = 64
 CAL_PROBES = 2000
@@ -476,8 +477,9 @@ class Recorder:
                     self.counters['events_unresolved_at_flush'] += 1
             with self._lock:
                 rows, self.rows = self.rows, []
-            for text in self.lines(rows):
-                logger.info(text)
+            # Alpha-next PLAN 2: one atomic write per part through the process receipt writer.
+            from native_measurement import emit_receipt_lines
+            emit_receipt_lines(self.lines(rows), logger)
         except Exception:  # noqa: BLE001 - logging failures are counted, never raised
             self.counters['log_failures'] += 1
 
@@ -504,7 +506,7 @@ class Recorder:
                      installed=self.installed, missing=self.missing, seams=SEAMS,
                      fields=dict(m=M_FIELDS, a=A_FIELDS, seam=SEAM_FIELDS))
         first_text = json.dumps(first, separators=(',', ':'), sort_keys=True)
-        budget = LINE_BYTES - len(LINE_PREFIX) - len(json.dumps(head)) - 256
+        budget = LINE_BYTES - IDENTITY_BYTES - len(LINE_PREFIX) - len(json.dumps(head)) - 256
         parts, current, size = [], {}, len(first_text) + 32
         for tag, text in encoded:
             if current and size + len(text) + 8 > budget:

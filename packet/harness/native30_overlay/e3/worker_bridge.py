@@ -757,14 +757,17 @@ class NativeWorkerBridge:
                 return
             self.memory_rows = (self.memory_rows + [row])[-16:]
             import logging
-            logging.getLogger(__name__).info(
+            # Alpha-next PLAN 2: one atomic write through the process receipt writer.
+            from native_measurement import emit_receipt_kv
+            emit_receipt_kv(
                 'flash-s5 memory point=%s rank=%d txn_seq=%d chunk=%d-%d allocated=%d '
                 'reserved=%d inactive_split=%d alloc_retries=%d ooms=%d free=%d total=%d '
-                'sync_all_streams=%d device_allocs=%d device_frees=%d',
-                row['point'], row['rank'], row['txn_seq'], row['chunk_start'],
-                row['chunk_end'], row['allocated'], row['reserved'], row['inactive_split'],
-                row['alloc_retries'], row['ooms'], row['free'], row['total'],
-                row['sync_all_streams'], row['device_allocs'], row['device_frees'])
+                'sync_all_streams=%d device_allocs=%d device_frees=%d'
+                % (row['point'], row['rank'], row['txn_seq'], row['chunk_start'],
+                   row['chunk_end'], row['allocated'], row['reserved'], row['inactive_split'],
+                   row['alloc_retries'], row['ooms'], row['free'], row['total'],
+                   row['sync_all_streams'], row['device_allocs'], row['device_frees']),
+                logging.getLogger(__name__))
         except Exception:
             self.memory_receipt_errors += 1
 
