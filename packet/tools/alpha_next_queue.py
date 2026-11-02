@@ -12,8 +12,11 @@ restore tail. Declared deltas, each applied exactly once:
              declaration and preflight, with no FLASH_S5_PROBE_* key and FLASH_S5_UNION_RETIRE still unset;
   stop race  host_crash_detected runs alpha_next_stop_race.py when the frozen death scan says DEAD: the declared STOP_RACE class
              (lead, 2 Nov 13:30) is recorded and counted, engine_crashed stays false; anything else stays a crash;
-  pins       the overlay manifest and package pins, PLACEHOLDER until the packaging step fills tools/alpha_next_queue_pins.json
-             and re-derives (a placeholder refuses the declaration);
+  pins       the declaration pins the harness and native files as Step B's does (its STEP pins line, plus the alpha-next files).
+             No bundle, manifest or package digest is written here (Step B's way, coordinator 2 Nov): the declare script is in
+             the harness bundle, so a digest inside it would change the digests it holds. The bundle and overlay identity is pinned
+             outside the bundle (build-derived owner runner, precheck conf). tools/alpha_next_queue_pins.json is the hub-side
+             record, written by the packaging chain after the build; nothing in the harness bundle reads it;
   body       the core arms (alpha_next_arms, parts 'core' and 'extra'), each behind a typed FULL; a typed FULL and the core
              grade, the queue's verdict; then the g4 tail (part 'tail'), reads only, each behind its own typed FULL; instruments-end and the end
              FULL (counted); the read over every arm (not counted).
@@ -36,8 +39,7 @@ OLD_Q, NEW_Q = step_b.NEW_Q, 'q18a-alpha-next'
 SWITCHES = 'FLASH_S5_STAGE_LOCAL=1 FLASH_S5_HANDLER_ANATOMY=1'
 CORE = tuple('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED))
 TAIL = tuple(table.labels('tail'))
-PINS_FILE = ROOT / 'tools/alpha_next_queue_pins.json'
-PLACEHOLDER = 'PLACEHOLDER-filled-by-the-packaging-step'
+PINS_FILE = ROOT / 'tools/alpha_next_queue_pins.json'     # hub-side record only (the packaging chain writes it); never read here
 HEADER_NOTE = ('# alpha-next: this queue compares C0 stage-local native progress with the serial path on the composed Step A + Step B\n'
                '# engine (fused in every arm, one layer group size per arm), matched per arm by the typed native_stage_local control:\n'
                '# a core of %d arms (ABBA C0 on/off, live and solo, band 1 at size 2 over %d rounds, band 2 at size 2), then %d extra\n'
@@ -257,33 +259,6 @@ FINAL_READ_NEW = (
 FINAL_DICT_OLD = "engine_crash_source=sys.argv[9] or None,"
 FINAL_DICT_NEW = ("engine_crash_source=sys.argv[9] or None,stop_race=(stop_race or {}).get('stop_race') is True,"
                   "stop_race_record=stop_race,alpha_next_read=read,")
-PINS_ANCHOR = '{\n  for p in "$R/startup.json"'
-
-
-def pins():
-    data = json.loads(PINS_FILE.read_text())
-    return data['overlay_manifest_sha256'], data['package_sha256']
-
-
-def pins_block():
-    manifest, package = pins()
-    return (
-        "# alpha-next bundle and manifest pins, from tools/alpha_next_queue_pins.json. PLACEHOLDER until the packaging step fills\n"
-        "# that file and re-derives this text (tools/alpha_next_queue.py); a placeholder refuses the declaration. The harness bundle\n"
-        "# pin is held outside the bundle (the harness SHA256SUMS covers this text, so it cannot hold its own digest).\n"
-        "ALPHA_NEXT_OVERLAY_MANIFEST_SHA256=%s\n"
-        "ALPHA_NEXT_PACKAGE_SHA256=%s\n"
-        "[[ $ALPHA_NEXT_OVERLAY_MANIFEST_SHA256 =~ ^[0-9a-f]{64}$ && $ALPHA_NEXT_PACKAGE_SHA256 =~ ^[0-9a-f]{64}$ ]] ||\n"
-        "  fail \"alpha-next bundle pins are placeholders (filled by the packaging step)\"\n"
-        "[[ $(sha256sum \"$S5_OVERLAY/SHA256SUMS\" | cut -c1-64) == \"$ALPHA_NEXT_OVERLAY_MANIFEST_SHA256\" ]] ||\n"
-        "  fail \"overlay manifest differs from the alpha-next pin\"\n"
-        "python3 - \"$S5_OVERLAY/S5-OVERLAP-GENERATION.json\" \"$ALPHA_NEXT_PACKAGE_SHA256\" <<'PY_ALPHA_NEXT_PIN' || "
-        "fail \"overlay package differs from the alpha-next pin\"\n"
-        "import json,sys\n"
-        "assert json.load(open(sys.argv[1])).get('package_sha256')==sys.argv[2]\n"
-        "PY_ALPHA_NEXT_PIN\n" % (manifest, package))
-
-
 def replace_once(text, old, new):
     assert text.count(old) == 1, (old[:120], text.count(old))
     return text.replace(old, new)
@@ -329,7 +304,6 @@ def derive():
         else:
             text = replace_once(text, step_b.DECLARE_GROUPS, step_b.DECLARE_GROUPS + DECLARE_SWITCHES)
             text = replace_once(text, PINS_OLD, PINS_NEW)
-            text = replace_once(text, PINS_ANCHOR, pins_block() + PINS_ANCHOR)
         out['harness/runs/' + NEW + suffix] = rename(text)
     return out
 
