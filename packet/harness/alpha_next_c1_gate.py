@@ -1,9 +1,10 @@
 """q18a-alpha-next-c1 box queue: one phase budget for the watchdog and the draft, relative to the run's own start only.
 
-alpha-next's gate (alpha_next_gate) with this queue's arm table (alpha_next_c1_arms, 18 arms: 16 core, 2 tail). Startup, bind and
+alpha-next's gate (alpha_next_gate) with this queue's arm table (alpha_next_c1_arms, 20 arms: 18 core, 2 tail). Startup, bind and
 the unarmed check are held-f's (native40's phase caps, unchanged); every arm cap, the grade and read caps, ACTIVE_S and both entry
 limits follow alpha-next's formulas (the entry limits do not depend on the arm count: an arm enters only while its own worst case
-and everything after it still fit ACTIVE_S). The box budget is 9,000 s including cleanup (CLEANUP_S 900), relative to the run's
+and everything after it still fit ACTIVE_S). The box budget is 9,750 s including cleanup (CLEANUP_S 900; 9,000 s
+until band 2's C1-defer arms were added, lead 2 Nov 22:5x CET), relative to the run's
 start. There is no absolute time here: no hard end, no not-before, no latest start, no window, and no clock import.
 
 EXPECTED_RUNTIME_S is descriptive, from the lead's box walls (2 Nov, 16:40): the first arm about 480 s after the start; band 1
@@ -33,7 +34,7 @@ PHASES.update({
     'read': GRADE_CAP_S,                                  # the read over every arm
 })
 WORST_CASE_SUM_S = sum(PHASES.values())
-BOX_BUDGET_S = 9000                                       # the lead's cap, cleanup included, relative to the run's start
+BOX_BUDGET_S = 9750                                       # cleanup included, relative to the run's start (lead's cap >= this + staging)
 ACTIVE_S = BOX_BUDGET_S - CLEANUP_S
 ACTIVE_AND_CLEANUP = ACTIVE_S + CLEANUP_S
 ARM_RESERVE_S = FULL_IDLE_CAP_S + ARM_TIMEOUT_S + ARM_KILL_AFTER_S + INGRESS_CAP_S
@@ -112,7 +113,7 @@ EXPECTED_RUNTIME_S = {
     'last_tail_entry_s': LAST_TAIL_ENTRY_S,
     'basis': 'estimate from the lead\'s box walls (2 Nov 16:40): first arm +480 s, the cold first arm 246 s, band 1 solo 75 / live '
              '147 s, band 2 solo 128 / live 273 s, the g4 tail as band 1, C1 on as C1 off (unmeasured on the box); core FULL and '
-             'grade 150 s, the end 600 s. An arm that would enter after its limit is NOT_RUN. The 9,000 s budget holds the worst '
+             'grade 150 s, the end 600 s. An arm that would enter after its limit is NOT_RUN. The 9,750 s budget holds the worst '
              'case.',
 }
 

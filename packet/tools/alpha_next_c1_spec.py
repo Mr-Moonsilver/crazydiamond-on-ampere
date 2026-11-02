@@ -158,7 +158,7 @@ def generate(scratch, expected_tests, pre_queue=False):
             model_settings_changed=False, alpha_next_c1_settings=settings, **pending,
             queue='q18a-alpha-next-c1: alpha-next\'s queue with the overlap, deferred-bind and observe switches set for the whole '
                   'run; C1 off (C0 local) and on (overlap) arms over two bands, C1-defer (overlap with the deferred bind) arms '
-                  'in band 1, then a C1-on read-only tail, the arm table the queue\'s own; validity, engagement (early open) '
+                  'in both bands, then a C1-on read-only tail, the arm table the queue\'s own; validity, engagement (early open) '
                   'and generated tokens gated on the core, speed, decode and memory reported; relative box budget only',
             scope='C1 composed onto alpha-next against alpha-next\'s pre-VM build; not a release assessment',
             engine_delta=dict(focused_suites=FOCUSED_DELTA, lineage_rows=[])),

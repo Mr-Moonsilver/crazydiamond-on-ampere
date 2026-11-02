@@ -72,22 +72,22 @@ GIB, MIB = 2 ** 30, 2 ** 20
 # --- the table and the budget -------------------------------------------------------------------------------
 
 class Table(unittest.TestCase):
-    def test_the_declared_eighteen_arms_in_order(self):
+    def test_the_declared_twenty_arms_in_order(self):
         self.assertEqual(ALL_LABELS, [
             'c1off.g2-solo-0', 'c1on.g2-solo-0', 'c1defer.g2-solo-0', 'c1defer.g2-live-0', 'c1on.g2-live-0', 'c1off.g2-live-0',
             'c1off.g2-live-1', 'c1on.g2-live-1', 'c1defer.g2-live-1', 'c1defer.g2-solo-1', 'c1on.g2-solo-1', 'c1off.g2-solo-1',
-            'c1off.g2-solo-2', 'c1on.g2-solo-2', 'c1on.g2-live-2', 'c1off.g2-live-2',
+            'c1off.g2-solo-2', 'c1on.g2-solo-2', 'c1defer.g2-solo-2', 'c1defer.g2-live-2', 'c1on.g2-live-2', 'c1off.g2-live-2',
             'c1on.g4-solo-0', 'c1on.g4-live-0'])
         rows = T.arms()
-        self.assertEqual([r['part'] for r in rows], ['core'] * 16 + ['tail'] * 2)
-        self.assertEqual([r['band'] for r in rows], [1] * 12 + [2] * 4 + [1] * 2)
+        self.assertEqual([r['part'] for r in rows], ['core'] * 18 + ['tail'] * 2)
+        self.assertEqual([r['band'] for r in rows], [1] * 12 + [2] * 6 + [1] * 2)
         self.assertEqual({(r['stage_local'], r['c0']) for r in rows}, {(True, 'on')})
         self.assertEqual([r['overlap'] for r in rows], [r['c1'] != 'off' for r in rows])
         # defer_bind explicit on every arm: true on the C1-defer arms only.
         self.assertEqual([r['defer_bind'] for r in rows], [r['c1'] == 'defer' for r in rows])
-        self.assertEqual(sum(r['defer_bind'] for r in rows), 4)
+        self.assertEqual(sum(r['defer_bind'] for r in rows), 6)
         self.assertEqual(T.GRADED, ('core',))
-        self.assertIs(T.BAND2_DEFER, False)
+        self.assertIs(T.BAND2_DEFER, True)      # lead 2 Nov 22:5x CET, with the 9,750 s budget
         self.assertEqual((T.STANDING_DECODERS, T.STANDING_GREEDY, T.STANDING_SAMPLED),
                          (8, (0, 1), (2, 3, 4, 5, 6, 7)))
 
@@ -145,40 +145,49 @@ class Table(unittest.TestCase):
 class Budget(unittest.TestCase):
     def test_the_box_budget_and_the_entry_limits_are_relative_and_alpha_nexts(self):
         import alpha_next_gate as an_gate
-        self.assertEqual((gate.BOX_BUDGET_S, gate.CLEANUP_S, gate.ACTIVE_S), (9000, 900, 8100))
-        self.assertEqual((gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S), (an_gate.LAST_ARM_ENTRY_S, an_gate.LAST_TAIL_ENTRY_S))
-        self.assertEqual((gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S), (3420, 4470))
-        self.assertEqual((gate.ARMS, gate.CORE_ARMS, gate.TAIL_ARMS), (18, 16, 2))
-        self.assertEqual(gate.PHASES['alpha_next_c1_arms'], 18 * (1500 + 30))
+        # 9,750 s (lead 2 Nov 22:5x CET, band 2's C1-defer arms added; 9,000 s before): alpha-next's formulas over this budget,
+        # so each entry limit is alpha-next's moved by exactly the budget difference.
+        self.assertEqual((gate.BOX_BUDGET_S, gate.CLEANUP_S, gate.ACTIVE_S), (9750, 900, 8850))
+        self.assertEqual(an_gate.ACTIVE_S, 8100)
+        self.assertEqual((gate.LAST_ARM_ENTRY_S - an_gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S - an_gate.LAST_TAIL_ENTRY_S),
+                         (gate.ACTIVE_S - an_gate.ACTIVE_S,) * 2)
+        self.assertEqual((gate.ARM_RESERVE_S, gate.TAIL_RESERVE_S, gate.END_RESERVE_S),
+                         (an_gate.ARM_RESERVE_S, an_gate.TAIL_RESERVE_S, an_gate.END_RESERVE_S))
+        self.assertEqual((gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S), (4170, 5220))
+        self.assertEqual((gate.ARMS, gate.CORE_ARMS, gate.TAIL_ARMS), (20, 18, 2))
+        self.assertEqual(gate.PHASES['alpha_next_c1_arms'], 20 * (1500 + 30))
         self.assertLessEqual(gate.WORST_CASE_SUM_S + gate.CLEANUP_S, 10 ** 6)     # the caps are a sum; the budget is ACTIVE_S
-        self.assertTrue(gate.arm_fits(3420) and not gate.arm_fits(3421) and gate.arm_fits(4470, 'tail'))
+        self.assertTrue(gate.arm_fits(4170) and not gate.arm_fits(4171) and gate.arm_fits(5220, 'tail')
+                        and not gate.arm_fits(5221, 'tail'))
 
-    def test_eighteen_arms_at_the_lead_walls_and_where_they_stop_fitting(self):
+    def test_twenty_arms_at_the_lead_walls_and_at_1_5x(self):
         e = gate.EXPECTED_RUNTIME_S['nominal']
-        self.assertEqual((e['arms_entering'], e['core_arms_entering'], e['tail_arms_entering'], e['not_run']), (18, 16, 2, []))
-        # first arm +480 s; band 1: 246 (cold) + 75 * 5 + 147 * 6; band 2: 128 * 2 + 273 * 2; core FULL and grade 150.
-        self.assertEqual(e['last_core_arm_enters_s'], 480 + 1503 + 128 + 128 + 273)
-        self.assertEqual(e['last_arm_enters_s'], 480 + 1503 + 802 + 150 + 75)
-        self.assertEqual((e['last_arm_ends_s'], e['total_s'], e['total_min']), (3157, 3757, 62.6))
-        self.assertEqual(e['min_margin_s'], 908)
-        # Every arm enters up to 1.4x the walls; at 1.5x (the lead's test) band 2's last control is NOT_RUN (its on arm INC).
-        self.assertEqual(gate._estimate(lambda row, first: 1.4 * gate.arm_wall(row, first))['arms_entering'], 18)
+        self.assertEqual((e['arms_entering'], e['core_arms_entering'], e['tail_arms_entering'], e['not_run']), (20, 18, 2, []))
+        # first arm +480 s; band 1: 246 (cold) + 75 * 5 + 147 * 6; band 2: 128 * 3 + 273 * 3; core FULL and grade 150.
+        self.assertEqual(e['last_core_arm_enters_s'], 480 + 1503 + 128 * 3 + 273 * 2)
+        self.assertEqual(e['last_arm_enters_s'], 480 + 1503 + 1203 + 150 + 75)
+        self.assertEqual((e['last_arm_ends_s'], e['total_s'], e['total_min']), (3558, 4158, 69.3))
+        self.assertEqual(e['min_margin_s'], 4170 - 2913)
+        # Every arm enters at 1.4x and at 1.5x the walls (the lead's test for adding arms).
+        at14 = gate._estimate(lambda row, first: 1.4 * gate.arm_wall(row, first))
+        self.assertEqual((at14['arms_entering'], at14['not_run'], at14['total_min']), (20, [], 88.8))
         slower = gate.EXPECTED_RUNTIME_S['slower']
-        self.assertEqual((slower['arms_entering'], slower['core_arms_entering'], slower['not_run']), (17, 15, ['c1off.g2-live-2']))
-        # Band 2's C1-defer arms: 20 arms (about 69 min) at the walls, two core arms NOT_RUN at 1.5x: not added.
+        self.assertEqual((slower['arms_entering'], slower['core_arms_entering'], slower['not_run'], slower['total_min']),
+                         (20, 18, [], 93.7))
+        self.assertGreater(slower['min_margin_s'], 0)
+        # Band 2's C1-defer arms are in the table: the band2_defer walk is the table's own walk.
         b2 = gate.EXPECTED_RUNTIME_S['band2_defer']
-        self.assertEqual((b2['nominal']['arms_entering'], b2['nominal']['total_min']), (20, 69.3))
-        self.assertEqual(b2['slower']['not_run'], ['c1on.g2-live-2', 'c1off.g2-live-2'])
-        self.assertIs(T.BAND2_DEFER, False)
+        self.assertEqual((b2['nominal']['arms_entering'], b2['nominal']['total_min'], b2['slower']['not_run']), (20, 69.3, []))
+        self.assertIs(T.BAND2_DEFER, True)
 
     def test_the_tool_prints_the_table_with_its_limits(self):
         text = queue.table_text()
         for name in ALL_LABELS:
             self.assertIn(name, text)
-        self.assertIn('LAST_TAIL_ENTRY_S 4470 s', text)
-        self.assertIn('LAST_ARM_ENTRY_S 3420 s', text)
-        self.assertIn('at 1.5x the walls: arms entering 17 (core 15); not run: c1off.g2-live-2', text)
-        self.assertIn('band 2 C1-defer arms (BAND2_DEFER False): with them 20 arms', text)
+        self.assertIn('LAST_TAIL_ENTRY_S 5220 s', text)
+        self.assertIn('LAST_ARM_ENTRY_S 4170 s', text)
+        self.assertIn('at 1.5x the walls: arms entering 20 (core 18)', text)
+        self.assertIn('band 2 C1-defer arms (BAND2_DEFER True): with them 20 arms', text)
 
 
 # --- the arm's control -----------------------------------------------------------------------------------
@@ -623,7 +632,8 @@ class Grade(GradeBase):
         self.assertEqual(result['table']['c1off.g2-solo-0']['c1'], 'off')
         self.assertEqual(sorted(result['summary']['band1']['over_c0_off']),
                          ['c1defer.g2-live', 'c1defer.g2-solo', 'c1on.g2-live', 'c1on.g2-solo'])
-        self.assertEqual(sorted(result['summary']['band2']['over_c0_off']), ['c1on.g2-live', 'c1on.g2-solo'])
+        self.assertEqual(sorted(result['summary']['band2']['over_c0_off']),
+                         ['c1defer.g2-live', 'c1defer.g2-solo', 'c1on.g2-live', 'c1on.g2-solo'])
         self.assertEqual(result['memory_read']['c1on.g2-live-0']['against'], 'c1off.g2-live-0')
         self.assertEqual(result['memory_read']['c1defer.g2-live-0']['against'], 'c1off.g2-live-0')
         self.assertEqual(sorted(result['memory_c0_on_vs_off']), sorted(x for x in CORE if not x.startswith('c1off')))

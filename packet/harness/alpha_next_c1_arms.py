@@ -24,8 +24,8 @@ A row is (part, C1 selection, cohort, round index):
 Order (lead): core first, tail last. Band 1 at g2, ABBA over two rounds, each C1-on arm with its matched C1-off arm at the same
 cohort and round, and each C1-defer arm beside its matched C1-on arm, mirrored like the others (ABBA against C1 on per cohort):
 off-solo-0 on-solo-0 defer-solo-0 defer-live-0 on-live-0 off-live-0 | off-live-1 on-live-1 defer-live-1 defer-solo-1 on-solo-1
-off-solo-1. Band 2 at g2, matched: off-solo on-solo on-live off-live (BAND2_DEFER adds defer-solo defer-live between on-solo and
-on-live only if the budget allows: see alpha_next_c1_gate). Then the g4 tail, C1 on, band 1 round 0: on-solo-g4 on-live-g4,
+off-solo-1. Band 2 at g2, matched: off-solo on-solo defer-solo defer-live on-live off-live (BAND2_DEFER, lead 22:5x: the
+defer arms between on-solo and on-live; the budget is alpha_next_c1_gate's). Then the g4 tail, C1 on, band 1 round 0: on-solo-g4 on-live-g4,
 reads only, never matched (its memory is reported only). The tail stays last: ``group_layers_max`` is a lifetime high-water mark (alpha-next's reason).
 
 Standing decoders: alpha-next's (8; streams STANDING_GREEDY greedy at temperature 0 carry the numerics read, the others keep the
@@ -48,9 +48,10 @@ TAIL_INDEX = 0                            # the g4 tail runs band 1, round 0 (it
 BAND_SIZE = {'core': {1: 2, 2: 2},        # layer group size per part and band, sent per arm through native_layer_group {size}
              'tail': {1: 4, 2: 4}}
 ORDER_A = (('off', 'solo'), ('on', 'solo'), ('defer', 'solo'), ('defer', 'live'), ('on', 'live'), ('off', 'live'))  # B = A reversed
-# Band 2's C1-defer arms (lead, 21:0x: "only if the budget allows", core limit at 1.5x the walls): they do not fit (the gate's
-# EXPECTED_RUNTIME_S['slower']), so band 2 stays alpha-next-c1's four arms.
-BAND2_DEFER = False
+# Band 2's C1-defer arms (lead, 21:0x: "only if the budget allows", core limit at 1.5x the walls). At the 9,000 s budget they did
+# not fit; lead 2 Nov 22:5x CET (box free until ~09:45): added, with the queue budget raised to 9,750 s (alpha_next_c1_gate), at
+# which every arm still enters at 1.5x the walls.
+BAND2_DEFER = True
 ORDER_BAND2 = ((('off', 'solo'), ('on', 'solo'), ('defer', 'solo'), ('defer', 'live'), ('on', 'live'), ('off', 'live'))
                if BAND2_DEFER else (('off', 'solo'), ('on', 'solo'), ('on', 'live'), ('off', 'live')))
 ORDER_TAIL = (('on', 'solo'), ('on', 'live'))
