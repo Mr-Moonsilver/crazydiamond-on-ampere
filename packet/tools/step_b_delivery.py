@@ -86,6 +86,8 @@ def main():
     sp = json.loads(a.staging_predicates.read_text())
     assert sp['schema'] == 'staging-predicates/1' and sp['verdict'] == 'PASS' and not sp['missing_blocks'] and not sp['repeated_blocks']
     assert sp['runner_sha256'] == b['runner_sha256'] and sp['selfrun_sha256'] == sha(a.queue) and sp['engine_selfrun_sha256'] == sha(a.engine)
+    pins = json.loads((ROOT / 'tools/step_b_negative_pins.json').read_text())
+    assert neg['pinned_tests'] == len(pins['tests']) and sha(pins['observation']['observed_json']) == pins['observation']['observed_sha256']
     proof = json.loads((Path(b['bundle']).parent / 'freeze-proof.json').read_text())
     assert sha(Path(b['bundle']).parent / 'freeze-proof.json') == b['freeze_proof_sha256'] and proof['verdict'] == 'PASS'
     assert sha(Path(b['bundle']) / 'SHA256SUMS') == b['manifest']
@@ -113,7 +115,10 @@ def main():
                comparison=dict(path=str(a.compare), sha256=sha(a.compare), verdict=cmp_['verdict'], compared=cmp_['compared'],
                                parent_record=cmp_['parent_record'], parent_record_sha256=cmp_['parent_record_sha256']),
                negative=dict(path=str(a.negative), sha256=sha(a.negative), verdict=neg['verdict'], pinned_tests=neg['pinned_tests'],
-                             tests=neg['suites'].get('tests'), container_rc=neg['container_rc'], overlay_manifest=neg['overlay_manifest']),
+                             tests=neg['suites'].get('tests'), container_rc=neg['container_rc'], overlay_manifest=neg['overlay_manifest'],
+                             pins=dict(declared='negative pins from observation, 2 Nov', count=len(pins['tests']), cases=len(pins['cases']),
+                                       path='tools/step_b_negative_pins.json', sha256=sha(ROOT / 'tools/step_b_negative_pins.json'),
+                                       observation=pins['observation'])),
                overlay_tamper=dict(path=str(a.tamper), sha256=sha(a.tamper), verdict=tam['verdict'], cases=len(tam['cases'])),
                queue_selfrun=dict(path=str(a.queue), sha256=sha(a.queue), verdict=q['verdict'], rc=q.get('rc'),
                                   tests_run=q['tests_run'], skips=q['skips'], container=q.get('container'),
