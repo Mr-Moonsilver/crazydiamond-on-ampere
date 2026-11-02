@@ -5,12 +5,16 @@ Derived from e3_alpha_next_box (imported as ``an``, unchanged): every arm and gr
 the names below bound in its place for the duration of one call (``_bound``); alpha-next's own arm and grade in the same process
 are untouched. The arm table is alpha_next_c1_arms (one declared table): an arm not in it is refused before any traffic.
 
-The arm: alpha-next's (Step B's arm with alpha-next's seams), with the stage control sending ``overlap``. Control order: pause,
-native_progress {burst}, native_qsa_fused {true}, native_layer_group {size}, native_stage_local {local: true, overlap},
-release_auto_arm, resume, then status only. The reply must carry ``local`` true and the arm's ``overlap``; the status before and
-after the fresh prompt must show stage-local and the arm's overlap selected (the overlap block, its counters flat as
-``overlap_<counter>`` in the stage view and the stage delta). The record keeps ``c0`` 'on' and ``stage_local`` true (C0 local in
-every arm) and carries ``selection`` (``c1on.g2``); the C1 selection is in the selection, the label and ``stage_switch.overlap``.
+The arm: alpha-next's (Step B's arm with alpha-next's seams), with the stage control sending ``overlap`` and ``defer_bind``
+(explicitly in every arm: true on a C1-defer arm, false otherwise). Control order: pause, native_progress {burst},
+native_qsa_fused {true}, native_layer_group {size}, native_stage_local {local: true, overlap, defer_bind}, release_auto_arm,
+resume, then status only. The reply must carry ``local`` true and the arm's ``overlap``; the status before and after the fresh
+prompt must show stage-local and the arm's overlap selected (the overlap block, its counters flat as ``overlap_<counter>`` in the
+stage view and the stage delta; its defer_bind block {installed, selected, counters} flat as ``defer_bind_installed``,
+``defer_bind_selected`` and ``defer_<counter>``). The record keeps ``c0`` 'on' and ``stage_local`` true (C0 local in every arm),
+carries ``selection`` (``c1on.g2``, ``c1defer.g2``) and ``defer_bind`` {requested, acknowledged, previous, replied}: the value
+the engine's reply acknowledged beside the one the arm sent. The arm does not refuse a different acknowledgement (the record must
+reach the grade, which refuses the arm).
 
 C1's grade pieces are restated from e3_alpha_c1_box (claude/c1), not imported: importing it imports e3_alpha_c0_box, which wraps
 progress.chunk_breakdown for the whole process (alpha-next's reason for restating C0). test_alpha_next_c1_queue.C1Parity compares
@@ -52,6 +56,20 @@ checked on every arm, C1 on included. Plus:
               chunk without its line drops out with its predecessor (whose flush kept the successor's early rows). A lost engine
               flush on a C1-on arm is INC ('overlap-arm-engine-flush-lost'): its successor's early rows cannot be placed.
   budget      an arm the queue did not start (budget) has no record and is INC ('no-arm-record'), never an engine result.
+  defer_bind  every arm sends defer_bind explicitly (DEFER_BIND: true on C1-defer arms, false on C1 on and off). The arm's
+              record must carry the requested and the acknowledged value (else FAIL HARNESS); the engine's reply must have
+              acknowledged the requested value and its status before and after the fresh prompt must show it selected with the
+              deferred bind installed (else FAIL ENGINE: 'defer-bind-acknowledged-differs-from-requested', ...). Engagement: a
+              C1-defer arm needs a deferred bind in its status delta (else INC, coverage not reached), any other arm none
+              moved (else INC); missing counters are INC.
+  observe     c1_overlap_read over the ``flash-s5 overlap-observe`` lines (FLASH_S5_STAGE_OVERLAP_OBSERVE=1), joined to arms by
+              sequence (each chunk's ``seqs`` against the arm's 'n' rows; the row schema is unchanged): per arm OVERLAP or NONE
+              per successor with the reason, the per-op device bounds summary and the observe log bytes. A read, never a
+              verdict input: plain C1-on arms are the control (NONE expected), reported as a control.
+  numbers     beside alpha-next's C0/C1 numbers, per arm (``arm_numbers``): live and solo prefill tok/s, the decode ratio, the
+              episode loss TTFT_live x (1 - live/solo), stage 0 and stage 1 s/chunk on the slower TP rank, per rank min free,
+              max reserved, alloc retries and OOMs (stage 0 rank 0 apart) and alpha-next's memory MET / NOT_MET against the
+              matched C1-off arm, unchanged; a C1-defer arm also against its matched C1-on arm. A read.
 
 Two grades as alpha-next: ``grade`` over the core arms (the queue verdict, written before the g4 tail), ``read`` over every arm
 (a read only). Receipts hold counts, hashes, identities, token ids and host clock stamps, never prompts or auth.
@@ -64,6 +82,7 @@ import re
 from types import SimpleNamespace
 
 import alpha_next_c1_arms as T
+import c1_overlap_read as observe_read
 import e3_alpha_next_box as an
 
 b, sa, ap, progress, base = an.b, an.sa, an.ap, an.progress, an.base
@@ -86,6 +105,9 @@ OVERLAP_SIGNATURES = (('overlap-lane', 'stage 1 opened another lane than the suc
                       ('overlap-unbound', 'accepted operations exist without a bound producer'),
                       ('overlap-order', 'a stage opened the successor before releasing the older chunk'),
                       ('overlap-closed', 'a row closed by the successor lacks the local release'))
+# The deferred PP bind's counters (patches/s5_engine/stage_overlap.py OverlapSegmentDriver.defer_counters), in the status at
+# native_stage_local.overlap.defer_bind.counters.
+DEFER_COUNTERS = ('deferred_opens', 'deferred_binds')
 OVERLAP_MARK = 'flash-s5 stage-overlap '
 OVERLAP_LINE = re.compile(r'flash-s5 stage-overlap txn=(\d+) seqs=(-|\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*) successor=(\d+|none)\s*$')
 MEMORY_MARK = torn_lines.MEMORY_MARK
@@ -151,13 +173,25 @@ def table_view(c1=None):
     """This table as alpha-next's code reads alpha_next_arms.
 
     For the grade (``c1`` None): every row's ``c0`` is the C1 selection, the candidate axis of alpha-next's comparisons (a row
-    keeps ``c1`` and ``overlap``); ``C0`` maps both selections to stage-local True. For one arm (``c1`` 'on' or 'off'): the
-    arm's label and selection carry ``c1`` whatever C0 value alpha-next passes ('on', C0 local), so the record keeps c0 'on'."""
+    keeps ``c1``, ``overlap`` and ``defer_bind``): 'off' for C1 off (the controls), 'on' for C1 on and for C1 defer (both
+    candidates against their matched C1-off arm; the defer arm's own comparison with its matched C1-on arm is this module's,
+    ``arm_numbers``); ``parse_selection`` reads ``c1defer`` as a candidate the same way, so alpha-next's speed read keys it
+    against C1 off under its own group key. ``C0`` maps every selection to stage-local True. For one arm (``c1`` 'on', 'off' or
+    'defer'): the arm's label and selection carry ``c1`` whatever C0 value alpha-next passes ('on', C0 local), so the record
+    keeps c0 'on'."""
     names = {k: getattr(T, k) for k in _TABLE_NAMES}
 
+    def axis(c1):
+        return 'off' if c1 == 'off' else 'on'
+
     def arms(part=None):
-        return [dict(r, c0=r['c1']) for r in T.arms(part)]
-    names.update(arms=arms, by_label=lambda: {r['label']: r for r in arms()}, C0={'on': True, 'off': True})
+        return [dict(r, c0=axis(r['c1'])) for r in T.arms(part)]
+
+    def parse_selection(token):
+        parsed = T.parse_selection(token)
+        return None if parsed is None else (axis(parsed[0]), parsed[1])
+    names.update(arms=arms, by_label=lambda: {r['label']: r for r in arms()}, C0={'on': True, 'off': True},
+                 parse_selection=parse_selection)
     if c1 is not None:
         names.update(selection=lambda _c0, size: T.selection(c1, size),
                      label=lambda _c0, size, cohort, index: T.label(c1, size, cohort, index), C0={'on': True})
@@ -174,18 +208,25 @@ def stage_view(status):
     block = status[STAGE_CONTROL].get('overlap')
     if type(block) is not dict or type(block.get('counters')) is not dict:
         raise ValueError('native-stage-overlap-not-installed')
+    defer = block.get('defer_bind')
+    defer = defer if type(defer) is dict else {}
+    counters = defer.get('counters') if type(defer.get('counters')) is dict else {}
     return dict(row, overlap_selected=block.get('selected'),
-                **{'overlap_' + k: block['counters'].get(k) for k in OVERLAP_COUNTERS})
+                **{'overlap_' + k: block['counters'].get(k) for k in OVERLAP_COUNTERS},
+                defer_bind_installed=defer.get('installed'), defer_bind_selected=defer.get('selected'),
+                **{'defer_' + k: counters.get(k) for k in DEFER_COUNTERS})
 
 
 def stage_delta(after, before):
     out = AN_STAGE_DELTA(after, before)
     out.update({'overlap_' + k: progress.delta(after, before, 'overlap_' + k) for k in OVERLAP_COUNTERS})
+    out.update({'defer_' + k: progress.delta(after, before, 'defer_' + k) for k in DEFER_COUNTERS})
     return out
 
 
-def release_c1(overlap):
-    """alpha-next's release with ``overlap`` added to the stage command; the reply must carry it."""
+def release_c1(overlap, defer_bind=False):
+    """alpha-next's release with ``overlap`` and ``defer_bind`` added to the stage command; the reply must carry ``overlap``. The
+    reply's ``defer_bind`` (the selected value after the command) is recorded beside the requested one, never refused here."""
     def factory(size, local):
         release = AN_RELEASE(size, local)
 
@@ -198,7 +239,7 @@ def release_c1(overlap):
 
                 def call(self, action, **fields):
                     if action == STAGE_CONTROL:
-                        fields = dict(fields, overlap=overlap)
+                        fields = dict(fields, overlap=overlap, defer_bind=defer_bind)
                     reply = client.call(action, **fields)
                     if action == STAGE_CONTROL:
                         replies['stage'] = reply
@@ -208,7 +249,12 @@ def release_c1(overlap):
             finally:
                 reply = replies.get('stage')
                 if type(reply) is dict and type(record.get('stage_switch')) is dict:
-                    record['stage_switch'].update(overlap=reply.get('overlap'), previous_overlap=reply.get('previous_overlap'))
+                    record['stage_switch'].update(overlap=reply.get('overlap'), previous_overlap=reply.get('previous_overlap'),
+                                                  defer_bind=reply.get('defer_bind'),
+                                                  previous_defer_bind=reply.get('previous_defer_bind'))
+                record['defer_bind'] = dict(requested=defer_bind, replied=type(reply) is dict,
+                                            acknowledged=reply.get('defer_bind') if type(reply) is dict else None,
+                                            previous=reply.get('previous_defer_bind') if type(reply) is dict else None)
             if record['stage_switch'].get('overlap') is not overlap:
                 raise ValueError('native-stage-overlap-selection-unproved')
         return run
@@ -234,12 +280,12 @@ def _arm_print(*args, **kwargs):
 
 def arm_names(c1):
     overlap = T.C1[c1]
-    return dict(T=table_view(c1), release_alpha_next=release_c1(overlap), stage_reasons=stage_reasons_c1(overlap),
+    return dict(T=table_view(c1), release_alpha_next=release_c1(overlap, T.DEFER_BIND[c1]), stage_reasons=stage_reasons_c1(overlap),
                 stage_view=stage_view, stage_delta=stage_delta, print=_arm_print)
 
 
 def run_arm(a):
-    """alpha-next's arm, C0 local ('on') with this arm's C1 selection."""
+    """alpha-next's arm, C0 local ('on') with this arm's C1 selection and defer_bind."""
     args = argparse.Namespace(**dict(vars(a), stage_local='on'))
     with _bound(an, arm_names(a.c1)):
         return an.run_arm(args)
@@ -378,6 +424,8 @@ def regrouping(original):
         replaced = {}
         for arm in _RUN['arms']:
             mine = [f for f in engine if id(f) not in replaced and ap.in_span(f['stamp'], arm)]
+            # The arm's 'n' row sequences (the row schema unchanged): the overlap observation joins its chunks to arms by these.
+            _RUN['seqs'][arm['label']] = {r['seq'] for f in mine for r in f['rows'].get('n', []) if type(r.get('seq')) is int}
             texts = [t for s, t in _RUN['overlap'] if ap.in_span(s, arm)]
             if not mine or not texts:
                 continue
@@ -478,7 +526,16 @@ def engagement(arm, row, lines, declared):
             reasons.append('regrouped-chunk-without-two-opens-and-two-releases')
     elif logged or lost:
         reasons.append('c1-off-arm-logged-an-overlap-line')
-    c1 = dict(overlap=overlap, engaged=not reasons, reasons=reasons, counters=counters, overlap_lines=logged,
+    defer = (T.by_label().get(arm.get('label')) or {}).get('defer_bind') is True
+    defer_counters = {k: delta.get('defer_' + k) for k in DEFER_COUNTERS}
+    if any(type(v) is not int for v in defer_counters.values()):
+        reasons.append('defer-bind-counters-missing')
+    elif defer and defer_counters['deferred_binds'] < 1:
+        reasons.append('defer-bind-arm-never-deferred-a-bind')          # coverage not reached
+    elif not defer and any(defer_counters.values()):
+        reasons.append('defer-bind-off-arm-moved-a-defer-counter')
+    c1 = dict(overlap=overlap, defer_bind=defer, defer_counters=defer_counters, engaged=not reasons, reasons=reasons,
+              counters=counters, overlap_lines=logged,
               lost_overlap_lines=lost, regrouped_chunks_checked=len(kept) if overlap else None,
               regrouped_chunks_uneven=uneven if overlap else None)
     every = list(out['reasons']) + reasons
@@ -516,7 +573,7 @@ def peak_compare(lines, rows):
     chunk start; extremes over all chunks and over the chunks past the 97,152-row arena. A read, never a verdict input."""
     out = {}
     for row in rows:
-        if row['c1'] != 'on':
+        if not row['overlap']:
             continue
         mine = chunk_peaks(lines.get(row['label']) or an.EMPTY_LINES)
         partner = T.matched_off(row)
@@ -557,7 +614,7 @@ def stage_margin(table, lines, rows):
         return out
     out = {}
     for row in rows:
-        if row['c1'] != 'on':
+        if not row['overlap']:
             continue
         partner = T.matched_off(row)
         mine = per_stage(row['label'])
@@ -585,6 +642,195 @@ def chunk_peaks_by_rank(lines):
     return out
 
 
+# --- defer_bind: the value the engine acknowledged ------------------------------------------------------
+
+def defer_bind_check(arm, row):
+    """(reasons, classification) of an arm whose defer_bind is not proved to be the table's: the arm's record must carry what it
+    sent and what the engine acknowledged (HARNESS when it does not, or when it sent another value than the table's); the engine's
+    reply and its status before and after the fresh prompt must show the requested value, with the deferred bind installed (ENGINE
+    when they do not). An arm whose stage command never got a reply is left to alpha-next's rules (it is incomplete already)."""
+    want = row['defer_bind']
+    rec = arm.get('defer_bind')
+    if type(rec) is not dict or not {'requested', 'acknowledged', 'replied'} <= set(rec):
+        return ['arm-record-without-the-acknowledged-defer-bind'], 'HARNESS'
+    if rec['requested'] is not want:
+        return ['arm-requested-another-defer-bind-than-the-table'], 'HARNESS'
+    if rec['replied'] is not True:
+        return [], None
+    reasons = []
+    if rec['acknowledged'] is not want:
+        reasons.append('defer-bind-acknowledged-differs-from-requested')
+    views = {v.get('label'): (v.get(STAGE_CONTROL) or {}) for v in arm.get('progress') or [] if type(v) is dict}
+    for point in ('before-fresh', 'after-fresh'):
+        view = views.get(point)
+        if not view:
+            continue                      # alpha-next's own reasons cover a missing status view
+        if view.get('defer_bind_installed') is not True:
+            reasons.append('defer-bind-not-installed-at-' + point)
+        elif view.get('defer_bind_selected') is not want:
+            reasons.append('defer-bind-status-differs-from-requested-at-' + point)
+    return reasons, 'ENGINE' if reasons else None
+
+
+# --- the overlap observation (c1_overlap_read), a read ---------------------------------------------------
+
+def observe_rows(logs):
+    """(stamp, text, body) per whole ``flash-s5 overlap-observe`` line, and (stamp, text) per line whose JSON body does not parse
+    or names another schema (torn or foreign: kept out of the read, counted)."""
+    whole, torn = [], []
+    for stamp, text in ap.read_stamped(logs, lambda line: observe_read.LINE in line):
+        at = text.find(observe_read.LINE)
+        try:
+            body = json.loads(text[at + len(observe_read.LINE):])
+        except ValueError:
+            torn.append((stamp, text))
+            continue
+        if type(body) is not dict or body.get('schema') != observe_read.SCHEMA or type(body.get('txn')) is not int:
+            torn.append((stamp, text))
+            continue
+        whole.append((stamp, text, body))
+    return whole, torn
+
+
+def observe_join(whole, seqs):
+    """txn -> arm label by sequence: the chunk's part 0 names its sequences (``seqs``, the 'n' rows' ``seq``), joined to the arm
+    whose engine rows hold them (c1_overlap_read's join; the row schema is unchanged). A chunk no arm or two arms hold is not
+    joined (counted)."""
+    owner, unjoined, ambiguous = {}, [], []
+    for _stamp, _text, body in whole:
+        if body.get('part') != 0:
+            continue
+        mine = observe_read.expand_ranges(body.get('seqs'))
+        arms = sorted(name for name, held in seqs.items() if mine & held)
+        if len(arms) == 1:
+            owner[body['txn']] = arms[0]
+        else:
+            (ambiguous if arms else unjoined).append(body['txn'])
+    return owner, sorted(set(unjoined)), sorted(set(ambiguous))
+
+
+def bounds_summary(chunks):
+    """Per op kind over one arm's observed ops: how many, how many with a lower bound (``lo_ns``: a submit seen while the op was
+    pending), an upper bound (``hi_ns``: the first apply listing it complete) and both, and the width hi - lo (ns) where both."""
+    kinds = {}
+    for chunk in chunks.values():
+        for row in chunk['ops'].values():
+            cell = kinds.setdefault(str(row.get('kind')), dict(ops=0, lo=0, hi=0, both=0, widths=[]))
+            cell['ops'] += 1
+            lo, hi = row.get('lo_ns'), row.get('hi_ns')
+            cell['lo'] += lo is not None
+            cell['hi'] += hi is not None
+            if lo is not None and hi is not None:
+                cell['both'] += 1
+                cell['widths'].append(hi - lo)
+    out = {}
+    for kind, cell in sorted(kinds.items()):
+        widths = sorted(cell.pop('widths'))
+        cell.update(width_ns_median=widths[len(widths) // 2] if widths else None, width_ns_max=widths[-1] if widths else None,
+                    width_negative=sum(1 for w in widths if w < 0))
+        out[kind] = cell
+    return out
+
+
+OBSERVE_ROLE = {'off': 'no successor expected (C1 off)', 'on': 'control: NONE expected (C1 without the deferred bind)',
+                'defer': 'measurement (C1 with the deferred bind)'}
+
+
+def observe_read_arms(logs, seqs, rows, arms):
+    """Per declared arm present: c1_overlap_read over the observe lines joined to it by sequence (OVERLAP or NONE per successor,
+    with the reason), the per-op device bounds summary and the observe log bytes. A read, never a verdict input; plain C1-on arms
+    are the control (NONE expected), reported as a control, never gated."""
+    whole, torn = observe_rows(logs)
+    owner, unjoined, ambiguous = observe_join(whole, seqs)
+    known = {a.get('label'): a for a in arms if a.get('label')}
+    out = {}
+    for row in rows:
+        name = row['label']
+        if name not in known:
+            continue
+        mine = [(text, body) for _stamp, text, body in whole if owner.get(body['txn']) == name]
+        lines = [text for text, _body in mine]
+        cell = dict(c1=row['c1'], defer_bind=row['defer_bind'], role=OBSERVE_ROLE[row['c1']], observe_lines=len(lines),
+                    observe_bytes=sum(len(t.encode()) for t in lines), chunks=len({b['txn'] for _t, b in mine}),
+                    torn_or_foreign_lines=sum(1 for stamp, _t in torn if ap.in_span(stamp, known[name])))
+        try:
+            read = observe_read.overlap_read(lines)
+            cell.update(successors=read['successors'], overlap=read['overlap'], none=read['none'],
+                        rows=[{k: r.get(k) for k in ('txn', 'older', 'verdict', 'reason', 'margin_ns', 'early', 'deferred_bind')}
+                              for r in read['rows']],
+                        bounds=bounds_summary(observe_read.parse(lines)), error=None)
+        except (ValueError, KeyError, TypeError) as exc:
+            cell.update(successors=None, overlap=None, none=None, rows=[], bounds={}, error='%s: %s' % (type(exc).__name__, exc))
+        if row['c1'] == 'on':
+            cell['control_as_expected'] = None if cell['successors'] is None else cell['overlap'] == 0
+        out[name] = cell
+    return dict(arms=out, schema=observe_read.SCHEMA, unjoined_chunks=unjoined, ambiguous_chunks=ambiguous,
+                torn_or_foreign_lines=len(torn), observe_bytes=sum(len(t.encode()) for _s, t, _b in whole), is_gate=False,
+                rule='c1_overlap_read: OVERLAP when a stage-0 layer of the successor completed on every stage-0 rank before '
+                     'stage 1\'s finalize of the older chunk provably completed (host monotonic bounds); else NONE with the '
+                     'reason. Chunks join arms by sequence.')
+
+
+# --- the numbers beside C0/C1 (a read) -----------------------------------------------------------------
+
+def arm_numbers(result, rows):
+    """Per declared arm present: live and solo prefill tok/s and TTFT, the live decode ratio, the episode loss
+    TTFT_live x (1 - prefill_live / prefill_solo) (the live arm against the solo arm of the same selection and round: the seconds
+    the live episode lost to the standing decoders, = TTFT_live - TTFT_solo at equal tokens), stage 0 and stage 1 s/chunk on the
+    slower TP rank (Step B's slow_rank: the median over counted chunks of the slower own rank's stage time), per rank min free,
+    max reserved, alloc retries and OOMs (stage 0 rank 0 apart), and alpha-next's memory read (MET / NOT_MET / INC against the
+    matched C1-off arm, unchanged). Ratios against the matched C1-off arm and, for a C1-defer arm, its matched C1-on arm. Never a
+    verdict input."""
+    table, slow = result['table'], ((result.get('slow_rank') or {}).get('arms') or {})
+    memory = result.get('memory_read') or {}
+
+    def ratio(a, b_):
+        return None if a is None or not b_ else round(a / b_, 4)
+
+    out = {}
+    for row in rows:
+        name = row['label']
+        cell = table.get(name)
+        if cell is None:
+            continue
+        ranks = (cell.get('memory') or {}).get('ranks') or {}
+        per_rank = {r: dict(min_free_mib=v.get('min_free_mib'), max_reserved_mib=v.get('peak_reserved_mib'),
+                            alloc_retries=v.get('alloc_retries'), ooms=v.get('ooms')) for r, v in sorted(ranks.items())}
+        stages = (slow.get(name) or {}).get('all') or {}
+        solo = T.label(row['c1'], row['size'], 'solo', row['index']) if row['cohort'] == 'live' else None
+        solo_cell = table.get(solo) if solo else None
+        loss = None
+        if solo_cell and cell.get('ttft_s') is not None and cell.get('prefill_tok_s') and solo_cell.get('prefill_tok_s'):
+            loss = round(cell['ttft_s'] * (1 - cell['prefill_tok_s'] / solo_cell['prefill_tok_s']), 3)
+        mem = memory.get(name) or {}
+        item = dict(c1=row['c1'], defer_bind=row['defer_bind'], cohort=row['cohort'], band=row['band'], part=row['part'],
+                    prefill_tok_s=cell.get('prefill_tok_s'), ttft_s=cell.get('ttft_s'),
+                    decode_ratio=cell.get('decode_ratio') if row['cohort'] == 'live' else None,
+                    episode_loss_s=loss, solo_partner=solo if solo_cell else None,
+                    stage_s_per_chunk_slow_rank={st: ((stages.get(st) or {}).get('own_s') or {}).get('slow_rank_median')
+                                                 for st in ('0', '1')},
+                    ranks=per_rank, stage0_rank0=per_rank.get('0'),
+                    memory_read=dict(verdict=mem.get('verdict'), against=mem.get('against'),
+                                     min_free_below_off_mib=mem.get('min_free_below_c0_off_mib')))
+        for key, partner in (('vs_c1_off', T.matched_off(row) if row['c1'] != 'off' else None),
+                             ('vs_c1_on', T.matched_on(row))):
+            other = table.get(partner) if partner else None
+            if other is not None:
+                item[key] = dict(against=partner, prefill_ratio=ratio(cell.get('prefill_tok_s'), other.get('prefill_tok_s')),
+                                 ttft_ratio=ratio(cell.get('ttft_s'), other.get('ttft_s')),
+                                 decode_ratio_delta=(None if item['decode_ratio'] is None or other.get('decode_ratio') is None
+                                                     else round(item['decode_ratio'] - other['decode_ratio'], 4)))
+        out[name] = item
+    for name, item in out.items():
+        for key in ('vs_c1_off', 'vs_c1_on'):
+            partner = (item.get(key) or {}).get('against')
+            if partner in out and item['episode_loss_s'] is not None and out[partner]['episode_loss_s'] is not None:
+                item[key]['episode_loss_delta_s'] = round(item['episode_loss_s'] - out[partner]['episode_loss_s'], 3)
+    return dict(arms=out, is_gate=False, episode_loss_rule='TTFT_live x (1 - prefill_tok_s_live / prefill_tok_s_solo), the live '
+                'and solo arms of the same C1 selection, size and round', memory_against='the matched C1-off arm (C0 local; '
+                'this queue has no serial arm), alpha-next\'s memory read unchanged')
+
+
 # --- the grade ----------------------------------------------------------------------------------------
 
 def grade(arms, ingress, checks, logs, watches=None, part='core'):
@@ -593,7 +839,7 @@ def grade(arms, ingress, checks, logs, watches=None, part='core'):
     intact, torn_overlap = overlap_rows(logs)
     by_arm, outside = oom_rises(logs, known)
     _RUN.clear()
-    _RUN.update(arms=known, overlap=intact, torn_overlap=torn_overlap, oom=by_arm, regroup={}, in_flight={})
+    _RUN.update(arms=known, overlap=intact, torn_overlap=torn_overlap, oom=by_arm, regroup={}, in_flight={}, seqs={})
     view = table_view()
     try:
         with _bound(an, dict(T=view, engagement=engagement)), \
@@ -602,7 +848,7 @@ def grade(arms, ingress, checks, logs, watches=None, part='core'):
                 _bound(progress, dict(assemble=regrouping(progress.assemble), chunk_breakdown=breakdown(progress.chunk_breakdown))):
             result = an.grade(arms, ingress, checks, logs, watches, part=part)
             lines, _ = an.arm_lines(arms, logs)
-        in_flight_rows, regroup_facts = dict(_RUN['in_flight']), dict(_RUN['regroup'])
+        in_flight_rows, regroup_facts, seqs = dict(_RUN['in_flight']), dict(_RUN['regroup']), dict(_RUN['seqs'])
     finally:
         _RUN.clear()
     present = {a.get('label') for a in arms} | set(watches or {})
@@ -620,10 +866,22 @@ def grade(arms, ingress, checks, logs, watches=None, part='core'):
         extra |= {'two-commands-in-flight-on-stage-' + s for s, c in (v['in_flight'] or {}).items() if c['breaches']}
         v['signatures'] = sorted(set(v.get('signatures') or ()) | extra)
     declared = T.by_label()
+    records = {a.get('label'): a for a in known}
+    for name, v in result['validity'].items():
+        row, arm = declared.get(name), records.get(name)
+        if row is None or arm is None:
+            continue
+        v['defer_bind'] = dict(arm.get('defer_bind') or {}, table=row['defer_bind'])
+        reasons, cls = defer_bind_check(arm, row)
+        if reasons:
+            v['reasons'] = list(v.get('reasons') or []) + reasons
+            v['verdict'], v['classification'] = 'FAIL', cls
+            failures.update(name + ':' + x for x in reasons)
+            classes.add(cls)
     for name, cell in result['table'].items():
         row = declared.get(name)
         if row:
-            cell.update(c0='on', c1=row['c1'], overlap=row['overlap'], stage_local=True)
+            cell.update(c0='on', c1=row['c1'], overlap=row['overlap'], defer_bind=row['defer_bind'], stage_local=True)
     for row in result['arm_table']['arms']:
         row.update(c0='on')
     verdict = 'FAIL' if failures else 'INC' if missing else 'PASS'
@@ -635,13 +893,16 @@ def grade(arms, ingress, checks, logs, watches=None, part='core'):
                   failures=sorted(failures), missing=sorted(missing), oom_outside_every_arm=outside, oom_is_gate=True,
                   memory_peak_vs_c1_off=peak_compare(lines, [r for r in rows if r['label'] in result['table']]),
                   memory_stage_vs_c1_off=stage_margin(result['table'], lines, [r for r in rows if r['label'] in result['table']]),
-                  in_flight_is_gate=True, declared_limits=LIMITS, axis=AXIS,
-                  basis='one engine, fused and C0 stage-local selected in every arm, one group size and one C1 selection per arm '
-                        'by typed control; band 1 ABBA at 65,445 tokens over two rounds, band 2 matched at 131,094 past the '
+                  in_flight_is_gate=True, declared_limits=LIMITS, axis=AXIS, defer_bind_is_gate=True,
+                  overlap_observe=observe_read_arms(logs, seqs, [r for r in rows if r['label'] in result['table']], known),
+                  overlap_observe_is_gate=False,
+                  arm_numbers=arm_numbers(result, [r for r in rows if r['label'] in result['table']]),
+                  basis='one engine, fused and C0 stage-local selected in every arm, one group size, one C1 selection and one '
+                        'defer_bind per arm by typed control; band 1 ABBA at 65,445 tokens over two rounds, band 2 matched at 131,094 past the '
                         '97,152-row arena; per chunk, the critical rank of each native command, rows regrouped by chunk on C1-on '
                         'arms; live arms count chunks begun with all 8 decoders, solo arms chunks begun with none',
-                  scope='C1 (two chunks in flight, one command in flight per stage) against C0 local on the composed alpha-next '
-                        'engine, with speed, decode and memory reported and never gated; gains from separate experiments are '
+                  scope='C1 (two chunks in flight, one command in flight per stage), with and without the deferred PP bind, '
+                        'against C0 local on the composed alpha-next engine, with the overlap observation, speed, decode and memory reported and never gated; gains from separate experiments are '
                         'never multiplied')
     if part != 'core':
         result['read_only'] = ('a read over every arm, g4 tail included; the queue verdict is the core grade '
@@ -675,7 +936,7 @@ def report(result):
         o = c1.get('counters') or {}
         f = v.get('in_flight') or {}
         lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (
-            name, 'on' if c1.get('overlap') else 'off', c1.get('engaged'), _cell(o.get('successor_frames')),
+            name, (T.by_label().get(name) or {}).get('c1', '-'), c1.get('engaged'), _cell(o.get('successor_frames')),
             _cell(o.get('early_opens')), _cell(o.get('overlapped_commits')), _cell(c1.get('overlap_lines')),
             _cell(c1.get('lost_overlap_lines')), ','.join(str(x) for x in c1.get('regrouped_chunks_uneven') or []) or '0',
             _cell((v.get('regroup') or {}).get('moved_rows')),
@@ -709,7 +970,54 @@ def report(result):
             name, cell['against'] or 'reported only', _cell(s0['min_free_mib']), _cell(s0.get('min_free_below_off_mib')),
             _cell(s0['max_peak_allocated_mib']), _cell(s0.get('peak_allocated_over_off_mib')), _cell(s1['min_free_mib']),
             _cell(s1.get('min_free_below_off_mib')), _cell(s1['max_peak_allocated_mib']), _cell(s1.get('peak_allocated_over_off_mib'))))
+    lines += observe_report(result) + numbers_report(result)
     return head + '\n'.join(lines) + sep + tail
+
+
+def observe_report(result):
+    obs = result['overlap_observe']
+    lines = ['', '### Overlap observation per arm (c1_overlap_read, a read)', '',
+             'OVERLAP when a stage-0 layer of the successor completed on every stage-0 rank before stage 1\'s finalize of the older '
+             'chunk provably completed; else NONE. C1-on arms are the control (NONE expected), C1-defer arms the measurement. '
+             'Chunks joined to arms by sequence: unjoined %d, joined to two arms %d; torn or foreign lines %d; observe bytes %d.' % (
+                 len(obs['unjoined_chunks']), len(obs['ambiguous_chunks']), obs['torn_or_foreign_lines'], obs['observe_bytes']), '',
+             '| arm | role | successors | OVERLAP | NONE | control as expected | NONE reasons | layer ops lo/hi/both | finalize ops '
+             'lo/hi/both | layer width median ns | observe lines | observe bytes | error |',
+             '|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+    for name, cell in obs['arms'].items():
+        reasons = {}
+        for r in cell['rows']:
+            if r['verdict'] == 'NONE':
+                reasons[r['reason']] = reasons.get(r['reason'], 0) + 1
+        layer, fin = cell['bounds'].get('layer') or {}, cell['bounds'].get('state_finalize') or {}
+        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (
+            name, cell['role'], _cell(cell['successors']), _cell(cell['overlap']), _cell(cell['none']),
+            cell.get('control_as_expected', '-'), '; '.join('%s x%d' % kv for kv in sorted(reasons.items())) or '-',
+            '/'.join(str(layer.get(k, 0)) for k in ('lo', 'hi', 'both')), '/'.join(str(fin.get(k, 0)) for k in ('lo', 'hi', 'both')),
+            _cell(layer.get('width_ns_median')), cell['observe_lines'], cell['observe_bytes'], cell['error'] or '-'))
+    return lines
+
+
+def numbers_report(result):
+    nums = result['arm_numbers']
+    lines = ['', '### Beside the C0/C1 numbers, per arm (a read)', '',
+             'Episode loss: %s. Memory read against %s.' % (nums['episode_loss_rule'], nums['memory_against']), '',
+             '| arm | c1 | defer | prefill tok/s | TTFT s | decode ratio | episode loss s | stage 0 s/chunk slow rank | '
+             'stage 1 s/chunk slow rank | rank 0 (stage 0) min free / max reserved / retries / OOMs | min free per rank | '
+             'memory read | vs C1 off: prefill ratio | vs C1 on: prefill ratio / episode loss delta s |',
+             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+    for name, n in nums['arms'].items():
+        r0 = n['stage0_rank0'] or {}
+        off, on = n.get('vs_c1_off') or {}, n.get('vs_c1_on') or {}
+        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s / %s / %s / %s | %s | %s | %s | %s |' % (
+            name, n['c1'], n['defer_bind'], _cell(n['prefill_tok_s']), _cell(n['ttft_s'], 3), _cell(n['decode_ratio'], 4),
+            _cell(n['episode_loss_s'], 3), _cell(n['stage_s_per_chunk_slow_rank']['0'], 4),
+            _cell(n['stage_s_per_chunk_slow_rank']['1'], 4), _cell(r0.get('min_free_mib')), _cell(r0.get('max_reserved_mib')),
+            _cell(r0.get('alloc_retries')), _cell(r0.get('ooms')),
+            ','.join('%s:%s' % (r, _cell(v['min_free_mib'])) for r, v in n['ranks'].items()) or '-',
+            '%s (%s)' % (n['memory_read']['verdict'], n['memory_read']['against'] or '-'), _cell(off.get('prefill_ratio'), 4),
+            '%s / %s' % (_cell(on.get('prefill_ratio'), 4), _cell(on.get('episode_loss_delta_s'), 3)) if on else '-'))
+    return lines
 
 
 def main(argv=None):
@@ -720,7 +1028,8 @@ def main(argv=None):
     r.add_argument('--model', required=True)
     r.add_argument('--run-id', required=True)
     r.add_argument('--epoch', type=int, required=True)
-    r.add_argument('--c1', choices=tuple(T.C1), required=True, help='this arm\'s C1 selection: on (overlap) or off (C0 local)')
+    r.add_argument('--c1', choices=tuple(T.C1), required=True,
+                   help='this arm\'s C1 selection: on (overlap), defer (overlap with the deferred PP bind) or off (C0 local)')
     r.add_argument('--size', type=int, choices=T.SIZES, required=True, help='this arm\'s layer group size; fused and burst in every arm')
     r.add_argument('--cohort', choices=progress.COHORTS, required=True)
     r.add_argument('--index', type=int, choices=T.INDEXES, required=True)

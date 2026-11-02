@@ -11,13 +11,14 @@ unchanged), the core-then-tail structure and the read. Declared deltas, each app
              alpha_next_c1_gate (the budget reader and the cap comments); the history comments keep their names;
   budget     the draft reads alpha_next_c1_gate: alpha-next's formulas, relative to the run's own start only (ACTIVE_S,
              LAST_ARM_ENTRY_S for core arms, LAST_TAIL_ENTRY_S for the g4 tail), no window;
-  switches   FLASH_S5_STAGE_OVERLAP=1 in EXTRA_ENV after alpha-next's FLASH_S5_HANDLER_ANATOMY=1, asserted in the declaration and
-             the preflight beside alpha-next's asserts;
+  switches   FLASH_S5_STAGE_OVERLAP=1 FLASH_S5_STAGE_OVERLAP_DEFER_BIND=1 FLASH_S5_STAGE_OVERLAP_OBSERVE=1 in EXTRA_ENV after
+             alpha-next's FLASH_S5_HANDLER_ANATOMY=1 (C1, the deferred PP bind installed, the overlap observation; the whole run),
+             each asserted in the declaration and the preflight beside alpha-next's asserts;
   pins       the declaration pins alpha-next's files and adds e3_alpha_next_c1_box.py alpha_next_c1_gate.py
-             alpha_next_c1_arms.py (the draft's interface list too). No bundle, manifest or package digest is written here
+             alpha_next_c1_arms.py c1_overlap_read.py (the draft's interface list too). No bundle, manifest or package digest is written here
              (alpha-next's way);
   body       alpha-next's body with the C1 selection in place of the C0 selection: labels ``c1on.g2-live-0``, the arm call
-             ``--c1 on|off`` (C0 local is selected by the box in every arm), the core arms (alpha_next_c1_arms part 'core'),
+             ``--c1 on|off|defer`` (C0 local and defer_bind are selected by the box in every arm), the core arms (alpha_next_c1_arms part 'core'),
              the core grade (the queue's verdict), then the g4 tail (part 'tail', reads only) and the read over every arm.
 No model setting, gate threshold, launcher or restore change. The arm lists come from harness/alpha_next_c1_arms.py; --check
 verifies the files.
@@ -33,16 +34,18 @@ import alpha_next_c1_arms as table  # noqa: E402
 
 OLD, NEW = alpha_next.NEW, 'q18a_alpha_next_c1'
 OLD_Q, NEW_Q = alpha_next.NEW_Q, 'q18a-alpha-next-c1'
-SWITCH = 'FLASH_S5_STAGE_OVERLAP=1'
+SWITCH_NAMES = ('FLASH_S5_STAGE_OVERLAP', 'FLASH_S5_STAGE_OVERLAP_DEFER_BIND', 'FLASH_S5_STAGE_OVERLAP_OBSERVE')
+SWITCH = ' '.join(name + '=1' for name in SWITCH_NAMES)
 CORE = tuple('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED))
 TAIL = tuple(table.labels('tail'))
-HEADER_NOTE = ('# alpha-next-c1: this queue compares C1 (two chunks in flight, one command in flight per stage) with C0\'s local\n'
-               '# path on the alpha-next engine (fused, layer groups and C0 stage-local installed, plus FLASH_S5_STAGE_OVERLAP=1),\n'
-               '# matched per arm by the typed native_stage_local {local: true, overlap} control: a core of %d arms (band 1 ABBA C1\n'
-               '# on/off, live and solo, at size 2 over %d rounds; band 2 matched at size 2), whose grade is the queue verdict, then a\n'
-               '# g4 tail of %d C1-on arms, reads only. Mechanism gates (crash-free, TP commitment, group, C0 and C1 engagement, one\n'
-               '# command in flight per stage, OOM); numerics on the greedy standing streams, speed, decode and memory are reported;\n'
-               '# release readiness is not assessed.\n#\n' % (
+HEADER_NOTE = ('# alpha-next-c1: this queue compares C1 (two chunks in flight, one command in flight per stage) and C1 with the\n'
+               '# deferred PP bind with C0\'s local path on the alpha-next engine (fused, layer groups and C0 stage-local installed,\n'
+               '# plus FLASH_S5_STAGE_OVERLAP=1, FLASH_S5_STAGE_OVERLAP_DEFER_BIND=1 and FLASH_S5_STAGE_OVERLAP_OBSERVE=1), matched per\n'
+               '# arm by the typed native_stage_local {local: true, overlap, defer_bind} control: a core of %d arms (band 1 ABBA C1\n'
+               '# on/off and defer/on, live and solo, at size 2 over %d rounds; band 2 matched at size 2), whose grade is the queue\n'
+               '# verdict, then a g4 tail of %d C1-on arms, reads only. Mechanism gates (crash-free, TP commitment, group, C0 and C1\n'
+               '# engagement, the acknowledged defer_bind, one command in flight per stage, OOM); numerics on the greedy standing\n'
+               '# streams, speed, decode, memory and the overlap observation are reported; release readiness is not assessed.\n#\n' % (
                    len(table.arms('core')), table.BAND1_ROUNDS, len(TAIL)))
 
 # The body: alpha-next's, with these edits (each old text must be there; every occurrence replaced).
@@ -61,7 +64,7 @@ BODY_EDITS = (
     ('python3 "$H/e3_alpha_next_box.py"', 'python3 "$H/e3_alpha_next_c1_box.py"'),
     ('--stage-local "${_c0#c0}"', '--c1 "${_c1#c1}"'),
     ("'auto arm: 8 standing decoders, burst, fused, the group size and the C0 selection, fresh, append; live keeps them, solo cancels'",
-     "'auto arm: 8 standing decoders, burst, fused, the group size, C0 local and the C1 selection, fresh, append; live keeps them, solo cancels'"),
+     "'auto arm: 8 standing decoders, burst, fused, the group size, C0 local, the C1 selection and defer_bind, fresh, append; live keeps them, solo cancels'"),
     ('$Q/alpha-next-', '$Q/alpha-next-c1-'),
     ("record alpha-next \"$?\" 'core arms: per-arm mechanism (crash-free, TP commitment, group and C0 engagement), numerics envelope, "
      "complete progress lines; speed, decode and memory descriptive'",
@@ -101,18 +104,23 @@ DECLARE_NAMES = (
 SETTINGS_NAMES = (
     ('QNAME=${QNAME:-q18a-alpha-next}', 'QNAME=${QNAME:-q18a-alpha-next-c1}', 1),
 )
-C1_FILES = 'e3_alpha_next_c1_box.py alpha_next_c1_gate.py alpha_next_c1_arms.py'
+C1_FILES = 'e3_alpha_next_c1_box.py alpha_next_c1_gate.py alpha_next_c1_arms.py c1_overlap_read.py'
 INTERFACE_OLD = alpha_next.INTERFACE_NEW
 INTERFACE_NEW = INTERFACE_OLD[:-len('; do')] + ' \\\n  ' + C1_FILES + '; do'
 PINS_OLD = alpha_next.PINS_NEW
 PINS_NEW = PINS_OLD + C1_FILES + ' '
 SETTINGS_OLD = alpha_next.SETTINGS_OLD + alpha_next.SWITCHES + ' '
 SETTINGS_ANCHOR = alpha_next.SETTINGS_NOTE.splitlines()[0]
-SETTINGS_NOTE = ('# alpha-next-c1: FLASH_S5_STAGE_OVERLAP=1 (C1) below, the only setting added to alpha-next; each arm selects C1 on\n'
-                 '# or off (with C0 local) by typed control.\n')
-DRAFT_SWITCHES = alpha_next.DRAFT_SWITCHES + "assert env.get('FLASH_S5_STAGE_OVERLAP') == '1', 'alpha-next-c1 stage-overlap switch (C1)'\n"
-DECLARE_SWITCHES = (alpha_next.DECLARE_SWITCHES
-                    + "assert env.get('FLASH_S5_STAGE_OVERLAP')=='1', 'alpha-next-c1 runs with the stage-overlap switch installed'\n")
+SETTINGS_NOTE = ('# alpha-next-c1: FLASH_S5_STAGE_OVERLAP=1 (C1), FLASH_S5_STAGE_OVERLAP_DEFER_BIND=1 (the deferred PP bind installed)\n'
+                 '# and FLASH_S5_STAGE_OVERLAP_OBSERVE=1 (the overlap observation lines) below, for the whole run, the only settings\n'
+                 '# added to alpha-next; each arm selects C1 off, on or defer (with C0 local) and its defer_bind by typed control.\n')
+SWITCH_ROLES = {'FLASH_S5_STAGE_OVERLAP': ('stage-overlap switch (C1)', 'the stage-overlap switch installed'),
+                'FLASH_S5_STAGE_OVERLAP_DEFER_BIND': ('deferred PP bind installed', 'the deferred PP bind installed'),
+                'FLASH_S5_STAGE_OVERLAP_OBSERVE': ('overlap observation', 'the overlap observation')}
+DRAFT_SWITCHES = alpha_next.DRAFT_SWITCHES + ''.join(
+    "assert env.get('%s') == '1', 'alpha-next-c1 %s'\n" % (name, SWITCH_ROLES[name][0]) for name in SWITCH_NAMES)
+DECLARE_SWITCHES = alpha_next.DECLARE_SWITCHES + ''.join(
+    "assert env.get('%s')=='1', 'alpha-next-c1 runs with %s'\n" % (name, SWITCH_ROLES[name][1]) for name in SWITCH_NAMES)
 
 
 def replace_once(text, old, new, count=1):
@@ -150,11 +158,11 @@ def table_text():
     """The arm table as the draft runs it, with each part's relative entry limit and the expected runtime (descriptive)."""
     import alpha_next_c1_gate as gate
     lines = ['q18a-alpha-next-c1 arm table (harness/alpha_next_c1_arms.py); entry limits relative to the run start, never a clock',
-             '%-3s %-16s %-5s %-4s %-4s %-6s %-4s %-5s %s' % ('#', 'label', 'part', 'c1', 'size', 'cohort', 'band', 'round',
+             '%-3s %-17s %-5s %-5s %-5s %-4s %-6s %-4s %-5s %s' % ('#', 'label', 'part', 'c1', 'defer', 'size', 'cohort', 'band', 'round',
                                                           'enters while SECONDS <=')]
     for k, row in enumerate(table.arms(), 1):
-        lines.append('%-3d %-16s %-5s %-4s %-4d %-6s %-4d %-5d %s %d s' % (
-            k, row['label'], row['part'], row['c1'], row['size'], row['cohort'], row['band'], row['index'], row['entry_limit'],
+        lines.append('%-3d %-17s %-5s %-5s %-5s %-4d %-6s %-4d %-5d %s %d s' % (
+            k, row['label'], row['part'], row['c1'], str(row['defer_bind']).lower(), row['size'], row['cohort'], row['band'], row['index'], row['entry_limit'],
             gate.ENTRY_LIMIT_S[row['entry_limit']]))
     exp = gate.EXPECTED_RUNTIME_S
     e = exp['nominal']
@@ -166,6 +174,13 @@ def table_text():
                  '%.1f min with the end; smallest entry margin %d s' % (
                      e['arms_entering'], e['core_arms_entering'], e['tail_arms_entering'], e['last_core_arm_enters_s'],
                      e['last_arm_ends_s'], e['total_min'], e['min_margin_s']))
+    slow = exp['slower']
+    lines.append('at %.1fx the walls: arms entering %d (core %d); not run: %s' % (
+        gate.SLOWER, slow['arms_entering'], slow['core_arms_entering'], ', '.join(slow['not_run']) or 'none'))
+    b2 = exp['band2_defer']
+    lines.append('band 2 C1-defer arms (BAND2_DEFER %s): with them %d arms, about %.1f min at the walls; at %.1fx not run: %s' % (
+        table.BAND2_DEFER, b2['nominal']['arms_entering'], b2['nominal']['total_min'], gate.SLOWER,
+        ', '.join(b2['slower']['not_run']) or 'none'))
     return '\n'.join(lines)
 
 
@@ -173,6 +188,9 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--check', action='store_true')
     p.add_argument('--table', action='store_true', help='print the arm table with its entry limits; write nothing')
+    p.add_argument('--replace-derived', action='store_true',
+                   help='write a derived text that differs from the one on disk (only for a text no queue has run: the old one '
+                        'stays in git)')
     a = p.parse_args(argv)
     if a.table:
         print(table_text())
@@ -182,7 +200,8 @@ def main(argv=None):
         if a.check:
             assert path.read_text() == text, name
         else:
-            assert not path.exists() or path.read_text() == text, 'refusing to change an existing derived text: ' + name
+            assert a.replace_derived or not path.exists() or path.read_text() == text, (
+                'refusing to change an existing derived text: ' + name)
             path.write_text(text)
             path.chmod(0o664)
     print('alpha-next-c1 queue ' + ('verified' if a.check else 'written'))
