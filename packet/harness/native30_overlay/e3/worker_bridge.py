@@ -153,13 +153,14 @@ def peak_reset(cuda=None):
     if not cuda.is_initialized():
         return None
     cuda.reset_peak_memory_stats()
-    return int(cuda.memory_stats().get('allocated_bytes.all.current', -1))
+    return int(cuda.memory_allocated())
 
 
 def peak_receipt(rank, transaction, at_open, cuda=None):
     """alpha-next (REPORT.md option 2): one rank's peak allocated and reserved bytes since the chunk's open.
 
-    Receipt only, never a control-flow input. ``stage_timer`` says whether stock QSA_STAGE_TIMING is on: its own
+    Receipt only, never a control-flow input; it reads max_memory_allocated/max_memory_reserved (no memory_stats call,
+    so the inherited `flash-s5 memory` receipt's queries are unchanged). ``stage_timer`` says whether stock QSA_STAGE_TIMING is on: its own
     periodic peak reset then makes these values a lower bound. ``None`` when CUDA is not initialized.
     """
     if cuda is None:
@@ -167,11 +168,10 @@ def peak_receipt(rank, transaction, at_open, cuda=None):
         cuda = torch.cuda
     if not cuda.is_initialized():
         return None
-    stats = cuda.memory_stats()
     return dict(rank=int(rank), txn_seq=int(transaction.txn_seq), chunk_start=int(transaction.chunk_start),
                 chunk_end=int(transaction.chunk_end),
-                peak_allocated=int(stats.get('allocated_bytes.all.peak', -1)),
-                peak_reserved=int(stats.get('reserved_bytes.all.peak', -1)),
+                peak_allocated=int(cuda.max_memory_allocated()),
+                peak_reserved=int(cuda.max_memory_reserved()),
                 allocated_at_open=-1 if at_open is None else int(at_open),
                 stage_timer=int(os.environ.get('QSA_STAGE_TIMING', '0') == '1'))
 
@@ -807,15 +807,15 @@ class NativeWorkerBridge:
             self.memory_receipt_errors += 1
 
     def _peak_open(self):
-        """alpha-next: reset the allocator peak at the chunk's open; a failure is counted, never raised."""
+        """alpha-next: reset the allocator peak at the chunk's open; a failure is counted (peak_receipt_errors), never raised."""
         try:
             self._peak_at_open = peak_reset(cuda=self._memory_cuda)
         except Exception:
             self._peak_at_open = None
-            self.memory_receipt_errors += 1
+            self.peak_receipt_errors = getattr(self, 'peak_receipt_errors', 0) + 1
 
     def _peak_receipt(self, transaction):
-        """alpha-next: the chunk's peak-allocated receipt line; a failure is counted, never raised."""
+        """alpha-next: the chunk's peak-allocated receipt line; a failure is counted (peak_receipt_errors), never raised."""
         try:
             row = peak_receipt(self.rank, transaction, getattr(self, '_peak_at_open', None),
                                cuda=self._memory_cuda)
@@ -828,7 +828,7 @@ class NativeWorkerBridge:
                 row['chunk_end'], row['peak_allocated'], row['peak_reserved'], row['allocated_at_open'],
                 row['stage_timer'])
         except Exception:
-            self.memory_receipt_errors += 1
+            self.peak_receipt_errors = getattr(self, 'peak_receipt_errors', 0) + 1
 
     def _route_fail(self, reason):
         self._route_failure = reason

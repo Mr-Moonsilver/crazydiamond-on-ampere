@@ -2,7 +2,8 @@
 """alpha-next per-chunk peak-allocated receipt (REPORT.md option 2; lead 2 Nov 13:30): recorded, never gating (CPU).
 
 The bridge resets the allocator peak at a chunk's open and writes one `flash-s5 memory-peak ` line at its release, both
-only where the `flash-s5 memory` receipts already run (FLASH_S5_AUTO_ARM). A failure is counted, never raised; no CUDA
+only where the `flash-s5 memory` receipts already run (FLASH_S5_AUTO_ARM). A failure is counted in its own peak_receipt_errors (the inherited memory_receipt_errors and the memory_stats
+queries are unchanged), never raised; no CUDA
 means no line; the line is invisible to every inherited memory grader (they match `flash-s5 memory point=`).
 """
 import ast
@@ -44,13 +45,21 @@ class PeakCuda:
         self.resets += 1
         self.peak_allocated, self.peak_reserved = self.allocated, self.reserved
 
+    def memory_allocated(self):
+        return self.allocated
+
+    def max_memory_allocated(self):
+        return self.peak_allocated
+
+    def max_memory_reserved(self):
+        return self.peak_reserved
+
     def memory_stats(self):
-        return {'allocated_bytes.all.current': self.allocated, 'reserved_bytes.all.current': self.reserved,
-                'allocated_bytes.all.peak': self.peak_allocated, 'reserved_bytes.all.peak': self.peak_reserved}
+        raise AssertionError('the peak receipt never calls memory_stats (the inherited receipt owns those queries)')
 
 
 def bridge(cuda, rank=2):
-    return SimpleNamespace(rank=rank, _memory_cuda=cuda, memory_receipt_errors=0)
+    return SimpleNamespace(rank=rank, _memory_cuda=cuda, memory_receipt_errors=0, peak_receipt_errors=0)
 
 
 TX = SimpleNamespace(txn_seq=7, chunk_start=44528, chunk_end=45552)
@@ -74,7 +83,7 @@ class PeakReceipt(unittest.TestCase):
         m = self.chunk(cuda, b, [(300, 1000), (250, 1200), (120, 1200)])
         self.assertIsNotNone(m)
         self.assertEqual(tuple(int(x) for x in m.groups()), (2, 7, 44528, 45552, 300, 1200, 100, 0))
-        self.assertEqual((cuda.resets, b.memory_receipt_errors), (1, 0))
+        self.assertEqual((cuda.resets, b.peak_receipt_errors, b.memory_receipt_errors), (1, 0, 0))
 
     def test_stage_timer_marks_a_lower_bound(self):
         cuda = PeakCuda()
@@ -89,19 +98,19 @@ class PeakReceipt(unittest.TestCase):
         wb.NativeWorkerBridge._peak_open(b)
         with self.assertNoLogs('worker_bridge', level='INFO'):
             wb.NativeWorkerBridge._peak_receipt(b, TX)
-        self.assertEqual((cuda.resets, b.memory_receipt_errors), (0, 0))
+        self.assertEqual((cuda.resets, b.peak_receipt_errors), (0, 0))
 
     def test_failure_is_counted_never_raised(self):
         class Broken(PeakCuda):
             def reset_peak_memory_stats(self):
                 raise RuntimeError('x')
 
-            def memory_stats(self):
+            def max_memory_allocated(self):
                 raise RuntimeError('y')
         b = bridge(Broken())
         wb.NativeWorkerBridge._peak_open(b)
         wb.NativeWorkerBridge._peak_receipt(b, TX)
-        self.assertEqual(b.memory_receipt_errors, 2)
+        self.assertEqual((b.peak_receipt_errors, b.memory_receipt_errors), (2, 0))
         self.assertIsNone(b._peak_at_open)
 
     def test_missing_open_reads_minus_one(self):
