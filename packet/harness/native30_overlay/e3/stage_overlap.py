@@ -612,8 +612,12 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 command = self._retry
                 if command is None:
                     continue
-                accepted = {rank for rank, op_seq in self.accepted_tickets if op_seq == command.op_seq}
-                if not accepted or set(self._targets) <= accepted:
+                # op_seq repeats across stages and accepted_tickets is the chunk's (both stages'):
+                # only this command's own targets count (as the trunk fix, alpha-trunk-stopfix 5c7dbb5).
+                targets = set(self._targets)
+                accepted = {rank for rank, op_seq in self.accepted_tickets
+                            if op_seq == command.op_seq and rank in targets}
+                if not accepted or targets <= accepted:
                     continue
                 if command.transaction != self.tx:
                     raise DriverError('stop found a foreign partially accepted command')

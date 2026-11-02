@@ -603,6 +603,43 @@ class StopStates(OverlapBase):
     def test_first_frame_partial_prepare_then_stop_overlap_unselected(self):
         self.first_frame_partial_prepare(overlap=False)
 
+    def test_other_stage_ticket_with_the_same_op_seq_is_not_an_acceptance(self):
+        """op_seq repeats across stages and accepted_tickets is the chunk's.  Planted state
+        (declared): stage 0's retained PREPARE with rank 0's acceptance swapped for a stage-1
+        rank's ticket of the same op_seq; the stop must not count it (no replay).  The real
+        tickets are then restored and the stop finishes as in the first-frame case."""
+        network = self.network()
+        driver = network.driver
+        dispatcher = network.workers[1].dispatcher
+        real = dispatcher.submit
+        first = []
+
+        def busy(command, real=real):
+            if not first:
+                first.append(command)
+            if command.transaction == first[0].transaction and command.op_seq == first[0].op_seq \
+                    and len(first) < 3:
+                first.append(command)
+                raise E3Pending('test: peer busy')
+            return real(command)
+        dispatcher.submit = busy
+        self.reach(network, lambda: len(first) >= 2 and driver._frames
+                   and driver._frames[0].stage[0]['_retry'] is not None)
+        frame = driver._frames[0]
+        op = frame.stage[0]['_retry'].op_seq
+        tickets = frame.chunk['accepted_tickets']
+        real_tickets = dict(tickets)
+        ticket = tickets.pop((0, op))
+        tickets[(2, op)] = ticket
+        replays = driver.overlap_counters['partial_replays']
+        self.assertFalse(driver._stop_partial_segment(frame))
+        self.assertEqual(driver.overlap_counters['partial_replays'], replays)
+        tickets.clear()
+        tickets.update(real_tickets)
+        self.finish(network)
+        self.assertGreater(driver.overlap_counters['partial_replays'], replays)
+        self.assertEqual(network.controller.commits, 0)
+
 
 class Control(OverlapBase):
     """The per-arm selection: ``native_stage_local {local, overlap}`` at paused idle FULL."""
