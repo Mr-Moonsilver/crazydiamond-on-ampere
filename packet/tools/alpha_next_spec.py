@@ -56,6 +56,9 @@ HEADER = [
     'Queue: Step B\'s startup and cleanup with FLASH_S5_STAGE_LOCAL=1 added; core ABBA C0 on/off arms at size 2 over both bands, then '
     'the size 4 C0-on tail (reads only), matched by the typed native_stage_local and native_layer_group selections; no production start.',
 ]
+# Hub-side files the gate chain writes after the build: never bundled, so writing them cannot move the bundle it pins
+# (tools/alpha_next_queue_pins_write.py proves the same over each build OUT).
+HUB_SIDE = ('tools/alpha_next_queue_pins.json',)
 FOCUSED_DELTA = ['test_e3_stage_local', 'test_e3_stage_local_control', 'test_e3_stage_local_qsa', 'test_stage1_handler_anatomy',
                  'test_e3_native_anatomy', 'test_e3_native_lean_replies', 'test_alpha_next_stopfix_matrix', 'test_alpha_next_c0_ring',
                  'test_alpha_next_peak_receipt', 'test_alpha_next_receipts', 'test_alpha_next_receipts_mutants',
@@ -133,7 +136,9 @@ def generate(scratch, expected_tests, pre_queue=False):
     for name in TOOLS_REPLACED:
         assert 'M\ttools/' + name in paths, ('replaced tool not an M row', name)
     tools = sorted(row.split('\t', 1)[1][len('tools/'):] for row in paths
-                   if row.startswith('A\ttools/') and row.count('/') == 1 and row.endswith(('.py', '.json')))
+                   if row.startswith('A\ttools/') and row.count('/') == 1 and row.endswith(('.py', '.json'))
+                   and row.split('\t', 1)[1] not in HUB_SIDE)
+    assert not set(HUB_SIDE) & {'tools/' + n for n in tools}, 'a hub-side file would be bundled'
     moved = overlay.propose(scratch)
     assert moved['added'] == sorted(NEW_OVERLAY) and not moved['removed'], moved
     dense = STEP_B['engine_selfrun']

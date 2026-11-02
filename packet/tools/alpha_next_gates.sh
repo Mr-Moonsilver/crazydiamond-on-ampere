@@ -22,7 +22,7 @@
 #   The VM run needs the built bundle, so with no VM_RECORD in the environment the chain stops after the staging check; the delivery
 #   tool is then run by hand with --vm (or with VM_RECORD set, by this chain). The chain stops there on purpose and logs it.
 #   composition -> review pins -> strict -> focused -> composition test -> prepare review + commit -> build (with alpha-next-freeze.json)
-#   -> bundle self-run -> engine self-run -> comparison -> negative -> tamper -> clock scan -> compile proof -> precheck conf
+#   -> bundle self-run -> queue pins write + check (tools/alpha_next_queue_pins.json, committed by the lead) -> engine self-run -> comparison -> negative -> tamper -> clock scan -> compile proof -> precheck conf
 #   -> precheck -> staging check -> [delivery when VM_RECORD is set].
 # Stops at the first failing step; every rc is logged in $EVID/gates-$TAG.steps.
 set -u
@@ -93,6 +93,14 @@ RUNNER=$OUT/q18a-alpha-next-owner-run-$P12.py
 python3 -B tools/native43_bundle_selfrun.py --spec "$SPEC" --bundle "$HELD" --out "$OUT/selfrun" \
     --name "alpha-next-hub-cpu-$P12" --runner "$RUNNER" >"$OUT/selfrun-stdout.json" 2>&1
 step bundle-selfrun $?
+
+# Hub-side queue pins (tools/alpha_next_queue_pins.json): bundle, overlay and package identity from this build, then checked
+# against OUT. The lead commits the pins file; the chain does not. A re-run over filled pins needs PINS_SUPERSEDE="reason".
+python3 -B tools/alpha_next_queue_pins_write.py --out "$OUT" ${PINS_SUPERSEDE:+--supersede "$PINS_SUPERSEDE"} \
+    >"$OUT/queue-pins-write.log" 2>&1
+step queue-pins-write $?
+python3 -B tools/alpha_next_queue_pins_write.py --out "$OUT" --check >"$OUT/queue-pins-check.log" 2>&1
+step queue-pins-check $?
 
 python3 -B tools/alpha_next_engine_selfrun.py --spec "$SPEC" --tree "$WT" --bundle "$HELD" --out "$OUT/engine-selfrun" \
     --name "alpha-next-engine-cpu-$P12" >"$OUT/engine-selfrun-stdout.log" 2>&1

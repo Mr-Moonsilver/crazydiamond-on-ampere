@@ -7,7 +7,9 @@ tools/step_b_delivery.py's assertions over the alpha-next records, with C0's sha
 the VM record is optional (--vm; absent means NOT_RUN in the record), the engine diff declares the added modules as 'A' rows, and the
 freeze is alpha_next_freeze's record ('alpha-next-freeze/1', verdict PASS, written by tools/build_alpha_next.py). The staging check
 is tools/alpha_next_staging_check.py (Step B's check). The dense container's left-out ids (declared clock-bound and robust-swap ids)
-are read back from its own suites.log and the composed container's declared exclusions from its record.
+are read back from its own suites.log and the composed container's declared exclusions from its record. The hub-side queue pins
+(tools/alpha_next_queue_pins.json, written by tools/alpha_next_queue_pins_write.py from this build's OUT) must hold exactly this
+build's bundle, overlay and package identity (alpha_next_queue_pins_write.check: recomputed from OUT, same OUT, outside the build).
 """
 import argparse
 import hashlib
@@ -83,6 +85,10 @@ def main():
     assert st['schema'] == 'alpha-next-staging-check/1' and st['verdict'] == 'PASS' and all(st['negative_controls_refused'].values())
     assert st['runner_sha256'] == b['runner_sha256'] == sha(b['runner'])
     assert st['selfrun_sha256'] == sha(a.queue) and st['engine_selfrun_sha256'] == sha(a.engine)
+    # The hub-side queue pins (tools/alpha_next_queue_pins.json) hold exactly this build's bundle, overlay and package identity.
+    import alpha_next_queue_pins_write as queue_pins
+    qp = queue_pins.check(a.build.parent)
+    assert qp['harness_bundle_sha256'] == b['manifest'] and qp['overlay_manifest_sha256'] == b['overlay_manifest']
     pins = json.loads(PINS.read_text())
     assert pins['schema'] == 'alpha-next-negative-pins/1' and pins['tests'] and pins['observation'], 'negative pins not observed yet'
     assert neg['pinned_tests'] == len(pins['tests']) and sha(pins['observation']['observed_json']) == pins['observation']['observed_sha256']
@@ -126,6 +132,7 @@ def main():
                              tests=neg['suites'].get('tests'), container_rc=neg['container_rc'], overlay_manifest=neg['overlay_manifest'],
                              pins=dict(count=len(pins['tests']), cases=len(pins['cases']), path='tools/alpha_next_negative_pins.json',
                                        sha256=sha(PINS), observation=pins['observation'], discovery=pins.get('discovery'))),
+               queue_pins=qp,
                overlay_tamper=dict(path=str(a.tamper), sha256=sha(a.tamper), verdict=tam['verdict'], cases=len(tam['cases'])),
                queue_selfrun=dict(path=str(a.queue), sha256=sha(a.queue), verdict=q['verdict'], rc=q.get('rc'),
                                   tests_run=q['tests_run'], skips=q['skips'], container=q.get('container'),
