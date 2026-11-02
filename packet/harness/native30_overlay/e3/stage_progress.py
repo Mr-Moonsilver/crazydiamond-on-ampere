@@ -77,6 +77,28 @@ def stage_local_enabled(env):
     return value == '1'
 
 
+def ring_limiting_readers(sender, need):
+    """Reader indices that still owe a read on a written slot of the next ``need``; a pure query.
+
+    alpha-next C0 ring reading (assessment 4C.6): reported, never consulted.  Reader
+    ``i`` is metadata column ``1 + i``, the ring's i-th local reader (declared: the
+    workers attach in rank order, so reader i is the i-th rank of the executor).
+    """
+    queue = getattr(sender, 'queue', None)
+    buffer = getattr(queue, 'buffer', None)
+    metadata = getattr(buffer, 'get_metadata', None)
+    index = getattr(queue, 'current_idx', None)
+    size = getattr(buffer, 'max_chunks', None)
+    if not callable(metadata) or type(index) is not int or type(size) is not int:
+        return ()
+    owing = set()
+    for offset in range(min(need, size)):
+        with metadata((index + offset) % size) as slots:
+            if slots[0] and sum(slots[1:]) != buffer.n_reader:
+                owing.update(i for i, flag in enumerate(slots[1:]) if not flag)
+    return tuple(sorted(owing))
+
+
 def ring_has_headroom(sender, need):
     """True when the next ``need`` broadcast slots are writable; a pure query.
 
@@ -155,6 +177,12 @@ class StagedSegmentDriver(NativeSegmentDriver):
         self._both_since = None
         self._both_ns = 0
         self._headroom_chunk = 0
+        # alpha-next ring reading: time unable to submit and the reader that limits
+        # reclamation, beside headroom_refused (recorded, never consulted).
+        self.stage_ring = dict(blocked_ns=0, episodes=0, blocked_max_ns=0,
+                               limiting={}, limiting_sole={})
+        self._ring_blocked_since = None
+        self._ring_blocked_chunk_ns = 0
 
     # -- scope ------------------------------------------------------------
     @contextmanager
@@ -220,12 +248,42 @@ class StagedSegmentDriver(NativeSegmentDriver):
 
     def _check_headroom(self, real, envelope):
         if self.stop_kind is not None:
+            self._ring_unblocked()
             return    # A stop only needs the ordinary writable slot.
         poll = envelope[0] == 'flash_s5_poll' and type(envelope[1][0]) is PollRequest
-        if not ring_has_headroom(real, (POLL_RESERVE if poll else RING_RESERVE) + 1):
+        need = (POLL_RESERVE if poll else RING_RESERVE) + 1
+        if not ring_has_headroom(real, need):
             self.stage_counters['headroom_refused'] += 1
             self._headroom_chunk += 1
+            self._ring_blocked(real, need)
             raise Backpressure('ring_headroom')
+        self._ring_unblocked()
+
+    def _ring_blocked(self, real, need):
+        """Receipt only: open a blocked episode and name the readers owing a read."""
+        try:
+            if self._ring_blocked_since is None:
+                self._ring_blocked_since = time.monotonic_ns()
+                self.stage_ring['episodes'] += 1
+            owing = ring_limiting_readers(real, need)
+            ranks = self._all_ranks
+            names = [ranks[i] if i < len(ranks) else i for i in owing]
+            for rank in names:
+                self.stage_ring['limiting'][rank] = self.stage_ring['limiting'].get(rank, 0) + 1
+            if len(names) == 1:
+                rank = names[0]
+                self.stage_ring['limiting_sole'][rank] = self.stage_ring['limiting_sole'].get(rank, 0) + 1
+        except Exception:
+            pass
+
+    def _ring_unblocked(self):
+        since, self._ring_blocked_since = self._ring_blocked_since, None
+        if since is None:
+            return
+        elapsed = time.monotonic_ns() - since
+        self.stage_ring['blocked_ns'] += elapsed
+        self.stage_ring['blocked_max_ns'] = max(self.stage_ring['blocked_max_ns'], elapsed)
+        self._ring_blocked_chunk_ns += elapsed
 
     def _submit_observed(self, kind, envelope, ranks, *, timeout_s=None):
         frame, stage = self._scoped_frame, self._scoped_stage
@@ -304,6 +362,7 @@ class StagedSegmentDriver(NativeSegmentDriver):
         self._frames.append(frame)
         self._both_ns = 0
         self._headroom_chunk = 0
+        self._ring_blocked_chunk_ns = 0
         self._show_rest()
 
     def _apply_stage_open(self, values):
@@ -537,13 +596,14 @@ class StagedSegmentDriver(NativeSegmentDriver):
         try:
             _progress_logger().info(
                 'flash-s5 stage-local txn=%d chunk=%d-%d commands=%d,%d both_stages_ns=%d '
-                'first_ns=%s,%s last_ns=%s,%s local_release_ns=%s,%s headroom_refused=%d',
+                'first_ns=%s,%s last_ns=%s,%s local_release_ns=%s,%s headroom_refused=%d '
+                'headroom_blocked_ns=%d',
                 transaction.txn_seq, transaction.chunk_start, transaction.chunk_end,
                 stats['commands'][0], stats['commands'][1], both_ns,
                 stats['first_ns'][0], stats['first_ns'][1],
                 stats['last_ns'][0], stats['last_ns'][1],
                 stats['local_release_ns'][0], stats['local_release_ns'][1],
-                self._headroom_chunk)
+                self._headroom_chunk, self._ring_blocked_chunk_ns)
         except Exception:
             logging.getLogger(__name__).debug('stage line failed', exc_info=True)
 
@@ -678,6 +738,14 @@ class StagedSegmentDriver(NativeSegmentDriver):
                 self._stop_round()
                 self._next_receipt()
                 return True
+        # Stop fix 2 on the staged driver (alpha-next): a stage segment one TP peer
+        # accepted while the other answered pending is replayed, exact, to that
+        # stage's targets before any cancel.  Each stage has its own retry cursor;
+        # the frozen method filters accepted tickets by its targets (op_seq is per lane).
+        for stage in (0, 1):
+            with self._scope(frame, stage):
+                if self._drive_partial_stop_submission():
+                    return True
         return False
 
     def _stop_retained_rows(self, frame):
@@ -775,6 +843,9 @@ class StagedSegmentDriver(NativeSegmentDriver):
         return dict(schema='s5-stage-local/1', selected=self.stage_selected,
                     ring_reserve=RING_RESERVE, poll_reserve=POLL_RESERVE,
                     counters=dict(self.stage_counters),
+                    ring=dict(self.stage_ring, limiting=dict(self.stage_ring['limiting']),
+                              limiting_sole=dict(self.stage_ring['limiting_sole']),
+                              blocked_open=self._ring_blocked_since is not None),
                     frames=[dict(transaction=frame.chunk['tx'].txn_seq,
                                  opened=sorted(frame.opened), released=sorted(frame.released),
                                  phases=[frame.stage[stage]['phase'] for stage in (0, 1)],

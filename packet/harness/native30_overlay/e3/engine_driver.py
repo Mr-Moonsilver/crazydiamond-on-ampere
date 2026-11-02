@@ -28,6 +28,7 @@ Admission is fail-closed.  The E2 scheduler integration that would emit
 optimistic publication) is not implemented in this increment; without that
 marker this driver never parks anything.  See the pass report's Open items.
 """
+import json
 import math
 import time
 import copy
@@ -805,6 +806,10 @@ class TPTailSubmissionObligation:
 
 
 _PROGRESS_LOG = None
+# alpha-next item 1: one engine line per stop partial replay or exhausted stop bound
+# (receipts only; the progress row table is unchanged, so inherited graders read as before).
+STOP_RECEIPT_LINE = 'flash-s5 stop '
+STOP_RECEIPT_SCHEMA = 's5-stop-receipt/1'
 # Plan entries a burst owner wait may advance; every other kind stays on the tick.
 _WAIT_SEGMENT_KINDS = frozenset((SegmentKind.PREFIX, SegmentKind.LAYER, SegmentKind.SUFFIX))
 
@@ -1222,6 +1227,9 @@ class NativeSegmentDriver:
         self.journal_limit = journal_limit
         self._journal = deque(maxlen=journal_limit)
         self._journal_dropped = 0
+        # alpha-next item 1: stop receipts, recorded and never consulted.
+        self._stop_partial_replays = 0
+        self._stop_bound_exhausted = 0
         self.clock_basis = CLOCK_BASIS
         self.control_path = ControlPathCounters(self.engine_epoch)
         self.qsa_control = QsaControlCounters(self.engine_epoch, self.stage_layers)
@@ -3175,14 +3183,59 @@ class NativeSegmentDriver:
         if command.transaction != self.tx or self._command != command:
             raise DriverError('stop found a foreign partially accepted command')
         self._stop_round()
-        self._record('stop_partial_replay', transaction=self.tx.txn_seq,
-                     op_seq=command.op_seq,
-                     segment_kind=getattr(command.kind, 'value', str(command.kind)),
-                     accepted_ranks=sorted(accepted),
-                     pending_ranks=sorted(set(targets) - accepted),
-                     reason=self.stop_kind)
+        row = dict(transaction=self.tx.txn_seq, op_seq=command.op_seq,
+                   segment_kind=getattr(command.kind, 'value', str(command.kind)),
+                   accepted_ranks=sorted(accepted),
+                   pending_ranks=sorted(set(targets) - accepted),
+                   reason=self.stop_kind)
+        self._record('stop_partial_replay', **row)
+        self._stop_partial_replays += 1
+        self._stop_receipt('stop_partial_replay', row)
         self._send_segment(command, targets)
         return True
+
+    def _partial_stop_state(self):
+        """(command, accepted, pending) of a partially accepted retry, or None; reads only."""
+        command = self._retry
+        if command is None or not self._targets:
+            return None
+        targets = set(self._targets)
+        accepted = {rank for rank, op_seq in self.accepted_tickets
+                    if op_seq == command.op_seq and rank in targets}
+        if not accepted or targets <= accepted:
+            return None
+        return command, sorted(accepted), sorted(targets - accepted)
+
+    def _note_stop_bound_exhausted(self):
+        """Receipt for a stop that ran out of rounds; recorded before the refusal, never raises."""
+        try:
+            partial = self._partial_stop_state()
+            row = dict(transaction=self.tx.txn_seq if self.tx is not None else None,
+                       reason=self.stop_kind, stop_rounds=self._stop_ticks,
+                       fused=bool(self._tx_fused),
+                       op_seq=partial[0].op_seq if partial else None,
+                       segment_kind=(getattr(partial[0].kind, 'value', str(partial[0].kind))
+                                     if partial else None),
+                       accepted_ranks=partial[1] if partial else [],
+                       pending_ranks=partial[2] if partial else [])
+            self._stop_bound_exhausted += 1
+            self._record('stop_bound_exhausted', **row)
+            self._stop_receipt('stop_bound_exhausted', row)
+        except Exception:
+            pass
+
+    def _stop_receipt(self, kind, row):
+        """One engine receipt line per stop event, only where progress receipts are installed."""
+        progress = self.progress
+        if progress is None:
+            return
+        try:
+            body = dict(schema=STOP_RECEIPT_SCHEMA, side='engine', kind=kind,
+                        observed_ns=int(self._monotonic_ns()), **row)
+            _progress_logger().info(STOP_RECEIPT_LINE + json.dumps(body, separators=(',', ':'),
+                                                                   sort_keys=True))
+        except Exception:
+            progress.counters['line_errors'] += 1
 
     def _drive_pp_stop_submission(self):
         """Finish a partially accepted transfer before cancelling either end.
@@ -3348,6 +3401,7 @@ class NativeSegmentDriver:
         counters['stop_rounds_max'] = max(counters['stop_rounds_max'], self._stop_ticks)
         counters['stop_ms_max'] = max(counters['stop_ms_max'], int(elapsed * 1e3))
         if elapsed > self.qsa_fused.stall_s:
+            self._note_stop_bound_exhausted()
             raise DriverError('cancellation did not close worker ownership within the bound')
 
     def _stop_round(self):
@@ -3356,6 +3410,7 @@ class NativeSegmentDriver:
         if self._tx_fused:
             return self._fused_stop_round()
         if self._stop_ticks > self.stop_budget:
+            self._note_stop_bound_exhausted()
             raise DriverError('cancellation did not close worker ownership within the bound')
 
     def _receipts_pending(self):
@@ -3985,7 +4040,14 @@ class NativeSegmentDriver:
             result['native_qsa_fused'] = self.qsa_fused.snapshot()
         if self.layer_groups is not None:
             result['native_layer_groups'] = self.layer_groups.snapshot()
+        # alpha-next item 1: stop receipts (engine-lifetime counts, never consulted).
+        result['stop_receipts'] = self.stop_receipts()
         return result
+
+    def stop_receipts(self):
+        """alpha-next item 1: engine-lifetime stop receipt counts (never consulted)."""
+        return dict(partial_replays=self._stop_partial_replays,
+                    bound_exhausted=self._stop_bound_exhausted)
 
     def _status_record_base(self, now=None):
         now = int(self._monotonic_ns()) if now is None else now
@@ -4698,6 +4760,10 @@ class NativeSegmentDriver:
             'refusals': self._profile_refusal_receipt(),
             'basis': 'engine-lifetime-monotonic-count'}
         record['measurement']['qsa_control'] = self.qsa_control.snapshot()
+        record['measurement']['stop_receipts'] = {
+            'partial_replays': self._stop_partial_replays,
+            'bound_exhausted': self._stop_bound_exhausted,
+            'basis': 'engine-lifetime-monotonic-count; recorded, never consulted'}
         record['measurement']['stock_steps_skipped'] = {
             'count': self._stock_steps_skipped,
             'basis': 'engine-lifetime hook bypasses; subtract matching status snapshots'}
