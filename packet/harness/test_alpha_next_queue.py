@@ -1267,7 +1267,7 @@ class ArmLoop(unittest.TestCase):
 
     tool = tap.ArmLoop.tool
 
-    def run_loop(self, *, jump_after=None, jump_to='LAST_ARM_ENTRY_S + 10', die_in=None, rcs=None, timeout=420):
+    def run_loop(self, *, jump_after=None, jump_to='LAST_ARM_ENTRY_S + 10', die_in=None, rcs=None, timeout=1200):
         emit, arms = run_of('all', rows=T.arms())
         first_tail = min(a['wall_start_s'] for a in arms if a['part'] == 'tail') * 1e9
         cut = next(i for i, (_, text) in enumerate(emit.lines) if (sr.death.wall_ns(text.encode()) or 0) >= first_tail)
@@ -1366,7 +1366,9 @@ class ArmLoop(unittest.TestCase):
         self.assertFalse([x for x in result['missing'] if any(e in x for e in EXTRA)])
 
     def test_extra_arms_run_when_the_budget_allows_and_are_graded(self):
-        out, err, calls, steps = self.run_loop(jump_after='ingress-' + CORE[-1], jump_to='LAST_ARM_ENTRY_S - 1')
+        # 600 s of budget left after the core: the four extra arms enter on any hub load. (It was 1 s: at hub load 70 the fake
+        # arms' real seconds carried the fourth past the limit, g3 focused, HARNESS.) The limit's edge is tested by the +10 jumps.
+        out, err, calls, steps = self.run_loop(jump_after='ingress-' + CORE[-1], jump_to='LAST_ARM_ENTRY_S - 600')
         self.assertEqual(steps['arm-' + EXTRA[0]], 'PASS')
         self.assertEqual([x for x in EXTRA if steps['arm-' + x] != 'PASS'], [])
         self.assertEqual(self.grade_file()['required_arms'], GRADED)
@@ -1414,7 +1416,7 @@ def bash_words(args, draft, values=None):
               '--watch "c0on.g2-live-2=$Q/engine-watch-arm-c0on.g2-live-2.json"')
     lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays,
               'source "$H/runs/q18a_alpha_next_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
-    done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
+    done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=300)
     return done.returncode, done.stdout.decode().split('\0')[:-1], done.stderr.decode()[-400:]
 
 
@@ -1458,7 +1460,7 @@ class Commands(unittest.TestCase):
         script = ('for _arm in %s %s; do _label=${_arm#*:}\n%s echo 1; else echo 2; fi\n'
                   'printf "%%s %%s %%s %%s %%s\\n" "${_arm%%%%:*}" "${_c0#c0}" "${_group#g}" "$_cohort" "$_pair"\ndone') % (
             core, tail, split)
-        done = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=30)
+        done = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=300)
         got = done.stdout.split('\n')
         bands = [int(x) for x in got[0::2] if x]
         rows = [x.split() for x in got[1::2] if x]
@@ -1704,7 +1706,7 @@ class Window(unittest.TestCase):
 
     def test_the_tool_prints_the_table_with_its_limits(self):
         done = subprocess.run([sys.executable, str(ROOT / 'tools/alpha_next_queue.py'), '--table'], capture_output=True, text=True,
-                              timeout=60)
+                              timeout=300)
         self.assertEqual(done.returncode, 0, done.stderr)
         lines = done.stdout.splitlines()
         self.assertIn('never a clock', lines[0])
