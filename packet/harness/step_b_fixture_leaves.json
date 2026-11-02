@@ -171,6 +171,14 @@
    "equivalence": "Same manifest schema and refusal checks with test-scale token ids; the real manifests are alpha-perf's, by name, in the frozen bundle",
    "cannot_prove": "Real tokenization and chunk counts on the box",
    "box_evidence": false
+  },
+  {
+   "name": "grade-seam-stubs",
+   "test": "test_step_b_queue.Grade",
+   "replaces": "sa.read_nothing: an attribute e3_step_a_box does not have, set with create=True inside grade_seams; sa.chunk_kinds: e3_step_a_box.chunk_kinds, the real reader of one progress row's command kinds (chunks, profile and layer counts)",
+   "equivalence": "sa.read_nothing replaces no engine object: no grade reads it, it only proves grade_seams restores Step A's module after an exception inside it. sa.chunk_kinds returns the same kinds shape the real reader returns for a progress row (chunks, per-chunk profile and layer counts) with profile queries present, so the real Step B engagement rule runs unchanged and refuses the arm as arm-sent-profile-queries",
+   "cannot_prove": "Real progress rows carrying profile queries on the box",
+   "box_evidence": false
   }
  ]
 }
