@@ -74,5 +74,24 @@ class OneChunk(unittest.TestCase):
         self.assertAlmostEqual(self.out['interval_ms_per_1024'], 40.0)
 
 
+class ArmGroups(unittest.TestCase):
+    """mode is 'burst' for every arm: the group comes from the selection, so fused and stepped never pool."""
+
+    def test_step_a_selection(self):
+        self.assertEqual(report.arm_group('fused-live-0', dict(selection='fused', mode='burst')), ('fused', 'fused', 1))
+        self.assertEqual(report.arm_group('stepped-solo-1', dict(mode='burst')), ('stepped', 'stepped', 1))
+
+    def test_step_b_group_size(self):
+        self.assertEqual(report.arm_group('g4-live-0', dict(selection='g4', size=4)), ('fused.g4', 'fused', 4))
+        self.assertEqual(report.arm_group('s2-live-0', dict()), ('fused.g2', 'fused', 2))
+
+    def test_tokens_hold_no_dash(self):
+        # compare() splits a summary key at the first '-': the token must be whole before it.
+        for name, arm in (('fused-live-0', {}), ('g2-solo-0', {}), ('weird-name-0', dict(selection='a-b'))):
+            token = report.arm_group(name, arm)[0]
+            self.assertNotIn('-', token)
+            self.assertEqual(('%s-live-below-arena' % token).partition('-')[0], token)
+
+
 if __name__ == '__main__':
     unittest.main()
