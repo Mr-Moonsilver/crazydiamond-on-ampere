@@ -71,6 +71,9 @@ def run_modules(names, verbosity=1):
     for name in names:
         suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(importlib.import_module(name)))
     kept, excluded = strip(suite)
+    # Drop the loaded suite before running, as plain unittest does: it held every test instance, so none was freed after it ran
+    # (7.26 GB peak against 4.44 GB on the engine self-run's dense suites, over its container's 6g cap; chain k2, rc 137).
+    del suite
     print('clock-bound excluded: ' + (', '.join(sorted(excluded)) or 'none'), file=sys.stderr, flush=True)
     result = unittest.TextTestRunner(verbosity=verbosity).run(kept)
     return 0 if result.wasSuccessful() else 1
