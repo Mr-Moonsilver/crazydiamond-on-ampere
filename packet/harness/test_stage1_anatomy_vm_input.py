@@ -19,12 +19,13 @@ HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE), str(HERE.parent / 'tools')]
 import test_stage1_handler_anatomy as rigs  # noqa: E402
 import stage1_anatomy_vm_input as vmi  # noqa: E402
+import stage1_anatomy_vm_grade as vm_grade  # noqa: E402
 
 eh, ha, nm = rigs.eh, rigs.ha, rigs.nm
 
 
 class ProbeHelpers(unittest.TestCase):
-    def run_helpers(self, async_scheduling):
+    def run_helpers(self, async_scheduling, record=None):
         marks = []
         with ExitStack() as stack:
             # Rank 2 (stage 1, the output rank's own stage): execute_model returns None, sample_tokens replies.
@@ -52,6 +53,7 @@ class ProbeHelpers(unittest.TestCase):
             scope['stage1_rpc']('execute_model', ('so',), output_rank=2)
             scope['stage1_final_flush']()
             with tempfile.TemporaryDirectory() as out:
+                out = record or out
                 summary = scope['stage1_anatomy_summary'](Path(out))
                 with lzma.open(os.path.join(out, 'stage1-anatomy-lines.jsonl.xz'), 'rt') as handle:
                     archived = [json.loads(line) for line in handle]
@@ -81,6 +83,35 @@ class ProbeHelpers(unittest.TestCase):
         self.assertFalse(marks[0][1]['async_scheduling'])
         self.assertEqual(summary['output_rows_async_thread'], 0)
         self.assertGreater(summary['output_rows_main_thread'], 0)
+
+
+class Grade(unittest.TestCase):
+    """The VM grade on a record made of the rig's own summary and archive."""
+
+    def record(self, root, wrapper='PASS', **change):
+        summary = ProbeHelpers().run_helpers(True, record=root)[0]
+        summary.update(change)
+        with open(os.path.join(root, 'probe.json'), 'w') as handle:
+            json.dump(dict(verdict='PASS', stage1_anatomy=summary), handle, default=str)
+        with open(os.path.join(root, 'result.json'), 'w') as handle:
+            json.dump(dict(verdict=wrapper), handle)
+
+    def test_pass_and_readback(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.record(root)
+            checks, notes, readback = vm_grade.grade(root)
+        self.assertTrue(all(checks.values()), checks)
+        self.assertEqual(readback['torn'], 0)
+        self.assertGreater(readback['rows']['main'], 0)
+
+    def test_fail_and_inc(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.record(root, rows_with_device_forward=0)
+            checks = vm_grade.grade(root)[0]
+        self.assertIs(checks['events_resolve'], False)
+        with tempfile.TemporaryDirectory() as root:
+            checks = vm_grade.grade(root)[0]
+        self.assertIsNone(checks['wrapper_pass'])
 
 
 class ProbePatch(unittest.TestCase):

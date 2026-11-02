@@ -37,6 +37,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'patches/s5_engine')]
 import step_a_vm_input as sa  # noqa: E402
+import decode_probe  # noqa: E402
 from build_native30_held import sha, dump, manifest, verify  # noqa: E402
 from native_readiness import digest, payload_identity, verify_finalized_package  # noqa: E402
 from audit_native_runtime_imports import audit  # noqa: E402
@@ -232,8 +233,10 @@ def build(overlay_src, bundle_manifest, out):
     dump(overlay / 'S5-OVERLAP-GENERATION.json', gen)
     dump(overlay / 'e3/native-overlap-readiness.json', ready)
     manifest(overlay)
-    closure = json.loads((overlay / 'e3/native-implementation-closure.json').read_text())
-    verify_finalized_package(overlay, closure['generated_source_shas'])
+    # The runtime check (native_readiness.verify_package) expects decode_probe.GENERATED_SOURCES, not the closure's own
+    # rows: checking against the closure let stage1-anatomy-b's overlay (no handler_anatomy row) pass here and fail
+    # require_native_ready on the VM.
+    verify_finalized_package(overlay, decode_probe.GENERATED_SOURCES)
     launcher = sha(overlay / 'run-flash-s5-test.sh')
     graph = audit(overlay, ROOT, launcher_sha256=launcher)
     if graph['verdict'] != 'PASS':
