@@ -37,7 +37,7 @@ import random
 import unittest
 from unittest import mock
 
-from test_e3_stage_overlap import OverlapBase, serial_stack  # sets the engine path first
+from test_e3_stage_overlap import OverlapBase, replay_counts, serial_stack  # sets the engine path first
 from e3_types import E3Pending  # noqa: E402
 from lane_comm import PP_SLOTS  # noqa: E402
 from stage_net import stage_of_command, w  # noqa: E402
@@ -558,10 +558,14 @@ class Stops(RebindBase):
         self.assertEqual(retry.kind, slot)
         self.assertEqual({r for r, op in frame.chunk['accepted_tickets'] if op == retry.op_seq}, {0})
         self.assertNotIn(1, driver._frames[0].released)
-        replays = driver.overlap_counters['partial_replays']
+        replays = replay_counts(driver)
         before = len(network.sent_envelopes)
         self.finish(network, hold)
-        self.assertGreater(driver.overlap_counters['partial_replays'], replays)
+        # alpha-next-c1 (HARNESS, composition): the staged stop obligations replay the half-accepted command first (alpha-next's
+        # stop fix 2 on C0's path), so C1's own counter stays and the composed one moves; exactly one path replays.
+        composed, own = replay_counts(driver)
+        self.assertGreater(composed, replays[0])
+        self.assertEqual(own, replays[1])
         self.assertIn((retry.op_seq, retry.kind, retry.descriptor), took)
         replayed = [(m, ranks) for method, m, ranks in map(stage_of_command, network.sent_envelopes[before:])
                     if method == 'flash_s5_submit' and m.op_seq == retry.op_seq
