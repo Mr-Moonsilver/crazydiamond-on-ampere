@@ -35,7 +35,7 @@
     "parent_manifest": "d6b0f69ead0b7d602f5caf879d938ec111162fb3d38fb79e3960b0a6846465f7",
     "queue": "q18a-alpha-c0: alpha-perf's queue with the stage-local switch and eight matched arms over band 1; validity, engagement and generated tokens gated, speed and memory reported; 9,000 s box budget",
     "scope": "stage-local native progress with overlap off, against the frozen serial path; not a release assessment",
-    "source_commit": "095bac9295aaa4de43e973dff23f8fdc9b76f248"
+    "source_commit": "f37ee41a544ff6d5deeec423949f6575fbc6c5da"
   },
   "backend_semantics_provenance": {
     "constructor_and_method_ASTs_equal": true,
@@ -1533,8 +1533,8 @@
     "basis": "fresh full strict registered CPU regression on the packaged tree",
     "cases": 350,
     "exit_code": 0,
-    "log_sha256": "2365b9728f0a0154dfc9bbd3781bbfe617fee3753fbf5a8c1408f8cee94d2239",
-    "reported_tests": 4241,
+    "log_sha256": "de5b251f8351f45938726e8de95248950d6ae5bfa430252a4a8eccd8a3d88300",
+    "reported_tests": 4242,
     "required": 350,
     "skips": 0,
     "suites": 233
@@ -1551,7 +1551,7 @@
   "harness_source_shas": {
     "agent_replay.py": "b448663bca93fdac24d2f0d36e11e7a5d74ce645014c2561deae74ce4e3c63ee",
     "alpha_c0_fixture_leaves.json": "dfbbae0e2798a4f58b3270b1a4629b923634c6c3460a2a8e8792b1ad5ba96fb2",
-    "alpha_c0_gate.py": "35b39042a717f540cec06dabb09085eb30db411d14301970d77ac5cfb5044873",
+    "alpha_c0_gate.py": "28d57e83a809470e2cdb2e6cf5751d52dab516e717efd78d4922c2cfeb419207",
     "alpha_m3_fixture_leaves.json": "5b198646158c248c7adcdf9e75a068a06c596346855e1966e205302b187dfea2",
     "alpha_perf_fixture_leaves.json": "297540e49726959ddc3e551c87fbbe0e25ff5a5c61d06b2a86c0586a0b561649",
     "alpha_perf_gate.py": "1a9e65923e2c9705fb7d1f9abb914de106c4610196c6e4a7e5e7f3fdfa4af942",
@@ -1571,7 +1571,7 @@
     "canary_relay.py": "8e60a60ab2832a768d0177e4b5f4a3b548b172a0eb751d50f92e1aade4a49019",
     "churn_probe.py": "9b3ea3edc3dbc055f70bff6a3e58c3f9e48077ab9047f823eeb3b44e4d5cc6b0",
     "churn_test.py": "6eafb731c10d8f56ce0b693ea51dc3cd550a6ccebfa735096b347fcd592810dd",
-    "clock_bound.py": "c6478e2c426230fed4e9311f71d43e2ee7f7e2c59d247d3b95b29ab89095bbec",
+    "clock_bound.py": "a3d8d069a19dd698e84183a98d2632d5c0fe4406572e247064657d4b3a840b0a",
     "cost_budget_grade.py": "e0c57ff457df6aeb237e64dadbd3c65472f772f39c448010807d8ec6c5c234bd",
     "cov_gate.py": "3afd39313dd4d6e84e3e4dc0fa5ae2c511b2e4a30426684acb682d8c2decab40",
     "cow_invariants.py": "d2f4357856c9bbc754918f446920c83e7a961661e2690855ffbaa1a2c90db0e6",
@@ -1993,7 +1993,7 @@
     "runs/q17b_teacher12.draft.sh": "a2c3527f85310b11765a9055635228ea563367cf4796496639a8c181608d71ac",
     "runs/q17b_teacher12_declare.sh": "3dc6d17990232d642da49d83f2a52dd1e45b44e0a1c5dda3fe0a804d3da42320",
     "runs/q17s_declare.sh": "a91a4762b2cecc4266b30b2edc8389013d3bcaef525034a65c66bfb73e3fcfe0",
-    "runs/q18a_alpha_c0.draft.sh": "3078b19b7805a7940851225f524af617d6c9dc0d92aee67a1a2a9f56b61d25ba",
+    "runs/q18a_alpha_c0.draft.sh": "0108c188875f8c9b8a1b6c529f22e54b77b6d4f170cb189ccce51529f9c2fb14",
     "runs/q18a_alpha_c0_declare.sh": "afa6a1342d97f7a08ef7f033866691a437046523af076f9cc0cfa20cc286bacf",
     "runs/q18a_alpha_c0_settings.sh": "8b2efefd5b0febc0d888411927807473b777a7d40e72b5ab1fe28dc4d5fcafca",
     "runs/q18a_alpha_perf.draft.sh": "451f8484a9fabd9cafa55702920449d6b04d301b1ea12e6ceeb8e309ec745cdc",
@@ -2348,7 +2348,7 @@
     "swap-w6-for-w7.sh": "d16f3be9201dc3cecf25007f59e89831e95f1dfd33c74b9e61d56622254eb4a2",
     "teacher_forced.py": "7d3b3fdf82061df20603513724ee8dcd60d43af9aacacc916969c3f333615656",
     "test_agent_replay.py": "8d0c944c3552ee49a6db4b13fe658ad3f064faa03a083017bb6459d1f8d60453",
-    "test_alpha_c0_queue.py": "bea54fb18a31e4826e97eda36fa342c72d8bfba6c0a169f6471582a13fbf35cb",
+    "test_alpha_c0_queue.py": "1e20a55262062f40628ae66124c8b8629c0b1127f92fe786b0822f71afbc8fd2",
     "test_alpha_c0_report.py": "c24ee3413cf24b85f95c06fbf7d7ee34f1b24ec403eaef2cf3e638543c98320d",
     "test_alpha_m3_receipts.py": "c6bc10b181f9de89239cf545457fb72c20f8a847455fc74a4f88118c9e36fc3b",
     "test_alpha_perf_queue.py": "ea303f98b20001fba01666b6cca199673af311a445efdde2141fb9bd72a5e076",
@@ -3677,9 +3677,9 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "ba8e82c06e4183f4f811d8bee727d4d3ec9cacd19b7d5ab3579a09b63ccd231a",
+    "log_sha256": "cb7c96629c8f3211c7a3a3991f6a9fd711bbcc4f82cbd1027e169f14ddeed3e7",
     "skips": 0,
-    "tests": 1146,
+    "tests": 1147,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
