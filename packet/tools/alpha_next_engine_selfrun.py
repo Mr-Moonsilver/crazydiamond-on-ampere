@@ -26,6 +26,10 @@ Six containers over one frozen bundle, the composed engine in each, all results 
     repository. Both run on the hub (the focused list through alpha_next_robust_swap; strict). test_alpha_next_receipts_mutants
     is not here: it copies the writer and reruns test_alpha_next_receipts in subprocesses (about 3 min); it runs on the hub in the
     focused list and strict.
+Receipt writer slot (PLAN 2): every shared-process suite runner here (held-f's Record, which the progress, fused, groups, stage and
+composed containers and the negative use, and the dense line) calls harness/alpha_next_robust_swap.reset_receipt_writer after each
+test, so a test that installs the process ReceiptWriter cannot blind a later module's logger captures; each container record
+carries receipt_writer_resets (the dense count read back from its suites.log), and the merged record lists them per part.
 OUT/result.json is the merged record (schema alpha-next-selfrun/1) the frozen runner reads; its connected cases are exactly
 expected_cases() (Step B's, C0's stage cases and held-g's probe cases). Verdict PASS only when all six are PASS. A failure keeps all records,
 classified HARNESS-OR-ENGINE-UNCLASSIFIED.
@@ -159,6 +163,39 @@ def left_out_of(log):
     return sorted(re.findall('^' + re.escape(EXCLUDED_LINE) + r'(\S+)$', log.read_text(), re.M)) if log.is_file() else []
 
 
+# ---------------------------------------------------------------- receipt writer reset in every shared-process runner
+# PLAN 2: a test that runs s5_startup.install_engine or install_native_lane installs the process-global ReceiptWriter
+# (native_measurement._RECEIPT_WRITER); in one shared unittest process every later module's frozen logger captures would then see
+# nothing. harness/alpha_next_robust_swap.reset_receipt_writer puts the slot back to None after each test (claude/alpha-next
+# 4152b220). held-f's SUITES_PY is the one suite runner the progress, fused, groups, stage and composed containers and the negative
+# write (step_a's and C0's runner swaps read it at call time), so its Record gets the stopTest reset and suites.json the count; each
+# part's record keeps suites.json minus the outcomes, so the count lands in every container record. The dense line is below.
+_RECORD_INIT = "        super().__init__(*a,**k);self.rows={}\n"
+_RECORD_RESET = (_RECORD_INIT + "    def stopTest(self,test):\n"
+                 "        super().stopTest(test);_w.reset_receipt_writer(test.id())\n")
+_MAIN_LINE = "if __name__ == '__main__':\n    import torch\n"
+_MAIN_RESET = "if __name__ == '__main__':\n    import alpha_next_robust_swap as _w\n    import torch\n"
+_COUNT_LINE = "errors=len(r.errors),"
+_COUNT_RESET = ("errors=len(r.errors),receipt_writer_resets=len(_w.WRITER_RESETS),"
+                "receipt_writer_reset_tests=list(_w.WRITER_RESETS),")
+
+
+def _reset_suites_py(text):
+    for old, new in ((_RECORD_INIT, _RECORD_RESET), (_MAIN_LINE, _MAIN_RESET), (_COUNT_LINE, _COUNT_RESET)):
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
+    return text
+
+
+_HELD_F_SUITES_PY = held_f.SUITES_PY
+held_f.SUITES_PY = _reset_suites_py(_HELD_F_SUITES_PY)
+
+
+def writer_resets(result):
+    """The reset count a container's suites.json (or its record's suites) carries; None if the runner did not count."""
+    return (result or {}).get('receipt_writer_resets')
+
+
 # ---------------------------------------------------------------- command lines: Step B's, plus C0's stage cases
 _step_b_lines = step_a.command_lines
 
@@ -194,13 +231,15 @@ def filtered_container(*args, **kwargs):
 _DENSE_UNITTEST = 'python3 -B -m unittest -v '
 DENSE_CLOCK_LINE = 'clock-bound, excluded (declared): '
 DENSE_SWAP_LINE = 'robust-swap, excluded (declared): '
+DENSE_RESET_LINE = 'receipt writer slot resets (declared, PLAN 2): '
 _DENSE_FILTERED = ('python3 -B -c "import sys,unittest; sys.path.insert(0,\'.\'); import step_b_clock_bound as c; '
                    'import alpha_next_robust_swap as w; names=sys.argv[1:]; '
                    's=unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName(n) for n in names); k,r=c.filtered(s); del s; '
                    'assert r==c.expected_removed(names),r; k,q=w.filtered(k); assert q==w.expected_removed(names),q; '
                    '[print(\'%s\'+x,file=sys.stderr) for x in r]; [print(\'%s\'+x,file=sys.stderr) for x in q]; '
-                   'sys.exit(0 if unittest.TextTestRunner(verbosity=2).run(k).wasSuccessful() else 1)" '
-                   % (DENSE_CLOCK_LINE, DENSE_SWAP_LINE))
+                   'res=unittest.TextTestRunner(verbosity=2,resultclass=w._WriterResetResult).run(k); '
+                   'print(\'%s\'+str(len(w.WRITER_RESETS)),file=sys.stderr); sys.exit(0 if res.wasSuccessful() else 1)" '
+                   % (DENSE_CLOCK_LINE, DENSE_SWAP_LINE, DENSE_RESET_LINE))
 _dense_original = step_b._dense_original
 
 
@@ -225,9 +264,11 @@ def dense_left_out(spec, out):
     text = log.read_text() if log.is_file() else ''
     clock = sorted(re.findall('^' + re.escape(DENSE_CLOCK_LINE) + r'(\S+)$', text, re.M))
     swapped = sorted(re.findall('^' + re.escape(DENSE_SWAP_LINE) + r'(\S+)$', text, re.M))
+    resets = re.findall('^' + re.escape(DENSE_RESET_LINE) + r'(\d+)$', text, re.M)
     want_clock, want_swap = cb.expected_removed(suites), swap.expected_removed(suites)
     return dict(clock_bound=clock, clock_bound_expected=want_clock, robust_swap=swapped, robust_swap_expected=want_swap,
-                ok=clock == want_clock and swapped == want_swap, clock_bound_reason=cb.REASON,
+                receipt_writer_resets=int(resets[-1]) if len(resets) == 1 else None,
+                ok=clock == want_clock and swapped == want_swap and len(resets) == 1, clock_bound_reason=cb.REASON,
                 robust_swap_reasons={x: swap.reason(x) for x in swapped if x in swap.ROBUST_SWAP or x in swap.SUPERSEDED},
                 suites_log=str(log), suites_log_sha256=sha(log) if log.is_file() else None)
 
@@ -269,12 +310,13 @@ def run_composed(bundle, out, name):
     left_out = left_out_of(log)
     rows, differ = held_g_pairs(cases)
     ok = rc == 0 and result.get('ok') is True and result.get('skips') == 0 and (result.get('tests') or 0) > 0 \
-        and applied(left_out, result.get('outcomes') or {}, candidate=True) and not differ \
+        and applied(left_out, result.get('outcomes') or {}, candidate=True) and not differ and writer_resets(result) is not None \
         and all(v.get('verdict') == 'PASS' for v in cases.values())
     record = dict(schema='alpha-next-composed-selfrun/1', verdict='PASS' if ok else 'FAIL', container_rc=rc,
                   suites={k: v for k, v in result.items() if k != 'outcomes'}, suite_names=list(SUITES),
                   outcomes_sha256=hashlib.sha256(json.dumps(result.get('outcomes'), sort_keys=True).encode()).hexdigest(),
                   left_out={x: CONTAINER_EXCLUDED[x] for x in left_out}, suites_log_sha256=sha(log) if log.is_file() else None,
+                  receipt_writer_resets=writer_resets(result),
                   cases={m: step_a.case_row(out, m, r) for m, r in cases.items()}, pairs=rows,
                   pair_fields=list(HELD_G_PAIR_FIELDS), differs=differ,
                   manifest=sha(bundle / 'SHA256SUMS'), image=IMAGE, network='none', gpu_device_requests=0,
@@ -309,6 +351,9 @@ def run(spec, tree, bundle, out, name):
     skips = [(x.get('skips') if x.get('skips') is not None else x.get('skipped')) or 0 for x in pieces]
     connected = dict(p['cases'], **f['cases'], **g['cases'], **s['cases'], **n['cases'])
     ok = ok and sorted(connected) == expected_cases()
+    resets = dict({x: writer_resets(r['suites']) for x, r in zip(PARTS, (p, d, f, g, s, n)) if x != 'dense'},
+                  dense=left['receipt_writer_resets'])
+    ok = ok and all(v is not None for v in resets.values())
     record = dict(schema=SCHEMA, verdict='PASS' if ok else 'FAIL',
                   classification=None if ok else 'HARNESS-OR-ENGINE-UNCLASSIFIED', negative_control=False,
                   container_rc=max(x['container_rc'] for x in (p, d, f, g, s, n)),
@@ -326,6 +371,7 @@ def run(spec, tree, bundle, out, name):
                   probe39=d['probe39'], probe37=d['probe37'], py_compile=d['py_compile'],
                   scheduler_tick_probe=d.get('scheduler_tick_probe'), clock_split=d['clock_split'], dense_left_out=left,
                   composed_suites=list(SUITES), composed_left_out=n['left_out'],
+                  receipt_writer_resets=resets,
                   **{x + '_record_sha256': sha(out / x / 'result.json') for x in PARTS},
                   spec=str(spec), spec_sha256=sha(spec), declared_limit=DECLARED_LIMIT)
     (out / 'result.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
@@ -382,7 +428,8 @@ def negative(bundle, overlay, sources, out, name, observe=False):
                   suite_names=list(NEGATIVE_SUITES),
                   outcomes_sha256=hashlib.sha256(json.dumps(outcomes, sort_keys=True).encode()).hexdigest(),
                   left_out={x: CONTAINER_EXCLUDED[x] for x in left_out if x in CONTAINER_EXCLUDED},
-                  pinned_tests=len(pins['tests']), cases={m: step_a.case_row(out, m, r) for m, r in cases.items()},
+                  pinned_tests=len(pins['tests']), receipt_writer_resets=writer_resets(result),
+                  cases={m: step_a.case_row(out, m, r) for m, r in cases.items()},
                   bundle=str(bundle), manifest=sha(bundle / 'SHA256SUMS'), overlay=str(overlay),
                   overlay_manifest=sha(overlay / 'SHA256SUMS'), sources=str(sources),
                   pins_sha256=None if observe else sha(PINS), image=IMAGE,
