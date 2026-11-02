@@ -40,6 +40,7 @@ import time
 from e3_types import E3Pending
 from engine_driver import (DriverError, NativeSegmentDriver, _WAIT_SEGMENT_KINDS,
                            _progress_logger)
+from native_measurement import emit_receipt_kv
 from reply_transport import Backpressure
 from stage_wire import StageScoped
 from wire_v1 import (CancelRequest, OpSeqTracker, OpenAck, PollRequest, ReleaseAck,
@@ -594,16 +595,18 @@ class StagedSegmentDriver(NativeSegmentDriver):
         if self.progress is None:
             return
         try:
-            _progress_logger().info(
+            # Alpha-next PLAN 2: one atomic write through the process receipt writer.
+            emit_receipt_kv(
                 'flash-s5 stage-local txn=%d chunk=%d-%d commands=%d,%d both_stages_ns=%d '
                 'first_ns=%s,%s last_ns=%s,%s local_release_ns=%s,%s headroom_refused=%d '
-                'headroom_blocked_ns=%d',
-                transaction.txn_seq, transaction.chunk_start, transaction.chunk_end,
-                stats['commands'][0], stats['commands'][1], both_ns,
-                stats['first_ns'][0], stats['first_ns'][1],
-                stats['last_ns'][0], stats['last_ns'][1],
-                stats['local_release_ns'][0], stats['local_release_ns'][1],
-                self._headroom_chunk, self._ring_blocked_chunk_ns)
+                'headroom_blocked_ns=%d'
+                % (transaction.txn_seq, transaction.chunk_start, transaction.chunk_end,
+                   stats['commands'][0], stats['commands'][1], both_ns,
+                   stats['first_ns'][0], stats['first_ns'][1],
+                   stats['last_ns'][0], stats['last_ns'][1],
+                   stats['local_release_ns'][0], stats['local_release_ns'][1],
+                   self._headroom_chunk, self._ring_blocked_chunk_ns),
+                _progress_logger())
         except Exception:
             logging.getLogger(__name__).debug('stage line failed', exc_info=True)
 

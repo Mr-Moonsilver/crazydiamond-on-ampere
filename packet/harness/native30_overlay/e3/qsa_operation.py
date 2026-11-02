@@ -794,17 +794,20 @@ class QsaPrefillOperation:
         """M3: one bounded line per chunk and rank.  A failure is counted, never raised."""
         try:
             stats, tx = self.stats, self.transaction
-            logging.getLogger(__name__).info(
+            # Alpha-next PLAN 2: one atomic write through the process receipt writer.
+            from native_measurement import emit_receipt_kv
+            emit_receipt_kv(
                 'flash-s5 native-alloc rank=%d txn_seq=%d chunk=%d-%d union_retire=%d union_sets=%d '
                 'union_retired=%d union_single=%d union_live_max=%d indexer_layers=%d '
                 'indexer_rows=%d indexer_width=%d '
-                'indexer_chunks=%d indexer_peak=%d indexer_total=%d indexer_errors=%d',
-                self.lane.worker_rank, tx.txn_seq, tx.chunk_start, tx.chunk_end,
-                self.union_retire, stats['union_scratch_sets'], stats['union_scratch_retired'],
-                stats['union_scratch_bytes'], stats['union_scratch_live_max_bytes'],
-                stats['indexer_layers'], stats['indexer_rows'], stats['indexer_width'],
-                stats['indexer_chunks'], stats['indexer_peak_bytes'],
-                stats['indexer_total_bytes'], stats['indexer_errors'])
+                'indexer_chunks=%d indexer_peak=%d indexer_total=%d indexer_errors=%d'
+                % (self.lane.worker_rank, tx.txn_seq, tx.chunk_start, tx.chunk_end,
+                   self.union_retire, stats['union_scratch_sets'], stats['union_scratch_retired'],
+                   stats['union_scratch_bytes'], stats['union_scratch_live_max_bytes'],
+                   stats['indexer_layers'], stats['indexer_rows'], stats['indexer_width'],
+                   stats['indexer_chunks'], stats['indexer_peak_bytes'],
+                   stats['indexer_total_bytes'], stats['indexer_errors']),
+                logging.getLogger(__name__))
         except Exception:
             self.stats['alloc_receipt_errors'] += 1
 

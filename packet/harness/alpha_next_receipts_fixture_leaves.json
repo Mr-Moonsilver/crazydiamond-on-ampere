@@ -1,0 +1,67 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "Alpha-next PLAN section 2, producer-side log fix: ReceiptWriter, emit sites, receipt_lines grader, CPU witness and mutants; hub CPU tests only; no box or GPU evidence",
+ "inherits": [
+  "native41_held_g_fixture_leaves.json",
+  "native41_progress_fixture_leaves.json",
+  "alpha_m3_fixture_leaves.json",
+  "alpha_c0_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "alpha-next-receipts-vllm-add-prefix",
+   "test": "test_alpha_next_receipts.Witness; alpha_next_receipts_witness.py (old path)",
+   "replaces": "vLLM vllm/utils/system_utils._add_prefix, which decorate_logs installs on sys.stdout/sys.stderr (multiproc_executor.py:1067, 1095; v1/engine/core.py:1303)",
+   "equivalence": "Declared equivalent: the pinned source is not under reference/vllm-src. Copied from a hub tree (tmp scratchpad of another session, .../scratchpad/le/vllm-src/vllm) whose 491 files that overlap reference/vllm-src are byte-identical to it (6 differ, all files this project patches: qsa.py x2, block_pool.py, single_type_kv_cache_manager.py, scheduler.py, gpu/model_runner.py). Source file sha256 837e6ff0ab524c06c048d6b42d4f35b77baba2e9d9e57837fe333ca0aaee1cfb, lines 201-234 sha256 88f5c10153e9343be6c34a62c4431a298ba6b16b1721e86f24e66ff123fdba64. One change: the colour branch is fixed to the non-tty prefix '(<name> pid=<pid>) ' because vllm.envs is not importable here; the box's lines carry no colour codes, so that is the box's branch.",
+   "leaf_source_sha256": "07e9e01f964c66186f1635c8e1f876a8a4d8b8df6e38a372a3fff72f2b2af195",
+   "cannot_prove": "that the image's system_utils.py is this file (it was not extracted from the image and pinned by sha, as PLAN 2 asks); the old path's exact syscall split on the box",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "alpha-next-receipts-old-path-stream",
+   "test": "alpha_next_receipts_witness.old_path_logger; test_alpha_next_receipts.Witness.test_old_path_leaves_a_long_record_in_several_writes",
+   "replaces": "vLLM's worker logger path: init_logger's StreamHandler on the decorated default sys.stdout",
+   "equivalence": "The witness child uses the real default object open(1, 'w') (TextIOWrapper over a BufferedWriter sized by the pipe's st_blksize) with a logging.StreamHandler and a vLLM-shaped format; StreamHandler.emit writes msg + newline then flushes, as on the box. The structural test uses a counting RawIOBase under a BufferedWriter of the same size in place of the FileIO.",
+   "cannot_prove": "vLLM's exact formatter text; the docker/containerd side of the pipe",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "alpha-next-receipts-shared-pipe",
+   "test": "test_alpha_next_receipts.Witness.test_new_path_has_no_bad_record_and_contiguous_seq; alpha_next_receipts_witness.py",
+   "replaces": "the container stdout FIFO that every worker process and the engine share (docker non-tty stdio, a containerd FIFO)",
+   "equivalence": "one os.pipe whose write end is each child's fd 1 (dup2); the writer makes its own private dup(1) and checks S_ISFIFO and select.PIPE_BUF exactly as in production; POSIX atomicity of writes <= PIPE_BUF holds for both",
+   "cannot_prove": "that the box's stdout is a FIFO (the first box run's receipt_path line shows it)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "alpha-next-receipts-capture-write",
+   "test": "test_alpha_next_receipts.Budget, Writer, Grader, ExistingParsers, EmitSites",
+   "replaces": "os.write in ReceiptWriter (its write= seam) and, for getpid=, os.getpid",
+   "equivalence": "the leaf records (fd, bytes) of every call and returns the byte count, or scripts one short write / one OSError; the writer is otherwise the real class on a real pipe fd (so the path check is real)",
+   "cannot_prove": "kernel behaviour of the write",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "alpha-next-receipts-emit-site-fakes",
+   "test": "test_alpha_next_receipts.EmitSites",
+   "replaces": "the objects around each real emit function: SimpleNamespace QsaPrefillOperation/NativeWorkerBridge/StagedSegmentDriver selves (as test_alpha_m3_receipts), FakeCuda (test_alpha_m3_receipts), TimingEvent/FakeClock (test_e3_native_anatomy), a torch module stub for s5_startup._device_spans, and the stage-1 Rig of test_stage1_handler_anatomy (its declared leaves)",
+   "equivalence": "each emit function runs unchanged; the fakes supply only the attributes it reads",
+   "cannot_prove": "that the startup seams run in every box process (checked structurally on s5_startup's AST; the box run's per-process receipts records show it)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "alpha-next-receipts-mutant-engine-dir",
+   "test": "test_alpha_next_receipts_mutants.Mutants",
+   "replaces": "patches/s5_engine/native_measurement.py by a mutated copy first on sys.path (ALPHA_NEXT_RECEIPTS_ENGINE, harness only)",
+   "equivalence": "each mutant is one exact text replacement of the committed source, refused unless it matches exactly once; the run prints the module file it imported",
+   "cannot_prove": "mutants outside native_measurement.py",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}
