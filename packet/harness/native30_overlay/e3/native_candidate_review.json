@@ -2412,7 +2412,7 @@
     "test_alpha_next_composition.py": "d0a2cebdb3f7e84545d952f1e4898c0cfa54d906a9b40441e059dac5556ec4dc",
     "test_alpha_next_path_qualification.py": "0cc8b356c63cf5256d30000a09c7f16e0fd3d6489d0bfd13c4bf74407352e65f",
     "test_alpha_next_peak_receipt.py": "ba17ab515e21c962a7e182451fdd287addb2a54a9d5e2e0250152d1e924f1bcc",
-    "test_alpha_next_queue.py": "193a43c77f6fe47fae6ecce44111ccfeb53c9ff7e724d1055592d53be73e7223",
+    "test_alpha_next_queue.py": "30e8fb75d60808342cf097eccb7fc05b6b3745e8dd2f23ef10bd10e41ba3028a",
     "test_alpha_next_receipts.py": "043315874807d5ffb2daed953b7c41f768aaf150d9d1e0e440892c09d47e5398",
     "test_alpha_next_receipts_mutants.py": "d15c3e17f0d83e0854d10812fb63d29bb867d07e5b0e107b02ca086532dc7e40",
     "test_alpha_next_stage1_slow_rank.py": "761c29dfc79c2907dc10f94ed8ab3d6287fd0f473bb842fa2254497f7f72f3b3",
