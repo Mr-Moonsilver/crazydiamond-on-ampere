@@ -1,16 +1,34 @@
 {
   "schema": "fixture-leaves/1",
-  "scope": "C1 bind-gate witness and the deferred-rebind repair: test_c1_rebind_witness (CPU ring fixture); no box or GPU evidence",
+  "scope": "C1 bind-gate witness and the deferred-rebind repair: test_c1_rebind_witness, test_c1_rebind_on (CPU ring fixture); no box or GPU evidence",
   "inherits": [
     "stage_overlap_fixture_leaves.json"
   ],
   "leaves": [
     {
       "name": "held-receiver-device-events",
-      "test": "test_c1_rebind_witness.ReceiverHold",
+      "test": "test_c1_rebind_witness.ReceiverHold (held chunks: the first in Witness, DelayedConsumption, Stops; every chunk or a random subset under RebindBase.late_consumer_tick in PeerIdentity and Bounded)",
       "replaces": "the CUDA events LaneDispatcher._record records on the receiving stage's prefill stream for chunk n's last LAYER, its SUFFIX and its STATE_FINALIZE, and the state_event _do_state_finalize records, while those kernels are still running",
       "equivalence": "the events are r4's ControllableEvent objects the real dispatcher created and recorded; only their host query differs: it answers False (cudaEventQuery's cudaErrorNotReady) until the test releases the hold, by undoing the network's complete_all for exactly these events. The STATE_FINALIZE record's event is the one _after_record hands to channel.consumer_done, so pp_consumer_complete() is False for its real reason and the bridge's report carries no PP_CONSUMER proof. No RPC, reply, RELEASE, receipt or logical acknowledgement is delayed; every other event (stage 0's, the PP receive's, stage 1's PREPARE/PREFIX/first layer) completes at the network's normal rate",
       "cannot_prove": "device timing or that kernels of two chunks run concurrently on the box; the witness shows only which host submissions the engine and workers make while stage 1's late work is incomplete",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "sender-channel-spy",
+      "test": "test_c1_rebind_witness.SenderSpy",
+      "replaces": "nothing: it wraps the stage-0 FakePPChannel's bind_consumer, send and validate_consumer_proof and records around them",
+      "equivalence": "each wrapper calls the wrapped method with the same arguments and returns its answer or raises its exception; it records the channel's consumer_binding at each send (on the ticket), bind and proof validation, and the live (non-retired) tickets, and appends a violation when a proof is validated under a binding other than its ticket's own, when a bind meets a live ticket, or when a send meets a live send",
+      "cannot_prove": "the real PrefillPPChannel's slot accounting on device; its bind/validate code is the same rule (lane_comm.PrefillPPChannel.bind_consumer refuses with live tickets, validate_consumer_proof checks the channel-wide binding)",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "late-consumer-schedule",
+      "test": "test_c1_rebind_witness.RebindBase.late_consumer_tick",
+      "replaces": "a receiving stage whose final layer and state finalize take longer than the sending stage's next chunk",
+      "equivalence": "the held-receiver-device-events leaf, released per chunk once that chunk's deferred successor has waited at its PP_SEND for `patience` ticks, or after `cap` ticks; every other completion and RPC is the network's ordinary tick",
+      "cannot_prove": "real stage timing",
       "more_convenient": true,
       "box_evidence": false
     }

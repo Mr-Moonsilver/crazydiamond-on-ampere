@@ -32,12 +32,13 @@ Commit stays the frozen commit, in chunk order, once per chunk.  Stop: see
 from contextlib import contextmanager
 from dataclasses import replace
 import logging
+import os
 
 from e3_types import E3ContractError
 from engine_driver import DriverError, NativeSegmentDriver, _progress_logger
 from scheduler_hooks import PrefillAdmissionController
 from stage_progress import StagedSegmentDriver, stage_local_enabled
-from wire_v1 import CancelRequest, PollRequest, ReleaseAck
+from wire_v1 import CancelRequest, PollRequest, ReleaseAck, SegmentKind
 
 STAGE_OVERLAP_ENV = 'FLASH_S5_STAGE_OVERLAP'
 REFUSALS = ('older-terminal', 'successor-may-be-terminal', 'older-at-last-hash-boundary',
@@ -50,6 +51,20 @@ def stage_overlap_enabled(env):
         raise DriverError(STAGE_OVERLAP_ENV + ' must be 0 or 1')
     if value == '1' and not stage_local_enabled(env):
         raise DriverError(STAGE_OVERLAP_ENV + ' needs FLASH_S5_STAGE_LOCAL=1')
+    return value == '1'
+
+
+# C1 rebind (review 2 Nov, section 2, option (a)): stage 0 binds n+1's PP consumer just before n+1's PP_SEND,
+# not at its early open, so n+1's PREPARE/PREFIX/layers/SUFFIX need not wait for n's consumer proof.  Default off.
+DEFER_BIND_ENV = 'FLASH_S5_STAGE_OVERLAP_DEFER_BIND'
+
+
+def stage_overlap_defer_bind_enabled(env):
+    value = env.get(DEFER_BIND_ENV, '0')
+    if value not in ('0', '1'):
+        raise DriverError(DEFER_BIND_ENV + ' must be 0 or 1')
+    if value == '1' and not stage_overlap_enabled(env):
+        raise DriverError(DEFER_BIND_ENV + ' needs FLASH_S5_STAGE_OVERLAP=1')
     return value == '1'
 
 
@@ -336,6 +351,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         self.overlap_counters = dict(successor_frames=0, overlapped_commits=0, early_opens=0,
                                      lane_checks=0, closed_by_successor=0, successor_retires=0,
                                      unbegun_successor_cancels=0, partial_replays=0)
+        self.defer_bind = stage_overlap_defer_bind_enabled(os.environ)
+        self.defer_counters = dict(deferred_opens=0, deferred_binds=0)
 
     # -- admission query (scheduler side) --------------------------------------
     def successor_admissible(self, transaction):
@@ -386,6 +403,7 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             return False
         if stage == 0 and frame.stage[0]['phase'] == 'bind':
             # The sender's PP channel may be rebound only after n's tickets retired.
+            # With the deferred bind this is the same gate, reached just before n+1's PP_SEND.
             chunk = older.chunk
             return (chunk['_receipt_inflight'] is None
                     and set(chunk['_receipt_acked']) == set(self.pp_peers))
@@ -401,6 +419,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         if (controller.successor is not None and self._frames
                 and not any(frame.chunk['tx'] == controller.successor.transaction for frame in self._frames)):
             self._begin_successor()
+        if self.defer_bind:
+            for frame in tuple(self._frames):
+                self._deferred_bind_due(frame)
         polls = []
         for frame in tuple(self._frames):
             for stage in (0, 1):
@@ -450,6 +471,11 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         self._bind_index = 0
         self._pending_binding = None
         self.plan, self.index, self.phase = plans[0], 0, 'bind'
+        if self.defer_bind:
+            # n+1's own compute needs no PP binding; the bind waits in front of its PP_SEND.
+            self.phase = 'segments'
+            frame.deferred_bind = True
+            self.defer_counters['deferred_opens'] += 1
         other = frame.stage[1]
         other['plan'], other['index'] = plans[1], 0
         frame.early = True
@@ -459,6 +485,38 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                      state_epoch=frame.open_state_epoch,
                      expected_lanes=[[rank, lane.storage_epoch, lane.context_id]
                                      for rank, lane in sorted(frame.expected_lanes.items())])
+
+    # -- deferred PP binding (FLASH_S5_STAGE_OVERLAP_DEFER_BIND) -----------------
+    def _deferred_send_next(self, cursor, chunk):
+        """Stage 0's next command is the PP_SEND and this frame's senders are not all bound."""
+        return (cursor['_retry'] is None and cursor['index'] < len(cursor['plan'])
+                and cursor['plan'][cursor['index']]['kind'] is SegmentKind.PP_SEND
+                and len(chunk['_bindings']) < len(self.stage_ranks[0]))
+
+    def _segment_gate(self, frame, stage):
+        """A deferred frame's PP_SEND never leaves before its own binding (tick or in-wait)."""
+        if (stage == 0 and getattr(frame, 'deferred_bind', False)
+                and self._deferred_send_next(self.__dict__, self.__dict__)):
+            return True
+        return super()._segment_gate(frame, stage)
+
+    def _deferred_bind_due(self, frame):
+        """Move a deferred frame's stage 0 into ``bind`` once its PP_SEND is next.
+
+        From there the frozen bind path runs unchanged: ``_frame_ready`` holds it until n's
+        receipts are all acked (n's retained send retired under n's own binding), then
+        ``_next_binding`` binds n+1's receiver lanes and ``_apply_bind`` returns to segments.
+        """
+        if frame.dead or not getattr(frame, 'deferred_bind', False) or self._scoped_frame is not None:
+            return False
+        cursor = frame.stage[0]
+        if cursor['phase'] != 'segments' or not self._deferred_send_next(cursor, frame.chunk):
+            return False
+        if any(route == (frame, 0) for route in self._seq_route.values()):
+            return False
+        cursor['phase'] = 'bind'
+        self.defer_counters['deferred_binds'] += 1
+        return True
 
     def _chunk_opened(self, frame):
         if not getattr(frame, 'early', False):
@@ -718,6 +776,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         result['overlap'] = dict(selected=self.overlap_selected, counters=dict(self.overlap_counters),
                                  controller=dict(self.controller.overlap_counters),
                                  refusals=dict(self.controller.overlap_refusals))
+        if self.defer_bind:
+            result['overlap']['defer_bind'] = dict(counters=dict(self.defer_counters))
         return result
 
 
@@ -736,5 +796,5 @@ def _ranges(values):
     return ','.join(str(a) if a == b else '%d-%d' % (a, b) for a, b in out) or '-'
 
 
-__all__ = ['OverlapSegmentDriver', 'REFUSALS', 'STAGE_OVERLAP_ENV', 'StagedAdmissionController',
-           'overlap_refusal', 'provisional_fields', 'stage_overlap_enabled']
+__all__ = ['DEFER_BIND_ENV', 'OverlapSegmentDriver', 'REFUSALS', 'STAGE_OVERLAP_ENV', 'StagedAdmissionController',
+           'overlap_refusal', 'provisional_fields', 'stage_overlap_defer_bind_enabled', 'stage_overlap_enabled']
