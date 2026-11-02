@@ -1,0 +1,48 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "alpha-next PLAN 5: the load-robust twins of two load-flaky frozen test methods, test_e3_w1_decode_driver_ordered (5a) and test_native43_le_bounded_enqueue_stepped (5b), swapped in for the frozen ids by harness/alpha_next_robust_swap.py. Hub CPU only; no leaf is box evidence. The actual e3_w1_decode_driver, executor_hooks.bounded_enqueue and fatal channel run.",
+ "inherits": ["native43_le_bounded_enqueue_fixture_leaves.json"],
+ "source": "PLAN.md section 5 (alpha-next); the frozen fixtures reused unchanged are test_e3_w1_decode_driver.FakeConfig/FakeServer/_Handler/FakeController/BASE_MANIFEST and test_native43_le_bounded_enqueue.Ring/fatal_executor/publish_fatal",
+ "leaves": [
+  {
+   "name": "gated-cohort-server",
+   "test": "test_e3_w1_decode_driver_ordered.OrderedOpenTest",
+   "replaces": "The frozen loopback SSE fake (test_e3_w1_decode_driver.FakeServer with start_delays {0: 0.04, 1: 0.0, 2: 0.02}), which stands in for the engine's streamed /v1/chat/completions",
+   "equivalence": "The same handler, request recording, events, usage and pacing (frozen _Handler._measure, run after the gate); only the first-event stagger changes from a per-stream sleep measured from that stream's arrival to a per-stream Event the test opens, and no gate opens before all three measure requests have arrived. The driver sees the same 200 headers, then the first token of stream 1, then 2, then 0, as in the frozen fixture without the scheduler deciding the order",
+   "implementation": "GatedConfig(FakeConfig) adds gates {index: Event}, an all_arrived Event and gate_misses; _GatedHandler(_Handler)._measure sends the headers, marks arrival, waits (30 s each) for all_arrived and its gate, then runs the frozen _measure body; GatedServer(FakeServer) binds the same _CohortHTTPServer to the gated handler",
+   "cannot_prove": "Real engine first-token timing and stream order; the frozen test does not prove them either",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "tracked-stream-state",
+   "test": "test_e3_w1_decode_driver_ordered.OrderedOpenTest",
+   "replaces": "e3_w1_decode_driver.StreamState (patched with mock.patch.object on the driver module the frozen test loads)",
+   "equivalence": "A subclass with the same constructor and fields that only appends the instance to a list the test reads; the driver never type-checks or copies the state object, so its open phase sets state.opened together with first_at_ns exactly as with the stock class, and the test waits on that same Event",
+   "implementation": "class TrackedStreamState(D.StreamState): __init__ calls super().__init__ then TrackedStreamState.registry.append(self); registry is a fresh list per test (mock.patch.object)",
+   "cannot_prove": "Nothing beyond the driver's own open phase; the advance order is still computed by the driver from first_at_ns",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "ordered-workload",
+   "test": "test_e3_w1_decode_driver_ordered.OrderedOpenTest",
+   "replaces": "The frozen test's manifest (BASE_MANIFEST with repeats 1, route_plan [split]) and run_driver environment",
+   "equivalence": "The same manifest schema and driver code path. Fixture parameters of the fake run, not product thresholds: open_timeout_s 150 s, above the four summed 30 s liveness waits; generation_budget 2000 and window_s 0.5 so a 4 ms stream advances inside the window and does not finish before it under load (the run ends by the driver's own cancellation); READ_TIMEOUT_S 60 and DRAIN_TIMEOUT_S 30, at or above the liveness deadline (production defaults are 120 and 60). Residual clock dependence, declared: each stream must emit at least one token inside the 0.5 s window",
+   "implementation": "frozen._deep_update(BASE_MANIFEST, streams 3, repeats 1, route_plan [split], open_timeout_s, generation_budget, window_s); env WORKLOAD, RUN_ID, CONTROLLER_TIMEOUT_S 3 (the frozen value), READ_TIMEOUT_S, DRAIN_TIMEOUT_S; the frozen FakeController",
+   "cannot_prove": "Box W1 timing and rates",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stepped-ring",
+   "test": "test_native43_le_bounded_enqueue_stepped.SteppedBoundedEnqueueTests",
+   "replaces": "The frozen test's Ring (leaf broadcast-ring of native43_le_bounded_enqueue_fixture_leaves.json), itself the stand-in for vllm MessageQueue.acquire_write's timeout contract on the EngineCore rpc_broadcast_mq",
+   "equivalence": "The same contract on a full ring, with the slice expiry given by the test instead of the clock: enqueue(obj, timeout) with a timeout blocks until the test releases that slice, then raises TimeoutError before any block is claimed (nothing written); timeout=None waits for a free block as acquire_write does (never, on this full ring, so the stock unbounded write hangs). bounded_enqueue uses only enqueue(obj, timeout) and shutting_down, so the slice count it reaches is exact",
+   "implementation": "SteppedRing(Ring) with free=0: enqueue appends the timeout to calls and notifies; with a timeout it waits on the ring condition until released >= its slice number, then raises TimeoutError; release(n) and finish() notify the same condition; the fixture frees a parked thread after 60 s; background() signals the call's end on the ring condition instead of reading the clock. Waits on product state without a seam (the fatal hand-off, the teardown) poll at 1 ms within the 30 s liveness bound",
+   "cannot_prove": "Shared-memory timing and the fatal thread's hand-off latency (dropped from the bound, declared in PLAN 5b); the pinned-image probe tools/native43_le_fix_enqueueprobe.py runs the real MessageQueue",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}
