@@ -116,7 +116,9 @@ def main():
                fixture_leaves=dict(path='harness/alpha_c0_fixture_leaves.json', sha256=sha(ROOT / 'harness/alpha_c0_fixture_leaves.json'),
                                    inherits=leaves['inherits'], names=[x['name'] for x in leaves['leaves']]),
                expected_runtime=gate.EXPECTED_RUNTIME_S, box_budget_s=gate.BOX_BUDGET_S, active_s=gate.ACTIVE_S, cleanup_s=gate.CLEANUP_S,
-               last_arm_entry_s=gate.LAST_ARM_ENTRY_S, latest_start_unix=gate.latest_arm(),
+               last_arm_entry_s=gate.LAST_ARM_ENTRY_S,
+               start_window=dict(absolute=None, why='no absolute-time window: launch time is the lead\'s (operator, 2 Nov); '
+                                 'the limits are relative to the run\'s own start (box_budget_s, last_arm_entry_s)'),
                note=str(a.note), note_sha256=sha(a.note), model_settings_changed=False, box_device_run='NOT_RUN')
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with a.out.open('x') as handle:

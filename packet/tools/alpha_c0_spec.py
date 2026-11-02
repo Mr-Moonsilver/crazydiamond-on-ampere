@@ -23,7 +23,11 @@ PARENT_CASES = ['abort-before', 'abort-live', 'auto', 'bad-graph', 'below-thresh
                 'progress-current-solo', 'progress-trace', 'progress-trace-skew', 'progress-unset', 'receipts-auto',
                 'receipts-below-threshold', 'receipts-latched', 'receipts-off', 'refuse', 'reuse', 'running-prefill', 'tp-skew']
 RUNNER_SWAPS = [
-    ["    from alpha_perf_gate import window_ok\n", "    from alpha_c0_gate import window_ok\n"],
+    # No absolute-time window (operator, 2 Nov: "we don't put in code what you govern"; launch time is the lead's): check_slot
+    # keeps its name and its call in live_guards and refuses nothing by wall clock. The relative budget is the draft's.
+    ["    from alpha_perf_gate import window_ok\n    require(window_ok(time.time()),'operator-window-not-before-or-cleanup-margin')\n",
+     "    # C0: no absolute-time window (operator, 2 Nov); launch time is the lead's, the relative budget is the draft's.\n"
+     "    return None\n"],
     ["engine.get('schema')=='alpha-perf-selfrun/1'", "engine.get('schema')=='alpha-c0-selfrun/1'"],
     ["result.get('alpha_perf_queue')=='PASS'", "result.get('alpha_perf_queue')=='PASS' and result.get('alpha_c0_queue')=='PASS'"],
     # Removed, not replaced (operator, 2 Nov: box timing is governed by the lead at launch): the native39 trunk queue's window-slot

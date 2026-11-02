@@ -1,4 +1,4 @@
-"""C0 box queue: one phase budget for the watchdog, the owner window and the draft.
+"""C0 box queue: one phase budget for the watchdog and the draft; no absolute-time window.
 
 alpha_perf_gate's rule over C0's eight required arms: startup, bind and the unarmed check are held-f's (native40's
 phase caps, unchanged). Then eight band 1 arms, each behind a typed all-rank FULL entry, with
@@ -7,18 +7,16 @@ instruments and ingress receipts, a typed FULL at the end and the grade, then na
 ACTIVE_S is the outer watchdog, not the sum of the per-step caps: the box budget is 9,000 s including cleanup. The draft
 guards each arm entry with LAST_ARM_ENTRY_S: an arm starts only when that arm's own worst case (entry, arm, ingress) and
 the whole tail (instruments, typed FULL, grade, report, end identity) still fit ACTIVE_S. An arm past that point is
-NOT_RUN and INC. NOT_BEFORE and CLEANUP_S are native40_box_gate's. The hard end is C0's own: 2026-11-02T09:30Z = production time
-07:00Z (08:00 CET) plus the box budget including cleanup, so the coded latest start is production time and never refuses a start
-before it (operator, 2 Nov, about 03:35 CET: a run cut off at production time is stopped by the lead with TERM to the queue).
-native40_box_gate.HARD_END (06:00Z) and every other frozen gate are unchanged.
-``window_ok(time.time())`` is the single entry check used by the draft and the owner runner.
+NOT_RUN and INC. CLEANUP_S is native40_box_gate's.
+
+No absolute-time window (operator, 2 Nov: "we don't put in code what you govern"; launch time is the lead's). There is no
+NOT_BEFORE, HARD_END, latest start or window_ok here, and neither the draft nor the owner runner refuses a start by wall clock.
+The only time limits are relative, counted from the run's own start: the draft's outer timeout (ACTIVE_S, then CLEANUP_S for
+owned cleanup) and LAST_ARM_ENTRY_S before each arm (bash SECONDS). native40_box_gate and every other frozen gate are unchanged.
 """
 from native41_box_gate import (ARM_KILL_AFTER_S, ARM_TIMEOUT_S, FULL_IDLE_CAP_S, INGRESS_CAP_S,
                                INSTRUMENTS_CAP_S, KEPT)
-from native40_box_gate import CLEANUP_S, HARD_END as NATIVE40_HARD_END, NOT_BEFORE, PHASES as NATIVE40_PHASES
-
-HARD_END = 1793611800.0                                    # 2026-11-02T09:30Z = 07:00Z + 9,000 s, C0 only (operator, 2 Nov)
-assert HARD_END == NATIVE40_HARD_END + 3600 + 9000
+from native40_box_gate import CLEANUP_S, PHASES as NATIVE40_PHASES
 
 BAND1_ARMS = 8
 ARMS = BAND1_ARMS
@@ -50,14 +48,6 @@ EXPECTED_RUNTIME_S = {
              '35 min for startup, bind, the unarmed check and the eight arms, plus the tail: about 40 min. On the box the first arm '
              'enters about 480 s after queue start (alpha-perf, 1 Nov). The 9,000 s budget gives LAST_ARM_ENTRY_S 4,470 s, '
              'which holds all eight arms and a slower local path; an arm past it is NOT_RUN and INC.'}
-
-
-def latest_arm():
-    return HARD_END - ACTIVE_S - CLEANUP_S
-
-
-def window_ok(now):
-    return NOT_BEFORE <= now and now + ACTIVE_S + CLEANUP_S <= HARD_END
 
 
 def arm_fits(elapsed_s):

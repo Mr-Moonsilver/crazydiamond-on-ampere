@@ -6,7 +6,8 @@ both band manifests and their /tokenize guards (band 2 is not run here; its guar
 the le-fix death scan and watch, the M3 allocator receipts and the whole
 owned cleanup/restore tail. Declared deltas, each applied exactly once:
   names    q18a_alpha_perf -> q18a_alpha_c0, q18a-alpha-perf -> q18a-alpha-c0 (the band 2 manifest keeps its file name);
-  budget   draft and window read alpha_c0_gate (ACTIVE_S is the 9,000 s box budget less cleanup, LAST_ARM_ENTRY_S the rule);
+  budget   the draft reads alpha_c0_gate (ACTIVE_S is the 9,000 s box budget less cleanup, LAST_ARM_ENTRY_S the rule);
+  window   none: alpha-perf's PY_SLOT wall-clock refusal is replaced by SLOT_NEW (operator, 2 Nov: launch time is the lead's);
   switch   FLASH_S5_STAGE_LOCAL=1 in EXTRA_ENV, asserted in declaration and preflight beside the kept dense assert;
   body     eight band 1 arms, ABBA, each behind a typed FULL; no optional arm; the grade is e3_alpha_c0_box.
 Labels carry round 0 or 1, so every cache salt stays unique and the band follows from the index as in alpha-perf.
@@ -116,6 +117,20 @@ timeout 600s python3 "$H/e3_alpha_c0_box.py" grade "${GRADE_ARGS[@]}" \
 record alpha-c0 "$?" 'per-arm mechanism (crash-free, TP commitment, engagement), complete progress lines; speed and memory descriptive'
 '''
 BUDGET_OLD = 'from alpha_perf_gate import ACTIVE_S,CLEANUP_S,LAST_ARM_ENTRY_S,PHASES\n'
+# Alpha-perf's absolute-time slot, replaced: C0 has no wall-clock window (operator, 2 Nov: "we don't put in code what you
+# govern"). The relative budget (the outer timeout and LAST_ARM_ENTRY_S, from the run's own start) is unchanged.
+SLOT_OLD = ('# The owner supplies the UTC hard end at bundle build time. The queue refuses\n'
+            '# entry unless its derived active timeout plus 900 s kill margin fits that window (native39_trunk_gate derivation).\n'
+            '# Production restoration remains with the owner. No workload/gate changes.\n'
+            "python3 - <<'PY_SLOT' || fail_early night-window-worst-case-exceeds-restore-margin\n"
+            'import os,sys,time\n'
+            "sys.path.insert(0,os.environ.get('HARNESS_DIR') or os.environ.get('H') or '')\n"
+            'from alpha_perf_gate import window_ok\n'
+            "assert window_ok(time.time()), 'queue outside owner window or cleanup margin'\n"
+            'PY_SLOT\n')
+SLOT_NEW = ('# C0: no absolute-time window (operator, 2 Nov): launch time is the lead\'s, and no start is refused by wall clock.\n'
+            '# The time limits are relative to this run\'s own start: the outer timeout above (ACTIVE_S, then CLEANUP_S for owned\n'
+            '# cleanup) and LAST_ARM_ENTRY_S before each arm. Production restoration remains with the owner.\n')
 BUDGET_NEW = 'from alpha_c0_gate import ACTIVE_S,CLEANUP_S,LAST_ARM_ENTRY_S,PHASES\n'
 SETTINGS_DENSE = 'FLASH_S5_NATIVE_PROGRESS=burst ' + alpha.DENSE + ' '
 SETTINGS_ANCHOR = '# Alpha-perf: FLASH_S5_NATIVE_QSA_POLICY=dense below,'
@@ -155,7 +170,7 @@ def derive():
         if suffix == '.draft.sh':
             text = replace_once(text, alpha.BODY, BODY)
             text = replace_once(text, BUDGET_OLD, BUDGET_NEW)
-            text = replace_once(text, 'from alpha_perf_gate import window_ok', 'from alpha_c0_gate import window_ok')
+            text = replace_once(text, SLOT_OLD, SLOT_NEW)
             text = replace_once(text, INTERFACE_OLD, INTERFACE_NEW)
             old = alpha.DRAFT_DENSE.splitlines(True)[0]
             text = replace_once(text, old, old + DRAFT_SWITCH)

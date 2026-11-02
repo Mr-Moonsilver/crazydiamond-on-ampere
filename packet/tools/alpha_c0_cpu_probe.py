@@ -102,8 +102,8 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 # Declared exclusion (harness/clock_bound.py; operator, 2 Nov: box timing is governed by the lead at launch). Test files unchanged.
 import clock_bound
 suite,clock_excluded=clock_bound.strip(suite)
-assert len(clock_excluded)==10 and set(clock_excluded)<=set(clock_bound.CLOCK_BOUND_FROZEN),('clock-bound-exclusion-differs',sorted(clock_excluded))
-EXPECTED_TESTS=341  # the 287 alpha-perf probe cases plus the 64 C0 queue cases, less 10 declared real-clock window-slot tests; pinned into the frozen runner gate
+assert len(clock_excluded)==9 and set(clock_excluded)<=set(clock_bound.CLOCK_BOUND_FROZEN),('clock-bound-exclusion-differs',sorted(clock_excluded))
+EXPECTED_TESTS=342  # the 287 alpha-perf probe cases plus the 64 C0 queue cases, less 9 declared real-clock window-slot tests; pinned into the frozen runner gate
 result=unittest.TextTestRunner(verbosity=2).run(suite)
 assert not torch.cuda.is_initialized()
 identity_receipts=sys.modules['test_native30_identity'].IDENTITY_RECEIPTS
@@ -128,12 +128,12 @@ import alpha_perf_gate
 import alpha_c0_gate
 active_and_cleanup=alpha_c0_gate.ACTIVE_S+alpha_c0_gate.CLEANUP_S
 from unittest.mock import patch
-# The frozen runner's check_slot reads alpha_c0_gate.window_ok (C0's own hard end), so its negatives are C0's boundaries.
-for instant in (alpha_c0_gate.NOT_BEFORE-1,alpha_c0_gate.HARD_END-active_and_cleanup+1):
+# C0's runner has no absolute-time window (operator, 2 Nov): its check_slot refuses nothing by wall clock, so it is
+# executed at two fixed instants far apart (1970 and 2100) and must accept both.
+for instant in (0.0,4102444800.0):
     with patch.object(owner.time,'time',lambda:instant):
         try:owner.check_slot()
-        except owner.Refused:pass
-        else:raise AssertionError('frozen-owner-window-negative-accepted')
+        except owner.Refused:raise AssertionError('c0-owner-refused-by-wall-clock')
 overlay=Path('/source/harness/native30_overlay')
 owner.verify_sources(overlay,built=True,final=True)
 owner.OVERLAY=overlay
@@ -141,7 +141,7 @@ green,final_manifest,build_proof=owner.verify_final_build()
 assert final_manifest==hashlib.sha256((overlay/'SHA256SUMS').read_bytes()).hexdigest()
 actual_bridge=sys.modules['test_native32'].NativeWorkerBridge
 assert actual_bridge is sys.modules['vllm.v1.flash_e3.worker_bridge'].NativeWorkerBridge
-owner_prelaunch=dict(actual_bridge_class=actual_bridge.__module__+'.'+actual_bridge.__name__,verdict='PASS',methods_executed=['check_slot (actual weekend gate, two negative boundaries)','verify_sources(built=True,final=True)','verify_final_build'],runner_sha256=hashlib.sha256(Path('/source/owner.py').read_bytes()).hexdigest(),overlay_manifest=final_manifest,green_sha256=green,device_state_checks='DEFERRED to owner: stopped unit, current launcher/defaults, GPUs idle and real arm-time window',device_execution=False)
+owner_prelaunch=dict(actual_bridge_class=actual_bridge.__module__+'.'+actual_bridge.__name__,verdict='PASS',methods_executed=['check_slot (no absolute window: accepted at two fixed instants)','verify_sources(built=True,final=True)','verify_final_build'],runner_sha256=hashlib.sha256(Path('/source/owner.py').read_bytes()).hexdigest(),overlay_manifest=final_manifest,green_sha256=green,device_state_checks='DEFERRED to owner: stopped unit, current launcher/defaults, GPUs idle and real arm-time window',device_execution=False)
 Path('/out/owner-prelaunch.json').write_text(json.dumps(owner_prelaunch,sort_keys=True,indent=2)+'\n')
 import native31_cpu_check
 native31_receipt=native31_cpu_check.run()
@@ -284,7 +284,7 @@ alpha_calls=sys.modules['test_alpha_perf_queue'].ARGPARSE_RECEIPTS
 assert alpha_calls and all(r['verdict']=='parsed' for r in alpha_calls)
 Path('/out/alpha-perf-queue-check.json').write_text(json.dumps(dict(slots=alpha_slots,argparse=alpha_calls),sort_keys=True,indent=2)+'\n')
 alpha_c0_slots=sys.modules['test_alpha_c0_queue'].SLOT_RECEIPTS
-assert alpha_c0_slots==[]  # C0's own slot test is excluded too (clock_bound)
+assert alpha_c0_slots==[]  # C0's draft has no slot (no absolute-time window), so its queue records no slot receipt
 alpha_c0_calls=sys.modules['test_alpha_c0_queue'].ARGPARSE_RECEIPTS
 assert alpha_c0_calls and all(r['verdict']=='parsed' for r in alpha_c0_calls)
 Path('/out/alpha-c0-queue-check.json').write_text(json.dumps(dict(slots=alpha_c0_slots,argparse=alpha_c0_calls),sort_keys=True,indent=2)+'\n')

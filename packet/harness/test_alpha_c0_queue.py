@@ -1329,22 +1329,28 @@ class Derivation(unittest.TestCase):
         diff = [line for line in difflib.ndiff(old_lines, new_lines) if line[:1] in '+-']
         removed = [line[2:] for line in diff if line[0] == '-']
         added = [line[2:] for line in diff if line[0] == '+']
-        # Every removed line names alpha-perf's gate or grade; each has its alpha-c0 line.
-        self.assertEqual(len(removed), 7, removed)
+        # Alpha-perf's absolute-time slot block goes whole and C0's note replaces it (no window; operator, 2 Nov).
+        slot_old, slot_new = queue.SLOT_OLD.splitlines(), queue.SLOT_NEW.splitlines()
+        self.assertEqual([x for x in removed if x in slot_old], slot_old)
+        self.assertEqual([x for x in added if x in slot_new], slot_new)
+        removed = [x for x in removed if x not in slot_old]
+        # Every other removed line names alpha-perf's gate or grade; each has its alpha-c0 line.
+        self.assertEqual(len(removed), 6, removed)
         for line in removed:
             self.assertTrue('alpha_perf_gate' in line or 'alpha-perf-grade' in line, line)
             self.assertTrue(any('alpha_c0_gate' in x or 'alpha-c0-grade' in x for x in added), line)
         declared = queue.HEADER_NOTE.splitlines() + [queue.DRAFT_SWITCH.strip(), '  e3_alpha_c0_box.py alpha_c0_gate.py; do',
-                                                     queue.INTERFACE_NEW.splitlines()[0]]
+                                                     queue.INTERFACE_NEW.splitlines()[0]] + slot_new
         self.assertEqual([x for x in added if not ('alpha_c0_gate' in x or 'alpha-c0-grade' in x) and x not in declared], [], diff)
 
     def test_the_draft_reads_alpha_c0_only(self):
         draft = queue.derive()[DRAFT]
-        for text in ('from alpha_c0_gate import window_ok', 'from alpha_c0_gate import ACTIVE_S,CLEANUP_S,LAST_ARM_ENTRY_S,PHASES',
+        for text in ('from alpha_c0_gate import ACTIVE_S,CLEANUP_S,LAST_ARM_ENTRY_S,PHASES',
                      "perf=p.parent/'alpha-c0-grade.json'", 'python3 "$H/e3_alpha_c0_box.py" arm', 'python3 "$H/e3_alpha_c0_box.py" grade',
                      "assert env.get('FLASH_S5_STAGE_LOCAL') == '1'"):
             self.assertIn(text, draft)
-        for text in ('from alpha_perf_gate import', 'python3 "$H/e3_alpha_perf_box.py"', 'q18a_alpha_perf', 'alpha-perf-grade'):
+        for text in ('from alpha_perf_gate import', 'python3 "$H/e3_alpha_perf_box.py"', 'q18a_alpha_perf', 'alpha-perf-grade',
+                     'window_ok', 'PY_SLOT', 'HARD_END', 'NOT_BEFORE'):
             self.assertNotIn(text, draft)
         self.assertEqual(queue.BODY.count('engine_watched '), 3)
         self.assertEqual(len(re.findall(r'^\s*python3 "\$H/', queue.BODY, flags=re.M)), 0)
@@ -1367,10 +1373,12 @@ class Window(unittest.TestCase):
     def test_the_box_budget_and_the_arm_entry_rule(self):
         import native40_box_gate as n40
         import native41_box_gate as n41
-        self.assertEqual((gate.CLEANUP_S, gate.NOT_BEFORE), (n40.CLEANUP_S, n40.NOT_BEFORE))
-        # C0's own hard end, 2026-11-02T09:30Z = production time 07:00Z plus the 9,000 s budget: the operator's instruction of 2 Nov
-        # (about 03:35 CET); the lead approved this pin edit (the latest-start string below follows from it). native40's stays 06:00Z.
-        self.assertEqual((gate.HARD_END, n40.HARD_END), (1793611800.0, 1793599200.0))
+        self.assertEqual(gate.CLEANUP_S, n40.CLEANUP_S)
+        # No absolute-time window (operator, 2 Nov: "we don't put in code what you govern"; launch time is the lead's): the gate
+        # has no NOT_BEFORE, HARD_END, latest start or window_ok. native40's own window is untouched.
+        for name in ('NOT_BEFORE', 'HARD_END', 'latest_arm', 'window_ok'):
+            self.assertFalse(hasattr(gate, name), name)
+        self.assertEqual(n40.HARD_END, 1793599200.0)
         for name in n41.KEPT:
             self.assertEqual(gate.PHASES[name], n40.PHASES[name], name)
         self.assertEqual(gate.ACTIVE_S + gate.CLEANUP_S, gate.BOX_BUDGET_S)
@@ -1389,11 +1397,6 @@ class Window(unittest.TestCase):
                             ('timeout 600s python3 "$H/e3_alpha_c0_box.py" grade', 1)):
             self.assertEqual(body.count(text), count, text)
         self.assertEqual((n41.INSTRUMENTS_CAP_S, n41.FULL_IDLE_CAP_S, n41.INGRESS_CAP_S, gate.GRADE_CAP_S), (120, 450, 60, 600))
-        self.assertEqual(gate.latest_arm(), gate.HARD_END - gate.BOX_BUDGET_S)
-        self.assertEqual(time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(gate.latest_arm())), '2026-11-02T07:00Z')
-        self.assertTrue(gate.window_ok(gate.latest_arm()))
-        self.assertFalse(gate.window_ok(gate.latest_arm() + 1))
-        self.assertFalse(gate.window_ok(gate.NOT_BEFORE - 1))
         func = tap.le_fix_function(queue.derive()[DRAFT], 'native41_budget')
         for key, value in (('active', gate.ACTIVE_S), ('cleanup', gate.CLEANUP_S), ('health', gate.PHASES['health']),
                            ('end_identity', gate.PHASES['end_identity']), ('last_arm_entry', gate.LAST_ARM_ENTRY_S)):
@@ -1401,18 +1404,18 @@ class Window(unittest.TestCase):
                                   env=dict(os.environ, HARNESS_DIR=str(HERE)), capture_output=True, text=True)
             self.assertEqual((done.returncode, done.stdout.strip()), (0, str(value)), done.stderr)
 
-    def test_draft_window_slot_executes_at_real_wall_clock(self):
+    def test_no_absolute_time_window_only_the_relative_budget(self):
+        # Replaces the real-clock slot test (removed with its id from harness/clock_bound.py): C0's draft has no slot to execute.
+        # Fixed texts only, no wall clock. The draft refuses no start by time; its limits run from its own start.
         draft = queue.derive()[DRAFT]
-        start = draft.index("python3 - <<'PY_SLOT'")
-        slot = draft[start:draft.index('\nPY_SLOT\n', start) + len('\nPY_SLOT\n')]
-        self.assertIn('alpha_c0_gate', slot)
-        done = subprocess.run(['bash', '-c', 'fail_early() { return 2; }\n' + slot],
-                              env=dict(os.environ, HARNESS_DIR=str(HERE)), capture_output=True, text=True)
-        expected = 0 if gate.window_ok(time.time()) else 2
-        self.assertEqual(done.returncode, expected, done.stderr)
-        SLOT_RECEIPTS.append(dict(draft='q18a_alpha_c0.draft.sh', real_wall_clock=True,
-                                  verdict='PASS' if done.returncode == 0 else 'OUTSIDE-WINDOW',
-                                  active_s=gate.ACTIVE_S, cleanup_margin_s=gate.CLEANUP_S))
+        self.assertEqual(draft.count(queue.SLOT_NEW), 1)
+        for text in ('PY_SLOT', 'window_ok', 'night-window-worst-case-exceeds-restore-margin', 'time.time()'):
+            self.assertNotIn(text, draft)
+        self.assertEqual(draft.count('exec timeout --signal=TERM --kill-after="$(native41_budget cleanup)s" '
+                                     '"$(native41_budget active)s"'), 1)
+        self.assertEqual(queue.BODY.count('if (( SECONDS > LAST_ARM_ENTRY_S )); then'), 1)
+        self.assertEqual(queue.BODY.count('LAST_ARM_ENTRY_S=$(native41_budget last_arm_entry)'), 1)
+        self.assertEqual(SLOT_RECEIPTS, [])
 
 
 if __name__ == '__main__':

@@ -4,11 +4,12 @@
 Reason (operator, 2 Nov 2026, about 03:05 CET): box timing is governed by the lead at launch. Each listed test runs a queue draft's
 PY_SLOT at the real clock against that queue's own gate, so it starts failing at a fixed instant of the night whatever the code
 (native39 trunk after 01:14:59Z, native35 p after 01:44:59Z, ... native34 after 05:17:59Z). The list is every real-clock
-window-slot test, C0's own included, found by the tests' own text (PY_SLOT / SLOT_RECEIPTS with real_wall_clock), not cut at a
-time. Every test file stays byte-identical; nothing here edits a test. The 14th id (native43 boundary, asserting
-gate.window_ok(time.time()) directly, last true 03:57:20Z) was added after chain j's engine self-run attempt 2 failed on it
-(lead's go, 2 Nov); a wider scan of every harness test for real-clock window asserts found no other. The arm-time window code is unchanged (C0's gate HARD_END
-is 08:30Z, the operator's instruction); removing window code entirely is for the next composed build.
+window-slot test of the frozen and inherited queues, found by the tests' own text (PY_SLOT / SLOT_RECEIPTS with real_wall_clock,
+and window_ok(time.time()) asserted directly), not cut at a time. Those test files stay byte-identical; nothing here edits a test.
+The native43 boundary id (window_ok(time.time()) asserted directly, last true 03:57:20Z) was added after chain j's engine
+self-run attempt 2 failed on it (lead's go, 2 Nov); a wider scan of every harness test for real-clock window asserts found no other.
+Nothing listed tests C0's own gate: C0 has no absolute-time window (operator, 2 Nov: "we don't put in code what you govern"),
+and its own slot test was reworked to that contract in test_alpha_c0_queue.py (C0's file), so its id left this list (chain l).
 
     python3 clock_bound.py SUITE.py          run one suite file as `python3 SUITE.py` would, minus its listed ids
     python3 clock_bound.py -m MOD [MOD ...]  run modules as `python3 -m unittest MOD ...` would, minus the listed ids
@@ -25,7 +26,6 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REASON = 'box timing is governed by the lead at launch (operator, 2 Nov)'
 CLOCK_BOUND_FROZEN = (
-    'test_alpha_c0_queue.Window.test_draft_window_slot_executes_at_real_wall_clock',
     'test_alpha_perf_queue.Window.test_draft_window_slot_executes_at_real_wall_clock',
     'test_native34_queue.FrozenProtocol.test_every_draft_window_slot_executes_at_real_wall_clock',
     'test_native35_l2.Queue.test_l2_draft_window_slot_executes_at_real_wall_clock',

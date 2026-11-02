@@ -3,15 +3,16 @@
 
 alpha_c0_cpu_probe.py = alpha_perf_cpu_probe.py with:
   * candidate q18a-alpha-c0 (the frozen C0 owner runner's QNAME); FLASH_NATIVE35_ARM stays TRUNK;
-  * the alpha_c0_gate window instead of alpha_perf_gate;
+  * the alpha_c0_gate budget instead of alpha_perf_gate's (C0 has no absolute-time window);
   * test_alpha_c0_queue added to the discovered suites (every inherited suite stays), EXPECTED_TESTS 287 + the suite's;
-  * the C0 draft's real-clock slot receipt appended to the inherited ones;
+  * test_alpha_c0_queue's SLOT_RECEIPTS appended to the inherited ones (empty: C0's draft has no slot);
   * the LOCALIZE=0 inert check run on the C0 settings, held to the same expectations;
   * the C0 queue receipts asserted and recorded (alpha_c0_queue='PASS');
   * the declared real-clock window-slot exclusion (harness/clock_bound.py; operator, 2 Nov: box timing is governed by the lead at
-    launch): the listed ids are stripped from the discovered suites, EXPECTED_TESTS drops by the 10 present here, and the slot
-    receipt asserts read what still runs; the excluded ids are recorded;
-  * the frozen owner runner's check_slot negatives at C0's own boundaries (its window is alpha_c0_gate's own hard end).
+    launch): the listed ids are stripped from the discovered suites, EXPECTED_TESTS drops by the 9 present here (none tests C0's
+    own gate), and the slot receipt asserts read what still runs; the excluded ids are recorded;
+  * the frozen owner runner's check_slot, which in C0 refuses nothing by wall clock (operator, 2 Nov): executed at two fixed
+    instants far apart, each must be accepted.
 The bundle self-run is tools/native43_bundle_selfrun.py with the spec's arm and probe.
 Every replacement must match exactly once.  --check verifies the committed file.
 """
@@ -21,7 +22,7 @@ import sys
 TOOLS = Path(__file__).resolve().parent
 PARENT_TESTS = 287
 ALPHA_C0_TESTS = 64  # test_alpha_c0_queue
-CLOCK_BOUND_HERE = 10  # harness/clock_bound.py ids among the suites this probe discovers (9 inherited + C0's own)
+CLOCK_BOUND_HERE = 9  # harness/clock_bound.py ids among the suites this probe discovers (inherited queues only; none tests C0's gate)
 CANDIDATE = 'q18a-alpha-c0'
 PARENT_CANDIDATE = 'q18a-alpha-perf'
 
@@ -37,9 +38,19 @@ PROBE_SWAPS = (
      "assert len(clock_excluded)==%d and set(clock_excluded)<=set(clock_bound.CLOCK_BOUND_FROZEN),('clock-bound-exclusion-differs',sorted(clock_excluded))\n"
      'EXPECTED_TESTS=%d  # the %d alpha-perf probe cases plus the %d C0 queue cases, less %d declared real-clock window-slot tests; pinned into the frozen runner gate\n'
      % (CLOCK_BOUND_HERE, PARENT_TESTS + ALPHA_C0_TESTS - CLOCK_BOUND_HERE, PARENT_TESTS, ALPHA_C0_TESTS, CLOCK_BOUND_HERE)),
-    ("for instant in (weekend_gate.NOT_BEFORE-1,weekend_gate.HARD_END-active_and_cleanup+1):\n",
-     "# The frozen runner's check_slot reads alpha_c0_gate.window_ok (C0's own hard end), so its negatives are C0's boundaries.\n"
-     "for instant in (alpha_c0_gate.NOT_BEFORE-1,alpha_c0_gate.HARD_END-active_and_cleanup+1):\n"),
+    ("for instant in (weekend_gate.NOT_BEFORE-1,weekend_gate.HARD_END-active_and_cleanup+1):\n"
+     "    with patch.object(owner.time,'time',lambda:instant):\n"
+     "        try:owner.check_slot()\n"
+     "        except owner.Refused:pass\n"
+     "        else:raise AssertionError('frozen-owner-window-negative-accepted')\n",
+     "# C0's runner has no absolute-time window (operator, 2 Nov): its check_slot refuses nothing by wall clock, so it is\n"
+     "# executed at two fixed instants far apart (1970 and 2100) and must accept both.\n"
+     "for instant in (0.0,4102444800.0):\n"
+     "    with patch.object(owner.time,'time',lambda:instant):\n"
+     "        try:owner.check_slot()\n"
+     "        except owner.Refused:raise AssertionError('c0-owner-refused-by-wall-clock')\n"),
+    ("'check_slot (actual weekend gate, two negative boundaries)'",
+     "'check_slot (no absolute window: accepted at two fixed instants)'"),
     ("assert len(slot_receipts)==20 and all(r['real_wall_clock'] for r in slot_receipts)\n"
      "assert {r['draft'] for r in slot_receipts}>={'q18a_native35_r.draft.sh','q18a_native35_o.draft.sh','q18a_native35_l.draft.sh','q18a_native35_p.draft.sh','q18a_native35_p_b.draft.sh','q18a_native35_p_c.draft.sh','q18a_native35_l2.draft.sh'}\n"
      "assert [r['active_s'] for r in slot_receipts if r['draft']=='q18a_native35_p_c.draft.sh']==[native35p_gate.SPEED_ACTIVE_S]\n",
@@ -57,7 +68,7 @@ PROBE_SWAPS = (
      "negative=inert.run('/source/harness/runs/q18a_alpha_c0_settings.sh','TRUNK settings (LOCALIZE=0)')"),
     ("record=dict(alpha_perf_queue='PASS',",
      "alpha_c0_slots=sys.modules['test_alpha_c0_queue'].SLOT_RECEIPTS\n"
-     "assert alpha_c0_slots==[]  # C0's own slot test is excluded too (clock_bound)\n"
+     "assert alpha_c0_slots==[]  # C0's draft has no slot (no absolute-time window), so its queue records no slot receipt\n"
      "alpha_c0_calls=sys.modules['test_alpha_c0_queue'].ARGPARSE_RECEIPTS\n"
      "assert alpha_c0_calls and all(r['verdict']=='parsed' for r in alpha_c0_calls)\n"
      "Path('/out/alpha-c0-queue-check.json').write_text(json.dumps(dict(slots=alpha_c0_slots,argparse=alpha_c0_calls),sort_keys=True,indent=2)+'\\n')\n"
