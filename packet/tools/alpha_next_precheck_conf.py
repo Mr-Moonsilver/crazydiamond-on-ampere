@@ -22,7 +22,8 @@ STEM = 'q18a_alpha_next'
 ADDED = {'e3/handler_anatomy.py', 'e3/stage_progress.py', 'e3/stage_wire.py'}
 METADATA = ('S5-OVERLAP-GENERATION.json', 'e3/native-overlap-readiness.json', 'e3/native-implementation-closure.json',
             'e3/decode-probe-evidence.json')
-SEAMS = ('test_alpha_next_queue.py e3_alpha_next_box.py test_alpha_next_stopfix_matrix.py test_alpha_next_c0_ring.py '
+SEAMS = ('test_alpha_next_queue.py e3_alpha_next_box.py alpha_next_arms.py alpha_next_gate.py alpha_next_stop_race.py '
+         'receipt_lines.py test_alpha_next_stopfix_matrix.py test_alpha_next_c0_ring.py '
          'test_alpha_next_peak_receipt.py test_e3_stopfix_partial_segment.py test_e3_stopfix_refused_open.py '
          'test_alpha_next_receipts.py test_alpha_next_receipts_mutants.py test_alpha_next_stage1_slow_rank.py '
          'test_alpha_next_path_qualification.py '

@@ -99,7 +99,7 @@ def main():
     leaves = {n: json.loads((ROOT / 'harness' / n).read_text()) for n in (
         'step_b_fixture_leaves.json', 'alpha_c0_fixture_leaves.json', 'stage1_anatomy_fixture_leaves.json',
         'native41_held_g_fixture_leaves.json', 'alpha_next_stopfix_fixture_leaves.json', 'alpha_next_robust_fixture_leaves.json',
-        'alpha_next_receipts_fixture_leaves.json')}
+        'alpha_next_receipts_fixture_leaves.json', 'alpha_next_queue_fixture_leaves.json')}
     source = fz['source']
     row = dict(schema='alpha-next-delivery/1', verdict='PASS', classification=None, box_action=False, gpu_execution=False,
                name=b['name'], bundle=b['bundle'], manifest=b['manifest'], overlay_manifest=b['overlay_manifest'],
