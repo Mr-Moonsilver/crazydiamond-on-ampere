@@ -50,6 +50,15 @@
    "cannot_prove": "What the module does with the parsed arguments",
    "more_convenient": true,
    "box_evidence": false
+  },
+  {
+   "name": "c1-grade-without-regrouping",
+   "test": "test_alpha_c1_box.Connected.test_without_the_regroup_an_overlap_arm_is_not_engaged",
+   "replaces": "e3_alpha_c1_box.regrouping (box.regrouping patched to the identity, so progress.assemble runs unwrapped)",
+   "equivalence": "A fault injection, not a stand-in: the grade must refuse an overlap arm whose engine flushes are not regrouped by its stage-overlap lines (regrouped-chunk-without-two-opens-and-two-releases, verdict INC) and still pass the serial arm.",
+   "cannot_prove": "Nothing about the real regroup beyond what the passing grade tests prove",
+   "more_convenient": false,
+   "box_evidence": false
   }
  ]
 }
