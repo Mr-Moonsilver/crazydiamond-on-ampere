@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """CLOCK_BOUND_FROZEN for Step B: every real-clock window-slot test in the strict list and the bundle self-run, left out by id.
 
-Each listed test executes (or asserts) a queue draft's owner-window slot at real wall clock against that queue's budget and hard end,
-Step B's own included. Box timing is governed by the lead at launch (operator, 2 Nov 2026 about 03:05 CET), so these tests are not
+Each listed test executes (or asserts) a frozen queue draft's owner-window slot at real wall clock against that queue's budget and
+hard end. Step B's own draft has no such slot any more (no absolute time in its gate, draft or runner), so its test is gone. Box timing is governed by the lead at launch (operator, 2 Nov 2026 about 03:05 CET), so these tests are not
 gates of this package. The list is deterministic, not cut by the time of the run. The test files stay byte-identical; only these ids
-are left out, each with the declared reason. The arm-time window code itself is unchanged (Step B's gate HARD_END is 07:00Z).
+are left out, each with the declared reason.
 
 Uses: `python3 step_b_clock_bound.py MODULE [MODULE ...]` runs those test modules minus the listed ids (selftest rows, the gate
 chain's focused list); `filtered(suite)` for the bundle self-run probe. Both refuse unless every listed id of the loaded modules
@@ -29,7 +29,6 @@ CLOCK_BOUND_FROZEN = {name: REASON for name in (
     'test_native43_lf_queue.Window.test_l_f_draft_window_slot_executes_at_real_wall_clock',
     'test_alpha_perf_queue.Window.test_draft_window_slot_executes_at_real_wall_clock',
     'test_step_a_queue.Window.test_draft_window_slot_executes_at_real_wall_clock',
-    'test_step_b_queue.Window.test_draft_window_slot_executes_at_real_wall_clock',
 )}
 MODULES = sorted({name.split('.', 1)[0] for name in CLOCK_BOUND_FROZEN})
 # The bundle self-run probe's suites hold these (native39 lifecycle, native43 boundary, lifecycle and l-f are strict-only).

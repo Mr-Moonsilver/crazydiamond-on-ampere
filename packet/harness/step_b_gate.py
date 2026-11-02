@@ -1,4 +1,4 @@
-"""Step B box queue: one phase budget for the watchdog, the owner window and the draft.
+"""Step B box queue: one phase budget for the watchdog and the draft, relative to the run's own start.
 
 step_a_gate's rule over Step B's sixteen required arms: startup, bind and the unarmed check are held-f's. Then twelve band 1
 arms (sizes 1, 2, 4) and four band 2 arms (sizes 1, 2), each behind a typed all-rank FULL entry, with instruments and ingress
@@ -7,18 +7,15 @@ receipts, a typed FULL at the end and the grade, then native40's end identity an
 ACTIVE_S is the outer watchdog: the box budget is 9,000 s including cleanup. An arm starts only inside LAST_ARM_ENTRY_S, Step A's
 number, since each arm's worst case and the tail are unchanged. TRIM_G4_REPEAT_S is the lead's order of what goes first: a size 4
 repeat enters only while band 2's nominal time still fits, so a slow run gives up those two arms before it gives up a band 2
-arm. A trimmed arm is NOT_RUN and the run is INC, never PASS. HARD_END is Step B's own: 2026-11-02T07:00Z, the operator's move of
-2 Nov (production comes back at 08:00 CET); native40_box_gate's 06:00Z and every other gate stay as they are. NOT_BEFORE and CLEANUP_S
-stay native40's.
-``window_ok(time.time())`` is the single entry check used by the draft and the owner runner.
+arm. A trimmed arm is NOT_RUN and the run is INC, never PASS.
+No absolute time here: launch time is governed by the lead at launch (operator, 2 Nov 2026: "we don't put in code what you govern"),
+so this gate has no hard end, no not-before and no window check, and neither the draft nor the owner runner refuses by wall clock.
+Every limit counts from the run's own start (bash SECONDS in the draft, the watchdog's timeout). CLEANUP_S stays native40's.
 """
 from native41_box_gate import ARM_KILL_AFTER_S, ARM_TIMEOUT_S, FULL_IDLE_CAP_S, INGRESS_CAP_S, INSTRUMENTS_CAP_S, KEPT
-import datetime
-
-from native40_box_gate import CLEANUP_S, NOT_BEFORE, PHASES as NATIVE40_PHASES
+from native40_box_gate import CLEANUP_S, PHASES as NATIVE40_PHASES
 from step_a_gate import ACTIVE_S, BOX_BUDGET_S, GRADE_CAP_S, LAST_ARM_ENTRY_S
 
-HARD_END = datetime.datetime(2026, 11, 2, 7, tzinfo=datetime.timezone.utc).timestamp()   # operator, 2 Nov: production at 08:00 CET
 BAND1_ARMS = 12
 BAND2_ARMS = 4
 ARMS = BAND1_ARMS + BAND2_ARMS
@@ -49,14 +46,6 @@ EXPECTED_RUNTIME_S = {
              'never measured on the box at this writing, and neither group speed nor fused speed is measured on the box: this is '
              'an estimate. Sum: about 15 min for startup, bind and the unarmed check, 25 min for twelve band 1 arms, 19 min for '
              'band 2, 5 min for entries and tail: about 65 min. The lead planned 80 to 90 min. The 9,000 s budget holds the worst case.'}
-
-
-def latest_arm():
-    return HARD_END - ACTIVE_S - CLEANUP_S
-
-
-def window_ok(now):
-    return NOT_BEFORE <= now and now + ACTIVE_S + CLEANUP_S <= HARD_END
 
 
 def arm_fits(elapsed_s):

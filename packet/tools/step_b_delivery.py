@@ -152,10 +152,9 @@ def main():
                                        left_out_of_bundle_selfrun=q['clock_bound_frozen_excluded'],
                                        runner_requirement_removed="result.get('native39_trunk_queue')=='PASS'",
                                        approval='operator, 2 Nov 2026 about 03:05 CET, through the lead'),
-               hard_end_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(gate.HARD_END)),
-               latest_start_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(gate.latest_arm())),
+               launch_time='governed by the lead at launch (operator, 2 Nov 2026); no hard end, window or latest start in the package',
                expected_runtime=gate.EXPECTED_RUNTIME_S, box_budget_s=gate.BOX_BUDGET_S, active_s=gate.ACTIVE_S, cleanup_s=gate.CLEANUP_S,
-               last_arm_entry_s=gate.LAST_ARM_ENTRY_S, latest_start_unix=gate.latest_arm(),
+               last_arm_entry_s=gate.LAST_ARM_ENTRY_S, trim_g4_repeat_s=gate.TRIM_G4_REPEAT_S,
                note=str(a.note), note_sha256=sha(a.note), model_settings_changed=False, device_run='NOT_RUN')
     a.out.parent.mkdir(parents=True, exist_ok=True)
     with a.out.open('x') as handle:

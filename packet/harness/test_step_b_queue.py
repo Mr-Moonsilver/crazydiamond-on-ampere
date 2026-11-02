@@ -1137,15 +1137,18 @@ class Derivation(unittest.TestCase):
         diff = [line for line in difflib.ndiff(old_lines, new_lines) if line[:1] in '+-']
         removed = [line[2:] for line in diff if line[0] == '-']
         added = [line[2:] for line in diff if line[0] == '+']
-        self.assertEqual(len(removed), 8, removed)
+        # Step A's absolute window slot is the one block taken out (operator, 2 Nov 2026: launch time is the lead's).
+        window_removed = [line for line in queue.WINDOW_OLD.splitlines() if line not in queue.WINDOW_NEW.splitlines()]
+        self.assertEqual(len(removed), 7 + len(window_removed), removed)
         for line in removed:
-            self.assertTrue('step_a_gate' in line or 'step-a-grade' in line or 'last_arm_entry' in line, line)
-        declared = queue.HEADER_NOTE.splitlines() + [queue.DRAFT_GROUPS.strip(), queue.INTERFACE_NEW]
+            self.assertTrue('step_a_gate' in line or 'step-a-grade' in line or 'last_arm_entry' in line or line in window_removed, line)
+        self.assertEqual([line for line in window_removed if line not in removed], [])
+        declared = queue.HEADER_NOTE.splitlines() + [queue.DRAFT_GROUPS.strip(), queue.INTERFACE_NEW] + queue.WINDOW_NEW.splitlines()
         self.assertEqual([x for x in added if not ('step_b_gate' in x or 'step-b-grade' in x or 'trim_g4_repeat' in x) and x not in declared], [], diff)
 
     def test_the_draft_reads_step_b_only(self):
         draft = queue.derive()[DRAFT]
-        for text in ('from step_b_gate import window_ok', 'from step_b_gate import ACTIVE_S,CLEANUP_S,LAST_ARM_ENTRY_S,PHASES,TRIM_G4_REPEAT_S',
+        for text in ('from step_b_gate import ACTIVE_S,CLEANUP_S,LAST_ARM_ENTRY_S,PHASES,TRIM_G4_REPEAT_S',
                      "perf=p.parent/'step-b-grade.json'", 'python3 "$H/e3_step_b_box.py" arm', 'python3 "$H/e3_step_b_box.py" grade',
                      "assert env.get('FLASH_S5_QSA_FUSED') == '1'", "assert env.get('FLASH_S5_LAYER_GROUPS') == '1'"):
             self.assertIn(text, draft)
@@ -1159,9 +1162,14 @@ class Window(unittest.TestCase):
     def test_the_box_budget_and_the_arm_entry_rule(self):
         import native40_box_gate as n40
         import native41_box_gate as n41
-        self.assertEqual((gate.CLEANUP_S, gate.NOT_BEFORE), (n40.CLEANUP_S, n40.NOT_BEFORE))
-        self.assertEqual(gate.HARD_END, 1793602800.0)      # 2026-11-02T07:00Z, Step B's own (operator, 2 Nov)
-        self.assertEqual(n40.HARD_END, 1793599200.0)       # native40's 06:00Z is not moved
+        self.assertEqual(gate.CLEANUP_S, n40.CLEANUP_S)
+        # No absolute time in Step B's gate, draft or runner: launch time is governed by the lead (operator, 2 Nov 2026).
+        for name in ('HARD_END', 'NOT_BEFORE', 'window_ok', 'latest_arm'):
+            self.assertFalse(hasattr(gate, name), name)
+        draft = queue.derive()[DRAFT]
+        for text in ('window_ok', 'PY_SLOT', 'HARD_END', 'night-window'):
+            self.assertNotIn(text, draft)
+        self.assertIn('Launch time is governed by the lead at launch (operator, 2 Nov 2026)', draft)
         for name in n41.KEPT:
             self.assertEqual(gate.PHASES[name], n40.PHASES[name], name)
         self.assertEqual((gate.ACTIVE_S, gate.BOX_BUDGET_S, gate.LAST_ARM_ENTRY_S), (a_gate.ACTIVE_S, 9000, a_gate.LAST_ARM_ENTRY_S))
@@ -1182,11 +1190,6 @@ class Window(unittest.TestCase):
                             ('timeout 60s python3 "$H/e3_native39_trunk_checks.py" ingress', 1),
                             ('timeout 600s python3 "$H/e3_step_b_box.py" grade', 1)):
             self.assertEqual(body.count(text), count, text)
-        self.assertEqual(gate.latest_arm(), gate.HARD_END - gate.BOX_BUDGET_S)
-        self.assertEqual(time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(gate.latest_arm())), '2026-11-02T04:30Z')
-        self.assertTrue(gate.window_ok(gate.latest_arm()))
-        self.assertFalse(gate.window_ok(gate.latest_arm() + 1))
-        self.assertFalse(gate.window_ok(gate.NOT_BEFORE - 1))
         func = tap.le_fix_function(queue.derive()[DRAFT], 'native41_budget')
         for key, value in (('active', gate.ACTIVE_S), ('cleanup', gate.CLEANUP_S), ('health', gate.PHASES['health']),
                            ('end_identity', gate.PHASES['end_identity']), ('last_arm_entry', gate.LAST_ARM_ENTRY_S),
@@ -1195,23 +1198,10 @@ class Window(unittest.TestCase):
                                   env=dict(os.environ, HARNESS_DIR=str(HERE)), capture_output=True, text=True)
             self.assertEqual((done.returncode, done.stdout.strip()), (0, str(value)), done.stderr)
 
-    def test_draft_window_slot_executes_at_real_wall_clock(self):
-        draft = queue.derive()[DRAFT]
-        start = draft.index("python3 - <<'PY_SLOT'")
-        slot = draft[start:draft.index('\nPY_SLOT\n', start) + len('\nPY_SLOT\n')]
-        self.assertIn('step_b_gate', slot)
-        done = subprocess.run(['bash', '-c', 'fail_early() { return 2; }\n' + slot],
-                              env=dict(os.environ, HARNESS_DIR=str(HERE)), capture_output=True, text=True)
-        expected = 0 if gate.window_ok(time.time()) else 2
-        self.assertEqual(done.returncode, expected, done.stderr)
-        SLOT_RECEIPTS.append(dict(draft='q18a_step_b.draft.sh', real_wall_clock=True,
-                                  verdict='PASS' if done.returncode == 0 else 'OUTSIDE-WINDOW',
-                                  active_s=gate.ACTIVE_S, cleanup_margin_s=gate.CLEANUP_S))
-
     def test_clock_bound_list_is_exact(self):
         """Every declared real-clock window-slot id exists once in its module; the filter leaves out exactly those."""
         import step_b_clock_bound as cb
-        self.assertEqual(len(cb.CLOCK_BOUND_FROZEN), 15)
+        self.assertEqual(len(cb.CLOCK_BOUND_FROZEN), 14)
         self.assertEqual(set(cb.CLOCK_BOUND_FROZEN.values()), {'box timing is governed by the lead at launch (operator, 2 Nov)'})
         import ast
         found = []
@@ -1220,12 +1210,11 @@ class Window(unittest.TestCase):
             found += ['%s.%s.%s' % (name, c.name, f.name) for c in tree.body if isinstance(c, ast.ClassDef)
                       for f in c.body if isinstance(f, ast.FunctionDef) and name + '.' + c.name + '.' + f.name in cb.CLOCK_BOUND_FROZEN]
         self.assertEqual(sorted(found), sorted(cb.CLOCK_BOUND_FROZEN))
-        self.assertEqual(len(cb.IN_PROBE), 11)
-        own = 'test_step_b_queue.Window.test_draft_window_slot_executes_at_real_wall_clock'
-        suite = unittest.TestSuite([self, Window('test_the_box_budget_and_the_arm_entry_rule'),
-                                    Window('test_draft_window_slot_executes_at_real_wall_clock')])
+        self.assertEqual(len(cb.IN_PROBE), 10)
+        self.assertNotIn('test_step_b_queue', cb.MODULES)
+        suite = unittest.TestSuite([self, Window('test_the_box_budget_and_the_arm_entry_rule')])
         kept, removed = cb.filtered(suite)
-        self.assertEqual((kept.countTestCases(), removed), (2, [own]))
+        self.assertEqual((kept.countTestCases(), removed), (2, []))
 
 if __name__ == '__main__':
     unittest.main()

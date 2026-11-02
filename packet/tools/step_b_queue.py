@@ -99,6 +99,24 @@ def rename(text):
     return text
 
 
+# Step A's absolute owner-window slot, taken out: launch time is governed by the lead at launch (operator, 2 Nov 2026: "we don't
+# put in code what you govern"). The run's own budget stays relative to its start (bash SECONDS against step_b_gate's caps).
+WINDOW_OLD = (
+    "# The owner supplies the UTC hard end at bundle build time. The queue refuses\n"
+    "# entry unless its derived active timeout plus 900 s kill margin fits that window (native39_trunk_gate derivation).\n"
+    "# Production restoration remains with the owner. No workload/gate changes.\n"
+    "python3 - <<'PY_SLOT' || fail_early night-window-worst-case-exceeds-restore-margin\n"
+    "import os,sys,time\n"
+    "sys.path.insert(0,os.environ.get('HARNESS_DIR') or os.environ.get('H') or '')\n"
+    "from step_a_gate import window_ok\n"
+    "assert window_ok(time.time()), 'queue outside owner window or cleanup margin'\n"
+    "PY_SLOT\n")
+WINDOW_NEW = (
+    "# Launch time is governed by the lead at launch (operator, 2 Nov 2026); no absolute window or hard end in this queue. The run's\n"
+    "# budget is relative to its own start: the watchdog, the arm entry limit and the size 4 repeat trim (step_b_gate, bash SECONDS).\n"
+    "# Production restoration remains with the owner. No workload/gate changes.\n")
+
+
 def derive():
     out = {}
     for suffix in ('.draft.sh', '_settings.sh', '_declare.sh'):
@@ -107,7 +125,7 @@ def derive():
             text = replace_once(text, step_a.BODY, BODY)
             text = replace_once(text, BUDGET_OLD, BUDGET_NEW)
             text = replace_once(text, PRINT_OLD, PRINT_NEW)
-            text = replace_once(text, 'from step_a_gate import window_ok', 'from step_b_gate import window_ok')
+            text = replace_once(text, WINDOW_OLD, WINDOW_NEW)
             text = replace_once(text, INTERFACE_OLD, INTERFACE_NEW)
             text = replace_once(text, step_a.DRAFT_FUSED, step_a.DRAFT_FUSED + DRAFT_GROUPS)
             for a, b in (("perf=p.parent/'step-a-grade.json'", "perf=p.parent/'step-b-grade.json'"),

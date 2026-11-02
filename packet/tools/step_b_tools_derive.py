@@ -4,13 +4,13 @@
 step_b_cpu_probe.py = step_a_cpu_probe.py with:
   * candidate q18a-step-b (the frozen Step B owner runner's QNAME); FLASH_NATIVE35_ARM stays TRUNK;
   * the step_b_gate window instead of step_a_gate;
-  * test_step_b_queue added to the discovered suites (every inherited suite stays), EXPECTED_TESTS 333 + the suite's - 11;
+  * test_step_b_queue added to the discovered suites (every inherited suite stays), EXPECTED_TESTS 333 + the suite's - 10;
   * the Step B draft's slot receipts appended to the inherited ones (empty: its slot test is declared out);
   * the LOCALIZE=0 inert check run on the Step B settings, held to the same expectations;
   * the Step B queue receipts asserted and recorded (step_b_queue='PASS');
   * the declared real-clock window-slot tests (harness/step_b_clock_bound.py, Step B's own included) left out of the suite before
-    it runs and recorded with their reason, their slot receipts asserted empty, and the frozen runner's negative instants taken
-    from step_b_gate (its HARD_END is Step B's 07:00Z).
+    it runs and recorded with their reason, their slot receipts asserted empty; the frozen runner's check_slot, which no longer
+    refuses by wall clock, is run at the two former boundary instants and must accept.
 The bundle self-run is tools/native43_bundle_selfrun.py with the spec's arm and probe.
 Every replacement must match exactly once.  --check verifies the committed file.
 """
@@ -19,8 +19,8 @@ import sys
 
 TOOLS = Path(__file__).resolve().parent
 PARENT_TESTS = 333
-STEP_B_TESTS = 52  # test_step_b_queue
-CLOCK_BOUND_IN_PROBE = 11  # harness/step_b_clock_bound.IN_PROBE: the declared real-clock window-slot tests in the probe's suites
+STEP_B_TESTS = 51  # test_step_b_queue
+CLOCK_BOUND_IN_PROBE = 10  # harness/step_b_clock_bound.IN_PROBE: the declared real-clock window-slot tests in the probe's suites
 EXPECTED = PARENT_TESTS - CLOCK_BOUND_IN_PROBE + STEP_B_TESTS
 CANDIDATE = 'q18a-step-b'
 PARENT_CANDIDATE = 'q18a-step-a'
@@ -38,8 +38,9 @@ PROBE_SWAPS = (
      'suite,clock_bound_removed=step_b_clock_bound.filtered(suite)\n'
      'assert clock_bound_removed==step_b_clock_bound.IN_PROBE,clock_bound_removed\n'
      'result=unittest.TextTestRunner(verbosity=2).run(suite)\n'),
-    ('for instant in (weekend_gate.NOT_BEFORE-1,weekend_gate.HARD_END-active_and_cleanup+1):\n',
-     'for instant in (step_b_gate.NOT_BEFORE-1,step_b_gate.HARD_END-active_and_cleanup+1):\n'),
+    ("        try:owner.check_slot()\n        except owner.Refused:pass\n        else:raise AssertionError('frozen-owner-window-negative-accepted')\n",
+     "        owner.check_slot()  # never refused by wall clock: launch time is governed by the lead (operator, 2 Nov 2026)\n"),
+    ("'check_slot (actual weekend gate, two negative boundaries)'", "'check_slot (no wall-clock refusal at the two former boundaries)'"),
     ("assert len(slot_receipts)==20 and all(r['real_wall_clock'] for r in slot_receipts)\n",
      "assert slot_receipts==[]  # their real-clock slot tests are declared (step_b_clock_bound) and left out\n"),
     ("assert {r['draft'] for r in slot_receipts}>={'q18a_native35_r.draft.sh',", "assert not {r['draft'] for r in slot_receipts}&{'q18a_native35_r.draft.sh',"),

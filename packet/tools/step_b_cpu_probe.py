@@ -100,7 +100,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_alpha_perf_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_step_a_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_step_b_queue.py'))
-EXPECTED_TESTS=374  # the 333 Step A probe cases plus the 52 Step B queue cases, less 11 declared real-clock window-slot tests; pinned into the frozen runner gate
+EXPECTED_TESTS=374  # the 333 Step A probe cases plus the 51 Step B queue cases, less 10 declared real-clock window-slot tests; pinned into the frozen runner gate
 import step_b_clock_bound
 suite,clock_bound_removed=step_b_clock_bound.filtered(suite)
 assert clock_bound_removed==step_b_clock_bound.IN_PROBE,clock_bound_removed
@@ -129,11 +129,9 @@ import step_a_gate
 import step_b_gate
 active_and_cleanup=step_b_gate.ACTIVE_S+step_b_gate.CLEANUP_S
 from unittest.mock import patch
-for instant in (step_b_gate.NOT_BEFORE-1,step_b_gate.HARD_END-active_and_cleanup+1):
+for instant in (weekend_gate.NOT_BEFORE-1,weekend_gate.HARD_END-active_and_cleanup+1):
     with patch.object(owner.time,'time',lambda:instant):
-        try:owner.check_slot()
-        except owner.Refused:pass
-        else:raise AssertionError('frozen-owner-window-negative-accepted')
+        owner.check_slot()  # never refused by wall clock: launch time is governed by the lead (operator, 2 Nov 2026)
 overlay=Path('/source/harness/native30_overlay')
 owner.verify_sources(overlay,built=True,final=True)
 owner.OVERLAY=overlay
@@ -141,7 +139,7 @@ green,final_manifest,build_proof=owner.verify_final_build()
 assert final_manifest==hashlib.sha256((overlay/'SHA256SUMS').read_bytes()).hexdigest()
 actual_bridge=sys.modules['test_native32'].NativeWorkerBridge
 assert actual_bridge is sys.modules['vllm.v1.flash_e3.worker_bridge'].NativeWorkerBridge
-owner_prelaunch=dict(actual_bridge_class=actual_bridge.__module__+'.'+actual_bridge.__name__,verdict='PASS',methods_executed=['check_slot (actual weekend gate, two negative boundaries)','verify_sources(built=True,final=True)','verify_final_build'],runner_sha256=hashlib.sha256(Path('/source/owner.py').read_bytes()).hexdigest(),overlay_manifest=final_manifest,green_sha256=green,device_state_checks='DEFERRED to owner: stopped unit, current launcher/defaults, GPUs idle and real arm-time window',device_execution=False)
+owner_prelaunch=dict(actual_bridge_class=actual_bridge.__module__+'.'+actual_bridge.__name__,verdict='PASS',methods_executed=['check_slot (no wall-clock refusal at the two former boundaries)','verify_sources(built=True,final=True)','verify_final_build'],runner_sha256=hashlib.sha256(Path('/source/owner.py').read_bytes()).hexdigest(),overlay_manifest=final_manifest,green_sha256=green,device_state_checks='DEFERRED to owner: stopped unit, current launcher/defaults, GPUs idle and real arm-time window',device_execution=False)
 Path('/out/owner-prelaunch.json').write_text(json.dumps(owner_prelaunch,sort_keys=True,indent=2)+'\n')
 import native31_cpu_check
 native31_receipt=native31_cpu_check.run()

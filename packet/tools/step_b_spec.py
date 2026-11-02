@@ -28,7 +28,10 @@ def _step_a_swap(marker):
 STEP_A_CASES_TEXT = _step_a_swap("sorted(engine.get('cases') or {})==")
 assert STEP_A_CASES_TEXT == "sorted(engine.get('cases') or {})==" + repr(selfrun.step_a_cases()), 'Step A runner case list differs from its sources'
 RUNNER_SWAPS = [
-    [_step_a_swap('import window_ok'), "    from step_b_gate import window_ok\n"],
+    # No wall-clock refusal in the runner: launch time is governed by the lead at launch (operator, 2 Nov 2026). check_slot stays
+    # (its callers are unchanged) and returns at once.
+    [_step_a_swap('import window_ok') + "    require(window_ok(time.time()),'operator-window-not-before-or-cleanup-margin')\n",
+     "    return None  # launch time is governed by the lead at launch (operator, 2 Nov 2026); no wall-clock window here\n"],
     [_step_a_swap("engine.get('schema')=="), "engine.get('schema')=='step-b-selfrun/1'"],
     [_step_a_swap("result.get('step_a_queue')=='PASS'"),
      _step_a_swap("result.get('step_a_queue')=='PASS'") + " and result.get('step_b_queue')=='PASS'"],
