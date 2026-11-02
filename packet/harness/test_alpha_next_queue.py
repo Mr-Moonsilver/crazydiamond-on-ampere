@@ -1366,7 +1366,9 @@ class ArmLoop(unittest.TestCase):
         self.assertFalse([x for x in result['missing'] if any(e in x for e in EXTRA)])
 
     def test_extra_arms_run_when_the_budget_allows_and_are_graded(self):
-        out, err, calls, steps = self.run_loop(jump_after='ingress-' + CORE[-1], jump_to='LAST_ARM_ENTRY_S - 1')
+        # 600 s of budget left after the core: the four extra arms enter on any hub load. (It was 1 s: at hub load 70 the fake
+        # arms' real seconds carried the fourth past the limit, g3 focused, HARNESS.) The limit's edge is tested by the +10 jumps.
+        out, err, calls, steps = self.run_loop(jump_after='ingress-' + CORE[-1], jump_to='LAST_ARM_ENTRY_S - 600')
         self.assertEqual(steps['arm-' + EXTRA[0]], 'PASS')
         self.assertEqual([x for x in EXTRA if steps['arm-' + x] != 'PASS'], [])
         self.assertEqual(self.grade_file()['required_arms'], GRADED)
