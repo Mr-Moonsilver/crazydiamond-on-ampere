@@ -207,6 +207,43 @@ class FusedRefusedOpen(ro.Base):
                 driver.stop('abort')
 
 
+class GroupedRefusedOpen(ro.Base):
+    """Fix 1 with the chunk's fused latch and a group size latched at the refused open (sizes 2 and 4; leaf fused-latch-at-refused-open).
+
+    The grouped column of the assessment's matrix. The C0 column's fix-1 equivalent is C0's own _stop_retained_rows
+    (test_e3_stage_local.PartialOpen), not the stepped branch.
+    """
+
+    def test_refused_open_with_a_group_latched_closes_the_row_then_retires(self):
+        for size in (2, 4):
+            for kind in ro.STOPS:
+                with self.subTest(size=size, stop=kind):
+                    network = self.refused_open()
+                    driver = network.driver
+                    driver.qsa_fused = ed.FusedQsa()
+                    driver.install_layer_groups().size = size
+                    driver._tx_fused = True
+                    driver._tx_group = size
+                    driver.stop(kind)
+                    self.assertIsNone(driver.error)
+                    self.finish(network)
+                    self.assert_closed(network)
+                    rows = self.after_row_one(self.commands(network))
+                    self.assertEqual(rows[0], ('flash_s5_cancel', 1))
+                    self.assertNotIn(('flash_s5_open', 2), rows)
+
+    def test_reach_fix_1_acts_with_a_group_latched(self):
+        network = self.refused_open()
+        driver = network.driver
+        driver.qsa_fused = ed.FusedQsa()
+        driver.install_layer_groups().size = 2
+        driver._tx_fused, driver._tx_group = True, 2
+        with mock.patch.object(ed.NativeSegmentDriver, '_drive_retained_cancel',
+                               lambda self: (_ for _ in ()).throw(AssertionError('fix 1 reached'))):
+            with self.assertRaisesRegex(AssertionError, 'fix 1 reached'):
+                driver.stop('abort')
+
+
 # ---------------------------------------------------------------- C0 staged
 REPLAYED = (('prepare', 1), ('prefix', 1), ('layer', 1), ('suffix', 3), ('state_finalize', 1), ('prepare', 3))
 
