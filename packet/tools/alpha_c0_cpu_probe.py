@@ -99,7 +99,11 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_native41_progress_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_alpha_perf_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_alpha_c0_queue.py'))
-EXPECTED_TESTS=351  # the 287 alpha-perf probe cases plus the 64 C0 queue cases; pinned into the frozen runner gate
+# Declared exclusion (harness/clock_bound.py; operator, 2 Nov: box timing is governed by the lead at launch). Test files unchanged.
+import clock_bound
+suite,clock_excluded=clock_bound.strip(suite)
+assert len(clock_excluded)==10 and set(clock_excluded)<=set(clock_bound.CLOCK_BOUND_FROZEN),('clock-bound-exclusion-differs',sorted(clock_excluded))
+EXPECTED_TESTS=341  # the 287 alpha-perf probe cases plus the 64 C0 queue cases, less 10 declared real-clock window-slot tests; pinned into the frozen runner gate
 result=unittest.TextTestRunner(verbosity=2).run(suite)
 assert not torch.cuda.is_initialized()
 identity_receipts=sys.modules['test_native30_identity'].IDENTITY_RECEIPTS
@@ -124,7 +128,8 @@ import alpha_perf_gate
 import alpha_c0_gate
 active_and_cleanup=alpha_c0_gate.ACTIVE_S+alpha_c0_gate.CLEANUP_S
 from unittest.mock import patch
-for instant in (weekend_gate.NOT_BEFORE-1,weekend_gate.HARD_END-active_and_cleanup+1):
+# The frozen runner's check_slot reads alpha_c0_gate.window_ok (C0's hard end 07:00Z), so its negatives are C0's boundaries.
+for instant in (alpha_c0_gate.NOT_BEFORE-1,alpha_c0_gate.HARD_END-active_and_cleanup+1):
     with patch.object(owner.time,'time',lambda:instant):
         try:owner.check_slot()
         except owner.Refused:pass
@@ -168,11 +173,9 @@ assert len(causal_cli)==3
 Path('/out/causal-cli-check.json').write_text(json.dumps(causal_cli,sort_keys=True,indent=2)+'\n')
 
 slot_receipts=sys.modules['test_native34_queue'].SLOT_RECEIPTS+sys.modules['test_native35_queue'].SLOT_RECEIPTS+sys.modules['test_native35_performance_queue'].SLOT_RECEIPTS+sys.modules['test_native35_l2'].SLOT_RECEIPTS
-assert len(slot_receipts)==20 and all(r['real_wall_clock'] for r in slot_receipts)
-assert {r['draft'] for r in slot_receipts}>={'q18a_native35_r.draft.sh','q18a_native35_o.draft.sh','q18a_native35_l.draft.sh','q18a_native35_p.draft.sh','q18a_native35_p_b.draft.sh','q18a_native35_p_c.draft.sh','q18a_native35_l2.draft.sh'}
-assert [r['active_s'] for r in slot_receipts if r['draft']=='q18a_native35_p_c.draft.sh']==[native35p_gate.SPEED_ACTIVE_S]
+assert all(r['real_wall_clock'] for r in slot_receipts)  # the drafts' own slot tests are excluded (clock_bound); others' receipts kept
 trunk_slots=sys.modules['test_native39_trunk_queue'].SLOT_RECEIPTS
-assert len(trunk_slots)==1 and trunk_slots[0]['draft']=='q18a_native39_trunk.draft.sh' and trunk_slots[0]['real_wall_clock'] and trunk_slots[0]['active_s']==native39_trunk_gate.TRUNK_ACTIVE_S
+assert trunk_slots==[]  # its one slot test is excluded (clock_bound)
 slot_receipts=slot_receipts+trunk_slots+sys.modules['test_native40_box_queue'].SLOT_RECEIPTS+sys.modules['test_native41_box_queue'].SLOT_RECEIPTS+sys.modules['test_native41_progress_queue'].SLOT_RECEIPTS+sys.modules['test_alpha_perf_queue'].SLOT_RECEIPTS+sys.modules['test_alpha_c0_queue'].SLOT_RECEIPTS
 Path('/out/draft-window-check.json').write_text(json.dumps(slot_receipts,sort_keys=True,indent=2)+'\n')
 protocol_receipts=sys.modules['test_native34_runtime'].PROTOCOL_RECEIPTS
@@ -276,16 +279,16 @@ assert [r['split_entries'] for r in trunk_cases if r['case'] in ('tail-foreign-a
 assert [r['accepted'] for r in trunk_cases if r['case']=='round-wrapper-declared-not-run-only']==[['declared']]
 Path('/out/native39-trunk-queue-check.json').write_text(json.dumps(dict(cases=trunk_cases,slots=trunk_slots),sort_keys=True,indent=2)+'\n')
 alpha_slots=sys.modules['test_alpha_perf_queue'].SLOT_RECEIPTS
-assert len(alpha_slots)==1 and alpha_slots[0]['draft']=='q18a_alpha_perf.draft.sh' and alpha_slots[0]['real_wall_clock'] and alpha_slots[0]['active_s']==alpha_perf_gate.ACTIVE_S
+assert alpha_slots==[]  # its one slot test is excluded (clock_bound)
 alpha_calls=sys.modules['test_alpha_perf_queue'].ARGPARSE_RECEIPTS
 assert alpha_calls and all(r['verdict']=='parsed' for r in alpha_calls)
 Path('/out/alpha-perf-queue-check.json').write_text(json.dumps(dict(slots=alpha_slots,argparse=alpha_calls),sort_keys=True,indent=2)+'\n')
 alpha_c0_slots=sys.modules['test_alpha_c0_queue'].SLOT_RECEIPTS
-assert len(alpha_c0_slots)==1 and alpha_c0_slots[0]['draft']=='q18a_alpha_c0.draft.sh' and alpha_c0_slots[0]['real_wall_clock'] and alpha_c0_slots[0]['active_s']==alpha_c0_gate.ACTIVE_S
+assert alpha_c0_slots==[]  # C0's own slot test is excluded too (clock_bound)
 alpha_c0_calls=sys.modules['test_alpha_c0_queue'].ARGPARSE_RECEIPTS
 assert alpha_c0_calls and all(r['verdict']=='parsed' for r in alpha_c0_calls)
 Path('/out/alpha-c0-queue-check.json').write_text(json.dumps(dict(slots=alpha_c0_slots,argparse=alpha_c0_calls),sort_keys=True,indent=2)+'\n')
-record=dict(alpha_c0_queue='PASS',alpha_c0_queue_slots=alpha_c0_slots,alpha_c0_argparse_calls=len(alpha_c0_calls),alpha_perf_queue='PASS',alpha_perf_queue_slots=alpha_slots,alpha_perf_argparse_calls=len(alpha_calls),native39_trunk_queue='PASS',native39_trunk_queue_receipts=trunk_cases,native39_trunk_window_active_and_cleanup_s=active_and_cleanup,native35_p_c_continuation='PASS',native35_p_c_continuation_receipts=pc_continuation,native35_p_c_row4='PASS',native35_p_c_row4_receipts=pc_row4,native35_localize_off='PASS',native35_p_c_inert=inert_receipt,native35_p_c_cleanup_receipts=cleanup,native35_row4_l2='PASS',native35_p_b_row4_receipts=row4,native35_l2_cli_receipts=l2_cli,native35_l2_timing_receipts=l2_timing,
+record=dict(clock_bound_excluded=sorted(clock_excluded),clock_bound_reason=clock_bound.REASON,alpha_c0_queue='PASS',alpha_c0_queue_slots=alpha_c0_slots,alpha_c0_argparse_calls=len(alpha_c0_calls),alpha_perf_queue='PASS',alpha_perf_queue_slots=alpha_slots,alpha_perf_argparse_calls=len(alpha_calls),native39_trunk_queue='PASS',native39_trunk_queue_receipts=trunk_cases,native39_trunk_window_active_and_cleanup_s=active_and_cleanup,native35_p_c_continuation='PASS',native35_p_c_continuation_receipts=pc_continuation,native35_p_c_row4='PASS',native35_p_c_row4_receipts=pc_row4,native35_localize_off='PASS',native35_p_c_inert=inert_receipt,native35_p_c_cleanup_receipts=cleanup,native35_row4_l2='PASS',native35_p_b_row4_receipts=row4,native35_l2_cli_receipts=l2_cli,native35_l2_timing_receipts=l2_timing,
     native35_arm=role,native35_performance='PASS',native35_performance_receipts=perf_receipts,native35_builder='PASS',native35_builder_view=builder_view,native35_cli_receipts=native35_cli,native35_o_arm_readback=native35_readback,native35_window_active_and_cleanup_s=active_and_cleanup,probe_environment={k:os.environ[k] for k in ('FLASH_NATIVE34_DIAG','FLASH_NATIVE34_ARM','FLASH_NATIVE34_READBACK','FLASH_NATIVE35_ARM')},native34_readback='PASS',readback_check=readback_check,native34_protocol='PASS',protocol_receipts=protocol_receipts,draft_window_slots='PASS',draft_window_receipts=slot_receipts,arm=role,final_input_proof=True,native34=native34_receipt,owner_prelaunch=owner_prelaunch,native31=native31_receipt,receipt_policy='PASS',receipt_budget_bytes=policy.BYTES_PER_RANK,receipt_tail_s=policy.TAIL_S,row4_cli_validation='PASS',cli_receipts=cli_receipts,identity_receipts=identity_receipts,verdict='PASS' if result.wasSuccessful() and not result.skipped and result.testsRun==EXPECTED_TESTS else 'FAIL',tests_run=result.testsRun,skips=len(result.skipped),plugin_loader='PASS',identity_capture_check='PASS' if result.wasSuccessful() else 'FAIL',identity_timeout_negative_rejected=result.wasSuccessful(),mounted_modules=modules,cuda_initialized=False,gpu_execution=False,
     fixture='CPU driver-registration stub, synthetic launch/sync/control objects; no GPU model forward, stream or memory query')
 Path('/out/probe.json').write_text(json.dumps(record,sort_keys=True,indent=2)+'\n')

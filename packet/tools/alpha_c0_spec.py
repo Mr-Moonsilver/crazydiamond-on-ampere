@@ -26,6 +26,10 @@ RUNNER_SWAPS = [
     ["    from alpha_perf_gate import window_ok\n", "    from alpha_c0_gate import window_ok\n"],
     ["engine.get('schema')=='alpha-perf-selfrun/1'", "engine.get('schema')=='alpha-c0-selfrun/1'"],
     ["result.get('alpha_perf_queue')=='PASS'", "result.get('alpha_perf_queue')=='PASS' and result.get('alpha_c0_queue')=='PASS'"],
+    # Removed, not replaced (operator, 2 Nov: box timing is governed by the lead at launch): the native39 trunk queue's window-slot
+    # test is excluded (harness/clock_bound.py). The neighbouring clause is carried so the swap matches once both ways.
+    ["result.get('native35_p_c_continuation')=='PASS' and result.get('native39_trunk_queue')=='PASS'",
+     "result.get('native35_p_c_continuation')=='PASS'"],
     ["sorted(engine.get('cases') or {})==" + repr(PARENT_CASES),
      "sorted(engine.get('cases') or {})==" + repr(sorted(PARENT_CASES + list(selfrun.CASES)))],
 ]

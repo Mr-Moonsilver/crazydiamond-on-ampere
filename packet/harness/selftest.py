@@ -8,6 +8,8 @@ stall_trace2.py --recompute (good run; missing newcomer token; stopped stream; i
 usage: selftest.py [REVIEW_FIXTURE_DIR]   exit 0 only if every case behaves as required
 """
 import atexit, hashlib, json, os, re, shutil, subprocess, sys, tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import clock_bound  # noqa: E402  declared clock-bound exclusions
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -881,7 +883,10 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_decode_correctness.py', 'E3 W1 short live-cohort correctness: full/split/full exact token oracle, paused-route lifecycle and control-vs-split verdicts (loopback fakes)'),
                      ('test_prefix_capacity.py', 'prefix capacity: source shapes and conditional LRU model'),
                      ('test_pp_grouping.py', 'PP grouping, pool stats, warm/cold gates: offline checks')]:
-    identity_test = subprocess.run([sys.executable, os.path.join(HERE, suite)], capture_output=True, text=True,
+    # Declared exclusion (harness/clock_bound.py): a suite holding a clock-bound frozen window-slot test runs minus that id.
+    command = ([sys.executable, os.path.join(HERE, 'clock_bound.py'), suite] if suite[:-3] in clock_bound.MODULES
+               else [sys.executable, os.path.join(HERE, suite)])
+    identity_test = subprocess.run(command, capture_output=True, text=True,
                                    env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
     if identity_test.returncode:
         print(identity_test.stdout + identity_test.stderr)
