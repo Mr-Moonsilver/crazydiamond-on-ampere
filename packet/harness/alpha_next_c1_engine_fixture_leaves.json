@@ -1,0 +1,52 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "alpha-next-c1 composition fixes in stage_overlap.py (per-frame composed fields; the successor's recorder view): test_alpha_next_c1_composed_fields on C1's ring fixture with alpha-next's fused, grouped and lean selections installed on the real driver and latched by the real dispatchers; CPU only, no box or GPU evidence",
+  "inherits": ["stage_overlap_fixture_leaves.json", "step_a_fixture_leaves.json", "step_b_fixture_leaves.json"],
+  "leaves": [
+    {
+      "name": "auto-arm-ownership",
+      "test": "test_alpha_next_c1_composed_fields.Fixture.composed",
+      "replaces": "the auto-arm policy (native_auto_arm) and its admission intent, which own every chunk of an auto-armed arm on the box",
+      "equivalence": "the driver reads exactly policy.manual_owned/phase/active and the intent's origin/phase/seq through _progress_owned(); the values are the ones the real policy holds while an auto-armed native chunk runs, as Step A's FusedNetwork sets them (step-a-auto-arm-state)",
+      "cannot_prove": "the policy's own arming and disarming; those run in test_native41_autoarm and the Step A/B probes",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "no-qsa-layer-driver",
+      "test": "test_alpha_next_c1_composed_fields.Fixture.composed (dispatcher.driver_factory)",
+      "replaces": "the real layer driver factory, here through Step A's declared NoQsaDriver (step-a-no-qsa-driver)",
+      "equivalence": "the ring model's four layers are GDN only, so PREPARE's fused plan is empty, as on a stage with no QSA layer; the dispatcher still latches fused and the group at OPEN and checks every command against them",
+      "cannot_prove": "QSA grants and fused profiles under two frames; the per-frame fields that carry them (_tx_fused, _tx_group) are the ones witnessed here",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "fake-lane-stage-end",
+      "test": "test_alpha_next_c1_composed_fields.Fixture.composed (lane.end_layer)",
+      "replaces": "the real lane's end_layer, set by the model runner to its PP stage's layer end",
+      "equivalence": "max(lane.layers) + 1 is the stage end of r4's FakeLane (layers (0,1) and (2,3)), the value _do_layer_group saves and restores around a group command, as Step B's equip_stack sets it (step-b-fake-layers)",
+      "cannot_prove": "a real model's layer bounds; those are Step B's connected-lane-end",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "lean-recorder-direct",
+      "test": "test_alpha_next_c1_composed_fields.Fixture.composed (install_progress('burst'); progress.replies = 'lean')",
+      "replaces": "the held-g startup seam and the per-arm reply-mode control that set progress.replies on the box",
+      "equivalence": "the driver reads only progress.replies and _progress_owned() in _open_replies(); the recorder is the real one, installed through the real seam",
+      "cannot_prove": "the per-arm control's own validation; tested in alpha-next's held-g suites",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "watchdog-clock",
+      "test": "test_alpha_next_c1_composed_fields.Composed.test_fused_stall_watchdog_with_two_frames_in_flight",
+      "replaces": "time.monotonic as the driver's clock, and FusedQsa.STALL_S (300 s) by 5 s",
+      "equivalence": "the driver takes its clock as an injected callable and reads stall_s from the FusedQsa object; the watchdog compares the same per-chunk mark against the same bound",
+      "cannot_prove": "that _fused_mark/_fused_mark_at must be per frame: with both shared the stall in this test is caught at the same tick, so no mutant here separates them. They are kept per frame so each chunk's watchdog reads its own tickets and reports, as serially; a successor's stage is driven only after the older chunk released it (_frame_ready), and one stage's chunk work is seconds against a 300 s bound",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}

@@ -42,6 +42,30 @@ from wire_v1 import CancelRequest, PollRequest, ReleaseAck
 STAGE_OVERLAP_ENV = 'FLASH_S5_STAGE_OVERLAP'
 REFUSALS = ('older-terminal', 'successor-may-be-terminal', 'older-at-last-hash-boundary',
             'older-at-shared-prefix-boundary', 'partial-tail-pending', 'manager-shape')
+# alpha-next composition: per-chunk fields the composed base driver keeps on ``self`` (held-g L4 lean replies,
+# Step A fused QSA, Step B layer groups), set at each chunk's begin and read by that chunk's handlers.  C0 runs one
+# frame, so its swap (stage_progress._CHUNK_FIELDS) never needed them; with two frames each keeps its own here, or
+# n+1's begin and n's reset would overwrite the other chunk's values (n's commit set _tx_group to 1 under a grouped
+# n+1).  ``_fused_stop_at`` is not here: the stop bound runs over the whole stop, both frames, as the base driver's.
+COMPOSED_CHUNK_FIELDS = ('_replies', '_lean_streams', '_tx_fused', '_tx_group', '_fused_mark', '_fused_mark_at')
+
+
+class _ProgressNoBegin:
+    """The engine progress recorder seen by the successor's frozen ``_begin``: every read is the real recorder's
+    (so ``_open_replies`` picks the arm's reply format, lean included, and the lean chunk counter counts it), only
+    ``begin`` does nothing (one engine progress line per commit; see OverlapSegmentDriver._reset)."""
+
+    def __init__(self, progress):
+        self.__dict__['_progress'] = progress
+
+    def begin(self, *args, **kwargs):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self.__dict__['_progress'], name)
+
+    def __setattr__(self, name, value):
+        setattr(self.__dict__['_progress'], name, value)
 
 
 def stage_overlap_enabled(env):
@@ -337,6 +361,33 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                                      lane_checks=0, closed_by_successor=0, successor_retires=0,
                                      unbegun_successor_cancels=0, partial_replays=0)
 
+    # -- the composed per-chunk fields, per frame -------------------------------
+    def _new_frame(self):
+        frame = super()._new_frame()
+        attrs = self.__dict__
+        frame.composed = {name: attrs[name] for name in COMPOSED_CHUNK_FIELDS if name in attrs}
+        return frame
+
+    @contextmanager
+    def _scope(self, frame, stage=None):
+        with super()._scope(frame, stage) as bound:
+            attrs = self.__dict__
+            composed = getattr(frame, 'composed', None)
+            if composed is not None:
+                attrs.update(composed)
+            try:
+                yield bound
+            finally:
+                if composed is not None and not frame.dead:
+                    frame.composed = {name: attrs[name] for name in composed}
+
+    def _show_rest(self):
+        super()._show_rest()
+        if self._frames:
+            composed = getattr(self._frames[0], 'composed', None)
+            if composed is not None:
+                self.__dict__.update(composed)
+
     # -- admission query (scheduler side) --------------------------------------
     def successor_admissible(self, transaction):
         """True when n+1 may be admitted now: stage 0 locally released n, nothing else pending."""
@@ -361,7 +412,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         attrs = self.__dict__
         progress = attrs['progress']
         with controller.begin_view(record):
-            attrs['progress'] = None   # one progress line per commit; see _reset
+            # One progress line per commit (see _reset); the recorder is still read, so a lean arm opens n+1 lean.
+            attrs['progress'] = None if progress is None else _ProgressNoBegin(progress)
             try:
                 NativeSegmentDriver._begin(self)
             finally:
