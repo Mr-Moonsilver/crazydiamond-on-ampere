@@ -60,7 +60,7 @@ from e3_types import (
 )
 from lane_comm import PPConsumerReceipt
 from lane_state import BatchRow, MetadataSnapshot, _freeze
-from native_measurement import (PROGRESS_N,NativeMeasurementCensus, encode_report_vector,
+from native_measurement import (PROGRESS_N, emit_receipt_lines,NativeMeasurementCensus, encode_report_vector,
                                 decode_report_vector, ControlPathCounters, QsaControlCounters,
                                 PROGRESS_DIRECT_METHODS, PROGRESS_META_BYTES, PROGRESS_META_KEY, PROGRESS_MODES,
                                 ProgressTrace, StepAnatomy, encode_progress_meta)
@@ -1037,16 +1037,15 @@ class NativeProgress:
             if row is not None:
                 row[PROGRESS_N['t_apply']] = self.clock_ns()
                 self.trace.record('n', *row)
-            for text in self.trace.lines(**(self.identity or {}), mode=self.mode,
-                                         open_rows=len(self.native)):
-                logger.info(text)
+            # Alpha-next PLAN 2: one atomic write per part through the process receipt writer.
+            emit_receipt_lines(self.trace.lines(**(self.identity or {}), mode=self.mode,
+                                                open_rows=len(self.native)), logger)
         except Exception:
             self.counters['line_errors'] += 1
         try:
             # Held-g R5: the chunk's step anatomy, on its own schema.
-            for text in self.steps.lines(**(self.identity or {}), mode=self.mode, idle=self.idle,
-                                         replies=self.replies):
-                logger.info(text)
+            emit_receipt_lines(self.steps.lines(**(self.identity or {}), mode=self.mode, idle=self.idle,
+                                                replies=self.replies), logger)
         except Exception:
             self.counters['line_errors'] += 1
         self.identity = None
@@ -3183,16 +3182,26 @@ class NativeSegmentDriver:
         if command.transaction != self.tx or self._command != command:
             raise DriverError('stop found a foreign partially accepted command')
         self._stop_round()
-        row = dict(transaction=self.tx.txn_seq, op_seq=command.op_seq,
-                   segment_kind=getattr(command.kind, 'value', str(command.kind)),
-                   accepted_ranks=sorted(accepted),
-                   pending_ranks=sorted(set(targets) - accepted),
-                   reason=self.stop_kind)
-        self._record('stop_partial_replay', **row)
-        self._stop_partial_replays += 1
-        self._stop_receipt('stop_partial_replay', row)
+        self._record('stop_partial_replay', transaction=self.tx.txn_seq,
+                     op_seq=command.op_seq,
+                     segment_kind=getattr(command.kind, 'value', str(command.kind)),
+                     accepted_ranks=sorted(accepted),
+                     pending_ranks=sorted(set(targets) - accepted),
+                     reason=self.stop_kind)
+        self._note_stop_partial_replay()
         self._send_segment(command, targets)
         return True
+
+    _STOP_ROW_KEYS = ('transaction', 'op_seq', 'segment_kind', 'accepted_ranks', 'pending_ranks', 'reason')
+
+    def _note_stop_partial_replay(self):
+        """alpha-next item 1: count the replay just journalled and write its receipt line; never raises."""
+        try:
+            self._stop_partial_replays += 1
+            entry = self._journal[-1]
+            self._stop_receipt('stop_partial_replay', {k: entry.get(k) for k in self._STOP_ROW_KEYS})
+        except Exception:
+            pass
 
     def _partial_stop_state(self):
         """(command, accepted, pending) of a partially accepted retry, or None; reads only."""
@@ -3232,8 +3241,9 @@ class NativeSegmentDriver:
         try:
             body = dict(schema=STOP_RECEIPT_SCHEMA, side='engine', kind=kind,
                         observed_ns=int(self._monotonic_ns()), **row)
-            _progress_logger().info(STOP_RECEIPT_LINE + json.dumps(body, separators=(',', ':'),
-                                                                   sort_keys=True))
+            # Alpha-next PLAN 2: one atomic write through the process receipt writer.
+            emit_receipt_lines([STOP_RECEIPT_LINE + json.dumps(body, separators=(',', ':'), sort_keys=True)],
+                               _progress_logger())
         except Exception:
             progress.counters['line_errors'] += 1
 

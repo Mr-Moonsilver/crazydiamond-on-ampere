@@ -48,6 +48,14 @@
    "equivalence": "the driver writes each stop receipt as one INFO message through _progress_logger(); the capture handler records the formatted message unchanged",
    "cannot_prove": "the container log path; PLAN section 2's writer and its witness cover that",
    "box_evidence": false
+  },
+  {
+   "name": "peak-cuda",
+   "test": "test_alpha_next_peak_receipt.PeakReceipt",
+   "replaces": "torch.cuda's caching-allocator counters (memory_stats peak and current, reset_peak_memory_stats, is_initialized) on a worker rank",
+   "equivalence": "a counter object with torch's documented semantics: a peak is the maximum current value since the last reset, and a reset sets the peak to the current value; the bridge reads only these keys and the reset",
+   "cannot_prove": "the real allocator's peak values, the reset's cost on the device thread, or interaction with stock QSA_STAGE_TIMING's own reset beyond the declared stage_timer flag",
+   "box_evidence": false
   }
  ]
 }
