@@ -1,6 +1,6 @@
 """q18a-alpha-next-c1 box queue: one phase budget for the watchdog and the draft, relative to the run's own start only.
 
-alpha-next's gate (alpha_next_gate) with this queue's arm table (alpha_next_c1_arms, 14 arms: 12 core, 2 tail). Startup, bind and
+alpha-next's gate (alpha_next_gate) with this queue's arm table (alpha_next_c1_arms, 18 arms: 16 core, 2 tail). Startup, bind and
 the unarmed check are held-f's (native40's phase caps, unchanged); every arm cap, the grade and read caps, ACTIVE_S and both entry
 limits follow alpha-next's formulas (the entry limits do not depend on the arm count: an arm enters only while its own worst case
 and everything after it still fit ACTIVE_S). The box budget is 9,000 s including cleanup (CLEANUP_S 900), relative to the run's
@@ -8,7 +8,9 @@ start. There is no absolute time here: no hard end, no not-before, no latest sta
 
 EXPECTED_RUNTIME_S is descriptive, from the lead's box walls (2 Nov, 16:40): the first arm about 480 s after the start; band 1
 solo 75 s, live 147 s, the cold first arm 246 s; band 2 solo 128 s, live 273 s; the g4 tail as band 1. C1 on the fused, grouped
-engine is unmeasured on the box; the C1-on walls are set equal to C1 off.
+engine is unmeasured on the box; the C1-on and C1-defer walls are set equal to C1 off. ``slower`` is the same walk at 1.5x
+every arm wall (the lead's test for adding arms, 21:0x); ``band2_defer`` walks the table with band 2's C1-defer arms added
+(alpha_next_c1_arms.BAND2_DEFER) at the walls and at 1.5x: they are added only if every core arm still enters at 1.5x.
 """
 from native41_box_gate import ARM_KILL_AFTER_S, ARM_TIMEOUT_S, FULL_IDLE_CAP_S, INGRESS_CAP_S, INSTRUMENTS_CAP_S, KEPT
 from native40_box_gate import CLEANUP_S, PHASES as NATIVE40_PHASES
@@ -56,10 +58,14 @@ def arm_wall(row, first=False):
     return COLD_FIRST_S if first else WALL_S[(row['band'], row['cohort'])]
 
 
-def _estimate(per_arm):
+SLOWER = 1.5                                              # the lead's margin test for adding arms
+
+
+def _estimate(per_arm, rows=None):
     """Walk the table at a per-arm wall time; an arm past its entry limit is NOT_RUN and takes no time, as in the draft."""
     entered, clock, tail_started = [], FIRST_ARM_S, False
-    for k, row in enumerate(table.arms()):
+    rows = table.arms() if rows is None else rows
+    for k, row in enumerate(rows):
         if row['part'] == 'tail' and not tail_started:
             clock += BETWEEN_S
             tail_started = True
@@ -71,7 +77,8 @@ def _estimate(per_arm):
         clock += wall
     count = lambda part: sum(1 for r in entered if r['part'] == part)
     core = [r for r in entered if r['part'] == 'core']
-    return dict(core_arms_entering=count('core'), extra_arms_entering=0, tail_arms_entering=count('tail'),
+    return dict(not_run=[r['label'] for r in rows if r['label'] not in {e['label'] for e in entered}],
+                core_arms_entering=count('core'), extra_arms_entering=0, tail_arms_entering=count('tail'),
                 arms_entering=len(entered), last_arm_enters_s=entered[-1]['enters_s'] if entered else None,
                 last_core_arm_enters_s=core[-1]['enters_s'] if core else None,
                 last_arm_ends_s=entered[-1]['enters_s'] + entered[-1]['wall_s'] if entered else None,
@@ -79,9 +86,27 @@ def _estimate(per_arm):
                 total_s=clock + END_S, total_min=round((clock + END_S) / 60, 1))
 
 
+def _with_band2_defer():
+    """The table with band 2's C1-defer arms between its on-solo and on-live arms (BAND2_DEFER's order)."""
+    rows, out = table.arms(), []
+    for row in rows:
+        out.append(row)
+        if row['band'] == 2 and row['part'] == 'core' and (row['c1'], row['cohort']) == ('on', 'solo') and not table.BAND2_DEFER:
+            for cohort in ('solo', 'live'):
+                out.append(dict(row, label=table.label('defer', row['size'], cohort, row['index']), c1='defer', cohort=cohort,
+                                selection=table.selection('defer', row['size']), defer_bind=True))
+    return out
+
+
+def slower_wall(row, first=False):
+    return SLOWER * arm_wall(row, first)
+
+
 EXPECTED_RUNTIME_S = {
     'arms': ARMS, 'core_arms': CORE_ARMS, 'extra_arms': EXTRA_ARMS, 'tail_arms': TAIL_ARMS,
     'nominal': _estimate(arm_wall),
+    'slower': _estimate(slower_wall),
+    'band2_defer': dict(nominal=_estimate(arm_wall, _with_band2_defer()), slower=_estimate(slower_wall, _with_band2_defer())),
     'worst_case_budget': BOX_BUDGET_S,
     'last_arm_entry_s': LAST_ARM_ENTRY_S,
     'last_tail_entry_s': LAST_TAIL_ENTRY_S,
