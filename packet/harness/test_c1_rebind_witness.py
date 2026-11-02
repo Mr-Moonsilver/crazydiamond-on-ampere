@@ -30,16 +30,21 @@ handlers that ran, in order): ``OVERLAPS`` when any PREPARE, PREFIX, LAYER or
 SUFFIX of n+1 ran on a stage-0 rank while n's hold was in force, else ``BLOCKED``.
 CPU only; no pass or fail here is native evidence.
 """
+import itertools
 import json
 import os
 import random
 import unittest
+from unittest import mock
 
 from test_e3_stage_overlap import OverlapBase, serial_stack  # sets the engine path first
 from e3_types import E3Pending  # noqa: E402
 from lane_comm import PP_SLOTS  # noqa: E402
 from stage_net import stage_of_command, w  # noqa: E402
 from stage_wire import retained_sends  # noqa: E402
+import stage_overlap  # noqa: E402
+import test_e3_r4_worker_bridge as r4  # noqa: E402
+from c1_overlap_read import expand_ranges, overlap_read  # noqa: E402
 
 COMPUTE_KINDS = ('prepare', 'prefix', 'layer', 'suffix')
 SETTLE_TICKS = 300
@@ -599,6 +604,218 @@ class Stops(RebindBase):
         self.finish(network, hold)
 
 
+class LineCapture:
+    """Leaf ``observe-line-capture``: the engine progress logger, keeping each formatted line."""
+
+    def __init__(self):
+        self.lines = []
+
+    def info(self, fmt, *args):
+        self.lines.append(fmt % args)
+
+
+class Observe(RebindBase):
+    """FLASH_S5_STAGE_OVERLAP_OBSERVE: device-completion bounds per command and the per-successor read."""
+
+    def setUp(self):
+        self.capture = LineCapture()
+        patcher = mock.patch.object(stage_overlap, '_progress_logger', lambda: self.capture)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def observed(self, network):
+        """Leaf ``observer-counter-clock``: a strictly increasing counter for CLOCK_MONOTONIC."""
+        counter = itertools.count(1)
+        network.driver.overlap_observer = stage_overlap.OverlapObserver(clock=lambda: next(counter))
+        return network
+
+    def held_read(self, defer):
+        network = self.observed(self.network(defer=defer))
+        n = self.first_txn(network)
+        hold = ReceiverHold(network, lambda txn: txn == n)
+        self.reach(network, lambda: successor_of(network.driver, n) is not None
+                   and 0 in successor_of(network.driver, n).opened, limit=2000)
+        for _ in range(100):
+            network.tick()
+        hold.release()
+        network.run_request()
+        self.assert_serial(network)
+        read = overlap_read(self.capture.lines)
+        return network, n, {row['txn']: row for row in read['rows']}, read
+
+    def test_witness_reads_overlap_with_the_deferred_bind(self):
+        _network, n, rows, read = self.held_read(defer=True)
+        self.assertEqual(rows[n + 1]['verdict'], 'OVERLAP', read)
+        self.assertTrue(rows[n + 1]['deferred_bind'], read)
+
+    def test_witness_reads_none_without_it(self):
+        _network, n, rows, read = self.held_read(defer=False)
+        self.assertEqual(rows[n + 1]['verdict'], 'NONE', read)
+        self.assertEqual(read['overlap'], 0, read)
+
+    def test_late_consumer_every_chunk(self):
+        for defer in (True, False):
+            with self.subTest(defer=defer):
+                self.capture.lines = []
+                network = self.observed(self.network(defer=defer))
+                hold = ReceiverHold(network, lambda txn: True)
+                network.run_request(tick=self.late_consumer_tick(network, hold, cap=40))
+                self.assert_serial(network)
+                read = overlap_read(self.capture.lines)
+                early = network.driver.overlap_counters['early_opens']
+                self.assertGreater(early, 3)
+                if defer:
+                    self.assertEqual(read['overlap'], early, read)
+                else:
+                    self.assertEqual(read['overlap'], 0, read)
+
+    def test_txn_per_command_and_consumer_marker(self):
+        network = self.observed(self.network(defer=True))
+        network.run_request(tick=self.slow_tick(network))
+        lines = [json.loads(line[len(stage_overlap.OBSERVE_LINE):]) for line in self.capture.lines]
+        heads = [body for body in lines if body['part'] == 0]
+        self.assertEqual(len(heads), network.controller.commits)
+        seen = set()
+        for body in heads:
+            seqs = expand_ranges(body['seqs'])
+            self.assertFalse(seqs & seen, body['txn'])          # one txn per command
+            seen |= seqs
+            marks = body['consumer']
+            self.assertEqual(sorted(sender for _seq, sender, _rank, _t in marks), [0, 1], body)
+            for seq, sender, rank, _t in marks:
+                self.assertIn(seq, seqs)                         # the marked reply is this chunk's
+                self.assertEqual(rank, network.driver.pp_peers[sender])
+        self.assertTrue(seen)
+
+    def run_counted(self, observe):
+        """One fair run; counts every host event query the workers make."""
+        queries = [0]
+        real = r4.ControllableEvent.query
+
+        def counted(event, real=real):
+            queries[0] += 1
+            return real(event)
+        with mock.patch.object(r4.ControllableEvent, 'query', counted):
+            network = self.network(defer=True)
+            if observe:
+                self.observed(network)
+            network.run_request(tick=self.slow_tick(network))
+        return network, queries[0]
+
+    def test_cost_on_against_off(self):
+        off, off_queries = self.run_counted(False)
+        self.capture.lines = []
+        on, on_queries = self.run_counted(True)
+        # No command, reply, device op or event query is added or reordered.
+        self.assertEqual(on_queries, off_queries)
+        self.assertEqual([stage_of_command(env) for env in on.sent_envelopes],
+                         [stage_of_command(env) for env in off.sent_envelopes])
+        for rank in (0, 1, 2, 3):
+            self.assertEqual(on.ledgers[rank], off.ledgers[rank])
+        self.assertEqual(on.persistent_state(), off.persistent_state())
+        counters = on.driver.overlap_observer.counters
+        accepted = sum(1 for line in self.capture.lines
+                       for _ in json.loads(line[len(stage_overlap.OBSERVE_LINE):])['ops'])
+        self.assertEqual(counters['ops'], accepted)
+        self.assertEqual(counters['lines'], len(self.capture.lines))
+        self.assertEqual(counters['submits_dropped'], 0)
+        self.assertLess(max(len(line) for line in self.capture.lines), 12000)
+        self.assertIsNone(off.driver.overlap_observer)
+        self.assertNotIn('observe', off.driver.stage_status()['overlap'])
+        path = os.environ.get('C1_REBIND_WITNESS_OUT')
+        if path:
+            with open(path, 'a') as out:
+                out.write(json.dumps(dict(test=self.id(), commits=on.controller.commits,
+                                          event_queries=[off_queries, on_queries],
+                                          envelopes=len(on.sent_envelopes), **counters)) + '\n')
+
+
+class ReadSoundness(unittest.TestCase):
+    """The observer's bounds and the read on hand-built report interleavings (no network).
+
+    Leaf ``synthetic-reports``: reports are namespaces with the three fields the observer reads
+    (``worker_rank``, ``pending_op_seqs``, ``completed_op_seqs``); descriptors carry ``kind`` and
+    ``layer_start``; the clock is a counter.  Txn 1 is the older chunk (stage 1 ranks 2, 3,
+    STATE_FINALIZE op 9), txn 2 its successor (stage 0 ranks 0, 1, LAYER 0 as op 3).
+    """
+
+    def setUp(self):
+        import types
+        self.ns = types.SimpleNamespace
+        counter = itertools.count(1)
+        self.observer = stage_overlap.OverlapObserver(clock=lambda: next(counter))
+        self.frames = {1: self.ns(stats={}), 2: self.ns(stats={})}
+        self.descriptors = {(r, 9): self.ns(kind=w.SegmentKind.STATE_FINALIZE, layer_start=None) for r in (2, 3)}
+        self.descriptors.update({(r, 3): self.ns(kind=w.SegmentKind.LAYER, layer_start=0) for r in (0, 1)})
+
+    def submit(self, sequence):
+        self.observer.note_submit(sequence)
+
+    def apply(self, sequence, txn, ranks, pending=(), completed=()):
+        self.observer.begin_apply(sequence)
+        for rank in ranks:
+            report = self.ns(worker_rank=rank, pending_op_seqs=tuple(pending), completed_op_seqs=tuple(completed))
+            self.observer.note_report(self.frames[txn], report, self.descriptors, (), ())
+        self.observer.end_apply()
+
+    def read(self):
+        lines = []
+        for txn, frame in self.frames.items():
+            info = dict(successor_of=None if txn == 1 else 1, early=txn == 2, deferred_bind=txn == 2,
+                        stage_ranks=[[0, 1], [2, 3]])
+            lines += self.observer.lines(self.ns(txn_seq=txn, chunk_start=0, chunk_end=4), frame.stats, info)
+        rows = overlap_read(lines)['rows']
+        self.assertEqual(len(rows), 1)
+        return rows[0]
+
+    def test_ambiguous_order_reads_none(self):
+        # Stage 0's reply (layer done) and stage 1's poll (finalize pending) were in flight together:
+        # the layer finished somewhere in [1, 3], the finalize was pending somewhere in [2, 4].
+        self.submit(10)
+        self.submit(11)
+        self.apply(10, 2, (0, 1), completed=(3,))
+        self.apply(11, 1, (2, 3), pending=(9,))
+        self.submit(12)
+        self.apply(12, 1, (2, 3), completed=(9,))
+        row = self.read()
+        self.assertEqual(row['verdict'], 'NONE', row)
+        self.assertEqual((row['layer_hi_ns'], row['fin_lo_ns']), (3, 2), row)
+
+    def test_layer_done_before_a_later_pending_finalize_reads_overlap(self):
+        self.submit(11)
+        self.apply(11, 1, (2, 3), pending=(9,))
+        self.submit(10)
+        self.apply(10, 2, (0, 1), completed=(3,))
+        self.submit(12)
+        self.apply(12, 1, (2, 3), pending=(9,))
+        self.submit(13)
+        self.apply(13, 1, (2, 3), completed=(9,))
+        row = self.read()
+        self.assertEqual(row['verdict'], 'OVERLAP', row)
+        self.assertEqual((row['layer_hi_ns'], row['fin_lo_ns']), (4, 5), row)
+
+    def test_one_tp_rank_late_reads_none(self):
+        # Rank 0 finished LAYER 0 before a pending finalize report; rank 1 only after it.
+        self.submit(11)
+        self.apply(11, 1, (2, 3), pending=(9,))
+        self.submit(10)
+        self.observer.begin_apply(10)
+        for rank, done in ((0, True), (1, False)):
+            report = self.ns(worker_rank=rank, pending_op_seqs=() if done else (3,),
+                             completed_op_seqs=(3,) if done else ())
+            self.observer.note_report(self.frames[2], report, self.descriptors, (), ())
+        self.observer.end_apply()
+        self.submit(12)
+        self.apply(12, 1, (2, 3), pending=(9,))
+        self.submit(14)
+        self.apply(14, 2, (0, 1), completed=(3,))
+        self.submit(13)
+        self.apply(13, 1, (2, 3), completed=(9,))
+        row = self.read()
+        self.assertEqual(row['verdict'], 'NONE', row)
+        self.assertEqual((row['layer_hi_ns'], row['fin_lo_ns']), (8, 5), row)
+
+
 class Selection(unittest.TestCase):
     def test_switch_values(self):
         from engine_driver import DriverError
@@ -609,6 +826,17 @@ class Selection(unittest.TestCase):
         self.assertTrue(on(dict(base, **{DEFER_BIND_ENV: '1'})))
         for bad in ({DEFER_BIND_ENV: '1'}, {DEFER_BIND_ENV: '1', 'FLASH_S5_STAGE_LOCAL': '1'},
                     dict(base, **{DEFER_BIND_ENV: 'yes'}), dict(base, **{DEFER_BIND_ENV: ''})):
+            with self.subTest(bad=bad), self.assertRaises(DriverError):
+                on(bad)
+
+    def test_observe_switch_values(self):
+        from engine_driver import DriverError
+        from stage_overlap import OBSERVE_ENV, stage_overlap_observe_enabled as on
+        base = {'FLASH_S5_STAGE_LOCAL': '1', 'FLASH_S5_STAGE_OVERLAP': '1'}
+        self.assertFalse(on({}))
+        self.assertFalse(on(base))
+        self.assertTrue(on(dict(base, **{OBSERVE_ENV: '1'})))
+        for bad in ({OBSERVE_ENV: '1'}, dict(base, **{OBSERVE_ENV: 'on'})):
             with self.subTest(bad=bad), self.assertRaises(DriverError):
                 on(bad)
 
