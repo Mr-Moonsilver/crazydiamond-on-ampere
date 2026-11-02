@@ -33,6 +33,12 @@ not pass, each with its pinned outcome and reason, and every other test passes. 
 alpha-next's PARENT_PASS cases, C0's stage cases and held-g's probe cases pass with alpha-next's frozen traces. --negative --observe
 records the outcomes once (verdict OBSERVED, rc 1, never a pass) for the pins file (two-phase, as alpha-next's); the pins are written
 from that one observation, after review, by tools/alpha_next_c1_negative_pins_write.py.
+Bounded and fail-closed (lead 2 Nov ~23:50 CET, after alpha-next's g5 negative hung; HARNESS): the negative's container client runs
+under alpha-next's shared guard (harness/alpha_next_wall_guard.run_bounded, NEGATIVE_WALL_LIMIT_S): at the limit the container is
+stopped (docker stop -t 30), the client killed after the grace, and the run recorded TIMEOUT with rc, limit, wall and what was in
+flight. wall_guard.inc_reasons judges first: OBSERVED / PASS / FAIL only with container rc 0, every NEGATIVE_SUITES suite reported
+and skips 0; otherwise (timeout, killed, rc 137 with suites {}, a missing suite, skips, an unreadable container record) the verdict
+is INC, classification INC, exit INC_RC 4: never OBSERVED and never an expected FAIL.
 
 Declared limit, as alpha-next and C1: the connected cases use declared device leaves below the worker; real collectives on two PP
 stages and the anatomy switch on have no CPU composition. The box is the first place the whole stack is live.
@@ -42,6 +48,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -67,6 +74,11 @@ PINS = Path(__file__).resolve().with_name('alpha_next_c1_negative_pins.json')
 sha = an.sha
 canonical = an.canonical
 DECLARED_LIMIT = an.DECLARED_LIMIT + '; ' + c1.DECLARED_LIMIT
+sys.path.insert(0, str(ROOT / 'harness'))
+import alpha_next_wall_guard as wall_guard  # noqa: E402  (alpha-next's shared guard, 55b21ae5: one implementation for both)
+INC_RC = 4
+NEGATIVE_WALL_LIMIT_S = wall_guard.WALL_LIMIT_S      # 2,700 s, alpha-next's (its largest container wall ~820 s at load ~40)
+NEGATIVE_STOP_GRACE_S = wall_guard.STOP_GRACE_S
 
 # ---------------------------------------------------------------- command lines: alpha-next's, plus C1's cases in C1's form
 _an_lines = step_a.command_lines
@@ -240,6 +252,54 @@ def judge(pins, outcomes, cases, place, observe=False):
     return reasons
 
 
+def _stop_container(name):
+    subprocess.call(['sudo', '-n', 'docker', 'stop', '-t', '30', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class _GuardedSubprocess:
+    """step_a.container's view of subprocess while the negative runs: call() is bounded; everything else is the module's."""
+    STDOUT = subprocess.STDOUT
+    DEVNULL = subprocess.DEVNULL
+
+    def __init__(self, limit_s):
+        self.limit_s = limit_s
+        self.guard = None
+
+    def __getattr__(self, name):
+        return getattr(subprocess, name)
+
+    def call(self, cmd, stdout=None, stderr=None):
+        assert self.guard is None and stderr == subprocess.STDOUT, 'one container per negative'
+        name = cmd[cmd.index('--name') + 1]
+        self.guard = wall_guard.run_bounded(cmd, stdout, self.limit_s, lambda: _stop_container(name), NEGATIVE_STOP_GRACE_S)
+        return self.guard['rc']
+
+
+def guarded_container(*args, **kwargs):
+    """step_a.container under the wall guard: ((rc, result, cases, command, wall) or None, guard, error)."""
+    shim = _GuardedSubprocess(NEGATIVE_WALL_LIMIT_S)
+    original = step_a.subprocess
+    step_a.subprocess = shim
+    try:
+        return step_a.container(*args, **kwargs), shim.guard, None
+    except Exception as exc:   # e.g. the stopped container's record cannot be read: INC with the reason, never a traceback only
+        return None, shim.guard, '%s: %s' % (type(exc).__name__, exc)
+    finally:
+        step_a.subprocess = original
+
+
+def negative_judgement(rc, result, guard, reasons, observe, error=None):
+    """(verdict, classification, inc_reasons, ok): wall_guard.inc_reasons first (fail closed), then OBSERVED / PASS / FAIL."""
+    inc = wall_guard.inc_reasons(rc, result, list(NEGATIVE_SUITES), guard)
+    if guard is None:
+        inc.append('container-not-run-under-the-wall-guard')
+    if error:
+        inc.append('container-record-unreadable:' + error)
+    ok = not inc and not reasons and (result or {}).get('skips') == 0 and not observe
+    verdict = wall_guard.verdict(inc, observe, ok)
+    return verdict, 'INC' if inc else None if ok or observe else 'HARNESS-OR-ENGINE-UNCLASSIFIED', inc, ok
+
+
 def negative(bundle, overlay, sources, out, name, observe=False):
     """The candidate harness over the regenerated alpha-next overlay and sources; exactly the pinned rows differ."""
     bundle, overlay, sources, out = bundle.resolve(), overlay.resolve(), sources.resolve(), out.resolve()
@@ -251,13 +311,16 @@ def negative(bundle, overlay, sources, out, name, observe=False):
     else:
         assert sha(place / 'result.json') == pins['frozen_record_sha256'], 'pins were taken against another frozen record'
     modes = PARENT_PASS + CASES
-    rc, result, cases, c, wall = step_a.container(bundle, overlay, sources, out, name, modes, NEGATIVE_SUITES, hide_candidate=True)
+    got, guard, error = guarded_container(bundle, overlay, sources, out, name, modes, NEGATIVE_SUITES, hide_candidate=True)
+    rc, result, cases, c, wall = got if got is not None else ((guard or {}).get('rc'), {}, {}, None, (guard or {}).get('wall_s'))
     outcomes = result.get('outcomes') or {}
     reasons = judge(pins, outcomes, cases, place, observe)
-    ok = not reasons and result.get('skips') == 0 and not observe
-    record = dict(schema='alpha-next-c1-negative/1', verdict='OBSERVED' if observe else 'PASS' if ok else 'FAIL',
+    verdict, classification, inc, ok = negative_judgement(rc, result, guard, reasons, observe, error)
+    record = dict(schema='alpha-next-c1-negative/1', verdict=verdict,
                   negative_control=True, negative_kind='alpha-next-parent',
-                  classification=None if ok or observe else 'HARNESS-OR-ENGINE-UNCLASSIFIED',
+                  classification=classification, inc_reasons=inc, wall_guard=guard,
+                  expected_container_rc=list(wall_guard.EXPECTED_CONTAINER_RC),
+                  in_flight=wall_guard.in_flight(out) if inc else None,
                   container_rc=rc, reasons=reasons, suites={k: v for k, v in result.items() if k != 'outcomes'},
                   suite_names=list(NEGATIVE_SUITES),
                   outcomes_sha256=hashlib.sha256(json.dumps(outcomes, sort_keys=True).encode()).hexdigest(),
@@ -269,10 +332,12 @@ def negative(bundle, overlay, sources, out, name, observe=False):
                   pins_sha256=None if observe else sha(PINS), image=an.IMAGE,
                   network='none', gpu_device_requests=0, gpu_execution=False, box_action=False, container=name, wall_s=wall,
                   command=c, log_shas={p.name: sha(p) for p in sorted(out.glob('*.log'))})
-    if observe:
+    if observe and verdict == 'OBSERVED':       # an INC record carries no observation (the pin writer can never read one)
         record['observed'] = {k: v for k, v in sorted(outcomes.items()) if v[0] != 'ok'}
     (out / 'result.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
-    print(record['verdict'], sha(out / 'result.json'), len(reasons))
+    print(record['verdict'], sha(out / 'result.json'), len(reasons), len(inc))
+    if inc:
+        return INC_RC
     return 0 if ok else 1
 
 
@@ -323,7 +388,7 @@ if __name__ == '__main__':
     p.add_argument('--overlay', type=Path)
     p.add_argument('--sources', type=Path)
     p.add_argument('--negative', action='store_true')
-    p.add_argument('--observe', action='store_true', help='negative only: record the outcomes, verdict OBSERVED, rc 1')
+    p.add_argument('--observe', action='store_true', help='negative only: record the outcomes, verdict OBSERVED, rc 1 (INC: rc 4)')
     p.add_argument('--compare', type=Path, help='candidate engine self-run directory')
     a = p.parse_args()
     if a.compare:

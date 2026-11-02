@@ -57,7 +57,7 @@ if [[ $RC != 0 ]] && flaky strict "$STRICT_LOG"; then
 else step strict "$RC"; fi
 focused() { { echo "# head $HEAD focused"; python3 -B alpha_next_robust_swap.py \
     test_alpha_next_c1_queue test_e3_stage_overlap test_alpha_next_c1_composed_fields test_e3_stage_overlap_control \
-    test_c1_rebind_witness test_c1_rebind_on test_alpha_next_c1_defer_control test_alpha_next_c1_rebind_default_off \
+    test_c1_rebind_witness test_c1_rebind_on test_alpha_next_c1_defer_control test_alpha_next_c1_rebind_default_off test_alpha_next_c1_negative_guard \
     test_alpha_next_probe_launch test_alpha_c1_queue test_alpha_c1_box test_alpha_c1_report \
     test_alpha_next_queue test_alpha_next_receipts test_alpha_next_receipts_mutants test_alpha_next_stage1_slow_rank \
     test_alpha_next_path_qualification test_alpha_next_stopfix_matrix test_alpha_next_c0_ring test_alpha_next_peak_receipt \
@@ -138,6 +138,10 @@ if python3 -I -c "import json,sys;sys.exit(0 if str(json.load(open(sys.argv[1]))
   python3 -B tools/alpha_next_c1_engine_selfrun.py --negative --observe --bundle "$HELD" --overlay "$OUT/parent/native30_overlay" \
       --sources "$OUT/parent/e3_builder" --out "$OUT/engine-negative-observe" --name "alpha-next-c1-negative-observe-cpu-$P12" \
       >"$OUT/engine-negative-observe-stdout.log" 2>&1
+  ORC=$?
+  # INC (rc 4: the wall guard's TIMEOUT or the fail-closed judge, harness/alpha_next_wall_guard.py) stops the chain INC, never a
+  # FAIL and never an observation; its reasons are in the record's inc_reasons.
+  if [[ $ORC == 4 ]]; then echo 'engine-negative-observe INC: see engine-negative-observe/result.json inc_reasons' >>"$STEPS"; step engine-negative-observe 4; fi
   # --observe exits 1 by design; the step passes when the record's verdict is OBSERVED.
   python3 -I -c "import json,sys;sys.exit(0 if json.load(open(sys.argv[1]))['verdict']=='OBSERVED' else 1)" \
       "$OUT/engine-negative-observe/result.json"
@@ -148,7 +152,9 @@ fi
 python3 -B tools/alpha_next_c1_engine_selfrun.py --negative --bundle "$HELD" --overlay "$OUT/parent/native30_overlay" \
     --sources "$OUT/parent/e3_builder" --out "$OUT/engine-negative" --name "alpha-next-c1-negative-cpu-$P12" \
     >"$OUT/engine-negative-stdout.log" 2>&1
-step engine-negative $?
+RC=$?
+[[ $RC == 4 ]] && echo 'engine-negative INC: see engine-negative/result.json inc_reasons' >>"$STEPS"
+step engine-negative "$RC"
 
 python3 -B tools/alpha_next_c1_overlay_tamper.py --parent "$OUT/parent/native30_overlay" --candidate "$HELD/native30_overlay" \
     --out "$OUT/overlay-tamper.json" >"$OUT/overlay-tamper-stdout.log" 2>&1

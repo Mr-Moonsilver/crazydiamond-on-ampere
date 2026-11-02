@@ -142,6 +142,15 @@
       "cannot_prove": "nothing about the engine; the faults only show each check in the proof is live",
       "more_convenient": true,
       "box_evidence": false
+    },
+    {
+      "name": "negative-guard-fakes",
+      "test": "test_alpha_next_c1_negative_guard (HangingSuite, EndToEnd)",
+      "replaces": "the docker container of the negative control: step_a.container replaced by a function that makes the same guarded subprocess.call (client with --name, stdout to suites.log, stderr folded) on a local python process (a unittest blocked on a pipe nobody writes, or an exit with a chosen rc); _stop_container (docker stop -t 30) replaced by a SIGTERM to that process or by nothing; the wall limit and stop grace patched to 2 s; frozen() and PINS pointed at a temporary frozen record and an AWAITING-OBSERVATION stub; patched names: sr.step_a.container, sr._stop_container, sr.NEGATIVE_WALL_LIMIT_S and sr.NEGATIVE_STOP_GRACE_S (2 s each), sr.frozen and sr.PINS (sr = tools/alpha_next_c1_engine_selfrun)",
+      "equivalence": "the guarded call, the guard (alpha_next_wall_guard.run_bounded, inc_reasons, verdict) and negative()'s judging and record writing run unpatched; only what runs inside the container and how it is stopped differ",
+      "cannot_prove": "docker's own stop and the container's real suites and cases; the chain's negative runs those over alpha-next's overlay",
+      "more_convenient": true,
+      "box_evidence": false
     }
   ]
 }
