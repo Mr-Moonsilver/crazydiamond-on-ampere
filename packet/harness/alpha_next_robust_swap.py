@@ -11,6 +11,11 @@ Uses: `python3 alpha_next_robust_swap.py MODULE [MODULE ...]` runs those test mo
 step_b_clock_bound's declared real-clock window-slot ids (so a gate chain's focused list can run through this one runner);
 `filtered(suite)` for a bundle probe.  Both refuse unless every listed id of the loaded modules was found and removed exactly
 once, and unless each removed id's robust twin loads.
+
+Coverage note: modules are loaded by name (as step_b_clock_bound does), not run as scripts.  test_e3_w1_decode_driver.py has
+a first `if __name__ == '__main__': unittest.main()` at line 1508, before ReviewRegressionTests (5 tests) is defined, so its
+script-mode selftest row ran 52 tests; through this runner the row runs 56 (52 - 1 swapped + those 5, all green).
+test_native43_le_bounded_enqueue runs 9 (10 - 1 swapped).
 """
 import sys
 import unittest
