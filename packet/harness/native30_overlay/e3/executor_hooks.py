@@ -1242,6 +1242,10 @@ _WORKER_PROGRESS = None
 _WORKER_PROGRESS_LOCK = threading.Lock()
 _REPLY_LOCKS_LOCK = threading.Lock()
 _progress_log = None
+# Stage-1 handler anatomy (FLASH_S5_HANDLER_ANATOMY=1, default off): None until
+# first read, False when off, else this process's handler_anatomy.Recorder. Read
+# only under a live progress state, so with progress unset it is never read.
+_ANATOMY = None
 
 
 def _progress_logger():
@@ -1270,6 +1274,27 @@ def _worker_progress(rank):
                 _WORKER_PROGRESS = ((ProgressTrace('worker', rank), deque())
                                     if mode is not None else False)
             state = _WORKER_PROGRESS
+    return state or None
+
+
+def _anatomy(proc):
+    """This worker's handler-anatomy recorder, or None. Unset: never imports handler_anatomy."""
+    global _ANATOMY
+    state = _ANATOMY
+    if state is None:
+        with _WORKER_PROGRESS_LOCK:
+            if _ANATOMY is None:
+                if os.environ.get('FLASH_S5_HANDLER_ANATOMY', '') != '1':
+                    _ANATOMY = False
+                else:
+                    try:
+                        import handler_anatomy
+                        _ANATOMY = handler_anatomy.install(proc)
+                    except Exception as error:
+                        # A measurement never fails the RPC: refuse once, visibly, and stay off.
+                        _ANATOMY = False
+                        _progress_logger().warning('flash-s5 handler install refused: %s', type(error).__name__)
+            state = _ANATOMY
     return state or None
 
 
@@ -1303,6 +1328,10 @@ def worker_rpc_begin(proc, method, kwargs):
                 _progress_logger().info(text)
         except Exception:
             state[0].dropped_total += 1
+        if (anatomy := _anatomy(proc)) is not None:
+            anatomy.flush(_progress_logger())
+    if state is not None and (anatomy := _anatomy(proc)) is not None:
+        anatomy.begin(sequence, name)
     return [sequence, name, time.monotonic_ns(), None, direct]
 
 
@@ -1310,6 +1339,8 @@ def worker_rpc_returned(proc, rpc, output_rank):
     if rpc is None:
         return
     rpc[3] = time.monotonic_ns()
+    if _ANATOMY:
+        _ANATOMY.returned(rpc, output_rank)
     if output_rank is None or proc.rank == output_rank:
         return
     state = _worker_progress(proc.rank)
@@ -1340,6 +1371,8 @@ def worker_handle_output(proc, rpc, output):
     if state is not None:
         # Ordered replies leave in exactly handle_output order (async FIFO).
         state[1].append(rpc)
+        if rpc is not None and (anatomy := _anatomy(proc)) is not None:
+            return anatomy.handle_output(proc, rpc, output)
     proc.handle_output(output)
 
 
@@ -1357,6 +1390,8 @@ def worker_enqueue_reply(proc, result):
         return
     if rpc is not None:
         state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], time.monotonic_ns(), 0, 1)
+        if (anatomy := _anatomy(proc)) is not None:
+            anatomy.replied(rpc)
 
 
 __all__ = [

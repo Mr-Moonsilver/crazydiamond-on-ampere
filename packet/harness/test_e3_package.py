@@ -194,7 +194,8 @@ class SyntheticTests(unittest.TestCase):
         # name-only list, so the reviewed launcher (pin 22473a90) stays
         # byte-identical. It is still in the digest manifest and under the
         # whole-e3 mount; the queue preflight checks every overlay digest.
-        self.assertEqual(g.LAUNCHER_LIST_EXEMPT, ('native_auto_arm',))
+        # Stage-1 anatomy: handler_anatomy is the second, for the same reason.
+        self.assertEqual(g.LAUNCHER_LIST_EXEMPT, ('native_auto_arm', 'handler_anatomy'))
         listed = g.manifest(out)
         loop = launcher.split('for f in e3/__init__.py ', 1)[1].split('; do', 1)[0].split()
         for name in g.E3_MODULES:

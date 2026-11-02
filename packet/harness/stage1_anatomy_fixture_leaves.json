@@ -1,0 +1,99 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "Stage-1 stock-handler anatomy (FLASH_S5_HANDLER_ANATOMY): CPU tests of handler_anatomy over the real executor_hooks worker functions and the generated WorkerProc reply path; no box or GPU evidence (the VM run record is separate)",
+ "inherits": [
+  "step_a_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "stage1-generated-workerproc",
+   "test": "test_stage1_handler_anatomy.proc_class",
+   "replaces": "vllm WorkerProc (multiproc_executor.py): its _execute_worker_rpc, handle_output, enqueue_output and async_output_busy_loop",
+   "equivalence": "Not a leaf for these four methods: their text is cut from executor_hooks.generate_executor(pinned source) and exec'd unchanged (same construction as test_e3_native_reply_hol). Only the class around them, ResponseStatus (two strings), the AsyncModelRunnerOutput base (isinstance only) and the logger (no-op exception) are leaves.",
+   "cannot_prove": "WorkerProc construction, the shared-memory broadcast dequeue, process death and the fatal pipe.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage1-gpu-worker",
+   "test": "test_stage1_handler_anatomy.Worker",
+   "replaces": "vllm.v1.worker.gpu_worker.Worker.execute_model/sample_tokens",
+   "equivalence": "Same statements in the same order as the reference (lines 1121-1220): wait self._pp_send_work, irecv_tensor_dict on non-first ranks wrapped as AsyncIntermediateTensors, model_runner.execute_model, isend_tensor_dict on non-last ranks with _pp_send_work = handles[1:]. LeafNames.test_worker_order_matches_reference reads that order from the source.",
+   "cannot_prove": "The SP all-gather branch, the profiler annotation, the v2 pooling branch and with_gpu_sync_check.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage1-model-runner-v1",
+   "test": "test_stage1_handler_anatomy.RunnerV1",
+   "replaces": "vllm.v1.worker.gpu_model_runner.GPUModelRunner (V1): execute_model, _model_forward, compute_logits, sample_tokens, _sample, _bookkeeping_sync, _pp_broadcast_prev_sampled_token_ids, _pp_receive_prev_sampled_token_ids_to_input_batch",
+   "equivalence": "vLLM's method names, signatures the recorder passes through and call order (reference 4187-4866, checked by LeafNames). Host costs are spin (CPU) or sleep (blocked) of declared sizes; device work is a launch on the leaf stream. _bookkeeping_sync sleeps when async scheduling is off, standing for _to_list's GPU->CPU sync.",
+   "cannot_prove": "Real host costs, real kernels, real sync durations; the stage-1 numbers come only from the box.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage1-model-runner-v2",
+   "test": "test_stage1_handler_anatomy.RunnerV2",
+   "replaces": "vllm.v1.worker.gpu.model_runner.GPUModelRunner (V2, the default runner): execute_model with add/update_requests, prepare_inputs, prepare_attn, model_state.prepare_attn, the intermediate copy, cudagraph_manager.run_fullgraph; sample_tokens with sample (compute_logits), pp_handler.receive/broadcast, postprocess_sampled, AsyncOutput",
+   "equivalence": "Same names and order as the reference (1785-2325; LeafNames checks the names and the sample_tokens order). The S5 split bank manager (runner._flash_e3_graph_router.backend.manager) is not in this leaf: the VM run shows whether it exists.",
+   "cannot_prove": "Graph routing (graph_hooks.replay_fullgraph, split bank replay on the green stream), real stream choice.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage1-pp-group",
+   "test": "test_stage1_handler_anatomy.Group",
+   "replaces": "vllm.distributed.parallel_state.GroupCoordinator (PP and TP groups) and torch.distributed Work handles",
+   "equivalence": "The attributes the recorder reads (rank_in_group, world_size, is_first_rank, is_last_rank) and the two PP methods with the reference return shapes: irecv_tensor_dict -> (dict, handles, postprocess), isend_tensor_dict -> handles retained in _pending_isends. irecv sleeps (recv_object blocks the host until stage 0 sends); Work.wait sleeps.",
+   "cannot_prove": "NCCL/gloo behaviour, the real metadata wait, _RetainedHandle idempotency (the proxy delegates wait unchanged).",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage1-cuda",
+   "test": "test_stage1_handler_anatomy.LeafTorch",
+   "replaces": "torch.cuda.Event(enable_timing=True), torch.cuda.current_stream(), Stream.query, torch.cuda.synchronize",
+   "equivalence": "A fake device clock: work launched on the stream completes when the test advances the clock; Event.record stamps the stream tail; query compares; elapsed_time raises (and records a violation) unless both events query True; every synchronize raises and records a violation; any other attribute is an AttributeError, so the recorder's CUDA surface is exactly Event/current_stream/record/query/elapsed_time/Stream.query (asserted).",
+   "cannot_prove": "Real event resolution latency, CUDA graph capture state, multiple streams (the green decode stream).",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage1-async-output",
+   "test": "test_stage1_handler_anatomy.AsyncOutput",
+   "replaces": "AsyncGPUModelRunnerOutput (V1) / gpu.async_utils.AsyncOutput (V2)",
+   "equivalence": "get_output is a method on the instance (the recorder wraps it there) and blocks by sleep, standing for copy_event.synchronize(), vLLM's own sync on the async output thread.",
+   "cannot_prove": "The real D2H copy and its duration.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage1-response-mq",
+   "test": "test_stage1_handler_anatomy.Writer",
+   "replaces": "MessageQueue (worker_response_mq) enqueue",
+   "equivalence": "Records each result tuple in order; the recorder wraps enqueue on the instance to time serialization + write.",
+   "cannot_prove": "Pickling cost and the shared-memory ring write.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage1-process-state",
+   "test": "test_stage1_handler_anatomy.Rig",
+   "replaces": "One worker process: executor_hooks._WORKER_PROGRESS and _ANATOMY process globals, vllm.distributed.parallel_state, vllm.platforms",
+   "equivalence": "Each rig patches the globals to unread and restores them, so each scenario is one fresh worker process; the off proof and byte-identity run in real fresh interpreters (offrun_subprocess).",
+   "cannot_prove": "Four ranks in one process at once.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stage1-hook-clock",
+   "test": "test_stage1_handler_anatomy.HookClock",
+   "replaces": "time.monotonic_ns as read by executor_hooks (only in the byte-identity subprocess)",
+   "equivalence": "A counter: progress stamps become a function of call order only, so step-b's hooks and these hooks (off and on) must give byte-identical progress lines for the same RPC script. handler_anatomy keeps the real clock.",
+   "cannot_prove": "Real progress timing.",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}
