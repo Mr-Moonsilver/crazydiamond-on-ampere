@@ -449,6 +449,12 @@ class StopSweep(OverlapBase):
                 self.assert_closed(network)
 
 
+def replay_counts(driver):
+    """(composed stop path, C1's own) partial replays. On alpha-next the staged stop obligations replay a half-accepted
+    segment first (stop fix 2 on C0's path, alpha-next 68c5c63b), so C1's _stop_partial_segment no longer sees one."""
+    return driver._stop_partial_replays, driver.overlap_counters['partial_replays']
+
+
 class StopStates(OverlapBase):
     def finish(self, network, kind='abort'):
         driver = network.driver
@@ -551,11 +557,11 @@ class StopStates(OverlapBase):
         retry = successor.stage[0]['_retry']
         accepted = {rank for rank, op in successor.chunk['accepted_tickets'] if op == retry.op_seq}
         self.assertEqual(accepted, {0})
-        replays = driver.overlap_counters['partial_replays']
+        replays = replay_counts(driver)
         self.finish(network)
         # The stop replayed the retained command to the pending peer before cancelling,
         # and the peer took exactly that command.
-        self.assertGreater(driver.overlap_counters['partial_replays'], replays)
+        self.assert_replayed_once_by_the_composed_path(driver, replays)
         self.assertIn((retry.op_seq, retry.kind, retry.descriptor), peer_took)
         sent = [stage_of_command(env)[1] for env in network.sent_envelopes if env[0] == 'flash_s5_submit']
         same = [m for m in sent if m.op_seq == retry.op_seq and m.transaction == transaction]
@@ -563,6 +569,12 @@ class StopStates(OverlapBase):
         self.assertGreaterEqual(len(same), 2)
         self.assertEqual({(m.kind, m.stage, m.descriptor) for m in same}, {(retry.kind, retry.stage, retry.descriptor)})
 
+
+    def assert_replayed_once_by_the_composed_path(self, driver, before):
+        """The composed path replayed (its counter and receipt moved); C1's own replay did not run, so no double replay."""
+        composed, own = replay_counts(driver)
+        self.assertGreater(composed, before[0])
+        self.assertEqual(own, before[1])
 
     def first_frame_partial_prepare(self, overlap):
         """Frozen-trunk finding 2 on the overlap driver: the first chunk's PREPARE accepted by
@@ -591,9 +603,9 @@ class StopStates(OverlapBase):
         self.assertIs(retry.kind, w.SegmentKind.PREPARE)
         self.assertIsNone(frame.chunk['bound_ticket'])
         self.assertEqual({rank for rank, op in frame.chunk['accepted_tickets'] if op == retry.op_seq}, {0})
-        replays = driver.overlap_counters['partial_replays']
+        replays = replay_counts(driver)
         self.finish(network)
-        self.assertGreater(driver.overlap_counters['partial_replays'], replays)
+        self.assert_replayed_once_by_the_composed_path(driver, replays)
         self.assertIn((retry.op_seq, retry.kind, retry.descriptor), peer_took)
         self.assertEqual(network.controller.commits, 0)
 
@@ -631,13 +643,15 @@ class StopStates(OverlapBase):
         real_tickets = dict(tickets)
         ticket = tickets.pop((0, op))
         tickets[(2, op)] = ticket
-        replays = driver.overlap_counters['partial_replays']
+        replays = replay_counts(driver)
         self.assertFalse(driver._stop_partial_segment(frame))
-        self.assertEqual(driver.overlap_counters['partial_replays'], replays)
+        with driver._scope(frame, 0):
+            self.assertFalse(driver._drive_partial_stop_submission())
+        self.assertEqual(replay_counts(driver), replays)
         tickets.clear()
         tickets.update(real_tickets)
         self.finish(network)
-        self.assertGreater(driver.overlap_counters['partial_replays'], replays)
+        self.assert_replayed_once_by_the_composed_path(driver, replays)
         self.assertEqual(network.controller.commits, 0)
 
 
