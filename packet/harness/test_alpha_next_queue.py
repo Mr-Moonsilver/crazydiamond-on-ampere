@@ -1770,36 +1770,104 @@ class C0Parity(unittest.TestCase):
 
 
 class ReceiptIntegrity(unittest.TestCase):
-    """receipt_lines (PLAN 2, merged from claude/alpha-next) over the followed logs: reported in the grade, not a verdict input."""
+    """receipt_lines (PLAN 2, merged from claude/alpha-next) over the followed logs: RECEIPT_INTEGRITY_IS_GATE False (lead: a read
+    this run, a gate next run), per-process counts, a headline under Overall in both cases, the would-be-INC reads."""
+    TEXTS = ['flash-s5 memory-peak rank=0 txn_seq=%d chunk=0-1024 peak_allocated=1 peak_reserved=2 allocated_at_open=0 '
+             'stage_timer=0' % i for i in range(3)]
+    STAGE = ('flash-s5 stage-local txn=1 chunk=0-1024 commands=9,9 both_stages_ns=2000000 first_ns=1,1 last_ns=2,2 '
+             'local_release_ns=2,2 headroom_refused=1 headroom_blocked_ns=0')
 
-    def line(self, text, pid, seq, sha=None):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix='receipts-'))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+
+    @staticmethod
+    def line(text, pid, seq, sha=None):
         return '%s pid=%d seq=%d sha=%s' % (text, pid, seq, sha or receipt_lines.sha16([text]))
 
-    def test_whole_records_read_ok_and_a_gap_or_bad_sha_read_inc(self):
-        d = Path(tempfile.mkdtemp(prefix='receipts-'))
-        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        texts = ['flash-s5 memory-peak rank=0 txn_seq=%d chunk=0-1024 peak_allocated=1 peak_reserved=2 allocated_at_open=0 '
-                 'stage_timer=0' % i for i in range(3)]
-        for name, lines, want in (('ok', [self.line(t, 7, i) for i, t in enumerate(texts)], ('OK', 0, 0)),
-                                  ('gap', [self.line(texts[0], 7, 0), self.line(texts[2], 7, 2)], ('INC', 1, 0)),
-                                  ('sha', [self.line(texts[0], 7, 0, sha='0' * 16)], ('INC', 0, 1))):
-            with self.subTest(case=name):
-                log = d / ('%s.log' % name)
-                log.write_text(''.join('2026-11-02T12:00:00.000000000Z (Worker pid=7) ' + x + '\n' for x in lines))
-                read = box.receipt_read([str(log), str(d / 'absent.err')])
-                self.assertEqual((read['verdict'], read['counts']['missing_seq'], read['counts']['bad_sha'], read['is_gate']),
-                                 want + (False,))
-        # The identity suffix does not change what the box parses.
-        self.assertEqual(box.PEAK_RE.search(self.line(texts[1], 7, 1)).group(2), '1')
+    def read(self, name, lines):
+        log = self.dir / ('%s.log' % name)
+        log.write_text(''.join('2026-11-02T12:00:00.000000000Z (Worker pid=1) ' + x + '\n' for x in lines))
+        return box.receipt_read([str(log), str(self.dir / 'absent.err')])
 
-    def test_the_grade_reports_it_and_its_verdict_does_not_follow_it(self):
+    def test_the_declaration(self):
+        self.assertIs(box.RECEIPT_INTEGRITY_IS_GATE, False)
+        src = (HERE / 'e3_alpha_next_box.py').read_text()
+        self.assertEqual(len(re.findall(r'^RECEIPT_INTEGRITY_IS_GATE = (True|False)$', src, flags=re.M)), 1)
+        self.assertIn("the PLAN 2 writer's behaviour on the box FIFO is unproven, and this run\n# proves it", src)
+        self.assertLess(src.index('NUMERICS_IS_GATE = False'), src.index('RECEIPT_INTEGRITY_IS_GATE = False'))
+
+    def test_clean_and_dirty_per_process_counts_and_headlines(self):
+        t = self.TEXTS
+        clean = self.read('ok', [self.line(x, 7, i) for i, x in enumerate(t)] + [self.line(self.STAGE, 9, 0)])
+        self.assertEqual((clean['verdict'], clean['clean'], clean['is_gate'], clean['per_process'], clean['would_be_inc']),
+                         ('OK', True, False, {}, []))
+        self.assertEqual(clean['headline'],
+                         'RECEIPT INTEGRITY OK (a read this run, the verdict does not change): all clean, 4 records from 2 processes')
+        dirty = self.read('dirty', [self.line(t[0], 7, 0), self.line(t[2], 7, 2), self.line(self.STAGE, 9, 0, sha='0' * 16),
+                                    self.line(self.STAGE, 11, 0), 'flash-s5 stop {"schema": "s5-stop-receipt/1"}'])
+        self.assertEqual((dirty['verdict'], dirty['clean'], dirty['is_gate']), ('INC', False, False))
+        zero = dict.fromkeys(box.RECEIPT_PROBLEMS, 0)
+        self.assertEqual(dirty['per_process'], {'7': dict(zero, missing_seq=1), '9': dict(zero, bad_sha=1)})
+        self.assertEqual(dirty['log_wide_counts'], dict(zero, unsafe_path=1))
+        self.assertEqual(dirty['headline'],
+                         'RECEIPT INTEGRITY INC (a read this run, the verdict does not change): '
+                         'pid 7: missing_seq 1, bad_sha 0, incomplete 0, unsafe_path 0; '
+                         'pid 9: missing_seq 0, bad_sha 1, incomplete 0, unsafe_path 0; '
+                         'log-wide: missing_seq 0, bad_sha 0, incomplete 0, unsafe_path 1')
+        # Which process fed which read: 7 the memory-peak receipts, 9 the stage line, the identity-less stop line log-wide.
+        self.assertEqual([(w['pid'], w['problems'], w['kinds'], w['reads']) for w in dirty['would_be_inc']],
+                         [(7, ['missing_seq'], ['memory-peak'], ['memory_peak']),
+                          (9, ['bad_sha'], ['stage-local'], ['c0_engagement', 'c0_ring']),
+                          (None, ['unsafe_path'], ['stop'], ['stop_receipts'])])
+        self.assertEqual(dirty['would_be_inc_reads'], ['c0_engagement', 'c0_ring', 'memory_peak', 'stop_receipts'])
+        # The identity suffix does not change what the box parses.
+        self.assertEqual(box.PEAK_RE.search(self.line(t[1], 7, 1)).group(2), '1')
+
+    def test_dirty_integrity_changes_no_verdict_and_both_headlines_lead_the_report(self):
         grade = Grader()
         self.addCleanup(grade.tmp.cleanup)
         emit, arms = run_of('graded')
+        result = grade(emit, arms)          # the emitters write identity-less lines: dirty (legacy, log-wide)
+        self.assertEqual((result['verdict'], result['receipt_integrity_is_gate'], result['receipt_integrity_clean']),
+                         ('PASS', False, False))
+        self.assertEqual(result['receipt_integrity']['verdict'], 'INC')
+        self.assertEqual(result['receipt_integrity_headline'], result['receipt_integrity']['headline'])
+        self.assertIn('engagement', result['receipt_integrity']['would_be_inc_reads'])
+        text = box.report(result).splitlines()
+        self.assertEqual(text[4], '**%s**' % result['receipt_integrity_headline'])
+        self.assertTrue(text[4].startswith('**RECEIPT INTEGRITY INC (a read this run, the verdict does not change): log-wide: '))
+        self.assertTrue([x for x in text if x.startswith('- receipt_lines rule would make INC: process log-wide (unsafe_path; '
+                                                         'kinds ') and 'engagement' in x])
+        # With an OUTSIDE numerics read too: both bold lines under Overall, numerics first; still PASS.
+        name = 'c0on.g2-solo-0'
+        for a in arms:
+            if a['label'] == name:
+                a['outputs'] = outputs(T.by_label()[name], cut=10)
         result = grade(emit, arms)
+        text = box.report(result).splitlines()
         self.assertEqual(result['verdict'], 'PASS')
-        self.assertEqual((result['receipt_integrity']['verdict'], result['receipt_integrity']['is_gate']), ('INC', False))
-        self.assertIn('Receipt integrity (receipt_lines, a read, not a verdict input): INC', box.report(result))
+        self.assertEqual(text[4:7], ['**%s**' % result['numerics_headline'], '', '**%s**' % result['receipt_integrity_headline']])
+        # The one constant flipped: dirty integrity makes the queue INC.
+        with mock.patch.object(box, 'RECEIPT_INTEGRITY_IS_GATE', True):
+            gated = grade(emit, arms)
+        self.assertEqual((gated['verdict'], gated['receipt_integrity']['is_gate']), ('INC', True))
+        self.assertIn('receipt-integrity:INC', gated['missing'])
+
+    def test_a_clean_log_headline_in_the_report(self):
+        log = self.dir / 'engine-stream.log'
+        log.write_text(''.join('2026-11-02T12:00:00.000000000Z (Worker pid=1) ' + self.line(x, 7, i) + '\n'
+                               for i, x in enumerate(self.TEXTS)))
+        clean = box.receipt_read([str(log)])
+        grade = Grader()
+        self.addCleanup(grade.tmp.cleanup)
+        with mock.patch.object(box, 'receipt_read', return_value=clean):
+            result = grade(*run_of('graded'))
+        self.assertEqual((result['verdict'], result['receipt_integrity_clean']), ('PASS', True))
+        text = box.report(result).splitlines()
+        self.assertEqual(text[4], '**RECEIPT INTEGRITY OK (a read this run, the verdict does not change): all clean, 3 records '
+                                  'from 1 processes**')
+        self.assertFalse([x for x in text if x.startswith('- receipt_lines rule would make INC')])
 
 
 class Report(unittest.TestCase):
