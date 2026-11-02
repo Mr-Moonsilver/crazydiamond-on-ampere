@@ -1,0 +1,12 @@
+{
+ "build": "<hub-dir>/agents/flash-next/tmp/step-a/pack/final-g/build/build.json",
+ "build_sha256": "3ccbb5c5cdb62460e10510eb01578b256e54b4b27421c5c834d977bfba2d9a48",
+ "delivery": "<hub-dir>/agents/flash-next/tmp/step-a/pack/final-g/evidence/delivery-g.json",
+ "delivery_sha256": "6b1233805a92ce46ca029059d86fe1245def9a3d648e5b52beedfd04de3d343e",
+ "engine_selfrun": "<hub-dir>/agents/flash-next/tmp/step-a/pack/final-g/build/engine-selfrun",
+ "engine_selfrun_sha256": "5e6f840dcb41c98b8220e0172c1e787d0a8a8a78e48240ada2a5dec8cd49bb16",
+ "manifest": "090a02111567669e9346e0be9b1e0e72d44f74a8eef3fdb6917723ebcaf44043",
+ "runner_sha256": "73dc0669bd6728648c9f25c9936cb801ec6fbee69387eeced3edd41e3f3b2f6b",
+ "schema": "step-b-parent/1",
+ "source": "a6426e274214c62038e6ddd937147b25661af556"
+}

@@ -33,7 +33,7 @@ from build_native30_held import verify  # noqa: E402
 import step_a_freeze as base  # noqa: E402
 from step_a_freeze import _packaged, _references, _text, _units, function, project, removals  # noqa: E402
 
-PARENT = 'f483bc7'
+PARENT = 'a6426e2'
 DECLARATION = ROOT / 'tools/step_b_declarations.json'
 ENGINE = ('engine_driver.py', 'lane_dispatch.py', 'native_measurement.py', 'native_overlap_control.py', 'native_overlap_session.py',
           'probe_control.py', 's5_startup.py', 'wire_v1.py', 'worker_bridge.py')
