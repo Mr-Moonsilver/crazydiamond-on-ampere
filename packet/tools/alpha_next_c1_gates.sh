@@ -57,8 +57,8 @@ if [[ $RC != 0 ]] && flaky strict "$STRICT_LOG"; then
 else step strict "$RC"; fi
 focused() { { echo "# head $HEAD focused"; python3 -B alpha_next_robust_swap.py \
     test_alpha_next_c1_queue test_e3_stage_overlap test_alpha_next_c1_composed_fields test_e3_stage_overlap_control \
-    test_c1_rebind_witness test_c1_rebind_on test_alpha_next_c1_defer_control test_alpha_next_probe_launch \
-    test_alpha_c1_queue test_alpha_c1_box test_alpha_c1_report \
+    test_c1_rebind_witness test_c1_rebind_on test_alpha_next_c1_defer_control test_alpha_next_c1_rebind_default_off \
+    test_alpha_next_probe_launch test_alpha_c1_queue test_alpha_c1_box test_alpha_c1_report \
     test_alpha_next_queue test_alpha_next_receipts test_alpha_next_receipts_mutants test_alpha_next_stage1_slow_rank \
     test_alpha_next_path_qualification test_alpha_next_stopfix_matrix test_alpha_next_c0_ring test_alpha_next_peak_receipt \
     test_stage1_handler_anatomy test_e3_native_anatomy test_e3_native_lean_replies test_e3_w1_decode_driver_ordered \

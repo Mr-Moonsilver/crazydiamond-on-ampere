@@ -43,6 +43,7 @@ def _alpha_next_seams():
 SEAMS = ('test_alpha_next_c1_queue.py e3_alpha_next_c1_box.py alpha_next_c1_arms.py alpha_next_c1_gate.py '
          'test_alpha_next_c1_composed_fields.py test_e3_stage_overlap.py test_e3_stage_overlap_control.py e3_alpha_c1_probe.py '
          'test_c1_rebind_witness.py test_c1_rebind_on.py c1_overlap_read.py test_alpha_next_c1_defer_control.py '
+         'test_alpha_next_c1_rebind_default_off.py '
          'test_alpha_c1_queue.py test_alpha_c1_report.py test_alpha_c1_box.py e3_alpha_c1_box.py ' + _alpha_next_seams())
 assert SEAMS.endswith(' ') and len(SEAMS.split()) == len(set(SEAMS.split())), 'seam list'
 
