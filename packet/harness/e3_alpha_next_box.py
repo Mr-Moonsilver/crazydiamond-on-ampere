@@ -31,6 +31,9 @@ speed; memory (the min-free read and the per-chunk ``flash-s5 memory-peak`` rece
 refusals, ``headroom_blocked_ns`` on the stage line, status ``ring``: blocked_ns, episodes, blocked_max_ns, limiting and
 limiting_sole per rank); the item-1 stop receipts (``flash-s5 stop`` lines, schema s5-stop-receipt/1, status ``stop_receipts``);
 the stage-1 handler anatomy line count (tools/stage1_anatomy_report.py reads the lines).
+Receipt integrity (RECEIPT_INTEGRITY_IS_GATE = False; lead, 2 Nov: a read this run, a gate next run, because the PLAN 2 writer's
+behaviour on the box FIFO is unproven and this run proves it): receipt_lines' per-process counts, headline under Overall beside
+the numerics line, and the reads its rule for new queues would have made INC.
 
 Two grades: ``grade`` over the core arms (parts core and extra; an extra arm that was not entered is not required) is the
 queue's verdict, written before the g4 tail starts. ``read`` over every arm (core, extra and tail) is a read only: same rules,
@@ -95,6 +98,16 @@ DECODE_LINES = (0.8, 0.9)
 # differ from each other widen the envelope instead of leaving the read UNPROVEN by construction. Sampled streams are not compared
 # (their digests are recorded). NUMERICS_IS_GATE True would make OUTSIDE a FAIL ENGINE and UNPROVEN an INC.
 NUMERICS_IS_GATE = False
+# PLAN 2 receipt record integrity (harness/receipt_lines.py: missing seq, bad sha, incomplete record, unsafe path, per process).
+# A read this run, a gate next run (lead, 2 Nov 14:4x): the PLAN 2 writer's behaviour on the box FIFO is unproven, and this run
+# proves it. Shown under Overall as prominently as the numerics line, with per-process counts and the reads receipt_lines' rule
+# for new queues would have made INC (RECEIPT_READS); True would make the queue INC on any dirty process.
+RECEIPT_INTEGRITY_IS_GATE = False
+RECEIPT_PROBLEMS = ('missing_seq', 'bad_sha', 'incomplete', 'unsafe_path')
+# Which grade reads each receipt kind feeds (the receipt_lines kind is the prefix's second word).
+RECEIPT_READS = {'progress': ('engagement', 'speed'), 'stage-local': ('c0_engagement', 'c0_ring'),
+                 'stop': ('stop_receipts',), 'memory': ('memory',), 'native-alloc': ('memory',),
+                 'memory-peak': ('memory_peak',), 'anatomy': ('anatomy',), 'handler': ('anatomy_lines',), 'receipts': ()}
 NUMERICS_PREFIX = 256
 NUMERICS_FACTOR = 2
 OUTPUT_TOKENS = 8
@@ -692,17 +705,65 @@ def peak_read(lines):
                 peak_allocated_mib=max((c['peak_allocated_mib'] for c in ranks.values()), default=None), is_gate=False)
 
 
+def _reads_of(kinds):
+    return sorted({r for k in kinds for r in RECEIPT_READS.get(k, ())})
+
+
 def receipt_read(logs):
-    """PLAN 2 receipt record integrity (harness/receipt_lines.py, merged from claude/alpha-next 32e7cc63) over the followed
-    logs: missing seq, bad sha, incomplete records, unsafe path, per process. Reported here as a read; receipt_lines' rule for
-    new queues (every read fed by an INC process is INC) is not wired into the verdict until the lead says so."""
+    """PLAN 2 receipt record integrity over the followed logs (receipt_lines, merged from claude/alpha-next): per process the
+    counts of missing seq, bad sha, incomplete record and unsafe path; the log-wide rows (legacy lines without identity, the
+    startup path); the reads receipt_lines' rule for new queues would have made INC, by process (would_be_inc); a headline.
+    RECEIPT_INTEGRITY_IS_GATE False: a read, never a verdict input this run."""
+    is_gate = RECEIPT_INTEGRITY_IS_GATE
     try:
         report = receipt_lines.check(receipt_lines.read(logs), require_start=False)
     except (OSError, ValueError) as exc:
-        return dict(verdict='UNAVAILABLE', error=type(exc).__name__, is_gate=False)
+        return dict(verdict='UNAVAILABLE', error=type(exc).__name__, is_gate=is_gate, clean=False,
+                    headline='RECEIPT INTEGRITY UNAVAILABLE (%s): %s' % (
+                        'a gate' if is_gate else 'a read this run, the verdict does not change', type(exc).__name__))
     out = receipt_lines.verdict(report)
-    out.update(records=report['records'], processes=report['processes'], is_gate=False,
-               counts={k: len(report[k]) for k in ('missing_seq', 'bad_sha', 'incomplete', 'unsafe_path')})
+    per_process, log_wide = {}, {k: 0 for k in RECEIPT_PROBLEMS}
+    legacy_kinds, startup_wide = set(), False
+    for name in RECEIPT_PROBLEMS:
+        for item in report[name]:
+            pid = item.get('pid')
+            if pid is None:
+                log_wide[name] += 1
+                reason = str(item.get('reason', ''))
+                if reason.startswith('legacy:'):
+                    legacy_kinds.add(reason.split(':', 1)[1])
+                else:
+                    startup_wide = True
+                continue
+            per_process.setdefault(str(pid), {k: 0 for k in RECEIPT_PROBLEMS})[name] += 1
+    procs = report.get('per_process') or {}
+    would = []
+    for pid, counts in sorted(per_process.items(), key=lambda kv: int(kv[0])):
+        info = procs.get(pid) or {}
+        kinds = sorted(info.get('kinds') or {})
+        would.append(dict(pid=int(pid), problems=sorted(k for k, v in counts.items() if v), kinds=kinds,
+                          sides=info.get('sides') or [], ranks=info.get('ranks') or [], reads=_reads_of(kinds)))
+    if legacy_kinds:
+        would.append(dict(pid=None, problems=['unsafe_path'], kinds=sorted(legacy_kinds), sides=[], ranks=[],
+                          reads=_reads_of(legacy_kinds), reason='receipt lines without identity (the old logger path)'))
+    if startup_wide:
+        every = sorted(RECEIPT_READS)
+        would.append(dict(pid=None, problems=['unsafe_path'], kinds=every, sides=[], ranks=[], reads=_reads_of(every),
+                          reason='the startup receipt path is not atomic-fifo'))
+    clean = out['verdict'] == 'OK'
+    if clean:
+        detail = 'all clean, %d records from %d processes' % (report['records'], report['processes'])
+    else:
+        rows = ['pid %s: %s' % (pid, ', '.join('%s %d' % (k, c[k]) for k in RECEIPT_PROBLEMS))
+                for pid, c in sorted(per_process.items(), key=lambda kv: int(kv[0]))]
+        if any(log_wide.values()):
+            rows.append('log-wide: %s' % ', '.join('%s %d' % (k, log_wide[k]) for k in RECEIPT_PROBLEMS))
+        detail = '; '.join(rows)
+    out.update(records=report['records'], processes=report['processes'], is_gate=is_gate, clean=clean,
+               counts={k: len(report[k]) for k in RECEIPT_PROBLEMS}, per_process=per_process, log_wide_counts=log_wide,
+               would_be_inc=would, would_be_inc_reads=sorted({r for w in would for r in w['reads']}),
+               headline='RECEIPT INTEGRITY %s (%s): %s' % (
+                   'OK' if clean else 'INC', 'a gate' if is_gate else 'a read this run, the verdict does not change', detail))
     return out
 
 
@@ -777,6 +838,9 @@ def grade(arms, ingress, checks, logs, watches=None, part='core'):
         classes.add('ENGINE')
     elif NUMERICS_IS_GATE and compared['verdict'] == 'UNPROVEN':
         missing.update('numerics:' + x for x in compared['unproven'])
+    receipts = receipt_read(logs)
+    if RECEIPT_INTEGRITY_IS_GATE and not receipts['clean']:
+        missing.add('receipt-integrity:' + receipts['verdict'])
     verdict = 'FAIL' if failures else 'INC' if missing else 'PASS'
     # Lead, 14:29: OUTSIDE is shown prominently in the grade and the report, and changes no verdict while NUMERICS_IS_GATE is
     # False; this run establishes the envelope (the graded C0-off greedy arms against each other, per band and stream).
@@ -791,7 +855,8 @@ def grade(arms, ingress, checks, logs, watches=None, part='core'):
                   classification=sorted(classes) or (['HARNESS'] if verdict == 'FAIL' else None))
     result.update(schema=GRADE_SCHEMA if part == 'core' else READ_SCHEMA, part=part, is_queue_verdict=part == 'core',
                   numerics=compared, numerics_verdict=compared['verdict'], numerics_outside=list(compared['outside']),
-                  numerics_headline=headline, receipt_integrity=receipt_read(logs), decode_read=decode, decode_lines=list(DECODE_LINES), decode_is_gate=False, c0_ring=ring,
+                  numerics_headline=headline, receipt_integrity=receipts, receipt_integrity_is_gate=RECEIPT_INTEGRITY_IS_GATE,
+                  receipt_integrity_headline=receipts['headline'], receipt_integrity_clean=receipts['clean'], decode_read=decode, decode_lines=list(DECODE_LINES), decode_is_gate=False, c0_ring=ring,
                   stop_receipts=dict(arms=stops, schema=STOP_SCHEMA, **run_lines), memory_peak=peaks, anatomy_lines=anatomy,
                   arm_table=dict(band_size=T.BAND_SIZE, arms=rows, standing_decoders=T.STANDING_DECODERS,
                                  band1_rounds=T.BAND1_ROUNDS, band1_required_rounds=T.BAND1_REQUIRED_ROUNDS,
@@ -828,9 +893,15 @@ def report(result):
     if headline:
         lines += ['**%s**' % headline, '']
     receipts = result.get('receipt_integrity') or {}
-    lines += ['## Mechanism', '', 'Receipt integrity (receipt_lines, a read, not a verdict input): %s, counts %s, INC processes %s.' % (
-        receipts.get('verdict'), json.dumps(receipts.get('counts'), sort_keys=True),
-        json.dumps(receipts.get('inc_processes'), sort_keys=True)), '']
+    if receipts.get('headline'):
+        lines += ['**%s**' % receipts['headline'], '']
+    for row in receipts.get('would_be_inc') or []:
+        lines.append('- receipt_lines rule would make INC: process %s (%s; kinds %s) feeds %s' % (
+            'log-wide' if row['pid'] is None else row['pid'], ', '.join(row['problems']), ','.join(row['kinds']) or '-',
+            ', '.join(row['reads']) or 'no grade read'))
+    if receipts.get('would_be_inc'):
+        lines.append('')
+    lines += ['## Mechanism', '']
     lines += ['| arm | part | verdict | class | crash-free | disagree | signatures | engaged | owned chunks | '
               'fused cmds | group chunks | group cmds | layer cmds per chunk | stage chunks | releases | stage lines | foreign '
               'replies | reasons |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
