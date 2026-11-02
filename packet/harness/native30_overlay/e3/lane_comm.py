@@ -23,6 +23,7 @@ Nothing here is imported at module load from torch/vLLM; the constructors take
 the communicator class and torch module so CPU tests inject fakes.
 """
 from contextlib import contextmanager
+import hashlib
 from dataclasses import dataclass
 
 from e3_types import (E3ContractError, TransactionId, CompletionProof, CompletionKind,
@@ -80,6 +81,30 @@ def _pynccl_class():
 
 # --- TP ------------------------------------------------------------------------
 
+class CollectiveLedger:
+    """Step A: one command's lane TP collectives as (count, digest).
+
+    TP commitment is order, communicator and message shape, not an equal count.
+    Host bookkeeping only; each note runs before its collective is enqueued, so
+    a mismatch is reported even when the peers can no longer make progress.
+    """
+    def __init__(self):
+        self.begin()
+
+    def begin(self):
+        self.count = 0
+        self._hash = hashlib.sha256()
+
+    def note(self, op, pynccl, tensor, root=None):
+        self.count += 1
+        # PyNccl's unique id is broadcast at init, so it names one communicator on every peer.
+        self._hash.update(repr((op, bytes(pynccl.unique_id.internal), int(pynccl.world_size),
+                                tuple(tensor.shape), str(tensor.dtype), root)).encode())
+
+    def take(self):
+        return self.count, self._hash.hexdigest()
+
+
 class PrefillTpCommunicator:
     """TP device communicator for the prefill lane: PyNccl on the lane stream only."""
 
@@ -99,8 +124,12 @@ class PrefillTpCommunicator:
         self.rank = int(getattr(pynccl, 'rank', 0))
         self.collectives = 0
         self.warmed = False
+        # Step A: set only while a fused transaction is open.
+        self.ledger = None
 
     def all_reduce(self, input_):
+        if self.ledger is not None:
+            self.ledger.note('all_reduce', self.pynccl_comm, input_)
         stream = self.torch.cuda.current_stream(self.device)
         out = self.pynccl_comm.all_reduce(input_, stream=stream)
         if out is None:
@@ -178,6 +207,9 @@ def canonical_selection(selection, *, group=None, torch_module=None):
     pynccl = getattr(communicator, 'pynccl_comm', None)
     if pynccl is None or pynccl.disabled or pynccl.world_size != group.world_size:
         raise LaneCommError('TP selection requires enabled matching PyNccl')
+    ledger = getattr(communicator, 'ledger', None)
+    if ledger is not None:
+        ledger.note('broadcast', pynccl, selection, 0)
     stream = torch.cuda.current_stream(selection.device)
     # PyNccl.broadcast mutates in place and returns None. src is group-local.
     pynccl.broadcast(selection, src=0, stream=stream)
@@ -514,6 +546,6 @@ class PrefillCommunicators:
         return record
 
 
-__all__ = ['PPConsumerReceipt', 'HEADER_LEN', 'HEADER_MAGIC', 'LaneCommError', 'PP_SLOTS', 'PPTicket',
+__all__ = ['CollectiveLedger', 'PPConsumerReceipt', 'HEADER_LEN', 'HEADER_MAGIC', 'LaneCommError', 'PP_SLOTS', 'PPTicket',
            'PrefillCommunicators', 'PrefillPPChannel', 'PrefillTpCommunicator',
            'header_values', 'tp_scope']

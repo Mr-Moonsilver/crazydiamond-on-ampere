@@ -1,0 +1,534 @@
+{
+ "cases": {
+  "step-b-g1-burst": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-b-g1-burst-skew": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-b-g1-burst-solo": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-b-g2-burst": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-b-g2-burst-skew": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-b-g2-burst-solo": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ],
+  "step-b-g4-burst": [
+   "FAIL",
+   "DriverError",
+   "native-control-unknown-action"
+  ]
+ },
+ "discovery": "negative pins from observation, 2 Nov 2026 04:28 CET: candidate harness of chain c build (review commit 5f46c07) over the regenerated Step A overlay and e3_builder (pack/c/build/parent), one hub CPU container, tmp/step-b/pack/c/neg-observe-1; 146 tests run, 95 do not pass (92 test_e3_native_layer_groups, 3 test_step_b_queue), 0 skips; Step A parent cases PASS; every non-pass reviewed and inside the Step B group set (lead's go, 2 Nov about 04:25 CET)",
+ "frozen_record_sha256": "5e6f840dcb41c98b8220e0172c1e787d0a8a8a78e48240ada2a5dec8cd49bb16",
+ "observation": {
+  "log": "<hub-dir>/agents/flash-next/tmp/step-b/pack/c/neg-observe-1.log",
+  "log_sha256": "715cb00d914b02ba4efcdd89cd697a24258dc36c06c65aa35f6bbe24721e685b",
+  "not_passing": 95,
+  "observed_json": "<hub-dir>/agents/flash-next/tmp/step-b/pack/c/neg-observe-1/observed.json",
+  "observed_sha256": "76310d2cb7e838c213585c192270be37d1264271d45e4c8c6ed9a9ff9b79082e",
+  "skips": 0,
+  "tests_run": 146
+ },
+ "reasons": {
+  "test_e3_native_layer_groups.Burst.test_a_group_goes_out_inside_an_owner_wait": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Burst.test_a_poll_in_flight_with_a_group_queued_keeps_the_wait_permit": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Cancel.test_a_retry_without_a_stop_finishes_the_same_command": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Cancel.test_a_stop_outlasts_the_round_budget_while_groups_drain": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Cancel.test_a_stop_past_the_stall_bound_retains_ownership": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Cancel.test_cancel_at_every_command_boundary_with_one_peer_unresolved": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Cancel.test_cancel_between_acceptances_in_a_group_with_qsa": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Cancel.test_cancel_between_acceptances_in_a_group_without_qsa": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Cancel.test_stop_with_the_group_reply_in_flight_waits_for_it": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Control.test_bad_fields_refused": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Control.test_fused_cannot_be_deselected_under_a_group": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Control.test_needs_the_fused_switch_and_installs_once": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Control.test_not_a_control_unless_installed": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Control.test_refused_during_an_owned_cycle": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Control.test_refused_unless_paused": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Control.test_selected_only_with_fused_paused_idle_full": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Control.test_size_one_without_fused_is_step_a": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.DefaultOff.test_a_group_transaction_refuses_a_foreign_size": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.DefaultOff.test_a_multi_layer_descriptor_needs_its_group_size": "SegmentDescriptor has no layer_group field: Step A descriptors carry no group",
+  "test_e3_native_layer_groups.DefaultOff.test_dispatcher_selects_a_group_only_at_open_with_fused": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.DefaultOff.test_fused_not_selected_never_groups_even_with_a_stale_size": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.DefaultOff.test_local_command_still_refuses_more_than_one_layer_without_a_group": "SegmentCommand takes no layer_group: Step A commands carry no group",
+  "test_e3_native_layer_groups.DefaultOff.test_manual_cycles_never_group": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.DefaultOff.test_open_refuses_a_group_without_the_fused_selection": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.DefaultOff.test_transactions_not_selecting_groups_refuse_a_group_with_no_device_work": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Exposure.test_client_refuses_a_bad_size_before_any_call": "the control client has no layer-group call: Step A cannot validate a group size",
+  "test_e3_native_layer_groups.Exposure.test_control_client_guard": "native_overlap_control has no _layer_groups: Step A forwards no group selection",
+  "test_e3_native_layer_groups.Exposure.test_session_passes_the_size": "the session has no native_layer_group action: Step A refuses it",
+  "test_e3_native_layer_groups.Exposure.test_session_refuses_during_a_measurement": "the session has no native_layer_group action: Step A refuses it",
+  "test_e3_native_layer_groups.Failure.test_a_layer_that_does_not_finish_quarantines": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Failure.test_a_peer_refusal_after_a_peer_accepted_fails_closed_on_the_owner": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Failure.test_layer_two_of_four_raises_on_one_peer": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Failure.test_the_qsa_layer_of_a_group_raises_on_one_peer": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Journal.test_a_group_chunk_keeps_every_telemetry_row_and_journal_entry_valid": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Journal.test_size_one_journal_rows_carry_no_group_field": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Journal.test_the_measurement_accepts_a_declared_group_and_nothing_longer": "wire_v1 has no group layer shape: Step A rejects a multi-layer group segment",
+  "test_e3_native_layer_groups.Ledger.test_a_different_count_inside_a_group_fails_closed": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Ledger.test_equal_counts_in_a_different_order_across_a_groups_layers_fail_closed": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Ledger.test_equal_counts_with_a_different_shape_inside_a_group_fail_closed": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Ledger.test_group_collective_counts_on_the_wire": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Ledger.test_the_ledger_is_per_group_and_is_compared_on_every_group": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_a_group_lifted_for_every_transaction_in_the_local_command": "SegmentCommand takes no layer_group: Step A commands carry no group",
+  "test_e3_native_layer_groups.Mutants.test_a_group_reruns_on_a_duplicate": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_a_host_wait_inside_a_group": "LaneDispatcher has no _do_layer_group: Step A cannot execute a group command",
+  "test_e3_native_layer_groups.Mutants.test_control_accepts_a_size_without_fused": "the driver has no _layer_group_control: Step A has no typed group control",
+  "test_e3_native_layer_groups.Mutants.test_control_accepts_while_running": "the driver has no _layer_group_control: Step A has no typed group control",
+  "test_e3_native_layer_groups.Mutants.test_fused_deselected_under_a_group": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_group_counters_lie": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_journal_row_loses_the_group": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_latch_reads_the_live_size_in_a_manual_cycle": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_ledger_stops_at_the_first_layer_of_a_group": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_no_obligation_for_a_group_with_qsa": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_no_obligation_for_a_group_without_qsa": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_plan_crosses_the_stage_end": "engine_driver has no layer_group_plan: Step A plans no groups",
+  "test_e3_native_layer_groups.Mutants.test_plan_does_not_close_after_a_qsa_layer": "engine_driver has no layer_group_plan: Step A plans no groups",
+  "test_e3_native_layer_groups.Mutants.test_plan_groups_by_the_layer_number_not_the_prepare_plan": "engine_driver has no layer_group_plan: Step A plans no groups",
+  "test_e3_native_layer_groups.Mutants.test_run_ahead_ignores_the_table": "engine_driver has no LayerGroups (run-ahead per size): Step A has none",
+  "test_e3_native_layer_groups.Mutants.test_run_ahead_reads_one_peer_only": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_size_one_takes_a_group_obligation": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_worker_accepts_a_layer_that_did_not_finish": "LaneDispatcher has no _do_layer_group: Step A cannot execute a group command",
+  "test_e3_native_layer_groups.Mutants.test_worker_does_not_check_the_stage_end_before_enqueueing": "LaneDispatcher has no _do_layer_group: Step A cannot execute a group command",
+  "test_e3_native_layer_groups.Mutants.test_worker_ignores_the_transactions_latch": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Mutants.test_worker_runs_a_group_short_by_one": "LaneDispatcher has no _do_layer_group: Step A cannot execute a group command",
+  "test_e3_native_layer_groups.OneCommand.test_a_qsa_stage_one_grants_and_runs_fused": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.OneCommand.test_commands_per_chunk_shrink_by_the_plan": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.OneCommand.test_duplicate_delivery_replays_the_ack_with_no_device_work": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.OneCommand.test_no_credit_query_can_pend_a_group": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.OneCommand.test_one_command_per_group_with_every_device_event_unresolved": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.OneCommand.test_same_device_work_as_size_one": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Plan.test_a_stage_without_qsa_groups_too": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Plan.test_each_group_holds_at_most_one_qsa_layer_last_and_covers_the_stage": "engine_driver has no layer_group_plan: Step A plans no groups",
+  "test_e3_native_layer_groups.Plan.test_grant_rides_on_the_group_of_its_qsa_layer": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Plan.test_groups_close_at_the_size_after_a_qsa_layer_and_at_the_stage_end": "engine_driver has no layer_group_plan: Step A plans no groups",
+  "test_e3_native_layer_groups.Plan.test_positions_come_from_the_prepare_plan_not_from_the_layer_number": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Router.test_all_settings_forward_the_control_to_the_real_session": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Router.test_every_other_setting_refuses_with_409": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.RouterNotInstalled.test_an_engine_without_the_switch_refuses_and_its_status_has_no_block": "wire_v1 has no group command form: Step A answers invalid-command-json",
+  "test_e3_native_layer_groups.RunAhead.test_a_held_peer_keeps_its_owners_until_released": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.RunAhead.test_only_layer_entries_are_held": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.RunAhead.test_table_and_reason": "engine_driver has no LayerGroups (run-ahead per size): Step A has none",
+  "test_e3_native_layer_groups.RunAhead.test_the_bound_per_size_with_a_peer_held_in_either_direction": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.Startup.test_needs_the_fused_switch": "s5_startup has no FLASH_S5_LAYER_GROUPS guard: Step A does not require fused for groups",
+  "test_e3_native_layer_groups.Startup.test_only_a_boolean_setting": "s5_startup does not parse FLASH_S5_LAYER_GROUPS: Step A has no such switch",
+  "test_e3_native_layer_groups.StepAIdentity.test_size_one_gives_a_lone_gdn_layer_no_obligation_as_step_a": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.StepAIdentity.test_size_one_is_exactly_step_as_command_stream": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.StepAIdentity.test_size_one_opens_with_no_group_and_size_two_opens_with_its_size": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.WorkerRefusal.test_a_group_off_the_cursor": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.WorkerRefusal.test_a_group_that_crosses_its_stage": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.WorkerRefusal.test_a_qsa_group_without_its_grant_and_a_grant_without_a_qsa_layer": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.WorkerRefusal.test_a_qsa_layer_not_last": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.WorkerRefusal.test_a_wire_grant_names_the_groups_last_layer": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_e3_native_layer_groups.WorkerRefusal.test_two_qsa_layers": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_step_b_queue.Arm.test_every_size_in_both_bands_through_the_exact_cli": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_step_b_queue.Arm.test_sizes_and_rounds_outside_the_declared_set_do_not_parse": "the driver has no install_layer_groups: Step A has no layer-group install path",
+  "test_step_b_queue.Arm.test_the_wrong_manifest_for_the_round_is_refused_before_any_traffic": "the driver has no install_layer_groups: Step A has no layer-group install path"
+ },
+ "schema": "step-b-negative-pins/1",
+ "tests": {
+  "test_e3_native_layer_groups.Burst.test_a_group_goes_out_inside_an_owner_wait": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Burst.test_a_poll_in_flight_with_a_group_queued_keeps_the_wait_permit": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Cancel.test_a_retry_without_a_stop_finishes_the_same_command": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Cancel.test_a_stop_outlasts_the_round_budget_while_groups_drain": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Cancel.test_a_stop_past_the_stall_bound_retains_ownership": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Cancel.test_cancel_at_every_command_boundary_with_one_peer_unresolved": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Cancel.test_cancel_between_acceptances_in_a_group_with_qsa": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Cancel.test_cancel_between_acceptances_in_a_group_without_qsa": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Cancel.test_stop_with_the_group_reply_in_flight_waits_for_it": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Control.test_bad_fields_refused": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Control.test_fused_cannot_be_deselected_under_a_group": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Control.test_needs_the_fused_switch_and_installs_once": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Control.test_not_a_control_unless_installed": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Control.test_refused_during_an_owned_cycle": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Control.test_refused_unless_paused": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Control.test_selected_only_with_fused_paused_idle_full": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Control.test_size_one_without_fused_is_step_a": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.DefaultOff.test_a_group_transaction_refuses_a_foreign_size": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.DefaultOff.test_a_multi_layer_descriptor_needs_its_group_size": [
+   "error",
+   "AttributeError: 'SegmentDescriptor' object has no attribute 'layer_group'"
+  ],
+  "test_e3_native_layer_groups.DefaultOff.test_dispatcher_selects_a_group_only_at_open_with_fused": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.DefaultOff.test_fused_not_selected_never_groups_even_with_a_stale_size": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.DefaultOff.test_local_command_still_refuses_more_than_one_layer_without_a_group": [
+   "error",
+   "TypeError: SegmentCommand.__init__() got an unexpected keyword argument 'layer_group'"
+  ],
+  "test_e3_native_layer_groups.DefaultOff.test_manual_cycles_never_group": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.DefaultOff.test_open_refuses_a_group_without_the_fused_selection": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.DefaultOff.test_transactions_not_selecting_groups_refuse_a_group_with_no_device_work": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Exposure.test_client_refuses_a_bad_size_before_any_call": [
+   "fail",
+   "AssertionError: \"native-control-layer-group-invalid\" does not match \"'NativeControlClient' object has no attribute 'native_layer_group'\""
+  ],
+  "test_e3_native_layer_groups.Exposure.test_control_client_guard": [
+   "error",
+   "AttributeError: module 'native_overlap_control' has no attribute '_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Exposure.test_session_passes_the_size": [
+   "error",
+   "AttributeError: 'NativeOverlapSession' object has no attribute '_action_native_layer_group'. Did you mean: '_action_native_progress'?"
+  ],
+  "test_e3_native_layer_groups.Exposure.test_session_refuses_during_a_measurement": [
+   "fail",
+   "AssertionError: \"native-layer-group-with-open-measurement\" does not match \"'NativeOverlapSession' object has no attribute '_action_native_layer_group'\""
+  ],
+  "test_e3_native_layer_groups.Failure.test_a_layer_that_does_not_finish_quarantines": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Failure.test_a_peer_refusal_after_a_peer_accepted_fails_closed_on_the_owner": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Failure.test_layer_two_of_four_raises_on_one_peer": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Failure.test_the_qsa_layer_of_a_group_raises_on_one_peer": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Journal.test_a_group_chunk_keeps_every_telemetry_row_and_journal_entry_valid": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Journal.test_size_one_journal_rows_carry_no_group_field": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Journal.test_the_measurement_accepts_a_declared_group_and_nothing_longer": [
+   "fail",
+   "-  ['segment-layer-shape-invalid'])"
+  ],
+  "test_e3_native_layer_groups.Ledger.test_a_different_count_inside_a_group_fails_closed": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Ledger.test_equal_counts_in_a_different_order_across_a_groups_layers_fail_closed": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Ledger.test_equal_counts_with_a_different_shape_inside_a_group_fail_closed": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Ledger.test_group_collective_counts_on_the_wire": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Ledger.test_the_ledger_is_per_group_and_is_compared_on_every_group": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_a_group_lifted_for_every_transaction_in_the_local_command": [
+   "fail",
+   "TypeError: SegmentCommand.__init__() got an unexpected keyword argument 'layer_group'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_a_group_reruns_on_a_duplicate": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_a_host_wait_inside_a_group": [
+   "error",
+   "AttributeError: type object 'LaneDispatcher' has no attribute '_do_layer_group'. Did you mean: '_do_layer_fused'?"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_control_accepts_a_size_without_fused": [
+   "error",
+   "AttributeError: type object 'NativeSegmentDriver' has no attribute '_layer_group_control'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_control_accepts_while_running": [
+   "error",
+   "AttributeError: type object 'NativeSegmentDriver' has no attribute '_layer_group_control'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_fused_deselected_under_a_group": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_group_counters_lie": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_journal_row_loses_the_group": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_latch_reads_the_live_size_in_a_manual_cycle": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_ledger_stops_at_the_first_layer_of_a_group": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_no_obligation_for_a_group_with_qsa": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_no_obligation_for_a_group_without_qsa": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_plan_crosses_the_stage_end": [
+   "error",
+   "AttributeError: module 'engine_driver' has no attribute 'layer_group_plan'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_plan_does_not_close_after_a_qsa_layer": [
+   "error",
+   "AttributeError: module 'engine_driver' has no attribute 'layer_group_plan'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_plan_groups_by_the_layer_number_not_the_prepare_plan": [
+   "error",
+   "AttributeError: module 'engine_driver' has no attribute 'layer_group_plan'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_run_ahead_ignores_the_table": [
+   "error",
+   "AttributeError: module 'engine_driver' has no attribute 'LayerGroups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_run_ahead_reads_one_peer_only": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_size_one_takes_a_group_obligation": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_worker_accepts_a_layer_that_did_not_finish": [
+   "error",
+   "AttributeError: type object 'LaneDispatcher' has no attribute '_do_layer_group'. Did you mean: '_do_layer_fused'?"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_worker_does_not_check_the_stage_end_before_enqueueing": [
+   "error",
+   "AttributeError: type object 'LaneDispatcher' has no attribute '_do_layer_group'. Did you mean: '_do_layer_fused'?"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_worker_ignores_the_transactions_latch": [
+   "fail",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Mutants.test_worker_runs_a_group_short_by_one": [
+   "error",
+   "AttributeError: type object 'LaneDispatcher' has no attribute '_do_layer_group'. Did you mean: '_do_layer_fused'?"
+  ],
+  "test_e3_native_layer_groups.OneCommand.test_a_qsa_stage_one_grants_and_runs_fused": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.OneCommand.test_commands_per_chunk_shrink_by_the_plan": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.OneCommand.test_duplicate_delivery_replays_the_ack_with_no_device_work": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.OneCommand.test_no_credit_query_can_pend_a_group": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.OneCommand.test_one_command_per_group_with_every_device_event_unresolved": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.OneCommand.test_same_device_work_as_size_one": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Plan.test_a_stage_without_qsa_groups_too": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Plan.test_each_group_holds_at_most_one_qsa_layer_last_and_covers_the_stage": [
+   "error",
+   "AttributeError: module 'engine_driver' has no attribute 'layer_group_plan'"
+  ],
+  "test_e3_native_layer_groups.Plan.test_grant_rides_on_the_group_of_its_qsa_layer": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Plan.test_groups_close_at_the_size_after_a_qsa_layer_and_at_the_stage_end": [
+   "error",
+   "AttributeError: module 'engine_driver' has no attribute 'layer_group_plan'"
+  ],
+  "test_e3_native_layer_groups.Plan.test_positions_come_from_the_prepare_plan_not_from_the_layer_number": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Router.test_all_settings_forward_the_control_to_the_real_session": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Router.test_every_other_setting_refuses_with_409": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.RouterNotInstalled.test_an_engine_without_the_switch_refuses_and_its_status_has_no_block": [
+   "fail",
+   "+ (400, {'error': 'invalid-command-json'})"
+  ],
+  "test_e3_native_layer_groups.RunAhead.test_a_held_peer_keeps_its_owners_until_released": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.RunAhead.test_only_layer_entries_are_held": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.RunAhead.test_table_and_reason": [
+   "error",
+   "AttributeError: module 'engine_driver' has no attribute 'LayerGroups'"
+  ],
+  "test_e3_native_layer_groups.RunAhead.test_the_bound_per_size_with_a_peer_held_in_either_direction": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.Startup.test_needs_the_fused_switch": [
+   "fail",
+   "AssertionError: 'needs FLASH_S5_QSA_FUSED=1' not found in 'require_native_ready: reviewed implementation closure missing'"
+  ],
+  "test_e3_native_layer_groups.Startup.test_only_a_boolean_setting": [
+   "fail",
+   "AssertionError: 'invalid boolean setting: FLASH_S5_LAYER_GROUPS' not found in 'require_native_ready: reviewed implementation closure missing'"
+  ],
+  "test_e3_native_layer_groups.StepAIdentity.test_size_one_gives_a_lone_gdn_layer_no_obligation_as_step_a": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.StepAIdentity.test_size_one_is_exactly_step_as_command_stream": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.StepAIdentity.test_size_one_opens_with_no_group_and_size_two_opens_with_its_size": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.WorkerRefusal.test_a_group_off_the_cursor": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.WorkerRefusal.test_a_group_that_crosses_its_stage": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.WorkerRefusal.test_a_qsa_group_without_its_grant_and_a_grant_without_a_qsa_layer": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.WorkerRefusal.test_a_qsa_layer_not_last": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.WorkerRefusal.test_a_wire_grant_names_the_groups_last_layer": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_e3_native_layer_groups.WorkerRefusal.test_two_qsa_layers": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_step_b_queue.Arm.test_every_size_in_both_bands_through_the_exact_cli": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_step_b_queue.Arm.test_sizes_and_rounds_outside_the_declared_set_do_not_parse": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ],
+  "test_step_b_queue.Arm.test_the_wrong_manifest_for_the_round_is_refused_before_any_traffic": [
+   "error",
+   "AttributeError: 'NativeSegmentDriver' object has no attribute 'install_layer_groups'"
+  ]
+ },
+ "why": {
+  "cases": "every step-b probe mode sends native_layer_group in the arm control sequence, which Step A refuses as native-control-unknown-action",
+  "tests": "each pinned test is a Step B group test (test_e3_native_layer_groups) or a Step B queue test that builds the real arm path, and needs the group engine Step A lacks; reason per test in reasons"
+ }
+}

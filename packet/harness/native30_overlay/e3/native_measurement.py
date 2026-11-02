@@ -1351,7 +1351,8 @@ class NativeMeasurementCensus:
         layer_end = entry.get('layer_end')
         if segment_kind == 'layer':
             if not _is_int(layer_start) or layer_start < 0 \
-                    or not _is_int(layer_end) or layer_end != layer_start + 1:
+                    or not _is_int(layer_end) \
+                    or not layer_start < layer_end <= layer_start + entry.get('layer_group', 1):
                 self._conflict(chunk['conflicts'], 'segment-layer-shape-invalid')
                 return {'accepted': False,
                         'reason': 'segment-layer-shape-invalid'}
