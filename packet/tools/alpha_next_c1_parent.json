@@ -1,0 +1,5 @@
+{
+ "note": "placeholder: alpha-next's pre-VM build is not delivered yet. After its READY-pre-vm note lands and its READY commit is merged into this branch, run: python3 tools/alpha_next_c1_parent_pin.py --out ALPHA_NEXT_OUT --steps ALPHA_NEXT_GATES_STEPS --ready <hub-dir>/agents/flash-next/tmp/alpha-next/READY-pre-vm.md, review, commit this file alone. Until then every alpha-next-c1 tool exits 3 'parent not pinned'.",
+ "schema": "alpha-next-c1-parent/1",
+ "status": "NOT-PINNED"
+}

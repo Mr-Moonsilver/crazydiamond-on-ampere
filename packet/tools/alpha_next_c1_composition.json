@@ -1,0 +1,48 @@
+{
+ "base": "eb3e01461368c81eb26e8124c6d644af286b4809",
+ "blocks": [
+  {
+   "index": 0,
+   "marked_sha256": "9a04828369671b8029f061fa7babc835f2e63dd0d78ca84ab3eccf87b56999f7",
+   "merge": "b58b6af759c059d06b23004d164f8ad539d1f4be",
+   "path": "harness/test_e3_package.py",
+   "text": "        # Stage-1 anatomy: handler_anatomy is exempt for the same reason (C0's stage_wire/stage_progress before it); C1's stage_overlap too.\n        self.assertEqual(g.LAUNCHER_LIST_EXEMPT, ('native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap'))\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "d498278a2578a34d930dca8eb790bd3cf64218dc0f12828ee99644f42754eb12",
+   "merge": "b58b6af759c059d06b23004d164f8ad539d1f4be",
+   "path": "harness/test_native35_performance.py",
+   "text": "    Hub tests intentionally use frozen native35 O; it predates native41's,\n    C0's, the stage-1 anatomy's and C1's opt-in modules. Frozen native41 bundle tests use their own complete overlay.\n"
+  },
+  {
+   "index": 1,
+   "marked_sha256": "8df1f3f550019115c42539aea2a7fe80675f2ccd80a004bcb11b257b0c142dc5",
+   "merge": "b58b6af759c059d06b23004d164f8ad539d1f4be",
+   "path": "harness/test_native35_performance.py",
+   "text": "                   if name not in ('native_auto_arm','stage_wire','stage_progress','handler_anatomy','stage_overlap')\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "5c1a1690912837f175f28caedf7c831df777693ef32fea67ae7373755e491af7",
+   "merge": "b58b6af759c059d06b23004d164f8ad539d1f4be",
+   "path": "patches/s5_engine/decode_probe.py",
+   "text": "GENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'native_auto_arm', 'admission_metadata', 'worker_bridge', 'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma', 'native_source', 'row1_oracle', 'row1_exactness', 'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers', 'native_overlap_metrics', 'native_overlap_worker', 'native_overlap_control', 'native_overlap_session', 'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement', 'native_readiness', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap')\n"
+  },
+  {
+   "index": 0,
+   "marked_sha256": "b89755fda939988478faf00b0ad39cfa1f2b40c1dffb76e6a927b04ad5e5c013",
+   "merge": "b58b6af759c059d06b23004d164f8ad539d1f4be",
+   "path": "patches/s5_engine/make_s5_overlap.py",
+   "text": "              # Stage-1 handler anatomy (FLASH_S5_HANDLER_ANATOMY, default off): imported by executor_hooks only under the switch.\n              'handler_anatomy',\n              # C1: two chunks in flight (FLASH_S5_STAGE_OVERLAP).\n              'stage_overlap')\n"
+  },
+  {
+   "index": 1,
+   "marked_sha256": "96bc85f90588f13072942a5a6612b38f799ac36207343e4bcffd1a4f13dc7186",
+   "merge": "b58b6af759c059d06b23004d164f8ad539d1f4be",
+   "path": "patches/s5_engine/make_s5_overlap.py",
+   "text": "LAUNCHER_LIST_EXEMPT = ('native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap')\n"
+  }
+ ],
+ "schema": "alpha-next-c1-composition-declaration/1"
+}
