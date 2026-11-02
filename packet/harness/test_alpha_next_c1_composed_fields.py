@@ -126,6 +126,28 @@ class Composed(Fixture):
                 self.assertEqual(ctl['promoted'], counters['overlapped_commits'])
                 self.assertLessEqual(max(on.inflight_peak.values()), 1, on.inflight_peak)
 
+    def test_overlap_arms_emit_one_peak_receipt_per_chunk_per_rank(self):
+        """alpha-next's per-chunk peak-allocated receipt under two chunks in flight: a bridge holds one transaction at a time, so
+        each rank's open and release alternate and its one peak slot is the chunk's own; one line per chunk per rank, in order."""
+        import native_measurement
+        import test_alpha_next_peak_receipt as peak
+        network = self.composed(group=2, lean=True)
+        lines = []
+        for rank in (0, 1, 2, 3):
+            bridge = network.worker(rank)._flash_s5_bridge
+            bridge._memory_receipts = True       # FLASH_S5_AUTO_ARM's receipts, as on the box's auto-armed arms
+            bridge._memory_cuda = peak.PeakCuda()   # Leaf peak-allocator (the peak test's allocator counters)
+        with mock.patch.object(native_measurement, 'emit_receipt_kv', lambda line, *rest, **kw: lines.append(line)):
+            self.run_overlapped(network)
+        rows = [peak.LINE.match(line).groups() for line in lines if line.startswith('flash-s5 memory-peak ')]
+        ends = [min(4 * k, network.tokens - 1) for k in range(1, network.expected_commits + 1)]
+        for rank in (0, 1, 2, 3):
+            mine = [(int(txn), int(start), int(end)) for r, txn, start, end, *_ in rows if int(r) == rank]
+            self.assertEqual([end for _txn, _start, end in mine], ends, rank)
+            self.assertEqual([txn for txn, _start, _end in mine], sorted(txn for txn, _start, _end in mine), rank)
+            self.assertEqual(getattr(network.worker(rank)._flash_s5_bridge, 'peak_receipt_errors', 0), 0)
+        self.assertEqual(len(rows), 4 * network.expected_commits)
+
     def test_lean_arm_opens_every_chunk_lean_successors_included(self):
         network = self.composed(lean=True, fused=False)
         self.run_overlapped(network)

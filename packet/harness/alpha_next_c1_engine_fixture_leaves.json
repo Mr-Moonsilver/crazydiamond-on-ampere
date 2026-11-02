@@ -1,7 +1,11 @@
 {
   "schema": "fixture-leaves/1",
   "scope": "alpha-next-c1 composition fixes in stage_overlap.py (per-frame composed fields; the successor's recorder view): test_alpha_next_c1_composed_fields on C1's ring fixture with alpha-next's fused, grouped and lean selections installed on the real driver and latched by the real dispatchers; CPU only, no box or GPU evidence",
-  "inherits": ["stage_overlap_fixture_leaves.json", "step_a_fixture_leaves.json", "step_b_fixture_leaves.json"],
+  "inherits": [
+    "stage_overlap_fixture_leaves.json",
+    "step_a_fixture_leaves.json",
+    "step_b_fixture_leaves.json"
+  ],
   "leaves": [
     {
       "name": "auto-arm-ownership",
@@ -45,6 +49,15 @@
       "replaces": "time.monotonic as the driver's clock, and FusedQsa.STALL_S (300 s) by 5 s",
       "equivalence": "the driver takes its clock as an injected callable and reads stall_s from the FusedQsa object; the watchdog compares the same per-chunk mark against the same bound",
       "cannot_prove": "that _fused_mark/_fused_mark_at must be per frame: with both shared the stall in this test is caught at the same tick, so no mutant here separates them. They are kept per frame so each chunk's watchdog reads its own tickets and reports, as serially; a successor's stage is driven only after the older chunk released it (_frame_ready), and one stage's chunk work is seconds against a 300 s bound",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "peak-allocator",
+      "test": "test_alpha_next_c1_composed_fields.Composed.test_overlap_arms_emit_one_peak_receipt_per_chunk_per_rank",
+      "replaces": "torch.cuda's allocator counters on each rank (the bridge's _memory_cuda), and FLASH_S5_AUTO_ARM's receipt flag set on each bridge after construction",
+      "equivalence": "the peak test's PeakCuda (test_alpha_next_peak_receipt) has the reset/peak/allocated surface peak_reset and peak_receipt read; the flag is the attribute the bridge sets from the environment at construction; open and release ordering per rank is the real bridge's",
+      "cannot_prove": "real allocator peaks and stage 1's margin at 131k under overlap; those are the box's per-chunk receipt read against the matched off arm. The inherited flash-s5 memory receipt counts errors here because PeakCuda refuses memory_stats; only the peak line is read",
       "more_convenient": true,
       "box_evidence": false
     }
