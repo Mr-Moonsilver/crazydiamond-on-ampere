@@ -5,7 +5,9 @@ alpha_next_cpu_probe.py = step_b_cpu_probe.py with:
   * candidate q18a-alpha-next (the frozen alpha-next owner runner's QNAME); FLASH_NATIVE35_ARM stays TRUNK;
   * the alpha_next_gate budget instead of step_b_gate's (no absolute-time window: the relative budget only);
   * test_alpha_next_queue added to the discovered suites (every inherited suite stays, Step B's declared real-clock exclusion
-    unchanged), EXPECTED_TESTS Step B's 374 + the suite's;
+    unchanged), EXPECTED_TESTS Step B's 374 + the suite's. The suite's count is read by loading it in a fresh process (none of its
+    ids may be a declared clock-bound id); the probe file carries the literal, so a changed count fails --check (the build's
+    checks step) until the probe is regenerated and committed;
   * test_alpha_next_queue's SLOT_RECEIPTS appended to the inherited ones (empty: alpha-next's draft has no slot);
   * the LOCALIZE=0 inert check run on the alpha-next settings, held to the same expectations;
   * the alpha-next queue receipts asserted and recorded (alpha_next_queue='PASS'), Step B's kept (step_b_queue='PASS').
@@ -15,22 +17,33 @@ spec's arm and probe. Every replacement must match exactly once. --check verifie
 """
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 TOOLS = Path(__file__).resolve().parent
 PARENT_TESTS = 374  # Step B's spec expected_tests (step_b_cpu_probe EXPECTED_TESTS)
-ALPHA_NEXT_TESTS = None  # test_alpha_next_queue: set from the committed queue suite (tools/alpha_next_spec.py counts and asserts it)
+QUEUE_SUITE = 'test_alpha_next_queue'
 CANDIDATE = 'q18a-alpha-next'
 PARENT_CANDIDATE = 'q18a-step-b'
 
 
+def queue_tests():
+    """test_alpha_next_queue's test count, loaded by name in a fresh process; none of its ids a declared clock-bound id."""
+    assert (TOOLS.parent / 'harness' / (QUEUE_SUITE + '.py')).is_file(), 'the queue suite has not landed: ' + QUEUE_SUITE
+    code = ('import sys,unittest; sys.path.insert(0,"harness"); import step_b_clock_bound as c; '
+            's=unittest.defaultTestLoader.loadTestsFromName(%r); assert not c.expected_removed([%r]); '
+            'print(s.countTestCases())' % (QUEUE_SUITE, QUEUE_SUITE))
+    count = int(subprocess.check_output([sys.executable, '-B', '-c', code], cwd=TOOLS.parent, text=True).strip())
+    assert count > 0, count
+    return count
+
+
 def expected():
-    assert isinstance(ALPHA_NEXT_TESTS, int) and ALPHA_NEXT_TESTS > 0, \
-        'ALPHA_NEXT_TESTS is not set: the test_alpha_next_queue count comes with the committed queue suite'
-    return PARENT_TESTS + ALPHA_NEXT_TESTS
+    return PARENT_TESTS + queue_tests()
 
 
 def probe_swaps():
+    alpha_next_tests = queue_tests()
     return (
         ("suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_step_b_queue.py'))\n"
          'EXPECTED_TESTS=%d  # the 333 Step A probe cases plus the 51 Step B queue cases, less 10 declared real-clock window-slot '
@@ -38,7 +51,7 @@ def probe_swaps():
          "suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_step_b_queue.py'))\n"
          "suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_alpha_next_queue.py'))\n"
          'EXPECTED_TESTS=%d  # the %d Step B probe cases plus the %d alpha-next queue cases; pinned into the frozen runner gate\n'
-         % (expected(), PARENT_TESTS, ALPHA_NEXT_TESTS)),
+         % (PARENT_TESTS + alpha_next_tests, PARENT_TESTS, alpha_next_tests)),
         ("owner.QNAME==%r\n" % PARENT_CANDIDATE, "owner.QNAME==%r\n" % CANDIDATE),
         ('import step_b_gate\nactive_and_cleanup=step_b_gate.ACTIVE_S+step_b_gate.CLEANUP_S\n',
          'import step_b_gate\nimport alpha_next_gate\nactive_and_cleanup=alpha_next_gate.ACTIVE_S+alpha_next_gate.CLEANUP_S\n'),

@@ -2,9 +2,10 @@
 # alpha-next packaging gate chain (CPU only, hub; no box/VM/GPU action, no push). tools/alpha_c0_gates_g.sh's chain shape (C0 was the
 # first candidate to add overlay modules) over Step B's tool family:
 #   build_alpha_next.py (Step B's frozen build e as parent, C0's added-module wrappers, TOOLS_REPLACED step_a_report.py);
-#   one step before strict: the git-based composition proof (tools/alpha_next_composition.py);
+#   two steps before strict: the git-based composition proof (tools/alpha_next_composition.py) and the review pins check
+#   (tools/alpha_next_review_pins.py --check);
 #   the focused list is the union of Step B's (step_b_gates_c.sh) and C0's (alpha_c0_gates_g.sh) lists plus the alpha-next queue suite,
-#   the alpha-next stop-fix matrix, C0 ring and peak receipt suites, the stage-1 anatomy suite, held-g's anatomy and lean-replies suites
+#   the alpha-next stop-fix matrix, C0 ring, peak receipt, receipt writer (PLAN 2, with its mutants) and stage-1 slow-rank suites, the stage-1 anatomy suite, held-g's anatomy and lean-replies suites
 #   and the two load-robust twins; it runs through harness/alpha_next_robust_swap.py, which leaves out the declared load-flaky frozen
 #   methods (swapped for their twins), the superseded stage-1 FreezeProof method and step_b_clock_bound's declared real-clock ids;
 #   test_alpha_next_composition runs on its own (it needs git), after focused;
@@ -15,7 +16,7 @@
 # usage: alpha_next_gates.sh WT SPEC OUT EVID TAG NOTE [DELIVERY]
 #   The VM run needs the built bundle, so with no VM_RECORD in the environment the chain stops after the staging check; the delivery
 #   tool is then run by hand with --vm (or with VM_RECORD set, by this chain). The chain stops there on purpose and logs it.
-#   composition -> strict -> focused -> composition test -> prepare review + commit -> build (with alpha-next-freeze.json)
+#   composition -> review pins -> strict -> focused -> composition test -> prepare review + commit -> build (with alpha-next-freeze.json)
 #   -> bundle self-run -> engine self-run -> comparison -> negative -> tamper -> clock scan -> compile proof -> precheck conf
 #   -> precheck -> staging check -> [delivery when VM_RECORD is set].
 # Stops at the first failing step; every rc is logged in $EVID/gates-$TAG.steps.
@@ -33,12 +34,16 @@ printf 'priority nice %s; loadavg %s\n' "$(nice)" "$(cut -d' ' -f1-3 /proc/loada
 
 python3 -B tools/alpha_next_composition.py --out "$EVID/composition-$TAG.json" >"$EVID/composition-$TAG.log" 2>&1
 step composition $?
+# The review's source and harness pins equal the committed tree (any later source commit means re-running the tool and committing).
+python3 -B tools/alpha_next_review_pins.py --check >"$EVID/review-pins-$TAG.log" 2>&1
+step review-pins $?
 
 cd "$WT/harness"
 { python3 -u selftest.py 2>&1; echo "rc=$?"; } >"$EVID/strict-$TAG.log"
 step strict "$(tail -n 1 "$EVID/strict-$TAG.log" | sed 's/^rc=//')"
 { echo "# head $HEAD focused"; python3 -B alpha_next_robust_swap.py \
-    test_alpha_next_queue test_alpha_next_stopfix_matrix test_alpha_next_c0_ring test_alpha_next_peak_receipt \
+    test_alpha_next_queue test_alpha_next_receipts test_alpha_next_receipts_mutants test_alpha_next_stage1_slow_rank \
+    test_alpha_next_stopfix_matrix test_alpha_next_c0_ring test_alpha_next_peak_receipt \
     test_stage1_handler_anatomy test_e3_native_anatomy test_e3_native_lean_replies test_e3_w1_decode_driver_ordered \
     test_native43_le_bounded_enqueue_stepped test_alpha_c0_queue test_e3_stage_local test_e3_stage_local_control \
     test_e3_stage_local_qsa test_alpha_c0_report test_step_b_queue test_e3_native_layer_groups test_step_a_queue \

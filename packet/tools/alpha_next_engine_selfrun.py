@@ -12,14 +12,16 @@ Six containers over one frozen bundle, the composed engine in each, all results 
   * stage/: tools/alpha_c0_engine_selfrun.py run_stage(), called unchanged: one case per mode of harness/e3_alpha_c0_probe.py
     (local and serial selections with the switch installed) and the C0 suites, its local-against-serial pairs;
   * composed/: the suites the composition adds and that no inherited container runs (stage-1 anatomy, held-g anatomy and lean
-    replies, the stop-fix trunk's two suites, the alpha-next stop-fix matrix, C0 ring and peak receipt suites, the two load-robust
-    twins, the alpha-next queue
+    replies, the stop-fix trunk's two suites, the alpha-next stop-fix matrix, C0 ring, peak receipt, receipt writer (PLAN 2) and
+    stage-1 slow-rank suites, the two load-robust twins, the alpha-next queue
     suite, and test_step_a_report for the replaced tools/step_a_report.py), in one unittest process with per-test outcomes. No
     connected case: FLASH_S5_HANDLER_ANATOMY is default off, and the held-g receipts ride FLASH_S5_NATIVE_PROGRESS, which the
     inherited connected cases already run. Declared exclusions (CONTAINER_EXCLUDED, tools/stage1_sweep_git_bound.py's rule on
     claude/stage1-sweep): the stage-1 FreezeProof method (superseded by tools/alpha_next_freeze.py, alpha_next_robust_swap
     .SUPERSEDED) and the stage-1 Off byte-identity test, which reads its git base by `git show`; the containers mount no
-    repository. Both run on the hub (the focused list through alpha_next_robust_swap; strict).
+    repository. Both run on the hub (the focused list through alpha_next_robust_swap; strict). test_alpha_next_receipts_mutants
+    is not here: it copies the writer and reruns test_alpha_next_receipts in subprocesses (about 3 min); it runs on the hub in the
+    focused list and strict.
 OUT/result.json is the merged record (schema alpha-next-selfrun/1) the frozen runner reads; its connected cases are exactly
 expected_cases() (Step B's plus C0's stage cases). Verdict PASS only when all six are PASS. A failure keeps all records,
 classified HARNESS-OR-ENGINE-UNCLASSIFIED.
@@ -60,7 +62,8 @@ PARENT_FILE = ROOT / 'tools/alpha_next_parent.json'
 SCHEMA = 'alpha-next-selfrun/1'
 SUITES = ('test_stage1_handler_anatomy', 'test_stage1_anatomy_report', 'test_step_a_report', 'test_e3_native_anatomy',
           'test_e3_native_lean_replies', 'test_alpha_next_stopfix_matrix', 'test_alpha_next_c0_ring', 'test_alpha_next_peak_receipt',
-          'test_e3_stopfix_partial_segment', 'test_e3_stopfix_refused_open', 'test_e3_w1_decode_driver_ordered',
+          'test_e3_stopfix_partial_segment', 'test_e3_stopfix_refused_open', 'test_alpha_next_receipts',
+          'test_alpha_next_stage1_slow_rank', 'test_e3_w1_decode_driver_ordered',
           'test_native43_le_bounded_enqueue_stepped', 'test_alpha_next_queue')
 NEGATIVE_SUITES = c0.SUITES + SUITES
 PARENT_PASS = step_b.PARENT_PASS + step_b.CASES

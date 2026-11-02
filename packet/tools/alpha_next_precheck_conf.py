@@ -24,6 +24,7 @@ METADATA = ('S5-OVERLAP-GENERATION.json', 'e3/native-overlap-readiness.json', 'e
             'e3/decode-probe-evidence.json')
 SEAMS = ('test_alpha_next_queue.py e3_alpha_next_box.py test_alpha_next_stopfix_matrix.py test_alpha_next_c0_ring.py '
          'test_alpha_next_peak_receipt.py test_e3_stopfix_partial_segment.py test_e3_stopfix_refused_open.py '
+         'test_alpha_next_receipts.py test_alpha_next_receipts_mutants.py test_alpha_next_stage1_slow_rank.py '
          'test_e3_w1_decode_driver_ordered.py test_native43_le_bounded_enqueue_stepped.py '
          'test_stage1_handler_anatomy.py test_stage1_anatomy_report.py test_e3_native_anatomy.py test_e3_native_lean_replies.py '
          'e3_native41_held_g_probe.py '

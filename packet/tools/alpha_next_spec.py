@@ -13,7 +13,6 @@ import argparse
 import json
 from pathlib import Path
 import re
-import subprocess
 import sys
 
 TOOLS = Path(__file__).resolve().parent
@@ -59,7 +58,8 @@ HEADER = [
 ]
 FOCUSED_DELTA = ['test_e3_stage_local', 'test_e3_stage_local_control', 'test_e3_stage_local_qsa', 'test_stage1_handler_anatomy',
                  'test_e3_native_anatomy', 'test_e3_native_lean_replies', 'test_alpha_next_stopfix_matrix', 'test_alpha_next_c0_ring',
-                 'test_alpha_next_peak_receipt']
+                 'test_alpha_next_peak_receipt', 'test_alpha_next_receipts', 'test_alpha_next_receipts_mutants',
+                 'test_alpha_next_stage1_slow_rank']
 
 
 def queue_settings():
@@ -71,20 +71,20 @@ def queue_settings():
     return {k: env.get(k) for k in SETTING_KEYS}
 
 
-def queue_suite_tests():
-    """test_alpha_next_queue's test count (a fresh process loads it by name), none of them a declared clock-bound id."""
-    code = ('import sys,unittest; sys.path.insert(0,"harness"); import step_b_clock_bound as c; '
-            's=unittest.defaultTestLoader.loadTestsFromName("test_alpha_next_queue"); '
-            'assert not c.expected_removed(["test_alpha_next_queue"]); print(s.countTestCases())')
-    return int(subprocess.check_output([sys.executable, '-B', '-c', code], cwd=b.ROOT, text=True).strip())
-
-
 def expected_tests_from_sources():
-    """The bundle self-run's test count: the derived CPU probe's EXPECTED_TESTS, Step B's spec count plus the alpha-next queue's."""
+    """The bundle self-run's test count: Step B's spec count plus the alpha-next queue suite's, equal to the committed derived CPU
+    probe's EXPECTED_TESTS literal (the probe is regenerated and committed first; tools/alpha_next_spec_regen.sh does both)."""
     import alpha_next_tools_derive as derive
     assert derive.PARENT_TESTS == STEP_B['expected_tests'], (derive.PARENT_TESTS, STEP_B['expected_tests'])
-    assert derive.ALPHA_NEXT_TESTS == queue_suite_tests(), (derive.ALPHA_NEXT_TESTS, queue_suite_tests())
-    return derive.expected()
+    want = derive.expected()
+    probe = (TOOLS / 'alpha_next_cpu_probe.py').read_text()
+    pinned = re.findall(r'^EXPECTED_TESTS=(\d+) ', probe, re.M)
+    assert pinned == [str(want)], ('the committed probe pins another count; regenerate it', pinned, want)
+    return want
+
+
+def queue_landed():
+    return all((b.ROOT / 'harness/runs' / name).is_file() for name in QUEUE)
 
 
 def compiled(paths, tools):
@@ -109,8 +109,16 @@ def compiled(paths, tools):
     return out
 
 
-def generate(scratch, expected_tests):
-    assert expected_tests == expected_tests_from_sources(), (expected_tests, expected_tests_from_sources())
+def generate(scratch, expected_tests, pre_queue=False):
+    if pre_queue:
+        # Before the queue harness lands: everything the tree declares now, with the queue-derived fields left null and said so.
+        # Such a spec cannot build (its checks name tools/alpha_next_queue.py; build_native43 asserts the queue texts).
+        assert not queue_landed(), 'the queue harness is here: generate the full spec'
+        assert expected_tests is None, '--expected-tests comes from the queue suite; not with --pre-queue'
+    else:
+        want = expected_tests_from_sources()
+        expected_tests = want if expected_tests is None else expected_tests
+        assert expected_tests == want, (expected_tests, want)
     head = b.git('rev-parse', 'HEAD').strip()
     spec = dict(source_commit=head, tools=[])
     proposed = b.propose(spec)
@@ -129,13 +137,16 @@ def generate(scratch, expected_tests):
     moved = overlay.propose(scratch)
     assert moved['added'] == sorted(NEW_OVERLAY) and not moved['removed'], moved
     dense = STEP_B['engine_selfrun']
-    settings = queue_settings()
-    assert settings['FLASH_S5_STAGE_LOCAL'] == '1' and settings['FLASH_S5_LAYER_GROUPS'] == '1', settings
+    settings = {k: None for k in SETTING_KEYS} if pre_queue else queue_settings()
+    assert pre_queue or (settings['FLASH_S5_STAGE_LOCAL'] == '1' and settings['FLASH_S5_LAYER_GROUPS'] == '1'), settings
+    pending = dict(pending='PRE-QUEUE: the queue harness has not landed; expected_tests and alpha_next_settings are null and are '
+                           'filled by regenerating this spec after it lands (tools/alpha_next_spec_regen.sh); this spec cannot '
+                           'build') if pre_queue else {}
     return dict(
         schema='native43-packaging-spec/1', label='alpha-next', dry_run=False, source_commit=head,
         candidate='q18a-alpha-next', arm='TRUNK', review='prepare', review_key='alpha_next',
         details=dict(
-            model_settings_changed=False, alpha_next_settings=settings,
+            model_settings_changed=False, alpha_next_settings=settings, **pending,
             queue='q18a-alpha-next: Step B\'s queue with the stage-local switch; core ABBA C0 on/off at size 2 over two bands, then '
                   'the size 4 C0-on tail as reads; validity, engagement and generated tokens gated on the core, speed, decode and '
                   'memory reported; 9,000 s box budget relative to the run\'s start',
@@ -155,7 +166,8 @@ def generate(scratch, expected_tests):
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--scratch', type=Path, required=True, help='a directory that does not exist yet (the overlay propose scratch)')
-    p.add_argument('--expected-tests', type=int, required=True)
+    p.add_argument('--expected-tests', type=int, help='asserted against the sources (default: taken from them)')
+    p.add_argument('--pre-queue', action='store_true', help='the queue harness has not landed: write the spec with its fields null')
     a = p.parse_args()
-    (TOOLS / NAME).write_text(json.dumps(generate(a.scratch, a.expected_tests), indent=1, sort_keys=True) + '\n')
+    (TOOLS / NAME).write_text(json.dumps(generate(a.scratch, a.expected_tests, a.pre_queue), indent=1, sort_keys=True) + '\n')
     print('spec written for ' + b.git('rev-parse', 'HEAD').strip())
