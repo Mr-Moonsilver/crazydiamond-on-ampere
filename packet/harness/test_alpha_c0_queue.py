@@ -1368,13 +1368,13 @@ class Window(unittest.TestCase):
         import native40_box_gate as n40
         import native41_box_gate as n41
         self.assertEqual((gate.CLEANUP_S, gate.NOT_BEFORE), (n40.CLEANUP_S, n40.NOT_BEFORE))
-        # C0's own hard end, 2026-11-02T08:30Z = production time 07:00Z plus the 5,400 s budget: the operator's instruction of 2 Nov
+        # C0's own hard end, 2026-11-02T09:30Z = production time 07:00Z plus the 9,000 s budget: the operator's instruction of 2 Nov
         # (about 03:35 CET); the lead approved this pin edit (the latest-start string below follows from it). native40's stays 06:00Z.
-        self.assertEqual((gate.HARD_END, n40.HARD_END), (1793608200.0, 1793599200.0))
+        self.assertEqual((gate.HARD_END, n40.HARD_END), (1793611800.0, 1793599200.0))
         for name in n41.KEPT:
             self.assertEqual(gate.PHASES[name], n40.PHASES[name], name)
         self.assertEqual(gate.ACTIVE_S + gate.CLEANUP_S, gate.BOX_BUDGET_S)
-        self.assertEqual(gate.BOX_BUDGET_S, 5400)
+        self.assertEqual(gate.BOX_BUDGET_S, 9000)                # lead's go, 2 Nov: 5,400 s let only arms 1-3 enter
         self.assertEqual((gate.ARMS, len(queue.ARMS), gate.BAND1_ARMS), (8, 8, 8))
         self.assertEqual(gate.ARM_RESERVE_S, 450 + 1500 + 30 + 60)
         self.assertEqual(gate.LAST_ARM_ENTRY_S + gate.ARM_RESERVE_S + gate.TAIL_RESERVE_S, gate.ACTIVE_S)

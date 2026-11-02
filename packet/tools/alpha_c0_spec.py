@@ -72,7 +72,7 @@ def generate(scratch, expected_tests):
                              'FLASH_S5_STAGE_LOCAL': '1', 'FLASH_S5_UNION_RETIRE': None, 'FLASH_S5_NATIVE_QSA_TRACE': None,
                              'FLASH_S5_NATIVE_QSA_STOP_AFTER': None},
             queue='q18a-alpha-c0: alpha-perf\'s queue with the stage-local switch and eight matched arms over band 1; validity, '
-                  'engagement and generated tokens gated, speed and memory reported; 5,400 s box budget',
+                  'engagement and generated tokens gated, speed and memory reported; 9,000 s box budget',
             scope='stage-local native progress with overlap off, against the frozen serial path; not a release assessment',
             engine_delta=dict(focused_suites=['test_e3_stage_local', 'test_e3_stage_local_control', 'test_e3_stage_local_qsa'],
                               lineage_rows=[])),

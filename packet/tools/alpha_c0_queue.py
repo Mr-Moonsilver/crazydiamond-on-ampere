@@ -6,7 +6,7 @@ both band manifests and their /tokenize guards (band 2 is not run here; its guar
 the le-fix death scan and watch, the M3 allocator receipts and the whole
 owned cleanup/restore tail. Declared deltas, each applied exactly once:
   names    q18a_alpha_perf -> q18a_alpha_c0, q18a-alpha-perf -> q18a-alpha-c0 (the band 2 manifest keeps its file name);
-  budget   draft and window read alpha_c0_gate (ACTIVE_S is the 5,400 s box budget less cleanup, LAST_ARM_ENTRY_S the rule);
+  budget   draft and window read alpha_c0_gate (ACTIVE_S is the 9,000 s box budget less cleanup, LAST_ARM_ENTRY_S the rule);
   switch   FLASH_S5_STAGE_LOCAL=1 in EXTRA_ENV, asserted in declaration and preflight beside the kept dense assert;
   body     eight band 1 arms, ABBA, each behind a typed FULL; no optional arm; the grade is e3_alpha_c0_box.
 Labels carry round 0 or 1, so every cache salt stays unique and the band follows from the index as in alpha-perf.
