@@ -31,7 +31,8 @@ STEP_B = PARENT = json.loads(PARENT_SPEC_PATH.read_text())   # STEP_B: the paren
 QUEUE = ['q18a_alpha_next_c1.draft.sh', 'q18a_alpha_next_c1_declare.sh', 'q18a_alpha_next_c1_settings.sh']
 SETTING_KEYS = ('FLASH_S5_AUTO_ARM', 'FLASH_S5_NATIVE_PROGRESS', 'FLASH_S5_NATIVE_QSA_POLICY', 'FLASH_S5_QSA_FUSED',
                 'FLASH_S5_LAYER_GROUPS', 'FLASH_S5_STAGE_LOCAL', 'FLASH_S5_HANDLER_ANATOMY', 'FLASH_S5_UNION_RETIRE',
-                'FLASH_S5_NATIVE_QSA_TRACE', 'FLASH_S5_NATIVE_QSA_STOP_AFTER', 'FLASH_S5_STAGE_OVERLAP')
+                'FLASH_S5_NATIVE_QSA_TRACE', 'FLASH_S5_NATIVE_QSA_STOP_AFTER', 'FLASH_S5_STAGE_OVERLAP',
+                'FLASH_S5_STAGE_OVERLAP_DEFER_BIND', 'FLASH_S5_STAGE_OVERLAP_OBSERVE')
 
 
 def _parent_swap(marker):
@@ -56,8 +57,9 @@ HEADER = [
     'Engine: claude/alpha-next-c1, alpha-next with C1 (FLASH_S5_STAGE_OVERLAP: two chunks in flight on the staged driver, one added '
     'module) composed, default off behind its switch; C1-off-is-alpha-next and both-off proofs in alpha-next-c1-freeze.json; the '
     'overlay files moved or added vs PREV are recomputed by the conf tool.',
-    'Queue: alpha-next\'s startup and cleanup with FLASH_S5_STAGE_OVERLAP=1 added; C1 off (C0 local) and on (overlap) arms, matched by '
-    'the typed native_stage_local selection with its overlap field; no production start.',
+    'Queue: alpha-next\'s startup and cleanup with FLASH_S5_STAGE_OVERLAP=1, FLASH_S5_STAGE_OVERLAP_DEFER_BIND=1 and '
+    'FLASH_S5_STAGE_OVERLAP_OBSERVE=1 set for the whole run; C1 off (C0 local), on (overlap) and C1-defer (overlap with the deferred '
+    'bind) arms, selected per arm by the typed native_stage_local command with its overlap and defer_bind fields; no production start.',
 ]
 # Hub-side files the gate chain writes after the build: never bundled, so writing them cannot move the bundle it pins
 # (tools/alpha_next_c1_queue_pins_write.py proves the same over each build OUT).
@@ -144,7 +146,8 @@ def generate(scratch, expected_tests, pre_queue=False):
     assert moved['added'] == sorted(NEW_OVERLAY) and not moved['removed'], moved
     dense = STEP_B['engine_selfrun']
     settings = {k: None for k in SETTING_KEYS} if pre_queue else queue_settings()
-    assert pre_queue or (settings['FLASH_S5_STAGE_LOCAL'] == '1' and settings['FLASH_S5_STAGE_OVERLAP'] == '1'), settings
+    assert pre_queue or all(settings[k] == '1' for k in ('FLASH_S5_STAGE_LOCAL', 'FLASH_S5_STAGE_OVERLAP',
+                                                         'FLASH_S5_STAGE_OVERLAP_DEFER_BIND', 'FLASH_S5_STAGE_OVERLAP_OBSERVE')), settings
     pending = dict(pending='PRE-QUEUE: the queue harness has not landed; expected_tests and alpha_next_c1_settings are null and are '
                            'filled by regenerating this spec after it lands (tools/alpha_next_c1_spec_regen.sh); this spec cannot '
                            'build') if pre_queue else {}
@@ -153,9 +156,10 @@ def generate(scratch, expected_tests, pre_queue=False):
         candidate='q18a-alpha-next-c1', arm='TRUNK', review='prepare', review_key='alpha_next_c1',
         details=dict(
             model_settings_changed=False, alpha_next_c1_settings=settings, **pending,
-            queue='q18a-alpha-next-c1: alpha-next\'s queue with the overlap switch installed; C1 off (C0 local) against on (overlap) '
-                  'arms over two bands, then a C1-on read-only tail, the arm table the queue\'s own; validity, engagement (early '
-                  'open) and generated tokens gated on the core, speed, decode and memory reported; relative box budget only',
+            queue='q18a-alpha-next-c1: alpha-next\'s queue with the overlap, deferred-bind and observe switches set for the whole '
+                  'run; C1 off (C0 local) and on (overlap) arms over two bands, C1-defer (overlap with the deferred bind) arms '
+                  'in band 1, then a C1-on read-only tail, the arm table the queue\'s own; validity, engagement (early open) '
+                  'and generated tokens gated on the core, speed, decode and memory reported; relative box budget only',
             scope='C1 composed onto alpha-next against alpha-next\'s pre-VM build; not a release assessment',
             engine_delta=dict(focused_suites=FOCUSED_DELTA, lineage_rows=[])),
         source_paths=paths, definitions=proposed['definitions'], engine_changed=moved['engine_changed'],
