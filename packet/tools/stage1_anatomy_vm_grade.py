@@ -18,7 +18,8 @@ sys.path.insert(0, HERE)
 import stage1_anatomy_report as report  # noqa: E402
 
 REQUIRED_INSTALLED = ('runner.execute_model', 'runner.sample_tokens')
-FORWARD_TARGETS = ('runner._model_forward', 'cgm.run_fullgraph', 'cgm.run_pw_graph', 'split_cgm.run_fullgraph')
+FORWARD_TARGETS = ('runner._model_forward', 'cgm.run_fullgraph', 'cgm.run_pw_graph', 'router.native_replay')
+FORWARD_COVERAGE = 0.95   # execute_model rows carrying the forward seam (stage1-anatomy-c: 10 of 1,106, a missed seam)
 ZERO_COUNTERS = ('observer_errors', 'log_failures', 'rows_dropped', 'events_pool_empty')
 
 
@@ -34,7 +35,8 @@ def grade(record):
     checks, notes = {}, {}
     result, probe = read_json(record, 'result.json'), read_json(record, 'probe.json')
     checks['wrapper_pass'] = None if result is None else result.get('verdict') == 'PASS'
-    s = (probe or {}).get('stage1_anatomy')
+    # The probe nests gpu_case's return under sections.local_overlap.
+    s = ((probe or {}).get('sections') or {}).get('local_overlap', {}).get('stage1_anatomy')
     if s is None:
         checks['summary_present'] = None if probe is None else False
         return checks, notes, None
@@ -48,8 +50,11 @@ def grade(record):
         progress_lines=s.get('progress_lines', 0) > 0,
         stock_rows=(s.get('kinds') or {}).get('e', 0) > 0 and (s.get('kinds') or {}).get('s', 0) > 0,
         wrapped_names=all(n in installed for n in REQUIRED_INSTALLED) and any(n in installed for n in FORWARD_TARGETS),
-        forward_seam='forward' in (s.get('seam_rows') or {}),
-        events_resolve=s.get('rows_with_device_forward', 0) > 0,
+        forward_seam=(s.get('seam_rows') or {}).get('forward', 0) >= FORWARD_COVERAGE * s.get('execute_rows', 0) > 0,
+        # Every forward pair resolves by query, or is flagged and counted unresolved at a flush (never waited on).
+        events_resolve=(s.get('rows_with_device_forward', 0) + counters.get('events_unresolved_at_flush', 0)
+                        >= (s.get('seam_rows') or {}).get('forward', 0) > 0
+                        and s.get('rows_with_device_forward', 0) > 0),
         calibration=bool((s.get('calibration') or {})),
         counters_zero=all(counters.get(k, 0) == 0 for k in ZERO_COUNTERS),
         replies_seen=(s.get('output_rows_async_thread', 0) > 0 if (s.get('identity') or {}).get('async_scheduling')

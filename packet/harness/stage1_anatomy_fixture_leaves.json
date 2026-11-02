@@ -36,7 +36,7 @@
    "name": "stage1-model-runner-v2",
    "test": "test_stage1_handler_anatomy.RunnerV2",
    "replaces": "vllm.v1.worker.gpu.model_runner.GPUModelRunner (V2, the default runner): execute_model with add/update_requests, prepare_inputs, prepare_attn, model_state.prepare_attn, the intermediate copy, cudagraph_manager.run_fullgraph; sample_tokens with sample (compute_logits), pp_handler.receive/broadcast, postprocess_sampled, AsyncOutput",
-   "equivalence": "Same names and order as the reference (1785-2325; LeafNames checks the names and the sample_tokens order). The S5 split bank manager (runner._flash_e3_graph_router.backend.manager) is not in this leaf: the VM run shows whether it exists.",
+   "equivalence": "Same names and order as the reference (1785-2325; LeafNames checks the names and the sample_tokens order). With the Router leaf set (rig runner='v2split') the forward is the router's native_replay, as graph_hooks.replay_fullgraph does on the split route.",
    "cannot_prove": "Graph routing (graph_hooks.replay_fullgraph, split bank replay on the green stream), real stream choice.",
    "more_convenient": true,
    "box_evidence": false
@@ -92,6 +92,14 @@
    "replaces": "time.monotonic_ns as read by executor_hooks (only in the byte-identity subprocess)",
    "equivalence": "A counter: progress stamps become a function of call order only, so step-b's hooks and these hooks (off and on) must give byte-identical progress lines for the same RPC script. handler_anatomy keeps the real clock.",
    "cannot_prove": "Real progress timing.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "Router",
+   "replaces": "graph_router.GraphRouter at runner._flash_e3_graph_router (S5 split route)",
+   "equivalence": "native_replay(descriptor, *, observed_context, observed_stream) with the real signature enqueues the decode replay on the current stream and returns an object with .output, as graph_hooks.replay_fullgraph reads it; replay (transaction route) refuses: a stock decode step carries no transaction",
+   "cannot_prove": "the real split bank, its green stream and its per-replay event; the VM run stage1-anatomy-d shows the real router wrapped and the forward seam on split-route steps",
    "more_convenient": true,
    "box_evidence": false
   }

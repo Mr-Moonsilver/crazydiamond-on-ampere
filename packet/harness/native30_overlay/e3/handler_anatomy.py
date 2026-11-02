@@ -23,7 +23,7 @@ Hard rules (checked by ``harness/test_stage1_handler_anatomy.py``):
 * everything is bounded: ``EVENT_PAIRS`` event pairs, ``MAX_ROWS`` rows per
   flush, drops counted, never blocking, never growing;
 * wrappers are set on instances (worker's model runner, its model, graph
-  managers, PP handler, model state, the PP group coordinator, the response MQ
+  manager, the S5 graph router, PP handler, model state, the PP group coordinator, the response MQ
   and the async output queue), never on classes; installed once per process;
   exceptions and return values pass through unchanged (PP comm handles come back
   wrapped in a delegating proxy, as briefed, so their ``wait`` can be timed).
@@ -57,8 +57,8 @@ SEAM_ID = {name: index for index, name in enumerate(SEAMS)}
 
 # (owner, attribute, seam, mode). Missing owners/attributes are skipped and named
 # in the header: V1 (gpu_model_runner.GPUModelRunner) and V2
-# (gpu/model_runner.GPUModelRunner) differ, and the S5 split bank has its own
-# graph manager.
+# (gpu/model_runner.GPUModelRunner) differ, and on the S5 split route the forward
+# is the graph router's replay (runner._flash_e3_graph_router), not the manager's.
 TARGETS = (
     ('pp', 'irecv_tensor_dict', 'pp_recv', 'recv'),
     ('pp', 'isend_tensor_dict', 'pp_send', 'send'),
@@ -67,7 +67,8 @@ TARGETS = (
     ('runner', '_model_forward', 'forward', 'forward'),                                   # V1
     ('cgm', 'run_fullgraph', 'forward', 'forward'),                                       # V2 FULL
     ('cgm', 'run_pw_graph', 'forward', 'forward'),                                        # V2 piecewise
-    ('split_cgm', 'run_fullgraph', 'forward', 'forward'),                                 # S5 split bank
+    ('router', 'native_replay', 'forward', 'forward'),                                    # S5 split route
+    ('router', 'replay', 'forward', 'forward'),                                           # S5 transaction
     ('model', 'compute_logits', 'logits', 'plain'),
     ('model', 'compute_logits_local', 'logits', 'plain'),
     ('runner', '_sample', 'sample', 'plain'),                                             # V1
@@ -175,11 +176,11 @@ class Recorder:
         owners = {
             'pp': self.pp, 'runner': runner, 'model': getattr(runner, 'model', None),
             'cgm': getattr(runner, 'cudagraph_manager', None),
-            'split_cgm': getattr(getattr(router, 'backend', None), 'manager', None),
+            # S5: on the split route graph_hooks.replay_fullgraph replays through the router, never the stock
+            # manager (VM run stage1-anatomy-c: the forward seam fired on the full-route steps only).
+            'router': router,
             'pph': getattr(runner, 'pp_handler', None), 'mstate': getattr(runner, 'model_state', None),
         }
-        if owners['split_cgm'] is owners['cgm']:
-            owners['split_cgm'] = None
         seen = set()
         for owner, attr, seam, mode in TARGETS:
             target = owners.get(owner)

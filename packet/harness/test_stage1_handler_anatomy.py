@@ -379,6 +379,22 @@ class GraphManager:
         raise AssertionError('fixture decode runs FULL graphs')
 
 
+class Router:
+    """graph_router.GraphRouter leaf (runner._flash_e3_graph_router): on the split route graph_hooks.replay_fullgraph
+    calls native_replay, which enqueues the split-bank replay on the current (green decode) stream."""
+
+    def __init__(self, torch, costs):
+        self.torch, self.c = torch, costs
+
+    def native_replay(self, descriptor, *, observed_context, observed_stream):
+        spin(self.c.launch)
+        self.torch.stream.launch(self.c.forward_dev)
+        return types.SimpleNamespace(output='hidden')
+
+    def replay(self, transaction, descriptor, ticket, **kwargs):
+        raise AssertionError('a stock decode step carries no transaction')
+
+
 class PPHandler:
     """gpu/pp_utils.PPHandler leaf."""
 
@@ -434,7 +450,11 @@ class RunnerV2:
         self.model_state.prepare_attn(input_batch)
         if not self.pp.is_first_rank:
             intermediate_tensors.tensors
-        hidden = self.cudagraph_manager.run_fullgraph('batch_desc')
+        router = getattr(self, '_flash_e3_graph_router', None)
+        if router is not None:     # the S5 split route (graph_hooks.replay_fullgraph)
+            hidden = router.native_replay('descriptor', observed_context=1, observed_stream=1).output
+        else:
+            hidden = self.cudagraph_manager.run_fullgraph('batch_desc')
         self.execute_model_state = (input_batch, hidden)
         if not self.pp.is_last_rank:
             return Tensors({'hidden_states': hidden})
@@ -581,6 +601,8 @@ class Rig:
         stack.callback(logger.removeHandler, self.capture)
         cls = RunnerV1 if runner == 'v1' else RunnerV2
         self.runner = cls(self.torch, pp, async_scheduling, costs)
+        if runner == 'v2split':
+            self.runner._flash_e3_graph_router = Router(self.torch, costs)
         self.worker = Worker(self.state, self.runner)
         proc = proc_class(hooks)()
         proc.rank = rank
@@ -907,6 +929,25 @@ class V2Runner(Case):
             self.assertGreaterEqual({x['seq']: x for x in out}[sample]['get_output_ns'], Costs.copy_wait * 1e9)
 
 
+class V2SplitRoute(Case):
+    """The S5 split route: the forward is the graph router's native_replay (VM run stage1-anatomy-c found the stock
+    manager's run_fullgraph only on full-route steps)."""
+
+    def test_router_replay_is_the_forward(self):
+        r = self.rig(2, runner='v2split')
+        seqs = [r.step() for _ in range(2)]
+        r.replies(4)
+        r.release()
+        heads, main, _ = parse(r.handler_lines())
+        rows = {x['seq']: x for x in main}
+        self.assertTrue({'router.native_replay', 'router.replay', 'cgm.run_fullgraph'} <= set(heads[0]['installed']))
+        for execute, _ in seqs:
+            self.assertIn('forward', rows[execute]['seams'])
+            self.assertEqual(rows[execute]['seams']['forward']['n'], 1)
+            self.assertEqual(rows[execute]['dev_forward_ns'], Costs.forward_dev)
+            self.assertLess(rows[execute]['seams']['execute']['excl_ns'], rows[execute]['seams']['forward']['ns'])
+
+
 class ForwardFailure(Case):
     def test_exception_path_unchanged_and_state_reset(self):
         r = self.rig(2)
@@ -1000,7 +1041,7 @@ class LeafNames(unittest.TestCase):
                                                                           'GPUModelRunner')],
         'pp': [('distributed/parallel_state.py', 'GroupCoordinator')],
         'cgm': [('v1/worker/gpu/cudagraph_utils.py', None)],
-        'split_cgm': [('v1/worker/gpu/cudagraph_utils.py', None)],
+        'router': [(str(ROOT / 'patches/s5_engine/graph_router.py'), 'GraphRouter')],   # absolute: S5's own source
         'pph': [('v1/worker/gpu/pp_utils.py', 'PPHandler')],
         'mstate': [('v1/worker/gpu/model_states/default.py', None), ('v1/worker/gpu/model_states/interface.py', None)],
         'model': [('models/qwen4_exp/nvidia/model.py', None), ('model_executor/models/qwen3_5.py', None)],

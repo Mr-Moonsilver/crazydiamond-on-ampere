@@ -92,7 +92,8 @@ class Grade(unittest.TestCase):
         summary = ProbeHelpers().run_helpers(True, record=root)[0]
         summary.update(change)
         with open(os.path.join(root, 'probe.json'), 'w') as handle:
-            json.dump(dict(verdict='PASS', stage1_anatomy=summary), handle, default=str)
+            json.dump(dict(verdict='PASS', sections=dict(local_overlap=dict(stage1_anatomy=summary))), handle,
+                      default=str)
         with open(os.path.join(root, 'result.json'), 'w') as handle:
             json.dump(dict(verdict=wrapper), handle)
 
