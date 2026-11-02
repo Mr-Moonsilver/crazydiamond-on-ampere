@@ -405,8 +405,8 @@
  "review_key": "step_b",
  "runner_swaps": [
   [
-   "    from step_a_gate import window_ok\n",
-   "    from step_b_gate import window_ok\n"
+   "    from step_a_gate import window_ok\n    require(window_ok(time.time()),'operator-window-not-before-or-cleanup-margin')\n",
+   "    return None  # launch time is governed by the lead at launch (operator, 2 Nov 2026); no wall-clock window here\n"
   ],
   [
    "engine.get('schema')=='step-a-selfrun/1'",
@@ -426,7 +426,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "9402d426f7d0d14278d778645208f36008f42e4b",
+ "source_commit": "355ad094f44e0e3edfbb43219590fdcd4715ea8f",
  "source_paths": [
   "A\tharness/e3_step_b_box.py",
   "A\tharness/e3_step_b_probe.py",
@@ -451,6 +451,7 @@
   "M\tpatches/s5_engine/worker_bridge.py",
   "A\ttools/build_step_b.py",
   "A\ttools/native43_spec.step-b.json",
+  "A\ttools/owner-precheck/native-precheck.conf.step-b-d",
   "A\ttools/step_b_clock_scan.py",
   "A\ttools/step_b_cpu_probe.py",
   "A\ttools/step_b_declarations.json",
