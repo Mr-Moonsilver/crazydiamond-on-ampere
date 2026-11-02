@@ -18,7 +18,7 @@ Classes:
 * ArmLoop: the derived body under real bash with the draft's own functions, the real death watch and the real grade and read, over
   stub arm and check clients: the order, the core grade before the tail, the budgets, a dead engine.
 * Commands / QueueArgparse: every python3 call of the derived texts parses with its own module's real parser.
-* Derivation / Window / NoClock / C0Parity / Report: derived texts, the deltas against Step B, the placeholders, the relative
+* Derivation / Window / NoClock / C0Parity / Report: derived texts, the deltas against Step B, no bundle digest in the declaration, the relative
   budget, no absolute-time construct in the new files, C0's restated constants, the analyser's grouping key.
 
 Fixture leaves: alpha_next_queue_fixture_leaves.json, beside the inherited files it names.
@@ -1540,7 +1540,7 @@ class Derivation(unittest.TestCase):
                          [line[2:] for line in diff if line[0] == '-'])
         self.assertEqual([line[2:] for line in diff if line[0] == '+' and 'EXTRA_ENV' not in line], queue.SETTINGS_NOTE.splitlines())
 
-    def test_the_declaration_adds_the_asserts_the_pins_and_the_placeholders(self):
+    def test_the_declaration_adds_the_switch_asserts_and_the_file_pins_only(self):
         old = queue.rename((ROOT / 'harness/runs/q18a_step_b_declare.sh').read_text())
         new = queue.derive()[DECLARE]
         diff = [line for line in difflib.ndiff(old.splitlines(), new.splitlines()) if line[:1] in '+-']
@@ -1548,32 +1548,31 @@ class Derivation(unittest.TestCase):
         self.assertEqual(len(removed), 1)
         self.assertIn(queue.PINS_OLD.strip(), removed[0])
         added = [x[2:] for x in diff if x[0] == '+']
-        want = (queue.DECLARE_SWITCHES.splitlines() + queue.pins_block().splitlines()
-                + [removed[0].replace(queue.PINS_OLD, queue.PINS_NEW)])
-        self.assertEqual(sorted(added), sorted(want))
-        self.assertEqual(new.count(queue.PLACEHOLDER), 2)
+        self.assertEqual(sorted(added), sorted(queue.DECLARE_SWITCHES.splitlines()
+                                               + [removed[0].replace(queue.PINS_OLD, queue.PINS_NEW)]))
+
+    def test_no_bundle_or_package_digest_in_the_declaration_and_no_harness_reader_of_the_pins_file(self):
+        """Step B's way (coordinator, 2 Nov): the declare script is in the harness bundle, so it holds no bundle, manifest or
+        package digest; the identity is pinned outside the bundle. The pins file is a hub-side record nothing in harness/ reads."""
+        old = queue.rename((ROOT / 'harness/runs/q18a_step_b_declare.sh').read_text())
+        new = queue.derive()[DECLARE]
+        for word in ('ALPHA_NEXT_OVERLAY_MANIFEST_SHA256', 'ALPHA_NEXT_PACKAGE_SHA256', 'ALPHA_NEXT_BUNDLE', 'PLACEHOLDER',
+                     'pins.json', 'alpha-next pin'):
+            self.assertNotIn(word, new)
+        # Every 64-hex literal of the declaration is one Step B's declaration already holds (image and library pins).
+        hexes = lambda text: set(re.findall(r'(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])', text))
+        self.assertLessEqual(hexes(new), hexes(old))
+        name = ('alpha_next_queue' + '_pins').encode()        # built here so this file does not hold the literal either
+        readers = [str(f.relative_to(ROOT)) for f in sorted(HERE.rglob('*'))
+                   if f.is_file() and '__pycache__' not in f.parts and name in f.read_bytes()]
+        self.assertEqual(readers, [])
+        for text in queue.derive().values():
+            self.assertNotIn(name.decode(), text)
+        # The hub-side record keeps its schema and three keys; the packaging chain's writer (the pack branch pins writer
+        # in tools/) owns the values and may add keys, so neither the values nor an exact key set are asserted.
         pins = json.loads(queue.PINS_FILE.read_text())
-        self.assertTrue(pins['status'].startswith('PLACEHOLDER'))
-        self.assertEqual({k for k, v in pins.items() if v == queue.PLACEHOLDER},
-                         {'overlay_manifest_sha256', 'package_sha256', 'harness_bundle_sha256'})
-
-    def test_a_placeholder_pin_refuses_the_declaration_and_filled_pins_are_checked(self):
-        d = Path(tempfile.mkdtemp(prefix='pins-'))
-        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        (d / 'SHA256SUMS').write_text('x\n')
-        (d / 'S5-OVERLAP-GENERATION.json').write_text(json.dumps(dict(package_sha256='e' * 64)))
-        manifest = hashlib.sha256(b'x\n').hexdigest()
-
-        def run(block):
-            script = 'fail() { echo "FAIL $1"; exit 3; }\nS5_OVERLAY=%s\n%secho PINS-OK\n' % (shlex.quote(str(d)), block)
-            return subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=30).stdout.strip()
-        self.assertEqual(run(queue.pins_block()), 'FAIL alpha-next bundle pins are placeholders (filled by the packaging step)')
-        pins = d / 'pins.json'
-        for values, want in (((manifest, 'e' * 64), 'PINS-OK'), (('f' * 64, 'e' * 64), 'FAIL overlay manifest differs from the alpha-next pin'),
-                             ((manifest, 'f' * 64), 'FAIL overlay package differs from the alpha-next pin')):
-            pins.write_text(json.dumps(dict(overlay_manifest_sha256=values[0], package_sha256=values[1])))
-            with self.subTest(want=want), mock.patch.object(queue, 'PINS_FILE', pins):
-                self.assertEqual(run(queue.pins_block()), want)
+        self.assertEqual(pins['schema'], 'alpha-next-queue-pins/1')
+        self.assertLessEqual({'overlay_manifest_sha256', 'package_sha256', 'harness_bundle_sha256', 'status'}, set(pins))
 
     def test_everything_kept_is_step_b_line_for_line(self):
         old = queue.rename((ROOT / 'harness/runs/q18a_step_b.draft.sh').read_text())
