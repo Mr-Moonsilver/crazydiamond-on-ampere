@@ -1,0 +1,410 @@
+{
+ "arm": "TRUNK",
+ "bundle_selfrun": {
+  "arm": "TRUNK",
+  "probe": "alpha_c1_cpu_probe.py"
+ },
+ "candidate": "q18a-alpha-c1",
+ "checks": [
+  [
+   "tools/alpha_c1_queue.py",
+   "--check"
+  ],
+  [
+   "tools/alpha_c1_tools_derive.py",
+   "--check"
+  ]
+ ],
+ "clock_split": {
+  "expect": {
+   "bracket": "proved",
+   "identity_equality": "refused",
+   "module:native43_boundary_clock.prove": "proved",
+   "native_window_clock": "proved",
+   "native_window_clock_pre_fix": "refused",
+   "prove_clock_domain": "refused"
+  },
+  "modules": [
+   "native43_boundary_clock.prove"
+  ],
+  "note": "Codex's native43_clock_probe --serve in the engine container, its prove() in the client container across the CT-vs-container split: the bracket proof holds; the identity-equality checks refuse there, as on the box (native40). Native43 lifecycle: the reuse grade path is e3_native_performance.native_window (the lifecycle client prefill); its expectation is proved. The pre-fix native_window (n43-f bytes) grades the same records: refused across the split, proved in the shared-view control.",
+  "pre_fix": {
+   "commit": "2a4917b7df6e6e264b0eefe8f9287d3a4fb915d6",
+   "note": "the n43-f build source native_window (identity equality; = 109313a and 1ffc394 bytes)",
+   "path": "harness/e3_native_performance.py",
+   "sha256": "27055ae0b444d43ecdf16351584a6221994e82b2bdd55330d2b1c874dd4b90e1"
+  },
+  "side": "native43-clock-probe"
+ },
+ "definitions": {
+  "harness/selftest.py": [
+   "module:For#12"
+  ],
+  "harness/test_e3_package.py": [
+   "SyntheticTests.test_default_off_settings_budget_and_launcher_guard"
+  ],
+  "harness/test_native35_performance.py": [
+   "package_inventory"
+  ],
+  "patches/s5_engine/decode_probe.py": [
+   "module:GENERATED_SOURCES"
+  ],
+  "patches/s5_engine/engine_driver.py": [
+   "NativeSegmentDriver.__init__",
+   "class:NativeSegmentDriver"
+  ],
+  "patches/s5_engine/make_s5_overlap.py": [
+   "module:E3_MODULES",
+   "module:LAUNCHER_LIST_EXEMPT"
+  ],
+  "patches/s5_engine/native_overlap_control.py": [
+   "NativeControlClient.native_stage_overlap",
+   "_stage_overlap"
+  ],
+  "patches/s5_engine/native_overlap_session.py": [
+   "NativeOverlapSession._action_native_stage_local"
+  ],
+  "patches/s5_engine/s5_startup.py": [
+   "install_engine"
+  ]
+ },
+ "details": {
+  "alpha_c1_settings": {
+   "FLASH_S5_AUTO_ARM": "1",
+   "FLASH_S5_NATIVE_PROGRESS": "burst",
+   "FLASH_S5_NATIVE_QSA_POLICY": "dense",
+   "FLASH_S5_NATIVE_QSA_STOP_AFTER": null,
+   "FLASH_S5_NATIVE_QSA_TRACE": null,
+   "FLASH_S5_STAGE_LOCAL": "1",
+   "FLASH_S5_STAGE_OVERLAP": "1",
+   "FLASH_S5_UNION_RETIRE": null
+  },
+  "engine_delta": {
+   "focused_suites": [
+    "test_e3_stage_overlap",
+    "test_e3_stage_overlap_control"
+   ],
+   "lineage_rows": []
+  },
+  "model_settings_changed": false,
+  "queue": "q18a-alpha-c1: C0 l's queue with the stage-overlap switch; twelve mirrored band 1 arms (serial, local and overlap, solo and live) and four band 2 arms under the native41 caps; validity, engagement and generated tokens gated, speed and memory reported; 9,000 s box budget, no absolute-time window",
+  "scope": "two chunks in flight per request (stage overlap) on C0's stage-local progress, against the frozen serial path and C0's local path; not a release assessment"
+ },
+ "dry_run": false,
+ "engine_changed": [
+  "e3/decode_probe.py",
+  "e3/engine_driver.py",
+  "e3/native_overlap_control.py",
+  "e3/native_overlap_session.py",
+  "e3/s5_startup.py"
+ ],
+ "engine_selfrun": {
+  "compiled": [
+   "patches/s5_engine/scheduler_hooks.py",
+   "patches/s5_engine/engine_driver.py",
+   "patches/s5_engine/native_overlap_session.py",
+   "harness/e3_native39_trunk_probe.py",
+   "harness/test_native39_trunk.py",
+   "harness/selftest.py",
+   "tools/native39_trunk_selfrun.py",
+   "tools/native39_trunk_freeze.py",
+   "tools/build_native39_trunk.py",
+   "harness/native43_boundary_client.py",
+   "harness/native43_boundary_clock.py",
+   "harness/native43_boundary_gate.py",
+   "harness/native43_clock_probe.py",
+   "harness/native43_dense_grade.py",
+   "harness/native43_scheduler_tick_probe.py",
+   "harness/test_e3_lane_private.py",
+   "harness/test_e3_qsa_driver.py",
+   "harness/test_native43_boundary_queue.py",
+   "harness/test_native43_dense_boundary.py",
+   "patches/s5_engine/native_resources.py",
+   "patches/s5_engine/qsa_driver.py",
+   "patches/s5_engine/qsa_operation.py",
+   "tools/build_native43.py",
+   "tools/native43_bundle_selfrun.py",
+   "tools/native43_clock_split.py",
+   "tools/native43_cpu_probe.py",
+   "tools/native43_owner_seam.py",
+   "tools/native43_precheck_conf.py",
+   "tools/native43_queue_drafts.py",
+   "tools/native43_selfrun.py",
+   "tools/native43_tools_derive.py",
+   "harness/native43_lifecycle_gate.py",
+   "harness/native43_lifecycle_grade.py",
+   "harness/native39_lifecycle_gate.py",
+   "harness/test_native43_lifecycle_queue.py",
+   "harness/e3_native_performance.py",
+   "harness/e3_q18a_lifecycle.py",
+   "tools/native43_lifecycle_queue_drafts.py",
+   "tools/native43_lifecycle_cpu_probe.py",
+   "tools/native43_lifecycle_tools_derive.py",
+   "harness/test_e3_tp_finalize_skew.py",
+   "harness/test_e3_native_measurement_clients.py",
+   "harness/test_native35_performance.py",
+   "patches/s5_engine/executor_hooks.py",
+   "patches/s5_engine/row1_oracle.py",
+   "harness/native43_engine_death.py",
+   "harness/native43_row1_grade.py",
+   "harness/native43_row1_qualification.py",
+   "harness/test_native43_engine_death.py",
+   "harness/test_native43_le_fatal_log.py",
+   "harness/test_native43_le_bounded_enqueue.py",
+   "harness/test_native43_le_fix_queue_deltas.py",
+   "harness/test_native43_row1_dense.py",
+   "harness/test_native43_row1_grade.py",
+   "harness/test_native43_lf_queue.py",
+   "tools/native43_le_fix_queue_deltas.py",
+   "tools/native43_lf_queue_drafts.py",
+   "tools/native43_lf_tools_derive.py",
+   "tools/native43_lf_cpu_probe.py",
+   "harness/alpha_perf_gate.py",
+   "harness/e3_alpha_perf_box.py",
+   "harness/test_alpha_perf_queue.py",
+   "harness/native43_allocator_phase_deltas.py",
+   "harness/test_alpha_m3_receipts.py",
+   "tools/alpha_perf_queue.py",
+   "tools/alpha_perf_tools_derive.py",
+   "tools/alpha_perf_cpu_probe.py",
+   "tools/alpha_perf_clock_scan.py",
+   "tools/alpha_perf_precheck_conf.py",
+   "tools/alpha_perf_engine_selfrun.py",
+   "tools/alpha_perf_spec.py",
+   "tools/alpha_perf_overlay_propose.py",
+   "tools/build_alpha_perf.py",
+   "tools/alpha_perf_delivery.py",
+   "tools/alpha_m3_queue_deltas.py",
+   "harness/alpha_c0_gate.py",
+   "harness/e3_alpha_c0_box.py",
+   "harness/e3_alpha_c0_probe.py",
+   "harness/test_alpha_c0_queue.py",
+   "harness/test_alpha_c0_report.py",
+   "harness/test_e3_stage_local.py",
+   "harness/test_e3_stage_local_control.py",
+   "harness/test_e3_stage_local_qsa.py",
+   "harness/stage_net.py",
+   "tools/build_alpha_c0.py",
+   "tools/alpha_c0_clock_scan.py",
+   "tools/alpha_c0_cpu_probe.py",
+   "tools/alpha_c0_delivery.py",
+   "tools/alpha_c0_engine_selfrun.py",
+   "tools/alpha_c0_freeze.py",
+   "tools/alpha_c0_overlay_propose.py",
+   "tools/alpha_c0_overlay_tamper.py",
+   "tools/alpha_c0_precheck_conf.py",
+   "tools/alpha_c0_queue.py",
+   "tools/alpha_c0_report.py",
+   "tools/alpha_c0_vm_compare.py",
+   "tools/alpha_c0_vm_input.py",
+   "tools/alpha_c0_spec.py",
+   "tools/alpha_c0_tools_derive.py",
+   "tools/stage_default_off.py",
+   "tools/c0_bit_identity.py",
+   "harness/alpha_c1_gate.py",
+   "harness/e3_alpha_c1_box.py",
+   "harness/e3_alpha_c1_probe.py",
+   "harness/test_alpha_c1_queue.py",
+   "harness/test_alpha_c1_report.py",
+   "harness/test_alpha_c1_box.py",
+   "harness/test_e3_stage_overlap.py",
+   "harness/test_e3_stage_overlap_control.py",
+   "tools/build_alpha_c1.py",
+   "tools/alpha_c1_clock_scan.py",
+   "tools/alpha_c1_cpu_probe.py",
+   "tools/alpha_c1_delivery.py",
+   "tools/alpha_c1_engine_selfrun.py",
+   "tools/alpha_c1_flaky.py",
+   "tools/alpha_c1_freeze.py",
+   "tools/alpha_c1_overlay_propose.py",
+   "tools/alpha_c1_overlay_tamper.py",
+   "tools/alpha_c1_precheck_conf.py",
+   "tools/alpha_c1_queue.py",
+   "tools/alpha_c1_report.py",
+   "tools/alpha_c1_vm_compare.py",
+   "tools/alpha_c1_vm_input.py",
+   "tools/alpha_c1_spec.py",
+   "tools/alpha_c1_tools_derive.py",
+   "tools/stage_default_off_c1.py"
+  ],
+  "probes": [
+   {
+    "field": "scheduler_tick_probe",
+    "keep": [
+     "schema",
+     "real_scheduler",
+     "baseline_scheduler_ticks",
+     "unexpected_scheduler_ticks",
+     "admitted_after_cutoff",
+     "source_leases_clean",
+     "stop_calls",
+     "cuda_initialized"
+    ],
+    "out": "native43-scheduler-probe.json",
+    "require": {
+     "admitted_after_cutoff": 0,
+     "cuda_initialized": false,
+     "schema": "native43-real-scheduler-cutoff/1",
+     "source_leases_clean": true,
+     "stop_calls": [
+      "cancel"
+     ],
+     "unexpected_scheduler_ticks": 0
+    },
+    "script": "native43_scheduler_tick_probe.py"
+   }
+  ],
+  "schema": "alpha-c1-selfrun-dense-part/1",
+  "suites": [
+   "test_native39_trunk",
+   "test_native37_robust",
+   "test_native38_plain_bind",
+   "test_e3_admission_native",
+   "test_e3_staged_chunk_plan",
+   "test_e3_native_overlap",
+   "test_e3_native_storage_replay",
+   "test_e3_r4_worker_bridge",
+   "test_e3_admission_metadata",
+   "test_native43_dense_boundary",
+   "test_native43_boundary_queue",
+   "test_e3_qsa_driver",
+   "test_e3_lane_private",
+   "test_e3_sparse_history_dma",
+   "test_e3_worker_operations",
+   "test_e3_tp_finalize_skew",
+   "test_e3_native_measurement_clients",
+   "test_native35_performance",
+   "test_native43_engine_death",
+   "test_native43_le_fatal_log",
+   "test_native43_le_bounded_enqueue",
+   "test_native43_le_fix_queue_deltas",
+   "test_native43_row1_dense",
+   "test_native43_row1_grade",
+   "test_e3_native_source_oracle",
+   "test_e3_native_row1_grade",
+   "test_alpha_m3_receipts"
+  ]
+ },
+ "expected_tests": 356,
+ "label": "alpha-c1",
+ "overlay_definitions": {
+  "e3/decode_probe.py": [
+   "module:GENERATED_SOURCES"
+  ],
+  "e3/engine_driver.py": [
+   "NativeSegmentDriver.__init__",
+   "class:NativeSegmentDriver"
+  ],
+  "e3/native_overlap_control.py": [
+   "NativeControlClient.native_stage_overlap",
+   "_stage_overlap"
+  ],
+  "e3/native_overlap_session.py": [
+   "NativeOverlapSession._action_native_stage_local"
+  ],
+  "e3/s5_startup.py": [
+   "install_engine"
+  ]
+ },
+ "precheck": {
+  "fixture_rows": [],
+  "header": [
+   "C1 packaged by tools/build_alpha_c1.py (spec alpha-c1); PREV is the C0 l build-l bundle (a1526e066c6a) and runner.",
+   "Engine: claude/c1, two chunks in flight (FLASH_S5_STAGE_OVERLAP=1 beside FLASH_S5_STAGE_LOCAL=1), default off; C0 l's engine (cf0e301) plus e3/stage_overlap.py and the declared seams; default-off projections in alpha-c1-freeze.json; the overlay files moved vs PREV are recomputed by the conf tool.",
+   "Queue: C0 l's startup and cleanup with FLASH_S5_STAGE_OVERLAP=1 added; twelve mirrored band 1 arms (serial, local, overlap; solo and live) and four band 2 arms; no production start."
+  ],
+  "seams": ""
+ },
+ "queue": [
+  "q18a_alpha_c1.draft.sh",
+  "q18a_alpha_c1_declare.sh",
+  "q18a_alpha_c1_settings.sh"
+ ],
+ "rehearsal": null,
+ "review": "prepare",
+ "review_key": "alpha_c1",
+ "runner_swaps": [
+  [
+   "engine.get('schema')=='alpha-c0-selfrun/1'",
+   "engine.get('schema')=='alpha-c1-selfrun/1'"
+  ],
+  [
+   "result.get('alpha_c0_queue')=='PASS'",
+   "result.get('alpha_c0_queue')=='PASS' and result.get('alpha_c1_queue')=='PASS'"
+  ],
+  [
+   "sorted(engine.get('cases') or {})==['abort-before', 'abort-live', 'alpha-c0-local-burst', 'alpha-c0-local-burst-skew', 'alpha-c0-local-burst-solo', 'alpha-c0-serial-burst', 'alpha-c0-serial-burst-skew', 'alpha-c0-serial-burst-solo', 'auto', 'bad-graph', 'below-threshold', 'foreign', 'long-id', 'off', 'pending-full', 'pending-split', 'progress-burst', 'progress-burst-current', 'progress-burst-skew', 'progress-burst-solo', 'progress-current-solo', 'progress-trace', 'progress-trace-skew', 'progress-unset', 'receipts-auto', 'receipts-below-threshold', 'receipts-latched', 'receipts-off', 'refuse', 'reuse', 'running-prefill', 'tp-skew']",
+   "sorted(engine.get('cases') or {})==['abort-before', 'abort-live', 'alpha-c0-local-burst', 'alpha-c0-local-burst-skew', 'alpha-c0-local-burst-solo', 'alpha-c0-serial-burst', 'alpha-c0-serial-burst-skew', 'alpha-c0-serial-burst-solo', 'alpha-c1-local-burst', 'alpha-c1-overlap-burst', 'alpha-c1-overlap-burst-skew', 'alpha-c1-overlap-burst-slow1', 'alpha-c1-overlap-burst-solo', 'alpha-c1-serial-burst', 'auto', 'bad-graph', 'below-threshold', 'foreign', 'long-id', 'off', 'pending-full', 'pending-split', 'progress-burst', 'progress-burst-current', 'progress-burst-skew', 'progress-burst-solo', 'progress-current-solo', 'progress-trace', 'progress-trace-skew', 'progress-unset', 'receipts-auto', 'receipts-below-threshold', 'receipts-latched', 'receipts-off', 'refuse', 'reuse', 'running-prefill', 'tp-skew']"
+  ]
+ ],
+ "schema": "native43-packaging-spec/1",
+ "source_commit": "884c4e66a39f7f065d8c1b4705ab79d623759572",
+ "source_paths": [
+  "A\tharness/alpha_c1_fixture_leaves.json",
+  "A\tharness/alpha_c1_gate.py",
+  "A\tharness/e3_alpha_c1_box.py",
+  "A\tharness/e3_alpha_c1_probe.py",
+  "A\tharness/runs/q18a_alpha_c1.draft.sh",
+  "A\tharness/runs/q18a_alpha_c1_declare.sh",
+  "A\tharness/runs/q18a_alpha_c1_settings.sh",
+  "A\tharness/stage_overlap_fixture_leaves.json",
+  "A\tharness/test_alpha_c1_box.py",
+  "A\tharness/test_alpha_c1_queue.py",
+  "A\tharness/test_alpha_c1_report.py",
+  "A\tharness/test_e3_stage_overlap.py",
+  "A\tharness/test_e3_stage_overlap_control.py",
+  "A\tpatches/s5_engine/stage_overlap.py",
+  "A\ttools/alpha_c1_clock_scan.py",
+  "A\ttools/alpha_c1_cpu_probe.py",
+  "A\ttools/alpha_c1_delivery.py",
+  "A\ttools/alpha_c1_engine_selfrun.py",
+  "A\ttools/alpha_c1_flaky.py",
+  "A\ttools/alpha_c1_freeze.py",
+  "A\ttools/alpha_c1_gates.sh",
+  "A\ttools/alpha_c1_negative_pins.json",
+  "A\ttools/alpha_c1_overlay_propose.py",
+  "A\ttools/alpha_c1_overlay_tamper.py",
+  "A\ttools/alpha_c1_precheck_conf.py",
+  "A\ttools/alpha_c1_queue.py",
+  "A\ttools/alpha_c1_report.py",
+  "A\ttools/alpha_c1_spec.py",
+  "A\ttools/alpha_c1_tools_derive.py",
+  "A\ttools/alpha_c1_vm_compare.py",
+  "A\ttools/alpha_c1_vm_input.py",
+  "A\ttools/build_alpha_c1.py",
+  "A\ttools/native43_spec.alpha-c1.json",
+  "A\ttools/owner-precheck/native-precheck.conf.alpha-c0",
+  "A\ttools/stage_default_off_c1.py",
+  "M\tharness/selftest.py",
+  "M\tharness/test_e3_package.py",
+  "M\tharness/test_native35_performance.py",
+  "M\tpatches/s5_engine/decode_probe.py",
+  "M\tpatches/s5_engine/engine_driver.py",
+  "M\tpatches/s5_engine/make_s5_overlap.py",
+  "M\tpatches/s5_engine/native_candidate_review.json",
+  "M\tpatches/s5_engine/native_overlap_control.py",
+  "M\tpatches/s5_engine/native_overlap_session.py",
+  "M\tpatches/s5_engine/s5_startup.py"
+ ],
+ "tools": [
+  "alpha_c1_clock_scan.py",
+  "alpha_c1_cpu_probe.py",
+  "alpha_c1_delivery.py",
+  "alpha_c1_engine_selfrun.py",
+  "alpha_c1_flaky.py",
+  "alpha_c1_freeze.py",
+  "alpha_c1_negative_pins.json",
+  "alpha_c1_overlay_propose.py",
+  "alpha_c1_overlay_tamper.py",
+  "alpha_c1_precheck_conf.py",
+  "alpha_c1_queue.py",
+  "alpha_c1_report.py",
+  "alpha_c1_spec.py",
+  "alpha_c1_tools_derive.py",
+  "alpha_c1_vm_compare.py",
+  "alpha_c1_vm_input.py",
+  "build_alpha_c1.py",
+  "native43_spec.alpha-c1.json",
+  "stage_default_off_c1.py"
+ ]
+}
