@@ -238,9 +238,11 @@ RECEIPT_RECORD_BYTES = 3968
 # Room ``ProgressTrace.lines`` leaves for the identity and the newline.
 RECEIPT_IDENTITY_BYTES = 96
 RECEIPT_PATH_LINE = 'flash-s5 receipts '
-RECEIPT_JSON_PREFIXES = (PROGRESS_LINE, 'flash-s5 anatomy ', 'flash-s5 handler ')
+# ``flash-s5 stop `` (one JSON object, no parts) and ``flash-s5 memory-peak `` are the
+# receipt kinds claude/alpha-next added after 5990af80; their emit sites route here when composed.
+RECEIPT_JSON_PREFIXES = (PROGRESS_LINE, 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ')
 RECEIPT_KV_PREFIXES = (RECEIPT_PATH_LINE, 'flash-s5 native-alloc ', 'flash-s5 memory ',
-                       'flash-s5 stage-local ')
+                       'flash-s5 stage-local ', 'flash-s5 memory-peak ')
 RECEIPT_PIPE_BUF_MIN = 4096
 
 

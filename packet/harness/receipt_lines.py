@@ -27,8 +27,11 @@ import re
 import sys
 from pathlib import Path
 
-JSON_PREFIXES = ('flash-s5 progress ', 'flash-s5 anatomy ', 'flash-s5 handler ')
-KV_PREFIXES = ('flash-s5 receipts ', 'flash-s5 native-alloc ', 'flash-s5 memory ', 'flash-s5 stage-local ')
+# `flash-s5 stop ` is one JSON object without parts; `flash-s5 memory-peak ` a k=v line (both added on claude/alpha-next
+# after 5990af80).
+JSON_PREFIXES = ('flash-s5 progress ', 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ')
+KV_PREFIXES = ('flash-s5 receipts ', 'flash-s5 native-alloc ', 'flash-s5 memory ', 'flash-s5 stage-local ',
+               'flash-s5 memory-peak ')
 PREFIXES = JSON_PREFIXES + KV_PREFIXES
 PATH_PREFIX = 'flash-s5 receipts '
 STARTUP_PATH = re.compile(r'flash-s5 startup receipt_path=(\S+)(?: pipe_buf=(\d+))?')
@@ -71,6 +74,10 @@ def parse_line(line):
             head = json.loads(body)
         except ValueError:
             return dict(kind=kind, pid=pid, seq=seq, sha=sha, unreadable=True)
+        if type(head) is dict and 'part' not in head and 'parts' not in head:
+            # A single-object JSON record (stop rows): judged alone, like a k=v record.
+            return dict(kind=kind, pid=pid, seq=seq, sha=sha, text=bare, side=head.get('side'), rank=head.get('rank'),
+                        line=None, part=0, parts=1)
         if type(head) is not dict or type(head.get('part')) is not int or type(head.get('parts')) is not int:
             return dict(kind=kind, pid=pid, seq=seq, sha=sha, unreadable=True)
         return dict(kind=kind, pid=pid, seq=seq, sha=sha, text=bare, side=head.get('side'), rank=head.get('rank'),

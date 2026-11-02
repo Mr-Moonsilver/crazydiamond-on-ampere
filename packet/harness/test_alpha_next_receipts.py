@@ -185,6 +185,21 @@ class Writer(unittest.TestCase):
                                       'handler'})
         close_pipe(writer)
 
+    def test_later_kinds_stop_and_memory_peak_are_records_too(self):
+        writer, cap = capture_writer()
+        stop = 'flash-s5 stop ' + json.dumps(dict(schema='s5-stop-receipt/1', side='engine', kind='stop_partial_replay',
+                                                  txn=3, op_seq=9), separators=(',', ':'), sort_keys=True)
+        peak = 'flash-s5 memory-peak rank=2 txn_seq=3 chunk=0-1024 peak=7'
+        self.assertTrue(writer.write_lines([stop]))
+        self.assertTrue(writer.write_kv(peak))
+        lines = lines_from(cap.writes)
+        report = rl.check(lines)
+        self.assertEqual(rl.verdict(report)['verdict'], 'OK', report)
+        self.assertEqual(report['per_process']['4242']['kinds'], {'receipts': 1, 'stop': 1, 'memory-peak': 1})
+        forged = lines[1].replace('"op_seq":9', '"op_seq":8')
+        self.assertEqual(len(rl.check([lines[0], forged, lines[2]])['bad_sha']), 1)
+        close_pipe(writer)
+
     def test_kv_records_keep_their_text_and_gain_pid_seq_sha(self):
         writer, cap = capture_writer(pid=9)
         writer.write_kv(MEMORY)
