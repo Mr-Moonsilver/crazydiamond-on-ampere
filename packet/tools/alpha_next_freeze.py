@@ -64,8 +64,15 @@ FEATURE_RECORDS = (
      '88c3b8c813f4', 'f708f0828fd089c247e3631f77e3064fcef6cafb', 'c90a7f8e'),
 )
 
+_KV_ROUTE = (("emit_receipt_kv('flash-s5 ", "logging.getLogger(__name__).info('flash-s5 "), ("' % (", "', "),
+             ('), logging.getLogger(__name__))', ')'))
 PROJECTIONS = {
     'engine_driver.py': {
+        'NativeProgress.end': dict(subs=(
+            ('emit_receipt_lines(self.trace.lines(**self.identity or {}, mode=self.mode, open_rows=len(self.native)), logger)',
+             'for text in self.trace.lines(**self.identity or {}, mode=self.mode, open_rows=len(self.native)):\n            logger.info(text)'),
+            ('emit_receipt_lines(self.steps.lines(**self.identity or {}, mode=self.mode, idle=self.idle, replies=self.replies), logger)',
+             'for text in self.steps.lines(**self.identity or {}, mode=self.mode, idle=self.idle, replies=self.replies):\n            logger.info(text)'))),
         'NativeSegmentDriver.__init__': dict(drop={'self._stop_partial_replays = 0': 1, 'self._stop_bound_exhausted = 0': 1}),
         'NativeSegmentDriver._drive_partial_stop_submission': dict(drop={'self._note_stop_partial_replay()': 1}),
         'NativeSegmentDriver._stop_round': dict(drop={'self._note_stop_bound_exhausted()': 1}),
@@ -78,12 +85,46 @@ PROJECTIONS = {
     'worker_bridge.py': {
         'NativeWorkerBridge.open': dict(drop={'self._peak_open()': 1}),
         'NativeWorkerBridge._release_lane': dict(drop={'self._peak_receipt(transaction)': 1}),
+        'NativeWorkerBridge._memory_receipt': dict(drop={'from native_measurement import emit_receipt_kv': 1}, subs=_KV_ROUTE),
+    },
+    # PLAN 2 routing (writer not consulted): each emit call is the parent's logger call(s) with the same text and arguments.
+    'qsa_operation.py': {
+        'QsaPrefillOperation._alloc_receipt': dict(drop={'from native_measurement import emit_receipt_kv': 1}, subs=_KV_ROUTE),
+    },
+    'executor_hooks.py': {
+        'worker_rpc_begin': dict(subs=(('emit_receipt_lines(state[0].lines(), _progress_logger())',
+                                        'for text in state[0].lines():\n                _progress_logger().info(text)'),)),
+    },
+    's5_startup.py': {
+        # install_receipt_writer() constructs the process writer and opens or writes nothing (WRITER_SHAPE); AUTO_ARM unset.
+        'install_engine': dict(drop={'from native_measurement import install_receipt_writer, receipt_path': 1,
+                                     'install_receipt_writer()': 1},
+                            subs=(("\n    if auto == '1':\n        try:\n            from vllm.logger import init_logger\n"
+                                   "        except ImportError:\n            import logging\n            init_logger = logging.getLogger\n"
+                                   "        init_logger(__name__).info('flash-s5 startup receipt_path=%s', receipt_path())", ''),)),
+        'install_native_lane': dict(drop={'from native_measurement import install_receipt_writer': 1, 'install_receipt_writer()': 1}),
+        # DeviceSpans is built only with FLASH_S5_NATIVE_PROGRESS (held-g's reach); emit_lines is the routed group emit.
+        '_device_spans': dict(subs=(('from native_measurement import DeviceSpans, emit_receipt_lines', 'from native_measurement import DeviceSpans'),
+                                    (', emit_lines=lambda texts: emit_receipt_lines(texts, _progress_logger()))', ')'))),
+    },
+    'native_measurement.py': {
+        # emit_lines None (the parent's construction): the parent's per-line emit.
+        'DeviceSpans.__init__': dict(drop={'self.emit_lines = emit_lines': 1},
+                                     off={'if emit_lines is not None and (not callable(emit_lines)):': 1},
+                                     subs=((', emit_lines=None):', '):'),)),
+        'DeviceSpans.release': dict(off={'if self.emit_lines is not None:': 1}, subs=(
+            ('texts = self.trace.lines(txn=transaction.txn_seq, request_generation=transaction.request_generation, '
+             'chunk_start=transaction.chunk_start, chunk_end=transaction.chunk_end, stage=self.stage)\n        for text in texts:',
+             'for text in self.trace.lines(txn=transaction.txn_seq, request_generation=transaction.request_generation, '
+             'chunk_start=transaction.chunk_start, chunk_end=transaction.chunk_end, stage=self.stage):'),)),
+        # Not equal: the part budget shrinks (PROGRESS_LINE_BYTES 12000 -> 3968, minus the writer's identity); NOT_PROJECTED.
+        'ProgressTrace.lines': dict(subs=(('PROGRESS_LINE_BYTES - RECEIPT_IDENTITY_BYTES - ', 'PROGRESS_LINE_BYTES - '),)),
     },
 }
 
 # Always-on receipt helpers: the self attributes each may write, and the calls each may make (unparsed callee text).
 _RECEIPT_CALLS = {'self._record', 'self._stop_receipt', 'self._partial_stop_state', 'self._monotonic_ns', 'json.dumps',
-                  '_progress_logger().info', '_progress_logger', 'dict', 'sorted', 'set', 'getattr', 'str', 'bool', 'int', 'entry.get'}
+                  '_progress_logger().info', '_progress_logger', 'emit_receipt_lines', 'dict', 'sorted', 'set', 'getattr', 'str', 'bool', 'int', 'entry.get'}
 RECEIPTS = {
     'engine_driver.py': {
         'NativeSegmentDriver._note_stop_partial_replay': {'_stop_partial_replays'},
@@ -98,6 +139,20 @@ AUTO_ARM = {
     'worker_bridge.py': ('NativeWorkerBridge._peak_open', 'NativeWorkerBridge._peak_receipt', 'peak_reset', 'peak_receipt'),
 }
 STAGE_LOCAL_FILE = 'stage_progress.py'
+ANATOMY_FILE = 'handler_anatomy.py'
+# PLAN 2 writer: installed in every engine and worker process; opens and writes nothing until the first receipt (WRITER_SHAPE), and
+# every receipt is emitted only by a site its own feature's switch guards (progress, auto-arm, anatomy, stage-local).
+WRITER = {
+    'native_measurement.py': ('class:ReceiptWriter', 'ReceiptWriter.__init__', 'ReceiptWriter._emit_kv', 'ReceiptWriter._next',
+                              'ReceiptWriter._put', 'ReceiptWriter._start', 'ReceiptWriter.stats', 'ReceiptWriter.write_kv',
+                              'ReceiptWriter.write_lines', 'emit_receipt_kv', 'emit_receipt_lines', 'install_receipt_writer',
+                              'installed_receipt_writer', 'receipt_path', 'receipt_sha'),
+}
+_ND_IMPORT = ('module:from native_measurement import PROGRESS_N, %sNativeMeasurementCensus, encode_report_vector, decode_report_vector, '
+              'ControlPathCounters, QsaControlCounters, PROGRESS_DIRECT_METHODS, PROGRESS_META_BYTES, PROGRESS_META_KEY, PROGRESS_MODES, '
+              'ProgressTrace, StepAnatomy, encode_progress_meta')
+_EH_IMPORT = ('module:from native_measurement import PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta, '
+              '%sencode_progress_meta, progress_mode')
 CLASS_FIELDS = (('engine_driver.py', 'NativeSegmentDriver',
                  ["_STOP_ROW_KEYS = ('transaction', 'op_seq', 'segment_kind', 'accepted_ranks', 'pending_ranks', 'reason')"]),)
 MODULE_STATEMENTS = {
@@ -107,7 +162,20 @@ MODULE_STATEMENTS = {
         'module:STOP_RECEIPT_SCHEMA': "constant 's5-stop-receipt/1', read only by _stop_receipt",
     },
     'worker_bridge.py': {'module:PEAK_LINE': "constant 'flash-s5 memory-peak ', read only by _peak_receipt"},
+    'executor_hooks.py': {_EH_IMPORT % 'emit_receipt_lines, ': 'adds emit_receipt_lines to an existing import (PLAN 2 routing)',
+                          _EH_IMPORT % '': "the parent's row of the same import"},
+    'native_measurement.py': {
+        'module:import os': 'the writer duplicates fd 1 and writes with os.write',
+        'module:PROGRESS_LINE_BYTES': 'part budget 12000 -> 3968 (one record within PIPE_BUF); NOT_PROJECTED',
+        'module:RECEIPT_IDENTITY_BYTES': 'writer constant', 'module:RECEIPT_JSON_PREFIXES': 'writer constant',
+        'module:RECEIPT_KV_PREFIXES': 'writer constant', 'module:RECEIPT_PATH_LINE': 'writer constant',
+        'module:RECEIPT_PIPE_BUF_MIN': 'writer constant', 'module:RECEIPT_RECORD_BYTES': 'writer constant',
+        'module:_RECEIPT_WRITER': 'the process writer slot, None until install_receipt_writer',
+    },
 }
+MODULE_STATEMENTS['engine_driver.py'].update({
+    _ND_IMPORT % 'emit_receipt_lines, ': 'adds emit_receipt_lines to an existing import (PLAN 2 routing)',
+    _ND_IMPORT % '': "the parent's row of the same import"})
 
 NOT_PROJECTED = [
     dict(what='stop receipts (item 1) are always on', detail='Not default-off. Every stop partial replay and every exhausted stop '
@@ -123,6 +191,13 @@ NOT_PROJECTED = [
          'here with equal patch-ids.'),
     dict(what='C0 stop fix 2 and ring reading', detail='stage_progress.py changes run only with FLASH_S5_STAGE_LOCAL=1; with it on they '
          'change C0 behaviour (partial PREPARE replay on stop) and are proved by the stop-fix matrix, not here.'),
+    dict(what='receipt writer (PLAN 2) is installed always', detail='install_engine and install_native_lane install the process '
+         'ReceiptWriter in every engine and worker process. Installing does no I/O (writer_shape); every receipt site stays behind its own '
+         "feature switch, and with a writer installed a receipt goes out as one os.write on a private dup(1) instead of the logger, so "
+         'the line carries pid/seq/sha and not the logger prefix. Whether box stdout is a FIFO, and that every process installs it, is '
+         'not proved on CPU (receipt_path line under AUTO_ARM; graders read unsafe paths as INC).'),
+    dict(what='progress part budget', detail='PROGRESS_LINE_BYTES 12000 -> 3968 and handler_anatomy LINE_BYTES likewise: with progress or '
+         'anatomy on, a chunk splits into more parts (one record within PIPE_BUF). Off, no part is written.'),
     dict(what='native_candidate_review.json', detail='Not code: the review pin moves by design. The build checks it against the tree.'),
 ]
 
@@ -186,7 +261,8 @@ def receipt_shape(node, allowed_attrs):
         if isinstance(n, ast.Call):
             assert ast.unparse(n.func) in _RECEIPT_CALLS, 'receipt calls outside its allowlist: ' + ast.unparse(n.func)
     for n in ast.walk(node):
-        if isinstance(n, ast.Call) and ast.unparse(n.func) in ('self._record', 'json.dumps', '_progress_logger().info'):
+        if isinstance(n, ast.Call) and ast.unparse(n.func) in ('self._record', 'json.dumps', '_progress_logger().info',
+                                                                'emit_receipt_lines'):
             inside = any(isinstance(t, ast.Try) and any(c is n for c in ast.walk(t)) for t in ast.walk(node))
             assert inside, 'receipt call that can fail is not caught: ' + ast.unparse(n.func)
     return hashlib.sha256(ast.unparse(node).encode()).hexdigest()
@@ -211,6 +287,52 @@ def stage_local_reach(texts=None):
     assert [(f, q) for f, q, _ in found] == [('s5_startup.py', 'install_engine')], ('StagedSegmentDriver named elsewhere', found)
     assert all(need <= set(g) for _, _, g in found), ('StagedSegmentDriver reachable outside its guard', found)
     return dict(verdict='PASS', references=[[f, q, sorted(need)] for f, q, _ in found], other_guards=len(found[0][2]) - len(need))
+
+
+def anatomy_reach(texts=None):
+    """handler_anatomy is named only in executor_hooks._anatomy, inside the else of the FLASH_S5_HANDLER_ANATOMY != '1' test."""
+    texts = texts or {}
+    found = []
+    for path in git('ls-files', ENGINE).split():
+        if not path.endswith('.py') or path.endswith('/' + ANATOMY_FILE):
+            continue
+        file = path[len(ENGINE):]
+        text = texts.get(file) or (ROOT / path).read_text()
+        if 'handler_anatomy' not in text:
+            continue
+        for qual, node in _units(text, file):
+            for n in ast.walk(node):
+                if (isinstance(n, ast.Name) and n.id == 'handler_anatomy') or (
+                        isinstance(n, ast.Import) and any(a.name == 'handler_anatomy' for a in n.names)):
+                    found.append((file, qual))
+    assert {f for f in found} == {('executor_hooks.py', '_anatomy')}, ('handler_anatomy named elsewhere', sorted(set(found)))
+    fn = function(texts.get('executor_hooks.py') or (ROOT / ENGINE / 'executor_hooks.py').read_text(), '_anatomy')
+    gates = [n for n in ast.walk(fn) if isinstance(n, ast.If)
+             and ast.unparse(n.test) == "os.environ.get('FLASH_S5_HANDLER_ANATOMY', '') != '1'"]
+    assert len(gates) == 1, 'anatomy gate missing'
+    inside = {id(m) for s in gates[0].orelse for m in ast.walk(s)}
+    outside = [n for n in ast.walk(fn) if ((isinstance(n, ast.Name) and n.id == 'handler_anatomy') or isinstance(n, ast.Import))
+               and id(n) not in inside]
+    assert not outside, 'handler_anatomy reached outside the switch'
+    return dict(verdict='PASS', site='executor_hooks.py:_anatomy', gate="FLASH_S5_HANDLER_ANATOMY == '1'")
+
+
+_WRITER_IO = {'os.dup', 'os.write', 'open', 'os.open', 'os.fstat', 'self._write', 'self._start', 'self._put', 'self._emit_kv',
+              'receipt_path'}
+
+
+def writer_shape(texts=None):
+    """Installing the writer does no I/O: install_receipt_writer constructs only, and ReceiptWriter.__init__ calls none of _WRITER_IO;
+    the emit functions consult the writer only when installed, else the parent's logger call."""
+    texts = texts or {}
+    text = texts.get('native_measurement.py') or (ROOT / ENGINE / 'native_measurement.py').read_text()
+    for name in ('ReceiptWriter.__init__', 'install_receipt_writer'):
+        calls = {ast.unparse(n.func) for n in ast.walk(function(text, name)) if isinstance(n, ast.Call)}
+        assert not calls & _WRITER_IO, ('writer install does I/O', name, sorted(calls & _WRITER_IO))
+    for name, logged in (('emit_receipt_lines', 'logger.info'), ('emit_receipt_kv', 'logger.info')):
+        calls = {ast.unparse(n.func) for n in ast.walk(function(text, name)) if isinstance(n, ast.Call)}
+        assert logged in calls, ('emit without the parent logger fallback', name)
+    return dict(verdict='PASS', install_io_free=True, emit_fallback='logger.info when no writer is installed')
 
 
 def auto_arm_reach(texts=None):
@@ -250,6 +372,11 @@ def own(texts=None):
             key = file + ':' + name
             if file == STAGE_LOCAL_FILE:
                 accounted[key] = 'stage-local (FLASH_S5_STAGE_LOCAL=1 only; stage_local_reach)'
+            elif file == ANATOMY_FILE:
+                accounted[key] = 'handler anatomy (FLASH_S5_HANDLER_ANATOMY=1 only; anatomy_reach)'
+            elif name in WRITER.get(file, ()):
+                assert name not in old_names, 'writer definition existed in the parent: ' + key
+                accounted[key] = 'receipt writer (writer_shape)'
             elif name in PROJECTIONS.get(file, {}):
                 spec = PROJECTIONS[file][name]
                 try:
@@ -275,7 +402,7 @@ def own(texts=None):
                 raise AssertionError('undeclared own change: ' + key)
     declared = ({f + ':' + n for f, s in PROJECTIONS.items() for n in s} | {f + ':' + n for f, s in RECEIPTS.items() for n in s}
                 | {f + ':' + n for f, s in AUTO_ARM.items() for n in s} | {f + ':' + n for f, s in MODULE_STATEMENTS.items() for n in s}
-                | {f + ':class:' + c for f, c, _ in CLASS_FIELDS})
+                | {f + ':class:' + c for f, c, _ in CLASS_FIELDS} | {f + ':' + n for f, s in WRITER.items() for n in s})
     unused = sorted(declared - set(accounted))
     assert not unused, ('declared but not changed', unused)
     return dict(verdict='PASS', base=rev(COMPOSED), paths=rows, accounted=accounted, bodies=result, removals=table)
@@ -286,6 +413,7 @@ def source_level():
     assert proof['verdict'] == 'PASS' and proof['composed'] == rev(COMPOSED)
     return dict(schema='alpha-next-source/1', verdict='PASS', head=rev('HEAD'), composition=proof, features=features(),
                 own=own(), stage_local_reach=stage_local_reach(), auto_arm_reach=auto_arm_reach(),
+                anatomy_reach=anatomy_reach(), writer_shape=writer_shape(),
                 compiled=compiled(), not_projected=NOT_PROJECTED,
                 declaration_sha256=hashlib.sha256((ROOT / 'tools/alpha_next_composition.json').read_bytes()).hexdigest())
 
@@ -330,6 +458,14 @@ def negative_controls():
             startup, '    driver_class = NativeSegmentDriver\n',
             '    from stage_progress import StagedSegmentDriver\n    driver_class = StagedSegmentDriver\n')})),
         'feature-record-tampered': refused(lambda: _feature_tamper()),
+        'writer-install-does-io': refused(lambda: writer_shape({'native_measurement.py': swap(
+            (ROOT / ENGINE / 'native_measurement.py').read_text(), '        self._lock = threading.Lock()\n',
+            '        self._lock = threading.Lock()\n        self.fd = os.dup(1)\n')})),
+        'anatomy-imported-unguarded': refused(lambda: anatomy_reach({'executor_hooks.py': swap(
+            (ROOT / ENGINE / 'executor_hooks.py').read_text(), '    global _ANATOMY\n',
+            '    global _ANATOMY\n    import handler_anatomy\n')})),
+        'routed-emit-with-other-text': refused(lambda: own({'qsa_operation.py': swap(
+            (ROOT / ENGINE / 'qsa_operation.py').read_text(), "'flash-s5 native-alloc rank=%d ", "'flash-s5 native-alloc  rank=%d ")})),
     }
     assert set(rows.values()) == {'REFUSED'}, rows
     return rows
