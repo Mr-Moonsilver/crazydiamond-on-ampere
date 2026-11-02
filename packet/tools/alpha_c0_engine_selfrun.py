@@ -5,7 +5,9 @@ Three containers over one frozen bundle, the composed engine in each, all result
   * progress/: tools/native41_progress_engine_selfrun.py run() unchanged (held-f): 18 connected auto-arm and receipt cases and
     the eight connected native progress cases, burst included, plus its suites, with every C0 switch unset;
   * dense/: tools/native43_selfrun.py run() unchanged (the dense line): probe39, probe37, the spec's suites, the real-scheduler
-    tick probe, the clock split;
+    tick probe, the clock split. One change (lead's go, 2 Nov): the suites line runs through the bundle's harness/clock_bound.py
+    at verbosity 2, which leaves out exactly its declared real-clock window ids by id; the ids left out and the reason are in
+    the merged record (dense_clock_bound), and the verdict needs them equal to the listed ids of those suites;
   * stage/: one case per mode of harness/e3_alpha_c0_probe.py (cases alpha-c0-<mode>), local and serial selections with the switch
     installed, and the C0 suites in one unittest process with per-test outcomes.
 OUT/result.json is the merged record (schema alpha-c0-selfrun/1) the frozen runner reads; verdict PASS only when all three are PASS
@@ -168,12 +170,48 @@ def run_stage(bundle, out, name):
     return 0 if ok else 1
 
 
+def _clock_bound(bundle):
+    """The bundle's own harness/clock_bound.py (what the container runs), loaded on the hub to read its list and reason."""
+    import importlib.util
+    module_spec = importlib.util.spec_from_file_location('bundle_clock_bound', bundle / 'clock_bound.py')
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+def _dense_suites_through_clock_bound(original):
+    """The dense container's one unittest line, run through clock_bound.py -v -m with the same modules; nothing else moves."""
+    def inner_script(label, suites, compiled):
+        text = original(label, suites, compiled)
+        old = 'python3 -B -m unittest -v ' + ' '.join(dense.base.SUITES) + ' > /out/suites.log'
+        assert text.count(old) == 1, 'dense suites line not found once'
+        return text.replace(old, 'python3 -B clock_bound.py -v -m ' + ' '.join(dense.base.SUITES) + ' > /out/suites.log')
+    return inner_script
+
+
+def _dense_clock_bound_record(spec, bundle, out):
+    cb = _clock_bound(bundle)
+    suites = json.loads(spec.read_text())['engine_selfrun']['suites']
+    expected = sorted(x for x in cb.CLOCK_BOUND_FROZEN if x.split('.', 1)[0] in suites)
+    text = (out / 'dense/engine/suites.log').read_text()
+    lines = re.findall(r'^clock-bound excluded: (.*)$', text, re.M)
+    got = None if len(lines) != 1 else ([] if lines[0] == 'none' else sorted(lines[0].split(', ')))
+    return dict(reason=cb.REASON, excluded=got, expected=expected, ok=got == expected,
+                module=str(bundle / 'clock_bound.py'), module_sha256=sha(bundle / 'clock_bound.py'))
+
+
 def run(spec, tree, bundle, out, name):
     spec, bundle, out = Path(spec).resolve(), Path(bundle).resolve(), Path(out).resolve()
     out.mkdir()
     out.chmod(0o777)
     rc_progress = held_f.run(bundle, out / 'progress', name + '-progress')
-    rc_dense = dense.run(spec, tree, bundle, out / 'dense', name + '-dense')
+    original = dense.base.inner_script
+    dense.base.inner_script = _dense_suites_through_clock_bound(original)
+    try:
+        rc_dense = dense.run(spec, tree, bundle, out / 'dense', name + '-dense')
+    finally:
+        dense.base.inner_script = original
+    dense_clock_bound = _dense_clock_bound_record(spec, bundle, out)
     rc_stage = run_stage(bundle, out / 'stage', name + '-stage')
     p = json.loads((out / 'progress/result.json').read_text())
     d = json.loads((out / 'dense/result.json').read_text())
@@ -183,7 +221,7 @@ def run(spec, tree, bundle, out, name):
     # The progress and stage records count in 'tests'; the dense one keeps unittest's own line in 'ran'.
     ran = re.fullmatch(r'Ran (\d+) tests? in [0-9.]+s', pieces[1].get('ran') or '')
     tests = [pieces[0].get('tests') or 0, int(ran.group(1)) if ran else 0, pieces[2].get('tests') or 0]
-    ok = ok and ran is not None
+    ok = ok and ran is not None and dense_clock_bound['ok']
     skips = [(x.get('skips') if x.get('skips') is not None else x.get('skipped')) or 0 for x in pieces]
     connected = dict(p['cases'], **f['cases'])
     record = dict(schema=SCHEMA, verdict='PASS' if ok else 'FAIL',
@@ -201,7 +239,7 @@ def run(spec, tree, bundle, out, name):
                   py_compile=d['py_compile'], scheduler_tick_probe=d.get('scheduler_tick_probe'), clock_split=d['clock_split'],
                   progress_record_sha256=sha(out / 'progress/result.json'), dense_record_sha256=sha(out / 'dense/result.json'),
                   stage_record_sha256=sha(out / 'stage/result.json'), spec=str(spec), spec_sha256=sha(spec),
-                  declared_limit=DECLARED_LIMIT)
+                  dense_clock_bound=dense_clock_bound, declared_limit=DECLARED_LIMIT)
     (out / 'result.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
     print(json.dumps(dict(verdict=record['verdict'], tests=record['tests'], skips=record['skips'], cases=len(connected),
                           result_sha256=sha(out / 'result.json')), sort_keys=True))
