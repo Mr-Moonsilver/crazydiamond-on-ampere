@@ -7,17 +7,18 @@ instruments and ingress receipts, a typed FULL at the end and the grade, then na
 ACTIVE_S is the outer watchdog, not the sum of the per-step caps: the box budget is 5,400 s including cleanup. The draft
 guards each arm entry with LAST_ARM_ENTRY_S: an arm starts only when that arm's own worst case (entry, arm, ingress) and
 the whole tail (instruments, typed FULL, grade, report, end identity) still fit ACTIVE_S. An arm past that point is
-NOT_RUN and INC. NOT_BEFORE and CLEANUP_S are native40_box_gate's. The hard end is C0's own: 2026-11-02T07:00Z, the operator's
-instruction of 2 Nov (production comes back at 08:00 CET); native40_box_gate.HARD_END (06:00Z) and every other frozen gate are
-unchanged.
+NOT_RUN and INC. NOT_BEFORE and CLEANUP_S are native40_box_gate's. The hard end is C0's own: 2026-11-02T08:30Z = production time
+07:00Z (08:00 CET) plus the box budget including cleanup, so the coded latest start is production time and never refuses a start
+before it (operator, 2 Nov, about 03:35 CET: a run cut off at production time is stopped by the lead with TERM to the queue).
+native40_box_gate.HARD_END (06:00Z) and every other frozen gate are unchanged.
 ``window_ok(time.time())`` is the single entry check used by the draft and the owner runner.
 """
 from native41_box_gate import (ARM_KILL_AFTER_S, ARM_TIMEOUT_S, FULL_IDLE_CAP_S, INGRESS_CAP_S,
                                INSTRUMENTS_CAP_S, KEPT)
 from native40_box_gate import CLEANUP_S, HARD_END as NATIVE40_HARD_END, NOT_BEFORE, PHASES as NATIVE40_PHASES
 
-HARD_END = 1793602800.0                                    # 2026-11-02T07:00Z, C0 only (operator, 2 Nov)
-assert HARD_END == NATIVE40_HARD_END + 3600
+HARD_END = 1793608200.0                                    # 2026-11-02T08:30Z = 07:00Z + 5,400 s, C0 only (operator, 2 Nov)
+assert HARD_END == NATIVE40_HARD_END + 3600 + 5400
 
 BAND1_ARMS = 8
 ARMS = BAND1_ARMS

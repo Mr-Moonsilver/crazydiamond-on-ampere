@@ -6,7 +6,7 @@ PY_SLOT at the real clock against that queue's own gate, so it starts failing at
 (native39 trunk after 01:14:59Z, native35 p after 01:44:59Z, ... native34 after 05:17:59Z). The list is every real-clock
 window-slot test, C0's own included, found by the tests' own text (PY_SLOT / SLOT_RECEIPTS with real_wall_clock), not cut at a
 time. Every test file stays byte-identical; nothing here edits a test. The arm-time window code is unchanged (C0's gate HARD_END
-is 07:00Z, the operator's instruction); removing window code entirely is for the next composed build.
+is 08:30Z, the operator's instruction); removing window code entirely is for the next composed build.
 
     python3 clock_bound.py SUITE.py          run one suite file as `python3 SUITE.py` would, minus its listed ids
     python3 clock_bound.py -m MOD [MOD ...]  run modules as `python3 -m unittest MOD ...` would, minus the listed ids

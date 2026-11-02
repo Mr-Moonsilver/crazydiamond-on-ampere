@@ -128,7 +128,7 @@ import alpha_perf_gate
 import alpha_c0_gate
 active_and_cleanup=alpha_c0_gate.ACTIVE_S+alpha_c0_gate.CLEANUP_S
 from unittest.mock import patch
-# The frozen runner's check_slot reads alpha_c0_gate.window_ok (C0's hard end 07:00Z), so its negatives are C0's boundaries.
+# The frozen runner's check_slot reads alpha_c0_gate.window_ok (C0's own hard end), so its negatives are C0's boundaries.
 for instant in (alpha_c0_gate.NOT_BEFORE-1,alpha_c0_gate.HARD_END-active_and_cleanup+1):
     with patch.object(owner.time,'time',lambda:instant):
         try:owner.check_slot()

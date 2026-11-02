@@ -11,7 +11,7 @@ alpha_c0_cpu_probe.py = alpha_perf_cpu_probe.py with:
   * the declared real-clock window-slot exclusion (harness/clock_bound.py; operator, 2 Nov: box timing is governed by the lead at
     launch): the listed ids are stripped from the discovered suites, EXPECTED_TESTS drops by the 10 present here, and the slot
     receipt asserts read what still runs; the excluded ids are recorded;
-  * the frozen owner runner's check_slot negatives at C0's own boundaries (its window is alpha_c0_gate's, hard end 07:00Z).
+  * the frozen owner runner's check_slot negatives at C0's own boundaries (its window is alpha_c0_gate's own hard end).
 The bundle self-run is tools/native43_bundle_selfrun.py with the spec's arm and probe.
 Every replacement must match exactly once.  --check verifies the committed file.
 """
@@ -38,7 +38,7 @@ PROBE_SWAPS = (
      'EXPECTED_TESTS=%d  # the %d alpha-perf probe cases plus the %d C0 queue cases, less %d declared real-clock window-slot tests; pinned into the frozen runner gate\n'
      % (CLOCK_BOUND_HERE, PARENT_TESTS + ALPHA_C0_TESTS - CLOCK_BOUND_HERE, PARENT_TESTS, ALPHA_C0_TESTS, CLOCK_BOUND_HERE)),
     ("for instant in (weekend_gate.NOT_BEFORE-1,weekend_gate.HARD_END-active_and_cleanup+1):\n",
-     "# The frozen runner's check_slot reads alpha_c0_gate.window_ok (C0's hard end 07:00Z), so its negatives are C0's boundaries.\n"
+     "# The frozen runner's check_slot reads alpha_c0_gate.window_ok (C0's own hard end), so its negatives are C0's boundaries.\n"
      "for instant in (alpha_c0_gate.NOT_BEFORE-1,alpha_c0_gate.HARD_END-active_and_cleanup+1):\n"),
     ("assert len(slot_receipts)==20 and all(r['real_wall_clock'] for r in slot_receipts)\n"
      "assert {r['draft'] for r in slot_receipts}>={'q18a_native35_r.draft.sh','q18a_native35_o.draft.sh','q18a_native35_l.draft.sh','q18a_native35_p.draft.sh','q18a_native35_p_b.draft.sh','q18a_native35_p_c.draft.sh','q18a_native35_l2.draft.sh'}\n"

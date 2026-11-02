@@ -1368,9 +1368,9 @@ class Window(unittest.TestCase):
         import native40_box_gate as n40
         import native41_box_gate as n41
         self.assertEqual((gate.CLEANUP_S, gate.NOT_BEFORE), (n40.CLEANUP_S, n40.NOT_BEFORE))
-        # C0's own hard end, 2026-11-02T07:00Z: the operator's instruction of 2 Nov (production back at 08:00 CET); the lead approved
-        # this pin edit (and the inherited tuple above and the latest-start string below follow from it). native40's stays 06:00Z.
-        self.assertEqual((gate.HARD_END, n40.HARD_END), (1793602800.0, 1793599200.0))
+        # C0's own hard end, 2026-11-02T08:30Z = production time 07:00Z plus the 5,400 s budget: the operator's instruction of 2 Nov
+        # (about 03:35 CET); the lead approved this pin edit (the latest-start string below follows from it). native40's stays 06:00Z.
+        self.assertEqual((gate.HARD_END, n40.HARD_END), (1793608200.0, 1793599200.0))
         for name in n41.KEPT:
             self.assertEqual(gate.PHASES[name], n40.PHASES[name], name)
         self.assertEqual(gate.ACTIVE_S + gate.CLEANUP_S, gate.BOX_BUDGET_S)
@@ -1390,7 +1390,7 @@ class Window(unittest.TestCase):
             self.assertEqual(body.count(text), count, text)
         self.assertEqual((n41.INSTRUMENTS_CAP_S, n41.FULL_IDLE_CAP_S, n41.INGRESS_CAP_S, gate.GRADE_CAP_S), (120, 450, 60, 600))
         self.assertEqual(gate.latest_arm(), gate.HARD_END - gate.BOX_BUDGET_S)
-        self.assertEqual(time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(gate.latest_arm())), '2026-11-02T05:30Z')
+        self.assertEqual(time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(gate.latest_arm())), '2026-11-02T07:00Z')
         self.assertTrue(gate.window_ok(gate.latest_arm()))
         self.assertFalse(gate.window_ok(gate.latest_arm() + 1))
         self.assertFalse(gate.window_ok(gate.NOT_BEFORE - 1))
