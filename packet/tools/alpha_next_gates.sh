@@ -5,12 +5,17 @@
 #   two steps before strict: the git-based composition proof (tools/alpha_next_composition.py) and the review pins check
 #   (tools/alpha_next_review_pins.py --check);
 #   the focused list is the union of Step B's (step_b_gates_c.sh) and C0's (alpha_c0_gates_g.sh) lists plus the alpha-next queue suite,
-#   the alpha-next stop-fix matrix, C0 ring, peak receipt, receipt writer (PLAN 2, with its mutants) and stage-1 slow-rank suites, the stage-1 anatomy suite, held-g's anatomy and lean-replies suites
+#   the alpha-next stop-fix matrix, C0 ring, peak receipt, receipt writer (PLAN 2, with its mutants), stage-1 slow-rank and 4C.5 path qualification suites, the stage-1 anatomy suite, held-g's anatomy and lean-replies suites
 #   and the two load-robust twins; it runs through harness/alpha_next_robust_swap.py, which leaves out the declared load-flaky frozen
 #   methods (swapped for their twins), the superseded stage-1 FreezeProof method and step_b_clock_bound's declared real-clock ids;
 #   test_alpha_next_composition runs on its own (it needs git), after focused;
-#   the engine self-run (Step B's four containers, C0's stage container, the composed suites container) with its comparison against
-#   Step B's frozen record, the negative over the regenerated Step B overlay, and the overlay tamper control;
+#   the engine self-run (Step B's four containers, C0's stage container, the composed container with held-g's probe cases and the
+#   composed suites) with its comparison against Step B's frozen record, the negative over the regenerated Step B overlay, and the
+#   overlay tamper control;
+#   negative pins: while tools/alpha_next_negative_pins.json is the AWAITING-OBSERVATION stub, the negative step runs once with
+#   --observe instead (into $OUT/engine-negative-observe) and the chain stops there (rc 5, logged). Then: review the observation,
+#   write the pins with one command (tools/alpha_next_negative_pins_write.py --observed .../result.json --log ...-stdout.log
+#   --classify REVIEWED.json --discovery TEXT), commit the pins file alone, and run the chain again (new TAG and OUT: the head moved);
 #   after the precheck, the staging check (the frozen runner's own staging requires over the exact records, tools/alpha_next_staging_check.py).
 # One heavy job at a time (the hub is shared), so nothing runs in parallel here. No absolute-time window: launch time is the lead's.
 # usage: alpha_next_gates.sh WT SPEC OUT EVID TAG NOTE [DELIVERY]
@@ -43,7 +48,7 @@ cd "$WT/harness"
 step strict "$(tail -n 1 "$EVID/strict-$TAG.log" | sed 's/^rc=//')"
 { echo "# head $HEAD focused"; python3 -B alpha_next_robust_swap.py \
     test_alpha_next_queue test_alpha_next_receipts test_alpha_next_receipts_mutants test_alpha_next_stage1_slow_rank \
-    test_alpha_next_stopfix_matrix test_alpha_next_c0_ring test_alpha_next_peak_receipt \
+    test_alpha_next_path_qualification test_alpha_next_stopfix_matrix test_alpha_next_c0_ring test_alpha_next_peak_receipt \
     test_stage1_handler_anatomy test_e3_native_anatomy test_e3_native_lean_replies test_e3_w1_decode_driver_ordered \
     test_native43_le_bounded_enqueue_stepped test_alpha_c0_queue test_e3_stage_local test_e3_stage_local_control \
     test_e3_stage_local_qsa test_alpha_c0_report test_step_b_queue test_e3_native_layer_groups test_step_a_queue \
@@ -97,6 +102,19 @@ python3 -B tools/alpha_next_engine_selfrun.py --compare "$OUT/engine-selfrun" --
     >"$OUT/engine-comparison-stdout.log" 2>&1
 step engine-comparison $?
 
+if python3 -I -c "import json,sys;sys.exit(0 if str(json.load(open(sys.argv[1]))['status']).startswith('AWAITING-OBSERVATION') else 1)" \
+    tools/alpha_next_negative_pins.json; then
+  # One observation only (the sweep's rule): observe, then stop for review and the pin writer.
+  python3 -B tools/alpha_next_engine_selfrun.py --negative --observe --bundle "$HELD" --overlay "$OUT/parent/native30_overlay" \
+      --sources "$OUT/parent/e3_builder" --out "$OUT/engine-negative-observe" --name "alpha-next-negative-observe-cpu-$P12" \
+      >"$OUT/engine-negative-observe-stdout.log" 2>&1
+  # --observe exits 1 by design; the step passes when the record's verdict is OBSERVED.
+  python3 -I -c "import json,sys;sys.exit(0 if json.load(open(sys.argv[1]))['verdict']=='OBSERVED' else 1)" \
+      "$OUT/engine-negative-observe/result.json"
+  step engine-negative-observe $?
+  echo "pins awaiting review: tools/alpha_next_negative_pins_write.py --observed $OUT/engine-negative-observe/result.json --log $OUT/engine-negative-observe-stdout.log --classify REVIEWED.json --discovery TEXT" >>"$STEPS"
+  step engine-negative-awaiting-pins 5
+fi
 python3 -B tools/alpha_next_engine_selfrun.py --negative --bundle "$HELD" --overlay "$OUT/parent/native30_overlay" \
     --sources "$OUT/parent/e3_builder" --out "$OUT/engine-negative" --name "alpha-next-negative-cpu-$P12" \
     >"$OUT/engine-negative-stdout.log" 2>&1

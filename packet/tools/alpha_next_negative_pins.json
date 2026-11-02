@@ -29,18 +29,95 @@
    "FAIL",
    "ModuleNotFoundError",
    "No module named 'vllm.v1.flash_e3.stage_progress'"
+  ],
+  "held-g-burst": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-current": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-lean": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-skew": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo-lean": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo-wait": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-solo-wait-lean": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-burst-wait": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-current-solo": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-current-solo-wait": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-trace": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-trace-skew": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
+  ],
+  "held-g-unset": [
+   "FAIL",
+   "AttributeError",
+   "module 'vllm.v1.flash_e3.executor_hooks' has no attribute '_stock_step_idle'"
   ]
  },
  "cases_from": {
-  "frozen_record_sha256": "488b6cfc424c923a0270e7b5d961109344e6e41f37cfef3dde15f9a81ac885ed",
-  "path": "tools/alpha_c0_negative_pins.json",
-  "why": "every alpha-c0 probe mode imports the stage modules, which the parent overlay lacks"
+  "alpha-c0": {
+   "frozen_record_sha256": "488b6cfc424c923a0270e7b5d961109344e6e41f37cfef3dde15f9a81ac885ed",
+   "path": "tools/alpha_c0_negative_pins.json",
+   "why": "every alpha-c0 probe mode imports the stage modules, which the parent overlay lacks"
+  },
+  "held-g": {
+   "name": "NEGATIVE_CASES",
+   "path": "tools/native41_held_g_engine_selfrun.py (claude/native41-held-g-pack)",
+   "why": "every held-g probe mode reads executor_hooks._stock_step_idle, which the Step B overlay (1a29d84f) lacks; expected, confirmed or replaced by the one observation"
+  }
  },
  "discovery": null,
  "frozen_record_sha256": "466447cd61c5144861474db8740ad781d66cb156d6cdc2434a3f15a9ac7fd942",
  "observation": null,
  "reasons": {},
  "schema": "alpha-next-negative-pins/1",
- "status": "AWAITING-OBSERVATION: the case rows are carried from C0's pins (its observation over c3f1f64) as the expected refusal over Step B's overlay, which has no stage modules either; the test rows are empty until one alpha_next_engine_selfrun.py --negative --observe over the chain's own build is reviewed and pinned. With no test rows the negative refuses (negative-suites-not-run), so the chain stops at engine-negative until then.",
+ "status": "AWAITING-OBSERVATION: the alpha-c0 case rows are carried from C0's pins (its observation over c3f1f64) and the held-g case rows from held-g's NEGATIVE_CASES (over held-f) as the expected refusals over Step B's overlay, which has neither the stage modules nor executor_hooks._stock_step_idle; the test rows are empty until one alpha_next_engine_selfrun.py --negative --observe over the chain's own build is reviewed and pinned with tools/alpha_next_negative_pins_write.py. With no test rows the negative refuses (negative-suites-not-run), so the chain observes and stops at engine-negative until then.",
  "tests": {}
 }
