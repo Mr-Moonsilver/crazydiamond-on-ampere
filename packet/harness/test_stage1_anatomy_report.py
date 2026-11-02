@@ -123,6 +123,8 @@ class Synthetic(unittest.TestCase):
         gpu = d['outcomes']['waiting_on_decode_gpu']
         self.assertAlmostEqual(gpu['share'], 2 / total, places=3)            # 2 / 2.2 >= 0.8 and work queued after
         self.assertEqual(d['verdict'], 'dominates: pp_receive_or_gpu_cpu_sync')
+        self.assertEqual(d['forward_coverage'], 1.0)
+        self.assertEqual(d['notes'], [])
         self.assertEqual(d['chunks'], 1)
         self.assertIn('no live chunks', self.run_report(self.lines())['decision']['fused']['beyond-arena']['verdict'])
 
@@ -134,6 +136,15 @@ class Synthetic(unittest.TestCase):
         self.assertTrue(d['verdict'].startswith('no outcome reaches 50 %'), d['verdict'])
         self.assertIn('forward_launch', d['verdict'])
         self.assertEqual(d['outcomes']['waiting_on_decode_gpu']['class'], 'minor')   # 4.9 / 10 < 0.8
+
+    def test_missed_forward_seam_is_named(self):
+        rows = [main_row(201, 'e', 0, 10, 2, 0.1, seams(execute=(9, 9, 1, 1)), qb=1, qa=0)]
+        got = self.run_report([engine_line(1, 1, 0, [201]), handler_line(2, 2, 0, rows), handler_line(2, 3, 0, rows)])
+        d = got['decision']['fused']['below-arena']
+        self.assertEqual(d['forward_coverage'], 0.0)
+        self.assertTrue(any('missed seam' in n for n in d['notes']), d['notes'])
+        cover = got['groups']['fused-live-below-arena']['per_rank_kind']['2:execute_model']['seam_coverage']
+        self.assertEqual(cover, {'execute': 1.0})
 
     def test_cpu_bound_counts_only_with_the_stream_idle_at_launch(self):
         rows = [main_row(201, 'e', 0, 10, 9, 0.1, seams(execute=(9, 9, 8.5, 1)), qb=1, qa=0)]

@@ -251,6 +251,9 @@ def per_rank_kind(rows, outs):
         replies = [o for r in group for o in outs.get((rank, r['seq']), ())]
         out[key] = dict(
             rpcs=len(group),
+            # Rows carrying each seam / RPCs: a seam the path always takes (forward on execute_model) short of ~1.0
+            # means a missed seam (VM run stage1-anatomy-c: forward on 10 of 1,106 execute rows).
+            seam_coverage={s: round(sum(1 for r in group if s in r['seams']) / len(group), 4) for s in seams},
             wall_ms=dist([ms(r['wall_ns']) for r in group]), total_ms=dist([ms(total(r)) for r in group]), cpu_ms=dist([ms(r['cpu_ns']) for r in group]),
             cpu_share=dist([r['cpu_ns'] / r['wall_ns'] for r in group if r['wall_ns'] and r['cpu_ns'] is not None]),
             observer_ms=dist([ms(r['observer_ns']) for r in group]),
@@ -319,7 +322,7 @@ def decision(pairs, outs, where):
             result[band_name] = dict(chunks=0, verdict='no live chunks with both stage-1 ranks in this band')
             continue
         shares, extra = {}, dict(cpu_share=[], blocked_share_pp_sync=[], idle_before=[], forward_vs_device=[],
-                                 sample_vs_device=[], queued_after=[], handler_ms=[])
+                                 sample_vs_device=[], queued_after=[], handler_ms=[], forward_coverage=[])
         for rows in chunks:
             wall = sum(total(r) for r in rows) or 1
             cats = {}
@@ -329,6 +332,9 @@ def decision(pairs, outs, where):
             for k, v in cats.items():
                 shares.setdefault(k, []).append(v / wall)
             extra['handler_ms'].append(wall / 1e6)
+            executes = [r for r in rows if r['kind'] == 'e']
+            extra['forward_coverage'].append(sum(1 for r in executes if 'forward' in r['seams']) / len(executes)
+                                             if executes else None)
             extra['cpu_share'].append(sum(r['cpu_ns'] or 0 for r in rows) / (sum(r['wall_ns'] or 0 for r in rows) or 1))
             pp_seams = CATEGORIES['pp_receive'] + CATEGORIES['gpu_cpu_sync']
             ns, cpu = 0, 0
@@ -404,7 +410,15 @@ def readout(chunks, shares, side):
             largest, 100 * shares[largest])
     else:
         verdict = 'no rows'
-    return dict(chunks=chunks, handler_ms_per_chunk=side['handler_ms'], category_shares=shares, outcomes=outcomes,
+    notes = []
+    if side['forward_coverage'] is not None and side['forward_coverage'] < 0.95:
+        notes.append('forward seam on %.0f %% of execute_model rows: a missed seam, the launch is in prepare; '
+                     'do not read the rule' % (100 * side['forward_coverage']))
+    if shares.get('other', 0) >= SIGNIFICANT:
+        notes.append("'other' is %.0f %% of the handler total: find its seam before reading the rule"
+                     % (100 * shares['other']))
+    return dict(chunks=chunks, handler_ms_per_chunk=side['handler_ms'], forward_coverage=side['forward_coverage'],
+                notes=notes, category_shares=shares, outcomes=outcomes,
                 significant=[k for k, v in outcomes.items() if v['class'] == 'significant'], verdict=verdict,
                 caveat=CAVEAT)
 
