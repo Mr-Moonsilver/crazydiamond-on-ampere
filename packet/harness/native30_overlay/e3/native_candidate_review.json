@@ -31,7 +31,8 @@
         "test_alpha_next_receipts_mutants",
         "test_alpha_next_stage1_slow_rank",
         "test_alpha_next_path_qualification",
-        "test_alpha_next_probe_launch"
+        "test_alpha_next_probe_launch",
+        "test_alpha_next_wall_guard"
       ],
       "lineage_rows": []
     },
@@ -56,7 +57,7 @@
     "parent_manifest": "4b1eccb869db64e8b6914c5a9b30b58cc46615cb014c30616c714eb6eab64069",
     "queue": "q18a-alpha-next: Step B's queue with the stage-local switch; core ABBA C0 on/off at size 2 over two bands, then the size 4 C0-on tail as reads; validity, engagement and generated tokens gated on the core, speed, decode and memory reported; 9,000 s box budget relative to the run's start",
     "scope": "the composed candidate (held-g, Step A/B, C0, stage-1 anatomy on the stop-fix trunk) against Step B; not a release assessment",
-    "source_commit": "fedfdfaf4099804c1ee22919ded5a3a69c3f8248"
+    "source_commit": "53d37b461a85d3df124aa5ee2cd28a989b705ed6"
   },
   "backend_semantics_provenance": {
     "constructor_and_method_ASTs_equal": true,
@@ -1552,13 +1553,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict registered CPU regression on the packaged tree",
-    "cases": 374,
+    "cases": 375,
     "exit_code": 0,
-    "log_sha256": "8732ce798ffd956a49aa3eedcbc1b121963ea281381a2dffa9dd5ad2a02529b0",
-    "reported_tests": 4762,
-    "required": 374,
+    "log_sha256": "39a15e10e59a708e700a63e7134b2534d9f8b56eec732dbe2f062aacb061c15a",
+    "reported_tests": 4771,
+    "required": 375,
     "skips": 0,
-    "suites": 257
+    "suites": 258
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -3764,9 +3765,9 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "901b50907b72638bed3aa6ac01eb0318facb6883fdba3ef41c7efd7ecb9d958c",
+    "log_sha256": "55b9f7586a4f40a096e2cddd2eeb414980758e0862fd39a3c6a267c8829c58d7",
     "skips": 0,
-    "tests": 1630,
+    "tests": 1639,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
