@@ -377,8 +377,71 @@ def revert_core(source, expected=None):
 
 # --- worker -----------------------------------------------------------------
 
+# stage1-step L1 (FLASH_S5_LAZY_RECV, default off, per RPC by the engine's mark on the scheduler output): the PP receive
+# runs at the runner's first read of ``.tensors``, after the CPU prep, instead of before the runner starts.  Same RPC, same
+# order against stage 0's sends; only the host position inside this execute_model moves.  Unmarked, the stock branch runs.
+_LAZY_RECV_CLASS = '''class FlashS5LazyIntermediateTensors(AsyncIntermediateTensors):
+    """stage1-step L1: AsyncIntermediateTensors whose receive itself waits for the first ``.tensors``."""
+
+    def __init__(self, receive) -> None:
+        super().__init__({})
+        self._flash_s5_receive = receive
+
+    def wait_for_comm(self) -> None:
+        receive = object.__getattribute__(self, "_flash_s5_receive")
+        if receive is not None:
+            self._flash_s5_receive = None
+            tensor_dict, comm_handles, comm_postprocess = receive()
+            assert tensor_dict is not None
+            self.tensors = tensor_dict
+            self._comm_handles = comm_handles
+            self._comm_postprocess = comm_postprocess
+        AsyncIntermediateTensors.wait_for_comm(self)
+
+    def __getitem__(self, key):
+        # The stock slice calls ``self.__class__(tensors)``; here a slice is a plain, received view.
+        if isinstance(key, slice):
+            return AsyncIntermediateTensors({k: v[key] for k, v in self.tensors.items()})
+        return self.tensors[key]
+
+    def flash_s5_require_received(self) -> None:
+        # Fail closed: an unconsumed receive would hand stage 0's next batch to the next step.
+        if object.__getattribute__(self, "_flash_s5_receive") is not None:
+            raise RuntimeError("stage1-step lazy PP receive was never consumed by the runner")
+
+
+'''
+
 _WORKER_FORWARD = (
     ('logger = init_logger(__name__)\n', 'logger = init_logger(__name__)\n\n' + _IMPORT),
+    ('class Worker(WorkerBase):\n', _LAZY_RECV_CLASS + 'class Worker(WorkerBase):\n'),
+    ('''        if forward_pass and not get_pp_group().is_first_rank:
+            tensor_dict, comm_handles, comm_postprocess = (
+''', '''        if (
+            forward_pass
+            and not get_pp_group().is_first_rank
+            and _flash_s5_hooks.lazy_recv_marked(scheduler_output)
+        ):
+            intermediate_tensors = FlashS5LazyIntermediateTensors(
+                lambda: get_pp_group().irecv_tensor_dict(
+                    all_gather_group=get_tp_group(),
+                    all_gather_tensors=all_gather_tensors,
+                )
+            )
+        elif forward_pass and not get_pp_group().is_first_rank:
+            tensor_dict, comm_handles, comm_postprocess = (
+'''),
+    ('''                scheduler_output, intermediate_tensors
+            )
+            if (
+                self.use_v2_model_runner
+''', '''                scheduler_output, intermediate_tensors
+            )
+            if type(intermediate_tensors) is FlashS5LazyIntermediateTensors:
+                intermediate_tensors.flash_s5_require_received()
+            if (
+                self.use_v2_model_runner
+'''),
     ('    def shutdown(self) -> None:\n', _WORKER_METHODS + '    def shutdown(self) -> None:\n'),
 )
 
@@ -962,11 +1025,18 @@ def after_engine_startup(engine):
     return install_engine(engine)
 
 
+def lazy_recv_marked(scheduler_output):
+    """stage1-step L1, worker: the engine's per-RPC mark; both TP peers read the same broadcast object."""
+    return getattr(scheduler_output, 'flash_s5_lazy_recv', False) is True
+
+
 def park_prefill(engine, scheduler_output):
     """True when E3 took this whole scheduled step as an asynchronous chunk."""
     driver = _driver(engine)
     if driver is None:
         return False
+    if getattr(driver, 'lazy_recv', False) is True:
+        driver.mark_lazy_recv(scheduler_output)
     steps = _steps(engine)
     if steps is not None:
         # Held-g R5: scheduler.schedule returned (an empty batch or tokens).
@@ -981,6 +1051,10 @@ def before_step_with_batch_queue(engine):
     if driver is not None:
         started = time.monotonic_ns()
         result = _stock_step_bypass(driver, driver.advance())
+        sync = getattr(driver, 'sync_decode_merge', None)
+        if sync is not None:
+            # stage1-step L2: read by this step's schedule() (scheduler_hooks.decode_merge_cap).
+            sync(engine.scheduler)
         steps = _steps(engine)
         if steps is not None:
             # Held-g R5: read after the advance, which may have begun the chunk.

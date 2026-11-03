@@ -659,6 +659,11 @@ check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdi
 sys.path.insert(0, HERE)
 from step_b_clock_bound import MODULES as STEP_B_CLOCK_BOUND_MODULES  # noqa: E402
 from alpha_next_robust_swap import MODULES as ROBUST_SWAP_MODULES  # noqa: E402
+# stage1-step: c1's tree-identity ids are superseded on this tree by stage1_step_robust_swap, which needs the base-tree receipt (tools/stage1_step_base_proof.py, the
+# chain's or one per run) and runs the default-off proof itself. The helper is imported, not defined here: tools/strict_parallel.py evaluates the command expression below.
+from stage1_step_robust_swap import MODULES as STAGE1_STEP_SWAP_MODULES, selftest_base_receipt as stage1_step_base_receipt  # noqa: E402
+# stage1-step (attn-meta's rule, lead 3 Nov 13:3x): c1's tree-identity ids are superseded on this tree by stage1_step_robust_swap, whose --self-proof runs the base-tree proof
+# (tools/stage1_step_base_proof.py: c1's two modules at fbb9123e in a detached checkout) and the default-off proof in the same process; a literal command, so tools/strict_parallel.py can read it.
 for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithmetic, bucket bytes, fragmentation and no extra window (CPU)'),
                      ('test_s5_dma_window.py', 'S5 repeated DMA: every layer/chunk, bounded CPU copies, strict oracle, solo/overlap accounting (CPU)'),
                      ('test_e2_arena.py', 'E2 single arena: owner epochs, bounded fills, completion and retirement (CPU only)'),
@@ -782,6 +787,13 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_alpha_next_c1b_queue.py', 'alpha-next-c1b queue q18a-alpha-next-c1b: the fixed-schedule numerics table S1 S2 L1 L2 D S3 (six solo band 1 arms: serial x3, C0 local x2, C1 defer; serial selected per arm by native_stage_local local false), the numerics probe (temperature 0, 256 tokens, top-20 logprobs, fresh only) and its verdict declared before the run (bit-equal if S1 = S2, else the S1-S2 bound; outside FAIL ENGINE, drift or missing INC), the C1-aware open-rows rule (e3_c1_open_rows, check 4 INC ENGINE) and ring increments in c1\'s grade, texts derived from alpha-next-c1\'s, the arm loop under real bash, every python call parsed, relative budget 7,800 s only (CPU only)'),
                      ('test_e3_c1_open_rows.py', 'alpha-next-c1b (a): progress-line-open-rows-carried (supersedes progress-line-with-open-rows on C1 overlap arms): each of the four checks and its named reason (check 4 the ENGINE reason), line order, the stage-overlap index; ring_increments from the running headroom_blocked_ns total (CPU only)'),
                      ('test_alpha_next_c1_send_gate.py', 'alpha-next-c1b (b): the deferred PP_SEND gate in stage_overlap: unreachable through the real tick and in-wait paths (bind-due runs first on every tick; the in-wait path excludes PP_SEND), each declining case driven explicitly, a call-site scan; the gate kept as a backstop and its contract held with the bind-due faulted; send-gate-removed is an equivalent mutant on the real paths and caught by the contract tests (CPU only)'),
+                     ('test_native43_engine_death_h.py', 'Health-scoped engine death: a broadcast-block stall before the first APIServer health 200 is a startup read, recorded, not a death (returning-append 14904f18, byte for byte; lead 3 Nov 16:49) (CPU only; leaves in native43_engine_death_h_fixture_leaves.json)'),
+                     ('test_alpha_next_stop_race_h.py', 'Stop race over the health-scoped scan, importing only native43_engine_death_h (returning-append 14904f18, byte for byte) (CPU only)'),
+                     ('test_hub_slot.py', 'Hub test slot and the dry-run record: at most N commands of one class, released on any exit; require-dryrun refuses a missing, failed, stale or dirty record (CPU only)'),
+                     ('test_stage1_step_box.py', "q18a-stage1-step box: the arm table's selection through the real router, the acknowledgement recorded, the grade over this table with c1b's C1-aware rules bound, the gate both ways (selection, counters, worker rows) with mutants, the grader rules on a synthetic jump-on flush (CPU only; leaves in stage1_step_fixture_leaves.json)"),
+                     ('test_stage1_step_robust_swap.py', 'stage1-step superseded map: exactly the four c1 tree-identity ids, each found once, a fifth refused (mutant); the base-tree receipt and the default-off proof carry the claim (missing INC, not holding FAIL) (CPU only)'),
+                     ('test_stage1_step_queue_names.py', 'stage1-step queue names: every bash QNAME rule run in bash with the real QNAME, the runner names, the declaration executed up to its last rule (CPU only)'),
+                     ('test_stage1_step_queue.py', 'q18a-stage1-step queue: texts derived from c1 (c1 unchanged), the switch, names, relative budget (18 arms), the arm loop under real bash over the real grade, every python3 call parsed by its real parser (CPU only; leaves in stage1_step_fixture_leaves.json)'),
                      ('test_alpha_next_c1_defer_control_b.py', 'alpha-next-c1b (b): test_alpha_next_c1_defer_control.Mutants superseded by name: the five mutants rebuilt with explicit super(OverlapSegmentDriver, self), each scenario passing unmutated and failing under its mutant by assertion only (no TypeError); the old construction\'s TypeError recorded (CPU only)'),
                      ('test_alpha_c1_report.py', 'C1 post-run report over real emitter lines (CPU only)'),
                      ('test_alpha_c1_queue.py', 'C1 queue: texts derived from C0 l, the sixteen-arm loop under real bash over the real C1 grade, every python3 call parsed, the 9,000 s budget against the measured box walls (CPU only; leaves in alpha_c1_fixture_leaves.json)'),
@@ -936,7 +948,8 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
     # only those ids (CLOCK_BOUND_FROZEN, each with its reason; a superset of C0's clock_bound list); the test files are unchanged.
     # Alpha-next PLAN 5: a module holding a declared load-flaky frozen method runs through alpha_next_robust_swap, which leaves
     # out only that id (ROBUST_SWAP, with its reason and its twin; it also applies CLOCK_BOUND_FROZEN); the twin is its own row.
-    command = ([sys.executable, os.path.join(HERE, 'alpha_next_robust_swap.py'), suite] if suite[:-3] in ROBUST_SWAP_MODULES
+    command = ([sys.executable, os.path.join(HERE, 'stage1_step_robust_swap.py'), '--base-receipt', stage1_step_base_receipt(), suite] if suite[:-3] in STAGE1_STEP_SWAP_MODULES
+               else [sys.executable, os.path.join(HERE, 'alpha_next_robust_swap.py'), suite] if suite[:-3] in ROBUST_SWAP_MODULES
                else [sys.executable, os.path.join(HERE, 'step_b_clock_bound.py'), suite] if suite[:-3] in STEP_B_CLOCK_BOUND_MODULES
                else [sys.executable, os.path.join(HERE, suite)])
     identity_test = subprocess.run(command, capture_output=True, text=True,

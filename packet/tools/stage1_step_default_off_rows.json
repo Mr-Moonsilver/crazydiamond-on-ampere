@@ -1,0 +1,11 @@
+{
+ "added": [],
+ "base": "fbb9123e",
+ "engine": "patches/s5_engine",
+ "exempt": [
+  "native_candidate_review.json"
+ ],
+ "files": [],
+ "rows": [],
+ "schema": "stage1-step-default-off-rows/1"
+}

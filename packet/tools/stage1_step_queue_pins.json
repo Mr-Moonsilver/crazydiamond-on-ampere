@@ -1,0 +1,8 @@
+{
+  "schema": "stage1-step-queue-pins/1",
+  "status": "PLACEHOLDER: not packaged yet",
+  "overlay_manifest_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
+  "package_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
+  "harness_bundle_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
+  "history": []
+}

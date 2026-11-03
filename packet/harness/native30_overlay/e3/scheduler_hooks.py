@@ -103,6 +103,12 @@ def _require_e2(source, digest, path, marker):
 
 _SCHEDULER_FORWARD = (
     ('logger = init_logger(__name__)\n', 'logger = init_logger(__name__)\n\n' + _IMPORT),
+    ('''            dec_cap = (ndec_all + 1) // 2 if ndec_all > 1 else None
+        ndec_sched = 0
+''', '''            dec_cap = (ndec_all + 1) // 2 if ndec_all > 1 else None
+        dec_cap = _flash_s5_hooks.decode_merge_cap(self, dec_cap)
+        ndec_sched = 0
+'''),
     ('''                        request.shared_prefix_boundary,
                         hit_diverged,
                     ) = self._get_local_prefix_cache_hit(request)
@@ -226,6 +232,10 @@ _SCHEDULER_FORWARD = (
 
 _SCHEDULER_REVERSE = (
     # (new, old) pairs in forward order; revert walks in reverse.
+    ('''        dec_cap = _flash_s5_hooks.decode_merge_cap(self, dec_cap)
+        ndec_sched = 0
+''', '''        ndec_sched = 0
+'''),
     ('''        return num_waiting + len(self.running) + _flash_s5_hooks.parked_count(self)
 ''', '''        return num_waiting + len(self.running)
 '''),
@@ -364,6 +374,19 @@ _BLOCK_POOL_REVERSE = (
     ('logger = init_logger(__name__)\n\n' + _IMPORT,
      'logger = init_logger(__name__)\n'),
 )
+
+
+def decode_merge_cap(scheduler, dec_cap):
+    """stage1-step L2 (FLASH_S5_DECODE_MERGE, default off): while the engine says so, one batch of all decoders.
+
+    The decoder cap of this step.  Unset (always, with the switch off) the stock value.  Set: no cap on even steps, a
+    cap of zero on odd ones, so an odd cohort stays eligible, waits one step and joins the even one.  An odd step is an
+    empty step: its execute_model still consumes the PP handler's slot, so the sampled-token ring keeps its cadence.
+    Unset again, the parity cap re-forms two cohorts within a step.
+    """
+    if getattr(scheduler, 'flash_s5_decode_merge', False) is not True:
+        return dec_cap
+    return None if scheduler.current_step % 2 == 0 else 0
 
 
 def generate_scheduler(source):
@@ -2398,7 +2421,7 @@ __all__ = [
     'SCHEDULER_E2_SHA256', 'SCHEDULER_PATH', 'SCHEDULER_PINNED_SHA256',
     'SchedulerLeases', 'SourceHold', 'after_schedule',
     'before_scheduler_shutdown', 'before_touch', 'block_held',
-    'blocked_deferred', 'defer_request_free', 'defer_stock_positive_frontier',
+    'blocked_deferred', 'decode_merge_cap', 'defer_request_free', 'defer_stock_positive_frontier',
     'defer_stock_prefix_hit', 'defer_stock_running_prefill',
     'flash_s5_admit',
     'generate_block_pool', 'generate_scheduler', 'hold_leased_blocks',

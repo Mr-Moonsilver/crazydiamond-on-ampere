@@ -1,0 +1,9 @@
+{
+ "schema": "stage1-step-engine-suites/1",
+ "status": "discovery mode: engine_suites filled; refusal_tests and why stay empty (no default-off proof)",
+ "engine_suites": [
+  "test_stage1_step_engine"
+ ],
+ "refusal_tests": [],
+ "why": {}
+}

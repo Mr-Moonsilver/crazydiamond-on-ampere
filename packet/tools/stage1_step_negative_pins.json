@@ -1,0 +1,8 @@
+{
+ "cases": {},
+ "cases_from": "none: stage1-step adds no probe case (c1's cases are parent cases here, held to c1b's frozen traces)",
+ "frozen_record_sha256": null,
+ "schema": "stage1-step-negative-pins/1",
+ "status": "AWAITING-OBSERVATION: one --negative --observe over c1b build-b2's regenerated overlay, then tools/stage1_step_negative_pins_write.py after review",
+ "tests": {}
+}

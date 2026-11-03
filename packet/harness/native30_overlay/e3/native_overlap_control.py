@@ -86,6 +86,11 @@ def _stage_overlap_defer():
     return _stage_overlap() and os.environ.get('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', '0') == '1'
 
 
+def _step_switch(name):
+    """stage1-step: a field is exposed only where the engine installed it."""
+    return _stage_overlap_defer() and os.environ.get(name, '0') == '1'
+
+
 def _positive(value):
     return type(value) is int and value > 0
 
@@ -308,7 +313,7 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-local-not-set')
         return reply
 
-    async def native_stage_overlap(self, local, overlap, defer_bind=None):
+    async def native_stage_overlap(self, local, overlap, defer_bind=None, lazy_recv=None, decode_merge=None):
         """C1 per-arm switch (installed only): C0's command with ``overlap``; the engine re-checks idle FULL.
         alpha-next-c1: ``defer_bind`` (installed only) rides on the same command; the reply must acknowledge it."""
         if not _stage_overlap():
@@ -324,6 +329,18 @@ class NativeControlClient:
             if type(defer_bind) is not bool:
                 raise NativeControlError('native-control-stage-overlap-defer-bind-invalid')
             command['defer_bind'] = defer_bind
+        if lazy_recv is not None:
+            if not _step_switch('FLASH_S5_LAZY_RECV'):
+                raise NativeControlError('native-control-stage-lazy-recv-not-installed')
+            if type(lazy_recv) is not bool:
+                raise NativeControlError('native-control-stage-lazy-recv-invalid')
+            command['lazy_recv'] = lazy_recv
+        if decode_merge is not None:
+            if not _step_switch('FLASH_S5_DECODE_MERGE'):
+                raise NativeControlError('native-control-stage-decode-merge-not-installed')
+            if decode_merge not in ('off', 'chunk', 'always'):
+                raise NativeControlError('native-control-stage-decode-merge-invalid')
+            command['decode_merge'] = decode_merge
         if self.engine_epoch is None:
             await self.status()
         reply = await self._call(command)
@@ -331,6 +348,10 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-overlap-not-set')
         if defer_bind is not None and reply.get('defer_bind') is not defer_bind:
             raise NativeControlError('native-control-stage-overlap-defer-bind-not-set')
+        if lazy_recv is not None and reply.get('lazy_recv') is not lazy_recv:
+            raise NativeControlError('native-control-stage-lazy-recv-not-set')
+        if decode_merge is not None and reply.get('decode_merge') != decode_merge:
+            raise NativeControlError('native-control-stage-decode-merge-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------

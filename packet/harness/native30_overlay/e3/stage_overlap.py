@@ -94,6 +94,31 @@ def stage_overlap_defer_bind_enabled(env):
     return value == '1'
 
 
+# stage1-step (results/hub/stage1-step/DESIGN-stage1-step.md).  L1 lazy PP receive and L2 decode merge, one switch each,
+# both default off; the startup flag installs the mechanism and ``lazy_recv`` / ``decode_merge`` on native_stage_local
+# select it per arm, while paused idle FULL.  Installed and unselected is the C1 defer base.
+LAZY_RECV_ENV = 'FLASH_S5_LAZY_RECV'
+DECODE_MERGE_ENV = 'FLASH_S5_DECODE_MERGE'
+DECODE_MERGE_MODES = ('off', 'chunk', 'always')
+
+
+def _step_switch(env, name):
+    value = env.get(name, '0')
+    if value not in ('0', '1'):
+        raise DriverError(name + ' must be 0 or 1')
+    if value == '1' and not stage_overlap_defer_bind_enabled(env):
+        raise DriverError(name + ' needs ' + DEFER_BIND_ENV + '=1')
+    return value == '1'
+
+
+def lazy_recv_enabled(env):
+    return _step_switch(env, LAZY_RECV_ENV)
+
+
+def decode_merge_enabled(env):
+    return _step_switch(env, DECODE_MERGE_ENV)
+
+
 # C1 overlap observation (default off): per chunk command, device-completion bounds read from the reports the
 # engine already ingests (no extra RPC, poll or event query), on the engine's CLOCK_MONOTONIC.  A read, never a gate.
 OBSERVE_ENV = 'FLASH_S5_STAGE_OVERLAP_OBSERVE'
@@ -487,6 +512,13 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         # ``defer_bind`` of native_stage_local selects it per arm while paused idle FULL, as fused and layer groups are.
         self.defer_bind_installed = self.defer_bind
         self.overlap_observer = OverlapObserver() if stage_overlap_observe_enabled(os.environ) else None
+        # stage1-step: off until selected, so an installed engine with no selection is the base.
+        self.lazy_recv_installed = lazy_recv_enabled(os.environ)
+        self.decode_merge_installed = decode_merge_enabled(os.environ)
+        self.lazy_recv = False
+        self.decode_merge = 'off'
+        self.decode_step_counters = dict(lazy_marked=0, merge_steps=0, merge_on=0, merge_off=0)
+        self._merge_active = False
 
     # -- the composed per-chunk fields, per frame -------------------------------
     def _new_frame(self):
@@ -609,6 +641,34 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             if self.overlap_observer is not None and self._scoped_stage is not None:
                 self.overlap_observer.note_submit(sequence)
         return sequence
+
+    # -- stage1-step ---------------------------------------------------------------
+    def mark_lazy_recv(self, scheduler_output):
+        """L1: the mark rides on the broadcast scheduler output, as the decode ticket does; both TP peers see one value."""
+        if self.lazy_recv and scheduler_output.total_num_scheduled_tokens > 0:
+            scheduler_output.flash_s5_lazy_recv = True
+            self.decode_step_counters['lazy_marked'] += 1
+
+    def _decode_merge_wanted(self):
+        if self.decode_merge == 'always':
+            return True
+        if self.decode_merge != 'chunk':
+            return False
+        # The policy's native phase spans the chunks of one prefill, handoffs included.
+        policy = getattr(self, 'auto_arm', None)
+        return policy is not None and not policy.manual_owned and policy.phase == 'native'
+
+    def sync_decode_merge(self, scheduler):
+        """L2: set before each schedule() from the arm's selection and the policy's phase."""
+        wanted = self._decode_merge_wanted()
+        counters = self.decode_step_counters
+        if wanted is not self._merge_active:
+            self._merge_active = wanted
+            counters['merge_on' if wanted else 'merge_off'] += 1
+        if wanted:
+            counters['merge_steps'] += 1
+        if wanted or getattr(scheduler, 'flash_s5_decode_merge', False):
+            scheduler.flash_s5_decode_merge = wanted
 
     # -- overlap observation (FLASH_S5_STAGE_OVERLAP_OBSERVE) ---------------------
     def _apply(self, kind, values, sequence=None):
@@ -971,7 +1031,26 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-overlap-defer-bind-not-installed')
             if defer and overlap is not True:
                 raise DriverError('native-stage-overlap-defer-bind-needs-overlap')
-        reply = super()._stage_control({k: v for k, v in command.items() if k not in ('overlap', 'defer_bind')})
+        # stage1-step: each field needs its own switch at startup, and overlap with the deferred bind when it selects
+        # anything.  Checked before anything is applied.
+        lazy = command.get('lazy_recv', None)
+        merge = command.get('decode_merge', None)
+        if 'lazy_recv' in command:
+            if not self.lazy_recv_installed:
+                raise DriverError('native-stage-lazy-recv-not-installed')
+            if type(lazy) is not bool:
+                raise DriverError('native-stage-lazy-recv-invalid')
+            if lazy and (overlap is not True or defer is not True):
+                raise DriverError('native-stage-lazy-recv-needs-defer-bind')
+        if 'decode_merge' in command:
+            if not self.decode_merge_installed:
+                raise DriverError('native-stage-decode-merge-not-installed')
+            if type(merge) is not str or merge not in DECODE_MERGE_MODES:
+                raise DriverError('native-stage-decode-merge-invalid')
+            if merge != 'off' and (overlap is not True or defer is not True):
+                raise DriverError('native-stage-decode-merge-needs-defer-bind')
+        reply = super()._stage_control({k: v for k, v in command.items()
+                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -987,6 +1066,22 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 defer = previous_defer
             self.defer_bind = defer
             reply.update(defer_bind=defer, previous_defer_bind=previous_defer)
+        if self.lazy_recv_installed:
+            previous_lazy = self.lazy_recv
+            if not overlap or not self.defer_bind:
+                lazy = False
+            elif lazy is None:
+                lazy = previous_lazy
+            self.lazy_recv = lazy
+            reply.update(lazy_recv=lazy, previous_lazy_recv=previous_lazy)
+        if self.decode_merge_installed:
+            previous_merge = self.decode_merge
+            if not overlap or not self.defer_bind:
+                merge = 'off'
+            elif merge is None:
+                merge = previous_merge
+            self.decode_merge = merge
+            reply.update(decode_merge=merge, previous_decode_merge=previous_merge)
         return reply
 
     def stage_status(self):
@@ -997,6 +1092,11 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         if self.defer_bind_installed:
             result['overlap']['defer_bind'] = dict(installed=True, selected=self.defer_bind,
                                                    counters=dict(self.defer_counters))
+        if self.lazy_recv_installed or self.decode_merge_installed:
+            result['overlap']['decode_step'] = dict(lazy_recv_installed=self.lazy_recv_installed, lazy_recv=self.lazy_recv,
+                                                    decode_merge_installed=self.decode_merge_installed,
+                                                    decode_merge=self.decode_merge,
+                                                    counters=dict(self.decode_step_counters))
         if self.overlap_observer is not None:
             result['overlap']['observe'] = dict(counters=dict(self.overlap_observer.counters))
         return result
@@ -1017,6 +1117,6 @@ def _ranges(values):
     return ','.join(str(a) if a == b else '%d-%d' % (a, b) for a, b in out) or '-'
 
 
-__all__ = ['DEFER_BIND_ENV', 'OBSERVE_ENV', 'OBSERVE_LINE', 'OBSERVE_SCHEMA', 'OverlapObserver', 'OverlapSegmentDriver', 'REFUSALS', 'STAGE_OVERLAP_ENV', 'StagedAdmissionController',
+__all__ = ['DECODE_MERGE_ENV', 'DECODE_MERGE_MODES', 'LAZY_RECV_ENV', 'decode_merge_enabled', 'lazy_recv_enabled', 'DEFER_BIND_ENV', 'OBSERVE_ENV', 'OBSERVE_LINE', 'OBSERVE_SCHEMA', 'OverlapObserver', 'OverlapSegmentDriver', 'REFUSALS', 'STAGE_OVERLAP_ENV', 'StagedAdmissionController',
            'overlap_refusal', 'provisional_fields', 'stage_overlap_defer_bind_enabled', 'stage_overlap_enabled',
            'stage_overlap_observe_enabled']
