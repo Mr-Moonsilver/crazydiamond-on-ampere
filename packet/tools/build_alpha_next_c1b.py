@@ -68,8 +68,12 @@ NEW_OVERLAY = ()
 CANDIDATE = 'q18a-alpha-next-c1b'
 FREEZE = 'alpha-next-c1b-freeze.json'
 # Keys of a METADATA json row that are bound to the source review (directly or through the closure's bytes): the only keys
-# allowed to move. Any other key moving in any METADATA row refuses the build.
-REVIEW_BOUND_KEYS = frozenset({'review', 'review_sha256', 'implementation_review_sha256', 'package_sha256', 'receipt_sha256'})
+# allowed to move. Any other key moving in any METADATA row refuses the build. source_manifest_sha256 / source_generation_sha256
+# (the finalizer's digests of the raw generated package, harness/e3_finalize_package.py) are review-bound through the raw package,
+# whose own moved rows are proved to be the closure and the generation record only (raw_review_only, in the freeze).
+REVIEW_BOUND_KEYS = frozenset({'review', 'review_sha256', 'implementation_review_sha256', 'package_sha256', 'receipt_sha256',
+                               'source_manifest_sha256', 'source_generation_sha256'})
+RAW_MOVABLE = frozenset({'S5-OVERLAP-GENERATION.json', 'e3/native-implementation-closure.json'})
 
 
 def load_spec(path):
@@ -100,6 +104,29 @@ def _diff_paths(old, new, prefix=()):
     return [] if old == new else [prefix]
 
 
+def _json_review_only(name, old_path, new_path):
+    old, new = json.loads(Path(old_path).read_text()), json.loads(Path(new_path).read_text())
+    return ['metadata-key-moved-outside-the-review:%s:%s' % (name, '/'.join(map(str, path))) for path in _diff_paths(old, new)
+            if not path or not any(k in REVIEW_BOUND_KEYS for k in path[:1] + path[-1:])]
+
+
+def _sums(root):
+    return {name: digest for digest, name in (line.split(None, 1) for line in (Path(root) / 'SHA256SUMS').read_text().splitlines())}
+
+
+def raw_review_only(parent_raw, raw):
+    """The raw generated packages (before finalisation; parent's from the reference regeneration): same rows, the moved ones
+    within RAW_MOVABLE, each moved only in review-bound keys. Problems, empty when it holds."""
+    old, new = _sums(parent_raw), _sums(raw)
+    problems = ['raw-file-set-changed:%s' % sorted(set(old) ^ set(new))] if set(old) != set(new) else []
+    for name in sorted(n for n in old if n in new and old[n] != new[n]):
+        if name not in RAW_MOVABLE:
+            problems.append('raw-row-moved:' + name)
+        else:
+            problems += _json_review_only('raw/' + name, Path(parent_raw) / name, Path(raw) / name)
+    return problems
+
+
 def metadata_review_only(parent_overlay, overlay, review=None):
     """Problems (empty when it holds): every moved row is a METADATA json row whose differing key paths all end in (or pass
     through, for the closure's 'review') a REVIEW_BOUND_KEYS key; with REVIEW given, the closure's review equals it."""
@@ -111,11 +138,7 @@ def metadata_review_only(parent_overlay, overlay, review=None):
         if name not in b.METADATA or not name.endswith('.json'):
             problems.append('non-metadata-row-moved:' + name)
             continue
-        old = json.loads((Path(parent_overlay) / name).read_text())
-        new = json.loads((Path(overlay) / name).read_text())
-        for path in _diff_paths(old, new):
-            if not path or not any(k in REVIEW_BOUND_KEYS for k in path[:1] + path[-1:]):
-                problems.append('metadata-key-moved-outside-the-review:%s:%s' % (name, '/'.join(map(str, path))))
+        problems += _json_review_only(name, Path(parent_overlay) / name, Path(overlay) / name)
     if review is not None:
         closure = json.loads((Path(overlay) / 'e3/native-implementation-closure.json').read_text())
         if closure.get('review') != review:
@@ -276,12 +299,18 @@ def build(spec_path, out, strict_log, focused_log):
     rows, parent_rows = b.verify(held / 'native30_overlay'), b.verify(b.PARENT / 'native30_overlay')
     moved = sorted(n for n in parent_rows if rows[n] != parent_rows[n])
     ref = reference(out)
+    raw = raw_review_only(out / 'parent-work/raw', out / 'raw')
+    assert not raw, raw
     controls = dict(overlay_controls(out, held / 'native30_overlay', review),
                     **{'undeclared-replaced-tool': replaced_tool_control(out)})
     proof = dict(schema='alpha-next-c1b-freeze/1', verdict='PASS',
                  overlay=dict(parent_overlay_manifest=b.PARENT_OVERLAY_MANIFEST, candidate_overlay_manifest=result['overlay_manifest'],
                               rows=len(rows), moved=moved, metadata_moved=moved, non_metadata_moved=[],
                               engine_rows_byte_identical_to_parent=True, metadata_review_only=True,
+                              raw_package=dict(parent=str(out / 'parent-work/raw'), candidate=str(out / 'raw'),
+                                               moved=sorted(n for n, d in _sums(out / 'raw').items()
+                                                            if _sums(out / 'parent-work/raw').get(n) != d),
+                                               review_only=True),
                               byte_identical_to_parent=not moved),
                  engine_sources=engine_sources(result['source'], held), superseded_check=superseded_record(),
                  negative_controls=controls, reference=ref, tools_replaced=dict(declared=[], replaced=sorted(TOOLS_REPLACED)),
