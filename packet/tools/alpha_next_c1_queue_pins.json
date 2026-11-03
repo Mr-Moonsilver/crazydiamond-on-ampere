@@ -1,8 +1,15 @@
 {
   "schema": "alpha-next-c1-queue-pins/1",
-  "status": "PLACEHOLDER: filled by the packaging step",
-  "overlay_manifest_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
-  "package_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
-  "harness_bundle_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
-  "note": "Hub-side queue pins for q18a-alpha-next-c1, written by tools/alpha_next_c1_queue_pins_write.py from the gate chain build OUT and committed by the lead. overlay_manifest_sha256 = sha256 of the held bundle native30_overlay/SHA256SUMS; package_sha256 = its S5-OVERLAP-GENERATION.json package_sha256; harness_bundle_sha256 = sha256 of the held bundle SHA256SUMS. No harness text holds them; the waiter and tools/alpha_next_c1_delivery.py compare against this file. A placeholder means not packaged yet."
+  "status": "FILLED: from the gate chain build at build_out",
+  "overlay_manifest_sha256": "41936d66d864547dee0a018294415741ab670c4e6b2169fd95022ab1e3ba8673",
+  "package_sha256": "7f74f7c8e86529d1ac529d57ea6d15fcec9da34166f8d26c04498ebb962b788e",
+  "harness_bundle_sha256": "d6f4071a8c28aa643db0f94277b63737dd1b7d05fd3edeeded967a7258a026cc",
+  "build_out": "<hub-dir>/agents/flash-next/tmp/alpha-next-c1/build-a1",
+  "build_json_sha256": "b4401067ff9f036207ecb2d11229f3daa4859e68cb91f3be58ec65ef0b1fac8d",
+  "source_commit": "d8900a0cab4c3d376386b1816fe273f804e53c88",
+  "review_sha256": "825cf69bed278d5db25758677df380290256a0e710eb78a37b8f4c6cf2f1c2fa",
+  "runner_sha256": "097bd18e6fcc7705ce0ac0dd85dca4ca6eed6d9218637fb0c756287e229c8763",
+  "written_by": "tools/alpha_next_c1_queue_pins_write.py",
+  "note": "Hub-side queue pins, written by tools/alpha_next_c1_queue_pins_write.py from the gate chain build OUT and committed by the lead. overlay_manifest_sha256 = sha256 of the held bundle native30_overlay/SHA256SUMS; package_sha256 = its S5-OVERLAP-GENERATION.json package_sha256; harness_bundle_sha256 = sha256 of the held bundle SHA256SUMS. No harness text holds them (the review the build prepares pins the declaration text, and the overlay covers the review); the waiter and tools/alpha_next_c1_delivery.py compare against this file. A placeholder means not packaged yet.",
+  "history": []
 }
