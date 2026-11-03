@@ -149,6 +149,59 @@
     "scope": "harness-only package over alpha-next-c1's delivered build; engine bytes unchanged; not a release assessment",
     "source_commit": "c3c33e8d1af4862794ca43461786a5aa7755c160"
   },
+  "attn_meta": {
+    "arm": "TRUNK",
+    "attn_meta_settings": {
+      "FLASH_ATTN_META_GDN_BATCH": "1",
+      "FLASH_S5_AUTO_ARM": "1",
+      "FLASH_S5_HANDLER_ANATOMY": "1",
+      "FLASH_S5_LAYER_GROUPS": "1",
+      "FLASH_S5_NATIVE_PROGRESS": "burst",
+      "FLASH_S5_NATIVE_QSA_POLICY": "dense",
+      "FLASH_S5_NATIVE_QSA_STOP_AFTER": null,
+      "FLASH_S5_NATIVE_QSA_TRACE": null,
+      "FLASH_S5_QSA_FUSED": "1",
+      "FLASH_S5_STAGE_LOCAL": "1",
+      "FLASH_S5_STAGE_OVERLAP": "1",
+      "FLASH_S5_STAGE_OVERLAP_DEFER_BIND": "1",
+      "FLASH_S5_STAGE_OVERLAP_OBSERVE": "1",
+      "FLASH_S5_UNION_RETIRE": null
+    },
+    "candidate": "q18a-attn-meta",
+    "device_run": "NOT_RUN",
+    "dry_run": false,
+    "engine_delta": {
+      "focused_suites": [
+        "test_attn_meta_control",
+        "test_attn_meta_c1_g1",
+        "test_attn_meta_box",
+        "test_attn_meta_queue",
+        "test_attn_meta_default_off",
+        "test_attn_meta_robust_swap",
+        "test_attn_meta_box_b",
+        "test_native43_engine_death_h",
+        "test_alpha_next_stop_race_h",
+        "test_e3_c1_open_rows"
+      ],
+      "lineage_rows": []
+    },
+    "engine_files": [
+      "e3/decode_probe.py",
+      "e3/engine_driver.py",
+      "e3/native_overlap_control.py",
+      "e3/native_overlap_worker.py",
+      "e3/native_qualification_frontend.py",
+      "e3/probe_control.py",
+      "e3/s5_startup.py"
+    ],
+    "model_settings_changed": false,
+    "parent": "q18a-alpha-next-c1b",
+    "parent_commit": "8a7bdb273f2d57d9b0f687778a11620896d0e776",
+    "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
+    "queue": "q18a-attn-meta: c1's queue with FLASH_ATTN_META_GDN_BATCH=1 for the whole run; the amendment A 2x2 at G1 (R, M, P, MP: C1 off or defer x attn-meta off or on, selected per arm while paused idle FULL), MP band 2, P2/MP2 at G2 last, decode-only baselines attn-meta off and on; c1's grade over the non-decode arms, attn-meta engagement and selection-leak rules per arm; reads never verdict inputs; relative box budget only",
+    "scope": "attn-meta GDN metadata batch composed onto c1 against c1's delivered build; not a release assessment",
+    "source_commit": "59354b0720a5790e48565316517c51c65445afc3"
+  },
   "backend_semantics_provenance": {
     "constructor_and_method_ASTs_equal": true,
     "methods": 7,
@@ -1643,13 +1696,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict registered CPU regression on the packaged tree",
-    "cases": 396,
+    "cases": 410,
     "exit_code": 0,
-    "log_sha256": "73988729ada35cd5b72b0ec88be6ca7818b0b29782c8b9316971ee22879fb179",
-    "reported_tests": 5132,
-    "required": 396,
+    "log_sha256": "3a6eb120873a0231dc2f6e77d4969269ddc5852df52788c399ab59e66ddb3338",
+    "reported_tests": 5370,
+    "required": 410,
     "skips": 0,
-    "suites": 279
+    "suites": 293
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -3938,9 +3991,9 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "2dca220603921688a36f3e16617ade4d2145fa62cce512a5f54d8b7b4bbbd11a",
+    "log_sha256": "29cec1b9c437da73695092205ba87f5e8ea1bd16a1d9e421825bc4359e534881",
     "skips": 0,
-    "tests": 1961,
+    "tests": 2122,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
