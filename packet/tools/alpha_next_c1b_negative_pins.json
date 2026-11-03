@@ -1,0 +1,42 @@
+{
+ "cases": {
+  "alpha-c1-local-burst": [
+   "PASS",
+   null,
+   null
+  ],
+  "alpha-c1-overlap-burst": [
+   "PASS",
+   null,
+   null
+  ],
+  "alpha-c1-overlap-burst-skew": [
+   "PASS",
+   null,
+   null
+  ],
+  "alpha-c1-overlap-burst-slow1": [
+   "PASS",
+   null,
+   null
+  ],
+  "alpha-c1-overlap-burst-solo": [
+   "PASS",
+   null,
+   null
+  ],
+  "alpha-c1-serial-burst": [
+   "PASS",
+   null,
+   null
+  ]
+ },
+ "cases_from": "expected: c1 engine unchanged (alpha-next-c1 frozen record, overlap part)",
+ "discovery": null,
+ "frozen_record_sha256": "34902b700d082173072b243caf937ccd3a5d45b328497386013bc1882b02a01f",
+ "observation": null,
+ "reasons": {},
+ "schema": "alpha-next-c1b-negative-pins/1",
+ "status": "AWAITING-OBSERVATION: c1b moves no engine byte, so over alpha-next-c1's regenerated overlay and sources the alpha-c1 probe cases are expected to PASS with c1's frozen traces (rows ['PASS', None, None]); the test rows are empty until one alpha_next_c1b_engine_selfrun.py --negative --observe over the chain's own build is reviewed and pinned with tools/alpha_next_c1b_negative_pins_write.py (zero non-passes is pinned as no_failing_tests). With no test rows the negative refuses (negative-suites-not-run), so the chain observes and stops at engine-negative-awaiting-pins until then.",
+ "tests": {}
+}
