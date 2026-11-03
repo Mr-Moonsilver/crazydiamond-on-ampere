@@ -268,6 +268,26 @@ class Family(unittest.TestCase):
         for name in ('native43_engine_death_h.py', 'alpha_next_stop_race_h.py', 'e3_attn_meta_box_b.py', 'e3_c1_open_rows.py'):
             self.assertIn(name, seams)
 
+    def test_gates_b_calls_only_the_b_family(self):
+        text = (TOOLS / 'attn_meta_gates_b.sh').read_text()
+        for old in ('build_attn_meta.py', 'attn_meta_parent_pin.py', 'attn_meta_engine_selfrun.py', 'attn_meta_overlay_tamper.py',
+                    'attn_meta_clock_scan.py', 'attn_meta_precheck_conf.py'):
+            self.assertNotIn('tools/' + old, text.replace('tools/attn_meta_gates.sh', ''), old)
+        self.assertEqual(subprocess.run(['bash', '-n', str(TOOLS / 'attn_meta_gates_b.sh')]).returncode, 0)
+        self.assertEqual(subprocess.run(['bash', '-n', str(TOOLS / 'attn_meta_gates_b_cont.sh')]).returncode, 0)
+        for suite in ('test_attn_meta_box_b', 'test_native43_engine_death_h', 'test_alpha_next_stop_race_h', 'test_alpha_next_c1b_queue'):
+            self.assertIn(suite, text)
+        self.assertIn('--cap 1800', text)
+
+    def test_tamper_b_falls_back_only_for_a_module_without_a_comment(self):
+        import attn_meta_overlay_tamper_b as tamper
+        with_comment = b'"""Doc."""\n# a comment\nx = 1\n'
+        self.assertEqual(with_comment[tamper.c0.comment_offset(with_comment):][:1], b'a')
+        without = b'"""Doc."""\nx = 1\n'
+        self.assertEqual(without[tamper.c0.comment_offset(without):][:1], b'D')
+        with self.assertRaises((AssertionError, ValueError)):
+            tamper.c0.comment_offset(b'x = 1\n')
+
     def test_negative_pins_are_hub_side(self):
         spec = json.loads((TOOLS / 'native43_spec.attn-meta-b.json').read_text())
         self.assertNotIn('attn_meta_negative_pins.json', spec['tools'])

@@ -32,6 +32,22 @@ TABLE = {
     'attn_meta_overlay_tamper_b.py': ('attn_meta_overlay_tamper.py', (
         ('import attn_meta_freeze as freeze', 'import attn_meta_freeze_b as freeze', 1),
         ("over tools/attn_meta_freeze.py'", "over tools/attn_meta_freeze_b.py'", 1),
+        ('c0.freeze = freeze\n',
+         'c0.freeze = freeze\n'
+         '_comment_offset = c0.comment_offset\n\n\n'
+         'def comment_offset(data):\n'
+         '    """c0\'s comment byte; a module with no comment at all (e3/attn_meta_select.py, found by the 3 Nov trial, HARNESS: chain a never\n'
+         '    reached this step): a letter inside its module docstring. T1 still requires the byte check to refuse; every other module keeps\n'
+         '    the comment byte the AST does not see."""\n'
+         '    try:\n'
+         '        return _comment_offset(data)\n'
+         '    except AssertionError:\n'
+         '        text = data.decode()\n'
+         '        start = text.index(\'"""\') + 3\n'
+         '        assert ast.get_docstring(ast.parse(text)) and text[start].isalpha(), \'no comment and no docstring to tamper\'\n'
+         '        return len(text[:start].encode())\n\n\n'
+         'c0.comment_offset = comment_offset\n', 1),
+        ('import argparse\nimport json\n', 'import argparse\nimport ast\nimport json\n', 1),
     )),
     'attn_meta_negative_pins_write_b.py': ('attn_meta_negative_pins_write.py', (
         ('import attn_meta_engine_selfrun as selfrun', 'import attn_meta_engine_selfrun_b as selfrun', 1),
@@ -98,6 +114,8 @@ GATE_SWAPS = (
     ('tools/attn_meta_overlay_tamper.py', 'tools/attn_meta_overlay_tamper_b.py', 1),
     ('tools/attn_meta_clock_scan.py', 'tools/attn_meta_clock_scan_b.py', 1),
     ('tools/attn_meta_precheck_conf.py', 'tools/attn_meta_precheck_conf_b.py', 1),
+    # The lead withdrew the 10-minute rule (3 Nov): selfrun5's default --cap 600 is the old rule; its bound here is the 1,800 s below.
+    ('tools/attn_meta_selfrun5.py --mode "$MODE" --name', 'tools/attn_meta_selfrun5.py --mode "$MODE" --cap 1800 --name', 1),
 )
 GATE_NOTE = ('# attn_meta_gates_b.sh: derived by tools/attn_meta_b_derive.py from tools/attn_meta_gates.sh (chain a ran it; never edited): the\n'
              '# c1b-base family, the parent c1b b2\'s READY build, focused plus the c1b and _h suites. Everything below is that chain.\n')

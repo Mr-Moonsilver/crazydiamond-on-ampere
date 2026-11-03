@@ -188,7 +188,7 @@ step engine-negative "$RC"
 # The suites that need the model config and the overlay qsa (tools/attn_meta_selfrun5.py, unchanged; its own wait rule and 600 s cap).
 for MODE in tests-c probe-c; do
   wait_clear "attn-$MODE"
-  python3 -B tools/attn_meta_selfrun5.py --mode "$MODE" --name "attn-meta-$MODE-cpu-$P12" --out "$OUT/attn-$MODE" \
+  python3 -B tools/attn_meta_selfrun5.py --mode "$MODE" --cap 1800 --name "attn-meta-$MODE-cpu-$P12" --out "$OUT/attn-$MODE" \
       --overlay-qsa "$HELD/native30_overlay/qsa.py" >"$OUT/attn-$MODE-stdout.log" 2>&1
   RC=$?
   python3 -I -c "import json,sys;sys.exit(0 if json.load(open(sys.argv[1]))['verdict']=='PASS' else 1)" "$OUT/attn-$MODE/result.json" \

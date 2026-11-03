@@ -9,6 +9,7 @@ T8 restored). The T2 case must hit one of attn-meta's two new modules. Works on 
 Usage: attn_meta_overlay_tamper.py --parent PARENT/native30_overlay --candidate BUNDLE/native30_overlay --out JSON
 """
 import argparse
+import ast
 import json
 from pathlib import Path
 import sys
@@ -18,6 +19,23 @@ import alpha_c0_overlay_tamper as c0  # noqa: E402
 import attn_meta_freeze_b as freeze  # noqa: E402
 
 c0.freeze = freeze
+_comment_offset = c0.comment_offset
+
+
+def comment_offset(data):
+    """c0's comment byte; a module with no comment at all (e3/attn_meta_select.py, found by the 3 Nov trial, HARNESS: chain a never
+    reached this step): a letter inside its module docstring. T1 still requires the byte check to refuse; every other module keeps
+    the comment byte the AST does not see."""
+    try:
+        return _comment_offset(data)
+    except AssertionError:
+        text = data.decode()
+        start = text.index('"""') + 3
+        assert ast.get_docstring(ast.parse(text)) and text[start].isalpha(), 'no comment and no docstring to tamper'
+        return len(text[:start].encode())
+
+
+c0.comment_offset = comment_offset
 
 
 def main():
