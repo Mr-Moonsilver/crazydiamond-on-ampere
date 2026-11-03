@@ -41,36 +41,16 @@
    "module:For#12",
    "module:from stage1_step_robust_swap import MODULES as STAGE1_STEP_SWAP_MODULES, selftest_base_receipt as stage1_step_base_receipt"
   ],
-  "patches/s5_engine/decode_probe.py": [
-   "module:GENERATED_SOURCES"
-  ],
-  "patches/s5_engine/engine_driver.py": [
-   "NativeProgress.meta",
-   "NativeSegmentDriver._progress_meta_flags",
-   "NativeSegmentDriver._submit_observed"
-  ],
   "patches/s5_engine/executor_hooks.py": [
-   "_worker_fifo",
-   "module:AugAssign#2",
-   "module:AugAssign#3",
-   "module:AugAssign#4",
-   "module:_FIFO",
-   "module:__all__",
-   "module:_native_fifo",
-   "worker_next_rpc",
-   "worker_rpc_begin"
-  ],
-  "patches/s5_engine/make_s5_overlap.py": [
-   "module:E3_MODULES",
-   "module:LAUNCHER_LIST_EXEMPT"
-  ],
-  "patches/s5_engine/native_measurement.py": [
-   "encode_progress_meta",
-   "module:RECEIPT_JSON_PREFIXES"
+   "before_step_with_batch_queue",
+   "lazy_recv_marked",
+   "module:_LAZY_RECV_CLASS",
+   "module:_WORKER_FORWARD",
+   "park_prefill"
   ],
   "patches/s5_engine/native_overlap_control.py": [
    "NativeControlClient.native_stage_overlap",
-   "_native_fifo"
+   "_step_switch"
   ],
   "patches/s5_engine/native_overlap_session.py": [
    "NativeOverlapSession._action_native_stage_local"
@@ -78,25 +58,35 @@
   "patches/s5_engine/s5_startup.py": [
    "install_engine"
   ],
+  "patches/s5_engine/scheduler_hooks.py": [
+   "decode_merge_cap",
+   "module:_SCHEDULER_FORWARD",
+   "module:_SCHEDULER_REVERSE",
+   "module:__all__"
+  ],
   "patches/s5_engine/stage_overlap.py": [
    "OverlapSegmentDriver.__init__",
-   "OverlapSegmentDriver._progress_meta_flags",
+   "OverlapSegmentDriver._decode_merge_wanted",
    "OverlapSegmentDriver._stage_control",
+   "OverlapSegmentDriver.mark_lazy_recv",
    "OverlapSegmentDriver.stage_status",
-   "module:Assign#1",
-   "module:FIFO_JUMP_KINDS",
-   "module:FIFO_STAGE",
-   "module:NATIVE_FIFO_ENV",
-   "module:__all__",
-   "native_fifo_enabled"
+   "OverlapSegmentDriver.sync_decode_merge",
+   "_step_switch",
+   "decode_merge_enabled",
+   "lazy_recv_enabled",
+   "module:DECODE_MERGE_ENV",
+   "module:DECODE_MERGE_MODES",
+   "module:LAZY_RECV_ENV",
+   "module:__all__"
+  ],
+  "patches/s5_engine/worker_hooks.py": [
+   "module:WORKER_AFTER_C_SHA256"
   ]
  },
  "details": {
   "engine_delta": {
    "focused_suites": [
-    "test_stage1_step_order",
     "test_stage1_step_engine",
-    "test_stage1_step_mq",
     "test_stage1_step_box",
     "test_stage1_step_queue",
     "test_stage1_step_robust_swap",
@@ -107,13 +97,14 @@
    "lineage_rows": []
   },
   "model_settings_changed": false,
-  "queue": "q18a-stage1-step: c1's queue with FLASH_S5_DECODE_STEP_UNUSED=1 for the whole run; fourteen core arms, C1 defer, the jump off and on selected per arm while paused idle FULL, band 1 live x2 and solo x2, band 2 live and solo, matched and counterbalanced, one matched band 1 live min-pairs pair; c1's grade, the jump selection, counter and worker-row order gate; reads never verdict inputs; numerics not covered; relative box budget only",
-  "scope": "stage-1 FIFO jump composed onto c1b against c1b's READY build; not a release assessment and not a numerics result",
+  "queue": "q18a-stage1-step: c1's queue with FLASH_S5_LAZY_RECV=1 FLASH_S5_DECODE_MERGE=1 for the whole run; eighteen core arms, C1 defer, off, L1 and L1+L2 selected per arm while paused idle FULL, band 1 and band 2, live and solo, matched and counterbalanced, one band 1 live always-merged pair; c1's grade, the lever selection and counter gate; batch 8 vs 2x4 changes batch composition, OUTSIDE expected on merged arms; reads never verdict inputs; numerics not covered; relative box budget only",
+  "scope": "L1 and L2 composed onto c1b against c1b's READY build; not a release assessment and not a numerics result",
   "stage1_step_settings": {
    "FLASH_S5_AUTO_ARM": "1",
+   "FLASH_S5_DECODE_MERGE": "1",
    "FLASH_S5_HANDLER_ANATOMY": "1",
    "FLASH_S5_LAYER_GROUPS": "1",
-   "FLASH_S5_DECODE_STEP_UNUSED": "1",
+   "FLASH_S5_LAZY_RECV": "1",
    "FLASH_S5_NATIVE_PROGRESS": "burst",
    "FLASH_S5_NATIVE_QSA_POLICY": "dense",
    "FLASH_S5_NATIVE_QSA_STOP_AFTER": null,
@@ -128,15 +119,15 @@
  },
  "dry_run": false,
  "engine_changed": [
-  "e3/decode_probe.py",
-  "e3/engine_driver.py",
+  "core/scheduler.py",
   "e3/executor_hooks.py",
-  "e3/native_measurement.py",
   "e3/native_overlap_control.py",
   "e3/native_overlap_session.py",
   "e3/s5_startup.py",
+  "e3/scheduler_hooks.py",
   "e3/stage_overlap.py",
-  "e3_sources/executor.py"
+  "e3/worker_hooks.py",
+  "e3_sources/worker.py"
  ],
  "engine_selfrun": {
   "compiled": [
@@ -460,7 +451,6 @@
    "harness/native43_engine_death_h.py",
    "harness/stage1_step_arms.py",
    "harness/stage1_step_gate.py",
-   "harness/stage1_step_order.py",
    "harness/stage1_step_read.py",
    "harness/stage1_step_robust_swap.py",
    "harness/test_alpha_next_stop_race_h.py",
@@ -468,12 +458,9 @@
    "harness/test_native43_engine_death_h.py",
    "harness/test_stage1_step_box.py",
    "harness/test_stage1_step_engine.py",
-   "harness/test_stage1_step_mq.py",
-   "harness/test_stage1_step_order.py",
    "harness/test_stage1_step_queue.py",
    "harness/test_stage1_step_queue_names.py",
    "harness/test_stage1_step_robust_swap.py",
-   "patches/s5_engine/native_fifo.py",
    "tools/build_stage1_step.py",
    "tools/stage1_step_base_proof.py",
    "tools/stage1_step_clock_scan.py",
@@ -496,7 +483,8 @@
    "tools/stage1_step_spec.py",
    "tools/stage1_step_staging_check.py",
    "tools/stage1_step_tools_derive.py",
-   "tools/strict_parallel.py"
+   "tools/strict_parallel.py",
+   "patches/s5_engine/worker_hooks.py"
   ],
   "probes": [
    {
@@ -559,32 +547,19 @@
  "expected_tests": 584,
  "label": "stage1-step",
  "overlay_definitions": {
-  "e3/decode_probe.py": [
-   "module:GENERATED_SOURCES"
-  ],
-  "e3/engine_driver.py": [
-   "NativeProgress.meta",
-   "NativeSegmentDriver._progress_meta_flags",
-   "NativeSegmentDriver._submit_observed"
+  "core/scheduler.py": [
+   "Scheduler.schedule"
   ],
   "e3/executor_hooks.py": [
-   "_worker_fifo",
-   "module:AugAssign#2",
-   "module:AugAssign#3",
-   "module:AugAssign#4",
-   "module:_FIFO",
-   "module:__all__",
-   "module:_native_fifo",
-   "worker_next_rpc",
-   "worker_rpc_begin"
-  ],
-  "e3/native_measurement.py": [
-   "encode_progress_meta",
-   "module:RECEIPT_JSON_PREFIXES"
+   "before_step_with_batch_queue",
+   "lazy_recv_marked",
+   "module:_LAZY_RECV_CLASS",
+   "module:_WORKER_FORWARD",
+   "park_prefill"
   ],
   "e3/native_overlap_control.py": [
    "NativeControlClient.native_stage_overlap",
-   "_native_fifo"
+   "_step_switch"
   ],
   "e3/native_overlap_session.py": [
    "NativeOverlapSession._action_native_stage_local"
@@ -592,28 +567,45 @@
   "e3/s5_startup.py": [
    "install_engine"
   ],
+  "e3/scheduler_hooks.py": [
+   "decode_merge_cap",
+   "module:_SCHEDULER_FORWARD",
+   "module:_SCHEDULER_REVERSE",
+   "module:__all__"
+  ],
   "e3/stage_overlap.py": [
    "OverlapSegmentDriver.__init__",
-   "OverlapSegmentDriver._progress_meta_flags",
+   "OverlapSegmentDriver._decode_merge_wanted",
    "OverlapSegmentDriver._stage_control",
+   "OverlapSegmentDriver.mark_lazy_recv",
    "OverlapSegmentDriver.stage_status",
-   "module:Assign#1",
-   "module:FIFO_JUMP_KINDS",
-   "module:FIFO_STAGE",
-   "module:NATIVE_FIFO_ENV",
-   "module:__all__",
-   "native_fifo_enabled"
+   "OverlapSegmentDriver.sync_decode_merge",
+   "_step_switch",
+   "decode_merge_enabled",
+   "lazy_recv_enabled",
+   "module:DECODE_MERGE_ENV",
+   "module:DECODE_MERGE_MODES",
+   "module:LAZY_RECV_ENV",
+   "module:__all__"
   ],
-  "e3_sources/executor.py": [
-   "WorkerProc.worker_busy_loop"
+  "e3/worker_hooks.py": [
+   "module:WORKER_AFTER_C_SHA256"
+  ],
+  "e3_sources/worker.py": [
+   "FlashS5LazyIntermediateTensors.__getitem__",
+   "FlashS5LazyIntermediateTensors.__init__",
+   "FlashS5LazyIntermediateTensors.flash_s5_require_received",
+   "FlashS5LazyIntermediateTensors.wait_for_comm",
+   "Worker._flash_s5_stock_execute_model",
+   "class:FlashS5LazyIntermediateTensors"
   ]
  },
  "precheck": {
   "fixture_rows": [],
   "header": [
    "q18a-stage1-step packaged by tools/build_stage1_step.py (spec stage1-step); PREV is the alpha-next-c1b READY build bundle and runner.",
-   "Engine: claude/stage1-step, c1b with the stage-1 FIFO jump (FLASH_S5_DECODE_STEP_UNUSED, one added module e3/native_fifo.py, typed per-arm fields fifo_jump and fifo_min_pairs on native_stage_local) composed, default off behind its switch; stage1-step-off-is-c1 and both-off proofs in stage1-step-freeze.json; the overlay files moved vs PREV are recomputed by the conf tool.",
-   "Queue: c1's startup and cleanup with FLASH_S5_DECODE_STEP_UNUSED=1 set for the whole run beside c1's switches; fourteen core arms, C1 defer, the jump off and on selected per arm while paused idle FULL, band 1 live x2 and solo x2, band 2 live and solo, matched and counterbalanced, one matched band 1 live min-pairs pair; speed reads only, numerics not covered; no production start."
+   "Engine: claude/stage1-step, c1b with L1 lazy PP receive and L2 decode merge (FLASH_S5_LAZY_RECV, FLASH_S5_DECODE_MERGE, no added module, typed per-arm fields lazy_recv and decode_merge on native_stage_local) composed, default off behind its switches; discovery build, parent logs reused, no default-off proof run; the overlay files moved vs PREV are recomputed by the conf tool.",
+   "Queue: c1's startup and cleanup with FLASH_S5_LAZY_RECV=1 FLASH_S5_DECODE_MERGE=1 set for the whole run beside c1's switches; eighteen core arms, C1 defer, off, L1 and L1+L2 selected per arm while paused idle FULL, band 1 and band 2, live and solo, matched and counterbalanced, one band 1 live always-merged pair; speed reads only, numerics not covered; no production start."
   ],
   "seams": ""
  },
@@ -636,7 +628,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "e2c5847d4e3287d29bc2c75b46015e85b862ee87",
+ "source_commit": "e8ea0ad80d8df95c23de7d072fc9f95d2339c1b5",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/e3_stage1_step_box.py",
@@ -649,7 +641,6 @@
   "A\tharness/runs/q18a_stage1_step_settings.sh",
   "A\tharness/stage1_step_arms.py",
   "A\tharness/stage1_step_gate.py",
-  "A\tharness/stage1_step_order.py",
   "A\tharness/stage1_step_read.py",
   "A\tharness/stage1_step_robust_swap.py",
   "A\tharness/test_alpha_next_stop_race_h.py",
@@ -657,12 +648,9 @@
   "A\tharness/test_native43_engine_death_h.py",
   "A\tharness/test_stage1_step_box.py",
   "A\tharness/test_stage1_step_engine.py",
-  "A\tharness/test_stage1_step_mq.py",
-  "A\tharness/test_stage1_step_order.py",
   "A\tharness/test_stage1_step_queue.py",
   "A\tharness/test_stage1_step_queue_names.py",
   "A\tharness/test_stage1_step_robust_swap.py",
-  "A\tpatches/s5_engine/native_fifo.py",
   "A\ttools/build_stage1_step.py",
   "A\ttools/dryrun-record.sh",
   "A\ttools/hub-slot.sh",
@@ -703,16 +691,14 @@
   "A\ttools/strict_lanes3.alpha-next-c1b.json",
   "A\ttools/strict_parallel.py",
   "M\tharness/selftest.py",
-  "M\tpatches/s5_engine/decode_probe.py",
-  "M\tpatches/s5_engine/engine_driver.py",
   "M\tpatches/s5_engine/executor_hooks.py",
-  "M\tpatches/s5_engine/make_s5_overlap.py",
   "M\tpatches/s5_engine/native_candidate_review.json",
-  "M\tpatches/s5_engine/native_measurement.py",
   "M\tpatches/s5_engine/native_overlap_control.py",
   "M\tpatches/s5_engine/native_overlap_session.py",
   "M\tpatches/s5_engine/s5_startup.py",
+  "M\tpatches/s5_engine/scheduler_hooks.py",
   "M\tpatches/s5_engine/stage_overlap.py",
+  "M\tpatches/s5_engine/worker_hooks.py",
   "M\ttools/alpha_next_c1b_queue_pins.json"
  ],
  "tools": [
