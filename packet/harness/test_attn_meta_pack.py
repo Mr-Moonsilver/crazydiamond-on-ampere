@@ -388,7 +388,12 @@ class Names(unittest.TestCase):
         self.assertEqual(scan.TEXTS, ('q18a_attn_meta.draft.sh', 'q18a_attn_meta_declare.sh', 'q18a_attn_meta_settings.sh'))
         pins = json.loads((TOOLS / 'attn_meta_queue_pins.json').read_text())
         self.assertEqual(pins['schema'], 'attn-meta-queue-pins/1')
-        self.assertTrue(pins['status'].startswith('PLACEHOLDER'))
+        # Placeholder before the chain's build; a chain's filled pins are committed after it (chain b's record, then chain c's over
+        # it through --supersede), and each filled value is then a whole sha256, never the placeholder text.
+        if not pins['status'].startswith('PLACEHOLDER'):
+            self.assertTrue(pins['status'].startswith('FILLED'), pins['status'])
+            for key in ('overlay_manifest_sha256', 'package_sha256', 'harness_bundle_sha256'):
+                self.assertRegex(pins[key], '^[0-9a-f]{64}$', key)
         tamper = (TOOLS / 'attn_meta_overlay_tamper.py').read_text()
         self.assertIn('import attn_meta_freeze as freeze', tamper)
         self.assertIn("r['path'] in freeze.NEW", tamper)
