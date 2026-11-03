@@ -1,0 +1,40 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "alpha-next-c1b hub CPU tests: the six-arm numerics queue (test_alpha_next_c1b_queue) and the deferred PP_SEND gate reachability and contract (test_alpha_next_c1_send_gate); no box or GPU evidence",
+ "inherits": [
+  "alpha_next_c1_queue_fixture_leaves.json",
+  "alpha_next_c1_engine_fixture_leaves.json",
+  "stage_overlap_fixture_leaves.json",
+  "c1_rebind_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "arm-release-recorder",
+   "test": "test_alpha_next_c1b_queue.ArmControl",
+   "replaces": "c1.AN_RELEASE (alpha-next's release over the control client) by a recorder of the native_stage_local command each selection sends",
+   "equivalence": "The question is the command c1's release_c1 builds per selection (serial: local false, overlap false, defer_bind false; off: local true; defer: overlap and defer_bind true); the recorder receives exactly that command from the real release_c1.",
+   "cannot_prove": "That the engine applies the selection; the real control plane's replies."
+  },
+  {
+   "name": "numerics-probe-transport",
+   "test": "test_alpha_next_c1b_queue.ArmControl",
+   "replaces": "shared._workload_view, shared._request, shared._send_prefill and correctness._start_streams (the HTTP send of the fresh request) by stand-ins that capture the workload, the request body and the instrument",
+   "equivalence": "The question is the request body the numerics seam builds (temperature 0, top_p 1, 256 tokens, logprobs 20, return_tokens_as_token_ids) and that the append (index 1) still goes through the original send; the stand-ins see the real numerics_send's arguments.",
+   "cannot_prove": "vLLM's logprob response shape on the box (the Numerics instrument's parser is tested on synthetic chunks); network timing."
+  },
+  {
+   "name": "open-rows-rule-outcome",
+   "test": "test_alpha_next_c1b_queue.Grade",
+   "replaces": "rule.check_arm (e3_c1_open_rows) by a fixed outcome carrying c1-open-row-not-successor",
+   "equivalence": "The question is how the grade classifies check 4 (INC ENGINE, not FAIL); the rule itself is tested on its own in test_e3_c1_open_rows and on C1Emit's lines unpatched.",
+   "cannot_prove": "That a box run produces such a row."
+  },
+  {
+   "name": "bind-due-faulted",
+   "test": "test_alpha_next_c1_send_gate.GateHolds",
+   "replaces": "OverlapSegmentDriver._deferred_bind_due by a function that never fires, to reach the armed state the real path never reaches",
+   "equivalence": "The question is the gate's contract (no PP_SEND before its own binding) when the bind-due does not run; the reachability tests run unpatched and show the real path never arms the gate.",
+   "cannot_prove": "Native timing on the box; the stop path (_stop_frame does not consult the gate)."
+  }
+ ]
+}
