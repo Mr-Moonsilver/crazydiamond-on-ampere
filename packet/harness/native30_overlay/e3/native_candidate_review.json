@@ -105,6 +105,50 @@
     "scope": "C1 composed onto alpha-next against alpha-next's pre-VM build; not a release assessment",
     "source_commit": "785d26b62ece4310a159344d767b5b89207a1e40"
   },
+  "alpha_next_c1b": {
+    "alpha_next_c1b_settings": {
+      "FLASH_S5_AUTO_ARM": "1",
+      "FLASH_S5_HANDLER_ANATOMY": "1",
+      "FLASH_S5_LAYER_GROUPS": "1",
+      "FLASH_S5_NATIVE_PROGRESS": "burst",
+      "FLASH_S5_NATIVE_QSA_POLICY": "dense",
+      "FLASH_S5_NATIVE_QSA_STOP_AFTER": null,
+      "FLASH_S5_NATIVE_QSA_TRACE": null,
+      "FLASH_S5_QSA_FUSED": "1",
+      "FLASH_S5_STAGE_LOCAL": "1",
+      "FLASH_S5_STAGE_OVERLAP": "1",
+      "FLASH_S5_STAGE_OVERLAP_DEFER_BIND": "1",
+      "FLASH_S5_STAGE_OVERLAP_OBSERVE": "1",
+      "FLASH_S5_UNION_RETIRE": null
+    },
+    "arm": "TRUNK",
+    "candidate": "q18a-alpha-next-c1b",
+    "device_run": "NOT_RUN",
+    "dry_run": false,
+    "engine_delta": {
+      "engine_changed": [],
+      "focused_suites": [
+        "test_e3_c1_open_rows",
+        "test_alpha_next_c1b_queue",
+        "test_alpha_next_c1_send_gate",
+        "test_alpha_next_c1_defer_control_b"
+      ],
+      "lineage_rows": [],
+      "overlay_metadata_moved": [
+        "S5-OVERLAP-GENERATION.json",
+        "e3/native-implementation-closure.json",
+        "e3/native-overlap-readiness.json"
+      ]
+    },
+    "engine_files": [],
+    "model_settings_changed": false,
+    "parent": "q18a-alpha-next-c1",
+    "parent_commit": "58813608f1bd1667989d6287a4016bc213321711",
+    "parent_manifest": "0c33ca841620c66bef2ce28b6ae7cc0995fc7cc4f04094f3aaebd0de910d36e7",
+    "queue": "q18a-alpha-next-c1b: the c1b queue (harness-only changes over alpha-next-c1) on c1's unchanged engine; the arm table and gates are the queue's own; relative box budget only",
+    "scope": "harness-only package over alpha-next-c1's delivered build; engine bytes unchanged; not a release assessment",
+    "source_commit": "1899314f5d7f707771b19d8b1ccb1d84be6005e7"
+  },
   "backend_semantics_provenance": {
     "constructor_and_method_ASTs_equal": true,
     "methods": 7,
@@ -1599,13 +1643,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict registered CPU regression on the packaged tree",
-    "cases": 389,
+    "cases": 394,
     "exit_code": 0,
-    "log_sha256": "9a9a6f0ab0e2693dfb1d72f076442485cff53fa019700830b9e44132163e2d81",
-    "reported_tests": 5033,
-    "required": 389,
+    "log_sha256": "c2703c1d4f58ca66c7a9e0b23aa6ffbd6f3137966081ae63d096e46c5a97d108",
+    "reported_tests": 5112,
+    "required": 394,
     "skips": 0,
-    "suites": 272
+    "suites": 277
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -3857,9 +3901,9 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "c22970a4dbdba3f355c8d0b8e55688a59f01483d8e059988e6a7b97ebdf6eb2f",
+    "log_sha256": "5e77b9655005633af148ea4d72fda0d0aac55e608cf256de1ebcb643a5c09de7",
     "skips": 0,
-    "tests": 1884,
+    "tests": 1954,
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
