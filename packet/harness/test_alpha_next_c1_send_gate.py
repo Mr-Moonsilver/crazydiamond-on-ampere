@@ -23,12 +23,18 @@ Finding (``Reachability``, asserted): on this engine the armed gate is NOT reach
   next entry in PREFIX/LAYER/SUFFIX (``_WAIT_SEGMENT_KINDS``); PP_SEND is not, so the clause is false there.
 * Moreover state (i) does not arise naturally: one command per stage, and the SUFFIX reply that makes the send next is
   that stage's only route; the next tick's bind-due then fires. Here the route is planted (a real stage-0 poll
-  submitted through the driver's own ``_submit``), the one declared leaf of this file.
+  submitted through the driver's own ``_submit``).
 
-So the gate is defence in depth, and ``send-gate-removed`` is an equivalent mutant on the unfaulted paths. It stays
-(no engine change). ``GateHolds`` tests its contract: directly, in a real state where C0's gate would let the send
-go, and connected with the one fault that makes it the only guard (the bind-due never firing): no PP_SEND of the
-frame leaves before its own binding on the tick or in-wait paths. Both fail under ``send-gate-removed``.
+So the gate is defence in depth, and ``send-gate-removed`` is an equivalent mutant on the unfaulted paths (the
+``Reachability`` tests pass under it, as they should). It stays (no engine change). Note that in the natural armed
+state (fair timing: n committed, the frame's stage 1 opened and waiting at its PP_RECEIVE) C0's gate answers False: the
+real path relies there on the bind-due at the top of the next ``_drive`` alone, with this gate behind it.
+``GateHolds`` tests the gate's contract: directly in that state and in a faulted one, and connected with the one fault
+that makes it the only guard (the bind-due never firing): no PP_SEND of the frame leaves before its own binding on the
+tick or in-wait paths. All four fail under ``send-gate-removed``.
+
+Planted (declared here): the stage-0 poll of (i); the scoped ``_drive`` of (ii) on the tick; the ``never_due`` fault of
+``GateHolds`` (lifted before each run completes); the direct contract's bindings / ``deferred_bind`` (restored).
 
 Fixtures: test_e3_stage_overlap.OverlapStack (real StagedAdmissionController, OverlapSegmentDriver, workers, PP
 channel, ReplyTransport), test_c1_rebind_witness's RebindBase / ReceiverHold / SenderSpy, test_e3_stage_local's
