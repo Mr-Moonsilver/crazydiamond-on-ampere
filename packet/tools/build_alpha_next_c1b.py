@@ -314,7 +314,8 @@ def build(spec_path, out, strict_log, focused_log):
                               byte_identical_to_parent=not moved),
                  engine_sources=engine_sources(result['source'], held), superseded_check=superseded_record(),
                  negative_controls=controls, reference=ref, tools_replaced=dict(declared=[], replaced=sorted(TOOLS_REPLACED)),
-                 candidate_manifest=result['manifest'], parent_manifest=b.PARENT_MANIFEST,
+                 candidate_manifest=result['manifest'], candidate_overlay_manifest=result['overlay_manifest'],
+                 parent_manifest=b.PARENT_MANIFEST,
                  parent_pins_sha256=b.sha(parent_pin.TARGET), dev_parent=bool(PINS.get('dev')), gpu_execution=False,
                  box_action=False)
     b.dump(out / FREEZE, proof)
