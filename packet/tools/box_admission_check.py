@@ -31,14 +31,23 @@ auto_arm phase ``native``, and progress chunks (``progress_delta.chunks``; absen
   UNKNOWN              anything else (unreadable, unfinished, arm error, request not served, no samples, admitted not
                        recorded, not declared). Never a guess.
 
+Arm errors (any role, added after q18a-append-yield-h, 3 Nov 2026: every arm ended at its first control call with
+``error`` {error_type QualificationRefused, error_message controller-refusal}, 12 min and nothing measured): the finished
+arms (readable records, not skipped) in run order (``wall_end_s``, else ``wall_start_s``, else the file mtime); two or
+more consecutive arms that carry an ``error`` -> ARM_ERRORS. This covers the first two finished arms both erroring and
+any later run of two. One errored arm alone never alerts.
+
 Output: line 1 one JSON object (schema box-admission-check/1), line 2 one summary line starting ``box-admission``.
-The overall verdict is NO_NATIVE_ADMISSION when any finished native arm (not skipped) is, else ADMITTED when one is,
-else UNKNOWN.
+The overall verdict is ARM_ERRORS when the arm-error rule fires, else NO_NATIVE_ADMISSION when any finished native arm
+(not skipped) is, else ADMITTED when one is, else UNKNOWN.
 
   box_admission_check.py check QUEUE_DIR [--skip LABEL[,LABEL...]] [--out FILE]
-  box_admission_check.py alert FILE|-     reads a check's JSON line; on NO_NATIVE_ADMISSION prints
-                                          'ALERT: no-native-admission <arm> (admitted 0, split 0/<n> samples)' and the
+  box_admission_check.py alert FILE|-     reads a check's JSON line; on ARM_ERRORS prints
+                                          'ALERT: arm-errors <first label> (<error_type>: <error_message>), <e> of <f>
+                                          finished arms', on NO_NATIVE_ADMISSION
+                                          'ALERT: no-native-admission <arm> (admitted 0, split 0/<n> samples)', then the
                                           labels to skip on a relaunch, exit 2; else prints nothing, exit 0; bad input 3.
+Dirs named ``private`` are never listed.
 """
 import argparse
 import json
@@ -51,6 +60,7 @@ SCHEMA = 'box-admission-check/1'
 ADMITTED = 'ADMITTED'
 NO_NATIVE_ADMISSION = 'NO_NATIVE_ADMISSION'
 UNKNOWN = 'UNKNOWN'
+ARM_ERRORS = 'ARM_ERRORS'
 MAX_BYTES = 64 << 20
 ARM_FILE = re.compile(r'^arm-(?P<label>[A-Za-z0-9._-]+?)\.json(?P<xz>\.xz)?$')
 LABEL = re.compile(r'^[A-Za-z0-9._/-]+$')
@@ -66,7 +76,8 @@ def _subdirs(path):
         names = sorted(os.listdir(path))
     except OSError:
         return []
-    return [n for n in names if os.path.isdir(os.path.join(path, n)) and not os.path.islink(os.path.join(path, n))]
+    return [n for n in names if n != 'private' and os.path.isdir(os.path.join(path, n))
+            and not os.path.islink(os.path.join(path, n))]
 
 
 def queue_dirs(queue_dir):
@@ -190,12 +201,35 @@ def arm_errored(record):
     return bool(record.get('error')) or 'arm-error' in reasons or 'arm-refused' in reasons
 
 
+def _text(value, limit=120):
+    """A short printable rendering of an error field (no newlines, no unusual characters)."""
+    text = re.sub(r'[^A-Za-z0-9 ._:/=,()+-]', '?', str(value if value is not None else '-'))
+    return text[:limit] if text.strip() else '-'
+
+
+def error_of(record):
+    """{type, message} of the arm's ``error``, or None when the arm carries no error."""
+    err = record.get('error')
+    if not err:
+        return None
+    if isinstance(err, dict):
+        return dict(type=_text(err.get('error_type') or err.get('type')),
+                    message=_text(err.get('error_message') or err.get('message')))
+    return dict(type='-', message=_text(err))
+
+
 def judge(label, path, record, error):
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = None
     row = dict(label=label, file=os.path.basename(path), role=None, signal=None, verdict=UNKNOWN, reasons=[],
-               wall_end_s=None)
+               wall_end_s=None, order_s=mtime, finished=False, error=None)
     if record is None:
         row['reasons'].append(error)
         return row
+    row['finished'] = True
+    row['error'] = error_of(record)
     if isinstance(record.get('label'), str) and record['label'] != label.rsplit('/', 1)[-1]:
         row['record_label'] = record['label']
     native, signal = declared(record)
@@ -203,6 +237,11 @@ def judge(label, path, record, error):
     row['role'] = {True: 'native', False: 'control', None: 'undeclared'}[native]
     end = record.get('wall_end_s')
     row['wall_end_s'] = end if isinstance(end, (int, float)) and not isinstance(end, bool) else None
+    start = record.get('wall_start_s')
+    for t in (row['wall_end_s'], start if isinstance(start, (int, float)) and not isinstance(start, bool) else None):
+        if t is not None:
+            row['order_s'] = t
+            break
     row.update(measure(record))
     served, which = native_request(record)
     row['native_request'], row['native_request_served'] = which, served
@@ -243,7 +282,7 @@ def check(queue_dir, skip=()):
         row = judge(label, path, record, error)
         row['skipped'] = label in skip
         out['arms'].append(row)
-    out['arms'].sort(key=lambda r: (r['wall_end_s'] is None, r['wall_end_s'] or 0.0, r['label']))
+    out['arms'].sort(key=lambda r: (r['order_s'] is None, r['order_s'] or 0.0, r['label']))
     counted = [r for r in out['arms'] if not r['skipped']]
     native = [r for r in counted if r['role'] == 'native']
     out['counts'] = dict(arm_records=len(out['arms']), native=len(native),
@@ -253,6 +292,7 @@ def check(queue_dir, skip=()):
                          no_native_admission=sum(1 for r in native if r['verdict'] == NO_NATIVE_ADMISSION),
                          unknown=sum(1 for r in native if r['verdict'] == UNKNOWN),
                          skipped=len(out['arms']) - len(counted))
+    out['arm_errors'] = arm_errors([r for r in counted if r['finished']])
     missing = [r for r in native if r['verdict'] == NO_NATIVE_ADMISSION]
     if missing:
         out['verdict'] = NO_NATIVE_ADMISSION
@@ -264,6 +304,28 @@ def check(queue_dir, skip=()):
         out['verdict'] = ADMITTED
     elif dirs:
         out['reasons'].append('no-arm-record' if not out['arms'] else 'no-finished-native-arm-with-evidence')
+    if out['arm_errors']['streaks']:
+        out['verdict'] = ARM_ERRORS
+    return out
+
+
+def arm_errors(finished):
+    """The arm-error rule over finished arms in run order: runs of two or more consecutive arms with an error."""
+    streaks, run = [], []
+    for row in finished + [None]:
+        if row is not None and row['error']:
+            run.append(row)
+            continue
+        if len(run) >= 2:
+            streaks.append([r['label'] for r in run])
+        run = []
+    errored = [r for r in finished if r['error']]
+    out = dict(finished=len(finished), errored=len(errored), errored_labels=[r['label'] for r in errored],
+               streaks=streaks, first=None)
+    if streaks:
+        first = next(r for r in finished if r['label'] == streaks[0][0])
+        out['first'] = dict(label=first['label'], error_type=first['error']['type'],
+                            error_message=first['error']['message'])
     return out
 
 
@@ -278,6 +340,13 @@ def summary(out):
     if first:
         text += '; first %s admitted %s split %d/%d samples (%d polls)' % (
             first['label'], first['admitted'], first['split_or_native_samples'], first['samples'], first['polls'])
+    errs = out.get('arm_errors') or {}
+    if errs.get('errored'):
+        text += '; arm errors %d of %d finished' % (errs['errored'], errs['finished'])
+        if errs.get('first'):
+            f = errs['first']
+            text += ', run of %d from %s (%s: %s)' % (len(errs['streaks'][0]), f['label'], f['error_type'],
+                                                      f['error_message'])
     if out.get('reasons'):
         text += '; ' + ','.join(out['reasons'])
     return text
@@ -287,6 +356,17 @@ def alert_lines(out):
     """The watcher's alert for a check result, or None."""
     if not isinstance(out, dict) or out.get('schema') != SCHEMA:
         raise ValueError('not a %s object' % SCHEMA)
+    if out.get('verdict') == ARM_ERRORS:
+        errs = out.get('arm_errors')
+        first = errs.get('first') if isinstance(errs, dict) else None
+        if not isinstance(first, dict) or not LABEL.match(str(first.get('label'))):
+            raise ValueError('arm_errors.first missing')
+        labels = [x for x in list(errs.get('errored_labels') or []) + list(out.get('no_admission_labels') or [])
+                  + list(out.get('skipped') or []) if LABEL.match(str(x))]
+        return ['ALERT: arm-errors %s (%s: %s), %s of %s finished arms' % (
+                    first['label'], _text(first.get('error_type')), _text(first.get('error_message')),
+                    errs.get('errored'), errs.get('finished')),
+                'relaunch-skip: %s' % ','.join(sorted(set(labels)))]
     if out.get('verdict') != NO_NATIVE_ADMISSION:
         return None
     first = out.get('first_no_admission')

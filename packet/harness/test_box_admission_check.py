@@ -8,6 +8,8 @@ Committed records, read only:
   q18a-native41-autoarm-run-2  kind 'stock' control arms beside kind 'auto' arms; records in .json.xz.
   q18a-returning-append     the bulk family: bulk true arms, nobulk controls.
   q18a-append-yield         no arm ran (no arm record): UNKNOWN.
+  q18a-append-yield-h       (harness/fixtures/box_admission) every arm errored at its first control call
+                            (QualificationRefused: controller-refusal): ARM_ERRORS.
 Variants of real records (missing fields, partial write, admission seen only in the counter) live in a temp dir.
 
 The watcher runs with BW_TEST_PVE pointing at a fake PVE command (snapshots from files, the check run locally on the
@@ -36,9 +38,12 @@ C1 = BOX / 'q18a-alpha-next-c1' / 'box' / 'run' / 'q18a-alpha-next-c1'
 AUTO = BOX / 'q18a-native41-autoarm-run-2' / 'box' / 'n41e' / 'q18a-native41-autoarm'
 RA = BOX / 'q18a-returning-append' / 'box' / 'run' / 'q18a-returning-append'
 AY = BOX / 'q18a-append-yield' / 'box' / 'run' / 'q18a-append-yield'
+A1H = ROOT / 'harness' / 'fixtures' / 'box_admission' / 'q18a-append-yield-h'  # its 26 arm records (README there)
 C1B_ARMS = ('c0off.g2-solo-0', 'c0off.g2-solo-1', 'c1off.g2-solo-0', 'c1off.g2-solo-1', 'c1defer.g2-solo-0',
             'c0off.g2-solo-3')
 C1B_ALERT = 'ALERT: no-native-admission c0off.g2-solo-0 (admitted 0, split 0/3 samples)'
+A1H_FIRST = 'nobulk-s500-t09-yon-0'
+A1H_ALERT = 'ALERT: arm-errors nobulk-s500-t09-yon-0 (QualificationRefused: controller-refusal), 26 of 26 finished arms'
 
 
 def _load_tool():
@@ -284,6 +289,134 @@ class Variants(unittest.TestCase):
         self.assertIsNone(bac.alert_lines(out))
 
 
+def _run_order(path):
+    """Arm record names of a queue dir in run order (wall_end_s)."""
+    return [n for _, n in sorted((_arm(f)['wall_end_s'], f.name) for f in Path(path).glob('arm-*.json'))]
+
+
+class ArmErrors(unittest.TestCase):
+    """The arm-error rule: two or more consecutive finished arms (any role) with an ``error``."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.q = Path(self.tmp.name) / 'q18a-variant'
+        self.q.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def copy(self, src, names):
+        for name in names:
+            shutil.copy(Path(src) / name, self.q / name)
+
+    def inject(self, name, error=None):
+        r = _arm(self.q / name)
+        r['error'] = error or {'error_type': 'QualificationRefused', 'error_message': 'controller-refusal',
+                               'error_stack': []}
+        (self.q / name).write_text(json.dumps(r))
+
+    def test_a1h_record(self):
+        before = _tree_state(A1H)
+        out = bac.check(str(A1H))
+        self.assertEqual(_tree_state(A1H), before)
+        self.assertEqual(out['verdict'], bac.ARM_ERRORS)
+        e = out['arm_errors']
+        self.assertEqual((e['finished'], e['errored'], len(e['streaks']), len(e['streaks'][0])), (26, 26, 1, 26))
+        self.assertEqual(e['first'], dict(label=A1H_FIRST, error_type='QualificationRefused',
+                                          error_message='controller-refusal'))
+        self.assertEqual(out['counts']['native'], 22)  # bulk=true arms; the 4 nobulk controls are counted as finished too
+        lines = bac.alert_lines(out)
+        self.assertEqual(lines[0], A1H_ALERT)
+        self.assertEqual(lines[1], 'relaunch-skip: ' + ','.join(sorted(n[4:-5] for n in os.listdir(A1H) if n.startswith('arm-'))))
+
+    def test_a1h_alert_after_its_first_two_arms(self):
+        order = _run_order(A1H)
+        self.assertEqual(order[0], 'arm-%s.json' % A1H_FIRST)
+        self.copy(A1H, order[:1])
+        one = bac.check(str(self.q))
+        self.assertEqual((one['verdict'], one['arm_errors']['errored'], one['arm_errors']['streaks']), (bac.UNKNOWN, 1, []))
+        self.assertIsNone(bac.alert_lines(one))  # one errored arm alone never alerts
+        self.copy(A1H, order[1:2])
+        two = bac.check(str(self.q))
+        self.assertEqual(two['verdict'], bac.ARM_ERRORS)
+        self.assertEqual(bac.alert_lines(two)[0], 'ALERT: arm-errors %s (QualificationRefused: controller-refusal), '
+                                                  '2 of 2 finished arms' % A1H_FIRST)
+
+    def test_later_run_of_two_on_a_healthy_queue(self):
+        order = _run_order(C1)[:6]
+        self.copy(C1, order)
+        self.assertEqual(bac.check(str(self.q))['verdict'], bac.ADMITTED)
+        self.inject(order[3])
+        single = bac.check(str(self.q))
+        self.assertEqual((single['verdict'], single['arm_errors']['errored']), (bac.ADMITTED, 1))
+        self.inject(order[5])  # errors at 4 and 6: not consecutive
+        apart = bac.check(str(self.q))
+        self.assertEqual((apart['verdict'], apart['arm_errors']['errored'], apart['arm_errors']['streaks']),
+                         (bac.ADMITTED, 2, []))
+        self.inject(order[4])  # 4, 5, 6 now
+        out = bac.check(str(self.q))
+        self.assertEqual(out['verdict'], bac.ARM_ERRORS)
+        self.assertEqual(out['arm_errors']['streaks'], [[n[4:-5] for n in order[3:6]]])
+        self.assertEqual(bac.alert_lines(out)[0], 'ALERT: arm-errors %s (QualificationRefused: controller-refusal), '
+                                                  '3 of 6 finished arms' % order[3][4:-5])
+
+    def test_any_role_counts(self):
+        # The A1-h run starts with a nobulk control: control arms count for the arm-error rule.
+        order = _run_order(A1H)
+        self.copy(A1H, order[:2])
+        roles = [a['role'] for a in bac.check(str(self.q))['arms']]
+        self.assertEqual(roles, ['control', 'native'])
+        r = _arm(self.q / order[1])
+        del r['bulk']  # undeclared arms count too
+        (self.q / order[1]).write_text(json.dumps(r))
+        out = bac.check(str(self.q))
+        self.assertEqual(([a['role'] for a in out['arms']], out['verdict']), (['control', 'undeclared'], bac.ARM_ERRORS))
+
+    def test_partial_record_is_not_a_finished_arm(self):
+        order = _run_order(A1H)
+        self.copy(A1H, order[:1])
+        (self.q / order[1]).write_text((A1H / order[1]).read_text()[:400])
+        out = bac.check(str(self.q))
+        self.assertEqual((out['verdict'], out['arm_errors']['finished']), (bac.UNKNOWN, 1))
+
+    def test_precedence_and_relaunch_skip(self):
+        self.copy(C1B, ['arm-%s.json' % x for x in C1B_ARMS])
+        self.inject('arm-c1off.g2-solo-0.json')
+        self.inject('arm-c1off.g2-solo-1.json', {'error_type': 'ReadTimeout', 'error_message': 'line1\nline2 <x>'})
+        out = bac.check(str(self.q))
+        self.assertEqual(out['verdict'], bac.ARM_ERRORS)  # before NO_NATIVE_ADMISSION, which stays recorded
+        self.assertEqual(out['first_no_admission']['label'], 'c0off.g2-solo-0')
+        lines = bac.alert_lines(out)
+        self.assertEqual(lines[0], 'ALERT: arm-errors c1off.g2-solo-0 (QualificationRefused: controller-refusal), '
+                                   '2 of 6 finished arms')
+        self.assertEqual(lines[1], 'relaunch-skip: ' + ','.join(sorted(C1B_ARMS)))
+        by = {a['label']: a for a in out['arms']}
+        self.assertEqual(by['c1off.g2-solo-1']['error'], dict(type='ReadTimeout', message='line1?line2 ?x?'))
+        cleared = bac.check(str(self.q), skip=list(C1B_ARMS))
+        self.assertEqual((cleared['verdict'], bac.alert_lines(cleared)), (bac.UNKNOWN, None))
+
+    def test_no_arm_error_alert_on_any_committed_record(self):
+        dirs = sorted({p.parent for p in BOX.rglob('arm-*.json*') if p.name.endswith(('.json', '.json.xz'))})
+        self.assertGreaterEqual(len(dirs), 20)
+        verdicts = {}
+        for d in dirs:
+            out = bac.check(str(d))
+            self.assertNotEqual(out['verdict'], bac.ARM_ERRORS, str(d))
+            self.assertEqual(out['arm_errors']['streaks'], [], str(d))
+            verdicts[str(d.relative_to(BOX))] = out['verdict']
+        self.assertEqual([k for k, v in verdicts.items() if v == bac.NO_NATIVE_ADMISSION],
+                         [str(C1B.relative_to(BOX))])
+        self.assertEqual(verdicts[str(C1.relative_to(BOX))], bac.ADMITTED)
+
+    def test_private_dirs_are_never_listed(self):
+        order = _run_order(A1H)
+        (self.q / 'private').mkdir()
+        for name in order[:2]:
+            shutil.copy(A1H / name, self.q / 'private' / name)
+        out = bac.check(str(self.q))
+        self.assertEqual((out['verdict'], out['arms'], out['dirs']), (bac.UNKNOWN, [], ['.']))
+
+
 class CommandLine(unittest.TestCase):
 
     def run_tool(self, args, stdin=None):
@@ -466,6 +599,15 @@ class Watcher(unittest.TestCase):
     def test_bad_skip_is_usage(self):
         p, _ = self.run_watch('q18a-alpha-next-c1b', C1B.parent, [SNAP_RUNNING], {'BW_ADMISSION_SKIP': 'a b'})
         self.assertEqual((p.returncode, p.stdout.strip()), (4, 'USAGE bad BW_ADMISSION_SKIP'))
+
+    def test_a1h_arm_errors_alert(self):
+        p, log = self.run_watch('q18a-append-yield-h', A1H.parent, [SNAP_RUNNING, SNAP_DONE])
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        out = p.stdout.splitlines()
+        self.assertEqual(out[0], A1H_ALERT)
+        self.assertTrue(out[1].startswith('relaunch-skip: after-s1500-t09-yon-0,'), out[1])
+        self.assertEqual(self.calls('polls'), ['1'])
+        self.assertIn('ADMISSION box-admission ARM_ERRORS', log)
 
     def test_old_watcher_unchanged_and_superseded_by_name(self):
         old = (ROOT / 'tools' / 'box-watch-haiku.sh').read_text()
