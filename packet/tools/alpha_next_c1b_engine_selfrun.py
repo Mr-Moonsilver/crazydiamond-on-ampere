@@ -43,6 +43,7 @@ QUEUE_SUITE = 'test_alpha_next_c1b_queue'
 OVERLAP_SUITES = tuple(base.OVERLAP_SUITES) + (QUEUE_SUITE,)
 NEGATIVE_SUITES = OVERLAP_SUITES
 CASES = base.CASES
+PARENT_PASS = base.PARENT_PASS
 PINS = Path(__file__).resolve().with_name('alpha_next_c1b_negative_pins.json')
 sha = base.sha
 canonical = base.canonical
