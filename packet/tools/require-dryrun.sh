@@ -2,7 +2,8 @@
 # Launch guard: exit 0 only if the record proves a passing dry run of this exact head.
 # Usage: require-dryrun.sh <worktree> <record.json>      (record from tools/dryrun-record.sh)
 # Accepts only if: the record exists with schema dryrun-record/1 and rc 0, its head equals the
-# worktree's current HEAD, dirty was 0, and the log still has the recorded sha256.
+# worktree's current HEAD, dirty was 0, the worktree has no tracked changes now (untracked files are
+# ignored, so a record file inside the worktree is fine), and the log still has the recorded sha256.
 # Otherwise exit 3 with one line on stderr naming the reason.
 set -uo pipefail
 [[ $# -eq 2 ]] || { echo "require-dryrun: REFUSED usage: require-dryrun.sh <worktree> <record.json>" >&2; exit 3; }
@@ -34,6 +35,13 @@ except (subprocess.CalledProcessError, OSError):
     refuse(f"cannot read HEAD of worktree {wt}")
 if rec.get("head") != head:
     refuse(f"head mismatch: dry run was {str(rec.get('head'))[:12]}, worktree is at {head[:12]}")
+try:
+    changed = subprocess.run(["git", "-C", wt, "status", "--short", "--untracked-files=no"], check=True,
+                             capture_output=True, text=True).stdout.splitlines()
+except (subprocess.CalledProcessError, OSError):
+    refuse(f"cannot read git status of worktree {wt}")
+if changed:
+    refuse(f"worktree has tracked changes now ({len(changed)} status lines, first: {changed[0].strip()})")
 log = rec.get("log")
 if not isinstance(log, str) or not isinstance(rec.get("log_sha256"), str):
     refuse("record has no log path / log_sha256")

@@ -297,6 +297,20 @@ class DryRun(unittest.TestCase):
         git(self.wt, "commit", "-q", "-am", "two")
         self.assertRefused(self.require(), r"head mismatch")
 
+    def test_refuses_tracked_changes_made_after_the_dryrun(self):
+        self.assertEqual(self.record().returncode, 0)
+        (self.wt / "a.txt").write_text("edited after the dry run\n")  # same head, uncommitted edit
+        self.assertRefused(self.require(), r"tracked changes now")
+        git(self.wt, "checkout", "--", "a.txt")
+        self.assertEqual(self.require().returncode, 0)  # reverted: accepted again
+
+    def test_untracked_files_after_the_dryrun_do_not_refuse(self):
+        self.assertEqual(self.record().returncode, 0)
+        (self.wt / "evidence.json").write_text(self.rec.read_text())  # e.g. a record file inside the worktree
+        (self.wt / "new-untracked.txt").write_text("x")
+        r = self.require()
+        self.assertEqual((r.returncode, r.stderr), (0, ""), r.stdout)
+
     def test_refuses_changed_log(self):
         self.assertEqual(self.record().returncode, 0)
         self.log.write_text("dry run output\nPASS (edited)\n")
