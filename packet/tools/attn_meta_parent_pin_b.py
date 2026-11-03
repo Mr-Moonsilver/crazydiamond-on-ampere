@@ -13,8 +13,9 @@ requires, from c1b's own chain:
     rebind-default-off and vm-carry included; strict, focused and engine-selfrun may pass on their '-2' rerun) and the line
     'stopped-before-delivery: VM run pending'; or, through a continuation (--continuation), alpha_next_c1_parent_pin's
     continuation rule unchanged, applied with this STEPS_REQUIRED;
-  * the READY commit (the first commit id in the READY note's first lines) and build.source are ancestors of HEAD (the rebased
-    branch must hold c1b's READY commit).
+  * the READY commit is the commit that added results/hub/alpha-next-c1b/READY-c1b.md (the note says 'the commit that adds this file', so
+    its first id is the chain head, not the READY commit: c1pin.ready_commit would read the wrong one); the committed note must equal
+    --ready byte for byte; it and build.source are ancestors of HEAD (the rebased branch must hold c1b's READY commit).
 load() refuses a placeholder (rc 3, 'parent not pinned') and a development pin outside ATTN_META_PARENT_B. Never overwritten.
     python3 tools/attn_meta_parent_pin_b.py --out C1B_OUT --steps STEPS --ready READY_NOTE [--continuation CONT] [--check]
     python3 tools/attn_meta_parent_pin_b.py --pinned
@@ -43,6 +44,15 @@ STEPS_REQUIRED = ('parent-pin', 'composition', 'rebind-default-off', 'review-pin
                   'engine-negative', 'overlay-tamper', 'clock-scan', 'compile-proof', 'precheck-conf', 'precheck', 'staging-check')
 RERUN_STEPS = ('strict', 'focused', 'engine-selfrun')  # as c1pin.steps_ok: the '-2' attempt counts
 STOPPED = c1pin.STOPPED
+READY_PATH = 'results/hub/alpha-next-c1b/READY-c1b.md'
+
+
+def ready_commit(note):
+    found = c1pin.git('log', '--diff-filter=A', '-1', '--format=%H', '--', READY_PATH).stdout.strip()
+    assert found, 'no commit adds ' + READY_PATH
+    committed = c1pin.git('show', found + ':' + READY_PATH).stdout
+    assert committed == Path(note).read_text(), 'the READY note differs from the committed one'
+    return found
 
 
 def load(path=None):
@@ -91,7 +101,7 @@ def pins(out, steps=None, ready=None, continuation=None, dev=False):
     else:
         c1pin.STEPS_REQUIRED = STEPS_REQUIRED  # c1pin.steps_ok adds the three rerun steps itself
         try:
-            missing = c1pin.continuation_ok(text, Path(continuation).read_text(), c1pin.ready_commit(ready))
+            missing = c1pin.continuation_ok(text, Path(continuation).read_text(), ready_commit(ready))
         finally:
             c1pin.STEPS_REQUIRED = saved
         assert not missing, ('c1b chain and continuation not complete through the staging check', missing)
@@ -104,7 +114,7 @@ def pins(out, steps=None, ready=None, continuation=None, dev=False):
     staging = 'staging-check-%s.json' % tag if tag else 'staging-check.json'
     for name in ('engine-comparison.json', staging):
         assert json.loads((out / name).read_text())['verdict'] == 'PASS', name + ' not PASS'
-    commit = c1pin.ready_commit(ready)
+    commit = ready_commit(ready)
     assert c1pin.ancestor(commit), 'c1b READY commit %s is not merged here' % commit[:12]
     record.update(engine_selfrun=str(engine), engine_selfrun_sha256=c1pin.sha(engine / 'result.json'),
                   comparison_sha256=c1pin.sha(out / 'engine-comparison.json'), staging_check=staging,

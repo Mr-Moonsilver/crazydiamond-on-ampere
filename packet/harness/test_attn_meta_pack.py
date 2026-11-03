@@ -85,6 +85,16 @@ class ParentPinB(unittest.TestCase):
                 pin.load(dev)
             self.assertEqual(e.exception.code, 3)
 
+    def test_ready_commit_is_the_one_that_added_the_note(self):
+        import attn_meta_parent_pin_b as pin
+        with tempfile.TemporaryDirectory() as tmp:
+            note = Path(tmp) / 'n.md'
+            note.write_text((ROOT / pin.READY_PATH).read_text())
+            self.assertEqual(pin.ready_commit(note), pin.load()['ready_commit'])
+            note.write_text('other\n')
+            with self.assertRaisesRegex(AssertionError, 'differs'):
+                pin.ready_commit(note)
+
     def test_steps_rule(self):
         import attn_meta_parent_pin_b as pin
         rows = pin.STEPS_REQUIRED + ('strict-2', 'focused', 'engine-selfrun')
