@@ -13,6 +13,7 @@
     overlay modules, schema names, the queue stem, the seam list resolving to harness files, the queue pins placeholder);
     the clock scan PASSes over this tree with the queue's setcfg reference.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -58,14 +59,31 @@ class ParentPin(unittest.TestCase):
 
 
 class ParentPinB(unittest.TestCase):
-    """The c1b READY pin for the rebased tree: placeholder until the rebase; the steps rule is c1b's chain's names."""
-    C1B = ROOT.parent / 'tmp/alpha-next-c1b/build-a2'
+    """The c1b READY pin of this tree; the steps rule is c1b's chain's names (tools/alpha_next_c1b_gates_b.sh)."""
 
-    def test_placeholder_refused(self):
+    def test_the_pin_is_c1b_b2s_ready_build(self):
         import attn_meta_parent_pin_b as pin
-        with self.assertRaises(SystemExit) as e:
-            pin.load()
-        self.assertEqual(e.exception.code, 3)
+        p = pin.load()
+        self.assertEqual(p['schema'], pin.SCHEMA)
+        self.assertEqual(json.loads(Path(p['build']).read_text())['name'], 'q18a-alpha-next-c1b')
+        self.assertEqual(json.loads(Path(p['build']).read_text())['manifest'], p['manifest'])
+        self.assertIn('engine_selfrun_sha256', p)
+        self.assertIn('ready_commit', p)
+        self.assertNotIn('dev', p)
+
+    def test_placeholder_and_dev_rules(self):
+        import attn_meta_parent_pin_b as pin
+        with tempfile.TemporaryDirectory() as tmp:
+            ph = Path(tmp) / 'p.json'
+            ph.write_text(json.dumps(dict(schema=pin.SCHEMA, status='NOT-PINNED: x')))
+            with self.assertRaises(SystemExit) as e:
+                pin.load(ph)
+            self.assertEqual(e.exception.code, 3)
+            dev = Path(tmp) / 'd.json'
+            dev.write_text(json.dumps(dict(schema=pin.SCHEMA, status='DEV: x', dev=True)))
+            with self.assertRaises(SystemExit) as e:          # a dev pin read without the environment: refused
+                pin.load(dev)
+            self.assertEqual(e.exception.code, 3)
 
     def test_steps_rule(self):
         import attn_meta_parent_pin_b as pin
@@ -77,13 +95,6 @@ class ParentPinB(unittest.TestCase):
         self.assertEqual(pin.steps_ok(ok.replace('strict-2 rc=0', 'strict-2 rc=1')), ['strict'])
         for name in ('parent-pin', 'composition', 'rebind-default-off', 'vm-carry', 'staging-check'):
             self.assertIn(name, pin.STEPS_REQUIRED)
-
-    @unittest.skipUnless((ROOT.parent / 'tmp/alpha-next-c1b/build-a2/build.json').exists(), 'c1b build-a2 not on this hub')
-    def test_c1b_build_refused_where_its_source_is_not_merged(self):
-        import attn_meta_parent_pin_b as pin
-        with self.assertRaises(AssertionError) as e:     # this branch is on c1, not c1b: the c1b source is not an ancestor
-            pin.pins(self.C1B, dev=True)
-        self.assertIn('not merged here', str(e.exception))
 
 
 class Freeze(unittest.TestCase):
@@ -204,11 +215,124 @@ class PostRead(unittest.TestCase):
 
 class Probe(unittest.TestCase):
     def test_committed_probe_is_the_derivation(self):
-        got = tool('tools/attn_meta_tools_derive.py', '--check')
+        got = tool('tools/attn_meta_tools_derive_b.py', '--check')
         self.assertEqual(got.returncode, 0, got.stderr[-800:])
-        text = (TOOLS / 'attn_meta_cpu_probe.py').read_text()
+        text = (TOOLS / 'attn_meta_cpu_probe_b.py').read_text()
         self.assertIn("owner.QNAME=='q18a-attn-meta'", text)
-        self.assertRegex(text, r"(?m)^EXPECTED_TESTS=530  # the 519 alpha-next-c1 probe cases plus the 11 attn-meta queue cases")
+        self.assertRegex(text, r"(?m)^EXPECTED_TESTS=579  # the 563 alpha-next-c1b probe cases plus the 16 attn-meta queue cases")
+        self.assertIn('import alpha_next_c1b_gate\nimport attn_meta_gate\n', text)
+        self.assertIn("record=dict(attn_meta_queue='PASS',", text)
+        self.assertIn("alpha_next_c1b_queue='PASS',", text)
+
+
+class Family(unittest.TestCase):
+    def test_every_derived_tool_is_its_declared_swaps(self):
+        got = tool('tools/attn_meta_b_derive.py', '--check')
+        self.assertEqual(got.returncode, 0, got.stderr[-800:])
+
+    def test_a_changed_source_text_refuses(self):
+        import attn_meta_b_derive as d
+        with self.assertRaises(AssertionError):
+            d.swap('no such text', (d.PIN,), 'x')
+
+    def test_engine_selfrun_b_binds_c1bs_record_and_compare(self):
+        import attn_meta_engine_selfrun_b as m
+        self.assertEqual(m.ATTN_SUITES[-1], 'test_attn_meta_box_b')
+        self.assertIn('test_alpha_next_c1b_queue', m._run_ns['OVERLAP_SUITES'])
+        self.assertIs(m.negative.__globals__['frozen'], m.frozen)
+        self.assertIs(m.compare.__globals__['frozen'], m.frozen)
+        self.assertEqual(m.expected_cases(), m.base.expected_cases())
+        self.assertEqual(json.loads(m.PINS.read_text())['schema'], 'attn-meta-negative-pins/1')
+        import attn_meta_parent_pin_b as pin
+        self.assertEqual(str(m.frozen()), pin.load()['engine_selfrun'])
+
+    def test_freeze_b_and_build_b_read_the_c1b_pin(self):
+        import attn_meta_freeze_b as freeze
+        import build_attn_meta_b as build
+        import attn_meta_parent_pin_b as pin
+        p = pin.load()
+        self.assertEqual(freeze.PARENT_SOURCE, p['source'])
+        self.assertEqual((build.CANDIDATE, build.b.PARENT_CANDIDATE, build.b.PARENT_STEM),
+                         ('q18a-attn-meta', 'q18a-alpha-next-c1b', 'q18a_alpha_next_c1b'))
+        with tempfile.TemporaryDirectory() as tmp:
+            r = freeze.prove(ROOT, Path(tmp) / 'work')
+        self.assertEqual(r['verdict'], 'PASS', r['faults'])
+        self.assertTrue(r['both_off_reaches_c1_freeze']['projected_byte_identical'])
+        self.assertEqual(r['both_off_reaches_c1_freeze']['proved_commit'], p['source'])
+
+    def test_precheck_conf_b_seams_exist_and_name_the_h_modules(self):
+        import attn_meta_precheck_conf_b as conf
+        seams = conf.SEAMS.split()
+        self.assertEqual(len(seams), len(set(seams)))
+        self.assertTrue(all((ROOT / 'harness' / s).is_file() for s in seams), [s for s in seams if not (ROOT / 'harness' / s).is_file()])
+        for name in ('native43_engine_death_h.py', 'alpha_next_stop_race_h.py', 'e3_attn_meta_box_b.py', 'e3_c1_open_rows.py'):
+            self.assertIn(name, seams)
+
+    def test_negative_pins_are_hub_side(self):
+        spec = json.loads((TOOLS / 'native43_spec.attn-meta-b.json').read_text())
+        self.assertNotIn('attn_meta_negative_pins.json', spec['tools'])
+        self.assertNotIn('attn_meta_queue_pins.json', spec['tools'])
+
+
+class Continuation(unittest.TestCase):
+    """tools/attn_meta_gates_b_cont.sh refuses anywhere but the observation stop, with the pins filled, clean, the bundle unmoved."""
+    SCRIPT = TOOLS / 'attn_meta_gates_b_cont.sh'
+
+    def refused(self, steps, status='FILLED', moved=False):
+        script = self.SCRIPT.read_text()
+        cut = script.index('wait_clear engine-negative\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, out, evid = Path(tmp) / 'wt', Path(tmp) / 'out', Path(tmp) / 'evid'
+            (wt / 'tools').mkdir(parents=True)
+            out.mkdir()
+            evid.mkdir()
+            subprocess.run(['git', 'init', '-q', str(wt)], check=True)
+            (wt / 'tools/attn_meta_negative_pins.json').write_text(json.dumps(dict(status=status)))
+            subprocess.run(['git', '-C', str(wt), 'add', '.'], check=True)
+            subprocess.run(['git', '-C', str(wt), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'x'], check=True)
+            digest = hashlib.sha256(b'x\n').hexdigest()
+            bundle = out / ('q18a-attn-meta-bundle-' + digest[:12])
+            bundle.mkdir()
+            (bundle / 'SHA256SUMS').write_text('moved\n' if moved else 'x\n')
+            (out / 'build.json').write_text(json.dumps(dict(manifest=digest)))
+            stepfile = evid / 'gates-t.steps'
+            stepfile.write_text(steps)
+            # Only the refusal block runs (everything before the chain's own tail): the tail is the chain's text, unchanged.
+            body = script[:cut] + 'echo through\nexit 0\n'
+            runner = Path(tmp) / 'cont.sh'
+            runner.write_text(body)
+            got = subprocess.run(['bash', str(runner), str(wt), 'spec', str(out), str(evid), 't', 'note', 'clear'],
+                                 capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+            return got.returncode, got.stdout, stepfile.read_text()
+
+    STOP = '12:00:00Z engine-negative-observe rc=0\npins awaiting review\n12:00:01Z engine-negative-awaiting-pins rc=5\n'
+
+    def test_through_at_the_stop_with_filled_pins(self):
+        rc, out, steps = self.refused(self.STOP)
+        self.assertEqual((rc, out.strip()), (0, 'through'), steps)
+        self.assertIn('continuation head ', steps)
+
+    def test_refused_elsewhere(self):
+        rc, out, steps = self.refused('12:00:00Z engine-comparison rc=0\n')
+        self.assertEqual(rc, 3)
+        self.assertIn('not at the observation stop', steps)
+
+    def test_refused_with_the_pins_awaiting(self):
+        rc, out, steps = self.refused(self.STOP, status='AWAITING-OBSERVATION: x')
+        self.assertEqual(rc, 3)
+        self.assertIn('pins not filled', steps)
+
+    def test_refused_when_the_bundle_moved(self):
+        rc, out, steps = self.refused(self.STOP, moved=True)
+        self.assertEqual(rc, 3)
+        self.assertIn('the bundle moved', steps)
+
+    def test_the_tail_is_the_chains_text_and_ends_at_the_stop_line(self):
+        import attn_meta_b_derive as d
+        gates, cont = d.gates(), self.SCRIPT.read_text()
+        tail = gates[gates.index('wait_clear engine-negative\n'):]
+        self.assertTrue(cont.endswith(tail))
+        self.assertIn("echo 'stopped-before-delivery: VM run pending'", tail)
 
 
 class Names(unittest.TestCase):
@@ -240,10 +364,10 @@ class Names(unittest.TestCase):
         self.assertIn("r['path'] in freeze.NEW", tamper)
 
     def test_spec_names_and_runner_swaps(self):
-        spec = json.loads((TOOLS / 'native43_spec.attn-meta.json').read_text())
+        spec = json.loads((TOOLS / 'native43_spec.attn-meta-b.json').read_text())
         self.assertEqual((spec['candidate'], spec['label'], spec['review_key']), ('q18a-attn-meta', 'attn-meta', 'attn_meta'))
         self.assertEqual(spec['queue'], ['q18a_attn_meta.draft.sh', 'q18a_attn_meta_declare.sh', 'q18a_attn_meta_settings.sh'])
-        self.assertEqual(spec['bundle_selfrun']['probe'], 'attn_meta_cpu_probe.py')
+        self.assertEqual(spec['bundle_selfrun']['probe'], 'attn_meta_cpu_probe_b.py')
         self.assertEqual(spec['details']['attn_meta_settings']['FLASH_ATTN_META_GDN_BATCH'], '1')
         self.assertEqual(len(spec['runner_swaps']), 2)
         self.assertEqual(spec['runner_swaps'][0][1], "engine.get('schema')=='attn-meta-selfrun/1'")
@@ -253,7 +377,7 @@ class Names(unittest.TestCase):
     def test_clock_scan_passes_over_this_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / 'scan.json'
-            got = tool('tools/attn_meta_clock_scan.py', '--tree', str(ROOT), '--setcfg-reference', str(ROOT / 'deploy/setcfg.py'),
+            got = tool('tools/attn_meta_clock_scan_b.py', '--tree', str(ROOT), '--setcfg-reference', str(ROOT / 'deploy/setcfg.py'),
                        '--out', str(out))
             self.assertEqual(got.returncode, 0, got.stdout[-1500:] + got.stderr[-800:])
             self.assertEqual(json.loads(out.read_text())['verdict'], 'PASS')

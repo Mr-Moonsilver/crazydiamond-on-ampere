@@ -4,7 +4,7 @@ derived arm loop under real bash (stub arm and check clients, the real watch fun
 CPU only; no pass here is box evidence.
 
 Classes:
-* Derivation: tools/attn_meta_queue.py --check (the files are the derivation); c1's texts unchanged (its --check); every
+* Derivation: tools/attn_meta_queue_b.py --check (the files are the derivation); c1's texts unchanged (its --check); every
   declared delta present; the draft's body is the derived body; the switch in EXTRA_ENV and asserted in preflight and declaration.
 * NameChecks: every QNAME test in the three runs/ scripts, extracted and executed in bash with QNAME set to the settings'
   real default (the runner's name, q18a-attn-meta), passes; the declaration's request dir, the draft's RUN_ID and every
@@ -33,7 +33,7 @@ sys.path[:0] = [str(HERE), str(ROOT / 'tools')]
 import test_alpha_next_c1_queue as tq  # noqa: E402  (first: paths)
 import attn_meta_arms as T  # noqa: E402
 import attn_meta_gate as gate  # noqa: E402
-import attn_meta_queue as queue  # noqa: E402
+import attn_meta_queue_b as queue  # noqa: E402
 import alpha_next_c1_queue as c1q  # noqa: E402
 import test_attn_meta_box as tbox  # noqa: E402
 
@@ -77,7 +77,7 @@ class Derivation(unittest.TestCase):
             self.assertNotIn(mark, body)
         self.assertIn('if [[ $_pair == [234] ]]; then _attn=on; else _attn=off; fi', body)
         self.assertIn('if [[ $_pair == [0134] ]]; then _workload=$H/workloads/q18a-native41-progress.json', body)
-        self.assertIn('python3 "$H/e3_attn_meta_box.py" arm --attn "$_attn"', body)
+        self.assertIn('python3 "$H/e3_attn_meta_box_b.py" arm --attn "$_attn"', body)
         self.assertNotIn('e3_alpha_next_c1_box.py', body)
 
     def test_switch_in_extra_env_and_asserted(self):
@@ -160,7 +160,7 @@ if sys.argv[1] in ('grade', 'read'):
     with open(os.environ['CALLS'], 'a') as f:
         f.write(json.dumps(dict(script='box', action=sys.argv[1])) + '\n')
     sys.path.insert(0, os.environ['REAL_HARNESS'])
-    import e3_attn_meta_box as real
+    import e3_attn_meta_box_b as real
     raise SystemExit(real.main(sys.argv[1:]))
 a = sys.argv
 out = a[a.index('--out') + 1]
@@ -188,11 +188,11 @@ class ArmLoop(unittest.TestCase):
         self.q, self.h, self.bin, self.arms = (self.root / x for x in ('q', 'h', 'bin', 'arms'))
         for d in (self.q, self.h, self.bin, self.arms):
             d.mkdir()
-        for name in ('native43_engine_death.py', 'attn_meta_gate.py', 'attn_meta_arms.py', 'alpha_next_arms.py',
-                     'alpha_next_stop_race.py', 'native39_trunk_gate.py', 'native40_box_gate.py', 'native41_box_gate.py'):
+        for name in ('native43_engine_death_h.py', 'attn_meta_gate.py', 'attn_meta_arms.py', 'alpha_next_arms.py',
+                     'alpha_next_stop_race_h.py', 'native39_trunk_gate.py', 'native40_box_gate.py', 'native41_box_gate.py'):
             (self.h / name).symlink_to(HERE / name)
         (self.h / 'e3_native39_trunk_checks.py').write_text(tap.STUB_CHECKS)
-        (self.h / 'e3_attn_meta_box.py').write_text(STUB_BOX)
+        (self.h / 'e3_attn_meta_box_b.py').write_text(STUB_BOX)
         self.tool('nvidia-smi', 'printf "0, 22925\\n1, 22835\\n2, 23037\\n3, 22947\\n"')
         self.tool('docker', 'case "$*" in *State.Running*) echo true;; *) echo 2026-11-01T10:48:09.000000000Z;; esac')
         self.tool('systemctl', 'echo 0')
@@ -310,6 +310,61 @@ def bash_words(args, draft, values=None):
     return done.returncode, done.stdout.decode().split('\0')[:-1], done.stderr.decode()[-400:]
 
 
+class QueueH(unittest.TestCase):
+    """The health-scoped death scan (lead 3 Nov 16:49; returning-append 14904f18, byte for byte): the draft calls _h, never the old."""
+    OLD = ('native43_engine_death.py', 'alpha_next_stop_race.py')
+
+    def test_the_bytes_are_the_forwarded_ones(self):
+        import hashlib
+        for name, want in (('native43_engine_death_h.py', '8217760e769a500245c0bfe995cb3547e4a46775145cb81d42824a965107ac04'),
+                           ('alpha_next_stop_race_h.py', '44f2954f2536bd6efb85dc90cfdf4e623e93dfe81b8cac95f45028ed84784dcd')):
+            self.assertEqual(hashlib.sha256((HERE / name).read_bytes()).hexdigest(), want, name)
+
+    def test_the_draft_names_the_new_modules_never_the_old(self):
+        draft = queue.derive()[DRAFT]
+        for old in self.OLD:
+            self.assertNotIn(old, draft)
+        self.assertEqual(draft.count('python3 "${H:-}/native43_engine_death_h.py" scan '), 1)
+        self.assertEqual(draft.count('python3 "$H/native43_engine_death_h.py" watch '), 1)
+        self.assertEqual(draft.count('python3 "$H/alpha_next_stop_race_h.py" '), 1)
+        crash = draft[draft.index('host_crash_detected() {'):draft.index('engine_watched() {')]
+        self.assertIn('native43_engine_death_h.py" scan', crash)
+        self.assertIn('alpha_next_stop_race_h.py"', crash)
+
+    def test_the_new_modules_import_nothing_old(self):
+        for name in ('native43_engine_death_h.py', 'alpha_next_stop_race_h.py'):
+            tree = ast.parse((HERE / name).read_text())
+            names = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names} \
+                | {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+            self.assertFalse(names & {'native43_engine_death', 'alpha_next_stop_race'}, name)
+
+    def test_the_declaration_pins_them_and_undoing_the_swaps_gives_the_base_texts(self):
+        h, b = queue.derive(), queue.base.derive()
+        for name in ('native43_engine_death_h.py', 'alpha_next_stop_race_h.py', 'e3_attn_meta_box_b.py', 'e3_c1_open_rows.py'):
+            self.assertEqual(h[DECLARE].count(' ' + name + ' '), 1, name)
+        self.assertEqual(h[DECLARE].replace(queue.PINS_NEW, queue.PINS_OLD), b[DECLARE])
+        draft = h[DRAFT].replace(queue.INTERFACE_NEW, queue.INTERFACE_OLD)
+        for old, new, _ in queue.DRAFT_SWAPS:
+            draft = draft.replace(new, old)
+        self.assertEqual(draft, b[DRAFT])
+        self.assertEqual(h[SETTINGS], b[SETTINGS])
+
+    def test_a_startup_stall_before_the_first_health_200_is_a_read_and_one_after_it_is_a_death(self):
+        import contextlib
+        import io
+        import native43_engine_death_h as death
+        stall = '2026-11-03T15:06:22.000000000Z (EngineCore pid=1) shm_broadcast.py:801] No available shared memory broadcast block found in 60 seconds\n'
+        health = '2026-11-03T15:06:54.000000000Z (APIServer pid=2) INFO:     127.0.0.1:1 - "GET /health HTTP/1.1" 200 OK\n'
+        late = stall.replace('15:06:22', '15:07:30')
+        with tempfile.TemporaryDirectory() as tmp:
+            for lines, verdict, rc in (([stall, health], 'ALIVE', 0), ([health, late], 'DEAD', 1), ([stall], 'DEAD', 1)):
+                log, out = Path(tmp) / 'engine.log', Path(tmp) / ('scan-%d.json' % len(list(Path(tmp).iterdir())))
+                log.write_text(''.join(lines))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    got = death.main(['scan', '--log', str(log), '--out', str(out)])
+                self.assertEqual((got, json.loads(out.read_text())['verdict']), (rc, verdict), lines)
+
+
 class QueueArgparse(unittest.TestCase):
     def test_every_queue_python_call_parses_with_its_real_parser(self):
         held = tan.held
@@ -318,8 +373,9 @@ class QueueArgparse(unittest.TestCase):
         calls = held.queue_python_calls(texts, (HERE / 'qlib.sh').read_text())
         parent = held.queue_python_calls(c1q.derive(), (HERE / 'qlib.sh').read_text())
         # c1's calls, one for one, with its box replaced by this queue's, plus the decode arm's three (entry, arm, ingress).
-        swap = lambda s: 'e3_attn_meta_box.py' if s == 'e3_alpha_next_c1_box.py' else s
-        extra = sorted(['e3_native39_trunk_checks.py', 'e3_attn_meta_box.py', 'e3_native39_trunk_checks.py'])
+        swap = lambda s: {'e3_alpha_next_c1_box.py': 'e3_attn_meta_box_b.py', 'native43_engine_death.py': 'native43_engine_death_h.py',
+                          'alpha_next_stop_race.py': 'alpha_next_stop_race_h.py'}.get(s, s)
+        extra = sorted(['e3_native39_trunk_checks.py', 'e3_attn_meta_box_b.py', 'e3_native39_trunk_checks.py'])
         self.assertEqual(sorted(c[1] for c in calls), sorted(sorted(swap(c[1]) for c in parent) + extra))
         self.assertNotIn('e3_alpha_next_c1_box.py', {c[1] for c in calls})
         setcfg = next(p for p in (ROOT / 'deploy/setcfg.py', HERE / 'setcfg.reference.py') if p.is_file())
@@ -345,8 +401,8 @@ class QueueArgparse(unittest.TestCase):
 
         def first(script, action):
             return next(a for n, s, a, f in calls if s == script and a.split()[0] == action)
-        arm, grade = first('e3_attn_meta_box.py', 'arm'), first('e3_attn_meta_box.py', 'grade')
-        dec = first('e3_attn_meta_box.py', 'decode-arm')
+        arm, grade = first('e3_attn_meta_box_b.py', 'arm'), first('e3_attn_meta_box_b.py', 'grade')
+        dec = first('e3_attn_meta_box_b.py', 'decode-arm')
         for label, original, (old, new), values in (
                 ('arm-unknown-option', arm, ('--control-timeout-s', '--control-timeout-sec'), None),
                 ('arm-without-attn', arm, ('--attn "$_attn" ', ''), None),
@@ -360,7 +416,7 @@ class QueueArgparse(unittest.TestCase):
                 self.assertEqual(original.count(old), 1, (label, original[:200]))
                 rc, words, err = bash_words(original.replace(old, new), draft, values)
                 self.assertEqual(rc, 0, err)
-                self.assertEqual(held.real_parse(HERE / 'e3_attn_meta_box.py', words)[0], 'refused', label)
+                self.assertEqual(held.real_parse(HERE / 'e3_attn_meta_box_b.py', words)[0], 'refused', label)
 
 
 if __name__ == '__main__':

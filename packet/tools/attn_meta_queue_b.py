@@ -37,6 +37,11 @@ def __getattr__(name):                      # everything else is the base tool's
     return getattr(base, name)
 
 
+def body():
+    """The base body with the box call swapped (the death names are outside the body)."""
+    return base.body().replace(DRAFT_SWAPS[2][0], DRAFT_SWAPS[2][1])
+
+
 def derive():
     out = dict(base.derive())
     draft = out[DRAFT]
