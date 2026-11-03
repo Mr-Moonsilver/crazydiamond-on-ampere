@@ -9,6 +9,12 @@ there is no delivery record; instead the pin requires, from alpha-next's own cha
   * alpha-next-freeze.json: verdict PASS and source.head == build.source (the engine commit the freeze proved is the bundle's);
   * engine-comparison.json and staging-check.json: verdict PASS;
   * the steps file: every step rc=0 through staging-check and the line 'stopped-before-delivery: VM run pending';
+    or, when alpha-next finished through a continuation (--continuation, its g6 + g6c, lead-approved two-phase: the chain stops at
+    the negative observation with rc 5, the pins are committed, a frozen continuation script runs the remaining steps over the
+    same build): the chain's steps file has every row rc=0 except its last, exactly 'engine-negative-awaiting-pins rc=5'; the
+    continuation's steps file starts 'head <READY commit> continuation', has every row rc=0, and ends with the stop line (a
+    parenthetical after it allowed, as g6c writes it); the two files together hold every required step rc=0. Both files are
+    sha-pinned, with the continuation's head and script sha256;
   * the READY commit (first 40-hex or 7..40-hex commit id in the READY note's first lines) is an ancestor of HEAD, and so is
     build.source: the alpha-next-c1 branch must have merged alpha-next's READY commit before the pin is written.
 
@@ -19,6 +25,7 @@ Writing replaces only the placeholder; a pinned file is never overwritten (pin a
 (no engine self-run, comparison, staging check or steps needed; marked dev) so the tests can exercise the tools.
 
     python3 tools/alpha_next_c1_parent_pin.py --out ALPHA_NEXT_OUT --steps GATES_STEPS --ready READY_NOTE [--check]
+    python3 tools/alpha_next_c1_parent_pin.py --out OUT --steps GATES_STEPS --continuation CONT_STEPS --ready READY_NOTE [--check]
     python3 tools/alpha_next_c1_parent_pin.py --pinned        # exit 0 when pinned, 3 'parent not pinned' otherwise
 """
 import argparse
@@ -83,6 +90,31 @@ def steps_ok(text):
     return missing
 
 
+AWAITING = 'engine-negative-awaiting-pins'
+STOP_LINE = re.compile(r'^' + re.escape(STOPPED) + r'( \(.*\))?$')
+
+
+def continuation_ok(chain, cont, ready):
+    """The g6 + g6c rule (see the module docstring): the problems, empty when it holds."""
+    problems = []
+    rows = re.findall(r'^\d\d:\d\d:\d\dZ (\S+) rc=(\d+)$', chain, re.M)
+    if not rows or rows[-1] != (AWAITING, '5'):
+        problems.append('chain-does-not-end-at-the-negative-observation-stop')
+    problems += ['chain-step-not-0:%s:%s' % r for r in rows[:-1] if r[1] != '0']
+    head = re.match(r'head ([0-9a-f]{40}) continuation ', cont)
+    if not head or head.group(1) != ready:
+        problems.append('continuation-head-is-not-the-ready-commit')
+    crows = re.findall(r'^\d\d:\d\d:\d\dZ (\S+) rc=(\d+)$', cont, re.M)
+    problems += ['continuation-step-not-0:%s:%s' % r for r in crows if r[1] != '0']
+    lines = [l for l in cont.splitlines() if l.strip()]
+    if not lines or not STOP_LINE.match(lines[-1]):
+        problems.append('continuation-stop-line')
+    union = dict(r for r in rows[:-1]) | dict(crows)
+    union_text = '\n'.join('00:00:00Z %s rc=%s' % kv for kv in union.items()) + '\n' + STOPPED + '\n'
+    problems += ['missing:' + m for m in steps_ok(union_text)]
+    return problems
+
+
 def ready_commit(note):
     head = '\n'.join(Path(note).read_text().splitlines()[:8])
     found = re.findall(r'\b([0-9a-f]{40}|[0-9a-f]{7,12})\b', head)
@@ -92,7 +124,7 @@ def ready_commit(note):
     return full.stdout.strip()
 
 
-def pins(out, steps=None, ready=None, dev=False):
+def pins(out, steps=None, ready=None, dev=False, continuation=None):
     out = Path(out).resolve()
     build = json.loads((out / 'build.json').read_text())
     assert build['schema'] == 'native43-build/1' and build['name'] == 'q18a-alpha-next', build.get('name')
@@ -109,8 +141,13 @@ def pins(out, steps=None, ready=None, dev=False):
         record.update(dev=True, status='DEV: development parent; no engine self-run, comparison, staging check or steps pinned')
         return record
     text = Path(steps).read_text()
-    missing = steps_ok(text)
-    assert not missing, ('alpha-next chain not complete through the staging check', missing)
+    if continuation is None:
+        missing = steps_ok(text)
+        assert not missing, ('alpha-next chain not complete through the staging check', missing)
+    else:
+        cont = Path(continuation).read_text()
+        missing = continuation_ok(text, cont, ready_commit(ready))
+        assert not missing, ('alpha-next chain and continuation not complete through the staging check', missing)
     engine = out / ('engine-selfrun-2' if re.search(r' engine-selfrun-2 rc=0$', text, re.M) else 'engine-selfrun')
     assert json.loads((engine / 'result.json').read_text())['verdict'] == 'PASS', 'alpha-next engine self-run not PASS'
     for name in ('engine-comparison.json', 'staging-check.json'):
@@ -121,6 +158,10 @@ def pins(out, steps=None, ready=None, dev=False):
                   comparison_sha256=sha(out / 'engine-comparison.json'), staging_check_sha256=sha(out / 'staging-check.json'),
                   steps=str(Path(steps).resolve()), steps_sha256=sha(steps), ready=str(Path(ready).resolve()),
                   ready_sha256=sha(ready), ready_commit=commit)
+    if continuation is not None:
+        script = re.search(r'script sha256 ([0-9a-f]{64})', cont)
+        record.update(continuation=str(Path(continuation).resolve()), continuation_sha256=sha(continuation),
+                      continuation_head=commit, continuation_script_sha256=script.group(1) if script else None)
     return record
 
 
@@ -129,6 +170,7 @@ def main(argv=None):
     p.add_argument('--out', type=Path, help="alpha-next's gate-chain OUT directory")
     p.add_argument('--steps', type=Path, help="alpha-next's gates-TAG.steps")
     p.add_argument('--ready', type=Path, help="alpha-next's READY-pre-vm note")
+    p.add_argument('--continuation', type=Path, help="alpha-next's continuation steps file (its gates-TAGc.steps)")
     p.add_argument('--check', action='store_true')
     p.add_argument('--dev', action='store_true', help='print the pins of a development parent; writes nothing')
     p.add_argument('--pinned', action='store_true', help='exit 0 when pinned, 3 otherwise')
@@ -141,7 +183,7 @@ def main(argv=None):
         print(json.dumps(pins(a.out, dev=True), indent=1, sort_keys=True))
         return 0
     assert a.out and a.steps and a.ready, '--out, --steps and --ready are required'
-    text = json.dumps(pins(a.out, a.steps, a.ready), indent=1, sort_keys=True) + '\n'
+    text = json.dumps(pins(a.out, a.steps, a.ready, continuation=a.continuation), indent=1, sort_keys=True) + '\n'
     if a.check:
         assert TARGET.read_text() == text, 'tools/alpha_next_c1_parent.json differs from alpha-next\'s build'
         print('alpha-next-c1 parent verified')

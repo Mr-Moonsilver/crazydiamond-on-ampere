@@ -89,6 +89,34 @@ class ParentPin(unittest.TestCase):
         self.assertIn('precheck', parent_pin.steps_ok(full.replace(' precheck rc=0', ' precheck rc=1')))
         self.assertIn('focused', parent_pin.steps_ok(full.replace(' focused-2 rc=0', ' focused-2 rc=1')))
 
+    def test_a_chain_and_its_continuation_together_need_every_step(self):
+        # alpha-next g6 + g6c (lead-approved two-phase): the chain stops at the negative observation with rc 5, the continuation
+        # (head = the READY commit) runs the rest over the same build. Shapes as the real files; each fault refuses.
+        ready = 'a' * 40
+        first = ('composition', 'review-pins', 'strict', 'focused', 'composition-test', 'prepare-review', 'review-commit', 'build',
+                 'bundle-selfrun', 'queue-pins-write', 'queue-pins-check', 'engine-selfrun', 'engine-comparison',
+                 'engine-negative-observe')
+        rest = ('continuation-checks', 'engine-negative', 'overlay-tamper', 'clock-scan', 'compile-proof', 'precheck-conf',
+                'precheck', 'staging-check')
+        chain = '\n'.join(['head %s spec x' % ('b' * 40)] + ['00:00:00Z %s rc=0' % n for n in first]
+                          + ['00:00:01Z engine-negative-awaiting-pins rc=5']) + '\n'
+        cont = '\n'.join(['head %s continuation g6c of chain g6' % ready, 'priority nice 10; script sha256 ' + 'c' * 64]
+                         + ['00:01:00Z %s rc=0' % n for n in rest]
+                         + [parent_pin.STOPPED + ' (the lead takes the VM)']) + '\n'
+        ok = parent_pin.continuation_ok
+        self.assertEqual(ok(chain, cont, ready), [])
+        self.assertIn('continuation-head-is-not-the-ready-commit', ok(chain, cont, 'd' * 40))
+        self.assertIn('chain-does-not-end-at-the-negative-observation-stop',
+                      ok(chain.replace('awaiting-pins rc=5', 'awaiting-pins rc=0'), cont, ready))
+        self.assertIn('chain-step-not-0:strict:1', ok(chain.replace(' strict rc=0', ' strict rc=1'), cont, ready))
+        self.assertIn('continuation-step-not-0:precheck:1', ok(chain, cont.replace(' precheck rc=0', ' precheck rc=1'), ready))
+        self.assertIn('continuation-stop-line', ok(chain, cont.replace(parent_pin.STOPPED, 'stopped'), ready))
+        self.assertIn('missing:staging-check', ok(chain, cont.replace(' staging-check rc=0\n', '\n'), ready))
+        self.assertIn('missing:engine-negative', ok(chain, cont.replace(' engine-negative rc=0', ' engine-negative-x rc=0'), ready))
+        # The single-file rule is unchanged: the exact stop line, no parenthetical.
+        self.assertIn('stop-line', parent_pin.steps_ok(cont))
+        self.assertNotIn('stop-line', parent_pin.steps_ok(cont.replace(' (the lead takes the VM)', '')))
+
 
 class Freeze(DevParent, unittest.TestCase):
     def test_the_composed_rows_are_c1s_rows_rebased_once(self):
