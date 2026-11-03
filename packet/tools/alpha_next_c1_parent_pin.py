@@ -14,7 +14,8 @@ there is no delivery record; instead the pin requires, from alpha-next's own cha
     same build): the chain's steps file has every row rc=0 except its last, exactly 'engine-negative-awaiting-pins rc=5'; the
     continuation's steps file starts 'head <READY commit> continuation', has every row rc=0, and ends with the stop line (a
     parenthetical after it allowed, as g6c writes it); the two files together hold every required step rc=0. Both files are
-    sha-pinned, with the continuation's head and script sha256;
+    sha-pinned, with the continuation's head and script sha256; its staging check is its tagged record (staging-check-TAG.json,
+    TAG from 'head <commit> continuation TAG');
   * the READY commit (first 40-hex or 7..40-hex commit id in the READY note's first lines) is an ancestor of HEAD, and so is
     build.source: the alpha-next-c1 branch must have merged alpha-next's READY commit before the pin is written.
 
@@ -150,12 +151,15 @@ def pins(out, steps=None, ready=None, dev=False, continuation=None):
         assert not missing, ('alpha-next chain and continuation not complete through the staging check', missing)
     engine = out / ('engine-selfrun-2' if re.search(r' engine-selfrun-2 rc=0$', text, re.M) else 'engine-selfrun')
     assert json.loads((engine / 'result.json').read_text())['verdict'] == 'PASS', 'alpha-next engine self-run not PASS'
-    for name in ('engine-comparison.json', 'staging-check.json'):
+    # The continuation writes its records tagged (g6c: staging-check-g6c.json); the tag is its head line's.
+    tag = re.match(r'head \S+ continuation (\S+) ', cont).group(1) if continuation is not None else None
+    staging = 'staging-check-%s.json' % tag if tag else 'staging-check.json'
+    for name in ('engine-comparison.json', staging):
         assert json.loads((out / name).read_text())['verdict'] == 'PASS', name + ' not PASS'
     commit = ready_commit(ready)
     assert ancestor(commit), 'alpha-next READY commit %s is not merged here' % commit[:12]
     record.update(engine_selfrun=str(engine), engine_selfrun_sha256=sha(engine / 'result.json'),
-                  comparison_sha256=sha(out / 'engine-comparison.json'), staging_check_sha256=sha(out / 'staging-check.json'),
+                  comparison_sha256=sha(out / 'engine-comparison.json'), staging_check_sha256=sha(out / staging), staging_check=staging,
                   steps=str(Path(steps).resolve()), steps_sha256=sha(steps), ready=str(Path(ready).resolve()),
                   ready_sha256=sha(ready), ready_commit=commit)
     if continuation is not None:
