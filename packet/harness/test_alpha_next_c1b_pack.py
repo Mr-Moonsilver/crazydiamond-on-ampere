@@ -29,6 +29,7 @@ C1_OUT = Path('<hub-dir>/agents/flash-next/tmp/alpha-next-c1/build-b')
 C1_BUNDLE = C1_OUT / 'q18a-alpha-next-c1-bundle-0c33ca841620'
 C1_ENGINE = C1_OUT / 'engine-selfrun'
 TOOLS = ROOT / 'tools'
+STUB_COMMIT = '78704a53^'                                 # the negative pins stub, as committed before the pins
 
 
 def sha(path):
@@ -319,7 +320,9 @@ class EngineComparison(Scratch):
         s = self.selfrun
         cases = {m: json.loads((C1_ENGINE / s.part_of(m) / (m + '.json')).read_text()) for m in s.CASES}
         pins = json.loads(s.PINS.read_text())
-        base = dict(pins, tests={})
+        # the committed pins carry no_failing_tests once observed (78704a53); this case is about its absence (chain b, 3 Nov: the
+        # test read the committed file as the stub, HARNESS)
+        base = {k: v for k, v in dict(pins, tests={}).items() if k != 'no_failing_tests'}
         outcomes = {'t.a': ['ok', '']}
         parent = set(s.PARENT_PASS)
 
@@ -342,12 +345,19 @@ class NegativePins(Scratch):
         import alpha_next_c1b_engine_selfrun as selfrun
         self.writer, self.selfrun = writer, selfrun
 
-    def test_the_stub(self):
-        stub = json.loads(self.writer.OUT.read_text())
+    def test_the_stub_as_committed_before_the_pins(self):
+        """Supersedes test_the_stub by name (chain b, 3 Nov: it read the committed file, filled at 78704a53, as the stub; HARNESS).
+        The stub is the file as committed before the pins commit; the committed pins are its one observation."""
+        stub = json.loads(subprocess.run(['git', 'show', STUB_COMMIT + ':tools/alpha_next_c1b_negative_pins.json'], cwd=ROOT,
+                                         capture_output=True, text=True, check=True).stdout)
         self.assertTrue(stub['status'].startswith('AWAITING-OBSERVATION'))
         self.assertEqual(stub['tests'], {})
         self.assertEqual(stub['cases'], {m: ['PASS', None, None] for m in self.selfrun.CASES})
         self.assertEqual(stub['frozen_record_sha256'], parent_pin.load()['engine_selfrun_sha256'])
+        pinned = json.loads(self.writer.OUT.read_text())
+        self.assertEqual((pinned['status'], pinned['tests'], pinned['no_failing_tests']), ('OBSERVED', {}, True))
+        self.assertEqual(pinned['cases'], stub['cases'])
+        self.assertEqual(pinned['frozen_record_sha256'], stub['frozen_record_sha256'])
 
     def observation(self, failing_case=None, observed=None):
         place = self.tmp / 'obs'
@@ -390,7 +400,13 @@ class Rebound(Scratch):
         import alpha_next_c1_queue_pins_write as c1
         self.assertEqual(w.from_out.__globals__['PINS'], TOOLS / 'alpha_next_c1b_queue_pins.json')
         self.assertEqual(c1.PINS, TOOLS / 'alpha_next_c1_queue_pins.json')
-        self.assertTrue(w.placeholders(json.loads((TOOLS / 'alpha_next_c1b_queue_pins.json').read_text())))
+        # placeholders until a chain writes them (a2 did; chain b, 3 Nov: the old assertion read the filled file, HARNESS): the
+        # file is c1b's own schema either way, and filled values are never c1's
+        current = json.loads((TOOLS / 'alpha_next_c1b_queue_pins.json').read_text())
+        self.assertEqual(current['schema'], 'alpha-next-c1b-queue-pins/1')
+        theirs = json.loads((TOOLS / 'alpha_next_c1_queue_pins.json').read_text())
+        if not w.placeholders(current):
+            self.assertFalse(any(current[k] == theirs[k] for k in c1.KEYS), 'c1b pins carry c1 values')
         with self.assertRaises(AssertionError) as caught:
             w.from_out(C1_OUT)
         self.assertIn('alpha-next-c1b-freeze.json', str(caught.exception))
