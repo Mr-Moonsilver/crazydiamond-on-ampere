@@ -200,7 +200,7 @@
     "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
     "queue": "q18a-attn-meta: c1's queue with FLASH_ATTN_META_GDN_BATCH=1 for the whole run; the amendment A 2x2 at G1 (R, M, P, MP: C1 off or defer x attn-meta off or on, selected per arm while paused idle FULL), MP band 2, P2/MP2 at G2 last, decode-only baselines attn-meta off and on; c1's grade over the non-decode arms, attn-meta engagement and selection-leak rules per arm; reads never verdict inputs; relative box budget only",
     "scope": "attn-meta GDN metadata batch composed onto c1 against c1's delivered build; not a release assessment",
-    "source_commit": "59354b0720a5790e48565316517c51c65445afc3"
+    "source_commit": "3c181578cf99b70dcb724774e9a8dbf2ce2cf02b"
   },
   "backend_semantics_provenance": {
     "constructor_and_method_ASTs_equal": true,
@@ -1696,13 +1696,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict registered CPU regression on the packaged tree",
-    "cases": 410,
+    "cases": 411,
     "exit_code": 0,
-    "log_sha256": "3a6eb120873a0231dc2f6e77d4969269ddc5852df52788c399ab59e66ddb3338",
-    "reported_tests": 5370,
-    "required": 410,
+    "log_sha256": "330d14448a6d8286f2e23b1422c22c61033c8ee6c9fc48c0115c43d63102aa7b",
+    "reported_tests": 5393,
+    "required": 411,
     "skips": 0,
-    "suites": 293
+    "suites": 294
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -3993,7 +3993,7 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "29cec1b9c437da73695092205ba87f5e8ea1bd16a1d9e421825bc4359e534881",
+    "log_sha256": "d703265eecd7d31df5d137929ab82736243671b62a0878433ca888148caf0e8d",
     "skips": 0,
     "tests": 2122,
     "verdict": "PASS"
