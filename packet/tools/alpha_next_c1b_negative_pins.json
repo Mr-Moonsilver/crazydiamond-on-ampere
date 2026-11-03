@@ -32,11 +32,61 @@
   ]
  },
  "cases_from": "expected: c1 engine unchanged (alpha-next-c1 frozen record, overlap part)",
- "discovery": null,
+ "classes": {},
+ "classification": null,
+ "discovery": "chain a2 (head e940ec13, review 91cf9933, bundle 69f889fa11e0): one observation of c1b's suites and cases on alpha-next-c1's parent overlay; engine bytes unchanged from c1 (vm-carry 72/72), 224 tests 0 failures 0 errors 0 skips, 12 alpha-c0/c1 cases PASS; nothing bites, as expected for a harness-only package",
+ "expected_cases": {
+  "alpha-c1-local-burst": [
+   "PASS",
+   null,
+   null
+  ],
+  "alpha-c1-overlap-burst": [
+   "PASS",
+   null,
+   null
+  ],
+  "alpha-c1-overlap-burst-skew": [
+   "PASS",
+   null,
+   null
+  ],
+  "alpha-c1-overlap-burst-slow1": [
+   "PASS",
+   null,
+   null
+  ],
+  "alpha-c1-overlap-burst-solo": [
+   "PASS",
+   null,
+   null
+  ],
+  "alpha-c1-serial-burst": [
+   "PASS",
+   null,
+   null
+  ]
+ },
  "frozen_record_sha256": "34902b700d082173072b243caf937ccd3a5d45b328497386013bc1882b02a01f",
- "observation": null,
+ "no_failing_tests": true,
+ "observation": {
+  "bundle_manifest": "69f889fa11e0cef43aa0daff05f33eaa0ba7eeec3f9ddc30432018637a35b521",
+  "container": "alpha-next-c1b-negative-observe-cpu-69f889fa11e0",
+  "log": "<hub-dir>/agents/flash-next/tmp/alpha-next-c1b/build-a2/engine-negative-observe-stdout.log",
+  "log_sha256": "9dae8fb93a0bc0d09d49205c53b90006978bf05635dfac5095783f7ce9fa723f",
+  "not_passing": 0,
+  "observed_json": "<hub-dir>/agents/flash-next/tmp/alpha-next-c1b/build-a2/engine-negative-observe/result.json",
+  "observed_sha256": "24c16f73494971c6bc493a66691c58164806b17e26f191231aa37d9c9da19181",
+  "overlay_manifest": "3e6d505b00dce1155043c6c48a78a62912cc50b845e39de2827eb931118e5395",
+  "reasons": [],
+  "skips": 0,
+  "tests_run": 224
+ },
  "reasons": {},
  "schema": "alpha-next-c1b-negative-pins/1",
- "status": "AWAITING-OBSERVATION: c1b moves no engine byte, so over alpha-next-c1's regenerated overlay and sources the alpha-c1 probe cases are expected to PASS with c1's frozen traces (rows ['PASS', None, None]); the test rows are empty until one alpha_next_c1b_engine_selfrun.py --negative --observe over the chain's own build is reviewed and pinned with tools/alpha_next_c1b_negative_pins_write.py (zero non-passes is pinned as no_failing_tests). With no test rows the negative refuses (negative-suites-not-run), so the chain observes and stops at engine-negative-awaiting-pins until then.",
- "tests": {}
+ "status": "OBSERVED",
+ "tests": {},
+ "why": {
+  "rule": "one observation over the chain's own build; every alpha-c1 probe case and parent case PASS over alpha-next-c1's engine; every suite non-pass pinned with its reviewed reason and class (none expected: no_failing_tests); negative() refuses any other non-pass, a pinned test that passes or changes, and any probe case not PASS or whose trace differs from c1's frozen record"
+ }
 }
