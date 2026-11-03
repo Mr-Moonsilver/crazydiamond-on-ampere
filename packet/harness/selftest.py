@@ -659,6 +659,23 @@ check('S5 verdict INCONCLUSIVE: missing pair', s5_combine([s5_fixture()])['verdi
 sys.path.insert(0, HERE)
 from step_b_clock_bound import MODULES as STEP_B_CLOCK_BOUND_MODULES  # noqa: E402
 from alpha_next_robust_swap import MODULES as ROBUST_SWAP_MODULES  # noqa: E402
+from attn_meta_robust_swap import MODULES as ATTN_META_SWAP_MODULES  # noqa: E402
+# attn-meta (lead 3 Nov 13:3x): c1's tree-identity ids are superseded on this tree by attn_meta_robust_swap, which needs the base-tree
+# receipt of this run (tools/attn_meta_base_proof.py: c1's two modules at fbb9123e in a detached checkout) and runs the default-off
+# proof itself; written once per selftest run, before the first such module.
+ATTN_META_BASE_RECEIPT = []
+
+
+def attn_meta_base_receipt():
+    if not ATTN_META_BASE_RECEIPT:
+        d = tempfile.mkdtemp(prefix='attn-meta-base-proof-')
+        atexit.register(shutil.rmtree, d, True)
+        path = os.path.join(d, 'base-proof.json')
+        proof = subprocess.run([sys.executable, '-B', os.path.join(HERE, '..', 'tools', 'attn_meta_base_proof.py'), '--out', path],
+                               capture_output=True, text=True)
+        print('selftest attn-meta base proof: rc %d' % proof.returncode)
+        ATTN_META_BASE_RECEIPT.append(path)
+    return ATTN_META_BASE_RECEIPT[0]
 for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithmetic, bucket bytes, fragmentation and no extra window (CPU)'),
                      ('test_s5_dma_window.py', 'S5 repeated DMA: every layer/chunk, bounded CPU copies, strict oracle, solo/overlap accounting (CPU)'),
                      ('test_e2_arena.py', 'E2 single arena: owner epochs, bounded fills, completion and retirement (CPU only)'),
@@ -783,6 +800,16 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_c1_open_rows.py', 'alpha-next-c1b (a): progress-line-open-rows-carried (supersedes progress-line-with-open-rows on C1 overlap arms): each of the four checks and its named reason (check 4 the ENGINE reason), line order, the stage-overlap index; ring_increments from the running headroom_blocked_ns total (CPU only)'),
                      ('test_alpha_next_c1_send_gate.py', 'alpha-next-c1b (b): the deferred PP_SEND gate in stage_overlap: unreachable through the real tick and in-wait paths (bind-due runs first on every tick; the in-wait path excludes PP_SEND), each declining case driven explicitly, a call-site scan; the gate kept as a backstop and its contract held with the bind-due faulted; send-gate-removed is an equivalent mutant on the real paths and caught by the contract tests (CPU only)'),
                      ('test_alpha_next_c1_defer_control_b.py', 'alpha-next-c1b (b): test_alpha_next_c1_defer_control.Mutants superseded by name: the five mutants rebuilt with explicit super(OverlapSegmentDriver, self), each scenario passing unmutated and failing under its mutant by assertion only (no TypeError); the old construction\'s TypeError recorded (CPU only)'),
+                     ('test_attn_meta_robust_swap.py', "attn-meta superseded map (lead 3 Nov 13:3x, option A): exactly the four c1 tree-identity ids, each found once, a fifth refused (mutant); the base-tree receipt and the default-off proof carry the claim (missing INC, not holding FAIL); c1's two modules minus the four run green (CPU only)"),
+                     ('test_attn_meta_default_off.py', 'attn-meta default-off proof (tools/attn_meta_default_off.py): with FLASH_ATTN_META_GDN_BATCH unset the engine projects byte-identically onto c1 fbb9123e (declared rows, each with why), switch-unset refusal tests in a child; every check live (CPU only)'),
+                     ('test_attn_meta_control.py', 'attn-meta per-arm switch (decision A): attn_meta_select/read through the client, the engine driver (admitted only paused idle FULL: mid-decode, native-active, split, admission, policy cycle and recording refused with typed reasons) and the worker on four real bridge ranks; the qualification worker adapter route (exact payloads, unknown action and switch-off refused); startup hook order; mutants (CPU only; leaves in attn_meta_fixture_leaves.json)'),
+                     ('test_attn_meta_c1_g1.py', 'attn-meta G1: C1 defer composes at layer group size 1 (two chunks in flight, defer on and off, equal to serial); a grouped run at size 1 is seen (mutant) (CPU only; stage_overlap fixture leaves)'),
+                     ('test_attn_meta_box.py', "q18a-attn-meta box: the amendment A table (2x2 at G1 interleaved, MP band 2, P2/MP2 G2 tail, decode-only baselines), the select inside c1's release before release_auto_arm, the end read, the attn-meta rules (leak FAIL ENGINE, not engaged INC, order, startup lines) over c1's real grade, the three decode retentions and summary (a)/(b); mutants (CPU only; leaves in attn_meta_fixture_leaves.json)"),
+                     ('test_attn_meta_queue.py', "q18a-attn-meta queue: texts derived from c1's (c1 unchanged), the declaration's QNAME test executed with the runner's real QNAME, names resolve, relative budget (17 arms), the derived arm loop under real bash with the real grade and read (CPU only; leaves in attn_meta_fixture_leaves.json)"),
+                     ('test_attn_meta_vm_input_b.py', 'attn-meta VM input b: provenance with engine bytes, check-bind against a bundle, name rule (CPU only)'),
+                     ('test_attn_meta_vm_input_c.py', 'attn-meta VM input c: probe c and attn_meta_select in the input, engine-bytes binding, name rule (CPU only)'),
+                     ('test_attn_meta_gates.py', "q18a-attn-meta gate chain (tools/attn_meta_gates.sh): c1's steps in c1's order with the base-tree and default-off proofs, the superseded runner with the receipt, every container step after wait_clear (the lead's names and the clearance file), the block run under bash with docker ps replaced (CPU only, no docker)"),
+                     ('test_attn_meta_pack.py', "q18a-attn-meta chain tools: parent pin against c1's delivery b, the freeze (off is c1, five mutants refused), the engine self-run derived from c1's by exact swaps, the probe derivation (530), the declared names of build, spec, review pins, tamper, clock scan (PASS over the tree), precheck conf, staging check and queue pins (CPU only, git)"),
                      ('test_alpha_c1_report.py', 'C1 post-run report over real emitter lines (CPU only)'),
                      ('test_alpha_c1_queue.py', 'C1 queue: texts derived from C0 l, the sixteen-arm loop under real bash over the real C1 grade, every python3 call parsed, the 9,000 s budget against the measured box walls (CPU only; leaves in alpha_c1_fixture_leaves.json)'),
                      ('test_alpha_perf_queue.py', 'Alpha-perf queue on the composed engine with the dense policy: both bands through the exact arm CLI over the real control plane with the declared standing budget, the per-arm and per-band grade over real progress emitters (explicit PASS/FAIL on crash-free completion and 0 disagree, speed never gated), the derived arm loop under real bash with the real death watch and grade (band manifest, env through the watch, budget guard, dead engine), every command through its real parser, the band 2 manifest and length declaration, the 2.5 h budget and the window at real clock.'),
@@ -936,7 +963,9 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
     # only those ids (CLOCK_BOUND_FROZEN, each with its reason; a superset of C0's clock_bound list); the test files are unchanged.
     # Alpha-next PLAN 5: a module holding a declared load-flaky frozen method runs through alpha_next_robust_swap, which leaves
     # out only that id (ROBUST_SWAP, with its reason and its twin; it also applies CLOCK_BOUND_FROZEN); the twin is its own row.
-    command = ([sys.executable, os.path.join(HERE, 'alpha_next_robust_swap.py'), suite] if suite[:-3] in ROBUST_SWAP_MODULES
+    command = ([sys.executable, os.path.join(HERE, 'attn_meta_robust_swap.py'), '--base-receipt', attn_meta_base_receipt(), suite]
+               if suite[:-3] in ATTN_META_SWAP_MODULES
+               else [sys.executable, os.path.join(HERE, 'alpha_next_robust_swap.py'), suite] if suite[:-3] in ROBUST_SWAP_MODULES
                else [sys.executable, os.path.join(HERE, 'step_b_clock_bound.py'), suite] if suite[:-3] in STEP_B_CLOCK_BOUND_MODULES
                else [sys.executable, os.path.join(HERE, suite)])
     identity_test = subprocess.run(command, capture_output=True, text=True,

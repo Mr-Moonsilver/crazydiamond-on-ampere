@@ -3899,8 +3899,8 @@ class NativeSegmentDriver:
             raise DriverError('native-control-engine-epoch-differs')
         if action == 'qualification':
             worker_action = command.get('worker_action')
-            from native_overlap_worker import QUALIFICATION_ACTIONS
-            if worker_action not in QUALIFICATION_ACTIONS:
+            from native_overlap_worker import QUALIFICATION_ACTIONS, attn_meta_actions
+            if worker_action not in QUALIFICATION_ACTIONS and worker_action not in attn_meta_actions():
                 raise DriverError('native-qualification-action-unknown')
         if self._route_exchange() is not None or self._return_pending is not None:
             raise DriverError('native-control-route-exchange-outstanding')
@@ -3938,6 +3938,19 @@ class NativeSegmentDriver:
                         + '-requires-paused-empty-engine')
                 return
             if worker_action in CONTROL_LIVE_COHORT_QUALIFICATION:
+                return
+            if worker_action == 'attn_meta_read':
+                return
+            if worker_action == 'attn_meta_select':
+                # attn-meta's per-arm switch: paused idle FULL only, the rule native_layer_group holds (no split
+                # route, no transaction, no native work, no retained row, no armed admission, no active policy, no
+                # recording); the live/inflight and paused checks above already ran.
+                policy = getattr(self, 'auto_arm', None)
+                recording = self.progress is not None and self.progress.recording
+                if (self._split_ready or self.tx is not None or self.controller.active
+                        or self._retained is not None or self._admission_intent is not None
+                        or (policy is not None and policy.active) or recording):
+                    raise DriverError('native-attn-meta-requires-paused-idle-full')
                 return
             raise DriverError('native-qualification-action-unknown')
         if action in CONTROL_LIVE_COHORT_ACTIONS:

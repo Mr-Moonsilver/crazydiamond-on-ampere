@@ -1,0 +1,23 @@
+{
+ "build": "<hub-dir>/agents/flash-next/tmp/alpha-next-c1/build-b/build.json",
+ "build_sha256": "0803249aad6d567e3e542944f7ff73c8e47b16a08107f78245fe8fc86b054a58",
+ "comparison_sha256": "06c577f0d545825ed7f4a8001c5b32fd91c53ad2000eb8df97666b21904d64a3",
+ "delivery": "results/hub/alpha-next-c1/delivery.json",
+ "delivery_commit": "fbb9123e62ad0364470293fc2f4744279b3667ee",
+ "delivery_sha256": "a0aece29563d07315d65e5cf1cbccf2d178aa81f1e7fbddd01f3765f5dea9a86",
+ "engine_selfrun": "<hub-dir>/agents/flash-next/tmp/alpha-next-c1/build-b/engine-selfrun",
+ "engine_selfrun_sha256": "34902b700d082173072b243caf937ccd3a5d45b328497386013bc1882b02a01f",
+ "expected_selfrun_tests": 519,
+ "freeze": "<hub-dir>/agents/flash-next/tmp/alpha-next-c1/build-b/alpha-next-c1-freeze.json",
+ "freeze_sha256": "c39ec502a7bf437d37705262e0a3694be38ce6404f71081543ba0e8f22e4c8cd",
+ "manifest": "0c33ca841620c66bef2ce28b6ae7cc0995fc7cc4f04094f3aaebd0de910d36e7",
+ "overlay_manifest": "3e6d505b00dce1155043c6c48a78a62912cc50b845e39de2827eb931118e5395",
+ "runner_sha256": "e22b51db5194cb47e53faa85ba818a0e1d5095687b0129f8450c81d458d90101",
+ "schema": "attn-meta-parent/1",
+ "source": "58813608f1bd1667989d6287a4016bc213321711",
+ "source_commit": "785d26b62ece4310a159344d767b5b89207a1e40",
+ "spec": "tools/native43_spec.alpha-next-c1.json",
+ "spec_sha256": "45f6d4757b265e9342fb369873f09aa0cf230e4871b8e5167850881a9ed199d9",
+ "staging_check_sha256": "d294a5645a9c114d2737f44534bfa3014559a65919cacd12dfb40ab73f262630",
+ "vm_sha256": "23a0fc12e15e1bedc07ec0d8d2a1117cee91e1d94261f3c392ad07846a5a77c1"
+}

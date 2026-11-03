@@ -57,7 +57,7 @@ def package_inventory():
     """
     import decode_probe
     expected=tuple(name for name in decode_probe.GENERATED_SOURCES
-                   if name not in ('native_auto_arm','stage_wire','stage_progress','handler_anatomy','stage_overlap')
+                   if name not in ('native_auto_arm','stage_wire','stage_progress','handler_anatomy','stage_overlap','attn_meta_batch','attn_meta_select')
                    or (OVERLAY/('e3/%s.py'%name)).is_file())
     with patch.object(decode_probe,'GENERATED_SOURCES',expected):
         yield

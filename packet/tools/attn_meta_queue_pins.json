@@ -1,0 +1,8 @@
+{
+  "schema": "attn-meta-queue-pins/1",
+  "status": "PLACEHOLDER: filled by the packaging step",
+  "overlay_manifest_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
+  "package_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
+  "harness_bundle_sha256": "PLACEHOLDER-filled-by-the-packaging-step",
+  "note": "Hub-side queue pins for q18a-attn-meta, written by tools/attn_meta_queue_pins_write.py from the gate chain build OUT and committed by the lead. overlay_manifest_sha256 = sha256 of the held bundle native30_overlay/SHA256SUMS; package_sha256 = its S5-OVERLAP-GENERATION.json package_sha256; harness_bundle_sha256 = sha256 of the held bundle SHA256SUMS. No harness text holds them; the waiter and tools/attn_meta_delivery.py compare against this file. A placeholder means not packaged yet."
+}

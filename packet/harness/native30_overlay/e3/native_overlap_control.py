@@ -47,6 +47,9 @@ ACTIONS = READ_ACTIONS + INTENT_ACTIONS
 QUALIFICATION_ACTIONS = ('teacher_configure', 'teacher_evidence',
                          'observer_begin', 'observer_end',
                          'row1_configure', 'row1_evidence')
+# attn-meta (FLASH_ATTN_META_GDN_BATCH=1, default off): the per-arm selector's worker actions ride the qualification
+# intent (paused idle FULL for the select, enforced by the engine driver); exposed only where the switch is on.
+ATTN_META_ACTIONS = ('attn_meta_select', 'attn_meta_read')
 
 
 class NativeControlError(RuntimeError):
@@ -63,6 +66,11 @@ def _qsa_fused():
     """The Step A switch is exposed only where the engine installed it."""
     return (os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'
             and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')
+
+
+def attn_meta_actions():
+    """The attn-meta selector actions, only where the switch installed it (else none)."""
+    return ATTN_META_ACTIONS if os.environ.get('FLASH_ATTN_META_GDN_BATCH', '0') == '1' else ()
 
 
 def _layer_groups():
@@ -483,7 +491,7 @@ class NativeControlClient:
 
     async def qualification(self, worker_action, payload=None):
         """Dispatch the exact qualification action; never supply its verdict."""
-        if worker_action not in QUALIFICATION_ACTIONS:
+        if worker_action not in QUALIFICATION_ACTIONS and worker_action not in attn_meta_actions():
             raise NativeControlError('native-control-qualification-action-unknown')
         if payload is not None and type(payload) is not dict:
             raise NativeControlError('native-control-qualification-payload-invalid')
@@ -540,6 +548,7 @@ class NativeControlClient:
         raise NativeControlError('native-control-action-not-exposed')
 
 
-__all__ = ['ACTIONS', 'ADMISSION_PHASES', 'INTENT_ACTIONS', 'NATIVE_ADMISSION_PHASES',
+__all__ = ['ACTIONS', 'ADMISSION_PHASES', 'ATTN_META_ACTIONS', 'INTENT_ACTIONS', 'NATIVE_ADMISSION_PHASES',
+           'attn_meta_actions',
            'NativeControlClient', 'NativeControlError', 'QUALIFICATION_ACTIONS',
            'READ_ACTIONS', 'UTILITY']

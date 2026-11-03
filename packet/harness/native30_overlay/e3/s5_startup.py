@@ -81,6 +81,11 @@ def row1_qualification_types():
 def install_builder(runner, kv_caches, is_profiling=False, *, env=None):
     """Install the builder A's ``init_lane`` calls at the end of runner init."""
     env = os.environ if env is None else env
+    if not is_profiling and env.get('FLASH_ATTN_META_GDN_BATCH', '0') != '0':
+        # attn-meta (default off): its instance wrapper goes on first, before any RPC (handler anatomy installs at the
+        # first RPC and wraps it); a refusal fails startup, never a skipped wrapper. Unset or 0: no import.
+        from attn_meta_select import startup as _attn_meta_startup
+        _attn_meta_startup(runner, env=env)
     probe = mode_settings(env)
     if probe is not None:
         # Diagnostic mode: the split (worker_hooks) and later the split bank
