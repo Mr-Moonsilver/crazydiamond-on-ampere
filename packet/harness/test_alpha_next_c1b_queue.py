@@ -34,6 +34,8 @@ import e3_c1_open_rows as rule  # noqa: E402
 import test_alpha_next_c1_queue as tc1  # noqa: E402
 import test_alpha_next_queue as tan  # noqa: E402
 import test_alpha_perf_queue as tap  # noqa: E402
+# QueueNames (lead 3 Nov 13:08): the runs/ name rules run with the runner's real QNAME, in this suite so the bundle self-run has them
+from test_alpha_next_c1b_queue_names import QueueNames  # noqa: E402,F401
 
 progress, ap, sb = box.progress, box.ap, c1.an.b
 SLOT_RECEIPTS = []
