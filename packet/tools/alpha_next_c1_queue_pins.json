@@ -1,15 +1,31 @@
 {
   "schema": "alpha-next-c1-queue-pins/1",
   "status": "FILLED: from the gate chain build at build_out",
-  "overlay_manifest_sha256": "41936d66d864547dee0a018294415741ab670c4e6b2169fd95022ab1e3ba8673",
-  "package_sha256": "7f74f7c8e86529d1ac529d57ea6d15fcec9da34166f8d26c04498ebb962b788e",
-  "harness_bundle_sha256": "d6f4071a8c28aa643db0f94277b63737dd1b7d05fd3edeeded967a7258a026cc",
-  "build_out": "<hub-dir>/agents/flash-next/tmp/alpha-next-c1/build-a1",
-  "build_json_sha256": "b4401067ff9f036207ecb2d11229f3daa4859e68cb91f3be58ec65ef0b1fac8d",
-  "source_commit": "d8900a0cab4c3d376386b1816fe273f804e53c88",
-  "review_sha256": "825cf69bed278d5db25758677df380290256a0e710eb78a37b8f4c6cf2f1c2fa",
-  "runner_sha256": "097bd18e6fcc7705ce0ac0dd85dca4ca6eed6d9218637fb0c756287e229c8763",
+  "overlay_manifest_sha256": "feb5ad03bc0a114e266da48e34db998cafd69e1ba2bc4e055cca7b4ef08f9854",
+  "package_sha256": "69ed1570b44074f1c8b72b19cc4f48eee1590c07c622235577ad9634b90b8558",
+  "harness_bundle_sha256": "4aad5e52e9ff861bae73af75245e51cb17c8574b61c31debb92d1bc2543b9bdd",
+  "build_out": "<hub-dir>/agents/flash-next/tmp/alpha-next-c1/build-a2",
+  "build_json_sha256": "a44064ebb3aa46b66f7cee7ea7461831509d953c8695ff5a169e44565db22035",
+  "source_commit": "c23c026cf25fb9d3e372164e4614e0d84601d5de",
+  "review_sha256": "193c5d1998d0c1f276b8c63f4bb38f6b950538089eb83e68de64537672c15a31",
+  "runner_sha256": "eb2099c7a5fea72aab05c86a5d6f63523a1bc8952d58080ea0af08ecfa1c2abc",
   "written_by": "tools/alpha_next_c1_queue_pins_write.py",
   "note": "Hub-side queue pins, written by tools/alpha_next_c1_queue_pins_write.py from the gate chain build OUT and committed by the lead. overlay_manifest_sha256 = sha256 of the held bundle native30_overlay/SHA256SUMS; package_sha256 = its S5-OVERLAP-GENERATION.json package_sha256; harness_bundle_sha256 = sha256 of the held bundle SHA256SUMS. No harness text holds them (the review the build prepares pins the declaration text, and the overlay covers the review); the waiter and tools/alpha_next_c1_delivery.py compare against this file. A placeholder means not packaged yet.",
-  "history": []
+  "history": [
+    {
+      "schema": "alpha-next-c1-queue-pins/1",
+      "status": "FILLED: from the gate chain build at build_out",
+      "overlay_manifest_sha256": "41936d66d864547dee0a018294415741ab670c4e6b2169fd95022ab1e3ba8673",
+      "package_sha256": "7f74f7c8e86529d1ac529d57ea6d15fcec9da34166f8d26c04498ebb962b788e",
+      "harness_bundle_sha256": "d6f4071a8c28aa643db0f94277b63737dd1b7d05fd3edeeded967a7258a026cc",
+      "build_out": "<hub-dir>/agents/flash-next/tmp/alpha-next-c1/build-a1",
+      "build_json_sha256": "b4401067ff9f036207ecb2d11229f3daa4859e68cb91f3be58ec65ef0b1fac8d",
+      "source_commit": "d8900a0cab4c3d376386b1816fe273f804e53c88",
+      "review_sha256": "825cf69bed278d5db25758677df380290256a0e710eb78a37b8f4c6cf2f1c2fa",
+      "runner_sha256": "097bd18e6fcc7705ce0ac0dd85dca4ca6eed6d9218637fb0c756287e229c8763",
+      "written_by": "tools/alpha_next_c1_queue_pins_write.py",
+      "superseded_because": "chain a1 stopped at engine-selfrun rc 1 (HARNESS judge defect, fixed by name in tools/alpha_next_c1_engine_selfrun_b.py, c23c026c); a2 rebuilds over b6fee37e",
+      "superseded_by_build_out": "<hub-dir>/agents/flash-next/tmp/alpha-next-c1/build-a2"
+    }
+  ]
 }
