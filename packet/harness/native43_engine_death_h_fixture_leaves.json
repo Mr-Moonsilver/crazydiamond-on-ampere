@@ -1,0 +1,29 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "Health-scoped engine death (native43_engine_death_h.py, alpha_next_stop_race_h.py) hub CPU tests; no box, VM or GPU evidence beyond the retained log excerpt",
+ "inherits": [
+  "native43_engine_death_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "startup-stall-excerpt",
+   "test": "test_native43_engine_death_h.Scan, test_native43_engine_death_h.WatchPair, test_alpha_next_stop_race_h.InheritedStopRace",
+   "replaces": "The retained host stream engine-stream.log of the voided q18a-append-yield (bundle d1cd5c4bd6fd, 3 Nov 2026): tmp/box-append-yield-fetch/x/q18a-append-yield/engine-stream.log, the host observer's follow of docker logs --timestamps",
+   "implementation": "harness/fixtures/native43_engine_death_h/startup-stall-engine-stream.log: verbatim source lines 106-113 (the stall is 109) and 197-203 (the first health 200 is 200); PROVENANCE.json holds the source path, the line ranges and both sha256 values, and the Fixture test re-checks them when the hub holds the fetch. Each mutant case rewrites or removes named lines of the excerpt (the stall moved, the health line dropped, a teardown inserted) and says which",
+   "equivalence": "The scanner is line-local except for ordering by the docker stamp, which the excerpt keeps byte for byte. The one line that voided the run and the one health line the rule reads are both inside it. The whole retained record, read when the hub holds it, gives the same verdict with the source's own line numbers",
+   "cannot_prove": "How often a startup stall appears on the box, and whether a stall before the first health 200 can ever precede a real later death: the rule reads the line as a startup read and leaves later deaths to the other markers. Lines outside the excerpt are covered by the survey over the retained logs, not by these cases",
+   "more_convenient": "Yes: a committed excerpt instead of the box log. The fetch is read-only and stays on the hub",
+   "box_evidence": true
+  },
+  {
+   "name": "frozen-tests-over-the-h-modules",
+   "test": "test_native43_engine_death_h.InheritedScan, test_native43_engine_death_h.WatchPair, test_alpha_next_stop_race_h.InheritedStopRace",
+   "replaces": "A separate copy of every test the frozen modules already have",
+   "implementation": "A private importlib copy of test_native43_engine_death.py with its globals death and TOOL pointed at the new module, and of test_alpha_next_queue.py with its global sr pointed at the new stop race. The frozen files' own test runs are untouched",
+   "equivalence": "The same test bodies run against the new module through its CLI and its Scanner. The one override is the stop-race CLI test, for the record's schema name",
+   "cannot_prove": "Nothing about the box; these are the frozen modules' CPU tests over real child processes with GPU and container fakes, as their own leaves declare",
+   "more_convenient": "Yes: no copied test text",
+   "box_evidence": false
+  }
+ ]
+}
