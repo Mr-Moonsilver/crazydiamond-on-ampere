@@ -346,6 +346,7 @@
    "harness/test_alpha_next_c1_composed_fields.py",
    "harness/test_alpha_next_c1_defer_control.py",
    "harness/test_alpha_next_c1_engine_selfrun_b.py",
+   "harness/test_alpha_next_c1_gates_c.py",
    "harness/test_alpha_next_c1_negative_guard.py",
    "harness/test_alpha_next_c1_pack.py",
    "harness/test_alpha_next_c1_queue.py",
@@ -511,7 +512,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "c23c026cf25fb9d3e372164e4614e0d84601d5de",
+ "source_commit": "785d26b62ece4310a159344d767b5b89207a1e40",
  "source_paths": [
   "A\tharness/alpha_c1_fixture_leaves.json",
   "A\tharness/alpha_c1_gate.py",
@@ -538,6 +539,7 @@
   "A\tharness/test_alpha_next_c1_composed_fields.py",
   "A\tharness/test_alpha_next_c1_defer_control.py",
   "A\tharness/test_alpha_next_c1_engine_selfrun_b.py",
+  "A\tharness/test_alpha_next_c1_gates_c.py",
   "A\tharness/test_alpha_next_c1_negative_guard.py",
   "A\tharness/test_alpha_next_c1_pack.py",
   "A\tharness/test_alpha_next_c1_queue.py",
@@ -584,6 +586,7 @@
   "A\ttools/alpha_next_c1_freeze.py",
   "A\ttools/alpha_next_c1_gates.sh",
   "A\ttools/alpha_next_c1_gates_b.sh",
+  "A\ttools/alpha_next_c1_gates_c.sh",
   "A\ttools/alpha_next_c1_negative_pins.json",
   "A\ttools/alpha_next_c1_negative_pins_write.py",
   "A\ttools/alpha_next_c1_overlay_propose.py",
