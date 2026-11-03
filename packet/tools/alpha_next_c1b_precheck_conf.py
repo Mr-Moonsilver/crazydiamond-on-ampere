@@ -22,7 +22,7 @@ PARENT_BUILD = Path(parent_pin.load()['build'])
 STEM = 'q18a_alpha_next_c1b'
 ADDED = set()
 SEAMS = ('test_alpha_next_c1b_queue.py e3_alpha_next_c1b_box.py alpha_next_c1b_arms.py alpha_next_c1b_gate.py '
-         'test_e3_c1_open_rows.py test_alpha_next_c1_send_gate.py test_alpha_next_c1_defer_control_b.py ' + c1.SEAMS)
+         'e3_c1_open_rows.py test_alpha_next_c1_send_gate.py test_alpha_next_c1_defer_control_b.py ' + c1.SEAMS)
 assert SEAMS.endswith(' ') and len(SEAMS.split()) == len(set(SEAMS.split())), 'seam list'
 SWAPS = (("b['name'] == 'q18a-alpha-next-c1' and prev['name'] == 'q18a-alpha-next'",
           "b['name'] == 'q18a-alpha-next-c1b' and prev['name'] == 'q18a-alpha-next-c1'"),
