@@ -103,7 +103,7 @@
     "parent_manifest": "1cd5310598860b310aef67502151801060f3c69f64902ca7ba86e6752f34bf92",
     "queue": "q18a-alpha-next-c1: alpha-next's queue with the overlap, deferred-bind and observe switches set for the whole run; C1 off (C0 local) and on (overlap) arms over two bands, C1-defer (overlap with the deferred bind) arms in both bands, then a C1-on read-only tail, the arm table the queue's own; validity, engagement (early open) and generated tokens gated on the core, speed, decode and memory reported; relative box budget only",
     "scope": "C1 composed onto alpha-next against alpha-next's pre-VM build; not a release assessment",
-    "source_commit": "d8900a0cab4c3d376386b1816fe273f804e53c88"
+    "source_commit": "c23c026cf25fb9d3e372164e4614e0d84601d5de"
   },
   "backend_semantics_provenance": {
     "constructor_and_method_ASTs_equal": true,
@@ -1599,13 +1599,13 @@
   },
   "cpu_regression": {
     "basis": "fresh full strict registered CPU regression on the packaged tree",
-    "cases": 387,
+    "cases": 388,
     "exit_code": 0,
-    "log_sha256": "2d7168c70aa441bd5e3c3de1c5840aa924e4012f21cbb6f01e5f9a3e5c05b29a",
-    "reported_tests": 5024,
-    "required": 387,
+    "log_sha256": "943eb1ce48620f4a7d329f2a5fae3982cc6684ca7dd4b190a4313560f70035b4",
+    "reported_tests": 5028,
+    "required": 388,
     "skips": 0,
-    "suites": 270
+    "suites": 271
   },
   "hardware_gates_pending": [
     "actual native startup and memory",
@@ -3843,7 +3843,7 @@
   },
   "post_review_cpu": {
     "basis": "the spec's focused suites over the packaged tree",
-    "log_sha256": "5cac505bb31148259d98a940081caadb2783b802663b61a37f92340241368d60",
+    "log_sha256": "8612b371dd156cce0238fa14157e821ef4792d40911257656027cb573b6c740c",
     "skips": 0,
     "tests": 1884,
     "verdict": "PASS"
