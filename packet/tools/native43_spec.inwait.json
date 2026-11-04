@@ -124,9 +124,22 @@
    "module:import sys",
    "ring_message_waiting"
   ],
+  "patches/s5_engine/lane_private.py": [
+   "LanePrivateBindings.prepare_workspace"
+  ],
+  "patches/s5_engine/lane_state.py": [
+   "estimated_e3_inventory",
+   "prefill_scratch_specs",
+   "topk_bytes"
+  ],
   "patches/s5_engine/make_s5_overlap.py": [
    "module:E3_MODULES",
    "module:LAUNCHER_LIST_EXEMPT"
+  ],
+  "patches/s5_engine/native_auto_arm.py": [
+   "AutoArmPolicy._plan",
+   "module:from scheduler_hooks import native_chunk_cap, staged_chunk_plan, _ProjectedPrefillRequest",
+   "module:from scheduler_hooks import staged_chunk_plan, _ProjectedPrefillRequest"
   ],
   "patches/s5_engine/native_measurement.py": [
    "module:INWAIT_ENV",
@@ -165,10 +178,12 @@
    "install_engine"
   ],
   "patches/s5_engine/scheduler_hooks.py": [
+   "PrefillAdmissionController._admit_observed",
    "decode_merge_cap",
    "module:_SCHEDULER_FORWARD",
    "module:_SCHEDULER_REVERSE",
-   "module:__all__"
+   "module:__all__",
+   "native_chunk_cap"
   ],
   "patches/s5_engine/stage_overlap.py": [
    "OverlapSegmentDriver.__init__",
@@ -192,6 +207,7 @@
    "OverlapSegmentDriver.stage_status",
    "OverlapSegmentDriver.successor_admissible",
    "OverlapSegmentDriver.sync_decode_merge",
+   "StagedAdmissionController._admit_observed",
    "_step_switch",
    "class:_PollPaced",
    "decode_merge_enabled",
@@ -206,7 +222,9 @@
    "module:from e3_types import E3ContractError",
    "module:from e3_types import E3ContractError, E3Pending",
    "module:from native_measurement import INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS",
-   "module:from reply_transport import Backpressure"
+   "module:from reply_transport import Backpressure",
+   "module:from scheduler_hooks import PrefillAdmissionController",
+   "module:from scheduler_hooks import PrefillAdmissionController, native_chunk_cap"
   ],
   "patches/s5_engine/worker_bridge.py": [
    "NativeWorkerBridge._cow_receipt",
@@ -230,6 +248,7 @@
     "test_inwait_cow",
     "test_inwait_early_alloc",
     "test_inwait_router",
+    "test_dp5_chunk",
     "test_inwait_box",
     "test_inwait_queue",
     "test_inwait_robust_swap",
@@ -270,6 +289,9 @@
   "e3/executor_hooks.py",
   "e3/lane_chunk.py",
   "e3/lane_dispatch.py",
+  "e3/lane_private.py",
+  "e3/lane_state.py",
+  "e3/native_auto_arm.py",
   "e3/native_measurement.py",
   "e3/native_overlap_control.py",
   "e3/native_overlap_session.py",
@@ -641,6 +663,7 @@
    "harness/test_compose2_queue_names.py",
    "harness/test_compose2_receipt_refused.py",
    "harness/test_compose2_router.py",
+   "harness/test_dp5_chunk.py",
    "harness/test_hub_slot.py",
    "harness/test_inwait_box.py",
    "harness/test_inwait_cow.py",
@@ -660,6 +683,9 @@
    "patches/s5_engine/attn_meta_batch.py",
    "patches/s5_engine/attn_meta_select.py",
    "patches/s5_engine/lane_chunk.py",
+   "patches/s5_engine/lane_private.py",
+   "patches/s5_engine/lane_state.py",
+   "patches/s5_engine/native_auto_arm.py",
    "patches/s5_engine/native_overlap_worker.py",
    "patches/s5_engine/native_qualification_frontend.py",
    "patches/s5_engine/worker_hooks.py",
@@ -820,7 +846,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 592,
+ "expected_tests": 594,
  "label": "inwait",
  "overlay_definitions": {
   "core/scheduler.py": [
@@ -900,6 +926,19 @@
    "module:import sys",
    "ring_message_waiting"
   ],
+  "e3/lane_private.py": [
+   "LanePrivateBindings.prepare_workspace"
+  ],
+  "e3/lane_state.py": [
+   "estimated_e3_inventory",
+   "prefill_scratch_specs",
+   "topk_bytes"
+  ],
+  "e3/native_auto_arm.py": [
+   "AutoArmPolicy._plan",
+   "module:from .scheduler_hooks import native_chunk_cap, staged_chunk_plan, _ProjectedPrefillRequest",
+   "module:from .scheduler_hooks import staged_chunk_plan, _ProjectedPrefillRequest"
+  ],
   "e3/native_measurement.py": [
    "module:INWAIT_ENV",
    "module:PROGRESS_DIRECT_INWAIT_METHODS"
@@ -937,10 +976,12 @@
    "install_engine"
   ],
   "e3/scheduler_hooks.py": [
+   "PrefillAdmissionController._admit_observed",
    "decode_merge_cap",
    "module:_SCHEDULER_FORWARD",
    "module:_SCHEDULER_REVERSE",
-   "module:__all__"
+   "module:__all__",
+   "native_chunk_cap"
   ],
   "e3/stage_overlap.py": [
    "OverlapSegmentDriver.__init__",
@@ -964,6 +1005,7 @@
    "OverlapSegmentDriver.stage_status",
    "OverlapSegmentDriver.successor_admissible",
    "OverlapSegmentDriver.sync_decode_merge",
+   "StagedAdmissionController._admit_observed",
    "_step_switch",
    "class:_PollPaced",
    "decode_merge_enabled",
@@ -978,7 +1020,9 @@
    "module:from .e3_types import E3ContractError",
    "module:from .e3_types import E3ContractError, E3Pending",
    "module:from .native_measurement import INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS",
-   "module:from .reply_transport import Backpressure"
+   "module:from .reply_transport import Backpressure",
+   "module:from .scheduler_hooks import PrefillAdmissionController",
+   "module:from .scheduler_hooks import PrefillAdmissionController, native_chunk_cap"
   ],
   "e3/worker_bridge.py": [
    "NativeWorkerBridge._cow_receipt",
@@ -1026,7 +1070,7 @@
   ],
   [
    "QNAME='q18a-inwait'",
-   "SMSPLIT_DECODE_SMS=os.environ.get('SMSPLIT_DECODE_SMS','52')\nif not re.fullmatch('[2-6][02468]',SMSPLIT_DECODE_SMS) or not 24<=int(SMSPLIT_DECODE_SMS)<=60:\n    raise SystemExit('SMSPLIT_DECODE_SMS must be even, 24..60')\nQNAME='q18a-sm-split-'+SMSPLIT_DECODE_SMS"
+   "SMSPLIT_DECODE_SMS=os.environ.get('SMSPLIT_DECODE_SMS','44')\nif not re.fullmatch('[2-6][02468]',SMSPLIT_DECODE_SMS) or not 24<=int(SMSPLIT_DECODE_SMS)<=60:\n    raise SystemExit('SMSPLIT_DECODE_SMS must be even, 24..60')\nCHUNK_TOKENS=os.environ.get('CHUNK_TOKENS','2048')\nif CHUNK_TOKENS not in ('1024','1536','2048'):\n    raise SystemExit('CHUNK_TOKENS must be 1024, 1536 or 2048')\nQNAME='q18a-chunk-'+CHUNK_TOKENS"
   ],
   [
    "OVERLAY=Path('/data/vllm/flash-next-tp4/prod/overlay-v16s5-q18a-inwait')",
@@ -1034,11 +1078,11 @@
   ],
   [
    "S5_REQUESTED_DECODE_SMS='44'",
-   "S5_REQUESTED_DECODE_SMS=SMSPLIT_DECODE_SMS"
+   "S5_REQUESTED_DECODE_SMS=SMSPLIT_DECODE_SMS,S5_REQUESTED_CHUNK_TOKENS=CHUNK_TOKENS"
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "7a35dbbf6aa708148784960cfa63bba83f7a9cd3",
+ "source_commit": "763bd73ccee49da8df70041a8d1ea389cda168e0",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/attn_meta_arms.py",
@@ -1102,6 +1146,7 @@
   "A\tharness/test_compose2_queue_names.py",
   "A\tharness/test_compose2_receipt_refused.py",
   "A\tharness/test_compose2_router.py",
+  "A\tharness/test_dp5_chunk.py",
   "M\tharness/test_e3_package.py",
   "A\tharness/test_hub_slot.py",
   "A\tharness/test_inwait_box.py",
@@ -1127,7 +1172,10 @@
   "M\tpatches/s5_engine/executor_hooks.py",
   "M\tpatches/s5_engine/lane_chunk.py",
   "M\tpatches/s5_engine/lane_dispatch.py",
+  "M\tpatches/s5_engine/lane_private.py",
+  "M\tpatches/s5_engine/lane_state.py",
   "M\tpatches/s5_engine/make_s5_overlap.py",
+  "M\tpatches/s5_engine/native_auto_arm.py",
   "M\tpatches/s5_engine/native_candidate_review.json",
   "M\tpatches/s5_engine/native_measurement.py",
   "M\tpatches/s5_engine/native_overlap_control.py",
