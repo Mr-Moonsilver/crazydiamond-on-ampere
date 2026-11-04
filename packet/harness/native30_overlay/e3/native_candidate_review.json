@@ -5281,7 +5281,7 @@
     "stage_wire.py": "57a5cb8c33b70e010daab8bf81d181efd97c1577f1e2b391ba155addeb366247",
     "teacher_decode.py": "8ab74b57de7ea90f4a94154d9bd609ab748400e989f58eb5bc553d427faff05c",
     "wire_v1.py": "d7c2a7ce08b221511e92ec9051adedf55be5c6aeae86b17062965afbdd6c298a",
-    "worker_bridge.py": "6fe22e3a0ede5e3c2cee16c663552b84069fd5215230b9f711c2afb8ce7d22fa",
+    "worker_bridge.py": "d3051e4751443ffc556980c4a43c01ddaf4c9c62802c238fb4f01470308a0cc6",
     "worker_hooks.py": "9b65c2aee0e30409d1df5e0d4982ae58b2bbf4e8b1ef215072467723163f4edc"
   },
   "stage1_step": {
