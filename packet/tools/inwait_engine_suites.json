@@ -1,0 +1,13 @@
+{
+ "schema": "inwait-engine-suites/1",
+ "status": "Discovery mode: the parts' engine suites over the composed tree, the new lever's, and the real-router smoke.",
+ "engine_suites": [
+  "test_stage1_step_engine",
+  "test_attn_meta_control",
+  "test_compose2_receipt_refused",
+  "test_inwait_engine",
+  "test_inwait_router"
+ ],
+ "refusal_tests": [],
+ "why": {}
+}
