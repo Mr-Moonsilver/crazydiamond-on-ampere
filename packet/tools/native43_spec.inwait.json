@@ -609,6 +609,7 @@
    "harness/e3_attn_meta_box.py",
    "harness/e3_attn_meta_box_b.py",
    "harness/e3_compose2_box.py",
+   "harness/e3_dp3_startup_grade.py",
    "harness/e3_inwait_box.py",
    "harness/e3_stage1_step_box.py",
    "harness/inwait_arms.py",
@@ -819,7 +820,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 585,
+ "expected_tests": 592,
  "label": "inwait",
  "overlay_definitions": {
   "core/scheduler.py": [
@@ -1022,10 +1023,22 @@
   [
    "result.get('step_a_queue')=='PASS' and result.get('step_b_queue')=='PASS' and result.get('alpha_next_queue')=='PASS' and result.get('alpha_next_c1_queue')=='PASS' and result.get('alpha_next_c1b_queue')=='PASS'",
    "result.get('step_a_queue')=='PASS' and result.get('step_b_queue')=='PASS' and result.get('alpha_next_queue')=='PASS' and result.get('alpha_next_c1_queue')=='PASS' and result.get('alpha_next_c1b_queue')=='PASS' and result.get('inwait_queue')=='PASS'"
+  ],
+  [
+   "QNAME='q18a-inwait'",
+   "SMSPLIT_DECODE_SMS=os.environ.get('SMSPLIT_DECODE_SMS','52')\nif not re.fullmatch('[2-6][02468]',SMSPLIT_DECODE_SMS) or not 24<=int(SMSPLIT_DECODE_SMS)<=60:\n    raise SystemExit('SMSPLIT_DECODE_SMS must be even, 24..60')\nQNAME='q18a-sm-split-'+SMSPLIT_DECODE_SMS"
+  ],
+  [
+   "OVERLAY=Path('/data/vllm/flash-next-tp4/prod/overlay-v16s5-q18a-inwait')",
+   "OVERLAY=Path('/data/vllm/flash-next-tp4/prod/overlay-v16s5-'+QNAME)"
+  ],
+  [
+   "S5_REQUESTED_DECODE_SMS='44'",
+   "S5_REQUESTED_DECODE_SMS=SMSPLIT_DECODE_SMS"
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "f424e8fd01dbad60aab8eddaf41ae5fad3cfc6a5",
+ "source_commit": "c66eb6c0b19dea8bd8bc68ad93e103ecd8cc5e44",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/attn_meta_arms.py",
@@ -1038,6 +1051,7 @@
   "A\tharness/e3_attn_meta_box.py",
   "A\tharness/e3_attn_meta_box_b.py",
   "A\tharness/e3_compose2_box.py",
+  "A\tharness/e3_dp3_startup_grade.py",
   "A\tharness/e3_inwait_box.py",
   "A\tharness/e3_stage1_step_box.py",
   "A\tharness/fixtures/attn_meta_post_read/arm-decode-am0.json",
