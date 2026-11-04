@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""inwait build-4 (results/hub/inwait/DESIGN-4.md): the fast CoW copy against stock's bytes, the zero/copy row, the reserved cap. Discovery mode.
+
+The copy runs on real CPU tensors against the image's real ``copy_kv_cache_blocks_inplace``, in both of its branches. No GPU: whether it is
+faster, and what the residue chunk's device time is on each TP rank, is the box's question.
+"""
+import itertools
+import logging
+import os
+import types
+import unittest
+from unittest import mock
+
+import torch
+from vllm.utils import torch_utils
+from vllm.v1.core.kv_cache_utils import KVCacheBlockCopy
+from vllm.v1.worker.utils import copy_kv_cache_blocks_inplace
+
+import lane_chunk as lc
+import worker_bridge as wb
+
+NUM_BLOCKS = 8
+torch_utils.PIN_MEMORY = False    # no driver on the hub: stock pins its index tensor, which needs one
+
+
+def whole_storage(dtype=torch.int16):
+    # The cache covers its whole storage: stock's byte view branch.
+    return torch.arange(NUM_BLOCKS * 3 * 5, dtype=dtype).view(NUM_BLOCKS, 3, 5).clone()
+
+
+def split_blocks():
+    # Virtual block splitting: 2 kernel blocks a scheduler block.
+    return torch.arange(NUM_BLOCKS * 2 * 4, dtype=torch.float32).view(NUM_BLOCKS * 2, 4).clone()
+
+
+def strided():
+    # A view into a wider allocation: stock's unflatten branch.
+    base = torch.arange(NUM_BLOCKS * 6 * 3, dtype=torch.int32).view(NUM_BLOCKS, 6, 3).clone()
+    return base[:, ::2, :], base
+
+
+def caches():
+    shared = whole_storage()
+    wide = torch.arange(NUM_BLOCKS * 7, dtype=torch.int64).view(NUM_BLOCKS, 7).clone()
+    view, _base = strided()
+    # Aliased views of one allocation: cross-layer sharing.
+    alias = wide.view(NUM_BLOCKS, 7)
+    return [shared, split_blocks(), view, wide, alias]
+
+
+def bytes_of(items):
+    return [item.clone().numpy().tobytes() for item in items]
+
+
+class Copy(unittest.TestCase):
+    def assert_same_as_stock(self, pairs):
+        stock, fast = caches(), caches()
+        copy_kv_cache_blocks_inplace(stock, NUM_BLOCKS, [KVCacheBlockCopy(s, d) for s, d in pairs])
+        out = lc.copy_blocks_fast(fast, NUM_BLOCKS, pairs)
+        self.assertIsNotNone(out)
+        self.assertEqual(bytes_of(fast), bytes_of(stock))
+        return out
+
+    def test_every_single_pair_copies_the_same_bytes(self):
+        for src, dst in itertools.permutations(range(NUM_BLOCKS), 2):
+            self.assert_same_as_stock([(src, dst)])
+
+    def test_several_pairs_copy_the_same_bytes(self):
+        self.assert_same_as_stock([(0, 3), (1, 4), (2, 5)])
+        self.assert_same_as_stock([(0, 3), (0, 4)])
+
+    def test_the_rest_of_the_cache_is_untouched(self):
+        before, after = caches(), caches()
+        lc.copy_blocks_fast(after, NUM_BLOCKS, [(1, 6)])
+        for old, new in zip(before, after):
+            kernel = old.shape[0] // NUM_BLOCKS
+            old, new = old.unflatten(0, (NUM_BLOCKS, kernel)), new.unflatten(0, (NUM_BLOCKS, kernel))
+            for block in range(NUM_BLOCKS):
+                want = old[1] if block == 6 else old[block]
+                self.assertEqual(new[block].numpy().tobytes(), want.numpy().tobytes())
+
+    def test_an_aliased_view_is_copied_once(self):
+        wide = torch.arange(NUM_BLOCKS * 7, dtype=torch.int64).view(NUM_BLOCKS, 7).clone()
+        out = lc.copy_blocks_fast([wide, wide.view(NUM_BLOCKS, 7)], NUM_BLOCKS, [(1, 2)])
+        self.assertEqual(out['views'], 1)
+        self.assertEqual(out['bytes'], 7 * 8)
+
+    def test_a_list_where_order_could_matter_goes_to_stock_with_nothing_copied(self):
+        for pairs in ([(0, 1), (1, 2)], [(0, 2), (1, 2)], [(3, 3)]):
+            items = caches()
+            before = bytes_of(items)
+            self.assertIsNone(lc.copy_blocks_fast(items, NUM_BLOCKS, pairs), pairs)
+            self.assertEqual(bytes_of(items), before)
+
+    def test_blocks_not_divisible_are_refused(self):
+        with self.assertRaises(lc.LaneChunkError):
+            lc.copy_blocks_fast([torch.zeros(NUM_BLOCKS + 1, 2)], NUM_BLOCKS, [(0, 1)])
+
+
+class Mark:
+    def __init__(self, log=None, done=True, at=0.0):
+        self.done, self.at, self.log = done, at, log
+
+    def query(self):
+        return self.done
+
+    def elapsed_time(self, other):
+        return other.at - self.at
+
+
+class Pages(unittest.TestCase):
+    def setUp(self):
+        saved = dict(lc.COW_FAST)
+        self.addCleanup(lambda: (lc.COW_FAST.update(saved), lc.take_cow_row()))
+        lc.COW_FAST.update(selected=False, calls=0, pairs=0, fallbacks=0, rows=0, row_errors=0)
+        lc.take_cow_row()
+        self.log = []
+        self.caches = caches()
+        zeroer = types.SimpleNamespace(zero_block_ids=lambda ids: self.log.append(('zero', tuple(ids))))
+        self.runner = types.SimpleNamespace(kv_caches=self.caches, kv_cache_config=types.SimpleNamespace(num_blocks=NUM_BLOCKS), kv_block_zeroer=zeroer)
+        marks = [Mark(at=0.0), Mark(at=1.5), Mark(at=501.5)]
+        self.ports = types.SimpleNamespace(block_copy=KVCacheBlockCopy, copy_blocks_inplace=self.stock, cow_mark=lambda: marks.pop(0))
+        self.request = lc.LaneRequest.__new__(lc.LaneRequest)
+        self.request.runner, self.request.ports = self.runner, self.ports
+
+    def stock(self, kv_caches, num_blocks, copies):
+        self.log.append(('stock', len(copies)))
+        copy_kv_cache_blocks_inplace(kv_caches, num_blocks, copies)
+
+    def admission(self, zero=(), pairs=()):
+        return types.SimpleNamespace(new_block_ids_to_zero=zero, cow_pairs=pairs)
+
+    def test_off_runs_stock_and_times_it(self):
+        self.request._apply_allocated_pages(self.admission(zero=(5,), pairs=((1, 2),)))
+        self.assertEqual(self.log, [('zero', (5,)), ('stock', 1)])
+        self.assertEqual((lc.COW_FAST['calls'], lc.COW_FAST['rows']), (0, 1))
+        row = lc.cow_row_times(lc.take_cow_row())
+        self.assertEqual((row['zero_ids'], row['pairs'], row['fast'], row['views'], row['bytes']), (1, 1, 0, None, None))
+        self.assertEqual((row['zero_dev_us'], row['copy_dev_us']), (1500, 500000))
+        self.assertNotIn('marks', row)
+        self.assertIsNone(lc.take_cow_row(), 'once')
+
+    def test_on_runs_the_fast_copy_with_the_same_bytes(self):
+        stock = caches()
+        copy_kv_cache_blocks_inplace(stock, NUM_BLOCKS, [KVCacheBlockCopy(1, 2)])
+        lc.select_cow_fast(True)
+        self.request._apply_allocated_pages(self.admission(pairs=((1, 2),)))
+        self.assertEqual(self.log, [])
+        self.assertEqual(bytes_of(self.caches), bytes_of(stock))
+        self.assertEqual((lc.COW_FAST['calls'], lc.COW_FAST['pairs'], lc.COW_FAST['fallbacks']), (1, 1, 0))
+        row = lc.take_cow_row()
+        self.assertEqual(row['fast'], 1)
+        self.assertGreater(row['bytes'], 0)
+
+    def test_on_with_a_chain_goes_to_stock_and_counts_it(self):
+        lc.select_cow_fast(True)
+        self.request._apply_allocated_pages(self.admission(pairs=((1, 2), (2, 3))))
+        self.assertEqual(self.log, [('stock', 2)])
+        self.assertEqual((lc.COW_FAST['calls'], lc.COW_FAST['fallbacks']), (0, 1))
+        self.assertEqual(lc.take_cow_row()['fast'], 0)
+
+    def test_host_views_copy_the_same_blocks(self):
+        views = [torch.arange(NUM_BLOCKS * 2, dtype=torch.int32).view(NUM_BLOCKS, 2).clone()]
+        self.runner._qsa_host_views = views
+        self.request._apply_allocated_pages(self.admission(pairs=((1, 2),)))
+        self.assertEqual(views[0][2].tolist(), views[0][1].tolist())
+        self.assertEqual(lc.take_cow_row()['host_views'], 1)
+
+    def test_a_chunk_with_no_pages_has_no_row_and_no_mark(self):
+        self.ports.cow_mark = None
+        self.request._apply_allocated_pages(self.admission())
+        self.assertIsNone(lc.take_cow_row())
+        self.assertEqual(self.log, [])
+
+    def test_a_port_without_marks_still_copies(self):
+        self.ports.cow_mark = None
+        self.request._apply_allocated_pages(self.admission(pairs=((1, 2),)))
+        row = lc.cow_row_times(lc.take_cow_row())
+        self.assertEqual((row['zero_dev_us'], row['copy_dev_us']), (None, None))
+
+    def test_an_unfinished_pair_reads_none_and_never_waits(self):
+        row = dict(marks=[Mark(), Mark(done=False), Mark()])
+        out = lc.cow_row_times(row)
+        self.assertEqual((out['zero_dev_us'], out['copy_dev_us']), (None, None))
+
+
+class Receipt(unittest.TestCase):
+    def bridge(self):
+        return types.SimpleNamespace(rank=2)
+
+    def tx(self):
+        return types.SimpleNamespace(txn_seq=66, chunk_start=65296, chunk_end=65444)
+
+    def test_the_line_names_the_rank_chunk_and_times(self):
+        lc._COW_ROW[0] = dict(marks=[Mark(at=0.0), Mark(at=1.0), Mark(at=3.0)], zero_ids=0, pairs=1, fast=1, views=2, bytes=64,
+                              host_views=0, zero_host_us=1, copy_host_us=2, host_view_us=0)
+        lines = []
+        with mock.patch.dict(os.environ, {'FLASH_S5_INWAIT': '1'}), \
+                mock.patch('native_measurement.emit_receipt_kv', lambda line, logger: lines.append(line)):
+            wb.NativeWorkerBridge._cow_receipt(self.bridge(), self.tx())
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith('flash-s5 cow rank=2 txn_seq=66 chunk=65296-65444 '), lines[0])
+        self.assertIn('copy_dev_us=2000', lines[0])
+        self.assertIn('fast=1', lines[0])
+        self.assertNotIn('marks', lines[0])
+
+    def test_no_row_no_line_and_a_failure_is_counted(self):
+        lc.take_cow_row()
+        lines = []
+        with mock.patch.dict(os.environ, {'FLASH_S5_INWAIT': '1'}), \
+                mock.patch('native_measurement.emit_receipt_kv', lambda line, logger: lines.append(line)):
+            wb.NativeWorkerBridge._cow_receipt(self.bridge(), self.tx())
+            self.assertEqual(lines, [])
+            before = lc.COW_FAST['row_errors']
+            lc._COW_ROW[0] = dict(marks=[object(), object(), object()])
+            wb.NativeWorkerBridge._cow_receipt(self.bridge(), self.tx())
+        self.assertEqual(lc.COW_FAST['row_errors'], before + 1)
+        self.assertEqual(lines, [])
+
+    def test_flag_off_touches_nothing(self):
+        lc._COW_ROW[0] = dict(marks=[])
+        self.addCleanup(lc.take_cow_row)
+        with mock.patch.dict(os.environ, {'FLASH_S5_INWAIT': '0'}):
+            wb.NativeWorkerBridge._cow_receipt(self.bridge(), self.tx())
+        self.assertIsNotNone(lc._COW_ROW[0])
+
+
+MIB = 1024 * 1024
+
+
+class Cap(unittest.TestCase):
+    def setUp(self):
+        saved = dict(lc.RESERVED_CAP)
+        self.addCleanup(lambda: lc.RESERVED_CAP.update(saved))
+        lc.RESERVED_CAP.update(selected=False, cap_bytes=0, fraction=0.0, flushes=0)
+
+    def test_the_cap_from_this_box_ranks(self):
+        # Rank 0 and rank 1 of build-3b's record: total 24124 MiB, outside the allocator 1206.5 and 1318.5.
+        total = 25296044032
+        for other in (1206.5, 1318.5):
+            reserved = 21856 * MIB
+            free = total - reserved - int(other * MIB)
+            cap = lc.reserved_cap_bytes(total, free, reserved)
+            self.assertEqual(total - int(other * MIB) - cap, 512 * MIB)
+
+    def test_out_of_range_is_refused(self):
+        with self.assertRaises(lc.LaneChunkError):
+            lc.reserved_cap_bytes(100, 50, 60)
+        with self.assertRaises(lc.LaneChunkError):
+            lc.reserved_cap_bytes(100 * MIB, 90 * MIB, 5 * MIB)
+
+    def fake_cuda(self):
+        calls = []
+        cuda = types.SimpleNamespace(
+            current_device=lambda: 3, synchronize=lambda: calls.append('sync'), empty_cache=lambda: calls.append('flush'),
+            mem_get_info=lambda device: (2000 * MIB, 24000 * MIB), memory_reserved=lambda device: 21000 * MIB,
+            set_per_process_memory_fraction=lambda fraction, device: calls.append((round(fraction, 6), device)))
+        return cuda, calls
+
+    def test_on_flushes_then_caps_and_off_lifts_it(self):
+        cuda, calls = self.fake_cuda()
+        with mock.patch.object(torch, 'cuda', cuda):
+            state = lc.select_reserved_cap(True)
+            self.assertEqual(calls[:2], ['sync', 'flush'])
+            # 1000 MiB outside the allocator: at most 22488 reserved keeps 512 free.
+            self.assertEqual(state['cap_bytes'], 22488 * MIB)
+            self.assertEqual(calls[2], (round(22488 / 24000, 6), 3))
+            self.assertEqual(state['flushes'], 1)
+            self.assertEqual(lc.select_reserved_cap(True)['flushes'], 1, 'on to on does nothing')
+            self.assertEqual(len(calls), 3)
+            state = lc.select_reserved_cap(False)
+            self.assertEqual(calls[3], (1.0, 3))
+            self.assertEqual((state['selected'], state['cap_bytes']), (False, 0))
+            lc.select_reserved_cap(False)
+            self.assertEqual(len(calls), 4, 'off to off touches nothing')
+
+    def test_not_bool_is_refused(self):
+        for select in (lc.select_reserved_cap, lc.select_cow_fast):
+            with self.assertRaises(lc.LaneChunkError):
+                select(1)
+
+
+if __name__ == '__main__':
+    logging.disable(logging.CRITICAL)
+    unittest.main()

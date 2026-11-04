@@ -17,7 +17,7 @@ from unittest import mock
 an = c1box.an
 tap = tq.tap
 ROOT = Path(__file__).resolve().parents[1]
-ORDER = ['ps0.g2-solo-0', 'ps1.g2-solo-0', 'ps0.g2-live-0', 'ps1.g2-live-0', 'ps1.g2-live-1', 'ps0.g2-live-1', 'pw.g2-solo-0', 'pw.g2-live-0', 'pw.g2-live-1']
+ORDER = ['sm.g2-live-0', 'ps1.g2-solo-0', 'cf.g2-solo-0', 'ps1.g2-live-0', 'cf.g2-live-0', 'cf.g2-live-1', 'ps1.g2-live-1', 'cf.g2-live-2', 'cf.g2-solo-2', 'cap.g2-live-0']
 QUIET = dict(lazy_marked=0, merge_steps=0, merge_on=0, merge_off=0)
 MOVED = dict(lazy_marked=4, merge_steps=4, merge_on=1, merge_off=1)
 STEP_VIEW = dict(defer_bind_installed=True, defer_bind_selected=True, step_lazy_installed=True, step_lazy=False, step_merge_installed=True, step_merge='off', **{'step_' + k: 0 for k in QUIET})
@@ -26,7 +26,7 @@ STEP_VIEW = dict(defer_bind_installed=True, defer_bind_selected=True, step_lazy_
 class Table(unittest.TestCase):
     def test_the_arms_in_order(self):
         self.assertEqual(T.labels(), ORDER)
-        self.assertEqual(T.labels('tail'), [])
+        self.assertEqual(T.labels('tail'), ['cap.g2-live-0'])
         self.assertEqual(T.COLD_ARM, ORDER[0])
         self.assertEqual([d['label'] for d in T.DECODE_ARMS], ['decode-am1'])
         self.assertEqual(T.REFERENCE_ARM, 'decode-am1')
@@ -35,17 +35,29 @@ class Table(unittest.TestCase):
         for r in T.arms():
             self.assertEqual((r['attn'], r['lazy_recv'], r['decode_merge'], r['inwait']), (True, True, 'chunk', True), r['label'])
             self.assertIs(r['next_levers'], True, r['label'])
-            self.assertIs(r['prepare_slices'], r['c1'] != 'ps0', r['label'])
-            self.assertIs(r['score_warm'], r['c1'] == 'pw', r['label'])
+            self.assertIs(r['prepare_slices'], True, r['label'])
+            self.assertIs(r['score_warm'], False, r['label'])
+            self.assertIs(r['cow_fast'], r['c1'] in ('cf', 'sm'), r['label'])
+            self.assertIs(r['reserved_cap'], r['c1'] == 'cap', r['label'])
             self.assertEqual((r['overlap'], r['defer_bind'], r['size']), (True, True, 2), r['label'])
 
     def test_the_view(self):
         view = box.table_view()
-        self.assertEqual({r['c0'] for r in view.arms() if r['c1'] != 'ps0'}, {'on'})
-        self.assertEqual({r['c0'] for r in view.arms() if r['c1'] == 'ps0'}, {'off'})
-        self.assertEqual(view.label('on', 2, 'live', 1), 'ps1.g2-live-1')
-        self.assertEqual(view.label('off', 2, 'live', 1), 'ps0.g2-live-1')
-        self.assertEqual(box.table_view('ps0').label('on', 2, 'live', 1), 'ps0.g2-live-1')
+        self.assertEqual({r['c0'] for r in view.arms() if r['c1'] != 'ps1'}, {'on'})
+        self.assertEqual({r['c0'] for r in view.arms() if r['c1'] == 'ps1'}, {'off'})
+        self.assertEqual(view.label('on', 2, 'live', 1), 'cf.g2-live-1')
+        self.assertEqual(view.label('off', 2, 'live', 1), 'ps1.g2-live-1')
+        self.assertEqual(box.table_view('ps1').label('on', 2, 'live', 1), 'ps1.g2-live-1')
+
+    def test_the_smoke_is_first_the_cap_last_and_band_two_has_its_workload_round(self):
+        self.assertEqual(T.labels()[0], T.SMOKE_ARM)
+        self.assertEqual(T.SMOKE_ARM, 'sm.g2-live-0')
+        self.assertEqual(T.labels()[-1], 'cap.g2-live-0')
+        self.assertEqual([r['label'] for r in T.arms() if r['band'] == 2], ['cf.g2-live-2', 'cf.g2-solo-2'])
+        self.assertEqual(T.matched_off(T.by_label()['cf.g2-live-0']), 'ps1.g2-live-0')
+        self.assertIsNone(T.matched_off(T.by_label()['cf.g2-live-2']), 'band 2 has no off arm')
+        self.assertIsNone(T.matched_off(T.by_label()['sm.g2-live-0']))
+        self.assertEqual(T.by_label()['cap.g2-live-0']['part'], 'tail', 'an OOM there changes no grade')
 
 
 class Client(tq.FakeClient):
@@ -82,7 +94,7 @@ class ArmControl(unittest.TestCase):
             self.assertEqual(record['inwait'], dict(requested=T.INWAIT[sel], acknowledged=T.INWAIT[sel], early_requested=T.NEXT[sel], early_acknowledged=T.NEXT[sel]))
             self.assertEqual(dict(client.calls)['native_stage_local']['early_successor'], T.NEXT[sel])
             self.assertEqual(record['step'], dict(requested_lazy=T.LAZY_RECV[sel], requested_merge=T.DECODE_MERGE[sel], replied=True, acknowledged_lazy=T.LAZY_RECV[sel], acknowledged_merge=T.DECODE_MERGE[sel]))
-            self.assertEqual(order, [('levers', dict(slots_fast=T.NEXT[sel], prepare_slices=T.SLICES[sel], score_warm=T.WARM[sel]), 'native_stage_local'), (T.ATTN[sel], 'native_stage_local')], sel)    # after the stage command, before release_auto_arm
+            self.assertEqual(order, [('levers', dict(slots_fast=T.NEXT[sel], prepare_slices=T.SLICES[sel], score_warm=T.WARM[sel], cow_fast=T.COW_FAST[sel], reserved_cap=T.RESERVED_CAP[sel]), 'native_stage_local'), (T.ATTN[sel], 'native_stage_local')], sel)    # after the stage command, before release_auto_arm
 
     def test_the_actions_are_the_list_the_router_smoke_holds(self):
         client = Client()
@@ -147,43 +159,123 @@ def moved_of(row):
 
 
 class OpenRows(unittest.TestCase):
-    """check_arm_inwait over the two flushes the rule reads; READING-box-1 item 1."""
-
-    def flushes(self, carried):
-        own = [dict(seq=1, t_submit=10, t_apply=100), dict(seq=2, t_submit=20, t_apply=90)]
-        next_rows = carried + [dict(seq=9, t_submit=500, t_apply=600, origin='tick')]
-        return [dict(line=1, identity=dict(txn=5, open_rows=len(carried)), rows=dict(n=own)),
-                dict(line=2, identity=dict(txn=6, open_rows=0), rows=dict(n=next_rows))]
+    """check_arm_inwait over the boundary the engine recorded (review section 7), not n's last apply."""
 
     OVERLAP = {5: (frozenset({1, 2}), 6), 6: (frozenset({3, 4, 9}), None)}
+    COMMIT = 150000
 
-    def test_a_row_sent_from_the_wait_after_the_last_apply_is_carried(self):
-        flushes = self.flushes([dict(seq=3, t_submit=95, t_apply=200, origin='wait'), dict(seq=4, t_submit=101, t_apply=210, origin='wait')])
+    def flushes(self, carried, named=None, **identity):
+        own = [dict(seq=1, t_submit=10000, t_apply=100000), dict(seq=2, t_submit=20000, t_apply=90000)]
+        next_rows = carried + [dict(seq=9, t_submit=500000, t_apply=600000, origin='tick')]
+        named = [r['seq'] for r in carried] if named is None else named
+        return [dict(line=1, identity=dict(dict(txn=5, open_rows=len(named), commit_ns=self.COMMIT, open_seqs=named), **identity), rows=dict(n=own)),
+                dict(line=2, identity=dict(txn=6, open_rows=0, commit_ns=700000, open_seqs=[]), rows=dict(n=next_rows))]
+
+    def reasons(self, flushes):
+        return box.check_arm_inwait(flushes, self.OVERLAP)['reasons']
+
+    def test_rows_out_at_the_recorded_boundary_are_carried_whatever_the_last_apply(self):
+        # Both sent after n's last apply (100000), before the commit: what 'last apply' called not carried.
+        flushes = self.flushes([dict(seq=3, t_submit=120000, t_apply=200000, origin='wait'), dict(seq=4, t_submit=130000, t_apply=210000, origin='tick')])
         self.assertEqual(box.rule.check_arm(flushes, self.OVERLAP)['reasons'], ['c1-open-rows-not-carried'])
         out = box.check_arm_inwait(flushes, self.OVERLAP)
         self.assertEqual(out['reasons'], [])
-        self.assertEqual((out['flagged'][0]['carried_seqs'], out['flagged'][0]['carried_from_wait']), ([3, 4], 1))
+        self.assertEqual((out['flagged'][0]['carried_seqs'], out['flagged'][0]['commit_ns']), ([3, 4], self.COMMIT))
 
-    def test_a_row_sent_by_the_tick_after_the_last_apply_stays_inc(self):
-        flushes = self.flushes([dict(seq=3, t_submit=95, t_apply=200, origin='wait'), dict(seq=4, t_submit=101, t_apply=210, origin='tick')])
-        self.assertEqual(box.check_arm_inwait(flushes, self.OVERLAP)['reasons'], ['c1-open-rows-not-carried'])
+    def test_no_record_is_named_not_inferred(self):
+        flushes = self.flushes([dict(seq=3, t_submit=95000, t_apply=200000, origin='wait')])
+        for key in ('commit_ns', 'open_seqs'):
+            del flushes[0]['identity'][key]
+        self.assertEqual(self.reasons(flushes), ['c1-commit-boundary-absent'])
 
-    def test_a_carried_row_that_is_not_the_successors_stays_inc(self):
-        flushes = self.flushes([dict(seq=3, t_submit=95, t_apply=200, origin='wait'), dict(seq=7, t_submit=101, t_apply=210, origin='wait')])
-        self.assertEqual(box.check_arm_inwait(flushes, self.OVERLAP)['reasons'], ['c1-open-rows-not-carried'])
+    def test_a_named_row_missing_from_the_next_line_stays_inc(self):
+        flushes = self.flushes([dict(seq=3, t_submit=95000, t_apply=200000, origin='wait')], named=[3, 4])
+        self.assertIn('c1-open-rows-not-carried', self.reasons(flushes))
 
-    def test_too_few_rows_stays_inc(self):
-        flushes = self.flushes([dict(seq=3, t_submit=95, t_apply=200, origin='wait')])
-        flushes[0]['identity']['open_rows'] = 3
-        self.assertEqual(box.check_arm_inwait(flushes, self.OVERLAP)['reasons'], ['c1-open-rows-not-carried'])
+    def test_a_count_that_differs_from_the_names_stays_inc(self):
+        flushes = self.flushes([dict(seq=3, t_submit=95000, t_apply=200000, origin='wait')], open_rows=3)
+        self.assertEqual(self.reasons(flushes), ['c1-open-rows-not-carried'])
+
+    def test_a_row_of_the_older_chunk_stays_inc(self):
+        flushes = self.flushes([dict(seq=2, t_submit=95000, t_apply=200000, origin='wait')])
+        self.assertEqual(self.reasons(flushes), ['c1-open-row-not-successor'])
+
+    def test_a_row_sent_after_the_commit_stays_inc(self):
+        flushes = self.flushes([dict(seq=3, t_submit=160000, t_apply=200000, origin='wait')])
+        self.assertEqual(self.reasons(flushes), ['c1-open-row-sent-after-the-commit'])
+
+    def test_a_row_applied_before_the_commit_stays_inc(self):
+        flushes = self.flushes([dict(seq=3, t_submit=95000, t_apply=140000, origin='wait')])
+        self.assertEqual(self.reasons(flushes), ['c1-open-row-applied-before-the-commit'])
+
+    def test_a_row_out_at_the_commit_that_was_not_named_stays_inc(self):
+        rows = [dict(seq=3, t_submit=95000, t_apply=200000, origin='wait'), dict(seq=4, t_submit=96000, t_apply=210000, origin='wait')]
+        self.assertEqual(self.reasons(self.flushes(rows, named=[3])), ['c1-row-out-at-the-commit-not-recorded'])
+
+    def test_a_row_at_the_boundary_within_the_lines_microsecond_is_carried(self):
+        flushes = self.flushes([dict(seq=3, t_submit=self.COMMIT + 900, t_apply=self.COMMIT - 900, origin='wait')])
+        self.assertEqual(self.reasons(flushes), [])
 
     def test_a_clean_flush_is_the_rule_unchanged(self):
-        flushes = self.flushes([dict(seq=3, t_submit=95, t_apply=200, origin='wait')])
+        flushes = self.flushes([])
         self.assertEqual(box.check_arm_inwait(flushes, self.OVERLAP), box.rule.check_arm(flushes, self.OVERLAP))
 
+    def test_the_read_counts_the_records(self):
+        flushes = self.flushes([dict(seq=3, t_submit=95000, t_apply=200000, origin='wait')])
+        self.assertEqual(box.commit_boundary_read(dict(a=flushes)), dict(a=dict(flushes=2, recorded=2, open_rows=1, max_open=1)))
 
-def synthetic():
-    emit, arms = tq.synthetic_run(rows=[dict(r, c1='defer') for r in T.arms()])
+
+class Smoke(unittest.TestCase):
+    RANKS = ('0', '1', '2', '3')
+
+    def good(self):
+        each = dict.fromkeys(self.RANKS, 3)
+        return dict(label=T.SMOKE_ARM, complete=True, reasons=[], outputs=dict(fresh=[1], append=[2], standing={'0': {}}), generation_requests_expected=10,
+                    inwait=dict(acknowledged=True, early_acknowledged=True), attn_meta=dict(select={'0': {}}), stage_delta=dict(step_iw_applied=9, step_iw_early_begins=4),
+                    progress_delta=dict(chunks=66, line_errors=0), slots_fast=dict(calls=dict(each)), prepare_slices=dict(counters=dict(sliced=dict(each))),
+                    cow_fast=dict(counters=dict(calls=dict(each), rows=dict(each))))
+
+    def test_an_engaged_arm_passes(self):
+        self.assertEqual(box.smoke_check(self.good()), (True, []))
+
+    def test_each_failure_has_its_name(self):
+        for edit, reason in (
+                (lambda r: r.update(complete=False), 'smoke-arm-not-complete'),
+                (lambda r: r.update(reasons=['x']), 'smoke-arm-not-complete'),
+                (lambda r: r['outputs'].pop('fresh'), 'smoke-request-shape-not-observed'),
+                (lambda r: r.update(generation_requests_expected=9), 'smoke-request-shape-differs'),
+                (lambda r: r['inwait'].update(acknowledged=False), 'smoke-control-not-acknowledged'),
+                (lambda r: r['attn_meta'].update(select=None), 'smoke-select-not-sent'),
+                (lambda r: r['progress_delta'].update(chunks=0), 'smoke-no-native-chunks'),
+                (lambda r: r['stage_delta'].update(step_iw_applied=0), 'smoke-in-wait-not-engaged'),
+                (lambda r: r['stage_delta'].update(step_iw_early_begins=0), 'smoke-early-successor-not-engaged'),
+                (lambda r: r['slots_fast']['calls'].update({'2': 0}), 'smoke-slots-fast-not-engaged-on-every-rank'),
+                (lambda r: r['prepare_slices']['counters']['sliced'].pop('1'), 'smoke-sliced-not-engaged-on-every-rank'),
+                (lambda r: r['cow_fast']['counters']['calls'].update({'3': 0}), 'smoke-calls-not-engaged-on-every-rank'),
+                (lambda r: r['cow_fast']['counters']['rows'].update({'0': 0}), 'smoke-rows-not-engaged-on-every-rank')):
+            record = self.good()
+            edit(record)
+            ok, reasons = box.smoke_check(record)
+            self.assertFalse(ok, reason)
+            self.assertIn(reason, reasons)
+
+    def test_an_unreadable_record_does_not_pass(self):
+        self.assertEqual(box.smoke_check(None), (False, ['smoke-record-unreadable']))
+
+    def test_the_cli_writes_its_record_and_says_so_in_the_rc(self):
+        with tempfile.TemporaryDirectory() as root:
+            arm, out = Path(root) / 'arm.json', Path(root) / 'smoke.json'
+            arm.write_text(json.dumps(self.good()))
+            self.assertEqual(box.main(['smoke', '--arm', str(arm), '--out', str(out)]), 0)
+            self.assertIs(json.loads(out.read_text())['engaged'], True)
+            arm.write_text(json.dumps(dict(self.good(), complete=False)))
+            out2 = Path(root) / 'smoke2.json'
+            self.assertEqual(box.main(['smoke', '--arm', str(arm), '--out', str(out2)]), 2)
+            self.assertIs(json.loads(out2.read_text())['engaged'], False)
+
+
+def synthetic(part):
+    emit, arms = tq.synthetic_run(rows=[dict(r, c1='defer') for r in T.arms(part)])
     declared = T.by_label()
     for a in arms:
         row = declared[a['label']]
@@ -198,6 +290,9 @@ def synthetic():
         cut, warm = row['prepare_slices'], row['score_warm']
         a['prepare_slices'] = dict(requested=cut, counters=dict(sliced=per(60 if cut else 0), yields=per(70 if cut else 0), peek_missing=per(0)))
         a['score_warm'] = dict(requested=warm, counters=dict(allocs=per(1 if warm else 0), flushes=per(0), rewarms=per(0), errors=per(0)))
+        fast, cap = row['cow_fast'], row['reserved_cap']
+        a['cow_fast'] = dict(requested=fast, counters=dict(calls=per(2 if fast else 0), pairs=per(2 if fast else 0), fallbacks=per(0), rows=per(9), row_errors=per(0)))
+        a['reserved_cap'] = dict(requested=cap, counters=dict(flushes=per(1 if cap else 0)))
         a['stage_delta'].update({'step_iw_' + k: 0 for k in box.IW_DELTA})
         a['stage_delta'].update(step_iw_applied=30 if on else 0, step_iw_direct_opens=1 if on else 0, step_iw_direct_releases=1 if on else 0, step_iw_early_begins=30 if nxt else 0)
         a['progress'] = [dict(label=point, native_stage_local=dict(STEP_VIEW, step_lazy=lazy, step_merge=merge, step_iw_selected=on)) for point in ('before-fresh', 'after-fresh')]
@@ -208,10 +303,11 @@ def synthetic():
 _RUN = {}
 
 
-def run_of():
-    if 'run' not in _RUN:
-        _RUN['run'] = synthetic()
-    emit, arms = _RUN['run']
+def run_of(part=T.GRADED):
+    key = 'run-%s' % (part,)
+    if key not in _RUN:
+        _RUN[key] = synthetic(part)
+    emit, arms = _RUN[key]
     return emit, copy.deepcopy(arms)
 
 
@@ -225,18 +321,19 @@ def decode_records(rates=(440.0,)):
     return out
 
 
-def full_run():
-    emit, arms = run_of()
+def full_run(part=T.GRADED):
+    # The core grade runs before the tail: neither its record nor its lines exist yet. The read has every arm.
+    emit, arms = run_of(part)
     return emit, decode_records() + arms
 
 
-def grade_with(root, emit, arms, startup=tam.STARTUP, box_module=box):
+def grade_with(root, emit, arms, startup=tam.STARTUP, box_module=box, part='core'):
     q = Path(tempfile.mkdtemp(dir=root))
     tap.write_streams(q, emit.lines)
     extra = q / 'startup.log'
     extra.write_text(''.join('INFO x %s\n' % line for line in startup))
     logs = [str(q / 'engine-stream.log'), str(q / 'engine-stream.err'), str(extra)]
-    return box_module.grade(arms, {a['label']: tap.PASS for a in arms}, tap.CHECKS, logs, {a['label']: tap.ALIVE for a in arms})
+    return box_module.grade(arms, {a['label']: tap.PASS for a in arms}, tap.CHECKS, logs, {a['label']: tap.ALIVE for a in arms}, part=part)
 
 
 class Gate(unittest.TestCase):
@@ -257,12 +354,12 @@ class Gate(unittest.TestCase):
         self.assertEqual(result['verdict'], 'PASS', (result['failures'], result['missing']))
         self.assertEqual(result['schema'], 'inwait-grade/1')
         self.assertIs(result['numerics_covered'], False)
-        self.assertEqual(sorted(result['step_gate']['arms']), sorted(ORDER))
-        self.assertEqual(sorted(result['attn_meta']), sorted(ORDER + ['decode-am1']))
+        self.assertEqual(sorted(result['step_gate']['arms']), sorted(ORDER[:-1]))
+        self.assertEqual(sorted(result['attn_meta']), sorted(ORDER[:-1] + ['decode-am1']))
         self.assertIsNone(result['step_read']['error'])
-        self.assertEqual(len(result['step_read']['pairs']), 6)     # ps1 and pw, live x2 and solo
+        self.assertEqual(len(result['step_read']['pairs']), 3)     # cf live x2 and solo
         read = result['compose_read']
-        self.assertEqual(sorted(read['arms']), sorted(ORDER))
+        self.assertEqual(sorted(read['arms']), sorted(ORDER))         # the table's every row, the cap's empty until the read
         cell = read['arms']['ps1.g2-live-0']
         self.assertIsNotNone(cell['prefill_tok_s'])
         self.assertIsNotNone(cell['decode_ratio_own_window'])
@@ -279,28 +376,40 @@ class Gate(unittest.TestCase):
         self.assertIn('## inwait reads', text)
         self.assertIn('Not covered: numerics', text)
 
+    def test_the_read_takes_every_arm(self):
+        emit, arms = full_run(None)
+        read = grade_with(self.tmp.name, emit, arms, part='all')
+        self.assertEqual(read['verdict'], 'PASS', (read['failures'], read['missing']))
+        self.assertEqual(sorted(read['compose_read']['arms']), sorted(ORDER))
+        self.assertIn('sm band 1 live', read['compose_read']['cells'])
+        self.assertIsNotNone(read['compose_read']['pair']['live_cap_over_off'])
+
     def test_attn_leak_and_not_engaged(self):
         result = self.edited('ps1.g2-live-1', lambda a: a['attn_meta'].update(tam.block(True, [0, 40, 40, 40])))
         self.assertEqual(result['verdict'], 'INC')
         self.assertIn('ps1.g2-live-1:attn-meta-not-engaged', result['missing'])
 
     def test_step_gate_kept(self):
-        result = self.edited('ps0.g2-live-0', lambda a: a['stage_delta'].update(step_merge_steps=0))
-        self.assertIn('ps0.g2-live-0:step-selected-lever-never-moved:merge_steps', result['missing'])
+        result = self.edited('ps1.g2-live-0', lambda a: a['stage_delta'].update(step_merge_steps=0))
+        self.assertIn('ps1.g2-live-0:step-selected-lever-never-moved:merge_steps', result['missing'])
 
     def test_inwait_check(self):
         result = self.edited('ps1.g2-live-0', lambda a: a['stage_delta'].update(step_iw_applied=0))
         self.assertIn('ps1.g2-live-0:inwait-selected-applied-nothing-in-the-wait', result['failures'])
-        result = self.edited('ps0.g2-live-0', lambda a: a['prepare_slices']['counters']['sliced'].update({'0': 2}))
-        self.assertIn('ps0.g2-live-0:prepare-slices-off-moved-its-counter', result['failures'])
+        result = self.edited('ps1.g2-live-0', lambda a: a['cow_fast']['counters']['calls'].update({'0': 2}))
+        self.assertIn('ps1.g2-live-0:cow-fast-off-moved-its-counter', result['failures'])
+        result = self.edited('cf.g2-live-0', lambda a: a['cow_fast']['counters']['calls'].update({'1': 0}))
+        self.assertIn('cf.g2-live-0:cow-fast-selected-not-engaged', result['missing'])
+        result = self.edited('ps1.g2-live-0', lambda a: a['cow_fast']['counters']['rows'].update({'2': 0}))
+        self.assertIn('ps1.g2-live-0:cow-receipt-rows-absent', result['missing'])
         result = self.edited('ps1.g2-live-0', lambda a: a['prepare_slices']['counters']['sliced'].update({'3': 0}))
         self.assertIn('ps1.g2-live-0:prepare-slices-selected-not-engaged', result['missing'])
         result = self.edited('ps1.g2-live-0', lambda a: a['prepare_slices'].pop('counters'))
         self.assertIn('ps1.g2-live-0:prepare-slices-counters-absent', result['missing'])
         result = self.edited('ps1.g2-live-0', lambda a: a['score_warm']['counters']['allocs'].update({'0': 1}))
         self.assertIn('ps1.g2-live-0:score-warm-off-moved-its-counter', result['failures'])
-        result = self.edited('pw.g2-live-0', lambda a: a['score_warm']['counters']['errors'].update({'2': 1}))
-        self.assertIn('pw.g2-live-0:score-warm-errors', result['missing'])
+        result = self.edited('cf.g2-live-0', lambda a: a['score_warm']['counters']['errors'].update({'2': 1}))
+        self.assertIn('cf.g2-live-0:score-warm-errors', result['missing'])
         result = self.edited('ps1.g2-live-0', lambda a: a['stage_delta'].update(step_iw_early_begins=0))
         self.assertIn('ps1.g2-live-0:early-successor-selected-not-engaged', result['missing'])
         result = self.edited('ps1.g2-live-1', lambda a: a['slots_fast'].update(calls={'0': 0, '1': 40, '2': 40, '3': 40}))

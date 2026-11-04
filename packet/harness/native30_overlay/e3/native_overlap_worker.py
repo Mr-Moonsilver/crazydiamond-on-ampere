@@ -537,7 +537,7 @@ def handle(worker, command, *, clock=time.monotonic_ns, torch_module=None):
     raise NativeOverlapUnavailable('native-overlap-action-not-implemented')
 
 
-INWAIT_RANK_LEVERS = ('slots_fast', 'prepare_slices', 'score_warm')
+INWAIT_RANK_LEVERS = ('slots_fast', 'prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap')
 
 
 def _attn_meta(runner, command):
@@ -572,7 +572,9 @@ def _attn_meta(runner, command):
         row = result['after' if action == 'attn_meta_select' else 'counters']
         selects = dict(slots_fast=(lane_chunk.select_slots_fast, lane_chunk.SLOTS_FAST),
                        prepare_slices=(lane_chunk.select_prepare_slices, lane_chunk.PREPARE_SLICES),
-                       score_warm=(lane_chunk.select_score_warm, lane_chunk.SCORE_WARM))
+                       score_warm=(lane_chunk.select_score_warm, lane_chunk.SCORE_WARM),
+                       cow_fast=(lane_chunk.select_cow_fast, lane_chunk.COW_FAST),
+                       reserved_cap=(lane_chunk.select_reserved_cap, lane_chunk.RESERVED_CAP))
         for name in INWAIT_RANK_LEVERS:
             select, state = selects[name]
             row[name] = select(levers[name]) if name in levers else dict(state)

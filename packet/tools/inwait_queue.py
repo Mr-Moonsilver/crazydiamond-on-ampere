@@ -4,7 +4,7 @@
 Declared deltas over compose-2's three texts, each by exact count:
   names     every compose-2 name -> inwait (the queue, records, box, gate, table);
   switch    FLASH_S5_INWAIT=1 in EXTRA_ENV after FLASH_ATTN_META_GDN_BATCH=1 (installed, not selected), asserted in the declaration and the preflight beside them;
-  body      this table's core list; one decode-only baseline (decode-am1), not two.
+  body      this table's core list; one decode-only baseline (decode-am1), not two; the exact-path smoke before them, whose failure stops every later arm; the cap arm as the tail, after the core grade.
 The arm lists come from harness/inwait_arms.py; --check verifies the files.
 """
 import argparse
@@ -19,17 +19,48 @@ import inwait_arms as table  # noqa: E402
 OLD, NEW = cq.NEW, 'q18a_inwait'
 OLD_Q, NEW_Q = cq.NEW_Q, 'q18a-inwait'
 SWITCH_NAME = 'FLASH_S5_INWAIT'
-CORE = ' '.join('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED))
+CORE = ' '.join('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED) if r['label'] != table.SMOKE_ARM)
 DECODE = ' '.join(d['label'] for d in table.DECODE_ARMS)
+TAIL = ' '.join(table.labels('tail'))
 NAMES = ((OLD, NEW), (OLD_Q, NEW_Q), ('COMPOSE2', 'INWAIT'), ('compose2', 'inwait'), ('compose-2', 'inwait'))
 FILES = 'e3_inwait_box.py inwait_arms.py e3_attn_meta_box.py attn_meta_arms.py'
-HEADER_NOTE = ('# inwait: native handoffs inside the stock wait, discovery mode: FLASH_S5_INWAIT installed for the whole run beside attn-meta and L1 + L2, all selected per arm by typed control while paused idle FULL: ps0 off,\n'
-               '# ps1 and pw on; one decode-only baseline first; band 1 live x2 and solo x1 each (harness/inwait_arms.py). NUMERICS ARE NOT COVERED by this queue either: speed, decode, handler time and memory are reads only.\n#\n')
+HEADER_NOTE = ('# inwait: native handoffs inside the stock wait, discovery mode: FLASH_S5_INWAIT installed for the whole run beside attn-meta and L1 + L2, all selected per arm by typed control while paused idle FULL: ps1 off,\n'
+               '# cf and cap on; the exact-path smoke first, then one decode-only baseline; band 1 live x2 and solo x1 each, band 2 one pair, one cap arm last, after the core grade (harness/inwait_arms.py). NUMERICS ARE NOT COVERED by this queue either: speed, decode, handler time and memory are reads only.\n#\n')
 SETTINGS_NOTE = '# inwait: FLASH_S5_INWAIT=1 below (installed, not selected), for the whole run, the only setting added to compose-2; each arm selects it by typed control.\n'
 SETTINGS_ANCHOR = '# compose-2: FLASH_ATTN_META_GDN_BATCH=1'
 DRAFT_ASSERT = "assert env.get('FLASH_ATTN_META_GDN_BATCH') == '1', 'attn-meta installed'\n"
 DECLARE_ASSERT = "assert env.get('FLASH_ATTN_META_GDN_BATCH')=='1', 'compose-2 runs with attn-meta installed'\n"
 AM0_CASE = '    (decode-am0) _attn=off;;\n'
+SMOKE_ANCHOR = '  for _label in ' + DECODE + '; do\n'
+SMOKE_CALL = '  inwait_smoke ' + table.SMOKE_ARM + '\n'
+SMOKE_DEFS_ANCHOR = 'GRADE_ARGS=(); READ_ARGS=()\n'
+SMOKE_DEFS = '''# inwait build-4: arm 1 is the exact-path smoke (review section 6). Real request shape, real control, positive engagement, one complete
+# observation, clean teardown: if not, SMOKE_ABORT stops every later arm, each recorded NOT_RUN.
+SMOKE_ABORT=
+inwait_smoke() {
+  local _label=$1 _rc
+  alpha_next_arm core "$_label"
+  timeout 60s python3 "$H/e3_inwait_box.py" smoke --arm "$Q/arm-$_label.json" --out "$Q/smoke.json" > "$Q/smoke.log" 2>&1
+  _rc=$?
+  n=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null) || n=unknown
+  if [[ $_rc == 0 ]] && { [[ $n != "$N0" ]] || host_crash_detected || ! health_ok; }; then _rc=2; fi
+  record smoke "$_rc" 'exact-path smoke: complete arm, real control acknowledged, native engaged on every rank, engine healthy after it; else the table aborts'
+  [[ $_rc == 0 ]] || SMOKE_ABORT=1
+  return 0
+}
+'''
+ARM_GUARD_ANCHOR = '  if (( SECONDS > _limit )); then\n'
+ARM_GUARD = '''  if [[ -n $SMOKE_ABORT ]]; then
+    "$_skip" "arm-$_label" 2 'NOT_RUN: the exact-path smoke did not engage; table aborted'
+    return 0
+  fi
+'''
+DECODE_GUARD_ANCHOR = '  if (( SECONDS > LAST_ARM_ENTRY_S )); then\n    record "arm-$_label" 2 "NOT_RUN: box budget'
+DECODE_GUARD = '''  if [[ -n $SMOKE_ABORT ]]; then
+    record "arm-$_label" 2 'NOT_RUN: the exact-path smoke did not engage; table aborted'
+    return 0
+  fi
+'''
 
 
 def once(text, old, new, count=1):
@@ -47,6 +78,12 @@ def body():
     text = once(cq.body(), cq.CORE, CORE)
     text = once(text, '  for _label in ' + cq.DECODE + '; do', '  for _label in ' + DECODE + '; do')
     text = once(text, AM0_CASE, '')
+    text = once(text, '  for _label in ; do\n    alpha_next_arm tail', '  for _label in ' + TAIL + '; do\n    alpha_next_arm tail')
+    text = text.replace('g4 tail', 'cap arm')
+    text = once(text, SMOKE_ANCHOR, SMOKE_CALL + SMOKE_ANCHOR)
+    text = once(text, SMOKE_DEFS_ANCHOR, SMOKE_DEFS + SMOKE_DEFS_ANCHOR)
+    text = once(text, ARM_GUARD_ANCHOR, ARM_GUARD + ARM_GUARD_ANCHOR)
+    text = once(text, DECODE_GUARD_ANCHOR, DECODE_GUARD + DECODE_GUARD_ANCHOR)
     return renames(text)
 
 

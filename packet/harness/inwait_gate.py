@@ -35,19 +35,20 @@ LAST_TAIL_ENTRY_S = ACTIVE_S - ARM_RESERVE_S - END_RESERVE_S        # tail arms:
 assert 0 < LAST_ARM_ENTRY_S < LAST_TAIL_ENTRY_S
 ENTRY_LIMIT_S = {name: globals()[name] for name, _ in table.ENTRY_LIMIT.values()}
 
-FIRST_ARM_S = 480
-COLD_FIRST_S = 246                                        # the run's first prefill arm (cold)
-WALL_S = {(1, 'solo'): 75, (1, 'live'): 147, (2, 'solo'): 128, (2, 'live'): 273}
+FIRST_ARM_S = 780                                        # build-3b's box: launch to the first prefill arm, 13-14 min
+COLD_FIRST_S = 60                                         # the run's first prefill arm (cold)
+WALL_S = {(1, 'solo'): 50, (1, 'live'): 52, (2, 'solo'): 95, (2, 'live'): 110}
 DECODE_WALL_S = 60
-BETWEEN_S = 150
-END_S = 600
+BETWEEN_S = 30
+END_S = 240
 SLOWER = 1.5
-PER_ARM_ALL_IN_MIN = 2.1                                  # the lead's basis (c1's box record)
+PER_ARM_ALL_IN_MIN = 2.1                                  # c1's old all-in basis, kept for the record
 
 
 def rows():
-    """Every arm in run order: the decode-only baselines, then the table."""
-    return [dict(d, entry_limit='LAST_ARM_ENTRY_S', band=1) for d in table.DECODE_ARMS] + table.arms()
+    """Every arm in run order: the exact-path smoke, the decode-only baselines, then the rest of the table."""
+    rows_ = table.arms()
+    return rows_[:1] + [dict(d, entry_limit='LAST_ARM_ENTRY_S', band=1) for d in table.DECODE_ARMS] + rows_[1:]
 
 
 def arm_wall(row, first=False):
@@ -88,9 +89,7 @@ EXPECTED_RUNTIME_S = {
     'worst_case_budget': BOX_BUDGET_S,
     'last_arm_entry_s': LAST_ARM_ENTRY_S,
     'last_tail_entry_s': LAST_TAIL_ENTRY_S,
-    'basis': 'estimate from c1\'s walls (lead, 2 Nov 16:40): first arm +480 s, the first prefill arm cold 246 s, band 1 solo 75 / '
-             'live 147 s, band 2 live 273 s, a decode-only arm 60 s, the lever arms as the base; the end 600 s, core FULL and grade 150 s inside it. '
-             'Lead\'s all-in basis: 7 arms x 2.1 min.',
+    'basis': "measured on build-3b's box (4 Nov, 12:08-12:33): 13-14 min to the first prefill arm, 47-52 s a band 1 arm, 3 min at the end; band 2 estimated at about twice band 1",
 }
 
 

@@ -35,26 +35,27 @@ ACTIONS = (('pause', ()), ('native_progress', ('mode',)), ('native_qsa_fused', (
            ('native_stage_local', ('local', 'overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor')), ('qualification_worker', ('worker_action', 'payload')),
            ('release_auto_arm', ()), ('resume', ()), ('status', ()))
 AXIS = ("alpha-next's C0 on/off names and c1's C1-on/off names in this record (over_c0_off, c0_decode_delta, vs_c1_off, memory_c0_on_vs_off, min_free_below_c0_off_mib, C1-on/C1-off table headings) name "
-        'ps1 (PREPARE in slices) against its matched ps0 (PREPARE whole), and pw (slices and the warm score block) against ps0 too; every arm is C1 defer, C0 local, attn-meta, L1 + L2, in-wait, early successor and fast slot mappings')
+        'cf (the fast CoW copy) against its matched ps1, and cap (the reserved cap) against ps1 too; every arm is C1 defer, C0 local, attn-meta, L1 + L2, in-wait, early successor, fast slot mappings and PREPARE in slices')
 _ROLE = 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on, early successor, fast slot mappings'
-OBSERVE_ROLE = {'ps0': _ROLE + ')', 'ps1': _ROLE + ', PREPARE in slices)', 'pw': _ROLE + ', PREPARE in slices, warm score block)'}
+_ROLE = _ROLE + ', PREPARE in slices'
+OBSERVE_ROLE = {'ps1': _ROLE + ')', 'cf': _ROLE + ', fast CoW copy)', 'sm': _ROLE + ', fast CoW copy; the exact-path smoke)', 'cap': _ROLE + ', reserved cap)'}
 NOT_COVERED = ('numerics: this queue runs no fixed-schedule check; these arms are speed reads, batch 8 against 2 x 4 changes batch composition so OUTSIDE on merged arms is expected and is not a defect, '
                'and the fixed-schedule check owed for C1 defer stays owed')
 BASIS = ('one engine, FLASH_ATTN_META_GDN_BATCH=1 FLASH_S5_LAZY_RECV=1 FLASH_S5_DECODE_MERGE=1 FLASH_S5_INWAIT=1 for the whole run, every prefill arm C1 defer with fused, group size 2, attn-meta and L1 + L2 '
-         'selected and in-wait on or off by typed control; one decode-only baseline first; band 1 at 65,445 tokens live over two counterbalanced rounds and solo once')
+         'selected and in-wait on or off by typed control; the exact-path smoke first, then one decode-only baseline; band 1 at 65,445 tokens live over two counterbalanced rounds and solo once; band 2 at 131,094 tokens, one pair on cf; one cap arm last')
 SCOPE = ("in-wait handoffs on compose-2's engine; selection, counters, crash, OOM and one in flight are gated; speed, decode, per-step thread time and memory are reads; "
          'not a release assessment and not a numerics result')
 IW_COUNTERS = ('direct_opens', 'direct_releases', 'polls_paced', 'refused_releases', 'refused_in_wait', 'early_begins')
 
 
 def table_view(sel=None):
-    """This table as alpha-next's code reads alpha_next_arms: the candidate axis is ps1 against ps0 (c0 'off' = ps0; c0 'on' = ps1). For one arm the label and selection
+    """This table as alpha-next's code reads alpha_next_arms: the candidate axis is cf against ps1 (c0 'off' = ps1; c0 'on' = cf). For one arm the label and selection
     carry ``sel`` whatever value alpha-next passes; the record keeps c0 'on'."""
     names = {k: getattr(T, k) for k in c1._TABLE_NAMES}
-    sel_of = dict({s: s for s in T.SELECTIONS}, off='ps0', on='ps1')
+    sel_of = dict({s: s for s in T.SELECTIONS}, off=T.OFF, on='cf')
 
     def axis(value):
-        return 'off' if value == 'ps0' else 'on'
+        return 'off' if value == T.OFF else 'on'
 
     def arms(part=None):
         return [dict(r, c0=axis(r['c1'])) for r in T.arms(part)]
@@ -78,7 +79,7 @@ def sb_bindings():
 
 # --- the arm --------------------------------------------------------------------------------------------
 
-RANK_LEVERS = ('slots_fast', 'prepare_slices', 'score_warm')
+RANK_LEVERS = ('slots_fast', 'prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap')
 
 
 def levers_into(client, attn, wanted, record):
@@ -94,9 +95,9 @@ def levers_into(client, attn, wanted, record):
 class _InwaitSelecting:
     """The arm's client with ``inwait`` on the stage command; the reply's value goes to the record, and the grade reads it."""
 
-    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False):
+    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False):
         self._client, self._inwait, self._record, self._next, self._attn = client, inwait, record, next_levers, attn
-        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm)
+        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap)
         self._raw, self._slots_sent = client if raw is None else raw, False
 
     def __getattr__(self, name):
@@ -123,7 +124,7 @@ def release_compose(row):
         run_inner = inner(size, local)
 
         def run(client, record, mode):
-            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm']), record, mode)
+            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap']), record, mode)
             if (record.get('attn_meta') or {}).get('select') is None:
                 raise ValueError('attn-meta-select-not-sent')
             if record.get('inwait') is None:
@@ -216,7 +217,9 @@ def slots_calls(select, end):
 def rank_lever_counters(record, row, end):
     """The build-3 levers' counters on the arm record, per rank; the grade and the read use them."""
     for name, wanted, fields in (('prepare_slices', row['prepare_slices'], ('sliced', 'yields', 'peek_missing')),
-                                 ('score_warm', row['score_warm'], ('allocs', 'flushes', 'rewarms', 'errors'))):
+                                 ('score_warm', row['score_warm'], ('allocs', 'flushes', 'rewarms', 'errors')),
+                                 ('cow_fast', row['cow_fast'], ('calls', 'pairs', 'fallbacks', 'rows', 'row_errors')),
+                                 ('reserved_cap', row['reserved_cap'], ('flushes',))):
         block = record.setdefault(name, dict(requested=wanted, select=None))
         block['counters'] = {field: lever_delta(block.get('select'), end, name, field) for field in fields}
 
@@ -318,6 +321,17 @@ def inwait_check(arms, want):
             missing.add(row['label'] + ':prepare-slices-selected-not-engaged')
         elif not row['prepare_slices'] and (any(sliced.values()) or any((yields or {}).values())):
             failures.add(row['label'] + ':prepare-slices-off-moved-its-counter')
+        cow = (rec.get('cow_fast') or {}).get('counters') or {}
+        calls, cow_rows = cow.get('calls'), cow.get('rows')
+        facts[row['label']].update(cow_fast=row['cow_fast'], cow=cow, reserved_cap=row['reserved_cap'], cap_flushes=((rec.get('reserved_cap') or {}).get('counters') or {}).get('flushes'))
+        if type(calls) is not dict or any(type(v) is not int for v in calls.values()):
+            missing.add(row['label'] + ':cow-fast-counters-absent')
+        elif row['cow_fast'] and not all(calls.values()):
+            missing.add(row['label'] + ':cow-fast-selected-not-engaged')
+        elif not row['cow_fast'] and any(calls.values()):
+            failures.add(row['label'] + ':cow-fast-off-moved-its-counter')
+        if type(cow_rows) is not dict or not all(type(v) is int and v for v in cow_rows.values()):
+            missing.add(row['label'] + ':cow-receipt-rows-absent')
         allocs, errors = warm.get('allocs'), warm.get('errors')
         if type(allocs) is not dict or any(type(v) is not int for v in allocs.values()):
             missing.add(row['label'] + ':score-warm-counters-absent')
@@ -342,30 +356,90 @@ _RULE_CHECK_ARM = rule.check_arm
 
 
 def check_arm_inwait(flushes, overlap):
-    """e3_c1_open_rows.check_arm, whose check 3 takes n's last apply F as the commit instant. In the wait a reply is applied and the next command sent at once and the commit comes at the next
-    tick, so a row sent after F can be open at the commit (READING-box-1 item 1). A not-carried flush passes here when n+1's first k rows hold every row sent before F, all the others were sent from
-    the wait, and all k are n+1's seqs and none of n's. Every other reason stands."""
+    """e3_c1_open_rows.check_arm's boundary checks over the commit boundary the engine recorded (review section 7), not n's last apply:
+    a flush with open rows names commit_ns and open_seqs. Every named row must be a successor's, in n+1's line, sent at or before the commit
+    and not applied before it; and n+1's line holds no other row sent before the commit. The successor and last-line reasons stand."""
     out = _RULE_CHECK_ARM(flushes, overlap)
     ordered = sorted(flushes, key=lambda f: f.get('line') or 0)
     index = {f.get('line'): i for i, f in enumerate(ordered)}
     for cell in out['flagged']:
-        if 'c1-open-rows-not-carried' not in cell['reasons'] or index[cell['line']] + 1 >= len(ordered):
+        # Both are check 3's inference; the record below decides them.
+        cell['reasons'] = [r for r in cell['reasons'] if r not in ('c1-open-rows-not-carried', 'c1-open-row-not-successor')]
+        if cell['reasons'] or index[cell['line']] + 1 >= len(ordered):
             continue
         flush, nxt = ordered[index[cell['line']]], ordered[index[cell['line']] + 1]
-        applies = [r['t_apply'] for r in (flush.get('rows') or {}).get('n', []) if type(r.get('t_apply')) is int]
-        if not applies:
-            continue
-        f_ns, k = max(applies), cell['open_rows']
-        rows = sorted((r for r in (nxt.get('rows') or {}).get('n', []) if type(r.get('t_submit')) is int), key=lambda r: r['t_submit'])
-        first, before = rows[:k], [r for r in rows if r['t_submit'] < f_ns]
-        own = (overlap.get(cell['txn']) or (frozenset(), None))[0]
-        successor = (overlap.get(cell['next_txn']) or (frozenset(), None))[0]
-        if (len(first) == k and len(before) <= k and all(r.get('origin') == 'wait' for r in first[len(before):])
-                and all(r.get('seq') in successor and r.get('seq') not in own for r in first)):
-            cell['reasons'].remove('c1-open-rows-not-carried')
-            cell.update(carried_seqs=[r.get('seq') for r in first], carried_from_wait=k - len(before))
+        cell.update(_reconcile(flush, nxt, cell, overlap))
     kept = {'c1-open-rows-unreadable'} & set(out['reasons'])
     return dict(out, reasons=sorted(kept.union(*[c['reasons'] for c in out['flagged']])))
+
+
+def _reconcile(flush, nxt, cell, overlap):
+    identity = flush.get('identity') or {}
+    commit_ns, named, k = identity.get('commit_ns'), identity.get('open_seqs'), cell['open_rows']
+    if type(commit_ns) is not int or type(named) is not list:
+        return dict(reasons=['c1-commit-boundary-absent'])
+    reasons = []
+    # Times on the line are in whole microseconds below its base: a row at the boundary may read up to 1 us off it.
+    rows = {r.get('seq'): r for r in (nxt.get('rows') or {}).get('n', [])}
+    if len(named) != k or any(seq not in rows for seq in named):
+        reasons.append('c1-open-rows-not-carried')
+    own, successor = (overlap.get(cell['txn']) or (frozenset(), None))[0], (overlap.get(cell['next_txn']) or (frozenset(), None))[0]
+    if any(seq not in successor or seq in own for seq in named):
+        reasons.append('c1-open-row-not-successor')
+    for seq in named:
+        row = rows.get(seq) or {}
+        if type(row.get('t_submit')) is int and row['t_submit'] > commit_ns + 1000:
+            reasons.append('c1-open-row-sent-after-the-commit')
+        if type(row.get('t_apply')) is int and row['t_apply'] < commit_ns - 1000:
+            reasons.append('c1-open-row-applied-before-the-commit')
+    extra = [seq for seq, row in rows.items() if seq not in named and type(row.get('t_submit')) is int and row['t_submit'] < commit_ns - 1000]
+    if extra:
+        reasons.append('c1-row-out-at-the-commit-not-recorded')
+    return dict(reasons=sorted(set(reasons)), carried_seqs=list(named), commit_ns=commit_ns)
+
+
+def commit_boundary_read(flushes_by_arm):
+    """Per arm: flushes, how many name the boundary, and rows out at it; a read."""
+    out = {}
+    for label, flushes in flushes_by_arm.items():
+        idents = [f.get('identity') or {} for f in flushes]
+        out[label] = dict(flushes=len(idents), recorded=sum(type(i.get('commit_ns')) is int for i in idents),
+                          open_rows=sum(i.get('open_rows') or 0 for i in idents), max_open=max((i.get('open_rows') or 0 for i in idents), default=0))
+    return out
+
+
+# --- the exact-path smoke (review section 6) ------------------------------------------------------------------
+
+def smoke_check(rec, row=None):
+    """Arm 1's facts: real request shape, real control dispatch, positive native engagement, one complete observation. (ok, reasons); the queue aborts the table on not ok."""
+    row = row or T.by_label()[T.SMOKE_ARM]
+    if not isinstance(rec, dict):
+        return False, ['smoke-record-unreadable']
+    reasons = []
+    if rec.get('label') != row['label'] or rec.get('complete') is not True or rec.get('reasons'):
+        reasons.append('smoke-arm-not-complete')
+    outputs = rec.get('outputs') or {}
+    if not (outputs.get('fresh') and outputs.get('append') and outputs.get('standing')):
+        reasons.append('smoke-request-shape-not-observed')
+    if rec.get('generation_requests_expected') != 10:
+        reasons.append('smoke-request-shape-differs')
+    if (rec.get('inwait') or {}).get('acknowledged') is not row['inwait'] or (rec.get('inwait') or {}).get('early_acknowledged') is not row['next_levers']:
+        reasons.append('smoke-control-not-acknowledged')
+    if (rec.get('attn_meta') or {}).get('select') is None:
+        reasons.append('smoke-select-not-sent')
+    delta, chunks = rec.get('stage_delta') or {}, (rec.get('progress_delta') or {}).get('chunks')
+    if type(chunks) is not int or chunks < 1 or (rec.get('progress_delta') or {}).get('line_errors'):
+        reasons.append('smoke-no-native-chunks')
+    if not delta.get('step_iw_applied'):
+        reasons.append('smoke-in-wait-not-engaged')
+    if not delta.get('step_iw_early_begins'):
+        reasons.append('smoke-early-successor-not-engaged')
+    for name, field in (('slots_fast', None), ('prepare_slices', 'sliced'), ('cow_fast', 'calls'), ('cow_fast', 'rows')):
+        block = rec.get(name) or {}
+        values = block.get('calls') if field is None else (block.get('counters') or {}).get(field)
+        if type(values) is not dict or len(values) != 4 or not all(type(v) is int and v > 0 for v in values.values()):
+            reasons.append('smoke-%s-not-engaged-on-every-rank' % (field or name).replace('_', '-'))
+    return not reasons, sorted(set(reasons))
 
 
 # --- the reads --------------------------------------------------------------------------------------------
@@ -402,11 +476,11 @@ def compose_read(result, decode_records, attn):
 
     def cell_of(sel, cohort):
         return medians.get('%s band 1 %s' % (sel, cohort)) or {}
-    pair = dict(live_on_over_off=_ratio(cell_of('ps1', 'live').get('prefill_tok_s'), cell_of('ps0', 'live').get('prefill_tok_s')),
-                solo_on_over_off=_ratio(cell_of('ps1', 'solo').get('prefill_tok_s'), cell_of('ps0', 'solo').get('prefill_tok_s')),
-                decode_vs_fixed_on=cell_of('ps1', 'live').get('decode_vs_fixed_reference'), decode_vs_fixed_off=cell_of('ps0', 'live').get('decode_vs_fixed_reference'),
-                live_warm_over_slices=_ratio(cell_of('pw', 'live').get('prefill_tok_s'), cell_of('ps1', 'live').get('prefill_tok_s')),
-                decode_vs_fixed_warm=cell_of('pw', 'live').get('decode_vs_fixed_reference'))
+    pair = dict(live_on_over_off=_ratio(cell_of('cf', 'live').get('prefill_tok_s'), cell_of(T.OFF, 'live').get('prefill_tok_s')),
+                solo_on_over_off=_ratio(cell_of('cf', 'solo').get('prefill_tok_s'), cell_of(T.OFF, 'solo').get('prefill_tok_s')),
+                decode_vs_fixed_on=cell_of('cf', 'live').get('decode_vs_fixed_reference'), decode_vs_fixed_off=cell_of(T.OFF, 'live').get('decode_vs_fixed_reference'),
+                live_cap_over_off=_ratio(cell_of('cap', 'live').get('prefill_tok_s'), cell_of(T.OFF, 'live').get('prefill_tok_s')),
+                decode_vs_fixed_cap=cell_of('cap', 'live').get('decode_vs_fixed_reference'))
     return dict(is_gate=False, reference_arm=T.REFERENCE_ARM, fixed_reference_tok_s=reference, decode_only={k: v for k, v in rate.items()}, arms=arms, cells=medians, pair=pair)
 
 
@@ -482,13 +556,16 @@ def main(argv=None):
     r.add_argument('--model', required=True)
     r.add_argument('--run-id', required=True)
     r.add_argument('--epoch', type=int, required=True)
-    r.add_argument('--c1', choices=T.SELECTIONS, required=True, help="this arm's selection: ps0 or ps1; C1 defer, attn-meta and L1 + L2 in every arm")
+    r.add_argument('--c1', choices=T.SELECTIONS, required=True, help="this arm's selection; C1 defer, attn-meta and L1 + L2 in every arm")
     r.add_argument('--size', type=int, choices=T.SIZES, required=True)
     r.add_argument('--cohort', choices=progress.COHORTS, required=True)
     r.add_argument('--index', type=int, choices=T.INDEXES, required=True)
     r.add_argument('--workload', required=True)
     r.add_argument('--control-timeout-s', type=float, default=120.0)
     r.add_argument('--out', required=True)
+    k = sub.add_parser('smoke', help='the exact-path smoke: 0 engaged, 2 not (the queue aborts the table)')
+    k.add_argument('--arm', required=True)
+    k.add_argument('--out', required=True)
     d = sub.add_parser('decode-arm')
     for flag in ('--url', '--model', '--run-id', '--workload', '--out'):
         d.add_argument(flag, required=True)
@@ -512,6 +589,12 @@ def main(argv=None):
         return run_arm(a)
     if a.action == 'decode-arm':
         return am.run_decode_arm(a)
+    if a.action == 'smoke':
+        ok, reasons = smoke_check(base.load(a.arm))
+        with open(a.out, 'x') as handle:
+            json.dump(dict(schema='inwait-smoke/1', engaged=ok, reasons=reasons), handle, sort_keys=True)
+        print('INWAIT_SMOKE %s %s' % ('ENGAGED' if ok else 'NOT_ENGAGED', ','.join(reasons)))
+        return 0 if ok else 2
     arms = [base.load(x) or {'label': None, 'complete': False, 'reasons': ['arm-artifact-unreadable:' + Path(x).name]} for x in a.arm]
     result = grade(arms, ap.load_pairs(a.ingress), ap.load_pairs(a.check), a.log, ap.load_pairs(a.watch), part='core' if a.action == 'grade' else 'all')
     with open(a.out, 'x') as handle:

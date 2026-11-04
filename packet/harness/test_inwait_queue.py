@@ -8,7 +8,7 @@ Classes:
 * NameChecks: every QNAME test in the three runs/ scripts, extracted and executed in bash with QNAME set to the settings' real default (the runner's name, q18a-inwait), passes;
   the declaration's request dir, the draft's RUN_ID and every ``$H/runs/...`` and ``python3 "$H/X.py"`` name resolve to files in this tree; nothing executable names c1's queue.
 * Budget: the gate's limits are relative (no clock import), every arm enters at the walls and at 1.5x the walls (a stated property of the 7,500 s budget).
-* ArmLoop: the derived body: the decode-only baselines, then the core arms in table order with --c1 ps0|ps1 and the band's workload, the core grade, no tail, the read. An off-arm leak in a record makes the core grade FAIL and the queue count it.
+* ArmLoop: the derived body: the exact-path smoke (its failure stops the table), the decode-only baselines, then the core arms in table order with the selection and the band's workload, the core grade, no tail, the read. An off-arm leak in a record makes the core grade FAIL and the queue count it.
 * QueueH: the health-scoped death scan (the lead's rule, byte for byte as returning-append's forwarded files): the draft calls _h, never the old.
 * QueueArgparse: every python call of the texts parses with its real parser; unknown or undeclared options are refused (controls).
 """
@@ -47,6 +47,7 @@ SETTINGS = 'harness/runs/q18a_inwait_settings.sh'
 DECLARE = 'harness/runs/q18a_inwait_declare.sh'
 SCRIPTS = (DRAFT, SETTINGS, DECLARE)
 CORE = T.labels('core')
+TAIL = T.labels('tail')
 DECODE = [d['label'] for d in T.DECODE_ARMS]
 
 
@@ -73,8 +74,10 @@ class Derivation(unittest.TestCase):
         self.assertNotIn('e3_stage1_step_box.py', body)
         self.assertIn('  for _label in decode-am1; do\n    inwait_decode_arm "$_label"\n  done\n', body)
         self.assertLess(body.index('inwait_decode_arm "$_label"'), body.index('for _arm in core:'))
-        self.assertIn('  for _label in ; do\n', body)      # no tail
-        self.assertIn('for _arm in ' + ' '.join('core:' + x for x in CORE) + '; do', body)
+        self.assertLess(body.index('  inwait_smoke ' + T.SMOKE_ARM + '\n'), body.index('inwait_decode_arm "$_label"'))
+        self.assertIn('  for _label in ' + ' '.join(TAIL) + '; do\n    alpha_next_arm tail', body)
+        self.assertLess(body.index('" grade '), body.index('alpha_next_arm tail "$_label"'), 'the cap arm after the core grade')
+        self.assertIn('for _arm in ' + ' '.join('core:' + x for x in CORE[1:]) + '; do', body)
 
     def test_the_switch_in_extra_env_and_asserted(self):
         settings = (ROOT / SETTINGS).read_text()
@@ -160,7 +163,7 @@ class Budget(unittest.TestCase):
                    for a in n.names} | {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         self.assertFalse(imports & {'time', 'datetime', 'calendar'})
         exp = gate.EXPECTED_RUNTIME_S
-        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (10, 1, 9, 0))
+        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (11, 1, 9, 1))
         self.assertEqual(exp['nominal']['not_run'], [])
         self.assertLess(gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S)
         self.assertTrue(gate.arm_fits(gate.LAST_ARM_ENTRY_S, 'core'))
@@ -170,7 +173,7 @@ class Budget(unittest.TestCase):
 
     def test_what_the_budget_buys_at_1_5x_the_walls(self):
         self.assertEqual(gate.BOX_BUDGET_S, 8700)
-        self.assertLessEqual(gate.EXPECTED_RUNTIME_S['nominal']['total_min'], 70)
+        self.assertLessEqual(gate.EXPECTED_RUNTIME_S['nominal']['total_min'], 40)
         self.assertEqual(gate.EXPECTED_RUNTIME_S['slower']['not_run'], [])
 
     def test_the_tool_prints_the_table(self):
@@ -191,6 +194,10 @@ if sys.argv[1] in ('grade', 'read'):
     raise SystemExit(real.main(sys.argv[1:]))
 a = sys.argv
 out = a[a.index('--out') + 1]
+if a[1] == 'smoke':
+    with open(os.environ['CALLS'], 'a') as f:
+        f.write(json.dumps(dict(script='box', action='smoke')) + '\n')
+    raise SystemExit(int(os.environ['SMOKE_RC']))
 if a[1] == 'decode-arm':
     label = a[a.index('--label') + 1]
     with open(os.environ['CALLS'], 'a') as f:
@@ -224,8 +231,9 @@ class ArmLoop(unittest.TestCase):
 
     tool = tap.ArmLoop.tool
 
-    def run_loop(self, edit=None, timeout=420):
+    def run_loop(self, edit=None, timeout=420, smoke_rc=0):
         emit, arms = tbox.full_run()
+        arms += [a for a in tbox.run_of(None)[1] if a['label'] in TAIL]      # the stub arm's record; no lines here, so the read cannot be whole
         for a in arms:
             a.update((edit or {}).get(a['label'], {}))
             (self.arms / ('arm-%s.json' % a['label'])).write_text(json.dumps(a))
@@ -240,7 +248,7 @@ class ArmLoop(unittest.TestCase):
         path = self.root / 'loop.sh'
         path.write_text('\n'.join(script) + '\n')
         env = {k: v for k, v in os.environ.items() if k != 'HARNESS_DIR'}
-        env.update(PATH='%s:%s' % (self.bin, os.environ['PATH']), Q=str(self.q), CALLS=str(self.root / 'calls.jsonl'), ARMS=str(self.arms),
+        env.update(SMOKE_RC=str(smoke_rc), PATH='%s:%s' % (self.bin, os.environ['PATH']), Q=str(self.q), CALLS=str(self.root / 'calls.jsonl'), ARMS=str(self.arms),
                    REAL_HARNESS=str(HERE), DEATH_LINE=tap.DEATH_LINE, PYTHONDONTWRITEBYTECODE='1')
         proc = subprocess.Popen(['bash', str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
         try:
@@ -257,7 +265,8 @@ class ArmLoop(unittest.TestCase):
         out, err, calls, steps = self.run_loop()
         self.assertIn('END FAILS=0 INCS=0 CRASHED=0', out, (out[-2000:], err[-1500:]))
         box = [c for c in calls if c['script'] == 'box']
-        self.assertEqual([c.get('label') or c['action'] for c in box], DECODE + CORE + ['grade', 'read'])
+        self.assertEqual([c.get('label') or c['action'] for c in box], CORE[:1] + ['smoke'] + DECODE + CORE[1:] + ['grade'] + TAIL + ['read'])
+        self.assertEqual(steps['smoke'], 'PASS')
         rows = T.by_label()
         self.assertEqual([c['attn'] for c in box if c['action'] == 'decode-arm'], ['on'])
         for c in box:
@@ -266,10 +275,11 @@ class ArmLoop(unittest.TestCase):
                 self.assertEqual(c['c1'], row['c1'], c['label'])
                 self.assertEqual(c['workload'], tq.ap.BAND_WORKLOAD[row['band']] + '.json', c['label'])
         ingress = [c['out'] for c in calls if c['script'] == 'checks' and c['action'] == 'ingress']
-        self.assertEqual(ingress, ['ingress-%s.json' % x for x in DECODE + CORE])
+        self.assertEqual(ingress, ['ingress-%s.json' % x for x in CORE[:1] + DECODE + CORE[1:] + TAIL])
         for name in DECODE + CORE:
             self.assertEqual(steps['arm-' + name], 'PASS', name)
-        self.assertEqual((steps['inwait'], steps['inwait-read']), ('PASS', 'READ-PASS'))
+        # The stub's cap arm wrote a record and no engine lines: the core grade passes, the read says it cannot be whole. Whole read: test_inwait_box.
+        self.assertEqual((steps['inwait'], steps['inwait-read']), ('PASS', 'READ-INCONCLUSIVE'))
         grade = json.loads((self.q / 'inwait-grade.json').read_text())
         self.assertEqual((grade['schema'], grade['verdict'], grade['missing']), ('inwait-grade/1', 'PASS', []))
         self.assertEqual(sorted(grade['step_gate']['arms']), sorted(CORE))
@@ -281,13 +291,24 @@ class ArmLoop(unittest.TestCase):
 
     def test_a_leak_fails_the_core_grade_and_counts(self):
         emit, arms = tbox.run_of()
-        arm = next(a for a in arms if a['label'] == 'ps0.g2-live-1')
-        arm['prepare_slices']['counters']['sliced']['0'] = 2
-        out, err, calls, steps = self.run_loop(edit={'ps0.g2-live-1': dict(prepare_slices=arm['prepare_slices'])})
+        arm = next(a for a in arms if a['label'] == 'ps1.g2-live-1')
+        arm['cow_fast']['counters']['calls']['0'] = 2
+        out, err, calls, steps = self.run_loop(edit={'ps1.g2-live-1': dict(cow_fast=arm['cow_fast'])})
         self.assertEqual(steps['inwait'], 'FAIL', out[-1500:])
         self.assertIn('END FAILS=1', out)
         grade = json.loads((self.q / 'inwait-grade.json').read_text())
-        self.assertIn('ps0.g2-live-1:prepare-slices-off-moved-its-counter', grade['failures'])
+        self.assertIn('ps1.g2-live-1:cow-fast-off-moved-its-counter', grade['failures'])
+
+    def test_a_smoke_that_does_not_engage_stops_the_table(self):
+        out, err, calls, steps = self.run_loop(smoke_rc=2)
+        self.assertEqual(steps['smoke'], 'INCONCLUSIVE', out[-1500:])
+        box = [c for c in calls if c['script'] == 'box']
+        self.assertEqual([c.get('label') or c['action'] for c in box if c['action'] in ('arm', 'decode-arm')], CORE[:1], 'the smoke arm alone ran')
+        for name in DECODE + CORE[1:]:
+            self.assertEqual(steps['arm-' + name], 'INCONCLUSIVE', name)
+        for name in TAIL:
+            self.assertEqual(steps['arm-' + name], 'READ-INCONCLUSIVE', name)
+        self.assertIn('NOT_RUN: the exact-path smoke did not engage', out)
 
 
 ARGPARSE_VALUES = dict(tq.ARGPARSE_VALUES, QNAME='q18a-inwait', RUN_ID='q18a-inwait-fixture', _label='ps1.g2-live-1',
@@ -368,7 +389,9 @@ class QueueArgparse(unittest.TestCase):
                           'alpha_next_stop_race.py': 'alpha_next_stop_race_h.py'}.get(s, s)
         decode = [c for c in calls if c[1] == 'e3_inwait_box.py' and c[2].split()[0] == 'decode-arm']
         self.assertEqual(len(decode), 1)
-        added = sorted(c[1] for c in calls if c not in decode and c[2].split()[0] not in ('ingress', 'full-idle'))
+        smoke = [c for c in calls if c[1] == 'e3_inwait_box.py' and c[2].split()[0] == 'smoke']
+        self.assertEqual(len(smoke), 1)
+        added = sorted(c[1] for c in calls if c not in decode and c not in smoke and c[2].split()[0] not in ('ingress', 'full-idle'))
         self.assertEqual(added, sorted(swap(c[1]) for c in parent if c[2].split()[0] not in ('ingress', 'full-idle')))
         self.assertNotIn('e3_alpha_next_c1_box.py', {c[1] for c in calls})
         setcfg = next(p for p in (ROOT / 'deploy/setcfg.py', HERE / 'setcfg.reference.py') if p.is_file())

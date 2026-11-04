@@ -8,6 +8,8 @@
   "test_inwait_engine",
   "test_inwait_slots",
   "test_inwait_slices",
+  "test_inwait_cow",
+  "test_inwait_early_alloc",
   "test_inwait_router"
  ],
  "refusal_tests": [],

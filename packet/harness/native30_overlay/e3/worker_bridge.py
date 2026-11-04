@@ -814,6 +814,24 @@ class NativeWorkerBridge:
         except Exception:
             self.memory_receipt_errors += 1
 
+    def _cow_receipt(self, transaction):
+        """inwait build-4: this chunk's zero and CoW times, one line; the lane is drained here. A failure is counted, never raised."""
+        if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+            return
+        import lane_chunk
+        try:
+            row = lane_chunk.take_cow_row()
+            if row is None:
+                return
+            row = lane_chunk.cow_row_times(row)
+            import logging
+            from native_measurement import emit_receipt_kv
+            emit_receipt_kv('flash-s5 cow rank=%d txn_seq=%d chunk=%d-%d %s' % (
+                self.rank, transaction.txn_seq, transaction.chunk_start, transaction.chunk_end,
+                ' '.join('%s=%s' % (key, row[key]) for key in sorted(row))), logging.getLogger(__name__))
+        except Exception:
+            lane_chunk.COW_FAST['row_errors'] += 1
+
     def _peak_open(self):
         """alpha-next: reset the allocator peak at the chunk's open; a failure is counted (peak_receipt_errors), never raised."""
         try:
@@ -879,6 +897,7 @@ class NativeWorkerBridge:
             if self._memory_receipts:
                 self._memory_receipt('released', transaction)
                 self._peak_receipt(transaction)
+                self._cow_receipt(transaction)
         if not self._runtime_released:
             runtime = getattr(self.server, 'runtime', None)
             release = getattr(runtime, 'release', None)

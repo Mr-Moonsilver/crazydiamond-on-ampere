@@ -74,8 +74,11 @@ class Base(dctl.RouterBase):
         patcher = mock.patch.object(lc, '_flush_allocator')
         self.flush = patcher.start()
         self.addCleanup(patcher.stop)
-        saved = dict(lc.PREPARE_SLICES), dict(lc.SCORE_WARM)
-        self.addCleanup(lambda: (lc.PREPARE_SLICES.update(saved[0]), lc.SCORE_WARM.update(saved[1])))
+        cap = mock.patch.object(lc, 'select_reserved_cap', lambda on: (lc.RESERVED_CAP.update(selected=on), dict(lc.RESERVED_CAP))[1])
+        cap.start()
+        self.addCleanup(cap.stop)
+        saved = dict(lc.PREPARE_SLICES), dict(lc.SCORE_WARM), dict(lc.COW_FAST), dict(lc.RESERVED_CAP)
+        self.addCleanup(lambda: (lc.PREPARE_SLICES.update(saved[0]), lc.SCORE_WARM.update(saved[1]), lc.COW_FAST.update(saved[2]), lc.RESERVED_CAP.update(saved[3])))
         self.env_box = settings_env()
         patch = mock.patch.dict(os.environ, dict(self.env_box, VLLM_API_KEY=held.KEY))
         patch.start()
@@ -124,8 +127,8 @@ class Exposure(Base):
                     if action == 'qualification_worker':
                         out[am.SELECT] = worker.call(am.SELECT, {'on': True})
                         out['slots_fast'] = worker.call(am.SELECT, {'on': True, 'slots_fast': False})
-                        out['rank_levers'] = worker.call(am.SELECT, {'on': True, 'slots_fast': True, 'prepare_slices': True, 'score_warm': True})
-                        out['rank_levers_off'] = worker.call(am.SELECT, {'on': True, 'slots_fast': False, 'prepare_slices': False, 'score_warm': False})
+                        out['rank_levers'] = worker.call(am.SELECT, {'on': True, 'slots_fast': True, 'prepare_slices': True, 'score_warm': True, 'cow_fast': True, 'reserved_cap': True})
+                        out['rank_levers_off'] = worker.call(am.SELECT, {'on': True, 'slots_fast': False, 'prepare_slices': False, 'score_warm': False, 'cow_fast': False, 'reserved_cap': False})
                         out[am.READ] = worker.call(am.READ, {})
                     else:
                         out[action] = client.call(action, **{name: SAMPLE[name] for name in fields})
@@ -135,7 +138,7 @@ class Exposure(Base):
         out = await self.off_loop(smoke)
         self.assertEqual({k: v for k, v in out.items() if type(v) is str}, {})
         self.assertEqual(set(out), {a for a, _f in box.ACTIONS} - {'qualification_worker'} | {am.SELECT, am.READ, 'slots_fast', 'rank_levers', 'rank_levers_off'})
-        for name in ('prepare_slices', 'score_warm'):
+        for name in ('prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap'):
             self.assertEqual({r['after'][name]['selected'] for r in out['rank_levers'].values()}, {True}, name)
             self.assertEqual({r['after'][name]['selected'] for r in out['rank_levers_off'].values()}, {False}, name)
 
@@ -158,7 +161,7 @@ class BoxCalls(Base):
             client.resume()
             args = types.SimpleNamespace(url=self.bridge.url, run_id=RUN, epoch=client.epoch, control_timeout_s=60)
             return record, None, status, am.end_read(args)
-        for sel in ('ps1', 'ps0', 'ps1'):
+        for sel in ('ps1', 'cf', 'cap', 'ps1'):
             row = rows[sel]
             with self.subTest(sel=sel):
                 record, exc, status, end = await self.off_loop(lambda row=row: one(row))
@@ -172,7 +175,7 @@ class BoxCalls(Base):
                 self.assertEqual({r['after']['slots_fast']['selected'] for r in record['slots_fast']['select'].values()}, {row['next_levers']})
                 self.assertEqual({r['counters']['slots_fast']['selected'] for r in end['read'].values()}, {row['next_levers']})
                 self.assertEqual(box.slots_calls(record['slots_fast']['select'], end['read']), dict.fromkeys(('0', '1', '2', '3'), 0))
-                for name in ('prepare_slices', 'score_warm'):
+                for name in ('prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap'):
                     self.assertEqual({r['after'][name]['selected'] for r in record[name]['select'].values()}, {row[name]}, name)
                     self.assertEqual({r['counters'][name]['selected'] for r in end['read'].values()}, {row[name]}, name)
                 view = box.stage_view(status)

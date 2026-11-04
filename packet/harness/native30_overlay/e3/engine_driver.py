@@ -935,6 +935,7 @@ class NativeProgress:
     never changed. Receipts are host CLOCK_MONOTONIC stamps, one line per chunk.
     """
     WAIT_SEND_LIMIT = 8
+    OPEN_SEQS_CAP = 32
     DIRECT_KINDS = frozenset(('segment', 'profile', 'poll'))
     MODES = ('current', 'burst')
     # Held-g L3, the per-arm ``idle`` selection: ``step`` is held-f's engine
@@ -1038,8 +1039,10 @@ class NativeProgress:
                 row[PROGRESS_N['t_apply']] = self.clock_ns()
                 self.trace.record('n', *row)
             # Alpha-next PLAN 2: one atomic write per part through the process receipt writer.
+            # inwait build-4: the boundary itself, and the commands still out at it (in flight, so few; capped anyway).
             emit_receipt_lines(self.trace.lines(**(self.identity or {}), mode=self.mode,
-                                                open_rows=len(self.native)), logger)
+                                                open_rows=len(self.native), commit_ns=self.clock_ns(),
+                                                open_seqs=sorted(self.native)[:self.OPEN_SEQS_CAP]), logger)
         except Exception:
             self.counters['line_errors'] += 1
         try:

@@ -29,6 +29,7 @@ from contextlib import contextmanager
 import copy
 from dataclasses import dataclass
 import enum
+import time
 
 from e3_types import E3ContractError, TransactionId
 
@@ -89,6 +90,114 @@ def score_warm_bytes(prompt_end):
     width = -(-(-(-prompt_end // SCORE_COMPRESS)) // 64) * 64
     need = SCORE_ROWS * max(64, width) * 4 + SCORE_WARM_SLACK_BYTES
     return -(-need // SCORE_WARM_STEP_BYTES) * SCORE_WARM_STEP_BYTES
+
+
+# inwait build-4 (DESIGN-4): per rank, selected the same way. The partial-tail CoW copy as one slice copy per block, with no
+# advanced index and no temporary; and an allocator cap that keeps a declared amount of the device free. One row per chunk
+# that zeroes or copies pages times both, on or off, so the box names what the residue chunk's PREPARE does on each TP rank.
+COW_FAST = dict(selected=False, calls=0, pairs=0, fallbacks=0, rows=0, row_errors=0)
+RESERVED_CAP = dict(selected=False, cap_bytes=0, fraction=0.0, flushes=0)
+RESERVED_CAP_FREE_BYTES = 512 * 1024 * 1024
+_COW_ROW = [None]
+
+
+def select_cow_fast(on):
+    if type(on) is not bool:
+        raise LaneChunkError('cow-fast-not-bool')
+    COW_FAST['selected'] = on
+    return dict(COW_FAST)
+
+
+def reserved_cap_bytes(total, free, reserved, keep=RESERVED_CAP_FREE_BYTES):
+    """The most this process may reserve so that ``keep`` stays free: what is outside the allocator is read, not assumed."""
+    other = total - free - reserved
+    cap = total - other - keep
+    if other < 0 or cap <= 0:
+        raise LaneChunkError('reserved-cap-out-of-range')
+    return cap
+
+
+def select_reserved_cap(on):
+    """Off to on, while paused idle: flush the cache, read what is outside the allocator, cap reserved. On to off: no cap."""
+    if type(on) is not bool:
+        raise LaneChunkError('reserved-cap-not-bool')
+    if on is not RESERVED_CAP['selected']:
+        import torch
+        device = torch.cuda.current_device()
+        if on:
+            _flush_allocator()
+            free, total = torch.cuda.mem_get_info(device)
+            cap = reserved_cap_bytes(total, free, torch.cuda.memory_reserved(device))
+            fraction = cap / total
+            torch.cuda.set_per_process_memory_fraction(fraction, device)
+            RESERVED_CAP.update(cap_bytes=cap, fraction=fraction, flushes=RESERVED_CAP['flushes'] + 1)
+        else:
+            torch.cuda.set_per_process_memory_fraction(1.0, device)
+            RESERVED_CAP.update(cap_bytes=0, fraction=0.0)
+    RESERVED_CAP['selected'] = on
+    return dict(RESERVED_CAP)
+
+
+def take_cow_row():
+    """This chunk's row for the worker's release line, once; None when it zeroed and copied nothing."""
+    row, _COW_ROW[0] = _COW_ROW[0], None
+    return row
+
+
+def cow_row_times(row):
+    """Device and host microseconds from a row, after its chunk drained. An unfinished pair reads None; never waits."""
+    marks = row.pop('marks', None) or ()
+    out = dict(zero_dev_us=None, copy_dev_us=None)
+    if len(marks) == 3 and all(mark is not None for mark in marks) and all(bool(mark.query()) for mark in marks):
+        out.update(zero_dev_us=int(round(marks[0].elapsed_time(marks[1]) * 1e3)),
+                   copy_dev_us=int(round(marks[1].elapsed_time(marks[2]) * 1e3)))
+    row.update(out)
+    return row
+
+
+def _blocks_of(cache, num_blocks, storages):
+    """Stock ``copy_kv_cache_blocks_inplace``'s view of one cache with dim 0 in scheduler blocks; None when the storage was copied."""
+    import torch
+    kernel_blocks, remainder = divmod(cache.shape[0], num_blocks)
+    if remainder:
+        raise LaneChunkError('kernel blocks not divisible by scheduler blocks')
+    storage = cache.untyped_storage()
+    stride = cache.stride(0) * cache.element_size() * kernel_blocks
+    if storage.nbytes() == num_blocks * stride:
+        key = (cache.device, storage.data_ptr())
+        if key in storages:
+            return None
+        storages.add(key)
+        blocks = torch.empty(0, dtype=torch.uint8, device=cache.device)
+        blocks.set_(storage)
+        return blocks.view(num_blocks, -1)
+    return cache.unflatten(0, (num_blocks, kernel_blocks))
+
+
+def copy_blocks_fast(caches, num_blocks, pairs):
+    """The same bytes as stock's ``blocks[dst] = blocks[src]``, one ``copy_`` per block per distinct view, on the current stream.
+
+    Stock reads every source before it writes. Pairs here run in order, so a pair list where order could matter goes to stock:
+    returns None, nothing copied. Else {'views': distinct views copied, 'bytes': bytes copied}.
+    """
+    sources, targets = [src for src, _ in pairs], [dst for _, dst in pairs]
+    if len(set(targets)) != len(targets) or set(sources) & set(targets):
+        return None
+    seen, storages, views, size = set(), set(), 0, 0
+    for cache in caches:
+        key = (cache.device, cache.data_ptr())
+        if key in seen:
+            continue
+        seen.add(key)
+        blocks = _blocks_of(cache, num_blocks, storages)
+        if blocks is None:
+            continue
+        views += 1
+        for src, dst in pairs:
+            target = blocks[dst]
+            target.copy_(blocks[src], non_blocking=True)
+            size += target.numel() * target.element_size()
+    return dict(views=views, bytes=size)
 
 
 MAX_NATIVE_BUILDER_BYTES = 256 * 1024 * 1024
@@ -319,6 +428,10 @@ class ChunkAdmission:
                 f'state_epoch={self.state_epoch})')
 
 
+def _no_mark():
+    return None
+
+
 class Ports:
     """Pinned entry points the chunk needs; see ``PinnedPorts.load`` for the real ones."""
 
@@ -364,7 +477,14 @@ class PinnedPorts:
                 idx_mapping, state_idx, num_computed, query_start_loc, accepted, src_col, src_off,
                 num_reqs, BLOCK_SIZE=block, MAMBA_BLOCK_SIZE=block_size)
 
-        return Ports(InputBatch=InputBatch, BatchDescriptor=BatchDescriptor,
+        def cow_mark():
+            # One timing event on this scope's stream (the prefill stream); read at release.
+            import torch
+            event = torch.cuda.Event(enable_timing=True)
+            event.record()
+            return event
+
+        return Ports(InputBatch=InputBatch, BatchDescriptor=BatchDescriptor, cow_mark=cow_mark,
                      MambaHybridAttnMetadata=MambaHybridAttnMetadata,
                      build_attn_metadata=build_attn_metadata,
                      build_slot_mappings_by_layer=build_slot_mappings_by_layer,
@@ -515,18 +635,43 @@ class LaneRequest:
     def _apply_allocated_pages(self, admission):
         """Zero allocation-owned pages and apply CoW copies (shared by all chunks)."""
         runner = self.runner
-        if admission.new_block_ids_to_zero:
+        zero_ids, pairs = admission.new_block_ids_to_zero, admission.cow_pairs
+        if not zero_ids and not pairs:
+            return
+        mark = getattr(self.ports, 'cow_mark', None) or _no_mark
+        views = getattr(runner, '_qsa_host_views', None)
+        marks = [mark()]
+        started = time.monotonic_ns()
+        if zero_ids:
             zeroer = getattr(runner, 'kv_block_zeroer', None)
             if zeroer is None:
                 raise LaneChunkError('runner has no KV block zeroer for the new blocks')
-            zeroer.zero_block_ids(list(admission.new_block_ids_to_zero))
-        if admission.cow_pairs:
-            copies = [self.ports.block_copy(src, dst) for src, dst in admission.cow_pairs]
-            self.ports.copy_blocks_inplace(runner.kv_caches, runner.kv_cache_config.num_blocks,
-                                           copies)
-            views = getattr(runner, '_qsa_host_views', None)
-            if views:
-                self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
+            zeroer.zero_block_ids(list(zero_ids))
+        marks.append(mark())
+        zeroed = time.monotonic_ns()
+        fast = None
+        if pairs:
+            num_blocks = runner.kv_cache_config.num_blocks
+            if COW_FAST['selected']:
+                fast = copy_blocks_fast(runner.kv_caches, num_blocks, pairs)
+                COW_FAST['fallbacks'] += int(fast is None)
+            if fast is None:
+                copies = [self.ports.block_copy(src, dst) for src, dst in pairs]
+                self.ports.copy_blocks_inplace(runner.kv_caches, num_blocks, copies)
+            else:
+                COW_FAST['calls'] += 1
+                COW_FAST['pairs'] += len(pairs)
+        marks.append(mark())
+        copied = time.monotonic_ns()
+        if pairs and views:
+            copies = [self.ports.block_copy(src, dst) for src, dst in pairs]
+            self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
+        ended = time.monotonic_ns()
+        _COW_ROW[0] = dict(marks=marks, zero_ids=len(zero_ids or ()), pairs=len(pairs or ()),
+                           fast=int(fast is not None), views=(fast or {}).get('views'), bytes=(fast or {}).get('bytes'),
+                           host_views=len(views or ()), zero_host_us=(zeroed - started) // 1000,
+                           copy_host_us=(copied - zeroed) // 1000, host_view_us=(ended - copied) // 1000)
+        COW_FAST['rows'] += 1
 
     def update(self, admission):
         if self.req_id != admission.request_uid or self.generation != admission.request_generation:
