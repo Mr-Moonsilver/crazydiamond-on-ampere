@@ -121,7 +121,7 @@ spec=importlib.util.spec_from_file_location('native34_frozen_owner','/source/own
 owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(owner)
 role=os.environ['FLASH_NATIVE35_ARM'];assert role=='TRUNK' and os.environ['FLASH_NATIVE34_ARM']=='O'
 provenance=json.loads(Path('/source/harness/native30-provenance.json').read_text())
-assert provenance['native35_arm']==role and provenance['candidate']==owner.QNAME=='q18a-inwait'
+assert provenance['native35_arm']==role and provenance['candidate']=='q18a-inwait' and owner.QNAME=='q18a-sm-split-52' and owner.SMSPLIT_DECODE_SMS=='52'
 owner.check_slot()
 import native34_gate as weekend_gate
 import native35p_gate
