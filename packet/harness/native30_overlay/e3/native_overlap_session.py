@@ -94,6 +94,12 @@ class NativeOverlapSession:
                 os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'
                 and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'):
             handler = None
+        if action == 'native_append_yield' and not (
+                os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'
+                and all(os.environ.get(name) is not None for name in (
+                    'FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK',
+                    'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES'))):
+            handler = None
         if action == 'native_layer_group' and not (
                 os.environ.get('FLASH_S5_LAYER_GROUPS', '0') == '1'
                 and os.environ.get('FLASH_S5_QSA_FUSED', '0') == '1'
@@ -146,6 +152,11 @@ class NativeOverlapSession:
         if self.measure_start_ns is not None:
             raise NativeOverlapSessionError('native-qsa-fused-with-open-measurement')
         return await self.control.native_qsa_fused(command.get('fused'))
+
+    async def _action_native_append_yield(self, command):
+        if self.measure_start_ns is not None:
+            raise NativeOverlapSessionError('native-append-yield-with-open-measurement')
+        return await self.control.native_append_yield(command.get('enabled'))
 
     async def _action_native_layer_group(self, command):
         if self.measure_start_ns is not None:

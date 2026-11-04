@@ -33,6 +33,7 @@ from e3_types import (
     LaneRole,
     OperationTicket,
     TransactionId,
+    _text,
 )
 
 from async_handoff import LeaseCategory
@@ -1228,6 +1229,59 @@ SPLIT_HOLD_BOUND_NS = 30_000_000_000
 SPLIT_HOLD_KINDS = ('fresh', 'positive-frontier', 'running-prefill')
 FURTHEST_BASIS = ('furthest end of any chunk the bounded search accepted, backtracked '
                   'edges included; descriptive, not a certified stock-forced stop')
+# returning-append (Option A): a short held request may run natively between two
+# chunks of a bulk native prefill.  Both bounds are launch settings; absent, no
+# config object exists and every path below is the frozen one.
+APPEND_YIELD_ENV = ('FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK',
+                    'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES')
+
+
+class AppendYieldConfig:
+    """Launch-time bounds of the chunk-boundary yield to a short native request.
+
+    ``max_new``: the most new (uncached) prompt tokens a yielded request may
+    prefill natively.  ``per_bulk``: the most yields one bulk request grants.
+    ``handback_steps``: the most engine steps the FULL window waits, on FULL,
+    for the yielded request's one-token handback to be scheduled; then the
+    yield ends and the bulk re-enters (the request is held as without a yield).
+    ``reentry_retries``: the most scheduler passes the re-armed split waits for
+    the bulk's reopen; then the yield ends and the bulk follows the existing
+    refused-admission rule (FULL return, stock tail).  Both are counts of engine
+    steps, never a clock.  ``enabled`` is the typed on/off control
+    (``native_append_yield``); it starts on when the bounds are given at launch.
+    """
+    __slots__ = ('max_new', 'per_bulk', 'handback_steps', 'reentry_retries', 'enabled')
+    FIELDS = ('max_new', 'per_bulk', 'handback_steps', 'reentry_retries')
+
+    def __init__(self, max_new, per_bulk, handback_steps, reentry_retries, *, enabled=True):
+        for name, value in zip(self.FIELDS, (max_new, per_bulk, handback_steps, reentry_retries)):
+            if type(value) is not int or value < 1:
+                raise E3ContractError('append yield %s must be a positive int' % name)
+        if type(enabled) is not bool:
+            raise E3ContractError('append yield enabled must be a bool')
+        self.max_new, self.per_bulk = max_new, per_bulk
+        self.handback_steps, self.reentry_retries = handback_steps, reentry_retries
+        self.enabled = enabled
+
+    @classmethod
+    def from_env(cls, env):
+        """``None`` when no bound is set; all four or none, else refused."""
+        values = [env.get(name) for name in APPEND_YIELD_ENV]
+        if values == [None] * len(APPEND_YIELD_ENV):
+            return None
+        if None in values:
+            raise E3ContractError('append yield needs all four launch bounds or none')
+        parsed = []
+        for name, value in zip(APPEND_YIELD_ENV, values):
+            if type(value) is not str or not value.isdigit() or value != str(int(value)):
+                raise E3ContractError('%s must be a positive decimal int' % name)
+            parsed.append(int(value))
+        return cls(*parsed)
+
+    def record(self):
+        return {'max_new': self.max_new, 'per_bulk': self.per_bulk,
+                'handback_steps': self.handback_steps, 'reentry_retries': self.reentry_retries,
+                'enabled': self.enabled}
 
 
 class _ProjectedPrefillRequest:
@@ -1596,6 +1650,13 @@ class PrefillAdmissionController:
             self._split_hold = None
             self._split_hold_requests.clear()
             return
+        # returning-append: a yield owns this split route between the bulk's rows
+        # (closing / append / resume); no idle-hold budget runs while it does.
+        yielding = getattr(owner, 'append_yield_active', None)
+        if callable(yielding) and yielding():
+            self._split_hold = None
+            self._split_hold_requests.clear()
+            return
         if request is None:
             queue = self._queue(scheduler)
             request = queue.peek_request() if queue else None
@@ -1686,6 +1747,118 @@ class PrefillAdmissionController:
         if intent is not None:
             self._refuse(request, reason, **fields)
         return dict(self.last_split_hold_timeout)
+
+    # returning-append: launch-time yield bounds (AppendYieldConfig) or None.
+    append_yield = None
+    yield_stock_deferrals_by_kind = None
+
+    def note_yield_hold(self, kind):
+        """Count a stock prefill held in a yield's FULL window (no hold clock)."""
+        if self.yield_stock_deferrals_by_kind is None:
+            self.yield_stock_deferrals_by_kind = {name: 0 for name in SPLIT_HOLD_KINDS}
+        self.yield_stock_deferrals_by_kind[kind] += 1
+
+    def _waiting_object(self, scheduler, queue, target):
+        """The queue holding exactly ``target`` (the yield's append or bulk), or None."""
+        if queue.peek_request() is target:
+            return queue, target
+        for candidate in (queue, getattr(scheduler, 'skipped_waiting', None),
+                          getattr(scheduler, 'waiting', None)):
+            if candidate is None or not hasattr(candidate, '__iter__'):
+                continue
+            if any(item is target for item in candidate):
+                return candidate, target
+        return None
+
+    def append_yield_candidate(self, scheduler, bulk, decode_counts=None, exclude=(), seen=None):
+        """The first held request (FCFS) that may run natively between two bulk chunks.
+
+        The same refusals as auto-arm's plan (native_auto_arm._plan) except the
+        bulk-size floor: waiting, nothing computed or generated, no LoRA, pooling,
+        structured output, logprobs, connector or shared-prefix junction; then at
+        most ``max_new`` new tokens beyond its cached prefix and a complete staged
+        plan.  With ``decode_counts`` (the worker's proven decode cohort sizes) the
+        running set plus every smaller cohort must be proven.  ``exclude``: request
+        ids already refused for this bulk.  ``seen`` (a set the caller keeps): request ids
+        looked up already, skipped and added to.  Read-only: a lookup, never an allocation.
+        """
+        config = self.append_yield
+        if config is None or not config.enabled:
+            return None
+        running = len(getattr(scheduler, 'running', ()))
+        # The append's slot plus the slot auto-arm keeps for the bulk (its re-entry
+        # cohort is at most max_num_running_reqs - 1, as at selection).
+        if running + 2 > getattr(scheduler, 'max_num_running_reqs', 1):
+            return None
+        # The re-entry identity proof needs every cohort size 1..running+1.
+        if decode_counts is not None and not set(range(1, running + 2)) <= set(decode_counts):
+            return None
+        if self._environment_refuses(scheduler):
+            return None
+        requests = getattr(scheduler, 'requests', None)
+        looked = set()
+        for queue in (getattr(scheduler, 'skipped_waiting', None), getattr(scheduler, 'waiting', None)):
+            if queue is None or not hasattr(queue, '__iter__'):
+                continue
+            for request in list(queue):
+                uid = getattr(request, 'request_id', None)
+                if request is bulk or id(request) in looked or uid in exclude:
+                    continue
+                looked.add(id(request))
+                if seen is not None:
+                    if uid in seen:
+                        continue
+                    seen.add(uid)
+                if self._append_yield_plan(scheduler, request, requests, config) is not None:
+                    return request
+        return None
+
+    def _append_yield_plan(self, scheduler, request, requests, config):
+        sampling = getattr(request, 'sampling_params', None)
+        if (type(requests) is not dict or requests.get(getattr(request, 'request_id', None)) is not request
+                or getattr(getattr(request, 'status', None), 'name', None) != 'WAITING'
+                or getattr(request, 'num_computed_tokens', None) != 0
+                or getattr(request, 'num_output_tokens', None) != 0
+                or getattr(request, 'num_preemptions', 0) != 0 or getattr(request, 'resumable', False)
+                or getattr(request, 'lora_request', None) is not None
+                or getattr(request, 'pooling_params', None) is not None
+                or getattr(request, 'structured_output_request', None) is not None
+                or getattr(request, 'ec_transfer_params', None)
+                or sampling is None or getattr(sampling, 'prompt_logprobs', None) is not None
+                or getattr(sampling, 'logprobs', None) is not None
+                or self._request_refuses(scheduler, request)):
+            return None
+        try:
+            _text('request_uid', request.request_id)
+        except E3ContractError:
+            return None
+        prompt_end = getattr(request, 'num_tokens', None)
+        if type(prompt_end) is not int or prompt_end < 2:
+            return None
+        manager = scheduler.kv_cache_manager
+        blocks, start, shared = manager.get_computed_blocks(request)
+        if shared or type(start) is not int or start < 0:
+            return None
+        end = prompt_end - 1
+        if end - start < 1 or end - start > config.max_new:
+            return None
+        # auto-arm _plan's free-block check: the whole request must fit now.
+        needed = manager.coordinator.get_num_blocks_to_allocate(
+            request_id=request.request_id, num_tokens=prompt_end,
+            new_computed_blocks=blocks.blocks, num_encoder_tokens=0,
+            total_computed_tokens=start, num_local_computed_tokens=start,
+            num_tokens_main_model=prompt_end, apply_admission_cap=True)
+        if needed + manager.watermark_blocks > manager.block_pool.get_num_free_blocks():
+            return None
+        cap = min(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', 0))
+        if cap < 1:
+            return None
+        def split(position, limit):
+            projected = request if position == start else _ProjectedPrefillRequest(request, position)
+            return self._aligned_split(scheduler, projected, limit,
+                                       num_new_local_computed_tokens=start if position == start else 0)
+        plan = staged_chunk_plan(start, end, cap, self.minimum_stage_rows, split)
+        return plan or None
 
     def _retained_waiting(self, scheduler, queue, retained):
         """The retained request and the queue holding it, wherever it waits.
@@ -1794,6 +1967,21 @@ class PrefillAdmissionController:
             if found is None:
                 return None
             queue, request = found
+        else:
+            # returning-append: while a yield runs, only its current target (the
+            # short request, then the bulk's reopen) may be admitted; while the
+            # bulk row is being closed nothing is.
+            target_query = getattr(owner, 'append_yield_target', None)
+            target = target_query() if callable(target_query) else None
+            if target is not None:
+                phase, wanted = target
+                if wanted is None:
+                    return None
+                found = self._waiting_object(scheduler, queue, wanted)
+                if found is None:
+                    owner.append_yield_target_lost(phase)
+                    return None
+                queue, request = found
         policy = getattr(owner, 'auto_arm', None)
         if policy is not None and policy.active and not policy.permits(request):
             return None
@@ -1983,6 +2171,10 @@ class PrefillAdmissionController:
             unpublished = details['unpublished_blocks']
             if type(unpublished) is not tuple or not set(unpublished) <= set(flat):
                 raise E3ContractError('unpublished pages are outside the source lease')
+            check = getattr(owner, 'append_yield_check_blocks', None)
+            if callable(check):
+                check(request, set(unpublished) | set(details['new_block_ids_to_zero'])
+                      | {pair[1] for pair in record.cow_pairs})
             self.frontier.reserve(transaction, unpublished)
         except BaseException:
             self.parked.failed = True
@@ -2400,7 +2592,14 @@ def _defer_stock_while_split_armed(scheduler, kind, request=None):
         raise E3ContractError('scheduler E3 admission controller is invalid')
     # Historical helper name; stock safety is independent of admission policy.
     if controller._stock_hold_owner(scheduler) is None:
-        return False
+        # returning-append A1: the yield's FULL window (the append's handback and
+        # the bulk's re-entry) keeps every stock prefill held but that handback.
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        holds = getattr(owner, 'append_yield_holds', None)
+        if not (callable(holds) and holds(request, kind)):
+            return False
+        controller.note_yield_hold(kind)
+        return True
     controller._note_split_hold(scheduler, kind, request)
     return True
 

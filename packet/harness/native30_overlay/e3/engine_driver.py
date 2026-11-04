@@ -112,6 +112,12 @@ def _wire_ready():
 
 
 # Reported when a chunk cannot be parked; the engine then runs the stock path.
+# returning-append: the yield's row close uses the existing wire reason whose meaning
+# is "close the row, keep the route" (control_route_pause_kept); no wire change.
+YIELD_CANCEL_REASON = 'pause'
+YIELD_HISTORY = 16                       # finished yields kept in the status record (bounded, no UIDs)
+# a1-trunk: the arrival classes of the review's section 8, read at selection.
+YIELD_ARRIVALS = ('before-admission', 'reserved-unopened', 'stage0-ahead', 'transfer-retirement', 'in-chunk')
 _STOP_KINDS = ('abort', 'cancel', 'disconnect', 'preempt', 'reset', 'pause',
                'shutdown')
 
@@ -1266,6 +1272,26 @@ class NativeSegmentDriver:
         # to park a native chunk.  It outlives chunk reset by design.
         self._admission_intent = None
         self._admission_seq = 0
+        # returning-append (Option A, A1): the chunk-boundary yield of an auto-arm
+        # bulk to one short native request.  Inert unless the launch bounds set
+        # controller.append_yield; then at most one yield runs at a time.
+        self._yield = None
+        self._yield_seq = 0
+        self._yield_history = deque(maxlen=YIELD_HISTORY)
+        self._yield_counts = {}
+        # (bulk uid, generation) -> request ids whose append admission was refused
+        # during a yield for that bulk; never selected again for it.
+        self._yield_refused = {}
+        self.append_yield_counters = dict(selected=0, rows_closed=0, admitted=0, handbacks=0,
+                                          reentries=0, reopened=0, abandoned=0,
+                                          handback_expired=0, reentry_refused=0,
+                                          append_refused=0, handbacks_served=0,
+                                          handback_skipped=0)
+        # Engine-lifetime count of each yield end reason (the bounded history keeps 16).
+        self.append_yield_end_reasons = {}
+        # a1-trunk: where the bulk's admitted work stood when each yield was selected.
+        self.append_yield_arrivals = dict.fromkeys(YIELD_ARRIVALS, 0)
+        self._yield_scan = None
         # Held-f: absent unless FLASH_S5_NATIVE_PROGRESS installed it.
         self.progress = None
         self._progress_origin = 'tick'
@@ -1370,6 +1396,36 @@ class NativeSegmentDriver:
         self.qsa_fused.counters['selections'] += int(previous != fused)
         now = int(self._monotonic_ns())
         return {'schema': 1, 'action': 'native_qsa_fused', 'fused': fused, 'previous': previous,
+                'engine_epoch': self.engine_epoch, 'route': 'full',
+                'route_generation': self.route_generation,
+                'observed_clock_ns': now, 'clock': self._clock_record(now)}
+
+    def _append_yield_control(self, command):
+        """returning-append per-arm on/off (installed only, paused idle FULL)."""
+        if self.error is not None:
+            raise DriverError(self.error)
+        if set(command) - {'action', 'enabled', 'engine_epoch'}:
+            raise DriverError('native-append-yield-command-fields-differ')
+        epoch = command.get('engine_epoch')
+        if epoch is not None and (type(epoch) is not int or epoch != self.engine_epoch):
+            raise DriverError('native-control-engine-epoch-differs')
+        enabled = command.get('enabled')
+        if type(enabled) is not bool:
+            raise DriverError('native-append-yield-invalid')
+        policy = getattr(self, 'auto_arm', None)
+        if (not self._engine_paused() or self._split_ready or self.tx is not None
+                or self.controller.active or self._inflight or self._control is not None
+                or self._route_exchange() is not None or self._return_pending is not None
+                or self._retained is not None or self._admission_intent is not None
+                or self._yield is not None or policy is None or policy.active):
+            raise DriverError('native-append-yield-requires-paused-idle-full')
+        config = self.controller.append_yield
+        previous = config.enabled
+        config.enabled = enabled
+        now = int(self._monotonic_ns())
+        return {'schema': 1, 'action': 'native_append_yield', 'enabled': enabled,
+                'previous': previous, 'max_new': config.max_new, 'per_bulk': config.per_bulk,
+                'handback_steps': config.handback_steps, 'reentry_retries': config.reentry_retries,
                 'engine_epoch': self.engine_epoch, 'route': 'full',
                 'route_generation': self.route_generation,
                 'observed_clock_ns': now, 'clock': self._clock_record(now)}
@@ -2224,6 +2280,10 @@ class NativeSegmentDriver:
                              **{field: 1})
         self.stop_kind = 'abort'
         self._return_pending = 'unsupported-profile'
+        if self._yield is not None:
+            # returning-append: the only stop_kind writer outside stop(); during a
+            # yield the refused chunk is the append's, so the yield's abort rule runs.
+            self._yield_stop('abort', cause='profile')
         entry = self._record('schedule_profile_refused', transaction=self.tx.txn_seq,
                      stage=self._profile_query.stage,
                      layer=self._profile_query.layer, reason=reason,
@@ -2475,6 +2535,14 @@ class NativeSegmentDriver:
             # The chunk left the final prompt token for stock decode.  Stock
             # work on the full bank may not start before every rank drained
             # the split route and acknowledged the return.
+            if (self._yield is not None and self._yield['phase'] == 'append'
+                    and transaction.request_uid == self._yield['append'].request_id):
+                # returning-append A1: the yielded request's handback runs on FULL
+                # like every native request's; the bulk re-enters split after it.
+                self._yield['phase'] = 'handback'
+                self.append_yield_counters['handbacks'] += 1
+                self._yield_journal(self._yield, 'handback',
+                                    transaction=transaction.txn_seq, route_generation=self.route_generation)
             self._note_terminal_route('handback')
         return
 
@@ -2637,11 +2705,19 @@ class NativeSegmentDriver:
                 # native39: stock work held past the bound with no native work
                 # in flight; the FULL return has started, skip this step.
                 return (None, False)
+            if self._yield is not None and self._yield['phase'] == 'closing':
+                # returning-append: close the bulk's worker row; decode continues.
+                self._drive_yield_close()
+                return None
             if self.tx is None:
                 if not self.controller.active:
+                    self._maybe_yield()
                     return None
                 self._begin()
             self._drive()
+            # A commit inside _drive may have left the bulk's row retained: offer
+            # the yield before the scheduler can admit the bulk's next chunk.
+            self._maybe_yield()
             return None
         except Backpressure:
             # Ring full: no expectation was registered; retry on the next tick.
@@ -2840,6 +2916,8 @@ class NativeSegmentDriver:
                                      chunk_start=transaction.chunk_start,
                                      chunk_end=transaction.chunk_end,
                                      decode_live=self._progress_decode_live()))
+        if self._yield is not None:
+            self._note_yield_begin(admission.transaction)
         self.plan = []
         self.index = 0
         self._profile_query = None
@@ -3047,6 +3125,8 @@ class NativeSegmentDriver:
     def stop(self, kind, *, drain=False):
         if kind not in _STOP_KINDS:
             raise DriverError('unknown stop kind')
+        if self._yield is not None:
+            self._yield_stop(kind)
         route_pending = (self._return_pending is not None
                          or self._transition is not None
                          or self._bootstrap_command is not None)
@@ -3396,8 +3476,9 @@ class NativeSegmentDriver:
                 and report.completed_sequence == expected
                 and ack.completed_sequence == expected)
 
-    def _retire_retained_cancel(self):
+    def _retire_retained_cancel(self, reason=None):
         """Forget a row every rank certified closed; no publication/frontier move."""
+        reason = self.stop_kind if reason is None else reason
         row = self._retained
         acks = self._retained_cancel_acks
         if row is None or set(acks) != set(self.ranks) \
@@ -3409,9 +3490,9 @@ class NativeSegmentDriver:
                      chunk_start=row['transaction'].chunk_start,
                      chunk_end=row['transaction'].chunk_end,
                      ranks=list(self.ranks),
-                     reason=self.stop_kind,
+                     reason=reason,
                      dispositions=sorted({ack.disposition for ack in acks.values()}))
-        self._remember_native_closure(row['transaction'], acks, row['reports'], self.stop_kind)
+        self._remember_native_closure(row['transaction'], acks, row['reports'], reason)
         self._retained = None
         self._retained_cancel_request = None
         self._retained_cancel_acks = {}
@@ -3592,7 +3673,7 @@ class NativeSegmentDriver:
         """
         intent = self._admission_intent
         if (not self._split_ready or self.tx is not None
-                or self.controller.active or self._retained is not None
+                or self.controller.active or self._retained is not None or self._yield is not None
                 or self.stop_kind is not None or self._control is not None or self._inflight
                 or self._return_pending is not None or self._route_exchange() is not None):
             return False
@@ -3760,6 +3841,537 @@ class NativeSegmentDriver:
         intent = self._admission_intent
         return None if intent is None else dict(intent)
 
+    # -- returning-append: chunk-boundary yield (Option A, A1) ------------------
+    #
+    # draining  (a1-trunk, review 4 Nov section 8) a yield is pending: no further
+    #           bulk chunk is admitted, every chunk already admitted (C1's successor
+    #           included) runs to its frozen commit; none is cancelled or rolled back.
+    # closing   split; the bulk's retained worker row closes (typed all-rank
+    #           CancelRequest, no publication/frontier move); nothing is admitted.
+    # append    split; the short request runs natively from its cached start.
+    # handback  its terminal commit returned FULL; its one-token handback runs on
+    #           FULL; every other stock prefill (the bulk first) stays held.
+    # reenter   auto-arm's entry sequence (drain, barrier, identity, enter_split,
+    #           arm) for the bulk, bound to its request, plan from its frontier.
+    # resume    split and armed; only the bulk may be admitted; its first chunk
+    #           from the committed frontier ends the yield.
+    def append_yield_active(self):
+        return self._yield is not None
+
+    def append_yield_phase(self):
+        return None if self._yield is None else self._yield['phase']
+
+    def append_yield_record(self):
+        """Bounded status row (no request UID): phase, counters, launch bounds."""
+        config = getattr(self.controller, 'append_yield', None)
+        y = self._yield
+        holds = getattr(self.controller, 'yield_stock_deferrals_by_kind', None)
+        return dict(schema='s5-append-yield/1', config=None if config is None else config.record(),
+                    phase=None if y is None else y['phase'], seq=self._yield_seq,
+                    counters=dict(self.append_yield_counters),
+                    end_reasons=dict(self.append_yield_end_reasons),
+                    arrivals=dict(self.append_yield_arrivals),
+                    # stock prefill the yield held, by kind (one snapshot with the counters)
+                    holds=None if holds is None else dict(holds),
+                    current=None if y is None else dict(seq=y['seq'], times=dict(y['times'])),
+                    history=[dict(h, times=dict(h['times'])) for h in self._yield_history])
+
+    def append_yield_target(self):
+        """(phase, request) the admission may take while a yield runs, else None."""
+        y = self._yield
+        if y is None:
+            return None
+        if y['phase'] == 'append':
+            return ('append', y['append'])
+        if y['phase'] == 'resume':
+            return ('resume', y['bulk'])
+        return (y['phase'], None)
+
+    def append_yield_target_lost(self, phase):
+        """The target left the waiting queues before its admission.
+
+        A lost append (nothing of it ran) hands the armed split straight to the
+        bulk.  A lost bulk is not ended here: the policy's next tick pauses the
+        scheduler, ends the yield and rolls the route back (_yield_native), so no
+        later step of this schedule pass sees an armed intent without its owner.
+        """
+        y = self._yield
+        if y is None or y['phase'] != phase:
+            return
+        if phase == 'append' and not y['append_transactions']:
+            # Finished/aborted while held: nothing of it ran.  The route is still
+            # split and armed, so the bulk resumes without a FULL window.
+            self._yield_enter_resume(y)
+            self._yield_journal(y, 'append_left', route_generation=self.route_generation)
+
+    def append_yield_bulk_uid(self):
+        """The yielded bulk's request UID while a yield owns the route, else None."""
+        return None if self._yield is None else self._yield['bulk'].request_id
+
+    def yield_permits(self, request):
+        target = self.append_yield_target()
+        return target is not None and target[1] is not None and request is target[1]
+
+    def append_yield_holds(self, request, kind):
+        """True while the yield owns a FULL window: only the append's handback runs."""
+        y = self._yield
+        if y is None:
+            return False
+        if (y['phase'] == 'handback' and request is y['append'] and kind == 'positive-frontier'
+                and getattr(request, 'num_tokens', 0) - getattr(request, 'num_computed_tokens', 0) == 1):
+            return False
+        if y['phase'] == 'reenter' and y.get('drain_wait') and kind == 'running-prefill':
+            return False                         # the drain wait: a decoder's in-flight prefill finishes
+        return True
+
+    def append_yield_handback_done(self):
+        """The append produced its first token on FULL, or it left the scheduler."""
+        y = self._yield
+        if y is None or y['phase'] != 'handback':
+            return False
+        append = y['append']
+        requests = getattr(self.scheduler, 'requests', None)
+        if type(requests) is dict and requests.get(append.request_id) is not append:
+            return True
+        return (getattr(append, 'num_output_tokens', 0) > 0
+                or getattr(append, 'num_computed_tokens', 0) >= getattr(append, 'num_tokens', 1))
+
+    def append_yield_handback_skip(self):
+        """The FULL window cannot serve the append: skip it (delta review of ae865d44, D-MINOR-1).
+
+        The window releases only a one-token positive-frontier handback.  An append
+        stopped by the abort rule (a profile refusal, the stale guard) is still in
+        the scheduler with more than one prompt token left, so it would sit held
+        until HANDBACK_STEPS ran out.  Then: journal ``append_yield_handback_skipped``
+        and return True; the caller re-enters the bulk at once.  As after an expiry,
+        the yield keeps its binding to the bulk (the held request is ahead of it in
+        the waiting queues) and ends 'handback-skipped' at the reopen; the request
+        then continues on stock after the bulk's FULL return, as without a yield.
+        """
+        y = self._yield
+        if y is None or y['phase'] != 'handback':
+            return False
+        append = y['append']
+        requests = getattr(self.scheduler, 'requests', None)
+        if type(requests) is dict and requests.get(append.request_id) is not append:
+            return False
+        left = getattr(append, 'num_tokens', 0) - getattr(append, 'num_computed_tokens', 0)
+        if getattr(append, 'num_output_tokens', 0) > 0 or left <= 1:
+            return False
+        y['handback_skipped'] = True
+        self.append_yield_counters['handback_skipped'] += 1
+        self._yield_journal(y, 'handback_skipped', tokens_left=left, route_generation=self.route_generation)
+        return True
+
+    def append_yield_set_drain_wait(self, waiting):
+        """auto-arm's re-entry released its pause for one scheduler pass between drain
+        attempts (D-MINOR-2): a decoder's running stock prefill may finish its chunk
+        then; every other stock prefill stays held."""
+        y = self._yield
+        if y is not None and y['phase'] == 'reenter':
+            y['drain_wait'] = bool(waiting)
+
+    def append_yield_handback_step(self):
+        """One engine step on FULL with the yielded request's handback still unscheduled.
+
+        Counted by auto-arm's tick (one per engine step), never timed.  True once
+        FLASH_S5_APPEND_YIELD_HANDBACK_STEPS steps are spent: the FULL window ends
+        (``append_yield_handback_expired``) and the caller re-enters the bulk.  The
+        yield keeps only its binding to the bulk (the held request stays ahead of
+        the bulk in the waiting queues; the binding admits the bulk's reopen) and
+        ends with reason 'handback-expired' at that reopen.  The request waits
+        under the yield's hold, then the split hold, as without a yield.
+        """
+        y = self._yield
+        if y is None or y['phase'] != 'handback':
+            raise DriverError('append yield handback step outside the FULL window')
+        y['handback_steps'] = y.get('handback_steps', 0) + 1
+        if y['handback_steps'] < self.controller.append_yield.handback_steps:
+            return False
+        y['handback_expired'] = True
+        self.append_yield_counters['handback_expired'] += 1
+        self._yield_journal(y, 'handback_expired', steps=y['handback_steps'],
+                            route_generation=self.route_generation)
+        return True
+
+    def _yield_enter_resume(self, y):
+        """Every entry into resume (the re-arm, append_left, the append's refused
+        admission, the partial append's row close) snapshots the admission count
+        and the scheduler pass, so the reopen's refused passes count from here."""
+        y['phase'] = 'resume'
+        c = self.controller
+        y['resume_at'] = (getattr(c, 'admitted', None), getattr(c, '_schedule_seq', None))
+
+    def append_yield_reentry_wait(self, admitted, schedule_seq):
+        """auto-arm's tick in resume with nothing native live: the bulk's reopen refused?
+
+        Counted from the first resume tick on the yield itself (delta review of
+        ae865d44, D-MAJOR-1): resume is reached through the re-arm and also on
+        the existing arm (append_left, the append's refused admission, the
+        partial append's row close), so no policy snapshot from the last arm
+        applies.  Resume's entry records (admitted, schedule_seq)
+        (_yield_enter_resume); a tick with ``admitted`` unchanged counts the
+        scheduler passes since.  True once
+        more than FLASH_S5_APPEND_YIELD_REENTRY_RETRIES passed: journal
+        ``append_yield_reentry_refused`` and end the yield; the caller disarms
+        through the existing refused-admission rule.  Never raises, never a clock.
+        """
+        y = self._yield
+        if y is None or y['phase'] != 'resume':
+            return False
+        at = y.get('resume_at')
+        if at is None or at[0] != admitted or type(at[1]) is not int:
+            y['resume_at'] = (admitted, schedule_seq)
+            return False
+        passes = schedule_seq - at[1]
+        if passes <= self.controller.append_yield.reentry_retries:
+            return False
+        self.append_yield_counters['reentry_refused'] += 1
+        self._yield_journal(y, 'reentry_refused', passes=passes,
+                            route_generation=self.route_generation)
+        self._end_yield('reentry-refused')
+        return True
+
+    def append_yield_set_phase(self, phase):
+        """auto-arm's re-entry steps: handback -> reenter -> resume."""
+        y = self._yield
+        allowed = {'reenter': ('handback',), 'resume': ('reenter',)}
+        if y is None or phase not in allowed or y['phase'] not in allowed[phase]:
+            raise DriverError('append yield phase change is out of order')
+        if phase == 'resume':
+            self._yield_enter_resume(y)
+        else:
+            y['phase'] = phase
+        if phase == 'reenter':
+            self.append_yield_counters['reentries'] += 1
+        self._yield_journal(y, phase, route_generation=self.route_generation)
+
+    def append_yield_end(self, reason):
+        if self._yield is not None:
+            self._end_yield(reason)
+
+    def append_yield_check_blocks(self, request, written):
+        """The yielded request must never write a block the bulk holds."""
+        y = self._yield
+        if y is None or request is not y['append']:
+            return
+        manager = self.scheduler.kv_cache_manager
+        try:
+            rows = manager.get_block_ids(y['bulk'].request_id)
+        except (KeyError, AttributeError):
+            rows = ()
+        held = {block for row in rows for block in row if block > 0}
+        if held & {block for block in written if block > 0}:
+            raise DriverError('append yield would write a block the yielded bulk holds')
+
+    def _yield_journal(self, y, name, **fields):
+        """One ``append_yield_<name>`` journal record; its engine time stays on the yield.
+
+        The status history carries these times per yield (no request UID), so a
+        client can split the FULL-return and re-entry windows of each yield
+        against its own decode samples (A1 grade: each stall separately).
+        """
+        self._record('append_yield_' + name, seq=y['seq'], **fields)
+        y['times'].setdefault(name, self._journal[-1]['observed_ns'])
+
+    def append_yield_mark_full(self):
+        """auto-arm saw the append's FULL return settled (the FULL window opens)."""
+        y = self._yield
+        if y is not None and y['phase'] == 'handback' and 'full' not in y['times']:
+            self._yield_journal(y, 'full', route_generation=self.route_generation)
+
+    def _end_yield(self, reason):
+        y = self._yield
+        self._yield = None
+        if reason not in ('reopened', 'handback-expired', 'handback-skipped', 'drain-no-append'):
+            self.append_yield_counters['abandoned'] += 1     # the bulk did not reopen inside the yield
+        self.append_yield_end_reasons[reason] = self.append_yield_end_reasons.get(reason, 0) + 1
+        self._yield_journal(y, 'end', reason=reason, phase=y['phase'],
+                            route_generation=self.route_generation)
+        self._yield_history.append(dict(seq=y['seq'], reason=reason, times=dict(y['times']),
+                                        arrival=y['arrival'], open_chunks=y['open_chunks'],
+                                        route_generation_selected=y['route_generation'],
+                                        route_generation_end=self.route_generation))
+
+    def _yield_stop(self, kind, cause=None):
+        y = self._yield
+        if kind == 'abort' and y['phase'] == 'append':
+            # before_abort stops only for natively owned work, which in this phase
+            # is the append: its cancel returns FULL, then the bulk re-enters.
+            y['phase'] = 'handback'
+            y['append_aborted'] = True
+            self._yield_journal(y, 'append_aborted', cause=cause or 'abort',
+                                route_generation=self.route_generation)
+        else:
+            # Every other stop, a prefix-cache reset in any yield state included,
+            # ends the yield; the bulk then follows the existing stop rule (lead
+            # resume 5: a reset is FULL plus a stock tail, counted in end_reasons).
+            self._end_yield('stop-' + kind)
+
+    def append_yield_stale(self):
+        """The route left split under a draining/closing/append/resume yield without its stop.
+
+        Backstop for a stop that bypassed stop() (none is known after the
+        profile-refusal fix): an append yield becomes the abort rule's FULL
+        window; any other phase ends ('route-left-split').  Returns the new phase.
+        """
+        y = self._yield
+        if y is None or y['phase'] not in ('draining', 'closing', 'append', 'resume'):
+            return None
+        self._yield_journal(y, 'stale', phase=y['phase'], route_generation=self.route_generation)
+        if y['phase'] == 'append':
+            y['phase'] = 'handback'
+            y['append_aborted'] = True
+            return 'handback'
+        self._end_yield('route-left-split')
+        return None
+
+    def append_yield_append_wait(self, admitted, schedule_seq):
+        """auto-arm's tick in the append phase: the append's admission refused?
+
+        A scheduler pass that ran with the split armed for the append, no chunk
+        in flight and no admission is a refusal (allocation, a changed prefix
+        hit, a memoised no-plan, a slot check).  Before any append chunk ran:
+        the yield goes to resume (the bulk reopens; the append stays held).
+        After a partial append: its retained row closes through the same typed
+        close, then resume; the append later continues from its own frontier
+        (stock, after the bulk's FULL return).  The refused request is not
+        selected again for this bulk.  Returns None, 'resume' or 'closing'.
+        Counts passes, never a clock.
+        """
+        y = self._yield
+        if y is None or y['phase'] != 'append':
+            return None
+        if self.live or self.tx is not None:
+            y['idle_at'] = None
+            return None
+        idle = y.get('idle_at')
+        if idle is None or idle[0] != admitted:
+            y['idle_at'] = (admitted, schedule_seq)
+            return None
+        if schedule_seq <= idle[1]:
+            return None
+        self.append_yield_counters['append_refused'] += 1
+        key = (y['bulk_transaction'].request_uid, y['bulk_transaction'].request_generation)
+        self._yield_refused = {key: self._yield_refused.get(key, frozenset()) | {y['append'].request_id}}
+        row = self._retained
+        partial = row is not None and row['transaction'].request_uid == y['append'].request_id
+        self._yield_journal(y, 'append_refused', partial=partial, route_generation=self.route_generation)
+        if not partial:
+            self._yield_enter_resume(y)
+            return 'resume'
+        y['closing_append'] = row['transaction']
+        y['close_rounds'] = 0
+        y['phase'] = 'closing'
+        return 'closing'
+
+    def append_yield_note_handback(self):
+        """The FULL window ended with the append's first token sampled (counted once)."""
+        y = self._yield
+        if (y is not None and not y.get('handback_served')
+                and getattr(y['append'], 'num_output_tokens', 0) > 0):
+            y['handback_served'] = True
+            self.append_yield_counters['handbacks_served'] += 1
+
+    def append_yield_reentry_refused(self, stage, refusals):
+        """A re-entry proof or drain refused ``refusals`` times; past the launch bound
+        journal ``append_yield_reentry_refused`` and end the yield (never a raise)."""
+        y = self._yield
+        if y is None or y['phase'] != 'reenter':
+            return False
+        if refusals <= self.controller.append_yield.reentry_retries:
+            return False
+        self.append_yield_counters['reentry_refused'] += 1
+        self._yield_journal(y, 'reentry_refused', stage=stage, passes=refusals,
+                            route_generation=self.route_generation)
+        self._end_yield('reentry-refused')
+        return True
+
+    def _maybe_yield(self):
+        """Offer the yield; a pending one moves to closing once its drain is over."""
+        y = self._yield
+        if y is None:
+            return self._yield_offer()
+        if y['phase'] == 'draining':
+            self._yield_drain_step(y)
+        return False
+
+    def _yield_open_records(self):
+        """The admission records of chunks admitted and not committed, oldest first."""
+        controller = self.controller
+        return tuple(record for record in (controller.parked, getattr(controller, 'successor', None))
+                     if record is not None)
+
+    def _yield_foreign_command(self):
+        """A non-chunk command is out; a poll or, with a chunk open, its own commands do not count."""
+        return bool(self._inflight) and any(kind != 'poll' for kind in self._inflight.values())
+
+    def _yield_arrival(self, records):
+        """The review's arrival class (a read on the status record, never a decision)."""
+        return 'before-admission' if not records else 'in-chunk'
+
+    def _yield_offer(self):
+        """Mark a yield pending if a short request is held; called before any bulk admission.
+
+        Contract (review 4 Nov, section 8): from here no further bulk chunk is admitted,
+        the chunks already admitted run to their commit, and only then the short request is
+        served.  No chunk is cancelled and no counter rolled back.
+        """
+        controller = self.controller
+        config = getattr(controller, 'append_yield', None)
+        if config is None or not config.enabled or self._yield is not None:
+            return False
+        policy = getattr(self, 'auto_arm', None)
+        if (policy is None or policy.phase != 'native' or not self._split_ready
+                or self.stop_kind is not None or self.error is not None
+                or self._return_pending is not None or self._route_exchange() is not None
+                or self._control is not None or self._profile_failure is not None
+                or self._native43 is not None or self._retained_cancel_request is not None
+                or self._yield_foreign_command()):
+            return False
+        intent = self._admission_intent
+        bulk = policy._request()
+        if intent is None or intent.get('origin') != 'auto-arm' or bulk is None:
+            return False
+        records = self._yield_open_records()
+        if records:
+            if any(record.failed or record.admission is None or record.admission.terminal
+                   or record.transaction.request_uid != bulk.request_id for record in records):
+                return False                     # a terminal chunk returns FULL anyway
+            transaction = records[-1].transaction
+        else:
+            row = self._retained
+            if row is None or row['transaction'].request_uid != bulk.request_id:
+                return False
+            transaction = row['transaction']
+        key = (transaction.request_uid, transaction.request_generation)
+        if self._yield_counts.get(key, 0) >= config.per_bulk:
+            return False
+        refused = self._yield_refused.get(key, frozenset())
+        # Each held request is looked up once per newest chunk (a lookup is not free on a long prompt).
+        scan = self._yield_scan
+        if scan is None or scan[0] != transaction:
+            scan = self._yield_scan = (transaction, set())
+        candidate = controller.append_yield_candidate(self.scheduler, bulk,
+                                                      getattr(policy, 'decode_counts', None),
+                                                      exclude=refused, seen=scan[1])
+        if candidate is None:
+            return False
+        self._yield_refused = {key: refused}
+        self._yield_counts = {key: self._yield_counts.get(key, 0) + 1}
+        self._yield_seq += 1
+        arrival = self._yield_arrival(records)
+        self._yield = dict(seq=self._yield_seq, phase='draining', append=candidate, bulk=bulk,
+                           bulk_transaction=transaction, frontier=transaction.chunk_end,
+                           append_transactions=[], close_rounds=0, append_aborted=False,
+                           times={}, route_generation=self.route_generation,
+                           arrival=arrival, open_chunks=len(records), key=key)
+        self.append_yield_counters['selected'] += 1
+        self.append_yield_arrivals[arrival] += 1
+        self._yield_journal(self._yield, 'selected',
+                            bulk_transaction=transaction.txn_seq, bulk_frontier=transaction.chunk_end,
+                            arrival=arrival, open_chunks=len(records),
+                            yields_this_bulk=self._yield_counts[key], route_generation=self.route_generation)
+        self._yield_drain_step(self._yield)
+        return True
+
+    def _yield_drain_step(self, y):
+        """The common valid state: nothing admitted, the bulk's row retained at its committed frontier.
+
+        Every chunk commits only after both stages locally released it (state written,
+        Mamba and KV at its end) and every PP receipt was accepted, so no stage is ahead of
+        the other here and no transfer is outstanding.  Checked, then the row may close.
+        """
+        if self._yield_open_records() or self.tx is not None or self._yield_foreign_command():
+            return False
+        row = self._retained
+        bulk = y['bulk']
+        if row is None or row['transaction'].request_uid != bulk.request_id:
+            self._yield_journal(y, 'drain_lost_row', route_generation=self.route_generation)
+            self._end_yield('drain-lost-row')
+            return False
+        transaction = row['transaction']
+        if (getattr(bulk, 'num_computed_tokens', None) != transaction.chunk_end
+                or any(ledger.outstanding(transaction) for ledger in self.pp_ledgers.values())):
+            raise DriverError('append yield drained to a state that is not common to both stages')
+        y['bulk_transaction'], y['frontier'] = transaction, transaction.chunk_end
+        # The drain took time: the selected request may have left; the first still held takes the turn.
+        policy = self.auto_arm
+        refused = self._yield_refused.get(y['key'], frozenset())
+        candidate = self.controller.append_yield_candidate(self.scheduler, bulk,
+                                                           getattr(policy, 'decode_counts', None), exclude=refused)
+        if candidate is None:
+            self._yield_counts = {y['key']: self._yield_counts.get(y['key'], 1) - 1}
+            self._yield_journal(y, 'drain_no_append', route_generation=self.route_generation)
+            self._end_yield('drain-no-append')
+            return False
+        y['append'] = candidate
+        y['phase'] = 'closing'
+        self._yield_journal(y, 'drained', bulk_transaction=transaction.txn_seq, bulk_frontier=transaction.chunk_end,
+                            route_generation=self.route_generation)
+        return True
+
+    def _drive_yield_close(self):
+        """The existing typed retained-row close, outside any stop and its budget.
+
+        The wire reason is 'pause' (close the row, keep the route: the meaning of
+        control_route_pause_kept); the journal reason is 'yield'.  A stop arriving
+        meanwhile takes over the same immutable command (_drive_retained_cancel).
+        """
+        y = self._yield
+        row = self._retained
+        appending = y.get('closing_append') is not None
+        target = y['closing_append'] if appending else y['bulk_transaction']
+        if row is None or row['transaction'] != target:
+            raise DriverError('append yield lost the row it is closing')
+        if self._inflight and any(kind != 'poll' for kind in self._inflight.values()):
+            return
+        acks = self._retained_cancel_acks
+        if set(acks) == set(self.ranks) and all(ack.closed for ack in acks.values()):
+            self._retire_retained_cancel(reason='yield')
+            self.append_yield_counters['rows_closed'] += 1
+            if appending:
+                # the refused append's partial row closed: the bulk reopens next
+                y['closing_append'] = None
+                self._yield_enter_resume(y)
+                self._yield_journal(y, 'append_row_closed', transaction=target.txn_seq,
+                                    route_generation=self.route_generation)
+                return
+            y['phase'] = 'append'
+            self._yield_journal(y, 'row_closed', bulk_frontier=y['frontier'],
+                                route_generation=self.route_generation)
+            return
+        y['close_rounds'] += 1
+        if y['close_rounds'] > self.stop_budget:
+            raise DriverError('append yield row close did not finish within the bound; ownership retained')
+        request = self._retained_cancel_request
+        if request is None:
+            request = CancelRequest(row['transaction'], row['state_epoch'], YIELD_CANCEL_REASON)
+            self._retained_cancel_request = request
+        self._submit('retained_cancel', ('flash_s5_cancel', (request,), {}, None), self.ranks)
+
+    def _note_yield_begin(self, transaction):
+        y = self._yield
+        if y['phase'] == 'append' and transaction.request_uid == y['append'].request_id:
+            if not y['append_transactions']:
+                self.append_yield_counters['admitted'] += 1
+                self._yield_journal(y, 'admitted', transaction=transaction.txn_seq,
+                                    chunk_start=transaction.chunk_start, chunk_end=transaction.chunk_end,
+                                    route_generation=self.route_generation)
+            y['append_transactions'].append(transaction.txn_seq)
+        elif y['phase'] == 'draining' and transaction.request_uid == y['bulk'].request_id:
+            pass                                 # admitted before the yield was pending: it runs to its commit
+        elif y['phase'] == 'resume' and transaction.request_uid == y['bulk'].request_id:
+            if transaction.chunk_start != y['frontier']:
+                raise DriverError('yielded bulk reopened away from its committed frontier')
+            self.append_yield_counters['reopened'] += 1
+            self._yield_journal(y, 'bulk_reopened', transaction=transaction.txn_seq,
+                                chunk_start=transaction.chunk_start, route_generation=self.route_generation)
+            self._end_yield('handback-expired' if y.get('handback_expired')
+                            else 'handback-skipped' if y.get('handback_skipped') else 'reopened')
+        else:
+            raise DriverError('append yield admitted a transaction outside its target')
+
     def _state_control(self, action, command):
         """Arm/disarm the typed admission intent; never a raw boolean.
 
@@ -3875,6 +4487,9 @@ class NativeSegmentDriver:
             return self._fused_control(command)
         if action == 'native_layer_group' and self.layer_groups is not None:
             return self._layer_group_control(command)
+        if (action == 'native_append_yield'
+                and getattr(self.controller, 'append_yield', None) is not None):
+            return self._append_yield_control(command)
         if action not in CONTROL_ACTIONS:
             raise DriverError('native-control-unknown-action')
         if action == 'cancel':
@@ -4080,6 +4695,8 @@ class NativeSegmentDriver:
             result['native_qsa_fused'] = self.qsa_fused.snapshot()
         if self.layer_groups is not None:
             result['native_layer_groups'] = self.layer_groups.snapshot()
+        if getattr(self.controller, 'append_yield', None) is not None:
+            result['append_yield'] = self.append_yield_record()
         # alpha-next item 1: stop receipts (engine-lifetime counts, never consulted).
         result['stop_receipts'] = self.stop_receipts()
         return result

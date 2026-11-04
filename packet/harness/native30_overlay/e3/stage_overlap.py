@@ -582,6 +582,13 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         """True when n+1 may be admitted now: stage 0 locally released n, nothing else pending."""
         if not (self.stage_selected and self.overlap_selected):
             return False
+        # a1-trunk (review 4 Nov, section 8): a pending yield admits no further bulk chunk.  The offer runs here, in the
+        # admission pass, so a request that arrived since the tick is seen before the lookahead takes the next chunk.
+        if self._yield is None:
+            self._yield_offer()
+        if self._yield is not None and not (self._yield['phase'] == 'append'
+                                            and transaction.request_uid == self._yield['append'].request_id):
+            return False
         if (self.error is not None or self.stop_kind is not None or self._native43 is not None
                 or self._control is not None or self._control_orphans
                 or self._route_exchange() is not None or self._return_pending is not None
@@ -593,6 +600,26 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         stage0 = 0 in frame.released or (self.early_successor and frame.stage[0]['phase'] in ('finalize', 'release'))
         return (not frame.dead and frame.chunk['tx'] == transaction and stage0
                 and frame.chunk['admission'] is not None and not frame.chunk['admission'].terminal)
+
+    # -- a1-trunk: the arrival classes of a pending yield (a read, see _yield_offer) ---
+    def _yield_foreign_command(self):
+        if not self._frames:
+            return super()._yield_foreign_command()
+        return any(kind != 'poll' and sequence not in self._seq_route for sequence, kind in self._inflight.items())
+
+    def _yield_arrival(self, records):
+        if not records:
+            return 'before-admission'
+        newest = self._frames[-1] if self._frames else None
+        if (newest is None or newest.chunk['tx'] != records[-1].transaction
+                or not newest.opened):
+            return 'reserved-unopened'
+        if len(self._frames) == 2:
+            older = self._frames[0]
+            return 'stage0-ahead' if older.released != {0, 1} else 'transfer-retirement'
+        if newest.released or set(newest.chunk['_receipts']) - set(newest.chunk['_receipt_acked']):
+            return 'transfer-retirement'
+        return 'in-chunk'
 
     # -- successor frame ------------------------------------------------------
     def _begin_successor(self):
@@ -696,6 +723,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             return False
         # The policy's native phase spans the chunks of one prefill, handoffs included.
         policy = getattr(self, 'auto_arm', None)
+        if self.append_yield_phase() == 'handback':
+            return False                         # a1-trunk: the yield's FULL window is FULL, as a prefill's tail is
         return policy is not None and not policy.manual_owned and policy.phase == 'native'
 
     def sync_decode_merge(self, scheduler):

@@ -78,6 +78,16 @@ def _layer_groups():
     return os.environ.get('FLASH_S5_LAYER_GROUPS', '0') == '1' and _qsa_fused()
 
 
+APPEND_YIELD_ENV = ('FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK',
+                    'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES')
+
+
+def _append_yield():
+    """returning-append: exposed only where all four launch bounds installed the yield."""
+    return (os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1'
+            and all(os.environ.get(name) is not None for name in APPEND_YIELD_ENV))
+
+
 def _stage_local():
     """The C0 switch is exposed only where the engine installed it."""
     return (os.environ.get('FLASH_S5_STAGE_LOCAL', '0') == '1'
@@ -176,6 +186,7 @@ class NativeControlClient:
                     or action == 'native_progress' and _progress_burst()
                     or action == 'native_qsa_fused' and _qsa_fused()
                     or action == 'native_layer_group' and _layer_groups()
+                    or action == 'native_append_yield' and _append_yield()
                     or action == 'native_stage_local' and _stage_local()):
                 raise NativeControlError('native-control-unknown-action')
         if self.pending is not None and action not in READ_ACTIONS:
@@ -297,6 +308,17 @@ class NativeControlClient:
         reply = await self._call({'action': 'native_qsa_fused', 'fused': fused})
         if reply.get('fused') is not fused:
             raise NativeControlError('native-control-qsa-fused-not-set')
+        return reply
+
+    async def native_append_yield(self, enabled):
+        """returning-append per-arm on/off (installed only); the engine re-checks idle FULL."""
+        if type(enabled) is not bool:
+            raise NativeControlError('native-control-append-yield-invalid')
+        if self.engine_epoch is None:
+            await self.status()
+        reply = await self._call({'action': 'native_append_yield', 'enabled': enabled})
+        if reply.get('enabled') is not enabled:
+            raise NativeControlError('native-control-append-yield-not-set')
         return reply
 
     async def native_layer_group(self, size):

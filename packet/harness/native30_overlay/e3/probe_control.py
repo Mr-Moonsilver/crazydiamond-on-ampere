@@ -726,6 +726,10 @@ def attach_native_router(args, app, env=None):
     # C0: the per-arm native_stage_local switch, only where it is installed.
     if auto_actions and env.get('FLASH_S5_STAGE_LOCAL', '0') == '1':
         auto_actions += ('native_stage_local',)
+    # returning-append: the per-arm native_append_yield switch, only where all four launch bounds installed the yield.
+    from native_overlap_control import APPEND_YIELD_ENV
+    if auto_actions and all(env.get(name) is not None for name in APPEND_YIELD_ENV):
+        auto_actions += ('native_append_yield',)
     install_owner_health(app)
 
     async def endpoint(request):

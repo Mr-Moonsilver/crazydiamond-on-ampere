@@ -303,6 +303,15 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     groups = env.get('FLASH_S5_LAYER_GROUPS', '0')
     if groups not in ('0', '1'):
         raise StartupError('invalid boolean setting: FLASH_S5_LAYER_GROUPS')
+    # returning-append (Option A, A1): all four yield bounds at launch, or none.
+    from scheduler_hooks import AppendYieldConfig
+    from e3_types import E3ContractError
+    try:
+        append_yield = AppendYieldConfig.from_env(env)
+    except E3ContractError as exc:
+        raise StartupError(str(exc)) from None
+    if append_yield is not None and auto != '1':
+        raise StartupError('FLASH_S5_APPEND_YIELD_* needs FLASH_S5_AUTO_ARM=1')
     if groups == '1' and fused != '1':
         raise StartupError('FLASH_S5_LAYER_GROUPS needs FLASH_S5_QSA_FUSED=1')
     # alpha-next-c1: the C1 rebind switches are refused unless C1 is on (fail closed, never silently ignored).
@@ -427,6 +436,8 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     if auto == '1':
         from native_auto_arm import install
         install(engine, driver, env)
+    if append_yield is not None:
+        controller.append_yield = append_yield
     if progress is not None:
         # Held-f receipts (and the burst candidate) attach to the auto policy only.
         driver.install_progress(progress)
