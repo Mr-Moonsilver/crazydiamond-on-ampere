@@ -54,7 +54,8 @@
    "module:GENERATED_SOURCES"
   ],
   "patches/s5_engine/engine_driver.py": [
-   "NativeSegmentDriver._admit_control"
+   "NativeSegmentDriver._admit_control",
+   "NativeSegmentDriver._next_receipt"
   ],
   "patches/s5_engine/executor_hooks.py": [
    "before_step_with_batch_queue",
@@ -147,6 +148,7 @@
     "test_stage1_step_engine",
     "test_attn_meta_control",
     "test_compose2_router",
+    "test_compose2_receipt_refused",
     "test_compose2_box",
     "test_compose2_queue",
     "test_compose2_robust_swap",
@@ -529,6 +531,7 @@
    "harness/test_compose2_box.py",
    "harness/test_compose2_queue.py",
    "harness/test_compose2_queue_names.py",
+   "harness/test_compose2_receipt_refused.py",
    "harness/test_compose2_router.py",
    "harness/test_hub_slot.py",
    "harness/test_native43_engine_death_h.py",
@@ -539,6 +542,9 @@
    "harness/test_stage1_step_robust_swap.py",
    "patches/s5_engine/attn_meta_batch.py",
    "patches/s5_engine/attn_meta_select.py",
+   "patches/s5_engine/native_overlap_worker.py",
+   "patches/s5_engine/native_qualification_frontend.py",
+   "patches/s5_engine/worker_hooks.py",
    "tools/attn_meta_b_derive.py",
    "tools/attn_meta_base_proof.py",
    "tools/attn_meta_box_vmc.py",
@@ -625,10 +631,7 @@
    "tools/stage1_step_spec.py",
    "tools/stage1_step_staging_check.py",
    "tools/stage1_step_tools_derive.py",
-   "tools/strict_parallel.py",
-   "patches/s5_engine/native_overlap_worker.py",
-   "patches/s5_engine/native_qualification_frontend.py",
-   "patches/s5_engine/worker_hooks.py"
+   "tools/strict_parallel.py"
   ],
   "probes": [
    {
@@ -698,7 +701,8 @@
    "module:GENERATED_SOURCES"
   ],
   "e3/engine_driver.py": [
-   "NativeSegmentDriver._admit_control"
+   "NativeSegmentDriver._admit_control",
+   "NativeSegmentDriver._next_receipt"
   ],
   "e3/executor_hooks.py": [
    "before_step_with_batch_queue",
@@ -799,7 +803,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "eecf02356c74bcc54c7e49f60a2e0155db61e980",
+ "source_commit": "8a9c6346616d18307f0757f2256557d282b8e1c5",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/attn_meta_arms.py",
@@ -829,6 +833,7 @@
   "A\tharness/runs/q18a_stage1_step.draft.sh",
   "A\tharness/runs/q18a_stage1_step_declare.sh",
   "A\tharness/runs/q18a_stage1_step_settings.sh",
+  "M\tharness/selftest.py",
   "A\tharness/stage1_step_arms.py",
   "A\tharness/stage1_step_gate.py",
   "A\tharness/stage1_step_read.py",
@@ -853,8 +858,11 @@
   "A\tharness/test_compose2_box.py",
   "A\tharness/test_compose2_queue.py",
   "A\tharness/test_compose2_queue_names.py",
+  "A\tharness/test_compose2_receipt_refused.py",
   "A\tharness/test_compose2_router.py",
+  "M\tharness/test_e3_package.py",
   "A\tharness/test_hub_slot.py",
+  "M\tharness/test_native35_performance.py",
   "A\tharness/test_native43_engine_death_h.py",
   "A\tharness/test_stage1_step_box.py",
   "A\tharness/test_stage1_step_engine.py",
@@ -863,6 +871,21 @@
   "A\tharness/test_stage1_step_robust_swap.py",
   "A\tpatches/s5_engine/attn_meta_batch.py",
   "A\tpatches/s5_engine/attn_meta_select.py",
+  "M\tpatches/s5_engine/decode_probe.py",
+  "M\tpatches/s5_engine/engine_driver.py",
+  "M\tpatches/s5_engine/executor_hooks.py",
+  "M\tpatches/s5_engine/make_s5_overlap.py",
+  "M\tpatches/s5_engine/native_candidate_review.json",
+  "M\tpatches/s5_engine/native_overlap_control.py",
+  "M\tpatches/s5_engine/native_overlap_session.py",
+  "M\tpatches/s5_engine/native_overlap_worker.py",
+  "M\tpatches/s5_engine/native_qualification_frontend.py",
+  "M\tpatches/s5_engine/probe_control.py",
+  "M\tpatches/s5_engine/s5_startup.py",
+  "M\tpatches/s5_engine/scheduler_hooks.py",
+  "M\tpatches/s5_engine/stage_overlap.py",
+  "M\tpatches/s5_engine/worker_hooks.py",
+  "M\ttools/alpha_next_c1b_queue_pins.json",
   "A\ttools/attn_meta_b_derive.py",
   "A\ttools/attn_meta_base_proof.py",
   "A\ttools/attn_meta_box_vmc.conf.example",
@@ -983,25 +1006,7 @@
   "A\ttools/stage1_step_targeted.sh",
   "A\ttools/stage1_step_tools_derive.py",
   "A\ttools/strict_lanes3.alpha-next-c1b.json",
-  "A\ttools/strict_parallel.py",
-  "M\tharness/selftest.py",
-  "M\tharness/test_e3_package.py",
-  "M\tharness/test_native35_performance.py",
-  "M\tpatches/s5_engine/decode_probe.py",
-  "M\tpatches/s5_engine/engine_driver.py",
-  "M\tpatches/s5_engine/executor_hooks.py",
-  "M\tpatches/s5_engine/make_s5_overlap.py",
-  "M\tpatches/s5_engine/native_candidate_review.json",
-  "M\tpatches/s5_engine/native_overlap_control.py",
-  "M\tpatches/s5_engine/native_overlap_session.py",
-  "M\tpatches/s5_engine/native_overlap_worker.py",
-  "M\tpatches/s5_engine/native_qualification_frontend.py",
-  "M\tpatches/s5_engine/probe_control.py",
-  "M\tpatches/s5_engine/s5_startup.py",
-  "M\tpatches/s5_engine/scheduler_hooks.py",
-  "M\tpatches/s5_engine/stage_overlap.py",
-  "M\tpatches/s5_engine/worker_hooks.py",
-  "M\ttools/alpha_next_c1b_queue_pins.json"
+  "A\ttools/strict_parallel.py"
  ],
  "tools": [
   "attn_meta_b_derive.py",
