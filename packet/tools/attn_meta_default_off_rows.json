@@ -1,0 +1,134 @@
+{
+ "schema": "attn-meta-default-off-rows/1",
+ "base": "fbb9123e",
+ "engine": "patches/s5_engine",
+ "added": [
+  "attn_meta_batch.py",
+  "attn_meta_select.py"
+ ],
+ "exempt": [
+  "native_candidate_review.json"
+ ],
+ "rows": [
+  {
+   "file": "decode_probe.py",
+   "current": "BUILD_ONLY_SOURCES = ('operation_source',)\nGENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'native_auto_arm', 'admission_metadata', 'worker_bridge', 'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma', 'native_source', 'row1_oracle', 'row1_exactness', 'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers', 'native_overlap_metrics', 'native_overlap_worker', 'native_overlap_control', 'native_overlap_session', 'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement', 'native_readiness', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap', 'attn_meta_batch', 'attn_meta_select')\n",
+   "base": "BUILD_ONLY_SOURCES = ('operation_source',)\nGENERATED_SOURCES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_backend', 'lane_hooks', 'async_handoff', 'native_resources', 'engine_driver', 'executor_hooks', 'scheduler_hooks', 's5_startup', 'native_auto_arm', 'admission_metadata', 'worker_bridge', 'graph_router', 'graph_hooks', 'qsa_operation', 'sparse_history_dma', 'native_source', 'row1_oracle', 'row1_exactness', 'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers', 'native_overlap_metrics', 'native_overlap_worker', 'native_overlap_control', 'native_overlap_session', 'native_prefill_offers', 'native_placement', 'native_measurement', 'native_qualification', 'native_qualification_frontend', 'native_observation', 'native_graph_placement', 'native_readiness', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap')\n",
+   "why": "module list: names the two packaged modules (packaging only; never imported with the switch unset)"
+  },
+  {
+   "file": "engine_driver.py",
+   "current": "            worker_action = command.get('worker_action')\n            from native_overlap_worker import QUALIFICATION_ACTIONS, attn_meta_actions\n            if worker_action not in QUALIFICATION_ACTIONS and worker_action not in attn_meta_actions():\n",
+   "base": "            worker_action = command.get('worker_action')\n            from native_overlap_worker import QUALIFICATION_ACTIONS\n            if worker_action not in QUALIFICATION_ACTIONS:\n",
+   "why": "membership in attn_meta_actions(), which is () with the switch unset: the same refusal as before"
+  },
+  {
+   "file": "engine_driver.py",
+   "current": "            if worker_action in CONTROL_LIVE_COHORT_QUALIFICATION:\n                return\n            if worker_action == 'attn_meta_read':\n                return\n            if worker_action == 'attn_meta_select':\n                # attn-meta's per-arm switch: paused idle FULL only, the rule native_layer_group holds (no split\n                # route, no transaction, no native work, no retained row, no armed admission, no active policy, no\n                # recording); the live/inflight and paused checks above already ran.\n                policy = getattr(self, 'auto_arm', None)\n                recording = self.progress is not None and self.progress.recording\n                if (self._split_ready or self.tx is not None or self.controller.active\n                        or self._retained is not None or self._admission_intent is not None\n                        or (policy is not None and policy.active) or recording):\n                    raise DriverError('native-attn-meta-requires-paused-idle-full')\n",
+   "base": "            if worker_action in CONTROL_LIVE_COHORT_QUALIFICATION:\n",
+   "why": "branches reached only for worker_action attn_meta_*, which the first check refuses with the switch unset"
+  },
+  {
+   "file": "make_s5_overlap.py",
+   "current": "              # C1: two chunks in flight (FLASH_S5_STAGE_OVERLAP).\n              'stage_overlap',\n              # attn-meta (FLASH_ATTN_META_GDN_BATCH, default off): imported by s5_startup / native_overlap_worker only under it.\n              'attn_meta_batch', 'attn_meta_select')\n",
+   "base": "              # C1: two chunks in flight (FLASH_S5_STAGE_OVERLAP).\n              'stage_overlap')\n",
+   "why": "module list: the two modules packaged (files added to the overlay, imported only under the switch)"
+  },
+  {
+   "file": "make_s5_overlap.py",
+   "current": "# the manifest and refuses any file outside it.\nLAUNCHER_LIST_EXEMPT = ('native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap',\n                        'attn_meta_batch', 'attn_meta_select')\n",
+   "base": "# the manifest and refuses any file outside it.\nLAUNCHER_LIST_EXEMPT = ('native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap')\n",
+   "why": "launcher-list exemption for the two modules (as handler_anatomy / stage_overlap): the launcher stays byte-identical"
+  },
+  {
+   "file": "native_overlap_control.py",
+   "current": "                         'row1_configure', 'row1_evidence')\n# attn-meta (FLASH_ATTN_META_GDN_BATCH=1, default off): the per-arm selector's worker actions ride the qualification\n# intent (paused idle FULL for the select, enforced by the engine driver); exposed only where the switch is on.\nATTN_META_ACTIONS = ('attn_meta_select', 'attn_meta_read')\n",
+   "base": "                         'row1_configure', 'row1_evidence')\n",
+   "why": "a constant nothing reads with the switch unset"
+  },
+  {
+   "file": "native_overlap_control.py",
+   "current": "            and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')\n\n\ndef attn_meta_actions():\n    \"\"\"The attn-meta selector actions, only where the switch installed it (else none).\"\"\"\n    return ATTN_META_ACTIONS if os.environ.get('FLASH_ATTN_META_GDN_BATCH', '0') == '1' else ()\n",
+   "base": "            and os.environ.get('FLASH_S5_AUTO_ARM', '0') == '1')\n",
+   "why": "a function returning () with the switch unset"
+  },
+  {
+   "file": "native_overlap_control.py",
+   "current": "        \"\"\"Dispatch the exact qualification action; never supply its verdict.\"\"\"\n        if worker_action not in QUALIFICATION_ACTIONS and worker_action not in attn_meta_actions():\n",
+   "base": "        \"\"\"Dispatch the exact qualification action; never supply its verdict.\"\"\"\n        if worker_action not in QUALIFICATION_ACTIONS:\n",
+   "why": "membership in () with the switch unset: the same refusal as before"
+  },
+  {
+   "file": "native_overlap_control.py",
+   "current": "\n__all__ = ['ACTIONS', 'ADMISSION_PHASES', 'ATTN_META_ACTIONS', 'INTENT_ACTIONS', 'NATIVE_ADMISSION_PHASES',\n           'attn_meta_actions',\n",
+   "base": "\n__all__ = ['ACTIONS', 'ADMISSION_PHASES', 'INTENT_ACTIONS', 'NATIVE_ADMISSION_PHASES',\n",
+   "why": "__all__ names"
+  },
+  {
+   "file": "native_overlap_worker.py",
+   "current": "                         'row1_configure', 'row1_evidence')\n# attn-meta (FLASH_ATTN_META_GDN_BATCH=1, default off): the per-arm selector (patches/s5_engine/attn_meta_select.py),\n# answered in the row's ``qualification`` mapping; known only where the switch is on.\nATTN_META_ACTIONS = ('attn_meta_select', 'attn_meta_read')\n_ATTN_META_FIELDS = {'attn_meta_select': {'action', 'on', 'engine_epoch', 'route_generation'},\n                     'attn_meta_read': {'action', 'engine_epoch', 'route_generation'}}\n\n\ndef attn_meta_actions():\n    return ATTN_META_ACTIONS if os.environ.get('FLASH_ATTN_META_GDN_BATCH', '0') == '1' else ()\n",
+   "base": "                         'row1_configure', 'row1_evidence')\n",
+   "why": "constants and a function returning () with the switch unset"
+  },
+  {
+   "file": "native_overlap_worker.py",
+   "current": "    action = command.get('action')\n    if action not in ACTIONS and action not in QUALIFICATION_ACTIONS and action not in attn_meta_actions():\n",
+   "base": "    action = command.get('action')\n    if action not in ACTIONS and action not in QUALIFICATION_ACTIONS:\n",
+   "why": "membership in () with the switch unset: the same refusal as before"
+  },
+  {
+   "file": "native_overlap_worker.py",
+   "current": "                    qualification=_qualification(runner, command), **common)\n    if action in attn_meta_actions():\n        return _row(worker, native, 'qualification', command, clock,\n                    qualification=_attn_meta(runner, command), **common)\n",
+   "base": "                    qualification=_qualification(runner, command), **common)\n",
+   "why": "a branch on membership in (): never taken with the switch unset"
+  },
+  {
+   "file": "native_overlap_worker.py",
+   "current": "\ndef _attn_meta(runner, command):\n    \"\"\"The attn-meta selector's typed select / read on this rank; counters and wrapper order, never a verdict.\"\"\"\n    action = command.get('action')\n    if set(command) != _ATTN_META_FIELDS[action]:\n        raise NativeOverlapUnavailable('native-attn-meta-fields-differ')\n    import attn_meta_select\n    try:\n        if action == 'attn_meta_select':\n            if type(command['on']) is not bool:\n                raise NativeOverlapUnavailable('native-attn-meta-select-not-bool')\n            record = attn_meta_select.select(runner, command['on'])\n        else:\n            record = attn_meta_select.read(runner)\n    except attn_meta_select.AttnMetaSelectError as error:\n        raise NativeOverlapUnavailable('native-' + str(error)) from None\n    result = copy.deepcopy(record)\n    result.update(worker_action=action, graded_by='attn_meta_select', engine_supplied_verdict=False)\n    return result\n\n\n",
+   "base": "\n",
+   "why": "a function called only from that branch"
+  },
+  {
+   "file": "native_overlap_worker.py",
+   "current": "__all__ = [\n    'ACTIONS', 'ATTN_META_ACTIONS', 'CLOCK_BASIS', 'NativeCensus', 'attn_meta_actions', 'NativeOverlapUnavailable',\n",
+   "base": "__all__ = [\n    'ACTIONS', 'CLOCK_BASIS', 'NativeCensus', 'NativeOverlapUnavailable',\n",
+   "why": "__all__ names"
+  },
+  {
+   "file": "probe_control.py",
+   "current": "        NativeControlError,\n        attn_meta_actions,\n",
+   "base": "        NativeControlError,\n",
+   "why": "an import of a function"
+  },
+  {
+   "file": "probe_control.py",
+   "current": "            action = command.get('action')\n            if action in QUALIFICATION_ACTIONS or action in attn_meta_actions():\n",
+   "base": "            action = command.get('action')\n            if action in QUALIFICATION_ACTIONS:\n",
+   "why": "membership in () with the switch unset: the same routing as before"
+  },
+  {
+   "file": "s5_startup.py",
+   "current": "    env = os.environ if env is None else env\n    if not is_profiling and env.get('FLASH_ATTN_META_GDN_BATCH', '0') != '0':\n        # attn-meta (default off): its instance wrapper goes on first, before any RPC (handler anatomy installs at the\n        # first RPC and wraps it); a refusal fails startup, never a skipped wrapper. Unset or 0: no import.\n        from attn_meta_select import startup as _attn_meta_startup\n        _attn_meta_startup(runner, env=env)\n",
+   "base": "    env = os.environ if env is None else env\n",
+   "why": "a block run only when the switch is set and not profiling"
+  },
+  {
+   "file": "native_qualification_frontend.py",
+   "current": "# attn-meta (FLASH_ATTN_META_GDN_BATCH=1, default off): the per-arm selector's two worker actions, exact payloads; allowlisted\n# only where the switch is on (attn_meta_actions), so with it off this adapter refuses them exactly as before.\nATTN_META_PAYLOAD_FIELDS = {'attn_meta_select': {'on'}, 'attn_meta_read': set()}\n\n\ndef attn_meta_actions():\n    return tuple(ATTN_META_PAYLOAD_FIELDS) if os.environ.get('FLASH_ATTN_META_GDN_BATCH', '0') == '1' else ()\n\n\n",
+   "base": "",
+   "why": "a constant and a function; attn_meta_actions() is () with the switch unset, so nothing below reads the table"
+  },
+  {
+   "file": "native_qualification_frontend.py",
+   "current": "    _require(command.get('worker_action') in WORKER_ACTIONS or command.get('worker_action') in attn_meta_actions(),",
+   "base": "    _require(command.get('worker_action') in WORKER_ACTIONS,",
+   "why": "'x in ()' is False with the switch unset: the allowlist is the base's"
+  },
+  {
+   "file": "native_qualification_frontend.py",
+   "current": "    attn = ATTN_META_PAYLOAD_FIELDS.get(command['worker_action']) if command['worker_action'] in attn_meta_actions() else None\n    if attn is not None:\n        _require(set(payload) == attn, 'worker-payload-fields-differ')\n        _require(type(payload.get('on', False)) is bool, 'worker-payload-on-not-a-bool')\n",
+   "base": "",
+   "why": "attn is None with the switch unset (attn_meta_actions() is ()): the block does nothing"
+  }
+ ]
+}

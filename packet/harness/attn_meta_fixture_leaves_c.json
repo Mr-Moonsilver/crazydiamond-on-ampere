@@ -1,0 +1,45 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "attn-meta chain c (found by the 3 Nov dry run of chain b's precheck over its kept build: CHECK seams FAIL, 12 mocked seams not named; chain a and chain b never reached that step): the mocks of test_attn_meta_control, test_attn_meta_box, test_attn_meta_box_b and test_attn_meta_robust_swap. Mutants prove a test bites; stand-ins isolate one rule. No box or GPU evidence.",
+ "inherits": [
+  "attn_meta_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "control-validator-and-admission-mutants",
+   "test": "test_attn_meta_control",
+   "replaces": "qf.validate_worker and NativeSegmentDriver._admit_control: wrapped by deliberately broken versions (any attn action, payload unchecked, switch ignored; no attn clause, no paused check), each inside one mutant subtest",
+   "equivalence": "The mutants exist to show the refusal tests fail when the rule is gone. Every positive case in the suite calls the real validator and the real admission.",
+   "cannot_prove": "Nothing beyond the tests biting: the real admission under a real paused FULL engine is the box run and the VM run.",
+   "more_convenient": false,
+   "box_evidence": false
+  },
+  {
+   "name": "box-selection-and-rule-mutants",
+   "test": "test_attn_meta_box",
+   "replaces": "box._Selecting (a subclass that releases without sending the select) and box.attn_check (the real rule with its selection-leak or engagement finding removed), each inside one mutant test",
+   "equivalence": "The mutants exist to show the release check and the grade verdicts depend on the real rule. Every positive case uses the real class and the real rule.",
+   "cannot_prove": "That a real worker honours the select: VM (attn-meta-vm-c) and box.",
+   "more_convenient": false,
+   "box_evidence": false
+  },
+  {
+   "name": "box-b-binding-stand-ins",
+   "test": "test_attn_meta_box_b",
+   "replaces": "box.AM_GRADE and box.AM_REPORT (the amendment A grade and report under the c1b layer: canned verdicts and text); am.main (a recorder of what is bound during main); c1b.RAW_PROGRESS_RECEIPTS and c1b.RAW_ASSEMBLE (canned raw receipts, so only the open-rows rule decides); am.grade (set to box.grade, the real c1b-layer grade, so the inherited amendment A cases run through it)",
+   "equivalence": "The question is the c1b layer alone: what it binds for one grade and restores, and how the open-rows rule moves a verdict. CoreGrade runs the amendment A cases through box.grade with the real am.grade beneath it, so the layer's stand-ins do not hide that grade.",
+   "cannot_prove": "That real progress lines from a box run produce these receipts: the box run. The composition of grade and report on a real record is the post-run read.",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "robust-swap-map-and-receipt-stand-ins",
+   "test": "test_attn_meta_robust_swap",
+   "replaces": "swap.SUPERSEDED (a map with a fifth id, which must be refused) and swap.default_off (a canned verdict, so the rc rules are tested without a run of the default-off proof)",
+   "equivalence": "The chain runs the real map and the real default_off in every focused and composition-test step; a failing default-off there is INC or FAIL by the rule these cases test.",
+   "cannot_prove": "That the default-off proof itself passes on this tree: tools/attn_meta_default_off.py and test_attn_meta_default_off.",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}

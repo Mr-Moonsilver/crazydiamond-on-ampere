@@ -704,6 +704,7 @@ def attach_native_router(args, app, env=None):
         QUALIFICATION_ACTIONS,
         NativeControlClient,
         NativeControlError,
+        attn_meta_actions,
     )
     from native_overlap_session import NativeOverlapSession, NativeOverlapSessionError
     router = APIRouter()
@@ -759,7 +760,7 @@ def attach_native_router(args, app, env=None):
             elif state['engine'] is not engine:
                 raise ProbeControlError('engine-client-incarnation-changed')
             action = command.get('action')
-            if action in QUALIFICATION_ACTIONS:
+            if action in QUALIFICATION_ACTIONS or action in attn_meta_actions():
                 result = await state['control'].qualification(
                     action, command.get('payload'))
             elif action in NATIVE_SESSION_ACTIONS or action in auto_actions:
