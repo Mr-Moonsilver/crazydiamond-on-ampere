@@ -191,7 +191,7 @@ class ArmEnd(Base):
             self.assertEqual(row['readers_alive'], [])
             self.assertGreater(row['ttft_s'], 0)
         ok, reasons = box.smoke_check(record)
-        self.assertEqual(reasons, ['smoke-no-native-chunks', 'smoke-no-yield-served'], 'everything but the native chunks and the yield, which this fixture does not run')
+        self.assertEqual(reasons, ['smoke-cow-fast-not-engaged', 'smoke-host-filter-not-engaged', 'smoke-no-native-chunks', 'smoke-no-yield-served'], 'everything but the native chunks, the yield and the copies they would make, which this fixture does not run')
         self.assertFalse(ok)
 
     async def test_an_off_arm_sends_enabled_false_and_several_return_at_once(self):
