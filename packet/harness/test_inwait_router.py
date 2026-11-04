@@ -28,7 +28,7 @@ import probe_control
 HERE = Path(__file__).resolve().parent
 SETTINGS = HERE / 'runs' / 'q18a_inwait_settings.sh'
 RUN = 'inwait-router'
-SAMPLE = dict(mode='burst', fused=True, size=2, local=True, overlap=True, defer_bind=True, lazy_recv=True, decode_merge='chunk', inwait=True)
+SAMPLE = dict(mode='burst', fused=True, size=2, local=True, overlap=True, defer_bind=True, lazy_recv=True, decode_merge='chunk', inwait=True, early_successor=True)
 
 
 def settings_env():
@@ -116,6 +116,7 @@ class Exposure(Base):
                 try:
                     if action == 'qualification_worker':
                         out[am.SELECT] = worker.call(am.SELECT, {'on': True})
+                        out['slots_fast'] = worker.call(am.SELECT, {'on': True, 'slots_fast': False})
                         out[am.READ] = worker.call(am.READ, {})
                     else:
                         out[action] = client.call(action, **{name: SAMPLE[name] for name in fields})
@@ -124,7 +125,7 @@ class Exposure(Base):
             return out
         out = await self.off_loop(smoke)
         self.assertEqual({k: v for k, v in out.items() if type(v) is str}, {})
-        self.assertEqual(set(out), {a for a, _f in box.ACTIONS} - {'qualification_worker'} | {am.SELECT, am.READ})
+        self.assertEqual(set(out), {a for a, _f in box.ACTIONS} - {'qualification_worker'} | {am.SELECT, am.READ, 'slots_fast'})
 
 
 class BoxCalls(Base):
@@ -145,7 +146,7 @@ class BoxCalls(Base):
             client.resume()
             args = types.SimpleNamespace(url=self.bridge.url, run_id=RUN, epoch=client.epoch, control_timeout_s=60)
             return record, None, status, am.end_read(args)
-        for sel in ('iw1', 'iw0', 'iw1'):
+        for sel in ('nx1', 'nx0', 'nx1'):
             row = rows[sel]
             with self.subTest(sel=sel):
                 record, exc, status, end = await self.off_loop(lambda row=row: one(row))
@@ -155,6 +156,10 @@ class BoxCalls(Base):
                 self.assertEqual((self.driver.lazy_recv, self.driver.decode_merge), (row['lazy_recv'], row['decode_merge']))
                 self.assertIs(self.driver.defer_bind, True)
                 self.assertEqual((record['inwait']['acknowledged'], self.driver.inwait), (row['inwait'], row['inwait']))
+                self.assertEqual((record['inwait']['early_acknowledged'], self.driver.early_successor), (row['next_levers'], row['next_levers']))
+                self.assertEqual({r['after']['slots_fast']['selected'] for r in record['slots_fast']['select'].values()}, {row['next_levers']})
+                self.assertEqual({r['counters']['slots_fast']['selected'] for r in end['read'].values()}, {row['next_levers']})
+                self.assertEqual(box.slots_calls(record['slots_fast']['select'], end['read']), dict.fromkeys(('0', '1', '2', '3'), 0))
                 view = box.stage_view(status)
                 self.assertIs(view['step_iw_selected'], row['inwait'])
                 self.assertIs(view['step_iw_installed'], True)

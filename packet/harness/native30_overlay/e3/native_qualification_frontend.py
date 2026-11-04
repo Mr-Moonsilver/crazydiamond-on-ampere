@@ -148,8 +148,10 @@ def validate_worker(command):
                      'worker-payload-enabled-not-a-bool')
     attn = ATTN_META_PAYLOAD_FIELDS.get(command['worker_action']) if command['worker_action'] in attn_meta_actions() else None
     if attn is not None:
-        _require(set(payload) == attn, 'worker-payload-fields-differ')
+        extra = {'slots_fast'} if command['worker_action'] == 'attn_meta_select' and os.environ.get('FLASH_S5_INWAIT', '0') == '1' else set()
+        _require(set(payload) - extra == attn, 'worker-payload-fields-differ')
         _require(type(payload.get('on', False)) is bool, 'worker-payload-on-not-a-bool')
+        _require(type(payload.get('slots_fast', False)) is bool, 'worker-payload-slots-fast-not-a-bool')
     return command
 
 

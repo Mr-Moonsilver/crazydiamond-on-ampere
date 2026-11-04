@@ -6,6 +6,7 @@
   "test_attn_meta_control",
   "test_compose2_receipt_refused",
   "test_inwait_engine",
+  "test_inwait_slots",
   "test_inwait_router"
  ],
  "refusal_tests": [],

@@ -542,7 +542,10 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         self.inwait_installed = inwait_enabled(os.environ)
         self.inwait = False
         self.inwait_counters = dict(direct_opens=0, direct_releases=0, polls_paced=0, refused_releases=0,
-                                    refused_in_wait=0, wait_applied={}, wait_sent={})
+                                    refused_in_wait=0, early_begins=0, wait_applied={}, wait_sent={})
+        # inwait build-2 (DESIGN-2): admit n+1 once n's stage 0 reached its finalize, not at its release.  Off until selected;
+        # _frame_ready still holds n+1's open until stage 0 released n, so only the engine's frame comes earlier.
+        self.early_successor = False
         self.inwait_refused = {}          # refused sends per worker method, on every arm of an installed engine
         self._inwait_refused_chunk = {}
         self._inwait_poll_ns = {0: None, 1: None}
@@ -587,7 +590,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         if len(self._frames) != 1:
             return False
         frame = self._frames[0]
-        return (not frame.dead and frame.chunk['tx'] == transaction and 0 in frame.released
+        stage0 = 0 in frame.released or (self.early_successor and frame.stage[0]['phase'] in ('finalize', 'release'))
+        return (not frame.dead and frame.chunk['tx'] == transaction and stage0
                 and frame.chunk['admission'] is not None and not frame.chunk['admission'].terminal)
 
     # -- successor frame ------------------------------------------------------
@@ -607,6 +611,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         frame = self._new_frame()
         frame.successor_of = older
         frame.early = False
+        if 0 not in older.released:
+            self.inwait_counters['early_begins'] += 1
         if self.overlap_observer is not None:
             frame.stats['obs_successor_of'] = older.chunk['tx'].txn_seq
         frame.expected_lanes = {rank: replace(older.chunk['lanes'][rank],
@@ -1236,8 +1242,16 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-inwait-invalid')
             if inwait and (overlap is not True or defer is not True):
                 raise DriverError('native-stage-inwait-needs-defer-bind')
+        early = command.get('early_successor', None)
+        if 'early_successor' in command:
+            if not self.inwait_installed:
+                raise DriverError('native-stage-inwait-not-installed')
+            if type(early) is not bool:
+                raise DriverError('native-stage-early-successor-invalid')
+            if early and inwait is not True:
+                raise DriverError('native-stage-early-successor-needs-inwait')
         reply = super()._stage_control({k: v for k, v in command.items()
-                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait')})
+                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -1278,6 +1292,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             self.inwait = inwait
             self._inwait_poll_ns = {0: None, 1: None}
             reply.update(inwait=inwait, previous_inwait=previous_inwait)
+            self.early_successor = bool(inwait and early)
+            reply.update(early_successor=self.early_successor)
         return reply
 
     def stage_status(self):
@@ -1295,7 +1311,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                                                     counters=dict(self.decode_step_counters))
         if self.inwait_installed:
             counters = self.inwait_counters
-            result['overlap']['inwait'] = dict(installed=True, selected=self.inwait, refused=dict(self.inwait_refused),
+            result['overlap']['inwait'] = dict(installed=True, selected=self.inwait, early_successor=self.early_successor,
+                                               refused=dict(self.inwait_refused),
                                                counters=dict(counters, wait_applied=dict(counters['wait_applied']),
                                                              wait_sent=dict(counters['wait_sent'])))
         if self.overlap_observer is not None:

@@ -32,28 +32,28 @@ READ_SCHEMA = 'inwait-read/1'
 ARM_SCHEMA = 'inwait-arm/1'
 APPEND_REASON = 'append-moved-the-fused-group-or-stage-counters'
 ACTIONS = (('pause', ()), ('native_progress', ('mode',)), ('native_qsa_fused', ('fused',)), ('native_layer_group', ('size',)),
-           ('native_stage_local', ('local', 'overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait')), ('qualification_worker', ('worker_action', 'payload')),
+           ('native_stage_local', ('local', 'overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor')), ('qualification_worker', ('worker_action', 'payload')),
            ('release_auto_arm', ()), ('resume', ()), ('status', ()))
 AXIS = ("alpha-next's C0 on/off names and c1's C1-on/off names in this record (over_c0_off, c0_decode_delta, vs_c1_off, memory_c0_on_vs_off, min_free_below_c0_off_mib, C1-on/C1-off table headings) name "
-        'iw1 (in-wait on) against its matched iw0; every arm is C1 defer, C0 local, attn-meta and L1 + L2 selected')
-OBSERVE_ROLE = {'iw0': 'measurement (C1 defer, attn-meta and L1 + L2, in-wait off)', 'iw1': 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on)'}
+        'nx1 (in-wait on, next levers on) against its matched nx0 (in-wait on, next levers off); every arm is C1 defer, C0 local, attn-meta and L1 + L2 selected')
+OBSERVE_ROLE = {'nx0': 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on)', 'nx1': 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on, early successor, fast slot mappings)'}
 NOT_COVERED = ('numerics: this queue runs no fixed-schedule check; these arms are speed reads, batch 8 against 2 x 4 changes batch composition so OUTSIDE on merged arms is expected and is not a defect, '
                'and the fixed-schedule check owed for C1 defer stays owed')
 BASIS = ('one engine, FLASH_ATTN_META_GDN_BATCH=1 FLASH_S5_LAZY_RECV=1 FLASH_S5_DECODE_MERGE=1 FLASH_S5_INWAIT=1 for the whole run, every prefill arm C1 defer with fused, group size 2, attn-meta and L1 + L2 '
          'selected and in-wait on or off by typed control; one decode-only baseline first; band 1 at 65,445 tokens live over two counterbalanced rounds and solo once')
 SCOPE = ("in-wait handoffs on compose-2's engine; selection, counters, crash, OOM and one in flight are gated; speed, decode, per-step thread time and memory are reads; "
          'not a release assessment and not a numerics result')
-IW_COUNTERS = ('direct_opens', 'direct_releases', 'polls_paced', 'refused_releases', 'refused_in_wait')
+IW_COUNTERS = ('direct_opens', 'direct_releases', 'polls_paced', 'refused_releases', 'refused_in_wait', 'early_begins')
 
 
 def table_view(sel=None):
-    """This table as alpha-next's code reads alpha_next_arms: the candidate axis is iw1 against iw0 (c0 'off' = iw0; c0 'on' = iw1). For one arm the label and selection
+    """This table as alpha-next's code reads alpha_next_arms: the candidate axis is nx1 against nx0 (c0 'off' = nx0; c0 'on' = nx1). For one arm the label and selection
     carry ``sel`` whatever value alpha-next passes; the record keeps c0 'on'."""
     names = {k: getattr(T, k) for k in c1._TABLE_NAMES}
-    sel_of = dict({s: s for s in T.SELECTIONS}, off='iw0', on='iw1')
+    sel_of = dict({s: s for s in T.SELECTIONS}, off='nx0', on='nx1')
 
     def axis(value):
-        return 'off' if value == 'iw0' else 'on'
+        return 'off' if value == 'nx0' else 'on'
 
     def arms(part=None):
         return [dict(r, c0=axis(r['c1'])) for r in T.arms(part)]
@@ -77,20 +77,34 @@ def sb_bindings():
 
 # --- the arm --------------------------------------------------------------------------------------------
 
+def slots_into(client, attn, on, record):
+    """Inside the arm's pause: attn_meta_select with slots_fast, every rank proved as asked; attn-meta's own select follows and keeps it."""
+    rows = am.Worker(client.control, client.run_id, client.epoch).call(am.SELECT, {'on': attn, 'slots_fast': on})
+    record['slots_fast'] = dict(requested=on, select=am._keyed(rows))
+    if any(((r.get('after') or {}).get('slots_fast') or {}).get('selected') is not on for r in rows.values()):
+        raise ValueError('slots-fast-selection-unproved')
+
+
 class _InwaitSelecting:
     """The arm's client with ``inwait`` on the stage command; the reply's value goes to the record, and the grade reads it."""
 
-    def __init__(self, client, inwait, record):
-        self._client, self._inwait, self._record = client, inwait, record
+    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None):
+        self._client, self._inwait, self._record, self._next, self._attn = client, inwait, record, next_levers, attn
+        self._raw, self._slots_sent = client if raw is None else raw, False
 
     def __getattr__(self, name):
         return getattr(self._client, name)
 
     def call(self, action, **fields):
+        if action == 'release_auto_arm' and not self._slots_sent:
+            # Build-2: the rank's fast slot mappings, inside the arm's pause, before attn-meta's own select.
+            self._slots_sent = True
+            slots_into(self._raw, self._attn, self._next, self._record)
         if action != STAGE_CONTROL:
             return self._client.call(action, **fields)
-        reply = self._client.call(action, **dict(fields, inwait=self._inwait))
-        self._record['inwait'] = dict(requested=self._inwait, acknowledged=reply.get('inwait') if type(reply) is dict else None)
+        reply = self._client.call(action, **dict(fields, inwait=self._inwait, early_successor=self._next))
+        self._record['inwait'] = dict(requested=self._inwait, acknowledged=reply.get('inwait') if type(reply) is dict else None,
+                                      early_requested=self._next, early_acknowledged=reply.get('early_successor') if type(reply) is dict else None)
         return reply
 
 
@@ -102,11 +116,13 @@ def release_compose(row):
         run_inner = inner(size, local)
 
         def run(client, record, mode):
-            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record), record, mode)
+            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client), record, mode)
             if (record.get('attn_meta') or {}).get('select') is None:
                 raise ValueError('attn-meta-select-not-sent')
             if record.get('inwait') is None:
                 raise ValueError('inwait-field-not-sent')
+            if record.get('slots_fast') is None:
+                raise ValueError('slots-fast-not-sent')
         return run
     return factory
 
@@ -173,6 +189,18 @@ def append_rule(record):
     return True
 
 
+def slots_calls(select, end):
+    """Per rank: fast slot mapping calls in the arm, end read minus select; None when either is missing."""
+    if not select or not end:
+        return None
+    out = {}
+    for rank in sorted(set(select) | set(end)):
+        a = (((select.get(rank) or {}).get('after') or {}).get('slots_fast') or {}).get('calls')
+        b = (((end.get(rank) or {}).get('counters') or {}).get('slots_fast') or {}).get('calls')
+        out[rank] = b - a if type(a) is int and type(b) is int else None
+    return out
+
+
 def run_arm(a):
     """alpha-next's arm, C0 local ('on'), C1 defer, with this arm's selection; the append rule; then attn-meta's end read. ``a.out`` = the arm's record + attn_meta."""
     name = T.label(a.c1, a.size, a.cohort, a.index)
@@ -190,8 +218,9 @@ def run_arm(a):
         block = record.setdefault('attn_meta', dict(requested=row['attn'], select=None))
         block['end'] = am.end_read(a)
         block['deltas'] = am.deltas(block.get('select'), (block['end'] or {}).get('read'))
+        record.setdefault('slots_fast', dict(requested=row['next_levers'], select=None))['calls'] = slots_calls((record.get('slots_fast') or {}).get('select'), (block['end'] or {}).get('read'))
         block['table'] = row['attn']
-        record.update(inwait_schema=ARM_SCHEMA, inner_record=Path(inner).name, levers=dict(attn=row['attn'], lazy_recv=row['lazy_recv'], decode_merge=row['decode_merge'], inwait=row['inwait']))
+        record.update(inwait_schema=ARM_SCHEMA, inner_record=Path(inner).name, levers=dict(attn=row['attn'], lazy_recv=row['lazy_recv'], decode_merge=row['decode_merge'], inwait=row['inwait'], next_levers=row['next_levers']))
     with open(a.out, 'x') as handle:
         json.dump(record, handle, sort_keys=True)
     print('INWAIT_ARM_RECORD %s %s' % (name, 'COMPLETE' if record.get('complete') is True else 'INCOMPLETE'))
@@ -244,9 +273,22 @@ def inwait_check(arms, want):
             continue
         ack, delta = (rec.get('inwait') or {}).get('acknowledged'), rec.get('stage_delta') or {}
         applied, direct = delta.get('step_iw_applied'), [delta.get('step_iw_direct_opens'), delta.get('step_iw_direct_releases')]
-        facts[row['label']] = dict(requested=row['inwait'], acknowledged=ack, applied=applied, direct=direct)
+        early, calls = delta.get('step_iw_early_begins'), (rec.get('slots_fast') or {}).get('calls')
+        facts[row['label']] = dict(requested=row['inwait'], acknowledged=ack, applied=applied, direct=direct, next_levers=row['next_levers'], early_begins=early, slots_fast_calls=calls)
         if ack is not row['inwait']:
             failures.add(row['label'] + ':inwait-selection-not-acknowledged')
+        if (rec.get('inwait') or {}).get('early_acknowledged') is not row['next_levers']:
+            failures.add(row['label'] + ':early-successor-selection-not-acknowledged')
+        if not row['next_levers'] and early:
+            failures.add(row['label'] + ':early-successor-off-moved-its-counter')
+        if type(calls) is not dict or any(type(v) is not int for v in calls.values()):
+            missing.add(row['label'] + ':slots-fast-calls-absent')
+        elif row['next_levers'] and not all(calls.values()):
+            missing.add(row['label'] + ':slots-fast-selected-not-engaged')
+        elif not row['next_levers'] and any(calls.values()):
+            failures.add(row['label'] + ':slots-fast-off-moved-its-counter')
+        if row['next_levers'] and row['cohort'] == 'live' and type(early) is int and not early:
+            missing.add(row['label'] + ':early-successor-selected-not-engaged')
         if type(applied) is not int or any(type(x) is not int for x in direct):
             missing.add(row['label'] + ':inwait-counters-absent')
         elif row['inwait'] and row['cohort'] == 'live' and not applied:
@@ -254,6 +296,38 @@ def inwait_check(arms, want):
         elif not row['inwait'] and (applied or any(direct)):
             failures.add(row['label'] + ':inwait-off-moved-the-in-wait-counters')
     return failures, missing, facts
+
+
+# --- the open-rows rule on in-wait arms ----------------------------------------------------------------------
+
+_RULE_CHECK_ARM = rule.check_arm
+
+
+def check_arm_inwait(flushes, overlap):
+    """e3_c1_open_rows.check_arm, whose check 3 takes n's last apply F as the commit instant. In the wait a reply is applied and the next command sent at once and the commit comes at the next
+    tick, so a row sent after F can be open at the commit (READING-box-1 item 1). A not-carried flush passes here when n+1's first k rows hold every row sent before F, all the others were sent from
+    the wait, and all k are n+1's seqs and none of n's. Every other reason stands."""
+    out = _RULE_CHECK_ARM(flushes, overlap)
+    ordered = sorted(flushes, key=lambda f: f.get('line') or 0)
+    index = {f.get('line'): i for i, f in enumerate(ordered)}
+    for cell in out['flagged']:
+        if 'c1-open-rows-not-carried' not in cell['reasons'] or index[cell['line']] + 1 >= len(ordered):
+            continue
+        flush, nxt = ordered[index[cell['line']]], ordered[index[cell['line']] + 1]
+        applies = [r['t_apply'] for r in (flush.get('rows') or {}).get('n', []) if type(r.get('t_apply')) is int]
+        if not applies:
+            continue
+        f_ns, k = max(applies), cell['open_rows']
+        rows = sorted((r for r in (nxt.get('rows') or {}).get('n', []) if type(r.get('t_submit')) is int), key=lambda r: r['t_submit'])
+        first, before = rows[:k], [r for r in rows if r['t_submit'] < f_ns]
+        own = (overlap.get(cell['txn']) or (frozenset(), None))[0]
+        successor = (overlap.get(cell['next_txn']) or (frozenset(), None))[0]
+        if (len(first) == k and len(before) <= k and all(r.get('origin') == 'wait' for r in first[len(before):])
+                and all(r.get('seq') in successor and r.get('seq') not in own for r in first)):
+            cell['reasons'].remove('c1-open-rows-not-carried')
+            cell.update(carried_seqs=[r.get('seq') for r in first], carried_from_wait=k - len(before))
+    kept = {'c1-open-rows-unreadable'} & set(out['reasons'])
+    return dict(out, reasons=sorted(kept.union(*[c['reasons'] for c in out['flagged']])))
 
 
 # --- the reads --------------------------------------------------------------------------------------------
@@ -290,9 +364,9 @@ def compose_read(result, decode_records, attn):
 
     def cell_of(sel, cohort):
         return medians.get('%s band 1 %s' % (sel, cohort)) or {}
-    pair = dict(live_on_over_off=_ratio(cell_of('iw1', 'live').get('prefill_tok_s'), cell_of('iw0', 'live').get('prefill_tok_s')),
-                solo_on_over_off=_ratio(cell_of('iw1', 'solo').get('prefill_tok_s'), cell_of('iw0', 'solo').get('prefill_tok_s')),
-                decode_vs_fixed_on=cell_of('iw1', 'live').get('decode_vs_fixed_reference'), decode_vs_fixed_off=cell_of('iw0', 'live').get('decode_vs_fixed_reference'))
+    pair = dict(live_on_over_off=_ratio(cell_of('nx1', 'live').get('prefill_tok_s'), cell_of('nx0', 'live').get('prefill_tok_s')),
+                solo_on_over_off=_ratio(cell_of('nx1', 'solo').get('prefill_tok_s'), cell_of('nx0', 'solo').get('prefill_tok_s')),
+                decode_vs_fixed_on=cell_of('nx1', 'live').get('decode_vs_fixed_reference'), decode_vs_fixed_off=cell_of('nx0', 'live').get('decode_vs_fixed_reference'))
     return dict(is_gate=False, reference_arm=T.REFERENCE_ARM, fixed_reference_tok_s=reference, decode_only={k: v for k, v in rate.items()}, arms=arms, cells=medians, pair=pair)
 
 
@@ -303,7 +377,7 @@ def grade(arms, ingress, checks, logs, watches=None, part='core'):
     known = [a for a in arms if a.get('label')]
     decode_records = {a['label']: a for a in known if a.get('kind') == 'decode-only'}
     prefill = [a for a in arms if a.get('kind') != 'decode-only']
-    with _bound(sb, sb_bindings()):
+    with _bound(sb, sb_bindings()), _bound(rule, dict(check_arm=check_arm_inwait)):
         result = sb.grade(prefill, ingress, checks, logs, watches, part=part)
     want = T.arms(None if part == 'all' else T.GRADED)
     afail, amiss, acls, attn, start = attn_gate(prefill, decode_records, ingress, watches, logs, want)
@@ -368,7 +442,7 @@ def main(argv=None):
     r.add_argument('--model', required=True)
     r.add_argument('--run-id', required=True)
     r.add_argument('--epoch', type=int, required=True)
-    r.add_argument('--c1', choices=T.SELECTIONS, required=True, help="this arm's selection: iw0 or iw1; C1 defer, attn-meta and L1 + L2 in every arm")
+    r.add_argument('--c1', choices=T.SELECTIONS, required=True, help="this arm's selection: nx0 or nx1; C1 defer, attn-meta and L1 + L2 in every arm")
     r.add_argument('--size', type=int, choices=T.SIZES, required=True)
     r.add_argument('--cohort', choices=progress.COHORTS, required=True)
     r.add_argument('--index', type=int, choices=T.INDEXES, required=True)

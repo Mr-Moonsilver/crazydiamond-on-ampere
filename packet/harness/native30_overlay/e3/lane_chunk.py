@@ -39,6 +39,17 @@ class LaneChunkError(E3ContractError):
     pass
 
 
+# inwait build-2 (DESIGN-2): per rank, selected per arm through attn_meta_select's control while paused idle FULL.  Off until selected.
+SLOTS_FAST = dict(selected=False, calls=0)
+
+
+def select_slots_fast(on):
+    if type(on) is not bool:
+        raise LaneChunkError('slots-fast-not-bool')
+    SLOTS_FAST['selected'] = on
+    return dict(SLOTS_FAST)
+
+
 MAX_NATIVE_BUILDER_BYTES = 256 * 1024 * 1024
 _SHARED_CONFIG_FIELDS = {
     'kv_cache_spec', 'vllm_config', 'device', 'backend',
@@ -369,9 +380,30 @@ class LaneTables:
             views.append(target[:1])
         return tuple(views)
 
+    def slot_mappings_fast(self, admission, pad):
+        """slot_mappings' values by tensor arithmetic, one group at a time; inwait build-2 (DESIGN-2)."""
+        torch = self.torch
+        positions = torch.arange(admission.chunk_start, admission.chunk_end, dtype=torch.int64)
+        out = torch.full((self.num_groups, admission.num_tokens), pad, dtype=torch.int64)
+        for group, row in enumerate(admission.block_tables):
+            if not self.slot_mapping_enabled[group]:
+                continue
+            kbs = self.kernel_block_sizes[group]
+            ids = self.expanded(group, row)
+            first, last = admission.chunk_start // kbs, (admission.chunk_end - 1) // kbs
+            if last >= len(ids):
+                raise LaneChunkError('admission row too short for the chunk positions')
+            table = torch.tensor(ids[first:last + 1], dtype=torch.int64)
+            out[group] = table[positions // kbs - first] * kbs + positions % kbs
+        SLOTS_FAST['calls'] += 1
+        return out
+
     def slot_mappings(self, admission, pad):
         """[num_groups, num_tokens] slot ids computed on the CPU from the admission rows."""
         n = admission.num_tokens
+        if (SLOTS_FAST['selected'] and n > 0 and len(admission.block_tables) == self.num_groups
+                and admission.chunk_end - admission.chunk_start == n):
+            return self.slot_mappings_fast(admission, pad)
         rows = []
         for group, row in enumerate(admission.block_tables):
             ids = self.expanded(group, row)

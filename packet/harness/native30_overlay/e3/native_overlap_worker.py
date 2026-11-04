@@ -540,7 +540,15 @@ def handle(worker, command, *, clock=time.monotonic_ns, torch_module=None):
 def _attn_meta(runner, command):
     """The attn-meta selector's typed select / read on this rank; counters and wrapper order, never a verdict."""
     action = command.get('action')
-    if set(command) != _ATTN_META_FIELDS[action]:
+    fields = set(command)
+    slots_fast = None
+    if action == 'attn_meta_select' and 'slots_fast' in fields and os.environ.get('FLASH_S5_INWAIT', '0') == '1':
+        # inwait build-2 (DESIGN-2): this rank's fast slot mappings, the same pause as the attn-meta selection.
+        fields.discard('slots_fast')
+        slots_fast = command['slots_fast']
+        if type(slots_fast) is not bool:
+            raise NativeOverlapUnavailable('native-attn-meta-slots-fast-not-bool')
+    if fields != _ATTN_META_FIELDS[action]:
         raise NativeOverlapUnavailable('native-attn-meta-fields-differ')
     import attn_meta_select
     try:
@@ -553,6 +561,11 @@ def _attn_meta(runner, command):
     except attn_meta_select.AttnMetaSelectError as error:
         raise NativeOverlapUnavailable('native-' + str(error)) from None
     result = copy.deepcopy(record)
+    if os.environ.get('FLASH_S5_INWAIT', '0') == '1':
+        # Inside ``after`` and ``counters``: the rows the box's attn-meta reader keeps.
+        import lane_chunk
+        state = lane_chunk.select_slots_fast(slots_fast) if slots_fast is not None else dict(lane_chunk.SLOTS_FAST)
+        result['after' if action == 'attn_meta_select' else 'counters']['slots_fast'] = state
     result.update(worker_action=action, graded_by='attn_meta_select', engine_supplied_verdict=False)
     return result
 

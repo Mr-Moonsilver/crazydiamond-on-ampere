@@ -59,6 +59,43 @@ class StopStatesOn(Selected, c1.StopStates):
     pass
 
 
+class Early(Selected):
+    def network(self, **kwargs):
+        network = super().network(**kwargs)
+        network.driver.early_successor = bool(network.driver.inwait)
+        return network
+
+
+class IdentityEarly(Early, c1.Identity):
+    pass
+
+
+class StopSweepEarly(Early, c1.StopSweep):
+    pass
+
+
+class StopStatesEarly(Early, c1.StopStates):
+    def test_admitted_not_begun(self):
+        # The early state: admitted at n's stage 0 finalize, before its release.
+        network = self.network()
+        controller, driver = network.controller, network.driver
+        self.reach(network, lambda: len(driver._frames) == 1 and driver._frames[0].stage[0]['phase'] in ('finalize', 'release')
+                   and 0 not in driver._frames[0].released and controller.successor is None and not driver._frames[0].dead)
+        network.admit_next()
+        self.assertIsNotNone(controller.successor)
+        self.assertEqual(len(driver._frames), 1)
+        self.assertNotIn(0, driver._frames[0].released)
+        self.finish(network)
+        self.assertEqual(driver.overlap_counters['unbegun_successor_cancels'], 1)
+
+    def test_begun_before_stage_zero_released(self):
+        network = self.network()
+        driver = network.driver
+        self.reach(network, lambda: self.two_frames(network) and 0 not in driver._frames[0].released)
+        self.assertEqual(driver._frames[1].opened, set())
+        self.finish(network)
+
+
 class Base(FlagOn, Selected, sg.Base):
     def run_in_wait(self, select=True, **kwargs):
         network = self.burst(self.network(direct=True))
@@ -172,6 +209,65 @@ class Widened(Base):
                         tick()
                     self.assertFalse(driver.active, network.status_text())
                     self.assert_closed(network)
+
+
+class EarlySuccessor(Base):
+    def run_early(self, on=True):
+        network = self.burst(self.network(direct=True))
+        driver = network.driver
+        driver.early_successor = on
+        begins, opens = [], []
+        begin, submit = driver._begin_successor, driver._submit_observed
+
+        def spy_begin():
+            begins.append((0 in driver._frames[0].released, driver._in_wait))
+            return begin()
+
+        def spy_submit(kind, envelope, ranks, **kwargs):
+            frame = driver._scoped_frame
+            older = getattr(frame, 'successor_of', None)
+            if kind == 'open' and older is not None and driver._scoped_stage == 0 and older in driver._frames:
+                opens.append(0 in older.released)
+            return submit(kind, envelope, ranks, **kwargs)
+        driver._begin_successor, driver._submit_observed = spy_begin, spy_submit
+        network.run_request(tick=self.in_wait_tick(network))
+        return network, begins, opens
+
+    def test_the_successor_begins_before_stage_zero_released_and_opens_after(self):
+        network, begins, opens = self.run_early()
+        self.same_as_serial(network)
+        self.assertTrue(begins)
+        self.assertEqual([row for row in begins if row[1]], [], 'the begin stays on the tick')
+        self.assertEqual(network.driver.inwait_counters['early_begins'], sum(1 for released, _wait in begins if not released))
+        self.assertGreater(network.driver.inwait_counters['early_begins'], 0, begins)
+        self.assertTrue(opens)
+        self.assertTrue(all(opens), opens)
+        self.assertLessEqual(max(network.inflight_peak.values()), 1)
+
+    def test_off_every_successor_waits_for_the_release(self):
+        network, begins, _opens = self.run_early(on=False)
+        self.same_as_serial(network)
+        self.assertTrue(begins)
+        self.assertTrue(all(released for released, _wait in begins), begins)
+        self.assertEqual(network.driver.inwait_counters['early_begins'], 0)
+
+    def test_stage_zero_before_its_finalize_is_not_admissible(self):
+        network = self.burst(self.network(direct=True))
+        driver = network.driver
+        driver.early_successor = True
+        rows = []
+        query = driver.successor_admissible
+
+        def spy(transaction):
+            answer = query(transaction)
+            frame = driver._frames[0] if driver._frames else None
+            if answer and frame is not None:
+                rows.append((frame.stage[0]['phase'], 0 in frame.released))
+            return answer
+        driver.successor_admissible = spy
+        network.run_request(tick=self.in_wait_tick(network))
+        self.assertTrue(rows)
+        self.assertTrue(all(released or phase in ('finalize', 'release') for phase, released in rows), rows)
 
 
 class Direct(Base):
@@ -318,6 +414,16 @@ class Control(FlagOn, sg.Base):
                 driver._stage_control(bad)
         self.assertIs(driver.inwait, False)
         self.assertTrue(driver.stage_status()['overlap']['inwait']['installed'])
+        reply = driver._stage_control(dict(base, inwait=True, early_successor=True))
+        self.assertEqual((reply['early_successor'], driver.early_successor), (True, True))
+        self.assertIs(driver.stage_status()['overlap']['inwait']['early_successor'], True)
+        self.assertIs(driver._stage_control(dict(base, inwait=True, early_successor=False))['early_successor'], False)
+        self.assertIs(driver._stage_control(dict(base, inwait=True, early_successor=True))['early_successor'], True)
+        self.assertIs(driver._stage_control(dict(base, inwait=False))['early_successor'], False)
+        self.assertIs(driver.early_successor, False)
+        for bad in (dict(base, inwait=True, early_successor=1), dict(base, early_successor=True), dict(base, inwait=False, early_successor=True)):
+            with self.assertRaises(ed.DriverError):
+                driver._stage_control(bad)
 
     def test_not_installed_refused_and_no_status_block(self):
         with mock.patch.dict(os.environ, {nm.INWAIT_ENV: '0'}):
