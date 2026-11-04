@@ -96,9 +96,11 @@
    "module:ALLOCATOR_FLUSH",
    "module:COW_FAST",
    "module:COW_HOST_FILTER",
+   "module:COW_VERIFY",
    "module:PREPARE_SLICES",
    "module:RESERVED_CAP",
    "module:RESERVED_CAP_FREE_BYTES",
+   "module:RESERVED_CAP_OVERDRAFT_BYTES",
    "module:SCORE_COMPRESS",
    "module:SCORE_ROWS",
    "module:SCORE_WARM",
@@ -112,10 +114,12 @@
    "note_worker_rank",
    "qsa_host_pairs",
    "reserved_cap_bytes",
+   "score_under_cap",
    "score_warm_bytes",
    "select_allocator_flush",
    "select_cow_fast",
    "select_cow_host_filter",
+   "select_cow_verify",
    "select_prepare_slices",
    "select_reserved_cap",
    "select_score_warm",
@@ -177,6 +181,9 @@
   ],
   "patches/s5_engine/probe_control.py": [
    "attach_native_router"
+  ],
+  "patches/s5_engine/qsa_driver.py": [
+   "QsaLayerDriver._pre"
   ],
   "patches/s5_engine/s5_startup.py": [
    "install_builder",
@@ -302,6 +309,7 @@
   "e3/native_overlap_worker.py",
   "e3/native_qualification_frontend.py",
   "e3/probe_control.py",
+  "e3/qsa_driver.py",
   "e3/s5_startup.py",
   "e3/scheduler_hooks.py",
   "e3/stage_overlap.py",
@@ -896,9 +904,11 @@
    "module:ALLOCATOR_FLUSH",
    "module:COW_FAST",
    "module:COW_HOST_FILTER",
+   "module:COW_VERIFY",
    "module:PREPARE_SLICES",
    "module:RESERVED_CAP",
    "module:RESERVED_CAP_FREE_BYTES",
+   "module:RESERVED_CAP_OVERDRAFT_BYTES",
    "module:SCORE_COMPRESS",
    "module:SCORE_ROWS",
    "module:SCORE_WARM",
@@ -912,10 +922,12 @@
    "note_worker_rank",
    "qsa_host_pairs",
    "reserved_cap_bytes",
+   "score_under_cap",
    "score_warm_bytes",
    "select_allocator_flush",
    "select_cow_fast",
    "select_cow_host_filter",
+   "select_cow_verify",
    "select_prepare_slices",
    "select_reserved_cap",
    "select_score_warm",
@@ -973,6 +985,9 @@
   ],
   "e3/probe_control.py": [
    "attach_native_router"
+  ],
+  "e3/qsa_driver.py": [
+   "QsaLayerDriver._pre"
   ],
   "e3/s5_startup.py": [
    "install_builder",
@@ -1074,7 +1089,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "9d4bba3e8f58c571c4f18e4b330146567143d6f0",
+ "source_commit": "93a6fa2e5744e78cd94980b358b24af4b43a0ca6",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/attn_meta_arms.py",
@@ -1173,6 +1188,7 @@
   "M\tpatches/s5_engine/native_overlap_worker.py",
   "M\tpatches/s5_engine/native_qualification_frontend.py",
   "M\tpatches/s5_engine/probe_control.py",
+  "M\tpatches/s5_engine/qsa_driver.py",
   "M\tpatches/s5_engine/s5_startup.py",
   "M\tpatches/s5_engine/scheduler_hooks.py",
   "M\tpatches/s5_engine/stage_overlap.py",
