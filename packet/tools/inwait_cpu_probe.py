@@ -104,7 +104,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_alpha_next_c1_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_alpha_next_c1b_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_inwait_queue.py'))
-EXPECTED_TESTS=585  # the 563 alpha-next-c1b probe cases plus the 22 inwait queue cases; pinned into the frozen runner gate
+EXPECTED_TESTS=592  # the 563 alpha-next-c1b probe cases plus the 29 inwait queue cases; pinned into the frozen runner gate
 import step_b_clock_bound
 suite,clock_bound_removed=step_b_clock_bound.filtered(suite)
 assert clock_bound_removed==step_b_clock_bound.IN_PROBE,clock_bound_removed
