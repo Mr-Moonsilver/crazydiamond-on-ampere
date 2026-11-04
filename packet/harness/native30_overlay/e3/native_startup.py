@@ -79,7 +79,7 @@ def _hc_width(model):
 def _ple_scratch(model, chunk_tokens, torch, device, owners):
     found = []
     for layer_idx in range(int(model.start_layer), int(model.end_layer)):
-        embedding = ple_embedding(model, layer_idx)
+        embedding = ple_embedding(model, layer_idx, chunk_tokens)
         if embedding is not None:
             found.append((layer_idx, embedding))
     if not found:

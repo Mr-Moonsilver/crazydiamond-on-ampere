@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'patches/s5_engine'), str(ROOT / 'harness')]
 import inwait_arms as T
 import lane_state
+import model_hooks as mh
 import scheduler_hooks as sh
 import test_e3_lane_private as private_fixture
 import test_e3_staged_chunk_plan as plan_fixture
@@ -130,6 +131,32 @@ class Admission(unittest.TestCase):
     def test_a_prompt_under_the_chunk_goes_stock(self):
         import native_auto_arm
         self.assertIn('end - start < max(MIN_NATIVE_ROWS, c.chunk_tokens)', Path(native_auto_arm.__file__).read_text())
+
+
+class Ple(unittest.TestCase):
+    """The deployed path to the embedding; the pinned source and the real shape, dtype and device check run in test_dp5_ple (torch)."""
+
+    def model(self, real=True, rows=1024):
+        class Tensor:
+            shape, dtype, device = (rows, 8, 160), 'bf16', 'cuda:0'
+        embedding = types.SimpleNamespace(supports_prefetch=True, etp_data_parallel_size=1, _prefetch_buffer=Tensor(), _prefetch_stream=types.SimpleNamespace(cuda_stream=7))
+        ple = types.SimpleNamespace(ple_embedding=types.SimpleNamespace(ngram_embedding=embedding)) if real else types.SimpleNamespace(ngram_embedding=embedding)
+        return types.SimpleNamespace(layers=[types.SimpleNamespace(ple=None), types.SimpleNamespace(ple=ple)]), embedding
+
+    def test_above_1024_the_real_path_resolves(self):
+        model, embedding = self.model()
+        self.assertIs(mh.ple_embedding(model, 1, 2048), embedding)
+        self.assertIsNone(mh.ple_embedding(model, 0, 2048))
+
+    def test_at_1024_nothing_changes_on_the_real_path(self):
+        model, _ = self.model()
+        self.assertIsNone(mh.ple_embedding(model, 1))
+        self.assertIsNone(mh.ple_embedding(model, 1, 1024))
+
+    def test_the_old_path_still_resolves_at_either(self):
+        model, embedding = self.model(real=False)
+        self.assertIs(mh.ple_embedding(model, 1), embedding)
+        self.assertIs(mh.ple_embedding(model, 1, 2048), embedding)
 
 
 if __name__ == '__main__':

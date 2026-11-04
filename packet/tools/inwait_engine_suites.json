@@ -11,7 +11,7 @@
   "test_inwait_cow",
   "test_inwait_early_alloc",
   "test_inwait_router",
-  "test_dp5_chunk"
+  "test_dp5_chunk", "test_dp5_ple"
  ],
  "refusal_tests": [],
  "why": {}

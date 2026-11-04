@@ -301,13 +301,20 @@ class AttributeSwap:
         return False
 
 
-def ple_embedding(model, layer_idx):
-    """The pinned-table PLE embedding of a layer, or None when it has none."""
+def ple_embedding(model, layer_idx, rows=1024):
+    """The pinned-table PLE embedding of a layer, or None when it has none.
+
+    Decode-phase dp5b: the deployed model holds it at layer.ple.ple_embedding.ngram_embedding, so at 1024 rows this finds nothing on the real
+    model and native shares stock's _prefetch_buffer, as in every run so far. Above 1024 rows that buffer is too short: the real path resolves
+    and the private scratch engages. 1024 stays as it was, so a 1024 rerun stays comparable.
+    """
     layer = model.layers[layer_idx]
     ple = getattr(layer, 'ple', None)
     if ple is None:
         return None
     embedding = getattr(ple, 'ngram_embedding', None)
+    if embedding is None and rows > 1024:
+        embedding = getattr(getattr(ple, 'ple_embedding', None), 'ngram_embedding', None)
     if embedding is None or not getattr(embedding, 'supports_prefetch', False):
         return None
     return embedding
@@ -340,6 +347,7 @@ class PlePrivateScratch:
         self.buffer = torch_module.empty(shape, dtype=buffer.dtype, device=device)
         self.bytes = int(self.buffer.numel() * self.buffer.element_size())
         self.embedding = embedding
+        self.chunk_tokens = int(chunk_tokens)
 
     def scope(self):
         return AttributeSwap(self.embedding, {'_prefetch_buffer': self.buffer,
@@ -596,7 +604,7 @@ class LaneForward:
                 # for this segment and restored exactly afterwards.
                 stack.enter_context(self.prefill_owners.scope())
             if (layer_idx is not None and self.ple_scratch is not None
-                    and ple_embedding(self.model, layer_idx) is self.ple_scratch.embedding):
+                    and ple_embedding(self.model, layer_idx, self.ple_scratch.chunk_tokens) is self.ple_scratch.embedding):
                 stack.enter_context(self.ple_scratch.scope())
             else:
                 stack.enter_context(nullcontext())

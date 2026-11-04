@@ -439,7 +439,7 @@ class LanePrivateBindings:
                 raise LanePrivateError(
                     'top-k scratch and the QSA layer live on different devices')
 
-        ple = _ple_audit(model, ple_scratch)
+        ple = _ple_audit(model, ple_scratch, chunk_tokens)
         audit = _audit_record(owners, decode_uid, uid, chunk_tokens, width,
                               runtime, lanes, ple, scratch)
         bindings = cls(runner, runtime, chunk_tokens=chunk_tokens, torch=torch_module,
@@ -789,10 +789,10 @@ def _workspace_lanes(runtime):
     return lanes
 
 
-def _ple_audit(model, ple_scratch):
+def _ple_audit(model, ple_scratch, chunk_tokens=1024):
     found = []
     for layer_idx in _local_layers(model):
-        embedding = ple_embedding(model, layer_idx)
+        embedding = ple_embedding(model, layer_idx, chunk_tokens)
         if embedding is not None:
             found.append((layer_idx, embedding))
     if not found:
