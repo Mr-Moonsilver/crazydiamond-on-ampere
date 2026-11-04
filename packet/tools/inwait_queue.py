@@ -44,7 +44,7 @@ inwait_smoke() {
   _rc=$?
   n=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null) || n=unknown
   if [[ $_rc == 0 ]] && { [[ $n != "$N0" ]] || host_crash_detected || ! health_ok; }; then _rc=2; fi
-  record smoke "$_rc" 'exact-path smoke: complete arm, real control acknowledged, native engaged on every rank, engine healthy after it; else the table aborts'
+  record smoke "$_rc" 'exact-path smoke: complete arm, real control acknowledged, native engaged on every rank, a finite top-20 on fresh and append, engine healthy after it; else the table aborts'
   [[ $_rc == 0 ]] || SMOKE_ABORT=1
   return 0
 }

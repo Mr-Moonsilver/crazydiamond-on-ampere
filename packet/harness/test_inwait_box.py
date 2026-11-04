@@ -241,7 +241,8 @@ class Smoke(unittest.TestCase):
                     progress_delta=dict(chunks=66, line_errors=0), slots_fast=dict(calls=dict(each)), prepare_slices=dict(counters=dict(sliced=dict(each))),
                     cow_fast=dict(counters=dict(calls=dict(each), rows=dict(each), row_errors=dict.fromkeys(self.RANKS, 0))),
                     score_warm=dict(counters=dict(allocs={'0': 1, '1': 0, '2': 0, '3': 0})), reserved_cap=dict(select={'0': {}}),
-                    cow_host_filter=dict(counters=dict(kept=dict.fromkeys(self.RANKS, 0), skipped=dict(each))))
+                    cow_host_filter=dict(counters=dict(kept=dict.fromkeys(self.RANKS, 0), skipped=dict(each))),
+                    first_token={f: dict(tokens=[1], errors=0, top=[[[i, -3.0 - i / 8] for i in range(20)]]) for f in ('fresh', 'append')})
 
     def test_an_engaged_arm_passes(self):
         self.assertEqual(box.smoke_check(self.good()), (True, []))
@@ -252,6 +253,14 @@ class Smoke(unittest.TestCase):
                 (lambda r: r['score_warm']['counters']['allocs'].update({'0': 0}), 'smoke-score-warm-not-rank-0-only'),
                 (lambda r: r['score_warm']['counters']['allocs'].update({'3': 1}), 'smoke-score-warm-not-rank-0-only'),
                 (lambda r: r['reserved_cap'].update(select=None), 'smoke-reserved-cap-select-absent'),
+                (lambda r: r.pop('first_token'), 'smoke-logprobs-absent:fresh'),
+                (lambda r: r['first_token'].pop('append'), 'smoke-logprobs-absent:append'),
+                (lambda r: r['first_token']['fresh'].update(errors=1), 'smoke-logprobs-absent:fresh'),
+                (lambda r: r['first_token']['fresh'].update(top=[]), 'smoke-logprobs-absent:fresh'),
+                (lambda r: r['first_token']['fresh'].update(top=[[]]), 'smoke-logprobs-absent:fresh'),
+                (lambda r: r['first_token']['fresh'].update(top=[[[1, -3.0]]]), 'smoke-logprobs-not-a-finite-top-20:fresh'),
+                (lambda r: r['first_token']['fresh'].update(top=[[[i, float('nan')] for i in range(20)]]), 'smoke-logprobs-not-a-finite-top-20:fresh'),
+                (lambda r: r['first_token']['append'].update(top=[[[i, 0.0] for i in range(20)]]), 'smoke-logprobs-zeroed:append'),
                 (lambda r: r.update(complete=False), 'smoke-arm-not-complete'),
                 (lambda r: r.update(reasons=['x']), 'smoke-arm-not-complete'),
                 (lambda r: r['outputs'].pop('fresh'), 'smoke-request-shape-not-observed'),

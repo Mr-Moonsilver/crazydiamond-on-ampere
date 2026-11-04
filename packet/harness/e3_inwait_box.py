@@ -13,6 +13,7 @@ wait_capped; the in-wait counters; refused sends per worker method. The per-chun
 """
 import argparse
 import hashlib
+import math
 import json
 from pathlib import Path
 
@@ -508,6 +509,25 @@ def commit_boundary_read(flushes_by_arm):
 
 # --- the exact-path smoke (review section 6) ------------------------------------------------------------------
 
+def smoke_vector_reasons(rec, row):
+    """A native admit that drops or zeroes the logprobs stops the table, as a failed admission does: the rule's vectors would be missing from every arm."""
+    if row['band'] != 1:
+        return []
+    reasons = []
+    for family in ('fresh', 'append'):
+        block = (rec.get('first_token') or {}).get(family) or {}
+        top = block.get('top') or []
+        if block.get('errors') or not top or not top[0]:
+            reasons.append('smoke-logprobs-absent:' + family)
+            continue
+        values = [pair[1] for pair in top[0]]
+        if len(values) < c1b.NUMERICS['logprobs'] or not all(type(v) in (int, float) and math.isfinite(v) for v in values):
+            reasons.append('smoke-logprobs-not-a-finite-top-20:' + family)
+        elif len(set(values)) == 1:
+            reasons.append('smoke-logprobs-zeroed:' + family)
+    return reasons
+
+
 def smoke_check(rec, row=None):
     """Arm 1's facts: real request shape, real control dispatch, positive native engagement, one complete observation. (ok, reasons); the queue aborts the table on not ok."""
     row = row or T.by_label()[T.SMOKE_ARM]
@@ -534,6 +554,7 @@ def smoke_check(rec, row=None):
         reasons.append('smoke-early-successor-not-engaged')
     if (rec.get('inwait') or {}).get('exact_acknowledged') is not row['exact_successor']:
         reasons.append('smoke-exact-successor-not-acknowledged')
+    reasons.extend(smoke_vector_reasons(rec, row))
     # exact_admits is a read, not a condition: if the masked clause refuses, the other levers' arms still count.
     row_errors = ((rec.get('cow_fast') or {}).get('counters') or {}).get('row_errors')
     if type(row_errors) is not dict or any(row_errors.values()):

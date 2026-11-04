@@ -190,5 +190,41 @@ class BoxCalls(Base):
                 self.assertEqual(sorted(end['read']), ['0', '1', '2', '3'])
 
 
+class LogprobAdmission(unittest.TestCase):
+    """READING-box-5b: the auto-arm's real _plan on the real cold stack, by the flag. Admission is scheduler side; no router action carries it."""
+
+    def plan(self, flag, **params):
+        """The real _plan and the real staged_chunk_plan over band 1's size. The scheduler and controller are stand-ins: the cold stack's request is too small to plan, and no test reached this path before."""
+        import native_auto_arm as auto
+        ns = types.SimpleNamespace
+        uid = 'bulk'
+        request = ns(request_id=uid, status=ns(name='WAITING'), num_computed_tokens=0, num_output_tokens=0, num_preemptions=0, resumable=False, lora_request=None, pooling_params=None,
+                     structured_output_request=None, ec_transfer_params=None, num_tokens=65445, sampling_params=ns(**dict(dict(logprobs=None, prompt_logprobs=None), **params)))
+        manager = ns(get_computed_blocks=lambda r: (ns(blocks=[[ns(block_id=1)]]), 0, 0), watermark_blocks=0, block_pool=ns(get_num_free_blocks=lambda: 100),
+                     coordinator=ns(get_num_blocks_to_allocate=lambda **k: 1))
+        scheduler = ns(requests={uid: request}, kv_cache_manager=manager, max_num_scheduled_tokens=4048)
+        controller = ns(_request_refuses=lambda s, r: False, chunk_tokens=4048, minimum_stage_rows=1, _aligned_split=lambda s, projected, limit, **k: limit)
+        policy = auto.AutoArmPolicy(ns(scheduler=scheduler), ns(controller=controller))
+        with mock.patch.dict(os.environ, {'FLASH_S5_INWAIT': flag}):
+            return policy._plan(request)
+
+    def test_without_logprobs_it_plans_either_way(self):
+        plan = self.plan('0')
+        self.assertEqual((plan['start'], plan['end']), (0, 65444))
+        self.assertGreater(len(plan['plan']), 1)
+        self.assertEqual(self.plan('1'), plan)
+
+    def test_flag_off_logprobs_are_refused(self):
+        self.assertIsNone(self.plan('0', logprobs=20))
+
+    def test_flag_on_logprobs_are_admitted_with_the_same_plan(self):
+        self.assertEqual(self.plan('1', logprobs=20), self.plan('1'))
+
+    def test_flag_on_prompt_logprobs_stay_refused(self):
+        self.assertIsNone(self.plan('1', prompt_logprobs=1))
+        self.assertIsNone(self.plan('1', logprobs=20, prompt_logprobs=1))
+        self.assertIsNone(self.plan('0', prompt_logprobs=1))
+
+
 if __name__ == '__main__':
     unittest.main()

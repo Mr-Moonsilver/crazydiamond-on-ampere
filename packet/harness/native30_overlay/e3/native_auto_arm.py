@@ -3,6 +3,7 @@
 Scheduling remains paused until existing output Futures, the worker barrier,
 and typed split acks settle. No new transport, CUDA operation or model setting.
 """
+import os
 import weakref
 
 from e3_types import E3ContractError, _text
@@ -60,6 +61,12 @@ def worker_capability(native):
     return dict(schema='s5-auto-decode-capability/1', supported_counts=supported,
                 engine_epoch=router.engine_epoch, route_generation=router._transition_seq,
                 storage_epoch=router.handle.storage_epoch)
+
+
+def _generation_logprobs_refused(params):
+    """Stock's refusal, except under FLASH_S5_INWAIT, whose first-token read asks for them on the bulk. Native rows produce no logits; the
+    request's last row runs stock with the request's own parameters, so that row answers. Prompt logprobs need every prompt row's logits and stay refused."""
+    return params.logprobs is not None and os.environ.get('FLASH_S5_INWAIT', '0') != '1'
 
 
 class AutoArmPolicy:
@@ -176,7 +183,7 @@ class AutoArmPolicy:
                 or getattr(request, 'structured_output_request', None) is not None
                 or c._request_refuses(s, request) or request.ec_transfer_params
                 or request.sampling_params.prompt_logprobs is not None
-                or request.sampling_params.logprobs is not None):
+                or _generation_logprobs_refused(request.sampling_params)):
             return None
         try:
             _text('request_uid', request.request_id)
