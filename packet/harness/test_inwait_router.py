@@ -146,7 +146,8 @@ class Exposure(Base):
 class BoxCalls(Base):
     async def test_each_selection_through_the_release_and_the_end_read(self):
         """The box's own release for each selection in turn (each switch moves from the last): replies, driver, status view, all ranks' selectors."""
-        rows = {r['c1']: r for r in T.arms()}
+        with mock.patch.object(T, 'ARM_TABLE', T.BUILD4C_TABLE + (('core', 'cfa', 'live', 0),)):
+            rows = {r['c1']: r for r in T.arms()}
 
         def one(row):
             client = self.client()
@@ -161,7 +162,7 @@ class BoxCalls(Base):
             client.resume()
             args = types.SimpleNamespace(url=self.bridge.url, run_id=RUN, epoch=client.epoch, control_timeout_s=60)
             return record, None, status, am.end_read(args)
-        for sel in ('ps1', 'cf', 'cap', 'ps1'):
+        for sel in ('ps1', 'cf', 'cap', 'cfa', 'ps1'):
             row = rows[sel]
             with self.subTest(sel=sel):
                 record, exc, status, end = await self.off_loop(lambda row=row: one(row))

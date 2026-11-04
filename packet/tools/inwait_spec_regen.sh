@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 [[ -z ${INWAIT_PARENT:-} ]] || { echo 'INWAIT_PARENT is set: a committed spec needs the pinned parent' >&2; exit 3; }
 python3 -B tools/inwait_parent_pin.py --pinned
 SCAN=<hub-dir>/agents/flash-next/tmp/alpha-next/scripts/secret_scan.sh
-PACK=<hub-dir>/agents/flash-next/tmp/inwait/pack
+PACK=<hub-dir>/agents/flash-next/tmp/decode-phase/pack3
 MODE=${1:-}
 [[ -z $MODE || $MODE == --pre-queue ]] || { echo "usage: $0 [--pre-queue]" >&2; exit 2; }
 [[ -z $(git status --porcelain -- harness patches tools) ]] || { echo 'commit harness/, patches/ and tools/ first' >&2; exit 3; }

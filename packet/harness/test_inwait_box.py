@@ -23,6 +23,18 @@ MOVED = dict(lazy_marked=4, merge_steps=4, merge_on=1, merge_off=1)
 STEP_VIEW = dict(defer_bind_installed=True, defer_bind_selected=True, step_lazy_installed=True, step_lazy=False, step_merge_installed=True, step_merge='off', **{'step_' + k: 0 for k in QUIET})
 
 
+_TABLE = mock.patch.object(T, 'ARM_TABLE', T.BUILD4C_TABLE)
+
+
+def setUpModule():
+    """These tests prove the box's rules over build-4c's table, whose off and cap rows carry them; the table this queue runs has its own tests in test_inwait_queue."""
+    _TABLE.start()
+
+
+def tearDownModule():
+    _TABLE.stop()
+
+
 class Table(unittest.TestCase):
     def test_the_arms_in_order(self):
         self.assertEqual(T.labels(), ORDER)
@@ -70,7 +82,8 @@ class Client(tq.FakeClient):
 
 class ArmControl(unittest.TestCase):
     def release(self, sel, client):
-        row = next(r for r in T.arms() if r['c1'] == sel)
+        with mock.patch.object(T, 'ARM_TABLE', T.BUILD4C_TABLE + (('core', 'cfa', 'live', 0),)):
+            row = next(r for r in T.arms() if r['c1'] == sel)
         order = []
 
         def select(_client, attn, record):
@@ -304,7 +317,7 @@ _RUN = {}
 
 
 def run_of(part=T.GRADED):
-    key = 'run-%s' % (part,)
+    key = (part, T.ARM_TABLE)      # the fixture's table or the queue's own
     if key not in _RUN:
         _RUN[key] = synthetic(part)
     emit, arms = _RUN[key]

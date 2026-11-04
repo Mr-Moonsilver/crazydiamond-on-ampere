@@ -6,7 +6,10 @@ The engine is build-3b's plus these levers behind one default-off flag, FLASH_S5
   cf   ps1 and the fast CoW copy at the residue chunk
   sm   cf as the exact-path smoke: arm 1, cold, graded as any arm, no matched pair; if it does not engage, nothing else runs
   cap  ps1 and a reserved cap that keeps 512 MiB free; flushes the allocator cache at its selection
-Order: sm live | decode-am1 | round 0: ps1 cf solo, ps1 cf live | round 1: cf ps1 live (reversed) | band 2: cf live, solo | the core grade | cap live, last and a read, so an OOM costs nothing else.
+Order in build-4c: sm live | decode-am1 | round 0: ps1 cf solo, ps1 cf live | round 1: cf ps1 live (reversed) | band 2: cf live, solo | the core grade | cap live.
+
+Decode-phase build-3 (READING-box-dp2.md; lead, 4 Nov 15:4x CET): the same engine at another decode SM count, a launch setting (S5_REQUESTED_DECODE_SMS, one launch one value, DEFAULT_DECODE_SMS first).
+Same labels as build-4c, whose cf arms at 44 are the control: sm live | decode-am1 | cf solo | cf live x2 | cfa live (cf with merge always, last). No ps1, band 2 or cap arm.
 """
 import alpha_next_arms as _alpha_next
 import attn_meta_arms as _attn_meta
@@ -25,25 +28,29 @@ ROUND0 = (('ps1', 'solo'), ('cf', 'solo'), ('ps1', 'live'), ('cf', 'live'))
 ROUND1 = (('cf', 'live'), ('ps1', 'live'))
 SMOKE_ROW = ('core', 'sm', 'live', 0)
 BAND2_ROWS = (('core', 'cf', 'live', BAND2_INDEX), ('core', 'cf', 'solo', BAND2_INDEX))
-CAP_ROW = ('tail', 'cap', 'live', 0)     # after the core grade, a read: an OOM here costs no main pair and does not change the grade
-ARM_TABLE = ((SMOKE_ROW,) + tuple([('core', s, c, 0) for s, c in ROUND0] + [('core', s, c, 1) for s, c in ROUND1]) + BAND2_ROWS + (CAP_ROW,))
+CAP_ROW = ('tail', 'cap', 'live', 0)
+# Build-4c's table, not run here: the control's arms and the fixture of test_inwait_box, whose off-arm and cap rules stay in the code.
+BUILD4C_TABLE = ((SMOKE_ROW,) + tuple([('core', s, c, 0) for s, c in ROUND0] + [('core', s, c, 1) for s, c in ROUND1]) + BAND2_ROWS + (CAP_ROW,))
+ARM_TABLE = (SMOKE_ROW, ('core', 'cf', 'solo', 0), ('core', 'cf', 'live', 0), ('core', 'cf', 'live', 1), ('core', 'cfa', 'live', 0))
+DEFAULT_DECODE_SMS = '52'
+MIN_DECODE_SMS, MAX_DECODE_SMS = 24, 60
 DECODE_ARMS = tuple(d for d in _attn_meta.DECODE_ARMS if d['attn'])
 REFERENCE_ARM = 'decode-am1'              # this run's decode-only baseline; FIXED_REFERENCE below is the lead's fixed number
 FIXED_REFERENCE_TOK_S = 452.8             # the lead's fixed reference (brief, 4 Nov); compose-2's own decode-am1 read 456.598
 PARTS = ('core', 'tail')
 ENTRY_LIMIT = {'core': ('LAST_ARM_ENTRY_S', 'last_arm_entry'), 'tail': ('LAST_TAIL_ENTRY_S', 'last_tail_entry')}
 GRADED = ('core',)
-SELECTIONS = ('sm', 'ps1', 'cf', 'cap')
+SELECTIONS = ('sm', 'ps1', 'cf', 'cap', 'cfa')
 OFF = 'ps1'                                 # the matched off arm of every lever
 ATTN = dict.fromkeys(SELECTIONS, True)
 LAZY_RECV = dict.fromkeys(SELECTIONS, True)
-DECODE_MERGE = dict.fromkeys(SELECTIONS, 'chunk')
+DECODE_MERGE = dict(dict.fromkeys(SELECTIONS, 'chunk'), cfa='always')
 INWAIT = dict.fromkeys(SELECTIONS, True)
 NEXT = dict.fromkeys(SELECTIONS, True)      # early_successor on native_stage_local, slots_fast on attn_meta_select
 SLICES = dict.fromkeys(SELECTIONS, True)    # prepare_slices on attn_meta_select
 WARM = dict.fromkeys(SELECTIONS, False)     # score_warm on attn_meta_select: build-3's pw, dropped (READING-box-3b)
-COW_FAST = {'sm': True, 'ps1': False, 'cf': True, 'cap': False}     # cow_fast on attn_meta_select
-RESERVED_CAP = {'sm': False, 'ps1': False, 'cf': False, 'cap': True}    # reserved_cap on attn_meta_select
+COW_FAST = {'sm': True, 'ps1': False, 'cf': True, 'cap': False, 'cfa': True}     # cow_fast on attn_meta_select
+RESERVED_CAP = {'sm': False, 'ps1': False, 'cf': False, 'cap': True, 'cfa': False}    # reserved_cap on attn_meta_select
 C1 = dict.fromkeys(SELECTIONS, True)
 DEFER_BIND = dict.fromkeys(SELECTIONS, True)
 STAGE_LOCAL = True
@@ -52,6 +59,14 @@ INDEXES = tuple(sorted(BAND1_INDEXES + (BAND2_INDEX,)))
 SIZES = (1, 2, 4)
 COLD_ARM = 'sm.g2-live-0'
 SMOKE_ARM = COLD_ARM
+
+
+def legal_decode_sms(value):
+    """The launch's decode SM count, a string: even, MIN..MAX. Anything else raises."""
+    text = str(value)
+    if not (text.isascii() and text.isdigit()) or int(text) % 2 or not MIN_DECODE_SMS <= int(text) <= MAX_DECODE_SMS or text != str(int(text)):
+        raise ValueError('decode SM count must be even, %d..%d' % (MIN_DECODE_SMS, MAX_DECODE_SMS))
+    return text
 
 
 def band_of_index(index):
@@ -116,21 +131,18 @@ def check():
     assert set(BAND_SIZE) == set(PARTS) == set(ENTRY_LIMIT)
     assert BAND1_REQUIRED_ROUNDS == BAND1_ROUNDS == len(BAND1_INDEXES)
     names = labels()
-    assert len(names) == len(set(names)) == 10, 'ten distinct prefill arm labels'
-    assert labels('tail') == [names[-1]] and labels('core') == names[:-1], 'the cap arm is the tail'
+    assert len(names) == len(set(names)) == 5, 'five distinct prefill arm labels'
+    assert labels('tail') == [] and labels('core') == names, 'no tail'
     assert names[0] == COLD_ARM, 'the cold arm is the first prefill arm'
-    assert names[-1] == label('cap', 2, 'live', 0), 'the cap arm is last'
+    assert names[-1] == label('cfa', 2, 'live', 0), 'merge always is last'
+    assert set(names[1:-1]) < {label(s, BAND_SIZE[p][band_of_index(i)], c, i) for p, s, c, i in BUILD4C_TABLE}, 'the chunk arms carry the labels of the control'
     assert [d['label'] for d in DECODE_ARMS] == [REFERENCE_ARM] and [d['attn'] for d in DECODE_ARMS] == [True]
     assert ROUND1 == ROUND0[:1:-1], 'round 1 is round 0 live reversed'
     assert set(ATTN) == set(LAZY_RECV) == set(DECODE_MERGE) == set(INWAIT) == set(NEXT) == set(SLICES) == set(WARM) == set(COW_FAST) == set(RESERVED_CAP) == set(C1) == set(DEFER_BIND) == set(SELECTIONS)
     for row in arms():
         assert row['overlap'] is True and row['defer_bind'] is True and row['stage_local'] is True, 'C1 defer in every arm'
-        assert row['attn'] is True and row['lazy_recv'] is True and row['decode_merge'] == 'chunk', 'attn-meta, L1 and L2 in every arm'
+        assert row['attn'] is True and row['lazy_recv'] is True and row['decode_merge'] == ('always' if row['c1'] == 'cfa' else 'chunk'), 'attn-meta, L1 and L2 in every arm'
         assert row['size'] == 2, 'group size 2 in every arm'
-        if row['c1'] not in (OFF, 'sm') and row['part'] in GRADED and row['band'] == 1:
-            assert matched_off(row), 'on arm without its matched off arm: ' + row['label']
-    for index in BAND1_INDEXES:
-        assert {OFF, 'cf'} <= {r['c1'] for r in arms() if r['index'] == index and r['cohort'] == 'live'}, ('live pair', index)
     return True
 
 

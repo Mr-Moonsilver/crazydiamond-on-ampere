@@ -38,11 +38,11 @@ AXIS = ("alpha-next's C0 on/off names and c1's C1-on/off names in this record (o
         'cf (the fast CoW copy) against its matched ps1, and cap (the reserved cap) against ps1 too; every arm is C1 defer, C0 local, attn-meta, L1 + L2, in-wait, early successor, fast slot mappings and PREPARE in slices')
 _ROLE = 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on, early successor, fast slot mappings'
 _ROLE = _ROLE + ', PREPARE in slices'
-OBSERVE_ROLE = {'ps1': _ROLE + ')', 'cf': _ROLE + ', fast CoW copy)', 'sm': _ROLE + ', fast CoW copy; the exact-path smoke)', 'cap': _ROLE + ', reserved cap)'}
+OBSERVE_ROLE = {'ps1': _ROLE + ')', 'cf': _ROLE + ', fast CoW copy)', 'sm': _ROLE + ', fast CoW copy; the exact-path smoke)', 'cap': _ROLE + ', reserved cap)', 'cfa': _ROLE + ', fast CoW copy, merge always)'}
 NOT_COVERED = ('numerics: this queue runs no fixed-schedule check; these arms are speed reads, batch 8 against 2 x 4 changes batch composition so OUTSIDE on merged arms is expected and is not a defect, '
                'and the fixed-schedule check owed for C1 defer stays owed')
 BASIS = ('one engine, FLASH_ATTN_META_GDN_BATCH=1 FLASH_S5_LAZY_RECV=1 FLASH_S5_DECODE_MERGE=1 FLASH_S5_INWAIT=1 for the whole run, every prefill arm C1 defer with fused, group size 2, attn-meta and L1 + L2 '
-         'selected and in-wait on or off by typed control; the exact-path smoke first, then one decode-only baseline; band 1 at 65,445 tokens live over two counterbalanced rounds and solo once; band 2 at 131,094 tokens, one pair on cf; one cap arm last')
+         'selected and in-wait on by typed control, at the launch\'s decode SM count; the exact-path smoke first, then one decode-only baseline; band 1 at 65,445 tokens: cf solo once, cf live twice, cf with merge always live once, last')
 SCOPE = ("in-wait handoffs on compose-2's engine; selection, counters, crash, OOM and one in flight are gated; speed, decode, per-step thread time and memory are reads; "
          'not a release assessment and not a numerics result')
 IW_COUNTERS = ('direct_opens', 'direct_releases', 'polls_paced', 'refused_releases', 'refused_in_wait', 'early_begins')
@@ -480,7 +480,9 @@ def compose_read(result, decode_records, attn):
                 solo_on_over_off=_ratio(cell_of('cf', 'solo').get('prefill_tok_s'), cell_of(T.OFF, 'solo').get('prefill_tok_s')),
                 decode_vs_fixed_on=cell_of('cf', 'live').get('decode_vs_fixed_reference'), decode_vs_fixed_off=cell_of(T.OFF, 'live').get('decode_vs_fixed_reference'),
                 live_cap_over_off=_ratio(cell_of('cap', 'live').get('prefill_tok_s'), cell_of(T.OFF, 'live').get('prefill_tok_s')),
-                decode_vs_fixed_cap=cell_of('cap', 'live').get('decode_vs_fixed_reference'))
+                decode_vs_fixed_cap=cell_of('cap', 'live').get('decode_vs_fixed_reference'),
+                live_always_over_chunk=_ratio(cell_of('cfa', 'live').get('prefill_tok_s'), cell_of('cf', 'live').get('prefill_tok_s')),
+                decode_vs_fixed_always=cell_of('cfa', 'live').get('decode_vs_fixed_reference'))
     return dict(is_gate=False, reference_arm=T.REFERENCE_ARM, fixed_reference_tok_s=reference, decode_only={k: v for k, v in rate.items()}, arms=arms, cells=medians, pair=pair)
 
 

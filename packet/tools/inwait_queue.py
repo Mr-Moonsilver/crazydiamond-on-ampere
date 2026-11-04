@@ -22,10 +22,13 @@ SWITCH_NAME = 'FLASH_S5_INWAIT'
 CORE = ' '.join('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED) if r['label'] != table.SMOKE_ARM)
 DECODE = ' '.join(d['label'] for d in table.DECODE_ARMS)
 TAIL = ' '.join(table.labels('tail'))
+QNAME_DEFAULT = 'q18a-sm-split-' + table.DEFAULT_DECODE_SMS
+GRADE = 'e3_dp3_startup_grade.py'
+LEGAL_TEST = ('[[ $S5_REQUESTED_DECODE_SMS =~ ^[2-6][02468]$ && $S5_REQUESTED_DECODE_SMS -ge %d && $S5_REQUESTED_DECODE_SMS -le %d ]]' % (table.MIN_DECODE_SMS, table.MAX_DECODE_SMS))
 NAMES = ((OLD, NEW), (OLD_Q, NEW_Q), ('COMPOSE2', 'INWAIT'), ('compose2', 'inwait'), ('compose-2', 'inwait'))
 FILES = 'e3_inwait_box.py inwait_arms.py e3_attn_meta_box.py attn_meta_arms.py'
-HEADER_NOTE = ('# inwait: native handoffs inside the stock wait, discovery mode: FLASH_S5_INWAIT installed for the whole run beside attn-meta and L1 + L2, all selected per arm by typed control while paused idle FULL: ps1 off,\n'
-               '# cf and cap on; the exact-path smoke first, then one decode-only baseline; band 1 live x2 and solo x1 each, band 2 one pair, one cap arm last, after the core grade (harness/inwait_arms.py). NUMERICS ARE NOT COVERED by this queue either: speed, decode, handler time and memory are reads only.\n#\n')
+HEADER_NOTE = ('# decode-phase build-3 over inwait build-4c, discovery mode: FLASH_S5_INWAIT installed for the whole run beside attn-meta and L1 + L2, all selected per arm by typed control while paused idle FULL; the decode SM count is a launch setting (S5_REQUESTED_DECODE_SMS, one value per launch, even %d..%d).\n'
+               '# The exact-path smoke first, then one decode-only baseline; cf solo x1, cf live x2, cf with merge always live x1; control: build-4c cf arms at 44 (harness/inwait_arms.py). NUMERICS ARE NOT COVERED by this queue either: speed, decode, handler time and memory are reads only.\n#\n' % (table.MIN_DECODE_SMS, table.MAX_DECODE_SMS))
 SETTINGS_NOTE = '# inwait: FLASH_S5_INWAIT=1 below (installed, not selected), for the whole run, the only setting added to compose-2; each arm selects it by typed control.\n'
 SETTINGS_ANCHOR = '# compose-2: FLASH_ATTN_META_GDN_BATCH=1'
 DRAFT_ASSERT = "assert env.get('FLASH_ATTN_META_GDN_BATCH') == '1', 'attn-meta installed'\n"
@@ -79,7 +82,7 @@ def body():
     text = once(text, '  for _label in ' + cq.DECODE + '; do', '  for _label in ' + DECODE + '; do')
     text = once(text, AM0_CASE, '')
     text = once(text, '  for _label in ; do\n    alpha_next_arm tail', '  for _label in ' + TAIL + '; do\n    alpha_next_arm tail')
-    text = text.replace('g4 tail', 'cap arm')
+    text = text.replace('g4 tail', 'last arm')
     text = once(text, SMOKE_ANCHOR, SMOKE_CALL + SMOKE_ANCHOR)
     text = once(text, SMOKE_DEFS_ANCHOR, SMOKE_DEFS + SMOKE_DEFS_ANCHOR)
     text = once(text, ARM_GUARD_ANCHOR, ARM_GUARD + ARM_GUARD_ANCHOR)
@@ -91,18 +94,31 @@ def draft(text):
     text = once(text, cq.body(), body())
     text = once(text, DRAFT_ASSERT, DRAFT_ASSERT + "assert env.get('%s') == '1', 'in-wait installed'\n" % SWITCH_NAME)
     text = once(text, '# compose-2: attn-meta and stage1-step', HEADER_NOTE + '# compose-2: attn-meta and stage1-step')
-    return renames(text)
+    text = renames(text)
+    text = once(text, '[[ $S5_REQUESTED_DECODE_SMS == 44 ]] || fail_early decode-sms-must-be-44', LEGAL_TEST + ' || fail_early decode-sms-illegal')
+    text = once(text, 'RUN_ID="q18a-inwait-$(date', 'RUN_ID="q18a-sm-split-${S5_REQUESTED_DECODE_SMS}-$(date')
+    text = once(text, 'python3 "$H/e3_native_startup_grade.py"', 'python3 "$H/%s"' % GRADE)
+    return once(text, 'for _interface in e3_native_startup_grade.py ', 'for _interface in e3_native_startup_grade.py %s ' % GRADE)
 
 
 def settings(text):
     text = once(text, 'FLASH_ATTN_META_GDN_BATCH=1 FLASH_S5_REPLAY_LIB=', 'FLASH_ATTN_META_GDN_BATCH=1 ' + SWITCH_NAME + '=1 FLASH_S5_REPLAY_LIB=')
     text = once(text, SETTINGS_ANCHOR, SETTINGS_NOTE + SETTINGS_ANCHOR)
-    return renames(text)
+    text = renames(text)
+    text = once(text, 'QNAME=${QNAME:-q18a-inwait}', 'QNAME=${QNAME:-%s}' % QNAME_DEFAULT)
+    text = once(text, 'S5_REQUESTED_DECODE_SMS=${S5_REQUESTED_DECODE_SMS:-44}', 'S5_REQUESTED_DECODE_SMS=${S5_REQUESTED_DECODE_SMS:-%s}' % table.DEFAULT_DECODE_SMS)
+    text = once(text, "[[ $S5_REQUESTED_DECODE_SMS == 44 ]] || {\n  echo 'decode split remains declared 44' >&2; return 2; }",
+                LEGAL_TEST + " || {\n  echo 'decode split must be even, %d..%d' >&2; return 2; }\nexport S5_REQUESTED_DECODE_SMS" % (table.MIN_DECODE_SMS, table.MAX_DECODE_SMS))
+    return once(text, 'FLASH_S5_DECODE_SMS=44 ', 'FLASH_S5_DECODE_SMS=$S5_REQUESTED_DECODE_SMS ')
 
 
 def declare(text):
     text = once(text, DECLARE_ASSERT, DECLARE_ASSERT + "assert env.get('%s')=='1', 'inwait runs with the lever installed'\n" % SWITCH_NAME)
-    return renames(text)
+    text = renames(text)
+    text = once(text, 'QNAME=${QNAME:-q18a-inwait}', 'QNAME=${QNAME:-%s}' % QNAME_DEFAULT)
+    text = once(text, '''python3 - "$R/startup.json" "$Q18A_TARGET_LABEL" <<'PY_DECL' ''', '''python3 - "$R/startup.json" "$Q18A_TARGET_LABEL" "$S5_REQUESTED_DECODE_SMS" <<'PY_DECL' ''')
+    text = once(text, "assert env.get('FLASH_S5_DECODE_SMS')=='44', 'decode split differs'", "assert env.get('FLASH_S5_DECODE_SMS')==sys.argv[3], 'decode split differs'")
+    return once(text, '  for name in e3_native_startup_grade.py ', '  for name in e3_native_startup_grade.py %s ' % GRADE)
 
 
 def derive():

@@ -118,7 +118,7 @@ class NameChecks(unittest.TestCase):
     QNAME = re.search(r'QNAME=\$\{QNAME:-([^}]+)\}', (ROOT / SETTINGS).read_text()).group(1)
 
     def test_the_real_qname(self):
-        self.assertEqual(self.QNAME, 'q18a-inwait')
+        self.assertEqual(self.QNAME, 'q18a-sm-split-52')
         self.assertEqual(re.search(r'QNAME=\$\{QNAME:-([^}]+)\}', (ROOT / DECLARE).read_text()).group(1), self.QNAME)
 
     def test_every_qname_test_passes_with_it(self):
@@ -137,7 +137,7 @@ class NameChecks(unittest.TestCase):
 
     def test_run_id_and_request_dir_carry_the_name(self):
         draft = (ROOT / DRAFT).read_text()
-        self.assertIn('RUN_ID="%s-$(date -u +%%Y%%m%%dT%%H%%M%%SZ)-$$"' % self.QNAME, draft)
+        self.assertIn('RUN_ID="q18a-sm-split-${S5_REQUESTED_DECODE_SMS}-$(date -u +%Y%m%dT%H%M%SZ)-$$"', draft)
         self.assertIn('R=$S0/$QNAME-requests', (ROOT / DECLARE).read_text())
 
     def test_names_resolve_and_none_is_c1s_queue(self):
@@ -163,7 +163,7 @@ class Budget(unittest.TestCase):
                    for a in n.names} | {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         self.assertFalse(imports & {'time', 'datetime', 'calendar'})
         exp = gate.EXPECTED_RUNTIME_S
-        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (11, 1, 9, 1))
+        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (6, 1, 5, 0))
         self.assertEqual(exp['nominal']['not_run'], [])
         self.assertLess(gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S)
         self.assertTrue(gate.arm_fits(gate.LAST_ARM_ENTRY_S, 'core'))
@@ -278,8 +278,7 @@ class ArmLoop(unittest.TestCase):
         self.assertEqual(ingress, ['ingress-%s.json' % x for x in CORE[:1] + DECODE + CORE[1:] + TAIL])
         for name in DECODE + CORE:
             self.assertEqual(steps['arm-' + name], 'PASS', name)
-        # The stub's cap arm wrote a record and no engine lines: the core grade passes, the read says it cannot be whole. Whole read: test_inwait_box.
-        self.assertEqual((steps['inwait'], steps['inwait-read']), ('PASS', 'READ-INCONCLUSIVE'))
+        self.assertEqual((steps['inwait'], steps['inwait-read']), ('PASS', 'READ-PASS'))
         grade = json.loads((self.q / 'inwait-grade.json').read_text())
         self.assertEqual((grade['schema'], grade['verdict'], grade['missing']), ('inwait-grade/1', 'PASS', []))
         self.assertEqual(sorted(grade['step_gate']['arms']), sorted(CORE))
@@ -291,13 +290,13 @@ class ArmLoop(unittest.TestCase):
 
     def test_a_leak_fails_the_core_grade_and_counts(self):
         emit, arms = tbox.run_of()
-        arm = next(a for a in arms if a['label'] == 'ps1.g2-live-1')
-        arm['cow_fast']['counters']['calls']['0'] = 2
-        out, err, calls, steps = self.run_loop(edit={'ps1.g2-live-1': dict(cow_fast=arm['cow_fast'])})
+        arm = next(a for a in arms if a['label'] == 'cf.g2-live-1')
+        arm['inwait'].update(acknowledged=False)
+        out, err, calls, steps = self.run_loop(edit={'cf.g2-live-1': dict(inwait=arm['inwait'])})
         self.assertEqual(steps['inwait'], 'FAIL', out[-1500:])
         self.assertIn('END FAILS=1', out)
         grade = json.loads((self.q / 'inwait-grade.json').read_text())
-        self.assertIn('ps1.g2-live-1:cow-fast-off-moved-its-counter', grade['failures'])
+        self.assertIn('cf.g2-live-1:inwait-selection-not-acknowledged', grade['failures'])
 
     def test_a_smoke_that_does_not_engage_stops_the_table(self):
         out, err, calls, steps = self.run_loop(smoke_rc=2)
@@ -309,6 +308,69 @@ class ArmLoop(unittest.TestCase):
         for name in TAIL:
             self.assertEqual(steps['arm-' + name], 'READ-INCONCLUSIVE', name)
         self.assertIn('NOT_RUN: the exact-path smoke did not engage', out)
+
+
+class DecodeSms(unittest.TestCase):
+    """Decode-phase build-3: this launch's table and the decode SM count as a launch setting."""
+
+    def test_the_table_and_the_control_labels(self):
+        self.assertEqual(T.labels(), ['sm.g2-live-0', 'cf.g2-solo-0', 'cf.g2-live-0', 'cf.g2-live-1', 'cfa.g2-live-0'])
+        self.assertEqual([r['decode_merge'] for r in T.arms()], ['chunk'] * 4 + ['always'])
+        self.assertEqual([r['cow_fast'] for r in T.arms()], [True] * 5)
+        self.assertEqual(T.labels('tail'), [])
+
+    def test_the_legal_values(self):
+        for good in ('24', '44', '52', '60'):
+            self.assertEqual(T.legal_decode_sms(good), good)
+        for bad in ('22', '45', '62', '052', '', 'x', '٥٢'):
+            with self.assertRaises(ValueError, msg=bad):
+                T.legal_decode_sms(bad)
+
+    def settings(self, sms):
+        values = {'S5_REQUESTED_DECODE_SMS': sms}
+        return bash_words('"$QNAME" "$S5_REQUESTED_DECODE_SMS" "$(printenv S5_REQUESTED_DECODE_SMS)" "${EXTRA_ENV:-}"', queue.derive()[DRAFT], values)
+
+    def test_the_settings_export_the_value_and_refuse_others(self):
+        rc, words, err = self.settings('52')
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(words[1:3], ['52', '52'])
+        text = (ROOT / SETTINGS).read_text()
+        self.assertEqual(text.count('FLASH_S5_DECODE_SMS=$S5_REQUESTED_DECODE_SMS '), 1)
+        self.assertNotIn('FLASH_S5_DECODE_SMS=44', text)
+        for bad in ('45', '62', '44x'):
+            self.assertEqual(self.settings(bad)[0], 97, bad)
+
+    def test_the_draft_checks_the_value_and_runs_the_bound_grade(self):
+        draft = queue.derive()[DRAFT]
+        self.assertNotIn('decode-sms-must-be-44', draft)
+        self.assertIn(queue.LEGAL_TEST + ' || fail_early decode-sms-illegal', draft)
+        self.assertEqual(draft.count('python3 "$H/e3_dp3_startup_grade.py"'), 1)
+        self.assertNotIn('python3 "$H/e3_native_startup_grade.py"', draft)
+
+    def test_the_declaration_compares_with_the_launch_value(self):
+        text = (ROOT / DECLARE).read_text()
+        self.assertIn('"$Q18A_TARGET_LABEL" "$S5_REQUESTED_DECODE_SMS" <<\'PY_DECL\'', text)
+        self.assertIn("env.get('FLASH_S5_DECODE_SMS')==sys.argv[3]", text)
+        self.assertIn('e3_dp3_startup_grade.py', text)
+
+    def grade_text(self, sms):
+        code = ('import e3_dp3_startup_grade as g; ns = g.namespace(); '
+                'print(ns["REQUESTED"], callable(ns["main"]))')
+        env = dict(os.environ, S5_REQUESTED_DECODE_SMS=sms)
+        return subprocess.run([sys.executable, '-B', '-c', code], cwd=HERE, env=env, capture_output=True, text=True, timeout=60)
+
+    def test_the_grade_binds_the_value_and_refuses_an_illegal_one(self):
+        done = self.grade_text('52')
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, '52 True'), done.stderr[-400:])
+        self.assertNotEqual(self.grade_text('45').returncode, 0)
+
+    def test_the_grade_has_no_literal_left(self):
+        text = (HERE / 'e3_native_startup_grade.py').read_text()
+        import e3_dp3_startup_grade as g
+        for old, new in g.SWAPS:
+            self.assertEqual(text.count(old), 1, old)
+            text = text.replace(old, new)
+        self.assertNotIn('==44', text)
 
 
 ARGPARSE_VALUES = dict(tq.ARGPARSE_VALUES, QNAME='q18a-inwait', RUN_ID='q18a-inwait-fixture', _label='ps1.g2-live-1',
@@ -385,7 +447,7 @@ class QueueArgparse(unittest.TestCase):
         calls = held.queue_python_calls(texts, (HERE / 'qlib.sh').read_text())
         parent = held.queue_python_calls(c1q.derive(), (HERE / 'qlib.sh').read_text())
         # c1's calls, one for one, with its box replaced by this queue's and the _h names.
-        swap = lambda s: {'e3_alpha_next_c1_box.py': 'e3_inwait_box.py', 'native43_engine_death.py': 'native43_engine_death_h.py',
+        swap = lambda s: {'e3_native_startup_grade.py': 'e3_dp3_startup_grade.py', 'e3_alpha_next_c1_box.py': 'e3_inwait_box.py', 'native43_engine_death.py': 'native43_engine_death_h.py',
                           'alpha_next_stop_race.py': 'alpha_next_stop_race_h.py'}.get(s, s)
         decode = [c for c in calls if c[1] == 'e3_inwait_box.py' and c[2].split()[0] == 'decode-arm']
         self.assertEqual(len(decode), 1)
