@@ -141,7 +141,19 @@
   "patches/s5_engine/model_hooks.py": [
    "LaneForward._scopes",
    "PlePrivateScratch.__init__",
-   "ple_embedding"
+   "PlePrivateScratch.engaged",
+   "PleWitness.__init__",
+   "PleWitness.check",
+   "PleWitness.install",
+   "PleWitness.lookup",
+   "PleWitness.reduce",
+   "class:PleWitness",
+   "module:PLE_PRIVATE",
+   "module:PLE_WITNESS",
+   "module:__all__",
+   "ple_embedding",
+   "select_ple_private",
+   "select_ple_witness"
   ],
   "patches/s5_engine/native_auto_arm.py": [
    "AutoArmPolicy._plan",
@@ -178,7 +190,12 @@
    "validate_worker"
   ],
   "patches/s5_engine/native_startup.py": [
-   "_ple_scratch"
+   "_ple_scratch",
+   "_ple_witness",
+   "install_worker_native",
+   "module:from model_hooks import LaneForward, PlePrivateScratch, PleWitness, PrefillStreamOwners, local_text_model, ple_embedding",
+   "module:from model_hooks import LaneForward, PlePrivateScratch, PrefillStreamOwners, local_text_model, ple_embedding",
+   "module:import os"
   ],
   "patches/s5_engine/probe_control.py": [
    "attach_native_router"
@@ -260,6 +277,7 @@
     "test_inwait_router",
     "test_dp5_chunk",
     "test_dp5_ple",
+    "test_ple_private",
     "test_inwait_box",
     "test_inwait_queue",
     "test_inwait_robust_swap",
@@ -689,6 +707,7 @@
    "harness/test_inwait_slices.py",
    "harness/test_inwait_slots.py",
    "harness/test_native43_engine_death_h.py",
+   "harness/test_ple_private.py",
    "harness/test_stage1_step_box.py",
    "harness/test_stage1_step_engine.py",
    "harness/test_stage1_step_queue.py",
@@ -955,7 +974,19 @@
   "e3/model_hooks.py": [
    "LaneForward._scopes",
    "PlePrivateScratch.__init__",
-   "ple_embedding"
+   "PlePrivateScratch.engaged",
+   "PleWitness.__init__",
+   "PleWitness.check",
+   "PleWitness.install",
+   "PleWitness.lookup",
+   "PleWitness.reduce",
+   "class:PleWitness",
+   "module:PLE_PRIVATE",
+   "module:PLE_WITNESS",
+   "module:__all__",
+   "ple_embedding",
+   "select_ple_private",
+   "select_ple_witness"
   ],
   "e3/native_auto_arm.py": [
    "AutoArmPolicy._plan",
@@ -992,7 +1023,12 @@
    "validate_worker"
   ],
   "e3/native_startup.py": [
-   "_ple_scratch"
+   "_ple_scratch",
+   "_ple_witness",
+   "install_worker_native",
+   "module:from .model_hooks import LaneForward, PlePrivateScratch, PleWitness, PrefillStreamOwners, local_text_model, ple_embedding",
+   "module:from .model_hooks import LaneForward, PlePrivateScratch, PrefillStreamOwners, local_text_model, ple_embedding",
+   "module:import os"
   ],
   "e3/probe_control.py": [
    "attach_native_router"
@@ -1096,7 +1132,7 @@
   ],
   [
    "QNAME='q18a-inwait'",
-   "SMSPLIT_DECODE_SMS=os.environ.get('SMSPLIT_DECODE_SMS','44')\nif not re.fullmatch('[2-6][02468]',SMSPLIT_DECODE_SMS) or not 24<=int(SMSPLIT_DECODE_SMS)<=60:\n    raise SystemExit('SMSPLIT_DECODE_SMS must be even, 24..60')\nCHUNK_TOKENS=os.environ.get('CHUNK_TOKENS','2048')\nif CHUNK_TOKENS not in ('1024','1536','2048'):\n    raise SystemExit('CHUNK_TOKENS must be 1024, 1536 or 2048')\nQNAME='q18a-chunk-'+CHUNK_TOKENS"
+   "SMSPLIT_DECODE_SMS=os.environ.get('SMSPLIT_DECODE_SMS','44')\nif not re.fullmatch('[2-6][02468]',SMSPLIT_DECODE_SMS) or not 24<=int(SMSPLIT_DECODE_SMS)<=60:\n    raise SystemExit('SMSPLIT_DECODE_SMS must be even, 24..60')\nCHUNK_TOKENS=os.environ.get('CHUNK_TOKENS','1024')\nif CHUNK_TOKENS not in ('1024','1536','2048'):\n    raise SystemExit('CHUNK_TOKENS must be 1024, 1536 or 2048')\nQNAME='q18a-ple-private-'+CHUNK_TOKENS"
   ],
   [
    "OVERLAY=Path('/data/vllm/flash-next-tp4/prod/overlay-v16s5-q18a-inwait')",
@@ -1108,7 +1144,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "ec9222524e4b83edf0c1071ec0035774e433c329",
+ "source_commit": "1937874e831c5eff8f18a883df8eb38770844dcf",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/attn_meta_arms.py",
@@ -1187,6 +1223,7 @@
   "A\tharness/test_inwait_slots.py",
   "M\tharness/test_native35_performance.py",
   "A\tharness/test_native43_engine_death_h.py",
+  "A\tharness/test_ple_private.py",
   "A\tharness/test_stage1_step_box.py",
   "A\tharness/test_stage1_step_engine.py",
   "A\tharness/test_stage1_step_queue.py",
