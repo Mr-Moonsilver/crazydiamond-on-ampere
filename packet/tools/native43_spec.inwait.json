@@ -140,6 +140,11 @@
    "module:E3_MODULES",
    "module:LAUNCHER_LIST_EXEMPT"
   ],
+  "patches/s5_engine/native_auto_arm.py": [
+   "AutoArmPolicy._plan",
+   "_generation_logprobs_refused",
+   "module:import os"
+  ],
   "patches/s5_engine/native_measurement.py": [
    "module:INWAIT_ENV",
    "module:PROGRESS_DIRECT_INWAIT_METHODS",
@@ -290,6 +295,7 @@
   "e3/executor_hooks.py",
   "e3/lane_chunk.py",
   "e3/lane_dispatch.py",
+  "e3/native_auto_arm.py",
   "e3/native_measurement.py",
   "e3/native_overlap_control.py",
   "e3/native_overlap_session.py",
@@ -680,6 +686,7 @@
    "patches/s5_engine/attn_meta_batch.py",
    "patches/s5_engine/attn_meta_select.py",
    "patches/s5_engine/lane_chunk.py",
+   "patches/s5_engine/native_auto_arm.py",
    "patches/s5_engine/native_overlap_worker.py",
    "patches/s5_engine/native_qualification_frontend.py",
    "patches/s5_engine/worker_hooks.py",
@@ -929,6 +936,11 @@
    "module:import sys",
    "ring_message_waiting"
   ],
+  "e3/native_auto_arm.py": [
+   "AutoArmPolicy._plan",
+   "_generation_logprobs_refused",
+   "module:import os"
+  ],
   "e3/native_measurement.py": [
    "module:INWAIT_ENV",
    "module:PROGRESS_DIRECT_INWAIT_METHODS",
@@ -1062,7 +1074,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "3f35b51cc1d9007814b288029bc2384fbbf40b91",
+ "source_commit": "9d4bba3e8f58c571c4f18e4b330146567143d6f0",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/attn_meta_arms.py",
@@ -1153,6 +1165,7 @@
   "M\tpatches/s5_engine/lane_chunk.py",
   "M\tpatches/s5_engine/lane_dispatch.py",
   "M\tpatches/s5_engine/make_s5_overlap.py",
+  "M\tpatches/s5_engine/native_auto_arm.py",
   "M\tpatches/s5_engine/native_candidate_review.json",
   "M\tpatches/s5_engine/native_measurement.py",
   "M\tpatches/s5_engine/native_overlap_control.py",
