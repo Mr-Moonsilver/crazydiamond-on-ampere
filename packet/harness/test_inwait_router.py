@@ -161,7 +161,7 @@ class BoxCalls(Base):
             client.resume()
             args = types.SimpleNamespace(url=self.bridge.url, run_id=RUN, epoch=client.epoch, control_timeout_s=60)
             return record, None, status, am.end_read(args)
-        for sel in ('hf', 'both', 'cap', 'w0', 'wa', 'hf'):
+        for sel in ('hf', 'full', 'cn', 'hf'):
             row = rows[sel]
             with self.subTest(sel=sel):
                 record, exc, status, end = await self.off_loop(lambda row=row: one(row))

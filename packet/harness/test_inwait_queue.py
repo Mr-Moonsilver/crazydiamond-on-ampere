@@ -163,7 +163,7 @@ class Budget(unittest.TestCase):
                    for a in n.names} | {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         self.assertFalse(imports & {'time', 'datetime', 'calendar'})
         exp = gate.EXPECTED_RUNTIME_S
-        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (15, 1, 13, 1))
+        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (12, 1, 9, 2))
         self.assertEqual(exp['nominal']['not_run'], [])
         self.assertLess(gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S)
         self.assertTrue(gate.arm_fits(gate.LAST_ARM_ENTRY_S, 'core'))

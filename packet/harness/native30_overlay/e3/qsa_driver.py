@@ -398,8 +398,9 @@ class QsaLayerDriver:
             raise QsaDriverError('QSA main K/V cache is not bound')
         operation = self.operation
         operation.begin_layer(attn.layer_name, attn._qsa_host_kv)
-        selected = attn.indexer(state['projected_qk'], inputs['positions'],
-                                attn.topk_indices_buffer[:num_tokens])
+        from lane_chunk import score_under_cap
+        selected = score_under_cap(lambda: attn.indexer(state['projected_qk'], inputs['positions'],
+                                                        attn.topk_indices_buffer[:num_tokens]))
         if tuple(selected.shape) != (num_tokens, attn.indexer.packed_output_width):
             raise QsaDriverError('QSA indexer returned an invalid selection shape')
         if getattr(operation, 'memory_receipts', False):

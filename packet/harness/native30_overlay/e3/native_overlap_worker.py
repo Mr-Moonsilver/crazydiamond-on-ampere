@@ -537,7 +537,7 @@ def handle(worker, command, *, clock=time.monotonic_ns, torch_module=None):
     raise NativeOverlapUnavailable('native-overlap-action-not-implemented')
 
 
-INWAIT_RANK_LEVERS = ('allocator_flush', 'slots_fast', 'prepare_slices', 'score_warm', 'score_warm_rank0', 'cow_fast', 'reserved_cap', 'cow_host_filter')    # the flush first: the cap is sized after it
+INWAIT_RANK_LEVERS = ('allocator_flush', 'slots_fast', 'prepare_slices', 'score_warm', 'score_warm_rank0', 'cow_fast', 'reserved_cap', 'cow_host_filter', 'cow_verify')    # the flush first: the cap is sized after it
 
 
 def _attn_meta(runner, command):
@@ -577,6 +577,7 @@ def _attn_meta(runner, command):
                        allocator_flush=(lane_chunk.select_allocator_flush, lane_chunk.ALLOCATOR_FLUSH),
                        cow_fast=(lane_chunk.select_cow_fast, lane_chunk.COW_FAST),
                        cow_host_filter=(lane_chunk.select_cow_host_filter, lane_chunk.COW_HOST_FILTER),
+                       cow_verify=(lane_chunk.select_cow_verify, lane_chunk.COW_VERIFY),
                        reserved_cap=(lane_chunk.select_reserved_cap, lane_chunk.RESERVED_CAP))
         for name in INWAIT_RANK_LEVERS:
             select, state = selects[name]

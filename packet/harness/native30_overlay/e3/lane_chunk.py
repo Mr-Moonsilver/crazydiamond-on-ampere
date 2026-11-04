@@ -124,8 +124,10 @@ def score_warm_bytes(prompt_end):
 # that zeroes or copies pages times both, on or off, so the box names what the residue chunk's PREPARE does on each TP rank.
 COW_FAST = dict(selected=False, calls=0, pairs=0, fallbacks=0, rows=0, row_errors=0, verify_pairs=0, verify_unequal=0, pages_errors=0)
 COW_HOST_FILTER = dict(selected=False, kept=0, skipped=0, unfiltered=0)
-RESERVED_CAP = dict(selected=False, cap_bytes=0, fraction=0.0, flushes=0)
+RESERVED_CAP = dict(selected=False, cap_bytes=0, fraction=0.0, flushes=0, overdrafts=0, overdraft_refused=0)
 RESERVED_CAP_FREE_BYTES = 512 * 1024 * 1024
+RESERVED_CAP_OVERDRAFT_BYTES = 160 * 1024 * 1024    # the largest score block band 2 warms (score_warm_bytes(131094))
+COW_VERIFY = dict(selected=True, skipped=0)         # the byte check at release: on unless an arm selects it off (DESIGN-5d)
 _COW_ROW = [None]
 
 
@@ -164,6 +166,39 @@ def select_reserved_cap(on):
             RESERVED_CAP.update(cap_bytes=0, fraction=0.0)
     RESERVED_CAP['selected'] = on
     return dict(RESERVED_CAP)
+
+
+def score_under_cap(call):
+    """The indexer under the reserved cap (READING-box-5c): a score buffer that cannot grow by a few MiB must not kill the engine with 600 MiB free on the device.
+    One retry, with reserved allowed at most RESERVED_CAP_OVERDRAFT_BYTES past the cap, then the cap again; what it reserved stays cached and serves the next chunk.
+    The retry repeats only the indexer's cache-row writes, with the same values, before the allocation. Counted, so a run that used it shows it, and its min free shows the price.
+    With no cap selected, or too little free on the device, the error stands."""
+    import torch
+    try:
+        return call()
+    except torch.OutOfMemoryError:
+        if not RESERVED_CAP['selected'] or not RESERVED_CAP['cap_bytes']:
+            raise
+    # Outside the except: the traceback's frames, and the tensors they hold, are gone.
+    device = torch.cuda.current_device()
+    free, total = torch.cuda.mem_get_info(device)
+    if free < RESERVED_CAP_OVERDRAFT_BYTES:
+        RESERVED_CAP['overdraft_refused'] += 1
+        return call()
+    RESERVED_CAP['overdrafts'] += 1
+    torch.cuda.set_per_process_memory_fraction(min(1.0, (RESERVED_CAP['cap_bytes'] + RESERVED_CAP_OVERDRAFT_BYTES) / total), device)
+    try:
+        return call()
+    finally:
+        torch.cuda.set_per_process_memory_fraction(RESERVED_CAP['fraction'], device)
+
+
+def select_cow_verify(on):
+    """inwait build-5d: off for the fair hf read, so a non-hf arm doesn't carry the check at release (READING-box-5c)."""
+    if type(on) is not bool:
+        raise LaneChunkError('cow_verify selection must be a bool')
+    COW_VERIFY['selected'] = on
+    return dict(COW_VERIFY)
 
 
 def select_cow_host_filter(on):
@@ -261,7 +296,9 @@ def cow_host_verify(runner, pairs, chunk_start):
 def cow_row_pages(row, chunk_start):
     """Residency and the byte check for a row, at release so the chunk's path pays nothing. A failure is one count in the line, the times stay."""
     pages = row.pop('pages', None)
-    if pages and pages['pairs']:
+    if pages and pages['pairs'] and not COW_VERIFY['selected']:
+        COW_VERIFY['skipped'] += 1
+    elif pages and pages['pairs']:
         try:
             host_pairs = pages.get('host_pairs', pages['pairs'])
             row.update(cow_residency(pages['runner'], pages['views'], pages['pairs'], host_pairs))

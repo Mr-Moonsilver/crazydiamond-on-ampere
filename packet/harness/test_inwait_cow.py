@@ -448,6 +448,89 @@ class Cap(unittest.TestCase):
                 select(1)
 
 
+class ScoreUnderCap(unittest.TestCase):
+    """READING-box-5c: the score buffer may not kill the engine under the cap. The real function, the device calls stood in."""
+
+    MIB = 1048576
+
+    def setUp(self):
+        self.fractions = []
+        self.free = 600 * self.MIB
+        self.total = 25000 * self.MIB
+        lc.RESERVED_CAP.update(selected=True, cap_bytes=22000 * self.MIB, fraction=0.88, overdrafts=0, overdraft_refused=0)
+        self.addCleanup(lc.RESERVED_CAP.update, selected=False, cap_bytes=0, fraction=0.0, overdrafts=0, overdraft_refused=0)
+        for name, fake in (('current_device', lambda: 0), ('mem_get_info', lambda device: (self.free, self.total)), ('set_per_process_memory_fraction', lambda f, device: self.fractions.append(f))):
+            patcher = mock.patch.object(torch.cuda, name, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def failing(self, times):
+        state = dict(left=times, calls=0)
+
+        def call():
+            state['calls'] += 1
+            if state['left']:
+                state['left'] -= 1
+                raise torch.OutOfMemoryError('CUDA out of memory')
+            return 'selected'
+        return call, state
+
+    def test_no_error_touches_nothing(self):
+        call, state = self.failing(0)
+        self.assertEqual(lc.score_under_cap(call), 'selected')
+        self.assertEqual((state['calls'], self.fractions, lc.RESERVED_CAP['overdrafts']), (1, [], 0))
+
+    def test_one_retry_past_the_cap_by_the_bound_then_the_cap_again(self):
+        call, state = self.failing(1)
+        self.assertEqual(lc.score_under_cap(call), 'selected')
+        self.assertEqual(state['calls'], 2)
+        self.assertEqual(self.fractions, [(22000 + 160) / 25000, 0.88])
+        self.assertEqual(lc.RESERVED_CAP['overdrafts'], 1)
+
+    def test_a_second_failure_stands_and_the_cap_is_restored(self):
+        call, state = self.failing(2)
+        with self.assertRaises(torch.OutOfMemoryError):
+            lc.score_under_cap(call)
+        self.assertEqual((state['calls'], self.fractions[-1]), (2, 0.88))
+
+    def test_no_cap_selected_the_error_stands(self):
+        lc.RESERVED_CAP.update(selected=False)
+        call, state = self.failing(1)
+        with self.assertRaises(torch.OutOfMemoryError):
+            lc.score_under_cap(call)
+        self.assertEqual((state['calls'], self.fractions), (1, []))
+
+    def test_too_little_free_on_the_device_is_not_overdrawn(self):
+        self.free = 100 * self.MIB
+        call, state = self.failing(2)
+        with self.assertRaises(torch.OutOfMemoryError):
+            lc.score_under_cap(call)
+        self.assertEqual((self.fractions, lc.RESERVED_CAP['overdraft_refused']), ([], 1))
+
+    def test_the_fused_path_calls_the_indexer_through_it(self):
+        import ast
+        import qsa_driver
+        tree = ast.parse(open(qsa_driver.__file__).read())
+        pre = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == '_pre')
+        wrapped = [n for n in ast.walk(pre) if isinstance(n, ast.Call) and getattr(n.func, 'id', None) == 'score_under_cap']
+        self.assertEqual(len(wrapped), 1)
+        self.assertTrue(any(getattr(c.func, 'attr', None) == 'indexer' for c in ast.walk(wrapped[0]) if isinstance(c, ast.Call)))
+
+
+class VerifySelection(unittest.TestCase):
+    def test_off_skips_the_check_and_counts(self):
+        lc.select_cow_verify(False)
+        self.addCleanup(lc.select_cow_verify, True)
+        lc.COW_VERIFY.update(skipped=0)
+        with mock.patch.object(lc, 'cow_host_verify', side_effect=AssertionError('the check ran')):
+            row = lc.cow_row_pages(dict(pages=dict(pairs=[(1, 2)], runner=None, views=())), 528)
+        self.assertEqual((lc.COW_VERIFY['skipped'], 'verify_pairs' in row, 'pages' in row), (1, False, False))
+
+    def test_not_a_bool_is_refused(self):
+        with self.assertRaises(lc.LaneChunkError):
+            lc.select_cow_verify(1)
+
+
 if __name__ == '__main__':
     logging.disable(logging.CRITICAL)
     unittest.main()
