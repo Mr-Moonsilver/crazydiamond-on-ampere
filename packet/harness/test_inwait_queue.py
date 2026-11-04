@@ -118,7 +118,7 @@ class NameChecks(unittest.TestCase):
     QNAME = re.search(r'QNAME=\$\{QNAME:-([^}]+)\}', (ROOT / SETTINGS).read_text()).group(1)
 
     def test_the_real_qname(self):
-        self.assertEqual(self.QNAME, 'q18a-chunk-2048')
+        self.assertEqual(self.QNAME, 'q18a-ple-private-1024')
         self.assertEqual(re.search(r'QNAME=\$\{QNAME:-([^}]+)\}', (ROOT / DECLARE).read_text()).group(1), self.QNAME)
 
     def test_every_qname_test_passes_with_it(self):
@@ -137,7 +137,7 @@ class NameChecks(unittest.TestCase):
 
     def test_run_id_and_request_dir_carry_the_name(self):
         draft = (ROOT / DRAFT).read_text()
-        self.assertIn('RUN_ID="q18a-chunk-${S5_REQUESTED_CHUNK_TOKENS}-$(date -u +%Y%m%dT%H%M%SZ)-$$"', draft)
+        self.assertIn('RUN_ID="q18a-ple-private-${S5_REQUESTED_CHUNK_TOKENS}-$(date -u +%Y%m%dT%H%M%SZ)-$$"', draft)
         self.assertIn('R=$S0/$QNAME-requests', (ROOT / DECLARE).read_text())
 
     def test_names_resolve_and_none_is_c1s_queue(self):
@@ -163,7 +163,7 @@ class Budget(unittest.TestCase):
                    for a in n.names} | {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         self.assertFalse(imports & {'time', 'datetime', 'calendar'})
         exp = gate.EXPECTED_RUNTIME_S
-        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (6, 1, 5, 0))
+        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (13, 1, 12, 0))
         self.assertEqual(exp['nominal']['not_run'], [])
         self.assertLess(gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S)
         self.assertTrue(gate.arm_fits(gate.LAST_ARM_ENTRY_S, 'core'))
@@ -248,7 +248,7 @@ class ArmLoop(unittest.TestCase):
         path = self.root / 'loop.sh'
         path.write_text('\n'.join(script) + '\n')
         env = {k: v for k, v in os.environ.items() if k != 'HARNESS_DIR'}
-        env.update(S5_REQUESTED_CHUNK_TOKENS='2048', SMOKE_RC=str(smoke_rc), PATH='%s:%s' % (self.bin, os.environ['PATH']), Q=str(self.q), CALLS=str(self.root / 'calls.jsonl'), ARMS=str(self.arms),
+        env.update(S5_REQUESTED_CHUNK_TOKENS='1024', SMOKE_RC=str(smoke_rc), PATH='%s:%s' % (self.bin, os.environ['PATH']), Q=str(self.q), CALLS=str(self.root / 'calls.jsonl'), ARMS=str(self.arms),
                    REAL_HARNESS=str(HERE), DEATH_LINE=tap.DEATH_LINE, PYTHONDONTWRITEBYTECODE='1')
         proc = subprocess.Popen(['bash', str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
         try:
@@ -314,9 +314,12 @@ class DecodeSms(unittest.TestCase):
     """Decode-phase build-3: this launch's table and the decode SM count as a launch setting."""
 
     def test_the_table_and_the_control_labels(self):
-        self.assertEqual(T.labels(), ['sm.g2-live-0', 'cf.g2-solo-0', 'cf.g2-live-0', 'cf.g2-live-1', 'cf.g2-live-2'])
-        self.assertEqual([r['decode_merge'] for r in T.arms()], ['chunk'] * 5)
-        self.assertEqual([r['cow_fast'] for r in T.arms()], [True] * 5)
+        self.assertEqual(T.labels(), ['sm.g2-live-0', 'cfw.g2-solo-0', 'cf.g2-live-0', 'cfp.g2-live-0', 'cfp.g2-live-1', 'cf.g2-live-1',
+                                      'cfw.g2-live-0', 'cfpw.g2-live-0', 'cfpw.g2-live-1', 'cfw.g2-live-1', 'cfw.g2-live-2', 'cfpw.g2-live-2'])
+        self.assertEqual([r['decode_merge'] for r in T.arms()], ['chunk'] * 12)
+        self.assertEqual([r['cow_fast'] for r in T.arms()], [True] * 12)
+        self.assertEqual([r['label'] for r in T.arms() if r['ple_witness'] and not r['ple_private']], ['cfw.g2-solo-0', 'cfw.g2-live-0', 'cfw.g2-live-1', 'cfw.g2-live-2'])
+        self.assertEqual([r['label'] for r in T.arms() if r['c1'] in ('cf', 'cfp') and r['ple_witness']], [], 'the speed pairs carry no witness')
         self.assertEqual(T.labels('tail'), [])
 
     def test_the_legal_values(self):

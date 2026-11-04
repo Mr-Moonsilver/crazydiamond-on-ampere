@@ -49,7 +49,7 @@ class Table(unittest.TestCase):
             self.assertIs(r['next_levers'], True, r['label'])
             self.assertIs(r['prepare_slices'], True, r['label'])
             self.assertIs(r['score_warm'], False, r['label'])
-            self.assertIs(r['cow_fast'], r['c1'] in ('cf', 'sm'), r['label'])
+            self.assertIs(r['cow_fast'], r['c1'] in ('cf', 'sm', 'cfp', 'cfw', 'cfpw'), r['label'])
             self.assertIs(r['reserved_cap'], r['c1'] == 'cap', r['label'])
             self.assertEqual((r['overlap'], r['defer_bind'], r['size']), (True, True, 2), r['label'])
 
@@ -100,14 +100,14 @@ class ArmControl(unittest.TestCase):
         return record, order
 
     def test_every_selection_sends_its_fields_and_selects_inside_the_pause(self):
-        for sel in T.SELECTIONS:
+        for sel in sorted({r['c1'] for r in T.arms()}):
             client = Client()
             record, order = self.release(sel, client)
             self.assertEqual(dict(client.calls)['native_stage_local'], dict(local=True, overlap=True, defer_bind=True, lazy_recv=T.LAZY_RECV[sel], decode_merge=T.DECODE_MERGE[sel], inwait=T.INWAIT[sel], early_successor=T.NEXT[sel]))
             self.assertEqual(record['inwait'], dict(requested=T.INWAIT[sel], acknowledged=T.INWAIT[sel], early_requested=T.NEXT[sel], early_acknowledged=T.NEXT[sel]))
             self.assertEqual(dict(client.calls)['native_stage_local']['early_successor'], T.NEXT[sel])
             self.assertEqual(record['step'], dict(requested_lazy=T.LAZY_RECV[sel], requested_merge=T.DECODE_MERGE[sel], replied=True, acknowledged_lazy=T.LAZY_RECV[sel], acknowledged_merge=T.DECODE_MERGE[sel]))
-            self.assertEqual(order, [('levers', dict(slots_fast=T.NEXT[sel], prepare_slices=T.SLICES[sel], score_warm=T.WARM[sel], cow_fast=T.COW_FAST[sel], reserved_cap=T.RESERVED_CAP[sel]), 'native_stage_local'), (T.ATTN[sel], 'native_stage_local')], sel)    # after the stage command, before release_auto_arm
+            self.assertEqual(order, [('levers', dict(slots_fast=T.NEXT[sel], prepare_slices=T.SLICES[sel], score_warm=T.WARM[sel], cow_fast=T.COW_FAST[sel], reserved_cap=T.RESERVED_CAP[sel], ple_private=T.PLE_PRIVATE[sel], ple_witness=T.PLE_WITNESS[sel]), 'native_stage_local'), (T.ATTN[sel], 'native_stage_local')], sel)    # after the stage command, before release_auto_arm
 
     def test_the_actions_are_the_list_the_router_smoke_holds(self):
         client = Client()
@@ -246,7 +246,14 @@ class Smoke(unittest.TestCase):
         return dict(label=T.SMOKE_ARM, complete=True, reasons=[], outputs=dict(fresh=[1], append=[2], standing={'0': {}}), generation_requests_expected=10,
                     inwait=dict(acknowledged=True, early_acknowledged=True), attn_meta=dict(select={'0': {}}), stage_delta=dict(step_iw_applied=9, step_iw_early_begins=4),
                     progress_delta=dict(chunks=66, line_errors=0), slots_fast=dict(calls=dict(each)), prepare_slices=dict(counters=dict(sliced=dict(each))),
-                    cow_fast=dict(counters=dict(calls=dict(each), rows=dict(each))), fresh=dict(prompt_tokens_observed=65445))
+                    cow_fast=dict(counters=dict(calls=dict(each), rows=dict(each))), fresh=dict(prompt_tokens_observed=65445),
+                    ple_private=dict(counters=dict(scopes=dict(each))), ple_witness=dict(counters=dict(native_checks=dict(each))))
+
+    def test_a_ple_lever_not_engaged_stops_the_table(self):
+        for name, field, reason in (('ple_private', 'scopes', 'smoke-ple-private-not-engaged'), ('ple_witness', 'native_checks', 'smoke-ple-witness-not-engaged')):
+            record = self.good()
+            record[name]['counters'][field]['1'] = 0
+            self.assertEqual(box.smoke_check(record), (False, [reason]))
 
     def test_an_engaged_arm_passes(self):
         self.assertEqual(box.smoke_check(self.good()), (True, []))
@@ -318,6 +325,11 @@ def synthetic(part):
         fast, cap = row['cow_fast'], row['reserved_cap']
         a['cow_fast'] = dict(requested=fast, counters=dict(calls=per(2 if fast else 0), pairs=per(2 if fast else 0), fallbacks=per(0), rows=per(9), row_errors=per(0)))
         a['reserved_cap'] = dict(requested=cap, counters=dict(flushes=per(1 if cap else 0)))
+        private, witness = row['ple_private'], row['ple_witness']
+        a['ple_private'] = dict(requested=private, counters=dict(scopes={'0': 12 if private else 0, '1': 12 if private else 0, '2': 0, '3': 0}))
+        a['ple_witness'] = dict(requested=witness, counters={f: per(0) for f in box.WITNESS_FIELDS})
+        if witness:
+            a['ple_witness']['counters']['native_checks'] = {'0': 12, '1': 12, '2': 0, '3': 0}
         a['stage_delta'].update({'step_iw_' + k: 0 for k in box.IW_DELTA})
         a['stage_delta'].update(step_iw_applied=30 if on else 0, step_iw_direct_opens=1 if on else 0, step_iw_direct_releases=1 if on else 0, step_iw_early_begins=30 if nxt else 0)
         a['progress'] = [dict(label=point, native_stage_local=dict(STEP_VIEW, step_lazy=lazy, step_merge=merge, step_iw_selected=on)) for point in ('before-fresh', 'after-fresh')]

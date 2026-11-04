@@ -64,7 +64,7 @@ def probe_swaps():
          'EXPECTED_TESTS=%d  # the %d alpha-next-c1b probe cases plus the %d inwait queue cases; pinned into the frozen runner '
          'gate\n' % (parent + ours, parent, ours)),
         ("provenance['candidate']==owner.QNAME==%r\n" % PARENT_CANDIDATE,
-         "provenance['candidate']==%r and owner.QNAME=='q18a-chunk-2048' and owner.CHUNK_TOKENS=='2048' and owner.SMSPLIT_DECODE_SMS=='44'\n" % CANDIDATE),
+         "provenance['candidate']==%r and owner.QNAME=='q18a-ple-private-1024' and owner.CHUNK_TOKENS=='1024' and owner.SMSPLIT_DECODE_SMS=='44'\n" % CANDIDATE),
         ('import alpha_next_c1b_gate\nactive_and_cleanup=alpha_next_c1b_gate.ACTIVE_S+alpha_next_c1b_gate.CLEANUP_S\n',
          'import alpha_next_c1b_gate\nimport inwait_gate\n'
          'active_and_cleanup=inwait_gate.ACTIVE_S+inwait_gate.CLEANUP_S\n'),

@@ -153,6 +153,10 @@ class Ple(unittest.TestCase):
         self.assertIsNone(mh.ple_embedding(model, 1))
         self.assertIsNone(mh.ple_embedding(model, 1, 1024))
 
+    def test_the_flag_takes_the_real_path_at_1024(self):
+        model, embedding = self.model()
+        self.assertIs(mh.ple_embedding(model, 1, 1024, True), embedding)
+
     def test_the_old_path_still_resolves_at_either(self):
         model, embedding = self.model(real=False)
         self.assertIs(mh.ple_embedding(model, 1), embedding)

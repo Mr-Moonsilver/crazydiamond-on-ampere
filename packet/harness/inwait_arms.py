@@ -34,9 +34,12 @@ BAND2_ROWS = (('core', 'cf', 'live', BAND2_INDEX), ('core', 'cf', 'solo', BAND2_
 CAP_ROW = ('tail', 'cap', 'live', 0)
 # Build-4c's table, not run here: the control's arms and the fixture of test_inwait_box, whose off-arm and cap rules stay in the code.
 BUILD4C_TABLE = ((SMOKE_ROW,) + tuple([('core', s, c, 0) for s, c in ROUND0] + [('core', s, c, 1) for s, c in ROUND1]) + BAND2_ROWS + (CAP_ROW,))
-ARM_TABLE = (SMOKE_ROW, ('core', 'cf', 'solo', 0), ('core', 'cf', 'live', 0), ('core', 'cf', 'live', 1), ('core', 'cf', 'live', BAND2_INDEX))
+# ple-private (FINDING-ple-shared-prefetch.md): one launch at 1024. Control cfw solo; speed cf cfp cfp cf, no witness; witness off and on, band 1 twice, band 2 last.
+ARM_TABLE = (SMOKE_ROW, ('core', 'cfw', 'solo', 0), ('core', 'cf', 'live', 0), ('core', 'cfp', 'live', 0), ('core', 'cfp', 'live', 1), ('core', 'cf', 'live', 1),
+             ('core', 'cfw', 'live', 0), ('core', 'cfpw', 'live', 0), ('core', 'cfpw', 'live', 1), ('core', 'cfw', 'live', 1),
+             ('core', 'cfw', 'live', BAND2_INDEX), ('core', 'cfpw', 'live', BAND2_INDEX))
 DEFAULT_DECODE_SMS = '44'
-DEFAULT_CHUNK_TOKENS = '2048'
+DEFAULT_CHUNK_TOKENS = '1024'
 LEGAL_CHUNK_TOKENS = ('1024', '1536', '2048')     # 1024 the rerun on this bundle, 1536 the fallback if 2048 fails on memory alone
 MAMBA_BLOCK_ROWS, HASH_BLOCK_ROWS = 4048, 176     # read from this model's chunks on the box: ends 4048 x k, last stop prompt-1 // 176 x 176
 MIN_DECODE_SMS, MAX_DECODE_SMS = 24, 60
@@ -46,7 +49,7 @@ FIXED_REFERENCE_TOK_S = 452.8             # the lead's fixed reference (brief, 4
 PARTS = ('core', 'tail')
 ENTRY_LIMIT = {'core': ('LAST_ARM_ENTRY_S', 'last_arm_entry'), 'tail': ('LAST_TAIL_ENTRY_S', 'last_tail_entry')}
 GRADED = ('core',)
-SELECTIONS = ('sm', 'ps1', 'cf', 'cap', 'cfa')
+SELECTIONS = ('sm', 'ps1', 'cf', 'cap', 'cfa', 'cfp', 'cfw', 'cfpw')
 OFF = 'ps1'                                 # the matched off arm of every lever
 ATTN = dict.fromkeys(SELECTIONS, True)
 LAZY_RECV = dict.fromkeys(SELECTIONS, True)
@@ -55,8 +58,10 @@ INWAIT = dict.fromkeys(SELECTIONS, True)
 NEXT = dict.fromkeys(SELECTIONS, True)      # early_successor on native_stage_local, slots_fast on attn_meta_select
 SLICES = dict.fromkeys(SELECTIONS, True)    # prepare_slices on attn_meta_select
 WARM = dict.fromkeys(SELECTIONS, False)     # score_warm on attn_meta_select: build-3's pw, dropped (READING-box-3b)
-COW_FAST = {'sm': True, 'ps1': False, 'cf': True, 'cap': False, 'cfa': True}     # cow_fast on attn_meta_select
-RESERVED_CAP = {'sm': False, 'ps1': False, 'cf': False, 'cap': True, 'cfa': False}    # reserved_cap on attn_meta_select
+COW_FAST = {'sm': True, 'ps1': False, 'cf': True, 'cap': False, 'cfa': True, 'cfp': True, 'cfw': True, 'cfpw': True}     # cow_fast on attn_meta_select
+RESERVED_CAP = {'sm': False, 'ps1': False, 'cf': False, 'cap': True, 'cfa': False, 'cfp': False, 'cfw': False, 'cfpw': False}    # reserved_cap on attn_meta_select
+PLE_PRIVATE = dict(dict.fromkeys(SELECTIONS, False), sm=True, cfp=True, cfpw=True)    # ple_private on attn_meta_select
+PLE_WITNESS = dict(dict.fromkeys(SELECTIONS, False), sm=True, cfw=True, cfpw=True)    # ple_witness on attn_meta_select; stays on through decode-am1, the arm after sm
 C1 = dict.fromkeys(SELECTIONS, True)
 DEFER_BIND = dict.fromkeys(SELECTIONS, True)
 STAGE_LOCAL = True
@@ -129,7 +134,7 @@ def arms(part=None):
         band = band_of_index(index)
         size = BAND_SIZE[row_part][band]
         rows.append(dict(label=label(sel, size, cohort, index), selection=selection(sel, size), part=row_part, c1=sel, attn=ATTN[sel], lazy_recv=LAZY_RECV[sel], decode_merge=DECODE_MERGE[sel],
-                         inwait=INWAIT[sel], next_levers=NEXT[sel], prepare_slices=SLICES[sel], score_warm=WARM[sel], cow_fast=COW_FAST[sel], reserved_cap=RESERVED_CAP[sel], overlap=C1[sel], defer_bind=DEFER_BIND[sel], c0='on', stage_local=STAGE_LOCAL, size=size, cohort=cohort,
+                         inwait=INWAIT[sel], next_levers=NEXT[sel], prepare_slices=SLICES[sel], score_warm=WARM[sel], cow_fast=COW_FAST[sel], reserved_cap=RESERVED_CAP[sel], ple_private=PLE_PRIVATE[sel], ple_witness=PLE_WITNESS[sel], overlap=C1[sel], defer_bind=DEFER_BIND[sel], c0='on', stage_local=STAGE_LOCAL, size=size, cohort=cohort,
                          index=index, band=band, extra=False, entry_limit=ENTRY_LIMIT[row_part][0]))
     return rows
 
@@ -163,14 +168,15 @@ def check():
     assert set(BAND_SIZE) == set(PARTS) == set(ENTRY_LIMIT)
     assert BAND1_REQUIRED_ROUNDS == BAND1_ROUNDS == len(BAND1_INDEXES)
     names = labels()
-    assert len(names) == len(set(names)) == 5, 'five distinct prefill arm labels'
+    assert len(names) == len(set(names)) == 12, 'twelve distinct prefill arm labels'
     assert labels('tail') == [] and labels('core') == names, 'no tail'
     assert names[0] == COLD_ARM, 'the cold arm is the first prefill arm'
-    assert names[-1] == label('cf', 2, 'live', BAND2_INDEX), 'band 2 is last'
-    assert set(names[1:-1]) < {label(s, BAND_SIZE[p][band_of_index(i)], c, i) for p, s, c, i in BUILD4C_TABLE}, 'the chunk arms carry the labels of the control'
+    assert names[-2:] == [label('cfw', 2, 'live', BAND2_INDEX), label('cfpw', 2, 'live', BAND2_INDEX)], 'band 2 is last'
     assert [d['label'] for d in DECODE_ARMS] == [REFERENCE_ARM] and [d['attn'] for d in DECODE_ARMS] == [True]
     assert ROUND1 == ROUND0[:1:-1], 'round 1 is round 0 live reversed'
     assert set(ATTN) == set(LAZY_RECV) == set(DECODE_MERGE) == set(INWAIT) == set(NEXT) == set(SLICES) == set(WARM) == set(COW_FAST) == set(RESERVED_CAP) == set(C1) == set(DEFER_BIND) == set(SELECTIONS)
+    assert set(PLE_PRIVATE) == set(PLE_WITNESS) == set(SELECTIONS)
+    assert not any(PLE_WITNESS[s] for s, c in (('cf', 0), ('cfp', 0))), 'the speed pairs carry no witness'
     for row in arms():
         assert row['overlap'] is True and row['defer_bind'] is True and row['stage_local'] is True, 'C1 defer in every arm'
         assert row['attn'] is True and row['lazy_recv'] is True and row['decode_merge'] == ('always' if row['c1'] == 'cfa' else 'chunk'), 'attn-meta, L1 and L2 in every arm'

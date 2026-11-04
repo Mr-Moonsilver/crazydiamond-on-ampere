@@ -792,7 +792,7 @@ def _workspace_lanes(runtime):
 def _ple_audit(model, ple_scratch, chunk_tokens=1024):
     found = []
     for layer_idx in _local_layers(model):
-        embedding = ple_embedding(model, layer_idx, chunk_tokens)
+        embedding = ple_embedding(model, layer_idx, chunk_tokens, getattr(ple_scratch, 'selectable', False))
         if embedding is not None:
             found.append((layer_idx, embedding))
     if not found:

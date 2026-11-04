@@ -38,7 +38,8 @@ AXIS = ("alpha-next's C0 on/off names and c1's C1-on/off names in this record (o
         'cf (the fast CoW copy) against its matched ps1, and cap (the reserved cap) against ps1 too; every arm is C1 defer, C0 local, attn-meta, L1 + L2, in-wait, early successor, fast slot mappings and PREPARE in slices')
 _ROLE = 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on, early successor, fast slot mappings'
 _ROLE = _ROLE + ', PREPARE in slices'
-OBSERVE_ROLE = {'ps1': _ROLE + ')', 'cf': _ROLE + ', fast CoW copy)', 'sm': _ROLE + ', fast CoW copy; the exact-path smoke)', 'cap': _ROLE + ', reserved cap)', 'cfa': _ROLE + ', fast CoW copy, merge always)'}
+OBSERVE_ROLE = {'ps1': _ROLE + ')', 'cf': _ROLE + ', fast CoW copy)', 'sm': _ROLE + ', fast CoW copy; the exact-path smoke)', 'cap': _ROLE + ', reserved cap)', 'cfa': _ROLE + ', fast CoW copy, merge always)',
+               'cfp': _ROLE + ', fast CoW copy, private PLE buffer)', 'cfw': _ROLE + ', fast CoW copy, PLE witness)', 'cfpw': _ROLE + ', fast CoW copy, private PLE buffer, PLE witness)'}
 NOT_COVERED = ('numerics: this queue runs no fixed-schedule check; these arms are speed reads, batch 8 against 2 x 4 changes batch composition so OUTSIDE on merged arms is expected and is not a defect, '
                'and the fixed-schedule check owed for C1 defer stays owed')
 BASIS = ('one engine, FLASH_ATTN_META_GDN_BATCH=1 FLASH_S5_LAZY_RECV=1 FLASH_S5_DECODE_MERGE=1 FLASH_S5_INWAIT=1 for the whole run, every prefill arm C1 defer with fused, group size 2, attn-meta and L1 + L2 '
@@ -79,7 +80,8 @@ def sb_bindings():
 
 # --- the arm --------------------------------------------------------------------------------------------
 
-RANK_LEVERS = ('slots_fast', 'prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap')
+RANK_LEVERS = ('slots_fast', 'prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap', 'ple_private', 'ple_witness')
+WITNESS_FIELDS = ('native_checks', 'native_unequal', 'native_rows', 'decode_checks', 'decode_unequal', 'decode_rows', 'missing_ids', 'errors')
 
 
 def levers_into(client, attn, wanted, record):
@@ -95,9 +97,9 @@ def levers_into(client, attn, wanted, record):
 class _InwaitSelecting:
     """The arm's client with ``inwait`` on the stage command; the reply's value goes to the record, and the grade reads it."""
 
-    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False):
+    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False, ple_private=False, ple_witness=False):
         self._client, self._inwait, self._record, self._next, self._attn = client, inwait, record, next_levers, attn
-        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap)
+        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap, ple_private=ple_private, ple_witness=ple_witness)
         self._raw, self._slots_sent = client if raw is None else raw, False
 
     def __getattr__(self, name):
@@ -124,7 +126,7 @@ def release_compose(row):
         run_inner = inner(size, local)
 
         def run(client, record, mode):
-            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap']), record, mode)
+            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap'], row['ple_private'], row['ple_witness']), record, mode)
             if (record.get('attn_meta') or {}).get('select') is None:
                 raise ValueError('attn-meta-select-not-sent')
             if record.get('inwait') is None:
@@ -219,7 +221,9 @@ def rank_lever_counters(record, row, end):
     for name, wanted, fields in (('prepare_slices', row['prepare_slices'], ('sliced', 'yields', 'peek_missing')),
                                  ('score_warm', row['score_warm'], ('allocs', 'flushes', 'rewarms', 'errors')),
                                  ('cow_fast', row['cow_fast'], ('calls', 'pairs', 'fallbacks', 'rows', 'row_errors', 'verify_pairs', 'verify_unequal', 'pages_errors')),
-                                 ('reserved_cap', row['reserved_cap'], ('flushes',))):
+                                 ('reserved_cap', row['reserved_cap'], ('flushes',)),
+                                 ('ple_private', row['ple_private'], ('scopes',)),
+                                 ('ple_witness', row['ple_witness'], WITNESS_FIELDS)):
         block = record.setdefault(name, dict(requested=wanted, select=None))
         block['counters'] = {field: lever_delta(block.get('select'), end, name, field) for field in fields}
 
@@ -321,6 +325,24 @@ def inwait_check(arms, want):
             missing.add(row['label'] + ':prepare-slices-selected-not-engaged')
         elif not row['prepare_slices'] and (any(sliced.values()) or any((yields or {}).values())):
             failures.add(row['label'] + ':prepare-slices-off-moved-its-counter')
+        # ple-private: engaged where asked, on the stage that has the PLE (ranks 0, 1), unmoved where not. Witness counts are the run's result, read by the reader, never a failure here.
+        scopes = ((rec.get('ple_private') or {}).get('counters') or {}).get('scopes')
+        witness = (rec.get('ple_witness') or {}).get('counters') or {}
+        facts[row['label']].update(ple_private=row['ple_private'], ple_scopes=scopes, ple_witness=row['ple_witness'], witness=witness)
+        native_checks = witness.get('native_checks')
+        if type(scopes) is not dict or type(native_checks) is not dict:
+            missing.add(row['label'] + ':ple-counters-absent')
+        else:
+            if row['ple_private'] and not (scopes.get('0') and scopes.get('1')):
+                missing.add(row['label'] + ':ple-private-selected-not-engaged')
+            if not row['ple_private'] and any(scopes.values()):
+                failures.add(row['label'] + ':ple-private-off-moved-its-counter')
+            if row['ple_witness'] and not (native_checks.get('0') and native_checks.get('1')):
+                missing.add(row['label'] + ':ple-witness-selected-not-engaged')
+            if not row['ple_witness'] and any(native_checks.values()):
+                failures.add(row['label'] + ':ple-witness-off-moved-its-counter')
+            if any((witness.get('errors') or {}).values()) or any((witness.get('missing_ids') or {}).values()):
+                missing.add(row['label'] + ':ple-witness-errors')
         cow = (rec.get('cow_fast') or {}).get('counters') or {}
         calls, cow_rows = cow.get('calls'), cow.get('rows')
         facts[row['label']].update(cow_fast=row['cow_fast'], cow=cow, reserved_cap=row['reserved_cap'], cap_flushes=((rec.get('reserved_cap') or {}).get('counters') or {}).get('flushes'))
@@ -435,6 +457,13 @@ def smoke_check(rec, row=None, chunk_tokens=None):
         prompt = (rec.get('fresh') or {}).get('prompt_tokens_observed')
         if type(prompt) is not int or chunks != T.expected_chunks(prompt, int(T.legal_chunk_tokens(chunk_tokens))):
             reasons.append('smoke-chunk-rows-not-requested')
+    # ple-private: the smoke selects both; the PLE sits on ranks 0 and 1.
+    scopes = ((rec.get('ple_private') or {}).get('counters') or {}).get('scopes') or {}
+    native_checks = ((rec.get('ple_witness') or {}).get('counters') or {}).get('native_checks') or {}
+    if row['ple_private'] and not (scopes.get('0') and scopes.get('1')):
+        reasons.append('smoke-ple-private-not-engaged')
+    if row['ple_witness'] and not (native_checks.get('0') and native_checks.get('1')):
+        reasons.append('smoke-ple-witness-not-engaged')
     if not delta.get('step_iw_applied'):
         reasons.append('smoke-in-wait-not-engaged')
     if not delta.get('step_iw_early_begins'):

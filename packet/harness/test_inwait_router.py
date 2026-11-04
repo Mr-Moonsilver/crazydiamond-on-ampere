@@ -127,8 +127,8 @@ class Exposure(Base):
                     if action == 'qualification_worker':
                         out[am.SELECT] = worker.call(am.SELECT, {'on': True})
                         out['slots_fast'] = worker.call(am.SELECT, {'on': True, 'slots_fast': False})
-                        out['rank_levers'] = worker.call(am.SELECT, {'on': True, 'slots_fast': True, 'prepare_slices': True, 'score_warm': True, 'cow_fast': True, 'reserved_cap': True})
-                        out['rank_levers_off'] = worker.call(am.SELECT, {'on': True, 'slots_fast': False, 'prepare_slices': False, 'score_warm': False, 'cow_fast': False, 'reserved_cap': False})
+                        out['rank_levers'] = worker.call(am.SELECT, {'on': True, 'slots_fast': True, 'prepare_slices': True, 'score_warm': True, 'cow_fast': True, 'reserved_cap': True, 'ple_private': True, 'ple_witness': True})
+                        out['rank_levers_off'] = worker.call(am.SELECT, {'on': True, 'slots_fast': False, 'prepare_slices': False, 'score_warm': False, 'cow_fast': False, 'reserved_cap': False, 'ple_private': False, 'ple_witness': False})
                         out[am.READ] = worker.call(am.READ, {})
                     else:
                         out[action] = client.call(action, **{name: SAMPLE[name] for name in fields})
@@ -138,7 +138,7 @@ class Exposure(Base):
         out = await self.off_loop(smoke)
         self.assertEqual({k: v for k, v in out.items() if type(v) is str}, {})
         self.assertEqual(set(out), {a for a, _f in box.ACTIONS} - {'qualification_worker'} | {am.SELECT, am.READ, 'slots_fast', 'rank_levers', 'rank_levers_off'})
-        for name in ('prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap'):
+        for name in ('prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap', 'ple_private', 'ple_witness'):
             self.assertEqual({r['after'][name]['selected'] for r in out['rank_levers'].values()}, {True}, name)
             self.assertEqual({r['after'][name]['selected'] for r in out['rank_levers_off'].values()}, {False}, name)
 
@@ -176,7 +176,7 @@ class BoxCalls(Base):
                 self.assertEqual({r['after']['slots_fast']['selected'] for r in record['slots_fast']['select'].values()}, {row['next_levers']})
                 self.assertEqual({r['counters']['slots_fast']['selected'] for r in end['read'].values()}, {row['next_levers']})
                 self.assertEqual(box.slots_calls(record['slots_fast']['select'], end['read']), dict.fromkeys(('0', '1', '2', '3'), 0))
-                for name in ('prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap'):
+                for name in ('prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap', 'ple_private', 'ple_witness'):
                     self.assertEqual({r['after'][name]['selected'] for r in record[name]['select'].values()}, {row[name]}, name)
                     self.assertEqual({r['counters'][name]['selected'] for r in end['read'].values()}, {row[name]}, name)
                 view = box.stage_view(status)
