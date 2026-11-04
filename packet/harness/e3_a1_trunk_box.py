@@ -21,6 +21,7 @@ import time
 
 import a1_trunk_arms as T
 import e3_inwait_box as iw
+import e3_native39_w2_length as w2
 import e3_native_refusal_client as refusal
 import step_a_torn_lines as torn_lines
 
@@ -59,7 +60,7 @@ def yield_view(status, history=False):
     row = status.get('append_yield') if type(status) is dict else None
     if type(row) is not dict:
         return None
-    out = {k: row.get(k) for k in ('schema', 'config', 'phase', 'seq', 'counters', 'end_reasons', 'arrivals', 'holds')}
+    out = {k: row.get(k) for k in ('schema', 'config', 'phase', 'seq', 'counters', 'end_reasons', 'arrivals', 'holds', 'refusals', 'lookups', 'split_holds')}
     current = row.get('current')
     out['current_seq'] = current.get('seq') if type(current) is dict else None
     if history:
@@ -101,16 +102,40 @@ def returner_text(prompt, label_, index, tokens):
     return prompt + '\n' + shared._prompt(suffix_seed(label_, index), 2, tokens)
 
 
+def shaped_returner_text(a, prompt, label_, index, tokens, short, *, post=None, timeout=120):
+    """The returner's text with the tail it needs, measured by the engine's own /tokenize; (text, record). Never sends a token id onward."""
+    post = post or w2._post
+    extra, tails = 0, []
+    for _ in range(T.TAIL_ATTEMPTS):
+        text = returner_text(prompt, label_, index, tokens + extra)
+        got = post(a.url, '/tokenize', {'model': a.model, 'prompt': text}, timeout).get('tokens')
+        if type(got) is not list:
+            raise ValueError('tokenize-reply-shape')
+        tail = T.tail_rows(len(got))
+        tails.append(tail)
+        if T.tail_fits(tail, short):
+            return text, dict(prompt_tokens_tokenized=len(got), tail_rows=tail, tail_attempts=len(tails), short_tail=short)
+        extra += (T.TAIL_TARGET[short] - tail) % T.PREFIX_UNIT
+    raise ValueError('returner-tail-not-shaped: %s' % tails)
+
+
 class Returner:
     """One returning agent, on its own thread: wait for its time, end the standing stream's turn, send the prompt plus the suffix under the same salt, read to the end."""
 
-    def __init__(self, a, cfg, row, standing_state, salt, plan_row, label_):
+    def __init__(self, a, cfg, row, standing_state, salt, plan_row, label_, row_of_arm):
         self.a, self.cfg, self.prompt, self.standing, self.salt = a, cfg, row['prompt'], standing_state, salt
         self.index, self.tokens, self.at_s = plan_row
         self.label = label_
+        self.short = T.keeps_short_tail(row_of_arm, self.index)
+        self.text = None
         self.state = None
         self.row = dict(index=self.index, suffix_tokens=self.tokens, at_s=self.at_s, sent=False)
         self.thread = threading.Thread(target=self.run, name='a1-trunk-returner-%d' % self.index, daemon=True)
+
+    def prepare(self):
+        """Before the bulk: /tokenize doesn't reach the engine's step, and no decode window is open yet."""
+        self.text, shape = shaped_returner_text(self.a, self.prompt, self.label, self.index, self.tokens, self.short)
+        self.row.update(shape)
 
     def start(self, bulk_send_ns):
         self.bulk_send_ns = bulk_send_ns
@@ -125,7 +150,7 @@ class Returner:
                                              finish_timeout_s=self.cfg['timeouts']['finish_s'])
             self.row['turn_end_ns'] = time.monotonic_ns()
             self.row['readers_alive'] = streams._cancel_streams([self.standing], workload)
-            text = returner_text(self.prompt, self.label, self.index, self.tokens)
+            text = self.text
             body = shared._request(self.a.model, text, workload, self.salt)
             self.state = streams._start_streams(self.a.url, self.a.model, [body], [{'prompt_sha256': hashlib.sha256(text.encode()).hexdigest(), 'prompt_chars': len(text)}], workload,
                                                 instrument=UsageInstrument())[0]
@@ -241,7 +266,9 @@ def arm(a, row, cfg, budget, client, poll_client, *, sleep=time.sleep):
             cancel.update(triggered=True, started_ns=time.monotonic_ns())
             cancel['readers_alive'] = streams._cancel_streams(standing, workload)
             cancel['ended_ns'] = time.monotonic_ns()
-        returners = [Returner(a, cfg, rows[p[0]], standing[p[0]], shared._cache_salt(a.run_id, progress.STANDING, p[0]), p, name) for p in row['plan']]
+        returners = [Returner(a, cfg, rows[p[0]], standing[p[0]], shared._cache_salt(a.run_id, progress.STANDING, p[0]), p, name, row) for p in row['plan']]
+        for r in returners:
+            r.prepare()
         spec = cfg['prefill']['fresh']
         poller = progress.SoloPoller(poll_client, on_native=solo_cancel if cohort == 'solo' else None)
         poller.start(base.compact(before))
@@ -388,6 +415,17 @@ def _s(later, earlier):
     return round((later - earlier) / 1e9, 4) if type(later) is int and type(earlier) is int else None
 
 
+def lookup_read(before, after):
+    """Every prefix lookup through the manager in this arm: the yield's scan apart from the rest (stock's loop, the admission). max is the run's so far."""
+    before, after = before or {}, after or {}
+    if not after:
+        return None
+    gain = lambda key: after.get(key, 0) - before.get(key, 0)
+    calls, scan = gain('calls'), gain('scan_calls')
+    return dict(calls=calls, scan_calls=scan, other_calls=calls - scan, total_s=round(gain('ns') / 1e9, 3), scan_s=round(gain('scan_ns') / 1e9, 3),
+                mean_ms=round(gain('ns') / calls / 1e6, 1) if calls else None, max_ms=round(after.get('max_ns', 0) / 1e6, 1))
+
+
 def yield_read(rec):
     """Per yield of this arm, from the journal; per arm the counter deltas."""
     before, after = _status(rec, 'before-fresh') or {}, _status(rec, 'after-fresh') or {}
@@ -410,6 +448,7 @@ def yield_read(rec):
     g0, g1 = before.get('route_generation'), after.get('route_generation')
     return dict(yields=rows, served=sum(1 for r in rows if r['served']), journal=len(rows), counters=_delta(y1.get('counters'), y0.get('counters')), end_reasons=_delta(y1.get('end_reasons'), y0.get('end_reasons')),
                 arrivals=_delta(y1.get('arrivals'), y0.get('arrivals')), holds=_delta(y1.get('holds'), y0.get('holds')), route_generation_window=g1 - g0 if type(g0) is int and type(g1) is int else None,
+                refusals=_delta(y1.get('refusals'), y0.get('refusals')), lookups=lookup_read(y0.get('lookups'), y1.get('lookups')), split_holds=_delta(y1.get('split_holds'), y0.get('split_holds')),
                 current_seq=y1.get('current_seq'), clock_proven=((rec.get('yield_control') or {}).get('clock_proof') or {}).get('inside'))
 
 
@@ -422,7 +461,7 @@ def arm_read(rec, decode_only_rate):
     return dict(prefill_tok_s=round(basis['prefill_tokens_per_s'], 1) if type(basis.get('prefill_tokens_per_s')) in (int, float) else None, bulk_ttft_s=basis.get('bulk_ttft_s'), bulk_complete_s=basis.get('bulk_complete_s'),
                 always_on=rec.get('always_on'), decode_per_stream_tok_s=per_stream, decode_vs_reference_per_stream=round(per_stream / reference, 4) if per_stream else None,
                 decode_only_8_tok_s=own, decode_only_vs_reference=round(own / T.FIXED_REFERENCE_TOK_S, 4) if type(own) in (int, float) else None, decode_only_vs_this_run=round(own / decode_only_rate, 4) if type(own) in (int, float) and type(decode_only_rate) in (int, float) and decode_only_rate else None,
-                returners=[{k: r.get(k) for k in ('index', 'suffix_tokens', 'at_s', 'ttft_s', 'since_bulk_send_s', 'cached_tokens', 'new_tokens', 'prompt_tokens', 'output_completion', 'ok')} for r in rec.get('returners') or ()],
+                returners=[{k: r.get(k) for k in ('index', 'suffix_tokens', 'tail_rows', 'short_tail', 'tail_attempts', 'prompt_tokens_tokenized', 'at_s', 'ttft_s', 'since_bulk_send_s', 'cached_tokens', 'new_tokens', 'prompt_tokens', 'output_completion', 'ok')} for r in rec.get('returners') or ()],
                 stock_append_ttft_s=(rec.get('append') or {}).get('ttft_s'), progress=rec.get('progress_delta'), inwait={k: (rec.get('stage_delta') or {}).get('step_iw_' + k) for k in iw.IW_DELTA}, **{'yield': yield_read(rec)})
 
 
@@ -546,10 +585,14 @@ def report(result):
     for name, r in result['arms'].items():
         for y in r['yield']['yields']:
             lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (name, y['seq'], y['arrival'], y['open_chunks'], y['reason'], cell(y['selected_to_full_s'], 3), json.dumps(y['steps'], sort_keys=True), cell(y.get('full_return_stall_s'), 3), cell(y.get('reentry_stall_s'), 3)))
-    lines += ['', '## Returners', '', '| arm | stream | suffix | sent after bulk s | first output s | cached | new |', '|---|---|---|---|---|---|---|']
+    lines += ['', '## Refusals and lookups', '', 'Every prefix lookup through the manager in the arm, off arms too. `other` is stock\'s loop and the admission: if an off arm shows many of about 265 ms, stock taxes a held request on its own.', '', '| arm | refusals | calls | yield scan | other | total s | scan s | mean ms | max ms so far | stock holds |', '|---|---|---|---|---|---|---|---|---|---|']
+    for name, r in result['arms'].items():
+        l = r['yield'].get('lookups') or {}
+        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (name, json.dumps(r['yield'].get('refusals'), sort_keys=True), l.get('calls'), l.get('scan_calls'), l.get('other_calls'), l.get('total_s'), l.get('scan_s'), l.get('mean_ms'), l.get('max_ms'), json.dumps(r['yield'].get('split_holds'), sort_keys=True)))
+    lines += ['', '## Returners', '', '| arm | stream | suffix | tail rows | kept short | sent after bulk s | first output s | cached | new |', '|---|---|---|---|---|---|---|---|---|']
     for name, r in result['arms'].items():
         for t in r['returners']:
-            lines.append('| %s | %s | %s | %s | %s | %s | %s |' % (name, t['index'], t['suffix_tokens'], cell(t['since_bulk_send_s']), cell(t['ttft_s'], 3), t['cached_tokens'], t['new_tokens']))
+            lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (name, t['index'], t['suffix_tokens'], t.get('tail_rows'), t.get('short_tail'), cell(t['since_bulk_send_s']), cell(t['ttft_s'], 3), t['cached_tokens'], t['new_tokens']))
     return '\n'.join(lines) + '\n'
 
 

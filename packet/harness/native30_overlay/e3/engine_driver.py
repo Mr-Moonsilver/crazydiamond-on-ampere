@@ -3873,6 +3873,9 @@ class NativeSegmentDriver:
                     arrivals=dict(self.append_yield_arrivals),
                     # stock prefill the yield held, by kind (one snapshot with the counters)
                     holds=None if holds is None else dict(holds),
+                    refusals=dict(getattr(self.controller, 'yield_refusals', None) or {}),
+                    lookups=dict(getattr(self.controller, 'yield_lookups', None) or {}),
+                    split_holds=dict(getattr(self.controller, 'split_stock_deferrals_by_kind', None) or {}),
                     current=None if y is None else dict(seq=y['seq'], times=dict(y['times'])),
                     history=[dict(h, times=dict(h['times'])) for h in self._yield_history])
 
@@ -4219,7 +4222,10 @@ class NativeSegmentDriver:
         """
         controller = self.controller
         config = getattr(controller, 'append_yield', None)
-        if config is None or not config.enabled or self._yield is not None:
+        if config is None:
+            return False
+        controller.yield_lookup_timer(self.scheduler)          # a read; with the control off too
+        if not config.enabled or self._yield is not None:
             return False
         policy = getattr(self, 'auto_arm', None)
         if (policy is None or policy.phase != 'native' or not self._split_ready
@@ -4248,10 +4254,11 @@ class NativeSegmentDriver:
         if self._yield_counts.get(key, 0) >= config.per_bulk:
             return False
         refused = self._yield_refused.get(key, frozenset())
-        # Each held request is looked up once per newest chunk (a lookup is not free on a long prompt).
+        # Each held request is looked up once per bulk: on a 151k prompt a lookup stalls the engine about 0.265 s (box 1).
+        # A request refused here waits behind the bulk, as with the yield off.
         scan = self._yield_scan
-        if scan is None or scan[0] != transaction:
-            scan = self._yield_scan = (transaction, set())
+        if scan is None or scan[0] != key:
+            scan = self._yield_scan = (key, set())
         candidate = controller.append_yield_candidate(self.scheduler, bulk,
                                                       getattr(policy, 'decode_counts', None),
                                                       exclude=refused, seen=scan[1])
@@ -4298,8 +4305,12 @@ class NativeSegmentDriver:
         # The drain took time: the selected request may have left; the first still held takes the turn.
         policy = self.auto_arm
         refused = self._yield_refused.get(y['key'], frozenset())
-        candidate = self.controller.append_yield_candidate(self.scheduler, bulk,
-                                                           getattr(policy, 'decode_counts', None), exclude=refused)
+        counts = getattr(policy, 'decode_counts', None)
+        if self.controller.append_yield_still_held(self.scheduler, y['append'], counts):
+            candidate = y['append']              # no second lookup; the admission does its own
+        else:
+            seen = self._yield_scan[1] if self._yield_scan is not None and self._yield_scan[0] == y['key'] else None
+            candidate = self.controller.append_yield_candidate(self.scheduler, bulk, counts, exclude=refused, seen=seen)
         if candidate is None:
             self._yield_counts = {y['key']: self._yield_counts.get(y['key'], 1) - 1}
             self._yield_journal(y, 'drain_no_append', route_generation=self.route_generation)

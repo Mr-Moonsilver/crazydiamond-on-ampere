@@ -39,6 +39,14 @@ LAUNCH_ENV = {'FLASH_S5_APPEND_YIELD_MAX_NEW': 2048, 'FLASH_S5_APPEND_YIELD_PER_
 PLANS = {'pair': ((7, 500, 5.0), (6, 1500, 12.0)), 'several': ((7, 500, 6.0), (6, 500, 6.0), (5, 1500, 6.0)), 'none': ()}
 PLAN = {'sm': 'pair', 'on': 'pair', 'off': 'pair', 'mn': 'several', 'mo': 'several'}
 REPLY_TOKENS = 64
+# Box run 1: stock must stop at the prompt's last hash boundary, and the last chunk must be at least 64 rows. Returners with tails of 16 and 58
+# rows had no plan and never yielded. A returner is shaped to a tail of at least 64 with /tokenize before the bulk is sent; these stay short on
+# purpose, to read the refusal and what it costs. Serving a short tail is the next lever, not built.
+PREFIX_UNIT = 176
+MIN_TAIL = 64
+TAIL_TARGET = {False: 120, True: 32}
+TAIL_ATTEMPTS = 6
+SHORT_TAIL = {'several': (5,)}
 BUDGET_FIRST_OUTPUT_S = {500: 2.0, 1500: 3.0}   # operator, 3 Nov 12:41 CET: first output of a short returning append during bulk prefill
 BUDGET_BULK_SLACK_S = 3.0                       # bulk complete <= yield-off + 3.0 s
 BUDGET_DECODE_RATIO = 0.97                      # standing decode >= 0.97 of yield-off
@@ -98,6 +106,19 @@ def matched_off(row):
     return want if want in labels() else None
 
 
+def tail_rows(tokens):
+    """The rows of the last native chunk: from the prompt's last hash boundary to the native end (prompt - 1)."""
+    return tokens - 1 - tokens // PREFIX_UNIT * PREFIX_UNIT
+
+
+def tail_fits(tail, short):
+    return 0 < tail < MIN_TAIL if short else tail >= MIN_TAIL
+
+
+def keeps_short_tail(row, index):
+    return index in SHORT_TAIL.get(PLAN.get(row['c1']), ())
+
+
 def check():
     names = labels()
     assert len(names) == len(set(names)) == 8, 'eight distinct prefill arm labels'
@@ -108,6 +129,7 @@ def check():
         assert len({row[0] for row in plan}) == len(plan) and {row[0] for row in plan} <= set(STANDING_SAMPLED), 'a returner is one sampled standing stream'
         assert all(row[1] in BUDGET_FIRST_OUTPUT_S for row in plan)
         assert all(row[1] + 1 + 176 <= LAUNCH['max_new'] for row in plan), 'a returner stays under the launch bound'
+    assert not any(row[0] in SHORT_TAIL.get(PLAN[sel], ()) for sel in ('sm', 'on', 'off') for row in PLANS[PLAN[sel]]), 'the gate arms and their pairs are all servable'
     for row in arms():
         if row['yield_on'] and row['cohort'] == 'live' and row['c1'] != 'sm':
             assert matched_off(row), 'on arm without its matched off arm: ' + row['label']

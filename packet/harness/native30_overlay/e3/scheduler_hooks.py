@@ -1751,6 +1751,9 @@ class PrefillAdmissionController:
     # returning-append: launch-time yield bounds (AppendYieldConfig) or None.
     append_yield = None
     yield_stock_deferrals_by_kind = None
+    yield_refusals = None
+    yield_lookups = None
+    _yield_scanning = False
 
     def note_yield_hold(self, kind):
         """Count a stock prefill held in a yield's FULL window (no hold clock)."""
@@ -1770,6 +1773,63 @@ class PrefillAdmissionController:
                 return candidate, target
         return None
 
+    def yield_lookup_timer(self, scheduler):
+        """A read: every prefix lookup through the manager, whoever calls it, counted and timed (box 1: about 0.265 s on a 151k prompt).
+
+        Installed once the first time the driver offers, also with the control off, so an off arm says what stock's own lookups cost.
+        """
+        manager = getattr(scheduler, 'kv_cache_manager', None)
+        real = getattr(manager, 'get_computed_blocks', None)
+        if real is None or getattr(real, 'yield_timed', False):
+            return
+        stats = self.yield_lookups = dict(calls=0, ns=0, max_ns=0, scan_calls=0, scan_ns=0)
+
+        def timed(request):
+            started = time.monotonic_ns()
+            try:
+                return real(request)
+            finally:
+                took = time.monotonic_ns() - started
+                stats['calls'] += 1
+                stats['ns'] += took
+                stats['max_ns'] = max(stats['max_ns'], took)
+                if self._yield_scanning:
+                    stats['scan_calls'] += 1
+                    stats['scan_ns'] += took
+        timed.yield_timed = True
+        manager.get_computed_blocks = timed
+
+    def _yield_refuse(self, reason):
+        """Count why a held request isn't taken; a declined yield leaves no other record."""
+        if self.yield_refusals is None:
+            self.yield_refusals = {}
+        self.yield_refusals[reason] = self.yield_refusals.get(reason, 0) + 1
+
+    def _append_yield_gate(self, scheduler, decode_counts):
+        """The rules on the engine, before any request is read."""
+        config = self.append_yield
+        if config is None or not config.enabled:
+            return False
+        running = len(getattr(scheduler, 'running', ()))
+        # The append's slot plus the slot auto-arm keeps for the bulk (its re-entry
+        # cohort is at most max_num_running_reqs - 1, as at selection).
+        if running + 2 > getattr(scheduler, 'max_num_running_reqs', 1):
+            self._yield_refuse('slots')
+            return False
+        # The re-entry identity proof needs every cohort size 1..running+1.
+        if decode_counts is not None and not set(range(1, running + 2)) <= set(decode_counts):
+            self._yield_refuse('decode-cover')
+            return False
+        if self._environment_refuses(scheduler):
+            self._yield_refuse('environment')
+            return False
+        return True
+
+    def append_yield_still_held(self, scheduler, request, decode_counts=None):
+        """The drain's re-check: the selected request is still takeable.  No lookup; the admission does its own."""
+        return (self._append_yield_gate(scheduler, decode_counts)
+                and self._append_yield_eligible(scheduler, request, getattr(scheduler, 'requests', None)))
+
     def append_yield_candidate(self, scheduler, bulk, decode_counts=None, exclude=(), seen=None):
         """The first held request (FCFS) that may run natively between two bulk chunks.
 
@@ -1782,19 +1842,9 @@ class PrefillAdmissionController:
         ids already refused for this bulk.  ``seen`` (a set the caller keeps): request ids
         looked up already, skipped and added to.  Read-only: a lookup, never an allocation.
         """
+        if not self._append_yield_gate(scheduler, decode_counts):
+            return None
         config = self.append_yield
-        if config is None or not config.enabled:
-            return None
-        running = len(getattr(scheduler, 'running', ()))
-        # The append's slot plus the slot auto-arm keeps for the bulk (its re-entry
-        # cohort is at most max_num_running_reqs - 1, as at selection).
-        if running + 2 > getattr(scheduler, 'max_num_running_reqs', 1):
-            return None
-        # The re-entry identity proof needs every cohort size 1..running+1.
-        if decode_counts is not None and not set(range(1, running + 2)) <= set(decode_counts):
-            return None
-        if self._environment_refuses(scheduler):
-            return None
         requests = getattr(scheduler, 'requests', None)
         looked = set()
         for queue in (getattr(scheduler, 'skipped_waiting', None), getattr(scheduler, 'waiting', None)):
@@ -1813,7 +1863,19 @@ class PrefillAdmissionController:
                     return request
         return None
 
-    def _append_yield_plan(self, scheduler, request, requests, config):
+    def _append_yield_short_tail(self, scheduler, prompt_end):
+        """True when stock's split leaves a last chunk under the staged minimum, at any start.
+
+        Stock must stop at the prompt's last hash boundary, so a chunk can't cross it.  From the length alone, so
+        no 151k lookup (box 1: returners with tails of 16 and 58 rows found no plan, and paid one every chunk).
+        """
+        unit = getattr(scheduler, 'hash_block_size', None)
+        if getattr(scheduler, 'mamba_partial_cache_hit', False) is not True or type(unit) is not int or unit < 1:
+            return False
+        # 0: the boundary is the native end itself, a chunk may end on it.
+        return 0 < prompt_end - 1 - prompt_end // unit * unit < self.minimum_stage_rows
+
+    def _append_yield_eligible(self, scheduler, request, requests):
         sampling = getattr(request, 'sampling_params', None)
         if (type(requests) is not dict or requests.get(getattr(request, 'request_id', None)) is not request
                 or getattr(getattr(request, 'status', None), 'name', None) != 'WAITING'
@@ -1827,20 +1889,38 @@ class PrefillAdmissionController:
                 or sampling is None or getattr(sampling, 'prompt_logprobs', None) is not None
                 or getattr(sampling, 'logprobs', None) is not None
                 or self._request_refuses(scheduler, request)):
-            return None
+            self._yield_refuse('request')
+            return False
         try:
             _text('request_uid', request.request_id)
         except E3ContractError:
-            return None
+            self._yield_refuse('request')
+            return False
         prompt_end = getattr(request, 'num_tokens', None)
         if type(prompt_end) is not int or prompt_end < 2:
+            self._yield_refuse('request')
+            return False
+        if self._append_yield_short_tail(scheduler, prompt_end):
+            self._yield_refuse('short-tail')
+            return False
+        return True
+
+    def _append_yield_plan(self, scheduler, request, requests, config):
+        if not self._append_yield_eligible(scheduler, request, requests):
             return None
+        prompt_end = request.num_tokens
         manager = scheduler.kv_cache_manager
-        blocks, start, shared = manager.get_computed_blocks(request)
+        self._yield_scanning = True
+        try:
+            blocks, start, shared = manager.get_computed_blocks(request)
+        finally:
+            self._yield_scanning = False
         if shared or type(start) is not int or start < 0:
+            self._yield_refuse('shared-junction')
             return None
         end = prompt_end - 1
         if end - start < 1 or end - start > config.max_new:
+            self._yield_refuse('max-new')
             return None
         # auto-arm _plan's free-block check: the whole request must fit now.
         needed = manager.coordinator.get_num_blocks_to_allocate(
@@ -1849,15 +1929,19 @@ class PrefillAdmissionController:
             total_computed_tokens=start, num_local_computed_tokens=start,
             num_tokens_main_model=prompt_end, apply_admission_cap=True)
         if needed + manager.watermark_blocks > manager.block_pool.get_num_free_blocks():
+            self._yield_refuse('blocks')
             return None
         cap = min(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', 0))
         if cap < 1:
+            self._yield_refuse('cap')
             return None
         def split(position, limit):
             projected = request if position == start else _ProjectedPrefillRequest(request, position)
             return self._aligned_split(scheduler, projected, limit,
                                        num_new_local_computed_tokens=start if position == start else 0)
         plan = staged_chunk_plan(start, end, cap, self.minimum_stage_rows, split)
+        if not plan:
+            self._yield_refuse('no-plan')
         return plan or None
 
     def _retained_waiting(self, scheduler, queue, retained):

@@ -1505,9 +1505,10 @@ class Mutants(unittest.TestCase):
             rig.s.running = [NS(request_id='d1')]
             self.assertIsNone(rig.c.append_yield_candidate(rig.s, rig.bulk, frozenset({1})))
         check()
-        self.fails(check, sh.PrefillAdmissionController, 'append_yield_candidate',
+        self.fails(check, sh.PrefillAdmissionController, '_append_yield_gate',
                    ('        if decode_counts is not None and not set(range(1, running + 2)) <= set(decode_counts):\n'
-                    '            return None\n', ''))
+                    "            self._yield_refuse('decode-cover')\n"
+                    '            return False\n', ''))
 
     # review MAJOR-3: membership instead of the contiguous range; the last running slot taken
     def test_candidate_counts_not_contiguous(self):
@@ -1517,7 +1518,7 @@ class Mutants(unittest.TestCase):
             rig.s.running = [NS(request_id='d1'), NS(request_id='d2')]
             self.assertIsNone(rig.c.append_yield_candidate(rig.s, rig.bulk, frozenset({1, 3})))
         check()
-        self.fails(check, sh.PrefillAdmissionController, 'append_yield_candidate',
+        self.fails(check, sh.PrefillAdmissionController, '_append_yield_gate',
                    ('not set(range(1, running + 2)) <= set(decode_counts)', 'running + 1 not in decode_counts'))
 
     def test_candidate_takes_the_last_slot(self):
@@ -1528,7 +1529,7 @@ class Mutants(unittest.TestCase):
             rig.s.max_num_running_reqs = 4
             self.assertIsNone(rig.c.append_yield_candidate(rig.s, rig.bulk))
         check()
-        self.fails(check, sh.PrefillAdmissionController, 'append_yield_candidate',
+        self.fails(check, sh.PrefillAdmissionController, '_append_yield_gate',
                    ("if running + 2 > getattr(scheduler, 'max_num_running_reqs', 1):",
                     "if running + 1 > getattr(scheduler, 'max_num_running_reqs', 1):"))
 
@@ -1542,6 +1543,7 @@ class Mutants(unittest.TestCase):
         check()
         self.fails(check, sh.PrefillAdmissionController, '_append_yield_plan',
                    ("        if needed + manager.watermark_blocks > manager.block_pool.get_num_free_blocks():\n"
+                    "            self._yield_refuse('blocks')\n"
                     "            return None\n", ""))
 
     def test_second_yield_over_per_bulk(self):
@@ -1575,11 +1577,11 @@ class Mutants(unittest.TestCase):
             run_to_yield(rig)
             self.assertIsNone(rig.d.append_yield_phase())
         check()
-        with mutant(sh.PrefillAdmissionController, 'append_yield_candidate',
+        with mutant(sh.PrefillAdmissionController, '_append_yield_gate',
                     ('if config is None or not config.enabled:', 'if config is None:')):
             self.fails(check, ed.NativeSegmentDriver, '_yield_offer',
-                       ('if config is None or not config.enabled or self._yield is not None:',
-                        'if config is None or self._yield is not None:'))
+                       ('if not config.enabled or self._yield is not None:',
+                        'if self._yield is not None:'))
 
 
 # --- B2: the FULL window's bound; B3: a refused reopen after the re-arm ------------------------------------------

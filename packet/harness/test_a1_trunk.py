@@ -427,7 +427,8 @@ class Several(Base):
 
 
 class Scan(Base):
-    def test_each_held_request_looked_up_once_per_chunk(self):
+    def test_each_held_request_looked_up_once_per_bulk(self):
+        """Box 1: a 151k lookup stalled the engine about 0.265 s, per held request, per chunk, when the scan was per chunk."""
         rig = self.rig()
         rig.admit()
         rig.add_held(APPEND_UID, 2000, cached=0)        # over max_new: never a candidate
@@ -435,6 +436,94 @@ class Scan(Base):
         for _ in range(5):
             rig.d._yield_offer()
         self.assertEqual(len(rig.lookups) - before, 1)
+        rig.finish_chunk()
+        rig.admit()                                     # a new newest chunk, the same bulk
+        rig.d._yield_offer()
+        self.assertEqual(len(rig.lookups) - before, 1)
+        self.assertEqual(rig.c.yield_refusals, {'max-new': 1})
+
+    def test_the_drain_does_not_look_up_a_request_still_held(self):
+        rig = self.rig()
+        rig.admit()
+        rig.add_held(APPEND_UID, 11, cached=8)
+        rig.d._yield_offer()
+        self.assertEqual(rig.d.append_yield_phase(), 'draining')
+        before = len(rig.lookups)
+        rig.finish_chunk()
+        rig.d._maybe_yield()
+        self.assertEqual(rig.d.append_yield_phase(), 'closing')
+        self.assertEqual(len(rig.lookups), before)
+
+    def test_timer_counts_every_caller_also_with_the_control_off(self):
+        rig = self.rig()
+        rig.admit()
+        rig.c.append_yield.enabled = False
+        rig.d._yield_offer()
+        rig.add_held(APPEND_UID, 2000, cached=0)
+        rig.s.kv_cache_manager.get_computed_blocks(rig.s.requests[APPEND_UID])      # as stock's waiting loop does
+        record = rig.d.append_yield_record()['lookups']
+        self.assertEqual((record['calls'], record['scan_calls']), (1, 0))
+        self.assertGreaterEqual(record['max_ns'], 0)
+        rig.c.append_yield.enabled = True
+        rig.d._yield_offer()
+        record = rig.d.append_yield_record()['lookups']
+        self.assertEqual((record['calls'], record['scan_calls']), (2, 1))
+
+    def test_no_timer_without_the_bounds(self):
+        rig = self.rig()
+        rig.c.append_yield = None
+        real = rig.s.kv_cache_manager.get_computed_blocks
+        rig.d._yield_offer()
+        self.assertIs(rig.s.kv_cache_manager.get_computed_blocks, real)
+
+
+class ShortTail(Base):
+    """Box 1, q18a-a1-trunk: returners of 151905 and 152651 tokens, stock's stop at the last hash boundary, a minimum of 64 rows."""
+    UNIT, MINIMUM = 176, 64
+
+    def stock_split(self, request, limit, num_new_local_computed_tokens=0):
+        """The stop of scheduler._mamba_block_aligned_split that matters here: a chunk can't cross the prompt's last hash boundary."""
+        start = request.num_computed_tokens or num_new_local_computed_tokens
+        boundary = request.num_tokens // self.UNIT * self.UNIT
+        return boundary - start if start < boundary < start + limit else limit
+
+    def plan(self, tokens, start):
+        def split(position, limit):
+            return self.stock_split(NS(num_tokens=tokens, num_computed_tokens=position), limit)
+        return sh.staged_chunk_plan(start, tokens - 1, 1024, self.MINIMUM, split)
+
+    def test_the_box_returners_have_no_plan_and_a_longer_tail_has(self):
+        self.assertEqual(self.plan(151905, 151360), ())
+        self.assertEqual(self.plan(152651, 151008), ())
+        self.assertEqual(sum(self.plan(65445, 64768)), 65444 - 64768, 'the bulk tail of 148 rows')
+        self.assertEqual(sum(self.plan(151905 + 100, 151360)), 151905 + 100 - 1 - 151360)
+
+    def test_length_rule_agrees_with_the_planner_at_every_tail(self):
+        rig = self.rig()
+        rig.s.hash_block_size, rig.s.mamba_partial_cache_hit = self.UNIT, True
+        rig.c.minimum_stage_rows = self.MINIMUM
+        for tokens in range(151360 + 200, 151360 + 200 + self.UNIT + 2):
+            start = 151360
+            self.assertEqual(rig.c._append_yield_short_tail(rig.s, tokens), not self.plan(tokens, start), tokens)
+
+    def test_refused_from_its_length_without_a_lookup(self):
+        rig = self.rig(max_new=2048)
+        rig.admit()                                     # the rig's short bulk runs under the minimum of 1
+        rig.s.hash_block_size, rig.s.mamba_partial_cache_hit = self.UNIT, True
+        rig.c.minimum_stage_rows = self.MINIMUM
+        rig.add_held(APPEND_UID, 176 * 3 + 17, cached=176)
+        before = len(rig.lookups)
+        rig.d._yield_offer()
+        self.assertIsNone(rig.d.append_yield_phase())
+        self.assertEqual(len(rig.lookups), before)
+        self.assertEqual(rig.c.yield_refusals, {'short-tail': 1})
+        self.assertEqual(rig.d.append_yield_record()['refusals'], {'short-tail': 1})
+
+    def test_not_applied_when_stock_has_no_such_stop(self):
+        rig = self.rig()
+        rig.s.hash_block_size, rig.s.mamba_partial_cache_hit = self.UNIT, False
+        rig.c.minimum_stage_rows = self.MINIMUM
+        self.assertFalse(rig.c._append_yield_short_tail(rig.s, 176 * 3 + 17))
 
 
 class Merge(Base):

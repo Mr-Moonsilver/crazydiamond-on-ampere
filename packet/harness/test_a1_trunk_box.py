@@ -92,6 +92,52 @@ class Returners(unittest.TestCase):
             self.assertNotEqual(one.split()[1:9], other.split()[1:9])
 
 
+class Tails(unittest.TestCase):
+    A = types.SimpleNamespace(url='http://x', model='m')
+
+    def post(self, base):
+        """/tokenize of the fixture: the words of the suffix count one token each, on top of a long prompt."""
+        self.calls = []
+
+        def reply(url, path, body, timeout):
+            self.calls.append(path)
+            return dict(tokens=[0] * (base + len(body['prompt'].split())))
+        return reply
+
+    def test_the_box_tails_are_short_and_shaped_ones_fit(self):
+        self.assertEqual((T.tail_rows(151905), T.tail_rows(152651), T.tail_rows(65445)), (16, 58, 148))
+        for base in range(151000, 151000 + 2 * T.PREFIX_UNIT, 7):
+            text, shape = box.shaped_returner_text(self.A, 'history', 'on.g2-live-0', 7, 500, False, post=self.post(base))
+            self.assertGreaterEqual(shape['tail_rows'], T.MIN_TAIL, base)
+            self.assertLessEqual(shape['tail_attempts'], T.TAIL_ATTEMPTS)
+            self.assertEqual(self.calls, ['/tokenize'] * shape['tail_attempts'])
+            self.assertTrue(text.startswith('history\n'))
+
+    def test_a_short_one_stays_short(self):
+        for base in range(151000, 151000 + 2 * T.PREFIX_UNIT, 7):
+            _, shape = box.shaped_returner_text(self.A, 'history', 'mn.g2-live-0', 5, 1500, True, post=self.post(base))
+            self.assertTrue(0 < shape['tail_rows'] < T.MIN_TAIL, base)
+
+    def test_only_the_several_plan_keeps_one_short(self):
+        rows = T.by_label()
+        self.assertTrue(T.keeps_short_tail(rows['mn.g2-live-0'], 5))
+        self.assertTrue(T.keeps_short_tail(rows['mo.g2-live-0'], 5))
+        for label in ('sm.g2-live-0', 'on.g2-live-0', 'off.g2-live-0'):
+            for row in rows[label]['plan']:
+                self.assertFalse(T.keeps_short_tail(rows[label], row[0]))
+
+    def test_a_bad_reply_stops_the_arm(self):
+        with self.assertRaises(ValueError):
+            box.shaped_returner_text(self.A, 'h', 'on.g2-live-0', 7, 500, False, post=lambda *_: {})
+
+
+class Lookups(unittest.TestCase):
+    def test_the_arm_delta_keeps_the_scan_apart(self):
+        read = box.lookup_read(dict(calls=2, ns=10, scan_calls=1, scan_ns=5, max_ns=7), dict(calls=7, ns=1000010, scan_calls=2, scan_ns=5, max_ns=9000000))
+        self.assertEqual((read['calls'], read['scan_calls'], read['other_calls'], read['mean_ms'], read['max_ms']), (5, 1, 4, 0.2, 9.0))
+        self.assertIsNone(box.lookup_read(None, None), 'no timer yet: no bounds, or nothing offered')
+
+
 class Reads(unittest.TestCase):
     def test_the_gap_counts_whole_across_the_window(self):
         ms = 10 ** 6

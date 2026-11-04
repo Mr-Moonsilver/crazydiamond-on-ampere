@@ -130,6 +130,14 @@ class ArmEnd(Base):
 
         class Handler(server.http.RequestHandlerClass):
             def do_POST(self):
+                if self.path == '/tokenize':                # the image's route; the fixture counts words. On the box: w2-length's call, 200 in run 1
+                    text = json.loads(self.rfile.read(int(self.headers['Content-Length'])))['prompt']
+                    content = json.dumps(dict(tokens=[0] * len(text.split()))).encode()
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+                    return None
                 if self.path not in others:
                     return super().do_POST()
                 data = self.rfile.read(int(self.headers['Content-Length']))
