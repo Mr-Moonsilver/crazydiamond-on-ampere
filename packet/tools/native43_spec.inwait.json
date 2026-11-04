@@ -70,10 +70,37 @@
    "worker_rpc_begin"
   ],
   "patches/s5_engine/lane_chunk.py": [
+   "LaneChunk.build_metadata",
+   "LaneChunkFactory.admit_steps",
+   "LaneChunkFactory.can_slice",
+   "LaneChunkFactory.warm_scores",
    "LaneTables.slot_mappings",
    "LaneTables.slot_mappings_fast",
+   "_flush_allocator",
+   "module:PREPARE_SLICES",
+   "module:SCORE_COMPRESS",
+   "module:SCORE_ROWS",
+   "module:SCORE_WARM",
+   "module:SCORE_WARM_SLACK_BYTES",
+   "module:SCORE_WARM_STEP_BYTES",
    "module:SLOTS_FAST",
+   "score_warm_bytes",
+   "select_prepare_slices",
+   "select_score_warm",
    "select_slots_fast"
+  ],
+  "patches/s5_engine/lane_dispatch.py": [
+   "LaneDispatcher._admit_chunk",
+   "LaneDispatcher._do_prepare",
+   "LaneDispatcher._reset_transaction",
+   "LaneDispatcher.cancel",
+   "LaneDispatcher.prepare_resuming",
+   "LaneDispatcher.ring_waiting",
+   "_worker_ring",
+   "module:_RING",
+   "module:import lane_chunk",
+   "module:import sys",
+   "ring_message_waiting"
   ],
   "patches/s5_engine/make_s5_overlap.py": [
    "module:E3_MODULES",
@@ -99,6 +126,7 @@
    "attn_meta_actions",
    "handle",
    "module:ATTN_META_ACTIONS",
+   "module:INWAIT_RANK_LEVERS",
    "module:_ATTN_META_FIELDS",
    "module:__all__"
   ],
@@ -158,6 +186,10 @@
    "module:from native_measurement import INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS",
    "module:from reply_transport import Backpressure"
   ],
+  "patches/s5_engine/worker_bridge.py": [
+   "NativeWorkerBridge._prepare_resuming",
+   "NativeWorkerBridge.submit"
+  ],
   "patches/s5_engine/worker_hooks.py": [
    "module:WORKER_AFTER_C_SHA256"
   ]
@@ -170,6 +202,7 @@
     "test_compose2_receipt_refused",
     "test_inwait_engine",
     "test_inwait_slots",
+    "test_inwait_slices",
     "test_inwait_router",
     "test_inwait_box",
     "test_inwait_queue",
@@ -210,6 +243,7 @@
   "e3/engine_driver.py",
   "e3/executor_hooks.py",
   "e3/lane_chunk.py",
+  "e3/lane_dispatch.py",
   "e3/native_measurement.py",
   "e3/native_overlap_control.py",
   "e3/native_overlap_session.py",
@@ -219,6 +253,7 @@
   "e3/s5_startup.py",
   "e3/scheduler_hooks.py",
   "e3/stage_overlap.py",
+  "e3/worker_bridge.py",
   "e3/worker_hooks.py",
   "e3_sources/worker.py"
  ],
@@ -585,6 +620,7 @@
    "harness/test_inwait_queue.py",
    "harness/test_inwait_queue_names.py",
    "harness/test_inwait_router.py",
+   "harness/test_inwait_slices.py",
    "harness/test_inwait_slots.py",
    "harness/test_native43_engine_death_h.py",
    "harness/test_stage1_step_box.py",
@@ -781,10 +817,37 @@
    "worker_rpc_begin"
   ],
   "e3/lane_chunk.py": [
+   "LaneChunk.build_metadata",
+   "LaneChunkFactory.admit_steps",
+   "LaneChunkFactory.can_slice",
+   "LaneChunkFactory.warm_scores",
    "LaneTables.slot_mappings",
    "LaneTables.slot_mappings_fast",
+   "_flush_allocator",
+   "module:PREPARE_SLICES",
+   "module:SCORE_COMPRESS",
+   "module:SCORE_ROWS",
+   "module:SCORE_WARM",
+   "module:SCORE_WARM_SLACK_BYTES",
+   "module:SCORE_WARM_STEP_BYTES",
    "module:SLOTS_FAST",
+   "score_warm_bytes",
+   "select_prepare_slices",
+   "select_score_warm",
    "select_slots_fast"
+  ],
+  "e3/lane_dispatch.py": [
+   "LaneDispatcher._admit_chunk",
+   "LaneDispatcher._do_prepare",
+   "LaneDispatcher._reset_transaction",
+   "LaneDispatcher.cancel",
+   "LaneDispatcher.prepare_resuming",
+   "LaneDispatcher.ring_waiting",
+   "_worker_ring",
+   "module:_RING",
+   "module:from . import lane_chunk",
+   "module:import sys",
+   "ring_message_waiting"
   ],
   "e3/native_measurement.py": [
    "module:INWAIT_ENV",
@@ -806,6 +869,7 @@
    "attn_meta_actions",
    "handle",
    "module:ATTN_META_ACTIONS",
+   "module:INWAIT_RANK_LEVERS",
    "module:_ATTN_META_FIELDS",
    "module:__all__"
   ],
@@ -865,6 +929,10 @@
    "module:from .native_measurement import INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS",
    "module:from .reply_transport import Backpressure"
   ],
+  "e3/worker_bridge.py": [
+   "NativeWorkerBridge._prepare_resuming",
+   "NativeWorkerBridge.submit"
+  ],
   "e3/worker_hooks.py": [
    "module:WORKER_AFTER_C_SHA256"
   ],
@@ -905,7 +973,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "210b2d3a78f834cd1831b9a42352ef80a85d03e7",
+ "source_commit": "4e3c4e015156f64597884db653c1b6bf5177a1a8",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/attn_meta_arms.py",
@@ -975,6 +1043,7 @@
   "A\tharness/test_inwait_queue.py",
   "A\tharness/test_inwait_queue_names.py",
   "A\tharness/test_inwait_router.py",
+  "A\tharness/test_inwait_slices.py",
   "A\tharness/test_inwait_slots.py",
   "M\tharness/test_native35_performance.py",
   "A\tharness/test_native43_engine_death_h.py",
@@ -989,6 +1058,7 @@
   "M\tpatches/s5_engine/engine_driver.py",
   "M\tpatches/s5_engine/executor_hooks.py",
   "M\tpatches/s5_engine/lane_chunk.py",
+  "M\tpatches/s5_engine/lane_dispatch.py",
   "M\tpatches/s5_engine/make_s5_overlap.py",
   "M\tpatches/s5_engine/native_candidate_review.json",
   "M\tpatches/s5_engine/native_measurement.py",
@@ -1000,6 +1070,7 @@
   "M\tpatches/s5_engine/s5_startup.py",
   "M\tpatches/s5_engine/scheduler_hooks.py",
   "M\tpatches/s5_engine/stage_overlap.py",
+  "M\tpatches/s5_engine/worker_bridge.py",
   "M\tpatches/s5_engine/worker_hooks.py",
   "M\ttools/alpha_next_c1b_queue_pins.json",
   "A\ttools/attn_meta_b_derive.py",
