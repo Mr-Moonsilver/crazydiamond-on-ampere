@@ -412,8 +412,8 @@ class Gate(unittest.TestCase):
     def test_inwait_check(self):
         result = self.edited('cf.g2-live-0', lambda a: a['stage_delta'].update(step_iw_applied=0))
         self.assertIn('cf.g2-live-0:inwait-selected-applied-nothing-in-the-wait', result['failures'])
-        result = self.edited('cf.g2-live-0', lambda a: a['cow_host_filter']['counters']['skipped'].update({'0': 2}))
-        self.assertIn('cf.g2-live-0:cow-host-filter-off-moved-its-counter', result['failures'])
+        result = self.edited('cf.g2-live-0', lambda a: a['cow_host_filter']['counters']['skipped'].update(dict.fromkeys(('0', '1', '2', '3'), 0)))
+        self.assertIn('cf.g2-live-0:cow-host-filter-selected-not-engaged', result['missing'])
         result = self.edited('w0.g2-live-0', lambda a: a['score_warm']['counters']['allocs'].update({'1': 1}))
         self.assertIn('w0.g2-live-0:score-warm-rank0-warmed-another-rank', result['failures'])
         result = self.edited('w0.g2-live-0', lambda a: a['score_warm']['counters']['allocs'].update({'0': 0}))

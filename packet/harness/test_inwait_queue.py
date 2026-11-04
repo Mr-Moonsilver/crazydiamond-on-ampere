@@ -292,12 +292,12 @@ class ArmLoop(unittest.TestCase):
     def test_a_leak_fails_the_core_grade_and_counts(self):
         emit, arms = tbox.run_of()
         arm = next(a for a in arms if a['label'] == 'cf.g2-live-1')
-        arm['cow_host_filter']['counters']['skipped']['0'] = 2
-        out, err, calls, steps = self.run_loop(edit={'cf.g2-live-1': dict(cow_host_filter=arm['cow_host_filter'])})
+        arm['score_warm']['counters']['allocs']['0'] = 2
+        out, err, calls, steps = self.run_loop(edit={'cf.g2-live-1': dict(score_warm=arm['score_warm'])})
         self.assertEqual(steps['inwait'], 'FAIL', out[-1500:])
         self.assertIn('END FAILS=1', out)
         grade = json.loads((self.q / 'inwait-grade.json').read_text())
-        self.assertIn('cf.g2-live-1:cow-host-filter-off-moved-its-counter', grade['failures'])
+        self.assertIn('cf.g2-live-1:score-warm-off-moved-its-counter', grade['failures'])
 
     def test_a_smoke_that_does_not_engage_stops_the_table(self):
         out, err, calls, steps = self.run_loop(smoke_rc=2)

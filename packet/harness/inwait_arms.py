@@ -1,8 +1,8 @@
 """q18a-inwait arm table: the one declared table (DESIGN-5b, 4 Nov, build-5b). Change it here and nowhere else.
 
-Build-5b (results/hub/inwait/DESIGN-5b.md): in-wait, the early successor, fast slot mappings, PREPARE in slices and the fast CoW copy are on in every arm (build-4's cf). Build-5's hf and se stay in the engine; BASE_HF and BASE_SE fold them into every arm if build-5's result says so.
+Build-5b (results/hub/inwait/DESIGN-5b.md): in-wait, the early successor, fast slot mappings, PREPARE in slices and the fast CoW copy are on in every arm (build-4's cf). Build-5's hf is on in every arm as well (BASE_HF); its se stays in the engine, off (BASE_SE).
 The engine is build-5's plus these levers behind one default-off flag, FLASH_S5_INWAIT, installed for the whole run. The only axis, selected per arm by typed control while paused, idle and FULL; every prefill arm flushes the allocator at its selection, so warm and cap are the only differences:
-  cf   build-4's cf, the base
+  cf   build-4's cf and build-5's hf, the base
   cap  cf and the reserved cap that keeps 512 MiB free
   w0   cap and the warm score block on rank 0 only
   wa   cap and the warm score block on every rank
@@ -36,8 +36,8 @@ GRADED = ('core',)
 SELECTIONS = ('sm', 'cf', 'cap', 'w0', 'wa')
 OFF = 'cf'                                  # the matched off arm of every lever
 ON = 'cap'
-BASE_HF = False                             # build-5's hf, every arm, if its result says so
-BASE_SE = False                             # build-5's se, every arm, if its result says so
+BASE_HF = True                              # build-5's hf in every arm: it removed the residue stall (READING-box-5)
+BASE_SE = False                             # build-5's se stays out: READING-box-5's numerics flag is not cleared
 ATTN = dict.fromkeys(SELECTIONS, True)
 LAZY_RECV = dict.fromkeys(SELECTIONS, True)
 DECODE_MERGE = dict.fromkeys(SELECTIONS, 'chunk')
