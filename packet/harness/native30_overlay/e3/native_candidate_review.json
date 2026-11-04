@@ -186,6 +186,7 @@
         "test_stage1_step_engine",
         "test_attn_meta_control",
         "test_compose2_router",
+        "test_compose2_receipt_refused",
         "test_compose2_box",
         "test_compose2_queue",
         "test_compose2_robust_swap",
@@ -217,7 +218,7 @@
     "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
     "queue": "q18a-compose-2: c1's queue with the three lever flags for the whole run; two decode-only baselines, twelve core arms, C1 defer, levers selected per arm while paused idle FULL; c1's grade and each lever's selection and counter gate; reads never verdict inputs; numerics not covered; relative box budget only",
     "scope": "attn-meta and L1+L2 composed onto c1b against c1b's READY build, discovery mode; not a release assessment and not a numerics result",
-    "source_commit": "eecf02356c74bcc54c7e49f60a2e0155db61e980"
+    "source_commit": "8a9c6346616d18307f0757f2256557d282b8e1c5"
   },
   "control_counter_scope": {
     "basis": "exclusive EngineCore coordinator host-wall spans and successfully submitted RPC count",
