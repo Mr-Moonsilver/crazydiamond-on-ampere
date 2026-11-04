@@ -3054,6 +3054,7 @@
       "e3/native_overlap_worker.py",
       "e3/native_qualification_frontend.py",
       "e3/probe_control.py",
+      "e3/qsa_driver.py",
       "e3/s5_startup.py",
       "e3/scheduler_hooks.py",
       "e3/stage_overlap.py",
@@ -3086,7 +3087,7 @@
     "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
     "queue": "q18a-inwait: compose-2's queue with FLASH_S5_INWAIT=1 for the whole run; one decode-only baseline, six core arms, C1 defer, in-wait selected per arm while paused idle FULL; compose-2's grade plus the in-wait selection and engagement check",
     "scope": "in-wait handoffs on compose-2's engine against c1b's READY build, discovery mode; not a release assessment and not a numerics result",
-    "source_commit": "9d4bba3e8f58c571c4f18e4b330146567143d6f0"
+    "source_commit": "93a6fa2e5744e78cd94980b358b24af4b43a0ca6"
   },
   "launcher_delta": {
     "exact_delta": "S5-only Docker json-file max-size=512m/max-file=4 and ulimit core=0; model command, environment and mounts unchanged",
