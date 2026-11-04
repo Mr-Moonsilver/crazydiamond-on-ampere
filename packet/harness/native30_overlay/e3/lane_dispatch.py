@@ -459,7 +459,11 @@ class LaneDispatcher:
     def prepare_resuming(self, command):
         """True when this PREPARE continues its own slices: same op_seq, same command."""
         state = self._slices
-        return state is not None and state['identity'] == command.identity()
+        if state is None:
+            return False
+        if not isinstance(command, SegmentCommand):
+            command = SegmentCommand.from_descriptor(command)
+        return state['identity'] == command.identity()
 
     def _admit_chunk(self, command):
         """``factory.admit``, or build-3's slices: E3Pending at a boundary when a message waits in this rank's ring.

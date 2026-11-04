@@ -1,16 +1,18 @@
 """inwait build-3 (DESIGN-3): PREPARE in slices and the warm score block, worker side, and the engine's retry of a pending PREPARE."""
+import pickle
 import types
 import unittest
 from unittest import mock
 
 import test_e3_lane_chunk as tlc
+import test_e3_r4_worker_bridge as br
 import test_e3_lane_dispatch as ld
 import test_inwait_engine as ie
 import test_e3_stage_overlap as c1
 import lane_chunk as lc
 import lane_dispatch as dp
 from e3_types import E3Pending
-from wire_v1 import SegmentKind
+from wire_v1 import SegmentCommand, SegmentDescriptor, SegmentKind
 
 
 class Reset:
@@ -286,25 +288,98 @@ class Factory(Reset, unittest.TestCase):
         self.assertEqual(self.factory.release(), 'req-a')
 
 
-class SlicedPrepare:
-    """The composed engine with every later PREPARE answering pending twice, per rank, as the worker does at its boundaries."""
-    PENDS = 2
+class WireResend(Reset, unittest.TestCase):
+    """The real path of a resend: a real wire command, the real bridge, the real dispatcher's slices.
+
+    Build-3's box crash was here: the bridge handed the wire command to ``prepare_resuming``, and only lane commands have ``identity``.
+    """
+
+    def send_twice(self, rank, ranks, stage):
+        lc.select_prepare_slices(True)
+        stack = br.Stack()
+        stack.drive(lambda: stack.driver._pending_binding is not None)
+        worker = stack.worker(rank)
+        bridge = worker._flash_s5_bridge
+        factory, log = worker.factory, []
+
+        def steps(admission):
+            log.append(1)
+            yield
+            log.append(2)
+            yield
+            log.append(3)
+            return factory.admit(admission)
+        factory.can_slice = lambda _admission: True
+        factory.admit_steps = steps
+        waits = [True, False]
+        worker.dispatcher.ring_waiting = lambda: waits.pop(0)
+        binds = []
+        bind = bridge._bind_prepare_source
+        bridge._bind_prepare_source = lambda command: (binds.append(command), bind(command))[1]
+        tx = stack.record.transaction
+        command = SegmentCommand(SegmentDescriptor(tx, SegmentKind.PREPARE, stage), 1, ranks,
+                                 source=stack.controller.source_hold(tx).descriptor())
+        self.assertIs(type(command), SegmentCommand)
+
+        first = bridge.submit(command)
+        self.assertTrue(first.pending)
+        self.assertFalse(first.accepted)
+        self.assertEqual(log, [1])
+        self.assertEqual(len(binds), 1)
+        bound = bridge._source_binding
+        self.assertIsNotNone(bound)
+        self.assertEqual(first.op_seq, 1)
+        self.assertEqual(worker.dispatcher.accepted, {})
+
+        # The ring hands each send over as a new object: resend one that has been through pickle.
+        second = bridge.submit(pickle.loads(pickle.dumps(command)))
+        self.assertTrue(second.accepted)
+        self.assertFalse(second.pending)
+        self.assertEqual(second.op_seq, 1)
+        self.assertEqual(log, [1, 2, 3])
+        self.assertEqual(len(binds), 1, 'the resend is not bound again')
+        self.assertIs(bridge._source_binding, bound)
+        self.assertIsNone(worker.dispatcher.quarantined)
+        self.assertIsNone(worker.dispatcher._slices)
+        self.assertEqual(lc.PREPARE_SLICES['sliced'], 1)
+        self.assertEqual(lc.PREPARE_SLICES['yields'], 1)
+
+    def test_stage_0(self):
+        self.send_twice(0, (0, 1), 0)
+
+    def test_stage_1(self):
+        self.send_twice(2, (2, 3), 1)
+
+
+class SlicedPrepare(Reset):
+    """The composed engine with the dispatcher's real slices: every later PREPARE answers pending twice, per rank, through the real bridge."""
+
+    def in_slices(self, rank):
+        return True
 
     def network(self, **kwargs):
         network = super().network(**kwargs)
+        lc.select_prepare_slices(True)
         self.pends = {}
         for rank, worker in network.workers.items():
-            dispatcher = worker.dispatcher
-            real = dispatcher.submit
-
-            def submit(command, real=real, rank=rank):
-                key = (rank, command.transaction, command.op_seq)
-                if command.kind == 'prepare' and command.transaction.chunk_start > 0 and self.pends.get(key, 0) < self.PENDS:
-                    self.pends[key] = self.pends.get(key, 0) + 1
-                    raise E3Pending('test: prepare slice')
-                return real(command)
-            dispatcher.submit = submit
+            if self.in_slices(rank):
+                self.install_slices(rank, worker.dispatcher, worker.factory)
         return network
+
+    def install_slices(self, rank, dispatcher, factory):
+        def steps(admission):
+            yield
+            yield
+            return factory.admit(admission)
+
+        def waiting():
+            identity = dispatcher._slices['identity']
+            key = (rank, identity[0], identity[3])
+            self.pends[key] = self.pends.get(key, 0) + 1
+            return True
+        factory.can_slice = lambda admission: admission.chunk_start > 0
+        factory.admit_steps = steps
+        dispatcher.ring_waiting = waiting
 
 
 class StopSweepSliced(SlicedPrepare, ie.Selected, c1.StopSweep):
@@ -318,13 +393,8 @@ class StopSweepSlicedEarly(SlicedPrepare, ie.Early, c1.StopSweep):
 class StopSweepOnePeer(StopSweepSlicedEarly):
     """One TP peer takes PREPARE whole while the other is in slices: the peers' peeks need not agree."""
 
-    def network(self, **kwargs):
-        network = super().network(**kwargs)
-        for rank in (1, 3):
-            worker = network.workers[rank]
-            real = worker.dispatcher.submit
-            worker.dispatcher.submit = lambda command, real=real, keep=self.pends, rank=rank: (keep.setdefault((rank, command.transaction, command.op_seq), 99), real(command))[1]
-        return network
+    def in_slices(self, rank):
+        return rank in (0, 2)
 
 
 class Engine(SlicedPrepare, ie.Base):
