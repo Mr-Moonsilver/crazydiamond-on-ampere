@@ -95,7 +95,7 @@ def score_warm_bytes(prompt_end):
 # inwait build-4 (DESIGN-4): per rank, selected the same way. The partial-tail CoW copy as one slice copy per block, with no
 # advanced index and no temporary; and an allocator cap that keeps a declared amount of the device free. One row per chunk
 # that zeroes or copies pages times both, on or off, so the box names what the residue chunk's PREPARE does on each TP rank.
-COW_FAST = dict(selected=False, calls=0, pairs=0, fallbacks=0, rows=0, row_errors=0)
+COW_FAST = dict(selected=False, calls=0, pairs=0, fallbacks=0, rows=0, row_errors=0, verify_pairs=0, verify_unequal=0, pages_errors=0)
 RESERVED_CAP = dict(selected=False, cap_bytes=0, fraction=0.0, flushes=0)
 RESERVED_CAP_FREE_BYTES = 512 * 1024 * 1024
 _COW_ROW = [None]
@@ -147,12 +147,94 @@ def take_cow_row():
 def cow_row_times(row):
     """Device and host microseconds from a row, after its chunk drained. An unfinished pair reads None; never waits."""
     marks = row.pop('marks', None) or ()
-    out = dict(zero_dev_us=None, copy_dev_us=None)
-    if len(marks) == 3 and all(mark is not None for mark in marks) and all(bool(mark.query()) for mark in marks):
+    out = dict(zero_dev_us=None, copy_dev_us=None, host_view_dev_us=None)
+    if len(marks) == 4 and all(mark is not None for mark in marks) and all(bool(mark.query()) for mark in marks):
         out.update(zero_dev_us=int(round(marks[0].elapsed_time(marks[1]) * 1e3)),
-                   copy_dev_us=int(round(marks[1].elapsed_time(marks[2]) * 1e3)))
+                   copy_dev_us=int(round(marks[1].elapsed_time(marks[2]) * 1e3)),
+                   host_view_dev_us=int(round(marks[2].elapsed_time(marks[3]) * 1e3)))
     row.update(out)
     return row
+
+
+def _kv_arenas(runner):
+    """The known KV arenas as (start, end, class), the pools before the allocations that could hold them. Pointers stay in here; never logged."""
+    def span(tensor, name):
+        start = tensor.data_ptr()
+        return start, start + tensor.numel() * tensor.element_size(), name
+    layers = runner.compilation_config.static_forward_context.values()
+    arenas = [span(layer._qsa_host_kv, 'host') for layer in layers if getattr(layer, '_qsa_host_kv', None) is not None]
+    arenas += [span(layer._qsa_gpu_slots, 'slot') for layer in layers if getattr(layer, '_qsa_gpu_slots', None) is not None]
+    for cache in runner.kv_caches:
+        storage = cache.untyped_storage()
+        arenas.append((storage.data_ptr(), storage.data_ptr() + storage.nbytes(), 'device'))
+    return arenas
+
+
+def cow_residency(runner, views, pairs):
+    """Where each pair's pages sit, per copy pass (k: runner.kv_caches, h: the QSA host views) and per distinct view: counts and bytes by source and target class.
+
+    host: a registered ``_qsa_host_kv`` pool, so UVA from the GPU's side. slot: a layer's GPU placeholder. device: another KV allocation. other: none of them.
+    """
+    arenas = _kv_arenas(runner)
+
+    def class_of(pointer):
+        for start, end, name in arenas:
+            if start <= pointer < end:
+                return name
+        return 'other'
+    out = {}
+    num_blocks = runner.kv_cache_config.num_blocks
+    for tag, caches in (('k', runner.kv_caches), ('h', views or ())):
+        for blocks in _block_views(caches, num_blocks):
+            for src, dst in pairs:
+                source, target = blocks[src], blocks[dst]
+                name = '%s_%s_%s' % (tag, class_of(source.data_ptr()), class_of(target.data_ptr()))
+                out[name + '_pairs'] = out.get(name + '_pairs', 0) + 1
+                out[name + '_bytes'] = out.get(name + '_bytes', 0) + target.numel() * target.element_size()
+    return out
+
+
+def cow_host_verify(runner, pairs, chunk_start):
+    """Host bytes, after the lane drained: each pair's copied prefix against its source, on every QSA pool. Raw bytes, so a NaN equals itself."""
+    import torch
+    compared, unequal, prefix = 0, 0, None
+    for layer in runner.compilation_config.static_forward_context.values():
+        host = getattr(layer, '_qsa_host_kv', None)
+        if host is None:
+            continue
+        prefix = chunk_start % host.shape[2]
+        for src, dst in pairs:
+            compared += 1
+            unequal += not torch.equal(host[src, :, :prefix].view(torch.uint8), host[dst, :, :prefix].view(torch.uint8))
+    return dict(verify_pairs=compared, verify_unequal=unequal, verify_prefix=prefix)
+
+
+def cow_row_pages(row, chunk_start):
+    """Residency and the byte check for a row, at release so the chunk's path pays nothing. A failure is one count in the line, the times stay."""
+    pages = row.pop('pages', None)
+    if pages and pages['pairs']:
+        try:
+            row.update(cow_residency(pages['runner'], pages['views'], pages['pairs']))
+            row.update(cow_host_verify(pages['runner'], pages['pairs'], chunk_start))
+            COW_FAST['verify_pairs'] += row['verify_pairs']
+            COW_FAST['verify_unequal'] += row['verify_unequal']
+        except Exception:
+            row['pages_error'] = 1
+            COW_FAST['pages_errors'] += 1
+    return row
+
+
+def _block_views(caches, num_blocks):
+    """Stock's walk: each distinct view once, each storage's byte view once."""
+    seen, storages = set(), set()
+    for cache in caches:
+        key = (cache.device, cache.data_ptr())
+        if key in seen:
+            continue
+        seen.add(key)
+        blocks = _blocks_of(cache, num_blocks, storages)
+        if blocks is not None:
+            yield blocks
 
 
 def _blocks_of(cache, num_blocks, storages):
@@ -183,15 +265,8 @@ def copy_blocks_fast(caches, num_blocks, pairs):
     sources, targets = [src for src, _ in pairs], [dst for _, dst in pairs]
     if len(set(targets)) != len(targets) or set(sources) & set(targets):
         return None
-    seen, storages, views, size = set(), set(), 0, 0
-    for cache in caches:
-        key = (cache.device, cache.data_ptr())
-        if key in seen:
-            continue
-        seen.add(key)
-        blocks = _blocks_of(cache, num_blocks, storages)
-        if blocks is None:
-            continue
+    views, size = 0, 0
+    for blocks in _block_views(caches, num_blocks):
         views += 1
         for src, dst in pairs:
             target = blocks[dst]
@@ -663,13 +738,21 @@ class LaneRequest:
                 COW_FAST['pairs'] += len(pairs)
         marks.append(mark())
         copied = time.monotonic_ns()
+        host_fast = None
         if pairs and views:
-            copies = [self.ports.block_copy(src, dst) for src, dst in pairs]
-            self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
+            # The QSA pages themselves: pinned host RAM, these are their UVA views. runner.kv_caches holds the layers' GPU placeholders.
+            if fast is not None:
+                host_fast = copy_blocks_fast(views, runner.kv_cache_config.num_blocks, pairs)
+            if host_fast is None:
+                copies = [self.ports.block_copy(src, dst) for src, dst in pairs]
+                self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
+        marks.append(mark())
         ended = time.monotonic_ns()
         _COW_ROW[0] = dict(marks=marks, zero_ids=len(zero_ids or ()), pairs=len(pairs or ()),
                            fast=int(fast is not None), views=(fast or {}).get('views'), bytes=(fast or {}).get('bytes'),
-                           host_views=len(views or ()), zero_host_us=(zeroed - started) // 1000,
+                           host_views=len(views or ()), host_fast=int(host_fast is not None),
+                           host_bytes=(host_fast or {}).get('bytes'), pages=dict(runner=runner, views=views, pairs=list(pairs or ())),
+                           zero_host_us=(zeroed - started) // 1000,
                            copy_host_us=(copied - zeroed) // 1000, host_view_us=(ended - copied) // 1000)
         COW_FAST['rows'] += 1
 

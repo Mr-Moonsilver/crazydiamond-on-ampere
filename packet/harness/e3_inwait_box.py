@@ -218,7 +218,7 @@ def rank_lever_counters(record, row, end):
     """The build-3 levers' counters on the arm record, per rank; the grade and the read use them."""
     for name, wanted, fields in (('prepare_slices', row['prepare_slices'], ('sliced', 'yields', 'peek_missing')),
                                  ('score_warm', row['score_warm'], ('allocs', 'flushes', 'rewarms', 'errors')),
-                                 ('cow_fast', row['cow_fast'], ('calls', 'pairs', 'fallbacks', 'rows', 'row_errors')),
+                                 ('cow_fast', row['cow_fast'], ('calls', 'pairs', 'fallbacks', 'rows', 'row_errors', 'verify_pairs', 'verify_unequal', 'pages_errors')),
                                  ('reserved_cap', row['reserved_cap'], ('flushes',))):
         block = record.setdefault(name, dict(requested=wanted, select=None))
         block['counters'] = {field: lever_delta(block.get('select'), end, name, field) for field in fields}

@@ -7,6 +7,7 @@ faster, and what the residue chunk's device time is on each TP rank, is the box'
 import itertools
 import logging
 import os
+import re
 import types
 import unittest
 from unittest import mock
@@ -118,7 +119,7 @@ class Pages(unittest.TestCase):
         self.caches = caches()
         zeroer = types.SimpleNamespace(zero_block_ids=lambda ids: self.log.append(('zero', tuple(ids))))
         self.runner = types.SimpleNamespace(kv_caches=self.caches, kv_cache_config=types.SimpleNamespace(num_blocks=NUM_BLOCKS), kv_block_zeroer=zeroer)
-        marks = [Mark(at=0.0), Mark(at=1.5), Mark(at=501.5)]
+        marks = [Mark(at=0.0), Mark(at=1.5), Mark(at=501.5), Mark(at=503.5)]
         self.ports = types.SimpleNamespace(block_copy=KVCacheBlockCopy, copy_blocks_inplace=self.stock, cow_mark=lambda: marks.pop(0))
         self.request = lc.LaneRequest.__new__(lc.LaneRequest)
         self.request.runner, self.request.ports = self.runner, self.ports
@@ -136,7 +137,7 @@ class Pages(unittest.TestCase):
         self.assertEqual((lc.COW_FAST['calls'], lc.COW_FAST['rows']), (0, 1))
         row = lc.cow_row_times(lc.take_cow_row())
         self.assertEqual((row['zero_ids'], row['pairs'], row['fast'], row['views'], row['bytes']), (1, 1, 0, None, None))
-        self.assertEqual((row['zero_dev_us'], row['copy_dev_us']), (1500, 500000))
+        self.assertEqual((row['zero_dev_us'], row['copy_dev_us'], row['host_view_dev_us']), (1500, 500000, 2000))
         self.assertNotIn('marks', row)
         self.assertIsNone(lc.take_cow_row(), 'once')
 
@@ -164,7 +165,28 @@ class Pages(unittest.TestCase):
         self.runner._qsa_host_views = views
         self.request._apply_allocated_pages(self.admission(pairs=((1, 2),)))
         self.assertEqual(views[0][2].tolist(), views[0][1].tolist())
-        self.assertEqual(lc.take_cow_row()['host_views'], 1)
+        row = lc.take_cow_row()
+        self.assertEqual((row['host_views'], row['host_fast'], row['host_bytes']), (1, 0, None))
+
+    def test_on_copies_the_host_views_fast_too_with_the_same_bytes(self):
+        views = [torch.arange(NUM_BLOCKS * 2, dtype=torch.int32).view(NUM_BLOCKS, 2).clone()]
+        want = views[0].clone()
+        want[2] = want[1]
+        self.runner._qsa_host_views = views
+        lc.select_cow_fast(True)
+        self.request._apply_allocated_pages(self.admission(pairs=((1, 2),)))
+        self.assertEqual(self.log, [])
+        self.assertEqual(views[0].tolist(), want.tolist())
+        row = lc.take_cow_row()
+        self.assertEqual((row['host_fast'], row['host_bytes']), (1, 2 * 4))
+
+    def test_on_with_a_chain_copies_the_host_views_with_stock_too(self):
+        views = [torch.arange(NUM_BLOCKS * 2, dtype=torch.int32).view(NUM_BLOCKS, 2).clone()]
+        self.runner._qsa_host_views = views
+        lc.select_cow_fast(True)
+        self.request._apply_allocated_pages(self.admission(pairs=((1, 2), (2, 3))))
+        self.assertEqual(self.log, [('stock', 2), ('stock', 2)])
+        self.assertEqual(lc.take_cow_row()['host_fast'], 0)
 
     def test_a_chunk_with_no_pages_has_no_row_and_no_mark(self):
         self.ports.cow_mark = None
@@ -176,12 +198,90 @@ class Pages(unittest.TestCase):
         self.ports.cow_mark = None
         self.request._apply_allocated_pages(self.admission(pairs=((1, 2),)))
         row = lc.cow_row_times(lc.take_cow_row())
-        self.assertEqual((row['zero_dev_us'], row['copy_dev_us']), (None, None))
+        self.assertEqual((row['zero_dev_us'], row['copy_dev_us'], row['host_view_dev_us']), (None, None, None))
 
     def test_an_unfinished_pair_reads_none_and_never_waits(self):
-        row = dict(marks=[Mark(), Mark(done=False), Mark()])
+        row = dict(marks=[Mark(), Mark(), Mark(done=False), Mark()])
         out = lc.cow_row_times(row)
-        self.assertEqual((out['zero_dev_us'], out['copy_dev_us']), (None, None))
+        self.assertEqual((out['zero_dev_us'], out['copy_dev_us'], out['host_view_dev_us']), (None, None, None))
+
+
+PAGE_TOKENS, HOST_WIDTH = 8, 4
+
+
+class Residency(unittest.TestCase):
+    """Two QSA pools with their UVA views and placeholders, one other KV allocation: the box's arenas as far as CPU tensors can stand in."""
+
+    def setUp(self):
+        shape = (NUM_BLOCKS, 1, PAGE_TOKENS, HOST_WIDTH)
+        self.hosts = [torch.randn(shape).to(torch.bfloat16) for _ in range(2)]
+        self.slots = [torch.zeros(NUM_BLOCKS, 1, PAGE_TOKENS, 1, dtype=torch.bfloat16) for _ in range(2)]
+        self.other = whole_storage()
+        ctx = {'qsa%d' % i: types.SimpleNamespace(_qsa_host_kv=h, _qsa_gpu_slots=s) for i, (h, s) in enumerate(zip(self.hosts, self.slots))}
+        ctx['plain'] = types.SimpleNamespace()
+        self.views = [h.view(shape) for h in self.hosts]
+        self.runner = types.SimpleNamespace(kv_caches=self.slots + [self.other], kv_cache_config=types.SimpleNamespace(num_blocks=NUM_BLOCKS),
+                                            compilation_config=types.SimpleNamespace(static_forward_context=ctx))
+
+    def test_each_pass_counts_each_pair_by_the_arena_it_sits_in(self):
+        out = lc.cow_residency(self.runner, self.views, [(1, 2), (3, 4)])
+        page = PAGE_TOKENS * HOST_WIDTH * 2
+        self.assertEqual(out, {'k_slot_slot_pairs': 4, 'k_slot_slot_bytes': 4 * PAGE_TOKENS * 2,
+                               'k_device_device_pairs': 2, 'k_device_device_bytes': 2 * 3 * 5 * 2,
+                               'h_host_host_pairs': 4, 'h_host_host_bytes': 4 * page})
+
+    def test_a_view_outside_every_arena_reads_other(self):
+        out = lc.cow_residency(self.runner, [torch.zeros(NUM_BLOCKS, 2)], [(1, 2)])
+        self.assertEqual(out['h_other_other_pairs'], 1)
+
+    def test_no_views_counts_only_the_first_pass(self):
+        self.assertFalse([k for k in lc.cow_residency(self.runner, None, [(1, 2)]) if k.startswith('h_')])
+
+    def copied(self, chunk_start=PAGE_TOKENS * 3 + 5):
+        for host in self.hosts:
+            host[2] = host[1]
+        return lc.cow_host_verify(self.runner, [(1, 2)], chunk_start)
+
+    def test_a_copied_prefix_verifies_and_the_rest_of_the_page_may_differ(self):
+        for host in self.hosts:
+            host[2, :, 5:] = 7.0
+        for host in self.hosts:
+            host[2, :, :5] = host[1, :, :5]
+        self.assertEqual(lc.cow_host_verify(self.runner, [(1, 2)], PAGE_TOKENS * 3 + 5), dict(verify_pairs=2, verify_unequal=0, verify_prefix=5))
+
+    def test_a_nan_equals_itself(self):
+        self.hosts[0][1, 0, 0, 0] = float('nan')
+        self.assertEqual(self.copied()['verify_unequal'], 0)
+
+    def test_a_wrong_or_missing_copy_is_counted_per_pool(self):
+        self.copied()
+        self.hosts[1][2, 0, 4, 0] = self.hosts[1][1, 0, 4, 0] + 1
+        self.assertEqual(lc.cow_host_verify(self.runner, [(1, 2)], PAGE_TOKENS * 3 + 5)['verify_unequal'], 1)
+
+    def test_the_line_carries_counts_and_no_pointer(self):
+        lc._COW_ROW[0] = dict(marks=[Mark(), Mark(), Mark(), Mark()], zero_ids=0, pairs=1, fast=0, views=None, bytes=None, host_views=2,
+                              host_fast=0, host_bytes=None, zero_host_us=1, copy_host_us=2, host_view_us=3,
+                              pages=dict(runner=self.runner, views=self.views, pairs=[(1, 2)]))
+        lines = []
+        with mock.patch.dict(os.environ, {'FLASH_S5_INWAIT': '1'}), \
+                mock.patch('native_measurement.emit_receipt_kv', lambda line, logger: lines.append(line)):
+            wb.NativeWorkerBridge._cow_receipt(types.SimpleNamespace(rank=0), types.SimpleNamespace(txn_seq=1, chunk_start=PAGE_TOKENS + 5, chunk_end=99))
+        self.assertEqual(len(lines), 1)
+        self.assertIn('h_host_host_pairs=2', lines[0])
+        self.assertIn('verify_pairs=2', lines[0])
+        self.assertNotIn('pages=', lines[0])
+        self.assertNotIn('namespace', lines[0])
+        pointers = {str(t.data_ptr()) for t in self.hosts + self.slots + [self.other]}
+        pointers |= {hex(t.data_ptr()) for t in self.hosts + self.slots + [self.other]}
+        self.assertFalse([p for p in pointers if p in lines[0]])
+        self.assertLess(max(int(v) for v in re.findall(r'=(\d+)', lines[0])), 2 ** 32)
+
+    def test_a_failed_read_is_one_count_and_the_row_stays(self):
+        row = lc.cow_row_pages(dict(pairs=1, pages=dict(runner=object(), views=None, pairs=[(1, 2)])), 5)
+        self.assertEqual(row, dict(pairs=1, pages_error=1))
+
+    def test_a_row_with_no_pairs_reads_nothing(self):
+        self.assertEqual(lc.cow_row_pages(dict(zero_ids=1, pages=dict(runner=object(), views=None, pairs=[])), 5), dict(zero_ids=1))
 
 
 class Receipt(unittest.TestCase):
@@ -192,7 +292,7 @@ class Receipt(unittest.TestCase):
         return types.SimpleNamespace(txn_seq=66, chunk_start=65296, chunk_end=65444)
 
     def test_the_line_names_the_rank_chunk_and_times(self):
-        lc._COW_ROW[0] = dict(marks=[Mark(at=0.0), Mark(at=1.0), Mark(at=3.0)], zero_ids=0, pairs=1, fast=1, views=2, bytes=64,
+        lc._COW_ROW[0] = dict(marks=[Mark(at=0.0), Mark(at=1.0), Mark(at=3.0), Mark(at=3.0)], zero_ids=0, pairs=1, fast=1, views=2, bytes=64,
                               host_views=0, zero_host_us=1, copy_host_us=2, host_view_us=0)
         lines = []
         with mock.patch.dict(os.environ, {'FLASH_S5_INWAIT': '1'}), \
@@ -212,7 +312,7 @@ class Receipt(unittest.TestCase):
             wb.NativeWorkerBridge._cow_receipt(self.bridge(), self.tx())
             self.assertEqual(lines, [])
             before = lc.COW_FAST['row_errors']
-            lc._COW_ROW[0] = dict(marks=[object(), object(), object()])
+            lc._COW_ROW[0] = dict(marks=[object(), object(), object(), object()])
             wb.NativeWorkerBridge._cow_receipt(self.bridge(), self.tx())
         self.assertEqual(lc.COW_FAST['row_errors'], before + 1)
         self.assertEqual(lines, [])

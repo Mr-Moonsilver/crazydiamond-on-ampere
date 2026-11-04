@@ -823,7 +823,7 @@ class NativeWorkerBridge:
             row = lane_chunk.take_cow_row()
             if row is None:
                 return
-            row = lane_chunk.cow_row_times(row)
+            row = lane_chunk.cow_row_pages(lane_chunk.cow_row_times(row), transaction.chunk_start)
             import logging
             from native_measurement import emit_receipt_kv
             emit_receipt_kv('flash-s5 cow rank=%d txn_seq=%d chunk=%d-%d %s' % (
