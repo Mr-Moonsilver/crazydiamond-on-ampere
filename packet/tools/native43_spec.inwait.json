@@ -125,7 +125,9 @@
    "ring_message_waiting"
   ],
   "patches/s5_engine/lane_private.py": [
-   "LanePrivateBindings.prepare_workspace"
+   "LanePrivateBindings.discover",
+   "LanePrivateBindings.prepare_workspace",
+   "_ple_audit"
   ],
   "patches/s5_engine/lane_state.py": [
    "estimated_e3_inventory",
@@ -135,6 +137,11 @@
   "patches/s5_engine/make_s5_overlap.py": [
    "module:E3_MODULES",
    "module:LAUNCHER_LIST_EXEMPT"
+  ],
+  "patches/s5_engine/model_hooks.py": [
+   "LaneForward._scopes",
+   "PlePrivateScratch.__init__",
+   "ple_embedding"
   ],
   "patches/s5_engine/native_auto_arm.py": [
    "AutoArmPolicy._plan",
@@ -169,6 +176,9 @@
    "attn_meta_actions",
    "module:ATTN_META_PAYLOAD_FIELDS",
    "validate_worker"
+  ],
+  "patches/s5_engine/native_startup.py": [
+   "_ple_scratch"
   ],
   "patches/s5_engine/probe_control.py": [
    "attach_native_router"
@@ -249,6 +259,7 @@
     "test_inwait_early_alloc",
     "test_inwait_router",
     "test_dp5_chunk",
+    "test_dp5_ple",
     "test_inwait_box",
     "test_inwait_queue",
     "test_inwait_robust_swap",
@@ -291,12 +302,14 @@
   "e3/lane_dispatch.py",
   "e3/lane_private.py",
   "e3/lane_state.py",
+  "e3/model_hooks.py",
   "e3/native_auto_arm.py",
   "e3/native_measurement.py",
   "e3/native_overlap_control.py",
   "e3/native_overlap_session.py",
   "e3/native_overlap_worker.py",
   "e3/native_qualification_frontend.py",
+  "e3/native_startup.py",
   "e3/probe_control.py",
   "e3/s5_startup.py",
   "e3/scheduler_hooks.py",
@@ -664,6 +677,7 @@
    "harness/test_compose2_receipt_refused.py",
    "harness/test_compose2_router.py",
    "harness/test_dp5_chunk.py",
+   "harness/test_dp5_ple.py",
    "harness/test_hub_slot.py",
    "harness/test_inwait_box.py",
    "harness/test_inwait_cow.py",
@@ -685,9 +699,11 @@
    "patches/s5_engine/lane_chunk.py",
    "patches/s5_engine/lane_private.py",
    "patches/s5_engine/lane_state.py",
+   "patches/s5_engine/model_hooks.py",
    "patches/s5_engine/native_auto_arm.py",
    "patches/s5_engine/native_overlap_worker.py",
    "patches/s5_engine/native_qualification_frontend.py",
+   "patches/s5_engine/native_startup.py",
    "patches/s5_engine/worker_hooks.py",
    "tools/attn_meta_b_derive.py",
    "tools/attn_meta_base_proof.py",
@@ -927,12 +943,19 @@
    "ring_message_waiting"
   ],
   "e3/lane_private.py": [
-   "LanePrivateBindings.prepare_workspace"
+   "LanePrivateBindings.discover",
+   "LanePrivateBindings.prepare_workspace",
+   "_ple_audit"
   ],
   "e3/lane_state.py": [
    "estimated_e3_inventory",
    "prefill_scratch_specs",
    "topk_bytes"
+  ],
+  "e3/model_hooks.py": [
+   "LaneForward._scopes",
+   "PlePrivateScratch.__init__",
+   "ple_embedding"
   ],
   "e3/native_auto_arm.py": [
    "AutoArmPolicy._plan",
@@ -967,6 +990,9 @@
    "attn_meta_actions",
    "module:ATTN_META_PAYLOAD_FIELDS",
    "validate_worker"
+  ],
+  "e3/native_startup.py": [
+   "_ple_scratch"
   ],
   "e3/probe_control.py": [
    "attach_native_router"
@@ -1082,7 +1108,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "763bd73ccee49da8df70041a8d1ea389cda168e0",
+ "source_commit": "ec9222524e4b83edf0c1071ec0035774e433c329",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/attn_meta_arms.py",
@@ -1147,6 +1173,7 @@
   "A\tharness/test_compose2_receipt_refused.py",
   "A\tharness/test_compose2_router.py",
   "A\tharness/test_dp5_chunk.py",
+  "A\tharness/test_dp5_ple.py",
   "M\tharness/test_e3_package.py",
   "A\tharness/test_hub_slot.py",
   "A\tharness/test_inwait_box.py",
@@ -1175,6 +1202,7 @@
   "M\tpatches/s5_engine/lane_private.py",
   "M\tpatches/s5_engine/lane_state.py",
   "M\tpatches/s5_engine/make_s5_overlap.py",
+  "M\tpatches/s5_engine/model_hooks.py",
   "M\tpatches/s5_engine/native_auto_arm.py",
   "M\tpatches/s5_engine/native_candidate_review.json",
   "M\tpatches/s5_engine/native_measurement.py",
@@ -1182,6 +1210,7 @@
   "M\tpatches/s5_engine/native_overlap_session.py",
   "M\tpatches/s5_engine/native_overlap_worker.py",
   "M\tpatches/s5_engine/native_qualification_frontend.py",
+  "M\tpatches/s5_engine/native_startup.py",
   "M\tpatches/s5_engine/probe_control.py",
   "M\tpatches/s5_engine/s5_startup.py",
   "M\tpatches/s5_engine/scheduler_hooks.py",
