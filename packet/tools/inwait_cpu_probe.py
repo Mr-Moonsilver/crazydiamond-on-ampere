@@ -104,7 +104,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_alpha_next_c1_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_alpha_next_c1b_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_inwait_queue.py'))
-EXPECTED_TESTS=592  # the 563 alpha-next-c1b probe cases plus the 29 inwait queue cases; pinned into the frozen runner gate
+EXPECTED_TESTS=594  # the 563 alpha-next-c1b probe cases plus the 31 inwait queue cases; pinned into the frozen runner gate
 import step_b_clock_bound
 suite,clock_bound_removed=step_b_clock_bound.filtered(suite)
 assert clock_bound_removed==step_b_clock_bound.IN_PROBE,clock_bound_removed
@@ -121,7 +121,7 @@ spec=importlib.util.spec_from_file_location('native34_frozen_owner','/source/own
 owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(owner)
 role=os.environ['FLASH_NATIVE35_ARM'];assert role=='TRUNK' and os.environ['FLASH_NATIVE34_ARM']=='O'
 provenance=json.loads(Path('/source/harness/native30-provenance.json').read_text())
-assert provenance['native35_arm']==role and provenance['candidate']=='q18a-inwait' and owner.QNAME=='q18a-sm-split-52' and owner.SMSPLIT_DECODE_SMS=='52'
+assert provenance['native35_arm']==role and provenance['candidate']=='q18a-inwait' and owner.QNAME=='q18a-chunk-2048' and owner.CHUNK_TOKENS=='2048' and owner.SMSPLIT_DECODE_SMS=='44'
 owner.check_slot()
 import native34_gate as weekend_gate
 import native35p_gate
