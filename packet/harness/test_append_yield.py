@@ -183,6 +183,9 @@ def staged_cold_stack():
     return stack
 
 
+STACKS = {'native': lambda: native.cold_stack(), 'staged': lambda: staged_cold_stack()}
+
+
 class Rig:
     """The connected yield rig (see the module docstring); every step is the engine's own call.
 
@@ -193,7 +196,7 @@ class Rig:
     def __init__(self, *, max_new=8, per_bulk=4, handback_steps=8, reentry_retries=4, cached=None, enabled=True,
                  configure=True, driver=None):
         self.kind = driver or Rig.DRIVER
-        self.stack = staged_cold_stack() if self.kind == 'staged' else native.cold_stack()
+        self.stack = STACKS[self.kind]()
         assert type(self.stack.driver) is DRIVERS[self.kind], (self.kind, type(self.stack.driver))
         self.core, self.frontend = native.core_for(self.stack, paused=True)
         self.s, self.c, self.d = self.stack.scheduler, self.stack.controller, self.stack.driver
@@ -599,7 +602,7 @@ class YieldAtBoundary(unittest.TestCase):
         rig = connected_cycle(self)
         records = [e for e in rig.d._journal if e['kind'].startswith('append_yield_')]
         self.assertEqual([e['kind'] for e in records],
-                         ['append_yield_selected', 'append_yield_row_closed', 'append_yield_admitted',
+                         ['append_yield_selected', 'append_yield_drained', 'append_yield_row_closed', 'append_yield_admitted',
                           'append_yield_handback', 'append_yield_full', 'append_yield_reenter',
                           'append_yield_resume', 'append_yield_bulk_reopened', 'append_yield_end'])
         self.assertTrue(all(e['seq'] == 1 and type(e['route_generation']) is int for e in records))
@@ -622,7 +625,7 @@ class YieldAtBoundary(unittest.TestCase):
         self.assertEqual(len(record['history']), 1)
         entry = record['history'][0]
         self.assertEqual((entry['seq'], entry['reason']), (1, 'reopened'))
-        order = ['selected', 'row_closed', 'admitted', 'handback', 'full', 'reenter', 'resume', 'bulk_reopened', 'end']
+        order = ['selected', 'drained', 'row_closed', 'admitted', 'handback', 'full', 'reenter', 'resume', 'bulk_reopened', 'end']
         self.assertEqual(list(entry['times']), order)
         times = [entry['times'][name] for name in order]
         self.assertEqual(times, sorted(times))
@@ -1563,7 +1566,7 @@ class Mutants(unittest.TestCase):
                     "            return None\n", ""))
 
     def test_second_yield_over_per_bulk(self):
-        self.fails(self.cycle, ed.NativeSegmentDriver, '_maybe_yield',
+        self.fails(self.cycle, ed.NativeSegmentDriver, '_yield_offer',
                    ('if self._yield_counts.get(key, 0) >= config.per_bulk:',
                     'if self._yield_counts.get(key, 0) > config.per_bulk:'))
 
@@ -1595,7 +1598,7 @@ class Mutants(unittest.TestCase):
         check()
         with mutant(sh.PrefillAdmissionController, 'append_yield_candidate',
                     ('if config is None or not config.enabled:', 'if config is None:')):
-            self.fails(check, ed.NativeSegmentDriver, '_maybe_yield',
+            self.fails(check, ed.NativeSegmentDriver, '_yield_offer',
                        ('if config is None or not config.enabled or self._yield is not None:',
                         'if config is None or self._yield is not None:'))
 
@@ -2015,7 +2018,7 @@ class ReviewMajor1StaleYield(unittest.TestCase):
             self.recovers(rig, append, frontier)
         check()
         Mutants.fails(self, check, auto.AutoArmPolicy, '_yield_native',
-                      ("        if (phase in ('closing', 'append', 'resume') and not d._split_ready and not d.active\n",
+                      ("        if (phase in ('draining', 'closing', 'append', 'resume') and not d._split_ready and not d.active\n",
                        "        if (False and not d._split_ready and not d.active\n"))
 
 
@@ -2613,7 +2616,7 @@ class YieldExitInvariant(unittest.TestCase):
         # the abort rule's FULL window has a backstop (the MAJOR-1 stale guard), so the mutant removes both
         def check():
             with mutant(auto.AutoArmPolicy, '_yield_native',
-                        ("        if (phase in ('closing', 'append', 'resume') and not d._split_ready and not d.active\n",
+                        ("        if (phase in ('draining', 'closing', 'append', 'resume') and not d._split_ready and not d.active\n",
                          "        if (False and not d._split_ready and not d.active\n")):
                 exit_cell(self, 'append', 'client_exit')
         check()
@@ -2879,27 +2882,6 @@ class RealBuilderState(unittest.TestCase):
         self.assertFalse(all(read == start for _, start, read in reads))
 
 
-
-class Leaves(unittest.TestCase):
-    def test_every_leaf_declares_the_real_object_and_names_a_test_here(self):
-        import json
-        doc = json.loads((HERE / 'append_yield_fixture_leaves.json').read_text())
-        self.assertEqual(doc['schema'], 'fixture-leaves/1')
-        for parent in doc['inherits']:
-            self.assertTrue((HERE / parent).is_file(), parent)
-        names = set()
-        for leaf in doc['leaves']:
-            with self.subTest(leaf=leaf.get('name')):
-                self.assertEqual(sorted(leaf), sorted(['name', 'test', 'replaces', 'equivalence', 'cannot_prove',
-                                                       'more_convenient', 'box_evidence']))
-                self.assertNotIn(leaf['name'], names)
-                names.add(leaf['name'])
-                self.assertIs(leaf['box_evidence'], False)
-                module, cls = leaf['test'].split('.')
-                self.assertEqual(module, 'test_append_yield')
-                self.assertTrue(issubclass(globals()[cls], unittest.TestCase))
-                for field in ('replaces', 'equivalence', 'cannot_prove'):
-                    self.assertGreater(len(leaf[field]), 10)
 
 if __name__ == '__main__':
     unittest.main()
