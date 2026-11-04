@@ -3085,7 +3085,7 @@
     "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
     "queue": "q18a-inwait: compose-2's queue with FLASH_S5_INWAIT=1 for the whole run; one decode-only baseline, six core arms, C1 defer, in-wait selected per arm while paused idle FULL; compose-2's grade plus the in-wait selection and engagement check",
     "scope": "in-wait handoffs on compose-2's engine against c1b's READY build, discovery mode; not a release assessment and not a numerics result",
-    "source_commit": "b0ca89adb345ee6055a57b13b6704ee3aa12db83"
+    "source_commit": "3f35b51cc1d9007814b288029bc2384fbbf40b91"
   },
   "launcher_delta": {
     "exact_delta": "S5-only Docker json-file max-size=512m/max-file=4 and ulimit core=0; model command, environment and mounts unchanged",
