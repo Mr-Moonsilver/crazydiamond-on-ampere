@@ -12,6 +12,7 @@ Reads, never gates (compose_read): per arm and per cell live and solo prefill to
 wait_capped; the in-wait counters; refused sends per worker method. The per-chunk split (stage 0 non-layer apply, stage 1 open + release hold, PP_RECEIVE gate, FIFO) is read on the hub from the fetched logs.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -35,11 +36,11 @@ ACTIONS = (('pause', ()), ('native_progress', ('mode',)), ('native_qsa_fused', (
            ('native_stage_local', ('local', 'overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor')), ('qualification_worker', ('worker_action', 'payload')),
            ('release_auto_arm', ()), ('resume', ()), ('status', ()))
 AXIS = ("alpha-next's C0 on/off names and c1's C1-on/off names in this record (over_c0_off, c0_decode_delta, vs_c1_off, memory_c0_on_vs_off, min_free_below_c0_off_mib, C1-on/C1-off table headings) name "
-        'cap (reserved cap), w0 (cap, warm block on rank 0) and wa (cap, warm block on every rank) against their matched cf; every arm starts from a flush and is C1 defer, C0 local, attn-meta, L1 + L2, in-wait, early successor, fast slot mappings, PREPARE in slices and the fast CoW copy')
+        'both (exact successor), cap (reserved cap), w0 (cap, warm block on rank 0) and wa (cap, warm block on every rank) against their matched hf; every arm starts from a flush and is C1 defer, C0 local, attn-meta, L1 + L2, in-wait, early successor, fast slot mappings, PREPARE in slices, the fast CoW copy and the filtered host pass')
 _ROLE = 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on, early successor, fast slot mappings'
 _ROLE = _ROLE + ', PREPARE in slices'
-_ROLE = _ROLE + ', fast CoW copy'
-OBSERVE_ROLE = {'cf': _ROLE + ')', 'cap': _ROLE + ', reserved cap)', 'w0': _ROLE + ', reserved cap, warm block on rank 0)', 'wa': _ROLE + ', reserved cap, warm block on every rank)', 'sm': _ROLE + ', reserved cap, warm block on rank 0; the exact-path smoke)'}
+_ROLE = _ROLE + ', fast CoW copy, host pass filtered'
+OBSERVE_ROLE = {'hf': _ROLE + ')', 'both': _ROLE + ', exact successor)', 'cap': _ROLE + ', reserved cap)', 'w0': _ROLE + ', reserved cap, warm block on rank 0)', 'wa': _ROLE + ', reserved cap, warm block on every rank)', 'sm': _ROLE + ', exact successor, reserved cap, warm block on rank 0; the exact-path smoke)'}
 NOT_COVERED = ('numerics: this queue runs no fixed-schedule check; these arms are speed reads, batch 8 against 2 x 4 changes batch composition so OUTSIDE on merged arms is expected and is not a defect, '
                'and the fixed-schedule check owed for C1 defer stays owed')
 BASIS = ('one engine, FLASH_ATTN_META_GDN_BATCH=1 FLASH_S5_LAZY_RECV=1 FLASH_S5_DECODE_MERGE=1 FLASH_S5_INWAIT=1 for the whole run, every prefill arm C1 defer with fused, group size 2, attn-meta and L1 + L2 '
@@ -230,6 +231,72 @@ def rank_lever_counters(record, row, end):
         block['counters'] = {field: lever_delta(block.get('select'), end, name, field) for field in fields}
 
 
+class FirstToken(c1b.Numerics):
+    """READING-box-5's flag: each generated position's token and top-20, on the request as sampled. A bad block is counted, never fails the arm."""
+
+    def __init__(self):
+        super().__init__()
+        self.errors = 0
+
+    def consume(self, state, event):
+        try:
+            super().consume(state, event)
+        except ValueError:
+            self.errors += 1
+
+
+def first_token_send(captured):
+    """shared._send_prefill with top-20 logprobs on band 1's fresh (index 0) and append (index 1); sampling and everything else as declared."""
+    shared = c1b.shared
+
+    def send(url, model, cfg, lane, index, prompt, generation_budget, prompt_seed, salt):
+        workload = shared._workload_view(cfg, streams=1, generation_budget=generation_budget, prompt_seed=prompt_seed, finish_timeout_s=cfg['timeouts']['finish_s'])
+        body = dict(shared._request(model, prompt, workload, salt), logprobs=c1b.NUMERICS['logprobs'], return_tokens_as_token_ids=True)
+        instrument = captured[{0: 'fresh', 1: 'append'}.get(index, str(index))] = FirstToken()
+        states = c1b.correctness._start_streams(url, model, [body], [{'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(), 'prompt_chars': len(prompt)}], workload, instrument=instrument)
+        return states[0], workload
+    return send
+
+
+def first_token_record(captured):
+    return {family: dict(tokens=list(i.tokens), top=list(i.top), errors=i.errors) for family, i in captured.items()}
+
+
+def _top_at(record, family, position):
+    top = ((record.get('first_token') or {}).get(family) or {}).get('top') or []
+    return dict(top[position]) if position < len(top) else {}
+
+
+def _max_delta(left, right):
+    ids = set(left) & set(right)
+    return round(max(abs(left[i] - right[i]) for i in ids), 6) if ids else None
+
+
+def first_token_read(arms):
+    """READING-box-5's flag, as numbers. Per arm, family and captured position: the token and top-1 minus top-2. Per family and position: the largest absolute logprob difference over the shared top-20 ids, for each hf-hf and both-hf pair of band 1 arms. A read; numerics are not gated here."""
+    records = {a['label']: a for a in arms if a.get('first_token')}
+    rows, spread = {}, {}
+    for label, record in records.items():
+        rows[label] = {}
+        for family, row in record['first_token'].items():
+            rows[label][family] = dict(errors=row.get('errors'), positions=[])
+            for position, token in enumerate(row.get('tokens') or []):
+                top = _top_at(record, family, position)
+                order = sorted(top.values(), reverse=True)
+                rows[label][family]['positions'].append(dict(token=token, emitted_logprob=top.get(token), margin=round(order[0] - order[1], 6) if len(order) > 1 else None))
+    base = sorted(n for n in records if (T.by_label().get(n) or {}).get('c1') == T.OFF)
+    on = sorted(n for n in records if (T.by_label().get(n) or {}).get('c1') == T.ON)
+    for family in sorted({f for r in records.values() for f in r['first_token']}):
+        depth = max(len((r['first_token'].get(family) or {}).get('top') or []) for r in records.values())
+        spread[family] = []
+        for position in range(depth):
+            same = {'%s|%s' % (x, y): _max_delta(_top_at(records[x], family, position), _top_at(records[y], family, position)) for i, x in enumerate(base) for y in base[i + 1:]}
+            across = {'%s|%s' % (x, y): _max_delta(_top_at(records[x], family, position), _top_at(records[y], family, position)) for x in on for y in base}
+            known = lambda d: [v for v in d.values() if v is not None]
+            spread[family].append(dict(position=position, hf_vs_hf=same, both_vs_hf=across, hf_vs_hf_max=max(known(same), default=None), both_vs_hf_max=max(known(across), default=None)))
+    return dict(arms=rows, spread=spread, is_gate=False)
+
+
 def run_arm(a):
     """alpha-next's arm, C0 local ('on'), C1 defer, with this arm's selection; the append rule; then attn-meta's end read. ``a.out`` = the arm's record + attn_meta."""
     name = T.label(a.c1, a.size, a.cohort, a.index)
@@ -239,7 +306,9 @@ def run_arm(a):
     else:
         inner = a.out + '.inner.json'
         args = argparse.Namespace(**dict(vars(a), stage_local='on', out=inner))
-        with _bound(c1, dict(T=T)), _bound(an, arm_names(a.c1, row)):
+        captured = {}
+        send = dict(_send_prefill=first_token_send(captured)) if row['band'] == 1 else {}
+        with _bound(c1, dict(T=T)), _bound(an, arm_names(a.c1, row)), _bound(c1b.shared, send):
             rc = an.run_arm(args)
         record = base.load(inner) or dict(label=name, complete=False, reasons=['arm-record-unreadable'])
         if append_rule(record) and rc == 2 and record['complete']:
@@ -249,6 +318,7 @@ def run_arm(a):
         block['deltas'] = am.deltas(block.get('select'), (block['end'] or {}).get('read'))
         record.setdefault('slots_fast', dict(requested=row['next_levers'], select=None))['calls'] = slots_calls((record.get('slots_fast') or {}).get('select'), (block['end'] or {}).get('read'))
         rank_lever_counters(record, row, (block['end'] or {}).get('read'))
+        record['first_token'] = first_token_record(captured)
         block['table'] = row['attn']
         record.update(inwait_schema=ARM_SCHEMA, inner_record=Path(inner).name, levers=dict(attn=row['attn'], lazy_recv=row['lazy_recv'], decode_merge=row['decode_merge'], inwait=row['inwait'], next_levers=row['next_levers'], prepare_slices=row['prepare_slices'], score_warm=row['score_warm']))
     with open(a.out, 'x') as handle:
@@ -561,6 +631,7 @@ def grade(arms, ingress, checks, logs, watches=None, part='core'):
         classes = set()
     result['prefill_records'] = prefill
     read = compose_read(result, decode_records, attn)
+    read['first_token'] = first_token_read(result['prefill_records'])
     del result['prefill_records']
     result.update(verdict=verdict, classification=sorted(classes) or None, failures=sorted(failures), missing=sorted(missing), attn_meta=attn, attn_meta_is_gate=True, startup=start,
                   inwait_check=ifacts, compose_read=read, basis=BASIS, scope=SCOPE,
@@ -583,6 +654,7 @@ def report(result):
     lines = ['## inwait reads', '', 'Pair, band 1 medians: %s.' % json.dumps(read['pair'], sort_keys=True), '',
              'Decode-only tok/s: %s; fixed reference %s tok/s.' % (json.dumps(read['decode_only'], sort_keys=True), read['fixed_reference_tok_s']), '',
              'Append rule, step_* exempted, delta kept: %s.' % (json.dumps(result['append_step_exempt'], sort_keys=True) or '{}'), '',
+             'First token, max absolute logprob difference over the shared top-20, per family and position: %s.' % json.dumps({f: [dict(position=p['position'], hf_vs_hf_max=p['hf_vs_hf_max'], both_vs_hf_max=p['both_vs_hf_max']) for p in rows] for f, rows in (read.get('first_token') or {}).get('spread', {}).items()}, sort_keys=True), '',
              '| arm | prefill tok/s | decode own | decode vs fixed | decode vs this run | wait sends | wait capped | applied in wait | refused (receipts) | S1 thread share | S1 forward p50 ms | merge steps | cold |',
              '|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for name, r in read['arms'].items():

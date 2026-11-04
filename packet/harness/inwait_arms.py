@@ -1,13 +1,15 @@
 """q18a-inwait arm table: the one declared table (DESIGN-5b, 4 Nov, build-5b). Change it here and nowhere else.
 
-Build-5b (results/hub/inwait/DESIGN-5b.md): in-wait, the early successor, fast slot mappings, PREPARE in slices and the fast CoW copy are on in every arm (build-4's cf). Build-5's hf is on in every arm as well (BASE_HF); its se stays in the engine, off (BASE_SE).
-The engine is build-5's plus these levers behind one default-off flag, FLASH_S5_INWAIT, installed for the whole run. The only axis, selected per arm by typed control while paused, idle and FULL; every prefill arm flushes the allocator at its selection, so warm and cap are the only differences:
-  cf   build-4's cf and build-5's hf, the base
-  cap  cf and the reserved cap that keeps 512 MiB free
+Build-5b (results/hub/inwait/DESIGN-5b.md): in-wait, the early successor, fast slot mappings, PREPARE in slices, the fast CoW copy and the host pass filtered to QSA targets are on in every arm (build-5's hf).
+The engine is build-5's plus these levers behind one default-off flag, FLASH_S5_INWAIT, installed for the whole run. The only axis, selected per arm by typed control while paused, idle and FULL; every prefill arm flushes the allocator at its selection, so each lever is the only difference:
+  hf   the base
+  both hf and the exact successor plan
+  cap  hf and the reserved cap that keeps 512 MiB free
   w0   cap and the warm score block on rank 0 only
   wa   cap and the warm score block on every rank
-  sm   w0 as the exact-path smoke: arm 1, cold, graded as any arm, no matched pair; if it does not engage, nothing else runs
-Order: sm live | decode-am1 | round 0: cf solo, cf cap w0 wa live | round 1: wa w0 cap cf live (reversed) | the core grade | w0 live at band 2, last and a read, so an OOM costs nothing else.
+  sm   both and w0 as the exact-path smoke: arm 1, cold, graded as any arm, no matched pair; if it does not engage, nothing else runs
+Order: sm live | decode-am1 | round 0: hf both solo, hf both cap w0 wa live | round 1: wa w0 cap both hf live (reversed) | the core grade | w0 live at band 2, last and a read, so an OOM costs nothing else.
+Band 1's fresh and append requests carry top-20 logprobs, so hf and both can be compared token vector by token vector (READING-box-5's flag).
 """
 import alpha_next_arms as _alpha_next
 import attn_meta_arms as _attn_meta
@@ -22,8 +24,8 @@ BAND1_INDEXES = (0, 1)
 BAND2_INDEX = 2                           # 131,094 tokens fresh; the selected config's pair
 TAIL_INDEX = 0                            # no row uses it: the inherited code reads the name
 BAND_SIZE = {'core': {1: 2, 2: 2}, 'tail': {1: 2, 2: 2}}
-ROUND0 = (('cf', 'solo'), ('cf', 'live'), ('cap', 'live'), ('w0', 'live'), ('wa', 'live'))
-ROUND1 = (('wa', 'live'), ('w0', 'live'), ('cap', 'live'), ('cf', 'live'))
+ROUND0 = (('hf', 'solo'), ('both', 'solo'), ('hf', 'live'), ('both', 'live'), ('cap', 'live'), ('w0', 'live'), ('wa', 'live'))
+ROUND1 = (('wa', 'live'), ('w0', 'live'), ('cap', 'live'), ('both', 'live'), ('hf', 'live'))
 SMOKE_ROW = ('core', 'sm', 'live', 0)
 BAND2_ROWS = (('tail', 'w0', 'live', BAND2_INDEX),)    # after the core grade, a read: an OOM here costs no pair and does not change the grade
 ARM_TABLE = ((SMOKE_ROW,) + tuple([('core', s, c, 0) for s, c in ROUND0] + [('core', s, c, 1) for s, c in ROUND1]) + BAND2_ROWS)
@@ -33,24 +35,22 @@ FIXED_REFERENCE_TOK_S = 452.8             # the lead's fixed reference (brief, 4
 PARTS = ('core', 'tail')
 ENTRY_LIMIT = {'core': ('LAST_ARM_ENTRY_S', 'last_arm_entry'), 'tail': ('LAST_TAIL_ENTRY_S', 'last_tail_entry')}
 GRADED = ('core',)
-SELECTIONS = ('sm', 'cf', 'cap', 'w0', 'wa')
-OFF = 'cf'                                  # the matched off arm of every lever
-ON = 'cap'
-BASE_HF = True                              # build-5's hf in every arm: it removed the residue stall (READING-box-5)
-BASE_SE = False                             # build-5's se stays out: READING-box-5's numerics flag is not cleared
+SELECTIONS = ('sm', 'hf', 'both', 'cap', 'w0', 'wa')
+OFF = 'hf'                                  # the matched off arm of every lever
+ON = 'both'
 ATTN = dict.fromkeys(SELECTIONS, True)
 LAZY_RECV = dict.fromkeys(SELECTIONS, True)
 DECODE_MERGE = dict.fromkeys(SELECTIONS, 'chunk')
 INWAIT = dict.fromkeys(SELECTIONS, True)
 NEXT = dict.fromkeys(SELECTIONS, True)      # early_successor on native_stage_local, slots_fast on attn_meta_select
 SLICES = dict.fromkeys(SELECTIONS, True)    # prepare_slices on attn_meta_select
-WARM = {'sm': True, 'cf': False, 'cap': False, 'w0': True, 'wa': True}    # score_warm on attn_meta_select
-WARM_RANK0 = {'sm': True, 'cf': False, 'cap': False, 'w0': True, 'wa': False}    # score_warm_rank0 on attn_meta_select
+WARM = {'sm': True, 'hf': False, 'both': False, 'cap': False, 'w0': True, 'wa': True}    # score_warm on attn_meta_select
+WARM_RANK0 = {'sm': True, 'hf': False, 'both': False, 'cap': False, 'w0': True, 'wa': False}    # score_warm_rank0 on attn_meta_select
 FLUSH = dict.fromkeys(SELECTIONS, True)     # allocator_flush on attn_meta_select: every prefill arm, so the pairs start matched
 COW_FAST = dict.fromkeys(SELECTIONS, True)    # cow_fast on attn_meta_select
-RESERVED_CAP = {'sm': True, 'cf': False, 'cap': True, 'w0': True, 'wa': True}    # reserved_cap on attn_meta_select
-HOST_FILTER = dict.fromkeys(SELECTIONS, BASE_HF)    # cow_host_filter on attn_meta_select
-EXACT = dict.fromkeys(SELECTIONS, BASE_SE)    # exact_successor on native_stage_local
+RESERVED_CAP = {'sm': True, 'hf': False, 'both': False, 'cap': True, 'w0': True, 'wa': True}    # reserved_cap on attn_meta_select
+HOST_FILTER = dict.fromkeys(SELECTIONS, True)    # cow_host_filter on attn_meta_select
+EXACT = {'sm': True, 'hf': False, 'both': True, 'cap': False, 'w0': False, 'wa': False}    # exact_successor on native_stage_local
 C1 = dict.fromkeys(SELECTIONS, True)
 DEFER_BIND = dict.fromkeys(SELECTIONS, True)
 STAGE_LOCAL = True
@@ -123,11 +123,11 @@ def check():
     assert set(BAND_SIZE) == set(PARTS) == set(ENTRY_LIMIT)
     assert BAND1_REQUIRED_ROUNDS == BAND1_ROUNDS == len(BAND1_INDEXES)
     names = labels()
-    assert len(names) == len(set(names)) == 11, 'eleven distinct prefill arm labels'
+    assert len(names) == len(set(names)) == 14, 'fourteen distinct prefill arm labels'
     assert labels('tail') == ['w0.g2-live-2'] and labels('core') == names[:-1], 'one tail arm, last'
     assert names[0] == COLD_ARM, 'the cold arm is the first prefill arm'
     assert [d['label'] for d in DECODE_ARMS] == [REFERENCE_ARM] and [d['attn'] for d in DECODE_ARMS] == [True]
-    assert ROUND1 == ROUND0[:0:-1], 'round 1 is round 0 live reversed'
+    assert ROUND1 == ROUND0[:1:-1], 'round 1 is round 0 live reversed'
     assert set(ATTN) == set(LAZY_RECV) == set(DECODE_MERGE) == set(INWAIT) == set(NEXT) == set(SLICES) == set(WARM) == set(WARM_RANK0) == set(FLUSH) == set(COW_FAST) == set(RESERVED_CAP) == set(HOST_FILTER) == set(EXACT) == set(C1) == set(DEFER_BIND) == set(SELECTIONS)
     for row in arms():
         assert row['overlap'] is True and row['defer_bind'] is True and row['stage_local'] is True, 'C1 defer in every arm'
@@ -137,7 +137,7 @@ def check():
         if row['c1'] not in (OFF, 'sm') and row['part'] in GRADED and row['band'] == 1:
             assert matched_off(row), 'on arm without its matched off arm: ' + row['label']
     for index in BAND1_INDEXES:
-        assert {OFF, 'cap', 'w0', 'wa'} <= {r['c1'] for r in arms() if r['index'] == index and r['cohort'] == 'live'}, ('live pair', index)
+        assert {OFF, ON, 'cap', 'w0', 'wa'} <= {r['c1'] for r in arms() if r['index'] == index and r['cohort'] == 'live'}, ('live pair', index)
     return True
 
 
