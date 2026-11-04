@@ -452,5 +452,73 @@ class Merge(Base):
         self.assertFalse(rig.d._decode_merge_wanted())
 
 
+class InWait(Base):
+    """A yield under real progress_in_wait calls inside the stock wait: the commit, the admission and the phases stay on the tick, the frames advance in the wait."""
+
+    def run_with_waits(self, rig, *, hold_at_chunk=2, early=True):
+        d, c = rig.d, rig.c
+        # Leaf: the executor hook strips this meta on the real path; the rig's fake workers take the call directly.
+        patcher = mock.patch.object(ed.NativeProgress, 'with_meta', staticmethod(lambda envelope, _meta: envelope))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        real_submit = ay.StagedDirectTransport.submit
+
+        def submit(transport, kind, send, *args, direct=False, **kwargs):      # leaf: the rig's direct transport has one path
+            return real_submit(transport, kind, send, *args, **kwargs)
+        patch_submit = mock.patch.object(ay.StagedDirectTransport, 'submit', submit)
+        patch_submit.start()
+        self.addCleanup(patch_submit.stop)
+        d.install_progress('burst')
+        d.progress.mode = 'burst'
+        d.inwait_installed = True
+        d.inwait = True
+        d.early_successor = early
+        rig.admit()
+        served, moved, held, append = False, [], False, None
+        for _ in range(4000):
+            if rig.bulk.num_computed_tokens >= rig.bulk.num_tokens - 1:
+                break
+            if not held and rig.bulk.num_computed_tokens >= 4 * hold_at_chunk and d._frames:
+                held = True
+                append = rig.add_held(APPEND_UID, 11, cached=8)
+            phase = d.append_yield_phase()
+            if phase == 'handback' and not d._split_ready and not d.active and not served:
+                served = True
+                rig.stock_handback(d._yield['append'])
+            with auto_arm_workers():
+                rig.p.tick()
+                sh.flash_s5_admit(rig.s)
+                for _call in range(3):
+                    if not d._frames:
+                        break
+                    d.progress.last_stock_kind = 'sample_tokens'
+                    before = d.append_yield_phase(), c.overlap_counters['successors'], rig.bulk.num_computed_tokens
+                    sent = d.progress_in_wait()
+                    self.assertEqual((d.append_yield_phase(), c.overlap_counters['successors'], rig.bulk.num_computed_tokens), before, 'the wait moved a phase, an admission or a commit')
+                    if sent is None:
+                        break
+                    moved.append(phase)
+                    rig.stack.complete_everything()
+                d.advance()
+                rig.stack.complete_everything()
+        self.assertIsNone(d.error)
+        self.assertTrue(held and served, (held, served, d.append_yield_phase(), rig.kinds()[-8:]))
+        self.assertEqual(d.append_yield_counters['reopened'], 1, d.append_yield_counters)
+        self.assertEqual(rig.bulk.num_computed_tokens, rig.bulk.num_tokens - 1)
+        return moved
+
+    def test_the_wait_drives_the_drain_and_the_flow_ends_where_it_should(self):
+        rig = self.rig()
+        moved = self.run_with_waits(rig)
+        self.assertIn('draining', moved, 'in-wait advanced a frame while the yield drained')
+        applied = sum((rig.d.inwait_counters.get('wait_applied') or {}).values()) + sum((rig.d.inwait_counters.get('wait_sent') or {}).values())
+        self.assertGreater(applied, 0, rig.d.inwait_counters)
+        self.assertEqual(rig.d.append_yield_arrivals['in-chunk'] + sum(v for k, v in rig.d.append_yield_arrivals.items() if k != 'in-chunk'), 1)
+
+    def test_without_the_early_successor(self):
+        moved = self.run_with_waits(self.rig(), early=False)
+        self.assertIn(None, moved, 'in-wait ran with no yield too')
+
+
 if __name__ == '__main__':
     unittest.main()

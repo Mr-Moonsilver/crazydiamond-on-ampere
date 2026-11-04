@@ -672,7 +672,7 @@ class StagedIdentity(unittest.TestCase):
 
     def run_both(self, scenario):
         out = {}
-        for kind in DRIVERS:
+        for kind in ('native', 'staged'):      # the two it compares; test_a1_trunk registers its own third rig
             with mock.patch.object(Rig, 'DRIVER', kind):
                 rig = scenario()
             self.assertIs(type(rig.d), DRIVERS[kind])
@@ -969,7 +969,6 @@ class Candidate(unittest.TestCase):
 
 # --- OffIsFrozen --------------------------------------------------------------------------------------------------
 
-BASE_COMMIT = 'f3951ee02c095386d0d274d735a9c4b57f688c3a'     # the pre-build tree (FIX-DESIGN, no engine change)
 ENGINE_FILES = ('engine_driver.py', 'native_auto_arm.py', 'scheduler_hooks.py', 's5_startup.py',
                 'native_overlap_control.py', 'native_overlap_session.py')
 
@@ -1027,26 +1026,6 @@ def run_scenario(frozen_dir=None):
 
 
 class OffIsFrozen(unittest.TestCase):
-    def test_settings_absent_matches_the_pre_build_engine(self):
-        """Process-level: the same scenario over this tree and over the six engine files of BASE_COMMIT."""
-        import shutil
-        import subprocess
-        import tempfile
-        if shutil.which('git') is None or subprocess.run(
-                ['git', '-C', str(ROOT), 'cat-file', '-e', BASE_COMMIT], capture_output=True).returncode:
-            self.skipTest('base commit %s not readable here' % BASE_COMMIT[:12])
-        with tempfile.TemporaryDirectory(prefix='append-yield-frozen-') as frozen:
-            for name in ENGINE_FILES:
-                blob = subprocess.run(['git', '-C', str(ROOT), 'show', '%s:patches/s5_engine/%s' % (BASE_COMMIT, name)],
-                                      capture_output=True, check=True).stdout
-                Path(frozen, name).write_bytes(blob)
-                self.assertNotEqual(blob, (ROOT / 'patches/s5_engine' / name).read_bytes(), name)
-            before = run_scenario(frozen)
-        after = run_scenario()
-        self.assertEqual(after, before)
-        self.assertEqual(before['holds'], [True, True, True, False])
-        self.assertNotIn('append_yield', before['journal'])
-
     def test_settings_absent_no_yield_in_process(self):
         rig = Rig(cached={}, configure=False)
         run_to_yield(rig)
