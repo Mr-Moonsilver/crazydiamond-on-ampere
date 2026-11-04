@@ -73,7 +73,7 @@ class Exposure(Base):
             for action, fields in box.ACTIONS:
                 try:
                     if action == 'qualification_worker':
-                        out[action] = worker.call(iwr.am.SELECT, {'on': True, 'slots_fast': True, 'prepare_slices': True, 'score_warm': False, 'cow_fast': False, 'reserved_cap': False})
+                        out[action] = worker.call(iwr.am.SELECT, {'on': True, 'slots_fast': True, 'prepare_slices': True, 'score_warm': False, 'cow_fast': True, 'reserved_cap': False, 'cow_host_filter': True})
                     else:
                         out[action] = client.call(action, **{name: SAMPLE[name] for name in fields})
                 except Exception as exc:  # noqa: BLE001 - the test reads it

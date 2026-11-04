@@ -1299,6 +1299,26 @@ class _ProjectedPrefillRequest:
         raise E3ContractError('projected prefill request is read-only')
 
 
+class _ShortTailPrefillRequest:
+    """Read-only view: stock's split sees the prompt's last hash boundary one unit lower.
+
+    a1-trunk build-1d.  A chunk can't cross ``num_prompt_tokens // unit * unit``, so a prompt ending under the staged
+    minimum past it has no native plan.  Below the boundary the stop lands one unit lower and the last chunk crosses
+    the old one, carrying unit + tail rows.  ``num_tokens`` is untouched, so the prefill end stays.
+    """
+    __slots__ = ('_request', 'num_prompt_tokens')
+
+    def __init__(self, request, boundary):
+        object.__setattr__(self, '_request', request)
+        object.__setattr__(self, 'num_prompt_tokens', boundary - 1)
+
+    def __getattr__(self, name):
+        return getattr(self._request, name)
+
+    def __setattr__(self, name, value):
+        raise E3ContractError('short tail prefill request is read-only')
+
+
 def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536,
                       trace=None):
     """Find a complete native prefix partition before allocating any chunk.
@@ -1866,14 +1886,27 @@ class PrefillAdmissionController:
     def _append_yield_short_tail(self, scheduler, prompt_end):
         """True when stock's split leaves a last chunk under the staged minimum, at any start.
 
-        Stock must stop at the prompt's last hash boundary, so a chunk can't cross it.  From the length alone, so
-        no 151k lookup (box 1: returners with tails of 16 and 58 rows found no plan, and paid one every chunk).
+        Stock must stop at the prompt's last hash boundary, so a chunk can't cross it (box 1: tails of 16 and 58 rows).
+        0 is not short: the boundary is the native end itself, a chunk may end on it.
         """
         unit = getattr(scheduler, 'hash_block_size', None)
         if getattr(scheduler, 'mamba_partial_cache_hit', False) is not True or type(unit) is not int or unit < 1:
             return False
-        # 0: the boundary is the native end itself, a chunk may end on it.
         return 0 < prompt_end - 1 - prompt_end // unit * unit < self.minimum_stage_rows
+
+    def _append_yield_split_view(self, scheduler, request):
+        """The request stock's split reads for a yield's short request: a short tail moves the stop one hash unit back.
+
+        Cost: no partial-tail entry at the old boundary, so this request's next turn resumes one registered state
+        earlier.  Under one unit of prompt there is nothing to move back to; the plan refuses it as before.
+        """
+        prompt_end = request.num_tokens
+        if not self._append_yield_short_tail(scheduler, prompt_end):
+            return request
+        boundary = prompt_end // scheduler.hash_block_size * scheduler.hash_block_size
+        if boundary < scheduler.hash_block_size:
+            return request
+        return _ShortTailPrefillRequest(request, boundary)
 
     def _append_yield_eligible(self, scheduler, request, requests):
         sampling = getattr(request, 'sampling_params', None)
@@ -1899,9 +1932,6 @@ class PrefillAdmissionController:
         prompt_end = getattr(request, 'num_tokens', None)
         if type(prompt_end) is not int or prompt_end < 2:
             self._yield_refuse('request')
-            return False
-        if self._append_yield_short_tail(scheduler, prompt_end):
-            self._yield_refuse('short-tail')
             return False
         return True
 
@@ -1935,8 +1965,9 @@ class PrefillAdmissionController:
         if cap < 1:
             self._yield_refuse('cap')
             return None
+        view = self._append_yield_split_view(scheduler, request)
         def split(position, limit):
-            projected = request if position == start else _ProjectedPrefillRequest(request, position)
+            projected = view if position == start else _ProjectedPrefillRequest(view, position)
             return self._aligned_split(scheduler, projected, limit,
                                        num_new_local_computed_tokens=start if position == start else 0)
         plan = staged_chunk_plan(start, end, cap, self.minimum_stage_rows, split)
@@ -2108,13 +2139,17 @@ class PrefillAdmissionController:
             raise E3ContractError('scheduler token budget is not declared')
         cap = min(self.chunk_tokens, budget)
         if self.minimum_stage_rows > 1:
+            # a1-trunk 1d: every chunk of a yield's short request plans over the same view, flag off this is the request.
+            is_append = getattr(owner, 'append_yield_is_append', None)
+            view = (self._append_yield_split_view(scheduler, request)
+                    if callable(is_append) and is_append(request) else request)
             def projected_split(position, limit):
                 if position == start:
                     return self._aligned_split(
-                        scheduler, request, limit,
+                        scheduler, view, limit,
                         num_new_local_computed_tokens=num_new_computed)
                 return self._aligned_split(
-                    scheduler, _ProjectedPrefillRequest(request, position), limit)
+                    scheduler, _ProjectedPrefillRequest(view, position), limit)
             key = self._plan_key(scheduler, request, start, prompt_end, cap)
             receipt = (None if retained is not None
                        else self._memoised_plan_refusal(request, key))

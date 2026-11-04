@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""q18a-a1-trunk box arms and grade: the returning-agent yield on and off, with returning agents in the live replay, over inwait's ps1 base. Discovery mode.
+"""q18a-a1-trunk box arms and grade: the returning-agent yield on and off, with returning agents in the live replay, over inwait's ps1 base plus cf and hf (build-1d). Discovery mode.
 
 The arm is its own, from native41's arm (progress.arm) and A1's (claude/returning-append, e3_q18b_append_yield_box.run_arm): that arm's receipts assume one auto cycle of one request and 8 streams
 open through the bulk, and a served yield breaks each of those on purpose. Same request shape otherwise: 8 standing decoders (greedy 0 and 1), burst, the decode-only window, the bulk, the stock append.
@@ -40,7 +40,7 @@ SIGNATURES = an.sa.SIGNATURES + an.STAGE_SIGNATURES
 HARD_MARKERS = ('Traceback', 'EngineDeadError', 'illegal memory access', 'E3ContractError', 'CUDA error')
 LANE = 'native41-progress-'
 JOIN_S = 300.0
-NOT_COVERED = 'numerics: no fixed-schedule check; a yield under real progress_in_wait ticks was never exercised on CPU (composition read from the code), this box run is its first exercise'
+NOT_COVERED = 'numerics: no fixed-schedule check, hf has no byte bound (verify_pairs 0 where it skips), the short-tail path has no numerics read; a yield under real progress_in_wait ticks was never exercised on CPU (composition read from the code), this box run is its first exercise'
 SCOPE = 'the returning-agent yield on the trunk: selection, engagement, crash, OOM are gated; every speed, the budget lines and decode are reads; not a release assessment and not a numerics result'
 
 
@@ -462,6 +462,7 @@ def arm_read(rec, decode_only_rate):
                 always_on=rec.get('always_on'), decode_per_stream_tok_s=per_stream, decode_vs_reference_per_stream=round(per_stream / reference, 4) if per_stream else None,
                 decode_only_8_tok_s=own, decode_only_vs_reference=round(own / T.FIXED_REFERENCE_TOK_S, 4) if type(own) in (int, float) else None, decode_only_vs_this_run=round(own / decode_only_rate, 4) if type(own) in (int, float) and type(decode_only_rate) in (int, float) and decode_only_rate else None,
                 returners=[{k: r.get(k) for k in ('index', 'suffix_tokens', 'tail_rows', 'short_tail', 'tail_attempts', 'prompt_tokens_tokenized', 'at_s', 'ttft_s', 'since_bulk_send_s', 'cached_tokens', 'new_tokens', 'prompt_tokens', 'output_completion', 'ok')} for r in rec.get('returners') or ()],
+                levers={name: (rec.get(name) or {}).get('counters') for name in ('cow_fast', 'cow_host_filter')},
                 stock_append_ttft_s=(rec.get('append') or {}).get('ttft_s'), progress=rec.get('progress_delta'), inwait={k: (rec.get('stage_delta') or {}).get('step_iw_' + k) for k in iw.IW_DELTA}, **{'yield': yield_read(rec)})
 
 
@@ -480,6 +481,11 @@ def lever_read(arms_read):
             for r in on['returners']:
                 budget = T.BUDGET_FIRST_OUTPUT_S[r['suffix_tokens']]
                 lines.append(dict(line='first-output', arm=row['label'], index=r['index'], suffix_tokens=r['suffix_tokens'], ttft_s=r['ttft_s'], budget_s=budget, within=r['ttft_s'] <= budget if type(r['ttft_s']) in (int, float) else None))
+                rule = T.RULE_1D_FIRST_OUTPUT_S[r['suffix_tokens']]
+                lines.append(dict(line='rule-1d-first-output', arm=row['label'], index=r['index'], suffix_tokens=r['suffix_tokens'], short_tail=r.get('short_tail'), ttft_s=r['ttft_s'], rule_s=rule, within=r['ttft_s'] <= rule if type(r['ttft_s']) in (int, float) else None))
+            # Stock fills usage's cached count and the native path doesn't (box 1c), so a count here is a returner stock prefilled; served is the journal's.
+            stock = [r['index'] for r in on['returners'] if r.get('cached_tokens')]
+            lines.append(dict(line='rule-1d-no-stock-prefill', arm=row['label'], returners=len(on['returners']), served=on['yield']['served'], stock_usage=stock, within=on['yield']['served'] >= len(on['returners']) and not stock))
         off = arms_read.get(off_label) if off_label else None
         if not on or not off:
             continue
@@ -488,6 +494,7 @@ def lever_read(arms_read):
         c, d = on.get('decode_per_stream_tok_s'), off.get('decode_per_stream_tok_s')
         ratio = round(c / d, 4) if type(c) in (int, float) and type(d) in (int, float) and d else None
         lines.append(dict(line='decode', arm=row['label'], off=off_label, on_tok_s=c, off_tok_s=d, ratio=ratio, min_ratio=T.BUDGET_DECODE_RATIO, within=ratio >= T.BUDGET_DECODE_RATIO if ratio is not None else None))
+        lines.append(dict(line='rule-1d-decode', arm=row['label'], off=off_label, ratio=ratio, min_ratio=T.RULE_1D_DECODE_RATIO, within=ratio >= T.RULE_1D_DECODE_RATIO if ratio is not None else None))
     return lines
 
 
@@ -585,6 +592,9 @@ def report(result):
     for name, r in result['arms'].items():
         for y in r['yield']['yields']:
             lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (name, y['seq'], y['arrival'], y['open_chunks'], y['reason'], cell(y['selected_to_full_s'], 3), json.dumps(y['steps'], sort_keys=True), cell(y.get('full_return_stall_s'), 3), cell(y.get('reentry_stall_s'), 3)))
+    lines += ['', '## CoW levers', '', 'Per rank, arm deltas. hf: kept + skipped are pairs, a chunk with no CoW adds none. verify_pairs is 0 where hf skipped every pair: no byte bound there.', '', '| arm | cow_fast | cow_host_filter |', '|---|---|---|']
+    for name, r in result['arms'].items():
+        lines.append('| %s | %s | %s |' % (name, json.dumps(r['levers'].get('cow_fast'), sort_keys=True), json.dumps(r['levers'].get('cow_host_filter'), sort_keys=True)))
     lines += ['', '## Refusals and lookups', '', 'Every prefix lookup through the manager in the arm, off arms too. `other` is stock\'s loop and the admission: if an off arm shows many of about 265 ms, stock taxes a held request on its own.', '', '| arm | refusals | calls | yield scan | other | total s | scan s | mean ms | max ms so far | stock holds |', '|---|---|---|---|---|---|---|---|---|---|']
     for name, r in result['arms'].items():
         l = r['yield'].get('lookups') or {}
@@ -626,6 +636,13 @@ def smoke_check(rec, row=None):
         reasons.append('smoke-no-yield-served')
     if any(y['counters'].get(k) for k in REFUSAL_COUNTERS):
         reasons.append('smoke-a-yield-fell-back')
+    filtered = ((rec.get('cow_host_filter') or {}).get('counters') or {})
+    kept, skipped = filtered.get('kept'), filtered.get('skipped')
+    if not (type(kept) is dict and type(skipped) is dict and len(skipped) == 4 and all((kept.get(rank) or 0) + (value or 0) for rank, value in skipped.items())):
+        reasons.append('smoke-host-filter-not-engaged')
+    calls = ((rec.get('cow_fast') or {}).get('counters') or {}).get('calls')
+    if not (type(calls) is dict and len(calls) == 4 and all(calls.values())):
+        reasons.append('smoke-cow-fast-not-engaged')
     returners = rec.get('returners') or ()
     if len(returners) != len(row['plan']) or any(r.get('ok') is not True for r in returners):
         reasons.append('smoke-a-returner-did-not-finish')

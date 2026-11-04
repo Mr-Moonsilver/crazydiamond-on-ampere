@@ -482,48 +482,134 @@ class ShortTail(Base):
     UNIT, MINIMUM = 176, 64
 
     def stock_split(self, request, limit, num_new_local_computed_tokens=0):
-        """The stop of scheduler._mamba_block_aligned_split that matters here: a chunk can't cross the prompt's last hash boundary."""
-        start = request.num_computed_tokens or num_new_local_computed_tokens
-        boundary = request.num_tokens // self.UNIT * self.UNIT
+        """The stop of scheduler._mamba_block_aligned_split that matters here; like stock, it reads num_prompt_tokens. The real text: scratch/box1d/real_split.py."""
+        start = request.num_computed_tokens + num_new_local_computed_tokens
+        boundary = request.num_prompt_tokens // self.UNIT * self.UNIT
         return boundary - start if start < boundary < start + limit else limit
 
-    def plan(self, tokens, start):
+    def plan(self, tokens, start, *, moved=True):
+        rig = getattr(self, '_rig', None) or self.rig()
+        self._rig = rig
+        rig.s.hash_block_size, rig.s.mamba_partial_cache_hit = self.UNIT, True
+        rig.c.minimum_stage_rows = self.MINIMUM
+        request = NS(num_tokens=tokens, num_prompt_tokens=tokens, num_computed_tokens=0)
+        view = rig.c._append_yield_split_view(rig.s, request) if moved else request
+
         def split(position, limit):
-            return self.stock_split(NS(num_tokens=tokens, num_computed_tokens=position), limit)
+            return self.stock_split(sh._ProjectedPrefillRequest(view, position), limit)
         return sh.staged_chunk_plan(start, tokens - 1, 1024, self.MINIMUM, split)
 
-    def test_the_box_returners_have_no_plan_and_a_longer_tail_has(self):
-        self.assertEqual(self.plan(151905, 151360), ())
-        self.assertEqual(self.plan(152651, 151008), ())
-        self.assertEqual(sum(self.plan(65445, 64768)), 65444 - 64768, 'the bulk tail of 148 rows')
-        self.assertEqual(sum(self.plan(151905 + 100, 151360)), 151905 + 100 - 1 - 151360)
+    def test_the_box_returners_have_a_plan_once_the_stop_moves(self):
+        self.assertEqual(self.plan(151905, 151360, moved=False), ())
+        self.assertEqual(self.plan(152651, 151008, moved=False), ())
+        self.assertEqual(self.plan(151905, 151360), (352, 192))
+        self.assertEqual(self.plan(152651, 151008), (1024, 384, 234))
 
-    def test_length_rule_agrees_with_the_planner_at_every_tail(self):
-        rig = self.rig()
-        rig.s.hash_block_size, rig.s.mamba_partial_cache_hit = self.UNIT, True
-        rig.c.minimum_stage_rows = self.MINIMUM
-        for tokens in range(151360 + 200, 151360 + 200 + self.UNIT + 2):
-            start = 151360
-            self.assertEqual(rig.c._append_yield_short_tail(rig.s, tokens), not self.plan(tokens, start), tokens)
+    def test_a_tail_that_fits_keeps_stocks_stop(self):
+        self.assertEqual(self.plan(151965, 151360), (528, 76), 'box 1c, yield 3')
+        self.assertEqual(self.plan(65445, 64768), (528, 148), 'the bulk tail')
+        rig = self._rig
+        request = NS(num_tokens=151965, num_prompt_tokens=151965)
+        self.assertIs(rig.c._append_yield_split_view(rig.s, request), request)
 
-    def test_refused_from_its_length_without_a_lookup(self):
-        rig = self.rig(max_new=2048)
-        rig.admit()                                     # the rig's short bulk runs under the minimum of 1
-        rig.s.hash_block_size, rig.s.mamba_partial_cache_hit = self.UNIT, True
-        rig.c.minimum_stage_rows = self.MINIMUM
-        rig.add_held(APPEND_UID, 176 * 3 + 17, cached=176)
-        before = len(rig.lookups)
-        rig.d._yield_offer()
-        self.assertIsNone(rig.d.append_yield_phase())
-        self.assertEqual(len(rig.lookups), before)
-        self.assertEqual(rig.c.yield_refusals, {'short-tail': 1})
-        self.assertEqual(rig.d.append_yield_record()['refusals'], {'short-tail': 1})
+    def test_every_tail_at_every_start_has_a_plan_over_the_whole_prompt(self):
+        boundary = 860 * self.UNIT
+        for tokens in range(boundary, boundary + self.UNIT + 1):
+            for start in (boundary - 3 * self.UNIT, boundary - self.UNIT):
+                plan = self.plan(tokens, start)
+                if tokens - 1 - start < self.MINIMUM:
+                    continue
+                self.assertEqual(sum(plan), tokens - 1 - start, tokens)
+                self.assertGreaterEqual(min(plan), self.MINIMUM, (tokens, plan))
 
-    def test_not_applied_when_stock_has_no_such_stop(self):
+    def test_only_a_hit_inside_the_last_unit_stays_without_a_plan(self):
+        # New rows all past the last boundary, under the minimum: no earlier state to resume from.
+        self.assertEqual(self.plan(176 * 3 + 17, 176 * 3), ())
+        self.assertEqual(sum(self.plan(176 * 3 + 17, 176 * 2)), 176 + 16, 'one unit back from a hit crosses the boundary')
+
+    def test_the_view_is_read_only_and_keeps_the_prefill_end(self):
+        request = NS(num_tokens=151905, num_prompt_tokens=151905, num_computed_tokens=151360, marker=1)
+        view = sh._ShortTailPrefillRequest(request, 151888)
+        self.assertEqual((view.num_prompt_tokens, view.num_tokens, view.num_computed_tokens, view.marker), (151887, 151905, 151360, 1))
+        self.assertEqual(max(view.num_prompt_tokens, view.num_tokens - 1), 151904)
+        with self.assertRaises(sh.E3ContractError):
+            view.num_prompt_tokens = 1
+
+    def test_no_stop_to_move_when_stock_has_none(self):
         rig = self.rig()
         rig.s.hash_block_size, rig.s.mamba_partial_cache_hit = self.UNIT, False
         rig.c.minimum_stage_rows = self.MINIMUM
         self.assertFalse(rig.c._append_yield_short_tail(rig.s, 176 * 3 + 17))
+        request = NS(num_tokens=176 * 3 + 17, num_prompt_tokens=176 * 3 + 17)
+        self.assertIs(rig.c._append_yield_split_view(rig.s, request), request)
+
+    def test_under_one_unit_nothing_moves(self):
+        rig = self.rig()
+        rig.s.hash_block_size, rig.s.mamba_partial_cache_hit = self.UNIT, True
+        rig.c.minimum_stage_rows = self.MINIMUM
+        request = NS(num_tokens=20, num_prompt_tokens=20)
+        self.assertIs(rig.c._append_yield_split_view(rig.s, request), request)
+
+
+class ShortTailFlow(Base):
+    """The real path, small numbers: unit 8, minimum 3, chunks of 4. 26 tokens: last boundary 24, one row past it."""
+    UNIT, MINIMUM, TOKENS = 8, 3, 26
+
+    def stock_split(self, request, limit, num_new_local_computed_tokens=0):
+        start = request.num_computed_tokens + num_new_local_computed_tokens
+        boundary = request.num_prompt_tokens // self.UNIT * self.UNIT
+        self.seen.append((request.request_id, boundary))
+        return boundary - start if start < boundary < start + limit else limit
+
+    def setup_rig(self, tokens=None, cached=8):
+        self.seen = []
+        rig = self.rig(max_new=64)
+        rig.admit()
+        rig.s.hash_block_size, rig.s.mamba_partial_cache_hit = self.UNIT, True
+        rig.c.minimum_stage_rows = self.MINIMUM
+        rig.s._mamba_block_aligned_split = self.stock_split
+        rig.ticks(rig.stage0_released)
+        append = rig.add_held(APPEND_UID, self.TOKENS if tokens is None else tokens, cached=cached)
+        append.num_prompt_tokens = append.num_tokens
+        return rig, append
+
+    def test_a_short_tail_is_selected_and_its_last_chunk_crosses_the_old_boundary(self):
+        rig, append = self.setup_rig()
+        rig.d._yield_offer()
+        self.assertIsNotNone(rig.d.append_yield_phase())
+        self.assertFalse(rig.c.yield_refusals)
+        ay.to_append(rig)
+        self.seen.clear()
+        starts = []
+        real = rig.c._aligned_split
+
+        def spy(scheduler, request, n, num_new_local_computed_tokens=0):
+            starts.append(request.num_computed_tokens + num_new_local_computed_tokens)
+            return real(scheduler, request, n, num_new_local_computed_tokens=num_new_local_computed_tokens)
+        rig.c._aligned_split = spy
+        ay.run_append(rig)
+        rig.c._aligned_split = real
+        self.assertIsNone(rig.d.error)
+        self.assertEqual(append.num_computed_tokens, self.TOKENS - 1, 'native to the last row but one: the prompt is whole before handback')
+        boundaries = {boundary for uid, boundary in self.seen if uid == APPEND_UID}
+        self.assertEqual(boundaries, {16}, 'every chunk of it planned over the moved stop')
+        self.assertFalse(rig.c.yield_refusals)
+
+    def test_the_bulks_own_split_never_sees_the_view(self):
+        rig, _append = self.setup_rig()
+        rig.d._yield_offer()
+        ay.to_append(rig)
+        self.assertTrue(rig.d.append_yield_is_append(rig.d._yield['append']))
+        self.assertFalse(rig.d.append_yield_is_append(rig.bulk))
+        ay.run_append(rig)
+        self.assertFalse(rig.d.append_yield_is_append(rig.d._yield['append'] if rig.d._yield else None))
+        self.assertFalse(any(uid == BULK_UID and boundary != 32 for uid, boundary in self.seen), self.seen[:6])
+
+    def test_a_hit_inside_the_last_unit_is_refused_and_named(self):
+        rig, _append = self.setup_rig(cached=24)
+        rig.d._yield_offer()
+        self.assertIsNone(rig.d.append_yield_phase())
+        self.assertEqual(rig.c.yield_refusals, {'no-plan': 1})
 
 
 class Merge(Base):

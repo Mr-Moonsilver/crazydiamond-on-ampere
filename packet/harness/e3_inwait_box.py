@@ -86,7 +86,7 @@ def levers_into(client, attn, wanted, record):
     """Inside the arm's pause: attn_meta_select with the rank levers, every rank proved as asked; attn-meta's own select follows and keeps them."""
     rows = am.Worker(client.control, client.run_id, client.epoch).call(am.SELECT, dict(wanted, on=attn))
     selected = am._keyed(rows)
-    for name in RANK_LEVERS:
+    for name in wanted:
         record[name] = dict(requested=wanted[name], select=selected)
         if any(((r.get('after') or {}).get(name) or {}).get('selected') is not wanted[name] for r in rows.values()):
             raise ValueError(name.replace('_', '-') + '-selection-unproved')
@@ -95,9 +95,11 @@ def levers_into(client, attn, wanted, record):
 class _InwaitSelecting:
     """The arm's client with ``inwait`` on the stage command; the reply's value goes to the record, and the grade reads it."""
 
-    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False):
+    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False, host_filter=None):
         self._client, self._inwait, self._record, self._next, self._attn = client, inwait, record, next_levers, attn
         self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap)
+        if host_filter is not None:
+            self._wanted['cow_host_filter'] = host_filter   # a1-trunk build-1d, inwait build-5's lever; absent on inwait's own rows here
         self._raw, self._slots_sent = client if raw is None else raw, False
 
     def __getattr__(self, name):
@@ -124,7 +126,7 @@ def release_compose(row):
         run_inner = inner(size, local)
 
         def run(client, record, mode):
-            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap']), record, mode)
+            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap'], row.get('cow_host_filter')), record, mode)
             if (record.get('attn_meta') or {}).get('select') is None:
                 raise ValueError('attn-meta-select-not-sent')
             if record.get('inwait') is None:
@@ -219,7 +221,8 @@ def rank_lever_counters(record, row, end):
     for name, wanted, fields in (('prepare_slices', row['prepare_slices'], ('sliced', 'yields', 'peek_missing')),
                                  ('score_warm', row['score_warm'], ('allocs', 'flushes', 'rewarms', 'errors')),
                                  ('cow_fast', row['cow_fast'], ('calls', 'pairs', 'fallbacks', 'rows', 'row_errors', 'verify_pairs', 'verify_unequal', 'pages_errors')),
-                                 ('reserved_cap', row['reserved_cap'], ('flushes',))):
+                                 ('reserved_cap', row['reserved_cap'], ('flushes',)),
+                                 *((('cow_host_filter', row['cow_host_filter'], ('kept', 'skipped', 'unfiltered')),) if 'cow_host_filter' in row else ())):
         block = record.setdefault(name, dict(requested=wanted, select=None))
         block['counters'] = {field: lever_delta(block.get('select'), end, name, field) for field in fields}
 

@@ -41,7 +41,7 @@ PLAN = {'sm': 'pair', 'on': 'pair', 'off': 'pair', 'mn': 'several', 'mo': 'sever
 REPLY_TOKENS = 64
 # Box run 1: stock must stop at the prompt's last hash boundary, and the last chunk must be at least 64 rows. Returners with tails of 16 and 58
 # rows had no plan and never yielded. A returner is shaped to a tail of at least 64 with /tokenize before the bulk is sent; these stay short on
-# purpose, to read the refusal and what it costs. Serving a short tail is the next lever, not built.
+# purpose. Build-1d serves them natively, the stop one unit back; this is the one read of that path.
 PREFIX_UNIT = 176
 MIN_TAIL = 64
 TAIL_TARGET = {False: 120, True: 32}
@@ -50,6 +50,8 @@ SHORT_TAIL = {'several': (5,)}
 BUDGET_FIRST_OUTPUT_S = {500: 2.0, 1500: 3.0}   # operator, 3 Nov 12:41 CET: first output of a short returning append during bulk prefill
 BUDGET_BULK_SLACK_S = 3.0                       # bulk complete <= yield-off + 3.0 s
 BUDGET_DECODE_RATIO = 0.97                      # standing decode >= 0.97 of yield-off
+RULE_1D_FIRST_OUTPUT_S = {500: 2.5, 1500: 3.0}  # the lead, 4 Nov, fixed before the run; the operator's budget above stays beside it
+RULE_1D_DECODE_RATIO = 0.90
 ARM_GENERATIONS = 10                            # 8 standing, the bulk, the stock append; the returners come on top
 COHORTS = ('live', 'solo')
 INDEXES = BAND1_INDEXES
@@ -82,9 +84,9 @@ def arms(part=None):
             continue
         band = band_of_index(index)
         plan = plan_of(sel, cohort)
-        # inwait's selection ps1: the levers release_compose reads.
+        # inwait's selection ps1 plus cf and hf, on and off alike: the levers release_compose reads. Build-1d's first cut, READING-box-1c-native.
         rows.append(dict(label=label(sel, 2, cohort, index), selection=selection(sel, 2), part=row_part, c1=sel, attn=True, lazy_recv=True, decode_merge='chunk', inwait=True, next_levers=True,
-                         prepare_slices=True, score_warm=False, cow_fast=False, reserved_cap=False, overlap=True, defer_bind=True, stage_local=True, size=2, cohort=cohort, index=index, band=band,
+                         prepare_slices=True, score_warm=False, cow_fast=True, cow_host_filter=True, reserved_cap=False, overlap=True, defer_bind=True, stage_local=True, size=2, cohort=cohort, index=index, band=band,
                          extra=False, entry_limit=ENTRY_LIMIT[row_part][0], yield_on=YIELD[sel], plan=plan, generations=ARM_GENERATIONS + len(plan)))
     return rows
 

@@ -3890,6 +3890,11 @@ class NativeSegmentDriver:
             return ('resume', y['bulk'])
         return (y['phase'], None)
 
+    def append_yield_is_append(self, request):
+        """True only for the short request of the yield running now, in its append phase."""
+        y = self._yield
+        return y is not None and y['phase'] == 'append' and y['append'] is request
+
     def append_yield_target_lost(self, phase):
         """The target left the waiting queues before its admission.
 

@@ -33,6 +33,7 @@ def record_of(row, served=None):
                 yield_control=dict(enabled=row['yield_on'], confirmed=True, clock_proof=dict(inside=True)), inwait=dict(acknowledged=row['inwait'], early_acknowledged=row['next_levers']), attn_meta=tam.block(True, [40] * 4),
                 outputs=dict(fresh=dict(tokens=1), append=dict(tokens=1), standing={'0': dict(tokens=1)}), progress_delta=dict(chunks=66, line_errors=0), returners=returners, always_on=always, append=dict(ttft_s=0.4),
                 decode_only=dict(aggregate_tokens_per_s=450.0), stage_delta={'step_iw_applied': 30},
+                cow_fast=dict(requested=True, counters=dict(calls={str(k): 2 for k in range(4)})), cow_host_filter=dict(requested=True, counters=dict(kept={str(k): 0 for k in range(4)}, skipped={str(k): 74 for k in range(4)}, unfiltered={str(k): 0 for k in range(4)})),
                 client_basis=dict(prefill_tokens_per_s=3300.0, bulk_ttft_s=20.0 + (2.0 if row['yield_on'] and row['plan'] else 0.0), decode_window=dict(aggregate_tokens_per_s=57.0 * len(always), streams=[{}] * len(always))),
                 statuses=[dict(label='before-fresh', route_generation=10, append_yield=y0), dict(label='after-fresh', route_generation=12 + 2 * served, append_yield=y1)], yield_stalls={str(5 + k): dict(full_return_stall_s=0.1, reentry_stall_s=0.1) for k in range(1, served + 1)})
 
@@ -62,13 +63,19 @@ class Table(unittest.TestCase):
         self.assertIsNone(T.matched_off(rows['on.g2-solo-0']))
         self.assertIsNone(T.matched_off(rows['sm.g2-live-0']))
 
-    def test_every_arm_is_inwaits_ps1_and_the_axis_is_the_yield(self):
+    def test_every_arm_is_inwaits_ps1_plus_cf_and_hf_and_the_axis_is_the_yield(self):
         import inwait_arms as parent
         ps1 = next(r for r in parent.arms() if r['c1'] == 'ps1')
         for r in T.arms():
-            for name in ('attn', 'lazy_recv', 'decode_merge', 'inwait', 'next_levers', 'prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap', 'overlap', 'defer_bind', 'stage_local', 'size'):
+            for name in ('attn', 'lazy_recv', 'decode_merge', 'inwait', 'next_levers', 'prepare_slices', 'score_warm', 'reserved_cap', 'overlap', 'defer_bind', 'stage_local', 'size'):
                 self.assertEqual(r[name], ps1[name], (r['label'], name))
+            self.assertIs(r['cow_fast'], True, r['label'])
+            self.assertIs(r['cow_host_filter'], True, r['label'])
             self.assertIs(r['yield_on'], T.YIELD[r['c1']])
+
+    def test_inwaits_own_rows_send_no_host_filter(self):
+        import inwait_arms as parent
+        self.assertFalse(any('cow_host_filter' in r for r in parent.arms()))
 
     def test_a_returner_is_a_sampled_stream_and_the_counts_add_up(self):
         rows = T.by_label()
@@ -90,6 +97,46 @@ class Returners(unittest.TestCase):
         for other in others:
             # Not even a shared first prefix unit (176 tokens).
             self.assertNotEqual(one.split()[1:9], other.split()[1:9])
+
+
+class Rule1d(unittest.TestCase):
+    def lines(self, edit=None):
+        arms_read = {}
+        for r in T.arms():
+            rec = record_of(r)
+            for ret in rec['returners']:
+                ret['cached_tokens'] = None if r['yield_on'] else ret['cached_tokens']
+            if edit:
+                edit(r, rec)
+            arms_read[r['label']] = box.arm_read(rec, 450.0)
+        return box.lever_read(arms_read)
+
+    def of(self, lines, line, arm='on.g2-live-0'):
+        return [row for row in lines if row['line'] == line and row['arm'] == arm]
+
+    def test_the_rule_is_read_beside_the_operators_budget(self):
+        lines = self.lines()
+        self.assertEqual({row['rule_s'] for row in self.of(lines, 'rule-1d-first-output')}, {2.5, 3.0})
+        self.assertTrue(all(row['within'] for row in self.of(lines, 'rule-1d-first-output')))
+        self.assertEqual(self.of(lines, 'rule-1d-decode')[0]['min_ratio'], 0.90)
+        self.assertTrue(self.of(lines, 'first-output'))
+        self.assertEqual({row['budget_s'] for row in self.of(lines, 'first-output')}, {2.0, 3.0})
+
+    def test_a_returner_stock_prefilled_fails_its_line(self):
+        self.assertTrue(self.of(self.lines(), 'rule-1d-no-stock-prefill')[0]['within'])
+
+        def edit(row, rec):
+            if row['label'] == 'on.g2-live-0':
+                rec['returners'][0]['cached_tokens'] = 151000
+        row = self.of(self.lines(edit), 'rule-1d-no-stock-prefill')[0]
+        self.assertIs(row['within'], False)
+        self.assertEqual(row['stock_usage'], [T.by_label()['on.g2-live-0']['plan'][0][0]])
+
+    def test_a_returner_no_yield_served_fails_its_line(self):
+        def edit(row, rec):
+            if row['label'] == 'on.g2-live-0':
+                rec['statuses'][1]['append_yield']['history'] = rec['statuses'][1]['append_yield']['history'][:1]
+        self.assertIs(self.of(self.lines(edit), 'rule-1d-no-stock-prefill')[0]['within'], False)
 
 
 class Tails(unittest.TestCase):
@@ -199,7 +246,7 @@ class Reads(unittest.TestCase):
         result = grade_of(arms)
         self.assertEqual(result['verdict'], 'PASS', (result['failures'], result['missing']))
         misses = [x for x in result['lever_read'] if x.get('arm') == 'on.g2-live-0' and x['within'] is False]
-        self.assertEqual(sorted(x['line'] for x in misses), ['bulk-complete', 'decode', 'first-output'])
+        self.assertEqual(sorted(x['line'] for x in misses), ['bulk-complete', 'decode', 'first-output', 'rule-1d-decode', 'rule-1d-first-output', 'rule-1d-no-stock-prefill'])
         self.assertIs(result['is_budget_gate'], False)
 
 
@@ -280,6 +327,9 @@ class Smoke(unittest.TestCase):
                            (lambda r: r['inwait'].update(acknowledged=False), 'smoke-control-not-acknowledged'),
                            (lambda r: r['attn_meta'].update(select=None), 'smoke-select-not-sent'),
                            (lambda r: r['progress_delta'].update(chunks=0), 'smoke-no-native-chunks'),
+                           (lambda r: r.pop('cow_host_filter'), 'smoke-host-filter-not-engaged'),
+                           (lambda r: r['cow_host_filter']['counters']['skipped'].update({'2': 0}), 'smoke-host-filter-not-engaged'),
+                           (lambda r: r['cow_fast']['counters']['calls'].update({'0': 0}), 'smoke-cow-fast-not-engaged'),
                            (lambda r: r['statuses'][1]['append_yield'].update(history=[]), 'smoke-no-yield-served'),
                            (lambda r: r['statuses'][1]['append_yield']['counters'].update(reentry_refused=1), 'smoke-a-yield-fell-back'),
                            (lambda r: r['returners'][0].update(ok=False), 'smoke-a-returner-did-not-finish')):
