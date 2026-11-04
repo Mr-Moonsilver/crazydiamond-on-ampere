@@ -73,7 +73,7 @@
     "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
     "queue": "q18a-a1-trunk: in-wait's queue with the four FLASH_S5_APPEND_YIELD_* bounds for the whole run; the exact-path smoke, one decode-only baseline, off/on live pairs with returning agents, one solo; its own small grade",
     "scope": "the returning-agent yield on in-wait's engine against c1b's READY build, discovery mode; not a release assessment and not a numerics result",
-    "source_commit": "641d12cd5dddc257ecb50240da1360cc2ff126ce"
+    "source_commit": "8e095db325ce855acb384dbc974b8a1ba09a0e43"
   },
   "alpha_next": {
     "alpha_next_settings": {
