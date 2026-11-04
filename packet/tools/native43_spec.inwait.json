@@ -54,10 +54,12 @@
    "module:GENERATED_SOURCES"
   ],
   "patches/s5_engine/engine_driver.py": [
+   "NativeProgress.end",
    "NativeSegmentDriver._admit_control",
    "NativeSegmentDriver._next_receipt",
    "NativeSegmentDriver._progress_direct",
-   "NativeSegmentDriver._submit_observed"
+   "NativeSegmentDriver._submit_observed",
+   "class:NativeProgress"
   ],
   "patches/s5_engine/executor_hooks.py": [
    "before_step_with_batch_queue",
@@ -74,20 +76,35 @@
    "LaneChunkFactory.admit_steps",
    "LaneChunkFactory.can_slice",
    "LaneChunkFactory.warm_scores",
+   "LaneRequest._apply_allocated_pages",
    "LaneTables.slot_mappings",
    "LaneTables.slot_mappings_fast",
+   "PinnedPorts.load",
+   "_blocks_of",
    "_flush_allocator",
+   "_no_mark",
+   "copy_blocks_fast",
+   "cow_row_times",
+   "module:COW_FAST",
    "module:PREPARE_SLICES",
+   "module:RESERVED_CAP",
+   "module:RESERVED_CAP_FREE_BYTES",
    "module:SCORE_COMPRESS",
    "module:SCORE_ROWS",
    "module:SCORE_WARM",
    "module:SCORE_WARM_SLACK_BYTES",
    "module:SCORE_WARM_STEP_BYTES",
    "module:SLOTS_FAST",
+   "module:_COW_ROW",
+   "module:import time",
+   "reserved_cap_bytes",
    "score_warm_bytes",
+   "select_cow_fast",
    "select_prepare_slices",
+   "select_reserved_cap",
    "select_score_warm",
-   "select_slots_fast"
+   "select_slots_fast",
+   "take_cow_row"
   ],
   "patches/s5_engine/lane_dispatch.py": [
    "LaneDispatcher._admit_chunk",
@@ -187,7 +204,9 @@
    "module:from reply_transport import Backpressure"
   ],
   "patches/s5_engine/worker_bridge.py": [
+   "NativeWorkerBridge._cow_receipt",
    "NativeWorkerBridge._prepare_resuming",
+   "NativeWorkerBridge._release_lane",
    "NativeWorkerBridge.submit"
   ],
   "patches/s5_engine/worker_hooks.py": [
@@ -203,6 +222,8 @@
     "test_inwait_engine",
     "test_inwait_slots",
     "test_inwait_slices",
+    "test_inwait_cow",
+    "test_inwait_early_alloc",
     "test_inwait_router",
     "test_inwait_box",
     "test_inwait_queue",
@@ -616,6 +637,8 @@
    "harness/test_compose2_router.py",
    "harness/test_hub_slot.py",
    "harness/test_inwait_box.py",
+   "harness/test_inwait_cow.py",
+   "harness/test_inwait_early_alloc.py",
    "harness/test_inwait_engine.py",
    "harness/test_inwait_queue.py",
    "harness/test_inwait_queue_names.py",
@@ -791,7 +814,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 584,
+ "expected_tests": 585,
  "label": "inwait",
  "overlay_definitions": {
   "core/scheduler.py": [
@@ -801,10 +824,12 @@
    "module:GENERATED_SOURCES"
   ],
   "e3/engine_driver.py": [
+   "NativeProgress.end",
    "NativeSegmentDriver._admit_control",
    "NativeSegmentDriver._next_receipt",
    "NativeSegmentDriver._progress_direct",
-   "NativeSegmentDriver._submit_observed"
+   "NativeSegmentDriver._submit_observed",
+   "class:NativeProgress"
   ],
   "e3/executor_hooks.py": [
    "before_step_with_batch_queue",
@@ -821,20 +846,35 @@
    "LaneChunkFactory.admit_steps",
    "LaneChunkFactory.can_slice",
    "LaneChunkFactory.warm_scores",
+   "LaneRequest._apply_allocated_pages",
    "LaneTables.slot_mappings",
    "LaneTables.slot_mappings_fast",
+   "PinnedPorts.load",
+   "_blocks_of",
    "_flush_allocator",
+   "_no_mark",
+   "copy_blocks_fast",
+   "cow_row_times",
+   "module:COW_FAST",
    "module:PREPARE_SLICES",
+   "module:RESERVED_CAP",
+   "module:RESERVED_CAP_FREE_BYTES",
    "module:SCORE_COMPRESS",
    "module:SCORE_ROWS",
    "module:SCORE_WARM",
    "module:SCORE_WARM_SLACK_BYTES",
    "module:SCORE_WARM_STEP_BYTES",
    "module:SLOTS_FAST",
+   "module:_COW_ROW",
+   "module:import time",
+   "reserved_cap_bytes",
    "score_warm_bytes",
+   "select_cow_fast",
    "select_prepare_slices",
+   "select_reserved_cap",
    "select_score_warm",
-   "select_slots_fast"
+   "select_slots_fast",
+   "take_cow_row"
   ],
   "e3/lane_dispatch.py": [
    "LaneDispatcher._admit_chunk",
@@ -930,7 +970,9 @@
    "module:from .reply_transport import Backpressure"
   ],
   "e3/worker_bridge.py": [
+   "NativeWorkerBridge._cow_receipt",
    "NativeWorkerBridge._prepare_resuming",
+   "NativeWorkerBridge._release_lane",
    "NativeWorkerBridge.submit"
   ],
   "e3/worker_hooks.py": [
@@ -973,7 +1015,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "7dd4020a985fa34aad9a4f06d6e2f2dc28f04214",
+ "source_commit": "6e5acdbbd6bf1f5111edc4087850a3a50b6bd498",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/attn_meta_arms.py",
@@ -1039,6 +1081,8 @@
   "M\tharness/test_e3_package.py",
   "A\tharness/test_hub_slot.py",
   "A\tharness/test_inwait_box.py",
+  "A\tharness/test_inwait_cow.py",
+  "A\tharness/test_inwait_early_alloc.py",
   "A\tharness/test_inwait_engine.py",
   "A\tharness/test_inwait_queue.py",
   "A\tharness/test_inwait_queue_names.py",
