@@ -96,6 +96,7 @@ def score_warm_bytes(prompt_end):
 # advanced index and no temporary; and an allocator cap that keeps a declared amount of the device free. One row per chunk
 # that zeroes or copies pages times both, on or off, so the box names what the residue chunk's PREPARE does on each TP rank.
 COW_FAST = dict(selected=False, calls=0, pairs=0, fallbacks=0, rows=0, row_errors=0, verify_pairs=0, verify_unequal=0, pages_errors=0)
+COW_HOST_FILTER = dict(selected=False, kept=0, skipped=0, unfiltered=0)
 RESERVED_CAP = dict(selected=False, cap_bytes=0, fraction=0.0, flushes=0)
 RESERVED_CAP_FREE_BYTES = 512 * 1024 * 1024
 _COW_ROW = [None]
@@ -138,6 +139,27 @@ def select_reserved_cap(on):
     return dict(RESERVED_CAP)
 
 
+def select_cow_host_filter(on):
+    """inwait build-5: the host-view pass copies only pairs whose target is in a QSA group's row, stock's filter. Selected per arm while paused."""
+    if type(on) is not bool:
+        raise LaneChunkError('cow_host_filter selection must be a bool')
+    COW_HOST_FILTER['selected'] = on
+    return dict(COW_HOST_FILTER)
+
+
+def qsa_host_pairs(runner, block_tables, pairs):
+    """The pairs whose target is in a QSA group's row of this request; stock's _qsa_copy_host_pages keeps the same ones. Pairs unchanged when the groups are unknown, counted."""
+    groups = getattr(runner, '_qsa_host_groups', None)
+    if groups is None:
+        COW_HOST_FILTER['unfiltered'] += 1
+        return pairs
+    targets = {block for group in groups for block in block_tables[group]}
+    kept = tuple(pair for pair in pairs if pair[1] in targets)
+    COW_HOST_FILTER['kept'] += len(kept)
+    COW_HOST_FILTER['skipped'] += len(pairs) - len(kept)
+    return kept
+
+
 def take_cow_row():
     """This chunk's row for the worker's release line, once; None when it zeroed and copied nothing."""
     row, _COW_ROW[0] = _COW_ROW[0], None
@@ -170,7 +192,7 @@ def _kv_arenas(runner):
     return arenas
 
 
-def cow_residency(runner, views, pairs):
+def cow_residency(runner, views, pairs, host_pairs=None):
     """Where each pair's pages sit, per copy pass (k: runner.kv_caches, h: the QSA host views) and per distinct view: counts and bytes by source and target class.
 
     host: a registered ``_qsa_host_kv`` pool, so UVA from the GPU's side. slot: a layer's GPU placeholder. device: another KV allocation. other: none of them.
@@ -184,9 +206,9 @@ def cow_residency(runner, views, pairs):
         return 'other'
     out = {}
     num_blocks = runner.kv_cache_config.num_blocks
-    for tag, caches in (('k', runner.kv_caches), ('h', views or ())):
+    for tag, caches, chosen in (('k', runner.kv_caches, pairs), ('h', views or (), pairs if host_pairs is None else host_pairs)):
         for blocks in _block_views(caches, num_blocks):
-            for src, dst in pairs:
+            for src, dst in chosen:
                 source, target = blocks[src], blocks[dst]
                 name = '%s_%s_%s' % (tag, class_of(source.data_ptr()), class_of(target.data_ptr()))
                 out[name + '_pairs'] = out.get(name + '_pairs', 0) + 1
@@ -214,8 +236,9 @@ def cow_row_pages(row, chunk_start):
     pages = row.pop('pages', None)
     if pages and pages['pairs']:
         try:
-            row.update(cow_residency(pages['runner'], pages['views'], pages['pairs']))
-            row.update(cow_host_verify(pages['runner'], pages['pairs'], chunk_start))
+            host_pairs = pages.get('host_pairs', pages['pairs'])
+            row.update(cow_residency(pages['runner'], pages['views'], pages['pairs'], host_pairs))
+            row.update(cow_host_verify(pages['runner'], host_pairs, chunk_start))
             COW_FAST['verify_pairs'] += row['verify_pairs']
             COW_FAST['verify_unequal'] += row['verify_unequal']
         except Exception:
@@ -739,19 +762,23 @@ class LaneRequest:
         marks.append(mark())
         copied = time.monotonic_ns()
         host_fast = None
-        if pairs and views:
+        host_pairs = pairs
+        if pairs and views and COW_HOST_FILTER['selected']:
+            host_pairs = qsa_host_pairs(runner, admission.block_tables, pairs)
+        if host_pairs and views:
             # The QSA pages themselves: pinned host RAM, these are their UVA views. runner.kv_caches holds the layers' GPU placeholders.
             if fast is not None:
-                host_fast = copy_blocks_fast(views, runner.kv_cache_config.num_blocks, pairs)
+                host_fast = copy_blocks_fast(views, runner.kv_cache_config.num_blocks, host_pairs)
             if host_fast is None:
-                copies = [self.ports.block_copy(src, dst) for src, dst in pairs]
+                copies = [self.ports.block_copy(src, dst) for src, dst in host_pairs]
                 self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
         marks.append(mark())
         ended = time.monotonic_ns()
         _COW_ROW[0] = dict(marks=marks, zero_ids=len(zero_ids or ()), pairs=len(pairs or ()),
                            fast=int(fast is not None), views=(fast or {}).get('views'), bytes=(fast or {}).get('bytes'),
                            host_views=len(views or ()), host_fast=int(host_fast is not None),
-                           host_bytes=(host_fast or {}).get('bytes'), pages=dict(runner=runner, views=views, pairs=list(pairs or ())),
+                           host_bytes=(host_fast or {}).get('bytes'), host_pairs=len(host_pairs or ()),
+                           pages=dict(runner=runner, views=views, pairs=list(pairs or ()), host_pairs=list(host_pairs or ())),
                            zero_host_us=(zeroed - started) // 1000,
                            copy_host_us=(copied - zeroed) // 1000, host_view_us=(ended - copied) // 1000)
         COW_FAST['rows'] += 1

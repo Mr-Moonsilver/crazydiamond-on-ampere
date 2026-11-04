@@ -160,6 +160,8 @@ class NativeOverlapSession:
             raise NativeOverlapSessionError('native-stage-overlap-defer-bind-not-installed')
         if 'early_successor' in command and 'inwait' not in command:
             raise NativeOverlapSessionError('native-stage-early-successor-needs-inwait')
+        if 'exact_successor' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-exact-successor-needs-inwait')
         if 'lazy_recv' in command or 'decode_merge' in command or 'inwait' in command:
             # stage1-step: never dropped silently; rides on C1's command with the deferred bind, or is refused here.
             if 'inwait' in command and os.environ.get('FLASH_S5_INWAIT', '0') != '1':
@@ -174,7 +176,8 @@ class NativeOverlapSession:
                                                            lazy_recv=command.get('lazy_recv'),
                                                            decode_merge=command.get('decode_merge'),
                                                            inwait=command.get('inwait'),
-                                                           early_successor=command.get('early_successor'))
+                                                           early_successor=command.get('early_successor'),
+                                                           exact_successor=command.get('exact_successor'))
         if 'overlap' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP', '0') == '1':
             # C1 only; with the switch off the command is C0's, field and all, as before.
             if 'defer_bind' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', '0') == '1':

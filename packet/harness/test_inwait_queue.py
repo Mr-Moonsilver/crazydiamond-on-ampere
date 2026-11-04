@@ -163,7 +163,7 @@ class Budget(unittest.TestCase):
                    for a in n.names} | {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         self.assertFalse(imports & {'time', 'datetime', 'calendar'})
         exp = gate.EXPECTED_RUNTIME_S
-        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (11, 1, 9, 1))
+        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (14, 1, 13, 0))
         self.assertEqual(exp['nominal']['not_run'], [])
         self.assertLess(gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S)
         self.assertTrue(gate.arm_fits(gate.LAST_ARM_ENTRY_S, 'core'))
@@ -278,8 +278,7 @@ class ArmLoop(unittest.TestCase):
         self.assertEqual(ingress, ['ingress-%s.json' % x for x in CORE[:1] + DECODE + CORE[1:] + TAIL])
         for name in DECODE + CORE:
             self.assertEqual(steps['arm-' + name], 'PASS', name)
-        # The stub's cap arm wrote a record and no engine lines: the core grade passes, the read says it cannot be whole. Whole read: test_inwait_box.
-        self.assertEqual((steps['inwait'], steps['inwait-read']), ('PASS', 'READ-INCONCLUSIVE'))
+        self.assertEqual((steps['inwait'], steps['inwait-read']), ('PASS', 'READ-PASS'))
         grade = json.loads((self.q / 'inwait-grade.json').read_text())
         self.assertEqual((grade['schema'], grade['verdict'], grade['missing']), ('inwait-grade/1', 'PASS', []))
         self.assertEqual(sorted(grade['step_gate']['arms']), sorted(CORE))
@@ -291,13 +290,13 @@ class ArmLoop(unittest.TestCase):
 
     def test_a_leak_fails_the_core_grade_and_counts(self):
         emit, arms = tbox.run_of()
-        arm = next(a for a in arms if a['label'] == 'ps1.g2-live-1')
-        arm['cow_fast']['counters']['calls']['0'] = 2
-        out, err, calls, steps = self.run_loop(edit={'ps1.g2-live-1': dict(cow_fast=arm['cow_fast'])})
+        arm = next(a for a in arms if a['label'] == 'cf.g2-live-1')
+        arm['cow_host_filter']['counters']['skipped']['0'] = 2
+        out, err, calls, steps = self.run_loop(edit={'cf.g2-live-1': dict(cow_host_filter=arm['cow_host_filter'])})
         self.assertEqual(steps['inwait'], 'FAIL', out[-1500:])
         self.assertIn('END FAILS=1', out)
         grade = json.loads((self.q / 'inwait-grade.json').read_text())
-        self.assertIn('ps1.g2-live-1:cow-fast-off-moved-its-counter', grade['failures'])
+        self.assertIn('cf.g2-live-1:cow-host-filter-off-moved-its-counter', grade['failures'])
 
     def test_a_smoke_that_does_not_engage_stops_the_table(self):
         out, err, calls, steps = self.run_loop(smoke_rc=2)
@@ -311,8 +310,8 @@ class ArmLoop(unittest.TestCase):
         self.assertIn('NOT_RUN: the exact-path smoke did not engage', out)
 
 
-ARGPARSE_VALUES = dict(tq.ARGPARSE_VALUES, QNAME='q18a-inwait', RUN_ID='q18a-inwait-fixture', _label='ps1.g2-live-1',
-                       _sel='ps1.g2', _c1='ps1', _group='g2', _arm='core:ps1.g2-live-1', _pair='1', _cohort='live')
+ARGPARSE_VALUES = dict(tq.ARGPARSE_VALUES, QNAME='q18a-inwait', RUN_ID='q18a-inwait-fixture', _label='cf.g2-live-1',
+                       _sel='cf.g2', _c1='cf', _group='g2', _arm='core:cf.g2-live-1', _pair='1', _cohort='live')
 
 
 def bash_words(args, draft, values=None):
@@ -321,8 +320,8 @@ def bash_words(args, draft, values=None):
     values = dict(ARGPARSE_VALUES, **(values or {}))
     lines = ['set -u', 'fail_early() { :; }', 'fail() { :; }', 'H=%s' % shlex.quote(str(HERE))]
     lines += ['%s=%s' % (k, shlex.quote(v)) for k, v in values.items()]
-    arrays = ('--arm "$Q/arm-ps1.g2-live-1.json" --ingress "ps1.g2-live-1=$Q/ingress-ps1.g2-live-1.json" '
-              '--watch "ps1.g2-live-1=$Q/engine-watch-arm-ps1.g2-live-1.json"')
+    arrays = ('--arm "$Q/arm-cf.g2-live-1.json" --ingress "cf.g2-live-1=$Q/ingress-cf.g2-live-1.json" '
+              '--watch "cf.g2-live-1=$Q/engine-watch-arm-cf.g2-live-1.json"')
     lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays,
               'source "$H/runs/q18a_inwait_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)

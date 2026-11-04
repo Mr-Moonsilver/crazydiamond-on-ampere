@@ -32,27 +32,28 @@ READ_SCHEMA = 'inwait-read/1'
 ARM_SCHEMA = 'inwait-arm/1'
 APPEND_REASON = 'append-moved-the-fused-group-or-stage-counters'
 ACTIONS = (('pause', ()), ('native_progress', ('mode',)), ('native_qsa_fused', ('fused',)), ('native_layer_group', ('size',)),
-           ('native_stage_local', ('local', 'overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor')), ('qualification_worker', ('worker_action', 'payload')),
+           ('native_stage_local', ('local', 'overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor')), ('qualification_worker', ('worker_action', 'payload')),
            ('release_auto_arm', ()), ('resume', ()), ('status', ()))
 AXIS = ("alpha-next's C0 on/off names and c1's C1-on/off names in this record (over_c0_off, c0_decode_delta, vs_c1_off, memory_c0_on_vs_off, min_free_below_c0_off_mib, C1-on/C1-off table headings) name "
-        'cf (the fast CoW copy) against its matched ps1, and cap (the reserved cap) against ps1 too; every arm is C1 defer, C0 local, attn-meta, L1 + L2, in-wait, early successor, fast slot mappings and PREPARE in slices')
+        'hf (host pass filtered), se (exact successor) and both against their matched cf; every arm is C1 defer, C0 local, attn-meta, L1 + L2, in-wait, early successor, fast slot mappings, PREPARE in slices and the fast CoW copy')
 _ROLE = 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on, early successor, fast slot mappings'
 _ROLE = _ROLE + ', PREPARE in slices'
-OBSERVE_ROLE = {'ps1': _ROLE + ')', 'cf': _ROLE + ', fast CoW copy)', 'sm': _ROLE + ', fast CoW copy; the exact-path smoke)', 'cap': _ROLE + ', reserved cap)'}
+_ROLE = _ROLE + ', fast CoW copy'
+OBSERVE_ROLE = {'cf': _ROLE + ')', 'hf': _ROLE + ', host pass filtered)', 'se': _ROLE + ', exact successor)', 'both': _ROLE + ', host pass filtered, exact successor)', 'sm': _ROLE + ', host pass filtered, exact successor; the exact-path smoke)'}
 NOT_COVERED = ('numerics: this queue runs no fixed-schedule check; these arms are speed reads, batch 8 against 2 x 4 changes batch composition so OUTSIDE on merged arms is expected and is not a defect, '
                'and the fixed-schedule check owed for C1 defer stays owed')
 BASIS = ('one engine, FLASH_ATTN_META_GDN_BATCH=1 FLASH_S5_LAZY_RECV=1 FLASH_S5_DECODE_MERGE=1 FLASH_S5_INWAIT=1 for the whole run, every prefill arm C1 defer with fused, group size 2, attn-meta and L1 + L2 '
          'selected and in-wait on or off by typed control; the exact-path smoke first, then one decode-only baseline; band 1 at 65,445 tokens live over two counterbalanced rounds and solo once; band 2 at 131,094 tokens, one pair on cf; one cap arm last')
 SCOPE = ("in-wait handoffs on compose-2's engine; selection, counters, crash, OOM and one in flight are gated; speed, decode, per-step thread time and memory are reads; "
          'not a release assessment and not a numerics result')
-IW_COUNTERS = ('direct_opens', 'direct_releases', 'polls_paced', 'refused_releases', 'refused_in_wait', 'early_begins')
+IW_COUNTERS = ('direct_opens', 'direct_releases', 'polls_paced', 'refused_releases', 'refused_in_wait', 'early_begins', 'exact_admits', 'exact_terminal')
 
 
 def table_view(sel=None):
     """This table as alpha-next's code reads alpha_next_arms: the candidate axis is cf against ps1 (c0 'off' = ps1; c0 'on' = cf). For one arm the label and selection
     carry ``sel`` whatever value alpha-next passes; the record keeps c0 'on'."""
     names = {k: getattr(T, k) for k in c1._TABLE_NAMES}
-    sel_of = dict({s: s for s in T.SELECTIONS}, off=T.OFF, on='cf')
+    sel_of = dict({s: s for s in T.SELECTIONS}, off=T.OFF, on=T.ON)
 
     def axis(value):
         return 'off' if value == T.OFF else 'on'
@@ -79,7 +80,7 @@ def sb_bindings():
 
 # --- the arm --------------------------------------------------------------------------------------------
 
-RANK_LEVERS = ('slots_fast', 'prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap')
+RANK_LEVERS = ('slots_fast', 'prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap', 'cow_host_filter')
 
 
 def levers_into(client, attn, wanted, record):
@@ -95,9 +96,10 @@ def levers_into(client, attn, wanted, record):
 class _InwaitSelecting:
     """The arm's client with ``inwait`` on the stage command; the reply's value goes to the record, and the grade reads it."""
 
-    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False):
+    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False, host_filter=False, exact=False):
         self._client, self._inwait, self._record, self._next, self._attn = client, inwait, record, next_levers, attn
-        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap)
+        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap, cow_host_filter=host_filter)
+        self._exact = exact
         self._raw, self._slots_sent = client if raw is None else raw, False
 
     def __getattr__(self, name):
@@ -110,9 +112,10 @@ class _InwaitSelecting:
             levers_into(self._raw, self._attn, self._wanted, self._record)
         if action != STAGE_CONTROL:
             return self._client.call(action, **fields)
-        reply = self._client.call(action, **dict(fields, inwait=self._inwait, early_successor=self._next))
+        reply = self._client.call(action, **dict(fields, inwait=self._inwait, early_successor=self._next, exact_successor=self._exact))
         self._record['inwait'] = dict(requested=self._inwait, acknowledged=reply.get('inwait') if type(reply) is dict else None,
-                                      early_requested=self._next, early_acknowledged=reply.get('early_successor') if type(reply) is dict else None)
+                                      early_requested=self._next, early_acknowledged=reply.get('early_successor') if type(reply) is dict else None,
+                                      exact_requested=self._exact, exact_acknowledged=reply.get('exact_successor') if type(reply) is dict else None)
         return reply
 
 
@@ -124,7 +127,7 @@ def release_compose(row):
         run_inner = inner(size, local)
 
         def run(client, record, mode):
-            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap']), record, mode)
+            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap'], row['cow_host_filter'], row['exact_successor']), record, mode)
             if (record.get('attn_meta') or {}).get('select') is None:
                 raise ValueError('attn-meta-select-not-sent')
             if record.get('inwait') is None:
@@ -219,6 +222,7 @@ def rank_lever_counters(record, row, end):
     for name, wanted, fields in (('prepare_slices', row['prepare_slices'], ('sliced', 'yields', 'peek_missing')),
                                  ('score_warm', row['score_warm'], ('allocs', 'flushes', 'rewarms', 'errors')),
                                  ('cow_fast', row['cow_fast'], ('calls', 'pairs', 'fallbacks', 'rows', 'row_errors', 'verify_pairs', 'verify_unequal', 'pages_errors')),
+                                 ('cow_host_filter', row['cow_host_filter'], ('kept', 'skipped', 'unfiltered')),
                                  ('reserved_cap', row['reserved_cap'], ('flushes',))):
         block = record.setdefault(name, dict(requested=wanted, select=None))
         block['counters'] = {field: lever_delta(block.get('select'), end, name, field) for field in fields}
@@ -332,6 +336,20 @@ def inwait_check(arms, want):
             failures.add(row['label'] + ':cow-fast-off-moved-its-counter')
         if type(cow_rows) is not dict or not all(type(v) is int and v for v in cow_rows.values()):
             missing.add(row['label'] + ':cow-receipt-rows-absent')
+        hf = (rec.get('cow_host_filter') or {}).get('counters') or {}
+        kept, skipped = hf.get('kept'), hf.get('skipped')
+        exact_admits, exact_terminal = delta.get('step_iw_exact_admits'), delta.get('step_iw_exact_terminal')
+        facts[row['label']].update(cow_host_filter=row['cow_host_filter'], host_filter=hf, exact_successor=row['exact_successor'], exact_admits=exact_admits, exact_terminal=exact_terminal)
+        if type(skipped) is not dict or type(kept) is not dict:
+            missing.add(row['label'] + ':cow-host-filter-counters-absent')
+        elif row['cow_host_filter'] and not all(kept.get(rank, 0) + skipped.get(rank, 0) for rank in skipped):
+            missing.add(row['label'] + ':cow-host-filter-selected-not-engaged')
+        elif not row['cow_host_filter'] and (any(kept.values()) or any(skipped.values())):
+            failures.add(row['label'] + ':cow-host-filter-off-moved-its-counter')
+        if (rec.get('inwait') or {}).get('exact_acknowledged') is not row['exact_successor']:
+            failures.add(row['label'] + ':exact-successor-selection-not-acknowledged')
+        if not row['exact_successor'] and (exact_admits or exact_terminal):
+            failures.add(row['label'] + ':exact-successor-off-moved-its-counter')
         allocs, errors = warm.get('allocs'), warm.get('errors')
         if type(allocs) is not dict or any(type(v) is not int for v in allocs.values()):
             missing.add(row['label'] + ':score-warm-counters-absent')
@@ -434,6 +452,13 @@ def smoke_check(rec, row=None):
         reasons.append('smoke-in-wait-not-engaged')
     if not delta.get('step_iw_early_begins'):
         reasons.append('smoke-early-successor-not-engaged')
+    if (rec.get('inwait') or {}).get('exact_acknowledged') is not row['exact_successor']:
+        reasons.append('smoke-exact-successor-not-acknowledged')
+    # exact_admits is a read, not a condition: if the masked clause refuses, the other levers' arms still count.
+    hf = (rec.get('cow_host_filter') or {}).get('counters') or {}
+    if row['cow_host_filter'] and not (type(hf.get('kept')) is dict and type(hf.get('skipped')) is dict and len(hf['skipped']) == 4
+                                       and all(hf['kept'].get(rank, 0) + value for rank, value in hf['skipped'].items())):
+        reasons.append('smoke-cow-host-filter-not-engaged-on-every-rank')
     for name, field in (('slots_fast', None), ('prepare_slices', 'sliced'), ('cow_fast', 'calls'), ('cow_fast', 'rows')):
         block = rec.get(name) or {}
         values = block.get('calls') if field is None else (block.get('counters') or {}).get(field)
@@ -476,11 +501,13 @@ def compose_read(result, decode_records, attn):
 
     def cell_of(sel, cohort):
         return medians.get('%s band 1 %s' % (sel, cohort)) or {}
-    pair = dict(live_on_over_off=_ratio(cell_of('cf', 'live').get('prefill_tok_s'), cell_of(T.OFF, 'live').get('prefill_tok_s')),
-                solo_on_over_off=_ratio(cell_of('cf', 'solo').get('prefill_tok_s'), cell_of(T.OFF, 'solo').get('prefill_tok_s')),
-                decode_vs_fixed_on=cell_of('cf', 'live').get('decode_vs_fixed_reference'), decode_vs_fixed_off=cell_of(T.OFF, 'live').get('decode_vs_fixed_reference'),
-                live_cap_over_off=_ratio(cell_of('cap', 'live').get('prefill_tok_s'), cell_of(T.OFF, 'live').get('prefill_tok_s')),
-                decode_vs_fixed_cap=cell_of('cap', 'live').get('decode_vs_fixed_reference'))
+    pair = dict(live_on_over_off=_ratio(cell_of(T.ON, 'live').get('prefill_tok_s'), cell_of(T.OFF, 'live').get('prefill_tok_s')),
+                solo_on_over_off=_ratio(cell_of(T.ON, 'solo').get('prefill_tok_s'), cell_of(T.OFF, 'solo').get('prefill_tok_s')),
+                decode_vs_fixed_on=cell_of(T.ON, 'live').get('decode_vs_fixed_reference'), decode_vs_fixed_off=cell_of(T.OFF, 'live').get('decode_vs_fixed_reference'),
+                live_hf_over_off=_ratio(cell_of('hf', 'live').get('prefill_tok_s'), cell_of(T.OFF, 'live').get('prefill_tok_s')),
+                decode_vs_fixed_hf=cell_of('hf', 'live').get('decode_vs_fixed_reference'),
+                live_se_over_off=_ratio(cell_of('se', 'live').get('prefill_tok_s'), cell_of(T.OFF, 'live').get('prefill_tok_s')),
+                decode_vs_fixed_se=cell_of('se', 'live').get('decode_vs_fixed_reference'))
     return dict(is_gate=False, reference_arm=T.REFERENCE_ARM, fixed_reference_tok_s=reference, decode_only={k: v for k, v in rate.items()}, arms=arms, cells=medians, pair=pair)
 
 

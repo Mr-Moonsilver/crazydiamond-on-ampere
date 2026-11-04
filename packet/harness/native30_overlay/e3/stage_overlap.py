@@ -40,7 +40,7 @@ from e3_types import E3ContractError, E3Pending
 from engine_driver import DriverError, NativeSegmentDriver, _progress_logger
 from native_measurement import INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS
 from reply_transport import Backpressure
-from scheduler_hooks import PrefillAdmissionController
+from scheduler_hooks import PrefillAdmissionController, _ProjectedPrefillRequest, staged_chunk_plan
 from stage_progress import StagedSegmentDriver, stage_local_enabled
 from wire_v1 import CancelRequest, PollRequest, ReleaseAck, SegmentKind
 
@@ -341,6 +341,7 @@ class StagedAdmissionController(PrefillAdmissionController):
                                      partial_successor_retires=0, alloc_wait=0)
         self.overlap_refusals = dict.fromkeys(REFUSALS, 0)
         self.last_successor_refusal = None
+        self.exact_counters = dict(exact_admits=0, exact_terminal=0)
 
     # -- successor admission ------------------------------------------------
     def _queue(self, scheduler):
@@ -362,6 +363,15 @@ class StagedAdmissionController(PrefillAdmissionController):
         cap = min(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', self.chunk_tokens))
         reason = overlap_refusal(scheduler.kv_cache_manager, request, parked.transaction.chunk_end,
                                  parked.admission.terminal, cap)
+        exact = reason == 'successor-may-be-terminal' and getattr(owner, 'exact_successor', False) is True
+        if exact:
+            # inwait build-5: the exact plan in place of the stand-in. cap 0 turns only that clause off, the others still read.
+            if self._successor_reaches_end(scheduler, request, parked.transaction.chunk_end, cap):
+                self.exact_counters['exact_terminal'] += 1
+                exact = False
+            else:
+                reason = overlap_refusal(scheduler.kv_cache_manager, request, parked.transaction.chunk_end,
+                                         parked.admission.terminal, 0)
         if reason is not None:
             self.overlap_refusals[reason] += 1
             self.last_successor_refusal = dict(reason=reason, transaction=parked.transaction.txn_seq)
@@ -386,8 +396,21 @@ class StagedAdmissionController(PrefillAdmissionController):
             self.refused, self.alloc_failures, self.refusal_seq, self.last_refusal = receipts
             self.overlap_counters['alloc_wait'] += 1
             return None
+        if exact:
+            if successor.admission.terminal:
+                raise E3ContractError('exact successor plan named a terminal chunk not terminal')
+            self.exact_counters['exact_admits'] += 1
         self.overlap_counters['successors'] += 1
         return record
+
+    def _successor_reaches_end(self, scheduler, request, start, cap):
+        """Pure: the admission's own plan from n's end, before any allocation. True when n+1 would be terminal, or when no plan exists."""
+        end = request.num_tokens - 1
+        if self.minimum_stage_rows <= 1:
+            return start + self._aligned_split(scheduler, _ProjectedPrefillRequest(request, start), min(cap, end - start)) >= end
+        plan = staged_chunk_plan(start, end, cap, self.minimum_stage_rows,
+                                 lambda position, limit: self._aligned_split(scheduler, _ProjectedPrefillRequest(request, position), limit))
+        return not plan or start + plan[0] >= end
 
     # -- lookups by transaction ---------------------------------------------
     def _record_for(self, transaction):
@@ -546,6 +569,7 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         # inwait build-2 (DESIGN-2): admit n+1 once n's stage 0 reached its finalize, not at its release.  Off until selected;
         # _frame_ready still holds n+1's open until stage 0 released n, so only the engine's frame comes earlier.
         self.early_successor = False
+        self.exact_successor = False
         self.inwait_refused = {}          # refused sends per worker method, on every arm of an installed engine
         self._inwait_refused_chunk = {}
         self._inwait_poll_ns = {0: None, 1: None}
@@ -1250,8 +1274,16 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-early-successor-invalid')
             if early and inwait is not True:
                 raise DriverError('native-stage-early-successor-needs-inwait')
+        exact = command.get('exact_successor', None)
+        if 'exact_successor' in command:
+            if not self.inwait_installed:
+                raise DriverError('native-stage-inwait-not-installed')
+            if type(exact) is not bool:
+                raise DriverError('native-stage-exact-successor-invalid')
+            if exact and inwait is not True:
+                raise DriverError('native-stage-exact-successor-needs-inwait')
         reply = super()._stage_control({k: v for k, v in command.items()
-                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor')})
+                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -1294,6 +1326,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             reply.update(inwait=inwait, previous_inwait=previous_inwait)
             self.early_successor = bool(inwait and early)
             reply.update(early_successor=self.early_successor)
+            self.exact_successor = bool(inwait and exact)
+            reply.update(exact_successor=self.exact_successor)
         return reply
 
     def stage_status(self):
@@ -1312,8 +1346,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         if self.inwait_installed:
             counters = self.inwait_counters
             result['overlap']['inwait'] = dict(installed=True, selected=self.inwait, early_successor=self.early_successor,
+                                               exact_successor=self.exact_successor,
                                                refused=dict(self.inwait_refused),
-                                               counters=dict(counters, wait_applied=dict(counters['wait_applied']),
+                                               counters=dict(counters, **getattr(self.controller, 'exact_counters', {}), wait_applied=dict(counters['wait_applied']),
                                                              wait_sent=dict(counters['wait_sent'])))
         if self.overlap_observer is not None:
             result['overlap']['observe'] = dict(counters=dict(self.overlap_observer.counters))

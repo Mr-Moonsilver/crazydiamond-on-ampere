@@ -99,6 +99,7 @@ class Copy(unittest.TestCase):
 
 
 class Mark:
+    # one timing event
     def __init__(self, log=None, done=True, at=0.0):
         self.done, self.at, self.log = done, at, log
 
@@ -188,6 +189,64 @@ class Pages(unittest.TestCase):
         self.assertEqual(self.log, [('stock', 2), ('stock', 2)])
         self.assertEqual(lc.take_cow_row()['host_fast'], 0)
 
+    def filtered(self, views, tables, pairs, **runner):
+        self.runner._qsa_host_views = views
+        self.runner.__dict__.update(runner)
+        lc.select_cow_host_filter(True)
+        self.addCleanup(lc.select_cow_host_filter, False)
+        self.request._apply_allocated_pages(types.SimpleNamespace(new_block_ids_to_zero=(), cow_pairs=pairs, block_tables=tables))
+        return lc.take_cow_row()
+
+    def view(self):
+        return torch.arange(NUM_BLOCKS * 2, dtype=torch.int32).view(NUM_BLOCKS, 2).clone()
+
+    def test_filter_on_a_target_outside_the_qsa_groups_copies_no_host_page(self):
+        lc.COW_HOST_FILTER.update(kept=0, skipped=0, unfiltered=0)
+        views = [self.view()]
+        before = views[0].clone()
+        row = self.filtered(views, ((7,), (2,)), ((1, 2),), _qsa_host_groups=[0])
+        self.assertEqual(views[0].tolist(), before.tolist())
+        self.assertEqual(self.log, [('stock', 1)], 'the device pass still ran')
+        self.assertEqual((row['host_pairs'], row['pages']['pairs'], row['pages']['host_pairs']), (0, [(1, 2)], []))
+        self.assertEqual((lc.COW_HOST_FILTER['kept'], lc.COW_HOST_FILTER['skipped']), (0, 1))
+
+    def test_filter_on_a_consumer_hit_in_a_qsa_group_is_still_copied(self):
+        lc.COW_HOST_FILTER.update(kept=0, skipped=0, unfiltered=0)
+        views = [self.view()]
+        want = views[0].clone()
+        want[2] = want[1]
+        row = self.filtered(views, ((2, 3), (6,)), ((1, 2), (4, 6)), _qsa_host_groups=[0])
+        self.assertEqual(views[0].tolist(), want.tolist(), 'pair (4, 6) is not in the QSA group')
+        self.assertEqual(row['pages']['host_pairs'], [(1, 2)])
+        self.assertEqual((lc.COW_HOST_FILTER['kept'], lc.COW_HOST_FILTER['skipped']), (1, 1))
+
+    def test_filter_with_the_groups_unknown_copies_everything_and_counts_it(self):
+        lc.COW_HOST_FILTER.update(kept=0, skipped=0, unfiltered=0)
+        views = [self.view()]
+        want = views[0].clone()
+        want[2] = want[1]
+        self.filtered(views, ((7,), (2,)), ((1, 2),))
+        self.assertEqual(views[0].tolist(), want.tolist())
+        self.assertEqual(lc.COW_HOST_FILTER['unfiltered'], 1)
+
+    def test_filter_and_fast_together_copy_the_kept_pair_fast(self):
+        views = [self.view()]
+        want = views[0].clone()
+        want[2] = want[1]
+        lc.select_cow_fast(True)
+        row = self.filtered(views, ((2,), (6,)), ((1, 2), (4, 6)), _qsa_host_groups=[0])
+        self.assertEqual(views[0].tolist(), want.tolist())
+        self.assertEqual((row['fast'], row['host_fast'], row['host_pairs'], row['host_bytes']), (1, 1, 1, 8))
+
+    def test_filter_off_copies_every_pair_as_before(self):
+        views = [self.view()]
+        want = views[0].clone()
+        want[2] = want[1]
+        self.runner._qsa_host_views = views
+        self.runner._qsa_host_groups = [0]
+        self.request._apply_allocated_pages(types.SimpleNamespace(new_block_ids_to_zero=(), cow_pairs=((1, 2),), block_tables=((7,),)))
+        self.assertEqual(views[0].tolist(), want.tolist())
+
     def test_a_chunk_with_no_pages_has_no_row_and_no_mark(self):
         self.ports.cow_mark = None
         self.request._apply_allocated_pages(self.admission())
@@ -275,6 +334,15 @@ class Residency(unittest.TestCase):
         pointers |= {hex(t.data_ptr()) for t in self.hosts + self.slots + [self.other]}
         self.assertFalse([p for p in pointers if p in lines[0]])
         self.assertLess(max(int(v) for v in re.findall(r'=(\d+)', lines[0])), 2 ** 32)
+
+    def test_the_read_follows_the_filter(self):
+        # A skipped pair is neither classified on the host pass nor byte-checked: its target's page is nobody's.
+        for host in self.hosts:
+            host[2] = host[1] + 1
+        row = lc.cow_row_pages(dict(pages=dict(runner=self.runner, views=self.views, pairs=[(1, 2)], host_pairs=[])), PAGE_TOKENS + 5)
+        self.assertEqual((row['verify_pairs'], row['verify_unequal']), (0, 0))
+        self.assertFalse([k for k in row if k.startswith('h_')])
+        self.assertTrue([k for k in row if k.startswith('k_')])
 
     def test_a_failed_read_is_one_count_and_the_row_stays(self):
         row = lc.cow_row_pages(dict(pairs=1, pages=dict(runner=object(), views=None, pairs=[(1, 2)])), 5)

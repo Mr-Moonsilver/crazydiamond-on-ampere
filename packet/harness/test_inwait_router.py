@@ -29,7 +29,7 @@ import probe_control
 HERE = Path(__file__).resolve().parent
 SETTINGS = HERE / 'runs' / 'q18a_inwait_settings.sh'
 RUN = 'inwait-router'
-SAMPLE = dict(mode='burst', fused=True, size=2, local=True, overlap=True, defer_bind=True, lazy_recv=True, decode_merge='chunk', inwait=True, early_successor=True)
+SAMPLE = dict(mode='burst', fused=True, size=2, local=True, overlap=True, defer_bind=True, lazy_recv=True, decode_merge='chunk', inwait=True, early_successor=True, exact_successor=False)
 
 
 def settings_env():
@@ -161,7 +161,7 @@ class BoxCalls(Base):
             client.resume()
             args = types.SimpleNamespace(url=self.bridge.url, run_id=RUN, epoch=client.epoch, control_timeout_s=60)
             return record, None, status, am.end_read(args)
-        for sel in ('ps1', 'cf', 'cap', 'ps1'):
+        for sel in ('cf', 'both', 'hf', 'se', 'cf'):
             row = rows[sel]
             with self.subTest(sel=sel):
                 record, exc, status, end = await self.off_loop(lambda row=row: one(row))
@@ -175,7 +175,8 @@ class BoxCalls(Base):
                 self.assertEqual({r['after']['slots_fast']['selected'] for r in record['slots_fast']['select'].values()}, {row['next_levers']})
                 self.assertEqual({r['counters']['slots_fast']['selected'] for r in end['read'].values()}, {row['next_levers']})
                 self.assertEqual(box.slots_calls(record['slots_fast']['select'], end['read']), dict.fromkeys(('0', '1', '2', '3'), 0))
-                for name in ('prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap'):
+                self.assertEqual((record['inwait']['exact_acknowledged'], self.driver.exact_successor), (row['exact_successor'], row['exact_successor']))
+                for name in ('prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap', 'cow_host_filter'):
                     self.assertEqual({r['after'][name]['selected'] for r in record[name]['select'].values()}, {row[name]}, name)
                     self.assertEqual({r['counters'][name]['selected'] for r in end['read'].values()}, {row[name]}, name)
                 view = box.stage_view(status)
