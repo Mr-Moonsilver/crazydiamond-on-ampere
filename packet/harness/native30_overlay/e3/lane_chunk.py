@@ -50,6 +50,47 @@ def select_slots_fast(on):
     return dict(SLOTS_FAST)
 
 
+# inwait build-3 (DESIGN-3): per rank, selected the same way. PREPARE's host work in slices, so a stock RPC waiting in the
+# rank's ring runs between them, and one cached score block so the indexer's growing buffers stop stacking up in the cache.
+PREPARE_SLICES = dict(selected=False, sliced=0, yields=0, peek_missing=0)
+SCORE_WARM = dict(selected=False, bytes=0, allocs=0, flushes=0, rewarms=0, errors=0, retries_seen=None)
+SCORE_WARM_SLACK_BYTES = 16 * 1024 * 1024
+SCORE_WARM_STEP_BYTES = 32 * 1024 * 1024
+SCORE_ROWS = 1024
+SCORE_COMPRESS = 4
+
+
+def select_prepare_slices(on):
+    if type(on) is not bool:
+        raise LaneChunkError('prepare-slices-not-bool')
+    PREPARE_SLICES['selected'] = on
+    return dict(PREPARE_SLICES)
+
+
+def _flush_allocator():
+    import torch
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
+
+def select_score_warm(on):
+    """Off to on, while paused idle: flush the cache, so the arm starts without an earlier arm's dead blocks."""
+    if type(on) is not bool:
+        raise LaneChunkError('score-warm-not-bool')
+    if on and not SCORE_WARM['selected']:
+        _flush_allocator()
+        SCORE_WARM.update(flushes=SCORE_WARM['flushes'] + 1, bytes=0, retries_seen=None)
+    SCORE_WARM['selected'] = on
+    return dict(SCORE_WARM)
+
+
+def score_warm_bytes(prompt_end):
+    """One score buffer for this prompt (rows x width x 4, as qsa_operation.indexer_score_shape), plus slack, on a 32 MiB step."""
+    width = -(-(-(-prompt_end // SCORE_COMPRESS)) // 64) * 64
+    need = SCORE_ROWS * max(64, width) * 4 + SCORE_WARM_SLACK_BYTES
+    return -(-need // SCORE_WARM_STEP_BYTES) * SCORE_WARM_STEP_BYTES
+
+
 MAX_NATIVE_BUILDER_BYTES = 256 * 1024 * 1024
 _SHARED_CONFIG_FIELDS = {
     'kv_cache_spec', 'vllm_config', 'device', 'backend',
@@ -697,12 +738,17 @@ class LaneChunk:
         self.batch = batch
         return batch
 
-    def build_metadata(self):
-        """Align pre-copy, aligned indices, then the per-layer attention metadata."""
+    def build_metadata(self, precopy=True):
+        """Align pre-copy, aligned indices, then the per-layer attention metadata.
+
+        ``precopy=False``, build-3's slices: everything here but the pre-copy reads only this chunk and the lane's private
+        tables and builders, and the pre-copy writes neither, so the caller runs it afterwards, in PREPARE's last slice.
+        """
         runner = self.runner
         ports = self.ports
         torch = self.torch
-        self.align.precopy(self)
+        if precopy:
+            self.align.precopy(self)
         is_prefilling = torch.ones((1,), dtype=torch.bool)
         mamba = ports.MambaHybridAttnMetadata(is_prefilling=is_prefilling, num_accepted_tokens=None,
                                               num_decode_draft_tokens_cpu=None)
@@ -788,6 +834,65 @@ class LaneChunkFactory:
         chunk.build_metadata()
         self.chunks += 1
         return chunk
+
+    def can_slice(self, admission):
+        """A later chunk of the registered request: its row index is known, and nothing shared moves before the last slice."""
+        return (type(admission) is ChunkAdmission and self.request.req_id is not None
+                and self.request.req_id == admission.request_uid
+                and self.request.generation == admission.request_generation
+                and self._active_metadata_chunk is None)
+
+    def admit_steps(self, admission):
+        """``admit`` in three slices, for a later chunk (``can_slice``); each ``next`` is one slice, the last returns the chunk.
+
+        The first two touch only this chunk and the lane's private tables and builders, so a stop between slices leaves
+        nothing to undo. All the rest is the last slice: the request row, new pages, the metadata gate, the align pre-copy.
+        """
+        chunk = LaneChunk(self.runner, self.ports, self.tables, self.align, admission, self.request.req_index,
+                          torch_module=self.torch, attn_groups=self.native_attn_groups)
+        chunk.input_batch()
+        yield
+        chunk.build_metadata(precopy=False)
+        yield
+        if self._active_metadata_chunk is not None:
+            raise LaneChunkError('native metadata generation still has live consumers')
+        if self.request.update(admission) != chunk.req_index:
+            raise LaneChunkError('the request row moved between PREPARE slices')
+        self._active_metadata_chunk = chunk
+        self._metadata_generation += 1
+        chunk.native_metadata_generation = self._metadata_generation
+        self.align.precopy(chunk)
+        self.chunks += 1
+        return chunk
+
+    def warm_scores(self, admission):
+        """One cached block on the prefill stream (the caller's scope) big enough for this prompt's score buffers.
+
+        From the second chunk on, so the first chunk's working set does not split it. A failure is counted, never raised:
+        without the block the allocator behaves as it does today.
+        """
+        if not SCORE_WARM['selected'] or admission.chunk_start == 0:
+            return False
+        torch = self.torch
+        try:
+            device = self.runner.device
+            retries = torch.cuda.memory_stats(device).get('num_alloc_retries', 0)
+            if SCORE_WARM['retries_seen'] != retries:
+                # A retry emptied the cache, this block with it.
+                SCORE_WARM['rewarms'] += int(SCORE_WARM['retries_seen'] is not None)
+                SCORE_WARM['bytes'] = 0
+            need = score_warm_bytes(admission.prompt_end)
+            if need > SCORE_WARM['bytes']:
+                block = torch.empty((need,), dtype=torch.uint8, device=device)
+                del block
+                SCORE_WARM['bytes'] = need
+                SCORE_WARM['allocs'] += 1
+                retries = torch.cuda.memory_stats(device).get('num_alloc_retries', 0)
+            SCORE_WARM['retries_seen'] = retries
+            return True
+        except Exception:
+            SCORE_WARM['errors'] += 1
+            return False
 
     def complete_chunk(self, chunk, *, consumers_complete):
         """Release the single-generation reuse gate after dispatcher drain.

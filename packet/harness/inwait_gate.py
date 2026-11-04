@@ -1,4 +1,4 @@
-"""q18a-inwait box queue: compose2_gate's formulas with this table (inwait_arms: 6 core arms, no tail, one decode-only baseline run first). One phase budget for the watchdog and the draft, relative to the run's own start only.
+"""q18a-inwait box queue: compose2_gate's formulas with this table (inwait_arms: 9 core arms, no tail, one decode-only baseline run first). One phase budget for the watchdog and the draft, relative to the run's own start only.
 
 EXPECTED_RUNTIME_S is descriptive, from c1's walls; the on arm is set equal to the off arm. ``slower`` is the same walk at 1.5x every wall.
 """
@@ -24,7 +24,7 @@ PHASES.update({
     'read': GRADE_CAP_S,
 })
 WORST_CASE_SUM_S = sum(PHASES.values())
-BOX_BUDGET_S = 7500
+BOX_BUDGET_S = 8700
 ACTIVE_S = BOX_BUDGET_S - CLEANUP_S
 ACTIVE_AND_CLEANUP = ACTIVE_S + CLEANUP_S
 ARM_RESERVE_S = FULL_IDLE_CAP_S + ARM_TIMEOUT_S + ARM_KILL_AFTER_S + INGRESS_CAP_S

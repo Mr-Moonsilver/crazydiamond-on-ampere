@@ -35,8 +35,9 @@ ACTIONS = (('pause', ()), ('native_progress', ('mode',)), ('native_qsa_fused', (
            ('native_stage_local', ('local', 'overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor')), ('qualification_worker', ('worker_action', 'payload')),
            ('release_auto_arm', ()), ('resume', ()), ('status', ()))
 AXIS = ("alpha-next's C0 on/off names and c1's C1-on/off names in this record (over_c0_off, c0_decode_delta, vs_c1_off, memory_c0_on_vs_off, min_free_below_c0_off_mib, C1-on/C1-off table headings) name "
-        'nx1 (in-wait on, next levers on) against its matched nx0 (in-wait on, next levers off); every arm is C1 defer, C0 local, attn-meta and L1 + L2 selected')
-OBSERVE_ROLE = {'nx0': 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on)', 'nx1': 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on, early successor, fast slot mappings)'}
+        'ps1 (PREPARE in slices) against its matched ps0 (PREPARE whole), and pw (slices and the warm score block) against ps0 too; every arm is C1 defer, C0 local, attn-meta, L1 + L2, in-wait, early successor and fast slot mappings')
+_ROLE = 'measurement (C1 defer, attn-meta and L1 + L2, in-wait on, early successor, fast slot mappings'
+OBSERVE_ROLE = {'ps0': _ROLE + ')', 'ps1': _ROLE + ', PREPARE in slices)', 'pw': _ROLE + ', PREPARE in slices, warm score block)'}
 NOT_COVERED = ('numerics: this queue runs no fixed-schedule check; these arms are speed reads, batch 8 against 2 x 4 changes batch composition so OUTSIDE on merged arms is expected and is not a defect, '
                'and the fixed-schedule check owed for C1 defer stays owed')
 BASIS = ('one engine, FLASH_ATTN_META_GDN_BATCH=1 FLASH_S5_LAZY_RECV=1 FLASH_S5_DECODE_MERGE=1 FLASH_S5_INWAIT=1 for the whole run, every prefill arm C1 defer with fused, group size 2, attn-meta and L1 + L2 '
@@ -47,13 +48,13 @@ IW_COUNTERS = ('direct_opens', 'direct_releases', 'polls_paced', 'refused_releas
 
 
 def table_view(sel=None):
-    """This table as alpha-next's code reads alpha_next_arms: the candidate axis is nx1 against nx0 (c0 'off' = nx0; c0 'on' = nx1). For one arm the label and selection
+    """This table as alpha-next's code reads alpha_next_arms: the candidate axis is ps1 against ps0 (c0 'off' = ps0; c0 'on' = ps1). For one arm the label and selection
     carry ``sel`` whatever value alpha-next passes; the record keeps c0 'on'."""
     names = {k: getattr(T, k) for k in c1._TABLE_NAMES}
-    sel_of = dict({s: s for s in T.SELECTIONS}, off='nx0', on='nx1')
+    sel_of = dict({s: s for s in T.SELECTIONS}, off='ps0', on='ps1')
 
     def axis(value):
-        return 'off' if value == 'nx0' else 'on'
+        return 'off' if value == 'ps0' else 'on'
 
     def arms(part=None):
         return [dict(r, c0=axis(r['c1'])) for r in T.arms(part)]
@@ -77,19 +78,25 @@ def sb_bindings():
 
 # --- the arm --------------------------------------------------------------------------------------------
 
-def slots_into(client, attn, on, record):
-    """Inside the arm's pause: attn_meta_select with slots_fast, every rank proved as asked; attn-meta's own select follows and keeps it."""
-    rows = am.Worker(client.control, client.run_id, client.epoch).call(am.SELECT, {'on': attn, 'slots_fast': on})
-    record['slots_fast'] = dict(requested=on, select=am._keyed(rows))
-    if any(((r.get('after') or {}).get('slots_fast') or {}).get('selected') is not on for r in rows.values()):
-        raise ValueError('slots-fast-selection-unproved')
+RANK_LEVERS = ('slots_fast', 'prepare_slices', 'score_warm')
+
+
+def levers_into(client, attn, wanted, record):
+    """Inside the arm's pause: attn_meta_select with the rank levers, every rank proved as asked; attn-meta's own select follows and keeps them."""
+    rows = am.Worker(client.control, client.run_id, client.epoch).call(am.SELECT, dict(wanted, on=attn))
+    selected = am._keyed(rows)
+    for name in RANK_LEVERS:
+        record[name] = dict(requested=wanted[name], select=selected)
+        if any(((r.get('after') or {}).get(name) or {}).get('selected') is not wanted[name] for r in rows.values()):
+            raise ValueError(name.replace('_', '-') + '-selection-unproved')
 
 
 class _InwaitSelecting:
     """The arm's client with ``inwait`` on the stage command; the reply's value goes to the record, and the grade reads it."""
 
-    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None):
+    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False):
         self._client, self._inwait, self._record, self._next, self._attn = client, inwait, record, next_levers, attn
+        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm)
         self._raw, self._slots_sent = client if raw is None else raw, False
 
     def __getattr__(self, name):
@@ -97,9 +104,9 @@ class _InwaitSelecting:
 
     def call(self, action, **fields):
         if action == 'release_auto_arm' and not self._slots_sent:
-            # Build-2: the rank's fast slot mappings, inside the arm's pause, before attn-meta's own select.
+            # The rank levers, inside the arm's pause, before attn-meta's own select.
             self._slots_sent = True
-            slots_into(self._raw, self._attn, self._next, self._record)
+            levers_into(self._raw, self._attn, self._wanted, self._record)
         if action != STAGE_CONTROL:
             return self._client.call(action, **fields)
         reply = self._client.call(action, **dict(fields, inwait=self._inwait, early_successor=self._next))
@@ -116,7 +123,7 @@ def release_compose(row):
         run_inner = inner(size, local)
 
         def run(client, record, mode):
-            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client), record, mode)
+            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm']), record, mode)
             if (record.get('attn_meta') or {}).get('select') is None:
                 raise ValueError('attn-meta-select-not-sent')
             if record.get('inwait') is None:
@@ -189,16 +196,29 @@ def append_rule(record):
     return True
 
 
-def slots_calls(select, end):
-    """Per rank: fast slot mapping calls in the arm, end read minus select; None when either is missing."""
+def lever_delta(select, end, name, field):
+    """Per rank: one rank lever's counter in the arm, end read minus select; None when either is missing."""
     if not select or not end:
         return None
     out = {}
     for rank in sorted(set(select) | set(end)):
-        a = (((select.get(rank) or {}).get('after') or {}).get('slots_fast') or {}).get('calls')
-        b = (((end.get(rank) or {}).get('counters') or {}).get('slots_fast') or {}).get('calls')
+        a = (((select.get(rank) or {}).get('after') or {}).get(name) or {}).get(field)
+        b = (((end.get(rank) or {}).get('counters') or {}).get(name) or {}).get(field)
         out[rank] = b - a if type(a) is int and type(b) is int else None
     return out
+
+
+def slots_calls(select, end):
+    """Per rank: fast slot mapping calls in the arm, end read minus select; None when either is missing."""
+    return lever_delta(select, end, 'slots_fast', 'calls')
+
+
+def rank_lever_counters(record, row, end):
+    """The build-3 levers' counters on the arm record, per rank; the grade and the read use them."""
+    for name, wanted, fields in (('prepare_slices', row['prepare_slices'], ('sliced', 'yields', 'peek_missing')),
+                                 ('score_warm', row['score_warm'], ('allocs', 'flushes', 'rewarms', 'errors'))):
+        block = record.setdefault(name, dict(requested=wanted, select=None))
+        block['counters'] = {field: lever_delta(block.get('select'), end, name, field) for field in fields}
 
 
 def run_arm(a):
@@ -219,8 +239,9 @@ def run_arm(a):
         block['end'] = am.end_read(a)
         block['deltas'] = am.deltas(block.get('select'), (block['end'] or {}).get('read'))
         record.setdefault('slots_fast', dict(requested=row['next_levers'], select=None))['calls'] = slots_calls((record.get('slots_fast') or {}).get('select'), (block['end'] or {}).get('read'))
+        rank_lever_counters(record, row, (block['end'] or {}).get('read'))
         block['table'] = row['attn']
-        record.update(inwait_schema=ARM_SCHEMA, inner_record=Path(inner).name, levers=dict(attn=row['attn'], lazy_recv=row['lazy_recv'], decode_merge=row['decode_merge'], inwait=row['inwait'], next_levers=row['next_levers']))
+        record.update(inwait_schema=ARM_SCHEMA, inner_record=Path(inner).name, levers=dict(attn=row['attn'], lazy_recv=row['lazy_recv'], decode_merge=row['decode_merge'], inwait=row['inwait'], next_levers=row['next_levers'], prepare_slices=row['prepare_slices'], score_warm=row['score_warm']))
     with open(a.out, 'x') as handle:
         json.dump(record, handle, sort_keys=True)
     print('INWAIT_ARM_RECORD %s %s' % (name, 'COMPLETE' if record.get('complete') is True else 'INCOMPLETE'))
@@ -287,6 +308,23 @@ def inwait_check(arms, want):
             missing.add(row['label'] + ':slots-fast-selected-not-engaged')
         elif not row['next_levers'] and any(calls.values()):
             failures.add(row['label'] + ':slots-fast-off-moved-its-counter')
+        slices, warm = (rec.get('prepare_slices') or {}).get('counters') or {}, (rec.get('score_warm') or {}).get('counters') or {}
+        sliced, yields = slices.get('sliced'), slices.get('yields')
+        facts[row['label']].update(prepare_slices=row['prepare_slices'], sliced=sliced, yields=yields, peek_missing=slices.get('peek_missing'),
+                                   score_warm=row['score_warm'], warm=warm)
+        if type(sliced) is not dict or any(type(v) is not int for v in sliced.values()):
+            missing.add(row['label'] + ':prepare-slices-counters-absent')
+        elif row['prepare_slices'] and not all(sliced.values()):
+            missing.add(row['label'] + ':prepare-slices-selected-not-engaged')
+        elif not row['prepare_slices'] and (any(sliced.values()) or any((yields or {}).values())):
+            failures.add(row['label'] + ':prepare-slices-off-moved-its-counter')
+        allocs, errors = warm.get('allocs'), warm.get('errors')
+        if type(allocs) is not dict or any(type(v) is not int for v in allocs.values()):
+            missing.add(row['label'] + ':score-warm-counters-absent')
+        elif not row['score_warm'] and any(allocs.values()):
+            failures.add(row['label'] + ':score-warm-off-moved-its-counter')
+        elif any((errors or {}).values()):
+            missing.add(row['label'] + ':score-warm-errors')
         if row['next_levers'] and row['cohort'] == 'live' and type(early) is int and not early:
             missing.add(row['label'] + ':early-successor-selected-not-engaged')
         if type(applied) is not int or any(type(x) is not int for x in direct):
@@ -364,9 +402,11 @@ def compose_read(result, decode_records, attn):
 
     def cell_of(sel, cohort):
         return medians.get('%s band 1 %s' % (sel, cohort)) or {}
-    pair = dict(live_on_over_off=_ratio(cell_of('nx1', 'live').get('prefill_tok_s'), cell_of('nx0', 'live').get('prefill_tok_s')),
-                solo_on_over_off=_ratio(cell_of('nx1', 'solo').get('prefill_tok_s'), cell_of('nx0', 'solo').get('prefill_tok_s')),
-                decode_vs_fixed_on=cell_of('nx1', 'live').get('decode_vs_fixed_reference'), decode_vs_fixed_off=cell_of('nx0', 'live').get('decode_vs_fixed_reference'))
+    pair = dict(live_on_over_off=_ratio(cell_of('ps1', 'live').get('prefill_tok_s'), cell_of('ps0', 'live').get('prefill_tok_s')),
+                solo_on_over_off=_ratio(cell_of('ps1', 'solo').get('prefill_tok_s'), cell_of('ps0', 'solo').get('prefill_tok_s')),
+                decode_vs_fixed_on=cell_of('ps1', 'live').get('decode_vs_fixed_reference'), decode_vs_fixed_off=cell_of('ps0', 'live').get('decode_vs_fixed_reference'),
+                live_warm_over_slices=_ratio(cell_of('pw', 'live').get('prefill_tok_s'), cell_of('ps1', 'live').get('prefill_tok_s')),
+                decode_vs_fixed_warm=cell_of('pw', 'live').get('decode_vs_fixed_reference'))
     return dict(is_gate=False, reference_arm=T.REFERENCE_ARM, fixed_reference_tok_s=reference, decode_only={k: v for k, v in rate.items()}, arms=arms, cells=medians, pair=pair)
 
 
@@ -442,7 +482,7 @@ def main(argv=None):
     r.add_argument('--model', required=True)
     r.add_argument('--run-id', required=True)
     r.add_argument('--epoch', type=int, required=True)
-    r.add_argument('--c1', choices=T.SELECTIONS, required=True, help="this arm's selection: nx0 or nx1; C1 defer, attn-meta and L1 + L2 in every arm")
+    r.add_argument('--c1', choices=T.SELECTIONS, required=True, help="this arm's selection: ps0 or ps1; C1 defer, attn-meta and L1 + L2 in every arm")
     r.add_argument('--size', type=int, choices=T.SIZES, required=True)
     r.add_argument('--cohort', choices=progress.COHORTS, required=True)
     r.add_argument('--index', type=int, choices=T.INDEXES, required=True)

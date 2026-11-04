@@ -64,5 +64,38 @@ class Switch(unittest.TestCase):
                 lc.select_slots_fast(bad)
 
 
+class ScoreBlock(unittest.TestCase):
+    def test_the_warm_size_covers_the_indexer_buffer(self):
+        import qsa_operation as qo
+        for prompt in (1024, 65444, 131328, 262144):
+            peak = qo.indexer_score_shape(1024, prompt, lc.SCORE_COMPRESS, 1 << 20, 1 << 10, 512)[3]
+            self.assertGreaterEqual(lc.score_warm_bytes(prompt), peak + lc.SCORE_WARM_SLACK_BYTES, prompt)
+            self.assertLess(lc.score_warm_bytes(prompt), peak + lc.SCORE_WARM_SLACK_BYTES + lc.SCORE_WARM_STEP_BYTES, prompt)
+
+
+class RealRing(unittest.TestCase):
+    def test_the_peek_on_the_pinned_message_queue(self):
+        """Non-destructive: empty, written, still there after the peek, read, empty."""
+        import threading
+        import lane_dispatch as dp
+        from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
+        writer = MessageQueue(n_reader=1, n_local_reader=1, max_chunk_bytes=1 << 16, max_chunks=8)
+        reader = MessageQueue.create_from_handle(writer.export_handle(), 0)
+        thread = threading.Thread(target=reader.wait_until_ready, daemon=True)
+        thread.start()
+        writer.wait_until_ready()
+        thread.join(30)
+        self.assertFalse(dp.ring_message_waiting(reader))
+        writer.enqueue(('e', 1))
+        self.assertTrue(dp.ring_message_waiting(reader))
+        self.assertTrue(dp.ring_message_waiting(reader))
+        self.assertEqual(reader.dequeue(timeout=5), ('e', 1))
+        self.assertFalse(dp.ring_message_waiting(reader))
+        writer.enqueue(('s', 2))
+        writer.enqueue(('e', 3))
+        self.assertEqual(reader.dequeue(timeout=5), ('s', 2))
+        self.assertTrue(dp.ring_message_waiting(reader))
+
+
 if __name__ == '__main__':
     unittest.main()

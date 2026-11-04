@@ -43,10 +43,12 @@ never bypasses these checks.  A handler or event-recording failure after a
 partial enqueue quarantines the dispatcher: further submits are refused,
 ``drain`` is always false and ``release`` refuses.
 """
+import sys
 import time
 from copy import deepcopy
 from contextlib import ExitStack, nullcontext
 
+import lane_chunk
 from e3_types import E3ContractError, E3Pending, TransactionId
 from lane_comm import CollectiveLedger, LaneCommError
 
@@ -57,6 +59,29 @@ _UNSET = object()
 
 class LaneDispatchError(E3ContractError):
     pass
+
+
+_RING = {}
+
+
+def _worker_ring():
+    """This worker's stock RPC ring, from the frame that is running this command; None outside a worker RPC."""
+    if 'mq' not in _RING:
+        frame = sys._getframe(1)
+        while frame is not None:
+            if frame.f_code.co_name == '_execute_worker_rpc':
+                mq = getattr(frame.f_locals.get('self'), 'rpc_broadcast_mq', None)
+                if mq is not None:
+                    _RING['mq'] = mq
+                break
+            frame = frame.f_back
+    return _RING.get('mq')
+
+
+def ring_message_waiting(mq):
+    """Read-only peek, the same check as MessageQueue.acquire_read: the next block is written and unread by this reader."""
+    with mq.buffer.get_metadata(mq.current_idx) as metadata:
+        return bool(metadata[0]) and not metadata[mq.local_reader_rank + 1]
 
 
 class SegmentCommand:
@@ -222,6 +247,7 @@ class LaneDispatcher:
         self.quarantined = None
         self._partial = False
         self._cancel_owners = ()
+        self._slices = None
 
     # -- scopes -------------------------------------------------------------
     def _scope(self):
@@ -393,8 +419,7 @@ class LaneDispatcher:
             if binding is None or binding.descriptor != command.source:
                 raise LaneDispatchError(
                     'prepare source lease was not bound for this command')
-        self._partial = True
-        chunk = self.factory.admit(self.admission)
+        chunk = self._admit_chunk(command)
         self.chunk = chunk
         driver = None
         if self.driver_factory is not None:
@@ -419,6 +444,56 @@ class LaneDispatcher:
             return {'prepared': True, 'req_index': chunk.req_index,
                     'dense_profiles': self.fused_profiles}
         return {'prepared': True, 'req_index': chunk.req_index}
+
+    def ring_waiting(self):
+        """A message waits in this rank's ring; with no ring to read, say yes: the cost is one resend."""
+        try:
+            mq = _worker_ring()
+            if mq is not None:
+                return ring_message_waiting(mq)
+        except Exception:
+            pass
+        lane_chunk.PREPARE_SLICES['peek_missing'] += 1
+        return True
+
+    def prepare_resuming(self, command):
+        """True when this PREPARE continues its own slices: same op_seq, same command."""
+        state = self._slices
+        return state is not None and state['identity'] == command.identity()
+
+    def _admit_chunk(self, command):
+        """``factory.admit``, or build-3's slices: E3Pending at a boundary when a message waits in this rank's ring.
+
+        Pending consumes no op_seq and the engine resends the same command. Before the last slice ``_partial`` stays False,
+        because only private state has moved; a stop in between cancels as it would before PREPARE.
+        """
+        factory = self.factory
+        state = self._slices
+        if state is None:
+            warm = getattr(factory, 'warm_scores', None)
+            if warm is not None:
+                warm(self.admission)
+            can_slice = getattr(factory, 'can_slice', None)
+            if not lane_chunk.PREPARE_SLICES['selected'] or can_slice is None or not can_slice(self.admission):
+                self._partial = True
+                return factory.admit(self.admission)
+            lane_chunk.PREPARE_SLICES['sliced'] += 1
+            state = self._slices = dict(identity=command.identity(), steps=factory.admit_steps(self.admission), left=2)
+        elif state['identity'] != command.identity():
+            raise LaneDispatchError('prepare slices continue only their own command')
+        while state['left']:
+            next(state['steps'])
+            state['left'] -= 1
+            if self.ring_waiting():
+                lane_chunk.PREPARE_SLICES['yields'] += 1
+                raise E3Pending('prepare slice: a message waits in the ring')
+        self._partial = True
+        self._slices = None
+        try:
+            next(state['steps'])
+        except StopIteration as done:
+            return done.value
+        raise LaneDispatchError('prepare slices did not finish in three steps')
 
     def _do_pp_receive(self, command):
         channel = self.native.comms.pp
@@ -636,7 +711,7 @@ class LaneDispatcher:
         self._cancel_owners = (self.chunk,
             tuple(getattr(self.lane, name, None) for name in
                   ('hidden_states', 'block_output', 'injection', 'output')),
-            dict(getattr(self.driver, 'phases', {})))
+            dict(getattr(self.driver, 'phases', {})), self._slices)
         self.operation.cancel(reason)
         if self.lane is not None:
             self.lane.abort(reason)

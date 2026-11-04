@@ -350,6 +350,11 @@ class NativeWorkerBridge:
         return state
 
     # -- scheduler source lease -------------------------------------------
+    def _prepare_resuming(self, command):
+        """Build-3: a resend of a PREPARE in slices; its lease was proved and bound on the first send."""
+        resuming = getattr(self.dispatcher, 'prepare_resuming', None)
+        return callable(resuming) and resuming(command) is True
+
     def _bind_prepare_source(self, command):
         """Prove and bind the engine's actual lease before any submission.
 
@@ -514,7 +519,7 @@ class NativeWorkerBridge:
             return SegmentAcceptance(
                 command.transaction, self.rank, command.kind, command.stage,
                 command.op_seq, skipped=True, cursor=cursor, report=self._sent(report))
-        if command.kind is SegmentKind.PREPARE:
+        if command.kind is SegmentKind.PREPARE and not self._prepare_resuming(command):
             self._bind_prepare_source(command)
         if command.profile is not None:
             if command.profile.fused:

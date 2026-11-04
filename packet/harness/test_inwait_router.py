@@ -23,6 +23,7 @@ import e3_attn_meta_box as am
 import e3_inwait_box as box
 import e3_native_runtime_client as rc
 import native_qualification_frontend as nqf
+import lane_chunk as lc
 import probe_control
 
 HERE = Path(__file__).resolve().parent
@@ -69,6 +70,12 @@ class Bridge:
 
 class Base(dctl.RouterBase):
     async def asyncSetUp(self):
+        # The flush is torch's; this smoke is the router and the fields. The levers are module state, so each test puts them back.
+        patcher = mock.patch.object(lc, '_flush_allocator')
+        self.flush = patcher.start()
+        self.addCleanup(patcher.stop)
+        saved = dict(lc.PREPARE_SLICES), dict(lc.SCORE_WARM)
+        self.addCleanup(lambda: (lc.PREPARE_SLICES.update(saved[0]), lc.SCORE_WARM.update(saved[1])))
         self.env_box = settings_env()
         patch = mock.patch.dict(os.environ, dict(self.env_box, VLLM_API_KEY=held.KEY))
         patch.start()
@@ -117,6 +124,8 @@ class Exposure(Base):
                     if action == 'qualification_worker':
                         out[am.SELECT] = worker.call(am.SELECT, {'on': True})
                         out['slots_fast'] = worker.call(am.SELECT, {'on': True, 'slots_fast': False})
+                        out['rank_levers'] = worker.call(am.SELECT, {'on': True, 'slots_fast': True, 'prepare_slices': True, 'score_warm': True})
+                        out['rank_levers_off'] = worker.call(am.SELECT, {'on': True, 'slots_fast': False, 'prepare_slices': False, 'score_warm': False})
                         out[am.READ] = worker.call(am.READ, {})
                     else:
                         out[action] = client.call(action, **{name: SAMPLE[name] for name in fields})
@@ -125,7 +134,10 @@ class Exposure(Base):
             return out
         out = await self.off_loop(smoke)
         self.assertEqual({k: v for k, v in out.items() if type(v) is str}, {})
-        self.assertEqual(set(out), {a for a, _f in box.ACTIONS} - {'qualification_worker'} | {am.SELECT, am.READ, 'slots_fast'})
+        self.assertEqual(set(out), {a for a, _f in box.ACTIONS} - {'qualification_worker'} | {am.SELECT, am.READ, 'slots_fast', 'rank_levers', 'rank_levers_off'})
+        for name in ('prepare_slices', 'score_warm'):
+            self.assertEqual({r['after'][name]['selected'] for r in out['rank_levers'].values()}, {True}, name)
+            self.assertEqual({r['after'][name]['selected'] for r in out['rank_levers_off'].values()}, {False}, name)
 
 
 class BoxCalls(Base):
@@ -146,7 +158,7 @@ class BoxCalls(Base):
             client.resume()
             args = types.SimpleNamespace(url=self.bridge.url, run_id=RUN, epoch=client.epoch, control_timeout_s=60)
             return record, None, status, am.end_read(args)
-        for sel in ('nx1', 'nx0', 'nx1'):
+        for sel in ('ps1', 'ps0', 'ps1'):
             row = rows[sel]
             with self.subTest(sel=sel):
                 record, exc, status, end = await self.off_loop(lambda row=row: one(row))
@@ -160,6 +172,9 @@ class BoxCalls(Base):
                 self.assertEqual({r['after']['slots_fast']['selected'] for r in record['slots_fast']['select'].values()}, {row['next_levers']})
                 self.assertEqual({r['counters']['slots_fast']['selected'] for r in end['read'].values()}, {row['next_levers']})
                 self.assertEqual(box.slots_calls(record['slots_fast']['select'], end['read']), dict.fromkeys(('0', '1', '2', '3'), 0))
+                for name in ('prepare_slices', 'score_warm'):
+                    self.assertEqual({r['after'][name]['selected'] for r in record[name]['select'].values()}, {row[name]}, name)
+                    self.assertEqual({r['counters'][name]['selected'] for r in end['read'].values()}, {row[name]}, name)
                 view = box.stage_view(status)
                 self.assertIs(view['step_iw_selected'], row['inwait'])
                 self.assertIs(view['step_iw_installed'], True)

@@ -8,7 +8,7 @@ Classes:
 * NameChecks: every QNAME test in the three runs/ scripts, extracted and executed in bash with QNAME set to the settings' real default (the runner's name, q18a-inwait), passes;
   the declaration's request dir, the draft's RUN_ID and every ``$H/runs/...`` and ``python3 "$H/X.py"`` name resolve to files in this tree; nothing executable names c1's queue.
 * Budget: the gate's limits are relative (no clock import), every arm enters at the walls and at 1.5x the walls (a stated property of the 7,500 s budget).
-* ArmLoop: the derived body: the decode-only baselines, then the core arms in table order with --c1 nx0|nx1 and the band's workload, the core grade, no tail, the read. An off-arm leak in a record makes the core grade FAIL and the queue count it.
+* ArmLoop: the derived body: the decode-only baselines, then the core arms in table order with --c1 ps0|ps1 and the band's workload, the core grade, no tail, the read. An off-arm leak in a record makes the core grade FAIL and the queue count it.
 * QueueH: the health-scoped death scan (the lead's rule, byte for byte as returning-append's forwarded files): the draft calls _h, never the old.
 * QueueArgparse: every python call of the texts parses with its real parser; unknown or undeclared options are refused (controls).
 """
@@ -160,7 +160,7 @@ class Budget(unittest.TestCase):
                    for a in n.names} | {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         self.assertFalse(imports & {'time', 'datetime', 'calendar'})
         exp = gate.EXPECTED_RUNTIME_S
-        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (7, 1, 6, 0))
+        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (10, 1, 9, 0))
         self.assertEqual(exp['nominal']['not_run'], [])
         self.assertLess(gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S)
         self.assertTrue(gate.arm_fits(gate.LAST_ARM_ENTRY_S, 'core'))
@@ -169,7 +169,7 @@ class Budget(unittest.TestCase):
         self.assertEqual(gate.ACTIVE_S + gate.CLEANUP_S, gate.BOX_BUDGET_S)
 
     def test_what_the_budget_buys_at_1_5x_the_walls(self):
-        self.assertEqual(gate.BOX_BUDGET_S, 7500)
+        self.assertEqual(gate.BOX_BUDGET_S, 8700)
         self.assertLessEqual(gate.EXPECTED_RUNTIME_S['nominal']['total_min'], 70)
         self.assertEqual(gate.EXPECTED_RUNTIME_S['slower']['not_run'], [])
 
@@ -178,7 +178,7 @@ class Budget(unittest.TestCase):
         self.assertEqual(got.returncode, 0, got.stderr[-400:])
         for name in CORE:
             self.assertIn(name, got.stdout)
-        self.assertIn('box budget 7500 s', got.stdout)
+        self.assertIn('box budget 8700 s', got.stdout)
 
 
 STUB_BOX = r'''#!/usr/bin/env python3
@@ -281,17 +281,17 @@ class ArmLoop(unittest.TestCase):
 
     def test_a_leak_fails_the_core_grade_and_counts(self):
         emit, arms = tbox.run_of()
-        arm = next(a for a in arms if a['label'] == 'nx0.g2-live-1')
-        arm['stage_delta']['step_iw_early_begins'] = 2
-        out, err, calls, steps = self.run_loop(edit={'nx0.g2-live-1': dict(stage_delta=arm['stage_delta'])})
+        arm = next(a for a in arms if a['label'] == 'ps0.g2-live-1')
+        arm['prepare_slices']['counters']['sliced']['0'] = 2
+        out, err, calls, steps = self.run_loop(edit={'ps0.g2-live-1': dict(prepare_slices=arm['prepare_slices'])})
         self.assertEqual(steps['inwait'], 'FAIL', out[-1500:])
         self.assertIn('END FAILS=1', out)
         grade = json.loads((self.q / 'inwait-grade.json').read_text())
-        self.assertIn('nx0.g2-live-1:early-successor-off-moved-its-counter', grade['failures'])
+        self.assertIn('ps0.g2-live-1:prepare-slices-off-moved-its-counter', grade['failures'])
 
 
-ARGPARSE_VALUES = dict(tq.ARGPARSE_VALUES, QNAME='q18a-inwait', RUN_ID='q18a-inwait-fixture', _label='nx1.g2-live-1',
-                       _sel='nx1.g2', _c1='nx1', _group='g2', _arm='core:nx1.g2-live-1', _pair='1', _cohort='live')
+ARGPARSE_VALUES = dict(tq.ARGPARSE_VALUES, QNAME='q18a-inwait', RUN_ID='q18a-inwait-fixture', _label='ps1.g2-live-1',
+                       _sel='ps1.g2', _c1='ps1', _group='g2', _arm='core:ps1.g2-live-1', _pair='1', _cohort='live')
 
 
 def bash_words(args, draft, values=None):
@@ -300,8 +300,8 @@ def bash_words(args, draft, values=None):
     values = dict(ARGPARSE_VALUES, **(values or {}))
     lines = ['set -u', 'fail_early() { :; }', 'fail() { :; }', 'H=%s' % shlex.quote(str(HERE))]
     lines += ['%s=%s' % (k, shlex.quote(v)) for k, v in values.items()]
-    arrays = ('--arm "$Q/arm-nx1.g2-live-1.json" --ingress "nx1.g2-live-1=$Q/ingress-nx1.g2-live-1.json" '
-              '--watch "nx1.g2-live-1=$Q/engine-watch-arm-nx1.g2-live-1.json"')
+    arrays = ('--arm "$Q/arm-ps1.g2-live-1.json" --ingress "ps1.g2-live-1=$Q/ingress-ps1.g2-live-1.json" '
+              '--watch "ps1.g2-live-1=$Q/engine-watch-arm-ps1.g2-live-1.json"')
     lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays,
               'source "$H/runs/q18a_inwait_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
