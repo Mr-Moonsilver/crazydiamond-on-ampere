@@ -3033,6 +3033,7 @@
         "test_inwait_early_alloc",
         "test_inwait_router",
         "test_dp5_chunk",
+        "test_dp5_ple",
         "test_inwait_box",
         "test_inwait_queue",
         "test_inwait_robust_swap",
@@ -3051,12 +3052,14 @@
       "e3/lane_dispatch.py",
       "e3/lane_private.py",
       "e3/lane_state.py",
+      "e3/model_hooks.py",
       "e3/native_auto_arm.py",
       "e3/native_measurement.py",
       "e3/native_overlap_control.py",
       "e3/native_overlap_session.py",
       "e3/native_overlap_worker.py",
       "e3/native_qualification_frontend.py",
+      "e3/native_startup.py",
       "e3/probe_control.py",
       "e3/s5_startup.py",
       "e3/scheduler_hooks.py",
@@ -3090,7 +3093,7 @@
     "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
     "queue": "q18a-inwait: compose-2's queue with FLASH_S5_INWAIT=1 for the whole run; one decode-only baseline, six core arms, C1 defer, in-wait selected per arm while paused idle FULL; compose-2's grade plus the in-wait selection and engagement check",
     "scope": "in-wait handoffs on compose-2's engine against c1b's READY build, discovery mode; not a release assessment and not a numerics result",
-    "source_commit": "763bd73ccee49da8df70041a8d1ea389cda168e0"
+    "source_commit": "ec9222524e4b83edf0c1071ec0035774e433c329"
   },
   "launcher_delta": {
     "exact_delta": "S5-only Docker json-file max-size=512m/max-file=4 and ulimit core=0; model command, environment and mounts unchanged",
