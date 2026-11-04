@@ -1,0 +1,11 @@
+{
+ "schema": "compose-2-engine-suites/1",
+ "status": "Discovery mode: each part's engine suites over the composed tree plus the real-router smoke.",
+ "engine_suites": [
+  "test_stage1_step_engine",
+  "test_attn_meta_control",
+  "test_compose2_router"
+ ],
+ "refusal_tests": [],
+ "why": {}
+}
