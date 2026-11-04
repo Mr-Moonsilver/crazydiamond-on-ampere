@@ -25,7 +25,7 @@ TAIL = ' '.join(table.labels('tail'))
 NAMES = ((OLD, NEW), (OLD_Q, NEW_Q), ('COMPOSE2', 'INWAIT'), ('compose2', 'inwait'), ('compose-2', 'inwait'))
 FILES = 'e3_inwait_box.py inwait_arms.py e3_attn_meta_box.py attn_meta_arms.py'
 HEADER_NOTE = ('# inwait: native handoffs inside the stock wait, discovery mode: FLASH_S5_INWAIT installed for the whole run beside attn-meta and L1 + L2, all selected per arm by typed control while paused idle FULL: ps1 off,\n'
-               '# hf base, against both, cap, w0 and wa; the exact-path smoke first, then one decode-only baseline; band 1 live x2 each and solo x1 for hf and both, top-20 logprobs on band 1's fresh and append, w0 at band 2 last, after the core grade (harness/inwait_arms.py). NUMERICS ARE NOT COVERED by this queue either: speed, decode, handler time, memory and the logprob spread are reads only.\n#\n')
+               '# hf base, against both, cap, w0 and wa; the exact-path smoke first, then one decode-only baseline; band 1 live x2 each and solo x1 for hf and both, top-20 logprobs on the band 1 fresh and append, w0 at band 2 last, after the core grade (harness/inwait_arms.py). NUMERICS ARE NOT COVERED by this queue either: speed, decode, handler time, memory and the logprob spread are reads only.\n#\n')
 SETTINGS_NOTE = '# inwait: FLASH_S5_INWAIT=1 below (installed, not selected), for the whole run, the only setting added to compose-2; each arm selects it by typed control.\n'
 SETTINGS_ANCHOR = '# compose-2: FLASH_ATTN_META_GDN_BATCH=1'
 DRAFT_ASSERT = "assert env.get('FLASH_ATTN_META_GDN_BATCH') == '1', 'attn-meta installed'\n"
