@@ -37,6 +37,9 @@
   "side": "native43-clock-probe"
  },
  "definitions": {
+  "harness/receipt_lines.py": [
+   "module:KV_PREFIXES"
+  ],
   "harness/selftest.py": [
    "attn_meta_base_receipt",
    "module:ATTN_META_BASE_RECEIPT",
@@ -90,6 +93,7 @@
    "cow_residency",
    "cow_row_pages",
    "cow_row_times",
+   "module:ALLOCATOR_FLUSH",
    "module:COW_FAST",
    "module:COW_HOST_FILTER",
    "module:PREPARE_SLICES",
@@ -98,19 +102,24 @@
    "module:SCORE_COMPRESS",
    "module:SCORE_ROWS",
    "module:SCORE_WARM",
+   "module:SCORE_WARM_RANK0",
    "module:SCORE_WARM_SLACK_BYTES",
    "module:SCORE_WARM_STEP_BYTES",
    "module:SLOTS_FAST",
    "module:_COW_ROW",
+   "module:_WORKER_RANK",
    "module:import time",
+   "note_worker_rank",
    "qsa_host_pairs",
    "reserved_cap_bytes",
    "score_warm_bytes",
+   "select_allocator_flush",
    "select_cow_fast",
    "select_cow_host_filter",
    "select_prepare_slices",
    "select_reserved_cap",
    "select_score_warm",
+   "select_score_warm_rank0",
    "select_slots_fast",
    "take_cow_row"
   ],
@@ -133,7 +142,8 @@
   ],
   "patches/s5_engine/native_measurement.py": [
    "module:INWAIT_ENV",
-   "module:PROGRESS_DIRECT_INWAIT_METHODS"
+   "module:PROGRESS_DIRECT_INWAIT_METHODS",
+   "module:RECEIPT_KV_PREFIXES"
   ],
   "patches/s5_engine/native_overlap_control.py": [
    "NativeControlClient.native_stage_overlap",
@@ -217,6 +227,7 @@
    "module:from scheduler_hooks import PrefillAdmissionController, _ProjectedPrefillRequest, staged_chunk_plan"
   ],
   "patches/s5_engine/worker_bridge.py": [
+   "NativeWorkerBridge.__init__",
    "NativeWorkerBridge._cow_receipt",
    "NativeWorkerBridge._prepare_resuming",
    "NativeWorkerBridge._release_lane",
@@ -875,6 +886,7 @@
    "cow_residency",
    "cow_row_pages",
    "cow_row_times",
+   "module:ALLOCATOR_FLUSH",
    "module:COW_FAST",
    "module:COW_HOST_FILTER",
    "module:PREPARE_SLICES",
@@ -883,19 +895,24 @@
    "module:SCORE_COMPRESS",
    "module:SCORE_ROWS",
    "module:SCORE_WARM",
+   "module:SCORE_WARM_RANK0",
    "module:SCORE_WARM_SLACK_BYTES",
    "module:SCORE_WARM_STEP_BYTES",
    "module:SLOTS_FAST",
    "module:_COW_ROW",
+   "module:_WORKER_RANK",
    "module:import time",
+   "note_worker_rank",
    "qsa_host_pairs",
    "reserved_cap_bytes",
    "score_warm_bytes",
+   "select_allocator_flush",
    "select_cow_fast",
    "select_cow_host_filter",
    "select_prepare_slices",
    "select_reserved_cap",
    "select_score_warm",
+   "select_score_warm_rank0",
    "select_slots_fast",
    "take_cow_row"
   ],
@@ -914,7 +931,8 @@
   ],
   "e3/native_measurement.py": [
    "module:INWAIT_ENV",
-   "module:PROGRESS_DIRECT_INWAIT_METHODS"
+   "module:PROGRESS_DIRECT_INWAIT_METHODS",
+   "module:RECEIPT_KV_PREFIXES"
   ],
   "e3/native_overlap_control.py": [
    "NativeControlClient.native_stage_overlap",
@@ -998,6 +1016,7 @@
    "module:from .scheduler_hooks import PrefillAdmissionController, _ProjectedPrefillRequest, staged_chunk_plan"
   ],
   "e3/worker_bridge.py": [
+   "NativeWorkerBridge.__init__",
    "NativeWorkerBridge._cow_receipt",
    "NativeWorkerBridge._prepare_resuming",
    "NativeWorkerBridge._release_lane",
@@ -1043,7 +1062,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "b0ca89adb345ee6055a57b13b6704ee3aa12db83",
+ "source_commit": "3f35b51cc1d9007814b288029bc2384fbbf40b91",
  "source_paths": [
   "A\tharness/alpha_next_stop_race_h.py",
   "A\tharness/attn_meta_arms.py",
@@ -1067,6 +1086,7 @@
   "A\tharness/inwait_gate.py",
   "A\tharness/native43_engine_death_h.py",
   "A\tharness/native43_engine_death_h_fixture_leaves.json",
+  "M\tharness/receipt_lines.py",
   "A\tharness/runs/q18a_attn_meta.draft.sh",
   "A\tharness/runs/q18a_attn_meta_declare.sh",
   "A\tharness/runs/q18a_attn_meta_settings.sh",
