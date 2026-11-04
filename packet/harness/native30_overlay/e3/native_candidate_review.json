@@ -2712,7 +2712,7 @@
     "test_a1_trunk.py": "47e00868f1772d3aa09788fb33448460276bca13c01129b7a5a5d3a174ac8d93",
     "test_a1_trunk_box.py": "f6c77011579963f7ee81fbbacaafa8398dd28bc268a8456c846e4ab09041c901",
     "test_a1_trunk_queue.py": "08b11e9d943c27c79f714d4acade62570574d4848dfb2b7efc8fd7cb18145974",
-    "test_a1_trunk_router.py": "2a2c75e8e4eb0ab7b72dd01a56af69b67c1cc000c4254b5562dd53ae956f571c",
+    "test_a1_trunk_router.py": "b7cac7c3692cb27a39ec21f9c87808bec02356596465b62adb8264ea20b95776",
     "test_agent_replay.py": "8d0c944c3552ee49a6db4b13fe658ad3f064faa03a083017bb6459d1f8d60453",
     "test_alpha_c0_queue.py": "1e20a55262062f40628ae66124c8b8629c0b1127f92fe786b0822f71afbc8fd2",
     "test_alpha_c0_report.py": "c24ee3413cf24b85f95c06fbf7d7ee34f1b24ec403eaef2cf3e638543c98320d",
