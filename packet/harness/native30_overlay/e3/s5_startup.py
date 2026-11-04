@@ -313,7 +313,7 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
         if value == '1' and env.get('FLASH_S5_STAGE_OVERLAP', '0') != '1':
             raise StartupError(name + ' needs FLASH_S5_STAGE_OVERLAP=1')
     # stage1-step: refused unless the deferred bind is on (fail closed, never silently ignored).
-    for name in ('FLASH_S5_LAZY_RECV', 'FLASH_S5_DECODE_MERGE'):
+    for name in ('FLASH_S5_LAZY_RECV', 'FLASH_S5_DECODE_MERGE', 'FLASH_S5_INWAIT'):
         value = env.get(name, '0')
         if value not in ('0', '1'):
             raise StartupError('invalid boolean setting: ' + name)

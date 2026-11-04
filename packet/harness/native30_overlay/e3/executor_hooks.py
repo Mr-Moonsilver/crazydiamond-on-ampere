@@ -28,7 +28,7 @@ from e3_types import E3ContractError, E3Pending
 from reply_transport import (Backpressure, DirectReply, NotReady, ReplyTransport, TransportError,
                              WorkerRPCError)
 from stage_wire import STAGE_SKIP, StageScoped, stage_rpc
-from native_measurement import (PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta,
+from native_measurement import (INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS, PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta,
                                 emit_receipt_lines,
                                 encode_progress_meta, progress_mode)
 
@@ -1474,7 +1474,8 @@ def worker_rpc_begin(proc, method, kwargs):
         return None
     sequence, direct = decode_progress_meta(kwargs.pop(PROGRESS_META_KEY))
     name = method if type(method) is str else 'callable'
-    if direct and name not in PROGRESS_DIRECT_METHODS:
+    if direct and name not in PROGRESS_DIRECT_METHODS and not (
+            name in PROGRESS_DIRECT_INWAIT_METHODS and os.environ.get(INWAIT_ENV, '0') == '1'):
         # Raised inside the RPC's try: the monitored worker-failure report and a
         # FAILURE wire, which the engine receiver poisons on before matching.
         raise ValueError('flash-s5 direct reply refused for this method')

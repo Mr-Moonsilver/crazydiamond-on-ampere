@@ -36,8 +36,10 @@ import logging
 import os
 import time
 
-from e3_types import E3ContractError
+from e3_types import E3ContractError, E3Pending
 from engine_driver import DriverError, NativeSegmentDriver, _progress_logger
+from native_measurement import INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS
+from reply_transport import Backpressure
 from scheduler_hooks import PrefillAdmissionController
 from stage_progress import StagedSegmentDriver, stage_local_enabled
 from wire_v1 import CancelRequest, PollRequest, ReleaseAck, SegmentKind
@@ -117,6 +119,23 @@ def lazy_recv_enabled(env):
 
 def decode_merge_enabled(env):
     return _step_switch(env, DECODE_MERGE_ENV)
+
+
+# inwait (results/hub/inwait/DESIGN.md).  One switch, default off; the startup flag installs it and ``inwait`` on
+# native_stage_local selects it per arm, while paused idle FULL.  Selected, a stock wait applies every chunk reply and
+# drives every stage as a tick does; commit, successor begin, control, route and stop stay on the tick.
+INWAIT_APPLY_KINDS = frozenset(('open', 'bind', 'segment', 'profile', 'poll', 'receipt', 'release'))
+# A stage's in-wait polls are at least this far apart: applied in the wait, an idle stage would re-poll at round-trip
+# speed, fill the ring and take the slots of real commands.
+INWAIT_POLL_GAP_NS = 2_000_000
+
+
+def inwait_enabled(env):
+    return _step_switch(env, INWAIT_ENV)
+
+
+class _PollPaced(Backpressure):
+    """An in-wait poll inside its stage's gap: nothing was sent and the ring was not asked."""
 
 
 # C1 overlap observation (default off): per chunk command, device-completion bounds read from the reports the
@@ -519,6 +538,14 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         self.decode_merge = 'off'
         self.decode_step_counters = dict(lazy_marked=0, merge_steps=0, merge_on=0, merge_off=0)
         self._merge_active = False
+        # inwait: off until selected, so an installed engine with no selection is the base.
+        self.inwait_installed = inwait_enabled(os.environ)
+        self.inwait = False
+        self.inwait_counters = dict(direct_opens=0, direct_releases=0, polls_paced=0, refused_releases=0,
+                                    refused_in_wait=0, wait_applied={}, wait_sent={})
+        self.inwait_refused = {}          # refused sends per worker method, on every arm of an installed engine
+        self._inwait_refused_chunk = {}
+        self._inwait_poll_ns = {0: None, 1: None}
 
     # -- the composed per-chunk fields, per frame -------------------------------
     def _new_frame(self):
@@ -634,7 +661,14 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                                                    self.poll_budget),), {}, None), self.ranks)
 
     def _submit_observed(self, kind, envelope, ranks, *, timeout_s=None):
+        in_wait = self.inwait and self._in_wait
+        if in_wait and kind == 'poll':
+            self._pace_wait_poll()
         sequence = super()._submit_observed(kind, envelope, ranks, timeout_s=timeout_s)
+        if in_wait:
+            self._note_wait('wait_sent', self._wait_kind(kind, self._command))
+            if kind == 'poll':
+                self._inwait_poll_ns[self._scoped_stage] = time.monotonic_ns()
         frame = self._scoped_frame
         if frame is not None:
             frame.stats.setdefault('seqs', []).append(sequence)
@@ -670,8 +704,145 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         if wanted or getattr(scheduler, 'flash_s5_decode_merge', False):
             scheduler.flash_s5_decode_merge = wanted
 
+    # -- inwait (FLASH_S5_INWAIT) ---------------------------------------------------
+    @staticmethod
+    def _wait_kind(kind, command):
+        return kind if kind != 'segment' or command is None else command.kind.value
+
+    def _note_wait(self, field, key):
+        row = self.inwait_counters[field]
+        row[key] = row.get(key, 0) + 1
+
+    def _pace_wait_poll(self):
+        last = self._inwait_poll_ns[self._scoped_stage]
+        if last is not None and time.monotonic_ns() - last < INWAIT_POLL_GAP_NS:
+            self.inwait_counters['polls_paced'] += 1
+            raise _PollPaced('in-wait poll gap')
+
+    def _check_headroom(self, real, envelope):
+        try:
+            super()._check_headroom(real, envelope)
+        except Backpressure:
+            if self.inwait_installed:
+                method = envelope[0]
+                self.inwait_refused[method] = self.inwait_refused.get(method, 0) + 1
+                self._inwait_refused_chunk[method] = self._inwait_refused_chunk.get(method, 0) + 1
+            raise
+
+    def _progress_direct(self, kind, envelope, progress):
+        """stage1-handoff's L2: stage 1's open and non-terminal local release, on a live chunk with no stop."""
+        if (self.inwait and kind in ('open', 'release') and self._scoped_stage == 1 and self._scoped_frame is not None
+                and self.stop_kind is None and progress.burst() and envelope[0] in PROGRESS_DIRECT_INWAIT_METHODS
+                and not self.admission.terminal):
+            self.inwait_counters['direct_opens' if kind == 'open' else 'direct_releases'] += 1
+            return True
+        return super()._progress_direct(kind, envelope, progress)
+
+    def _send_release(self):
+        """A send the ring refused is not an attempt: wait and tick together would burn the bound on a busy ring."""
+        if not self.inwait:
+            return super()._send_release()
+        try:
+            return super()._send_release()
+        except Backpressure:
+            self._release_attempts -= 1
+            self.inwait_counters['refused_releases'] += 1
+            raise
+
+    def _stage_wait_ok(self, frame, stage):
+        if not self.inwait:
+            return super()._stage_wait_ok(frame, stage)
+        inflight = tuple(kind for sequence, kind in self._inflight.items() if self._route_stage(sequence) == stage)
+        if inflight:
+            return len(inflight) == 1 and inflight[0] in INWAIT_APPLY_KINDS
+        if not self._frame_ready(frame, stage):
+            return False
+        phase = frame.stage[stage]['phase']
+        if phase == 'opened':
+            return False
+        if phase == 'released':
+            chunk = frame.chunk
+            return (stage == 0 and chunk['_receipt_inflight'] is None
+                    and bool(set(chunk['_receipts']) - set(chunk['_receipt_acked'])))
+        return True
+
+    def _drain_observed(self):
+        if not (self.inwait and self._in_wait and self._frames):
+            return super()._drain_observed()
+        # Only a route, control, stop or stage-less reply stays on the tick.
+        held = {sequence: kind for sequence, kind in self._inflight.items()
+                if sequence not in self._seq_route or kind not in INWAIT_APPLY_KINDS}
+        for sequence in held:
+            del self._inflight[sequence]
+        try:
+            return NativeSegmentDriver._drain_observed(self)
+        finally:
+            self._inflight.update(held)
+
+    def _wait_stage(self, frame, stage):
+        """This tick's stage step, in the wait; (commands that were not polls, True when it only wants a poll)."""
+        before = set(self._inflight)
+        wants_poll = False
+        try:
+            wants_poll = self._drive_stage(frame, stage)
+        except _PollPaced:
+            pass
+        return sum(kind != 'poll' for sequence, kind in self._inflight.items() if sequence not in before), wants_poll
+
+    def progress_in_wait(self):
+        """_drive without _maybe_commit and _begin_successor, under the permit.  Polls are not counted as sends."""
+        if not (self.inwait and self._frames):
+            return super().progress_in_wait()
+        if not self._wait_permit() or not self.progress.wait_allowed():
+            return None
+        self._in_wait = True
+        self._progress_origin = 'wait'
+        sent = 0
+        try:
+            self._drain()
+            if not self._wait_permit(nested=True) or not self.progress.wait_allowed():
+                return 0
+            polls = []
+            for frame in tuple(self._frames):
+                if self.defer_bind:
+                    self._deferred_bind_due(frame)
+                for stage in (0, 1):
+                    if (frame.dead or not self._stage_wait_ok(frame, stage)
+                            or any(self._route_stage(sequence) == stage for sequence in self._inflight)):
+                        continue
+                    count, wants_poll = self._wait_stage(frame, stage)
+                    sent += count
+                    if wants_poll:
+                        polls.append((frame, stage))
+            for frame, stage in polls:
+                if any(self._route_stage(sequence) == stage for sequence in self._inflight):
+                    continue
+                try:
+                    with self._scope(frame, stage):
+                        self._submit('poll', ('flash_s5_poll', (PollRequest(self.tx, self.admission.state_epoch,
+                                                                            self.poll_budget),), {}, None), self.ranks)
+                except _PollPaced:
+                    pass
+            return sent
+        except Backpressure:
+            # The ring refused: keep draining, the wait retries in 1 ms (the frozen path ends the wait here).
+            self.inwait_counters['refused_in_wait'] += 1
+            return sent
+        except E3Pending:
+            raise
+        except BaseException:
+            self.error = 'native driver failed; ownership retained'
+            raise
+        finally:
+            self._in_wait = False
+            self._progress_origin = 'tick'
+
     # -- overlap observation (FLASH_S5_STAGE_OVERLAP_OBSERVE) ---------------------
     def _apply(self, kind, values, sequence=None):
+        if self.inwait and self._in_wait:
+            route = self._seq_route.get(sequence)
+            command = None if route is None else route[0].stage[route[1]]['_command']
+            self._note_wait('wait_applied', self._wait_kind(kind, command))
         observer = self.overlap_observer
         if observer is None:
             return super()._apply(kind, values, sequence)
@@ -832,6 +1003,14 @@ class OverlapSegmentDriver(StagedSegmentDriver):
 
     def _stage_line(self, transaction, stats, both_ns):
         super()._stage_line(transaction, stats, both_ns)
+        refused, self._inwait_refused_chunk = self._inwait_refused_chunk, {}
+        if refused and self.progress is not None:
+            # Between commits, so it may name the older chunk for a successor's refusal.  A read: a retried receipt shows here.
+            try:
+                _progress_logger().info('flash-s5 inwait txn=%d selected=%d refused=%s', transaction.txn_seq, int(self.inwait),
+                                        json.dumps(refused, sort_keys=True))
+            except Exception:
+                logging.getLogger(__name__).debug('inwait line failed', exc_info=True)
         observer = self.overlap_observer
         if observer is not None:
             info = dict(successor_of=stats.get('obs_successor_of'), early=stats.get('obs_early'),
@@ -1049,8 +1228,16 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-decode-merge-invalid')
             if merge != 'off' and (overlap is not True or defer is not True):
                 raise DriverError('native-stage-decode-merge-needs-defer-bind')
+        inwait = command.get('inwait', None)
+        if 'inwait' in command:
+            if not self.inwait_installed:
+                raise DriverError('native-stage-inwait-not-installed')
+            if type(inwait) is not bool:
+                raise DriverError('native-stage-inwait-invalid')
+            if inwait and (overlap is not True or defer is not True):
+                raise DriverError('native-stage-inwait-needs-defer-bind')
         reply = super()._stage_control({k: v for k, v in command.items()
-                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge')})
+                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -1082,6 +1269,15 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 merge = previous_merge
             self.decode_merge = merge
             reply.update(decode_merge=merge, previous_decode_merge=previous_merge)
+        if self.inwait_installed:
+            previous_inwait = self.inwait
+            if not overlap or not self.defer_bind:
+                inwait = False
+            elif inwait is None:
+                inwait = previous_inwait
+            self.inwait = inwait
+            self._inwait_poll_ns = {0: None, 1: None}
+            reply.update(inwait=inwait, previous_inwait=previous_inwait)
         return reply
 
     def stage_status(self):
@@ -1097,6 +1293,11 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                                                     decode_merge_installed=self.decode_merge_installed,
                                                     decode_merge=self.decode_merge,
                                                     counters=dict(self.decode_step_counters))
+        if self.inwait_installed:
+            counters = self.inwait_counters
+            result['overlap']['inwait'] = dict(installed=True, selected=self.inwait, refused=dict(self.inwait_refused),
+                                               counters=dict(counters, wait_applied=dict(counters['wait_applied']),
+                                                             wait_sent=dict(counters['wait_sent'])))
         if self.overlap_observer is not None:
             result['overlap']['observe'] = dict(counters=dict(self.overlap_observer.counters))
         return result
@@ -1117,6 +1318,6 @@ def _ranges(values):
     return ','.join(str(a) if a == b else '%d-%d' % (a, b) for a, b in out) or '-'
 
 
-__all__ = ['DECODE_MERGE_ENV', 'DECODE_MERGE_MODES', 'LAZY_RECV_ENV', 'decode_merge_enabled', 'lazy_recv_enabled', 'DEFER_BIND_ENV', 'OBSERVE_ENV', 'OBSERVE_LINE', 'OBSERVE_SCHEMA', 'OverlapObserver', 'OverlapSegmentDriver', 'REFUSALS', 'STAGE_OVERLAP_ENV', 'StagedAdmissionController',
+__all__ = ['INWAIT_APPLY_KINDS', 'inwait_enabled', 'DECODE_MERGE_ENV', 'DECODE_MERGE_MODES', 'LAZY_RECV_ENV', 'decode_merge_enabled', 'lazy_recv_enabled', 'DEFER_BIND_ENV', 'OBSERVE_ENV', 'OBSERVE_LINE', 'OBSERVE_SCHEMA', 'OverlapObserver', 'OverlapSegmentDriver', 'REFUSALS', 'STAGE_OVERLAP_ENV', 'StagedAdmissionController',
            'overlap_refusal', 'provisional_fields', 'stage_overlap_defer_bind_enabled', 'stage_overlap_enabled',
            'stage_overlap_observe_enabled']

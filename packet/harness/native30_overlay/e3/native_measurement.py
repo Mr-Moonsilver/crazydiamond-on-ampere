@@ -187,6 +187,10 @@ PROGRESS_META_BYTES = 9
 # profile and poll kinds). Checked when the engine builds the envelope and
 # again by the worker before dispatch; any other method refuses a direct bit.
 PROGRESS_DIRECT_METHODS = frozenset(('flash_s5_submit', 'flash_s5_poll'))
+# inwait: stage 1's open and non-terminal release may reply direct too, only where FLASH_S5_INWAIT=1 installed it
+# (stage1-handoff's L2). Kept apart so the set above, and an engine without the flag, are what they were.
+INWAIT_ENV = 'FLASH_S5_INWAIT'
+PROGRESS_DIRECT_INWAIT_METHODS = frozenset(('flash_s5_open', 'flash_s5_release'))
 PROGRESS_ROWS = {
     # engine: one native command, transport sequence through owner apply
     'n': ('seq', 'kind', 'segment', 'op_seq', 'stage', 'layer', 'origin', 't_submit', 't_sent',

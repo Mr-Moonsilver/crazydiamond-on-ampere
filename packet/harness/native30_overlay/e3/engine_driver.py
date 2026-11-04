@@ -1673,6 +1673,13 @@ class NativeSegmentDriver:
             raise DriverError('native bounded command sender is not installed')
         return sender
 
+    def _progress_direct(self, kind, envelope, progress):
+        """Held-f's rule: a burst chunk's command-flow kinds reply direct, on eligible methods only."""
+        direct = progress.burst() and kind in progress.DIRECT_KINDS
+        if direct and envelope[0] not in PROGRESS_DIRECT_METHODS:
+            raise DriverError('native-progress-direct-method-not-eligible')
+        return direct
+
     def _submit(self, kind, envelope, ranks, *, timeout_s=None):
         with self.control_path.span('prepare_ns'):
             return self._submit_observed(kind, envelope, ranks, timeout_s=timeout_s)
@@ -1684,9 +1691,7 @@ class NativeSegmentDriver:
         sender = self._bounded()
         check = getattr(sender, 'check', None)
         progress = self.progress if self.progress is not None and self.progress.recording else None
-        direct = progress is not None and progress.burst() and kind in progress.DIRECT_KINDS
-        if direct and envelope[0] not in PROGRESS_DIRECT_METHODS:
-            raise DriverError('native-progress-direct-method-not-eligible')
+        direct = progress is not None and self._progress_direct(kind, envelope, progress)
         if progress is not None:
             submitted_ns = time.monotonic_ns()
             # Same pickled size as the real meta: the size precheck stays exact.
