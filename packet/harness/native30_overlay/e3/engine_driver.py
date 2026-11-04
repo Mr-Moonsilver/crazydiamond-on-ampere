@@ -2538,8 +2538,15 @@ class NativeSegmentDriver:
                                          (self._receipts[candidate],))
             self._receipt_inflight = candidate
             self._receipt_last = delivery
-            self._submit('receipt', ('flash_s5_receipt', (delivery,), {}, candidate),
-                         (candidate,))
+            try:
+                self._submit('receipt', ('flash_s5_receipt', (delivery,), {}, candidate),
+                             (candidate,))
+            except Backpressure:
+                # Nothing was sent and no reply is owed: the next tick must retry.  Left
+                # set, the guard above answers "sent" for ever and the chunk never commits.
+                self._receipt_inflight = None
+                self._receipt_last = None
+                raise
             return True
         return False
 
