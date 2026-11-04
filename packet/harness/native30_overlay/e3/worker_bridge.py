@@ -897,7 +897,7 @@ class NativeWorkerBridge:
             if self._memory_receipts:
                 self._memory_receipt('released', transaction)
                 self._peak_receipt(transaction)
-                self._cow_receipt(transaction)
+            self._cow_receipt(transaction)
         if not self._runtime_released:
             runtime = getattr(self.server, 'runtime', None)
             release = getattr(runtime, 'release', None)
