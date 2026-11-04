@@ -423,3 +423,65 @@ class Engine(SlicedPrepare, ie.Base):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WarmScope(unittest.TestCase):
+    """build-5b: the warm block on rank 0 only, and a flush at every selection."""
+
+    def setUp(self):
+        lc.SCORE_WARM.update(selected=True, bytes=0, allocs=0, flushes=0, rewarms=0, errors=0, retries_seen=None)
+        lc.SCORE_WARM_RANK0.update(selected=False, skipped=0)
+        lc.ALLOCATOR_FLUSH.update(selected=False, flushes=0)
+        self.addCleanup(lc.SCORE_WARM.update, selected=False, bytes=0, allocs=0, retries_seen=None)
+        self.addCleanup(lc.SCORE_WARM_RANK0.update, selected=False, skipped=0)
+        self.addCleanup(lc.ALLOCATOR_FLUSH.update, selected=False, flushes=0)
+        self.addCleanup(lc.note_worker_rank, None)
+        self.torch = mock.Mock()
+        self.torch.cuda.memory_stats.return_value = dict(num_alloc_retries=0)
+        self.factory = lc.LaneChunkFactory.__new__(lc.LaneChunkFactory)
+        self.factory.torch, self.factory.runner = self.torch, types.SimpleNamespace(device='cuda:0')
+        self.admission = types.SimpleNamespace(chunk_start=1024, prompt_end=65444)
+
+    def warmed(self, rank, rank0):
+        lc.note_worker_rank(rank)
+        lc.select_score_warm_rank0(rank0)
+        self.factory.warm_scores(self.admission)
+        return self.torch.empty.call_count
+
+    def test_scope_on_rank_0_warms(self):
+        self.assertEqual(self.warmed(0, True), 1)
+        self.assertEqual(lc.SCORE_WARM_RANK0['skipped'], 0)
+
+    def test_scope_on_another_rank_does_not(self):
+        self.assertEqual(self.warmed(1, True), 0)
+        self.assertEqual(lc.SCORE_WARM_RANK0['skipped'], 1)
+
+    def test_scope_on_an_unknown_rank_does_not(self):
+        self.assertEqual(self.warmed(None, True), 0)
+        self.assertEqual(lc.SCORE_WARM_RANK0['skipped'], 1)
+
+    def test_scope_off_every_rank_warms(self):
+        self.assertEqual(self.warmed(3, False), 1)
+
+    def test_every_selection_flushes_and_the_block_is_warmed_again(self):
+        lc.note_worker_rank(0)
+        with mock.patch.object(lc, '_flush_allocator') as flush:
+            self.assertEqual(lc.select_allocator_flush(True)['flushes'], 1)
+            self.factory.warm_scores(self.admission)
+            self.factory.warm_scores(self.admission)
+            self.assertEqual(self.torch.empty.call_count, 1)
+            self.assertEqual(lc.select_allocator_flush(True)['flushes'], 2)
+            self.factory.warm_scores(self.admission)
+        self.assertEqual(flush.call_count, 2)
+        self.assertEqual(self.torch.empty.call_count, 2, 'the flush took the block')
+        self.assertEqual(lc.SCORE_WARM['rewarms'], 0, 'a flush is not a retry')
+
+    def test_off_does_not_flush(self):
+        with mock.patch.object(lc, '_flush_allocator') as flush:
+            self.assertIs(lc.select_allocator_flush(False)['selected'], False)
+        flush.assert_not_called()
+
+    def test_not_bools_refused(self):
+        for select in (lc.select_allocator_flush, lc.select_score_warm_rank0):
+            with self.assertRaises(lc.LaneChunkError):
+                select(1)

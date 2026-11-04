@@ -57,6 +57,10 @@ PREPARE_SLICES = dict(selected=False, sliced=0, yields=0, peek_missing=0)
 SCORE_WARM = dict(selected=False, bytes=0, allocs=0, flushes=0, rewarms=0, errors=0, retries_seen=None)
 SCORE_WARM_SLACK_BYTES = 16 * 1024 * 1024
 SCORE_WARM_STEP_BYTES = 32 * 1024 * 1024
+# inwait build-5b: the warm block on rank 0 only (off: every rank), and a flush at each selection so arms start matched.
+SCORE_WARM_RANK0 = dict(selected=False, skipped=0)
+ALLOCATOR_FLUSH = dict(selected=False, flushes=0)
+_WORKER_RANK = [None]
 SCORE_ROWS = 1024
 SCORE_COMPRESS = 4
 
@@ -83,6 +87,29 @@ def select_score_warm(on):
         SCORE_WARM.update(flushes=SCORE_WARM['flushes'] + 1, bytes=0, retries_seen=None)
     SCORE_WARM['selected'] = on
     return dict(SCORE_WARM)
+
+
+def note_worker_rank(rank):
+    _WORKER_RANK[0] = rank
+
+
+def select_score_warm_rank0(on):
+    if type(on) is not bool:
+        raise LaneChunkError('score-warm-rank0-not-bool')
+    SCORE_WARM_RANK0['selected'] = on
+    return dict(SCORE_WARM_RANK0)
+
+
+def select_allocator_flush(on):
+    """On, while paused idle: flush at every selection, not only off to on, and the warm block goes with it, so it is warmed again."""
+    if type(on) is not bool:
+        raise LaneChunkError('allocator-flush-not-bool')
+    if on:
+        _flush_allocator()
+        ALLOCATOR_FLUSH['flushes'] += 1
+        SCORE_WARM.update(bytes=0, retries_seen=None)
+    ALLOCATOR_FLUSH['selected'] = on
+    return dict(ALLOCATOR_FLUSH)
 
 
 def score_warm_bytes(prompt_end):
@@ -1127,6 +1154,10 @@ class LaneChunkFactory:
         without the block the allocator behaves as it does today.
         """
         if not SCORE_WARM['selected'] or admission.chunk_start == 0:
+            return False
+        if SCORE_WARM_RANK0['selected'] and _WORKER_RANK[0] != 0:
+            # An unknown rank warms nothing: rank 0's allocs stay 0 and the box says so.
+            SCORE_WARM_RANK0['skipped'] += 1
             return False
         torch = self.torch
         try:

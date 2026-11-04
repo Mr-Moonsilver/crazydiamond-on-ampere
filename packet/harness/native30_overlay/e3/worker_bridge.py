@@ -239,6 +239,9 @@ class NativeWorkerBridge:
         self.rank = _rank(server, dispatcher) if rank is None else rank
         if type(self.rank) is not int or self.rank < 0:
             raise WorkerBridgeError('native bridge rank must be a non-negative int')
+        if os.environ.get('FLASH_S5_INWAIT', '0') == '1':
+            import lane_chunk
+            lane_chunk.note_worker_rank(self.rank)
         self.clock = clock
         self.source_binder = source_binder
         # The worker-local pinned source binding, kept until the lane's release
@@ -826,9 +829,12 @@ class NativeWorkerBridge:
             row = lane_chunk.cow_row_pages(lane_chunk.cow_row_times(row), transaction.chunk_start)
             import logging
             from native_measurement import emit_receipt_kv
-            emit_receipt_kv('flash-s5 cow rank=%d txn_seq=%d chunk=%d-%d %s' % (
+            written = emit_receipt_kv('flash-s5 cow rank=%d txn_seq=%d chunk=%d-%d %s' % (
                 self.rank, transaction.txn_seq, transaction.chunk_start, transaction.chunk_end,
                 ' '.join('%s=%s' % (key, row[key]) for key in sorted(row))), logging.getLogger(__name__))
+            if written is False:
+                # build-5b: the writer refused it; build-4c lost every line this way, silently.
+                lane_chunk.COW_FAST['row_errors'] += 1
         except Exception:
             lane_chunk.COW_FAST['row_errors'] += 1
 

@@ -163,7 +163,7 @@ class Budget(unittest.TestCase):
                    for a in n.names} | {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         self.assertFalse(imports & {'time', 'datetime', 'calendar'})
         exp = gate.EXPECTED_RUNTIME_S
-        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (14, 1, 13, 0))
+        self.assertEqual((exp['arms'], exp['decode_arms'], exp['core_arms'], exp['tail_arms']), (12, 1, 10, 1))
         self.assertEqual(exp['nominal']['not_run'], [])
         self.assertLess(gate.LAST_ARM_ENTRY_S, gate.LAST_TAIL_ENTRY_S)
         self.assertTrue(gate.arm_fits(gate.LAST_ARM_ENTRY_S, 'core'))
@@ -278,7 +278,8 @@ class ArmLoop(unittest.TestCase):
         self.assertEqual(ingress, ['ingress-%s.json' % x for x in CORE[:1] + DECODE + CORE[1:] + TAIL])
         for name in DECODE + CORE:
             self.assertEqual(steps['arm-' + name], 'PASS', name)
-        self.assertEqual((steps['inwait'], steps['inwait-read']), ('PASS', 'READ-PASS'))
+        # The stub's tail arm wrote a record and no engine lines: the core grade passes, the read says it cannot be whole. Whole read: test_inwait_box.
+        self.assertEqual((steps['inwait'], steps['inwait-read']), ('PASS', 'READ-INCONCLUSIVE'))
         grade = json.loads((self.q / 'inwait-grade.json').read_text())
         self.assertEqual((grade['schema'], grade['verdict'], grade['missing']), ('inwait-grade/1', 'PASS', []))
         self.assertEqual(sorted(grade['step_gate']['arms']), sorted(CORE))

@@ -451,3 +451,48 @@ class Cap(unittest.TestCase):
 if __name__ == '__main__':
     logging.disable(logging.CRITICAL)
     unittest.main()
+
+
+class ThroughTheWriter(unittest.TestCase):
+    """build-5b: build-4c lost every cow line in the receipt writer's allow-list, and the tests above mock the writer away. Here the real writer and the real checker."""
+
+    def setUp(self):
+        import native_measurement as nm
+        import receipt_lines as rl
+        self.nm, self.rl, self.out = nm, rl, []
+        self.writer = nm.ReceiptWriter(fd=9, write=lambda fd, data: (self.out.append(data), len(data))[1], getpid=lambda: 77)
+        with mock.patch.object(nm, 'receipt_path', lambda fd, limit=None: 'atomic-fifo'):
+            self.writer._start()
+        patcher = mock.patch.object(nm, '_RECEIPT_WRITER', self.writer)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        lc.COW_FAST.update(row_errors=0, rows=0)
+        self.addCleanup(lc.COW_FAST.update, row_errors=0, rows=0)
+        self.addCleanup(lc._COW_ROW.__setitem__, 0, None)
+
+    def receipt(self):
+        lc._COW_ROW[0] = dict(marks=[Mark(at=0.0), Mark(at=1.0), Mark(at=3.0), Mark(at=7.0)], zero_ids=0, pairs=37, fast=37, views=6, bytes=64,
+                              host_views=6, host_fast=222, host_bytes=128, zero_host_us=1, copy_host_us=2, host_view_us=3)
+        with mock.patch.dict(os.environ, {'FLASH_S5_INWAIT': '1'}):
+            wb.NativeWorkerBridge._cow_receipt(types.SimpleNamespace(rank=2), types.SimpleNamespace(txn_seq=66, chunk_start=65296, chunk_end=65444))
+
+    def test_the_line_is_written_and_the_checker_reads_it(self):
+        before = self.writer.seq
+        self.receipt()
+        self.assertEqual(self.writer.faults, 0)
+        self.assertEqual(self.writer.seq, before + 1)
+        line = self.out[-1].decode()
+        self.assertTrue(line.startswith('flash-s5 cow rank=2 txn_seq=66 chunk=65296-65444 '), line)
+        self.assertIn('host_view_dev_us=4000', line)
+        record = self.rl.parse_line(line)
+        self.assertEqual(record['kind'], 'cow')
+        self.assertEqual(record['rank'], 2)
+        self.assertEqual(record['sha'], self.rl.sha16([record['text']]))
+        self.assertEqual((record['pid'], record['seq']), (77, before))
+        self.assertEqual(lc.COW_FAST['row_errors'], 0)
+
+    def test_a_refused_line_counts_a_row_error(self):
+        with mock.patch.object(self.nm, 'RECEIPT_KV_PREFIXES', ('flash-s5 memory ',)):
+            self.receipt()
+        self.assertEqual(self.writer.faults, 1)
+        self.assertEqual(lc.COW_FAST['row_errors'], 1)

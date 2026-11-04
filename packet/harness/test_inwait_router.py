@@ -161,7 +161,7 @@ class BoxCalls(Base):
             client.resume()
             args = types.SimpleNamespace(url=self.bridge.url, run_id=RUN, epoch=client.epoch, control_timeout_s=60)
             return record, None, status, am.end_read(args)
-        for sel in ('cf', 'both', 'hf', 'se', 'cf'):
+        for sel in ('cf', 'cap', 'w0', 'wa', 'cf'):
             row = rows[sel]
             with self.subTest(sel=sel):
                 record, exc, status, end = await self.off_loop(lambda row=row: one(row))
@@ -176,7 +176,7 @@ class BoxCalls(Base):
                 self.assertEqual({r['counters']['slots_fast']['selected'] for r in end['read'].values()}, {row['next_levers']})
                 self.assertEqual(box.slots_calls(record['slots_fast']['select'], end['read']), dict.fromkeys(('0', '1', '2', '3'), 0))
                 self.assertEqual((record['inwait']['exact_acknowledged'], self.driver.exact_successor), (row['exact_successor'], row['exact_successor']))
-                for name in ('prepare_slices', 'score_warm', 'cow_fast', 'reserved_cap', 'cow_host_filter'):
+                for name in ('prepare_slices', 'score_warm', 'score_warm_rank0', 'allocator_flush', 'cow_fast', 'reserved_cap', 'cow_host_filter'):
                     self.assertEqual({r['after'][name]['selected'] for r in record[name]['select'].values()}, {row[name]}, name)
                     self.assertEqual({r['counters'][name]['selected'] for r in end['read'].values()}, {row[name]}, name)
                 view = box.stage_view(status)
