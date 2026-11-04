@@ -1245,6 +1245,12 @@ class _ProjectedPrefillRequest:
         raise E3ContractError('projected prefill request is read-only')
 
 
+def native_chunk_cap(chunk_tokens, budget):
+    """A native chunk's row limit. decode-phase dp5: FLASH_S5_CHUNK_TOKENS above 1024 is the limit itself, native only, with stock's
+    budget left at 1024 (stock prefill and decode don't change). At or below 1024, as always: the smaller of the two."""
+    return chunk_tokens if chunk_tokens > 1024 else min(chunk_tokens, budget)
+
+
 def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536,
                       trace=None):
     """Find a complete native prefix partition before allocating any chunk.
@@ -1834,7 +1840,7 @@ class PrefillAdmissionController:
         budget = getattr(scheduler, 'max_num_scheduled_tokens', None)
         if type(budget) is not int or budget < 1:
             raise E3ContractError('scheduler token budget is not declared')
-        cap = min(self.chunk_tokens, budget)
+        cap = native_chunk_cap(self.chunk_tokens, budget)
         if self.minimum_stage_rows > 1:
             def projected_split(position, limit):
                 if position == start:

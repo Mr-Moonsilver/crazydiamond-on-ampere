@@ -52,12 +52,15 @@ RUNNER_SWAPS = [
     [_parent_swap("engine.get('schema')=="), "engine.get('schema')==" + repr(selfrun.SCHEMA)],
     [PARENT_QUEUES_TEXT, PARENT_QUEUES_TEXT + " and result.get('inwait_queue')=='PASS'"],
     # Decode-phase build-3: one launch one value, tools/sm_split_queue.py's rows on claude/sm-split. Read once at the runner's start, refused before any action.
-    ["QNAME='q18a-inwait'", "SMSPLIT_DECODE_SMS=os.environ.get('SMSPLIT_DECODE_SMS','52')\n"
+    ["QNAME='q18a-inwait'", "SMSPLIT_DECODE_SMS=os.environ.get('SMSPLIT_DECODE_SMS','44')\n"
                             "if not re.fullmatch('[2-6][02468]',SMSPLIT_DECODE_SMS) or not 24<=int(SMSPLIT_DECODE_SMS)<=60:\n"
                             "    raise SystemExit('SMSPLIT_DECODE_SMS must be even, 24..60')\n"
-                            "QNAME='q18a-sm-split-'+SMSPLIT_DECODE_SMS"],
+                            "CHUNK_TOKENS=os.environ.get('CHUNK_TOKENS','2048')\n"
+                            "if CHUNK_TOKENS not in ('1024','1536','2048'):\n"
+                            "    raise SystemExit('CHUNK_TOKENS must be 1024, 1536 or 2048')\n"
+                            "QNAME='q18a-chunk-'+CHUNK_TOKENS"],
     ["OVERLAY=Path('/data/vllm/flash-next-tp4/prod/overlay-v16s5-q18a-inwait')", "OVERLAY=Path('/data/vllm/flash-next-tp4/prod/overlay-v16s5-'+QNAME)"],
-    ["S5_REQUESTED_DECODE_SMS='44'", "S5_REQUESTED_DECODE_SMS=SMSPLIT_DECODE_SMS"],
+    ["S5_REQUESTED_DECODE_SMS='44'", "S5_REQUESTED_DECODE_SMS=SMSPLIT_DECODE_SMS,S5_REQUESTED_CHUNK_TOKENS=CHUNK_TOKENS"],
 ]
 HEADER = [
     'q18a-inwait packaged by tools/build_inwait.py (spec inwait); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree\'s.',

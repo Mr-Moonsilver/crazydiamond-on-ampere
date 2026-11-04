@@ -10,7 +10,8 @@
   "test_inwait_slices",
   "test_inwait_cow",
   "test_inwait_early_alloc",
-  "test_inwait_router"
+  "test_inwait_router",
+  "test_dp5_chunk"
  ],
  "refusal_tests": [],
  "why": {}

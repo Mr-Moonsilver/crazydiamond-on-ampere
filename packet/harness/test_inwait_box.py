@@ -246,7 +246,7 @@ class Smoke(unittest.TestCase):
         return dict(label=T.SMOKE_ARM, complete=True, reasons=[], outputs=dict(fresh=[1], append=[2], standing={'0': {}}), generation_requests_expected=10,
                     inwait=dict(acknowledged=True, early_acknowledged=True), attn_meta=dict(select={'0': {}}), stage_delta=dict(step_iw_applied=9, step_iw_early_begins=4),
                     progress_delta=dict(chunks=66, line_errors=0), slots_fast=dict(calls=dict(each)), prepare_slices=dict(counters=dict(sliced=dict(each))),
-                    cow_fast=dict(counters=dict(calls=dict(each), rows=dict(each))))
+                    cow_fast=dict(counters=dict(calls=dict(each), rows=dict(each))), fresh=dict(prompt_tokens_observed=65445))
 
     def test_an_engaged_arm_passes(self):
         self.assertEqual(box.smoke_check(self.good()), (True, []))
@@ -272,6 +272,18 @@ class Smoke(unittest.TestCase):
             self.assertFalse(ok, reason)
             self.assertIn(reason, reasons)
 
+    def test_a_fallback_from_the_rows_asked_for_stops_the_table(self):
+        record = self.good()                                  # 66 chunks: what 1024 rows gives on this prompt
+        self.assertEqual(box.smoke_check(record, chunk_tokens='1024'), (True, []))
+        self.assertEqual(box.smoke_check(record, chunk_tokens='2048'), (False, ['smoke-chunk-rows-not-requested']))
+        record['progress_delta']['chunks'] = 34
+        self.assertEqual(box.smoke_check(record, chunk_tokens='2048'), (True, []))
+        record['progress_delta']['chunks'] = 35               # one block in three chunks, so one chunk well short of 2048
+        self.assertEqual(box.smoke_check(record, chunk_tokens='2048'), (False, ['smoke-chunk-rows-not-requested']))
+        record['progress_delta']['chunks'] = 34
+        record['fresh'] = {}
+        self.assertEqual(box.smoke_check(record, chunk_tokens='2048'), (False, ['smoke-chunk-rows-not-requested']))
+
     def test_an_unreadable_record_does_not_pass(self):
         self.assertEqual(box.smoke_check(None), (False, ['smoke-record-unreadable']))
 
@@ -279,11 +291,11 @@ class Smoke(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             arm, out = Path(root) / 'arm.json', Path(root) / 'smoke.json'
             arm.write_text(json.dumps(self.good()))
-            self.assertEqual(box.main(['smoke', '--arm', str(arm), '--out', str(out)]), 0)
+            self.assertEqual(box.main(['smoke', '--arm', str(arm), '--out', str(out), '--chunk-tokens', '1024']), 0)
             self.assertIs(json.loads(out.read_text())['engaged'], True)
             arm.write_text(json.dumps(dict(self.good(), complete=False)))
             out2 = Path(root) / 'smoke2.json'
-            self.assertEqual(box.main(['smoke', '--arm', str(arm), '--out', str(out2)]), 2)
+            self.assertEqual(box.main(['smoke', '--arm', str(arm), '--out', str(out2), '--chunk-tokens', '1024']), 2)
             self.assertIs(json.loads(out2.read_text())['engaged'], False)
 
 

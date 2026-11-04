@@ -118,7 +118,7 @@ class NameChecks(unittest.TestCase):
     QNAME = re.search(r'QNAME=\$\{QNAME:-([^}]+)\}', (ROOT / SETTINGS).read_text()).group(1)
 
     def test_the_real_qname(self):
-        self.assertEqual(self.QNAME, 'q18a-sm-split-52')
+        self.assertEqual(self.QNAME, 'q18a-chunk-2048')
         self.assertEqual(re.search(r'QNAME=\$\{QNAME:-([^}]+)\}', (ROOT / DECLARE).read_text()).group(1), self.QNAME)
 
     def test_every_qname_test_passes_with_it(self):
@@ -137,7 +137,7 @@ class NameChecks(unittest.TestCase):
 
     def test_run_id_and_request_dir_carry_the_name(self):
         draft = (ROOT / DRAFT).read_text()
-        self.assertIn('RUN_ID="q18a-sm-split-${S5_REQUESTED_DECODE_SMS}-$(date -u +%Y%m%dT%H%M%SZ)-$$"', draft)
+        self.assertIn('RUN_ID="q18a-chunk-${S5_REQUESTED_CHUNK_TOKENS}-$(date -u +%Y%m%dT%H%M%SZ)-$$"', draft)
         self.assertIn('R=$S0/$QNAME-requests', (ROOT / DECLARE).read_text())
 
     def test_names_resolve_and_none_is_c1s_queue(self):
@@ -248,7 +248,7 @@ class ArmLoop(unittest.TestCase):
         path = self.root / 'loop.sh'
         path.write_text('\n'.join(script) + '\n')
         env = {k: v for k, v in os.environ.items() if k != 'HARNESS_DIR'}
-        env.update(SMOKE_RC=str(smoke_rc), PATH='%s:%s' % (self.bin, os.environ['PATH']), Q=str(self.q), CALLS=str(self.root / 'calls.jsonl'), ARMS=str(self.arms),
+        env.update(S5_REQUESTED_CHUNK_TOKENS='2048', SMOKE_RC=str(smoke_rc), PATH='%s:%s' % (self.bin, os.environ['PATH']), Q=str(self.q), CALLS=str(self.root / 'calls.jsonl'), ARMS=str(self.arms),
                    REAL_HARNESS=str(HERE), DEATH_LINE=tap.DEATH_LINE, PYTHONDONTWRITEBYTECODE='1')
         proc = subprocess.Popen(['bash', str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
         try:
@@ -314,8 +314,8 @@ class DecodeSms(unittest.TestCase):
     """Decode-phase build-3: this launch's table and the decode SM count as a launch setting."""
 
     def test_the_table_and_the_control_labels(self):
-        self.assertEqual(T.labels(), ['sm.g2-live-0', 'cf.g2-solo-0', 'cf.g2-live-0', 'cf.g2-live-1', 'cfa.g2-live-0'])
-        self.assertEqual([r['decode_merge'] for r in T.arms()], ['chunk'] * 4 + ['always'])
+        self.assertEqual(T.labels(), ['sm.g2-live-0', 'cf.g2-solo-0', 'cf.g2-live-0', 'cf.g2-live-1', 'cf.g2-live-2'])
+        self.assertEqual([r['decode_merge'] for r in T.arms()], ['chunk'] * 5)
         self.assertEqual([r['cow_fast'] for r in T.arms()], [True] * 5)
         self.assertEqual(T.labels('tail'), [])
 
@@ -340,6 +340,23 @@ class DecodeSms(unittest.TestCase):
         for bad in ('45', '62', '44x'):
             self.assertEqual(self.settings(bad)[0], 97, bad)
 
+    def chunk(self, tokens):
+        values = {'S5_REQUESTED_CHUNK_TOKENS': tokens}
+        return bash_words('"$S5_REQUESTED_CHUNK_TOKENS" "$(printenv S5_REQUESTED_CHUNK_TOKENS)"', queue.derive()[DRAFT], values)
+
+    def test_the_settings_export_the_chunk_rows_and_refuse_others(self):
+        for good in T.LEGAL_CHUNK_TOKENS:
+            rc, words, err = self.chunk(good)
+            self.assertEqual((rc, words), (0, [good, good]), err)
+        for bad in ('1025', '4096', '2048x'):
+            self.assertEqual(self.chunk(bad)[0], 97, bad)
+        self.assertEqual((ROOT / SETTINGS).read_text().count('FLASH_S5_CHUNK_TOKENS=$S5_REQUESTED_CHUNK_TOKENS '), 1)
+
+    def test_the_draft_hands_the_smoke_the_chunk_rows(self):
+        draft = queue.derive()[DRAFT]
+        self.assertEqual(draft.count('--chunk-tokens "$S5_REQUESTED_CHUNK_TOKENS"'), 1)
+        self.assertIn(queue.CHUNK_TEST + ' || fail_early chunk-tokens-illegal', draft)
+
     def test_the_draft_checks_the_value_and_runs_the_bound_grade(self):
         draft = queue.derive()[DRAFT]
         self.assertNotIn('decode-sms-must-be-44', draft)
@@ -349,8 +366,9 @@ class DecodeSms(unittest.TestCase):
 
     def test_the_declaration_compares_with_the_launch_value(self):
         text = (ROOT / DECLARE).read_text()
-        self.assertIn('"$Q18A_TARGET_LABEL" "$S5_REQUESTED_DECODE_SMS" <<\'PY_DECL\'', text)
+        self.assertIn('"$Q18A_TARGET_LABEL" "$S5_REQUESTED_DECODE_SMS" "$S5_REQUESTED_CHUNK_TOKENS" <<\'PY_DECL\'', text)
         self.assertIn("env.get('FLASH_S5_DECODE_SMS')==sys.argv[3]", text)
+        self.assertIn("env.get('FLASH_S5_CHUNK_TOKENS')==sys.argv[4]", text)
         self.assertIn('e3_dp3_startup_grade.py', text)
 
     def grade_text(self, sms):

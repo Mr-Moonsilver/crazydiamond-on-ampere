@@ -410,7 +410,7 @@ def commit_boundary_read(flushes_by_arm):
 
 # --- the exact-path smoke (review section 6) ------------------------------------------------------------------
 
-def smoke_check(rec, row=None):
+def smoke_check(rec, row=None, chunk_tokens=None):
     """Arm 1's facts: real request shape, real control dispatch, positive native engagement, one complete observation. (ok, reasons); the queue aborts the table on not ok."""
     row = row or T.by_label()[T.SMOKE_ARM]
     if not isinstance(rec, dict):
@@ -430,6 +430,11 @@ def smoke_check(rec, row=None):
     delta, chunks = rec.get('stage_delta') or {}, (rec.get('progress_delta') or {}).get('chunks')
     if type(chunks) is not int or chunks < 1 or (rec.get('progress_delta') or {}).get('line_errors'):
         reasons.append('smoke-no-native-chunks')
+    # dp5: a silent fallback to smaller chunks would read as no gain, so it stops the table here.
+    if chunk_tokens is not None:
+        prompt = (rec.get('fresh') or {}).get('prompt_tokens_observed')
+        if type(prompt) is not int or chunks != T.expected_chunks(prompt, int(T.legal_chunk_tokens(chunk_tokens))):
+            reasons.append('smoke-chunk-rows-not-requested')
     if not delta.get('step_iw_applied'):
         reasons.append('smoke-in-wait-not-engaged')
     if not delta.get('step_iw_early_begins'):
@@ -568,6 +573,7 @@ def main(argv=None):
     k = sub.add_parser('smoke', help='the exact-path smoke: 0 engaged, 2 not (the queue aborts the table)')
     k.add_argument('--arm', required=True)
     k.add_argument('--out', required=True)
+    k.add_argument('--chunk-tokens', required=True, help='the launch value: the prompt must run in exactly the chunks it implies')
     d = sub.add_parser('decode-arm')
     for flag in ('--url', '--model', '--run-id', '--workload', '--out'):
         d.add_argument(flag, required=True)
@@ -592,7 +598,7 @@ def main(argv=None):
     if a.action == 'decode-arm':
         return am.run_decode_arm(a)
     if a.action == 'smoke':
-        ok, reasons = smoke_check(base.load(a.arm))
+        ok, reasons = smoke_check(base.load(a.arm), chunk_tokens=a.chunk_tokens)
         with open(a.out, 'x') as handle:
             json.dump(dict(schema='inwait-smoke/1', engaged=ok, reasons=reasons), handle, sort_keys=True)
         print('INWAIT_SMOKE %s %s' % ('ENGAGED' if ok else 'NOT_ENGAGED', ','.join(reasons)))

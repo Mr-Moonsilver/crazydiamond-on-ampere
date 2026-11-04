@@ -10,6 +10,9 @@ Order in build-4c: sm live | decode-am1 | round 0: ps1 cf solo, ps1 cf live | ro
 
 Decode-phase build-3 (READING-box-dp2.md; lead, 4 Nov 15:4x CET): the same engine at another decode SM count, a launch setting (S5_REQUESTED_DECODE_SMS, one launch one value, DEFAULT_DECODE_SMS first).
 Same labels as build-4c, whose cf arms at 44 are the control: sm live | decode-am1 | cf solo | cf live x2 | cfa live (cf with merge always, last). No ps1, band 2 or cap arm.
+
+Decode-phase dp5 (DESIGN-dp5.md; lead, 4 Nov 19:3x CET): native chunks above 1024 rows, a launch setting (S5_REQUESTED_CHUNK_TOKENS, FLASH_S5_CHUNK_TOKENS on the engine, DEFAULT_CHUNK_TOKENS first), at 44 SMs. Control: build-4c's cf arms again.
+sm live | decode-am1 | cf solo | cf live x2 | cf live band 2, last: memory is the likeliest failure and band 2 its worst case, so an OOM there still leaves band 1's numbers. The smoke stops the table unless the prompt ran in exactly expected_chunks chunks.
 """
 import alpha_next_arms as _alpha_next
 import attn_meta_arms as _attn_meta
@@ -31,8 +34,11 @@ BAND2_ROWS = (('core', 'cf', 'live', BAND2_INDEX), ('core', 'cf', 'solo', BAND2_
 CAP_ROW = ('tail', 'cap', 'live', 0)
 # Build-4c's table, not run here: the control's arms and the fixture of test_inwait_box, whose off-arm and cap rules stay in the code.
 BUILD4C_TABLE = ((SMOKE_ROW,) + tuple([('core', s, c, 0) for s, c in ROUND0] + [('core', s, c, 1) for s, c in ROUND1]) + BAND2_ROWS + (CAP_ROW,))
-ARM_TABLE = (SMOKE_ROW, ('core', 'cf', 'solo', 0), ('core', 'cf', 'live', 0), ('core', 'cf', 'live', 1), ('core', 'cfa', 'live', 0))
-DEFAULT_DECODE_SMS = '52'
+ARM_TABLE = (SMOKE_ROW, ('core', 'cf', 'solo', 0), ('core', 'cf', 'live', 0), ('core', 'cf', 'live', 1), ('core', 'cf', 'live', BAND2_INDEX))
+DEFAULT_DECODE_SMS = '44'
+DEFAULT_CHUNK_TOKENS = '2048'
+LEGAL_CHUNK_TOKENS = ('1024', '1536', '2048')     # 1024 the rerun on this bundle, 1536 the fallback if 2048 fails on memory alone
+MAMBA_BLOCK_ROWS, HASH_BLOCK_ROWS = 4048, 176     # read from this model's chunks on the box: ends 4048 x k, last stop prompt-1 // 176 x 176
 MIN_DECODE_SMS, MAX_DECODE_SMS = 24, 60
 DECODE_ARMS = tuple(d for d in _attn_meta.DECODE_ARMS if d['attn'])
 REFERENCE_ARM = 'decode-am1'              # this run's decode-only baseline; FIXED_REFERENCE below is the lead's fixed number
@@ -67,6 +73,32 @@ def legal_decode_sms(value):
     if not (text.isascii() and text.isdigit()) or int(text) % 2 or not MIN_DECODE_SMS <= int(text) <= MAX_DECODE_SMS or text != str(int(text)):
         raise ValueError('decode SM count must be even, %d..%d' % (MIN_DECODE_SMS, MAX_DECODE_SMS))
     return text
+
+
+def legal_chunk_tokens(value):
+    """The launch's native chunk rows, a string. Anything else raises."""
+    text = str(value)
+    if text not in LEGAL_CHUNK_TOKENS:
+        raise ValueError('native chunk rows must be one of ' + ', '.join(LEGAL_CHUNK_TOKENS))
+    return text
+
+
+def expected_chunks(prompt_tokens, cap):
+    """How many native chunks a fresh prompt runs in at this cap: the largest stock split at each position, as staged_chunk_plan finds it.
+
+    At cap 2048 every 4048-row block takes at least two chunks, so a count equal to this one also proves each block's chunks are 2000-2048 rows: one chunk at 1024 makes it larger.
+    """
+    end = prompt_tokens - 1
+    stop = end // HASH_BLOCK_ROWS * HASH_BLOCK_ROWS
+    position, count = 0, 0
+    while position < end:
+        following = min(position + cap, end)
+        if following < end and following // MAMBA_BLOCK_ROWS * MAMBA_BLOCK_ROWS > position:
+            following = following // MAMBA_BLOCK_ROWS * MAMBA_BLOCK_ROWS
+        if position < stop < following:
+            following = stop
+        position, count = following, count + 1
+    return count
 
 
 def band_of_index(index):
@@ -134,7 +166,7 @@ def check():
     assert len(names) == len(set(names)) == 5, 'five distinct prefill arm labels'
     assert labels('tail') == [] and labels('core') == names, 'no tail'
     assert names[0] == COLD_ARM, 'the cold arm is the first prefill arm'
-    assert names[-1] == label('cfa', 2, 'live', 0), 'merge always is last'
+    assert names[-1] == label('cf', 2, 'live', BAND2_INDEX), 'band 2 is last'
     assert set(names[1:-1]) < {label(s, BAND_SIZE[p][band_of_index(i)], c, i) for p, s, c, i in BUILD4C_TABLE}, 'the chunk arms carry the labels of the control'
     assert [d['label'] for d in DECODE_ARMS] == [REFERENCE_ARM] and [d['attn'] for d in DECODE_ARMS] == [True]
     assert ROUND1 == ROUND0[:1:-1], 'round 1 is round 0 live reversed'

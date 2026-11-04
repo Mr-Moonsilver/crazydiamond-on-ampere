@@ -46,7 +46,8 @@ class QueueNames(unittest.TestCase):
         declare, draft, settings = (p.read_text() for p in (DECLARE, DRAFT, SETTINGS))
         self.assertEqual(names.name_rules(declare), ['^q18a[-_a-zA-Z0-9]*$'])     # the rule that refused q18b-append-yield
         self.assertEqual((names.name_rules(draft), names.name_rules(settings)), ([], []))
-        self.assertIn("QNAME=${QNAME:-%s}" % qname, declare)                       # the declaration's own default agrees
+        import inwait_queue as queue
+        self.assertIn("QNAME=${QNAME:-%s}" % queue.QNAME_DEFAULT, declare)         # the declaration's default is the launch's, the runner's QNAME overrides it
         rc, out = names.run_declare_names(DECLARE, qname, QLIB)
         self.assertEqual((rc, out.strip().splitlines()[-1]), (0, names.PASSED), out[-400:])
 
