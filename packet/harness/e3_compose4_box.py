@@ -87,7 +87,8 @@ def base_record(a, row, client):
                 statuses=[], progress=[], run_id=a.run_id, engine_epoch=client.epoch, yield_on=row['yield_on'], ple_private=row['ple_private'], wall_start_s=time.time())
 
 
-def replay_arm(a, row, client, poll_client, *, run=replay.run):
+def replay_arm(a, row, client, poll_client, *, run=None):
+    run = run or replay.run
     record = base_record(a, row, client)
     mark = len(getattr(client, 'history', ()))
     poller = None

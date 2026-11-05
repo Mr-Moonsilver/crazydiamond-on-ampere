@@ -2,11 +2,13 @@
 """q18a-compose-4: the table, the replay client against a scripted stream, the arm's control order, the smoke and the grade over synthetic records, and the rule both ways on fixture records. CPU only; no pass here is box evidence. The arm through the real router: test_compose4_router."""
 import contextlib
 import datetime
+import http.server
 import io
 import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -110,6 +112,48 @@ class Replay(unittest.TestCase):
             self.assertEqual(replay.key_from_env(), 'k-xyz')
         (cfg, summary, turns, _o), _p = self.play()
         self.assertNotIn('k-xyz', json.dumps([cfg, summary, turns]))
+
+
+class StreamTurn(unittest.TestCase):
+    """The client over real HTTP: the wire is the image's SSE shape, the key goes in the header."""
+
+    def serve(self, lines):
+        seen = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen.update(path=self.path, auth=self.headers.get('Authorization'), body=json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.end_headers()
+                for line in lines:
+                    self.wfile.write(line.encode() + b'\n\n')
+
+            def log_message(self, *_args):
+                pass
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return 'http://127.0.0.1:%d' % server.server_address[1], seen
+
+    def test_a_turn_reads_pieces_finish_and_usage(self):
+        chunk = lambda text, finish=None: 'data: ' + json.dumps(dict(choices=[dict(delta=dict(content=text), finish_reason=finish)]))
+        usage = 'data: ' + json.dumps(dict(choices=[], usage=dict(prompt_tokens=70000, completion_tokens=3, prompt_tokens_details=dict(cached_tokens=66000))))
+        url, seen = self.serve([chunk('a'), chunk('b'), chunk('c', 'length'), usage, 'data: [DONE]'])
+        body = replay.request_body('m', [dict(role='user', content='x')], 3, 'salt-1')
+        got = replay.stream_turn(url, body, 'k-xyz', time.monotonic())
+        self.assertEqual((seen['path'], seen['auth'], seen['body']['cache_salt'], seen['body']['min_tokens'], seen['body']['temperature']), ('/v1/chat/completions', 'Bearer k-xyz', 'salt-1', 3, 0.7))
+        self.assertEqual((got['text'], got['finish'], got['prompt_tokens'], got['cached_tokens'], got['completion_tokens'], len(got['arrivals_ms'])), ('abc', 'length', 70000, 66000, 3, 3))
+        self.assertIsNotNone(got['ttft'])
+        self.assertTrue(replay.ar.turn_complete(got, 3))
+
+    def test_a_short_reply_is_not_a_valid_turn(self):
+        chunk = lambda text, finish=None: 'data: ' + json.dumps(dict(choices=[dict(delta=dict(content=text), finish_reason=finish)]))
+        usage = 'data: ' + json.dumps(dict(choices=[], usage=dict(prompt_tokens=70000, completion_tokens=1, prompt_tokens_details=dict(cached_tokens=0))))
+        url, _seen = self.serve([chunk('a', 'stop'), usage, 'data: [DONE]'])
+        got = replay.stream_turn(url, replay.request_body('m', [], 3, 's'), None, time.monotonic())
+        self.assertFalse(replay.ar.turn_complete(got, 3))
 
 
 def stamp(at):
