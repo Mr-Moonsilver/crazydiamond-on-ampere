@@ -210,6 +210,113 @@ class CrashRead(UnderThisTable, unittest.TestCase):
         self.assertIsNotNone(crash['first_death_s'])
 
 
+class JsonCarriesTheReasons(UnderThisTable, unittest.TestCase):
+    """Codex, REVIEW-compose5 item 1: a word this rule changes has its reason in the JSON too, not only in the text."""
+
+    def over_the_bound(self, tmp):
+        fx = Fixture5(tmp)
+        tb.healthy(fx)
+        tb.healthy(fx, NY)
+        fx.lines.append(tb.memory_line(tb.ORIGIN + 50, 'open', 0, 9000, 52624, 54672))
+        return fx.done()
+
+    def test_a_chunk_past_the_bound_is_inc_with_its_reason_in_both(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            word, lines, facts = self.over_the_bound(tmp)
+        self.assertEqual((word, facts['rule']), ('INC', 'INC'))
+        self.assertEqual(facts['reasons'], ['chunk-rows: 1 chunks past the bound over 1024 rows'])
+        self.assertIn('REASON ' + facts['reasons'][0], lines)
+
+    def test_a_stock_rescue_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture5(tmp)
+            tb.healthy(fx)
+            tb.healthy(fx, NY)
+            with mock.patch.object(rule, 'stock_rescues', return_value=2):
+                word, lines, facts = fx.done()
+        self.assertEqual(word, 'INC')
+        self.assertEqual(facts['reasons'], ['stock-rescue: cmp 2'])
+        self.assertIn('REASON stock-rescue: cmp 2', lines)
+
+    def test_the_base_reasons_stay_and_a_clean_run_has_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture5(tmp)
+            tb.healthy(fx)
+            tb.healthy(fx, NY)
+            word, _lines, facts = fx.done()
+        self.assertEqual((word, facts['reasons']), ('PASS', []))
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture5(tmp)
+            tb.healthy(fx)
+            tb.healthy(fx, NY)
+            fx.lines.append(tb.memory_line(tb.ORIGIN + 50, 'open', 0, 9000, 52624, 54672))
+            fx.lines.append(tb.stamp(tb.ORIGIN) + ' ERROR torch.OutOfMemoryError: CUDA out of memory\n')
+            word, _lines, facts = fx.done()
+        self.assertEqual(word, 'FAIL', 'INC never lowers a FAIL')
+        self.assertTrue(any('OutOfMemoryError' in x for x in facts['reasons']))
+        self.assertIn('chunk-rows: 1 chunks past the bound over 1024 rows', facts['reasons'])
+
+
+class ChunkRowsOfADeadArm(UnderThisTable, unittest.TestCase):
+    """Codex, REVIEW-compose5 item 2: a crashed cmp has no final record; its count is partial or unavailable, never zero."""
+
+    def crashed(self, tmp, *, death=True):
+        fx = Fixture5(tmp)
+        tb.healthy(fx, starts=(320, 500, 700))
+        fx.lines.append(tb.memory_line(tb.ORIGIN + 900, 'open', 0, 9000, 97152, 98176))
+        fx.lines.append(tb.memory_line(tb.ORIGIN + 1000, 'open', 0, 9001, 97152, 98176))      # past the death line: not this arm's
+        (fx.root / 'engine-stream.log').write_text(''.join(fx.lines))
+        fx.write_turns(CMP)
+        if death:
+            (fx.root / 'engine-stream.err').write_text(tb.stamp(tb.ORIGIN + 950) + REAL_TORCH[0])
+        return rule.report(str(fx.root))
+
+    def test_the_stopped_arm_counts_its_real_rows_marked_partial(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            word, lines, facts = self.crashed(tmp)
+        self.assertEqual(word, 'FAIL')
+        got = facts['chunk_rows'][CMP]
+        self.assertIs(got['partial'], True)
+        self.assertGreater(got['below_bound'], 0)
+        self.assertEqual(got['below_max'], 1024)
+        self.assertTrue(any(line.startswith('CHUNK ROWS %s' % CMP) and '"partial": true' in line for line in lines))
+
+    def test_the_stopped_arm_ends_at_the_death_line_not_past_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with_death = self.crashed(tmp)[2]['chunk_rows'][CMP]
+        with tempfile.TemporaryDirectory() as tmp:
+            without = self.crashed(tmp, death=False)[2]['chunk_rows'][CMP]
+        self.assertEqual(without['past_bound'] - with_death['past_bound'], 1, 'the row after the death line is counted only without a death line')
+
+    def test_an_arm_that_never_ran_is_unavailable_not_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _word, lines, facts = self.crashed(tmp)
+        got = facts['chunk_rows'][NY]
+        self.assertEqual(got, dict(unavailable='no final record and no journal header'))
+        self.assertNotIn('below_bound', got)
+        self.assertTrue(any(line.startswith('CHUNK ROWS %s' % NY) and 'unavailable' in line for line in lines))
+
+    def test_a_whole_arm_is_not_marked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture5(tmp)
+            tb.healthy(fx)
+            tb.healthy(fx, NY)
+            facts = fx.done()[2]
+        self.assertNotIn('partial', facts['chunk_rows'][CMP])
+        self.assertGreater(facts['chunk_rows'][CMP]['below_bound'], 0)
+
+    def test_a_partial_span_past_the_bound_over_1024_still_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture5(tmp)
+            tb.healthy(fx, starts=(320, 500, 700))
+            fx.lines.append(tb.memory_line(tb.ORIGIN + 900, 'open', 0, 9000, 97152, 99200))
+            (fx.root / 'engine-stream.log').write_text(''.join(fx.lines))
+            fx.write_turns(CMP)
+            facts = rule.report(str(fx.root))[2]
+        self.assertEqual(facts['chunk_rows'][CMP]['past_over_1024'], 1)
+        self.assertIn('chunk-rows: 1 chunks past the bound over 1024 rows', facts['reasons'])
+
+
 class ChunkRows(unittest.TestCase):
     def test_the_read_sees_each_side_of_the_bound_on_rank_0_and_inside_the_span(self):
         rows = [dict(point='open', rank=0, t=5, a=0, b=2048), dict(point='open', rank=0, t=5, a=2048, b=4048), dict(point='open', rank=0, t=6, a=52624, b=53648), dict(point='open', rank=0, t=6, a=53648, b=55696),

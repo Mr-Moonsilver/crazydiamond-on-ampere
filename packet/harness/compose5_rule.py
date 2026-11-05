@@ -106,13 +106,18 @@ def death_lines(root):
     return first, tried
 
 
+def arm_span(root, label):
+    """(start, end) by the arm's record, or by its turns' header with end None: a stopped arm leaves no record. (None, None) when neither says."""
+    record = base.load_json('%s/arm-%s.json' % (root, label)) or {}
+    header = base.load_turns('%s/arm-%s.json.turns.jsonl' % (root, label))[0] or {}
+    return record.get('wall_start_s') or header.get('replay_start_s'), record.get('wall_end_s')
+
+
 def arm_at(root, labels, at):
-    """The arm running at the stamp, by its record or its turns' header; a stopped arm leaves no record. (label, seconds into it) or ('after <label>', None)."""
+    """The arm running at the stamp, by its record or its turns' header. (label, seconds into it) or ('after <label>', None)."""
     last = None
     for label in labels:
-        record = base.load_json('%s/arm-%s.json' % (root, label)) or {}
-        header = base.load_turns('%s/arm-%s.json.turns.jsonl' % (root, label))[0] or {}
-        start, end = record.get('wall_start_s') or header.get('replay_start_s'), record.get('wall_end_s')
+        start, end = arm_span(root, label)
         if start is None or (at is not None and start > at):
             continue
         last = (label, start, end)
@@ -157,6 +162,22 @@ def chunk_rows(rows, start, end):
     return dict(below_bound=len(below), below_over_1024=sum(1 for n in below if n > BOUND_ROWS), below_max=max(below, default=None), past_bound=len(past), past_over_1024=sum(1 for n in past if n > BOUND_ROWS), past_max=max(past, default=None))
 
 
+def arm_chunk_rows(root, label, rows):
+    """chunk_rows over the arm's span. No final record: from its journal's header to the first death line or the next arm's start, marked partial. No start known: unavailable, never a count of zero."""
+    start, end = arm_span(root, label)
+    if start is None:
+        return dict(unavailable='no final record and no journal header')
+    if end is not None:
+        return chunk_rows(rows, start, end)
+    limits = [at for at in (death_lines(root)[0],) if at is not None and at >= start]
+    for later in ARMS[ARMS.index(label) + 1:]:
+        following = arm_span(root, later)[0]
+        if following is not None:
+            limits.append(following)
+            break
+    return dict(chunk_rows(rows, start, min(limits) if limits else float('inf')), partial=True)
+
+
 def stock_rescues(arm):
     counters = ((arm.get('record') or {}).get('stock_rescue') or {}).get('counters') or {}
     return sum(v for name in ('attempts', 'refused') for v in (counters.get(name) or {}).values() if type(v) is int)
@@ -175,8 +196,10 @@ def report(root):
         arms[label]['record'] = base.load_json('%s/arm-%s.json' % (root, label))
     rule_line = lines.pop()
     rescues = stock_rescues(arms[ON])
+    reasons = list(facts.get('reasons') or [])      # what this rule adds goes in the JSON too, beside the base verdict's
     if rescues:
-        lines.append('REASON stock-rescue: cmp %d' % rescues)
+        reasons.append('stock-rescue: cmp %d' % rescues)
+        lines.append('REASON ' + reasons[-1])
         word = 'FAIL' if word == 'FAIL' else 'INC'
     price = price_read(arms)
     for pair in price['pairs']:
@@ -190,11 +213,12 @@ def report(root):
     chunks = {}
     for label in ARMS:
         record = arms[label].get('record') or {}
-        chunks[label] = chunk_rows(rows, record.get('wall_start_s') or 0, record.get('wall_end_s') or 0)
+        chunks[label] = arm_chunk_rows(root, label, rows)
         lines.append('CHUNK ROWS %s: %s; HOST FILTER %s' % (label, json.dumps(chunks[label], sort_keys=True), json.dumps((record.get('cow_host_filter') or {}).get('counters'), sort_keys=True)))
-    over = sum(chunks[label]['past_over_1024'] for label in ARMS)
+    over = sum(chunks[label].get('past_over_1024') or 0 for label in ARMS)     # a partial span's chunks are real rows; an arm with no span has no count
     if over:
-        lines.append('REASON chunk-rows: %d chunks past the bound over 1024 rows' % over)
+        reasons.append('chunk-rows: %d chunks past the bound over 1024 rows' % over)
+        lines.append('REASON ' + reasons[-1])
         word = 'FAIL' if word == 'FAIL' else 'INC'
     crash = crash_read(root)
     if crash:
@@ -208,7 +232,7 @@ def report(root):
     lines.append('RULE %s' % word)
     for label in ARMS:
         arms[label].pop('record', None)
-    facts.update(rule=word, price=price, r1=read, stock_rescues=rescues, chunk_rows=chunks, crash=crash)
+    facts.update(rule=word, reasons=reasons, price=price, r1=read, stock_rescues=rescues, chunk_rows=chunks, crash=crash)
     return word, lines, facts
 
 
