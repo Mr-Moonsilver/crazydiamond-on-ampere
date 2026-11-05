@@ -4,9 +4,9 @@
 Declared deltas over compose-4's three texts, each by exact count:
   names     q18a-compose-4 -> q18a-compose-5 and every compose-4 name of the queue, records, box, gate and table -> compose5. The box imports compose-4's box, table and replay, so those three keep their names;
   body      this table's core list; the arm and grade texts that name the arms;
-  modules   compose-4's box and table added to the preflight's and the declaration's lists: compose-5's box binds its table over them.
-The switches, the yield's bounds and the ingress check stay compose-4's. The arm list comes from harness/compose5_arms.py; --check verifies the files.
-Not here yet, waiting on the 5f and chunk_bound merges: their settings, and the chunk's assert (DESIGN-compose-5.md, Build state).
+  modules   compose-4's box and table added to the preflight's and the declaration's lists: compose-5's box binds its table over them;
+  chunk     FLASH_S5_CHUNK_TOKENS=2048 in EXTRA_ENV for the whole run, as dp8d's launch; both preflights assert it, where compose-4's asserted it unset.
+The other switches, the yield's bounds and the ingress check stay compose-4's. The arm list comes from harness/compose5_arms.py; --check verifies the files.
 """
 import argparse
 from pathlib import Path
@@ -25,7 +25,8 @@ HEADER_NOTE = ('# compose-5: compose-4 with the yield priced, discovery mode: th
                "the private PLE buffer on every arm (harness/compose5_arms.py). The rule and the price are harness/compose5_rule.py on the hub.\n")
 NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-compose-5'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
 # compose-5's box imports compose-4's box, table and replay by their names; the rename above must not reach them.
-SWITCHES = table.CONNECTIONS_ENV + ' ' + table.PLE_ENV
+SWITCHES = table.CONNECTIONS_ENV + ' ' + table.PLE_ENV + ' ' + table.CHUNK_ENV
+OLD_LAST_SWITCH = table.PLE_ENV + ' '
 DRAFT_FILES = 'e3_compose5_box.py compose5_arms.py e3_attn_meta_box.py attn_meta_arms.py e3_inwait_box.py inwait_arms.py e3_native_refusal_client.py; do'
 DECLARE_FILES = 'e3_compose5_box.py compose5_arms.py compose5_gate.py inwait_gate.py e3_inwait_box.py inwait_arms.py e3_native_refusal_client.py'
 MODULES_AFTER = ' e3_a1_trunk_box.py a1_trunk_arms.py compose5_replay.py agent_replay.py'
@@ -47,7 +48,12 @@ def source(suffix):
     return (ROOT / 'harness/runs' / (OLD + suffix)).read_text()
 
 
+def chunk_assert(text, form):
+    return once(text, "assert 'FLASH_S5_CHUNK_TOKENS' not in env, 'the chunk stays the default 1024'", "assert env.get('FLASH_S5_CHUNK_TOKENS')%s'%d', 'native chunk rows installed'" % (form, table.CHUNK_TOKENS))
+
+
 def draft(text):
+    text = chunk_assert(text, ' == ')
     text = once(text, OLD_CORE, CORE)
     text = once(text, ARM_TEXT[0], ARM_TEXT[1])
     text = once(text, HEADER_ANCHOR, HEADER_NOTE + HEADER_ANCHOR)
@@ -56,10 +62,12 @@ def draft(text):
 
 
 def settings(text):
+    text = once(text, OLD_LAST_SWITCH, OLD_LAST_SWITCH + table.CHUNK_ENV + ' ')
     return renames(text)
 
 
 def declare(text):
+    text = chunk_assert(text, '==')
     text = renames(text)
     return once(text, MODULES_AFTER, MODULES)
 

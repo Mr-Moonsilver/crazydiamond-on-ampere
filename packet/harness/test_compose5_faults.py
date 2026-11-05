@@ -107,7 +107,7 @@ class ReentryPlan(unittest.TestCase):
     """The policy's plan at re-entry against the chunks admission then really admits."""
     TOKENS = 6000
 
-    def resume(self, chunk, driver='native'):
+    def resume(self, chunk, driver='native', bound=None):
         real = ay.bridge_suite.Request
 
         def big(uid=None, tokens=None, **kwargs):
@@ -115,6 +115,7 @@ class ReentryPlan(unittest.TestCase):
         with mock.patch.object(ay.bridge_suite, 'Request', big):
             rig = ay.Rig(cached={}, driver=driver)
         rig.c.chunk_tokens = chunk
+        rig.c.chunk_bound = bound
         append = ay.run_to_yield(rig)
         ay.to_append(rig)
         ay.run_append(rig)
@@ -132,8 +133,8 @@ class ReentryPlan(unittest.TestCase):
             sizes.append(rig.bulk.num_computed_tokens - before)
         return sizes
 
-    def agrees(self, chunk, driver='native'):
-        rig = self.resume(chunk, driver)
+    def agrees(self, chunk, driver='native', bound=None):
+        rig = self.resume(chunk, driver, bound)
         plan = rig.p._reentry_plan(rig.bulk)['plan']
         self.assertEqual(sum(plan), self.TOKENS - 1 - rig.bulk.num_computed_tokens)
         self.assertEqual(list(plan), self.walk(rig))
@@ -147,6 +148,16 @@ class ReentryPlan(unittest.TestCase):
 
     def test_the_box_driver_too(self):
         self.assertEqual(self.agrees(2048, 'staged'), (2048, 1903))
+
+    def test_with_the_bound_the_plan_is_what_admission_does(self):
+        # b13's shape at this rig's size: from 2048 rows in, 2048 to a chunk past 3000, then 1024. The unbounded plan above is the control.
+        self.assertEqual(self.agrees(2048, bound=(3000, 1024)), (2048, 1024, 879))
+
+    def test_with_the_bound_on_the_box_driver_too(self):
+        self.assertEqual(self.agrees(2048, 'staged', bound=(3000, 1024)), (2048, 1024, 879))
+
+    def test_a_bound_past_the_prompt_changes_nothing(self):
+        self.assertEqual(self.agrees(2048, bound=(52624, 1024)), (2048, 1903))
 
 
 if __name__ == '__main__':

@@ -29,7 +29,7 @@ import probe_control
 HERE = Path(__file__).resolve().parent
 SETTINGS = HERE / 'runs' / 'q18a_inwait_settings.sh'
 RUN = 'inwait-router'
-SAMPLE = dict(mode='burst', fused=True, size=2, local=True, overlap=True, defer_bind=True, lazy_recv=True, decode_merge='chunk', inwait=True, early_successor=True, exact_successor=False)
+SAMPLE = dict(mode='burst', fused=True, size=2, local=True, overlap=True, defer_bind=True, lazy_recv=True, decode_merge='chunk', inwait=True, early_successor=True, exact_successor=False, chunk_bound=None)
 
 
 def settings_env():

@@ -171,6 +171,8 @@ class NativeOverlapSession:
             raise NativeOverlapSessionError('native-stage-overlap-defer-bind-not-installed')
         if 'early_successor' in command and 'inwait' not in command:
             raise NativeOverlapSessionError('native-stage-early-successor-needs-inwait')
+        if 'chunk_bound' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-chunk-bound-needs-inwait')
         if 'exact_successor' in command and 'inwait' not in command:
             raise NativeOverlapSessionError('native-stage-exact-successor-needs-inwait')
         if 'lazy_recv' in command or 'decode_merge' in command or 'inwait' in command:
@@ -188,7 +190,8 @@ class NativeOverlapSession:
                                                            decode_merge=command.get('decode_merge'),
                                                            inwait=command.get('inwait'),
                                                            early_successor=command.get('early_successor'),
-                                                           exact_successor=command.get('exact_successor'))
+                                                           exact_successor=command.get('exact_successor'),
+                                                           **({'chunk_bound': command['chunk_bound']} if 'chunk_bound' in command else {}))
         if 'overlap' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP', '0') == '1':
             # C1 only; with the switch off the command is C0's, field and all, as before.
             if 'defer_bind' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', '0') == '1':

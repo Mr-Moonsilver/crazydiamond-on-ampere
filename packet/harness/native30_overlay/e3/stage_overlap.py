@@ -40,7 +40,7 @@ from e3_types import E3ContractError, E3Pending
 from engine_driver import DriverError, NativeSegmentDriver, _progress_logger
 from native_measurement import INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS
 from reply_transport import Backpressure
-from scheduler_hooks import PrefillAdmissionController, _ProjectedPrefillRequest, native_chunk_cap, staged_chunk_plan
+from scheduler_hooks import PrefillAdmissionController, _ProjectedPrefillRequest, bounded_limit, native_chunk_cap, staged_chunk_plan
 from stage_progress import StagedSegmentDriver, stage_local_enabled
 from wire_v1 import CancelRequest, PollRequest, ReleaseAck, SegmentKind
 
@@ -361,6 +361,7 @@ class StagedAdmissionController(PrefillAdmissionController):
             return None
         request = parked.request
         cap = native_chunk_cap(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', self.chunk_tokens))
+        cap = bounded_limit(getattr(self, 'chunk_bound', None), parked.transaction.chunk_end, cap)     # decode-phase dp6: the rows the successor may really take
         reason = overlap_refusal(scheduler.kv_cache_manager, request, parked.transaction.chunk_end,
                                  parked.admission.terminal, cap)
         exact = reason == 'successor-may-be-terminal' and getattr(owner, 'exact_successor', False) is True
@@ -409,7 +410,7 @@ class StagedAdmissionController(PrefillAdmissionController):
         if self.minimum_stage_rows <= 1:
             return start + self._aligned_split(scheduler, _ProjectedPrefillRequest(request, start), min(cap, end - start)) >= end
         plan = staged_chunk_plan(start, end, cap, self.minimum_stage_rows,
-                                 lambda position, limit: self._aligned_split(scheduler, _ProjectedPrefillRequest(request, position), limit))
+                                 lambda position, limit: self._aligned_split(scheduler, _ProjectedPrefillRequest(request, position), bounded_limit(getattr(self, 'chunk_bound', None), position, limit)))
         return not plan or start + plan[0] >= end
 
     # -- lookups by transaction ---------------------------------------------
@@ -1311,8 +1312,16 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-exact-successor-invalid')
             if exact and inwait is not True:
                 raise DriverError('native-stage-exact-successor-needs-inwait')
+        if 'chunk_bound' in command:
+            # decode-phase dp6: per arm, in the same pause. None is today's plan.
+            if not self.inwait_installed:
+                raise DriverError('native-stage-inwait-not-installed')
+            bound = command['chunk_bound']
+            if bound is not None and not (type(bound) in (list, tuple) and len(bound) == 2 and all(type(v) is int for v in bound)
+                                          and bound[0] >= 0 and 1024 <= bound[1] <= self.controller.chunk_tokens):
+                raise DriverError('native-stage-chunk-bound-invalid')
         reply = super()._stage_control({k: v for k, v in command.items()
-                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor')})
+                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor', 'chunk_bound')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -1357,6 +1366,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             reply.update(early_successor=self.early_successor)
             self.exact_successor = bool(inwait and exact)
             reply.update(exact_successor=self.exact_successor)
+        if 'chunk_bound' in command:
+            self.controller.chunk_bound = None if command['chunk_bound'] is None else tuple(command['chunk_bound'])
+            reply.update(chunk_bound=command['chunk_bound'])
         return reply
 
     def stage_status(self):

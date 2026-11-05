@@ -10,7 +10,9 @@ One launch, connections 32 and the launch switches for the whole run, as compose
   ny    the yield off, the same replay, the same seed; the salts differ, so neither hits the other's cache
 Order: sm | decode-am1 | dec1 | fon foff | foff fon (reversed, on index 1) | cmp | ny | the grade.
 Lost, on the lead's ruling: compose-4's replay read of the private PLE buffer on and off.
-Not in this table yet, waiting on the 5f and chunk_bound merges: score_split, stock_rescue, chunk_bound (DESIGN-compose-5.md, Build state).
+b13 on every arm, from dp8d (READING-box-dp8d.md, confirmed at 32): native chunks at 2048 rows below 13 Mamba blocks, 1024 from there, FLASH_S5_CHUNK_TOKENS=2048 for the whole run. hf (cow_host_filter) on every arm,
+adopted by dp8d, as its b13h. What dp8d did not run with them: 5d's warm block and reserved cap, the exact successor, the private PLE buffer and the yield; those are compose-4's rows.
+5f is out, for compose-6 (lead, 5 Nov 08:42): no score_split, no stock_rescue; the rule reads their counters as none.
 """
 import sys
 
@@ -46,6 +48,10 @@ CONNECTIONS_ENV = _c4.CONNECTIONS_ENV
 PLE_ENV = _c4.PLE_ENV
 PLANS = _c4.PLANS
 PLAN = {'sm': 'pair', 'dec1': 'none', 'fon': 'pair', 'foff': 'pair', 'cmp': 'none', 'ny': 'none'}
+CHUNK_TOKENS = 2048
+CHUNK_ENV = 'FLASH_S5_CHUNK_TOKENS=%d' % CHUNK_TOKENS
+MAMBA_BLOCK_ROWS, HASH_BLOCK_ROWS = 4048, 176     # read from this model's chunks on the box (dp5): ends 4048 x k, last stop prompt-1 // 176 x 176
+B13_BOUND = [13 * MAMBA_BLOCK_ROWS, 1024]         # dp8d's b13 and b13h: chunk_bound on native_stage_local, [end, rows]
 ARM_GENERATIONS = _c4.ARM_GENERATIONS
 ONE_STREAM_WINDOW_S = _c4.ONE_STREAM_WINDOW_S
 
@@ -64,6 +70,23 @@ INDEXES = BAND1_INDEXES
 SIZES = _c4.SIZES
 COLD_ARM = 'sm.g2-live-0'
 SMOKE_ARM = COLD_ARM
+
+
+def planned_chunks(prompt_tokens, cap=CHUNK_TOKENS, bound=None):
+    """A fresh prompt's native chunks: the largest stock split at each position, as staged_chunk_plan finds it (dp6)."""
+    end = prompt_tokens - 1
+    stop = end // HASH_BLOCK_ROWS * HASH_BLOCK_ROWS
+    position, sizes = 0, []
+    while position < end:
+        limit = cap if bound is None or position < bound[0] else min(cap, bound[1])
+        following = min(position + limit, end)
+        if following < end and following // MAMBA_BLOCK_ROWS * MAMBA_BLOCK_ROWS > position:
+            following = following // MAMBA_BLOCK_ROWS * MAMBA_BLOCK_ROWS
+        if position < stop < following:
+            following = stop
+        sizes.append(following - position)
+        position = following
+    return sizes
 
 
 def band_of_index(index):
@@ -95,7 +118,7 @@ def arms(part=None):
         rows.append(dict(label=label(sel, 2, cohort, index), selection=selection(sel, 2), part=row_part, c1=sel, kind=KIND[sel], attn=True, lazy_recv=True, decode_merge='chunk', inwait=True, next_levers=True,
                          prepare_slices=True, score_warm=True, score_warm_rank0=False, allocator_flush=True, cow_fast=True, reserved_cap=True, cow_host_filter=True, cow_verify=True, exact_successor=True,
                          ple_private=PLE_PRIVATE[sel], ple_witness=PLE_WITNESS[sel], overlap=True, defer_bind=True, c0='on', stage_local=True, size=2, cohort=cohort, index=index, band=band_of_index(index),
-                         extra=False, entry_limit=ENTRY_LIMIT[row_part][0], yield_on=YIELD[sel], plan=PLANS[PLAN[sel]], generations=generations_of(sel)))
+                         extra=False, entry_limit=ENTRY_LIMIT[row_part][0], yield_on=YIELD[sel], plan=PLANS[PLAN[sel]], generations=generations_of(sel), chunk_bound=list(B13_BOUND)))
     return rows
 
 
@@ -139,6 +162,8 @@ def check():
     assert rows['fon.g2-live-1']['index'] == rows['foff.g2-live-1']['index'] == 1
     assert all(r['score_warm'] and r['reserved_cap'] and r['exact_successor'] and r['allocator_flush'] and r['ple_private'] for r in rows.values()), "5d's full and the private PLE buffer on every arm"
     assert not any(r['ple_witness'] for r in rows.values()), 'no arm carries the witness'
+    assert all(r['chunk_bound'] == B13_BOUND and r['cow_host_filter'] and r['cow_fast'] for r in rows.values()), "dp8d's b13h on every arm"
+    assert B13_BOUND == [52624, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, B13_BOUND)) == 40, "dp8d's 40 chunks at band 1"
     return True
 
 

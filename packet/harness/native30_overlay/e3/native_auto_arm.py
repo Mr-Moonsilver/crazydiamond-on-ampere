@@ -7,7 +7,7 @@ import os
 import weakref
 
 from e3_types import E3ContractError, _text
-from scheduler_hooks import native_chunk_cap, staged_chunk_plan, _ProjectedPrefillRequest
+from scheduler_hooks import bounded_limit, native_chunk_cap, staged_chunk_plan, _ProjectedPrefillRequest
 
 ENV = 'FLASH_S5_AUTO_ARM'
 PHASE = 'auto-prefill'
@@ -317,6 +317,7 @@ class AutoArmPolicy:
             return None
         cap = native_chunk_cap(c.chunk_tokens, s.max_num_scheduled_tokens)
         def split(position, limit):
+            limit = bounded_limit(getattr(c, 'chunk_bound', None), position, limit)
             projected = request if position == start else _ProjectedPrefillRequest(request, position)
             return c._aligned_split(s, projected, limit,
                 num_new_local_computed_tokens=start if position == start else 0)
@@ -343,6 +344,7 @@ class AutoArmPolicy:
             return None
         cap = native_chunk_cap(c.chunk_tokens, s.max_num_scheduled_tokens)    # the cap admission plans with
         def split(position, limit):
+            limit = bounded_limit(getattr(c, 'chunk_bound', None), position, limit)
             projected = request if position == start else _ProjectedPrefillRequest(request, position)
             return c._aligned_split(s, projected, limit)
         plan = staged_chunk_plan(start, end, cap, c.minimum_stage_rows, split)

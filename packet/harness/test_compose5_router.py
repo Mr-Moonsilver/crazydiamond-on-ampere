@@ -31,6 +31,7 @@ class Base(a1r.Base):
     async def asyncSetUp(self):
         with mock.patch.object(a1r, 'SETTINGS', SETTINGS):
             await super().asyncSetUp()
+        self.driver.controller.chunk_tokens = T.CHUNK_TOKENS    # the box's: the fixture's own is under the bound's 1024 rows, and the stage refuses that
 
 
 class Exposure(Base):
@@ -39,7 +40,7 @@ class Exposure(Base):
             self.assertEqual(self.env_box.get(name), str(value), name)
         for name, value in (('FLASH_S5_INWAIT', '1'), ('FLASH_S5_PLE_PRIVATE', '1'), ('FLASH_S5_PLE_WITNESS', '1')):    # connections: the fixture's env holds FLASH names only; test_compose5_queue reads EXTRA_ENV
             self.assertEqual(self.env_box.get(name), value, name)
-        self.assertIsNone(self.env_box.get('FLASH_S5_CHUNK_TOKENS'))
+        self.assertEqual(self.env_box.get('FLASH_S5_CHUNK_TOKENS'), str(T.CHUNK_TOKENS))
 
     async def test_every_box_action_gets_a_200(self):
         def smoke():
@@ -69,6 +70,7 @@ class ArmEnd(a1r.ArmEnd):
     async def asyncSetUp(self):
         with mock.patch.object(a1r, 'SETTINGS', SETTINGS):
             await super().asyncSetUp()
+        self.driver.controller.chunk_tokens = T.CHUNK_TOKENS
 
     async def arm(self, sel, cohort='live', index=0):
         real = replay.run

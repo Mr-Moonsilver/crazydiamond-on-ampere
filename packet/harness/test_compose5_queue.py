@@ -64,13 +64,16 @@ class Derivation(unittest.TestCase):
             self.assertIn("assert env.get('%s') == " % name, draft)
             self.assertIn("assert env.get('%s')==" % name, declare)
         self.assertEqual((pairs['FLASH_S5_INWAIT'], pairs['FLASH_S5_AUTO_ARM']), ('1', '1'))
-        self.assertNotIn('FLASH_S5_CHUNK_TOKENS', pairs, 'the chunk stays the default')
+        self.assertEqual(pairs['FLASH_S5_CHUNK_TOKENS'], '2048', 'b13 is a plan under a 2048 launch')
+        self.assertIn("assert env.get('FLASH_S5_CHUNK_TOKENS') == '2048'", draft)
+        self.assertIn("assert env.get('FLASH_S5_CHUNK_TOKENS')=='2048'", declare)
+        self.assertNotIn("'FLASH_S5_CHUNK_TOKENS' not in env", draft + declare)
         for module in ('e3_a1_trunk_box.py', 'a1_trunk_arms.py', 'compose4_replay.py', 'e3_compose4_box.py', 'compose4_arms.py', 'agent_replay.py', 'e3_inwait_box.py', 'inwait_arms.py', 'e3_native_refusal_client.py', 'inwait_gate.py'):
             self.assertIn(module, draft, 'the box imports it: the preflight lists it')
             self.assertIn(module, declare, 'the box imports it: the declaration lists it')
         self.assertNotRegex(draft, r'a1-trunk-(grade|read|report)', 'the records carry this queue\'s name')
 
-    def test_the_default_chunk_is_1024(self):
+    def test_the_default_chunk_is_1024_so_the_launch_must_say_2048(self):
         import async_handoff
         self.assertEqual(async_handoff.DEFAULT_CHUNK_TOKENS, 1024)
 
@@ -96,7 +99,8 @@ def declared_env():
 
 
 def real_env():
-    return dict(json.loads((HERE / 'fixtures/compose4_declared_20261105_0422.json').read_text())['identity']['env'])
+    # compose-4's staging on the box, and the one name this queue adds, as dp8d's identity declared it on the box (q18a-dp8-c32, engine.identity-start.json: "2048", plain).
+    return dict(json.loads((HERE / 'fixtures/compose4_declared_20261105_0422.json').read_text())['identity']['env'], FLASH_S5_CHUNK_TOKENS='2048')
 
 
 def declare_block(text):
@@ -164,13 +168,18 @@ class DeclaredIdentity(unittest.TestCase):
         self.assertIn('AssertionError: installed for the whole run', done.stderr)
 
     def test_each_switch_missing_fails_the_preflight(self):
-        for name in ('CUDA_DEVICE_MAX_CONNECTIONS', 'FLASH_S5_PLE_PRIVATE', 'FLASH_S5_PLE_WITNESS', 'FLASH_S5_INWAIT'):
+        for name in ('CUDA_DEVICE_MAX_CONNECTIONS', 'FLASH_S5_PLE_PRIVATE', 'FLASH_S5_PLE_WITNESS', 'FLASH_S5_INWAIT', 'FLASH_S5_CHUNK_TOKENS'):
             with self.subTest(name):
                 env = declared_env()
                 del env[name]
                 self.assertEqual(self.run_block(declare_block(queue.derive()[DECLARE]), env).returncode, 1)
-        env = dict(declared_env(), FLASH_S5_CHUNK_TOKENS='2048')
-        self.assertEqual(self.run_block(declare_block(queue.derive()[DECLARE]), env).returncode, 1)
+        for value in ('1024', '4048', {'redacted_length': 4}):
+            with self.subTest(value=value):
+                env = dict(declared_env(), FLASH_S5_CHUNK_TOKENS=value)
+                self.assertEqual(self.run_block(declare_block(queue.derive()[DECLARE]), env).returncode, 1)
+
+    def test_the_identity_shows_the_chunk_plain_as_dp8ds_did(self):
+        self.assertEqual(engine_identity.clean_value('FLASH_S5_CHUNK_TOKENS', '2048'), '2048')
 
     def test_the_drafts_preflight_env_lines_pass_on_the_real_identity(self):
         env = declared_env()

@@ -86,7 +86,7 @@ class Table(unittest.TestCase):
     def test_compose_4s_rows_are_the_base(self):
         c4 = T4.by_label()[CMP]
         row = T.by_label()[CMP]
-        self.assertEqual({k: row[k] for k in row if row[k] != c4[k]}, {}, 'cmp is compose-4\'s cmp')
+        self.assertEqual({k: row[k] for k in row if k not in c4 or row[k] != c4[k]}, dict(chunk_bound=T.B13_BOUND), 'cmp is compose-4\'s cmp and b13')
         self.assertEqual(sorted(k for k in c4 if c4[k] != T.by_label()[NY][k]), ['c1', 'label', 'selection', 'yield_on'], 'ny is cmp without the yield')
 
     def test_the_replay_and_the_ceiling_are_compose_4s(self):
@@ -104,6 +104,57 @@ class Table(unittest.TestCase):
         self.assertEqual(T.matched_off(rows['fon.g2-live-1']), 'foff.g2-live-1')
         self.assertEqual(T.matched_off(rows[CMP]), NY)
         self.assertIsNone(T.matched_off(rows[SM]))
+
+
+class Smoke(unittest.TestCase):
+    """What this table adds to compose-4's smoke; b13h's numbers in the record are dp8d's (q18a-dp8-c32, arm-b13h.g2-live-0.json)."""
+
+    def full(self):
+        row = T.by_label()[SM]
+        rec = ta1.record_of(row)
+        rec.update(ple_private=dict(counters=dict(scopes={'0': 9, '1': 9})), score_warm=dict(counters=dict(allocs={str(k): 1 for k in range(4)})), reserved_cap=dict(requested=True, counters={}),
+                   cow_host_filter=dict(requested=True, counters=dict(kept={str(k): 0 for k in range(4)}, skipped={str(k): 37 for k in range(4)}, unfiltered={str(k): 0 for k in range(4)})))
+        rec.setdefault('inwait', {}).update(exact_acknowledged=True, bound_requested=[52624, 1024], bound_acknowledged=[52624, 1024])
+        rec.setdefault('progress_delta', {})['chunks'] = 40
+        rec.setdefault('fresh', {})['prompt_tokens_observed'] = 65445
+        return rec
+
+    def assert_stops(self, change, reason):
+        rec = self.full()
+        change(rec)
+        ok, reasons = box.smoke_check(rec)
+        self.assertFalse(ok)
+        self.assertIn(reason, reasons)
+
+    def test_dp8ds_numbers_pass(self):
+        self.assertEqual(box.smoke_check(self.full()), (True, []))
+
+    def test_the_bound_not_acknowledged_stops_the_table(self):
+        self.assert_stops(lambda r: r['inwait'].update(bound_acknowledged=None), 'smoke-chunk-bound-not-acknowledged')
+
+    def test_a_launch_that_fell_back_to_1024_stops_the_table(self):
+        # compose-4's smoke at 1024: 71 chunks, its 66 and the 5 of its returners and append. That's the control: under b13, with the same 5, 45.
+        self.assert_stops(lambda r: r['progress_delta'].update(chunks=71), 'smoke-chunk-rows-not-requested')
+        self.assert_stops(lambda r: r['progress_delta'].update(chunks=66), 'smoke-chunk-rows-not-requested')
+        rec = self.full()
+        rec['progress_delta']['chunks'] = 45
+        self.assertEqual(box.smoke_check(rec), (True, []))
+
+    def test_no_count_to_read_stops_the_table(self):
+        self.assert_stops(lambda r: r['progress_delta'].pop('chunks'), 'smoke-chunk-rows-not-requested')
+        self.assert_stops(lambda r: r['fresh'].pop('prompt_tokens_observed'), 'smoke-chunk-rows-not-requested')
+
+    def test_the_host_filter_not_engaged_on_a_rank_stops_the_table(self):
+        self.assert_stops(lambda r: r['cow_host_filter']['counters']['skipped'].update({'2': 0}), 'smoke-host-filter-not-engaged')
+        self.assert_stops(lambda r: r['cow_host_filter'].update(counters={}), 'smoke-host-filter-not-engaged')
+        self.assert_stops(lambda r: r['cow_host_filter']['counters']['unfiltered'].update({'3': 1}), 'smoke-host-filter-unfiltered')
+
+
+class ChunkRows(unittest.TestCase):
+    def test_the_read_sees_each_side_of_the_bound_on_rank_0_and_inside_the_span(self):
+        rows = [dict(point='open', rank=0, t=5, a=0, b=2048), dict(point='open', rank=0, t=5, a=2048, b=4048), dict(point='open', rank=0, t=6, a=52624, b=53648), dict(point='open', rank=0, t=6, a=53648, b=55696),
+                dict(point='released', rank=0, t=6, a=53648, b=55696), dict(point='open', rank=1, t=6, a=53648, b=55696), dict(point='open', rank=0, t=50, a=53648, b=55696)]
+        self.assertEqual(rule.chunk_rows(rows, 1, 10), dict(below_bound=2, below_over_1024=2, below_max=2048, past_bound=2, past_over_1024=1, past_max=2048))
 
 
 class BoxBinding(unittest.TestCase):
@@ -159,7 +210,9 @@ class Grade(unittest.TestCase):
     def records(self):
         out = []
         for row in T.arms():
-            out.append(dict(ta1.record_of(dict(row)), schema=box.ARM_SCHEMA, kind=row['kind'], label=row['label']))
+            rec = dict(ta1.record_of(dict(row)), schema=box.ARM_SCHEMA, kind=row['kind'], label=row['label'])
+            rec['inwait'] = dict(rec.get('inwait') or {}, bound_requested=row['chunk_bound'], bound_acknowledged=row['chunk_bound'])
+            out.append(rec)
         return ta1.tbox.decode_records() + out
 
     def grade_of(self, arms, **kw):
@@ -168,6 +221,15 @@ class Grade(unittest.TestCase):
             log.write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP))
             known = [a for a in arms if a.get('label')]
             return box.grade(arms, {a['label']: tap.PASS for a in known}, tap.CHECKS, [str(log)], {a['label']: tap.ALIVE for a in known}, **kw)
+
+    def test_a_bound_the_engine_did_not_acknowledge_fails_on_every_arm(self):
+        for row in T.arms():
+            for reply in (None, [0, 1024], [52624, 2048]):
+                arms = self.records()
+                next(a for a in arms if a.get('label') == row['label'])['inwait']['bound_acknowledged'] = reply
+                result = self.grade_of(arms)
+                self.assertEqual(result['verdict'], 'FAIL', (row['label'], reply))
+                self.assertIn(row['label'] + ':chunk-bound-not-acknowledged', result['failures'])
 
     def test_a_missing_frozen_arm_is_inc(self):
         arms = [a for a in self.records() if a['label'] != 'foff.g2-live-1']

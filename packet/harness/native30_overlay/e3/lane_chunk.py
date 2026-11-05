@@ -454,7 +454,62 @@ def _builder_field_class(name, value, torch_module):
     raise LaneChunkError('unclassified native metadata builder field: ' + name)
 
 
-def private_attention_groups(attn_groups, *, torch_module, max_bytes=MAX_NATIVE_BUILDER_BYTES):
+# decode-phase dp5c: QSAMetadataBuilder's persistent row buffers (common/qsa_cache.py:624-650), sized by the stock budget.
+_QSA_ROW_BUFFERS = ('token_to_req_buffer', 'slot_mapping_buffer', 'logical_positions_buffer',
+                    'visible_blocks_buffer')
+_QSA_ROW_METADATA = ('token_to_req', 'slot_mapping', 'logical_positions', 'visible_blocks')
+
+
+def _scaled_builder_shape(builder, name, value, row_capacity, torch_module):
+    """The private shape of a stock-row-sized builder tensor above the stock budget, else None (a plain clone).
+
+    Nothing else may be sized by the stock rows: an unknown tensor of that length refuses at startup, because
+    the stock builder's ``[:num_tokens]`` on it would return too few rows without an error.
+    """
+    if row_capacity is None or not isinstance(value, torch_module.Tensor):
+        return None
+    stock_rows, chunk_tokens = row_capacity
+    if name in _QSA_ROW_BUFFERS:
+        if tuple(value.shape) != (stock_rows,):
+            raise LaneChunkError(f'native metadata row buffer {name} is not the stock {stock_rows} rows')
+        return (chunk_tokens,)
+    if name == 'k_work_metadata_buffer':
+        if int(value.numel()) == 0:
+            return None
+        ratio, capacity = builder.compress_ratio, builder.request_capacity
+        if tuple(value.shape) != ((stock_rows + (ratio - 1) * capacity) // ratio, 2):
+            raise LaneChunkError('native metadata k-work buffer is not the stock shape')
+        return ((chunk_tokens + (ratio - 1) * capacity) // ratio, 2)
+    if int(value.dim()) > 0 and int(value.shape[0]) == stock_rows:
+        raise LaneChunkError('stock-row-sized native metadata builder field is not scaled: ' + name)
+    return None
+
+
+def _scaled_builder_value(value, shape, torch_module, copied, name, max_bytes):
+    nbytes = int(value.element_size())
+    for size in shape:
+        nbytes *= int(size)
+    if sum(size for size, _ in copied) + nbytes > max_bytes:
+        raise LaneChunkError(f'native metadata builder storage exceeds {max_bytes} byte per-rank cap at {name}')
+    result = torch_module.empty(shape, dtype=value.dtype, device=value.device)
+    copied.append((nbytes, value))
+    return result
+
+
+def check_metadata_rows(metadata, num_tokens):
+    """decode-phase dp5c: a builder slices a persistent buffer with ``[:num_tokens]``, and past its end that returns
+    fewer rows with no error; the next stage then fails far away, or a kernel takes the short view. Every QSA row
+    field of this chunk's metadata must hold the chunk's rows. Host shapes only."""
+    for name, md in metadata.items():
+        if getattr(md, 'visible_blocks', None) is None:
+            continue
+        for field in _QSA_ROW_METADATA:
+            rows = tuple(getattr(md, field).shape)
+            if len(rows) != 1 or rows[0] != num_tokens:
+                raise LaneChunkError(f'native metadata {name}.{field} holds {rows}, not {num_tokens} rows')
+
+
+def private_attention_groups(attn_groups, *, torch_module, max_bytes=MAX_NATIVE_BUILDER_BYTES, row_capacity=None):
     """Create a native-only builder view; stock groups/builders are untouched.
 
     Every builder tensor and container is copied once per LaneChunkFactory,
@@ -462,6 +517,9 @@ def private_attention_groups(attn_groups, *, torch_module, max_bytes=MAX_NATIVE_
     QSA's token map, logical positions, visible blocks, slot mapping and
     k-work rows) as well as mutable builder fields such as Mamba-aligned state
     indices. Non-container configuration objects are shared read-only.
+
+    decode-phase dp5c: ``row_capacity`` is (stock rows, native chunk rows), set only above the stock budget; the
+    row-sized buffers are then allocated at the chunk's size instead of cloned. None, as always: plain clones.
     """
     copied = []
     result = []
@@ -490,8 +548,12 @@ def private_attention_groups(attn_groups, *, torch_module, max_bytes=MAX_NATIVE_
                 for name, value in builder_fields.items():
                     field_class = _builder_field_class(name, value, torch_module)
                     bytes_before = sum(size for size, _ in copied)
-                    cloned = (value if field_class.startswith('shared-read-only') else
-                              _clone_builder_value(value, torch_module, copied, name, max_bytes))
+                    shape = _scaled_builder_shape(builder, name, value, row_capacity, torch_module)
+                    if shape is not None:
+                        cloned = _scaled_builder_value(value, shape, torch_module, copied, name, max_bytes)
+                    else:
+                        cloned = (value if field_class.startswith('shared-read-only') else
+                                  _clone_builder_value(value, torch_module, copied, name, max_bytes))
                     setattr(private_builder, name, cloned)
                     copied_bytes = sum(size for size, _ in copied) - bytes_before
                     fields.append(dict(name=name, classification=field_class,
@@ -1087,6 +1149,7 @@ class LaneChunk:
             kv_cache_config=runner.kv_cache_config, seq_lens_cpu_upper_bound=self.seq_lens_cpu,
             dcp_local_seq_lens=None, positions=self.positions, model_specific_attn_metadata=mamba,
             for_cudagraph_capture=False, rswa_prefix_lens=None)
+        check_metadata_rows(self.attn_metadata, n)
         from native_resources import _qsa_layers
         self.qsa_host_plan = attach_qsa_host_metadata(
             self.attn_metadata, tuple(name for name, _ in _qsa_layers(runner)),
@@ -1117,18 +1180,22 @@ class LaneChunk:
 class LaneChunkFactory:
     """Per-worker owner of the lane tables, align context and the one registered request."""
 
-    def __init__(self, runner, *, ports=None, torch_module=None):
+    def __init__(self, runner, *, ports=None, torch_module=None, chunk_tokens=1024):
         if torch_module is None:
             import torch as torch_module
         self.runner = runner
         self.ports = ports if ports is not None else PinnedPorts.load()
+        # decode-phase dp5c: at or below 1024 the builders stay plain clones, without reading the stock budget.
+        row_capacity = None
+        if chunk_tokens > 1024:
+            row_capacity = (int(runner.scheduler_config.max_num_batched_tokens), int(chunk_tokens))
         self.torch = torch_module
         self.tables = LaneTables(runner, torch_module=torch_module)
         self.align = LaneAlign(runner, self.ports, self.tables, torch_module=torch_module)
         self.request = LaneRequest(runner, self.ports, torch_module=torch_module)
         (self.native_attn_groups, self.native_builder_bytes,
          self.native_builder_tensor_count, self.native_builder_fields) = (
-            private_attention_groups(runner.attn_groups, torch_module=torch_module)
+            private_attention_groups(runner.attn_groups, torch_module=torch_module, row_capacity=row_capacity)
         )
         self.chunks = 0
         self._active_metadata_chunk = None

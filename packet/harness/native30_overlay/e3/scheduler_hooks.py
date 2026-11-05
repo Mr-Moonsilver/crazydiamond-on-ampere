@@ -1325,6 +1325,11 @@ def native_chunk_cap(chunk_tokens, budget):
     return chunk_tokens if chunk_tokens > 1024 else min(chunk_tokens, budget)
 
 
+def bounded_limit(bound, position, limit):
+    """decode-phase dp6: a chunk starting at or past ``bound[0]`` is limited to ``bound[1]`` rows. ``bound`` None: unchanged."""
+    return limit if bound is None or position < bound[0] else min(limit, bound[1])
+
+
 def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536,
                       trace=None):
     """Find a complete native prefix partition before allocating any chunk.
@@ -1436,6 +1441,7 @@ class PrefillAdmissionController:
         self.frontier = frontier
         self.engine_epoch = engine_epoch
         self.chunk_tokens = chunk_tokens
+        self.chunk_bound = None     # decode-phase dp6: (end, rows), per arm, set while paused idle; None is today's plan
         self.minimum_stage_rows = minimum_stage_rows
         self.ranks = ranks
         self.max_active = max_active
@@ -1611,7 +1617,7 @@ class PrefillAdmissionController:
 
     def _plan_key(self, scheduler, request, start, prompt_end, cap):
         owner = getattr(scheduler, '_flash_s5_driver', None)
-        return (start, prompt_end, cap, self.minimum_stage_rows,
+        return (start, prompt_end, cap, self.chunk_bound, self.minimum_stage_rows,
                 getattr(request, 'num_prompt_tokens', None),
                 getattr(request, 'shared_prefix_boundary', None),
                 getattr(owner, 'route_generation', None))
@@ -2150,6 +2156,7 @@ class PrefillAdmissionController:
             view = (self._append_yield_split_view(scheduler, request)
                     if callable(is_append) and is_append(request) else request)
             def projected_split(position, limit):
+                limit = bounded_limit(self.chunk_bound, position, limit)
                 if position == start:
                     return self._aligned_split(
                         scheduler, view, limit,
@@ -2190,7 +2197,7 @@ class PrefillAdmissionController:
             num_new = plan[0]
         else:
             num_new = self._aligned_split(
-                scheduler, request, min(cap, prompt_end - 1 - start),
+                scheduler, request, bounded_limit(self.chunk_bound, start, min(cap, prompt_end - 1 - start)),
                 num_new_local_computed_tokens=num_new_computed)
         if num_new < 1:
             return self._refuse(request, 'no-aligned-chunk', prompt_tokens=prompt_end,

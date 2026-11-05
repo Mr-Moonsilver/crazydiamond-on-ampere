@@ -3,6 +3,8 @@
 compose-4's rule, unchanged in its numbers and its clauses, over this table: cmp is the arm it reads, ny its control. On top:
   - INC if the score op's stock rescue ran on cmp (5f's stock_rescue counters; absent until 5f is merged, and then read as none);
   - SMOKE R1: the first read of r1 under yields at 32 connections (lead, 5 Nov 07:49). A read, never in the verdict. Same line for cmp and ny;
+  - CHUNK ROWS: this run's b13 (2048 below 52624, 1024 from there): rows per chunk below and past the bound, on the replay pair and the frozen pair. A read; a chunk past the bound over 1024 rows is INC, the plan isn't the one that was confirmed;
+  - HOST FILTER: hf's counters per arm, a read;
   - PRICE: the yield's price on the frozen pair, each index on and off, with the noise of the two. Numbers, never a word (DESIGN-compose-5.md item 6).
 The replay's price is compose-4's cmp and ctl lines, here cmp and ny, one pass each.
 """
@@ -19,6 +21,7 @@ SM, ON, OFF = 'sm.g2-live-0', 'cmp.g2-live-0', 'ny.g2-live-0'
 PRICE_PAIRS = (('fon.g2-live-0', 'foff.g2-live-0'), ('fon.g2-live-1', 'foff.g2-live-1'))
 ARMS = (SM, 'dec1.g2-live-0', 'fon.g2-live-0', 'foff.g2-live-0', 'foff.g2-live-1', 'fon.g2-live-1', ON, OFF)
 READ_RANK = '1'
+BOUND_END, BOUND_ROWS = 52624, 1024
 
 
 def __getattr__(name):
@@ -72,6 +75,15 @@ def rank_read(arm, rank=READ_RANK):
                 oom_rise=(memory.get('oom_rise') or {}).get(rank), min_free_mib=(memory.get('min_free_mib') or {}).get(rank))
 
 
+def chunk_rows(rows, start, end):
+    """Chunks opened in the arm's span, on rank 0, by rows: how many over 1024 and the largest, below and past the bound."""
+    below, past = [], []
+    for row in rows:
+        if row['point'] == 'open' and row['rank'] == 0 and start <= row['t'] <= end:
+            (below if row['a'] < BOUND_END else past).append(row['b'] - row['a'])
+    return dict(below_bound=len(below), below_over_1024=sum(1 for n in below if n > BOUND_ROWS), below_max=max(below, default=None), past_bound=len(past), past_over_1024=sum(1 for n in past if n > BOUND_ROWS), past_max=max(past, default=None))
+
+
 def stock_rescues(arm):
     counters = ((arm.get('record') or {}).get('stock_rescue') or {}).get('counters') or {}
     return sum(v for name in ('attempts', 'refused') for v in (counters.get(name) or {}).values() if type(v) is int)
@@ -101,11 +113,21 @@ def report(root):
     lines.append('SMOKE R1, the first read of r1 under yields at 32: %s' % json.dumps(read[SM], sort_keys=True))
     lines.append('R1 replay: cmp %s; ny %s' % (json.dumps(read[ON], sort_keys=True), json.dumps(read[OFF], sort_keys=True)))
     lines.append('STOCK RESCUE cmp: %d' % rescues)
+    rows, _fatal = base.read_log(root + '/engine-stream.log')
+    chunks = {}
+    for label in ARMS:
+        record = arms[label].get('record') or {}
+        chunks[label] = chunk_rows(rows, record.get('wall_start_s') or 0, record.get('wall_end_s') or 0)
+        lines.append('CHUNK ROWS %s: %s; HOST FILTER %s' % (label, json.dumps(chunks[label], sort_keys=True), json.dumps((record.get('cow_host_filter') or {}).get('counters'), sort_keys=True)))
+    over = sum(chunks[label]['past_over_1024'] for label in ARMS)
+    if over:
+        lines.append('REASON chunk-rows: %d chunks past the bound over 1024 rows' % over)
+        word = 'FAIL' if word == 'FAIL' else 'INC'
     assert rule_line.startswith('RULE '), rule_line
     lines.append('RULE %s' % word)
     for label in ARMS:
         arms[label].pop('record', None)
-    facts.update(rule=word, price=price, r1=read, stock_rescues=rescues)
+    facts.update(rule=word, price=price, r1=read, stock_rescues=rescues, chunk_rows=chunks)
     return word, lines, facts
 
 

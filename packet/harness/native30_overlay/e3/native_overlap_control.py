@@ -50,6 +50,7 @@ QUALIFICATION_ACTIONS = ('teacher_configure', 'teacher_evidence',
 # attn-meta (FLASH_ATTN_META_GDN_BATCH=1, default off): the per-arm selector's worker actions ride the qualification
 # intent (paused idle FULL for the select, enforced by the engine driver); exposed only where the switch is on.
 ATTN_META_ACTIONS = ('attn_meta_select', 'attn_meta_read')
+_NOT_SENT = object()    # decode-phase dp6: chunk_bound None is a value, today's plan
 
 
 class NativeControlError(RuntimeError):
@@ -343,7 +344,7 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-local-not-set')
         return reply
 
-    async def native_stage_overlap(self, local, overlap, defer_bind=None, lazy_recv=None, decode_merge=None, inwait=None, early_successor=None, exact_successor=None):
+    async def native_stage_overlap(self, local, overlap, defer_bind=None, lazy_recv=None, decode_merge=None, inwait=None, early_successor=None, exact_successor=None, chunk_bound=_NOT_SENT):
         """C1 per-arm switch (installed only): C0's command with ``overlap``; the engine re-checks idle FULL.
         alpha-next-c1: ``defer_bind`` (installed only) rides on the same command; the reply must acknowledge it."""
         if not _stage_overlap():
@@ -389,6 +390,10 @@ class NativeControlClient:
             if type(exact_successor) is not bool:
                 raise NativeControlError('native-control-stage-exact-successor-invalid')
             command['exact_successor'] = exact_successor
+        if chunk_bound is not _NOT_SENT:
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            command['chunk_bound'] = chunk_bound
         if self.engine_epoch is None:
             await self.status()
         reply = await self._call(command)
@@ -404,6 +409,8 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-inwait-not-set')
         if early_successor is not None and reply.get('early_successor') is not early_successor:
             raise NativeControlError('native-control-stage-early-successor-not-set')
+        if chunk_bound is not _NOT_SENT and reply.get('chunk_bound') != chunk_bound:
+            raise NativeControlError('native-control-stage-chunk-bound-not-set')
         if exact_successor is not None and reply.get('exact_successor') is not exact_successor:
             raise NativeControlError('native-control-stage-exact-successor-not-set')
         return reply
