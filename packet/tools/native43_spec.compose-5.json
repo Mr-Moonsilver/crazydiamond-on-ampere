@@ -1484,7 +1484,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "1eac3e151ab02187bf1f2ec3a32a02bec8ccea36",
+ "source_commit": "d65ea110f688d97fb6cce1e41478a1d94d1563dc",
  "source_paths": [
   "A\tharness/a1_trunk_arms.py",
   "A\tharness/a1_trunk_gate.py",
