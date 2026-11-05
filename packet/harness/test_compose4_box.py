@@ -181,9 +181,10 @@ class Fixture:
             self.origin[label] = origin
             self.turns[label] = []
 
-    def write_turns(self, label):
-        header = dict(header=True, label=label, replay_start_s=self.origin[label], replay_config=T.REPLAY)
-        (self.root / ('arm-%s.json.turns.jsonl' % label)).write_text(''.join(json.dumps(row) + '\n' for row in [header] + sorted(self.turns[label], key=lambda r: r['t'])))
+    def write_turns(self, label, turns=None, header=None):
+        head = dict(dict(header=True, label=label, replay_start_s=self.origin[label], replay_config=T.REPLAY), **(header or {}))
+        rows = sorted(self.turns[label], key=lambda r: r['t']) if turns is None else turns
+        (self.root / ('arm-%s.json.turns.jsonl' % label)).write_text(''.join(json.dumps(row) + '\n' for row in [head] + rows))
 
     def write_record(self, label, **fields):
         (self.root / ('arm-%s.log' % label)).write_text('')
@@ -218,7 +219,7 @@ class Fixture:
         (self.root / 'engine-stream.log').write_text(''.join(self.lines))
         for label in (CMP, CTL):
             origin = self.origin[label]
-            self.write_record(label, wall_start_s=origin - 5, wall_end_s=origin + 1090, replay_start_s=origin, replay_config=dict(T.REPLAY), replay_summary=dict(warm_turns=len(self.turns[label])), replay_still_open=[], reserved_cap=dict(counters=(cap or {}).get(label, dict(overdrafts={'0': 0}, overdraft_refused={'0': 0}))))
+            self.write_record(label, wall_start_s=origin - 5, wall_end_s=origin + 1090, replay_start_s=origin, replay_config=dict(T.REPLAY), replay_summary=dict(warm_turns=len(self.turns[label])), replay_still_open=[], replay_requests_sent=len(self.turns[label]), reserved_cap=dict(counters=(cap or {}).get(label, dict(overdrafts={'0': 0}, overdraft_refused={'0': 0}))))
             self.write_turns(label)
         return rule.report(str(self.root))
 
@@ -492,8 +493,9 @@ class StoppedArm(unittest.TestCase):
             proc.wait(10)
         with open(path, 'a') as handle:
             handle.write('{"t": 99.0, "kin')      # a kill can cut a write
-        header, turns = rule.load_turns(str(path))
+        header, turns, malformed = rule.load_turns(str(path))
         self.assertIs(header['header'], True)
+        self.assertEqual(malformed, 0, 'a cut last line is not damage')
         self.assertGreaterEqual(len(turns), 5)
         self.assertEqual([t['t'] for t in turns], [float(k) for k in range(len(turns))])
 
@@ -504,9 +506,112 @@ class StoppedArm(unittest.TestCase):
             replay.TurnSink(str(path), {})
 
     def test_no_turns_no_partial(self):
-        self.assertEqual(rule.load_turns(str(Path(self.tmp.name) / 'absent.jsonl')), (None, None))
+        self.assertEqual(rule.load_turns(str(Path(self.tmp.name) / 'absent.jsonl')), (None, None, 0))
         (Path(self.tmp.name) / 'nohead.jsonl').write_text('{"t": 1.0}\n')
-        self.assertEqual(rule.load_turns(str(Path(self.tmp.name) / 'nohead.jsonl')), (None, None))
+        self.assertEqual(rule.load_turns(str(Path(self.tmp.name) / 'nohead.jsonl')), (None, None, 0))
+
+    def test_the_first_bound_is_the_earliest_send_though_the_journal_runs_in_finish_order(self):
+        healthy(self.fx, starts=(320, 500, 700))
+        self.fx.turn(CMP, 'append', 310.0, prompt=70000, cached=67000, ttft=40.0, agent=30)    # sent first, finishes after later ones
+        rows = sorted(self.fx.turns[CMP], key=lambda r: r['t'] + r['seconds'])    # as the sink writes them
+        self.assertGreater(rows[0]['t'], min(r['t'] for r in rows), 'the fixture must be out of send order')
+        (self.fx.root / 'engine-stream.log').write_text(''.join(self.fx.lines))
+        self.fx.write_turns(CMP, turns=rows)
+        (self.fx.root / 'arm-cmp.g2-live-0.log').write_text('')
+        _word, _lines, facts = rule.report(str(self.fx.root))
+        partial = facts['arms'][CMP]['partial']
+        self.assertEqual(partial['first_turn_s'], min(r['t'] for r in rows))
+        self.assertTrue(partial['word'].startswith('PARTIAL window=%.1f..' % min(r['t'] for r in rows)), partial['word'])
+
+
+class JournalAgainstRecord(unittest.TestCase):
+    """A whole-looking record over a journal that isn't whole never reads as a full arm."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.fx = Fixture(self.tmp.name)
+        healthy(self.fx)
+        healthy(self.fx, CTL)
+        self.assertEqual(self.fx.done()[0], 'PASS', 'the control: whole, it passes')
+
+    def journal(self):
+        return self.fx.root / 'arm-cmp.g2-live-0.json.turns.jsonl'
+
+    def assert_not_full(self, why, label=CMP):
+        word, lines, facts = rule.report(str(self.fx.root))
+        self.assertEqual(word, 'INC', lines)
+        self.assertIn(why, facts['arms'][label]['journal_problem'])
+        self.assertIn('journal: ' + label, ' '.join(facts['reasons']))
+        self.assertTrue(facts['arms'][label]['partial']['word'].startswith('PARTIAL window='))
+        short = label.split('.')[0]
+        self.assertIn('%s PARTIAL window=' % short, lines[0])
+        return facts
+
+    def test_turns_short_of_the_records_count(self):
+        rows = sorted(self.fx.turns[CMP], key=lambda r: r['t'])
+        self.fx.write_turns(CMP, turns=rows[:-5])
+        self.assert_not_full('journal-count')
+
+    def test_turns_beyond_the_records_count(self):
+        rows = sorted(self.fx.turns[CMP], key=lambda r: r['t'])
+        self.fx.write_turns(CMP, turns=rows + rows[:1])
+        self.assert_not_full('journal-count')
+
+    def test_a_turn_still_open_is_no_mismatch_though_the_hang_fails(self):
+        record = json.loads((self.fx.root / 'arm-cmp.g2-live-0.json').read_text())
+        record.update(replay_requests_sent=record['replay_requests_sent'] + 1, replay_still_open=['compose4-agent-0'], complete=False, reasons=['replay-turns-still-open:1'])
+        (self.fx.root / 'arm-cmp.g2-live-0.json').write_text(json.dumps(record))
+        word, _lines, facts = rule.report(str(self.fx.root))
+        self.assertEqual(word, 'FAIL')
+        self.assertNotIn('journal_problem', facts['arms'][CMP])
+
+    def test_a_malformed_line_inside_the_journal_is_damage_not_a_torn_end(self):
+        lines = self.journal().read_text().split('\n')
+        lines[3] = '{"t": 1.0, "kin'
+        self.journal().write_text('\n'.join(lines))
+        self.assert_not_full('journal-malformed-lines:1')
+
+    def test_a_row_that_is_not_a_turn_is_damage(self):
+        lines = self.journal().read_text().split('\n')
+        lines[3] = '{"t": "soon"}'
+        self.journal().write_text('\n'.join(lines))
+        self.assert_not_full('journal-malformed-lines:1')
+
+    def test_a_torn_last_line_under_a_whole_record_is_a_short_journal(self):
+        text = self.journal().read_text().rstrip('\n')
+        self.journal().write_text(text[:text.rindex('\n') + 12])
+        self.assert_not_full('journal-count')
+
+    def test_another_arms_journal_gives_no_numbers(self):
+        self.fx.write_turns(CMP, header=dict(label=CTL))
+        word, _lines, facts = rule.report(str(self.fx.root))
+        self.assertEqual(word, 'INC')
+        self.assertIn('journal-names-another-arm', facts['arms'][CMP]['journal_problem'])
+        self.assertNotIn('read', facts['arms'][CMP])
+
+    def test_another_replays_journal_is_not_this_arms(self):
+        self.fx.write_turns(CMP, header=dict(replay_start_s=self.fx.origin[CMP] + 1))
+        self.assert_not_full('journal-from-another-replay')
+
+    def test_a_missing_journal_is_inc_on_either_arm(self):
+        path = self.fx.root / 'arm-ctl.g2-live-0.json.turns.jsonl'
+        path.rename(path.with_suffix('.moved'))
+        word, _lines, facts = rule.report(str(self.fx.root))
+        self.assertEqual(word, 'INC')
+        self.assertEqual(facts['arms'][CTL]['journal_problem'], 'journal-missing-or-no-header')
+        self.assertIn('journal: ' + CTL, ' '.join(facts['reasons']))
+
+    def test_a_short_control_journal_marks_the_control(self):
+        rows = sorted(self.fx.turns[CTL], key=lambda r: r['t'])
+        self.fx.write_turns(CTL, turns=rows[:-3])
+        self.assert_not_full('journal-count', label=CTL)
+
+    def test_an_agent_that_raised_reads_inc_from_the_arm_log(self):
+        (self.fx.root / 'arm-cmp.g2-live-0.log').write_text('Exception in thread compose4-agent-3:\nOSError: [Errno 28] No space left on device\n')
+        word, _lines, facts = rule.report(str(self.fx.root))
+        self.assertEqual(word, 'INC')
+        self.assertIn('agent-died: ' + CMP, ' '.join(facts['reasons']))
 
 
 class Grade(unittest.TestCase):

@@ -22,6 +22,7 @@ Per arm, read only, none of them in the verdict (review item 10, lead, 5 Nov):
   decode debt: output delivered over the window against the reference. The reference is explicit: 56.6 per stream-second actually decoding (the debt in tokens is that minus delivered), and beside it 452.8 over the whole window, an upper bound a closed loop does not reach because its agents pause;
   extra prefill duration: seconds to first output on fresh turns, native and stock. It is apart from the debt: the first is how long a prefill took, the second what the streams beside it delivered.
 An arm stopped mid-run (the death watch's SIGTERM, a timeout) leaves no record, only its turns as they finished (<arm>.json.turns.jsonl, compose4_replay.TurnSink). The verdict stays FAIL for the crash; its numbers print over the turns it has, every line marked PARTIAL window=<first..last turn>, so nobody reads them as a full arm. A turn in flight at the stop is not in them, nor are the arm's end-read counters. If it stopped inside the warmup, the partial window starts at 0.
+A record does not prove its journal whole (Codex review, 5 Nov). A full-arm reading needs a header naming this arm and this replay's start, no malformed line except a torn last one, and the journal's turn count equal to the record's replay_requests_sent less replay_still_open. Otherwise the arm reads INC and its numbers print marked PARTIAL. A journal write failure on the box kills an agent and looks like a finished one (build-3; compose-5 fixes it): its turn is short in the journal, and the arm log's thread traceback reads INC here too.
 Times: memory lines are engine clock (UTC stamps), turns are the client's; the same host.
 """
 import collections
@@ -312,22 +313,71 @@ def load_json(path):
         return None
 
 
+def valid_turn(row):
+    return type(row) is dict and type(row.get('t')) in (int, float) and row.get('kind') in ('fresh', 'append')
+
+
 def load_turns(path):
-    """(header, turns) from the arm's sink; a last line cut by a kill is dropped. (None, None) without a header."""
+    """(header, turns, malformed) from the arm's sink. Only a last line a kill cut short is skipped silently; any other bad line is counted. (None, None, 0) without a header."""
     try:
         with open(path, errors='replace') as handle:
-            lines = handle.read().split('\n')
+            text = handle.read()
     except OSError:
-        return None, None
-    rows = []
+        return None, None, 0
+    lines = text.split('\n')
+    torn = lines.pop()        # after the last newline: empty, or a write a kill cut
+    rows, malformed = [], 0
     for line in lines:
         try:
             rows.append(json.loads(line))
         except ValueError:
-            continue
-    if not rows or rows[0].get('header') is not True:
-        return None, None
-    return rows[0], rows[1:]
+            malformed += 1
+            rows.append(None)
+    if torn:
+        try:
+            rows.append(json.loads(torn))     # whole but for its newline
+        except ValueError:
+            pass
+    if not rows or type(rows[0]) is not dict or rows[0].get('header') is not True:
+        return None, None, 0
+    turns = [row for row in rows[1:] if valid_turn(row)]
+    return rows[0], turns, sum(1 for row in rows[1:] if row is not None and not valid_turn(row)) + malformed
+
+
+def journal_problem(label, record, header, turns, malformed):
+    """Why this journal can't carry a full-arm reading; None when it can. ``record`` None: the arm stopped, so only identity and damage count."""
+    if header is None:
+        return 'journal-missing-or-no-header'
+    if header.get('label') != label:
+        return 'journal-names-another-arm:%s' % header.get('label')
+    if type(header.get('replay_start_s')) not in (int, float):
+        return 'journal-header-has-no-start'
+    if malformed:
+        return 'journal-malformed-lines:%d' % malformed
+    if record is None:
+        return None
+    if header['replay_start_s'] != record.get('replay_start_s'):
+        return 'journal-from-another-replay'
+    sent, still = record.get('replay_requests_sent'), record.get('replay_still_open')
+    if type(sent) is not int or type(still) is not list:
+        return 'record-has-no-request-count'
+    if len(turns) != sent - len(still):
+        return 'journal-count:%d-turns-against-%d-sent-%d-open' % (len(turns), sent, len(still))
+    return None
+
+
+def arm_log_errors(root, label):
+    """An agent thread that raised, as the arm's own log shows it: build-3 doesn't carry it to the record."""
+    try:
+        with open('%s/arm-%s.log' % (root, label), errors='replace') as handle:
+            return [line[:200].rstrip() for line in handle if 'Exception in thread compose4-agent' in line]
+    except OSError:
+        return []
+
+
+def partial_of(turns, why):
+    first, last = min(t['t'] for t in turns), max(t['t'] + (t.get('seconds') or 0.0) for t in turns)
+    return dict(first_turn_s=first, last_turn_s=round(last, 1), turns=len(turns), why=why, word='PARTIAL window=%.1f..%.1f' % (first, last))
 
 
 def replay_read(stamped, runs, origin, config, yield_on, partial_end=None):
@@ -347,14 +397,21 @@ def replay_read(stamped, runs, origin, config, yield_on, partial_end=None):
 def read_arm(root, label, rows, runs, yield_on):
     record = load_json('%s/arm-%s.json' % (root, label))
     out = dict(record=record, started=os.path.exists('%s/arm-%s.log' % (root, label)))
-    header, turns = load_turns('%s/arm-%s.json.turns.jsonl' % (root, label))
+    header, turns, malformed = load_turns('%s/arm-%s.json.turns.jsonl' % (root, label))
+    if label in (ON, OFF):
+        out['agent_errors'] = arm_log_errors(root, label)
+        problem = journal_problem(label, record, header, turns, malformed)
+        if problem and (record is not None or header is not None):
+            out['journal_problem'] = problem
+        if problem and header is not None and header.get('label') != label:
+            header, turns = None, None        # another arm's turns are no numbers of this one
     if turns is not None:
         out['read_timeouts'] = sum(1 for t in turns if 'timeout' in (t.get('error') or '').lower() or 'timed out' in (t.get('error') or '').lower())
     if record is None:
         if turns:
-            first, last = turns[0]['t'], max(t['t'] + (t.get('seconds') or 0.0) for t in turns)
             origin = header['replay_start_s']
-            out['partial'] = dict(first_turn_s=first, last_turn_s=round(last, 1), turns=len(turns), word='PARTIAL window=%.1f..%.1f' % (first, last))
+            out['partial'] = partial_of(turns, 'the arm stopped: the rule\'s FAIL stands for the stop')
+            last = out['partial']['last_turn_s']
             out['memory'] = arm_memory(rows, origin, origin + last)
             out['read'] = replay_read(stamp_turns(turns, origin), runs, origin, header.get('replay_config') or {}, yield_on, partial_end=last)
         return out
@@ -362,8 +419,13 @@ def read_arm(root, label, rows, runs, yield_on):
     cap = (record.get('reserved_cap') or {}).get('counters') or {}
     rescued = sum(v for name in ('overdrafts', 'overdraft_refused') for v in (cap.get(name) or {}).values() if type(v) is int)
     out.update(memory=memory, overdrafts=cap.get('overdrafts'), overdraft_refused=cap.get('overdraft_refused'), rescued=rescued, oom_unmatched=max(0, sum(memory['oom_rise'].values()) - rescued))
-    if turns is not None:
-        read = replay_read(stamp_turns(turns, record['replay_start_s']), runs, record['replay_start_s'], record.get('replay_config') or {}, yield_on)
+    if turns:
+        origin = record.get('replay_start_s') or header['replay_start_s']
+        partial_end = None
+        if out.get('journal_problem'):
+            out['partial'] = partial_of(turns, 'the journal doesn\'t carry the whole arm: ' + out['journal_problem'])
+            partial_end = out['partial']['last_turn_s']
+        read = replay_read(stamp_turns(turns, origin), runs, origin, record.get('replay_config') or {}, yield_on, partial_end=partial_end)
         read['summary'] = record.get('replay_summary')
         out['read'] = read
     return out
@@ -380,6 +442,10 @@ def verdict(arms, death, fatal):
         record = arm.get('record')
         if arm.get('read_timeouts'):
             fail.append('hang: %s has %d turns whose read timed out' % (label, arm['read_timeouts']))
+        if arm.get('journal_problem'):
+            inc.append('journal: %s %s' % (label, arm['journal_problem']))
+        if arm.get('agent_errors'):
+            inc.append('agent-died: %s %d agent threads raised, see its arm log' % (label, len(arm['agent_errors'])))
         if record is None:
             (fail if arm.get('started') else inc).append(('hang-or-crash: %s started and left no record' if arm.get('started') else 'not-run: %s') % label)
             continue
@@ -460,7 +526,7 @@ def report(root):
     lines.append('RULE %s' % word)
     for label in (ON, OFF):
         if arms[label].get('partial'):
-            lines.insert(-1, '%s %s: %d turns; the rule\'s FAIL stands for the stop, and no number here is a full arm' % (label, arms[label]['partial']['word'], arms[label]['partial']['turns']))
+            lines.insert(-1, '%s %s: %d turns; %s, and no number here is a full arm' % (label, arms[label]['partial']['word'], arms[label]['partial']['turns'], arms[label]['partial']['why']))
     facts = {label: {k: v for k, v in arm.items() if k != 'record'} for label, arm in arms.items()}
     return word, lines, dict(rule=word, reasons=reasons, arms=facts, one_stream=one, decode_am1=eight)
 

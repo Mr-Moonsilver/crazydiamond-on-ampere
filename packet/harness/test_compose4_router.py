@@ -127,6 +127,8 @@ class ArmEnd(a1r.ArmEnd):
         header, *turns = [json.loads(line) for line in Path(str(out) + '.turns.jsonl').read_text().splitlines()]
         self.assertEqual((header['header'], header['label'], header['replay_start_s']), (True, 'cmp.g2-live-0', record['replay_start_s']))
         self.assertEqual(record['replay_requests_sent'], len(turns))
+        import compose4_rule as rule
+        self.assertIsNone(rule.journal_problem(record['label'], record, *rule.load_turns(str(out) + '.turns.jsonl')), 'the arm\'s real record and journal agree under the reader')
         self.assertGreater(len(turns), 0)
         self.assertEqual(record['replay_still_open'], [])
         self.assertEqual(record['replay_config']['AGENTS'], 2)
