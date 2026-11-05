@@ -50,6 +50,9 @@
   "harness/test_e3_package.py": [
    "SyntheticTests.test_default_off_settings_budget_and_launcher_guard"
   ],
+  "harness/test_e3_r4_worker_bridge.py": [
+   "ConstructionTests.test_install_native_lane_wires_the_real_bridge_objects"
+  ],
   "harness/test_native35_performance.py": [
    "package_inventory"
   ],
@@ -886,6 +889,7 @@
    "harness/test_dp5_ple.py",
    "harness/test_dp5c_connected.py",
    "harness/test_dp5c_path.py",
+   "harness/test_e3_r4_worker_bridge.py",
    "harness/test_hub_slot.py",
    "harness/test_inwait_box.py",
    "harness/test_inwait_cow.py",
@@ -1480,7 +1484,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "e5069d6aa55304c7aa0bb92c3c6952a64555d571",
+ "source_commit": "1eac3e151ab02187bf1f2ec3a32a02bec8ccea36",
  "source_paths": [
   "A\tharness/a1_trunk_arms.py",
   "A\tharness/a1_trunk_gate.py",
@@ -1589,6 +1593,7 @@
   "A\tharness/test_dp5c_connected.py",
   "A\tharness/test_dp5c_path.py",
   "M\tharness/test_e3_package.py",
+  "M\tharness/test_e3_r4_worker_bridge.py",
   "A\tharness/test_hub_slot.py",
   "A\tharness/test_inwait_box.py",
   "A\tharness/test_inwait_cow.py",
