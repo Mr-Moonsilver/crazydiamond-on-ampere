@@ -1,4 +1,4 @@
-"""q18a-compose-5 box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, the frozen pair twice, two 18-minute replay arms, no tail). One phase budget for the watchdog and the draft, relative to the run's own start only.
+"""q18a-compose-dnr box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, the frozen pair twice, two 18-minute replay arms, no tail). One phase budget for the watchdog and the draft, relative to the run's own start only.
 
 EXPECTED_RUNTIME_S is descriptive. The startup, the smoke and the end are build-3b's walls; the replay arm's wall is its table, DURATION and the turns it lets finish. ``slower`` is the same walk at 1.5x every wall except a replay's, whose length is its clock. The slot limit is the operator's script's; this budget holds the watchdog.
 """
@@ -24,7 +24,7 @@ PHASES.update({
     'read': GRADE_CAP_S,
 })
 WORST_CASE_SUM_S = sum(PHASES.values())
-BOX_BUDGET_S = 8700
+BOX_BUDGET_S = 10800                                       # dnr: four replay arms have to enter; the 8700 of compose-5 stops at 3120 s, before the second pair
 ACTIVE_S = BOX_BUDGET_S - CLEANUP_S
 ACTIVE_AND_CLEANUP = ACTIVE_S + CLEANUP_S
 ARM_RESERVE_S = FULL_IDLE_CAP_S + ARM_TIMEOUT_S + ARM_KILL_AFTER_S + INGRESS_CAP_S

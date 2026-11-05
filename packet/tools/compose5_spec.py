@@ -13,10 +13,10 @@ import compose5_engine_selfrun as selfrun  # noqa: E402
 import inwait_spec as parent  # noqa: E402
 
 NAME = 'native43_spec.compose-5.json'
-QUEUE = ['q18a_compose_5.draft.sh', 'q18a_compose_5_declare.sh', 'q18a_compose_5_settings.sh']
+QUEUE = ['q18a_compose_dnr.draft.sh', 'q18a_compose_dnr_declare.sh', 'q18a_compose_dnr_settings.sh']
 BOUNDS = ('FLASH_S5_CHUNK_TOKENS', 'FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK', 'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES', 'CUDA_DEVICE_MAX_CONNECTIONS', 'FLASH_S5_PLE_PRIVATE', 'FLASH_S5_PLE_WITNESS')
 HEADER = [
-    "q18a-compose-5 packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
+    "q18a-compose-dnr packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
     'Engine: claude/compose-5-build, compose-4 with the decline counters, chunk_bound and the builder at 2048 rows from dp8d (FLASH_S5_CHUNK_TOKENS=2048 for the whole run), default off, selected per arm by typed control. No 5f, no 1g, no witness.',
     "Queue: compose-4's startup and cleanup with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen pairs on and off for the yield, the replay arm and its control without the yield; no fixed-schedule check.",
 ]
@@ -42,12 +42,12 @@ parent.expected_tests_from_sources = expected_tests_from_sources
 
 def generate(scratch):
     spec = parent.generate(scratch, None)
-    spec.update(label='compose-5', candidate='q18a-compose-5', review_key='compose5', bundle_selfrun=dict(arm='TRUNK', probe='compose5_cpu_probe.py'),
+    spec.update(label='compose-5', candidate='q18a-compose-dnr', review_key='compose5', bundle_selfrun=dict(arm='TRUNK', probe='compose5_cpu_probe.py'),
                 checks=[['tools/compose5_queue.py', '--check'], ['tools/compose5_tools_derive.py', '--check']])
     details = spec['details']
     details['compose5_settings'] = details.pop('inwait_settings')
     assert all(details['compose5_settings'][k] is not None for k in BOUNDS), details['compose5_settings']
-    details.update(queue="q18a-compose-5: compose-4's queue with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
+    details.update(queue="q18a-compose-dnr: compose-4's queue with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
                    scope="b13 and hf at 32 with the four lever tracks under the closed-loop replay, the yield priced by frozen pairs, against c1b's READY build, discovery mode; not a release assessment and not a numerics result")
     details['engine_delta'] = dict(focused_suites=selfrun.ENGINE_SUITES + ['test_compose5_box', 'test_compose5_queue'], lineage_rows=[])
     return spec

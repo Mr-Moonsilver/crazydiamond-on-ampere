@@ -61,7 +61,7 @@ class Bound(unittest.TestCase):
             position += size
 
     def test_every_row_carries_it(self):
-        self.assertEqual({tuple(r['chunk_bound']) for r in T.arms()}, {(52624, 1024)})
+        self.assertEqual({tuple(r['chunk_bound']) for r in T.arms()}, {(52624, 1024), (89056, 1024)})
         self.assertEqual({(r['cow_host_filter'], r['cow_fast']) for r in T.arms()}, {(True, True)})
         self.assertFalse(any(r.get('score_split') or r.get('stock_rescue') for r in T.arms()), '5f is compose-6')
 
@@ -181,8 +181,8 @@ class Client(unittest.TestCase):
         for row in T.arms():
             fake, record = self.Fake(), {}
             self.selecting(fake, record, row, row['chunk_bound']).call(box.STAGE_CONTROL, local=True)
-            self.assertEqual(fake.calls[-1][1]['chunk_bound'], T.B13_BOUND)
-            self.assertEqual(record['inwait']['bound_acknowledged'], T.B13_BOUND)
+            self.assertEqual(fake.calls[-1][1]['chunk_bound'], row['chunk_bound'])
+            self.assertEqual(record['inwait']['bound_acknowledged'], row['chunk_bound'])
 
     def test_a_row_without_the_field_sends_nothing(self):
         import compose4_arms as T4

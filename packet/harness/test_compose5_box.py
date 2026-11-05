@@ -19,7 +19,8 @@ import e3_compose5_box as box
 import test_compose4_box as tb
 
 tam, tap, ta1 = tb.tam, tb.tap, tb.ta1
-SM, DEC1, CMP, NY = rule.SM, 'dec1.g2-live-0', rule.ON, rule.OFF
+SM, DEC1, CMP, NY = rule.SM, 'dec1.g2-live-0', rule.ON, rule.OFF      # the rule's labels: compose-5's, for its own suites; dnr's table has no cmp
+N22, NY1, N221 = 'n22.g2-live-0', 'ny.g2-live-1', 'n22.g2-live-1'
 PAIRS = rule.PRICE_PAIRS
 
 
@@ -69,41 +70,90 @@ class JournalAgainstRecord(UnderThisTable, tb.JournalAgainstRecord):
 
 class Table(unittest.TestCase):
     def test_the_order(self):
-        self.assertEqual(T.labels(), [SM, DEC1, 'fon.g2-live-0', 'foff.g2-live-0', 'foff.g2-live-1', 'fon.g2-live-1', CMP, NY])
-        self.assertEqual(tuple(T.labels()), rule.ARMS)
-        self.assertEqual(tuple(T.price_pairs()), PAIRS)
+        self.assertEqual(T.labels(), [SM, DEC1, NY, N22, N221, NY1])
 
-    def test_each_pair_differs_in_the_yield_alone(self):
+    def test_each_pair_differs_in_the_plan_alone_and_shares_a_seed(self):
         rows = T.by_label()
-        for on, off in ((CMP, NY),) + PAIRS:
-            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'label', 'selection', 'yield_on'], (on, off))
-            self.assertEqual((rows[on]['yield_on'], rows[off]['yield_on']), (True, False))
+        for on, off, seed in ((N22, NY, 1), (N221, NY1, 2)):
+            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'chunk_bound', 'label', 'selection'], (on, off))
+            self.assertEqual((rows[on]['chunk_bound'], rows[off]['chunk_bound']), ([89056, 1024], [52624, 1024]))
+            self.assertEqual((T.replay_config(rows[on])['SEED'], T.replay_config(rows[off])['SEED']), (seed, seed))
 
-    def test_the_private_ple_buffer_is_on_every_arm_and_the_witness_on_none(self):
+    def test_a_replays_config_is_compose_4s_but_for_the_seed(self):
+        row = T.by_label()[N221]
+        self.assertEqual({k: v for k, v in T.replay_config(row).items() if T4.REPLAY[k] != v}, dict(SEED=2))
+        self.assertEqual(T4.REPLAY['SEED'], 1, "the table's own stays as it is")
+
+    def test_the_cap_is_off_on_every_arm(self):
+        self.assertEqual({r['reserved_cap'] for r in T.arms()}, {False})
+
+    def test_the_private_ple_buffer_only_off_on_the_replays_and_the_witness_on_none(self):
         for row in T.arms():
-            self.assertEqual((row['ple_private'], row['ple_witness']), (True, False), row['label'])
+            self.assertEqual((row['ple_private'], row['ple_witness']), (row['kind'] != 'replay', False), row['label'])
 
-    def test_compose_4s_rows_are_the_base(self):
-        c4 = T4.by_label()[CMP]
-        row = T.by_label()[CMP]
-        self.assertEqual({k: row[k] for k in row if k not in c4 or row[k] != c4[k]}, dict(chunk_bound=T.B13_BOUND), 'cmp is compose-4\'s cmp and b13')
-        self.assertEqual(sorted(k for k in c4 if c4[k] != T.by_label()[NY][k]), ['c1', 'label', 'selection', 'yield_on'], 'ny is cmp without the yield')
+    def test_compose_4s_ctl_is_the_base(self):
+        c4 = T4.by_label()['ctl.g2-live-0']
+        row = T.by_label()[NY]
+        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'label', 'reserved_cap', 'selection'])
+        self.assertEqual((row['chunk_bound'], row['reserved_cap'], row['yield_on'], row['ple_private']), ([52624, 1024], False, False, False))
 
     def test_the_replay_and_the_ceiling_are_compose_4s(self):
         self.assertIs(T.REPLAY, T4.REPLAY)
         self.assertEqual(T.MAX_PROMPT_TOKENS, 135000)
         self.assertEqual((T.RULE_PREFILL_TOK_S, T.RULE_DECODE_VS_FIXED, T.RULE_MIN_NATIVE_BULKS), (T4.RULE_PREFILL_TOK_S, T4.RULE_DECODE_VS_FIXED, T4.RULE_MIN_NATIVE_BULKS))
 
-    def test_a_live_arms_request_count_and_a_replays(self):
-        self.assertEqual(T.by_label()['fon.g2-live-1']['generations'], 12)
-        self.assertEqual(T.by_label()['foff.g2-live-1']['generations'], 12)
-        self.assertIsNone(T.by_label()[NY]['generations'])
+    def test_a_replays_request_count_is_in_its_record(self):
+        for label in (NY, N22, N221, NY1):
+            self.assertIsNone(T.by_label()[label]['generations'])
 
     def test_a_matched_off_only_for_the_on_arms(self):
         rows = T.by_label()
-        self.assertEqual(T.matched_off(rows['fon.g2-live-1']), 'foff.g2-live-1')
-        self.assertEqual(T.matched_off(rows[CMP]), NY)
+        self.assertEqual(T.matched_off(rows[N221]), NY1)
+        self.assertEqual(T.matched_off(rows[N22]), NY)
         self.assertIsNone(T.matched_off(rows[SM]))
+
+
+class CapReadBack(unittest.TestCase):
+    def test_the_real_records(self):
+        def rec(state):
+            return dict(reserved_cap=dict(select={str(k): dict(after=dict(reserved_cap=state), before={}, order={}, counters={}) for k in range(4)}))
+        self.assertIs(box.cap_selected(rec(dict(cap_bytes=0, flushes=0, fraction=0.0, selected=False))), False, "dn's")
+        self.assertIs(box.cap_selected(rec(dict(cap_bytes=23369547776, flushes=1, fraction=0.92, overdraft_refused=0, overdrafts=0, selected=True))), True, "c4b's")
+        self.assertIsNone(box.cap_selected(dict()))
+
+
+class ReplaySeed(unittest.TestCase):
+    """The seed reaches the run and the journal header, by the real replay_arm of compose-4's box up to the run call."""
+
+    def go(self, label):
+        row = T.by_label()[label]
+        seen = {}
+
+        class Stop(Exception):
+            pass
+
+        def fake(a, row_, client, poll_client, *, run=None):
+            seen['header'] = box4.T.REPLAY
+            try:
+                run('u', 'm', 'k', 'r', row_['label'], sink=None)
+            except Stop:
+                pass
+            return dict(label=row_['label'])
+
+        def real_run(*args, cfg=None, **kwargs):
+            seen['cfg'] = cfg
+            raise Stop()
+        with mock.patch.object(box, '_replay_arm', fake), mock.patch.object(box._box.replay, 'run', real_run):
+            box.replay_arm(None, row, None, None)
+        return seen
+
+    def test_each_index_gets_its_seed_and_the_table_is_put_back(self):
+        saved = T.REPLAY
+        for label, seed in ((NY, 1), (N22, 1), (N221, 2), (NY1, 2)):
+            seen = self.go(label)
+            self.assertEqual((seen['cfg']['SEED'], seen['header']['SEED']), (seed, seed), label)
+        self.assertIs(T.REPLAY, saved)
+        self.assertIs(box4.T, T4)
 
 
 class Smoke(unittest.TestCase):
@@ -112,7 +162,7 @@ class Smoke(unittest.TestCase):
     def full(self):
         row = T.by_label()[SM]
         rec = ta1.record_of(row)
-        rec.update(ple_private=dict(counters=dict(scopes={'0': 9, '1': 9})), score_warm=dict(counters=dict(allocs={str(k): 1 for k in range(4)})), reserved_cap=dict(requested=True, counters={}),
+        rec.update(ple_private=dict(counters=dict(scopes={'0': 9, '1': 9})), score_warm=dict(counters=dict(allocs={str(k): 1 for k in range(4)})), reserved_cap=dict(requested=False, select={str(k): dict(after=dict(reserved_cap=dict(cap_bytes=0, flushes=0, fraction=0.0, selected=False))) for k in range(4)}, counters=dict(flushes={str(k): 0 for k in range(4)})),
                    cow_host_filter=dict(requested=True, counters=dict(kept={str(k): 0 for k in range(4)}, skipped={str(k): 37 for k in range(4)}, unfiltered={str(k): 0 for k in range(4)})))
         rec.setdefault('inwait', {}).update(exact_acknowledged=True, bound_requested=[52624, 1024], bound_acknowledged=[52624, 1024])
         rec.setdefault('progress_delta', {})['chunks'] = 40
@@ -128,6 +178,14 @@ class Smoke(unittest.TestCase):
 
     def test_dp8ds_numbers_pass(self):
         self.assertEqual(box.smoke_check(self.full()), (True, []))
+
+    def test_the_cap_selected_stops_the_table(self):
+        self.assert_stops(lambda r: r['reserved_cap'].update(requested=True), 'smoke-reserved-cap-not-off')
+        self.assert_stops(lambda r: r.pop('reserved_cap'), 'smoke-reserved-cap-not-off')
+        # The numbers are c4b's sm on r1 and dn's sm, the real shape of the rank's answer.
+        self.assert_stops(lambda r: r['reserved_cap']['select'].update({'1': dict(after=dict(reserved_cap=dict(cap_bytes=23369547776, flushes=1, fraction=0.9238, selected=True)))}), 'smoke-reserved-cap-selected')
+        self.assert_stops(lambda r: r['reserved_cap']['select'].pop('3'), 'smoke-reserved-cap-selected')
+        self.assert_stops(lambda r: r['reserved_cap'].update(select=None), 'smoke-reserved-cap-selected')
 
     def test_the_bound_not_acknowledged_stops_the_table(self):
         self.assert_stops(lambda r: r['inwait'].update(bound_acknowledged=None), 'smoke-chunk-bound-not-acknowledged')
@@ -341,13 +399,13 @@ class BoxBinding(unittest.TestCase):
 
     def test_the_argparse_takes_this_tables_selections_and_refuses_the_old_control(self):
         with mock.patch.object(box4, 'run_arm', return_value=0) as arm, tempfile.TemporaryDirectory() as tmp:
-            args = ['arm', '--url', 'u', '--model', 'm', '--run-id', 'r', '--epoch', '1', '--c1', 'foff', '--size', '2', '--cohort', 'live', '--index', '1', '--workload', 'w', '--out', tmp + '/x.json']
+            args = ['arm', '--url', 'u', '--model', 'm', '--run-id', 'r', '--epoch', '1', '--c1', 'n22', '--size', '2', '--cohort', 'live', '--index', '1', '--workload', 'w', '--out', tmp + '/x.json']
             self.assertEqual(box.main(args), 0)
-            self.assertEqual((arm.call_args[0][0].c1, arm.call_args[0][0].index), ('foff', 1))
+            self.assertEqual((arm.call_args[0][0].c1, arm.call_args[0][0].index), ('n22', 1))
             with self.assertRaises(SystemExit):
-                box.main(args[:9] + ['ctl'] + args[10:])
+                box.main(args[:9] + ['cmp'] + args[10:])
 
-    def test_a_frozen_arm_goes_the_live_path_and_a_replay_the_replay_path(self):
+    def test_the_smoke_goes_the_live_path_and_a_replay_the_replay_path(self):
         import types
 
         def go(c1, index):
@@ -357,10 +415,10 @@ class BoxBinding(unittest.TestCase):
                 self.assertEqual(box.run_arm(a), 0)
             return (live.call_args or play.call_args)[0][1], bool(live.called), bool(play.called)
         with tempfile.TemporaryDirectory() as tmp:
-            row, live, play = go('foff', 1)
-            self.assertEqual((row['label'], row['yield_on'], row['index'], live, play), ('foff.g2-live-1', False, 1, True, False))
+            row, live, play = go('sm', 0)
+            self.assertEqual((row['label'], row['yield_on'], row['index'], live, play), (SM, True, 0, True, False))
             row, live, play = go('ny', 0)
-            self.assertEqual((row['label'], row['yield_on'], row['ple_private'], live, play), (NY, False, True, False, True))
+            self.assertEqual((row['label'], row['yield_on'], row['ple_private'], live, play), (NY, False, False, False, True))
 
     def test_the_grade_names_this_run_and_reads_every_arm(self):
         grade = Grade()
@@ -369,7 +427,7 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-compose-5'))
+        self.assertTrue(text.startswith('# q18a-compose-dnr'))
         self.assertIn('compose5_rule.py', text)
 
 
@@ -398,14 +456,20 @@ class Grade(unittest.TestCase):
                 self.assertEqual(result['verdict'], 'FAIL', (row['label'], reply))
                 self.assertIn(row['label'] + ':chunk-bound-not-acknowledged', result['failures'])
 
-    def test_a_missing_frozen_arm_is_inc(self):
-        arms = [a for a in self.records() if a['label'] != 'foff.g2-live-1']
+    def test_a_cap_a_rank_says_is_selected_fails_that_arm(self):
+        arms = self.records()
+        next(a for a in arms if a.get('label') == N22)['reserved_cap'] = dict(requested=False, select={str(k): dict(after=dict(reserved_cap=dict(cap_bytes=1, selected=True))) for k in range(4)})
+        self.assertIn(N22 + ':reserved-cap-selected', self.grade_of(arms)['failures'])
+        self.assertNotIn(NY + ':reserved-cap-selected', self.grade_of(arms)['failures'])
+
+    def test_a_missing_arm_is_inc(self):
+        arms = [a for a in self.records() if a['label'] != NY1]
         result = self.grade_of(arms)
         self.assertEqual(result['verdict'], 'INC')
-        self.assertIn('foff.g2-live-1:no-arm-record', result['missing'])
+        self.assertIn(NY1 + ':no-arm-record', result['missing'])
 
     def test_either_off_arm_that_yielded_fails(self):
-        for label in (NY, 'foff.g2-live-0', 'foff.g2-live-1'):
+        for label in (NY, N22, N221, NY1):
             with self.subTest(label):
                 arms = self.records()
                 off = next(a for a in arms if a['label'] == label)

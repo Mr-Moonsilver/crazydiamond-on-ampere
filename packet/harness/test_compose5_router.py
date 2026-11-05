@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_compose_5_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_compose_dnr_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SHORT = dict(T.REPLAY, AGENTS=2, DURATION=0.4, WARMUP=0.0, START_MIN=60000, START_MAX=60000, TOOL_MIN=0.01, TOOL_MAX=0.02)
@@ -75,8 +75,8 @@ class ArmEnd(a1r.ArmEnd):
     async def arm(self, sel, cohort='live', index=0):
         real = replay.run
 
-        def short(url, model, key, run_id, label, sink=None):
-            return real(url, model, key, run_id, label, cfg=SHORT, stream=scripted, finish_bound_s=5.0, sink=sink)
+        def short(url, model, key, run_id, label, sink=None, cfg=None):
+            return real(url, model, key, run_id, label, cfg=dict(SHORT, SEED=cfg['SEED']), stream=scripted, finish_bound_s=5.0, sink=sink)
 
         def run():
             client = self.client()
@@ -120,45 +120,30 @@ class ArmEnd(a1r.ArmEnd):
         self.assertEqual(len(served), 1)
         self.assertEqual(len(record['decode_only']['stream_rates_tokens_per_s']), 1)
 
-    async def test_the_replay_arm_with_the_yield_on_keeps_its_turns_beside_the_record(self):
-        rc_, record, actions, _served, out = await self.arm('cmp')
-        self.assertNotIn('error', record, record.get('error'))
-        self.assertEqual((rc_, record['reasons'], record['kind']), (0, [], 'replay'))
-        self.assert_control(actions)
-        self.assertIs(record['yield_control']['enabled'], True)
-        self.assertIs(self.driver.controller.append_yield.enabled, True)
-        header, *turns = [json.loads(line) for line in Path(str(out) + '.turns.jsonl').read_text().splitlines()]
-        self.assertEqual((header['header'], header['label'], header['replay_start_s']), (True, 'cmp.g2-live-0', record['replay_start_s']))
-        self.assertEqual(record['replay_requests_sent'], len(turns))
-        import compose5_rule as rule
-        self.assertIsNone(rule.journal_problem(record['label'], record, *rule.load_turns(str(out) + '.turns.jsonl')), 'the arm\'s real record and journal agree under the reader')
-        self.assertGreater(len(turns), 0)
-        self.assertEqual(record['replay_still_open'], [])
-        self.assertEqual(record['replay_config']['AGENTS'], 2)
-        self.assertIsNotNone(record['polled'])
-        self.assertTrue(set(record['control_actions']) <= box.ACTION_NAMES)
-
-    async def test_the_control_sends_the_yield_off_and_keeps_the_ple_on(self):
-        rc_, record, _actions, _served, _out = await self.arm('ny')
-        self.assertNotIn('error', record, record.get('error'))
-        self.assertEqual((rc_, record['reasons']), (0, []))
-        self.assertIs(record['yield_control']['enabled'], False)
-        self.assertIs(self.driver.controller.append_yield.enabled, False)
-        self.assertIs((record['ple_private'] or {}).get('requested'), True)
-
-    async def test_a_frozen_off_arm_on_the_second_index_runs_the_live_path_with_the_yield_off(self):
-        rc_, record, _actions, _served, _out = await self.arm('foff', index=1)
-        self.assertNotIn('error', record, record.get('error'))
-        self.assertEqual((rc_, record['reasons'], record['kind'], record['index']), (0, [], 'auto', 1))
-        self.assertIs(record['yield_control']['enabled'], False)
-        self.assertIs(self.driver.controller.append_yield.enabled, False)
-
-    async def test_a_frozen_on_arm_serves_its_returners_with_the_yield_on(self):
-        rc_, record, _actions, _served, _out = await self.arm('fon')
-        self.assertNotIn('error', record, record.get('error'))
-        self.assertEqual((rc_, record['reasons'], record['index']), (0, [], 0))
-        self.assertIs(record['yield_control']['enabled'], True)
-        self.assertEqual(len(record['returners']), 2)
+    async def test_the_replay_arm_keeps_its_turns_beside_the_record_with_its_seed(self):
+        for sel, index, seed in (('ny', 0, 1), ('n22', 1, 2)):
+            with self.subTest(sel):
+                rc_, record, actions, _served, out = await self.arm(sel, index=index)
+                name = T.label(sel, 2, 'live', index)
+                self.assertNotIn('error', record, record.get('error'))
+                self.assertEqual((rc_, record['reasons'], record['kind']), (0, [], 'replay'))
+                self.assert_control(actions)
+                self.assertIs(record['yield_control']['enabled'], False)
+                self.assertIs(self.driver.controller.append_yield.enabled, False)
+                self.assertIs((record['ple_private'] or {}).get('requested'), False)
+                self.assertIs((record['reserved_cap'] or {}).get('requested'), False)
+                self.assertEqual(record['inwait']['bound_acknowledged'], T.by_label()[name]['chunk_bound'])
+                header, *turns = [json.loads(line) for line in Path(str(out) + '.turns.jsonl').read_text().splitlines()]
+                self.assertEqual((header['header'], header['label'], header['replay_start_s']), (True, name, record['replay_start_s']))
+                self.assertEqual((header['replay_config']['SEED'], record['replay_config']['SEED']), (seed, seed))
+                self.assertEqual(record['replay_requests_sent'], len(turns))
+                import compose5_rule as rule
+                self.assertIsNone(rule.journal_problem(record['label'], record, *rule.load_turns(str(out) + '.turns.jsonl')), 'the arm\'s real record and journal agree under the reader')
+                self.assertGreater(len(turns), 0)
+                self.assertEqual(record['replay_still_open'], [])
+                self.assertEqual(record['replay_config']['AGENTS'], 2)
+                self.assertIsNotNone(record['polled'])
+                self.assertTrue(set(record['control_actions']) <= box.ACTION_NAMES)
 
 
 if __name__ == '__main__':
