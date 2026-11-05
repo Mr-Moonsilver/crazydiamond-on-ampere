@@ -72,8 +72,8 @@ class ArmEnd(a1r.ArmEnd):
     async def arm(self, sel, cohort='live', index=0):
         real = replay.run
 
-        def short(url, model, key, run_id, label):
-            return real(url, model, key, run_id, label, cfg=SHORT, stream=scripted, finish_bound_s=5.0)
+        def short(url, model, key, run_id, label, sink=None):
+            return real(url, model, key, run_id, label, cfg=SHORT, stream=scripted, finish_bound_s=5.0, sink=sink)
 
         def run():
             client = self.client()
@@ -124,7 +124,8 @@ class ArmEnd(a1r.ArmEnd):
         self.assert_control(actions)
         self.assertIs(record['yield_control']['enabled'], True)
         self.assertIs(self.driver.controller.append_yield.enabled, True)
-        turns = json.loads(Path(str(out) + '.turns.json').read_text())
+        header, *turns = [json.loads(line) for line in Path(str(out) + '.turns.jsonl').read_text().splitlines()]
+        self.assertEqual((header['header'], header['label'], header['replay_start_s']), (True, 'cmp.g2-live-0', record['replay_start_s']))
         self.assertEqual(record['replay_requests_sent'], len(turns))
         self.assertGreater(len(turns), 0)
         self.assertEqual(record['replay_still_open'], [])

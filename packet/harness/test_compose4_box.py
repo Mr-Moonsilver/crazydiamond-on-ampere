@@ -6,6 +6,9 @@ import http.server
 import io
 import json
 from pathlib import Path
+import signal
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -178,6 +181,10 @@ class Fixture:
             self.origin[label] = origin
             self.turns[label] = []
 
+    def write_turns(self, label):
+        header = dict(header=True, label=label, replay_start_s=self.origin[label], replay_config=T.REPLAY)
+        (self.root / ('arm-%s.json.turns.jsonl' % label)).write_text(''.join(json.dumps(row) + '\n' for row in [header] + sorted(self.turns[label], key=lambda r: r['t'])))
+
     def write_record(self, label, **fields):
         (self.root / ('arm-%s.log' % label)).write_text('')
         (self.root / ('arm-%s.json' % label)).write_text(json.dumps(dict(dict(label=label, complete=True, reasons=[]), **fields)))
@@ -212,7 +219,7 @@ class Fixture:
         for label in (CMP, CTL):
             origin = self.origin[label]
             self.write_record(label, wall_start_s=origin - 5, wall_end_s=origin + 1090, replay_start_s=origin, replay_config=dict(T.REPLAY), replay_summary=dict(warm_turns=len(self.turns[label])), replay_still_open=[], reserved_cap=dict(counters=(cap or {}).get(label, dict(overdrafts={'0': 0}, overdraft_refused={'0': 0}))))
-            (self.root / ('arm-%s.json.turns.json' % label)).write_text(json.dumps(self.turns[label]))
+            self.write_turns(label)
         return rule.report(str(self.root))
 
 
@@ -427,6 +434,81 @@ class Rule(unittest.TestCase):
             self.assertEqual(rule.main([]), 2)
 
 
+class StoppedArm(unittest.TestCase):
+    """An arm the watch stops leaves its turns and no record: the numbers print, marked, under the FAIL."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.fx = Fixture(self.tmp.name)
+
+    def stopped(self, starts=(320, 500, 700)):
+        healthy(self.fx, starts=starts)
+        (self.fx.root / 'engine-stream.log').write_text(''.join(self.fx.lines))
+        self.fx.write_turns(CMP)
+        (self.fx.root / 'arm-cmp.g2-live-0.log').write_text('')
+        return rule.report(str(self.fx.root))
+
+    def test_a_stopped_cmp_fails_and_prints_its_numbers_marked_partial(self):
+        word, lines, facts = self.stopped()
+        self.assertEqual(word, 'FAIL', lines)
+        self.assertIn('hang-or-crash: cmp.g2-live-0 started and left no record', facts['reasons'])
+        partial = facts['arms'][CMP]['partial']
+        self.assertEqual(partial['turns'], 15)
+        self.assertRegex(partial['word'], r'^PARTIAL window=\d+\.\d\.\.\d+\.\d$')
+        self.assertEqual(facts['arms'][CMP]['read']['native_bulks'], 3)
+        self.assertGreater(facts['arms'][CMP]['read']['prefill_tok_s'], 3300)
+        self.assertTrue(lines[0].startswith('NATIVE SHARE'), lines[0])
+        for line in lines:
+            if line.startswith(('NATIVE SHARE', 'PREFILL', 'DECODE', 'RATE', 'TAIL', 'RETURN-TURN', 'COMPLETED', 'STOCK cmp')):
+                self.assertIn('cmp ' + partial['word'], line)
+        self.assertIn(CMP + ' ' + partial['word'], '\n'.join(lines))
+
+    def test_the_debt_window_is_the_partial_one(self):
+        _word, _lines, facts = self.stopped()
+        debt = facts['arms'][CMP]['read']['serving']['decode_debt']
+        self.assertLess(debt['window_s'], 780 - 1)
+        self.assertGreater(debt['window_s'], 300)
+
+    def test_a_stop_inside_the_warmup_reads_from_zero(self):
+        word, _lines, facts = self.stopped(starts=(60, 150))
+        self.assertEqual(word, 'FAIL')
+        read = facts['arms'][CMP]['read']
+        self.assertEqual(read['native_bulks'], 2)
+
+    def test_a_real_killed_writer_leaves_every_flushed_turn_and_a_cut_line_is_dropped(self):
+        path = Path(self.tmp.name) / 'killed.turns.jsonl'
+        code = ('import sys,time; sys.path.insert(0, sys.argv[2]); import compose4_replay as r\n'
+                'sink = r.TurnSink(sys.argv[1], dict(replay_start_s=1.0, replay_config={}))\n'
+                'k = 0\n'
+                'while True:\n    sink.write(dict(t=float(k), kind="append")); k += 1; time.sleep(0.01)\n')
+        proc = subprocess.Popen([sys.executable, '-B', '-c', code, str(path), str(Path(__file__).resolve().parent)])
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and (not path.exists() or path.read_text().count('\n') < 6):
+                time.sleep(0.02)
+        finally:
+            proc.send_signal(signal.SIGKILL)
+            proc.wait(10)
+        with open(path, 'a') as handle:
+            handle.write('{"t": 99.0, "kin')      # a kill can cut a write
+        header, turns = rule.load_turns(str(path))
+        self.assertIs(header['header'], True)
+        self.assertGreaterEqual(len(turns), 5)
+        self.assertEqual([t['t'] for t in turns], [float(k) for k in range(len(turns))])
+
+    def test_the_sink_never_overwrites(self):
+        path = Path(self.tmp.name) / 'once.jsonl'
+        replay.TurnSink(str(path), {}).close()
+        with self.assertRaises(FileExistsError):
+            replay.TurnSink(str(path), {})
+
+    def test_no_turns_no_partial(self):
+        self.assertEqual(rule.load_turns(str(Path(self.tmp.name) / 'absent.jsonl')), (None, None))
+        (Path(self.tmp.name) / 'nohead.jsonl').write_text('{"t": 1.0}\n')
+        self.assertEqual(rule.load_turns(str(Path(self.tmp.name) / 'nohead.jsonl')), (None, None))
+
+
 class Grade(unittest.TestCase):
     def records(self):
         out = []
@@ -484,8 +566,8 @@ class ArmOrder(unittest.TestCase):
         a = types.SimpleNamespace(run_id='r', url='http://x', model='m')
         client = types.SimpleNamespace(epoch=1, history=[], call=lambda *_a, **_k: self.status())
         with mock.patch.object(box.shared, '_package_gate', return_value={'ok': False}):
-            record, turns = box.replay_arm(a, T.by_label()[CMP], client, client, run=None)
-        self.assertEqual((record['complete'], record['reasons'], turns), (False, ['arm-error'], None))
+            record = box.replay_arm(a, T.by_label()[CMP], client, client, run=None)
+        self.assertEqual((record['complete'], record['reasons']), (False, ['arm-error']))
 
     def test_an_arm_entry_that_is_not_idle_full_is_refused(self):
         client = types.SimpleNamespace(call=lambda *_a, **_k: dict(self.status(), scheduler_requests=2))

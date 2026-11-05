@@ -21,6 +21,7 @@ Per arm, read only, none of them in the verdict (review item 10, lead, 5 Nov):
   completed valid turns: turns sent in the window that finished as agent_replay.turn_complete counts them, against the others;
   decode debt: output delivered over the window against the reference. The reference is explicit: 56.6 per stream-second actually decoding (the debt in tokens is that minus delivered), and beside it 452.8 over the whole window, an upper bound a closed loop does not reach because its agents pause;
   extra prefill duration: seconds to first output on fresh turns, native and stock. It is apart from the debt: the first is how long a prefill took, the second what the streams beside it delivered.
+An arm stopped mid-run (the death watch's SIGTERM, a timeout) leaves no record, only its turns as they finished (<arm>.json.turns.jsonl, compose4_replay.TurnSink). The verdict stays FAIL for the crash; its numbers print over the turns it has, every line marked PARTIAL window=<first..last turn>, so nobody reads them as a full arm. A turn in flight at the stop is not in them, nor are the arm's end-read counters. If it stopped inside the warmup, the partial window starts at 0.
 Times: memory lines are engine clock (UTC stamps), turns are the client's; the same host.
 """
 import collections
@@ -311,29 +312,59 @@ def load_json(path):
         return None
 
 
+def load_turns(path):
+    """(header, turns) from the arm's sink; a last line cut by a kill is dropped. (None, None) without a header."""
+    try:
+        with open(path, errors='replace') as handle:
+            lines = handle.read().split('\n')
+    except OSError:
+        return None, None
+    rows = []
+    for line in lines:
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    if not rows or rows[0].get('header') is not True:
+        return None, None
+    return rows[0], rows[1:]
+
+
+def replay_read(stamped, runs, origin, config, yield_on, partial_end=None):
+    warmup, duration = config.get('WARMUP', 0), config.get('DURATION', 0)
+    if partial_end is not None:
+        duration = min(duration, partial_end)
+        warmup = warmup if warmup < duration else 0
+    read = classify(stamped, runs, origin + warmup, yield_on)
+    read['decode'] = decode_over(stamped, read['bulks'], origin)
+    read['serving'] = serving_reads(stamped, read.pop('live_bulks'), origin, warmup, duration)
+    read['serving']['rate_retention']['beside_native_bulks'] = read['decode']['decode_vs_fixed']    # one number for one thing: the gate's
+    read['returner_first_output_s'] = dict(all=ttft_read(read['served']), up_to_1000=ttft_read([s for s in read['served'] if s['new'] <= 1000]), held_stock=ttft_read(read['held']))
+    read['bulks'] = [dict(t=b['t'], prompt=b['prompt_tokens'], ttft=round(b['ttft'], 2), chunks=b['run']['chunks']) for b in read['bulks']]
+    return read
+
+
 def read_arm(root, label, rows, runs, yield_on):
     record = load_json('%s/arm-%s.json' % (root, label))
     out = dict(record=record, started=os.path.exists('%s/arm-%s.log' % (root, label)))
+    header, turns = load_turns('%s/arm-%s.json.turns.jsonl' % (root, label))
+    if turns is not None:
+        out['read_timeouts'] = sum(1 for t in turns if 'timeout' in (t.get('error') or '').lower() or 'timed out' in (t.get('error') or '').lower())
     if record is None:
+        if turns:
+            first, last = turns[0]['t'], max(t['t'] + (t.get('seconds') or 0.0) for t in turns)
+            origin = header['replay_start_s']
+            out['partial'] = dict(first_turn_s=first, last_turn_s=round(last, 1), turns=len(turns), word='PARTIAL window=%.1f..%.1f' % (first, last))
+            out['memory'] = arm_memory(rows, origin, origin + last)
+            out['read'] = replay_read(stamp_turns(turns, origin), runs, origin, header.get('replay_config') or {}, yield_on, partial_end=last)
         return out
     memory = arm_memory(rows, record.get('wall_start_s') or 0, record.get('wall_end_s') or 0)
     cap = (record.get('reserved_cap') or {}).get('counters') or {}
     rescued = sum(v for name in ('overdrafts', 'overdraft_refused') for v in (cap.get(name) or {}).values() if type(v) is int)
     out.update(memory=memory, overdrafts=cap.get('overdrafts'), overdraft_refused=cap.get('overdraft_refused'), rescued=rescued, oom_unmatched=max(0, sum(memory['oom_rise'].values()) - rescued))
-    turns = load_json('%s/arm-%s.json.turns.json' % (root, label))
     if turns is not None:
-        origin = record['replay_start_s']
-        out['read_timeouts'] = sum(1 for t in turns if 'timeout' in (t.get('error') or '').lower() or 'timed out' in (t.get('error') or '').lower())
-        stamped = stamp_turns(turns, origin)
-        warmup = (record.get('replay_config') or {}).get('WARMUP', 0)
-        read = classify(stamped, runs, origin + warmup, yield_on)
-        read['decode'] = decode_over(stamped, read['bulks'], origin)
-        config = record.get('replay_config') or {}
-        read['serving'] = serving_reads(stamped, read.pop('live_bulks'), origin, config.get('WARMUP', 0), config.get('DURATION', 0))
-        read['serving']['rate_retention']['beside_native_bulks'] = read['decode']['decode_vs_fixed']    # one number for one thing: the gate's
-        read['returner_first_output_s'] = dict(all=ttft_read(read['served']), up_to_1000=ttft_read([s for s in read['served'] if s['new'] <= 1000]), held_stock=ttft_read(read['held']))
+        read = replay_read(stamp_turns(turns, record['replay_start_s']), runs, record['replay_start_s'], record.get('replay_config') or {}, yield_on)
         read['summary'] = record.get('replay_summary')
-        read['bulks'] = [dict(t=b['t'], prompt=b['prompt_tokens'], ttft=round(b['ttft'], 2), chunks=b['run']['chunks']) for b in read['bulks']]
         out['read'] = read
     return out
 
@@ -347,14 +378,14 @@ def verdict(arms, death, fatal):
     for label in ARMS:
         arm = arms[label]
         record = arm.get('record')
+        if arm.get('read_timeouts'):
+            fail.append('hang: %s has %d turns whose read timed out' % (label, arm['read_timeouts']))
         if record is None:
             (fail if arm.get('started') else inc).append(('hang-or-crash: %s started and left no record' if arm.get('started') else 'not-run: %s') % label)
             continue
         if record.get('replay_still_open'):
             fail.append('hang: %s has %d turns still open' % (label, len(record['replay_still_open'])))
-        elif arm.get('read_timeouts'):
-            fail.append('hang: %s has %d turns whose read timed out' % (label, arm['read_timeouts']))
-        elif record.get('complete') is not True:
+        elif record.get('complete') is not True and not arm.get('read_timeouts'):
             inc.append('incomplete: %s: %s' % (label, ','.join(record.get('reasons') or ['no-reason'])))
     on = arms[ON]
     read = on.get('read')
@@ -418,11 +449,18 @@ def report(root):
     lines.append('ONE STREAM decode only: %s; decode-am1, eight: %s' % (json.dumps(one, sort_keys=True), json.dumps(eight, sort_keys=True)))
     sm_window = ((arms['sm.g2-live-0'].get('record') or {}).get('client_basis') or {}).get('decode_window') or {}
     lines.append('SM, frozen shape: tail gaps ms beside the bulk %s; first output of its returners above; completed %s' % (json.dumps(gap_fields(sm_window), sort_keys=True), (arms['sm.g2-live-0'].get('record') or {}).get('complete')))
+    for short, label in (('cmp', ON), ('ctl', OFF)):
+        partial = arms[label].get('partial')
+        if partial:      # every line that names the arm says so
+            lines = [re.sub(r'\b%s\b' % short, '%s %s' % (short, partial['word']), line) for line in lines]
     for reason in reasons:
         lines.append('REASON ' + reason)
     for line in fatal[:3]:
         lines.append('FATAL ' + line)
     lines.append('RULE %s' % word)
+    for label in (ON, OFF):
+        if arms[label].get('partial'):
+            lines.insert(-1, '%s %s: %d turns; the rule\'s FAIL stands for the stop, and no number here is a full arm' % (label, arms[label]['partial']['word'], arms[label]['partial']['turns']))
     facts = {label: {k: v for k, v in arm.items() if k != 'record'} for label, arm in arms.items()}
     return word, lines, dict(rule=word, reasons=reasons, arms=facts, one_stream=one, decode_am1=eight)
 

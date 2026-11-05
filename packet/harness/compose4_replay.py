@@ -66,7 +66,22 @@ def draws(seed, agent):
     return {name: stream(name) for name in ('start', 'append', 'reply', 'pause', 'text')}
 
 
-def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, records, lock, *, clock=time.monotonic, sleep=time.sleep, stream=stream_turn):
+class TurnSink:
+    """The arm's turns as they finish, one JSON line each after a header, so an arm the death watch stops keeps every finished turn. One open per arm, a flush per turn, no fsync: a killed process's flushed lines are in the file. Never overwrites."""
+
+    def __init__(self, path, header):
+        self.handle = open(path, 'x')
+        self.write(dict(header, header=True))
+
+    def write(self, row):
+        self.handle.write(json.dumps(row) + '\n')
+        self.handle.flush()
+
+    def close(self):
+        self.handle.close()
+
+
+def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, records, lock, *, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, sink=None):
     rng = draws(cfg['SEED'], agent)
     session, history_tokens, messages, salt = 0, 0, [], None
     append_draw = None     # a drawn append that rolled the session is kept for the next: the sequence of draws doesn't depend on the roll
@@ -98,17 +113,19 @@ def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, record
             messages = []
         with lock:
             records.append(record)
+            if sink is not None:
+                sink.write(record)
         pause = rng['pause'].uniform(cfg['TOOL_MIN'], cfg['TOOL_MAX'])
         sleep(max(0.0, min(pause, t_end - clock())))
 
 
-def run(url, model, key, run_id, label, *, cfg=None, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, finish_bound_s=FINISH_BOUND_S):
+def run(url, model, key, run_id, label, *, cfg=None, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, finish_bound_s=FINISH_BOUND_S, sink=None):
     """The replay; (config, summary, turns, still_open). Same start spacing as agent_replay's."""
     cfg = dict(T.REPLAY if cfg is None else cfg)
     records, lock = [], threading.Lock()
     origin = clock()
     t_end = origin + cfg['DURATION']
-    threads = [threading.Thread(target=agent_loop, args=(i, url, model, key, cfg, run_id, label, origin, t_end, records, lock), kwargs=dict(clock=clock, sleep=sleep, stream=stream), name='compose4-agent-%d' % i, daemon=True)
+    threads = [threading.Thread(target=agent_loop, args=(i, url, model, key, cfg, run_id, label, origin, t_end, records, lock), kwargs=dict(clock=clock, sleep=sleep, stream=stream, sink=sink), name='compose4-agent-%d' % i, daemon=True)
                for i in range(cfg['AGENTS'])]
     for thread in threads:
         thread.start()

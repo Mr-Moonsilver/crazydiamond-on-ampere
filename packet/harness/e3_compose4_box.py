@@ -92,7 +92,7 @@ def replay_arm(a, row, client, poll_client, *, run=None):
     record = base_record(a, row, client)
     mark = len(getattr(client, 'history', ()))
     poller = None
-    turns = None
+    sink = None
     try:
         if shared._package_gate(os.environ).get('ok') is not True:
             raise ValueError('reviewed-package-readiness-not-pass')
@@ -105,7 +105,8 @@ def replay_arm(a, row, client, poll_client, *, run=None):
         poller = Poller(poll_client)
         poller.start()
         record['replay_start_s'] = time.time()
-        cfg, summary, turns, still_open = run(a.url, a.model, replay.key_from_env(), a.run_id, row['label'])
+        sink = replay.TurnSink(a.out + '.turns.jsonl', dict(label=row['label'], replay_start_s=record['replay_start_s'], replay_config=T.REPLAY))
+        cfg, summary, turns, still_open = run(a.url, a.model, replay.key_from_env(), a.run_id, row['label'], sink=sink)
         record['replay_end_s'] = time.time()
         record.update(replay_config=cfg, replay_summary=summary, replay_still_open=still_open, replay_requests_sent=len(turns) + len(still_open))
         poller.done.set()
@@ -139,9 +140,11 @@ def replay_arm(a, row, client, poll_client, *, run=None):
         if poller is not None:
             poller.done.set()
             record['polled'] = dict(rows=poller.rows, errors=poller.errors)
+        if sink is not None:
+            sink.close()
         record['wall_end_s'] = time.time()
     record['complete'] = not record['reasons']
-    return record, turns
+    return record
 
 
 def one_stream_arm(a, row, cfg, budget, client, *, sleep=time.sleep):
@@ -190,14 +193,14 @@ def one_stream_arm(a, row, cfg, budget, client, *, sleep=time.sleep):
 def run_arm(a):
     name = T.label(a.c1, a.size, a.cohort, a.index)
     row = T.by_label().get(name)
-    client, turns = None, None
+    client = None
     try:
         if row is None:
             raise ValueError('arm-not-in-the-declared-table')
         client = refusal.RefusalKeepingClient(a.url, a.run_id, epoch=a.epoch, timeout_s=a.control_timeout_s)
         poll = refusal.RefusalKeepingClient(a.url, a.run_id, epoch=a.epoch, timeout_s=a.control_timeout_s)
         if row['kind'] == 'replay':
-            record, turns = replay_arm(a, row, client, poll)
+            record = replay_arm(a, row, client, poll)
         else:
             cfg, budget = a1.load_config(a, row['band'])
             record = a1.arm(a, row, cfg, budget, client, poll) if row['kind'] == 'live-arm' else one_stream_arm(a, row, cfg, budget, client)
@@ -211,9 +214,6 @@ def run_arm(a):
         block['table'] = row['attn']
         record.setdefault('slots_fast', dict(requested=row['next_levers'], select=None))['calls'] = iw.slots_calls((record.get('slots_fast') or {}).get('select'), read)
         iw.rank_lever_counters(record, row, read)
-    if turns is not None:
-        with open(a.out + '.turns.json', 'x') as handle:
-            json.dump(turns, handle)
     with open(a.out, 'x') as handle:
         json.dump(record, handle, sort_keys=True)
     print('COMPOSE4_ARM_RECORD %s %s' % (name, 'COMPLETE' if record.get('complete') is True else 'INCOMPLETE'))
