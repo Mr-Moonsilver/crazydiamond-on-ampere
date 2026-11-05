@@ -122,6 +122,44 @@ class Stage(unittest.TestCase):
         self.assertEqual(d.controller.chunk_bound, (52624, 1024))
 
 
+class PleCounter(unittest.TestCase):
+    """At 2048 the scratch has no lever, so the counter the smoke and the grade hold the arm to has to move without one. Real scratch, real path lookup, fake tensors."""
+
+    def scratch(self, rows):
+        import model_hooks as mh
+        tensor = SimpleNamespace(numel=lambda: 1, element_size=lambda: 1, shape=(rows, 3, 4))
+        embedding = SimpleNamespace(supports_prefetch=True, _prefetch_buffer=SimpleNamespace(shape=(1024, 3, 4), dtype=None), _prefetch_stream=object(), etp_data_parallel_size=1)
+        layer = SimpleNamespace(ple=SimpleNamespace(ngram_embedding=None, ple_embedding=SimpleNamespace(ngram_embedding=embedding)))
+        scratch = mh.PlePrivateScratch(embedding, rows, torch_module=SimpleNamespace(empty=lambda *a, **k: tensor), device='cpu', stream=SimpleNamespace(cuda_stream=9), selectable=True)
+        return mh, scratch, SimpleNamespace(layers=[layer])
+
+    def setUp(self):
+        import model_hooks as mh
+        saved = dict(mh.PLE_PRIVATE)
+        self.addCleanup(mh.PLE_PRIVATE.update, saved)
+        mh.PLE_PRIVATE.update(selected=False, scopes=0)
+
+    def test_at_2048_it_engages_without_the_lever_and_counts(self):
+        mh, scratch, model = self.scratch(T.CHUNK_TOKENS)
+        self.assertFalse(scratch.selectable)
+        self.assertTrue(scratch.engaged(model, 0))
+        self.assertEqual(mh.PLE_PRIVATE['scopes'], 1)
+
+    def test_at_2048_with_the_lever_sent_too_it_counts_once_per_segment(self):
+        mh, scratch, model = self.scratch(T.CHUNK_TOKENS)
+        mh.select_ple_private(True)
+        scratch.engaged(model, 0), scratch.engaged(model, 0)
+        self.assertEqual(mh.PLE_PRIVATE['scopes'], 2)
+
+    def test_at_1024_nothing_moved_the_lever_decides_and_off_counts_nothing(self):
+        mh, scratch, model = self.scratch(1024)
+        self.assertFalse(scratch.engaged(model, 0))
+        self.assertEqual(mh.PLE_PRIVATE['scopes'], 0)
+        mh.select_ple_private(True)
+        self.assertTrue(scratch.engaged(model, 0))
+        self.assertEqual(mh.PLE_PRIVATE['scopes'], 1)
+
+
 class Client(unittest.TestCase):
     """The box's arm client: the bound goes out on the arm's own command, for every row, and a row without the field sends nothing."""
 

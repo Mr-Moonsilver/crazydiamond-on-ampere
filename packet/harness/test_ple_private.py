@@ -90,7 +90,7 @@ class Private(Base):
         scratch, model = self.scratch(e, 2048), model_of(e)
         self.assertFalse(scratch.selectable)
         self.assertTrue(scratch.engaged(model, 1))
-        self.assertEqual(mh.PLE_PRIVATE['scopes'], 0)
+        self.assertEqual(mh.PLE_PRIVATE['scopes'], 1, "compose-5: the box's only sign of it at 2048, and compose-4's smoke and grade read it")
 
 
 class Witness(Base):

@@ -426,13 +426,12 @@ class PlePrivateScratch:
         self.chunk_tokens = int(chunk_tokens)
 
     def engaged(self, model, layer_idx):
-        """On this layer's segment; a selectable scratch only when the lever says so."""
+        """On this layer's segment; a selectable scratch only when the lever says so. Counted either way: above 1024 rows the counter is the box's only sign of it."""
         if ple_embedding(model, layer_idx, self.chunk_tokens, self.selectable) is not self.embedding:
             return False
-        if self.selectable:
-            if not PLE_PRIVATE['selected']:
-                return False
-            PLE_PRIVATE['scopes'] += 1
+        if self.selectable and not PLE_PRIVATE['selected']:
+            return False
+        PLE_PRIVATE['scopes'] += 1
         return True
 
     def scope(self):
