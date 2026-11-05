@@ -63,19 +63,21 @@ class Table(unittest.TestCase):
         self.assertIsNone(T.matched_off(rows['on.g2-solo-0']))
         self.assertIsNone(T.matched_off(rows['sm.g2-live-0']))
 
-    def test_every_arm_is_inwaits_ps1_plus_cf_and_hf_and_the_axis_is_the_yield(self):
+    def test_every_arm_is_inwaits_hf_and_the_axis_is_the_yield(self):
+        # compose-4: the inwait table it merged has no ps1 row; hf is its base, cf with the host filter
         import inwait_arms as parent
-        ps1 = next(r for r in parent.arms() if r['c1'] == 'ps1')
+        hf = next(r for r in parent.arms() if r['c1'] == 'hf')
         for r in T.arms():
             for name in ('attn', 'lazy_recv', 'decode_merge', 'inwait', 'next_levers', 'prepare_slices', 'score_warm', 'reserved_cap', 'overlap', 'defer_bind', 'stage_local', 'size'):
-                self.assertEqual(r[name], ps1[name], (r['label'], name))
+                self.assertEqual(r[name], hf[name], (r['label'], name))
             self.assertIs(r['cow_fast'], True, r['label'])
             self.assertIs(r['cow_host_filter'], True, r['label'])
             self.assertIs(r['yield_on'], T.YIELD[r['c1']])
 
-    def test_inwaits_own_rows_send_no_host_filter(self):
+    def test_inwaits_own_rows_name_the_host_filter(self):
+        # compose-4: 5d's table carries the field on every row (it selects cn's off)
         import inwait_arms as parent
-        self.assertFalse(any('cow_host_filter' in r for r in parent.arms()))
+        self.assertTrue(all('cow_host_filter' in r for r in parent.arms()))
 
     def test_a_returner_is_a_sampled_stream_and_the_counts_add_up(self):
         rows = T.by_label()

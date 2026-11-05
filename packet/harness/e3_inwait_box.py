@@ -99,9 +99,10 @@ def levers_into(client, attn, wanted, record):
 class _InwaitSelecting:
     """The arm's client with ``inwait`` on the stage command; the reply's value goes to the record, and the grade reads it."""
 
-    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False, host_filter=False, exact=False, warm_rank0=False, flush=False, cow_verify=True, ple_private=False, ple_witness=False):
+    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False, host_filter=False, exact=False, warm_rank0=False, flush=False, cow_verify=True, ple_private=None, ple_witness=None):
         self._client, self._inwait, self._record, self._next, self._attn = client, inwait, record, next_levers, attn
-        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap, cow_host_filter=host_filter, score_warm_rank0=warm_rank0, allocator_flush=flush, cow_verify=cow_verify, ple_private=ple_private, ple_witness=ple_witness)
+        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap, cow_host_filter=host_filter, score_warm_rank0=warm_rank0, allocator_flush=flush, cow_verify=cow_verify)
+        self._wanted.update({name: value for name, value in (('ple_private', ple_private), ('ple_witness', ple_witness)) if value is not None})    # a row without the lever does not send it
         self._exact = exact
         self._raw, self._slots_sent = client if raw is None else raw, False
 
@@ -130,7 +131,7 @@ def release_compose(row):
         run_inner = inner(size, local)
 
         def run(client, record, mode):
-            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap'], row['cow_host_filter'], row['exact_successor'], row['score_warm_rank0'], row['allocator_flush'], row['cow_verify'], row.get('ple_private', False), row.get('ple_witness', False)), record, mode)
+            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap'], row['cow_host_filter'], row['exact_successor'], row['score_warm_rank0'], row['allocator_flush'], row['cow_verify'], row.get('ple_private'), row.get('ple_witness')), record, mode)
             if (record.get('attn_meta') or {}).get('select') is None:
                 raise ValueError('attn-meta-select-not-sent')
             if record.get('inwait') is None:
