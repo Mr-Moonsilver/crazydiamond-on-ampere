@@ -88,6 +88,58 @@ def read_log(path):
     return rows, fatal
 
 
+DECLINE_LINE = re.compile(r'flash-s5 decline site=(\S+) num_tokens=(\d+)')
+
+
+def read_declines(path):
+    """The engine's line per stock turn (compose-5): stamp, site, length. Empty on a record from before it."""
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    with open(path, errors='replace') as handle:
+        for line in handle:
+            if 'flash-s5 decline ' not in line:
+                continue
+            found = DECLINE_LINE.search(line)
+            if found:
+                try:
+                    rows.append(dict(t=epoch(line.split()[0]), site=found.group(1), num_tokens=int(found.group(2))))
+                except ValueError:
+                    continue
+    return rows
+
+
+def site_of(declines, prompt, send, bound_s=120.0):
+    """The site of the turn of this length sent then: the line comes when stock admits it, so never before its send, less a second of clock."""
+    rows = [row for row in declines if row['num_tokens'] == prompt and send - 1.0 <= row['t'] <= send + bound_s]
+    return min(rows, key=lambda row: row['t'])['site'] if rows else None
+
+
+def decline_read(record):
+    """An arm's decline counters: its last status less its entry, nonzero only. None on a record from before them."""
+    statuses = (record or {}).get('statuses') or ()
+    entry = next((row for row in statuses if row.get('label') == 'entry'), None)
+    after = next((row for row in reversed(statuses) if str(row.get('label')).startswith('after')), None)
+    start = ((entry or {}).get('append_yield') or {}).get('declines') or {}
+    end = ((after or {}).get('append_yield') or {}).get('declines')
+    if not isinstance(end, dict):
+        return None
+    delta = lambda name: {k: v - (start.get(name) or {}).get(k, 0) for k, v in sorted((end.get(name) or {}).items()) if v != (start.get(name) or {}).get(k, 0)}
+    totals = {k: end[k] - start.get(k, 0) for k in ('armed', 'selected_after_decline', 'left_while_waiting', 'dropped', 'read_errors') if k in end}
+    return dict(turns=delta('turns'), ticks=delta('ticks'), restores=delta('restores'), rollbacks=delta('rollbacks'), pending=end.get('pending'), **totals)
+
+
+def stock_turn_sites(stamped, declines, warmup_at):
+    """The window's turns by kind and site, for turns with a decline line; a turn with none went native or was never declined."""
+    out = {'fresh': collections.Counter(), 'append': collections.Counter()}
+    for turn in stamped:
+        if turn['send'] >= warmup_at and type(turn.get('prompt_tokens')) is int and turn.get('kind') in out:
+            site = site_of(declines, turn['prompt_tokens'], turn['send'])
+            if site is not None:
+                out[turn['kind']][site] += 1
+    return {k: dict(sorted(v.items())) for k, v in out.items()}
+
+
 def chunk_runs(rows):
     """Rank 0's native chunks as runs, one per request: a chunk continues the run that ended where it starts, so a bulk carries on across its yields."""
     chunks = {}
@@ -192,7 +244,7 @@ def classify(turns, runs, warmup_at, yield_on):
                 facts['stock_fresh_contended'] += 1
             elif new >= MIN_NATIVE_ROWS:
                 facts['stock_fresh_clean'] += 1
-                violations.append(dict(clause='a', t=turn['t'], agent=turn['agent'], new=new, decoding=decoding))
+                violations.append(dict(clause='a', t=turn['t'], agent=turn['agent'], new=new, decoding=decoding, send=turn['send'], prompt=turn['prompt_tokens']))
             continue
         live = [b for b in live_bulks if b['run']['first'] <= at <= b['run']['last']]
         if not live:
@@ -211,7 +263,7 @@ def classify(turns, runs, warmup_at, yield_on):
             facts['stock_append_bulk_ending'] += 1
         elif yield_on:
             facts['stock_append_clean'] += 1
-            violations.append(dict(clause='b', t=turn['t'], agent=turn['agent'], new=new, bulk_left_s=round(left, 2), held_ahead=held_ahead))
+            violations.append(dict(clause='b', t=turn['t'], agent=turn['agent'], new=new, bulk_left_s=round(left, 2), held_ahead=held_ahead, send=turn['send'], prompt=turn['prompt_tokens']))
         else:
             facts['stock_append_yield_off'] += 1
     facts['stock_total'] = sum(v for k, v in facts.items() if k.startswith('stock_'))
@@ -394,9 +446,16 @@ def replay_read(stamped, runs, origin, config, yield_on, partial_end=None):
     return read
 
 
-def read_arm(root, label, rows, runs, yield_on):
+def name_sites(read, declines):
+    """Each flagged turn's site, where the engine logged one (compose-5); the send and the length were only for this match."""
+    for row in read.get('violations') or ():
+        row['site'] = site_of(declines, row.pop('prompt'), row.pop('send'))
+    return read
+
+
+def read_arm(root, label, rows, runs, yield_on, declines=()):
     record = load_json('%s/arm-%s.json' % (root, label))
-    out = dict(record=record, started=os.path.exists('%s/arm-%s.log' % (root, label)))
+    out = dict(record=record, started=os.path.exists('%s/arm-%s.log' % (root, label)), declines=decline_read(record))
     header, turns, malformed = load_turns('%s/arm-%s.json.turns.jsonl' % (root, label))
     if label in (ON, OFF):
         out['agent_errors'] = arm_log_errors(root, label)
@@ -413,7 +472,7 @@ def read_arm(root, label, rows, runs, yield_on):
             out['partial'] = partial_of(turns, 'the arm stopped: the rule\'s FAIL stands for the stop')
             last = out['partial']['last_turn_s']
             out['memory'] = arm_memory(rows, origin, origin + last)
-            out['read'] = replay_read(stamp_turns(turns, origin), runs, origin, header.get('replay_config') or {}, yield_on, partial_end=last)
+            out['read'] = name_sites(replay_read(stamp_turns(turns, origin), runs, origin, header.get('replay_config') or {}, yield_on, partial_end=last), declines)
         return out
     memory = arm_memory(rows, record.get('wall_start_s') or 0, record.get('wall_end_s') or 0)
     cap = (record.get('reserved_cap') or {}).get('counters') or {}
@@ -427,7 +486,8 @@ def read_arm(root, label, rows, runs, yield_on):
             partial_end = out['partial']['last_turn_s']
         read = replay_read(stamp_turns(turns, origin), runs, origin, record.get('replay_config') or {}, yield_on, partial_end=partial_end)
         read['summary'] = record.get('replay_summary')
-        out['read'] = read
+        out['stock_turn_sites'] = stock_turn_sites(stamp_turns(turns, origin), declines, origin + ((record.get('replay_config') or {}).get('WARMUP') or 0))
+        out['read'] = name_sites(read, declines)
     return out
 
 
@@ -485,7 +545,8 @@ def report(root):
         with open(err, errors='replace') as handle:
             fatal += [line[:300].rstrip() for line in handle if 'OutOfMemoryError' in line or 'FLASH_S5_WORKER_FAILURE' in line]
     runs = chunk_runs(rows)
-    arms = {label: read_arm(root, label, rows, runs, label != OFF) for label in ARMS}
+    declines = read_declines(root + '/engine-stream.log')
+    arms = {label: read_arm(root, label, rows, runs, label != OFF, declines) for label in ARMS}
     death = (load_json(root + '/engine-death-scan.json') or {}).get('verdict')
     word, reasons = verdict(arms, death, fatal)
     lines = []
@@ -497,6 +558,8 @@ def report(root):
     lines.append('STOCK cmp: %s' % json.dumps(on.get('counts'), sort_keys=True))
     lines.append('STOCK ctl: %s' % json.dumps(off.get('counts'), sort_keys=True))
     literal = (on.get('counts') or {}).get('stock_total')
+    for label in ARMS:
+        lines.append('DECLINES %s: %s; stock turns by kind and site %s' % (label, json.dumps(arms[label].get('declines'), sort_keys=True) if arms[label].get('declines') is not None else 'not in this record', json.dumps(arms[label].get('stock_turn_sites'), sort_keys=True)))
     lines.append('LITERAL reading, any stock prefill on cmp: %s (%s)' % (literal, 'would FAIL' if literal else 'none'))
     lines.append('RETURNER first output s, cmp served: %s; held then stock: %s; ctl held then stock: %s' % ((on.get('returner_first_output_s') or {}).get('all'), (on.get('returner_first_output_s') or {}).get('held_stock'), (off.get('returner_first_output_s') or {}).get('held_stock')))
     sm = (arms['sm.g2-live-0'].get('record') or {}).get('returners') or ()

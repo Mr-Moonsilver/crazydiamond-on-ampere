@@ -3866,7 +3866,9 @@ class NativeSegmentDriver:
         config = getattr(self.controller, 'append_yield', None)
         y = self._yield
         holds = getattr(self.controller, 'yield_stock_deferrals_by_kind', None)
+        declines = getattr(getattr(self, 'auto_arm', None), 'decline_record', None)
         return dict(schema='s5-append-yield/1', config=None if config is None else config.record(),
+                    declines=declines() if callable(declines) else None,
                     phase=None if y is None else y['phase'], seq=self._yield_seq,
                     counters=dict(self.append_yield_counters),
                     end_reasons=dict(self.append_yield_end_reasons),

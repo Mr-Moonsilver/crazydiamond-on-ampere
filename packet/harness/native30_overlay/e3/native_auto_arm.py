@@ -16,6 +16,17 @@ MAX_COHORT = 63
 MAX_REJECTED = 1024
 RELEASE = 'release_auto_arm'
 READS = frozenset(('status', 'snapshot', 'transition_acks', 'bootstrap_acks', 'overlap_evidence'))
+# compose-5: every place a waiting head leaves for stock instead of native, in the order a tick reaches them. Only these
+# ticks let stock admit: cooldown, tail, and _select returning False. Numbers only: no request UID leaves this module.
+# Names stay clear of the words the box watchers grep for in a log line.
+DECLINE_SITES = ('cooldown', 'tail',
+                 'gate-manual-owned', 'gate-route-or-work', 'gate-not-bootstrapped', 'gate-driver-stopped', 'gate-engine-paused',
+                 'gate-policy', 'gate-no-batch-queue', 'gate-config', 'gate-not-running',
+                 'cohort-empty', 'cohort-over', 'cohort-prefill', 'cohort-other', 'cohort-uid',
+                 'rejected',
+                 'plan-state', 'plan-controller', 'plan-transfer', 'plan-prompt-logprobs', 'plan-generation-logprobs', 'plan-uid',
+                 'plan-shared', 'plan-below-floor', 'plan-kv-blocks', 'plan-empty')
+MAX_PENDING_DECLINES = 64
 
 
 def enabled(env):
@@ -95,6 +106,14 @@ class AutoArmPolicy:
         self.reentry = False
         self.reentry_refusals = 0
         self.drain_wait_seq = None
+        # compose-5: ticks per site; turns per site, each turn once, at the last site before it left for stock.
+        self.decline_ticks = dict.fromkeys(DECLINE_SITES, 0)
+        self.decline_turns = dict.fromkeys(DECLINE_SITES, 0)
+        self.decline_totals = dict(selected_after_decline=0, left_while_waiting=0, dropped=0, read_errors=0, armed=0)
+        self.restores = {}
+        self.rollbacks = {}
+        self._decline_pending = {}
+        self._decline_why = None
 
     @property
     def active(self):
@@ -131,6 +150,54 @@ class AutoArmPolicy:
             # returns policy ownership. Failed commands acquire no lease.
             self.manual_owned = True
         return result
+
+    def decline_record(self):
+        """Bounded status row: counts only, never a request UID. Cumulative; a reader takes an arm's delta."""
+        return dict(schema='s5-auto-declines/1', ticks=dict(self.decline_ticks), turns=dict(self.decline_turns),
+                    pending=len(self._decline_pending), restores=dict(self.restores), rollbacks=dict(self.rollbacks),
+                    **self.decline_totals)
+
+    def _decline(self, site):
+        """The waiting head, if any, may go to stock this tick. A count must never stop the engine."""
+        try:
+            queue = self.controller._queue(self.scheduler)
+            if not queue:
+                return
+            request = queue.peek_request()
+            self.decline_ticks[site] += 1
+            uid = request.request_id
+            if uid not in self._decline_pending and len(self._decline_pending) >= MAX_PENDING_DECLINES:
+                self._decline_pending.pop(next(iter(self._decline_pending)))
+                self.decline_totals['dropped'] += 1
+            self._decline_pending[uid] = (weakref.ref(request), site)
+        except Exception:
+            self.decline_totals['read_errors'] += 1
+
+    def _settle_declines(self):
+        """A head declined earlier: admitted since means stock took it, at the last site it saw."""
+        if not self._decline_pending:
+            return
+        try:
+            for uid, (ref, site) in list(self._decline_pending.items()):
+                request = ref()
+                state = getattr(getattr(request, 'status', None), 'name', None)
+                if request is None or self.scheduler.requests.get(uid) is not request or str(state).startswith('FINISHED'):
+                    self.decline_totals['left_while_waiting'] += 1
+                elif str(state).startswith('WAITING'):
+                    continue
+                else:
+                    self.decline_turns[site] += 1
+                    self._decline_log(site, request)
+                self._decline_pending.pop(uid)
+        except Exception:
+            self.decline_totals['read_errors'] += 1
+            self._decline_pending.clear()
+
+    @staticmethod
+    def _decline_log(site, request):
+        # One line per stock turn: its stamp and length tie the site to the client's journal.
+        from engine_driver import _progress_logger
+        _progress_logger().info('flash-s5 decline site=%s num_tokens=%d', site, request.num_tokens)
 
     def _control(self, action):
         self._internal = True
@@ -181,36 +248,63 @@ class AutoArmPolicy:
 
     def _cohort(self):
         running = tuple(self.scheduler.running)
-        if (not 1 <= len(running) <= min(MAX_COHORT, self.scheduler.max_num_running_reqs - 1)
-                or any(r.is_prefill_chunk or r.num_computed_tokens < r.num_prompt_tokens
-                       or r.lora_request is not None or r.resumable for r in running)):
+        if not running:
+            self._decline_why = 'cohort-empty'
+            return None
+        if len(running) > min(MAX_COHORT, self.scheduler.max_num_running_reqs - 1):
+            self._decline_why = 'cohort-over'
+            return None
+        if any(r.is_prefill_chunk or r.num_computed_tokens < r.num_prompt_tokens for r in running):
+            self._decline_why = 'cohort-prefill'
+            return None
+        if any(r.lora_request is not None or r.resumable for r in running):
+            self._decline_why = 'cohort-other'
             return None
         try:
             for r in running:_text('request_uid', r.request_id)
         except E3ContractError:
+            self._decline_why = 'cohort-uid'
             return None
         return tuple(sorted(r.request_id for r in running))
 
-    def _plan(self, request):
+    def _plan_state_site(self, request):
         s, c = self.scheduler, self.controller
         if (request is None or s.requests.get(request.request_id) is not request
                 or getattr(request.status, 'name', None) != 'WAITING'
                 or request.num_computed_tokens != 0 or request.num_output_tokens != 0
                 or request.num_preemptions != 0 or request.resumable
                 or request.lora_request is not None or request.pooling_params is not None
-                or getattr(request, 'structured_output_request', None) is not None
-                or c._request_refuses(s, request) or request.ec_transfer_params
-                or request.sampling_params.prompt_logprobs is not None
-                or _generation_logprobs_refused(request.sampling_params)):
+                or getattr(request, 'structured_output_request', None) is not None):
+            return 'plan-state'
+        if c._request_refuses(s, request):
+            return 'plan-controller'
+        if request.ec_transfer_params:
+            return 'plan-transfer'
+        if request.sampling_params.prompt_logprobs is not None:
+            return 'plan-prompt-logprobs'
+        if _generation_logprobs_refused(request.sampling_params):
+            return 'plan-generation-logprobs'
+        return None
+
+    def _plan(self, request):
+        s, c = self.scheduler, self.controller
+        site = self._plan_state_site(request)
+        if site is not None:
+            self._decline_why = site
             return None
         try:
             _text('request_uid', request.request_id)
         except E3ContractError:
+            self._decline_why = 'plan-uid'
             return None
         blocks, start, shared = s.kv_cache_manager.get_computed_blocks(request)
         end = request.num_tokens - 1
         # Shared-prefix junction/streaming/recompute special cases stay stock.
-        if shared or end - start < max(MIN_NATIVE_ROWS, c.chunk_tokens):
+        if shared:
+            self._decline_why = 'plan-shared'
+            return None
+        if end - start < max(MIN_NATIVE_ROWS, c.chunk_tokens):
+            self._decline_why = 'plan-below-floor'
             return None
         manager = s.kv_cache_manager
         needed = manager.coordinator.get_num_blocks_to_allocate(
@@ -219,6 +313,7 @@ class AutoArmPolicy:
             total_computed_tokens=start, num_local_computed_tokens=start,
             num_tokens_main_model=request.num_tokens, apply_admission_cap=True)
         if needed + manager.watermark_blocks > manager.block_pool.get_num_free_blocks():
+            self._decline_why = 'plan-kv-blocks'
             return None
         cap = native_chunk_cap(c.chunk_tokens, s.max_num_scheduled_tokens)
         def split(position, limit):
@@ -227,6 +322,7 @@ class AutoArmPolicy:
                 num_new_local_computed_tokens=start if position == start else 0)
         plan = staged_chunk_plan(start, end, cap, c.minimum_stage_rows, split)
         if not plan:
+            self._decline_why = 'plan-empty'
             return None
         return dict(start=start, end=end, plan=tuple(plan),
                     blocks=tuple(tuple(b.block_id for b in group) for group in blocks.blocks))
@@ -384,27 +480,52 @@ class AutoArmPolicy:
         self._rollback('request-changed-or-admission-refused')
         return False
 
+    def _gate_site(self):
+        s, d = self.scheduler, self.driver
+        if self.manual_owned:
+            return 'gate-manual-owned'
+        if d._split_ready or d.active or d.admission_intent() is not None or d._control_route is not None:
+            return 'gate-route-or-work'
+        if not d._bootstrapped:
+            return 'gate-not-bootstrapped'
+        if d.error is not None:
+            return 'gate-driver-stopped'
+        if d._engine_paused():
+            return 'gate-engine-paused'
+        if getattr(s.policy, 'name', None) != 'FCFS':
+            return 'gate-policy'
+        if getattr(self.engine, 'batch_queue', None) is None:
+            return 'gate-no-batch-queue'
+        if (getattr(s.vllm_config.parallel_config, 'data_parallel_size', None) != 1
+                or getattr(s.vllm_config, 'speculative_config', None) is not None
+                or getattr(s, 'connector', None) is not None):
+            return 'gate-config'
+        if callable(getattr(self.engine, 'is_running', None)) and not self.engine.is_running():
+            return 'gate-not-running'
+        return None
+
     def _select(self):
         s, d = self.scheduler, self.driver
-        if (self.manual_owned or d._split_ready or d.active or d.admission_intent() is not None
-                or d._control_route is not None or not d._bootstrapped or d.error is not None
-                or d._engine_paused() or getattr(s.policy, 'name', None) != 'FCFS'
-                or getattr(self.engine, 'batch_queue', None) is None
-                or getattr(s.vllm_config.parallel_config, 'data_parallel_size', None) != 1
-                or getattr(s.vllm_config, 'speculative_config', None) is not None
-                or getattr(s, 'connector', None) is not None
-                or (callable(getattr(self.engine, 'is_running', None)) and not self.engine.is_running())):
+        site = self._gate_site()
+        if site is not None:
+            self._decline(site)
             return False
         cohort = self._cohort()
         queue = self.controller._queue(s)
         if cohort is None or not queue:
+            if cohort is None:
+                self._decline(self._decline_why)
             return False
         request = queue.peek_request()
         if self.rejected.get(request.request_id, lambda: None)() is request:
+            self._decline('rejected')
             return False
         plan = self._plan(request)
         if plan is None:
+            self._decline(self._decline_why)
             return False
+        if self._decline_pending.pop(request.request_id, None) is not None:
+            self.decline_totals['selected_after_decline'] += 1
         self.request_ref = weakref.ref(request)
         self.plan, self.cohort = plan, cohort
         self.selection_seq += 1
@@ -424,6 +545,7 @@ class AutoArmPolicy:
             raise E3ContractError('auto-arm-close-with-owned-route-or-work')
         d.append_yield_end(reason)
         self.reentry = False
+        self.restores[reason] = self.restores.get(reason, 0) + 1
         self._note('closed', reason=reason)
         self._remember()
         self.phase = 'idle'
@@ -438,6 +560,7 @@ class AutoArmPolicy:
         self.old_pause = None
 
     def _rollback(self, reason):
+        self.rollbacks[reason] = self.rollbacks.get(reason, 0) + 1
         self._note('refused', reason=reason)
         if self.driver._split_ready:
             self.deadline = self.driver.clock() + self.driver._control_timeout_s
@@ -486,9 +609,11 @@ class AutoArmPolicy:
     def tick(self):
         """One bounded tick. True bypasses stock; False allows existing Core work."""
         d = self.driver
+        self._settle_declines()
         if not self.active:
             if self.cooldown:
                 self.cooldown = False
+                self._decline('cooldown')
                 return False
             if not self._select():
                 return False
@@ -515,6 +640,7 @@ class AutoArmPolicy:
             request = self._request()
             if request is None or request.num_output_tokens > 0:
                 self._restore('full-tail-completed')
+            self._decline('tail')
             return False
         if self.phase == 'drain_wait':
             # One scheduler pass with the pause released between re-entry attempts.
@@ -607,6 +733,8 @@ class AutoArmPolicy:
             if self.reentry:
                 self.reentry = False
                 d.append_yield_set_phase('resume')
+            else:
+                self.decline_totals['armed'] += 1
             self._note('armed', route_generation=d.route_generation)
             self.scheduler.set_pause_state(self.old_pause)
         elif self.phase == 'return':

@@ -19,7 +19,8 @@
   "test_dp5_chunk",
   "test_inwait_box",
   "test_a1_trunk_box",
-  "test_compose4_router"
+  "test_compose4_router",
+  "test_compose5_declines"
  ],
  "refusal_tests": [],
  "why": {}
