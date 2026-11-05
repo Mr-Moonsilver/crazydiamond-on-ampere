@@ -1442,6 +1442,9 @@ class PrefillAdmissionController:
         self.engine_epoch = engine_epoch
         self.chunk_tokens = chunk_tokens
         self.chunk_bound = None     # decode-phase dp6: (end, rows), per arm, set while paused idle; None is today's plan
+        self.native_hold_s = 0      # decode-phase hold: seconds a natively plannable waiting request stays off stock, per arm; 0 is today's
+        self.native_hold_deferrals = 0
+        self.handback_front = 0
         self.minimum_stage_rows = minimum_stage_rows
         self.ranks = ranks
         self.max_active = max_active
@@ -2496,7 +2499,15 @@ class PrefillAdmissionController:
         self.commits += 1
         if admission.remaining_tokens > 0:
             # One-token handback: the pinned waiting branch schedules the rest.
-            parked.queue.prepend_request(parked.request)
+            queue = parked.queue
+            if admission.remaining_tokens == 1 and self.native_hold_s and queue is getattr(self._scheduler, 'waiting', None):
+                # decode-phase hold: FCFS serves skipped-waiting first, and the split held every arrival there, so the last
+                # row waited behind them (dnr: 7.2 s median from the last chunk to the first output). Ahead of them now.
+                served = getattr(self._scheduler, 'skipped_waiting', None)
+                if served is not None:
+                    queue = served
+                    self.handback_front += 1
+            queue.prepend_request(parked.request)
         return parked.request
 
     def cancel(self, transaction, *, proof=None, never_submitted=False):
@@ -2691,7 +2702,22 @@ def defer_stock_prefix_hit(scheduler, computed_blocks, *, request=None):
     if guard is not None and guard.defer_stock_prefix_hit(computed_blocks):
         return True
     # Independent of the lease guard: the applied route decides the hold.
-    return _defer_stock_while_split_armed(scheduler, 'fresh', request)
+    if _defer_stock_while_split_armed(scheduler, 'fresh', request):
+        return True
+    return _native_hold(scheduler, request)
+
+
+def _native_hold(scheduler, request):
+    """decode-phase hold: a waiting request the auto-arm policy can take natively stays in skipped-waiting this step,
+    unallocated, for at most its arm's native_hold_s; stock admits what is behind it. Off (0) on every arm but the lever's."""
+    policy = getattr(getattr(scheduler, '_flash_s5_driver', None), 'auto_arm', None)
+    holds = getattr(policy, 'holds_from_stock', None)
+    if request is None or not callable(holds) or not holds(request):
+        return False
+    controller = getattr(scheduler, '_flash_s5_admission', None)
+    if controller is not None:
+        controller.native_hold_deferrals = getattr(controller, 'native_hold_deferrals', 0) + 1
+    return True
 
 
 def defer_stock_positive_frontier(scheduler, request):

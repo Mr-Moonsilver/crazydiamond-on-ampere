@@ -27,6 +27,15 @@ DECLINE_SITES = ('cooldown', 'tail',
                  'plan-state', 'plan-controller', 'plan-transfer', 'plan-prompt-logprobs', 'plan-generation-logprobs', 'plan-uid',
                  'plan-shared', 'plan-below-floor', 'plan-kv-blocks', 'plan-empty')
 MAX_PENDING_DECLINES = 64
+# decode-phase hold (5 Nov 2026, the operator's rule: no stock prefill while a decoder is live). With the controller's native_hold_s
+# set (per arm, by the stage command; 0, the default, is today's behaviour) every waiting prefill waits for the native lane while
+# anything runs, the 32768-row floor drops to the staged path's own minimum, and a refused selection is retried. Stock takes a
+# request only when nothing runs, when native can't plan it (plan-state, plan-empty, plan-shared: counted by reason), after
+# MAX_RETRIES refusals, or after native_hold_s on the driver's clock (a valve against a stuck lane, counted as 'expired').
+MAX_HOLDS = 64
+MAX_UNHOLDABLE = 1024
+MAX_RETRIES = 2
+TRANSIENT_PLAN_SITES = frozenset(('plan-kv-blocks',))      # waits: blocks free as decoders finish
 
 
 def enabled(env):
@@ -114,6 +123,12 @@ class AutoArmPolicy:
         self.rollbacks = {}
         self._decline_pending = {}
         self._decline_why = None
+        # decode-phase hold: uid -> (weakref, first held on the driver's clock); uid -> weakref of a request stock may take.
+        self.holds = {}
+        self.unholdable = {}
+        self.hold_totals = dict(held=0, selected=0, expired=0, unplannable=0, errors=0, retried=0, retries_spent=0)
+        self.hold_released = {}          # site -> requests the hold let stock take, by the plan's reason
+        self.retries = {}
 
     @property
     def active(self):
@@ -124,7 +139,7 @@ class AutoArmPolicy:
         return dict(schema='s5-auto-arm/1', phase=self.phase, active=self.active,
                     manual_owned=self.manual_owned, selection_seq=self.selection_seq,
                     request_uid=None if request is None else request.request_id,
-                    completed=self.completed, minimum_native_rows=max(MIN_NATIVE_ROWS, self.controller.chunk_tokens),
+                    completed=self.completed, minimum_native_rows=self._floor(),
                     max_cohort=MAX_COHORT)
 
     def manual_control(self, command, submit):
@@ -155,7 +170,80 @@ class AutoArmPolicy:
         """Bounded status row: counts only, never a request UID. Cumulative; a reader takes an arm's delta."""
         return dict(schema='s5-auto-declines/1', ticks=dict(self.decline_ticks), turns=dict(self.decline_turns),
                     pending=len(self._decline_pending), restores=dict(self.restores), rollbacks=dict(self.rollbacks),
+                    holds=dict(self.hold_totals, waiting=len(self.holds), limit_s=self._hold_limit(), released=dict(self.hold_released),
+                               deferrals=getattr(self.controller, 'native_hold_deferrals', 0),
+                               handback_front=getattr(self.controller, 'handback_front', 0)),
                     **self.decline_totals)
+
+    # -- decode-phase hold -------------------------------------------------
+    def _hold_limit(self):
+        limit = getattr(self.controller, 'native_hold_s', 0)
+        return limit if type(limit) in (int, float) and limit > 0 else 0
+
+    def _holdable(self, request):
+        """The plan's own state checks and its row floor, on the rows stock would compute; the full plan is _select's."""
+        if self._plan_state_site(request) is not None:
+            return False
+        uncached = getattr(self.scheduler, '_sf_uncached', None)
+        rows = uncached(request) if callable(uncached) else request.num_tokens
+        return type(rows) is int and rows - 1 >= self._floor()
+
+    def _floor(self):
+        """Rows a native plan needs: today's 32768 (native41's conservative choice, not a measured cost), or under the hold the
+        staged path's own minimum."""
+        c = self.controller
+        if self._hold_limit():
+            return max(1, getattr(c, 'minimum_stage_rows', 1))
+        return max(MIN_NATIVE_ROWS, c.chunk_tokens)
+
+    def _unhold(self, request, why, site=None):
+        if self.holds.pop(request.request_id, None) is not None or why == 'unplannable':
+            self.hold_totals[why] += 1
+            key = site or why
+            self.hold_released[key] = self.hold_released.get(key, 0) + 1
+        self.unholdable[request.request_id] = weakref.ref(request)
+        while len(self.unholdable) > MAX_UNHOLDABLE:
+            self.unholdable.pop(next(iter(self.unholdable)))
+
+    def _prune_holds(self):
+        for uid, (ref, _since) in list(self.holds.items()):
+            request = ref()
+            if (request is None or self.scheduler.requests.get(uid) is not request
+                    or not str(getattr(getattr(request, 'status', None), 'name', None)).startswith('WAITING')):
+                self.holds.pop(uid)
+
+    def holds_from_stock(self, request):
+        """The stock loop's fresh seam asks: True keeps this waiting request in skipped-waiting, unallocated, this step.
+        Stock admits the requests behind it. A count or a read must never stop the engine: any error lets stock take it."""
+        try:
+            limit = self._hold_limit()
+            if not limit or request is None or self.manual_owned or not self.scheduler.running:
+                return False
+            uid = request.request_id
+            if self.unholdable.get(uid, lambda: None)() is request:
+                return False
+            if self.rejected.get(uid, lambda: None)() is request and self.retries.get(uid, 0) >= MAX_RETRIES:
+                return False
+            now = self.driver.clock()
+            entry = self.holds.get(uid)
+            if entry is None or entry[0]() is not request:
+                if not self._holdable(request):
+                    self._unhold(request, 'unplannable', 'plan-state' if self._plan_state_site(request) else 'below-minimum')
+                    return False
+                if len(self.holds) >= MAX_HOLDS:
+                    self._prune_holds()
+                    if len(self.holds) >= MAX_HOLDS:
+                        return False
+                self.holds[uid] = (weakref.ref(request), now)
+                self.hold_totals['held'] += 1
+                return True
+            if now - entry[1] > limit:
+                self._unhold(request, 'expired')
+                return False
+            return True
+        except Exception:
+            self.hold_totals['errors'] += 1
+            return False
 
     def _decline(self, site):
         """The waiting head, if any, may go to stock this tick. A count must never stop the engine."""
@@ -303,7 +391,7 @@ class AutoArmPolicy:
         if shared:
             self._decline_why = 'plan-shared'
             return None
-        if end - start < max(MIN_NATIVE_ROWS, c.chunk_tokens):
+        if end - start < self._floor():
             self._decline_why = 'plan-below-floor'
             return None
         manager = s.kv_cache_manager
@@ -520,14 +608,30 @@ class AutoArmPolicy:
             return False
         request = queue.peek_request()
         if self.rejected.get(request.request_id, lambda: None)() is request:
-            self._decline('rejected')
-            return False
+            uid = request.request_id
+            if self._hold_limit() and self.retries.get(uid, 0) < MAX_RETRIES:
+                # decode-phase hold: a refused selection is tried again, at most MAX_RETRIES times.
+                self.retries[uid] = self.retries.get(uid, 0) + 1
+                self.hold_totals['retried'] += 1
+                self.rejected.pop(uid, None)
+                if len(self.retries) > MAX_UNHOLDABLE:
+                    self.retries.pop(next(iter(self.retries)))
+            else:
+                if uid in self.holds:
+                    self.hold_totals['retries_spent'] += 1
+                    self._unhold(request, 'unplannable', 'rejected')
+                self._decline('rejected')
+                return False
         plan = self._plan(request)
         if plan is None:
+            if request.request_id in self.holds and self._decline_why not in TRANSIENT_PLAN_SITES:
+                self._unhold(request, 'unplannable', self._decline_why)      # stock takes it next step
             self._decline(self._decline_why)
             return False
         if self._decline_pending.pop(request.request_id, None) is not None:
             self.decline_totals['selected_after_decline'] += 1
+        if self.holds.pop(request.request_id, None) is not None:
+            self.hold_totals['selected'] += 1
         self.request_ref = weakref.ref(request)
         self.plan, self.cohort = plan, cohort
         self.selection_seq += 1

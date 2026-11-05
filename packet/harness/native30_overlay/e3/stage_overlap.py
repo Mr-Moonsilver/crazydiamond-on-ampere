@@ -1320,8 +1320,16 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             if bound is not None and not (type(bound) in (list, tuple) and len(bound) == 2 and all(type(v) is int for v in bound)
                                           and bound[0] >= 0 and 1024 <= bound[1] <= self.controller.chunk_tokens):
                 raise DriverError('native-stage-chunk-bound-invalid')
+        if 'native_hold' in command:
+            # decode-phase hold: per arm, in the same pause, seconds; 0 is today's behaviour.
+            if not self.inwait_installed:
+                raise DriverError('native-stage-inwait-not-installed')
+            hold = command['native_hold']
+            if type(hold) is not int or not 0 <= hold <= 600:
+                raise DriverError('native-stage-native-hold-invalid')
         reply = super()._stage_control({k: v for k, v in command.items()
-                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor', 'chunk_bound')})
+                                        if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor', 'chunk_bound',
+                                                     'native_hold')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -1369,6 +1377,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         if 'chunk_bound' in command:
             self.controller.chunk_bound = None if command['chunk_bound'] is None else tuple(command['chunk_bound'])
             reply.update(chunk_bound=command['chunk_bound'])
+        if 'native_hold' in command:
+            self.controller.native_hold_s = command['native_hold']
+            reply.update(native_hold=command['native_hold'])
         return reply
 
     def stage_status(self):
