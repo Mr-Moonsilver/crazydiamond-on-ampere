@@ -7,7 +7,7 @@ import os
 import weakref
 
 from e3_types import E3ContractError, _text
-from scheduler_hooks import bounded_limit, native_chunk_cap, staged_chunk_plan, _ProjectedPrefillRequest
+from scheduler_hooks import bounded_limit, native_chunk_cap, residue_hit, staged_chunk_plan, _ProjectedPrefillRequest
 
 ENV = 'FLASH_S5_AUTO_ARM'
 PHASE = 'auto-prefill'
@@ -36,6 +36,11 @@ MAX_HOLDS = 64
 MAX_UNHOLDABLE = 1024
 MAX_RETRIES = 2
 TRANSIENT_PLAN_SITES = frozenset(('plan-kv-blocks',))      # waits: blocks free as decoders finish
+# coverage-residue (6 Nov 2026): with the controller's native_residue set on a hold arm, the hold's stock residue goes native.
+# The shared-prefix junction plans natively (its stop is stock's split's, its state published by the chunk's commit); a hit
+# that leaves under the staged minimum is lowered (scheduler_hooks.residue_hit); a refused selection stays held and is tried
+# again once the decode cohort has changed, with no retry count. What stock still takes, it takes by name (stock_site).
+MAX_STOCK_WHY = 1024
 
 
 def enabled(env):
@@ -129,6 +134,11 @@ class AutoArmPolicy:
         self.hold_totals = dict(held=0, selected=0, expired=0, unplannable=0, errors=0, retried=0, retries_spent=0, moved_stop=0)
         self.hold_released = {}          # site -> requests the hold let stock take, by the plan's reason
         self.retries = {}
+        # coverage-residue: uid -> the hold's last word on why stock may take it; uid -> the cohort a selection was refused under.
+        self.stock_why = {}
+        self.unhold_site = {}
+        self.refused_cohort = {}
+        self.residue_counts = dict(junction=0, lowered=0, refused_held=0, refused_retried=0)
 
     @property
     def active(self):
@@ -173,7 +183,43 @@ class AutoArmPolicy:
                     holds=dict(self.hold_totals, waiting=len(self.holds), limit_s=self._hold_limit(), released=dict(self.hold_released),
                                deferrals=getattr(self.controller, 'native_hold_deferrals', 0),
                                handback_front=getattr(self.controller, 'handback_front', 0)),
+                    residue=dict(self.residue_counts, on=self._residue(),
+                                 admitted=dict(getattr(self.controller, 'residue_totals', None) or {})),
+                    coverage=self._coverage_record(),
                     **self.decline_totals)
+
+    # -- coverage-residue ---------------------------------------------------
+    def _residue(self):
+        """On only with the hold: the residue is the hold's."""
+        return 1 if self._hold_limit() and getattr(self.controller, 'native_residue', 0) == 1 else 0
+
+    def _coverage_record(self):
+        coverage = getattr(self.controller, 'coverage', None)
+        record = getattr(coverage, 'record', None)
+        return record() if callable(record) else None
+
+    def _why(self, request, why):
+        table = self.stock_why
+        table.pop(request.request_id, None)
+        table[request.request_id] = why
+        while len(table) > MAX_STOCK_WHY:
+            table.pop(next(iter(table)))
+
+    def stock_site(self, request):
+        """Why stock took this request, for the coverage counter: the hold's word at the stock seam, else the head's decline
+        site, else 'no-seam' (stock reached it on a path the hold doesn't see). Never raises."""
+        try:
+            uid = request.request_id
+            why = self.stock_why.get(uid)
+            pending = self._decline_pending.get(uid)
+            site = pending[1] if pending is not None and pending[0]() is request else None
+            if why is None:
+                return site or 'no-seam'
+            if why == 'hold-off':
+                return 'hold-off/' + (site or 'none')
+            return why
+        except Exception:
+            return 'site-error'
 
     # -- decode-phase hold -------------------------------------------------
     def _hold_limit(self):
@@ -185,7 +231,8 @@ class AutoArmPolicy:
         if self._plan_state_site(request) is not None:
             return False
         uncached = getattr(self.scheduler, '_sf_uncached', None)
-        rows = uncached(request) if callable(uncached) else request.num_tokens
+        rows = uncached(request) if callable(uncached) and not self._residue() else request.num_tokens
+        # coverage-residue: a lowered hit can always leave the floor if the prompt has it, so the whole prompt decides.
         return type(rows) is int and rows - 1 >= self._floor()
 
     def _floor(self):
@@ -201,6 +248,9 @@ class AutoArmPolicy:
             self.hold_totals[why] += 1
             key = site or why
             self.hold_released[key] = self.hold_released.get(key, 0) + 1
+        self.unhold_site[request.request_id] = site or why
+        while len(self.unhold_site) > MAX_UNHOLDABLE:
+            self.unhold_site.pop(next(iter(self.unhold_site)))
         self.unholdable[request.request_id] = weakref.ref(request)
         while len(self.unholdable) > MAX_UNHOLDABLE:
             self.unholdable.pop(next(iter(self.unholdable)))
@@ -216,33 +266,52 @@ class AutoArmPolicy:
         """The stock loop's fresh seam asks: True keeps this waiting request in skipped-waiting, unallocated, this step.
         Stock admits the requests behind it. A count or a read must never stop the engine: any error lets stock take it."""
         try:
+            if request is None:
+                return False
             limit = self._hold_limit()
-            if not limit or request is None or self.manual_owned or not self.scheduler.running:
+            if not limit:
+                self._why(request, 'hold-off')
+                return False
+            if self.manual_owned:
+                self._why(request, 'manual-owned')
+                return False
+            if not self.scheduler.running:
+                self._why(request, 'nothing-running')
                 return False
             uid = request.request_id
             if self.unholdable.get(uid, lambda: None)() is request:
+                self._why(request, self.unhold_site.get(uid, 'unholdable'))
                 return False
-            if self.rejected.get(uid, lambda: None)() is request and self.retries.get(uid, 0) >= MAX_RETRIES:
+            if (self.rejected.get(uid, lambda: None)() is request and self.retries.get(uid, 0) >= MAX_RETRIES
+                    and not self._residue()):
+                self._why(request, 'retries-spent')
                 return False
             now = self.driver.clock()
             entry = self.holds.get(uid)
             if entry is None or entry[0]() is not request:
                 if not self._holdable(request):
                     self._unhold(request, 'unplannable', 'plan-state' if self._plan_state_site(request) else 'below-minimum')
+                    self._why(request, self.unhold_site[uid])
                     return False
                 if len(self.holds) >= MAX_HOLDS:
                     self._prune_holds()
                     if len(self.holds) >= MAX_HOLDS:
+                        self._why(request, 'holds-full')
                         return False
                 self.holds[uid] = (weakref.ref(request), now)
                 self.hold_totals['held'] += 1
                 return True
             if now - entry[1] > limit:
                 self._unhold(request, 'expired')
+                self._why(request, 'expired')
                 return False
             return True
         except Exception:
             self.hold_totals['errors'] += 1
+            try:
+                self._why(request, 'hold-error')
+            except Exception:
+                pass
             return False
 
     def _decline(self, site):
@@ -330,6 +399,11 @@ class AutoArmPolicy:
         request = self.request_ref() if self.request_ref is not None else None
         if request is not None:
             self.rejected[request.request_id] = weakref.ref(request)
+            # coverage-residue: the cohort it was refused under; _select retries it once that has changed.
+            self.refused_cohort.pop(request.request_id, None)
+            self.refused_cohort[request.request_id] = self.cohort
+            while len(self.refused_cohort) > MAX_REJECTED:
+                self.refused_cohort.pop(next(iter(self.refused_cohort)))
         self.rejected = {k: ref for k, ref in self.rejected.items() if ref() is not None}
         while len(self.rejected) > MAX_REJECTED:
             self.rejected.pop(next(iter(self.rejected)))
@@ -385,10 +459,19 @@ class AutoArmPolicy:
         except E3ContractError:
             self._decline_why = 'plan-uid'
             return None
-        blocks, start, shared = s.kv_cache_manager.get_computed_blocks(request)
+        residue = self._residue()
+        self._plan_residue = None
+        if residue:
+            # coverage-residue: the admission's own hit (scheduler_hooks.residue_hit), and the junction set as stock's lookup
+            # sets it, so the split stops there and the chunk's commit publishes the shared prefix's state.
+            blocks, start, shared, lowered = residue_hit(s, request, self._floor())
+            request.shared_prefix_boundary = shared
+            self._plan_residue = 'lowered' if lowered else ('junction' if shared else None)
+        else:
+            blocks, start, shared = s.kv_cache_manager.get_computed_blocks(request)
         end = request.num_tokens - 1
         # Shared-prefix junction/streaming/recompute special cases stay stock.
-        if shared:
+        if shared and not residue:
             self._decline_why = 'plan-shared'
             return None
         if end - start < self._floor():
@@ -613,7 +696,17 @@ class AutoArmPolicy:
                 self._decline(self._decline_why)
             return False
         request = queue.peek_request()
-        if self.rejected.get(request.request_id, lambda: None)() is request:
+        if self.rejected.get(request.request_id, lambda: None)() is request and self._residue():
+            # coverage-residue: no retry count; the same cohort would be refused the same way, so wait for it to change.
+            uid = request.request_id
+            if self.refused_cohort.get(uid) == cohort:
+                self.residue_counts['refused_held'] += 1
+                self._decline('rejected')
+                return False
+            self.residue_counts['refused_retried'] += 1
+            self.hold_totals['retried'] += 1
+            self.rejected.pop(uid, None)
+        elif self.rejected.get(request.request_id, lambda: None)() is request:
             uid = request.request_id
             if self._hold_limit() and self.retries.get(uid, 0) < MAX_RETRIES:
                 # decode-phase hold: a refused selection is tried again, at most MAX_RETRIES times.
@@ -640,6 +733,8 @@ class AutoArmPolicy:
             self.hold_totals['selected'] += 1
         if getattr(self, '_plan_moved', False):
             self.hold_totals['moved_stop'] += 1
+        if getattr(self, '_plan_residue', None) in ('junction', 'lowered'):
+            self.residue_counts[self._plan_residue] += 1
         self.request_ref = weakref.ref(request)
         self.plan, self.cohort = plan, cohort
         self.selection_seq += 1

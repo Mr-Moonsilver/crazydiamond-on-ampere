@@ -1327,9 +1327,15 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             hold = command['native_hold']
             if type(hold) is not int or not 0 <= hold <= 600:
                 raise DriverError('native-stage-native-hold-invalid')
+        if 'native_residue' in command:
+            # coverage-residue: per arm, in the same pause, 0 or 1; it acts only with the hold (native_auto_arm._residue).
+            if not self.inwait_installed:
+                raise DriverError('native-stage-inwait-not-installed')
+            if command['native_residue'] not in (0, 1) or type(command['native_residue']) is not int:
+                raise DriverError('native-stage-native-residue-invalid')
         reply = super()._stage_control({k: v for k, v in command.items()
                                         if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor', 'chunk_bound',
-                                                     'native_hold')})
+                                                     'native_hold', 'native_residue')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -1380,6 +1386,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         if 'native_hold' in command:
             self.controller.native_hold_s = command['native_hold']
             reply.update(native_hold=command['native_hold'])
+        if 'native_residue' in command:
+            self.controller.native_residue = command['native_residue']
+            reply.update(native_residue=command['native_residue'])
         return reply
 
     def stage_status(self):

@@ -1396,6 +1396,156 @@ def _plan_result(plan, trace, queries, exhausted, furthest):
     return plan
 
 
+
+# coverage-residue (6 Nov 2026, the operator's 23:10 rule: the engine takes 100 % of prefill while any decoder is live). Every
+# prefill row is counted where it runs: stock rows from each schedule() output, native rows from each committed chunk. Counts
+# only, never a request UID in the record; cumulative, a reader takes an arm's delta of the status row.
+COVERAGE_SCHEMA = 's5-prefill-coverage/1'
+MAX_COVERAGE_REQUESTS = 4096
+
+
+def _prefill_end(request):
+    """Positions below this are prefill: the prompt, or a resumed request's replayed output (stock's own split bound)."""
+    return max(request.num_prompt_tokens, request.num_tokens - 1)
+
+
+def decoders_live(scheduler, scheduled=None, exclude=()):
+    """Running requests past their prefill, as of the start of this step. ``scheduled``: this step's tokens per request,
+    already added to num_computed_tokens (after_schedule runs after _update_after_schedule)."""
+    scheduled = scheduled or {}
+    live = 0
+    for request in tuple(getattr(scheduler, 'running', ())):
+        uid = request.request_id
+        if uid in exclude:
+            continue
+        before = request.num_computed_tokens - scheduled.get(uid, 0)
+        if before >= _prefill_end(request):
+            live += 1
+    return live
+
+
+class PrefillCoverage:
+    """Prefill rows by path (native, stock) and site, with a decoder live or not. Exact or counted as an error.
+
+    Stock: the scheduled rows of each request below its prefill end, every schedule() output. A request's site is fixed at
+    its first stock row: 'handback' for the row a native turn hands back, else what the auto-arm policy says let stock take
+    it. Native: a committed chunk's rows, live as at its admission, by how the native lane planned it."""
+
+    PATHS = ('native', 'stock')
+
+    def __init__(self):
+        self.rows = {state: {path: {} for path in self.PATHS} for state in ('live', 'idle')}
+        self.requests = {state: {path: {} for path in self.PATHS} for state in ('live', 'idle')}
+        self.steps = 0
+        self.errors = 0
+        self._stock_site = {}        # uid -> site of its stock prefill (bounded, oldest out)
+        self._native_site = {}       # uid -> site of its native prefill (bounded)
+        self._admitted = {}          # transaction -> (live, site) until commit or cancel
+        self._handback = {}          # uid -> weakref of a request whose last row a native turn handed back
+        self._counted = {}           # (state, path, uid) -> True: a request counted once per bucket (bounded)
+
+    @staticmethod
+    def _bounded(table, key, value):
+        table.pop(key, None)
+        table[key] = value
+        while len(table) > MAX_COVERAGE_REQUESTS:
+            table.pop(next(iter(table)))
+
+    def _add(self, live, path, site, uid, rows):
+        state = 'live' if live else 'idle'
+        bucket = self.rows[state][path]
+        bucket[site] = bucket.get(site, 0) + rows
+        key = (state, path, site, uid)
+        if key not in self._counted:
+            self._bounded(self._counted, key, True)
+            counts = self.requests[state][path]
+            counts[site] = counts.get(site, 0) + 1
+
+    def note_stock(self, scheduler, scheduler_output):
+        try:
+            scheduled = getattr(scheduler_output, 'num_scheduled_tokens', None) or {}
+            requests = getattr(scheduler, 'requests', {})
+            prefill = []
+            for uid, n in scheduled.items():
+                request = requests.get(uid)
+                if request is None or type(n) is not int or n <= 0:
+                    continue
+                before = request.num_computed_tokens - n
+                rows = min(before + n, _prefill_end(request)) - before
+                if rows > 0:
+                    prefill.append((uid, request, rows))
+            self.steps += 1
+            if not prefill:
+                return
+            live = decoders_live(scheduler, scheduled, {uid for uid, _r, _n in prefill}) > 0
+            policy = getattr(getattr(scheduler, '_flash_s5_driver', None), 'auto_arm', None)
+            for uid, request, rows in prefill:
+                site = self._stock_site.get(uid)
+                if site is None:
+                    ref = self._handback.get(uid)
+                    if ref is not None and ref() is request:
+                        site = 'handback'
+                    else:
+                        why = getattr(policy, 'stock_site', None)
+                        site = why(request) if callable(why) else 'no-policy'
+                    self._bounded(self._stock_site, uid, site)
+                self._add(live, 'stock', site, uid, rows)
+        except Exception:
+            self.errors += 1
+
+    def note_native_admit(self, scheduler, request, transaction, site):
+        try:
+            uid = request.request_id
+            if site is not None or uid not in self._native_site:
+                self._bounded(self._native_site, uid, site or 'plan')
+            live = decoders_live(scheduler, None, (uid,)) > 0
+            self._admitted[transaction] = (live, self._native_site[uid])
+        except Exception:
+            self.errors += 1
+
+    def note_native_commit(self, transaction):
+        try:
+            entry = self._admitted.pop(transaction, None)
+            if entry is None:
+                self.errors += 1
+                return
+            self._add(entry[0], 'native', entry[1], transaction.request_uid, transaction.chunk_end - transaction.chunk_start)
+        except Exception:
+            self.errors += 1
+
+    def note_native_cancel(self, transaction):
+        self._admitted.pop(transaction, None)       # rows not computed: if stock runs them, stock counts them
+
+    def note_handback(self, request):
+        try:
+            self._bounded(self._handback, request.request_id, weakref.ref(request))
+        except Exception:
+            self.errors += 1
+
+    def record(self):
+        copy = lambda table: {state: {path: dict(sites) for path, sites in paths.items()} for state, paths in table.items()}
+        return dict(schema=COVERAGE_SCHEMA, rows=copy(self.rows), requests=copy(self.requests), steps=self.steps,
+                    errors=self.errors, open_native=len(self._admitted))
+
+
+def residue_hit(scheduler, request, floor):
+    """coverage-residue: the cache hit the native lane plans from, and how. (blocks, start, junction, lowered).
+
+    A hit that leaves under ``floor`` rows (the staged minimum) to compute is lowered: the longest hit at most the prompt's
+    last row less ``floor``, from the coordinator's own search, so native computes the rows stock would have, and more. The
+    cost is a1-trunk 1d's and the dup-key fix's: a lower registered state, at most a Mamba block and ``floor`` rows more.
+    Pure: the lookup records nothing (save_new_computed_blocks does, at allocation)."""
+    manager = scheduler.kv_cache_manager
+    blocks, start, junction = manager.get_computed_blocks(request)
+    end = request.num_tokens - 1
+    if type(start) is not int or start <= 0 or end - start >= floor or end - floor < 0:
+        return blocks, start, junction, False
+    found, hit, uncached = manager.coordinator.find_longest_cache_hit(request.block_hashes, end - floor)
+    if type(hit) is not int or hit >= start:
+        return blocks, start, junction, False
+    return manager.create_kv_cache_blocks(found), hit, (hit + uncached if uncached else 0), True
+
+
 class PrefillAdmissionController:
     """Pre-schedule admission, delayed publication and one-token handback.
 
@@ -1445,6 +1595,10 @@ class PrefillAdmissionController:
         self.native_hold_s = 0      # decode-phase hold: seconds a natively plannable waiting request stays off stock, per arm; 0 is today's
         self.native_hold_deferrals = 0
         self.handback_front = 0
+        # coverage-residue: per arm, set while paused idle with the hold; 0 is the hold build. The counter is always on.
+        self.native_residue = 0
+        self.residue_totals = dict(junction=0, lowered=0)
+        self.coverage = PrefillCoverage()
         self.minimum_stage_rows = minimum_stage_rows
         self.ranks = ranks
         self.max_active = max_active
@@ -2140,9 +2294,18 @@ class PrefillAdmissionController:
 
         new_computed_blocks = None
         num_new_computed = 0
+        residue_site = None
         if start == 0:
-            new_computed_blocks, num_new_computed, _ = (
-                manager.get_computed_blocks(request))
+            if self.native_residue:
+                # coverage-residue: the same hit the auto-arm planned from; the junction is the stock split's stop, as stock
+                # sets it at its own lookup, so the chunk ending there publishes the shared prefix's state.
+                new_computed_blocks, num_new_computed, junction, lowered = residue_hit(
+                    scheduler, request, self.minimum_stage_rows)
+                request.shared_prefix_boundary = junction
+                residue_site = 'lowered' if lowered else ('junction' if junction else 'plan')
+            else:
+                new_computed_blocks, num_new_computed, _ = (
+                    manager.get_computed_blocks(request))
             start = num_new_computed
             if prompt_end - start <= 1:
                 # Everything except the final token is cached: stock handback,
@@ -2323,6 +2486,9 @@ class PrefillAdmissionController:
         self._split_hold = None
         self._split_hold_requests.clear()
         self.admitted += 1
+        if residue_site in ('junction', 'lowered') and start == num_new_computed:
+            self.residue_totals[residue_site] += 1
+        self.coverage.note_native_admit(scheduler, request, transaction, residue_site)
         return record
 
     # -- driver-facing state ----------------------------------------------
@@ -2486,6 +2652,7 @@ class PrefillAdmissionController:
             if parked.capture.release_retained(self._scheduler):
                 self.retained_releases += 1
         parked.request.num_computed_tokens = transaction.chunk_end
+        self.coverage.note_native_commit(transaction)
         self._committed[transaction] = dict(
             committed_end=transaction.chunk_end,
             remaining=admission.remaining_tokens,
@@ -2500,6 +2667,8 @@ class PrefillAdmissionController:
         self.commits += 1
         if admission.remaining_tokens > 0:
             # One-token handback: the pinned waiting branch schedules the rest.
+            if admission.remaining_tokens == 1:
+                self.coverage.note_handback(parked.request)
             queue = parked.queue
             if admission.remaining_tokens == 1 and self.native_hold_s and queue is getattr(self._scheduler, 'waiting', None):
                 # decode-phase hold: FCFS serves skipped-waiting first, and the split held every arrival there, so the last
@@ -2559,6 +2728,7 @@ class PrefillAdmissionController:
         self.parked = None
         self._request_identities.pop(transaction.request_uid, None)
         self.cancels += 1
+        self.coverage.note_native_cancel(transaction)
         return parked.request
 
     def _parked_for(self, transaction):
@@ -2638,6 +2808,10 @@ def note_source_owners(scheduler, transaction, lanes, layer_count):
 
 
 def after_schedule(scheduler, scheduler_output):
+    controller = getattr(scheduler, '_flash_s5_admission', None)
+    coverage = getattr(controller, 'coverage', None)
+    if isinstance(coverage, PrefillCoverage):
+        coverage.note_stock(scheduler, scheduler_output)      # counts never raise
     guard = _guard(scheduler)
     if guard is None:
         return None
