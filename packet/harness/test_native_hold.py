@@ -2,6 +2,7 @@
 handback goes ahead of what the split held. CPU only: the real AutoArmPolicy over compose-5's stand-in scheduler, the real
 stock seam, and the real PrefillAdmissionController's terminal commit."""
 import sys
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -166,6 +167,79 @@ class Seam(unittest.TestCase):
     def test_no_policy_no_hold(self):
         self.assertFalse(sh._native_hold(NS(), rig.req()))
         self.assertFalse(sh._native_hold(NS(_flash_s5_driver=NS(auto_arm=None)), rig.req()))
+
+
+class MovedStop(unittest.TestCase):
+    """plan-empty under the hold: a prompt whose last hash-boundary tail is under the staged minimum. a1-trunk 1d's view (the real
+    controller methods) moves stock's stop one unit back, in the auto-arm's plan and in the admission; the hold off is today's."""
+    UNIT, MINIMUM = 176, 64
+
+    def split_seen(self, unit):
+        seen = []
+
+        def stock_split(request, limit, num_new_local_computed_tokens=0):
+            """The stop that matters, as test_a1_trunk.ShortTail has it: stock reads num_prompt_tokens."""
+            start = request.num_computed_tokens + num_new_local_computed_tokens
+            boundary = request.num_prompt_tokens // unit * unit
+            seen.append(boundary)
+            return boundary - start if start < boundary < start + limit else limit
+        return stock_split, seen
+
+    def policy(self, tokens, hold):
+        s = stage(rig.req(tokens=tokens, num_prompt_tokens=tokens), hold=hold)
+        c, real = s.controller, sh.PrefillAdmissionController
+        c.minimum_stage_rows = self.MINIMUM
+        s.scheduler.hash_block_size, s.scheduler.mamba_partial_cache_hit = self.UNIT, True
+        c._append_yield_short_tail = types.MethodType(real._append_yield_short_tail, c)
+        c._append_yield_split_view = types.MethodType(real._append_yield_split_view, c)
+        stock_split, seen = self.split_seen(self.UNIT)
+        c._aligned_split = lambda sched, request, limit, **kw: stock_split(request, limit, **kw)
+        return s, seen
+
+    def test_a_short_tail_is_planned_over_the_moved_stop(self):
+        tokens = 176 * 200 + 17                              # 16 rows past the last boundary, under 64
+        s, seen = self.policy(tokens, 30)
+        self.assertTrue(s.policy.holds_from_stock(s.queue[0]))
+        self.assertTrue(s.policy.tick())
+        self.assertEqual(set(seen), {176 * 199})
+        holds = s.policy.decline_record()['holds']
+        self.assertEqual((holds['selected'], holds['moved_stop'], holds['unplannable']), (1, 1, 0))
+
+    def test_off_a_short_tail_is_plan_empty_as_today(self):
+        s, seen = self.policy(176 * 200 + 17, 0)
+        s.policy.tick()
+        self.assertEqual(s.policy._decline_why, 'plan-empty')
+        self.assertEqual(set(seen), {176 * 200})
+
+    def test_a_tail_that_fits_keeps_stocks_stop(self):
+        s, seen = self.policy(176 * 200 + 100, 30)
+        self.assertTrue(s.policy.holds_from_stock(s.queue[0]))
+        self.assertTrue(s.policy.tick())
+        self.assertEqual(set(seen), {176 * 200})
+        self.assertEqual(s.policy.decline_record()['holds']['moved_stop'], 0)
+
+    def admission(self, hold):
+        """The real admission over test_e3_admission_native's rig, ShortTailFlow's numbers: unit 8, minimum 3, chunks of 4, 26 tokens."""
+        request = adm.Request(tokens=26)
+        request.num_prompt_tokens = 26
+        scheduler = adm.Scheduler(adm.Manager(), [request])
+        scheduler.hash_block_size, scheduler.mamba_partial_cache_hit = 8, True
+        stock_split, seen = self.split_seen(8)
+        scheduler._mamba_block_aligned_split = stock_split
+        controller = adm.make_controller(scheduler, chunk=4)
+        controller.minimum_stage_rows = 3
+        controller.native_hold_s = hold
+        return controller.admit(scheduler), seen
+
+    def test_the_admission_plans_over_the_moved_stop_under_the_hold(self):
+        record, seen = self.admission(30)
+        self.assertIsNotNone(record)
+        self.assertEqual(set(seen), {16})
+
+    def test_off_the_admission_refuses_it_as_today(self):
+        record, seen = self.admission(0)
+        self.assertIsNone(record)
+        self.assertEqual(set(seen), {24})
 
 
 class Handback(unittest.TestCase):

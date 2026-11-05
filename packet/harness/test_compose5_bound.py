@@ -61,7 +61,7 @@ class Bound(unittest.TestCase):
             position += size
 
     def test_every_row_carries_it(self):
-        self.assertEqual({tuple(r['chunk_bound']) for r in T.arms()}, {(52624, 1024), (89056, 1024)})
+        self.assertEqual({tuple(r['chunk_bound']) for r in T.arms()}, {(52624, 1024)})        # hold: b13h on every arm, the hold the only difference
         self.assertEqual({(r['cow_host_filter'], r['cow_fast']) for r in T.arms()}, {(True, True)})
         self.assertFalse(any(r.get('score_split') or r.get('stock_rescue') for r in T.arms()), '5f is compose-6')
 

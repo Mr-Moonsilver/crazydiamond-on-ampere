@@ -2156,8 +2156,9 @@ class PrefillAdmissionController:
         if self.minimum_stage_rows > 1:
             # a1-trunk 1d: every chunk of a yield's short request plans over the same view, flag off this is the request.
             is_append = getattr(owner, 'append_yield_is_append', None)
+            # decode-phase hold: every native admission plans over the moved stop, as the auto-arm's _plan selected it.
             view = (self._append_yield_split_view(scheduler, request)
-                    if callable(is_append) and is_append(request) else request)
+                    if (callable(is_append) and is_append(request)) or self.native_hold_s else request)
             def projected_split(position, limit):
                 limit = bounded_limit(self.chunk_bound, position, limit)
                 if position == start:

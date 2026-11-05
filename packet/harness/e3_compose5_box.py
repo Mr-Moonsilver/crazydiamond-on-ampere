@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""q18a-compose-dnr box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr adds a per-row replay seed and the cap off, nothing else.
+"""q18a-compose-hold box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold adds the per-row native_hold, acknowledged.
 
 Every arm kind compose-5 runs, compose-4's box already runs: the live arm for sm, fon and foff, the replay arm for cmp and ny, the one-stream arm. Only the table and the names differ, so the table is bound in here
 and nothing that ran is edited. The rule is compose5_rule.py on the fetched record; this grade only says the record is whole.
@@ -19,7 +19,7 @@ _report = _box.report
 
 
 def report(result):
-    return _report(result).replace('q18a-compose-4', 'q18a-compose-dnr', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    return _report(result).replace('q18a-compose-4', 'q18a-compose-hold', 1).replace('compose4_rule.py', 'compose5_rule.py')
 
 
 def __getattr__(name):
@@ -70,6 +70,8 @@ def grade(arms, *args, **kwargs):
         rec = by.get(row['label'])
         if rec is not None and (rec.get('inwait') or {}).get('bound_acknowledged') != row['chunk_bound']:
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':chunk-bound-not-acknowledged'})
+        if rec is not None and (rec.get('inwait') or {}).get('hold_acknowledged') != row['native_hold']:
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':native-hold-not-acknowledged'})
         if rec is not None and cap_selected(rec):
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':reserved-cap-selected'})
     result['verdict'] = 'FAIL' if result['failures'] else 'INC' if result['missing'] else 'PASS'
@@ -91,6 +93,8 @@ def smoke_check(rec, row=None):
         reasons.append('smoke-reserved-cap-selected')
     if (rec.get('inwait') or {}).get('bound_acknowledged') != row['chunk_bound']:
         reasons.append('smoke-chunk-bound-not-acknowledged')
+    if (rec.get('inwait') or {}).get('hold_acknowledged') != row['native_hold']:
+        reasons.append('smoke-native-hold-not-acknowledged')
     # A silent fallback to 1024 would read as no gain. The arm's count holds the bulk, its returners and the append, so the line is the bulk's count at 1024: b13's 40 sit well under it.
     prompt, chunks = (rec.get('fresh') or {}).get('prompt_tokens_observed'), (rec.get('progress_delta') or {}).get('chunks')
     if type(prompt) is not int or type(chunks) is not int or chunks >= len(T.planned_chunks(prompt, 1024)):

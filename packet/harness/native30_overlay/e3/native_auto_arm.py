@@ -126,7 +126,7 @@ class AutoArmPolicy:
         # decode-phase hold: uid -> (weakref, first held on the driver's clock); uid -> weakref of a request stock may take.
         self.holds = {}
         self.unholdable = {}
-        self.hold_totals = dict(held=0, selected=0, expired=0, unplannable=0, errors=0, retried=0, retries_spent=0)
+        self.hold_totals = dict(held=0, selected=0, expired=0, unplannable=0, errors=0, retried=0, retries_spent=0, moved_stop=0)
         self.hold_released = {}          # site -> requests the hold let stock take, by the plan's reason
         self.retries = {}
 
@@ -404,15 +404,21 @@ class AutoArmPolicy:
             self._decline_why = 'plan-kv-blocks'
             return None
         cap = native_chunk_cap(c.chunk_tokens, s.max_num_scheduled_tokens)
+        # decode-phase hold: a prompt whose last hash-boundary tail is under the staged minimum had no plan (dnr: every
+        # plan-empty turn; about 0.36 of all turns once the hold sends every turn here). a1-trunk 1d's view moves stock's
+        # stop one unit back, as the admission does under the hold (scheduler_hooks.admit); unchanged with the hold off.
+        moved = getattr(c, '_append_yield_split_view', None)
+        view = moved(s, request) if self._hold_limit() and callable(moved) else request
         def split(position, limit):
             limit = bounded_limit(getattr(c, 'chunk_bound', None), position, limit)
-            projected = request if position == start else _ProjectedPrefillRequest(request, position)
+            projected = view if position == start else _ProjectedPrefillRequest(view, position)
             return c._aligned_split(s, projected, limit,
                 num_new_local_computed_tokens=start if position == start else 0)
         plan = staged_chunk_plan(start, end, cap, c.minimum_stage_rows, split)
         if not plan:
             self._decline_why = 'plan-empty'
             return None
+        self._plan_moved = view is not request       # read once per selection by _select; later phases re-plan to compare
         return dict(start=start, end=end, plan=tuple(plan),
                     blocks=tuple(tuple(b.block_id for b in group) for group in blocks.blocks))
 
@@ -632,6 +638,8 @@ class AutoArmPolicy:
             self.decline_totals['selected_after_decline'] += 1
         if self.holds.pop(request.request_id, None) is not None:
             self.hold_totals['selected'] += 1
+        if getattr(self, '_plan_moved', False):
+            self.hold_totals['moved_stop'] += 1
         self.request_ref = weakref.ref(request)
         self.plan, self.cohort = plan, cohort
         self.selection_seq += 1

@@ -1,9 +1,11 @@
-"""q18a-compose-dnr box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, the frozen pair twice, two 18-minute replay arms, no tail). One phase budget for the watchdog and the draft, relative to the run's own start only.
+"""q18a-compose-hold box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, three pairs of short replay arms, no tail). One budget for the watchdog and the draft, relative to the run's own start only.
+
+hold (lead, 5 Nov 23:00): a lean run, about 30 min nominal, its hard cap at most 1.5x nominal, cleanup included. The entry limits come from the nominal walls at 1.5x, not from the worst-case caps (those sum past the cap); a step that overruns meets the budget's TERM, whose path is the clean stop (tmp/decode-phase/STOP-dnr.md).
 
 EXPECTED_RUNTIME_S is descriptive. The startup, the smoke and the end are build-3b's walls; the replay arm's wall is its table, DURATION and the turns it lets finish. ``slower`` is the same walk at 1.5x every wall except a replay's, whose length is its clock. The slot limit is the operator's script's; this budget holds the watchdog.
 """
 from native41_box_gate import ARM_KILL_AFTER_S, ARM_TIMEOUT_S, FULL_IDLE_CAP_S, INGRESS_CAP_S, INSTRUMENTS_CAP_S, KEPT
-from native40_box_gate import CLEANUP_S, PHASES as NATIVE40_PHASES
+from native40_box_gate import PHASES as NATIVE40_PHASES
 import compose5_arms as table
 
 DECODE_ARMS = len(table.DECODE_ARMS)
@@ -23,26 +25,40 @@ PHASES.update({
     'end_full_idle': FULL_IDLE_CAP_S,
     'read': GRADE_CAP_S,
 })
-WORST_CASE_SUM_S = sum(PHASES.values())
-BOX_BUDGET_S = 30000                                      # dnr: twenty replay arms have to enter, with 30 min of margin; compose-5's 8700 stops arms at 3120 s
-ACTIVE_S = BOX_BUDGET_S - CLEANUP_S
-ACTIVE_AND_CLEANUP = ACTIVE_S + CLEANUP_S
-ARM_RESERVE_S = FULL_IDLE_CAP_S + ARM_TIMEOUT_S + ARM_KILL_AFTER_S + INGRESS_CAP_S
-END_RESERVE_S = INSTRUMENTS_CAP_S + PHASES['end_full_idle'] + PHASES['read'] + PHASES['report'] + PHASES['end_identity']
-TAIL_RESERVE_S = PHASES['core_full_idle'] + PHASES['grade'] + END_RESERVE_S
-LAST_ARM_ENTRY_S = ACTIVE_S - ARM_RESERVE_S - TAIL_RESERVE_S        # decode and core arms
-LAST_TAIL_ENTRY_S = ACTIVE_S - ARM_RESERVE_S - END_RESERVE_S        # tail arms: the core grade is already written
-assert 0 < LAST_ARM_ENTRY_S < LAST_TAIL_ENTRY_S
-ENTRY_LIMIT_S = {name: globals()[name] for name, _ in table.ENTRY_LIMIT.values()}
+WORST_CASE_SUM_S = sum(PHASES.values())                  # descriptive: every cap at once, past the budget by design
 
-FIRST_ARM_S = 780                                        # build-3b's box: launch to the first prefill arm, 13-14 min
-COLD_FIRST_S = 70                                         # the run's first prefill arm (cold)
-ONE_STREAM_WALL_S = 60                                    # the entry's release, the settle, a 20 s window, the stop
-REPLAY_TAIL_S = 60                                        # the turns sent before the clock ran out, then the end read
-DECODE_WALL_S = 60
+FIRST_ARM_S = 600                                        # dnr's box: 450 s from the restart to sm's entry, plus the preflight
+COLD_FIRST_S = 220                                       # dnr's sm: 216 s
+ONE_STREAM_WALL_S = 60                                   # dnr's dec1: 26 s and its entry
+REPLAY_TAIL_S = 45                                       # dnr: 10-34 s past DURATION for the open turns; nw may hold one a little longer
+ENTRY_S = 10                                             # dnr's entries: 0.3-8 s
+DECODE_WALL_S = 60                                       # dnr's decode-am1: 29 s
 BETWEEN_S = 30
 END_S = 240
 SLOWER = 1.5
+CAP = 1.5                                                # the lead's hard cap over nominal
+
+
+def _nominal_s():
+    """The table walked at its nominal walls with no entry limit: the cap's basis."""
+    walls = FIRST_ARM_S + COLD_FIRST_S + DECODE_ARMS * DECODE_WALL_S + BETWEEN_S + END_S
+    for row in table.arms()[1:]:
+        walls += ENTRY_S + (table.REPLAY['DURATION'] + REPLAY_TAIL_S if row['kind'] == 'replay' else ONE_STREAM_WALL_S)
+    return walls
+
+
+NOMINAL_S = int(_nominal_s())
+CLEANUP_S = 600                                          # this queue's own: STOP-dnr.md read 1.5-3 min of cleanup; native40's 900 is a third of this run
+BOX_BUDGET_S = int(CAP * NOMINAL_S)                      # the hard cap, cleanup included: the outer timeout's KILL
+ACTIVE_S = BOX_BUDGET_S - CLEANUP_S                      # the outer timeout's TERM, the clean stop's path
+ACTIVE_AND_CLEANUP = ACTIVE_S + CLEANUP_S
+ARM_RESERVE_S = int(CAP * (ENTRY_S + table.REPLAY['DURATION'] + REPLAY_TAIL_S))
+END_RESERVE_S = int(CAP * END_S)
+TAIL_RESERVE_S = int(CAP * BETWEEN_S) + END_RESERVE_S
+LAST_ARM_ENTRY_S = ACTIVE_S - ARM_RESERVE_S - TAIL_RESERVE_S        # decode and core arms
+LAST_TAIL_ENTRY_S = ACTIVE_S - ARM_RESERVE_S - END_RESERVE_S        # tail arms (none in this table)
+assert 0 < LAST_ARM_ENTRY_S < LAST_TAIL_ENTRY_S
+ENTRY_LIMIT_S = {name: globals()[name] for name, _ in table.ENTRY_LIMIT.values()}
 PER_ARM_ALL_IN_MIN = 2.1                                  # c1's old all-in basis, kept for the record
 
 
@@ -68,7 +84,7 @@ def _estimate(scale):
             tail_started = True
         if clock > ENTRY_LIMIT_S[row['entry_limit']]:
             continue
-        wall = arm_wall(row, first and row['part'] != 'decode')
+        wall = arm_wall(row, first and row['part'] != 'decode') + (ENTRY_S if row['part'] != 'decode' and not first else 0)
         wall = wall if row.get('kind') == 'replay' else scale * wall
         if row['part'] != 'decode':
             first = False
@@ -93,7 +109,8 @@ EXPECTED_RUNTIME_S = {
     'worst_case_budget': BOX_BUDGET_S,
     'last_arm_entry_s': LAST_ARM_ENTRY_S,
     'last_tail_entry_s': LAST_TAIL_ENTRY_S,
-    'basis': "build-3b's box (4 Nov, 12:08-12:33): 13-14 min to the first prefill arm, 3 min at the end; a replay arm is its table's 18 min plus a guessed minute of tail: no replay has run on the native engine",
+    'nominal_s': NOMINAL_S, 'cap': CAP,
+    'basis': "dnr's box (5 Nov): 450 s from the restart to sm, sm 216 s, decode-am1 29 s, dec1 26 s, entries 0.3-8 s, a replay arm DURATION plus 10-34 s; the end is compose-4's 4 min",
 }
 
 

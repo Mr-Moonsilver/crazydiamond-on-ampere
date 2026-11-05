@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Derive the q18a-compose-dnr box scripts from q18a-compose-4's committed texts. Nothing a past queue ran is edited. Discovery mode.
+"""Derive the q18a-compose-hold box scripts from q18a-compose-4's committed texts. Nothing a past queue ran is edited. Discovery mode.
 
 Declared deltas over compose-4's three texts, each by exact count:
-  names     q18a-compose-4 -> q18a-compose-dnr and every compose-4 name of the queue, records, box, gate and table -> compose5. The box imports compose-4's box, table and replay, so those three keep their names;
+  names     q18a-compose-4 -> q18a-compose-hold and every compose-4 name of the queue, records, box, gate and table -> compose5. The box imports compose-4's box, table and replay, so those three keep their names;
   body      this table's core list; the arm and grade texts that name the arms;
   modules   compose-4's box and table added to the preflight's and the declaration's lists: compose-5's box binds its table over them;
   chunk     FLASH_S5_CHUNK_TOKENS=2048 in EXTRA_ENV for the whole run, as dp8d's launch; both preflights assert it, where compose-4's asserted it unset.
@@ -16,14 +16,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'harness')]
 import compose5_arms as table  # noqa: E402
 
-OLD, NEW = 'q18a_compose_4', 'q18a_compose_dnr'
+OLD, NEW = 'q18a_compose_4', 'q18a_compose_hold'
 OLD_CORE = 'core:dec1.g2-live-0 core:cmp.g2-live-0 core:ctl.g2-live-0'
 CORE = ' '.join('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED) if r['label'] != table.SMOKE_ARM)
-ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, ny and n22 eight replay agents for 18 minutes')
+ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, ny and nw eight replay agents for %d s, three pairs' % table.REPLAY['DURATION'])
 HEADER_ANCHOR = '# compose-4: the four lever tracks on one engine under the closed-loop agent replay'
-HEADER_NOTE = ('# dnr: c22h against b13h under the closed-loop replay, discovery mode: ny and n22 differ in the plan alone, ABBA over two seeds, the reserved cap off on every arm '
-               "(harness/compose5_arms.py, tmp/decode-phase/DESIGN-dn-replay.md). The reader is scratch/dnr_read.py on the hub.\n")
-NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-compose-dnr'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
+HEADER_NOTE = ('# hold: b13h with the native hold (nw) against b13h (ny) under the closed-loop replay, discovery mode, lean: three pairs of short arms, the hold the only difference '
+               "(harness/compose5_arms.py, tmp/decode-phase/READY-decode-phase-hold.md). The reader is decode-phase-lean/scratch/hold_read.py on the hub.\n")
+NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-compose-hold'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
 # compose-5's box imports compose-4's box, table and replay by their names; the rename above must not reach them.
 SWITCHES = table.CONNECTIONS_ENV + ' ' + table.PLE_ENV + ' ' + table.CHUNK_ENV
 OLD_LAST_SWITCH = table.PLE_ENV + ' '
@@ -91,7 +91,7 @@ def final_body():
 
 def table_text():
     import compose5_gate as gate
-    lines = ['q18a-compose-dnr arm table (harness/compose5_arms.py); entry limits relative to the run start, never a clock',
+    lines = ['q18a-compose-hold arm table (harness/compose5_arms.py); entry limits relative to the run start, never a clock',
              '%-3s %-16s %-10s %-6s %-5s %s' % ('#', 'label', 'kind', 'yield', 'ple', 'enters while SECONDS <=')]
     for k, row in enumerate(gate.rows(), 1):
         lines.append('%-3d %-16s %-10s %-6s %-5s %s %d s' % (k, row['label'], row.get('kind', 'decode'), {True: 'on', False: 'off'}.get(row.get('yield_on'), '-'), {True: 'on', False: 'off'}.get(row.get('ple_private'), '-'), row['entry_limit'], gate.ENTRY_LIMIT_S[row['entry_limit']]))
