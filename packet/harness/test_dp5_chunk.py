@@ -42,10 +42,10 @@ class Cap(unittest.TestCase):
         self.assertEqual(sh.native_chunk_cap(1536, 1024), 1536)
 
     def test_every_site_reads_it(self):
-        for name, text in (('scheduler_hooks', 'cap = native_chunk_cap(self.chunk_tokens, budget)'),
-                           ('native_auto_arm', 'cap = native_chunk_cap(c.chunk_tokens, s.max_num_scheduled_tokens)'),
-                           ('stage_overlap', "cap = native_chunk_cap(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', self.chunk_tokens))")):
-            self.assertEqual((ROOT / 'patches/s5_engine' / (name + '.py')).read_text().count(text), 1, name)
+        for name, text, sites in (('scheduler_hooks', 'cap = native_chunk_cap(self.chunk_tokens, budget)', 1),
+                                  ('native_auto_arm', 'cap = native_chunk_cap(c.chunk_tokens, s.max_num_scheduled_tokens)', 2),     # the plan and, since compose-5, the re-entry plan
+                                  ('stage_overlap', "cap = native_chunk_cap(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', self.chunk_tokens))", 1)):
+            self.assertEqual((ROOT / 'patches/s5_engine' / (name + '.py')).read_text().count(text), sites, name)
 
 
 class Plan(unittest.TestCase):

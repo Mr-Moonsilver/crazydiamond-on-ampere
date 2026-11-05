@@ -150,6 +150,66 @@ class Smoke(unittest.TestCase):
         self.assert_stops(lambda r: r['cow_host_filter']['counters']['unfiltered'].update({'3': 1}), 'smoke-host-filter-unfiltered')
 
 
+REAL_TORCH = (" (Worker_PP0_TP0_EP0 pid=96) torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 194.00 MiB. GPU 0 has a total capacity of 23.56 GiB of which 164.94 MiB is free. Including non-PyTorch memory\n",
+              " (Worker_PP0_TP1_EP1 pid=102) torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 194.00 MiB. GPU 1 has a total capacity of 23.56 GiB of which 60.94 MiB is free. Including non-PyTorch memory\n")     # dp8d's cf, band 2
+
+
+class CrashRead(UnderThisTable, unittest.TestCase):
+    """A read on an engine death, never the verdict: compose-4's clause already says FAIL."""
+
+    def fixture(self, tmp, *, death_at=None, turns=True):
+        fx = Fixture5(tmp)
+        tb.healthy(fx)
+        tb.healthy(fx, NY)
+        if not turns:
+            fx.turns[CMP] = []
+        if death_at is not None:
+            fx.lines.append(tb.memory_line(death_at - 1, 'open', 1, 900, 97152, 99200, free=60))
+            fx.lines.append(tb.memory_line(death_at - 1, 'open', 0, 900, 97152, 99200, free=164))
+            (fx.root / 'engine-stream.err').write_text(''.join(tb.stamp(death_at) + line for line in REAL_TORCH))
+        return fx
+
+    def test_a_clean_run_prints_nothing_of_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _word, lines, facts = self.fixture(tmp).done()
+        self.assertFalse([x for x in lines if x.startswith('CRASH')])
+        self.assertIsNone(facts['crash'])
+
+    def test_a_death_names_the_arm_each_ranks_chunk_and_torchs_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            word, lines, facts = self.fixture(tmp, death_at=tb.ORIGIN + 100).done()
+        self.assertEqual(word, 'FAIL', 'the verdict is the old clause')
+        crash = facts['crash']
+        self.assertEqual(crash['arm'], CMP)
+        self.assertEqual({k: crash['ranks'][k]['chunk'] for k in ('0', '1')}, {'0': '97152-99200', '1': '97152-99200'})
+        self.assertEqual(crash['tried']['0']['tried_mib'], 194.0)
+        self.assertEqual(crash['tried']['1']['free_mib'], 60.94)
+        self.assertEqual(crash['tried']['0']['position_if_score_at_2048'], 99328, "dp8d's chunk ended at 99200: the width rounds up to 64")
+        self.assertEqual(crash['tried']['0']['position_if_score_at_1024'], 198656)
+        self.assertGreater(crash['turns']['finished'], 0)
+        self.assertTrue([x for x in lines if x.startswith('CRASH GPU 1')])
+
+    def test_the_verdict_is_the_same_with_the_read_or_without(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(rule, 'crash_read', return_value=None):
+            without = self.fixture(tmp, death_at=tb.ORIGIN + 100).done()[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.fixture(tmp, death_at=tb.ORIGIN + 100).done()[0], without)
+
+    def test_a_death_between_arms_says_after_which(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = self.fixture(tmp)
+            record = json.loads((fx.root / ('arm-%s.json' % PAIRS[0][0])).read_text())
+            self.assertEqual(rule.arm_at(str(fx.root), (PAIRS[0][0],), record['wall_end_s'] + 5), ('after ' + PAIRS[0][0], None))
+
+    def test_a_line_without_a_size_or_a_stamp_is_kept_going(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = self.fixture(tmp)
+            (fx.root / 'engine-stream.err').write_text('garbage OutOfMemoryError\n' + tb.stamp(tb.ORIGIN) + ' FLASH_S5_WORKER_FAILURE rank=1 cause=OutOfMemoryError\n')
+            crash = rule.crash_read(str(fx.root))
+        self.assertEqual(crash['tried'], {})
+        self.assertIsNotNone(crash['first_death_s'])
+
+
 class ChunkRows(unittest.TestCase):
     def test_the_read_sees_each_side_of_the_bound_on_rank_0_and_inside_the_span(self):
         rows = [dict(point='open', rank=0, t=5, a=0, b=2048), dict(point='open', rank=0, t=5, a=2048, b=4048), dict(point='open', rank=0, t=6, a=52624, b=53648), dict(point='open', rank=0, t=6, a=53648, b=55696),

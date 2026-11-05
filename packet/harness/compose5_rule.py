@@ -5,6 +5,7 @@ compose-4's rule, unchanged in its numbers and its clauses, over this table: cmp
   - SMOKE R1: the first read of r1 under yields at 32 connections (lead, 5 Nov 07:49). A read, never in the verdict. Same line for cmp and ny;
   - CHUNK ROWS: this run's b13 (2048 below 52624, 1024 from there): rows per chunk below and past the bound, on the replay pair and the frozen pair. A read; a chunk past the bound over 1024 rows is INC, the plan isn't the one that was confirmed;
   - HOST FILTER: hf's counters per arm, a read;
+  - CRASH: on an engine death, a measurement instead of a loss: the arm, each rank's last chunk, torch's 'Tried to allocate' per GPU and the position that size implies, the prompts the journal holds. A read, never in the verdict;
   - PRICE: the yield's price on the frozen pair, each index on and off, with the noise of the two. Numbers, never a word (DESIGN-compose-5.md item 6).
 The replay's price is compose-4's cmp and ctl lines, here cmp and ny, one pass each.
 """
@@ -75,6 +76,78 @@ def rank_read(arm, rank=READ_RANK):
                 oom_rise=(memory.get('oom_rise') or {}).get(rank), min_free_mib=(memory.get('min_free_mib') or {}).get(rank))
 
 
+TRIED = re.compile(r"Tried to allocate ([\d.]+) (KiB|MiB|GiB)\. GPU (\d+) has a total capacity of [\d.]+ GiB of which ([\d.]+) (KiB|MiB|GiB) is free")
+UNIT_MIB = dict(KiB=1 / 1024, MiB=1, GiB=1024)
+
+
+def death_lines(root):
+    """(first death stamp or None, torch's message per GPU, first one each), from both engine streams."""
+    first, tried = None, {}
+    for name in ('engine-stream.log', 'engine-stream.err'):
+        try:
+            with open('%s/%s' % (root, name), errors='replace') as handle:
+                for line in handle:
+                    if 'OutOfMemoryError' not in line and 'FLASH_S5_WORKER_FAILURE' not in line:
+                        continue
+                    try:
+                        at = base.epoch(line.split()[0])
+                    except (ValueError, IndexError):
+                        at = None
+                    if at is not None and (first is None or at < first):
+                        first = at
+                    found = TRIED.search(line)
+                    if found and found.group(3) not in tried:
+                        size = float(found.group(1)) * UNIT_MIB[found.group(2)]
+                        # A score buffer is rows x (position / 4) x 4 bytes, so the size names the position, given the rows. Only a score buffer: torch doesn't say what the allocation was.
+                        tried[found.group(3)] = dict(tried_mib=size, free_mib=float(found.group(4)) * UNIT_MIB[found.group(5)], at=at,
+                                                     position_if_score_at_2048=round(size * 1048576 / 2048), position_if_score_at_1024=round(size * 1048576 / 1024))
+        except OSError:
+            continue
+    return first, tried
+
+
+def arm_at(root, labels, at):
+    """The arm running at the stamp, by its record or its turns' header; a stopped arm leaves no record. (label, seconds into it) or ('after <label>', None)."""
+    last = None
+    for label in labels:
+        record = base.load_json('%s/arm-%s.json' % (root, label)) or {}
+        header = base.load_turns('%s/arm-%s.json.turns.jsonl' % (root, label))[0] or {}
+        start, end = record.get('wall_start_s') or header.get('replay_start_s'), record.get('wall_end_s')
+        if start is None or (at is not None and start > at):
+            continue
+        last = (label, start, end)
+    if last is None:
+        return None, None
+    label, start, end = last
+    if at is None or (end is not None and end < at):
+        return 'after ' + label, None
+    return label, round(at - start, 1)
+
+
+def crash_read(root, labels=ARMS):
+    """None without a death line. Each rank's last memory row, torch's sizes, and the largest prompts the arm's journal holds. An in-flight turn is not in the journal, and the engine logs no prompt length."""
+    first, tried = death_lines(root)
+    if first is None and not tried:
+        return None
+    label, into = arm_at(root, labels, first)
+    rows, _fatal = base.read_log(root + '/engine-stream.log')
+    ranks = {}
+    for row in rows:
+        if first is None or row['t'] <= first:
+            ranks[str(row['rank'])] = dict(point=row['point'], chunk='%d-%d' % (row['a'], row['b']), free_mib=row['free'], retries=row['retries'], t=row['t'])
+    turns = None
+    named = label[len('after '):] if label and label.startswith('after ') else label
+    if named:
+        _header, rows_, _malformed = base.load_turns('%s/arm-%s.json.turns.jsonl' % (root, named))
+        if rows_:
+            last = {}
+            for row in rows_:
+                if type(row.get('prompt_tokens')) is int:
+                    last[row.get('agent')] = dict(prompt_tokens=row['prompt_tokens'], kind=row.get('kind'), t=row.get('t'))
+            turns = dict(finished=len(rows_), largest_prompt=max((row['prompt_tokens'] for row in rows_ if type(row.get('prompt_tokens')) is int), default=None), last_per_agent={str(k): v for k, v in sorted(last.items(), key=lambda x: str(x[0]))})
+    return dict(first_death_s=first, arm=label, into_arm_s=into, ranks=ranks, tried=tried, turns=turns)
+
+
 def chunk_rows(rows, start, end):
     """Chunks opened in the arm's span, on rank 0, by rows: how many over 1024 and the largest, below and past the bound."""
     below, past = [], []
@@ -123,11 +196,19 @@ def report(root):
     if over:
         lines.append('REASON chunk-rows: %d chunks past the bound over 1024 rows' % over)
         word = 'FAIL' if word == 'FAIL' else 'INC'
+    crash = crash_read(root)
+    if crash:
+        lines.append('CRASH arm %s, %s s into it, first death line at %s' % (crash['arm'], crash['into_arm_s'], crash['first_death_s']))
+        for rank, row in sorted(crash['ranks'].items()):
+            lines.append('CRASH rank %s last chunk: %s' % (rank, json.dumps(row, sort_keys=True)))
+        for gpu, row in sorted(crash['tried'].items()):
+            lines.append('CRASH GPU %s, torch: %s' % (gpu, json.dumps(row, sort_keys=True)))
+        lines.append("CRASH turns, finished only, the one in flight isn't there: %s" % json.dumps(crash['turns'], sort_keys=True))
     assert rule_line.startswith('RULE '), rule_line
     lines.append('RULE %s' % word)
     for label in ARMS:
         arms[label].pop('record', None)
-    facts.update(rule=word, price=price, r1=read, stock_rescues=rescues, chunk_rows=chunks)
+    facts.update(rule=word, price=price, r1=read, stock_rescues=rescues, chunk_rows=chunks, crash=crash)
     return word, lines, facts
 
 
