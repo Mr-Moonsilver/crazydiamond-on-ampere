@@ -89,7 +89,7 @@ def levers_into(client, attn, wanted, record):
     """Inside the arm's pause: attn_meta_select with the rank levers, every rank proved as asked; attn-meta's own select follows and keeps them."""
     rows = am.Worker(client.control, client.run_id, client.epoch).call(am.SELECT, dict(wanted, on=attn))
     selected = am._keyed(rows)
-    for name in RANK_LEVERS:
+    for name in wanted:
         record[name] = dict(requested=wanted[name], select=selected)
         if any(((r.get('after') or {}).get(name) or {}).get('selected') is not wanted[name] for r in rows.values()):
             raise ValueError(name.replace('_', '-') + '-selection-unproved')

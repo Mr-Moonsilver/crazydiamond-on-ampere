@@ -1,0 +1,20 @@
+{
+ "schema": "a1-trunk-engine-suites/1",
+ "status": "Discovery mode: inwait's engine suites over the composed tree, the yield's (A1's suite ported, the C1 arrival tests), and the real-router smoke with the arm end to end.",
+ "engine_suites": [
+  "test_stage1_step_engine",
+  "test_attn_meta_control",
+  "test_compose2_receipt_refused",
+  "test_inwait_engine",
+  "test_inwait_slots",
+  "test_inwait_slices",
+  "test_inwait_cow",
+  "test_inwait_early_alloc",
+  "test_inwait_router",
+  "test_append_yield",
+  "test_a1_trunk",
+  "test_a1_trunk_router"
+ ],
+ "refusal_tests": [],
+ "why": {}
+}

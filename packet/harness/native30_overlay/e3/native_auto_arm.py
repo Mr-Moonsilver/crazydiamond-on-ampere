@@ -89,6 +89,12 @@ class AutoArmPolicy:
         self.schedule_before = 0
         self.external_pause = False
         self.cooldown = False
+        # returning-append A1: the decode cohort sizes the last identity proof
+        # covered, and whether the entry phases run a yielded bulk's re-entry.
+        self.decode_counts = None
+        self.reentry = False
+        self.reentry_refusals = 0
+        self.drain_wait_seq = None
 
     @property
     def active(self):
@@ -144,14 +150,26 @@ class AutoArmPolicy:
         return request
 
     def permits(self, request):
-        return self.phase == 'native' and request is self._request()
+        if self.phase != 'native':
+            return False
+        if self.driver.append_yield_active():
+            # returning-append: only the yield's current target (the short request,
+            # then the bulk's reopen) may be admitted.
+            return self.driver.yield_permits(request)
+        return request is self._request()
 
     def bound_intent(self, intent):
         request = self._request()
-        return (self.phase == 'native' and request is not None
+        uid = None if request is None else request.request_id
+        if uid is None:
+            # returning-append: a yielded bulk that left the scheduler (client abort)
+            # keeps the split intent bound to it until this policy's own tick
+            # closes the yield; the admission pass never ends it.
+            uid = self.driver.append_yield_bulk_uid()
+        return (self.phase == 'native' and uid is not None
                 and intent.get('origin') == 'auto-arm' and intent.get('phase') == PHASE
                 and intent.get('selection_seq') == self.selection_seq
-                and intent.get('request_uid') == request.request_id)
+                and intent.get('request_uid') == uid)
 
     def _remember(self):
         request = self.request_ref() if self.request_ref is not None else None
@@ -213,6 +231,159 @@ class AutoArmPolicy:
         return dict(start=start, end=end, plan=tuple(plan),
                     blocks=tuple(tuple(b.block_id for b in group) for group in blocks.blocks))
 
+    def _reentry_plan(self, request):
+        """A yielded bulk's plan from its committed frontier; no bulk-size floor.
+
+        Bound to the selected request, never the waiting head; the frontier is
+        the scheduler's own count, never a fresh prefix lookup.
+        """
+        s, c = self.scheduler, self.controller
+        if (request is None or s.requests.get(request.request_id) is not request
+                or getattr(request.status, 'name', None) != 'WAITING'
+                or request.num_output_tokens != 0 or request.resumable):
+            return None
+        start, end = request.num_computed_tokens, request.num_tokens - 1
+        if type(start) is not int or start <= 0 or end - start < 1:
+            return None
+        cap = min(c.chunk_tokens, s.max_num_scheduled_tokens)
+        def split(position, limit):
+            projected = request if position == start else _ProjectedPrefillRequest(request, position)
+            return c._aligned_split(s, projected, limit)
+        plan = staged_chunk_plan(start, end, cap, c.minimum_stage_rows, split)
+        if not plan:
+            return None
+        return dict(start=start, end=end, plan=tuple(plan), reentry=True)
+
+    def _reentry_cohort(self):
+        """The running decoders at re-entry (the returned append among them)."""
+        running = tuple(self.scheduler.running)
+        if (len(running) > min(MAX_COHORT, self.scheduler.max_num_running_reqs - 1)
+                or any(r.is_prefill_chunk or r.num_computed_tokens < r.num_prompt_tokens
+                       or r.lora_request is not None or r.resumable for r in running)):
+            return None
+        try:
+            for r in running:_text('request_uid', r.request_id)
+        except E3ContractError:
+            return None
+        return tuple(sorted(r.request_id for r in running))
+
+    def _begin_reentry(self, request):
+        """Start the bulk's re-entry; False (never a raise) when it has no plan.
+
+        Runs when the FULL window ends: the append's handback ran or the append
+        left, or the launch bound of FULL steps expired with it unscheduled.
+        """
+        d = self.driver
+        plan = self._reentry_plan(request)
+        if plan is None:
+            # FULL, nothing native owned, no intent armed: close as an ordinary
+            # auto-arm selection; the bulk continues on stock.
+            self._restore('yielded-bulk-has-no-reentry-plan')
+            return False
+        if d.append_yield_active():
+            d.append_yield_set_phase('reenter')
+        self.plan, self.reentry = plan, True
+        self.reentry_refusals = 0
+        self.drain_wait_seq = None
+        self.cohort = self._reentry_cohort() or ()
+        self.deadline = d.clock() + d._control_timeout_s
+        self.phase = 'drain'
+        self._note('reentry', start=plan['start'], native_end=plan['end'], chunks=len(plan['plan']))
+        self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+        return True
+
+    def _yield_native(self, request):
+        """The 'native' phase while a yield runs; False lets ordinary Core work run.
+
+        Every phase exits within counted engine steps (review of f76a31de): the
+        stale guard, the append's refused admission, the FULL window's bound and
+        the reopen's retries; none reads a clock or raises.
+        """
+        d = self.driver
+        phase = d.append_yield_phase()
+        if (phase in ('draining', 'closing', 'append', 'resume') and not d._split_ready and not d.active
+                and d._return_pending is None and d._route_exchange() is None):
+            # The route left split without the yield's own stop: never hold FULL.
+            if d.append_yield_stale() is None:
+                self.phase = 'tail'
+                self._note('full_handback')
+            return False
+        if phase == 'append':
+            c = self.controller
+            d.append_yield_append_wait(c.admitted, c._schedule_seq)
+            return False
+        if phase == 'resume':
+            if d.active:
+                return False                     # the bulk's reopen is parked or running
+            if request is None:
+                d.append_yield_end('bulk-left')
+                return self._native_refused()
+            c = self.controller
+            # Scheduler passes since resume began (counted on the yield: resume is
+            # also reached on the existing arm) without the bulk's admission; past
+            # the launch bound the yield ends and the existing refused-admission
+            # rule disarms (never a raise, never a clock).
+            if d.append_yield_reentry_wait(c.admitted, c._schedule_seq):
+                return self._native_refused()
+            return False
+        if phase != 'handback':
+            return False                         # draining or closing: split, chunks committing or the row close in flight
+        if d._split_ready or d.active or d._return_pending is not None or d._route_exchange() is not None:
+            return False                         # the FULL return of the handback is still settling
+        d.append_yield_mark_full()
+        if request is None:
+            d.append_yield_end('bulk-left')
+            self._restore('yielded-bulk-left')
+            return False
+        if not d.append_yield_handback_done():
+            # The append's handback runs on FULL first, for at most the launch
+            # bound of engine steps; then the FULL window ends and the bulk re-enters.
+            # An append with more than its one handback token left (stopped by the
+            # abort rule) cannot be served there: the window is skipped at once.
+            if not d.append_yield_handback_skip() and not d.append_yield_handback_step():
+                return False
+        d.append_yield_note_handback()
+        return self._begin_reentry(request)
+
+    def _reentry_refused(self, stage):
+        """One refused re-entry drain or proof; past the launch bound, close on FULL.
+
+        Otherwise the next attempt waits one scheduler pass with the pause
+        released (delta review of ae865d44, D-MINOR-2): back-to-back attempts
+        under PAUSED_ALL could not see any change.  The route is FULL with no
+        intent; the yield's hold keeps every stock prefill held but a decoder's
+        running prefill, which may finish its chunk in that pass.
+        """
+        self.reentry_refusals += 1
+        if self.driver.append_yield_reentry_refused(stage, self.reentry_refusals):
+            self._restore('yielded-bulk-reentry-refused')
+            return True
+        self.drain_wait_seq = self.controller._schedule_seq
+        self.driver.append_yield_set_drain_wait(True)
+        self.scheduler.set_pause_state(self.old_pause)
+        self.phase = 'drain_wait'
+        return True
+
+    def _reentry_lost_yield(self):
+        """A stop (a reset included) ended the yield during the re-entry: follow the
+        existing stop rule instead of arming (FULL, the bulk on stock)."""
+        if not self.reentry or self.driver.append_yield_active():
+            return False
+        if self.driver._split_ready:
+            self._rollback('yield-ended-during-reentry')
+        else:
+            self._restore('yield-ended-during-reentry')
+        return True
+
+    def _native_refused(self):
+        self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+        if getattr(self.engine, 'batch_queue', None):
+            self.deadline = self.driver.clock() + self.driver._control_timeout_s
+            self.phase = 'rollback_drain'
+            return False
+        self._rollback('request-changed-or-admission-refused')
+        return False
+
     def _select(self):
         s, d = self.scheduler, self.driver
         if (self.manual_owned or d._split_ready or d.active or d.admission_intent() is not None
@@ -251,6 +422,8 @@ class AutoArmPolicy:
         d = self.driver
         if d._split_ready or d.active or d.admission_intent() is not None:
             raise E3ContractError('auto-arm-close-with-owned-route-or-work')
+        d.append_yield_end(reason)
+        self.reentry = False
         self._note('closed', reason=reason)
         self._remember()
         self.phase = 'idle'
@@ -302,6 +475,12 @@ class AutoArmPolicy:
                     return False
             elif row.get('barrier_clean') is not True or row.get('drained_streams', 0) <= 0:
                 return False
+        if capability:
+            covered = None
+            for row in rows:
+                counts = set(row['native_inventory']['auto_arm_decode']['supported_counts'])
+                covered = counts if covered is None else covered & counts
+            self.decode_counts = frozenset(covered or ())
         return True
 
     def tick(self):
@@ -315,6 +494,8 @@ class AutoArmPolicy:
                 return False
         if self.phase == 'native':
             request = self._request()
+            if d.append_yield_active():
+                return self._yield_native(request)
             if not d._split_ready and not d.active:
                 self.phase = 'tail'
                 self._note('full_handback')
@@ -335,6 +516,15 @@ class AutoArmPolicy:
             if request is None or request.num_output_tokens > 0:
                 self._restore('full-tail-completed')
             return False
+        if self.phase == 'drain_wait':
+            # One scheduler pass with the pause released between re-entry attempts.
+            if self.controller._schedule_seq <= self.drain_wait_seq and self.driver.append_yield_active():
+                return False
+            d.append_yield_set_drain_wait(False)
+            self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+            self.deadline = d.clock() + d._control_timeout_s
+            self.phase = 'drain'
+            return True
         if self.deadline is not None and d.clock() > self.deadline:
             raise E3ContractError('auto-arm-entry-or-return-deadline-expired; ownership retained')
         if self.phase in ('drain', 'rollback_drain'):
@@ -343,7 +533,23 @@ class AutoArmPolicy:
             if self.phase == 'rollback_drain':
                 self._rollback('request-changed-or-admission-refused')
                 return True
-            if self._request() is None or self._cohort() != self.cohort or self._plan(self._request()) != self.plan:
+            if self.reentry:
+                if self._reentry_lost_yield():
+                    return True
+                request = self._request()
+                if request is None:
+                    self._restore('yielded-bulk-left')
+                    return True
+                if self._reentry_plan(request) != self.plan:
+                    self._restore('yielded-bulk-frontier-moved')
+                    return True
+                cohort = self._reentry_cohort()
+                if cohort is None:
+                    # a decoder is mid-prefill or the cohort is over the slot bound:
+                    # drain again, at most the launch bound of times
+                    return self._reentry_refused('drain')
+                self.cohort = cohort
+            elif self._request() is None or self._cohort() != self.cohort or self._plan(self._request()) != self.plan:
                 self._restore('selection-changed-during-output-drain')
                 return True
             self.pending = self._control('barrier')
@@ -352,14 +558,23 @@ class AutoArmPolicy:
         if self.pending is None or not self.pending.done():
             return True
         result = self.pending.result()
+        if self.phase in ('barrier', 'identity') and self._reentry_lost_yield():
+            self.pending = None
+            return True
         if self.phase == 'barrier':
             if not self._proof(result):
+                if self.reentry:
+                    self.pending, self.phase = None, 'drain'   # the cohort moved: re-read it
+                    return self._reentry_refused('barrier')
                 self._rollback('worker-barrier-cohort-refused')
             else:
                 self.pending = self._control('identity')
                 self.phase = 'identity'
         elif self.phase == 'identity':
             if not self._proof(result, capability=True):
+                if self.reentry:
+                    self.pending, self.phase = None, 'drain'
+                    return self._reentry_refused('identity')
                 self._rollback('worker-graph-support-refused')
             else:
                 self.pending = self._control('enter_split')
@@ -368,7 +583,15 @@ class AutoArmPolicy:
             if (result.get('typed_acks') is not True or result.get('route_after') != 'split'
                     or len(result.get('transition_acks', ())) != len(d.ranks)):
                 raise E3ContractError('auto-arm-split-ack-incomplete; ownership retained')
-            if self._request() is None or self._plan(self._request()) != self.plan:
+            if self.reentry and not d.append_yield_active():
+                self.pending = None
+                self._rollback('yield-ended-during-reentry')
+                return True
+            if self.reentry and self._request() is not None:
+                if self._reentry_plan(self._request()) != self.plan:
+                    self._rollback('yielded-bulk-frontier-moved')
+                    return True
+            elif self._request() is None or self._plan(self._request()) != self.plan:
                 self._rollback('selection-changed-before-arm')
                 return True
             d._control_route = None  # policy owns this route, not a manual session
@@ -381,6 +604,9 @@ class AutoArmPolicy:
             self.schedule_before = self.controller._schedule_seq
             self.admitted_before = self.controller.admitted
             self.pending = None
+            if self.reentry:
+                self.reentry = False
+                d.append_yield_set_phase('resume')
             self._note('armed', route_generation=d.route_generation)
             self.scheduler.set_pause_state(self.old_pause)
         elif self.phase == 'return':

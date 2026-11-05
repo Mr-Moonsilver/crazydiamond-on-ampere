@@ -1,0 +1,288 @@
+{
+ "schema": "fixture-leaves/1",
+ "scope": "returning-append Option A (A1) chunk-boundary yield hub CPU tests (test_append_yield.py); no box, VM or GPU evidence",
+ "inherits": [
+  "returning_append_fixture_leaves.json"
+ ],
+ "leaves": [
+  {
+   "name": "native-transaction-rig",
+   "test": "test_append_yield.YieldAtBoundary",
+   "replaces": "A served engine running the ~40k bulk native prefill (41 chunks) and a short native append on the split route (PP2xTP2, four ranks)",
+   "equivalence": "Inherited from returning_append_fixture_leaves.json and used as is: test_e3_native_overlap.cold_stack gives the real PrefillAdmissionController, NativeSegmentDriver, GraphRouter/route controllers and four real bridge/dispatcher workers. The yield reads only states this rig has: the retained worker row, the typed all-rank CancelRequest and its CancelAcks, the parked chunk, the terminal commit, the FULL transition acks and the armed intent. A 3-chunk bulk reaches every boundary branch a 41-chunk bulk does.",
+   "cannot_prove": "Chunk timing, CUDA work, decode stalls, the real 0.77 s/chunk",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "pause-state-enum",
+   "test": "test_append_yield.YieldAtBoundary",
+   "replaces": "vllm.v1.core.sched PauseState (the enum AutoArmPolicy reads as type(old_pause).PAUSED_ALL)",
+   "equivalence": "A str Enum with UNPAUSED and PAUSED_ALL that compares equal to the rig's pause strings, so core_for's set_pause_state and the policy's type(old_pause).PAUSED_ALL both work unchanged.",
+   "cannot_prove": "Other pause modes (the policy only uses these two)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "request-object",
+   "test": "test_append_yield.Candidate",
+   "replaces": "The pinned vllm Request of the bulk, the returning append and other held requests",
+   "equivalence": "test_append_yield.Req extends the reviewed test_e3_admission_native.Request with exactly the fields the candidate rule, _reentry_plan and _reentry_cohort read (status.name, num_output_tokens, num_preemptions, num_prompt_tokens, resumable, is_prefill_chunk, lora/pooling/structured/ec params, sampling_params logprobs). Every refusal branch is driven field by field in Candidate.",
+   "cannot_prove": "Real token ids and sampling",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "per-request-prefix-hit",
+   "test": "test_append_yield.Candidate",
+   "replaces": "KVCacheManager.get_computed_blocks over the real prefix cache (the append's 107,184-token hit on the box)",
+   "equivalence": "Returns (blocks, cached tokens, shared) per request id, the triple the candidate rule and the admission read; the lookup is recorded so a reopen from a fresh lookup is visible (Codex 3).",
+   "cannot_prove": "The real prefix hit; the box records cached tokens per request",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "kv-free",
+   "test": "test_append_yield.Mutants",
+   "replaces": "KVCacheManager.free (kv_cache_manager.py:603)",
+   "equivalence": "Returns the request's block ids to the reviewed BlockPool.freed list and drops its row: the effect the close-frees mutant must make visible (Codex 1).",
+   "cannot_prove": "Allocator internals (ref counts, the free queue order)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stock-handback",
+   "test": "test_append_yield.YieldAtBoundary",
+   "replaces": "The stock schedule step that, on FULL, schedules the append's last prompt token and samples its first output token, and the worker-side add_request",
+   "equivalence": "Scheduler side: the request moves from waiting to running with num_output_tokens 1 and its prompt computed. Worker side: each rank's req_states gains a row whose prefill is complete, so the real live_census counts it as a live decode. These are the only fields append_yield_handback_done, _reentry_cohort and the barrier/identity proofs read.",
+   "cannot_prove": "The sampled token, decode numerics",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stock-finish-and-abort",
+   "test": "test_append_yield.Stops",
+   "replaces": "Scheduler.finish_requests (ABORTED) after executor_hooks.before_abort returned, as EngineCore orders them",
+   "equivalence": "The request leaves its queue, running, scheduler.requests and every worker row; its blocks are freed. executor_hooks.before_abort itself is the real seam and decides whether the driver stops.",
+   "cannot_prove": "Client transport timing",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "auto-arm-decode-capability",
+   "test": "test_append_yield.YieldAtBoundary",
+   "replaces": "native_auto_arm.worker_capability under FLASH_S5_AUTO_ARM=1 (stock cudagraph dispatch against the captured decode-split bank)",
+   "equivalence": "The supported cohort counts 1-4 are given (the counts the box proved at alpha-next); engine epoch, route generation (router._transition_seq) and storage epoch are the worker's own. auto-arm's identity proof reads exactly this record.",
+   "cannot_prove": "That the captured graph exists for a count, or runs correctly with the joined append (box)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "construction-inventory",
+   "test": "test_append_yield.YieldAtBoundary",
+   "replaces": "native_startup.NativeStartup.inventory() and its lane_state decode owner",
+   "equivalence": "Only the fields the identity row reads (route, generation, storage epoch, worker rank, incarnation), each taken from the worker's real WorkerState, GraphRouter and route controller.",
+   "cannot_prove": "Bank/communicator byte measurements",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "policy-tick-order",
+   "test": "test_append_yield.YieldAtBoundary",
+   "replaces": "executor_hooks: one AutoArmPolicy.tick per EngineCore step, then the driver's advance, with control replies settled by the transport",
+   "equivalence": "Rig.tick calls p.tick(), d.advance() and the workers' completions in that order; the policy's own phases (drain, barrier, identity, split, arm) run unmodified.",
+   "cannot_prove": "Wall-clock gaps between steps",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "scheduler-select-fields",
+   "test": "test_append_yield.Mutants",
+   "replaces": "The pinned Scheduler.policy and VllmConfig fields AutoArmPolicy._select reads",
+   "equivalence": "FCFS policy, data_parallel_size 1, no speculative config: the production settings. Only reached after a mutant sends the bulk to stock.",
+   "cannot_prove": "Other policies (refused by _select anyway)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "align-world",
+   "test": "test_append_yield.RealBuilderState",
+   "replaces": "The worker's Mamba align kernels and stock model-state registration around a native chunk (mamba_utils preprocess/precopy/postprocess, MambaHybridModelState.add_request, RequestState add/remove)",
+   "equivalence": "The real LaneChunkFactory, LaneAlign, LaneTables and LaneChunk over test_e3_lane_chunk's reviewed fake runner. The kernels are their pinned arithmetic, one request: preprocess (:534-548), precopy (copy src_col -> state_idx when src_col >= 0 and they differ, :604-610), postprocess under PRECOMPUTED_NEW_COMPUTED, add_request (accepted = 1, state_idx = (num_computed - 1) // block_size, :115-123). The slot is freed on release and reused on the next registration.",
+   "cannot_prove": "Kernel numerics, the 4,048-token block (the rig uses 4), GDN layer state contents",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "forward-state-model",
+   "test": "test_append_yield.RealBuilderState",
+   "replaces": "The GDN layers' read of the running SSM/conv state at column state_idx of the lane table row and their write of the state at chunk_end",
+   "equivalence": "A block's state is the token count folded into it; a chunk [s, e) must read s and writes e. A block another request rewrites, or a reopen from a wrong start, shows as a wrong read (both mutants in RealBuilderState).",
+   "cannot_prove": "Numerical equality of states (token identity is the VM/box proof)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "frozen-tree-subprocess",
+   "test": "test_append_yield.OffIsFrozen",
+   "replaces": "The pre-build engine (BASE_COMMIT f3951ee0) running the same scenario",
+   "equivalence": "A child interpreter pre-imports the six changed engine files from BASE_COMMIT (git show), then runs frozen_scenario over the same unchanged harness rig; journals (clocks and incarnations removed), admission records, hold decisions, queues and route are compared with this tree's run.",
+   "cannot_prove": "Paths the scenario does not visit; skips where git or the base commit is unavailable",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "source-mutants",
+   "test": "test_append_yield.Mutants",
+   "replaces": "A hand-edited engine with one defect",
+   "equivalence": "Each mutant recompiles one function from its own source with one or two exact edits (each must match once) in its module's globals and patches it in for one check.",
+   "cannot_prove": "Defects outside the named edits",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "deferred-cancel-ack",
+   "test": "test_append_yield.Mutants",
+   "replaces": "A rank whose retained row is still draining when the first close round arrives",
+   "equivalence": "Rank 3 answers the first round with a valid wire_v1.CancelAck (disposition accepted, not released); later rounds reach its real bridge cancel. The driver's own ack handling decides.",
+   "cannot_prove": "Real drain timing on a rank",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "bulk-block-allocator",
+   "test": "test_append_yield.Mutants",
+   "replaces": "An allocator defect handing the append blocks the bulk holds",
+   "equivalence": "allocate_slots for the append returns the bulk's block ids: fault injection the engine guard must refuse (Codex 2).",
+   "cannot_prove": "How such a defect could arise",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "startup-enabled",
+   "test": "test_append_yield.Config",
+   "replaces": "s5_startup._enabled over the overlap composition settings",
+   "equivalence": "As test_e3_native_layer_groups.Startup: patched true so the launch guards that follow it are reached with only the yield settings varied.",
+   "cannot_prove": "The overlap composition's own settings checks",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "staged-direct-transport",
+   "test": "test_append_yield.YieldAtBoundaryStaged",
+   "replaces": "The owned ReplyTransport plus the generated worker loop (executor_hooks.worker_rpc -> stage_wire.stage_rpc, worker_handle_output) for FLASH_S5_STAGE_LOCAL=1 stage-scoped broadcasts",
+   "equivalence": "test_e3_r4_worker_bridge.DirectTransport with the one stage-local rule: every rank executes the broadcast through the real worker_rpc; a rank outside the StageScoped ranks returns STAGE_SKIP and writes no reply; only the scope's ranks (or the targeted output rank) answer and are expected. Unscoped commands keep the base rule. The driver is the real StagedSegmentDriver (s5_startup.py:378-381 selection), staged progress selected.",
+   "cannot_prove": "Pickling over the MQ, reply-thread timing, per-rank ring lag (test_e3_stage_local's RingStack proves those for the staged driver)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "staged-ring-metadata",
+   "test": "test_append_yield.StagedIdentity",
+   "replaces": "The rpc_broadcast_mq ring metadata StagedSegmentDriver._check_headroom reads (ring_has_headroom over BoundedSender.queue)",
+   "equivalence": "stage_net.FakeRing (declared in stage_fixture_leaves.json) attached to the rig's bounded sender and never written: every slot writable, so the headroom check passes as on an idle ring; the reserve itself and a full ring are test_e3_stage_local.RingHeadroom's",
+   "cannot_prove": "A yield on a ring that is near full (the close is an unscoped command and uses the ordinary writable-slot check)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "refused-bulk-allocation",
+   "test": "test_append_yield.ReentryRefused",
+   "replaces": "KVCacheManager.allocate_slots returning None (no free blocks) for the bulk's reopen",
+   "equivalence": "The pinned allocate_slots contract: None means the allocation is refused and nothing is allocated; the real controller then refuses the admission and nothing is parked; every other request allocates through the rig's manager",
+   "cannot_prove": "Why a box allocation would refuse (block pressure, eviction state)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "paused-core-schedules-nothing",
+   "test": "test_append_yield.ReentryRefused",
+   "replaces": "EngineCore stepping a PAUSED_ALL scheduler (no schedule(), so no flash_s5_admit seam)",
+   "equivalence": "Scheduler.get_num_unfinished_requests returns 0 under PAUSED_ALL (scheduler.py:2826) and schedule() gives no budget (scheduler.py:648); the policy pauses the core before every rollback, as on the frozen auto-arm refused path; the rig reaches the admission seam only while core.paused is False",
+   "cannot_prove": "An EngineCore step that runs schedule() while paused (not in the pinned source)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "free-block-check",
+   "test": "test_append_yield.Candidate",
+   "replaces": "KVCacheCoordinator.get_num_blocks_to_allocate, BlockPool.get_num_free_blocks and KVCacheManager.watermark_blocks as the candidate rule and auto-arm _plan read them",
+   "equivalence": "The pinned arithmetic: one block per uncached token (num_tokens - total_computed_tokens), a settable free-block count and watermark 0; the candidate refuses when needed + watermark exceeds free, as the real check does",
+   "cannot_prove": "The box block size, hybrid Mamba/attention group arithmetic and the real free count under load",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "profile-query",
+   "test": "test_append_yield.ReviewMajor1StaleYield",
+   "replaces": "The stepped (unfused) QSA path's active-stage profile query (stage 0, layer 0, stage-0 ranks) that _drive would have sent before _refuse_profile",
+   "equivalence": "The driver's own _refuse_profile runs on the real yield state; only the query record it reads is set by the test; the worker-side profile agreement is test_e3_native_schedule_profile's",
+   "cannot_prove": "Whether a box profile disagreement occurs during an append chunk at all",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "profile-failure-publication",
+   "test": "test_append_yield.ReviewMajor1StaleYield",
+   "replaces": "vllm.v1.request.RequestStatus, vllm.v1.engine output types and Scheduler.finish_requests(FINISHED_ERROR) on the embedding-core failure route",
+   "equivalence": "The types are constructed, never read; finish_requests removes the request from its queue, requests and worker rows as the stock abort leaf does",
+   "cannot_prove": "The client-visible error output and the real scheduler's finish bookkeeping",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "refused-append-allocation",
+   "test": "test_append_yield.ReviewMajor2AppendRefused",
+   "replaces": "KVCacheManager.allocate_slots returning None for the append after a given number of granted chunks",
+   "equivalence": "The pinned allocate_slots contract: None means refused and nothing allocated; the real controller then refuses the admission and parks nothing; every other request allocates through the rig manager",
+   "cannot_prove": "Why a box allocation would refuse between the candidate check and the admission (prefix-cache change, block pressure)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "engine-step-order",
+   "test": "test_append_yield.YieldExitInvariant",
+   "replaces": "One EngineCore step: executor_hooks' policy tick, the driver tick, worker completions, the scheduler admission seam when unpaused, and stock's own step serving the one-token handback when the hold releases it",
+   "equivalence": "The same call order the engine makes each step, counted in steps (no clock); the handback is served only when the real hold (defer_stock_positive_frontier) does not hold the append and the route is FULL",
+   "cannot_prove": "Box step timing, batch composition and how many engine steps a real handback takes",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "close-refused-ack",
+   "test": "test_append_yield.YieldExitInvariant",
+   "replaces": "A worker's flash_s5_cancel reply that accepts the close but reports the row not closed, on every round",
+   "equivalence": "A typed CancelAck from one rank with an empty closed set; the driver reads it through its frozen apply path as any reply",
+   "cannot_prove": "Whether a box rank can keep a row open under a close; the existing fail-closed raise is the recorded outcome",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "aborted-append-frontier",
+   "test": "test_append_yield.DeltaMinor1HandbackSkipped",
+   "replaces": "An append stopped mid-prefill by the abort rule (a profile refusal, the stale guard) and still in the scheduler in the FULL window: its frontier set back so more than one prompt token is left",
+   "equivalence": "The same request object in the same queue with num_computed_tokens below num_tokens - 1, the state the abort rule leaves; the hold and the window read only those fields",
+   "cannot_prove": "Which frontier a box abort leaves, or how often a profile refusal hits an append (unreachable with fused QSA selected)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "stock-running-prefill-chunk",
+   "test": "test_append_yield.DeltaMinor2DrainRetrySpaced",
+   "replaces": "Stock's own step scheduling a decoder's running prefill chunk to completion during the re-entry's drain wait",
+   "equivalence": "Applied only while the core is unpaused and the real hold (defer_stock_running_prefill) releases the request; the chunk end sets num_computed_tokens to num_tokens as a stock step does",
+   "cannot_prove": "How many box steps the chunk takes, or that one pass suffices for a long prompt (the retries stay bounded either way)",
+   "more_convenient": true,
+   "box_evidence": false
+  },
+  {
+   "name": "driver-kind-switch",
+   "test": "test_append_yield.StagedIdentity",
+   "replaces": "The engine choosing its segment driver at startup (s5_startup: StagedSegmentDriver with FLASH_S5_STAGE_LOCAL=1, the box setting; NativeSegmentDriver otherwise). The tests switch the class attribute Rig.DRIVER ('native' or 'staged'; the StagedDriver mixin, StagedIdentity.run_both, StagedMutants)",
+   "equivalence": "Rig builds the real driver class the startup would pick for that setting over the same real controller, auto-arm policy and four bridge workers; the attribute picks the class and nothing else (each case asserts type(rig.d))",
+   "cannot_prove": "The startup path itself (covered by the s5_startup suites), CUDA work",
+   "more_convenient": true,
+   "box_evidence": false
+  }
+ ]
+}

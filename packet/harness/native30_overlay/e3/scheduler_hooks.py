@@ -33,6 +33,7 @@ from e3_types import (
     LaneRole,
     OperationTicket,
     TransactionId,
+    _text,
 )
 
 from async_handoff import LeaseCategory
@@ -1228,6 +1229,59 @@ SPLIT_HOLD_BOUND_NS = 30_000_000_000
 SPLIT_HOLD_KINDS = ('fresh', 'positive-frontier', 'running-prefill')
 FURTHEST_BASIS = ('furthest end of any chunk the bounded search accepted, backtracked '
                   'edges included; descriptive, not a certified stock-forced stop')
+# returning-append (Option A): a short held request may run natively between two
+# chunks of a bulk native prefill.  Both bounds are launch settings; absent, no
+# config object exists and every path below is the frozen one.
+APPEND_YIELD_ENV = ('FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK',
+                    'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES')
+
+
+class AppendYieldConfig:
+    """Launch-time bounds of the chunk-boundary yield to a short native request.
+
+    ``max_new``: the most new (uncached) prompt tokens a yielded request may
+    prefill natively.  ``per_bulk``: the most yields one bulk request grants.
+    ``handback_steps``: the most engine steps the FULL window waits, on FULL,
+    for the yielded request's one-token handback to be scheduled; then the
+    yield ends and the bulk re-enters (the request is held as without a yield).
+    ``reentry_retries``: the most scheduler passes the re-armed split waits for
+    the bulk's reopen; then the yield ends and the bulk follows the existing
+    refused-admission rule (FULL return, stock tail).  Both are counts of engine
+    steps, never a clock.  ``enabled`` is the typed on/off control
+    (``native_append_yield``); it starts on when the bounds are given at launch.
+    """
+    __slots__ = ('max_new', 'per_bulk', 'handback_steps', 'reentry_retries', 'enabled')
+    FIELDS = ('max_new', 'per_bulk', 'handback_steps', 'reentry_retries')
+
+    def __init__(self, max_new, per_bulk, handback_steps, reentry_retries, *, enabled=True):
+        for name, value in zip(self.FIELDS, (max_new, per_bulk, handback_steps, reentry_retries)):
+            if type(value) is not int or value < 1:
+                raise E3ContractError('append yield %s must be a positive int' % name)
+        if type(enabled) is not bool:
+            raise E3ContractError('append yield enabled must be a bool')
+        self.max_new, self.per_bulk = max_new, per_bulk
+        self.handback_steps, self.reentry_retries = handback_steps, reentry_retries
+        self.enabled = enabled
+
+    @classmethod
+    def from_env(cls, env):
+        """``None`` when no bound is set; all four or none, else refused."""
+        values = [env.get(name) for name in APPEND_YIELD_ENV]
+        if values == [None] * len(APPEND_YIELD_ENV):
+            return None
+        if None in values:
+            raise E3ContractError('append yield needs all four launch bounds or none')
+        parsed = []
+        for name, value in zip(APPEND_YIELD_ENV, values):
+            if type(value) is not str or not value.isdigit() or value != str(int(value)):
+                raise E3ContractError('%s must be a positive decimal int' % name)
+            parsed.append(int(value))
+        return cls(*parsed)
+
+    def record(self):
+        return {'max_new': self.max_new, 'per_bulk': self.per_bulk,
+                'handback_steps': self.handback_steps, 'reentry_retries': self.reentry_retries,
+                'enabled': self.enabled}
 
 
 class _ProjectedPrefillRequest:
@@ -1243,6 +1297,26 @@ class _ProjectedPrefillRequest:
 
     def __setattr__(self, name, value):
         raise E3ContractError('projected prefill request is read-only')
+
+
+class _ShortTailPrefillRequest:
+    """Read-only view: stock's split sees the prompt's last hash boundary one unit lower.
+
+    a1-trunk build-1d.  A chunk can't cross ``num_prompt_tokens // unit * unit``, so a prompt ending under the staged
+    minimum past it has no native plan.  Below the boundary the stop lands one unit lower and the last chunk crosses
+    the old one, carrying unit + tail rows.  ``num_tokens`` is untouched, so the prefill end stays.
+    """
+    __slots__ = ('_request', 'num_prompt_tokens')
+
+    def __init__(self, request, boundary):
+        object.__setattr__(self, '_request', request)
+        object.__setattr__(self, 'num_prompt_tokens', boundary - 1)
+
+    def __getattr__(self, name):
+        return getattr(self._request, name)
+
+    def __setattr__(self, name, value):
+        raise E3ContractError('short tail prefill request is read-only')
 
 
 def staged_chunk_plan(start, end, cap, minimum, split, *, query_limit=65536,
@@ -1596,6 +1670,13 @@ class PrefillAdmissionController:
             self._split_hold = None
             self._split_hold_requests.clear()
             return
+        # returning-append: a yield owns this split route between the bulk's rows
+        # (closing / append / resume); no idle-hold budget runs while it does.
+        yielding = getattr(owner, 'append_yield_active', None)
+        if callable(yielding) and yielding():
+            self._split_hold = None
+            self._split_hold_requests.clear()
+            return
         if request is None:
             queue = self._queue(scheduler)
             request = queue.peek_request() if queue else None
@@ -1686,6 +1767,213 @@ class PrefillAdmissionController:
         if intent is not None:
             self._refuse(request, reason, **fields)
         return dict(self.last_split_hold_timeout)
+
+    # returning-append: launch-time yield bounds (AppendYieldConfig) or None.
+    append_yield = None
+    yield_stock_deferrals_by_kind = None
+    yield_refusals = None
+    yield_lookups = None
+    _yield_scanning = False
+
+    def note_yield_hold(self, kind):
+        """Count a stock prefill held in a yield's FULL window (no hold clock)."""
+        if self.yield_stock_deferrals_by_kind is None:
+            self.yield_stock_deferrals_by_kind = {name: 0 for name in SPLIT_HOLD_KINDS}
+        self.yield_stock_deferrals_by_kind[kind] += 1
+
+    def _waiting_object(self, scheduler, queue, target):
+        """The queue holding exactly ``target`` (the yield's append or bulk), or None."""
+        if queue.peek_request() is target:
+            return queue, target
+        for candidate in (queue, getattr(scheduler, 'skipped_waiting', None),
+                          getattr(scheduler, 'waiting', None)):
+            if candidate is None or not hasattr(candidate, '__iter__'):
+                continue
+            if any(item is target for item in candidate):
+                return candidate, target
+        return None
+
+    def yield_lookup_timer(self, scheduler):
+        """A read: every prefix lookup through the manager, whoever calls it, counted and timed (box 1: about 0.265 s on a 151k prompt).
+
+        Installed once the first time the driver offers, also with the control off, so an off arm says what stock's own lookups cost.
+        """
+        manager = getattr(scheduler, 'kv_cache_manager', None)
+        real = getattr(manager, 'get_computed_blocks', None)
+        if real is None or getattr(real, 'yield_timed', False):
+            return
+        stats = self.yield_lookups = dict(calls=0, ns=0, max_ns=0, scan_calls=0, scan_ns=0)
+
+        def timed(request):
+            started = time.monotonic_ns()
+            try:
+                return real(request)
+            finally:
+                took = time.monotonic_ns() - started
+                stats['calls'] += 1
+                stats['ns'] += took
+                stats['max_ns'] = max(stats['max_ns'], took)
+                if self._yield_scanning:
+                    stats['scan_calls'] += 1
+                    stats['scan_ns'] += took
+        timed.yield_timed = True
+        manager.get_computed_blocks = timed
+
+    def _yield_refuse(self, reason):
+        """Count why a held request isn't taken; a declined yield leaves no other record."""
+        if self.yield_refusals is None:
+            self.yield_refusals = {}
+        self.yield_refusals[reason] = self.yield_refusals.get(reason, 0) + 1
+
+    def _append_yield_gate(self, scheduler, decode_counts):
+        """The rules on the engine, before any request is read."""
+        config = self.append_yield
+        if config is None or not config.enabled:
+            return False
+        running = len(getattr(scheduler, 'running', ()))
+        # The append's slot plus the slot auto-arm keeps for the bulk (its re-entry
+        # cohort is at most max_num_running_reqs - 1, as at selection).
+        if running + 2 > getattr(scheduler, 'max_num_running_reqs', 1):
+            self._yield_refuse('slots')
+            return False
+        # The re-entry identity proof needs every cohort size 1..running+1.
+        if decode_counts is not None and not set(range(1, running + 2)) <= set(decode_counts):
+            self._yield_refuse('decode-cover')
+            return False
+        if self._environment_refuses(scheduler):
+            self._yield_refuse('environment')
+            return False
+        return True
+
+    def append_yield_still_held(self, scheduler, request, decode_counts=None):
+        """The drain's re-check: the selected request is still takeable.  No lookup; the admission does its own."""
+        return (self._append_yield_gate(scheduler, decode_counts)
+                and self._append_yield_eligible(scheduler, request, getattr(scheduler, 'requests', None)))
+
+    def append_yield_candidate(self, scheduler, bulk, decode_counts=None, exclude=(), seen=None):
+        """The first held request (FCFS) that may run natively between two bulk chunks.
+
+        The same refusals as auto-arm's plan (native_auto_arm._plan) except the
+        bulk-size floor: waiting, nothing computed or generated, no LoRA, pooling,
+        structured output, logprobs, connector or shared-prefix junction; then at
+        most ``max_new`` new tokens beyond its cached prefix and a complete staged
+        plan.  With ``decode_counts`` (the worker's proven decode cohort sizes) the
+        running set plus every smaller cohort must be proven.  ``exclude``: request
+        ids already refused for this bulk.  ``seen`` (a set the caller keeps): request ids
+        looked up already, skipped and added to.  Read-only: a lookup, never an allocation.
+        """
+        if not self._append_yield_gate(scheduler, decode_counts):
+            return None
+        config = self.append_yield
+        requests = getattr(scheduler, 'requests', None)
+        looked = set()
+        for queue in (getattr(scheduler, 'skipped_waiting', None), getattr(scheduler, 'waiting', None)):
+            if queue is None or not hasattr(queue, '__iter__'):
+                continue
+            for request in list(queue):
+                uid = getattr(request, 'request_id', None)
+                if request is bulk or id(request) in looked or uid in exclude:
+                    continue
+                looked.add(id(request))
+                if seen is not None:
+                    if uid in seen:
+                        continue
+                    seen.add(uid)
+                if self._append_yield_plan(scheduler, request, requests, config) is not None:
+                    return request
+        return None
+
+    def _append_yield_short_tail(self, scheduler, prompt_end):
+        """True when stock's split leaves a last chunk under the staged minimum, at any start.
+
+        Stock must stop at the prompt's last hash boundary, so a chunk can't cross it (box 1: tails of 16 and 58 rows).
+        0 is not short: the boundary is the native end itself, a chunk may end on it.
+        """
+        unit = getattr(scheduler, 'hash_block_size', None)
+        if getattr(scheduler, 'mamba_partial_cache_hit', False) is not True or type(unit) is not int or unit < 1:
+            return False
+        return 0 < prompt_end - 1 - prompt_end // unit * unit < self.minimum_stage_rows
+
+    def _append_yield_split_view(self, scheduler, request):
+        """The request stock's split reads for a yield's short request: a short tail moves the stop one hash unit back.
+
+        Cost: no partial-tail entry at the old boundary, so this request's next turn resumes one registered state
+        earlier.  Under one unit of prompt there is nothing to move back to; the plan refuses it as before.
+        """
+        prompt_end = request.num_tokens
+        if not self._append_yield_short_tail(scheduler, prompt_end):
+            return request
+        boundary = prompt_end // scheduler.hash_block_size * scheduler.hash_block_size
+        if boundary < scheduler.hash_block_size:
+            return request
+        return _ShortTailPrefillRequest(request, boundary)
+
+    def _append_yield_eligible(self, scheduler, request, requests):
+        sampling = getattr(request, 'sampling_params', None)
+        if (type(requests) is not dict or requests.get(getattr(request, 'request_id', None)) is not request
+                or getattr(getattr(request, 'status', None), 'name', None) != 'WAITING'
+                or getattr(request, 'num_computed_tokens', None) != 0
+                or getattr(request, 'num_output_tokens', None) != 0
+                or getattr(request, 'num_preemptions', 0) != 0 or getattr(request, 'resumable', False)
+                or getattr(request, 'lora_request', None) is not None
+                or getattr(request, 'pooling_params', None) is not None
+                or getattr(request, 'structured_output_request', None) is not None
+                or getattr(request, 'ec_transfer_params', None)
+                or sampling is None or getattr(sampling, 'prompt_logprobs', None) is not None
+                or getattr(sampling, 'logprobs', None) is not None
+                or self._request_refuses(scheduler, request)):
+            self._yield_refuse('request')
+            return False
+        try:
+            _text('request_uid', request.request_id)
+        except E3ContractError:
+            self._yield_refuse('request')
+            return False
+        prompt_end = getattr(request, 'num_tokens', None)
+        if type(prompt_end) is not int or prompt_end < 2:
+            self._yield_refuse('request')
+            return False
+        return True
+
+    def _append_yield_plan(self, scheduler, request, requests, config):
+        if not self._append_yield_eligible(scheduler, request, requests):
+            return None
+        prompt_end = request.num_tokens
+        manager = scheduler.kv_cache_manager
+        self._yield_scanning = True
+        try:
+            blocks, start, shared = manager.get_computed_blocks(request)
+        finally:
+            self._yield_scanning = False
+        if shared or type(start) is not int or start < 0:
+            self._yield_refuse('shared-junction')
+            return None
+        end = prompt_end - 1
+        if end - start < 1 or end - start > config.max_new:
+            self._yield_refuse('max-new')
+            return None
+        # auto-arm _plan's free-block check: the whole request must fit now.
+        needed = manager.coordinator.get_num_blocks_to_allocate(
+            request_id=request.request_id, num_tokens=prompt_end,
+            new_computed_blocks=blocks.blocks, num_encoder_tokens=0,
+            total_computed_tokens=start, num_local_computed_tokens=start,
+            num_tokens_main_model=prompt_end, apply_admission_cap=True)
+        if needed + manager.watermark_blocks > manager.block_pool.get_num_free_blocks():
+            self._yield_refuse('blocks')
+            return None
+        cap = min(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', 0))
+        if cap < 1:
+            self._yield_refuse('cap')
+            return None
+        view = self._append_yield_split_view(scheduler, request)
+        def split(position, limit):
+            projected = view if position == start else _ProjectedPrefillRequest(view, position)
+            return self._aligned_split(scheduler, projected, limit,
+                                       num_new_local_computed_tokens=start if position == start else 0)
+        plan = staged_chunk_plan(start, end, cap, self.minimum_stage_rows, split)
+        if not plan:
+            self._yield_refuse('no-plan')
+        return plan or None
 
     def _retained_waiting(self, scheduler, queue, retained):
         """The retained request and the queue holding it, wherever it waits.
@@ -1794,6 +2082,21 @@ class PrefillAdmissionController:
             if found is None:
                 return None
             queue, request = found
+        else:
+            # returning-append: while a yield runs, only its current target (the
+            # short request, then the bulk's reopen) may be admitted; while the
+            # bulk row is being closed nothing is.
+            target_query = getattr(owner, 'append_yield_target', None)
+            target = target_query() if callable(target_query) else None
+            if target is not None:
+                phase, wanted = target
+                if wanted is None:
+                    return None
+                found = self._waiting_object(scheduler, queue, wanted)
+                if found is None:
+                    owner.append_yield_target_lost(phase)
+                    return None
+                queue, request = found
         policy = getattr(owner, 'auto_arm', None)
         if policy is not None and policy.active and not policy.permits(request):
             return None
@@ -1836,13 +2139,17 @@ class PrefillAdmissionController:
             raise E3ContractError('scheduler token budget is not declared')
         cap = min(self.chunk_tokens, budget)
         if self.minimum_stage_rows > 1:
+            # a1-trunk 1d: every chunk of a yield's short request plans over the same view, flag off this is the request.
+            is_append = getattr(owner, 'append_yield_is_append', None)
+            view = (self._append_yield_split_view(scheduler, request)
+                    if callable(is_append) and is_append(request) else request)
             def projected_split(position, limit):
                 if position == start:
                     return self._aligned_split(
-                        scheduler, request, limit,
+                        scheduler, view, limit,
                         num_new_local_computed_tokens=num_new_computed)
                 return self._aligned_split(
-                    scheduler, _ProjectedPrefillRequest(request, position), limit)
+                    scheduler, _ProjectedPrefillRequest(view, position), limit)
             key = self._plan_key(scheduler, request, start, prompt_end, cap)
             receipt = (None if retained is not None
                        else self._memoised_plan_refusal(request, key))
@@ -1983,6 +2290,10 @@ class PrefillAdmissionController:
             unpublished = details['unpublished_blocks']
             if type(unpublished) is not tuple or not set(unpublished) <= set(flat):
                 raise E3ContractError('unpublished pages are outside the source lease')
+            check = getattr(owner, 'append_yield_check_blocks', None)
+            if callable(check):
+                check(request, set(unpublished) | set(details['new_block_ids_to_zero'])
+                      | {pair[1] for pair in record.cow_pairs})
             self.frontier.reserve(transaction, unpublished)
         except BaseException:
             self.parked.failed = True
@@ -2400,7 +2711,14 @@ def _defer_stock_while_split_armed(scheduler, kind, request=None):
         raise E3ContractError('scheduler E3 admission controller is invalid')
     # Historical helper name; stock safety is independent of admission policy.
     if controller._stock_hold_owner(scheduler) is None:
-        return False
+        # returning-append A1: the yield's FULL window (the append's handback and
+        # the bulk's re-entry) keeps every stock prefill held but that handback.
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        holds = getattr(owner, 'append_yield_holds', None)
+        if not (callable(holds) and holds(request, kind)):
+            return False
+        controller.note_yield_hold(kind)
+        return True
     controller._note_split_hold(scheduler, kind, request)
     return True
 
