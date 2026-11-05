@@ -86,7 +86,7 @@ def arms(part=None):
         plan = plan_of(sel, cohort)
         # inwait's selection ps1 plus cf and hf, on and off alike: the levers release_compose reads. Build-1d's first cut, READING-box-1c-native.
         rows.append(dict(label=label(sel, 2, cohort, index), selection=selection(sel, 2), part=row_part, c1=sel, attn=True, lazy_recv=True, decode_merge='chunk', inwait=True, next_levers=True,
-                         prepare_slices=True, score_warm=False, cow_fast=True, cow_host_filter=True, reserved_cap=False, overlap=True, defer_bind=True, stage_local=True, size=2, cohort=cohort, index=index, band=band,
+                         prepare_slices=True, score_warm=False, cow_fast=True, cow_host_filter=True, reserved_cap=False, exact_successor=False, score_warm_rank0=False, allocator_flush=False, cow_verify=True, overlap=True, defer_bind=True, stage_local=True, size=2, cohort=cohort, index=index, band=band,
                          extra=False, entry_limit=ENTRY_LIMIT[row_part][0], yield_on=YIELD[sel], plan=plan, generations=ARM_GENERATIONS + len(plan)))
     return rows
 

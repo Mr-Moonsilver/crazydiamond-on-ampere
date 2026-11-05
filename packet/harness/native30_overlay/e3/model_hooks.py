@@ -301,13 +301,95 @@ class AttributeSwap:
         return False
 
 
-def ple_embedding(model, layer_idx):
-    """The pinned-table PLE embedding of a layer, or None when it has none."""
+# ple-private (FINDING-ple-shared-prefetch.md): native and decode share one stock _prefetch_buffer, with nothing ordering their writes.
+# FLASH_S5_PLE_PRIVATE builds the private buffer at startup; the rank lever selects it per arm. FLASH_S5_PLE_WITNESS installs the witness; its lever
+# selects it per arm, because its host sync costs time. Both default off, and with both off nothing here runs.
+PLE_PRIVATE = dict(selected=False, scopes=0)
+PLE_WITNESS = dict(selected=False, native_checks=0, native_unequal=0, native_rows=0, decode_checks=0, decode_unequal=0, decode_rows=0, missing_ids=0, errors=0)
+
+
+def select_ple_private(on):
+    if type(on) is not bool:
+        raise ModelHookError('ple-private-not-bool')
+    PLE_PRIVATE['selected'] = on
+    return dict(PLE_PRIVATE)
+
+
+def select_ple_witness(on):
+    if type(on) is not bool:
+        raise ModelHookError('ple-witness-not-bool')
+    PLE_WITNESS['selected'] = on
+    return dict(PLE_WITNESS)
+
+
+class PleWitness:
+    """Repeats the stock lookup for a lane's first rows just before it reads them, and compares bytes.
+
+    The same ids and the same pinned table give equal bytes, so an unequal row had another writer. Hooks the two undecorated stock methods the prefetch
+    calls by attribute, so it also holds on graph replay, whose eager breaks call the undecorated functions. Rows are this rank's, before the TP reduce.
+    A failure is counted, never raised. Counts only, no values. Its host read moves timing, so a zero doesn't clear a race.
+    """
+
+    ROWS = 8
+
+    def __init__(self, embedding, native_stream, *, torch_module, device):
+        buffer = embedding._prefetch_buffer
+        self.embedding, self.native_stream, self.torch = embedding, native_stream, torch_module
+        self.buffer = torch_module.empty((self.ROWS,) + tuple(buffer.shape[1:]), dtype=buffer.dtype, device=device)
+        self.ids = {}
+        self._stock_lookup, self._stock_reduce = embedding._lookup, embedding._reduce_etp_embeddings
+
+    def install(self):
+        self.embedding._lookup, self.embedding._reduce_etp_embeddings = self.lookup, self.reduce
+        return self
+
+    def lookup(self, input_ids, output=None):
+        result = self._stock_lookup(input_ids, output=output)
+        if PLE_WITNESS['selected'] and output is not None:
+            self.ids[id(self.embedding._prefetch_stream)] = input_ids[:self.ROWS].clone()
+        return result
+
+    def reduce(self, embeddings):
+        if PLE_WITNESS['selected']:
+            self.check(embeddings)
+        return self._stock_reduce(embeddings)
+
+    def check(self, embeddings):
+        stream = self.embedding._prefetch_stream
+        ids = self.ids.pop(id(stream), None)
+        if ids is None:
+            PLE_WITNESS['missing_ids'] += 1
+            return
+        lane = 'native' if stream is self.native_stream else 'decode'
+        try:
+            rows = min(int(ids.shape[0]), int(embeddings.shape[0]))
+            fresh = self._stock_lookup(ids[:rows], output=self.buffer[:rows])
+            torch = self.torch
+            read = embeddings[:rows].reshape(rows, -1).view(torch.uint8)
+            equal = (read == fresh.reshape(rows, -1).view(torch.uint8)).all(dim=1)
+            bad = rows - int(equal.sum().item())
+        except Exception:  # noqa: BLE001 - counted, the arm carries on
+            PLE_WITNESS['errors'] += 1
+            return
+        PLE_WITNESS[lane + '_checks'] += 1
+        PLE_WITNESS[lane + '_unequal'] += int(bad > 0)
+        PLE_WITNESS[lane + '_rows'] += bad
+
+
+def ple_embedding(model, layer_idx, rows=1024, private=False):
+    """The pinned-table PLE embedding of a layer, or None when it has none.
+
+    Decode-phase dp5b: the deployed model holds it at layer.ple.ple_embedding.ngram_embedding, so at 1024 rows this finds nothing on the real
+    model and native shares stock's _prefetch_buffer, as in every run so far. Above 1024 rows that buffer is too short: the real path resolves
+    and the private scratch engages. 1024 stays as it was, so a 1024 rerun stays comparable, unless ``private`` (FLASH_S5_PLE_PRIVATE) asks for the real path there too.
+    """
     layer = model.layers[layer_idx]
     ple = getattr(layer, 'ple', None)
     if ple is None:
         return None
     embedding = getattr(ple, 'ngram_embedding', None)
+    if embedding is None and (rows > 1024 or private):
+        embedding = getattr(getattr(ple, 'ple_embedding', None), 'ngram_embedding', None)
     if embedding is None or not getattr(embedding, 'supports_prefetch', False):
         return None
     return embedding
@@ -322,7 +404,8 @@ class PlePrivateScratch:
     ``stream_basis`` records which one was used.
     """
 
-    def __init__(self, embedding, chunk_tokens, *, torch_module, device, stream=None):
+    def __init__(self, embedding, chunk_tokens, *, torch_module, device, stream=None, selectable=False):
+        self.selectable = selectable and int(chunk_tokens) <= 1024     # above 1024 stock's buffer can't serve: always engaged, no lever
         buffer = getattr(embedding, '_prefetch_buffer', None)
         original = getattr(embedding, '_prefetch_stream', None)
         if buffer is None or original is None:
@@ -340,6 +423,17 @@ class PlePrivateScratch:
         self.buffer = torch_module.empty(shape, dtype=buffer.dtype, device=device)
         self.bytes = int(self.buffer.numel() * self.buffer.element_size())
         self.embedding = embedding
+        self.chunk_tokens = int(chunk_tokens)
+
+    def engaged(self, model, layer_idx):
+        """On this layer's segment; a selectable scratch only when the lever says so."""
+        if ple_embedding(model, layer_idx, self.chunk_tokens, self.selectable) is not self.embedding:
+            return False
+        if self.selectable:
+            if not PLE_PRIVATE['selected']:
+                return False
+            PLE_PRIVATE['scopes'] += 1
+        return True
 
     def scope(self):
         return AttributeSwap(self.embedding, {'_prefetch_buffer': self.buffer,
@@ -596,7 +690,7 @@ class LaneForward:
                 # for this segment and restored exactly afterwards.
                 stack.enter_context(self.prefill_owners.scope())
             if (layer_idx is not None and self.ple_scratch is not None
-                    and ple_embedding(self.model, layer_idx) is self.ple_scratch.embedding):
+                    and self.ple_scratch.engaged(self.model, layer_idx)):
                 stack.enter_context(self.ple_scratch.scope())
             else:
                 stack.enter_context(nullcontext())
@@ -682,6 +776,6 @@ class LaneForward:
         return tuple(range(self.cursor, self.end_layer))
 
 
-__all__ = ['AttributeSwap', 'LaneForward', 'ModelHookError', 'PINS', 'PlePrivateScratch',
+__all__ = ['AttributeSwap', 'LaneForward', 'ModelHookError', 'PINS', 'PLE_PRIVATE', 'PLE_WITNESS', 'PlePrivateScratch', 'PleWitness', 'select_ple_private', 'select_ple_witness',
            'PrefillStreamOwners', 'SegmentRecord', 'generate', 'generate_one',
            'local_text_model', 'ple_embedding', 'prefill_pinned_types', 'revert_one']

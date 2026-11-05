@@ -537,7 +537,7 @@ def handle(worker, command, *, clock=time.monotonic_ns, torch_module=None):
     raise NativeOverlapUnavailable('native-overlap-action-not-implemented')
 
 
-INWAIT_RANK_LEVERS = ('allocator_flush', 'slots_fast', 'prepare_slices', 'score_warm', 'score_warm_rank0', 'cow_fast', 'reserved_cap', 'cow_host_filter', 'cow_verify')    # the flush first: the cap is sized after it
+INWAIT_RANK_LEVERS = ('allocator_flush', 'slots_fast', 'prepare_slices', 'score_warm', 'score_warm_rank0', 'cow_fast', 'reserved_cap', 'cow_host_filter', 'cow_verify', 'ple_private', 'ple_witness')    # the flush first: the cap is sized after it
 
 
 def _attn_meta(runner, command):
@@ -569,6 +569,7 @@ def _attn_meta(runner, command):
     if os.environ.get('FLASH_S5_INWAIT', '0') == '1':
         # Inside ``after`` and ``counters``: the rows the box's attn-meta reader keeps.
         import lane_chunk
+        import model_hooks
         row = result['after' if action == 'attn_meta_select' else 'counters']
         selects = dict(slots_fast=(lane_chunk.select_slots_fast, lane_chunk.SLOTS_FAST),
                        prepare_slices=(lane_chunk.select_prepare_slices, lane_chunk.PREPARE_SLICES),
@@ -578,7 +579,9 @@ def _attn_meta(runner, command):
                        cow_fast=(lane_chunk.select_cow_fast, lane_chunk.COW_FAST),
                        cow_host_filter=(lane_chunk.select_cow_host_filter, lane_chunk.COW_HOST_FILTER),
                        cow_verify=(lane_chunk.select_cow_verify, lane_chunk.COW_VERIFY),
-                       reserved_cap=(lane_chunk.select_reserved_cap, lane_chunk.RESERVED_CAP))
+                       reserved_cap=(lane_chunk.select_reserved_cap, lane_chunk.RESERVED_CAP),
+                       ple_private=(model_hooks.select_ple_private, model_hooks.PLE_PRIVATE),
+                       ple_witness=(model_hooks.select_ple_witness, model_hooks.PLE_WITNESS))
         for name in INWAIT_RANK_LEVERS:
             select, state = selects[name]
             row[name] = select(levers[name]) if name in levers else dict(state)

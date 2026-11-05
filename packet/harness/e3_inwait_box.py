@@ -82,7 +82,8 @@ def sb_bindings():
 
 # --- the arm --------------------------------------------------------------------------------------------
 
-RANK_LEVERS = ('allocator_flush', 'slots_fast', 'prepare_slices', 'score_warm', 'score_warm_rank0', 'cow_fast', 'reserved_cap', 'cow_host_filter', 'cow_verify')
+RANK_LEVERS = ('allocator_flush', 'slots_fast', 'prepare_slices', 'score_warm', 'score_warm_rank0', 'cow_fast', 'reserved_cap', 'cow_host_filter', 'cow_verify', 'ple_private', 'ple_witness')
+WITNESS_FIELDS = ('native_checks', 'native_unequal', 'native_rows', 'decode_checks', 'decode_unequal', 'decode_rows', 'missing_ids', 'errors')
 
 
 def levers_into(client, attn, wanted, record):
@@ -98,9 +99,9 @@ def levers_into(client, attn, wanted, record):
 class _InwaitSelecting:
     """The arm's client with ``inwait`` on the stage command; the reply's value goes to the record, and the grade reads it."""
 
-    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False, host_filter=False, exact=False, warm_rank0=False, flush=False, cow_verify=True):
+    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False, host_filter=False, exact=False, warm_rank0=False, flush=False, cow_verify=True, ple_private=False, ple_witness=False):
         self._client, self._inwait, self._record, self._next, self._attn = client, inwait, record, next_levers, attn
-        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap, cow_host_filter=host_filter, score_warm_rank0=warm_rank0, allocator_flush=flush, cow_verify=cow_verify)
+        self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap, cow_host_filter=host_filter, score_warm_rank0=warm_rank0, allocator_flush=flush, cow_verify=cow_verify, ple_private=ple_private, ple_witness=ple_witness)
         self._exact = exact
         self._raw, self._slots_sent = client if raw is None else raw, False
 
@@ -129,7 +130,7 @@ def release_compose(row):
         run_inner = inner(size, local)
 
         def run(client, record, mode):
-            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap'], row['cow_host_filter'], row['exact_successor'], row['score_warm_rank0'], row['allocator_flush'], row['cow_verify']), record, mode)
+            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap'], row['cow_host_filter'], row['exact_successor'], row['score_warm_rank0'], row['allocator_flush'], row['cow_verify'], row.get('ple_private', False), row.get('ple_witness', False)), record, mode)
             if (record.get('attn_meta') or {}).get('select') is None:
                 raise ValueError('attn-meta-select-not-sent')
             if record.get('inwait') is None:
@@ -228,7 +229,8 @@ def rank_lever_counters(record, row, end):
                                  ('score_warm_rank0', row['score_warm_rank0'], ('skipped',)),
                                  ('allocator_flush', row['allocator_flush'], ('flushes',)),
                                  ('reserved_cap', row['reserved_cap'], ('flushes', 'overdrafts', 'overdraft_refused')),
-                                 ('cow_verify', row['cow_verify'], ('skipped',))):
+                                 ('cow_verify', row['cow_verify'], ('skipped',)),
+                                 *((('ple_private', row['ple_private'], ('scopes',)), ('ple_witness', row['ple_witness'], WITNESS_FIELDS)) if 'ple_private' in row else ())):
         block = record.setdefault(name, dict(requested=wanted, select=None))
         block['counters'] = {field: lever_delta(block.get('select'), end, name, field) for field in fields}
 
@@ -399,6 +401,25 @@ def inwait_check(arms, want):
             missing.add(row['label'] + ':prepare-slices-selected-not-engaged')
         elif not row['prepare_slices'] and (any(sliced.values()) or any((yields or {}).values())):
             failures.add(row['label'] + ':prepare-slices-off-moved-its-counter')
+        if 'ple_private' in row:
+            # ple-private: engaged where asked, on the stage that has the PLE (ranks 0, 1), unmoved where not. Witness counts are the run's result, read by the reader, never a failure here.
+            scopes = ((rec.get('ple_private') or {}).get('counters') or {}).get('scopes')
+            witness = (rec.get('ple_witness') or {}).get('counters') or {}
+            facts[row['label']].update(ple_private=row['ple_private'], ple_scopes=scopes, ple_witness=row['ple_witness'], witness=witness)
+            native_checks = witness.get('native_checks')
+            if type(scopes) is not dict or type(native_checks) is not dict:
+                missing.add(row['label'] + ':ple-counters-absent')
+            else:
+                if row['ple_private'] and not (scopes.get('0') and scopes.get('1')):
+                    missing.add(row['label'] + ':ple-private-selected-not-engaged')
+                if not row['ple_private'] and any(scopes.values()):
+                    failures.add(row['label'] + ':ple-private-off-moved-its-counter')
+                if row['ple_witness'] and not (native_checks.get('0') and native_checks.get('1')):
+                    missing.add(row['label'] + ':ple-witness-selected-not-engaged')
+                if not row['ple_witness'] and any(native_checks.values()):
+                    failures.add(row['label'] + ':ple-witness-off-moved-its-counter')
+                if any((witness.get('errors') or {}).values()) or any((witness.get('missing_ids') or {}).values()):
+                    missing.add(row['label'] + ':ple-witness-errors')
         cow = (rec.get('cow_fast') or {}).get('counters') or {}
         calls, cow_rows = cow.get('calls'), cow.get('rows')
         facts[row['label']].update(cow_fast=row['cow_fast'], cow=cow, reserved_cap=row['reserved_cap'], cap_flushes=((rec.get('reserved_cap') or {}).get('counters') or {}).get('flushes'))
@@ -549,6 +570,13 @@ def smoke_check(rec, row=None):
     delta, chunks = rec.get('stage_delta') or {}, (rec.get('progress_delta') or {}).get('chunks')
     if type(chunks) is not int or chunks < 1 or (rec.get('progress_delta') or {}).get('line_errors'):
         reasons.append('smoke-no-native-chunks')
+    # ple-private: the smoke selects both; the PLE sits on ranks 0 and 1.
+    scopes = ((rec.get('ple_private') or {}).get('counters') or {}).get('scopes') or {}
+    native_checks = ((rec.get('ple_witness') or {}).get('counters') or {}).get('native_checks') or {}
+    if row.get('ple_private') and not (scopes.get('0') and scopes.get('1')):
+        reasons.append('smoke-ple-private-not-engaged')
+    if row.get('ple_witness') and not (native_checks.get('0') and native_checks.get('1')):
+        reasons.append('smoke-ple-witness-not-engaged')
     if not delta.get('step_iw_applied'):
         reasons.append('smoke-in-wait-not-engaged')
     if not delta.get('step_iw_early_begins'):

@@ -439,7 +439,7 @@ class LanePrivateBindings:
                 raise LanePrivateError(
                     'top-k scratch and the QSA layer live on different devices')
 
-        ple = _ple_audit(model, ple_scratch)
+        ple = _ple_audit(model, ple_scratch, chunk_tokens)
         audit = _audit_record(owners, decode_uid, uid, chunk_tokens, width,
                               runtime, lanes, ple, scratch)
         bindings = cls(runner, runtime, chunk_tokens=chunk_tokens, torch=torch_module,
@@ -465,7 +465,7 @@ class LanePrivateBindings:
         """Fund the reserved lane after stock warmup, before capture's lock.
 
         The pinned profile_run exercises max_num_tokens; this native chunk is
-        no larger. Mirror the actual stock workspace high-water allocation into
+        no larger, or, above 1024 rows (dp5), funded in proportion. Mirror the actual stock workspace high-water allocation into
         the already-provisioned extra lane. Never resize or replace stock graph
         storage, unlock a manager, or allow lazy live allocation after capture.
         """
@@ -475,7 +475,8 @@ class LanePrivateBindings:
             self._require_workspace()
             return self._workspace_bytes
         maximum = getattr(self.runner, 'max_num_tokens', None)
-        if type(maximum) is not int or maximum < self.chunk_tokens:
+        # decode-phase dp5: above 1024 rows the native chunk may exceed stock's token bound, which stays 1024; its lane is funded in proportion below.
+        if type(maximum) is not int or maximum < 1 or (maximum < self.chunk_tokens and self.chunk_tokens <= 1024):
             raise LanePrivateError('stock profile token bound does not cover the native chunk')
         if (getattr(manager, '_num_ubatches', None) != 1
                 or getattr(manager, '_num_lanes', None) != self.workspace_lanes
@@ -490,6 +491,8 @@ class LanePrivateBindings:
         needed = _numel(stock) * _element_size(stock)
         if needed < 1:
             raise LanePrivateError('stock workspace warmup has no allocated capacity')
+        if self.chunk_tokens > maximum:
+            needed = -(-needed * self.chunk_tokens // maximum)
         capturing = getattr(self.torch.cuda, 'is_current_stream_capturing', None)
         if not callable(capturing) or capturing():
             raise LanePrivateError('prefill workspace funding requires a non-capturing startup stream')
@@ -786,10 +789,10 @@ def _workspace_lanes(runtime):
     return lanes
 
 
-def _ple_audit(model, ple_scratch):
+def _ple_audit(model, ple_scratch, chunk_tokens=1024):
     found = []
     for layer_idx in _local_layers(model):
-        embedding = ple_embedding(model, layer_idx)
+        embedding = ple_embedding(model, layer_idx, chunk_tokens, getattr(ple_scratch, 'selectable', False))
         if embedding is not None:
             found.append((layer_idx, embedding))
     if not found:

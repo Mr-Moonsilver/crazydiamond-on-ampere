@@ -60,6 +60,27 @@ COLD_ARM = 'sm.g2-live-0'
 SMOKE_ARM = COLD_ARM
 
 
+MAMBA_BLOCK_ROWS, HASH_BLOCK_ROWS = 4048, 176     # read from this model's chunks on the box (dp5); expected_chunks is claude/ple-private-b's, for test_dp5_chunk
+
+
+def expected_chunks(prompt_tokens, cap):
+    """How many native chunks a fresh prompt runs in at this cap: the largest stock split at each position, as staged_chunk_plan finds it.
+
+    At cap 2048 every 4048-row block takes at least two chunks, so a count equal to this one also proves each block's chunks are 2000-2048 rows: one chunk at 1024 makes it larger.
+    """
+    end = prompt_tokens - 1
+    stop = end // HASH_BLOCK_ROWS * HASH_BLOCK_ROWS
+    position, count = 0, 0
+    while position < end:
+        following = min(position + cap, end)
+        if following < end and following // MAMBA_BLOCK_ROWS * MAMBA_BLOCK_ROWS > position:
+            following = following // MAMBA_BLOCK_ROWS * MAMBA_BLOCK_ROWS
+        if position < stop < following:
+            following = stop
+        position, count = following, count + 1
+    return count
+
+
 def band_of_index(index):
     return 1 if index in BAND1_INDEXES else 2 if index == BAND2_INDEX else None
 

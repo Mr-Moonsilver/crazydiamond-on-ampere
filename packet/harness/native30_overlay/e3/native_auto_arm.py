@@ -7,7 +7,7 @@ import os
 import weakref
 
 from e3_types import E3ContractError, _text
-from scheduler_hooks import staged_chunk_plan, _ProjectedPrefillRequest
+from scheduler_hooks import native_chunk_cap, staged_chunk_plan, _ProjectedPrefillRequest
 
 ENV = 'FLASH_S5_AUTO_ARM'
 PHASE = 'auto-prefill'
@@ -220,7 +220,7 @@ class AutoArmPolicy:
             num_tokens_main_model=request.num_tokens, apply_admission_cap=True)
         if needed + manager.watermark_blocks > manager.block_pool.get_num_free_blocks():
             return None
-        cap = min(c.chunk_tokens, s.max_num_scheduled_tokens)
+        cap = native_chunk_cap(c.chunk_tokens, s.max_num_scheduled_tokens)
         def split(position, limit):
             projected = request if position == start else _ProjectedPrefillRequest(request, position)
             return c._aligned_split(s, projected, limit,

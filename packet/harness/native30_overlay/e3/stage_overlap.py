@@ -40,7 +40,7 @@ from e3_types import E3ContractError, E3Pending
 from engine_driver import DriverError, NativeSegmentDriver, _progress_logger
 from native_measurement import INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS
 from reply_transport import Backpressure
-from scheduler_hooks import PrefillAdmissionController, _ProjectedPrefillRequest, staged_chunk_plan
+from scheduler_hooks import PrefillAdmissionController, _ProjectedPrefillRequest, native_chunk_cap, staged_chunk_plan
 from stage_progress import StagedSegmentDriver, stage_local_enabled
 from wire_v1 import CancelRequest, PollRequest, ReleaseAck, SegmentKind
 
@@ -360,7 +360,7 @@ class StagedAdmissionController(PrefillAdmissionController):
         if not callable(query) or not query(parked.transaction):
             return None
         request = parked.request
-        cap = min(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', self.chunk_tokens))
+        cap = native_chunk_cap(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', self.chunk_tokens))
         reason = overlap_refusal(scheduler.kv_cache_manager, request, parked.transaction.chunk_end,
                                  parked.admission.terminal, cap)
         exact = reason == 'successor-may-be-terminal' and getattr(owner, 'exact_successor', False) is True
