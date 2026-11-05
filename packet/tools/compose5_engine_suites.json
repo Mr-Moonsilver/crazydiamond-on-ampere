@@ -1,0 +1,33 @@
+{
+ "schema": "compose5-engine-suites/1",
+ "status": "Discovery mode: compose-4's engine suites over this tree, what compose-5 adds to them (declines, faults, bound, its router smoke, the builder at 2048 rows, torch), and compose-4's box, which this box binds its table over.",
+ "engine_suites": [
+  "test_stage1_step_engine",
+  "test_attn_meta_control",
+  "test_compose2_receipt_refused",
+  "test_inwait_engine",
+  "test_inwait_slots",
+  "test_inwait_slices",
+  "test_inwait_cow",
+  "test_inwait_early_alloc",
+  "test_inwait_router",
+  "test_append_yield",
+  "test_a1_trunk",
+  "test_a1_trunk_router",
+  "test_ple_private",
+  "test_dp5_ple",
+  "test_dp5_chunk",
+  "test_inwait_box",
+  "test_a1_trunk_box",
+  "test_compose4_router",
+  "test_compose4_box",
+  "test_dp5c_path",
+  "test_dp5c_connected",
+  "test_compose5_declines",
+  "test_compose5_faults",
+  "test_compose5_bound",
+  "test_compose5_router"
+ ],
+ "refusal_tests": [],
+ "why": {}
+}

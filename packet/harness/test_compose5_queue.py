@@ -204,7 +204,7 @@ class Names(unittest.TestCase):
     def test_the_real_qname_passes_every_name_rule(self):
         phases = ['q18a_compose_5.draft.sh', 'q18a_compose_5_declare.sh']
         self.assertEqual(names.check_names(QNAME, phases, RUNS, HERE / 'qlib.sh'), [])
-        # The packaging tool's CANDIDATE is checked when it exists: tools/build_compose5.py comes with the 5f and chunk_bound merges.
+        self.assertEqual(re.findall(r"^CANDIDATE = '([^']+)'$", (ROOT / 'tools/build_compose5.py').read_text(), re.M), [QNAME])
         for text in queue.derive().values():
             for name in re.findall(r'python3 "\$H/([a-z0-9_]+\.py)"', text) + re.findall(r'\$H/runs/([A-Za-z0-9_.]+\.sh)', text):
                 self.assertTrue((HERE / name).is_file() or (RUNS / name).is_file(), name)
