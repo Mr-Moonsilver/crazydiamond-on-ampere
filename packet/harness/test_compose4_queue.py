@@ -19,6 +19,7 @@ import test_inwait_queue as tiq  # noqa: E402  (first: paths)
 import compose4_arms as T  # noqa: E402
 import compose4_gate as gate  # noqa: E402
 import compose4_queue as queue  # noqa: E402
+import engine_identity  # noqa: E402
 import inwait_queue_names as names  # noqa: E402
 import test_compose4_box as tbox  # noqa: E402
 
@@ -60,8 +61,8 @@ class Derivation(unittest.TestCase):
             self.assertEqual(pairs[name], str(value), name)
         for name, value in (('CUDA_DEVICE_MAX_CONNECTIONS', '32'), ('FLASH_S5_PLE_PRIVATE', '1'), ('FLASH_S5_PLE_WITNESS', '1')):
             self.assertEqual(pairs[name], value, name)
-            self.assertIn("assert env.get('%s') == '%s'" % (name, value), draft)
-            self.assertIn("assert env.get('%s')=='%s'" % (name, value), declare)
+            self.assertIn("assert env.get('%s') == " % name, draft)
+            self.assertIn("assert env.get('%s')==" % name, declare)
         self.assertEqual((pairs['FLASH_S5_INWAIT'], pairs['FLASH_S5_AUTO_ARM']), ('1', '1'))
         self.assertNotIn('FLASH_S5_CHUNK_TOKENS', pairs, 'the chunk stays the default')
         for module in ('e3_a1_trunk_box.py', 'a1_trunk_arms.py', 'compose4_replay.py', 'agent_replay.py', 'e3_inwait_box.py', 'inwait_arms.py', 'e3_native_refusal_client.py', 'inwait_gate.py'):
@@ -75,6 +76,119 @@ class Derivation(unittest.TestCase):
 
     def test_the_header_states_numerics_are_not_covered(self):
         self.assertIn('NUMERICS ARE NOT COVERED', queue.derive()[DRAFT])
+
+
+def settings_rows():
+    """The real settings text under real bash: what engine_identity declare --settings gets."""
+    lines = ['set -u', 'H=%s' % shlex.quote(str(HERE))] + ['%s=%s' % (k, shlex.quote(v)) for k, v in ARGPARSE_VALUES.items()]
+    lines += ['source "$H/runs/q18a_compose_4_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
+    done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
+    assert done.returncode == 0, done.stderr.decode()[-400:]
+    return done.stdout.decode().split('\0')[:-1]
+
+
+def declared_env():
+    """EXTRA_ENV through engine_identity's own cleaning, the box's record's form (q18a-compose-4 staging, 5 Nov 04:22: FLASH_S5_PLE_PRIVATE {'redacted_length': 1})."""
+    (extra,) = [row.split('=', 1)[1] for row in settings_rows() if row.startswith('EXTRA_ENV=')]
+    env = engine_identity.clean_value('EXTRA_ENV', extra)
+    env['Q18A_TARGET_LABEL'] = ARGPARSE_VALUES.get('Q18A_TARGET_LABEL', 's5-overlap-80-80')
+    return env
+
+
+def real_env():
+    return dict(json.loads((HERE / 'fixtures/compose4_declared_20261105_0422.json').read_text())['identity']['env'])
+
+
+def declare_block(text):
+    start = text.index("<<'PY_DECL'")
+    start = text.index('\n', start) + 1
+    return text[start:text.index('\nPY_DECL\n', start)] + '\n'
+
+
+class DeclaredIdentity(unittest.TestCase):
+    """Build-3's staging stopped at the declaration's FLASH_S5_PLE_PRIVATE line: the assert wanted the value, the record has its length. These run the preflight's own text over engine_identity's own output."""
+
+    def run_block(self, block, env):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'startup.json'
+            path.write_text(json.dumps(dict(identity=dict(env=env, command=dict(args=['--host', '0.0.0.0', '--host', '127.0.0.1'])))))
+            return subprocess.run([sys.executable, '-I', '-c', block, str(path), env['Q18A_TARGET_LABEL']], capture_output=True, text=True, timeout=60)
+
+    def test_the_real_record_of_the_refused_staging_now_passes_and_the_text_it_refused_on_still_fails(self):
+        env = real_env()
+        self.assertEqual(env['FLASH_S5_PLE_PRIVATE'], {'redacted_length': 1})
+        block = declare_block(queue.derive()[DECLARE])
+        done = self.run_block(block, env)
+        self.assertEqual(done.returncode, 0, done.stderr[-600:])
+        done = self.run_block(block.replace("assert env.get('FLASH_S5_PLE_PRIVATE')=={'redacted_length': 1}", "assert env.get('FLASH_S5_PLE_PRIVATE')=='1'"), env)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('AssertionError: installed for the whole run', done.stderr)
+
+    def test_redacted_variants_of_the_real_record(self):
+        """The redaction as it stands passes; the switch shown plain, another length, or a declared switch newly redacted stops the declaration."""
+        block = declare_block(queue.derive()[DECLARE])
+        for name, value, want in (('FLASH_S5_PLE_PRIVATE', engine_identity.clean_value('FLASH_S5_PLE_PRIVATE', '1'), 0),
+                                  ('FLASH_S5_PLE_PRIVATE', '1', 1), ('FLASH_S5_PLE_PRIVATE', {'redacted_length': 2}, 1),
+                                  ('FLASH_S5_PLE_WITNESS', {'redacted_length': 1}, 1), ('CUDA_DEVICE_MAX_CONNECTIONS', {'redacted_length': 2}, 1)):
+            with self.subTest(name=name, value=value):
+                self.assertEqual(self.run_block(block, dict(real_env(), **{name: value})).returncode, want)
+
+    def test_the_settings_here_declare_what_the_box_declared(self):
+        """Every name this text puts in EXTRA_ENV reads on the box as it reads here; the two library hashes are this test's stand-ins."""
+        real, here = real_env(), declared_env()
+        self.assertEqual(set(here) - set(real), set())
+        self.assertEqual(sorted(name for name in here if here[name] != real[name]), ['FLASH_S5_GREEN_LIB_SHA256', 'FLASH_S5_REPLAY_LIB_SHA256'])
+
+    def test_a_declared_length_of_one_cannot_tell_0_from_1_so_the_settings_hold_the_value(self):
+        """The preflight can't see the value: the settings text pins it here, and the smoke's scopes on ranks 0 and 1 show it engaged on the box."""
+        self.assertEqual(engine_identity.clean_value('FLASH_S5_PLE_PRIVATE', '0'), engine_identity.clean_value('FLASH_S5_PLE_PRIVATE', '1'))
+        (extra,) = [row.split('=', 1)[1] for row in settings_rows() if row.startswith('EXTRA_ENV=')]
+        self.assertIn('FLASH_S5_PLE_PRIVATE=1', extra.split())
+
+    def test_the_identity_redacts_the_private_switch_and_shows_the_others(self):
+        env = declared_env()
+        self.assertEqual(env['FLASH_S5_PLE_PRIVATE'], {'redacted_length': 1})
+        self.assertEqual((env['FLASH_S5_PLE_WITNESS'], env['CUDA_DEVICE_MAX_CONNECTIONS']), ('1', '32'))
+        self.assertEqual(dict(tok.split('=', 1) for tok in queue.SWITCHES.split())['FLASH_S5_PLE_PRIVATE'], '1', 'the value itself: the settings text')
+
+    def test_the_declarations_preflight_passes_on_the_real_identity(self):
+        done = self.run_block(declare_block(queue.derive()[DECLARE]), declared_env())
+        self.assertEqual(done.returncode, 0, done.stderr[-600:])
+
+    def test_the_text_build_3_ran_fails_as_it_did_on_the_box(self):
+        block = declare_block(queue.derive()[DECLARE])
+        old = block.replace("assert env.get('FLASH_S5_PLE_PRIVATE')=={'redacted_length': 1}", "assert env.get('FLASH_S5_PLE_PRIVATE')=='1'")
+        self.assertNotEqual(old, block)
+        done = self.run_block(old, declared_env())
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('AssertionError: installed for the whole run', done.stderr)
+
+    def test_each_switch_missing_fails_the_preflight(self):
+        for name in ('CUDA_DEVICE_MAX_CONNECTIONS', 'FLASH_S5_PLE_PRIVATE', 'FLASH_S5_PLE_WITNESS', 'FLASH_S5_INWAIT'):
+            with self.subTest(name):
+                env = declared_env()
+                del env[name]
+                self.assertEqual(self.run_block(declare_block(queue.derive()[DECLARE]), env).returncode, 1)
+        env = dict(declared_env(), FLASH_S5_CHUNK_TOKENS='2048')
+        self.assertEqual(self.run_block(declare_block(queue.derive()[DECLARE]), env).returncode, 1)
+
+    def test_the_drafts_preflight_env_lines_pass_on_the_real_identity(self):
+        env = declared_env()
+        lines = [line for line in queue.derive()[DRAFT].splitlines() if line.startswith(("assert env.get('", "assert '")) and ' in env' in line or re.match(r"assert env\.get\('\w+'\) == ('|\{'redacted_length': 1\})", line)]
+        self.assertGreater(len(lines), 20)
+        self.assertIn("assert env.get('FLASH_S5_PLE_PRIVATE') == {'redacted_length': 1}, 'installed for the whole run'", lines)
+        done = subprocess.run([sys.executable, '-I', '-c', 'import json,sys\nenv=json.loads(sys.argv[1])\n' + '\n'.join(lines), json.dumps(env)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr[-600:])
+
+    def test_every_module_the_preflights_pin_is_a_file_here(self):
+        texts = queue.derive()
+        for text, names in ((texts[DECLARE], queue.DECLARE_FILES + queue.MODULES), (texts[DRAFT], queue.DRAFT_FILES.replace('; do', '') + queue.MODULES)):
+            self.assertIn(names.split()[0], text)
+            for name in names.split():
+                self.assertTrue((HERE / name).is_file(), name)
+        declared = re.search(r'for name in (.*?); do', texts[DECLARE], re.S).group(1)
+        for name in declared.replace('\\\n', ' ').split():
+            self.assertTrue((HERE / name).is_file() or name.startswith(('baselines/', 'canary_hub', 'flash_canary')), name)
 
 
 class Names(unittest.TestCase):

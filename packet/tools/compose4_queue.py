@@ -17,6 +17,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'harness')]
 import compose4_arms as table  # noqa: E402
+import engine_identity  # noqa: E402
 
 OLD, NEW = 'q18a_a1_trunk', 'q18a_compose_4'
 OLD_Q, NEW_Q = 'q18a-a1-trunk', 'q18a-compose-4'
@@ -56,8 +57,10 @@ def renames(text):
 
 
 def asserts(env_form):
+    # engine_identity redacts any name holding "private" (its SECRET): the declared env shows that value's length, not the value. The settings text holds it, and test_compose4_queue reads it there.
+    declared = lambda name, value: repr(dict(redacted_length=len(value))) if engine_identity.SECRET.search(name) else repr(value)
     pairs = (tok.split('=', 1) for tok in SWITCHES.split())
-    return ''.join("assert env.get('%s')%s'%s', 'installed for the whole run'\n" % (name, env_form, value) for name, value in pairs) + "assert 'FLASH_S5_CHUNK_TOKENS' not in env, 'the chunk stays the default 1024'\n"
+    return ''.join("assert env.get('%s')%s%s, 'installed for the whole run'\n" % (name, env_form, declared(name, value)) for name, value in pairs) + "assert 'FLASH_S5_CHUNK_TOKENS' not in env, 'the chunk stays the default 1024'\n"
 
 
 def source(suffix):

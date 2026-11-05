@@ -1,0 +1,63 @@
+{
+ "identity": {
+  "command": {
+   "args": [
+    "--host",
+    "0.0.0.0",
+    "--host",
+    "127.0.0.1"
+   ]
+  },
+  "env": {
+   "CUDA_DEVICE_MAX_CONNECTIONS": "32",
+   "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+   "FLASH_ATTN_META_GDN_BATCH": "1",
+   "FLASH_NATIVE30_LOCALIZE": "0",
+   "FLASH_NATIVE30_SYNC": "none",
+   "FLASH_NATIVE33_DIAG": "0",
+   "FLASH_NATIVE34_DIAG": "0",
+   "FLASH_PARITY_BALANCE": "1",
+   "FLASH_PD_ALTERNATE": "1",
+   "FLASH_S5_APPEND_YIELD_HANDBACK_STEPS": "16",
+   "FLASH_S5_APPEND_YIELD_MAX_NEW": "2048",
+   "FLASH_S5_APPEND_YIELD_PER_BULK": "4",
+   "FLASH_S5_APPEND_YIELD_REENTRY_RETRIES": "4",
+   "FLASH_S5_AUTO_ARM": "1",
+   "FLASH_S5_DECODE_MERGE": "1",
+   "FLASH_S5_DECODE_ONLY_PROBE": "0",
+   "FLASH_S5_DECODE_SMS": "44",
+   "FLASH_S5_ENGINE_OFFERS": "0",
+   "FLASH_S5_GREEN_LIB": "/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3/native/flash_s5_green.so",
+   "FLASH_S5_GREEN_LIB_SHA256": "e06b062263dcc315dec1ab279f1c08abc8f627e4c6f901ef5a740ec307cba41b",
+   "FLASH_S5_HANDLER_ANATOMY": "1",
+   "FLASH_S5_INWAIT": "1",
+   "FLASH_S5_LAYER_GROUPS": "1",
+   "FLASH_S5_LAZY_RECV": "1",
+   "FLASH_S5_NATIVE_PROGRESS": "burst",
+   "FLASH_S5_NATIVE_QSA_POLICY": "dense",
+   "FLASH_S5_OVERLAP": "1",
+   "FLASH_S5_PLE_PRIVATE": {
+    "redacted_length": 1
+   },
+   "FLASH_S5_PLE_WITNESS": "1",
+   "FLASH_S5_QSA_FUSED": "1",
+   "FLASH_S5_REPLAY_LIB": "/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3/native/flash_s5_replay_observer.so",
+   "FLASH_S5_REPLAY_LIB_SHA256": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d",
+   "FLASH_S5_REPLAY_OBSERVER": "0",
+   "FLASH_S5_STAGE_LOCAL": "1",
+   "FLASH_S5_STAGE_OVERLAP": "1",
+   "FLASH_S5_STAGE_OVERLAP_DEFER_BIND": "1",
+   "FLASH_S5_STAGE_OVERLAP_OBSERVE": "1",
+   "FLASH_SCHED_STATS": "200",
+   "PYTHONPATH": "/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3/native30_plugins",
+   "Q18A_TARGET_LABEL": "s5-overlap-80-80",
+   "VLLM_API_KEY": {
+    "redacted_length": 64
+   },
+   "VLLM_BUILD_URL": {
+    "redacted_length": 49
+   }
+  }
+ },
+ "note": "The env and --host pairs of q18a-compose-4-requests/startup.json, staged on the box 5 Nov 2026 04:22 CET and refused: names FLASH_*, Q18A_*, CUDA_DEVICE_*, PYTHONPATH and the redacted rows, as declared. Other names and args left out: no preflight reads them."
+}
