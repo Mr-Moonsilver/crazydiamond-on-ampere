@@ -8,6 +8,7 @@ One launch, connections 32 and FLASH_S5_CHUNK_TOKENS=2048 for the whole run. Sel
   n22   the same with c22h: 2048 rows below 22 Mamba blocks, 1024 from there
 Order: sm | decode-am1 | dec1 | ny n22 (seed 1, index 0) | n22 ny (seed 2, index 1) | ... ten pairs, the order alternating, each with its own seed | the grade.
 The reserved cap is off on every arm, every rank: a 2048 chunk peaks at 22378 MiB allocated outside the indexer, and only the indexer has an overdraft, so keep 512 (r1's cap 22287) can't hold it. dn, sc and dp8d ran 2048 the same way.
+The warm block is off too, as in dn: it's sized for 1024 rows, it can't hold c22h's 170.5 MiB, and dn is the only record of that buffer passing. The allocator flush stays on: each arm starts from the same allocator state, which matters over a night.
 Each arm's salt comes from its label, so no arm hits another's cache. 5f is out: no score_split, no stock_rescue.
 """
 import sys
@@ -122,7 +123,7 @@ def arms(part=None):
             continue
         # compose-5's rows less the cap (the module's note); the plan is the one axis between ny and n22.
         rows.append(dict(label=label(sel, 2, cohort, index), selection=selection(sel, 2), part=row_part, c1=sel, kind=KIND[sel], attn=True, lazy_recv=True, decode_merge='chunk', inwait=True, next_levers=True,
-                         prepare_slices=True, score_warm=True, score_warm_rank0=False, allocator_flush=True, cow_fast=True, reserved_cap=False, cow_host_filter=True, cow_verify=True, exact_successor=True,
+                         prepare_slices=True, score_warm=False, score_warm_rank0=False, allocator_flush=True, cow_fast=True, reserved_cap=False, cow_host_filter=True, cow_verify=True, exact_successor=True,
                          ple_private=PLE_PRIVATE[sel], ple_witness=PLE_WITNESS[sel], overlap=True, defer_bind=True, c0='on', stage_local=True, size=2, cohort=cohort, index=index, band=band_of_index(index),
                          extra=False, entry_limit=ENTRY_LIMIT[row_part][0], yield_on=YIELD[sel], plan=PLANS[PLAN[sel]], generations=generations_of(sel), chunk_bound=list(BOUND[sel])))
     return rows
@@ -164,7 +165,7 @@ def check():
     order = [r['label'] for r in rows.values() if r['kind'] == 'replay']
     assert order[:4] == ['ny.g2-live-0', 'n22.g2-live-0', 'n22.g2-live-1', 'ny.g2-live-1'] and len(order) == 2 * PAIRS, 'the order alternates; a crash on the first n22 keeps the first ny'
     assert len(set(REPLAY_SEEDS.values())) == PAIRS and replay_config(rows[order[0]])['SEED'] == REPLAY['SEED'] and all(index < 10 for index in REPLAY_SEEDS), "one seed a pair, index 0 c4b's, one digit in a label"
-    assert all(r['score_warm'] and not r['reserved_cap'] and r['exact_successor'] and r['allocator_flush'] for r in rows.values()), "5d's full less the cap on every arm"
+    assert all(not r['score_warm'] and not r['reserved_cap'] and r['exact_successor'] and r['allocator_flush'] for r in rows.values()), "5d's full less the cap and the warm block on every arm"
     assert not any(r['ple_witness'] for r in rows.values()), 'no arm carries the witness'
     assert all(r['cow_host_filter'] and r['cow_fast'] for r in rows.values()), 'hf on every arm'
     assert B13_BOUND == [52624, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, B13_BOUND)) == 40, "dp8d's 40 chunks at band 1"

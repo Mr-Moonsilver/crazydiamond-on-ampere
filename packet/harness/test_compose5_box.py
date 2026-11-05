@@ -87,8 +87,8 @@ class Table(unittest.TestCase):
         self.assertEqual({k: v for k, v in T.replay_config(row).items() if T4.REPLAY[k] != v}, dict(SEED=2))
         self.assertEqual(T4.REPLAY['SEED'], 1, "the table's own stays as it is")
 
-    def test_the_cap_is_off_on_every_arm(self):
-        self.assertEqual({r['reserved_cap'] for r in T.arms()}, {False})
+    def test_the_cap_and_the_warm_block_are_off_on_every_arm(self):
+        self.assertEqual({(r['reserved_cap'], r['score_warm']) for r in T.arms()}, {(False, False)})
 
     def test_the_private_ple_buffer_only_off_on_the_replays_and_the_witness_on_none(self):
         for row in T.arms():
@@ -97,7 +97,7 @@ class Table(unittest.TestCase):
     def test_compose_4s_ctl_is_the_base(self):
         c4 = T4.by_label()['ctl.g2-live-0']
         row = T.by_label()[NY]
-        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'label', 'reserved_cap', 'selection'])
+        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'label', 'reserved_cap', 'score_warm', 'selection'])
         self.assertEqual((row['chunk_bound'], row['reserved_cap'], row['yield_on'], row['ple_private']), ([52624, 1024], False, False, False))
 
     def test_the_replay_and_the_ceiling_are_compose_4s(self):
