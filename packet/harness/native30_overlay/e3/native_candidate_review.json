@@ -308,7 +308,7 @@
     "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
     "queue": "q18a-compose-4: a1-trunk's queue with connections 32 and the PLE switches for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, the composed replay arm and its control; no fixed-schedule check",
     "scope": "the four lever tracks on one engine under the closed-loop replay, against c1b's READY build, discovery mode; not a release assessment and not a numerics result",
-    "source_commit": "8deedbe0080a0cc97234ef32e6636c2ffe738c36"
+    "source_commit": "efc81c3ed8620dc2b598e6321582d8ad409d1b45"
   },
   "control_counter_scope": {
     "basis": "exclusive EngineCore coordinator host-wall spans and successfully submitted RPC count",
