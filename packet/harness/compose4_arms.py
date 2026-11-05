@@ -132,7 +132,7 @@ def check():
 check()
 
 if __name__ == '__main__':
-    # The queue's ingress check: python3 compose4_arms.py generations LABEL RECORD (a replay's count is the record's own; none readable, none printed: the check reads that as unknown)
+    # The queue's ingress check: python3 compose4_arms.py generations LABEL RECORD (a replay's count is the record's own; none readable, 0: the queue reads the span from the same record, so the check runs only over a readable one)
     if len(sys.argv) != 4 or sys.argv[1] != 'generations':
         raise SystemExit(2)
     count = by_label()[sys.argv[2]]['generations']
@@ -142,5 +142,4 @@ if __name__ == '__main__':
             count = json.load(open(sys.argv[3])).get('replay_requests_sent')
         except (OSError, ValueError):
             count = None
-    if type(count) is int:
-        print(count)
+    print(count if type(count) is int else 0)

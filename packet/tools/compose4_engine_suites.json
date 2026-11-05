@@ -1,0 +1,26 @@
+{
+ "schema": "compose4-engine-suites/1",
+ "status": "Discovery mode: a1-trunk's engine suites over the composed tree, the private PLE buffer's and the dp5 chunk's, inwait's and a1's box, and the real-router smoke with the replay arm end to end.",
+ "engine_suites": [
+  "test_stage1_step_engine",
+  "test_attn_meta_control",
+  "test_compose2_receipt_refused",
+  "test_inwait_engine",
+  "test_inwait_slots",
+  "test_inwait_slices",
+  "test_inwait_cow",
+  "test_inwait_early_alloc",
+  "test_inwait_router",
+  "test_append_yield",
+  "test_a1_trunk",
+  "test_a1_trunk_router",
+  "test_ple_private",
+  "test_dp5_ple",
+  "test_dp5_chunk",
+  "test_inwait_box",
+  "test_a1_trunk_box",
+  "test_compose4_router"
+ ],
+ "refusal_tests": [],
+ "why": {}
+}

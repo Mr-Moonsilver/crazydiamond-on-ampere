@@ -4,7 +4,7 @@ The report leads with the native share of prefill tokens per arm: how much of a 
 
 FAIL, any of:
   - a crash on any arm: the death scan not ALIVE, a worker failure, an OutOfMemoryError in the engine log (fatal OOM);
-  - a hang on any arm: an arm that started and left no record, or replay turns still open past the finish bound;
+  - a hang on any arm: an arm that started and left no record, replay turns still open past the finish bound, or a turn's read timed out;
   - on cmp, a stock prefill the levers claim to cover:
     (a) a fresh of at least 32768 new rows, sent with a decoder running and no other prefill in flight or queued ahead, that did not go native;
     (b) an append of at most the yield's max_new new tokens, sent during a live bulk, with the bulk's four yields not spent and time left in it, that went stock instead of being served.
@@ -14,6 +14,13 @@ Every other stock prefill is counted and reported: an append with no bulk live, 
 
 Prefill: prompt tokens over first output, the client basis of every lever track's number, on native fresh turns whose first chunk opened within QUEUED_S of the send (a queued wait is not prefill speed). Beside it, rows over the chunk span.
 Decode: tokens per second per stream while decoding, over the native bulks' spans, times 8 over the fixed 452.8. A closed loop has fewer than 8 decoding, and fewer streams each run faster, so it reads high against an arm's: the mean count, the aggregate and the cmp/ctl ratio print beside it.
+Per arm, read only, none of them in the verdict (review item 10, lead, 5 Nov):
+  rate retention: tokens per second per decoding stream over the fixed 56.6, beside native bulks and with none live;
+  tail gaps: the gap between arrivals in a turn's decode, p50, p99 and max, over the window and beside native bulks;
+  return-turn first output: every append's first output, and split as served by the yield or stock;
+  completed valid turns: turns sent in the window that finished as agent_replay.turn_complete counts them, against the others;
+  decode debt: output delivered over the window against the reference. The reference is explicit: 56.6 per stream-second actually decoding (the debt in tokens is that minus delivered), and beside it 452.8 over the whole window, an upper bound a closed loop does not reach because its agents pause;
+  extra prefill duration: seconds to first output on fresh turns, native and stock. It is apart from the debt: the first is how long a prefill took, the second what the streams beside it delivered.
 Times: memory lines are engine clock (UTC stamps), turns are the client's; the same host.
 """
 import collections
@@ -62,7 +69,9 @@ def read_log(path):
     rows, fatal = [], []
     if not os.path.exists(path):
         return rows, fatal
-    for line in open(path, errors='replace'):
+    with open(path, errors='replace') as handle:
+        text = handle.readlines()
+    for line in text:
         if 'OutOfMemoryError' in line or 'FLASH_S5_WORKER_FAILURE' in line:
             fatal.append(line[:300].rstrip())
         at = line.find('flash-s5 memory ')
@@ -204,8 +213,15 @@ def classify(turns, runs, warmup_at, yield_on):
         else:
             facts['stock_append_yield_off'] += 1
     facts['stock_total'] = sum(v for k, v in facts.items() if k.startswith('stock_'))
-    return dict(counts=dict(facts), bulks=bulks, prefill_tok_s=median(fresh_rates), prefill_n=len(fresh_rates), span_tok_s=median(span_rates), native_bulks=len(bulks), native_rows=native_rows, stock_rows=stock_rows,
+    return dict(counts=dict(facts), bulks=bulks, live_bulks=live_bulks, prefill_tok_s=median(fresh_rates), prefill_n=len(fresh_rates), span_tok_s=median(span_rates), native_bulks=len(bulks), native_rows=native_rows, stock_rows=stock_rows,
                 native_share=round(native_rows / (native_rows + stock_rows), 4) if native_rows + stock_rows else None, served=served, held=held, violations=violations)
+
+
+def tokens_per_arrival(turn):
+    """A server can coalesce tokens into one piece: a turn's arrivals count pieces, its usage counts tokens."""
+    arrivals = turn.get('arrivals_ms') or ()
+    tokens = turn.get('completion_tokens')
+    return tokens / len(arrivals) if arrivals and type(tokens) is int and tokens > 0 else 1.0
 
 
 def decode_over(turns, bulks, origin):
@@ -220,11 +236,60 @@ def decode_over(turns, bulks, origin):
             inside = [origin + ms / 1000.0 for ms in turn['arrivals_ms']]
             inside = [t for t in inside if first <= t <= last]
             if len(inside) >= 2:
-                tokens += len(inside) - 1
+                tokens += (len(inside) - 1) * tokens_per_arrival(turn)
                 active += inside[-1] - inside[0]
     per_stream = tokens / active if active else None
     return dict(per_stream_tok_s=round(per_stream, 2) if per_stream else None, decode_vs_fixed=round(per_stream * STREAMS / FIXED_REFERENCE_TOK_S, 4) if per_stream else None, mean_decoding=round(active / total, 2) if total else None,
                 aggregate_vs_fixed=round(tokens / total / FIXED_REFERENCE_TOK_S, 4) if total else None)
+
+
+def gap_fields(window):
+    """A record's decode window: its rows hold each stream's gaps."""
+    gaps = [g for row in window.get('rows') or window.get('streams') or () for g in row.get('gaps_ms') or ()]
+    return gap_read(gaps)
+
+
+def gap_read(gaps):
+    return dict(n=len(gaps), p50=pct(gaps, 0.5), p99=pct(gaps, 0.99), max=max(gaps) if gaps else None)
+
+
+def serving_reads(turns, bulks, origin, warmup, duration):
+    """The per-arm reads of item 10 over [warmup, duration] on the replay's own clock. Offsets in ms from the replay's origin."""
+    start_ms, end_ms = warmup * 1000.0, duration * 1000.0
+    spans = sorted(((b['run']['first'] - origin) * 1000.0, (b['run']['last'] - origin) * 1000.0) for b in bulks)
+    beside = lambda a, b: any(lo <= a and b <= hi for lo, hi in spans)
+    inside = lambda a, b: start_ms <= a and b <= end_ms
+    gaps_all, gaps_beside, quiet_tokens, quiet_ms, beside_tokens, beside_ms = [], [], 0, 0.0, 0, 0.0
+    bulk_turns = {id(b) for b in bulks}
+    delivered = 0
+    for turn in turns:      # a fresh turn's own arrivals come after its prefill, so they count as any others
+        weight = tokens_per_arrival(turn)
+        for a, b in zip(turn.get('arrivals_ms') or (), (turn.get('arrivals_ms') or ())[1:]):
+            if not inside(a, b):
+                continue
+            gaps_all.append(b - a)
+            if beside(a, b):
+                gaps_beside.append(b - a)
+                beside_tokens, beside_ms = beside_tokens + weight, beside_ms + b - a
+            else:
+                quiet_tokens, quiet_ms = quiet_tokens + weight, quiet_ms + b - a
+    for turn in turns:
+        delivered += sum(1 for at in turn.get('arrivals_ms') or () if start_ms <= at <= end_ms) * tokens_per_arrival(turn)
+    rate = lambda tokens, ms: tokens * 1000.0 / ms if ms else None
+    per = lambda value: round(value / (FIXED_REFERENCE_TOK_S / STREAMS), 4) if value else None
+    decoding_s = (beside_ms + quiet_ms) / 1000.0
+    reference = decoding_s * FIXED_REFERENCE_TOK_S / STREAMS
+    window_s = duration - warmup
+    sent = [t for t in turns if warmup <= t['t'] <= duration]
+    fresh = [t for t in sent if t['kind'] == 'fresh' and t.get('ttft') is not None]
+    appends = [t for t in sent if t['kind'] == 'append' and t.get('ttft') is not None]
+    return dict(rate_retention=dict(beside_native_bulks=per(rate(beside_tokens, beside_ms)), no_bulk_live=per(rate(quiet_tokens, quiet_ms))),
+                tail_gaps_ms=dict(window=gap_read(gaps_all), beside_native_bulks=gap_read(gaps_beside)),
+                return_turn_first_output_s=ttft_read([dict(ttft=t['ttft']) for t in appends]),
+                completed_valid_turns=dict(valid=sum(1 for t in sent if t.get('complete') is True), not_valid=sum(1 for t in sent if t.get('complete') is not True)),
+                decode_debt=dict(delivered_tokens=round(delivered), decoding_stream_s=round(decoding_s, 1), reference_tokens=round(reference), debt_tokens=round(reference - beside_tokens - quiet_tokens), debt_share=round(1 - (beside_tokens + quiet_tokens) / reference, 4) if reference else None,
+                                 window_s=window_s, window_reference_tokens=round(window_s * FIXED_REFERENCE_TOK_S), delivered_vs_window_reference=round(delivered / (window_s * FIXED_REFERENCE_TOK_S), 4)),
+                prefill_duration_s=dict(fresh_native=round(sum(t['ttft'] for t in fresh if id(t) in bulk_turns), 1), fresh_stock=round(sum(t['ttft'] for t in fresh if id(t) not in bulk_turns), 1), fresh_turns=len(fresh)))
 
 
 def ttft_read(rows):
@@ -235,12 +300,13 @@ def ttft_read(rows):
 def decode_only_read(record):
     window = (record or {}).get('decode_only') or {}
     rates = window.get('stream_rates_tokens_per_s') or ()
-    return dict(streams=len(rates), per_stream_tok_s=round(sum(rates) / len(rates), 2) if rates else None, aggregate=window.get('aggregate_tokens_per_s'), gap_ms_p50=window.get('gap_ms_p50'), gap_ms_p99=window.get('gap_ms_p99'))
+    return dict(streams=len(rates), per_stream_tok_s=round(sum(rates) / len(rates), 2) if rates else None, aggregate=window.get('aggregate_tokens_per_s'), gaps=gap_fields(window))
 
 
 def load_json(path):
     try:
-        return json.load(open(path))
+        with open(path) as handle:
+            return json.load(handle)
     except (OSError, ValueError):
         return None
 
@@ -257,10 +323,14 @@ def read_arm(root, label, rows, runs, yield_on):
     turns = load_json('%s/arm-%s.json.turns.json' % (root, label))
     if turns is not None:
         origin = record['replay_start_s']
+        out['read_timeouts'] = sum(1 for t in turns if 'timeout' in (t.get('error') or '').lower() or 'timed out' in (t.get('error') or '').lower())
         stamped = stamp_turns(turns, origin)
         warmup = (record.get('replay_config') or {}).get('WARMUP', 0)
         read = classify(stamped, runs, origin + warmup, yield_on)
         read['decode'] = decode_over(stamped, read['bulks'], origin)
+        config = record.get('replay_config') or {}
+        read['serving'] = serving_reads(stamped, read.pop('live_bulks'), origin, config.get('WARMUP', 0), config.get('DURATION', 0))
+        read['serving']['rate_retention']['beside_native_bulks'] = read['decode']['decode_vs_fixed']    # one number for one thing: the gate's
         read['returner_first_output_s'] = dict(all=ttft_read(read['served']), up_to_1000=ttft_read([s for s in read['served'] if s['new'] <= 1000]), held_stock=ttft_read(read['held']))
         read['summary'] = record.get('replay_summary')
         read['bulks'] = [dict(t=b['t'], prompt=b['prompt_tokens'], ttft=round(b['ttft'], 2), chunks=b['run']['chunks']) for b in read['bulks']]
@@ -282,6 +352,8 @@ def verdict(arms, death, fatal):
             continue
         if record.get('replay_still_open'):
             fail.append('hang: %s has %d turns still open' % (label, len(record['replay_still_open'])))
+        elif arm.get('read_timeouts'):
+            fail.append('hang: %s has %d turns whose read timed out' % (label, arm['read_timeouts']))
         elif record.get('complete') is not True:
             inc.append('incomplete: %s: %s' % (label, ','.join(record.get('reasons') or ['no-reason'])))
     on = arms[ON]
@@ -313,7 +385,8 @@ def report(root):
     rows, fatal = read_log(root + '/engine-stream.log')
     err = root + '/engine-stream.err'
     if os.path.exists(err):
-        fatal += [line[:300].rstrip() for line in open(err, errors='replace') if 'OutOfMemoryError' in line or 'FLASH_S5_WORKER_FAILURE' in line]
+        with open(err, errors='replace') as handle:
+            fatal += [line[:300].rstrip() for line in handle if 'OutOfMemoryError' in line or 'FLASH_S5_WORKER_FAILURE' in line]
     runs = chunk_runs(rows)
     arms = {label: read_arm(root, label, rows, runs, label != OFF) for label in ARMS}
     death = (load_json(root + '/engine-death-scan.json') or {}).get('verdict')
@@ -337,9 +410,14 @@ def report(root):
     summaries = {k: (arms[k].get('read') or {}).get('summary') or {} for k in (ON, OFF)}
     for name in ('turns_per_hour', 'turn_s_p50', 'turn_s_p95', 'append_ttft_p50', 'append_ttft_p95', 'fresh_ttft_p50', 'decode_tps_p50', 'decode_tps_p5', 'output_tokens_per_s', 'prefix_hit_rate_appends', 'warm_turns', 'errors', 'incomplete'):
         lines.append('REPLAY %s: cmp %s ctl %s, cmp/ctl %s' % (name, summaries[ON].get(name), summaries[OFF].get(name), ratio(summaries[ON].get(name), summaries[OFF].get(name))))
+    served_on, served_off = on.get('serving') or {}, off.get('serving') or {}
+    for name, text in (('rate_retention', 'RATE RETENTION'), ('tail_gaps_ms', 'TAIL GAPS ms'), ('return_turn_first_output_s', 'RETURN-TURN FIRST OUTPUT s'), ('completed_valid_turns', 'COMPLETED VALID TURNS'), ('decode_debt', 'DECODE DEBT, delivered output against the reference'), ('prefill_duration_s', 'PREFILL DURATION s, apart from the debt')):
+        lines.append('%s: cmp %s; ctl %s' % (text, json.dumps(served_on.get(name), sort_keys=True), json.dumps(served_off.get(name), sort_keys=True)))
     one = decode_only_read(arms['dec1.g2-live-0'].get('record'))
     eight = decode_only_read(load_json(root + '/arm-decode-am1.json'))
     lines.append('ONE STREAM decode only: %s; decode-am1, eight: %s' % (json.dumps(one, sort_keys=True), json.dumps(eight, sort_keys=True)))
+    sm_window = ((arms['sm.g2-live-0'].get('record') or {}).get('client_basis') or {}).get('decode_window') or {}
+    lines.append('SM, frozen shape: tail gaps ms beside the bulk %s; first output of its returners above; completed %s' % (json.dumps(gap_fields(sm_window), sort_keys=True), (arms['sm.g2-live-0'].get('record') or {}).get('complete')))
     for reason in reasons:
         lines.append('REASON ' + reason)
     for line in fatal[:3]:
