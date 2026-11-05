@@ -1041,7 +1041,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 596,
+ "expected_tests": 606,
  "label": "compose-4",
  "overlay_definitions": {
   "core/scheduler.py": [
@@ -1408,7 +1408,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "8deedbe0080a0cc97234ef32e6636c2ffe738c36",
+ "source_commit": "efc81c3ed8620dc2b598e6321582d8ad409d1b45",
  "source_paths": [
   "A\tharness/a1_trunk_arms.py",
   "A\tharness/a1_trunk_gate.py",
@@ -1437,6 +1437,7 @@
   "A\tharness/fixtures/attn_meta_post_read/arm-decode-am0.json",
   "A\tharness/fixtures/attn_meta_post_read/arm-decode-am1.json",
   "A\tharness/fixtures/attn_meta_post_read/engine-stream.log.xz",
+  "A\tharness/fixtures/compose4_declared_20261105_0422.json",
   "A\tharness/fixtures/native43_engine_death_h/PROVENANCE.json",
   "A\tharness/fixtures/native43_engine_death_h/startup-stall-engine-stream.log",
   "A\tharness/inwait_arms.py",
