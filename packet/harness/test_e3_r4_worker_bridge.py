@@ -1924,7 +1924,7 @@ class ConstructionTests(unittest.TestCase):
         }
         with patch.object(native_startup, 'install_worker_native',
                           lambda *a, **kw: native), \
-             patch.object(lane_chunk, 'LaneChunkFactory', lambda runner: fake_factory), \
+             patch.object(lane_chunk, 'LaneChunkFactory', lambda runner, chunk_tokens=1024: fake_factory), \
              patch('lane_dispatch.LaneDispatcher', StartupDispatcher), \
              patch.dict(sys.modules, modules):
             dispatcher = s5_startup.install_native_lane(
