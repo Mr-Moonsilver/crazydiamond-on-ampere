@@ -1,4 +1,4 @@
-"""q18a-compose-hold box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, three pairs of short replay arms, no tail). One budget for the watchdog and the draft, relative to the run's own start only.
+"""q18a-compose-residue box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, three pairs of short replay arms, no tail). One budget for the watchdog and the draft, relative to the run's own start only.
 
 hold (lead, 5 Nov 23:00): a lean run, about 30 min nominal, its hard cap at most 1.5x nominal, cleanup included. The entry limits come from the nominal walls at 1.5x, not from the worst-case caps (those sum past the cap); a step that overruns meets the budget's TERM, whose path is the clean stop (tmp/decode-phase/STOP-dnr.md).
 

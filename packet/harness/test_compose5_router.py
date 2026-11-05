@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_compose_hold_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_compose_residue_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SHORT = dict(T.REPLAY, AGENTS=2, DURATION=0.4, WARMUP=0.0, START_MIN=60000, START_MAX=60000, TOOL_MIN=0.01, TOOL_MAX=0.02)
@@ -121,7 +121,7 @@ class ArmEnd(a1r.ArmEnd):
         self.assertEqual(len(record['decode_only']['stream_rates_tokens_per_s']), 1)
 
     async def test_the_replay_arm_keeps_its_turns_beside_the_record_with_its_seed(self):
-        for sel, index, seed in (('ny', 0, 1), ('nw', 1, 2)):
+        for sel, index, seed in (('nw', 0, 1), ('nr', 1, 2)):
             with self.subTest(sel):
                 rc_, record, actions, _served, out = await self.arm(sel, index=index)
                 name = T.label(sel, 2, 'live', index)
@@ -135,6 +135,12 @@ class ArmEnd(a1r.ArmEnd):
                 self.assertEqual(record['inwait']['bound_acknowledged'], T.by_label()[name]['chunk_bound'])
                 self.assertEqual((record['inwait']['hold_requested'], record['inwait']['hold_acknowledged']), (T.NATIVE_HOLD[sel],) * 2)
                 self.assertEqual(self.driver.controller.native_hold_s, T.NATIVE_HOLD[sel])
+                self.assertEqual((record['inwait']['residue_requested'], record['inwait']['residue_acknowledged']), (T.NATIVE_RESIDUE[sel],) * 2)
+                self.assertEqual(self.driver.controller.native_residue, T.NATIVE_RESIDUE[sel])
+                # the real driver's status, through the real box: the decline record and its coverage counter reach the arm's record
+                for status in [s for s in record['statuses'] if s['label'] in ('entry', 'after')]:
+                    self.assertEqual(status['append_yield']['declines']['coverage']['schema'], 's5-prefill-coverage/1', status['label'])
+                self.assertEqual(record['statuses'][-1]['append_yield']['declines']['residue']['on'], T.NATIVE_RESIDUE[sel])
                 header, *turns = [json.loads(line) for line in Path(str(out) + '.turns.jsonl').read_text().splitlines()]
                 self.assertEqual((header['header'], header['label'], header['replay_start_s']), (True, name, record['replay_start_s']))
                 self.assertEqual((header['replay_config']['SEED'], record['replay_config']['SEED']), (seed, seed))

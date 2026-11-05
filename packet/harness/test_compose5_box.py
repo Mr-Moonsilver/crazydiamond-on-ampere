@@ -20,7 +20,7 @@ import test_compose4_box as tb
 
 tam, tap, ta1 = tb.tam, tb.tap, tb.ta1
 SM, DEC1, CMP, NY = rule.SM, 'dec1.g2-live-0', rule.ON, rule.OFF      # the rule's labels: compose-5's, for its own suites; dnr's table has no cmp
-NW, NY1, NW1 = 'nw.g2-live-0', 'ny.g2-live-1', 'nw.g2-live-1'
+W0, R0, W1, R1 = 'nw.g2-live-0', 'nr.g2-live-0', 'nw.g2-live-1', 'nr.g2-live-1'     # this table: nw the hold, nr the hold with the residue
 PAIRS = rule.PRICE_PAIRS
 
 
@@ -70,20 +70,21 @@ class JournalAgainstRecord(UnderThisTable, tb.JournalAgainstRecord):
 
 class Table(unittest.TestCase):
     def test_the_order(self):
-        self.assertEqual(T.labels()[:6], [SM, DEC1, NY, NW, NW1, NY1])
+        self.assertEqual(T.labels()[:6], [SM, DEC1, W0, R0, R1, W1])
         self.assertEqual(len(T.labels()), 8)
-        self.assertEqual(T.labels()[6:8], ['ny.g2-live-2', 'nw.g2-live-2'])
+        self.assertEqual(T.labels()[6:8], ['nw.g2-live-2', 'nr.g2-live-2'])
 
     def test_each_pair_differs_in_the_plan_alone_and_shares_a_seed(self):
         rows = T.by_label()
-        for on, off, seed in tuple(('nw.g2-live-%d' % i, 'ny.g2-live-%d' % i, i + 1) for i in range(3)):
-            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'label', 'native_hold', 'selection'], (on, off))
+        for on, off, seed in tuple(('nr.g2-live-%d' % i, 'nw.g2-live-%d' % i, i + 1) for i in range(3)):
+            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'label', 'native_residue', 'selection'], (on, off))
             self.assertEqual((rows[on]['chunk_bound'], rows[off]['chunk_bound']), ([52624, 1024], [52624, 1024]))
-            self.assertEqual((rows[on]['native_hold'], rows[off]['native_hold']), (T.HOLD_S, 0))
+            self.assertEqual((rows[on]['native_hold'], rows[off]['native_hold']), (T.HOLD_S, T.HOLD_S))
+            self.assertEqual((rows[on]['native_residue'], rows[off]['native_residue']), (1, 0))
             self.assertEqual((T.replay_config(rows[on])['SEED'], T.replay_config(rows[off])['SEED']), (seed, seed))
 
     def test_a_replays_config_is_compose_4s_but_for_the_seed(self):
-        row = T.by_label()[NW1]
+        row = T.by_label()[W1]
         self.assertEqual({k: v for k, v in T.replay_config(row).items() if T4.REPLAY[k] != v}, dict(SEED=2, DURATION=90.0, WARMUP=0.0, START_MIN=20000, START_MAX=40000), 'hold: lean arms, smaller fresh prompts')
         self.assertEqual(T4.REPLAY['SEED'], 1, "the table's own stays as it is")
 
@@ -96,8 +97,8 @@ class Table(unittest.TestCase):
 
     def test_compose_4s_ctl_is_the_base(self):
         c4 = T4.by_label()['ctl.g2-live-0']
-        row = T.by_label()[NY]
-        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'label', 'native_hold', 'reserved_cap', 'score_warm', 'selection'])
+        row = T.by_label()[W0]
+        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'label', 'native_hold', 'native_residue', 'reserved_cap', 'score_warm', 'selection'])
         self.assertEqual((row['chunk_bound'], row['reserved_cap'], row['yield_on'], row['ple_private']), ([52624, 1024], False, False, False))
 
     def test_the_replay_and_the_ceiling_are_compose_4s(self):
@@ -105,20 +106,23 @@ class Table(unittest.TestCase):
         self.assertEqual({k for k in T.REPLAY if T.REPLAY[k] != T4.REPLAY[k]}, {'DURATION', 'WARMUP', 'START_MIN', 'START_MAX'}, 'hold: lean arms')
         self.assertEqual(T4.REPLAY['DURATION'], 1080.0, "compose-4's own stays as it is")
 
-    def test_the_hold_is_on_the_nw_arms_alone(self):
-        self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, {r['label']: T.HOLD_S for r in T.arms() if r['c1'] == 'nw'})
-        self.assertEqual(len([r for r in T.arms() if r['native_hold']]), 3)
+    def test_the_hold_is_on_every_replay_and_the_residue_on_nr_alone(self):
+        self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, {r['label']: T.HOLD_S for r in T.arms() if r['kind'] == 'replay'})
+        self.assertEqual(len([r for r in T.arms() if r['native_hold']]), 6)
+        self.assertEqual({r['label'] for r in T.arms() if r['native_residue']}, {r['label'] for r in T.arms() if r['c1'] == 'nr'})
+        self.assertEqual(len([r for r in T.arms() if r['native_residue']]), 3)
         self.assertEqual(T.MAX_PROMPT_TOKENS, 135000)
         self.assertEqual((T.RULE_PREFILL_TOK_S, T.RULE_DECODE_VS_FIXED, T.RULE_MIN_NATIVE_BULKS), (T4.RULE_PREFILL_TOK_S, T4.RULE_DECODE_VS_FIXED, T4.RULE_MIN_NATIVE_BULKS))
 
     def test_a_replays_request_count_is_in_its_record(self):
-        for label in (NY, NW, NW1, NY1):
+        for label in (W0, R0, W1, R1):
             self.assertIsNone(T.by_label()[label]['generations'])
 
     def test_a_matched_off_only_for_the_on_arms(self):
         rows = T.by_label()
-        self.assertEqual(T.matched_off(rows[NW1]), NY1)
-        self.assertEqual(T.matched_off(rows[NW]), NY)
+        self.assertEqual(T.matched_off(rows[R1]), W1)
+        self.assertEqual(T.matched_off(rows[R0]), W0)
+        self.assertIsNone(T.matched_off(rows[W0]))
         self.assertIsNone(T.matched_off(rows[SM]))
 
 
@@ -158,7 +162,7 @@ class ReplaySeed(unittest.TestCase):
 
     def test_each_index_gets_its_seed_and_the_table_is_put_back(self):
         saved = T.REPLAY
-        for label, seed in ((NY, 1), (NW, 1), (NW1, 2), (NY1, 2)):
+        for label, seed in ((W0, 1), (R0, 1), (W1, 2), (R1, 2)):
             seen = self.go(label)
             self.assertEqual((seen['cfg']['SEED'], seen['header']['SEED']), (seed, seed), label)
         self.assertIs(T.REPLAY, saved)
@@ -173,7 +177,7 @@ class Smoke(unittest.TestCase):
         rec = ta1.record_of(row)
         rec.update(ple_private=dict(counters=dict(scopes={'0': 9, '1': 9})), score_warm=dict(counters=dict(allocs={str(k): 1 for k in range(4)})), reserved_cap=dict(requested=False, select={str(k): dict(after=dict(reserved_cap=dict(cap_bytes=0, flushes=0, fraction=0.0, selected=False))) for k in range(4)}, counters=dict(flushes={str(k): 0 for k in range(4)})),
                    cow_host_filter=dict(requested=True, counters=dict(kept={str(k): 0 for k in range(4)}, skipped={str(k): 37 for k in range(4)}, unfiltered={str(k): 0 for k in range(4)})))
-        rec.setdefault('inwait', {}).update(exact_acknowledged=True, bound_requested=[52624, 1024], bound_acknowledged=[52624, 1024], hold_requested=0, hold_acknowledged=0)
+        rec.setdefault('inwait', {}).update(exact_acknowledged=True, bound_requested=[52624, 1024], bound_acknowledged=[52624, 1024], hold_requested=0, hold_acknowledged=0, residue_requested=0, residue_acknowledged=0)
         rec.setdefault('progress_delta', {})['chunks'] = 40
         rec.setdefault('fresh', {})['prompt_tokens_observed'] = 65445
         return rec
@@ -203,6 +207,11 @@ class Smoke(unittest.TestCase):
         self.assert_stops(lambda r: r['inwait'].update(hold_acknowledged=None), 'smoke-native-hold-not-acknowledged')
         self.assert_stops(lambda r: r['inwait'].update(hold_acknowledged=600), 'smoke-native-hold-not-acknowledged')
         self.assert_stops(lambda r: r['inwait'].pop('hold_acknowledged'), 'smoke-native-hold-not-acknowledged')
+
+    def test_the_residue_not_acknowledged_stops_the_table(self):
+        self.assert_stops(lambda r: r['inwait'].update(residue_acknowledged=None), 'smoke-native-residue-not-acknowledged')
+        self.assert_stops(lambda r: r['inwait'].update(residue_acknowledged=1), 'smoke-native-residue-not-acknowledged')
+        self.assert_stops(lambda r: r['inwait'].pop('residue_acknowledged'), 'smoke-native-residue-not-acknowledged')
 
     def test_a_launch_that_fell_back_to_1024_stops_the_table(self):
         # compose-4's smoke at 1024: 71 chunks, its 66 and the 5 of its returners and append. That's the control: under b13, with the same 5, 45.
@@ -431,8 +440,8 @@ class BoxBinding(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             row, live, play = go('sm', 0)
             self.assertEqual((row['label'], row['yield_on'], row['index'], live, play), (SM, True, 0, True, False))
-            row, live, play = go('ny', 0)
-            self.assertEqual((row['label'], row['yield_on'], row['ple_private'], live, play), (NY, False, False, False, True))
+            row, live, play = go('nw', 0)
+            self.assertEqual((row['label'], row['yield_on'], row['ple_private'], live, play), (W0, False, False, False, True))
 
     def test_the_grade_names_this_run_and_reads_every_arm(self):
         grade = Grade()
@@ -441,16 +450,30 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-compose-hold'))
+        self.assertTrue(text.startswith('# q18a-compose-residue'))
         self.assertIn('compose5_rule.py', text)
+
+
+def coverage(native=0, stock=None, idle_stock=None, errors=0, steps=0):
+    """The engine's counter as decline_record carries it (scheduler_hooks.PrefillCoverage.record), cumulative."""
+    rows = dict(live=dict(native=dict(plan=native) if native else {}, stock=dict(stock or {})), idle=dict(native={}, stock=dict(idle_stock or {})))
+    return dict(schema=box.COVERAGE_SCHEMA, rows=rows, requests=rows, steps=steps, errors=errors, open_native=0)
+
+
+def with_coverage(rec, start, end):
+    rec['statuses'] = [dict(label='entry', append_yield=dict(declines=dict(coverage=start)))] + list(rec.get('statuses') or ()) + [
+        dict(label='after', append_yield=dict(counters={}, declines=dict(coverage=end)))]
+    return rec
 
 
 class Grade(unittest.TestCase):
     def records(self):
         out = []
-        for row in T.arms():
+        for k, row in enumerate(T.arms()):
             rec = dict(ta1.record_of(dict(row)), schema=box.ARM_SCHEMA, kind=row['kind'], label=row['label'])
-            rec['inwait'] = dict(rec.get('inwait') or {}, bound_requested=row['chunk_bound'], bound_acknowledged=row['chunk_bound'], hold_requested=row['native_hold'], hold_acknowledged=row['native_hold'])
+            rec['inwait'] = dict(rec.get('inwait') or {}, bound_requested=row['chunk_bound'], bound_acknowledged=row['chunk_bound'], hold_requested=row['native_hold'], hold_acknowledged=row['native_hold'],
+                                 residue_requested=row['native_residue'], residue_acknowledged=row['native_residue'])
+            with_coverage(rec, coverage(1000 * k, steps=10 * k), coverage(1000 * k + 900, steps=10 * k + 9))
             out.append(rec)
         return ta1.tbox.decode_records() + out
 
@@ -481,24 +504,87 @@ class Grade(unittest.TestCase):
 
     def test_a_cap_a_rank_says_is_selected_fails_that_arm(self):
         arms = self.records()
-        next(a for a in arms if a.get('label') == NW)['reserved_cap'] = dict(requested=False, select={str(k): dict(after=dict(reserved_cap=dict(cap_bytes=1, selected=True))) for k in range(4)})
-        self.assertIn(NW + ':reserved-cap-selected', self.grade_of(arms)['failures'])
-        self.assertNotIn(NY + ':reserved-cap-selected', self.grade_of(arms)['failures'])
+        next(a for a in arms if a.get('label') == R0)['reserved_cap'] = dict(requested=False, select={str(k): dict(after=dict(reserved_cap=dict(cap_bytes=1, selected=True))) for k in range(4)})
+        self.assertIn(R0 + ':reserved-cap-selected', self.grade_of(arms)['failures'])
+        self.assertNotIn(W0 + ':reserved-cap-selected', self.grade_of(arms)['failures'])
 
     def test_a_missing_arm_is_inc(self):
-        arms = [a for a in self.records() if a['label'] != NY1]
+        arms = [a for a in self.records() if a['label'] != R1]
         result = self.grade_of(arms)
         self.assertEqual(result['verdict'], 'INC')
-        self.assertIn(NY1 + ':no-arm-record', result['missing'])
+        self.assertIn(R1 + ':no-arm-record', result['missing'])
 
     def test_either_off_arm_that_yielded_fails(self):
-        for label in (NY, NW, NW1, NY1):
+        for label in (W0, R0, W1, R1):
             with self.subTest(label):
                 arms = self.records()
                 off = next(a for a in arms if a['label'] == label)
                 off['statuses'][-1]['append_yield']['counters'] = dict(selected=9)
                 off['statuses'][-1]['label'] = 'after'
                 self.assertIn(label + ':yield-off-selected-a-yield', self.grade_of(arms)['failures'])
+
+
+class Coverage(unittest.TestCase):
+    """The operator's rule on the residue arms, from the engine's counter in the status rows (scheduler_hooks.PrefillCoverage)."""
+    grade = Grade()
+
+    def arms_with(self, label, *, stock=None, errors=0, drop=False):
+        """Counts added inside this arm's window: its 'after' and every later status (the counter is cumulative)."""
+        arms = self.grade.records()
+        rec = next(a for a in arms if a.get('label') == label)
+        later = [rec['statuses'][-1]] + [s for a in arms if a.get('label') in T.labels()[T.labels().index(label) + 1:] for s in a['statuses']]
+        for status in later:
+            cov = ((status.get('append_yield') or {}).get('declines') or {}).get('coverage')
+            if cov is not None:
+                cov['rows']['live']['stock'] = dict(stock or {})
+                cov['errors'] += errors
+        if drop:
+            rec['statuses'][0]['append_yield'].pop('declines')
+        return arms
+
+    def test_whole_native_passes_and_the_share_is_one(self):
+        result = self.grade.grade_of(self.grade.records())
+        self.assertEqual(result['verdict'], 'PASS', result['failures'])
+        self.assertEqual(result['coverage'][R0]['live_native_share'], 1.0)
+        self.assertEqual(result['coverage'][R0]['to'], 'next-entry')
+        self.assertEqual(result['coverage']['nr.g2-live-2']['to'], 'after')
+        self.assertEqual(result['coverage'][R0]['rows']['live']['native'], {'plan': 1000})
+
+    def test_a_stock_row_with_a_decoder_live_fails_a_residue_arm_by_site(self):
+        result = self.grade.grade_of(self.arms_with(R0, stock={'no-seam': 3}))
+        self.assertEqual(result['verdict'], 'FAIL')
+        self.assertIn(R0 + ':stock-prefill-with-decoder-live', result['failures'])
+        self.assertEqual(result['coverage'][R0]['rows']['live']['stock'], {'no-seam': 3})
+
+    def test_the_handback_row_fails_by_its_own_name(self):
+        result = self.grade.grade_of(self.arms_with(R1, stock={'handback': 12}))
+        self.assertEqual([f for f in result['failures'] if f.startswith(R1)], [R1 + ':handback-row-with-decoder-live'])
+
+    def test_the_hold_arm_is_read_not_failed(self):
+        result = self.grade.grade_of(self.arms_with(W0, stock={'plan-shared': 500}))
+        self.assertEqual(result['verdict'], 'PASS', result['failures'])
+        self.assertEqual(result['coverage'][W0]['live_native_share'], round(1000 / 1500, 6))
+
+    def test_counter_errors_or_no_counter_fail_any_replay_arm(self):
+        self.assertIn(W1 + ':coverage-errors', self.grade.grade_of(self.arms_with(W1, errors=1))['failures'])
+        self.assertIn(R0 + ':coverage-not-read', self.grade.grade_of(self.arms_with(R0, drop=True))['failures'])
+
+    def test_a_residue_the_engine_did_not_acknowledge_fails(self):
+        for row in T.arms():
+            arms = self.grade.records()
+            next(a for a in arms if a.get('label') == row['label'])['inwait']['residue_acknowledged'] = None
+            self.assertIn(row['label'] + ':native-residue-not-acknowledged', self.grade.grade_of(arms)['failures'])
+
+    def test_a_count_that_went_down_is_not_read(self):
+        self.assertIsNone(box.coverage_delta(dict(append_yield=dict(declines=dict(coverage=coverage(10)))),
+                                             dict(append_yield=dict(declines=dict(coverage=coverage(5))))))
+
+    def test_the_status_row_keeps_the_decline_record(self):
+        reply = dict(append_yield=dict(schema='s5-append-yield/1', declines=dict(coverage=coverage(7))), route='full')
+        with box._bound():
+            row = box4.status_row('entry', reply)
+        self.assertEqual(row['append_yield']['declines']['coverage']['rows']['live']['native'], {'plan': 7})
+        self.assertNotIn('declines', box4.status_row('entry', reply)['append_yield'], "compose-4's own stays as it is")
 
 
 class Reads(UnderThisTable):

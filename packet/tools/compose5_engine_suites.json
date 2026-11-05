@@ -26,7 +26,9 @@
   "test_compose5_declines",
   "test_compose5_faults",
   "test_compose5_bound",
-  "test_compose5_router"
+  "test_compose5_router",
+  "test_native_hold",
+  "test_coverage_residue"
  ],
  "refusal_tests": [],
  "why": {}
