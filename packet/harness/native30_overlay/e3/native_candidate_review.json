@@ -1875,7 +1875,7 @@
     "compose4_arms.py": "225f15f7d7b6fd5429633db560d4656af1dd0d3f510c31ece57aceb04bc68781",
     "compose4_gate.py": "7fda1de7a8fbd7f3dc3ce5c22379ccfab993b297fba151a168df57c2a9e40e10",
     "compose4_replay.py": "8ec5dae214150a2762a0fb60b3b650f285b4c2db3f1e7620121c4745bcf750c9",
-    "compose4_rule.py": "217d54eb8d050000d25b7763c5e5f56ef99bcd7ae1043df3a170d90d62e81a27",
+    "compose4_rule.py": "55ea85faf2cdcc18e2ba64160af0ab16c5488b0210b62c936684f2c074892b0f",
     "cost_budget_grade.py": "e0c57ff457df6aeb237e64dadbd3c65472f772f39c448010807d8ec6c5c234bd",
     "cov_gate.py": "3afd39313dd4d6e84e3e4dc0fa5ae2c511b2e4a30426684acb682d8c2decab40",
     "cow_invariants.py": "d2f4357856c9bbc754918f446920c83e7a961661e2690855ffbaa1a2c90db0e6",
