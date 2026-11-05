@@ -3012,7 +3012,7 @@
     "test_e3_q17b_full_queue.py": "f5a6cbd99e8ac4d7adf2bab6b2b4d5e3aba025edee91d49d23cdc761abc5176c",
     "test_e3_q18a_guards.py": "2564a150dc790942246f65ff93b4f76bccc6083731e2821d2e3cf62f6f263f2b",
     "test_e3_qsa_driver.py": "6e326b0db68dbdc97233c3551d2517e07f82cd7c5037b18744519ff4511b3ce4",
-    "test_e3_r4_worker_bridge.py": "46ee084e1e75a0a423befe61c0beab8f2c4c491ad3c442d01955a51521c59808",
+    "test_e3_r4_worker_bridge.py": "fc86bee7a39b81cea489cbb6100e1e0fe697cfc288a2d197b0d750698b61dbce",
     "test_e3_replay_observer.py": "283d9836dcaacd0c36e6436664526b6e25b906fc46d364ab11cd257e23431089",
     "test_e3_report_validation_cost.py": "822f535ea2a52834fe14694f0cd9b04f2ffff916a1547d4118211917ce22e583",
     "test_e3_route_invariant.py": "a96d8a23d61428abd274e4ddedc5bd648c723935dad0ee3f6712fe8fc3f79b6e",
