@@ -341,7 +341,7 @@ class AutoArmPolicy:
         start, end = request.num_computed_tokens, request.num_tokens - 1
         if type(start) is not int or start <= 0 or end - start < 1:
             return None
-        cap = min(c.chunk_tokens, s.max_num_scheduled_tokens)
+        cap = native_chunk_cap(c.chunk_tokens, s.max_num_scheduled_tokens)    # the cap admission plans with
         def split(position, limit):
             projected = request if position == start else _ProjectedPrefillRequest(request, position)
             return c._aligned_split(s, projected, limit)

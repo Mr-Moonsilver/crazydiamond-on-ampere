@@ -81,7 +81,7 @@ class TurnSink:
         self.handle.close()
 
 
-def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, records, lock, *, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, sink=None):
+def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, records, lock, *, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, sink=None, faults=None):
     rng = draws(cfg['SEED'], agent)
     session, history_tokens, messages, salt = 0, 0, [], None
     append_draw = None     # a drawn append that rolled the session is kept for the next: the sequence of draws doesn't depend on the roll
@@ -114,18 +114,38 @@ def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, record
         with lock:
             records.append(record)
             if sink is not None:
-                sink.write(record)
+                try:
+                    sink.write(record)
+                except Exception as exc:  # noqa: BLE001 - a turn the journal doesn't hold fails the arm; the load goes on (Codex P1)
+                    if faults is not None:
+                        faults['journal_write_failures'] += 1
+                        faults['kinds'].add(type(exc).__name__)
+                    else:
+                        raise
         pause = rng['pause'].uniform(cfg['TOOL_MIN'], cfg['TOOL_MAX'])
         sleep(max(0.0, min(pause, t_end - clock())))
+
+
+def _guarded_agent(counts, guard, /, *args, **kwargs):
+    """Counts the agents that end normally. `still_open` only sees threads still alive, so a dead one looks finished (Codex P1)."""
+    try:
+        agent_loop(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - run() reads it as a death, and the arm fails on it
+        with guard:
+            counts['kinds'].add(type(exc).__name__)
+    else:
+        with guard:
+            counts['agents_finished'] += 1
 
 
 def run(url, model, key, run_id, label, *, cfg=None, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, finish_bound_s=FINISH_BOUND_S, sink=None):
     """The replay; (config, summary, turns, still_open). Same start spacing as agent_replay's."""
     cfg = dict(T.REPLAY if cfg is None else cfg)
     records, lock = [], threading.Lock()
+    faults = dict(journal_write_failures=0, agents_finished=0, kinds=set())
     origin = clock()
     t_end = origin + cfg['DURATION']
-    threads = [threading.Thread(target=agent_loop, args=(i, url, model, key, cfg, run_id, label, origin, t_end, records, lock), kwargs=dict(clock=clock, sleep=sleep, stream=stream, sink=sink), name='compose4-agent-%d' % i, daemon=True)
+    threads = [threading.Thread(target=_guarded_agent, args=(faults, lock, i, url, model, key, cfg, run_id, label, origin, t_end, records, lock), kwargs=dict(clock=clock, sleep=sleep, stream=stream, sink=sink, faults=faults), name='compose4-agent-%d' % i, daemon=True)
                for i in range(cfg['AGENTS'])]
     for thread in threads:
         thread.start()
@@ -137,6 +157,8 @@ def run(url, model, key, run_id, label, *, cfg=None, clock=time.monotonic, sleep
     with lock:
         turns = sorted(records, key=lambda r: r['t'])
     summary = ar.summarize(turns, cfg['WARMUP'], cfg['DURATION'])
+    with lock:
+        summary.update(journal_write_failures=faults['journal_write_failures'], agents_died=len(threads) - faults['agents_finished'] - len(still_open), fault_kinds=sorted(faults['kinds']))
     return cfg, summary, turns, still_open
 
 

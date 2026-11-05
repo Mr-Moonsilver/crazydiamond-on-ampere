@@ -125,6 +125,10 @@ def replay_arm(a, row, client, poll_client, *, run=None):
             record['reasons'].append('replay-turns-still-open:%d' % len(still_open))
         if summary.get('errors'):
             record['reasons'].append('replay-turn-errors:%d' % summary['errors'])
+        if summary.get('journal_write_failures'):
+            record['reasons'].append('replay-journal-write-failures:%d' % summary['journal_write_failures'])
+        if summary.get('agents_died'):
+            record['reasons'].append('replay-agents-died:%d' % summary['agents_died'])
         over = [t['prompt_tokens'] for t in turns if type(t.get('prompt_tokens')) is int and t['prompt_tokens'] > T.MAX_PROMPT_TOKENS]
         if over:
             record['reasons'].append('replay-prompt-over-the-ceiling:%d' % len(over))
