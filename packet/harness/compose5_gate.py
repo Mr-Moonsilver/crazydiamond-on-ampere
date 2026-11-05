@@ -24,7 +24,7 @@ PHASES.update({
     'read': GRADE_CAP_S,
 })
 WORST_CASE_SUM_S = sum(PHASES.values())
-BOX_BUDGET_S = 10800                                       # dnr: four replay arms have to enter; the 8700 of compose-5 stops at 3120 s, before the second pair
+BOX_BUDGET_S = 30000                                      # dnr: twenty replay arms have to enter, with 30 min of margin; compose-5's 8700 stops arms at 3120 s
 ACTIVE_S = BOX_BUDGET_S - CLEANUP_S
 ACTIVE_AND_CLEANUP = ACTIVE_S + CLEANUP_S
 ARM_RESERVE_S = FULL_IDLE_CAP_S + ARM_TIMEOUT_S + ARM_KILL_AFTER_S + INGRESS_CAP_S

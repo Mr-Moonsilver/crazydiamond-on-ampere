@@ -6,7 +6,7 @@ One launch, connections 32 and FLASH_S5_CHUNK_TOKENS=2048 for the whole run. Sel
   dec1  one standing stream, decode only, as compose-5
   ny    b13h under the replay, yield off, private PLE buffer off, as c4b's ctl
   n22   the same with c22h: 2048 rows below 22 Mamba blocks, 1024 from there
-Order: sm | decode-am1 | dec1 | ny n22 (seed 1, index 0) | n22 ny (seed 2, index 1) | the grade.
+Order: sm | decode-am1 | dec1 | ny n22 (seed 1, index 0) | n22 ny (seed 2, index 1) | ... ten pairs, the order alternating, each with its own seed | the grade.
 The reserved cap is off on every arm, every rank: a 2048 chunk peaks at 22378 MiB allocated outside the indexer, and only the indexer has an overdraft, so keep 512 (r1's cap 22287) can't hold it. dn, sc and dp8d ran 2048 the same way.
 Each arm's salt comes from its label, so no arm hits another's cache. 5f is out: no score_split, no stock_rescue.
 """
@@ -20,10 +20,11 @@ STANDING_DECODERS = _inwait.STANDING_DECODERS
 STANDING_GREEDY = _inwait.STANDING_GREEDY
 GREEDY_TEMPERATURE = _inwait.GREEDY_TEMPERATURE
 STANDING_SAMPLED = _inwait.STANDING_SAMPLED
-BAND1_INDEXES = (0, 1)
+PAIRS = 10                                         # one pair per index, one seed per pair (lead, 5 Nov: the night is ours, matched repeats, not a squeeze)
+BAND1_INDEXES = tuple(range(PAIRS))                # a replay has no band; sm, the one live arm, is index 0
 BAND_SIZE = _c4.BAND_SIZE
 SMOKE_ROW = ('core', 'sm', 'live', 0)
-ARM_TABLE = (SMOKE_ROW, ('core', 'dec1', 'live', 0), ('core', 'ny', 'live', 0), ('core', 'n22', 'live', 0), ('core', 'n22', 'live', 1), ('core', 'ny', 'live', 1))
+ARM_TABLE = (SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', index) for index in BAND1_INDEXES for sel in (('ny', 'n22') if index % 2 == 0 else ('n22', 'ny')))
 DECODE_ARMS = _inwait.DECODE_ARMS
 REFERENCE_ARM = _inwait.REFERENCE_ARM
 FIXED_REFERENCE_TOK_S = _inwait.FIXED_REFERENCE_TOK_S
@@ -54,7 +55,7 @@ ONE_STREAM_WINDOW_S = _c4.ONE_STREAM_WINDOW_S
 
 # The replay and the ceiling stay compose-4's, so c4b reads across (lead, 5 Nov 07:49: the ceiling stays 135,000 here).
 REPLAY = _c4.REPLAY
-REPLAY_SEEDS = {0: 1, 1: 2}                       # index 0 is c4b's and compose-5's seed; both arms of a pair get the same draws
+REPLAY_SEEDS = {index: index + 1 for index in BAND1_INDEXES}      # index 0 is c4b's and compose-5's seed; both arms of a pair get the same draws
 
 
 def replay_config(row):
@@ -151,7 +152,7 @@ def band1_glob():
 
 def check():
     names = labels()
-    assert names == ['sm.g2-live-0', 'dec1.g2-live-0', 'ny.g2-live-0', 'n22.g2-live-0', 'n22.g2-live-1', 'ny.g2-live-1'] and names[0] == COLD_ARM and labels('tail') == []
+    assert names[:2] == ['sm.g2-live-0', 'dec1.g2-live-0'] and len(names) == 2 + 2 * PAIRS and names[0] == COLD_ARM and labels('tail') == []
     assert set(KIND) == set(YIELD) == set(PLE_PRIVATE) == set(PLE_WITNESS) == set(PLAN) == set(SELECTIONS)
     assert REPLAY['START_MAX'] + PROMPT_SLACK_TOKENS < MAX_PROMPT_TOKENS, 'a fresh prompt fits under the ceiling'
     rows = by_label()
@@ -161,8 +162,8 @@ def check():
         assert on['chunk_bound'] == C22_BOUND and off['chunk_bound'] == B13_BOUND
         assert not on['yield_on'] and not off['yield_on'] and not on['ple_private'] and not off['ple_private'], "c4b's ctl"
     order = [r['label'] for r in rows.values() if r['kind'] == 'replay']
-    assert order == ['ny.g2-live-0', 'n22.g2-live-0', 'n22.g2-live-1', 'ny.g2-live-1'], 'ABBA, a crash on n22 keeps the first ny'
-    assert replay_config(rows[order[0]])['SEED'] == REPLAY['SEED'] and replay_config(rows[order[1]])['SEED'] == REPLAY['SEED'] and replay_config(rows[order[2]])['SEED'] == replay_config(rows[order[3]])['SEED'] != REPLAY['SEED']
+    assert order[:4] == ['ny.g2-live-0', 'n22.g2-live-0', 'n22.g2-live-1', 'ny.g2-live-1'] and len(order) == 2 * PAIRS, 'the order alternates; a crash on the first n22 keeps the first ny'
+    assert len(set(REPLAY_SEEDS.values())) == PAIRS and replay_config(rows[order[0]])['SEED'] == REPLAY['SEED'] and all(index < 10 for index in REPLAY_SEEDS), "one seed a pair, index 0 c4b's, one digit in a label"
     assert all(r['score_warm'] and not r['reserved_cap'] and r['exact_successor'] and r['allocator_flush'] for r in rows.values()), "5d's full less the cap on every arm"
     assert not any(r['ple_witness'] for r in rows.values()), 'no arm carries the witness'
     assert all(r['cow_host_filter'] and r['cow_fast'] for r in rows.values()), 'hf on every arm'

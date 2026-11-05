@@ -54,6 +54,8 @@ def chunk_assert(text, form):
 
 def draft(text):
     text = chunk_assert(text, ' == ')
+    # dnr: a replay arm doesn't read the workload, and index 2-9 would have named band 2's; one file for every index, the one sm has.
+    text = once(text, 'if [[ $_pair == [01] ]]; then _workload=', 'if [[ $_pair == [0-9] ]]; then _workload=')
     text = once(text, OLD_CORE, CORE)
     text = once(text, ARM_TEXT[0], ARM_TEXT[1])
     text = once(text, HEADER_ANCHOR, HEADER_NOTE + HEADER_ANCHOR)

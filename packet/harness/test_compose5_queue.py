@@ -216,8 +216,10 @@ class Budget(unittest.TestCase):
         self.assertNotRegex(source, r'import (time|datetime)')
         for key in ('nominal', 'slower'):
             est = gate.EXPECTED_RUNTIME_S[key]
-            self.assertEqual((est['not_run'], est['arms_entering']), ([], 7), key)
-        self.assertLess(gate.EXPECTED_RUNTIME_S['nominal']['total_min'], 100, 'about 97 min by the formula')
+            self.assertEqual((est['not_run'], est['arms_entering']), ([], 23), key)
+        self.assertLess(gate.EXPECTED_RUNTIME_S['nominal']['total_min'], 410, 'about 6.7 h by the formula')
+        self.assertGreaterEqual(gate.EXPECTED_RUNTIME_S['slower']['min_margin_s'], 1500, 'every arm enters with room')
+        self.assertLessEqual(gate.BOX_BUDGET_S, 30000, 'worst case inside the night, from a start at about 22:30 CET')
         self.assertIn('compose5_arms', gate.PHASES)
 
     def test_the_arm_timeout_holds_a_replay_and_its_finish_bound(self):
@@ -356,7 +358,7 @@ class QueueArgparse(unittest.TestCase):
         ARGPARSE_RECEIPTS[:] = rows
         self.assertEqual(SLOT_RECEIPTS, [])
         arm = next(a for _n, s, a, _f in calls if s == 'e3_compose5_box.py' and a.split()[0] == 'arm')
-        for label, (old, new) in (('arm-unknown-option', ('--control-timeout-s', '--control-timeout-sec')), ('arm-undeclared-selection', ('--c1 "${_c1#c1}"', '--c1 ps1')), ('arm-undeclared-round', ('--index "$_pair"', '--index 6'))):
+        for label, (old, new) in (('arm-unknown-option', ('--control-timeout-s', '--control-timeout-sec')), ('arm-undeclared-selection', ('--c1 "${_c1#c1}"', '--c1 ps1')), ('arm-undeclared-round', ('--index "$_pair"', '--index 16'))):
             with self.subTest(control=label):
                 self.assertEqual(arm.count(old), 1, label)
                 rc, words, err = bash_words(arm.replace(old, new), draft)

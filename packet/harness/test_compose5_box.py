@@ -70,11 +70,14 @@ class JournalAgainstRecord(UnderThisTable, tb.JournalAgainstRecord):
 
 class Table(unittest.TestCase):
     def test_the_order(self):
-        self.assertEqual(T.labels(), [SM, DEC1, NY, N22, N221, NY1])
+        self.assertEqual(T.labels()[:6], [SM, DEC1, NY, N22, N221, NY1])
+        self.assertEqual(len(T.labels()), 22)
+        self.assertEqual(T.labels()[6:8], ['ny.g2-live-2', 'n22.g2-live-2'])
+        self.assertEqual(T.labels()[-2:], ['n22.g2-live-9', 'ny.g2-live-9'])
 
     def test_each_pair_differs_in_the_plan_alone_and_shares_a_seed(self):
         rows = T.by_label()
-        for on, off, seed in ((N22, NY, 1), (N221, NY1, 2)):
+        for on, off, seed in tuple(('n22.g2-live-%d' % i, 'ny.g2-live-%d' % i, i + 1) for i in range(10)):
             self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'chunk_bound', 'label', 'selection'], (on, off))
             self.assertEqual((rows[on]['chunk_bound'], rows[off]['chunk_bound']), ([89056, 1024], [52624, 1024]))
             self.assertEqual((T.replay_config(rows[on])['SEED'], T.replay_config(rows[off])['SEED']), (seed, seed))
