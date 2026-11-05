@@ -406,7 +406,7 @@
     "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
     "queue": "q18a-compose-dnr: compose-4's queue with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
     "scope": "b13 and hf at 32 with the four lever tracks under the closed-loop replay, the yield priced by frozen pairs, against c1b's READY build, discovery mode; not a release assessment and not a numerics result",
-    "source_commit": "c1098497b78e9a76101be63d4af94ee17d1d0f4e"
+    "source_commit": "7ca72a15ab4ba4b01e0f817ff81a18b2a54be99e"
   },
   "control_counter_scope": {
     "basis": "exclusive EngineCore coordinator host-wall spans and successfully submitted RPC count",
