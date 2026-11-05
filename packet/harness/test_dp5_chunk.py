@@ -130,7 +130,15 @@ class Admission(unittest.TestCase):
 
     def test_a_prompt_under_the_chunk_goes_stock(self):
         import native_auto_arm
-        self.assertIn('end - start < max(MIN_NATIVE_ROWS, c.chunk_tokens)', Path(native_auto_arm.__file__).read_text())
+        # decode-phase hold moved the floor into _floor(): the same max with the hold off, the staged minimum with it on.
+        from types import SimpleNamespace as NS
+        self.assertIn('end - start < self._floor()', Path(native_auto_arm.__file__).read_text())
+        for chunk, want in ((1024, 32768), (2048, 32768), (40000, 40000)):
+            off = NS(controller=NS(chunk_tokens=chunk, minimum_stage_rows=64), _hold_limit=lambda: 0)
+            self.assertEqual(native_auto_arm.AutoArmPolicy._floor(off), max(native_auto_arm.MIN_NATIVE_ROWS, chunk), chunk)
+            self.assertEqual(native_auto_arm.AutoArmPolicy._floor(off), want)
+            on = NS(controller=NS(chunk_tokens=chunk, minimum_stage_rows=64), _hold_limit=lambda: 30)
+            self.assertEqual(native_auto_arm.AutoArmPolicy._floor(on), 64)
 
 
 class Ple(unittest.TestCase):
