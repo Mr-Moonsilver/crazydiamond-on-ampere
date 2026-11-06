@@ -21,6 +21,20 @@ import test_compose4_box as tb
 tam, tap, ta1 = tb.tam, tb.tap, tb.ta1
 SM, DEC1, CMP, NY = rule.SM, 'dec1.g2-live-0', rule.ON, rule.OFF      # the rule's labels: compose-5's, for its own suites; dnr's table has no cmp
 W0, R0, W1, R1 = 'ny.g2-live-0', 'nt.g2-live-0', 'ny.g2-live-1', 'nt.g2-live-1'     # this table: ny as dnr ran it, nr the hold with the residue
+# build-2b24: the table is one pair (nt.0 ny.0); W1/R1 are the second pair of TWO_PAIRS, under which the grade's own tests run
+# (the grade reads T.arms() at call time and is shape-generic: windows, the last arm to 'after', nr-first-to-last).
+TWO_PAIRS = (T.SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', i) for i in range(2) for sel in (('nt', 'ny') if i % 2 == 0 else ('ny', 'nt')))
+
+
+class TwoPairs(unittest.TestCase):
+    """build-2b24: the grade's tests over build-2b's two-pair shape (ABBA), patched in for the test only."""
+    def setUp(self):
+        super().setUp()
+        for name, value in (('ARM_TABLE', TWO_PAIRS), ('REPLAY_SEEDS', {0: 1, 1: 2}), ('BAND1_INDEXES', (0, 1)), ('INDEXES', (0, 1))):
+            patcher = mock.patch.object(T, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
 PAIRS = rule.PRICE_PAIRS
 
 
@@ -70,21 +84,22 @@ class JournalAgainstRecord(UnderThisTable, tb.JournalAgainstRecord):
 
 class Table(unittest.TestCase):
     def test_the_order(self):
-        self.assertEqual(T.labels(), [SM, DEC1, R0, W0, W1, R1], 'ABBA: nt ny ny nt')
+        self.assertEqual(T.labels(), [SM, DEC1, R0, W0], 'build-2b24: one pair, nt then ny')
 
     def test_each_pair_differs_in_the_plan_alone_and_shares_a_seed(self):
         rows = T.by_label()
-        for on, off, seed in tuple(('nt.g2-live-%d' % i, 'ny.g2-live-%d' % i, i + 1) for i in range(2)):
-            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'label', 'native_hold', 'native_residue', 'selection', 'yield_on'], (on, off))
+        for on, off, seed in tuple(('nt.g2-live-%d' % i, 'ny.g2-live-%d' % i, i + 1) for i in range(T.PAIRS)):
+            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'chunk_bound', 'label', 'native_hold', 'native_residue', 'selection', 'yield_on'], (on, off))
             self.assertEqual((rows[on]['yield_on'], rows[off]['yield_on']), (True, False), 'coverage-throughput: the yield on nt')
-            self.assertEqual((rows[on]['chunk_bound'], rows[off]['chunk_bound']), ([52624, 1024], [52624, 1024]))
+            self.assertEqual((rows[on]['chunk_bound'], rows[off]['chunk_bound']), ([97152, 1024], [52624, 1024]), 'build-2b24: b24 on nt, b13 on ny')
             self.assertEqual((rows[on]['native_hold'], rows[off]['native_hold']), (T.HOLD_S, 0))
             self.assertEqual((rows[on]['native_residue'], rows[off]['native_residue']), (1, 0))
             self.assertEqual((T.replay_config(rows[on])['SEED'], T.replay_config(rows[off])['SEED']), (seed, seed))
 
     def test_a_replays_config_is_compose_4s_but_for_the_seed(self):
-        row = T.by_label()[W1]
-        self.assertEqual({k: v for k, v in T.replay_config(row).items() if T4.REPLAY[k] != v}, dict(SEED=2, DURATION=480.0, WARMUP=0.0), "soak: dnr's turn mix, 480 s arms, every turn graded")
+        self.assertEqual(T.PAIRS, 1, 'build-2b24: one pair')
+        row = T.by_label()[W0]
+        self.assertEqual({k: v for k, v in T.replay_config(row).items() if T4.REPLAY[k] != v}, dict(DURATION=480.0, WARMUP=0.0), "soak: dnr's turn mix and seed 1, 480 s arms, every turn graded")
         self.assertEqual(T4.REPLAY['SEED'], 1, "the table's own stays as it is")
 
     def test_the_cap_and_the_warm_block_are_off_on_every_arm(self):
@@ -107,18 +122,17 @@ class Table(unittest.TestCase):
         self.assertEqual(T4.REPLAY['DURATION'], 1080.0, "compose-4's own stays as it is")
 
     def test_the_hold_and_the_residue_are_on_nr_alone(self):
-        self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, {R0: T.HOLD_S, R1: T.HOLD_S})
-        self.assertEqual({r['label'] for r in T.arms() if r['native_residue']}, {R0, R1})
+        self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, {R0: T.HOLD_S})
+        self.assertEqual({r['label'] for r in T.arms() if r['native_residue']}, {R0})
         self.assertEqual(T.MAX_PROMPT_TOKENS, 135000)
         self.assertEqual((T.RULE_PREFILL_TOK_S, T.RULE_DECODE_VS_FIXED, T.RULE_MIN_NATIVE_BULKS), (T4.RULE_PREFILL_TOK_S, T4.RULE_DECODE_VS_FIXED, T4.RULE_MIN_NATIVE_BULKS))
 
     def test_a_replays_request_count_is_in_its_record(self):
-        for label in (W0, R0, W1, R1):
+        for label in (W0, R0):
             self.assertIsNone(T.by_label()[label]['generations'])
 
     def test_a_matched_off_only_for_the_on_arms(self):
         rows = T.by_label()
-        self.assertEqual(T.matched_off(rows[R1]), W1)
         self.assertEqual(T.matched_off(rows[R0]), W0)
         self.assertIsNone(T.matched_off(rows[W0]))
         self.assertIsNone(T.matched_off(rows[SM]))
@@ -160,7 +174,7 @@ class ReplaySeed(unittest.TestCase):
 
     def test_each_index_gets_its_seed_and_the_table_is_put_back(self):
         saved = T.REPLAY
-        for label, seed in ((W0, 1), (R0, 1), (W1, 2), (R1, 2)):
+        for label, seed in ((W0, 1), (R0, 1)):
             seen = self.go(label)
             self.assertEqual((seen['cfg']['SEED'], seen['header']['SEED']), (seed, seed), label)
         self.assertIs(T.REPLAY, saved)
@@ -182,7 +196,7 @@ def memory(free=(1464, 1574, 1352, 1462), rss=40 << 20, grow=(0, 0, 0, 0), worke
                 rss_kib=rss, processes=7, top=[['python3', rss]], workers=rows, errors=[])
 
 
-class Soak(unittest.TestCase):
+class Soak(TwoPairs):
     """coverage-soak: a hang named, memory read at the traffic's start and end, growth flagged on nr."""
 
     def test_engine_memory_reads_nvidia_smi_and_docker_top(self):
@@ -309,7 +323,7 @@ class Soak(unittest.TestCase):
         self.assertEqual(result['failures'], [R0 + ':worker-rss-not-read'])
 
 
-class WorkerRss(unittest.TestCase):
+class WorkerRss(TwoPairs):
     """coverage-soak-fix (lead, 6 Nov 06:25): per Worker_PP RSS fails an nr arm at 256 MiB, or 32 B per native-append history token."""
 
     def grade(self, label=R1, grow=(0, 0, 0, 0), history=None, start=None):
@@ -391,7 +405,7 @@ class WorkerRss(unittest.TestCase):
         self.assertEqual(out['errors'], [])
 
 
-class BulkHoldGrade(unittest.TestCase):
+class BulkHoldGrade(TwoPairs):
     """coverage-throughput build-2b (lead, 6 Nov): a yielded bulk held at the positive frontier FAILs nt loudly, with its own line."""
     cov = property(lambda self: Coverage())
 
@@ -423,7 +437,7 @@ class BulkHoldGrade(unittest.TestCase):
         self.assertEqual([f for f in result['failures'] if f.startswith(W1)], [])
 
 
-class GeometryGrade(unittest.TestCase):
+class GeometryGrade(TwoPairs):
     """coverage-soak-fix: the geometry-tail class is native-served on nr, on its own line; without its native turns it fails."""
     cov = property(lambda self: Coverage())      # defined below this class
 
@@ -719,9 +733,11 @@ class BoxBinding(unittest.TestCase):
 
     def test_the_argparse_takes_this_tables_selections_and_refuses_the_old_control(self):
         with mock.patch.object(box4, 'run_arm', return_value=0) as arm, tempfile.TemporaryDirectory() as tmp:
-            args = ['arm', '--url', 'u', '--model', 'm', '--run-id', 'r', '--epoch', '1', '--c1', 'ny', '--size', '2', '--cohort', 'live', '--index', '1', '--workload', 'w', '--out', tmp + '/x.json']
+            args = ['arm', '--url', 'u', '--model', 'm', '--run-id', 'r', '--epoch', '1', '--c1', 'ny', '--size', '2', '--cohort', 'live', '--index', '0', '--workload', 'w', '--out', tmp + '/x.json']
             self.assertEqual(box.main(args), 0)
-            self.assertEqual((arm.call_args[0][0].c1, arm.call_args[0][0].index), ('ny', 1))
+            self.assertEqual((arm.call_args[0][0].c1, arm.call_args[0][0].index), ('ny', 0))
+            with self.assertRaises(SystemExit):
+                box.main(args[:15] + ['1'] + args[16:])        # build-2b24: no second pair
             with self.assertRaises(SystemExit):
                 box.main(args[:9] + ['nw'] + args[10:])
 
@@ -747,7 +763,7 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-compose-throughput-b2'))
+        self.assertTrue(text.startswith('# q18a-compose-throughput-b24'))
         self.assertIn('compose5_rule.py', text)
 
 
@@ -763,7 +779,7 @@ def with_coverage(rec, start, end):
     return rec
 
 
-class Grade(unittest.TestCase):
+class Grade(TwoPairs):
     def records(self):
         out = []
         for k, row in enumerate(T.arms()):
@@ -823,7 +839,7 @@ class Grade(unittest.TestCase):
                 self.assertIn(label + ':yield-off-selected-a-yield', self.grade_of(arms)['failures'])
 
 
-class Coverage(unittest.TestCase):
+class Coverage(TwoPairs):
     """The operator's rule on the residue arms, from the engine's counter in the status rows (scheduler_hooks.PrefillCoverage)."""
     grade = Grade()
 

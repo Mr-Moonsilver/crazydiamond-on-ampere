@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Derive the q18a-compose-throughput-b2 box scripts from q18a-compose-4's committed texts. Nothing a past queue ran is edited. Discovery mode.
+"""Derive the q18a-compose-throughput-b24 box scripts from q18a-compose-4's committed texts. Nothing a past queue ran is edited. Discovery mode.
 
 Declared deltas over compose-4's three texts, each by exact count:
-  names     q18a-compose-4 -> q18a-compose-throughput-b2 and every compose-4 name of the queue, records, box, gate and table -> compose5. The box imports compose-4's box, table and replay, so those three keep their names;
+  names     q18a-compose-4 -> q18a-compose-throughput-b24 and every compose-4 name of the queue, records, box, gate and table -> compose5. The box imports compose-4's box, table and replay, so those three keep their names;
   body      this table's core list; the arm and grade texts that name the arms;
   modules   compose-4's box and table added to the preflight's and the declaration's lists: compose-5's box binds its table over them;
   chunk     FLASH_S5_CHUNK_TOKENS=2048 in EXTRA_ENV for the whole run, as dp8d's launch; both preflights assert it, where compose-4's asserted it unset.
@@ -18,19 +18,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'harness')]
 import compose5_arms as table  # noqa: E402
 
-OLD, NEW = 'q18a_compose_4', 'q18a_compose_throughput_b2'
+OLD, NEW = 'q18a_compose_4', 'q18a_compose_throughput_b24'
 OLD_CORE = 'core:dec1.g2-live-0 core:cmp.g2-live-0 core:ctl.g2-live-0'
 CORE = ' '.join('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED) if r['label'] != table.SMOKE_ARM)
-ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, nt and ny eight replay agents for %d s, ABBA' % table.REPLAY['DURATION'])
+ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, nt and ny eight replay agents for %d s, one pair nt ny' % table.REPLAY['DURATION'])
 HEADER_ANCHOR = '# compose-4: the four lever tracks on one engine under the closed-loop agent replay'
-HEADER_NOTE = ('# coverage-throughput build-2: build-1\'s table, its candidate nt (the hold, the residue and the append yield) against ny on dnr\'s closed-loop turn mix, '
+HEADER_NOTE = ('# coverage-throughput build-2b24: build-2b\'s engine and table with nt\'s chunk_bound b24 [97152, 1024] (ny b13), one pair nt ny at 480 s (not ABBA). Build-2: build-1\'s table, its candidate nt (the hold, the residue and the append yield) against ny on dnr\'s closed-loop turn mix, '
                "ABBA nt ny ny nt, 480 s of traffic an arm, discovery mode, over an engine with (a) prepare-ahead, the safe variant (a later chunk's PREPARE "
                "slices 1-2 staged after the live chunk's state_finalize; FLASH_S5_PREPARE_AHEAD=1 for the whole run, used by native chunks only), (b) K2 "
                "(the next run selected at the scheduled handback, no cooldown) and (c) the geometry tail at the prompt's last prefix unit. Unchanged from "
                "build-1: the grade (the geometry-tail class, per Worker_PP RSS failing nt, any other stock prefill row and a request still open after the "
-               "drain failing nt), chunk geometry and the indexer logits cap (harness/compose5_arms.py, tmp/decode-phase/READY-coverage-throughput-b2.md). "
-               "The reader with the parity word is coverage-throughput/scratch/throughput2_read.py on the hub.\n")
-NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-compose-throughput-b2'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
+               "drain failing nt), chunk geometry (but nt's bound) and the indexer logits cap (harness/compose5_arms.py, tmp/decode-phase/READY-coverage-throughput-b2b24.md). "
+               "The reader with the parity word is coverage-throughput/scratch/throughput2b24_read.py on the hub.\n")
+NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-compose-throughput-b24'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
 # compose-5's box imports compose-4's box, table and replay by their names; the rename above must not reach them.
 SWITCHES = table.CONNECTIONS_ENV + ' ' + table.PLE_ENV + ' ' + table.CHUNK_ENV
 OLD_LAST_SWITCH = table.PLE_ENV + ' '
@@ -114,7 +114,7 @@ def final_body():
 
 def table_text():
     import compose5_gate as gate
-    lines = ['q18a-compose-throughput-b2 arm table (harness/compose5_arms.py); entry limits relative to the run start, never a clock',
+    lines = ['q18a-compose-throughput-b24 arm table (harness/compose5_arms.py); entry limits relative to the run start, never a clock',
              '%-3s %-16s %-10s %-6s %-5s %s' % ('#', 'label', 'kind', 'yield', 'ple', 'enters while SECONDS <=')]
     for k, row in enumerate(gate.rows(), 1):
         lines.append('%-3d %-16s %-10s %-6s %-5s %s %d s' % (k, row['label'], row.get('kind', 'decode'), {True: 'on', False: 'off'}.get(row.get('yield_on'), '-'), {True: 'on', False: 'off'}.get(row.get('ple_private'), '-'), row['entry_limit'], gate.ENTRY_LIMIT_S[row['entry_limit']]))

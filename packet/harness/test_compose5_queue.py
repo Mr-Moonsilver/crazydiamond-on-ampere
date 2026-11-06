@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""q18a-compose-throughput-b2 queue: the derivation from a1's committed texts, the name rules with the runner's real QNAME, the budget, the derived arm loop under real bash with the real grade, and every python call against its real parser. CPU only; no pass here is box evidence."""
+"""q18a-compose-throughput-b24 queue: the derivation from a1's committed texts, the name rules with the runner's real QNAME, the budget, the derived arm loop under real bash with the real grade, and every python call against its real parser. CPU only; no pass here is box evidence."""
 import json
 import os
 from pathlib import Path
@@ -27,12 +27,12 @@ tap, tq, tan = tiq.tap, tiq.tq, tiq.tan
 SLOT_RECEIPTS = []
 ARGPARSE_RECEIPTS = []
 RUNS = HERE / 'runs'
-DRAFT = 'harness/runs/q18a_compose_throughput_b2.draft.sh'
-SETTINGS = 'harness/runs/q18a_compose_throughput_b2_settings.sh'
-DECLARE = 'harness/runs/q18a_compose_throughput_b2_declare.sh'
+DRAFT = 'harness/runs/q18a_compose_throughput_b24.draft.sh'
+SETTINGS = 'harness/runs/q18a_compose_throughput_b24_settings.sh'
+DECLARE = 'harness/runs/q18a_compose_throughput_b24_declare.sh'
 CORE = T.labels('core')
 DECODE = [d['label'] for d in T.DECODE_ARMS]
-QNAME = 'q18a-compose-throughput-b2'
+QNAME = 'q18a-compose-throughput-b24'
 STUB_BOX = tiq.STUB_BOX.replace('import e3_inwait_box as real', 'import e3_compose5_box as real')
 assert STUB_BOX != tiq.STUB_BOX
 
@@ -84,14 +84,14 @@ class Derivation(unittest.TestCase):
 def settings_rows():
     """The real settings text under real bash: what engine_identity declare --settings gets."""
     lines = ['set -u', 'H=%s' % shlex.quote(str(HERE))] + ['%s=%s' % (k, shlex.quote(v)) for k, v in ARGPARSE_VALUES.items()]
-    lines += ['source "$H/runs/q18a_compose_throughput_b2_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
+    lines += ['source "$H/runs/q18a_compose_throughput_b24_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
     assert done.returncode == 0, done.stderr.decode()[-400:]
     return done.stdout.decode().split('\0')[:-1]
 
 
 def declared_env():
-    """EXTRA_ENV through engine_identity's own cleaning, the box's record's form (q18a-compose-throughput-b2 staging, 5 Nov 04:22: FLASH_S5_PLE_PRIVATE {'redacted_length': 1})."""
+    """EXTRA_ENV through engine_identity's own cleaning, the box's record's form (q18a-compose-throughput-b24 staging, 5 Nov 04:22: FLASH_S5_PLE_PRIVATE {'redacted_length': 1})."""
     (extra,) = [row.split('=', 1)[1] for row in settings_rows() if row.startswith('EXTRA_ENV=')]
     env = engine_identity.clean_value('EXTRA_ENV', extra)
     env['Q18A_TARGET_LABEL'] = ARGPARSE_VALUES.get('Q18A_TARGET_LABEL', 's5-overlap-80-80')
@@ -223,7 +223,7 @@ class DeclaredIdentity(unittest.TestCase):
 
 class Names(unittest.TestCase):
     def test_the_real_qname_passes_every_name_rule(self):
-        phases = ['q18a_compose_throughput_b2.draft.sh', 'q18a_compose_throughput_b2_declare.sh']
+        phases = ['q18a_compose_throughput_b24.draft.sh', 'q18a_compose_throughput_b24_declare.sh']
         self.assertEqual(names.check_names(QNAME, phases, RUNS, HERE / 'qlib.sh'), [])
         self.assertEqual(re.findall(r"^CANDIDATE = '([^']+)'$", (ROOT / 'tools/build_compose5.py').read_text(), re.M), [QNAME])
         for text in queue.derive().values():
@@ -239,9 +239,10 @@ class Budget(unittest.TestCase):
             est = gate.EXPECTED_RUNTIME_S[key]
             self.assertEqual((est['not_run'], est['arms_entering']), ([], len(gate.rows())), key)
             self.assertLessEqual(est['total_min'] * 60, gate.ACTIVE_S, key + ': the run ends before the TERM')
-        self.assertEqual(gate.NOMINAL_S, 3420, 'soak (lead 04:10): four 480 s arms with a 60 s tail, 57 min nominal')
+        self.assertEqual(gate.NOMINAL_S, 2320, 'build-2b24 (lead ~15:40): one pair, two 480 s arms with a 60 s tail, 38.7 min nominal')
+        self.assertEqual((gate.CAP, gate.BOX_BUDGET_S), (1.53, 3549), "build-2b24: the smallest cap admitting ny at 1.5x walls (lead's go, ~15:45)")
         self.assertGreater(gate.EXPECTED_RUNTIME_S['slower']['min_margin_s'], 0, 'every arm enters at 1.5x the walls')
-        self.assertLessEqual(gate.BOX_BUDGET_S, 1.3 * gate.NOMINAL_S, "the lead's hard cap: 1.3x nominal, cleanup included")
+        self.assertLessEqual(gate.BOX_BUDGET_S, gate.CAP * gate.NOMINAL_S, "the lead's hard cap, cleanup included")
         self.assertLessEqual(gate.BOX_BUDGET_S, 75 * 60, 'the run ends by 07:15 CET from a 06:00 start')
         self.assertEqual(gate.ACTIVE_S + gate.CLEANUP_S, gate.BOX_BUDGET_S)
         self.assertIn('compose5_arms', gate.PHASES)
@@ -318,7 +319,7 @@ class ArmLoop(unittest.TestCase):
         grade = json.loads((self.q / 'compose5-grade.json').read_text())
         self.assertEqual((grade['schema'], grade['verdict'], grade['missing']), ('compose5-grade/1', 'PASS', []))
         self.assertEqual(sorted(grade['arms']), sorted(CORE))
-        self.assertTrue((self.q / 'compose5-report.md').read_text().startswith('# q18a-compose-throughput-b2'))
+        self.assertTrue((self.q / 'compose5-report.md').read_text().startswith('# q18a-compose-throughput-b24'))
         self.assertEqual(json.loads((self.q / 'compose5-read.json').read_text())['verdict'], 'PASS')
 
     def test_a_smoke_that_does_not_engage_stops_the_table(self):
@@ -354,7 +355,7 @@ def bash_words(args, draft, values=None):
     lines = ['set -u', 'fail_early() { :; }', 'fail() { :; }', 'H=%s' % shlex.quote(str(HERE))]
     lines += ['%s=%s' % (k, shlex.quote(v)) for k, v in values.items()]
     arrays = '--arm "$Q/arm-cmp.g2-live-0.json" --ingress "cmp.g2-live-0=$Q/ingress-cmp.g2-live-0.json" --watch "cmp.g2-live-0=$Q/engine-watch-arm-cmp.g2-live-0.json"'
-    lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays, 'source "$H/runs/q18a_compose_throughput_b2_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
+    lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays, 'source "$H/runs/q18a_compose_throughput_b24_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
     return done.returncode, done.stdout.decode().split('\0')[:-1], done.stderr.decode()[-400:]
 

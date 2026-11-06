@@ -1,4 +1,8 @@
-"""q18a-compose-throughput-b2 arm table: the one declared table (coverage-throughput build-2, 6 Nov 2026; tmp/decode-phase/READY-coverage-throughput-b2.md). Change it here and nowhere else.
+"""q18a-compose-throughput-b24 arm table: the one declared table (coverage-throughput build-2b24, 6 Nov 2026; tmp/decode-phase/READY-coverage-throughput-b2b24.md). Change it here and nowhere else.
+
+coverage-throughput build-2b24 (lead, 6 Nov ~15:35): build-2b's engine and table unchanged, except nt's chunk_bound: b24's [97152, 1024]
+(2048-row native chunks up to 97152, 1024 past; q18a-o4-b24 ran it clean, OOM 0, 15:01-15:23). ny keeps b13 [52624, 1024]. One pair, nt then ny,
+480 s each (lead, ~15:40: the slot ends 17:20), not ABBA. Build-2's text follows.
 
 coverage-throughput build-2 (lead, 6 Nov): build-1's table and arms unchanged (ABBA nt ny ny nt), over an engine with (a) prepare-ahead,
 the safe variant (a later chunk's PREPARE slices 1-2 staged after the live chunk's state_finalize, on a second builder set; launch setting
@@ -36,7 +40,7 @@ STANDING_DECODERS = _inwait.STANDING_DECODERS
 STANDING_GREEDY = _inwait.STANDING_GREEDY
 GREEDY_TEMPERATURE = _inwait.GREEDY_TEMPERATURE
 STANDING_SAMPLED = _inwait.STANDING_SAMPLED
-PAIRS = 2                                          # lead, 6 Nov 03:55: ABBA nr ny ny nr
+PAIRS = 1                                          # build-2b24 (lead, 6 Nov ~15:40): one pair, nt then ny, 480 s each (was 2: ABBA)
 # coverage-soak-fix build-2 (lead, 6 Nov 08:50: name and fix the Worker_PP RSS owner): the CoW byte check at release
 # (lane_chunk.cow_host_verify) reads each host CoW pair's src and dst page prefix through the registered QSA host pool on the
 # CPU, which maps those pool pages into the worker: the soak's worker RSS growth on nr (native appends only). Off on every arm,
@@ -73,8 +77,9 @@ CHUNK_ENV = 'FLASH_S5_CHUNK_TOKENS=%d' % CHUNK_TOKENS
 PREPARE_AHEAD_ENV = 'FLASH_S5_PREPARE_AHEAD=1'     # build-2 (a): installed for the whole run; needs FLASH_S5_STAGE_OVERLAP=1 (the settings carry it)
 MAMBA_BLOCK_ROWS, HASH_BLOCK_ROWS = 4048, 176     # read from this model's chunks on the box (dp5): ends 4048 x k, last stop prompt-1 // 176 x 176
 B13_BOUND = [13 * MAMBA_BLOCK_ROWS, 1024]         # dp8d's b13 and b13h: chunk_bound on native_stage_local, [end, rows]
+B24_BOUND = [24 * MAMBA_BLOCK_ROWS, 1024]         # build-2b24: o4's b24 (q18a-o4-b24), 2048 rows up to 97152, then 1024
 C22_BOUND = [22 * MAMBA_BLOCK_ROWS, 1024]         # dn's c22h: largest score buffer 170.5 MiB at 85008-87056; cf died at 194 at 97152
-BOUND = {'sm': B13_BOUND, 'dec1': B13_BOUND, 'ny': B13_BOUND, 'nt': B13_BOUND}
+BOUND = {'sm': B13_BOUND, 'dec1': B13_BOUND, 'ny': B13_BOUND, 'nt': B24_BOUND}     # build-2b24: nt alone on b24
 HOLD_S = 600                                      # the engine's valve on a stuck lane, not a wait the arm expects: longer than an arm
 NATIVE_HOLD = {'sm': 0, 'dec1': 0, 'ny': 0, 'nt': HOLD_S}
 NATIVE_RESIDUE = {'sm': 0, 'dec1': 0, 'ny': 0, 'nt': 1}     # the residue needs the hold; ny has neither, as dnr ran it
@@ -188,12 +193,12 @@ def check():
     rows = by_label()
     for index in REPLAY_SEEDS:
         on, off = rows['nt.g2-live-%d' % index], rows['ny.g2-live-%d' % index]
-        assert sorted(k for k in on if on[k] != off[k]) == ['c1', 'label', 'native_hold', 'native_residue', 'selection', 'yield_on'], 'each pair differs in the hold, the residue and the yield alone'
-        assert on['chunk_bound'] == off['chunk_bound'] == B13_BOUND and on['native_hold'] == HOLD_S and off['native_hold'] == 0
+        assert sorted(k for k in on if on[k] != off[k]) == ['c1', 'chunk_bound', 'label', 'native_hold', 'native_residue', 'selection', 'yield_on'], 'each pair differs in the hold, the residue, the yield and the bound alone'
+        assert on['chunk_bound'] == B24_BOUND and off['chunk_bound'] == B13_BOUND and on['native_hold'] == HOLD_S and off['native_hold'] == 0
         assert on['native_residue'] == 1 and off['native_residue'] == 0
         assert on['yield_on'] and not off['yield_on'] and not on['ple_private'] and not off['ple_private'], "the yield on nt alone; c4b's ple off"
     order = [r['label'] for r in rows.values() if r['kind'] == 'replay']
-    assert order == ['nt.g2-live-0', 'ny.g2-live-0', 'ny.g2-live-1', 'nt.g2-live-1'], 'ABBA: nt ny ny nt'
+    assert order == ['nt.g2-live-0', 'ny.g2-live-0'], 'build-2b24: one pair, nt first'
     assert all(r['native_hold'] == (HOLD_S if r['c1'] == 'nt' else 0) for r in rows.values()), 'the hold on nt alone'
     assert {k: REPLAY[k] for k in _c4.REPLAY if k not in ('DURATION', 'WARMUP')} == {k: v for k, v in _c4.REPLAY.items() if k not in ('DURATION', 'WARMUP')}, "dnr's turn mix"
     assert REPLAY['DURATION'] == REPLAY_S and REPLAY['WARMUP'] == 0.0
@@ -205,6 +210,8 @@ def check():
     assert LAUNCH == dict(_a1.LAUNCH, max_new=8192) and _a1.LAUNCH['max_new'] == 2048, "the yield's new-row bound raised here alone"
     assert PREPARE_AHEAD_ENV == 'FLASH_S5_PREPARE_AHEAD=1' and CHUNK_TOKENS == 2048 and CHUNK_ENV == 'FLASH_S5_CHUNK_TOKENS=2048', 'build-2: prepare-ahead on, chunk geometry unchanged'
     assert B13_BOUND == [52624, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, B13_BOUND)) == 40, "dp8d's 40 chunks at band 1"
+    assert B24_BOUND == [97152, 1024] and len(planned_chunks(131094, CHUNK_TOKENS, B24_BOUND)) == 83, "b24's 83 chunks for the 131,094-token fresh (READY-o4-b24)"
+    assert all(r['chunk_bound'] == (B24_BOUND if r['c1'] == 'nt' else B13_BOUND) for r in rows.values()), 'b24 on nt alone'
     assert C22_BOUND == [89056, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, C22_BOUND)) == 34 and len(planned_chunks(131094, CHUNK_TOKENS, C22_BOUND)) == 87, "dn's 34 and 87 chunks"
     return True
 
