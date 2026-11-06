@@ -1,6 +1,6 @@
-"""q18a-compose-residue box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, three pairs of short replay arms, no tail). One budget for the watchdog and the draft, relative to the run's own start only.
+"""q18a-compose-soak box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, four soak arms on dnr's turn mix, ABBA, no tail). One budget for the watchdog and the draft, relative to the run's own start only.
 
-hold (lead, 5 Nov 23:00): a lean run, about 30 min nominal, its hard cap at most 1.5x nominal, cleanup included. The entry limits come from the nominal walls at 1.5x, not from the worst-case caps (those sum past the cap); a step that overruns meets the budget's TERM, whose path is the clean stop (tmp/decode-phase/STOP-dnr.md).
+soak (lead, 6 Nov 04:10): four arms of 480 s traffic plus a 60 s tail, hard cap 1.3x nominal (~74 min), cleanup included; the run ends by 07:15 CET. The entry limits come from the nominal walls at 1.5x, not from the worst-case caps (those sum past the cap); a step that overruns meets the budget's TERM, whose path is the clean stop (tmp/decode-phase/STOP-dnr.md).
 
 EXPECTED_RUNTIME_S is descriptive. The startup, the smoke and the end are build-3b's walls; the replay arm's wall is its table, DURATION and the turns it lets finish. ``slower`` is the same walk at 1.5x every wall except a replay's, whose length is its clock. The slot limit is the operator's script's; this budget holds the watchdog.
 """
@@ -30,13 +30,13 @@ WORST_CASE_SUM_S = sum(PHASES.values())                  # descriptive: every ca
 FIRST_ARM_S = 600                                        # dnr's box: 450 s from the restart to sm's entry, plus the preflight
 COLD_FIRST_S = 220                                       # dnr's sm: 216 s
 ONE_STREAM_WALL_S = 60                                   # dnr's dec1: 26 s and its entry
-REPLAY_TAIL_S = 45                                       # dnr: 10-34 s past DURATION for the open turns; nw may hold one a little longer
+REPLAY_TAIL_S = 60                                       # dnr: 10-34 s past DURATION for the open turns; nr's native turns run longer (lead 04:10: 60 s)
 ENTRY_S = 10                                             # dnr's entries: 0.3-8 s
 DECODE_WALL_S = 60                                       # dnr's decode-am1: 29 s
 BETWEEN_S = 30
 END_S = 240
 SLOWER = 1.5
-CAP = 1.5                                                # the lead's hard cap over nominal
+CAP = 1.3                                                # the lead's hard cap over nominal (6 Nov 04:10)
 
 
 def _nominal_s():

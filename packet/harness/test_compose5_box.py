@@ -20,7 +20,7 @@ import test_compose4_box as tb
 
 tam, tap, ta1 = tb.tam, tb.tap, tb.ta1
 SM, DEC1, CMP, NY = rule.SM, 'dec1.g2-live-0', rule.ON, rule.OFF      # the rule's labels: compose-5's, for its own suites; dnr's table has no cmp
-W0, R0, W1, R1 = 'nw.g2-live-0', 'nr.g2-live-0', 'nw.g2-live-1', 'nr.g2-live-1'     # this table: nw the hold, nr the hold with the residue
+W0, R0, W1, R1 = 'ny.g2-live-0', 'nr.g2-live-0', 'ny.g2-live-1', 'nr.g2-live-1'     # this table: ny as dnr ran it, nr the hold with the residue
 PAIRS = rule.PRICE_PAIRS
 
 
@@ -70,22 +70,20 @@ class JournalAgainstRecord(UnderThisTable, tb.JournalAgainstRecord):
 
 class Table(unittest.TestCase):
     def test_the_order(self):
-        self.assertEqual(T.labels()[:6], [SM, DEC1, W0, R0, R1, W1])
-        self.assertEqual(len(T.labels()), 8)
-        self.assertEqual(T.labels()[6:8], ['nw.g2-live-2', 'nr.g2-live-2'])
+        self.assertEqual(T.labels(), [SM, DEC1, R0, W0, W1, R1], 'ABBA: nr ny ny nr')
 
     def test_each_pair_differs_in_the_plan_alone_and_shares_a_seed(self):
         rows = T.by_label()
-        for on, off, seed in tuple(('nr.g2-live-%d' % i, 'nw.g2-live-%d' % i, i + 1) for i in range(3)):
-            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'label', 'native_residue', 'selection'], (on, off))
+        for on, off, seed in tuple(('nr.g2-live-%d' % i, 'ny.g2-live-%d' % i, i + 1) for i in range(2)):
+            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'label', 'native_hold', 'native_residue', 'selection'], (on, off))
             self.assertEqual((rows[on]['chunk_bound'], rows[off]['chunk_bound']), ([52624, 1024], [52624, 1024]))
-            self.assertEqual((rows[on]['native_hold'], rows[off]['native_hold']), (T.HOLD_S, T.HOLD_S))
+            self.assertEqual((rows[on]['native_hold'], rows[off]['native_hold']), (T.HOLD_S, 0))
             self.assertEqual((rows[on]['native_residue'], rows[off]['native_residue']), (1, 0))
             self.assertEqual((T.replay_config(rows[on])['SEED'], T.replay_config(rows[off])['SEED']), (seed, seed))
 
     def test_a_replays_config_is_compose_4s_but_for_the_seed(self):
         row = T.by_label()[W1]
-        self.assertEqual({k: v for k, v in T.replay_config(row).items() if T4.REPLAY[k] != v}, dict(SEED=2, DURATION=90.0, WARMUP=0.0, START_MIN=20000, START_MAX=40000), 'hold: lean arms, smaller fresh prompts')
+        self.assertEqual({k: v for k, v in T.replay_config(row).items() if T4.REPLAY[k] != v}, dict(SEED=2, DURATION=480.0, WARMUP=0.0), "soak: dnr's turn mix, 480 s arms, every turn graded")
         self.assertEqual(T4.REPLAY['SEED'], 1, "the table's own stays as it is")
 
     def test_the_cap_and_the_warm_block_are_off_on_every_arm(self):
@@ -103,14 +101,12 @@ class Table(unittest.TestCase):
 
     def test_the_replay_and_the_ceiling_are_compose_4s(self):
         self.assertEqual(set(T.REPLAY), set(T4.REPLAY))
-        self.assertEqual({k for k in T.REPLAY if T.REPLAY[k] != T4.REPLAY[k]}, {'DURATION', 'WARMUP', 'START_MIN', 'START_MAX'}, 'hold: lean arms')
+        self.assertEqual({k for k in T.REPLAY if T.REPLAY[k] != T4.REPLAY[k]}, {'DURATION', 'WARMUP'}, "soak: dnr's sizes, its own length")
         self.assertEqual(T4.REPLAY['DURATION'], 1080.0, "compose-4's own stays as it is")
 
-    def test_the_hold_is_on_every_replay_and_the_residue_on_nr_alone(self):
-        self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, {r['label']: T.HOLD_S for r in T.arms() if r['kind'] == 'replay'})
-        self.assertEqual(len([r for r in T.arms() if r['native_hold']]), 6)
-        self.assertEqual({r['label'] for r in T.arms() if r['native_residue']}, {r['label'] for r in T.arms() if r['c1'] == 'nr'})
-        self.assertEqual(len([r for r in T.arms() if r['native_residue']]), 3)
+    def test_the_hold_and_the_residue_are_on_nr_alone(self):
+        self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, {R0: T.HOLD_S, R1: T.HOLD_S})
+        self.assertEqual({r['label'] for r in T.arms() if r['native_residue']}, {R0, R1})
         self.assertEqual(T.MAX_PROMPT_TOKENS, 135000)
         self.assertEqual((T.RULE_PREFILL_TOK_S, T.RULE_DECODE_VS_FIXED, T.RULE_MIN_NATIVE_BULKS), (T4.RULE_PREFILL_TOK_S, T4.RULE_DECODE_VS_FIXED, T4.RULE_MIN_NATIVE_BULKS))
 
@@ -156,7 +152,7 @@ class ReplaySeed(unittest.TestCase):
         def real_run(*args, cfg=None, **kwargs):
             seen['cfg'] = cfg
             raise Stop()
-        with mock.patch.object(box, '_replay_arm', fake), mock.patch.object(box._box.replay, 'run', real_run):
+        with mock.patch.object(box, '_replay_arm', fake), mock.patch.object(box._box.replay, 'run', real_run), mock.patch.object(box, 'memory_read', dict):
             box.replay_arm(None, row, None, None)
         return seen
 
@@ -167,6 +163,122 @@ class ReplaySeed(unittest.TestCase):
             self.assertEqual((seen['cfg']['SEED'], seen['header']['SEED']), (seed, seed), label)
         self.assertIs(T.REPLAY, saved)
         self.assertIs(box4.T, T4)
+
+
+def memory(free=(1464, 1574, 1352, 1462), rss=40 << 20):
+    return dict(schema=box.MEMORY_SCHEMA, wall_s=1.0, gpus={str(k): dict(used_mib=24576 - f, total_mib=24576, free_mib=f) for k, f in enumerate(free)},
+                rss_kib=rss, processes=7, top=[['python3', rss]], errors=[])
+
+
+class Soak(unittest.TestCase):
+    """coverage-soak: a hang named, memory read at the traffic's start and end, growth flagged on nr."""
+
+    def test_engine_memory_reads_nvidia_smi_and_docker_top(self):
+        def run(cmd, **kw):
+            if cmd[0] == 'nvidia-smi':
+                return mock.Mock(returncode=0, stdout='0, 23112, 24576\n1, 23002, 24576\n2, 23224, 24576\n3, 23114, 24576\n')
+            self.assertEqual(cmd, ['docker', 'top', 'qwen-flash-prod', '-eo', 'pid,rss,comm'])
+            return mock.Mock(returncode=0, stdout='PID RSS COMMAND\n4101 812345 python3\n4210 9123456 VLLM::Worker_PP0_TP0\n4211 9000000 VLLM::Worker_PP0_TP1\n')
+        out = box.engine_memory(run=run, clock=lambda: 7.0)
+        self.assertEqual(out['gpus']['0'], dict(used_mib=23112, total_mib=24576, free_mib=1464))
+        self.assertEqual((out['rss_kib'], out['processes'], out['top'][0], out['errors']), (812345 + 9123456 + 9000000, 3, ['VLLM::Worker_PP0_TP0', 9123456], []))
+
+    def test_engine_memory_never_raises(self):
+        def broken(cmd, **kw):
+            raise OSError('no docker')
+        out = box.engine_memory(run=broken)
+        self.assertEqual((out['gpus'], out['rss_kib'], out['errors']), (None, None, ['nvidia-smi:OSError', 'docker-top:OSError']))
+        out = box.engine_memory(run=lambda cmd, **kw: mock.Mock(returncode=1, stdout=''))
+        self.assertEqual(out['errors'], ['nvidia-smi-rc-1', 'docker-top-rc-1'])
+
+    def test_tracking_names_what_is_open_and_forgets_what_ended(self):
+        import threading
+        inflight, lock, gate = {}, threading.Lock(), threading.Event()
+
+        def stream(url, body, key, origin, **kw):
+            if body.get('block'):
+                gate.wait(5)
+            if body.get('boom'):
+                raise TimeoutError('read')
+            return 'ok'
+        wrapped = box.tracking(stream, inflight, lock, clock=lambda: 130.0)
+        body = lambda session, n, **kw: dict(messages=[{'role': 'system', 'content': 'You are coding agent 3, session %d.' % session}] + [{}] * (n - 1), **kw)
+        self.assertEqual(wrapped('u', body(1, 2), None, 10.0), 'ok')
+        with self.assertRaises(TimeoutError):
+            wrapped('u', body(1, 4, boom=True), None, 10.0)
+        self.assertEqual(inflight, {})
+        th = threading.Thread(target=wrapped, args=('u', body(2, 6, block=True), None, 10.0), name='compose4-agent-3')
+        th.start()
+        for _ in range(100):
+            if inflight:
+                break
+            threading.Event().wait(0.01)
+        self.assertEqual(inflight, {'compose4-agent-3': dict(agent=3, session=2, kind='append', turn_messages=6, sent_s=120.0)})
+        gate.set()
+        th.join(5)
+        self.assertEqual(inflight, {})
+
+    def test_the_arm_record_carries_open_requests_and_memory(self):
+        import threading
+        row, gate = T.by_label()[R0], threading.Event()
+        reads = iter((memory(), memory(free=(1400, 1574, 1352, 1462))))
+
+        def fake(a, row_, client, poll_client, *, run=None):
+            run('u', 'm', 'k', 'r', row_['label'], sink=None)
+            return dict(label=row_['label'], complete=False, reasons=['replay-turns-still-open:1'])
+
+        def real_run(*args, cfg=None, stream=None, **kwargs):
+            body = dict(messages=[{'role': 'system', 'content': 'You are coding agent 5, session 1.'}, {}])
+            threading.Thread(target=stream, args=('u', body, None, 0.0), name='compose4-agent-5', daemon=True).start()
+            for _ in range(100):
+                threading.Event().wait(0.01)
+                if gate.is_set():
+                    break
+            return cfg, {}, [], ['compose4-agent-5']
+
+        def slow(*args, **kw):
+            gate.set()
+            threading.Event().wait(2)
+        with mock.patch.object(box, '_replay_arm', fake), mock.patch.object(box._box.replay, 'run', real_run), \
+                mock.patch.object(box._box.replay, 'stream_turn', slow), mock.patch.object(box, 'memory_read', lambda: next(reads)):
+            rec = box.replay_arm(None, row, None, None)
+        self.assertEqual([(r['agent'], r['session'], r['kind']) for r in rec['replay_open_requests']], [(5, 1, 'fresh')])
+        self.assertEqual(rec['memory']['end']['gpus']['0']['free_mib'], 1400)
+
+    def arms(self, mem=None, open_=None):
+        arms = Grade().records()
+        for rec in arms:
+            if rec.get('label') in (R0, R1, W0, W1):
+                rec['memory'] = dict(start=memory(), end=memory())
+                rec.update((mem or {}).get(rec['label'], {}))
+                if rec['label'] in (open_ or ()):
+                    rec['replay_open_requests'] = [dict(agent=2, session=1, kind='append', turn_messages=8, sent_s=471.2)]
+                    rec['replay_still_open'] = ['compose4-agent-2']
+        return arms
+
+    def test_a_request_open_after_the_drain_fails_nr_by_name_and_is_read_on_ny(self):
+        result = Grade().grade_of(self.arms(open_=(R1, W0)))
+        self.assertIn(R1 + ':request-open-after-the-drain', result['failures'])
+        self.assertNotIn(W0 + ':request-open-after-the-drain', result['failures'])
+        self.assertEqual(result['open_requests'][R1]['requests'][0]['sent_s'], 471.2)
+        self.assertEqual(result['open_requests'][W0]['agents'], ['compose4-agent-2'])
+
+    def test_memory_flat_passes_and_growth_on_nr_is_flagged_not_failed(self):
+        result = Grade().grade_of(self.arms())
+        self.assertEqual((result['verdict'], result['memory_flags']), ('PASS', {}))
+        self.assertEqual(result['memory'][R0]['ranks']['0'], dict(free_start_mib=1464, free_end_mib=1464, free_drop_mib=0))
+        grown = {R1: dict(memory=dict(start=memory(), end=memory(free=(1300, 1574, 1352, 1462), rss=(40 << 20) + (300 << 10))))}
+        result = Grade().grade_of(self.arms(mem=grown))
+        self.assertEqual(result['verdict'], 'PASS', 'a flag, not a failure')
+        self.assertEqual(result['memory_flags'][R1], ['vram-free-down-rank0-164MiB', 'engine-rss-up-300MiB'])
+        self.assertEqual(result['memory_flags']['nr-first-start-to-last-end'], ['vram-free-down-rank0-164MiB', 'engine-rss-up-300MiB'])
+
+    def test_memory_on_ny_is_read_not_flagged_and_an_unread_nr_is_flagged(self):
+        result = Grade().grade_of(self.arms(mem={W0: dict(memory=dict(start=memory(), end=memory(free=(100, 100, 100, 100)))), R0: dict(memory=dict(start=None, end=memory()))}))
+        self.assertEqual(result['memory'][W0]['ranks']['1']['free_drop_mib'], 1474)
+        self.assertNotIn(W0, result['memory_flags'])
+        self.assertEqual(result['memory_flags'][R0], ['memory-not-read'])
+        self.assertEqual(result['verdict'], 'PASS')
 
 
 class Smoke(unittest.TestCase):
@@ -422,11 +534,11 @@ class BoxBinding(unittest.TestCase):
 
     def test_the_argparse_takes_this_tables_selections_and_refuses_the_old_control(self):
         with mock.patch.object(box4, 'run_arm', return_value=0) as arm, tempfile.TemporaryDirectory() as tmp:
-            args = ['arm', '--url', 'u', '--model', 'm', '--run-id', 'r', '--epoch', '1', '--c1', 'nw', '--size', '2', '--cohort', 'live', '--index', '1', '--workload', 'w', '--out', tmp + '/x.json']
+            args = ['arm', '--url', 'u', '--model', 'm', '--run-id', 'r', '--epoch', '1', '--c1', 'ny', '--size', '2', '--cohort', 'live', '--index', '1', '--workload', 'w', '--out', tmp + '/x.json']
             self.assertEqual(box.main(args), 0)
-            self.assertEqual((arm.call_args[0][0].c1, arm.call_args[0][0].index), ('nw', 1))
+            self.assertEqual((arm.call_args[0][0].c1, arm.call_args[0][0].index), ('ny', 1))
             with self.assertRaises(SystemExit):
-                box.main(args[:9] + ['cmp'] + args[10:])
+                box.main(args[:9] + ['nw'] + args[10:])
 
     def test_the_smoke_goes_the_live_path_and_a_replay_the_replay_path(self):
         import types
@@ -440,7 +552,7 @@ class BoxBinding(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             row, live, play = go('sm', 0)
             self.assertEqual((row['label'], row['yield_on'], row['index'], live, play), (SM, True, 0, True, False))
-            row, live, play = go('nw', 0)
+            row, live, play = go('ny', 0)
             self.assertEqual((row['label'], row['yield_on'], row['ple_private'], live, play), (W0, False, False, False, True))
 
     def test_the_grade_names_this_run_and_reads_every_arm(self):
@@ -450,7 +562,7 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-compose-residue'))
+        self.assertTrue(text.startswith('# q18a-compose-soak'))
         self.assertIn('compose5_rule.py', text)
 
 
@@ -553,7 +665,7 @@ class Coverage(unittest.TestCase):
         self.assertEqual(result['verdict'], 'PASS', result['failures'])
         self.assertEqual(result['coverage'][R0]['live_native_share'], 1.0)
         self.assertEqual(result['coverage'][R0]['to'], 'next-entry')
-        self.assertEqual(result['coverage']['nr.g2-live-2']['to'], 'after')
+        self.assertEqual(result['coverage'][R1]['to'], 'after')
         self.assertEqual(result['coverage'][R0]['rows']['live']['native'], {'plan': 1000})
 
     def test_a_stock_row_with_a_decoder_live_fails_a_residue_arm_by_site(self):
@@ -569,7 +681,7 @@ class Coverage(unittest.TestCase):
         self.assertEqual(cov['handback'], dict(turns=12, rows=12, excess_rows=0, requests=12, native_turns=12, max_rows_per_turn=1,
                                                every_row_after_a_native_turn=True))
         self.assertEqual((cov['live_native_share'], cov['all_native_share']), (1.0, 1.0))
-        self.assertEqual(cov['live_native_share_strict'], round(1000 / 1012, 6))
+        self.assertEqual(cov['live_native_share_strict'], round(900 / 912, 6))     # the last arm: entry to its after
 
     def test_a_handback_row_with_no_native_turn_before_it_fails(self):
         result = self.grade.grade_of(self.arms_with(R1, stock={'handback': 12}, native_turns=11))
@@ -585,7 +697,7 @@ class Coverage(unittest.TestCase):
         self.assertEqual([f for f in result['failures'] if f.startswith(R1)],
                          [R1 + ':handback-not-one-row-of-a-native-turn', R1 + ':stock-prefill-with-decoder-live'])
         self.assertEqual((result['coverage'][R1]['handback']['max_rows_per_turn'], result['coverage'][R1]['handback']['rows']), (3, 5))
-        self.assertEqual(result['coverage'][R1]['live_native_share'], round(1003 / 1005, 6))
+        self.assertEqual(result['coverage'][R1]['live_native_share'], round(903 / 905, 6))
 
     def test_the_hold_valve_expired_fails_a_residue_arm(self):
         result = self.grade.grade_of(self.arms_with(R0, stock={'expired': 1}))

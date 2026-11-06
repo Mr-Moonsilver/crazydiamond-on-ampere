@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""q18a-compose-residue box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
+"""q18a-compose-soak box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
 coverage-residue adds the per-row native_residue, acknowledged, keeps the engine's decline record (with its prefill coverage counter) in each status row, and grades coverage per replay arm.
+coverage-soak adds, per replay arm: the requests still open when the replay gave up on them, by agent, session and send time (a hang, named), and
+the engine's memory at the traffic's start and end (per-rank free VRAM by nvidia-smi, the engine container's process RSS by docker top), read on
+the box host, never raising; the grade flags growth on nr, it does not fail on it.
 
 Every arm kind compose-5 runs, compose-4's box already runs: the live arm for sm, fon and foff, the replay arm for cmp and ny, the one-stream arm. Only the table and the names differ, so the table is bound in here
 and nothing that ran is edited. The rule is compose5_rule.py on the fetched record; this grade only says the record is whole.
 """
+import os
+import re
+import subprocess
+import threading
+import time
 from contextlib import contextmanager
 from functools import wraps
 
@@ -20,7 +28,7 @@ _report = _box.report
 
 
 def report(result):
-    return _report(result).replace('q18a-compose-4', 'q18a-compose-residue', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    return _report(result).replace('q18a-compose-4', 'q18a-compose-soak', 1).replace('compose4_rule.py', 'compose5_rule.py')
 
 
 def __getattr__(name):
@@ -76,6 +84,90 @@ def cap_selected(rec):
 
 
 COVERAGE_SCHEMA = 's5-prefill-coverage/1'
+MEMORY_SCHEMA = 'soak-memory/1'
+CONTAINER = os.environ.get('Q17_TEST_CONTAINER') or 'qwen-flash-prod'      # the draft's engine container (its CONTAINER)
+GPU_QUERY = ['nvidia-smi', '--query-gpu=index,memory.used,memory.total', '--format=csv,noheader,nounits']
+VRAM_GROWTH_MIB = 64          # flagged: a rank's free VRAM down by this much from an nr arm's start to its end (the pool is preallocated)
+RSS_GROWTH_KIB = 256 * 1024   # flagged: the engine container's process RSS up by this much
+
+
+def engine_memory(run=subprocess.run, clock=time.time):
+    """Per-rank VRAM and the engine container's process RSS, now. Read only; never raises: a failed read is an error in the row."""
+    out = dict(schema=MEMORY_SCHEMA, wall_s=clock(), gpus=None, rss_kib=None, processes=None, top=None, errors=[])
+    try:
+        got = run(GPU_QUERY, capture_output=True, text=True, timeout=20)
+        gpus = {}
+        for line in (got.stdout or '').splitlines():
+            if line.strip():
+                index, used, total = (int(x.strip()) for x in line.split(','))
+                gpus[str(index)] = dict(used_mib=used, total_mib=total, free_mib=total - used)
+        if got.returncode == 0 and gpus:
+            out['gpus'] = gpus
+        else:
+            out['errors'].append('nvidia-smi-rc-%s' % got.returncode)
+    except Exception as exc:  # noqa: BLE001 - a read, never the arm's failure
+        out['errors'].append('nvidia-smi:' + type(exc).__name__)
+    try:
+        got = run(['docker', 'top', CONTAINER, '-eo', 'pid,rss,comm'], capture_output=True, text=True, timeout=20)
+        rows = []
+        for line in (got.stdout or '').splitlines()[1:]:
+            parts = line.split(None, 2)
+            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                rows.append((parts[2].strip() if len(parts) > 2 else '?', int(parts[1])))
+        if got.returncode == 0 and rows:
+            out['rss_kib'], out['processes'] = sum(r for _c, r in rows), len(rows)
+            out['top'] = [list(r) for r in sorted(rows, key=lambda r: -r[1])[:6]]
+        else:
+            out['errors'].append('docker-top-rc-%s' % got.returncode)
+    except Exception as exc:  # noqa: BLE001
+        out['errors'].append('docker-top:' + type(exc).__name__)
+    return out
+
+
+_AGENT = re.compile(r'You are coding agent (\d+), session (\d+)\.')
+
+
+def tracking(stream, inflight, lock, clock=time.monotonic):
+    """The replay's stream with each request in ``inflight`` while it is open: what the replay gives up on can be named."""
+    def wrapped(url, body, key, origin, **kwargs):
+        messages = body.get('messages') or ()
+        found = _AGENT.match(str((messages[0] if messages else {}).get('content', '')))
+        entry = dict(agent=int(found.group(1)) if found else None, session=int(found.group(2)) if found else None,
+                     kind='fresh' if len(messages) <= 2 else 'append', turn_messages=len(messages), sent_s=round(clock() - origin, 3))
+        name = threading.current_thread().name
+        with lock:
+            inflight[name] = entry
+        try:
+            return stream(url, body, key, origin, **kwargs)
+        finally:
+            with lock:
+                inflight.pop(name, None)
+    wrapped.around = lambda inner: tracking(inner, inflight, lock, clock)       # the same tracking over another stream (a test's scripted one)
+    return wrapped
+
+
+def memory_delta(start, end):
+    """Per rank: free VRAM start, end, drop (MiB); RSS start, end, growth (KiB). None where a side was not read."""
+    if not isinstance(start, dict) or not isinstance(end, dict):
+        return None
+    ranks = {}
+    for rank in sorted(set((start.get('gpus') or {})) | set((end.get('gpus') or {}))):
+        a, b = (start.get('gpus') or {}).get(rank), (end.get('gpus') or {}).get(rank)
+        ranks[rank] = dict(free_start_mib=(a or {}).get('free_mib'), free_end_mib=(b or {}).get('free_mib'),
+                           free_drop_mib=a['free_mib'] - b['free_mib'] if a and b else None)
+    rss = (start.get('rss_kib'), end.get('rss_kib'))
+    return dict(ranks=ranks or None, rss_start_kib=rss[0], rss_end_kib=rss[1],
+                rss_growth_kib=rss[1] - rss[0] if None not in rss else None, errors=list(start.get('errors') or ()) + list(end.get('errors') or ()))
+
+
+def memory_flags(delta):
+    if delta is None or not delta.get('ranks') or delta.get('rss_growth_kib') is None:
+        return ['memory-not-read']
+    flags = ['vram-free-down-rank%s-%dMiB' % (r, v['free_drop_mib']) for r, v in delta['ranks'].items()
+             if v['free_drop_mib'] is None or v['free_drop_mib'] >= VRAM_GROWTH_MIB]
+    if delta['rss_growth_kib'] >= RSS_GROWTH_KIB:
+        flags.append('engine-rss-up-%dMiB' % (delta['rss_growth_kib'] // 1024))
+    return flags
 
 
 def _coverage(status):
@@ -182,6 +274,31 @@ def grade(arms, *args, **kwargs):
             if rows[label]['native_residue'] and (hb['excess_rows'] or not hb['every_row_after_a_native_turn']):
                 fails.append('handback-not-one-row-of-a-native-turn')
         result['failures'] = sorted(set(result['failures']) | {label + ':' + f for f in fails})
+    # coverage-soak (lead, 6 Nov 03:55): no hang (every request sent in an arm completes within the arm and its drain; any that did not is
+    # named), and memory at each nr arm's start and end, growth flagged, not failed. ny is read alike, never failed on these.
+    result['open_requests'], result['memory'], result['memory_flags'] = {}, {}, {}
+    nr = []
+    for row in T.arms():
+        rec = by.get(row['label'])
+        if row['kind'] != 'replay' or rec is None:
+            continue
+        open_ = rec.get('replay_open_requests') or []
+        if open_ or rec.get('replay_still_open'):
+            result['open_requests'][row['label']] = dict(requests=open_, agents=rec.get('replay_still_open') or [])
+            if row['c1'] == T.ON:
+                result['failures'] = sorted(set(result['failures']) | {row['label'] + ':request-open-after-the-drain'})
+        mem = rec.get('memory') or {}
+        result['memory'][row['label']] = memory_delta(mem.get('start'), mem.get('end'))
+        if row['c1'] == T.ON:
+            nr.append(mem)
+            flags = memory_flags(result['memory'][row['label']])
+            if flags:
+                result['memory_flags'][row['label']] = flags
+    if len(nr) > 1:
+        result['memory']['nr-first-start-to-last-end'] = run_delta = memory_delta(nr[0].get('start'), nr[-1].get('end'))
+        flags = memory_flags(run_delta)
+        if flags:
+            result['memory_flags']['nr-first-start-to-last-end'] = flags
     result['verdict'] = 'FAIL' if result['failures'] else 'INC' if result['missing'] else 'PASS'
     return result
 
@@ -225,16 +342,30 @@ def replay_arm(a, row, client, poll_client, *, run=None):
     """compose-4's replay arm with this row's seed: in the run itself, and in the journal header, which reads the table's REPLAY."""
     base = run or _box.replay.run
     cfg = T.replay_config(row)
+    inflight, lock, memory = {}, threading.Lock(), {}
 
     def seeded(*args, **kwargs):
-        return base(*args, cfg=cfg, **kwargs)
+        kwargs['stream'] = tracking(kwargs.get('stream') or _box.replay.stream_turn, inflight, lock)
+        memory['start'] = memory_read()
+        try:
+            return base(*args, cfg=cfg, **kwargs)
+        finally:
+            memory['end'] = memory_read()
     saved = T.REPLAY
     T.REPLAY = cfg
     try:
         with _bound():
-            return _replay_arm(a, row, client, poll_client, run=seeded)
+            record = _replay_arm(a, row, client, poll_client, run=seeded)
     finally:
         T.REPLAY = saved
+    with lock:
+        record['replay_open_requests'] = sorted(inflight.values(), key=lambda e: (e['sent_s'], e['agent'] or 0))
+    record['memory'] = dict(start=memory.get('start'), end=memory.get('end'))
+    return record
+
+
+def memory_read():
+    return engine_memory()
 
 
 one_stream_arm = _under_this_table(_box.one_stream_arm)

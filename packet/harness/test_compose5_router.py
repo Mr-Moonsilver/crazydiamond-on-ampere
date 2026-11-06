@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_compose_residue_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_compose_soak_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SHORT = dict(T.REPLAY, AGENTS=2, DURATION=0.4, WARMUP=0.0, START_MIN=60000, START_MAX=60000, TOOL_MIN=0.01, TOOL_MAX=0.02)
@@ -75,8 +75,8 @@ class ArmEnd(a1r.ArmEnd):
     async def arm(self, sel, cohort='live', index=0):
         real = replay.run
 
-        def short(url, model, key, run_id, label, sink=None, cfg=None):
-            return real(url, model, key, run_id, label, cfg=dict(SHORT, SEED=cfg['SEED']), stream=scripted, finish_bound_s=5.0, sink=sink)
+        def short(url, model, key, run_id, label, sink=None, cfg=None, stream=None):
+            return real(url, model, key, run_id, label, cfg=dict(SHORT, SEED=cfg['SEED']), stream=stream.around(scripted), finish_bound_s=5.0, sink=sink)
 
         def run():
             client = self.client()
@@ -87,7 +87,8 @@ class ArmEnd(a1r.ArmEnd):
             argv = ['arm', '--url', self.server.url, '--model', 'fixture-model', '--run-id', a1r.RUN, '--epoch', str(self.driver.engine_epoch), '--c1', sel, '--size', '2', '--cohort', cohort, '--index', str(index),
                     '--workload', self.workload, '--control-timeout-s', '30', '--out', str(out)]
             mark, served = len(self.server.session_actions), len(self.server.completions)
-            with mock.patch.object(box4.shared, '_package_gate', return_value={'ok': True}), mock.patch.object(box4.base, 'SETTLE_S', 0.2), mock.patch.object(box4.base, 'CLOSE_TIMEOUT_S', 1.0), \
+            with mock.patch.object(box, 'memory_read', lambda: dict(schema=box.MEMORY_SCHEMA, gpus=None, rss_kib=None, errors=['stub'])), \
+                    mock.patch.object(box4.shared, '_package_gate', return_value={'ok': True}), mock.patch.object(box4.base, 'SETTLE_S', 0.2), mock.patch.object(box4.base, 'CLOSE_TIMEOUT_S', 1.0), \
                     mock.patch.object(box4.replay, 'run', short), mock.patch.object(box4, 'POLL_S', 0.1), mock.patch.object(T, 'ONE_STREAM_WINDOW_S', 0.3), mock.patch.dict(T.PLANS, QUICK), contextlib.redirect_stdout(io.StringIO()):
                 rc_ = box.main(argv)
             return rc_, json.loads(out.read_text()), self.server.session_actions[mark:], self.server.completions[served:], out
@@ -121,7 +122,7 @@ class ArmEnd(a1r.ArmEnd):
         self.assertEqual(len(record['decode_only']['stream_rates_tokens_per_s']), 1)
 
     async def test_the_replay_arm_keeps_its_turns_beside_the_record_with_its_seed(self):
-        for sel, index, seed in (('nw', 0, 1), ('nr', 1, 2)):
+        for sel, index, seed in (('ny', 0, 1), ('nr', 1, 2)):
             with self.subTest(sel):
                 rc_, record, actions, _served, out = await self.arm(sel, index=index)
                 name = T.label(sel, 2, 'live', index)
@@ -148,7 +149,8 @@ class ArmEnd(a1r.ArmEnd):
                 import compose5_rule as rule
                 self.assertIsNone(rule.journal_problem(record['label'], record, *rule.load_turns(str(out) + '.turns.jsonl')), 'the arm\'s real record and journal agree under the reader')
                 self.assertGreater(len(turns), 0)
-                self.assertEqual(record['replay_still_open'], [])
+                self.assertEqual((record['replay_still_open'], record['replay_open_requests']), ([], []))
+                self.assertEqual((record['memory']['start']['schema'], record['memory']['end']['errors']), (box.MEMORY_SCHEMA, ['stub']))
                 self.assertEqual(record['replay_config']['AGENTS'], 2)
                 self.assertIsNotNone(record['polled'])
                 self.assertTrue(set(record['control_actions']) <= box.ACTION_NAMES)
