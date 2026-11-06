@@ -4,7 +4,7 @@
   "arm": "TRUNK",
   "probe": "compose5_cpu_probe.py"
  },
- "candidate": "q18a-compose-throughput-b24c64",
+ "candidate": "q18a-compose-throughput-p2",
  "checks": [
   [
    "tools/compose5_queue.py",
@@ -572,13 +572,14 @@
     "test_compose5_router",
     "test_native_hold",
     "test_coverage_residue",
+    "test_parity2_terminal",
     "test_compose5_box",
     "test_compose5_queue"
    ],
    "lineage_rows": []
   },
   "model_settings_changed": false,
-  "queue": "q18a-compose-throughput-b24c64: compose-4's queue with connections 32, the PLE switches, the 2048 chunk, prepare-ahead and the indexer logits cap 64 MiB for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
+  "queue": "q18a-compose-throughput-p2: compose-4's queue with connections 32, the PLE switches, the 2048 chunk, prepare-ahead and the indexer logits cap 64 MiB for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
   "scope": "b13 and hf at 32 with the four lever tracks under the closed-loop replay, the yield priced by frozen pairs, against c1b's READY build, discovery mode; not a release assessment and not a numerics result"
  },
  "dry_run": false,
@@ -1020,6 +1021,7 @@
    "harness/test_inwait_slots.py",
    "harness/test_native43_engine_death_h.py",
    "harness/test_native_hold.py",
+   "harness/test_parity2_terminal.py",
    "harness/test_ple_private.py",
    "harness/test_prepare_ahead.py",
    "harness/test_reentry_view.py",
@@ -1684,16 +1686,16 @@
  "precheck": {
   "fixture_rows": [],
   "header": [
-   "q18a-compose-throughput-b24c64 packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
+   "q18a-compose-throughput-p2 packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
    "Engine: claude/compose-5-build, compose-4 with the decline counters, chunk_bound and the builder at 2048 rows from dp8d (FLASH_S5_CHUNK_TOKENS=2048 for the whole run), default off, selected per arm by typed control. No 5f, no 1g, no witness.",
    "Queue: compose-4's startup and cleanup with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen pairs on and off for the yield, the replay arm and its control without the yield; no fixed-schedule check."
   ],
   "seams": ""
  },
  "queue": [
-  "q18a_compose_throughput_b24c64.draft.sh",
-  "q18a_compose_throughput_b24c64_declare.sh",
-  "q18a_compose_throughput_b24c64_settings.sh"
+  "q18a_compose_throughput_p2.draft.sh",
+  "q18a_compose_throughput_p2_declare.sh",
+  "q18a_compose_throughput_p2_settings.sh"
  ],
  "rehearsal": null,
  "review": "prepare",
@@ -1709,7 +1711,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "faaa2266e69eb2acd1058f407fc296ecd50caad8",
+ "source_commit": "c1907056ad36744617bcb87153512ee8857f35b8",
  "source_paths": [
   "A\tharness/a1_trunk_arms.py",
   "A\tharness/a1_trunk_gate.py",
@@ -1788,6 +1790,9 @@
   "A\tharness/runs/q18a_compose_throughput_b2_declare.sh",
   "A\tharness/runs/q18a_compose_throughput_b2_settings.sh",
   "A\tharness/runs/q18a_compose_throughput_declare.sh",
+  "A\tharness/runs/q18a_compose_throughput_p2.draft.sh",
+  "A\tharness/runs/q18a_compose_throughput_p2_declare.sh",
+  "A\tharness/runs/q18a_compose_throughput_p2_settings.sh",
   "A\tharness/runs/q18a_compose_throughput_settings.sh",
   "A\tharness/runs/q18a_inwait.draft.sh",
   "A\tharness/runs/q18a_inwait_declare.sh",
@@ -1862,6 +1867,7 @@
   "M\tharness/test_native35_performance.py",
   "A\tharness/test_native43_engine_death_h.py",
   "A\tharness/test_native_hold.py",
+  "A\tharness/test_parity2_terminal.py",
   "A\tharness/test_ple_private.py",
   "A\tharness/test_prepare_ahead.py",
   "A\tharness/test_reentry_view.py",
