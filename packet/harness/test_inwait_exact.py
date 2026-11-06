@@ -140,6 +140,7 @@ class Rule(unittest.TestCase):
         controller = so.StagedAdmissionController.__new__(so.StagedAdmissionController)
         controller.minimum_stage_rows = minimum
         controller.exact_counters = dict(exact_admits=0, exact_terminal=0)
+        controller.native_hold_s, controller.native_residue = 0, 0      # coverage-soak-fix's native_end reads both
         return controller, types.SimpleNamespace(_mamba_block_aligned_split=split or Split())
 
     def request(self, computed=28):
@@ -173,6 +174,66 @@ class Rule(unittest.TestCase):
         before = dict(vars(request))
         controller._successor_reaches_end(scheduler, request, 28, CAP)
         self.assertEqual(vars(request), before)
+
+
+class HoldView(unittest.TestCase):
+    """coverage-throughput: under the hold the exact plan reads the admission's view (plan_view), at production geometry.
+
+    Soak (q18a-compose-soak, ANSWERS Q1): the chunk before a short hash tail planned its successor over the raw request, which has
+    no plan there; the search ran to its 65,536-query bound on every engine tick (~250 ms a step, ~4.3 s a chunk) and named a
+    non-terminal successor terminal, so the early successor never opened.
+    """
+    PROMPT, START = 37362, 36432        # Q1's txn 478 -> its successor: 929 rows left, tail 49 rows past the last 176-row unit
+
+    def setUp(self):
+        import test_coverage_residue as tcr
+        host = types.SimpleNamespace(**tcr.split_host())
+        self.queries = 0
+        def split(request, num_new_tokens, num_new_local_computed_tokens=0):
+            self.queries += 1
+            return tcr.SPLIT(host, request, num_new_tokens, num_new_local_computed_tokens=num_new_local_computed_tokens)
+        self.scheduler = types.SimpleNamespace(_mamba_block_aligned_split=split, **vars(host))
+        self.cap = so.bounded_limit([52624, 1024], self.START, so.native_chunk_cap(2048, host.max_num_scheduled_tokens))
+
+    def controller(self, hold):
+        controller = so.StagedAdmissionController.__new__(so.StagedAdmissionController)
+        controller.minimum_stage_rows, controller.chunk_bound = 64, [52624, 1024]
+        controller.native_hold_s, controller.native_residue = hold, 1
+        controller.exact_counters = dict(exact_admits=0, exact_terminal=0)
+        return controller
+
+    def request(self):
+        return types.SimpleNamespace(request_id='r', num_tokens=self.PROMPT, num_prompt_tokens=self.PROMPT, num_computed_tokens=0, shared_prefix_boundary=0)
+
+    def test_under_the_hold_the_successor_is_not_terminal_and_the_plan_is_cheap(self):
+        self.assertFalse(self.controller(600)._successor_reaches_end(self.scheduler, self.request(), self.START, self.cap))
+        self.assertLess(self.queries, 16, 'the moved view plans in a few queries, not the 65,536 bound')
+
+    def test_the_answer_is_the_plan_admission_makes(self):
+        controller, request = self.controller(600), self.request()
+        view = controller.plan_view(self.scheduler, request)
+        self.assertIsNot(view, request, 'the hold moves the stop on a short tail')
+        end = controller.native_end(self.scheduler, request)
+        plan = so.staged_chunk_plan(self.START, end, self.cap, 64, lambda p, l: controller._aligned_split(
+            self.scheduler, so._ProjectedPrefillRequest(view, p), so.bounded_limit(controller.chunk_bound, p, l)))
+        self.assertEqual(plan, (704, 225))
+        self.assertFalse(controller._successor_reaches_end(self.scheduler, request, self.START, self.cap))
+
+    def test_hold_off_keeps_the_raw_view(self):
+        controller, request = self.controller(0), self.request()
+        self.assertIs(controller.plan_view(self.scheduler, request), request)
+
+    def test_the_same_inputs_are_answered_once(self):
+        controller, request = self.controller(600), self.request()
+        first = controller._successor_reaches_end(self.scheduler, request, self.START, self.cap)
+        asked = self.queries
+        self.assertEqual(controller._successor_reaches_end(self.scheduler, request, self.START, self.cap), first)
+        self.assertEqual(self.queries, asked, 'the parked chunk asks every tick; the second ask is the kept answer')
+        self.assertTrue(controller._successor_reaches_end(self.scheduler, request, 37136, self.cap), 'a new start plans again: 225 rows, terminal')
+        self.assertGreater(self.queries, asked)
+        other = self.request()
+        controller._successor_reaches_end(self.scheduler, other, self.START, self.cap)
+        self.assertGreater(self.queries, asked + 1, 'another request object plans again')
 
 
 if __name__ == '__main__':

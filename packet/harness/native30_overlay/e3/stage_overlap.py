@@ -409,9 +409,19 @@ class StagedAdmissionController(PrefillAdmissionController):
         end = self.native_end(scheduler, request)       # coverage-soak-fix: the block boundary on a geometry tail
         if self.minimum_stage_rows <= 1:
             return start + self._aligned_split(scheduler, _ProjectedPrefillRequest(request, start), min(cap, end - start)) >= end
+        # coverage-throughput: the admission's own view (plan_view), so this answer is the plan admit() would make.  The
+        # parked chunk asks once per engine tick with the same inputs, so the last answer is kept per those inputs.
+        view = self.plan_view(scheduler, request)
+        bound = getattr(self, 'chunk_bound', None)
+        key = (start, end, cap, self.minimum_stage_rows, tuple(bound) if bound else None, view is request, request.num_tokens)
+        memo = getattr(self, '_successor_end_memo', None)
+        if memo is not None and memo[0] is request and memo[1] == key:
+            return memo[2]
         plan = staged_chunk_plan(start, end, cap, self.minimum_stage_rows,
-                                 lambda position, limit: self._aligned_split(scheduler, _ProjectedPrefillRequest(request, position), bounded_limit(getattr(self, 'chunk_bound', None), position, limit)))
-        return not plan or start + plan[0] >= end
+                                 lambda position, limit: self._aligned_split(scheduler, _ProjectedPrefillRequest(view, position), bounded_limit(bound, position, limit)))
+        answer = not plan or start + plan[0] >= end
+        self._successor_end_memo = (request, key, answer)
+        return answer
 
     # -- lookups by transaction ---------------------------------------------
     def _record_for(self, transaction):

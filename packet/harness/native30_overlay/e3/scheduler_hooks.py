@@ -2178,6 +2178,20 @@ class PrefillAdmissionController:
             return False
         return 0 < prompt_end - 1 - prompt_end // unit * unit < self.minimum_stage_rows
 
+    def plan_view(self, scheduler, request):
+        """The request every staged plan of ``request`` reads: the admission's, and the exact successor's (coverage-throughput).
+
+        a1-trunk 1d: a yield's short request plans over the moved stop; decode-phase hold: every native admission does, as
+        the auto-arm's _plan selected it.  Else the request itself.  One rule, so a plan that admits and a plan that only
+        asks "is the next chunk terminal" can't disagree (soak: the raw view had no plan on a short hash tail, the search
+        ran to its 65,536-query bound on every engine tick, ~250 ms a step, and named a non-terminal successor terminal).
+        """
+        owner = getattr(scheduler, '_flash_s5_driver', None)
+        is_append = getattr(owner, 'append_yield_is_append', None)
+        if (callable(is_append) and is_append(request)) or getattr(self, 'native_hold_s', 0):
+            return self._append_yield_split_view(scheduler, request)
+        return request
+
     def _append_yield_split_view(self, scheduler, request):
         """The request stock's split reads for a yield's short request: a short tail moves the stop one hash unit back.
 
@@ -2437,11 +2451,7 @@ class PrefillAdmissionController:
             raise E3ContractError('scheduler token budget is not declared')
         cap = native_chunk_cap(self.chunk_tokens, budget)
         if self.minimum_stage_rows > 1:
-            # a1-trunk 1d: every chunk of a yield's short request plans over the same view, flag off this is the request.
-            is_append = getattr(owner, 'append_yield_is_append', None)
-            # decode-phase hold: every native admission plans over the moved stop, as the auto-arm's _plan selected it.
-            view = (self._append_yield_split_view(scheduler, request)
-                    if (callable(is_append) and is_append(request)) or self.native_hold_s else request)
+            view = self.plan_view(scheduler, request)
             def projected_split(position, limit):
                 limit = bounded_limit(self.chunk_bound, position, limit)
                 if position == start:
