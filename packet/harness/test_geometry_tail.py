@@ -42,6 +42,18 @@ class Rule(unittest.TestCase):
         for r in (0, 1, 65, 176, 4047):
             self.assertEqual(self.rows(22 * BLOCK + r), 0, r)
 
+    def test_unit_tails_with_the_prefix_cache(self):
+        """Build-2 (c), option A: the tail past the last 176-row unit, not only past the last block (the soak's 48 appends)."""
+        self.assertEqual((HOST.mamba_partial_cache_hit, HOST.hash_block_size), (True, UNIT))
+        for r in (2, 33, 61, 64):
+            n = 22 * BLOCK + 3 * UNIT + r
+            self.assertEqual(self.rows(n), r, r)
+            self.assertEqual(self.rows(n, mamba_partial_cache_hit=False), 0, 'the block rule without the prefix cache')
+        for r in (0, 1, 65, 175):
+            self.assertEqual(self.rows(22 * BLOCK + 3 * UNIT + r), 0, r)
+        self.assertEqual(self.rows(37362), 37362 % UNIT, 'HoldView geometry: tail 50 past the last unit')
+        self.assertEqual(self.rows(22 * BLOCK + 3 * UNIT + 11, hash_block_size=None), 0, 'no int unit: the block rule')
+
     def test_the_four_soak_turns_are_geometry_tails(self):
         self.assertEqual([self.rows(n) for _name, n, _s in SOAK], [48, 11, 49, 41])
 

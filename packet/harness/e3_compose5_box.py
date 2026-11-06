@@ -325,6 +325,8 @@ def coverage_delta(start, end):
     # coverage-soak-fix (lead, 6 Nov 06:25): a geometry tail's r rows (2..64) after the request's own native turn that ended at the
     # last block boundary, once per turn, are native-served as their own class; the counter names them only so, any row past r is
     # 'handback-excess'. max_r and max_rows are the engine's life maxima, not this window's.
+    # coverage-throughput build-2 (c) (lead, 6 Nov): the boundary is the prompt's last prefix unit (176 rows; a block boundary is
+    # one); same class, same once-per-turn and 64-row limits, so the grade below is unchanged.
     ga, gb = a.get('geometry_tail') or {}, b.get('geometry_tail') or {}
     out['geometry_tail'] = dict(turns=gb.get('turns', 0) - ga.get('turns', 0),
                                 rows=sum(out['rows'][s]['stock'].get('geometry-tail', 0) for s in ('live', 'idle')),

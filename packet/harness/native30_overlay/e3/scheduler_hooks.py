@@ -1226,18 +1226,25 @@ GEOMETRY_TAIL_MAX = QSA_STAGE_MIN_ROWS  # coverage-soak-fix: the most rows a geo
 
 def geometry_tail_rows(scheduler, request, minimum):
     """coverage-soak-fix (lead, 6 Nov 06:25): r = num_tokens % block when 2 <= r <= minimum, else 0.
+    coverage-throughput build-2 (c) (lead, 6 Nov, option A): with the fine-grained prefix cache on
+    (``mamba_partial_cache_hit`` and an int ``hash_block_size``), the boundary is the prompt's last prefix unit:
+    r = num_tokens % hash_block_size. A block boundary is a unit multiple, so every block tail is still one.
 
-    Stock's split must stop at the last Mamba block boundary (num_tokens - r), so a native turn to num_tokens - 1 would
+    Stock's split must stop at the last registered boundary (num_tokens - r), so a native turn to num_tokens - 1 would
     end in a chunk of r - 1 rows, under the staged minimum, and has no plan (soak build-2: all four plan-empty nr turns).
     The native turn ends at that boundary instead and stock runs the r rows, the prompt's last chunk (stock's split
-    exempts it from alignment). 0: the one-row handback. Pure, from stock's own block size.
+    exempts it from alignment). Ending there, the commit registers the state at the last unit as stock's own turn does,
+    so the next turn's hit lands where stock's would (the soak: 48 of 143 appends recomputed a mean 1,960 rows more when
+    the moved stop skipped that unit). 0: the one-row handback. Pure, from stock's own block and unit sizes.
     """
     block = getattr(getattr(scheduler, 'cache_config', None), 'block_size', None)
     n = getattr(request, 'num_tokens', None)
     if (type(block) is not int or block < 1 or type(n) is not int or type(minimum) is not int
             or getattr(scheduler, 'use_eagle_block_drop', False)):
         return 0
-    r = n % block
+    unit = getattr(scheduler, 'hash_block_size', None)
+    step = unit if (getattr(scheduler, 'mamba_partial_cache_hit', False) is True and type(unit) is int and unit >= 1) else block
+    r = n % step
     return r if 2 <= r <= min(minimum, GEOMETRY_TAIL_MAX) and n - r > 0 else 0
 
 

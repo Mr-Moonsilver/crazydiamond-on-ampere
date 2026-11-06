@@ -182,8 +182,24 @@ class HoldView(unittest.TestCase):
     Soak (q18a-compose-soak, ANSWERS Q1): the chunk before a short hash tail planned its successor over the raw request, which has
     no plan there; the search ran to its 65,536-query bound on every engine tick (~250 ms a step, ~4.3 s a chunk) and named a
     non-terminal successor terminal, so the early successor never opened.
+
+    Build-2 (c), option A, ends such a turn at its last 176-row unit (a geometry tail), so the hold no longer moves this stop.
+    The pause-fix checks run under the block rule (build-1's geometry_tail_rows, ``block_rule``), where it still does; the
+    unit tail's own answer is in ``test_unit_tail_*``.
     """
     PROMPT, START = 37362, 36432        # Q1's txn 478 -> its successor: 929 rows left, tail 49 rows past the last 176-row unit
+
+    def setUp_block_rule(self):
+        import scheduler_hooks as sh
+        from unittest import mock
+
+        def block_rule(scheduler, request, minimum):
+            block = scheduler.cache_config.block_size
+            r = request.num_tokens % block
+            return r if 2 <= r <= min(minimum, sh.GEOMETRY_TAIL_MAX) and request.num_tokens - r > 0 else 0
+        patcher = mock.patch.object(sh, 'geometry_tail_rows', block_rule)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def setUp(self):
         import test_coverage_residue as tcr
@@ -206,10 +222,12 @@ class HoldView(unittest.TestCase):
         return types.SimpleNamespace(request_id='r', num_tokens=self.PROMPT, num_prompt_tokens=self.PROMPT, num_computed_tokens=0, shared_prefix_boundary=0)
 
     def test_under_the_hold_the_successor_is_not_terminal_and_the_plan_is_cheap(self):
+        self.setUp_block_rule()
         self.assertFalse(self.controller(600)._successor_reaches_end(self.scheduler, self.request(), self.START, self.cap))
         self.assertLess(self.queries, 16, 'the moved view plans in a few queries, not the 65,536 bound')
 
     def test_the_answer_is_the_plan_admission_makes(self):
+        self.setUp_block_rule()
         controller, request = self.controller(600), self.request()
         view = controller.plan_view(self.scheduler, request)
         self.assertIsNot(view, request, 'the hold moves the stop on a short tail')
@@ -224,6 +242,7 @@ class HoldView(unittest.TestCase):
         self.assertIs(controller.plan_view(self.scheduler, request), request)
 
     def test_the_same_inputs_are_answered_once(self):
+        self.setUp_block_rule()
         controller, request = self.controller(600), self.request()
         first = controller._successor_reaches_end(self.scheduler, request, self.START, self.cap)
         asked = self.queries
@@ -234,6 +253,22 @@ class HoldView(unittest.TestCase):
         other = self.request()
         controller._successor_reaches_end(self.scheduler, other, self.START, self.cap)
         self.assertGreater(self.queries, asked + 1, 'another request object plans again')
+
+    def test_unit_tail_ends_the_turn_at_the_last_unit_and_the_view_stays(self):
+        import scheduler_hooks as sh
+        controller, request = self.controller(600), self.request()
+        self.assertEqual(sh.geometry_tail_rows(self.scheduler, request, 64), self.PROMPT % 176)
+        self.assertEqual(controller.native_end(self.scheduler, request), self.PROMPT - self.PROMPT % 176)
+        self.assertIs(controller.plan_view(self.scheduler, request), request, 'a geometry tail: the stop is not moved')
+
+    def test_unit_tail_successor_is_the_one_chunk_to_the_last_unit_and_cheap(self):
+        controller, request = self.controller(600), self.request()
+        end = controller.native_end(self.scheduler, request)
+        plan = so.staged_chunk_plan(self.START, end, self.cap, 64, lambda p, l: controller._aligned_split(
+            self.scheduler, so._ProjectedPrefillRequest(request, p), so.bounded_limit(controller.chunk_bound, p, l)))
+        self.assertEqual(plan, (end - self.START,))
+        self.assertTrue(controller._successor_reaches_end(self.scheduler, request, self.START, self.cap))
+        self.assertLess(self.queries, 16)
 
 
 if __name__ == '__main__':
