@@ -101,9 +101,12 @@ def coverage_delta(start, end):
                 if any(type(v) is not int or v < 0 for v in diff.values()) or out['steps'] < 0 or out['errors'] < 0:
                     return None
                 out[table][state][path] = {site: v for site, v in diff.items() if v}
-    live = out['rows']['live']
+    live, idle = out['rows']['live'], out['rows']['idle']
     native, stock = sum(live['native'].values()), sum(live['stock'].values())
     out['live_native_share'] = round(native / (native + stock), 6) if native + stock else None
+    native += sum(idle['native'].values())
+    stock += sum(idle['stock'].values())
+    out['all_native_share'] = round(native / (native + stock), 6) if native + stock else None      # the lead's 01:10 target: 1.0 both
     return out
 
 
@@ -142,8 +145,9 @@ def grade(arms, *args, **kwargs):
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':native-residue-not-acknowledged'})
         if rec is not None and cap_selected(rec):
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':reserved-cap-selected'})
-    # coverage-residue: the operator's rule, measured. On a residue arm any stock prefill row with a decoder live fails it, the last-row
-    # handback by its own name (native rows produce no logits: the one path this build leaves stock).
+    # coverage-residue: the operator's rule, measured. On a residue arm any stock prefill row fails it, with a decoder live or idle (the lead,
+    # 6 Nov 01:10: 100 % of all prefill rows), the last-row handback by its own name (native rows produce no logits: the one path this build
+    # leaves stock).
     result['coverage'] = coverage_windows(arms)
     rows = T.by_label()
     for label, delta in result['coverage'].items():
@@ -153,11 +157,12 @@ def grade(arms, *args, **kwargs):
         else:
             if delta['errors']:
                 fails.append('coverage-errors')
-            stock = delta['rows']['live']['stock']
-            if rows[label]['native_residue'] and any(v for site, v in stock.items() if site != 'handback'):
-                fails.append('stock-prefill-with-decoder-live')
-            if rows[label]['native_residue'] and stock.get('handback'):
-                fails.append('handback-row-with-decoder-live')
+            for state, name in (('live', 'with-decoder-live'), ('idle', 'idle')):
+                stock = delta['rows'][state]['stock']
+                if rows[label]['native_residue'] and any(v for site, v in stock.items() if site != 'handback'):
+                    fails.append('stock-prefill-' + name)
+                if rows[label]['native_residue'] and stock.get('handback'):
+                    fails.append('handback-row-' + name)
         result['failures'] = sorted(set(result['failures']) | {label + ':' + f for f in fails})
     result['verdict'] = 'FAIL' if result['failures'] else 'INC' if result['missing'] else 'PASS'
     return result

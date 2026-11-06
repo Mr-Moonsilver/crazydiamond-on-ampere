@@ -22,7 +22,7 @@ CORE = ' '.join('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRAD
 ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, nw and nr eight replay agents for %d s, three pairs' % table.REPLAY['DURATION'])
 HEADER_ANCHOR = '# compose-4: the four lever tracks on one engine under the closed-loop agent replay'
 HEADER_NOTE = ('# coverage-residue: the hold build (nw) against it with the residue native (nr) under the closed-loop replay, discovery mode, lean: three pairs of short arms, '
-               "the residue the only difference; the grade fails nr on any stock prefill row with a decoder live (harness/compose5_arms.py, tmp/a1-trunk/READY-coverage-residue.md). "
+               "the residue the only difference; the grade fails nr on any stock prefill row, decoder live or idle (harness/compose5_arms.py, tmp/a1-trunk/READY-coverage-residue.md). "
                "The reader is coverage-residue/scratch/coverage_read.py on the hub.\n")
 NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-compose-residue'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
 # compose-5's box imports compose-4's box, table and replay by their names; the rename above must not reach them.

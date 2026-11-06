@@ -2,8 +2,9 @@
 
 The operator's rule (5 Nov 23:10): the engine takes 100 % of prefill on the native lane while any decoder is live. nw is the hold build as
 q18a-compose-hold runs it (b13h, native_hold 600). nr is nw with native_residue on: the hold's stock residue goes native (the shared-prefix
-junction, a hit leaving under 64 rows, a refused selection held for a changed cohort). Every arm counts its prefill rows by path and site,
-decoder live or not (the engine's coverage counter); a stock row with a decoder live on nr is a FAIL in the grade. Forked from the hold at
+junction, a hit leaving under 64 rows, a refused selection held for a changed cohort, a lost race not counted as a refusal, and idle prefill:
+held and selected with an empty cohort). Every arm counts its prefill rows by path and site, decoder live or idle (the engine's coverage
+counter); any stock prefill row on nr is a FAIL in the grade (lead, 6 Nov 01:10: 100 % of all prefill rows). Forked from the hold at
 5879e0e3. Discovery mode. One launch, connections 32 and FLASH_S5_CHUNK_TOKENS=2048 for the whole run. Per arm, by typed control at entry:
   sm    the a1 live arm's shape, the exact-path smoke, b13; its failure stops the table
   dec1  one standing stream, decode only, as compose-5

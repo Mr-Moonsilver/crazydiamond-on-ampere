@@ -446,6 +446,81 @@ class Refused(unittest.TestCase):
         self.assertEqual(s.policy.stock_site(r), 'retries-spent')
 
 
+class Idle(unittest.TestCase):
+    """The lead's 01:10 target: 100 % of all prefill rows, idle included. With the residue, nothing running is no reason for stock."""
+
+    def test_with_nothing_running_it_is_held_and_selected_with_an_empty_cohort(self):
+        s = held_stage(1)
+        r = s.queue[0]
+        s.scheduler.running = []
+        self.assertTrue(s.policy.holds_from_stock(r))
+        self.assertTrue(s.policy.tick())
+        self.assertEqual(s.policy.cohort, ())
+        self.assertEqual(s.policy.decline_record()['residue']['idle_selected'], 1)
+
+    def test_off_nothing_running_goes_stock_and_the_cohort_is_empty_as_today(self):
+        s = held_stage(0)
+        r = s.queue[0]
+        s.scheduler.running = []
+        self.assertFalse(s.policy.holds_from_stock(r))
+        self.assertEqual(s.policy.stock_site(r), 'nothing-running')
+        self.assertFalse(s.policy.tick())
+        self.assertEqual(s.policy._decline_why, 'cohort-empty')
+
+
+def closing(residue):
+    s = held_stage(residue)
+    r = s.queue[0]
+    s.driver.append_yield_end = lambda reason: None
+    s.policy.holds_from_stock(r)
+    return s, r
+
+
+def close(s, r, reason, via_rollback=False):
+    s.policy.request_ref = auto.weakref.ref(r)
+    s.policy.old_pause, s.policy.external_pause = rig.Pause.UNPAUSED, False
+    if via_rollback:
+        s.policy._rollback(reason)            # no split: straight to _restore
+    else:
+        s.policy._restore(reason)
+
+
+class Races(unittest.TestCase):
+    """The hold box's 'cooldown' turns: three quick closes, then stock. A lost race is not a refusal of the request."""
+
+    def test_a_race_close_does_not_mark_the_request_refused(self):
+        for reason, via in (('selection-changed-during-output-drain', False), ('worker-barrier-cohort-refused', True), ('selection-changed-before-arm', True)):
+            s, r = closing(1)
+            close(s, r, reason, via)
+            self.assertNotIn(r.request_id, s.policy.rejected, reason)
+            self.assertEqual(s.policy.decline_record()['residue']['races'], 1)
+
+    def test_the_rollback_reason_survives_the_return_to_full(self):
+        s, r = closing(1)
+        s.policy._rollback_reason = 'selection-changed-before-arm'
+        close(s, r, 'returned-before-native-admission')
+        self.assertNotIn(r.request_id, s.policy.rejected)
+
+    def test_races_are_bounded_then_it_is_a_refusal(self):
+        s, r = closing(1)
+        for _ in range(auto.MAX_RACES):
+            close(s, r, 'selection-changed-during-output-drain')
+        self.assertNotIn(r.request_id, s.policy.rejected)
+        close(s, r, 'selection-changed-during-output-drain')
+        self.assertIn(r.request_id, s.policy.rejected)
+        self.assertEqual(s.policy.decline_record()['residue']['races_spent'], 1)
+
+    def test_a_real_refusal_still_marks_it(self):
+        s, r = closing(1)
+        close(s, r, 'worker-graph-support-refused', True)
+        self.assertIn(r.request_id, s.policy.rejected)
+
+    def test_off_every_close_marks_it_as_the_hold_does(self):
+        s, r = closing(0)
+        close(s, r, 'selection-changed-during-output-drain')
+        self.assertIn(r.request_id, s.policy.rejected)
+
+
 class StockSite(unittest.TestCase):
     def test_every_hold_refusal_names_itself(self):
         s = held_stage(1)
@@ -455,8 +530,7 @@ class StockSite(unittest.TestCase):
         self.assertEqual(s.policy.stock_site(r), 'manual-owned')
         s.policy.manual_owned = False
         s.scheduler.running = []
-        s.policy.holds_from_stock(r)
-        self.assertEqual(s.policy.stock_site(r), 'nothing-running')
+        self.assertTrue(s.policy.holds_from_stock(r))          # under the residue nothing running is held too (Idle)
         s.scheduler.running = [rig.decoder()]
         s.driver.clock = lambda: 1 / 0
         s.policy.holds_from_stock(r)

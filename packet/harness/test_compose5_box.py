@@ -560,6 +560,18 @@ class Coverage(unittest.TestCase):
         result = self.grade.grade_of(self.arms_with(R1, stock={'handback': 12}))
         self.assertEqual([f for f in result['failures'] if f.startswith(R1)], [R1 + ':handback-row-with-decoder-live'])
 
+    def test_idle_stock_rows_fail_a_residue_arm_too_and_both_shares_are_given(self):
+        arms = self.grade.records()
+        rec = next(a for a in arms if a.get('label') == R0)
+        later = [rec['statuses'][-1]] + [s for a in arms if a.get('label') in T.labels()[T.labels().index(R0) + 1:] for s in a['statuses']]
+        for status in later:
+            cov = ((status.get('append_yield') or {}).get('declines') or {}).get('coverage')
+            if cov is not None:
+                cov['rows']['idle']['stock'] = {'no-seam': 250, 'handback': 2}
+        result = self.grade.grade_of(arms)
+        self.assertEqual([f for f in result['failures'] if f.startswith(R0)], [R0 + ':handback-row-idle', R0 + ':stock-prefill-idle'])
+        self.assertEqual((result['coverage'][R0]['live_native_share'], result['coverage'][R0]['all_native_share']), (1.0, round(1000 / 1252, 6)))
+
     def test_the_hold_arm_is_read_not_failed(self):
         result = self.grade.grade_of(self.arms_with(W0, stock={'plan-shared': 500}))
         self.assertEqual(result['verdict'], 'PASS', result['failures'])

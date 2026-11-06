@@ -41,6 +41,11 @@ TRANSIENT_PLAN_SITES = frozenset(('plan-kv-blocks',))      # waits: blocks free 
 # that leaves under the staged minimum is lowered (scheduler_hooks.residue_hit); a refused selection stays held and is tried
 # again once the decode cohort has changed, with no retry count. What stock still takes, it takes by name (stock_site).
 MAX_STOCK_WHY = 1024
+# coverage-residue, idle (lead, 6 Nov 01:10: 100 % of all prefill rows, idle included): with the residue on, the hold holds with nothing
+# running and the policy selects with an empty cohort. A close that lost a race (the selection or the cohort moved under it, the hold box's
+# 'cooldown' turns: three quick closes, then stock) is not a refusal of the request: no rejected mark, at most MAX_RACES per request.
+RACE_CLOSES = frozenset(('selection-changed-during-output-drain', 'selection-changed-before-arm', 'worker-barrier-cohort-refused'))
+MAX_RACES = 8
 
 
 def enabled(env):
@@ -138,7 +143,9 @@ class AutoArmPolicy:
         self.stock_why = {}
         self.unhold_site = {}
         self.refused_cohort = {}
-        self.residue_counts = dict(junction=0, lowered=0, refused_held=0, refused_retried=0)
+        self.residue_counts = dict(junction=0, lowered=0, refused_held=0, refused_retried=0, idle_selected=0, races=0, races_spent=0)
+        self.races = {}
+        self._rollback_reason = None
 
     @property
     def active(self):
@@ -275,7 +282,7 @@ class AutoArmPolicy:
             if self.manual_owned:
                 self._why(request, 'manual-owned')
                 return False
-            if not self.scheduler.running:
+            if not self.scheduler.running and not self._residue():
                 self._why(request, 'nothing-running')
                 return False
             uid = request.request_id
@@ -411,6 +418,8 @@ class AutoArmPolicy:
     def _cohort(self):
         running = tuple(self.scheduler.running)
         if not running:
+            if self._residue():
+                return ()              # coverage-residue: idle prefill goes native too; the barrier proves an empty live set
             self._decline_why = 'cohort-empty'
             return None
         if len(running) > min(MAX_COHORT, self.scheduler.max_num_running_reqs - 1):
@@ -735,6 +744,8 @@ class AutoArmPolicy:
             self.hold_totals['moved_stop'] += 1
         if getattr(self, '_plan_residue', None) in ('junction', 'lowered'):
             self.residue_counts[self._plan_residue] += 1
+        if cohort == () and self._residue():
+            self.residue_counts['idle_selected'] += 1
         self.request_ref = weakref.ref(request)
         self.plan, self.cohort = plan, cohort
         self.selection_seq += 1
@@ -756,7 +767,10 @@ class AutoArmPolicy:
         self.reentry = False
         self.restores[reason] = self.restores.get(reason, 0) + 1
         self._note('closed', reason=reason)
-        self._remember()
+        why = self._rollback_reason if reason == 'returned-before-native-admission' and self._rollback_reason else reason
+        self._rollback_reason = None
+        if not self._race_close(why):
+            self._remember()
         self.phase = 'idle'
         self.pending = None
         self.request_ref = None
@@ -768,7 +782,24 @@ class AutoArmPolicy:
             self.scheduler.set_pause_state(self.old_pause)
         self.old_pause = None
 
+    def _race_close(self, why):
+        """coverage-residue: True when this close lost a race and the request is not marked refused (at most MAX_RACES each)."""
+        request = self.request_ref() if self.request_ref is not None else None
+        if why not in RACE_CLOSES or request is None or not self._residue():
+            return False
+        uid = request.request_id
+        count = self.races.pop(uid, 0) + 1
+        self.races[uid] = count
+        while len(self.races) > MAX_REJECTED:
+            self.races.pop(next(iter(self.races)))
+        if count > MAX_RACES:
+            self.residue_counts['races_spent'] += 1
+            return False
+        self.residue_counts['races'] += 1
+        return True
+
     def _rollback(self, reason):
+        self._rollback_reason = reason
         self.rollbacks[reason] = self.rollbacks.get(reason, 0) + 1
         self._note('refused', reason=reason)
         if self.driver._split_ready:
