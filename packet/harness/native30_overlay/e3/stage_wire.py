@@ -189,7 +189,7 @@ def stage_ahead(bridge, record):
     except Exception:
         try:
             import lane_chunk
-            lane_chunk.PREPARE_AHEAD['errors'] += 1
+            lane_chunk.ahead_count('errors')
         except Exception:
             pass
         return None

@@ -59,6 +59,33 @@ PREPARE_SLICES = dict(selected=False, sliced=0, yields=0, peek_missing=0)
 # refused: a stage request that did not qualify (counted by reason); errors: a staging that raised (nothing staged).
 PREPARE_AHEAD = dict(selected=False, staged=0, adopted=0, dropped=0, refused={}, errors=0)
 PREPARE_AHEAD_ENV = 'FLASH_S5_PREPARE_AHEAD'
+AHEAD_LINE = 'flash-s5 prepare-ahead '
+AHEAD_EVERY = 128            # decisions between receipt lines (the first decision always has one)
+
+
+def ahead_line():
+    """The worker's cumulative counters as one receipt line (a reader takes an arm's delta per worker pid)."""
+    import json, os
+    row = dict(PREPARE_AHEAD, refused=dict(sorted(PREPARE_AHEAD['refused'].items())), pid=os.getpid())
+    return AHEAD_LINE + json.dumps(row, sort_keys=True, separators=(',', ':'))
+
+
+def ahead_count(key, reason=None, emit=None):
+    """Build-2 (a): one prepare-ahead decision counted; the receipt line at the first and every AHEAD_EVERY-th. Never raises."""
+    try:
+        if key == 'refused':
+            PREPARE_AHEAD['refused'][reason] = PREPARE_AHEAD['refused'].get(reason, 0) + 1
+        else:
+            PREPARE_AHEAD[key] += 1
+        decisions = (PREPARE_AHEAD['staged'] + PREPARE_AHEAD['adopted'] + PREPARE_AHEAD['dropped'] + PREPARE_AHEAD['errors']
+                     + sum(PREPARE_AHEAD['refused'].values()))
+        if decisions == 1 or decisions % AHEAD_EVERY == 0:
+            if emit is None:
+                from executor_hooks import _progress_logger
+                emit = _progress_logger().info
+            emit(ahead_line())
+    except Exception:
+        pass
 
 
 def prepare_ahead_from_env(env):
@@ -1244,7 +1271,7 @@ class LaneChunkFactory:
         return chunk
 
     def _refuse_ahead(self, reason):
-        PREPARE_AHEAD['refused'][reason] = PREPARE_AHEAD['refused'].get(reason, 0) + 1
+        ahead_count('refused', reason)
         return dict(staged=False, why=reason)
 
     def stage_ahead(self, admission):
@@ -1274,16 +1301,16 @@ class LaneChunkFactory:
             chunk.input_batch()
             chunk.build_metadata(precopy=False)
         except Exception:
-            PREPARE_AHEAD['errors'] += 1
+            ahead_count('errors')
             return dict(staged=False, why='error')
         self._staged = (admission, chunk)
-        PREPARE_AHEAD['staged'] += 1
+        ahead_count('staged')
         return dict(staged=True, why='staged')
 
     def drop_ahead(self):
         if self._staged is not None:
             self._staged = None
-            PREPARE_AHEAD['dropped'] += 1
+            ahead_count('dropped')
             return True
         return False
 
@@ -1293,10 +1320,10 @@ class LaneChunkFactory:
         if staged is None:
             return None
         if staged[0] != admission or not self.can_slice(admission) or staged[1].builder_set != self._next_set():
-            PREPARE_AHEAD['dropped'] += 1
+            ahead_count('dropped')
             return None
         chunk = self._finish(admission, staged[1])
-        PREPARE_AHEAD['adopted'] += 1
+        ahead_count('adopted')
         return chunk
 
     def _finish(self, admission, chunk):

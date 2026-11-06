@@ -10,6 +10,7 @@ What it does not: device ordering itself (the fake torch has no streams), the en
 """
 import types
 import unittest
+import unittest.mock
 
 import test_e3_lane_chunk as tlc
 import test_e3_lane_dispatch as ld
@@ -257,6 +258,42 @@ def record(chunk_start=8, chunk_end=11, seq=2):
         transaction=TransactionId(1, 'req-a', 0, chunk_start, chunk_end, seq), prompt_end=20, state_epoch=9, committed_end=chunk_start,
         block_tables=((5, 6, 7), (9, 10), (), (0, 0)), slot_mappings=((0, 1, 2), (3, 4), (), ()),
         new_block_ids_to_zero=(), cow_pairs=(), input_ids=tuple(range(chunk_end - chunk_start)), ngram_context=(70, 71, 72))
+
+
+class Receipt(Reset, unittest.TestCase):
+    """Build-2 (a): the worker's counters reach the box log as 'flash-s5 prepare-ahead {json}' at the first decision and every
+    AHEAD_EVERY-th, cumulative, with the worker pid; the count itself never raises, even when the logger does."""
+
+    def test_first_and_every_nth_decision_emit_the_cumulative_row(self):
+        import json, os
+        lines = []
+        lc.ahead_count('staged', emit=lines.append)
+        self.assertEqual(len(lines), 1)
+        for _ in range(lc.AHEAD_EVERY - 3):
+            lc.ahead_count('adopted', emit=lines.append)
+        lc.ahead_count('refused', 'set-held', emit=lines.append)
+        self.assertEqual(len(lines), 1)
+        lc.ahead_count('refused', 'live-chunk-not-finalized', emit=lines.append)      # decision AHEAD_EVERY
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].startswith(lc.AHEAD_LINE))
+        row = json.loads(lines[1][len(lc.AHEAD_LINE):])
+        self.assertEqual(row, dict(selected=False, staged=1, adopted=lc.AHEAD_EVERY - 3, dropped=0, errors=0, pid=os.getpid(),
+                                   refused={'live-chunk-not-finalized': 1, 'set-held': 1}))
+        self.assertEqual(list(row['refused']), sorted(row['refused']))
+
+    def test_factory_decisions_are_counted_through_it(self):
+        lines = []
+        torch = tlc.fake_torch()
+        factory = lc.LaneChunkFactory(tlc.fake_runner(torch, []), ports=tlc.fake_ports([]), torch_module=torch)
+        with unittest.mock.patch.object(lc, 'ahead_count', lambda *a, **k: lines.append(a)):
+            factory.stage_ahead(later())
+        self.assertEqual(lines, [('refused', 'not-selected')])
+
+    def test_a_failing_logger_never_raises_and_still_counts(self):
+        def boom(_text):
+            raise RuntimeError('logger')
+        lc.ahead_count('errors', emit=boom)
+        self.assertEqual(lc.PREPARE_AHEAD['errors'], 1)
 
 
 class Flag(unittest.TestCase):
