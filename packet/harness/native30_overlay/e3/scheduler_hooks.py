@@ -1442,6 +1442,9 @@ class PrefillCoverage:
         self._native_site = {}       # uid -> site of its native prefill (bounded)
         self._admitted = {}          # transaction -> (live, site) until commit or cancel
         self._handback = {}          # uid -> weakref of a request whose last row a native turn handed back
+        self._handback_rows = {}     # uid -> stock rows of a handed-back request (bounded): the first is 'handback', any more 'handback-excess'
+        self.native_turns = 0        # native turns that ended in a handback (note_handback): a handback row needs one before it
+        self.handback_max_rows = 0   # the most stock rows any handed-back request ran (cumulative): 1 is the contract
         self._counted = {}           # (state, path, uid) -> True: a request counted once per bucket (bounded)
 
     @staticmethod
@@ -1489,6 +1492,18 @@ class PrefillCoverage:
                         why = getattr(policy, 'stock_site', None)
                         site = why(request) if callable(why) else 'no-policy'
                     self._bounded(self._stock_site, uid, site)
+                if site == 'handback':
+                    # lead, 6 Nov: the handback is native-served only as exactly one row of the native turn's own handback;
+                    # any row past the first (a preemption's replay, a longer handback) is a stock row by its own name.
+                    before_rows = self._handback_rows.get(uid, 0)
+                    self._bounded(self._handback_rows, uid, before_rows + rows)
+                    self.handback_max_rows = max(self.handback_max_rows, before_rows + rows)
+                    first = max(0, min(rows, 1 - before_rows))
+                    if first:
+                        self._add(live, 'stock', 'handback', uid, first)
+                    if rows - first:
+                        self._add(live, 'stock', 'handback-excess', uid, rows - first)
+                    continue
                 self._add(live, 'stock', site, uid, rows)
         except Exception:
             self.errors += 1
@@ -1518,6 +1533,9 @@ class PrefillCoverage:
 
     def note_handback(self, request):
         try:
+            self.native_turns += 1
+            self._handback_rows.pop(request.request_id, None)       # a new turn's handback starts its own count
+            self._stock_site.pop(request.request_id, None)          # and is named by this turn, not an earlier stock site
             self._bounded(self._handback, request.request_id, weakref.ref(request))
         except Exception:
             self.errors += 1
@@ -1525,7 +1543,8 @@ class PrefillCoverage:
     def record(self):
         copy = lambda table: {state: {path: dict(sites) for path, sites in paths.items()} for state, paths in table.items()}
         return dict(schema=COVERAGE_SCHEMA, rows=copy(self.rows), requests=copy(self.requests), steps=self.steps,
-                    errors=self.errors, open_native=len(self._admitted))
+                    errors=self.errors, open_native=len(self._admitted), native_turns=self.native_turns,
+                    handback_max_rows=self.handback_max_rows)
 
 
 def residue_hit(scheduler, request, floor):

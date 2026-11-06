@@ -157,6 +157,43 @@ class Counter(unittest.TestCase):
         self.c.note_stock(scheduler, out)
         self.assertEqual(self.c.record()['rows']['live']['stock'], {'handback': 1})
 
+    def test_a_handback_longer_than_one_row_is_handback_excess(self):
+        d = running('d', 100, 140, tokens=141)
+        p = running('p', 5000, 4997)
+        self.c.note_handback(p)
+        scheduler, out = step((d, 1, True), (p, 3, True))
+        self.c.note_stock(scheduler, out)
+        rec = self.c.record()
+        self.assertEqual(rec['rows']['live']['stock'], {'handback': 1, 'handback-excess': 2})
+        self.assertEqual((rec['native_turns'], rec['handback_max_rows']), (1, 3))
+
+    def test_a_replay_after_the_handback_is_handback_excess(self):
+        d = running('d', 100, 140, tokens=141)
+        p = running('p', 5000, 4999)
+        self.c.note_handback(p)
+        scheduler, out = step((d, 1, True), (p, 1, True))
+        self.c.note_stock(scheduler, out)
+        p.num_computed_tokens, p.num_tokens = 0, 5001       # preempted after its first output: stock replays it
+        scheduler, out = step((d, 1, True), (p, 1024, True))
+        self.c.note_stock(scheduler, out)
+        rec = self.c.record()
+        self.assertEqual(rec['rows']['live']['stock'], {'handback': 1, 'handback-excess': 1024})
+        self.assertEqual(rec['handback_max_rows'], 1025)
+
+    def test_each_native_turn_names_its_own_handback(self):
+        d = running('d', 100, 140, tokens=141)
+        p = running('p', 5000, 0)
+        scheduler, out = step((d, 1, True), (p, 64, True), policy=NS(stock_site=lambda r: 'no-seam'))
+        self.c.note_stock(scheduler, out)                   # stock first, then a native turn hands back its last row
+        for _ in range(2):
+            p.num_computed_tokens = 4999
+            self.c.note_handback(p)
+            scheduler, out = step((d, 1, True), (p, 1, True), policy=NS(stock_site=lambda r: 'no-seam'))
+            self.c.note_stock(scheduler, out)
+        rec = self.c.record()
+        self.assertEqual(rec['rows']['live']['stock'], {'no-seam': 64, 'handback': 2})
+        self.assertEqual((rec['native_turns'], rec['handback_max_rows']), (2, 1))
+
     def test_handback_is_bound_to_the_request_object_not_its_uid(self):
         d = running('d', 100, 140, tokens=141)
         self.c.note_handback(running('p', 5000, 4999))

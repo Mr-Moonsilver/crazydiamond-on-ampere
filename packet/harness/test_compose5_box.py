@@ -528,7 +528,7 @@ class Coverage(unittest.TestCase):
     """The operator's rule on the residue arms, from the engine's counter in the status rows (scheduler_hooks.PrefillCoverage)."""
     grade = Grade()
 
-    def arms_with(self, label, *, stock=None, errors=0, drop=False):
+    def arms_with(self, label, *, stock=None, errors=0, drop=False, native_turns=None, max_rows=None, idle_stock=None):
         """Counts added inside this arm's window: its 'after' and every later status (the counter is cumulative)."""
         arms = self.grade.records()
         rec = next(a for a in arms if a.get('label') == label)
@@ -537,7 +537,13 @@ class Coverage(unittest.TestCase):
             cov = ((status.get('append_yield') or {}).get('declines') or {}).get('coverage')
             if cov is not None:
                 cov['rows']['live']['stock'] = dict(stock or {})
+                if idle_stock is not None:
+                    cov['rows']['idle']['stock'] = dict(idle_stock)
                 cov['errors'] += errors
+                if native_turns is not None:
+                    cov['native_turns'] = native_turns
+                if max_rows is not None:
+                    cov['handback_max_rows'] = max_rows
         if drop:
             rec['statuses'][0]['append_yield'].pop('declines')
         return arms
@@ -556,21 +562,40 @@ class Coverage(unittest.TestCase):
         self.assertIn(R0 + ':stock-prefill-with-decoder-live', result['failures'])
         self.assertEqual(result['coverage'][R0]['rows']['live']['stock'], {'no-seam': 3})
 
-    def test_the_handback_row_fails_by_its_own_name(self):
-        result = self.grade.grade_of(self.arms_with(R1, stock={'handback': 12}))
-        self.assertEqual([f for f in result['failures'] if f.startswith(R1)], [R1 + ':handback-row-with-decoder-live'])
+    def test_the_one_row_handback_of_a_native_turn_is_native_served(self):
+        result = self.grade.grade_of(self.arms_with(R1, stock={'handback': 12}, native_turns=12))
+        self.assertEqual([f for f in result['failures'] if f.startswith(R1)], [])
+        cov = result['coverage'][R1]
+        self.assertEqual(cov['handback'], dict(turns=12, rows=12, excess_rows=0, requests=12, native_turns=12, max_rows_per_turn=1,
+                                               every_row_after_a_native_turn=True))
+        self.assertEqual((cov['live_native_share'], cov['all_native_share']), (1.0, 1.0))
+        self.assertEqual(cov['live_native_share_strict'], round(1000 / 1012, 6))
+
+    def test_a_handback_row_with_no_native_turn_before_it_fails(self):
+        result = self.grade.grade_of(self.arms_with(R1, stock={'handback': 12}, native_turns=11))
+        self.assertEqual([f for f in result['failures'] if f.startswith(R1)], [R1 + ':handback-not-one-row-of-a-native-turn'])
+
+    def test_an_orphan_handback_fails_its_own_window_not_the_later_ones(self):
+        result = self.grade.grade_of(self.arms_with(R0, stock={'handback': 2}, native_turns=1))
+        self.assertIn(R0 + ':handback-not-one-row-of-a-native-turn', result['failures'])
+        self.assertEqual([f for f in result['failures'] if f.startswith(R1)], [])
+
+    def test_a_longer_handback_is_a_stock_row_and_fails(self):
+        result = self.grade.grade_of(self.arms_with(R1, stock={'handback': 3, 'handback-excess': 2}, native_turns=3, max_rows=3))
+        self.assertEqual([f for f in result['failures'] if f.startswith(R1)],
+                         [R1 + ':handback-not-one-row-of-a-native-turn', R1 + ':stock-prefill-with-decoder-live'])
+        self.assertEqual((result['coverage'][R1]['handback']['max_rows_per_turn'], result['coverage'][R1]['handback']['rows']), (3, 5))
+        self.assertEqual(result['coverage'][R1]['live_native_share'], round(1003 / 1005, 6))
+
+    def test_the_hold_valve_expired_fails_a_residue_arm(self):
+        result = self.grade.grade_of(self.arms_with(R0, stock={'expired': 1}))
+        self.assertEqual([f for f in result['failures'] if f.startswith(R0)], [R0 + ':stock-prefill-with-decoder-live'])
 
     def test_idle_stock_rows_fail_a_residue_arm_too_and_both_shares_are_given(self):
-        arms = self.grade.records()
-        rec = next(a for a in arms if a.get('label') == R0)
-        later = [rec['statuses'][-1]] + [s for a in arms if a.get('label') in T.labels()[T.labels().index(R0) + 1:] for s in a['statuses']]
-        for status in later:
-            cov = ((status.get('append_yield') or {}).get('declines') or {}).get('coverage')
-            if cov is not None:
-                cov['rows']['idle']['stock'] = {'no-seam': 250, 'handback': 2}
-        result = self.grade.grade_of(arms)
-        self.assertEqual([f for f in result['failures'] if f.startswith(R0)], [R0 + ':handback-row-idle', R0 + ':stock-prefill-idle'])
-        self.assertEqual((result['coverage'][R0]['live_native_share'], result['coverage'][R0]['all_native_share']), (1.0, round(1000 / 1252, 6)))
+        result = self.grade.grade_of(self.arms_with(R0, idle_stock={'no-seam': 250, 'handback': 2}, native_turns=2))
+        self.assertEqual([f for f in result['failures'] if f.startswith(R0)], [R0 + ':stock-prefill-idle'])
+        self.assertEqual((result['coverage'][R0]['live_native_share'], result['coverage'][R0]['all_native_share']), (1.0, round(1002 / 1252, 6)))
+        self.assertEqual(result['coverage'][R0]['all_native_share_strict'], round(1000 / 1252, 6))
 
     def test_the_hold_arm_is_read_not_failed(self):
         result = self.grade.grade_of(self.arms_with(W0, stock={'plan-shared': 500}))

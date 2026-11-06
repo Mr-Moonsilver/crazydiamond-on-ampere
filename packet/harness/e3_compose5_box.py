@@ -89,7 +89,8 @@ def coverage_delta(start, end):
     a, b = _coverage(start), _coverage(end)
     if a is None or b is None:
         return None
-    out = dict(steps=b.get('steps', 0) - a.get('steps', 0), errors=b.get('errors', 0) - a.get('errors', 0), open_native=b.get('open_native'))
+    out = dict(steps=b.get('steps', 0) - a.get('steps', 0), errors=b.get('errors', 0) - a.get('errors', 0), open_native=b.get('open_native'),
+               native_turns=b.get('native_turns', 0) - a.get('native_turns', 0))
     for table in ('rows', 'requests'):
         out[table] = {}
         for state in ('live', 'idle'):
@@ -102,11 +103,27 @@ def coverage_delta(start, end):
                     return None
                 out[table][state][path] = {site: v for site, v in diff.items() if v}
     live, idle = out['rows']['live'], out['rows']['idle']
-    native, stock = sum(live['native'].values()), sum(live['stock'].values())
-    out['live_native_share'] = round(native / (native + stock), 6) if native + stock else None
-    native += sum(idle['native'].values())
-    stock += sum(idle['stock'].values())
-    out['all_native_share'] = round(native / (native + stock), 6) if native + stock else None      # the lead's 01:10 target: 1.0 both
+    # The lead (6 Nov): the one-row handback of a native turn is native-served (one token in the decode batch for its logits), so the
+    # shares count it native; 'strict' counts it stock. Any other stock row, 'handback-excess' and 'expired' included, is stock.
+    hb_rows = sum(out['rows'][s]['stock'].get('handback', 0) for s in ('live', 'idle'))
+    hb_requests = sum(out['requests'][s]['stock'].get('handback', 0) for s in ('live', 'idle'))
+    excess = sum(out['rows'][s]['stock'].get('handback-excess', 0) for s in ('live', 'idle'))
+    # every 'handback' row is the first stock row after its own native turn's note_handback (the counter only names it so then): one per
+    # turn, so turns == rows. "A native turn before it", exact over the engine's life: handback rows never outrun native turns; a
+    # window fails if that deficit grows inside it (an earlier window's own is that window's failure, not this one's).
+    deficit = lambda c: sum(((c.get('rows') or {}).get(s) or {}).get('stock', {}).get('handback', 0) for s in ('live', 'idle')) - c.get('native_turns', 0)
+    out['handback'] = dict(turns=hb_rows, rows=hb_rows + excess, excess_rows=excess, requests=hb_requests, native_turns=out['native_turns'],
+                           max_rows_per_turn=(b.get('handback_max_rows') if excess else (1 if hb_rows else 0)),
+                           every_row_after_a_native_turn=deficit(b) <= max(0, deficit(a)))
+    def share(states, served):
+        native = sum(sum(out['rows'][s]['native'].values()) for s in states)
+        stock = sum(sum(out['rows'][s]['stock'].values()) for s in states)
+        if served:
+            moved = sum(out['rows'][s]['stock'].get('handback', 0) for s in states)
+            native, stock = native + moved, stock - moved
+        return round(native / (native + stock), 6) if native + stock else None
+    out['live_native_share'], out['all_native_share'] = share(('live',), True), share(('live', 'idle'), True)     # target 1.0 both
+    out['live_native_share_strict'], out['all_native_share_strict'] = share(('live',), False), share(('live', 'idle'), False)
     return out
 
 
@@ -146,8 +163,8 @@ def grade(arms, *args, **kwargs):
         if rec is not None and cap_selected(rec):
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':reserved-cap-selected'})
     # coverage-residue: the operator's rule, measured. On a residue arm any stock prefill row fails it, with a decoder live or idle (the lead,
-    # 6 Nov 01:10: 100 % of all prefill rows), the last-row handback by its own name (native rows produce no logits: the one path this build
-    # leaves stock).
+    # 6 Nov 01:10: 100 % of all prefill rows). The lead's call (6 Nov): the one-row handback of a native turn is native-served, only as exactly
+    # one row per turn after that turn (a longer one is 'handback-excess', stock); more handbacks than native turns fail.
     result['coverage'] = coverage_windows(arms)
     rows = T.by_label()
     for label, delta in result['coverage'].items():
@@ -161,8 +178,9 @@ def grade(arms, *args, **kwargs):
                 stock = delta['rows'][state]['stock']
                 if rows[label]['native_residue'] and any(v for site, v in stock.items() if site != 'handback'):
                     fails.append('stock-prefill-' + name)
-                if rows[label]['native_residue'] and stock.get('handback'):
-                    fails.append('handback-row-' + name)
+            hb = delta['handback']
+            if rows[label]['native_residue'] and (hb['excess_rows'] or not hb['every_row_after_a_native_turn']):
+                fails.append('handback-not-one-row-of-a-native-turn')
         result['failures'] = sorted(set(result['failures']) | {label + ':' + f for f in fails})
     result['verdict'] = 'FAIL' if result['failures'] else 'INC' if result['missing'] else 'PASS'
     return result
