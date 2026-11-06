@@ -36,7 +36,8 @@ class Queue(list):
 
 def req(uid='r1', tokens=70000, **fields):
     base = dict(request_id=uid, status=NS(name='WAITING'), num_computed_tokens=0, num_output_tokens=0, num_preemptions=0, resumable=False, lora_request=None,
-                pooling_params=None, structured_output_request=None, ec_transfer_params=None, sampling_params=NS(prompt_logprobs=None, logprobs=None), num_tokens=tokens)
+                pooling_params=None, structured_output_request=None, ec_transfer_params=None, sampling_params=NS(prompt_logprobs=None, logprobs=None), num_tokens=tokens,
+                num_prompt_tokens=tokens, is_prefill_chunk=False)      # build-2 (b): the pinned Request fields K2's tail reads
     base.update(fields)
     return Ref(**base)
 

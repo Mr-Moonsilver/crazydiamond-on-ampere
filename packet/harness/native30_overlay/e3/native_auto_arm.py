@@ -119,6 +119,8 @@ class AutoArmPolicy:
         self.schedule_before = 0
         self.external_pause = False
         self.cooldown = False
+        # coverage-throughput build-2 (b): engine ticks in 'tail' since the FULL ack (closes by reason: restores)
+        self.tail_ticks = 0
         # returning-append A1: the decode cohort sizes the last identity proof
         # covered, and whether the entry phases run a yielded bulk's re-entry.
         self.decode_counts = None
@@ -374,6 +376,33 @@ class AutoArmPolicy:
         self.driver._record('auto_' + event, selection_seq=self.selection_seq,
                             request_uid=self.snapshot()['request_uid'], **fields)
 
+    @staticmethod
+    def _handback_scheduled(request):
+        """K2: stock has scheduled every prompt row of the handed-back request (the 1-row handback, or a geometry
+        tail's r rows over one or two steps); RUNNING, no chunk left, so the cohort reads it as a decoder."""
+        return (getattr(getattr(request, 'status', None), 'name', None) == 'RUNNING' and not request.is_prefill_chunk
+                and request.num_computed_tokens >= request.num_prompt_tokens)
+
+    def _tail_ack(self):
+        """Receipt (b): the FULL return is acknowledged and the tail starts; splits the unlogged handoff on the box."""
+        self.tail_ticks = 0
+        try:
+            from engine_driver import _progress_logger
+            request = self._request()
+            _progress_logger().info('flash-s5 tail full-ack selection=%d computed=%s prompt=%s', self.selection_seq,
+                                    getattr(request, 'num_computed_tokens', None), getattr(request, 'num_prompt_tokens', None))
+        except Exception:
+            self.decline_totals['read_errors'] += 1
+
+    def _tail_end(self, reason, request):
+        """Receipt (b): the tail ends (K2 at the scheduled handback, or the old first-token/left close)."""
+        try:
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 tail end reason=%s selection=%d ticks=%d output_tokens=%s', reason,
+                                    self.selection_seq, self.tail_ticks, getattr(request, 'num_output_tokens', None))
+        except Exception:
+            self.decline_totals['read_errors'] += 1
+
     def _request(self):
         request = self.request_ref() if self.request_ref is not None else None
         if request is None or self.scheduler.requests.get(request.request_id) is not request:
@@ -596,6 +625,7 @@ class AutoArmPolicy:
             if d.append_yield_stale() is None:
                 self.phase = 'tail'
                 self._note('full_handback')
+                self._tail_ack()
             return False
         if phase == 'append':
             c = self.controller
@@ -869,6 +899,7 @@ class AutoArmPolicy:
             if not d._split_ready and not d.active:
                 self.phase = 'tail'
                 self._note('full_handback')
+                self._tail_ack()
             elif (request is None or (self.controller._schedule_seq > self.schedule_before
                     and self.controller.admitted == self.admitted_before)):
                 if not d.active:
@@ -883,10 +914,24 @@ class AutoArmPolicy:
                 return False
         if self.phase == 'tail':
             request = self._request()
-            if request is None or request.num_output_tokens > 0:
-                self._restore('full-tail-completed')
-            self._decline('tail')
-            return False
+            self.tail_ticks += 1
+            if request is not None and request.num_output_tokens == 0 and self._handback_scheduled(request):
+                # coverage-throughput build-2 (b) K2 (lead, 6 Nov): every handback row is scheduled on FULL, so the
+                # request is a decoder; close with no cooldown and select the next head in this tick. PAUSED_ALL
+                # stops further stock steps, the drain lands the handback step, and the barrier proves the cohort
+                # with this request in it (prefill 0), as for any decoder. A failed selection leaves the policy idle.
+                self._tail_end('full-tail-scheduled', request)
+                self._restore('full-tail-scheduled')
+                self.cooldown = False
+                if not self._select():
+                    return False
+                # a fresh selection: the drain below, as from idle
+            else:
+                if request is None or request.num_output_tokens > 0:
+                    self._tail_end('full-tail-completed', request)
+                    self._restore('full-tail-completed')
+                self._decline('tail')
+                return False
         if self.phase == 'drain_wait':
             # One scheduler pass with the pause released between re-entry attempts.
             if self.controller._schedule_seq <= self.drain_wait_seq and self.driver.append_yield_active():
