@@ -2239,15 +2239,19 @@ class PrefillAdmissionController:
             return None
         prompt_end = request.num_tokens
         manager = scheduler.kv_cache_manager
+        end = self.native_end(scheduler, request)
         self._yield_scanning = True
         try:
-            blocks, start, shared = manager.get_computed_blocks(request)
+            if getattr(self, 'native_residue', 0) == 1:
+                # coverage-throughput: the residue's hit, as admit() takes it (a short hit lowered); pure, like the stock lookup.
+                blocks, start, shared, _ = residue_hit(scheduler, request, self.minimum_stage_rows, end)
+            else:
+                blocks, start, shared = manager.get_computed_blocks(request)
         finally:
             self._yield_scanning = False
         if shared or type(start) is not int or start < 0:
             self._yield_refuse('shared-junction')
             return None
-        end = self.native_end(scheduler, request)
         if end - start < 1 or end - start > config.max_new:
             self._yield_refuse('max-new')
             return None
@@ -2260,12 +2264,14 @@ class PrefillAdmissionController:
         if needed + manager.watermark_blocks > manager.block_pool.get_num_free_blocks():
             self._yield_refuse('blocks')
             return None
-        cap = min(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', 0))
+        cap = native_chunk_cap(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', 0))   # coverage-throughput: admit()'s cap
         if cap < 1:
             self._yield_refuse('cap')
             return None
         view = self._append_yield_split_view(scheduler, request)
+        bound = getattr(self, 'chunk_bound', None)
         def split(position, limit):
+            limit = bounded_limit(bound, position, limit)       # coverage-throughput: the chunk bound admit() plans with
             projected = view if position == start else _ProjectedPrefillRequest(view, position)
             return self._aligned_split(scheduler, projected, limit,
                                        num_new_local_computed_tokens=start if position == start else 0)

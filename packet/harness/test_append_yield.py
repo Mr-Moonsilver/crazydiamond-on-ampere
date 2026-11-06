@@ -869,6 +869,52 @@ class Control(unittest.TestCase):
         self.assertNotIn('append_yield', driver.submit_control({'action': 'status'}))
 
 
+class CandidateAsAdmitted(unittest.TestCase):
+    """coverage-throughput: the yield's candidate plan is the one admit() makes for it: the residue's hit (a short hit lowered),
+    the chunk bound and the native chunk cap. Before, a candidate on the coverage line could be planned from stock's hit, past
+    the bound and under a 1024 cap, then admitted from another start and other chunks."""
+
+    def setUp(self):
+        self.rig = Rig(cached={}, max_new=16)
+        self.c, self.s = self.rig.c, self.rig.s
+        self.c.minimum_stage_rows = 4
+
+    def pick(self):
+        return self.c.append_yield_candidate(self.s, self.rig.bulk)
+
+    def test_the_residue_lowers_a_short_hit_as_admit_does(self):
+        request = self.rig.add_held('ra-r', 40, cached=38)            # 1 row left: under the staged minimum, no plan
+        request.block_hashes = ()
+        manager = self.s.kv_cache_manager
+        asked = []
+        def longest(hashes, limit):
+            asked.append(limit)
+            return [], 31, 0
+        manager.coordinator.find_longest_cache_hit = longest
+        manager.create_kv_cache_blocks = lambda found: NS(blocks=())
+        self.assertIsNone(self.pick(), 'stock\'s hit leaves 1 row')
+        self.c.native_residue = 1
+        self.assertIs(self.pick(), request, 'the residue lowers the hit to 31: 8 rows, two 4-row chunks')
+        self.assertEqual(asked, [35])
+
+    def test_the_residue_still_refuses_a_shared_junction(self):
+        self.rig.add_held('ra-j', 12, cached=4)
+        self.c.native_residue = 1
+        self.s.kv_cache_manager.get_computed_blocks = lambda r: (NS(blocks=()), 4, 8)
+        self.assertIsNone(self.pick())
+
+    def test_the_chunk_bound_applies(self):
+        request = self.rig.add_held('ra-b', 9)
+        self.assertIs(self.pick(), request)
+        self.c.chunk_bound = (0, 3)                                   # every chunk under the minimum: no plan
+        self.assertIsNone(self.pick())
+
+    def test_the_native_chunk_cap_applies(self):
+        request = self.rig.add_held('ra-c', 10)                       # 9 rows: no plan of 4-row chunks at minimum 4
+        self.c.chunk_tokens, self.s.max_num_scheduled_tokens = 2048, 4
+        self.assertIs(self.pick(), request, 'native_chunk_cap(2048, 4) is 2048: one chunk')
+
+
 class Candidate(unittest.TestCase):
     """The yield candidate rule over the real controller (auto-arm _plan's refusals minus the bulk floor)."""
 
