@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""q18a-compose-throughput-b24c64 box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
+"""q18a-compose-throughput-p2 box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode.
+parity-2 adds the per-row terminal_successor, acknowledged (FAIL), and its counters per replay arm: nt that never admitted a terminal
+successor is INC (not engaged), ny that did is FAIL; the counts are reported per arm. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
 coverage-residue adds the per-row native_residue, acknowledged, keeps the engine's decline record (with its prefill coverage counter) in each status row, and grades coverage per replay arm.
 coverage-soak adds, per replay arm: the requests still open when the replay gave up on them, by agent, session and send time (a hang, named), and
 the engine's memory at the traffic's start and end (per-rank free VRAM by nvidia-smi, the engine container's process RSS by docker top), read on
@@ -29,7 +31,7 @@ _report = _box.report
 
 
 def report(result):
-    text = _report(result).replace('q18a-compose-4', 'q18a-compose-throughput-b24c64', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    text = _report(result).replace('q18a-compose-4', 'q18a-compose-throughput-p2', 1).replace('compose4_rule.py', 'compose5_rule.py')
     # coverage-soak-fix: the geometry-tail class and the worker RSS read, one line per replay arm (the decode gap is the reader's)
     extra = []
     for label, cov in sorted((result.get('coverage') or {}).items()):
@@ -55,6 +57,10 @@ def report(result):
         # build-3: the arms the RSS rule does not grade (ny, the control), read the same way
         if label not in (result.get('worker_rss') or {}) and not label.startswith('nr-first-') and delta is not None:
             extra.append('- %s worker RSS (read, not graded): %s' % (label, rss_read(delta)))
+    for label, row in sorted((result.get('terminal') or {}).items()):
+        # parity-2 A: the terminal successor's counters over the arm (stage_delta), and the exact plan's terminal answers beside them
+        extra.append('- %s terminal successor: selected %s, admitted %s, mismatch %s; exact admits %s, exact terminal answers %s'
+                     % (label, row['selected'], row['terminal_admits'], row['terminal_mismatch'], row['exact_admits'], row['exact_terminal']))
     alloc = result.get('alloc_retries')
     if alloc:
         # build-2b24c64: the logits cap's retry rule, per rank over the run, then per arm
@@ -621,6 +627,8 @@ def grade(arms, *args, **kwargs):
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':native-hold-not-acknowledged'})
         if rec is not None and (rec.get('inwait') or {}).get('residue_acknowledged') != row['native_residue']:
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':native-residue-not-acknowledged'})
+        if rec is not None and (rec.get('inwait') or {}).get('terminal_acknowledged') is not row['terminal_successor']:
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':terminal-successor-not-acknowledged'})
         if rec is not None and cap_selected(rec):
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':reserved-cap-selected'})
     # coverage-residue: the operator's rule, measured. On a residue arm any stock prefill row fails it, with a decoder live or idle (the lead,
@@ -685,6 +693,23 @@ def grade(arms, *args, **kwargs):
         flags = memory_flags(run_delta)
         if flags:
             result['memory_flags']['nr-first-start-to-last-start'] = flags
+    # parity-2 A: per replay arm, the terminal successor's counters over the arm. On nt, none admitted is not engaged (INC: the fix did not
+    # run, so the pair does not price it); on ny, any admitted is the control moved (FAIL). A mismatch (the plan named a chunk terminal that
+    # was not) is counted by the engine, not raised, and reported here.
+    result['terminal'] = terminal = {}
+    for row in T.arms():
+        rec = by.get(row['label'])
+        if row['kind'] != 'replay' or rec is None:
+            continue
+        delta = rec.get('stage_delta') or {}
+        terminal[row['label']] = read = dict(selected=row['terminal_successor'], **{k: delta.get('step_iw_' + k) for k in ('terminal_admits', 'terminal_mismatch', 'exact_admits', 'exact_terminal')})
+        admits = read['terminal_admits']
+        if type(admits) is not int:
+            result['missing'] = sorted(set(result['missing']) | {row['label'] + ':terminal-counters-not-read'})
+        elif row['terminal_successor'] and admits == 0:
+            result['missing'] = sorted(set(result['missing']) | {row['label'] + ':terminal-successor-not-engaged'})
+        elif not row['terminal_successor'] and admits:
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':terminal-successor-on-the-control'})
     result['verdict'] = 'FAIL' if result['failures'] else 'INC' if result['missing'] else 'PASS'
     return result
 
@@ -708,6 +733,8 @@ def smoke_check(rec, row=None):
         reasons.append('smoke-native-hold-not-acknowledged')
     if (rec.get('inwait') or {}).get('residue_acknowledged') != row['native_residue']:
         reasons.append('smoke-native-residue-not-acknowledged')
+    if (rec.get('inwait') or {}).get('terminal_acknowledged') is not row['terminal_successor']:
+        reasons.append('smoke-terminal-successor-not-acknowledged')
     # A silent fallback to 1024 would read as no gain. The arm's count holds the bulk, its returners and the append, so the line is the bulk's count at 1024: b13's 40 sit well under it.
     prompt, chunks = (rec.get('fresh') or {}).get('prompt_tokens_observed'), (rec.get('progress_delta') or {}).get('chunks')
     if type(prompt) is not int or type(chunks) is not int or chunks >= len(T.planned_chunks(prompt, 1024)):

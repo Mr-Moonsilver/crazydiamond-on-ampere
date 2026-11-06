@@ -1,4 +1,4 @@
-"""q18a-compose-throughput-b24c64 box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, four soak arms on dnr's turn mix, ABBA (build-2b24c64; build-2b24 ran one pair), no tail). One budget for the watchdog and the draft, relative to the run's own start only.
+"""q18a-compose-throughput-p2 box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, four soak arms on dnr's turn mix, ABBA (build-2b24c64; build-2b24 ran one pair), no tail). One budget for the watchdog and the draft, relative to the run's own start only.
 
 soak (lead, 6 Nov 04:10): four arms of 480 s traffic plus a 60 s tail, hard cap 1.3x nominal (~74 min), cleanup included; the run ends by 07:15 CET. The entry limits come from the nominal walls at 1.5x, not from the worst-case caps (those sum past the cap); a step that overruns meets the budget's TERM, whose path is the clean stop (tmp/decode-phase/STOP-dnr.md).
 

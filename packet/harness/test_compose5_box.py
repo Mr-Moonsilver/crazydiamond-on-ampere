@@ -90,11 +90,12 @@ class Table(unittest.TestCase):
     def test_each_pair_differs_in_the_plan_alone_and_shares_a_seed(self):
         rows = T.by_label()
         for on, off, seed in tuple(('nt.g2-live-%d' % i, 'ny.g2-live-%d' % i, i + 1) for i in range(T.PAIRS)):
-            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'chunk_bound', 'label', 'native_hold', 'native_residue', 'selection', 'yield_on'], (on, off))
+            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'chunk_bound', 'label', 'native_hold', 'native_residue', 'selection', 'terminal_successor', 'yield_on'], (on, off))
             self.assertEqual((rows[on]['yield_on'], rows[off]['yield_on']), (True, False), 'coverage-throughput: the yield on nt')
             self.assertEqual((rows[on]['chunk_bound'], rows[off]['chunk_bound']), ([97152, 1024], [52624, 1024]), 'build-2b24: b24 on nt, b13 on ny')
             self.assertEqual((rows[on]['native_hold'], rows[off]['native_hold']), (T.HOLD_S, 0))
             self.assertEqual((rows[on]['native_residue'], rows[off]['native_residue']), (1, 0))
+            self.assertEqual((rows[on]['terminal_successor'], rows[off]['terminal_successor']), (True, False), 'parity-2 A: nt alone')
             self.assertEqual((T.replay_config(rows[on])['SEED'], T.replay_config(rows[off])['SEED']), (seed, seed))
 
     def test_a_replays_config_is_compose_4s_but_for_the_seed(self):
@@ -114,7 +115,7 @@ class Table(unittest.TestCase):
         c4 = T4.by_label()['ctl.g2-live-0']
         row = T.by_label()[W0]
         # coverage-soak-fix build-2: cow_verify off (the worker RSS owner, test_cow_verify_rss)
-        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'cow_verify', 'label', 'native_hold', 'native_residue', 'reserved_cap', 'score_warm', 'selection'])
+        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'cow_verify', 'label', 'native_hold', 'native_residue', 'reserved_cap', 'score_warm', 'selection', 'terminal_successor'])
         self.assertEqual((row['chunk_bound'], row['reserved_cap'], row['yield_on'], row['ple_private'], row['cow_verify'], c4['cow_verify']), ([52624, 1024], False, False, False, False, True))
 
     def test_the_replay_and_the_ceiling_are_compose_4s(self):
@@ -125,6 +126,8 @@ class Table(unittest.TestCase):
     def test_the_hold_and_the_residue_are_on_nr_alone(self):
         self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, {R0: T.HOLD_S, R1: T.HOLD_S})
         self.assertEqual({r['label'] for r in T.arms() if r['native_residue']}, {R0, R1})
+        self.assertEqual({r['label'] for r in T.arms() if r['terminal_successor']}, {R0, R1})
+        self.assertEqual({r['terminal_successor'] for r in T.arms()}, {True, False}, 'every row sends its value')
         self.assertEqual(T.MAX_PROMPT_TOKENS, 135000)
         self.assertEqual((T.RULE_PREFILL_TOK_S, T.RULE_DECODE_VS_FIXED, T.RULE_MIN_NATIVE_BULKS), (T4.RULE_PREFILL_TOK_S, T4.RULE_DECODE_VS_FIXED, T4.RULE_MIN_NATIVE_BULKS))
 
@@ -490,7 +493,8 @@ class Smoke(unittest.TestCase):
         rec = ta1.record_of(row)
         rec.update(ple_private=dict(counters=dict(scopes={'0': 9, '1': 9})), score_warm=dict(counters=dict(allocs={str(k): 1 for k in range(4)})), reserved_cap=dict(requested=False, select={str(k): dict(after=dict(reserved_cap=dict(cap_bytes=0, flushes=0, fraction=0.0, selected=False))) for k in range(4)}, counters=dict(flushes={str(k): 0 for k in range(4)})),
                    cow_host_filter=dict(requested=True, counters=dict(kept={str(k): 0 for k in range(4)}, skipped={str(k): 37 for k in range(4)}, unfiltered={str(k): 0 for k in range(4)})))
-        rec.setdefault('inwait', {}).update(exact_acknowledged=True, bound_requested=[52624, 1024], bound_acknowledged=[52624, 1024], hold_requested=0, hold_acknowledged=0, residue_requested=0, residue_acknowledged=0)
+        rec.setdefault('inwait', {}).update(exact_acknowledged=True, bound_requested=[52624, 1024], bound_acknowledged=[52624, 1024], hold_requested=0, hold_acknowledged=0, residue_requested=0, residue_acknowledged=0,
+                                            terminal_requested=False, terminal_acknowledged=False)
         rec.setdefault('progress_delta', {})['chunks'] = 40
         rec.setdefault('fresh', {})['prompt_tokens_observed'] = 65445
         return rec
@@ -525,6 +529,12 @@ class Smoke(unittest.TestCase):
         self.assert_stops(lambda r: r['inwait'].update(residue_acknowledged=None), 'smoke-native-residue-not-acknowledged')
         self.assert_stops(lambda r: r['inwait'].update(residue_acknowledged=1), 'smoke-native-residue-not-acknowledged')
         self.assert_stops(lambda r: r['inwait'].pop('residue_acknowledged'), 'smoke-native-residue-not-acknowledged')
+
+    def test_the_terminal_successor_not_acknowledged_stops_the_table(self):
+        # parity-2 A: the smoke sends False; an engine that ignores the field (None), a missing key, or 0 for False all stop it
+        for value in (None, True, 0):
+            self.assert_stops(lambda r, value=value: r['inwait'].update(terminal_acknowledged=value), 'smoke-terminal-successor-not-acknowledged')
+        self.assert_stops(lambda r: r['inwait'].pop('terminal_acknowledged'), 'smoke-terminal-successor-not-acknowledged')
 
     def test_a_launch_that_fell_back_to_1024_stops_the_table(self):
         # compose-4's smoke at 1024: 71 chunks, its 66 and the 5 of its returners and append. That's the control: under b13, with the same 5, 45.
@@ -765,7 +775,7 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-compose-throughput-b24c64'))
+        self.assertTrue(text.startswith('# q18a-compose-throughput-p2'))
         self.assertIn('compose5_rule.py', text)
 
 
@@ -787,7 +797,12 @@ class Grade(TwoPairs):
         for k, row in enumerate(T.arms()):
             rec = dict(ta1.record_of(dict(row)), schema=box.ARM_SCHEMA, kind=row['kind'], label=row['label'])
             rec['inwait'] = dict(rec.get('inwait') or {}, bound_requested=row['chunk_bound'], bound_acknowledged=row['chunk_bound'], hold_requested=row['native_hold'], hold_acknowledged=row['native_hold'],
-                                 residue_requested=row['native_residue'], residue_acknowledged=row['native_residue'])
+                                 residue_requested=row['native_residue'], residue_acknowledged=row['native_residue'],
+                                 terminal_requested=row['terminal_successor'], terminal_acknowledged=row['terminal_successor'])
+            if row['kind'] == 'replay':
+                # parity-2 A: the arm's counters as stage_delta carries them (c64's nt.g2-live-0: exact admits 50, terminal answers 2768)
+                rec['stage_delta'] = dict(rec.get('stage_delta') or {}, step_iw_terminal_admits=97 if row['terminal_successor'] else 0, step_iw_terminal_mismatch=0,
+                                          step_iw_exact_admits=50, step_iw_exact_terminal=97 if row['terminal_successor'] else 2768)
             with_coverage(rec, coverage(1000 * k, steps=10 * k), coverage(1000 * k + 900, steps=10 * k + 9))
             if row['kind'] == 'replay':
                 rec['memory'] = dict(start=memory(), end=memory())     # coverage-soak-fix: the worker reads, flat
@@ -1049,6 +1064,37 @@ class Coverage(TwoPairs):
             arms = self.grade.records()
             next(a for a in arms if a.get('label') == row['label'])['inwait']['residue_acknowledged'] = None
             self.assertIn(row['label'] + ':native-residue-not-acknowledged', self.grade.grade_of(arms)['failures'])
+
+    def test_a_terminal_successor_the_engine_did_not_acknowledge_fails(self):
+        for row in T.arms():
+            for value in (None, not row['terminal_successor']):
+                arms = self.grade.records()
+                next(a for a in arms if a.get('label') == row['label'])['inwait']['terminal_acknowledged'] = value
+                self.assertIn(row['label'] + ':terminal-successor-not-acknowledged', self.grade.grade_of(arms)['failures'], (row['label'], value))
+
+    def test_the_terminal_successor_is_read_per_replay_arm(self):
+        result = self.grade.grade_of(self.grade.records())
+        self.assertEqual(result['verdict'], 'PASS', (result['failures'], result['missing']))
+        self.assertEqual(set(result['terminal']), {R0, W0, W1, R1})
+        self.assertEqual((result['terminal'][R0]['selected'], result['terminal'][R0]['terminal_admits']), (True, 97))
+        self.assertEqual((result['terminal'][W0]['selected'], result['terminal'][W0]['terminal_admits'], result['terminal'][W0]['exact_terminal']), (False, 0, 2768))
+        text = box.report(result)
+        self.assertIn('- %s terminal successor: selected True, admitted 97, mismatch 0; exact admits 50, exact terminal answers 97' % R0, text)
+
+    def test_nt_not_engaged_is_inc_and_ny_engaged_fails(self):
+        def edited(label, **delta):
+            arms = self.grade.records()
+            next(a for a in arms if a.get('label') == label)['stage_delta'].update(delta)
+            return self.grade.grade_of(arms)
+        result = edited(R1, step_iw_terminal_admits=0)
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [R1 + ':terminal-successor-not-engaged']), result['failures'])
+        result = edited(W0, step_iw_terminal_admits=1)
+        self.assertEqual((result['verdict'], result['failures']), ('FAIL', [W0 + ':terminal-successor-on-the-control']))
+        result = edited(R0, step_iw_terminal_admits=None)
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [R0 + ':terminal-counters-not-read']), result['failures'])
+        result = edited(R0, step_iw_terminal_mismatch=3)
+        self.assertEqual(result['verdict'], 'PASS', 'a mismatch is counted and reported, not failed')
+        self.assertEqual(result['terminal'][R0]['terminal_mismatch'], 3)
 
     def test_a_count_that_went_down_is_not_read(self):
         self.assertIsNone(box.coverage_delta(dict(append_yield=dict(declines=dict(coverage=coverage(10)))),

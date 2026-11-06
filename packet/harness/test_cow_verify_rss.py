@@ -47,7 +47,7 @@ class Arms(unittest.TestCase):
             self.assertIs(rows['nt.g2-live-%d' % index]['cow_verify'], rows['ny.g2-live-%d' % index]['cow_verify'])
 
     def test_the_settings_leave_the_runner_check_off(self):
-        settings = (HERE / 'runs/q18a_compose_throughput_b24c64_settings.sh').read_text()
+        settings = (HERE / 'runs/q18a_compose_throughput_p2_settings.sh').read_text()
         self.assertIn('QSA_COW_VERIFY=-', settings)
 
 

@@ -354,6 +354,10 @@ class StagedAdmissionController(PrefillAdmissionController):
         self.overlap_refusals = dict.fromkeys(REFUSALS, 0)
         self.last_successor_refusal = None
         self.exact_counters = dict(exact_admits=0, exact_terminal=0)
+        # parity-2 A (READING-lane-pace.md §2): the terminal successor admitted beside commit(n). Its own counters, so the
+        # exact pair keeps its two keys; ``terminal_mismatch``: the plan named n+1 terminal and admission did not (admitted as
+        # an ordinary successor, counted, never raised).
+        self.terminal_counters = dict(terminal_admits=0, terminal_mismatch=0)
 
     # -- successor admission ------------------------------------------------
     def _queue(self, scheduler):
@@ -377,11 +381,19 @@ class StagedAdmissionController(PrefillAdmissionController):
         reason = overlap_refusal(scheduler.kv_cache_manager, request, parked.transaction.chunk_end,
                                  parked.admission.terminal, cap)
         exact = reason == 'successor-may-be-terminal' and getattr(owner, 'exact_successor', False) is True
+        terminal = False
         if exact:
             # inwait build-5: the exact plan in place of the stand-in. cap 0 turns only that clause off, the others still read.
             if self._successor_reaches_end(scheduler, request, parked.transaction.chunk_end, cap):
                 self.exact_counters['exact_terminal'] += 1
                 exact = False
+                if getattr(owner, 'terminal_successor', False) is True:
+                    # parity-2 A: the terminal n+1 is admitted too. It commits after n (commit order), alone, on the
+                    # ordinary path: its release closes the row and its commit hands back on FULL, as a serial terminal
+                    # chunk's. The hash-boundary, shared-prefix and partial-tail clauses still read (cap 0).
+                    terminal = True
+                    reason = overlap_refusal(scheduler.kv_cache_manager, request, parked.transaction.chunk_end,
+                                             parked.admission.terminal, 0)
             else:
                 reason = overlap_refusal(scheduler.kv_cache_manager, request, parked.transaction.chunk_end,
                                          parked.admission.terminal, 0)
@@ -413,6 +425,8 @@ class StagedAdmissionController(PrefillAdmissionController):
             if successor.admission.terminal:
                 raise E3ContractError('exact successor plan named a terminal chunk not terminal')
             self.exact_counters['exact_admits'] += 1
+        if terminal:
+            self.terminal_counters['terminal_admits' if successor.admission.terminal else 'terminal_mismatch'] += 1
         self.overlap_counters['successors'] += 1
         return record
 
@@ -593,6 +607,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         # _frame_ready still holds n+1's open until stage 0 released n, so only the engine's frame comes earlier.
         self.early_successor = False
         self.exact_successor = False
+        # parity-2 A: off until selected, so an installed engine with no selection is the base; needs the exact successor.
+        self.terminal_successor = False
         self.inwait_refused = {}          # refused sends per worker method, on every arm of an installed engine
         self._inwait_refused_chunk = {}
         self._inwait_poll_ns = {0: None, 1: None}
@@ -1335,6 +1351,15 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-exact-successor-invalid')
             if exact and inwait is not True:
                 raise DriverError('native-stage-exact-successor-needs-inwait')
+        terminal = command.get('terminal_successor', None)
+        if 'terminal_successor' in command:
+            # parity-2 A: per arm, in the same pause; it replaces the exact plan's terminal refusal, so it needs that plan.
+            if not self.inwait_installed:
+                raise DriverError('native-stage-inwait-not-installed')
+            if type(terminal) is not bool:
+                raise DriverError('native-stage-terminal-successor-invalid')
+            if terminal and exact is not True:
+                raise DriverError('native-stage-terminal-successor-needs-exact')
         if 'chunk_bound' in command:
             # decode-phase dp6: per arm, in the same pause. None is today's plan.
             if not self.inwait_installed:
@@ -1358,7 +1383,7 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-native-residue-invalid')
         reply = super()._stage_control({k: v for k, v in command.items()
                                         if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor', 'chunk_bound',
-                                                     'native_hold', 'native_residue')})
+                                                     'native_hold', 'native_residue', 'terminal_successor')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -1403,6 +1428,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             reply.update(early_successor=self.early_successor)
             self.exact_successor = bool(inwait and exact)
             reply.update(exact_successor=self.exact_successor)
+            # parity-2 A: a command without the field turns it off, as the exact successor's.
+            self.terminal_successor = bool(self.exact_successor and terminal)
+            reply.update(terminal_successor=self.terminal_successor)
         if 'chunk_bound' in command:
             self.controller.chunk_bound = None if command['chunk_bound'] is None else tuple(command['chunk_bound'])
             reply.update(chunk_bound=command['chunk_bound'])
@@ -1432,8 +1460,13 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             result['overlap']['inwait'] = dict(installed=True, selected=self.inwait, early_successor=self.early_successor,
                                                exact_successor=self.exact_successor,
                                                refused=dict(self.inwait_refused),
-                                               counters=dict(counters, **getattr(self.controller, 'exact_counters', {}), wait_applied=dict(counters['wait_applied']),
+                                               counters=dict(counters, **getattr(self.controller, 'exact_counters', {}),
+                                                             **getattr(self.controller, 'terminal_counters', {}), wait_applied=dict(counters['wait_applied']),
                                                              wait_sent=dict(counters['wait_sent'])))
+            # parity-2 A: the terminal counters ride in the inwait counters (so arm records' stage_delta carries them) and
+            # under their own key with the selection.
+            result['overlap']['terminal_successor'] = dict(selected=self.terminal_successor,
+                                                           counters=dict(getattr(self.controller, 'terminal_counters', {})))
         if self.overlap_observer is not None:
             result['overlap']['observe'] = dict(counters=dict(self.overlap_observer.counters))
         return result

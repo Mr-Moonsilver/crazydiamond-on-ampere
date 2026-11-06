@@ -1,4 +1,12 @@
-"""q18a-compose-throughput-b24c64 arm table: the one declared table (coverage-throughput build-2b24c64, 6 Nov 2026; tmp/decode-phase/READY-coverage-throughput-b2b24c64.md). Change it here and nowhere else.
+"""q18a-compose-throughput-p2 arm table: the one declared table (parity-2 build-1, 7 Nov 2026; tmp/decode-phase/READY-parity-2.md). Change it here and nowhere else.
+
+parity-2 (lead, 6 Nov ~23:35; tmp/decode-phase/READING-lane-pace.md): build-2b24c64's table, engine and launch unchanged, with fix A on nt:
+the terminal successor (``terminal_successor`` on native_stage_local, per arm; it needs the exact successor). On c64 the terminal chunk was
+refused as a successor on 193 of 207 second-to-last chunks (``successor-may-be-terminal``), edge 267-324 ms against ~40. nt sends True, every
+other row sends False; the grade fails an arm whose reply does not echo its value. ABBA nt ny ny nt, seeds 1/2, 480 s, as c64. Build-2b24c64's
+text follows.
+
+q18a-compose-throughput-b24c64 (coverage-throughput build-2b24c64, 6 Nov 2026; tmp/decode-phase/READY-coverage-throughput-b2b24c64.md).
 
 coverage-throughput build-2b24c64 (lead, 6 Nov ~17:12): build-2b24's table with build-2b's full ABBA back (nt ny ny nt, 480 s, the same seeds
 and positions) and the indexer logits cap VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=64 for the whole run (LOGITS_ENV, both preflights assert it).
@@ -90,6 +98,7 @@ BOUND = {'sm': B13_BOUND, 'dec1': B13_BOUND, 'ny': B13_BOUND, 'nt': B24_BOUND}  
 HOLD_S = 600                                      # the engine's valve on a stuck lane, not a wait the arm expects: longer than an arm
 NATIVE_HOLD = {'sm': 0, 'dec1': 0, 'ny': 0, 'nt': HOLD_S}
 NATIVE_RESIDUE = {'sm': 0, 'dec1': 0, 'ny': 0, 'nt': 1}     # the residue needs the hold; ny has neither, as dnr ran it
+TERMINAL_SUCCESSOR = {'sm': False, 'dec1': False, 'ny': False, 'nt': True}     # parity-2 A: nt alone; every row sends its value
 ARM_GENERATIONS = _c4.ARM_GENERATIONS
 ONE_STREAM_WINDOW_S = _c4.ONE_STREAM_WINDOW_S
 
@@ -166,7 +175,8 @@ def arms(part=None):
                          prepare_slices=True, score_warm=False, score_warm_rank0=False, allocator_flush=True, cow_fast=True, reserved_cap=False, cow_host_filter=True, cow_verify=COW_VERIFY, exact_successor=True,
                          ple_private=PLE_PRIVATE[sel], ple_witness=PLE_WITNESS[sel], overlap=True, defer_bind=True, c0='on', stage_local=True, size=2, cohort=cohort, index=index, band=band_of_index(index),
                          extra=False, entry_limit=ENTRY_LIMIT[row_part][0], yield_on=YIELD[sel], plan=PLANS[PLAN[sel]], generations=generations_of(sel), chunk_bound=list(BOUND[sel]),
-                         native_hold=NATIVE_HOLD[sel], native_residue=NATIVE_RESIDUE[sel]))
+                         native_hold=NATIVE_HOLD[sel], native_residue=NATIVE_RESIDUE[sel],
+                         terminal_successor=TERMINAL_SUCCESSOR[sel]))
     return rows
 
 
@@ -195,14 +205,15 @@ def band1_glob():
 def check():
     names = labels()
     assert names[:2] == ['sm.g2-live-0', 'dec1.g2-live-0'] and len(names) == 2 + 2 * PAIRS and names[0] == COLD_ARM and labels('tail') == []
-    assert set(KIND) == set(YIELD) == set(PLE_PRIVATE) == set(PLE_WITNESS) == set(PLAN) == set(NATIVE_HOLD) == set(NATIVE_RESIDUE) == set(SELECTIONS)
+    assert set(KIND) == set(YIELD) == set(PLE_PRIVATE) == set(PLE_WITNESS) == set(PLAN) == set(NATIVE_HOLD) == set(NATIVE_RESIDUE) == set(TERMINAL_SUCCESSOR) == set(SELECTIONS)
     assert REPLAY['START_MAX'] + PROMPT_SLACK_TOKENS < MAX_PROMPT_TOKENS, 'a fresh prompt fits under the ceiling'
     rows = by_label()
     for index in REPLAY_SEEDS:
         on, off = rows['nt.g2-live-%d' % index], rows['ny.g2-live-%d' % index]
-        assert sorted(k for k in on if on[k] != off[k]) == ['c1', 'chunk_bound', 'label', 'native_hold', 'native_residue', 'selection', 'yield_on'], 'each pair differs in the hold, the residue, the yield and the bound alone'
+        assert sorted(k for k in on if on[k] != off[k]) == ['c1', 'chunk_bound', 'label', 'native_hold', 'native_residue', 'selection', 'terminal_successor', 'yield_on'], 'each pair differs in the hold, the residue, the yield, the bound and the terminal successor alone'
         assert on['chunk_bound'] == B24_BOUND and off['chunk_bound'] == B13_BOUND and on['native_hold'] == HOLD_S and off['native_hold'] == 0
         assert on['native_residue'] == 1 and off['native_residue'] == 0
+        assert on['terminal_successor'] is True and off['terminal_successor'] is False
         assert on['yield_on'] and not off['yield_on'] and not on['ple_private'] and not off['ple_private'], "the yield on nt alone; c4b's ple off"
     order = [r['label'] for r in rows.values() if r['kind'] == 'replay']
     assert order == ['nt.g2-live-0', 'ny.g2-live-0', 'ny.g2-live-1', 'nt.g2-live-1'], 'ABBA: nt ny ny nt (build-2b24c64, as build-2b)'
@@ -210,6 +221,7 @@ def check():
     assert {k: REPLAY[k] for k in _c4.REPLAY if k not in ('DURATION', 'WARMUP')} == {k: v for k, v in _c4.REPLAY.items() if k not in ('DURATION', 'WARMUP')}, "dnr's turn mix"
     assert REPLAY['DURATION'] == REPLAY_S and REPLAY['WARMUP'] == 0.0
     assert all(r['native_residue'] == (r['c1'] == 'nt') for r in rows.values()), 'the residue on nt alone'
+    assert all(r['terminal_successor'] is (r['c1'] == 'nt') for r in rows.values()), 'the terminal successor on nt alone, needing the exact successor'
     assert len(set(REPLAY_SEEDS.values())) == PAIRS and replay_config(rows[order[0]])['SEED'] == REPLAY['SEED'] and all(index < 10 for index in REPLAY_SEEDS), "one seed a pair, index 0 c4b's, one digit in a label"
     assert all(not r['score_warm'] and not r['reserved_cap'] and r['exact_successor'] and r['allocator_flush'] for r in rows.values()), "5d's full less the cap and the warm block on every arm"
     assert not any(r['ple_witness'] for r in rows.values()), 'no arm carries the witness'

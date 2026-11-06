@@ -344,7 +344,7 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-local-not-set')
         return reply
 
-    async def native_stage_overlap(self, local, overlap, defer_bind=None, lazy_recv=None, decode_merge=None, inwait=None, early_successor=None, exact_successor=None, chunk_bound=_NOT_SENT, native_hold=_NOT_SENT, native_residue=_NOT_SENT):
+    async def native_stage_overlap(self, local, overlap, defer_bind=None, lazy_recv=None, decode_merge=None, inwait=None, early_successor=None, exact_successor=None, chunk_bound=_NOT_SENT, native_hold=_NOT_SENT, native_residue=_NOT_SENT, terminal_successor=_NOT_SENT):
         """C1 per-arm switch (installed only): C0's command with ``overlap``; the engine re-checks idle FULL.
         alpha-next-c1: ``defer_bind`` (installed only) rides on the same command; the reply must acknowledge it."""
         if not _stage_overlap():
@@ -408,6 +408,13 @@ class NativeControlClient:
             if type(native_residue) is not int or native_residue not in (0, 1):
                 raise NativeControlError('native-control-stage-native-residue-invalid')
             command['native_residue'] = native_residue
+        if terminal_successor is not _NOT_SENT:
+            # parity-2 A: per arm, a bool; needs the exact successor on the same command (the engine refuses it otherwise).
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if type(terminal_successor) is not bool:
+                raise NativeControlError('native-control-stage-terminal-successor-invalid')
+            command['terminal_successor'] = terminal_successor
         if self.engine_epoch is None:
             await self.status()
         reply = await self._call(command)
@@ -431,6 +438,8 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-native-residue-not-set')
         if exact_successor is not None and reply.get('exact_successor') is not exact_successor:
             raise NativeControlError('native-control-stage-exact-successor-not-set')
+        if terminal_successor is not _NOT_SENT and reply.get('terminal_successor') is not terminal_successor:
+            raise NativeControlError('native-control-stage-terminal-successor-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------

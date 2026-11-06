@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_compose_throughput_b24c64_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_compose_throughput_p2_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SHORT = dict(T.REPLAY, AGENTS=2, DURATION=0.4, WARMUP=0.0, START_MIN=60000, START_MAX=60000, TOOL_MIN=0.01, TOOL_MAX=0.02)
@@ -144,6 +144,10 @@ class ArmEnd(a1r.ArmEnd):
                 self.assertEqual(self.driver.controller.native_hold_s, T.NATIVE_HOLD[sel])
                 self.assertEqual((record['inwait']['residue_requested'], record['inwait']['residue_acknowledged']), (T.NATIVE_RESIDUE[sel],) * 2)
                 self.assertEqual(self.driver.controller.native_residue, T.NATIVE_RESIDUE[sel])
+                # parity-2 A: the terminal successor through the real router, session and control to the stage driver
+                self.assertEqual((record['inwait']['terminal_requested'], record['inwait']['terminal_acknowledged']), (T.TERMINAL_SUCCESSOR[sel],) * 2)
+                self.assertIs(self.driver.terminal_successor, T.TERMINAL_SUCCESSOR[sel])
+                self.assertEqual({k: type(record['stage_delta'].get('step_iw_' + k)) for k in ('terminal_admits', 'terminal_mismatch')}, dict(terminal_admits=int, terminal_mismatch=int), 'the counters reach the arm record')
                 # the real driver's status, through the real box: the decline record and its coverage counter reach the arm's record
                 for status in [s for s in record['statuses'] if s['label'] in ('entry', 'after')]:
                     self.assertEqual(status['append_yield']['declines']['coverage']['schema'], 's5-prefill-coverage/1', status['label'])

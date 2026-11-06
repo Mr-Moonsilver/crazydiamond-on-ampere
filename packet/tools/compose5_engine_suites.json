@@ -28,7 +28,8 @@
   "test_compose5_bound",
   "test_compose5_router",
   "test_native_hold",
-  "test_coverage_residue"
+  "test_coverage_residue",
+  "test_parity2_terminal"
  ],
  "refusal_tests": [],
  "why": {}
