@@ -938,11 +938,12 @@ class LaneRequest:
             host_pairs = qsa_host_pairs(runner, admission.block_tables, pairs)
         if host_pairs and views:
             # The QSA pages themselves: pinned host RAM, these are their UVA views. runner.kv_caches holds the layers' GPU placeholders.
-            if fast is not None:
-                host_fast = copy_blocks_fast(views, runner.kv_cache_config.num_blocks, host_pairs)
-            if host_fast is None:
-                copies = [self.ports.block_copy(src, dst) for src, dst in host_pairs]
-                self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
+            # coverage-soak-fix build-3 (lead, 6 Nov 11:45): always stock's copy, as stock's runner does. copy_blocks_fast here was a
+            # host-to-host copy_ per block that ran on the CPU (~9.6 ms a pair), mapping the src and dst pool pages into the worker for
+            # good: the nr worker RssShmem growth with the byte check off. Stock's indexed copy runs on the GPU; ny stayed flat on it.
+            # host_fast stays None (host_fast 0 in the row); the device copy above keeps its fast path.
+            copies = [self.ports.block_copy(src, dst) for src, dst in host_pairs]
+            self.ports.copy_blocks_inplace(views, runner.kv_cache_config.num_blocks, copies)
         marks.append(mark())
         ended = time.monotonic_ns()
         _COW_ROW[0] = dict(marks=marks, zero_ids=len(zero_ids or ()), pairs=len(pairs or ()),

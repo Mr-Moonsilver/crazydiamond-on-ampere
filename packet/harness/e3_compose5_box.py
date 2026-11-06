@@ -47,8 +47,13 @@ def report(result):
             extra.append('- %s YIELD BULK HELD: bulks %d, deferrals %d, expired %d, errors %d (a yielded bulk with no re-entry plan)'
                          % (label, held.get('bulks', 0), held.get('deferrals', 0), held.get('expired', 0), held.get('errors', 0)))
     for label, row in sorted((result.get('worker_rss') or {}).items()):
-        extra.append('- %s worker RSS: %s; native appends %s, history %s tokens'
-                     % (label, ', '.join(row['fails']) or 'no failure', row['native_appends'], row['append_history_tokens']))
+        extra.append('- %s worker RSS: %s; native appends %s, history %s tokens%s'
+                     % (label, ', '.join(row['fails']) or 'no failure', row['native_appends'], row['append_history_tokens'],
+                        '; ' + row['read'] if row.get('read') else ''))
+    for label, delta in sorted((result.get('memory') or {}).items()):
+        # build-3: the arms the RSS rule does not grade (ny, the control), read the same way
+        if label not in (result.get('worker_rss') or {}) and not label.startswith('nr-first-') and delta is not None:
+            extra.append('- %s worker RSS (read, not graded): %s' % (label, rss_read(delta)))
     return text + ('\n' + '\n'.join(extra) + '\n' if extra else '')
 
 
@@ -110,7 +115,7 @@ def cap_selected(rec):
 
 
 COVERAGE_SCHEMA = 's5-prefill-coverage/1'
-MEMORY_SCHEMA = 'soak-memory/1'
+MEMORY_SCHEMA = 'soak-memory/2'       # /2: the box host's meminfo and cgroup in each read (build-3)
 CONTAINER = os.environ.get('Q17_TEST_CONTAINER') or 'qwen-flash-prod'      # the draft's engine container (its CONTAINER)
 GPU_QUERY = ['nvidia-smi', '--query-gpu=index,memory.used,memory.total', '--format=csv,noheader,nounits']
 VRAM_GROWTH_MIB = 64          # flagged: a rank's free VRAM down by this much from an nr arm's start to its settled end, or first nr start to last
@@ -125,6 +130,44 @@ T_GEOMETRY_MAX = 64            # the engine's GEOMETRY_TAIL_MAX (scheduler_hooks
 # the /proc/<pid>/status fields that tell the leak's class (owner hunt, 6 Nov): heap (RssAnon, VmData), pinned (VmLck, VmPin),
 # shared (RssShmem), plus the mapping count (lines of /proc/<pid>/maps)
 STATUS_FIELDS = ('VmRSS', 'RssAnon', 'RssFile', 'RssShmem', 'VmLck', 'VmPin', 'VmData')
+# coverage-soak-fix build-3 (lead, 6 Nov 11:45): the box host's own memory at the same reads, beside the workers' RssShmem: new memory
+# (cgroup memory.current and Shmem up, MemAvailable down) or pool pages already charged, newly mapped into a worker (those flat)
+CGROUP = '/sys/fs/cgroup'
+MEMINFO_FIELDS = ('MemTotal', 'MemAvailable', 'Shmem')
+CGROUP_STAT_FIELDS = ('shmem', 'anon', 'file')
+
+
+def host_memory(cgroup=CGROUP, meminfo='/proc/meminfo', opener=open):
+    """The box host's memory now: /proc/meminfo MemTotal, MemAvailable, Shmem (KiB) and the cgroup's memory.current, memory.max
+    (bytes; 'max' is None) and memory.stat shmem, anon, file (bytes). Read only; never raises: a failed read is an error in the row."""
+    out = dict(errors=[])
+    try:
+        with opener(meminfo) as f:
+            for line in f:
+                key, _, value = line.partition(':')
+                if key in MEMINFO_FIELDS:
+                    parts = value.split()
+                    out[key.lower() + '_kib'] = int(parts[0]) if parts and parts[0].isdigit() else None
+    except Exception as exc:  # noqa: BLE001 - a read, never the arm's failure
+        out['errors'].append('meminfo:' + type(exc).__name__)
+    for name in ('memory.current', 'memory.max'):
+        key = name.replace('.', '_')
+        try:
+            with opener('%s/%s' % (cgroup, name)) as f:
+                value = f.read().strip()
+            out[key] = int(value) if value.isdigit() else None
+        except Exception as exc:  # noqa: BLE001
+            out[key] = None
+            out['errors'].append('%s:%s' % (name, type(exc).__name__))
+    try:
+        with opener('%s/memory.stat' % cgroup) as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) == 2 and parts[0] in CGROUP_STAT_FIELDS:
+                    out['cgroup_' + parts[0]] = int(parts[1]) if parts[1].isdigit() else None
+    except Exception as exc:  # noqa: BLE001
+        out['errors'].append('memory.stat:' + type(exc).__name__)
+    return out
 
 
 def worker_status(pid, proc='/proc', opener=open):
@@ -148,10 +191,14 @@ def worker_status(pid, proc='/proc', opener=open):
     return out
 
 
-def engine_memory(run=subprocess.run, clock=time.time, status=worker_status):
-    """Per-rank VRAM and the engine container's process RSS, now; per Worker_PP its pid, RSS and /proc status (coverage-soak-fix).
-    Read only; never raises: a failed read is an error in the row."""
-    out = dict(schema=MEMORY_SCHEMA, wall_s=clock(), gpus=None, rss_kib=None, processes=None, top=None, workers=None, errors=[])
+def engine_memory(run=subprocess.run, clock=time.time, status=worker_status, host=host_memory):
+    """Per-rank VRAM and the engine container's process RSS, now; per Worker_PP its pid, RSS and /proc status (coverage-soak-fix);
+    the box host's meminfo and cgroup (build-3). Read only; never raises: a failed read is an error in the row."""
+    out = dict(schema=MEMORY_SCHEMA, wall_s=clock(), gpus=None, rss_kib=None, processes=None, top=None, workers=None, host=None, errors=[])
+    try:
+        out['host'] = host()
+    except Exception as exc:  # noqa: BLE001
+        out['errors'].append('host:' + type(exc).__name__)
     try:
         got = run(GPU_QUERY, capture_output=True, text=True, timeout=20)
         gpus = {}
@@ -244,7 +291,40 @@ def memory_delta(start, end):
     rss = (start.get('rss_kib'), end.get('rss_kib'))
     return dict(ranks=ranks or None, rss_start_kib=rss[0], rss_end_kib=rss[1],
                 rss_growth_kib=rss[1] - rss[0] if None not in rss else None, workers=worker_delta(start, end),
-                errors=list(start.get('errors') or ()) + list(end.get('errors') or ()))
+                host=host_delta(start, end), errors=list(start.get('errors') or ()) + list(end.get('errors') or ()))
+
+
+HOST_KEYS = tuple(f.lower() + '_kib' for f in MEMINFO_FIELDS) + ('memory_current', 'memory_max') + tuple('cgroup_' + f for f in CGROUP_STAT_FIELDS)
+
+
+def host_delta(start, end):
+    """The box host's fields at both ends and their growth (meminfo in KiB, cgroup in bytes); None when either side has no host read."""
+    a, b = (start or {}).get('host'), (end or {}).get('host')
+    if type(a) is not dict or type(b) is not dict:
+        return None
+    rows = {}
+    for key in HOST_KEYS:
+        x, y = a.get(key), b.get(key)
+        rows[key] = dict(start=x, end=y, growth=y - x if type(x) is int and type(y) is int else None)
+    return rows
+
+
+def _mib(value, unit):
+    return '?' if value is None else '%+d' % round(value * unit / 2 ** 20)
+
+
+def rss_read(delta):
+    """The RSS line's reading: each Worker_PP's RssShmem growth, then the host's memory.current, MemAvailable, Shmem and the
+    cgroup's shmem growth (MiB). '?' where a side was not read."""
+    workers = ((delta or {}).get('workers') or {}).get('rows') or {}
+    shmem = ', '.join('pid%s %s' % (pid, _mib(row.get('rssshmem_kib', {}).get('growth'), 1024)) for pid, row in sorted(workers.items()))
+    host = (delta or {}).get('host')
+    if host is None:
+        return 'worker RssShmem MiB %s; host not read' % (shmem or '-')
+    g = lambda key: host.get(key, {}).get('growth')   # noqa: E731
+    return ('worker RssShmem MiB %s; host MiB: cgroup memory.current %s, MemAvailable %s, meminfo Shmem %s, cgroup shmem %s'
+            % (shmem or '-', _mib(g('memory_current'), 1), _mib(g('memavailable_kib'), 1024), _mib(g('shmem_kib'), 1024),
+               _mib(g('cgroup_shmem'), 1)))
 
 
 def worker_delta(start, end):
@@ -446,7 +526,8 @@ def grade(arms, *args, **kwargs):
             cov = result['coverage'].get(row['label']) or {}
             rss_fails = worker_rss_fails(result['memory'][row['label']], cov.get('append_history_tokens'))
             result.setdefault('worker_rss', {})[row['label']] = dict(
-                fails=rss_fails, append_history_tokens=cov.get('append_history_tokens'), native_appends=cov.get('native_appends'))
+                fails=rss_fails, append_history_tokens=cov.get('append_history_tokens'), native_appends=cov.get('native_appends'),
+                read=rss_read(result['memory'][row['label']]))
             if rss_fails:
                 result['failures'] = sorted(set(result['failures']) | {row['label'] + ':' + f for f in rss_fails})
             flags = memory_flags(result['memory'][row['label']])

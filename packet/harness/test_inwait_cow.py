@@ -169,17 +169,21 @@ class Pages(unittest.TestCase):
         row = lc.take_cow_row()
         self.assertEqual((row['host_views'], row['host_fast'], row['host_bytes']), (1, 0, None))
 
-    def test_on_copies_the_host_views_fast_too_with_the_same_bytes(self):
+    def test_on_copies_the_device_fast_and_the_host_views_with_stock(self):
+        # coverage-soak-fix build-3: the host views never take copy_blocks_fast (a host-to-host copy_ on the CPU: the nr worker
+        # RssShmem growth); stock's indexed copy, as stock's runner. The same bytes.
         views = [torch.arange(NUM_BLOCKS * 2, dtype=torch.int32).view(NUM_BLOCKS, 2).clone()]
         want = views[0].clone()
         want[2] = want[1]
         self.runner._qsa_host_views = views
         lc.select_cow_fast(True)
-        self.request._apply_allocated_pages(self.admission(pairs=((1, 2),)))
-        self.assertEqual(self.log, [])
+        with mock.patch.object(lc, 'copy_blocks_fast', wraps=lc.copy_blocks_fast) as fast:
+            self.request._apply_allocated_pages(self.admission(pairs=((1, 2),)))
+        self.assertEqual([c.args[0] is self.caches for c in fast.call_args_list], [True], 'the device caches only')
+        self.assertEqual(self.log, [('stock', 1)])
         self.assertEqual(views[0].tolist(), want.tolist())
         row = lc.take_cow_row()
-        self.assertEqual((row['host_fast'], row['host_bytes']), (1, 2 * 4))
+        self.assertEqual((row['fast'], row['host_fast'], row['host_bytes']), (1, 0, None))
 
     def test_on_with_a_chain_copies_the_host_views_with_stock_too(self):
         views = [torch.arange(NUM_BLOCKS * 2, dtype=torch.int32).view(NUM_BLOCKS, 2).clone()]
@@ -229,14 +233,16 @@ class Pages(unittest.TestCase):
         self.assertEqual(views[0].tolist(), want.tolist())
         self.assertEqual(lc.COW_HOST_FILTER['unfiltered'], 1)
 
-    def test_filter_and_fast_together_copy_the_kept_pair_fast(self):
+    def test_filter_and_fast_together_copy_the_kept_host_pair_with_stock(self):
         views = [self.view()]
         want = views[0].clone()
         want[2] = want[1]
         lc.select_cow_fast(True)
         row = self.filtered(views, ((2,), (6,)), ((1, 2), (4, 6)), _qsa_host_groups=[0])
         self.assertEqual(views[0].tolist(), want.tolist())
-        self.assertEqual((row['fast'], row['host_fast'], row['host_pairs'], row['host_bytes']), (1, 1, 1, 8))
+        # coverage-soak-fix build-3: the kept host pair goes to stock's copy, the device pairs stay fast
+        self.assertEqual(self.log, [('stock', 1)])
+        self.assertEqual((row['fast'], row['host_fast'], row['host_pairs'], row['host_bytes']), (1, 0, 1, None))
 
     def test_filter_off_copies_every_pair_as_before(self):
         views = [self.view()]
