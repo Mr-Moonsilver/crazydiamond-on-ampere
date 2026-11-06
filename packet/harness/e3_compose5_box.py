@@ -41,6 +41,11 @@ def report(result):
             extra.append('- %s native share %s (strict %s) | geometry-tail rows %d of %d prefill rows, share %s'
                          % (label, cov.get('all_native_share'), cov.get('all_native_share_strict'), geo['rows'], total,
                             round(geo['rows'] / total, 6) if total else None))
+    for label, cov in sorted((result.get('coverage') or {}).items()):
+        held = (cov or {}).get('yield_bulk_hold') or {}
+        if any(held.values()):
+            extra.append('- %s YIELD BULK HELD: bulks %d, deferrals %d, expired %d, errors %d (a yielded bulk with no re-entry plan)'
+                         % (label, held.get('bulks', 0), held.get('deferrals', 0), held.get('expired', 0), held.get('errors', 0)))
     for label, row in sorted((result.get('worker_rss') or {}).items()):
         extra.append('- %s worker RSS: %s; native appends %s, history %s tokens'
                      % (label, ', '.join(row['fails']) or 'no failure', row['native_appends'], row['append_history_tokens']))
@@ -293,6 +298,11 @@ def _coverage(status):
     return found if type(found) is dict and found.get('schema') == COVERAGE_SCHEMA else None
 
 
+def _bulk_hold(status):
+    found = (((status or {}).get('append_yield') or {}).get('declines') or {}).get('yield_bulk_hold')
+    return found if type(found) is dict else {}
+
+
 def coverage_delta(start, end):
     """The engine's prefill coverage counter between two status rows: rows and requests by live|idle, native|stock, site. None if either
     row lacks it, or a count went down (another engine)."""
@@ -303,6 +313,9 @@ def coverage_delta(start, end):
                native_turns=b.get('native_turns', 0) - a.get('native_turns', 0),
                native_appends=b.get('native_appends', 0) - a.get('native_appends', 0),
                append_history_tokens=b.get('append_history_tokens', 0) - a.get('append_history_tokens', 0))
+    # coverage-throughput build-2b (lead, 6 Nov): yielded bulks the re-entry could not plan, held at the positive frontier.
+    ha, hb = _bulk_hold(start), _bulk_hold(end)
+    out['yield_bulk_hold'] = {k: hb.get(k, 0) - ha.get(k, 0) for k in ('bulks', 'deferrals', 'expired', 'errors')}
     for table in ('rows', 'requests'):
         out[table] = {}
         for state in ('live', 'idle'):
@@ -404,6 +417,9 @@ def grade(arms, *args, **kwargs):
             hb = delta['handback']
             if rows[label]['native_residue'] and (hb['excess_rows'] or not hb['every_row_after_a_native_turn']):
                 fails.append('handback-not-one-row-of-a-native-turn')
+            held = delta.get('yield_bulk_hold') or {}
+            if rows[label]['native_residue'] and (held.get('bulks') or held.get('expired') or held.get('errors')):
+                fails.append('yield-bulk-held')       # build-2b: unreachable by plan_view; the lead: FAIL loudly if it fires
             geo = delta['geometry_tail']
             if rows[label]['native_residue'] and geo['rows'] and (not geo['turns'] or geo['rows'] > geo['turns'] * T_GEOMETRY_MAX
                                                                   or geo['max_rows'] > T_GEOMETRY_MAX):

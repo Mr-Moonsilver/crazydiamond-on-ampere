@@ -391,6 +391,38 @@ class WorkerRss(unittest.TestCase):
         self.assertEqual(out['errors'], [])
 
 
+class BulkHoldGrade(unittest.TestCase):
+    """coverage-throughput build-2b (lead, 6 Nov): a yielded bulk held at the positive frontier FAILs nt loudly, with its own line."""
+    cov = property(lambda self: Coverage())
+
+    def arms(self, label, **held):
+        arms = self.cov.arms_with(label)
+        rec = next(a for a in arms if a.get('label') == label)
+        later = [rec['statuses'][-1]] + [s for a in arms if a.get('label') in T.labels()[T.labels().index(label) + 1:] for s in a['statuses']]
+        for status in later:
+            declines = (status.get('append_yield') or {}).get('declines')
+            if declines is not None:
+                declines['yield_bulk_hold'] = dict(dict(bulks=0, deferrals=0, expired=0, errors=0), **held)
+        return arms
+
+    def test_a_held_bulk_fails_nt_with_its_own_line(self):
+        result = self.cov.grade.grade_of(self.arms(R1, bulks=1, deferrals=40))
+        self.assertIn(R1 + ':yield-bulk-held', result['failures'])
+        self.assertEqual(result['coverage'][R1]['yield_bulk_hold'], dict(bulks=1, deferrals=40, expired=0, errors=0))
+        with box._bound():
+            self.assertIn('- %s YIELD BULK HELD: bulks 1, deferrals 40, expired 0, errors 0' % R1, box.report(result))
+
+    def test_none_held_passes_and_prints_nothing(self):
+        result = self.cov.grade.grade_of(self.arms(R1))
+        self.assertEqual([f for f in result['failures'] if f.startswith(R1)], [])
+        with box._bound():
+            self.assertNotIn('YIELD BULK HELD', box.report(result))
+
+    def test_on_ny_it_is_read_not_failed(self):
+        result = self.cov.grade.grade_of(self.arms(W1, bulks=1))
+        self.assertEqual([f for f in result['failures'] if f.startswith(W1)], [])
+
+
 class GeometryGrade(unittest.TestCase):
     """coverage-soak-fix: the geometry-tail class is native-served on nr, on its own line; without its native turns it fails."""
     cov = property(lambda self: Coverage())      # defined below this class

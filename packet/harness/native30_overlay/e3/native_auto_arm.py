@@ -138,6 +138,9 @@ class AutoArmPolicy:
         # decode-phase hold: uid -> (weakref, first held on the driver's clock); uid -> weakref of a request stock may take.
         self.holds = {}
         self.unholdable = {}
+        # build-2b (lead, 6 Nov): yielded bulks the re-entry could not plan, held at the positive frontier (uid -> (ref, since))
+        self.abandoned = {}
+        self.bulk_hold = dict(bulks=0, deferrals=0, expired=0, errors=0)
         self.hold_totals = dict(held=0, selected=0, expired=0, unplannable=0, errors=0, retried=0, retries_spent=0, moved_stop=0)
         self.hold_released = {}          # site -> requests the hold let stock take, by the plan's reason
         self.retries = {}
@@ -189,6 +192,7 @@ class AutoArmPolicy:
         """Bounded status row: counts only, never a request UID. Cumulative; a reader takes an arm's delta."""
         return dict(schema='s5-auto-declines/1', ticks=dict(self.decline_ticks), turns=dict(self.decline_turns),
                     pending=len(self._decline_pending), restores=dict(self.restores), rollbacks=dict(self.rollbacks),
+                    yield_bulk_hold=dict(self.bulk_hold, waiting=len(self.abandoned)),
                     holds=dict(self.hold_totals, waiting=len(self.holds), limit_s=self._hold_limit(), released=dict(self.hold_released),
                                deferrals=getattr(self.controller, 'native_hold_deferrals', 0),
                                handback_front=getattr(self.controller, 'handback_front', 0)),
@@ -270,6 +274,28 @@ class AutoArmPolicy:
             if (request is None or self.scheduler.requests.get(uid) is not request
                     or not str(getattr(getattr(request, 'status', None), 'name', None)).startswith('WAITING')):
                 self.holds.pop(uid)
+
+    def holds_frontier_from_stock(self, request):
+        """build-2b (lead, 6 Nov): the positive-frontier seam asks for a waiting, part-computed request. True keeps a yielded
+        bulk the re-entry could not plan out of stock this step: it never continues on stock while the hold's limit runs. At
+        the limit (the hold's own valve) stock takes it, named 'yield-no-reentry-plan'. Any other request, or the hold off:
+        False, as before. Never raises."""
+        try:
+            uid = getattr(request, 'request_id', None)
+            entry = self.abandoned.get(uid)
+            if entry is None or entry[0]() is not request:
+                return False
+            limit = self._hold_limit()
+            if limit and self.driver.clock() - entry[1] <= limit:
+                self.bulk_hold['deferrals'] += 1
+                return True
+            self.abandoned.pop(uid, None)
+            self.bulk_hold['expired'] += 1
+            self._why(request, 'yield-no-reentry-plan')
+            return False
+        except Exception:
+            self.bulk_hold['errors'] += 1
+            return False
 
     def holds_from_stock(self, request):
         """The stock loop's fresh seam asks: True keeps this waiting request in skipped-waiting, unallocated, this step.
@@ -563,9 +589,14 @@ class AutoArmPolicy:
         if type(start) is not int or start <= 0 or end - start < 1:
             return None
         cap = native_chunk_cap(c.chunk_tokens, s.max_num_scheduled_tokens)    # the cap admission plans with
+        # coverage-throughput build-2b (1b's box run): the bulk's remainder plans over the view its admission reads
+        # (controller.plan_view: the hold's moved stop on a short hash tail), as _plan, admission and the exact successor do.
+        # The raw view had no plan on a short tail: 19 yields closed 'yielded-bulk-has-no-reentry-plan' and stock took the bulks.
+        view_of = getattr(c, 'plan_view', None)
+        view = view_of(s, request) if callable(view_of) else request
         def split(position, limit):
             limit = bounded_limit(getattr(c, 'chunk_bound', None), position, limit)
-            projected = request if position == start else _ProjectedPrefillRequest(request, position)
+            projected = view if position == start else _ProjectedPrefillRequest(view, position)
             return c._aligned_split(s, projected, limit)
         plan = staged_chunk_plan(start, end, cap, c.minimum_stage_rows, split)
         if not plan:
@@ -595,7 +626,15 @@ class AutoArmPolicy:
         plan = self._reentry_plan(request)
         if plan is None:
             # FULL, nothing native owned, no intent armed: close as an ordinary
-            # auto-arm selection; the bulk continues on stock.
+            # auto-arm selection; the bulk continues on stock, under its own site name in the coverage counter
+            # (build-2b: never 'cooldown' or 'no-seam'), so the grade names it.
+            if request is not None:
+                self._why(request, 'yield-no-reentry-plan')
+                self.abandoned.pop(request.request_id, None)
+                self.abandoned[request.request_id] = (weakref.ref(request), d.clock())
+                while len(self.abandoned) > MAX_UNHOLDABLE:
+                    self.abandoned.pop(next(iter(self.abandoned)))
+                self.bulk_hold['bulks'] += 1
             self._restore('yielded-bulk-has-no-reentry-plan')
             return False
         if d.append_yield_active():

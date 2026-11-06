@@ -3054,7 +3054,12 @@ def defer_stock_positive_frontier(scheduler, request):
     every stock step from the terminal commit until the FULL ack, and that
     ack clears the intent (engine_driver ``_drive_route``/transition ack).
     """
-    return _defer_stock_while_split_armed(scheduler, 'positive-frontier', request)
+    if _defer_stock_while_split_armed(scheduler, 'positive-frontier', request):
+        return True
+    # build-2b (lead, 6 Nov): a yielded bulk the re-entry could not plan waits for native here, never continues on stock.
+    policy = getattr(getattr(scheduler, '_flash_s5_driver', None), 'auto_arm', None)
+    holds = getattr(policy, 'holds_frontier_from_stock', None)
+    return bool(request is not None and callable(holds) and holds(request))
 
 
 def defer_stock_running_prefill(scheduler, request):
