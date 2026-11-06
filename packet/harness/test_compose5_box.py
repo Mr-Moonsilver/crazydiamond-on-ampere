@@ -413,6 +413,15 @@ class GeometryGrade(unittest.TestCase):
         with box._bound():
             self.assertIn('- %s geometry-tail: turns 4, rows 107 (107 live), max r 48, max rows 48 (engine life)' % R1,
                           box.report(result))
+            # build-2 (c): the tail's rows and share on the line after, next to native share (served and strict)
+            text = box.report(result)
+            total = sum(sum(cov['rows'][s][p].values()) for s in ('live', 'idle') for p in ('native', 'stock'))
+            line = '- %s native share %s (strict %s) | geometry-tail rows 107 of %d prefill rows, share %s' % (
+                R1, cov['all_native_share'], cov['all_native_share_strict'], total, round(107 / total, 6))
+            self.assertIn(line, text)
+            self.assertLess(cov['all_native_share_strict'], cov['all_native_share'])
+            lines = text.splitlines()
+            self.assertEqual(lines.index(line), lines.index('- %s geometry-tail: turns 4, rows 107 (107 live), max r 48, max rows 48 (engine life)' % R1) + 1)
 
     def test_rows_with_no_turn_or_too_many_fail(self):
         self.assertIn(R1 + ':geometry-tail-not-of-a-native-turn', self.cov.grade.grade_of(self.arms(20, 0))['failures'])

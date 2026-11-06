@@ -36,6 +36,11 @@ def report(result):
         if geo:
             extra.append('- %s geometry-tail: turns %d, rows %d (%d live), max r %s, max rows %s (engine life)'
                          % (label, geo['turns'], geo['rows'], geo['live_rows'], geo['max_r'], geo['max_rows']))
+            # coverage-throughput build-2 (c) (lead, 6 Nov): the tail rows and their share next to native share, every reading
+            total = sum(sum(((cov.get('rows') or {}).get(s) or {}).get(p, {}).values()) for s in ('live', 'idle') for p in ('native', 'stock'))
+            extra.append('- %s native share %s (strict %s) | geometry-tail rows %d of %d prefill rows, share %s'
+                         % (label, cov.get('all_native_share'), cov.get('all_native_share_strict'), geo['rows'], total,
+                            round(geo['rows'] / total, 6) if total else None))
     for label, row in sorted((result.get('worker_rss') or {}).items()):
         extra.append('- %s worker RSS: %s; native appends %s, history %s tokens'
                      % (label, ', '.join(row['fails']) or 'no failure', row['native_appends'], row['append_history_tokens']))
