@@ -797,7 +797,7 @@ class Grade(TwoPairs):
     def grade_of(self, arms, **kw):
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / 'engine.log'
-            log.write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP))
+            log.write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP) + QUIET)    # scope: one native chunk read
             known = [a for a in arms if a.get('label')]
             return box.grade(arms, {a['label']: tap.PASS for a in known}, tap.CHECKS, [str(log)], {a['label']: tap.ALIVE for a in known}, **kw)
 
@@ -847,48 +847,93 @@ def retry(rank, ask, stamp='2026-11-06T15:41:27.891618328Z'):
             'to allocate %d bytes (free: 9371648, total: 25296044032).\n' % (stamp, rank, rank, ask))
 
 
+def chunk(rank, txn, before, after, peak=64 * (1 << 20), stamp='2026-11-06T15:41:27.000000000Z'):
+    """One native chunk's receipts on one rank as engine-stream.log carries them (b2b24c64's record): open and released with the engine's
+    cumulative alloc_retries, and native-alloc with the indexer peak."""
+    tail = 'inactive_split=1 alloc_retries=%d ooms=0 free=1 total=25296044032 sync_all_streams=1 device_allocs=1 device_frees=1 pid=1 seq=1 sha=x\n'
+    return ('%s flash-s5 memory point=open rank=%d txn_seq=%d chunk=0-1024 allocated=1 reserved=1 ' % (stamp, rank, txn) + tail % before
+            + '%s flash-s5 native-alloc rank=%d txn_seq=%d chunk=0-1024 union_retire=0 indexer_layers=6 indexer_rows=1 indexer_width=64 '
+              'indexer_chunks=1 indexer_peak=%d indexer_total=1 indexer_errors=0 pid=1 seq=1 sha=x\n' % (stamp, rank, txn, peak)
+            + '%s flash-s5 memory point=released rank=%d txn_seq=%d chunk=0-1024 allocated=1 reserved=1 ' % (stamp, rank, txn) + tail % after)
+
+
 MIB = 1 << 20
+QUIET = chunk(0, 1, 0, 0)         # one native chunk, no retry: the rule has read the lane
 
 
 class AllocRetry(TwoPairs):
-    """build-2b24c64 (lead, 6 Nov ~17:12): with the logits cap at 64 MiB, any allocator retry over 64 MiB on any rank FAILs the run, per rank."""
+    """build-2b24c64, scoped (lead, 6 Nov ~21:50): the logits cap's rule on the native lane by identity. A retried ask over 64 MiB inside a
+    native chunk, or a native indexer peak over 64 MiB, FAILs that rank; asks outside native chunks (stock or other) print, never fail."""
     grade = Grade()
 
-    def grade_with(self, *texts, arms=None):
+    def grade_with(self, err='', log=QUIET, arms=None):
         with tempfile.TemporaryDirectory() as tmp:
-            logs = []
-            for k, text in enumerate(texts):
-                logs.append(Path(tmp) / ('engine-stream.%d' % k))
-                logs[-1].write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP) + text)
+            logs = [Path(tmp) / 'engine-stream.log', Path(tmp) / 'engine-stream.err']
+            logs[0].write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP) + log)
+            logs[1].write_text(err)
             arms = self.grade.records() if arms is None else arms
             known = [a for a in arms if a.get('label')]
             result = box.grade(arms, {a['label']: tap.PASS for a in known}, tap.CHECKS, [str(p) for p in logs], {a['label']: tap.ALIVE for a in known})
             with box._bound():
                 return result, box.report(result)
 
-    def test_retries_at_the_cap_pass_and_are_counted_per_rank(self):
-        result, text = self.grade_with(retry(0, 64 * MIB) + retry(1, 2 * MIB) + retry(1, 60 * MIB))
+    def test_b2b24c64s_record_shape_passes_with_stock_over_the_cap_printed(self):
+        # rank 0: retry 1 inside a native chunk at 64 MiB, retry 2 a stock step after the handback at 118 MiB (the box run, ny.g2-live-0)
+        result, text = self.grade_with(retry(0, 64 * MIB) + retry(0, 118 * MIB), chunk(0, 1, 0, 1))
         self.assertEqual(result['verdict'], 'PASS', result['failures'] + result['missing'])
-        ranks = result['alloc_retries']['ranks']
-        self.assertEqual({k: (v['retries'], v['max_ask_mib']) for k, v in ranks.items()}, {'rank0': (1, 64.0), 'rank1': (2, 60.0)})
-        self.assertIn('- allocator retries, cap 64 MiB: run rank0 1 (max 64.00 MiB), rank1 2 (max 60.00 MiB); fatal CUDA OOM lines 0', text)
+        alloc = result['alloc_retries']
+        self.assertEqual((alloc['native_ranks']['rank0']['retries'], alloc['native_ranks']['rank0']['max_ask_mib']), (1, 64.0))
+        self.assertEqual((alloc['other_ranks']['rank0']['retries'], alloc['other_ranks']['rank0']['max_ask_mib']), (1, 118.0))
+        self.assertIn('- allocator retries, cap 64 MiB, graded on the native lane: native rank0 1 (max 64.00 MiB); native indexer peak rank0 64.00 MiB; '
+                      '1 native chunks; fatal CUDA OOM lines 0', text)
+        self.assertIn('- allocator retries outside native chunks (stock or other; printed, not graded): rank0 1 (max 118.00 MiB)', text)
 
-    def test_one_ask_over_the_cap_fails_that_rank_alone(self):
-        result, text = self.grade_with(retry(0, 64 * MIB) + retry(2, 66 * MIB) + retry(3, 64 * MIB + 1))
+    def test_a_native_ask_over_the_cap_fails_that_rank_alone(self):
+        err = retry(2, 66 * MIB) + retry(3, 64 * MIB + 1) + retry(1, 200 * MIB)
+        log = chunk(2, 1, 0, 1) + chunk(3, 1, 0, 1) + chunk(1, 1, 0, 0)       # rank 1's ask came after its chunk: outside
+        result, _ = self.grade_with(err, log)
         self.assertEqual(result['verdict'], 'FAIL')
-        self.assertEqual([f for f in result['failures'] if 'alloc' in f], ['rank2:alloc-retry-ask-over-64MiB', 'rank3:alloc-retry-ask-over-64MiB'])
+        self.assertEqual([f for f in result['failures'] if 'alloc' in f], ['rank2:native-alloc-retry-ask-over-64MiB', 'rank3:native-alloc-retry-ask-over-64MiB'])
+
+    def test_the_kth_warning_is_the_kth_retry_whatever_the_stamps(self):
+        # rank 0's second retry is the one inside the chunk (counter 1 -> 2), though its stamp is before the chunk's
+        err = retry(0, 10 * MIB, '2026-11-06T15:00:00.0Z') + retry(0, 90 * MIB, '2026-11-06T15:00:00.0Z') + retry(0, 118 * MIB, '2026-11-06T16:00:00.0Z')
+        result, _ = self.grade_with(err, chunk(0, 1, 1, 2, stamp='2026-11-06T15:30:00.0Z'))
+        self.assertEqual([f for f in result['failures'] if 'alloc' in f], ['rank0:native-alloc-retry-ask-over-64MiB'])
+        self.assertEqual(result['alloc_retries']['other_ranks']['rank0']['retries'], 2)
+
+    def test_a_native_indexer_peak_over_the_cap_fails_without_any_retry(self):
+        result, _ = self.grade_with('', chunk(1, 1, 0, 0, peak=64 * MIB + 2048) + chunk(0, 1, 0, 0))
+        self.assertEqual([f for f in result['failures'] if 'native' in f], ['rank1:native-indexer-peak-over-64MiB'])
 
     def test_build_2b24s_death_fails_every_rank_and_the_oom(self):
         death = ''.join(retry(r, 199229440) for r in range(4))
         death += '2026-11-06T15:52:30.670270001Z (Worker_PP0_TP1_EP1 pid=102) torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 190.00 MiB.\n'
-        result, _ = self.grade_with(death)
-        self.assertEqual(sorted(f for f in result['failures'] if 'alloc' in f or 'memory' in f),
-                         ['cuda-out-of-memory'] + ['rank%d:alloc-retry-ask-over-64MiB' % r for r in range(4)])
+        result, _ = self.grade_with(death, ''.join(chunk(r, 1, 0, 1, peak=199229440) for r in range(4)))
+        self.assertEqual(sorted(f for f in result['failures'] if 'alloc' in f or 'memory' in f or 'peak' in f),
+                         sorted(['cuda-out-of-memory'] + ['rank%d:native-alloc-retry-ask-over-64MiB' % r for r in range(4)]
+                                + ['rank%d:native-indexer-peak-over-64MiB' % r for r in range(4)]))
+
+    def test_fewer_warnings_than_the_engines_count_are_inc(self):
+        result, _ = self.grade_with(retry(0, 10 * MIB), chunk(0, 1, 0, 2))
+        self.assertIn('alloc-retry-count-mismatch', result['missing'])
+        self.assertEqual(result['verdict'], 'INC')
+
+    def test_no_native_chunk_read_is_inc(self):
+        result, _ = self.grade_with(retry(0, 10 * MIB), log='')
+        self.assertIn('native-chunks-not-read', result['missing'])
+        self.assertNotEqual(result['verdict'], 'PASS')
 
     def test_the_same_warning_in_two_streams_counts_once(self):
         line = retry(1, 40 * MIB)
-        result, _ = self.grade_with(line, line + retry(1, 40 * MIB, stamp='2026-11-06T15:41:29.000000000Z'))
-        self.assertEqual(result['alloc_retries']['ranks']['rank1']['retries'], 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = [Path(tmp) / n for n in ('a.err', 'b.err', 'c.log')]
+            paths[0].write_text(line)
+            paths[1].write_text(line + retry(1, 40 * MIB, stamp='2026-11-06T15:41:29.000000000Z'))
+            paths[2].write_text(chunk(1, 1, 0, 2))
+            alloc = box.alloc_retries([str(p) for p in paths])
+        self.assertEqual(alloc['ranks']['rank1']['retries'], 2)
+        self.assertEqual(box.alloc_fails(alloc), ([], []))
 
     def test_no_log_read_is_inc_never_a_pass(self):
         arms = self.grade.records()
@@ -904,15 +949,17 @@ class AllocRetry(TwoPairs):
         self.assertEqual(result['verdict'], 'INC')
         self.assertIn('1 retry lines not parsed', text)
 
-    def test_each_arm_window_reads_its_own_retries(self):
+    def test_each_arm_window_reads_native_and_outside_apart(self):
         arms = self.grade.records()
         rec = next(a for a in arms if a.get('label') == R0)
         rec["wall_start_s"], rec["wall_end_s"] = 1793979600.0, 1793980080.0     # 2026-11-06T15:40:00Z .. 15:48:00Z
         inside, outside = '2026-11-06T15:41:27.891618328Z', '2026-11-06T15:49:00.000000000Z'
-        result, text = self.grade_with(retry(1, 40 * MIB, inside) + retry(1, 50 * MIB, outside), arms=arms)
-        self.assertEqual(result['alloc_retries']['arms'][R0], {'rank1': dict(retries=1, max_ask_bytes=40 * MIB, max_ask_mib=40.0)})
-        self.assertEqual(result['alloc_retries']['ranks']['rank1']['retries'], 2)
-        self.assertIn('- %s allocator retries: rank1 1 (max 40.00 MiB)' % R0, text)
+        err = retry(1, 40 * MIB, inside) + retry(1, 100 * MIB, inside) + retry(1, 50 * MIB, outside)
+        result, text = self.grade_with(err, chunk(1, 1, 0, 1, stamp=inside) + chunk(0, 1, 0, 0, stamp=outside), arms=arms)
+        self.assertEqual(result['alloc_retries']['native_arms'][R0], {'rank1': dict(retries=1, max_ask_bytes=40 * MIB, max_ask_mib=40.0)})
+        self.assertEqual(result['alloc_retries']['other_arms'][R0], {'rank1': dict(retries=1, max_ask_bytes=100 * MIB, max_ask_mib=100.0)})
+        self.assertIn('- %s allocator retries: native rank1 1 (max 40.00 MiB) | outside rank1 1 (max 100.00 MiB) | native indexer peak rank0 none, rank1 64.00 MiB' % R0, text)
+        self.assertEqual(result['verdict'], 'PASS', result['failures'] + result['missing'])
 
 
 class Coverage(TwoPairs):

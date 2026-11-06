@@ -300,6 +300,8 @@ class ArmLoop(unittest.TestCase):
             (self.arms / ('arm-%s.json' % a['label'])).write_text(json.dumps(a))
         emit = tiq.tbox.run_of()[0]
         tap.write_streams(self.q, [(emit.lines[0][0], 'INFO x %s\n' % line) for line in tbox.tam.STARTUP])
+        with open(self.q / 'engine-stream.log', 'a') as handle:
+            handle.write(tbox.QUIET)       # build-2b24c64 scope: one native chunk's receipts, so the logits rule has read the lane
         draft = queue.derive()[DRAFT]
         script = ['set -uo pipefail', 'FAILS=0; INCS=0; declare -A PHASE_VERDICT=()',
                   "ENGINE_CRASHED=0; ENGINE_CRASH_SOURCE=''; STOP_RACE=0; CONTAINER=qwen-flash-prod; SERVICE=vllm-flash; N0=0",

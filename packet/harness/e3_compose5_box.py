@@ -59,10 +59,15 @@ def report(result):
     if alloc:
         # build-2b24c64: the logits cap's retry rule, per rank over the run, then per arm
         per = lambda ranks: ', '.join('%s %d (max %.2f MiB)' % (k, v['retries'], v['max_ask_mib']) for k, v in sorted(ranks.items())) or 'none'
-        extra.append('- allocator retries, cap %d MiB: run %s; fatal CUDA OOM lines %d%s' % (
-            alloc['cap_mib'], per(alloc['ranks']), alloc['cuda_oom_lines'], ('' if alloc['read'] else '; NO LOG READ') + ('; %d retry lines not parsed' % alloc['unparsed'] if alloc['unparsed'] else '')))
+        mib = lambda peaks: ', '.join('%s %s' % (k, 'none' if v is None else '%.2f MiB' % (v / MIB)) for k, v in sorted(peaks.items())) or 'none'
+        extra.append('- allocator retries, cap %d MiB, graded on the native lane: native %s; native indexer peak %s; %d native chunks; fatal CUDA OOM lines %d%s' % (
+            alloc['cap_mib'], per(alloc.get('native_ranks') or {}), mib(alloc.get('native_indexer_peak') or {}), alloc.get('native_chunks', 0),
+            alloc['cuda_oom_lines'], ('' if alloc['read'] else '; NO LOG READ') + ('; %d retry lines not parsed' % alloc['unparsed'] if alloc['unparsed'] else '')))
+        extra.append('- allocator retries outside native chunks (stock or other; printed, not graded): %s' % per(alloc.get('other_ranks') or {}))
         for label, ranks in alloc['arms'].items():
-            extra.append('- %s allocator retries: %s' % (label, per(ranks)))
+            extra.append('- %s allocator retries: native %s | outside %s | native indexer peak %s' % (
+                label, per((alloc.get('native_arms') or {}).get(label) or {}), per((alloc.get('other_arms') or {}).get(label) or {}),
+                mib((alloc.get('native_indexer_peak_arms') or {}).get(label) or {})))
     return text + ('\n' + '\n'.join(extra) + '\n' if extra else '')
 
 
@@ -479,6 +484,14 @@ def coverage_windows(arms):
 ALLOC_RETRY = re.compile(r'\[rank(\d+)\]:\[W[^\]]*CUDACachingAllocator[^\]]*\] memory allocation failed with OOM on device (\d+) '
                          r'while trying to allocate (\d+) bytes')
 CUDA_OOM = re.compile(r'OutOfMemoryError: CUDA out of memory')
+# build-2b24c64 scope (lead, 6 Nov ~21:50): the cap's rule covers the native lane, by identity, not every retried ask by size. On
+# b2b24c64's box run ny's only asks over 64 MiB (118 MiB, ranks 0 and 2) came on the first stock step after a native run's handback,
+# outside every native chunk; under the cap no indexer prefill slice can exceed it (ops/qsa_indexer.py rows_per_chunk), so they are not
+# capped logits. Attribution is clock-free: the engine's own cumulative alloc_retries per rank at each native chunk's open and release
+# ('flash-s5 memory point=open|released'), against each rank's warnings in order (warning k is retry k: the counts matched on every
+# record read). A retry counted inside a chunk's (open, released] is native (a stock step overlapping the chunk counts too: toward FAIL).
+NATIVE_MEMORY = re.compile(r'flash-s5 memory point=(open|released) rank=(\d+) txn_seq=(\d+) chunk=\d+-\d+ .*?alloc_retries=(\d+) ')
+NATIVE_ALLOC = re.compile(r'flash-s5 native-alloc rank=(\d+) txn_seq=(\d+) chunk=\d+-\d+ .*?indexer_peak=(\d+) ')
 LOG_STAMP = re.compile(r'^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?)Z ')
 MIB = 1 << 20
 
@@ -508,6 +521,7 @@ def alloc_retries(logs, arms=()):
     """Every allocator retry in the followed logs (each line once: the same warning in two streams counts once), per rank over the run and
     per arm window (the arm record's wall_start_s .. wall_end_s), and the fatal CUDA OOM lines. 'read' and 'unread' name the paths."""
     seen, rows, read, unread, oom, unparsed = set(), [], [], [], set(), set()
+    opened, spans, peaks, counters = {}, {}, {}, {}
     for path in logs or ():
         try:
             handle = open(path, errors='replace')
@@ -517,6 +531,20 @@ def alloc_retries(logs, arms=()):
         read.append(str(path))
         with handle:
             for line in handle:
+                if 'flash-s5 memory point=' in line or 'flash-s5 native-alloc' in line:
+                    m = NATIVE_MEMORY.search(line)
+                    if m:
+                        rank, retries, key = int(m.group(2)), int(m.group(4)), (int(m.group(2)), m.group(3))
+                        counters[rank] = max(counters.get(rank, 0), retries)
+                        if m.group(1) == 'open':
+                            opened[key] = retries
+                        elif key in opened:
+                            spans.setdefault(rank, []).append((opened.pop(key), retries, log_wall(line)))
+                    m = NATIVE_ALLOC.search(line)
+                    if m:
+                        rank, peak = int(m.group(1)), int(m.group(3))
+                        peaks.setdefault(rank, []).append((log_wall(line), peak))
+                    continue
                 if 'CUDA out of memory' in line and CUDA_OOM.search(line):
                     oom.add(line.rstrip('\n'))
                 if 'CUDACachingAllocator' not in line or 'memory allocation failed' not in line:
@@ -528,24 +556,49 @@ def alloc_retries(logs, arms=()):
                     continue
                 seen.add(line)
                 rows.append((log_wall(line), int(m.group(1)), int(m.group(3))))
-    windows = {}
+    # each rank's k-th warning is its k-th retry; native when some chunk's counter went from below k to k or more
+    nth, native = {}, []
+    for row in rows:
+        nth[row[1]] = nth.get(row[1], 0) + 1
+        native.append(any(lo < nth[row[1]] <= hi for lo, hi, _wall in spans.get(row[1], ())))
+    windows, native_windows, other_windows, peak_windows = {}, {}, {}, {}
     for rec in arms or ():
         start, end = (rec or {}).get('wall_start_s'), (rec or {}).get('wall_end_s')
         if rec and rec.get('label') and type(start) in (int, float) and type(end) in (int, float):
-            windows[rec['label']] = _ranks([r for r in rows if r[0] is not None and start <= r[0] <= end])
+            inside = lambda wall: wall is not None and start <= wall <= end
+            windows[rec['label']] = _ranks([r for r in rows if inside(r[0])])
+            native_windows[rec['label']] = _ranks([r for r, n in zip(rows, native) if n and inside(r[0])])
+            other_windows[rec['label']] = _ranks([r for r, n in zip(rows, native) if not n and inside(r[0])])
+            peak_windows[rec['label']] = {'rank%d' % k: max((p for wall, p in v if inside(wall)), default=None) for k, v in sorted(peaks.items())}
+    counted = {'rank%d' % k: v for k, v in sorted(nth.items())}
     return dict(cap_mib=T.LOGITS_CAP_MB, read=read, unread=unread, ranks=_ranks(rows), arms=windows, unstamped=sum(1 for r in rows if r[0] is None),
-                cuda_oom_lines=len(oom), unparsed=len(unparsed))
+                cuda_oom_lines=len(oom), unparsed=len(unparsed),
+                native_ranks=_ranks([r for r, n in zip(rows, native) if n]), other_ranks=_ranks([r for r, n in zip(rows, native) if not n]),
+                native_arms=native_windows, other_arms=other_windows, native_chunks=sum(len(v) for v in spans.values()),
+                native_indexer_peak={'rank%d' % k: max(p for _w, p in v) for k, v in sorted(peaks.items())}, native_indexer_peak_arms=peak_windows,
+                engine_retries={'rank%d' % k: v for k, v in sorted(counters.items())}, warned_retries=counted)
 
 
 def alloc_fails(alloc):
-    """FAIL per rank on any retried ask over the cap; FAIL on a fatal CUDA OOM line; nothing read is missing (INC), never a pass."""
-    fails = ['%s:alloc-retry-ask-over-%dMiB' % (rank, alloc['cap_mib']) for rank, row in sorted(alloc['ranks'].items())
-             if row['max_ask_bytes'] > alloc['cap_mib'] * MIB]
+    """The cap's rule on the native lane (scope, lead 6 Nov ~21:50): FAIL per rank on a native indexer peak over the cap (the lane's own
+    native-alloc receipt) or a retried ask over the cap inside a native chunk; FAIL on a fatal CUDA OOM line. Asks outside native chunks
+    (stock or other) are printed, never failed. INC: nothing read, a retry line it cannot size, no native receipt, or warnings that do not
+    match the engine's own retry count (the attribution would not hold)."""
+    cap = alloc['cap_mib'] * MIB
+    fails = ['%s:native-alloc-retry-ask-over-%dMiB' % (rank, alloc['cap_mib']) for rank, row in sorted(alloc['native_ranks'].items())
+             if row['max_ask_bytes'] > cap]
+    fails += ['%s:native-indexer-peak-over-%dMiB' % (rank, alloc['cap_mib']) for rank, peak in sorted(alloc['native_indexer_peak'].items())
+              if peak > cap]
     if alloc['cuda_oom_lines']:
         fails.append('cuda-out-of-memory')
     missing = [] if alloc['read'] else ['alloc-retries-not-read']
     if alloc['unparsed']:
         missing.append('alloc-retry-line-unparsed')       # a retry warning this rule cannot size: not a pass
+    if alloc['read'] and not alloc['native_chunks']:
+        missing.append('native-chunks-not-read')
+    # every retry the engine counted has its warning (a later stock retry may follow the last receipt): fewer warnings and the k-th is not retry k
+    if alloc['read'] and alloc['native_chunks'] and any(alloc['warned_retries'].get(rank, 0) < n for rank, n in alloc['engine_retries'].items()):
+        missing.append('alloc-retry-count-mismatch')
     return fails, missing
 
 
