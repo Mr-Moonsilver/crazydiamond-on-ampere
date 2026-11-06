@@ -312,7 +312,7 @@
   },
   "compose5": {
     "arm": "TRUNK",
-    "candidate": "q18a-compose-throughput",
+    "candidate": "q18a-compose-throughput-b2",
     "compose5_settings": {
       "CUDA_DEVICE_MAX_CONNECTIONS": "32",
       "FLASH_ATTN_META_GDN_BATCH": "1",
@@ -399,6 +399,7 @@
       "e3/scheduler_hooks.py",
       "e3/stage_overlap.py",
       "e3/stage_progress.py",
+      "e3/stage_wire.py",
       "e3/wire_v1.py",
       "e3/worker_bridge.py",
       "e3/worker_hooks.py",
@@ -408,9 +409,9 @@
     "parent": "q18a-alpha-next-c1b",
     "parent_commit": "8a7bdb273f2d57d9b0f687778a11620896d0e776",
     "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
-    "queue": "q18a-compose-throughput: compose-4's queue with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
+    "queue": "q18a-compose-throughput-b2: compose-4's queue with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
     "scope": "b13 and hf at 32 with the four lever tracks under the closed-loop replay, the yield priced by frozen pairs, against c1b's READY build, discovery mode; not a release assessment and not a numerics result",
-    "source_commit": "f2a83e52d9857a12171558a159fed6dd719c4572"
+    "source_commit": "f8262895e9826d1bb19ac68d0b4ba5dd7c44d02a"
   },
   "control_counter_scope": {
     "basis": "exclusive EngineCore coordinator host-wall spans and successfully submitted RPC count",
