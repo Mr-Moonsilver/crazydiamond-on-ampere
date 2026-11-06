@@ -406,7 +406,7 @@ class StagedAdmissionController(PrefillAdmissionController):
 
     def _successor_reaches_end(self, scheduler, request, start, cap):
         """Pure: the admission's own plan from n's end, before any allocation. True when n+1 would be terminal, or when no plan exists."""
-        end = request.num_tokens - 1
+        end = self.native_end(scheduler, request)       # coverage-soak-fix: the block boundary on a geometry tail
         if self.minimum_stage_rows <= 1:
             return start + self._aligned_split(scheduler, _ProjectedPrefillRequest(request, start), min(cap, end - start)) >= end
         plan = staged_chunk_plan(start, end, cap, self.minimum_stage_rows,
@@ -1028,6 +1028,7 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                      prompt_end=self.admission.prompt_end,
                      remaining_tokens=self.admission.remaining_tokens,
                      terminal=self.admission.terminal,
+                     native_end=getattr(self.admission, 'native_end', self.admission.prompt_end - 1),
                      stages=[self.stage_of[rank] for rank in sorted(self.lanes)],
                      lane_storage_epochs=[self.lanes[rank].storage_epoch
                                           for rank in sorted(self.lanes)])

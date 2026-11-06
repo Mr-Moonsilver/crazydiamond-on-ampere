@@ -1,4 +1,4 @@
-"""q18a-compose-soak arm table: the one declared table (coverage-soak, 6 Nov 2026; tmp/a1-trunk/READY-coverage-soak.md). Change it here and nowhere else.
+"""q18a-compose-soak-fix arm table: the one declared table (coverage-soak, 6 Nov 2026; tmp/a1-trunk/READY-coverage-soak-fix.md). Change it here and nowhere else.
 
 The lead (6 Nov 03:55): the residue build met coverage on 90 s arms of 20-40k fresh prompts; the operator's goal is an engine that takes 100 %
 of calls and works all the time. This is a lean soak on the real turn mix: dnr's closed-loop agent replay (compose-4's REPLAY: 8 agents,

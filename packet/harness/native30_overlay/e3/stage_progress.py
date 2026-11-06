@@ -434,6 +434,7 @@ class StagedSegmentDriver(NativeSegmentDriver):
                      prompt_end=self.admission.prompt_end,
                      remaining_tokens=self.admission.remaining_tokens,
                      terminal=self.admission.terminal,
+                     native_end=getattr(self.admission, 'native_end', self.admission.prompt_end - 1),
                      stages=[self.stage_of[rank] for rank in sorted(self.lanes)],
                      lane_storage_epochs=[self.lanes[rank].storage_epoch
                                           for rank in sorted(self.lanes)])

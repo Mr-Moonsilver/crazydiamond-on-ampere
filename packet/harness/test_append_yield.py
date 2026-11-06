@@ -2267,7 +2267,7 @@ class DeltaMinor1HandbackSkipped(unittest.TestCase):
 
     def test_mutant_no_skip(self):
         Mutants.fails(self, self.check, ed.NativeSegmentDriver, 'append_yield_handback_skip',
-                      ("        if getattr(append, 'num_output_tokens', 0) > 0 or left <= 1:\n",
+                      ("        if getattr(append, 'num_output_tokens', 0) > 0 or left <= self._handback_rows(append):\n",
                        "        if True:\n"))
 
 

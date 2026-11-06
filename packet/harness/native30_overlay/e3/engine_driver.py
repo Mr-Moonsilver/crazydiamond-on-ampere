@@ -2006,6 +2006,7 @@ class NativeSegmentDriver:
                      prompt_end=self.admission.prompt_end,
                      remaining_tokens=self.admission.remaining_tokens,
                      terminal=self.admission.terminal,
+                     native_end=getattr(self.admission, 'native_end', self.admission.prompt_end - 1),
                      stages=[self.stage_of[rank] for rank in sorted(self.lanes)],
                      lane_storage_epochs=[self.lanes[rank].storage_epoch
                                           for rank in sorted(self.lanes)])
@@ -3928,11 +3929,18 @@ class NativeSegmentDriver:
         if y is None:
             return False
         if (y['phase'] == 'handback' and request is y['append'] and kind == 'positive-frontier'
-                and getattr(request, 'num_tokens', 0) - getattr(request, 'num_computed_tokens', 0) == 1):
-            return False
+                and getattr(request, 'num_tokens', 0) - getattr(request, 'num_computed_tokens', 0)
+                == self._handback_rows(request)):
+            return False                         # coverage-soak-fix: one row, or a geometry tail's r rows
         if y['phase'] == 'reenter' and y.get('drain_wait') and kind == 'running-prefill':
             return False                         # the drain wait: a decoder's in-flight prefill finishes
         return True
+
+    def _handback_rows(self, request):
+        """coverage-soak-fix: the stock rows a native turn of ``request`` hands back (the controller's; 1 without it)."""
+        rows = getattr(self.controller, 'handback_rows', None)
+        value = rows(self.scheduler, request) if callable(rows) else 1
+        return value if type(value) is int and value >= 1 else 1
 
     def append_yield_handback_done(self):
         """The append produced its first token on FULL, or it left the scheduler."""
@@ -3966,7 +3974,7 @@ class NativeSegmentDriver:
         if type(requests) is dict and requests.get(append.request_id) is not append:
             return False
         left = getattr(append, 'num_tokens', 0) - getattr(append, 'num_computed_tokens', 0)
-        if getattr(append, 'num_output_tokens', 0) > 0 or left <= 1:
+        if getattr(append, 'num_output_tokens', 0) > 0 or left <= self._handback_rows(append):
             return False
         y['handback_skipped'] = True
         self.append_yield_counters['handback_skipped'] += 1
@@ -5274,7 +5282,7 @@ class NativeSegmentDriver:
                 chunk.update({key: entry.get(key) for key in
                               ('request', 'request_generation', 'chunk_start',
                                'chunk_end', 'state_epoch', 'committed_end',
-                               'prompt_end', 'remaining_tokens', 'terminal')})
+                               'prompt_end', 'remaining_tokens', 'terminal', 'native_end')})
                 chunk['begin_ns'] = entry['observed_ns']
                 chunk['segments'] = []
                 chunk['routes'] = set()

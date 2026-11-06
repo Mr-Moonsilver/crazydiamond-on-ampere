@@ -595,15 +595,20 @@ class ChunkAdmission:
     new_block_ids_to_zero: tuple = ()
     cow_pairs: tuple = ()
     state_epoch: int = 0
+    native_end: int = 0     # coverage-soak-fix: wire_v1 AdmissionRecord.native_end; 0 is prompt_end - 1
 
     def __post_init__(self):
         if type(self.transaction) is not TransactionId:
             raise LaneChunkError('transaction must be the canonical TransactionId')
+        if type(self.native_end) is not int or self.native_end < 0:
+            raise LaneChunkError('native_end must be a non-negative int')
+        if self.native_end == 0 and type(self.prompt_end) is int:
+            object.__setattr__(self, 'native_end', self.prompt_end - 1)
         if type(self.prompt_end) is not int or self.prompt_end < 0:
             raise LaneChunkError('prompt_end must be a non-negative int')
         if type(self.state_epoch) is not int or self.state_epoch < 0:
             raise LaneChunkError('state_epoch must be a non-negative int')
-        if not (self.chunk_start < self.chunk_end <= self.prompt_end - 1):
+        if not (self.chunk_start < self.chunk_end <= self.native_end <= self.prompt_end - 1):
             raise LaneChunkError('chunk must lie inside the prompt and leave the final token')
         _ints('input_ids', self.input_ids)
         if len(self.input_ids) != self.num_tokens:

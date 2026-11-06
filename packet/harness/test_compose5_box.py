@@ -165,9 +165,19 @@ class ReplaySeed(unittest.TestCase):
         self.assertIs(box4.T, T4)
 
 
-def memory(free=(1464, 1574, 1352, 1462), rss=40 << 20):
+WORKER_BASE = (25732, 25230, 6646, 2795)      # MiB, the soak's four Worker_PP at nr.0's start (build-2 record)
+
+
+def worker(pid, mib, anon=None, maps=900):
+    return dict(pid=pid, comm='VLLM::Worker_PP%d' % (pid - 4210), rss_kib=mib << 10, vmrss_kib=mib << 10, rssanon_kib=(anon or mib // 2) << 10,
+                rssfile_kib=1 << 20, rssshmem_kib=(mib - (anon or mib // 2)) << 10, vmlck_kib=0, vmpin_kib=0, vmdata_kib=mib << 10, maps=maps, errors=[])
+
+
+def memory(free=(1464, 1574, 1352, 1462), rss=40 << 20, grow=(0, 0, 0, 0), workers=True):
+    """coverage-soak-fix: four Worker_PP rows (pid 4210..4213), each grown by ``grow`` MiB; workers=False is a read without them."""
+    rows = [worker(4210 + k, base + g) for k, (base, g) in enumerate(zip(WORKER_BASE, grow))] if workers else None
     return dict(schema=box.MEMORY_SCHEMA, wall_s=1.0, gpus={str(k): dict(used_mib=24576 - f, total_mib=24576, free_mib=f) for k, f in enumerate(free)},
-                rss_kib=rss, processes=7, top=[['python3', rss]], errors=[])
+                rss_kib=rss, processes=7, top=[['python3', rss]], workers=rows, errors=[])
 
 
 class Soak(unittest.TestCase):
@@ -292,7 +302,125 @@ class Soak(unittest.TestCase):
         self.assertEqual(result['memory'][W0]['ranks']['1']['free_drop_mib'], 1474)
         self.assertNotIn(W0, result['memory_flags'])
         self.assertEqual(result['memory_flags'][R0], ['memory-not-read'])
-        self.assertEqual(result['verdict'], 'PASS')
+        # coverage-soak-fix: an nr arm with no worker read at its start fails; growth there must not pass unread
+        self.assertEqual(result['verdict'], 'FAIL')
+        self.assertEqual(result['failures'], [R0 + ':worker-rss-not-read'])
+
+
+class WorkerRss(unittest.TestCase):
+    """coverage-soak-fix (lead, 6 Nov 06:25): per Worker_PP RSS fails an nr arm at 256 MiB, or 32 B per native-append history token."""
+
+    def grade(self, label=R1, grow=(0, 0, 0, 0), history=None, start=None):
+        arms = Soak().arms(mem={label: dict(memory=dict(start=start or memory(), end=memory(grow=grow)))})
+        if history is not None:
+            for rec in arms:
+                for status in rec.get('statuses') or ():
+                    cov = ((status.get('append_yield') or {}).get('declines') or {}).get('coverage')
+                    if cov is not None and rec.get('label') == label and status.get('label') == 'after':
+                        cov['append_history_tokens'] = history
+        return Grade().grade_of(arms)
+
+    def test_flat_workers_pass(self):
+        result = self.grade()
+        self.assertEqual(result['verdict'], 'PASS', result['failures'])
+        self.assertEqual(result['worker_rss'][R1]['fails'], [])
+
+    def test_the_soaks_growth_fails_by_size_and_by_token(self):
+        # nr.1 of build-2: 2046, 2054, 1765, 2023 MiB over 7.624M append-history tokens (about 280 B per token)
+        result = self.grade(grow=(2046, 2054, 1765, 2023), history=7624000)
+        fails = [f for f in result['failures'] if f.startswith(R1)]
+        self.assertIn(R1 + ':worker-rss-up-pid4210-2046MiB', fails)
+        self.assertIn(R1 + ':worker-rss-per-append-token-pid4212-243B', fails)
+        self.assertEqual(len(fails), 8)
+
+    def test_under_the_size_a_per_token_rate_still_fails(self):
+        result = self.grade(grow=(100, 0, 0, 0), history=1000000)          # 105 B per token
+        self.assertEqual([f for f in result['failures'] if f.startswith(R1)], [R1 + ':worker-rss-per-append-token-pid4210-105B'])
+        result = self.grade(grow=(100, 0, 0, 0), history=10000000)         # 10 B per token, under 256 MiB
+        self.assertEqual(result['verdict'], 'PASS', result['failures'])
+
+    def test_with_no_append_history_only_the_size_counts(self):
+        self.assertEqual(self.grade(grow=(255, 0, 0, 0)).get('verdict'), 'PASS')
+        self.assertIn(R1 + ':worker-rss-up-pid4210-256MiB', self.grade(grow=(256, 0, 0, 0))['failures'])
+
+    def test_a_ny_arm_is_read_not_failed(self):
+        result = self.grade(label=W1, grow=(3000, 3000, 3000, 3000), history=1000)
+        self.assertEqual(result['verdict'], 'PASS', result['failures'])
+        self.assertNotIn(W1, result['worker_rss'])
+        self.assertEqual(result['memory'][W1]['workers']['rows']['4210']['rss_kib']['growth'], 3000 << 10)
+
+    def test_a_changed_pid_or_a_missing_worker_read_fails(self):
+        start = memory()
+        start['workers'][0] = dict(start['workers'][0], pid=4300)
+        self.assertIn(R1 + ':worker-pid-changed-4300', self.grade(start=start)['failures'])
+        self.assertIn(R1 + ':worker-rss-not-read', self.grade(start=memory(workers=False))['failures'])
+
+    def test_the_delta_carries_every_status_field_and_the_maps(self):
+        result = self.grade(grow=(64, 0, 0, 0))
+        row = result['memory'][R1]['workers']['rows']['4210']
+        self.assertEqual(sorted(row), sorted(['comm', 'rss_kib', 'maps'] + [f.lower() + '_kib' for f in box.STATUS_FIELDS]))
+        self.assertEqual((row['rssanon_kib']['growth'], row['maps']['growth']), (32 << 10, 0))
+
+    def test_the_report_has_a_worker_line_per_nr_arm(self):
+        result = self.grade(grow=(300, 0, 0, 0))
+        with box._bound():
+            text = box.report(result)
+        self.assertIn('- %s worker RSS: worker-rss-up-pid4210-300MiB' % R1, text)
+        self.assertIn('- %s worker RSS: no failure' % R0, text)
+
+    def test_engine_memory_reads_each_workers_proc(self):
+        with tempfile.TemporaryDirectory() as proc:
+            for pid in (4210, 4211):
+                Path(proc, str(pid)).mkdir()
+                Path(proc, str(pid), 'status').write_text('Name:\tVLLM::Worker\nVmRSS:\t  9123456 kB\nRssAnon:\t 5000000 kB\n'
+                                                          'RssFile:\t 23456 kB\nRssShmem:\t 4100000 kB\nVmLck:\t0 kB\nVmPin:\t 12 kB\nVmData:\t 7000000 kB\n')
+                Path(proc, str(pid), 'maps').write_text('a\n' * (100 + pid - 4210))
+
+            def run(cmd, **kw):
+                if cmd[0] == 'nvidia-smi':
+                    return mock.Mock(returncode=0, stdout='0, 23112, 24576\n')
+                return mock.Mock(returncode=0, stdout='PID RSS COMMAND\n4101 812345 python3\n4210 9123456 VLLM::Worker_PP0_TP0\n4211 9000000 VLLM::Worker_PP0_TP1\n4299 5 VLLM::Worker_PP1\n')
+            out = box.engine_memory(run=run, status=lambda pid: box.worker_status(pid, proc=proc))
+        rows = {w['pid']: w for w in out['workers']}
+        self.assertEqual(sorted(rows), [4210, 4211, 4299])
+        self.assertEqual((rows[4210]['rssanon_kib'], rows[4210]['rssshmem_kib'], rows[4210]['vmpin_kib'], rows[4210]['maps']), (5000000, 4100000, 12, 100))
+        self.assertEqual((rows[4211]['maps'], rows[4211]['rss_kib'], rows[4211]['comm']), (101, 9000000, 'VLLM::Worker_PP0_TP1'))
+        self.assertEqual(rows[4299]['errors'], ['status:FileNotFoundError', 'maps:FileNotFoundError'])
+        self.assertEqual(out['errors'], [])
+
+
+class GeometryGrade(unittest.TestCase):
+    """coverage-soak-fix: the geometry-tail class is native-served on nr, on its own line; without its native turns it fails."""
+    cov = property(lambda self: Coverage())      # defined below this class
+
+    def arms(self, rows, turns, max_rows=None):
+        arms = self.cov.arms_with(R1, stock={'handback': 10, 'geometry-tail': rows}, native_turns=10)
+        rec = next(a for a in arms if a.get('label') == R1)
+        for status in rec['statuses'][1:]:
+            c = ((status.get('append_yield') or {}).get('declines') or {}).get('coverage')
+            if c is not None:
+                c['geometry_tail'] = dict(turns=turns, max_r=48, max_rows=max_rows or 48)
+        return arms
+
+    def test_geometry_tail_rows_after_their_turns_pass_and_count_native(self):
+        result = self.cov.grade.grade_of(self.arms(107, 4))
+        self.assertEqual([f for f in result['failures'] if f.startswith(R1)], [])
+        cov = result['coverage'][R1]
+        self.assertEqual(cov['geometry_tail'], dict(turns=4, rows=107, live_rows=107, requests=107, max_r=48, max_rows=48))
+        self.assertEqual(cov['live_native_share'], 1.0)
+        with box._bound():
+            self.assertIn('- %s geometry-tail: turns 4, rows 107 (107 live), max r 48, max rows 48 (engine life)' % R1,
+                          box.report(result))
+
+    def test_rows_with_no_turn_or_too_many_fail(self):
+        self.assertIn(R1 + ':geometry-tail-not-of-a-native-turn', self.cov.grade.grade_of(self.arms(20, 0))['failures'])
+        self.assertIn(R1 + ':geometry-tail-not-of-a-native-turn', self.cov.grade.grade_of(self.arms(300, 4))['failures'])
+        self.assertIn(R1 + ':geometry-tail-not-of-a-native-turn', self.cov.grade.grade_of(self.arms(48, 1, max_rows=65))['failures'])
+
+    def test_on_a_ny_arm_it_is_read_not_failed(self):
+        arms = self.cov.arms_with(W1, stock={'geometry-tail': 20})
+        result = self.cov.grade.grade_of(arms)
+        self.assertEqual([f for f in result['failures'] if f.startswith(W1)], [])
 
 
 class Smoke(unittest.TestCase):
@@ -576,7 +704,7 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-compose-soak'))
+        self.assertTrue(text.startswith('# q18a-compose-soak-fix'))
         self.assertIn('compose5_rule.py', text)
 
 
@@ -600,6 +728,8 @@ class Grade(unittest.TestCase):
             rec['inwait'] = dict(rec.get('inwait') or {}, bound_requested=row['chunk_bound'], bound_acknowledged=row['chunk_bound'], hold_requested=row['native_hold'], hold_acknowledged=row['native_hold'],
                                  residue_requested=row['native_residue'], residue_acknowledged=row['native_residue'])
             with_coverage(rec, coverage(1000 * k, steps=10 * k), coverage(1000 * k + 900, steps=10 * k + 9))
+            if row['kind'] == 'replay':
+                rec['memory'] = dict(start=memory(), end=memory())     # coverage-soak-fix: the worker reads, flat
             out.append(rec)
         return ta1.tbox.decode_records() + out
 

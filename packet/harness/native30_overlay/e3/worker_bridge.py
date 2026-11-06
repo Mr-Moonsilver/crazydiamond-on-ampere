@@ -212,6 +212,7 @@ def admission_to_chunk(record):
         new_block_ids_to_zero=record.new_block_ids_to_zero,
         cow_pairs=record.cow_pairs,
         state_epoch=record.state_epoch,
+        native_end=getattr(record, 'native_end', 0),
     )
 
 
@@ -932,8 +933,9 @@ class NativeWorkerBridge:
         self._require_open(request.transaction, request.state_epoch)
         chunk = self.dispatcher.chunk
         if chunk is not None:
-            admitted_terminal = (chunk.admission.prompt_end
-                                 - chunk.admission.chunk_end) == 1
+            # coverage-soak-fix: the chunk ending at the admitted native end (the prompt's last row, or a geometry tail's
+            # block boundary) is the terminal one
+            admitted_terminal = chunk.admission.chunk_end == chunk.admission.native_end
             if request.terminal is not admitted_terminal:
                 raise WorkerBridgeError(
                     'release terminal flag differs from the admitted chunk')

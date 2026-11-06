@@ -457,6 +457,11 @@ class AutoArmPolicy:
             return 'plan-generation-logprobs'
         return None
 
+    def _native_end(self, request):
+        """coverage-soak-fix: the admission's native end (the last block boundary on a geometry tail), else the last row."""
+        end = getattr(self.controller, 'native_end', None)
+        return end(self.scheduler, request) if callable(end) else request.num_tokens - 1
+
     def _plan(self, request):
         s, c = self.scheduler, self.controller
         site = self._plan_state_site(request)
@@ -473,12 +478,12 @@ class AutoArmPolicy:
         if residue:
             # coverage-residue: the admission's own hit (scheduler_hooks.residue_hit), and the junction set as stock's lookup
             # sets it, so the split stops there and the chunk's commit publishes the shared prefix's state.
-            blocks, start, shared, lowered = residue_hit(s, request, self._floor())
+            blocks, start, shared, lowered = residue_hit(s, request, self._floor(), self._native_end(request))
             request.shared_prefix_boundary = shared
             self._plan_residue = 'lowered' if lowered else ('junction' if shared else None)
         else:
             blocks, start, shared = s.kv_cache_manager.get_computed_blocks(request)
-        end = request.num_tokens - 1
+        end = self._native_end(request)
         # Shared-prefix junction/streaming/recompute special cases stay stock.
         if shared and not residue:
             self._decline_why = 'plan-shared'
@@ -525,7 +530,7 @@ class AutoArmPolicy:
                 or getattr(request.status, 'name', None) != 'WAITING'
                 or request.num_output_tokens != 0 or request.resumable):
             return None
-        start, end = request.num_computed_tokens, request.num_tokens - 1
+        start, end = request.num_computed_tokens, self._native_end(request)
         if type(start) is not int or start <= 0 or end - start < 1:
             return None
         cap = native_chunk_cap(c.chunk_tokens, s.max_num_scheduled_tokens)    # the cap admission plans with

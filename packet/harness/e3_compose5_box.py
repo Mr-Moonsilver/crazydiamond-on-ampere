@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""q18a-compose-soak box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
+"""q18a-compose-soak-fix box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
 coverage-residue adds the per-row native_residue, acknowledged, keeps the engine's decline record (with its prefill coverage counter) in each status row, and grades coverage per replay arm.
 coverage-soak adds, per replay arm: the requests still open when the replay gave up on them, by agent, session and send time (a hang, named), and
 the engine's memory at the traffic's start and end (per-rank free VRAM by nvidia-smi, the engine container's process RSS by docker top), read on
@@ -28,7 +28,18 @@ _report = _box.report
 
 
 def report(result):
-    return _report(result).replace('q18a-compose-4', 'q18a-compose-soak', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    text = _report(result).replace('q18a-compose-4', 'q18a-compose-soak-fix', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    # coverage-soak-fix: the geometry-tail class and the worker RSS read, one line per replay arm (the decode gap is the reader's)
+    extra = []
+    for label, cov in sorted((result.get('coverage') or {}).items()):
+        geo = (cov or {}).get('geometry_tail')
+        if geo:
+            extra.append('- %s geometry-tail: turns %d, rows %d (%d live), max r %s, max rows %s (engine life)'
+                         % (label, geo['turns'], geo['rows'], geo['live_rows'], geo['max_r'], geo['max_rows']))
+    for label, row in sorted((result.get('worker_rss') or {}).items()):
+        extra.append('- %s worker RSS: %s; native appends %s, history %s tokens'
+                     % (label, ', '.join(row['fails']) or 'no failure', row['native_appends'], row['append_history_tokens']))
+    return text + ('\n' + '\n'.join(extra) + '\n' if extra else '')
 
 
 def __getattr__(name):
@@ -90,11 +101,42 @@ GPU_QUERY = ['nvidia-smi', '--query-gpu=index,memory.used,memory.total', '--form
 VRAM_GROWTH_MIB = 64          # flagged: a rank's free VRAM down by this much from an nr arm's start to its settled end, or first nr start to last
 SETTLE_STEP_S, SETTLE_TRIES = 2.0, 5   # the residue run's samples: in use rises ~1 GiB inside an arm and falls back when the lane goes idle (the flush)
 RSS_GROWTH_KIB = 256 * 1024   # flagged: the engine container's process RSS up by this much
+# coverage-soak-fix (lead, 6 Nov 06:25): per Worker_PP, an nr arm FAILS when its RSS grows by WORKER_RSS_FAIL_KIB, or by
+# WORKER_RSS_FAIL_B_PER_TOKEN bytes or more per token of native-append history in the arm (the soak's leak: about 280).
+WORKER_RSS_FAIL_KIB = 256 * 1024
+WORKER_RSS_FAIL_B_PER_TOKEN = 32
+WORKER_COMM = 'VLLM::Worker'
+T_GEOMETRY_MAX = 64            # the engine's GEOMETRY_TAIL_MAX (scheduler_hooks, wire_v1): the most rows a geometry tail hands stock
+# the /proc/<pid>/status fields that tell the leak's class (owner hunt, 6 Nov): heap (RssAnon, VmData), pinned (VmLck, VmPin),
+# shared (RssShmem), plus the mapping count (lines of /proc/<pid>/maps)
+STATUS_FIELDS = ('VmRSS', 'RssAnon', 'RssFile', 'RssShmem', 'VmLck', 'VmPin', 'VmData')
 
 
-def engine_memory(run=subprocess.run, clock=time.time):
-    """Per-rank VRAM and the engine container's process RSS, now. Read only; never raises: a failed read is an error in the row."""
-    out = dict(schema=MEMORY_SCHEMA, wall_s=clock(), gpus=None, rss_kib=None, processes=None, top=None, errors=[])
+def worker_status(pid, proc='/proc', opener=open):
+    """One Worker_PP's /proc status fields (KiB) and its mapping count. Read only; a failed read is an error in the row."""
+    out = dict(pid=pid, errors=[])
+    try:
+        with opener('%s/%d/status' % (proc, pid)) as f:
+            for line in f:
+                key, _, value = line.partition(':')
+                if key in STATUS_FIELDS:
+                    parts = value.split()
+                    out[key.lower() + '_kib'] = int(parts[0]) if parts and parts[0].isdigit() else None
+    except Exception as exc:  # noqa: BLE001 - a read, never the arm's failure
+        out['errors'].append('status:' + type(exc).__name__)
+    try:
+        with opener('%s/%d/maps' % (proc, pid)) as f:
+            out['maps'] = sum(1 for _ in f)
+    except Exception as exc:  # noqa: BLE001
+        out['maps'] = None
+        out['errors'].append('maps:' + type(exc).__name__)
+    return out
+
+
+def engine_memory(run=subprocess.run, clock=time.time, status=worker_status):
+    """Per-rank VRAM and the engine container's process RSS, now; per Worker_PP its pid, RSS and /proc status (coverage-soak-fix).
+    Read only; never raises: a failed read is an error in the row."""
+    out = dict(schema=MEMORY_SCHEMA, wall_s=clock(), gpus=None, rss_kib=None, processes=None, top=None, workers=None, errors=[])
     try:
         got = run(GPU_QUERY, capture_output=True, text=True, timeout=20)
         gpus = {}
@@ -110,14 +152,18 @@ def engine_memory(run=subprocess.run, clock=time.time):
         out['errors'].append('nvidia-smi:' + type(exc).__name__)
     try:
         got = run(['docker', 'top', CONTAINER, '-eo', 'pid,rss,comm'], capture_output=True, text=True, timeout=20)
-        rows = []
+        rows, workers = [], []
         for line in (got.stdout or '').splitlines()[1:]:
             parts = line.split(None, 2)
             if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-                rows.append((parts[2].strip() if len(parts) > 2 else '?', int(parts[1])))
+                comm = parts[2].strip() if len(parts) > 2 else '?'
+                rows.append((comm, int(parts[1])))
+                if comm.startswith(WORKER_COMM):
+                    workers.append(dict(status(int(parts[0])), comm=comm, rss_kib=int(parts[1])))
         if got.returncode == 0 and rows:
             out['rss_kib'], out['processes'] = sum(r for _c, r in rows), len(rows)
             out['top'] = [list(r) for r in sorted(rows, key=lambda r: -r[1])[:6]]
+            out['workers'] = sorted(workers, key=lambda x: x['pid'])
         else:
             out['errors'].append('docker-top-rc-%s' % got.returncode)
     except Exception as exc:  # noqa: BLE001
@@ -182,7 +228,44 @@ def memory_delta(start, end):
                            free_drop_mib=a['free_mib'] - b['free_mib'] if a and b else None)
     rss = (start.get('rss_kib'), end.get('rss_kib'))
     return dict(ranks=ranks or None, rss_start_kib=rss[0], rss_end_kib=rss[1],
-                rss_growth_kib=rss[1] - rss[0] if None not in rss else None, errors=list(start.get('errors') or ()) + list(end.get('errors') or ()))
+                rss_growth_kib=rss[1] - rss[0] if None not in rss else None, workers=worker_delta(start, end),
+                errors=list(start.get('errors') or ()) + list(end.get('errors') or ()))
+
+
+def worker_delta(start, end):
+    """Per Worker_PP (by pid, start and end): RSS and each /proc field at both ends and its growth (KiB), the mapping count.
+    None when either side has no worker list; a pid on one side only is named in 'unmatched' (an engine restart)."""
+    a = {w['pid']: w for w in (start or {}).get('workers') or ()}
+    b = {w['pid']: w for w in (end or {}).get('workers') or ()}
+    if not a or not b:
+        return None
+    rows = {}
+    for pid in sorted(set(a) & set(b)):
+        row = dict(comm=b[pid].get('comm'))
+        for key in ('rss_kib',) + tuple(f.lower() + '_kib' for f in STATUS_FIELDS) + ('maps',):
+            x, y = a[pid].get(key), b[pid].get(key)
+            row[key] = dict(start=x, end=y, growth=y - x if type(x) is int and type(y) is int else None)
+        rows[str(pid)] = row
+    return dict(rows=rows, unmatched=sorted(set(a) ^ set(b)))
+
+
+def worker_rss_fails(delta, append_history):
+    """coverage-soak-fix: the nr arm's RSS failures, per Worker_PP. ``append_history``: the arm's native-append history tokens (the
+    engine's coverage counter), None if not read. A missing worker read fails: unbounded growth must not pass unread."""
+    workers = (delta or {}).get('workers')
+    if not workers or not workers['rows']:
+        return ['worker-rss-not-read']
+    fails = ['worker-pid-changed-%s' % pid for pid in workers['unmatched']]
+    for pid, row in workers['rows'].items():
+        growth = row['rss_kib']['growth']
+        if growth is None:
+            fails.append('worker-rss-not-read-pid%s' % pid)
+            continue
+        if growth >= WORKER_RSS_FAIL_KIB:
+            fails.append('worker-rss-up-pid%s-%dMiB' % (pid, growth // 1024))
+        if type(append_history) is int and append_history > 0 and growth * 1024 / append_history >= WORKER_RSS_FAIL_B_PER_TOKEN:
+            fails.append('worker-rss-per-append-token-pid%s-%dB' % (pid, round(growth * 1024 / append_history)))
+    return fails
 
 
 def memory_flags(delta):
@@ -207,7 +290,9 @@ def coverage_delta(start, end):
     if a is None or b is None:
         return None
     out = dict(steps=b.get('steps', 0) - a.get('steps', 0), errors=b.get('errors', 0) - a.get('errors', 0), open_native=b.get('open_native'),
-               native_turns=b.get('native_turns', 0) - a.get('native_turns', 0))
+               native_turns=b.get('native_turns', 0) - a.get('native_turns', 0),
+               native_appends=b.get('native_appends', 0) - a.get('native_appends', 0),
+               append_history_tokens=b.get('append_history_tokens', 0) - a.get('append_history_tokens', 0))
     for table in ('rows', 'requests'):
         out[table] = {}
         for state in ('live', 'idle'):
@@ -232,11 +317,20 @@ def coverage_delta(start, end):
     out['handback'] = dict(turns=hb_rows, rows=hb_rows + excess, excess_rows=excess, requests=hb_requests, native_turns=out['native_turns'],
                            max_rows_per_turn=(b.get('handback_max_rows') if excess else (1 if hb_rows else 0)),
                            every_row_after_a_native_turn=deficit(b) <= max(0, deficit(a)))
+    # coverage-soak-fix (lead, 6 Nov 06:25): a geometry tail's r rows (2..64) after the request's own native turn that ended at the
+    # last block boundary, once per turn, are native-served as their own class; the counter names them only so, any row past r is
+    # 'handback-excess'. max_r and max_rows are the engine's life maxima, not this window's.
+    ga, gb = a.get('geometry_tail') or {}, b.get('geometry_tail') or {}
+    out['geometry_tail'] = dict(turns=gb.get('turns', 0) - ga.get('turns', 0),
+                                rows=sum(out['rows'][s]['stock'].get('geometry-tail', 0) for s in ('live', 'idle')),
+                                live_rows=out['rows']['live']['stock'].get('geometry-tail', 0),
+                                requests=sum(out['requests'][s]['stock'].get('geometry-tail', 0) for s in ('live', 'idle')),
+                                max_r=gb.get('max_r', 0), max_rows=gb.get('max_rows', 0))
     def share(states, served):
         native = sum(sum(out['rows'][s]['native'].values()) for s in states)
         stock = sum(sum(out['rows'][s]['stock'].values()) for s in states)
         if served:
-            moved = sum(out['rows'][s]['stock'].get('handback', 0) for s in states)
+            moved = sum(out['rows'][s]['stock'].get('handback', 0) + out['rows'][s]['stock'].get('geometry-tail', 0) for s in states)
             native, stock = native + moved, stock - moved
         return round(native / (native + stock), 6) if native + stock else None
     out['live_native_share'], out['all_native_share'] = share(('live',), True), share(('live', 'idle'), True)     # target 1.0 both
@@ -293,11 +387,15 @@ def grade(arms, *args, **kwargs):
                 fails.append('coverage-errors')
             for state, name in (('live', 'with-decoder-live'), ('idle', 'idle')):
                 stock = delta['rows'][state]['stock']
-                if rows[label]['native_residue'] and any(v for site, v in stock.items() if site != 'handback'):
+                if rows[label]['native_residue'] and any(v for site, v in stock.items() if site not in ('handback', 'geometry-tail')):
                     fails.append('stock-prefill-' + name)
             hb = delta['handback']
             if rows[label]['native_residue'] and (hb['excess_rows'] or not hb['every_row_after_a_native_turn']):
                 fails.append('handback-not-one-row-of-a-native-turn')
+            geo = delta['geometry_tail']
+            if rows[label]['native_residue'] and geo['rows'] and (not geo['turns'] or geo['rows'] > geo['turns'] * T_GEOMETRY_MAX
+                                                                  or geo['max_rows'] > T_GEOMETRY_MAX):
+                fails.append('geometry-tail-not-of-a-native-turn')
         result['failures'] = sorted(set(result['failures']) | {label + ':' + f for f in fails})
     # coverage-soak (lead, 6 Nov 03:55): no hang (every request sent in an arm completes within the arm and its drain; any that did not is
     # named), and memory at each nr arm's start and end, growth flagged, not failed. ny is read alike, never failed on these.
@@ -316,6 +414,13 @@ def grade(arms, *args, **kwargs):
         result['memory'][row['label']] = memory_delta(mem.get('start'), mem.get('end'))
         if row['c1'] == T.ON:
             nr.append(mem)
+            # coverage-soak-fix: RSS per Worker_PP fails the nr arm (lead, 6 Nov 06:25): >= 256 MiB, or >= 32 B per append-history token
+            cov = result['coverage'].get(row['label']) or {}
+            rss_fails = worker_rss_fails(result['memory'][row['label']], cov.get('append_history_tokens'))
+            result.setdefault('worker_rss', {})[row['label']] = dict(
+                fails=rss_fails, append_history_tokens=cov.get('append_history_tokens'), native_appends=cov.get('native_appends'))
+            if rss_fails:
+                result['failures'] = sorted(set(result['failures']) | {row['label'] + ':' + f for f in rss_fails})
             flags = memory_flags(result['memory'][row['label']])
             if flags:
                 result['memory_flags'][row['label']] = flags

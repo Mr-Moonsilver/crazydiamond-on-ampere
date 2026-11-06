@@ -1221,6 +1221,30 @@ class ParkedPrefill:
 
 
 QSA_STAGE_MIN_ROWS = 64  # pinned qsa.py: _QSA_STAGE_MIN_ROWS; no setting override
+GEOMETRY_TAIL_MAX = QSA_STAGE_MIN_ROWS  # coverage-soak-fix: the most rows a geometry-tail handback hands stock (wire_v1 pins the same)
+
+
+def geometry_tail_rows(scheduler, request, minimum):
+    """coverage-soak-fix (lead, 6 Nov 06:25): r = num_tokens % block when 2 <= r <= minimum, else 0.
+
+    Stock's split must stop at the last Mamba block boundary (num_tokens - r), so a native turn to num_tokens - 1 would
+    end in a chunk of r - 1 rows, under the staged minimum, and has no plan (soak build-2: all four plan-empty nr turns).
+    The native turn ends at that boundary instead and stock runs the r rows, the prompt's last chunk (stock's split
+    exempts it from alignment). 0: the one-row handback. Pure, from stock's own block size.
+    """
+    block = getattr(getattr(scheduler, 'cache_config', None), 'block_size', None)
+    n = getattr(request, 'num_tokens', None)
+    if (type(block) is not int or block < 1 or type(n) is not int or type(minimum) is not int
+            or getattr(scheduler, 'use_eagle_block_drop', False)):
+        return 0
+    r = n % block
+    return r if 2 <= r <= min(minimum, GEOMETRY_TAIL_MAX) and n - r > 0 else 0
+
+
+def prompt_end_tail(admission):
+    """The geometry-tail r a terminal admission was planned for: its rows past the native end, 0 for the one-row handback."""
+    left = admission.prompt_end - admission.native_end
+    return left if left > 1 else 0
 MAX_PLAN_REFUSAL_MEMO = 16  # refused-plan receipts kept per controller
 # native39: how long stock work may be held on an armed split route while no
 # native work is in flight before the engine returns FULL on its own (typed
@@ -1446,6 +1470,13 @@ class PrefillCoverage:
         self.native_turns = 0        # native turns that ended in a handback (note_handback): a handback row needs one before it
         self.handback_max_rows = 0   # the most stock rows any handed-back request ran (cumulative): 1 is the contract
         self._counted = {}           # (state, path, uid) -> True: a request counted once per bucket (bounded)
+        # coverage-soak-fix: a native turn that ended at the last Mamba block boundary hands stock its r rows ('geometry-tail').
+        self._tail_rows = {}         # uid -> r of its native turn's geometry-tail handback (bounded); absent: the one-row handback
+        self.geometry_turns = 0      # native turns that ended in a geometry-tail handback (not in native_turns)
+        self.geometry_max_r = 0      # the largest r handed back
+        self.geometry_max_rows = 0   # the most stock rows any geometry-tail request ran in its turn: r is the contract
+        self.native_appends = 0      # native turns from a cached prefix (their first admission's start > 0)
+        self.append_history_tokens = 0   # the sum of those starts: the history the soak's RSS law is per token of
 
     @staticmethod
     def _bounded(table, key, value):
@@ -1492,6 +1523,20 @@ class PrefillCoverage:
                         why = getattr(policy, 'stock_site', None)
                         site = why(request) if callable(why) else 'no-policy'
                     self._bounded(self._stock_site, uid, site)
+                if site == 'handback' and uid in self._tail_rows:
+                    # lead, 6 Nov 06:25: a geometry-tail handback is native-served only as the r rows of the request's own native
+                    # turn that ended at the last block boundary, once per turn; any row past them is 'handback-excess'.
+                    tail = self._tail_rows[uid]
+                    before_rows = self._handback_rows.get(uid, 0)
+                    self._bounded(self._handback_rows, uid, before_rows + rows)
+                    self.geometry_max_rows = max(self.geometry_max_rows, before_rows + rows)
+                    first = max(0, min(rows, tail - before_rows))
+                    if first:
+                        self._add(live, 'stock', 'geometry-tail', uid, first)
+                        self._tail_log(request, first, tail, live)
+                    if rows - first:
+                        self._add(live, 'stock', 'handback-excess', uid, rows - first)
+                    continue
                 if site == 'handback':
                     # lead, 6 Nov: the handback is native-served only as exactly one row of the native turn's own handback;
                     # any row past the first (a preemption's replay, a longer handback) is a stock row by its own name.
@@ -1531,32 +1576,68 @@ class PrefillCoverage:
     def note_native_cancel(self, transaction):
         self._admitted.pop(transaction, None)       # rows not computed: if stock runs them, stock counts them
 
-    def note_handback(self, request):
+    def note_handback(self, request, rows=1, tail=0):
+        """A native turn's terminal commit. ``rows``: the stock rows it leaves; ``tail``: the geometry-tail r the admission
+        planned for (geometry_tail_rows at that admission), 0 for the one-row handback. A geometry-tail turn counts only when
+        rows == tail == num_tokens % block (2..64) as planned; any other mismatch is an error and its rows are excess."""
         try:
-            self.native_turns += 1
-            self._handback_rows.pop(request.request_id, None)       # a new turn's handback starts its own count
-            self._stock_site.pop(request.request_id, None)          # and is named by this turn, not an earlier stock site
-            self._bounded(self._handback, request.request_id, weakref.ref(request))
+            uid = request.request_id
+            self._handback_rows.pop(uid, None)       # a new turn's handback starts its own count
+            self._stock_site.pop(uid, None)          # and is named by this turn, not an earlier stock site
+            self._tail_rows.pop(uid, None)
+            if tail and rows == tail and 2 <= tail <= GEOMETRY_TAIL_MAX:
+                self.geometry_turns += 1
+                self.geometry_max_r = max(self.geometry_max_r, tail)
+                self._bounded(self._tail_rows, uid, tail)
+            else:
+                # the one-row handback; a turn that left any other count (a tail not stock's geometry) is one error, and
+                # every row of it past the first is 'handback-excess'
+                if rows != 1:
+                    self.errors += 1
+                self.native_turns += 1
+            self._bounded(self._handback, uid, weakref.ref(request))
         except Exception:
             self.errors += 1
+
+    def note_append(self, history):
+        """A native turn's first admission from a cached prefix of ``history`` tokens."""
+        try:
+            if type(history) is int and history > 0:
+                self.native_appends += 1
+                self.append_history_tokens += history
+        except Exception:
+            self.errors += 1
+
+    @staticmethod
+    def _tail_log(request, rows, tail, live):
+        # One line per geometry-tail stock step: its stamp places the decode gap of the step in the client's journal.
+        try:
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 geometry-tail rows=%d r=%d num_tokens=%d live=%d', rows, tail,
+                                    request.num_tokens, int(bool(live)))
+        except Exception:
+            pass
 
     def record(self):
         copy = lambda table: {state: {path: dict(sites) for path, sites in paths.items()} for state, paths in table.items()}
         return dict(schema=COVERAGE_SCHEMA, rows=copy(self.rows), requests=copy(self.requests), steps=self.steps,
                     errors=self.errors, open_native=len(self._admitted), native_turns=self.native_turns,
-                    handback_max_rows=self.handback_max_rows)
+                    handback_max_rows=self.handback_max_rows,
+                    geometry_tail=dict(turns=self.geometry_turns, max_r=self.geometry_max_r, max_rows=self.geometry_max_rows),
+                    native_appends=self.native_appends, append_history_tokens=self.append_history_tokens)
 
 
-def residue_hit(scheduler, request, floor):
+def residue_hit(scheduler, request, floor, end=None):
     """coverage-residue: the cache hit the native lane plans from, and how. (blocks, start, junction, lowered).
 
     A hit that leaves under ``floor`` rows (the staged minimum) to compute is lowered: the longest hit at most the prompt's
     last row less ``floor``, from the coordinator's own search, so native computes the rows stock would have, and more. The
     cost is a1-trunk 1d's and the dup-key fix's: a lower registered state, at most a Mamba block and ``floor`` rows more.
-    Pure: the lookup records nothing (save_new_computed_blocks does, at allocation)."""
+    Pure: the lookup records nothing (save_new_computed_blocks does, at allocation). ``end``: the native end (coverage-soak-fix:
+    the last block boundary on a geometry tail), else the prompt's last row."""
     manager = scheduler.kv_cache_manager
     blocks, start, junction = manager.get_computed_blocks(request)
-    end = request.num_tokens - 1
+    end = request.num_tokens - 1 if end is None else end
     if type(start) is not int or start <= 0 or end - start >= floor or end - floor < 0:
         return blocks, start, junction, False
     found, hit, uncached = manager.coordinator.find_longest_cache_hit(request.block_hashes, end - floor)
@@ -2071,6 +2152,21 @@ class PrefillAdmissionController:
                     return request
         return None
 
+    def geometry_tail(self, scheduler, request):
+        """coverage-soak-fix: r of a geometry-tail turn (geometry_tail_rows), on only with the residue and the hold; else 0."""
+        hold = self.native_hold_s
+        if self.native_residue != 1 or type(hold) not in (int, float) or hold <= 0 or self.minimum_stage_rows <= 1:
+            return 0
+        return geometry_tail_rows(scheduler, request, self.minimum_stage_rows)
+
+    def native_end(self, scheduler, request):
+        """The last position a native turn computes to: the last block boundary on a geometry tail, else the prompt's last row."""
+        return request.num_tokens - (self.geometry_tail(scheduler, request) or 1)
+
+    def handback_rows(self, scheduler, request):
+        """The stock rows a native turn of ``request`` hands back: r on a geometry tail, else 1."""
+        return self.geometry_tail(scheduler, request) or 1
+
     def _append_yield_short_tail(self, scheduler, prompt_end):
         """True when stock's split leaves a last chunk under the staged minimum, at any start.
 
@@ -2089,8 +2185,9 @@ class PrefillAdmissionController:
         earlier.  Under one unit of prompt there is nothing to move back to; the plan refuses it as before.
         """
         prompt_end = request.num_tokens
-        if not self._append_yield_short_tail(scheduler, prompt_end):
-            return request
+        geometry = getattr(self, 'geometry_tail', None)
+        if (callable(geometry) and geometry(scheduler, request)) or not self._append_yield_short_tail(scheduler, prompt_end):
+            return request              # coverage-soak-fix: a geometry tail ends native at the block boundary, no moved stop
         boundary = prompt_end // scheduler.hash_block_size * scheduler.hash_block_size
         if boundary < scheduler.hash_block_size:
             return request
@@ -2136,7 +2233,7 @@ class PrefillAdmissionController:
         if shared or type(start) is not int or start < 0:
             self._yield_refuse('shared-junction')
             return None
-        end = prompt_end - 1
+        end = self.native_end(scheduler, request)
         if end - start < 1 or end - start > config.max_new:
             self._yield_refuse('max-new')
             return None
@@ -2308,25 +2405,29 @@ class PrefillAdmissionController:
             return self._refuse(request, 'resumed-with-output', prompt_tokens=prompt_end,
                                 start=start,
                                 output_tokens=getattr(request, 'num_output_tokens', None))
-        if prompt_end - start <= 1:
+        # coverage-soak-fix: the native end, and the stock rows it leaves (r on a geometry tail, else the one-row handback).
+        tail = self.geometry_tail(scheduler, request)
+        native_end = prompt_end - (tail or 1)
+        if native_end - start <= 0:
             return None
 
         new_computed_blocks = None
         num_new_computed = 0
         residue_site = None
+        turn_history = 0                # coverage-soak-fix: a turn's first admission, its cached start (the RSS law's history)
         if start == 0:
             if self.native_residue:
                 # coverage-residue: the same hit the auto-arm planned from; the junction is the stock split's stop, as stock
                 # sets it at its own lookup, so the chunk ending there publishes the shared prefix's state.
                 new_computed_blocks, num_new_computed, junction, lowered = residue_hit(
-                    scheduler, request, self.minimum_stage_rows)
+                    scheduler, request, self.minimum_stage_rows, native_end)
                 request.shared_prefix_boundary = junction
                 residue_site = 'lowered' if lowered else ('junction' if junction else 'plan')
             else:
                 new_computed_blocks, num_new_computed, _ = (
                     manager.get_computed_blocks(request))
-            start = num_new_computed
-            if prompt_end - start <= 1:
+            start = turn_history = num_new_computed
+            if native_end - start <= 0:
                 # Everything except the final token is cached: stock handback,
                 # which only the FULL route can run.  Typed (native39).
                 return self._refuse(request, 'full-prefix-hit', prompt_tokens=prompt_end,
@@ -2359,7 +2460,7 @@ class PrefillAdmissionController:
                 return self._refuse(request, 'no-staged-plan', memoised=True, **receipt)
             trace = {}
             self.plan_searches += 1
-            plan = staged_chunk_plan(start, prompt_end - 1, cap,
+            plan = staged_chunk_plan(start, native_end, cap,
                                      self.minimum_stage_rows, projected_split,
                                      trace=trace)
             if not plan:
@@ -2369,11 +2470,11 @@ class PrefillAdmissionController:
                     raise E3ContractError('retained native request has no staged chunk plan')
                 furthest = trace.get('furthest_boundary')
                 receipt = {'prompt_tokens': prompt_end, 'start': start,
-                           'native_end': prompt_end - 1, 'cap': cap,
+                           'native_end': native_end, 'cap': cap,
                            'minimum_rows': self.minimum_stage_rows,
                            'furthest_boundary': furthest,
                            'furthest_basis': FURTHEST_BASIS,
-                           'gap': (prompt_end - 1 - furthest
+                           'gap': (native_end - furthest
                                    if type(furthest) is int else None),
                            'queries': trace.get('queries'),
                            'exhausted': trace.get('exhausted'),
@@ -2383,7 +2484,7 @@ class PrefillAdmissionController:
             num_new = plan[0]
         else:
             num_new = self._aligned_split(
-                scheduler, request, bounded_limit(self.chunk_bound, start, min(cap, prompt_end - 1 - start)),
+                scheduler, request, bounded_limit(self.chunk_bound, start, min(cap, native_end - start)),
                 num_new_local_computed_tokens=num_new_computed)
         if num_new < 1:
             return self._refuse(request, 'no-aligned-chunk', prompt_tokens=prompt_end,
@@ -2462,7 +2563,8 @@ class PrefillAdmissionController:
                 block_tables=block_tables, slot_mappings=(),
                 new_block_ids_to_zero=details['new_block_ids_to_zero'],
                 cow_pairs=details['cow_pairs'], input_ids=input_ids,
-                ngram_context=details['ngram_context'], sparse_active=False)
+                ngram_context=details['ngram_context'], sparse_active=False,
+                native_end=native_end)
             self.parked.admission = record
             row_blocks = {b for b in record.flat_blocks() if b > 0}
             if not set(details['new_block_ids_to_zero']) <= row_blocks:
@@ -2508,6 +2610,8 @@ class PrefillAdmissionController:
         if residue_site in ('junction', 'lowered') and start == num_new_computed:
             self.residue_totals[residue_site] += 1
         self.coverage.note_native_admit(scheduler, request, transaction, residue_site)
+        if turn_history:
+            self.coverage.note_append(turn_history)
         return record
 
     # -- driver-facing state ----------------------------------------------
@@ -2681,15 +2785,18 @@ class PrefillAdmissionController:
         while len(self._committed) > self.max_history:
             self._committed.pop(next(iter(self._committed)))
         self.parked = None
-        if admission.remaining_tokens == 1:
+        if admission.terminal:
             self._request_identities.pop(transaction.request_uid, None)
         self.commits += 1
         if admission.remaining_tokens > 0:
-            # One-token handback: the pinned waiting branch schedules the rest.
-            if admission.remaining_tokens == 1:
-                self.coverage.note_handback(parked.request)
+            # One-token handback (coverage-soak-fix: or a geometry tail's r rows): the pinned waiting branch schedules the rest.
+            if admission.terminal:
+                # the class is stock's geometry now (r == num_tokens % block, 2..64), checked against what was planned
+                self.coverage.note_handback(parked.request, admission.remaining_tokens,
+                                            geometry_tail_rows(self._scheduler, parked.request, self.minimum_stage_rows)
+                                            if prompt_end_tail(admission) else 0)
             queue = parked.queue
-            if admission.remaining_tokens == 1 and self.native_hold_s and queue is getattr(self._scheduler, 'waiting', None):
+            if admission.terminal and self.native_hold_s and queue is getattr(self._scheduler, 'waiting', None):
                 # decode-phase hold: FCFS serves skipped-waiting first, and the split held every arrival there, so the last
                 # row waited behind them (dnr: 7.2 s median from the last chunk to the first output). Ahead of them now.
                 served = getattr(self._scheduler, 'skipped_waiting', None)

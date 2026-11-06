@@ -1419,6 +1419,10 @@ class NativeMeasurementCensus:
         state_epoch = entry.get('state_epoch')
         remaining = entry.get('remaining_tokens')
         terminal = entry.get('terminal')
+        # coverage-soak-fix: the native end (the prompt's last row, or a geometry tail's block boundary); absent is the last row
+        native_end = entry.get('native_end')
+        if native_end is None and _is_int(prompt_end):
+            native_end = prompt_end - 1
         fields_ok = (
             type(request) is str and bool(request)
             and _is_int(generation) and generation >= 1
@@ -1430,7 +1434,9 @@ class NativeMeasurementCensus:
             and _is_int(state_epoch) and state_epoch >= 1
             and _is_int(remaining) and remaining >= 1
             and remaining == prompt_end - chunk_end
-            and type(terminal) is bool and terminal == (remaining == 1)
+            and _is_int(native_end) and 1 <= prompt_end - native_end <= 64
+            and chunk_end <= native_end
+            and type(terminal) is bool and terminal == (chunk_end == native_end)
         )
         if not fields_ok:
             self._fault('chunk-open-invalid:transaction=%d' % txn)
@@ -1508,6 +1514,7 @@ class NativeMeasurementCensus:
             'state_epoch': state_epoch,
             'remaining_tokens': remaining,
             'terminal': terminal,
+            'native_end': native_end,
             'route': entry.get('route'),
             'route_generation': entry.get('route_generation'),
             'open_ns': observed_ns,
@@ -2879,15 +2886,16 @@ class NativeMeasurementCensus:
                 previous_end = chunk['chunk_end']
                 if chunk['terminal']:
                     terminal_seen += 1
-                    if chunk['remaining_tokens'] != 1 \
-                            or chunk['chunk_end'] != chunk['prompt_end'] - 1:
+                    if (chunk['chunk_end'] != chunk.get('native_end', chunk['prompt_end'] - 1)
+                            or chunk['remaining_tokens'] != chunk['prompt_end'] - chunk['chunk_end']
+                            or not 1 <= chunk['remaining_tokens'] <= 64):
                         _reason(reasons, 'request-terminal-coverage-invalid')
             if terminal_seen != 1:
                 _reason(reasons, 'request-terminal-not-covered')
             last = chunk_rows[-1]
             if not last['terminal']:
                 _reason(reasons, 'request-terminal-outside-window')
-            if last['chunk_end'] != last['prompt_end'] - 1:
+            if last['chunk_end'] != last.get('native_end', last['prompt_end'] - 1):
                 _reason(reasons, 'request-final-frontier-incomplete')
             family = group['family']
             if family not in ('fresh', 'append'):

@@ -46,6 +46,10 @@ from e3_types import (
 from lane_comm import PPConsumerReceipt
 from sparse_history_dma import ARENA_PAGES, ARENA_ROWS, MAX_DESCRIPTORS, MAX_LAYER_PAGES
 
+# coverage-soak-fix: the most prompt rows a terminal chunk leaves stock (a geometry tail; scheduler_hooks pins the same, the
+# staged minimum qsa.py _QSA_STAGE_MIN_ROWS); 1 is the one-row handback.
+GEOMETRY_TAIL_MAX = 64
+
 WIRE_VERSION = 1
 
 # The two route banks in the fixed decode-graph bank. They are wire values, not
@@ -150,6 +154,11 @@ class AdmissionRecord:
     least the final token for the ordinary handback path. ``committed_end`` is
     the committed frontier BEFORE this chunk (chunk_start); the worker's
     private align seed is derived from it, never sent.
+
+    ``native_end`` (coverage-soak-fix) is where the native turn ends: the
+    prompt's last row (``prompt_end - 1``, the default, 0 on the wire means it)
+    or, on a geometry tail, the last Mamba block boundary, leaving stock at most
+    ``GEOMETRY_TAIL_MAX`` rows. The chunk ending there is the terminal one.
     """
     transaction: TransactionId
     prompt_end: int
@@ -162,6 +171,7 @@ class AdmissionRecord:
     input_ids: tuple = field(repr=False)
     ngram_context: tuple = field(default=(), repr=False)
     sparse_active: bool = False
+    native_end: int = 0
 
     def __post_init__(self):
         transaction = self.transaction
@@ -170,9 +180,17 @@ class AdmissionRecord:
         _int('prompt_end', self.prompt_end, 2)
         if transaction.chunk_start >= transaction.chunk_end:
             raise E3ContractError('admission chunk is empty')
+        if type(self.native_end) is not int:
+            raise E3ContractError('native_end must be an int')
+        if self.native_end == 0:
+            object.__setattr__(self, 'native_end', self.prompt_end - 1)
+        if not 1 <= self.prompt_end - self.native_end <= GEOMETRY_TAIL_MAX:
+            raise E3ContractError('native_end leaves stock more than a geometry tail')
         if transaction.chunk_end > self.prompt_end - 1:
             raise E3ContractError(
                 'admission must leave the last prompt token for handback')
+        if transaction.chunk_end > self.native_end:
+            raise E3ContractError('admission chunk ends past the native end')
         _int('state_epoch', self.state_epoch, 1)
         _int('committed_end', self.committed_end, 0)
         if self.committed_end != transaction.chunk_start:
@@ -222,12 +240,13 @@ class AdmissionRecord:
 
     @property
     def terminal(self):
-        """This chunk hands the request to stock for its final prompt token.
+        """This chunk hands the request to stock for its final prompt token
+        (coverage-soak-fix: or a geometry tail's rows): it ends at ``native_end``.
 
         Only a terminal chunk releases the worker's request row; a chunk that
         is followed by another native chunk keeps the row for ``update()``.
         """
-        return self.remaining_tokens == 1
+        return self.transaction.chunk_end == self.native_end
 
     @property
     def align_accepted(self):
@@ -250,7 +269,7 @@ class AdmissionRecord:
                 f'prompt_end={self.prompt_end}, state_epoch={self.state_epoch}, '
                 f'committed_end={self.committed_end}, groups={groups}, '
                 f'blocks={blocks}, chunk_tokens={self.chunk_tokens}, '
-                f'sparse_active={self.sparse_active})')
+                f'sparse_active={self.sparse_active}, native_end={self.native_end})')
 
 
 @dataclass(frozen=True, repr=False)

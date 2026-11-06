@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 [[ -z ${INWAIT_PARENT:-} ]] || { echo 'INWAIT_PARENT is set: a committed spec needs the pinned parent' >&2; exit 3; }
 python3 -B tools/inwait_parent_pin.py --pinned
 SCAN=<hub-dir>/agents/flash-next/tmp/alpha-next/scripts/secret_scan.sh
-PACK=<hub-dir>/cargo-target/flash-next/coverage-soak/pack   # regenerable scratch, sdc by the lead's 5 Nov note
+PACK=<hub-dir>/cargo-target/flash-next/coverage-soak-fix/pack   # regenerable scratch, sdc by the lead's 5 Nov note
 [[ -z $(git status --porcelain -- harness patches tools) ]] || { echo 'commit harness/, patches/ and tools/ first' >&2; exit 3; }
 commit() {
   git add "$1"
