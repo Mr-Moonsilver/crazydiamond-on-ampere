@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""q18a-compose-soak-fix box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
+"""q18a-compose-throughput box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
 coverage-residue adds the per-row native_residue, acknowledged, keeps the engine's decline record (with its prefill coverage counter) in each status row, and grades coverage per replay arm.
 coverage-soak adds, per replay arm: the requests still open when the replay gave up on them, by agent, session and send time (a hang, named), and
 the engine's memory at the traffic's start and end (per-rank free VRAM by nvidia-smi, the engine container's process RSS by docker top), read on
@@ -28,7 +28,7 @@ _report = _box.report
 
 
 def report(result):
-    text = _report(result).replace('q18a-compose-4', 'q18a-compose-soak-fix', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    text = _report(result).replace('q18a-compose-4', 'q18a-compose-throughput', 1).replace('compose4_rule.py', 'compose5_rule.py')
     # coverage-soak-fix: the geometry-tail class and the worker RSS read, one line per replay arm (the decode gap is the reader's)
     extra = []
     for label, cov in sorted((result.get('coverage') or {}).items()):
@@ -65,13 +65,18 @@ def _bound():
     """This table and these names in compose-4's box for one call, and back: a suite that runs both boxes in one process sees each with its own."""
     names = dict(T=T, ARM_SCHEMA=ARM_SCHEMA, GRADE_SCHEMA=GRADE_SCHEMA, SCOPE=SCOPE, report=report, status_row=status_row)
     saved = {name: getattr(_box, name) for name in names}
+    # coverage-throughput: a1's yield_control confirms the engine's bounds against its own table's LAUNCH; this table raises max_new.
+    a1_table = _box.a1.T
+    a1_launch = a1_table.LAUNCH
     for name, value in names.items():
         setattr(_box, name, value)
+    a1_table.LAUNCH = T.LAUNCH
     try:
         yield
     finally:
         for name, value in saved.items():
             setattr(_box, name, value)
+        a1_table.LAUNCH = a1_launch
 
 
 def _under_this_table(fn):

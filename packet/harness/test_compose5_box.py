@@ -20,7 +20,7 @@ import test_compose4_box as tb
 
 tam, tap, ta1 = tb.tam, tb.tap, tb.ta1
 SM, DEC1, CMP, NY = rule.SM, 'dec1.g2-live-0', rule.ON, rule.OFF      # the rule's labels: compose-5's, for its own suites; dnr's table has no cmp
-W0, R0, W1, R1 = 'ny.g2-live-0', 'nr.g2-live-0', 'ny.g2-live-1', 'nr.g2-live-1'     # this table: ny as dnr ran it, nr the hold with the residue
+W0, R0, W1, R1 = 'ny.g2-live-0', 'nt.g2-live-0', 'ny.g2-live-1', 'nt.g2-live-1'     # this table: ny as dnr ran it, nr the hold with the residue
 PAIRS = rule.PRICE_PAIRS
 
 
@@ -70,12 +70,13 @@ class JournalAgainstRecord(UnderThisTable, tb.JournalAgainstRecord):
 
 class Table(unittest.TestCase):
     def test_the_order(self):
-        self.assertEqual(T.labels(), [SM, DEC1, R0, W0, W1, R1], 'ABBA: nr ny ny nr')
+        self.assertEqual(T.labels(), [SM, DEC1, R0, W0, W1, R1], 'ABBA: nt ny ny nt')
 
     def test_each_pair_differs_in_the_plan_alone_and_shares_a_seed(self):
         rows = T.by_label()
-        for on, off, seed in tuple(('nr.g2-live-%d' % i, 'ny.g2-live-%d' % i, i + 1) for i in range(2)):
-            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'label', 'native_hold', 'native_residue', 'selection'], (on, off))
+        for on, off, seed in tuple(('nt.g2-live-%d' % i, 'ny.g2-live-%d' % i, i + 1) for i in range(2)):
+            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'label', 'native_hold', 'native_residue', 'selection', 'yield_on'], (on, off))
+            self.assertEqual((rows[on]['yield_on'], rows[off]['yield_on']), (True, False), 'coverage-throughput: the yield on nt')
             self.assertEqual((rows[on]['chunk_bound'], rows[off]['chunk_bound']), ([52624, 1024], [52624, 1024]))
             self.assertEqual((rows[on]['native_hold'], rows[off]['native_hold']), (T.HOLD_S, 0))
             self.assertEqual((rows[on]['native_residue'], rows[off]['native_residue']), (1, 0))
@@ -704,7 +705,7 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-compose-soak-fix'))
+        self.assertTrue(text.startswith('# q18a-compose-throughput'))
         self.assertIn('compose5_rule.py', text)
 
 
@@ -771,7 +772,7 @@ class Grade(unittest.TestCase):
         self.assertIn(R1 + ':no-arm-record', result['missing'])
 
     def test_either_off_arm_that_yielded_fails(self):
-        for label in (W0, R0, W1, R1):
+        for label in (W0, W1):          # coverage-throughput: nt has the yield on (lever 1); ny's two arms keep it off
             with self.subTest(label):
                 arms = self.records()
                 off = next(a for a in arms if a['label'] == label)

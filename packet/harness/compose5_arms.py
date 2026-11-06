@@ -1,4 +1,9 @@
-"""q18a-compose-soak-fix arm table: the one declared table (coverage-soak, 6 Nov 2026; tmp/a1-trunk/READY-coverage-soak-fix.md). Change it here and nowhere else.
+"""q18a-compose-throughput arm table: the one declared table (coverage-throughput, 6 Nov 2026; tmp/decode-phase/READY-coverage-throughput.md). Change it here and nowhere else.
+
+coverage-throughput (lead, 6 Nov ~09:00): the soak-fix table with its candidate renamed nt: nr (the hold and the residue) plus the append yield,
+over an engine whose exact successor plans over the admission's view (the soak's in-run pause) and whose yield plans as admit() does.
+ABBA nt ny ny nt; ny unchanged. The soak-fix text follows.
+
 
 The lead (6 Nov 03:55): the residue build met coverage on 90 s arms of 20-40k fresh prompts; the operator's goal is an engine that takes 100 %
 of calls and works all the time. This is a lean soak on the real turn mix: dnr's closed-loop agent replay (compose-4's REPLAY: 8 agents,
@@ -29,35 +34,38 @@ PAIRS = 2                                          # lead, 6 Nov 03:55: ABBA nr 
 BAND1_INDEXES = tuple(range(PAIRS))                # a replay has no band; sm, the one live arm, is index 0
 BAND_SIZE = _c4.BAND_SIZE
 SMOKE_ROW = ('core', 'sm', 'live', 0)
-ARM_TABLE = (SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', index) for index in BAND1_INDEXES for sel in (('nr', 'ny') if index % 2 == 0 else ('ny', 'nr')))
+ARM_TABLE = (SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', index) for index in BAND1_INDEXES for sel in (('nt', 'ny') if index % 2 == 0 else ('ny', 'nt')))
 DECODE_ARMS = _inwait.DECODE_ARMS
 REFERENCE_ARM = _inwait.REFERENCE_ARM
 FIXED_REFERENCE_TOK_S = _inwait.FIXED_REFERENCE_TOK_S
 PARTS = _inwait.PARTS
 ENTRY_LIMIT = _inwait.ENTRY_LIMIT
 GRADED = _inwait.GRADED
-SELECTIONS = ('sm', 'dec1', 'ny', 'nr')
-KIND = {'sm': 'live-arm', 'dec1': 'one-stream', 'ny': 'replay', 'nr': 'replay'}
-YIELD = {'sm': True, 'dec1': True, 'ny': False, 'nr': False}
-PLE_PRIVATE = {'sm': True, 'dec1': True, 'ny': False, 'nr': False}
+SELECTIONS = ('sm', 'dec1', 'ny', 'nt')
+KIND = {'sm': 'live-arm', 'dec1': 'one-stream', 'ny': 'replay', 'nt': 'replay'}
+YIELD = {'sm': True, 'dec1': True, 'ny': False, 'nt': True}     # coverage-throughput: lever 1, the yield on the candidate
+PLE_PRIVATE = {'sm': True, 'dec1': True, 'ny': False, 'nt': False}
 PLE_WITNESS = dict.fromkeys(SELECTIONS, False)
-MATCHED_OFF = {'nr': 'ny'}
-OFF, ON = 'ny', 'nr'
-LAUNCH = _a1.LAUNCH
-LAUNCH_ENV = _a1.LAUNCH_ENV
+MATCHED_OFF = {'nt': 'ny'}
+OFF, ON = 'ny', 'nt'
+# coverage-throughput: the yield takes an append of up to YIELD_MAX_NEW new rows. a1's 2048 covered about one append in seven on this
+# mix (native appends compute 1.3-6.6k rows, the soak's mean 3.9k); the other three bounds stay a1's.
+YIELD_MAX_NEW = 8192
+LAUNCH = dict(_a1.LAUNCH, max_new=YIELD_MAX_NEW)
+LAUNCH_ENV = dict(_a1.LAUNCH_ENV, FLASH_S5_APPEND_YIELD_MAX_NEW=YIELD_MAX_NEW)
 CONNECTIONS_ENV = _c4.CONNECTIONS_ENV
 PLE_ENV = _c4.PLE_ENV
 PLANS = _c4.PLANS
-PLAN = {'sm': 'pair', 'dec1': 'none', 'ny': 'none', 'nr': 'none'}
+PLAN = {'sm': 'pair', 'dec1': 'none', 'ny': 'none', 'nt': 'none'}
 CHUNK_TOKENS = 2048
 CHUNK_ENV = 'FLASH_S5_CHUNK_TOKENS=%d' % CHUNK_TOKENS
 MAMBA_BLOCK_ROWS, HASH_BLOCK_ROWS = 4048, 176     # read from this model's chunks on the box (dp5): ends 4048 x k, last stop prompt-1 // 176 x 176
 B13_BOUND = [13 * MAMBA_BLOCK_ROWS, 1024]         # dp8d's b13 and b13h: chunk_bound on native_stage_local, [end, rows]
 C22_BOUND = [22 * MAMBA_BLOCK_ROWS, 1024]         # dn's c22h: largest score buffer 170.5 MiB at 85008-87056; cf died at 194 at 97152
-BOUND = {'sm': B13_BOUND, 'dec1': B13_BOUND, 'ny': B13_BOUND, 'nr': B13_BOUND}
+BOUND = {'sm': B13_BOUND, 'dec1': B13_BOUND, 'ny': B13_BOUND, 'nt': B13_BOUND}
 HOLD_S = 600                                      # the engine's valve on a stuck lane, not a wait the arm expects: longer than an arm
-NATIVE_HOLD = {'sm': 0, 'dec1': 0, 'ny': 0, 'nr': HOLD_S}
-NATIVE_RESIDUE = {'sm': 0, 'dec1': 0, 'ny': 0, 'nr': 1}     # the residue needs the hold; ny has neither, as dnr ran it
+NATIVE_HOLD = {'sm': 0, 'dec1': 0, 'ny': 0, 'nt': HOLD_S}
+NATIVE_RESIDUE = {'sm': 0, 'dec1': 0, 'ny': 0, 'nt': 1}     # the residue needs the hold; ny has neither, as dnr ran it
 ARM_GENERATIONS = _c4.ARM_GENERATIONS
 ONE_STREAM_WINDOW_S = _c4.ONE_STREAM_WINDOW_S
 
@@ -167,21 +175,22 @@ def check():
     assert REPLAY['START_MAX'] + PROMPT_SLACK_TOKENS < MAX_PROMPT_TOKENS, 'a fresh prompt fits under the ceiling'
     rows = by_label()
     for index in REPLAY_SEEDS:
-        on, off = rows['nr.g2-live-%d' % index], rows['ny.g2-live-%d' % index]
-        assert sorted(k for k in on if on[k] != off[k]) == ['c1', 'label', 'native_hold', 'native_residue', 'selection'], 'each pair differs in the hold and the residue alone'
+        on, off = rows['nt.g2-live-%d' % index], rows['ny.g2-live-%d' % index]
+        assert sorted(k for k in on if on[k] != off[k]) == ['c1', 'label', 'native_hold', 'native_residue', 'selection', 'yield_on'], 'each pair differs in the hold, the residue and the yield alone'
         assert on['chunk_bound'] == off['chunk_bound'] == B13_BOUND and on['native_hold'] == HOLD_S and off['native_hold'] == 0
         assert on['native_residue'] == 1 and off['native_residue'] == 0
-        assert not on['yield_on'] and not off['yield_on'] and not on['ple_private'] and not off['ple_private'], "c4b's ctl"
+        assert on['yield_on'] and not off['yield_on'] and not on['ple_private'] and not off['ple_private'], "the yield on nt alone; c4b's ple off"
     order = [r['label'] for r in rows.values() if r['kind'] == 'replay']
-    assert order == ['nr.g2-live-0', 'ny.g2-live-0', 'ny.g2-live-1', 'nr.g2-live-1'], 'ABBA: nr ny ny nr'
-    assert all(r['native_hold'] == (HOLD_S if r['c1'] == 'nr' else 0) for r in rows.values()), 'the hold on nr alone'
+    assert order == ['nt.g2-live-0', 'ny.g2-live-0', 'ny.g2-live-1', 'nt.g2-live-1'], 'ABBA: nt ny ny nt'
+    assert all(r['native_hold'] == (HOLD_S if r['c1'] == 'nt' else 0) for r in rows.values()), 'the hold on nt alone'
     assert {k: REPLAY[k] for k in _c4.REPLAY if k not in ('DURATION', 'WARMUP')} == {k: v for k, v in _c4.REPLAY.items() if k not in ('DURATION', 'WARMUP')}, "dnr's turn mix"
     assert REPLAY['DURATION'] == REPLAY_S and REPLAY['WARMUP'] == 0.0
-    assert all(r['native_residue'] == (r['c1'] == 'nr') for r in rows.values()), 'the residue on nr alone'
+    assert all(r['native_residue'] == (r['c1'] == 'nt') for r in rows.values()), 'the residue on nt alone'
     assert len(set(REPLAY_SEEDS.values())) == PAIRS and replay_config(rows[order[0]])['SEED'] == REPLAY['SEED'] and all(index < 10 for index in REPLAY_SEEDS), "one seed a pair, index 0 c4b's, one digit in a label"
     assert all(not r['score_warm'] and not r['reserved_cap'] and r['exact_successor'] and r['allocator_flush'] for r in rows.values()), "5d's full less the cap and the warm block on every arm"
     assert not any(r['ple_witness'] for r in rows.values()), 'no arm carries the witness'
     assert all(r['cow_host_filter'] and r['cow_fast'] for r in rows.values()), 'hf on every arm'
+    assert LAUNCH == dict(_a1.LAUNCH, max_new=8192) and _a1.LAUNCH['max_new'] == 2048, "the yield's new-row bound raised here alone"
     assert B13_BOUND == [52624, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, B13_BOUND)) == 40, "dp8d's 40 chunks at band 1"
     assert C22_BOUND == [89056, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, C22_BOUND)) == 34 and len(planned_chunks(131094, CHUNK_TOKENS, C22_BOUND)) == 87, "dn's 34 and 87 chunks"
     return True

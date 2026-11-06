@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_compose_soak_fix_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_compose_throughput_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SHORT = dict(T.REPLAY, AGENTS=2, DURATION=0.4, WARMUP=0.0, START_MIN=60000, START_MAX=60000, TOOL_MIN=0.01, TOOL_MAX=0.02)
@@ -32,6 +32,9 @@ class Base(a1r.Base):
         with mock.patch.object(a1r, 'SETTINGS', SETTINGS):
             await super().asyncSetUp()
         self.driver.controller.chunk_tokens = T.CHUNK_TOKENS    # the box's: the fixture's own is under the bound's 1024 rows, and the stage refuses that
+        # coverage-throughput: the yield's launch bounds as the engine parses them from this queue's settings (a1's fixture pins its own 2048)
+        self.driver.controller.append_yield = a1r.sh.AppendYieldConfig.from_env(self.env_box)
+        assert self.driver.controller.append_yield.max_new == T.LAUNCH['max_new'] == 8192
 
 
 class Exposure(Base):
@@ -71,6 +74,7 @@ class ArmEnd(a1r.ArmEnd):
         with mock.patch.object(a1r, 'SETTINGS', SETTINGS):
             await super().asyncSetUp()
         self.driver.controller.chunk_tokens = T.CHUNK_TOKENS
+        self.driver.controller.append_yield = a1r.sh.AppendYieldConfig.from_env(self.env_box)     # coverage-throughput: as Base
 
     async def arm(self, sel, cohort='live', index=0):
         real = replay.run
@@ -122,15 +126,15 @@ class ArmEnd(a1r.ArmEnd):
         self.assertEqual(len(record['decode_only']['stream_rates_tokens_per_s']), 1)
 
     async def test_the_replay_arm_keeps_its_turns_beside_the_record_with_its_seed(self):
-        for sel, index, seed in (('ny', 0, 1), ('nr', 1, 2)):
+        for sel, index, seed in (('ny', 0, 1), ('nt', 1, 2)):
             with self.subTest(sel):
                 rc_, record, actions, _served, out = await self.arm(sel, index=index)
                 name = T.label(sel, 2, 'live', index)
                 self.assertNotIn('error', record, record.get('error'))
                 self.assertEqual((rc_, record['reasons'], record['kind']), (0, [], 'replay'))
                 self.assert_control(actions)
-                self.assertIs(record['yield_control']['enabled'], False)
-                self.assertIs(self.driver.controller.append_yield.enabled, False)
+                self.assertIs(record['yield_control']['enabled'], T.YIELD[sel])     # coverage-throughput: on for nt
+                self.assertIs(self.driver.controller.append_yield.enabled, T.YIELD[sel])
                 self.assertIs((record['ple_private'] or {}).get('requested'), False)
                 self.assertIs((record['reserved_cap'] or {}).get('requested'), False)
                 self.assertEqual(record['inwait']['bound_acknowledged'], T.by_label()[name]['chunk_bound'])
