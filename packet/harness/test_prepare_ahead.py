@@ -422,5 +422,76 @@ class Startup(Reset, unittest.TestCase):
         self.assertTrue(lc.PREPARE_AHEAD['selected'])
 
 
+
+# -- the composed engine: real driver, wire, bridge and dispatcher; the workers' factories record staging and adoption ----
+import test_inwait_engine as ie  # noqa: E402
+import test_e3_stage_overlap as c1  # noqa: E402
+
+
+class AheadOn:
+    ahead = True
+
+    def network(self, **kwargs):
+        network = super().network(**kwargs)
+        network.driver.prepare_ahead = self.ahead
+        self.staged_log, self.adopted_log, self.mismatched = [], [], []
+        for rank, worker in network.workers.items():
+            self.install_ahead(rank, worker.factory)
+        return network
+
+    def install_ahead(self, rank, factory):
+        held = {}
+
+        def stage(admission):
+            held['a'] = admission
+            self.staged_log.append((rank, admission.transaction))
+            return dict(staged=True, why='staged')
+
+        def adopt(admission):
+            staged = held.pop('a', None)
+            if staged is None:
+                return None
+            if staged != admission:
+                self.mismatched.append((rank, staged.transaction, admission.transaction))
+                return None
+            self.adopted_log.append((rank, admission.transaction))
+            return factory.admit(admission)
+        factory.stage_ahead = stage
+        factory._refuse_ahead = lambda why: dict(staged=False, why=why)
+        factory.adopt = adopt
+
+
+class Engine(AheadOn, Reset, ie.Base):
+    def run_early(self):
+        network = self.burst(self.network(direct=True))
+        network.driver.early_successor = True
+        network.run_request(tick=self.in_wait_tick(network))
+        return network
+
+    def test_every_staged_successor_is_adopted_exactly_and_the_run_is_serial_equal(self):
+        network = self.run_early()
+        self.same_as_serial(network)
+        self.assert_closed(network)
+        self.assertEqual(self.mismatched, [])
+        self.assertTrue(self.adopted_log, 'nothing adopted: the carrier never reached a worker')
+        self.assertEqual({rank for rank, _ in self.adopted_log}, set(network.workers), 'every rank of both stages adopts')
+        staged = {}
+        for key in self.staged_log:
+            staged[key] = staged.get(key, 0) + 1
+        for key in self.adopted_log:
+            self.assertIn(key, staged)
+        self.assertTrue(all(txn.chunk_start > 0 for _rank, txn in self.staged_log), 'only later chunks are staged')
+
+    def test_off_carries_nothing(self):
+        self.ahead = False
+        network = self.run_early()
+        self.same_as_serial(network)
+        self.assertEqual((self.staged_log, self.adopted_log), ([], []))
+
+
+class StopSweepAhead(AheadOn, Reset, ie.Early, c1.StopSweep):
+    pass
+
+
 if __name__ == '__main__':
     unittest.main()
