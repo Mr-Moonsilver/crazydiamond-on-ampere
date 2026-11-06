@@ -4,7 +4,7 @@
   "arm": "TRUNK",
   "probe": "compose5_cpu_probe.py"
  },
- "candidate": "q18a-compose-residue",
+ "candidate": "q18a-compose-soak",
  "checks": [
   [
    "tools/compose5_queue.py",
@@ -511,7 +511,7 @@
    "lineage_rows": []
   },
   "model_settings_changed": false,
-  "queue": "q18a-compose-residue: compose-4's queue with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
+  "queue": "q18a-compose-soak: compose-4's queue with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
   "scope": "b13 and hf at 32 with the four lever tracks under the closed-loop replay, the yield priced by frozen pairs, against c1b's READY build, discovery mode; not a release assessment and not a numerics result"
  },
  "dry_run": false,
@@ -1543,16 +1543,16 @@
  "precheck": {
   "fixture_rows": [],
   "header": [
-   "q18a-compose-residue packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
+   "q18a-compose-soak packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
    "Engine: claude/compose-5-build, compose-4 with the decline counters, chunk_bound and the builder at 2048 rows from dp8d (FLASH_S5_CHUNK_TOKENS=2048 for the whole run), default off, selected per arm by typed control. No 5f, no 1g, no witness.",
    "Queue: compose-4's startup and cleanup with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen pairs on and off for the yield, the replay arm and its control without the yield; no fixed-schedule check."
   ],
   "seams": ""
  },
  "queue": [
-  "q18a_compose_residue.draft.sh",
-  "q18a_compose_residue_declare.sh",
-  "q18a_compose_residue_settings.sh"
+  "q18a_compose_soak.draft.sh",
+  "q18a_compose_soak_declare.sh",
+  "q18a_compose_soak_settings.sh"
  ],
  "rehearsal": null,
  "review": "prepare",
@@ -1568,7 +1568,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "d167319669968c6a48bc28a9b057040756c34d88",
+ "source_commit": "54b12ff2f899e899917c81cf4a8bbaabc53d14c8",
  "source_paths": [
   "A\tharness/a1_trunk_arms.py",
   "A\tharness/a1_trunk_gate.py",
@@ -1630,6 +1630,9 @@
   "A\tharness/runs/q18a_compose_residue.draft.sh",
   "A\tharness/runs/q18a_compose_residue_declare.sh",
   "A\tharness/runs/q18a_compose_residue_settings.sh",
+  "A\tharness/runs/q18a_compose_soak.draft.sh",
+  "A\tharness/runs/q18a_compose_soak_declare.sh",
+  "A\tharness/runs/q18a_compose_soak_settings.sh",
   "A\tharness/runs/q18a_inwait.draft.sh",
   "A\tharness/runs/q18a_inwait_declare.sh",
   "A\tharness/runs/q18a_inwait_settings.sh",
