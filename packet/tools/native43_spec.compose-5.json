@@ -4,7 +4,7 @@
   "arm": "TRUNK",
   "probe": "compose5_cpu_probe.py"
  },
- "candidate": "q18a-compose-soak",
+ "candidate": "q18a-compose-soak-fix",
  "checks": [
   [
    "tools/compose5_queue.py",
@@ -64,10 +64,12 @@
    "NativeSegmentDriver.__init__",
    "NativeSegmentDriver._admit_control",
    "NativeSegmentDriver._append_yield_control",
+   "NativeSegmentDriver._apply_open",
    "NativeSegmentDriver._apply_release",
    "NativeSegmentDriver._begin",
    "NativeSegmentDriver._drive_yield_close",
    "NativeSegmentDriver._end_yield",
+   "NativeSegmentDriver._handback_rows",
    "NativeSegmentDriver._maybe_yield",
    "NativeSegmentDriver._next_receipt",
    "NativeSegmentDriver._note_yield_begin",
@@ -108,6 +110,7 @@
    "NativeSegmentDriver.append_yield_stale",
    "NativeSegmentDriver.append_yield_target",
    "NativeSegmentDriver.append_yield_target_lost",
+   "NativeSegmentDriver.overlap_evidence",
    "NativeSegmentDriver.stop",
    "NativeSegmentDriver.yield_permits",
    "class:NativeProgress",
@@ -126,6 +129,7 @@
    "worker_rpc_begin"
   ],
   "patches/s5_engine/lane_chunk.py": [
+   "ChunkAdmission.__post_init__",
    "LaneChunk.build_metadata",
    "LaneChunkFactory.__init__",
    "LaneChunkFactory.admit_steps",
@@ -143,6 +147,7 @@
    "_scaled_builder_shape",
    "_scaled_builder_value",
    "check_metadata_rows",
+   "class:ChunkAdmission",
    "copy_blocks_fast",
    "cow_host_verify",
    "cow_residency",
@@ -240,6 +245,7 @@
    "AutoArmPolicy._gate_site",
    "AutoArmPolicy._hold_limit",
    "AutoArmPolicy._holdable",
+   "AutoArmPolicy._native_end",
    "AutoArmPolicy._native_refused",
    "AutoArmPolicy._plan",
    "AutoArmPolicy._plan_state_site",
@@ -281,6 +287,8 @@
    "module:import os"
   ],
   "patches/s5_engine/native_measurement.py": [
+   "NativeMeasurementCensus._ingest_chunk_open",
+   "NativeMeasurementCensus._reconcile_groups",
    "module:INWAIT_ENV",
    "module:PROGRESS_DIRECT_INWAIT_METHODS",
    "module:RECEIPT_KV_PREFIXES"
@@ -355,11 +363,16 @@
    "PrefillAdmissionController.append_yield_still_held",
    "PrefillAdmissionController.cancel",
    "PrefillAdmissionController.commit",
+   "PrefillAdmissionController.geometry_tail",
+   "PrefillAdmissionController.handback_rows",
+   "PrefillAdmissionController.native_end",
    "PrefillAdmissionController.note_yield_hold",
    "PrefillAdmissionController.yield_lookup_timer",
    "PrefillCoverage.__init__",
    "PrefillCoverage._add",
    "PrefillCoverage._bounded",
+   "PrefillCoverage._tail_log",
+   "PrefillCoverage.note_append",
    "PrefillCoverage.note_handback",
    "PrefillCoverage.note_native_admit",
    "PrefillCoverage.note_native_cancel",
@@ -381,8 +394,10 @@
    "decode_merge_cap",
    "decoders_live",
    "defer_stock_prefix_hit",
+   "geometry_tail_rows",
    "module:APPEND_YIELD_ENV",
    "module:COVERAGE_SCHEMA",
+   "module:GEOMETRY_TAIL_MAX",
    "module:MAX_COVERAGE_REQUESTS",
    "module:_SCHEDULER_FORWARD",
    "module:_SCHEDULER_REVERSE",
@@ -390,6 +405,7 @@
    "module:from e3_types import MAX_ACTIVE_PREFILL, CompletionKind, CompletionProof, E3ContractError, E3Pending, LaneId, LaneRole, OperationTicket, TransactionId",
    "module:from e3_types import MAX_ACTIVE_PREFILL, CompletionKind, CompletionProof, E3ContractError, E3Pending, LaneId, LaneRole, OperationTicket, TransactionId, _text",
    "native_chunk_cap",
+   "prompt_end_tail",
    "residue_hit"
   ],
   "patches/s5_engine/stage_overlap.py": [
@@ -397,6 +413,7 @@
    "OverlapSegmentDriver._apply",
    "OverlapSegmentDriver._begin_successor",
    "OverlapSegmentDriver._check_headroom",
+   "OverlapSegmentDriver._chunk_opened",
    "OverlapSegmentDriver._decode_merge_wanted",
    "OverlapSegmentDriver._drain_observed",
    "OverlapSegmentDriver._note_wait",
@@ -437,12 +454,24 @@
    "module:from scheduler_hooks import PrefillAdmissionController",
    "module:from scheduler_hooks import PrefillAdmissionController, _ProjectedPrefillRequest, bounded_limit, native_chunk_cap, staged_chunk_plan"
   ],
+  "patches/s5_engine/stage_progress.py": [
+   "StagedSegmentDriver._chunk_opened"
+  ],
+  "patches/s5_engine/wire_v1.py": [
+   "AdmissionRecord.__post_init__",
+   "AdmissionRecord.__repr__",
+   "AdmissionRecord.terminal",
+   "class:AdmissionRecord",
+   "module:GEOMETRY_TAIL_MAX"
+  ],
   "patches/s5_engine/worker_bridge.py": [
    "NativeWorkerBridge.__init__",
    "NativeWorkerBridge._cow_receipt",
    "NativeWorkerBridge._prepare_resuming",
    "NativeWorkerBridge._release_lane",
-   "NativeWorkerBridge.submit"
+   "NativeWorkerBridge.release",
+   "NativeWorkerBridge.submit",
+   "admission_to_chunk"
   ],
   "patches/s5_engine/worker_hooks.py": [
    "module:WORKER_AFTER_C_SHA256"
@@ -511,7 +540,7 @@
    "lineage_rows": []
   },
   "model_settings_changed": false,
-  "queue": "q18a-compose-soak: compose-4's queue with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
+  "queue": "q18a-compose-soak-fix: compose-4's queue with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
   "scope": "b13 and hf at 32 with the four lever tracks under the closed-loop replay, the yield priced by frozen pairs, against c1b's READY build, discovery mode; not a release assessment and not a numerics result"
  },
  "dry_run": false,
@@ -537,6 +566,8 @@
   "e3/s5_startup.py",
   "e3/scheduler_hooks.py",
   "e3/stage_overlap.py",
+  "e3/stage_progress.py",
+  "e3/wire_v1.py",
   "e3/worker_bridge.py",
   "e3/worker_hooks.py",
   "e3_sources/worker.py"
@@ -933,6 +964,7 @@
    "harness/test_dp5c_connected.py",
    "harness/test_dp5c_path.py",
    "harness/test_e3_r4_worker_bridge.py",
+   "harness/test_geometry_tail.py",
    "harness/test_hub_slot.py",
    "harness/test_inwait_box.py",
    "harness/test_inwait_cow.py",
@@ -1152,10 +1184,12 @@
    "NativeSegmentDriver.__init__",
    "NativeSegmentDriver._admit_control",
    "NativeSegmentDriver._append_yield_control",
+   "NativeSegmentDriver._apply_open",
    "NativeSegmentDriver._apply_release",
    "NativeSegmentDriver._begin",
    "NativeSegmentDriver._drive_yield_close",
    "NativeSegmentDriver._end_yield",
+   "NativeSegmentDriver._handback_rows",
    "NativeSegmentDriver._maybe_yield",
    "NativeSegmentDriver._next_receipt",
    "NativeSegmentDriver._note_yield_begin",
@@ -1196,6 +1230,7 @@
    "NativeSegmentDriver.append_yield_stale",
    "NativeSegmentDriver.append_yield_target",
    "NativeSegmentDriver.append_yield_target_lost",
+   "NativeSegmentDriver.overlap_evidence",
    "NativeSegmentDriver.stop",
    "NativeSegmentDriver.yield_permits",
    "class:NativeProgress",
@@ -1214,6 +1249,7 @@
    "worker_rpc_begin"
   ],
   "e3/lane_chunk.py": [
+   "ChunkAdmission.__post_init__",
    "LaneChunk.build_metadata",
    "LaneChunkFactory.__init__",
    "LaneChunkFactory.admit_steps",
@@ -1231,6 +1267,7 @@
    "_scaled_builder_shape",
    "_scaled_builder_value",
    "check_metadata_rows",
+   "class:ChunkAdmission",
    "copy_blocks_fast",
    "cow_host_verify",
    "cow_residency",
@@ -1324,6 +1361,7 @@
    "AutoArmPolicy._gate_site",
    "AutoArmPolicy._hold_limit",
    "AutoArmPolicy._holdable",
+   "AutoArmPolicy._native_end",
    "AutoArmPolicy._native_refused",
    "AutoArmPolicy._plan",
    "AutoArmPolicy._plan_state_site",
@@ -1365,6 +1403,8 @@
    "module:import os"
   ],
   "e3/native_measurement.py": [
+   "NativeMeasurementCensus._ingest_chunk_open",
+   "NativeMeasurementCensus._reconcile_groups",
    "module:INWAIT_ENV",
    "module:PROGRESS_DIRECT_INWAIT_METHODS",
    "module:RECEIPT_KV_PREFIXES"
@@ -1439,11 +1479,16 @@
    "PrefillAdmissionController.append_yield_still_held",
    "PrefillAdmissionController.cancel",
    "PrefillAdmissionController.commit",
+   "PrefillAdmissionController.geometry_tail",
+   "PrefillAdmissionController.handback_rows",
+   "PrefillAdmissionController.native_end",
    "PrefillAdmissionController.note_yield_hold",
    "PrefillAdmissionController.yield_lookup_timer",
    "PrefillCoverage.__init__",
    "PrefillCoverage._add",
    "PrefillCoverage._bounded",
+   "PrefillCoverage._tail_log",
+   "PrefillCoverage.note_append",
    "PrefillCoverage.note_handback",
    "PrefillCoverage.note_native_admit",
    "PrefillCoverage.note_native_cancel",
@@ -1465,8 +1510,10 @@
    "decode_merge_cap",
    "decoders_live",
    "defer_stock_prefix_hit",
+   "geometry_tail_rows",
    "module:APPEND_YIELD_ENV",
    "module:COVERAGE_SCHEMA",
+   "module:GEOMETRY_TAIL_MAX",
    "module:MAX_COVERAGE_REQUESTS",
    "module:_SCHEDULER_FORWARD",
    "module:_SCHEDULER_REVERSE",
@@ -1474,6 +1521,7 @@
    "module:from .e3_types import MAX_ACTIVE_PREFILL, CompletionKind, CompletionProof, E3ContractError, E3Pending, LaneId, LaneRole, OperationTicket, TransactionId",
    "module:from .e3_types import MAX_ACTIVE_PREFILL, CompletionKind, CompletionProof, E3ContractError, E3Pending, LaneId, LaneRole, OperationTicket, TransactionId, _text",
    "native_chunk_cap",
+   "prompt_end_tail",
    "residue_hit"
   ],
   "e3/stage_overlap.py": [
@@ -1481,6 +1529,7 @@
    "OverlapSegmentDriver._apply",
    "OverlapSegmentDriver._begin_successor",
    "OverlapSegmentDriver._check_headroom",
+   "OverlapSegmentDriver._chunk_opened",
    "OverlapSegmentDriver._decode_merge_wanted",
    "OverlapSegmentDriver._drain_observed",
    "OverlapSegmentDriver._note_wait",
@@ -1521,12 +1570,24 @@
    "module:from .scheduler_hooks import PrefillAdmissionController",
    "module:from .scheduler_hooks import PrefillAdmissionController, _ProjectedPrefillRequest, bounded_limit, native_chunk_cap, staged_chunk_plan"
   ],
+  "e3/stage_progress.py": [
+   "StagedSegmentDriver._chunk_opened"
+  ],
+  "e3/wire_v1.py": [
+   "AdmissionRecord.__post_init__",
+   "AdmissionRecord.__repr__",
+   "AdmissionRecord.terminal",
+   "class:AdmissionRecord",
+   "module:GEOMETRY_TAIL_MAX"
+  ],
   "e3/worker_bridge.py": [
    "NativeWorkerBridge.__init__",
    "NativeWorkerBridge._cow_receipt",
    "NativeWorkerBridge._prepare_resuming",
    "NativeWorkerBridge._release_lane",
-   "NativeWorkerBridge.submit"
+   "NativeWorkerBridge.release",
+   "NativeWorkerBridge.submit",
+   "admission_to_chunk"
   ],
   "e3/worker_hooks.py": [
    "module:WORKER_AFTER_C_SHA256"
@@ -1543,16 +1604,16 @@
  "precheck": {
   "fixture_rows": [],
   "header": [
-   "q18a-compose-soak packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
+   "q18a-compose-soak-fix packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
    "Engine: claude/compose-5-build, compose-4 with the decline counters, chunk_bound and the builder at 2048 rows from dp8d (FLASH_S5_CHUNK_TOKENS=2048 for the whole run), default off, selected per arm by typed control. No 5f, no 1g, no witness.",
    "Queue: compose-4's startup and cleanup with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen pairs on and off for the yield, the replay arm and its control without the yield; no fixed-schedule check."
   ],
   "seams": ""
  },
  "queue": [
-  "q18a_compose_soak.draft.sh",
-  "q18a_compose_soak_declare.sh",
-  "q18a_compose_soak_settings.sh"
+  "q18a_compose_soak_fix.draft.sh",
+  "q18a_compose_soak_fix_declare.sh",
+  "q18a_compose_soak_fix_settings.sh"
  ],
  "rehearsal": null,
  "review": "prepare",
@@ -1568,7 +1629,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "117c474fb3ca318c2b19832a2bf231f1b491b3fd",
+ "source_commit": "fa100771e3d03b50ee52052b15c73d17518c3cb7",
  "source_paths": [
   "A\tharness/a1_trunk_arms.py",
   "A\tharness/a1_trunk_gate.py",
@@ -1632,6 +1693,9 @@
   "A\tharness/runs/q18a_compose_residue_settings.sh",
   "A\tharness/runs/q18a_compose_soak.draft.sh",
   "A\tharness/runs/q18a_compose_soak_declare.sh",
+  "A\tharness/runs/q18a_compose_soak_fix.draft.sh",
+  "A\tharness/runs/q18a_compose_soak_fix_declare.sh",
+  "A\tharness/runs/q18a_compose_soak_fix_settings.sh",
   "A\tharness/runs/q18a_compose_soak_settings.sh",
   "A\tharness/runs/q18a_inwait.draft.sh",
   "A\tharness/runs/q18a_inwait_declare.sh",
@@ -1688,6 +1752,7 @@
   "A\tharness/test_dp5c_path.py",
   "M\tharness/test_e3_package.py",
   "M\tharness/test_e3_r4_worker_bridge.py",
+  "A\tharness/test_geometry_tail.py",
   "A\tharness/test_hub_slot.py",
   "A\tharness/test_inwait_box.py",
   "A\tharness/test_inwait_cow.py",
@@ -1732,6 +1797,8 @@
   "M\tpatches/s5_engine/s5_startup.py",
   "M\tpatches/s5_engine/scheduler_hooks.py",
   "M\tpatches/s5_engine/stage_overlap.py",
+  "M\tpatches/s5_engine/stage_progress.py",
+  "M\tpatches/s5_engine/wire_v1.py",
   "M\tpatches/s5_engine/worker_bridge.py",
   "M\tpatches/s5_engine/worker_hooks.py",
   "A\ttools/a1_trunk_cpu_probe.py",
