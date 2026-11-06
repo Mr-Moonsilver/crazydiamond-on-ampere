@@ -31,6 +31,11 @@ STANDING_GREEDY = _inwait.STANDING_GREEDY
 GREEDY_TEMPERATURE = _inwait.GREEDY_TEMPERATURE
 STANDING_SAMPLED = _inwait.STANDING_SAMPLED
 PAIRS = 2                                          # lead, 6 Nov 03:55: ABBA nr ny ny nr
+# coverage-soak-fix build-2 (lead, 6 Nov 08:50: name and fix the Worker_PP RSS owner): the CoW byte check at release
+# (lane_chunk.cow_host_verify) reads each host CoW pair's src and dst page prefix through the registered QSA host pool on the
+# CPU, which maps those pool pages into the worker: the soak's worker RSS growth on nr (native appends only). Off on every arm,
+# as the inwait control arm 'cn' ran it; the pair stays matched. tmp/a1-trunk/READY-coverage-soak-fix-2.md.
+COW_VERIFY = False
 BAND1_INDEXES = tuple(range(PAIRS))                # a replay has no band; sm, the one live arm, is index 0
 BAND_SIZE = _c4.BAND_SIZE
 SMOKE_ROW = ('core', 'sm', 'live', 0)
@@ -139,7 +144,7 @@ def arms(part=None):
             continue
         # compose-5's rows less the cap (the module's note); the residue is the one axis between nw and nr.
         rows.append(dict(label=label(sel, 2, cohort, index), selection=selection(sel, 2), part=row_part, c1=sel, kind=KIND[sel], attn=True, lazy_recv=True, decode_merge='chunk', inwait=True, next_levers=True,
-                         prepare_slices=True, score_warm=False, score_warm_rank0=False, allocator_flush=True, cow_fast=True, reserved_cap=False, cow_host_filter=True, cow_verify=True, exact_successor=True,
+                         prepare_slices=True, score_warm=False, score_warm_rank0=False, allocator_flush=True, cow_fast=True, reserved_cap=False, cow_host_filter=True, cow_verify=COW_VERIFY, exact_successor=True,
                          ple_private=PLE_PRIVATE[sel], ple_witness=PLE_WITNESS[sel], overlap=True, defer_bind=True, c0='on', stage_local=True, size=2, cohort=cohort, index=index, band=band_of_index(index),
                          extra=False, entry_limit=ENTRY_LIMIT[row_part][0], yield_on=YIELD[sel], plan=PLANS[PLAN[sel]], generations=generations_of(sel), chunk_bound=list(BOUND[sel]),
                          native_hold=NATIVE_HOLD[sel], native_residue=NATIVE_RESIDUE[sel]))

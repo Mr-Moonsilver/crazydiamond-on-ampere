@@ -97,8 +97,9 @@ class Table(unittest.TestCase):
     def test_compose_4s_ctl_is_the_base(self):
         c4 = T4.by_label()['ctl.g2-live-0']
         row = T.by_label()[W0]
-        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'label', 'native_hold', 'native_residue', 'reserved_cap', 'score_warm', 'selection'])
-        self.assertEqual((row['chunk_bound'], row['reserved_cap'], row['yield_on'], row['ple_private']), ([52624, 1024], False, False, False))
+        # coverage-soak-fix build-2: cow_verify off (the worker RSS owner, test_cow_verify_rss)
+        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'cow_verify', 'label', 'native_hold', 'native_residue', 'reserved_cap', 'score_warm', 'selection'])
+        self.assertEqual((row['chunk_bound'], row['reserved_cap'], row['yield_on'], row['ple_private'], row['cow_verify'], c4['cow_verify']), ([52624, 1024], False, False, False, False, True))
 
     def test_the_replay_and_the_ceiling_are_compose_4s(self):
         self.assertEqual(set(T.REPLAY), set(T4.REPLAY))

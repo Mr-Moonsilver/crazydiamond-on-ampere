@@ -137,6 +137,8 @@ class ArmEnd(a1r.ArmEnd):
                 self.assertIs(self.driver.controller.append_yield.enabled, T.YIELD[sel])
                 self.assertIs((record['ple_private'] or {}).get('requested'), False)
                 self.assertIs((record['reserved_cap'] or {}).get('requested'), False)
+                # coverage-soak-fix build-2: the CPU CoW byte check stays off on both rows (the worker RSS owner)
+                self.assertIs((record['cow_verify'] or {}).get('requested'), False)
                 self.assertEqual(record['inwait']['bound_acknowledged'], T.by_label()[name]['chunk_bound'])
                 self.assertEqual((record['inwait']['hold_requested'], record['inwait']['hold_acknowledged']), (T.NATIVE_HOLD[sel],) * 2)
                 self.assertEqual(self.driver.controller.native_hold_s, T.NATIVE_HOLD[sel])
