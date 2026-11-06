@@ -1,4 +1,10 @@
-"""q18a-compose-throughput arm table: the one declared table (coverage-throughput, 6 Nov 2026; tmp/decode-phase/READY-coverage-throughput.md). Change it here and nowhere else.
+"""q18a-compose-throughput-b2 arm table: the one declared table (coverage-throughput build-2, 6 Nov 2026; tmp/decode-phase/READY-coverage-throughput-b2.md). Change it here and nowhere else.
+
+coverage-throughput build-2 (lead, 6 Nov): build-1's table and arms unchanged (ABBA nt ny ny nt), over an engine with (a) prepare-ahead,
+the safe variant (a later chunk's PREPARE slices 1-2 staged after the live chunk's state_finalize, on a second builder set; launch setting
+FLASH_S5_PREPARE_AHEAD=1 for the whole run, used only by native chunks, so ny never stages), (b) K2 (the next run selected at the scheduled
+handback, no cooldown) and (c) the geometry tail at the prompt's last prefix unit. Chunk geometry and the indexer logits cap unchanged.
+Build-1's text follows.
 
 coverage-throughput (lead, 6 Nov ~09:00): the soak-fix table with its candidate renamed nt: nr (the hold and the residue) plus the append yield,
 over an engine whose exact successor plans over the admission's view (the soak's in-run pause) and whose yield plans as admit() does.
@@ -64,6 +70,7 @@ PLANS = _c4.PLANS
 PLAN = {'sm': 'pair', 'dec1': 'none', 'ny': 'none', 'nt': 'none'}
 CHUNK_TOKENS = 2048
 CHUNK_ENV = 'FLASH_S5_CHUNK_TOKENS=%d' % CHUNK_TOKENS
+PREPARE_AHEAD_ENV = 'FLASH_S5_PREPARE_AHEAD=1'     # build-2 (a): installed for the whole run; needs FLASH_S5_STAGE_OVERLAP=1 (the settings carry it)
 MAMBA_BLOCK_ROWS, HASH_BLOCK_ROWS = 4048, 176     # read from this model's chunks on the box (dp5): ends 4048 x k, last stop prompt-1 // 176 x 176
 B13_BOUND = [13 * MAMBA_BLOCK_ROWS, 1024]         # dp8d's b13 and b13h: chunk_bound on native_stage_local, [end, rows]
 C22_BOUND = [22 * MAMBA_BLOCK_ROWS, 1024]         # dn's c22h: largest score buffer 170.5 MiB at 85008-87056; cf died at 194 at 97152
@@ -196,6 +203,7 @@ def check():
     assert not any(r['ple_witness'] for r in rows.values()), 'no arm carries the witness'
     assert all(r['cow_host_filter'] and r['cow_fast'] for r in rows.values()), 'hf on every arm'
     assert LAUNCH == dict(_a1.LAUNCH, max_new=8192) and _a1.LAUNCH['max_new'] == 2048, "the yield's new-row bound raised here alone"
+    assert PREPARE_AHEAD_ENV == 'FLASH_S5_PREPARE_AHEAD=1' and CHUNK_TOKENS == 2048 and CHUNK_ENV == 'FLASH_S5_CHUNK_TOKENS=2048', 'build-2: prepare-ahead on, chunk geometry unchanged'
     assert B13_BOUND == [52624, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, B13_BOUND)) == 40, "dp8d's 40 chunks at band 1"
     assert C22_BOUND == [89056, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, C22_BOUND)) == 34 and len(planned_chunks(131094, CHUNK_TOKENS, C22_BOUND)) == 87, "dn's 34 and 87 chunks"
     return True

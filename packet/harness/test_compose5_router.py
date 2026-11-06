@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_compose_throughput_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_compose_throughput_b2_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SHORT = dict(T.REPLAY, AGENTS=2, DURATION=0.4, WARMUP=0.0, START_MIN=60000, START_MAX=60000, TOOL_MIN=0.01, TOOL_MAX=0.02)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""q18a-compose-throughput box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
+"""q18a-compose-throughput-b2 box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
 coverage-residue adds the per-row native_residue, acknowledged, keeps the engine's decline record (with its prefill coverage counter) in each status row, and grades coverage per replay arm.
 coverage-soak adds, per replay arm: the requests still open when the replay gave up on them, by agent, session and send time (a hang, named), and
 the engine's memory at the traffic's start and end (per-rank free VRAM by nvidia-smi, the engine container's process RSS by docker top), read on
@@ -28,7 +28,7 @@ _report = _box.report
 
 
 def report(result):
-    text = _report(result).replace('q18a-compose-4', 'q18a-compose-throughput', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    text = _report(result).replace('q18a-compose-4', 'q18a-compose-throughput-b2', 1).replace('compose4_rule.py', 'compose5_rule.py')
     # coverage-soak-fix: the geometry-tail class and the worker RSS read, one line per replay arm (the decode gap is the reader's)
     extra = []
     for label, cov in sorted((result.get('coverage') or {}).items()):

@@ -715,7 +715,7 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-compose-throughput'))
+        self.assertTrue(text.startswith('# q18a-compose-throughput-b2'))
         self.assertIn('compose5_rule.py', text)
 
 
