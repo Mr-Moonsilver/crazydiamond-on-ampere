@@ -1,4 +1,9 @@
-"""q18a-compose-throughput-b24 arm table: the one declared table (coverage-throughput build-2b24, 6 Nov 2026; tmp/decode-phase/READY-coverage-throughput-b2b24.md). Change it here and nowhere else.
+"""q18a-compose-throughput-b24c64 arm table: the one declared table (coverage-throughput build-2b24c64, 6 Nov 2026; tmp/decode-phase/READY-coverage-throughput-b2b24c64.md). Change it here and nowhere else.
+
+coverage-throughput build-2b24c64 (lead, 6 Nov ~17:12): build-2b24's table with build-2b's full ABBA back (nt ny ny nt, 480 s, the same seeds
+and positions) and the indexer logits cap VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=64 for the whole run (LOGITS_ENV, both preflights assert it).
+b24 on nt died at 16:52 on a 190 MiB logits ask (fragmentation, READING-b2b24-oom.md); the cap keeps every logits slice <= 64 MiB. The
+grade fails any allocator retry over 64 MiB, per rank. nt keeps b24, ny b13. Build-2b24's text follows.
 
 coverage-throughput build-2b24 (lead, 6 Nov ~15:35): build-2b's engine and table unchanged, except nt's chunk_bound: b24's [97152, 1024]
 (2048-row native chunks up to 97152, 1024 past; q18a-o4-b24 ran it clean, OOM 0, 15:01-15:23). ny keeps b13 [52624, 1024]. One pair, nt then ny,
@@ -40,7 +45,7 @@ STANDING_DECODERS = _inwait.STANDING_DECODERS
 STANDING_GREEDY = _inwait.STANDING_GREEDY
 GREEDY_TEMPERATURE = _inwait.GREEDY_TEMPERATURE
 STANDING_SAMPLED = _inwait.STANDING_SAMPLED
-PAIRS = 1                                          # build-2b24 (lead, 6 Nov ~15:40): one pair, nt then ny, 480 s each (was 2: ABBA)
+PAIRS = 2                                          # build-2b24c64 (lead, 6 Nov ~17:12): build-2b's ABBA nt ny ny nt again (build-2b24 ran 1)
 # coverage-soak-fix build-2 (lead, 6 Nov 08:50: name and fix the Worker_PP RSS owner): the CoW byte check at release
 # (lane_chunk.cow_host_verify) reads each host CoW pair's src and dst page prefix through the registered QSA host pool on the
 # CPU, which maps those pool pages into the worker: the soak's worker RSS growth on nr (native appends only). Off on every arm,
@@ -74,6 +79,8 @@ PLANS = _c4.PLANS
 PLAN = {'sm': 'pair', 'dec1': 'none', 'ny': 'none', 'nt': 'none'}
 CHUNK_TOKENS = 2048
 CHUNK_ENV = 'FLASH_S5_CHUNK_TOKENS=%d' % CHUNK_TOKENS
+LOGITS_CAP_MB = 64                                 # build-2b24c64: the indexer splits a chunk's rows so one score block stays under this (stock 512)
+LOGITS_ENV = 'VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=%d' % LOGITS_CAP_MB
 PREPARE_AHEAD_ENV = 'FLASH_S5_PREPARE_AHEAD=1'     # build-2 (a): installed for the whole run; needs FLASH_S5_STAGE_OVERLAP=1 (the settings carry it)
 MAMBA_BLOCK_ROWS, HASH_BLOCK_ROWS = 4048, 176     # read from this model's chunks on the box (dp5): ends 4048 x k, last stop prompt-1 // 176 x 176
 B13_BOUND = [13 * MAMBA_BLOCK_ROWS, 1024]         # dp8d's b13 and b13h: chunk_bound on native_stage_local, [end, rows]
@@ -198,7 +205,7 @@ def check():
         assert on['native_residue'] == 1 and off['native_residue'] == 0
         assert on['yield_on'] and not off['yield_on'] and not on['ple_private'] and not off['ple_private'], "the yield on nt alone; c4b's ple off"
     order = [r['label'] for r in rows.values() if r['kind'] == 'replay']
-    assert order == ['nt.g2-live-0', 'ny.g2-live-0'], 'build-2b24: one pair, nt first'
+    assert order == ['nt.g2-live-0', 'ny.g2-live-0', 'ny.g2-live-1', 'nt.g2-live-1'], 'ABBA: nt ny ny nt (build-2b24c64, as build-2b)'
     assert all(r['native_hold'] == (HOLD_S if r['c1'] == 'nt' else 0) for r in rows.values()), 'the hold on nt alone'
     assert {k: REPLAY[k] for k in _c4.REPLAY if k not in ('DURATION', 'WARMUP')} == {k: v for k, v in _c4.REPLAY.items() if k not in ('DURATION', 'WARMUP')}, "dnr's turn mix"
     assert REPLAY['DURATION'] == REPLAY_S and REPLAY['WARMUP'] == 0.0
@@ -211,6 +218,7 @@ def check():
     assert PREPARE_AHEAD_ENV == 'FLASH_S5_PREPARE_AHEAD=1' and CHUNK_TOKENS == 2048 and CHUNK_ENV == 'FLASH_S5_CHUNK_TOKENS=2048', 'build-2: prepare-ahead on, chunk geometry unchanged'
     assert B13_BOUND == [52624, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, B13_BOUND)) == 40, "dp8d's 40 chunks at band 1"
     assert B24_BOUND == [97152, 1024] and len(planned_chunks(131094, CHUNK_TOKENS, B24_BOUND)) == 83, "b24's 83 chunks for the 131,094-token fresh (READY-o4-b24)"
+    assert LOGITS_CAP_MB == 64 and LOGITS_ENV == 'VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=64', 'build-2b24c64: the logits cap for the whole run'
     assert all(r['chunk_bound'] == (B24_BOUND if r['c1'] == 'nt' else B13_BOUND) for r in rows.values()), 'b24 on nt alone'
     assert C22_BOUND == [89056, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, C22_BOUND)) == 34 and len(planned_chunks(131094, CHUNK_TOKENS, C22_BOUND)) == 87, "dn's 34 and 87 chunks"
     return True

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""q18a-compose-throughput-b24 box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
+"""q18a-compose-throughput-b24c64 box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
 coverage-residue adds the per-row native_residue, acknowledged, keeps the engine's decline record (with its prefill coverage counter) in each status row, and grades coverage per replay arm.
 coverage-soak adds, per replay arm: the requests still open when the replay gave up on them, by agent, session and send time (a hang, named), and
 the engine's memory at the traffic's start and end (per-rank free VRAM by nvidia-smi, the engine container's process RSS by docker top), read on
@@ -8,6 +8,7 @@ the box host, never raising; the grade flags growth on nr, it does not fail on i
 Every arm kind compose-5 runs, compose-4's box already runs: the live arm for sm, fon and foff, the replay arm for cmp and ny, the one-stream arm. Only the table and the names differ, so the table is bound in here
 and nothing that ran is edited. The rule is compose5_rule.py on the fetched record; this grade only says the record is whole.
 """
+import datetime
 import os
 import re
 import subprocess
@@ -28,7 +29,7 @@ _report = _box.report
 
 
 def report(result):
-    text = _report(result).replace('q18a-compose-4', 'q18a-compose-throughput-b24', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    text = _report(result).replace('q18a-compose-4', 'q18a-compose-throughput-b24c64', 1).replace('compose4_rule.py', 'compose5_rule.py')
     # coverage-soak-fix: the geometry-tail class and the worker RSS read, one line per replay arm (the decode gap is the reader's)
     extra = []
     for label, cov in sorted((result.get('coverage') or {}).items()):
@@ -54,6 +55,14 @@ def report(result):
         # build-3: the arms the RSS rule does not grade (ny, the control), read the same way
         if label not in (result.get('worker_rss') or {}) and not label.startswith('nr-first-') and delta is not None:
             extra.append('- %s worker RSS (read, not graded): %s' % (label, rss_read(delta)))
+    alloc = result.get('alloc_retries')
+    if alloc:
+        # build-2b24c64: the logits cap's retry rule, per rank over the run, then per arm
+        per = lambda ranks: ', '.join('%s %d (max %.2f MiB)' % (k, v['retries'], v['max_ask_mib']) for k, v in sorted(ranks.items())) or 'none'
+        extra.append('- allocator retries, cap %d MiB: run %s; fatal CUDA OOM lines %d%s' % (
+            alloc['cap_mib'], per(alloc['ranks']), alloc['cuda_oom_lines'], ('' if alloc['read'] else '; NO LOG READ') + ('; %d retry lines not parsed' % alloc['unparsed'] if alloc['unparsed'] else '')))
+        for label, ranks in alloc['arms'].items():
+            extra.append('- %s allocator retries: %s' % (label, per(ranks)))
     return text + ('\n' + '\n'.join(extra) + '\n' if extra else '')
 
 
@@ -463,10 +472,93 @@ def coverage_windows(arms):
     return out
 
 
+# build-2b24c64 (lead, 6 Nov ~17:12): the indexer logits cap is 64 MiB for the whole run. The caching allocator's retry warning names the ask:
+# '<stamp>Z [rank1]:[W1106 15:41:27.577 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate
+# 81788928 bytes (free: ..., total: ...)'. The retried asks above ~60 MiB on record are logits slices: under o4's cap 136 every one was <= 136
+# MiB (q18a-o4-chunk2048), under stock 512 they reached 190 (build-2b24's death). So every retried ask on any rank must be <= the cap.
+ALLOC_RETRY = re.compile(r'\[rank(\d+)\]:\[W[^\]]*CUDACachingAllocator[^\]]*\] memory allocation failed with OOM on device (\d+) '
+                         r'while trying to allocate (\d+) bytes')
+CUDA_OOM = re.compile(r'OutOfMemoryError: CUDA out of memory')
+LOG_STAMP = re.compile(r'^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?)Z ')
+MIB = 1 << 20
+
+
+def log_wall(line):
+    """The log line's own UTC stamp (docker's), as epoch seconds; None when it has none."""
+    m = LOG_STAMP.match(line)
+    if not m:
+        return None
+    s = m.group(1)[:26]
+    return datetime.datetime.strptime(s, '%Y-%m-%dT%H:%M:%S.%f' if '.' in s else '%Y-%m-%dT%H:%M:%S').replace(
+        tzinfo=datetime.timezone.utc).timestamp()
+
+
+def _ranks(rows):
+    out = {}
+    for _wall, rank, ask in rows:
+        row = out.setdefault('rank%d' % rank, dict(retries=0, max_ask_bytes=0))
+        row['retries'] += 1
+        row['max_ask_bytes'] = max(row['max_ask_bytes'], ask)
+    for row in out.values():
+        row['max_ask_mib'] = round(row['max_ask_bytes'] / MIB, 2)
+    return out
+
+
+def alloc_retries(logs, arms=()):
+    """Every allocator retry in the followed logs (each line once: the same warning in two streams counts once), per rank over the run and
+    per arm window (the arm record's wall_start_s .. wall_end_s), and the fatal CUDA OOM lines. 'read' and 'unread' name the paths."""
+    seen, rows, read, unread, oom, unparsed = set(), [], [], [], set(), set()
+    for path in logs or ():
+        try:
+            handle = open(path, errors='replace')
+        except OSError as exc:
+            unread.append('%s: %s' % (path, type(exc).__name__))
+            continue
+        read.append(str(path))
+        with handle:
+            for line in handle:
+                if 'CUDA out of memory' in line and CUDA_OOM.search(line):
+                    oom.add(line.rstrip('\n'))
+                if 'CUDACachingAllocator' not in line or 'memory allocation failed' not in line:
+                    continue
+                m = ALLOC_RETRY.search(line)
+                if not m:
+                    unparsed.add(line.rstrip('\n'))
+                if not m or line in seen:
+                    continue
+                seen.add(line)
+                rows.append((log_wall(line), int(m.group(1)), int(m.group(3))))
+    windows = {}
+    for rec in arms or ():
+        start, end = (rec or {}).get('wall_start_s'), (rec or {}).get('wall_end_s')
+        if rec and rec.get('label') and type(start) in (int, float) and type(end) in (int, float):
+            windows[rec['label']] = _ranks([r for r in rows if r[0] is not None and start <= r[0] <= end])
+    return dict(cap_mib=T.LOGITS_CAP_MB, read=read, unread=unread, ranks=_ranks(rows), arms=windows, unstamped=sum(1 for r in rows if r[0] is None),
+                cuda_oom_lines=len(oom), unparsed=len(unparsed))
+
+
+def alloc_fails(alloc):
+    """FAIL per rank on any retried ask over the cap; FAIL on a fatal CUDA OOM line; nothing read is missing (INC), never a pass."""
+    fails = ['%s:alloc-retry-ask-over-%dMiB' % (rank, alloc['cap_mib']) for rank, row in sorted(alloc['ranks'].items())
+             if row['max_ask_bytes'] > alloc['cap_mib'] * MIB]
+    if alloc['cuda_oom_lines']:
+        fails.append('cuda-out-of-memory')
+    missing = [] if alloc['read'] else ['alloc-retries-not-read']
+    if alloc['unparsed']:
+        missing.append('alloc-retry-line-unparsed')       # a retry warning this rule cannot size: not a pass
+    return fails, missing
+
+
 def grade(arms, *args, **kwargs):
     """compose-4's grade, and each arm's bound acknowledged: a launch that ignored it would read as this run with no sign of it."""
     with _bound():
         result = _grade(arms, *args, **kwargs)
+    # build-2b24c64: the logits cap's retry rule over the followed logs (compose-4's grade takes them as its fourth argument, 'logs')
+    logs = kwargs['logs'] if 'logs' in kwargs else args[2] if len(args) > 2 else ()
+    result['alloc_retries'] = alloc = alloc_retries(logs, [x for x in arms if x.get('label')])
+    fails, missing = alloc_fails(alloc)
+    result['failures'] = sorted(set(result['failures']) | set(fails))
+    result['missing'] = sorted(set(result['missing']) | set(missing))
     by = {x.get('label'): x for x in arms if x.get('label')}
     for row in T.arms():
         rec = by.get(row['label'])

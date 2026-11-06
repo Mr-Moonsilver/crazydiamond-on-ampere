@@ -21,8 +21,8 @@ import test_compose4_box as tb
 tam, tap, ta1 = tb.tam, tb.tap, tb.ta1
 SM, DEC1, CMP, NY = rule.SM, 'dec1.g2-live-0', rule.ON, rule.OFF      # the rule's labels: compose-5's, for its own suites; dnr's table has no cmp
 W0, R0, W1, R1 = 'ny.g2-live-0', 'nt.g2-live-0', 'ny.g2-live-1', 'nt.g2-live-1'     # this table: ny as dnr ran it, nr the hold with the residue
-# build-2b24: the table is one pair (nt.0 ny.0); W1/R1 are the second pair of TWO_PAIRS, under which the grade's own tests run
-# (the grade reads T.arms() at call time and is shape-generic: windows, the last arm to 'after', nr-first-to-last).
+# build-2b24 ran one pair, so the grade's own tests ran under TWO_PAIRS; build-2b24c64 is ABBA again and TWO_PAIRS equals its table
+# (asserted in Table), so the patch is the table itself.
 TWO_PAIRS = (T.SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', i) for i in range(2) for sel in (('nt', 'ny') if i % 2 == 0 else ('ny', 'nt')))
 
 
@@ -84,7 +84,8 @@ class JournalAgainstRecord(UnderThisTable, tb.JournalAgainstRecord):
 
 class Table(unittest.TestCase):
     def test_the_order(self):
-        self.assertEqual(T.labels(), [SM, DEC1, R0, W0], 'build-2b24: one pair, nt then ny')
+        self.assertEqual(TWO_PAIRS, T.ARM_TABLE, "build-2b24c64: the grade tests' patch is this table")
+        self.assertEqual(T.labels(), [SM, DEC1, R0, W0, W1, R1], 'ABBA: nt ny ny nt (build-2b24c64, as build-2b)')
 
     def test_each_pair_differs_in_the_plan_alone_and_shares_a_seed(self):
         rows = T.by_label()
@@ -97,9 +98,9 @@ class Table(unittest.TestCase):
             self.assertEqual((T.replay_config(rows[on])['SEED'], T.replay_config(rows[off])['SEED']), (seed, seed))
 
     def test_a_replays_config_is_compose_4s_but_for_the_seed(self):
-        self.assertEqual(T.PAIRS, 1, 'build-2b24: one pair')
-        row = T.by_label()[W0]
-        self.assertEqual({k: v for k, v in T.replay_config(row).items() if T4.REPLAY[k] != v}, dict(DURATION=480.0, WARMUP=0.0), "soak: dnr's turn mix and seed 1, 480 s arms, every turn graded")
+        self.assertEqual(T.PAIRS, 2, 'build-2b24c64: ABBA')
+        row = T.by_label()[W1]
+        self.assertEqual({k: v for k, v in T.replay_config(row).items() if T4.REPLAY[k] != v}, dict(SEED=2, DURATION=480.0, WARMUP=0.0), "soak: dnr's turn mix, 480 s arms, every turn graded")
         self.assertEqual(T4.REPLAY['SEED'], 1, "the table's own stays as it is")
 
     def test_the_cap_and_the_warm_block_are_off_on_every_arm(self):
@@ -122,17 +123,18 @@ class Table(unittest.TestCase):
         self.assertEqual(T4.REPLAY['DURATION'], 1080.0, "compose-4's own stays as it is")
 
     def test_the_hold_and_the_residue_are_on_nr_alone(self):
-        self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, {R0: T.HOLD_S})
-        self.assertEqual({r['label'] for r in T.arms() if r['native_residue']}, {R0})
+        self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, {R0: T.HOLD_S, R1: T.HOLD_S})
+        self.assertEqual({r['label'] for r in T.arms() if r['native_residue']}, {R0, R1})
         self.assertEqual(T.MAX_PROMPT_TOKENS, 135000)
         self.assertEqual((T.RULE_PREFILL_TOK_S, T.RULE_DECODE_VS_FIXED, T.RULE_MIN_NATIVE_BULKS), (T4.RULE_PREFILL_TOK_S, T4.RULE_DECODE_VS_FIXED, T4.RULE_MIN_NATIVE_BULKS))
 
     def test_a_replays_request_count_is_in_its_record(self):
-        for label in (W0, R0):
+        for label in (W0, R0, W1, R1):
             self.assertIsNone(T.by_label()[label]['generations'])
 
     def test_a_matched_off_only_for_the_on_arms(self):
         rows = T.by_label()
+        self.assertEqual(T.matched_off(rows[R1]), W1)
         self.assertEqual(T.matched_off(rows[R0]), W0)
         self.assertIsNone(T.matched_off(rows[W0]))
         self.assertIsNone(T.matched_off(rows[SM]))
@@ -174,7 +176,7 @@ class ReplaySeed(unittest.TestCase):
 
     def test_each_index_gets_its_seed_and_the_table_is_put_back(self):
         saved = T.REPLAY
-        for label, seed in ((W0, 1), (R0, 1)):
+        for label, seed in ((W0, 1), (R0, 1), (W1, 2), (R1, 2)):
             seen = self.go(label)
             self.assertEqual((seen['cfg']['SEED'], seen['header']['SEED']), (seed, seed), label)
         self.assertIs(T.REPLAY, saved)
@@ -733,11 +735,11 @@ class BoxBinding(unittest.TestCase):
 
     def test_the_argparse_takes_this_tables_selections_and_refuses_the_old_control(self):
         with mock.patch.object(box4, 'run_arm', return_value=0) as arm, tempfile.TemporaryDirectory() as tmp:
-            args = ['arm', '--url', 'u', '--model', 'm', '--run-id', 'r', '--epoch', '1', '--c1', 'ny', '--size', '2', '--cohort', 'live', '--index', '0', '--workload', 'w', '--out', tmp + '/x.json']
+            args = ['arm', '--url', 'u', '--model', 'm', '--run-id', 'r', '--epoch', '1', '--c1', 'ny', '--size', '2', '--cohort', 'live', '--index', '1', '--workload', 'w', '--out', tmp + '/x.json']
             self.assertEqual(box.main(args), 0)
-            self.assertEqual((arm.call_args[0][0].c1, arm.call_args[0][0].index), ('ny', 0))
+            self.assertEqual((arm.call_args[0][0].c1, arm.call_args[0][0].index), ('ny', 1))
             with self.assertRaises(SystemExit):
-                box.main(args[:15] + ['1'] + args[16:])        # build-2b24: no second pair
+                box.main(args[:15] + ['2'] + args[16:])        # build-2b24c64: two pairs, no third
             with self.assertRaises(SystemExit):
                 box.main(args[:9] + ['nw'] + args[10:])
 
@@ -763,7 +765,7 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-compose-throughput-b24'))
+        self.assertTrue(text.startswith('# q18a-compose-throughput-b24c64'))
         self.assertIn('compose5_rule.py', text)
 
 
@@ -837,6 +839,80 @@ class Grade(TwoPairs):
                 off['statuses'][-1]['append_yield']['counters'] = dict(selected=9)
                 off['statuses'][-1]['label'] = 'after'
                 self.assertIn(label + ':yield-off-selected-a-yield', self.grade_of(arms)['failures'])
+
+
+def retry(rank, ask, stamp='2026-11-06T15:41:27.891618328Z'):
+    """One allocator retry warning as the engine's stderr carries it (build-2b24's record, engine-stream.err)."""
+    return ('%s [rank%d]:[W1106 15:41:27.577106356 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device %d while trying '
+            'to allocate %d bytes (free: 9371648, total: 25296044032).\n' % (stamp, rank, rank, ask))
+
+
+MIB = 1 << 20
+
+
+class AllocRetry(TwoPairs):
+    """build-2b24c64 (lead, 6 Nov ~17:12): with the logits cap at 64 MiB, any allocator retry over 64 MiB on any rank FAILs the run, per rank."""
+    grade = Grade()
+
+    def grade_with(self, *texts, arms=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = []
+            for k, text in enumerate(texts):
+                logs.append(Path(tmp) / ('engine-stream.%d' % k))
+                logs[-1].write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP) + text)
+            arms = self.grade.records() if arms is None else arms
+            known = [a for a in arms if a.get('label')]
+            result = box.grade(arms, {a['label']: tap.PASS for a in known}, tap.CHECKS, [str(p) for p in logs], {a['label']: tap.ALIVE for a in known})
+            with box._bound():
+                return result, box.report(result)
+
+    def test_retries_at_the_cap_pass_and_are_counted_per_rank(self):
+        result, text = self.grade_with(retry(0, 64 * MIB) + retry(1, 2 * MIB) + retry(1, 60 * MIB))
+        self.assertEqual(result['verdict'], 'PASS', result['failures'] + result['missing'])
+        ranks = result['alloc_retries']['ranks']
+        self.assertEqual({k: (v['retries'], v['max_ask_mib']) for k, v in ranks.items()}, {'rank0': (1, 64.0), 'rank1': (2, 60.0)})
+        self.assertIn('- allocator retries, cap 64 MiB: run rank0 1 (max 64.00 MiB), rank1 2 (max 60.00 MiB); fatal CUDA OOM lines 0', text)
+
+    def test_one_ask_over_the_cap_fails_that_rank_alone(self):
+        result, text = self.grade_with(retry(0, 64 * MIB) + retry(2, 66 * MIB) + retry(3, 64 * MIB + 1))
+        self.assertEqual(result['verdict'], 'FAIL')
+        self.assertEqual([f for f in result['failures'] if 'alloc' in f], ['rank2:alloc-retry-ask-over-64MiB', 'rank3:alloc-retry-ask-over-64MiB'])
+
+    def test_build_2b24s_death_fails_every_rank_and_the_oom(self):
+        death = ''.join(retry(r, 199229440) for r in range(4))
+        death += '2026-11-06T15:52:30.670270001Z (Worker_PP0_TP1_EP1 pid=102) torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 190.00 MiB.\n'
+        result, _ = self.grade_with(death)
+        self.assertEqual(sorted(f for f in result['failures'] if 'alloc' in f or 'memory' in f),
+                         ['cuda-out-of-memory'] + ['rank%d:alloc-retry-ask-over-64MiB' % r for r in range(4)])
+
+    def test_the_same_warning_in_two_streams_counts_once(self):
+        line = retry(1, 40 * MIB)
+        result, _ = self.grade_with(line, line + retry(1, 40 * MIB, stamp='2026-11-06T15:41:29.000000000Z'))
+        self.assertEqual(result['alloc_retries']['ranks']['rank1']['retries'], 2)
+
+    def test_no_log_read_is_inc_never_a_pass(self):
+        arms = self.grade.records()
+        known = [a for a in arms if a.get('label')]
+        result = box.grade(arms, {a['label']: tap.PASS for a in known}, tap.CHECKS, ['/nonexistent/engine-stream.err'], {a['label']: tap.ALIVE for a in known})
+        self.assertIn('alloc-retries-not-read', result['missing'])
+        self.assertNotEqual(result['verdict'], 'PASS')
+
+    def test_a_retry_line_the_rule_cannot_size_is_inc(self):
+        odd = '2026-11-06T15:41:27.891618328Z [W1106 15:41:27.577 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1\n'
+        result, text = self.grade_with(odd)
+        self.assertIn('alloc-retry-line-unparsed', result['missing'])
+        self.assertEqual(result['verdict'], 'INC')
+        self.assertIn('1 retry lines not parsed', text)
+
+    def test_each_arm_window_reads_its_own_retries(self):
+        arms = self.grade.records()
+        rec = next(a for a in arms if a.get('label') == R0)
+        rec["wall_start_s"], rec["wall_end_s"] = 1793979600.0, 1793980080.0     # 2026-11-06T15:40:00Z .. 15:48:00Z
+        inside, outside = '2026-11-06T15:41:27.891618328Z', '2026-11-06T15:49:00.000000000Z'
+        result, text = self.grade_with(retry(1, 40 * MIB, inside) + retry(1, 50 * MIB, outside), arms=arms)
+        self.assertEqual(result['alloc_retries']['arms'][R0], {'rank1': dict(retries=1, max_ask_bytes=40 * MIB, max_ask_mib=40.0)})
+        self.assertEqual(result['alloc_retries']['ranks']['rank1']['retries'], 2)
+        self.assertIn('- %s allocator retries: rank1 1 (max 40.00 MiB)' % R0, text)
 
 
 class Coverage(TwoPairs):

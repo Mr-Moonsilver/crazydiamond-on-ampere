@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_compose_throughput_b24_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_compose_throughput_b24c64_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SHORT = dict(T.REPLAY, AGENTS=2, DURATION=0.4, WARMUP=0.0, START_MIN=60000, START_MAX=60000, TOOL_MIN=0.01, TOOL_MAX=0.02)
@@ -126,7 +126,7 @@ class ArmEnd(a1r.ArmEnd):
         self.assertEqual(len(record['decode_only']['stream_rates_tokens_per_s']), 1)
 
     async def test_the_replay_arm_keeps_its_turns_beside_the_record_with_its_seed(self):
-        for sel, index, seed in (('ny', 0, 1), ('nt', 0, 1)):    # build-2b24: one pair, seed 1 on both
+        for sel, index, seed in (('ny', 0, 1), ('nt', 1, 2)):
             with self.subTest(sel):
                 rc_, record, actions, _served, out = await self.arm(sel, index=index)
                 name = T.label(sel, 2, 'live', index)
