@@ -47,6 +47,9 @@ class StageScoped:
     message: object
     ranks: tuple
     local_release: bool = False
+    # coverage-throughput build-2 (a): the stage's successor AdmissionRecord, or None. Advisory: the worker may stage the
+    # successor's PREPARE slices 1-2 after answering; nothing is decided by it and it never raises into the command.
+    ahead: object = None
 
     def __post_init__(self):
         ranks = self.ranks
@@ -58,10 +61,14 @@ class StageScoped:
             raise E3ContractError('a stage scope does not nest')
         if type(self.local_release) is not bool:
             raise E3ContractError('local_release must be bool')
+        if self.ahead is not None:
+            from wire_v1 import AdmissionRecord
+            if type(self.ahead) is not AdmissionRecord:
+                raise E3ContractError('ahead must be an AdmissionRecord')
 
     def __repr__(self):
         return (f'StageScoped({type(self.message).__name__}, ranks={self.ranks}, '
-                f'local_release={self.local_release})')
+                f'local_release={self.local_release}' + (', ahead' if self.ahead is not None else '') + ')')
 
 
 def retained_sends(bridge):
@@ -170,13 +177,26 @@ def pending_send(bridge, command):
                              command.op_seq, pending=True, cursor=report.cursor, report=report)
 
 
-def stage_rpc(bridge, name, scoped, dispatch):
-    """One scoped command on this worker; ``dispatch`` is the ordinary path."""
-    if bridge.rank not in scoped.ranks:
-        return STAGE_SKIP
+def stage_ahead(bridge, record):
+    """Build-2 (a): stage the successor's PREPARE slices 1-2 on this worker; advisory, never raises."""
+    try:
+        import lane_chunk
+        stage = getattr(getattr(bridge, 'dispatcher', None), 'stage_ahead', None)
+        if stage is None:
+            return None
+        from worker_bridge import admission_to_chunk
+        return stage(admission_to_chunk(record))
+    except Exception:
+        try:
+            import lane_chunk
+            lane_chunk.PREPARE_AHEAD['errors'] += 1
+        except Exception:
+            pass
+        return None
+
+
+def _scoped_answer(bridge, name, scoped, dispatch):
     message = scoped.message
-    if type(message) is StageScoped:
-        raise E3ContractError('a stage scope does not nest')
     if scoped.local_release:
         if name != 'release':
             raise E3ContractError('only a release is stage-local')
@@ -190,5 +210,17 @@ def stage_rpc(bridge, name, scoped, dispatch):
     return dispatch(message)
 
 
+def stage_rpc(bridge, name, scoped, dispatch):
+    """One scoped command on this worker; ``dispatch`` is the ordinary path. A carried ``ahead`` is staged after the answer."""
+    if bridge.rank not in scoped.ranks:
+        return STAGE_SKIP
+    if type(scoped.message) is StageScoped:
+        raise E3ContractError('a stage scope does not nest')
+    answer = _scoped_answer(bridge, name, scoped, dispatch)
+    if scoped.ahead is not None:
+        stage_ahead(bridge, scoped.ahead)
+    return answer
+
+
 __all__ = ['RETAINED_ATTR', 'STAGE_SKIP', 'StageScoped', 'detach_pp_send', 'local_release',
-           'pending_send', 'receipt', 'retained_sends', 'stage_rpc']
+           'pending_send', 'receipt', 'retained_sends', 'stage_ahead', 'stage_rpc']

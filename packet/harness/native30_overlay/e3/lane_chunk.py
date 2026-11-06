@@ -58,6 +58,15 @@ PREPARE_SLICES = dict(selected=False, sliced=0, yields=0, peek_missing=0)
 # staged: slices 1-2 of the next chunk built early; adopted: a PREPARE that ran slice 3 only; dropped: a staged chunk not used;
 # refused: a stage request that did not qualify (counted by reason); errors: a staging that raised (nothing staged).
 PREPARE_AHEAD = dict(selected=False, staged=0, adopted=0, dropped=0, refused={}, errors=0)
+PREPARE_AHEAD_ENV = 'FLASH_S5_PREPARE_AHEAD'
+
+
+def prepare_ahead_from_env(env):
+    """The launch setting, read the same way by the engine and every worker; unset or 0 is today's one builder set."""
+    value = env.get(PREPARE_AHEAD_ENV, '0')
+    if value not in ('0', '1'):
+        raise LaneChunkError(PREPARE_AHEAD_ENV + ' must be 0 or 1')
+    return value == '1'
 SCORE_WARM = dict(selected=False, bytes=0, allocs=0, flushes=0, rewarms=0, errors=0, retries_seen=None)
 SCORE_WARM_SLACK_BYTES = 16 * 1024 * 1024
 SCORE_WARM_STEP_BYTES = 32 * 1024 * 1024

@@ -82,6 +82,18 @@ def stage_overlap_enabled(env):
     return value == '1'
 
 
+def prepare_ahead_enabled(env):
+    """coverage-throughput build-2 (a): FLASH_S5_PREPARE_AHEAD; successor frames exist only with the stage overlap."""
+    from lane_chunk import prepare_ahead_from_env, LaneChunkError
+    try:
+        value = prepare_ahead_from_env(env)
+    except LaneChunkError as error:
+        raise DriverError(str(error))
+    if value and not stage_overlap_enabled(env):
+        raise DriverError('FLASH_S5_PREPARE_AHEAD needs FLASH_S5_STAGE_OVERLAP=1')
+    return value
+
+
 # C1 rebind (review 2 Nov, section 2, option (a)): stage 0 binds n+1's PP consumer just before n+1's PP_SEND,
 # not at its early open, so n+1's PREPARE/PREFIX/layers/SUFFIX need not wait for n's consumer proof.  Default off.
 DEFER_BIND_ENV = 'FLASH_S5_STAGE_OVERLAP_DEFER_BIND'

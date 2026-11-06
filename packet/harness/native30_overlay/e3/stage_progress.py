@@ -130,8 +130,37 @@ class _ScopedSender:
     def _wrap(self, envelope):
         method, args, kwargs, rank = envelope
         scoped = StageScoped(args[0], self.ranks,
-                             local_release=method == 'flash_s5_release')
+                             local_release=method == 'flash_s5_release', ahead=self._ahead(method, args[0]))
         return method, (scoped,) + tuple(args[1:]), kwargs, rank
+
+    def _ahead(self, method, message):
+        """Build-2 (a): the successor frame's admission for this stage, on this stage's STATE_FINALIZE submit and on its
+        polls and release from the finalize phase on; None otherwise, or with the setting off, or once the successor opened
+        on this stage."""
+        driver = self.driver
+        if not getattr(driver, 'prepare_ahead', False):
+            return None
+        frame, stage = getattr(driver, '_scoped_frame', None), getattr(driver, '_scoped_stage', None)
+        frames = getattr(driver, '_frames', ())
+        if frame is None or stage is None or frame not in frames:
+            return None
+        index = frames.index(frame)
+        if index + 1 >= len(frames):
+            return None
+        successor = frames[index + 1]
+        if successor.dead or stage in successor.opened:
+            return None
+        if method == 'flash_s5_submit':
+            from wire_v1 import SegmentKind
+            if getattr(message, 'kind', None) is not SegmentKind.STATE_FINALIZE:
+                return None
+        elif method in ('flash_s5_poll', 'flash_s5_release'):
+            if driver.__dict__.get('phase') not in ('finalize', 'release'):
+                return None
+        else:
+            return None
+        request = successor.stage[stage].get('open_request')
+        return getattr(request, 'admission', None)
 
     def check(self, envelope):
         self.driver._check_headroom(self.real, envelope)

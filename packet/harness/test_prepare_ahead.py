@@ -249,5 +249,178 @@ class Dispatch(Reset, unittest.TestCase):
         self.assertEqual(whole, [self.admission])
 
 
+
+def record(chunk_start=8, chunk_end=11, seq=2):
+    import wire_v1 as w
+    from e3_types import TransactionId
+    return w.AdmissionRecord(
+        transaction=TransactionId(1, 'req-a', 0, chunk_start, chunk_end, seq), prompt_end=20, state_epoch=9, committed_end=chunk_start,
+        block_tables=((5, 6, 7), (9, 10), (), (0, 0)), slot_mappings=((0, 1, 2), (3, 4), (), ()),
+        new_block_ids_to_zero=(), cow_pairs=(), input_ids=tuple(range(chunk_end - chunk_start)), ngram_context=(70, 71, 72))
+
+
+class Flag(unittest.TestCase):
+    def test_worker_reader(self):
+        self.assertFalse(lc.prepare_ahead_from_env({}))
+        self.assertFalse(lc.prepare_ahead_from_env({'FLASH_S5_PREPARE_AHEAD': '0'}))
+        self.assertTrue(lc.prepare_ahead_from_env({'FLASH_S5_PREPARE_AHEAD': '1'}))
+        with self.assertRaises(lc.LaneChunkError):
+            lc.prepare_ahead_from_env({'FLASH_S5_PREPARE_AHEAD': 'yes'})
+
+    def test_engine_needs_the_overlap(self):
+        import stage_overlap as so
+        from engine_driver import DriverError
+        on = {'FLASH_S5_PREPARE_AHEAD': '1', 'FLASH_S5_STAGE_LOCAL': '1', 'FLASH_S5_STAGE_OVERLAP': '1'}
+        self.assertTrue(so.prepare_ahead_enabled(on))
+        self.assertFalse(so.prepare_ahead_enabled({}))
+        with self.assertRaises(DriverError):
+            so.prepare_ahead_enabled({'FLASH_S5_PREPARE_AHEAD': '1', 'FLASH_S5_STAGE_LOCAL': '1'})
+        with self.assertRaises(DriverError):
+            so.prepare_ahead_enabled(dict(on, FLASH_S5_PREPARE_AHEAD='2'))
+
+
+class Scoped(Reset, unittest.TestCase):
+    def test_ahead_defaults_to_none_and_the_repr_is_unchanged(self):
+        import stage_wire as sw
+        plain = sw.StageScoped('m', (0, 1))
+        self.assertIsNone(plain.ahead)
+        self.assertEqual(repr(plain), 'StageScoped(str, ranks=(0, 1), local_release=False)')
+        self.assertIn(', ahead', repr(sw.StageScoped('m', (0, 1), ahead=record())))
+
+    def test_ahead_must_be_an_admission_record(self):
+        import stage_wire as sw
+        from e3_types import E3ContractError
+        with self.assertRaises(E3ContractError):
+            sw.StageScoped('m', (0,), ahead=lc)
+
+    def bridge(self, rank=0, raises=False):
+        order = []
+
+        def stage(admission):
+            order.append(('stage', admission.chunk_start))
+            if raises:
+                raise RuntimeError('boom')
+            return dict(staged=True)
+        return types.SimpleNamespace(rank=rank, dispatcher=types.SimpleNamespace(stage_ahead=stage)), order
+
+    def test_staged_after_the_answer_and_the_answer_kept(self):
+        import stage_wire as sw
+        b, order = self.bridge()
+        answer = sw.stage_rpc(b, 'submit', sw.StageScoped('cmd', (0,), ahead=record()), lambda m: order.append(('answer', m)) or 'ack')
+        self.assertEqual(answer, 'ack')
+        self.assertEqual(order, [('answer', 'cmd'), ('stage', 8)])
+
+    def test_no_ahead_stages_nothing_and_a_non_target_neither(self):
+        import stage_wire as sw
+        b, order = self.bridge()
+        sw.stage_rpc(b, 'submit', sw.StageScoped('cmd', (0,)), lambda m: 'ack')
+        self.assertIs(sw.stage_rpc(b, 'submit', sw.StageScoped('cmd', (1,), ahead=record()), lambda m: 'ack'), sw.STAGE_SKIP)
+        self.assertEqual(order, [])
+
+    def test_a_staging_failure_never_reaches_the_command(self):
+        import stage_wire as sw
+        b, order = self.bridge(raises=True)
+        self.assertEqual(sw.stage_rpc(b, 'submit', sw.StageScoped('cmd', (0,), ahead=record()), lambda m: 'ack'), 'ack')
+        self.assertEqual(lc.PREPARE_AHEAD['errors'], 1)
+
+    def test_the_worker_stages_the_converted_admission(self):
+        import stage_wire as sw
+        from worker_bridge import admission_to_chunk
+        seen = []
+        b = types.SimpleNamespace(rank=0, dispatcher=types.SimpleNamespace(stage_ahead=lambda a: seen.append(a)))
+        rec = record()
+        sw.stage_rpc(b, 'submit', sw.StageScoped('cmd', (0,), ahead=rec), lambda m: 'ack')
+        self.assertEqual(seen, [admission_to_chunk(rec)], 'the same conversion OPEN uses, so adopt can match exactly')
+
+
+class Carry(unittest.TestCase):
+    """The engine side: which envelopes carry the successor's record."""
+
+    def sender(self, *, on=True, successor=True, opened=(), phase='segments', dead=False):
+        import stage_progress as sp
+        frame_k = types.SimpleNamespace(dead=False, opened={0, 1})
+        nxt = types.SimpleNamespace(dead=dead, opened=set(opened),
+                                    stage={0: dict(open_request=types.SimpleNamespace(admission='rec-s0')),
+                                           1: dict(open_request=types.SimpleNamespace(admission='rec-s1'))})
+        driver = types.SimpleNamespace(prepare_ahead=on, _scoped_frame=frame_k, _scoped_stage=1,
+                                       _frames=[frame_k, nxt] if successor else [frame_k])
+        driver.__dict__['phase'] = phase
+        return sp._ScopedSender(driver, None, (2, 3))
+
+    def cmd(self, kind):
+        import wire_v1 as w
+        return types.SimpleNamespace(kind=getattr(w.SegmentKind, kind))
+
+    def test_state_finalize_carries_the_stage_s_record(self):
+        self.assertEqual(self.sender()._ahead('flash_s5_submit', self.cmd('STATE_FINALIZE')), 'rec-s1')
+
+    def test_other_commands_do_not(self):
+        s = self.sender()
+        for kind in ('PREPARE', 'LAYER', 'SUFFIX', 'PP_SEND'):
+            self.assertIsNone(s._ahead('flash_s5_submit', self.cmd(kind)), kind)
+        self.assertIsNone(s._ahead('flash_s5_open', 'x'))
+
+    def test_polls_and_release_only_from_finalize_on(self):
+        self.assertIsNone(self.sender(phase='segments')._ahead('flash_s5_poll', 'p'))
+        self.assertEqual(self.sender(phase='finalize')._ahead('flash_s5_poll', 'p'), 'rec-s1')
+        self.assertEqual(self.sender(phase='release')._ahead('flash_s5_release', 'r'), 'rec-s1')
+
+    def test_off_no_successor_opened_or_dead_carry_nothing(self):
+        fin = self.cmd('STATE_FINALIZE')
+        self.assertIsNone(self.sender(on=False)._ahead('flash_s5_submit', fin))
+        self.assertIsNone(self.sender(successor=False)._ahead('flash_s5_submit', fin))
+        self.assertIsNone(self.sender(opened=(1,))._ahead('flash_s5_submit', fin))
+        self.assertEqual(self.sender(opened=(0,))._ahead('flash_s5_submit', fin), 'rec-s1', 'stage 0 opened says nothing of stage 1')
+        self.assertIsNone(self.sender(dead=True)._ahead('flash_s5_submit', fin))
+
+
+
+class Startup(Reset, unittest.TestCase):
+    """install_native_lane reads FLASH_S5_PREPARE_AHEAD into the worker factory (the scaffolding of
+    test_e3_r4_worker_bridge's install_native_lane test, with the factory's arguments recorded)."""
+
+    def install(self, env):
+        import sys
+        import native_startup
+        import s5_startup
+        from unittest.mock import patch
+        server = types.SimpleNamespace(operation_device=None, runtime=types.SimpleNamespace(
+            state=types.SimpleNamespace(worker_rank=0, prefill=None)))
+        runner = types.SimpleNamespace(device='cuda:0', _flash_s5_worker=server)
+        native = types.SimpleNamespace(split=types.SimpleNamespace(prefill_stream='prefill'),
+                                       comms=types.SimpleNamespace(pp=None), copy_stream=None)
+        calls = []
+
+        def factory(runner, **kwargs):
+            calls.append(kwargs)
+            return types.SimpleNamespace(inventory=lambda: {})
+
+        class StartupDispatcher:
+            def __init__(self, *a, **kw):
+                self.transaction, self.channel = None, None
+
+            def open(self, *a, **kw):
+                return {'opened': True}
+
+            def submit(self, command):
+                return {'op_seq': command.op_seq}
+        modules = {name: types.ModuleType(name) for name in (
+            'vllm', 'vllm.models', 'vllm.models.qwen4_exp', 'vllm.models.qwen4_exp.nvidia', 'vllm.models.qwen4_exp.nvidia.qsa')}
+        with patch.object(native_startup, 'install_worker_native', lambda *a, **kw: native), \
+             patch.object(lc, 'LaneChunkFactory', factory), \
+             patch('lane_dispatch.LaneDispatcher', StartupDispatcher), \
+             patch.dict(sys.modules, modules):
+            s5_startup.install_native_lane(runner, env=dict(env, FLASH_S5_OVERLAP='0'))
+        return calls
+
+    def test_off_is_todays_call(self):
+        self.assertEqual(self.install({}), [dict(chunk_tokens=1024)])
+        self.assertFalse(lc.PREPARE_AHEAD['selected'])
+
+    def test_on_builds_the_second_set(self):
+        self.assertEqual(self.install({'FLASH_S5_PREPARE_AHEAD': '1'}), [dict(chunk_tokens=1024, prepare_ahead=True)])
+        self.assertTrue(lc.PREPARE_AHEAD['selected'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -241,7 +241,12 @@ def install_native_lane(runner, *, env=None, clock=time.monotonic):
 
     server.row1_provider = row1_provider
 
-    factory = LaneChunkFactory(runner, chunk_tokens=config.chunk_tokens)
+    from lane_chunk import PREPARE_AHEAD, prepare_ahead_from_env
+    ahead = prepare_ahead_from_env(env)
+    PREPARE_AHEAD['selected'] = ahead
+    # Off: the same call as before build-2, so the factory and every fake of it see today's arguments.
+    factory = (LaneChunkFactory(runner, chunk_tokens=config.chunk_tokens, prepare_ahead=True) if ahead
+               else LaneChunkFactory(runner, chunk_tokens=config.chunk_tokens))
     # One per-worker private metadata generation, allocated once at startup.
     # Its byte count and full builder-field classification are included in
     # the existing native inventory/ledger; no per-chunk storage is retained.
@@ -416,6 +421,10 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
         # Host-monotonic observation clock for the control journal; the driver
         # never substitutes a CUDA elapsed duration for a host timestamp.
         monotonic_ns=time.monotonic_ns).install()
+    if overlap:
+        # coverage-throughput build-2 (a): the successor's admission rides its stage's finalize, polls and release.
+        from stage_overlap import prepare_ahead_enabled
+        driver.prepare_ahead = prepare_ahead_enabled(env)
     engine._flash_s5_composition = composition
     engine._flash_s5_admission = controller
     engine._flash_s5_driver = driver
