@@ -54,6 +54,10 @@ def select_slots_fast(on):
 # inwait build-3 (DESIGN-3): per rank, selected the same way. PREPARE's host work in slices, so a stock RPC waiting in the
 # rank's ring runs between them, and one cached score block so the indexer's growing buffers stop stacking up in the cache.
 PREPARE_SLICES = dict(selected=False, sliced=0, yields=0, peek_missing=0)
+# coverage-throughput build-2 (a), prepare-ahead: a launch setting (the factory builds a second private builder set at startup).
+# staged: slices 1-2 of the next chunk built early; adopted: a PREPARE that ran slice 3 only; dropped: a staged chunk not used;
+# refused: a stage request that did not qualify (counted by reason); errors: a staging that raised (nothing staged).
+PREPARE_AHEAD = dict(selected=False, staged=0, adopted=0, dropped=0, refused={}, errors=0)
 SCORE_WARM = dict(selected=False, bytes=0, allocs=0, flushes=0, rewarms=0, errors=0, retries_seen=None)
 SCORE_WARM_SLACK_BYTES = 16 * 1024 * 1024
 SCORE_WARM_STEP_BYTES = 32 * 1024 * 1024
@@ -1185,9 +1189,11 @@ class LaneChunk:
 class LaneChunkFactory:
     """Per-worker owner of the lane tables, align context and the one registered request."""
 
-    def __init__(self, runner, *, ports=None, torch_module=None, chunk_tokens=1024):
+    def __init__(self, runner, *, ports=None, torch_module=None, chunk_tokens=1024, prepare_ahead=False):
         if torch_module is None:
             import torch as torch_module
+        if type(prepare_ahead) is not bool:
+            raise LaneChunkError('prepare-ahead-not-bool')
         self.runner = runner
         self.ports = ports if ports is not None else PinnedPorts.load()
         # decode-phase dp5c: at or below 1024 the builders stay plain clones, without reading the stock budget.
@@ -1202,9 +1208,101 @@ class LaneChunkFactory:
          self.native_builder_tensor_count, self.native_builder_fields) = (
             private_attention_groups(runner.attn_groups, torch_module=torch_module, row_capacity=row_capacity)
         )
+        # Build-2 (a): with prepare-ahead, a second private set, so the next chunk's metadata is built while this chunk's
+        # kernels still read the first. Off: one set, today's bytes; native_builder_* keep describing one set.
+        self.builder_sets = [self.native_attn_groups]
+        if prepare_ahead:
+            self.builder_sets.append(private_attention_groups(runner.attn_groups, torch_module=torch_module,
+                                                              row_capacity=row_capacity)[0])
+        self.native_builder_sets = len(self.builder_sets)
+        self._last_set = None
+        self._staged = None
         self.chunks = 0
         self._active_metadata_chunk = None
         self._metadata_generation = 0
+
+    def _next_set(self):
+        """The builder set for the next chunk: the one the last admitted chunk does not hold; with one set, always it."""
+        if len(self.builder_sets) == 1 or self._last_set is None:
+            return 0
+        return 1 - self._last_set
+
+    def _new_chunk(self, admission, req_index):
+        index = self._next_set()
+        chunk = LaneChunk(self.runner, self.ports, self.tables, self.align, admission, req_index,
+                          torch_module=self.torch, attn_groups=self.builder_sets[index])
+        chunk.builder_set = index
+        return chunk
+
+    def _refuse_ahead(self, reason):
+        PREPARE_AHEAD['refused'][reason] = PREPARE_AHEAD['refused'].get(reason, 0) + 1
+        return dict(staged=False, why=reason)
+
+    def stage_ahead(self, admission):
+        """Build-2 (a): slices 1-2 of a later chunk of the registered request, into the set the live chunk does not hold.
+
+        The caller holds the lane prefill stream, after every command of the live chunk is enqueued there (the safe variant:
+        after its state_finalize), so the LaneTables row write and the aligned-index kernel run after the live chunk's
+        readers. Nothing shared moves: the request row, new pages, zeroing, CoW, the metadata gate and the pre-copy stay in
+        slice 3, at the real PREPARE. Never raises; a failure stages nothing.
+        """
+        if len(self.builder_sets) < 2:
+            return self._refuse_ahead('not-selected')
+        if type(admission) is not ChunkAdmission:
+            return self._refuse_ahead('not-an-admission')
+        if (self.request.req_id is None or self.request.req_id != admission.request_uid
+                or self.request.generation != admission.request_generation or admission.chunk_start == 0):
+            return self._refuse_ahead('not-a-later-chunk')
+        live = self._active_metadata_chunk
+        if live is not None and getattr(live, 'builder_set', None) == self._next_set():
+            return self._refuse_ahead('set-held')
+        if self._staged is not None:
+            if self._staged[0] == admission:
+                return dict(staged=True, why='already')
+            self.drop_ahead()
+        try:
+            chunk = self._new_chunk(admission, self.request.req_index)
+            chunk.input_batch()
+            chunk.build_metadata(precopy=False)
+        except Exception:
+            PREPARE_AHEAD['errors'] += 1
+            return dict(staged=False, why='error')
+        self._staged = (admission, chunk)
+        PREPARE_AHEAD['staged'] += 1
+        return dict(staged=True, why='staged')
+
+    def drop_ahead(self):
+        if self._staged is not None:
+            self._staged = None
+            PREPARE_AHEAD['dropped'] += 1
+            return True
+        return False
+
+    def adopt(self, admission):
+        """The staged chunk for exactly this admission, finished by slice 3 alone; None (and the staged chunk dropped) otherwise."""
+        staged, self._staged = self._staged, None
+        if staged is None:
+            return None
+        if staged[0] != admission or not self.can_slice(admission) or staged[1].builder_set != self._next_set():
+            PREPARE_AHEAD['dropped'] += 1
+            return None
+        chunk = self._finish(admission, staged[1])
+        PREPARE_AHEAD['adopted'] += 1
+        return chunk
+
+    def _finish(self, admission, chunk):
+        """Slice 3: the request row, new pages, the metadata gate, the align pre-copy."""
+        if self._active_metadata_chunk is not None:
+            raise LaneChunkError('native metadata generation still has live consumers')
+        if self.request.update(admission) != chunk.req_index:
+            raise LaneChunkError('the request row moved between PREPARE slices')
+        self._active_metadata_chunk = chunk
+        self._metadata_generation += 1
+        chunk.native_metadata_generation = self._metadata_generation
+        self._last_set = chunk.builder_set
+        self.align.precopy(chunk)
+        self.chunks += 1
+        return chunk
 
     def admit(self, admission):
         """Register (first chunk) or update the request, then build the private chunk."""
@@ -1216,11 +1314,11 @@ class LaneChunkFactory:
             index = self.request.register(admission)
         else:
             index = self.request.update(admission)
-        chunk = LaneChunk(self.runner, self.ports, self.tables, self.align, admission, index,
-                          torch_module=self.torch, attn_groups=self.native_attn_groups)
+        chunk = self._new_chunk(admission, index)
         self._active_metadata_chunk = chunk
         self._metadata_generation += 1
         chunk.native_metadata_generation = self._metadata_generation
+        self._last_set = chunk.builder_set
         chunk.input_batch()
         chunk.build_metadata()
         self.chunks += 1
@@ -1239,22 +1337,12 @@ class LaneChunkFactory:
         The first two touch only this chunk and the lane's private tables and builders, so a stop between slices leaves
         nothing to undo. All the rest is the last slice: the request row, new pages, the metadata gate, the align pre-copy.
         """
-        chunk = LaneChunk(self.runner, self.ports, self.tables, self.align, admission, self.request.req_index,
-                          torch_module=self.torch, attn_groups=self.native_attn_groups)
+        chunk = self._new_chunk(admission, self.request.req_index)
         chunk.input_batch()
         yield
         chunk.build_metadata(precopy=False)
         yield
-        if self._active_metadata_chunk is not None:
-            raise LaneChunkError('native metadata generation still has live consumers')
-        if self.request.update(admission) != chunk.req_index:
-            raise LaneChunkError('the request row moved between PREPARE slices')
-        self._active_metadata_chunk = chunk
-        self._metadata_generation += 1
-        chunk.native_metadata_generation = self._metadata_generation
-        self.align.precopy(chunk)
-        self.chunks += 1
-        return chunk
+        return self._finish(admission, chunk)
 
     def warm_scores(self, admission):
         """One cached block on the prefill stream (the caller's scope) big enough for this prompt's score buffers.
@@ -1305,6 +1393,7 @@ class LaneChunkFactory:
     def release(self):
         if self._active_metadata_chunk is not None:
             raise LaneChunkError('cannot release request with live metadata consumers')
+        self.drop_ahead()
         return self.request.release()
 
     def _align_inventory(self):

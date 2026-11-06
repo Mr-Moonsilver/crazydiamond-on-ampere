@@ -445,6 +445,26 @@ class LaneDispatcher:
                     'dense_profiles': self.fused_profiles}
         return {'prepared': True, 'req_index': chunk.req_index}
 
+    def stage_ahead(self, admission):
+        """Build-2 (a), the safe variant: stage a later chunk's slices 1-2 once this worker's live chunk is fully enqueued.
+
+        Fully enqueued: no transaction open, or the open one has its state_finalize accepted, so every device write staging
+        makes is stream-ordered after the live chunk's readers. Never raises into the lane; refusals are counted.
+        """
+        factory = self.factory
+        stage = getattr(factory, 'stage_ahead', None)
+        if stage is None:
+            return dict(staged=False, why='no-factory')
+        if self.quarantined is not None:
+            return factory._refuse_ahead('quarantined')
+        if self.transaction is not None:
+            if self._slices is not None:
+                return factory._refuse_ahead('prepare-in-slices')
+            if not any(entry[0].kind == 'state_finalize' for entry in self.accepted.values()):
+                return factory._refuse_ahead('live-chunk-not-finalized')
+        with self._scope():
+            return stage(admission)
+
     def ring_waiting(self):
         """A message waits in this rank's ring; with no ring to read, say yes: the cost is one resend."""
         try:
@@ -477,6 +497,13 @@ class LaneDispatcher:
             warm = getattr(factory, 'warm_scores', None)
             if warm is not None:
                 warm(self.admission)
+            # coverage-throughput build-2 (a): the next chunk staged early (slices 1-2) runs slice 3 only, with no yield.
+            adopt = getattr(factory, 'adopt', None)
+            if adopt is not None:
+                chunk = adopt(self.admission)
+                if chunk is not None:
+                    self._partial = True
+                    return chunk
             can_slice = getattr(factory, 'can_slice', None)
             if not lane_chunk.PREPARE_SLICES['selected'] or can_slice is None or not can_slice(self.admission):
                 self._partial = True
