@@ -87,7 +87,8 @@ COVERAGE_SCHEMA = 's5-prefill-coverage/1'
 MEMORY_SCHEMA = 'soak-memory/1'
 CONTAINER = os.environ.get('Q17_TEST_CONTAINER') or 'qwen-flash-prod'      # the draft's engine container (its CONTAINER)
 GPU_QUERY = ['nvidia-smi', '--query-gpu=index,memory.used,memory.total', '--format=csv,noheader,nounits']
-VRAM_GROWTH_MIB = 64          # flagged: a rank's free VRAM down by this much from an nr arm's start to its end (the pool is preallocated)
+VRAM_GROWTH_MIB = 64          # flagged: a rank's free VRAM down by this much from an nr arm's start to its settled end, or first nr start to last
+SETTLE_STEP_S, SETTLE_TRIES = 2.0, 5   # the residue run's samples: in use rises ~1 GiB inside an arm and falls back when the lane goes idle (the flush)
 RSS_GROWTH_KIB = 256 * 1024   # flagged: the engine container's process RSS up by this much
 
 
@@ -144,6 +145,30 @@ def tracking(stream, inflight, lock, clock=time.monotonic):
                 inflight.pop(name, None)
     wrapped.around = lambda inner: tracking(inner, inflight, lock, clock)       # the same tracking over another stream (a test's scripted one)
     return wrapped
+
+
+def _down(start, end):
+    """Any rank's free VRAM down by VRAM_GROWTH_MIB or more; False if either side has no VRAM read."""
+    a, b = (start or {}).get('gpus') or {}, (end or {}).get('gpus') or {}
+    return any(r in b and a[r]['free_mib'] - b[r]['free_mib'] >= VRAM_GROWTH_MIB for r in a)
+
+
+def settled_end(start, read=None, sleep=None):
+    """The end read, after the lane's release: re-read every SETTLE_STEP_S while a rank is still down from the start, at most
+    SETTLE_TRIES times. The first read is kept beside it; settle_s says how long it waited."""
+    read, sleep = read or memory_read, sleep or time.sleep
+    first = end = read()
+    waited = 0.0
+    for _ in range(SETTLE_TRIES):
+        if not _down(start, end):
+            break
+        sleep(SETTLE_STEP_S)
+        waited += SETTLE_STEP_S
+        end = read()
+    end = dict(end, settle_s=waited)
+    if waited:
+        end['first_gpus'] = first.get('gpus')
+    return end
 
 
 def memory_delta(start, end):
@@ -295,10 +320,12 @@ def grade(arms, *args, **kwargs):
             if flags:
                 result['memory_flags'][row['label']] = flags
     if len(nr) > 1:
-        result['memory']['nr-first-start-to-last-end'] = run_delta = memory_delta(nr[0].get('start'), nr[-1].get('end'))
+        # both starts are idle reads (the lane released at the previous arm's end): their difference is growth that stayed
+        result['memory']['nr-first-start-to-last-start'] = run_delta = memory_delta(nr[0].get('start'), nr[-1].get('start'))
+        result['memory']['nr-first-start-to-last-end'] = memory_delta(nr[0].get('start'), nr[-1].get('end'))
         flags = memory_flags(run_delta)
         if flags:
-            result['memory_flags']['nr-first-start-to-last-end'] = flags
+            result['memory_flags']['nr-first-start-to-last-start'] = flags
     result['verdict'] = 'FAIL' if result['failures'] else 'INC' if result['missing'] else 'PASS'
     return result
 
@@ -350,7 +377,7 @@ def replay_arm(a, row, client, poll_client, *, run=None):
         try:
             return base(*args, cfg=cfg, **kwargs)
         finally:
-            memory['end'] = memory_read()
+            memory['end'] = settled_end(memory['start'])
     saved = T.REPLAY
     T.REPLAY = cfg
     try:

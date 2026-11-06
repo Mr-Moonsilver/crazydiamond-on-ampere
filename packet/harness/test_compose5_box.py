@@ -221,7 +221,7 @@ class Soak(unittest.TestCase):
     def test_the_arm_record_carries_open_requests_and_memory(self):
         import threading
         row, gate = T.by_label()[R0], threading.Event()
-        reads = iter((memory(), memory(free=(1400, 1574, 1352, 1462))))
+        reads = iter((memory(), memory(free=(1400, 1574, 1352, 1462)), memory(free=(1460, 1574, 1352, 1462))))
 
         def fake(a, row_, client, poll_client, *, run=None):
             run('u', 'm', 'k', 'r', row_['label'], sink=None)
@@ -240,10 +240,20 @@ class Soak(unittest.TestCase):
             gate.set()
             threading.Event().wait(2)
         with mock.patch.object(box, '_replay_arm', fake), mock.patch.object(box._box.replay, 'run', real_run), \
-                mock.patch.object(box._box.replay, 'stream_turn', slow), mock.patch.object(box, 'memory_read', lambda: next(reads)):
+                mock.patch.object(box._box.replay, 'stream_turn', slow), mock.patch.object(box, 'memory_read', lambda: next(reads)), mock.patch.object(box.time, 'sleep'):
             rec = box.replay_arm(None, row, None, None)
         self.assertEqual([(r['agent'], r['session'], r['kind']) for r in rec['replay_open_requests']], [(5, 1, 'fresh')])
-        self.assertEqual(rec['memory']['end']['gpus']['0']['free_mib'], 1400)
+        self.assertEqual((rec['memory']['end']['gpus']['0']['free_mib'], rec['memory']['end']['settle_s'], rec['memory']['end']['first_gpus']['0']['free_mib']), (1460, 2.0, 1400))
+
+    def test_the_end_read_waits_for_the_release_at_most_ten_seconds(self):
+        slept = []
+        held = iter([memory(free=(400, 400, 400, 400))] * 6)
+        end = box.settled_end(memory(), read=lambda: next(held), sleep=slept.append)
+        self.assertEqual((end['settle_s'], len(slept), end['gpus']['0']['free_mib']), (10.0, 5, 400))
+        end = box.settled_end(memory(), read=lambda: memory(free=(1460, 1574, 1352, 1462)), sleep=slept.append)
+        self.assertEqual((end['settle_s'], 'first_gpus' in end), (0.0, False))
+        end = box.settled_end(dict(gpus=None), read=lambda: memory(), sleep=slept.append)
+        self.assertEqual(end['settle_s'], 0.0, 'no start read: nothing to wait for')
 
     def arms(self, mem=None, open_=None):
         arms = Grade().records()
@@ -271,7 +281,11 @@ class Soak(unittest.TestCase):
         result = Grade().grade_of(self.arms(mem=grown))
         self.assertEqual(result['verdict'], 'PASS', 'a flag, not a failure')
         self.assertEqual(result['memory_flags'][R1], ['vram-free-down-rank0-164MiB', 'engine-rss-up-300MiB'])
-        self.assertEqual(result['memory_flags']['nr-first-start-to-last-end'], ['vram-free-down-rank0-164MiB', 'engine-rss-up-300MiB'])
+        self.assertNotIn('nr-first-start-to-last-start', result['memory_flags'], "nr.1's start is as nr.0's")
+        drift = {R1: dict(memory=dict(start=memory(free=(1364, 1574, 1352, 1462), rss=(40 << 20) + (300 << 10)), end=memory()))}
+        result = Grade().grade_of(self.arms(mem=drift))
+        self.assertEqual(result['memory_flags']['nr-first-start-to-last-start'], ['vram-free-down-rank0-100MiB', 'engine-rss-up-300MiB'])
+        self.assertEqual(result['verdict'], 'PASS')
 
     def test_memory_on_ny_is_read_not_flagged_and_an_unread_nr_is_flagged(self):
         result = Grade().grade_of(self.arms(mem={W0: dict(memory=dict(start=memory(), end=memory(free=(100, 100, 100, 100)))), R0: dict(memory=dict(start=None, end=memory()))}))
