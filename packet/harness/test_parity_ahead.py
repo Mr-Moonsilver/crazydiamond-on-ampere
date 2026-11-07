@@ -689,6 +689,62 @@ class Wire(Reset, unittest.TestCase):
             sw.ahead_nosync_installed({'FLASH_S5_AHEAD_NOSYNC': 'yes'})
 
 
+class ThroughTheWriter(Reset, unittest.TestCase):
+    """parity-na2: q18a-parity-o3 n1 had no ahead-split line at all. The box installs the process receipt writer, whose allow-list
+    refused the prefix (a fault, nothing written), and the tests above mock emit_receipt_kv away. Here the real writer, the real
+    receipt parser and the box grade's own reader over the written bytes."""
+
+    def setUp(self):
+        super().setUp()
+        import native_measurement as nm
+        self.nm, self.out = nm, []
+        self.writer = nm.ReceiptWriter(fd=9, write=lambda fd, data: (self.out.append(data), len(data))[1], getpid=lambda: 77)
+        with mock.patch.object(nm, 'receipt_path', lambda fd, limit=None: 'atomic-fifo'):
+            self.writer._start()
+        patcher = mock.patch.object(nm, '_RECEIPT_WRITER', self.writer)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def emit(self):
+        def stage(admission, nosync=False, probe=None):
+            probe()
+            return dict(staged=True, why='staged', nosync=nosync, copies=9, bytes=640)
+        sw.timed_stage_ahead(bridge(stage, FakeStream([True, True])), 'state_finalize',
+                             sw.StageScoped(finalize(), (2,), ahead=sw.AheadNoSync(pa.record())))
+
+    def test_the_line_is_written_whole_and_the_parser_reads_it(self):
+        import receipt_lines as rl
+        before = self.writer.seq
+        self.emit()
+        self.assertEqual((self.writer.faults, self.writer.seq, lc.AHEAD_NOSYNC['unwritten']), (0, before + 1, 0))
+        line = self.out[-1].decode()
+        self.assertTrue(line.startswith(sw.AHEAD_SPLIT_LINE + 'rank=2 txn_seq=5 chunk=4-8 next=8-11 rpc=state_finalize '), line)
+        record = rl.parse_line(line)
+        self.assertEqual((record['pid'], record['seq'], record['sha']), (77, before, rl.sha16([record['text']])))
+        self.assertEqual(rl.KV_PREFIXES, self.nm.RECEIPT_KV_PREFIXES, 'the parser knows every writer prefix')
+
+    def test_the_box_grade_counts_the_written_line_in_its_arm(self):
+        import e3_compose5_box as box
+        import tempfile
+        from pathlib import Path
+        self.emit()
+        written = self.out[-1].decode()
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'engine-stream.log'
+            log.write_text('2026-11-07T13:40:00.500000000Z ' + written)       # docker's stamp, as the record's stream
+            at = box.log_wall('2026-11-07T13:40:00.500000000Z x')
+            arms = [dict(label='na.g2-live-0', wall_start_s=at - 10, wall_end_s=at + 10), dict(label='nt.g2-live-0', wall_start_s=at + 20, wall_end_s=at + 40)]
+            read = box.ahead_split([str(log)], arms)
+        self.assertEqual((read['arms']['na.g2-live-0']['lines'], read['arms']['na.g2-live-0']['nosync']), (1, 1))
+        self.assertEqual(read['arms']['nt.g2-live-0']['nosync'], 0)
+
+    def test_a_refused_line_is_counted_unwritten(self):
+        with mock.patch.object(self.nm, 'RECEIPT_KV_PREFIXES', ('flash-s5 memory ',)):
+            self.emit()
+        self.assertEqual((self.writer.faults, lc.AHEAD_NOSYNC['unwritten']), (1, 1))
+        self.assertFalse([d for d in self.out if b'ahead-split' in d])
+
+
 class Dispatcher(Reset, unittest.TestCase):
     """lane_dispatch.stage_ahead passes nosync/probe only when set, under the same refusals and the lane stream."""
 

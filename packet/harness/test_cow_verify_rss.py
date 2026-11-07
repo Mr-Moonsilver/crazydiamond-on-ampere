@@ -47,7 +47,7 @@ class Arms(unittest.TestCase):
             self.assertIs(rows['nt.g2-live-%d' % index]['cow_verify'], rows['sp.g2-live-%d' % index]['cow_verify'])      # lane-o3: sp replaces ny as the control
 
     def test_the_settings_leave_the_runner_check_off(self):
-        settings = (HERE / 'runs/q18a_parity_o3_settings.sh').read_text()
+        settings = (HERE / 'runs/q18a_parity_na2_settings.sh').read_text()
         self.assertIn('QSA_COW_VERIFY=-', settings)
 
 

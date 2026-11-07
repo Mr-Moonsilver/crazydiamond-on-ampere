@@ -318,9 +318,13 @@ def timed_stage_ahead(bridge, name, scoped, emit=None):
         if emit is None:
             import logging
             import native_measurement as nm
-            nm.emit_receipt_kv(text, logging.getLogger(__name__))
+            written = nm.emit_receipt_kv(text, logging.getLogger(__name__))
         else:
-            emit(text)
+            written = emit(text)
+        if written is False:
+            # parity-na2: a line the receipt writer refused (q18a-parity-o3 n1: the prefix was not in its list) is counted, never silent.
+            import lane_chunk
+            lane_chunk.AHEAD_NOSYNC['unwritten'] += 1
     except Exception:
         try:
             import lane_chunk

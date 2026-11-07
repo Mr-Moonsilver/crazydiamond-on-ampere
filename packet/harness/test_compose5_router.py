@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_parity_o3_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_parity_na2_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SAMPLE = dict(a1r.SAMPLE, o3_split=False, ahead_nosync=False)     # lane-o3-na: this queue's two stage fields (box.ACTIONS, compose-5's own)
@@ -127,6 +127,9 @@ class ArmEnd(a1r.ArmEnd):
         self.assertNotIn('smoke-exact-successor-not-acknowledged', reasons)
 
     async def test_the_o3_pair_arm_sends_its_natives_and_selects_o3(self):
+        patcher = mock.patch.object(T, 'ARM_TABLE', T.O3_ARM_TABLE)     # parity-na2: the pair arms are q18a-parity-o3's table's
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for sel in T.O3_PAIR:
             with self.subTest(sel):
                 rc_, record, actions, served, _out = await self.arm(sel)
@@ -157,6 +160,9 @@ class ArmEnd(a1r.ArmEnd):
         self.assertEqual(len(record['decode_only']['stream_rates_tokens_per_s']), 1)
 
     async def test_the_replay_arm_keeps_its_turns_beside_the_record_with_its_seed(self):
+        patcher = mock.patch.object(T, 'ARM_TABLE', T.O3_ARM_TABLE)     # parity-na2: 'no' is q18a-parity-o3's; na nt sp are in both tables
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for sel, index, seed in (('sp', 0, 1), ('nt', 1, 2), ('no', 1, 2), ('na', 0, 1)):
             with self.subTest(sel):
                 rc_, record, actions, _served, out = await self.arm(sel, index=index)

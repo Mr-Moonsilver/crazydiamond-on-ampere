@@ -103,7 +103,7 @@ def prepare_ahead_from_env(env):
 # prefill stream, so every kernel that reads it later on that stream runs after the copy. The pinned sources are kept with one
 # event recorded on that stream after the last copy, and dropped only once that event is queried complete (``H2DKeep``).
 # Nothing synchronizes. Counters for the receipt line only; the off path never touches them.
-AHEAD_NOSYNC = dict(staged=0, copies=0, bytes=0, kept=0, retired=0, keep_max=0, errors=0)
+AHEAD_NOSYNC = dict(staged=0, copies=0, bytes=0, kept=0, retired=0, keep_max=0, errors=0, unwritten=0)
 
 
 class H2DStaging:
