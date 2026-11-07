@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""q18a-parity-na2 box arms and grade (lane-o3: the o3-pair arm kind, o3_split acknowledged on every arm, O3 engaged on no and po and never on
+"""q18a-parity-o3f box arms and grade (lane-o3-fix: k2_settle acknowledged on every arm (FAIL), engaged on the arms that select it (INC)
+and never on the others (FAIL); an O3 arm that kept runs but armed none is INC (n1: kept > 0, armed 0 read as working); per arm the fix's receipts
+reported (O3 armed/kept/refused, yields split vs FULL, K2 barrier refusals, the lane parked on a held head). q18a-parity-na2: (lane-o3: the o3-pair arm kind, o3_split acknowledged on every arm, O3 engaged on no and po and never on
 the controls, the stop rule over the pair arms' first-token top-20 sets; sp, parity-base's native-off baseline, ported from claude/parity-base-sp
 e3a6a63f unchanged: keep_lease, small_status, native_off_read and its grade and report lines; lane-o3-na: na, nt with parity-ahead's
 ahead_nosync, acknowledged on every arm (FAIL), its 'flash-s5 ahead-split' receipts engaged on na (INC) and never nosync=1 elsewhere (FAIL), and
@@ -28,7 +30,7 @@ import compose5_arms as T
 import e3_compose4_box as _box
 
 # lane-o3-na: the router smoke's list with this queue's two stage fields (compose-4's ACTIONS is shared by the older routers, unchanged)
-ACTIONS = tuple((action, fields + ('o3_split', 'ahead_nosync')) if action == 'native_stage_local' else (action, fields) for action, fields in _box.ACTIONS)
+ACTIONS = tuple((action, fields + ('o3_split', 'ahead_nosync', 'k2_settle')) if action == 'native_stage_local' else (action, fields) for action, fields in _box.ACTIONS)
 ARM_SCHEMA = 'compose5-arm/1'
 GRADE_SCHEMA = 'compose5-grade/1'
 SCOPE = 'the yield priced under the closed-loop replay and in a frozen pair, on one engine: crash, OOM, stock prefill and the price read by compose5_rule.py; not a release assessment and not a numerics result'
@@ -38,7 +40,7 @@ _report = _box.report
 
 
 def report(result):
-    text = _report(result).replace('q18a-compose-4', 'q18a-parity-na2', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    text = _report(result).replace('q18a-compose-4', 'q18a-parity-o3f', 1).replace('compose4_rule.py', 'compose5_rule.py')
     # coverage-soak-fix: the geometry-tail class and the worker RSS read, one line per replay arm (the decode gap is the reader's)
     extra = []
     numerics = result.get('numerics_o3')
@@ -52,6 +54,13 @@ def report(result):
         extra.append('- %s O3: selected %s, kept %s, armed %s, route moves %s, gap %s, transitions %s, FULL reasons %s'
                      % (label, row.get('selected'), row.get('kept'), row.get('armed'), row.get('route_moves'), row.get('gap'),
                         row.get('transitions'), row.get('full')))
+    for label, row in (result.get('fix') or {}).items():
+        # lane-o3-fix: the fix's receipts over the arm (printed, not graded)
+        extra.append('- %s FIX: O3 armed %s kept %s refused %s returned %s settle_ticks %s unparked %s | yields split %s FULL %s | '
+                     'K2 settle %s settled %s bound %s, barrier refusals %s | parked %s ms (%s held ticks)'
+                     % (label, row.get('o3_armed'), row.get('o3_kept'), row.get('o3_refused'), row.get('o3_returned'), row.get('o3_settle_ticks'),
+                        row.get('o3_unparked'), row.get('yields_split'), row.get('yields_full'), row.get('k2_selected'), row.get('k2_settled'),
+                        row.get('k2_bound'), row.get('barrier_refusals'), row.get('parked_ms'), row.get('held_ticks')))
     for label, row in sorted(((result.get('ahead') or {}).get('arms') or {}).items()):
         # lane-o3-na: the parity-ahead receipts over the arm
         extra.append('- %s ahead-split: %d lines, %d nosync, %d errors; busy_in %d, still busy_out %d; wait p50 ms nosync %s, sync %s'
@@ -870,8 +879,32 @@ def grade(arms, *args, **kwargs):
             result['missing'] = sorted(set(result['missing']) | {row['label'] + ':o3-counters-not-read'})
         elif row['o3_split'] and read['kept'] == 0:
             result['missing'] = sorted(set(result['missing']) | {row['label'] + ':o3-not-engaged'})
+        elif row['o3_split'] and read['armed'] == 0:
+            # lane-o3-fix: n1 kept 3/13/27 runs and armed none on every arm; kept without a split continuation is not O3 working
+            result['missing'] = sorted(set(result['missing']) | {row['label'] + ':o3-not-armed'})
         elif not row['o3_split'] and read['kept']:
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':o3-on-the-control'})
+    # lane-o3-fix: k2_settle acknowledged on every arm (FAIL); per replay and pair arm the policy's k2 counters over the arm: selected with
+    # none settled is not engaged (INC), any settle tick or settle on an arm that did not select it is the control moved (FAIL); unread on a
+    # selecting arm is INC. The fix's receipts per arm go to the report.
+    result['fix'] = fix = {}
+    for row in T.arms():
+        rec = by.get(row['label'])
+        if rec is None:
+            continue
+        if (rec.get('inwait') or {}).get('k2_acknowledged') is not row['k2_settle']:
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':k2-settle-not-acknowledged'})
+        if row['kind'] not in ('replay', 'o3-pair'):
+            continue
+        fix[row['label']] = read = fix_arm_read(rec)
+        read['k2_selected'] = row['k2_settle']
+        if type(read['k2_settled']) is not int:
+            if row['k2_settle']:
+                result['missing'] = sorted(set(result['missing']) | {row['label'] + ':k2-counters-not-read'})
+        elif row['k2_settle'] and read['k2_settled'] == 0:
+            result['missing'] = sorted(set(result['missing']) | {row['label'] + ':k2-not-engaged'})
+        elif not row['k2_settle'] and (read['k2_settled'] or read['k2_settle_ticks']):
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':k2-on-the-control'})
     # lane-o3-na (parity-ahead's suggested grade): ahead_nosync acknowledged on every arm (FAIL); per replay and pair arm the engine's
     # 'flash-s5 ahead-split' receipts in its window: na with no nosync=1 line is not engaged (INC), a nosync=1 line on any other arm is
     # the control moved (FAIL). why=error lines are printed, never failed.
@@ -962,6 +995,42 @@ def _count_delta(after, before):
             out[key] = dict(n=n, ms=round(value[1] - old[1], 3), mean_ms=round((value[1] - old[1]) / n, 3) if n else None,
                             max_ms=value[2] if n else None)
     return out
+
+
+def _declines(rec, label):
+    rows = [s for s in rec.get('statuses') or () if s.get('label') == label]
+    if not rows:
+        return None
+    declines = (rows[-1].get('append_yield') or {}).get('declines')
+    return declines if type(declines) is dict else None
+
+
+def _int_delta(after, before, *path):
+    for key in path:
+        after = after.get(key) if type(after) is dict else None
+        before = before.get(key) if type(before) is dict else None
+    if type(after) not in (int, float):
+        return None
+    return round(after - (before if type(before) in (int, float) else 0), 3)
+
+
+def fix_arm_read(rec):
+    """lane-o3-fix: the fix's receipts over one arm, from the policy's decline record in its before and after status rows: O3 armed / kept /
+    refused by reason / FULL returns by reason / tail settle ticks / refusals not parked / yields kept split; yields on FULL (the driver's
+    'yield' FULL reason); K2 settle ticks, settles and bound hits; K2 barrier refusals; the lane parked on a held head (ms, ticks)."""
+    b, e = _declines(rec, 'before'), _declines(rec, 'after')
+    if b is None or e is None:
+        return dict(read=False, k2_settled=None, k2_settle_ticks=None)
+    o3b, o3e = b.get('o3') or {}, e.get('o3') or {}
+    full = _count_delta((o3e.get('driver') or {}).get('full'), (o3b.get('driver') or {}).get('full'))
+    return dict(read=True, o3_armed=_int_delta(e, b, 'o3', 'armed'), o3_kept=_int_delta(e, b, 'o3', 'kept'),
+                o3_refused=_count_delta(o3e.get('refused'), o3b.get('refused')), o3_returned=_count_delta(o3e.get('full'), o3b.get('full')),
+                o3_settle_ticks=_int_delta(e, b, 'o3', 'settle_ticks'), o3_unparked=_int_delta(e, b, 'o3', 'unparked'),
+                yields_split=_int_delta(e, b, 'o3', 'yield_kept'), yields_full=None if full.get('off') else full.get('yield', 0),     # off arms: every FULL reads 'off'
+                k2_settle_ticks=_int_delta(e, b, 'k2', 'settle_ticks'), k2_settled=_int_delta(e, b, 'k2', 'settled'),
+                k2_bound=_int_delta(e, b, 'k2', 'bound'),
+                barrier_refusals=_int_delta(e, b, 'rollbacks', 'worker-barrier-cohort-refused') or 0,
+                parked_ms=_int_delta(e, b, 'residue', 'held_ms'), held_ticks=_int_delta(e, b, 'residue', 'refused_held'))
 
 
 def o3_arm_read(rec):
@@ -1066,6 +1135,8 @@ def smoke_check(rec, row=None):
         reasons.append('smoke-o3-split-not-acknowledged')     # lane-o3: the smoke sends False; an engine without FLASH_S5_O3 refuses it
     if (rec.get('inwait') or {}).get('ahead_nosync_acknowledged') is not row['ahead_nosync']:
         reasons.append('smoke-ahead-nosync-not-acknowledged')     # lane-o3-na: the same, for FLASH_S5_AHEAD_NOSYNC
+    if (rec.get('inwait') or {}).get('k2_acknowledged') is not row['k2_settle']:
+        reasons.append('smoke-k2-settle-not-acknowledged')        # lane-o3-fix: the smoke sends False; an engine without the field refuses it
     # A silent fallback to 1024 would read as no gain. The arm's count holds the bulk, its returners and the append, so the line is the bulk's count at 1024: b13's 40 sit well under it.
     prompt, chunks = (rec.get('fresh') or {}).get('prompt_tokens_observed'), (rec.get('progress_delta') or {}).get('chunks')
     if type(prompt) is not int or type(chunks) is not int or chunks >= len(T.planned_chunks(prompt, 1024)):

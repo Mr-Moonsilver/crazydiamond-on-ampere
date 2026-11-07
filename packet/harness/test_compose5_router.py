@@ -17,10 +17,10 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_parity_na2_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_parity_o3f_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
-SAMPLE = dict(a1r.SAMPLE, o3_split=False, ahead_nosync=False)     # lane-o3-na: this queue's two stage fields (box.ACTIONS, compose-5's own)
+SAMPLE = dict(a1r.SAMPLE, o3_split=False, ahead_nosync=False, k2_settle=False)     # lane-o3-na: this queue's stage fields (box.ACTIONS, compose-5's own); lane-o3-fix: k2_settle
 SHORT = dict(T.REPLAY, AGENTS=2, DURATION=0.4, WARMUP=0.0, START_MIN=60000, START_MAX=60000, TOOL_MIN=0.01, TOOL_MAX=0.02)
 
 
@@ -65,7 +65,7 @@ class Exposure(Base):
         self.assertEqual({k: v for k, v in out.items() if type(v) is str}, {})
         self.assertEqual(set(out), {a for a, _f in box.ACTIONS})
         stage = dict(box.ACTIONS)['native_stage_local']
-        self.assertEqual(stage[-2:], ('o3_split', 'ahead_nosync'), 'lane-o3-na: both fields sent by the smoke')
+        self.assertEqual(stage[-3:], ('o3_split', 'ahead_nosync', 'k2_settle'), 'lane-o3-na, lane-o3-fix: the three fields sent by the smoke')
         self.assertIs(self.driver.ahead_nosync_installed, True)
 
 
@@ -190,6 +190,7 @@ class ArmEnd(a1r.ArmEnd):
                 # lane-o3-na: ahead_nosync the same way, to the stage driver (needs prepare-ahead, which the launch installs)
                 self.assertEqual((record['inwait']['ahead_nosync_requested'], record['inwait']['ahead_nosync_acknowledged']), (T.AHEAD_NOSYNC[sel],) * 2)
                 self.assertIs(self.driver.ahead_nosync, T.AHEAD_NOSYNC[sel])
+                self.assertEqual((record['inwait']['k2_requested'], record['inwait']['k2_acknowledged']), (False, False), 'lane-o3-fix: every arm sends k2_settle')
                 o3 = box.o3_arm_read(record)
                 self.assertTrue(o3['read'], 'the policy\'s O3 record reaches the arm\'s before and after status rows')
                 self.assertEqual(o3['kept'], 0)
@@ -212,10 +213,32 @@ class ArmEnd(a1r.ArmEnd):
                 self.assertIsNotNone(record['polled'])
                 self.assertTrue(set(record['control_actions']) <= box.ACTION_NAMES)
 
+    async def test_k2_settle_reaches_the_controller_the_policy_reads(self):
+        """lane-o3-fix: this queue's replay arms na nk n3 send k2_settle (False, True, True) through the real router, session and control to
+        the stage driver's controller (the attribute AutoArmPolicy reads), acknowledged on the record; the policy's k2 counters reach the
+        arm's status rows and the box's fix read, selected as sent."""
+        for sel, index in (('na', 0), ('nk', 0), ('n3', 1), ('nk', 1)):
+            with self.subTest(sel=sel, index=index):
+                rc_, record, actions, _served, _out = await self.arm(sel, index=index)
+                self.assertNotIn('error', record, record.get('error'))
+                self.assertEqual((rc_, record['reasons'], record['kind']), (0, [], 'replay'))
+                self.assertEqual((record['inwait']['k2_requested'], record['inwait']['k2_acknowledged']), (T.K2_SETTLE[sel],) * 2)
+                self.assertIs(self.driver.controller.k2_settle, T.K2_SETTLE[sel])
+                self.assertEqual((record['inwait']['o3_requested'], record['inwait']['o3_acknowledged']), (T.O3_SPLIT[sel],) * 2)
+                self.assertEqual((record['inwait']['ahead_nosync_requested'], record['inwait']['ahead_nosync_acknowledged']), (True, True))
+                k2 = record['statuses'][-1]['append_yield']['declines']['k2']
+                self.assertEqual(k2['selected'], int(T.K2_SETTLE[sel]))
+                fix = box.fix_arm_read(record)
+                self.assertTrue(fix['read'])
+                self.assertEqual(type(fix['k2_settled']), int)
+
     async def test_sp_keeps_the_lease_for_its_arm_and_the_next_arm_takes_the_lane_back(self):
         """parity-base: sp sends ny's controls (the release too), then pause and resume, and reads the lease held before any turn, at every
         poll and at the end, with attn-meta, the lazy receive and the decode merge off; nt run next on the same engine enters as after any arm
         and its release hands the policy back, with every decode feature on again (the real driver, AutoArmPolicy and workers)."""
+        patcher = mock.patch.object(T, 'ARM_TABLE', T.NA2_ARM_TABLE)     # lane-o3-fix: sp and nt are q18a-parity-na2's table's
+        patcher.start()
+        self.addCleanup(patcher.stop)
         policy = self.driver.auto_arm
         self.assertIsNotNone(policy)
         polls = mock.patch.object(box4.Poller.__init__, '__defaults__', (0.05,))     # Poller's period is bound at def time; POLL_S's patch misses it

@@ -25,7 +25,11 @@ P0, P1 = 'sp.g2-live-0', 'sp.g2-live-1'      # parity-base: the native-off basel
 N0, N1 = 'no.g2-live-0', 'no.g2-live-1'      # lane-o3: nt with O3
 A0, A1 = 'na.g2-live-0', 'na.g2-live-1'      # lane-o3-na: nt with the ahead nosync
 PF, PO, PG = ('%s.g2-live-0' % sel for sel in T.O3_PAIR)      # lane-o3: the pair arms, O3 off, on, off
+K0, K1 = 'nk.g2-live-0', 'nk.g2-live-1'      # lane-o3-fix: na with k2_settle
+T0, T1 = 'n3.g2-live-0', 'n3.g2-live-1'      # lane-o3-fix: nk with O3 (the fixed O3 and (b))
 NT_ROWS = {R0, R1, N0, N1, A0, A1, PF, PO, PG}        # lane-o3: the rows with nt's levers
+NT_ROWS_O3F = {PF, PO, PG, A0, A1, K0, K1, T0, T1}    # lane-o3-fix: the same levers on this queue's rows
+O3F_TABLE = T.ARM_TABLE                                               # lane-o3-fix: this queue's table, before any test patches it
 # build-2b24 ran one pair, so the grade's own tests ran under TWO_PAIRS; build-2b24c64 is ABBA again and TWO_PAIRS equals its table
 # (asserted in Table), so the patch is the table itself. parity-base: the name kept, the shape this table's (sp nt ny | ny nt sp).
 # lane-o3: the real table (pf po pg, no nt sp | sp nt no) with ny kept beside sp as the control the grade's own tests were written over
@@ -105,12 +109,19 @@ class O3Table(unittest.TestCase):
 
 
 class TableNa2(unittest.TestCase):
-    """parity-na2: sm | decode-am1 | dec1 | na nt sp | sp nt na, no pair arm and no 'no', O3 installed and selected on no arm."""
+    """parity-na2: sm | decode-am1 | dec1 | na nt sp | sp nt na, no pair arm and no 'no', O3 installed and selected on no arm.
+    lane-o3-fix: q18a-parity-na2's table is NA2_ARM_TABLE now, patched in (ARM_TABLE is q18a-parity-o3f's)."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(T, 'ARM_TABLE', T.NA2_ARM_TABLE)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_the_order_and_check(self):
         self.assertEqual(T.labels(), [SM, DEC1, A0, R0, P0, P1, R1, A1])
         T.check()
-        self.assertEqual(T.REPLAY_ORDER, ('na', 'nt', 'sp'))
+        self.assertEqual(T.NA2_REPLAY_ORDER, ('na', 'nt', 'sp'))
 
     def test_o3_installed_selected_nowhere_and_na_is_nt_but_for_the_nosync(self):
         rows = T.by_label()
@@ -181,7 +192,7 @@ class Table(O3Table):
         c4 = T4.by_label()['ctl.g2-live-0']
         row = rows_with_ny()[W0]
         # coverage-soak-fix build-2: cow_verify off (the worker RSS owner, test_cow_verify_rss)
-        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['ahead_nosync', 'c1', 'chunk_bound', 'cow_verify', 'label', 'native_hold', 'native_off', 'native_residue', 'o3_split', 'reserved_cap', 'score_warm', 'selection', 'terminal_successor'])
+        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['ahead_nosync', 'c1', 'chunk_bound', 'cow_verify', 'k2_settle', 'label', 'native_hold', 'native_off', 'native_residue', 'o3_split', 'reserved_cap', 'score_warm', 'selection', 'terminal_successor'])
         self.assertEqual((row['chunk_bound'], row['reserved_cap'], row['yield_on'], row['ple_private'], row['cow_verify'], c4['cow_verify']), ([52624, 1024], False, False, False, False, True))
 
     def test_the_replay_and_the_ceiling_are_compose_4s(self):
@@ -583,7 +594,7 @@ class Smoke(unittest.TestCase):
                    cow_host_filter=dict(requested=True, counters=dict(kept={str(k): 0 for k in range(4)}, skipped={str(k): 37 for k in range(4)}, unfiltered={str(k): 0 for k in range(4)})))
         rec.setdefault('inwait', {}).update(exact_acknowledged=True, bound_requested=[52624, 1024], bound_acknowledged=[52624, 1024], hold_requested=0, hold_acknowledged=0, residue_requested=0, residue_acknowledged=0,
                                             terminal_requested=False, terminal_acknowledged=False, o3_requested=False, o3_acknowledged=False,
-                                            ahead_nosync_requested=False, ahead_nosync_acknowledged=False)
+                                            ahead_nosync_requested=False, ahead_nosync_acknowledged=False, k2_requested=False, k2_acknowledged=False)
         rec.setdefault('progress_delta', {})['chunks'] = 40
         rec.setdefault('fresh', {})['prompt_tokens_observed'] = 65445
         return rec
@@ -874,7 +885,7 @@ class BoxBinding(O3Table):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-parity-na2'))
+        self.assertTrue(text.startswith('# q18a-parity-o3f'))
         self.assertIn('- %s native off: pure; native rows 0, handback rows 0, native-served rows 0, native turns 0, chunks 0; lease held' % P0, text)
         self.assertIn('compose5_rule.py', text)
 
@@ -902,6 +913,14 @@ def o3_after(kept):
                             transitions={'full': [1, 95.0, 95.0], 'split': [1, 88.0, 88.0]} if kept else {'full': [3, 290.0, 101.0], 'split': [3, 266.0, 92.0]}))
 
 
+K2_ZERO = dict(settle_ticks=0, settled=0, bound=0, selected=0)
+
+
+def k2_after(settled):
+    """lane-o3-fix: the policy's k2 record at an arm's end (append_yield.declines.k2), cumulative from K2_ZERO."""
+    return dict(K2_ZERO, settle_ticks=2 * settled, settled=settled, selected=int(bool(settled)))
+
+
 def with_o3(rec, row):
     """lane-o3: the O3 record in the arm's before and after status rows, and the route generation beside it (replay and pair arms)."""
     before = next((x for x in rec['statuses'] if x['label'] == 'before'), None)
@@ -910,8 +929,10 @@ def with_o3(rec, row):
         rec['statuses'].insert(1, before)
     after = [x for x in rec['statuses'] if x['label'] == 'after'][-1]
     kept = 3 if row['o3_split'] else 0
-    for status, o3, generation in ((before, O3_ZERO, 10), (after, o3_after(kept), 12 if kept else 16)):
+    settled = 40 if row.get('k2_settle') else 0
+    for status, o3, k2, generation in ((before, O3_ZERO, K2_ZERO, 10), (after, o3_after(kept), k2_after(settled), 12 if kept else 16)):
         status.setdefault('append_yield', {}).setdefault('declines', {})['o3'] = o3
+        status['append_yield']['declines']['k2'] = k2      # lane-o3-fix: beside o3, as decline_record carries it
         status['route_generation'] = generation
     return rec
 
@@ -938,7 +959,7 @@ def ahead_receipts(arms, ahead=None):
     """The receipt lines for ahead ({label: [nosync, ...]}) inside each arm's window; default one nosync=1 line on each na arm and one
     nosync=0 line on every other nt row (installed, not selected: timed with the sync)."""
     if ahead is None:
-        ahead = {a['label']: [a['label'].startswith('na.')] for a in arms if a.get('label') in NT_ROWS}
+        ahead = {a['label']: [a['label'].split('.')[0] in ('na', 'nk', 'n3')] for a in arms if a.get('label') in NT_ROWS | NT_ROWS_O3F}     # lane-o3-fix: nk, n3 select it too
     windows = {a['label']: a for a in arms if a.get('label')}
     return ''.join(ahead_line(windows[label]['wall_start_s'] + 30.0 + 0.1 * n, flag) for label, flags in ahead.items() if label in windows
                    for n, flag in enumerate(flags))
@@ -966,7 +987,8 @@ class Grade(TwoPairs):
                                  residue_requested=row['native_residue'], residue_acknowledged=row['native_residue'],
                                  terminal_requested=row['terminal_successor'], terminal_acknowledged=row['terminal_successor'],
                                  o3_requested=row['o3_split'], o3_acknowledged=row['o3_split'],
-                                 ahead_nosync_requested=row['ahead_nosync'], ahead_nosync_acknowledged=row['ahead_nosync'])
+                                 ahead_nosync_requested=row['ahead_nosync'], ahead_nosync_acknowledged=row['ahead_nosync'],
+                                 k2_requested=row['k2_settle'], k2_acknowledged=row['k2_settle'])
             # lane-o3-na: each arm its own window, so a receipt line names one arm (record_of gives every arm 1000-1060)
             rec.update(wall_start_s=AHEAD_ORIGIN + 100.0 * k, wall_end_s=AHEAD_ORIGIN + 100.0 * k + 60.0)
             if row['kind'] == 'replay':
@@ -1730,6 +1752,148 @@ class GradeNa2(TwoPairs):
         self.assertEqual(sorted(result['missing']), [A0 + ':ahead-nosync-not-engaged', A1 + ':ahead-nosync-not-engaged'], 'n1: no receipt at all')
         result = self.grade.grade_of(self.grade.records(), ahead={A0: [True], A1: [True], R1: [True]})
         self.assertEqual((result['verdict'], result['failures']), ('FAIL', [R1 + ':ahead-nosync-on-the-control']))
+
+
+class TableO3f(unittest.TestCase):
+    """lane-o3-fix: sm | decode-am1 | dec1 | pf po pg | na nk n3 | n3 nk na; one effect per arm (nk: k2_settle on na, n3: O3 on nk)."""
+
+    def test_the_order_and_check(self):
+        self.assertEqual(T.labels(), [SM, DEC1, PF, PO, PG, A0, K0, T0, T1, K1, A1])
+        T.check()
+        self.assertEqual(T.REPLAY_ORDER, ('na', 'nk', 'n3'))
+
+    def test_one_effect_per_arm(self):
+        rows = T.by_label()
+        for na, nk, n3 in ((A0, K0, T0), (A1, K1, T1)):
+            self.assertEqual(sorted(k for k in rows[nk] if rows[nk][k] != rows[na][k]), ['c1', 'k2_settle', 'label', 'selection'])
+            self.assertEqual(sorted(k for k in rows[n3] if rows[n3][k] != rows[nk][k]), ['c1', 'label', 'o3_split', 'selection'])
+        self.assertEqual(sorted(k for k in rows[PO] if rows[PO][k] != rows[PF][k]), ['c1', 'label', 'o3_split', 'selection'])
+        self.assertEqual([r['label'] for r in T.arms() if r['k2_settle']], [K0, T0, T1, K1])
+        self.assertEqual([r['label'] for r in T.arms() if r['o3_split']], [PO, T0, T1])
+        self.assertEqual([r['label'] for r in T.arms() if r['ahead_nosync']], [A0, K0, T0, T1, K1, A1])
+        self.assertEqual([r['label'] for r in T.arms() if r['native_off']], [], 'no sp arm')
+        self.assertEqual({r['label'] for r in T.arms() if r['native_hold']}, NT_ROWS_O3F)
+        self.assertEqual((T.matched_off(rows[K0]), T.matched_off(rows[T1]), T.matched_off(rows[PO])), (A0, K1, PF))
+
+    def test_the_older_tables_still_check(self):
+        for table in (T.O3_ARM_TABLE, T.NA2_ARM_TABLE):
+            with mock.patch.object(T, 'ARM_TABLE', table):
+                T.check()
+
+
+class GradeO3f(TwoPairs):
+    """lane-o3-fix: the grade over this queue's table. Whole records PASS (the stop rule over pf po pg); k2_settle acknowledged on every
+    arm (FAIL); k2 engaged on nk/n3 (INC) and never elsewhere (FAIL); an O3 arm that kept runs and armed none is INC (n1's lesson)."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(T, 'ARM_TABLE', O3F_TABLE)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.grade = Grade()
+
+    def k2(self, arms, label, **after):
+        rec = next(a for a in arms if a.get('label') == label)
+        status = [x for x in rec['statuses'] if x['label'] == 'after'][-1]
+        status['append_yield']['declines']['k2'] = dict(status['append_yield']['declines']['k2'], **after)
+        return rec
+
+    def test_whole_records_pass_and_the_fix_is_reported(self):
+        arms = self.grade.records()
+        result = self.grade.grade_of(arms)
+        self.assertEqual((result['verdict'], result['failures'], result['missing']), ('PASS', [], []))
+        self.assertEqual(result['numerics_o3']['verdict'], 'WITHIN')
+        self.assertEqual(set(result['fix']), {PF, PO, PG, A0, K0, T0, T1, K1, A1})
+        self.assertEqual({k: v['k2_settled'] for k, v in result['fix'].items() if v['k2_settled']}, {K0: 40, K1: 40, T0: 40, T1: 40})
+        self.assertEqual((result['fix'][T0]['o3_armed'], result['fix'][T0]['o3_kept']), (2, 3))
+        with box._bound():
+            text = box.report(result)
+        self.assertTrue(text.startswith('# q18a-parity-o3f'))
+        self.assertIn('- %s FIX: O3 armed 2 kept 3' % T0, text)
+        self.assertIn('K2 settle True settled 40 bound 0, barrier refusals 0', text)
+
+    def test_k2_not_acknowledged_fails_on_every_arm(self):
+        for row in T.arms():
+            with self.subTest(row['label']):
+                arms = self.grade.records()
+                next(a for a in arms if a.get('label') == row['label'])['inwait']['k2_acknowledged'] = None
+                result = self.grade.grade_of(arms)
+                self.assertIn(row['label'] + ':k2-settle-not-acknowledged', result['failures'])
+
+    def test_k2_not_engaged_is_inc_and_on_the_control_fails(self):
+        arms = self.grade.records()
+        self.k2(arms, K0, settled=0, settle_ticks=0)
+        result = self.grade.grade_of(arms)
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [K0 + ':k2-not-engaged']))
+        arms = self.grade.records()
+        self.k2(arms, A1, settle_ticks=3)
+        result = self.grade.grade_of(arms)
+        self.assertEqual((result['verdict'], result['failures']), ('FAIL', [A1 + ':k2-on-the-control']))
+        arms = self.grade.records()
+        rec = next(a for a in arms if a.get('label') == T1)
+        for status in rec['statuses']:
+            (status.get('append_yield') or {}).get('declines', {}).pop('k2', None)
+        result = self.grade.grade_of(arms)
+        self.assertIn(T1 + ':k2-counters-not-read', result['missing'])
+
+    def test_kept_but_not_armed_is_inc(self):
+        # n1: po kept 3, armed 0 (the census refused every run); kept > 0 without a split continuation is not O3 working
+        for label in (PO, T0):
+            with self.subTest(label):
+                arms = self.grade.records()
+                rec = next(a for a in arms if a.get('label') == label)
+                status = [x for x in rec['statuses'] if x['label'] == 'after'][-1]
+                status['append_yield']['declines']['o3'] = dict(status['append_yield']['declines']['o3'], armed=0)
+                result = self.grade.grade_of(arms)
+                self.assertEqual((result['verdict'], result['missing']), ('INC', [label + ':o3-not-armed']))
+
+    def test_the_smoke_needs_k2_acknowledged(self):
+        rec = Smoke('full').full()
+        self.assertTrue(box.smoke_check(rec)[0], box.smoke_check(rec)[1])
+        rec['inwait']['k2_acknowledged'] = None
+        self.assertIn('smoke-k2-settle-not-acknowledged', box.smoke_check(rec)[1])
+
+
+class GradeO3fMutants(unittest.TestCase):
+    """One mutation per GradeO3f rule; each must fail its test."""
+
+    def fails(self, name, owner, function, edit):
+        import test_append_yield as ay
+        case = GradeO3f(name)
+        with ay.mutant(owner, function, edit), self.assertRaises(ay.MUTANT_FAILURES):
+            case.setUp()
+            try:
+                getattr(case, name)()
+            finally:
+                case.doCleanups()
+
+    def test_k2_ack_not_checked(self):
+        self.fails('test_k2_not_acknowledged_fails_on_every_arm', box, 'grade',
+                   ("        if (rec.get('inwait') or {}).get('k2_acknowledged') is not row['k2_settle']:\n", "        if False:\n"))
+
+    def test_k2_not_engaged_not_inc(self):
+        self.fails('test_k2_not_engaged_is_inc_and_on_the_control_fails', box, 'grade',
+                   ("        elif row['k2_settle'] and read['k2_settled'] == 0:\n", "        elif False:\n"))
+
+    def test_k2_control_not_failed(self):
+        self.fails('test_k2_not_engaged_is_inc_and_on_the_control_fails', box, 'grade',
+                   ("        elif not row['k2_settle'] and (read['k2_settled'] or read['k2_settle_ticks']):\n", "        elif False:\n"))
+
+    def test_k2_unread_not_inc(self):
+        self.fails('test_k2_not_engaged_is_inc_and_on_the_control_fails', box, 'grade',
+                   ("                result['missing'] = sorted(set(result['missing']) | {row['label'] + ':k2-counters-not-read'})\n", "                pass\n"))
+
+    def test_not_armed_not_inc(self):
+        self.fails('test_kept_but_not_armed_is_inc', box, 'grade',
+                   ("        elif row['o3_split'] and read['armed'] == 0:\n", "        elif False:\n"))
+
+    def test_smoke_k2_not_checked(self):
+        self.fails('test_the_smoke_needs_k2_acknowledged', box, 'smoke_check',
+                   ("    if (rec.get('inwait') or {}).get('k2_acknowledged') is not row['k2_settle']:\n", "    if False:\n"))
+
+    def test_fix_not_reported(self):
+        self.fails('test_whole_records_pass_and_the_fix_is_reported', box, 'report',
+                   ("    for label, row in (result.get('fix') or {}).items():\n", "    for label, row in ():\n"))
 
 
 class GradeNa2Mutants(unittest.TestCase):

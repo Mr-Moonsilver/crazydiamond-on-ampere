@@ -44,10 +44,11 @@ class Arms(unittest.TestCase):
         T.check()
         rows = T.by_label()
         for index in T.REPLAY_SEEDS:
-            self.assertIs(rows['nt.g2-live-%d' % index]['cow_verify'], rows['sp.g2-live-%d' % index]['cow_verify'])      # lane-o3: sp replaces ny as the control
+            self.assertIs(rows['nk.g2-live-%d' % index]['cow_verify'], rows['na.g2-live-%d' % index]['cow_verify'])      # lane-o3-fix: na is nk's control, nk n3's
+            self.assertIs(rows['n3.g2-live-%d' % index]['cow_verify'], rows['nk.g2-live-%d' % index]['cow_verify'])
 
     def test_the_settings_leave_the_runner_check_off(self):
-        settings = (HERE / 'runs/q18a_parity_na2_settings.sh').read_text()
+        settings = (HERE / 'runs/q18a_parity_o3f_settings.sh').read_text()
         self.assertIn('QSA_COW_VERIFY=-', settings)
 
 

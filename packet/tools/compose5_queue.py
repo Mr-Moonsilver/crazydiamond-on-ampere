@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Derive the q18a-parity-na2 box scripts (parity-na2: q18a-parity-o3's derivation with this table and name) from q18a-compose-4's committed texts. Nothing a past queue ran is edited. Discovery mode.
+"""Derive the q18a-parity-o3f box scripts (lane-o3-fix: q18a-parity-na2's derivation with this table and name) from q18a-compose-4's committed texts. Nothing a past queue ran is edited. Discovery mode.
 
 Declared deltas over compose-4's three texts, each by exact count:
   names     q18a-compose-4 -> q18a-compose-throughput-p2 and every compose-4 name of the queue, records, box, gate and table -> compose5. The box imports compose-4's box, table and replay, so those three keep their names;
@@ -21,12 +21,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'harness')]
 import compose5_arms as table  # noqa: E402
 
-OLD, NEW = 'q18a_compose_4', 'q18a_parity_na2'
+OLD, NEW = 'q18a_compose_4', 'q18a_parity_o3f'
 OLD_CORE = 'core:dec1.g2-live-0 core:cmp.g2-live-0 core:ctl.g2-live-0'
 CORE = ' '.join('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED) if r['label'] != table.SMOKE_ARM)
-ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, na nt sp eight replay agents for %d s, na nt sp sp nt na' % table.REPLAY['DURATION'])
+ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, pf po pg two decoders and three back-to-back natives (O3 off, on, off), na nk n3 eight replay agents for %d s, na nk n3 n3 nk na' % table.REPLAY['DURATION'])
 HEADER_ANCHOR = '# compose-4: the four lever tracks on one engine under the closed-loop agent replay'
-HEADER_NOTE = ('# parity-na2: q18a-parity-o3\'s engine and launch (FLASH_S5_O3=1 installed, o3_split False on every arm), the lean repeat of na against nt and sp: '
+HEADER_NOTE = ("# lane-o3-fix: q18a-parity-na2's engine and launch with the fixed O3 and K2's settle: the pair arms pf po pg back (the stop rule unchanged), the replay na nk n3 | n3 nk na, nk being na with k2_settle on native_stage_local (acknowledged: FAIL otherwise), n3 nk with O3; the grade INC on an O3 arm that kept runs and armed none and on nk/n3 with K2 never settled, FAIL on K2 settling on another arm (tmp/decode-phase/READY-parity-o3f.md). The reader is parity-b/scratch/o3f/parity_o3f_read.py on the hub. "
+               '# parity-na2: q18a-parity-o3\'s engine and launch (FLASH_S5_O3=1 installed, o3_split False on every arm), the lean repeat of na against nt and sp: '
                'the replay na nt sp | sp nt na, no pair arms, no \'no\'; the ahead-split receipt through the receipt writer\'s allow-list (n1 lost them all) '
                '(tmp/decode-phase/READY-parity-na2.md). '
                '# lane-o3: parity-2\'s engine, launch and table with O3, stay split across runs (DESIGN-multi-prompt-lane O3): FLASH_S5_O3=1 for the whole run, '
@@ -45,7 +46,7 @@ HEADER_NOTE = ('# parity-na2: q18a-parity-o3\'s engine and launch (FLASH_S5_O3=1
                "build-1: the grade (the geometry-tail class, per Worker_PP RSS failing nt, any other stock prefill row and a request still open after the "
                "drain failing nt) and chunk geometry (but nt's bound) (harness/compose5_arms.py, tmp/decode-phase/READY-coverage-throughput-b2b24c64.md). "
                "The reader with the parity word is coverage-throughput/scratch/throughput2b24c64_read.py on the hub.\n")
-NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-parity-na2'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
+NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-parity-o3f'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
 # compose-5's box imports compose-4's box, table and replay by their names; the rename above must not reach them.
 SWITCHES = table.CONNECTIONS_ENV + ' ' + table.PLE_ENV + ' ' + table.CHUNK_ENV
 OLD_LAST_SWITCH = table.PLE_ENV + ' '
@@ -153,7 +154,7 @@ def final_body():
 
 def table_text():
     import compose5_gate as gate
-    lines = ['q18a-parity-na2 arm table (harness/compose5_arms.py); entry limits relative to the run start, never a clock',
+    lines = ['q18a-parity-o3f arm table (harness/compose5_arms.py); entry limits relative to the run start, never a clock',
              '%-3s %-16s %-10s %-6s %-5s %s' % ('#', 'label', 'kind', 'yield', 'ple', 'enters while SECONDS <=')]
     for k, row in enumerate(gate.rows(), 1):
         lines.append('%-3d %-16s %-10s %-6s %-5s %s %d s' % (k, row['label'], row.get('kind', 'decode'), {True: 'on', False: 'off'}.get(row.get('yield_on'), '-'), {True: 'on', False: 'off'}.get(row.get('ple_private'), '-'), row['entry_limit'], gate.ENTRY_LIMIT_S[row['entry_limit']]))
@@ -180,7 +181,7 @@ def main(argv=None):
         else:
             path.write_text(text)
             path.chmod(0o664)
-    print('parity-na2 queue ' + ('verified' if a.check else 'written'))
+    print('parity-o3f queue ' + ('verified' if a.check else 'written'))
 
 
 if __name__ == '__main__':

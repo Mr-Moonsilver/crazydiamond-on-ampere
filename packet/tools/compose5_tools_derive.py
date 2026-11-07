@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Derive the q18a-parity-na2 bundle CPU probe from inwait's (inwait_cpu_probe.py), as inwait derived its own from c1b's.
+"""Derive the q18a-parity-o3f bundle CPU probe from inwait's (inwait_cpu_probe.py), as inwait derived its own from c1b's.
 
-compose5_cpu_probe.py = inwait_cpu_probe.py with: candidate q18a-parity-na2 (the owner runner's QNAME); the compose5_gate budget; test_compose5_queue added to the discovered suites (every inherited suite stays),
+compose5_cpu_probe.py = inwait_cpu_probe.py with: candidate q18a-parity-o3f (the owner runner's QNAME); the compose5_gate budget; test_compose5_queue added to the discovered suites (every inherited suite stays),
 EXPECTED_TESTS = inwait's + the suite's; its SLOT_RECEIPTS appended (empty); the LOCALIZE=0 inert check on this queue's settings; its queue receipts asserted and recorded (compose5_queue='PASS'), inwait's kept.
 Every replacement must match exactly once. --check verifies the committed file.
 """
@@ -15,7 +15,7 @@ sys.path.insert(0, str(TOOLS))
 import alpha_next_tools_derive as parent_derive  # noqa: E402
 
 QUEUE_SUITE = 'test_compose5_queue'
-CANDIDATE = 'q18a-parity-na2'
+CANDIDATE = 'q18a-parity-o3f'
 PARENT_CANDIDATE = 'q18a-inwait'
 PARENT_PROBE = 'inwait_cpu_probe.py'
 EXPECTED_LINE = re.compile(r'^EXPECTED_TESTS=(\d+)  # [^\n]*\n', re.M)
@@ -53,7 +53,7 @@ def probe_swaps():
         ('import inwait_gate\nactive_and_cleanup=inwait_gate.ACTIVE_S+inwait_gate.CLEANUP_S\n',
          'import inwait_gate\nimport compose5_gate\nactive_and_cleanup=compose5_gate.ACTIVE_S+compose5_gate.CLEANUP_S\n'),
         ("+sys.modules['test_inwait_queue'].SLOT_RECEIPTS\n", "+sys.modules['test_inwait_queue'].SLOT_RECEIPTS+sys.modules['test_compose5_queue'].SLOT_RECEIPTS\n"),
-        ("negative=inert.run('/source/harness/runs/q18a_inwait_settings.sh','TRUNK settings (LOCALIZE=0)')", "negative=inert.run('/source/harness/runs/q18a_parity_na2_settings.sh','TRUNK settings (LOCALIZE=0)')"),
+        ("negative=inert.run('/source/harness/runs/q18a_inwait_settings.sh','TRUNK settings (LOCALIZE=0)')", "negative=inert.run('/source/harness/runs/q18a_parity_o3f_settings.sh','TRUNK settings (LOCALIZE=0)')"),
         ("record=dict(inwait_queue='PASS',",
          "c5_slots=sys.modules['test_compose5_queue'].SLOT_RECEIPTS\n"
          "assert c5_slots==[]  # no absolute-time window here either\n"
