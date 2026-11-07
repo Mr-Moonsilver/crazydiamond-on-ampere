@@ -3170,7 +3170,7 @@
     "test_native43_row1_dense.py": "209a17de3f149857f035cd380b51fcadc90dec5fb3bb29d1115516792d03fcdd",
     "test_native43_row1_grade.py": "2738399dc0b3d5e538669c1ed55266c68bb09ec74a08d588801911cad19a5b0e",
     "test_native_hold.py": "8c3f234e51176035d66f3f0331496e1052b59e0f7c70835f3e3a27bd97cace67",
-    "test_native_uva_legacy.py": "2a34f4c3f00cb965e7c69d0c5b5b866128257ecff291b4b2b3a7eb795c4e06a0",
+    "test_native_uva_legacy.py": "a12a126c031d40c1ef97a7e6523ac734fdcd2ccb8c37f7c05f1a9d4255184582",
     "test_native_uva_package.py": "70ec57863fc4bd92bc784c35bff7f8a572a935441d8a544fa5df976ac80343c4",
     "test_native_uva_pinned.py": "e04a966ed652a5eeae1ba585c7b85c486bc33b51ea399ad76e232ee8f4961900",
     "test_native_uva_retirement.py": "f202d52fe0ac35e34b4e951eb1dd8f57387b737767d6a2947dd04b36afdef89d",
