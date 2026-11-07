@@ -166,7 +166,9 @@ class AutoArmPolicy:
         self.stock_why = {}
         self.unhold_site = {}
         self.refused_cohort = {}
-        self.residue_counts = dict(junction=0, lowered=0, refused_held=0, refused_retried=0, idle_selected=0, races=0, races_spent=0)
+        self.residue_counts = dict(junction=0, lowered=0, refused_held=0, refused_retried=0, idle_selected=0, races=0, races_spent=0,
+                                   held_ms=0)
+        self._held_last = None         # lane-o3-fix: monotonic ns of the last refused_held tick (held_ms: the lane parked on a held head)
         self.races = {}
         self._rollback_reason = None
         self._o3_return_reason = None
@@ -175,7 +177,11 @@ class AutoArmPolicy:
         self.o3_ledger = frozenset()
         self.o3_split_generation = None
         self.o3_joined = None
-        self.o3_counts = dict(kept=0, armed=0, tail_bound=0, full={}, refused={}, gap={}, settle_ticks=0, unparked=0)
+        self.o3_counts = dict(kept=0, armed=0, tail_bound=0, full={}, refused={}, gap={}, settle_ticks=0, unparked=0,
+                              yield_split=0, yield_kept=0, yield_full={})
+        # lane-o3-fix (b): a yielded append's terminal handback kept split (yield_split); the bulk resumed on that split route after
+        # a census (yield_kept); a refusal returns FULL and runs today's re-entry (yield_full by reason).
+        self.o3_yield = False
         # lane-o3-fix (c), per arm (k2_settle on native_stage_local; off: today's K2): the FULL tail selects only after the
         # handed-back row was scheduled once more as a decoder, so the barrier sees it as one on every worker.
         self.k2_counts = dict(settle_ticks=0, settled=0, bound=0)
@@ -275,9 +281,15 @@ class AutoArmPolicy:
             request = self._request()
             if not self.o3 or getattr(self.controller, 'o3_selected', False) is not True:
                 return 'off'     # installed for the run (FLASH_S5_O3) and selected by the arm (o3_split)
-            if d.append_yield_active():
-                return 'yield'   # lane-o3-fix: a yielded append's terminal handback is a yield, not 'not-the-selection'
-            if self.phase != 'native' or request is None or request.request_id != uid:
+            y = (getattr(d, '_yield', None) or {}) if d.append_yield_active() else None
+            if y is not None:
+                # lane-o3-fix: a yielded append's terminal handback is a yield, not 'not-the-selection'. (b): the append's own
+                # one-row handback (its FULL window today) may stay split under the same rules as a run's end; the bulk then
+                # resumes on this split route after a census.
+                if (y.get('phase') != 'handback' or getattr(y.get('append'), 'request_id', None) != uid
+                        or self.phase != 'native' or request is None):
+                    return 'yield'
+            elif self.phase != 'native' or request is None or request.request_id != uid:
                 return 'not-the-selection'
             if remaining != 1:
                 return 'tail-rows'
@@ -293,7 +305,7 @@ class AutoArmPolicy:
                 return 'slots'
             if not self._o3_covers(rows):
                 return 'counts'
-            self.o3_counts['kept'] += 1
+            self.o3_counts['yield_split' if y is not None else 'kept'] += 1
             return None
         except Exception:
             self.decline_totals['read_errors'] += 1
@@ -353,9 +365,68 @@ class AutoArmPolicy:
         self.phase = 'rollback_drain'
         return False
 
+    def _o3_yield_tail(self):
+        """lane-o3-fix (b): a yielded append's handback kept split. Wait for the row's first decode (fix 1's rule), then re-enter
+        the yielded bulk on this split route: its re-entry plan, the yield's reenter phase, PAUSED_ALL, drain, census, arm,
+        resume; no FULL window. Past the tail bound, or the bulk gone or without a plan: today's FULL return, and the yield's
+        handback phase runs as today from there."""
+        d = self.driver
+        y = getattr(d, '_yield', None) or {}
+        append = y.get('append')
+        self.tail_ticks += 1
+        if not d._split_ready or d._return_pending is not None or d.append_yield_phase() != 'handback':
+            self.o3_tail, self.o3_yield, self.phase = False, False, 'native'
+            self._decline('tail')
+            return False
+        live = append is not None and self.scheduler.requests.get(append.request_id) is append
+        if live and not self._finished(append) and not self._decode_scheduled(append):
+            if self._handback_scheduled(append):
+                self.o3_counts['settle_ticks'] += 1
+            if self.tail_ticks > O3_TAIL_TICKS:
+                self.o3_counts['tail_bound'] += 1
+                self._o3_yield_full('tail-bound', route=False)
+            self._decline('tail')
+            return False
+        d.o3_handback_clear('scheduled' if live else 'left')
+        bulk = self._request()
+        plan = self._reentry_plan(bulk) if bulk is not None else None
+        if plan is None:
+            self._o3_yield_full('bulk-left' if bulk is None else 'no-reentry-plan', route=False)
+            return False
+        self.o3_tail = False
+        d.append_yield_note_handback()
+        d.append_yield_set_phase('reenter')
+        self.plan, self.reentry = plan, True
+        self.reentry_refusals = 0
+        self.drain_wait_seq = None
+        self.cohort = self._cohort() or ()
+        self.o3_joined = append.request_id if live else None
+        self.old_pause = self.scheduler.pause_state
+        self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+        self.deadline = d.clock() + d._control_timeout_s
+        self.phase = 'o3_drain'
+        self._note('reentry', start=plan['start'], native_end=plan['end'], chunks=len(plan['plan']), o3=1)
+        return True
+
+    def _o3_yield_full(self, why, *, route):
+        """(b) refused before the re-entry began: today's FULL return of the append's handback (the yield's handback phase)."""
+        self._o3_count('yield_full', why)
+        self.driver.o3_return_full('yield-' + why)
+        self.o3_tail, self.o3_yield, self.phase = False, False, 'native'
+
+    def _o3_plan(self, request):
+        return self._reentry_plan(request) if self.reentry else self._plan(request)
+
     def _o3_refuse(self, why):
-        """A split continuation that cannot be proven: today's FULL return (leave_split), then the frozen close."""
+        """A split continuation that cannot be proven: today's FULL return (leave_split), then the frozen close. Under (b) the
+        bulk's re-entry is not closed: the route returns FULL and today's re-entry runs from its drain (never a silent drop)."""
         self._o3_count('refused', why)
+        if self.o3_yield:
+            self._o3_count('yield_full', why)
+            self.deadline = self.driver.clock() + self.driver._control_timeout_s
+            self.phase = 'o3_yield_return'
+            self.pending = self._control('leave_split')
+            return True
         self._rollback('o3-' + why)
         return True
 
@@ -370,7 +441,7 @@ class AutoArmPolicy:
             return self._o3_refuse('driver-owned')
         request = self._request()
         cohort = self._cohort()
-        if request is None or cohort != self.cohort or self._plan(request) != self.plan:
+        if request is None or cohort != self.cohort or self._o3_plan(request) != self.plan:
             return self._o3_refuse('selection-changed')
         if d.route_generation != self.o3_split_generation:
             return self._o3_refuse('generation')
@@ -416,6 +487,14 @@ class AutoArmPolicy:
         self.admitted_before = self.controller.admitted
         self.pending = None
         self.o3_joined = None
+        if self.o3_yield:
+            # lane-o3-fix (b): the yielded bulk resumes on the split route it never left; the yield ends at its reopen as today
+            self.o3_yield, self.reentry = False, False
+            d.append_yield_set_phase('resume')
+            self.o3_counts['yield_kept'] += 1
+            self._note('armed', route_generation=d.route_generation, o3=1, yield_kept=1)
+            self.scheduler.set_pause_state(self.old_pause)
+            return
         self.decline_totals['armed'] += 1
         self.o3_counts['armed'] += 1
         self._o3_gap_close()
@@ -918,6 +997,13 @@ class AutoArmPolicy:
             return False
         if phase != 'handback':
             return False                         # draining or closing: split, chunks committing or the row close in flight
+        append = (getattr(d, '_yield', None) or {}).get('append')
+        if (d._split_ready and not d.active and d._return_pending is None and request is not None and append is not None
+                and d.o3_handback_uid() == append.request_id):
+            # lane-o3-fix (b): the append's handback was kept split; wait for its first decode, then re-enter the bulk here
+            self.o3_yield = True
+            self._o3_enter_tail(append)
+            return False
         if d._split_ready or d.active or d._return_pending is not None or d._route_exchange() is not None:
             return False                         # the FULL return of the handback is still settling
         d.append_yield_mark_full()
@@ -1002,6 +1088,7 @@ class AutoArmPolicy:
 
     def _select(self, o3=False):
         s, d = self.scheduler, self.driver
+        held_last, self._held_last = self._held_last, None     # lane-o3-fix: held_ms runs only across consecutive held ticks
         site = self._gate_site(o3)
         if site is not None:
             self._decline(site)
@@ -1018,6 +1105,10 @@ class AutoArmPolicy:
             uid = request.request_id
             if self.refused_cohort.get(uid) == cohort:
                 self.residue_counts['refused_held'] += 1
+                now = time.monotonic_ns()
+                if held_last is not None:
+                    self.residue_counts['held_ms'] = round(self.residue_counts['held_ms'] + (now - held_last) / 1e6, 3)
+                self._held_last = now
                 self._decline('rejected')
                 return False
             self.residue_counts['refused_retried'] += 1
@@ -1194,7 +1285,7 @@ class AutoArmPolicy:
             else:
                 return False
         if self.phase == 'tail' and self.o3_tail:
-            if not self._o3_tail():
+            if not (self._o3_yield_tail() if self.o3_yield else self._o3_tail()):
                 return False
         if self.phase == 'tail':
             request = self._request()
@@ -1336,11 +1427,19 @@ class AutoArmPolicy:
             self.pending = None
             if not self._o3_proof(result):
                 return self._o3_refuse('census')
-            if self._request() is None or self._plan(self._request()) != self.plan or self._cohort() != self.cohort:
+            if self._request() is None or self._o3_plan(self._request()) != self.plan or self._cohort() != self.cohort:
                 return self._o3_refuse('selection-changed-after-census')
             self._o3_arm()
         elif self.phase == 'return':
             if result.get('typed_acks') is not True or result.get('route_after') != 'full':
                 raise E3ContractError('auto-arm-full-ack-incomplete; ownership retained')
             self._restore('returned-before-native-admission')
+        elif self.phase == 'o3_yield_return':
+            # lane-o3-fix (b): FULL again; today's re-entry of the bulk from its drain (barrier, identity, enter_split, arm)
+            if result.get('typed_acks') is not True or result.get('route_after') != 'full':
+                raise E3ContractError('auto-arm-full-ack-incomplete; ownership retained')
+            self.pending, self.o3_yield, self.o3_joined = None, False, None
+            self.cohort = self._reentry_cohort() or ()
+            self.deadline = d.clock() + d._control_timeout_s
+            self.phase = 'drain'
         return True

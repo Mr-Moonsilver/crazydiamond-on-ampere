@@ -23,7 +23,7 @@ import numpy as np
 import test_append_yield as ay
 import test_parity2_terminal as p2t
 import stage_overlap as so
-from test_append_yield import BULK_UID, Pause, Rig, ed, sh
+from test_append_yield import APPEND_UID, BULK_UID, Pause, Rig, ed, sh
 import test_tail_select as ts
 import graph_hooks
 
@@ -446,6 +446,112 @@ class O3Selection(p2t.ie.FlagOn, p2t.ie.Early, p2t.c1.OverlapBase):
         self.assertIs(getattr(driver.controller, 'o3_selected', False), False, 'nothing applied on a refusal')
 
 
+def yield_rig(*, selected=True):
+    """lane-o3-fix (b): the append-yield rig (test_append_yield) with O3 installed and selected, armed as by a proven entry."""
+    rig = Rig(cached={}, per_bulk=1)
+    p, d = rig.p, rig.d
+    p.o3 = True
+    rig.c.o3_selected = selected
+    p.o3_split_generation, p.o3_ledger = d.route_generation, frozenset()
+    p.decode_counts = frozenset(COUNTS)
+    d._control_route = None
+    return rig
+
+
+class YieldSplit(unittest.TestCase):
+    """lane-o3-fix (b): a yielded append's terminal handback stays split (handback_uniform at n+1 on the split bank) and the
+    bulk resumes on that split route after a census: no FULL window, no barrier, no enter_split. Any refusal returns FULL and
+    runs today's re-entry; off, today's FULL window."""
+
+    def setUp(self):
+        self.log = ts.Log()
+        patcher = mock.patch.object(ed, '_progress_logger', lambda: self.log)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def to_kept(self, rig):
+        append = ay.run_to_yield(rig)
+        frontier = rig.bulk.num_computed_tokens
+        ay.to_append(rig)
+        ay.run_append(rig)
+        self.assertEqual(rig.d.append_yield_phase(), 'handback')
+        return append, frontier
+
+    def to_census(self, rig, append):
+        p = rig.p
+        ay.policy_ticks(rig, 1)
+        self.assertEqual((p.phase, p.o3_yield), ('tail', True))
+        split_handback_step(rig, append)
+        worker_lag(rig, append)
+        ay.policy_ticks(rig, 2)
+        self.assertEqual(p.phase, 'tail')                  # fix 1's rule: the row's first decode first
+        first_decode_step(rig, append)
+        ay.policy_ticks(rig, 1)
+        self.assertEqual(p.phase, 'o3_drain')
+        self.assertEqual(rig.d.append_yield_phase(), 'reenter')
+
+    def test_the_append_handback_stays_split_and_the_bulk_resumes_on_it(self):
+        rig = yield_rig()
+        p, d, s = rig.p, rig.d, rig.s
+        append, frontier = self.to_kept(rig)
+        generation, moves = d.route_generation, len(transitions(rig))
+        self.assertTrue(d._split_ready)
+        self.assertIsNone(d._return_pending)
+        self.assertEqual(d.o3_handback_uid(), APPEND_UID)
+        self.assertEqual(p.o3_counts['yield_split'], 1)
+        self.assertEqual(p.o3_counts['kept'], 0)               # a run's end is not a yield's
+        self.assertFalse(sh.defer_stock_positive_frontier(s, append))       # its one row passes on split
+        self.assertTrue(sh.defer_stock_positive_frontier(s, rig.bulk))      # the bulk stays held
+        self.to_census(rig, append)
+        self.assertEqual(p.cohort, (APPEND_UID,))
+        self.assertEqual(p.plan['start'], frontier)
+        ts.landed(rig, append)
+        rig.tick(lambda: d.append_yield_phase() == 'resume')
+        self.assertTrue(d._split_ready)
+        self.assertEqual(d.route_generation, generation, 'the route never left split')
+        self.assertEqual(len(transitions(rig)), moves, 'no FULL transition and no enter_split')
+        self.assertNotIn('worker_barrier', rig.kinds()[-12:])
+        self.assertEqual(p.o3_counts['yield_kept'], 1)
+        self.assertEqual(p.o3_counts['armed'], 0)
+        self.assertEqual(p.o3_ledger, frozenset({APPEND_UID}))
+        self.assertEqual(d.admission_intent()['request_uid'], BULK_UID)
+        txn = rig.admit()
+        self.assertEqual((txn.request_uid, txn.chunk_start), (BULK_UID, frontier))
+        rig.drive(lambda: d.tx is not None)
+        self.assertIsNone(d.append_yield_phase())
+        self.assertEqual(d.append_yield_counters['reopened'], 1)
+        self.assertEqual(d.append_yield_counters['handbacks_served'], 1)
+        self.assertEqual([e['reason'] for e in rig.journal('append_yield_end')], ['reopened'])
+
+    def test_a_census_refusal_runs_todays_reentry(self):
+        rig = yield_rig()
+        p, d = rig.p, rig.d
+        append, frontier = self.to_kept(rig)
+        generation = d.route_generation
+        self.to_census(rig, append)
+        rig.stack.workers[2].model_runner.req_states.req_id_to_index.pop(APPEND_UID)   # one rank lost the row: the census refuses
+        ts.landed(rig, append)
+        rig.tick(lambda: p.phase == 'drain' and not d._split_ready)
+        self.assertEqual(p.o3_counts['refused'], {'census': 1})
+        self.assertEqual(p.o3_counts['yield_full'], {'census': 1})
+        self.assertTrue(d.append_yield_active(), 'the yield is not closed: today\'s re-entry follows')
+        self.assertEqual(d.append_yield_phase(), 'reenter')
+        rig.stack.workers[2].model_runner.req_states.req_id_to_index[APPEND_UID] = 0
+        rig.tick(lambda: d.append_yield_phase() == 'resume')
+        self.assertEqual(d.route_generation, generation + 2)               # FULL, then today's enter_split
+        self.assertEqual(p.o3_counts['yield_kept'], 0)
+        self.assertNotIn(BULK_UID, p.rejected)
+        txn = rig.admit()
+        self.assertEqual((txn.request_uid, txn.chunk_start), (BULK_UID, frontier))
+
+    def test_off_keeps_todays_full_window(self):
+        rig = yield_rig(selected=False)
+        append, frontier = self.to_kept(rig)
+        self.assertEqual(rig.d._return_pending, 'handback')
+        self.assertIsNone(rig.d.o3_handback_uid())
+        self.assertEqual(rig.p.o3_counts['yield_split'], 0)
+
+
 class K2Settle(unittest.TestCase):
     """lane-o3-fix (c): with k2_settle the FULL tail selects after the handed-back row's first decode, so the K2 barrier sees a
     decoder on every worker; off, today's K2 selects at the handback step and the barrier refuses the stale row (the box's 2
@@ -567,7 +673,7 @@ class Mutants(unittest.TestCase):
     def test_label_yield_after_selection(self):
         self.fails(self.run_test(StaySplit, 'test_refusal_reasons'),
                    auto.AutoArmPolicy, '_o3_keeps_split',
-                   ("            if d.append_yield_active():\n                return 'yield'   # lane-o3-fix: a yielded append's terminal handback is a yield, not 'not-the-selection'\n", ''))
+                   ("            y = (getattr(d, '_yield', None) or {}) if d.append_yield_active() else None\n", "            y = None\n"))
 
     def test_k2_settle_not_waited(self):
         self.fails(self.run_test(K2Settle, 'test_settle_selects_after_the_rows_first_decode'),
@@ -590,6 +696,26 @@ class Mutants(unittest.TestCase):
         self.fails(self.run_test(K2Selection, 'test_refused_when_invalid'),
                    so.OverlapSegmentDriver, '_stage_control',
                    ("            if type(k2_settle) is not bool:\n                raise DriverError('native-stage-k2-settle-invalid')\n", ''))
+
+    def test_b_yield_never_kept(self):
+        self.fails(self.run_test(YieldSplit, 'test_the_append_handback_stays_split_and_the_bulk_resumes_on_it'),
+                   auto.AutoArmPolicy, '_o3_keeps_split',
+                   ("                if (y.get('phase') != 'handback' or getattr(y.get('append'), 'request_id', None) != uid\n",
+                    "                if (True or getattr(y.get('append'), 'request_id', None) != uid\n"))
+
+    def test_b_refusal_closes_the_yield(self):
+        self.fails(self.run_test(YieldSplit, 'test_a_census_refusal_runs_todays_reentry'),
+                   auto.AutoArmPolicy, '_o3_refuse', ("        if self.o3_yield:\n", "        if False:\n"))
+
+    def test_b_arm_without_resume(self):
+        self.fails(self.run_test(YieldSplit, 'test_the_append_handback_stays_split_and_the_bulk_resumes_on_it'),
+                   auto.AutoArmPolicy, '_o3_arm', ("            d.append_yield_set_phase('resume')\n", ''))
+
+    def test_b_tail_without_first_decode(self):
+        self.fails(self.run_test(YieldSplit, 'test_the_append_handback_stays_split_and_the_bulk_resumes_on_it'),
+                   auto.AutoArmPolicy, '_o3_yield_tail',
+                   ("        if live and not self._finished(append) and not self._decode_scheduled(append):\n",
+                    "        if live and not self._finished(append) and not self._handback_scheduled(append):\n"))
 
     def test_two_runs_driver_owes_full(self):
         self.fails(self.run_test(StaySplit, 'test_two_back_to_back_runs_stay_split'),
