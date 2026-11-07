@@ -33,7 +33,9 @@ from resident_attention import function
 
 E2_QSA_SHA256 = '3dc7e447d174eaa0463865edfe978af08e75d1fd8bc5de86810c4aa914281ad7'
 E2_OPS_SHA256 = 'aab7f8d83426f9c7c097347330102dbef991fd5403916107d52cd4d883b8f190'
-S5_RUNNER_SHA256 = '0f5b40fd506beb42a46a70a97bb7784e538aa97b0227e7a64ba41366fe9b4535'
+# lane-o3 (7 Nov 2026): was 0f5b40fd506beb42a46a70a97bb7784e538aa97b0227e7a64ba41366fe9b4535; the composition gains exactly the
+# three lines of graph_hooks' handback_uniform call after stock's gather_batch_req_state (inert unless FLASH_S5_O3=1).
+S5_RUNNER_SHA256 = '966ffbf182c7d352737845272fca139c7b9af19e4758a6977afa33b1e471bdd4'
 
 # The fixed-capacity union kernels are copied verbatim from the reviewed
 # ``patches/sparse_stage/kernels.py``; its bytes are pinned here.  The old

@@ -3078,7 +3078,8 @@ def _defer_stock_while_split_armed(scheduler, kind, request=None):
     if not isinstance(controller, PrefillAdmissionController):
         raise E3ContractError('scheduler E3 admission controller is invalid')
     # Historical helper name; stock safety is independent of admission policy.
-    if controller._stock_hold_owner(scheduler) is None:
+    split_owner = controller._stock_hold_owner(scheduler)
+    if split_owner is None:
         # returning-append A1: the yield's FULL window (the append's handback and
         # the bulk's re-entry) keeps every stock prefill held but that handback.
         owner = getattr(scheduler, '_flash_s5_driver', None)
@@ -3087,6 +3088,11 @@ def _defer_stock_while_split_armed(scheduler, kind, request=None):
             return False
         controller.note_yield_hold(kind)
         return True
+    # lane-o3: the kept run's one-row handback runs on the split bank beside the decoders (graph_hooks.handback_uniform
+    # classifies that batch decode-shaped); every other stock prefill stays held.
+    permits = getattr(split_owner, 'o3_handback_permits', None)
+    if callable(permits) and permits(request, kind):
+        return False
     controller._note_split_hold(scheduler, kind, request)
     return True
 

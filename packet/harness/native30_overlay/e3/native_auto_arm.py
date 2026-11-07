@@ -46,6 +46,20 @@ MAX_STOCK_WHY = 1024
 # 'cooldown' turns: three quick closes, then stock) is not a refusal of the request: no rejected mark, at most MAX_RACES per request.
 RACE_CLOSES = frozenset(('selection-changed-during-output-drain', 'selection-changed-before-arm', 'worker-barrier-cohort-refused'))
 MAX_RACES = 8
+# lane-o3 (7 Nov 2026, DESIGN-multi-prompt-lane O3): stay split across runs. With FLASH_S5_O3=1 a native run whose terminal
+# commit leaves one prompt row hands that row back on the split bank (stock schedules it beside the decoders; graph_hooks
+# classifies the batch decode-shaped, FULL at n+1); the next head is armed on the same split route after a census round trip.
+# The split cohort is a ledger: the entry-proven cohort plus requests joined through such a handback; never past the counts
+# proven at identity for this split residency. Geometry tails, yields and anything unproven keep today's FULL cycle.
+O3_ENV = 'FLASH_S5_O3'
+O3_TAIL_TICKS = 64            # policy ticks a kept handback may wait unscheduled on split before today's FULL return
+
+
+def o3_enabled(env):
+    value = env.get(O3_ENV, '0')
+    if value not in ('0', '1'):
+        raise E3ContractError('invalid boolean setting: ' + O3_ENV)
+    return value == '1'
 
 
 def enabled(env):
@@ -65,6 +79,7 @@ def install(engine, driver, env):
     # Bind only after owner startup. Installation itself never schedules or
     # pauses; inspect async capability on the first complete Core tick.
     policy = AutoArmPolicy(engine, driver)
+    policy.o3 = o3_enabled(env)
     driver.auto_arm = policy
     return policy
 
@@ -100,6 +115,8 @@ def _generation_logprobs_refused(params):
 
 
 class AutoArmPolicy:
+    o3 = False
+
     def __init__(self, engine, driver):
         self.engine, self.driver = engine, driver
         self.scheduler, self.controller = engine.scheduler, driver.controller
@@ -151,6 +168,13 @@ class AutoArmPolicy:
         self.residue_counts = dict(junction=0, lowered=0, refused_held=0, refused_retried=0, idle_selected=0, races=0, races_spent=0)
         self.races = {}
         self._rollback_reason = None
+        self._o3_return_reason = None
+        # lane-o3
+        self.o3_tail = False
+        self.o3_ledger = frozenset()
+        self.o3_split_generation = None
+        self.o3_joined = None
+        self.o3_counts = dict(kept=0, armed=0, tail_bound=0, full={}, refused={})
 
     @property
     def active(self):
@@ -199,7 +223,171 @@ class AutoArmPolicy:
                     residue=dict(self.residue_counts, on=self._residue(),
                                  admitted=dict(getattr(self.controller, 'residue_totals', None) or {})),
                     coverage=self._coverage_record(),
+                    o3=self.o3_record(),
                     **self.decline_totals)
+
+    # -- lane-o3 ------------------------------------------------------------
+    def o3_record(self):
+        driver = getattr(self.driver, 'o3_counters', None) or {}
+        return dict(on=int(bool(self.o3)), ledger=len(self.o3_ledger),
+                    **{k: (dict(v) if type(v) is dict else v) for k, v in self.o3_counts.items()},
+                    driver={k: (dict(v) if type(v) is dict else v) for k, v in driver.items()})
+
+    def _o3_count(self, table, why):
+        self.o3_counts[table][why] = self.o3_counts[table].get(why, 0) + 1
+
+    def _o3_covers(self, rows):
+        counts = self.decode_counts
+        return counts is not None and rows >= 1 and set(range(1, rows + 1)) <= counts
+
+    def o3_keeps_split(self, uid, remaining):
+        """The driver asks at a terminal commit under split: None keeps the route split for this run's handback, else the
+        reason today's FULL return runs. Never raises."""
+        try:
+            d, s = self.driver, self.scheduler
+            request = self._request()
+            if not self.o3:
+                return 'off'
+            if self.phase != 'native' or request is None or request.request_id != uid:
+                return 'not-the-selection'
+            if d.append_yield_active():
+                return 'yield'
+            if remaining != 1:
+                return 'tail-rows'
+            if self.o3_split_generation is None or d.route_generation != self.o3_split_generation:
+                return 'generation'
+            running = tuple(s.running)
+            if any(r.is_prefill_chunk or r.num_computed_tokens < r.num_prompt_tokens for r in running):
+                return 'cohort-prefill'
+            if not {r.request_id for r in running} <= self.o3_ledger:
+                return 'ledger'
+            rows = len(running) + 1
+            if rows > min(MAX_COHORT, s.max_num_running_reqs):
+                return 'slots'
+            if not self._o3_covers(rows):
+                return 'counts'
+            self.o3_counts['kept'] += 1
+            return None
+        except Exception:
+            self.decline_totals['read_errors'] += 1
+            return 'read-error'
+
+    def _o3_enter_tail(self, request):
+        """The run's terminal commit kept the route split: wait for stock to schedule the handback row on the split bank."""
+        self.phase, self.o3_tail, self.tail_ticks = 'tail', True, 0
+        self._note('split_handback')
+        try:
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 tail split-keep selection=%d computed=%s prompt=%s', self.selection_seq,
+                                    getattr(request, 'num_computed_tokens', None), getattr(request, 'num_prompt_tokens', None))
+        except Exception:
+            self.decline_totals['read_errors'] += 1
+
+    def _o3_tail(self):
+        """The split tail: the handback row scheduled (or the request gone) -> close and arm the next head on split."""
+        d = self.driver
+        request = self._request()
+        self.tail_ticks += 1
+        if not d._split_ready or d._return_pending is not None:
+            # The route is leaving split under us (a stop, a reset, the tail bound): today's FULL tail from here on.
+            self.o3_tail = False
+            self._decline('tail')
+            return False
+        if request is not None and request.num_output_tokens == 0 and not self._handback_scheduled(request):
+            if self.tail_ticks > O3_TAIL_TICKS:
+                self.o3_counts['tail_bound'] += 1
+                d.o3_return_full('tail-bound')
+                self.o3_tail = False
+            self._decline('tail')
+            return False
+        joined = request.request_id if request is not None else None
+        d.o3_handback_clear('scheduled' if request is not None else 'left')
+        self._tail_end('split-tail-scheduled' if request is not None else 'split-tail-left', request)
+        self.restores['split-tail-scheduled'] = self.restores.get('split-tail-scheduled', 0) + 1
+        self._note('closed', reason='split-tail-scheduled')
+        self.completed += 1
+        self.o3_tail = False
+        self.request_ref, self.plan, self.pending, self.cohort = None, None, None, ()
+        self.phase = 'idle'
+        self.o3_joined = joined
+        if self._select(o3=True):
+            return True
+        # No head to arm on split (or its plan refused): today's FULL return, after the in-flight handback step lands.
+        self._o3_count('full', 'no-next-head')
+        self.old_pause = self.scheduler.pause_state
+        self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+        self.deadline = d.clock() + d._control_timeout_s
+        self._o3_return_reason = 'o3-no-next-head'
+        self.phase = 'rollback_drain'
+        return False
+
+    def _o3_refuse(self, why):
+        """A split continuation that cannot be proven: today's FULL return (leave_split), then the frozen close."""
+        self._o3_count('refused', why)
+        self._rollback('o3-' + why)
+        return True
+
+    def _o3_census_begin(self):
+        d = self.driver
+        if d._return_pending is not None or d._route_exchange() is not None:
+            return False                       # the route is already on its way back: wait for it
+        if not d._split_ready:
+            self._restore('o3-route-left-split')
+            return True
+        if d.active or d.admission_intent() is not None:
+            return self._o3_refuse('driver-owned')
+        request = self._request()
+        cohort = self._cohort()
+        if request is None or cohort != self.cohort or self._plan(request) != self.plan:
+            return self._o3_refuse('selection-changed')
+        if d.route_generation != self.o3_split_generation:
+            return self._o3_refuse('generation')
+        if not self._o3_covers(max(1, len(cohort))):
+            return self._o3_refuse('counts')
+        allowed = self.o3_ledger | ({self.o3_joined} if self.o3_joined is not None else frozenset())
+        if not set(cohort) <= allowed:
+            return self._o3_refuse('ledger')
+        self.pending = self._control('census')
+        self.phase = 'o3_census'
+        return True
+
+    def _o3_proof(self, result):
+        """The census on the kept split route: every rank split on this generation, its live rows exactly the cohort, all
+        decode rows (prefill complete). The design's worker check, on the worker's own census."""
+        rows = result.get('workers')
+        d = self.driver
+        if (type(rows) is not list or len(rows) != len(d.ranks)
+                or {r.get('worker_rank') for r in rows} != set(d.ranks)):
+            return False
+        for row in rows:
+            live = row.get('live_decode') or {}
+            if (row.get('engine_epoch') != d.engine_epoch or row.get('route') != 'split'
+                    or row.get('route_generation') != d.route_generation
+                    or row.get('prefill_requests') != 0 or live.get('available') is not True
+                    or live.get('prefill_requests') != 0
+                    or sorted(live.get('live_request_uids', ())) != list(self.cohort)
+                    or row.get('decode_eligible') != len(self.cohort)):
+                return False
+        return True
+
+    def _o3_arm(self):
+        d = self.driver
+        self.o3_ledger = frozenset(self.cohort)
+        d._control_route = None
+        self._internal = True
+        try:
+            d._arm_admission(PHASE)
+        finally:
+            self._internal = False
+        self.phase = 'native'
+        self.schedule_before = self.controller._schedule_seq
+        self.admitted_before = self.controller.admitted
+        self.pending = None
+        self.o3_joined = None
+        self.decline_totals['armed'] += 1
+        self.o3_counts['armed'] += 1
+        self._note('armed', route_generation=d.route_generation, o3=1)
+        self.scheduler.set_pause_state(self.old_pause)
 
     # -- coverage-residue ---------------------------------------------------
     def _residue(self):
@@ -742,11 +930,13 @@ class AutoArmPolicy:
         self._rollback('request-changed-or-admission-refused')
         return False
 
-    def _gate_site(self):
+    def _gate_site(self, o3=False):
         s, d = self.scheduler, self.driver
         if self.manual_owned:
             return 'gate-manual-owned'
-        if d._split_ready or d.active or d.admission_intent() is not None or d._control_route is not None:
+        # lane-o3: the split tail selects on the route it keeps; nothing else may be owned.
+        if ((d._split_ready and not o3) or d.active or d.admission_intent() is not None or d._control_route is not None
+                or (o3 and (not d._split_ready or d._return_pending is not None))):
             return 'gate-route-or-work'
         if not d._bootstrapped:
             return 'gate-not-bootstrapped'
@@ -766,9 +956,9 @@ class AutoArmPolicy:
             return 'gate-not-running'
         return None
 
-    def _select(self):
+    def _select(self, o3=False):
         s, d = self.scheduler, self.driver
-        site = self._gate_site()
+        site = self._gate_site(o3)
         if site is not None:
             self._decline(site)
             return False
@@ -826,8 +1016,8 @@ class AutoArmPolicy:
         self.old_pause = s.pause_state
         self.external_pause = False
         self.deadline = d.clock() + d._control_timeout_s
-        self.phase = 'drain'
-        self._note('selected', start=plan['start'], native_end=plan['end'], chunks=len(plan['plan']))
+        self.phase = 'o3_drain' if o3 else 'drain'
+        self._note('selected', start=plan['start'], native_end=plan['end'], chunks=len(plan['plan']), o3=int(o3))
         # The real stock keep-pause state. Core drains its existing batch queue
         # normally; its outputs update the scheduler before the worker barrier.
         s.set_pause_state(type(self.old_pause).PAUSED_ALL)
@@ -935,6 +1125,10 @@ class AutoArmPolicy:
             request = self._request()
             if d.append_yield_active():
                 return self._yield_native(request)
+            if (d._split_ready and not d.active and request is not None and d._return_pending is None
+                    and d.o3_handback_uid() == request.request_id):
+                self._o3_enter_tail(request)
+                return False
             if not d._split_ready and not d.active:
                 self.phase = 'tail'
                 self._note('full_handback')
@@ -950,6 +1144,9 @@ class AutoArmPolicy:
                     self._rollback('request-changed-or-admission-refused')
                 return False
             else:
+                return False
+        if self.phase == 'tail' and self.o3_tail:
+            if not self._o3_tail():
                 return False
         if self.phase == 'tail':
             request = self._request()
@@ -982,11 +1179,17 @@ class AutoArmPolicy:
             return True
         if self.deadline is not None and d.clock() > self.deadline:
             raise E3ContractError('auto-arm-entry-or-return-deadline-expired; ownership retained')
+        if self.phase == 'o3_drain':
+            if getattr(self.engine, 'batch_queue', None):
+                return False                   # the handback step (and any decode step) lands first
+            if not self._o3_census_begin():
+                return False
         if self.phase in ('drain', 'rollback_drain'):
             if getattr(self.engine, 'batch_queue', None):
                 return False
             if self.phase == 'rollback_drain':
-                self._rollback('request-changed-or-admission-refused')
+                why, self._o3_return_reason = self._o3_return_reason, None
+                self._rollback(why or 'request-changed-or-admission-refused')
                 return True
             if self.reentry:
                 if self._reentry_lost_yield():
@@ -1055,6 +1258,8 @@ class AutoArmPolicy:
                 d._arm_admission(PHASE)
             finally:
                 self._internal = False
+            # lane-o3: this split residency's proven cohort and the generation the identity counts hold for
+            self.o3_ledger, self.o3_split_generation, self.o3_joined = frozenset(self.cohort), d.route_generation, None
             self.phase = 'native'
             self.schedule_before = self.controller._schedule_seq
             self.admitted_before = self.controller.admitted
@@ -1066,6 +1271,13 @@ class AutoArmPolicy:
                 self.decline_totals['armed'] += 1
             self._note('armed', route_generation=d.route_generation)
             self.scheduler.set_pause_state(self.old_pause)
+        elif self.phase == 'o3_census':
+            self.pending = None
+            if not self._o3_proof(result):
+                return self._o3_refuse('census')
+            if self._request() is None or self._plan(self._request()) != self.plan or self._cohort() != self.cohort:
+                return self._o3_refuse('selection-changed-after-census')
+            self._o3_arm()
         elif self.phase == 'return':
             if result.get('typed_acks') is not True or result.get('route_after') != 'full':
                 raise E3ContractError('auto-arm-full-ack-incomplete; ownership retained')

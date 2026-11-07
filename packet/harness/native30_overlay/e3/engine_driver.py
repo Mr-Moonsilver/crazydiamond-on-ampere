@@ -1225,6 +1225,9 @@ class NativeSegmentDriver:
         self._decode_watermarks = {}
         self._split_ready = False
         self._return_pending = None
+        # lane-o3: the run whose one-row handback stays on the split route, and the counters (status row)
+        self._o3_handback = None
+        self.o3_counters = dict(kept=0, passes=0, full={}, cleared={})
         # Host-monotonic journal of real admitted segments, accepted replies,
         # queried STATE_WRITE reports, PP receipts, source holds and committed
         # frontiers.  It is preserved across a chunk reset (only chunk *state*
@@ -1887,6 +1890,7 @@ class NativeSegmentDriver:
             self._split_ready = command.target_bank == ROUTE_BANK_SPLIT
             if command.target_bank == ROUTE_BANK_FULL:
                 self._return_pending = None
+                self.o3_handback_clear('route-returned-full')
                 self._control_route = None
                 if self._admission_intent is not None:
                     # A full return is the end of the native phase: the intent
@@ -2544,7 +2548,7 @@ class NativeSegmentDriver:
                 self.append_yield_counters['handbacks'] += 1
                 self._yield_journal(self._yield, 'handback',
                                     transaction=transaction.txn_seq, route_generation=self.route_generation)
-            self._note_terminal_route('handback')
+            self._note_terminal_route('handback', transaction, admission)
         return
 
     def _send_release(self):
@@ -3706,10 +3710,73 @@ class NativeSegmentDriver:
         unfinished = getattr(scheduler, 'get_num_unfinished_requests', None)
         return callable(unfinished) and unfinished() > 0
 
-    def _note_terminal_route(self, reason):
-        """A chunk retired for good: the split route now owes a full return."""
+    def _note_terminal_route(self, reason, transaction=None, admission=None):
+        """A chunk retired for good: the split route now owes a full return.
+
+        lane-o3: except a native run's one-row handback the auto-arm policy proves the split bank serves (FLASH_S5_O3=1):
+        the route stays split, the intent is disarmed, and stock schedules that row on the split bank beside the decoders.
+        """
         if self._split_ready:
+            if reason == 'handback' and self._o3_keep_split(transaction, admission):
+                return
             self._return_pending = reason
+
+    # -- lane-o3: stay split across runs ------------------------------------------
+    def _o3_keep_split(self, transaction, admission):
+        policy = getattr(self, 'auto_arm', None)
+        keeps = getattr(policy, 'o3_keeps_split', None)
+        if not callable(keeps) or transaction is None or admission is None:      # the policy owns the switch (o3_keeps_split)
+            return False
+        why = keeps(transaction.request_uid, admission.remaining_tokens)
+        if why is not None:
+            self.o3_counters['full'][why] = self.o3_counters['full'].get(why, 0) + 1
+            return False
+        if self._retained is not None or self.tx is not None or self.controller.active:
+            self.o3_counters['full']['driver-owned'] = self.o3_counters['full'].get('driver-owned', 0) + 1
+            return False
+        self._o3_handback = dict(request_uid=transaction.request_uid,
+                                 request_generation=transaction.request_generation,
+                                 route_generation=self.route_generation, transaction=transaction.txn_seq)
+        self.o3_counters['kept'] += 1
+        intent = self._admission_intent
+        if intent is not None:
+            # The run is over: no chunk of it, and nothing for the next selection, may park under this intent.
+            self._admission_intent = None
+            self._record('admission_disarmed', phase=intent['phase'], seq=intent['seq'],
+                         reason='o3-split-handback', route_generation=self.route_generation)
+        self._record('o3_split_handback', transaction=transaction.txn_seq,
+                     request_generation=transaction.request_generation, route_generation=self.route_generation)
+        return True
+
+    def o3_handback_uid(self):
+        return None if self._o3_handback is None else self._o3_handback['request_uid']
+
+    def o3_handback_permits(self, request, kind):
+        """The positive-frontier seam under split: True only for the kept run's own one-row handback, unscheduled, on the
+        route generation it was kept on, with no native chunk or row owned."""
+        h = self._o3_handback
+        try:
+            ok = (h is not None and kind == 'positive-frontier' and self._split_ready
+                  and self.route_generation == h['route_generation'] and self.tx is None and self._retained is None
+                  and getattr(request, 'request_id', None) == h['request_uid']
+                  and request.num_output_tokens == 0
+                  and request.num_tokens - request.num_computed_tokens == 1)
+        except (AttributeError, TypeError):
+            ok = False
+        if ok:
+            self.o3_counters['passes'] += 1
+        return ok
+
+    def o3_handback_clear(self, reason):
+        if self._o3_handback is not None:
+            self._o3_handback = None
+            self.o3_counters['cleared'][reason] = self.o3_counters['cleared'].get(reason, 0) + 1
+
+    def o3_return_full(self, reason):
+        """A kept split handback that cannot be served there: today's FULL return; stock schedules it on FULL."""
+        self.o3_handback_clear(reason)
+        if self._split_ready and self._return_pending is None:
+            self._return_pending = 'o3-' + reason
 
     def pp_sent(self):
         if self.tx is None:
