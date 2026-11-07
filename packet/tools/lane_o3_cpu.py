@@ -27,6 +27,7 @@ def main():
     p.add_argument('--bundle', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--name', required=True)
+    p.add_argument('--probe', type=Path, help='iteration only: this probe file over the bundle\'s copy (recorded)')
     a = p.parse_args()
     bundle, out = a.bundle.resolve(), a.out.resolve()
     out.mkdir()
@@ -45,6 +46,8 @@ def main():
     mounts.update({bundle: '/source/harness', bundle / 'e3_builder': '/source/patches/s5_engine', bundle / 'native35_tools': '/source/tools',
                    bundle / 'sparse_stage': '/source/patches/sparse_stage',
                    (HERE.parent / 'reference/vllm-src').resolve(): '/source/reference/vllm-src'})
+    if a.probe is not None:
+        mounts[a.probe.resolve()] = '/source/harness/e3_lane_o3_probe.py'
     for source, target in mounts.items():
         c += ['-v', '%s:%s:ro' % (source, target)]
     c += ['-v', '%s:/out' % out, '--entrypoint', 'bash', IMAGE, '/out/inner.sh']
@@ -64,7 +67,8 @@ def main():
     ok = rc == 0 and no_gpu and all(row['verdict'] == 'PASS' for row in rows.values())
     result = dict(schema='lane-o3-cpu-result/1', verdict='PASS' if ok else 'FAIL', container_rc=rc, no_gpu_no_network=no_gpu,
                   cases=rows, manifest=sha(bundle / 'SHA256SUMS'), image=IMAGE, wall_s=round(time.monotonic() - started, 1),
-                  gpu_execution=False, box_evidence=False)
+                  gpu_execution=False, box_evidence=False,
+                  probe_override=(sha(a.probe) if a.probe is not None else None))
     (out / 'result.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
     print(json.dumps(dict(verdict=result['verdict'], cases={k: v['verdict'] for k, v in rows.items()})))
     return 0 if ok else 1

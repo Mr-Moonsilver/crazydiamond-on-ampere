@@ -40,6 +40,7 @@ def run(case):
     import native_overlap_worker as nw
     on = case != 'off'
     os.environ['FLASH_S5_O3'] = '1' if on else '0'            # the workers' switch (graph_hooks reads it per step)
+    os.environ['FLASH_S5_AUTO_ARM'] = '1'                     # worker_capability reads the process env (recipe trap 2)
     real_install, real_manager, build = startup.install_engine, auto_probe.Connected.dispatch_manager, replay.build_native
     plain = replay._Vllm
 
@@ -125,10 +126,11 @@ def run(case):
         if not ok:
             violations.append(name)
 
+    conn.controller.native_hold_s = 30      # the box arms' decode-phase hold (set per arm by the stage command); both cases
     decoders = [conn.request('decoder-%d' % i, 40, outputs=60000) for i in range(DECODERS)]
     for _ in range(4):
         conn.step()
-    natives = [conn.request(uid, PROMPT, outputs=400) for uid in NATIVE]
+    natives = [conn.request(uid, PROMPT, outputs=60000) for uid in NATIVE]     # each stays a decoder: the cohort grows by one per run
     error = None
     started = time.monotonic()
     try:
@@ -141,12 +143,19 @@ def run(case):
     except Exception as exc:
         error = dict(type=type(exc).__name__, message=str(exc)[:400])
     transitions = [e for e in driver._journal if e['kind'] == 'transition']
+    bank_name = {1: 'split', 0: 'full', 'split': 'split', 'full': 'full'}
     handback_steps = [s for s in steps if s['handback'] in NATIVE]
+    first_native = next((i for i, s in enumerate(steps) if s['split']), len(steps))
+    route_runs = []                         # (split, generation) runs over the steps from the first split step on
+    for s_ in steps[first_native:]:
+        key = (s_['split'], s_['generation'])
+        if not route_runs or route_runs[-1] != key:
+            route_runs.append(key)
     record = dict(case=case, error=error, refused=refused[:4], wall_s=round(time.monotonic() - started, 1), ticks=conn.ticks,
                   native=[dict(uid=r['uid'], start=r['start'], end=r['end'], terminal=r['terminal'], split=r['split']) for r in conn.native],
-                  handback_steps=handback_steps, transitions=[dict(target=e.get('target_bank'), generation=e.get('route_generation'))
+                  handback_steps=handback_steps, transitions=[dict(target=bank_name.get(e.get('target_bank'), e.get('target_bank')), generation=e.get('route_generation'))
                                                               for e in transitions],
-                  o3=policy.o3_record(), restores=dict(policy.restores), rollbacks=dict(policy.rollbacks),
+                  o3=policy.o3_record(), route_runs=route_runs, restores=dict(policy.restores), rollbacks=dict(policy.rollbacks),
                   first_tokens={r.request_id: list(r.output_token_ids[:1]) for r in natives},
                   coverage=policy._coverage_record(), alias_failures=failures)
     if case in ('on', 'off'):
@@ -159,6 +168,11 @@ def run(case):
         check('one-handback-step-each', sorted(s['handback'] for s in handback_steps) == sorted(NATIVE), got=[s['handback'] for s in handback_steps])
         check('decoders-continued', all(d.num_output_tokens > 8 for d in decoders))
         # stock prefill on split: only a kept one-row handback, alone among the prefilling rows
+        check('no-route-refusal', not refused, refused=refused[:1])
+        cov = record['coverage'] or {}
+        check('coverage-handback-counted-once-at-site-handback', cov.get('native_turns') == 3
+              and (cov.get('rows') or {}).get('live', {}).get('stock') == {'handback': 3}
+              and (cov.get('requests') or {}).get('live', {}).get('stock') == {'handback': 3}, coverage=cov)
         check('no-other-stock-prefill-on-split', all(not s['split'] or not s.get('has_prefill') or (s['prefill_rows'] == 1 and s['handback'] in NATIVE)
                                                      for s in steps))
     if case == 'on':
@@ -166,21 +180,27 @@ def run(case):
               got=[(s['split'], s['cg_mode'], s['rows']) for s in handback_steps])
         check('handback-rows-grow', [s['rows'] for s in handback_steps] == [DECODERS + 1, DECODERS + 2, DECODERS + 3],
               got=[s['rows'] for s in handback_steps])
-        check('one-split-entry-one-return', [t['target'] for t in record['transitions']] == ['split', 'full'], got=record['transitions'])
+        last = max(i for i, s_ in enumerate(steps) if s_['handback'] in NATIVE) if handback_steps else -1
+        window = steps[first_native:last + 1]
+        check('one-split-residency-across-the-three-runs', bool(window) and all(s_['split'] for s_ in window)
+              and len({s_['generation'] for s_ in window}) == 1 and record['transitions'][-1:] == [dict(target='full', generation=window[0]['generation'] + 1)],
+              got=route_runs, transitions=record['transitions'])
         check('o3-kept-and-armed', policy.o3_counts['kept'] == 3 and policy.o3_counts['armed'] == 2
               and policy.o3_counts['full'] == {'no-next-head': 1}, o3=record['o3'])
     if case == 'off':
         check('handbacks-on-full-eager', all(not s['split'] and s['cg_mode'] == 'NONE' for s in handback_steps),
               got=[(s['split'], s['cg_mode'], s['rows']) for s in handback_steps])
-        check('a-split-cycle-per-run', [t['target'] for t in record['transitions']] == ['split', 'full'] * 3, got=record['transitions'])
+        check('a-split-cycle-per-run', [split for split, _ in route_runs] == [True, False] * 3, got=route_runs)
         check('o3-off-nothing-kept', policy.o3_counts['kept'] == 0 and driver.o3_counters['kept'] == 0)
+    # a mutant case counts only where its scenario was reached: the first run's native chunks ran to the terminal commit
+    reached = sum(r['terminal'] for r in conn.native) >= 1
     if case == 'mutant-no-classify':
-        check('split-handback-refused-by-the-router', bool(refused) and refused[0]['error'] == 'UnsupportedRoute', refused=refused[:1])
+        check('no-route-refusal', not refused, refused=refused[:1])      # the mutant: UnsupportedRoute at the first split handback
     if case == 'mutant-no-seam':
         check('stays-split-across-runs', policy.o3_counts['armed'] >= 1 and policy.o3_counts['tail_bound'] == 0, o3=record['o3'])
     expect = case.startswith('mutant-')
-    record.update(checks=checks, violations=violations, expect_violation=expect,
-                  verdict='PASS' if (bool(violations) == expect) else 'FAIL')
+    record.update(checks=checks, violations=violations, expect_violation=expect, scenario_reached=reached,
+                  verdict='PASS' if (reached and bool(violations) == expect) else 'FAIL')
     return record
 
 
