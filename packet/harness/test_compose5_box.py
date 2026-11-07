@@ -94,7 +94,40 @@ def rows_with_ny():
         return T.by_label()
 
 
-class Table(unittest.TestCase):
+class O3Table(unittest.TestCase):
+    """parity-na2: the lane-o3 table tests read q18a-parity-o3's table (O3_ARM_TABLE), patched in; TableNa2 reads this queue's."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(T, 'ARM_TABLE', T.O3_ARM_TABLE)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class TableNa2(unittest.TestCase):
+    """parity-na2: sm | decode-am1 | dec1 | na nt sp | sp nt na, no pair arm and no 'no', O3 installed and selected on no arm."""
+
+    def test_the_order_and_check(self):
+        self.assertEqual(T.labels(), [SM, DEC1, A0, R0, P0, P1, R1, A1])
+        T.check()
+        self.assertEqual(T.REPLAY_ORDER, ('na', 'nt', 'sp'))
+
+    def test_o3_installed_selected_nowhere_and_na_is_nt_but_for_the_nosync(self):
+        rows = T.by_label()
+        self.assertFalse([r['label'] for r in T.arms() if r['o3_split'] or r['kind'] == 'o3-pair'])
+        self.assertEqual(T.O3_ENV, 'FLASH_S5_O3=1')
+        for na, nt in ((A0, R0), (A1, R1)):
+            self.assertEqual(sorted(k for k in rows[na] if rows[na][k] != rows[nt][k]), ['ahead_nosync', 'c1', 'label', 'selection'])
+        self.assertEqual([r['label'] for r in T.arms() if r['ahead_nosync']], [A0, A1])
+        self.assertEqual([r['label'] for r in T.arms() if r['native_off']], [P0, P1])
+
+    def test_the_o3_table_is_the_lane_o3_order(self):
+        with mock.patch.object(T, 'ARM_TABLE', T.O3_ARM_TABLE):
+            self.assertEqual(T.labels(), [SM, DEC1, PF, PO, PG, N0, A0, R0, P0, P1, R1, A1, N1])
+            T.check()
+
+
+class Table(O3Table):
     def test_the_order(self):
         self.assertEqual(sorted(r for r in TWO_PAIRS if r[1] != 'ny'), sorted(T.ARM_TABLE), "lane-o3: the grade tests' patch is this table and ny's two rows")
         self.assertEqual(T.labels(), [SM, DEC1, PF, PO, PG, N0, A0, R0, P0, P1, R1, A1, N1], 'lane-o3-na: pf po pg | no na nt sp | sp nt na no')
@@ -204,7 +237,7 @@ class CapReadBack(unittest.TestCase):
         self.assertIsNone(box.cap_selected(dict()))
 
 
-class ReplaySeed(unittest.TestCase):
+class ReplaySeed(O3Table):
     """The seed reaches the run and the journal header, by the real replay_arm of compose-4's box up to the run call."""
 
     def go(self, label):
@@ -784,7 +817,7 @@ class ChunkRows(unittest.TestCase):
         self.assertEqual(rule.chunk_rows(rows, 1, 10), dict(below_bound=2, below_over_1024=2, below_max=2048, past_bound=2, past_over_1024=1, past_max=2048))
 
 
-class BoxBinding(unittest.TestCase):
+class BoxBinding(O3Table):
     def test_the_table_is_bound_for_the_call_and_put_back(self):
         seen = []
         with mock.patch.object(box4, 'replay_arm', side_effect=lambda *a, **k: seen.append(box4.T) or {}):
@@ -841,7 +874,7 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-parity-o3'))
+        self.assertTrue(text.startswith('# q18a-parity-na2'))
         self.assertIn('- %s native off: pure; native rows 0, handback rows 0, native-served rows 0, native turns 0, chunks 0; lease held' % P0, text)
         self.assertIn('compose5_rule.py', text)
 
@@ -1672,6 +1705,59 @@ class AheadGradeMutants(unittest.TestCase):
                    ("    if (rec.get('inwait') or {}).get('ahead_nosync_acknowledged') is not row['ahead_nosync']:\n", "    if False:\n"))
 
 
+class GradeNa2(TwoPairs):
+    """parity-na2: the grade over a table without the pair arms and without 'no' (this queue's shape, ny's rows kept as TWO_PAIRS has
+    them): whole records PASS with no stop rule to read, and an na arm with no nosync=1 receipt is still INC (n1's gap stays caught)."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(T, 'ARM_TABLE', tuple(r for r in TWO_PAIRS if r[1] not in T.O3_PAIR + ('no',)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.grade = Grade()
+
+    def test_whole_records_pass_with_no_stop_rule(self):
+        self.assertFalse([r for r in T.arms() if r['kind'] == 'o3-pair' or r['c1'] == 'no'])
+        result = self.grade.grade_of(self.grade.records())
+        self.assertEqual((result['verdict'], result['failures'], result['missing']), ('PASS', [], []))
+        self.assertEqual(result['numerics_o3']['verdict'], 'NOT-IN-TABLE')
+        self.assertEqual({k: v['nosync'] for k, v in result['ahead']['arms'].items() if v['nosync']}, {A0: 1, A1: 1})
+
+    def test_na_not_engaged_is_inc_and_the_control_moved_fails(self):
+        result = self.grade.grade_of(self.grade.records(), ahead={A0: [False, False], A1: [True]})
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [A0 + ':ahead-nosync-not-engaged']))
+        result = self.grade.grade_of(self.grade.records(), ahead={A0: [], A1: []})
+        self.assertEqual(sorted(result['missing']), [A0 + ':ahead-nosync-not-engaged', A1 + ':ahead-nosync-not-engaged'], 'n1: no receipt at all')
+        result = self.grade.grade_of(self.grade.records(), ahead={A0: [True], A1: [True], R1: [True]})
+        self.assertEqual((result['verdict'], result['failures']), ('FAIL', [R1 + ':ahead-nosync-on-the-control']))
+
+
+class GradeNa2Mutants(unittest.TestCase):
+    """One mutation per GradeNa2 rule; each must fail its test."""
+
+    def fails(self, name, owner, function, edit):
+        import test_append_yield as ay
+        case = GradeNa2(name)
+        with ay.mutant(owner, function, edit), self.assertRaises(ay.MUTANT_FAILURES):
+            case.setUp()
+            try:
+                getattr(case, name)()
+            finally:
+                case.doCleanups()
+
+    def test_the_stop_rule_unguarded(self):
+        self.fails('test_whole_records_pass_with_no_stop_rule', box, 'grade',
+                   ("o3_numerics(by) if any(row['kind'] == 'o3-pair' for row in T.arms()) else dict(verdict='NOT-IN-TABLE', reasons=[])", "o3_numerics(by)"))
+
+    def test_not_engaged_not_inc(self):
+        self.fails('test_na_not_engaged_is_inc_and_the_control_moved_fails', box, 'grade',
+                   ("        elif row['ahead_nosync'] and not counts['nosync']:\n", "        elif False:\n"))
+
+    def test_control_moved_not_failed(self):
+        self.fails('test_na_not_engaged_is_inc_and_the_control_moved_fails', box, 'grade',
+                   ("        elif not row['ahead_nosync'] and counts['nosync']:\n", "        elif False:\n"))
+
+
 class O3GradeMutants(unittest.TestCase):
     """One grade mutation per O3Grade test; each must fail it."""
 
@@ -1698,7 +1784,7 @@ class O3GradeMutants(unittest.TestCase):
 
     def test_outside_not_failed(self):
         self.fails('test_the_stop_rule_fails_outside_the_control_envelope', box, 'grade',
-                   ("    if numerics['verdict'] == 'OUTSIDE':\n", "    if False:\n"))
+                   ("    elif numerics['verdict'] == 'OUTSIDE':\n", "    elif False:\n"))
 
     def test_envelope_without_the_control(self):
         self.fails('test_the_envelope_is_the_controls_own_disagreement_with_the_margin', box, 'o3_numerics',

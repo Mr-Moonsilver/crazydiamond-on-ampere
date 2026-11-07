@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""q18a-parity-o3 box arms and grade (lane-o3: the o3-pair arm kind, o3_split acknowledged on every arm, O3 engaged on no and po and never on
+"""q18a-parity-na2 box arms and grade (lane-o3: the o3-pair arm kind, o3_split acknowledged on every arm, O3 engaged on no and po and never on
 the controls, the stop rule over the pair arms' first-token top-20 sets; sp, parity-base's native-off baseline, ported from claude/parity-base-sp
 e3a6a63f unchanged: keep_lease, small_status, native_off_read and its grade and report lines; lane-o3-na: na, nt with parity-ahead's
 ahead_nosync, acknowledged on every arm (FAIL), its 'flash-s5 ahead-split' receipts engaged on na (INC) and never nosync=1 elsewhere (FAIL), and
@@ -38,7 +38,7 @@ _report = _box.report
 
 
 def report(result):
-    text = _report(result).replace('q18a-compose-4', 'q18a-parity-o3', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    text = _report(result).replace('q18a-compose-4', 'q18a-parity-na2', 1).replace('compose4_rule.py', 'compose5_rule.py')
     # coverage-soak-fix: the geometry-tail class and the worker RSS read, one line per replay arm (the decode gap is the reader's)
     extra = []
     numerics = result.get('numerics_o3')
@@ -892,8 +892,11 @@ def grade(arms, *args, **kwargs):
             result['missing'] = sorted(set(result['missing']) | {row['label'] + ':ahead-nosync-not-engaged'})
         elif not row['ahead_nosync'] and counts['nosync']:
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':ahead-nosync-on-the-control'})
-    result['numerics_o3'] = numerics = o3_numerics(by)
-    if numerics['verdict'] == 'OUTSIDE':
+    # parity-na2: the stop rule reads the pair arms; a table without them (q18a-parity-na2) has no O3 candidate to stop, so no rule.
+    result['numerics_o3'] = numerics = o3_numerics(by) if any(row['kind'] == 'o3-pair' for row in T.arms()) else dict(verdict='NOT-IN-TABLE', reasons=[])
+    if numerics['verdict'] == 'NOT-IN-TABLE':
+        pass
+    elif numerics['verdict'] == 'OUTSIDE':
         result['failures'] = sorted(set(result['failures']) | set(numerics['reasons']))
     elif numerics['verdict'] != 'WITHIN':
         result['missing'] = sorted(set(result['missing']) | set(numerics['reasons']))

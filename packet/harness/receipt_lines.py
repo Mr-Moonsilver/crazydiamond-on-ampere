@@ -31,7 +31,7 @@ from pathlib import Path
 # after 5990af80).
 JSON_PREFIXES = ('flash-s5 progress ', 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ')
 KV_PREFIXES = ('flash-s5 receipts ', 'flash-s5 native-alloc ', 'flash-s5 memory ', 'flash-s5 stage-local ',
-               'flash-s5 memory-peak ', 'flash-s5 cow ')
+               'flash-s5 memory-peak ', 'flash-s5 cow ', 'flash-s5 ahead-split ')    # parity-na2: the writer's list, kept equal
 PREFIXES = JSON_PREFIXES + KV_PREFIXES
 PATH_PREFIX = 'flash-s5 receipts '
 STARTUP_PATH = re.compile(r'flash-s5 startup receipt_path=(\S+)(?: pipe_buf=(\d+))?')
