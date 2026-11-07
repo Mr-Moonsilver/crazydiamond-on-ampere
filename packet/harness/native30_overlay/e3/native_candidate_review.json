@@ -381,7 +381,9 @@
       "core/scheduler.py",
       "e3/decode_probe.py",
       "e3/engine_driver.py",
+      "e3/engine_offers.py",
       "e3/executor_hooks.py",
+      "e3/graph_hooks.py",
       "e3/lane_chunk.py",
       "e3/lane_dispatch.py",
       "e3/lane_private.py",
@@ -394,6 +396,7 @@
       "e3/native_overlap_worker.py",
       "e3/native_qualification_frontend.py",
       "e3/native_startup.py",
+      "e3/operation_source.py",
       "e3/probe_control.py",
       "e3/qsa_driver.py",
       "e3/s5_startup.py",
@@ -404,7 +407,8 @@
       "e3/wire_v1.py",
       "e3/worker_bridge.py",
       "e3/worker_hooks.py",
-      "e3_sources/worker.py"
+      "e3_sources/worker.py",
+      "model_runner_v2.py"
     ],
     "model_settings_changed": false,
     "parent": "q18a-alpha-next-c1b",
@@ -412,7 +416,7 @@
     "parent_manifest": "6595d6692a0d29877eaf9d7c30908c5d7effff5bc0655199a01a464d6e0879c1",
     "queue": "q18a-compose-throughput-p2: compose-4's queue with connections 32, the PLE switches, the 2048 chunk, prepare-ahead and the indexer logits cap 64 MiB for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
     "scope": "b13 and hf at 32 with the four lever tracks under the closed-loop replay, the yield priced by frozen pairs, against c1b's READY build, discovery mode; not a release assessment and not a numerics result",
-    "source_commit": "c1907056ad36744617bcb87153512ee8857f35b8"
+    "source_commit": "8489642a44ac43943991fe7dedebfd12002e0807"
   },
   "control_counter_scope": {
     "basis": "exclusive EngineCore coordinator host-wall spans and successfully submitted RPC count",
