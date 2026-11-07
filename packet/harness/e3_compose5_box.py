@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""q18a-compose-throughput-p2 box arms and grade: compose-4's box over this table (harness/compose5_arms.py). Discovery mode.
+"""q18a-parity-o3 box arms and grade (lane-o3: the o3-pair arm kind, o3_split acknowledged on every arm, O3 engaged on no and po and never on
+the controls, the stop rule over the pair arms' first-token top-20 sets; sp, parity-base's native-off baseline, ported from claude/parity-base-sp
+e3a6a63f unchanged: keep_lease, small_status, native_off_read and its grade and report lines; tmp/decode-phase/READY-parity-o3.md). q18a-compose-throughput-p2: compose-4's box over this table (harness/compose5_arms.py). Discovery mode.
 parity-2 adds the per-row terminal_successor, acknowledged (FAIL), and its counters per replay arm: nt that never admitted a terminal
 successor is INC (not engaged), ny that did is FAIL; the counts are reported per arm. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
 coverage-residue adds the per-row native_residue, acknowledged, keeps the engine's decline record (with its prefill coverage counter) in each status row, and grades coverage per replay arm.
@@ -11,6 +13,7 @@ Every arm kind compose-5 runs, compose-4's box already runs: the live arm for sm
 and nothing that ran is edited. The rule is compose5_rule.py on the fetched record; this grade only says the record is whole.
 """
 import datetime
+import hashlib
 import os
 import re
 import subprocess
@@ -31,9 +34,20 @@ _report = _box.report
 
 
 def report(result):
-    text = _report(result).replace('q18a-compose-4', 'q18a-compose-throughput-p2', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    text = _report(result).replace('q18a-compose-4', 'q18a-parity-o3', 1).replace('compose4_rule.py', 'compose5_rule.py')
     # coverage-soak-fix: the geometry-tail class and the worker RSS read, one line per replay arm (the decode gap is the reader's)
     extra = []
+    numerics = result.get('numerics_o3')
+    if numerics:
+        # lane-o3: the stop rule first; OUTSIDE means read nothing past it (lead, 7 Nov)
+        extra.append('- O3 NUMERICS (stop rule, first-token top-20 sets, %s against %s): %s; envelope %s, allowance %s, candidate worst %s, token flips %s%s'
+                     % (numerics.get('candidate'), ' | '.join(numerics.get('control') or ()), numerics['verdict'], numerics.get('envelope'),
+                        numerics.get('allowance'), numerics.get('candidate_worst'), numerics.get('token_flips'),
+                        '; ' + ', '.join(numerics['reasons']) if numerics.get('reasons') else ''))
+    for label, row in (result.get('o3') or {}).items():
+        extra.append('- %s O3: selected %s, kept %s, armed %s, route moves %s, gap %s, transitions %s, FULL reasons %s'
+                     % (label, row.get('selected'), row.get('kept'), row.get('armed'), row.get('route_moves'), row.get('gap'),
+                        row.get('transitions'), row.get('full')))
     for label, cov in sorted((result.get('coverage') or {}).items()):
         geo = (cov or {}).get('geometry_tail')
         if geo:
@@ -61,6 +75,15 @@ def report(result):
         # parity-2 A: the terminal successor's counters over the arm (stage_delta), and the exact plan's terminal answers beside them
         extra.append('- %s terminal successor: selected %s, admitted %s, mismatch %s; exact admits %s, exact terminal answers %s'
                      % (label, row['selected'], row['terminal_admits'], row['terminal_mismatch'], row['exact_admits'], row['exact_terminal']))
+    for label, row in sorted((result.get('native_off') or {}).items()):
+        # parity-base: what proves the baseline plain, one line per sp arm
+        dec = row.get('decode') or {}
+        extra.append('- %s native off: %s; native rows %s, handback rows %s, native-served rows %s, native turns %s, chunks %s; lease %s (%s); '
+                     'gate-manual-owned declines %s turns; decode features %s; attn-meta batched %s' % (
+                         label, ', '.join(row['fails'] + row['missing']) or 'pure', row.get('native_rows'), row.get('handback_rows'), row.get('served_rows'),
+                         row.get('native_turns'), row.get('chunks'), 'held' if row.get('lease_held') else 'NOT HELD' if row.get('lease_held') is False else 'not read',
+                         row.get('lease_reads'), row.get('manual_owned_declines'),
+                         ', '.join('%s %s' % kv for kv in sorted(dec.items())) or 'not read', row.get('attn_batched')))
     alloc = result.get('alloc_retries')
     if alloc:
         # build-2b24c64: the logits cap's retry rule, per rank over the run, then per arm
@@ -92,13 +115,56 @@ def status_row(tag, reply):
     source = reply.get('append_yield') if type(reply) is dict else None
     if type(row.get('append_yield')) is dict and type(source) is dict:
         row['append_yield']['declines'] = source.get('declines')
+    if type(reply) is dict:
+        row['route_generation'] = reply.get('route_generation')     # lane-o3: route moves per arm
     return row
+
+
+_select_and_release, _small_status = _box.select_and_release, _box.small_status
+
+
+def small_status(reply):
+    """compose-4's poll row and the policy's lease beside it (parity-base: sp proves the lease held through every poll)."""
+    row = _small_status(reply)
+    row['manual_owned'] = (reply.get('auto_arm') or {}).get('manual_owned') if type(reply) is dict else None
+    return row
+
+
+def keep_lease(client, record):
+    """parity-base, sp: after the arm's release (which every entry needs) take the manual lease back before any turn is sent. The client's
+    pause sends the all-rank barrier, a non-read native control (native_auto_arm.manual_control: manual_owned = True); resume is stock's
+    resume_generation and takes no lease. The status after must read the lease held, the policy idle, the route FULL, no request; else the arm
+    stops before its traffic. Every step recorded."""
+    out = record['native_off'] = dict(requested=True, paused=False, resumed=None, manual_owned=None)
+    try:
+        client.pause()
+        out['paused'] = True
+    finally:
+        reply = client.resume()
+        out['resumed'] = reply.get('resumed') is True or reply.get('already_running') is True
+    status = client.call('status')
+    record['statuses'].append(status_row('lease', status))
+    auto = status.get('auto_arm') or {}
+    out.update(manual_owned=auto.get('manual_owned'), phase=auto.get('phase'), active=auto.get('active'), selection_seq=auto.get('selection_seq'),
+               route=status.get('route'), scheduler_requests=status.get('scheduler_requests'))
+    if auto.get('manual_owned') is not True or auto.get('active') is not False or status.get('route') != 'full' or status.get('scheduler_requests') != 0:
+        raise ValueError('native-off-lease-not-held')
+
+
+def select_and_release(client, row, record):
+    """compose-4's, then on a native-off row the lease kept for the arm (keep_lease); every other row records native_off requested False."""
+    _select_and_release(client, row, record)
+    if row.get('native_off'):
+        keep_lease(client, record)
+    else:
+        record['native_off'] = dict(requested=False)
 
 
 @contextmanager
 def _bound():
     """This table and these names in compose-4's box for one call, and back: a suite that runs both boxes in one process sees each with its own."""
-    names = dict(T=T, ARM_SCHEMA=ARM_SCHEMA, GRADE_SCHEMA=GRADE_SCHEMA, SCOPE=SCOPE, report=report, status_row=status_row)
+    names = dict(T=T, ARM_SCHEMA=ARM_SCHEMA, GRADE_SCHEMA=GRADE_SCHEMA, SCOPE=SCOPE, report=report, status_row=status_row, one_stream_arm=one_stream_arm,
+                 select_and_release=select_and_release, small_status=small_status)
     saved = {name: getattr(_box, name) for name in names}
     # coverage-throughput: a1's yield_control confirms the engine's bounds against its own table's LAUNCH; this table raises max_new.
     a1_table = _box.a1.T
@@ -608,6 +674,58 @@ def alloc_fails(alloc):
     return fails, missing
 
 
+# parity-base: the decode-side counters a plain arm must leave at 0 (stage_delta, before..after), and the stage command's two decode fields
+SP_DECODE_COUNTERS = ('step_lazy_marked', 'step_merge_steps', 'step_iw_applied', 'step_iw_sent')
+
+
+def _turns(status, site):
+    turns = (((status or {}).get('append_yield') or {}).get('declines') or {}).get('turns')
+    return turns.get(site) if type(turns) is dict and type(turns.get(site)) is int else None
+
+
+def native_off_read(rec, cov):
+    """parity-base, one sp arm: (fails, missing, facts). The arm is plain when its coverage window (entry to the next arm's entry) holds no
+    native row, no handback (one-row or excess), no native-served geometry tail, no native turn or append, and its progress no chunk and no
+    native selection; the lease read held at every read from keep_lease to the arm's end (its statuses and every poll); the lazy receive and
+    the decode merge acknowledged off and their step counters at 0. The attn-meta leak is attn_check's FAIL already."""
+    fails, missing = [], []
+    status = {s.get('label'): s for s in rec.get('statuses') or ()}
+    facts = dict(native_rows=None, handback_rows=None, served_rows=None, native_turns=None, chunks=None, selections=None)
+    if cov is not None:
+        rows = cov['rows']
+        facts.update(native_rows=sum(sum(rows[s]['native'].values()) for s in ('live', 'idle')),
+                     handback_rows=cov['handback']['rows'], served_rows=cov['geometry_tail']['rows'],
+                     native_turns=cov['native_turns'] + cov['native_appends'])
+    chunks = (rec.get('progress_delta') or {}).get('chunks')
+    facts['chunks'] = chunks if type(chunks) is int else None
+    seqs = [((status.get(k) or {}).get('auto_arm') or {}).get('selection_seq') for k in ('lease', 'after')]
+    facts['selections'] = seqs[1] - seqs[0] if all(type(x) is int for x in seqs) else None
+    counts = [facts[k] for k in ('native_rows', 'handback_rows', 'served_rows', 'native_turns', 'chunks', 'selections')]
+    if any(type(x) is int and x for x in counts):
+        fails.append('sp:native-row')
+    elif any(x is None for x in counts):
+        missing.append('sp:native-rows-not-read')
+    reads = [((status.get(k) or {}).get('auto_arm') or {}).get('manual_owned') for k in ('lease', 'before', 'after')]
+    polls = [r.get('manual_owned') for r in (rec.get('polled') or {}).get('rows') or ()]
+    facts['lease_reads'] = 'lease, before, after and %d polls' % len(polls)
+    facts['lease_held'] = False if any(x is False for x in reads + polls) else True if all(x is True for x in reads + polls) else None
+    if facts['lease_held'] is False:
+        fails.append('sp:lease-not-held')
+    elif facts['lease_held'] is None:
+        missing.append('sp:lease-not-read')
+    step, delta = rec.get('step') or {}, rec.get('stage_delta')
+    dec = {k[5:]: (delta or {}).get(k) for k in SP_DECODE_COUNTERS}
+    dec['acknowledged_lazy'], dec['acknowledged_merge'] = step.get('acknowledged_lazy'), step.get('acknowledged_merge')
+    facts['decode'] = dec
+    if step.get('acknowledged_lazy') is not False or step.get('acknowledged_merge') != 'off' or any(type(dec[k[5:]]) is int and dec[k[5:]] for k in SP_DECODE_COUNTERS):
+        fails.append('sp:native-decode-feature')
+    elif delta is None or any(type(dec[k[5:]]) is not int for k in SP_DECODE_COUNTERS):
+        missing.append('sp:decode-features-not-read')
+    a, b = _turns(status.get('entry'), 'gate-manual-owned'), _turns(status.get('after'), 'gate-manual-owned')
+    facts['manual_owned_declines'] = b - a if a is not None and b is not None else None
+    return fails, missing, facts
+
+
 def grade(arms, *args, **kwargs):
     """compose-4's grade, and each arm's bound acknowledged: a launch that ignored it would read as this run with no sign of it."""
     with _bound():
@@ -658,6 +776,20 @@ def grade(arms, *args, **kwargs):
                                                                   or geo['max_rows'] > T_GEOMETRY_MAX):
                 fails.append('geometry-tail-not-of-a-native-turn')
         result['failures'] = sorted(set(result['failures']) | {label + ':' + f for f in fails})
+    # parity-base: sp, the native-off baseline, is plain (native_off_read); every arm ran the lane as its row asked
+    result['native_off'] = {}
+    for row in T.arms():
+        rec = by.get(row['label'])
+        if rec is None:
+            continue
+        if bool((rec.get('native_off') or {}).get('requested')) is not row['native_off']:
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':native-off-not-as-the-table'})
+        if row['native_off']:
+            fails, missing, facts = native_off_read(rec, result['coverage'].get(row['label']))
+            facts.update(fails=fails, missing=missing, attn_batched=((result.get('attn_meta') or {}).get(row['label']) or {}).get('batched'))
+            result['native_off'][row['label']] = facts
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':' + f for f in fails})
+            result['missing'] = sorted(set(result['missing']) | {row['label'] + ':' + m for m in missing})
     # coverage-soak (lead, 6 Nov 03:55): no hang (every request sent in an arm completes within the arm and its drain; any that did not is
     # named), and memory at each nr arm's start and end, growth flagged, not failed. ny is read alike, never failed on these.
     result['open_requests'], result['memory'], result['memory_flags'] = {}, {}, {}
@@ -669,11 +801,11 @@ def grade(arms, *args, **kwargs):
         open_ = rec.get('replay_open_requests') or []
         if open_ or rec.get('replay_still_open'):
             result['open_requests'][row['label']] = dict(requests=open_, agents=rec.get('replay_still_open') or [])
-            if row['c1'] == T.ON:
+            if row['c1'] in T.ONS:
                 result['failures'] = sorted(set(result['failures']) | {row['label'] + ':request-open-after-the-drain'})
         mem = rec.get('memory') or {}
         result['memory'][row['label']] = memory_delta(mem.get('start'), mem.get('end'))
-        if row['c1'] == T.ON:
+        if row['c1'] in T.ONS:
             nr.append(mem)
             # coverage-soak-fix: RSS per Worker_PP fails the nr arm (lead, 6 Nov 06:25): >= 256 MiB, or >= 32 B per append-history token
             cov = result['coverage'].get(row['label']) or {}
@@ -704,14 +836,141 @@ def grade(arms, *args, **kwargs):
         delta = rec.get('stage_delta') or {}
         terminal[row['label']] = read = dict(selected=row['terminal_successor'], **{k: delta.get('step_iw_' + k) for k in ('terminal_admits', 'terminal_mismatch', 'exact_admits', 'exact_terminal')})
         admits = read['terminal_admits']
-        if type(admits) is not int:
+        if type(admits) is not int and row.get('native_off'):
+            pass        # lane-o3: sp's stage_delta unread is sp:decode-features-not-read already; an admit on sp still fails below
+        elif type(admits) is not int:
             result['missing'] = sorted(set(result['missing']) | {row['label'] + ':terminal-counters-not-read'})
         elif row['terminal_successor'] and admits == 0:
             result['missing'] = sorted(set(result['missing']) | {row['label'] + ':terminal-successor-not-engaged'})
         elif not row['terminal_successor'] and admits:
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':terminal-successor-on-the-control'})
+    # lane-o3: o3_split acknowledged on every arm (FAIL); per replay and pair arm its counters over the arm: selected with none kept is not
+    # engaged (INC), any kept on an arm that did not select it is the control moved (FAIL). Then the stop rule over the pair arms' numerics.
+    result['o3'] = o3 = {}
+    for row in T.arms():
+        rec = by.get(row['label'])
+        if rec is None:
+            continue
+        if (rec.get('inwait') or {}).get('o3_acknowledged') is not row['o3_split']:
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':o3-split-not-acknowledged'})
+        if row['kind'] not in ('replay', 'o3-pair'):
+            continue
+        o3[row['label']] = read = o3_arm_read(rec)
+        read['selected'] = row['o3_split']
+        if type(read['kept']) is not int:
+            result['missing'] = sorted(set(result['missing']) | {row['label'] + ':o3-counters-not-read'})
+        elif row['o3_split'] and read['kept'] == 0:
+            result['missing'] = sorted(set(result['missing']) | {row['label'] + ':o3-not-engaged'})
+        elif not row['o3_split'] and read['kept']:
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':o3-on-the-control'})
+    result['numerics_o3'] = numerics = o3_numerics(by)
+    if numerics['verdict'] == 'OUTSIDE':
+        result['failures'] = sorted(set(result['failures']) | set(numerics['reasons']))
+    elif numerics['verdict'] != 'WITHIN':
+        result['missing'] = sorted(set(result['missing']) | set(numerics['reasons']))
     result['verdict'] = 'FAIL' if result['failures'] else 'INC' if result['missing'] else 'PASS'
     return result
+
+
+def _o3_status(rec, label):
+    rows = [s for s in rec.get('statuses') or () if s.get('label') == label]
+    if not rows:
+        return None, None
+    declines = (rows[-1].get('append_yield') or {}).get('declines')
+    o3 = declines.get('o3') if type(declines) is dict else None
+    return (o3 if type(o3) is dict else None), rows[-1].get('route_generation')
+
+
+def _count_delta(after, before):
+    """{key: int} or {key: [n, total, max]} after minus before; max is the arm's when it moved (a run's max cannot be split)."""
+    out = {}
+    for key, value in (after or {}).items():
+        old = (before or {}).get(key)
+        if type(value) is int:
+            out[key] = value - (old if type(old) is int else 0)
+        elif type(value) in (list, tuple) and len(value) == 3:
+            old = old if type(old) in (list, tuple) and len(old) == 3 else (0, 0.0, 0.0)
+            n = value[0] - old[0]
+            out[key] = dict(n=n, ms=round(value[1] - old[1], 3), mean_ms=round((value[1] - old[1]) / n, 3) if n else None,
+                            max_ms=value[2] if n else None)
+    return out
+
+
+def o3_arm_read(rec):
+    """One arm's O3 counters, the run-end gaps and the route transitions over the arm, from its before and after status rows."""
+    labels = ('before', 'after')
+    (b, gb), (e, ge) = (_o3_status(rec, x) for x in labels)
+    if b is None or e is None:
+        return dict(kept=None, read=False)
+    driver_b, driver_e = b.get('driver') or {}, e.get('driver') or {}
+    return dict(read=True, kept=(e.get('kept') or 0) - (b.get('kept') or 0), armed=(e.get('armed') or 0) - (b.get('armed') or 0),
+                tail_bound=(e.get('tail_bound') or 0) - (b.get('tail_bound') or 0),
+                driver_kept=(driver_e.get('kept') or 0) - (driver_b.get('kept') or 0),
+                full=_count_delta(driver_e.get('full'), driver_b.get('full')), returned=_count_delta(e.get('full'), b.get('full')),
+                refused=_count_delta(e.get('refused'), b.get('refused')),
+                gap=_count_delta(e.get('gap'), b.get('gap')), transitions=_count_delta(driver_e.get('transitions'), driver_b.get('transitions')),
+                route_moves=ge - gb if type(ge) is int and type(gb) is int else None)
+
+
+# The stop rule (lead, 7 Nov after 10:41): first-token top-20 sets with O3 on against off, judged against the control's self-disagreement,
+# numerical gate rule v4's shape (e3_teacher_decode_rule4: allowance = min(cap, max(floor, 2E + 0.125)), the counting metric 2E + a
+# margin): E is the off arms' own disagreement (pf against pg, the same prompt per native, the same position). Fixed before the run.
+O3_NUMERICS = dict(position=0, lp_floor=0.375, lp_cap=1.0, lp_add=0.125, members_floor=4, members_cap=40, members_add=2)
+
+
+def _top(native, position):
+    top = (native or {}).get('top') or []
+    return {int(k): float(v) for k, v in top[position]} if position < len(top) else None
+
+
+def _pair_diff(x, y):
+    shared = set(x) & set(y)
+    return dict(members=len(set(x) ^ set(y)), max_abs_logprob=round(max((abs(x[k] - y[k]) for k in shared), default=0.0), 6))
+
+
+def o3_numerics(by):
+    """The pair arms' stop rule: WITHIN, OUTSIDE (a FAIL; read nothing past it) or INC (evidence missing)."""
+    rule = O3_NUMERICS
+    off_a, on, off_b = ('%s.g2-live-0' % sel for sel in T.O3_PAIR)
+    out = dict(schema='parity-o3-numerics/1', is_gate=True, rule=dict(rule), control=[off_a, off_b], candidate=on, natives=[], reasons=[])
+    arms = {name: by.get(name) for name in (off_a, on, off_b)}
+    for name, rec in arms.items():
+        if rec is None or len((rec or {}).get('natives') or ()) != T.O3_PAIR_NATIVES:
+            out['reasons'].append('numerics-o3-evidence-missing:' + name)
+    if out['reasons']:
+        out.update(verdict='INC', allowance=None)
+        return out
+    prompts = {n.get('prompt_sha256') for rec in arms.values() for n in rec['natives']}
+    if len(prompts) != 1:
+        out['reasons'].append('numerics-o3-prompt-differs')
+    control, across = [], []
+    for i in range(T.O3_PAIR_NATIVES):
+        tops = {name: _top(arms[name]['natives'][i], rule['position']) for name in arms}
+        if any(v is None for v in tops.values()):
+            out['reasons'].append('numerics-o3-position-missing:%d' % i)
+            continue
+        c = _pair_diff(tops[off_a], tops[off_b])
+        d = [_pair_diff(tops[on], tops[off_a]), _pair_diff(tops[on], tops[off_b])]
+        tokens = {name: (arms[name]['natives'][i].get('tokens') or [None])[rule['position']] for name in arms}
+        control.append(c)
+        across.extend(d)
+        out['natives'].append(dict(index=i, control=c, candidate=d, tokens=tokens))
+    if out['reasons']:
+        out.update(verdict='INC', allowance=None)
+        return out
+    e_lp, e_m = max(c['max_abs_logprob'] for c in control), max(c['members'] for c in control)
+    allowance = dict(max_abs_logprob=min(rule['lp_cap'], max(rule['lp_floor'], 2 * e_lp + rule['lp_add'])),
+                     members=min(rule['members_cap'], max(rule['members_floor'], 2 * e_m + rule['members_add'])))
+    worst = dict(max_abs_logprob=max(d['max_abs_logprob'] for d in across), members=max(d['members'] for d in across))
+    out.update(envelope=dict(max_abs_logprob=e_lp, members=e_m), allowance=allowance, candidate_worst=worst,
+               token_flips=dict(control=sum(1 for n in out['natives'] if n['tokens'][off_a] != n['tokens'][off_b]),
+                                candidate=sum(1 for n in out['natives'] for ref in (off_a, off_b) if n['tokens'][on] != n['tokens'][ref])))
+    if worst['max_abs_logprob'] > allowance['max_abs_logprob'] or worst['members'] > allowance['members']:
+        out['reasons'].append('numerics-o3-outside:%s' % on)
+        out['verdict'] = 'OUTSIDE'
+    else:
+        out['verdict'] = 'WITHIN'
+    return out
 
 
 def smoke_check(rec, row=None):
@@ -735,6 +994,8 @@ def smoke_check(rec, row=None):
         reasons.append('smoke-native-residue-not-acknowledged')
     if (rec.get('inwait') or {}).get('terminal_acknowledged') is not row['terminal_successor']:
         reasons.append('smoke-terminal-successor-not-acknowledged')
+    if (rec.get('inwait') or {}).get('o3_acknowledged') is not row['o3_split']:
+        reasons.append('smoke-o3-split-not-acknowledged')     # lane-o3: the smoke sends False; an engine without FLASH_S5_O3 refuses it
     # A silent fallback to 1024 would read as no gain. The arm's count holds the bulk, its returners and the append, so the line is the bulk's count at 1024: b13's 40 sit well under it.
     prompt, chunks = (rec.get('fresh') or {}).get('prompt_tokens_observed'), (rec.get('progress_delta') or {}).get('chunks')
     if type(prompt) is not int or type(chunks) is not int or chunks >= len(T.planned_chunks(prompt, 1024)):
@@ -781,12 +1042,141 @@ def memory_read():
     return engine_memory()
 
 
-one_stream_arm = _under_this_table(_box.one_stream_arm)
+_one_stream_arm = _under_this_table(_box.one_stream_arm)
+
+# --- lane-o3: the design's first box test (kind o3-pair) --------------------------------------------------------------------------
+O3_LANE = 'parity-o3-pair-'
+O3_PAIR_SCHEMA = 'parity-o3-pair/1'
+
+
+def o3_view(reply):
+    """The policy's O3 record in a status reply (append_yield.declines.o3: bounded counts, the run-end gap and the transition ms by
+    path; no request id), with the route and its generation beside it. None when absent."""
+    if type(reply) is not dict:
+        return None
+    declines = (reply.get('append_yield') or {}).get('declines')
+    o3 = declines.get('o3') if type(declines) is dict else None
+    return dict(o3 if type(o3) is dict else {}, present=type(o3) is dict, route=reply.get('route'), route_generation=reply.get('route_generation'))
+
+
+def _o3_native(a, row, cfg, prompt, index):
+    """One native request of the pair arm: the band's fresh prompt under its own salt (so no cache hit, in this arm or another), greedy,
+    top-20 logprobs on every one of O3_PAIR_TOKENS positions (c1b's checked instrument)."""
+    shared, c1b = _box.shared, _box.iw.c1b
+    salt = shared._cache_salt(a.run_id, O3_LANE + row['label'], index)
+    workload = shared._workload_view(cfg, streams=1, generation_budget=T.O3_PAIR_TOKENS, prompt_seed=cfg['prefill']['fresh']['seed'],
+                                     finish_timeout_s=cfg['timeouts']['finish_s'], temperature=0.0, top_p=1.0)
+    body = dict(shared._request(a.model, prompt, workload, salt), logprobs=T.O3_LOGPROBS, return_tokens_as_token_ids=True)
+    instrument = c1b.Numerics()
+    digest = hashlib.sha256(prompt.encode()).hexdigest()
+    state = c1b.correctness._start_streams(a.url, a.model, [body], [{'prompt_sha256': digest, 'prompt_chars': len(prompt)}], workload,
+                                           instrument=instrument)[0]
+    return dict(index=index, state=state, workload=workload, instrument=instrument, prompt_sha256=digest,
+                salt_sha256=hashlib.sha256(salt.encode()).hexdigest(),
+                request=dict(temperature=body['temperature'], top_p=body['top_p'], max_tokens=body['max_tokens'], logprobs=body['logprobs']))
+
+
+def _ns(value):
+    return value if type(value) is int else None
+
+
+def o3_native_row(native, standing):
+    """The record row of one native: times (send, first output, finish), the tokens and their top-20, and how many standing decoders
+    were still open at its first output (the cohort its handback ran beside)."""
+    state, inst = native['state'], native['instrument']
+    send, first, done = _ns(getattr(state, 'send_at_ns', None)), _ns(native.get('first_ns')), _ns(getattr(state, 'finish_at_ns', None))
+    live = None
+    if first is not None:
+        live = sum(1 for d in standing if _ns(getattr(d, 'finish_at_ns', None)) is None or d.finish_at_ns > first)
+    tokens = list(getattr(inst, 'tokens', ()))
+    return dict(index=native['index'], prompt_sha256=native['prompt_sha256'], salt_sha256=native['salt_sha256'], request=native['request'],
+                send_ns=send, first_ns=first, finish_ns=done,
+                first_output_s=round((first - send) / 1e9, 6) if send is not None and first is not None else None,
+                total_s=round((done - send) / 1e9, 6) if send is not None and done is not None else None,
+                error=None if getattr(state, 'error', None) is None else str(state.error)[:200],
+                malformed=None if getattr(state, 'malformed', None) is None else str(state.malformed)[:200],
+                tokens=tokens, top=list(getattr(inst, 'top', ())), decoders_live_at_first=live,
+                complete=len(tokens) == T.O3_PAIR_TOKENS and len(getattr(inst, 'top', ())) == T.O3_PAIR_TOKENS)
+
+
+def o3_pair_arm(a, row, cfg, budget, client, *, sleep=time.sleep):
+    """lane-o3 arm 1 (DESIGN-multi-prompt-lane O3's first box test): O3_PAIR_DECODERS standing decoders open (the 8-stream baseline's
+    prompts and salts, so its cache serves them), the arm's levers selected (o3_split among them), then O3_PAIR_NATIVES native requests
+    sent at once; the hold keeps stock off them, so the lane takes them back to back. Every exception is retained, never retried."""
+    shared, streams, base, progress = _box.shared, _box.streams, _box.base, _box.progress
+    record = _box.base_record(a, row, client)
+    record.update(o3_schema=O3_PAIR_SCHEMA, o3_split=row['o3_split'], natives=[], o3={}, standing_generation_budget=budget)
+    standing, natives, workload = [], [], None
+    mark = len(getattr(client, 'history', ()))
+    try:
+        if shared._package_gate(os.environ).get('ok') is not True:
+            raise ValueError('reviewed-package-readiness-not-pass')
+        _box.entry_status(client, row, record)
+        workload = shared._workload_view(cfg, generation_budget=budget, streams=T.O3_PAIR_DECODERS)
+        rows = streams.build_cohort(workload)
+        if len(rows) != T.O3_PAIR_DECODERS:
+            raise ValueError('o3-pair-cohort-not-%d' % T.O3_PAIR_DECODERS)
+        bodies = [shared._request(a.model, item['prompt'], workload, shared._cache_salt(a.run_id, progress.STANDING, i)) for i, item in enumerate(rows)]
+        standing = streams._start_streams(a.url, a.model, bodies, rows, workload)
+        opened = streams._wait_open(standing, workload)
+        record['open'] = {k: opened.get(k) for k in ('complete', 'reasons')}
+        if opened.get('complete') is not True:
+            raise ValueError('standing-cohort-unopened')
+        _box.select_and_release(client, row, record)
+        sleep(base.SETTLE_S)
+        before = client.call('status')
+        record['statuses'].append(status_row('before', before))
+        record['progress'].append(dict(progress.progress_view(before) or {}, label='before', native_stage_local=_box.iw.stage_view(before)))
+        record['o3']['before'] = o3_view(before)
+        prompt = shared._prefill_prompts(cfg)['fresh']
+        record['prompt_sha256'] = hashlib.sha256(prompt.encode()).hexdigest()
+        record['natives_sent_s'] = time.time()
+        for index in range(T.O3_PAIR_NATIVES):
+            natives.append(_o3_native(a, row, cfg, prompt, index))
+        for native in natives:
+            native['first_ns'] = shared._wait_first_advance(native['state'], cfg['timeouts']['read_s'])
+        finish = shared._finish_or_cancel([n['state'] for n in natives], natives[0]['workload'])
+        record['natives_finish'] = {k: finish.get(k) for k in ('timed_out', 'cancelled', 'complete')} if type(finish) is dict else None
+        after = client.call('status')
+        record['statuses'].append(status_row('after', after))
+        record['progress'].append(dict(progress.progress_view(after) or {}, label='after', native_stage_local=_box.iw.stage_view(after)))
+        record['o3']['after'] = o3_view(after)
+        view = {r.get('label'): r for r in record['progress']}
+        if view['before'].get('native_stage_local') and view['after'].get('native_stage_local'):
+            record['stage_delta'] = _box.iw.stage_delta(view['after']['native_stage_local'], view['before']['native_stage_local'])
+        record['control_actions'] = sorted({h.get('action') for h in list(getattr(client, 'history', ()))[mark:]})
+        if not set(record['control_actions']) <= _box.ACTION_NAMES:
+            record['reasons'].append('arm-sent-a-non-receipt-action')
+    except Exception as exc:  # noqa: BLE001 - retained, never retried
+        record['error'] = _box.exception_details(exc, getattr(client, 'control', None))
+        if getattr(exc, 'refusal', None) is not None:
+            record['controller_refusal'] = exc.refusal
+        record['reasons'].append('arm-error')
+    finally:
+        record['natives'] = [o3_native_row(n, standing) for n in natives]
+        if standing:
+            streams._stop_streams({}, standing, workload)
+        record['wall_end_s'] = time.time()
+    for row_ in record['natives']:
+        if not row_['complete'] or row_['error'] or row_['malformed']:
+            record['reasons'].append('o3-pair-native-%d-incomplete' % row_['index'])
+    if record['natives'] and len(record['natives']) != T.O3_PAIR_NATIVES:
+        record['reasons'].append('o3-pair-natives-not-%d' % T.O3_PAIR_NATIVES)
+    record['complete'] = not record['reasons']
+    return record
+
+
+def one_stream_arm(a, row, cfg, budget, client, **kwargs):
+    """compose-4's run_arm sends every arm that is not a replay or a live arm here: the o3-pair kind is lane-o3's, the rest compose-4's."""
+    if row.get('kind') == 'o3-pair':
+        with _bound():
+            return o3_pair_arm(a, row, cfg, budget, client, **kwargs)
+    return _one_stream_arm(a, row, cfg, budget, client, **kwargs)
 
 
 def main(argv=None):
     # grade and smoke inside compose-4's main are this module's, for the call
-    names = dict(grade=grade, smoke_check=smoke_check, replay_arm=replay_arm)
+    names = dict(grade=grade, smoke_check=smoke_check, replay_arm=replay_arm, one_stream_arm=one_stream_arm)
     saved = {name: getattr(_box, name) for name in names}
     with _bound():
         for name, value in names.items():

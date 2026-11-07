@@ -4,6 +4,7 @@ Scheduling remains paused until existing output Futures, the worker barrier,
 and typed split acks settle. No new transport, CUDA operation or model setting.
 """
 import os
+import time
 import weakref
 
 from e3_types import E3ContractError, _text
@@ -174,7 +175,8 @@ class AutoArmPolicy:
         self.o3_ledger = frozenset()
         self.o3_split_generation = None
         self.o3_joined = None
-        self.o3_counts = dict(kept=0, armed=0, tail_bound=0, full={}, refused={})
+        self.o3_counts = dict(kept=0, armed=0, tail_bound=0, full={}, refused={}, gap={})
+        self._o3_gap_start = None      # (monotonic ns, path) at a run's terminal commit; closed at the next arm
 
     @property
     def active(self):
@@ -229,7 +231,7 @@ class AutoArmPolicy:
     # -- lane-o3 ------------------------------------------------------------
     def o3_record(self):
         driver = getattr(self.driver, 'o3_counters', None) or {}
-        return dict(on=int(bool(self.o3)), ledger=len(self.o3_ledger),
+        return dict(on=int(bool(self.o3)), selected=int(getattr(self.controller, 'o3_selected', False) is True), ledger=len(self.o3_ledger),
                     **{k: (dict(v) if type(v) is dict else v) for k, v in self.o3_counts.items()},
                     driver={k: (dict(v) if type(v) is dict else v) for k, v in driver.items()})
 
@@ -242,12 +244,33 @@ class AutoArmPolicy:
 
     def o3_keeps_split(self, uid, remaining):
         """The driver asks at a terminal commit under split: None keeps the route split for this run's handback, else the
-        reason today's FULL return runs. Never raises."""
+        reason today's FULL return runs. Never raises. A run's end (the selection's terminal commit, no yield) starts the gap
+        clock, read at the next arm by path: 'o3' (stayed split) or 'full' (today's cycle, any reason)."""
+        why = self._o3_keeps_split(uid, remaining)
+        try:
+            request = self._request()
+            if (self.phase == 'native' and request is not None and request.request_id == uid
+                    and not self.driver.append_yield_active()):
+                self._o3_gap_start = (time.monotonic_ns(), 'o3' if why is None else 'full')
+        except Exception:
+            self.decline_totals['read_errors'] += 1
+        return why
+
+    def _o3_gap_close(self):
+        """The next arm after a run's end: the gap in ms by path, [count, total, max] (bounded; no request id)."""
+        start, self._o3_gap_start = self._o3_gap_start, None
+        if start is None:
+            return
+        ms = (time.monotonic_ns() - start[0]) / 1e6
+        n, total, worst = self.o3_counts['gap'].get(start[1], (0, 0.0, 0.0))
+        self.o3_counts['gap'][start[1]] = [n + 1, round(total + ms, 3), round(max(worst, ms), 3)]
+
+    def _o3_keeps_split(self, uid, remaining):
         try:
             d, s = self.driver, self.scheduler
             request = self._request()
-            if not self.o3:
-                return 'off'
+            if not self.o3 or getattr(self.controller, 'o3_selected', False) is not True:
+                return 'off'     # installed for the run (FLASH_S5_O3) and selected by the arm (o3_split)
             if self.phase != 'native' or request is None or request.request_id != uid:
                 return 'not-the-selection'
             if d.append_yield_active():
@@ -386,6 +409,7 @@ class AutoArmPolicy:
         self.o3_joined = None
         self.decline_totals['armed'] += 1
         self.o3_counts['armed'] += 1
+        self._o3_gap_close()
         self._note('armed', route_generation=d.route_generation, o3=1)
         self.scheduler.set_pause_state(self.old_pause)
 
@@ -1269,6 +1293,7 @@ class AutoArmPolicy:
                 d.append_yield_set_phase('resume')
             else:
                 self.decline_totals['armed'] += 1
+                self._o3_gap_close()
             self._note('armed', route_generation=d.route_generation)
             self.scheduler.set_pause_state(self.old_pause)
         elif self.phase == 'o3_census':

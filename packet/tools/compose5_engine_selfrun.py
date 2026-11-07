@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""q18a-compose-throughput-p2 engine self-run, tools/inwait_engine_selfrun.py with this family's names and suites (discovery mode runs no --compare and no --negative): attn-meta's fixed form by name (claude/attn-meta-c1b: tools/attn_meta_engine_selfrun{,_b,_c}.py, flattened here, never edited
+"""q18a-parity-o3 engine self-run, tools/inwait_engine_selfrun.py with this family's names and suites (discovery mode runs no --compare and no --negative): attn-meta's fixed form by name (claude/attn-meta-c1b: tools/attn_meta_engine_selfrun{,_b,_c}.py, flattened here, never edited
 there): c1's seven containers unchanged plus one step container, compared against c1b's frozen record. CPU only, no network.
 
 Eight containers over one frozen bundle, all results kept under OUT:

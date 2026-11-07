@@ -1360,6 +1360,13 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-terminal-successor-invalid')
             if terminal and exact is not True:
                 raise DriverError('native-stage-terminal-successor-needs-exact')
+        o3_split = command.get('o3_split', False)
+        if 'o3_split' in command:
+            # lane-o3: per arm, in the same pause; installed by FLASH_S5_O3=1 for the whole run. A command without it turns it off.
+            if os.environ.get('FLASH_S5_O3', '0') != '1':
+                raise DriverError('native-stage-o3-not-installed')
+            if type(o3_split) is not bool:
+                raise DriverError('native-stage-o3-split-invalid')
         if 'chunk_bound' in command:
             # decode-phase dp6: per arm, in the same pause. None is today's plan.
             if not self.inwait_installed:
@@ -1383,7 +1390,7 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-native-residue-invalid')
         reply = super()._stage_control({k: v for k, v in command.items()
                                         if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor', 'chunk_bound',
-                                                     'native_hold', 'native_residue', 'terminal_successor')})
+                                                     'native_hold', 'native_residue', 'terminal_successor', 'o3_split')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -1440,6 +1447,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         if 'native_residue' in command:
             self.controller.native_residue = command['native_residue']
             reply.update(native_residue=command['native_residue'])
+        self.controller.o3_selected = o3_split
+        reply.update(o3_split=o3_split)
         return reply
 
     def stage_status(self):
@@ -1467,6 +1476,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             # under their own key with the selection.
             result['overlap']['terminal_successor'] = dict(selected=self.terminal_successor,
                                                            counters=dict(getattr(self.controller, 'terminal_counters', {})))
+        result['overlap']['o3'] = dict(installed=os.environ.get('FLASH_S5_O3', '0') == '1',
+                                       selected=getattr(self.controller, 'o3_selected', False) is True)
         if self.overlap_observer is not None:
             result['overlap']['observe'] = dict(counters=dict(self.overlap_observer.counters))
         return result

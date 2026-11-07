@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_compose_throughput_p2_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_parity_o3_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SHORT = dict(T.REPLAY, AGENTS=2, DURATION=0.4, WARMUP=0.0, START_MIN=60000, START_MAX=60000, TOOL_MIN=0.01, TOOL_MAX=0.02)
@@ -117,6 +117,28 @@ class ArmEnd(a1r.ArmEnd):
         self.assertNotIn('smoke-reserved-cap-not-requested', reasons)
         self.assertNotIn('smoke-exact-successor-not-acknowledged', reasons)
 
+    async def test_the_o3_pair_arm_sends_its_natives_and_selects_o3(self):
+        for sel in T.O3_PAIR:
+            with self.subTest(sel):
+                rc_, record, actions, served, _out = await self.arm(sel)
+                self.assertNotIn('error', record, record.get('error'))
+                self.assertEqual(record['kind'], 'o3-pair')
+                # this fixture's completion leaf streams no logprobs: the arm names each native's evidence invalid, never a pass
+                self.assertEqual((rc_, record['reasons']), (2, ['o3-pair-native-%d-incomplete' % i for i in range(T.O3_PAIR_NATIVES)]))
+                self.assertEqual({n['malformed'] for n in record['natives']}, {'teacher_logprob_evidence_invalid'})
+                natives = [c for c in served if c.get('max_tokens') == T.O3_PAIR_TOKENS]    # the fixture keeps max_tokens and the salt of each body
+                self.assertEqual(len(natives), T.O3_PAIR_NATIVES)
+                self.assertEqual(len({c['cache_salt'] for c in natives}), T.O3_PAIR_NATIVES)
+                self.assert_control(actions)
+                self.assertEqual(len(served), T.by_label()['%s.g2-live-0' % sel]['generations'], 'two standing decoders and three natives, as the ingress check counts')
+                self.assertEqual((record['inwait']['o3_requested'], record['inwait']['o3_acknowledged']), (T.O3_SPLIT[sel],) * 2)
+                self.assertIs(self.driver.controller.o3_selected, T.O3_SPLIT[sel])
+                self.assertEqual(len(record['natives']), T.O3_PAIR_NATIVES)
+                self.assertEqual(len({n['salt_sha256'] for n in record['natives']}), T.O3_PAIR_NATIVES, 'one salt per native: no cache hit')
+                self.assertEqual({n['prompt_sha256'] for n in record['natives']}, {record['prompt_sha256']}, 'one prompt: the numerics compare like with like')
+                self.assertEqual({(n['request']['temperature'], n['request']['logprobs'], n['request']['max_tokens']) for n in record['natives']}, {(0.0, T.O3_LOGPROBS, T.O3_PAIR_TOKENS)})
+                self.assertTrue(box.o3_arm_read(record)['read'])
+
     async def test_the_one_stream_arm_opens_one_and_reads_one_window(self):
         rc_, record, actions, served, _out = await self.arm('dec1')
         self.assertNotIn('error', record, record.get('error'))
@@ -126,7 +148,7 @@ class ArmEnd(a1r.ArmEnd):
         self.assertEqual(len(record['decode_only']['stream_rates_tokens_per_s']), 1)
 
     async def test_the_replay_arm_keeps_its_turns_beside_the_record_with_its_seed(self):
-        for sel, index, seed in (('ny', 0, 1), ('nt', 1, 2)):
+        for sel, index, seed in (('sp', 0, 1), ('nt', 1, 2), ('no', 1, 2)):
             with self.subTest(sel):
                 rc_, record, actions, _served, out = await self.arm(sel, index=index)
                 name = T.label(sel, 2, 'live', index)
@@ -147,6 +169,13 @@ class ArmEnd(a1r.ArmEnd):
                 # parity-2 A: the terminal successor through the real router, session and control to the stage driver
                 self.assertEqual((record['inwait']['terminal_requested'], record['inwait']['terminal_acknowledged']), (T.TERMINAL_SUCCESSOR[sel],) * 2)
                 self.assertIs(self.driver.terminal_successor, T.TERMINAL_SUCCESSOR[sel])
+                # lane-o3: o3_split through the real router, session and control to the stage driver and the controller the policy reads
+                self.assertEqual((record['inwait']['o3_requested'], record['inwait']['o3_acknowledged']), (T.O3_SPLIT[sel],) * 2)
+                self.assertIs(self.driver.controller.o3_selected, T.O3_SPLIT[sel])
+                o3 = box.o3_arm_read(record)
+                self.assertTrue(o3['read'], 'the policy\'s O3 record reaches the arm\'s before and after status rows')
+                self.assertEqual(o3['kept'], 0)
+                self.assertEqual(type(o3['route_moves']), int)
                 self.assertEqual({k: type(record['stage_delta'].get('step_iw_' + k)) for k in ('terminal_admits', 'terminal_mismatch')}, dict(terminal_admits=int, terminal_mismatch=int), 'the counters reach the arm record')
                 # the real driver's status, through the real box: the decline record and its coverage counter reach the arm's record
                 for status in [s for s in record['statuses'] if s['label'] in ('entry', 'after')]:
@@ -164,6 +193,49 @@ class ArmEnd(a1r.ArmEnd):
                 self.assertEqual(record['replay_config']['AGENTS'], 2)
                 self.assertIsNotNone(record['polled'])
                 self.assertTrue(set(record['control_actions']) <= box.ACTION_NAMES)
+
+    async def test_sp_keeps_the_lease_for_its_arm_and_the_next_arm_takes_the_lane_back(self):
+        """parity-base: sp sends ny's controls (the release too), then pause and resume, and reads the lease held before any turn, at every
+        poll and at the end, with attn-meta, the lazy receive and the decode merge off; nt run next on the same engine enters as after any arm
+        and its release hands the policy back, with every decode feature on again (the real driver, AutoArmPolicy and workers)."""
+        policy = self.driver.auto_arm
+        self.assertIsNotNone(policy)
+        polls = mock.patch.object(box4.Poller.__init__, '__defaults__', (0.05,))     # Poller's period is bound at def time; POLL_S's patch misses it
+        with polls:
+            rc_, record, actions, _served, _out = await self.arm('sp', index=0)
+        self.assertNotIn('error', record, record.get('error'))
+        self.assertEqual((rc_, record['reasons'], record['kind']), (0, [], 'replay'))
+        self.assert_control(actions)
+        at = actions.index('release_auto_arm')
+        self.assertEqual(actions[at:at + 5], ['release_auto_arm', 'resume', 'pause', 'resume', 'status'], actions)
+        self.assertEqual(actions.count('release_auto_arm'), 1)
+        lease = record['native_off']
+        self.assertEqual({k: lease[k] for k in ('requested', 'paused', 'resumed', 'manual_owned', 'active', 'route', 'scheduler_requests')},
+                         dict(requested=True, paused=True, resumed=True, manual_owned=True, active=False, route='full', scheduler_requests=0))
+        status = {s['label']: s for s in record['statuses']}
+        self.assertEqual([status[k]['auto_arm']['manual_owned'] for k in ('entry', 'lease', 'before', 'after')], [True] * 4)
+        self.assertGreater(len(record['polled']['rows']), 0)
+        self.assertEqual({r['manual_owned'] for r in record['polled']['rows']}, {True})
+        self.assertEqual({str(r): v['after']['selected'] for r, v in record['attn_meta']['select'].items()}, {str(r): False for r in range(4)})
+        self.assertEqual((record['step']['acknowledged_lazy'], record['step']['acknowledged_merge']), (False, 'off'))
+        self.assertEqual((record['yield_control']['enabled'], record['inwait']['hold_acknowledged'], record['inwait']['residue_acknowledged']), (False, 0, 0))
+        self.assertIs(policy.manual_owned, True)
+        self.assertIs(self.driver.lazy_recv, False)
+        # the next arm, as the table runs it after sp.g2-live-0
+        with polls:
+            rc_, record, actions, _served, _out = await self.arm('nt', index=0)
+        self.assertNotIn('error', record, record.get('error'))
+        self.assertEqual((rc_, record['reasons']), (0, []))
+        self.assertEqual(record['native_off'], dict(requested=False))
+        at = actions.index('release_auto_arm')
+        self.assertEqual(actions[at:at + 3], ['release_auto_arm', 'resume', 'status'], actions)     # no lease kept: the end read's pause comes after the record
+        status = {s['label']: s for s in record['statuses']}
+        self.assertEqual([status[k]['auto_arm']['manual_owned'] for k in ('entry', 'before', 'after')], [True, False, False])
+        self.assertEqual({r['manual_owned'] for r in record['polled']['rows']}, {False})
+        self.assertEqual({str(r): v['after']['selected'] for r, v in record['attn_meta']['select'].items()}, {str(r): True for r in range(4)})
+        self.assertEqual((record['step']['acknowledged_lazy'], record['step']['acknowledged_merge']), (True, 'chunk'))
+        self.assertEqual((record['yield_control']['enabled'], record['inwait']['hold_acknowledged'], record['inwait']['residue_acknowledged']), (True, T.HOLD_S, 1))
+        self.assertIs(self.driver.lazy_recv, True)
 
 
 if __name__ == '__main__':

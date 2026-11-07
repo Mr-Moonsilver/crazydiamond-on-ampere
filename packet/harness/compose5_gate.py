@@ -1,4 +1,4 @@
-"""q18a-compose-throughput-p2 box queue: a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, four soak arms on dnr's turn mix, ABBA (build-2b24c64; build-2b24 ran one pair), no tail). One budget for the watchdog and the draft, relative to the run's own start only.
+"""q18a-parity-o3 box queue (lane-o3: the three o3-pair arms at O3_PAIR_WALL_S each and six replay arms, no nt ny | ny nt no): a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, four soak arms on dnr's turn mix, ABBA (build-2b24c64; build-2b24 ran one pair), no tail). One budget for the watchdog and the draft, relative to the run's own start only.
 
 soak (lead, 6 Nov 04:10): four arms of 480 s traffic plus a 60 s tail, hard cap 1.3x nominal (~74 min), cleanup included; the run ends by 07:15 CET. The entry limits come from the nominal walls at 1.5x, not from the worst-case caps (those sum past the cap); a step that overruns meets the budget's TERM, whose path is the clean stop (tmp/decode-phase/STOP-dnr.md).
 
@@ -33,6 +33,7 @@ ONE_STREAM_WALL_S = 60                                   # dnr's dec1: 26 s and 
 REPLAY_TAIL_S = 60                                       # dnr: 10-34 s past DURATION for the open turns; nr's native turns run longer (lead 04:10: 60 s)
 ENTRY_S = 10                                             # dnr's entries: 0.3-8 s
 DECODE_WALL_S = 60                                       # dnr's decode-am1: 29 s
+O3_PAIR_WALL_S = 180                                     # lane-o3: 2 cached decoders open, 3 band-1 fresh natives (65k) back to back at ~20 s each, the outputs, entry and reads
 BETWEEN_S = 30
 END_S = 240
 SLOWER = 1.5
@@ -43,7 +44,7 @@ def _nominal_s():
     """The table walked at its nominal walls with no entry limit: the cap's basis."""
     walls = FIRST_ARM_S + COLD_FIRST_S + DECODE_ARMS * DECODE_WALL_S + BETWEEN_S + END_S
     for row in table.arms()[1:]:
-        walls += ENTRY_S + (table.REPLAY['DURATION'] + REPLAY_TAIL_S if row['kind'] == 'replay' else ONE_STREAM_WALL_S)
+        walls += ENTRY_S + (table.REPLAY['DURATION'] + REPLAY_TAIL_S if row['kind'] == 'replay' else O3_PAIR_WALL_S if row['kind'] == 'o3-pair' else ONE_STREAM_WALL_S)
     return walls
 
 
@@ -73,6 +74,8 @@ def arm_wall(row, first=False):
         return DECODE_WALL_S
     if row['kind'] == 'replay':
         return table.REPLAY['DURATION'] + REPLAY_TAIL_S
+    if row['kind'] == 'o3-pair':
+        return O3_PAIR_WALL_S
     return COLD_FIRST_S if row['kind'] == 'live-arm' else ONE_STREAM_WALL_S
 
 

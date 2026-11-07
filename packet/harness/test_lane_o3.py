@@ -21,6 +21,8 @@ from unittest import mock
 import numpy as np
 
 import test_append_yield as ay
+import test_parity2_terminal as p2t
+import stage_overlap as so
 from test_append_yield import BULK_UID, Pause, Rig, ed, sh
 import test_tail_select as ts
 import graph_hooks
@@ -31,7 +33,7 @@ THIRD_UID = 'o3-third'
 COUNTS = (1, 2, 3, 4)
 
 
-def o3_rig(*, o3=True, counts=COUNTS, waiting=(NEXT_UID,)):
+def o3_rig(*, o3=True, selected=None, counts=COUNTS, waiting=(NEXT_UID,)):
     """The Rig's bulk armed on split as by a proven entry: the residency's generation, its (empty) proven cohort and the
     identity's decode counts are what the policy's 'split' phase records (native_auto_arm tick, phase 'split')."""
     rig = Rig(cached={}, enabled=False)
@@ -39,6 +41,7 @@ def o3_rig(*, o3=True, counts=COUNTS, waiting=(NEXT_UID,)):
     rig.c.native_hold_s = 30
     p, d = rig.p, rig.d
     p.o3 = o3
+    rig.c.o3_selected = o3 if selected is None else selected     # the arm's o3_split (stage_overlap._stage_control)
     p.o3_split_generation, p.o3_ledger = d.route_generation, frozenset()
     p.decode_counts = frozenset(counts)
     # The rig enters split by a manual enter_split control; the policy's own entry hands the route to the policy
@@ -116,6 +119,11 @@ class StaySplit(unittest.TestCase):
         self.assertEqual(len(transitions(rig)), moves, 'no FULL transition and no enter_split')
         self.assertNotIn('worker_barrier', rig.kinds())
         self.assertEqual(p.o3_counts['armed'], 1)
+        gap = p.o3_record()['gap']
+        self.assertEqual(list(gap), ['o3'])                       # the run's end to the next arm, on the O3 path
+        self.assertEqual(gap['o3'][0], 1)
+        self.assertTrue(gap['o3'][1] >= gap['o3'][2] >= 0)
+        self.assertIsNone(p._o3_gap_start)
         self.assertEqual(p.o3_ledger, frozenset({BULK_UID}))
         self.assertEqual(rig.s.pause_state, Pause.UNPAUSED)
         self.assertEqual(d.admission_intent()['request_uid'], NEXT_UID)
@@ -140,6 +148,20 @@ class StaySplit(unittest.TestCase):
         self.assertEqual(len(transitions(rig)), moves + 1)
         self.assertEqual(rig.d.o3_counters['kept'], 0)
         self.assertFalse(sh.defer_stock_positive_frontier(rig.s, rig.bulk))     # on FULL: stock as today
+        self.assertEqual(rig.p._o3_gap_start[1], 'full', "the run's end starts today's gap")
+        full = rig.d.o3_counters['transitions'].get('full')
+        self.assertIsNotNone(full)
+        self.assertEqual(full[0], 1)                               # the FULL return, timed send -> every ack
+        self.assertTrue(full[1] >= full[2] >= 0)
+
+    def test_installed_but_not_selected_keeps_todays_full_return(self):
+        rig, _ = o3_rig(o3=True, selected=False)       # the box's off arms: FLASH_S5_O3=1 for the run, o3_split False
+        run_native_to_terminal(rig, rig.bulk)
+        self.assertEqual(rig.d._return_pending, 'handback')
+        self.assertIsNone(rig.d.o3_handback_uid())
+        self.assertEqual(rig.d.o3_counters['full'], {'off': 1})
+        self.assertEqual(rig.p.o3_record()['selected'], 0)
+        self.assertFalse(rig.d.o3_handback_permits(rig.bulk, 'positive-frontier'))
 
     def test_counts_not_proven_keep_the_full_return(self):
         rig, _ = o3_rig(counts=())
@@ -324,6 +346,38 @@ class Install(unittest.TestCase):
 MUTANT_LOG = []
 
 
+class O3Selection(p2t.ie.FlagOn, p2t.ie.Early, p2t.c1.OverlapBase):
+    """The arm's o3_split on the real stage command (stage_overlap._stage_control): selected, echoed, in status; a command
+    without it turns it off; refused when not a bool or not installed (FLASH_S5_O3 unset)."""
+    idle = p2t.Selection.idle
+    base = p2t.Selection.base
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.dict(os.environ, {'FLASH_S5_O3': '1'})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_selected_by_the_stage_command_and_read_in_status(self):
+        driver = self.idle()
+        self.assertIs(driver._stage_control(dict(self.base, o3_split=True))['o3_split'], True)
+        self.assertIs(driver.controller.o3_selected, True)
+        self.assertEqual(driver.stage_status()['overlap']['o3'], dict(installed=True, selected=True))
+        self.assertIs(driver._stage_control(dict(self.base))['o3_split'], False, 'a command without the field turns it off')
+        self.assertIs(driver.controller.o3_selected, False)
+        self.assertEqual(driver.stage_status()['overlap']['o3'], dict(installed=True, selected=False))
+
+    def test_refused_when_invalid_or_not_installed(self):
+        driver = self.idle()
+        with self.assertRaises(ed.DriverError):
+            driver._stage_control(dict(self.base, o3_split=1))
+        with mock.patch.dict(os.environ, {'FLASH_S5_O3': '0'}):
+            with self.assertRaises(ed.DriverError):
+                driver._stage_control(dict(self.base, o3_split=True))
+            self.assertIs(driver._stage_control(dict(self.base))['o3_split'], False)
+        self.assertIs(getattr(driver.controller, 'o3_selected', False), False, 'nothing applied on a refusal')
+
+
 class Mutants(unittest.TestCase):
     """One engine mutation per new test; each must fail it (lead's rule: a mutant per new test)."""
 
@@ -364,16 +418,39 @@ class Mutants(unittest.TestCase):
 
     def test_off_ignored(self):
         self.fails(self.run_test(StaySplit, 'test_off_keeps_todays_full_return'),
-                   auto.AutoArmPolicy, 'o3_keeps_split', ("            if not self.o3:\n                return 'off'\n", ''))
+                   auto.AutoArmPolicy, '_o3_keeps_split', ("            if not self.o3 or getattr(self.controller, 'o3_selected', False) is not True:\n", "            if False:\n"))
+
+    def test_gap_not_closed(self):
+        self.fails(self.run_test(StaySplit, 'test_two_back_to_back_runs_stay_split'),
+                   auto.AutoArmPolicy, '_o3_arm', ("        self._o3_gap_close()\n", ''))
+
+    def test_transitions_not_timed(self):
+        self.fails(self.run_test(StaySplit, 'test_off_keeps_todays_full_return'),
+                   ed.NativeSegmentDriver, '_apply',
+                   ("            self.o3_counters['transitions'][bank] = [n + 1, round(total + ms, 3), round(max(worst, ms), 3)]\n", ''))
+
+    def test_selection_ignored(self):
+        self.fails(self.run_test(StaySplit, 'test_installed_but_not_selected_keeps_todays_full_return'),
+                   auto.AutoArmPolicy, '_o3_keeps_split', ("            if not self.o3 or getattr(self.controller, 'o3_selected', False) is not True:\n", "            if not self.o3:\n"))
+
+    def test_stage_drops_the_selection(self):
+        self.fails(self.run_test(O3Selection, 'test_selected_by_the_stage_command_and_read_in_status'),
+                   so.OverlapSegmentDriver, '_stage_control',
+                   ('        self.controller.o3_selected = o3_split\n', '        self.controller.o3_selected = False\n'))
+
+    def test_stage_without_install_check(self):
+        self.fails(self.run_test(O3Selection, 'test_refused_when_invalid_or_not_installed'),
+                   so.OverlapSegmentDriver, '_stage_control',
+                   ("            if os.environ.get('FLASH_S5_O3', '0') != '1':\n                raise DriverError('native-stage-o3-not-installed')\n", ''))
 
     def test_counts_ignored(self):
         self.fails(self.run_test(StaySplit, 'test_counts_not_proven_keep_the_full_return'),
-                   auto.AutoArmPolicy, 'o3_keeps_split',
+                   auto.AutoArmPolicy, '_o3_keeps_split',
                    ("            if not self._o3_covers(rows):\n                return 'counts'\n", ''))
 
     def test_tail_rows_ignored(self):
         self.fails(self.run_test(StaySplit, 'test_refusal_reasons'),
-                   auto.AutoArmPolicy, 'o3_keeps_split', ("            if remaining != 1:", "            if False:"))
+                   auto.AutoArmPolicy, '_o3_keeps_split', ("            if remaining != 1:", "            if False:"))
 
     def test_seam_any_row_count(self):
         self.fails(self.run_test(StaySplit, 'test_the_seam_passes_only_the_kept_row'),

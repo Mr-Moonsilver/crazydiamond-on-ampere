@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""q18a-compose-throughput-p2 queue: the derivation from a1's committed texts, the name rules with the runner's real QNAME, the budget, the derived arm loop under real bash with the real grade, and every python call against its real parser. CPU only; no pass here is box evidence."""
+"""q18a-parity-o3 queue: the derivation from a1's committed texts, the name rules with the runner's real QNAME, the budget, the derived arm loop under real bash with the real grade, and every python call against its real parser. CPU only; no pass here is box evidence."""
 import json
 import os
 from pathlib import Path
@@ -27,12 +27,12 @@ tap, tq, tan = tiq.tap, tiq.tq, tiq.tan
 SLOT_RECEIPTS = []
 ARGPARSE_RECEIPTS = []
 RUNS = HERE / 'runs'
-DRAFT = 'harness/runs/q18a_compose_throughput_p2.draft.sh'
-SETTINGS = 'harness/runs/q18a_compose_throughput_p2_settings.sh'
-DECLARE = 'harness/runs/q18a_compose_throughput_p2_declare.sh'
+DRAFT = 'harness/runs/q18a_parity_o3.draft.sh'
+SETTINGS = 'harness/runs/q18a_parity_o3_settings.sh'
+DECLARE = 'harness/runs/q18a_parity_o3_declare.sh'
 CORE = T.labels('core')
 DECODE = [d['label'] for d in T.DECODE_ARMS]
-QNAME = 'q18a-compose-throughput-p2'
+QNAME = 'q18a-parity-o3'
 STUB_BOX = tiq.STUB_BOX.replace('import e3_inwait_box as real', 'import e3_compose5_box as real')
 assert STUB_BOX != tiq.STUB_BOX
 
@@ -84,14 +84,14 @@ class Derivation(unittest.TestCase):
 def settings_rows():
     """The real settings text under real bash: what engine_identity declare --settings gets."""
     lines = ['set -u', 'H=%s' % shlex.quote(str(HERE))] + ['%s=%s' % (k, shlex.quote(v)) for k, v in ARGPARSE_VALUES.items()]
-    lines += ['source "$H/runs/q18a_compose_throughput_p2_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
+    lines += ['source "$H/runs/q18a_parity_o3_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
     assert done.returncode == 0, done.stderr.decode()[-400:]
     return done.stdout.decode().split('\0')[:-1]
 
 
 def declared_env():
-    """EXTRA_ENV through engine_identity's own cleaning, the box's record's form (q18a-compose-throughput-p2 staging, 5 Nov 04:22: FLASH_S5_PLE_PRIVATE {'redacted_length': 1})."""
+    """EXTRA_ENV through engine_identity's own cleaning, the box's record's form (q18a-parity-o3 staging, 5 Nov 04:22: FLASH_S5_PLE_PRIVATE {'redacted_length': 1})."""
     (extra,) = [row.split('=', 1)[1] for row in settings_rows() if row.startswith('EXTRA_ENV=')]
     env = engine_identity.clean_value('EXTRA_ENV', extra)
     env['Q18A_TARGET_LABEL'] = ARGPARSE_VALUES.get('Q18A_TARGET_LABEL', 's5-overlap-80-80')
@@ -103,8 +103,9 @@ def real_env():
     # coverage-throughput: and the yield's new-row bound this table raises (compose5_arms.YIELD_MAX_NEW), shown plain as a1's 2048 was.
     # build-2: and FLASH_S5_PREPARE_AHEAD, in the form engine_identity.clean_value gives it ('1', plain; checked below), not yet seen on the box.
     # build-2b24c64: and the logits cap, plain, as the box declared o4's 136 (q18a-o4-chunk2048, engine.identity-start.json: '136').
+    # lane-o3: and FLASH_S5_O3, in the form engine_identity.clean_value gives it ('1', plain; checked below), not yet seen on the box.
     return dict(json.loads((HERE / 'fixtures/compose4_declared_20261105_0422.json').read_text())['identity']['env'], FLASH_S5_CHUNK_TOKENS='2048',
-                FLASH_S5_APPEND_YIELD_MAX_NEW=str(T.LAUNCH['max_new']), FLASH_S5_PREPARE_AHEAD='1', VLLM_SPARSE_INDEXER_MAX_LOGITS_MB='64')
+                FLASH_S5_APPEND_YIELD_MAX_NEW=str(T.LAUNCH['max_new']), FLASH_S5_PREPARE_AHEAD='1', VLLM_SPARSE_INDEXER_MAX_LOGITS_MB='64', FLASH_S5_O3='1')
 
 
 def declare_block(text):
@@ -180,6 +181,26 @@ class DeclaredIdentity(unittest.TestCase):
         settings = queue.derive()[SETTINGS]
         self.assertEqual(settings.count(' VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=64 '), 1, 'once in EXTRA_ENV, for the whole run')
 
+    def test_o3_is_declared_plain_and_both_preflights_refuse_it_missing_or_off(self):
+        """lane-o3: FLASH_S5_O3=1 in EXTRA_ENV for the whole run; the identity shows it as '1'; the declaration stops without it or at '0'."""
+        self.assertEqual(engine_identity.clean_value('FLASH_S5_O3', '1'), '1')
+        self.assertEqual(declared_env()['FLASH_S5_O3'], '1')
+        block = declare_block(queue.derive()[DECLARE])
+        self.assertEqual(self.run_block(block, real_env()).returncode, 0)
+        for value in (None, '0', 1):
+            bad = dict(real_env())
+            if value is None:
+                bad.pop('FLASH_S5_O3')
+            else:
+                bad['FLASH_S5_O3'] = value
+            done = self.run_block(block, bad)
+            self.assertEqual(done.returncode, 1, value)
+            self.assertIn('AssertionError: lane-o3 O3 installed', done.stderr)
+        draft = queue.derive()[DRAFT]
+        self.assertIn("assert env.get('FLASH_S5_O3') == '1', 'lane-o3 O3 installed'", draft)
+        settings = queue.derive()[SETTINGS]
+        self.assertEqual(settings.count(' FLASH_S5_O3=1 '), 1, 'once in EXTRA_ENV, for the whole run')
+
     def test_the_settings_here_declare_what_the_box_declared(self):
         """Every name this text puts in EXTRA_ENV reads on the box as it reads here; the two library hashes are this test's stand-ins."""
         real, here = real_env(), declared_env()
@@ -245,7 +266,7 @@ class DeclaredIdentity(unittest.TestCase):
 
 class Names(unittest.TestCase):
     def test_the_real_qname_passes_every_name_rule(self):
-        phases = ['q18a_compose_throughput_p2.draft.sh', 'q18a_compose_throughput_p2_declare.sh']
+        phases = ['q18a_parity_o3.draft.sh', 'q18a_parity_o3_declare.sh']
         self.assertEqual(names.check_names(QNAME, phases, RUNS, HERE / 'qlib.sh'), [])
         self.assertEqual(re.findall(r"^CANDIDATE = '([^']+)'$", (ROOT / 'tools/build_compose5.py').read_text(), re.M), [QNAME])
         for text in queue.derive().values():
@@ -261,11 +282,11 @@ class Budget(unittest.TestCase):
             est = gate.EXPECTED_RUNTIME_S[key]
             self.assertEqual((est['not_run'], est['arms_entering']), ([], len(gate.rows())), key)
             self.assertLessEqual(est['total_min'] * 60, gate.ACTIVE_S, key + ': the run ends before the TERM')
-        self.assertEqual(gate.NOMINAL_S, 3420, 'soak (lead 04:10): four 480 s arms with a 60 s tail, 57 min nominal (build-2b24c64: ABBA again)')
-        self.assertEqual((gate.CAP, gate.BOX_BUDGET_S), (1.3, 4446), "build-2b24c64: the lead's 1.3x, as build-2b")
+        self.assertEqual(gate.NOMINAL_S, 5090, 'lane-o3: parity-base\'s six 480 s replay arms with a 60 s tail and three pair arms at 180 s (+570 s with their entries), 84.8 min nominal (parity-base 4520)')
+        self.assertEqual((gate.CAP, gate.BOX_BUDGET_S, gate.LAST_ARM_ENTRY_S), (1.3, 6617, 4951), "the lead's 1.3x (lane-o3: the 6-arm replay accepted, 7 Nov 11:55)")
         self.assertGreater(gate.EXPECTED_RUNTIME_S['slower']['min_margin_s'], 0, 'every arm enters at 1.5x the walls')
         self.assertLessEqual(gate.BOX_BUDGET_S, gate.CAP * gate.NOMINAL_S, "the lead's hard cap, cleanup included")
-        self.assertLessEqual(gate.BOX_BUDGET_S, 75 * 60, 'the run ends by 07:15 CET from a 06:00 start')
+        self.assertLessEqual(gate.BOX_BUDGET_S, 111 * 60, 'lane-o3: the hard cap, 110.3 min (box time free until Monday 08:00, the lead 11:55)')
         self.assertEqual(gate.ACTIVE_S + gate.CLEANUP_S, gate.BOX_BUDGET_S)
         self.assertIn('compose5_arms', gate.PHASES)
 
@@ -343,7 +364,7 @@ class ArmLoop(unittest.TestCase):
         grade = json.loads((self.q / 'compose5-grade.json').read_text())
         self.assertEqual((grade['schema'], grade['verdict'], grade['missing']), ('compose5-grade/1', 'PASS', []))
         self.assertEqual(sorted(grade['arms']), sorted(CORE))
-        self.assertTrue((self.q / 'compose5-report.md').read_text().startswith('# q18a-compose-throughput-p2'))
+        self.assertTrue((self.q / 'compose5-report.md').read_text().startswith('# q18a-parity-o3'))
         self.assertEqual(json.loads((self.q / 'compose5-read.json').read_text())['verdict'], 'PASS')
 
     def test_a_smoke_that_does_not_engage_stops_the_table(self):
@@ -365,12 +386,13 @@ class Generations(unittest.TestCase):
             record = Path(tmp) / 'arm.json'
             done = self.call(T.SMOKE_ARM, record)
             self.assertEqual((done.returncode, done.stdout.strip()), (0, str(T.by_label()[T.SMOKE_ARM]['generations'])))
-            self.assertEqual(self.call('ny.g2-live-0', record).stdout.strip(), '0', 'no record: the queue runs no check over it, and 0 would not pass one')
+            self.assertEqual(self.call('sp.g2-live-0', record).stdout.strip(), '0', 'no record: the queue runs no check over it, and 0 would not pass one')
             record.write_text(json.dumps(dict(replay_requests_sent=217)))
-            self.assertEqual(self.call('ny.g2-live-0', record).stdout.strip(), '217')
+            self.assertEqual(self.call('sp.g2-live-0', record).stdout.strip(), '217')
+            self.assertEqual(self.call('po.g2-live-0', record).stdout.strip(), str(T.O3_PAIR_DECODERS + T.O3_PAIR_NATIVES), 'lane-o3: the pair arm, two decoders and three natives')
 
 
-ARGPARSE_VALUES = dict(tiq.ARGPARSE_VALUES, QNAME=QNAME, RUN_ID=QNAME + '-fixture', _label='ny.g2-live-0', _sel='ny.g2', _c1='ny', _group='g2', _arm='core:ny.g2-live-0', _pair='0', _cohort='live')
+ARGPARSE_VALUES = dict(tiq.ARGPARSE_VALUES, QNAME=QNAME, RUN_ID=QNAME + '-fixture', _label='sp.g2-live-0', _sel='sp.g2', _c1='sp', _group='g2', _arm='core:sp.g2-live-0', _pair='0', _cohort='live')
 
 
 def bash_words(args, draft, values=None):
@@ -379,7 +401,7 @@ def bash_words(args, draft, values=None):
     lines = ['set -u', 'fail_early() { :; }', 'fail() { :; }', 'H=%s' % shlex.quote(str(HERE))]
     lines += ['%s=%s' % (k, shlex.quote(v)) for k, v in values.items()]
     arrays = '--arm "$Q/arm-cmp.g2-live-0.json" --ingress "cmp.g2-live-0=$Q/ingress-cmp.g2-live-0.json" --watch "cmp.g2-live-0=$Q/engine-watch-arm-cmp.g2-live-0.json"'
-    lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays, 'source "$H/runs/q18a_compose_throughput_p2_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
+    lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays, 'source "$H/runs/q18a_parity_o3_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
     return done.returncode, done.stdout.decode().split('\0')[:-1], done.stderr.decode()[-400:]
 

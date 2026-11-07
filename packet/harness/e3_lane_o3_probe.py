@@ -28,7 +28,8 @@ DECODERS = 2
 NATIVE = ('o3-a', 'o3-b', 'o3-c')
 PROMPT = 32801            # over the 32768-row floor (no hold set): every row but the last native
 LIMIT_STEPS = 4000
-CASES = ('on', 'off', 'mutant-no-classify', 'mutant-no-seam')
+CASES = ('on', 'off', 'uninstalled', 'mutant-no-classify', 'mutant-no-seam')
+OFF_CASES = ('off', 'uninstalled')   # off: the box's off arms (FLASH_S5_O3=1 for the run, o3_split False); uninstalled: today's engine
 
 
 def run(case):
@@ -38,8 +39,9 @@ def run(case):
     import test_e3_native_storage_replay as replay
     import graph_hooks
     import native_overlap_worker as nw
-    on = case != 'off'
-    os.environ['FLASH_S5_O3'] = '1' if on else '0'            # the workers' switch (graph_hooks reads it per step)
+    on = case not in OFF_CASES
+    installed = case != 'uninstalled'
+    os.environ['FLASH_S5_O3'] = '1' if installed else '0'     # the workers' switch (graph_hooks reads it per step), installed for the run
     os.environ['FLASH_S5_AUTO_ARM'] = '1'                     # worker_capability reads the process env (recipe trap 2)
     real_install, real_manager, build = startup.install_engine, auto_probe.Connected.dispatch_manager, replay.build_native
     plain = replay._Vllm
@@ -59,7 +61,7 @@ def run(case):
         descriptors = manager._candidates[(1, 0)]
         manager._candidates = {(n, 0): [d for d in descriptors if d.num_tokens >= n] for n in range(1, 9)}
         return manager
-    env_extra = {'FLASH_S5_O3': '1' if on else '0'}
+    env_extra = {'FLASH_S5_O3': '1' if installed else '0'}
     with mock.patch.object(startup, 'install_engine', lambda engine, env: real_install(engine, env=dict(env, **env_extra))), \
             mock.patch.object(auto_probe.Connected, 'dispatch_manager', wider_manager), \
             mock.patch.object(replay, 'build_native', wider_build):
@@ -127,6 +129,7 @@ def run(case):
             violations.append(name)
 
     conn.controller.native_hold_s = 30      # the box arms' decode-phase hold (set per arm by the stage command); both cases
+    conn.controller.o3_selected = on        # the arm's o3_split (set per arm by the stage command, stage_overlap._stage_control)
     decoders = [conn.request('decoder-%d' % i, 40, outputs=60000) for i in range(DECODERS)]
     for _ in range(4):
         conn.step()
@@ -187,7 +190,7 @@ def run(case):
               got=route_runs, transitions=record['transitions'])
         check('o3-kept-and-armed', policy.o3_counts['kept'] == 3 and policy.o3_counts['armed'] == 2
               and policy.o3_counts['full'] == {'no-next-head': 1}, o3=record['o3'])
-    if case == 'off':
+    if case in OFF_CASES:
         check('handbacks-on-full-eager', all(not s['split'] and s['cg_mode'] == 'NONE' for s in handback_steps),
               got=[(s['split'], s['cg_mode'], s['rows']) for s in handback_steps])
         check('a-split-cycle-per-run', [split for split, _ in route_runs] == [True, False] * 3, got=route_runs)

@@ -344,7 +344,7 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-local-not-set')
         return reply
 
-    async def native_stage_overlap(self, local, overlap, defer_bind=None, lazy_recv=None, decode_merge=None, inwait=None, early_successor=None, exact_successor=None, chunk_bound=_NOT_SENT, native_hold=_NOT_SENT, native_residue=_NOT_SENT, terminal_successor=_NOT_SENT):
+    async def native_stage_overlap(self, local, overlap, defer_bind=None, lazy_recv=None, decode_merge=None, inwait=None, early_successor=None, exact_successor=None, chunk_bound=_NOT_SENT, native_hold=_NOT_SENT, native_residue=_NOT_SENT, terminal_successor=_NOT_SENT, o3_split=_NOT_SENT):
         """C1 per-arm switch (installed only): C0's command with ``overlap``; the engine re-checks idle FULL.
         alpha-next-c1: ``defer_bind`` (installed only) rides on the same command; the reply must acknowledge it."""
         if not _stage_overlap():
@@ -415,6 +415,15 @@ class NativeControlClient:
             if type(terminal_successor) is not bool:
                 raise NativeControlError('native-control-stage-terminal-successor-invalid')
             command['terminal_successor'] = terminal_successor
+        if o3_split is not _NOT_SENT:
+            # lane-o3: per arm, a bool; installed by FLASH_S5_O3=1 for the whole run (the workers' handback classification).
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if os.environ.get('FLASH_S5_O3', '0') != '1':
+                raise NativeControlError('native-control-stage-o3-not-installed')
+            if type(o3_split) is not bool:
+                raise NativeControlError('native-control-stage-o3-split-invalid')
+            command['o3_split'] = o3_split
         if self.engine_epoch is None:
             await self.status()
         reply = await self._call(command)
@@ -440,6 +449,8 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-exact-successor-not-set')
         if terminal_successor is not _NOT_SENT and reply.get('terminal_successor') is not terminal_successor:
             raise NativeControlError('native-control-stage-terminal-successor-not-set')
+        if o3_split is not _NOT_SENT and reply.get('o3_split') is not o3_split:
+            raise NativeControlError('native-control-stage-o3-split-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------

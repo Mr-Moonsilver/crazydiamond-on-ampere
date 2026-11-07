@@ -15,7 +15,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from native37_robust_selfrun import IMAGE, overlay_mounts  # noqa: E402
 
-CASES = ('on', 'off', 'mutant-no-classify', 'mutant-no-seam')
+CASES = ('on', 'off', 'uninstalled', 'mutant-no-classify', 'mutant-no-seam')
 
 
 def sha(path):

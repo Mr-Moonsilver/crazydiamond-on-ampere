@@ -1227,7 +1227,7 @@ class NativeSegmentDriver:
         self._return_pending = None
         # lane-o3: the run whose one-row handback stays on the split route, and the counters (status row)
         self._o3_handback = None
-        self.o3_counters = dict(kept=0, passes=0, full={}, cleared={})
+        self.o3_counters = dict(kept=0, passes=0, full={}, cleared={}, transitions={})
         # Host-monotonic journal of real admitted segments, accepted replies,
         # queried STATE_WRITE reports, PP receipts, source holds and committed
         # frontiers.  It is preserved across a chunk reset (only chunk *state*
@@ -1900,6 +1900,11 @@ class NativeSegmentDriver:
                     self._record('admission_disarmed', phase=closed['phase'],
                                  reason='route-returned-full',
                                  route_generation=self.route_generation)
+            bank = 'full' if command.target_bank == ROUTE_BANK_FULL else 'split'
+            started = getattr(self, '_transition_started', None)
+            n, total, worst = self.o3_counters['transitions'].get(bank, (0, 0.0, 0.0))
+            ms = 0.0 if started is None else max(0.0, (self.clock() - started) * 1e3)
+            self.o3_counters['transitions'][bank] = [n + 1, round(total + ms, 3), round(max(worst, ms), 3)]
             self._transition = None
             self._transition_retry = False
             self._transition_deadline = None
@@ -5552,6 +5557,7 @@ class NativeSegmentDriver:
         self._transition = command
         self._transition_retry = True
         self._transition_deadline = self.clock() + self.reply_timeout_s
+        self._transition_started = self.clock()      # lane-o3: the transition's time, send to every rank's ack
         self._send_transition()
         return command
 

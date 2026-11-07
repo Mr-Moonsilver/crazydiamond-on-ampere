@@ -29,7 +29,8 @@
   "test_compose5_router",
   "test_native_hold",
   "test_coverage_residue",
-  "test_parity2_terminal"
+  "test_parity2_terminal",
+  "test_lane_o3"
  ],
  "refusal_tests": [],
  "why": {}

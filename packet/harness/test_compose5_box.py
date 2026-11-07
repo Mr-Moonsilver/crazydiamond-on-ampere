@@ -21,9 +21,14 @@ import test_compose4_box as tb
 tam, tap, ta1 = tb.tam, tb.tap, tb.ta1
 SM, DEC1, CMP, NY = rule.SM, 'dec1.g2-live-0', rule.ON, rule.OFF      # the rule's labels: compose-5's, for its own suites; dnr's table has no cmp
 W0, R0, W1, R1 = 'ny.g2-live-0', 'nt.g2-live-0', 'ny.g2-live-1', 'nt.g2-live-1'     # this table: ny as dnr ran it, nr the hold with the residue
+P0, P1 = 'sp.g2-live-0', 'sp.g2-live-1'      # parity-base: the native-off baseline
+N0, N1 = 'no.g2-live-0', 'no.g2-live-1'      # lane-o3: nt with O3
+PF, PO, PG = ('%s.g2-live-0' % sel for sel in T.O3_PAIR)      # lane-o3: the pair arms, O3 off, on, off
+NT_ROWS = {R0, R1, N0, N1, PF, PO, PG}        # lane-o3: the rows with nt's levers
 # build-2b24 ran one pair, so the grade's own tests ran under TWO_PAIRS; build-2b24c64 is ABBA again and TWO_PAIRS equals its table
-# (asserted in Table), so the patch is the table itself.
-TWO_PAIRS = (T.SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', i) for i in range(2) for sel in (('nt', 'ny') if i % 2 == 0 else ('ny', 'nt')))
+# (asserted in Table), so the patch is the table itself. parity-base: the name kept, the shape this table's (sp nt ny | ny nt sp).
+# lane-o3: the real table (pf po pg, no nt sp | sp nt no) with ny kept beside sp as the control the grade's own tests were written over
+TWO_PAIRS = (T.SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', 0) for sel in T.O3_PAIR) + tuple(('core', sel, 'live', i) for i in range(2) for sel in (('sp', 'nt', 'ny', 'no') if i % 2 == 0 else ('no', 'ny', 'nt', 'sp')))
 
 
 class TwoPairs(unittest.TestCase):
@@ -82,13 +87,29 @@ class JournalAgainstRecord(UnderThisTable, tb.JournalAgainstRecord):
         self.assertIn('journal: ' + NY, ' '.join(facts['reasons']))
 
 
+def rows_with_ny():
+    """lane-o3: the table's rows with ny's two (the patch TWO_PAIRS): ny is sp's reference row, not an arm."""
+    with mock.patch.object(T, 'ARM_TABLE', TWO_PAIRS):
+        return T.by_label()
+
+
 class Table(unittest.TestCase):
     def test_the_order(self):
-        self.assertEqual(TWO_PAIRS, T.ARM_TABLE, "build-2b24c64: the grade tests' patch is this table")
-        self.assertEqual(T.labels(), [SM, DEC1, R0, W0, W1, R1], 'ABBA: nt ny ny nt (build-2b24c64, as build-2b)')
+        self.assertEqual(sorted(r for r in TWO_PAIRS if r[1] != 'ny'), sorted(T.ARM_TABLE), "lane-o3: the grade tests' patch is this table and ny's two rows")
+        self.assertEqual(T.labels(), [SM, DEC1, PF, PO, PG, N0, R0, P0, P1, R1, N1], 'lane-o3: pf po pg | no nt sp | sp nt no')
+
+    def test_sp_is_nys_row_with_the_lane_and_the_decode_features_off(self):
+        rows = rows_with_ny()
+        for index, (base, off) in enumerate(((P0, W0), (P1, W1))):
+            self.assertEqual(sorted(k for k in rows[base] if rows[base][k] != rows[off][k]), ['attn', 'c1', 'decode_merge', 'label', 'lazy_recv', 'native_off', 'selection'])
+            self.assertEqual({k: rows[base][k] for k in ('native_off', 'attn', 'lazy_recv', 'decode_merge', 'yield_on', 'native_hold', 'native_residue', 'kind')},
+                             dict(native_off=True, attn=False, lazy_recv=False, decode_merge='off', yield_on=False, native_hold=0, native_residue=0, kind='replay'))
+            self.assertEqual(T.replay_config(rows[base])['SEED'], index + 1, 'the seed of its index, as nt and ny')
+        self.assertEqual([r['label'] for r in T.arms() if r['native_off'] or not r['attn'] or not r['lazy_recv'] or r['decode_merge'] != 'chunk'], [P0, P1])
+        self.assertIsNone(T.matched_off(T.by_label()[P0]))
 
     def test_each_pair_differs_in_the_plan_alone_and_shares_a_seed(self):
-        rows = T.by_label()
+        rows = rows_with_ny()
         for on, off, seed in tuple(('nt.g2-live-%d' % i, 'ny.g2-live-%d' % i, i + 1) for i in range(T.PAIRS)):
             self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'chunk_bound', 'label', 'native_hold', 'native_residue', 'selection', 'terminal_successor', 'yield_on'], (on, off))
             self.assertEqual((rows[on]['yield_on'], rows[off]['yield_on']), (True, False), 'coverage-throughput: the yield on nt')
@@ -100,7 +121,7 @@ class Table(unittest.TestCase):
 
     def test_a_replays_config_is_compose_4s_but_for_the_seed(self):
         self.assertEqual(T.PAIRS, 2, 'build-2b24c64: ABBA')
-        row = T.by_label()[W1]
+        row = rows_with_ny()[W1]
         self.assertEqual({k: v for k, v in T.replay_config(row).items() if T4.REPLAY[k] != v}, dict(SEED=2, DURATION=480.0, WARMUP=0.0), "soak: dnr's turn mix, 480 s arms, every turn graded")
         self.assertEqual(T4.REPLAY['SEED'], 1, "the table's own stays as it is")
 
@@ -109,13 +130,13 @@ class Table(unittest.TestCase):
 
     def test_the_private_ple_buffer_only_off_on_the_replays_and_the_witness_on_none(self):
         for row in T.arms():
-            self.assertEqual((row['ple_private'], row['ple_witness']), (row['kind'] != 'replay', False), row['label'])
+            self.assertEqual((row['ple_private'], row['ple_witness']), (row['kind'] not in ('replay', 'o3-pair'), False), row['label'])
 
     def test_compose_4s_ctl_is_the_base(self):
         c4 = T4.by_label()['ctl.g2-live-0']
-        row = T.by_label()[W0]
+        row = rows_with_ny()[W0]
         # coverage-soak-fix build-2: cow_verify off (the worker RSS owner, test_cow_verify_rss)
-        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'cow_verify', 'label', 'native_hold', 'native_residue', 'reserved_cap', 'score_warm', 'selection', 'terminal_successor'])
+        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'cow_verify', 'label', 'native_hold', 'native_off', 'native_residue', 'o3_split', 'reserved_cap', 'score_warm', 'selection', 'terminal_successor'])
         self.assertEqual((row['chunk_bound'], row['reserved_cap'], row['yield_on'], row['ple_private'], row['cow_verify'], c4['cow_verify']), ([52624, 1024], False, False, False, False, True))
 
     def test_the_replay_and_the_ceiling_are_compose_4s(self):
@@ -124,23 +145,42 @@ class Table(unittest.TestCase):
         self.assertEqual(T4.REPLAY['DURATION'], 1080.0, "compose-4's own stays as it is")
 
     def test_the_hold_and_the_residue_are_on_nr_alone(self):
-        self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, {R0: T.HOLD_S, R1: T.HOLD_S})
-        self.assertEqual({r['label'] for r in T.arms() if r['native_residue']}, {R0, R1})
-        self.assertEqual({r['label'] for r in T.arms() if r['terminal_successor']}, {R0, R1})
+        self.assertEqual({r['label']: r['native_hold'] for r in T.arms() if r['native_hold']}, dict.fromkeys(NT_ROWS, T.HOLD_S))
+        self.assertEqual({r['label'] for r in T.arms() if r['native_residue']}, NT_ROWS)
+        self.assertEqual({r['label'] for r in T.arms() if r['terminal_successor']}, NT_ROWS)
         self.assertEqual({r['terminal_successor'] for r in T.arms()}, {True, False}, 'every row sends its value')
         self.assertEqual(T.MAX_PROMPT_TOKENS, 135000)
         self.assertEqual((T.RULE_PREFILL_TOK_S, T.RULE_DECODE_VS_FIXED, T.RULE_MIN_NATIVE_BULKS), (T4.RULE_PREFILL_TOK_S, T4.RULE_DECODE_VS_FIXED, T4.RULE_MIN_NATIVE_BULKS))
 
     def test_a_replays_request_count_is_in_its_record(self):
-        for label in (W0, R0, W1, R1):
-            self.assertIsNone(T.by_label()[label]['generations'])
+        rows = rows_with_ny()
+        for label in (W0, R0, W1, R1, P0, P1, N0, N1):
+            self.assertIsNone(rows[label]['generations'])
+        for label in (PF, PO, PG):
+            self.assertEqual(rows[label]['generations'], T.O3_PAIR_DECODERS + T.O3_PAIR_NATIVES, 'the ingress check counts the decoders and the natives')
 
     def test_a_matched_off_only_for_the_on_arms(self):
         rows = T.by_label()
-        self.assertEqual(T.matched_off(rows[R1]), W1)
-        self.assertEqual(T.matched_off(rows[R0]), W0)
-        self.assertIsNone(T.matched_off(rows[W0]))
+        self.assertEqual(T.matched_off(rows[R1]), P1)
+        self.assertEqual(T.matched_off(rows[R0]), P0)
+        self.assertEqual((T.matched_off(rows[N0]), T.matched_off(rows[N1]), T.matched_off(rows[PO])), (R0, R1, PF), 'lane-o3: O3 against today\'s lane')
+        self.assertIsNone(T.matched_off(rows[P0]))
         self.assertIsNone(T.matched_off(rows[SM]))
+
+    def test_o3_on_no_and_po_alone_and_every_row_sends_it(self):
+        rows = T.by_label()
+        self.assertEqual({r['label'] for r in T.arms() if r['o3_split']}, {N0, N1, PO})
+        self.assertEqual({type(r['o3_split']) for r in T.arms()}, {bool})
+        self.assertEqual(T.O3_ENV, 'FLASH_S5_O3=1')
+        for on, off in ((N0, R0), (N1, R1)):
+            self.assertEqual(sorted(k for k in rows[on] if rows[on][k] != rows[off][k]), ['c1', 'label', 'o3_split', 'selection'], (on, off))
+
+    def test_the_pair_arms_are_nt_but_for_their_kind_and_o3(self):
+        rows = T.by_label()
+        for label in (PF, PO, PG):
+            self.assertEqual(sorted(k for k in rows[label] if rows[label][k] != rows[R0][k]),
+                             sorted(['c1', 'generations', 'kind', 'label', 'selection'] + (['o3_split'] if label == PO else [])), label)
+            self.assertEqual((rows[label]['kind'], rows[label]['band'], rows[label]['index']), ('o3-pair', 1, 0))
 
 
 class CapReadBack(unittest.TestCase):
@@ -179,7 +219,7 @@ class ReplaySeed(unittest.TestCase):
 
     def test_each_index_gets_its_seed_and_the_table_is_put_back(self):
         saved = T.REPLAY
-        for label, seed in ((W0, 1), (R0, 1), (W1, 2), (R1, 2)):
+        for label, seed in ((P0, 1), (R0, 1), (N0, 1), (P1, 2), (R1, 2), (N1, 2)):
             seen = self.go(label)
             self.assertEqual((seen['cfg']['SEED'], seen['header']['SEED']), (seed, seed), label)
         self.assertIs(T.REPLAY, saved)
@@ -334,10 +374,12 @@ class WorkerRss(TwoPairs):
     def grade(self, label=R1, grow=(0, 0, 0, 0), history=None, start=None):
         arms = Soak().arms(mem={label: dict(memory=dict(start=start or memory(), end=memory(grow=grow)))})
         if history is not None:
+            # parity-base: the counter is cumulative and nt.1's window now ends at sp.1's entry, so the arm's 'after' and every later status
+            later = T.labels()[T.labels().index(label) + 1:]
             for rec in arms:
                 for status in rec.get('statuses') or ():
                     cov = ((status.get('append_yield') or {}).get('declines') or {}).get('coverage')
-                    if cov is not None and rec.get('label') == label and status.get('label') == 'after':
+                    if cov is not None and (rec.get('label') == label and status.get('label') == 'after' or rec.get('label') in later):
                         cov['append_history_tokens'] = history
         return Grade().grade_of(arms)
 
@@ -449,7 +491,8 @@ class GeometryGrade(TwoPairs):
     def arms(self, rows, turns, max_rows=None):
         arms = self.cov.arms_with(R1, stock={'handback': 10, 'geometry-tail': rows}, native_turns=10)
         rec = next(a for a in arms if a.get('label') == R1)
-        for status in rec['statuses'][1:]:
+        later = [s for a in arms if a.get('label') in T.labels()[T.labels().index(R1) + 1:] for s in a['statuses']]     # parity-base: sp.1 follows
+        for status in rec['statuses'][1:] + later:
             c = ((status.get('append_yield') or {}).get('declines') or {}).get('coverage')
             if c is not None:
                 c['geometry_tail'] = dict(turns=turns, max_r=48, max_rows=max_rows or 48)
@@ -494,7 +537,7 @@ class Smoke(unittest.TestCase):
         rec.update(ple_private=dict(counters=dict(scopes={'0': 9, '1': 9})), score_warm=dict(counters=dict(allocs={str(k): 1 for k in range(4)})), reserved_cap=dict(requested=False, select={str(k): dict(after=dict(reserved_cap=dict(cap_bytes=0, flushes=0, fraction=0.0, selected=False))) for k in range(4)}, counters=dict(flushes={str(k): 0 for k in range(4)})),
                    cow_host_filter=dict(requested=True, counters=dict(kept={str(k): 0 for k in range(4)}, skipped={str(k): 37 for k in range(4)}, unfiltered={str(k): 0 for k in range(4)})))
         rec.setdefault('inwait', {}).update(exact_acknowledged=True, bound_requested=[52624, 1024], bound_acknowledged=[52624, 1024], hold_requested=0, hold_acknowledged=0, residue_requested=0, residue_acknowledged=0,
-                                            terminal_requested=False, terminal_acknowledged=False)
+                                            terminal_requested=False, terminal_acknowledged=False, o3_requested=False, o3_acknowledged=False)
         rec.setdefault('progress_delta', {})['chunks'] = 40
         rec.setdefault('fresh', {})['prompt_tokens_observed'] = 65445
         return rec
@@ -752,6 +795,9 @@ class BoxBinding(unittest.TestCase):
                 box.main(args[:15] + ['2'] + args[16:])        # build-2b24c64: two pairs, no third
             with self.assertRaises(SystemExit):
                 box.main(args[:9] + ['nw'] + args[10:])
+            sp = ['arm', '--url', 'u', '--model', 'm', '--run-id', 'r', '--epoch', '1', '--c1', 'sp', '--size', '2', '--cohort', 'live', '--index', '0', '--workload', 'w', '--out', tmp + '/y.json']
+            self.assertEqual(box.main(sp), 0)      # parity-base
+            self.assertEqual((arm.call_args[0][0].c1, arm.call_args[0][0].index), ('sp', 0))
 
     def test_the_smoke_goes_the_live_path_and_a_replay_the_replay_path(self):
         import types
@@ -765,8 +811,15 @@ class BoxBinding(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             row, live, play = go('sm', 0)
             self.assertEqual((row['label'], row['yield_on'], row['index'], live, play), (SM, True, 0, True, False))
-            row, live, play = go('ny', 0)
-            self.assertEqual((row['label'], row['yield_on'], row['ple_private'], live, play), (W0, False, False, False, True))
+            row, live, play = go('no', 0)
+            self.assertEqual((row['label'], row['yield_on'], row['ple_private'], live, play), (N0, True, False, False, True))
+            a = types.SimpleNamespace(c1='po', size=2, cohort='live', index=0, url='u', run_id='r', epoch=1, control_timeout_s=1.0, out=str(Path(tmp) / 'po-0.json'))
+            with mock.patch.object(box4.refusal, 'RefusalKeepingClient'), mock.patch.object(box4.a1, 'load_config', return_value=({}, 1)), \
+                    mock.patch.object(box, 'o3_pair_arm', return_value=dict(label='pair', complete=True)) as pair, mock.patch.object(box, '_one_stream_arm') as one:
+                self.assertEqual(box.run_arm(a), 0)
+            self.assertEqual((pair.call_args[0][1]['label'], one.called), (PO, False), 'lane-o3: the o3-pair kind goes the pair path')
+            row, live, play = go('sp', 1)
+            self.assertEqual((row['label'], row['native_off'], live, play), (P1, True, False, True))
 
     def test_the_grade_names_this_run_and_reads_every_arm(self):
         grade = Grade()
@@ -775,7 +828,8 @@ class BoxBinding(unittest.TestCase):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-compose-throughput-p2'))
+        self.assertTrue(text.startswith('# q18a-parity-o3'))
+        self.assertIn('- %s native off: pure; native rows 0, handback rows 0, native-served rows 0, native turns 0, chunks 0; lease held' % P0, text)
         self.assertIn('compose5_rule.py', text)
 
 
@@ -791,19 +845,78 @@ def with_coverage(rec, start, end):
     return rec
 
 
+O3_ZERO = dict(on=1, selected=0, ledger=0, kept=0, armed=0, tail_bound=0, full={}, refused={}, gap={},
+               driver=dict(kept=0, passes=0, full={}, cleared={}, transitions={}))
+
+
+def o3_after(kept):
+    """lane-o3: the policy's O3 record at an arm's end (append_yield.declines.o3), cumulative from O3_ZERO: kept runs stayed split."""
+    return dict(O3_ZERO, selected=int(bool(kept)), kept=kept, armed=max(kept - 1, 0), gap={'o3': [kept, 40.0 * kept, 60.0]} if kept else {'full': [3, 2610.0, 900.0]},
+                driver=dict(kept=kept, passes=kept, full={} if kept else {'off': 3}, cleared={'split-tail-scheduled': kept} if kept else {},
+                            transitions={'full': [1, 95.0, 95.0], 'split': [1, 88.0, 88.0]} if kept else {'full': [3, 290.0, 101.0], 'split': [3, 266.0, 92.0]}))
+
+
+def with_o3(rec, row):
+    """lane-o3: the O3 record in the arm's before and after status rows, and the route generation beside it (replay and pair arms)."""
+    before = next((x for x in rec['statuses'] if x['label'] == 'before'), None)
+    if before is None:
+        before = dict(label='before', append_yield={})
+        rec['statuses'].insert(1, before)
+    after = [x for x in rec['statuses'] if x['label'] == 'after'][-1]
+    kept = 3 if row['o3_split'] else 0
+    for status, o3, generation in ((before, O3_ZERO, 10), (after, o3_after(kept), 12 if kept else 16)):
+        status.setdefault('append_yield', {}).setdefault('declines', {})['o3'] = o3
+        status['route_generation'] = generation
+    return rec
+
+
+def pair_natives(shift=0.0):
+    """lane-o3: a pair arm's three natives, the same prompt, top-20 at every position; shift moves position 0's logprobs (the candidate)."""
+    top = lambda p: [[t, round(-0.1 * t - (shift if p == 0 else 0.0), 6)] for t in range(20)]
+    return [dict(index=i, prompt_sha256='p' * 64, salt_sha256='%064d' % i, tokens=[0] * T.O3_PAIR_TOKENS, top=[top(p) for p in range(T.O3_PAIR_TOKENS)],
+                 complete=True, error=None, malformed=None, first_output_s=1.0) for i in range(T.O3_PAIR_NATIVES)]
+
+
+def plain(rec):
+    """parity-base: an sp record as keep_lease and the arm write it on a plain arm: the lease held at every read, no chunk, no selection,
+    attn-meta not selected and quiet, the lazy receive and the decode merge acknowledged off, their counters 0."""
+    held = dict(manual_owned=True, phase='idle', active=False, selection_seq=7)
+    rec.update(native_off=dict(requested=True, paused=True, resumed=True, manual_owned=True, phase='idle', active=False, selection_seq=7, route='full', scheduler_requests=0),
+               statuses=[dict(label='lease', auto_arm=dict(held)), dict(label='before', auto_arm=dict(held))],
+               polled=dict(errors=0, rows=[dict(phase='idle', selection_seq=7, manual_owned=True) for _ in range(3)]),
+               progress_delta=dict(chunks=0, line_errors=0), attn_meta=tam.block(False, [0] * 4),
+               step=dict(requested_lazy=False, requested_merge='off', replied=True, acknowledged_lazy=False, acknowledged_merge='off'),
+               stage_delta=dict(rec.get('stage_delta') or {}, **{k: 0 for k in box.SP_DECODE_COUNTERS}))
+    return rec
+
+
 class Grade(TwoPairs):
     def records(self):
-        out = []
+        out, native = [], 0
         for k, row in enumerate(T.arms()):
             rec = dict(ta1.record_of(dict(row)), schema=box.ARM_SCHEMA, kind=row['kind'], label=row['label'])
             rec['inwait'] = dict(rec.get('inwait') or {}, bound_requested=row['chunk_bound'], bound_acknowledged=row['chunk_bound'], hold_requested=row['native_hold'], hold_acknowledged=row['native_hold'],
                                  residue_requested=row['native_residue'], residue_acknowledged=row['native_residue'],
-                                 terminal_requested=row['terminal_successor'], terminal_acknowledged=row['terminal_successor'])
+                                 terminal_requested=row['terminal_successor'], terminal_acknowledged=row['terminal_successor'],
+                                 o3_requested=row['o3_split'], o3_acknowledged=row['o3_split'])
             if row['kind'] == 'replay':
                 # parity-2 A: the arm's counters as stage_delta carries them (c64's nt.g2-live-0: exact admits 50, terminal answers 2768)
                 rec['stage_delta'] = dict(rec.get('stage_delta') or {}, step_iw_terminal_admits=97 if row['terminal_successor'] else 0, step_iw_terminal_mismatch=0,
                                           step_iw_exact_admits=50, step_iw_exact_terminal=97 if row['terminal_successor'] else 2768)
-            with_coverage(rec, coverage(1000 * k, steps=10 * k), coverage(1000 * k + 900, steps=10 * k + 9))
+            if row['kind'] != 'live-arm':
+                rec['native_off'] = dict(requested=row['native_off'])      # parity-base: select_and_release's record (the live arm is a1's, without it)
+            if row['native_off']:
+                plain(rec)
+            # parity-base: the counter is cumulative over the run, so a plain arm's window (its entry to the next arm's entry) adds nothing
+            step = 0 if row['native_off'] else 1000
+            with_coverage(rec, coverage(native, steps=10 * k), coverage(native + (900 if step else 0), steps=10 * k + 9))
+            native += step
+            if row['native_off']:
+                rec['statuses'][-1]['auto_arm'] = dict(manual_owned=True, phase='idle', active=False, selection_seq=7)
+            if row['kind'] in ('replay', 'o3-pair'):
+                with_o3(rec, row)
+            if row['kind'] == 'o3-pair':
+                rec['natives'] = pair_natives()
             if row['kind'] == 'replay':
                 rec['memory'] = dict(start=memory(), end=memory())     # coverage-soak-fix: the worker reads, flat
             out.append(rec)
@@ -854,6 +967,137 @@ class Grade(TwoPairs):
                 off['statuses'][-1]['append_yield']['counters'] = dict(selected=9)
                 off['statuses'][-1]['label'] = 'after'
                 self.assertIn(label + ':yield-off-selected-a-yield', self.grade_of(arms)['failures'])
+
+
+class NativeOff(TwoPairs):
+    """parity-base: sp, the native-off baseline, is plain or FAILs sp:native-row (any native row, handback or native-served row in its window,
+    a chunk or a native selection in its progress), sp:lease-not-held, sp:native-decode-feature; what it cannot read is INC."""
+    grade = Grade()
+
+    def arms_with(self, label, *, native=0, stock=None, turns=0, appends=0):
+        """Counts added inside this arm's window: its 'after' and every later status (the counter is cumulative)."""
+        arms = self.grade.records()
+        rec = next(a for a in arms if a.get('label') == label)
+        later = [rec['statuses'][-1]] + [s for a in arms if a.get('label') in T.labels()[T.labels().index(label) + 1:] for s in a['statuses']]
+        for status in later:
+            cov = ((status.get('append_yield') or {}).get('declines') or {}).get('coverage')
+            if cov is not None:
+                live = cov['rows']['live']
+                live['native'] = dict(live['native'], plan=live['native'].get('plan', 0) + native) if native else live['native']
+                live['stock'] = {k: live['stock'].get(k, 0) + (stock or {}).get(k, 0) for k in set(live['stock']) | set(stock or {})}
+                cov['native_turns'] = cov.get('native_turns', 0) + turns
+                cov['native_appends'] = cov.get('native_appends', 0) + appends
+        return arms
+
+    def rec(self, arms, label):
+        return next(a for a in arms if a.get('label') == label)
+
+    def fails(self, arms, label=None):
+        result = self.grade.grade_of(arms)
+        return result, sorted(f for f in result['failures'] if label is None or f.startswith(label))
+
+    def test_a_plain_arm_passes_and_reads_zero_on_its_own_line(self):
+        result = self.grade.grade_of(self.grade.records())
+        self.assertEqual((result['verdict'], result['failures'], result['missing']), ('PASS', [], []))
+        for label in (P0, P1):
+            facts = result['native_off'][label]
+            self.assertEqual({k: facts[k] for k in ('native_rows', 'handback_rows', 'served_rows', 'native_turns', 'chunks', 'selections', 'lease_held', 'fails', 'missing', 'attn_batched')},
+                             dict(native_rows=0, handback_rows=0, served_rows=0, native_turns=0, chunks=0, selections=0, lease_held=True, fails=[], missing=[], attn_batched=[0] * 4))
+            self.assertEqual(result['coverage'][label]['all_native_share'], None, 'no prefill row counted in the fixture window')
+        self.assertEqual(sorted(result['native_off']), [P0, P1])
+        self.assertEqual(result['coverage'][P0]['to'], 'next-entry')
+        self.assertEqual(result['coverage'][P1]['to'], 'after')
+
+    def test_one_native_row_in_an_sp_window_fails_it_and_nothing_else(self):
+        for label in (P0, P1):
+            with self.subTest(label):
+                result, fails = self.fails(self.arms_with(label, native=1))
+                self.assertEqual(result['verdict'], 'FAIL')
+                self.assertEqual(fails, [label + ':sp:native-row'])
+                self.assertEqual(result['native_off'][label]['native_rows'], 1)
+                with box._bound():
+                    self.assertIn('- %s native off: sp:native-row; native rows 1,' % label, box.report(result))
+
+    def test_a_handback_a_geometry_tail_or_a_native_turn_fails_it(self):
+        for kw in (dict(stock={'handback': 1}, turns=1), dict(stock={'handback-excess': 2}), dict(stock={'geometry-tail': 3}, turns=1), dict(turns=1), dict(appends=1)):
+            with self.subTest(kw):
+                self.assertEqual(self.fails(self.arms_with(P0, **kw))[1], [P0 + ':sp:native-row'])
+
+    def test_stock_rows_are_what_sp_is_for(self):
+        result, fails = self.fails(self.arms_with(P0, stock={'no-seam': 900, 'cooldown': 5}))
+        self.assertEqual((result['verdict'], fails), ('PASS', []))
+        self.assertEqual(result['coverage'][P0]['all_native_share'], 0.0)
+
+    def test_a_chunk_or_a_selection_in_its_progress_fails_it_and_unread_is_inc(self):
+        arms = self.grade.records()
+        self.rec(arms, P0)['progress_delta']['chunks'] = 1
+        self.assertEqual(self.fails(arms)[1], [P0 + ':sp:native-row'])
+        arms = self.grade.records()
+        self.rec(arms, P1)['statuses'][-1]['auto_arm']['selection_seq'] = 8
+        self.assertEqual(self.fails(arms)[1], [P1 + ':sp:native-row'])
+        arms = self.grade.records()
+        self.rec(arms, P0).pop('progress_delta')
+        result, fails = self.fails(arms)
+        self.assertEqual((result['verdict'], fails, result['missing']), ('INC', [], [P0 + ':sp:native-rows-not-read']))
+
+    def test_the_lease_released_at_any_read_fails_it_and_unread_is_inc(self):
+        for where in ('lease', 'before', 'after', 'poll'):
+            with self.subTest(where):
+                arms = self.grade.records()
+                rec = self.rec(arms, P0)
+                row = rec['polled']['rows'][1] if where == 'poll' else next(s for s in rec['statuses'] if s['label'] == where)['auto_arm']
+                row['manual_owned'] = False
+                self.assertEqual(self.fails(arms)[1], [P0 + ':sp:lease-not-held'])
+        arms = self.grade.records()
+        self.rec(arms, P0)['polled']['rows'][0].pop('manual_owned')
+        result, fails = self.fails(arms)
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [P0 + ':sp:lease-not-read']))
+
+    def test_a_decode_feature_on_fails_it_and_unread_is_inc(self):
+        for change in (dict(acknowledged_lazy=True), dict(acknowledged_merge='chunk'), dict(acknowledged_lazy=None)):
+            with self.subTest(change):
+                arms = self.grade.records()
+                self.rec(arms, P1)['step'].update(change)
+                self.assertEqual(self.fails(arms)[1], [P1 + ':sp:native-decode-feature'])
+        for counter in box.SP_DECODE_COUNTERS:
+            with self.subTest(counter):
+                arms = self.grade.records()
+                self.rec(arms, P1)['stage_delta'][counter] = 4
+                self.assertEqual(self.fails(arms)[1], [P1 + ':sp:native-decode-feature'])
+        arms = self.grade.records()
+        self.rec(arms, P1).pop('stage_delta')
+        result, _fails = self.fails(arms)
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [P1 + ':sp:decode-features-not-read']))
+
+    def test_attn_meta_batched_on_sp_is_the_leak(self):
+        arms = self.grade.records()
+        self.rec(arms, P0)['attn_meta'] = tam.block(False, [0, 3, 0, 0])
+        result, fails = self.fails(arms, P0)
+        self.assertEqual(fails, [P0 + ':attn-meta-selection-leak'])
+        self.assertEqual(result['native_off'][P0]['attn_batched'], [0, 3, 0, 0])
+
+    def test_the_lane_as_the_table_asks_on_every_arm(self):
+        arms = self.grade.records()
+        self.rec(arms, P0)['native_off'] = dict(requested=False)
+        self.assertIn(P0 + ':native-off-not-as-the-table', self.fails(arms)[1])
+        arms = self.grade.records()
+        self.rec(arms, W1)['native_off'] = dict(requested=True)
+        self.assertEqual(self.fails(arms, W1)[1], [W1 + ':native-off-not-as-the-table'])
+
+    def test_native_rows_on_nt_and_ny_are_theirs_not_sps(self):
+        result, fails = self.fails(self.arms_with(R0, native=50, stock={'handback': 1}, turns=1))
+        self.assertEqual([f for f in fails if ':sp:' in f], [])
+        self.assertEqual(result['native_off'][P0]['native_rows'], 0)
+
+    def test_the_gate_manual_owned_turns_are_read(self):
+        arms = self.grade.records()
+        rec = self.rec(arms, P0)
+        rec['statuses'][0]['append_yield']['declines']['turns'] = {'gate-manual-owned': 4}
+        rec['statuses'][-1]['append_yield']['declines']['turns'] = {'gate-manual-owned': 21}
+        result = self.grade.grade_of(arms)
+        self.assertEqual(result['native_off'][P0]['manual_owned_declines'], 17)
+        with box._bound():
+            self.assertIn('gate-manual-owned declines 17 turns', box.report(result))
 
 
 def retry(rank, ask, stamp='2026-11-06T15:41:27.891618328Z'):
@@ -1006,7 +1250,8 @@ class Coverage(TwoPairs):
         self.assertEqual(result['verdict'], 'PASS', result['failures'])
         self.assertEqual(result['coverage'][R0]['live_native_share'], 1.0)
         self.assertEqual(result['coverage'][R0]['to'], 'next-entry')
-        self.assertEqual(result['coverage'][R1]['to'], 'after')
+        self.assertEqual(result['coverage'][R1]['to'], 'next-entry')      # parity-base: sp.1 is the last arm
+        self.assertEqual(result['coverage'][P1]['to'], 'after')
         self.assertEqual(result['coverage'][R0]['rows']['live']['native'], {'plan': 1000})
 
     def test_a_stock_row_with_a_decoder_live_fails_a_residue_arm_by_site(self):
@@ -1022,7 +1267,7 @@ class Coverage(TwoPairs):
         self.assertEqual(cov['handback'], dict(turns=12, rows=12, excess_rows=0, requests=12, native_turns=12, max_rows_per_turn=1,
                                                every_row_after_a_native_turn=True))
         self.assertEqual((cov['live_native_share'], cov['all_native_share']), (1.0, 1.0))
-        self.assertEqual(cov['live_native_share_strict'], round(900 / 912, 6))     # the last arm: entry to its after
+        self.assertEqual(cov['live_native_share_strict'], round(1000 / 1012, 6))     # parity-base: entry to sp.1's entry (was the last arm, 900)
 
     def test_a_handback_row_with_no_native_turn_before_it_fails(self):
         result = self.grade.grade_of(self.arms_with(R1, stock={'handback': 12}, native_turns=11))
@@ -1038,7 +1283,7 @@ class Coverage(TwoPairs):
         self.assertEqual([f for f in result['failures'] if f.startswith(R1)],
                          [R1 + ':handback-not-one-row-of-a-native-turn', R1 + ':stock-prefill-with-decoder-live'])
         self.assertEqual((result['coverage'][R1]['handback']['max_rows_per_turn'], result['coverage'][R1]['handback']['rows']), (3, 5))
-        self.assertEqual(result['coverage'][R1]['live_native_share'], round(903 / 905, 6))
+        self.assertEqual(result['coverage'][R1]['live_native_share'], round(1003 / 1005, 6))     # parity-base: to sp.1's entry
 
     def test_the_hold_valve_expired_fails_a_residue_arm(self):
         result = self.grade.grade_of(self.arms_with(R0, stock={'expired': 1}))
@@ -1075,7 +1320,7 @@ class Coverage(TwoPairs):
     def test_the_terminal_successor_is_read_per_replay_arm(self):
         result = self.grade.grade_of(self.grade.records())
         self.assertEqual(result['verdict'], 'PASS', (result['failures'], result['missing']))
-        self.assertEqual(set(result['terminal']), {R0, W0, W1, R1})
+        self.assertEqual(set(result['terminal']), {R0, W0, W1, R1, P0, P1, N0, N1})
         self.assertEqual((result['terminal'][R0]['selected'], result['terminal'][R0]['terminal_admits']), (True, 97))
         self.assertEqual((result['terminal'][W0]['selected'], result['terminal'][W0]['terminal_admits'], result['terminal'][W0]['exact_terminal']), (False, 0, 2768))
         text = box.report(result)
@@ -1191,6 +1436,138 @@ class Reads(UnderThisTable):
         self.assertIn('RULE PASS', proc.stdout)
         source = Path(rule.__file__).read_text()
         self.assertNotRegex(source, r'(?m)^(import|from) (compose5_arms|e3_|torch|numpy)')
+
+
+class O3Grade(TwoPairs):
+    """lane-o3: o3_split acknowledged on every arm, O3 engaged on its rows and never on the controls, the per-arm read, and the stop rule."""
+
+    def setUp(self):
+        super().setUp()
+        self.grade = Grade()
+
+    def rec(self, arms, label):
+        return next(a for a in arms if a.get('label') == label)
+
+    def test_whole_records_pass_and_report_the_stop_rule_first(self):
+        result = self.grade.grade_of(self.grade.records())
+        self.assertEqual((result['verdict'], result['failures'], result['missing']), ('PASS', [], []))
+        self.assertEqual(result['numerics_o3']['verdict'], 'WITHIN')
+        self.assertEqual(set(result['o3']), {PF, PO, PG, N0, N1, R0, R1, P0, P1, W0, W1})
+        read = result['o3'][N0]
+        self.assertEqual((read['kept'], read['armed'], read['route_moves'], read['selected']), (3, 2, 2, True))
+        self.assertEqual(read['gap']['o3'], dict(n=3, ms=120.0, mean_ms=40.0, max_ms=60.0))
+        self.assertEqual(read['transitions']['full']['n'], 1)
+        self.assertEqual((result['o3'][R0]['route_moves'], result['o3'][R0]['gap']['full']['mean_ms']), (6, 870.0))
+        with box._bound():
+            text = box.report(result)
+        self.assertIn('- O3 NUMERICS (stop rule, first-token top-20 sets, %s against %s | %s): WITHIN' % (PO, PF, PG), text)
+        self.assertLess(text.index('O3 NUMERICS'), text.index('%s O3: selected' % N0))
+
+    def test_an_unacknowledged_o3_split_fails_on_every_arm(self):
+        for row in T.arms():
+            for value in (None, not row['o3_split'], int(row['o3_split'])):
+                arms = self.grade.records()
+                self.rec(arms, row['label'])['inwait']['o3_acknowledged'] = value
+                result = self.grade.grade_of(arms)
+                self.assertIn(row['label'] + ':o3-split-not-acknowledged', result['failures'], (row['label'], value))
+
+    def test_not_engaged_is_inc_on_the_control_fails_and_unread_is_inc(self):
+        def edited(label, kept=None, drop=False):
+            arms = self.grade.records()
+            rec = self.rec(arms, label)
+            after = [x for x in rec['statuses'] if x['label'] == 'after'][-1]
+            if drop:
+                after['append_yield']['declines'].pop('o3')
+            else:
+                after['append_yield']['declines']['o3'] = o3_after(kept)
+            return self.grade.grade_of(arms)
+        result = edited(PO, kept=0)
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [PO + ':o3-not-engaged']), result['failures'])
+        for label in (R0, PF, P1, W0):
+            result = edited(label, kept=2)
+            self.assertEqual((result['verdict'], result['failures']), ('FAIL', [label + ':o3-on-the-control']), label)
+        result = edited(N1, drop=True)
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [N1 + ':o3-counters-not-read']), result['failures'])
+
+    def with_po(self, arms, shift=0.0, swap=0, label=None):
+        rec = self.rec(arms, label or PO)
+        rec['natives'] = pair_natives(shift)
+        if swap:
+            for n in rec['natives']:
+                n['top'][0] = [[100 + t, v] if t < swap else [t, v] for t, v in n['top'][0]]
+        return arms
+
+    def test_the_stop_rule_fails_outside_the_control_envelope(self):
+        result = self.grade.grade_of(self.with_po(self.grade.records(), shift=0.3))
+        self.assertEqual(result['numerics_o3']['verdict'], 'WITHIN', 'under the floor 0.375 with a bit-equal control')
+        result = self.grade.grade_of(self.with_po(self.grade.records(), shift=0.5))
+        self.assertEqual((result['verdict'], result['numerics_o3']['verdict']), ('FAIL', 'OUTSIDE'))
+        self.assertIn('numerics-o3-outside:' + PO, result['failures'])
+        self.assertEqual(result['numerics_o3']['allowance'], dict(max_abs_logprob=0.375, members=4))
+        result = self.grade.grade_of(self.with_po(self.grade.records(), swap=3))
+        self.assertEqual((result['numerics_o3']['verdict'], result['numerics_o3']['candidate_worst']['members']), ('OUTSIDE', 6))
+        result = self.grade.grade_of(self.with_po(self.grade.records(), swap=2))
+        self.assertEqual(result['numerics_o3']['verdict'], 'WITHIN', 'four members within the floor')
+
+    def test_the_envelope_is_the_controls_own_disagreement_with_the_margin(self):
+        arms = self.with_po(self.grade.records(), shift=0.4, label=PG)       # the control disagrees with itself by 0.4
+        self.with_po(arms, shift=0.9)                                         # po: 0.9 from pf, 0.5 from pg
+        result = self.grade.grade_of(arms)
+        n = result['numerics_o3']
+        self.assertEqual((n['envelope']['max_abs_logprob'], n['allowance']['max_abs_logprob']), (0.4, 0.925))
+        self.assertEqual(n['verdict'], 'WITHIN')
+        self.with_po(arms, shift=1.0)                                         # past the cap 1.0 whatever the control
+        self.assertEqual(self.grade.grade_of(arms)['numerics_o3']['verdict'], 'OUTSIDE')
+
+    def test_missing_evidence_is_inc_and_named(self):
+        arms = self.grade.records()
+        self.rec(arms, PF)['natives'] = []
+        result = self.grade.grade_of(arms)
+        self.assertEqual(result['verdict'], 'INC')
+        self.assertIn('numerics-o3-evidence-missing:' + PF, result['missing'])
+        arms = self.grade.records()
+        self.rec(arms, PG)['natives'][1]['top'] = []
+        self.assertIn('numerics-o3-position-missing:1', self.grade.grade_of(arms)['missing'])
+        arms = self.grade.records()
+        self.rec(arms, PO)['natives'][0]['prompt_sha256'] = 'q' * 64
+        self.assertIn('numerics-o3-prompt-differs', self.grade.grade_of(arms)['missing'])
+
+
+class O3GradeMutants(unittest.TestCase):
+    """One grade mutation per O3Grade test; each must fail it."""
+
+    def fails(self, name, owner, function, edit):
+        import test_append_yield as ay
+        case = O3Grade(name)
+        with ay.mutant(owner, function, edit), self.assertRaises(ay.MUTANT_FAILURES):
+            case.setUp()
+            try:
+                getattr(case, name)()
+            finally:
+                case.doCleanups()
+
+    def test_report_without_the_numerics_line(self):
+        self.fails('test_whole_records_pass_and_report_the_stop_rule_first', box, 'report', ("    if numerics:\n", "    if False:\n"))
+
+    def test_ack_not_checked(self):
+        self.fails('test_an_unacknowledged_o3_split_fails_on_every_arm', box, 'grade',
+                   ("        if (rec.get('inwait') or {}).get('o3_acknowledged') is not row['o3_split']:\n", "        if False:\n"))
+
+    def test_control_moved_not_failed(self):
+        self.fails('test_not_engaged_is_inc_on_the_control_fails_and_unread_is_inc', box, 'grade',
+                   ("        elif not row['o3_split'] and read['kept']:\n", "        elif False:\n"))
+
+    def test_outside_not_failed(self):
+        self.fails('test_the_stop_rule_fails_outside_the_control_envelope', box, 'grade',
+                   ("    if numerics['verdict'] == 'OUTSIDE':\n", "    if False:\n"))
+
+    def test_envelope_without_the_control(self):
+        self.fails('test_the_envelope_is_the_controls_own_disagreement_with_the_margin', box, 'o3_numerics',
+                   ("max(rule['lp_floor'], 2 * e_lp + rule['lp_add'])", "rule['lp_floor']"))
+
+    def test_missing_read_as_within(self):
+        self.fails('test_missing_evidence_is_inc_and_named', box, 'grade',
+                   ("    elif numerics['verdict'] != 'WITHIN':\n", "    elif False:\n"))
 
 
 if __name__ == '__main__':
