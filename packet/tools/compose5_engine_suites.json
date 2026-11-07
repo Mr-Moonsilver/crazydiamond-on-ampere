@@ -30,7 +30,8 @@
   "test_native_hold",
   "test_coverage_residue",
   "test_parity2_terminal",
-  "test_lane_o3"
+  "test_lane_o3",
+  "test_parity_ahead"
  ],
  "refusal_tests": [],
  "why": {}

@@ -41,6 +41,44 @@ class _StageSkip:
 STAGE_SKIP = _StageSkip()
 
 
+# parity-ahead (READING-parity-gaps-20261107.md A.5): ``FLASH_S5_AHEAD_NOSYNC=1`` installs, on the engine and every worker,
+# the per-arm selection (native_stage_local's ``ahead_nosync``) and the ``flash-s5 ahead-split`` receipt. With it unset nothing
+# here runs: the engine sends the plain AdmissionRecord and the worker stages it as before.
+AHEAD_NOSYNC_ENV = 'FLASH_S5_AHEAD_NOSYNC'
+AHEAD_SPLIT_LINE = 'flash-s5 ahead-split '
+_AHEAD_TIMED = [None]
+
+
+def ahead_nosync_installed(env=None):
+    """The launch setting; unset or 0 is today's path. Anything else is refused (the engine reads it at startup)."""
+    import os
+    value = (os.environ if env is None else env).get(AHEAD_NOSYNC_ENV, '0')
+    if value not in ('0', '1'):
+        raise E3ContractError(AHEAD_NOSYNC_ENV + ' must be 0 or 1')
+    return value == '1'
+
+
+def _ahead_timed():
+    """Worker: the receipt installed (read once per process; an invalid value reads as off and never raises here)."""
+    if _AHEAD_TIMED[0] is None:
+        try:
+            _AHEAD_TIMED[0] = ahead_nosync_installed()
+        except Exception:
+            _AHEAD_TIMED[0] = False
+    return _AHEAD_TIMED[0]
+
+
+@dataclass(frozen=True)
+class AheadNoSync:
+    """The stage's successor AdmissionRecord, to be staged with pinned non-blocking copies (the arm's selection on)."""
+    record: object
+
+    def __post_init__(self):
+        from wire_v1 import AdmissionRecord
+        if type(self.record) is not AdmissionRecord:
+            raise E3ContractError('ahead must be an AdmissionRecord')
+
+
 @dataclass(frozen=True, repr=False)
 class StageScoped:
     """One chunk command and the only ranks that execute and answer it."""
@@ -63,7 +101,9 @@ class StageScoped:
             raise E3ContractError('local_release must be bool')
         if self.ahead is not None:
             from wire_v1 import AdmissionRecord
-            if type(self.ahead) is not AdmissionRecord:
+            if type(self.ahead) is AheadNoSync:
+                pass        # parity-ahead: the wrapper checked its own record
+            elif type(self.ahead) is not AdmissionRecord:
                 raise E3ContractError('ahead must be an AdmissionRecord')
 
     def __repr__(self):
@@ -177,7 +217,7 @@ def pending_send(bridge, command):
                              command.op_seq, pending=True, cursor=report.cursor, report=report)
 
 
-def stage_ahead(bridge, record):
+def stage_ahead(bridge, record, nosync=False, probe=None):
     """Build-2 (a): stage the successor's PREPARE slices 1-2 on this worker; advisory, never raises."""
     try:
         import lane_chunk
@@ -185,6 +225,8 @@ def stage_ahead(bridge, record):
         if stage is None:
             return None
         from worker_bridge import admission_to_chunk
+        if nosync is not False or probe is not None:
+            return stage(admission_to_chunk(record), nosync=nosync, probe=probe)
         return stage(admission_to_chunk(record))
     except Exception:
         try:
@@ -218,9 +260,76 @@ def stage_rpc(bridge, name, scoped, dispatch):
         raise E3ContractError('a stage scope does not nest')
     answer = _scoped_answer(bridge, name, scoped, dispatch)
     if scoped.ahead is not None:
-        stage_ahead(bridge, scoped.ahead)
+        if type(scoped.ahead) is AheadNoSync or _ahead_timed():
+            timed_stage_ahead(bridge, name, scoped)
+        else:
+            stage_ahead(bridge, scoped.ahead)
     return answer
 
 
-__all__ = ['RETAINED_ATTR', 'STAGE_SKIP', 'StageScoped', 'detach_pp_send', 'local_release',
-           'pending_send', 'receipt', 'retained_sends', 'stage_ahead', 'stage_rpc']
+def _stream_busy(stream):
+    """1 when the stream still has queued work (a query, never a wait), 0 when idle, -1 unknown."""
+    try:
+        return -1 if stream is None else (0 if bool(stream.query()) else 1)
+    except Exception:
+        return -1
+
+
+def timed_stage_ahead(bridge, name, scoped, emit=None):
+    """parity-ahead: stage_ahead with four stamps and their thread CPU time; one ``flash-s5 ahead-split`` line per build.
+
+    entry -> the staged chunk's first device tensor (``wait``: today's blocking copy waits here for the prefill stream) ->
+    return (``work``). ``busy_in``/``busy_out``: the prefill stream queried at entry and at return; with the selection on, a
+    stream still busy at return is the direct sign that nothing waited. Never raises; refusals and ``already`` emit nothing.
+    """
+    import time
+    nosync = type(scoped.ahead) is AheadNoSync
+    record = scoped.ahead.record if nosync else scoped.ahead
+    mono, cpu = time.monotonic_ns, time.thread_time_ns
+    marks = []
+
+    def probe():
+        marks.append((mono(), cpu()))
+    try:
+        getter = getattr(getattr(bridge, 'dispatcher', None), 'prefill_stream', None)
+        stream = getter() if callable(getter) else None
+    except Exception:
+        stream = None
+    t0, c0 = mono(), cpu()
+    busy_in = _stream_busy(stream)
+    result = stage_ahead(bridge, record, nosync=nosync, probe=probe)
+    t2, c2 = mono(), cpu()
+    busy_out = _stream_busy(stream)
+    if not marks:
+        return result
+    try:
+        t1, c1 = marks[0]
+        message = scoped.message
+        txn = getattr(message, 'transaction', None)
+        nxt = getattr(record, 'transaction', None)
+        result = result if isinstance(result, dict) else {}
+        text = AHEAD_SPLIT_LINE + ('rank=%d txn_seq=%d chunk=%d-%d next=%d-%d rpc=%s op_seq=%d nosync=%d why=%s busy_in=%d '
+                                   'busy_out=%d wait_ns=%d wait_cpu_ns=%d work_ns=%d work_cpu_ns=%d copies=%d bytes=%d') % (
+            int(getattr(bridge, 'rank', -1)), int(getattr(txn, 'txn_seq', -1)), int(getattr(txn, 'chunk_start', -1)),
+            int(getattr(txn, 'chunk_end', -1)), int(getattr(nxt, 'chunk_start', -1)), int(getattr(nxt, 'chunk_end', -1)),
+            name, int(getattr(message, 'op_seq', -1) if type(getattr(message, 'op_seq', None)) is int else -1),
+            1 if nosync else 0, str(result.get('why', 'none')), busy_in, busy_out, t1 - t0, c1 - c0, t2 - t1, c2 - c1,
+            int(result.get('copies', 0) or 0), int(result.get('bytes', 0) or 0))
+        if emit is None:
+            import logging
+            import native_measurement as nm
+            nm.emit_receipt_kv(text, logging.getLogger(__name__))
+        else:
+            emit(text)
+    except Exception:
+        try:
+            import lane_chunk
+            lane_chunk.AHEAD_NOSYNC['errors'] += 1
+        except Exception:
+            pass
+    return result
+
+
+__all__ = ['AHEAD_NOSYNC_ENV', 'AHEAD_SPLIT_LINE', 'AheadNoSync', 'RETAINED_ATTR', 'STAGE_SKIP', 'StageScoped', 'ahead_nosync_installed',
+           'detach_pp_send', 'local_release', 'pending_send', 'receipt', 'retained_sends', 'stage_ahead', 'stage_rpc',
+           'timed_stage_ahead']

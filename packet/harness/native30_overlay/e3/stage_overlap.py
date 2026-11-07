@@ -82,6 +82,16 @@ def stage_overlap_enabled(env):
     return value == '1'
 
 
+def ahead_nosync_enabled(env):
+    """parity-ahead: FLASH_S5_AHEAD_NOSYNC; the staged successor's copies without a synchronize, selected per arm."""
+    from stage_wire import ahead_nosync_installed
+    from e3_types import E3ContractError
+    try:
+        return ahead_nosync_installed(env)
+    except E3ContractError as error:
+        raise DriverError(str(error))
+
+
 def prepare_ahead_enabled(env):
     """coverage-throughput build-2 (a): FLASH_S5_PREPARE_AHEAD; successor frames exist only with the stage overlap."""
     from lane_chunk import prepare_ahead_from_env, LaneChunkError
@@ -609,6 +619,10 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         self.exact_successor = False
         # parity-2 A: off until selected, so an installed engine with no selection is the base; needs the exact successor.
         self.terminal_successor = False
+        # parity-ahead: FLASH_S5_AHEAD_NOSYNC=1 installs the per-arm ahead_nosync (off until selected; needs prepare-ahead).
+        self.ahead_nosync_installed = ahead_nosync_enabled(os.environ)
+        self.ahead_nosync = False
+        self.ahead_nosync_counters = dict(sent=0)
         self.inwait_refused = {}          # refused sends per worker method, on every arm of an installed engine
         self._inwait_refused_chunk = {}
         self._inwait_poll_ns = {0: None, 1: None}
@@ -1351,6 +1365,15 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-exact-successor-invalid')
             if exact and inwait is not True:
                 raise DriverError('native-stage-exact-successor-needs-inwait')
+        nosync = command.get('ahead_nosync', None)
+        if 'ahead_nosync' in command:
+            # parity-ahead: per arm, in the same pause; it changes how the worker stages the successor, so prepare-ahead first.
+            if getattr(self, 'ahead_nosync_installed', False) is not True:
+                raise DriverError('native-stage-ahead-nosync-not-installed')
+            if type(nosync) is not bool:
+                raise DriverError('native-stage-ahead-nosync-invalid')
+            if nosync and getattr(self, 'prepare_ahead', False) is not True:
+                raise DriverError('native-stage-ahead-nosync-needs-prepare-ahead')
         terminal = command.get('terminal_successor', None)
         if 'terminal_successor' in command:
             # parity-2 A: per arm, in the same pause; it replaces the exact plan's terminal refusal, so it needs that plan.
@@ -1390,7 +1413,7 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-native-residue-invalid')
         reply = super()._stage_control({k: v for k, v in command.items()
                                         if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor', 'chunk_bound',
-                                                     'native_hold', 'native_residue', 'terminal_successor', 'o3_split')})
+                                                     'native_hold', 'native_residue', 'terminal_successor', 'o3_split', 'ahead_nosync')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -1449,6 +1472,12 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             reply.update(native_residue=command['native_residue'])
         self.controller.o3_selected = o3_split
         reply.update(o3_split=o3_split)
+        if getattr(self, 'ahead_nosync_installed', False) is True:
+            # parity-ahead: a command without the field turns it off. (getattr: a driver built without __init__, as the bound
+            # tests build one, is not installed.)
+            previous_nosync = self.ahead_nosync
+            self.ahead_nosync = nosync is True
+            reply.update(ahead_nosync=self.ahead_nosync, previous_ahead_nosync=previous_nosync)
         return reply
 
     def stage_status(self):
@@ -1478,6 +1507,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                                                            counters=dict(getattr(self.controller, 'terminal_counters', {})))
         result['overlap']['o3'] = dict(installed=os.environ.get('FLASH_S5_O3', '0') == '1',
                                        selected=getattr(self.controller, 'o3_selected', False) is True)
+        if getattr(self, 'ahead_nosync_installed', False) is True:
+            result['overlap']['ahead_nosync'] = dict(installed=True, selected=self.ahead_nosync,
+                                                     counters=dict(self.ahead_nosync_counters))
         if self.overlap_observer is not None:
             result['overlap']['observe'] = dict(counters=dict(self.overlap_observer.counters))
         return result
