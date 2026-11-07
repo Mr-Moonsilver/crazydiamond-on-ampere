@@ -15,7 +15,8 @@ Cases: on, off, mutant-no-classify (handback_uniform returns stock's value), mut
 A mutant case passes when the invariant it breaks is reported violated.
 
 lane-o3-fix (q18a-parity-o3 n1: O3 armed on split 0 times on the box; READING-o3-gap-20261107): the lag-* cases replace
-Connected.sync_rows with the real worker's lag. vLLM's runner sets a row's computed-prefill from the scheduler output that carries
+Connected.sync_rows with the real worker's lag, and give every scheduled row the box's V2+PP+async decode cadence
+(next_decode_eligible_step = current_step + pp_size, the async scheduler's update; the stack's scheduler honours it). vLLM's runner sets a row's computed-prefill from the scheduler output that carries
 it, i.e. the count before that step, and only when the row is in a step; Connected's leaf read the scheduler's post-advance count, so
 the handed-back row read complete at once and the census passed on CPU while the box refused it every time. The lag-* cases run with
 the box arms' hold and residue (native_residue 1) so a parked head shows.
@@ -42,6 +43,7 @@ LIMIT_STEPS = 4000
 CASES = ('on', 'off', 'uninstalled', 'mutant-no-classify', 'mutant-no-seam',
          'lag-on', 'lag-off', 'lag-k2', 'mutant-lag-no-settle', 'mutant-lag-park')
 OFF_CASES = ('off', 'uninstalled', 'lag-off', 'lag-k2')   # off: the box's off arms (FLASH_S5_O3=1, o3_split False); uninstalled: today's engine
+PP_SIZE = 2                  # the box's pipeline-parallel size (TP2 x PP2)
 LAG_CASES = ('lag-on', 'lag-off', 'lag-k2', 'mutant-lag-no-settle', 'mutant-lag-park')
 ON_CASES = ('on', 'lag-on')
 
@@ -111,6 +113,10 @@ def run(case):
             start = request.num_computed_tokens - scheduled          # the scheduler advanced it at schedule time
             rows.append((scheduled, min(start, request.num_prompt_tokens), request.num_prompt_tokens))
             worker_done[rid] = min(start, request.num_prompt_tokens)
+            if lag:
+                # the box's V2+PP+async cadence (async_scheduler.py:49, scheduler.py:634): a scheduled row is eligible for its next
+                # decode pp_size steps later, so the step after the handback does not carry the row
+                request.next_decode_eligible_step = S.current_step + PP_SIZE
         conn.dispatched.update(ids)
         conn.sync_rows()
         record = dict(step=conn.ticks, split=driver._split_ready, generation=driver.route_generation, rows=len(ids),
@@ -231,8 +237,15 @@ def run(case):
     if case in ON_CASES + ('mutant-lag-no-settle', 'mutant-lag-park'):
         check('handbacks-on-split-full-n-plus-1', all(s['split'] and s['cg_mode'] == 'FULL' and s['uniform'] == 1 for s in handback_steps),
               got=[(s['split'], s['cg_mode'], s['rows']) for s in handback_steps])
-        check('handback-rows-grow', [s['rows'] for s in handback_steps] == [DECODERS + 1, DECODERS + 2, DECODERS + 3],
-              got=[s['rows'] for s in handback_steps])
+        if not lag:
+            check('handback-rows-grow', [s['rows'] for s in handback_steps] == [DECODERS + 1, DECODERS + 2, DECODERS + 3],
+                  got=[s['rows'] for s in handback_steps])
+        else:
+            # under the PP cadence a decoder rides every pp_size-th step, so a handback step carries its row and at most the
+            # cohort proven for that run (DECODERS + the runs before it), never more
+            check('handback-rows-within-the-proven-cohort', len(handback_steps) == 3 and all(
+                s_['handback'] in s_['scheduled'] and 1 <= s_['rows'] <= DECODERS + i + 1 for i, s_ in enumerate(handback_steps)),
+                got=[s_['rows'] for s_ in handback_steps])
         last = max(i for i, s_ in enumerate(steps) if s_['handback'] in NATIVE) if handback_steps else -1
         window = steps[first_native:last + 1]
         check('one-split-residency-across-the-three-runs', bool(window) and all(s_['split'] for s_ in window)
