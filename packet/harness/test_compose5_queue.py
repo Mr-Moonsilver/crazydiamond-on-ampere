@@ -27,12 +27,12 @@ tap, tq, tan = tiq.tap, tiq.tq, tiq.tan
 SLOT_RECEIPTS = []
 ARGPARSE_RECEIPTS = []
 RUNS = HERE / 'runs'
-DRAFT = 'harness/runs/q18a_parity_o3f.draft.sh'
-SETTINGS = 'harness/runs/q18a_parity_o3f_settings.sh'
-DECLARE = 'harness/runs/q18a_parity_o3f_declare.sh'
+DRAFT = 'harness/runs/q18a_parity_n3u.draft.sh'
+SETTINGS = 'harness/runs/q18a_parity_n3u_settings.sh'
+DECLARE = 'harness/runs/q18a_parity_n3u_declare.sh'
 CORE = T.labels('core')
 DECODE = [d['label'] for d in T.DECODE_ARMS]
-QNAME = 'q18a-parity-o3f'
+QNAME = 'q18a-parity-n3u'
 STUB_BOX = tiq.STUB_BOX.replace('import e3_inwait_box as real', 'import e3_compose5_box as real')
 assert STUB_BOX != tiq.STUB_BOX
 
@@ -84,7 +84,7 @@ class Derivation(unittest.TestCase):
 def settings_rows():
     """The real settings text under real bash: what engine_identity declare --settings gets."""
     lines = ['set -u', 'H=%s' % shlex.quote(str(HERE))] + ['%s=%s' % (k, shlex.quote(v)) for k, v in ARGPARSE_VALUES.items()]
-    lines += ['source "$H/runs/q18a_parity_o3f_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
+    lines += ['source "$H/runs/q18a_parity_n3u_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
     assert done.returncode == 0, done.stderr.decode()[-400:]
     return done.stdout.decode().split('\0')[:-1]
@@ -289,7 +289,7 @@ class DeclaredIdentity(unittest.TestCase):
 
 class Names(unittest.TestCase):
     def test_the_real_qname_passes_every_name_rule(self):
-        phases = ['q18a_parity_o3f.draft.sh', 'q18a_parity_o3f_declare.sh']
+        phases = ['q18a_parity_n3u.draft.sh', 'q18a_parity_n3u_declare.sh']
         self.assertEqual(names.check_names(QNAME, phases, RUNS, HERE / 'qlib.sh'), [])
         self.assertEqual(re.findall(r"^CANDIDATE = '([^']+)'$", (ROOT / 'tools/build_compose5.py').read_text(), re.M), [QNAME])
         for text in queue.derive().values():
@@ -305,8 +305,8 @@ class Budget(unittest.TestCase):
             est = gate.EXPECTED_RUNTIME_S[key]
             self.assertEqual((est['not_run'], est['arms_entering']), ([], len(gate.rows())), key)
             self.assertLessEqual(est['total_min'] * 60, gate.ACTIVE_S, key + ': the run ends before the TERM')
-        self.assertEqual(gate.NOMINAL_S, 5090, 'lane-o3-fix: three 180 s pair arms and six 480 s replay arms with a 60 s tail, 84.8 min nominal (parity-na2 4520, lane-o3-na 6190)')
-        self.assertEqual((gate.CAP, gate.BOX_BUDGET_S, gate.LAST_ARM_ENTRY_S), (1.25, 6362, 4738), "lane-o3-fix: lane-o3-na's 1.25x, 106.0 min hard, the last entry at 79.0 min")
+        self.assertEqual(gate.NOMINAL_S, 3990, 'parity-n3u: three 180 s pair arms and four 480 s replay arms with a 60 s tail, 66.5 min nominal (lane-o3-fix 5090)')
+        self.assertEqual((gate.CAP, gate.BOX_BUDGET_S, gate.LAST_ARM_ENTRY_S), (1.4, 5586, 3838), 'parity-n3u: 1.4x so every arm enters at 1.5x, 93.1 min hard, the last entry at 64.0 min')
         self.assertGreater(gate.EXPECTED_RUNTIME_S['slower']['min_margin_s'], 0, 'every arm enters at 1.5x the walls')
         self.assertLessEqual(gate.BOX_BUDGET_S, gate.CAP * gate.NOMINAL_S, "the lead's hard cap, cleanup included")
         self.assertLessEqual(gate.BOX_BUDGET_S, 130 * 60, 'lane-o3-na: the hard cap, 128.9 min (the lead: up to ~130 min; box time free until Monday 08:00)')
@@ -388,7 +388,7 @@ class ArmLoop(unittest.TestCase):
         grade = json.loads((self.q / 'compose5-grade.json').read_text())
         self.assertEqual((grade['schema'], grade['verdict'], grade['missing']), ('compose5-grade/1', 'PASS', []))
         self.assertEqual(sorted(grade['arms']), sorted(CORE))
-        self.assertTrue((self.q / 'compose5-report.md').read_text().startswith('# q18a-parity-o3f'))
+        self.assertTrue((self.q / 'compose5-report.md').read_text().startswith('# q18a-parity-n3u'))
         self.assertEqual(json.loads((self.q / 'compose5-read.json').read_text())['verdict'], 'PASS')
 
     def test_a_smoke_that_does_not_engage_stops_the_table(self):
@@ -410,15 +410,15 @@ class Generations(unittest.TestCase):
             record = Path(tmp) / 'arm.json'
             done = self.call(T.SMOKE_ARM, record)
             self.assertEqual((done.returncode, done.stdout.strip()), (0, str(T.by_label()[T.SMOKE_ARM]['generations'])))
-            self.assertEqual(self.call('nk.g2-live-0', record).stdout.strip(), '0', 'no record: the queue runs no check over it, and 0 would not pass one')
+            self.assertEqual(self.call('sp.g2-live-0', record).stdout.strip(), '0', 'no record: the queue runs no check over it, and 0 would not pass one')
             record.write_text(json.dumps(dict(replay_requests_sent=217)))
-            self.assertEqual(self.call('nk.g2-live-0', record).stdout.strip(), '217')
+            self.assertEqual(self.call('sp.g2-live-0', record).stdout.strip(), '217')
             self.assertEqual(self.call('n3.g2-live-1', record).stdout.strip(), '217', 'lane-o3-fix: n3 is a replay arm too')
             self.assertEqual(self.call('po.g2-live-0', record).stdout.strip(), str(T.O3_PAIR_DECODERS + T.O3_PAIR_NATIVES), 'lane-o3-fix: the pair arms are back')
-            self.assertNotEqual(self.call('sp.g2-live-0', record).returncode, 0, 'lane-o3-fix: sp is not an arm')
+            self.assertNotEqual(self.call('nk.g2-live-0', record).returncode, 0, 'parity-n3u: nk is not an arm (sp is back)')
 
 
-ARGPARSE_VALUES = dict(tiq.ARGPARSE_VALUES, QNAME=QNAME, RUN_ID=QNAME + '-fixture', _label='na.g2-live-0', _sel='na.g2', _c1='na', _group='g2', _arm='core:na.g2-live-0', _pair='0', _cohort='live')
+ARGPARSE_VALUES = dict(tiq.ARGPARSE_VALUES, QNAME=QNAME, RUN_ID=QNAME + '-fixture', _label='n3.g2-live-0', _sel='n3.g2', _c1='n3', _group='g2', _arm='core:n3.g2-live-0', _pair='0', _cohort='live')
 
 
 def bash_words(args, draft, values=None):
@@ -427,7 +427,7 @@ def bash_words(args, draft, values=None):
     lines = ['set -u', 'fail_early() { :; }', 'fail() { :; }', 'H=%s' % shlex.quote(str(HERE))]
     lines += ['%s=%s' % (k, shlex.quote(v)) for k, v in values.items()]
     arrays = '--arm "$Q/arm-cmp.g2-live-0.json" --ingress "cmp.g2-live-0=$Q/ingress-cmp.g2-live-0.json" --watch "cmp.g2-live-0=$Q/engine-watch-arm-cmp.g2-live-0.json"'
-    lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays, 'source "$H/runs/q18a_parity_o3f_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
+    lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays, 'source "$H/runs/q18a_parity_n3u_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
     return done.returncode, done.stdout.decode().split('\0')[:-1], done.stderr.decode()[-400:]
 

@@ -29,7 +29,8 @@ K0, K1 = 'nk.g2-live-0', 'nk.g2-live-1'      # lane-o3-fix: na with k2_settle
 T0, T1 = 'n3.g2-live-0', 'n3.g2-live-1'      # lane-o3-fix: nk with O3 (the fixed O3 and (b))
 NT_ROWS = {R0, R1, N0, N1, A0, A1, PF, PO, PG}        # lane-o3: the rows with nt's levers
 NT_ROWS_O3F = {PF, PO, PG, A0, A1, K0, K1, T0, T1}    # lane-o3-fix: the same levers on this queue's rows
-O3F_TABLE = T.ARM_TABLE                                               # lane-o3-fix: this queue's table, before any test patches it
+O3F_TABLE = T.O3F_ARM_TABLE                                           # lane-o3-fix: q18a-parity-o3f's table (parity-n3u: kept by name)
+N3U_TABLE = T.ARM_TABLE                                               # parity-n3u: this queue's table, before any test patches it
 # build-2b24 ran one pair, so the grade's own tests ran under TWO_PAIRS; build-2b24c64 is ABBA again and TWO_PAIRS equals its table
 # (asserted in Table), so the patch is the table itself. parity-base: the name kept, the shape this table's (sp nt ny | ny nt sp).
 # lane-o3: the real table (pf po pg, no nt sp | sp nt no) with ny kept beside sp as the control the grade's own tests were written over
@@ -885,7 +886,7 @@ class BoxBinding(O3Table):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-parity-o3f'))
+        self.assertTrue(text.startswith('# q18a-parity-n3u'))
         self.assertIn('- %s native off: pure; native rows 0, handback rows 0, native-served rows 0, native turns 0, chunks 0; lease held' % P0, text)
         self.assertIn('compose5_rule.py', text)
 
@@ -1754,13 +1755,24 @@ class GradeNa2(TwoPairs):
         self.assertEqual((result['verdict'], result['failures']), ('FAIL', [R1 + ':ahead-nosync-on-the-control']))
 
 
-class TableO3f(unittest.TestCase):
+class O3fTable(unittest.TestCase):
+    """parity-n3u: q18a-parity-o3f's table and matched pairs, patched in."""
+
+    def setUp(self):
+        super().setUp()
+        for name, value in (('ARM_TABLE', O3F_TABLE), ('MATCHED_OFF', T.O3F_MATCHED_OFF)):
+            patcher = mock.patch.object(T, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+class TableO3f(O3fTable):
     """lane-o3-fix: sm | decode-am1 | dec1 | pf po pg | na nk n3 | n3 nk na; one effect per arm (nk: k2_settle on na, n3: O3 on nk)."""
 
     def test_the_order_and_check(self):
         self.assertEqual(T.labels(), [SM, DEC1, PF, PO, PG, A0, K0, T0, T1, K1, A1])
         T.check()
-        self.assertEqual(T.REPLAY_ORDER, ('na', 'nk', 'n3'))
+        self.assertEqual(T.O3F_REPLAY_ORDER, ('na', 'nk', 'n3'))
 
     def test_one_effect_per_arm(self):
         rows = T.by_label()
@@ -1787,9 +1799,10 @@ class GradeO3f(TwoPairs):
 
     def setUp(self):
         super().setUp()
-        patcher = mock.patch.object(T, 'ARM_TABLE', O3F_TABLE)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name, value in (('ARM_TABLE', O3F_TABLE), ('MATCHED_OFF', T.O3F_MATCHED_OFF)):
+            patcher = mock.patch.object(T, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.grade = Grade()
 
     def k2(self, arms, label, **after):
@@ -1808,7 +1821,7 @@ class GradeO3f(TwoPairs):
         self.assertEqual((result['fix'][T0]['o3_armed'], result['fix'][T0]['o3_kept']), (2, 3))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-parity-o3f'))
+        self.assertTrue(text.startswith('# q18a-parity-n3u'))
         self.assertIn('- %s FIX: O3 armed 2 kept 3' % T0, text)
         self.assertIn('K2 settle True settled 40 bound 0, barrier refusals 0', text)
 
@@ -1894,6 +1907,96 @@ class GradeO3fMutants(unittest.TestCase):
     def test_fix_not_reported(self):
         self.fails('test_whole_records_pass_and_the_fix_is_reported', box, 'report',
                    ("    for label, row in (result.get('fix') or {}).items():\n", "    for label, row in ():\n"))
+
+
+class TableN3u(unittest.TestCase):
+    """parity-n3u: sm | decode-am1 | dec1 | pf po pg | sp n3 | n3 sp; n3 is o3f's row unchanged, sp parity-base's, n3 against this run's sp."""
+
+    def test_the_order_and_check(self):
+        self.assertEqual(T.labels(), [SM, DEC1, PF, PO, PG, P0, T0, T1, P1])
+        T.check()
+        self.assertEqual(T.REPLAY_ORDER, ('sp', 'n3'))
+        self.assertEqual(T.ARM_TABLE, N3U_TABLE)
+
+    def test_n3_is_o3fs_row_and_sp_its_control(self):
+        rows = T.by_label()
+        with mock.patch.object(T, 'ARM_TABLE', O3F_TABLE):
+            o3f = T.by_label()
+        self.assertEqual((rows[T0], rows[T1]), (o3f[T0], o3f[T1]), "n3 is o3f's row")
+        self.assertEqual((T.matched_off(rows[T0]), T.matched_off(rows[T1]), T.matched_off(rows[PO])), (P0, P1, PF))
+        self.assertEqual([r['label'] for r in T.arms() if r['native_off']], [P0, P1])
+        self.assertEqual([r['label'] for r in T.arms() if r['k2_settle']], [T0, T1])
+        self.assertEqual([r['label'] for r in T.arms() if r['o3_split']], [PO, T0, T1])
+        self.assertEqual([r['label'] for r in T.arms() if r['ahead_nosync']], [T0, T1])
+        self.assertEqual({r['c1'] for r in T.arms() if r['kind'] == 'replay'}, {'sp', 'n3'}, 'lean: no other replay arm')
+
+
+class GradeN3u(TwoPairs):
+    """parity-n3u: the grade over this queue's table. Whole records PASS (the stop rule over pf po pg); k2 engaged on n3 (INC if not), never
+    on sp (FAIL); n3 kept-but-not-armed INC."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(T, 'ARM_TABLE', N3U_TABLE)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.grade = Grade()
+
+    k2 = GradeO3f.k2
+
+    def test_whole_records_pass(self):
+        arms = self.grade.records()
+        result = self.grade.grade_of(arms)
+        self.assertEqual((result['verdict'], result['failures'], result['missing']), ('PASS', [], []))
+        self.assertEqual(result['numerics_o3']['verdict'], 'WITHIN')
+        self.assertEqual({k: v['k2_settled'] for k, v in result['fix'].items() if v['k2_settled']}, {T0: 40, T1: 40})
+        with box._bound():
+            text = box.report(result)
+        self.assertTrue(text.startswith('# q18a-parity-n3u'))
+
+    def test_k2_on_sp_fails_and_not_on_n3_is_inc(self):
+        arms = self.grade.records()
+        self.k2(arms, P1, settle_ticks=3)
+        result = self.grade.grade_of(arms)
+        self.assertIn(P1 + ':k2-on-the-control', result['failures'])
+        arms = self.grade.records()
+        self.k2(arms, T0, settled=0, settle_ticks=0)
+        result = self.grade.grade_of(arms)
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [T0 + ':k2-not-engaged']))
+
+    def test_n3_kept_but_not_armed_is_inc(self):
+        arms = self.grade.records()
+        rec = next(a for a in arms if a.get('label') == T1)
+        status = [x for x in rec['statuses'] if x['label'] == 'after'][-1]
+        status['append_yield']['declines']['o3'] = dict(status['append_yield']['declines']['o3'], armed=0)
+        result = self.grade.grade_of(arms)
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [T1 + ':o3-not-armed']))
+
+
+class GradeN3uMutants(unittest.TestCase):
+    """One mutation per GradeN3u rule; each must fail its test."""
+
+    def fails(self, name, owner, function, edit):
+        import test_append_yield as ay
+        case = GradeN3u(name)
+        with ay.mutant(owner, function, edit), self.assertRaises(ay.MUTANT_FAILURES):
+            case.setUp()
+            try:
+                getattr(case, name)()
+            finally:
+                case.doCleanups()
+
+    def test_k2_on_sp_not_failed(self):
+        self.fails('test_k2_on_sp_fails_and_not_on_n3_is_inc', box, 'grade',
+                   ("        elif not row['k2_settle'] and (read['k2_settled'] or read['k2_settle_ticks']):\n", "        elif False:\n"))
+
+    def test_n3_not_engaged_not_inc(self):
+        self.fails('test_k2_on_sp_fails_and_not_on_n3_is_inc', box, 'grade',
+                   ("        elif row['k2_settle'] and read['k2_settled'] == 0:\n", "        elif False:\n"))
+
+    def test_n3_not_armed_not_inc(self):
+        self.fails('test_n3_kept_but_not_armed_is_inc', box, 'grade',
+                   ("        elif row['o3_split'] and read['armed'] == 0:\n", "        elif False:\n"))
 
 
 class GradeNa2Mutants(unittest.TestCase):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The q18a-parity-o3f held bundle and owner runner: tools/build_inwait.py's configuration, unchanged (build_native43 with alpha-next-c1b's READY build as parent), for this candidate. Discovery mode only:
+"""The q18a-parity-n3u held bundle (o3f's configuration plus native_uva.py in the overlay) and owner runner: tools/build_inwait.py's configuration, unchanged (build_native43 with alpha-next-c1b's READY build as parent), for this candidate. Discovery mode only:
 the two logs are the parent tree's and the records say so, no freeze proof, no parent reference. No GPU, no box action."""
 import argparse
 import json
@@ -10,8 +10,12 @@ TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 import build_inwait as parent  # noqa: E402
 
+# parity-n3u: Codex's legacy UVA retirement (926f17f1) adds one engine module, the private UVA slots' owner (native_uva.py, sha 766b084c);
+# the overlay declares it, so build_inwait's added-files assert and the bundle's SHA256SUMS carry it.
+UVA_OVERLAY = ('e3/native_uva.py',)
+parent.NEW_OVERLAY = parent.NEW_OVERLAY + UVA_OVERLAY
 b, PINS, TOOLS_REPLACED, NEW_OVERLAY = parent.b, parent.PINS, parent.TOOLS_REPLACED, parent.NEW_OVERLAY
-CANDIDATE = 'q18a-parity-o3f'
+CANDIDATE = 'q18a-parity-n3u'
 parent.CANDIDATE = CANDIDATE    # the one name build_inwait.load_spec holds a spec to
 
 if __name__ == '__main__':

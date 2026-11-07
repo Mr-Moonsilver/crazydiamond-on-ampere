@@ -1,4 +1,12 @@
-"""q18a-parity-o3f arm table: the one declared table (lane-o3-fix, 7 Nov 2026; tmp/decode-phase/READY-parity-o3f.md). Change it here and nowhere else.
+"""q18a-parity-n3u arm table: the one declared table (parity-n3u, 8 Nov 2026; tmp/decode-phase/READY-parity-n3u.md). Change it here and nowhere else.
+
+parity-n3u (lead, 8 Nov 00:02, brief-wt10-n3u-ahead-b-20261108.md): o3f's n3 on Codex's legacy UVA retirement (codex/legacy-uva-retirement
+926f17f1: private native UVA descriptor slots, retire before reuse; helper native_uva.py 766b084c), against this run's stock sp. o3f's launch
+and head unchanged (sm | decode-am1 | dec1 | pf po pg: the pair arms are the numerics envelope); the replay is sp n3 (seed 1) | n3 sp (seed 2),
+lean, no other arm. n3 is o3f's row unchanged (nt + ahead_nosync + k2_settle + O3); sp parity-base's. MATCHED_OFF n3: sp (n3's control here).
+O3F_ARM_TABLE keeps q18a-parity-o3f's order for its tests. The q18a-parity-o3f text follows.
+
+q18a-parity-o3f arm table (lane-o3-fix, 7 Nov 2026; tmp/decode-phase/READY-parity-o3f.md).
 
 lane-o3-fix (lead, 7 Nov 15:24; READING-o3-gap-20261107): on q18a-parity-o3 n1 O3 armed on split 0 times (the census refused the stale handed-back
 row, and the refusal parked the next head until a decoder finished). The fixed engine: O3's split tail waits for the row's first decode, an o3-
@@ -104,7 +112,9 @@ O3_REPLAY_ORDER = ('no', 'na', 'nt', 'sp')         # lane-o3 (+ na): index 0 in 
 O3_ARM_TABLE = (SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', 0) for sel in O3_PAIR) + tuple(('core', sel, 'live', index) for index in BAND1_INDEXES for sel in (O3_REPLAY_ORDER if index % 2 == 0 else O3_REPLAY_ORDER[::-1]))
 NA2_REPLAY_ORDER = ('na', 'nt', 'sp')              # parity-na2: no pair arms and no 'no'; index 0 in this order, index 1 reversed
 NA2_ARM_TABLE = (SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', index) for index in BAND1_INDEXES for sel in (NA2_REPLAY_ORDER if index % 2 == 0 else NA2_REPLAY_ORDER[::-1]))
-REPLAY_ORDER = ('na', 'nk', 'n3')                  # lane-o3-fix: the pair arms, then na nk n3 | n3 nk na
+O3F_REPLAY_ORDER = ('na', 'nk', 'n3')              # lane-o3-fix: the pair arms, then na nk n3 | n3 nk na
+O3F_ARM_TABLE = (SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', 0) for sel in O3_PAIR) + tuple(('core', sel, 'live', index) for index in BAND1_INDEXES for sel in (O3F_REPLAY_ORDER if index % 2 == 0 else O3F_REPLAY_ORDER[::-1]))
+REPLAY_ORDER = ('sp', 'n3')                        # parity-n3u: the pair arms, then sp n3 | n3 sp
 ARM_TABLE = (SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', 0) for sel in O3_PAIR) + tuple(('core', sel, 'live', index) for index in BAND1_INDEXES for sel in (REPLAY_ORDER if index % 2 == 0 else REPLAY_ORDER[::-1]))
 DECODE_ARMS = _inwait.DECODE_ARMS
 REFERENCE_ARM = _inwait.REFERENCE_ARM
@@ -127,7 +137,8 @@ KIND = dict(_nt({'sm': 'live-arm', 'dec1': 'one-stream', 'ny': 'replay', 'nt': '
 YIELD = _nt({'sm': True, 'dec1': True, 'ny': False, 'nt': True})     # coverage-throughput: lever 1, the yield on the candidate
 PLE_PRIVATE = _nt({'sm': True, 'dec1': True, 'ny': False, 'nt': False})
 PLE_WITNESS = dict.fromkeys(SELECTIONS, False)
-MATCHED_OFF = {'nt': 'sp', 'no': 'nt', 'na': 'nt', 'po': 'pf', 'nk': 'na', 'n3': 'nk'}     # lane-o3-fix: one effect each
+O3F_MATCHED_OFF = {'nt': 'sp', 'no': 'nt', 'na': 'nt', 'po': 'pf', 'nk': 'na', 'n3': 'nk'}     # lane-o3-fix: one effect each
+MATCHED_OFF = dict(O3F_MATCHED_OFF, n3='sp')       # parity-n3u: n3 against this run's sp (nk is not in the table)
 OFF, ON = 'sp', 'nt'
 # parity-base: sp, the parity baseline. NATIVE_OFF keeps the manual lease for the whole arm (the box's keep_lease, after the release); ATTN,
 # LAZY_RECV and DECODE_MERGE are the row's attn-meta selection and the stage command's two decode fields (every other arm: on, on, 'chunk').
@@ -295,16 +306,18 @@ def check():
     names = labels()
     o3 = ARM_TABLE == O3_ARM_TABLE                 # q18a-parity-o3's table (the O3 grade's tests select it)
     na2 = ARM_TABLE == NA2_ARM_TABLE               # q18a-parity-na2's (its tests select it); else lane-o3-fix's
-    o3f = not o3 and not na2
+    o3f = ARM_TABLE == O3F_ARM_TABLE               # q18a-parity-o3f's (its tests select it); else parity-n3u's
+    n3u = not o3 and not na2 and not o3f
     head = ['sm.g2-live-0', 'dec1.g2-live-0'] + (['pf.g2-live-0', 'po.g2-live-0', 'pg.g2-live-0'] if not na2 else [])
-    replay = O3_REPLAY_ORDER if o3 else NA2_REPLAY_ORDER if na2 else REPLAY_ORDER
+    replay = O3_REPLAY_ORDER if o3 else NA2_REPLAY_ORDER if na2 else O3F_REPLAY_ORDER if o3f else REPLAY_ORDER
     assert names[:len(head)] == head and len(names) == len(head) + len(replay) * PAIRS and names[0] == COLD_ARM and labels('tail') == []
     assert set(KIND) == set(YIELD) == set(PLE_PRIVATE) == set(PLE_WITNESS) == set(PLAN) == set(NATIVE_HOLD) == set(NATIVE_RESIDUE) == set(TERMINAL_SUCCESSOR) == set(O3_SPLIT) == set(AHEAD_NOSYNC) == set(K2_SETTLE) == set(NATIVE_OFF) == set(ATTN) == set(LAZY_RECV) == set(DECODE_MERGE) == set(SELECTIONS)
     assert REPLAY['START_MAX'] + PROMPT_SLACK_TOKENS < MAX_PROMPT_TOKENS, 'a fresh prompt fits under the ceiling'
     rows = by_label()
     for index in REPLAY_SEEDS:
         # lane-o3-fix: nt and sp are reference rows on q18a-parity-o3f (not arms); the rows below are what each table's arms are compared against
-        on, off = (rows['nt.g2-live-%d' % index], rows['sp.g2-live-%d' % index]) if not o3f else (reference_row('nt', index), reference_row('sp', index))
+        on, off = ((rows['nt.g2-live-%d' % index], rows['sp.g2-live-%d' % index]) if not (o3f or n3u) else
+                   (reference_row('nt', index), rows['sp.g2-live-%d' % index] if n3u else reference_row('sp', index)))
         assert sorted(k for k in on if on[k] != off[k]) == ['attn', 'c1', 'chunk_bound', 'decode_merge', 'label', 'lazy_recv', 'native_hold', 'native_off', 'native_residue', 'selection', 'terminal_successor', 'yield_on'], 'nt against sp: the levers and the lane'
         assert on['chunk_bound'] == B24_BOUND and off['chunk_bound'] == B13_BOUND and on['native_hold'] == HOLD_S and off['native_hold'] == 0
         assert on['native_residue'] == 1 and off['native_residue'] == 0
@@ -317,14 +330,14 @@ def check():
         if o3:
             no = rows['no.g2-live-%d' % index]
             assert sorted(k for k in no if no[k] != on[k]) == ['c1', 'label', 'o3_split', 'selection'] and no['o3_split'] is True and on['o3_split'] is False, 'no is nt but for O3'
-        na = rows['na.g2-live-%d' % index]
+        na = rows['na.g2-live-%d' % index] if not n3u else reference_row('na', index)
         assert sorted(k for k in na if na[k] != on[k]) == ['ahead_nosync', 'c1', 'label', 'selection'] and na['ahead_nosync'] is True and on['ahead_nosync'] is False, 'na is nt but for ahead_nosync'
-        if o3f:
-            nk, n3 = rows['nk.g2-live-%d' % index], rows['n3.g2-live-%d' % index]
+        if o3f or n3u:
+            nk, n3 = (rows['nk.g2-live-%d' % index] if o3f else reference_row('nk', index)), rows['n3.g2-live-%d' % index]
             assert sorted(k for k in nk if nk[k] != na[k]) == ['c1', 'k2_settle', 'label', 'selection'] and nk['k2_settle'] is True and na['k2_settle'] is False, 'nk is na but for k2_settle'
             assert sorted(k for k in n3 if n3[k] != nk[k]) == ['c1', 'label', 'o3_split', 'selection'] and n3['o3_split'] is True and nk['o3_split'] is False, 'n3 is nk but for O3'
     for sel in (O3_PAIR if not na2 else ()):
-        pair, nt0 = rows['%s.g2-live-0' % sel], (rows['nt.g2-live-0'] if not o3f else reference_row('nt', 0))
+        pair, nt0 = rows['%s.g2-live-0' % sel], (rows['nt.g2-live-0'] if not (o3f or n3u) else reference_row('nt', 0))
         assert sorted(k for k in pair if pair[k] != nt0[k]) == sorted(['c1', 'generations', 'kind', 'label', 'selection'] + (['o3_split'] if sel == 'po' else [])), 'a pair arm is nt but for its kind and O3'
     assert na2 or [rows['%s.g2-live-0' % sel]['o3_split'] for sel in O3_PAIR] == [False, True, False], 'off, on, off: the control pair brackets the candidate'
     assert not na2 or not any(r['o3_split'] or r['kind'] == 'o3-pair' for r in rows.values()), 'parity-na2: O3 installed, selected on no arm'
@@ -337,8 +350,10 @@ def check():
     order = [r['label'] for r in rows.values() if r['kind'] == 'replay']
     assert order == (['no.g2-live-0', 'na.g2-live-0', 'nt.g2-live-0', 'sp.g2-live-0', 'sp.g2-live-1', 'nt.g2-live-1', 'na.g2-live-1', 'no.g2-live-1'] if o3 else
                      ['na.g2-live-0', 'nt.g2-live-0', 'sp.g2-live-0', 'sp.g2-live-1', 'nt.g2-live-1', 'na.g2-live-1'] if na2 else
-                     ['na.g2-live-0', 'nk.g2-live-0', 'n3.g2-live-0', 'n3.g2-live-1', 'nk.g2-live-1', 'na.g2-live-1']), 'each pair ABBA'
+                     ['na.g2-live-0', 'nk.g2-live-0', 'n3.g2-live-0', 'n3.g2-live-1', 'nk.g2-live-1', 'na.g2-live-1'] if o3f else
+                     ['sp.g2-live-0', 'n3.g2-live-0', 'n3.g2-live-1', 'sp.g2-live-1']), 'each pair ABBA'
     assert [r['label'] for r in rows.values() if r['native_off']] == ([] if o3f else ['sp.g2-live-0', 'sp.g2-live-1']) and BASELINE == 'sp', 'the lane off on sp alone (lane-o3-fix: no sp arm)'
+    assert not n3u or (MATCHED_OFF['n3'] == 'sp' and {r['c1'] for r in rows.values() if r['kind'] == 'replay'} == {'sp', 'n3'}), 'parity-n3u: n3 against this run\'s sp, no other replay arm'
     assert all(r['attn'] and r['lazy_recv'] and r['decode_merge'] == 'chunk' for r in rows.values() if not r['native_off']), "every other arm's decode features as parity-2"
     assert not any(r['c1'] in REFERENCE_ONLY for r in rows.values()), 'ny is a reference row, not an arm'
     assert all(r['native_hold'] == (HOLD_S if r['c1'] in ('nt',) + _AS_NT else 0) for r in rows.values()), 'the hold on the nt rows alone'

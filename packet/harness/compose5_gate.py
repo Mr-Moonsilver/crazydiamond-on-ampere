@@ -1,4 +1,5 @@
-"""q18a-parity-o3f box queue (lane-o3-fix: three o3-pair arms pf po pg at O3_PAIR_WALL_S each and six replay arms, na nk n3 | n3 nk na: 84.8 min nominal, 106.0 min hard at 1.25x; parity-na2 had six replay arms and no pairs, lane-o3 three pairs and eight replay arms): a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, four soak arms on dnr's turn mix, ABBA (build-2b24c64; build-2b24 ran one pair), no tail). One budget for the watchdog and the draft, relative to the run's own start only.
+"""q18a-parity-n3u box queue (parity-n3u: o3f's head and pair arms, the replay sp n3 | n3 sp: 66.5 min nominal, 83.1 min hard at 1.25x). The q18a-parity-o3f text follows.
+q18a-parity-o3f box queue (lane-o3-fix: three o3-pair arms pf po pg at O3_PAIR_WALL_S each and six replay arms, na nk n3 | n3 nk na: 84.8 min nominal, 106.0 min hard at 1.25x; parity-na2 had six replay arms and no pairs, lane-o3 three pairs and eight replay arms): a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, four soak arms on dnr's turn mix, ABBA (build-2b24c64; build-2b24 ran one pair), no tail). One budget for the watchdog and the draft, relative to the run's own start only.
 
 soak (lead, 6 Nov 04:10): four arms of 480 s traffic plus a 60 s tail, hard cap 1.3x nominal (~74 min), cleanup included; the run ends by 07:15 CET. The entry limits come from the nominal walls at 1.5x, not from the worst-case caps (those sum past the cap); a step that overruns meets the budget's TERM, whose path is the clean stop (tmp/decode-phase/STOP-dnr.md).
 
@@ -37,7 +38,7 @@ O3_PAIR_WALL_S = 180                                     # lane-o3: 2 cached dec
 BETWEEN_S = 30
 END_S = 240
 SLOWER = 1.5
-CAP = 1.25                                               # lane-o3-na: the lead 7 Nov ~12:10 "up to ~130 min hard" (1.3x was 134.1 min on 8 replay arms); was 1.3 (6 Nov 04:10)
+CAP = 1.4                                                # parity-n3u: 1.4 so every arm enters at 1.5x the walls (1.25 and 1.3 skip sp.g2-live-1 there; 1.35 leaves 50 s), 93.1 min hard. lane-o3-na: the lead 7 Nov ~12:10 "up to ~130 min hard" (1.3x was 134.1 min on 8 replay arms); was 1.3 (6 Nov 04:10)
 
 
 def _nominal_s():

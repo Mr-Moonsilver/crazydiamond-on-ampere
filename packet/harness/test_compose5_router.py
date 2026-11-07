@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_parity_o3f_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_parity_n3u_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SAMPLE = dict(a1r.SAMPLE, o3_split=False, ahead_nosync=False, k2_settle=False)     # lane-o3-na: this queue's stage fields (box.ACTIONS, compose-5's own); lane-o3-fix: k2_settle
@@ -217,7 +217,8 @@ class ArmEnd(a1r.ArmEnd):
         """lane-o3-fix: this queue's replay arms na nk n3 send k2_settle (False, True, True) through the real router, session and control to
         the stage driver's controller (the attribute AutoArmPolicy reads), acknowledged on the record; the policy's k2 counters reach the
         arm's status rows and the box's fix read, selected as sent."""
-        for sel, index in (('na', 0), ('nk', 0), ('n3', 1), ('nk', 1)):
+        # parity-n3u: this queue's replay arms are sp and n3 (sp, the lane off, sends k2 False and no nosync: the stock bar)
+        for sel, index in (('sp', 0), ('n3', 0), ('n3', 1), ('sp', 1)):
             with self.subTest(sel=sel, index=index):
                 rc_, record, actions, _served, _out = await self.arm(sel, index=index)
                 self.assertNotIn('error', record, record.get('error'))
@@ -225,7 +226,7 @@ class ArmEnd(a1r.ArmEnd):
                 self.assertEqual((record['inwait']['k2_requested'], record['inwait']['k2_acknowledged']), (T.K2_SETTLE[sel],) * 2)
                 self.assertIs(self.driver.controller.k2_settle, T.K2_SETTLE[sel])
                 self.assertEqual((record['inwait']['o3_requested'], record['inwait']['o3_acknowledged']), (T.O3_SPLIT[sel],) * 2)
-                self.assertEqual((record['inwait']['ahead_nosync_requested'], record['inwait']['ahead_nosync_acknowledged']), (True, True))
+                self.assertEqual((record['inwait']['ahead_nosync_requested'], record['inwait']['ahead_nosync_acknowledged']), (T.AHEAD_NOSYNC[sel],) * 2)
                 k2 = record['statuses'][-1]['append_yield']['declines']['k2']
                 self.assertEqual(k2['selected'], int(T.K2_SETTLE[sel]))
                 fix = box.fix_arm_read(record)

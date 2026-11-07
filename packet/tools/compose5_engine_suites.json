@@ -31,8 +31,15 @@
   "test_coverage_residue",
   "test_parity2_terminal",
   "test_lane_o3",
-  "test_parity_ahead"
+  "test_parity_ahead",
+  "test_native_uva_retirement",
+  "test_native_uva_legacy",
+  "test_native_uva_package"
  ],
  "refusal_tests": [],
- "why": {}
+ "why": {
+  "test_native_uva_retirement": "parity-n3u: Codex's legacy 926f17f1, native private UVA pools: retire-before-reuse/growth, pending decode readers, failure retention",
+  "test_native_uva_legacy": "parity-n3u: 926f17f1 on the legacy prepare-ahead path (lane_chunk/lane_dispatch): private slots, retire before reuse",
+  "test_native_uva_package": "parity-n3u: native_uva packaged, relative imports under the mounted e3, launcher name pins unchanged"
+ }
 }
