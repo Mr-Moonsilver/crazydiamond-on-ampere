@@ -13,6 +13,17 @@ Leaves (Connected's, plus):
   * the split bank and dispatch candidates are widened to 1..8 decoders (the template's declared leaf; no graph exists on CPU).
 Cases: on, off, mutant-no-classify (handback_uniform returns stock's value), mutant-no-seam (the driver never permits the kept row).
 A mutant case passes when the invariant it breaks is reported violated.
+
+lane-o3-fix (q18a-parity-o3 n1: O3 armed on split 0 times on the box; READING-o3-gap-20261107): the lag-* cases replace
+Connected.sync_rows with the real worker's lag. vLLM's runner sets a row's computed-prefill from the scheduler output that carries
+it, i.e. the count before that step, and only when the row is in a step; Connected's leaf read the scheduler's post-advance count, so
+the handed-back row read complete at once and the census passed on CPU while the box refused it every time. The lag-* cases run with
+the box arms' hold and residue (native_residue 1) so a parked head shows.
+  * lag-on: O3 with the fix: the tail waits for the row's first decode; armed on split twice, no census refusal, no parked head.
+  * lag-off: today's FULL path under the lag: the K2 barrier refuses the stale row (the box's 2 refusals per run end).
+  * lag-k2: lag-off with k2_settle (fix c): K2 selects after the row's first decode; no barrier refusal.
+  * mutant-lag-no-settle: fix 1 reverted (the tail proceeds on the handback step): the census refuses (the box's refusal on CPU).
+  * mutant-lag-park: fixes 1 and 2 reverted (q18a-parity-o3's engine): the refusal also parks the next head on refused_held.
 """
 import argparse
 import hashlib
@@ -28,8 +39,11 @@ DECODERS = 2
 NATIVE = ('o3-a', 'o3-b', 'o3-c')
 PROMPT = 32801            # over the 32768-row floor (no hold set): every row but the last native
 LIMIT_STEPS = 4000
-CASES = ('on', 'off', 'uninstalled', 'mutant-no-classify', 'mutant-no-seam')
-OFF_CASES = ('off', 'uninstalled')   # off: the box's off arms (FLASH_S5_O3=1 for the run, o3_split False); uninstalled: today's engine
+CASES = ('on', 'off', 'uninstalled', 'mutant-no-classify', 'mutant-no-seam',
+         'lag-on', 'lag-off', 'lag-k2', 'mutant-lag-no-settle', 'mutant-lag-park')
+OFF_CASES = ('off', 'uninstalled', 'lag-off', 'lag-k2')   # off: the box's off arms (FLASH_S5_O3=1, o3_split False); uninstalled: today's engine
+LAG_CASES = ('lag-on', 'lag-off', 'lag-k2', 'mutant-lag-no-settle', 'mutant-lag-park')
+ON_CASES = ('on', 'lag-on')
 
 
 def run(case):
@@ -68,6 +82,21 @@ def run(case):
         conn = auto_probe.Connected('1')
     conn.dispatched = set()
     policy, driver, S = conn.driver.auto_arm, conn.driver, conn.scheduler
+    lag = case in LAG_CASES
+    worker_done = {}             # rid -> the pre-step count of the last step that carried it (the worker's own view)
+
+    def lagged_sync_rows():
+        # lane-o3-fix: the real worker's host mirror. update_requests takes num_computed_tokens from the scheduler output, the
+        # count before the step, for the rows in that step only; a row no step carried since keeps its last value.
+        for w in conn.workers.values():
+            r = w.model_runner
+            live = [req for req in S.running if req.request_id in conn.dispatched]
+            r.req_states = NS(req_id_to_index={req.request_id: i for i, req in enumerate(live)},
+                              prefill_len=NS(np=[req.num_prompt_tokens for req in live]),
+                              num_computed_prefill_tokens=[worker_done.get(req.request_id, 0) for req in live])
+            assert nw.live_census(r, r._flash_s5_native_census)['available']
+    if lag:
+        conn.sync_rows = lagged_sync_rows
     steps = []
     refused = []
 
@@ -81,6 +110,7 @@ def run(case):
             scheduled = out.num_scheduled_tokens[rid]
             start = request.num_computed_tokens - scheduled          # the scheduler advanced it at schedule time
             rows.append((scheduled, min(start, request.num_prompt_tokens), request.num_prompt_tokens))
+            worker_done[rid] = min(start, request.num_prompt_tokens)
         conn.dispatched.update(ids)
         conn.sync_rows()
         record = dict(step=conn.ticks, split=driver._split_ready, generation=driver.route_generation, rows=len(ids),
@@ -121,6 +151,22 @@ def run(case):
         graph_hooks.handback_uniform = lambda runner, output, state, uniform: uniform
     if case == 'mutant-no-seam':
         driver.o3_handback_permits = lambda request, kind: False
+    if case in ('mutant-lag-no-settle', 'mutant-lag-park'):
+        # fix 1 reverted: the tail proceeds once the handback row is scheduled (q18a-parity-o3's _o3_tail)
+        policy._decode_scheduled = policy._handback_scheduled
+    if case == 'mutant-lag-park':
+        # fix 2 reverted: an o3- refusal marks the next head rejected under its cohort (q18a-parity-o3's _restore)
+        import inspect
+        import sys
+        import textwrap
+        import types
+        restore = type(policy)._restore
+        source = textwrap.dedent(inspect.getsource(restore))
+        old = "if type(why) is str and why.startswith('o3-'):"
+        assert source.count(old) == 1, 'the fix-2 line moved'
+        namespace = {}
+        exec(compile(source.replace(old, 'if False:'), '<mutant _restore>', 'exec'), sys.modules[restore.__module__].__dict__, namespace)
+        policy._restore = types.MethodType(namespace['_restore'], policy)
     checks, violations = [], []
 
     def check(name, ok, **details):
@@ -130,6 +176,9 @@ def run(case):
 
     conn.controller.native_hold_s = 30      # the box arms' decode-phase hold (set per arm by the stage command); both cases
     conn.controller.o3_selected = on        # the arm's o3_split (set per arm by the stage command, stage_overlap._stage_control)
+    conn.controller.k2_settle = case == 'lag-k2'     # the arm's k2_settle (fix c), set the same way
+    if lag:
+        conn.controller.native_residue = 1  # the box replay arms' residue (nt's row): a refused head is held until its cohort changes
     decoders = [conn.request('decoder-%d' % i, 40, outputs=60000) for i in range(DECODERS)]
     for _ in range(4):
         conn.step()
@@ -160,8 +209,9 @@ def run(case):
                                                               for e in transitions],
                   o3=policy.o3_record(), route_runs=route_runs, restores=dict(policy.restores), rollbacks=dict(policy.rollbacks),
                   first_tokens={r.request_id: list(r.output_token_ids[:1]) for r in natives},
+                  residue=dict(policy.residue_counts), k2=dict(policy.k2_counts), lag=lag,
                   coverage=policy._coverage_record(), alias_failures=failures)
-    if case in ('on', 'off'):
+    if case in ('on', 'off') + LAG_CASES:
         check('no-error', error is None, error=error)
         check('all-three-first-tokens', all(list(r.output_token_ids[:1]) == [7] for r in natives))
         for uid in NATIVE:
@@ -178,7 +228,7 @@ def run(case):
               and (cov.get('requests') or {}).get('live', {}).get('stock') == {'handback': 3}, coverage=cov)
         check('no-other-stock-prefill-on-split', all(not s['split'] or not s.get('has_prefill') or (s['prefill_rows'] == 1 and s['handback'] in NATIVE)
                                                      for s in steps))
-    if case == 'on':
+    if case in ON_CASES + ('mutant-lag-no-settle', 'mutant-lag-park'):
         check('handbacks-on-split-full-n-plus-1', all(s['split'] and s['cg_mode'] == 'FULL' and s['uniform'] == 1 for s in handback_steps),
               got=[(s['split'], s['cg_mode'], s['rows']) for s in handback_steps])
         check('handback-rows-grow', [s['rows'] for s in handback_steps] == [DECODERS + 1, DECODERS + 2, DECODERS + 3],
@@ -190,7 +240,22 @@ def run(case):
               got=route_runs, transitions=record['transitions'])
         check('o3-kept-and-armed', policy.o3_counts['kept'] == 3 and policy.o3_counts['armed'] == 2
               and policy.o3_counts['full'] == {'no-next-head': 1}, o3=record['o3'])
+    if lag:
+        # lane-o3-fix: the box's failure modes, under the worker's real lag
+        check('no-census-refusal', policy.o3_counts['refused'] == {}, refused=policy.o3_counts['refused'])
+        check('no-parked-head', policy.residue_counts['refused_held'] == 0, residue=record['residue'])
+    if case == 'lag-on':
+        check('tail-waited-for-the-first-decode', policy.o3_counts['settle_ticks'] >= 1, o3=record['o3'])
+    if case == 'lag-off':
+        # the control: today's K2 under the lag refuses the stale row at the barrier (a race close, retried); counted, not failed
+        record['k2_barrier_refusals'] = policy.rollbacks.get('worker-barrier-cohort-refused', 0)
+        check('k2-barrier-refuses-the-stale-row', record['k2_barrier_refusals'] >= 1, rollbacks=record['rollbacks'])
+    if case == 'lag-k2':
+        record['k2_barrier_refusals'] = policy.rollbacks.get('worker-barrier-cohort-refused', 0)
+        check('k2-settle-no-barrier-refusal', record['k2_barrier_refusals'] == 0, rollbacks=record['rollbacks'], k2=record['k2'])
+        check('k2-settled-each-run-end', policy.k2_counts['settled'] == 3 and policy.k2_counts['bound'] == 0, k2=record['k2'])
     if case in OFF_CASES:
+        check('k2-off-unless-selected', (policy.k2_counts['settle_ticks'] == 0) is (case != 'lag-k2'), k2=record['k2'])
         check('handbacks-on-full-eager', all(not s['split'] and s['cg_mode'] == 'NONE' for s in handback_steps),
               got=[(s['split'], s['cg_mode'], s['rows']) for s in handback_steps])
         check('a-split-cycle-per-run', [split for split, _ in route_runs] == [True, False] * 3, got=route_runs)

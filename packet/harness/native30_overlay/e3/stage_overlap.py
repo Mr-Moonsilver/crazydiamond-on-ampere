@@ -1390,6 +1390,13 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-o3-not-installed')
             if type(o3_split) is not bool:
                 raise DriverError('native-stage-o3-split-invalid')
+        k2_settle = command.get('k2_settle', False)
+        if 'k2_settle' in command:
+            # lane-o3-fix (c): per arm, in the same pause; a bool. A command without it turns it off (today's K2).
+            if not self.inwait_installed:
+                raise DriverError('native-stage-inwait-not-installed')
+            if type(k2_settle) is not bool:
+                raise DriverError('native-stage-k2-settle-invalid')
         if 'chunk_bound' in command:
             # decode-phase dp6: per arm, in the same pause. None is today's plan.
             if not self.inwait_installed:
@@ -1413,7 +1420,7 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                 raise DriverError('native-stage-native-residue-invalid')
         reply = super()._stage_control({k: v for k, v in command.items()
                                         if k not in ('overlap', 'defer_bind', 'lazy_recv', 'decode_merge', 'inwait', 'early_successor', 'exact_successor', 'chunk_bound',
-                                                     'native_hold', 'native_residue', 'terminal_successor', 'o3_split', 'ahead_nosync')})
+                                                     'native_hold', 'native_residue', 'terminal_successor', 'o3_split', 'ahead_nosync', 'k2_settle')})
         previous = self.overlap_selected
         if not reply['local']:
             overlap = False
@@ -1472,6 +1479,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
             reply.update(native_residue=command['native_residue'])
         self.controller.o3_selected = o3_split
         reply.update(o3_split=o3_split)
+        self.controller.k2_settle = k2_settle
+        reply.update(k2_settle=k2_settle)
         if getattr(self, 'ahead_nosync_installed', False) is True:
             # parity-ahead: a command without the field turns it off. (getattr: a driver built without __init__, as the bound
             # tests build one, is not installed.)
@@ -1507,6 +1516,7 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                                                            counters=dict(getattr(self.controller, 'terminal_counters', {})))
         result['overlap']['o3'] = dict(installed=os.environ.get('FLASH_S5_O3', '0') == '1',
                                        selected=getattr(self.controller, 'o3_selected', False) is True)
+        result['overlap']['k2_settle'] = dict(selected=getattr(self.controller, 'k2_settle', False) is True)
         if getattr(self, 'ahead_nosync_installed', False) is True:
             result['overlap']['ahead_nosync'] = dict(installed=True, selected=self.ahead_nosync,
                                                      counters=dict(self.ahead_nosync_counters))

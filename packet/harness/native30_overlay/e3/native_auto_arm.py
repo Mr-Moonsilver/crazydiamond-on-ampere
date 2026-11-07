@@ -175,7 +175,10 @@ class AutoArmPolicy:
         self.o3_ledger = frozenset()
         self.o3_split_generation = None
         self.o3_joined = None
-        self.o3_counts = dict(kept=0, armed=0, tail_bound=0, full={}, refused={}, gap={})
+        self.o3_counts = dict(kept=0, armed=0, tail_bound=0, full={}, refused={}, gap={}, settle_ticks=0, unparked=0)
+        # lane-o3-fix (c), per arm (k2_settle on native_stage_local; off: today's K2): the FULL tail selects only after the
+        # handed-back row was scheduled once more as a decoder, so the barrier sees it as one on every worker.
+        self.k2_counts = dict(settle_ticks=0, settled=0, bound=0)
         self._o3_gap_start = None      # (monotonic ns, path) at a run's terminal commit; closed at the next arm
 
     @property
@@ -226,6 +229,7 @@ class AutoArmPolicy:
                                  admitted=dict(getattr(self.controller, 'residue_totals', None) or {})),
                     coverage=self._coverage_record(),
                     o3=self.o3_record(),
+                    k2=dict(self.k2_counts, selected=int(getattr(self.controller, 'k2_settle', False) is True)),
                     **self.decline_totals)
 
     # -- lane-o3 ------------------------------------------------------------
@@ -271,10 +275,10 @@ class AutoArmPolicy:
             request = self._request()
             if not self.o3 or getattr(self.controller, 'o3_selected', False) is not True:
                 return 'off'     # installed for the run (FLASH_S5_O3) and selected by the arm (o3_split)
+            if d.append_yield_active():
+                return 'yield'   # lane-o3-fix: a yielded append's terminal handback is a yield, not 'not-the-selection'
             if self.phase != 'native' or request is None or request.request_id != uid:
                 return 'not-the-selection'
-            if d.append_yield_active():
-                return 'yield'
             if remaining != 1:
                 return 'tail-rows'
             if self.o3_split_generation is None or d.route_generation != self.o3_split_generation:
@@ -316,7 +320,12 @@ class AutoArmPolicy:
             self.o3_tail = False
             self._decline('tail')
             return False
-        if request is not None and request.num_output_tokens == 0 and not self._handback_scheduled(request):
+        if request is not None and not self._finished(request) and not self._decode_scheduled(request):
+            # lane-o3-fix 1: wait for the row's first decode after the handback. The worker counts a row's prefill from the
+            # step that carries it (the scheduler's pre-advance count), so straight after the handback step every worker still
+            # reads it as prefill and the census refuses; the step that schedules its first decode lands it as a decoder.
+            if self._handback_scheduled(request):
+                self.o3_counts['settle_ticks'] += 1
             if self.tail_ticks > O3_TAIL_TICKS:
                 self.o3_counts['tail_bound'] += 1
                 d.o3_return_full('tail-bound')
@@ -613,6 +622,17 @@ class AutoArmPolicy:
     def _note(self, event, **fields):
         self.driver._record('auto_' + event, selection_seq=self.selection_seq,
                             request_uid=self.snapshot()['request_uid'], **fields)
+
+    @staticmethod
+    def _decode_scheduled(request):
+        """lane-o3-fix: stock scheduled the handed-back row once more, as a decoder (its first decode after the prompt): the
+        step that carries it brings every worker's prefill count to the prompt."""
+        return (getattr(getattr(request, 'status', None), 'name', None) == 'RUNNING' and not request.is_prefill_chunk
+                and request.num_computed_tokens > request.num_prompt_tokens)
+
+    @staticmethod
+    def _finished(request):
+        return str(getattr(getattr(request, 'status', None), 'name', '')).startswith('FINISHED')
 
     @staticmethod
     def _handback_scheduled(request):
@@ -1057,7 +1077,11 @@ class AutoArmPolicy:
         self._note('closed', reason=reason)
         why = self._rollback_reason if reason == 'returned-before-native-admission' and self._rollback_reason else reason
         self._rollback_reason = None
-        if not self._race_close(why):
+        if type(why) is str and why.startswith('o3-'):
+            # lane-o3-fix 2: an O3 refusal (census, selection, counts, ledger, generation) is not about the next head; marking
+            # it rejected parked the lane on refused_held until a decoder finished (q18a-parity-o3 n1: 68-70 s per arm).
+            self.o3_counts['unparked'] += 1
+        elif not self._race_close(why):
             self._remember()
         self.phase = 'idle'
         self.pending = None
@@ -1175,7 +1199,19 @@ class AutoArmPolicy:
         if self.phase == 'tail':
             request = self._request()
             self.tail_ticks += 1
-            if request is not None and request.num_output_tokens == 0 and self._handback_scheduled(request):
+            settle = getattr(self.controller, 'k2_settle', False) is True
+            if (settle and request is not None and not self._finished(request) and self._handback_scheduled(request)
+                    and not self._decode_scheduled(request)):
+                # lane-o3-fix (c): the handback step's row still reads as prefill on the workers; the barrier would refuse it
+                # (2 refusals per run end on nt). Wait for its first decode, bounded as the O3 tail; past it, today's K2.
+                if self.tail_ticks <= O3_TAIL_TICKS:
+                    self.k2_counts['settle_ticks'] += 1
+                    self._decline('tail')
+                    return False
+                self.k2_counts['bound'] += 1
+            if request is not None and (request.num_output_tokens == 0 or settle) and self._handback_scheduled(request):
+                if settle and self._decode_scheduled(request):
+                    self.k2_counts['settled'] += 1
                 # coverage-throughput build-2 (b) K2 (lead, 6 Nov): every handback row is scheduled on FULL, so the
                 # request is a decoder; close with no cooldown and select the next head in this tick. PAUSED_ALL
                 # stops further stock steps, the drain lands the handback step, and the barrier proves the cohort

@@ -62,6 +62,33 @@ def run_native_to_terminal(rig, request):
     return txns
 
 
+def nw_census(worker):
+    """The worker's real live census (native_overlap_worker.live_census) over its runner rows."""
+    import native_overlap_worker as nw
+    runner = worker.model_runner
+    return nw.live_census(runner, nw.install_census(runner))
+
+
+def worker_lag(rig, request):
+    """lane-o3-fix leaf: the real worker after the handback step. vLLM's runner sets the row's computed-prefill from the scheduler
+    output that carried it (the count before that step: prompt - 1), so every rank still reads it as prefill."""
+    for worker in rig.stack.workers.values():
+        states = worker.model_runner.req_states
+        states.num_computed_prefill_tokens[states.req_id_to_index[request.request_id]] = request.num_prompt_tokens - 1
+
+
+def first_decode_step(rig, request):
+    """lane-o3-fix leaf: the handback step landed; the stock step that schedules the row's first decode is in flight. The
+    scheduler advanced it past the prompt; on landing (ts.landed) every rank's runner took its count from this step's output."""
+    rig.core.batch_queue = []
+    request.num_output_tokens = 1
+    request.num_computed_tokens += 1
+    for worker in rig.stack.workers.values():
+        states = worker.model_runner.req_states
+        states.num_computed_prefill_tokens[states.req_id_to_index[request.request_id]] = request.num_prompt_tokens
+    rig.core.batch_queue = ['stock-decode-step']
+
+
 def transitions(rig):
     return [e for e in rig.d._journal if e['kind'] == 'transition']
 
@@ -104,6 +131,11 @@ class StaySplit(unittest.TestCase):
         ay.policy_ticks(rig, 2)
         self.assertEqual(p.phase, 'tail')               # not scheduled yet: the split tail waits
         split_handback_step(rig, rig.bulk)
+        worker_lag(rig, rig.bulk)
+        ay.policy_ticks(rig, 2)
+        self.assertEqual(p.phase, 'tail')               # lane-o3-fix 1: the workers still read the row as prefill: wait
+        self.assertEqual(p.o3_counts['settle_ticks'], 2)
+        first_decode_step(rig, rig.bulk)
         ay.policy_ticks(rig, 1)
         self.assertEqual(p.phase, 'o3_drain')
         self.assertIs(p.request_ref(), nxt)
@@ -187,6 +219,8 @@ class StaySplit(unittest.TestCase):
         self.assertEqual(p.o3_keeps_split(BULK_UID, 1), 'counts')               # 1 decoder + the row = 2 rows
         with mock.patch.object(rig.d, 'append_yield_active', lambda: True):
             self.assertEqual(p.o3_keeps_split(BULK_UID, 1), 'yield')
+            # lane-o3-fix: a yielded append's terminal handback is another request than the selection; it is labelled a yield
+            self.assertEqual(p.o3_keeps_split('the-append', 1), 'yield')
         p.o3 = False
         self.assertEqual(p.o3_keeps_split(BULK_UID, 1), 'off')
 
@@ -208,6 +242,7 @@ class StaySplit(unittest.TestCase):
         self.to_split_tail(rig)
         moves = len(transitions(rig))
         split_handback_step(rig, rig.bulk)
+        first_decode_step(rig, rig.bulk)
         ay.policy_ticks(rig, 1)
         self.assertEqual(rig.p.phase, 'rollback_drain')
         self.assertTrue(rig.d._split_ready)             # the handback step runs on split first
@@ -223,6 +258,7 @@ class StaySplit(unittest.TestCase):
         rig, _ = o3_rig()
         self.to_split_tail(rig)
         split_handback_step(rig, rig.bulk)
+        first_decode_step(rig, rig.bulk)
         ay.policy_ticks(rig, 1)
         # leaf: one rank's runner lost the handed-back row (a census the scheduler's cohort does not match)
         worker = rig.stack.workers[2]
@@ -233,6 +269,38 @@ class StaySplit(unittest.TestCase):
         self.assertEqual(rig.p.o3_counts['refused'], {'census': 1})
         self.assertEqual(rig.p.o3_counts['armed'], 0)
         self.assertEqual(rig.p.rollbacks, {'o3-census': 1})
+        # lane-o3-fix 2: the refusal is not the next head's; it is not marked rejected, so it is not held on refused_held
+        self.assertNotIn(NEXT_UID, rig.p.rejected)
+        self.assertNotIn(NEXT_UID, rig.p.refused_cohort)
+        self.assertEqual(rig.p.o3_counts['unparked'], 1)
+        rig.tick(lambda: rig.p.phase not in ('idle', 'cooldown'))      # the next head is selected again under the same cohort
+        self.assertEqual(rig.p.residue_counts['refused_held'], 0)
+        self.assertEqual(rig.p.request_ref().request_id, NEXT_UID)
+
+    def test_the_census_after_the_handback_step_sees_the_row_as_prefill(self):
+        # lane-o3-fix: q18a-parity-o3 n1's refusal (13/13, 23/27, 2/3 kept runs): proceeding on the handback step itself, the
+        # census reads the workers' stale row; with fix 1 the tail never gets there (this is the census's own view)
+        rig, _ = o3_rig()
+        self.to_split_tail(rig)
+        split_handback_step(rig, rig.bulk)
+        worker_lag(rig, rig.bulk)
+        rows = [nw_census(w) for w in rig.stack.workers.values()]
+        self.assertTrue(all(r['prefill_requests'] == 1 for r in rows), rows)
+        first_decode_step(rig, rig.bulk)
+        rows = [nw_census(w) for w in rig.stack.workers.values()]
+        self.assertTrue(all(r['prefill_requests'] == 0 for r in rows), rows)
+
+    def test_a_finished_handback_row_closes_the_tail(self):
+        rig, _ = o3_rig()
+        self.to_split_tail(rig)
+        split_handback_step(rig, rig.bulk)
+        worker_lag(rig, rig.bulk)
+        ay.policy_ticks(rig, 1)
+        self.assertEqual(rig.p.phase, 'tail')
+        rig.bulk.status = NS(name='FINISHED_LENGTH_CAPPED')     # one token and done: no first decode will come
+        ay.policy_ticks(rig, 1)
+        self.assertNotEqual(rig.p.phase, 'tail')
+        self.assertEqual(rig.p.o3_counts['tail_bound'], 0)
 
     def test_an_unscheduled_handback_returns_full_at_the_bound(self):
         rig, _ = o3_rig()
@@ -378,6 +446,87 @@ class O3Selection(p2t.ie.FlagOn, p2t.ie.Early, p2t.c1.OverlapBase):
         self.assertIs(getattr(driver.controller, 'o3_selected', False), False, 'nothing applied on a refusal')
 
 
+class K2Settle(unittest.TestCase):
+    """lane-o3-fix (c): with k2_settle the FULL tail selects after the handed-back row's first decode, so the K2 barrier sees a
+    decoder on every worker; off, today's K2 selects at the handback step and the barrier refuses the stale row (the box's 2
+    refusals per run end on every O3-off arm)."""
+
+    def setUp(self):
+        self.log = ts.Log()
+        patcher = mock.patch.object(ed, '_progress_logger', lambda: self.log)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_to_tail(self, settle):
+        rig = Rig(cached={}, enabled=False)
+        ts.mirror_stock_pause(rig)
+        rig.c.native_hold_s = 30
+        rig.c.k2_settle = settle
+        nxt = rig.add_held(NEXT_UID, 12, queue='waiting')
+        ay.finish_bulk(rig)
+        rig.tick(lambda: rig.p.phase == 'tail')
+        ts.scheduled(rig, rig.bulk)                  # the handback step on FULL, in flight
+        worker_lag(rig, rig.bulk)                     # every rank still reads the row as prefill
+        return rig, nxt
+
+    def test_settle_selects_after_the_rows_first_decode(self):
+        rig, nxt = self.run_to_tail(True)
+        p = rig.p
+        ay.policy_ticks(rig, 2)
+        self.assertEqual(p.phase, 'tail')
+        self.assertEqual(p.k2_counts['settle_ticks'], 2)
+        first_decode_step(rig, rig.bulk)
+        ay.policy_ticks(rig, 1)
+        self.assertEqual(p.phase, 'drain')
+        self.assertEqual(p.restores, {'full-tail-scheduled': 1})
+        self.assertIs(p.request_ref(), nxt)
+        self.assertEqual(p.k2_counts, dict(settle_ticks=2, settled=1, bound=0))
+        ts.landed(rig, rig.bulk)
+        rig.tick(lambda: p.phase == 'native')
+        self.assertNotIn('worker-barrier-cohort-refused', p.rollbacks)      # the barrier passed the first time
+        self.assertEqual(p.decline_record()['k2'], dict(settle_ticks=2, settled=1, bound=0, selected=1))
+
+    def test_off_selects_at_the_handback_step_and_the_barrier_refuses_the_stale_row(self):
+        rig, nxt = self.run_to_tail(False)
+        p = rig.p
+        ay.policy_ticks(rig, 1)
+        self.assertEqual(p.phase, 'drain')                                  # today's K2: at the handback step
+        self.assertEqual(p.k2_counts, dict(settle_ticks=0, settled=0, bound=0))
+        ts.landed(rig, rig.bulk)                                            # the handback step lands; no further step
+        ay.policy_ticks(rig, 8)
+        self.assertGreaterEqual(p.rollbacks.get('worker-barrier-cohort-refused', 0), 1, p.rollbacks)
+        self.assertEqual(p.decline_record()['k2']['selected'], 0)
+
+    def test_settle_is_bounded_then_todays_k2(self):
+        rig, nxt = self.run_to_tail(True)
+        p = rig.p
+        ay.policy_ticks(rig, auto.O3_TAIL_TICKS + 2)
+        self.assertEqual(p.k2_counts['bound'], 1)
+        self.assertEqual(p.restores, {'full-tail-scheduled': 1})
+        self.assertIs(p.request_ref(), nxt)
+
+
+class K2Selection(p2t.ie.FlagOn, p2t.ie.Early, p2t.c1.OverlapBase):
+    """k2_settle on the real stage command (stage_overlap._stage_control): selected, echoed, in status; a command without it
+    turns it off; refused when not a bool or without inwait."""
+    idle = p2t.Selection.idle
+    base = p2t.Selection.base
+
+    def test_selected_by_the_stage_command_and_read_in_status(self):
+        driver = self.idle()
+        self.assertIs(driver._stage_control(dict(self.base, k2_settle=True))['k2_settle'], True)
+        self.assertIs(driver.controller.k2_settle, True)
+        self.assertEqual(driver.stage_status()['overlap']['k2_settle'], dict(selected=True))
+        self.assertIs(driver._stage_control(dict(self.base))['k2_settle'], False, 'a command without the field turns it off')
+        self.assertIs(driver.controller.k2_settle, False)
+
+    def test_refused_when_invalid(self):
+        driver = self.idle()
+        with self.assertRaises(ed.DriverError):
+            driver._stage_control(dict(self.base, k2_settle=1))
+        self.assertIs(getattr(driver.controller, 'k2_settle', False), False, 'nothing applied on a refusal')
+
+
 class Mutants(unittest.TestCase):
     """One engine mutation per new test; each must fail it (lead's rule: a mutant per new test)."""
 
@@ -397,6 +546,50 @@ class Mutants(unittest.TestCase):
                 case.doCleanups()
         go.__name__ = name
         return go
+
+    # lane-o3-fix
+    def test_fix1_tail_proceeds_on_the_handback_step(self):
+        self.fails(self.run_test(StaySplit, 'test_two_back_to_back_runs_stay_split'),
+                   auto.AutoArmPolicy, '_o3_tail',
+                   ("        if request is not None and not self._finished(request) and not self._decode_scheduled(request):\n",
+                    "        if request is not None and request.num_output_tokens == 0 and not self._handback_scheduled(request):\n"))
+
+    def test_fix1_finished_row_waits(self):
+        self.fails(self.run_test(StaySplit, 'test_a_finished_handback_row_closes_the_tail'),
+                   auto.AutoArmPolicy, '_o3_tail',
+                   ("        if request is not None and not self._finished(request) and not self._decode_scheduled(request):\n",
+                    "        if request is not None and not self._decode_scheduled(request):\n"))
+
+    def test_fix2_o3_refusal_parks_the_head(self):
+        self.fails(self.run_test(StaySplit, 'test_a_census_mismatch_returns_full'),
+                   auto.AutoArmPolicy, '_restore', ("        if type(why) is str and why.startswith('o3-'):\n", "        if False:\n"))
+
+    def test_label_yield_after_selection(self):
+        self.fails(self.run_test(StaySplit, 'test_refusal_reasons'),
+                   auto.AutoArmPolicy, '_o3_keeps_split',
+                   ("            if d.append_yield_active():\n                return 'yield'   # lane-o3-fix: a yielded append's terminal handback is a yield, not 'not-the-selection'\n", ''))
+
+    def test_k2_settle_not_waited(self):
+        self.fails(self.run_test(K2Settle, 'test_settle_selects_after_the_rows_first_decode'),
+                   auto.AutoArmPolicy, 'tick', ("                if self.tail_ticks <= O3_TAIL_TICKS:\n", "                if False:\n"))
+
+    def test_k2_settle_always_on(self):
+        self.fails(self.run_test(K2Settle, 'test_off_selects_at_the_handback_step_and_the_barrier_refuses_the_stale_row'),
+                   auto.AutoArmPolicy, 'tick', ("            settle = getattr(self.controller, 'k2_settle', False) is True\n", "            settle = True\n"))
+
+    def test_k2_settle_unbounded(self):
+        self.fails(self.run_test(K2Settle, 'test_settle_is_bounded_then_todays_k2'),
+                   auto.AutoArmPolicy, 'tick', ("                if self.tail_ticks <= O3_TAIL_TICKS:\n", "                if True:\n"))
+
+    def test_k2_stage_drops_the_selection(self):
+        self.fails(self.run_test(K2Selection, 'test_selected_by_the_stage_command_and_read_in_status'),
+                   so.OverlapSegmentDriver, '_stage_control',
+                   ('        self.controller.k2_settle = k2_settle\n', '        self.controller.k2_settle = False\n'))
+
+    def test_k2_stage_accepts_a_non_bool(self):
+        self.fails(self.run_test(K2Selection, 'test_refused_when_invalid'),
+                   so.OverlapSegmentDriver, '_stage_control',
+                   ("            if type(k2_settle) is not bool:\n                raise DriverError('native-stage-k2-settle-invalid')\n", ''))
 
     def test_two_runs_driver_owes_full(self):
         self.fails(self.run_test(StaySplit, 'test_two_back_to_back_runs_stay_split'),

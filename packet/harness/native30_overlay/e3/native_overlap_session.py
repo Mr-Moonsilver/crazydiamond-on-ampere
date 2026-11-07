@@ -185,6 +185,8 @@ class NativeOverlapSession:
             raise NativeOverlapSessionError('native-stage-o3-split-needs-inwait')
         if 'ahead_nosync' in command and 'inwait' not in command:
             raise NativeOverlapSessionError('native-stage-ahead-nosync-needs-inwait')
+        if 'k2_settle' in command and 'inwait' not in command:
+            raise NativeOverlapSessionError('native-stage-k2-settle-needs-inwait')
         if 'lazy_recv' in command or 'decode_merge' in command or 'inwait' in command:
             # stage1-step: never dropped silently; rides on C1's command with the deferred bind, or is refused here.
             if 'inwait' in command and os.environ.get('FLASH_S5_INWAIT', '0') != '1':
@@ -206,7 +208,8 @@ class NativeOverlapSession:
                                                            **({'native_residue': command['native_residue']} if 'native_residue' in command else {}),
                                                            **({'terminal_successor': command['terminal_successor']} if 'terminal_successor' in command else {}),
                                                            **({'o3_split': command['o3_split']} if 'o3_split' in command else {}),
-                                                           **({'ahead_nosync': command['ahead_nosync']} if 'ahead_nosync' in command else {}))
+                                                           **({'ahead_nosync': command['ahead_nosync']} if 'ahead_nosync' in command else {}),
+                                                           **({'k2_settle': command['k2_settle']} if 'k2_settle' in command else {}))
         if 'overlap' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP', '0') == '1':
             # C1 only; with the switch off the command is C0's, field and all, as before.
             if 'defer_bind' in command and os.environ.get('FLASH_S5_STAGE_OVERLAP_DEFER_BIND', '0') == '1':

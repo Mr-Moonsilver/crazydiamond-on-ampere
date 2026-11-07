@@ -344,7 +344,7 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-local-not-set')
         return reply
 
-    async def native_stage_overlap(self, local, overlap, defer_bind=None, lazy_recv=None, decode_merge=None, inwait=None, early_successor=None, exact_successor=None, chunk_bound=_NOT_SENT, native_hold=_NOT_SENT, native_residue=_NOT_SENT, terminal_successor=_NOT_SENT, o3_split=_NOT_SENT, ahead_nosync=_NOT_SENT):
+    async def native_stage_overlap(self, local, overlap, defer_bind=None, lazy_recv=None, decode_merge=None, inwait=None, early_successor=None, exact_successor=None, chunk_bound=_NOT_SENT, native_hold=_NOT_SENT, native_residue=_NOT_SENT, terminal_successor=_NOT_SENT, o3_split=_NOT_SENT, ahead_nosync=_NOT_SENT, k2_settle=_NOT_SENT):
         """C1 per-arm switch (installed only): C0's command with ``overlap``; the engine re-checks idle FULL.
         alpha-next-c1: ``defer_bind`` (installed only) rides on the same command; the reply must acknowledge it."""
         if not _stage_overlap():
@@ -431,6 +431,13 @@ class NativeControlClient:
             if type(ahead_nosync) is not bool:
                 raise NativeControlError('native-control-stage-ahead-nosync-invalid')
             command['ahead_nosync'] = ahead_nosync
+        if k2_settle is not _NOT_SENT:
+            # lane-o3-fix (c): per arm, a bool; needs inwait (the engine refuses it otherwise).
+            if os.environ.get('FLASH_S5_INWAIT', '0') != '1':
+                raise NativeControlError('native-control-stage-inwait-not-installed')
+            if type(k2_settle) is not bool:
+                raise NativeControlError('native-control-stage-k2-settle-invalid')
+            command['k2_settle'] = k2_settle
         if self.engine_epoch is None:
             await self.status()
         reply = await self._call(command)
@@ -460,6 +467,8 @@ class NativeControlClient:
             raise NativeControlError('native-control-stage-o3-split-not-set')
         if ahead_nosync is not _NOT_SENT and reply.get('ahead_nosync') is not ahead_nosync:
             raise NativeControlError('native-control-stage-ahead-nosync-not-set')
+        if k2_settle is not _NOT_SENT and reply.get('k2_settle') is not k2_settle:
+            raise NativeControlError('native-control-stage-k2-settle-not-set')
         return reply
 
     # -- reads -----------------------------------------------------------
