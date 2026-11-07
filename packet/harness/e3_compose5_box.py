@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """q18a-parity-o3 box arms and grade (lane-o3: the o3-pair arm kind, o3_split acknowledged on every arm, O3 engaged on no and po and never on
 the controls, the stop rule over the pair arms' first-token top-20 sets; sp, parity-base's native-off baseline, ported from claude/parity-base-sp
-e3a6a63f unchanged: keep_lease, small_status, native_off_read and its grade and report lines; tmp/decode-phase/READY-parity-o3.md). q18a-compose-throughput-p2: compose-4's box over this table (harness/compose5_arms.py). Discovery mode.
+e3a6a63f unchanged: keep_lease, small_status, native_off_read and its grade and report lines; lane-o3-na: na, nt with parity-ahead's
+ahead_nosync, acknowledged on every arm (FAIL), its 'flash-s5 ahead-split' receipts engaged on na (INC) and never nosync=1 elsewhere (FAIL), and
+this queue's own ACTIONS with both stage fields for the router smoke; tmp/decode-phase/READY-parity-o3.md). q18a-compose-throughput-p2: compose-4's box over this table (harness/compose5_arms.py). Discovery mode.
 parity-2 adds the per-row terminal_successor, acknowledged (FAIL), and its counters per replay arm: nt that never admitted a terminal
 successor is INC (not engaged), ny that did is FAIL; the counts are reported per arm. dnr added a per-row replay seed and the cap off; hold added the per-row native_hold, acknowledged;
 coverage-residue adds the per-row native_residue, acknowledged, keeps the engine's decline record (with its prefill coverage counter) in each status row, and grades coverage per replay arm.
@@ -25,6 +27,8 @@ from functools import wraps
 import compose5_arms as T
 import e3_compose4_box as _box
 
+# lane-o3-na: the router smoke's list with this queue's two stage fields (compose-4's ACTIONS is shared by the older routers, unchanged)
+ACTIONS = tuple((action, fields + ('o3_split', 'ahead_nosync')) if action == 'native_stage_local' else (action, fields) for action, fields in _box.ACTIONS)
 ARM_SCHEMA = 'compose5-arm/1'
 GRADE_SCHEMA = 'compose5-grade/1'
 SCOPE = 'the yield priced under the closed-loop replay and in a frozen pair, on one engine: crash, OOM, stock prefill and the price read by compose5_rule.py; not a release assessment and not a numerics result'
@@ -48,6 +52,11 @@ def report(result):
         extra.append('- %s O3: selected %s, kept %s, armed %s, route moves %s, gap %s, transitions %s, FULL reasons %s'
                      % (label, row.get('selected'), row.get('kept'), row.get('armed'), row.get('route_moves'), row.get('gap'),
                         row.get('transitions'), row.get('full')))
+    for label, row in sorted(((result.get('ahead') or {}).get('arms') or {}).items()):
+        # lane-o3-na: the parity-ahead receipts over the arm
+        extra.append('- %s ahead-split: %d lines, %d nosync, %d errors; busy_in %d, still busy_out %d; wait p50 ms nosync %s, sync %s'
+                     % (label, row['lines'], row['nosync'], row['errors'], row['busy_in'], row['busy_out_of_busy_in'],
+                        row['wait_p50_ms']['nosync'], row['wait_p50_ms']['sync']))
     for label, cov in sorted((result.get('coverage') or {}).items()):
         geo = (cov or {}).get('geometry_tail')
         if geo:
@@ -863,6 +872,26 @@ def grade(arms, *args, **kwargs):
             result['missing'] = sorted(set(result['missing']) | {row['label'] + ':o3-not-engaged'})
         elif not row['o3_split'] and read['kept']:
             result['failures'] = sorted(set(result['failures']) | {row['label'] + ':o3-on-the-control'})
+    # lane-o3-na (parity-ahead's suggested grade): ahead_nosync acknowledged on every arm (FAIL); per replay and pair arm the engine's
+    # 'flash-s5 ahead-split' receipts in its window: na with no nosync=1 line is not engaged (INC), a nosync=1 line on any other arm is
+    # the control moved (FAIL). why=error lines are printed, never failed.
+    result['ahead'] = ahead = ahead_split(logs, [x for x in arms if x.get('label')])
+    for row in T.arms():
+        rec = by.get(row['label'])
+        if rec is None:
+            continue
+        if (rec.get('inwait') or {}).get('ahead_nosync_acknowledged') is not row['ahead_nosync']:
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':ahead-nosync-not-acknowledged'})
+        if row['kind'] not in ('replay', 'o3-pair'):
+            continue
+        counts = ahead['arms'].get(row['label'])
+        if counts is None or not ahead['read']:
+            if row['ahead_nosync']:
+                result['missing'] = sorted(set(result['missing']) | {row['label'] + ':ahead-split-not-read'})
+        elif row['ahead_nosync'] and not counts['nosync']:
+            result['missing'] = sorted(set(result['missing']) | {row['label'] + ':ahead-nosync-not-engaged'})
+        elif not row['ahead_nosync'] and counts['nosync']:
+            result['failures'] = sorted(set(result['failures']) | {row['label'] + ':ahead-nosync-on-the-control'})
     result['numerics_o3'] = numerics = o3_numerics(by)
     if numerics['verdict'] == 'OUTSIDE':
         result['failures'] = sorted(set(result['failures']) | set(numerics['reasons']))
@@ -870,6 +899,42 @@ def grade(arms, *args, **kwargs):
         result['missing'] = sorted(set(result['missing']) | set(numerics['reasons']))
     result['verdict'] = 'FAIL' if result['failures'] else 'INC' if result['missing'] else 'PASS'
     return result
+
+
+AHEAD_SPLIT = re.compile(r'flash-s5 ahead-split rank=(-?\d+) .*?nosync=([01]) why=(\S*) busy_in=(-?\d+) busy_out=(-?\d+) wait_ns=(\d+) wait_cpu_ns=(\d+)')
+
+
+def ahead_split(logs, arms=()):
+    """lane-o3-na: the parity-ahead receipts ('flash-s5 ahead-split', one per successor build, each line once over the followed logs)
+    per arm window (wall_start_s .. wall_end_s): lines, nosync=1 lines, why=error lines, busy_in=1 lines and those still busy_out=1, and
+    the wait wall p50 in ms by nosync."""
+    seen, rows, read = set(), [], []
+    for path in logs or ():
+        try:
+            handle = open(path, errors='replace')
+        except OSError:
+            continue
+        read.append(str(path))
+        with handle:
+            for line in handle:
+                if 'flash-s5 ahead-split ' not in line or line in seen:
+                    continue
+                seen.add(line)
+                m = AHEAD_SPLIT.search(line)
+                if m:
+                    rows.append((log_wall(line), int(m.group(1)), m.group(2) == '1', m.group(3), int(m.group(4)), int(m.group(5)), int(m.group(6))))
+    out = {}
+    for rec in arms or ():
+        start, end = (rec or {}).get('wall_start_s'), (rec or {}).get('wall_end_s')
+        if not (rec and rec.get('label') and type(start) in (int, float) and type(end) in (int, float)):
+            continue
+        mine = [r for r in rows if r[0] is not None and start <= r[0] <= end]
+        waits = lambda flag: sorted(r[6] for r in mine if r[2] is flag)
+        p50 = lambda v: round(v[len(v) // 2] / 1e6, 3) if v else None
+        out[rec['label']] = dict(lines=len(mine), nosync=sum(1 for r in mine if r[2]), errors=sum(1 for r in mine if r[3] == 'error'),
+                                 busy_in=sum(1 for r in mine if r[4] == 1), busy_out_of_busy_in=sum(1 for r in mine if r[4] == 1 and r[5] == 1),
+                                 wait_p50_ms=dict(nosync=p50(waits(True)), sync=p50(waits(False))))
+    return dict(read=read, lines=len(rows), unstamped=sum(1 for r in rows if r[0] is None), arms=out)
 
 
 def _o3_status(rec, label):
@@ -996,6 +1061,8 @@ def smoke_check(rec, row=None):
         reasons.append('smoke-terminal-successor-not-acknowledged')
     if (rec.get('inwait') or {}).get('o3_acknowledged') is not row['o3_split']:
         reasons.append('smoke-o3-split-not-acknowledged')     # lane-o3: the smoke sends False; an engine without FLASH_S5_O3 refuses it
+    if (rec.get('inwait') or {}).get('ahead_nosync_acknowledged') is not row['ahead_nosync']:
+        reasons.append('smoke-ahead-nosync-not-acknowledged')     # lane-o3-na: the same, for FLASH_S5_AHEAD_NOSYNC
     # A silent fallback to 1024 would read as no gain. The arm's count holds the bulk, its returners and the append, so the line is the bulk's count at 1024: b13's 40 sit well under it.
     prompt, chunks = (rec.get('fresh') or {}).get('prompt_tokens_observed'), (rec.get('progress_delta') or {}).get('chunks')
     if type(prompt) is not int or type(chunks) is not int or chunks >= len(T.planned_chunks(prompt, 1024)):

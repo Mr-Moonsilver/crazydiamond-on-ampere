@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 SETTINGS = HERE / 'runs' / 'q18a_parity_o3_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
+SAMPLE = dict(a1r.SAMPLE, o3_split=False, ahead_nosync=False)     # lane-o3-na: this queue's two stage fields (box.ACTIONS, compose-5's own)
 SHORT = dict(T.REPLAY, AGENTS=2, DURATION=0.4, WARMUP=0.0, START_MIN=60000, START_MAX=60000, TOOL_MIN=0.01, TOOL_MAX=0.02)
 
 
@@ -56,13 +57,16 @@ class Exposure(Base):
                     if action == 'qualification_worker':
                         out[action] = worker.call(iwr.am.SELECT, {'on': True, 'slots_fast': True, 'prepare_slices': True, 'score_warm': True, 'cow_fast': True, 'reserved_cap': True, 'cow_host_filter': True, 'ple_private': True, 'ple_witness': False})
                     else:
-                        out[action] = client.call(action, **{name: a1r.SAMPLE[name] for name in fields})
+                        out[action] = client.call(action, **{name: SAMPLE[name] for name in fields})
                 except Exception as exc:  # noqa: BLE001 - the test reads it
                     out[action] = repr(exc)
             return out
         out = await self.off_loop(smoke)
         self.assertEqual({k: v for k, v in out.items() if type(v) is str}, {})
         self.assertEqual(set(out), {a for a, _f in box.ACTIONS})
+        stage = dict(box.ACTIONS)['native_stage_local']
+        self.assertEqual(stage[-2:], ('o3_split', 'ahead_nosync'), 'lane-o3-na: both fields sent by the smoke')
+        self.assertIs(self.driver.ahead_nosync_installed, True)
 
 
 class ArmEnd(a1r.ArmEnd):
@@ -75,6 +79,11 @@ class ArmEnd(a1r.ArmEnd):
             await super().asyncSetUp()
         self.driver.controller.chunk_tokens = T.CHUNK_TOKENS
         self.driver.controller.append_yield = a1r.sh.AppendYieldConfig.from_env(self.env_box)     # coverage-throughput: as Base
+        # lane-o3-na: s5_startup's own line (driver.prepare_ahead = prepare_ahead_enabled(env)) over this queue's settings; the fixture skips
+        # that startup, and na's ahead_nosync=True needs it (native-stage-ahead-nosync-needs-prepare-ahead)
+        from stage_overlap import prepare_ahead_enabled
+        self.driver.prepare_ahead = prepare_ahead_enabled(self.env_box)
+        assert self.driver.prepare_ahead is True
 
     async def arm(self, sel, cohort='live', index=0):
         real = replay.run
@@ -148,7 +157,7 @@ class ArmEnd(a1r.ArmEnd):
         self.assertEqual(len(record['decode_only']['stream_rates_tokens_per_s']), 1)
 
     async def test_the_replay_arm_keeps_its_turns_beside_the_record_with_its_seed(self):
-        for sel, index, seed in (('sp', 0, 1), ('nt', 1, 2), ('no', 1, 2)):
+        for sel, index, seed in (('sp', 0, 1), ('nt', 1, 2), ('no', 1, 2), ('na', 0, 1)):
             with self.subTest(sel):
                 rc_, record, actions, _served, out = await self.arm(sel, index=index)
                 name = T.label(sel, 2, 'live', index)
@@ -172,6 +181,9 @@ class ArmEnd(a1r.ArmEnd):
                 # lane-o3: o3_split through the real router, session and control to the stage driver and the controller the policy reads
                 self.assertEqual((record['inwait']['o3_requested'], record['inwait']['o3_acknowledged']), (T.O3_SPLIT[sel],) * 2)
                 self.assertIs(self.driver.controller.o3_selected, T.O3_SPLIT[sel])
+                # lane-o3-na: ahead_nosync the same way, to the stage driver (needs prepare-ahead, which the launch installs)
+                self.assertEqual((record['inwait']['ahead_nosync_requested'], record['inwait']['ahead_nosync_acknowledged']), (T.AHEAD_NOSYNC[sel],) * 2)
+                self.assertIs(self.driver.ahead_nosync, T.AHEAD_NOSYNC[sel])
                 o3 = box.o3_arm_read(record)
                 self.assertTrue(o3['read'], 'the policy\'s O3 record reaches the arm\'s before and after status rows')
                 self.assertEqual(o3['kept'], 0)

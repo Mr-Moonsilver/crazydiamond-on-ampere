@@ -104,8 +104,9 @@ def real_env():
     # build-2: and FLASH_S5_PREPARE_AHEAD, in the form engine_identity.clean_value gives it ('1', plain; checked below), not yet seen on the box.
     # build-2b24c64: and the logits cap, plain, as the box declared o4's 136 (q18a-o4-chunk2048, engine.identity-start.json: '136').
     # lane-o3: and FLASH_S5_O3, in the form engine_identity.clean_value gives it ('1', plain; checked below), not yet seen on the box.
+    # lane-o3-na: and FLASH_S5_AHEAD_NOSYNC the same way ('1', plain; checked below), not yet seen on the box.
     return dict(json.loads((HERE / 'fixtures/compose4_declared_20261105_0422.json').read_text())['identity']['env'], FLASH_S5_CHUNK_TOKENS='2048',
-                FLASH_S5_APPEND_YIELD_MAX_NEW=str(T.LAUNCH['max_new']), FLASH_S5_PREPARE_AHEAD='1', VLLM_SPARSE_INDEXER_MAX_LOGITS_MB='64', FLASH_S5_O3='1')
+                FLASH_S5_APPEND_YIELD_MAX_NEW=str(T.LAUNCH['max_new']), FLASH_S5_PREPARE_AHEAD='1', VLLM_SPARSE_INDEXER_MAX_LOGITS_MB='64', FLASH_S5_O3='1', FLASH_S5_AHEAD_NOSYNC='1')
 
 
 def declare_block(text):
@@ -201,6 +202,28 @@ class DeclaredIdentity(unittest.TestCase):
         settings = queue.derive()[SETTINGS]
         self.assertEqual(settings.count(' FLASH_S5_O3=1 '), 1, 'once in EXTRA_ENV, for the whole run')
 
+    def test_ahead_nosync_is_declared_plain_and_both_preflights_refuse_it_missing_or_off(self):
+        """lane-o3-na: FLASH_S5_AHEAD_NOSYNC=1 in EXTRA_ENV for the whole run, after O3; the identity shows it as '1'; the declaration stops
+        without it or at '0'."""
+        self.assertEqual(engine_identity.clean_value('FLASH_S5_AHEAD_NOSYNC', '1'), '1')
+        self.assertEqual(declared_env()['FLASH_S5_AHEAD_NOSYNC'], '1')
+        block = declare_block(queue.derive()[DECLARE])
+        self.assertEqual(self.run_block(block, real_env()).returncode, 0)
+        for value in (None, '0', 1):
+            bad = dict(real_env())
+            if value is None:
+                bad.pop('FLASH_S5_AHEAD_NOSYNC')
+            else:
+                bad['FLASH_S5_AHEAD_NOSYNC'] = value
+            done = self.run_block(block, bad)
+            self.assertEqual(done.returncode, 1, value)
+            self.assertIn('AssertionError: parity-ahead ahead nosync installed', done.stderr)
+        draft = queue.derive()[DRAFT]
+        self.assertIn("assert env.get('FLASH_S5_AHEAD_NOSYNC') == '1', 'parity-ahead ahead nosync installed'", draft)
+        settings = queue.derive()[SETTINGS]
+        self.assertEqual(settings.count(' FLASH_S5_O3=1 FLASH_S5_AHEAD_NOSYNC=1 '), 1, 'once in EXTRA_ENV, for the whole run, after O3')
+        self.assertEqual(settings.count('FLASH_S5_PREPARE_AHEAD=1'), 1, 'the nosync needs prepare-ahead, installed with it')
+
     def test_the_settings_here_declare_what_the_box_declared(self):
         """Every name this text puts in EXTRA_ENV reads on the box as it reads here; the two library hashes are this test's stand-ins."""
         real, here = real_env(), declared_env()
@@ -282,11 +305,11 @@ class Budget(unittest.TestCase):
             est = gate.EXPECTED_RUNTIME_S[key]
             self.assertEqual((est['not_run'], est['arms_entering']), ([], len(gate.rows())), key)
             self.assertLessEqual(est['total_min'] * 60, gate.ACTIVE_S, key + ': the run ends before the TERM')
-        self.assertEqual(gate.NOMINAL_S, 5090, 'lane-o3: parity-base\'s six 480 s replay arms with a 60 s tail and three pair arms at 180 s (+570 s with their entries), 84.8 min nominal (parity-base 4520)')
-        self.assertEqual((gate.CAP, gate.BOX_BUDGET_S, gate.LAST_ARM_ENTRY_S), (1.3, 6617, 4951), "the lead's 1.3x (lane-o3: the 6-arm replay accepted, 7 Nov 11:55)")
+        self.assertEqual(gate.NOMINAL_S, 6190, 'lane-o3-na: eight 480 s replay arms with a 60 s tail (+2 x 550 s for na) and three pair arms at 180 s, 103.2 min nominal (lane-o3 5090)')
+        self.assertEqual((gate.CAP, gate.BOX_BUDGET_S, gate.LAST_ARM_ENTRY_S), (1.25, 7737, 6113), "lane-o3-na: 1.25x, the lead's 'up to ~130 min hard' (7 Nov ~12:10; 1.3x was 134.1 min)")
         self.assertGreater(gate.EXPECTED_RUNTIME_S['slower']['min_margin_s'], 0, 'every arm enters at 1.5x the walls')
         self.assertLessEqual(gate.BOX_BUDGET_S, gate.CAP * gate.NOMINAL_S, "the lead's hard cap, cleanup included")
-        self.assertLessEqual(gate.BOX_BUDGET_S, 111 * 60, 'lane-o3: the hard cap, 110.3 min (box time free until Monday 08:00, the lead 11:55)')
+        self.assertLessEqual(gate.BOX_BUDGET_S, 130 * 60, 'lane-o3-na: the hard cap, 128.9 min (the lead: up to ~130 min; box time free until Monday 08:00)')
         self.assertEqual(gate.ACTIVE_S + gate.CLEANUP_S, gate.BOX_BUDGET_S)
         self.assertIn('compose5_arms', gate.PHASES)
 
@@ -323,6 +346,7 @@ class ArmLoop(unittest.TestCase):
         tap.write_streams(self.q, [(emit.lines[0][0], 'INFO x %s\n' % line) for line in tbox.tam.STARTUP])
         with open(self.q / 'engine-stream.log', 'a') as handle:
             handle.write(tbox.QUIET)       # build-2b24c64 scope: one native chunk's receipts, so the logits rule has read the lane
+            handle.write(tbox.ahead_receipts(grade.records()))     # lane-o3-na: the ahead-split receipts in each nt row's window (na engaged)
         draft = queue.derive()[DRAFT]
         script = ['set -uo pipefail', 'FAILS=0; INCS=0; declare -A PHASE_VERDICT=()',
                   "ENGINE_CRASHED=0; ENGINE_CRASH_SOURCE=''; STOP_RACE=0; CONTAINER=qwen-flash-prod; SERVICE=vllm-flash; N0=0",

@@ -1,4 +1,4 @@
-"""q18a-parity-o3 box queue (lane-o3: the three o3-pair arms at O3_PAIR_WALL_S each and six replay arms, no nt ny | ny nt no): a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, four soak arms on dnr's turn mix, ABBA (build-2b24c64; build-2b24 ran one pair), no tail). One budget for the watchdog and the draft, relative to the run's own start only.
+"""q18a-parity-o3 box queue (lane-o3: the three o3-pair arms at O3_PAIR_WALL_S each and eight replay arms, no na nt sp | sp nt na no): a1-trunk's gate formulas with this table (compose5_arms: the smoke, one decode-only baseline, the one-stream arm, four soak arms on dnr's turn mix, ABBA (build-2b24c64; build-2b24 ran one pair), no tail). One budget for the watchdog and the draft, relative to the run's own start only.
 
 soak (lead, 6 Nov 04:10): four arms of 480 s traffic plus a 60 s tail, hard cap 1.3x nominal (~74 min), cleanup included; the run ends by 07:15 CET. The entry limits come from the nominal walls at 1.5x, not from the worst-case caps (those sum past the cap); a step that overruns meets the budget's TERM, whose path is the clean stop (tmp/decode-phase/STOP-dnr.md).
 
@@ -37,7 +37,7 @@ O3_PAIR_WALL_S = 180                                     # lane-o3: 2 cached dec
 BETWEEN_S = 30
 END_S = 240
 SLOWER = 1.5
-CAP = 1.3                                                # the lead's hard cap over nominal (6 Nov 04:10); build-2b24c64 is ABBA again (build-2b24's one pair needed 1.53)
+CAP = 1.25                                               # lane-o3-na: the lead 7 Nov ~12:10 "up to ~130 min hard" (1.3x was 134.1 min on 8 replay arms); was 1.3 (6 Nov 04:10)
 
 
 def _nominal_s():

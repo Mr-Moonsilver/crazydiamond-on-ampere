@@ -8,11 +8,14 @@ for the whole run (FLASH_S5_O3=1: the policy's capability and the workers' handb
               O3_PAIR_TOKENS positions. nt's levers; po O3 on, pf and pg off, in that order: pf|pg is the control's self-disagreement
               (numerical gate rule v4's shape, off vs off on the same prompts), po against both is the stop rule.
   no          nt with O3 on, under the replay
+  na          nt with ahead_nosync (parity-ahead 9daa2ac3, lead 7 Nov ~12:10: the prepare-ahead's successor copies without the stream sync,
+              installed for the whole run by FLASH_S5_AHEAD_NOSYNC=1, AHEAD_NOSYNC_ENV; selected per arm), under the replay
   nt          parity-2's, O3 off
   sp          parity-base's "stock, plain" (lead, 7 Nov 11:55: sp replaces ny, the acceptance bar): ny's row with the lane off for the whole
               arm (the box's keep_lease after the release: the policy declines 'gate-manual-owned'), attn-meta, lazy receive and decode merge off.
               ny stays in the selection tables as sp's reference row only; it is not an arm.
-Order: sm | decode-am1 | dec1 | pf po pg | no nt sp (seed 1) | sp nt no (seed 2): each pair of the three replay selections ABBA.
+Order: sm | decode-am1 | dec1 | pf po pg | no na nt sp (seed 1) | sp nt na no (seed 2): each pair of the four replay selections ABBA; one
+effect per arm against nt (no: O3, na: ahead_nosync, sp: the lane off).
 The parity-2 text follows.
 
 q18a-compose-throughput-p2 arm table (parity-2 build-1, 7 Nov 2026; tmp/decode-phase/READY-parity-2.md).
@@ -80,7 +83,7 @@ BAND1_INDEXES = tuple(range(PAIRS))                # a replay has no band; sm, t
 BAND_SIZE = _c4.BAND_SIZE
 SMOKE_ROW = ('core', 'sm', 'live', 0)
 O3_PAIR = ('pf', 'po', 'pg')                       # lane-o3 arm 1: off, on, off
-REPLAY_ORDER = ('no', 'nt', 'sp')                  # lane-o3: index 0 in this order, index 1 reversed
+REPLAY_ORDER = ('no', 'na', 'nt', 'sp')            # lane-o3 (+ na): index 0 in this order, index 1 reversed
 ARM_TABLE = (SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', 0) for sel in O3_PAIR) + tuple(('core', sel, 'live', index) for index in BAND1_INDEXES for sel in (REPLAY_ORDER if index % 2 == 0 else REPLAY_ORDER[::-1]))
 DECODE_ARMS = _inwait.DECODE_ARMS
 REFERENCE_ARM = _inwait.REFERENCE_ARM
@@ -88,10 +91,10 @@ FIXED_REFERENCE_TOK_S = _inwait.FIXED_REFERENCE_TOK_S
 PARTS = _inwait.PARTS
 ENTRY_LIMIT = _inwait.ENTRY_LIMIT
 GRADED = _inwait.GRADED
-SELECTIONS = ('sm', 'dec1', 'ny', 'nt', 'no', 'sp') + O3_PAIR
+SELECTIONS = ('sm', 'dec1', 'ny', 'nt', 'no', 'na', 'sp') + O3_PAIR
 REFERENCE_ONLY = ('ny',)                           # lane-o3: sp's reference row, not an arm
-# lane-o3: no and the pair arms are nt's row (_AS_NT) but for o3_split
-_AS_NT = ('no',) + O3_PAIR
+# lane-o3: no, na and the pair arms are nt's row (_AS_NT) but for o3_split (no, po) or ahead_nosync (na)
+_AS_NT = ('no', 'na') + O3_PAIR
 
 
 def _nt(table):
@@ -103,7 +106,7 @@ KIND = dict(_nt({'sm': 'live-arm', 'dec1': 'one-stream', 'ny': 'replay', 'nt': '
 YIELD = _nt({'sm': True, 'dec1': True, 'ny': False, 'nt': True})     # coverage-throughput: lever 1, the yield on the candidate
 PLE_PRIVATE = _nt({'sm': True, 'dec1': True, 'ny': False, 'nt': False})
 PLE_WITNESS = dict.fromkeys(SELECTIONS, False)
-MATCHED_OFF = {'nt': 'sp', 'no': 'nt', 'po': 'pf'}
+MATCHED_OFF = {'nt': 'sp', 'no': 'nt', 'na': 'nt', 'po': 'pf'}
 OFF, ON = 'sp', 'nt'
 # parity-base: sp, the parity baseline. NATIVE_OFF keeps the manual lease for the whole arm (the box's keep_lease, after the release); ATTN,
 # LAZY_RECV and DECODE_MERGE are the row's attn-meta selection and the stage command's two decode fields (every other arm: on, on, 'chunk').
@@ -112,7 +115,7 @@ NATIVE_OFF = dict(dict.fromkeys(SELECTIONS, False), sp=True)
 ATTN = dict(dict.fromkeys(SELECTIONS, True), sp=False)
 LAZY_RECV = dict(dict.fromkeys(SELECTIONS, True), sp=False)
 DECODE_MERGE = dict(dict.fromkeys(SELECTIONS, 'chunk'), sp='off')
-ONS = ('nt', 'no')                                 # lane-o3: the candidate's rules (open requests, RSS) on both nt rows
+ONS = ('nt', 'no', 'na')                           # lane-o3: the candidate's rules (open requests, RSS) on every nt row
 # coverage-throughput: the yield takes an append of up to YIELD_MAX_NEW new rows. a1's 2048 covered about one append in seven on this
 # mix (native appends compute 1.3-6.6k rows, the soak's mean 3.9k); the other three bounds stay a1's.
 YIELD_MAX_NEW = 8192
@@ -139,6 +142,10 @@ TERMINAL_SUCCESSOR = _nt({'sm': False, 'dec1': False, 'ny': False, 'nt': True}) 
 # lane-o3: on no and po alone; every row sends its value. FLASH_S5_O3=1 is in EXTRA_ENV for the whole run (O3_ENV; both preflights assert it).
 O3_SPLIT = dict(dict.fromkeys(SELECTIONS, False), no=True, po=True)
 O3_ENV = 'FLASH_S5_O3=1'
+# parity-ahead: on na alone; every row sends its value. FLASH_S5_AHEAD_NOSYNC=1 for the whole run (needs FLASH_S5_PREPARE_AHEAD=1; both
+# preflights assert it); True needs prepare-ahead, which every row has.
+AHEAD_NOSYNC = dict(dict.fromkeys(SELECTIONS, False), na=True)
+AHEAD_NOSYNC_ENV = 'FLASH_S5_AHEAD_NOSYNC=1'
 O3_PAIR_DECODERS = 2                                # the design's first box test: 2 decoders live
 O3_PAIR_NATIVES = 3                                 # and 3 back-to-back native requests (each >= MIN_NATIVE_ROWS new rows)
 O3_PAIR_TOKENS = 16                                 # greedy positions captured per native, top-20 each; position 0 is the handback's token
@@ -222,7 +229,7 @@ def arms(part=None):
                          ple_private=PLE_PRIVATE[sel], ple_witness=PLE_WITNESS[sel], overlap=True, defer_bind=True, c0='on', stage_local=True, size=2, cohort=cohort, index=index, band=band_of_index(index),
                          extra=False, entry_limit=ENTRY_LIMIT[row_part][0], yield_on=YIELD[sel], plan=PLANS[PLAN[sel]], generations=generations_of(sel), chunk_bound=list(BOUND[sel]),
                          native_hold=NATIVE_HOLD[sel], native_residue=NATIVE_RESIDUE[sel],
-                         terminal_successor=TERMINAL_SUCCESSOR[sel], o3_split=O3_SPLIT[sel], native_off=NATIVE_OFF[sel]))
+                         terminal_successor=TERMINAL_SUCCESSOR[sel], o3_split=O3_SPLIT[sel], ahead_nosync=AHEAD_NOSYNC[sel], native_off=NATIVE_OFF[sel]))
     return rows
 
 
@@ -250,8 +257,8 @@ def band1_glob():
 
 def check():
     names = labels()
-    assert names[:5] == ['sm.g2-live-0', 'dec1.g2-live-0', 'pf.g2-live-0', 'po.g2-live-0', 'pg.g2-live-0'] and len(names) == 5 + 3 * PAIRS and names[0] == COLD_ARM and labels('tail') == []
-    assert set(KIND) == set(YIELD) == set(PLE_PRIVATE) == set(PLE_WITNESS) == set(PLAN) == set(NATIVE_HOLD) == set(NATIVE_RESIDUE) == set(TERMINAL_SUCCESSOR) == set(O3_SPLIT) == set(NATIVE_OFF) == set(ATTN) == set(LAZY_RECV) == set(DECODE_MERGE) == set(SELECTIONS)
+    assert names[:5] == ['sm.g2-live-0', 'dec1.g2-live-0', 'pf.g2-live-0', 'po.g2-live-0', 'pg.g2-live-0'] and len(names) == 5 + len(REPLAY_ORDER) * PAIRS and names[0] == COLD_ARM and labels('tail') == []
+    assert set(KIND) == set(YIELD) == set(PLE_PRIVATE) == set(PLE_WITNESS) == set(PLAN) == set(NATIVE_HOLD) == set(NATIVE_RESIDUE) == set(TERMINAL_SUCCESSOR) == set(O3_SPLIT) == set(AHEAD_NOSYNC) == set(NATIVE_OFF) == set(ATTN) == set(LAZY_RECV) == set(DECODE_MERGE) == set(SELECTIONS)
     assert REPLAY['START_MAX'] + PROMPT_SLACK_TOKENS < MAX_PROMPT_TOKENS, 'a fresh prompt fits under the ceiling'
     rows = by_label()
     for index in REPLAY_SEEDS:
@@ -262,20 +269,24 @@ def check():
         assert on['terminal_successor'] is True and off['terminal_successor'] is False
         assert on['yield_on'] and not off['yield_on'] and not on['ple_private'] and not off['ple_private'], "the yield on nt alone; c4b's ple off"
         ny = {name: table[sel] for name, table, sel in ((k, globals()[v], 'ny') for k, v in (('yield_on', 'YIELD'), ('ple_private', 'PLE_PRIVATE'), ('chunk_bound', 'BOUND'),
-              ('native_hold', 'NATIVE_HOLD'), ('native_residue', 'NATIVE_RESIDUE'), ('terminal_successor', 'TERMINAL_SUCCESSOR'), ('o3_split', 'O3_SPLIT'), ('kind', 'KIND')))}
+              ('native_hold', 'NATIVE_HOLD'), ('native_residue', 'NATIVE_RESIDUE'), ('terminal_successor', 'TERMINAL_SUCCESSOR'), ('o3_split', 'O3_SPLIT'), ('ahead_nosync', 'AHEAD_NOSYNC'), ('kind', 'KIND')))}
         assert {k: off[k] for k in ny} == dict(ny, chunk_bound=list(ny['chunk_bound'])), "sp is ny's row but the lane off (parity-base)"
         assert off['native_off'] and not off['attn'] and not off['lazy_recv'] and off['decode_merge'] == 'off'
         no = rows['no.g2-live-%d' % index]
         assert sorted(k for k in no if no[k] != on[k]) == ['c1', 'label', 'o3_split', 'selection'] and no['o3_split'] is True and on['o3_split'] is False, 'no is nt but for O3'
+        na = rows['na.g2-live-%d' % index]
+        assert sorted(k for k in na if na[k] != on[k]) == ['ahead_nosync', 'c1', 'label', 'selection'] and na['ahead_nosync'] is True and on['ahead_nosync'] is False, 'na is nt but for ahead_nosync'
     for sel in O3_PAIR:
         pair, nt0 = rows['%s.g2-live-0' % sel], rows['nt.g2-live-0']
         assert sorted(k for k in pair if pair[k] != nt0[k]) == sorted(['c1', 'generations', 'kind', 'label', 'selection'] + (['o3_split'] if sel == 'po' else [])), 'a pair arm is nt but for its kind and O3'
     assert [rows['%s.g2-live-0' % sel]['o3_split'] for sel in O3_PAIR] == [False, True, False], 'off, on, off: the control pair brackets the candidate'
     assert all(r['generations'] == O3_PAIR_DECODERS + O3_PAIR_NATIVES for r in rows.values() if r['kind'] == 'o3-pair')
     assert all(r['o3_split'] is (r['c1'] in ('no', 'po')) for r in rows.values()), 'O3 on no and po alone'
+    assert all(r['ahead_nosync'] is (r['c1'] == 'na') for r in rows.values()), 'ahead_nosync on na alone'
+    assert AHEAD_NOSYNC_ENV == 'FLASH_S5_AHEAD_NOSYNC=1' and PREPARE_AHEAD_ENV == 'FLASH_S5_PREPARE_AHEAD=1', 'the nosync needs prepare-ahead, installed for the whole run'
     assert O3_ENV == 'FLASH_S5_O3=1' and O3_PAIR_DECODERS == 2 and O3_PAIR_NATIVES == 3 and O3_LOGPROBS == 20
     order = [r['label'] for r in rows.values() if r['kind'] == 'replay']
-    assert order == ['no.g2-live-0', 'nt.g2-live-0', 'sp.g2-live-0', 'sp.g2-live-1', 'nt.g2-live-1', 'no.g2-live-1'], 'no nt sp | sp nt no: each pair ABBA'
+    assert order == ['no.g2-live-0', 'na.g2-live-0', 'nt.g2-live-0', 'sp.g2-live-0', 'sp.g2-live-1', 'nt.g2-live-1', 'na.g2-live-1', 'no.g2-live-1'], 'no na nt sp | sp nt na no: each pair ABBA'
     assert [r['label'] for r in rows.values() if r['native_off']] == ['sp.g2-live-0', 'sp.g2-live-1'] and BASELINE == 'sp', 'the lane off on sp alone'
     assert all(r['attn'] and r['lazy_recv'] and r['decode_merge'] == 'chunk' for r in rows.values() if not r['native_off']), "every other arm's decode features as parity-2"
     assert not any(r['c1'] in REFERENCE_ONLY for r in rows.values()), 'ny is a reference row, not an arm'

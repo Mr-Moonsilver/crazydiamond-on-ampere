@@ -10,6 +10,7 @@ Declared deltas over compose-4's three texts, each by exact count:
   ahead     coverage-throughput build-2: FLASH_S5_PREPARE_AHEAD=1 (compose5_arms.PREPARE_AHEAD_ENV) in EXTRA_ENV after the chunk; both preflights assert it.
   logits    build-2b24c64: VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=64 (compose5_arms.LOGITS_ENV) in EXTRA_ENV after prepare-ahead, for the whole run; both preflights assert it.
   o3        lane-o3: FLASH_S5_O3=1 (compose5_arms.O3_ENV) in EXTRA_ENV after the logits cap, for the whole run (installed; each arm selects it by o3_split); both preflights assert it.
+  nosync    lane-o3-na: FLASH_S5_AHEAD_NOSYNC=1 (compose5_arms.AHEAD_NOSYNC_ENV) right after it, for the whole run (each arm selects it by ahead_nosync); both preflights assert it.
 The other switches, the yield's other three bounds and the ingress check stay compose-4's. The arm list comes from harness/compose5_arms.py; --check verifies the files.
 """
 import argparse
@@ -23,12 +24,12 @@ import compose5_arms as table  # noqa: E402
 OLD, NEW = 'q18a_compose_4', 'q18a_parity_o3'
 OLD_CORE = 'core:dec1.g2-live-0 core:cmp.g2-live-0 core:ctl.g2-live-0'
 CORE = ' '.join('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED) if r['label'] != table.SMOKE_ARM)
-ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, pf po pg two decoders and three back-to-back natives (O3 off, on, off), no nt ny eight replay agents for %d s, no nt ny ny nt no' % table.REPLAY['DURATION'])
+ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, pf po pg two decoders and three back-to-back natives (O3 off, on, off), no na nt sp eight replay agents for %d s, no na nt sp sp nt na no' % table.REPLAY['DURATION'])
 HEADER_ANCHOR = '# compose-4: the four lever tracks on one engine under the closed-loop agent replay'
 HEADER_NOTE = ('# lane-o3: parity-2\'s engine, launch and table with O3, stay split across runs (DESIGN-multi-prompt-lane O3): FLASH_S5_O3=1 for the whole run, '
                'selected per arm by o3_split on native_stage_local (acknowledged: FAIL otherwise); the pair arms pf po pg (two decoders, three '
                'back-to-back native requests, greedy with top-20 logprobs; O3 off, on, off) carry the stop rule over the first-token top-20 sets '
-               '(FAIL when po falls outside the pf|pg envelope); the replay no nt ny | ny nt no, no being nt with O3 (tmp/decode-phase/READY-parity-o3.md). '
+               '(FAIL when po falls outside the pf|pg envelope); the replay no na nt sp | sp nt na no, no being nt with O3, na nt with the ahead nosync (FLASH_S5_AHEAD_NOSYNC=1 for the whole run, selected per arm by ahead_nosync; parity-ahead 9daa2ac3), sp the lane off (parity-base) (tmp/decode-phase/READY-parity-o3.md). '
                'The reader is parity-b/scratch/o3/parity_o3_read.py on the hub. '
                '# parity-2 build-1: build-2b24c64\'s engine, launch and ABBA with fix A on nt alone: the terminal successor (terminal_successor on '
                'native_stage_local, needs the exact successor; ny and the smoke send False; the grade FAILs an unacknowledged value, INC on nt never '
@@ -99,9 +100,17 @@ def o3_assert(text, form):
     return once(text, line, line + "\nassert env.get('%s')%s'%s', 'lane-o3 O3 installed'" % (name, form, value))
 
 
+def nosync_assert(text, form):
+    """lane-o3-na: the ahead nosync installed for the whole run (parity-ahead 9daa2ac3), asserted right after O3."""
+    name, value = table.O3_ENV.split('=')
+    line = "assert env.get('%s')%s'%s', 'lane-o3 O3 installed'" % (name, form, value)
+    name, value = table.AHEAD_NOSYNC_ENV.split('=')
+    return once(text, line, line + "\nassert env.get('%s')%s'%s', 'parity-ahead ahead nosync installed'" % (name, form, value))
+
+
 def draft(text):
     text = yield_bound(chunk_assert(text, ' == '), ' == ')
-    text = o3_assert(logits_assert(ahead_assert(text, ' == '), ' == '), ' == ')
+    text = nosync_assert(o3_assert(logits_assert(ahead_assert(text, ' == '), ' == '), ' == '), ' == ')
     # dnr: a replay arm doesn't read the workload, and index 2-9 would have named band 2's; one file for every index, the one sm has.
     text = once(text, 'if [[ $_pair == [01] ]]; then _workload=', 'if [[ $_pair == [0-9] ]]; then _workload=')
     text = once(text, OLD_CORE, CORE)
@@ -112,14 +121,14 @@ def draft(text):
 
 
 def settings(text):
-    text = once(text, OLD_LAST_SWITCH, OLD_LAST_SWITCH + table.CHUNK_ENV + ' ' + table.PREPARE_AHEAD_ENV + ' ' + table.LOGITS_ENV + ' ' + table.O3_ENV + ' ')
+    text = once(text, OLD_LAST_SWITCH, OLD_LAST_SWITCH + table.CHUNK_ENV + ' ' + table.PREPARE_AHEAD_ENV + ' ' + table.LOGITS_ENV + ' ' + table.O3_ENV + ' ' + table.AHEAD_NOSYNC_ENV + ' ')
     text = once(text, 'FLASH_S5_APPEND_YIELD_MAX_NEW=2048 ', 'FLASH_S5_APPEND_YIELD_MAX_NEW=%d ' % table.LAUNCH['max_new'])
     return renames(text)
 
 
 def declare(text):
     text = yield_bound(chunk_assert(text, '=='), '==')
-    text = o3_assert(logits_assert(ahead_assert(text, '=='), '=='), '==')
+    text = nosync_assert(o3_assert(logits_assert(ahead_assert(text, '=='), '=='), '=='), '==')
     text = renames(text)
     return once(text, MODULES_AFTER, MODULES)
 

@@ -23,12 +23,13 @@ SM, DEC1, CMP, NY = rule.SM, 'dec1.g2-live-0', rule.ON, rule.OFF      # the rule
 W0, R0, W1, R1 = 'ny.g2-live-0', 'nt.g2-live-0', 'ny.g2-live-1', 'nt.g2-live-1'     # this table: ny as dnr ran it, nr the hold with the residue
 P0, P1 = 'sp.g2-live-0', 'sp.g2-live-1'      # parity-base: the native-off baseline
 N0, N1 = 'no.g2-live-0', 'no.g2-live-1'      # lane-o3: nt with O3
+A0, A1 = 'na.g2-live-0', 'na.g2-live-1'      # lane-o3-na: nt with the ahead nosync
 PF, PO, PG = ('%s.g2-live-0' % sel for sel in T.O3_PAIR)      # lane-o3: the pair arms, O3 off, on, off
-NT_ROWS = {R0, R1, N0, N1, PF, PO, PG}        # lane-o3: the rows with nt's levers
+NT_ROWS = {R0, R1, N0, N1, A0, A1, PF, PO, PG}        # lane-o3: the rows with nt's levers
 # build-2b24 ran one pair, so the grade's own tests ran under TWO_PAIRS; build-2b24c64 is ABBA again and TWO_PAIRS equals its table
 # (asserted in Table), so the patch is the table itself. parity-base: the name kept, the shape this table's (sp nt ny | ny nt sp).
 # lane-o3: the real table (pf po pg, no nt sp | sp nt no) with ny kept beside sp as the control the grade's own tests were written over
-TWO_PAIRS = (T.SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', 0) for sel in T.O3_PAIR) + tuple(('core', sel, 'live', i) for i in range(2) for sel in (('sp', 'nt', 'ny', 'no') if i % 2 == 0 else ('no', 'ny', 'nt', 'sp')))
+TWO_PAIRS = (T.SMOKE_ROW, ('core', 'dec1', 'live', 0)) + tuple(('core', sel, 'live', 0) for sel in T.O3_PAIR) + tuple(('core', sel, 'live', i) for i in range(2) for sel in (('sp', 'nt', 'ny', 'na', 'no') if i % 2 == 0 else ('no', 'na', 'ny', 'nt', 'sp')))
 
 
 class TwoPairs(unittest.TestCase):
@@ -96,7 +97,18 @@ def rows_with_ny():
 class Table(unittest.TestCase):
     def test_the_order(self):
         self.assertEqual(sorted(r for r in TWO_PAIRS if r[1] != 'ny'), sorted(T.ARM_TABLE), "lane-o3: the grade tests' patch is this table and ny's two rows")
-        self.assertEqual(T.labels(), [SM, DEC1, PF, PO, PG, N0, R0, P0, P1, R1, N1], 'lane-o3: pf po pg | no nt sp | sp nt no')
+        self.assertEqual(T.labels(), [SM, DEC1, PF, PO, PG, N0, A0, R0, P0, P1, R1, A1, N1], 'lane-o3-na: pf po pg | no na nt sp | sp nt na no')
+
+    def test_na_is_nt_but_for_the_ahead_nosync_and_alone_selects_it(self):
+        rows = T.by_label()
+        for na, nt in ((A0, R0), (A1, R1)):
+            self.assertEqual(sorted(k for k in rows[na] if rows[na][k] != rows[nt][k]), ['ahead_nosync', 'c1', 'label', 'selection'])
+            self.assertEqual((rows[na]['ahead_nosync'], rows[nt]['ahead_nosync']), (True, False))
+            self.assertEqual(T.matched_off(rows[na]), nt)
+        self.assertEqual([r['label'] for r in T.arms() if r['ahead_nosync']], [A0, A1])
+        self.assertEqual(T.AHEAD_NOSYNC_ENV, 'FLASH_S5_AHEAD_NOSYNC=1')
+        self.assertIn('na', T.ONS)
+        self.assertTrue(T.check())
 
     def test_sp_is_nys_row_with_the_lane_and_the_decode_features_off(self):
         rows = rows_with_ny()
@@ -136,7 +148,7 @@ class Table(unittest.TestCase):
         c4 = T4.by_label()['ctl.g2-live-0']
         row = rows_with_ny()[W0]
         # coverage-soak-fix build-2: cow_verify off (the worker RSS owner, test_cow_verify_rss)
-        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['c1', 'chunk_bound', 'cow_verify', 'label', 'native_hold', 'native_off', 'native_residue', 'o3_split', 'reserved_cap', 'score_warm', 'selection', 'terminal_successor'])
+        self.assertEqual(sorted(k for k in row if k not in c4 or row[k] != c4[k]), ['ahead_nosync', 'c1', 'chunk_bound', 'cow_verify', 'label', 'native_hold', 'native_off', 'native_residue', 'o3_split', 'reserved_cap', 'score_warm', 'selection', 'terminal_successor'])
         self.assertEqual((row['chunk_bound'], row['reserved_cap'], row['yield_on'], row['ple_private'], row['cow_verify'], c4['cow_verify']), ([52624, 1024], False, False, False, False, True))
 
     def test_the_replay_and_the_ceiling_are_compose_4s(self):
@@ -537,7 +549,8 @@ class Smoke(unittest.TestCase):
         rec.update(ple_private=dict(counters=dict(scopes={'0': 9, '1': 9})), score_warm=dict(counters=dict(allocs={str(k): 1 for k in range(4)})), reserved_cap=dict(requested=False, select={str(k): dict(after=dict(reserved_cap=dict(cap_bytes=0, flushes=0, fraction=0.0, selected=False))) for k in range(4)}, counters=dict(flushes={str(k): 0 for k in range(4)})),
                    cow_host_filter=dict(requested=True, counters=dict(kept={str(k): 0 for k in range(4)}, skipped={str(k): 37 for k in range(4)}, unfiltered={str(k): 0 for k in range(4)})))
         rec.setdefault('inwait', {}).update(exact_acknowledged=True, bound_requested=[52624, 1024], bound_acknowledged=[52624, 1024], hold_requested=0, hold_acknowledged=0, residue_requested=0, residue_acknowledged=0,
-                                            terminal_requested=False, terminal_acknowledged=False, o3_requested=False, o3_acknowledged=False)
+                                            terminal_requested=False, terminal_acknowledged=False, o3_requested=False, o3_acknowledged=False,
+                                            ahead_nosync_requested=False, ahead_nosync_acknowledged=False)
         rec.setdefault('progress_delta', {})['chunks'] = 40
         rec.setdefault('fresh', {})['prompt_tokens_observed'] = 65445
         return rec
@@ -877,6 +890,27 @@ def pair_natives(shift=0.0):
                  complete=True, error=None, malformed=None, first_output_s=1.0) for i in range(T.O3_PAIR_NATIVES)]
 
 
+AHEAD_ORIGIN = 1_700_000_000.0
+
+
+def ahead_line(at, nosync, why='ok', rank=2):
+    """One parity-ahead receipt as stage_wire emits it (its format string), docker's stamp before it."""
+    return ('%s INFO flash-s5 ahead-split rank=%d txn_seq=7 chunk=2048-4096 next=4096-6144 rpc=state_finalize op_seq=3 nosync=%d why=%s '
+            'busy_in=1 busy_out=%d wait_ns=%d wait_cpu_ns=%d work_ns=13000000 work_cpu_ns=12000000 copies=%d bytes=%d\n'
+            % (tb.stamp(at), rank, 1 if nosync else 0, why, 1 if nosync else 0, 200000 if nosync else 60000000, 150000 if nosync else 100000,
+               11 if nosync else 0, 90112 if nosync else 0))
+
+
+def ahead_receipts(arms, ahead=None):
+    """The receipt lines for ahead ({label: [nosync, ...]}) inside each arm's window; default one nosync=1 line on each na arm and one
+    nosync=0 line on every other nt row (installed, not selected: timed with the sync)."""
+    if ahead is None:
+        ahead = {a['label']: [a['label'].startswith('na.')] for a in arms if a.get('label') in NT_ROWS}
+    windows = {a['label']: a for a in arms if a.get('label')}
+    return ''.join(ahead_line(windows[label]['wall_start_s'] + 30.0 + 0.1 * n, flag) for label, flags in ahead.items() if label in windows
+                   for n, flag in enumerate(flags))
+
+
 def plain(rec):
     """parity-base: an sp record as keep_lease and the arm write it on a plain arm: the lease held at every read, no chunk, no selection,
     attn-meta not selected and quiet, the lazy receive and the decode merge acknowledged off, their counters 0."""
@@ -898,7 +932,10 @@ class Grade(TwoPairs):
             rec['inwait'] = dict(rec.get('inwait') or {}, bound_requested=row['chunk_bound'], bound_acknowledged=row['chunk_bound'], hold_requested=row['native_hold'], hold_acknowledged=row['native_hold'],
                                  residue_requested=row['native_residue'], residue_acknowledged=row['native_residue'],
                                  terminal_requested=row['terminal_successor'], terminal_acknowledged=row['terminal_successor'],
-                                 o3_requested=row['o3_split'], o3_acknowledged=row['o3_split'])
+                                 o3_requested=row['o3_split'], o3_acknowledged=row['o3_split'],
+                                 ahead_nosync_requested=row['ahead_nosync'], ahead_nosync_acknowledged=row['ahead_nosync'])
+            # lane-o3-na: each arm its own window, so a receipt line names one arm (record_of gives every arm 1000-1060)
+            rec.update(wall_start_s=AHEAD_ORIGIN + 100.0 * k, wall_end_s=AHEAD_ORIGIN + 100.0 * k + 60.0)
             if row['kind'] == 'replay':
                 # parity-2 A: the arm's counters as stage_delta carries them (c64's nt.g2-live-0: exact admits 50, terminal answers 2768)
                 rec['stage_delta'] = dict(rec.get('stage_delta') or {}, step_iw_terminal_admits=97 if row['terminal_successor'] else 0, step_iw_terminal_mismatch=0,
@@ -922,10 +959,13 @@ class Grade(TwoPairs):
             out.append(rec)
         return ta1.tbox.decode_records() + out
 
-    def grade_of(self, arms, **kw):
+    def grade_of(self, arms, ahead=None, **kw):
+        """ahead: {label: [nosync, ...]}, the receipt lines written inside each arm's window; default one nosync=1 line on each na arm
+        and one nosync=0 line on every other nt row (installed, not selected: timed with the sync)."""
+        receipts = ahead_receipts(arms, ahead)
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / 'engine.log'
-            log.write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP) + QUIET)    # scope: one native chunk read
+            log.write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP) + QUIET + receipts)    # scope: one native chunk read
             known = [a for a in arms if a.get('label')]
             return box.grade(arms, {a['label']: tap.PASS for a in known}, tap.CHECKS, [str(log)], {a['label']: tap.ALIVE for a in known}, **kw)
 
@@ -1128,9 +1168,9 @@ class AllocRetry(TwoPairs):
     def grade_with(self, err='', log=QUIET, arms=None):
         with tempfile.TemporaryDirectory() as tmp:
             logs = [Path(tmp) / 'engine-stream.log', Path(tmp) / 'engine-stream.err']
-            logs[0].write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP) + log)
-            logs[1].write_text(err)
             arms = self.grade.records() if arms is None else arms
+            logs[0].write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP) + log + ahead_receipts(arms))     # lane-o3-na: na engaged
+            logs[1].write_text(err)
             known = [a for a in arms if a.get('label')]
             result = box.grade(arms, {a['label']: tap.PASS for a in known}, tap.CHECKS, [str(p) for p in logs], {a['label']: tap.ALIVE for a in known})
             with box._bound():
@@ -1320,7 +1360,7 @@ class Coverage(TwoPairs):
     def test_the_terminal_successor_is_read_per_replay_arm(self):
         result = self.grade.grade_of(self.grade.records())
         self.assertEqual(result['verdict'], 'PASS', (result['failures'], result['missing']))
-        self.assertEqual(set(result['terminal']), {R0, W0, W1, R1, P0, P1, N0, N1})
+        self.assertEqual(set(result['terminal']), {R0, W0, W1, R1, P0, P1, N0, N1, A0, A1})
         self.assertEqual((result['terminal'][R0]['selected'], result['terminal'][R0]['terminal_admits']), (True, 97))
         self.assertEqual((result['terminal'][W0]['selected'], result['terminal'][W0]['terminal_admits'], result['terminal'][W0]['exact_terminal']), (False, 0, 2768))
         text = box.report(result)
@@ -1452,7 +1492,7 @@ class O3Grade(TwoPairs):
         result = self.grade.grade_of(self.grade.records())
         self.assertEqual((result['verdict'], result['failures'], result['missing']), ('PASS', [], []))
         self.assertEqual(result['numerics_o3']['verdict'], 'WITHIN')
-        self.assertEqual(set(result['o3']), {PF, PO, PG, N0, N1, R0, R1, P0, P1, W0, W1})
+        self.assertEqual(set(result['o3']), {PF, PO, PG, N0, N1, A0, A1, R0, R1, P0, P1, W0, W1})
         read = result['o3'][N0]
         self.assertEqual((read['kept'], read['armed'], read['route_moves'], read['selected']), (3, 2, 2, True))
         self.assertEqual(read['gap']['o3'], dict(n=3, ms=120.0, mean_ms=40.0, max_ms=60.0))
@@ -1531,6 +1571,105 @@ class O3Grade(TwoPairs):
         arms = self.grade.records()
         self.rec(arms, PO)['natives'][0]['prompt_sha256'] = 'q' * 64
         self.assertIn('numerics-o3-prompt-differs', self.grade.grade_of(arms)['missing'])
+
+
+class AheadGrade(TwoPairs):
+    """lane-o3-na: ahead_nosync acknowledged on every arm (FAIL), its receipts engaged on na (INC if not), never nosync=1 on another arm
+    (FAIL), unread on na is INC; the report's line per arm; the smoke's acknowledgement."""
+
+    def setUp(self):
+        super().setUp()
+        self.grade = Grade()
+
+    def test_whole_records_pass_and_the_receipts_are_read_per_arm(self):
+        result = self.grade.grade_of(self.grade.records())
+        self.assertEqual((result['verdict'], result['failures'], result['missing']), ('PASS', [], []))
+        self.assertEqual({k: (v['lines'], v['nosync']) for k, v in result['ahead']['arms'].items() if v['lines']},
+                         {**{k: (1, 0) for k in NT_ROWS - {A0, A1}}, A0: (1, 1), A1: (1, 1)})
+        row = result['ahead']['arms'][A0]
+        self.assertEqual((row['busy_in'], row['busy_out_of_busy_in'], row['wait_p50_ms']), (1, 1, dict(nosync=0.2, sync=None)))
+        self.assertEqual(result['ahead']['arms'][R0]['wait_p50_ms'], dict(nosync=None, sync=60.0))
+        with box._bound():
+            text = box.report(result)
+        self.assertIn('- %s ahead-split: 1 lines, 1 nosync, 0 errors; busy_in 1, still busy_out 1; wait p50 ms nosync 0.2, sync None' % A0, text)
+
+    def test_an_unacknowledged_ahead_nosync_fails_on_every_arm(self):
+        for row in T.arms():
+            for value in (None, not row['ahead_nosync']):
+                arms = self.grade.records()
+                next(a for a in arms if a.get('label') == row['label'])['inwait']['ahead_nosync_acknowledged'] = value
+                self.assertIn(row['label'] + ':ahead-nosync-not-acknowledged', self.grade.grade_of(arms)['failures'], (row['label'], value))
+
+    def test_not_engaged_is_inc_on_the_control_fails_and_unread_is_inc(self):
+        arms = self.grade.records()
+        result = self.grade.grade_of(arms, ahead={A0: [False, False], A1: [True]})
+        self.assertEqual((result['verdict'], result['missing']), ('INC', [A0 + ':ahead-nosync-not-engaged']))
+        for label in (R0, N1, PO, P0, W1):
+            result = self.grade.grade_of(self.grade.records(), ahead={A0: [True], A1: [True], label: [False, True]})
+            self.assertEqual((result['verdict'], result['failures']), ('FAIL', [label + ':ahead-nosync-on-the-control']), label)
+        known = [a for a in arms if a.get('label')]
+        result = box.grade(arms, {a['label']: tap.PASS for a in known}, tap.CHECKS, ['/nonexistent/engine-stream.log'], {a['label']: tap.ALIVE for a in known})
+        self.assertIn(A0 + ':ahead-split-not-read', result['missing'])
+        self.assertIn(A1 + ':ahead-split-not-read', result['missing'])
+        self.assertFalse([m for m in result['missing'] if 'ahead' in m and not m.startswith('na.')])
+
+    def test_an_error_line_is_printed_never_failed(self):
+        arms = self.grade.records()
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'engine.log'
+            log.write_text(''.join('INFO x %s\n' % line for line in tam.STARTUP) + QUIET + ahead_receipts(arms)
+                           + ahead_line(next(a for a in arms if a.get('label') == A0)['wall_start_s'] + 40.0, True, why='error'))
+            known = [a for a in arms if a.get('label')]
+            result = box.grade(arms, {a['label']: tap.PASS for a in known}, tap.CHECKS, [str(log)], {a['label']: tap.ALIVE for a in known})
+        self.assertEqual(result['verdict'], 'PASS', (result['failures'], result['missing']))
+        self.assertEqual((result['ahead']['arms'][A0]['errors'], result['ahead']['arms'][A0]['nosync']), (1, 2))
+
+    def test_the_smoke_reads_its_acknowledgement(self):
+        smoke = Smoke('full')
+        rec = smoke.full()
+        self.assertNotIn('smoke-ahead-nosync-not-acknowledged', box.smoke_check(rec)[1])
+        for value in (None, True):
+            rec = smoke.full()
+            rec['inwait']['ahead_nosync_acknowledged'] = value
+            self.assertIn('smoke-ahead-nosync-not-acknowledged', box.smoke_check(rec)[1], value)
+
+
+class AheadGradeMutants(unittest.TestCase):
+    """One grade mutation per AheadGrade rule; each must fail its test."""
+
+    def fails(self, name, owner, function, edit):
+        import test_append_yield as ay
+        case = AheadGrade(name)
+        with ay.mutant(owner, function, edit), self.assertRaises(ay.MUTANT_FAILURES):
+            case.setUp()
+            try:
+                getattr(case, name)()
+            finally:
+                case.doCleanups()
+
+    def test_ack_not_checked(self):
+        self.fails('test_an_unacknowledged_ahead_nosync_fails_on_every_arm', box, 'grade',
+                   ("        if (rec.get('inwait') or {}).get('ahead_nosync_acknowledged') is not row['ahead_nosync']:\n", "        if False:\n"))
+
+    def test_not_engaged_not_inc(self):
+        self.fails('test_not_engaged_is_inc_on_the_control_fails_and_unread_is_inc', box, 'grade',
+                   ("        elif row['ahead_nosync'] and not counts['nosync']:\n", "        elif False:\n"))
+
+    def test_control_moved_not_failed(self):
+        self.fails('test_not_engaged_is_inc_on_the_control_fails_and_unread_is_inc', box, 'grade',
+                   ("        elif not row['ahead_nosync'] and counts['nosync']:\n", "        elif False:\n"))
+
+    def test_window_ignored(self):
+        self.fails('test_whole_records_pass_and_the_receipts_are_read_per_arm', box, 'ahead_split',
+                   ("r[0] is not None and start <= r[0] <= end", "True"))
+
+    def test_nosync_flag_misread(self):
+        self.fails('test_whole_records_pass_and_the_receipts_are_read_per_arm', box, 'ahead_split',
+                   ("m.group(2) == '1'", "m.group(2) == '0'"))
+
+    def test_smoke_ack_not_checked(self):
+        self.fails('test_the_smoke_reads_its_acknowledgement', box, 'smoke_check',
+                   ("    if (rec.get('inwait') or {}).get('ahead_nosync_acknowledged') is not row['ahead_nosync']:\n", "    if False:\n"))
 
 
 class O3GradeMutants(unittest.TestCase):
