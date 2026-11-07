@@ -47,6 +47,10 @@
    "module:from attn_meta_robust_swap import MODULES as ATTN_META_SWAP_MODULES",
    "module:from stage1_step_robust_swap import MODULES as STAGE1_STEP_SWAP_MODULES, selftest_base_receipt as stage1_step_base_receipt"
   ],
+  "harness/test_e3_graph_routing.py": [
+   "TestGeneratedSource.test_generate_and_revert_exact_for_every_composition",
+   "TestGeneratedSource.test_placement_and_order"
+  ],
   "harness/test_e3_native_overlap.py": [
    "RetainedRowClosureTests.test_close_uses_actual_dispatcher_factory_and_request_release_chain"
   ],
@@ -67,6 +71,7 @@
    "NativeSegmentDriver.__init__",
    "NativeSegmentDriver._admit_control",
    "NativeSegmentDriver._append_yield_control",
+   "NativeSegmentDriver._apply",
    "NativeSegmentDriver._apply_open",
    "NativeSegmentDriver._apply_release",
    "NativeSegmentDriver._begin",
@@ -75,7 +80,9 @@
    "NativeSegmentDriver._handback_rows",
    "NativeSegmentDriver._maybe_yield",
    "NativeSegmentDriver._next_receipt",
+   "NativeSegmentDriver._note_terminal_route",
    "NativeSegmentDriver._note_yield_begin",
+   "NativeSegmentDriver._o3_keep_split",
    "NativeSegmentDriver._progress_direct",
    "NativeSegmentDriver._refuse_profile",
    "NativeSegmentDriver._retire_retained_cancel",
@@ -113,6 +120,10 @@
    "NativeSegmentDriver.append_yield_stale",
    "NativeSegmentDriver.append_yield_target",
    "NativeSegmentDriver.append_yield_target_lost",
+   "NativeSegmentDriver.o3_handback_clear",
+   "NativeSegmentDriver.o3_handback_permits",
+   "NativeSegmentDriver.o3_handback_uid",
+   "NativeSegmentDriver.o3_return_full",
    "NativeSegmentDriver.overlap_evidence",
    "NativeSegmentDriver.stop",
    "NativeSegmentDriver.yield_permits",
@@ -120,6 +131,9 @@
    "module:YIELD_ARRIVALS",
    "module:YIELD_CANCEL_REASON",
    "module:YIELD_HISTORY"
+  ],
+  "patches/s5_engine/engine_offers.py": [
+   "module:MODEL_RUNNER_PACKAGE_SHA256"
   ],
   "patches/s5_engine/executor_hooks.py": [
    "before_step_with_batch_queue",
@@ -130,6 +144,16 @@
    "module:from native_measurement import PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta, emit_receipt_lines, encode_progress_meta, progress_mode",
    "park_prefill",
    "worker_rpc_begin"
+  ],
+  "patches/s5_engine/graph_hooks.py": [
+   "_forward",
+   "handback_shaped",
+   "handback_uniform",
+   "module:O3_ENV",
+   "module:_UNIFORM_NEW",
+   "module:_UNIFORM_OLD",
+   "o3_enabled",
+   "revert"
   ],
   "patches/s5_engine/lane_chunk.py": [
    "ChunkAdmission.__post_init__",
@@ -268,6 +292,14 @@
    "AutoArmPolicy._holdable",
    "AutoArmPolicy._native_end",
    "AutoArmPolicy._native_refused",
+   "AutoArmPolicy._o3_arm",
+   "AutoArmPolicy._o3_census_begin",
+   "AutoArmPolicy._o3_count",
+   "AutoArmPolicy._o3_covers",
+   "AutoArmPolicy._o3_enter_tail",
+   "AutoArmPolicy._o3_proof",
+   "AutoArmPolicy._o3_refuse",
+   "AutoArmPolicy._o3_tail",
    "AutoArmPolicy._plan",
    "AutoArmPolicy._plan_state_site",
    "AutoArmPolicy._proof",
@@ -292,11 +324,15 @@
    "AutoArmPolicy.decline_record",
    "AutoArmPolicy.holds_from_stock",
    "AutoArmPolicy.holds_frontier_from_stock",
+   "AutoArmPolicy.o3_keeps_split",
+   "AutoArmPolicy.o3_record",
    "AutoArmPolicy.permits",
    "AutoArmPolicy.snapshot",
    "AutoArmPolicy.stock_site",
    "AutoArmPolicy.tick",
    "_generation_logprobs_refused",
+   "class:AutoArmPolicy",
+   "install",
    "module:DECLINE_SITES",
    "module:MAX_HOLDS",
    "module:MAX_PENDING_DECLINES",
@@ -304,11 +340,14 @@
    "module:MAX_RETRIES",
    "module:MAX_STOCK_WHY",
    "module:MAX_UNHOLDABLE",
+   "module:O3_ENV",
+   "module:O3_TAIL_TICKS",
    "module:RACE_CLOSES",
    "module:TRANSIENT_PLAN_SITES",
    "module:from scheduler_hooks import bounded_limit, native_chunk_cap, residue_hit, staged_chunk_plan, _ProjectedPrefillRequest",
    "module:from scheduler_hooks import staged_chunk_plan, _ProjectedPrefillRequest",
-   "module:import os"
+   "module:import os",
+   "o3_enabled"
   ],
   "patches/s5_engine/native_measurement.py": [
    "NativeMeasurementCensus._ingest_chunk_open",
@@ -356,6 +395,9 @@
    "module:from model_hooks import LaneForward, PlePrivateScratch, PleWitness, PrefillStreamOwners, local_text_model, ple_embedding",
    "module:from model_hooks import LaneForward, PlePrivateScratch, PrefillStreamOwners, local_text_model, ple_embedding",
    "module:import os"
+  ],
+  "patches/s5_engine/operation_source.py": [
+   "module:S5_RUNNER_SHA256"
   ],
   "patches/s5_engine/probe_control.py": [
    "attach_native_router"
@@ -587,7 +629,9 @@
   "core/scheduler.py",
   "e3/decode_probe.py",
   "e3/engine_driver.py",
+  "e3/engine_offers.py",
   "e3/executor_hooks.py",
+  "e3/graph_hooks.py",
   "e3/lane_chunk.py",
   "e3/lane_dispatch.py",
   "e3/lane_private.py",
@@ -600,6 +644,7 @@
   "e3/native_overlap_worker.py",
   "e3/native_qualification_frontend.py",
   "e3/native_startup.py",
+  "e3/operation_source.py",
   "e3/probe_control.py",
   "e3/qsa_driver.py",
   "e3/s5_startup.py",
@@ -610,7 +655,8 @@
   "e3/wire_v1.py",
   "e3/worker_bridge.py",
   "e3/worker_hooks.py",
-  "e3_sources/worker.py"
+  "e3_sources/worker.py",
+  "model_runner_v2.py"
  ],
  "engine_selfrun": {
   "compiled": [
@@ -952,6 +998,7 @@
    "harness/e3_compose5_box.py",
    "harness/e3_dp3_startup_grade.py",
    "harness/e3_inwait_box.py",
+   "harness/e3_lane_o3_probe.py",
    "harness/e3_native_refusal_client.py",
    "harness/e3_stage1_step_box.py",
    "harness/inwait_arms.py",
@@ -1004,6 +1051,7 @@
    "harness/test_dp5_ple.py",
    "harness/test_dp5c_connected.py",
    "harness/test_dp5c_path.py",
+   "harness/test_e3_graph_routing.py",
    "harness/test_e3_native_overlap.py",
    "harness/test_e3_r4_worker_bridge.py",
    "harness/test_geometry_tail.py",
@@ -1019,6 +1067,7 @@
    "harness/test_inwait_router.py",
    "harness/test_inwait_slices.py",
    "harness/test_inwait_slots.py",
+   "harness/test_lane_o3.py",
    "harness/test_native43_engine_death_h.py",
    "harness/test_native_hold.py",
    "harness/test_parity2_terminal.py",
@@ -1033,6 +1082,8 @@
    "harness/test_tail_select.py",
    "patches/s5_engine/attn_meta_batch.py",
    "patches/s5_engine/attn_meta_select.py",
+   "patches/s5_engine/engine_offers.py",
+   "patches/s5_engine/graph_hooks.py",
    "patches/s5_engine/lane_chunk.py",
    "patches/s5_engine/lane_private.py",
    "patches/s5_engine/lane_state.py",
@@ -1041,6 +1092,7 @@
    "patches/s5_engine/native_overlap_worker.py",
    "patches/s5_engine/native_qualification_frontend.py",
    "patches/s5_engine/native_startup.py",
+   "patches/s5_engine/operation_source.py",
    "patches/s5_engine/worker_hooks.py",
    "tools/a1_trunk_cpu_probe.py",
    "tools/a1_trunk_engine_selfrun.py",
@@ -1136,6 +1188,7 @@
    "tools/inwait_spec.py",
    "tools/inwait_staging_check.py",
    "tools/inwait_tools_derive.py",
+   "tools/lane_o3_cpu.py",
    "tools/stage1_step_base_proof.py",
    "tools/stage1_step_clock_scan.py",
    "tools/stage1_step_cpu_probe.py",
@@ -1231,6 +1284,7 @@
    "NativeSegmentDriver.__init__",
    "NativeSegmentDriver._admit_control",
    "NativeSegmentDriver._append_yield_control",
+   "NativeSegmentDriver._apply",
    "NativeSegmentDriver._apply_open",
    "NativeSegmentDriver._apply_release",
    "NativeSegmentDriver._begin",
@@ -1239,7 +1293,9 @@
    "NativeSegmentDriver._handback_rows",
    "NativeSegmentDriver._maybe_yield",
    "NativeSegmentDriver._next_receipt",
+   "NativeSegmentDriver._note_terminal_route",
    "NativeSegmentDriver._note_yield_begin",
+   "NativeSegmentDriver._o3_keep_split",
    "NativeSegmentDriver._progress_direct",
    "NativeSegmentDriver._refuse_profile",
    "NativeSegmentDriver._retire_retained_cancel",
@@ -1277,6 +1333,10 @@
    "NativeSegmentDriver.append_yield_stale",
    "NativeSegmentDriver.append_yield_target",
    "NativeSegmentDriver.append_yield_target_lost",
+   "NativeSegmentDriver.o3_handback_clear",
+   "NativeSegmentDriver.o3_handback_permits",
+   "NativeSegmentDriver.o3_handback_uid",
+   "NativeSegmentDriver.o3_return_full",
    "NativeSegmentDriver.overlap_evidence",
    "NativeSegmentDriver.stop",
    "NativeSegmentDriver.yield_permits",
@@ -1284,6 +1344,9 @@
    "module:YIELD_ARRIVALS",
    "module:YIELD_CANCEL_REASON",
    "module:YIELD_HISTORY"
+  ],
+  "e3/engine_offers.py": [
+   "module:MODEL_RUNNER_PACKAGE_SHA256"
   ],
   "e3/executor_hooks.py": [
    "before_step_with_batch_queue",
@@ -1294,6 +1357,16 @@
    "module:from .native_measurement import PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta, emit_receipt_lines, encode_progress_meta, progress_mode",
    "park_prefill",
    "worker_rpc_begin"
+  ],
+  "e3/graph_hooks.py": [
+   "_forward",
+   "handback_shaped",
+   "handback_uniform",
+   "module:O3_ENV",
+   "module:_UNIFORM_NEW",
+   "module:_UNIFORM_OLD",
+   "o3_enabled",
+   "revert"
   ],
   "e3/lane_chunk.py": [
    "ChunkAdmission.__post_init__",
@@ -1428,6 +1501,14 @@
    "AutoArmPolicy._holdable",
    "AutoArmPolicy._native_end",
    "AutoArmPolicy._native_refused",
+   "AutoArmPolicy._o3_arm",
+   "AutoArmPolicy._o3_census_begin",
+   "AutoArmPolicy._o3_count",
+   "AutoArmPolicy._o3_covers",
+   "AutoArmPolicy._o3_enter_tail",
+   "AutoArmPolicy._o3_proof",
+   "AutoArmPolicy._o3_refuse",
+   "AutoArmPolicy._o3_tail",
    "AutoArmPolicy._plan",
    "AutoArmPolicy._plan_state_site",
    "AutoArmPolicy._proof",
@@ -1452,11 +1533,15 @@
    "AutoArmPolicy.decline_record",
    "AutoArmPolicy.holds_from_stock",
    "AutoArmPolicy.holds_frontier_from_stock",
+   "AutoArmPolicy.o3_keeps_split",
+   "AutoArmPolicy.o3_record",
    "AutoArmPolicy.permits",
    "AutoArmPolicy.snapshot",
    "AutoArmPolicy.stock_site",
    "AutoArmPolicy.tick",
    "_generation_logprobs_refused",
+   "class:AutoArmPolicy",
+   "install",
    "module:DECLINE_SITES",
    "module:MAX_HOLDS",
    "module:MAX_PENDING_DECLINES",
@@ -1464,11 +1549,14 @@
    "module:MAX_RETRIES",
    "module:MAX_STOCK_WHY",
    "module:MAX_UNHOLDABLE",
+   "module:O3_ENV",
+   "module:O3_TAIL_TICKS",
    "module:RACE_CLOSES",
    "module:TRANSIENT_PLAN_SITES",
    "module:from .scheduler_hooks import bounded_limit, native_chunk_cap, residue_hit, staged_chunk_plan, _ProjectedPrefillRequest",
    "module:from .scheduler_hooks import staged_chunk_plan, _ProjectedPrefillRequest",
-   "module:import os"
+   "module:import os",
+   "o3_enabled"
   ],
   "e3/native_measurement.py": [
    "NativeMeasurementCensus._ingest_chunk_open",
@@ -1516,6 +1604,9 @@
    "module:from .model_hooks import LaneForward, PlePrivateScratch, PleWitness, PrefillStreamOwners, local_text_model, ple_embedding",
    "module:from .model_hooks import LaneForward, PlePrivateScratch, PrefillStreamOwners, local_text_model, ple_embedding",
    "module:import os"
+  ],
+  "e3/operation_source.py": [
+   "module:S5_RUNNER_SHA256"
   ],
   "e3/probe_control.py": [
    "attach_native_router"
@@ -1681,6 +1772,9 @@
    "FlashS5LazyIntermediateTensors.wait_for_comm",
    "Worker._flash_s5_stock_execute_model",
    "class:FlashS5LazyIntermediateTensors"
+  ],
+  "model_runner_v2.py": [
+   "GPUModelRunner._flash_e3_stock_execute_model"
   ]
  },
  "precheck": {
@@ -1711,7 +1805,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "c1907056ad36744617bcb87153512ee8857f35b8",
+ "source_commit": "8489642a44ac43943991fe7dedebfd12002e0807",
  "source_paths": [
   "A\tharness/a1_trunk_arms.py",
   "A\tharness/a1_trunk_gate.py",
@@ -1739,6 +1833,7 @@
   "A\tharness/e3_compose5_box.py",
   "A\tharness/e3_dp3_startup_grade.py",
   "A\tharness/e3_inwait_box.py",
+  "A\tharness/e3_lane_o3_probe.py",
   "A\tharness/e3_native_refusal_client.py",
   "A\tharness/e3_stage1_step_box.py",
   "A\tharness/fixtures/attn_meta_post_read/arm-decode-am0.json",
@@ -1848,6 +1943,7 @@
   "A\tharness/test_dp5_ple.py",
   "A\tharness/test_dp5c_connected.py",
   "A\tharness/test_dp5c_path.py",
+  "M\tharness/test_e3_graph_routing.py",
   "M\tharness/test_e3_native_overlap.py",
   "M\tharness/test_e3_package.py",
   "M\tharness/test_e3_r4_worker_bridge.py",
@@ -1864,6 +1960,7 @@
   "A\tharness/test_inwait_router.py",
   "A\tharness/test_inwait_slices.py",
   "A\tharness/test_inwait_slots.py",
+  "A\tharness/test_lane_o3.py",
   "M\tharness/test_native35_performance.py",
   "A\tharness/test_native43_engine_death_h.py",
   "A\tharness/test_native_hold.py",
@@ -1881,7 +1978,9 @@
   "A\tpatches/s5_engine/attn_meta_select.py",
   "M\tpatches/s5_engine/decode_probe.py",
   "M\tpatches/s5_engine/engine_driver.py",
+  "M\tpatches/s5_engine/engine_offers.py",
   "M\tpatches/s5_engine/executor_hooks.py",
+  "M\tpatches/s5_engine/graph_hooks.py",
   "M\tpatches/s5_engine/lane_chunk.py",
   "M\tpatches/s5_engine/lane_dispatch.py",
   "M\tpatches/s5_engine/lane_private.py",
@@ -1896,6 +1995,7 @@
   "M\tpatches/s5_engine/native_overlap_worker.py",
   "M\tpatches/s5_engine/native_qualification_frontend.py",
   "M\tpatches/s5_engine/native_startup.py",
+  "M\tpatches/s5_engine/operation_source.py",
   "M\tpatches/s5_engine/probe_control.py",
   "M\tpatches/s5_engine/qsa_driver.py",
   "M\tpatches/s5_engine/s5_startup.py",
@@ -2026,6 +2126,7 @@
   "A\ttools/inwait_spec_regen.sh",
   "A\ttools/inwait_staging_check.py",
   "A\ttools/inwait_tools_derive.py",
+  "A\ttools/lane_o3_cpu.py",
   "A\ttools/native43_spec.a1-trunk.json",
   "A\ttools/native43_spec.attn-meta-b.json",
   "A\ttools/native43_spec.attn-meta-c.json",
@@ -2178,6 +2279,7 @@
   "inwait_spec.py",
   "inwait_staging_check.py",
   "inwait_tools_derive.py",
+  "lane_o3_cpu.py",
   "native43_spec.a1-trunk.json",
   "native43_spec.attn-meta-b.json",
   "native43_spec.attn-meta-c.json",
