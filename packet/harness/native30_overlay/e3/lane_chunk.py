@@ -94,6 +94,88 @@ def prepare_ahead_from_env(env):
     if value not in ('0', '1'):
         raise LaneChunkError(PREPARE_AHEAD_ENV + ' must be 0 or 1')
     return value == '1'
+
+
+# parity-ahead (READING-parity-gaps-20261107.md A.2/A.5): the staged chunk's host-to-device copies without a synchronize.
+# Today LaneChunk's ``torch.tensor(..., device=cuda)`` (a pageable copy with non_blocking False) waits for the prefill stream
+# to drain the live chunk's tail on the worker's RPC thread (~45 ms p50 on stage 1). With the per-arm selection on, the ahead
+# builds each small tensor in pinned host memory and copies it with non_blocking=True on the caller's current stream, the lane
+# prefill stream, so every kernel that reads it later on that stream runs after the copy. The pinned sources are kept with one
+# event recorded on that stream after the last copy, and dropped only once that event is queried complete (``H2DKeep``).
+# Nothing synchronizes. Counters for the receipt line only; the off path never touches them.
+AHEAD_NOSYNC = dict(staged=0, copies=0, bytes=0, kept=0, retired=0, keep_max=0, errors=0)
+
+
+class H2DStaging:
+    """One staged chunk's host-to-device copies: pinned sources, non-blocking copies on the current (prefill) stream."""
+
+    def __init__(self, torch_module, device):
+        self.torch = torch_module
+        self.device = device
+        self.hosts = []
+        self.copies = 0
+        self.bytes = 0
+
+    def _pinned(self, host):
+        if not host.is_pinned():
+            host = host.pin_memory()
+        return host
+
+    def upload(self, host):
+        """A device copy of a CPU tensor: pinned source, ``non_blocking=True``, on the current stream; the source is kept."""
+        torch = self.torch
+        dev = torch.empty(tuple(host.shape), dtype=host.dtype, device=self.device)
+        if host.numel() == 0:
+            return dev
+        host = self._pinned(host)
+        dev.copy_(host, non_blocking=True)
+        self.hosts.append(host)
+        self.copies += 1
+        self.bytes += int(host.numel() * host.element_size())
+        return dev
+
+    def tensor(self, values, dtype):
+        """``torch.tensor(values, dtype=dtype, device=device)`` without the blocking copy."""
+        return self.upload(self.torch.tensor(values, dtype=dtype, pin_memory=True))
+
+    def copy_into(self, target, values, dtype):
+        """``target.copy_(torch.tensor(values))`` from a pinned source (the in-place LaneTables row write)."""
+        host = self.torch.tensor(values, dtype=dtype, pin_memory=True)
+        target.copy_(host, non_blocking=True)
+        self.hosts.append(host)
+        self.copies += 1
+        self.bytes += int(host.numel() * host.element_size())
+        return target
+
+
+class H2DKeep:
+    """The staged copies' pinned sources, each set with the event recorded after its last copy; never waits."""
+
+    def __init__(self, torch_module):
+        self.torch = torch_module
+        self.entries = []
+
+    def seal(self, staging):
+        """After the last copy is enqueued: one event on the current stream, the sources kept until it completes."""
+        if not staging.hosts:
+            return None
+        event = self.torch.cuda.Event()
+        event.record()
+        self.entries.append((event, tuple(staging.hosts)))
+        AHEAD_NOSYNC['kept'] += 1
+        AHEAD_NOSYNC['keep_max'] = max(AHEAD_NOSYNC['keep_max'], len(self.entries))
+        return event
+
+    def prune(self):
+        """Drop the sources whose event is complete (a query, never a wait); the rest stay."""
+        keep = []
+        for entry in self.entries:
+            if bool(entry[0].query()):
+                AHEAD_NOSYNC['retired'] += 1
+            else:
+                keep.append(entry)
+        self.entries = keep
+        return len(keep)
 SCORE_WARM = dict(selected=False, bytes=0, allocs=0, flushes=0, rewarms=0, errors=0, retries_seen=None)
 SCORE_WARM_SLACK_BYTES = 16 * 1024 * 1024
 SCORE_WARM_STEP_BYTES = 32 * 1024 * 1024
@@ -793,7 +875,7 @@ class LaneTables:
             return [b * bpk + k for b in row for k in range(bpk)]
         return list(row)
 
-    def write(self, admission):
+    def write(self, admission, staging=None):
         if len(admission.block_tables) != self.num_groups:
             raise LaneChunkError('admission block tables do not cover every KV group')
         views = []
@@ -802,7 +884,10 @@ class LaneTables:
             target = self.rows[group]
             if len(ids) > int(target.shape[1]):
                 raise LaneChunkError('admission row exceeds the lane table capacity')
-            if ids:
+            if ids and staging is not None:
+                # parity-ahead: the same in-place write from a pinned source (stream-ordered after the live chunk's readers).
+                staging.copy_into(target[0, :len(ids)], ids, self.torch.int32)
+            elif ids:
                 target[0, :len(ids)].copy_(self.torch.tensor(ids, dtype=self.torch.int32),
                                            non_blocking=True)
             if len(ids) < int(target.shape[1]):
@@ -1106,7 +1191,7 @@ class LaneChunk:
     """Private inputs, metadata and forward context for one admitted chunk."""
 
     def __init__(self, runner, ports, tables, align, admission, req_index, *, torch_module,
-                 attn_groups=None):
+                 attn_groups=None, staging=None, probe=None):
         torch = torch_module
         device = runner.device
         n = admission.num_tokens
@@ -1116,22 +1201,45 @@ class LaneChunk:
         self.req_index = req_index
         self.attn_groups = runner.attn_groups if attn_groups is None else attn_groups
         self.torch = torch
-        self.input_ids = torch.tensor(list(admission.input_ids), dtype=torch.int32, device=device)
-        self.positions = torch.arange(admission.chunk_start, admission.chunk_end, dtype=torch.int64,
-                                      device=device)
-        self.query_start_loc = torch.tensor([0, n], dtype=torch.int32, device=device)
-        self.query_start_loc_cpu = torch.tensor([0, n], dtype=torch.int32, device='cpu')
-        self.seq_lens = torch.tensor([admission.chunk_end], dtype=torch.int32, device=device)
-        self.seq_lens_cpu = torch.tensor([admission.chunk_end], dtype=torch.int32, device='cpu')
-        self.idx_mapping = torch.tensor([req_index], dtype=torch.int64, device=device)
-        self.is_padding = torch.zeros((n,), dtype=torch.bool, device=device)
-        # The pinned PLE/ngram path consumes ``[num_reqs, context_len]`` and
-        # slices ``[:num_reqs]``; this private chunk carries exactly one row.
-        self.ngram_context = torch.tensor([list(admission.ngram_context)],
-                                          dtype=torch.int64, device=device)
-        self.block_tables = tables.write(admission)
-        mappings = tables.slot_mappings(admission, ports.pad_slot_id)
-        self.slot_mappings = mappings.to(device) if hasattr(mappings, 'to') else mappings
+        # parity-ahead: ``staging`` (an H2DStaging) only for a staged chunk with the per-arm selection on; ``probe`` only
+        # with the receipt installed: it stamps the end of the first device tensor (today's wait for the stream).
+        self._staging = staging
+        if staging is None:
+            self.input_ids = torch.tensor(list(admission.input_ids), dtype=torch.int32, device=device)
+            if probe is not None:
+                probe()
+            self.positions = torch.arange(admission.chunk_start, admission.chunk_end, dtype=torch.int64,
+                                          device=device)
+            self.query_start_loc = torch.tensor([0, n], dtype=torch.int32, device=device)
+            self.query_start_loc_cpu = torch.tensor([0, n], dtype=torch.int32, device='cpu')
+            self.seq_lens = torch.tensor([admission.chunk_end], dtype=torch.int32, device=device)
+            self.seq_lens_cpu = torch.tensor([admission.chunk_end], dtype=torch.int32, device='cpu')
+            self.idx_mapping = torch.tensor([req_index], dtype=torch.int64, device=device)
+            self.is_padding = torch.zeros((n,), dtype=torch.bool, device=device)
+            # The pinned PLE/ngram path consumes ``[num_reqs, context_len]`` and
+            # slices ``[:num_reqs]``; this private chunk carries exactly one row.
+            self.ngram_context = torch.tensor([list(admission.ngram_context)],
+                                              dtype=torch.int64, device=device)
+            self.block_tables = tables.write(admission)
+            mappings = tables.slot_mappings(admission, ports.pad_slot_id)
+            self.slot_mappings = mappings.to(device) if hasattr(mappings, 'to') else mappings
+        else:
+            # The same tensors, values and shapes; every host value reaches the device by a pinned non-blocking copy.
+            self.input_ids = staging.tensor(list(admission.input_ids), torch.int32)
+            if probe is not None:
+                probe()
+            self.positions = torch.arange(admission.chunk_start, admission.chunk_end, dtype=torch.int64,
+                                          device=device)
+            self.query_start_loc = staging.tensor([0, n], torch.int32)
+            self.query_start_loc_cpu = torch.tensor([0, n], dtype=torch.int32, device='cpu')
+            self.seq_lens = staging.tensor([admission.chunk_end], torch.int32)
+            self.seq_lens_cpu = torch.tensor([admission.chunk_end], dtype=torch.int32, device='cpu')
+            self.idx_mapping = staging.tensor([req_index], torch.int64)
+            self.is_padding = torch.zeros((n,), dtype=torch.bool, device=device)
+            self.ngram_context = staging.tensor([list(admission.ngram_context)], torch.int64)
+            self.block_tables = tables.write(admission, staging=staging)
+            mappings = tables.slot_mappings(admission, ports.pad_slot_id)
+            self.slot_mappings = staging.upload(mappings) if hasattr(mappings, 'to') else mappings
         self.tables = tables
         self.align = align
         self.attn_metadata = None
@@ -1143,6 +1251,8 @@ class LaneChunk:
         torch = self.torch
         import numpy as np
 
+        # parity-ahead: with ``staging`` (a staged chunk, selection on) the two small device tensors come from pinned sources.
+        staging = self._staging
         batch = self.ports.InputBatch(
             req_ids=[self.admission.request_uid], num_reqs=1, num_reqs_after_padding=1,
             idx_mapping=self.idx_mapping, idx_mapping_np=np.array([self.req_index], dtype=np.intp),
@@ -1158,8 +1268,10 @@ class LaneChunk:
             num_computed_prefill_tokens_np=np.array([self.admission.chunk_start], dtype=np.int32),
             is_prefilling_np=np.array([True]), has_prefill=True, input_ids=self.input_ids,
             positions=self.positions, is_padding=self.is_padding,
-            logits_indices=torch.tensor([n - 1], dtype=torch.int64, device=self.runner.device),
-            cu_num_logits=torch.tensor([0, 1], dtype=torch.int32, device=self.runner.device),
+            logits_indices=(torch.tensor([n - 1], dtype=torch.int64, device=self.runner.device) if staging is None
+                            else staging.tensor([n - 1], torch.int64)),
+            cu_num_logits=(torch.tensor([0, 1], dtype=torch.int32, device=self.runner.device) if staging is None
+                           else staging.tensor([0, 1], torch.int32)),
             cu_num_logits_np=np.array([0, 1], dtype=np.int32), has_structured_output_reqs=False,
             prompt_lens=None)
         self.batch = batch
@@ -1257,6 +1369,8 @@ class LaneChunkFactory:
         self.chunks = 0
         self._active_metadata_chunk = None
         self._metadata_generation = 0
+        # parity-ahead: the pinned sources of non-blocking staged copies, until their event completes (selection on only).
+        self.h2d_keep = None
 
     def _next_set(self):
         """The builder set for the next chunk: the one the last admitted chunk does not hold; with one set, always it."""
@@ -1264,10 +1378,14 @@ class LaneChunkFactory:
             return 0
         return 1 - self._last_set
 
-    def _new_chunk(self, admission, req_index):
+    def _new_chunk(self, admission, req_index, staging=None, probe=None):
         index = self._next_set()
-        chunk = LaneChunk(self.runner, self.ports, self.tables, self.align, admission, req_index,
-                          torch_module=self.torch, attn_groups=self.builder_sets[index])
+        if staging is None and probe is None:
+            chunk = LaneChunk(self.runner, self.ports, self.tables, self.align, admission, req_index,
+                              torch_module=self.torch, attn_groups=self.builder_sets[index])
+        else:
+            chunk = LaneChunk(self.runner, self.ports, self.tables, self.align, admission, req_index,
+                              torch_module=self.torch, attn_groups=self.builder_sets[index], staging=staging, probe=probe)
         chunk.builder_set = index
         return chunk
 
@@ -1275,14 +1393,20 @@ class LaneChunkFactory:
         ahead_count('refused', reason)
         return dict(staged=False, why=reason)
 
-    def stage_ahead(self, admission):
+    def stage_ahead(self, admission, nosync=False, probe=None):
         """Build-2 (a): slices 1-2 of a later chunk of the registered request, into the set the live chunk does not hold.
 
         The caller holds the lane prefill stream, after every command of the live chunk is enqueued there (the safe variant:
         after its state_finalize), so the LaneTables row write and the aligned-index kernel run after the live chunk's
         readers. Nothing shared moves: the request row, new pages, zeroing, CoW, the metadata gate and the pre-copy stay in
         slice 3, at the real PREPARE. Never raises; a failure stages nothing.
+
+        parity-ahead: ``nosync`` (the per-arm selection) builds the same chunk with every host value copied from pinned
+        memory, non-blocking, on that same stream; the order above is the stream's, so it holds without the wait. ``probe``
+        (the receipt) is called once the chunk's first device tensor exists.
         """
+        if nosync is not False or probe is not None:
+            return self._stage_ahead_timed(admission, nosync is True, probe)
         if len(self.builder_sets) < 2:
             return self._refuse_ahead('not-selected')
         if type(admission) is not ChunkAdmission:
@@ -1307,6 +1431,50 @@ class LaneChunkFactory:
         self._staged = (admission, chunk)
         ahead_count('staged')
         return dict(staged=True, why='staged')
+
+    def _stage_ahead_timed(self, admission, nosync, probe):
+        """stage_ahead's checks and build with the probe, and (nosync) the pinned non-blocking copies kept until their event."""
+        if self.h2d_keep is not None:
+            self.h2d_keep.prune()
+        if len(self.builder_sets) < 2:
+            return self._refuse_ahead('not-selected')
+        if type(admission) is not ChunkAdmission:
+            return self._refuse_ahead('not-an-admission')
+        if (self.request.req_id is None or self.request.req_id != admission.request_uid
+                or self.request.generation != admission.request_generation or admission.chunk_start == 0):
+            return self._refuse_ahead('not-a-later-chunk')
+        live = self._active_metadata_chunk
+        if live is not None and getattr(live, 'builder_set', None) == self._next_set():
+            return self._refuse_ahead('set-held')
+        if self._staged is not None:
+            if self._staged[0] == admission:
+                return dict(staged=True, why='already')
+            self.drop_ahead()
+        staging = H2DStaging(self.torch, self.runner.device) if nosync else None
+        try:
+            chunk = self._new_chunk(admission, self.request.req_index, staging=staging, probe=probe)
+            chunk.input_batch()
+            chunk.build_metadata(precopy=False)
+        except Exception:
+            ahead_count('errors')
+            if staging is not None:
+                AHEAD_NOSYNC['errors'] += 1
+            return dict(staged=False, why='error')
+        finally:
+            if staging is not None:
+                # Copies already enqueued keep their sources until the event, the failed build's too.
+                if self.h2d_keep is None:
+                    self.h2d_keep = H2DKeep(self.torch)
+                self.h2d_keep.seal(staging)
+        if staging is not None:
+            chunk._staging = None
+            AHEAD_NOSYNC['staged'] += 1
+            AHEAD_NOSYNC['copies'] += staging.copies
+            AHEAD_NOSYNC['bytes'] += staging.bytes
+        self._staged = (admission, chunk)
+        ahead_count('staged')
+        return dict(staged=True, why='staged', nosync=nosync,
+                    copies=0 if staging is None else staging.copies, bytes=0 if staging is None else staging.bytes)
 
     def drop_ahead(self):
         if self._staged is not None:

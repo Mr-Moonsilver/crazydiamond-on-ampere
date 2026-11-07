@@ -445,12 +445,15 @@ class LaneDispatcher:
                     'dense_profiles': self.fused_profiles}
         return {'prepared': True, 'req_index': chunk.req_index}
 
-    def stage_ahead(self, admission):
+    def stage_ahead(self, admission, nosync=False, probe=None):
         """Build-2 (a), the safe variant: stage a later chunk's slices 1-2 once this worker's live chunk is fully enqueued.
 
         Fully enqueued: no transaction open, or the open one has its state_finalize accepted, so every device write staging
         makes is stream-ordered after the live chunk's readers. Never raises into the lane; refusals are counted.
+        parity-ahead: ``nosync`` and ``probe`` pass to the factory only when set (the per-arm selection, the receipt).
         """
+        if nosync is not False or probe is not None:
+            return self._stage_ahead_with(admission, nosync, probe)
         factory = self.factory
         stage = getattr(factory, 'stage_ahead', None)
         if stage is None:
@@ -464,6 +467,27 @@ class LaneDispatcher:
                 return factory._refuse_ahead('live-chunk-not-finalized')
         with self._scope():
             return stage(admission)
+
+    def _stage_ahead_with(self, admission, nosync, probe):
+        """stage_ahead with the factory's ``nosync``/``probe``: the same refusals, under the same lane prefill stream."""
+        factory = self.factory
+        stage = getattr(factory, 'stage_ahead', None)
+        if stage is None:
+            return dict(staged=False, why='no-factory')
+        if self.quarantined is not None:
+            return factory._refuse_ahead('quarantined')
+        if self.transaction is not None:
+            if self._slices is not None:
+                return factory._refuse_ahead('prepare-in-slices')
+            if not any(entry[0].kind == 'state_finalize' for entry in self.accepted.values()):
+                return factory._refuse_ahead('live-chunk-not-finalized')
+        with self._scope():
+            return stage(admission, nosync=nosync, probe=probe)
+
+    def prefill_stream(self):
+        """parity-ahead's receipt: the lane prefill stream, or None (a fake or not constructed)."""
+        split = getattr(getattr(self, 'native', None), 'split', None)
+        return getattr(split, 'prefill_stream', None)
 
     def ring_waiting(self):
         """A message waits in this rank's ring; with no ring to read, say yes: the cost is one resend."""

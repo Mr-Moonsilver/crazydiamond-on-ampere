@@ -103,7 +103,7 @@ _NOT_SENT = object()
 class _InwaitSelecting:
     """The arm's client with ``inwait`` on the stage command; the reply's value goes to the record, and the grade reads it."""
 
-    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False, host_filter=False, exact=False, warm_rank0=False, flush=False, cow_verify=True, ple_private=None, ple_witness=None, chunk_bound=_NOT_SENT, native_hold=_NOT_SENT, native_residue=_NOT_SENT, terminal_successor=_NOT_SENT):
+    def __init__(self, client, inwait, record, next_levers=False, attn=True, raw=None, slices=False, warm=False, cow_fast=False, reserved_cap=False, host_filter=False, exact=False, warm_rank0=False, flush=False, cow_verify=True, ple_private=None, ple_witness=None, chunk_bound=_NOT_SENT, native_hold=_NOT_SENT, native_residue=_NOT_SENT, terminal_successor=_NOT_SENT, ahead_nosync=_NOT_SENT):
         self._client, self._inwait, self._record, self._next, self._attn = client, inwait, record, next_levers, attn
         self._wanted = dict(slots_fast=next_levers, prepare_slices=slices, score_warm=warm, cow_fast=cow_fast, reserved_cap=reserved_cap, cow_host_filter=host_filter, score_warm_rank0=warm_rank0, allocator_flush=flush, cow_verify=cow_verify)
         self._wanted.update({name: value for name, value in (('ple_private', ple_private), ('ple_witness', ple_witness)) if value is not None})    # a row without the lever does not send it
@@ -112,6 +112,7 @@ class _InwaitSelecting:
         self._hold = native_hold        # decode-phase hold: seconds, per arm; a row without the field sends nothing
         self._residue = native_residue  # coverage-residue: 0 or 1, per arm; a row without the field sends nothing
         self._terminal = terminal_successor  # parity-2 A: True or False, per arm; a row without the field sends nothing
+        self._nosync = ahead_nosync          # parity-ahead: True or False, per arm; a row without the field sends nothing
         self._raw, self._slots_sent = client if raw is None else raw, False
 
     def __getattr__(self, name):
@@ -131,6 +132,8 @@ class _InwaitSelecting:
             sent['native_residue'] = self._residue
         if self._terminal is not _NOT_SENT:
             sent['terminal_successor'] = self._terminal
+        if self._nosync is not _NOT_SENT:
+            sent['ahead_nosync'] = self._nosync
         reply = self._client.call(action, **dict(fields, inwait=self._inwait, early_successor=self._next, exact_successor=self._exact, **sent))
         self._record['inwait'] = dict(requested=self._inwait, acknowledged=reply.get('inwait') if type(reply) is dict else None,
                                       early_requested=self._next, early_acknowledged=reply.get('early_successor') if type(reply) is dict else None,
@@ -143,6 +146,8 @@ class _InwaitSelecting:
             self._record['inwait'].update(residue_requested=self._residue, residue_acknowledged=reply.get('native_residue') if type(reply) is dict else None)
         if self._terminal is not _NOT_SENT:
             self._record['inwait'].update(terminal_requested=self._terminal, terminal_acknowledged=reply.get('terminal_successor') if type(reply) is dict else None)
+        if self._nosync is not _NOT_SENT:
+            self._record['inwait'].update(ahead_nosync_requested=self._nosync, ahead_nosync_acknowledged=reply.get('ahead_nosync') if type(reply) is dict else None)
         return reply
 
 
@@ -154,7 +159,7 @@ def release_compose(row):
         run_inner = inner(size, local)
 
         def run(client, record, mode):
-            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap'], row['cow_host_filter'], row['exact_successor'], row['score_warm_rank0'], row['allocator_flush'], row['cow_verify'], row.get('ple_private'), row.get('ple_witness'), row.get('chunk_bound', _NOT_SENT), row.get('native_hold', _NOT_SENT), row.get('native_residue', _NOT_SENT), row.get('terminal_successor', _NOT_SENT)), record, mode)
+            run_inner(_InwaitSelecting(am._Selecting(client, row['attn'], record), row['inwait'], record, row['next_levers'], row['attn'], client, row['prepare_slices'], row['score_warm'], row['cow_fast'], row['reserved_cap'], row['cow_host_filter'], row['exact_successor'], row['score_warm_rank0'], row['allocator_flush'], row['cow_verify'], row.get('ple_private'), row.get('ple_witness'), row.get('chunk_bound', _NOT_SENT), row.get('native_hold', _NOT_SENT), row.get('native_residue', _NOT_SENT), row.get('terminal_successor', _NOT_SENT), row.get('ahead_nosync', _NOT_SENT)), record, mode)
             if (record.get('attn_meta') or {}).get('select') is None:
                 raise ValueError('attn-meta-select-not-sent')
             if record.get('inwait') is None:

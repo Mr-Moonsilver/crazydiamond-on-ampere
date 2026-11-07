@@ -160,7 +160,15 @@ class _ScopedSender:
         else:
             return None
         request = successor.stage[stage].get('open_request')
-        return getattr(request, 'admission', None)
+        admission = getattr(request, 'admission', None)
+        if admission is not None and driver.__dict__.get('ahead_nosync') is True:
+            # parity-ahead: the arm's selection; the worker stages this record with pinned non-blocking copies.
+            from stage_wire import AheadNoSync
+            counters = driver.__dict__.get('ahead_nosync_counters')
+            if counters is not None:
+                counters['sent'] += 1
+            return AheadNoSync(admission)
+        return admission
 
     def check(self, envelope):
         self.driver._check_headroom(self.real, envelope)
