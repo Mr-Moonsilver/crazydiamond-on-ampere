@@ -10,6 +10,13 @@ import test_prepare_ahead as pa
 import test_parity_ahead as ahead
 
 class LegacyRetirement(unittest.TestCase):
+    def setUp(self):
+        # parity-n3u: the fake torch has no torch.full, so the case needs the ordinary slot path; SLOTS_FAST is process-global and an
+        # earlier suite in the same process can leave it selected (test_inwait_slots, test_parity_ahead): pin it off for this case.
+        patcher = mock.patch.dict(lc.lane_chunk.SLOTS_FAST, {'selected': False})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_pinned_factory_installs_owner_and_all_three_publications_require_scope(self):
         calls = []
         torch = lc.fake_torch()
