@@ -60,7 +60,7 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
               'native_source', 'row1_oracle', 'row1_exactness',
               # D4 worker/native side (Claude): contexts, split bank, worker seams,
               # lane forward/QSA driver, communicators, startup, chunk, dispatcher.
-              'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers',
+              'green_context', 'capture_streams', 'split_bank', 'worker_hooks', 'model_hooks', 'lane_private', 'qsa_driver', 'lane_comm', 'native_startup', 'native_uva', 'lane_chunk', 'lane_dispatch', 'operation_source', 'decode_probe', 'probe_control', 'probe_control_hooks', 'probe_session', 'launch_diagnostic', 'route_invariant', 'teacher_decode', 'replay_observer', 'observer_runtime', 'activity_accounting', 'engine_offers',
               # Native control over the pinned EngineCore utility channel.
               'native_overlap_metrics', 'native_overlap_worker',
               'native_overlap_control', 'native_overlap_session',
@@ -78,7 +78,7 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
 # reviewed launcher stays byte-identical (pin 22473a90). That loop greps names,
 # not digests; the queue preflight checks every overlay file's digest against
 # the manifest and refuses any file outside it.
-LAUNCHER_LIST_EXEMPT = ('native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap',
+LAUNCHER_LIST_EXEMPT = ('native_uva', 'native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap',
                         'attn_meta_batch', 'attn_meta_select')
 NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
                 'native/build_q17_helpers.sh')

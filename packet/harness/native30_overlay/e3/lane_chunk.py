@@ -40,6 +40,12 @@ class LaneChunkError(E3ContractError):
     pass
 
 
+def _require_publication_scope(runner):
+    owner = getattr(runner, '_flash_s5_native_uva', None)
+    if owner is not None:
+        owner.require_active()
+
+
 # inwait build-2 (DESIGN-2): per rank, selected per arm through attn_meta_select's control while paused idle FULL.  Off until selected.
 SLOTS_FAST = dict(selected=False, calls=0)
 
@@ -961,6 +967,7 @@ class LaneRequest:
     def register(self, admission):
         if self.req_id is not None:
             raise LaneChunkError('lane request already registered')
+        _require_publication_scope(self.runner)
         runner = self.runner
         states = runner.req_states
         if admission.request_uid in states.req_id_to_index:
@@ -1043,6 +1050,7 @@ class LaneRequest:
     def update(self, admission):
         if self.req_id != admission.request_uid or self.generation != admission.request_generation:
             raise LaneChunkError('admission names another request/generation than the registered one')
+        _require_publication_scope(self.runner)
         runner = self.runner
         states = runner.req_states
         index = self.req_index
@@ -1144,6 +1152,7 @@ class LaneAlign:
         """After the chunk's last state writer: advance the aligned state position."""
         if not self.enabled:
             return False
+        _require_publication_scope(self.runner)
         state = self.runner.model_state
         states = self.runner.req_states
         state.num_accepted_tokens_gpu[chunk.req_index].fill_(1)
@@ -1345,6 +1354,8 @@ class LaneChunkFactory:
             raise LaneChunkError('prepare-ahead-not-bool')
         self.runner = runner
         self.ports = ports if ports is not None else PinnedPorts.load()
+        from native_uva import NativeUvaSlots
+        self.native_uva = NativeUvaSlots(runner, torch_module) if ports is None else None
         # decode-phase dp5c: at or below 1024 the builders stay plain clones, without reading the stock budget.
         row_capacity = None
         if chunk_tokens > 1024:
@@ -1666,6 +1677,7 @@ class LaneChunkFactory:
 
     def inventory(self):
         return {'lane_tables_bytes': self.tables.bytes, 'align': self.align.enabled,
+                'native_uva': self.native_uva.inventory() if self.native_uva is not None else None,
                 'chunks': self.chunks, 'registered': self.request.req_id is not None,
                 'native_builder_bytes': self.native_builder_bytes,
                 'native_builder_tensor_count': self.native_builder_tensor_count,

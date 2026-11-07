@@ -260,6 +260,13 @@ class LaneDispatcher:
             stack.enter_context(torch.cuda.stream(self.native.split.prefill_stream))
         else:
             stack.enter_context(nullcontext())
+        native_uva = getattr(self.factory, 'native_uva', None)
+        if native_uva is not None:
+            try:
+                stack.enter_context(native_uva.scope())
+            except BaseException:
+                stack.close()
+                raise
         return stack
 
     def _record(self, command):
