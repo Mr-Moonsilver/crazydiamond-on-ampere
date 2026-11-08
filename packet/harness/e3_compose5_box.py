@@ -40,7 +40,7 @@ _report = _box.report
 
 
 def report(result):
-    text = _report(result).replace('q18a-compose-4', 'q18a-parity-n3s28', 1).replace('compose4_rule.py', 'compose5_rule.py')
+    text = _report(result).replace('q18a-compose-4', 'q18a-parity-n3s24', 1).replace('compose4_rule.py', 'compose5_rule.py')
     # coverage-soak-fix: the geometry-tail class and the worker RSS read, one line per replay arm (the decode gap is the reader's)
     extra = []
     numerics = result.get('numerics_o3')

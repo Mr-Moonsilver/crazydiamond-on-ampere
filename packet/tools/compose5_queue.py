@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'harness')]
 import compose5_arms as table  # noqa: E402
 
-OLD, NEW = 'q18a_compose_4', 'q18a_parity_n3s28'
+OLD, NEW = 'q18a_compose_4', 'q18a_parity_n3s24'
 OLD_CORE = 'core:dec1.g2-live-0 core:cmp.g2-live-0 core:ctl.g2-live-0'
 CORE = ' '.join('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED) if r['label'] != table.SMOKE_ARM)
 ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, pf po pg two decoders and three back-to-back natives (O3 off, on, off), sp n3 eight replay agents for %d s, sp n3 n3 sp' % table.REPLAY['DURATION'])
@@ -51,7 +51,7 @@ HEADER_NOTE = ("# parity-n3s: q18a-parity-n3u's engine, launch, table, gate, gra
                "build-1: the grade (the geometry-tail class, per Worker_PP RSS failing nt, any other stock prefill row and a request still open after the "
                "drain failing nt) and chunk geometry (but nt's bound) (harness/compose5_arms.py, tmp/decode-phase/READY-coverage-throughput-b2b24c64.md). "
                "The reader with the parity word is coverage-throughput/scratch/throughput2b24c64_read.py on the hub.\n")
-NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-parity-n3s28'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
+NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-parity-n3s24'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
 # compose-5's box imports compose-4's box, table and replay by their names; the rename above must not reach them.
 SWITCHES = table.CONNECTIONS_ENV + ' ' + table.PLE_ENV + ' ' + table.CHUNK_ENV
 OLD_LAST_SWITCH = table.PLE_ENV + ' '
@@ -174,7 +174,7 @@ def final_body():
 
 def table_text():
     import compose5_gate as gate
-    lines = ['q18a-parity-n3s28 arm table (harness/compose5_arms.py); entry limits relative to the run start, never a clock',
+    lines = ['q18a-parity-n3s24 arm table (harness/compose5_arms.py); entry limits relative to the run start, never a clock',
              '%-3s %-16s %-10s %-6s %-5s %s' % ('#', 'label', 'kind', 'yield', 'ple', 'enters while SECONDS <=')]
     for k, row in enumerate(gate.rows(), 1):
         lines.append('%-3d %-16s %-10s %-6s %-5s %s %d s' % (k, row['label'], row.get('kind', 'decode'), {True: 'on', False: 'off'}.get(row.get('yield_on'), '-'), {True: 'on', False: 'off'}.get(row.get('ple_private'), '-'), row['entry_limit'], gate.ENTRY_LIMIT_S[row['entry_limit']]))

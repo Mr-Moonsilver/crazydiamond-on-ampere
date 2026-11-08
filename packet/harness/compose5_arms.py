@@ -1,4 +1,4 @@
-"""q18a-parity-n3s28 arm table: the one declared table (parity-n3u, 8 Nov 2026; tmp/decode-phase/READY-parity-n3u.md). Change it here and nowhere else.
+"""q18a-parity-n3s24 arm table: the one declared table (parity-n3u, 8 Nov 2026; tmp/decode-phase/READY-parity-n3u.md). Change it here and nowhere else.
 
 parity-n3u (lead, 8 Nov 00:02, brief-wt10-n3u-ahead-b-20261108.md): o3f's n3 on Codex's legacy UVA retirement (codex/legacy-uva-retirement
 926f17f1: private native UVA descriptor slots, retire before reuse; helper native_uva.py 766b084c), against this run's stock sp. o3f's launch
@@ -189,7 +189,7 @@ AHEAD_NOSYNC_ENV = 'FLASH_S5_AHEAD_NOSYNC=1'
 # cuDevSmResourceSplitByCount with minCount = the count, exact at 36/44/52 on this box; a rounded split FAILs at startup.
 MIN_DECODE_SMS, MAX_DECODE_SMS = 24, 60
 N3U_DECODE_SMS = 44                                 # q18a-parity-n3u's, the comparison
-DECODE_SMS = 28                                     # q18a-parity-n3s28
+DECODE_SMS = 24                                     # q18a-parity-n3s24 (q18a-parity-n3s28 built at 28, 36b49b99)
 
 
 def legal_decode_sms(value):
