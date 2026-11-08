@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_inwait import b  # noqa: E402  (c1b's pinned build as the parent)
+from build_inwait import b, overlay_declaration  # noqa: E402  (c1b's pinned build as the parent)
 
 
 def propose(out):
@@ -31,7 +31,7 @@ def propose(out):
     rows, parent = b.verify(overlay), b.verify(b.PARENT / 'native30_overlay')
     moved = sorted(n for n in parent if rows.get(n) != parent[n])
     engine = sorted(n for n in moved if n not in b.METADATA)
-    definitions = {n: b.changed_definitions((b.PARENT / 'native30_overlay' / n).read_text(), (overlay / n).read_text())
+    definitions = {n: overlay_declaration(n, b.PARENT / 'native30_overlay' / n, overlay / n)
                    for n in engine}
     return dict(moved=moved, engine_changed=engine, overlay_definitions=definitions,
                 added=sorted(set(rows) - set(parent)), removed=sorted(set(parent) - set(rows)))

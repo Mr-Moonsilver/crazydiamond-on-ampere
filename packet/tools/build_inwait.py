@@ -15,6 +15,7 @@ Added after that build, in the same OUT:
 No GPU, no box action.
 """
 import argparse
+import ast
 import json
 from pathlib import Path
 import re
@@ -68,6 +69,49 @@ _expected_staging = b.expected_staging
 _stage = b.stage
 
 
+NON_AST_OVERLAY = frozenset({'run-flash-s5-test.sh'})
+
+
+def overlay_declaration(path, old, new):
+    """Only Python receives an AST proof; the one launcher gets exact byte pins."""
+    if path.endswith('.py'):
+        return b.changed_definitions(Path(old).read_text(), Path(new).read_text())
+    assert path in NON_AST_OVERLAY, 'non-Python overlay file not allowlisted: ' + path
+    return dict(format='non-ast-sha256/1', old_sha256=b.sha(old), new_sha256=b.sha(new))
+
+
+def overlay_file_proof(path, old, new, declared):
+    if path.endswith('.py'):
+        return b.prove(Path(old).read_text(), Path(new).read_text(), path, declared)
+    actual = overlay_declaration(path, old, new)
+    assert declared == actual, ('non-AST overlay pin differs', path, declared, actual)
+    return dict(actual, changed=['non-ast:sha256'])
+
+
+_derive_runner = b.derive_runner
+
+
+def derive_runner(candidate, tests, swaps_spec, pin, review_sha, sources, expect_engine_pins_unchanged):
+    """Keep the inherited runner body, including its independent launcher check."""
+    owner, _ = _derive_runner(candidate, tests, swaps_spec, pin, review_sha, sources, expect_engine_pins_unchanged)
+    assignment = next(n for n in ast.parse(owner).body if isinstance(n, ast.Assign)
+                      and isinstance(n.targets[0], ast.Name) and n.targets[0].id == 'LAUNCHER')
+    old = ast.get_source_segment(owner, assignment.value)
+    launcher = sources['run-flash-s5-test.sh']
+    assert re.fullmatch(r'[0-9a-f]{64}', launcher), 'invalid launcher pin'
+    if expect_engine_pins_unchanged:
+        assert ast.literal_eval(old) == launcher, 'unchanged launcher pin differs'
+    updated = b.replace(owner, dict(LAUNCHER=repr(launcher)))
+    assert b.replace(updated, dict(LAUNCHER=old)) == owner, 'runner changed beyond launcher pin'
+    compile(updated, candidate + '-owner-run', 'exec')
+    diff = [line for line in b.difflib.ndiff(b.PARENT_RUNNER.read_text().splitlines(), updated.splitlines())
+            if line.startswith(('- ', '+ ')) and not line[2:].startswith('EXPECTED_SOURCES=')]
+    return updated, diff
+
+
+b.derive_runner = derive_runner
+
+
 def overlay_level(spec, overlay, parent_rows):
     """build_native43's overlay rule plus exactly the declared added module; ``prove`` runs on the changed ones only."""
     rows = b.verify(overlay)
@@ -79,8 +123,8 @@ def overlay_level(spec, overlay, parent_rows):
     assert engine == sorted(spec['engine_changed']), ('undeclared overlay engine change', engine, spec['engine_changed'])
     assert not any(n.endswith('.so') for n in moved), 'compiled library moved'
     assert set(spec['overlay_definitions']) == set(engine), sorted(set(spec['overlay_definitions']) ^ set(engine))
-    definitions = {path: b.prove((b.PARENT / 'native30_overlay' / path).read_text(), (overlay / path).read_text(), path,
-                                 spec['overlay_definitions'][path]) for path in engine}
+    definitions = {path: overlay_file_proof(path, b.PARENT / 'native30_overlay' / path, overlay / path,
+                                             spec['overlay_definitions'][path]) for path in engine}
     return dict(parent_overlay=str(b.PARENT / 'native30_overlay'), parent_overlay_manifest=b.PARENT_OVERLAY_MANIFEST,
                 moved=moved, added=added, engine_changed=engine, metadata_moved=sorted(set(moved) - set(engine)),
                 definitions=definitions, compiled_libraries_byte_identical=True, byte_identical_to_parent=False)
