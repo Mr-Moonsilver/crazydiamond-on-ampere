@@ -2352,7 +2352,7 @@ class DeltaMinor2DrainRetrySpaced(unittest.TestCase):
 
     def test_mutant_back_to_back_retries(self):
         Mutants.fails(self, self.check, auto.AutoArmPolicy, '_reentry_refused',
-                      ("        self.scheduler.set_pause_state(self.old_pause)\n        self.phase = 'drain_wait'\n",
+                      ("        self._pause(self.old_pause)\n        self.phase = 'drain_wait'\n",     # 8f4725ed: set_pause_state via the gap-receipt _pause
                        "        self.phase = 'drain'\n"))
 
     def test_mutant_running_prefill_still_held(self):
