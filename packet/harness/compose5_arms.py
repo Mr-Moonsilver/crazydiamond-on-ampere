@@ -1,4 +1,4 @@
-"""q18a-parity-n3u arm table: the one declared table (parity-n3u, 8 Nov 2026; tmp/decode-phase/READY-parity-n3u.md). Change it here and nowhere else.
+"""q18a-parity-n3s28 arm table: the one declared table (parity-n3u, 8 Nov 2026; tmp/decode-phase/READY-parity-n3u.md). Change it here and nowhere else.
 
 parity-n3u (lead, 8 Nov 00:02, brief-wt10-n3u-ahead-b-20261108.md): o3f's n3 on Codex's legacy UVA retirement (codex/legacy-uva-retirement
 926f17f1: private native UVA descriptor slots, retire before reuse; helper native_uva.py 766b084c), against this run's stock sp. o3f's launch
@@ -181,6 +181,27 @@ AHEAD_NOSYNC = dict(dict.fromkeys(SELECTIONS, False), na=True, nk=True, n3=True)
 # the field needs inwait, which every row has; a command without it turns it off).
 K2_SETTLE = dict(dict.fromkeys(SELECTIONS, False), nk=True, n3=True)
 AHEAD_NOSYNC_ENV = 'FLASH_S5_AHEAD_NOSYNC=1'
+# parity-n3s (lead, 8 Nov 18:40, brief-wt10-n3s-20261108.md): n3u with prefill given more SMs, the decode SM count the only knob that
+# moves. n3u ran FLASH_S5_DECODE_SMS=44 of 82 (prefill 38). The launch's count is this table's, declared once here: the settings'
+# default, guard and EXTRA_ENV, the draft's guard, the declaration's assert, the runner's S5_REQUESTED_DECODE_SMS and the startup
+# grade (e3_split_startup_grade.py: requested, measured and membership all exactly this count) read it. The legal rule is the
+# decode-phase lineage's (inwait_arms.legal_decode_sms, build-3, dp4's 36/46): even, 24..60; the green helper splits by
+# cuDevSmResourceSplitByCount with minCount = the count, exact at 36/44/52 on this box; a rounded split FAILs at startup.
+MIN_DECODE_SMS, MAX_DECODE_SMS = 24, 60
+N3U_DECODE_SMS = 44                                 # q18a-parity-n3u's, the comparison
+DECODE_SMS = 28                                     # q18a-parity-n3s28
+
+
+def legal_decode_sms(value):
+    """The launch's decode SM count, a string: even, MIN..MAX (inwait_arms' rule on the decode-phase branches). Anything else raises."""
+    text = str(value)
+    if (not (text.isascii() and text.isdigit()) or text != str(int(text)) or int(text) % 2
+            or not MIN_DECODE_SMS <= int(text) <= MAX_DECODE_SMS):
+        raise ValueError('decode SM count must be even, %d..%d' % (MIN_DECODE_SMS, MAX_DECODE_SMS))
+    return text
+
+
+DECODE_SMS_ENV = 'FLASH_S5_DECODE_SMS=%s' % legal_decode_sms(DECODE_SMS)
 O3_PAIR_DECODERS = 2                                # the design's first box test: 2 decoders live
 O3_PAIR_NATIVES = 3                                 # and 3 back-to-back native requests (each >= MIN_NATIVE_ROWS new rows)
 O3_PAIR_TOKENS = 16                                 # greedy positions captured per native, top-20 each; position 0 is the handback's token
@@ -347,6 +368,8 @@ def check():
     assert all(r['k2_settle'] is (r['c1'] in ('nk', 'n3')) for r in rows.values()), 'k2_settle on nk and n3 alone; False on the pair arms (one effect, O3)'
     assert AHEAD_NOSYNC_ENV == 'FLASH_S5_AHEAD_NOSYNC=1' and PREPARE_AHEAD_ENV == 'FLASH_S5_PREPARE_AHEAD=1', 'the nosync needs prepare-ahead, installed for the whole run'
     assert O3_ENV == 'FLASH_S5_O3=1' and O3_PAIR_DECODERS == 2 and O3_PAIR_NATIVES == 3 and O3_LOGPROBS == 20
+    assert type(DECODE_SMS) is int and legal_decode_sms(DECODE_SMS) == str(DECODE_SMS) and DECODE_SMS != N3U_DECODE_SMS, 'parity-n3s: a legal split other than n3u\'s 44'
+    assert DECODE_SMS_ENV == 'FLASH_S5_DECODE_SMS=%d' % DECODE_SMS
     order = [r['label'] for r in rows.values() if r['kind'] == 'replay']
     assert order == (['no.g2-live-0', 'na.g2-live-0', 'nt.g2-live-0', 'sp.g2-live-0', 'sp.g2-live-1', 'nt.g2-live-1', 'na.g2-live-1', 'no.g2-live-1'] if o3 else
                      ['na.g2-live-0', 'nt.g2-live-0', 'sp.g2-live-0', 'sp.g2-live-1', 'nt.g2-live-1', 'na.g2-live-1'] if na2 else

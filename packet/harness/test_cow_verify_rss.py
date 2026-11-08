@@ -48,7 +48,7 @@ class Arms(unittest.TestCase):
                 self.assertIs(row['cow_verify'], rows[T.matched_off(row)]['cow_verify'])
 
     def test_the_settings_leave_the_runner_check_off(self):
-        settings = (HERE / 'runs/q18a_parity_n3u_settings.sh').read_text()
+        settings = (HERE / 'runs/q18a_parity_n3s28_settings.sh').read_text()
         self.assertIn('QSA_COW_VERIFY=-', settings)
 
 

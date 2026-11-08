@@ -27,12 +27,12 @@ tap, tq, tan = tiq.tap, tiq.tq, tiq.tan
 SLOT_RECEIPTS = []
 ARGPARSE_RECEIPTS = []
 RUNS = HERE / 'runs'
-DRAFT = 'harness/runs/q18a_parity_n3u.draft.sh'
-SETTINGS = 'harness/runs/q18a_parity_n3u_settings.sh'
-DECLARE = 'harness/runs/q18a_parity_n3u_declare.sh'
+DRAFT = 'harness/runs/q18a_parity_n3s28.draft.sh'
+SETTINGS = 'harness/runs/q18a_parity_n3s28_settings.sh'
+DECLARE = 'harness/runs/q18a_parity_n3s28_declare.sh'
 CORE = T.labels('core')
 DECODE = [d['label'] for d in T.DECODE_ARMS]
-QNAME = 'q18a-parity-n3u'
+QNAME = 'q18a-parity-n3s28'
 STUB_BOX = tiq.STUB_BOX.replace('import e3_inwait_box as real', 'import e3_compose5_box as real')
 assert STUB_BOX != tiq.STUB_BOX
 
@@ -84,7 +84,7 @@ class Derivation(unittest.TestCase):
 def settings_rows():
     """The real settings text under real bash: what engine_identity declare --settings gets."""
     lines = ['set -u', 'H=%s' % shlex.quote(str(HERE))] + ['%s=%s' % (k, shlex.quote(v)) for k, v in ARGPARSE_VALUES.items()]
-    lines += ['source "$H/runs/q18a_parity_n3u_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
+    lines += ['source "$H/runs/q18a_parity_n3s28_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
     assert done.returncode == 0, done.stderr.decode()[-400:]
     return done.stdout.decode().split('\0')[:-1]
@@ -105,8 +105,10 @@ def real_env():
     # build-2b24c64: and the logits cap, plain, as the box declared o4's 136 (q18a-o4-chunk2048, engine.identity-start.json: '136').
     # lane-o3: and FLASH_S5_O3, in the form engine_identity.clean_value gives it ('1', plain; checked below), not yet seen on the box.
     # lane-o3-na: and FLASH_S5_AHEAD_NOSYNC the same way ('1', plain; checked below), not yet seen on the box.
+    # parity-n3s: and the decode SM count this table moves (compose5_arms.DECODE_SMS), plain as the box declared 44 here and 36 on dp4.
     return dict(json.loads((HERE / 'fixtures/compose4_declared_20261105_0422.json').read_text())['identity']['env'], FLASH_S5_CHUNK_TOKENS='2048',
-                FLASH_S5_APPEND_YIELD_MAX_NEW=str(T.LAUNCH['max_new']), FLASH_S5_PREPARE_AHEAD='1', VLLM_SPARSE_INDEXER_MAX_LOGITS_MB='64', FLASH_S5_O3='1', FLASH_S5_AHEAD_NOSYNC='1')
+                FLASH_S5_APPEND_YIELD_MAX_NEW=str(T.LAUNCH['max_new']), FLASH_S5_PREPARE_AHEAD='1', VLLM_SPARSE_INDEXER_MAX_LOGITS_MB='64', FLASH_S5_O3='1', FLASH_S5_AHEAD_NOSYNC='1',
+                FLASH_S5_DECODE_SMS=str(T.DECODE_SMS))
 
 
 def declare_block(text):
@@ -289,7 +291,7 @@ class DeclaredIdentity(unittest.TestCase):
 
 class Names(unittest.TestCase):
     def test_the_real_qname_passes_every_name_rule(self):
-        phases = ['q18a_parity_n3u.draft.sh', 'q18a_parity_n3u_declare.sh']
+        phases = ['q18a_parity_n3s28.draft.sh', 'q18a_parity_n3s28_declare.sh']
         self.assertEqual(names.check_names(QNAME, phases, RUNS, HERE / 'qlib.sh'), [])
         self.assertEqual(re.findall(r"^CANDIDATE = '([^']+)'$", (ROOT / 'tools/build_compose5.py').read_text(), re.M), [QNAME])
         for text in queue.derive().values():
@@ -388,7 +390,7 @@ class ArmLoop(unittest.TestCase):
         grade = json.loads((self.q / 'compose5-grade.json').read_text())
         self.assertEqual((grade['schema'], grade['verdict'], grade['missing']), ('compose5-grade/1', 'PASS', []))
         self.assertEqual(sorted(grade['arms']), sorted(CORE))
-        self.assertTrue((self.q / 'compose5-report.md').read_text().startswith('# q18a-parity-n3u'))
+        self.assertTrue((self.q / 'compose5-report.md').read_text().startswith('# q18a-parity-n3s28'))
         self.assertEqual(json.loads((self.q / 'compose5-read.json').read_text())['verdict'], 'PASS')
 
     def test_a_smoke_that_does_not_engage_stops_the_table(self):
@@ -418,7 +420,8 @@ class Generations(unittest.TestCase):
             self.assertNotEqual(self.call('nk.g2-live-0', record).returncode, 0, 'parity-n3u: nk is not an arm (sp is back)')
 
 
-ARGPARSE_VALUES = dict(tiq.ARGPARSE_VALUES, QNAME=QNAME, RUN_ID=QNAME + '-fixture', _label='n3.g2-live-0', _sel='n3.g2', _c1='n3', _group='g2', _arm='core:n3.g2-live-0', _pair='0', _cohort='live')
+# parity-n3s: the runner hands the queue the table's decode SM count (compose5_spec's runner swap), not the parent fixture's 44.
+ARGPARSE_VALUES = dict(tiq.ARGPARSE_VALUES, S5_REQUESTED_DECODE_SMS=str(T.DECODE_SMS), QNAME=QNAME, RUN_ID=QNAME + '-fixture', _label='n3.g2-live-0', _sel='n3.g2', _c1='n3', _group='g2', _arm='core:n3.g2-live-0', _pair='0', _cohort='live')
 
 
 def bash_words(args, draft, values=None):
@@ -427,9 +430,80 @@ def bash_words(args, draft, values=None):
     lines = ['set -u', 'fail_early() { :; }', 'fail() { :; }', 'H=%s' % shlex.quote(str(HERE))]
     lines += ['%s=%s' % (k, shlex.quote(v)) for k, v in values.items()]
     arrays = '--arm "$Q/arm-cmp.g2-live-0.json" --ingress "cmp.g2-live-0=$Q/ingress-cmp.g2-live-0.json" --watch "cmp.g2-live-0=$Q/engine-watch-arm-cmp.g2-live-0.json"'
-    lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays, 'source "$H/runs/q18a_parity_n3u_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
+    lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays, 'source "$H/runs/q18a_parity_n3s28_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
     return done.returncode, done.stdout.decode().split('\0')[:-1], done.stderr.decode()[-400:]
+
+
+class DecodeSplit(unittest.TestCase):
+    """parity-n3s: the decode SM count is the table's (compose5_arms.DECODE_SMS) at every site compose-4 declared 44, legal by the
+    decode-phase rule; the startup grade binds it exactly; the runner hands it to the queue."""
+
+    def test_the_count_is_legal_and_not_n3us(self):
+        self.assertEqual(T.legal_decode_sms(T.DECODE_SMS), str(T.DECODE_SMS))
+        self.assertNotEqual(T.DECODE_SMS, T.N3U_DECODE_SMS)
+        for bad in ('23', '27', '61', '028', '', 'x', '30.0', '-28'):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                T.legal_decode_sms(bad)
+        self.assertEqual([T.legal_decode_sms(v) for v in (24, 28, 36, 44, 60)], ['24', '28', '36', '44', '60'])
+
+    def test_every_site_carries_the_count_and_none_carries_44(self):
+        d = queue.derive()
+        draft, settings, declare = d[DRAFT], d[SETTINGS], d[DECLARE]
+        n = T.DECODE_SMS
+        self.assertEqual(settings.count('S5_REQUESTED_DECODE_SMS=${S5_REQUESTED_DECODE_SMS:-%d}' % n), 1)
+        self.assertEqual(settings.count("[[ $S5_REQUESTED_DECODE_SMS == %d ]] || {\n  echo 'decode split remains declared %d' >&2; return 2; }" % (n, n)), 1)
+        self.assertEqual(settings.count(' FLASH_S5_DECODE_SMS=%d ' % n), 1)
+        self.assertEqual(draft.count('[[ $S5_REQUESTED_DECODE_SMS == %d ]] || fail_early decode-sms-must-be-%d' % (n, n)), 1)
+        self.assertEqual(declare.count("assert env.get('FLASH_S5_DECODE_SMS')=='%d', 'decode split differs'" % n), 1)
+        self.assertEqual(draft.count('python3 "$H/e3_split_startup_grade.py" --url'), 1)
+        self.assertNotIn('python3 "$H/e3_native_startup_grade.py"', draft)
+        self.assertIn('e3_native_startup_grade.py e3_split_startup_grade.py ', draft)
+        self.assertIn('e3_native_startup_grade.py e3_split_startup_grade.py ', declare)
+        for text in (draft, settings, declare):
+            self.assertNotRegex(text, r'DECODE_SMS(=|==| == |\)==\'|:-)\'?44\b')
+
+    def test_the_settings_refuse_n3us_count_and_take_the_tables(self):
+        def source(value):
+            values = dict(ARGPARSE_VALUES, S5_REQUESTED_DECODE_SMS=value)
+            lines = ['set -u', 'H=%s' % shlex.quote(str(HERE))] + ['%s=%s' % (k, shlex.quote(v)) for k, v in values.items()]
+            lines += ['source "$H/runs/%s" || exit 97' % SETTINGS.split('/')[-1], 'echo "$S5_REQUESTED_DECODE_SMS"']
+            return subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, text=True, timeout=60)
+        done = source(str(T.DECODE_SMS))
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, str(T.DECODE_SMS)), done.stderr[-300:])
+        for other in ('44', '36' if T.DECODE_SMS != 36 else '28', '29'):
+            with self.subTest(value=other):
+                done = source(other)
+                self.assertEqual(done.returncode, 97)
+                self.assertIn('decode split remains declared %d' % T.DECODE_SMS, done.stderr)
+
+    def test_the_startup_grade_binds_the_count_exactly(self):
+        import e3_split_startup_grade as split
+        self.assertEqual(split.REQUESTED, T.DECODE_SMS)
+        native = (HERE / 'e3_native_startup_grade.py').read_text()
+        for old, new in split.SWAPS:
+            self.assertEqual(native.count(old), 1, old)
+            self.assertIn('44', old)
+            self.assertNotIn('44', new)
+        ns = split.namespace()
+        self.assertEqual(ns['REQUESTED'], T.DECODE_SMS)
+        self.assertTrue(callable(ns['grade']) and callable(ns['main']))
+        self.assertTrue(split.launch_matches({}))
+        self.assertTrue(split.launch_matches({'S5_REQUESTED_DECODE_SMS': str(T.DECODE_SMS)}))
+        self.assertFalse(split.launch_matches({'S5_REQUESTED_DECODE_SMS': '44'}))
+        env = dict(os.environ, S5_REQUESTED_DECODE_SMS='44')
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / 'startup-grade.json'
+            done = subprocess.run([sys.executable, '-B', str(HERE / 'e3_split_startup_grade.py'), '--url', 'http://127.0.0.1:9', '--run-id', 'x',
+                                   '--package', tmp, '--out', str(out)], capture_output=True, text=True, timeout=120, env=env, cwd=tmp)
+            self.assertEqual(done.returncode, 2)
+            self.assertIn('startup grade refused', done.stderr)
+            self.assertFalse(out.exists(), 'refused before grading: no record')
+
+    def test_the_runner_hands_the_queue_the_count(self):
+        spec = json.loads((ROOT / 'tools/native43_spec.compose-5.json').read_text())
+        swaps = [tuple(row) for row in spec['runner_swaps']]
+        self.assertIn(("S5_REQUESTED_DECODE_SMS='44'", "S5_REQUESTED_DECODE_SMS='%d'" % T.DECODE_SMS), swaps)
 
 
 class QueueArgparse(unittest.TestCase):
