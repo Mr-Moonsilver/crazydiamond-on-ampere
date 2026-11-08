@@ -68,6 +68,9 @@ class SyntheticTests(unittest.TestCase):
             path = ref / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('# ref ' + name + '\n')
+        indexer = ref / g.INDEXER_PATH
+        indexer.parent.mkdir(parents=True, exist_ok=True)
+        indexer.write_text((ROOT / 'reference/vllm-src' / g.INDEXER_PATH).read_text())
         core = manifest(base / 'core')
         whole = manifest(base)
         return root, base, ref, whole, core
@@ -542,6 +545,7 @@ class FullPinnedTests(unittest.TestCase):
         expected_pins.update(worker_hooks.CAPTURE_REFERENCE_PINS)
         expected_pins.update(model_hooks.PINS)
         expected_pins.update(g.probe_control_hooks.PINS)
+        expected_pins[g.INDEXER_PATH] = g.INDEXER_SHA256
         import capture_streams
         expected_pins.update(capture_streams.PINS)
         self.assertEqual(record['reference_source_pins'], expected_pins)

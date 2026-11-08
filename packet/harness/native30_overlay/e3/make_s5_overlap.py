@@ -85,6 +85,8 @@ NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', '
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'
 CUDAGRAPH_PATH = 'v1/worker/gpu/cudagraph_utils.py'
 MODEL_DEST = '/usr/local/lib/python3.12/dist-packages/vllm/models/qwen4_exp/nvidia/model.py'
+INDEXER_PATH = 'models/qwen4_exp/nvidia/ops/qsa_indexer.py'
+INDEXER_SHA256 = '2c34883a6396bac0238f6308196854b653eadab8bbebbe7dd2d558e30d065cbb'
 BUILD_GREEN_HELPER = '''#!/bin/bash
 # Owner-only CPU compiler container; new output, no GPU or engine access.
 # Same sm_86/shared-cudart recipe qualified by q17a. Container is retained.
@@ -128,6 +130,7 @@ REFERENCE_INPUTS.update(worker_hooks.PINS)
 REFERENCE_INPUTS.update(worker_hooks.CAPTURE_REFERENCE_PINS)
 REFERENCE_INPUTS.update(model_hooks.PINS)
 REFERENCE_INPUTS.update(probe_control_hooks.PINS)
+REFERENCE_INPUTS[INDEXER_PATH] = INDEXER_SHA256
 LAUNCHER_NAME = 'run-flash-e2-test.sh'
 S5_LAUNCHER_NAME = 'run-flash-s5-test.sh'
 
@@ -225,6 +228,16 @@ def revert_runner(source, expected):
     return text
 
 
+def compose_indexer(source):
+    """Retire each score slice after its last consumer, before the next allocation."""
+    if _sha_text(source) != INDEXER_SHA256:
+        raise ValueError('unreviewed QSA indexer source')
+    return _replace(source, '            topk_workspace,\n        )\n\n\n__all__ = [',
+                    '            topk_workspace,\n        )\n'
+                    '        # Top-k is the last reader; same-stream reuse is ordered after it.\n'
+                    '        del logits\n\n\n__all__ = [')
+
+
 def _s5_launcher(source):
     """Extend the reviewed E2 test launcher with an off-by-default S5 branch."""
     # Keep the E2 branch and all its checks byte-identical; only add a guarded
@@ -240,7 +253,7 @@ if [[ -d $OVERLAY/e3 ]]; then
   # Bound Docker's ephemeral json-file log; the queue follows the full stream
   # into its own retained host artifact before engine startup.
   s5_log=(--log-opt max-size=512m --log-opt max-file=4 --ulimit core=0)
-  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES if name not in LAUNCHER_LIST_EXEMPT) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/sampler.py e3_sources/async_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py; do
+  for f in e3/__init__.py e3/decode-probe-evidence.json ''' + ''.join('e3/' + name + '.py ' for name in E3_MODULES if name not in LAUNCHER_LIST_EXEMPT) + ''.join('e3/' + name + ' ' for name in NATIVE_FILES) + '''e3/native/build_green_helper.sh e3_sources/executor.py e3_sources/core.py e3_sources/worker.py e3_sources/cudagraph_utils.py e3_sources/sampler.py e3_sources/async_utils.py e3_sources/model.py e3_sources/api_routers.py qsa.py ops_qsa.py ops_qsa_indexer.py; do
     grep -q "  $f$" "$OVERLAY/SHA256SUMS" || { echo "S5 mount not checksummed" >&2; exit 2; }
   done
   V=/usr/local/lib/python3.12/dist-packages/vllm/v1
@@ -252,7 +265,8 @@ if [[ -d $OVERLAY/e3 ]]; then
       -v "$OVERLAY/e3_sources/sampler.py:$V/worker/gpu/sample/sampler.py:ro"
       -v "$OVERLAY/e3_sources/async_utils.py:$V/worker/gpu/async_utils.py:ro"
       -v "$OVERLAY/e3_sources/api_routers.py:/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/routers.py:ro"
-      -v "$OVERLAY/e3_sources/model.py:''' + MODEL_DEST + ''':ro")
+      -v "$OVERLAY/e3_sources/model.py:''' + MODEL_DEST + ''':ro"
+      -v "$OVERLAY/ops_qsa_indexer.py:/usr/local/lib/python3.12/dist-packages/vllm/''' + INDEXER_PATH + ''':ro")
 fi
 '''
     text = _replace(source, '# VISION=1: image input', addition + '# VISION=1: image input')
@@ -497,6 +511,7 @@ def build(base, out, reference, base_manifest_sha256, graph=None,
     for name in NATIVE_FILES:
         files['e3/' + name] = (HERE / name).read_text()
     files['e3/native/build_green_helper.sh'] = BUILD_GREEN_HELPER
+    files['ops_qsa_indexer.py'] = compose_indexer((reference / INDEXER_PATH).read_text())
     files[S5_LAUNCHER_NAME] = _s5_launcher(launcher_source)
     graph_record = {'module': 'graph_hooks.py',
                     'sha256': sha(HERE / 'graph_hooks.py'),

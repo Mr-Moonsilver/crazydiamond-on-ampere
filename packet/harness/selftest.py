@@ -711,6 +711,7 @@ for suite, label in [('test_s5_arena_direct.py', 'S5 arena direct: pinned arithm
                      ('test_e3_r4_worker_bridge.py', 'E3 typed worker bridge: open/segment/bind/receipt/release/cancel over the real dispatcher, terminal handback and stock broadcast fidelity (CPU only, fakes)'),
                      ('test_e3_lane_state.py', 'E3 execution state: transaction/lane identities, completion proofs, lane lifecycle and pinned runner seams (CPU only)'),
                      ('test_e3_async_handoffs.py', 'E3 async handoffs: parked transaction, owned replies, completion/publication split, lifetime leases, stop paths and pinned C seams (CPU only)'),
+                     ('test_n3_indexer_lifetime.py', 'N3 indexer slice lifetime: pinned actual host functions, CPU score/top-k ports, single-live-slice and bit-equal outputs across 1024/1352 rows and 97k/133k/201k histories (CUDA proof deferred; n3_indexer_lifetime fixture leaves)'),
                      ('test_e3_package.py', 'E3 package: A+B+C composition, default-off mounts, manifest coverage, source drift and import identity (CPU only)'),
                      ('test_e3_native_storage_replay.py', 'E3 retained decode storage: native graph replay events and exact-command all-rank transition retries (CPU)'),
                      ('test_e3_native_overlap.py', 'E3 native-control completion: named engine utility dispatch, typed all-rank acks, worker census/drain, journaled overlap evidence and qualification delegation (CPU only, fakes)'),
