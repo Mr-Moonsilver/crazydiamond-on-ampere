@@ -969,6 +969,7 @@ class NativeProgress:
         self.last_stock_kind = None
         self.trace = ProgressTrace('engine')
         self.recording = False
+        self.gap_lines = self.gap_dropped = self.gap_errors = 0
         self.identity = None
         self.native = {}
         # The row whose reply is being applied: the apply that ends the chunk
@@ -988,8 +989,52 @@ class NativeProgress:
                     recording=self.recording,
                     wait_send_limit=self.WAIT_SEND_LIMIT,
                     direct_kinds=sorted(self.DIRECT_KINDS),
+                    gap_lines=self.gap_lines, gap_dropped=self.gap_dropped, gap_errors=self.gap_errors,
                     trace_lines=self.trace.lines_out, trace_dropped=self.trace.dropped_total,
                     **self.counters)
+
+    GAP_LIMIT = 32768
+
+    def gap(self, event, fields):
+        """Bounded owner-clock receipts outside chunk recording too; never drive work."""
+        try:
+            self.gap_lines += 1
+            if self.gap_lines > self.GAP_LIMIT:
+                self.gap_dropped += 1
+                if self.gap_dropped != 1:
+                    return
+                event, fields = 'coverage-incomplete', {}
+            d = self.driver
+            row = dict(schema='s5-native-gap/1', event=event, gap_seq=self.gap_lines,
+                       engine_epoch=d.engine_epoch, route_generation=d.route_generation,
+                       clock_basis=d.clock_basis, observed_ns=int(self.clock_ns()),
+                       recording=self.recording, coverage_complete=not (self.gap_dropped or self.gap_errors))
+            tx = getattr(d, 'tx', None)
+            uid = fields.get('request_uid', fields.get('request'))
+            if uid is None:
+                ref = getattr(getattr(d, 'auto_arm', None), 'request_ref', None)
+                request = ref() if callable(ref) else None
+                uid = getattr(request, 'request_id', None)
+            if uid is None and tx is not None:
+                uid = tx.request_uid
+            if type(uid) is str:
+                row['request_key'] = hashlib.sha256(uid.encode()).hexdigest()[:16]
+            if tx is not None and uid == tx.request_uid:
+                row.update(txn=tx.txn_seq, request_generation=tx.request_generation,
+                           chunk_start=tx.chunk_start, chunk_end=tx.chunk_end)
+            for key in ('transaction', 'request_generation', 'chunk_start', 'chunk_end',
+                        'selection_seq', 'sequence', 'prompt_tokens', 'start', 'native_end',
+                        'action', 'phase', 'pause', 'reason', 'terminal', 'retired'):
+                value = fields.get(key)
+                if type(value) in (int, bool):
+                    row[key] = value
+                elif type(value) is str:
+                    row[key] = value[:80]
+            if not emit_receipt_lines(['flash-s5 native-gap ' + json.dumps(row, sort_keys=True,
+                                                separators=(',', ':'))], _progress_logger()):
+                self.gap_errors += 1
+        except Exception:
+            self.gap_errors += 1
 
     def burst(self):
         return self.recording and self.mode == 'burst'
@@ -1769,6 +1814,8 @@ class NativeSegmentDriver:
                     return sender(envelope)
                 return sender(NativeProgress.with_meta(envelope, progress.meta(_sequence, direct)))
         extra = {'direct': True} if direct else {}
+        if kind == 'open':
+            self._gap_event('open_submit_begin')
         sequence = transport.submit(kind, send,
                                     ranks=tuple(ranks),
                                     timeout_s=(self.reply_timeout_s if timeout_s is None
@@ -1802,6 +1849,8 @@ class NativeSegmentDriver:
                 bucket_commands=int(self._command.profile is not None and not tail_command),
                 tail_commands=int(tail_command))
         self._inflight[sequence] = kind
+        if kind == 'open':
+            self._gap_event('open_sent', sequence=sequence)
         return sequence
 
     def _drain(self):
@@ -5052,12 +5101,14 @@ class NativeSegmentDriver:
         remaining = self._control_deadline - self.clock()
         if remaining <= 0:
             raise DriverError('native-control-deadline-expired')
+        self._gap_event('control_submit_begin', action=command.get('action'))
         sequence = self._submit(
             'native_overlap',
             ('flash_s5_native_overlap', (command,), {}, None),
             self.ranks, timeout_s=remaining)
         control['stage'] = 'reply'
         self._control_seq = sequence
+        self._gap_event('control_sent', sequence=sequence, action=command.get('action'))
 
     def _advance_inner(self, control, inner):
         if inner['stage'] == 'submit':
@@ -5144,6 +5195,7 @@ class NativeSegmentDriver:
         if self._control_reply is not None:
             raise DriverError('native control already holds an unclaimed reply')
         self._control_reply = values
+        self._gap_event('control_reply', sequence=sequence, action=self._control.get('action'))
 
     def _control_notice(self, kind):
         control = self._control
@@ -5306,7 +5358,21 @@ class NativeSegmentDriver:
                 entry[key] = _bounded_value(value)
         self._journal.append(entry)
         self.measurement_census.ingest(entry)
+        if (entry_kind in ('chunk_open', 'chunk_commit', 'source_hold', 'request_row_closed',
+                           'admission_armed', 'admission_disarmed')
+                or entry_kind.startswith(('auto_', 'append_yield_'))):
+            self._gap_event(entry_kind, **fields)
         return entry
+
+    def _gap_event(self, event, **fields):
+        """Diagnostic only: no installed recorder or a broken sink never changes control."""
+        try:
+            progress = getattr(self, 'progress', None)
+            emit = getattr(progress, 'gap', None)
+            if callable(emit):
+                emit(event, fields)
+        except Exception:
+            pass
 
     # -- overlap evidence from the journal -------------------------------
     def overlap_evidence(self, start_ns, end_ns):

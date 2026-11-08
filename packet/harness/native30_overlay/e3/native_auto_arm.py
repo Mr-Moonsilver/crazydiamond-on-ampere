@@ -359,7 +359,7 @@ class AutoArmPolicy:
         # No head to arm on split (or its plan refused): today's FULL return, after the in-flight handback step lands.
         self._o3_count('full', 'no-next-head')
         self.old_pause = self.scheduler.pause_state
-        self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+        self._pause(type(self.old_pause).PAUSED_ALL)
         self.deadline = d.clock() + d._control_timeout_s
         self._o3_return_reason = 'o3-no-next-head'
         self.phase = 'rollback_drain'
@@ -402,7 +402,7 @@ class AutoArmPolicy:
         self.cohort = self._cohort() or ()
         self.o3_joined = append.request_id if live else None
         self.old_pause = self.scheduler.pause_state
-        self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+        self._pause(type(self.old_pause).PAUSED_ALL)
         self.deadline = d.clock() + d._control_timeout_s
         self.phase = 'o3_drain'
         self._note('reentry', start=plan['start'], native_end=plan['end'], chunks=len(plan['plan']), o3=1)
@@ -493,13 +493,13 @@ class AutoArmPolicy:
             d.append_yield_set_phase('resume')
             self.o3_counts['yield_kept'] += 1
             self._note('armed', route_generation=d.route_generation, o3=1, yield_kept=1)
-            self.scheduler.set_pause_state(self.old_pause)
+            self._pause(self.old_pause)
             return
         self.decline_totals['armed'] += 1
         self.o3_counts['armed'] += 1
         self._o3_gap_close()
         self._note('armed', route_generation=d.route_generation, o3=1)
-        self.scheduler.set_pause_state(self.old_pause)
+        self._pause(self.old_pause)
 
     # -- coverage-residue ---------------------------------------------------
     def _residue(self):
@@ -697,6 +697,18 @@ class AutoArmPolicy:
             return self.driver.submit_control(dict(action=action, engine_epoch=self.driver.engine_epoch))
         finally:
             self._internal = False
+
+    def _gap(self, event, **fields):
+        try:
+            emit = getattr(self.driver, '_gap_event', None)
+            if callable(emit):
+                emit(event, phase=self.phase, selection_seq=self.selection_seq, **fields)
+        except Exception:
+            pass
+
+    def _pause(self, state):
+        self.scheduler.set_pause_state(state)
+        self._gap('pause', pause=getattr(state, 'name', str(state)))
 
     def _note(self, event, **fields):
         self.driver._record('auto_' + event, selection_seq=self.selection_seq,
@@ -957,7 +969,7 @@ class AutoArmPolicy:
         self.deadline = d.clock() + d._control_timeout_s
         self.phase = 'drain'
         self._note('reentry', start=plan['start'], native_end=plan['end'], chunks=len(plan['plan']))
-        self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+        self._pause(type(self.old_pause).PAUSED_ALL)
         return True
 
     def _yield_native(self, request):
@@ -1036,7 +1048,7 @@ class AutoArmPolicy:
             return True
         self.drain_wait_seq = self.controller._schedule_seq
         self.driver.append_yield_set_drain_wait(True)
-        self.scheduler.set_pause_state(self.old_pause)
+        self._pause(self.old_pause)
         self.phase = 'drain_wait'
         return True
 
@@ -1052,7 +1064,7 @@ class AutoArmPolicy:
         return True
 
     def _native_refused(self):
-        self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+        self._pause(type(self.old_pause).PAUSED_ALL)
         if getattr(self.engine, 'batch_queue', None):
             self.deadline = self.driver.clock() + self.driver._control_timeout_s
             self.phase = 'rollback_drain'
@@ -1129,6 +1141,7 @@ class AutoArmPolicy:
                     self._unhold(request, 'unplannable', 'rejected')
                 self._decline('rejected')
                 return False
+        self._gap('select_begin', request_uid=request.request_id)
         plan = self._plan(request)
         if plan is None:
             if request.request_id in self.holds and self._decline_why not in TRANSIENT_PLAN_SITES:
@@ -1155,7 +1168,7 @@ class AutoArmPolicy:
         self._note('selected', start=plan['start'], native_end=plan['end'], chunks=len(plan['plan']), o3=int(o3))
         # The real stock keep-pause state. Core drains its existing batch queue
         # normally; its outputs update the scheduler before the worker barrier.
-        s.set_pause_state(type(self.old_pause).PAUSED_ALL)
+        self._pause(type(self.old_pause).PAUSED_ALL)
         return True
 
     def _restore(self, reason):
@@ -1182,7 +1195,7 @@ class AutoArmPolicy:
         self.completed += 1
         self.cooldown = True
         if not self.external_pause:
-            self.scheduler.set_pause_state(self.old_pause)
+            self._pause(self.old_pause)
         self.old_pause = None
 
     def _race_close(self, why):
@@ -1275,7 +1288,7 @@ class AutoArmPolicy:
             elif (request is None or (self.controller._schedule_seq > self.schedule_before
                     and self.controller.admitted == self.admitted_before)):
                 if not d.active:
-                    self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+                    self._pause(type(self.old_pause).PAUSED_ALL)
                     if getattr(self.engine, 'batch_queue', None):
                         self.deadline = d.clock() + d._control_timeout_s
                         self.phase = 'rollback_drain'
@@ -1324,7 +1337,7 @@ class AutoArmPolicy:
             if self.controller._schedule_seq <= self.drain_wait_seq and self.driver.append_yield_active():
                 return False
             d.append_yield_set_drain_wait(False)
-            self.scheduler.set_pause_state(type(self.old_pause).PAUSED_ALL)
+            self._pause(type(self.old_pause).PAUSED_ALL)
             self.deadline = d.clock() + d._control_timeout_s
             self.phase = 'drain'
             return True
@@ -1333,11 +1346,13 @@ class AutoArmPolicy:
         if self.phase == 'o3_drain':
             if getattr(self.engine, 'batch_queue', None):
                 return False                   # the handback step (and any decode step) lands first
+            self._gap('drain_empty')
             if not self._o3_census_begin():
                 return False
         if self.phase in ('drain', 'rollback_drain'):
             if getattr(self.engine, 'batch_queue', None):
                 return False
+            self._gap('drain_empty')
             if self.phase == 'rollback_drain':
                 why, self._o3_return_reason = self._o3_return_reason, None
                 self._rollback(why or 'request-changed-or-admission-refused')
@@ -1422,7 +1437,7 @@ class AutoArmPolicy:
                 self.decline_totals['armed'] += 1
                 self._o3_gap_close()
             self._note('armed', route_generation=d.route_generation)
-            self.scheduler.set_pause_state(self.old_pause)
+            self._pause(self.old_pause)
         elif self.phase == 'o3_census':
             self.pending = None
             if not self._o3_proof(result):

@@ -347,6 +347,9 @@ _CORE_FORWARD = (
 
 
 _CORE_FORWARD += (
+    ('        self.scheduler.add_request(request)\n',
+     '        self.scheduler.add_request(request)\n'
+     '        _flash_s5_hooks.engine_request_admitted(self, request)\n'),
     ('        elif request_type == EngineCoreRequestType.EXECUTOR_FAILED:\n            raise RuntimeError("Executor failed.")\n',
      '        elif request_type == EngineCoreRequestType.EXECUTOR_FAILED:\n            _flash_s5_hooks.raise_worker_failure(self)\n            raise RuntimeError("Executor failed.")\n'),
     ('    def _make_ready_response(self) -> EngineCoreReadyResponse:\n',
@@ -1568,7 +1571,7 @@ __all__ = [
     'before_shutdown', 'before_step_with_batch_queue', 'collective_rpc',
     'config_reply_timeout', 'control_pending', 'engine_idle_tick', 'executor_shutdown',
     'native_progress_wait',
-    'generate_core', 'generate_executor',
+    'generate_core', 'generate_executor', 'engine_request_admitted',
     'generate_worker', 'install', 'log_worker_failure', 'native_control', 'native_work_pending', 'park_prefill',
     'retain_mq', 'revert_core',
     'revert_executor', 'revert_worker', 'worker_rpc',
@@ -1776,6 +1779,18 @@ def raise_worker_failure(engine):
     failure = getattr(engine.model_executor, '_flash_s5_fatal_failure', None)
     if failure is not None:
         raise failure
+
+
+def engine_request_admitted(engine, request):
+    """Timestamp scheduler acceptance, not the client's pre-tokenization send."""
+    try:
+        driver = getattr(engine, '_flash_s5_driver', None)
+        emit = getattr(driver, '_gap_event', None)
+        if callable(emit):
+            emit('request_admitted', request_uid=request.request_id,
+                 prompt_tokens=request.num_prompt_tokens)
+    except Exception:
+        pass
 
 
 def require_startup_owner(engine):
