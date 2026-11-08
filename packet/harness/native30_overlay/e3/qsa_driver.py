@@ -343,6 +343,9 @@ class QsaLayerDriver:
         grant, self._fused_grant = self._fused_grant, None
         if grant.query.layer != layer_idx:
             raise QsaDriverError('fused grant belongs to another layer')
+        phases = getattr(self.operation, 'phase_trace', None)
+        if phases is not None and len(phases.fused_layers) < phases.MAX_LAYERS:
+            phases.fused_layers.add(lane.model.layers[layer_idx].self_attn.layer_name)
         self._pre(lane, layer_idx)
         phase = self.phases[layer_idx]
         operation = self.operation
@@ -399,8 +402,10 @@ class QsaLayerDriver:
         operation = self.operation
         operation.begin_layer(attn.layer_name, attn._qsa_host_kv)
         from lane_chunk import score_under_cap
-        selected = score_under_cap(lambda: attn.indexer(state['projected_qk'], inputs['positions'],
-                                                        attn.topk_indices_buffer[:num_tokens]))
+        from native_measurement import indexer_phase_scope
+        with indexer_phase_scope(getattr(operation, 'phase_trace', None)):
+            selected = score_under_cap(lambda: attn.indexer(state['projected_qk'], inputs['positions'],
+                                                            attn.topk_indices_buffer[:num_tokens]))
         if tuple(selected.shape) != (num_tokens, attn.indexer.packed_output_width):
             raise QsaDriverError('QSA indexer returned an invalid selection shape')
         if getattr(operation, 'memory_receipts', False):

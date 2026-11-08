@@ -244,7 +244,7 @@ RECEIPT_IDENTITY_BYTES = 96
 RECEIPT_PATH_LINE = 'flash-s5 receipts '
 # ``flash-s5 stop `` (one JSON object, no parts) and ``flash-s5 memory-peak `` are the
 # receipt kinds claude/alpha-next added after 5990af80; their emit sites route here when composed.
-RECEIPT_JSON_PREFIXES = (PROGRESS_LINE, 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ', 'flash-s5 native-gap ')
+RECEIPT_JSON_PREFIXES = (PROGRESS_LINE, 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ', 'flash-s5 native-gap ', 'flash-s5 fused-phase ')
 # parity-na2: 'flash-s5 ahead-split ' (parity-ahead's receipt; q18a-parity-o3 n1 lost every one here: refused as a fault, nothing written).
 RECEIPT_KV_PREFIXES = (RECEIPT_PATH_LINE, 'flash-s5 native-alloc ', 'flash-s5 memory ',
                        'flash-s5 stage-local ', 'flash-s5 memory-peak ', 'flash-s5 cow ', 'flash-s5 ahead-split ')
@@ -3062,3 +3062,122 @@ def select_window_evidence(raw, begin, start_ns, end_ns):
         reasons.append(str(exc) if type(exc) is ValueError else 'measurement-envelope-malformed')
     binding['valid'] = binding['complete'] and binding['route_proved'] and not reasons
     return view, binding
+
+
+# A native-only dynamic scope; ordinary indexer calls see no recorder.
+from contextvars import ContextVar
+INDEXER_PHASE_CONTEXT = ContextVar('flash_s5_indexer_phase', default=None)
+
+
+@contextmanager
+def indexer_phase_scope(trace):
+    token = INDEXER_PHASE_CONTEXT.set(trace)
+    try:
+        yield
+    finally:
+        INDEXER_PHASE_CONTEXT.reset(token)
+
+
+class FusedPhaseSpans:
+    """Passive operation-owned events: no waits or elapsed reads until release."""
+    MAX_MARKERS = 512
+    MAX_LAYERS = 24
+    PHASES = ('score', 'topk', 'copy_wait', 'copy', 'attention')
+    PREFIX = 'flash-s5 fused-phase '
+
+    def __init__(self, operation):
+        self.operation = operation
+        self.rows, self.pending, self.pairs = {}, {}, []
+        self.markers = self.dropped = self.errors = self.submit_ns = 0
+        self.group = None
+        self.stage = None
+        self.route_generation = None
+        self.fused_layers = set()
+
+    def begin(self, phase, stream):
+        started = time.monotonic_ns()
+        try:
+            if self.markers + 2 > self.MAX_MARKERS:
+                self.dropped += 1
+                return None
+            run = self.operation._current_run()
+            name = run.layer_name
+            if name not in self.rows:
+                if len(self.rows) >= self.MAX_LAYERS:
+                    self.dropped += 1
+                    return None
+                self.rows[name] = dict(layer=name, group=self.group, history=run.valid_tokens,
+                                       fused=name in self.fused_layers,
+                                       phases={})
+            if phase not in self.PHASES:
+                raise ValueError('unknown fused diagnostic phase')
+            self.markers += 2  # Reserve both endpoints even if an event fails.
+            token = (name, phase, stream, self.operation.device.timing_event(stream))
+            self.pending[id(token)] = token
+            return token
+        except Exception:
+            self.errors += 1
+            return None
+        finally:
+            self.submit_ns += time.monotonic_ns() - started
+
+    def end(self, token):
+        if token is None:
+            return
+        started = time.monotonic_ns()
+        try:
+            name, phase, stream, first = self.pending.pop(id(token))
+            last = self.operation.device.timing_event(stream)
+            self.pairs.append((name, phase, first, last))
+        except Exception:
+            self.errors += 1
+        finally:
+            self.submit_ns += time.monotonic_ns() - started
+
+    def emit(self):
+        """Called only after the existing operation drain; an incomplete read never waits."""
+        op = self.operation
+        started = time.monotonic_ns()
+        incomplete = self.dropped + self.errors + len(self.pending)
+        for name, phase, first, last in self.pairs:
+            try:
+                if not op.device.query(last):
+                    incomplete += 1
+                    continue
+                ms = float(first.elapsed_time(last))
+                row = self.rows[name]['phases'].setdefault(phase, dict(count=0, total_ms=0.0, max_ms=0.0,
+                    stream='copy' if phase in ('copy_wait','copy') else 'compute'))
+                row['count'] += 1
+                row['total_ms'] += ms
+                row['max_ms'] = max(row['max_ms'], ms)
+            except Exception:
+                incomplete += 1
+        incomplete += int(not self.rows)
+        for row in self.rows.values():
+            counts = {key: value['count'] for key, value in row['phases'].items()}
+            incomplete += int(not row['fused'] or set(counts) != set(self.PHASES) or
+                              counts.get('score') != counts.get('topk') or
+                              counts.get('copy') != counts.get('attention') or
+                              counts.get('copy') != counts.get('copy_wait'))
+        read_ns = time.monotonic_ns() - started
+        tx = op.transaction
+        identity = dict(schema='s5-fused-phase/1', rank=op.lane.worker_rank, stage=self.stage,
+            engine_epoch=tx.engine_epoch, route_generation=self.route_generation, request_generation=tx.request_generation,
+            transaction=tx.txn_seq, chunk_start=tx.chunk_start, chunk_end=tx.chunk_end,
+            storage_epoch=op.lane.storage_epoch,
+            sample_every=op.device.native_fused_phase_every, markers=self.markers,
+            dropped=self.dropped, errors=self.errors, pending=len(self.pending), incomplete=incomplete,
+            cancelled=op._cancelled is not None, complete=incomplete == 0 and op._cancelled is None,
+            cpu_submit_ns=self.submit_ns, cpu_read_ns=read_ns,
+            basis='stream event spans include launch gaps; streams may overlap; no device value readback')
+        logger = __import__('logging').getLogger(__name__)
+        emit_started = time.monotonic_ns()
+        for row in self.rows.values():
+            if emit_receipt_lines([self.PREFIX + json.dumps(dict(identity, **row), separators=(',', ':'))], logger) is False:
+                raise OSError('fused phase receipt sink refused record')
+        summary = dict(identity, kind='summary', layers=len(self.rows),
+                       counters={key: op.stats.get(key, 0) for key in
+                                 ('buckets','pieces','bytes','waits','copy_events','consumer_events')},
+                       cpu_emit_ns_excludes_summary=time.monotonic_ns() - emit_started)
+        if emit_receipt_lines([self.PREFIX + json.dumps(summary, separators=(',', ':'))], logger) is False:
+            raise OSError('fused phase receipt sink refused summary')

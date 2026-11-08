@@ -377,6 +377,11 @@ class LaneDispatcher:
                 if spans is not None:
                     # Held-g: the command's start event, before its first launch.
                     mark = spans.start(self.native.split.prefill_stream, self.driver)
+                phases = getattr(self.operation, 'phase_trace', None)
+                if phases is not None:
+                    phases.group = (command.layer_start, command.layer_end)
+                    phases.stage = command.stage
+                    phases.route_generation = getattr(getattr(self.native, 'controller', None), 'route_generation', None)
                 handler = getattr(self, '_do_' + command.kind)
                 result = handler(command)
             self.last_ns = self.clock() - started

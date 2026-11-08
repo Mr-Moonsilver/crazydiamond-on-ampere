@@ -12,6 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'patches/s5_engine'))
 import make_s5_overlap as build
 import make_e2_arena as e2
+from native_measurement import INDEXER_PHASE_CONTEXT
 
 RECEIPTS=[]
 
@@ -25,15 +26,19 @@ def nodes(text):
 
 
 class Transform(unittest.TestCase):
-    def test_the_only_executable_change_is_delete_after_the_last_topk_consumer(self):
+    def test_the_only_nonprobe_change_is_delete_after_the_last_topk_consumer(self):
         old=source();new=build.compose_indexer(old)
         tree=ast.parse(new)
         fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='qsa_select_paged_prefill')
         loop=next(n for n in fn.body if isinstance(n,ast.For))
         self.assertIsInstance(loop.body[-1],ast.Delete)
         self.assertEqual(ast.unparse(loop.body[-1]),'del logits')
-        self.assertEqual(ast.unparse(loop.body[-2].value.func),'_topk')
         loop.body.pop()
+        # Strip only the observational context lookup/guards and its import.
+        tree.body = [n for n in tree.body if not (isinstance(n, ast.ImportFrom) and n.module == 'vllm.v1.flash_e3.native_measurement')]
+        fn.body = [n for n in fn.body if not (isinstance(n, ast.Assign) and isinstance(n.targets[0],ast.Name) and n.targets[0].id=='_phase')]
+        loop.body = [n for n in loop.body if not (isinstance(n,ast.If) and ast.unparse(n.test)=='_phase is not None')]
+        self.assertEqual(ast.unparse(loop.body[-1].value.func),'_topk')
         self.assertEqual(ast.dump(tree,include_attributes=False),ast.dump(ast.parse(old),include_attributes=False))
         self.assertEqual(new.count('del logits'),1)
         with self.assertRaisesRegex(ValueError,'unreviewed'):
@@ -90,6 +95,7 @@ def function(text,ports):
     module=ast.Module(body=[n for n in nodes(text) if isinstance(n,ast.FunctionDef) and n.name in keep],type_ignores=[])
     ns=dict(torch=ports,triton=NS(cdiv=lambda a,b:-(-a//b)),envs=NS(VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=64),
             _TOPK_WORKSPACE_BYTES=1024*1024,_qsa_mqa_paged_prefill_kernel=ports,
+            INDEXER_PHASE_CONTEXT=INDEXER_PHASE_CONTEXT,
             current_platform=NS(has_device_capability=lambda n:False,is_device_capability_family=lambda n:False))
     exec(compile(module,'actual-pinned-qsa-indexer-host-functions','exec'),ns)
     return ns['qsa_select_paged_prefill']

@@ -232,10 +232,25 @@ def compose_indexer(source):
     """Retire each score slice after its last consumer, before the next allocation."""
     if _sha_text(source) != INDEXER_SHA256:
         raise ValueError('unreviewed QSA indexer source')
-    return _replace(source, '            topk_workspace,\n        )\n\n\n__all__ = [',
+    text = _replace(source, '            topk_workspace,\n        )\n\n\n__all__ = [',
                     '            topk_workspace,\n        )\n'
                     '        # Top-k is the last reader; same-stream reuse is ordered after it.\n'
                     '        del logits\n\n\n__all__ = [')
+    text = _replace(text, 'import torch\n',
+                    'import torch\nfrom vllm.v1.flash_e3.native_measurement import INDEXER_PHASE_CONTEXT\n')
+    text = _replace(text, '    rows = q.shape[0]\n    # No row scores',
+                    '    rows = q.shape[0]\n    _phase = INDEXER_PHASE_CONTEXT.get()\n    # No row scores')
+    text = _replace(text, '        logits = _prefill_logits(\n',
+                    "        if _phase is not None:\n            _score = _phase.begin('score', _phase.operation.device.compute)\n"
+                    '        logits = _prefill_logits(\n')
+    text = _replace(text, '        _topk(\n            logits,\n',
+                    "        if _phase is not None:\n            _phase.end(_score)\n            _top = _phase.begin('topk', _phase.operation.device.compute)\n"
+                    '        _topk(\n            logits,\n')
+    text = _replace(text, '        # Top-k is the last reader;',
+                    '        if _phase is not None:\n            _phase.end(_top)\n'
+                    '        # Top-k is the last reader;')
+    return text
+
 
 
 def _s5_launcher(source):

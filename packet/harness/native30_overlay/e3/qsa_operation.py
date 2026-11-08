@@ -398,6 +398,7 @@ class NativeQsaDevice:
         import torch
         self.torch = torch
         self.native_qsa_policy, self.native_qsa_trace = native_qsa_settings(env)
+        self.native_fused_phase_every = fused_phase_every(env)
         declared = os.environ if env is None else env
         self.native_qsa_boundary = declared.get('FLASH_S5_NATIVE_QSA_STOP_AFTER', '0') == '101200'
         # M3: per-chunk allocation receipts, on the worker bridge's existing receipt gate.
@@ -593,6 +594,18 @@ def native_qsa_settings(env=None):
     return policy, trace == '1'
 
 
+def fused_phase_every(env=None):
+    env = os.environ if env is None else env
+    value = env.get('FLASH_S5_FUSED_PHASE_EVERY', '0')
+    try:
+        number = int(value)
+    except (ValueError, TypeError):
+        raise OperationError('invalid fused phase sample interval') from None
+    if str(number) != value or not 0 <= number <= 4096:
+        raise OperationError('invalid fused phase sample interval')
+    return number
+
+
 class NativeQsaTrace:
     """Bounded per-operation receipts; event elapsed times only after query.
 
@@ -718,6 +731,10 @@ class QsaPrefillOperation:
         if self.transport_policy not in ('current', 'dense'):
             raise OperationError('invalid latched native QSA policy')
         self.trace = NativeQsaTrace(self) if getattr(device, 'native_qsa_trace', False) else None
+        from native_measurement import FusedPhaseSpans
+        every = getattr(device, 'native_fused_phase_every', 0)
+        self.phase_trace = (FusedPhaseSpans(self) if every and
+                            (transaction.txn_seq - 1) % every == 0 else None)
         self.memory_receipts = getattr(device, 'native_memory_receipts', False) is True
         self.union_retire = getattr(device, 'native_union_retire', False) is True
         self.clock = clock
@@ -2004,6 +2021,8 @@ class QsaPrefillOperation:
         run.active_bucket = index
         run._pending_consumer = consumer
         try:
+            phases = self.phase_trace
+            waiting = phases.begin('copy_wait', self.device.copy) if phases is not None else None
             # Producer visibility and arena reuse are GPU dependencies, not host
             # waits.  The first bucket waits for the store and for the last
             # consumer of this shared arena; later buckets wait for the previous
@@ -2017,12 +2036,17 @@ class QsaPrefillOperation:
             else:
                 self.device.wait_event(self.device.copy, run.consumed[-1].event)
                 self.stats['waits'] += 1
+            if phases is not None:
+                phases.end(waiting)
+            copying = phases.begin('copy', self.device.copy) if phases is not None else None
             timing = self.trace.begin('copy', self.device.copy) if self.trace is not None else None
             for source_page, arena_page, pages in bucket.pieces:
                 self.device.copy_pages(run.source, run.arena, source_page,
                                        arena_page, pages)
             if self.trace is not None:
                 self.trace.end(timing)
+            if phases is not None:
+                phases.end(copying)
             copy.event = self.device.record(self.device.copy)
             self.stats['buckets'] += 1
             self.stats['pieces'] += len(bucket.pieces)
@@ -2030,6 +2054,7 @@ class QsaPrefillOperation:
             self.stats['copy_events'] += 1
             self.device.wait_event(self.device.compute, copy.event)
             self.stats['waits'] += 1
+            run._phase_attention = phases.begin('attention', self.device.compute) if phases is not None else None
             if self.trace is not None:
                 row = self.trace.row()
                 row['descriptors'] += copy.descriptors if sparse_active_for_trace(run) else len(copy.pieces)
@@ -2063,6 +2088,9 @@ class QsaPrefillOperation:
                 'cancelled operation cannot submit another attention bucket')
         if self.trace is not None:
             self.trace.end(self.trace.opened.pop('attention', None))
+        if self.phase_trace is not None:
+            self.phase_trace.end(getattr(run, '_phase_attention', None))
+            run._phase_attention = None
         consumer = run._pending_consumer
         sparse_active = (run.sparse is not None
                          and run.sparse.active_bucket is not None)
@@ -2441,6 +2469,13 @@ class QsaPrefillOperation:
                 self.stats['trace_emit_errors'] = self.stats.get('trace_emit_errors', 0) + 1
             finally:
                 self.trace = None
+        if self.phase_trace is not None:
+            try:
+                self.phase_trace.emit()
+            except Exception:
+                self.stats['phase_emit_errors'] = self.stats.get('phase_emit_errors', 0) + 1
+            finally:
+                self.phase_trace = None
         if self.memory_receipts:
             self._alloc_receipt()
         dropped = len(self._owners)
