@@ -4,7 +4,7 @@
   "arm": "TRUNK",
   "probe": "compose5_cpu_probe.py"
  },
- "candidate": "q18a-parity-n3s24",
+ "candidate": "q18a-parity-n3s24q2024rc6144",
  "checks": [
   [
    "tools/compose5_queue.py",
@@ -668,7 +668,7 @@
    "lineage_rows": []
   },
   "model_settings_changed": false,
-  "queue": "q18a-parity-n3s24: compose-4's queue with connections 32, the PLE switches, the 2048 chunk, prepare-ahead and the indexer logits cap 64 MiB for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
+  "queue": "q18a-parity-n3s24q2024rc6144: compose-4's queue with connections 32, the PLE switches, the 2048 chunk, prepare-ahead and the indexer logits cap 64 MiB for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
   "scope": "b13 and hf at 32 with the four lever tracks under the closed-loop replay, the yield priced by frozen pairs, against c1b's READY build, discovery mode; not a release assessment and not a numerics result"
  },
  "dry_run": false,
@@ -1326,7 +1326,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 616,
+ "expected_tests": 617,
  "label": "compose-5",
  "overlay_definitions": {
   "core/scheduler.py": [
@@ -1878,16 +1878,16 @@
  "precheck": {
   "fixture_rows": [],
   "header": [
-   "q18a-parity-n3s24 packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
+   "q18a-parity-n3s24q2024rc6144 packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
    "Engine: claude/compose-5-build, compose-4 with the decline counters, chunk_bound and the builder at 2048 rows from dp8d (FLASH_S5_CHUNK_TOKENS=2048 for the whole run), default off, selected per arm by typed control. No 5f, no 1g, no witness.",
    "Queue: compose-4's startup and cleanup with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen pairs on and off for the yield, the replay arm and its control without the yield; no fixed-schedule check."
   ],
   "seams": ""
  },
  "queue": [
-  "q18a_parity_n3s24.draft.sh",
-  "q18a_parity_n3s24_declare.sh",
-  "q18a_parity_n3s24_settings.sh"
+  "q18a_parity_n3s24q2024rc6144.draft.sh",
+  "q18a_parity_n3s24q2024rc6144_declare.sh",
+  "q18a_parity_n3s24q2024rc6144_settings.sh"
  ],
  "rehearsal": null,
  "review": "prepare",
@@ -1907,7 +1907,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "4b9de51ae9c446213e398f23f0d21da2cfd7aaf2",
+ "source_commit": "2eef49eaa17b20ad6812890acfd2eb51ec91873a",
  "source_paths": [
   "A\tharness/a1_trunk_arms.py",
   "A\tharness/a1_trunk_gate.py",
@@ -1999,6 +1999,9 @@
   "A\tharness/runs/q18a_parity_n3s24.draft.sh",
   "A\tharness/runs/q18a_parity_n3s24_declare.sh",
   "A\tharness/runs/q18a_parity_n3s24_settings.sh",
+  "A\tharness/runs/q18a_parity_n3s24q2024rc6144.draft.sh",
+  "A\tharness/runs/q18a_parity_n3s24q2024rc6144_declare.sh",
+  "A\tharness/runs/q18a_parity_n3s24q2024rc6144_settings.sh",
   "A\tharness/runs/q18a_parity_n3s28.draft.sh",
   "A\tharness/runs/q18a_parity_n3s28_declare.sh",
   "A\tharness/runs/q18a_parity_n3s28_settings.sh",
