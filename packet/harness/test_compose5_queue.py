@@ -27,12 +27,12 @@ tap, tq, tan = tiq.tap, tiq.tq, tiq.tan
 SLOT_RECEIPTS = []
 ARGPARSE_RECEIPTS = []
 RUNS = HERE / 'runs'
-DRAFT = 'harness/runs/q18a_parity_n3s24.draft.sh'
-SETTINGS = 'harness/runs/q18a_parity_n3s24_settings.sh'
-DECLARE = 'harness/runs/q18a_parity_n3s24_declare.sh'
+DRAFT = 'harness/runs/q18a_parity_n3s24q2024rc6144.draft.sh'
+SETTINGS = 'harness/runs/q18a_parity_n3s24q2024rc6144_settings.sh'
+DECLARE = 'harness/runs/q18a_parity_n3s24q2024rc6144_declare.sh'
 CORE = T.labels('core')
 DECODE = [d['label'] for d in T.DECODE_ARMS]
-QNAME = 'q18a-parity-n3s24'
+QNAME = 'q18a-parity-n3s24q2024rc6144'
 STUB_BOX = tiq.STUB_BOX.replace('import e3_inwait_box as real', 'import e3_compose5_box as real')
 assert STUB_BOX != tiq.STUB_BOX
 
@@ -84,7 +84,7 @@ class Derivation(unittest.TestCase):
 def settings_rows():
     """The real settings text under real bash: what engine_identity declare --settings gets."""
     lines = ['set -u', 'H=%s' % shlex.quote(str(HERE))] + ['%s=%s' % (k, shlex.quote(v)) for k, v in ARGPARSE_VALUES.items()]
-    lines += ['source "$H/runs/q18a_parity_n3s24_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
+    lines += ['source "$H/runs/q18a_parity_n3s24q2024rc6144_settings.sh" || exit 97', "printf '%s\\0' \"${S5_SETTINGS[@]}\""]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
     assert done.returncode == 0, done.stderr.decode()[-400:]
     return done.stdout.decode().split('\0')[:-1]
@@ -95,6 +95,10 @@ def declared_env():
     (extra,) = [row.split('=', 1)[1] for row in settings_rows() if row.startswith('EXTRA_ENV=')]
     env = engine_identity.clean_value('EXTRA_ENV', extra)
     env['Q18A_TARGET_LABEL'] = ARGPARSE_VALUES.get('Q18A_TARGET_LABEL', 's5-overlap-80-80')
+    # parity-n3s24q2024rc6144: the launcher's -e QSA_ROWCACHE_SLOTS from this settings row (setcfg over the box's 10240), and REQS from
+    # MAX_SEQS (the box's 10), as the launcher passes them: they are not in EXTRA_ENV.
+    (slots,) = [row.split('=', 1)[1] for row in settings_rows() if row.startswith('QSA_ROWCACHE_SLOTS=')]
+    env.update(QSA_ROWCACHE_SLOTS=slots, QSA_ROWCACHE_REQS='10')
     return env
 
 
@@ -108,7 +112,10 @@ def real_env():
     # parity-n3s: and the decode SM count this table moves (compose5_arms.DECODE_SMS), plain as the box declared 44 here and 36 on dp4.
     return dict(json.loads((HERE / 'fixtures/compose4_declared_20261105_0422.json').read_text())['identity']['env'], FLASH_S5_CHUNK_TOKENS='2048',
                 FLASH_S5_APPEND_YIELD_MAX_NEW=str(T.LAUNCH['max_new']), FLASH_S5_PREPARE_AHEAD='1', VLLM_SPARSE_INDEXER_MAX_LOGITS_MB='64', FLASH_S5_O3='1', FLASH_S5_AHEAD_NOSYNC='1',
-                FLASH_S5_DECODE_SMS=str(T.DECODE_SMS))
+                FLASH_S5_DECODE_SMS=str(T.DECODE_SMS),
+                # parity-n3s24q2024rc6144: and the row cache's two launcher values, plain as n3s28q1352's request declared 10240 and 10
+                # (q18a-parity-n3s28q1352-requests/startup.json identity.env), at this table's slots.
+                QSA_ROWCACHE_SLOTS=str(T.ROWCACHE_SLOTS), QSA_ROWCACHE_REQS=str(T.ROWCACHE_REQS))
 
 
 def declare_block(text):
@@ -244,6 +251,25 @@ class DeclaredIdentity(unittest.TestCase):
         self.assertEqual((env['FLASH_S5_PLE_WITNESS'], env['CUDA_DEVICE_MAX_CONNECTIONS']), ('1', '32'))
         self.assertEqual(dict(tok.split('=', 1) for tok in queue.SWITCHES.split())['FLASH_S5_PLE_PRIVATE'], '1', 'the value itself: the settings text')
 
+    def test_rowcache_slots_are_a_launcher_setting_not_extra_env_and_both_preflights_refuse_stock_or_missing(self):
+        """parity-n3s24q2024rc6144: QSA_ROWCACHE_SLOTS=6144 once, as its own S5_SETTINGS row (setcfg writes it over the box's 10240), never in
+        EXTRA_ENV; the draft's and the declaration's asserts pass on the identity with it and refuse 10240, a missing key and a changed REQS."""
+        rows = settings_rows()
+        self.assertEqual([r for r in rows if r.startswith('QSA_ROWCACHE')], ['QSA_ROWCACHE_SLOTS=6144'])
+        (extra,) = [row.split('=', 1)[1] for row in rows if row.startswith('EXTRA_ENV=')]
+        self.assertNotIn('ROWCACHE', extra)
+        self.assertEqual(queue.derive()[SETTINGS].count('QSA_ROWCACHE_SLOTS'), 1)
+        for text, form in ((queue.derive()[DECLARE], '=='), (queue.derive()[DRAFT], ' == ')):
+            self.assertEqual(text.count("assert env.get('QSA_ROWCACHE_SLOTS')%s'6144'" % form), 1)
+            self.assertEqual(text.count("assert env.get('QSA_ROWCACHE_REQS')%s'10'" % form), 1)
+        block = declare_block(queue.derive()[DECLARE])
+        self.assertEqual(self.run_block(block, real_env()).returncode, 0)
+        for bad in (dict(real_env(), QSA_ROWCACHE_SLOTS='10240'), {k: v for k, v in real_env().items() if k != 'QSA_ROWCACHE_SLOTS'},
+                    dict(real_env(), QSA_ROWCACHE_REQS='8')):
+            done = self.run_block(block, bad)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn('row cache', done.stderr)
+
     def test_the_declarations_preflight_passes_on_the_real_identity(self):
         done = self.run_block(declare_block(queue.derive()[DECLARE]), declared_env())
         self.assertEqual(done.returncode, 0, done.stderr[-600:])
@@ -291,7 +317,7 @@ class DeclaredIdentity(unittest.TestCase):
 
 class Names(unittest.TestCase):
     def test_the_real_qname_passes_every_name_rule(self):
-        phases = ['q18a_parity_n3s24.draft.sh', 'q18a_parity_n3s24_declare.sh']
+        phases = ['q18a_parity_n3s24q2024rc6144.draft.sh', 'q18a_parity_n3s24q2024rc6144_declare.sh']
         self.assertEqual(names.check_names(QNAME, phases, RUNS, HERE / 'qlib.sh'), [])
         self.assertEqual(re.findall(r"^CANDIDATE = '([^']+)'$", (ROOT / 'tools/build_compose5.py').read_text(), re.M), [QNAME])
         for text in queue.derive().values():
@@ -390,7 +416,7 @@ class ArmLoop(unittest.TestCase):
         grade = json.loads((self.q / 'compose5-grade.json').read_text())
         self.assertEqual((grade['schema'], grade['verdict'], grade['missing']), ('compose5-grade/1', 'PASS', []))
         self.assertEqual(sorted(grade['arms']), sorted(CORE))
-        self.assertTrue((self.q / 'compose5-report.md').read_text().startswith('# q18a-parity-n3s24'))
+        self.assertTrue((self.q / 'compose5-report.md').read_text().startswith('# q18a-parity-n3s24q2024rc6144'))
         self.assertEqual(json.loads((self.q / 'compose5-read.json').read_text())['verdict'], 'PASS')
 
     def test_a_smoke_that_does_not_engage_stops_the_table(self):
@@ -430,7 +456,7 @@ def bash_words(args, draft, values=None):
     lines = ['set -u', 'fail_early() { :; }', 'fail() { :; }', 'H=%s' % shlex.quote(str(HERE))]
     lines += ['%s=%s' % (k, shlex.quote(v)) for k, v in values.items()]
     arrays = '--arm "$Q/arm-cmp.g2-live-0.json" --ingress "cmp.g2-live-0=$Q/ingress-cmp.g2-live-0.json" --watch "cmp.g2-live-0=$Q/engine-watch-arm-cmp.g2-live-0.json"'
-    lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays, 'source "$H/runs/q18a_parity_n3s24_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
+    lines += ['GRADE_ARGS=(%s)' % arrays, 'READ_ARGS=(%s)' % arrays, 'source "$H/runs/q18a_parity_n3s24q2024rc6144_settings.sh" || exit 97', budget, "printf '%s\\0' " + args]
     done = subprocess.run(['bash', '-c', '\n'.join(lines)], capture_output=True, timeout=60)
     return done.returncode, done.stdout.decode().split('\0')[:-1], done.stderr.decode()[-400:]
 

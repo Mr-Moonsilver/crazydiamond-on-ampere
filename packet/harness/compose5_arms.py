@@ -1,4 +1,4 @@
-"""q18a-parity-n3s24 arm table: the one declared table (parity-n3u, 8 Nov 2026; tmp/decode-phase/READY-parity-n3u.md). Change it here and nowhere else.
+"""q18a-parity-n3s24q2024rc6144 arm table: the one declared table (parity-n3u, 8 Nov 2026; tmp/decode-phase/READY-parity-n3u.md). Change it here and nowhere else.
 
 parity-n3u (lead, 8 Nov 00:02, brief-wt10-n3u-ahead-b-20261108.md): o3f's n3 on Codex's legacy UVA retirement (codex/legacy-uva-retirement
 926f17f1: private native UVA descriptor slots, retire before reuse; helper native_uva.py 766b084c), against this run's stock sp. o3f's launch
@@ -164,7 +164,9 @@ LOGITS_ENV = 'VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=%d' % LOGITS_CAP_MB
 PREPARE_AHEAD_ENV = 'FLASH_S5_PREPARE_AHEAD=1'     # build-2 (a): installed for the whole run; needs FLASH_S5_STAGE_OVERLAP=1 (the settings carry it)
 MAMBA_BLOCK_ROWS, HASH_BLOCK_ROWS = 4048, 176     # read from this model's chunks on the box (dp5): ends 4048 x k, last stop prompt-1 // 176 x 176
 B13_BOUND = [13 * MAMBA_BLOCK_ROWS, 1024]         # dp8d's b13 and b13h: chunk_bound on native_stage_local, [end, rows]
-B24_BOUND = [24 * MAMBA_BLOCK_ROWS, 1024]         # build-2b24: o4's b24 (q18a-o4-b24), 2048 rows up to 97152, then 1024
+B24_BOUND = [24 * MAMBA_BLOCK_ROWS, 2024]         # parity-n3s24q2024rc6144 (the lead's re-plan 9 Nov, Codex's READING-n3-headroom-non-kv-20261109): 2048 rows up to 97152, then 2024
+#   settings only, no lifetime fix (n3s24q1680's 1680, n3s28q1352's and n3s24q1352's 1352)
+#   (b24 was [97152, 1024], build-2b24, o4's q18a-o4-b24; n3s24 ran it). The typed row only; FLASH_S5_CHUNK_TOKENS and the stock chunk stay.
 C22_BOUND = [22 * MAMBA_BLOCK_ROWS, 1024]         # dn's c22h: largest score buffer 170.5 MiB at 85008-87056; cf died at 194 at 97152
 BOUND = _nt({'sm': B13_BOUND, 'dec1': B13_BOUND, 'ny': B13_BOUND, 'nt': B24_BOUND})     # build-2b24: nt alone on b24
 HOLD_S = 600                                      # the engine's valve on a stuck lane, not a wait the arm expects: longer than an arm
@@ -181,6 +183,24 @@ AHEAD_NOSYNC = dict(dict.fromkeys(SELECTIONS, False), na=True, nk=True, n3=True)
 # the field needs inwait, which every row has; a command without it turns it off).
 K2_SETTLE = dict(dict.fromkeys(SELECTIONS, False), nk=True, n3=True)
 AHEAD_NOSYNC_ENV = 'FLASH_S5_AHEAD_NOSYNC=1'
+# parity-n3s24q2024rc6144 (the lead's re-plan 9 Nov; Codex's READING-n3-headroom-non-kv-20261109): the decode row cache's slots cut from the box's
+# 10240 (/etc/default/vllm-flash QSA_ROWCACHE_SLOTS, every earlier record's identity) to 6144, for the whole run, as a launcher-level
+# S5_SETTINGS override (the launcher passes -e QSA_ROWCACHE_SLOTS="${QSA_ROWCACHE_SLOTS:-8192}"), not EXTRA_ENV; both preflights assert
+# it and QSA_ROWCACHE_REQS stays 10 (MAX_SEQS). qsa.py allocates per local QSA layer values [REQS+1, SLOTS, 1, 512] bf16 plus int32 tags
+# and claims [REQS+1, SLOTS]: 66.0 MiB of values a layer (110.0 at 10240), 6 layers a rank, 396 MiB of values a rank (660), 266.06 MiB
+# fewer bytes a rank with the tags and claims (Codex). The cut is global: sp's decode reads the same smaller cache.
+ROWCACHE_SLOTS, ROWCACHE_STOCK_SLOTS, ROWCACHE_REQS, ROWCACHE_LAYERS_PER_RANK = 6144, 10240, 10, 6
+ROWCACHE_SETTING = 'QSA_ROWCACHE_SLOTS=%d' % ROWCACHE_SLOTS
+
+
+def rowcache_bytes(slots, reqs=ROWCACHE_REQS):
+    """(values, tags + claims) bytes of one layer's row cache, qsa.py's shapes: one local KV head x 2 x head_dim = 512 bf16 values (1024 bytes) a slot."""
+    rows = reqs + 1                                  # + the dummy row
+    return rows * slots * 512 * 2, 2 * rows * slots * 4
+
+
+ROWCACHE_VALUE_MIB_PER_LAYER = rowcache_bytes(ROWCACHE_SLOTS)[0] / 2 ** 20
+ROWCACHE_VALUE_MIB_PER_RANK = ROWCACHE_LAYERS_PER_RANK * ROWCACHE_VALUE_MIB_PER_LAYER
 # parity-n3s (lead, 8 Nov 18:40, brief-wt10-n3s-20261108.md): n3u with prefill given more SMs, the decode SM count the only knob that
 # moves. n3u ran FLASH_S5_DECODE_SMS=44 of 82 (prefill 38). The launch's count is this table's, declared once here: the settings'
 # default, guard and EXTRA_ENV, the draft's guard, the declaration's assert, the runner's S5_REQUESTED_DECODE_SMS and the startup
@@ -189,7 +209,7 @@ AHEAD_NOSYNC_ENV = 'FLASH_S5_AHEAD_NOSYNC=1'
 # cuDevSmResourceSplitByCount with minCount = the count, exact at 36/44/52 on this box; a rounded split FAILs at startup.
 MIN_DECODE_SMS, MAX_DECODE_SMS = 24, 60
 N3U_DECODE_SMS = 44                                 # q18a-parity-n3u's, the comparison
-DECODE_SMS = 24                                     # q18a-parity-n3s24 (q18a-parity-n3s28 built at 28, 36b49b99)
+DECODE_SMS = 24                                     # q18a-parity-n3s24q2024rc6144 (n3s24's, eaefc9d2; n3s24q1352 3c43792e at 1352; n3s24q1680 at 1680)
 
 
 def legal_decode_sms(value):
@@ -391,7 +411,10 @@ def check():
     assert LAUNCH == dict(_a1.LAUNCH, max_new=8192) and _a1.LAUNCH['max_new'] == 2048, "the yield's new-row bound raised here alone"
     assert PREPARE_AHEAD_ENV == 'FLASH_S5_PREPARE_AHEAD=1' and CHUNK_TOKENS == 2048 and CHUNK_ENV == 'FLASH_S5_CHUNK_TOKENS=2048', 'build-2: prepare-ahead on, chunk geometry unchanged'
     assert B13_BOUND == [52624, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, B13_BOUND)) == 40, "dp8d's 40 chunks at band 1"
-    assert B24_BOUND == [97152, 1024] and len(planned_chunks(131094, CHUNK_TOKENS, B24_BOUND)) == 83, "b24's 83 chunks for the 131,094-token fresh (READY-o4-b24)"
+    assert B24_BOUND == [97152, 2024] and len(planned_chunks(131094, CHUNK_TOKENS, B24_BOUND)) == 66, "q2024's 66 chunks for the 131,094-token fresh (q1680's 74, q1352's 75, b24's 83; Codex's declaration-counts.json)"
+    assert ROWCACHE_SETTING == 'QSA_ROWCACHE_SLOTS=6144' and ROWCACHE_REQS == 10 and ROWCACHE_LAYERS_PER_RANK == 6, 'q2024rc6144: the row cache at 6144 slots, 10 requests'
+    assert (ROWCACHE_VALUE_MIB_PER_LAYER, ROWCACHE_VALUE_MIB_PER_RANK) == (66.0, 396.0) and rowcache_bytes(ROWCACHE_STOCK_SLOTS)[0] == 110 * 2 ** 20, '66 MiB a layer, 396 a rank (stock 110 and 660)'
+    assert abs(ROWCACHE_LAYERS_PER_RANK * (sum(rowcache_bytes(ROWCACHE_STOCK_SLOTS)) - sum(rowcache_bytes(ROWCACHE_SLOTS))) / 2 ** 20 - 266.06) < 0.01, "Codex's 266.06 MiB a rank"
     assert LOGITS_CAP_MB == 64 and LOGITS_ENV == 'VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=64', 'build-2b24c64: the logits cap for the whole run'
     assert all(r['chunk_bound'] == (B24_BOUND if r['c1'] in ('nt',) + _AS_NT else B13_BOUND) for r in rows.values()), 'b24 on the nt rows alone'
     assert C22_BOUND == [89056, 1024] and len(planned_chunks(65445, CHUNK_TOKENS, C22_BOUND)) == 34 and len(planned_chunks(131094, CHUNK_TOKENS, C22_BOUND)) == 87, "dn's 34 and 87 chunks"

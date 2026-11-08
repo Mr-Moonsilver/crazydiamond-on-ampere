@@ -50,6 +50,21 @@ class Bound(unittest.TestCase):
             self.assertEqual(plan, T.planned_chunks(prompt, T.CHUNK_TOKENS, T.B13_BOUND), prompt)
             self.assertEqual(sum(plan), prompt - 1)
 
+    def test_q2024_the_real_search_past_97152(self):
+        """parity-n3s24q2024rc6144: the real staged search at [97152, 2024] (minimum 64, as the engine's), at Codex's three long fresh prompts (geometry.json's 2024 examples)."""
+        self.assertEqual(T.B24_BOUND, [97152, 2024])
+        for prompt, chunks, late in ((131094, 66, 18), (197270, 99, 51), (201261, 101, 53)):
+            plan, position, past = list(real_plan(prompt, T.B24_BOUND, minimum=64)), 0, []
+            for size in plan:
+                self.assertLessEqual(size, 2024 if position >= 97152 else T.CHUNK_TOKENS, (prompt, position))
+                self.assertGreaterEqual(size, 64, (prompt, position))
+                past += [size] if position >= 97152 else []
+                position += size
+            self.assertEqual((len(plan), len(past), sum(plan)), (chunks, late, prompt - 1), prompt)
+            self.assertEqual(max(past), 2024, prompt)
+        self.assertEqual(list(real_plan(131094, T.B24_BOUND, minimum=64))[-5:], [2024, 2024, 2024, 1408, 149], "Codex's tail (geometry.json)")
+        self.assertEqual(len(real_plan(131094, (97152, 1680), minimum=64)), 74, "q1680's 74")
+
     def test_band_1_is_dp8ds_forty_chunks(self):
         self.assertEqual(len(real_plan(65445, T.B13_BOUND)), 40)
 
@@ -62,8 +77,8 @@ class Bound(unittest.TestCase):
 
     def test_every_row_carries_it(self):
         # build-2b24: b24 on nt, b13 on every other arm
-        self.assertEqual({r['label']: tuple(r['chunk_bound']) for r in T.arms()}, {r['label']: ((97152, 1024) if r['c1'] in ('nt', 'no', 'na', 'nk', 'n3') + T.O3_PAIR else (52624, 1024)) for r in T.arms()})
-        self.assertEqual(tuple(T.reference_row('nt', 0)['chunk_bound']), (97152, 1024), 'lane-o3-fix: nt is out of the table; its row still carries b24')
+        self.assertEqual({r['label']: tuple(r['chunk_bound']) for r in T.arms()}, {r['label']: ((97152, 2024) if r['c1'] in ('nt', 'no', 'na', 'nk', 'n3') + T.O3_PAIR else (52624, 1024)) for r in T.arms()})
+        self.assertEqual(tuple(T.reference_row('nt', 0)['chunk_bound']), (97152, 2024), 'lane-o3-fix: nt is out of the table; its row still carries b24 (at 2024: parity-n3s24q2024rc6144)')
         self.assertEqual({(r['cow_host_filter'], r['cow_fast']) for r in T.arms()}, {(True, True)})
         self.assertFalse(any(r.get('score_split') or r.get('stock_rescue') for r in T.arms()), '5f is compose-6')
 
