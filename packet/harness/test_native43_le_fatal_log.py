@@ -59,6 +59,18 @@ def fault_worker(writer, kind):
     hooks.set_fatal_writer(writer)
 
     def execute_model():
+        if kind in ('native-layer', 'native-layer-long'):
+            import test_e3_lane_dispatch as rig
+            # Same fixture setup as DispatcherStage0Tests; the dispatcher and
+            # its exception chain are real, only layer execution is replaced.
+            d, lane, channel, server, admission, operation = rig.make(True, rig.fake_torch())
+            d.open(rig.TXN, admission, operation)
+            d.submit(rig.cmd('prepare', 1))
+            d.submit(rig.cmd('prefix', 2))
+            def layer_failure(index):
+                raise RuntimeError(('xé"\\' * 400) if kind.endswith('long') else 'CUDA error: allocation failed (fixture)')
+            lane.layer = layer_failure
+            d.submit(rig.cmd('layer', 3, layer_start=0, layer_end=1))
         if kind == 'le-row1':
             le_row1_failure()
         if kind == 'own-long':
@@ -143,6 +155,31 @@ class FatalLog(unittest.TestCase):
         self.assertNotIn('foreign payload', rows[0].getMessage())
         self.assertIn('detail=None', rows[0].getMessage())
         self.assertEqual(order, ['notified', 'logged', 'teardown'])
+
+    def test_native_layer_quarantine_keeps_the_device_cause_before_teardown(self):
+        order, rows, executor = self.run_fault('native-layer')
+        record = executor._flash_s5_fatal_failure.record
+        self.assertEqual(order, ['notified', 'logged', 'teardown'])
+        self.assertEqual(record['error_type'], 'LaneDispatchError')
+        self.assertEqual(record['cause'], 'RuntimeError')
+        self.assertEqual(record['native_message'], 'RuntimeError: CUDA error: allocation failed (fixture)')
+        self.assertIn('lane_dispatch.py:', record['native_trace'])
+        self.assertIn(':_do_layer', record['native_trace'])
+        self.assertIn(':layer_failure', record['native_trace'])
+        self.assertNotIn(str(ROOT), record['native_trace'])
+        line = rows[0].getMessage()
+        self.assertIn(record['native_message'], line)
+        self.assertIn('layer_failure', line)
+        self.assertNotIn('\n', line)
+
+    def test_escape_heavy_native_cause_still_fits_the_pipe_and_keeps_the_raising_frame(self):
+        _, rows, executor = self.run_fault('native-layer-long')
+        record = executor._flash_s5_fatal_failure.record
+        self.assertLessEqual(len(json.dumps(record).encode()), hooks.FATAL_RECORD_MAX)
+        self.assertTrue(record['native_message'].startswith('RuntimeError:'))
+        self.assertTrue(record['native_message'].isascii())
+        self.assertIn(':layer_failure', record['native_trace'])
+        self.assertIn('native_message=', rows[0].getMessage())
 
     def test_long_non_ascii_own_message_stays_inside_the_1024_byte_record(self):
         _, rows, executor = self.run_fault('own-long')

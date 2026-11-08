@@ -1,40 +1,49 @@
 {
- "leaves": [
-  {
-   "box_evidence": false,
-   "cannot_prove": "The exact l-e exception (never published on the box). `where` names the fixture function here; on the box it would name qsa_driver.py:382",
-   "equivalence": "report_worker_failure sees an exception of the same type, cause and message shape as the box worker, through the same generated except-branch; the parent reads the same pipe record schema",
-   "implementation": "A spawned multiprocessing process (real Pipe like make_fatal_pipe) running the actual generated WorkerProc._execute_worker_rpc: hooks.generate_executor over the pinned reference multiproc_executor.py, with revert_executor equality checked. Its worker.execute_model raises the l-e chain with the real classes, Row1OracleError(\"row1 qualification failed: route_mismatch\") then QsaDriverError(\"native row1 qualification failed: ...\") from it, as qsa_driver.py 377-382 does. Other cases raise a foreign ValueError, an own error with a long non-ASCII message, or os._exit(3) before publishing",
-   "name": "fatal-fault-worker",
-   "replaces": "A vLLM WorkerProc process whose execute_model raised during l-e row1 (the box worker, GPU, real QSA forward)",
-   "test": "test_native43_le_fatal_log.FatalLog"
-  },
-  {
-   "box_evidence": false,
-   "cannot_prove": "The real executor.shutdown and the EngineCore busy loop's handling of EXECUTOR_FAILED. The l-e hang after the teardown (main thread in shm_broadcast acquire_write, timeout None) is fixed separately: executor_hooks.bounded_enqueue, test_native43_le_bounded_enqueue and tools/native43_le_fix_enqueueprobe.py",
-   "equivalence": "monitor_fatal_workers, notify_worker_failure and log_worker_failure read exactly these attributes (_flash_s5_transport is absent, as in the native38 case)",
-   "implementation": "SimpleNamespace(workers=[SimpleNamespace(rank, proc=<real Process>, fatal_reader=<real Connection>)], is_failed, shutting_down, failure_callback, shutdown). shutdown records the order and terminates the worker. FLASH_S5_OVERLAP=1 is set in os.environ for the install only, the box value. Same shape as test_native38_plain_bind.FatalReplies",
-   "name": "fatal-executor-namespace",
-   "replaces": "MultiprocExecutor in the EngineCore process (patches/s5_engine/executor_hooks.monitor_fatal_workers argument)",
-   "test": "test_native43_le_fatal_log.FatalLog"
-  },
-  {
-   "box_evidence": false,
-   "cannot_prove": "Nothing beyond the container probe",
-   "equivalence": "log_worker_failure logs through logging.getLogger(__name__). In the engine, __name__ is vllm.v1.flash_e3.executor_hooks, which propagates to the vllm handler. The container self-run (tools/native43_le_fix_logprobe.py) checks that composition with the real vllm.logger configuration",
-   "implementation": "A logging.Handler on logging.getLogger(executor_hooks.__name__) that records the LogRecord and the order",
-   "name": "log-capture-handler",
-   "replaces": "vLLM's configured handler on the \"vllm\" logger (stdout, vLLM format) in the EngineCore process",
-   "test": "test_native43_le_fatal_log.FatalLog"
-  },
-  {
-   "box_evidence": false,
-   "cannot_prove": "The vLLM formatter itself (container probe)",
-   "equivalence": "The scanner and the l-e engine-errors grep match on the message text; the prefix only carries the timestamp the scanner orders by",
-   "implementation": "The prefix is formatted around the real message and line number, copied from the l-e line shapes",
-   "name": "box-line-shape",
-   "replaces": "The box engine-stream line around the message: docker timestamp, \"(EngineCore pid=85) ERROR mm-dd hh:mm:ss [executor_hooks.py:N]\"",
-   "test": "test_native43_le_fatal_log.FatalLog.test_logged_line_is_caught_by_the_scanner_and_by_the_unchanged_le_gate"
-  }
- ]
+  "leaves": [
+    {
+      "box_evidence": false,
+      "cannot_prove": "The exact l-e exception (never published on the box). `where` names the fixture function here; on the box it would name qsa_driver.py:382",
+      "equivalence": "report_worker_failure sees an exception of the same type, cause and message shape as the box worker, through the same generated except-branch; the parent reads the same pipe record schema",
+      "implementation": "A spawned multiprocessing process (real Pipe like make_fatal_pipe) running the actual generated WorkerProc._execute_worker_rpc: hooks.generate_executor over the pinned reference multiproc_executor.py, with revert_executor equality checked. Its worker.execute_model raises the l-e chain with the real classes, Row1OracleError(\"row1 qualification failed: route_mismatch\") then QsaDriverError(\"native row1 qualification failed: ...\") from it, as qsa_driver.py 377-382 does. Other cases raise a foreign ValueError, an own error with a long non-ASCII message, or os._exit(3) before publishing",
+      "name": "fatal-fault-worker",
+      "replaces": "A vLLM WorkerProc process whose execute_model raised during l-e row1 (the box worker, GPU, real QSA forward)",
+      "test": "test_native43_le_fatal_log.FatalLog"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "The real executor.shutdown and the EngineCore busy loop's handling of EXECUTOR_FAILED. The l-e hang after the teardown (main thread in shm_broadcast acquire_write, timeout None) is fixed separately: executor_hooks.bounded_enqueue, test_native43_le_bounded_enqueue and tools/native43_le_fix_enqueueprobe.py",
+      "equivalence": "monitor_fatal_workers, notify_worker_failure and log_worker_failure read exactly these attributes (_flash_s5_transport is absent, as in the native38 case)",
+      "implementation": "SimpleNamespace(workers=[SimpleNamespace(rank, proc=<real Process>, fatal_reader=<real Connection>)], is_failed, shutting_down, failure_callback, shutdown). shutdown records the order and terminates the worker. FLASH_S5_OVERLAP=1 is set in os.environ for the install only, the box value. Same shape as test_native38_plain_bind.FatalReplies",
+      "name": "fatal-executor-namespace",
+      "replaces": "MultiprocExecutor in the EngineCore process (patches/s5_engine/executor_hooks.monitor_fatal_workers argument)",
+      "test": "test_native43_le_fatal_log.FatalLog"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "Nothing beyond the container probe",
+      "equivalence": "log_worker_failure logs through logging.getLogger(__name__). In the engine, __name__ is vllm.v1.flash_e3.executor_hooks, which propagates to the vllm handler. The container self-run (tools/native43_le_fix_logprobe.py) checks that composition with the real vllm.logger configuration",
+      "implementation": "A logging.Handler on logging.getLogger(executor_hooks.__name__) that records the LogRecord and the order",
+      "name": "log-capture-handler",
+      "replaces": "vLLM's configured handler on the \"vllm\" logger (stdout, vLLM format) in the EngineCore process",
+      "test": "test_native43_le_fatal_log.FatalLog"
+    },
+    {
+      "box_evidence": false,
+      "cannot_prove": "The vLLM formatter itself (container probe)",
+      "equivalence": "The scanner and the l-e engine-errors grep match on the message text; the prefix only carries the timestamp the scanner orders by",
+      "implementation": "The prefix is formatted around the real message and line number, copied from the l-e line shapes",
+      "name": "box-line-shape",
+      "replaces": "The box engine-stream line around the message: docker timestamp, \"(EngineCore pid=85) ERROR mm-dd hh:mm:ss [executor_hooks.py:N]\"",
+      "test": "test_native43_le_fatal_log.FatalLog.test_logged_line_is_caught_by_the_scanner_and_by_the_unchanged_le_gate"
+    },
+    {
+      "name": "n3-quarantine-layer-failure",
+      "test": "test_native43_le_fatal_log.FatalLog.test_native_layer_quarantine_keeps_the_device_cause_before_teardown; test_escape_heavy_native_cause_still_fits_the_pipe_and_keeps_the_raising_frame",
+      "box_evidence": false,
+      "replaces": "A real CUDA/vLLM model layer called by LaneDispatcher.submit on a worker RPC thread",
+      "implementation": "test_e3_lane_dispatch.make/fake_torch provide CPU streams, events, lane and factory; lane.layer is replaced by layer_failure raising RuntimeError. The real dispatcher open/prepare/prefix/layer catch produces LaneDispatchError from RuntimeError. The actual generated WorkerProc RPC, spawned Pipe, fatal monitor and parent logger execute unpatched; logging.Handler records the emitted record. No device calls or device memory are simulated.",
+      "equivalence": "The fatal metadata sees the real quarantined exception chain before the worker parks; parent notification precedes its one log and teardown; native_message/native_trace remain within the existing1024-byte record.",
+      "cannot_prove": "Which GPU operation failed on n3s36, CUDA allocation fit, or actual stream/device correctness. The fixture executes ordinary non-fused dispatcher layer selection but exercises the shared submit catch used by fused/grouped layers too."
+    }
+  ]
 }

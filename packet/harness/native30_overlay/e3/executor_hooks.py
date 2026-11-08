@@ -1581,8 +1581,10 @@ _FATAL_SENT = False
 FATAL_RECORD_MAX = 1024  # monitor_fatal_workers reads one record with recv_bytes(1024)
 # Native43 le-fix (b): bounded metadata that lets the parent log the cause.  ``where`` and ``cause`` are code
 # locations and type names; ``detail`` is the message of this package's own typed errors only (foreign exception
-# payloads, e.g. torch or vLLM messages, are never serialized: WorkerRPCError's contract).
-FATAL_OPTIONAL = {'detail': 160, 'where': 100, 'cause': 80}
+# payloads are normally omitted). Native dispatcher quarantine is the explicit
+# diagnostic exception: bounded cause text and frame locations, without locals.
+FATAL_OPTIONAL = {'detail': 160, 'where': 100, 'cause': 80,
+                  'native_message': 160, 'native_trace': 320}
 
 
 def _fatal_own_error(error):
@@ -1606,6 +1608,24 @@ def _fatal_metadata(error):
             rows['cause'] = type(linked).__name__
         if _fatal_own_error(error):
             rows['detail'] = str(error)
+            # Native quarantine wraps the useful device error; do not lose it
+            # when this worker parks before its normal exception logger runs.
+            if type(error).__name__ == 'LaneDispatchError' and str(error).startswith('dispatcher quarantined:'):
+                root, seen = error, set()
+                while id(root) not in seen and len(seen) < 8:
+                    seen.add(id(root))
+                    linked = root.__cause__ if root.__cause__ is not None else root.__context__
+                    if linked is None or id(linked) in seen:
+                        break
+                    root = linked
+                rows['native_message'] = type(root).__name__ + ': ' + str(root)
+                frames, tb = [], root.__traceback__
+                while tb is not None:
+                    code = tb.tb_frame.f_code
+                    frames.append('%s:%d:%s' % (os.path.basename(code.co_filename), tb.tb_lineno, code.co_name))
+                    tb = tb.tb_next
+                # No locals, source lines, tensor contents or absolute paths.
+                rows['native_trace'] = ' <- '.join(frames[-8:])[-FATAL_OPTIONAL['native_trace']:]
     except Exception:  # noqa: BLE001 - metadata is best effort; the record itself must go out
         pass
     return {k: v.encode('ascii', 'backslashreplace').decode('ascii')[:FATAL_OPTIONAL[k]]
@@ -1645,6 +1665,11 @@ def report_worker_failure(rank, method, error):
                     break
                 record.pop(key, None)
                 data = json.dumps(record).encode()
+            # Escape-heavy device messages must still fit the existing pipe.
+            for key in ('native_trace', 'native_message'):
+                while len(data) > FATAL_RECORD_MAX and len(record.get(key, '')) > 32:
+                    record[key] = record[key][32:] if key == 'native_trace' else record[key][:-32]
+                    data = json.dumps(record).encode()
             try:
                 _FATAL_WRITER.send_bytes(data)
             except (OSError, EOFError):
@@ -1671,9 +1696,11 @@ def log_worker_failure(worker, record, unreadable=None):
                          unreadable or 'unknown')
         else:
             logger.error('FLASH_S5_WORKER_FAILURE rank=%s pid=%s method=%s error_type=%s code=%s cause=%s '
-                         'where=%s detail=%r; executor shutdown follows (worker fatal channel)',
+                         'where=%s detail=%r native_message=%r native_trace=%r; '
+                         'executor shutdown follows (worker fatal channel)',
                          record.get('rank'), record.get('pid'), record.get('method'), record.get('error_type'),
-                         record.get('code'), record.get('cause'), record.get('where'), record.get('detail'))
+                         record.get('code'), record.get('cause'), record.get('where'), record.get('detail'),
+                         record.get('native_message'), record.get('native_trace'))
     except Exception:  # noqa: BLE001 - logging must never stop the teardown
         pass
 
