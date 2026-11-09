@@ -886,7 +886,7 @@ class BoxBinding(O3Table):
         self.assertEqual(sorted(result['arms']), sorted(T.labels()))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-parity-n3s24q2024rc6144'))
+        self.assertTrue(text.startswith('# q18a-parity-n3s24q2024w'))
         self.assertIn('- %s native off: pure; native rows 0, handback rows 0, native-served rows 0, native turns 0, chunks 0; lease held' % P0, text)
         self.assertIn('compose5_rule.py', text)
 
@@ -1821,7 +1821,7 @@ class GradeO3f(TwoPairs):
         self.assertEqual((result['fix'][T0]['o3_armed'], result['fix'][T0]['o3_kept']), (2, 3))
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-parity-n3s24q2024rc6144'))
+        self.assertTrue(text.startswith('# q18a-parity-n3s24q2024w'))
         self.assertIn('- %s FIX: O3 armed 2 kept 3' % T0, text)
         self.assertIn('K2 settle True settled 40 bound 0, barrier refusals 0', text)
 
@@ -1952,7 +1952,7 @@ class GradeN3u(TwoPairs):
         self.assertEqual({k: v['k2_settled'] for k, v in result['fix'].items() if v['k2_settled']}, {T0: 40, T1: 40})
         with box._bound():
             text = box.report(result)
-        self.assertTrue(text.startswith('# q18a-parity-n3s24q2024rc6144'))
+        self.assertTrue(text.startswith('# q18a-parity-n3s24q2024w'))
 
     def test_k2_on_sp_fails_and_not_on_n3_is_inc(self):
         arms = self.grade.records()

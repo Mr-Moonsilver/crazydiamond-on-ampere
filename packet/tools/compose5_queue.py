@@ -24,12 +24,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'harness')]
 import compose5_arms as table  # noqa: E402
 
-OLD, NEW = 'q18a_compose_4', 'q18a_parity_n3s24q2024rc6144'
+OLD, NEW = 'q18a_compose_4', 'q18a_parity_n3s24q2024w'
 OLD_CORE = 'core:dec1.g2-live-0 core:cmp.g2-live-0 core:ctl.g2-live-0'
 CORE = ' '.join('%s:%s' % (r['part'], r['label']) for r in table.arms(table.GRADED) if r['label'] != table.SMOKE_ARM)
 ARM_TEXT = ('dec1 one standing stream and one decode window, cmp and ctl eight replay agents for 18 minutes', 'dec1 one standing stream and one decode window, pf po pg two decoders and three back-to-back natives (O3 off, on, off), sp n3 eight replay agents for %d s, sp n3 n3 sp' % table.REPLAY['DURATION'])
 HEADER_ANCHOR = '# compose-4: the four lever tracks on one engine under the closed-loop agent replay'
-HEADER_NOTE = ("# parity-n3s24q2024rc6144 (the lead's re-plan 9 Nov; Codex's READING-n3-headroom-non-kv-20261109.md): q18a-parity-n3s24q1680's table (settings only: no lifetime fix, no launcher change) with the n3 rows' chunk_bound [97152, 1680] -> [97152, 2024] (compose5_arms.B24_BOUND) and the decode row cache cut from 10240 to 6144 slots (QSA_ROWCACHE_SLOTS=6144 in S5_SETTINGS, a launcher-level override, not EXTRA_ENV; both preflights assert it; global: sp's decode too) (tmp/decode-phase/READY-parity-n3s24q2024rc6144.md). "
+HEADER_NOTE = ("# parity-n3s24q2024w (the lead 9 Nov 06:50 CET): q18a-parity-n3s24q2024rc6144's table with qlp's stack: Codex's n3 diagnostics (8f4725ed), indexer score-slice lifetime (1eec821d; launcher 0bf5b9a9 with the read-only ops_qsa_indexer mount, declared by dc6e8b7d), passive fused phase receipts (161111d9) and the timing-only producer witness (2af405d1), FLASH_S5_FUSED_PHASE_EVERY=16 for the whole run (both preflights assert it; FLASH_S5_NATIVE_QSA_TRACE stays unset). Late bound [97152, 2024], row cache 6144, logits cap 64, decode 24/58 unchanged. q2024rc6144's text follows.\n"
+               "# parity-n3s24q2024rc6144 (the lead's re-plan 9 Nov; Codex's READING-n3-headroom-non-kv-20261109.md): q18a-parity-n3s24q1680's table (settings only: no lifetime fix, no launcher change) with the n3 rows' chunk_bound [97152, 1680] -> [97152, 2024] (compose5_arms.B24_BOUND) and the decode row cache cut from 10240 to 6144 slots (QSA_ROWCACHE_SLOTS=6144 in S5_SETTINGS, a launcher-level override, not EXTRA_ENV; both preflights assert it; global: sp's decode too) (tmp/decode-phase/READY-parity-n3s24q2024rc6144.md). "
                "# parity-n3s24q1680 (the lead's re-plan 9 Nov; Codex's READING-n3-quantum-next-20261109.md): q18a-parity-n3s24's table with the n3 rows' chunk_bound [97152, 1024] -> [97152, 1680] (compose5_arms.B24_BOUND), settings only (no lifetime fix, no launcher change); FLASH_S5_CHUNK_TOKENS stays 2048 and the stock chunk 1024 (tmp/decode-phase/READY-parity-n3s24q1680.md). "
                "# parity-n3s: q18a-parity-n3u's engine, launch, table, gate, grade and stop rule with the decode SM count moved: FLASH_S5_DECODE_SMS=%d of 82 (n3u 44), the only knob (compose5_arms.DECODE_SMS); the startup grade binds it exactly (tmp/decode-phase/READY-parity-n3s.md). " % table.DECODE_SMS
                + "# parity-n3u: q18a-parity-o3f's engine and launch on Codex's legacy UVA retirement (926f17f1: private native UVA descriptor slots, retired before reuse; native_uva.py in the package): the pair arms pf po pg (the stop rule unchanged), the replay sp n3 | n3 sp, n3 against this run's stock sp (tmp/decode-phase/READY-parity-n3u.md). The reader is parity-n3u/scratch/parity_n3u_read.py on the hub. "
@@ -53,7 +54,7 @@ HEADER_NOTE = ("# parity-n3s24q2024rc6144 (the lead's re-plan 9 Nov; Codex's REA
                "build-1: the grade (the geometry-tail class, per Worker_PP RSS failing nt, any other stock prefill row and a request still open after the "
                "drain failing nt) and chunk geometry (but nt's bound) (harness/compose5_arms.py, tmp/decode-phase/READY-coverage-throughput-b2b24c64.md). "
                "The reader with the parity word is coverage-throughput/scratch/throughput2b24c64_read.py on the hub.\n")
-NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-parity-n3s24q2024rc6144'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
+NAMES = ((OLD, NEW), ('q18a-compose-4', 'q18a-parity-n3s24q2024w'), ('compose-4', 'compose-5'), ('compose4', 'compose5'))
 # compose-5's box imports compose-4's box, table and replay by their names; the rename above must not reach them.
 SWITCHES = table.CONNECTIONS_ENV + ' ' + table.PLE_ENV + ' ' + table.CHUNK_ENV
 OLD_LAST_SWITCH = table.PLE_ENV + ' '
@@ -119,6 +120,14 @@ def nosync_assert(text, form):
     return once(text, line, line + "\nassert env.get('%s')%s'%s', 'parity-ahead ahead nosync installed'" % (name, form, value))
 
 
+def fused_assert(text, form):
+    """parity-n3s24qLp (qlp's 0a56874c, here for q2024w): the passive fused phase sampler installed for the whole run (Codex's 161111d9), asserted right after the nosync."""
+    name, value = table.AHEAD_NOSYNC_ENV.split('=')
+    line = "assert env.get('%s')%s'%s', 'parity-ahead ahead nosync installed'" % (name, form, value)
+    name, value = table.FUSED_PHASE_ENV.split('=')
+    return once(text, line, line + "\nassert env.get('%s')%s'%s', 'parity-n3s24qLp fused phase sampler installed'" % (name, form, value))
+
+
 def rowcache_assert(text, form):
     """parity-n3s24q2024rc6144: the row cache's slots and requests as the launcher passes them, asserted right after the nosync."""
     name, value = table.AHEAD_NOSYNC_ENV.split('=')
@@ -139,7 +148,7 @@ def draft(text):
     text = once(text, 'python3 "$H/e3_native_startup_grade.py"', 'python3 "$H/e3_split_startup_grade.py"')
     text = once(text, 'for _interface in e3_native_startup_grade.py ', 'for _interface in e3_native_startup_grade.py e3_split_startup_grade.py ')
     text = yield_bound(chunk_assert(text, ' == '), ' == ')
-    text = rowcache_assert(nosync_assert(o3_assert(logits_assert(ahead_assert(text, ' == '), ' == '), ' == '), ' == '), ' == ')
+    text = rowcache_assert(fused_assert(nosync_assert(o3_assert(logits_assert(ahead_assert(text, ' == '), ' == '), ' == '), ' == '), ' == '), ' == ')
     # dnr: a replay arm doesn't read the workload, and index 2-9 would have named band 2's; one file for every index, the one sm has.
     text = once(text, 'if [[ $_pair == [01] ]]; then _workload=', 'if [[ $_pair == [0-9] ]]; then _workload=')
     text = once(text, OLD_CORE, CORE)
@@ -154,7 +163,7 @@ def settings(text):
     text = split(text, "[[ $S5_REQUESTED_DECODE_SMS == %d ]] || {\n  echo 'decode split remains declared %d' >&2; return 2; }",
                  "[[ $S5_REQUESTED_DECODE_SMS == %d ]] || {\n  echo 'decode split remains declared %d' >&2; return 2; }")
     text = split(text, 'FLASH_S5_DECODE_SMS=%d ', 'FLASH_S5_DECODE_SMS=%d ')
-    text = once(text, OLD_LAST_SWITCH, OLD_LAST_SWITCH + table.CHUNK_ENV + ' ' + table.PREPARE_AHEAD_ENV + ' ' + table.LOGITS_ENV + ' ' + table.O3_ENV + ' ' + table.AHEAD_NOSYNC_ENV + ' ')
+    text = once(text, OLD_LAST_SWITCH, OLD_LAST_SWITCH + table.CHUNK_ENV + ' ' + table.PREPARE_AHEAD_ENV + ' ' + table.LOGITS_ENV + ' ' + table.O3_ENV + ' ' + table.AHEAD_NOSYNC_ENV + ' ' + table.FUSED_PHASE_ENV + ' ')
     text = once(text, 'FLASH_S5_APPEND_YIELD_MAX_NEW=2048 ', 'FLASH_S5_APPEND_YIELD_MAX_NEW=%d ' % table.LAUNCH['max_new'])
     text = once(text, ' PREFILL_CHUNK=1024 FLASH_PD_ALTERNATE=1\n', ' PREFILL_CHUNK=1024 FLASH_PD_ALTERNATE=1\n ' + table.ROWCACHE_SETTING + '\n')
     return renames(text)
@@ -164,7 +173,7 @@ def declare(text):
     text = split(text, "assert env.get('FLASH_S5_DECODE_SMS')=='%d', 'decode split differs'", "assert env.get('FLASH_S5_DECODE_SMS')=='%d', 'decode split differs'")
     text = once(text, '  for name in e3_native_startup_grade.py ', '  for name in e3_native_startup_grade.py e3_split_startup_grade.py ')
     text = yield_bound(chunk_assert(text, '=='), '==')
-    text = rowcache_assert(nosync_assert(o3_assert(logits_assert(ahead_assert(text, '=='), '=='), '=='), '=='), '==')
+    text = rowcache_assert(fused_assert(nosync_assert(o3_assert(logits_assert(ahead_assert(text, '=='), '=='), '=='), '=='), '=='), '==')
     text = renames(text)
     return once(text, MODULES_AFTER, MODULES)
 
@@ -186,7 +195,7 @@ def final_body():
 
 def table_text():
     import compose5_gate as gate
-    lines = ['q18a-parity-n3s24q2024rc6144 arm table (harness/compose5_arms.py); entry limits relative to the run start, never a clock',
+    lines = ['q18a-parity-n3s24q2024w arm table (harness/compose5_arms.py); entry limits relative to the run start, never a clock',
              '%-3s %-16s %-10s %-6s %-5s %s' % ('#', 'label', 'kind', 'yield', 'ple', 'enters while SECONDS <=')]
     for k, row in enumerate(gate.rows(), 1):
         lines.append('%-3d %-16s %-10s %-6s %-5s %s %d s' % (k, row['label'], row.get('kind', 'decode'), {True: 'on', False: 'off'}.get(row.get('yield_on'), '-'), {True: 'on', False: 'off'}.get(row.get('ple_private'), '-'), row['entry_limit'], gate.ENTRY_LIMIT_S[row['entry_limit']]))

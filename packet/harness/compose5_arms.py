@@ -1,4 +1,4 @@
-"""q18a-parity-n3s24q2024rc6144 arm table: the one declared table (parity-n3u, 8 Nov 2026; tmp/decode-phase/READY-parity-n3u.md). Change it here and nowhere else.
+"""q18a-parity-n3s24q2024w arm table: the one declared table (parity-n3u, 8 Nov 2026; tmp/decode-phase/READY-parity-n3u.md). Change it here and nowhere else.
 
 parity-n3u (lead, 8 Nov 00:02, brief-wt10-n3u-ahead-b-20261108.md): o3f's n3 on Codex's legacy UVA retirement (codex/legacy-uva-retirement
 926f17f1: private native UVA descriptor slots, retire before reuse; helper native_uva.py 766b084c), against this run's stock sp. o3f's launch
@@ -183,6 +183,11 @@ AHEAD_NOSYNC = dict(dict.fromkeys(SELECTIONS, False), na=True, nk=True, n3=True)
 # the field needs inwait, which every row has; a command without it turns it off).
 K2_SETTLE = dict(dict.fromkeys(SELECTIONS, False), nk=True, n3=True)
 AHEAD_NOSYNC_ENV = 'FLASH_S5_AHEAD_NOSYNC=1'
+# parity-n3s24q2024w (the lead 9 Nov 06:50; qlp's 0a56874c, Codex's 161111d9 + producer witness 2af405d1): the passive fused phase sampler
+# and its producer-witness extension, every 16th transaction on all ranks ((txn_seq-1) % 16 == 0), for the whole run; both preflights
+# assert it. FLASH_S5_NATIVE_QSA_TRACE stays unset (the engine's default '0').
+FUSED_PHASE_EVERY = 16
+FUSED_PHASE_ENV = 'FLASH_S5_FUSED_PHASE_EVERY=%d' % FUSED_PHASE_EVERY
 # parity-n3s24q2024rc6144 (the lead's re-plan 9 Nov; Codex's READING-n3-headroom-non-kv-20261109): the decode row cache's slots cut from the box's
 # 10240 (/etc/default/vllm-flash QSA_ROWCACHE_SLOTS, every earlier record's identity) to 6144, for the whole run, as a launcher-level
 # S5_SETTINGS override (the launcher passes -e QSA_ROWCACHE_SLOTS="${QSA_ROWCACHE_SLOTS:-8192}"), not EXTRA_ENV; both preflights assert
@@ -209,7 +214,7 @@ ROWCACHE_VALUE_MIB_PER_RANK = ROWCACHE_LAYERS_PER_RANK * ROWCACHE_VALUE_MIB_PER_
 # cuDevSmResourceSplitByCount with minCount = the count, exact at 36/44/52 on this box; a rounded split FAILs at startup.
 MIN_DECODE_SMS, MAX_DECODE_SMS = 24, 60
 N3U_DECODE_SMS = 44                                 # q18a-parity-n3u's, the comparison
-DECODE_SMS = 24                                     # q18a-parity-n3s24q2024rc6144 (n3s24's, eaefc9d2; n3s24q1352 3c43792e at 1352; n3s24q1680 at 1680)
+DECODE_SMS = 24                                     # q18a-parity-n3s24q2024w (n3s24's, eaefc9d2; n3s24q1352 3c43792e at 1352; n3s24q1680 at 1680)
 
 
 def legal_decode_sms(value):
@@ -386,6 +391,7 @@ def check():
     assert all(r['o3_split'] is (r['c1'] in ('no', 'po', 'n3')) for r in rows.values()), 'O3 on no, po and n3 alone'
     assert all(r['ahead_nosync'] is (r['c1'] in ('na', 'nk', 'n3')) for r in rows.values()), 'ahead_nosync on na, nk and n3 alone'
     assert all(r['k2_settle'] is (r['c1'] in ('nk', 'n3')) for r in rows.values()), 'k2_settle on nk and n3 alone; False on the pair arms (one effect, O3)'
+    assert FUSED_PHASE_ENV == 'FLASH_S5_FUSED_PHASE_EVERY=16' and 1 <= FUSED_PHASE_EVERY <= 4096, 'parity-n3s24qLp: the sampler at 16 (Codex: 1..4096)'
     assert AHEAD_NOSYNC_ENV == 'FLASH_S5_AHEAD_NOSYNC=1' and PREPARE_AHEAD_ENV == 'FLASH_S5_PREPARE_AHEAD=1', 'the nosync needs prepare-ahead, installed for the whole run'
     assert O3_ENV == 'FLASH_S5_O3=1' and O3_PAIR_DECODERS == 2 and O3_PAIR_NATIVES == 3 and O3_LOGPROBS == 20
     assert type(DECODE_SMS) is int and legal_decode_sms(DECODE_SMS) == str(DECODE_SMS) and DECODE_SMS != N3U_DECODE_SMS, 'parity-n3s: a legal split other than n3u\'s 44'

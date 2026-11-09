@@ -17,7 +17,7 @@ import e3_compose5_box as box
 
 iwr, held = a1r.iwr, a1r.held
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / 'runs' / 'q18a_parity_n3s24q2024rc6144_settings.sh'
+SETTINGS = HERE / 'runs' / 'q18a_parity_n3s24q2024w_settings.sh'
 RUN = 'compose-5-router'
 QUICK = {'pair': a1r.QUICK['pair'], 'none': ()}
 SAMPLE = dict(a1r.SAMPLE, o3_split=False, ahead_nosync=False, k2_settle=False)     # lane-o3-na: this queue's stage fields (box.ACTIONS, compose-5's own); lane-o3-fix: k2_settle

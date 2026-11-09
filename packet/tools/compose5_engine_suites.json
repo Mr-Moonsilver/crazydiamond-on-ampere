@@ -34,12 +34,16 @@
   "test_parity_ahead",
   "test_native_uva_retirement",
   "test_native_uva_legacy",
-  "test_native_uva_package"
+  "test_native_uva_package",
+  "test_native43_le_fatal_log",
+  "test_n3_gap_receipts"
  ],
  "refusal_tests": [],
  "why": {
   "test_native_uva_retirement": "parity-n3u: Codex's legacy 926f17f1, native private UVA pools: retire-before-reuse/growth, pending decode readers, failure retention",
   "test_native_uva_legacy": "parity-n3u: 926f17f1 on the legacy prepare-ahead path (lane_chunk/lane_dispatch): private slots, retire before reuse",
-  "test_native_uva_package": "parity-n3u: native_uva packaged, relative imports under the mounted e3, launcher name pins unchanged"
+  "test_native_uva_package": "parity-n3u: native_uva packaged, relative imports under the mounted e3, launcher name pins unchanged",
+  "test_native43_le_fatal_log": "parity-n3s28d: Codex's ec378861, the native quarantine cause (bounded message and trace locations) preserved through the fatal pipe and logged by the parent; two first-cause negatives fail on 36b49b99",
+  "test_n3_gap_receipts": "parity-n3s28d: Codex's 8f4725ed, bounded s5-native-gap/1 admission/select/pause/drain/control/open/commit timestamps (32768 events, atomic writer and receipt_lines reader seam), work unchanged"
  }
 }
