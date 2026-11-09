@@ -4,7 +4,7 @@
   "arm": "TRUNK",
   "probe": "compose5_cpu_probe.py"
  },
- "candidate": "q18a-parity-n3s24q2024w",
+ "candidate": "q18a-parity-n3s24q2024p",
  "checks": [
   [
    "tools/compose5_queue.py",
@@ -490,15 +490,29 @@
   ],
   "patches/s5_engine/qsa_driver.py": [
    "QsaLayerDriver._fused",
-   "QsaLayerDriver._pre"
+   "QsaLayerDriver._pre",
+   "QsaLayerDriver._tail"
   ],
   "patches/s5_engine/qsa_operation.py": [
    "NativeQsaDevice.__init__",
    "QsaPrefillOperation.__init__",
+   "QsaPrefillOperation._adopt_prefix",
+   "QsaPrefillOperation._alloc_receipt",
+   "QsaPrefillOperation._prefix_identity",
+   "QsaPrefillOperation._refresh",
    "QsaPrefillOperation.after_attention_bucket",
+   "QsaPrefillOperation.bind_prefetch_frame",
    "QsaPrefillOperation.fill_bucket",
+   "QsaPrefillOperation.note_prefetch_layer",
+   "QsaPrefillOperation.pending",
+   "QsaPrefillOperation.prefetch_inventory",
+   "QsaPrefillOperation.prefetch_next",
    "QsaPrefillOperation.release",
-   "fused_phase_every"
+   "class:PrefixCopy",
+   "fused_phase_every",
+   "module:MAX_PREFETCH_LAYERS",
+   "module:import sys",
+   "next_layer_prefetch"
   ],
   "patches/s5_engine/s5_startup.py": [
    "install_builder",
@@ -651,6 +665,7 @@
   ],
   "patches/s5_engine/worker_bridge.py": [
    "NativeWorkerBridge.__init__",
+   "NativeWorkerBridge._bind_prepare_source",
    "NativeWorkerBridge._cow_receipt",
    "NativeWorkerBridge._prepare_resuming",
    "NativeWorkerBridge._release_lane",
@@ -733,7 +748,7 @@
    "lineage_rows": []
   },
   "model_settings_changed": false,
-  "queue": "q18a-parity-n3s24q2024w: compose-4's queue with connections 32, the PLE switches, the 2048 chunk, prepare-ahead and the indexer logits cap 64 MiB for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
+  "queue": "q18a-parity-n3s24q2024p: compose-4's queue with connections 32, the PLE switches, the 2048 chunk, prepare-ahead and the indexer logits cap 64 MiB for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
   "scope": "b13 and hf at 32 with the four lever tracks under the closed-loop replay, the yield priced by frozen pairs, against c1b's READY build, discovery mode; not a release assessment and not a numerics result"
  },
  "dry_run": false,
@@ -1190,6 +1205,7 @@
    "harness/test_n3_fused_phases.py",
    "harness/test_n3_gap_receipts.py",
    "harness/test_n3_indexer_lifetime.py",
+   "harness/test_n3_next_layer_prefetch.py",
    "harness/test_n3_producer_witness.py",
    "harness/test_native39_trunk_queue.py",
    "harness/test_native43_engine_death_h.py",
@@ -1403,7 +1419,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 618,
+ "expected_tests": 619,
  "label": "compose-5",
  "overlay_definitions": {
   "core/scheduler.py": [
@@ -1806,15 +1822,29 @@
   ],
   "e3/qsa_driver.py": [
    "QsaLayerDriver._fused",
-   "QsaLayerDriver._pre"
+   "QsaLayerDriver._pre",
+   "QsaLayerDriver._tail"
   ],
   "e3/qsa_operation.py": [
    "NativeQsaDevice.__init__",
    "QsaPrefillOperation.__init__",
+   "QsaPrefillOperation._adopt_prefix",
+   "QsaPrefillOperation._alloc_receipt",
+   "QsaPrefillOperation._prefix_identity",
+   "QsaPrefillOperation._refresh",
    "QsaPrefillOperation.after_attention_bucket",
+   "QsaPrefillOperation.bind_prefetch_frame",
    "QsaPrefillOperation.fill_bucket",
+   "QsaPrefillOperation.note_prefetch_layer",
+   "QsaPrefillOperation.pending",
+   "QsaPrefillOperation.prefetch_inventory",
+   "QsaPrefillOperation.prefetch_next",
    "QsaPrefillOperation.release",
-   "fused_phase_every"
+   "class:PrefixCopy",
+   "fused_phase_every",
+   "module:MAX_PREFETCH_LAYERS",
+   "module:import sys",
+   "next_layer_prefetch"
   ],
   "e3/s5_startup.py": [
    "install_builder",
@@ -1967,6 +1997,7 @@
   ],
   "e3/worker_bridge.py": [
    "NativeWorkerBridge.__init__",
+   "NativeWorkerBridge._bind_prepare_source",
    "NativeWorkerBridge._cow_receipt",
    "NativeWorkerBridge._prepare_resuming",
    "NativeWorkerBridge._release_lane",
@@ -2000,16 +2031,16 @@
  "precheck": {
   "fixture_rows": [],
   "header": [
-   "q18a-parity-n3s24q2024w packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
+   "q18a-parity-n3s24q2024p packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
    "Engine: claude/compose-5-build, compose-4 with the decline counters, chunk_bound and the builder at 2048 rows from dp8d (FLASH_S5_CHUNK_TOKENS=2048 for the whole run), default off, selected per arm by typed control. No 5f, no 1g, no witness.",
    "Queue: compose-4's startup and cleanup with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen pairs on and off for the yield, the replay arm and its control without the yield; no fixed-schedule check."
   ],
   "seams": ""
  },
  "queue": [
-  "q18a_parity_n3s24q2024w.draft.sh",
-  "q18a_parity_n3s24q2024w_declare.sh",
-  "q18a_parity_n3s24q2024w_settings.sh"
+  "q18a_parity_n3s24q2024p.draft.sh",
+  "q18a_parity_n3s24q2024p_declare.sh",
+  "q18a_parity_n3s24q2024p_settings.sh"
  ],
  "rehearsal": null,
  "review": "prepare",
@@ -2029,7 +2060,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "b9d63430f8a46455b024046a123be446f98d111c",
+ "source_commit": "51c6e0e201c3abf058c9ea0693ac173ce6c03164",
  "source_paths": [
   "A\tharness/a1_trunk_arms.py",
   "A\tharness/a1_trunk_gate.py",
@@ -2073,6 +2104,7 @@
   "A\tharness/n3_fused_phases_fixture_leaves.json",
   "A\tharness/n3_gap_fixture_leaves.json",
   "A\tharness/n3_indexer_lifetime_fixture_leaves.json",
+  "A\tharness/n3_next_layer_prefetch_fixture_leaves.json",
   "A\tharness/n3_producer_witness_fixture_leaves.json",
   "A\tharness/native43_engine_death_h.py",
   "A\tharness/native43_engine_death_h_fixture_leaves.json",
@@ -2127,6 +2159,9 @@
   "A\tharness/runs/q18a_parity_n3s24.draft.sh",
   "A\tharness/runs/q18a_parity_n3s24_declare.sh",
   "A\tharness/runs/q18a_parity_n3s24_settings.sh",
+  "A\tharness/runs/q18a_parity_n3s24q2024p.draft.sh",
+  "A\tharness/runs/q18a_parity_n3s24q2024p_declare.sh",
+  "A\tharness/runs/q18a_parity_n3s24q2024p_settings.sh",
   "A\tharness/runs/q18a_parity_n3s24q2024rc6144.draft.sh",
   "A\tharness/runs/q18a_parity_n3s24q2024rc6144_declare.sh",
   "A\tharness/runs/q18a_parity_n3s24q2024rc6144_settings.sh",
@@ -2222,6 +2257,7 @@
   "A\tharness/test_n3_fused_phases.py",
   "A\tharness/test_n3_gap_receipts.py",
   "A\tharness/test_n3_indexer_lifetime.py",
+  "A\tharness/test_n3_next_layer_prefetch.py",
   "A\tharness/test_n3_producer_witness.py",
   "M\tharness/test_native35_performance.py",
   "M\tharness/test_native39_trunk_queue.py",
