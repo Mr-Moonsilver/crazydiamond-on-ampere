@@ -38,12 +38,14 @@ class Device:
     def query(self,event):
         assert self.reading,'query in launch path'
         self.queries+=1;return self.ready
+    def stream_token(self,stream):return {'compute':101,'copy':202}[stream]
 
 
 def recorder():
     d=Device();tx=sparse.make_transaction(chunk_end=201261)
     op=NS(device=d,transaction=tx,lane=sparse.make_lane(),_cancelled=None,stats={})
-    run=NS(layer_name='qsa.0',valid_tokens=201261)
+    run=NS(layer_name='qsa.0',valid_tokens=201261,pages=tuple(range(50)),buckets=(0,))
+    op._layers={'qsa.0':run}
     op._current_run=lambda:run
     trace=nm.FusedPhaseSpans(op);trace.group=(0,2);trace.stage=0;trace.fused_layers.add('qsa.0')
     return trace,d,op
@@ -53,12 +55,17 @@ def rows(trace,device):
     texts=[];device.reading=True
     with patch.object(nm,'emit_receipt_lines',side_effect=lambda lines,logger:texts.extend(lines)):
         trace.emit()
-    return [json.loads(s[len(nm.FusedPhaseSpans.PREFIX):]) for s in texts]
+    return [json.loads(s[len(nm.FusedPhaseSpans.PREFIX):]) for s in texts
+            if s.startswith(nm.FusedPhaseSpans.PREFIX)]
 
 
 def all_phases(trace):
+    previous=object();trace.consumer(previous,'earlier',0)
+    trace.bucket(0,previous,'previous_layer')
     for phase in trace.PHASES:
-        trace.end(trace.begin(phase,'copy' if phase.startswith('copy') else 'compute'))
+        trace.end(trace.begin(phase,'copy' if phase in ('copy_wait','copy',
+            'wait_current_producer','wait_previous_arena_consumer') else 'compute',
+            bucket=0 if phase not in ('score','topk','indexer','canonical_selection','kv_producer_update') else None))
 
 
 class BoundsAndScope(unittest.TestCase):
@@ -80,7 +87,7 @@ class BoundsAndScope(unittest.TestCase):
         data=rows(trace,d);self.assertTrue(data[-1]['complete'])
         self.assertEqual(data[0]['phases']['score']['count'],1)
         self.assertEqual(data[0]['phases']['copy']['stream'],'copy')
-        self.assertEqual((d.queries,d.reads),(5,5))
+        self.assertEqual((d.queries,d.reads),(len(trace.PHASES),len(trace.PHASES)))
         trace,d,op=recorder()
         for _ in range(300):trace.end(trace.begin('score','compute'))
         self.assertEqual(len(d.records),512);self.assertEqual(trace.markers,512);self.assertEqual(trace.dropped,44)
@@ -118,7 +125,7 @@ class BoundsAndScope(unittest.TestCase):
             self.assertEqual(writer.faults,0)
             self.assertEqual(writer.oversize,0)
             self.assertTrue(all(len(data)<=3968 for _,data in cap.writes))
-            self.assertEqual(len(lines),3)  # path, layer, summary
+            self.assertEqual(len(lines),4)  # path, layer, bucket witness, summary
         finally:atomic.close_pipe(writer)
 
     def test_layer_bound(self):
@@ -159,6 +166,7 @@ class RealFused(fused.FusedCase):
                 event=stack.device.record(stream);event.elapsed_time=lambda other:.25
                 stack.phase_events.append(event);return event
             stack.device.timing_event=timing
+            stack.device.stream_token=lambda stream:{'compute':101,'copy':202}[stream]
         network.run_until(lambda:network.layer_accepted(0) and network.layer_accepted(1),ready=())
         for stack in network.qsa.values():
             self.assertFalse(any(e.ready for e in stack.phase_events))
@@ -166,7 +174,7 @@ class RealFused(fused.FusedCase):
             self.assertEqual(stack.device.host_reads,[])
             self.assertEqual(stack.operation.phase_trace is not None,sample)
             if sample:
-                self.assertEqual(len(stack.operation.phase_trace.pairs),9) # three buckets, wait/copy/attention
+                self.assertEqual(len(stack.operation.phase_trace.pairs),18) # three bucket paths and three producer brackets
                 self.assertTrue(stack.operation.phase_trace.rows[stack.attention.layer_name]['fused'])
         # The fixture indexer is a kernel leaf; it does not forge score/top-k timing.
         captured=[]
@@ -183,6 +191,13 @@ class RealFused(fused.FusedCase):
         if sample and not sink_fail:
             self.assertTrue(evidence)
             self.assertTrue(all(not r['complete'] for r in evidence),'fake indexer cannot certify score coverage')
+            layers=[r for r in evidence if r.get('kind')!='summary']
+            self.assertTrue(all(r['history']==fused.HISTORY+64 and r['pages']==50 for r in layers))
+            self.assertTrue(all({'indexer','canonical_selection','kv_producer_update'} <= r['phases'].keys() for r in layers))
+            buckets=[json.loads(s[len(nm.FusedPhaseSpans.WITNESS_PREFIX):]) for s in captured
+                     if s.startswith(nm.FusedPhaseSpans.WITNESS_PREFIX)]
+            self.assertEqual(len(buckets),6)
+            self.assertTrue(all(r['consumer_kind']==('none' if r['bucket']==0 else 'previous_bucket') for r in buckets))
         return ([(e.kind,e.descriptor.layer_start) for e in network.sent()],
                 [(s.device.page_copies,s.operation.stats['bytes'],len(s.device.waits),s.operation.stats['sparse_source_released']) for s in network.qsa.values()])
 

@@ -1,0 +1,31 @@
+{
+  "schema": "n3-producer-witness-fixture-leaves/1",
+  "box_evidence": false,
+  "inherits": ["n3_fused_phases_fixture_leaves.json", "step_a_fixture_leaves.json"],
+  "leaves": [
+    {
+      "name": "two-logical-streams-real-native-operation",
+      "tests": "test_n3_producer_witness.DependencyOrder",
+      "replaces": "NativeQsaDevice.record, wait_event, timing_event, stream_token, query and CUDA Event.elapsed_time; source/arena tensors and CUDA attention execution",
+      "implementation": " StreamDevice extends FakeSparseDevice: two synthetic stream clocks, recording an event snapshots that stream, wait_event advances only its target stream to the source event. Copy durations are pages/4 and attention is 3 synthetic ms; intervening producer work is 10 synthetic ms. TimingEvent asserts no elapsed_time or timing-event query before release and no cross-stream elapsed reads. stream_token maps compute/copy to101/202. These numbers are sentinels, not device measurements. Real QsaPrefillOperation, source registration/holds, begin_forward, producer_submitted, bind_plan, fill_bucket, after_attention_bucket, end/drain/release run over two layers and three buckets. Source mapping and tensors inherit the generated sparse-history harness leaves.",
+      "equivalence": "Actual producer/consumer/copy-ready edges, their order, copies, source retirement, per-bucket provenance and late metadata refresh execute on the real operation. Off/on results are equal; a dependency-order reversal and removed copy-ready edge must fail. The direct fixture has no indexer/fused execution and explicitly expects INCOMPLETE, never a forged full witness.",
+      "cannot_prove": "CUDA driver event scheduling, GPU timing, actual attention values, hardware TP/PP concurrency or real allocator headroom."
+    },
+    {
+      "name": "recorder-frame-and-capacity",
+      "tests": "test_n3_producer_witness.BoundsAndRecords; test_n3_fused_phases.BoundsAndScope",
+      "replaces": "Actual operation _current_run and _layers metadata in recorder-only tests; time.monotonic_ns is real host time, not a device clock",
+      "implementation": " SimpleNamespace run records stand in for the real bound layer metadata. The history test starts at0 then sets the host-known planned history before emit. The six-layer bound emits actual recorder calls at2048 rows,262144 history,64MiB logits and three buckets:418 markers and18 bucket rows. This is a recorder capacity test, not a model-tree or device proof.",
+      "equivalence": "The unchanged recorder, bounded metadata/event accounting and completeness rules execute. Real four-worker fused composition separately checks the actual late bind refresh and all three producer brackets; its indexer kernel leaf still emits no score/topk markers and remains INCOMPLETE.",
+      "cannot_prove": "A CPU synthetic complete recorder frame cannot certify a box run, future larger geometry or event allocation bytes."
+    },
+    {
+      "name": "atomic-witness-capture-and-faults",
+      "tests": "test_n3_producer_witness.BoundsAndRecords.test_atomic_writer_new_prefix_and_long_fields_fit; inherited RealFused sink failures",
+      "replaces": " emit_receipt_lines interception, os.write capture through capture_writer; Event.elapsed_time returning123456789.12345678 for the long-record stress; NativeQsaDevice timing_event raising OSError in the failure case",
+      "implementation": "Actual ReceiptWriter and receipt_lines parser validate the new producer-witness prefix, pid/seq/sha and3968-byte atomic limit. Long epoch/transaction/stream tokens and a long floating sentinel stress serialization. Failure leaves preserve real dependencies and release behavior. Captured logger rows are fixture output only.",
+      "equivalence": "Wire integrity, bounded formatting, deferred event reads and non-quarantining telemetry failure execute. Literal seams: timing_event, stream_token, elapsed_time, emit_receipt_lines, _current_run, _layers.",
+      "cannot_prove": "Box FIFO pressure, actual event timing accuracy or real log throughput."
+    }
+  ]
+}

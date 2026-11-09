@@ -244,7 +244,7 @@ RECEIPT_IDENTITY_BYTES = 96
 RECEIPT_PATH_LINE = 'flash-s5 receipts '
 # ``flash-s5 stop `` (one JSON object, no parts) and ``flash-s5 memory-peak `` are the
 # receipt kinds claude/alpha-next added after 5990af80; their emit sites route here when composed.
-RECEIPT_JSON_PREFIXES = (PROGRESS_LINE, 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ', 'flash-s5 native-gap ', 'flash-s5 fused-phase ')
+RECEIPT_JSON_PREFIXES = (PROGRESS_LINE, 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ', 'flash-s5 native-gap ', 'flash-s5 fused-phase ', 'flash-s5 producer-witness ')
 # parity-na2: 'flash-s5 ahead-split ' (parity-ahead's receipt; q18a-parity-o3 n1 lost every one here: refused as a fault, nothing written).
 RECEIPT_KV_PREFIXES = (RECEIPT_PATH_LINE, 'flash-s5 native-alloc ', 'flash-s5 memory ',
                        'flash-s5 stage-local ', 'flash-s5 memory-peak ', 'flash-s5 cow ', 'flash-s5 ahead-split ')
@@ -3082,19 +3082,25 @@ class FusedPhaseSpans:
     """Passive operation-owned events: no waits or elapsed reads until release."""
     MAX_MARKERS = 512
     MAX_LAYERS = 24
-    PHASES = ('score', 'topk', 'copy_wait', 'copy', 'attention')
+    MAX_BUCKET_ROWS = 128
+    PHASES = ('score', 'topk', 'copy_wait', 'copy', 'attention',
+              'wait_current_producer', 'wait_previous_arena_consumer',
+              'compute_wait_for_copy', 'indexer', 'canonical_selection',
+              'kv_producer_update')
     PREFIX = 'flash-s5 fused-phase '
+    WITNESS_PREFIX = 'flash-s5 producer-witness '
 
     def __init__(self, operation):
         self.operation = operation
         self.rows, self.pending, self.pairs = {}, {}, []
+        self.buckets, self.consumers, self.details, self.pair_details = {}, {}, {}, {}
         self.markers = self.dropped = self.errors = self.submit_ns = 0
         self.group = None
         self.stage = None
         self.route_generation = None
         self.fused_layers = set()
 
-    def begin(self, phase, stream):
+    def begin(self, phase, stream, *, bucket=None):
         started = time.monotonic_ns()
         try:
             if self.markers + 2 > self.MAX_MARKERS:
@@ -3114,6 +3120,7 @@ class FusedPhaseSpans:
             self.markers += 2  # Reserve both endpoints even if an event fails.
             token = (name, phase, stream, self.operation.device.timing_event(stream))
             self.pending[id(token)] = token
+            self.details[id(token)] = (bucket, started)
             return token
         except Exception:
             self.errors += 1
@@ -3127,8 +3134,44 @@ class FusedPhaseSpans:
         started = time.monotonic_ns()
         try:
             name, phase, stream, first = self.pending.pop(id(token))
+            bucket, started_ns = self.details.pop(id(token))
             last = self.operation.device.timing_event(stream)
             self.pairs.append((name, phase, first, last))
+            self.pair_details[id(first)] = (bucket, time.monotonic_ns() - started_ns)
+        except Exception:
+            self.errors += 1
+        finally:
+            self.submit_ns += time.monotonic_ns() - started
+
+    def bucket(self, index, consumer, kind):
+        """Record provenance only; never query an event or change its dependency."""
+        started = time.monotonic_ns()
+        try:
+            if len(self.buckets) >= self.MAX_BUCKET_ROWS:
+                self.dropped += 1
+                return
+            run, device = self.operation._current_run(), self.operation.device
+            previous = self.consumers[id(consumer)] if consumer is not None else (None, None, None)
+            self.buckets[(run.layer_name, index)] = dict(layer=run.layer_name,
+                group=self.group, bucket=index, consumer_kind=kind,
+                consumer_layer=previous[0], consumer_bucket=previous[1],
+                producer_stream=device.stream_token(device.compute),
+                copy_stream=device.stream_token(device.copy),
+                consumer_stream=previous[2],
+                phases={})
+        except Exception:
+            self.errors += 1
+        finally:
+            self.submit_ns += time.monotonic_ns() - started
+
+    def consumer(self, event, layer, index):
+        started = time.monotonic_ns()
+        try:
+            if len(self.consumers) >= self.MAX_BUCKET_ROWS:
+                self.dropped += 1
+                return
+            device = self.operation.device
+            self.consumers[id(event)] = (layer, index, device.stream_token(device.compute))
         except Exception:
             self.errors += 1
         finally:
@@ -3146,19 +3189,46 @@ class FusedPhaseSpans:
                     continue
                 ms = float(first.elapsed_time(last))
                 row = self.rows[name]['phases'].setdefault(phase, dict(count=0, total_ms=0.0, max_ms=0.0,
-                    stream='copy' if phase in ('copy_wait','copy') else 'compute'))
+                    host_ns=0, host_max_ns=0,
+                    stream='copy' if phase in ('copy_wait','copy','wait_current_producer',
+                                              'wait_previous_arena_consumer') else 'compute'))
+                bucket, host_ns = self.pair_details[id(first)]
                 row['count'] += 1
                 row['total_ms'] += ms
                 row['max_ms'] = max(row['max_ms'], ms)
+                row['host_ns'] += host_ns
+                row['host_max_ns'] = max(row['host_max_ns'], host_ns)
+                if bucket is not None:
+                    self.buckets[(name, bucket)]['phases'][phase] = dict(ms=ms, host_ns=host_ns)
             except Exception:
                 incomplete += 1
         incomplete += int(not self.rows)
         for row in self.rows.values():
+            try:
+                run = op._layers[row['layer']]
+                row.update(history=run.valid_tokens, pages=len(run.pages), buckets=len(run.buckets))
+                incomplete += int(row['history'] < 1 or row['pages'] < 1 or row['buckets'] < 1)
+            except Exception:
+                incomplete += 1
             counts = {key: value['count'] for key, value in row['phases'].items()}
-            incomplete += int(not row['fused'] or set(counts) != set(self.PHASES) or
+            required = set(self.PHASES) - {'wait_previous_arena_consumer'}
+            buckets = [b for (name, _), b in self.buckets.items() if name == row['layer']]
+            incomplete += int(not row['fused'] or not required <= set(counts) or
                               counts.get('score') != counts.get('topk') or
                               counts.get('copy') != counts.get('attention') or
-                              counts.get('copy') != counts.get('copy_wait'))
+                              counts.get('copy') != counts.get('copy_wait') or
+                              counts.get('copy') != counts.get('compute_wait_for_copy') or
+                              counts.get('copy') != len(buckets) or
+                              counts.get('wait_current_producer') != 1 or
+                              counts.get('wait_previous_arena_consumer', 0) !=
+                              sum(b['consumer_kind'] != 'none' for b in buckets))
+        for bucket in self.buckets.values():
+            required = {'copy_wait', 'copy', 'attention', 'compute_wait_for_copy'}
+            if bucket['bucket'] == 0:
+                required.add('wait_current_producer')
+            if bucket['consumer_kind'] != 'none':
+                required.add('wait_previous_arena_consumer')
+            incomplete += int(set(bucket['phases']) != required)
         read_ns = time.monotonic_ns() - started
         tx = op.transaction
         identity = dict(schema='s5-fused-phase/1', rank=op.lane.worker_rank, stage=self.stage,
@@ -3169,13 +3239,20 @@ class FusedPhaseSpans:
             dropped=self.dropped, errors=self.errors, pending=len(self.pending), incomplete=incomplete,
             cancelled=op._cancelled is not None, complete=incomplete == 0 and op._cancelled is None,
             cpu_submit_ns=self.submit_ns, cpu_read_ns=read_ns,
+            witness_version=1,
             basis='stream event spans include launch gaps; streams may overlap; no device value readback')
         logger = __import__('logging').getLogger(__name__)
         emit_started = time.monotonic_ns()
         for row in self.rows.values():
             if emit_receipt_lines([self.PREFIX + json.dumps(dict(identity, **row), separators=(',', ':'))], logger) is False:
                 raise OSError('fused phase receipt sink refused record')
+        for row in self.buckets.values():
+            data = dict(identity, **row)
+            data['schema'] = 's5-producer-witness/1'
+            if emit_receipt_lines([self.WITNESS_PREFIX + json.dumps(data, separators=(',', ':'))], logger) is False:
+                raise OSError('producer witness sink refused record')
         summary = dict(identity, kind='summary', layers=len(self.rows),
+                       bucket_rows=len(self.buckets),
                        counters={key: op.stats.get(key, 0) for key in
                                  ('buckets','pieces','bytes','waits','copy_events','consumer_events')},
                        cpu_emit_ns_excludes_summary=time.monotonic_ns() - emit_started)

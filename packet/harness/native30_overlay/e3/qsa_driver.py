@@ -403,20 +403,30 @@ class QsaLayerDriver:
         operation.begin_layer(attn.layer_name, attn._qsa_host_kv)
         from lane_chunk import score_under_cap
         from native_measurement import indexer_phase_scope
-        with indexer_phase_scope(getattr(operation, 'phase_trace', None)):
+        phases = getattr(operation, 'phase_trace', None)
+        indexing = phases.begin('indexer', operation.device.compute) if phases is not None else None
+        with indexer_phase_scope(phases):
             selected = score_under_cap(lambda: attn.indexer(state['projected_qk'], inputs['positions'],
                                                             attn.topk_indices_buffer[:num_tokens]))
+        if phases is not None:
+            phases.end(indexing)
         if tuple(selected.shape) != (num_tokens, attn.indexer.packed_output_width):
             raise QsaDriverError('QSA indexer returned an invalid selection shape')
         if getattr(operation, 'memory_receipts', False):
             _note_indexer_scores(operation, self.forward_context, attn, num_tokens)
         from lane_comm import canonical_selection
+        agreeing = phases.begin('canonical_selection', operation.device.compute) if phases is not None else None
         canonical_selection(selected)
+        if phases is not None:
+            phases.end(agreeing)
         operation.boundary_evidence(selected, selection=True)
         impl = attn.impl
+        storing = phases.begin('kv_producer_update', operation.device.compute) if phases is not None else None
         impl.do_kv_cache_update(attn, state['key'], state['value'], attn.kv_cache,
                                 main.slot_mapping)
         operation.producer_submitted(attn.layer_name, state['key'], state['value'], attn.kv_cache)
+        if phases is not None:
+            phases.end(storing)
         hold = self.source_holds.get(attn.layer_name)
         if hold is not None:
             operation.attach_sparse_source(attn.layer_name, hold)

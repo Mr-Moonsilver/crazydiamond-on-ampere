@@ -2022,23 +2022,36 @@ class QsaPrefillOperation:
         run._pending_consumer = consumer
         try:
             phases = self.phase_trace
-            waiting = phases.begin('copy_wait', self.device.copy) if phases is not None else None
+            if phases is not None:
+                previous = self._last_arena_consumer if index == 0 else run.consumed[-1].event
+                phases.bucket(index, previous, 'none' if previous is None else
+                              'previous_layer' if index == 0 else 'previous_bucket')
+            waiting = phases.begin('copy_wait', self.device.copy, bucket=index) if phases is not None else None
             # Producer visibility and arena reuse are GPU dependencies, not host
             # waits.  The first bucket waits for the store and for the last
             # consumer of this shared arena; later buckets wait for the previous
             # consumer of this layer.
             if index == 0:
+                producing = phases.begin('wait_current_producer', self.device.copy, bucket=index) if phases is not None else None
                 self.device.wait_event(self.device.copy, run.producer.event)
                 self.stats['waits'] += 1
+                if phases is not None:
+                    phases.end(producing)
                 if self._last_arena_consumer is not None:
+                    consuming = phases.begin('wait_previous_arena_consumer', self.device.copy, bucket=index) if phases is not None else None
                     self.device.wait_event(self.device.copy, self._last_arena_consumer)
                     self.stats['waits'] += 1
+                    if phases is not None:
+                        phases.end(consuming)
             else:
+                consuming = phases.begin('wait_previous_arena_consumer', self.device.copy, bucket=index) if phases is not None else None
                 self.device.wait_event(self.device.copy, run.consumed[-1].event)
                 self.stats['waits'] += 1
+                if phases is not None:
+                    phases.end(consuming)
             if phases is not None:
                 phases.end(waiting)
-            copying = phases.begin('copy', self.device.copy) if phases is not None else None
+            copying = phases.begin('copy', self.device.copy, bucket=index) if phases is not None else None
             timing = self.trace.begin('copy', self.device.copy) if self.trace is not None else None
             for source_page, arena_page, pages in bucket.pieces:
                 self.device.copy_pages(run.source, run.arena, source_page,
@@ -2052,9 +2065,12 @@ class QsaPrefillOperation:
             self.stats['pieces'] += len(bucket.pieces)
             self.stats['bytes'] += copy.bytes
             self.stats['copy_events'] += 1
+            computing = phases.begin('compute_wait_for_copy', self.device.compute, bucket=index) if phases is not None else None
             self.device.wait_event(self.device.compute, copy.event)
             self.stats['waits'] += 1
-            run._phase_attention = phases.begin('attention', self.device.compute) if phases is not None else None
+            if phases is not None:
+                phases.end(computing)
+            run._phase_attention = phases.begin('attention', self.device.compute, bucket=index) if phases is not None else None
             if self.trace is not None:
                 row = self.trace.row()
                 row['descriptors'] += copy.descriptors if sparse_active_for_trace(run) else len(copy.pieces)
@@ -2104,6 +2120,8 @@ class QsaPrefillOperation:
         except BaseException:
             self._failed = True
             raise
+        if self.phase_trace is not None:
+            self.phase_trace.consumer(consumer.event, run.layer_name, run.active_bucket)
         run.consumed.append(consumer)
         if run.sparse is not None and run.sparse.active_bucket is not None:
             run.sparse.active_bucket = None

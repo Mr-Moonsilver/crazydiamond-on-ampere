@@ -29,7 +29,7 @@ from pathlib import Path
 
 # `flash-s5 stop ` is one JSON object without parts; `flash-s5 memory-peak ` a k=v line (both added on claude/alpha-next
 # after 5990af80).
-JSON_PREFIXES = ('flash-s5 progress ', 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ', 'flash-s5 native-gap ', 'flash-s5 fused-phase ')
+JSON_PREFIXES = ('flash-s5 progress ', 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ', 'flash-s5 native-gap ', 'flash-s5 fused-phase ', 'flash-s5 producer-witness ')
 KV_PREFIXES = ('flash-s5 receipts ', 'flash-s5 native-alloc ', 'flash-s5 memory ', 'flash-s5 stage-local ',
                'flash-s5 memory-peak ', 'flash-s5 cow ', 'flash-s5 ahead-split ')    # parity-na2: the writer's list, kept equal
 PREFIXES = JSON_PREFIXES + KV_PREFIXES
