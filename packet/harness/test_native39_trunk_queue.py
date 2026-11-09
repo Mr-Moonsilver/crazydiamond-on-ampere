@@ -1001,7 +1001,7 @@ class Launcher(unittest.TestCase):
         launch.write_text(s5g._s5_launcher(e2g.launcher(prod.read_text())))
         self.assertEqual(dec.sha(launch), dec.S5_LAUNCHER_SHA)
         (fixture.task / 'prod/run-flash-prod.sh').write_bytes(prod.read_bytes())  # the found launcher
-        names = ['e3/__init__.py', 'e3/decode-probe-evidence.json', *['e3/%s.py' % n for n in s5g.E3_MODULES],
+        names = ['ops_qsa_indexer.py', 'e3/__init__.py', 'e3/decode-probe-evidence.json', *['e3/%s.py' % n for n in s5g.E3_MODULES],
                  *['e3/' + n for n in s5g.NATIVE_FILES], 'e3/native/build_green_helper.sh',
                  *['e3_sources/' + n for n in ('executor.py', 'core.py', 'worker.py', 'cudagraph_utils.py', 'sampler.py',
                                                'async_utils.py', 'model.py', 'api_routers.py')]]

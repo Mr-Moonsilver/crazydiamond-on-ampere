@@ -115,6 +115,11 @@ b.derive_runner = derive_runner
 def overlay_level(spec, overlay, parent_rows):
     """build_native43's overlay rule plus exactly the declared added module; ``prove`` runs on the changed ones only."""
     rows = b.verify(overlay)
+    # An independently frozen declaration pin must match the verified overlay bytes.
+    declaration = ast.parse((b.ROOT / 'harness/identity_declare.py').read_text())
+    pins = [ast.literal_eval(n.value) for n in declaration.body if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == 'S5_LAUNCHER_SHA' for t in n.targets)]
+    assert pins == [rows['run-flash-s5-test.sh']], 'overlay/declaration launcher pin differs'
     added = sorted(set(rows) - set(parent_rows))
     assert added == sorted(NEW_OVERLAY), ('overlay files added', added)
     assert not set(parent_rows) - set(rows), 'overlay file removed'

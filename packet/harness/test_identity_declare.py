@@ -168,7 +168,7 @@ class DeclareTests(unittest.TestCase):
         found = self.task / 'prod/run-flash-prod.sh'
         found.write_bytes((ROOT / 'deploy/run-flash-prod.sh').read_bytes())
         found_before = found.read_bytes()
-        names = ['e3/__init__.py', 'e3/decode-probe-evidence.json',
+        names = ['ops_qsa_indexer.py', 'e3/__init__.py', 'e3/decode-probe-evidence.json',
                  *[f'e3/{name}.py' for name in s5g.E3_MODULES],
                  *[f'e3/{name}' for name in s5g.NATIVE_FILES],
                  'e3/native/build_green_helper.sh',
