@@ -344,6 +344,9 @@ class QsaLayerDriver:
         if grant.query.layer != layer_idx:
             raise QsaDriverError('fused grant belongs to another layer')
         phases = getattr(self.operation, 'phase_trace', None)
+        if getattr(self.operation, 'prefetch_enabled', False):
+            self.operation.note_prefetch_layer(lane.model.layers[layer_idx].self_attn.layer_name,
+                                               layer_idx, self.operation._prefix_group)
         if phases is not None and len(phases.fused_layers) < phases.MAX_LAYERS:
             phases.fused_layers.add(lane.model.layers[layer_idx].self_attn.layer_name)
         self._pre(lane, layer_idx)
@@ -520,6 +523,19 @@ class QsaLayerDriver:
         self.operation.boundary_evidence(phase.attn_state['attn_output'])
         attn_out = attn._flash_e3_attention_post(phase.attn_state)
         self.operation.end_layer(attn.layer_name)
+        if (getattr(self.operation, 'prefetch_enabled', False)
+                and getattr(phase.grant, 'fused', False) is True):
+            # The last arena consumer precedes intervening model/indexer work on this same native stream.
+            for index in range(phase.layer_idx + 1, lane.end_layer):
+                if self.owns(lane.model, index):
+                    following = lane.model.layers[index].self_attn
+                    group = self.operation._prefix_group
+                    shift = index - phase.layer_idx
+                    hint = (tuple(x + shift for x in group) if group is not None
+                            and group[1] > group[0] and shift % (group[1] - group[0]) == 0 else None)
+                    self.operation.prefetch_next(following.layer_name, index,
+                        getattr(following, '_qsa_stage_arena_bytes', 0), hint)
+                    break
         result = layer._flash_e3_layer_post(phase.hidden, attn_out, phase.injection)
         del self.phases[phase.layer_idx]
         self.records.append(('tail', phase.layer_idx, self.clock() - phase.started_ns))

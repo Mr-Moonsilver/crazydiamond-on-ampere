@@ -405,6 +405,8 @@ class NativeWorkerBridge:
         operation = getattr(self.dispatcher, 'operation', None)
         if operation is not None:
             operation.native_source_holds = binding.holds
+            if getattr(operation, 'prefetch_enabled', False):
+                operation.bind_prefetch_frame(admission)
         return binding
 
     def _close_source_binding(self):

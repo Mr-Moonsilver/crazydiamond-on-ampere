@@ -46,6 +46,7 @@ import os
 import json
 import hashlib
 import logging
+import sys
 from functools import wraps
 
 from sparse_history_dma import (
@@ -86,6 +87,7 @@ MAX_OUTSTANDING_BUCKETS = 1
 MAX_LAYER_PAGES = 128
 MAX_STAGES_PER_LAYER = 1 + 2 * math.ceil(MAX_LAYER_PAGES / MAX_BUCKET_PAGES)
 MAX_TRACKED_TICKETS = 512
+MAX_PREFETCH_LAYERS = 6  # Pinned PP2 model: six local QSA layers; other layouts stay cold.
 # Explicit byte bound for the one operation-owned union buffer set: three
 # int32 vectors over the dense selection capacity, two int32 block totals and
 # the two-word count/route record, plus the inverse-remap buffer.  A geometry
@@ -174,6 +176,20 @@ class BucketPlan:
     @property
     def pages(self):
         return self.hi - self.lo
+
+
+@dataclass
+class PrefixCopy:
+    layer_name: str
+    pages: tuple
+    pieces: tuple
+    source_facts: TensorFacts
+    arena_facts: TensorFacts
+    identity: tuple
+    owners: tuple = field(repr=False)
+    event: object = field(default=None, repr=False)
+    complete: bool = False
+    used: bool = False
 
 
 @dataclass
@@ -399,6 +415,7 @@ class NativeQsaDevice:
         self.torch = torch
         self.native_qsa_policy, self.native_qsa_trace = native_qsa_settings(env)
         self.native_fused_phase_every = fused_phase_every(env)
+        self.native_next_layer_prefetch = next_layer_prefetch(env)
         declared = os.environ if env is None else env
         self.native_qsa_boundary = declared.get('FLASH_S5_NATIVE_QSA_STOP_AFTER', '0') == '101200'
         # M3: per-chunk allocation receipts, on the worker bridge's existing receipt gate.
@@ -594,6 +611,14 @@ def native_qsa_settings(env=None):
     return policy, trace == '1'
 
 
+def next_layer_prefetch(env=None):
+    env = os.environ if env is None else env
+    value = env.get('FLASH_S5_NEXT_LAYER_PREFETCH', '0')
+    if value not in ('0', '1'):
+        raise OperationError('FLASH_S5_NEXT_LAYER_PREFETCH must be 0 or 1')
+    return value == '1'
+
+
 def fused_phase_every(env=None):
     env = os.environ if env is None else env
     value = env.get('FLASH_S5_FUSED_PHASE_EVERY', '0')
@@ -735,6 +760,11 @@ class QsaPrefillOperation:
         every = getattr(device, 'native_fused_phase_every', 0)
         self.phase_trace = (FusedPhaseSpans(self) if every and
                             (transaction.txn_seq - 1) % every == 0 else None)
+        self.prefetch_enabled = getattr(device, 'native_next_layer_prefetch', False) is True
+        self._prefix_frame = self._prefix_pending = self._prefix_group = None
+        self._prefix_copies = []
+        self._prefix_rows = {}
+        self._prefix_overflow = 0
         self.memory_receipts = getattr(device, 'native_memory_receipts', False) is True
         self.union_retire = getattr(device, 'native_union_retire', False) is True
         self.clock = clock
@@ -813,8 +843,7 @@ class QsaPrefillOperation:
             stats, tx = self.stats, self.transaction
             # Alpha-next PLAN 2: one atomic write through the process receipt writer.
             from native_measurement import emit_receipt_kv
-            emit_receipt_kv(
-                'flash-s5 native-alloc rank=%d txn_seq=%d chunk=%d-%d union_retire=%d union_sets=%d '
+            text = ('flash-s5 native-alloc rank=%d txn_seq=%d chunk=%d-%d union_retire=%d union_sets=%d '
                 'union_retired=%d union_single=%d union_live_max=%d indexer_layers=%d '
                 'indexer_rows=%d indexer_width=%d '
                 'indexer_chunks=%d indexer_peak=%d indexer_total=%d indexer_errors=%d'
@@ -823,10 +852,163 @@ class QsaPrefillOperation:
                    stats['union_scratch_bytes'], stats['union_scratch_live_max_bytes'],
                    stats['indexer_layers'], stats['indexer_rows'], stats['indexer_width'],
                    stats['indexer_chunks'], stats['indexer_peak_bytes'],
-                   stats['indexer_total_bytes'], stats['indexer_errors']),
-                logging.getLogger(__name__))
+                   stats['indexer_total_bytes'], stats['indexer_errors']))
+            if getattr(self, 'prefetch_enabled', False):
+                text += ' prefix_prefetch=' + json.dumps(self.prefetch_inventory(), separators=(',', ':'))
+            emit_receipt_kv(text, logging.getLogger(__name__))
         except Exception:
             self.stats['alloc_receipt_errors'] += 1
+
+    def bind_prefetch_frame(self, admission):
+        """The bridge's immutable, source-validated admission; never a speculative allocator frame."""
+        from lane_chunk import ChunkAdmission
+        if (type(admission) is not ChunkAdmission or self._prefix_frame is not None or self._forward_open
+                or admission.transaction != self.transaction
+                or type(admission.state_epoch) is not int or admission.state_epoch < 1):
+            raise OperationError('prefetch frame differs from the open transaction')
+        self._prefix_frame = admission
+
+    def note_prefetch_layer(self, name, index, group=None):
+        row = self._prefix_rows.get(name)
+        if row is None:
+            if len(self._prefix_rows) >= MAX_PREFETCH_LAYERS:
+                self._prefix_overflow += 1
+                return None
+            row = dict(layer=index, group=group, issued=0, used=0,
+                       issued_bytes=0, used_bytes=0, descriptors=0, why='cold', plan_ns=0, enqueue_ns=0)
+            self._prefix_rows[name] = row
+        elif group is not None:
+            row['group'] = group
+        return row
+
+    def _prefix_identity(self, run):
+        return (self.transaction, self.lane, self.state_epoch, self.allocation_epoch,
+                run.source_epoch, run.source_versions, run.sparse_hold.owner)
+
+    def prefetch_next(self, name, index, arena_bytes, group=None):
+        """Move only a leading run of immutable whole descriptors, behind the last arena reader."""
+        started = time.monotonic_ns()
+        row = self.note_prefetch_layer(name, index, group)
+        if row is None:
+            return False
+        try:
+            self._check_identity(layer_name=name)
+            if not self.prefetch_enabled or self.fused_refusal() is not None:
+                raise OperationError('route')
+            if self._prefix_pending is not None or len(self._layers) > MAX_PREFETCH_LAYERS:
+                raise OperationError('capacity')
+            old, run, frame = self._current_run(), self._layer(name), self._prefix_frame
+            if (frame is None or frame.transaction != self.transaction
+                    or frame.state_epoch != self.state_epoch or frame.chunk_start != self.transaction.chunk_start):
+                raise OperationError('frame')
+            if (not old.finished or not old.consumed or old._pending_consumer is not None
+                    or old.next_bucket != len(old.buckets)
+                    or self._last_arena_consumer is not old.consumed[-1].event
+                    or getattr(old.schedule_grant, 'fused', False) is not True):
+                raise OperationError('consumer')
+            if run.producer is not None or run.finished:
+                raise OperationError('already-started')
+            arena, facts = old.arena, old.arena_facts
+            if (facts is None or self.device.facts(arena) != facts
+                    or facts.shape != (MAX_BUCKET_PAGES, *run.source_facts.shape[1:])
+                    or type(arena_bytes) is not int or arena_bytes // PAGE_BYTES != MAX_BUCKET_PAGES):
+                raise OperationError('arena')
+            pages = self._plan(name, (frame.chunk_end + PAGE_ROWS - 1) // PAGE_ROWS)
+            if (len(set(pages)) != len(pages) or not run.source_versions
+                    or any(p <= 0 or p >= run.source_facts.shape[0] or p >= len(run.source_versions) for p in pages)):
+                raise OperationError('mapping')
+            hold = run.sparse_hold
+            if hold is None:
+                raise OperationError('source')
+            hold.validate(hold.owner, name, pages)
+            owner = hold.owner
+            if (owner.transaction != self.transaction or owner.lane != self.lane
+                    or owner.storage_epoch != self.allocation_epoch or owner.source_epoch != run.source_epoch
+                    or owner.valid_tokens != frame.chunk_end
+                    or run.source_versions != self.source_versions.get(name)
+                    or self.device.facts(run.source) != run.source_facts):
+                raise OperationError('source-identity')
+            blocked = set(frame.new_block_ids_to_zero) | {b for pair in frame.cow_pairs for b in pair}
+            writes = set(pages[frame.chunk_start // PAGE_ROWS:])
+            pieces = []
+            for source, dest, count in plan_buckets(pages)[0].pieces:
+                if ((dest + count) * PAGE_ROWS > frame.chunk_start
+                        or any(p in blocked or p in writes for p in range(source, source + count))):
+                    break
+                pieces.append((source, dest, count))
+            if not pieces:
+                raise OperationError('no-immutable-piece')
+            record = PrefixCopy(name, tuple(pages), tuple(pieces), run.source_facts,
+                facts, self._prefix_identity(run), (run.source, arena, hold))
+        except (OperationError, SourceRefused) as exc:
+            row['why'] = str(exc)[:48]
+            return False
+        finally:
+            row['plan_ns'] += time.monotonic_ns() - started
+        # Register ownership before any enqueue; a partial failure is quarantined, never forgotten.
+        self._prefix_copies.append(record)
+        self._prefix_pending = record
+        phases = self.phase_trace
+        started = time.monotonic_ns()
+        try:
+            waiting = phases.begin('prefetch_wait_for_arena', self.device.copy, layer_name=name, group=group) if phases is not None else None
+            # C is after PREPARE/earlier native writers; only full committed pages disjoint from this frame's writes move early.
+            self.device.wait_event(self.device.copy, self._last_arena_consumer)
+            if phases is not None:
+                phases.end(waiting)
+            copying = phases.begin('prefetch_copy', self.device.copy, layer_name=name, group=group) if phases is not None else None
+            for source, dest, count in pieces:
+                self.device.copy_pages(run.source, arena, source, dest, count)
+                row['issued_bytes'] += count * PAGE_BYTES
+                self.stats['pieces'] += 1
+                self.stats['bytes'] += count * PAGE_BYTES
+            if phases is not None:
+                phases.end(copying)
+            record.event = self.device.record(self.device.copy)
+            row.update(issued=1, descriptors=len(pieces), why='issued')
+        except BaseException:
+            self._failed = True
+            raise
+        finally:
+            row['enqueue_ns'] += time.monotonic_ns() - started
+        return True
+
+    def _adopt_prefix(self, run, index, pieces):
+        record = self._prefix_pending
+        if record is None:
+            return pieces
+        if (index != 0 or record.layer_name != run.layer_name
+                or record.identity != self._prefix_identity(run)
+                or record.owners[0] is not run.source or record.owners[2] is not run.sparse_hold
+                or record.pages != run.pages or record.source_facts != self.device.facts(run.source)
+                or record.arena_facts != self.device.facts(run.arena)
+                or tuple(pieces[:len(record.pieces)]) != record.pieces
+                or record.used or record.event is None):
+            self._failed = True
+            raise OperationError('prefetched prefix differs from the actual admitted plan')
+        record.used = True
+        self._prefix_pending = None
+        row = self._prefix_rows[run.layer_name]
+        row.update(used=1, used_bytes=row['issued_bytes'], why='used')
+        return pieces[len(record.pieces):]
+
+    def prefetch_inventory(self):
+        fields = ('layer', 'lo', 'hi', 'issued', 'used', 'wasted', 'issued_bytes', 'used_bytes', 'wasted_bytes', 'descriptors', 'plan_ns', 'enqueue_ns', 'reason')
+        rows = []
+        for row in self._prefix_rows.values():
+            lo, hi = row['group'] if row['group'] is not None else (-1, -1)
+            rows.append([row['layer'], lo, hi, row['issued'], row['used'], row['issued'] - row['used'],
+                         row['issued_bytes'], row['used_bytes'], row['issued_bytes'] - row['used_bytes'],
+                         row['descriptors'], row['plan_ns'], row['enqueue_ns'], row['why']])
+        metadata = sys.getsizeof(self._prefix_copies) + sys.getsizeof(self._prefix_rows)
+        metadata += sum(sys.getsizeof(c) + sys.getsizeof(c.__dict__) + sys.getsizeof(c.pieces)
+                        + sys.getsizeof(c.pages) + sys.getsizeof(c.identity) for c in self._prefix_copies)
+        metadata += sum(sys.getsizeof(r) for r in self._prefix_rows.values())
+        return dict(v=1, fields=fields, rows=rows, overflow=self._prefix_overflow,
+                    extra_arena_bytes=0, extra_tensor_bytes=0, events=len(self._prefix_copies),
+                    metadata_shallow_bytes=metadata,
+                    host_plan_ns=sum(r['plan_ns'] for r in self._prefix_rows.values()),
+                    host_enqueue_ns=sum(r['enqueue_ns'] for r in self._prefix_rows.values()))
 
     def boundary_evidence(self, tensor, *, selection=False):
         if (self.trace is None or self.transaction.chunk_end != 101200
@@ -2012,6 +2194,8 @@ class QsaPrefillOperation:
         copy.page_bytes = page_bytes
         copy.pieces = bucket.pieces
         copy.owners = (run.source, run.arena, run.table)
+        pieces = (self._adopt_prefix(run, index, bucket.pieces)
+                  if self.prefetch_enabled else bucket.pieces)
         self._mark_qualification_bucket(
             run, index, route='dense_dma', rows=bucket.pages * PAGE_ROWS,
             pieces=len(bucket.pieces), compact_start=None, nbytes=copy.bytes,
@@ -2053,7 +2237,7 @@ class QsaPrefillOperation:
                 phases.end(waiting)
             copying = phases.begin('copy', self.device.copy, bucket=index) if phases is not None else None
             timing = self.trace.begin('copy', self.device.copy) if self.trace is not None else None
-            for source_page, arena_page, pages in bucket.pieces:
+            for source_page, arena_page, pages in pieces:
                 self.device.copy_pages(run.source, run.arena, source_page,
                                        arena_page, pages)
             if self.trace is not None:
@@ -2062,8 +2246,9 @@ class QsaPrefillOperation:
                 phases.end(copying)
             copy.event = self.device.record(self.device.copy)
             self.stats['buckets'] += 1
-            self.stats['pieces'] += len(bucket.pieces)
-            self.stats['bytes'] += copy.bytes
+            self.stats['pieces'] += len(pieces)
+            self.stats['bytes'] += (sum(p[2] for p in pieces) * page_bytes
+                                    if self.prefetch_enabled else copy.bytes)
             self.stats['copy_events'] += 1
             computing = phases.begin('compute_wait_for_copy', self.device.compute, bucket=index) if phases is not None else None
             self.device.wait_event(self.device.compute, copy.event)
@@ -2355,6 +2540,13 @@ class QsaPrefillOperation:
         completed = []
         if self._failed or self._released:
             return ()
+        for prefix in self._prefix_copies:
+            if not prefix.complete and prefix.event is not None:
+                try:
+                    prefix.complete = bool(self.device.query(prefix.event))
+                except BaseException:
+                    self._failed = True
+                    raise
         for run in self._layers.values():
             sparse = run.sparse
             if sparse is None or sparse.wave_copy is None or sparse.wave_event is None:
@@ -2411,7 +2603,8 @@ class QsaPrefillOperation:
 
     @property
     def pending(self):
-        return sum(1 for record in self._records if not record.complete)
+        return (sum(1 for record in self._records if not record.complete)
+                + sum(not prefix.complete for prefix in self._prefix_copies))
 
     @property
     def pending_buckets(self):
@@ -2502,6 +2695,8 @@ class QsaPrefillOperation:
             self._continuation.close()
             self._continuation = None
         self._owners.clear()
+        self._prefix_pending = self._prefix_frame = None
+        self._prefix_copies.clear()
         self._index_scratch.clear()
         self._union_scratch = None
         self._union_scratch_layer = None

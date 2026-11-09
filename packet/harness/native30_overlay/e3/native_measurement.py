@@ -3086,7 +3086,7 @@ class FusedPhaseSpans:
     PHASES = ('score', 'topk', 'copy_wait', 'copy', 'attention',
               'wait_current_producer', 'wait_previous_arena_consumer',
               'compute_wait_for_copy', 'indexer', 'canonical_selection',
-              'kv_producer_update')
+              'kv_producer_update', 'prefetch_wait_for_arena', 'prefetch_copy')
     PREFIX = 'flash-s5 fused-phase '
     WITNESS_PREFIX = 'flash-s5 producer-witness '
 
@@ -3100,19 +3100,20 @@ class FusedPhaseSpans:
         self.route_generation = None
         self.fused_layers = set()
 
-    def begin(self, phase, stream, *, bucket=None):
+    def begin(self, phase, stream, *, bucket=None, layer_name=None, group=None):
         started = time.monotonic_ns()
         try:
             if self.markers + 2 > self.MAX_MARKERS:
                 self.dropped += 1
                 return None
-            run = self.operation._current_run()
+            run = (self.operation._layer(layer_name) if layer_name is not None
+                   else self.operation._current_run())
             name = run.layer_name
             if name not in self.rows:
                 if len(self.rows) >= self.MAX_LAYERS:
                     self.dropped += 1
                     return None
-                self.rows[name] = dict(layer=name, group=self.group, history=run.valid_tokens,
+                self.rows[name] = dict(layer=name, group=self.group if group is None else group, history=run.valid_tokens,
                                        fused=name in self.fused_layers,
                                        phases={})
             if phase not in self.PHASES:
@@ -3191,7 +3192,8 @@ class FusedPhaseSpans:
                 row = self.rows[name]['phases'].setdefault(phase, dict(count=0, total_ms=0.0, max_ms=0.0,
                     host_ns=0, host_max_ns=0,
                     stream='copy' if phase in ('copy_wait','copy','wait_current_producer',
-                                              'wait_previous_arena_consumer') else 'compute'))
+                                              'wait_previous_arena_consumer', 'prefetch_wait_for_arena',
+                                              'prefetch_copy') else 'compute'))
                 bucket, host_ns = self.pair_details[id(first)]
                 row['count'] += 1
                 row['total_ms'] += ms
@@ -3204,14 +3206,21 @@ class FusedPhaseSpans:
                 incomplete += 1
         incomplete += int(not self.rows)
         for row in self.rows.values():
+            prefix = None
             try:
                 run = op._layers[row['layer']]
                 row.update(history=run.valid_tokens, pages=len(run.pages), buckets=len(run.buckets))
+                prefix = getattr(op, '_prefix_rows', {}).get(row['layer'])
+                if prefix is not None and prefix['issued']:
+                    row['fused'] = row['layer'] in self.fused_layers
+                if prefix is not None and prefix['group'] is not None:
+                    row['group'] = prefix['group']
                 incomplete += int(row['history'] < 1 or row['pages'] < 1 or row['buckets'] < 1)
             except Exception:
                 incomplete += 1
             counts = {key: value['count'] for key, value in row['phases'].items()}
-            required = set(self.PHASES) - {'wait_previous_arena_consumer'}
+            required = set(self.PHASES) - {'wait_previous_arena_consumer', 'prefetch_wait_for_arena', 'prefetch_copy'}
+            issued = bool(prefix and prefix['issued'])
             buckets = [b for (name, _), b in self.buckets.items() if name == row['layer']]
             incomplete += int(not row['fused'] or not required <= set(counts) or
                               counts.get('score') != counts.get('topk') or
@@ -3221,7 +3230,9 @@ class FusedPhaseSpans:
                               counts.get('copy') != len(buckets) or
                               counts.get('wait_current_producer') != 1 or
                               counts.get('wait_previous_arena_consumer', 0) !=
-                              sum(b['consumer_kind'] != 'none' for b in buckets))
+                              sum(b['consumer_kind'] != 'none' for b in buckets) or
+                              counts.get('prefetch_copy', 0) != int(issued) or
+                              counts.get('prefetch_wait_for_arena', 0) != int(issued))
         for bucket in self.buckets.values():
             required = {'copy_wait', 'copy', 'attention', 'compute_wait_for_copy'}
             if bucket['bucket'] == 0:

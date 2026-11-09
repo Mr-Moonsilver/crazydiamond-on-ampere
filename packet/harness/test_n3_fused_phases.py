@@ -63,6 +63,8 @@ def all_phases(trace):
     previous=object();trace.consumer(previous,'earlier',0)
     trace.bucket(0,previous,'previous_layer')
     for phase in trace.PHASES:
+        if phase.startswith('prefetch_'):
+            continue
         trace.end(trace.begin(phase,'copy' if phase in ('copy_wait','copy',
             'wait_current_producer','wait_previous_arena_consumer') else 'compute',
             bucket=0 if phase not in ('score','topk','indexer','canonical_selection','kv_producer_update') else None))
@@ -87,7 +89,7 @@ class BoundsAndScope(unittest.TestCase):
         data=rows(trace,d);self.assertTrue(data[-1]['complete'])
         self.assertEqual(data[0]['phases']['score']['count'],1)
         self.assertEqual(data[0]['phases']['copy']['stream'],'copy')
-        self.assertEqual((d.queries,d.reads),(len(trace.PHASES),len(trace.PHASES)))
+        self.assertEqual((d.queries,d.reads),(len(trace.PHASES)-2,len(trace.PHASES)-2))
         trace,d,op=recorder()
         for _ in range(300):trace.end(trace.begin('score','compute'))
         self.assertEqual(len(d.records),512);self.assertEqual(trace.markers,512);self.assertEqual(trace.dropped,44)
