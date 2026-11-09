@@ -105,7 +105,7 @@ suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='te
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_alpha_next_c1b_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_inwait_queue.py'))
 suite.addTests(unittest.defaultTestLoader.discover('/source/harness',pattern='test_compose5_queue.py'))
-EXPECTED_TESTS=618  # the 585 inwait probe cases plus the 33 compose-5 queue cases; pinned into the frozen runner gate
+EXPECTED_TESTS=619  # the 585 inwait probe cases plus the 34 compose-5 queue cases; pinned into the frozen runner gate
 import step_b_clock_bound
 suite,clock_bound_removed=step_b_clock_bound.filtered(suite)
 assert clock_bound_removed==step_b_clock_bound.IN_PROBE,clock_bound_removed
@@ -122,7 +122,7 @@ spec=importlib.util.spec_from_file_location('native34_frozen_owner','/source/own
 owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(owner)
 role=os.environ['FLASH_NATIVE35_ARM'];assert role=='TRUNK' and os.environ['FLASH_NATIVE34_ARM']=='O'
 provenance=json.loads(Path('/source/harness/native30-provenance.json').read_text())
-assert provenance['native35_arm']==role and provenance['candidate']==owner.QNAME=='q18a-parity-n3s24q2024w'
+assert provenance['native35_arm']==role and provenance['candidate']==owner.QNAME=='q18a-parity-n3s24q2024p'
 owner.check_slot()
 import native34_gate as weekend_gate
 import native35p_gate
@@ -235,7 +235,7 @@ expected_wrapped=sorted([('vllm.v1.flash_e3.lane_dispatch.LaneDispatcher',n) for
     +[('vllm.v1.worker.gpu_worker.Worker',n) for n in ('execute_model','sample_tokens','init_device','load_model')]
     +[(module+'.'+cls,method) for module,classes in host_mod.HOOKS.items() for cls,methods in classes.items() for method in methods])
 positive=inert.run('/source/harness/runs/q18a_native35_p_b_settings.sh','P-B settings (LOCALIZE=1, positive control)')
-negative=inert.run('/source/harness/runs/q18a_parity_n3s24q2024w_settings.sh','TRUNK settings (LOCALIZE=0)')
+negative=inert.run('/source/harness/runs/q18a_parity_n3s24q2024p_settings.sh','TRUNK settings (LOCALIZE=0)')
 for row in (positive,negative):
     assert row['entry_points']==inert.PLUGINS and row['cuda_initialized'] is False and row['sync_mode']=='none'
     assert all(f.startswith('/usr/local/lib/python3.12/dist-packages/vllm/v1/flash_e3/native30_plugins/') for f in row['plugin_files'].values())
