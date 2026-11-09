@@ -67,7 +67,10 @@ class LauncherOverlay(unittest.TestCase):
     def test_exact_queue_preflight_accepts_current_and_refuses_wrong_launcher_and_old_pin(self):
         sys.path.insert(0,str(b.ROOT/'harness'))
         import identity_declare, make_e2_arena, make_s5_overlap
-        draft=(b.ROOT/'harness/runs/q18a_parity_n3s24q1680l.draft.sh').read_text()
+        # parity-n3s24qlp (test-side locator only): this tree's own compose-5 draft, named by compose5_queue.NEW; Codex's base tree is
+        # q1680l's. The launcher-pin lines are the same text in every draft of the lineage.
+        new=re.search(r"^OLD, NEW = '[^']+', '([^']+)'$",(b.ROOT/'tools/compose5_queue.py').read_text(),re.M)[1]
+        draft=(b.ROOT/'harness/runs'/(new+'.draft.sh')).read_text()
         start=draft.index('TRUSTED_LAUNCHER_SHA=$(cd')
         end=draft.index('  fail_early candidate-launcher-pin\n',start)+len('  fail_early candidate-launcher-pin\n')
         slot=draft[start:end]
