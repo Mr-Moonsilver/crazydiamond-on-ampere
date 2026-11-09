@@ -4,7 +4,7 @@
   "arm": "TRUNK",
   "probe": "compose5_cpu_probe.py"
  },
- "candidate": "q18a-parity-n3s24q2024rc6144",
+ "candidate": "q18a-parity-n3s24q2024w",
  "checks": [
   [
    "tools/compose5_queue.py",
@@ -37,7 +37,11 @@
   "side": "native43-clock-probe"
  },
  "definitions": {
+  "harness/identity_declare.py": [
+   "module:S5_LAUNCHER_SHA"
+  ],
   "harness/receipt_lines.py": [
+   "module:JSON_PREFIXES",
    "module:KV_PREFIXES"
   ],
   "harness/selftest.py": [
@@ -55,28 +59,49 @@
    "RetainedRowClosureTests.test_close_uses_actual_dispatcher_factory_and_request_release_chain"
   ],
   "harness/test_e3_package.py": [
+   "FullPinnedTests.test_baseline_e2_payload_preserved_and_manifest_complete",
+   "SyntheticTests.fixture",
    "SyntheticTests.test_default_off_settings_budget_and_launcher_guard"
   ],
   "harness/test_e3_r4_worker_bridge.py": [
    "ConstructionTests.test_install_native_lane_wires_the_real_bridge_objects"
   ],
+  "harness/test_e3_startup_queue.py": [
+   "without_native28_log_cap"
+  ],
+  "harness/test_identity_declare.py": [
+   "DeclareTests.test_s5_pinned_launcher_declares_selectors_and_projected_swap"
+  ],
   "harness/test_native35_performance.py": [
    "package_inventory"
+  ],
+  "harness/test_native39_trunk_queue.py": [
+   "Launcher.declared"
+  ],
+  "harness/test_native43_le_fatal_log.py": [
+   "FatalLog.test_escape_heavy_native_cause_still_fits_the_pipe_and_keeps_the_raising_frame",
+   "FatalLog.test_native_layer_quarantine_keeps_the_device_cause_before_teardown",
+   "fault_worker"
   ],
   "patches/s5_engine/decode_probe.py": [
    "module:GENERATED_SOURCES"
   ],
   "patches/s5_engine/engine_driver.py": [
+   "NativeProgress.__init__",
    "NativeProgress.end",
+   "NativeProgress.gap",
+   "NativeProgress.snapshot",
    "NativeSegmentDriver.__init__",
    "NativeSegmentDriver._admit_control",
    "NativeSegmentDriver._append_yield_control",
    "NativeSegmentDriver._apply",
+   "NativeSegmentDriver._apply_native_overlap",
    "NativeSegmentDriver._apply_open",
    "NativeSegmentDriver._apply_release",
    "NativeSegmentDriver._begin",
    "NativeSegmentDriver._drive_yield_close",
    "NativeSegmentDriver._end_yield",
+   "NativeSegmentDriver._gap_event",
    "NativeSegmentDriver._handback_rows",
    "NativeSegmentDriver._maybe_yield",
    "NativeSegmentDriver._next_receipt",
@@ -84,12 +109,14 @@
    "NativeSegmentDriver._note_yield_begin",
    "NativeSegmentDriver._o3_keep_split",
    "NativeSegmentDriver._progress_direct",
+   "NativeSegmentDriver._record",
    "NativeSegmentDriver._refuse_profile",
    "NativeSegmentDriver._retire_retained_cancel",
    "NativeSegmentDriver._split_hold_timeout",
    "NativeSegmentDriver._status_record",
    "NativeSegmentDriver._submit_control",
    "NativeSegmentDriver._submit_observed",
+   "NativeSegmentDriver._submit_worker_control",
    "NativeSegmentDriver._yield_arrival",
    "NativeSegmentDriver._yield_drain_step",
    "NativeSegmentDriver._yield_enter_resume",
@@ -137,13 +164,20 @@
    "module:MODEL_RUNNER_PACKAGE_SHA256"
   ],
   "patches/s5_engine/executor_hooks.py": [
+   "_fatal_metadata",
    "before_step_with_batch_queue",
+   "engine_request_admitted",
    "lazy_recv_marked",
+   "log_worker_failure",
+   "module:AugAssign#3",
+   "module:FATAL_OPTIONAL",
    "module:_LAZY_RECV_CLASS",
    "module:_WORKER_FORWARD",
+   "module:__all__",
    "module:from native_measurement import INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS, PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta, emit_receipt_lines, encode_progress_meta, progress_mode",
    "module:from native_measurement import PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta, emit_receipt_lines, encode_progress_meta, progress_mode",
    "park_prefill",
+   "report_worker_failure",
    "worker_rpc_begin"
   ],
   "patches/s5_engine/graph_hooks.py": [
@@ -265,6 +299,7 @@
    "LaneDispatcher.prepare_resuming",
    "LaneDispatcher.ring_waiting",
    "LaneDispatcher.stage_ahead",
+   "LaneDispatcher.submit",
    "_worker_ring",
    "module:_RING",
    "module:import lane_chunk",
@@ -282,7 +317,13 @@
    "topk_bytes"
   ],
   "patches/s5_engine/make_s5_overlap.py": [
+   "_s5_launcher",
+   "build",
+   "compose_indexer",
+   "module:Assign#1",
    "module:E3_MODULES",
+   "module:INDEXER_PATH",
+   "module:INDEXER_SHA256",
    "module:LAUNCHER_LIST_EXEMPT"
   ],
   "patches/s5_engine/model_hooks.py": [
@@ -312,6 +353,7 @@
    "AutoArmPolicy._decode_scheduled",
    "AutoArmPolicy._finished",
    "AutoArmPolicy._floor",
+   "AutoArmPolicy._gap",
    "AutoArmPolicy._gate_site",
    "AutoArmPolicy._handback_scheduled",
    "AutoArmPolicy._hold_limit",
@@ -331,6 +373,7 @@
    "AutoArmPolicy._o3_tail",
    "AutoArmPolicy._o3_yield_full",
    "AutoArmPolicy._o3_yield_tail",
+   "AutoArmPolicy._pause",
    "AutoArmPolicy._plan",
    "AutoArmPolicy._plan_state_site",
    "AutoArmPolicy._proof",
@@ -382,11 +425,22 @@
    "o3_enabled"
   ],
   "patches/s5_engine/native_measurement.py": [
+   "FusedPhaseSpans.__init__",
+   "FusedPhaseSpans.begin",
+   "FusedPhaseSpans.bucket",
+   "FusedPhaseSpans.consumer",
+   "FusedPhaseSpans.emit",
+   "FusedPhaseSpans.end",
    "NativeMeasurementCensus._ingest_chunk_open",
    "NativeMeasurementCensus._reconcile_groups",
+   "class:FusedPhaseSpans",
+   "indexer_phase_scope",
+   "module:INDEXER_PHASE_CONTEXT",
    "module:INWAIT_ENV",
    "module:PROGRESS_DIRECT_INWAIT_METHODS",
-   "module:RECEIPT_KV_PREFIXES"
+   "module:RECEIPT_JSON_PREFIXES",
+   "module:RECEIPT_KV_PREFIXES",
+   "module:from contextvars import ContextVar"
   ],
   "patches/s5_engine/native_overlap_control.py": [
    "NativeControlClient._call",
@@ -435,7 +489,16 @@
    "attach_native_router"
   ],
   "patches/s5_engine/qsa_driver.py": [
+   "QsaLayerDriver._fused",
    "QsaLayerDriver._pre"
+  ],
+  "patches/s5_engine/qsa_operation.py": [
+   "NativeQsaDevice.__init__",
+   "QsaPrefillOperation.__init__",
+   "QsaPrefillOperation.after_attention_bucket",
+   "QsaPrefillOperation.fill_bucket",
+   "QsaPrefillOperation.release",
+   "fused_phase_every"
   ],
   "patches/s5_engine/s5_startup.py": [
    "install_builder",
@@ -662,13 +725,15 @@
     "test_native_uva_retirement",
     "test_native_uva_legacy",
     "test_native_uva_package",
+    "test_native43_le_fatal_log",
+    "test_n3_gap_receipts",
     "test_compose5_box",
     "test_compose5_queue"
    ],
    "lineage_rows": []
   },
   "model_settings_changed": false,
-  "queue": "q18a-parity-n3s24q2024rc6144: compose-4's queue with connections 32, the PLE switches, the 2048 chunk, prepare-ahead and the indexer logits cap 64 MiB for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
+  "queue": "q18a-parity-n3s24q2024w: compose-4's queue with connections 32, the PLE switches, the 2048 chunk, prepare-ahead and the indexer logits cap 64 MiB for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen yield pairs on two indexes, the replay arm and its control without the yield; no fixed-schedule check",
   "scope": "b13 and hf at 32 with the four lever tracks under the closed-loop replay, the yield priced by frozen pairs, against c1b's READY build, discovery mode; not a release assessment and not a numerics result"
  },
  "dry_run": false,
@@ -694,6 +759,7 @@
   "e3/operation_source.py",
   "e3/probe_control.py",
   "e3/qsa_driver.py",
+  "e3/qsa_operation.py",
   "e3/s5_startup.py",
   "e3/scheduler_hooks.py",
   "e3/stage_overlap.py",
@@ -702,8 +768,10 @@
   "e3/wire_v1.py",
   "e3/worker_bridge.py",
   "e3/worker_hooks.py",
+  "e3_sources/core.py",
   "e3_sources/worker.py",
-  "model_runner_v2.py"
+  "model_runner_v2.py",
+  "run-flash-s5-test.sh"
  ],
  "engine_selfrun": {
   "compiled": [
@@ -1049,6 +1117,7 @@
    "harness/e3_native_refusal_client.py",
    "harness/e3_split_startup_grade.py",
    "harness/e3_stage1_step_box.py",
+   "harness/identity_declare.py",
    "harness/inwait_arms.py",
    "harness/inwait_gate.py",
    "harness/native43_engine_death_h.py",
@@ -1102,9 +1171,11 @@
    "harness/test_e3_graph_routing.py",
    "harness/test_e3_native_overlap.py",
    "harness/test_e3_r4_worker_bridge.py",
+   "harness/test_e3_startup_queue.py",
    "harness/test_geometry_tail.py",
    "harness/test_host_cow_rss.py",
    "harness/test_hub_slot.py",
+   "harness/test_identity_declare.py",
    "harness/test_inwait_box.py",
    "harness/test_inwait_cow.py",
    "harness/test_inwait_early_alloc.py",
@@ -1116,6 +1187,11 @@
    "harness/test_inwait_slices.py",
    "harness/test_inwait_slots.py",
    "harness/test_lane_o3.py",
+   "harness/test_n3_fused_phases.py",
+   "harness/test_n3_gap_receipts.py",
+   "harness/test_n3_indexer_lifetime.py",
+   "harness/test_n3_producer_witness.py",
+   "harness/test_native39_trunk_queue.py",
    "harness/test_native43_engine_death_h.py",
    "harness/test_native_hold.py",
    "harness/test_native_uva_legacy.py",
@@ -1266,7 +1342,8 @@
    "tools/stage1_step_spec.py",
    "tools/stage1_step_staging_check.py",
    "tools/stage1_step_tools_derive.py",
-   "tools/strict_parallel.py"
+   "tools/strict_parallel.py",
+   "tools/test_inwait_launcher_overlay.py"
   ],
   "probes": [
    {
@@ -1326,7 +1403,7 @@
    "test_alpha_m3_receipts"
   ]
  },
- "expected_tests": 617,
+ "expected_tests": 618,
  "label": "compose-5",
  "overlay_definitions": {
   "core/scheduler.py": [
@@ -1336,16 +1413,21 @@
    "module:GENERATED_SOURCES"
   ],
   "e3/engine_driver.py": [
+   "NativeProgress.__init__",
    "NativeProgress.end",
+   "NativeProgress.gap",
+   "NativeProgress.snapshot",
    "NativeSegmentDriver.__init__",
    "NativeSegmentDriver._admit_control",
    "NativeSegmentDriver._append_yield_control",
    "NativeSegmentDriver._apply",
+   "NativeSegmentDriver._apply_native_overlap",
    "NativeSegmentDriver._apply_open",
    "NativeSegmentDriver._apply_release",
    "NativeSegmentDriver._begin",
    "NativeSegmentDriver._drive_yield_close",
    "NativeSegmentDriver._end_yield",
+   "NativeSegmentDriver._gap_event",
    "NativeSegmentDriver._handback_rows",
    "NativeSegmentDriver._maybe_yield",
    "NativeSegmentDriver._next_receipt",
@@ -1353,12 +1435,14 @@
    "NativeSegmentDriver._note_yield_begin",
    "NativeSegmentDriver._o3_keep_split",
    "NativeSegmentDriver._progress_direct",
+   "NativeSegmentDriver._record",
    "NativeSegmentDriver._refuse_profile",
    "NativeSegmentDriver._retire_retained_cancel",
    "NativeSegmentDriver._split_hold_timeout",
    "NativeSegmentDriver._status_record",
    "NativeSegmentDriver._submit_control",
    "NativeSegmentDriver._submit_observed",
+   "NativeSegmentDriver._submit_worker_control",
    "NativeSegmentDriver._yield_arrival",
    "NativeSegmentDriver._yield_drain_step",
    "NativeSegmentDriver._yield_enter_resume",
@@ -1406,13 +1490,20 @@
    "module:MODEL_RUNNER_PACKAGE_SHA256"
   ],
   "e3/executor_hooks.py": [
+   "_fatal_metadata",
    "before_step_with_batch_queue",
+   "engine_request_admitted",
    "lazy_recv_marked",
+   "log_worker_failure",
+   "module:AugAssign#3",
+   "module:FATAL_OPTIONAL",
    "module:_LAZY_RECV_CLASS",
    "module:_WORKER_FORWARD",
+   "module:__all__",
    "module:from .native_measurement import INWAIT_ENV, PROGRESS_DIRECT_INWAIT_METHODS, PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta, emit_receipt_lines, encode_progress_meta, progress_mode",
    "module:from .native_measurement import PROGRESS_DIRECT_METHODS, PROGRESS_META_KEY, ProgressTrace, decode_progress_meta, emit_receipt_lines, encode_progress_meta, progress_mode",
    "park_prefill",
+   "report_worker_failure",
    "worker_rpc_begin"
   ],
   "e3/graph_hooks.py": [
@@ -1534,6 +1625,7 @@
    "LaneDispatcher.prepare_resuming",
    "LaneDispatcher.ring_waiting",
    "LaneDispatcher.stage_ahead",
+   "LaneDispatcher.submit",
    "_worker_ring",
    "module:_RING",
    "module:from . import lane_chunk",
@@ -1577,6 +1669,7 @@
    "AutoArmPolicy._decode_scheduled",
    "AutoArmPolicy._finished",
    "AutoArmPolicy._floor",
+   "AutoArmPolicy._gap",
    "AutoArmPolicy._gate_site",
    "AutoArmPolicy._handback_scheduled",
    "AutoArmPolicy._hold_limit",
@@ -1596,6 +1689,7 @@
    "AutoArmPolicy._o3_tail",
    "AutoArmPolicy._o3_yield_full",
    "AutoArmPolicy._o3_yield_tail",
+   "AutoArmPolicy._pause",
    "AutoArmPolicy._plan",
    "AutoArmPolicy._plan_state_site",
    "AutoArmPolicy._proof",
@@ -1647,11 +1741,22 @@
    "o3_enabled"
   ],
   "e3/native_measurement.py": [
+   "FusedPhaseSpans.__init__",
+   "FusedPhaseSpans.begin",
+   "FusedPhaseSpans.bucket",
+   "FusedPhaseSpans.consumer",
+   "FusedPhaseSpans.emit",
+   "FusedPhaseSpans.end",
    "NativeMeasurementCensus._ingest_chunk_open",
    "NativeMeasurementCensus._reconcile_groups",
+   "class:FusedPhaseSpans",
+   "indexer_phase_scope",
+   "module:INDEXER_PHASE_CONTEXT",
    "module:INWAIT_ENV",
    "module:PROGRESS_DIRECT_INWAIT_METHODS",
-   "module:RECEIPT_KV_PREFIXES"
+   "module:RECEIPT_JSON_PREFIXES",
+   "module:RECEIPT_KV_PREFIXES",
+   "module:from contextvars import ContextVar"
   ],
   "e3/native_overlap_control.py": [
    "NativeControlClient._call",
@@ -1700,7 +1805,16 @@
    "attach_native_router"
   ],
   "e3/qsa_driver.py": [
+   "QsaLayerDriver._fused",
    "QsaLayerDriver._pre"
+  ],
+  "e3/qsa_operation.py": [
+   "NativeQsaDevice.__init__",
+   "QsaPrefillOperation.__init__",
+   "QsaPrefillOperation.after_attention_bucket",
+   "QsaPrefillOperation.fill_bucket",
+   "QsaPrefillOperation.release",
+   "fused_phase_every"
   ],
   "e3/s5_startup.py": [
    "install_builder",
@@ -1863,6 +1977,9 @@
   "e3/worker_hooks.py": [
    "module:WORKER_AFTER_C_SHA256"
   ],
+  "e3_sources/core.py": [
+   "EngineCore.add_request"
+  ],
   "e3_sources/worker.py": [
    "FlashS5LazyIntermediateTensors.__getitem__",
    "FlashS5LazyIntermediateTensors.__init__",
@@ -1873,21 +1990,26 @@
   ],
   "model_runner_v2.py": [
    "GPUModelRunner._flash_e3_stock_execute_model"
-  ]
+  ],
+  "run-flash-s5-test.sh": {
+   "format": "non-ast-sha256/1",
+   "new_sha256": "0bf5b9a9c0bde25f0b7c4650507d0aa1a90fa393414b47f5ba98cf08d224a224",
+   "old_sha256": "22473a909dad1a4cb8e9c22de88349e65ff1eb46b0fa05b281504afb21775f3c"
+  }
  },
  "precheck": {
   "fixture_rows": [],
   "header": [
-   "q18a-parity-n3s24q2024rc6144 packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
+   "q18a-parity-n3s24q2024w packaged by tools/build_compose5.py (spec compose-5); PREV is the alpha-next-c1b READY build bundle and runner. Discovery mode: strict and focused logs are the parent tree's.",
    "Engine: claude/compose-5-build, compose-4 with the decline counters, chunk_bound and the builder at 2048 rows from dp8d (FLASH_S5_CHUNK_TOKENS=2048 for the whole run), default off, selected per arm by typed control. No 5f, no 1g, no witness.",
    "Queue: compose-4's startup and cleanup with connections 32, the PLE switches and the 2048 chunk for the whole run; the exact-path smoke, one decode-only baseline, the one-stream arm, frozen pairs on and off for the yield, the replay arm and its control without the yield; no fixed-schedule check."
   ],
   "seams": ""
  },
  "queue": [
-  "q18a_parity_n3s24q2024rc6144.draft.sh",
-  "q18a_parity_n3s24q2024rc6144_declare.sh",
-  "q18a_parity_n3s24q2024rc6144_settings.sh"
+  "q18a_parity_n3s24q2024w.draft.sh",
+  "q18a_parity_n3s24q2024w_declare.sh",
+  "q18a_parity_n3s24q2024w_settings.sh"
  ],
  "rehearsal": null,
  "review": "prepare",
@@ -1907,7 +2029,7 @@
   ]
  ],
  "schema": "native43-packaging-spec/1",
- "source_commit": "2eef49eaa17b20ad6812890acfd2eb51ec91873a",
+ "source_commit": "b9d63430f8a46455b024046a123be446f98d111c",
  "source_paths": [
   "A\tharness/a1_trunk_arms.py",
   "A\tharness/a1_trunk_gate.py",
@@ -1945,10 +2067,16 @@
   "A\tharness/fixtures/compose4_declared_20261105_0422.json",
   "A\tharness/fixtures/native43_engine_death_h/PROVENANCE.json",
   "A\tharness/fixtures/native43_engine_death_h/startup-stall-engine-stream.log",
+  "M\tharness/identity_declare.py",
   "A\tharness/inwait_arms.py",
   "A\tharness/inwait_gate.py",
+  "A\tharness/n3_fused_phases_fixture_leaves.json",
+  "A\tharness/n3_gap_fixture_leaves.json",
+  "A\tharness/n3_indexer_lifetime_fixture_leaves.json",
+  "A\tharness/n3_producer_witness_fixture_leaves.json",
   "A\tharness/native43_engine_death_h.py",
   "A\tharness/native43_engine_death_h_fixture_leaves.json",
+  "M\tharness/native43_le_fatal_log_fixture_leaves.json",
   "A\tharness/native_uva_fixture_leaves.json",
   "M\tharness/receipt_lines.py",
   "A\tharness/runs/q18a_a1_trunk.draft.sh",
@@ -2002,6 +2130,9 @@
   "A\tharness/runs/q18a_parity_n3s24q2024rc6144.draft.sh",
   "A\tharness/runs/q18a_parity_n3s24q2024rc6144_declare.sh",
   "A\tharness/runs/q18a_parity_n3s24q2024rc6144_settings.sh",
+  "A\tharness/runs/q18a_parity_n3s24q2024w.draft.sh",
+  "A\tharness/runs/q18a_parity_n3s24q2024w_declare.sh",
+  "A\tharness/runs/q18a_parity_n3s24q2024w_settings.sh",
   "A\tharness/runs/q18a_parity_n3s28.draft.sh",
   "A\tharness/runs/q18a_parity_n3s28_declare.sh",
   "A\tharness/runs/q18a_parity_n3s28_settings.sh",
@@ -2072,9 +2203,11 @@
   "M\tharness/test_e3_native_overlap.py",
   "M\tharness/test_e3_package.py",
   "M\tharness/test_e3_r4_worker_bridge.py",
+  "M\tharness/test_e3_startup_queue.py",
   "A\tharness/test_geometry_tail.py",
   "A\tharness/test_host_cow_rss.py",
   "A\tharness/test_hub_slot.py",
+  "M\tharness/test_identity_declare.py",
   "A\tharness/test_inwait_box.py",
   "A\tharness/test_inwait_cow.py",
   "A\tharness/test_inwait_early_alloc.py",
@@ -2086,8 +2219,14 @@
   "A\tharness/test_inwait_slices.py",
   "A\tharness/test_inwait_slots.py",
   "A\tharness/test_lane_o3.py",
+  "A\tharness/test_n3_fused_phases.py",
+  "A\tharness/test_n3_gap_receipts.py",
+  "A\tharness/test_n3_indexer_lifetime.py",
+  "A\tharness/test_n3_producer_witness.py",
   "M\tharness/test_native35_performance.py",
+  "M\tharness/test_native39_trunk_queue.py",
   "A\tharness/test_native43_engine_death_h.py",
+  "M\tharness/test_native43_le_fatal_log.py",
   "A\tharness/test_native_hold.py",
   "A\tharness/test_native_uva_legacy.py",
   "A\tharness/test_native_uva_package.py",
@@ -2129,6 +2268,7 @@
   "M\tpatches/s5_engine/operation_source.py",
   "M\tpatches/s5_engine/probe_control.py",
   "M\tpatches/s5_engine/qsa_driver.py",
+  "M\tpatches/s5_engine/qsa_operation.py",
   "M\tpatches/s5_engine/s5_startup.py",
   "M\tpatches/s5_engine/scheduler_hooks.py",
   "M\tpatches/s5_engine/stage_overlap.py",
@@ -2303,7 +2443,8 @@
   "A\ttools/stage1_step_targeted.sh",
   "A\ttools/stage1_step_tools_derive.py",
   "A\ttools/strict_lanes3.alpha-next-c1b.json",
-  "A\ttools/strict_parallel.py"
+  "A\ttools/strict_parallel.py",
+  "A\ttools/test_inwait_launcher_overlay.py"
  ],
  "tools": [
   "a1_trunk_cpu_probe.py",
@@ -2451,6 +2592,7 @@
   "stage1_step_staging_check.py",
   "stage1_step_tools_derive.py",
   "strict_lanes3.alpha-next-c1b.json",
-  "strict_parallel.py"
+  "strict_parallel.py",
+  "test_inwait_launcher_overlay.py"
  ]
 }
