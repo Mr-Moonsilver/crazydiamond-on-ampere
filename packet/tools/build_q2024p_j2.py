@@ -108,7 +108,7 @@ def final_body():
     manifest=b.manifest(bundle);final=out/(NAME+'-bundle-'+manifest[:12]);bundle.rename(final)
     owner=J2_BUILD/'q18a-parity-n3j2-owner-run-321e4cd7ffd8.py'
     text=owner.read_text().replace('q18a-parity-n3j2',NAME).replace('q18a_parity_n3j2',NAME.replace('-','_'))
-    replacements=dict(H="Path('/home/<service-user>/harness/%s')"%manifest[:12],BUNDLE=repr(manifest),REVIEW=repr(proof['review_sha256']),EXPECTED_SOURCES=repr(b.verify_manifest(final/'native30_overlay')),SOURCE_COMMIT=repr(commit),CPU_SUITES=repr(SUITES))
+    replacements=dict(H="Path('/home/<service-user>/harness/%s')"%manifest[:12],BUNDLE=repr(manifest),LAUNCHER=repr(b.sha(final/'native30_overlay/run-flash-s5-test.sh')),REVIEW=repr(proof['review_sha256']),EXPECTED_SOURCES=repr(b.verify_manifest(final/'native30_overlay')),SOURCE_COMMIT=repr(commit),CPU_SUITES=repr(SUITES))
     lines=text.splitlines(True);seen=set()
     for node in ast.parse(text).body:
         if isinstance(node,ast.Assign) and isinstance(node.targets[0],ast.Name) and node.targets[0].id in replacements:
