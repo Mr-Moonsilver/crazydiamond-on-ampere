@@ -6,6 +6,7 @@
   draws   one seeded stream per quantity (session starts, appends, replies, pauses, text), so a small difference in a reply's length can't shift what comes next: both arms send the same sequence, timing aside.
   ceiling an append that would take the prompt over MAX_PROMPT_TOKENS rolls to a new session instead (READY: the cap's arithmetic).
 Each turn keeps its client-visible arrival times (ms from the arm's start), which the rule reader needs for decode beside a bulk. The text is agent_replay.text, unchanged.
+REQUEST_IDS in the replay config defaults to False; True adds per-turn request/SSE identity evidence only.
 """
 import json
 import os
@@ -31,6 +32,11 @@ def request_body(model, messages, max_tokens, salt):
             'chat_template_kwargs': {'enable_thinking': False}, 'cache_salt': salt}
 
 
+def request_id_of(run_id, label, agent, session, turn_index):
+    identity = json.dumps([run_id, label, agent, session, turn_index], separators=(',', ':'))
+    return 'q18a-' + hashlib.sha256(identity.encode()).hexdigest()[:32]
+
+
 def stream_turn(url, body, key, origin, *, timeout=READ_TIMEOUT_S, clock=time.monotonic):
     """One streamed turn: usage, finish, the reply's text and its arrival times in ms from ``origin``."""
     headers = {'Content-Type': 'application/json'}
@@ -39,12 +45,21 @@ def stream_turn(url, body, key, origin, *, timeout=READ_TIMEOUT_S, clock=time.mo
     request = urllib.request.Request(url + '/v1/chat/completions', json.dumps(body).encode(), headers)
     started = clock()
     ttft, out, usage, finish, arrivals = None, [], {}, None, []
+    expected_id = 'chatcmpl-' + body['request_id'] if 'request_id' in body else None
+    response_id = None
     with urllib.request.urlopen(request, timeout=timeout) as reply:
         for raw in reply:
             line = raw.decode().strip()
             if not line.startswith('data: ') or line == 'data: [DONE]':
                 continue
             event = json.loads(line[6:])
+            if expected_id is not None:
+                event_id = event.get('id')
+                if type(event_id) is not str or not event_id or len(event_id) > 128:
+                    raise ValueError('missing or invalid SSE response id')
+                if event_id != expected_id:
+                    raise ValueError('SSE response id mismatch')
+                response_id = event_id
             if event.get('usage'):
                 usage = event['usage']
             for choice in event.get('choices', ()):
@@ -56,8 +71,13 @@ def stream_turn(url, body, key, origin, *, timeout=READ_TIMEOUT_S, clock=time.mo
                         ttft = now - started
                     out.append(piece)
                     arrivals.append(int((now - origin) * 1000))
-    return {'ttft': ttft, 'seconds': clock() - started, 'text': ''.join(out), 'finish': finish, 'arrivals_ms': arrivals, 'completion_tokens': usage.get('completion_tokens'), 'prompt_tokens': usage.get('prompt_tokens'),
-            'cached_tokens': (usage.get('prompt_tokens_details') or {}).get('cached_tokens')}
+    result = {'ttft': ttft, 'seconds': clock() - started, 'text': ''.join(out), 'finish': finish, 'arrivals_ms': arrivals, 'completion_tokens': usage.get('completion_tokens'), 'prompt_tokens': usage.get('prompt_tokens'),
+              'cached_tokens': (usage.get('prompt_tokens_details') or {}).get('cached_tokens')}
+    if expected_id is not None:
+        if response_id is None:
+            raise ValueError('missing SSE response id')
+        result['response_id'] = response_id
+    return result
 
 
 def draws(seed, agent):
@@ -84,6 +104,7 @@ class TurnSink:
 def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, records, lock, *, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, sink=None, faults=None):
     rng = draws(cfg['SEED'], agent)
     session, history_tokens, messages, salt = 0, 0, [], None
+    turn_index = 0
     append_draw = None     # a drawn append that rolled the session is kept for the next: the sequence of draws doesn't depend on the roll
     while clock() < t_end:
         if append_draw is None and messages:
@@ -102,8 +123,18 @@ def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, record
         reply = rng['reply'].randint(cfg['REPLY_MIN'], cfg['REPLY_MAX'])
         sent = clock() - origin
         record = {'agent': agent, 'session': session, 'kind': kind, 't': round(sent, 3), 'history_est': history_tokens, 'reply_target': reply}
+        turn_index += 1
+        if cfg.get('REQUEST_IDS', False):
+            record.update(client_request_id=request_id_of(run_id, label, agent, session, turn_index), response_id=None)
         try:
-            got = stream(url, request_body(model, messages, reply, salt), key, origin)
+            body = request_body(model, messages, reply, salt)
+            if cfg.get('REQUEST_IDS', False):
+                body['request_id'] = record['client_request_id']
+            got = stream(url, body, key, origin)
+            if cfg.get('REQUEST_IDS', False):
+                if got.get('response_id') != 'chatcmpl-' + record['client_request_id']:
+                    raise ValueError('missing or mismatched replay response id')
+                record['response_id'] = got['response_id']
             record.update({k: got[k] for k in ('ttft', 'seconds', 'completion_tokens', 'prompt_tokens', 'cached_tokens', 'finish', 'arrivals_ms')})
             record['complete'] = ar.turn_complete(got, reply)
             messages.append({'role': 'assistant', 'content': got['text']})

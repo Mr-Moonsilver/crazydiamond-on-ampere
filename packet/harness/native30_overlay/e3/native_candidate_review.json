@@ -1992,7 +1992,7 @@
     "compose2_gate.py": "b470cb551c2bb83c71b8581dda4efa04e9472e39126f3d055c6102f4e2c90d5b",
     "compose4_arms.py": "225f15f7d7b6fd5429633db560d4656af1dd0d3f510c31ece57aceb04bc68781",
     "compose4_gate.py": "7fda1de7a8fbd7f3dc3ce5c22379ccfab993b297fba151a168df57c2a9e40e10",
-    "compose4_replay.py": "4d9cb8cee7fec110b9d71de2f07a220f0e2777f7d5802705769ea1dbe7d1afd8",
+    "compose4_replay.py": "008dd3428557ff9ab6aaeacf04827c8e03807c2c4ccccb924138b28f235f017d",
     "compose4_rule.py": "bc93d3aba9a7710bf4cf285322a3fb88a25bcdd391310afa145967a3005fad5f",
     "compose5_arms.py": "fe005166e80f7c8d266002912d07e7eb91e7ac348e6d8b9e523ec38f6b82bf19",
     "compose5_gate.py": "bf66c7d768bb0cda8a89d199b7f19502cd9584d09a97a1a9cec5d229d3d8cdeb",
@@ -4468,6 +4468,7 @@
     "hardware_qualified": false,
     "parent": "q2024p 3b784537290a",
     "prefetch": "unchanged ON; phase16,24/58,late2024,rc6144,indexer64,fullKV unchanged",
+    "request_ids": "Sealed j2 request/SSE identifiers only; RNG draws, prompt and salt text unchanged.",
     "scheduler": "sealed j2 321e4cd7ffd8",
     "source_tests": "46/46 hub source/composition tests; final sealed CPU proof pending"
   },
