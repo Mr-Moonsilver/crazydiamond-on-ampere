@@ -73,7 +73,8 @@ def prepare(commit,out):
     for name in RUNTIME:
         (bundle/'e3_builder'/(name+'.py')).write_bytes(b.git(ROOT,'show',commit+':patches/s5_engine/'+name+'.py'))
     (bundle/'e3_builder/native_candidate_review.json').write_bytes(b.git(ROOT,'show',commit+':patches/s5_engine/native_candidate_review.json'))
-    for name in ('test_q2024p_j2.py',):shutil.copyfile(ROOT/'harness'/name,bundle/name)
+    for name in ('test_q2024p_j2.py','test_append_yield.py','q2024p_j2_fixture_leaves.json'):
+        (bundle/name).write_bytes(b.git(ROOT,'show',commit+':harness/'+name))
     shutil.copyfile(Path(__file__),bundle/'tools'/Path(__file__).name)
     for name,text in queues().items():
         (bundle/name).write_text(text)

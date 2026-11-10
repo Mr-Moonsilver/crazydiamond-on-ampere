@@ -2959,7 +2959,7 @@
     "test_alpha_next_stopfix_matrix.py": "db2b20c394624173169c891242674f7b9df87261aa614af634ed725fec2c5e81",
     "test_alpha_next_wall_guard.py": "d0eb23e511ebf5de0e4cb8671224e0f590bca732897ed72b45aac87c5624cc17",
     "test_alpha_perf_queue.py": "ea303f98b20001fba01666b6cca199673af311a445efdde2141fb9bd72a5e076",
-    "test_append_yield.py": "25583d5b4bb5bbe6a76b93d8aa21f4c356fda04fcdee02cedf1e34ebf3f7851a",
+    "test_append_yield.py": "54ca527702c450ae84768723761fc3ee18e07ee4efa2927c71cf2fc550d1cebb",
     "test_append_yield_frozen.py": "8f8f7cea5e716afb504ad24674da5c25ec8327c88c4b1fb769e667d94784bbc6",
     "test_attn_meta_box.py": "2dd125f2d40344410702ecfde0aa5877917b91ae5100867f79102d511488c88a",
     "test_attn_meta_box_b.py": "50bb36fd4915774ff87eee45cc0a1c18ff86da9b30fc404b3ca358c86a0a5910",
