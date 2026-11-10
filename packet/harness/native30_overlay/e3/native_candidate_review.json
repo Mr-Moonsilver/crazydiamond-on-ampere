@@ -4459,6 +4459,18 @@
     "verdict": "PASS"
   },
   "profile": "q18a-native-performance",
+  "q2024p_j2": {
+    "engine_delta": [
+      "engine_driver.py",
+      "native_auto_arm.py",
+      "scheduler_hooks.py"
+    ],
+    "hardware_qualified": false,
+    "parent": "q2024p 3b784537290a",
+    "prefetch": "unchanged ON; phase16,24/58,late2024,rc6144,indexer64,fullKV unchanged",
+    "scheduler": "sealed j2 321e4cd7ffd8",
+    "source_tests": "46/46 hub source/composition tests; final sealed CPU proof pending"
+  },
   "qualified_observer_library_sha256": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d",
   "real_allocator_frontier_cpu_proof": {
     "chunks": 97,
@@ -5562,7 +5574,7 @@
     "capture_streams.py": "76944d3416a9635cbecd81c70c1d538d5e0efc25d4fed4a3f2cf200ec3f4bd2b",
     "decode_probe.py": "9f16d9b7ae0f840c2acb1b9bb80f03094e9889abc5a457f17bbc399765232639",
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
-    "engine_driver.py": "17dac84303468b977749a38488c1f20f11caa6ae1dfd24edff3c5049967014be",
+    "engine_driver.py": "803b371e57d4f3ca860f369ea9f5032e66407bedebf7f1da1f134b5f45230523",
     "engine_offers.py": "0db9cc31a3f88afc5e795ba15d930b0ea88fb4ef43624d1021aa9130069b3e7d",
     "executor_hooks.py": "8b3b4b6d195a77390b7ae37120bbdd63610d6ebdd1468f30ee4138e29b50fb14",
     "graph_hooks.py": "52bea0171355a855e090d9fa955f06962beab163eaca02690a3722a58f62e94e",
@@ -5582,7 +5594,7 @@
     "native/flash_s5_graph_bytes.cpp": "56f550ebc345ee96077bb473264c42cce92140218dc014f7555718bf95e36110",
     "native/flash_s5_green.cu": "c2151ef6a805f620d6c57ef57c405fc0cdbce3c815b25574f9e0d2e7f1fa1907",
     "native/flash_s5_replay_observer.cpp": "3713542b4165fb28e85d7099b3c3d91690856b2770b81da1aa179c6b4e605ece",
-    "native_auto_arm.py": "76b8d7fd02e0f8a239d63ffd97f94f30fffe69624ec69fa078430008b8caa9ea",
+    "native_auto_arm.py": "e80f7a26f7f9671863ad6f0b38d76319231e008d93c437726d0ed77ceebee096",
     "native_backend.py": "d7167cfb873d08138556663db44bf6bdbd2748706c5c8367d3719481e507a6a0",
     "native_graph_placement.py": "4c32310bbea2a70416eec85804dec578e7a3be8680f393c7211f1e59482ec216",
     "native_measurement.py": "28c9253a3ae1ab0cb199578d0ddd7827d66a0f1480cecdfd1d4ea3d93d169388",
@@ -5613,7 +5625,7 @@
     "row1_exactness.py": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799",
     "row1_oracle.py": "f6b7c97b1d6a2e4513ae9b210cbd83d731aca349f0f2f75aac99cedb54a1ebc0",
     "s5_startup.py": "fa80a0645dfe6cb3801c09002d91e1f6b18d0d416d9f648c38be49c070d7d872",
-    "scheduler_hooks.py": "747acdfb69bc73338aed70cfbca7224a91bf5e89267ec64d21a964ff8005715b",
+    "scheduler_hooks.py": "f123b87fdbfddd23d10fa27d58e37e348ca842de6a0adc593bc0caab6cbd21d1",
     "sparse_history_dma.py": "8d797043b9f077906e93cc32f13f2ba54e56197ba4ce701405951446cc843287",
     "split_bank.py": "ef8222d57888c8103936dffe4f3643edc5ba437b96fb1cab3c8341f97c1d19b4",
     "stage_overlap.py": "4b357cfff03405b83655c89e876121f6cb012156d0bae809395cf287cde1596a",
