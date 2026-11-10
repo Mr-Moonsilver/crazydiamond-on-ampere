@@ -58,12 +58,14 @@ def prepare(commit,out):
     for p in (bundle,*bundle.rglob('*')):p.chmod(0o755 if p.is_dir() else 0o644)
     # Keep all prefetch code and its launcher/identity declarations; add the sealed j2 harness.
     for p in J2.iterdir():
-        if p.is_file() and (p.name.startswith(('n3j1_','n3j2_','test_n3j','n3_junction','n3_shortest','n3_yield','test_n3_')) or p.name=='test_compose4_request_ids.py'):
+        if p.is_file() and (p.name.startswith(('n3j1_','n3j2_','test_n3j','n3_junction','n3_shortest','n3_yield','test_n3_')) or p.name in ('test_compose4_request_ids.py','test_append_yield.py')):
             shutil.copyfile(p,bundle/p.name)
     for p in (J2/'tools').iterdir():
         if p.is_file():
             (bundle/'tools').mkdir(exist_ok=True);shutil.copyfile(p,bundle/'tools'/p.name)
     shutil.copytree(J2/'n3j1_reference',bundle/'n3j1_reference')
+    (bundle/'deploy_reference').mkdir()
+    (bundle/'deploy_reference/run-flash-prod.sh').write_bytes(b.git(ROOT,'show',commit+':deploy/run-flash-prod.sh'))
     for suffix in ('.draft.sh','_declare.sh','_settings.sh'):
         shutil.copyfile(J2/'runs'/('q18a_parity_n3j1'+suffix),bundle/'runs'/('q18a_parity_n3j1'+suffix))
     # Replay identity adds no RNG draw, prompt, salt, target or execution parameter.
@@ -99,6 +101,7 @@ def final_body():
     probe=(J2/'tools/n3j2_queue_probe.py').read_text().replace('import n3j2_queue as queue','import q2024p_j2_queue as queue')
     (bundle/'tools/q2024p_j2_queue_probe.py').write_text(probe)
     cpu=(J2/'tools/n3j2_frozen_cpu.py').read_text().replace('from n3j2_queue_probe import run as queue_boundary','from q2024p_j2_queue_probe import run as queue_boundary')
+    cpu=once(cpu,'    mounts = []',"    mounts = ['--mount','type=bind,src='+str(bundle/'sparse_stage')+',dst=/src/patches/sparse_stage,readonly','--mount','type=bind,src='+str(bundle/'deploy_reference')+',dst=/src/deploy,readonly']")
     (bundle/'tools/n3j2_frozen_cpu.py').write_text(cpu)
     for p in bundle.rglob('*.py'):compile(p.read_bytes(),str(p),'exec')
     manifest=b.manifest(bundle);final=out/(NAME+'-bundle-'+manifest[:12]);bundle.rename(final)
