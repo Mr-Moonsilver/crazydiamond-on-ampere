@@ -20,8 +20,11 @@ The transforms target the E2-composed ``core/scheduler.py`` and
 unmodified upstream scheduler is refused. No torch/vLLM import is needed here.
 """
 import hashlib
+import json
+import os
 import time
 import weakref
+from itertools import chain, islice
 
 from e3_types import (
     MAX_ACTIVE_PREFILL,
@@ -1317,11 +1320,13 @@ class AppendYieldConfig:
 
 class _ProjectedPrefillRequest:
     """Read-only view for the stock, CPU-only Mamba split calculation."""
-    __slots__ = ('_request', 'num_computed_tokens')
+    __slots__ = ('_request', 'num_computed_tokens', 'shared_prefix_boundary')
 
-    def __init__(self, request, start):
+    def __init__(self, request, start, *, shared_prefix_boundary=None):
         object.__setattr__(self, '_request', request)
         object.__setattr__(self, 'num_computed_tokens', start)
+        object.__setattr__(self, 'shared_prefix_boundary', getattr(request, 'shared_prefix_boundary', 0)
+                           if shared_prefix_boundary is None else shared_prefix_boundary)
 
     def __getattr__(self, name):
         return getattr(self._request, name)
@@ -1704,6 +1709,14 @@ class PrefillAdmissionController:
         self.handback_front = 0
         # coverage-residue: per arm, set while paused idle with the hold; 0 is the hold build. The counter is always on.
         self.native_residue = 0
+        flags = {name: os.environ.get(name, '0') for name in
+                 ('FLASH_S5_JUNCTION_YIELD', 'FLASH_S5_BULK_SHORTEST')}
+        if any(value not in ('0', '1') for value in flags.values()):
+            raise E3ContractError('n3 queue-policy switches must be 0 or 1')
+        self.junction_yield = flags['FLASH_S5_JUNCTION_YIELD'] == '1'
+        self.shortest_bulk = flags['FLASH_S5_BULK_SHORTEST'] == '1'
+        self._yield_receipt_seen = {}
+        self.yield_receipts = dict(written=0, duplicate=0, dropped=0, errors=0, limit=4096)
         self.residue_totals = dict(junction=0, lowered=0)
         self.coverage = PrefillCoverage()
         self.minimum_stage_rows = minimum_stage_rows
@@ -2095,11 +2108,81 @@ class PrefillAdmissionController:
         timed.yield_timed = True
         manager.get_computed_blocks = timed
 
-    def _yield_refuse(self, reason):
-        """Count why a held request isn't taken; a declined yield leaves no other record."""
+    def _yield_refuse(self, reason, *, request=None, hit_end=None, junction=None):
+        """Count every refusal; the candidate logs bounded unique request/bulk causes."""
         if self.yield_refusals is None:
             self.yield_refusals = {}
         self.yield_refusals[reason] = self.yield_refusals.get(reason, 0) + 1
+        if not self.junction_yield or request is None:
+            return
+        self._yield_lookup_receipt(request, reason, hit_end, junction)
+
+    def _yield_quota_receipts(self, scheduler, bulk, used, limit):
+        """Observe at most eight queue entries; a quota stop proves no cache eligibility."""
+        if not self.junction_yield:
+            return
+        try:
+            if type(used) is not int or type(limit) is not int or not 1 <= limit <= used:
+                raise ValueError('invalid observed yield quota')
+            seen = set()
+            queues = (getattr(scheduler, name, ()) or () for name in ('skipped_waiting', 'waiting'))
+            for request in islice(chain.from_iterable(queues), 8):
+                if request is bulk or id(request) in seen:
+                    continue
+                seen.add(id(request))
+                self._yield_lookup_receipt(request, 'quota-active', None, None,
+                                           quota=(bulk.request_id, used, limit))
+        except Exception:
+            self.yield_receipts['errors'] += 1
+
+    def _yield_lookup_receipt(self, request, reason, hit_end, junction, *, quota=None):
+        try:
+            uid = _text('request_uid', request.request_id)
+            owner = getattr(self._scheduler, '_flash_s5_driver', None)
+            bulk_query = getattr(owner, 'append_yield_bulk_uid', None)
+            bulk = bulk_query() if callable(bulk_query) else None
+            retained_query = getattr(owner, 'retained_request', None)
+            retained = retained_query() if callable(retained_query) else None
+            if bulk is None and retained is not None:
+                bulk = retained.request_uid
+            if bulk is None:
+                policy = getattr(owner, 'auto_arm', None)
+                selected = policy._request() if policy is not None else None
+                bulk = None if selected is None else selected.request_id
+            if quota is not None:
+                bulk = _text('bulk_uid', quota[0])
+            key = (uid, bulk, reason, hit_end, junction)
+            if self._yield_receipt_seen.get(key, lambda: None)() is request:
+                self.yield_receipts['duplicate'] += 1
+                return
+            if self.yield_receipts['written'] >= self.yield_receipts['limit']:
+                self.yield_receipts['dropped'] += 1
+                return
+            self._yield_receipt_seen[key] = weakref.ref(request)
+            while len(self._yield_receipt_seen) > 1024:
+                self._yield_receipt_seen.pop(next(iter(self._yield_receipt_seen)))
+            queue_name = queue_position = None
+            for name in ('skipped_waiting', 'waiting'):
+                for position, item in enumerate(getattr(self._scheduler, name, ()) or ()):
+                    if item is request:
+                        queue_name, queue_position = name, position
+                        break
+                if queue_name is not None:
+                    break
+            row = dict(request_uid=uid, bulk_uid=bulk, reason=reason, hit_end=hit_end,
+                       junction=junction, queue=queue_name, queue_position=queue_position,
+                       basis='effective-residue-hit',
+                       prompt_tokens=request.num_tokens, arrival_wall_s=getattr(request, 'arrival_time', None),
+                       observed_ns=time.monotonic_ns(), engine_epoch=self.engine_epoch,
+                       route_generation=getattr(owner, 'route_generation', None))
+            if quota is not None:
+                row.update(quota_used=quota[1], quota_limit=quota[2], queue_snapshot_limit=8,
+                           eligibility='not-evaluated', basis='yield-quota-observation')
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 n3-yield-lookup %s', json.dumps(row, sort_keys=True, separators=(',', ':')))
+            self.yield_receipts['written'] += 1
+        except Exception:
+            self.yield_receipts['errors'] += 1
 
     def _append_yield_gate(self, scheduler, decode_counts):
         """The rules on the engine, before any request is read."""
@@ -2131,7 +2214,8 @@ class PrefillAdmissionController:
 
         The same refusals as auto-arm's plan (native_auto_arm._plan) except the
         bulk-size floor: waiting, nothing computed or generated, no LoRA, pooling,
-        structured output, logprobs, connector or shared-prefix junction; then at
+        structured output, logprobs or connector; a shared junction needs the
+        opt-in residue/hold path, then at
         most ``max_new`` new tokens beyond its cached prefix and a complete staged
         plan.  With ``decode_counts`` (the worker's proven decode cohort sizes) the
         running set plus every smaller cohort must be proven.  ``exclude``: request
@@ -2228,16 +2312,16 @@ class PrefillAdmissionController:
                 or sampling is None or getattr(sampling, 'prompt_logprobs', None) is not None
                 or getattr(sampling, 'logprobs', None) is not None
                 or self._request_refuses(scheduler, request)):
-            self._yield_refuse('request')
+            self._yield_refuse('request', request=request)
             return False
         try:
             _text('request_uid', request.request_id)
         except E3ContractError:
-            self._yield_refuse('request')
+            self._yield_refuse('request', request=request)
             return False
         prompt_end = getattr(request, 'num_tokens', None)
         if type(prompt_end) is not int or prompt_end < 2:
-            self._yield_refuse('request')
+            self._yield_refuse('request', request=request)
             return False
         return True
 
@@ -2256,11 +2340,16 @@ class PrefillAdmissionController:
                 blocks, start, shared = manager.get_computed_blocks(request)
         finally:
             self._yield_scanning = False
-        if shared or type(start) is not int or start < 0:
-            self._yield_refuse('shared-junction')
+        allow_junction = self.junction_yield and self.native_residue == 1 and self.native_hold_s > 0
+        if (type(start) is not int or start < 0
+                or allow_junction and (type(shared) is not int or shared < 0)):
+            self._yield_refuse('invalid-hit', request=request, junction=shared)
+            return None
+        if shared and not allow_junction:
+            self._yield_refuse('shared-junction', request=request, hit_end=start, junction=shared)
             return None
         if end - start < 1 or end - start > config.max_new:
-            self._yield_refuse('max-new')
+            self._yield_refuse('max-new', request=request, hit_end=start, junction=shared)
             return None
         # auto-arm _plan's free-block check: the whole request must fit now.
         needed = manager.coordinator.get_num_blocks_to_allocate(
@@ -2269,13 +2358,15 @@ class PrefillAdmissionController:
             total_computed_tokens=start, num_local_computed_tokens=start,
             num_tokens_main_model=prompt_end, apply_admission_cap=True)
         if needed + manager.watermark_blocks > manager.block_pool.get_num_free_blocks():
-            self._yield_refuse('blocks')
+            self._yield_refuse('blocks', request=request, hit_end=start, junction=shared)
             return None
         cap = native_chunk_cap(self.chunk_tokens, getattr(scheduler, 'max_num_scheduled_tokens', 0))   # coverage-throughput: admit()'s cap
         if cap < 1:
-            self._yield_refuse('cap')
+            self._yield_refuse('cap', request=request, hit_end=start, junction=shared)
             return None
-        view = self._append_yield_split_view(scheduler, request)
+        lookup_view = (_ProjectedPrefillRequest(request, request.num_computed_tokens,
+                       shared_prefix_boundary=shared) if allow_junction else request)
+        view = self._append_yield_split_view(scheduler, lookup_view)
         bound = getattr(self, 'chunk_bound', None)
         def split(position, limit):
             limit = bounded_limit(bound, position, limit)       # coverage-throughput: the chunk bound admit() plans with
@@ -2284,7 +2375,9 @@ class PrefillAdmissionController:
                                        num_new_local_computed_tokens=start if position == start else 0)
         plan = staged_chunk_plan(start, end, cap, self.minimum_stage_rows, split)
         if not plan:
-            self._yield_refuse('no-plan')
+            self._yield_refuse('no-plan', request=request, hit_end=start, junction=shared)
+        elif self.junction_yield:
+            self._yield_lookup_receipt(request, 'planned-junction' if shared else 'planned', start, shared)
         return plan or None
 
     def _retained_waiting(self, scheduler, queue, retained):
@@ -2310,7 +2403,7 @@ class PrefillAdmissionController:
 
     def native_admission_record(self):
         """Engine-lifetime admission counts and the newest typed refusal."""
-        return {'schema': 's5-native-admission/1',
+        result = {'schema': 's5-native-admission/1',
                 'admitted': self.admitted, 'refused': self.refused,
                 'alloc_failures': self.alloc_failures,
                 'plan_searches': self.plan_searches,
@@ -2329,6 +2422,10 @@ class PrefillAdmissionController:
                                  else dict(self.last_refusal)),
                 'basis': ('engine-lifetime monotonic counts; subtract matching status '
                           'snapshots for a window')}
+        if self.junction_yield or self.shortest_bulk:
+            result['queue_policy'] = dict(junction_yield=self.junction_yield, shortest_bulk=self.shortest_bulk,
+                                          yield_lookup_receipts=dict(self.yield_receipts))
+        return result
 
     def _next_transaction(self, request, start, chunk_end):
         self.txn_seq += 1
@@ -2410,6 +2507,13 @@ class PrefillAdmissionController:
                     return None
                 queue, request = found
         policy = getattr(owner, 'auto_arm', None)
+        if (self.shortest_bulk and policy is not None and policy.active and retained is None
+                and (not callable(target_query) or target is None)):
+            selected = policy._request()
+            found = None if selected is None else self._waiting_object(scheduler, queue, selected)
+            if found is None:
+                return None
+            queue, request = found
         if policy is not None and policy.active and not policy.permits(request):
             return None
         if self._request_refuses(scheduler, request):
@@ -2450,6 +2554,8 @@ class PrefillAdmissionController:
                     scheduler, request, self.minimum_stage_rows, native_end)
                 request.shared_prefix_boundary = junction
                 residue_site = 'lowered' if lowered else ('junction' if junction else 'plan')
+                if self.junction_yield:
+                    self._yield_lookup_receipt(request, 'admission-'+residue_site, num_new_computed, junction)
             else:
                 new_computed_blocks, num_new_computed, _ = (
                     manager.get_computed_blocks(request))

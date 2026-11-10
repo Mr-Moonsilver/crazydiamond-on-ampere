@@ -1,4 +1,4 @@
-"""Opt-in, EngineCore-thread-only FCFS native-prefill policy (no device owner).
+"""Opt-in, EngineCore-thread-only native-prefill policy (no device owner).
 
 Scheduling remains paused until existing output Futures, the worker barrier,
 and typed split acks settle. No new transport, CUDA operation or model setting.
@@ -6,6 +6,7 @@ and typed split acks settle. No new transport, CUDA operation or model setting.
 import os
 import time
 import weakref
+from itertools import islice
 
 from e3_types import E3ContractError, _text
 from scheduler_hooks import bounded_limit, native_chunk_cap, residue_hit, staged_chunk_plan, _ProjectedPrefillRequest
@@ -53,6 +54,8 @@ MAX_RACES = 8
 # The split cohort is a ledger: the entry-proven cohort plus requests joined through such a handback; never past the counts
 # proven at identity for this split residency. Geometry tails, yields and anything unproven keep today's FULL cycle.
 O3_ENV = 'FLASH_S5_O3'
+BULK_PICK_CANDIDATES = 10
+BULK_PICK_AGE_S = 45.0
 O3_TAIL_TICKS = 64            # policy ticks a kept handback may wait unscheduled on split before today's FULL return
 
 
@@ -168,6 +171,8 @@ class AutoArmPolicy:
         self.refused_cohort = {}
         self.residue_counts = dict(junction=0, lowered=0, refused_held=0, refused_retried=0, idle_selected=0, races=0, races_spent=0,
                                    held_ms=0)
+        self.bulk_pick = dict(scans=0, candidates=0, capped=0, reordered=0, aged=0, short_stop=0,
+                              rejected=0, unplannable=0, extra_lookup_calls=0, extra_lookup_ns=0)
         self._held_last = None         # lane-o3-fix: monotonic ns of the last refused_held tick (held_ms: the lane parked on a held head)
         self.races = {}
         self._rollback_reason = None
@@ -235,6 +240,7 @@ class AutoArmPolicy:
                                  admitted=dict(getattr(self.controller, 'residue_totals', None) or {})),
                     coverage=self._coverage_record(),
                     o3=self.o3_record(),
+                    shortest_bulk=dict(self.bulk_pick, on=getattr(self.controller, 'shortest_bulk', False) is True),
                     k2=dict(self.k2_counts, selected=int(getattr(self.controller, 'k2_settle', False) is True)),
                     **self.decline_totals)
 
@@ -840,7 +846,7 @@ class AutoArmPolicy:
         end = getattr(self.controller, 'native_end', None)
         return end(self.scheduler, request) if callable(end) else request.num_tokens - 1
 
-    def _plan(self, request):
+    def _plan(self, request, *, lookup_stats=None):
         s, c = self.scheduler, self.controller
         site = self._plan_state_site(request)
         if site is not None:
@@ -853,14 +859,24 @@ class AutoArmPolicy:
             return None
         residue = self._residue()
         self._plan_residue = None
-        if residue:
-            # coverage-residue: the admission's own hit (scheduler_hooks.residue_hit), and the junction set as stock's lookup
-            # sets it, so the split stops there and the chunk's commit publishes the shared prefix's state.
-            blocks, start, shared, lowered = residue_hit(s, request, self._floor(), self._native_end(request))
-            request.shared_prefix_boundary = shared
-            self._plan_residue = 'lowered' if lowered else ('junction' if shared else None)
-        else:
-            blocks, start, shared = s.kv_cache_manager.get_computed_blocks(request)
+        plan_request = request
+        started = time.monotonic_ns() if lookup_stats is not None else None
+        try:
+            if residue:
+                # coverage-residue: the admission's own hit and shared-junction stop.
+                blocks, start, shared, lowered = residue_hit(s, request, self._floor(), self._native_end(request))
+                if lookup_stats is None and not getattr(c, 'shortest_bulk', False):
+                    request.shared_prefix_boundary = shared
+                else:
+                    plan_request = _ProjectedPrefillRequest(request, request.num_computed_tokens,
+                                                           shared_prefix_boundary=shared)
+                self._plan_residue = 'lowered' if lowered else ('junction' if shared else None)
+            else:
+                blocks, start, shared = s.kv_cache_manager.get_computed_blocks(request)
+        finally:
+            if lookup_stats is not None:
+                lookup_stats['extra_lookup_calls'] += 1
+                lookup_stats['extra_lookup_ns'] += time.monotonic_ns() - started
         end = self._native_end(request)
         # Shared-prefix junction/streaming/recompute special cases stay stock.
         if shared and not residue:
@@ -883,7 +899,7 @@ class AutoArmPolicy:
         # plan-empty turn; about 0.36 of all turns once the hold sends every turn here). a1-trunk 1d's view moves stock's
         # stop one unit back, as the admission does under the hold (scheduler_hooks.admit); unchanged with the hold off.
         moved = getattr(c, '_append_yield_split_view', None)
-        view = moved(s, request) if self._hold_limit() and callable(moved) else request
+        view = moved(s, plan_request) if self._hold_limit() and callable(moved) else plan_request
         def split(position, limit):
             limit = bounded_limit(getattr(c, 'chunk_bound', None), position, limit)
             projected = view if position == start else _ProjectedPrefillRequest(view, position)
@@ -893,7 +909,7 @@ class AutoArmPolicy:
         if not plan:
             self._decline_why = 'plan-empty'
             return None
-        self._plan_moved = view is not request       # read once per selection by _select; later phases re-plan to compare
+        self._plan_moved = view is not plan_request  # count a moved stop, not the read-only probe view
         return dict(start=start, end=end, plan=tuple(plan),
                     blocks=tuple(tuple(b.block_id for b in group) for group in blocks.blocks))
 
@@ -1098,6 +1114,50 @@ class AutoArmPolicy:
             return 'gate-not-running'
         return None
 
+    def _shortest_bulk(self, queue, request, plan):
+        """Rank only the leading bulk cohort; a ready returner keeps its queue position."""
+        config = self.controller.append_yield
+        if config is None or plan['end'] - plan['start'] <= config.max_new:
+            return request, plan
+        stats = self.bulk_pick
+        stats['scans'] += 1
+        stats['capped'] += len(queue) > BULK_PICK_CANDIDATES
+        now = time.time()  # Request.arrival_time uses wall time, not the driver's monotonic clock.
+        def rank(candidate, candidate_plan):
+            age = max(0.0, now - candidate.arrival_time)
+            return ((0, candidate.arrival_time) if age >= BULK_PICK_AGE_S else
+                    (1, candidate_plan['end'] - candidate_plan['start'])), age
+        key, age = rank(request, plan)
+        chosen = (request, plan, 0, age)
+        state = (self._plan_moved, self._plan_residue, self._decline_why)
+        scanned = 1
+        for position, candidate in enumerate(islice(queue, 1, BULK_PICK_CANDIDATES), 1):
+            scanned += 1
+            if self.rejected.get(candidate.request_id, lambda: None)() is candidate:
+                stats['rejected'] += 1
+                continue
+            self._decline_why = state[2]
+            candidate_plan = self._plan(candidate, lookup_stats=stats)
+            if candidate_plan is None:
+                stats['unplannable'] += 1
+                continue
+            if candidate_plan['end'] - candidate_plan['start'] <= config.max_new:
+                stats['short_stop'] += 1
+                break
+            candidate_key, candidate_age = rank(candidate, candidate_plan)
+            if candidate_key < key:
+                key, chosen = candidate_key, (candidate, candidate_plan, position, candidate_age)
+                state = (self._plan_moved, self._plan_residue, self._decline_why)
+        self._plan_moved, self._plan_residue, self._decline_why = state
+        request, plan, position, age = chosen
+        stats['candidates'] += scanned
+        stats['reordered'] += position != 0
+        stats['aged'] += age >= BULK_PICK_AGE_S
+        self.driver._record('bulk_pick', request_uid=request.request_id, original_position=position,
+                            remaining_rows=plan['end'] - plan['start'], age_s=age,
+                            aged=age >= BULK_PICK_AGE_S, candidates=scanned)
+        return request, plan
+
     def _select(self, o3=False):
         s, d = self.scheduler, self.driver
         held_last, self._held_last = self._held_last, None     # lane-o3-fix: held_ms runs only across consecutive held ticks
@@ -1148,6 +1208,8 @@ class AutoArmPolicy:
                 self._unhold(request, 'unplannable', self._decline_why)      # stock takes it next step
             self._decline(self._decline_why)
             return False
+        if getattr(self.controller, 'shortest_bulk', False) is True:
+            request, plan = self._shortest_bulk(queue, request, plan)
         if self._decline_pending.pop(request.request_id, None) is not None:
             self.decline_totals['selected_after_decline'] += 1
         if self.holds.pop(request.request_id, None) is not None:

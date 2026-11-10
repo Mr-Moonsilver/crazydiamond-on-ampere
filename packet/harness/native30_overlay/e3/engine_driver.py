@@ -4388,6 +4388,7 @@ class NativeSegmentDriver:
             transaction = row['transaction']
         key = (transaction.request_uid, transaction.request_generation)
         if self._yield_counts.get(key, 0) >= config.per_bulk:
+            controller._yield_quota_receipts(self.scheduler, bulk, self._yield_counts[key], config.per_bulk)
             return False
         refused = self._yield_refused.get(key, frozenset())
         # Each held request is looked up once per bulk: on a 151k prompt a lookup stalls the engine about 0.265 s (box 1).
