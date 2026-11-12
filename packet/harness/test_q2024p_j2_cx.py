@@ -162,7 +162,8 @@ class Queues(unittest.TestCase):
     def test_settings_asserts_export_gate(self):
         runs = HERE / 'runs'
         built = sorted(p.name for p in runs.glob('*_settings.sh') if QUEUE.match(p.name)) if runs.is_dir() else []
-        if built and (HERE / 'n3j2_packet.py').is_file() and not (HERE.parent / 'patches/s5_engine').is_dir():
+        # a bundle (the frozen CPU mounts it at /src/harness, beside /src/patches): its own built cx queue in runs/
+        if built and (HERE / 'n3j2_packet.py').is_file():
             self.assertEqual(len(built), 1, built)                 # a bundle: its own built queue
             tag, variant = QUEUE.match(built[0]).groups()
             stem = built[0][:-len('_settings.sh')]
