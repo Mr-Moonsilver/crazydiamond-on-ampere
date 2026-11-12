@@ -402,7 +402,7 @@ class FakeClient:
 
 
 def status(trips, live=0):
-    return {'native_stage_local': {'overlap': {'decode_step': {'liveness': dict(trips=trips, live_max_stall_ms=live, max_stall_ms=live)}}}}
+    return {'native_stage_local': {'overlap': {'decode_step': {'liveness': dict(trips=trips, live_max_stall_ms=live, max_stall_ms=live, stall_ms=10000)}}}}
 
 
 class Guard(unittest.TestCase):
@@ -423,11 +423,11 @@ class Guard(unittest.TestCase):
         self.assertIsNone(g.trip)
         self.assertEqual(g.clock(), 100.0)
         client.call('status')
-        self.assertEqual(g.trip[:2], ('ENGINE', 'engine-trip'))
+        self.assertEqual(g.trip[:2], ('ENGINE', 'engine-stuck'))
         self.assertGreater(g.clock(), 100.0 + 10 ** 6)
         rec = dict(reasons=[], complete=True, statuses=[dict(label='before', decode_liveness=dict(trips=3)), dict(label='after', decode_liveness=dict(trips=4))])
         view = g.settle(rec)
-        self.assertEqual(rec['reasons'], ['decode-liveness-guard:ENGINE:engine-trip'])
+        self.assertEqual(rec['reasons'], ['decode-liveness-guard:ENGINE:engine-stuck'])
         self.assertIs(rec['complete'], False)
         self.assertEqual((view['trips_delta'], view['max_live_stall_ms'], view['ended_replay']), (1, 11000, True))
 
@@ -459,11 +459,65 @@ class Guard(unittest.TestCase):
         self.assertEqual((rec['reasons'], rec['complete']), ([], True))
         self.assertEqual(rec['decode_liveness_guard']['trips_delta'], 0)
 
-    def test_a_trip_only_in_after_minus_before_still_fails(self):
+    def test_a_recovered_trip_only_in_after_minus_before_is_recorded(self):
         g = guard_mod.Guard('x')
-        rec = dict(reasons=[], complete=True, statuses=[dict(label='before', decode_liveness=dict(trips=0)), dict(label='after', decode_liveness=dict(trips=2))])
+        rec = dict(reasons=[], complete=True, statuses=[dict(label='before', decode_liveness=dict(trips=0, stall_ms=10000)),
+                                                        dict(label='after', decode_liveness=dict(trips=2, live_max_stall_ms=40, stall_ms=10000))])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            view = g.settle(rec)
+        self.assertEqual((rec['reasons'], rec['complete']), ([], True))
+        self.assertEqual((view['trips_delta'], view['recovered_trips'], view['trip']), (2, 2, None))
+        self.assertIn('decode-liveness-guard recovered x trips=2', err.getvalue())
+
+    def test_a_stuck_decoder_in_the_after_row_fails(self):
+        g = guard_mod.Guard('x')
+        rec = dict(reasons=[], complete=True, statuses=[dict(label='before', decode_liveness=dict(trips=0, stall_ms=10000)),
+                                                        dict(label='after', decode_liveness=dict(trips=1, live_max_stall_ms=12000, stall_ms=10000))])
         g.settle(rec)
-        self.assertEqual(rec['reasons'], ['decode-liveness-guard:ENGINE:engine-trip'])
+        self.assertEqual((rec['reasons'], rec['complete']), (['decode-liveness-guard:ENGINE:engine-stuck'], False))
+
+    def test_a_recovered_trip_in_the_polls_is_recorded_and_the_replay_goes_on(self):
+        """The 12 Nov review case: a stock-like 8-12 s stall that recovers before the poll that shows the trip."""
+        g = guard_mod.Guard('sp.g2-live-0', clock=lambda: 50.0)
+        client = guard_mod.WatchedClient(FakeClient([status(0), status(1, 300), status(1, 120), status(2, 9000)]), g)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for _ in range(4):
+                client.call('status')
+        self.assertIsNone(g.trip)
+        self.assertEqual(g.clock(), 50.0)
+        self.assertEqual(g.recovered_trips, 2)
+        self.assertEqual(err.getvalue().count('decode-liveness-guard recovered sp.g2-live-0'), 2)   # one line per new count
+        rec = dict(reasons=[], complete=True, statuses=[dict(label='before', decode_liveness=dict(trips=0, stall_ms=10000)),
+                                                        dict(label='after', decode_liveness=dict(trips=2, live_max_stall_ms=0, stall_ms=10000))])
+        with contextlib.redirect_stderr(io.StringIO()):
+            view = g.settle(rec)
+        self.assertEqual((rec['reasons'], rec['complete'], view['recovered_trips'], view['trips_delta']), ([], True, 2, 2))
+
+    def test_recovered_then_stuck_ends_at_the_stuck_poll(self):
+        g = guard_mod.Guard('nm.g2-live-1', clock=lambda: 7.0)
+        client = guard_mod.WatchedClient(FakeClient([status(5), status(6, 10), status(7, 10000)]), g)
+        with contextlib.redirect_stderr(io.StringIO()):
+            client.call('status')
+            client.call('status')
+            self.assertIsNone(g.trip)
+            client.call('status')
+        self.assertEqual((g.trip[:2], g.recovered_trips), (('ENGINE', 'engine-stuck'), 1))
+        self.assertGreater(g.clock(), 10 ** 6)
+
+    def test_mutant_ending_on_any_counter_move_breaks_the_recovered_case(self):
+        """The first build's rule (end whenever the counter moved) would end a recovering stock arm: kept as a check."""
+        original = guard_mod.stuck
+        guard_mod.stuck = lambda block: True
+        try:
+            g = guard_mod.Guard('sp.g2-live-0', clock=lambda: 1.0)
+            client = guard_mod.WatchedClient(FakeClient([status(0), status(1, 300)]), g)
+            client.call('status')
+            client.call('status')
+            self.assertIsNotNone(g.trip)
+        finally:
+            guard_mod.stuck = original
 
     def test_watched_stream_passes_results_errors_and_the_thread_name(self):
         g = guard_mod.Guard('x')
@@ -494,7 +548,7 @@ class Guard(unittest.TestCase):
             raise OSError('released')
         g = guard_mod.Guard('nm.g2-live-0')
         stream = guard_mod.watched_stream(stalled, g, wait_s=0.05) if watched else stalled
-        timer = threading.Timer(0.5, lambda: g._end('ENGINE', 'engine-trip'))
+        timer = threading.Timer(0.5, lambda: g._end('ENGINE', 'engine-stuck'))
         timer.start()
         started = time.monotonic()
         try:
@@ -513,7 +567,7 @@ class Guard(unittest.TestCase):
         self.assertLess(elapsed, 5.0)
         self.assertEqual(summary['agents_died'], 0)
         self.assertEqual(len(turns) + len(still_open), 2)                     # each agent left its stalled turn (or is leaving)
-        self.assertTrue(turns and all(r['error'].startswith('GuardEnded:decode-liveness-guard:ENGINE:engine-trip') for r in turns), turns)
+        self.assertTrue(turns and all(r['error'].startswith('GuardEnded:decode-liveness-guard:ENGINE:engine-stuck') for r in turns), turns)
 
     def test_mutant_without_the_watched_stream_waits_for_the_stalled_read(self):
         elapsed, summary, turns, still_open = self.replay_with_a_stalled_stream(False, 3.0)

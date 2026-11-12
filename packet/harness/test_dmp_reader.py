@@ -54,10 +54,16 @@ def handler(wall, rank, forward_ms):
     return '%s flash-s5 handler %s\n' % (iso(wall + 0.01), json.dumps(d))
 
 
-def anatomy(wall, rank, c0, c1, busy_ms, window_ms):
+X_FIELDS = ['op_seq', 'kind', 'layer', 'refused', 't_host', 't_start', 't_end']     # a real j2 worker anatomy line's
+
+
+def anatomy(wall, rank, c0, c1, busy_ms, window_ms, waits_ms=(), idle_ms=0.0):
+    """A worker chunk row; x rows with device start - host enqueue = each of waits_ms (us offsets, the real layout)."""
     base = mono_ns(wall)
-    c = [33, 33, 0, 0, 0, int(window_ms * 1000), int(busy_ms * 1000), 0, 0, 0, 0, None, 0]
-    d = dict(pid=101, seq=8, sha='x', base_ns=base, chunk_start=c0, chunk_end=c1, rank=rank, rows=dict(c=[c]))
+    c = [33, 33, 0, 0, 0, int(window_ms * 1000), int(busy_ms * 1000), int(idle_ms * 1000), 0, 0, 0, None, 0]
+    x = [[i, 'layer', i, 0, 1000 * i, 1000 * i + int(w * 1000), 1000 * i + int(w * 1000) + 50] for i, w in enumerate(waits_ms)]
+    d = dict(pid=101, seq=8, sha='x', base_ns=base, chunk_start=c0, chunk_end=c1, rank=rank,
+             fields=dict(x=X_FIELDS), rows=dict(c=[c], x=x))
     return '%s flash-s5 anatomy %s\n' % (iso(wall + 0.5), json.dumps(d))
 
 
@@ -78,7 +84,7 @@ def turn(agent, t, ttft, period_ms, count):
     first = int(round((t + ttft) * 1000))
     arrivals = [first + i * period_ms for i in range(count)]
     return dict(agent=agent, session=1, kind='fresh', t=t, ttft=ttft, seconds=arrivals[-1] / 1000.0 - t + 0.001,
-                completion_tokens=count, arrivals_ms=arrivals)
+                completion_tokens=count, arrivals_ms=arrivals, prompt_tokens=81000, cached_tokens=1000)
 
 
 def arm(label, start, *, native_off, merge, turns_done, liveness=None, guard=None, steps=0):
@@ -117,7 +123,7 @@ def write_record(root, *, oom=0):
         lines.append(handler(T0 + 210 + k, 0, 14.0 + k * 0.1))
         lines.append(handler(T0 + 210 + k, 2, 13.0))
     lines.append(handler(T0 + 2000, 0, 99.0))                        # outside every window
-    lines.append(anatomy(T0 + 201, 0, 0, 2048, 230.0, 243.0))
+    lines.append(anatomy(T0 + 201, 0, 0, 2048, 230.0, 243.0, waits_ms=(2.0, 4.0, 6.0), idle_ms=12.0))
     lines.append(anatomy(T0 + 201, 2, 0, 2048, 245.0, 300.0))
     lines.append(anatomy(T0 + 301, 0, 2048, 2148, 20.0, 25.0))      # not bulk
     lines.append(sched(T0 + 50, 3000, 2000, 1000, 10, 8, 0))
@@ -189,6 +195,22 @@ class Reader(unittest.TestCase):
         self.assertEqual(a['liveness_lines'], 1)
         self.assertEqual(a['liveness_status']['after']['trips'], 1)
         self.assertEqual(a['liveness_guard']['trip']['classification'], 'ENGINE')
+
+    def test_agent_seconds_and_queue_wait(self):
+        a = self.res['arms']['n3.g2-live-0']
+        ags = a['agent_seconds']
+        self.assertEqual(ags['turns'], 4)
+        self.assertAlmostEqual(ags['ttft_s'], 5.0, places=3)                    # 0.5 + 0.5 + 2 + 2
+        self.assertEqual(ags['output_tokens'], 2 * 3000 + 2 * 2500)
+        self.assertEqual(ags['uncached_prompt_tokens'], 4 * 80000)
+        self.assertAlmostEqual(ags['ttft_ms_per_1k_uncached'], 5.0 * 1e6 / 320000, delta=0.01)
+        q = a['queue_wait']['0']
+        self.assertEqual((q['chunks'], q['sampled_chunks'], q['commands'], q['wait_per_chunk_ms'], q['wait_per_command_ms'],
+                          q['idle_per_chunk_ms']), (2, 1, 3, 12.0, 4.0, 6.0))   # the tiny chunk: no x rows (unsampled), idle 0
+        text = reader.render([self.res])
+        self.assertIn('native queue rank0:wait/chunk=12.0 wait/cmd=4.0', text)
+        self.assertIn('agent-s ttft=5.0', text)
+        self.assertLess(text.index('turns/h by arm:'), text.index('x sp by arm:'))
 
     def test_record_fields_and_render(self):
         self.assertEqual(self.res['arms']['n3.g2-live-0']['x_sp'], 1.2)

@@ -21,6 +21,10 @@ sp n3 n3 sp on a j2 record, which is how the reader is dry-run) it prints:
   * the liveness view: engine 'flash-s5 decode-liveness' lines in the window, the status rows' liveness blocks
     (before/after), the arm's decode_liveness_guard record;
   * the submit-cpu ride-along per worker rank: flash_s5_submit calls, wall ms, thread-CPU ms over the arm;
+  * agent-seconds over the turns started in the window (TTFT-s, decode-s, output tokens, uncached prompt tokens, TTFT
+    per 1k uncached prompt tokens): arms are compared as sums, not as paired turns;
+  * native command queue wait per rank (anatomy 'x' rows, t_start - t_host, per chunk and per command) and chunk idle
+    (anatomy 'c' idle_us): the 4 Nov two-cohort failure signature was this wait at 0.21-0.24 s vs 0.09 s;
 and per record: numerics_o3 verdict, queue/compose5 grade verdicts and rc, OOM max and fatal lines per rank, and the
 engine identity's FLASH_S5_DECODE_MERGE / FLASH_S5_DECODE_LIVENESS / FLASH_S5_SUBMIT_CPU / FLASH_S5_SMALL_PIECE_BATCH.
 
@@ -101,6 +105,7 @@ class Engine:
         self.mem = []                      # (wall, point, rank, txn, c0, c1)
         self.forward = []                  # (mono_s, rank, dev_forward_ms)
         self.anatomy = []                  # (mono_s first, rank, rows, busy_ms, window_ms)
+        self.queue = []                    # (mono_s first, rank, rows, idle_ms, [x-row wait ms: t_start - t_host])
         self.sched = []                    # (wall, step, dict, even, odd)
         self.liveness = []                 # wall of each decode-liveness line
         self.submit = []                   # (wall, rank, dict)
@@ -161,6 +166,17 @@ class Engine:
             window = (c[5] - c[4]) / 1000 if type(c[5]) is int else None
             rows = (d.get('chunk_end') or 0) - (d.get('chunk_start') or 0)
             self.anatomy.append(((base + c[4] * 1000) / 1e9, d.get('rank'), rows, c[6] / 1000, window))
+            fields = (d.get('fields') or {}).get('x') or ['op_seq', 'kind', 'layer', 'refused', 't_host', 't_start', 't_end']
+            try:
+                ih, js = fields.index('t_host'), fields.index('t_start')
+            except ValueError:
+                ih = js = None
+            waits = []
+            for x in (d.get('rows') or {}).get('x', ()) if ih is not None else ():
+                if len(x) > max(ih, js) and type(x[ih]) is int and type(x[js]) is int:
+                    waits.append((x[js] - x[ih]) / 1000)
+            idle = c[7] / 1000 if len(c) > 7 and type(c[7]) is int else None
+            self.queue.append(((base + c[4] * 1000) / 1e9, d.get('rank'), rows, idle, waits))
         elif 'flash-s5 decode-liveness ' in line:
             self.liveness.append(stamp(line))
         elif 'flash-s5 submit-cpu ' in line:
@@ -322,6 +338,55 @@ def bulk_busy_by_rank(engine, start, end):
     return out
 
 
+def queue_wait_by_rank(engine, start, end):
+    """Native command queue wait (device start - host enqueue, anatomy 'x' rows) and chunk idle (anatomy 'c' idle_us)
+    per rank over the chunks that started in the arm window: per sampled chunk sums (only chunk lines that carry x rows;
+    the recorder samples them) and per-command means, ms; idle over every chunk."""
+    rows = collections.defaultdict(lambda: dict(chunks=0, waits=[], chunk_wait=[], idle=[]))
+    for mono, rank, n_rows, idle, waits in engine.queue:
+        if start <= engine.wall(mono) <= end:
+            slot = rows[rank]
+            slot['chunks'] += 1
+            slot['waits'] += waits
+            if waits:                                  # the recorder keeps x rows on a sample of chunks (~1 in 16 on j2)
+                slot['chunk_wait'].append(sum(waits))
+            if idle is not None:
+                slot['idle'].append(idle)
+    out = {}
+    for rank in sorted(rows, key=str):
+        slot = rows[rank]
+        n = slot['chunks']
+        sampled = len(slot['chunk_wait'])
+        out[str(rank)] = dict(chunks=n, sampled_chunks=sampled, commands=len(slot['waits']),
+                              wait_per_chunk_ms=_r(sum(slot['chunk_wait']) / sampled) if sampled else None,
+                              wait_per_command_ms=_r(sum(slot['waits']) / len(slot['waits'])) if slot['waits'] else None,
+                              wait_p90_command_ms=_r(quantile(slot['waits'], .9)),
+                              idle_per_chunk_ms=_r(sum(slot['idle']) / len(slot['idle'])) if slot['idle'] else None)
+    return out
+
+
+def agent_seconds(turns, duration_s):
+    """Sums over the arm's journal turns that started inside the window: TTFT-s, decode-s (seconds - ttft), output
+    tokens, uncached prompt tokens (prompt - cached) and TTFT per 1k uncached prompt tokens (ms). Arms compare as sums."""
+    ttft = decode = out = uncached = 0.0
+    n = 0
+    for t in turns:
+        if type(t.get('t')) not in (int, float) or t['t'] >= duration_s:
+            continue
+        if type(t.get('ttft')) not in (int, float) or type(t.get('seconds')) not in (int, float):
+            continue
+        n += 1
+        ttft += t['ttft']
+        decode += max(0.0, t['seconds'] - t['ttft'])
+        out += t.get('completion_tokens') or 0
+        prompt, cached = t.get('prompt_tokens'), t.get('cached_tokens') or 0
+        if type(prompt) is int:
+            uncached += max(0, prompt - cached)
+    return dict(turns=n, ttft_s=round(ttft, 1), decode_s=round(decode, 1), output_tokens=int(out),
+                uncached_prompt_tokens=int(uncached),
+                ttft_ms_per_1k_uncached=round(ttft * 1e6 / uncached, 2) if uncached else None)
+
+
 def sched_over(engine, start, end):
     before = [r for r in engine.sched if r[0] is not None and r[0] < start]
     inside = [r for r in engine.sched if r[0] is not None and start <= r[0] <= end]
@@ -429,6 +494,8 @@ def collect(root, label):
             row['state_seconds'] = {STATES[k]: round(cells.count(k) / 1000, 1) for k in range(len(STATES))}
             row['forward'] = forward_by_rank(engine, start, end, cells)
             row['bulk_busy'] = bulk_busy_by_rank(engine, start, end)
+            row['queue_wait'] = queue_wait_by_rank(engine, start, end)
+            row['agent_seconds'] = agent_seconds(turns, duration)
             row['sched'] = sched_over(engine, start, end)
             row['liveness_lines'] = sum(1 for w in engine.liveness if w is not None and start <= w <= end)
             row['submit_cpu'] = submit_over(engine, start, end)
@@ -471,13 +538,16 @@ def render(results):
             res['numerics'], res['queue_grade'], res['compose5_grade'], res['queue_rc'], res['engine_crashed'],
             eng.get('oom_max'), eng.get('fatal_lines'), eng.get('liveness_lines'),
             json.dumps(res['turns_by_selection'], sort_keys=True)))
+        lines.append('   turns/h by arm: %s' % ' '.join('%s=%s' % (k, _f(a['turns_per_hour'])) for k, a in res['arms'].items()))
+        lines.append('   x sp by arm:    %s' % ' '.join('%s=%s' % (k, _f(a.get('x_sp'), 4)) for k, a in res['arms'].items()
+                                                      if a.get('x_sp') is not None))
         for name, arm in res['arms'].items():
             share = arm['native_share'] or {}
             dg = arm.get('decode_gaps') or {}
             step = arm.get('step') or {}
-            lines.append('  %-14s seed=%s turns=%s turns/h=%s x_sp=%s native=%s/%s complete=%s merge req/ack=%s/%s '
+            lines.append('  %-14s turns/h=%s x_sp=%s seed=%s turns=%s native=%s/%s complete=%s merge req/ack=%s/%s '
                          'merge_steps=%s on=%s off=%s gap p50/p95/p99=%s/%s/%s ms' % (
-                             name, arm['seed'], arm['completed_turns'], _f(arm['turns_per_hour']), _f(arm.get('x_sp'), 4),
+                             name, _f(arm['turns_per_hour']), _f(arm.get('x_sp'), 4), arm['seed'], arm['completed_turns'],
                              _f(share.get('live_native_share_strict'), 4), _f(share.get('all_native_share_strict'), 4),
                              arm['complete'], step.get('requested_merge'), step.get('acknowledged_merge'),
                              arm['merge'].get('step_merge_steps'), arm['merge'].get('step_merge_on'),
@@ -504,6 +574,17 @@ def render(results):
             if busy:
                 lines.append('      bulk>=%d busy %s' % (BULK_ROWS, ' '.join(
                     'rank%s:%s/%sms(n=%s)' % (r, b['busy_mean_ms'], b['window_mean_ms'], b['chunks']) for r, b in busy.items())))
+            ags = arm.get('agent_seconds')
+            if ags:
+                lines.append('      agent-s ttft=%s decode=%s out_tokens=%s uncached_prompt=%s ttft_ms/1k_uncached=%s (turns=%s)' % (
+                    ags['ttft_s'], ags['decode_s'], ags['output_tokens'], ags['uncached_prompt_tokens'],
+                    ags['ttft_ms_per_1k_uncached'], ags['turns']))
+            qw = arm.get('queue_wait') or {}
+            if qw:
+                lines.append('      native queue %s' % ' '.join(
+                    'rank%s:wait/chunk=%s wait/cmd=%s p90=%s idle/chunk=%sms(chunks=%s sampled=%s x_rows=%s)' % (
+                        r, q['wait_per_chunk_ms'], q['wait_per_command_ms'], q['wait_p90_command_ms'], q['idle_per_chunk_ms'],
+                        q['chunks'], q['sampled_chunks'], q['commands']) for r, q in qw.items()))
             if arm.get('sched'):
                 lines.append('      sched %s' % json.dumps(arm['sched'], sort_keys=True))
             live = arm.get('liveness_status') or {}
@@ -511,7 +592,7 @@ def render(results):
             lines.append('      liveness lines=%s before=%s after=%s guard=%s' % (
                 arm.get('liveness_lines'), json.dumps(live.get('before'), sort_keys=True),
                 json.dumps(live.get('after'), sort_keys=True),
-                '-' if guard is None else json.dumps({k: guard.get(k) for k in ('trip', 'harness', 'trips_delta',
+                '-' if guard is None else json.dumps({k: guard.get(k) for k in ('trip', 'harness', 'trips_delta', 'recovered_trips',
                                                                                   'max_live_stall_ms', 'polls',
                                                                                   'poll_failures', 'ended_replay')},
                                                      sort_keys=True)))

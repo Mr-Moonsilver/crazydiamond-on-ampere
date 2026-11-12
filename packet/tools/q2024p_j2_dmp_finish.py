@@ -7,6 +7,7 @@ No box command, GPU, VM, deletion or push.
 """
 import argparse
 import importlib.util
+import inspect
 import json
 from pathlib import Path
 import sys
@@ -86,6 +87,17 @@ def negatives(build, cpu_path, out):
     return result
 
 
+def transport_tagged(build, cpu_path, out, tag):
+    """base.transport with the scripts directory box-<name>-<tag>: a second rendering (same packet, same pins) whose
+    chain log is its own. On the box the packet's staging receipt and arm-run log are per QNAME, so a second run of the
+    same packet is refused there once the first has staged; the rendering covers a first chain that stopped before."""
+    source = inspect.getsource(base.transport)
+    assert source.count("'-n1'") == 1, 'transport scripts-dir naming changed'
+    space = dict(vars(base))
+    exec(compile(source.replace("'-n1'", repr('-' + tag)), base.__file__, 'exec'), space)
+    return space['transport'](build, cpu_path, out)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build', type=Path, required=True)
@@ -103,6 +115,9 @@ def main(argv=None):
     neg = negatives(build, cpu_path, root / 'dmp-negatives')
     moved = base.transport(build, cpu_path, root / 'transport')
     assert moved['waiter_cap_s'] == HARD_MIN * 60
+    second = transport_tagged(build, cpu_path, root / 'transport-n2', 'n2')
+    assert second['waiter_cap_s'] == HARD_MIN * 60 and second['scripts'].endswith('-n2')
+    assert second['runner_sha256'] == moved['runner_sha256'] and second['frozen_cpu_sha256'] == moved['frozen_cpu_sha256']
     comp = base.compile_pass(build, moved, root / 'compile-proof.json')
     cpu = json.loads(cpu_path.read_text())
     delivery = dict(schema='q2024p-j2-dmp-delivery/1', state='READY_FOR_OWNER_GATE', exploratory=True,
@@ -118,13 +133,19 @@ def main(argv=None):
                     transport_sha256=base.sha(root / 'transport/transport.json'),
                     compile_sha256=base.sha(root / 'compile-proof.json'),
                     owner_command=moved['owner_command'], waiter_cap_s=moved['waiter_cap_s'],
+                    owner_command_n2=second['owner_command'],
+                    transport_n2_sha256=base.sha(root / 'transport-n2/transport.json'),
+                    n2_scope='same packet and pins, own scripts dir and chain log; the box refuses a second staging of '
+                             'the same QNAME (staging receipt / arm-run log exist), so n2 serves a first chain that stopped '
+                             'before staging',
                     nominal_minutes=NOMINAL_MIN, hard_minutes=HARD_MIN,
                     review='none for this packet: builder CPU tests only', hardware_qualified=False,
                     box_action=False, gpu_action=False)
     base.dump(root / 'delivery.json', delivery)
     files = [root / 'build.json', cpu_path, root / 'precheck/precheck.json', root / 'dmp-negatives/negatives.json',
              root / 'transport/transport.json', root / 'compile-proof.json', root / 'delivery.json', Path(build['runner']),
-             Path(build['bundle']) / 'SHA256SUMS'] + sorted(Path(moved['scripts']).glob('*.sh'))
+             Path(build['bundle']) / 'SHA256SUMS', root / 'transport-n2/transport.json'] + \
+        sorted(Path(moved['scripts']).glob('*.sh')) + sorted(Path(second['scripts']).glob('*.sh'))
     with (root / 'DELIVERY-SHA256SUMS').open('x') as handle:
         handle.write(''.join(base.sha(p) + '  ' + str(p) + '\n' for p in files))
     print(json.dumps(dict(delivery, negatives=neg['results'], compile=comp), sort_keys=True))

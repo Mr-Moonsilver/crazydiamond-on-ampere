@@ -8,7 +8,12 @@ engine counts a running decoder whose output has not grown for 10 s as one trip)
 * the arm's 15 s status polls, which the guard sees by wrapping the poll client (the poller's rows are unchanged).
 
 Rules, every replay arm alike (chunk, off, off-small and stock):
-* **ENGINE** ``engine-trip``: the engine's trip counter moved during the arm (polls or after − before);
+* **ENGINE** ``engine-stuck``: the engine's trip counter moved during the arm AND, in that same reply, a running decoder
+  is still stalled (``live_max_stall_ms >= stall_ms``): polls, or the after row for after − before;
+* a trip that has recovered by the reply that shows it (the counter moved, the live stall is back under the threshold)
+  is **recorded only**: counted in ``recovered_trips``, one ``decode-liveness-guard recovered`` line on stderr (the arm
+  log); the replay goes on and the arm is not failed for it. Stock arms on the j2 records show recovering client gaps of
+  up to 8.0 s (v1b4 sp.g2-live-0), so a recovered stall must not break the ABBA;
 * **ENGINE** ``status-unanswered``: POLL_FAILS consecutive polls raised (the engine loop or its control is wedged);
 * **HARNESS** ``guard-blind``: a status that answered has no liveness block (the launch lacks the setting, or the path
   changed), so the guard cannot see; recorded, the replay is not ended for it.
@@ -19,13 +24,26 @@ refuses, as for any crash). The arm gets
 the reason ``decode-liveness-guard:<CLASS>:<detail>`` and ``complete`` False, so the inherited grade FAILs it. The guard
 never sends a control action and never changes what the engine runs.
 """
+import sys
 import threading
 import time
 
 STAGE_CONTROL = 'native_stage_local'
 POLL_FAILS = 4                       # 4 x 15 s polls: a minute with no status answer
+STALL_MS = 10_000                    # the engine's threshold when its block does not state it (stage_overlap.LIVENESS_STALL_NS)
 JUMP_S = 10.0 ** 7                   # past any replay window
 REASON = 'decode-liveness-guard:%s:%s'
+
+
+def stall_of(block):
+    value = block.get('stall_ms')
+    return value if type(value) is int and value > 0 else STALL_MS
+
+
+def stuck(block):
+    """A running decoder is still stalled at the engine's threshold in this reply."""
+    live = block.get('live_max_stall_ms')
+    return type(live) is int and live >= stall_of(block)
 
 
 def liveness_of(reply):
@@ -54,6 +72,8 @@ class Guard:
         self.base_trips = None
         self.polls = self.failures = self.consecutive = self.blind = 0
         self.max_live_stall_ms = 0
+        self.seen_trips = None            # the trip count last accounted for
+        self.recovered_trips = 0
         self.trip = None                  # (class, detail, wall_s)
         self.harness = None
 
@@ -81,12 +101,24 @@ class Guard:
                 self.harness = self.harness or 'guard-blind'
                 return
             if self.base_trips is None:
-                self.base_trips = trips
+                self.base_trips = self.seen_trips = trips
             live = block.get('live_max_stall_ms')
             if type(live) is int:
                 self.max_live_stall_ms = max(self.max_live_stall_ms, live)
-            if trips > self.base_trips:
-                self._end('ENGINE', 'engine-trip')
+            if trips > self.seen_trips:
+                new, self.seen_trips = trips - self.seen_trips, trips
+                if stuck(block):
+                    self._end('ENGINE', 'engine-stuck')
+                else:
+                    self._recovered(new, block)
+
+    def _recovered(self, new, block):
+        self.recovered_trips += new
+        try:
+            sys.stderr.write('decode-liveness-guard recovered %s trips=%s live_max_stall_ms=%s stall_ms=%s\n'
+                             % (self.label, block.get('trips'), block.get('live_max_stall_ms'), stall_of(block)))
+        except Exception:  # noqa: BLE001 - a log line never ends the arm
+            pass
 
     def failed(self):
         with self.lock:
@@ -102,12 +134,15 @@ class Guard:
         delta = None
         if isinstance(before, dict) and isinstance(after, dict) and type(before.get('trips')) is int and type(after.get('trips')) is int:
             delta = after['trips'] - before['trips']
-            if delta > 0 and self.trip is None:
-                self.trip = ('ENGINE', 'engine-trip', None)
+            unseen = after['trips'] - max(before['trips'], self.seen_trips if self.seen_trips is not None else before['trips'])
+            if delta > 0 and self.trip is None and stuck(after):
+                self.trip = ('ENGINE', 'engine-stuck', None)
+            elif unseen > 0 and self.trip is None:
+                self._recovered(unseen, after)
         elif self.harness is None and 'before' in rows and 'after' in rows:
             self.harness = 'guard-blind'
         view = dict(polls=self.polls, poll_failures=self.failures, blind_polls=self.blind, base_trips=self.base_trips,
-                    trips_delta=delta, max_live_stall_ms=self.max_live_stall_ms,
+                    trips_delta=delta, recovered_trips=self.recovered_trips, max_live_stall_ms=self.max_live_stall_ms,
                     trip=None if self.trip is None else dict(classification=self.trip[0], detail=self.trip[1], wall_s=self.trip[2]),
                     harness=self.harness, ended_replay=self.offset > 0,
                     before=before, after=after)

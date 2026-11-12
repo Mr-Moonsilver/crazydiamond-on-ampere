@@ -45,6 +45,11 @@ DRAFT_ANCHOR = 'set -uo pipefail\numask 077\n'
 DRAFT_EXPORT = ('export N3DMP_VARIANT=%s  # decode-merge probe: n3j2_packet.configure applies the dmp table in every python '
                 'started below\n')
 J2_SHAPE = '# sp0,n30,n31,sp1 at480s per window are retained.'
+# 12 Nov review: the arm gate also reads ENGINE_CRASHED (set by the engine death watch / scans), so after a hang the
+# later arms are NOT_RUN at once instead of each trying its entry.
+ARM_GATE = '  if [[ $n != "$N0" ]] || host_crash_detected || ! health_ok; then\n'
+ARM_GATE_NEW = ('  # decode-merge probe (dmp-b): a recorded engine crash or hang also closes the arm gate\n'
+                '  if [[ $n != "$N0" ]] || [[ $ENGINE_CRASHED != 0 ]] || host_crash_detected || ! health_ok; then\n')
 BOX_IMPORT_NEW = (base.BOX_IMPORT_NEW +
                   'import decode_liveness_guard  # decode-merge probe: the arm liveness guard\n'
                   'decode_liveness_guard.install(e3_compose5_box)  # decode-merge probe\n')
@@ -57,9 +62,12 @@ TOOLS = ('tools/q2024p_j2_hgb_reader.py', 'tools/build_q2024p_j2_hgb.py', 'tools
          'tools/q2024p_j2_dmp_reader.py')
 
 
+NAME_SUFFIX = ''                  # '-b' etc.: a rebuild under a new name (a built packet is never overwritten)
+
+
 def name_of(variant):
     assert variant in PROBES, variant
-    return base.PARENT_NAME + '-dmp-' + variant
+    return base.PARENT_NAME + '-dmp-' + variant + NAME_SUFFIX
 
 
 def once(text, old, new):
@@ -84,6 +92,7 @@ def queues(variant):
             text = once(text, anchor, anchor + added)
         if suffix == '.draft.sh':
             text = once(text, J2_LOOP, 'core:sp.g2-live-0 core:n3.g2-live-0 core:%s.g2-live-0 core:%s.g2-live-1 core:n3.g2-live-1' % (sel, sel))
+            text = once(text, ARM_GATE, ARM_GATE_NEW)
             text = once(text, J2_SHAPE, '# sp0,n30,%s0,%s1,n31 at 480s on seed 1 (dmp) replace j2\'s sp0,n30,n31,sp1.' % (sel, sel))
             head, sep, rest = text.partition(DRAFT_ANCHOR)
             code = [line for line in head.splitlines() if not line.lstrip().startswith('#')]
@@ -171,7 +180,7 @@ def prepare(commit, variant, out):
     install(variant)
     record = base.prepare(commit, variant, out)
     sel, mode = PROBES[variant]
-    record.update(schema='q2024p-j2-dmp-build/1', probe_selection=sel, decode_merge=mode, settings_added=SETTINGS_ADD,
+    record.update(schema='q2024p-j2-dmp-build/1', name_suffix=NAME_SUFFIX, probe_selection=sel, decode_merge=mode, settings_added=SETTINGS_ADD,
                   nominal_minutes=NOMINAL_MIN, hard_minutes=HARD_MIN, dmp_modules=MODULES)
     path = out / 'build.json'
     path.chmod(0o644)
@@ -186,7 +195,10 @@ if __name__ == '__main__':
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--variant', choices=sorted(PROBES), required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--name-suffix', default='', help="e.g. 'b' for q18a-parity-n3s24q2024p-j2-dmp-off-b")
     args = parser.parse_args()
+    assert args.name_suffix == '' or args.name_suffix.isalnum() and args.name_suffix.islower(), args.name_suffix
+    NAME_SUFFIX = '-' + args.name_suffix if args.name_suffix else ''
     result = prepare(args.source_commit, args.variant, args.out.resolve())
     print(json.dumps({k: v for k, v in result.items() if k != 'source_changes'}, sort_keys=True))
     sys.exit(0)
