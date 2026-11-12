@@ -7,7 +7,16 @@ selection, a copy of ``n3``'s row in every per-selection table but ``DECODE_MERG
 The replay is ``sp | n3 X X n3`` with X the probe selection, all five arms on seed 1 (index 1 is mapped to seed 1, so the
 second chunk and probe arms get distinct labels and the same draws). The head (smoke, pf po pg) is j2's. Every row but the
 declared probe rows keeps ``chunk``; ``sp`` keeps ``off`` (native off). No other field differs from ``n3``.
+
+The bundle applies it through ``wrap_env``: only a process whose environment names the variant (``N3DMP_VARIANT``, exported
+by the dmp draft; every python the draft starts inherits it) sees the probe table. Without it ``configure`` is j2's,
+unchanged, so j2's frozen suites, its mechanism rule fixtures and the runner's self-runs read j2's table as before. A
+process that should have the probe table and lacks the variable sees j2's: its first probe-arm call fails loudly (the
+label ``nm``/``ns`` is not in j2's table), never silently.
 """
+import os
+
+ENV = 'N3DMP_VARIANT'
 
 VARIANTS = {'off': ('nm', 'off'), 'offsmall': ('ns', 'off-small')}
 PROBE_SEED = 1
@@ -73,6 +82,17 @@ def check(table, variant):
             assert r['decode_merge'] == 'chunk', ('chunk on every other native row', r['label'])
     assert table.REPLAY['DURATION'] == 480 and table.REPLAY['AGENTS'] == 8
     return True
+
+
+def wrap_env(configure, environ=None):
+    """The bundle's n3j2_packet.configure, then the probe named by ``N3DMP_VARIANT``; j2's table when it is unset or empty."""
+    def configured():
+        variant = (os.environ if environ is None else environ).get(ENV, '')
+        table = configure()
+        return table if variant == '' else extend(table, variant)      # probe() refuses an unknown variant
+    configured.n3dmp_env = ENV
+    configured.j2_configure = configure
+    return configured
 
 
 def wrap(configure, variant):

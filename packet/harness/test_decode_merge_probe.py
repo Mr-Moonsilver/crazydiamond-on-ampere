@@ -20,7 +20,9 @@ CPU only; nothing here is box evidence.
 import contextlib
 import io
 import logging
+import json
 import os
+import sys
 from pathlib import Path
 import threading
 import time
@@ -636,6 +638,56 @@ class Table(unittest.TestCase):
             for name, value in vars(table).items():
                 if isinstance(value, dict) and set(value) >= set(self.saved['SELECTIONS']):
                     self.assertIn(sel, value, name)                              # every per-selection table knows the probe
+
+    J2_REPLAY = ['sp.g2-live-0', 'n3.g2-live-0', 'n3.g2-live-1', 'sp.g2-live-1']
+
+    def replay_labels(self, table):
+        return [r['label'] for r in table.arms() if r['kind'] == 'replay']
+
+    def test_env_switch(self):
+        """wrap_env: j2's table unless N3DMP_VARIANT names a variant; an unknown variant refuses. In the bundle this is
+        the configure every module imports (the tail); on the hub, j2's configure text wrapped the same way."""
+        import n3dmp_packet as dmp
+        inner = j2_configure()
+        inner = getattr(inner, 'j2_configure', inner)
+        self.assertEqual(self.replay_labels(dmp.wrap_env(inner, {})()), self.J2_REPLAY)
+        self.assertEqual(self.replay_labels(dmp.wrap_env(inner, {dmp.ENV: ''})()), self.J2_REPLAY)
+        self.tearDown()
+        self.assertEqual(self.replay_labels(dmp.wrap_env(inner, {dmp.ENV: 'off'})()),
+                         ['sp.g2-live-0', 'n3.g2-live-0', 'nm.g2-live-0', 'nm.g2-live-1', 'n3.g2-live-1'])
+        self.tearDown()
+        with self.assertRaises(AssertionError):
+            dmp.wrap_env(inner, {dmp.ENV: 'chunk'})()
+
+    def test_bundle_tail_and_processes(self):
+        """Bundle only (skipped on the hub, where n3j2_packet has no tail): the bundle's configure is env-wrapped and is
+        j2's in this process; fresh pythons with the draft's export import n3j2_gate (its budget assert at import) and
+        n3j2_arms on the probe table, and without it on j2's."""
+        try:
+            import n3j2_packet
+        except ImportError:
+            self.skipTest('hub: no bundle n3j2_packet')
+        self.assertEqual(getattr(n3j2_packet.configure, 'n3dmp_env', None), 'N3DMP_VARIANT')
+        self.assertNotIn('N3DMP_VARIANT', os.environ)
+        self.assertEqual(self.replay_labels(n3j2_packet.configure()), self.J2_REPLAY)
+        import subprocess
+        here = str(Path(n3j2_packet.__file__).resolve().parent)
+        code = ('import n3j2_gate, n3j2_arms, json; print(json.dumps([[r["label"] for r in n3j2_arms.table.arms() '
+                'if r["kind"] == "replay"], n3j2_gate.estimate()["total_s"], n3j2_gate.NOMINAL_S]))')
+        for variant, expected in (('off', 'nm'), ('offsmall', 'ns'), ('', None)):
+            env = dict(os.environ, PYTHONPATH=os.pathsep.join([here, os.environ.get('PYTHONPATH', '')]))
+            if variant:
+                env['N3DMP_VARIANT'] = variant
+            done = subprocess.run([sys.executable, '-B', '-c', code], env=env, cwd=here, capture_output=True, text=True,
+                                  timeout=120)
+            self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+            labels, total, nominal = json.loads(done.stdout.strip().splitlines()[-1])
+            self.assertLessEqual(total, nominal)
+            if expected is None:
+                self.assertEqual(labels, self.J2_REPLAY)
+            else:
+                self.assertEqual(labels, ['sp.g2-live-0', 'n3.g2-live-0', expected + '.g2-live-0', expected + '.g2-live-1',
+                                          'n3.g2-live-1'])
 
     def test_check_refuses_a_mutant(self):
         import n3dmp_packet as dmp

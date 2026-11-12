@@ -35,9 +35,14 @@ NOMINAL_MIN = 64
 HARD_MIN = 96
 GATE_OLD = 'NOMINAL_S = 54 * 60\n'
 GATE_NEW = 'NOMINAL_S = %d * 60  # decode-merge probe: five replay arms (sp n3 X X n3); j2: 54\n' % NOMINAL_MIN
-PACKET_TAIL = ('\n# decode-merge probe (q2024p-j2-dmp, exploratory): j2\'s configure above, then the probe table.\n'
+PACKET_TAIL = ('\n# decode-merge probe (q2024p-j2-dmp, exploratory): j2\'s configure above; the probe table only where the\n'
+               '# environment names it (N3DMP_VARIANT, exported by the dmp draft), j2\'s table everywhere else.\n'
                'import n3dmp_packet as _n3dmp\n'
-               'configure = _n3dmp.wrap(configure, %r)\n')
+               'configure = _n3dmp.wrap_env(configure)\n')
+DRAFT_ANCHOR = 'export PYTHONPATH="$H/e3_builder:$H"\n'
+DRAFT_EXPORT = ('export N3DMP_VARIANT=%s  # decode-merge probe: n3j2_packet.configure applies the dmp table in every python '
+                'started below\n')
+J2_SHAPE = '# sp0,n30,n31,sp1 at480s per window are retained.'
 BOX_IMPORT_NEW = (base.BOX_IMPORT_NEW +
                   'import decode_liveness_guard  # decode-merge probe: the arm liveness guard\n'
                   'decode_liveness_guard.install(e3_compose5_box)  # decode-merge probe\n')
@@ -77,6 +82,10 @@ def queues(variant):
             text = once(text, anchor, anchor + added)
         if suffix == '.draft.sh':
             text = once(text, J2_LOOP, 'core:sp.g2-live-0 core:n3.g2-live-0 core:%s.g2-live-0 core:%s.g2-live-1 core:n3.g2-live-1' % (sel, sel))
+            text = once(text, J2_SHAPE, '# sp0,n30,%s0,%s1,n31 at 480s on seed 1 (dmp) replace j2\'s sp0,n30,n31,sp1.' % (sel, sel))
+            head, sep, rest = text.partition(DRAFT_ANCHOR)
+            assert sep and 'n3j2_packet' not in head and 'n3j2_gate' not in head and 'n3j2_box' not in head, 'table use before the export'
+            text = once(text, DRAFT_ANCHOR, DRAFT_ANCHOR + DRAFT_EXPORT % variant)
             text = once(text, J2_HEADER, '# dmp-%s (exploratory decode-merge probe, decode_merge %s): %dmin nominal/%dmin hard from n3j2_gate '
                                          '(five replay arms; j2 54/81 by the operator\'s 00:24 exception); relative limits only.\n'
                                          % (variant, mode, NOMINAL_MIN, HARD_MIN))
@@ -86,7 +95,7 @@ def queues(variant):
 
 def bundle_edits(bundle, variant):
     packet = bundle / 'n3j2_packet.py'
-    packet.write_text(packet.read_text() + PACKET_TAIL % variant)
+    packet.write_text(packet.read_text() + PACKET_TAIL)
     gate = bundle / 'n3j2_gate.py'
     gate.write_text(once(gate.read_text(), GATE_OLD, GATE_NEW))
 
