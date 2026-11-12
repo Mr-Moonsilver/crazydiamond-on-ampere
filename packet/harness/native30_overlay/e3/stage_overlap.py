@@ -123,7 +123,63 @@ def stage_overlap_defer_bind_enabled(env):
 # select it per arm, while paused idle FULL.  Installed and unselected is the C1 defer base.
 LAZY_RECV_ENV = 'FLASH_S5_LAZY_RECV'
 DECODE_MERGE_ENV = 'FLASH_S5_DECODE_MERGE'
-DECODE_MERGE_MODES = ('off', 'chunk', 'always')
+DECODE_MERGE_MODES = ('off', 'chunk', 'always', 'off-small')
+# decode-merge probe (12 Nov 2026): 'off-small' merges as 'chunk' does, but only while the open piece has at least
+# OFF_SMALL_MIN_ROWS rows; a smaller piece, or none, runs stock's two parity cohorts.
+OFF_SMALL_MIN_ROWS = 1536
+# decode-merge probe: the liveness observer, installed by FLASH_S5_DECODE_LIVENESS=1 (default 0: never created, no status
+# key). Host clock only, no sync, never changes a schedule. A running request with output that has not grown for
+# LIVENESS_STALL_NS is one trip (one line per episode).
+DECODE_LIVENESS_ENV = 'FLASH_S5_DECODE_LIVENESS'
+LIVENESS_STALL_NS = 10_000_000_000
+LIVENESS_LINE = 'flash-s5 decode-liveness '
+
+
+class DecodeLiveness:
+    """Per running decoder, the monotonic time its output count last grew; bounded by the scheduler's running list."""
+
+    def __init__(self, stall_ns=LIVENESS_STALL_NS):
+        self.stall_ns = stall_ns
+        self.seen = {}
+        self.counters = dict(checked_steps=0, trips=0, max_stall_ms=0, live_max_stall_ms=0, tracked_max=0)
+
+    def check(self, scheduler, mode, now_ns=None):
+        now = time.monotonic_ns() if now_ns is None else now_ns
+        seen, fresh, live_max, tripped = self.seen, {}, 0, []
+        for request in getattr(scheduler, 'running', ()):
+            count = getattr(request, 'num_output_tokens', 0)
+            if type(count) is not int or count < 1:
+                continue
+            rid = request.request_id
+            last = seen.get(rid)
+            if last is None or last[0] != count:
+                fresh[rid] = [count, now, False]
+                continue
+            stall = now - last[1]
+            if stall >= self.stall_ns and not last[2]:
+                last[2] = True
+                tripped.append((rid, count, stall))
+            live_max = max(live_max, stall)
+            fresh[rid] = last
+        self.seen = fresh
+        c = self.counters
+        c['checked_steps'] += 1
+        c['live_max_stall_ms'] = live_max // 1_000_000
+        c['max_stall_ms'] = max(c['max_stall_ms'], c['live_max_stall_ms'])
+        c['tracked_max'] = max(c['tracked_max'], len(fresh))
+        for rid, count, stall in tripped:
+            c['trips'] += 1
+            try:
+                _progress_logger().warning(LIVENESS_LINE + json.dumps(dict(request=str(rid)[:80], output_tokens=count,
+                                                               stall_ms=stall // 1_000_000, mode=mode,
+                                                               running=len(fresh), trips=c['trips']),
+                                                          sort_keys=True, separators=(',', ':')))
+            except Exception:  # noqa: BLE001 - an observer never raises into the step
+                c['line_errors'] = c.get('line_errors', 0) + 1
+        return tripped
+
+    def status(self):
+        return dict(self.counters, stall_ms=self.stall_ns // 1_000_000)
 
 
 def _step_switch(env, name):
@@ -141,6 +197,16 @@ def lazy_recv_enabled(env):
 
 def decode_merge_enabled(env):
     return _step_switch(env, DECODE_MERGE_ENV)
+
+
+def decode_liveness_enabled(env):
+    """decode-merge probe: 0 (default) or 1; 1 needs the decode merge switch installed."""
+    value = env.get(DECODE_LIVENESS_ENV, '0')
+    if value not in ('0', '1'):
+        raise DriverError(DECODE_LIVENESS_ENV + ' must be 0 or 1')
+    if value == '1' and not decode_merge_enabled(env):
+        raise DriverError(DECODE_LIVENESS_ENV + ' needs ' + DECODE_MERGE_ENV + '=1')
+    return value == '1'
 
 
 # inwait (results/hub/inwait/DESIGN.md).  One switch, default off; the startup flag installs it and ``inwait`` on
@@ -608,6 +674,8 @@ class OverlapSegmentDriver(StagedSegmentDriver):
         self.decode_merge = 'off'
         self.decode_step_counters = dict(lazy_marked=0, merge_steps=0, merge_on=0, merge_off=0)
         self._merge_active = False
+        # decode-merge probe: None unless FLASH_S5_DECODE_LIVENESS=1.
+        self.decode_liveness = DecodeLiveness() if decode_liveness_enabled(os.environ) else None
         # inwait: off until selected, so an installed engine with no selection is the base.
         self.inwait_installed = inwait_enabled(os.environ)
         self.inwait = False
@@ -796,16 +864,27 @@ class OverlapSegmentDriver(StagedSegmentDriver):
     def _decode_merge_wanted(self):
         if self.decode_merge == 'always':
             return True
-        if self.decode_merge != 'chunk':
+        if self.decode_merge not in ('chunk', 'off-small'):
             return False
         # The policy's native phase spans the chunks of one prefill, handoffs included.
         policy = getattr(self, 'auto_arm', None)
         if self.append_yield_phase() == 'handback':
             return False                         # a1-trunk: the yield's FULL window is FULL, as a prefill's tail is
-        return policy is not None and not policy.manual_owned and policy.phase == 'native'
+        native = policy is not None and not policy.manual_owned and policy.phase == 'native'
+        if native and self.decode_merge == 'off-small':
+            # decode-merge probe: merged only while a piece of at least OFF_SMALL_MIN_ROWS rows is open.
+            tx = getattr(self, 'tx', None)
+            return tx is not None and tx.chunk_end - tx.chunk_start >= OFF_SMALL_MIN_ROWS
+        return native
 
     def sync_decode_merge(self, scheduler):
         """L2: set before each schedule() from the arm's selection and the policy's phase."""
+        if getattr(self, 'decode_liveness', None) is not None:
+            # decode-merge probe (FLASH_S5_DECODE_LIVENESS=1): observe only, every step, every selection.
+            try:
+                self.decode_liveness.check(scheduler, self.decode_merge)
+            except Exception:  # noqa: BLE001 - an observer never raises into the step
+                self.decode_liveness.counters['observer_errors'] = self.decode_liveness.counters.get('observer_errors', 0) + 1
         wanted = self._decode_merge_wanted()
         counters = self.decode_step_counters
         if wanted is not self._merge_active:
@@ -1502,6 +1581,9 @@ class OverlapSegmentDriver(StagedSegmentDriver):
                                                     decode_merge_installed=self.decode_merge_installed,
                                                     decode_merge=self.decode_merge,
                                                     counters=dict(self.decode_step_counters))
+            if getattr(self, 'decode_liveness', None) is not None:
+                # decode-merge probe: present only under FLASH_S5_DECODE_LIVENESS=1.
+                result['overlap']['decode_step']['liveness'] = self.decode_liveness.status()
         if self.inwait_installed:
             counters = self.inwait_counters
             result['overlap']['inwait'] = dict(installed=True, selected=self.inwait, early_successor=self.early_successor,
@@ -1540,6 +1622,6 @@ def _ranges(values):
     return ','.join(str(a) if a == b else '%d-%d' % (a, b) for a, b in out) or '-'
 
 
-__all__ = ['INWAIT_APPLY_KINDS', 'inwait_enabled', 'DECODE_MERGE_ENV', 'DECODE_MERGE_MODES', 'LAZY_RECV_ENV', 'decode_merge_enabled', 'lazy_recv_enabled', 'DEFER_BIND_ENV', 'OBSERVE_ENV', 'OBSERVE_LINE', 'OBSERVE_SCHEMA', 'OverlapObserver', 'OverlapSegmentDriver', 'REFUSALS', 'STAGE_OVERLAP_ENV', 'StagedAdmissionController',
+__all__ = ['INWAIT_APPLY_KINDS', 'inwait_enabled', 'DECODE_MERGE_ENV', 'DECODE_MERGE_MODES', 'DECODE_LIVENESS_ENV', 'DecodeLiveness', 'decode_liveness_enabled', 'OFF_SMALL_MIN_ROWS', 'LAZY_RECV_ENV', 'decode_merge_enabled', 'lazy_recv_enabled', 'DEFER_BIND_ENV', 'OBSERVE_ENV', 'OBSERVE_LINE', 'OBSERVE_SCHEMA', 'OverlapObserver', 'OverlapSegmentDriver', 'REFUSALS', 'STAGE_OVERLAP_ENV', 'StagedAdmissionController',
            'overlap_refusal', 'provisional_fields', 'stage_overlap_defer_bind_enabled', 'stage_overlap_enabled',
            'stage_overlap_observe_enabled']

@@ -369,7 +369,7 @@ class NativeControlClient:
         if decode_merge is not None:
             if not _step_switch('FLASH_S5_DECODE_MERGE'):
                 raise NativeControlError('native-control-stage-decode-merge-not-installed')
-            if decode_merge not in ('off', 'chunk', 'always'):
+            if decode_merge not in ('off', 'chunk', 'always', 'off-small'):  # decode-merge probe: + off-small
                 raise NativeControlError('native-control-stage-decode-merge-invalid')
             command['decode_merge'] = decode_merge
         if inwait is not None:
