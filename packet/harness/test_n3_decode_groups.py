@@ -8,6 +8,8 @@ in a bundle it is the bundle's n3j2_packet (its marked tail wraps it, so the tai
   * an unknown value refuses (ValueError) at the configure call;
   * bundle: fresh pythons with the draft's export import n3j2_arms / n3j2_gate on the mode's table, j2's budget
     unchanged (four replay arms, no added arm).
+  * decode groups x yield window: the real _decode_merge_wanted over a window's phase sequence; decode groups x
+    small-piece batch: SmallPieceBatchDriver inherits the decision unchanged (same answer per mode and phase).
 """
 import json
 import os
@@ -16,6 +18,7 @@ import re
 import subprocess
 import sys
 import unittest
+import unittest.mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -131,6 +134,24 @@ class WindowPhases(unittest.TestCase):
             got = [self.driver(mode, phase, rows)[0]._decode_merge_wanted() for phase, rows in window]
             self.assertEqual(got, expected, mode)
 
+    def test_small_piece_batch_driver_inherits_the_decision(self):
+        # decode groups x small-piece batch (FLASH_S5_SMALL_PIECE_BATCH=1 constructs SmallPieceBatchDriver): the batch
+        # driver neither overrides _decode_merge_wanted nor reads decode_merge, so every mode decides as the base driver
+        sys.path.insert(0, str(HERE.parent / 'patches/s5_engine'))
+        import small_piece_batch
+        import stage_overlap
+        cls = small_piece_batch.driver_class()
+        self.assertTrue(issubclass(cls, stage_overlap.OverlapSegmentDriver))
+        self.assertIs(cls._decode_merge_wanted, stage_overlap.OverlapSegmentDriver._decode_merge_wanted)
+        self.assertNotIn('decode_merge', Path(small_piece_batch.__file__).read_text())
+        small = stage_overlap.OFF_SMALL_MIN_ROWS
+        for mode in ('chunk', 'off', 'off-small'):
+            for phase, rows in (('append', small), ('append', small_piece_batch.SMALL_PIECE_ROWS), ('handback', small)):
+                base, _ = self.driver(mode, phase, rows)
+                batch = cls.__new__(cls)
+                batch.__dict__.update(base.__dict__)
+                self.assertEqual(batch._decode_merge_wanted(), base._decode_merge_wanted(), (mode, phase, rows))
+
     def test_manual_lease_and_no_piece(self):
         for mode in ('chunk', 'off-small'):
             self.assertFalse(self.driver(mode, 'append', 4096, manual=True)[0]._decode_merge_wanted(), mode)
@@ -140,11 +161,42 @@ class WindowPhases(unittest.TestCase):
 
 
 class BundleTail(unittest.TestCase):
+    def hub_tail(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('build_q2024p_j2_cx', HERE.parent / 'tools/build_q2024p_j2_cx.py')
+        cx = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cx)
+        text = (HERE / 'test_decode_merge_probe.py').read_text()
+        source = re.search(r"^J2_CONFIGURE = '''(.*?)'''", text, re.S | re.M).group(1) + cx.PACKET_TAIL
+        space = {}
+        exec(compile(source, 'n3j2_packet(inline + cx tail)', 'exec'), space)
+        configure = space['configure']
+        self.assertEqual(getattr(configure, 'decode_groups_env', None), dg.ENV, 'the tail wraps the configure')
+        import compose5_arms
+        saved = dict(vars(compose5_arms))
+        try:
+            for mode in ('', 'chunk', 'off', 'off-small'):
+                env = {dg.ENV: mode} if mode else {}
+                with unittest.mock.patch.dict(os.environ, env, clear=False):
+                    if not mode:
+                        os.environ.pop(dg.ENV, None)
+                    rows = configure().arms()
+                self.assertEqual([r['label'] for r in rows if r['kind'] == 'replay'], J2_REPLAY, mode)
+                self.assertEqual(sorted({r['decode_merge'] for r in rows if r['c1'] == 'n3'}), [mode or 'chunk'], mode)
+            with unittest.mock.patch.dict(os.environ, {dg.ENV: 'always'}), self.assertRaises(ValueError):
+                configure()
+        finally:
+            for k in list(vars(compose5_arms)):
+                if k not in saved:
+                    delattr(compose5_arms, k)
+            for k, v in saved.items():
+                setattr(compose5_arms, k, v)
+
     def test_tail_and_fresh_processes(self):
         try:
             import n3j2_packet
         except ImportError:
-            self.skipTest('hub: no bundle n3j2_packet (the tail is a packet-build edit)')
+            return self.hub_tail()             # hub: the builder's tail text over j2's configure text (no skip)
         chain, seen = n3j2_packet.configure, []
         while chain is not None:
             seen.append(getattr(chain, 'decode_groups_env', None))

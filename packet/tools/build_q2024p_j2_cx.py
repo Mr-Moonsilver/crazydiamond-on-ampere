@@ -64,7 +64,7 @@ BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control')
 ENGINE_MOVED = {'e3/' + n + '.py' for n in BOUND_MODULES}
 NEW_OVERLAY_FILES = np.NEW_OVERLAY_FILES
 SUITES = np.SUITES + ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups',
-                      'test_dmp_reader', 'test_q2024p_j2_cx')
+                      'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs')
 TOOLS = np.TOOLS + ('tools/build_q2024p_j2_dmp.py', 'tools/q2024p_j2_dmp_reader.py', 'tools/build_q2024p_j2_cx.py', 'tools/q2024p_j2_cx_finish.py', 'tools/q2024p_j2_cx_render.py',
                     'tools/q2024p_j2_cx_reader.py')
 CX_CONTAINER = "'q2024p-j2-cx-frozen-cpu-'"
@@ -169,7 +169,8 @@ def copy_delta(b, commit, bundle):
     copied = np.copy_delta(b, commit, bundle)
     for name in ('harness/n3_decode_groups.py', 'harness/decode_liveness_guard.py', 'harness/test_n3_decode_groups.py',
                  'harness/test_append_no_block_stop.py', 'harness/test_append_no_block_stop_stack.py',
-                 'harness/test_q2024p_j2_cx.py', 'patches/s5_engine/stage_overlap.py',
+                 'harness/test_q2024p_j2_cx.py', 'harness/test_n3_compose_pairs.py',
+                 'patches/s5_engine/stage_overlap.py',
                  'patches/s5_engine/native_overlap_control.py', 'patches/s5_engine/scheduler_hooks.py'):
         assert name in copied, name
     return copied

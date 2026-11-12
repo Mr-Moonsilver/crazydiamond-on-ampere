@@ -5,9 +5,10 @@
     decode-group mode other than chunk without the liveness observer, verify settings without ingress, ingress without
     explicit verify settings), unknown flags and values;
   * names: four blocks and the dry packet per tag, none a '-'-prefix of another or of a known QNAME; a clash refuses;
-  * queues (hub only, needs the parent j2 bundle): the settings line carries the three composition settings after the
-    ingress one, declaration and draft assert them, the draft exports FLASH_S5_DECODE_GROUPS right after its anchor
-    and its arm gate reads ENGINE_CRASHED;
+  * queues: the settings line carries the three composition settings after the ingress one (or its verify mode),
+    declaration and draft assert them, the draft exports FLASH_S5_DECODE_GROUPS right after its anchor and its arm gate
+    reads ENGINE_CRASHED; lever A's MAX_NEW is at most the launch's append-yield max_new (the A x Y1 precondition). On
+    the hub for a non-default flag set through the builder; in a bundle on the bundle's own built queue (no skip);
   * reader on synthetic records (the night-pack reader fixtures, records in fresh mkdtemp directories left in place):
     R per block pooled over the two seeds, G the geometric mean, a block without R named; the lever A append_pieces
     delta only where the block exists; identity NOTEs for a composition setting that differs from the cohort's.
@@ -17,6 +18,7 @@ import importlib.util
 import json
 import math
 from pathlib import Path
+import re
 import sys
 import unittest
 
@@ -114,32 +116,78 @@ class Names(unittest.TestCase):
                 cx.name_of('b1', bad)
 
 
+COMPOSE = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS')
+QUEUE = re.compile(r'^q18a_parity_n3s24q2024p_j2_cx([a-z0-9]{0,8})_(b[1-4]|dry)_settings\.sh$')
+
+
+def engine_text(name):
+    for path in (HERE.parent / 'patches/s5_engine' / name, HERE / 'e3_builder' / name):
+        if path.is_file():
+            return path.read_text()
+    raise FileNotFoundError(name)
+
+
 class Queues(unittest.TestCase):
+    """On the hub the builder's queue edits for a non-default flag set; in a bundle the bundle's own built texts."""
+
+    def check_texts(self, texts, flags, name):
+        settings = [t for r, t in texts.items() if r.endswith('_settings.sh')]
+        self.assertEqual(len(settings), 1)
+        settings = settings[0]
+        head = 'FLASH_S5_INGRESS_INCREMENTAL=%s ' % flags['FLASH_S5_INGRESS_INCREMENTAL']
+        if flags['FLASH_S5_INGRESS_INCREMENTAL'] == '1':
+            head = 'FLASH_S5_INGRESS_VERIFY_ASYNC=%s ' % flags['FLASH_S5_INGRESS_VERIFY_ASYNC']
+        self.assertEqual(settings.count(head + ''.join('%s=%s ' % (k, flags[k]) for k in COMPOSE)), 1)
+        self.assertEqual(cx.parse_flags(['%s=%s' % kv for kv in flags.items() if kv[1] is not None]), flags)
+        drafts = 0
+        for rel, text in texts.items():
+            if rel.endswith('_settings.sh'):
+                continue
+            for env in COMPOSE:
+                self.assertIn("assert env.get('%s') == '%s'" % (env, flags[env]), text, rel)
+            if rel.endswith('.draft.sh'):
+                drafts += 1
+                self.assertIn(cx.dmp.DRAFT_ANCHOR + 'export FLASH_S5_DECODE_GROUPS=%s ' % flags['FLASH_S5_DECODE_GROUPS'], text)
+                self.assertIn('[[ $ENGINE_CRASHED != 0 ]]', text)
+                self.assertNotIn(cx.dmp.ARM_GATE, text)
+        self.assertEqual(drafts, 1)
+        self.assertTrue(any(name in t for t in texts.values()))
+        # lever A x Y1 precondition: every turn lever A fuses (at most its MAX_NEW rows past the turn start) has at most
+        # the launch's append-yield max_new rows left, so Y1 refuses its yield with or without lever A
+        a_max = int(re.search(r'^APPEND_NO_BLOCK_STOP_MAX_NEW = (\d+)$', engine_text('scheduler_hooks.py'), re.M).group(1))
+        y_max = re.findall(r'\bFLASH_S5_APPEND_YIELD_MAX_NEW=(\d+)\b', settings)
+        self.assertTrue(y_max and len(set(y_max)) == 1, y_max)
+        self.assertLessEqual(a_max, int(y_max[0]))
+
     def test_settings_asserts_export_gate(self):
-        if not Path(cx.hgb.PARENT).is_dir():
-            self.skipTest('no parent j2 bundle here (bundle run): the queue edits are proved on the hub')
+        runs = HERE / 'runs'
+        built = sorted(p.name for p in runs.glob('*_settings.sh') if QUEUE.match(p.name)) if runs.is_dir() else []
+        if built and (HERE / 'n3j2_packet.py').is_file() and not (HERE.parent / 'patches/s5_engine').is_dir():
+            self.assertEqual(len(built), 1, built)                 # a bundle: its own built queue
+            tag, variant = QUEUE.match(built[0]).groups()
+            stem = built[0][:-len('_settings.sh')]
+            texts = {'runs/' + n: (runs / n).read_text() for n in (stem + '_settings.sh', stem + '_declare.sh', stem + '.draft.sh')}
+            settings = texts['runs/' + stem + '_settings.sh']
+            flags = {}
+            for f in cx.FLAGS:
+                got = re.findall(r'\b%s=(\S+) ' % f[0], settings)
+                self.assertLessEqual(len(set(got)), 1, f[0])
+                flags[f[0]] = got[0] if got else None
+            self.check_texts(texts, flags, cx.name_of(variant, tag))
+            return
+        self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
         flags = cx.parse_flags(['FLASH_S5_APPEND_NO_BLOCK_STOP=1', 'FLASH_S5_DECODE_GROUPS=off-small',
-                                'FLASH_S5_DECODE_LIVENESS=1'])
+                                'FLASH_S5_DECODE_LIVENESS=1', 'FLASH_S5_INGRESS_INCREMENTAL=1',
+                                'FLASH_S5_INGRESS_VERIFY_EVERY=16', 'FLASH_S5_INGRESS_VERIFY_ASYNC=1'])
         saved = dict(cx.CONFIG)
         try:
             cx.configure(flags, 'zt')
             texts = cx.queues('b3')
         finally:
             cx.CONFIG.update(saved)
-        settings = next(t for r, t in texts.items() if r.endswith('_settings.sh'))
-        tail = 'FLASH_S5_INGRESS_INCREMENTAL=0 FLASH_S5_APPEND_NO_BLOCK_STOP=1 FLASH_S5_DECODE_GROUPS=off-small FLASH_S5_DECODE_LIVENESS=1 '
-        self.assertEqual(settings.count(tail), 1)
-        for rel, text in texts.items():
-            if rel.endswith('_settings.sh'):
-                continue
-            for env, value in (('FLASH_S5_APPEND_NO_BLOCK_STOP', '1'), ('FLASH_S5_DECODE_GROUPS', 'off-small'),
-                               ('FLASH_S5_DECODE_LIVENESS', '1')):
-                self.assertIn("assert env.get('%s') == '%s'" % (env, value), text, rel)
-            if rel.endswith('.draft.sh'):
-                self.assertIn(cx.dmp.DRAFT_ANCHOR + 'export FLASH_S5_DECODE_GROUPS=off-small ', text)
-                self.assertIn('[[ $ENGINE_CRASHED != 0 ]]', text)
-                self.assertNotIn(cx.dmp.ARM_GATE, text)
-        self.assertTrue(any(cx.name_of('b3', 'zt') in t for t in texts.values()))
+        self.check_texts(texts, flags, cx.name_of('b3', 'zt'))
+        self.assertIn('FLASH_S5_INGRESS_VERIFY_EVERY=16 FLASH_S5_INGRESS_VERIFY_ASYNC=1 FLASH_S5_APPEND_NO_BLOCK_STOP=1 ',
+                      next(t for r, t in texts.items() if r.endswith('_settings.sh')))
 
 
 def pieces(n):

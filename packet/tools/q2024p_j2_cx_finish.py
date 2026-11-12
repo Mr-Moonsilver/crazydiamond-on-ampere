@@ -23,7 +23,7 @@ for _module in ('stage_overlap', 'native_overlap_control'):
     CASES['cx_generated_%s_sha' % _module] = (lambda m: lambda r: r['hgb_generated_modules'][m].update(sha256='0' * 64))(_module)
     CASES['cx_source_%s_missing' % _module] = (lambda m: lambda r: r['hgb_source_modules'].pop(m))(_module)
 for _suite in ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups', 'test_dmp_reader',
-               'test_q2024p_j2_cx'):
+               'test_q2024p_j2_cx', 'test_n3_compose_pairs'):
     CASES['suite_%s_absent' % _suite] = yfin._suite_absent(_suite)
 
 
