@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exploratory reader for the q2024p-j2 yield re-entry settle pair (yrs off/on). Read-only; no rule, no thresholds, no
+"""Exploratory reader for the q2024p-j2 yield re-entry settle packets (yrs off / hgb / on). Read-only; no rule, no thresholds, no
 verdict.
 
 Everything the hgb reader prints (tools/q2024p_j2_hgb_reader.py, reused unchanged: turns/h, x_sp, native share, the
@@ -16,13 +16,15 @@ small_piece_batch delta, <=176-row stage times, decode token gaps, numerics/grad
 and per record: FLASH_S5_YIELD_REENTRY_SETTLE in the engine's start/end identity env.
 
 The diagnostic is always on, so both records must carry the block on every n3 arm status row; the off record must show
-settle_on 0 and no settle waits, the on record settle_on 1. Each mismatch is printed as a NOTE, never a decision.
+settle_on 0 and no settle waits (as must the hgb record: FLASH_S5_SMALL_PIECE_BATCH=1, settle 0), the on record
+settle_on 1. Each mismatch is printed as a NOTE, never a decision.
 handbacks_served (append_yield counters) moves by design when the settle is on: a handback whose first token is already
 sampled at the re-entry's start is counted; it is printed beside the block, not read as a fault.
 
 Usage:
   python3 -B tools/q2024p_j2_yrs_reader.py off=<FETCH-OFF>/q18a-parity-n3s24q2024p-j2-yrs-off \
-      on=<FETCH-ON>/q18a-parity-n3s24q2024p-j2-yrs-on [--json-out <fresh.json>]
+      [hgb=<FETCH-HGB>/q18a-parity-n3s24q2024p-j2-yrs-hgb] on=<FETCH-ON>/q18a-parity-n3s24q2024p-j2-yrs-on \
+      [--json-out <fresh.json>]
 """
 import argparse
 import bisect
@@ -37,6 +39,8 @@ hgb = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(hgb)
 
 KEY = 'yield_reentry'
+# variant -> (FLASH_S5_SMALL_PIECE_BATCH, FLASH_S5_YIELD_REENTRY_SETTLE)
+VARIANTS = {'off': ('0', '0'), 'hgb': ('1', '0'), 'on': ('1', '1')}
 YRS_ENV = 'FLASH_S5_YIELD_REENTRY_SETTLE'
 SCALARS = ('exceeded', 'barrier_pass', 'barrier_first_try', 'settle_waits', 'settle_ticks', 'settled', 'settle_bound',
            'errors')
@@ -201,10 +205,11 @@ def handoffs(events, released, queued, start, end):
 
 def collect(root, variant):
     root = Path(root)
-    result = hgb.collect(root, variant)
+    spb, want = VARIANTS[variant]
+    result = hgb.collect(root, 'on' if spb == '1' else 'off')     # the hgb reader's checks for the batch flag
+    result['variant'] = variant
     settle = identity_settle(root)
     result['identity_settle'] = settle
-    want = {'off': '0', 'on': '1'}[variant]
     if any(value != want for value in settle.values()):
         result['notes'].append('identity-settle-%s-start-%s-end-%s' % (variant, settle['start'], settle['end']))
     windows = {}
@@ -219,9 +224,9 @@ def collect(root, variant):
         delta = reentry_delta(blocks.get('before'), blocks.get('after'))
         if delta is not None:
             on = delta['settle_on']
-            if on != ((0, 0) if variant == 'off' else (1, 1)):
+            if on != ((1, 1) if want == '1' else (0, 0)):
                 result['notes'].append('settle-on-%s-%s:%s' % (variant, on, label))
-            if variant == 'off' and (delta['settle_waits'] or delta['settled']):
+            if want == '0' and (delta['settle_waits'] or delta['settled']):
                 result['notes'].append('off-record-settled:' + label)
         result['arms'][label]['yield_reentry'] = delta
         result['arms'][label]['handbacks_served'] = hgb._sub(served(rows.get('after')), served(rows.get('before')))
@@ -269,14 +274,14 @@ def render(results):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('records', nargs='+', help='off=<record dir> and/or on=<record dir>')
+    parser.add_argument('records', nargs='+', help='off=<record dir>, hgb=<record dir> and/or on=<record dir>')
     parser.add_argument('--json-out', type=Path)
     args = parser.parse_args(argv)
     results = []
     for item in args.records:
         variant, sep, path = item.partition('=')
-        if not sep or variant not in ('off', 'on'):
-            parser.error('records are off=<dir> or on=<dir>')
+        if not sep or variant not in VARIANTS:
+            parser.error('records are off=<dir>, hgb=<dir> or on=<dir>')
         results.append(collect(Path(path), variant))
     print(render(results))
     print('EXPLORATORY no rule, no thresholds, no verdict')

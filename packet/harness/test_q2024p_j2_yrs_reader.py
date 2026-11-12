@@ -196,6 +196,20 @@ class Record(unittest.TestCase):
         self.assertFalse([n for n in result['notes'] if 'settle' in n or 'yield_reentry' in n], result['notes'])
         self.assertEqual(result['arms']['n3.g2-live-1']['yield_reentry']['retries_until_armed'], {'0': 1})
 
+    def test_hgb_record_expects_batch_on_and_settle_off(self):
+        rec = real_record()
+        arms = {label: arm(label, rec, rec) for label in ('n3.g2-live-0', 'n3.g2-live-1')}
+        result = reader.collect(record(arms, [], settle='0', spb='1'), 'hgb')
+        self.assertEqual(result['variant'], 'hgb')
+        self.assertEqual(result['identity_flag'], {'start': '1', 'end': '1'})
+        self.assertFalse([n for n in result['notes'] if 'settle' in n or 'yield_reentry' in n or 'identity' in n],
+                         result['notes'])
+        # the batch block is absent from these synthetic rows: the hgb reader's own note, as for an 'on' record
+        self.assertIn('on-record-lacks-small_piece_batch:n3.g2-live-0', result['notes'])
+        wrong = reader.collect(record(arms, [], settle='1', spb='0'), 'hgb')
+        self.assertIn('identity-settle-hgb-start-1-end-1', wrong['notes'])
+        self.assertIn('identity-flag-on-start-0-end-0', wrong['notes'])
+
     def test_json_out_is_fresh_only(self):
         rec = real_record()
         root = record({'n3.g2-live-0': arm('n3.g2-live-0', rec, rec)}, [])

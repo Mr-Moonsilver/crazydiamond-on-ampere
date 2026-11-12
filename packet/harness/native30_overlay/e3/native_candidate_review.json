@@ -3215,7 +3215,7 @@
     "test_prefix_capacity.py": "5eba67da3e61f607727f86071d7e003e1edd978c95403617a7d3965bb9254413",
     "test_prepare_ahead.py": "2aa534a7739aa2703018262efff95e4d35a256edab8d9245748d889d8f4ed027",
     "test_q16_attribution.py": "179d9f2750c844e446de0d58f43550f31b7c4325a2f04fda3332d11ae8799d57",
-    "test_q2024p_j2_yrs_reader.py": "c7f5781f2885409a2ade0317ce0fb712f6bc386bba004712671d9db39e0fddc2",
+    "test_q2024p_j2_yrs_reader.py": "2a72f426698ea18bb3a41b7fc4bd3ed2c79741cddbba03854828a712e6c1c585",
     "test_reentry_view.py": "1ee229c104c2f5b2f7941886bd73aeaefb87576dd34e5d4121a6609d6e15c7bc",
     "test_resume_prefill.py": "44d2399c36003eae4e131ed5bf1f8d89298d46badf15ff44bf506e48cc0407af",
     "test_round7_review.py": "0e204f906a249b582713045f9fbae460a31edd1298a89c115e2ddabed96c2829",
@@ -4510,7 +4510,8 @@
     "parent": "q2024p-j2 f63cff5d1e19, plus the q2024p_j2_hgb delta",
     "review": "no Codex review for this packet. The only earlier Codex input is CODEX-COMPOSE-REVIEW.md sha256 640f04d7c7392b50e43c7f47cac45a32a7bac7e8a79a80301966248edd6b4cf1, a source-only composition review of the host-gap batch (a2209a96 / 3fde8dc4); it does not cover native_auto_arm.py yield-reentry",
     "setting": "FLASH_S5_YIELD_REENTRY_SETTLE: unset or 0 takes today's re-entry path (the diagnostic still counts); 1 adds the first-decode wait before the yield re-entry; any other value refuses at install",
-    "source_tests": "test_yield_reentry_settle 37/37 (hub and pinned image); 37 related suites identical rc and failing ids vs the 33a42554 parent in the pinned image; test_q2024p_j2_yrs_reader 8/8 hub"
+    "source_tests": "test_yield_reentry_settle 37/37 (hub and pinned image); 37 related suites identical rc and failing ids vs the 33a42554 parent in the pinned image; test_q2024p_j2_yrs_reader 9/9 hub",
+    "variants": "off 0/0, hgb 1/0, on 1/1 (FLASH_S5_SMALL_PIECE_BATCH/FLASH_S5_YIELD_REENTRY_SETTLE); the diagnostic in all three"
   },
   "qualified_observer_library_sha256": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d",
   "real_allocator_frontier_cpu_proof": {
