@@ -2882,7 +2882,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "7faed744f66c14d0c04e3ef445610c0c413b20cf6b6488b2471d85a0daaff1ce",
+    "selftest.py": "21535ea25f7eb477b08397c47bc90c581b3ff8ed28727f69df672fad0ae4d88f",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -3215,6 +3215,7 @@
     "test_prefix_capacity.py": "5eba67da3e61f607727f86071d7e003e1edd978c95403617a7d3965bb9254413",
     "test_prepare_ahead.py": "2aa534a7739aa2703018262efff95e4d35a256edab8d9245748d889d8f4ed027",
     "test_q16_attribution.py": "179d9f2750c844e446de0d58f43550f31b7c4325a2f04fda3332d11ae8799d57",
+    "test_q2024p_j2_yrs_reader.py": "c7f5781f2885409a2ade0317ce0fb712f6bc386bba004712671d9db39e0fddc2",
     "test_reentry_view.py": "1ee229c104c2f5b2f7941886bd73aeaefb87576dd34e5d4121a6609d6e15c7bc",
     "test_resume_prefill.py": "44d2399c36003eae4e131ed5bf1f8d89298d46badf15ff44bf506e48cc0407af",
     "test_round7_review.py": "0e204f906a249b582713045f9fbae460a31edd1298a89c115e2ddabed96c2829",
@@ -3285,6 +3286,7 @@
     "test_vmid_job8.py": "e8e0eade7dc0b61d8f1716c0dc6260701deede306f29a4a1034f4969db4edddf",
     "test_vmid_job9.py": "4c9e53e40cb43db24c1f51d54e12340b2485198021e8d8070e398380c4d84c55",
     "test_vmid_job9b.py": "fa253fbbe70aa5ab0c95aef11e42706ef90c3bf3d035921e4fe2b166b50715bf",
+    "test_yield_reentry_settle.py": "ed0b40a972a568d10720b42a68701833e1dd2b38453599e1077aa3c0c5371ffe",
     "variant_queue.sh": "727ce44b24ffb4c0368551bd4f407693ba8dcb121d540bd81bfea92021d65609",
     "verify-release.sh": "7dafa00983b75bffc3a17ddb278c5855675f3109544302708c7154982458b461",
     "verify-rowcache-v2.sh": "5dc387bdf634591d0970e5ded7e9712a8e7fbb1a99ab406545f6eab634b4f3bf",
@@ -4496,6 +4498,20 @@
     "setting": "FLASH_S5_SMALL_PIECE_BATCH: unset or 0 keeps the overlap driver class byte-for-byte; 1 installs the batch driver (needs FLASH_S5_STAGE_OVERLAP=1)",
     "source_tests": "test_small_piece_batch 26/26 (hub and pinned image), test_small_piece_batch_reader 11, test_small_piece_batch_box 3 in the bundle frozen CPU run"
   },
+  "q2024p_j2_yrs": {
+    "bounds": "settle waits at most O3_TAIL_TICKS (64) scheduler ticks, unpaused with the FULL-window holds as today; REENTRY_RETRIES (4) and the stock fallback on the 5th refusal unchanged; _proof unchanged",
+    "diagnostic": "always on, observational: refusals by stage:field and retry, retries-until-armed histogram, armed ms, one numbers-only flash-s5 yield-reentry proof-miss line per refusal (no UID); no trailing sync, no extra RPC or control, no decision",
+    "engine_delta": [
+      "native_auto_arm.py (yield-reentry (1) diagnostic, (2) settle)"
+    ],
+    "exploratory": true,
+    "hardware_qualified": false,
+    "harness_observation": "none added: the block is append_yield.declines.yield_reentry, already copied whole by e3_compose5_box.status_row",
+    "parent": "q2024p-j2 f63cff5d1e19, plus the q2024p_j2_hgb delta",
+    "review": "no Codex review for this packet. The only earlier Codex input is CODEX-COMPOSE-REVIEW.md sha256 640f04d7c7392b50e43c7f47cac45a32a7bac7e8a79a80301966248edd6b4cf1, a source-only composition review of the host-gap batch (a2209a96 / 3fde8dc4); it does not cover native_auto_arm.py yield-reentry",
+    "setting": "FLASH_S5_YIELD_REENTRY_SETTLE: unset or 0 takes today's re-entry path (the diagnostic still counts); 1 adds the first-decode wait before the yield re-entry; any other value refuses at install",
+    "source_tests": "test_yield_reentry_settle 37/37 (hub and pinned image); 37 related suites identical rc and failing ids vs the 33a42554 parent in the pinned image; test_q2024p_j2_yrs_reader 8/8 hub"
+  },
   "qualified_observer_library_sha256": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d",
   "real_allocator_frontier_cpu_proof": {
     "chunks": 97,
@@ -5619,7 +5635,7 @@
     "native/flash_s5_graph_bytes.cpp": "56f550ebc345ee96077bb473264c42cce92140218dc014f7555718bf95e36110",
     "native/flash_s5_green.cu": "c2151ef6a805f620d6c57ef57c405fc0cdbce3c815b25574f9e0d2e7f1fa1907",
     "native/flash_s5_replay_observer.cpp": "3713542b4165fb28e85d7099b3c3d91690856b2770b81da1aa179c6b4e605ece",
-    "native_auto_arm.py": "e80f7a26f7f9671863ad6f0b38d76319231e008d93c437726d0ed77ceebee096",
+    "native_auto_arm.py": "3e0fc2e5c20d82cb9e78b3e7f5f500ac74b7cd410d8e73498dafe7a7770fd86d",
     "native_backend.py": "d7167cfb873d08138556663db44bf6bdbd2748706c5c8367d3719481e507a6a0",
     "native_graph_placement.py": "4c32310bbea2a70416eec85804dec578e7a3be8680f393c7211f1e59482ec216",
     "native_measurement.py": "28c9253a3ae1ab0cb199578d0ddd7827d66a0f1480cecdfd1d4ea3d93d169388",

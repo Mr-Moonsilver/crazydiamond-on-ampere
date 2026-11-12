@@ -57,12 +57,28 @@ O3_ENV = 'FLASH_S5_O3'
 BULK_PICK_CANDIDATES = 10
 BULK_PICK_AGE_S = 45.0
 O3_TAIL_TICKS = 64            # policy ticks a kept handback may wait unscheduled on split before today's FULL return
+# yield-reentry (12 Nov 2026, lead): (1) always on, observational only: every refused re-entry proof of a yielded bulk
+# (drain cohort, barrier, identity) is counted by stage and failing field, with one 'flash-s5 yield-reentry proof-miss'
+# line (numbers only: retry index, the launch bound, ms since the re-entry began); the retries an armed re-entry needed
+# are a histogram. No RPC, sync or decision reads any of it. (2) FLASH_S5_YIELD_REENTRY_SETTLE=1 (default 0: today's
+# path): the FULL window of a yield waits, unpaused, for the returned append's first decode to be scheduled before the
+# re-entry's PAUSED_ALL (the run-end path's K2 settle), bounded by O3_TAIL_TICKS; the retry bound and the stock fallback
+# are unchanged.
+YRS_ENV = 'FLASH_S5_YIELD_REENTRY_SETTLE'
+YRS_MAX_KEYS = 64             # bound on each diagnostic table (keys are stage:field or a retry index)
 
 
 def o3_enabled(env):
     value = env.get(O3_ENV, '0')
     if value not in ('0', '1'):
         raise E3ContractError('invalid boolean setting: ' + O3_ENV)
+    return value == '1'
+
+
+def yield_settle_enabled(env):
+    value = env.get(YRS_ENV, '0')
+    if value not in ('0', '1'):
+        raise E3ContractError('invalid boolean setting: ' + YRS_ENV)
     return value == '1'
 
 
@@ -84,6 +100,7 @@ def install(engine, driver, env):
     # pauses; inspect async capability on the first complete Core tick.
     policy = AutoArmPolicy(engine, driver)
     policy.o3 = o3_enabled(env)
+    policy.yield_settle = yield_settle_enabled(env)       # yield-reentry (2)
     driver.auto_arm = policy
     return policy
 
@@ -120,6 +137,7 @@ def _generation_logprobs_refused(params):
 
 class AutoArmPolicy:
     o3 = False
+    yield_settle = False          # yield-reentry (2): FLASH_S5_YIELD_REENTRY_SETTLE
 
     def __init__(self, engine, driver):
         self.engine, self.driver = engine, driver
@@ -191,6 +209,13 @@ class AutoArmPolicy:
         # handed-back row was scheduled once more as a decoder, so the barrier sees it as one on every worker.
         self.k2_counts = dict(settle_ticks=0, settled=0, bound=0)
         self._o3_gap_start = None      # (monotonic ns, path) at a run's terminal commit; closed at the next arm
+        # yield-reentry (1) diagnostic and (2) settle counters; monotonic ns at the re-entry's start; settle ticks (None: not waiting)
+        self.yrs_counts = dict(refused={}, refused_retry={}, retries_until_armed={}, exceeded=0, barrier_pass=0,
+                               barrier_first_try=0, armed_ms=[0, 0.0, 0.0], settle_waits=0, settle_ticks=0, settled=0,
+                               settle_bound=0, settle_skipped={}, errors=0)
+        self._yrs_t0 = None
+        self._yrs_ticks = None
+        self._yrs_seq = None
 
     @property
     def active(self):
@@ -242,6 +267,7 @@ class AutoArmPolicy:
                     o3=self.o3_record(),
                     shortest_bulk=dict(self.bulk_pick, on=getattr(self.controller, 'shortest_bulk', False) is True),
                     k2=dict(self.k2_counts, selected=int(getattr(self.controller, 'k2_settle', False) is True)),
+                    yield_reentry=self.yrs_record(),       # yield-reentry (1)/(2), counts only
                     **self.decline_totals)
 
     # -- lane-o3 ------------------------------------------------------------
@@ -404,6 +430,7 @@ class AutoArmPolicy:
         d.append_yield_set_phase('reenter')
         self.plan, self.reentry = plan, True
         self.reentry_refusals = 0
+        self._yrs_t0 = time.monotonic_ns()       # yield-reentry (1)
         self.drain_wait_seq = None
         self.cohort = self._cohort() or ()
         self.o3_joined = append.request_id if live else None
@@ -980,6 +1007,7 @@ class AutoArmPolicy:
             d.append_yield_set_phase('reenter')
         self.plan, self.reentry = plan, True
         self.reentry_refusals = 0
+        self._yrs_t0, self._yrs_ticks = time.monotonic_ns(), None       # yield-reentry (1)
         self.drain_wait_seq = None
         self.cohort = self._reentry_cohort() or ()
         self.deadline = d.clock() + d._control_timeout_s
@@ -1046,10 +1074,13 @@ class AutoArmPolicy:
             # abort rule) cannot be served there: the window is skipped at once.
             if not d.append_yield_handback_skip() and not d.append_yield_handback_step():
                 return False
+        elif self.yield_settle and self._yrs_settle_waits():       # yield-reentry (2): off, never entered
+            return False
+        self._yrs_ticks = None                                       # yield-reentry (2)
         d.append_yield_note_handback()
         return self._begin_reentry(request)
 
-    def _reentry_refused(self, stage):
+    def _reentry_refused(self, stage, why=None):
         """One refused re-entry drain or proof; past the launch bound, close on FULL.
 
         Otherwise the next attempt waits one scheduler pass with the pause
@@ -1059,7 +1090,9 @@ class AutoArmPolicy:
         running prefill, which may finish its chunk in that pass.
         """
         self.reentry_refusals += 1
-        if self.driver.append_yield_reentry_refused(stage, self.reentry_refusals):
+        ends = self.driver.append_yield_reentry_refused(stage, self.reentry_refusals)
+        self._yrs_refusal(stage, why, ends)                       # yield-reentry (1): observational
+        if ends:
             self._restore('yielded-bulk-reentry-refused')
             return True
         self.drain_wait_seq = self.controller._schedule_seq
@@ -1067,6 +1100,182 @@ class AutoArmPolicy:
         self._pause(self.old_pause)
         self.phase = 'drain_wait'
         return True
+
+    # -- yield-reentry (12 Nov 2026): (1) diagnostic, observational only; (2) the settle (FLASH_S5_YIELD_REENTRY_SETTLE) --
+    def yrs_record(self):
+        c = self.yrs_counts
+        return dict(schema='s5-yield-reentry/1', settle_on=int(bool(self.yield_settle)),
+                    retry_bound=self._yrs_bound(),
+                    **{k: (dict(v) if type(v) is dict else (list(v) if type(v) is list else v)) for k, v in c.items()})
+
+    def _yrs_bound(self):
+        try:
+            value = self.controller.append_yield.reentry_retries
+            return value if type(value) is int else None
+        except Exception:
+            return None
+
+    def _yrs_bump(self, table, key):
+        t = self.yrs_counts[table]
+        if key in t or len(t) < YRS_MAX_KEYS:
+            t[key] = t.get(key, 0) + 1
+        else:
+            t['other'] = t.get('other', 0) + 1
+
+    def _yrs_ms(self):
+        t0 = self._yrs_t0
+        return None if t0 is None else (time.monotonic_ns() - t0) / 1e6
+
+    def _yrs_refusal(self, stage, why, ends):
+        """(1) One refused re-entry proof: counted by stage and field, one line. Never raises, never decides."""
+        try:
+            field, rank, got, want = why if type(why) is tuple and len(why) == 4 else ('unread', None, None, None)
+            self._yrs_bump('refused', '%s:%s' % (stage, field))
+            self._yrs_bump('refused_retry', str(self.reentry_refusals))
+            if ends:
+                self.yrs_counts['exceeded'] += 1
+                self._yrs_bump('retries_until_armed', 'exceeded')
+            ms = self._yrs_ms()
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 yield-reentry proof-miss stage=%s field=%s rank=%s got=%s want=%s retry=%d bound=%s '
+                                    'ends=%d elapsed_ms=%s settle=%d', stage, field, rank, got, want, self.reentry_refusals,
+                                    self._yrs_bound(), int(bool(ends)), 'na' if ms is None else '%.1f' % ms,
+                                    int(bool(self.yield_settle)))
+        except Exception:
+            self.yrs_counts['errors'] += 1
+
+    def _yrs_barrier_pass(self):
+        try:
+            self.yrs_counts['barrier_pass'] += 1
+            if self.reentry_refusals == 0:
+                self.yrs_counts['barrier_first_try'] += 1
+        except Exception:
+            self.yrs_counts['errors'] += 1
+
+    def _yrs_armed(self):
+        """(1) The re-entry armed: its refusals so far into the histogram, its ms since the start into [n, total, max]."""
+        try:
+            self._yrs_bump('retries_until_armed', str(self.reentry_refusals))
+            ms = self._yrs_ms()
+            if ms is not None:
+                n, total, worst = self.yrs_counts['armed_ms']
+                self.yrs_counts['armed_ms'] = [n + 1, round(total + ms, 3), round(max(worst, ms), 3)]
+            self._yrs_t0 = None
+        except Exception:
+            self.yrs_counts['errors'] += 1
+
+    def _yrs_cohort_why(self):
+        """(1) Why _reentry_cohort() refused, in its own order: ('slots'|'prefill'|'lora'|'resumable'|'uid', None, got, want)."""
+        try:
+            running = tuple(self.scheduler.running)
+            bound = min(MAX_COHORT, self.scheduler.max_num_running_reqs - 1)
+            if len(running) > bound:
+                return ('slots', None, len(running), bound)
+            for r in running:
+                if r.is_prefill_chunk or r.num_computed_tokens < r.num_prompt_tokens:
+                    return ('prefill', None, sum(1 for x in running if x.is_prefill_chunk
+                                                 or x.num_computed_tokens < x.num_prompt_tokens), 0)
+                if r.lora_request is not None:
+                    return ('lora', None, None, None)
+                if r.resumable:
+                    return ('resumable', None, None, None)
+            for r in running:
+                try:
+                    _text('request_uid', r.request_id)
+                except E3ContractError:
+                    return ('uid', None, None, None)
+            return ('none', None, None, None)
+        except Exception:
+            self.yrs_counts['errors'] += 1
+            return ('unread', None, None, None)
+
+    def _yrs_proof_why(self, result, *, capability=False):
+        """(1) The first field _proof refuses, checked in _proof's own order; numbers only (counts, never a request UID).
+        ('none', ...) if every check passes (a test pins: 'none' exactly when _proof is True)."""
+        try:
+            rows = result.get('workers') if type(result) is dict else None
+            d = self.driver
+            if type(rows) is not list or len(rows) != len(d.ranks):
+                return ('worker-rows', None, len(rows) if type(rows) is list else None, len(d.ranks))
+            if {r.get('worker_rank') for r in rows} != set(d.ranks):
+                return ('worker-ranks', None, None, None)
+            for row in rows:
+                rank = row.get('worker_rank')
+                live = row.get('live_decode') or {}
+                if row.get('engine_epoch') != d.engine_epoch:
+                    return ('engine-epoch', rank, None, None)
+                if row.get('route') != 'full':
+                    return ('route', rank, row.get('route'), 'full')
+                if row.get('route_generation') != d.route_generation:
+                    return ('route-generation', rank, row.get('route_generation'), d.route_generation)
+                if row.get('prefill_requests') != 0:
+                    return ('prefill-requests', rank, row.get('prefill_requests'), 0)
+                if live.get('available') is not True:
+                    return ('live-unavailable', rank, None, None)
+                uids, want = sorted(live.get('live_request_uids', ())), list(self.cohort)
+                if uids != want:
+                    return ('live-uids', rank, len(uids), len(want))
+                if row.get('decode_eligible') != len(self.cohort):
+                    return ('decode-eligible', rank, row.get('decode_eligible'), len(self.cohort))
+                if capability:
+                    cap = (row.get('native_inventory') or {}).get('auto_arm_decode') or {}
+                    counts = cap.get('supported_counts')
+                    if (type(counts) is not list or len(counts) > MAX_COHORT
+                            or any(type(n) is not int or not 1 <= n <= MAX_COHORT for n in counts)
+                            or len(set(counts)) != len(counts)):
+                        return ('capability-counts', rank, None, None)
+                    if (cap.get('schema') != 's5-auto-decode-capability/1'
+                            or cap.get('engine_epoch') != d.engine_epoch
+                            or cap.get('route_generation') != d.route_generation
+                            or cap.get('storage_epoch') != row.get('storage_epoch')):
+                        return ('capability-identity', rank, None, None)
+                    if not set(range(1, len(self.cohort) + 1)) <= set(counts):
+                        return ('capability-cover', rank, None, len(self.cohort))
+                elif row.get('barrier_clean') is not True:
+                    return ('barrier-clean', rank, None, None)
+                elif row.get('drained_streams', 0) <= 0:
+                    return ('drained-streams', rank, row.get('drained_streams', 0), 1)
+            return ('none', None, None, None)
+        except Exception:
+            self.yrs_counts['errors'] += 1
+            return ('unread', None, None, None)
+
+    def _yrs_settle_waits(self):
+        """(2) True while the FULL window waits for the returned append's first decode (the run-end path's K2 rule):
+        the append is live, every prompt row scheduled, no decode yet, and the bound not spent. Off: never called."""
+        try:
+            y = getattr(self.driver, '_yield', None) or {}
+            if self._yrs_seq != y.get('seq'):
+                self._yrs_seq, self._yrs_ticks = y.get('seq'), None     # a new yield: no ticks carried over
+            append = y.get('append')
+            live = append is not None and self.scheduler.requests.get(append.request_id) is append
+            why = None
+            if not live:
+                why = 'append-left'
+            elif self._finished(append):
+                why = 'append-finished'
+            elif not self._handback_scheduled(append):
+                why = 'handback-unscheduled'
+            elif self._decode_scheduled(append):
+                why = 'decoded' if self._yrs_ticks else 'already-decoding'
+            if why is not None:
+                if why == 'decoded':
+                    self.yrs_counts['settled'] += 1
+                else:
+                    self._yrs_bump('settle_skipped', why)
+                return False
+            if self._yrs_ticks is None:
+                self._yrs_ticks = 0
+                self.yrs_counts['settle_waits'] += 1
+            self._yrs_ticks += 1
+            if self._yrs_ticks > O3_TAIL_TICKS:
+                self.yrs_counts['settle_bound'] += 1
+                return False
+            self.yrs_counts['settle_ticks'] += 1
+            return True
+        except Exception:
+            self.yrs_counts['errors'] += 1
+            return False
 
     def _reentry_lost_yield(self):
         """A stop (a reset included) ended the yield during the re-entry: follow the
@@ -1433,7 +1642,7 @@ class AutoArmPolicy:
                 if cohort is None:
                     # a decoder is mid-prefill or the cohort is over the slot bound:
                     # drain again, at most the launch bound of times
-                    return self._reentry_refused('drain')
+                    return self._reentry_refused('drain', self._yrs_cohort_why())
                 self.cohort = cohort
             elif self._request() is None or self._cohort() != self.cohort or self._plan(self._request()) != self.plan:
                 self._restore('selection-changed-during-output-drain')
@@ -1451,16 +1660,18 @@ class AutoArmPolicy:
             if not self._proof(result):
                 if self.reentry:
                     self.pending, self.phase = None, 'drain'   # the cohort moved: re-read it
-                    return self._reentry_refused('barrier')
+                    return self._reentry_refused('barrier', self._yrs_proof_why(result))
                 self._rollback('worker-barrier-cohort-refused')
             else:
+                if self.reentry:
+                    self._yrs_barrier_pass()                  # yield-reentry (1)
                 self.pending = self._control('identity')
                 self.phase = 'identity'
         elif self.phase == 'identity':
             if not self._proof(result, capability=True):
                 if self.reentry:
                     self.pending, self.phase = None, 'drain'
-                    return self._reentry_refused('identity')
+                    return self._reentry_refused('identity', self._yrs_proof_why(result, capability=True))
                 self._rollback('worker-graph-support-refused')
             else:
                 self.pending = self._control('enter_split')
@@ -1493,6 +1704,7 @@ class AutoArmPolicy:
             self.admitted_before = self.controller.admitted
             self.pending = None
             if self.reentry:
+                self._yrs_armed()                             # yield-reentry (1)
                 self.reentry = False
                 d.append_yield_set_phase('resume')
             else:
