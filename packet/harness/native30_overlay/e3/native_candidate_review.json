@@ -2891,7 +2891,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "fdccf6465aca8a204ed798f14b8804cf5d776af79595e82c586f19ceb6ca68f6",
+    "selftest.py": "76ab3182d4a0de1ad1327fb5a3a7169a22b953831c4a989060844673507fd7eb",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -4504,6 +4504,18 @@
     "scheduler": "sealed j2 321e4cd7ffd8",
     "source_tests": "46/46 hub source/composition tests; final sealed CPU proof pending"
   },
+  "q2024p_j2_ap": {
+    "counters": "native_admission.append_pieces (flag 1 only): appends, pieces, fused_pieces, stops_skipped, stale_states_unpublished, extra_blocks_unpublished, bulk_pieces, hist (pieces per append turn), fallbacks by reason, log_lines, log_dropped, errors, max_new; one numbers-only flash-s5 append-pieces-fallback line per kept stop (request, position, reason), bounded 4096",
+    "engine_delta": [
+      "scheduler_hooks.py (_aligned_split: the lever A hook; _append_block_fused, _append_turn_start, _append_kept, _append_unpublish_stale, _append_note_commit; flag parse; one guarded block in commit before cache_blocks; status block)"
+    ],
+    "exploratory": true,
+    "flag": "FLASH_S5_APPEND_NO_BLOCK_STOP: unset or 0 is the parent split and commit; 1: a piece of an append (<= 8192 prefill rows past its cached start) that stock stops at a Mamba block boundary continues with stock's own next piece (last hash boundary, a junction at or past the block boundary, native end, cap and chunk bound kept), and commit withholds the block it left from cache_blocks; any other value refuses at controller construction",
+    "hardware_qualified": false,
+    "review": "no review, Codex or other, covers this packet. The only Codex input on record for nearby work is CODEX-COMPOSE-REVIEW.md sha256 640f04d7c7392b50e43c7f47cac45a32a7bac7e8a79a80301966248edd6b4cf1, a source-only composition review of the host-gap batch; it does not cover lever A",
+    "rule_b": "FLASH_S5_TAIL_CUT_BACK: not in this commit",
+    "source_tests": "test_append_no_block_stop 22/22 hub and pinned image (junction rule refined: 22/22); test_append_no_block_stop_stack 3/3 pinned image (stock KVCacheManager); test_q2024p_j2_ap_reader 7/7 hub"
+  },
   "q2024p_j2_dmp": {
     "engine_delta": [
       "stage_overlap.py (decode_merge 'off-small'; DecodeLiveness under FLASH_S5_DECODE_LIVENESS)",
@@ -5702,7 +5714,7 @@
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
     "engine_driver.py": "1127f8a3f8b3623b356d90b725be59616c41c58c724656fd347d7584b681c090",
     "engine_offers.py": "0db9cc31a3f88afc5e795ba15d930b0ea88fb4ef43624d1021aa9130069b3e7d",
-    "executor_hooks.py": "3fd313a3f48168faaa2b51ce5db1068cbf12653e5926fb054cb1db58001b44cf",
+    "executor_hooks.py": "bfd64b3c44d83ee4767afbbe302bed0f649fc494985d1679c8e42cfc1446a369",
     "graph_hooks.py": "52bea0171355a855e090d9fa955f06962beab163eaca02690a3722a58f62e94e",
     "graph_router.py": "5d19c0a2ee7c291ba910916ae3fefc652117a4efa2c8d7d235241e8902272a71",
     "green_context.py": "f0b9e48e536c120946235490829295a3941c9f93b89df4d8be231172b1f6f0fe",
@@ -5752,7 +5764,7 @@
     "row1_exactness.py": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799",
     "row1_oracle.py": "f6b7c97b1d6a2e4513ae9b210cbd83d731aca349f0f2f75aac99cedb54a1ebc0",
     "s5_startup.py": "4ba7408b0a5a4575723e84cde6cf502dcb9012e6394a25930598429c95b63b5d",
-    "scheduler_hooks.py": "58266df0fe4d1042e2f85f042e55cb9c125aabadb363e0f28dc002c2f75298c9",
+    "scheduler_hooks.py": "a1bbbbdfcbd839ee8036166af6a2bd77e48d4943b0294bfbccebbed713408701",
     "small_piece_batch.py": "addd835559f70dde2c3ce6a59d2440353614590786544df91131b749e0b7cd5a",
     "sparse_history_dma.py": "8d797043b9f077906e93cc32f13f2ba54e56197ba4ce701405951446cc843287",
     "split_bank.py": "ef8222d57888c8103936dffe4f3643edc5ba437b96fb1cab3c8341f97c1d19b4",
@@ -6239,17 +6251,5 @@
       "scope": "single-GPU real native source holds/UVA/byte/output oracle, two storage epochs, cancellation/refusals; no scheduler/TP/PP/engine performance",
       "verdict": "PASS"
     }
-  },
-  "q2024p_j2_ap": {
-    "counters": "native_admission.append_pieces (flag 1 only): appends, pieces, fused_pieces, stops_skipped, stale_states_unpublished, extra_blocks_unpublished, bulk_pieces, hist (pieces per append turn), fallbacks by reason, log_lines, log_dropped, errors, max_new; one numbers-only flash-s5 append-pieces-fallback line per kept stop (request, position, reason), bounded 4096",
-    "engine_delta": [
-      "scheduler_hooks.py (_aligned_split: the lever A hook; _append_block_fused, _append_turn_start, _append_kept, _append_unpublish_stale, _append_note_commit; flag parse; one guarded block in commit before cache_blocks; status block)"
-    ],
-    "exploratory": true,
-    "flag": "FLASH_S5_APPEND_NO_BLOCK_STOP: unset or 0 is the parent split and commit; 1: a piece of an append (<= 8192 prefill rows past its cached start) that stock stops at a Mamba block boundary continues with stock's own next piece (last hash boundary, a junction at or past the block boundary, native end, cap and chunk bound kept), and commit withholds the block it left from cache_blocks; any other value refuses at controller construction",
-    "hardware_qualified": false,
-    "review": "no review, Codex or other, covers this packet. The only Codex input on record for nearby work is CODEX-COMPOSE-REVIEW.md sha256 640f04d7c7392b50e43c7f47cac45a32a7bac7e8a79a80301966248edd6b4cf1, a source-only composition review of the host-gap batch; it does not cover lever A",
-    "rule_b": "FLASH_S5_TAIL_CUT_BACK: not in this commit",
-    "source_tests": "test_append_no_block_stop 22/22 hub and pinned image (junction rule refined: 22/22); test_append_no_block_stop_stack 3/3 pinned image (stock KVCacheManager); test_q2024p_j2_ap_reader 7/7 hub"
   }
 }
