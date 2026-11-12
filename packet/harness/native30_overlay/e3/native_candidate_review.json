@@ -3001,7 +3001,7 @@
     "test_coverage_residue.py": "e2c211174898b943063a718b7d16446977ae09ea2599f7a66c0d42181422807b",
     "test_cow_verify_rss.py": "aa147af8bb1a09521f01be45b3d9e05e6a01b2fc31625bc2c2b452db68dfff10",
     "test_decode_merge_probe.py": "221c0a95971ff48c0d836c3ff76359abafdc3bf10e3f0684f3022cc211b33046",
-    "test_dmp_reader.py": "da54273de18b950b73477aed21e308d4198d1bdb4608a9e9b617c1a87dd8261e",
+    "test_dmp_reader.py": "db4f4eb1d32c850af692caf005f8169ca123b48dfefdc21c0f21df2f712a7229",
     "test_dp5_chunk.py": "3f2ad667834a836bd9f766ea55291895e18e4d43c31ebf2542d8650b389e1c01",
     "test_dp5_ple.py": "12569baa6cd53771a45160056837ee98544da7dcd59f435155a7cb473367ae85",
     "test_dp5c_connected.py": "1ca6c5527fe6102e4acd79d9c5c9235c84c56913d845a819ec812f327c787e53",

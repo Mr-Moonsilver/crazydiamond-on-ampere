@@ -25,7 +25,8 @@ and per record: numerics_o3 verdict, queue/compose5 grade verdicts and rc, OOM m
 engine identity's FLASH_S5_DECODE_MERGE / FLASH_S5_DECODE_LIVENESS / FLASH_S5_SUBMIT_CPU / FLASH_S5_SMALL_PIECE_BATCH.
 
 Times: engine monotonic stamps are mapped to wall by the minimum over native-gap lines of (line stamp - observed_ns)
-(as fable-levers parse.py does); client arrivals are replay_start_s + t + arrivals_ms.
+(as fable-levers parse.py does); a turn's arrivals_ms are ms since the arm's replay start (the journal's own base: the
+first arrival is t + ttft), its live interval is [t + ttft, t + seconds].
 
 Usage:
   python3 -B tools/q2024p_j2_dmp_reader.py off=<FETCH>/q18a-parity-n3s24q2024p-j2-dmp-off \
@@ -256,7 +257,7 @@ def client_gaps(turns, cells, ms):
             if j > i:
                 diff[i] += 1
                 diff[j] -= 1
-        streams.append([int(base + a) for a in arr if type(a) in (int, float)])
+        streams.append([int(a) for a in arr if type(a) in (int, float)])   # arrivals_ms: ms since the replay start
     live, run = bytearray(ms), 0
     for i in range(ms):
         run += diff[i]

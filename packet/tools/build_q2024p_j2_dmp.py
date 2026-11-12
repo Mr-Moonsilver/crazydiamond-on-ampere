@@ -104,6 +104,13 @@ PROBE_EDITS = (
      "    table=configure();fixture=parent.ArmLoop("),
     ("enabled=label.startswith('n3.'))", "enabled=label.startswith(('n3.', %(sel)r)))"),   # decode-merge probe: X is native
     ("if label.startswith(('sp.','n3.')))", "if label.startswith(('sp.','n3.', %(sel)r)))"),
+    ("    functions=tuple(dict.fromkeys(",
+     "    _ahead = parent.tbox.ahead_receipts  # decode-merge probe: the fixture forges ahead-split receipts by label (na/nk/n3);\n"
+     "    def _ahead_probe(arms, ahead=None, _ahead=_ahead):  # the probe rows copy n3's ahead_nosync, so theirs too\n"
+     "        extra = '' if ahead is not None else _ahead(arms, {a['label']: [True] for a in arms if (a.get('label') or '').startswith(%(sel)r)})\n"
+     "        return _ahead(arms, ahead) + extra\n"
+     "    parent.tbox.ahead_receipts = _ahead_probe  # decode-merge probe\n"
+     "    functions=tuple(dict.fromkeys("),
     ("    assert steps.get('smoke')==steps.get('compose5')=='PASS',steps\n",
      "    _grade = json.loads((fixture.q/'compose5-grade.json').read_text())  # decode-merge probe: the grade's lists in the message\n"
      "    assert steps.get('smoke')==steps.get('compose5')=='PASS',(steps, _grade.get('missing'), _grade.get('failures'))\n"),

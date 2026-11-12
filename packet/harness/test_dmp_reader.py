@@ -74,9 +74,10 @@ def submit(wall, rank, n, wall_ns, cpu_ns):
 
 
 def turn(agent, t, ttft, period_ms, count):
-    first = int(ttft * 1000)
+    """A journal turn: arrivals_ms are ms since the replay start (first = t + ttft), as compose4_replay writes them."""
+    first = int(round((t + ttft) * 1000))
     arrivals = [first + i * period_ms for i in range(count)]
-    return dict(agent=agent, session=1, kind='fresh', t=t, ttft=ttft, seconds=(arrivals[-1] / 1000.0) - 0.0 + 0.001,
+    return dict(agent=agent, session=1, kind='fresh', t=t, ttft=ttft, seconds=arrivals[-1] / 1000.0 - t + 0.001,
                 completion_tokens=count, arrivals_ms=arrivals)
 
 
