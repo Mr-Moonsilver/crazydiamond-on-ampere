@@ -39,7 +39,7 @@ PACKET_TAIL = ('\n# decode-merge probe (q2024p-j2-dmp, exploratory): j2\'s confi
                '# environment names it (N3DMP_VARIANT, exported by the dmp draft), j2\'s table everywhere else.\n'
                'import n3dmp_packet as _n3dmp\n'
                'configure = _n3dmp.wrap_env(configure)\n')
-DRAFT_ANCHOR = 'export PYTHONPATH="$H/e3_builder:$H"\n'
+DRAFT_ANCHOR = 'set -uo pipefail\numask 077\n'
 DRAFT_EXPORT = ('export N3DMP_VARIANT=%s  # decode-merge probe: n3j2_packet.configure applies the dmp table in every python '
                 'started below\n')
 J2_SHAPE = '# sp0,n30,n31,sp1 at480s per window are retained.'
@@ -84,7 +84,9 @@ def queues(variant):
             text = once(text, J2_LOOP, 'core:sp.g2-live-0 core:n3.g2-live-0 core:%s.g2-live-0 core:%s.g2-live-1 core:n3.g2-live-1' % (sel, sel))
             text = once(text, J2_SHAPE, '# sp0,n30,%s0,%s1,n31 at 480s on seed 1 (dmp) replace j2\'s sp0,n30,n31,sp1.' % (sel, sel))
             head, sep, rest = text.partition(DRAFT_ANCHOR)
-            assert sep and 'n3j2_packet' not in head and 'n3j2_gate' not in head and 'n3j2_box' not in head, 'table use before the export'
+            code = [line for line in head.splitlines() if not line.lstrip().startswith('#')]
+            assert sep and not any(m in line for line in code for m in ('n3j2_packet', 'n3j2_gate', 'n3j2_box', 'n3j2_arms', 'python')), \
+                'table use before the export'
             text = once(text, DRAFT_ANCHOR, DRAFT_ANCHOR + DRAFT_EXPORT % variant)
             text = once(text, J2_HEADER, '# dmp-%s (exploratory decode-merge probe, decode_merge %s): %dmin nominal/%dmin hard from n3j2_gate '
                                          '(five replay arms; j2 54/81 by the operator\'s 00:24 exception); relative limits only.\n'
