@@ -4955,7 +4955,24 @@ class NativeSegmentDriver:
     def _native_admission_record(self):
         """The admission controller's typed counts and newest refusal (native37)."""
         query = getattr(self.controller, 'native_admission_record', None)
-        return query() if callable(query) else None
+        record = query() if callable(query) else None
+        counter = getattr(self, '_ingress_prefix', None)
+        if counter is not None and type(record) is dict:   # ingress prefix counter: present once an engine arm admitted
+            record['ingress_prefix'] = counter.snapshot()
+        return record
+
+    def note_ingress_prefix(self, engine, request):
+        """Log-only common-prefix counter at scheduler acceptance; engine arms only (auto-arm released), never read
+        by a decision. The stock reference arm holds the manual lease and is not recorded."""
+        policy = getattr(self, 'auto_arm', None)
+        if policy is None or policy.manual_owned:
+            return
+        counter = getattr(self, '_ingress_prefix', None)
+        if counter is None:
+            from ingress_incremental import PrefixCounter
+            unit = getattr(getattr(engine, 'scheduler', None), 'hash_block_size', None)
+            counter = self._ingress_prefix = PrefixCounter(unit if type(unit) is int and unit > 0 else 0)
+        counter.record(request)
 
     def note_stock_step_skipped(self):
         """Engine hook bypassed one stock step; utility pumps do not count."""

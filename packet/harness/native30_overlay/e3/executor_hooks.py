@@ -1795,6 +1795,12 @@ def engine_request_admitted(engine, request):
                  prompt_tokens=request.num_prompt_tokens)
     except Exception:
         pass
+    try:                                # ingress prefix counter: log-only, engine arms only (the driver decides)
+        note = getattr(getattr(engine, '_flash_s5_driver', None), 'note_ingress_prefix', None)
+        if callable(note):
+            note(engine, request)
+    except Exception:
+        pass
 
 
 def require_startup_owner(engine):

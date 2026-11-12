@@ -731,8 +731,10 @@ def attach_native_router(args, app, env=None):
     if auto_actions and all(env.get(name) is not None for name in APPEND_YIELD_ENV):
         auto_actions += ('native_append_yield',)
     install_owner_health(app)
+    ingress = None              # FLASH_S5_INGRESS_INCREMENTAL=1 only: set with the first engine client
 
     async def endpoint(request):
+        nonlocal ingress
         host = getattr(getattr(request, 'client', None), 'host', '')
         try:
             local = ipaddress.ip_address(host).is_loopback
@@ -761,6 +763,9 @@ def attach_native_router(args, app, env=None):
                 state['control'] = NativeControlClient(engine)
                 state['session'] = NativeOverlapSession(engine,
                                                         control=state['control'])
+                if env.get('FLASH_S5_INGRESS_INCREMENTAL', '0') == '1':
+                    from ingress_incremental import install as install_ingress
+                    ingress = state['ingress'] = install_ingress(engine, env)
             elif state['engine'] is not engine:
                 raise ProbeControlError('engine-client-incarnation-changed')
             action = command.get('action')
@@ -769,6 +774,10 @@ def attach_native_router(args, app, env=None):
                     action, command.get('payload'))
             elif action in NATIVE_SESSION_ACTIONS or action in auto_actions:
                 result = await state['session'].execute(command)
+                if ingress is not None:     # ingress-incremental: mirror the engine selection; its counters on status
+                    ingress.binding.observe(action, result)
+                    if action == 'status' and type(result.get('native_admission')) is dict:
+                        result['native_admission']['ingress_api'] = ingress.snapshot()
             else:
                 raise ProbeControlError('native-action-not-exposed')
             return JSONResponse(result)

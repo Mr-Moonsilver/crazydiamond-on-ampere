@@ -198,9 +198,9 @@ class SyntheticTests(unittest.TestCase):
         # byte-identical. It is still in the digest manifest and under the
         # whole-e3 mount; the queue preflight checks every overlay digest.
         # Stage-1 anatomy: handler_anatomy is exempt for the same reason (C0's stage_wire/stage_progress before it); C1's stage_overlap too.
-        # host-gap batch: small_piece_batch is exempt for the same reason.
+        # host-gap batch: small_piece_batch is exempt for the same reason; ingress-incremental's ingress_incremental too.
         self.assertEqual(g.LAUNCHER_LIST_EXEMPT, ('native_uva', 'native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap',
-                                                  'attn_meta_batch', 'attn_meta_select', 'small_piece_batch'))
+                                                  'attn_meta_batch', 'attn_meta_select', 'small_piece_batch', 'ingress_incremental'))
         listed = g.manifest(out)
         loop = launcher.split('for f in e3/__init__.py ', 1)[1].split('; do', 1)[0].split()
         for name in g.E3_MODULES:
