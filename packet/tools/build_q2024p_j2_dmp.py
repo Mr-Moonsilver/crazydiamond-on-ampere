@@ -8,6 +8,8 @@ Reuses tools/build_q2024p_j2_hgb.py (same parent f63cff5d1e19, same frozen regen
   * bundle n3j2_packet.py: marked tail lines, j2's configure then n3dmp_packet (sp | n3 X X n3 on seed 1);
   * bundle n3j2_gate.py: the nominal budget for five replay arms (marked line), every per-phase cap j2's;
   * bundle n3j2_box.py: the host-gap status line, plus the liveness guard bound and its status-row line (marked);
+  * bundle tools/q2024p_j2_queue_probe.py (run by the frozen CPU tool): the queue loop under N3DMP_VARIANT with the probe
+    selection native like n3, then the capture probe back on j2's table (marked lines);
   * the queue triple under the new name: settings + FLASH_S5_SMALL_PIECE_BATCH=0 FLASH_S5_DECODE_LIVENESS=1
     FLASH_S5_SUBMIT_CPU=1 (asserted by declaration and draft), the arm loop sp n3 X X n3, the budget header;
   * the runner, frozen CPU tool and queue adapter under the new name, binding the moved engine modules as well.
@@ -95,7 +97,27 @@ def queues(variant):
     return result
 
 
+PROBE_EDITS = (
+    ("    table=configure();fixture=parent.ArmLoop(",
+     "    import n3dmp_packet as _n3dmp  # decode-merge probe: the queue loop on the probe table, as the draft exports it\n"
+     "    os.environ[_n3dmp.ENV] = %(variant)r  # decode-merge probe\n"
+     "    table=configure();fixture=parent.ArmLoop("),
+    ("enabled=label.startswith('n3.'))", "enabled=label.startswith(('n3.', %(sel)r)))"),   # decode-merge probe: X is native
+    ("if label.startswith(('sp.','n3.')))", "if label.startswith(('sp.','n3.', %(sel)r)))"),
+    ("    complete=capture_probe(reader)\n",
+     "    os.environ.pop(_n3dmp.ENV)  # decode-merge probe: the capture probe on j2's table (its rule fixture is j2's)\n"
+     "    configure()  # decode-merge probe: ARM_TABLE back to j2's\n"
+     "    complete=capture_probe(reader)\n"),
+)
+
+
 def bundle_edits(bundle, variant):
+    sel, _ = PROBES[variant]
+    probe = bundle / 'tools/q2024p_j2_queue_probe.py'
+    text = probe.read_text()
+    for old, new in PROBE_EDITS:
+        text = once(text, old, new % dict(variant=variant, sel=sel + '.'))
+    probe.write_text(text)
     packet = bundle / 'n3j2_packet.py'
     packet.write_text(packet.read_text() + PACKET_TAIL)
     gate = bundle / 'n3j2_gate.py'
