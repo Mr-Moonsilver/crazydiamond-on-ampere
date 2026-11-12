@@ -1266,6 +1266,8 @@ FURTHEST_BASIS = ('furthest end of any chunk the bounded search accepted, backtr
 # returning-append (Option A): a short held request may run natively between two
 # chunks of a bulk native prefill.  Both bounds are launch settings; absent, no
 # config object exists and every path below is the frozen one.
+YIELD_NO_APPEND_OWNER_ENV = 'FLASH_S5_YIELD_NO_APPEND_OWNER'     # yield-rules Y1, default 0
+YIELD_OWNER_RECEIPT_LIMIT = 4096
 APPEND_YIELD_ENV = ('FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK',
                     'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES')
 
@@ -1715,6 +1717,15 @@ class PrefillAdmissionController:
             raise E3ContractError('n3 queue-policy switches must be 0 or 1')
         self.junction_yield = flags['FLASH_S5_JUNCTION_YIELD'] == '1'
         self.shortest_bulk = flags['FLASH_S5_BULK_SHORTEST'] == '1'
+        # yield-rules Y1 (FLASH_S5_YIELD_NO_APPEND_OWNER, default 0): no junction yield while the lane owner itself has
+        # at most append_yield.max_new rows left; the waiting append starts at the owner's end through the ordinary switch.
+        y1 = os.environ.get(YIELD_NO_APPEND_OWNER_ENV, '0')
+        if y1 not in ('0', '1'):
+            raise E3ContractError(YIELD_NO_APPEND_OWNER_ENV + ' must be 0 or 1')
+        self.yield_no_append_owner = y1 == '1'
+        self.yield_owner_counts = dict(junctions=0, bulks=0, receipts=0, receipts_dropped=0, errors=0)
+        self._yield_owner_seen = None
+        self._yield_owner_bulk = None
         self._yield_receipt_seen = {}
         self.yield_receipts = dict(written=0, duplicate=0, dropped=0, errors=0, limit=4096)
         self.residue_totals = dict(junction=0, lowered=0)
@@ -2135,6 +2146,56 @@ class PrefillAdmissionController:
         except Exception:
             self.yield_receipts['errors'] += 1
 
+    def yield_owner_refuses(self, scheduler, bulk, transaction, key):
+        """yield-rules Y1: True while the lane owner has at most ``append_yield.max_new`` rows left past ``transaction``
+        (the newest admitted or retained bulk chunk): no yield at this junction and no candidate lookup.
+
+        Counted once per junction (bulk key, transaction) with at least one other request waiting, with one
+        'flash-s5 n3-yield-owner-refused' receipt; ``bulks`` counts each owner once.  Off, or on any fault (counted),
+        False: today's offer runs.
+        """
+        if not self.yield_no_append_owner:
+            return False
+        try:
+            config = self.append_yield
+            end = self.native_end(scheduler, bulk)
+            frontier = transaction.chunk_end
+            if type(end) is not int or type(frontier) is not int:
+                raise ValueError('owner rows')
+            left = end - frontier
+            if left > config.max_new:
+                return False
+        except Exception:
+            self.yield_owner_counts['errors'] += 1
+            return False
+        mark = (key, transaction.txn_seq)
+        if self._yield_owner_seen == mark:
+            return True
+        try:
+            waiting = sum(1 for name in ('skipped_waiting', 'waiting')
+                          for request in (getattr(scheduler, name, None) or ()) if request is not bulk)
+            if not waiting:
+                return True
+            self._yield_owner_seen = mark
+            self.yield_owner_counts['junctions'] += 1
+            if self._yield_owner_bulk != key:
+                self._yield_owner_bulk = key
+                self.yield_owner_counts['bulks'] += 1
+            if self.yield_owner_counts['receipts'] >= YIELD_OWNER_RECEIPT_LIMIT:
+                self.yield_owner_counts['receipts_dropped'] += 1
+                return True
+            owner = getattr(scheduler, '_flash_s5_driver', None)
+            row = dict(bulk_uid=_text('bulk_uid', bulk.request_id), txn=transaction.txn_seq, frontier=frontier,
+                       native_end=end, rows_left=left, max_new=config.max_new, waiting=waiting,
+                       observed_ns=time.monotonic_ns(), engine_epoch=self.engine_epoch,
+                       route_generation=getattr(owner, 'route_generation', None))
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 n3-yield-owner-refused %s', json.dumps(row, sort_keys=True, separators=(',', ':')))
+            self.yield_owner_counts['receipts'] += 1
+        except Exception:
+            self.yield_owner_counts['errors'] += 1
+        return True
+
     def _yield_lookup_receipt(self, request, reason, hit_end, junction, *, quota=None):
         try:
             uid = _text('request_uid', request.request_id)
@@ -2425,6 +2486,8 @@ class PrefillAdmissionController:
         if self.junction_yield or self.shortest_bulk:
             result['queue_policy'] = dict(junction_yield=self.junction_yield, shortest_bulk=self.shortest_bulk,
                                           yield_lookup_receipts=dict(self.yield_receipts))
+        if self.yield_no_append_owner:          # yield-rules Y1: present only with the flag on
+            result.setdefault('queue_policy', {})['no_append_owner'] = dict(self.yield_owner_counts)
         return result
 
     def _next_transaction(self, request, start, chunk_end):

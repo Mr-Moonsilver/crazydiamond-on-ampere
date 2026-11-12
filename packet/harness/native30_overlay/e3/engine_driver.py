@@ -4390,6 +4390,10 @@ class NativeSegmentDriver:
         if self._yield_counts.get(key, 0) >= config.per_bulk:
             controller._yield_quota_receipts(self.scheduler, bulk, self._yield_counts[key], config.per_bulk)
             return False
+        # yield-rules Y1 (FLASH_S5_YIELD_NO_APPEND_OWNER, default 0): the owner has an append's rows left: no yield, no lookup.
+        if getattr(controller, 'yield_no_append_owner', False) and controller.yield_owner_refuses(
+                self.scheduler, bulk, transaction, key):
+            return False
         refused = self._yield_refused.get(key, frozenset())
         # Each held request is looked up once per bulk: on a 151k prompt a lookup stalls the engine about 0.265 s (box 1).
         # A request refused here waits behind the bulk, as with the yield off.
