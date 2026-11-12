@@ -104,6 +104,9 @@ PROBE_EDITS = (
      "    table=configure();fixture=parent.ArmLoop("),
     ("enabled=label.startswith('n3.'))", "enabled=label.startswith(('n3.', %(sel)r)))"),   # decode-merge probe: X is native
     ("if label.startswith(('sp.','n3.')))", "if label.startswith(('sp.','n3.', %(sel)r)))"),
+    ("    assert steps.get('smoke')==steps.get('compose5')=='PASS',steps\n",
+     "    _grade = json.loads((fixture.q/'compose5-grade.json').read_text())  # decode-merge probe: the grade's lists in the message\n"
+     "    assert steps.get('smoke')==steps.get('compose5')=='PASS',(steps, _grade.get('missing'), _grade.get('failures'))\n"),
     ("    complete=capture_probe(reader)\n",
      "    os.environ.pop(_n3dmp.ENV)  # decode-merge probe: the capture probe on j2's table (its rule fixture is j2's)\n"
      "    configure()  # decode-merge probe: ARM_TABLE back to j2's\n"
