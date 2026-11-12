@@ -97,26 +97,35 @@ def name_only(out, variants):
     report = {}
     for v in variants[1:]:
         other = json.loads((out / ('build-' + v) / 'build.json').read_text())
-        subs = [(other['name'].encode(), first['name'].encode()), (other['manifest'].encode(), first['manifest'].encode()),
-                (other['manifest'][:12].encode(), first['manifest'][:12].encode())]
+        # the name in its QNAME form and in the queue-file form (q18a_parity_..._cx<tag>_<block>), then the manifest
+        subs = [(other['name'], first['name']), (other['name'].replace('-', '_'), first['name'].replace('-', '_')),
+                (other['manifest'], first['manifest']), (other['manifest'][:12], first['manifest'][:12]),
+                (str(out / ('build-' + v)), str(out / ('build-' + variants[0])))]      # the block's own build dir
+        bsubs = [(o.encode(), n.encode()) for o, n in subs]
+
+        def renamed_path(rel):
+            for old, new in subs:
+                rel = rel.replace(old, new)
+            return rel
         a_root, b_root = Path(first['bundle']), Path(other['bundle'])
         a_files = sorted(p.relative_to(a_root).as_posix() for p in a_root.rglob('*') if p.is_file())
-        b_files = sorted(p.relative_to(b_root).as_posix() for p in b_root.rglob('*') if p.is_file())
-        assert a_files == b_files, (v, sorted(set(a_files) ^ set(b_files)))
+        b_map = {renamed_path(p.relative_to(b_root).as_posix()): p.relative_to(b_root).as_posix()
+                 for p in b_root.rglob('*') if p.is_file()}
+        assert a_files == sorted(b_map), (v, sorted(set(a_files) ^ set(b_map)))
         same, renamed, differ = 0, 0, []
         for rel in a_files:
-            x, y = (a_root / rel).read_bytes(), (b_root / rel).read_bytes()
+            x, y = (a_root / rel).read_bytes(), (b_root / b_map[rel]).read_bytes()
             if x == y:
                 same += 1
                 continue
-            for old, new in subs:
+            for old, new in bsubs:
                 y = y.replace(old, new)
             if x == y:
                 renamed += 1
             else:
                 differ.append(rel)
         rx, ry = Path(first['runner']).read_bytes(), Path(other['runner']).read_bytes()
-        for old, new in subs:
+        for old, new in bsubs:
             ry = ry.replace(old, new)
         report[v] = dict(identical=same, equal_after_name=renamed, differ=differ, runner_equal_after_name=rx == ry,
                          flags_equal=first['flags'] == other['flags'], source_equal=first['source_commit'] == other['source_commit'],

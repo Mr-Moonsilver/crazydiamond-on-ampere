@@ -127,6 +127,37 @@ def engine_text(name):
     raise FileNotFoundError(name)
 
 
+class NameOnly(unittest.TestCase):
+    """render.name_only on two synthetic block builds (fresh mkdtemp, left in place): names in contents and in queue
+    file names (QNAME and underscore forms) and the manifest are substituted; any other byte difference is listed."""
+
+    def block(self, out, variant, manifest, extra=b''):
+        name = cx.name_of(variant, 'zz')
+        d = out / ('build-' + variant)
+        bundle = d / (name + '-bundle-' + manifest[:12])
+        (bundle / 'runs').mkdir(parents=True)
+        q = name.replace('-', '_')
+        (bundle / 'runs' / (q + '_settings.sh')).write_text('Q=%s FLASH_S5_DECODE_GROUPS=chunk\n' % name)
+        (bundle / 'n3j2_packet.py').write_bytes(b'configure = None\n' + extra)
+        (bundle / 'SHA256SUMS').write_text(manifest + '\n')
+        runner = d / (name + '-owner-run-' + manifest[:12] + '.py')
+        runner.write_text('BUNDLE = %r\nMANIFEST = %r\n' % (str(bundle), manifest))
+        (d / 'build.json').write_text(json.dumps(dict(name=name, manifest=manifest, bundle=str(bundle), runner=str(runner),
+                                                      flags=cx.parse_flags([]), source_commit='c' * 40, overlay_manifest='o' * 64)))
+
+    def test_names_substituted_other_bytes_listed(self):
+        import tempfile
+        out = Path(tempfile.mkdtemp(prefix='cx-name-only-'))
+        self.block(out, 'b1', 'a' * 64)
+        self.block(out, 'b2', 'b' * 64)
+        self.block(out, 'b3', 'c' * 64, extra=b'x = 1\n')
+        rep = render.name_only(out, ['b1', 'b2', 'b3'])
+        self.assertEqual(rep['b2']['differ'], [])                 # queue (renamed path), sums (manifest only)
+        self.assertEqual(rep['b2']['equal_after_name'], 2)
+        self.assertTrue(rep['b2']['runner_equal_after_name'] and rep['b2']['flags_equal'])
+        self.assertEqual(rep['b3']['differ'], ['n3j2_packet.py'])
+
+
 class Queues(unittest.TestCase):
     """On the hub the builder's queue edits for a non-default flag set; in a bundle the bundle's own built texts."""
 
