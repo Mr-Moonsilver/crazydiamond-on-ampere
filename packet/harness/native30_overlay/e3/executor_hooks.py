@@ -1412,6 +1412,38 @@ _progress_log = None
 # first read, False when off, else this process's handler_anatomy.Recorder. Read
 # only under a live progress state, so with progress unset it is never read.
 _ANATOMY = None
+# decode-merge probe (FLASH_S5_SUBMIT_CPU=1, default off): thread CPU time beside the wall stamps of flash_s5_submit on
+# this worker, cumulative, one 'flash-s5 submit-cpu' line per chunk release. None until first read, False when off.
+_SUBMIT_CPU = None
+SUBMIT_CPU_BUCKETS_MS = (5, 10, 20)
+
+
+def _submit_cpu():
+    global _SUBMIT_CPU
+    if _SUBMIT_CPU is None:
+        _SUBMIT_CPU = ({'n': 0, 'wall_ns': 0, 'cpu_ns': 0, 'max_wall_ns': 0, 'max_cpu_ns': 0,
+                        'by_wall_ms': {str(b): [0, 0, 0] for b in SUBMIT_CPU_BUCKETS_MS + ('more',)}}
+                       if os.environ.get('FLASH_S5_SUBMIT_CPU', '0') == '1' else False)
+    return _SUBMIT_CPU or None
+
+
+def _note_submit_cpu(rpc):
+    """decode-merge probe: one flash_s5_submit's (wall, thread CPU); host clocks only, never raises."""
+    try:
+        acc = _submit_cpu()
+        wall, cpu = rpc[3] - rpc[2], time.thread_time_ns() - rpc[5]
+        acc['n'] += 1
+        acc['wall_ns'] += wall
+        acc['cpu_ns'] += cpu
+        acc['max_wall_ns'] = max(acc['max_wall_ns'], wall)
+        acc['max_cpu_ns'] = max(acc['max_cpu_ns'], cpu)
+        key = next((str(b) for b in SUBMIT_CPU_BUCKETS_MS if wall <= b * 1_000_000), 'more')
+        row = acc['by_wall_ms'][key]
+        row[0] += 1
+        row[1] += wall
+        row[2] += cpu
+    except Exception:  # noqa: BLE001 - a measurement never fails the RPC
+        pass
 
 
 def _progress_logger():
@@ -1497,8 +1529,17 @@ def worker_rpc_begin(proc, method, kwargs):
             state[0].dropped_total += 1
         if (anatomy := _anatomy(proc)) is not None:
             anatomy.flush(_progress_logger())
+        if (acc := _submit_cpu()) is not None:
+            # decode-merge probe: cumulative submit wall/CPU of this rank, one line per chunk release.
+            try:
+                _progress_logger().info('flash-s5 submit-cpu ' + json.dumps(dict(acc, rank=proc.rank), sort_keys=True, separators=(',', ':')))
+            except Exception:  # noqa: BLE001 - a measurement never fails the RPC
+                pass
     if state is not None and (anatomy := _anatomy(proc)) is not None:
         anatomy.begin(sequence, name)
+    if state is not None and name == 'flash_s5_submit' and _submit_cpu() is not None:
+        # decode-merge probe: thread CPU stamp beside the wall stamp (rpc[5]).
+        return [sequence, name, time.monotonic_ns(), None, direct, time.thread_time_ns()]
     return [sequence, name, time.monotonic_ns(), None, direct]
 
 
@@ -1506,6 +1547,8 @@ def worker_rpc_returned(proc, rpc, output_rank):
     if rpc is None:
         return
     rpc[3] = time.monotonic_ns()
+    if len(rpc) > 5:
+        _note_submit_cpu(rpc)       # decode-merge probe (FLASH_S5_SUBMIT_CPU=1 only)
     if _ANATOMY:
         _ANATOMY.returned(rpc, output_rank)
     if output_rank is None or proc.rank == output_rank:
