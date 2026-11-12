@@ -196,9 +196,22 @@ def scan_engine(root):
                 fatal_lines=fatal)
 
 
+def identity_flag(root):
+    """FLASH_S5_SMALL_PIECE_BATCH in the engine's start and end identity env ('unset' when absent, None when unreadable)."""
+    values = {}
+    for phase in ('start', 'end'):
+        doc = load(root / ('engine.identity-%s.json' % phase))
+        env = ((doc or {}).get('identity') or {}).get('env') if doc else None
+        values[phase] = None if type(env) is not dict else env.get('FLASH_S5_SMALL_PIECE_BATCH', 'unset')
+    return values
+
+
 def collect(root, variant):
     root = Path(root)
     notes = []
+    flag = identity_flag(root)
+    if any(value != {'off': '0', 'on': '1'}[variant] for value in flag.values()):
+        notes.append('identity-flag-%s-start-%s-end-%s' % (variant, flag['start'], flag['end']))
     grade, queue = load(root / 'compose5-grade.json') or {}, load(root / 'queue-grade.json') or {}
     arms, windows = {}, {}
     for label in ARMS:
@@ -239,7 +252,7 @@ def collect(root, variant):
         if n3 and sp and n3['completed_turns'] and sp['completed_turns']:
             n3['x_sp'] = round(n3['completed_turns'] / sp['completed_turns'], 4)
     totals = [sum(arms[k]['completed_turns'] or 0 for k in arms if k.startswith(p)) for p in ('n3.', 'sp.')]
-    return dict(record=str(root), variant=variant, arms=arms, notes=notes,
+    return dict(record=str(root), variant=variant, arms=arms, notes=notes, identity_flag=flag,
                 x_sp=round(totals[0] / totals[1], 4) if totals[1] else None,
                 numerics=(grade.get('numerics_o3') or {}).get('verdict'),
                 compose5_grade=grade.get('verdict'), queue_grade=queue.get('verdict'), queue_rc=queue.get('rc'),
@@ -253,8 +266,9 @@ def _fmt(value, digits=1):
 def render(results):
     lines = []
     for result in results:
-        lines.append('== %s  %s  x_sp=%s numerics=%s grade=%s/%s rc=%s oom_max=%s fatal=%s' % (
-            result['variant'], result['record'], _fmt(result['x_sp'], 4), result['numerics'], result['queue_grade'],
+        lines.append('== %s  %s  flag=%s/%s x_sp=%s numerics=%s grade=%s/%s rc=%s oom_max=%s fatal=%s' % (
+            result['variant'], result['record'], result['identity_flag']['start'], result['identity_flag']['end'],
+            _fmt(result['x_sp'], 4), result['numerics'], result['queue_grade'],
             result['compose5_grade'], result['queue_rc'], result['engine'].get('oom_max'), result['engine'].get('fatal_lines')))
         for label, arm in result['arms'].items():
             share = arm['native_share'] or {}

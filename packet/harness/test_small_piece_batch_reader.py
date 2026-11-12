@@ -142,6 +142,9 @@ def write_record(root, variant, with_block):
             stamp = '1970-01-01T00:%02d:%02d.000000000Z' % divmod(int(start) + 10, 60)
             log.append(stage_line(stamp, 0, 176, (0, 0), (20000000, 30000000)))
     (root / 'engine.log').write_text(''.join(log))
+    for phase in ('start', 'end'):
+        env = {} if variant == 'unset' else {'FLASH_S5_SMALL_PIECE_BATCH': {'off': '0', 'on': '1'}[variant]}
+        (root / ('engine.identity-%s.json' % phase)).write_text(json.dumps(dict(identity=dict(env=env))))
     (root / 'engine-stream.log').write_text(
         ''.join('x flash-s5 memory point=open rank=%d allocated=1 ooms=0 free=1\n' % rank for rank in range(4)))
     return root
@@ -173,6 +176,14 @@ class Collect(unittest.TestCase):
         clean_off = reader.collect(write_record(base / 'clean-off', 'off', False), 'off')
         self.assertEqual(clean_off['notes'], [])
         self.assertIsNone(clean_off['arms']['n3.g2-live-0']['small_piece_batch'])
+        self.assertEqual(clean_off['identity_flag'], dict(start='0', end='0'))
+
+    def test_identity_flag_mismatch_is_a_note(self):
+        base = Path(tempfile.mkdtemp(prefix='hgb-reader-flag-'))
+        wrong = reader.collect(write_record(base / 'on-as-off', 'off', False), 'on')
+        self.assertIn('identity-flag-on-start-0-end-0', wrong['notes'])
+        unset = reader.collect(write_record(base / 'unset', 'unset', False), 'off')
+        self.assertIn('identity-flag-off-start-unset-end-unset', unset['notes'])
 
     def test_main_writes_a_fresh_json_only(self):
         base = Path(tempfile.mkdtemp(prefix='hgb-reader-main-'))

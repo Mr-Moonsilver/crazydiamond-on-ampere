@@ -3239,7 +3239,7 @@
     "test_s5_variants.py": "303d986f9c9db475e47ac3f280e0c58a44934c06bd06d02b7722851ad3df05cf",
     "test_small_piece_batch.py": "18db6a3510b298d9b18bb0e111e464ae14ab6a6d023aa06fbb02f394beee0ab4",
     "test_small_piece_batch_box.py": "bf406c59fcbe297fd54f5951b40807f0e084cb5c324e98b63fe63ec0c5f5cd7f",
-    "test_small_piece_batch_reader.py": "903a70d2617cca34256c56809485b5cac79958fda7535fcde50b046c8ea7cef4",
+    "test_small_piece_batch_reader.py": "e771e8cee62dd91a5d4bc9ca57ed98bcc3a2c24e805dac9ffa83e86def2cecdc",
     "test_sparse_stage.py": "2d4e10ac26baa3960e6929511393a08500d0f678710ca3348b1ff57948979292",
     "test_stage1_anatomy_report.py": "8517e2e08afdbc5d17dff716a6b3dc565de091975fbae304a80773a89e6f94e8",
     "test_stage1_anatomy_vm_input.py": "a1b907c53f52545c3e3d16648595fdda82cec3940b6d33dbe84f06f3b4c0f04d",
@@ -4494,7 +4494,7 @@
     "parent": "q2024p-j2 f63cff5d1e19 (bundle of the measured j2-v1b runs)",
     "review": "Codex GO, CODEX-COMPOSE-REVIEW.md sha256 640f04d7c7392b50e43c7f47cac45a32a7bac7e8a79a80301966248edd6b4cf1 (keep cap 2 and the hooks as they are)",
     "setting": "FLASH_S5_SMALL_PIECE_BATCH: unset or 0 keeps the overlap driver class byte-for-byte; 1 installs the batch driver (needs FLASH_S5_STAGE_OVERLAP=1)",
-    "source_tests": "test_small_piece_batch 26/26 (hub and pinned image), test_small_piece_batch_reader, test_small_piece_batch_box in the bundle frozen CPU run"
+    "source_tests": "test_small_piece_batch 26/26 (hub and pinned image), test_small_piece_batch_reader 11, test_small_piece_batch_box 3 in the bundle frozen CPU run"
   },
   "qualified_observer_library_sha256": "05a4846d17699a692e923882fcf6c7e8eb4cf486f1888823ac1e4072695ac06d",
   "real_allocator_frontier_cpu_proof": {
