@@ -3239,7 +3239,7 @@
     "test_prepare_ahead.py": "2aa534a7739aa2703018262efff95e4d35a256edab8d9245748d889d8f4ed027",
     "test_q16_attribution.py": "179d9f2750c844e446de0d58f43550f31b7c4325a2f04fda3332d11ae8799d57",
     "test_q2024p_j2.py": "ded123dbb03381c8dc1a0d28d554b805ad279dc1bde4c366eecc72b1ab45759d",
-    "test_q2024p_j2_cx.py": "858909467f81a6f5acf79fb818b123eaf75dd816fcdbfafb4ff8847221745723",
+    "test_q2024p_j2_cx.py": "0152f6040a653b5c398e5f618d54146bcc0fb8d780854f67a539ecd47646f854",
     "test_q2024p_j2_ing_reader.py": "43e6a82a31dd351ad3e889c1ece84322e31f9ab1b3a5c3b9b8d956f598889b1b",
     "test_q2024p_j2_np_reader.py": "557328ce85663f0e94b63418f61c7b6f48c7cd5f0d00be805de93abfa1035f04",
     "test_q2024p_j2_yr_reader.py": "f8a0faf2fd84c63ae31ce1e25ca568e99c24dff5cedda98787ab7a243ae40a0c",
