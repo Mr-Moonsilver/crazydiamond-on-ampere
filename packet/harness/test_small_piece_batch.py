@@ -303,6 +303,22 @@ class Connected(Base):
         self.assertGreater(status['partial'] + status['second_not_run'], 0, status)
         self.assertGreater(on.driver.progress.counters['lean_reports'], 0)
 
+    def test_overlap_observation_stays_whole_with_batches(self):
+        """FLASH_S5_STAGE_OVERLAP_OBSERVE is on in the box arms: the observer bounds every accepted op of a batch from
+        its submit and apply stamps, and emits its lines; equal device work to the observed unbatched run."""
+        off = self.plain()
+        off.driver.overlap_observer = so.OverlapObserver()
+        self.run_overlapped(off)
+        on = self.batched()
+        on.driver.overlap_observer = so.OverlapObserver()
+        self.run_overlapped(on)
+        self.assert_same(off, on)
+        self.assertGreater(on.driver.small_batch_status()['second_applied'], 0)
+        counters_on, counters_off = on.driver.overlap_observer.counters, off.driver.overlap_observer.counters
+        self.assertEqual(counters_on['ops'], counters_off['ops'])
+        self.assertGreater(counters_on['lines'], 0)
+        self.assertEqual(counters_on['submits_dropped'], 0)
+
     def test_only_layer_pairs_are_batched_and_every_other_kind_stays_single(self):
         on = self.batched()
         self.run_overlapped(on)
