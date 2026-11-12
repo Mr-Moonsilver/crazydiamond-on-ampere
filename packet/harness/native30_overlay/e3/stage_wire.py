@@ -249,6 +249,11 @@ def _scoped_answer(bridge, name, scoped, dispatch):
         answer = pending_send(bridge, message)
         if answer is not None:
             return answer
+        # host-gap batch (FLASH_S5_SMALL_PIECE_BATCH): the engine sends a SegmentBatch only with the setting on.
+        from small_piece_batch import scoped_submit
+        answer = scoped_submit(bridge, message, dispatch)
+        if answer is not None:
+            return answer
     return dispatch(message)
 
 

@@ -72,14 +72,16 @@ E3_MODULES = ('wire_v1', 'e3_types', 'lane_state', 'reply_transport', 'native_ba
               # C1: two chunks in flight (FLASH_S5_STAGE_OVERLAP).
               'stage_overlap',
               # attn-meta (FLASH_ATTN_META_GDN_BATCH, default off): imported by s5_startup / native_overlap_worker only under it.
-              'attn_meta_batch', 'attn_meta_select')
+              'attn_meta_batch', 'attn_meta_select',
+              # host-gap batch (FLASH_S5_SMALL_PIECE_BATCH, default off).
+              'small_piece_batch')
 # Modules packaged, mounted with the whole e3 dir and listed in the overlay
 # SHA256SUMS, but left out of the launcher's name-only checksum loop so the
 # reviewed launcher stays byte-identical (pin 22473a90). That loop greps names,
 # not digests; the queue preflight checks every overlay file's digest against
 # the manifest and refuses any file outside it.
 LAUNCHER_LIST_EXEMPT = ('native_uva', 'native_auto_arm', 'stage_wire', 'stage_progress', 'handler_anatomy', 'stage_overlap',
-                        'attn_meta_batch', 'attn_meta_select')
+                        'attn_meta_batch', 'attn_meta_select', 'small_piece_batch')
 NATIVE_FILES = ('native/flash_s5_graph_bytes.cpp', 'native/flash_s5_green.cu', 'native/flash_s5_replay_observer.cpp',
                 'native/build_q17_helpers.sh')
 MODEL_PATH = 'models/qwen4_exp/nvidia/model.py'

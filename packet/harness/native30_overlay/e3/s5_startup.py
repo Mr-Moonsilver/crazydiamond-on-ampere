@@ -414,6 +414,13 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     if overlap:
         from stage_overlap import OverlapSegmentDriver
         driver_class = OverlapSegmentDriver
+    # host-gap batch (FLASH_S5_SMALL_PIECE_BATCH): unset or 0 keeps the class above; 1 needs the overlap driver.
+    if env.get('FLASH_S5_SMALL_PIECE_BATCH', '0') != '0':
+        from small_piece_batch import driver_class as small_piece_driver, small_piece_batch_enabled
+        if small_piece_batch_enabled(env):
+            if not overlap:
+                raise RuntimeError('FLASH_S5_SMALL_PIECE_BATCH=1 needs FLASH_S5_STAGE_OVERLAP=1')
+            driver_class = small_piece_driver()
     driver = driver_class(
         controller, executor=executor, scheduler=scheduler, engine=engine,
         layer_count=layer_count, layer_split=layer_split, stage_of=stage_of,

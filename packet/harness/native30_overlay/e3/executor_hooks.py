@@ -1329,6 +1329,10 @@ def _wire_method(message):
                          (TransitionCommand, 'transition')):
         if type(message) is record:
             return name
+    # host-gap batch registration (FLASH_S5_SMALL_PIECE_BATCH): sent only with the setting on.
+    from small_piece_batch import SegmentBatch
+    if type(message) is SegmentBatch:
+        return 'submit'
     return None
 
 
