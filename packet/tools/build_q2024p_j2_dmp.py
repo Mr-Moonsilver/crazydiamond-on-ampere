@@ -115,6 +115,13 @@ def install(variant):
         bundle_edits(bundle, variant)
         return copied
     base.copy_delta = copy_delta
+    hgb_frozen_cpu_tool = base.frozen_cpu_tool
+
+    def frozen_cpu_tool(bundle):
+        hgb_frozen_cpu_tool(bundle)
+        path = bundle / 'tools/n3j2_frozen_cpu.py'
+        path.write_text(once(path.read_text(), "'q2024p-j2-hgb-frozen-cpu-'", "'q2024p-j2-dmp-frozen-cpu-'"))
+    base.frozen_cpu_tool = frozen_cpu_tool
 
 
 def prepare(commit, variant, out):
