@@ -1272,6 +1272,14 @@ YIELD_WINDOW_ENV = 'FLASH_S5_YIELD_WINDOW'                       # yield-rules Y
 YIELD_WINDOW_MAX_APPENDS = 4        # the owner's starvation bound: appends per window, the first included (sim: ~free)
 YIELD_WINDOW_RECEIPT_LIMIT = 4096
 YIELD_WINDOW_GAP_BUCKETS_MS = (100, 250, 500, 1000, 2000)
+# append-pieces lever A (lead 12 Nov 2026): FLASH_S5_APPEND_NO_BLOCK_STOP, default 0.  An append (at most this many prefill
+# rows past the turn's cached start: the table's FLASH_S5_APPEND_YIELD_MAX_NEW) runs a native piece through the next Mamba
+# block boundary instead of stopping there; every other stock stop stays.  Off: _aligned_split and commit are the parent's.
+APPEND_NO_BLOCK_STOP_ENV = 'FLASH_S5_APPEND_NO_BLOCK_STOP'
+APPEND_NO_BLOCK_STOP_MAX_NEW = 8192
+APPEND_PIECES_TURN_LIMIT = 4096         # turn starts kept (one per request in flight; LRU past this)
+APPEND_PIECES_LOG_LIMIT = 4096          # 'flash-s5 append-pieces-fallback' lines per engine, then counted only
+APPEND_PIECES_HIST_MAX = 16             # pieces-per-append histogram: 1..15, then '16+'
 APPEND_YIELD_ENV = ('FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK',
                     'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES')
 
@@ -1745,6 +1753,17 @@ class PrefillAdmissionController:
                                         # night-pack fix 5 (receipts only, behaviour as built): why a window ended
                                         # not-served, staged appends that left before the arm, the gap by handback path
                                         not_served={}, next_left=0, gap_by_path={})
+        # append-pieces lever A (FLASH_S5_APPEND_NO_BLOCK_STOP, default 0): see _append_block_fused.  Off: nothing below
+        # is read by any path, and the status record has no append_pieces block.
+        nbs = os.environ.get(APPEND_NO_BLOCK_STOP_ENV, '0')
+        if nbs not in ('0', '1'):
+            raise E3ContractError(APPEND_NO_BLOCK_STOP_ENV + ' must be 0 or 1')
+        self.append_no_block_stop = nbs == '1'
+        self.append_pieces = dict(appends=0, pieces=0, fused_pieces=0, stops_skipped=0, stale_states_unpublished=0,
+                                  extra_blocks_unpublished=0, bulk_pieces=0, hist={}, fallbacks={}, log_lines=0,
+                                  log_dropped=0, errors=0)
+        self._append_turns = {}             # uid -> [num_tokens, turn start, pieces committed]; insertion order is LRU
+        self._append_fallback_seen = {}
         self._yield_receipt_seen = {}
         self.yield_receipts = dict(written=0, duplicate=0, dropped=0, errors=0, limit=4096)
         self.residue_totals = dict(junction=0, lowered=0)
@@ -1829,7 +1848,155 @@ class PrefillAdmissionController:
                          num_new_local_computed_tokens=num_new_local_computed_tokens)
         if type(value) is not int or not 0 <= value <= num_new_tokens:
             raise E3ContractError('invalid aligned chunk size')
+        if self.append_no_block_stop:       # append-pieces lever A (FLASH_S5_APPEND_NO_BLOCK_STOP); off: the line above
+            return self._append_block_fused(scheduler, splitter, request, num_new_tokens,
+                                            num_new_local_computed_tokens, value)
         return value
+
+    # -- append-pieces lever A: no forced block stop on appends ------------------------------------------------------------
+    def _append_turn_start(self, request, position, local):
+        """The turn's cached start for ``request``: known at its first piece (a hit passes it as local rows, a cold turn
+        starts at 0), kept per request so every later plan (successor, re-entry, the next admission) reads the same."""
+        uid = request.request_id
+        turns = self._append_turns
+        entry = turns.get(uid)
+        if local > 0 or position == 0:
+            if entry is None or entry[0] != request.num_tokens or entry[1] != position:
+                if entry is not None:
+                    turns.pop(uid)
+                while len(turns) >= APPEND_PIECES_TURN_LIMIT:
+                    turns.pop(next(iter(turns)))
+                turns[uid] = [request.num_tokens, position, 0]
+            return position
+        if entry is None or entry[0] != request.num_tokens:
+            return None
+        return entry[1]
+
+    def _append_block_fused(self, scheduler, splitter, request, limit, local, size):
+        """Lever A: stock's piece ``size`` from ``position``, run through the block boundary it stopped at, for an append.
+
+        Stock stops a piece that starts inside a Mamba block at the block's end (the next-block stop, the aligned-end
+        floor, the last cacheable block), so the block's slot holds the state after exactly its tokens.  For an append that
+        state is the last full block's: published under retention 0 but never the next turn's hit (the prompt's last hash
+        boundary is; the V1 blocks: 2,016 of 2,016 hits there).  Here the piece instead continues with stock's own next
+        piece from the boundary, so every other stop (the last hash boundary, a shared-prefix junction, the prompt's end,
+        the cap and chunk bound) is stock's, and at most one block boundary lies inside the piece.  The block it leaves
+        holds the state at the piece's start, so commit does not publish it (_append_unpublish_stale).
+
+        Not fused, stock's ``size`` returned: not an append (more than APPEND_NO_BLOCK_STOP_MAX_NEW rows past the turn's
+        start), the stop is not a block boundary inside the limit, and the kept stops below (one count and one
+        numbers-only line each per request and position): ``tail-boundary`` (the block boundary is also the prompt's last
+        hash boundary: the next turn's hit), ``junction`` (a shared-prefix junction lies ahead), ``no-turn-start``,
+        ``shape`` (no fine-grained Mamba cache, eagle drop, prefill checkpoints, a non-int geometry, a limit of a block or
+        more), ``error`` (any fault).
+        """
+        try:
+            position = request.num_computed_tokens + local
+            start = self._append_turn_start(request, position, local)
+            end = position + size
+            block = getattr(getattr(scheduler, 'cache_config', None), 'block_size', None)
+            if (size < 1 or type(block) is not int or block < 1 or position % block == 0 or end % block
+                    or end != (position // block + 1) * block or end >= position + limit):
+                return size
+            prefill_end = max(request.num_prompt_tokens, request.num_tokens - 1)
+            if end >= prefill_end:
+                return size
+            if start is None:
+                return self._append_kept(request, position, end, 'no-turn-start', size)
+            if prefill_end - start > APPEND_NO_BLOCK_STOP_MAX_NEW:
+                return size
+            unit = getattr(scheduler, 'hash_block_size', None)
+            if (type(unit) is not int or unit < 1 or block % unit or limit - size >= block
+                    or getattr(scheduler, 'mamba_partial_cache_hit', False) is not True
+                    or getattr(scheduler, 'use_eagle_block_drop', False)
+                    or getattr(scheduler, 'mamba_has_prefill_checkpoint_blocks', False)):
+                return self._append_kept(request, position, end, 'shape', size)
+            if end == request.num_prompt_tokens // unit * unit:
+                return self._append_kept(request, position, end, 'tail-boundary', size)
+            junction = getattr(request, 'shared_prefix_boundary', 0) or 0
+            if type(junction) is not int or junction > position:
+                return self._append_kept(request, position, end, 'junction', size)
+            more = splitter(_ProjectedPrefillRequest(request, end), limit - size)
+            if type(more) is not int or not 0 <= more <= limit - size:
+                raise E3ContractError('invalid aligned chunk size past the block boundary')
+            return size + more
+        except Exception:
+            self.append_pieces['errors'] += 1
+            return self._append_kept(request, None, None, 'error', size)
+
+    def _append_kept(self, request, position, boundary, reason, size):
+        """A block stop lever A keeps: counted and logged once per (request, position, reason); returns stock's size."""
+        try:
+            key = (getattr(request, 'request_id', None), position, reason)
+            seen = self._append_fallback_seen
+            if key in seen:
+                return size
+            while len(seen) >= APPEND_PIECES_TURN_LIMIT:
+                seen.pop(next(iter(seen)))
+            seen[key] = True
+            counts = self.append_pieces
+            counts['fallbacks'][reason] = counts['fallbacks'].get(reason, 0) + 1
+            if counts['log_lines'] >= APPEND_PIECES_LOG_LIMIT:
+                counts['log_dropped'] += 1
+                return size
+            row = dict(reason=reason, position=position, boundary=boundary, rows=size,
+                       prompt_tokens=getattr(request, 'num_prompt_tokens', None),
+                       observed_ns=time.monotonic_ns(), engine_epoch=self.engine_epoch)
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 append-pieces-fallback %s', json.dumps(row, sort_keys=True, separators=(',', ':')))
+            counts['log_lines'] += 1
+        except Exception:
+            self.append_pieces['errors'] += 1
+        return size
+
+    def _append_unpublish_stale(self, request, transaction):
+        """Lever A, at commit before cache_blocks: a piece that starts inside Mamba block k and runs past its end left
+        block k holding the state at the piece's start, not after the block's tokens.  Each align-mode Mamba group's
+        cached count moves past k, so cache_blocks never hashes it (a hit there would resume from the wrong state); it is
+        the count cache_blocks itself sets for this end.  Only the hash is withheld: allocation, the copy into block k + 1
+        and stock's later free of block k are unchanged.  Returns True for such a piece.  A stock piece never crosses."""
+        start, end = transaction.chunk_start, transaction.chunk_end
+        block = getattr(getattr(self._scheduler, 'cache_config', None), 'block_size', None)
+        if type(block) is not int or block < 1 or start % block == 0 or (start // block + 1) * block >= end:
+            return False
+        stale = start // block
+        groups = getattr(getattr(self._scheduler.kv_cache_manager, 'coordinator', None), 'single_type_managers', ())
+        uid = request.request_id
+        for group in groups:
+            if getattr(group, 'mamba_cache_mode', None) != 'align':
+                continue
+            counts = group.num_cached_block
+            cached = counts.get(uid, 0)
+            if cached <= stale:
+                counts[uid] = stale + 1
+                self.append_pieces['stale_states_unpublished'] += 1
+                self.append_pieces['extra_blocks_unpublished'] += stale - cached
+        return True
+
+    def _append_note_commit(self, request, transaction, terminal, fused):
+        """Lever A counters, per committed piece: pieces of append turns, fused pieces (stops skipped), and the pieces
+        per append histogram at the turn's terminal piece."""
+        counts = self.append_pieces
+        try:
+            entry = self._append_turns.get(request.request_id)
+            prefill_end = max(request.num_prompt_tokens, request.num_tokens - 1)
+            if entry is None or entry[0] != request.num_tokens or prefill_end - entry[1] > APPEND_NO_BLOCK_STOP_MAX_NEW:
+                counts['bulk_pieces'] += 1
+                if terminal and entry is not None:
+                    self._append_turns.pop(request.request_id, None)
+                return
+            entry[2] += 1
+            counts['pieces'] += 1
+            if fused:
+                counts['fused_pieces'] += 1
+                counts['stops_skipped'] += 1
+            if terminal:
+                key = str(entry[2]) if entry[2] < APPEND_PIECES_HIST_MAX else '%d+' % APPEND_PIECES_HIST_MAX
+                counts['hist'][key] = counts['hist'].get(key, 0) + 1
+                counts['appends'] += 1
+                self._append_turns.pop(request.request_id, None)
+        except Exception:
+            counts['errors'] += 1
 
     def _environment_refuses(self, scheduler):
         if getattr(scheduler, 'connector', None) is not None:
@@ -2551,6 +2718,10 @@ class PrefillAdmissionController:
                                           yield_lookup_receipts=dict(self.yield_receipts))
         if self.yield_no_append_owner:          # yield-rules Y1: present only with the flag on
             result.setdefault('queue_policy', {})['no_append_owner'] = dict(self.yield_owner_counts)
+        if self.append_no_block_stop:           # append-pieces lever A: present only with the flag on
+            a = self.append_pieces
+            result['append_pieces'] = dict(a, hist=dict(a['hist']), fallbacks=dict(a['fallbacks']),
+                                           max_new=APPEND_NO_BLOCK_STOP_MAX_NEW)
         if self.yield_window:                   # yield-rules Y2: present only with the flag on
             w = self.yield_window_counts
             result.setdefault('queue_policy', {})['yield_window'] = dict(
@@ -3013,6 +3184,9 @@ class PrefillAdmissionController:
             # it here means the hold was retired through a foreign path.
             raise E3ContractError('source hold was released without a copy proof')
         manager = self._scheduler.kv_cache_manager
+        if self.append_no_block_stop:       # append-pieces lever A: a fused piece's stale block is not hashed below
+            fused = self._append_unpublish_stale(parked.request, transaction)
+            self._append_note_commit(parked.request, transaction, admission.terminal, fused)
         # Delayed allocation skipped this call; publish exactly once now.
         manager.cache_blocks(parked.request, transaction.chunk_end)
         parked.cache_published = True
