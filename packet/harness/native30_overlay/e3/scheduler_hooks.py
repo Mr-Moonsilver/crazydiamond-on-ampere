@@ -1886,7 +1886,9 @@ class PrefillAdmissionController:
         Not fused, stock's ``size`` returned: not an append (more than APPEND_NO_BLOCK_STOP_MAX_NEW rows past the turn's
         start), the stop is not a block boundary inside the limit, and the kept stops below (one count and one
         numbers-only line each per request and position): ``tail-boundary`` (the block boundary is also the prompt's last
-        hash boundary: the next turn's hit), ``junction`` (a shared-prefix junction lies ahead), ``no-turn-start``,
+        hash boundary: the next turn's hit), ``junction`` (a shared-prefix junction at or past the block boundary: its stop,
+        or its retained block is the one left; one inside the block before it is passed, as stock's split already stops
+        there when it is a fine-grained stop, and block-floored it is no stop and pins an earlier block), ``no-turn-start``,
         ``shape`` (no fine-grained Mamba cache, eagle drop, prefill checkpoints, a non-int geometry, a limit of a block or
         more), ``error`` (any fault).
         """
@@ -1914,7 +1916,7 @@ class PrefillAdmissionController:
             if end == request.num_prompt_tokens // unit * unit:
                 return self._append_kept(request, position, end, 'tail-boundary', size)
             junction = getattr(request, 'shared_prefix_boundary', 0) or 0
-            if type(junction) is not int or junction > position:
+            if type(junction) is not int or junction >= end:     # at or past the boundary: its stop or retention block
                 return self._append_kept(request, position, end, 'junction', size)
             more = splitter(_ProjectedPrefillRequest(request, end), limit - size)
             if type(more) is not int or not 0 <= more <= limit - size:

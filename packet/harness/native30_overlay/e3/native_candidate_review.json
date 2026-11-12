@@ -2969,7 +2969,7 @@
     "test_alpha_next_stopfix_matrix.py": "db2b20c394624173169c891242674f7b9df87261aa614af634ed725fec2c5e81",
     "test_alpha_next_wall_guard.py": "d0eb23e511ebf5de0e4cb8671224e0f590bca732897ed72b45aac87c5624cc17",
     "test_alpha_perf_queue.py": "ea303f98b20001fba01666b6cca199673af311a445efdde2141fb9bd72a5e076",
-    "test_append_no_block_stop.py": "6b4601a3cf8de302d09b44cbf81bf69a9e400ffed94f587e028a3e4ca5083c25",
+    "test_append_no_block_stop.py": "05299f70fc898bbc8bceaae8a7982f35127899d75897de79aeadea18ff36ce3d",
     "test_append_no_block_stop_stack.py": "54099100de5568f6ebda12a6c4a648ccb85e02073b0bb45a2294bc5d1c0a1d3c",
     "test_append_yield.py": "54ca527702c450ae84768723761fc3ee18e07ee4efa2927c71cf2fc550d1cebb",
     "test_append_yield_frozen.py": "8f8f7cea5e716afb504ad24674da5c25ec8327c88c4b1fb769e667d94784bbc6",
@@ -6246,10 +6246,10 @@
       "scheduler_hooks.py (_aligned_split: the lever A hook; _append_block_fused, _append_turn_start, _append_kept, _append_unpublish_stale, _append_note_commit; flag parse; one guarded block in commit before cache_blocks; status block)"
     ],
     "exploratory": true,
-    "flag": "FLASH_S5_APPEND_NO_BLOCK_STOP: unset or 0 is the parent split and commit; 1: a piece of an append (<= 8192 prefill rows past its cached start) that stock stops at a Mamba block boundary continues with stock's own next piece (last hash boundary, junction ahead, native end, cap and chunk bound kept), and commit withholds the block it left from cache_blocks; any other value refuses at controller construction",
+    "flag": "FLASH_S5_APPEND_NO_BLOCK_STOP: unset or 0 is the parent split and commit; 1: a piece of an append (<= 8192 prefill rows past its cached start) that stock stops at a Mamba block boundary continues with stock's own next piece (last hash boundary, a junction at or past the block boundary, native end, cap and chunk bound kept), and commit withholds the block it left from cache_blocks; any other value refuses at controller construction",
     "hardware_qualified": false,
     "review": "no review, Codex or other, covers this packet. The only Codex input on record for nearby work is CODEX-COMPOSE-REVIEW.md sha256 640f04d7c7392b50e43c7f47cac45a32a7bac7e8a79a80301966248edd6b4cf1, a source-only composition review of the host-gap batch; it does not cover lever A",
     "rule_b": "FLASH_S5_TAIL_CUT_BACK: not in this commit",
-    "source_tests": "test_append_no_block_stop 20/20 hub and pinned image; test_append_no_block_stop_stack 3/3 pinned image (stock KVCacheManager)"
+    "source_tests": "test_append_no_block_stop 22/22 hub and pinned image (junction rule refined: 22/22); test_append_no_block_stop_stack 3/3 pinned image (stock KVCacheManager); test_q2024p_j2_ap_reader 7/7 hub"
   }
 }

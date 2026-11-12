@@ -51,9 +51,11 @@ class Other:
         self.num_cached_block = {}
 
 
-def rig(n, start, flag, *, bound=BOUND, junction=0):
+def rig(n, start, flag, *, bound=BOUND, junction=0, fine=None):
     with mock.patch.dict(os.environ, {ENV: flag}):
         request, scheduler, manager, controller = tgt.admission_rig(n, start=start)
+    if fine is not None:                            # j2's launcher: fine-grained Mamba caching off (n3j2_generated_probe)
+        scheduler.mamba_fine_grained_prefix_cache = fine
     controller.chunk_tokens = CHUNK
     controller.chunk_bound = bound
     request.shared_prefix_boundary = junction
@@ -224,6 +226,31 @@ class Plan(unittest.TestCase):
         self.assertIn(b - 600, ends(on))
         self.assertNotIn(b, ends(on))
         self.assertEqual(controller.append_pieces['fallbacks'], {})
+
+    def test_a_junction_inside_the_block_before_the_boundary_is_passed(self):
+        # fine-grained off (j2): stock block-floors the junction (no stop; it pins block k - 1, already computed), so the
+        # piece runs through b; on, stock would stop at the junction itself and lever A never sees a block stop there
+        b = 21 * BLOCK
+        start, n = b - 1000, b + 2000
+        off, *_ = self.run_turn(n, start, '0', junction=b - 500, fine=False)
+        on, controller, *_ = self.run_turn(n, start, '1', junction=b - 500, fine=False)
+        self.assertIn(b, ends(off))
+        self.assertNotIn(b - 500, ends(off))
+        self.assertNotIn(b, ends(on))
+        self.assertEqual(controller.append_pieces['fallbacks'], {})
+        on_fine, controller, *_ = self.run_turn(n, start, '1', junction=b - 500, fine=True)
+        self.assertIn(b - 500, ends(on_fine))
+        self.assertNotIn(b, ends(on_fine))
+        self.assertEqual(controller.append_pieces['fallbacks'], {})
+
+    def test_a_junction_at_the_boundary_keeps_it(self):
+        b = 21 * BLOCK
+        start, n = b - 1000, b + 2000
+        for fine in (False, True):
+            with self.subTest(fine=fine):
+                on, controller, *_ = self.run_turn(n, start, '1', junction=b, fine=fine)
+                self.assertIn(b, ends(on))
+                self.assertEqual(controller.append_pieces['fallbacks'].get('junction'), 1)
 
     def test_a_geometry_tail_turn_still_ends_at_its_last_hash_boundary(self):
         n, start = 88020, 84656                          # r = 20: native ends at 88000, stock runs the 20 rows
