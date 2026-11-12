@@ -63,14 +63,34 @@ def turns_file(root, label, turns):
     (root / ('arm-' + label + '.json.turns.jsonl')).write_text('\n'.join(json.dumps(x) for x in [head] + turns) + '\n')
 
 
-def record(lines, y1='0', y2='0', with_block=False, extra_turns=()):
+def window_block(n):
+    return dict(windows=n, appends=2 * n, reentries_avoided=n, tail_full_handbacks=0, max_appends=4,
+                per_window={'2': n} if n else {}, ends={'none-waiting': n} if n else {},
+                gap_ms=dict(n=n, total=300.0 * n, max=400.0 if n else 0.0, buckets={}), receipts=3 * n,
+                receipts_dropped=0, errors=0)
+
+
+def window_receipts(t0=33):
+    rows = [dict(event='append', seq=9, index=1, gap_ms=None, tail_handback=False),
+            dict(event='append', seq=9, index=2, gap_ms=250.0, tail_handback=True),
+            dict(event='closed', seq=9, appends=2, end='none-waiting', reason='reopened'),
+            dict(event='append', seq=10, index=2, gap_ms=350.0, tail_handback=False),
+            dict(event='closed', seq=10, appends=2, end='bound', reason='reopened')]
+    return ['%s %s%s\n' % (base.at(t0 + i), reader.WINDOW_RECEIPT, json.dumps(row)) for i, row in enumerate(rows)]
+
+
+def record(lines, y1='0', y2='0', with_block=False, extra_turns=(), with_window=False):
     rec = base.real_record()
     arms = {label: base.arm(label, rec, rec) for label in reader.N3}
-    if with_block:
+    if with_block or with_window:
         for label in reader.N3:
             for row, n in zip(arms[label]['statuses'], (0, 2)):
-                row['native_admission'] = dict(queue_policy=dict(no_append_owner=dict(junctions=n, bulks=n // 2, receipts=n,
-                                                                                      receipts_dropped=0, errors=0)))
+                policy = {}
+                if with_block:
+                    policy['no_append_owner'] = dict(junctions=n, bulks=n // 2, receipts=n, receipts_dropped=0, errors=0)
+                if with_window:
+                    policy['yield_window'] = window_block(n)
+                row['native_admission'] = dict(queue_policy=policy)
     root = base.record(arms, lines)
     for phase in ('start', 'end'):
         path = root / ('engine.identity-%s.json' % phase)
@@ -104,6 +124,29 @@ class Yields(unittest.TestCase):
         missing = reader.collect(record(lane(), y1='0'), 'y1')
         self.assertIn('y1-record-lacks-no_append_owner:n3.g2-live-0', missing['notes'])
         self.assertTrue(any(n.startswith('identity-FLASH_S5_YIELD_NO_APPEND_OWNER-y1') for n in missing['notes']))
+
+
+class Window(unittest.TestCase):
+    def test_y12_gap_ends_and_block(self):
+        result = reader.collect(record(lane() + window_receipts(), y1='1', y2='1', with_block=True, with_window=True), 'y12')
+        arm = result['arms']['n3.g2-live-0']
+        y = arm['yield_rules']
+        self.assertEqual(y['in_window_gap_ms'], dict(n=2, mean=300.0, max=350.0))
+        self.assertEqual(y['window_ends'], {'bound': 1, 'none-waiting': 1})
+        self.assertEqual((y['tail_full_handbacks_receipts'], arm['y2_receipts']), (1, 5))
+        w = arm['yield_window']
+        self.assertEqual((w['windows'], w['appends'], w['reentries_avoided'], w['max_appends']), (2, 4, 2, 4))
+        self.assertEqual((w['per_window'], w['ends']), ({'2': 2}, {'none-waiting': 2}))
+        self.assertEqual(w['gap_ms']['n'], 2)
+        self.assertEqual(w['gap_ms']['mean'], 300.0)
+        self.assertFalse([n for n in result['notes'] if 'y2' in n or 'y12' in n or 'YIELD' in n], result['notes'])
+        self.assertIn('window:', reader.render([result]))
+
+    def test_notes_for_a_missing_block_and_stray_receipts(self):
+        lacking = reader.collect(record(lane(), y1='1', y2='1', with_block=True), 'y12')
+        self.assertIn('y12-record-lacks-yield_window:n3.g2-live-0', lacking['notes'])
+        stray = reader.collect(record(lane() + window_receipts(), y1='1', with_block=True), 'y1')
+        self.assertIn('record-carries-y2:n3.g2-live-0', stray['notes'])
 
 
 class Turns(unittest.TestCase):

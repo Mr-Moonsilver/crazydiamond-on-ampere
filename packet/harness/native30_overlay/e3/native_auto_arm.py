@@ -427,6 +427,8 @@ class AutoArmPolicy:
             return False
         self.o3_tail = False
         d.append_yield_note_handback()
+        if self._yield_window():
+            d.append_yield_window_offer()                            # yield-rules Y2: off, never called
         d.append_yield_set_phase('reenter')
         self.plan, self.reentry = plan, True
         self.reentry_refusals = 0
@@ -523,7 +525,8 @@ class AutoArmPolicy:
         if self.o3_yield:
             # lane-o3-fix (b): the yielded bulk resumes on the split route it never left; the yield ends at its reopen as today
             self.o3_yield, self.reentry = False, False
-            d.append_yield_set_phase('resume')
+            if not (self._yield_window() and d.append_yield_window_begin()):    # yield-rules Y2: the window's next append
+                d.append_yield_set_phase('resume')
             self.o3_counts['yield_kept'] += 1
             self._note('armed', route_generation=d.route_generation, o3=1, yield_kept=1)
             self._pause(self.old_pause)
@@ -1078,7 +1081,13 @@ class AutoArmPolicy:
             return False
         self._yrs_ticks = None                                       # yield-reentry (2)
         d.append_yield_note_handback()
+        if self._yield_window():
+            d.append_yield_window_offer()                            # yield-rules Y2: off, never called
         return self._begin_reentry(request)
+
+    def _yield_window(self):
+        """yield-rules Y2 (FLASH_S5_YIELD_WINDOW): the controller's flag; off, no window call is made."""
+        return getattr(self.controller, 'yield_window', False) is True
 
     def _reentry_refused(self, stage, why=None):
         """One refused re-entry drain or proof; past the launch bound, close on FULL.
@@ -1706,7 +1715,8 @@ class AutoArmPolicy:
             if self.reentry:
                 self._yrs_armed()                             # yield-reentry (1)
                 self.reentry = False
-                d.append_yield_set_phase('resume')
+                if not (self._yield_window() and d.append_yield_window_begin()):    # yield-rules Y2: the window's next append
+                    d.append_yield_set_phase('resume')
             else:
                 self.decline_totals['armed'] += 1
                 self._o3_gap_close()

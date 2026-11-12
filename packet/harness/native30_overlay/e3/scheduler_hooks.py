@@ -1268,6 +1268,10 @@ FURTHEST_BASIS = ('furthest end of any chunk the bounded search accepted, backtr
 # config object exists and every path below is the frozen one.
 YIELD_NO_APPEND_OWNER_ENV = 'FLASH_S5_YIELD_NO_APPEND_OWNER'     # yield-rules Y1, default 0
 YIELD_OWNER_RECEIPT_LIMIT = 4096
+YIELD_WINDOW_ENV = 'FLASH_S5_YIELD_WINDOW'                       # yield-rules Y2, default 0
+YIELD_WINDOW_MAX_APPENDS = 4        # the owner's starvation bound: appends per window, the first included (sim: ~free)
+YIELD_WINDOW_RECEIPT_LIMIT = 4096
+YIELD_WINDOW_GAP_BUCKETS_MS = (100, 250, 500, 1000, 2000)
 APPEND_YIELD_ENV = ('FLASH_S5_APPEND_YIELD_MAX_NEW', 'FLASH_S5_APPEND_YIELD_PER_BULK',
                     'FLASH_S5_APPEND_YIELD_HANDBACK_STEPS', 'FLASH_S5_APPEND_YIELD_REENTRY_RETRIES')
 
@@ -1726,6 +1730,18 @@ class PrefillAdmissionController:
         self.yield_owner_counts = dict(junctions=0, bulks=0, receipts=0, receipts_dropped=0, errors=0)
         self._yield_owner_seen = None
         self._yield_owner_bulk = None
+        # yield-rules Y2 (FLASH_S5_YIELD_WINDOW, default 0): a yield window. When a yielded append's handback was served,
+        # the next waiting eligible append (the same FCFS candidate rules and per-candidate gates) runs in the same window
+        # instead of the owner's re-entry; the owner re-enters when none waits, at the bound, or after an unserved
+        # handback. PER_BULK counts windows (the driver's per-bulk count moves only at a window's selection).
+        y2 = os.environ.get(YIELD_WINDOW_ENV, '0')
+        if y2 not in ('0', '1'):
+            raise E3ContractError(YIELD_WINDOW_ENV + ' must be 0 or 1')
+        self.yield_window = y2 == '1'
+        self.yield_window_max = YIELD_WINDOW_MAX_APPENDS
+        self.yield_window_counts = dict(windows=0, appends=0, reentries_avoided=0, tail_full_handbacks=0,
+                                        per_window={}, ends={}, gap_ms=dict(n=0, total=0.0, max=0.0, buckets={}),
+                                        receipts=0, receipts_dropped=0, errors=0)
         self._yield_receipt_seen = {}
         self.yield_receipts = dict(written=0, duplicate=0, dropped=0, errors=0, limit=4096)
         self.residue_totals = dict(junction=0, lowered=0)
@@ -2196,6 +2212,39 @@ class PrefillAdmissionController:
             self.yield_owner_counts['errors'] += 1
         return True
 
+    def yield_window_gap(self, gap_ms):
+        """yield-rules Y2: one in-window append->append gap (the previous append's terminal commit to this append's
+        admission, engine monotonic ms): count, total, max and a bucket."""
+        g = self.yield_window_counts['gap_ms']
+        g['n'] += 1
+        g['total'] = round(g['total'] + gap_ms, 3)
+        g['max'] = round(max(g['max'], gap_ms), 3)
+        bucket = next(('<%d' % b for b in YIELD_WINDOW_GAP_BUCKETS_MS if gap_ms < b),
+                      '>=%d' % YIELD_WINDOW_GAP_BUCKETS_MS[-1])
+        g['buckets'][bucket] = g['buckets'].get(bucket, 0) + 1
+
+    def yield_window_closed(self, appends, end):
+        """yield-rules Y2: a window closed with ``appends`` admitted appends (0: none ran) and its end reason."""
+        w = self.yield_window_counts
+        if appends >= 1:
+            w['windows'] += 1
+        w['per_window'][str(appends)] = w['per_window'].get(str(appends), 0) + 1
+        w['ends'][end] = w['ends'].get(end, 0) + 1
+
+    def yield_window_receipt(self, event, **fields):
+        """One bounded 'flash-s5 n3-yield-window' line (no request UID); never raises."""
+        w = self.yield_window_counts
+        try:
+            if w['receipts'] >= YIELD_WINDOW_RECEIPT_LIMIT:
+                w['receipts_dropped'] += 1
+                return
+            row = dict(fields, event=event, observed_ns=time.monotonic_ns(), engine_epoch=self.engine_epoch)
+            from engine_driver import _progress_logger
+            _progress_logger().info('flash-s5 n3-yield-window %s', json.dumps(row, sort_keys=True, separators=(',', ':')))
+            w['receipts'] += 1
+        except Exception:
+            w['errors'] += 1
+
     def _yield_lookup_receipt(self, request, reason, hit_end, junction, *, quota=None):
         try:
             uid = _text('request_uid', request.request_id)
@@ -2488,6 +2537,11 @@ class PrefillAdmissionController:
                                           yield_lookup_receipts=dict(self.yield_receipts))
         if self.yield_no_append_owner:          # yield-rules Y1: present only with the flag on
             result.setdefault('queue_policy', {})['no_append_owner'] = dict(self.yield_owner_counts)
+        if self.yield_window:                   # yield-rules Y2: present only with the flag on
+            w = self.yield_window_counts
+            result.setdefault('queue_policy', {})['yield_window'] = dict(
+                w, max_appends=self.yield_window_max, per_window=dict(w['per_window']), ends=dict(w['ends']),
+                gap_ms=dict(w['gap_ms'], buckets=dict(w['gap_ms']['buckets'])))
         return result
 
     def _next_transaction(self, request, start, chunk_end):

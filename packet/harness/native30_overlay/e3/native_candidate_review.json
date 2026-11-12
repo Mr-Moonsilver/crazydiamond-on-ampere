@@ -2882,7 +2882,7 @@
     "s6_grade.py": "6b50bb67e7d61108dc626ea7c2ca95844090589de2fc4549aab9d7e034e944c5",
     "salt_ab.py": "0b56c2ea3a562d3ad2cd697663f4e09b948513c0bb18c9802db63be53502b953",
     "sched_cases.py": "78b8054f7599b10d5bb3fcb2059fe2a06fd814052552ffc75d867ac72f829398",
-    "selftest.py": "0f5ef10bbe72b4cc352216dacc3ae01eba7dd43d9e38fe43eea910cc0e835de7",
+    "selftest.py": "02d561d44652f9d8b5589b5218a3261a2bbc1f2502e3c5204f07b82dd66a2cce",
     "series-agents.sh": "4957b296987f6cb2ce10df19058070c06b539e8e1dc97d2df30a3858ab9bc1c0",
     "series-dbg.sh": "06926a8caedb54bb4d17313f35305fc5ee1ffaa35593c118622cc9a6c82b1c7b",
     "series-mn.sh": "d97f991d928b22373b89548a9e15ea3756413b57936a1b19476fcbeb6e343f1f",
@@ -3215,7 +3215,7 @@
     "test_prefix_capacity.py": "5eba67da3e61f607727f86071d7e003e1edd978c95403617a7d3965bb9254413",
     "test_prepare_ahead.py": "2aa534a7739aa2703018262efff95e4d35a256edab8d9245748d889d8f4ed027",
     "test_q16_attribution.py": "179d9f2750c844e446de0d58f43550f31b7c4325a2f04fda3332d11ae8799d57",
-    "test_q2024p_j2_yr_reader.py": "d54547c0fde6bfde7481dc34ce591746c4935277076f708573d1eee456c5308b",
+    "test_q2024p_j2_yr_reader.py": "f8a0faf2fd84c63ae31ce1e25ca568e99c24dff5cedda98787ab7a243ae40a0c",
     "test_q2024p_j2_yrs_reader.py": "2a72f426698ea18bb3a41b7fc4bd3ed2c79741cddbba03854828a712e6c1c585",
     "test_reentry_view.py": "1ee229c104c2f5b2f7941886bd73aeaefb87576dd34e5d4121a6609d6e15c7bc",
     "test_resume_prefill.py": "44d2399c36003eae4e131ed5bf1f8d89298d46badf15ff44bf506e48cc0407af",
@@ -3289,6 +3289,7 @@
     "test_vmid_job9b.py": "fa253fbbe70aa5ab0c95aef11e42706ef90c3bf3d035921e4fe2b166b50715bf",
     "test_yield_no_append_owner.py": "9d77579ab854af9ca224fd0a8739e37b97e838c857bb7d7d06f8c1a16dcd49d9",
     "test_yield_reentry_settle.py": "ed0b40a972a568d10720b42a68701833e1dd2b38453599e1077aa3c0c5371ffe",
+    "test_yield_window.py": "380722812a141fe41ad0c7b149f73339d1f479a88815218490ff11d645ed7e33",
     "variant_queue.sh": "727ce44b24ffb4c0368551bd4f407693ba8dcb121d540bd81bfea92021d65609",
     "verify-release.sh": "7dafa00983b75bffc3a17ddb278c5855675f3109544302708c7154982458b461",
     "verify-rowcache-v2.sh": "5dc387bdf634591d0970e5ded7e9712a8e7fbb1a99ab406545f6eab634b4f3bf",
@@ -4501,17 +4502,18 @@
     "source_tests": "test_small_piece_batch 26/26 (hub and pinned image), test_small_piece_batch_reader 11, test_small_piece_batch_box 3 in the bundle frozen CPU run"
   },
   "q2024p_j2_yr": {
-    "counters": "native_admission.queue_policy.no_append_owner (junctions, bulks, receipts, receipts_dropped, errors), present only with the flag; one flash-s5 n3-yield-owner-refused receipt per refused junction with a request waiting, bounded 4096",
+    "counters": "native_admission.queue_policy.no_append_owner (junctions, bulks, receipts, receipts_dropped, errors), present only with the flag; one flash-s5 n3-yield-owner-refused receipt per refused junction with a request waiting, bounded 4096; Y2: native_admission.queue_policy.yield_window (windows, appends, reentries_avoided, tail_full_handbacks, per_window, ends, gap_ms n/total/max/buckets, max_appends, receipts, receipts_dropped, errors), present only with the flag; one flash-s5 n3-yield-window receipt per admitted append (gap_ms from the previous append's terminal commit) and per closed window (appends, end), bounded 4096; the status history row of a window carries window=dict(appends, end)",
     "engine_delta": [
-      "scheduler_hooks.py (yield_owner_refuses, flag parse, status block)",
-      "engine_driver.py (one hook in _yield_offer)"
+      "scheduler_hooks.py (Y1: yield_owner_refuses, flag parse, status block; Y2: flag parse, window counters, receipts, status block)",
+      "engine_driver.py (Y1: one hook in _yield_offer; Y2: window record in _yield_offer, append_yield_window_offer/begin, gap stamp at the append terminal commit, per-append FULL mark inside a window, window close in _end_yield)",
+      "native_auto_arm.py (Y2: the offer after a served handback on the FULL and O3 paths, the begin at both re-entry arms)"
     ],
     "exploratory": true,
     "hardware_qualified": false,
     "review": "no review, Codex or other, covers this packet. The only Codex input on record for nearby work is CODEX-COMPOSE-REVIEW.md sha256 640f04d7c7392b50e43c7f47cac45a32a7bac7e8a79a80301966248edd6b4cf1, a source-only composition review of the host-gap batch; it does not cover the yield rules",
     "rule_y1": "FLASH_S5_YIELD_NO_APPEND_OWNER: unset or 0 is today's offer; 1: no junction yield and no candidate lookup while the lane owner has at most append_yield.max_new rows left past its newest admitted or retained chunk (engine_driver._yield_offer, after the per-bulk quota, before the lookup); any other value refuses at controller construction",
-    "rule_y2": "FLASH_S5_YIELD_WINDOW: not in this commit",
-    "source_tests": "test_yield_no_append_owner 28/28 hub; test_q2024p_j2_yr_reader 4/4 hub"
+    "rule_y2": "FLASH_S5_YIELD_WINDOW: unset or 0 is today's one append per yield (no window record, no window call); 1: a yield is a window. After the current append's handback was served (FULL window, or kept split by O3), native_auto_arm asks engine_driver.append_yield_window_offer for the next waiting eligible append (append_yield_candidate: FCFS, max_new, slot, decode-cover and KV-block gates per candidate, the per-bulk lookup memo and refusals) before the re-entry; at the re-entry's arm (FULL enter_split or the O3 census) append_yield_window_begin starts it (phase append) instead of the owner's resume. The owner re-enters as today when none waits, at YIELD_WINDOW_MAX_APPENDS=4 appends (the first included), after an unserved handback (abort, skip, expiry) or when the staged append left before the arm. PER_BULK counts windows. A geometry-tail append is served only after its r rows ran on FULL (O3 never keeps a tail split); counted as tail_full_handbacks. Any other value refuses at controller construction",
+    "source_tests": "test_yield_no_append_owner 28/28 hub; test_q2024p_j2_yr_reader 6/6 hub; test_yield_window 36/36 hub"
   },
   "q2024p_j2_yrs": {
     "bounds": "settle waits at most O3_TAIL_TICKS (64) scheduler ticks, unpaused with the FULL-window holds as today; REENTRY_RETRIES (4) and the stock fallback on the 5th refusal unchanged; _proof unchanged",
@@ -5631,7 +5633,7 @@
     "capture_streams.py": "76944d3416a9635cbecd81c70c1d538d5e0efc25d4fed4a3f2cf200ec3f4bd2b",
     "decode_probe.py": "e61bcfab445e1d7b75845edfaceccbc055dc2e50292078357f1062eb9d7e80fa",
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
-    "engine_driver.py": "dd717f8db534ca4ffb0e1a4d7fa6181cf9623fe247bebcf094c9c29b5663f4f3",
+    "engine_driver.py": "3bac6b45be3423a304aa92584c271dc780b3b805b90a3f083f5c1c1451bafa0e",
     "engine_offers.py": "0db9cc31a3f88afc5e795ba15d930b0ea88fb4ef43624d1021aa9130069b3e7d",
     "executor_hooks.py": "3b7d02826941b50fb50b592c07bc083eeb4a2600febaceab583dec99d6ffbca5",
     "graph_hooks.py": "52bea0171355a855e090d9fa955f06962beab163eaca02690a3722a58f62e94e",
@@ -5651,7 +5653,7 @@
     "native/flash_s5_graph_bytes.cpp": "56f550ebc345ee96077bb473264c42cce92140218dc014f7555718bf95e36110",
     "native/flash_s5_green.cu": "c2151ef6a805f620d6c57ef57c405fc0cdbce3c815b25574f9e0d2e7f1fa1907",
     "native/flash_s5_replay_observer.cpp": "3713542b4165fb28e85d7099b3c3d91690856b2770b81da1aa179c6b4e605ece",
-    "native_auto_arm.py": "3e0fc2e5c20d82cb9e78b3e7f5f500ac74b7cd410d8e73498dafe7a7770fd86d",
+    "native_auto_arm.py": "b333e04fbbd9446515774ac3439b85151c722924db4355b5776dafa2d3b8e9d6",
     "native_backend.py": "d7167cfb873d08138556663db44bf6bdbd2748706c5c8367d3719481e507a6a0",
     "native_graph_placement.py": "4c32310bbea2a70416eec85804dec578e7a3be8680f393c7211f1e59482ec216",
     "native_measurement.py": "28c9253a3ae1ab0cb199578d0ddd7827d66a0f1480cecdfd1d4ea3d93d169388",
@@ -5682,7 +5684,7 @@
     "row1_exactness.py": "2b816cf781a9c25bc069afd25b26dc64412e77428a0889221610837a7be2f799",
     "row1_oracle.py": "f6b7c97b1d6a2e4513ae9b210cbd83d731aca349f0f2f75aac99cedb54a1ebc0",
     "s5_startup.py": "4ba7408b0a5a4575723e84cde6cf502dcb9012e6394a25930598429c95b63b5d",
-    "scheduler_hooks.py": "cbf0e37996e0669aeeb65f71296119a122dfb40573821fad4897c4afca72a497",
+    "scheduler_hooks.py": "d171bf57fd41ad238bf2ad6e8c9e63574d8076a7018d8098c251e9b066fe9416",
     "small_piece_batch.py": "addd835559f70dde2c3ce6a59d2440353614590786544df91131b749e0b7cd5a",
     "sparse_history_dma.py": "8d797043b9f077906e93cc32f13f2ba54e56197ba4ce701405951446cc843287",
     "split_bank.py": "ef8222d57888c8103936dffe4f3643edc5ba437b96fb1cab3c8341f97c1d19b4",

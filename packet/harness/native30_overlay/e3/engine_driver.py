@@ -2602,6 +2602,8 @@ class NativeSegmentDriver:
                 self.append_yield_counters['handbacks'] += 1
                 self._yield_journal(self._yield, 'handback',
                                     transaction=transaction.txn_seq, route_generation=self.route_generation)
+                if 'window' in self._yield:      # yield-rules Y2: the in-window gap runs from this terminal commit
+                    self._yield['window']['handback_ns'] = self._journal[-1]['observed_ns']
             self._note_terminal_route('handback', transaction, admission)
         return
 
@@ -4216,7 +4218,13 @@ class NativeSegmentDriver:
     def append_yield_mark_full(self):
         """auto-arm saw the append's FULL return settled (the FULL window opens)."""
         y = self._yield
-        if y is not None and y['phase'] == 'handback' and 'full' not in y['times']:
+        if y is None or y['phase'] != 'handback':
+            return
+        if 'window' in y:                        # yield-rules Y2: one FULL window per append of the window
+            if not y['window'].get('full_marked'):
+                y['window']['full_marked'] = True
+                self._yield_journal(y, 'full', route_generation=self.route_generation)
+        elif 'full' not in y['times']:
             self._yield_journal(y, 'full', route_generation=self.route_generation)
 
     def _end_yield(self, reason):
@@ -4231,6 +4239,13 @@ class NativeSegmentDriver:
                                         arrival=y['arrival'], open_chunks=y['open_chunks'],
                                         route_generation_selected=y['route_generation'],
                                         route_generation_end=self.route_generation))
+        if 'window' in y:
+            w = y['window']
+            end = w['end'] or 'yield-' + reason
+            self._yield_history[-1]['window'] = dict(appends=w['admitted'], end=end)
+            self.controller.yield_window_closed(w['admitted'], end)
+            self.controller.yield_window_receipt('closed', seq=y['seq'], appends=w['admitted'], end=end,
+                                                 reason=reason, route_generation=self.route_generation)
 
     def _yield_stop(self, kind, cause=None):
         y = self._yield
@@ -4326,6 +4341,111 @@ class NativeSegmentDriver:
         self._end_yield('reentry-refused')
         return True
 
+    # -- yield-rules Y2 (FLASH_S5_YIELD_WINDOW, default 0): the yield window ------------------------------------------
+    # A window is one yield (one selection, one PER_BULK count, one bulk row close, one bulk reopen) whose appends run
+    # back to back. Each append runs exactly as today's single append (admission, chunks, terminal commit, handback on
+    # FULL or kept split by O3); when its handback was served, auto-arm asks append_yield_window_offer before the
+    # re-entry. A staged next append makes the re-entry's arm start that append (phase 'append') instead of the owner's
+    # resume; the owner's binding, frontier and re-entry plan are those of the window. The owner re-enters as today when
+    # no eligible append waits, at YIELD_WINDOW_MAX_APPENDS, after an unserved handback (abort, skip, expiry), or when the
+    # staged append left before the arm.
+    def append_yield_window_offer(self):
+        """yield-rules Y2: the served handback of the current append; stage the next append of this window, or None.
+
+        The candidate is today's (append_yield_candidate: FCFS, max_new, the slot, decode-cover and KV-block gates per
+        candidate, the per-bulk lookup memo and refusals); no PER_BULK count. A geometry-tail append's handback is
+        served only once its r tail rows ran on FULL (the hold releases exactly them; O3 never keeps a tail split), so
+        the next append runs split only after that FULL handback: counted (tail_full_handbacks) at the next begin.
+        Never raises: a fault ends the window (counted) and the owner re-enters as today.
+        """
+        y = self._yield
+        w = None if y is None else y.get('window')
+        if w is None or y['phase'] != 'handback':
+            return None
+        w['next'] = None
+        try:
+            c = self.controller
+            if y.get('append_aborted') or y.get('handback_skipped') or y.get('handback_expired') \
+                    or not y.get('handback_served'):
+                w['end'] = 'not-served'
+                return None
+            if w['appends'] >= c.yield_window_max:
+                w['end'] = 'bound'
+                return None
+            tail = self._handback_rows(y['append']) > 1
+            if tail and self._split_ready:
+                w['end'] = 'tail-on-split'           # never expected: O3 keeps only a one-row handback split
+                return None
+            policy = getattr(self, 'auto_arm', None)
+            refused = self._yield_refused.get(y['key'], frozenset())
+            scan = self._yield_scan
+            if scan is None or scan[0] != y['key']:
+                scan = self._yield_scan = (y['key'], set())
+            candidate = c.append_yield_candidate(self.scheduler, y['bulk'], getattr(policy, 'decode_counts', None),
+                                                 exclude=refused, seen=scan[1])
+            if candidate is None:
+                w['end'] = 'none-waiting'
+                return None
+            w['next'], w['tail'] = candidate, tail
+            self._yield_journal(y, 'window_next', index=w['appends'] + 1, tail_handback=tail,
+                                route_generation=self.route_generation)
+            return candidate
+        except Exception:
+            self.controller.yield_window_counts['errors'] += 1
+            w['next'], w['end'] = None, 'error'
+            return None
+
+    def append_yield_window_begin(self):
+        """yield-rules Y2: at the re-entry's arm, start the staged append (phase 'append') instead of the owner's resume.
+
+        False (the caller resumes the owner as today) when nothing is staged or the staged append is no longer
+        takeable. The per-append state starts fresh; the window's owner binding, frontier and key stay.
+        """
+        y = self._yield
+        w = None if y is None else y.get('window')
+        if w is None or y['phase'] != 'reenter' or w.get('next') is None:
+            return False
+        candidate, w['next'] = w['next'], None
+        try:
+            held = self.controller.append_yield_still_held(self.scheduler, candidate,
+                                                           getattr(getattr(self, 'auto_arm', None), 'decode_counts', None))
+        except Exception:
+            self.controller.yield_window_counts['errors'] += 1
+            held = False
+        if not held:
+            w['end'] = 'next-left'
+            self._yield_journal(y, 'window_next_left', route_generation=self.route_generation)
+            return False
+        y['append'] = candidate
+        y['append_transactions'] = []
+        y['append_aborted'] = False
+        for name in ('handback_served', 'handback_steps', 'handback_expired', 'handback_skipped', 'idle_at',
+                     'drain_wait', 'closing_append'):
+            y.pop(name, None)
+        w['appends'] += 1
+        w['full_marked'] = False
+        counts = self.controller.yield_window_counts
+        counts['reentries_avoided'] += 1
+        if w['tail']:
+            counts['tail_full_handbacks'] += 1
+        y['phase'] = 'append'
+        self._yield_journal(y, 'window_append', index=w['appends'], tail_handback=w['tail'],
+                            route_generation=self.route_generation)
+        return True
+
+    def _yield_window_admitted(self, y):
+        """yield-rules Y2: an append of the window admitted; past the first, its gap from the previous terminal commit."""
+        w = y['window']
+        w['admitted'] += 1
+        c = self.controller
+        c.yield_window_counts['appends'] += 1
+        gap = None
+        if w['admitted'] >= 2 and type(w.get('handback_ns')) is int:
+            gap = round((self._journal[-1]['observed_ns'] - w['handback_ns']) / 1e6, 3)
+            c.yield_window_gap(gap)
+        c.yield_window_receipt('append', seq=y['seq'], index=w['admitted'], gap_ms=gap, tail_handback=w['tail'],
+                               route_generation=self.route_generation)
+
     def _maybe_yield(self):
         """Offer the yield; a pending one moves to closing once its drain is over."""
         y = self._yield
@@ -4414,6 +4534,9 @@ class NativeSegmentDriver:
                            append_transactions=[], close_rounds=0, append_aborted=False,
                            times={}, route_generation=self.route_generation,
                            arrival=arrival, open_chunks=len(records), key=key)
+        if getattr(controller, 'yield_window', False):
+            # yield-rules Y2: this yield is a window; its appends run back to back before the owner re-enters
+            self._yield['window'] = dict(appends=1, admitted=0, next=None, tail=False, handback_ns=None, end=None)
         self.append_yield_counters['selected'] += 1
         self.append_yield_arrivals[arrival] += 1
         self._yield_journal(self._yield, 'selected',
@@ -4510,6 +4633,8 @@ class NativeSegmentDriver:
                 self._yield_journal(y, 'admitted', transaction=transaction.txn_seq,
                                     chunk_start=transaction.chunk_start, chunk_end=transaction.chunk_end,
                                     route_generation=self.route_generation)
+                if 'window' in y:
+                    self._yield_window_admitted(y)
             y['append_transactions'].append(transaction.txn_seq)
         elif y['phase'] == 'draining' and transaction.request_uid == y['bulk'].request_id:
             pass                                 # admitted before the yield was pending: it runs to its commit

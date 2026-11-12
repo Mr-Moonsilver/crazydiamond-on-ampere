@@ -11,8 +11,12 @@ the settle at 0, so it reads each record as 'off'), and per n3 arm, inside the a
   * follow-on yields (an owner's second and later yields) and the owner chunks opened between consecutive yields of one
     owner, each yield placed at its first append's admission, i.e. in lane order (the simulator's '260 of 441 after
     exactly one owner chunk');
-  * appends per window (append_yield_admitted per yield window) and the in-window append->append gap (none before Y2);
+  * appends per window (append_yield_admitted per yield window) and, with Y2, the in-window append->append gap (the
+    engine's 'flash-s5 n3-yield-window' append receipts: previous terminal commit -> next admission, ms) and the window
+    ends (its 'closed' receipts);
   * Y1: 'flash-s5 n3-yield-owner-refused' receipts and the queue_policy.no_append_owner delta;
+  * Y2: the queue_policy.yield_window delta (windows, appends, per-window histogram, ends, re-entries avoided, tail
+    appends whose FULL handback ran before the next append, gap count/total/max);
   * per turn (the arm's turn journal joined to the engine's request_admitted by prompt tokens and time): append pre-open
     agent-s (sent -> first native chunk open, clipped to the window), append TTFT mean, longest fresh TTFT, and the
     turns the join could not place.
@@ -38,6 +42,7 @@ N3 = ('n3.g2-live-0', 'n3.g2-live-1')
 Y1_ENV, Y2_ENV = 'FLASH_S5_YIELD_NO_APPEND_OWNER', 'FLASH_S5_YIELD_WINDOW'
 VARIANTS = {'off': ('0', '0'), 'y1': ('1', '0'), 'y12': ('1', '1')}
 RECEIPT = 'flash-s5 n3-yield-owner-refused '
+WINDOW_RECEIPT = 'flash-s5 n3-yield-window '
 DEFAULT_MAX_NEW = 8192
 JOIN_SLACK_S = 2.0
 
@@ -51,8 +56,8 @@ def identity_env(root, name):
     return values
 
 
-def read_log(path):
-    """Native-gap events (time, event, doc) sorted, and the Y1 receipts (time, doc)."""
+def read_log(path, windows=None):
+    """Native-gap events (time, event, doc) sorted, and the Y1 receipts (time, doc); Y2 window receipts into ``windows``."""
     events, receipts = [], []
     with path.open(errors='replace') as handle:
         for line in handle:
@@ -70,6 +75,11 @@ def read_log(path):
             elif RECEIPT in line:
                 try:
                     receipts.append((hgb.stamp(line.split(' ', 1)[0]), json.loads(line.split(RECEIPT, 1)[1])))
+                except ValueError:
+                    continue
+            elif WINDOW_RECEIPT in line and windows is not None:
+                try:
+                    windows.append((hgb.stamp(line.split(' ', 1)[0]), json.loads(line.split(WINDOW_RECEIPT, 1)[1])))
                 except ValueError:
                     continue
     events.sort(key=lambda e: e[0])
@@ -124,6 +134,33 @@ def yields(events, table, start, end, max_new):
                 in_window_gap_ms=None)
 
 
+def window_read(receipts, start, end):
+    """Y2 receipts inside the arm window: the in-window gap (count, mean, max ms) and the window ends."""
+    gaps = [doc.get('gap_ms') for at, doc in receipts if start <= at <= end and doc.get('event') == 'append'
+            and type(doc.get('gap_ms')) in (int, float)]
+    ends = collections.Counter(str(doc.get('end')) for at, doc in receipts
+                               if start <= at <= end and doc.get('event') == 'closed')
+    tails = sum(1 for at, doc in receipts if start <= at <= end and doc.get('event') == 'append' and doc.get('tail_handback'))
+    gap = None if not gaps else dict(n=len(gaps), mean=round(sum(gaps) / len(gaps), 1), max=round(max(gaps), 1))
+    return gap, dict(sorted(ends.items())), tails
+
+
+def window_delta(before, after):
+    if type(before) is not dict or type(after) is not dict:
+        return None
+    out = {}
+    for k, v in after.items():
+        b = before.get(k)
+        if type(v) is dict and k != 'gap_ms':
+            out[k] = {n: hgb._sub(c, (b or {}).get(n, 0)) for n, c in v.items() if hgb._sub(c, (b or {}).get(n, 0))}
+        elif k == 'gap_ms' and type(v) is dict:
+            n, total = hgb._sub(v.get('n'), (b or {}).get('n')), hgb._sub(v.get('total'), (b or {}).get('total'))
+            out[k] = dict(n=n, mean=round(total / n, 1) if n and total is not None else None, max_lifetime=v.get('max'))
+        else:
+            out[k] = v if k == 'max_appends' else hgb._sub(v, b)
+    return out
+
+
 def turn_join(arm_path, events, origin, window):
     """Per n3 turn: TTFT (client), pre-open (sent -> first native chunk_open of the admitted request)."""
     turns = []
@@ -174,9 +211,9 @@ def turn_join(arm_path, events, origin, window):
     return out
 
 
-def owner_block(row):
+def owner_block(row, name='no_append_owner'):
     queue = (((row or {}).get('native_admission') or {}).get('queue_policy') or {})
-    return queue.get('no_append_owner')
+    return queue.get(name)
 
 
 def collect(root, variant):
@@ -192,7 +229,8 @@ def collect(root, variant):
     log = root / 'engine.log'
     if not log.is_file():
         log = root / 'engine-stream.log'
-    events, receipts = read_log(log) if log.is_file() else ([], [])
+    windows = []
+    events, receipts = read_log(log, windows) if log.is_file() else ([], [])
     table = owners(events)
     for label in N3:
         arm = hgb.load(root / ('arm-' + label + '.json'))
@@ -206,6 +244,9 @@ def collect(root, variant):
         if type(start) in (int, float) and type(end) in (int, float):
             slot['yield_rules'] = yields(events, table, start, end, max_new)
             slot['yield_rules']['max_new'] = max_new
+            gap, ends, tails = window_read(windows, start, end)
+            slot['yield_rules'].update(in_window_gap_ms=gap, window_ends=ends, tail_full_handbacks_receipts=tails)
+            slot['y2_receipts'] = sum(1 for at, _ in windows if start <= at <= end)
             slot['y1_receipts'] = sum(1 for at, _ in receipts if start <= at <= end)
             cfg = arm.get('replay_config') or {}
             slot['turn_join'] = turn_join(root / ('arm-' + label + '.json.turns.jsonl'), events, start,
@@ -217,6 +258,12 @@ def collect(root, variant):
             result['notes'].append('y1-record-lacks-no_append_owner:' + label)
         if want[0] == '0' and (after is not None or slot.get('y1_receipts')):
             result['notes'].append('off-record-carries-y1:' + label)
+        w_before, w_after = owner_block(rows.get('before'), 'yield_window'), owner_block(rows.get('after'), 'yield_window')
+        slot['yield_window'] = window_delta(w_before, w_after)
+        if want[1] == '1' and slot['yield_window'] is None:
+            result['notes'].append('y12-record-lacks-yield_window:' + label)
+        if want[1] == '0' and (w_after is not None or slot.get('y2_receipts')):
+            result['notes'].append('record-carries-y2:' + label)
     return result
 
 
@@ -233,6 +280,10 @@ def render(results):
                          'y1_block=%s' % (label, y['yields'], json.dumps(y['classes'], sort_keys=True), y['follow_on'],
                                           y['follow_on_after_one_owner_chunk'], json.dumps(y['appends_per_window']),
                                           arm.get('y1_receipts'), json.dumps(arm.get('no_append_owner'), sort_keys=True)))
+            if y.get('in_window_gap_ms') or y.get('window_ends') or arm.get('yield_window'):
+                lines.append('      window: in_window_gap_ms=%s ends=%s tail_receipts=%s y2_block=%s' % (
+                    json.dumps(y.get('in_window_gap_ms'), sort_keys=True), json.dumps(y.get('window_ends'), sort_keys=True),
+                    y.get('tail_full_handbacks_receipts'), json.dumps(arm.get('yield_window'), sort_keys=True)))
             j = arm.get('turn_join') or {}
             lines.append('      turns=%s append_preopen_agent_s=%s fresh_preopen_agent_s=%s append_ttft_mean=%ss '
                          'fresh_ttft_max=%ss unplaced=%s stock=%s' % (
