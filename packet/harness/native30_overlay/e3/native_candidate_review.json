@@ -4520,6 +4520,20 @@
     "review": "no review, Codex or other, covers this packet. The only Codex input on record for nearby work is CODEX-COMPOSE-REVIEW.md sha256 640f04d7c7392b50e43c7f47cac45a32a7bac7e8a79a80301966248edd6b4cf1, a source-only composition review of the host-gap batch; it does not cover the ingress splice or the prefix counter",
     "source_tests": "test_ingress_incremental 36/36 hub; test_ingress_incremental_hf 5/5 pinned container; test_q2024p_j2_ing_reader 4/4 hub"
   },
+  "q2024p_j2_np": {
+    "engine_delta": [
+      "ingress_incremental.py (install safety, env verify rate FLASH_S5_INGRESS_VERIFY_EVERY, off-path verify thread FLASH_S5_INGRESS_VERIFY_ASYNC: verify-mismatch disables and logs conversation index and position only; submit->done timing around the async wrapper; prefix counter COUNTER_ENTRIES 32, after_eviction, reply-aligned match, divergence id windows for the first 8 appends)",
+      "probe_control.py (install, observe and snapshot wrapped: ingress_api disabled install-error:<Type> / observe-error / snapshot-error)",
+      "executor_hooks.py (request_admitted arrival_s and admit_wall_s, log-only in every packet)",
+      "engine_driver.py / scheduler_hooks.py (Y2 receipts only: not_served split unsampled/abort/skip/expiry, append path o3|full, next_left counted, gap_ms by path; behaviour unchanged)",
+      "native_auto_arm.py (proof-miss line append_dec, append_out, running)"
+    ],
+    "exploratory": true,
+    "family": "q18a-parity-n3s24q2024p-j2-np-{off,off-n2,y12,y12-n2,ing,all,set,hgb}: one source commit, packets differ only in launch flags",
+    "hardware_qualified": false,
+    "review": "no review covers this family beyond the read-only Fable reviews of 12 Nov 2026 whose fixes it applies; no Codex review covers it",
+    "source_tests": "test_ingress_incremental 49 hub; test_ingress_incremental_hf 5 pinned container; test_ingress_real_tokenizer 6 pinned container with the real files mounted (not in a bundle); test_yield_window 43; test_yield_reentry_settle 37; test_small_piece_batch 29; test_q2024p_j2_np_reader 5"
+  },
   "q2024p_j2_yr": {
     "counters": "native_admission.queue_policy.no_append_owner (junctions, bulks, receipts, receipts_dropped, errors), present only with the flag; one flash-s5 n3-yield-owner-refused receipt per refused junction with a request waiting, bounded 4096; Y2: native_admission.queue_policy.yield_window (windows, appends, reentries_avoided, tail_full_handbacks, per_window, ends, gap_ms n/total/max/buckets, max_appends, receipts, receipts_dropped, errors), present only with the flag; one flash-s5 n3-yield-window receipt per admitted append (gap_ms from the previous append's terminal commit) and per closed window (appends, end), bounded 4096; the status history row of a window carries window=dict(appends, end)",
     "engine_delta": [

@@ -441,6 +441,117 @@ class O3Window(unittest.TestCase):
         self.assertEqual(d._yield['frontier'], frontier)
 
 
+def stock_handback_unsampled(rig, request):
+    """Leaf (night-pack fix 5): the box's FULL handback with asynchronous sampling. The pinned stock step scheduled the
+    request's last prompt token on FULL (prompt fully computed, a live decode row on every worker) but its first token
+    is not yet sampled when the FULL window ends; rig.stock_handback samples at once, which is why the CPU rig never
+    saw the as-built 'not-served' end on the FULL path (V1: 408 of 659 handbacks served = the O3 count)."""
+    rig.stock_handback(request)
+    request.num_output_tokens = 0
+
+
+class AsBuiltReceipts(unittest.TestCase):
+    """night-pack fix 5: receipts only; Y2's behaviour is pinned as built (not changed)."""
+
+    def setUp(self):
+        self.log = Lines(self)
+
+    def test_unsampled_full_handback_ends_the_window_although_an_append_waits(self):
+        rig = window_rig()
+        d = rig.d
+        append = ay.run_to_yield(rig)
+        other = rig.add_held(OTHER_UID, 6)
+        ay.to_append(rig)
+        ay.run_append(rig)
+        ay.to_full(rig)
+        stock_handback_unsampled(rig, append)
+        frontier = rig.bulk.num_computed_tokens
+        ay.to_resume(rig)                                   # as built: the owner re-enters, OTHER keeps waiting
+        w = d._yield['window']
+        self.assertEqual((w['end'], w['not_served'], w['offer_path']), ('not-served', 'unsampled', 'full'))
+        self.assertIsNone(w['next'])
+        self.assertEqual(d.append_yield_counters['handbacks_served'], 0)
+        self.assertIn(other, rig.s.skipped_waiting.items)
+        append.num_output_tokens = 1                        # the delayed sample lands: nothing moves
+        txn = rig.admit()
+        self.assertEqual((txn.request_uid, txn.chunk_start), (BULK_UID, frontier))
+        rig.finish_chunk()
+        c = counts(rig)
+        self.assertEqual((c['ends'], c['not_served'], c['per_window'], c['reentries_avoided']),
+                         ({'not-served': 1}, {'unsampled': 1}, {'1': 1}, 0))
+        closed = [r for r in self.log.receipts() if r['event'] == 'closed']
+        self.assertEqual([(r['end'], r['not_served'], r['appends']) for r in closed], [('not-served', 'unsampled', 1)])
+        block = rig.c.native_admission_record()['queue_policy']['yield_window']
+        self.assertEqual(block['not_served'], {'unsampled': 1})
+
+    def test_the_same_flow_sampled_continues_the_window(self):
+        """Control: sampled at once (the rig's default leaf) the same flow takes OTHER in the window."""
+        rig = window_rig()
+        append, (other,) = served_first(rig)
+        to_window_append(rig)
+        self.assertIs(rig.d._yield['append'], other)
+        self.assertEqual(counts(rig)['not_served'], {})
+
+    def test_abort_is_split_as_abort(self):
+        rig = window_rig()
+        append = ay.run_to_yield(rig)
+        rig.add_held(THIRD_UID, 6)
+        ay.to_append(rig)
+        ay.run_append(rig)
+        ay.to_full(rig)
+        self.assertIsNone(ay.abort(rig, append))
+        rig.stock_abort(append)
+        ay.to_resume(rig)
+        self.assertEqual((rig.d._yield['window']['end'], rig.d._yield['window']['not_served']), ('not-served', 'abort'))
+        self.assertEqual(counts(rig)['not_served'], {'abort': 1})
+
+    def test_append_receipt_path_full_and_gap_by_path(self):
+        rig = window_rig()
+        append, (other,) = served_first(rig)
+        to_window_append(rig)
+        ay.run_append(rig)
+        appends = [r for r in self.log.receipts() if r['event'] == 'append']
+        self.assertEqual([(r['index'], r['path']) for r in appends], [(1, None), (2, 'full')])
+        g = counts(rig)['gap_by_path']
+        self.assertEqual(list(g), ['full'])
+        self.assertEqual(g['full']['n'], 1)
+
+    def test_staged_candidate_that_left_is_counted(self):
+        rig = window_rig()
+        append, (other,) = served_first(rig)
+        rig.tick(lambda: rig.p.phase == 'split')
+        self.assertIs(rig.d._yield['window']['next'], other)
+        self.assertIsNone(ay.abort(rig, other))
+        rig.stock_abort(other)
+        ay.to_resume(rig)
+        self.assertEqual(rig.d._yield['window']['end'], 'next-left')
+        self.assertEqual(counts(rig)['next_left'], 1)
+
+    def test_o3_path_on_the_kept_split_route(self):
+        log = ts.Log()
+        with mock.patch.object(ed, '_progress_logger', lambda: log):
+            rig = lo3.yield_rig()
+            rig.c.yield_window = True
+            rig.s.max_num_running_reqs = 8
+            p, d = rig.p, rig.d
+            append = ay.run_to_yield(rig)
+            other = rig.add_held(OTHER_UID, 6)
+            ay.to_append(rig)
+            ay.run_append(rig)
+            ay.policy_ticks(rig, 1)
+            lo3.split_handback_step(rig, append)
+            lo3.worker_lag(rig, append)
+            ay.policy_ticks(rig, 1)
+            lo3.first_decode_step(rig, append)
+            ay.policy_ticks(rig, 1)
+            self.assertEqual(d._yield['window']['offer_path'], 'o3')
+            ts.landed(rig, append)
+            rig.tick(lambda: d.append_yield_phase() == 'append')
+            ay.run_append(rig)
+        self.assertEqual(d._yield['window']['path'], 'o3')
+        self.assertEqual(list(rig.c.yield_window_counts['gap_by_path']), ['o3'])
+
+
 class OffIsFrozen(unittest.TestCase):
     """Flag at 0: no window record, no window call (offer/begin raise if reached), the same journal and counters."""
 
@@ -524,10 +635,16 @@ class Mutants(unittest.TestCase):
 
     def test_unserved_handback_continues_caught(self):
         self.run_mutant(ed.NativeSegmentDriver, 'append_yield_window_offer',
-                        "            if y.get('append_aborted') or y.get('handback_skipped') or y.get('handback_expired') \\\n"
-                        "                    or not y.get('handback_served'):\n",
+                        "            if why is not None:\n",
                         "            if False:\n",
                         self.case(AbortInWindow, 'test_abort_of_the_second_append_mid_chunk_ends_the_window'))
+
+    def test_unsampled_continues_caught(self):
+        """night-pack fix 5: the as-built pin has power (an offer that continued after an unsampled FULL handback)."""
+        self.run_mutant(ed.NativeSegmentDriver, 'append_yield_window_offer',
+                        "            if why is not None:\n",
+                        "            if False:\n",
+                        self.case(AsBuiltReceipts, 'test_unsampled_full_handback_ends_the_window_although_an_append_waits'))
 
     def test_in_window_per_bulk_count_caught(self):
         self.run_mutant(ed.NativeSegmentDriver, 'append_yield_window_begin',

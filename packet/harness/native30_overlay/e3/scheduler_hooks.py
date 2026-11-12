@@ -1741,7 +1741,10 @@ class PrefillAdmissionController:
         self.yield_window_max = YIELD_WINDOW_MAX_APPENDS
         self.yield_window_counts = dict(windows=0, appends=0, reentries_avoided=0, tail_full_handbacks=0,
                                         per_window={}, ends={}, gap_ms=dict(n=0, total=0.0, max=0.0, buckets={}),
-                                        receipts=0, receipts_dropped=0, errors=0)
+                                        receipts=0, receipts_dropped=0, errors=0,
+                                        # night-pack fix 5 (receipts only, behaviour as built): why a window ended
+                                        # not-served, staged appends that left before the arm, the gap by handback path
+                                        not_served={}, next_left=0, gap_by_path={})
         self._yield_receipt_seen = {}
         self.yield_receipts = dict(written=0, duplicate=0, dropped=0, errors=0, limit=4096)
         self.residue_totals = dict(junction=0, lowered=0)
@@ -2212,9 +2215,15 @@ class PrefillAdmissionController:
             self.yield_owner_counts['errors'] += 1
         return True
 
-    def yield_window_gap(self, gap_ms):
+    def yield_window_gap(self, gap_ms, path=None):
         """yield-rules Y2: one in-window append->append gap (the previous append's terminal commit to this append's
-        admission, engine monotonic ms): count, total, max and a bucket."""
+        admission, engine monotonic ms): count, total, max and a bucket; also by the previous handback's path
+        ('o3' kept split, 'full'; night-pack fix 5)."""
+        if path is not None:
+            p = self.yield_window_counts['gap_by_path'].setdefault(str(path), dict(n=0, total=0.0, max=0.0))
+            p['n'] += 1
+            p['total'] = round(p['total'] + gap_ms, 3)
+            p['max'] = round(max(p['max'], gap_ms), 3)
         g = self.yield_window_counts['gap_ms']
         g['n'] += 1
         g['total'] = round(g['total'] + gap_ms, 3)
@@ -2230,6 +2239,11 @@ class PrefillAdmissionController:
             w['windows'] += 1
         w['per_window'][str(appends)] = w['per_window'].get(str(appends), 0) + 1
         w['ends'][end] = w['ends'].get(end, 0) + 1
+
+    def yield_window_not_served(self, why):
+        """night-pack fix 5: a window ended not-served, split by why (unsampled, abort, skip, expiry)."""
+        n = self.yield_window_counts['not_served']
+        n[why] = n.get(why, 0) + 1
 
     def yield_window_receipt(self, event, **fields):
         """One bounded 'flash-s5 n3-yield-window' line (no request UID); never raises."""
@@ -2541,7 +2555,8 @@ class PrefillAdmissionController:
             w = self.yield_window_counts
             result.setdefault('queue_policy', {})['yield_window'] = dict(
                 w, max_appends=self.yield_window_max, per_window=dict(w['per_window']), ends=dict(w['ends']),
-                gap_ms=dict(w['gap_ms'], buckets=dict(w['gap_ms']['buckets'])))
+                gap_ms=dict(w['gap_ms'], buckets=dict(w['gap_ms']['buckets'])), not_served=dict(w['not_served']),
+                gap_by_path={k: dict(v) for k, v in w['gap_by_path'].items()})
         return result
 
     def _next_transaction(self, request, start, chunk_end):

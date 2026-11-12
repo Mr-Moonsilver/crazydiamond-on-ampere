@@ -12,6 +12,7 @@ wrapper (stock object returned untouched when not selected); install with the fl
 counter (hash bisection, token refinement, buckets, through-reply counts, eviction, errors) and its driver hook.
 No GPU, CUDA or box claim.
 """
+import array
 import ast
 import asyncio
 from pathlib import Path
@@ -20,6 +21,7 @@ import sys
 import threading
 import types
 import unittest
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -620,8 +622,9 @@ class Counter(unittest.TestCase):
         for s in 'abc':
             c.record(Req(s, [1, 2, 3, 4]))
         self.assertEqual((c.counts['evicted'], list(c.prev)), (1, ['b', 'c']))
-        c.record(Req('a', [1, 2, 3, 4]))                 # evicted: counted as first again
-        self.assertEqual(c.counts['first'], 4)
+        c.record(Req('a', [1, 2, 3, 4]))                 # night-pack fix 4: evicted, not counted as first again
+        self.assertEqual((c.counts['first'], c.counts['after_eviction']), (3, 1))
+        self.assertEqual(ii.COUNTER_ENTRIES, 32)
         c.record(types.SimpleNamespace(cache_salt='c'))
         self.assertEqual(c.counts['errors'], 1)
         z = ii.PrefixCounter(0)
@@ -667,9 +670,11 @@ class Sources(unittest.TestCase):
         text = ast.get_source_segment(src, fn)
         self.assertIn("ingress = None", text)
         self.assertIn("if env.get('FLASH_S5_INGRESS_INCREMENTAL', '0') == '1':\n"
-                      "                    from ingress_incremental import install as install_ingress", text)
-        self.assertEqual(text.count('ingress.'), 2)
+                      "                    ingress = state['ingress'] = _install_ingress(engine, env)", text)
+        self.assertEqual(text.count('ingress.'), 0, 'night-pack fix 2: every ingress call goes through a guard')
+        self.assertEqual(text.count('_observe_ingress(ingress, action, result)'), 1)
         self.assertEqual(text.count('if ingress is not None:'), 1)
+        self.assertNotIn('import install', text)
 
     def test_overlay_declares_the_module(self):
         import make_s5_overlap as g
@@ -677,6 +682,219 @@ class Sources(unittest.TestCase):
         self.assertIn('ingress_incremental', g.E3_MODULES)
         self.assertIn('ingress_incremental', g.LAUNCHER_LIST_EXEMPT)
         self.assertIn('ingress_incremental', decode_probe.GENERATED_SOURCES)
+
+
+# -- night-pack fixes 2-4 (lead, 12 Nov 2026) ---------------------------------------------------------------------
+class InstallSafety(unittest.TestCase):
+    """fix 2: an exception in install, observe or snapshot never reaches the native command path."""
+
+    def test_install_error_is_reported_never_raised(self):
+        import probe_control as pc
+        with mock.patch.object(ii, 'install', side_effect=RuntimeError('renderer shape')):
+            got = pc._install_ingress(types.SimpleNamespace(renderer=object()), {ii.ENV: '1'})
+        self.assertEqual(got.snapshot(), {'disabled': 'install-error:RuntimeError'})
+        result = {'native_admission': {}}
+        pc._observe_ingress(got, 'status', result)
+        self.assertEqual(result['native_admission']['ingress_api'], {'disabled': 'install-error:RuntimeError'})
+        pc._observe_ingress(got, 'release_auto_arm', {'released': True})       # no raise, nothing selected
+        with mock.patch.dict(sys.modules, {'ingress_incremental': None}):           # the import itself fails
+            self.assertIn(pc._install_ingress(object(), {ii.ENV: '1'}).snapshot()['disabled'],
+                          ('install-error:ImportError', 'install-error:ModuleNotFoundError'))
+        none = pc._install_ingress(types.SimpleNamespace(renderer=None), {ii.ENV: '1'})
+        self.assertEqual(none.snapshot(), {'disabled': 'install-error:no-renderer'})
+
+    def test_partial_install_restores_the_stock_renderer(self):
+        r = FakeRenderer(FakeTok())
+        r._tokenize_prompt_async = 'stock-async'
+        before = r._tokenize_prompt
+        with fake_async(), mock.patch.object(ii.Ingress, 'async_wrapper', side_effect=TypeError('x')):
+            with self.assertRaises(TypeError):
+                ii.install(types.SimpleNamespace(renderer=r), {ii.ENV: '1'})
+        self.assertEqual((r._tokenize_prompt, r._tokenize_prompt_async), (before, 'stock-async'))
+        self.assertFalse(hasattr(r, '_flash_s5_ingress'))
+
+    def test_observe_and_snapshot_faults_deselect_and_report(self):
+        import probe_control as pc
+        r = FakeRenderer(FakeTok())
+        ing = ii.Ingress(r)
+        ing.binding.observe('release_auto_arm', {'released': True})
+        with mock.patch.object(ing.binding, 'observe', side_effect=KeyError('x')):
+            pc._observe_ingress(ing, 'pause', {})
+        self.assertFalse(ing.binding.selected)
+        self.assertEqual(ing.splicer.disabled, 'observe-error:KeyError')
+        result = {'native_admission': {}}
+        with mock.patch.object(ing, 'snapshot', side_effect=ValueError('y')):
+            pc._observe_ingress(ing, 'status', result)
+        self.assertEqual(result['native_admission']['ingress_api'], {'disabled': 'snapshot-error:ValueError'})
+        odd = {'native_admission': 'not-a-dict'}
+        pc._observe_ingress(ing, 'status', odd)                 # untouched, no raise
+        self.assertEqual(odd, {'native_admission': 'not-a-dict'})
+
+    def test_bad_verify_setting_is_an_install_error(self):
+        import probe_control as pc
+        r = FakeRenderer(FakeTok())
+        with fake_async():
+            for env in ({ii.VERIFY_EVERY_ENV: 'all'}, {ii.VERIFY_EVERY_ENV: '-1'}, {ii.VERIFY_ASYNC_ENV: 'yes'}):
+                got = pc._install_ingress(types.SimpleNamespace(renderer=r), dict(env, **{ii.ENV: '1'}))
+                self.assertEqual(got.snapshot(), {'disabled': 'install-error:ValueError'}, env)
+                self.assertFalse(hasattr(r, '_flash_s5_ingress'))
+
+
+def fake_async():
+    """vllm.utils.async_utils.make_async stand-in (the hub has no vllm)."""
+    fake = types.ModuleType('vllm.utils.async_utils')
+
+    def make_async(fn, executor=None):
+        async def run(*a, **k):
+            return fn(*a, **k)
+        return run
+    fake.make_async = make_async
+    return mock.patch.dict(sys.modules, {'vllm': types.ModuleType('vllm'), 'vllm.utils': types.ModuleType('vllm.utils'),
+                                         'vllm.utils.async_utils': fake})
+
+
+class Verification(unittest.TestCase):
+    """fix 3: the settable rate, the off-path verifier (spliced ids returned at once), disable on the first mismatch."""
+
+    def test_settings(self):
+        self.assertEqual(ii.verify_settings({}), (16, False))
+        self.assertEqual(ii.verify_settings({ii.VERIFY_EVERY_ENV: '1', ii.VERIFY_ASYNC_ENV: '1'}), (1, True))
+        self.assertEqual(ii.verify_settings({ii.VERIFY_EVERY_ENV: '0'}), (0, False))
+        for bad in ({ii.VERIFY_EVERY_ENV: 'x'}, {ii.VERIFY_EVERY_ENV: '-2'}, {ii.VERIFY_ASYNC_ENV: '2'}):
+            with self.assertRaises(ValueError):
+                ii.verify_settings(bad)
+        ing = ii.Ingress(FakeRenderer(FakeTok()), {ii.VERIFY_EVERY_ENV: '1', ii.VERIFY_ASYNC_ENV: '1'})
+        self.assertEqual((ing.splicer.verify_every, ing.splicer.verify_async), (1, True))
+
+    def test_verify_all_off_path_matches_and_never_calls_stock_inline(self):
+        tok = FakeTok()
+        sp = ii.Splicer(tok, verify_every=1, verify_async=True)
+        inline = []
+        for seed in range(3):
+            for t in conversation(30 + seed, 5, unicode=seed == 1):
+                got = sp.tokenize(t, dict(KW), lambda: inline.append(1) or tok(t, **KW)['input_ids'])
+                self.assertEqual(got, tok.encode(t))
+        self.assertTrue(sp.drain())
+        snap = sp.snapshot()
+        self.assertEqual(len(inline), 3, 'only the three first turns take the stock call inline')
+        self.assertEqual((snap['counts']['spliced'], snap['counts']['verify_submitted'], snap['counts']['verified']),
+                         (12, 12, 12))
+        self.assertEqual((snap['verify']['mismatches'], snap['disabled'], snap['verify']['pending']), ([], None, 0))
+        self.assertNotIn('verify_mismatch', snap['counts'])
+
+    def test_first_mismatch_disables_and_logs_index_and_position_only(self):
+        tok = FakeTok()
+        sp = ii.Splicer(tok, verify_every=1, verify_async=True)
+        texts = list(conversation(41, 4))
+        sp.tokenize(texts[0], dict(KW), lambda: tok(texts[0], **KW)['input_ids'])
+        real_submit = sp._submit
+
+        def wrong_splice(conversation, text, kwargs, packed):     # as if the splice had produced a wrong id at 5
+            bad = array.array('I', packed)
+            bad[5] = 7
+            return real_submit(conversation, text, kwargs, bad)
+        sp._submit = wrong_splice
+        with self.assertLogs('vllm.flash_s5.ingress', level='WARNING') as logs:
+            got = sp.tokenize(texts[1], dict(KW), lambda: tok(texts[1], **KW)['input_ids'])
+            self.assertEqual(got, tok.encode(texts[1]), 'the spliced ids are returned at once (off-path verify)')
+            self.assertTrue(sp.drain())
+        self.assertEqual(sp.disabled, 'verify-mismatch')
+        snap = sp.snapshot()
+        self.assertEqual((snap['counts']['verify_mismatch'], snap['verify']['mismatches'], snap['entries']), (1, [[0, 5]], 0))
+        self.assertEqual(logs.output, ['WARNING:vllm.flash_s5.ingress:flash-s5 ingress-verify-mismatch conversation=0 '
+                                       'position=5'])
+        calls = []
+        sp.tokenize(texts[2], dict(KW), lambda: calls.append(1) or tok(texts[2], **KW)['input_ids'])
+        self.assertEqual((calls, sp.fallbacks['verify-mismatch']), ([1], 1), 'disabled: the stock call from now on')
+
+    def test_queue_bound_counts_unverified(self):
+        sp = ii.Splicer(FakeTok(), verify_every=1, verify_async=True)
+        with mock.patch.object(ii, 'VERIFY_QUEUE', 0):
+            sp._submit(0, 'x', dict(KW), array.array('I'))
+        self.assertEqual((sp.counts['verify_dropped'], sp.counts['verify_submitted']), (1, 0))
+
+    def test_async_wrapper_times_submit_to_done_by_class(self):
+        tok = FakeTok()
+        r = FakeRenderer(tok)
+        with fake_async():
+            ing = ii.install(types.SimpleNamespace(renderer=r), {ii.ENV: '1'})
+        t = next(conversation(2, 1))
+        asyncio.run(r._tokenize_prompt_async({'prompt': t}, Params()))
+        ing.binding.observe('release_auto_arm', {'released': True})
+        asyncio.run(r._tokenize_prompt_async({'prompt': t}, Params()))
+        timing = ing.snapshot()['timing']
+        for key in ('async_stock_n', 'run_stock_n', 'async_n3_n', 'run_n3_n'):
+            self.assertEqual(timing[key], 1, key)
+        self.assertGreaterEqual(timing['async_n3_us'], timing['run_n3_us'])
+
+
+class CounterWindows(unittest.TestCase):
+    """fix 4: the id window around the first divergence (first appends only) and the reply-aligned match."""
+
+    def turn(self, c, salt, prompt, output=()):
+        r = Req(salt, prompt)
+        c.record(r)
+        r.extend(output)
+        return r
+
+    def test_reply_aligned_classes_and_offsets(self):
+        c = ii.PrefixCounter(4)
+        base, reply = list(range(10, 50)), [70, 71, 72, 2]
+        self.turn(c, 'a', base, reply)
+        self.turn(c, 'a', base + reply + [5])                        # whole reply at offset 0
+        self.turn(c, 'b', base, reply)
+        self.turn(c, 'b', base[:-4] + reply + [5])                  # think block dropped: the reply at offset -4
+        self.turn(c, 'c', base, reply)
+        self.turn(c, 'c', base + reply[:3] + [9])                   # all but the stop token
+        self.turn(c, 'd', base, reply)
+        self.turn(c, 'd', base + [70, 99])                          # into the reply
+        self.turn(c, 'e', base, reply)
+        self.turn(c, 'e', base + [1, 2, 3])                         # the reply re-tokenised away
+        snap = c.snapshot()
+        self.assertEqual(snap['reply_aligned'], {'whole': 2, 'but_last': 1, 'into': 1, 'none': 1})
+        self.assertEqual(snap['reply_offset'], {'0': 3, '-4': 1})
+        self.assertEqual((snap['sums']['reply_len'], snap['sums']['reply_run']), (20, 4 + 4 + 3 + 1))
+
+    def test_divergence_windows_first_appends_only(self):
+        c = ii.PrefixCounter(4)
+        base, reply = list(range(10, 50)), [70, 71, 72, 2]
+        for i in range(ii.WINDOW_APPENDS + 3):
+            salt = 's%d' % i
+            self.turn(c, salt, base, reply)
+            self.turn(c, salt, base[:-4] + [99, 98])
+        windows = c.snapshot()['divergence_windows']
+        self.assertEqual(len(windows), ii.WINDOW_APPENDS)
+        w = windows[0]
+        self.assertEqual((w['k'], w['d'], w['exact'], w['prev_prompt'], w['prev_output']), (36, -4, True, 40, 4))
+        self.assertEqual(w['start'], 36 - ii.WINDOW_HALF)
+        self.assertEqual(w['new'], base[30:36] + [99, 98])
+        self.assertEqual(w['old'], [None, None] + base[32:40] + reply[:2], 'ids outside the held 2-block tail: None')
+
+    def test_deep_divergence_window_marks_unheld_ids(self):
+        c = ii.PrefixCounter(4)
+        base = list(range(10, 50))
+        self.turn(c, 'a', base, [1])
+        self.turn(c, 'a', [0] + base)
+        w = c.snapshot()['divergence_windows'][0]
+        self.assertEqual((w['k'], w['exact']), (0, False))
+        self.assertEqual(w['old'], [None] * ii.WINDOW_HALF)
+
+
+class AdmittedStamps(unittest.TestCase):
+    """fix 3: request_admitted carries the API arrival stamp and the admission wall clock (log-only)."""
+
+    def test_fields_reach_the_gap_row(self):
+        import executor_hooks as eh
+        seen = []
+        engine = types.SimpleNamespace(_flash_s5_driver=types.SimpleNamespace(
+            _gap_event=lambda event, **fields: seen.append((event, fields))))
+        eh.engine_request_admitted(engine, types.SimpleNamespace(request_id='r', num_prompt_tokens=3, arrival_time=12.5))
+        (event, fields), = seen
+        self.assertEqual((event, fields['arrival_s'], fields['prompt_tokens']), ('request_admitted', 12.5, 3))
+        self.assertEqual(type(fields['admit_wall_s']), float)
+        seen.clear()
+        eh.engine_request_admitted(engine, types.SimpleNamespace(request_id='r', num_prompt_tokens=3))
+        self.assertIsNone(seen[0][1]['arrival_s'])
 
 
 if __name__ == '__main__':

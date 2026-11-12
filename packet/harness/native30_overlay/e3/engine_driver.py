@@ -1030,6 +1030,10 @@ class NativeProgress:
                     row[key] = value
                 elif type(value) is str:
                     row[key] = value[:80]
+            for key in ('arrival_s', 'admit_wall_s'):     # night-pack fix 3: wall-clock stamps of request_admitted
+                value = fields.get(key)
+                if type(value) is float:
+                    row[key] = round(value, 6)
             if not emit_receipt_lines(['flash-s5 native-gap ' + json.dumps(row, sort_keys=True,
                                                 separators=(',', ':'))], _progress_logger()):
                 self.gap_errors += 1
@@ -4245,7 +4249,8 @@ class NativeSegmentDriver:
             self._yield_history[-1]['window'] = dict(appends=w['admitted'], end=end)
             self.controller.yield_window_closed(w['admitted'], end)
             self.controller.yield_window_receipt('closed', seq=y['seq'], appends=w['admitted'], end=end,
-                                                 reason=reason, route_generation=self.route_generation)
+                                                 not_served=w.get('not_served'), reason=reason,
+                                                 route_generation=self.route_generation)
 
     def _yield_stop(self, kind, cause=None):
         y = self._yield
@@ -4365,9 +4370,18 @@ class NativeSegmentDriver:
         w['next'] = None
         try:
             c = self.controller
-            if y.get('append_aborted') or y.get('handback_skipped') or y.get('handback_expired') \
-                    or not y.get('handback_served'):
-                w['end'] = 'not-served'
+            w['offer_path'] = 'o3' if self._split_ready else 'full'   # night-pack fix 5: the handback's path (receipt)
+            # night-pack fix 5: the end stays 'not-served' (as built); why is split for the closed receipt and status.
+            # On the FULL path a handback whose first token is not yet sampled when the FULL window ends is 'unsampled'.
+            # An append that left the scheduler unserved (aborted on FULL, outside the 'append' phase) is 'abort'.
+            requests = getattr(self.scheduler, 'requests', None)
+            left = type(requests) is dict and requests.get(y['append'].request_id) is not y['append']
+            why = ('abort' if y.get('append_aborted') else 'skip' if y.get('handback_skipped')
+                   else 'expiry' if y.get('handback_expired') else None if y.get('handback_served')
+                   else 'abort' if left else 'unsampled')
+            if why is not None:
+                w['end'], w['not_served'] = 'not-served', why
+                c.yield_window_not_served(why)
                 return None
             if w['appends'] >= c.yield_window_max:
                 w['end'] = 'bound'
@@ -4414,8 +4428,10 @@ class NativeSegmentDriver:
             held = False
         if not held:
             w['end'] = 'next-left'
+            self.controller.yield_window_counts['next_left'] += 1      # night-pack fix 5: a staged candidate left
             self._yield_journal(y, 'window_next_left', route_generation=self.route_generation)
             return False
+        w['path'] = w.get('offer_path')                                # night-pack fix 5: the path it begins after
         y['append'] = candidate
         y['append_transactions'] = []
         y['append_aborted'] = False
@@ -4440,11 +4456,12 @@ class NativeSegmentDriver:
         c = self.controller
         c.yield_window_counts['appends'] += 1
         gap = None
+        path = w.get('path') if w['admitted'] >= 2 else None     # night-pack fix 5: o3 | full (None: the first append)
         if w['admitted'] >= 2 and type(w.get('handback_ns')) is int:
             gap = round((self._journal[-1]['observed_ns'] - w['handback_ns']) / 1e6, 3)
-            c.yield_window_gap(gap)
+            c.yield_window_gap(gap, path)
         c.yield_window_receipt('append', seq=y['seq'], index=w['admitted'], gap_ms=gap, tail_handback=w['tail'],
-                               route_generation=self.route_generation)
+                               path=path, route_generation=self.route_generation)
 
     def _maybe_yield(self):
         """Offer the yield; a pending one moves to closing once its drain is over."""

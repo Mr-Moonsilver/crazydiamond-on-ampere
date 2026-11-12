@@ -8,7 +8,10 @@ inside the common character prefix, plus the tokenisation of the rest of the new
 no join, other encode arguments, offsets requested, a result above the truncation length, a verify mismatch) takes the
 stock call unchanged. Correctness rests on the text comparison only; the cache key (a hash of the opening text) only
 finds the candidate. Every VERIFY_EVERY-th splice also runs the stock call and uses its ids (a mismatch drops the
-entry and is counted).
+entry and is counted). The verify rate is settable (FLASH_S5_INGRESS_VERIFY_EVERY, default 16; 1 = every splice, 0 =
+none); with FLASH_S5_INGRESS_VERIFY_ASYNC=1 the spliced ids are returned at once and the stock tokenisation runs on one
+separate verifier thread (the latency reading survives), and the first mismatch disables the splice for the launch
+(disabled='verify-mismatch'; one log line with the conversation index and the first differing position only).
 
 Bound to the engine selection: the splice runs only while the engine's auto-arm is released (the native engine arms).
 The API process mirrors the engine's own rule (native_auto_arm.manual_control) from the controls it forwards: a
@@ -25,12 +28,17 @@ inside the first differing block. Never consulted by any scheduling decision.
 import array
 import collections
 import hashlib
+import logging
 import os
 import threading
 import time
 
 ENV = 'FLASH_S5_INGRESS_INCREMENTAL'
 VERIFY_EVERY = 16
+VERIFY_EVERY_ENV = 'FLASH_S5_INGRESS_VERIFY_EVERY'     # night-pack fix 3: settable; unset = VERIFY_EVERY
+VERIFY_ASYNC_ENV = 'FLASH_S5_INGRESS_VERIFY_ASYNC'     # night-pack fix 3: 1 = off-path verifier thread; unset = 0
+VERIFY_QUEUE = 64                                       # pending off-path verifications; past it a splice goes unverified
+MISMATCH_KEEP = 8
 MAX_ENTRIES = 16
 MAX_BYTES = 128 << 20
 KEY_CHARS = 4096
@@ -38,13 +46,42 @@ KEY_JOINS = 2               # the key text ends at the second join end (the syst
 PER_KEY = 4                 # candidates per key: conversations sharing a system prompt do not thrash
 STOCK_KWARGS = frozenset(('truncation', 'max_length', 'add_special_tokens'))
 SESSION_NO_CHANGE = frozenset(('resume',))      # stock resume_generation: no native command, no lease
-COUNTER_ENTRIES = 12
+COUNTER_ENTRIES = 32           # night-pack fix 4 (was 12: an evicted conversation's next append counted as 'first')
+EVICTED_KEEP = 1024
+WINDOW_APPENDS = 8             # night-pack fix 4: the id window around the first divergence, first appends only
+WINDOW_HALF = 6
+REPLY_OFFSETS = 16             # night-pack fix 4: reply-aligned match, offsets from the previous prompt end searched
 MS_BUCKETS = (1, 2, 5, 10, 20, 50, 100, 200, 500)
 
 
 def enabled(env=None):
     env = os.environ if env is None else env
     return env.get(ENV, '0') == '1'
+
+
+def verify_settings(env=None):
+    """(every, async) from the launch env; strict: a malformed value raises (the install then reports install-error)."""
+    env = os.environ if env is None else env
+    every = env.get(VERIFY_EVERY_ENV)
+    every = VERIFY_EVERY if every is None else int(every)
+    if every < 0:
+        raise ValueError(VERIFY_EVERY_ENV)
+    mode = env.get(VERIFY_ASYNC_ENV, '0')
+    if mode not in ('0', '1'):
+        raise ValueError(VERIFY_ASYNC_ENV)
+    return every, mode == '1'
+
+
+def _logger():
+    return logging.getLogger('vllm.flash_s5.ingress')
+
+
+def _first_difference(a, b):
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n
 
 
 def _bucket(ms):
@@ -57,9 +94,18 @@ def _bucket(ms):
 class Splicer:
     """Per-conversation (text, ids, special-token ends) cache and the exact splice. Thread-safe."""
 
-    def __init__(self, tokenizer, *, max_entries=MAX_ENTRIES, max_bytes=MAX_BYTES, verify_every=VERIFY_EVERY):
+    def __init__(self, tokenizer, *, max_entries=MAX_ENTRIES, max_bytes=MAX_BYTES, verify_every=VERIFY_EVERY,
+                 verify_async=False):
         self.tokenizer = tokenizer
         self.max_entries, self.max_bytes, self.verify_every = max_entries, max_bytes, verify_every
+        self.verify_async = bool(verify_async)
+        self.vcounts = collections.Counter()      # written by the verifier thread only
+        self.verify_ms = collections.Counter()
+        self.mismatches = []                       # (conversation index, first differing position), at most MISMATCH_KEEP
+        self.conversations = {}                    # key -> conversation index (first seen order), bounded
+        self.vqueue = collections.deque()
+        self.vcond = threading.Condition()
+        self.vthread = None
         self.lock = threading.Lock()
         self.cache = collections.OrderedDict()     # entry id -> (key, text, packed ids, join ends); LRU order
         self.by_key = {}                            # key -> [entry ids], most recent last
@@ -196,6 +242,10 @@ class Splicer:
             self.sums['ids_total'] += len(ids)
             self.sums['splice_us'] += int(ms * 1000)
             self.splice_ms[_bucket(ms)] += 1
+            if self.verify_every and self.counts['spliced'] % self.verify_every == 0 and self.verify_async:
+                self._store(key, text, ids, (cut, k, prefix_ends), packed, replace=replace)
+                self._submit(self._conversation(key), text, kwargs, packed)
+                return ids
             if self.verify_every and self.counts['spliced'] % self.verify_every == 0:
                 stock = list(full())
                 self.counts['verified'] += 1
@@ -215,6 +265,75 @@ class Splicer:
         self.full_ms[_bucket(ms)] += 1
         self._store(key, text, ids, None)
         return ids
+
+    # -- off-path verification (night-pack fix 3) -------------------------------------------------------------------
+    def _conversation(self, key):
+        with self.lock:
+            index = self.conversations.get(key)
+            if index is None:
+                if len(self.conversations) >= 4096:
+                    return -1
+                index = self.conversations[key] = len(self.conversations)
+            return index
+
+    def _submit(self, conversation, text, kwargs, packed):
+        """Queue one stock tokenisation to compare with the spliced ids already returned; never blocks the caller."""
+        try:
+            with self.vcond:
+                if len(self.vqueue) >= VERIFY_QUEUE:
+                    self.counts['verify_dropped'] += 1
+                    return
+                self.vqueue.append((conversation, text, dict(kwargs), packed, time.perf_counter()))
+                self.counts['verify_submitted'] += 1
+                if self.vthread is None:
+                    self.vthread = threading.Thread(target=self._verifier, name='flash-s5-ingress-verify', daemon=True)
+                    self.vthread.start()
+                self.vcond.notify()
+        except Exception as exc:
+            self.counts['verify_submit_error'] += 1
+            _ = exc
+
+    def _verifier(self):
+        while True:
+            with self.vcond:
+                while not self.vqueue:
+                    self.vcond.wait()
+                job = self.vqueue.popleft()
+            self.verify_one(*job)
+
+    def verify_one(self, conversation, text, kwargs, packed, submitted):
+        """The stock call on the verifier thread; the first mismatch disables the splice (counted, one line)."""
+        try:
+            t0 = time.perf_counter()
+            stock = self.tokenizer(text, **kwargs)['input_ids']
+            ms = (time.perf_counter() - t0) * 1000
+            self.vcounts['verified'] += 1
+            self.vcounts['verify_us'] += int(ms * 1000)
+            self.vcounts['verify_lag_us'] += int((t0 - submitted) * 1e6)
+            self.verify_ms[_bucket(ms)] += 1
+            if array.array('I', stock) != packed:
+                pos = _first_difference(stock, packed)
+                self.vcounts['verify_mismatch'] += 1
+                if len(self.mismatches) < MISMATCH_KEEP:
+                    self.mismatches.append((conversation, pos))
+                if self.disabled is None:
+                    self.disabled = 'verify-mismatch'
+                    self.clear()
+                _logger().warning('flash-s5 ingress-verify-mismatch conversation=%d position=%d', conversation, pos)
+        except Exception as exc:
+            self.vcounts['verify_error'] += 1
+            _ = exc
+
+    def drain(self, timeout=5.0):
+        """Tests and the snapshot reader: wait until the verifier queue is empty (bounded)."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            with self.vcond:
+                if not self.vqueue and self.vcounts['verified'] + self.vcounts['verify_error'] >= \
+                        self.counts['verify_submitted']:
+                    return True
+            time.sleep(0.002)
+        return False
 
     def _safe_cut(self, entry, text):
         try:
@@ -285,10 +404,21 @@ class Splicer:
     def snapshot(self):
         with self.lock:
             entries, size = len(self.cache), self.bytes
+        with self.vcond:
+            pending = len(self.vqueue)
+        counts = dict(self.counts)
+        for name in ('verified', 'verify_mismatch'):        # inline and off-path verification add up
+            if self.vcounts.get(name):
+                counts[name] = counts.get(name, 0) + self.vcounts[name]
         return dict(schema='s5-ingress-incremental/1', disabled=self.disabled, joins=sorted(self.joins),
                     entries=entries, bytes=size, max_entries=self.max_entries, max_bytes=self.max_bytes,
-                    verify_every=self.verify_every, counts=dict(self.counts), fallbacks=dict(self.fallbacks),
-                    sums=dict(self.sums), splice_ms=dict(self.splice_ms), full_ms=dict(self.full_ms))
+                    verify_every=self.verify_every, verify_async=self.verify_async, counts=counts,
+                    fallbacks=dict(self.fallbacks), sums=dict(self.sums), splice_ms=dict(self.splice_ms),
+                    full_ms=dict(self.full_ms),
+                    verify=dict(pending=pending, verified=self.vcounts.get('verified', 0),
+                                errors=self.vcounts.get('verify_error', 0), verify_us=self.vcounts.get('verify_us', 0),
+                                lag_us=self.vcounts.get('verify_lag_us', 0), ms=dict(self.verify_ms),
+                                mismatches=[list(m) for m in self.mismatches]))
 
 
 class Binding:
@@ -329,15 +459,44 @@ class Binding:
 class Ingress:
     """The installed API-process state: one renderer wrapped, its splicer and its binding."""
 
-    def __init__(self, renderer):
+    def __init__(self, renderer, env=None):
+        every, verify_async = verify_settings(env)
         self.renderer = renderer
-        self.splicer = Splicer(renderer.get_tokenizer())
+        self.splicer = Splicer(renderer.get_tokenizer(), verify_every=every, verify_async=verify_async)
         self.binding = Binding(on_select=self.splicer.clear)
         self.counts = collections.Counter()
+        self.timing = collections.Counter()      # night-pack fix 3: submit -> done around the async wrapper, by class
         self.original = renderer._tokenize_prompt
 
     def tokenize_prompt(self, prompt, params):
-        """The renderer's _tokenize_prompt: the stock call unless selected and the prompt is a plain text prompt."""
+        """The renderer's _tokenize_prompt, timed on the executor thread (night-pack fix 3)."""
+        t0 = time.perf_counter()
+        selected = self.binding.selected
+        try:
+            return self._tokenize_prompt(prompt, params)
+        finally:
+            self._time('run', 'n3' if selected else 'stock', t0)
+
+    def _time(self, what, cls, t0):
+        try:
+            self.timing['%s_%s_n' % (what, cls)] += 1
+            self.timing['%s_%s_us' % (what, cls)] += int((time.perf_counter() - t0) * 1e6)
+        except Exception:
+            pass
+
+    def async_wrapper(self, inner):
+        """submit -> done of one async tokenisation (the executor queue, the run and the loop pickup), by class."""
+        async def tokenize_prompt_async(*args, **kwargs):
+            t0 = time.perf_counter()
+            selected = self.binding.selected
+            try:
+                return await inner(*args, **kwargs)
+            finally:
+                self._time('async', 'n3' if selected else 'stock', t0)
+        return tokenize_prompt_async
+
+    def _tokenize_prompt(self, prompt, params):
+        """The stock call unless selected and the prompt is a plain text prompt."""
         if not self.binding.selected:
             return self.original(prompt, params)
         r = self.renderer
@@ -361,7 +520,8 @@ class Ingress:
         return r._build_tokens_prompt(ids, prompt)
 
     def snapshot(self):
-        return dict(self.splicer.snapshot(), process='api', binding=self.binding.snapshot(), wrapper=dict(self.counts))
+        return dict(self.splicer.snapshot(), process='api', binding=self.binding.snapshot(), wrapper=dict(self.counts),
+                    timing=dict(self.timing))
 
 
 def install(engine_client, env=None):
@@ -372,10 +532,21 @@ def install(engine_client, env=None):
     if renderer is None or getattr(renderer, '_flash_s5_ingress', None) is not None:
         return getattr(renderer, '_flash_s5_ingress', None)
     from vllm.utils.async_utils import make_async
-    ingress = Ingress(renderer)
-    renderer._tokenize_prompt = ingress.tokenize_prompt
-    renderer._tokenize_prompt_async = make_async(ingress.tokenize_prompt, executor=renderer._executor)
-    renderer._flash_s5_ingress = ingress
+    ingress = Ingress(renderer, env)
+    saved = {name: renderer.__dict__[name] for name in ('_tokenize_prompt', '_tokenize_prompt_async')
+             if name in getattr(renderer, '__dict__', {})}
+    try:
+        renderer._tokenize_prompt = ingress.tokenize_prompt
+        renderer._tokenize_prompt_async = ingress.async_wrapper(
+            make_async(ingress.tokenize_prompt, executor=renderer._executor))
+        renderer._flash_s5_ingress = ingress
+    except BaseException:           # night-pack fix 2: never leave a half-wrapped renderer
+        for name in ('_tokenize_prompt', '_tokenize_prompt_async', '_flash_s5_ingress'):
+            if name in saved:
+                setattr(renderer, name, saved[name])
+            elif name in getattr(renderer, '__dict__', {}):
+                delattr(renderer, name)
+        raise
     return ingress
 
 
@@ -394,9 +565,13 @@ class PrefixCounter:
     def __init__(self, unit, max_entries=COUNTER_ENTRIES):
         self.unit, self.max_entries = unit, max_entries
         self.prev = collections.OrderedDict()
+        self.evicted = collections.OrderedDict()   # salts evicted from prev (bounded): their next append is not 'first'
         self.counts = collections.Counter()
         self.delta = collections.Counter()
         self.sums = collections.Counter()
+        self.reply = collections.Counter()          # night-pack fix 4: reply-aligned match class
+        self.reply_offset = collections.Counter()   # offset of the best reply alignment from the previous prompt end
+        self.windows = []                           # the id window around the first divergence, first WINDOW_APPENDS
 
     def lcp(self, new_ids, new_hashes, prev):
         """(common prefix length, exact) against prev = (prompt len, prompt tail, outputs, hashes)."""
@@ -436,10 +611,16 @@ class PrefixCounter:
             self.prev[salt] = (p_new, list(request.prompt_token_ids[max(0, p_new - keep):p_new]),
                                request.output_token_ids, request.block_hashes)
             while len(self.prev) > self.max_entries:
-                self.prev.popitem(last=False)
+                gone, _ = self.prev.popitem(last=False)
                 self.counts['evicted'] += 1
+                self.evicted[gone] = True
+                while len(self.evicted) > EVICTED_KEEP:
+                    self.evicted.popitem(last=False)
             if prev is None:
-                self.counts['first'] += 1
+                if self.evicted.pop(salt, None):
+                    self.counts['after_eviction'] += 1
+                else:
+                    self.counts['first'] += 1
                 return
             p, t = prev[0], prev[0] + len(prev[2])
             k, exact = self.lcp(request.prompt_token_ids, request.block_hashes, prev)
@@ -461,10 +642,57 @@ class PrefixCounter:
             self.sums['prev_prompt'] += p
             self.sums['prev_output'] += t - p
             self.sums['new_prompt'] += len(request.prompt_token_ids)
+            self._reply_aligned(request.prompt_token_ids, p, prev[2])
+            if len(self.windows) < WINDOW_APPENDS:
+                self.windows.append(self._window(request.prompt_token_ids, k, exact, prev))
         except Exception:
             self.counts['errors'] += 1
 
+    def _reply_aligned(self, new_ids, p, outputs):
+        """night-pack fix 4: the previous reply's ids searched in the new prompt at offsets -R..+R from the previous
+        prompt end; the longest leading run (ties: the smallest |offset|) is the reply-aligned match."""
+        n_out = len(outputs)
+        if not n_out:
+            self.reply['no-output'] += 1
+            return
+        best, best_o = 0, None
+        for o in sorted(range(-REPLY_OFFSETS, REPLY_OFFSETS + 1), key=abs):
+            a = p + o
+            if a < 0 or a >= len(new_ids):
+                continue
+            run, limit = 0, min(n_out, len(new_ids) - a)
+            while run < limit and new_ids[a + run] == outputs[run]:
+                run += 1
+            if run > best:
+                best, best_o = run, o
+                if run == n_out:
+                    break
+        name = ('whole' if best == n_out else 'but_last' if best == n_out - 1 else 'into' if best else 'none')
+        self.reply[name] += 1
+        if best_o is not None:
+            self.reply_offset[str(best_o)] += 1
+        self.sums['reply_run'] += best
+        self.sums['reply_len'] += n_out
+
+    def _window(self, new_ids, k, exact, prev):
+        """night-pack fix 4: ids around the first divergence k (new prompt and previous prompt + reply, where held)."""
+        p, tail, outputs = prev[0], prev[1], prev[2]
+        held = p - len(tail)
+        lo, hi = max(0, k - WINDOW_HALF), k + WINDOW_HALF
+        old = []
+        for i in range(lo, hi):
+            if i < held:
+                old.append(None)
+            elif i < p:
+                old.append(tail[i - held])
+            elif i - p < len(outputs):
+                old.append(outputs[i - p])
+        return dict(k=k, d=k - p, exact=exact, prev_prompt=p, prev_output=len(outputs), start=lo,
+                    new=list(new_ids[lo:hi]), old=old)
+
     def snapshot(self):
         return dict(schema='s5-ingress-prefix/1', unit=self.unit, entries=len(self.prev), counts=dict(self.counts),
-                    delta_vs_prev_prompt_end=dict(self.delta), sums=dict(self.sums),
+                    delta_vs_prev_prompt_end=dict(self.delta), sums=dict(self.sums), max_entries=self.max_entries,
+                    reply_aligned=dict(self.reply), reply_offset=dict(self.reply_offset),
+                    divergence_windows=[dict(w) for w in self.windows],
                     basis='engine-lifetime monotonic counts while the auto-arm is released; subtract matching snapshots')

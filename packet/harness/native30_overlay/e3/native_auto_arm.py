@@ -1145,13 +1145,31 @@ class AutoArmPolicy:
                 self.yrs_counts['exceeded'] += 1
                 self._yrs_bump('retries_until_armed', 'exceeded')
             ms = self._yrs_ms()
+            dec, out, running = self._yrs_append_state()
             from engine_driver import _progress_logger
             _progress_logger().info('flash-s5 yield-reentry proof-miss stage=%s field=%s rank=%s got=%s want=%s retry=%d bound=%s '
-                                    'ends=%d elapsed_ms=%s settle=%d', stage, field, rank, got, want, self.reentry_refusals,
-                                    self._yrs_bound(), int(bool(ends)), 'na' if ms is None else '%.1f' % ms,
-                                    int(bool(self.yield_settle)))
+                                    'ends=%d elapsed_ms=%s settle=%d append_dec=%s append_out=%s running=%s', stage, field,
+                                    rank, got, want, self.reentry_refusals, self._yrs_bound(), int(bool(ends)),
+                                    'na' if ms is None else '%.1f' % ms, int(bool(self.yield_settle)), dec, out, running)
         except Exception:
             self.yrs_counts['errors'] += 1
+
+    def _yrs_append_state(self):
+        """night-pack fix 6, observational: the returned append's state at a refusal: decode scheduled (1/0), output
+        tokens, and the scheduler's running count ('na' when unread). Never raises."""
+        dec = out = running = 'na'
+        try:
+            running = len(self.scheduler.running)
+        except Exception:
+            pass
+        try:
+            append = (getattr(self.driver, '_yield', None) or {}).get('append')
+            if append is not None:
+                out = int(getattr(append, 'num_output_tokens', 0))
+                dec = int(bool(self._decode_scheduled(append)))
+        except Exception:
+            pass
+        return dec, out, running
 
     def _yrs_barrier_pass(self):
         try:

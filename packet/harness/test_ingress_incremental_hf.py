@@ -151,7 +151,8 @@ class Differential(unittest.TestCase):
         self.assertEqual(r.stock, 8)
 
     def test_reply_rerender_drops_the_think_block(self):
-        """What the reuse counter will see: the new prompt diverges 4 tokens before the previous prompt's end."""
+        """Under this hub-written template the new prompt diverges 4 tokens before the previous prompt's end. The engine's
+        own template keeps the empty think block in history (test_ingress_real_tokenizer, night-pack fix 1)."""
         tok = tokenizer()
         texts = list(conversation(3, 2, unicode=False))
         a, b = (tok(t, **KW)['input_ids'] for t in texts)

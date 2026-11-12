@@ -1791,8 +1791,11 @@ def engine_request_admitted(engine, request):
         driver = getattr(engine, '_flash_s5_driver', None)
         emit = getattr(driver, '_gap_event', None)
         if callable(emit):
+            # night-pack fix 3: the API process's arrival stamp (wall clock) and the admission's wall clock beside it,
+            # so arrival -> admit reads in one clock domain and splits the sent -> admit constant (log-only)
             emit('request_admitted', request_uid=request.request_id,
-                 prompt_tokens=request.num_prompt_tokens)
+                 prompt_tokens=request.num_prompt_tokens, arrival_s=getattr(request, 'arrival_time', None),
+                 admit_wall_s=time.time())
     except Exception:
         pass
     try:                                # ingress prefix counter: log-only, engine arms only (the driver decides)

@@ -197,7 +197,9 @@ class Diagnostic(unittest.TestCase):
         self.assertEqual(len(misses), n)
         self.assertIn('stage=barrier field=prefill-requests', misses[0])
         self.assertIn('got=1 want=0 retry=1 bound=4 ends=0', misses[0])
-        self.assertRegex(misses[0], r'elapsed_ms=\d+\.\d settle=0$')
+        # night-pack fix 6: the returned append's state at each refusal (decode scheduled, output tokens, running)
+        self.assertRegex(misses[0], r'elapsed_ms=\d+\.\d settle=0 append_dec=0 append_out=\d+ running=\d+$')
+        self.assertTrue(all(' append_dec=0 ' in m for m in misses), misses)
         for text in misses + [repr(block)]:
             self.assertNotIn(ay.APPEND_UID, text)
             self.assertNotIn(ay.BULK_UID, text)

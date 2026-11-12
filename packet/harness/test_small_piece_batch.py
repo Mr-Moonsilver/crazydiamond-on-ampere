@@ -534,6 +534,54 @@ class Connected(Base):
                 self.fail('a wrong prediction was applied')
 
 
+class StopBetweenSendAndApply(Base):
+    """night-pack fix 7 (review-reentry-batch): a stop of the kinds the junction-yield path raises on a live chunk (the
+    profile 'abort' of _yield_stop and a stock 'pause'; 'cancel' as the control) arriving after the batch was sent and
+    BOTH stage-0 peers ran command 1, before the engine applied the batch reply. The batch reply is then applied under
+    the stop: command 0 and command 1 are each applied once (no 'small-piece-batch-diverged'), the stop closes with
+    no worker error and no live chunk, and the ranks' accepted order matches the unbatched commands."""
+
+    drive_until_batch, peek = Connected.drive_until_batch, Connected.peek
+
+    def run_stop(self, kind):
+        on = self.batched()
+        self.drive_until_batch(on)
+        batch = self.peek(on, 0)
+        self.ring_override[0] = self.ring_override[1] = lambda: False
+        on.step(0)
+        on.step(1)                                  # both peers run command 0 and command 1
+        for rank in (0, 1):
+            self.assertIn(batch.commands[1].op_seq, on.worker(rank).dispatcher.accepted, rank)
+        self.ring_override.clear()
+        driver = on.driver
+        driver.stop(kind)                           # before the batch reply is read and applied
+        on.settle()
+        for _ in range(400):
+            if not driver.live:
+                break
+            on.complete_everything()
+            on.pump()
+            driver.pump_stop()
+        self.assertIsNone(driver.error)
+        self.assertEqual(on.worker_errors, [])
+        self.assertFalse(driver.live)
+        status = driver.small_batch_status()
+        self.assertEqual(status['failures'], 0)
+        self.assertEqual(status['worker_stop'].get('complete', 0), 2, status['worker_stop'])
+        self.assertEqual(status['second_applied'], 1, status)
+        self.assertEqual(status['partial'], 0)
+        return on
+
+    def test_abort(self):
+        self.run_stop('abort')
+
+    def test_pause(self):
+        self.run_stop('pause')
+
+    def test_cancel(self):
+        self.run_stop('cancel')
+
+
 class Mutants(Base):
     """Each guard is load-bearing: the named mutant fails the named test."""
 
