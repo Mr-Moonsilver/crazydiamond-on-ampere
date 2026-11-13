@@ -589,6 +589,34 @@ class SamplerGate(unittest.TestCase):
             side.pop(proc, 'execute_model', {ds.WIRE_KEY: [1, 0, 7]})   # the bit only acts on sample_tokens
             self.assertFalse(side.fast.gated)
 
+    def test_periodic_lines_carry_the_rank_and_cumulative_counts(self):
+        """Compose line (13 Nov): a cumulative sample-fast line every log_every sampler steps, fast or stock, with the
+        rank, beside the power-of-two lines, so the cx reader takes per-arm deltas."""
+        log = Log()
+        sampler = Sampler([20] * 8)
+        fast = ds.FastSampler(sampler, torch=FakeTorch(), top_p_sample=lambda *a: None, sample=lambda *a: None,
+                              logger=log, rank=2, log_every=4)
+        fast.sample_top = lambda logits, k, top_p: 'tokens'
+        args = (Logits(8, 248320), 'e', list(range(8)), 'p', 'k', 'q', True)
+        rows = lambda: [json.loads(x[len(ds.LINE_SAMPLE):]) for x in log.lines]
+        for _ in range(3):                                   # the stock arm: gate off
+            sampler._sample_random(*args)
+        self.assertEqual(log.lines, [])
+        sampler._sample_random(*args)                        # step 4: periodic
+        self.assertEqual([(r['rank'], r['counters']['stock'], r['counters']['stock_not_gated'], r['counters']['fast'])
+                          for r in rows()], [(2, 4, 4, 0)])
+        fast.gated = True
+        for _ in range(8):                                   # fast 1, 2, 4, 8 (powers) and total 8, 12 (periodic)
+            sampler._sample_random(*args)
+        got = [(r['counters']['fast'], r['counters']['stock']) for r in rows()[1:]]
+        self.assertEqual(got, [(1, 4), (2, 4), (4, 4), (8, 4)])   # total 8 is fast 4: one line; total 12 is fast 8
+        self.assertTrue(all(x.startswith(ds.LINE_SAMPLE) and len(x) < ds.LINE_BYTES for x in log.lines))
+        side = ds.WorkerSide({ds.SAMPLE_FAST_ENV: '1'}, logger=log)
+        with mock.patch.object(ds, '_torch', lambda: FakeTorch()):
+            side.pop(NS(rank=3, worker=NS(model_runner=NS(sampler=Sampler([20])))), 'sample_tokens',
+                     {ds.WIRE_KEY: [1, 0, 1]})
+        self.assertEqual(side.fast.rank, 3)
+
     def test_worker_side_without_a_sampler_stays_stock(self):
         side = ds.WorkerSide({ds.SAMPLE_FAST_ENV: '1'})
         proc = NS(worker=NS(model_runner=NS()))                   # stage 0: no sampler

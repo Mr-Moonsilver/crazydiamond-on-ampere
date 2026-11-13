@@ -15,6 +15,10 @@ with one CTA per row. That is about 0.6-0.8 ms of the 1.76 ms device tail measur
   eligible only when FlashInfer was chosen anyway, every row's top_k is one K with 0 < K <= K_MAX, there is one fp32
   logit row per request and the vocab is at least MIN_VOCAB wide; any other step runs the stock call. More than
   WIDTH - K ties at the K-th value would drop tied entries; a device counter sees it (``tie_overflow``), never a sync.
+  Each sampling rank logs a cumulative ``flash-s5 sample-fast`` line (its rank, fast/stock counts by reason, the
+  lagged tie counter) at every power of two of the fast count and every LOG_EVERY sampler steps (about 9 s at the
+  ~110 steps/s of 8-stream decode): about 200 lines per sampling rank per j2 run, so a reader takes per-arm deltas
+  from the docker stamps, each arm edge within one period.
 
 ``FLASH_S5_DECODE_ANATOMY=1`` (the free read). The stage-1 handler anatomy (``FLASH_S5_HANDLER_ANATOMY=1``, required)
 only records while native progress rides the RPC, so clean decode has no rows. With this switch the engine core opens
@@ -60,6 +64,7 @@ LINE_BUDGET = LINE_BYTES - 512   # core stamp lines are packed by size under thi
 ANATOMY_METHODS = ('execute_model', 'sample_tokens')
 # wire tag: [sample_fast 0/1, anatomy code, engine transport sequence]
 TAG_NONE, TAG_RECORD, TAG_CLOSE = 0, 1, 2
+LOG_EVERY = 1024             # sampler steps (fast or stock) between periodic sample-fast lines (compose line, 13 Nov)
 REASONS = ('not_gated', 'not_flashinfer', 'no_top_k', 'rows', 'dtype', 'vocab', 'k_mixed', 'k_range', 'error')
 
 
@@ -240,8 +245,9 @@ class FastSampler:
     """Wraps one Sampler instance's ``_sample_random`` on the last PP stage (instance attribute, never the class)."""
 
     def __init__(self, sampler, *, torch=None, top_p_sample=None, sample=None, logger=None, width=WIDTH,
-                 k_max=K_MAX, min_vocab=MIN_VOCAB):
+                 k_max=K_MAX, min_vocab=MIN_VOCAB, rank=None, log_every=LOG_EVERY):
         self.sampler = sampler
+        self.rank, self.log_every = rank, log_every
         self.torch = torch if torch is not None else _torch()
         self.stock = sampler._sample_random
         self._top_p_sample, self._sample = top_p_sample, sample
@@ -296,14 +302,24 @@ class FastSampler:
         if k is None:
             self.counters['stock'] += 1
             self.counters['stock_' + why] += 1
-            return self.stock(processed_logits, expanded_idx_mapping, idx_mapping_np, pos, top_k, top_p,
-                              use_flashinfer)
+            result = self.stock(processed_logits, expanded_idx_mapping, idx_mapping_np, pos, top_k, top_p,
+                                use_flashinfer)
+            self._periodic()
+            return result
         sampled = self.sample_top(processed_logits, k, top_p)
         self.counters['fast'] += 1
         if self.counters['fast'] >= self._next_log:
             self._next_log *= 2
             self.log()
+        else:
+            self._periodic()
         return sampled, processed_logits
+
+    def _periodic(self):
+        """A cumulative line every ``log_every`` sampler steps (fast or stock), so a reader can take per-arm deltas
+        from the docker-stamped lines; the power-of-two lines above stay as they were."""
+        if self.log_every and (self.counters['fast'] + self.counters['stock']) % self.log_every == 0:
+            self.log()
 
     def sample_top(self, logits, k, top_p):
         torch = self.torch
@@ -335,7 +351,7 @@ class FastSampler:
 
     def log(self):
         if self.logger is not None:
-            _log_line(self.logger, LINE_SAMPLE, dict(schema=SCHEMA, width=self.width, k_max=self.k_max,
+            _log_line(self.logger, LINE_SAMPLE, dict(schema=SCHEMA, width=self.width, k_max=self.k_max, rank=self.rank,
                                                      counters=dict(self.counters),
                                                      tie_overflow_lagged=self.overflow_seen()))
 
@@ -386,7 +402,7 @@ class WorkerSide:
                     self.install_refused = True
                     self.counters['no_sampler'] += 1
                     return None
-                self.fast = FastSampler(sampler, logger=self.logger)
+                self.fast = FastSampler(sampler, logger=self.logger, rank=getattr(proc, 'rank', None))
         return self.fast
 
 

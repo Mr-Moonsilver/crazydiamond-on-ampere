@@ -19,7 +19,11 @@ PAUSED_ALL ms, total and per armed; the max fields are the engine's since start,
 selections and completions in the same window, or 'off (block absent)' with the same auto-arm delta, so one read shows
 whether the mechanism engaged; identity NOTEs for the four composition settings (FLASH_S5_APPEND_NO_BLOCK_STOP,
 FLASH_S5_DECODE_GROUPS, FLASH_S5_DECODE_LIVENESS, FLASH_S5_CONTROL_INWAIT), for an n3 arm whose recorded decode_merge is
-not the cohort's mode, and for a control_inwait block absent under the flag (or present without it).
+not the cohort's mode, and for a control_inwait block absent under the flag (or present without it); per arm the lever
+D sampler steps per sampling rank from engine-stream.log's docker-stamped 'flash-s5 sample-fast' lines (cumulative,
+one per power of two of the fast count and per 1,024 sampler steps; the last line in the arm less the last one before
+it, so each arm edge is within one period): fast, stock (the fallback) by reason, the fast share and the lagged tie
+counter, with NOTES for an n3 arm without lines under FLASH_S5_DECODE_SAMPLE_FAST=1 or lines without it.
 Cohort lines (descriptive, the V1 proposal's arithmetic): per block R = n3 completed turns / sp completed turns pooled
 over the block's two seeds (n3.g2-live-0 + n3.g2-live-1 over sp.g2-live-0 + sp.g2-live-1), and G = the geometric mean
 of the blocks' R; a block with an unread arm has no R and is named.
@@ -134,6 +138,49 @@ def inwait_delta(arm):
     return out
 
 
+SAMPLE_FAST = 'flash-s5 sample-fast '
+
+
+def sample_fast_lines(root):
+    """(wall, rank, counters, tie_overflow_lagged) per lever D line in engine-stream.log; None without the log."""
+    path = Path(root) / 'engine-stream.log'
+    if not path.is_file():
+        return None
+    out = []
+    with path.open(errors='replace') as handle:
+        for line in handle:
+            if SAMPLE_FAST not in line:
+                continue
+            d, wall = dmp._json_after(line, SAMPLE_FAST), dmp.stamp(line)
+            if d is not None and wall is not None and type(d.get('counters')) is dict:
+                out.append((wall, d.get('rank'), d['counters'], d.get('tie_overflow_lagged')))
+    return out
+
+
+def sample_fast_delta(lines, arm):
+    """Per sampling rank over the arm's replay window: fast and stock steps (stock by reason), the fast share."""
+    start = arm.get('replay_start_s')
+    if lines is None or type(start) not in (int, float):
+        return None
+    end = start + ((arm.get('replay_config') or {}).get('DURATION') or 480.0)
+    out = {}
+    for rank in sorted({r for _, r, _, _ in lines}, key=str):
+        rows = [(w, c, t) for w, r, c, t in lines if r == rank]
+        before = [c for w, c, _ in rows if w < start]
+        inside = [(c, t) for w, c, t in rows if start <= w <= end]
+        if not inside:
+            continue
+        a, b = inside[-1][0], (before[-1] if before else {})
+        d = {k: (a.get(k) or 0) - (b.get(k) or 0) for k in a}
+        steps = d.get('fast', 0) + d.get('stock', 0)
+        out[str(rank)] = dict(fast=d.get('fast', 0), stock=d.get('stock', 0),
+                              stock_by_reason={k[len('stock_'):]: v for k, v in sorted(d.items())
+                                               if k.startswith('stock_') and v},
+                              fast_share=round(d.get('fast', 0) / steps, 4) if steps else None,
+                              tie_overflow_lagged=inside[-1][1], lines=len(inside))
+    return out
+
+
 def auto_arm_delta(arm):
     """Selections and completions in the arm's window (the status rows' auto_arm block), flag on or off."""
     rows = hgb.status_rows(arm)
@@ -169,6 +216,8 @@ def collect(root, label, flags):
                         for name, arm in dview['arms'].items()}
     result['decode_engine_crashed'] = dview.get('engine_crashed')
     done, notes_extra = {}, []
+    fast_lines = sample_fast_lines(root)
+    d_on = flags['FLASH_S5_DECODE_SAMPLE_FAST'] == '1'
     for name in SP_ARMS + N3_ARMS:
         arm = hgb.load(root / ('arm-' + name + '.json'))
         # completed turns as the dmp reader counts them (warm turns less those finished after the window), per arm record
@@ -183,6 +232,11 @@ def collect(root, label, flags):
                 notes_extra.append('control-inwait-absent-%s-%s' % (label, name))
             elif not on and row['control_inwait'] is not None:
                 notes_extra.append('control-inwait-present-%s-%s' % (label, name))
+            row['sample_fast'] = sample_fast_delta(fast_lines, arm)
+            if d_on and name in N3_ARMS and not row['sample_fast']:
+                notes_extra.append('sample-fast-silent-%s-%s' % (label, name))
+            elif not d_on and row['sample_fast']:
+                notes_extra.append('sample-fast-present-%s-%s' % (label, name))
     result['identity_compose'], notes = compose_notes(root, label, flags, dview)
     result['compose_notes'] = notes + notes_extra + ['dmp-' + n for n in dview['notes']]
     result['completed'] = done
@@ -220,6 +274,19 @@ def inwait_lines(name, arm):
     return lines
 
 
+def sample_fast_render(name, arm):
+    if 'sample_fast' not in arm:
+        return []
+    got = arm['sample_fast']
+    if got is None:
+        return ['  %-13s sample_fast - (no engine-stream.log or arm start)' % name]
+    if not got:
+        return ['  %-13s sample_fast no lines in the arm' % name]
+    return ['  %-13s sample_fast rank%s fast=%s stock=%s share=%s stock_by_reason=%s tie_overflow_lagged=%s lines=%s' % (
+        name, rank, d['fast'], d['stock'], d['fast_share'], np.fmt(d['stock_by_reason']), d['tie_overflow_lagged'],
+        d['lines']) for rank, d in got.items()]
+
+
 def render(results, full=False):
     lines = [np.render(results, full=full)]
     for r in results:
@@ -237,6 +304,8 @@ def render(results, full=False):
                 lines.append('      append_pieces %s' % np.fmt(pieces))
         for name in SP_ARMS + N3_ARMS:                 # every arm, sp beside n3, in one place
             lines.extend(inwait_lines(name, r['arms'].get(name) or {}))
+        for name in SP_ARMS + N3_ARMS:
+            lines.extend(sample_fast_render(name, r['arms'].get(name) or {}))
         if r['compose_notes']:
             lines.append('  NOTES %s' % np.fmt(sorted(set(r['compose_notes']))))
     c = cohort_line(results)

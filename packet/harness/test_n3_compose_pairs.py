@@ -37,6 +37,12 @@ sample_tokens tagged fast, and the anatomy window never eligible (the policy is 
 throughout), so no anatomy line. Per step the policy's fields, the driver's yield phase and transaction and the queues are compared
 before and after D's step. Mutants: an inverted gate and a D that writes the policy (manual_owned) are caught; the
 Y2 end state alone does not show that write in this rig, the per-step comparison does.
+
+D x CONTROL_INWAIT (brief 7, 13 Nov): the CI window flow (A off and on) and both CI races with EngineSide stepped:
+D samples fast on the decode steps CI lets run beside the identity observation (phase control_observe), the anatomy
+window is never eligible there (the policy is not idle), and views, controls, CI counters, call counters and tick
+counts equal those without D; the races' own assertions hold with D stepped.
+CPU only; no box, GPU or torch device.
 """
 from pathlib import Path
 import sys
@@ -400,7 +406,7 @@ class DStepped:
                 if engine_state(policy) != before:
                     test.writes.append(len(test.trace))
                 test.trace.append(dict(
-                    native=test.side.native_arm, active=bool(policy.active),
+                    native=test.side.native_arm, active=bool(policy.active), phase=policy.phase,
                     progress=getattr(view.model_executor, '_flash_s5_progress_recording', None) is not None,
                     sample=test.side.wire('sample_tokens', len(test.trace)),
                     execute=test.side.wire('execute_model', len(test.trace))))
@@ -514,6 +520,51 @@ class DWithA(DStepped, Y2WithA):
     test_window_unchanged_and_the_append_fused = None
     test_control_without_the_splitter_lever_a_is_not_reached = None
 
+
+
+class DWithCI(DStepped, CIWithY2A):
+    """D x CONTROL_INWAIT (x Y2 x lever A; brief 7): the CI window flows and both CI races with EngineSide stepped
+    before every policy tick. D samples fast on the decode steps that CI lets run beside the identity observation
+    (phase control_observe, PAUSED_NEW), the anatomy window is never eligible there (the policy is not idle), and
+    nothing CI decides changes: views, controls, call counters and tick counts equal without D."""
+
+    def captured(self, fn, *args):
+        def run():
+            try:
+                return fn(*args)
+            finally:
+                self.side_counters = dict(self.side.counters)
+        return self.with_d(run)
+
+    def test_ci_window_unchanged_with_d(self):
+        for a in (False, True):
+            self.trace, self.ticks = [], 0
+            rig, view, pieces, sent, calls = self.flow(a, True)
+            off = (view, pieces, sent, calls, rig.p.control_inwait.snapshot()['transitions'], self.ticks)
+            self.assertEqual(self.trace, [])
+            self.ticks = 0
+            rig, view, pieces, sent, calls = self.captured(self.flow, a, True)
+            on = (view, pieces, sent, calls, rig.p.control_inwait.snapshot()['transitions'], self.ticks)
+            off[4]['yield-full-reentry'].update({k: 0 for k in ('pause_to_arm_ms', 'pause_to_arm_max_ms',
+                                                                'decoder_stall_ms', 'decoder_stall_max_ms')})
+            on[4]['yield-full-reentry'].update({k: 0 for k in ('pause_to_arm_ms', 'pause_to_arm_max_ms',
+                                                               'decoder_stall_ms', 'decoder_stall_max_ms')})
+            self.assertEqual(on, off, a)
+            self.assert_d_inert()
+            observing = [t for t in self.trace if t['phase'] == 'control_observe']
+            self.assertTrue(observing, sorted({t['phase'] for t in self.trace}))     # the rig reaches both
+            self.assertTrue(all(t['sample'][0] == 1 and t['active'] for t in observing))
+
+    def test_ci_races_unchanged_with_d(self):
+        for race in (CIWithY2A.test_a_decoder_leaving_after_the_certificate_invalidates_it,
+                     CIWithY2A.test_a_yield_revoked_between_probe_and_switch_never_switches):
+            self.captured(race, self)                # the race's own assertions, with D stepped
+            self.assert_d_inert()
+
+    # the inherited CI tests run once in CIWithY2A; here only the D pair
+    test_window_equal_and_reentries_through_the_in_wait_path = None
+    test_a_decoder_leaving_after_the_certificate_invalidates_it = None
+    test_a_yield_revoked_between_probe_and_switch_never_switches = None
 
 
 if __name__ == '__main__':

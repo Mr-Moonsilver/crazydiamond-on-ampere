@@ -13,7 +13,8 @@
     the hub for a non-default flag set through the builder; in a bundle on the bundle's own built queue (no skip);
   * reader on synthetic records (the night-pack reader fixtures, records in fresh mkdtemp directories left in place):
     R per block pooled over the two seeds, G the geometric mean, a block without R named; the lever A append_pieces
-    delta only where the block exists; the control_inwait delta per transition class on every arm (sp and n3) beside
+    delta only where the block exists; lever D's fast and stock sampler steps per arm and rank from stamped
+    engine-stream.log lines, with silent/present notes; the control_inwait delta per transition class on every arm (sp and n3) beside
     the auto-arm delta, 'off (block absent)' without it, NOTEs for a block absent under the flag or present without it;
     identity NOTEs for a composition setting that differs from the cohort's.
 No engine, torch or box access.
@@ -423,6 +424,55 @@ class Reader(unittest.TestCase):
                          ['control-inwait-absent-b2-' + a for a in sorted(reader.SP_ARMS + reader.N3_ARMS)])
         present = reader.collect(record(control_inwait=True), 'b3', reader.flags_of([]))
         self.assertIn('control-inwait-present-b3-n3.g2-live-0', present['compose_notes'])
+
+    def test_sample_fast_steps_per_arm_and_rank(self):
+        import datetime
+        root = record(dict(FLASH_S5_DECODE_SAMPLE_FAST='1'))
+        t0 = 1794436590.0
+        order = ('sp.g2-live-0', 'n3.g2-live-0', 'n3.g2-live-1', 'sp.g2-live-1')
+        for i, name in enumerate(order):                       # sequential arms, 600 s each, 100 s apart
+            path = root / ('arm-' + name + '.json')
+            arm = json.loads(path.read_text())
+            arm['replay_start_s'] = t0 + 700 * i
+            arm.setdefault('replay_config', {})['DURATION'] = 600
+            path.write_text(json.dumps(arm))
+
+        def line(t, rank, fast, not_gated, mixed, tie=0):
+            stamp = datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            body = dict(schema='s5-decode-step/1', rank=rank, tie_overflow_lagged=tie,
+                        counters=dict(fast=fast, stock=not_gated + mixed, stock_not_gated=not_gated, stock_k_mixed=mixed,
+                                      stock_dtype=0))
+            return '%s (Worker_PP1_TP%d pid=1) INFO flash-s5 sample-fast %s\n' % (stamp, rank - 2, json.dumps(body))
+        rows = []
+        for rank in (2, 3):
+            rows += [line(t0 + 750, rank, 1, 0, 0),                      # n3.g2-live-0 starts at t0+700
+                     line(t0 + 1290, rank, 5000, 0, 24),                  # inside n3.g2-live-0 (ends t0+1300)
+                     line(t0 + 1500, rank, 9000, 0, 30),                  # inside n3.g2-live-1
+                     line(t0 + 1990, rank, 13096, 0, 40, tie=rank - 2),  # its last line
+                     line(t0 + 2200, rank, 13096, 1024, 40)]              # sp.g2-live-1: stock, not gated
+        with (root / 'engine-stream.log').open('a') as handle:
+            handle.writelines(rows)
+        flags = reader.flags_of(['FLASH_S5_DECODE_SAMPLE_FAST=1'])
+        r = reader.collect(root, 'b1', flags)
+        n0, n1 = r['arms']['n3.g2-live-0']['sample_fast'], r['arms']['n3.g2-live-1']['sample_fast']
+        self.assertEqual(sorted(n0), ['2', '3'])
+        self.assertEqual({k: n0['2'][k] for k in ('fast', 'stock', 'stock_by_reason', 'lines')},
+                         dict(fast=5000, stock=24, stock_by_reason={'k_mixed': 24}, lines=2))
+        self.assertEqual((n1['3']['fast'], n1['3']['stock'], n1['3']['tie_overflow_lagged']), (8096, 16, 1))
+        self.assertEqual(n1['2']['fast_share'], round(8096 / 8112, 4))
+        sp1 = r['arms']['sp.g2-live-1']['sample_fast']['2']
+        self.assertEqual((sp1['fast'], sp1['stock_by_reason']), (0, {'not_gated': 1024}))
+        self.assertEqual(r['arms']['sp.g2-live-0']['sample_fast'], {})     # before D's first line: none
+        self.assertFalse([n for n in r['compose_notes'] if n.startswith('sample-fast-')])
+        text = reader.render([r])
+        self.assertIn('  n3.g2-live-0  sample_fast rank2 fast=5000 stock=24 share=0.9952 stock_by_reason={"k_mixed":24} '
+                      'tie_overflow_lagged=0 lines=2', text)
+        self.assertIn('  sp.g2-live-0  sample_fast no lines in the arm', text)
+        silent = reader.collect(record(dict(FLASH_S5_DECODE_SAMPLE_FAST='1')), 'b2', flags)
+        self.assertEqual(sorted(n for n in silent['compose_notes'] if n.startswith('sample-fast-')),
+                         ['sample-fast-silent-b2-n3.g2-live-0', 'sample-fast-silent-b2-n3.g2-live-1'])
+        present = reader.collect(root, 'b3', reader.flags_of([]))
+        self.assertIn('sample-fast-present-b3-n3.g2-live-0', present['compose_notes'])
 
     def test_identity_note(self):
         flags = reader.flags_of(['FLASH_S5_DECODE_GROUPS=off-small', 'FLASH_S5_DECODE_LIVENESS=1'])
