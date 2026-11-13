@@ -11,7 +11,8 @@ D (``decode_step.FastSampler.sample_top``) gets the same keyed sampler over its 
 With the same seeds it must return the same token on every row of every trial:
   * bf16-rounded logits (natural ties), forced ties at the pivot, -inf stop tokens (the min_tokens bias);
   * K in {1, 5, 20, 64, 128}; top_p in {None, 0.5, 0.95, 0.999}.
-Also tested: the stock call for a mixed-K batch, the tie-overflow counter (more than WIDTH - K ties at the pivot), its
+Also tested: no install on the image's GPUWatermarkSampler (its own watermarked ``_sample_random``; owner review
+13 Nov) while the plain V2 Sampler installs, with a mutant that drops the check; the stock call for a mixed-K batch, the tie-overflow counter (more than WIDTH - K ties at the pivot), its
 lagged non-blocking read, and four source-text mutants that must each break identity: an exact-K mask (ties dropped),
 no tie slack (width K), the column index instead of the vocab id, and the mixed-K check removed.
 On the box the RNG differs: FlashInfer draws its own, and flag-off is unseeded, so no two flag-off runs agree either.
@@ -177,6 +178,44 @@ class Identity(unittest.TestCase):
         _, kept = sampler._sample_random(logits, None, np.arange(ROWS), None, 'k', torch.full((ROWS,), 0.9), True)
         self.assertIs(kept, logits)
         self.assertTrue(torch.equal(logits, before))
+
+
+class ImageSamplers(unittest.TestCase):
+    """Owner review (13 Nov): the image's own sampler classes. GPUWatermarkSampler (built when watermark_config is
+    set) runs its own _sample_random, so WorkerSide must not install D on it; the plain V2 Sampler must still install.
+    Instances are made without __init__ (no CUDA): only the class layout and the install gate are under test."""
+
+    def side_on(self, module, cls):
+        sampler = object.__new__(cls)
+        sampler.sampling_states = States([20] * ROWS)
+        side = module.WorkerSide({module.SAMPLE_FAST_ENV: '1'})
+        side.pop(types.SimpleNamespace(rank=0, worker=types.SimpleNamespace(
+            model_runner=types.SimpleNamespace(sampler=sampler))), 'sample_tokens', {module.WIRE_KEY: [1, 0, 1]})
+        return side, sampler
+
+    def classes(self):
+        from vllm.v1.watermarking.gpu_sampler import GPUWatermarkSampler
+        from vllm.v1.worker.gpu.sample.sampler import Sampler as V2Sampler
+        return V2Sampler, GPUWatermarkSampler
+
+    def test_watermark_sampler_refused_plain_sampler_installed(self):
+        V2Sampler, GPUWatermarkSampler = self.classes()
+        self.assertEqual(ds.sample_random_owner(object.__new__(V2Sampler)), 'Sampler')
+        self.assertEqual(ds.sample_random_owner(object.__new__(GPUWatermarkSampler)), 'GPUWatermarkSampler')
+        side, sampler = self.side_on(ds, GPUWatermarkSampler)
+        self.assertIsNone(side.fast)
+        self.assertEqual(side.counters['sampler_override'], 1)
+        self.assertNotIn('_sample_random', vars(sampler))           # its own watermarked draw, unwrapped
+        side, sampler = self.side_on(ds, V2Sampler)
+        self.assertIsNotNone(side.fast)
+        self.assertEqual(sampler._sample_random, side.fast.sample_random)
+
+    def test_owner_check_removed_installs_on_the_watermark_sampler(self):
+        module = load_mutant("                if owner != 'Sampler' or getattr(sampler, 'watermarking', None) is not None:\n",
+                             "                if False:\n")
+        side, sampler = self.side_on(module, self.classes()[1])
+        self.assertIsNotNone(side.fast, 'the mutant must install over the watermarked draw')
+        self.assertIn('_sample_random', vars(sampler))
 
 
 class Mutants(unittest.TestCase):

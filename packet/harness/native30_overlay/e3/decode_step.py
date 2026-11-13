@@ -34,6 +34,13 @@ j2 packet: core <= MAX_WINDOWS x 26 lines (MAX_STAMPS stamps of about 20 bytes, 
 under 2,100 lines per run. The 20 s budget usually ends it inside the first window: 20 s of clean decode is about 2,200
 engine steps, so about 14 core lines plus 4 x 90 worker lines.
 
+D installs only on the plain V2 ``Sampler``: the first class in the sampler's MRO that defines ``_sample_random``
+must be ``Sampler`` itself, the instance must not already carry its own ``_sample_random`` and must have no
+``watermarking`` state. ``GPUWatermarkSampler`` (any ``watermark_config``) overrides ``_sample_random`` with its own
+watermarked draw, which the fast path would bypass. On such a sampler, or any other subclass or wrapper, D never
+installs: every step is the sampler's own call, and the rank logs one ``flash-s5 sample-fast-refused`` line and no
+sample-fast lines (the reader notes ``sample-fast-silent``). Owner review, compose line 13 Nov.
+
 Per-arm gate, both switches: the engine core reads ``auto_arm.manual_owned`` before each step (the gate
 ingress_incremental uses). The stock reference arm (sp) holds the manual lease, so its RPCs are never tagged and its
 workers run the stock sampler and the stock anatomy. The tag rides in the RPC kwargs under ``WIRE_KEY``. The worker pops
@@ -52,6 +59,7 @@ WIRE_KEY = '_flash_s5_ds'
 LINE_SAMPLE = 'flash-s5 sample-fast '
 LINE_ANATOMY = 'flash-s5 decode-anatomy '
 LINE_GATE = 'flash-s5 decode-step-gate '
+LINE_REFUSED = 'flash-s5 sample-fast-refused '
 LINE_BYTES = 3968            # == native_measurement.PROGRESS_LINE_BYTES
 WIDTH = 256                  # columns kept per row (FlashInfer's own top-k-first fast path cap)
 K_MAX = 128                  # eligible top_k; leaves WIDTH - K >= 128 slots for ties at the pivot
@@ -90,6 +98,17 @@ def check_startup(env):
     for key in (SAMPLE_FAST_ENV, ANATOMY_ENV):
         if env.get(key, '0') not in ('0', '1'):
             raise RuntimeError('%s must be 0 or 1' % key)
+
+
+def sample_random_owner(sampler):
+    """Qualified name of the class whose ``_sample_random`` the instance runs; 'instance' when the instance carries
+    its own (already wrapped); None when there is none."""
+    if '_sample_random' in getattr(sampler, '__dict__', {}):
+        return 'instance'
+    for cls in type(sampler).__mro__:
+        if '_sample_random' in vars(cls):
+            return cls.__qualname__
+    return None
 
 
 def _log_line(logger, prefix, body):
@@ -367,7 +386,8 @@ class WorkerSide:
         self.fast = None                     # FastSampler, installed at the first gated sample_tokens on a sampling rank
         self.install_refused = False
         self.lock = threading.Lock()
-        self.counters = dict(tags=0, fast_rpcs=0, clean_rows=0, flushes=0, no_sampler=0, errors=0)
+        self.counters = dict(tags=0, fast_rpcs=0, clean_rows=0, flushes=0, no_sampler=0, sampler_override=0,
+                             errors=0)
 
     def pop(self, proc, name, kwargs):
         """Before dispatch: (fast, anatomy code, sequence) from the tag, and the sampler gate for this RPC."""
@@ -402,11 +422,21 @@ class WorkerSide:
                     self.install_refused = True
                     self.counters['no_sampler'] += 1
                     return None
+                owner = sample_random_owner(sampler)
+                if owner != 'Sampler' or getattr(sampler, 'watermarking', None) is not None:
+                    # GPUWatermarkSampler (watermark_config set) or another override: D would bypass its draw, so
+                    # this rank stays on the sampler's own call for the whole run
+                    self.install_refused = True
+                    self.counters['sampler_override'] += 1
+                    if self.logger is not None:
+                        _log_line(self.logger, LINE_REFUSED, dict(schema=SCHEMA, rank=getattr(proc, 'rank', None),
+                                                                  sampler=type(sampler).__qualname__, owner=owner))
+                    return None
                 self.fast = FastSampler(sampler, logger=self.logger, rank=getattr(proc, 'rank', None))
         return self.fast
 
 
 __all__ = ['ANATOMY_ENV', 'AnatomyWindow', 'EngineSide', 'FastSampler', 'K_MAX', 'LINE_ANATOMY',
-           'LINE_GATE', 'LINE_SAMPLE', 'MAX_WINDOWS', 'MIN_VOCAB', 'SAMPLE_FAST_ENV', 'TAG_CLOSE', 'TAG_NONE',
+           'LINE_GATE', 'LINE_REFUSED', 'LINE_SAMPLE', 'MAX_WINDOWS', 'MIN_VOCAB', 'SAMPLE_FAST_ENV', 'TAG_CLOSE', 'TAG_NONE',
            'TAG_RECORD', 'WIDTH', 'WINDOW_S', 'WIRE_KEY', 'WorkerSide', 'anatomy_enabled', 'check_startup', 'installed',
-           'sample_fast_enabled']
+           'sample_fast_enabled', 'sample_random_owner']

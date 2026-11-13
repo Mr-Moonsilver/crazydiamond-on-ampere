@@ -625,6 +625,55 @@ class SamplerGate(unittest.TestCase):
         self.assertIsNone(side.fast)
         self.assertEqual(side.counters['no_sampler'], 1)
 
+    def test_worker_side_refuses_a_sampler_that_overrides_the_draw(self):
+        """Owner review (13 Nov): GPUWatermarkSampler (any watermark_config) overrides _sample_random with its own
+        watermarked draw, which D's fast path would bypass. D installs only where Sampler's own _sample_random runs and
+        there is no watermarking state; otherwise every step is the sampler's own call and one refusal line is logged."""
+        class WatermarkSampler(Sampler):                 # the image's GPUWatermarkSampler shape
+            def __init__(self, ks):
+                super().__init__(ks)
+                self.watermarking = NS(np=[True] * len(ks))
+
+            def _sample_random(self, *args):
+                return ('watermark', args)
+
+        class StateOnly(Sampler):                        # keeps the stock draw but carries watermarking state
+            def __init__(self, ks):
+                super().__init__(ks)
+                self.watermarking = NS(np=[True] * len(ks))
+
+        wrapped = Sampler([20] * 8)
+        wrapped._sample_random = lambda *args: ('other wrapper', args)
+        self.assertEqual(ds.sample_random_owner(Sampler([20])), 'Sampler')
+        self.assertEqual(ds.sample_random_owner(WatermarkSampler([20])), WatermarkSampler.__qualname__)
+        self.assertEqual(ds.sample_random_owner(wrapped), 'instance')
+        self.assertIsNone(ds.sample_random_owner(NS()))
+        args = (Logits(8, 248320), 'e', list(range(8)), 'p', 'k', 'q', True)
+        for sampler, owner, stock in ((WatermarkSampler([20] * 8), WatermarkSampler.__qualname__, 'watermark'),
+                                      (StateOnly([20] * 8), 'Sampler', 'stock'),
+                                      (wrapped, 'instance', 'other wrapper')):
+            log = Log()
+            side = ds.WorkerSide({ds.SAMPLE_FAST_ENV: '1'}, logger=log)
+            proc = NS(rank=1, worker=NS(model_runner=NS(sampler=sampler)))
+            with mock.patch.object(ds, '_torch', lambda: FakeTorch()):
+                side.pop(proc, 'sample_tokens', {ds.WIRE_KEY: [1, 0, 1]})
+                side.pop(proc, 'sample_tokens', {ds.WIRE_KEY: [1, 0, 2]})
+            self.assertIsNone(side.fast)
+            self.assertEqual(side.counters['sampler_override'], 1)
+            self.assertEqual(side.counters['fast_rpcs'], 0)
+            self.assertEqual(sampler._sample_random(*args)[0], stock)    # the sampler's own draw, unwrapped
+            self.assertEqual(len(log.lines), 1)
+            self.assertTrue(log.lines[0].startswith(ds.LINE_REFUSED))
+            self.assertFalse(log.lines[0].startswith(ds.LINE_SAMPLE))    # the reader's prefix never matches it
+            got = json.loads(log.lines[0][len(ds.LINE_REFUSED):])
+            self.assertEqual((got['rank'], got['owner'], got['sampler']), (1, owner, type(sampler).__qualname__))
+        plain = Sampler([20] * 8)                         # control: the plain sampler still installs
+        side = ds.WorkerSide({ds.SAMPLE_FAST_ENV: '1'})
+        with mock.patch.object(ds, '_torch', lambda: FakeTorch()):
+            side.pop(NS(rank=0, worker=NS(model_runner=NS(sampler=plain))), 'sample_tokens', {ds.WIRE_KEY: [1, 0, 1]})
+        self.assertIsNotNone(side.fast)
+        self.assertEqual(side.counters['sampler_override'], 0)
+
     def test_worker_side_switch_off_ignores_the_bit(self):
         sampler = Sampler([20])
         side = ds.WorkerSide({})
