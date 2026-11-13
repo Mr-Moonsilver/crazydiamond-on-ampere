@@ -424,6 +424,10 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
             if not overlap:
                 raise RuntimeError('FLASH_S5_SMALL_PIECE_BATCH=1 needs FLASH_S5_STAGE_OVERLAP=1')
             driver_class = small_piece_driver()
+    # decode-step (FLASH_S5_DECODE_SAMPLE_FAST, FLASH_S5_DECODE_ANATOMY): unset or 0 never imports decode_step.
+    if env.get('FLASH_S5_DECODE_SAMPLE_FAST', '0') != '0' or env.get('FLASH_S5_DECODE_ANATOMY', '0') != '0':
+        from decode_step import check_startup as decode_step_check
+        decode_step_check(env)
     driver = driver_class(
         controller, executor=executor, scheduler=scheduler, engine=engine,
         layer_count=layer_count, layer_split=layer_split, stage_of=stage_of,

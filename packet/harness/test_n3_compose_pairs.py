@@ -27,7 +27,16 @@ in-wait path; window counters, append-yield event kinds and counters, the event 
 for A off and on, the APPEND's pieces depend on A only, and lever A's fused split runs under CI (call counters). Races
 inside the window: a decoder that leaves after the identity was certified invalidates it (a fresh identity, the new
 cohort armed); a yield revoked after the certificate (between the probe and the switch) never issues enter_split.
-CPU only; no box, GPU or torch device.
+
+D (FLASH_S5_DECODE_SAMPLE_FAST, with FLASH_S5_DECODE_ANATOMY) x Y2 and x lever A: D shares the engine step seam
+(executor_hooks.before_step_with_batch_queue runs decode_step.EngineSide.step before auto-arm's tick) and reads the
+policy (manual_owned, active) and the driver's executor (_flash_s5_progress_recording); it writes neither. Both flows
+above run again with an EngineSide stepped on the real policy before every policy tick: the same window counters,
+event kinds, receipts and (for A) pieces and piece counters as without it; D's gate on (the native arm owns the lane),
+sample_tokens tagged fast, and the anatomy window never eligible (the policy is active and native progress records
+throughout), so no anatomy line. Per step the policy's fields, the driver's yield phase and transaction and the queues are compared
+before and after D's step. Mutants: an inverted gate and a D that writes the policy (manual_owned) are caught; the
+Y2 end state alone does not show that write in this rig, the per-step comparison does.
 """
 from pathlib import Path
 import sys
@@ -44,6 +53,7 @@ import types  # noqa: E402
 from types import SimpleNamespace as NS  # noqa: E402
 from unittest import mock  # noqa: E402
 
+import decode_step as ds  # noqa: E402
 import native_auto_arm as auto  # noqa: E402
 import scheduler_hooks as sh  # noqa: E402
 import test_coverage_residue as tcr  # noqa: E402
@@ -331,6 +341,179 @@ class CIWithY2A(unittest.TestCase):
         self.assertIsNone(rig.d.admission_intent())
         self.assertFalse(rig.d._split_ready)
         self.assertEqual(rig.p.control_inwait.snapshot()['transitions']['yield-full-reentry']['closed'], 1)
+
+
+class EngineView:
+    """The engine as before_step_with_batch_queue hands it to EngineSide.step: the policy's own engine and driver."""
+
+    def __init__(self, policy):
+        self.policy = policy
+
+    @property
+    def _flash_s5_driver(self):
+        return self.policy.driver
+
+    @property
+    def model_executor(self):
+        return self.policy.driver.executor
+
+    @property
+    def scheduler(self):
+        return self.policy.engine.scheduler
+
+    @property
+    def batch_queue(self):
+        return self.policy.engine.batch_queue
+
+
+def _plain(value):
+    return value if isinstance(value, (bool, int, float, str, tuple, type(None))) else ('obj', id(value))
+
+
+def engine_state(policy):
+    """What D's step could reach: the policy's fields, the driver's yield phase and transaction, the queues."""
+    scheduler = policy.engine.scheduler
+    return ({k: _plain(v) for k, v in vars(policy).items()}, policy.driver.append_yield_phase(),
+            id(policy.driver.tx), policy.driver.error,
+            [r.request_id for r in scheduler.running], [r.request_id for r in scheduler.waiting.items],
+            [r.request_id for r in scheduler.skipped_waiting.items], len(policy.engine.batch_queue))
+
+
+class DStepped:
+    """Mixin: every policy tick of a flow is preceded by EngineSide.step (when ``self.side`` is set); per step the
+    gate, the window's eligibility inputs and the stock tags D would put on sample_tokens / execute_model."""
+    side = None
+    module = ds
+
+    def setUp(self):
+        super().setUp()
+        self.trace, self.ticks, self.writes = [], 0, []
+        tick = auto.AutoArmPolicy.tick
+        test = self
+
+        def stepped(policy, *a, **k):
+            test.ticks += 1
+            if test.side is not None:
+                view = EngineView(policy)
+                before = engine_state(policy)
+                test.side.step(view)
+                if engine_state(policy) != before:
+                    test.writes.append(len(test.trace))
+                test.trace.append(dict(
+                    native=test.side.native_arm, active=bool(policy.active),
+                    progress=getattr(view.model_executor, '_flash_s5_progress_recording', None) is not None,
+                    sample=test.side.wire('sample_tokens', len(test.trace)),
+                    execute=test.side.wire('execute_model', len(test.trace))))
+            return tick(policy, *a, **k)
+        patch = mock.patch.object(auto.AutoArmPolicy, 'tick', stepped)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def with_d(self, flow, *args):
+        self.trace, self.lines, self.writes = [], [], []
+        logger = NS(info=lambda fmt, *a: self.lines.append(fmt % a), warning=lambda *a, **k: None)
+        self.side = self.module.EngineSide({ds.SAMPLE_FAST_ENV: '1', ds.ANATOMY_ENV: '1'}, logger=logger)
+        try:
+            return flow(*args)
+        finally:
+            self.side = None
+
+    def assert_d_inert(self):
+        self.assertGreater(len(self.trace), 0)
+        self.assertEqual(self.writes, [])                                    # D's step wrote no shared state
+        self.assertEqual(self.side_counters['errors'], 0)
+        self.assertTrue(all(t['native'] for t in self.trace), self.trace[:3])    # the native arm owns the lane
+        self.assertTrue(all(t['sample'] == [1, ds.TAG_NONE, i] for i, t in enumerate(self.trace)))
+        self.assertTrue(all(t['execute'] is None for t in self.trace))           # no window: nothing else tagged
+        self.assertTrue(all(t['active'] or t['progress'] for t in self.trace))   # never a clean decode window
+        self.assertEqual([x for x in self.lines if x.startswith(ds.LINE_ANATOMY)], [])
+        self.assertEqual(len([x for x in self.lines if x.startswith(ds.LINE_GATE)]), 1)   # the one gate-on line
+
+
+def _strip(flow_result):
+    """A flow's comparable part: everything but the rig and the Mamba group objects."""
+    return [x for x in flow_result if not isinstance(x, (yw.Rig, MambaGroup))]
+
+
+class DWithY2(DStepped, unittest.TestCase):
+    def flow(self):
+        self.ticks = 0
+        log = yw.Lines(self)
+        rig = yw.window_rig(max_new=6)
+        yw.served_first(rig)
+        yw.to_window_append(rig)
+        receipts = [{k: v for k, v in r.items() if k != 'gap_ms' and not (type(v) in (int, float) and v > 10 ** 6)}
+                    for r in log.receipts()]
+        counts = {k: v for k, v in yw.counts(rig).items() if k != 'gap_ms'}
+        return rig, counts, yw.kinds(rig), receipts, rig.d.append_yield_phase(), self.ticks
+
+    def test_window_unchanged_with_d(self):
+        off = self.flow()
+        self.assertEqual(self.trace, [])
+        on = self.with_d(self.flow_capture)
+        self.assertEqual((off[1]['appends'], off[1]['reentries_avoided']), (1, 1), off[1])
+        self.assertEqual(_strip(on), _strip(off))
+        self.assert_d_inert()
+
+    def flow_capture(self):
+        try:
+            return self.flow()
+        finally:
+            self.side_counters = dict(self.side.counters)
+
+    def mutant(self, old, new):
+        source = (HERE.parent / 'patches/s5_engine/decode_step.py').read_text()
+        self.assertEqual(source.count(old), 1, old)
+        module = types.ModuleType('decode_step_compose_mutant')
+        exec(compile(source.replace(old, new), 'decode_step_compose_mutant.py', 'exec'), module.__dict__)
+        return module
+
+    def test_mutant_inverted_gate_is_caught(self):
+        """D reading the policy wrong (fast only while stock owns the lane) shows in the composed rig."""
+        self.module = self.mutant("policy.manual_owned is False\n", "policy.manual_owned is True\n")
+        try:
+            self.with_d(self.flow_capture)
+            with self.assertRaises(AssertionError):
+                self.assert_d_inert()
+        finally:
+            self.module = ds
+
+    def test_mutant_d_writing_the_policy_is_caught(self):
+        """D writing the policy (manual_owned set on its step): the composed flow sees the write."""
+        old = "            native = policy is not None and policy.manual_owned is False\n"
+        self.module = self.mutant(old, old + "            policy.manual_owned = True\n")
+        try:
+            self.with_d(self.flow_capture)
+        finally:
+            self.module = ds
+        self.assertEqual(self.writes, [0])               # the first step's write; later steps find it already set
+        with self.assertRaises(AssertionError):
+            self.assert_d_inert()
+
+
+class DWithA(DStepped, Y2WithA):
+    def test_window_and_fused_append_unchanged_with_d(self):
+        for a in (False, True):
+            self.trace, self.ticks = [], 0
+            off = self.flow(a) + (self.ticks,)
+            self.assertEqual(self.trace, [])
+            self.ticks = 0
+            on = self.with_d(self.capture, a) + (self.ticks,)
+            self.assertEqual(_strip(on), _strip(off), a)
+            self.assert_d_inert()
+            pieces = on[1]
+            self.assertEqual(pieces, [(7, 10)] if a else [(7, 8), (8, 10)])   # A's effect is still visible with D
+
+    def capture(self, a):
+        try:
+            return self.flow(a)
+        finally:
+            self.side_counters = dict(self.side.counters)
+
+    # the inherited lever A tests run once in Y2WithA; here only the D pair
+    test_window_unchanged_and_the_append_fused = None
+    test_control_without_the_splitter_lever_a_is_not_reached = None
+
 
 
 if __name__ == '__main__':

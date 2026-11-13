@@ -63,8 +63,11 @@ FLAGS = (
     ('FLASH_S5_DECODE_GROUPS', 'decode_groups', ('chunk', 'off', 'off-small'), 'chunk'),
     ('FLASH_S5_DECODE_LIVENESS', 'decode_liveness', ('0', '1'), '0'),
     ('FLASH_S5_CONTROL_INWAIT', 'control_inwait', ('0', '1'), '0'),
+    ('FLASH_S5_DECODE_SAMPLE_FAST', 'decode_sample_fast', ('0', '1'), '0'),   # lever D (decode_step, 13 Nov)
+    ('FLASH_S5_DECODE_ANATOMY', 'decode_anatomy', ('0', '1'), '0'),           # clean-window anatomy (decode_step)
 )
-EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait')   # added on top of np's queues
+EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait', 'decode_sample_fast',
+         'decode_anatomy')                                                     # added on top of np's queues
 # CONTROL_INWAIT=1 is refused with each of these (flag, value that is NOT refused): untested together
 CONTROL_INWAIT_UNTESTED = (('FLASH_S5_YIELD_REENTRY_SETTLE', '0'), ('FLASH_S5_SMALL_PIECE_BATCH', '0'),
                            ('FLASH_S5_INGRESS_INCREMENTAL', '0'), ('FLASH_S5_DECODE_GROUPS', 'chunk'),
@@ -77,11 +80,12 @@ CONTROL_INWAIT_ENV = ("'-e','PYTHONDONTWRITEBYTECODE=1',",
                       % CONTROL_INWAIT_PARENT_FILE)
 BLOCKS = ('b1', 'b2', 'b3', 'b4')
 DRY = 'dry'
-BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control')
+BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control', 'decode_step')
 ENGINE_MOVED = {'e3/' + n + '.py' for n in BOUND_MODULES}
-NEW_OVERLAY_FILES = np.NEW_OVERLAY_FILES
+NEW_OVERLAY_FILES = set(np.NEW_OVERLAY_FILES) | {'e3/decode_step.py'}     # decode_step: new in the overlay (13 Nov)
 SUITES = np.SUITES + ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups',
-                      'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_control_inwait')
+                      'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_control_inwait',
+                      'test_decode_step', 'test_decode_step_torch')
 TOOLS = np.TOOLS + ('tools/build_q2024p_j2_dmp.py', 'tools/q2024p_j2_dmp_reader.py', 'tools/build_q2024p_j2_cx.py', 'tools/q2024p_j2_cx_finish.py', 'tools/q2024p_j2_cx_render.py',
                     'tools/q2024p_j2_cx_reader.py')
 CX_CONTAINER = "'q2024p-j2-cx-frozen-cpu-'"
@@ -151,6 +155,7 @@ def configure(flags, tag):
     ing.BOUND_MODULES, ing.ENGINE_MOVED = BOUND_MODULES, ENGINE_MOVED
     np.name_of = name_of
     np.SUITES, np.TOOLS, np.NP_CONTAINER = SUITES, TOOLS, CX_CONTAINER
+    np.NEW_OVERLAY_FILES = ing.NEW_OVERLAY_FILES = NEW_OVERLAY_FILES
     np.queues = queues
     hgb.BOX_IMPORT_NEW, hgb.BOX_ROW_NEW = dmp.BOX_IMPORT_NEW, dmp.BOX_ROW_NEW        # + the arm liveness guard
     np.bind()
@@ -172,6 +177,9 @@ def queues(variant):
     result = {}
     for rel, text in _np_queues(variant).items():
         if rel.endswith('_settings.sh'):
+            if v['decode_anatomy'] == '1':      # decode_step.check_startup refuses the engine otherwise; refuse here first
+                for need in ('FLASH_S5_HANDLER_ANATOMY=1 ', 'FLASH_S5_NATIVE_PROGRESS=burst '):
+                    assert need in text, 'FLASH_S5_DECODE_ANATOMY=1 needs %sin the settings' % need
             text = hgb.once(text, setting, setting + ''.join('%s=%s ' % kv for kv in extra))
         else:
             text = hgb.once(text, check, check + ''.join(
@@ -194,6 +202,7 @@ def copy_delta(b, commit, bundle):
                  'harness/test_q2024p_j2_cx.py', 'harness/test_n3_compose_pairs.py',
                  'harness/test_control_inwait.py', 'harness/control_inwait_fixture_leaves.json',
                  'patches/s5_engine/s5_startup.py', 'patches/s5_engine/executor_hooks.py',
+                 'harness/test_decode_step.py', 'harness/test_decode_step_torch.py', 'patches/s5_engine/decode_step.py',
                  'patches/s5_engine/stage_overlap.py',
                  'patches/s5_engine/native_overlap_control.py', 'patches/s5_engine/scheduler_hooks.py'):
         assert name in copied, name

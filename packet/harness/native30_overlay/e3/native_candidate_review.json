@@ -4536,6 +4536,18 @@
     "settings": "FLASH_S5_DECODE_LIVENESS=1 and FLASH_S5_SUBMIT_CPU=1 (observational, default 0 elsewhere); FLASH_S5_DECODE_MERGE=1 install switch unchanged; the per-arm decode_merge field selects chunk/off/off-small",
     "source_tests": "test_decode_merge_probe and test_dmp_reader (hub and pinned image); related suites branch vs parent 33a42554 in the pinned image"
   },
+  "q2024p_j2_ds": {
+    "engine_delta": [
+      "decode_step.py (new, E3_MODULES and LAUNCHER_LIST_EXEMPT, decode_probe GENERATED_SOURCES): EngineSide (per-arm gate from native_auto_arm.manual_owned, clean decode-only anatomy window, wire tag), WorkerSide (tag pop, sampler gate per RPC), FastSampler (instance wrapper of the V2 Sampler._sample_random), AnatomyWindow",
+      "executor_hooks.py (lazy decode_step import only under a switch; collective_rpc send adds the _flash_s5_ds tag on a copied kwargs dict; before_step_with_batch_queue steps the EngineSide first; worker_rpc_begin pops the tag, a _CleanRpc handler-anatomy row for the clean window, never in the progress trace)",
+      "s5_startup.py (decode_step.check_startup only when either switch is not 0)"
+    ],
+    "exploratory": true,
+    "flags": "FLASH_S5_DECODE_SAMPLE_FAST: unset or 0 imports nothing and tags nothing (byte-identical RPCs); 1: on the native arm only, sample_tokens on the last PP stage samples from the exact top 256 per row (ties at the K-th value kept, FlashInfer's own top_p_sampling_from_probs / sampling_from_probs over [n, 256]) when every row has one top_k K <= 128, fp32 logits, vocab >= 65536 and FlashInfer chosen; otherwise the stock call. FLASH_S5_DECODE_ANATOMY: unset or 0 nothing; 1 (needs FLASH_S5_HANDLER_ANATOMY=1 and FLASH_S5_NATIVE_PROGRESS): up to 3 windows of 20 s in clean decode-only steps (native arm, no native progress recording, policy inactive), handler-anatomy rows per rank and one engine-core step stamp per step; any other value refuses at startup",
+    "hardware_qualified": false,
+    "review": "no review, Codex or other, covers this packet",
+    "source_tests": "test_decode_step 32/32 hub; test_decode_step_torch 8/8 pinned image ad067db5 (120 seeded trials token-identical to the full-vocab reference, four source mutants caught); test_n3_compose_pairs 9/9 hub (D x Y2, D x lever A); test_q2024p_j2_cx 14/14 hub"
+  },
   "q2024p_j2_hgb": {
     "bounds": "BATCH_MAX 2 LAYER commands, pieces <=176 rows, fused only; worker yields before command 1 on a waiting ring message or live run-ahead",
     "declarations": [
@@ -5717,6 +5729,7 @@
     "attn_meta_select.py": "d818693133f4ffb062e1e42310cf81a9dca908fa651c2792d36507f8b1c9b74e",
     "capture_streams.py": "76944d3416a9635cbecd81c70c1d538d5e0efc25d4fed4a3f2cf200ec3f4bd2b",
     "decode_probe.py": "2139b97f613fc1c7b0fad1ffb5053c92439a1f655064f7206f2446b5b1944165",
+    "decode_step.py": "5adbde95763364bc615aa14296efddd8b427182db63b0c1e9ac150554a32cfda",
     "e3_types.py": "8dda9d6b2fa181352a0bacd387a042790fe3c328796153b8e8f10a60ed835bcf",
     "engine_driver.py": "04357421b587d75cb5e642f6972033392f0cd90187f3d7a3aaf3951b5de781b4",
     "engine_offers.py": "0db9cc31a3f88afc5e795ba15d930b0ea88fb4ef43624d1021aa9130069b3e7d",
