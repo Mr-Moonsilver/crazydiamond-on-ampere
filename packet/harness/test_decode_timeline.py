@@ -377,6 +377,163 @@ class Case(unittest.TestCase):
         self.assertIsNone(recorder.timeline.active)
         self.assertEqual(recorder.timeline.sessions, 1)
 
+    def outside_rpc(self, r, sampler, method, args=()):
+        r.seq += 1
+        tag = sampler.wire(method, r.seq, args, True)
+        kwargs = {dt.OUTSIDE_KEY: tag} if tag is not None else {}
+        r.proc._execute_worker_rpc((method, args, kwargs, ha.OUTPUT_RANK))
+        self.assertNotIn(dt.OUTSIDE_KEY, kwargs)
+        return r.seq
+
+    def test_outside_native_chunks_all_ranks_have_own_local_completion_proof(self):
+        for rank in range(4):
+            r, port, recorder = self.rig(rank=rank)
+            sampler = dt.OutsideSampler()
+            sampler.enabled, sampler.epoch = True, 1
+            output = NS(num_scheduled_tokens={'outside-member': 1},
+                        scheduled_cached_reqs=NS(req_ids=['outside-member'], num_computed_tokens=[48000]),
+                        descriptor=ExecutionDescriptor('full', 4, 4, 1, 1))
+            records_before = r.torch.device.calls.count('Event.record')
+            lines = []
+            with patch.object(dt, 'emit_receipt_lines', side_effect=lambda texts, logger: lines.extend(texts)):
+                sequence = self.outside_rpc(r, sampler, 'execute_model', (output,))
+                self.outside_rpc(r, sampler, 'sample_tokens', (None,))
+                r.torch.device.advance()
+                # Untagged RPC polls existing endpoints without creating a handler row.
+                self.outside_rpc(r, sampler, 'execute_model', (output,))
+            got = [json.loads(x[len(dt.TimelineTrace.LINE):]) for x in lines]
+            rows = self.decoded(got)
+            self.assertEqual(len(rows['d']), 1)
+            self.assertEqual(rows['d'][0][0], sequence)
+            self.assertEqual(rows['d'][0][1]['history_tokens'], [48000])
+            self.assertIsNotNone(rows['d'][0][-1])
+            complete_ns = got[0]['base_ns'] + rows['d'][0][-1]*1000
+            enter_ns = got[0]['base_ns'] + rows['d'][0][-3]*1000
+            self.assertGreaterEqual(complete_ns, enter_ns)
+            self.assertTrue(all(x['scope'] == 'outside-native-progress' and x['stage'] == rank//2 for x in got))
+            self.assertTrue(rows['s'][-1][0])
+            self.assertEqual(rows['p'], [])
+            self.assertIsNone(recorder.timeline.active)
+            self.assertEqual(r.torch.device.violations, [])
+            self.assertNotIn('outside-member', json.dumps(got))
+            self.assertIn(r.torch.device.calls.count('Event.record') - records_before, (2, 4))
+
+    def test_outside_sampler_skips_manual_native_recording_empty_and_caps(self):
+        sampler = dt.OutsideSampler()
+        output = NS(num_scheduled_tokens={'member': 1})
+        self.assertIsNone(sampler.wire('execute_model', 1, (output,), True))
+        sampler.enabled, sampler.epoch = True, 1
+        self.assertIsNone(sampler.wire('execute_model', 2, (output,), False))
+        self.assertIsNone(sampler.wire('execute_model', 3, (NS(num_scheduled_tokens={}),), True))
+        with patch.object(dt, 'MAX_OUTSIDE', 1):
+            tag = sampler.wire('execute_model', 4, (output,), True)
+            self.assertEqual(tag[:2], [4, 1])
+            self.assertEqual(sampler.wire('sample_tokens', 5, (), False)[-1], 4)
+            self.assertIsNone(sampler.wire('execute_model', 6, (output,), True))
+
+    def test_outside_sample_is_not_bound_across_an_intervening_execute(self):
+        sampler = dt.OutsideSampler()
+        sampler.enabled, sampler.epoch = True, 1
+        output = NS(num_scheduled_tokens={'member': 1})
+        self.assertIsNotNone(sampler.wire('execute_model', 1, (output,), True))
+        self.assertIsNone(sampler.wire('execute_model', 2, (output,), False))
+        self.assertIsNone(sampler.wire('sample_tokens', 3, (), False))
+
+    def test_outside_pending_forward_is_not_proven_complete_or_waited(self):
+        r, port, recorder = self.rig()
+        sampler = dt.OutsideSampler()
+        sampler.enabled, sampler.epoch = True, 1
+        output = NS(num_scheduled_tokens={'member': 1}, descriptor=ExecutionDescriptor('full', 4, 4, 1, 1))
+        self.outside_rpc(r, sampler, 'execute_model', (output,))
+        recorder.timeline.poll_outside()
+        self.assertEqual(recorder.timeline.outside['forwards'], 0)
+        self.assertEqual(r.torch.device.violations, [])
+
+    def test_outside_local_proof_survives_unsupported_cross_green_timing(self):
+        r, port, recorder = self.rig()
+        recorder.timeline.timing_failed = True
+        sampler = dt.OutsideSampler()
+        sampler.enabled, sampler.epoch = True, 1
+        output = NS(num_scheduled_tokens={'member': 1}, descriptor=ExecutionDescriptor('full', 4, 4, 1, 1))
+        lines = []
+        with patch.object(dt, 'emit_receipt_lines', side_effect=lambda texts, logger: lines.extend(texts)):
+            self.outside_rpc(r, sampler, 'execute_model', (output,))
+            r.torch.device.advance()
+            self.outside_rpc(r, sampler, 'sample_tokens', (None,))
+        got = [json.loads(x[len(dt.TimelineTrace.LINE):]) for x in lines]
+        row = self.decoded(got)['d'][0]
+        self.assertEqual(row[2], 0.)
+        self.assertAlmostEqual(row[3]*1e6, row[4], delta=2)
+        self.assertTrue(row[1]['completion'].startswith('own-forward'))
+
+    def test_outside_malformed_tag_is_stripped_without_changing_dispatch(self):
+        r, port, recorder = self.rig()
+        output = NS(num_scheduled_tokens={'member': 1}, descriptor=ExecutionDescriptor('full', 4, 4, 1, 1))
+        kwargs = {dt.OUTSIDE_KEY: [-1]}
+        r.proc._execute_worker_rpc(('execute_model', (output,), kwargs, ha.OUTPUT_RANK))
+        self.assertEqual(kwargs, {})
+        self.assertEqual(recorder.counters['observer_errors'], 1)
+        self.assertIsNone(recorder.timeline.outside)
+
+    def test_disabled_observer_cannot_emit_a_second_budget_notice(self):
+        r, port, recorder = self.rig()
+        observer = recorder.timeline
+        trace = self.native(r, port)
+        fp.all_phases(trace)
+        sampler = dt.OutsideSampler()
+        sampler.enabled, sampler.epoch = True, 1
+        output = NS(num_scheduled_tokens={'member': 1}, descriptor=ExecutionDescriptor('full', 4, 4, 1, 1))
+        self.outside_rpc(r, sampler, 'execute_model', (output,))
+        r.torch.device.advance()
+        observer.bytes = dt.MAX_LOG_BYTES - 4096
+        self.finish(trace)
+        before = observer.bytes
+        with patch.object(dt, 'emit_receipt_lines') as sink:
+            observer.poll_outside()
+        self.assertFalse(sink.called)
+        self.assertEqual(observer.bytes, before)
+
+
+class OutsideWire(unittest.TestCase):
+    def test_real_generated_collective_rpc_keeps_fifo_arguments_and_default_off_bytes(self):
+        import test_e3_native_reply_hol as hol
+        for selected in (False, True):
+            with ExitStack() as stack:
+                stack.enter_context(patch.dict(os.environ, {dt.ENV: '1' if selected else '0'}))
+                stack.enter_context(patch.object(eh, '_anatomy', return_value=None))
+                stack.enter_context(patch.object(eh, '_ANATOMY', False))
+                stack.enter_context(patch.object(eh, '_WORKER_PROGRESS', None))
+                stack.enter_context(patch.object(eh, '_DECODE_STEP', False))
+                net = hol.Network(self)
+                for proc in net.procs:
+                    proc.worker.execute_model = MethodType(lambda worker, output: ('executed', worker.rank), proc.worker)
+                engine = NS(model_executor=net.executor,
+                    _flash_s5_driver=NS(engine_epoch=7, auto_arm=NS(manual_owned=False)))
+                dt.engine_step(engine)
+                output = NS(num_scheduled_tokens={'member': 1})
+                execute = net.executor.collective_rpc('execute_model', args=(output,), non_block=True,
+                    unique_reply_rank=hol.OUTPUT_RANK, timeout=5)
+                self.assertEqual(execute.result(5), ('executed', 2))
+                sample = net.executor.collective_rpc('sample_tokens', args=('outside',), non_block=True,
+                    unique_reply_rank=hol.OUTPUT_RANK, timeout=5)
+                net.procs[2].worker.decode_done.setdefault('outside', __import__('threading').Event()).set()
+                self.assertEqual(sample.result(5), ('decode', 'outside'))
+                sent = net.executor.rpc_broadcast_mq.sent
+                self.assertEqual([x[0] for x in sent], ['execute_model', 'sample_tokens'])
+                self.assertEqual([list(x[2]) for x in sent], [[dt.OUTSIDE_KEY], [dt.OUTSIDE_KEY]] if selected else [[], []])
+                if selected:
+                    self.assertEqual(sent[1][2][dt.OUTSIDE_KEY][-1], execute.sequence)
+                    self.assertTrue(all(x[2][dt.OUTSIDE_KEY][1] == 7 for x in sent))
+                self.assertIsNone(execute._progress)
+                self.assertIsNone(sample._progress)
+                engine._flash_s5_driver.auto_arm.manual_owned = True
+                dt.engine_step(engine)
+                self.assertFalse(net.executor._flash_s5_decode_timeline.enabled)
+                engine._flash_s5_driver._control_route = 'split'
+                dt.engine_step(engine)
+                self.assertTrue(net.executor._flash_s5_decode_timeline.enabled)
+                net.close()
+
 
 class StripDiagnostic(ast.NodeTransformer):
     def visit_If(self, node):
@@ -431,7 +588,7 @@ class Mutants(unittest.TestCase):
                     'test_anchor_pending_and_cross_green_error_never_wait_or_fail_rpc')
 
     def test_no_forward_bound_caught(self):
-        self.killed("self.active['forwards'] >= MAX_FORWARDS", 'False', 'test_limits_and_log_budget_drop_visibly')
+        self.killed("session['forwards'] >= MAX_FORWARDS", 'False', 'test_limits_and_log_budget_drop_visibly')
 
     def test_log_budget_guard_caught(self):
         self.killed('self.bytes + size > MAX_LOG_BYTES - 4096', 'False', 'test_limits_and_log_budget_drop_visibly')
@@ -441,7 +598,7 @@ class Mutants(unittest.TestCase):
                     'test_incomplete_source_without_cancel_stays_incomplete')
 
     def test_added_event_wait_caught(self):
-        self.killed("        anchor = self.active['anchor']", "        anchor = self.active['anchor']\n        anchor.synchronize()",
+        self.killed("        anchor = session['anchor']", "        anchor = session['anchor']\n        anchor.synchronize()",
                     'test_real_generated_rpc_recorder_and_fused_join_all_ranks')
 
     def test_missing_prior_anchor_caught(self):
@@ -451,6 +608,14 @@ class Mutants(unittest.TestCase):
     def test_restarting_after_refused_flush_caught(self):
         self.killed("            self._emit(False)\n            if self.blocked:\n                return",
                     "            self._emit(False)", 'test_supersession_sink_refusal_stays_blocked')
+
+    def test_outside_scope_removed_caught(self):
+        self.killed('if recorder is None or recorder.timeline is None:', 'if True:',
+                    'test_outside_native_chunks_all_ranks_have_own_local_completion_proof')
+
+    def test_local_completion_proof_removed_caught(self):
+        self.killed('observer_ns, t_enter, t_exit, completed_ns)', 'observer_ns, t_enter, t_exit, None)',
+                    'test_outside_native_chunks_all_ranks_have_own_local_completion_proof')
 
 
 if __name__ == '__main__':

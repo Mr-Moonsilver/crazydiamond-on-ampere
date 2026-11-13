@@ -471,7 +471,9 @@ class Recorder:
                     if self.timeline is not None and slot == _DEVF:
                         self.timeline.forward(row[_SEQ], pair, device_ns=row[slot],
                             forward_host_ns=(row[_SEAMS].get(SEAM_ID['forward']) or [None])[0],
-                            observer_ns=row[_OBS], t_enter=row[_TE], t_exit=row[_TX])
+                            observer_ns=row[_OBS], t_enter=row[_TE], t_exit=row[_TX],
+                            forward_calls=(row[_SEAMS].get(SEAM_ID['forward']) or [None]*4)[3],
+                            handler_flags=row[_FLAGS])
                     if row[_FLAGS] & FLAG_DEV_UNRESOLVED:
                         self.counters['events_late'] += 1
                     self.pool.append(pair)

@@ -22,6 +22,13 @@
       "replaces": " emit_receipt_lines capture, False return and OSError injection; actual ReceiptWriter's os.write capture via capture_writer; MAX_FORWARDS, MAX_METADATA, MAX_PHASES and the bytes budget boundary are reduced for cap tests. sys.modules holds source-text mutant modules; os.environ selects the observer per fixture. SHA parent AST fixtures bind db9d358c.",
       "equivalence": "The real atomic writer/parser checks the new prefix and 3968-byte bound. Sink faults retain original native/RPC results. Mutants exercise offset order, readiness, forward/log budgets and source completeness. No container/box result is fabricated.",
       "cannot_prove": "Live pipe pressure, CUDA API latency, GPU event memory or observer throughput cost."
+    },
+    {
+      "name": "outside-native-progress-wire-and-local-event-proof",
+      "tests": "test_decode_timeline.OutsideWire and Case.test_outside_*",
+      "replaces": "Two connected CPU halves: test_e3_native_reply_hol.Network supplies Queue-backed broadcast/response rings and a no-model execute leaf for the actual generated collective_rpc, ReplyTransport and generated WorkerProc dispatch. The existing handler Rig separately runs actual OutsideSampler tags through the real generated WorkerProc and recorder on all four ranks, with its declared CPU model/stream/event leaves. EngineSide policy/epoch uses SimpleNamespace. os.environ selects the observer. No CUDA work, stock output or all-rank completion is fabricated.",
+      "equivalence": "Engine sends preserve call order, reply FIFO, original args/results and future._progress=None; the diagnostic tag is popped before dispatch. Four-rank handler tests have no native operation and no native progress header, yet record metadata and each rank's own queried forward-event completion. Event query pending, malformed tag, unsupported cross-green timing, intervening execute and shared log cap are checked. Explicit manual SPLIT capture and manual FULL exclusion are covered.",
+      "cannot_prove": "A complete four-worker Core/model/GPU run, existence of same-SPLIT far strata, cross-green timing compatibility, real sampling overhead, NCCL or GPU timing accuracy."
     }
   ]
 }
