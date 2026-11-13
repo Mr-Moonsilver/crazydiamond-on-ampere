@@ -31,6 +31,11 @@ Method: the night-pack tool (tools/build_q2024p_j2_np.py, through it the ing, yr
     DECODE_SAMPLE_FAST_REVIEWED_FIX as an ancestor AND whose regenerated overlay decode_step.py carries both the
     exact overflow route and the watermark refusal (DECODE_SAMPLE_FAST_MARKERS); anything else is refused.
     FLASH_S5_DECODE_ANATOMY stays available.
+  * FLASH_S5_DECODE_TIMELINE (Codex 84135895 + 1469bd85, log-only, default off: bounded execute/sample samples inside and
+    outside native progress with each rank's own queried forward completion) in the settings line and asserted; it
+    needs FLASH_S5_HANDLER_ANATOMY=1, AUTO_ARM=1, NATIVE_PROGRESS=burst and FUSED_PHASE_EVERY in 1..4096 in the parent's
+    settings (TIMELINE_NEEDS, asserted at build time; decode_timeline.check_startup refuses the engine otherwise); its
+    module is a new overlay file and bound; its suite test_decode_timeline runs in the frozen CPU.
 Refused flag sets: settle with the yield window (settle sits where the window hands off), a decode-group mode other than
 chunk without the liveness observer (the guard would be blind), verify settings without ingress, and CONTROL_INWAIT with
 any of settle, the small-piece batch, ingress, a decode-group mode other than chunk or the liveness observer (none of
@@ -77,9 +82,10 @@ FLAGS = (
     ('FLASH_S5_CONTROL_O3_INWAIT', 'control_o3_inwait', ('0', '1'), '0'),   # scope 2, kept-SPLIT (Codex a59b1e7f)
     ('FLASH_S5_DECODE_SAMPLE_FAST', 'decode_sample_fast', ('0', '1'), '0'),   # lever D (decode_step, 13 Nov)
     ('FLASH_S5_DECODE_ANATOMY', 'decode_anatomy', ('0', '1'), '0'),           # clean-window anatomy (decode_step)
+    ('FLASH_S5_DECODE_TIMELINE', 'decode_timeline', ('0', '1'), '0'),         # log-only stamp (decode_timeline, 13 Nov)
 )
 EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait', 'control_o3_inwait',
-         'decode_sample_fast', 'decode_anatomy')                                                     # added on top of np's queues
+         'decode_sample_fast', 'decode_anatomy', 'decode_timeline')                                                     # added on top of np's queues
 # CONTROL_INWAIT=1 is refused with each of these (flag, value that is NOT refused): untested together
 CONTROL_INWAIT_UNTESTED = (('FLASH_S5_YIELD_REENTRY_SETTLE', '0'), ('FLASH_S5_SMALL_PIECE_BATCH', '0'),
                            ('FLASH_S5_INGRESS_INCREMENTAL', '0'), ('FLASH_S5_DECODE_GROUPS', 'chunk'),
@@ -97,6 +103,9 @@ CONTROL_INWAIT_ENV = ("'-e','PYTHONDONTWRITEBYTECODE=1',",
                       % (CONTROL_INWAIT_PARENT_FILE, CONTROL_O3_PARENT_FILE))
 # scope 2 needs these in the parent's settings line (s5_startup refuses the engine otherwise; refused here first)
 CONTROL_O3_NEEDS = ('FLASH_S5_AUTO_ARM=1 ', 'FLASH_S5_O3=1 ')
+# the decode-timeline stamp needs these in the parent's settings line (decode_timeline.check_startup); refused here first
+TIMELINE_NEEDS = ('FLASH_S5_HANDLER_ANATOMY=1 ', 'FLASH_S5_AUTO_ARM=1 ', 'FLASH_S5_NATIVE_PROGRESS=burst ')
+TIMELINE_FUSED = re.compile(r'(?<![A-Z_])FLASH_S5_FUSED_PHASE_EVERY=([0-9]+) ')
 # lever D (FLASH_S5_DECODE_SAMPLE_FAST): blocked 13 Nov 13:23 (Codex's engine review
 # REVIEW-codex-decode-step-20261113.md: more than WIDTH - K ties at the K-th value sampled a truncated support, counted
 # but never a fallback). The reviewed fix is 2eba0dd0 on claude/n3-decode-step ("lever D reviewed-fix"; Codex re-review
@@ -124,12 +133,13 @@ def decode_sample_fast_refusals(source_text, is_ancestor):
 
 BLOCKS = ('b1', 'b2', 'b3', 'b4')
 DRY = 'dry'
-BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control', 'decode_step')
+BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control', 'decode_step', 'decode_timeline')
 ENGINE_MOVED = {'e3/' + n + '.py' for n in BOUND_MODULES}
-NEW_OVERLAY_FILES = set(np.NEW_OVERLAY_FILES) | {'e3/decode_step.py'}     # decode_step: new in the overlay (13 Nov)
+# decode_step (13 Nov) and decode_timeline (Codex 1469bd85): new in the overlay
+NEW_OVERLAY_FILES = set(np.NEW_OVERLAY_FILES) | {'e3/decode_step.py', 'e3/decode_timeline.py'}
 SUITES = np.SUITES + ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups',
                       'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_control_inwait',
-                      'test_decode_step', 'test_decode_step_torch', 'test_control_o3_inwait')
+                      'test_decode_step', 'test_decode_step_torch', 'test_control_o3_inwait', 'test_decode_timeline')
 TOOLS = np.TOOLS + ('tools/build_q2024p_j2_dmp.py', 'tools/q2024p_j2_dmp_reader.py', 'tools/build_q2024p_j2_cx.py', 'tools/q2024p_j2_cx_finish.py', 'tools/q2024p_j2_cx_render.py',
                     'tools/q2024p_j2_cx_reader.py')
 CX_CONTAINER = "'q2024p-j2-cx-frozen-cpu-'"
@@ -234,6 +244,12 @@ def queues(variant):
             if v['control_o3_inwait'] == '1':   # s5_startup refuses the engine without them; refuse here first
                 for need in CONTROL_O3_NEEDS:
                     assert need in text, 'FLASH_S5_CONTROL_O3_INWAIT=1 needs %sin the settings' % need
+            if v['decode_timeline'] == '1':     # decode_timeline.check_startup refuses the engine otherwise
+                for need in TIMELINE_NEEDS:
+                    assert need in text, 'FLASH_S5_DECODE_TIMELINE=1 needs %sin the settings' % need
+                every = set(TIMELINE_FUSED.findall(text))
+                assert len(every) == 1 and 1 <= int(every.pop()) <= 4096, \
+                    'FLASH_S5_DECODE_TIMELINE=1 needs one FLASH_S5_FUSED_PHASE_EVERY in 1..4096 in the settings'
             text = hgb.once(text, setting, setting + ''.join('%s=%s ' % kv for kv in extra))
         else:
             text = hgb.once(text, check, check + ''.join(
@@ -260,7 +276,11 @@ def copy_delta(b, commit, bundle):
                  'patches/s5_engine/s5_startup.py', 'patches/s5_engine/executor_hooks.py',
                  'harness/test_decode_step.py', 'harness/test_decode_step_torch.py', 'patches/s5_engine/decode_step.py',
                  'patches/s5_engine/stage_overlap.py',
-                 'patches/s5_engine/native_overlap_control.py', 'patches/s5_engine/scheduler_hooks.py'):
+                 'patches/s5_engine/native_overlap_control.py', 'patches/s5_engine/scheduler_hooks.py',
+                 'patches/s5_engine/decode_timeline.py', 'patches/s5_engine/handler_anatomy.py',
+                 'patches/s5_engine/native_measurement.py', 'harness/test_decode_timeline.py',
+                 'harness/decode_timeline_fixture_leaves.json', 'harness/decode_timeline_parent_ast.json',
+                 'harness/receipt_lines.py'):
         assert name in copied, name
     return copied
 

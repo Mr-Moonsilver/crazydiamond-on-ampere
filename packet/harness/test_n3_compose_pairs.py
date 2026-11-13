@@ -45,6 +45,12 @@ D x CONTROL_INWAIT (brief 7, 13 Nov): the CI window flow (A off and on) and both
 D samples fast on the decode steps CI lets run beside the identity observation (phase control_observe), the anatomy
 window is never eligible there (the policy is not idle), and views, controls, CI counters, call counters and tick
 counts equal those without D; the races' own assertions hold with D stepped.
+DECODE_TIMELINE x DECODE_ANATOMY (brief 10, 13 Nov; ayc2t carries both, with CI and scope 2): one outside-native-progress
+execute / sample / untagged execute through the generated WorkerProc and the real handler recorder on every rank, with
+the timeline tag, decode_step's clean-window tag, both, or neither: both tags are popped before dispatch, the replies
+are the same, the clean window's rows are the only handler rows when both are on (the timeline adds no second row for
+an RPC the window already records), and the timeline still writes its one d row with the same metadata and its own
+completion bound. Mutant: a worker that begins a timeline row beside the clean-window row is caught.
 CPU only; no box, GPU or torch device.
 """
 from pathlib import Path
@@ -653,6 +659,100 @@ class DWithO3(AnatomyWithO3):
         self.assertTrue([t for t in o3 if (t['sample'] or [0])[0] == 1], 'D must be gated on in some scope-2 step')
         every = [t for _, trace in traces for t in trace]
         self.assertTrue(all((t['sample'] or [0])[0] == (1 if t['native'] else 0) for t in every))
+
+
+class TimelineWithAnatomy(unittest.TestCase):
+    """DECODE_TIMELINE x DECODE_ANATOMY on the worker RPC path (see the module docstring)."""
+
+    def run_rpcs(self, rank, anatomy, timeline):
+        import contextlib
+        import json
+        import os
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        import decode_step as ds
+        import decode_timeline as dt
+        import executor_hooks as eh
+        from graph_router import ExecutionDescriptor
+        import test_decode_timeline as tdt
+        import test_stage1_handler_anatomy as ha
+        case = tdt.Case('test_outside_native_chunks_all_ranks_have_own_local_completion_proof')
+        self.addCleanup(case.doCleanups)
+        lines, sent = [], []
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(os.environ, {ds.ANATOMY_ENV: '1' if anatomy else '0'}))
+            stack.enter_context(mock.patch.object(eh, '_DECODE_STEP', ds if anatomy else False))
+            stack.enter_context(mock.patch.object(eh, '_DECODE_STEP_WORKER', None))
+            stack.enter_context(mock.patch.object(dt, 'emit_receipt_lines',
+                                                  side_effect=lambda texts, logger: lines.extend(texts)))
+            r, port, recorder = case.rig(rank=rank, selected=timeline)
+            sampler = dt.OutsideSampler()
+            sampler.enabled, sampler.epoch = True, 1
+            output = NS(num_scheduled_tokens={'pair-member': 1},
+                        scheduled_cached_reqs=NS(req_ids=['pair-member'], num_computed_tokens=[48000]),
+                        descriptor=ExecutionDescriptor('full', 4, 4, 1, 1))
+            first = r.seq + 1
+            for method, args in (('execute_model', (output,)), ('sample_tokens', (None,)), ('execute_model', (output,))):
+                r.seq += 1
+                kwargs = {}
+                tag = sampler.wire(method, r.seq, args, True) if timeline else None
+                if tag is not None:
+                    kwargs[dt.OUTSIDE_KEY] = tag
+                if anatomy:
+                    kwargs[ds.WIRE_KEY] = [0, ds.TAG_RECORD, r.seq]
+                sent.append(sorted(kwargs))
+                r.proc._execute_worker_rpc((method, args, kwargs, ha.OUTPUT_RANK))
+                self.assertEqual(kwargs, {}, (rank, anatomy, timeline, method))         # every tag popped
+                if method == 'sample_tokens':
+                    r.torch.device.advance()
+            replies = [(x[0], type(x[1]).__name__) for x in r.replies(3)]
+            rows = [tuple(row[:2]) for row in (recorder.rows if recorder else [])]
+            clean = dict(eh._DECODE_STEP_WORKER.counters) if anatomy else None
+        docs = [json.loads(x[len(dt.TimelineTrace.LINE):]) for x in lines]
+        d = [row for doc in docs for row in doc['rows'].get('d', [])]
+        return dict(sent=sent, replies=replies, rows=rows, clean=clean, d=d, docs=docs, first=first)
+
+    def check_rank(self, rank):
+        got = {(a, t): self.run_rpcs(rank, a, t) for a in (False, True) for t in (False, True)}
+        replies = {k: v['replies'] for k, v in got.items()}
+        self.assertEqual(len(set(map(tuple, replies.values()))), 1, replies)    # same replies in all four
+        both, alone, anatomy = got[(True, True)], got[(False, True)], got[(True, False)]
+        self.assertEqual(both['sent'][0], ['_flash_s5_ds', '_flash_s5_dt'])
+        self.assertEqual(both['rows'], anatomy['rows'])                         # no second row beside the window's
+        self.assertEqual(both['clean']['clean_rows'], 3)
+        self.assertEqual(both['clean']['errors'], 0)
+        for side in (both, alone):
+            self.assertEqual(len(side['d']), 1)
+            self.assertEqual(side['d'][0][0], side['first'])                    # the tagged execute's transport seq
+            self.assertIsNotNone(side['d'][0][-1])                              # its own completion query
+            self.assertTrue(all(x['scope'] == 'outside-native-progress' for x in side['docs']))
+        self.assertEqual(both['d'][0][1], alone['d'][0][1])                     # the same metadata
+        self.assertEqual(got[(False, False)]['d'], [])
+        self.assertEqual(anatomy['d'], [])
+        return got
+
+    def test_both_tags_on_every_rank(self):
+        for rank in range(4):
+            self.check_rank(rank)
+
+    def test_second_row_beside_the_window_caught(self):
+        import inspect
+        import textwrap
+        from unittest import mock
+        import executor_hooks as eh
+        source = textwrap.dedent(inspect.getsource(eh.worker_rpc_begin))
+        guard = 'if sequence is not None and PROGRESS_META_KEY not in kwargs and clean is None:'
+        self.assertEqual(source.count(guard), 1)
+        import types
+        scope = {}
+        exec(compile(source.replace(guard, 'if sequence is not None and PROGRESS_META_KEY not in kwargs:'),
+                     '<worker-rpc-begin-mutant>', 'exec'), dict(vars(eh)), scope)
+        made = scope['worker_rpc_begin']                 # bound to the live module globals (patched switches seen)
+        mutant = types.FunctionType(made.__code__, eh.__dict__, made.__name__, made.__defaults__, made.__closure__)
+        self.assertEqual(self.run_rpcs(2, True, True)['rows'], self.run_rpcs(2, True, False)['rows'])
+        with mock.patch.object(eh, 'worker_rpc_begin', mutant):
+            both, anatomy = self.run_rpcs(2, True, True), self.run_rpcs(2, True, False)
+        self.assertNotEqual(both['rows'], anatomy['rows'])                      # the extra row the guard prevents
 
 
 if __name__ == '__main__':

@@ -66,6 +66,7 @@ class Flags(unittest.TestCase):
                       ['FLASH_S5_YIELD_NO_APPEND_OWNER=1'], ['FLASH_S5_YIELD_WINDOW=1'],
                       ['FLASH_S5_APPEND_NO_BLOCK_STOP=1'], ['FLASH_S5_DECODE_LIVENESS=1'], ['FLASH_S5_CONTROL_INWAIT=1'],
                       ['FLASH_S5_CONTROL_INWAIT=1', 'FLASH_S5_CONTROL_O3_INWAIT=1'], ['FLASH_S5_DECODE_ANATOMY=1'],
+                      ['FLASH_S5_DECODE_TIMELINE=1'],
                       ['FLASH_S5_INGRESS_INCREMENTAL=1', 'FLASH_S5_INGRESS_VERIFY_EVERY=16', 'FLASH_S5_INGRESS_VERIFY_ASYNC=1'],
                       ['FLASH_S5_DECODE_GROUPS=off', 'FLASH_S5_DECODE_LIVENESS=1'],
                       ['FLASH_S5_DECODE_GROUPS=off-small', 'FLASH_S5_DECODE_LIVENESS=1']):
@@ -87,6 +88,10 @@ class Flags(unittest.TestCase):
                                'FLASH_S5_YIELD_WINDOW=1', 'FLASH_S5_CONTROL_INWAIT=1', 'FLASH_S5_CONTROL_O3_INWAIT=1',
                                'FLASH_S5_DECODE_ANATOMY=1'])
         self.assertEqual((ayc2['FLASH_S5_CONTROL_O3_INWAIT'], ayc2['FLASH_S5_DECODE_SAMPLE_FAST']), ('1', '0'))
+        ayc2t = cx.parse_flags(['FLASH_S5_APPEND_NO_BLOCK_STOP=1', 'FLASH_S5_YIELD_NO_APPEND_OWNER=1',
+                                'FLASH_S5_YIELD_WINDOW=1', 'FLASH_S5_CONTROL_INWAIT=1', 'FLASH_S5_CONTROL_O3_INWAIT=1',
+                                'FLASH_S5_DECODE_ANATOMY=1', 'FLASH_S5_DECODE_TIMELINE=1'])
+        self.assertEqual(dict(ayc2, FLASH_S5_DECODE_TIMELINE='1'), ayc2t)      # ayc2s plus the stamp, nothing else
 
     def test_refusals(self):
         self.refuses(['FLASH_S5_YIELD_REENTRY_SETTLE=1', 'FLASH_S5_YIELD_WINDOW=1'])
@@ -114,6 +119,7 @@ class Flags(unittest.TestCase):
             self.assertEqual(cx.parse_flags([])[key], safe)
         self.refuses(['FLASH_S5_DECODE_SAMPLE_FAST=2'])
         self.refuses(['FLASH_S5_DECODE_ANATOMY=yes'])
+        self.refuses(['FLASH_S5_DECODE_TIMELINE=2'])
         # scope 2 needs scope 1; its untested pairs are scope 1's (refused through CONTROL_INWAIT=1)
         self.refuses(['FLASH_S5_CONTROL_O3_INWAIT=1'])
         self.refuses(['FLASH_S5_CONTROL_O3_INWAIT=2', 'FLASH_S5_CONTROL_INWAIT=1'])
@@ -223,7 +229,7 @@ class Names(unittest.TestCase):
 
 COMPOSE = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS',
            'FLASH_S5_CONTROL_INWAIT', 'FLASH_S5_CONTROL_O3_INWAIT', 'FLASH_S5_DECODE_SAMPLE_FAST',
-           'FLASH_S5_DECODE_ANATOMY')
+           'FLASH_S5_DECODE_ANATOMY', 'FLASH_S5_DECODE_TIMELINE')
 QUEUE = re.compile(r'^q18a_parity_n3s24q2024p_j2_cx([a-z0-9]{0,8})_(b[1-4]|dry)_settings\.sh$')
 
 
@@ -359,6 +365,51 @@ class Queues(unittest.TestCase):
                         cx.queues('b1')
                 finally:
                     cx._np_queues = original
+        finally:
+            cx.CONFIG.update(saved)
+
+    def test_decode_timeline_flag_in_the_queues(self):
+        """The timeline stamp rides the settings line and the asserts; its module is a new, bound overlay file and its suite
+        runs in the frozen CPU. A parent settings line without handler anatomy, auto-arm, burst progress or one fused
+        sampling period in 1..4096 is refused at render time (decode_timeline.check_startup would refuse the engine)."""
+        if (HERE / 'n3j2_packet.py').is_file():
+            return                                  # a bundle: its own queue is checked by test_settings_asserts_export_gate
+        self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
+        flags = cx.parse_flags(['FLASH_S5_DECODE_TIMELINE=1'])
+        saved = dict(cx.CONFIG)
+        try:
+            cx.configure(flags, 'zl')
+            texts = cx.queues('b1')
+            self.assertIn('e3/decode_timeline.py', cx.hgb.NEW_OVERLAY_FILES)
+            self.assertIn('decode_timeline', cx.ing.BOUND_MODULES)
+            self.assertIn('test_decode_timeline', cx.SUITES)
+            settings = next(t for r, t in texts.items() if r.endswith('_settings.sh'))
+            self.assertIn('FLASH_S5_DECODE_ANATOMY=0 FLASH_S5_DECODE_TIMELINE=1 ', settings)
+            self.check_texts(texts, flags, cx.name_of('b1', 'zl'))
+            original = cx._np_queues
+            for old, new in (('FLASH_S5_HANDLER_ANATOMY=1 ', 'FLASH_S5_HANDLER_ANATOMY=0 '),
+                             ('FLASH_S5_AUTO_ARM=1 ', 'FLASH_S5_AUTO_ARM=0 '),
+                             ('FLASH_S5_NATIVE_PROGRESS=burst ', 'FLASH_S5_NATIVE_PROGRESS=0 '),
+                             ('FLASH_S5_FUSED_PHASE_EVERY=16 ', 'FLASH_S5_FUSED_PHASE_EVERY=0 '),
+                             ('FLASH_S5_FUSED_PHASE_EVERY=16 ', 'FLASH_S5_FUSED_PHASE_EVERY=5000 '),
+                             ('FLASH_S5_FUSED_PHASE_EVERY=16 ', '')):
+                self.assertIn(old, settings)
+                cx._np_queues = lambda variant, old=old, new=new: {
+                    r: t.replace(old, new) for r, t in original(variant).items()}
+                try:
+                    with self.assertRaises(AssertionError, msg=old + '->' + new):
+                        cx.queues('b1')
+                finally:
+                    cx._np_queues = original
+            off = cx.parse_flags([])                 # the stamp off: none of its needs is asserted
+            cx.configure(off, 'zl')
+            cx._np_queues = lambda variant: {r: t.replace('FLASH_S5_FUSED_PHASE_EVERY=16 ', '')
+                                             for r, t in original(variant).items()}
+            try:
+                self.assertIn('FLASH_S5_DECODE_TIMELINE=0 ', next(t for r, t in cx.queues('b1').items()
+                                                                if r.endswith('_settings.sh')))
+            finally:
+                cx._np_queues = original
         finally:
             cx.CONFIG.update(saved)
 
