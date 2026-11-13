@@ -106,6 +106,13 @@ def install(engine, driver, env):
         raise E3ContractError('invalid boolean setting: FLASH_S5_CONTROL_INWAIT')
     if control_inwait == '1':
         policy.control_inwait = ControlInWait(policy)
+    control_o3 = env.get('FLASH_S5_CONTROL_O3_INWAIT', '0')
+    if control_o3 not in ('0', '1'):
+        raise E3ContractError('invalid boolean setting: FLASH_S5_CONTROL_O3_INWAIT')
+    if control_o3 == '1':
+        if control_inwait != '1' or not policy.o3:
+            raise E3ContractError('FLASH_S5_CONTROL_O3_INWAIT needs CONTROL_INWAIT=1 and O3=1')
+        policy.control_inwait.enable_o3()
     driver.auto_arm = policy
     return policy
 
@@ -141,7 +148,10 @@ def _generation_logprobs_refused(params):
 
 
 class ControlInWait:
-    """Overlap a host-only FULL identity with decode; never overlap a bank switch."""
+    """Overlap host-only observations with decode; retain output and route fences."""
+
+    o3 = False
+    o3_active = False
 
     def __init__(self, policy):
         self.policy = policy
@@ -155,11 +165,15 @@ class ControlInWait:
         self.identity = None
 
     def snapshot(self):
-        return dict(schema='s5-control-inwait/1', enabled=True,
+        result = dict(schema='s5-control-inwait/1', enabled=True,
                     stall_basis='PAUSED_ALL host interval; not GPU idle or client token gap',
                     unchanged=('split-kept-handback-cut', 'full-return', 'cancel', 'rollback'),
                     transitions={key: dict(value, drains_kept=dict(value['drains_kept']))
                                  for key, value in self.rows.items()})
+        if self.o3:
+            result.update(o3_enabled=True, cut_pending=len(self.cut), cut_bound=2)
+            result['unchanged'] = ('native-source-PP-retirement', 'full-return', 'cancel', 'rollback')
+        return result
 
     def pause(self, state):
         now = time.monotonic_ns()
@@ -167,10 +181,9 @@ class ControlInWait:
             self.stall_ns += now - self.paused_ns
         self.paused_ns = now if getattr(state, 'name', str(state)) == 'PAUSED_ALL' else None
 
-    def begin(self):
-        p, d = self.policy, self.policy.driver
+    def _start_count(self, kind):
         if self.row is None:
-            self.kind = 'yield-full-reentry' if p.reentry else 'full-entry'
+            self.kind = kind
             self.row = self.rows.setdefault(self.kind, dict(
                 attempts=0, refused=0, invalidated=0, armed=0, closed=0,
                 drains_skipped=0, drains_kept={'applied-output-cut': 0, 'typed-route-fence': 0},
@@ -178,6 +191,10 @@ class ControlInWait:
                 decoder_stall_max_ms=0.))
             self.started_ns = self.paused_ns if self.paused_ns is not None else time.monotonic_ns()
             self.stall_ns = 0
+
+    def begin(self):
+        p, d = self.policy, self.policy.driver
+        self._start_count('yield-full-reentry' if p.reentry else 'full-entry')
         if self.certified:
             self.row['invalidated'] += 1
         self.certified = False
@@ -244,6 +261,8 @@ class ControlInWait:
         now = time.monotonic_ns()
         stall = self.stall_ns + (0 if self.paused_ns is None else now - self.paused_ns)
         self.row['armed' if armed else 'closed'] += 1
+        if self.o3_active and armed:
+            self.row['arms_with_later_frames'] += int(bool(self.policy.engine.batch_queue))
         self.row['decoder_stall_ms'] += stall / 1e6
         self.row['decoder_stall_max_ms'] = max(self.row['decoder_stall_max_ms'], stall / 1e6)
         if armed:
@@ -256,6 +275,109 @@ class ControlInWait:
         self.cohort = ()
         self.identity = None
         self.certified = False
+        if self.o3:
+            self.cut = []
+            self.o3_result = self.o3_reason = None
+            self.o3_active = False
+
+    def enable_o3(self):
+        scheduler = self.policy.scheduler
+        original = getattr(scheduler, 'update_from_output', None)
+        if (not callable(original) or getattr(scheduler, '_flash_s5_control_cut', None) is not None):
+            raise E3ContractError('control-inwait needs one owned scheduler output hook')
+        self.o3 = True
+        self.cut = []
+        self.o3_result = self.o3_reason = None
+
+        def applied(scheduler_output, model_runner_output):
+            result = original(scheduler_output, model_runner_output)
+            for index, output in enumerate(self.cut):
+                if output is scheduler_output:
+                    self.cut.pop(index)
+                    self.row['cut_frames_applied'] += 1
+                    break
+            return result
+        scheduler.update_from_output = applied
+        scheduler._flash_s5_control_cut = self
+
+    def begin_o3(self):
+        p, d = self.policy, self.policy.driver
+        if self.o3_active:
+            raise E3ContractError('control-inwait-stock-output-cut-already-owned')
+        if d._return_pending is not None or d._route_exchange() is not None:
+            return False
+        queue = p.engine.batch_queue
+        if (len(queue) > 2 or any(type(item) is not tuple or len(item) != 3 for item in queue)
+                or len({id(item[1]) for item in queue}) != len(queue)):
+            raise E3ContractError('control-inwait-stock-output-cut-invalid; ownership retained')
+        self._start_count('split-kept-yield' if p.o3_yield else 'split-kept-entry')
+        self.row.setdefault('cut_frames_issued', 0)
+        self.row.setdefault('cut_frames_applied', 0)
+        self.row.setdefault('arms_with_later_frames', 0)
+        self.row['attempts'] += 1
+        self.o3_active = True
+        self.cut = [item[1] for item in queue]
+        self.row['cut_frames_issued'] += len(self.cut)
+        self.members = tuple((r.request_id, r) for r in p.scheduler.running)
+        self.cohort = p.cohort
+        self.identity = (d.engine_epoch, d.route_generation)
+        p._pause(type(p.old_pause).PAUSED_NEW)
+        p._o3_census_begin()
+        if p.phase == 'o3_census':
+            p.phase = 'control_o3_observe'
+            self.row['drains_skipped'] += 1  # Queue-wide drain replaced by a finite applied prefix.
+            self.row['drains_kept']['applied-output-cut'] += 1
+        return False
+
+    def refuse_o3(self, why):
+        self.row['refused'] += 1
+        kept = self.row['drains_kept']
+        kept['fallback-full-cut'] = kept.get('fallback-full-cut', 0) + 1
+        self.o3_reason = why
+        self.policy._pause(type(self.policy.old_pause).PAUSED_ALL)
+        self.policy.phase = 'control_o3_rollback'
+        return False
+
+    def poll_o3(self):
+        p, d = self.policy, self.policy.driver
+        if p.phase == 'control_o3_rollback':
+            if p.engine.batch_queue:
+                return False
+            why = self.o3_reason
+            self.row['drains_kept']['typed-route-fence'] += 1
+            self.close(False)
+            return p._o3_refuse(why)
+        d.control_tick()
+        if p.phase == 'control_o3_observe':
+            if p.pending is None or not p.pending.done():
+                return False
+            self.o3_result = p.pending.result()
+            p.pending = None
+            p.phase = 'control_o3_cut'
+        if self.cut:
+            return False
+        if (not self.current() or p._request() is None or p._o3_plan(p._request()) != p.plan
+                or p._cohort() != p.cohort):
+            return self.refuse_o3('selection-changed-after-census')
+        if p.o3_yield and not d.append_yield_active():
+            return self.refuse_o3('yield-ended-during-reentry')
+        allowed = p.o3_ledger | ({p.o3_joined} if p.o3_joined is not None else frozenset())
+        if d.route_generation != p.o3_split_generation:
+            return self.refuse_o3('generation')
+        if not set(p.cohort) <= allowed:
+            return self.refuse_o3('ledger')
+        if not p._o3_covers(max(1, len(p.cohort))):
+            return self.refuse_o3('counts')
+        if p.o3_joined in p.cohort:
+            joined = p.scheduler.requests.get(p.o3_joined)
+            if joined is None or joined.num_output_tokens <= 0:
+                return self.refuse_o3('handback-output-unapplied')
+        if not p._o3_proof(self.o3_result):
+            return self.refuse_o3('census')
+        if d.active or d.admission_intent() is not None:
+            return self.refuse_o3('driver-owned')
+        p._o3_arm()
+        return False
 
 
 class AutoArmPolicy:
@@ -582,6 +704,8 @@ class AutoArmPolicy:
     def _o3_refuse(self, why):
         """A split continuation that cannot be proven: today's FULL return (leave_split), then the frozen close. Under (b) the
         bulk's re-entry is not closed: the route returns FULL and today's re-entry runs from its drain (never a silent drop)."""
+        if self.control_inwait is not None and self.control_inwait.o3_active:
+            return self.control_inwait.refuse_o3(why)
         self._o3_count('refused', why)
         if self.o3_yield:
             self._o3_count('yield_full', why)
@@ -644,6 +768,8 @@ class AutoArmPolicy:
             d._arm_admission(PHASE)
         finally:
             self._internal = False
+        if self.control_inwait is not None and self.control_inwait.o3_active:
+            self.control_inwait.close(True)
         self.phase = 'native'
         self.schedule_before = self.controller._schedule_seq
         self.admitted_before = self.controller.admitted
@@ -1774,7 +1900,11 @@ class AutoArmPolicy:
             raise E3ContractError('auto-arm-entry-or-return-deadline-expired; ownership retained')
         if self.phase == 'control_observe':
             return self.control_inwait.poll()
+        if self.phase in ('control_o3_observe', 'control_o3_cut', 'control_o3_rollback'):
+            return self.control_inwait.poll_o3()
         if self.phase == 'o3_drain':
+            if self.control_inwait is not None and self.control_inwait.o3:
+                return self.control_inwait.begin_o3()
             if getattr(self.engine, 'batch_queue', None):
                 return False                   # the handback step (and any decode step) lands first
             self._gap('drain_empty')
