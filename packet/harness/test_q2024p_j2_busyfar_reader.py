@@ -55,7 +55,7 @@ class Record:
             seq = self.rseq.get(pid, 0)
             self.rseq[pid] = seq + 1
             doc = dict(b, schema=reader.SCHEMAS[{'handler': 'handler', 'progress': 'progress', 'anatomy': 'anatomy',
-                                                  'native-gap': 'gap'}[kind]])
+                                                  'native-gap': 'gap', 'decode-timeline': 'timeline'}[kind]])
             if kind != 'native-gap':
                 doc.update(line=line_no, part=i, parts=len(bodies))
             if (pid, seq) in self.skip_rseq:
@@ -80,22 +80,49 @@ SEAMS = ['execute', 'forward', 'prep_states']
 DEF = dict(D=(15.0, 10.0), H=0.2, obs=0.1)
 
 
+META = dict(actual_rows=8, actual_tokens=8, uid_digest='u' * 64, history_tokens=[1000] * 8, bank='split',
+            route_generation=1, decode_sms=24, bank_sms=24, stream=7, cg_mode='FULL', num_tokens=8, num_reqs=8,
+            uniform_token_count=1, max_query_len=1, num_ubatches=None, forward_calls=1, handler_flags=0,
+            completion='own-forward-end-event-query')
+
+
+TL_FIELDS = dict(d=list(reader.D_FIELDS), p=['phase', 'layer', 'group', 'bucket', 'stream', 'start_ms', 'end_ms'],
+                 s=['complete', 'counters'])
+
+
 def standard(rec=None, busy_D=15.0, far_D=10.0, far_at=2500.0, busy_at=300.0, peers=None, drop_rank_seq=(),
-             null_dev=(), first_nonempty=False, far=True, env_core=(100.0, 900.0), h_ns=200_000, nulls_H=()):
+             null_dev=(), first_nonempty=False, far=True, env_core=(100.0, 900.0), h_ns=200_000, nulls_H=(),
+             extra_busy=False, outside=False, outside_at=1400.0, timeline=False, tl_drop=(), tl_meta=None, tl_dev=None,
+             qnative=None, idle=None, tl_stamp=None):
     """Chunk A (txn 1): native envelope [100, 900] ms on every rank, busy execute seq 11 at busy_at. Chunk B (txn 2):
-    envelope [2000, 2100] ms, far execute seq 21 at far_at. Samples 12 / 22; rank 2 returns the outputs."""
+    envelope [2000, 2100] ms, far execute seq 21 at far_at. Samples 12 / 22; rank 2 returns the outputs.
+
+    Timeline options (decode-timeline stamp): ``extra_busy`` a second busy step 14/15/16 in chunk A (cadence 11 -> 15);
+    ``outside`` an outside-native-progress pair 17/18 at outside_at between the chunks (no engine progress rows);
+    ``timeline`` d rows on every rank: one native session per (rank, txn) and one outside session per rank, own
+    completion at t_enter + D + 5 ms; ``tl_drop`` (rank, seq) d rows left out; ``tl_meta`` / ``tl_dev`` per-row overrides;
+    ``qnative`` {rank: ms} a native handler on that rank's worker thread from busy_at - 1 for ms; ``idle``
+    {(rank, seq): idle_before_launch}; ``tl_stamp`` wall stamp of the outside timeline lines."""
     rec = rec or Record()
     peers = peers or {}
+    idle = idle or {}
     steps = [(10, 11, 12, busy_at, busy_D, 1)]
+    if extra_busy:
+        steps.append((14, 15, 16, busy_at + 30, busy_D, 1))
     if far:
         steps.append((20, 21, 22, far_at, far_D, 2))
-    # engine progress chunks (pid 1)
-    for (e0, e1, sm, at, _, txn) in steps:
+    if outside:
+        steps.append((None, 17, 18, outside_at, far_D, None))
+    # engine progress chunks (pid 1), one flush per txn
+    for txn in sorted({s[5] for s in steps if s[5] is not None}):
         lo = env_core[0] if txn == 1 else 2000.0
         hi = env_core[1] if txn == 1 else 2100.0
-        s_rows = [[e0, 'execute_model', us(at - 2), us(at - 1.5), us(at - 1)],
-                  [e1, 'execute_model', us(at - 1), us(at - 0.5), us(at)],
-                  [sm, 'sample_tokens', us(at + 20), us(at + 20.5), us(at + 21)]]
+        s_rows = []
+        for (e0, e1, sm, at, _, x) in steps:
+            if x == txn:
+                s_rows += [[e0, 'execute_model', us(at - 2), us(at - 1.5), us(at - 1)],
+                           [e1, 'execute_model', us(at - 1), us(at - 0.5), us(at)],
+                           [sm, 'sample_tokens', us(at + 20), us(at + 20.5), us(at + 21)]]
         n_rows = [[100 * txn + k, 'flash_s5_submit', 0, k, 0, k, 'o', us(lo + k), us(lo + k), None, None, None, None,
                    us(hi - k), 'ok', False] for k in range(2)]
         rec.emit('progress', dict(side='engine', rank=None, base_ns=T, txn=txn, request_generation=1,
@@ -112,6 +139,11 @@ def standard(rec=None, busy_D=15.0, far_D=10.0, far_at=2500.0, busy_at=300.0, pe
                               fields=dict(r=['seq', 'kind', 't_enter', 't_exit', 't_emit', 'direct', 'replied']),
                               rows=dict(r=[[x, 'flash_s5_submit', us(150), us(151), us(151), True, True] for x in native])),
              W0 + 30, pid=10)
+    for rank, q in sorted((qnative or {}).items()):
+        rec.emit('progress', dict(side='worker', rank=rank, base_ns=T, dropped=0,
+                                  fields=dict(r=['seq', 'kind', 't_enter', 't_exit', 't_emit', 'direct', 'replied']),
+                                  rows=dict(r=[[13, 'flash_s5_submit', us(busy_at - 1), us(busy_at - 1 + q),
+                                                us(busy_at - 1 + q), True, True]])), W0 + 30, pid=10 + rank)
     # worker anatomy per rank and chunk
     for rank in range(4):
         for txn, (lo, hi) in ((1, env_core), (2, (2000.0, 2100.0))):
@@ -124,11 +156,12 @@ def standard(rec=None, busy_D=15.0, far_D=10.0, far_at=2500.0, busy_at=300.0, pe
         m, a = [], []
         for (e0, e1, sm, at, D, txn) in steps:
             dev = peers.get((rank, e1), D)
-            m.append([e0, 'e', int(rank >= 2), 0, us(at - 1), us(at - 0.8), 200000, 190000, 1000, None, None, None, None,
-                      None, [[0, 100000, 100000, 90000, 1]] + ([[1, 1, 1, 1, 1]] if first_nonempty else [])])
+            if e0 is not None:
+                m.append([e0, 'e', int(rank >= 2), 0, us(at - 1), us(at - 0.8), 200000, 190000, 1000, None, None, None,
+                          None, None, [[0, 100000, 100000, 90000, 1]] + ([[1, 1, 1, 1, 1]] if first_nonempty else [])])
             if (rank, e1) not in drop_rank_seq:
                 m.append([e1, 'e', int(rank >= 2), 0, us(at), us(at + 3), 3000000, 2900000, 100000,
-                          None if (rank, e1) in null_dev else int(dev * MS), None, 0, 0, 5000,
+                          None if (rank, e1) in null_dev else int(dev * MS), None, idle.get((rank, e1), 0), 0, 5000,
                           [[0, 3000000, 2000000, 2900000, 1]] +
                           ([[1, None if (rank, e1) in nulls_H else h_ns, h_ns, h_ns, 1]])])
             m.append([sm, 's', int(rank >= 2), 0, us(at + 21), us(at + 23), 2000000, 1900000, 2000, None, 1000000, None,
@@ -140,6 +173,34 @@ def standard(rec=None, busy_D=15.0, far_D=10.0, far_at=2500.0, busy_at=300.0, pe
                 a.append([sm, 0, us(at + 23), None, None, 30000, us(at + 23.1), 1000])
         rec.emit('handler', dict(side='worker', rank=rank, base_ns=T, head=dict(seams=SEAMS, counters=dict(rows_dropped=0)),
                                  rows=dict(m=m, a=a)), W0 + 40, pid=10 + rank)
+    if timeline:
+        tl_meta, tl_dev = tl_meta or {}, tl_dev or {}
+
+        def d_row(rank, e1, at, D, start, end):
+            meta = dict(META, **tl_meta.get((rank, e1), {}))
+            dev = tl_dev.get((rank, e1), int(peers.get((rank, e1), D) * MS))
+            return [e1, meta, start, end, dev, 3000000, 100000, us(at), us(at + 3), us(at + D + 5)]
+        for rank in range(4):
+            for txn in sorted({s[5] for s in steps if s[5] is not None}):
+                ds = [d_row(rank, e1, at, D, 1.0, 1.0 + D) for (e0, e1, sm, at, D, x) in steps
+                      if x == txn and (rank, e1) not in tl_drop]
+                rec.emit('decode-timeline', dict(
+                    side='worker', rank=rank, base_ns=T, engine_epoch=1, request_generation=1, txn=txn,
+                    chunk_start=0 if txn == 1 else 2048, chunk_end=2048 if txn == 1 else 4096, sample=txn,
+                    sample_every=16, session_limit=256, byte_limit=4 << 20, anchor='native-phase-event',
+                    anchor_sample=txn, stage=rank // 2, route_generation=1, phases=1, forwards=len(ds), cancelled=False,
+                    timing_backend_available=True, dropped=0, fields=TL_FIELDS,
+                    rows=dict(d=ds, p=[['attention', 'layer.0', 0, 8, 7, 0.5, 2.0]], s=[[True, {}]])),
+                    W0 + 41 + txn, pid=10 + rank, stream=('tl', txn))
+            for (e0, e1, sm, at, D, x) in steps:
+                if x is None and (rank, e1) not in tl_drop:
+                    rec.emit('decode-timeline', dict(
+                        side='worker', rank=rank, base_ns=T, scope='outside-native-progress', engine_epoch=1,
+                        stage=rank // 2, sample='outside-1', sample_every=64, anchor_sample='outside-1',
+                        engine_send_ns=T + us(at - 1) * 1000, execute_seq=e1, byte_limit=4 << 20, sample_limit=1024,
+                        anchor='this-decode-forward-first-event', basis='local', dropped=0, fields=TL_FIELDS,
+                        rows=dict(d=[d_row(rank, e1, at, D, 0.0, D)], s=[[True, {}]])),
+                        tl_stamp if tl_stamp is not None else W0 + 45, pid=10 + rank, stream=('tl', 'outside-1'))
     # native-gap: route generation 1 from before the run
     rec.emit('native-gap', dict(event='chunk_open', observed_ns=T + 50 * MS, route_generation=1, engine_epoch=1,
                                 gap_seq=0, recording=True, coverage_complete=True, txn=1), W0 + 5, pid=1)
@@ -157,8 +218,8 @@ def item(items, rank, seq):
     return next(i for i in items if i['rank'] == rank and i['seq'] == seq)
 
 
-def table(doc, rank):
-    return next(t for t in doc['tables'] if t['rank'] == str(rank))
+def table(doc, rank, group=None):
+    return next(t for t in doc['tables'] if t['rank'] == str(rank) and (group is None or t['group'] == group))
 
 
 class Receipts(unittest.TestCase):
@@ -326,6 +387,198 @@ class Mutants(unittest.TestCase):
         real = reader.num
         with mock.patch.object(reader, 'num', lambda v: 0 if v is None else real(v)):
             self.assertFalse(null_rule_holds())
+
+
+# --- decode-timeline stamp ------------------------------------------------------------------------------------------
+def tl_run(**kw):
+    arms = kw.pop('arms', None)
+    rec = standard(timeline=True, **kw)
+    return run(rec, **({'arms': arms} if arms else {}))
+
+
+def own_u_rule_holds():
+    """A rank without its own d row stays unlocated even though rank 2's get_output would bound it (no borrowed U)."""
+    data, items, est, meta, doc = tl_run(tl_drop={(0, 11)})
+    i = item(items, 0, 11)
+    return (i['cls'] == 'unlocated' and i['why'] == 'no_own_completion' and meta['excluded']['no_own_completion'] == 1
+            and item(items, 3, 11)['cls'] == 'inside')
+
+
+def outside_arm_rule_holds():
+    """The outside pair at 1400 ms lies between chunk A (arm n3.a) and chunk B (arm n2.b): an arm boundary, even
+    though its timeline line was logged inside n3.a's wall window."""
+    arms = (('n3.a', W0, W0 + 15), ('n2.b', W0 + 15, W0 + 100))
+    data, items, est, meta, doc = tl_run(outside=True, arms=arms, tl_stamp=W0 + 12)
+    return (not any(i['seq'] == 17 for i in items) and meta['excluded']['arm_boundary'] >= 4
+            and item(items, 2, 11)['arm'] == 'n3.a')
+
+
+def session_key_rule_holds():
+    """Two outside sessions on one rank with no forward (s row only, base_ns 0, line 0) are two flushes, not a
+    conflicting duplicate."""
+    rec = standard(timeline=True)
+    for n in (2, 3):
+        rec.emit('decode-timeline', dict(side='worker', rank=1, base_ns=0, scope='outside-native-progress',
+                                         engine_epoch=1, stage=0, sample='outside-%d' % n, anchor_sample='outside-%d' % n,
+                                         engine_send_ns=T, execute_seq=40 + n, dropped=0, fields=TL_FIELDS,
+                                         rows=dict(s=[[False, {'unresolved_forward': 1}]])),
+                 W0 + 46, pid=11, stream=('tl', 'outside-%d' % n))
+    data, items, est, meta, doc = run(rec)
+    s = data['loss']['timeline_stamp']
+    return (data['loss']['timeline']['conflicting_duplicates'] == 0 and s['sessions_outside'] == 2
+            and s['counters'].get('unresolved_forward') == 2 and s['sessions_incomplete'] == 2)
+
+
+def exposed_rule_holds():
+    """Critical PP path of queue_native = max over stages of max over TP peers; a null idle_before stays null."""
+    data, items, est, meta, doc = tl_run(extra_busy=True, qnative={0: 0.6, 1: 0.3, 2: 0.4, 3: 0.2},
+                                         idle={(0, 11): 1, (2, 11): 1, (3, 11): 1})
+    e = meta['exposed_wait']
+    rows = {r['bin_ms']: r for r in e['table']}
+    hot = rows.get('0.5-1')
+    data2, items2, est2, meta2, doc2 = tl_run(extra_busy=True, qnative={0: 0.6, 1: 0.3, 2: 0.4, 3: 0.2},
+                                              idle={(0, 11): 1, (1, 11): None, (2, 11): 1, (3, 11): 1})
+    hot2 = {r['bin_ms']: r for r in meta2['exposed_wait']['table']}.get('0.5-1')
+    return (hot is not None and hot['n'] == 1 and abs(hot['queue_native_crit_ms']['p50'] - 0.6) < 1e-6
+            and abs(hot['cadence_ms']['p50'] - 30.0) < 1e-6 and abs(hot['exposed_candidate_ms']['p50'] - 0.6) < 1e-6
+            and hot2 is not None and hot2['exposed_candidate_known'] == 0 and hot2['exposed_candidate_ms']['n'] == 0)
+
+
+class TimelineStamp(unittest.TestCase):
+    def test_own_bound_on_every_rank_and_outside_far_control(self):
+        data, items, est, meta, doc = tl_run(outside=True, tl_drop={(r, 21) for r in range(4)})
+        self.assertTrue(meta['timeline_mode'])
+        for rank in range(4):
+            self.assertEqual(item(items, rank, 11)['cls'], 'inside')          # rank 3 too: its own completion
+            self.assertEqual(item(items, rank, 17)['cls'], 'far')
+            self.assertEqual(item(items, rank, 17)['send_source'], 'transport-send')
+            self.assertEqual(item(items, rank, 17)['queue'], 1 * MS)           # enter - engine_send_ns
+            self.assertEqual(item(items, rank, 21)['why'], 'no_own_completion')
+            self.assertEqual(item(items, rank, 11)['bracket'], 20 * MS + reader.QUANT_NS)   # D 15 + 5 ms
+        self.assertEqual(meta['excluded']['no_own_completion'], 4)
+        for rank in ('2', '3', 'stage0', 'stage1'):
+            k = table(doc, rank, 'bank=split')['contrast']
+            self.assertEqual(k['pairs'], 1)
+            self.assertEqual(k['pairs_control_outside'], 1)
+            self.assertEqual(k['pairs_same_uid_set'], dict(known=1, same=1))
+            self.assertAlmostEqual(k['paired_D_diff_ms']['p50'], 5.0)
+        body = reader.text(doc)
+        self.assertIn('own: t_complete_query + 1 us', body)
+        self.assertIn('timeline stamp: sessions native 8 outside 4', body)
+        self.assertIn('pairs with an outside-sample control 1', body)
+
+    def test_legacy_mode_without_the_stamp_keeps_the_borrowed_rule(self):
+        data, items, est, meta, doc = run(standard(outside=True))
+        self.assertFalse(meta['timeline_mode'])
+        self.assertEqual(item(items, 3, 11)['cls'], 'unlocated')
+        self.assertFalse(any(i['seq'] == 17 for i in items))                   # no engine send row, no stamp
+        self.assertIn('borrowed: rank 2', reader.text(doc))
+
+    def test_strata_from_actual_metadata(self):
+        data, items, est, meta, doc = tl_run(outside=True, tl_drop={(r, 21) for r in range(4)},
+                                             tl_meta={(r, 17): dict(num_tokens=16) for r in range(4)})
+        self.assertNotEqual(item(items, 2, 11)['stratum'], item(items, 2, 17)['stratum'])
+        k = table(doc, 2, 'bank=split')['contrast']
+        self.assertEqual(k['pairs'], 0)
+        self.assertEqual(k['insufficient'], 1)
+        self.assertIn('INSUFFICIENT_SAME_ARM_SUPPORT', reader.text(doc))
+
+    def test_unsupported_metadata_excluded(self):
+        data, items, est, meta, doc = tl_run(tl_meta={(2, 11): dict(forward_calls=2), (1, 11): dict(history_tokens=None),
+                                                      (0, 11): dict(handler_flags=4)})
+        for rank in (0, 1, 2):
+            self.assertEqual(item(items, rank, 11)['cls'], 'metadata_unsupported')
+        self.assertEqual(item(items, 3, 11)['cls'], 'inside')
+        self.assertEqual(meta['excluded']['metadata_unsupported'], 3)
+
+    def test_d_row_must_match_its_handler_row(self):
+        data, items, est, meta, doc = tl_run(tl_dev={(2, 11): 14 * MS})
+        self.assertEqual(item(items, 2, 11)['cls'], 'inconsistent')
+        self.assertEqual(meta['excluded']['timeline_mismatch_or_conflict'], 1)
+
+    def test_conflicting_d_rows_inconsistent(self):
+        rec = standard(timeline=True)
+        rec.emit('decode-timeline', dict(side='worker', rank=2, base_ns=T, engine_epoch=1, txn=9, sample=9,
+                                         anchor_sample=9, dropped=0, fields=TL_FIELDS,
+                                         rows=dict(d=[[11, META, 1.0, 16.0, 15 * MS, 1, 1, us(300), us(303), us(390)]],
+                                                   s=[[True, {}]])), W0 + 47, pid=12, stream=('tl', 9))
+        data, items, est, meta, doc = run(rec)
+        self.assertEqual(data['loss']['timeline_stamp']['conflicting_d_rows'], 1)
+        self.assertEqual(item(items, 2, 11)['cls'], 'inconsistent')
+
+    def test_stamp_loss_facts_printed(self):
+        rec = standard(timeline=True)
+        rec.lines = [l for l in rec.lines if not ('decode-timeline' in l and '"rank":0' in l and '"sample":1,' in l)]
+        rec.emit('decode-timeline', dict(side='worker', rank=0, base_ns=T, engine_epoch=1, txn=3, sample=3,
+                                         anchor_sample=3, dropped=0, fields=TL_FIELDS,
+                                         rows=dict(s=[[False, {'pending': 2, 'log_budget_exhausted': 1}]])),
+                 W0 + 48, pid=10, stream=('tl', 3))
+        data, items, est, meta, doc = run(rec)
+        s = data['loss']['timeline_stamp']
+        self.assertEqual(s['sample_gaps'], 1)                  # native session 1 of rank 0 lost
+        self.assertEqual(s['log_budget_exhausted_sessions'], 1)
+        self.assertEqual(item(items, 0, 11)['why'], 'no_own_completion')
+        body = reader.text(doc)
+        self.assertIn('timeline missing_parts 0 conflicts 0 sample_gaps 1 incomplete 1 of 8 sessions', body)
+        self.assertIn('budget_exhausted 1 pending 2', body)
+
+    def test_exposed_wait_bins_cadence_and_baseline(self):
+        data, items, est, meta, doc = tl_run(extra_busy=True, outside=True, qnative={0: 0.6, 1: 0.3, 2: 0.4, 3: 0.2})
+        e = meta['exposed_wait']
+        rows = {r['bin_ms']: r for r in e['table']}
+        self.assertEqual(rows['0.5-1']['n'], 1)                    # seq 11
+        self.assertEqual(rows['0.5-1']['exposed_candidate_ms']['p50'], 0.0)   # stream busy at launch: hidden
+        self.assertEqual(rows['0']['n'], 2)                        # seq 15 and the far seq 21
+        self.assertEqual(rows['0']['cadence_ms']['n'], 0)          # no next nonempty execute in their chunks
+        self.assertIn('n3.g2-live-0 rank 2', e['outside_queue_baseline_ms'])
+        body = reader.text(doc)
+        self.assertIn('EXPOSED-WAIT', body)
+        self.assertIn('never a sum of rank delays', body)
+
+    def test_rules_hold(self):
+        self.assertTrue(own_u_rule_holds())
+        self.assertTrue(outside_arm_rule_holds())
+        self.assertTrue(session_key_rule_holds())
+        self.assertTrue(exposed_rule_holds())
+
+
+class TimelineMutants(unittest.TestCase):
+    def test_borrowed_upper_bound_caught(self):
+        real = reader.own_upper_bound
+
+        def borrowed(timeline, rank, seq, outs, sample):
+            U, row, why = real(timeline, rank, seq, outs, sample)
+            if why and sample is not None:
+                U = reader.upper_bound(outs, sample, rank)[0]
+                return U, timeline.get((2, seq)), None
+            return U, row, why
+        with mock.patch.object(reader, 'own_upper_bound', borrowed):
+            self.assertFalse(own_u_rule_holds())
+
+    def test_arm_by_wall_stamp_caught(self):
+        def by_stamp(lo, hi, windows, owners):
+            return 'n3.a'                    # what the outside line's log stamp (W0 + 12) falls in
+        with mock.patch.object(reader, 'outside_arm', by_stamp):
+            self.assertFalse(outside_arm_rule_holds())
+
+    def test_line_only_key_caught(self):
+        with mock.patch.object(reader, 'TIMELINE_KEY', ()):
+            real = reader.assemble
+            with mock.patch.object(reader, 'assemble', lambda r, extra=(), line_gaps=True: real(r, (), line_gaps)):
+                self.assertFalse(session_key_rule_holds())
+
+    def test_sum_over_peers_caught(self):
+        with mock.patch.object(reader, 'stage_value', sum):
+            self.assertFalse(exposed_rule_holds())
+
+    def test_sum_over_stages_caught(self):
+        with mock.patch.object(reader, 'over_stages', sum):
+            self.assertFalse(exposed_rule_holds())
+
+    def test_zero_filled_null_idle_caught(self):
+        real = reader.num
+        with mock.patch.object(reader, 'num', lambda v: 0 if v is None else real(v)):
+            self.assertFalse(exposed_rule_holds())
 
 
 if __name__ == '__main__':

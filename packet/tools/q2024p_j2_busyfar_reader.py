@@ -44,6 +44,22 @@ Method.
      difference by native chunk, not by forward. Also the clearance of every bracketed forward from the nearest
      blocking envelope, and the clear stretches inside each n3 arm, so an empty far class can be read.
   7. ESTIMATED: the old endpoint reconstruction ([U - D, U]) is printed in its own block, never in the contrast.
+  8. Decode-timeline stamp (FLASH_S5_DECODE_TIMELINE, Codex 1469bd85; lead brief 13 Nov 18:48). When the record has
+     ``flash-s5 decode-timeline`` d rows the reader is in timeline mode: U is each rank's OWN queried forward
+     completion (t_complete_query + 1 us), on all four ranks, never rank 2's get_output; a forward without its own d
+     row is unlocated (no_own_completion); a d row whose device_ns or t_enter differs from its handler row, or a
+     second different d row for one (rank, seq), is inconsistent. Sessions are keyed by sample / txn / anchor_sample
+     beside line and base_ns (line is 0 per session, base_ns 0 without a forward); sample-number gaps, incomplete
+     sessions and every ``s`` counter are printed. Outside-native-progress samples supply far controls: engine send
+     from the stamp header (engine_send_ns, transport send) and the arm from the certified engine chunks around
+     [send, completion] (both neighbours and any overlapping chunk in one arm), never the line's log stamp. Strata come
+     from the actual metadata (arm, bank, route generation, engine epoch, bank SMs, cg mode, padded num_tokens,
+     num_reqs, actual rows, max-history band); forward_calls != 1, handler_flags != 0, null history or no descriptor:
+     metadata_unsupported. Pairs report how many share the uid digest. Exposed wait: per native-chunk execute the
+     worker queue_native on the critical PP path (max of TP peers per stage, then max over stages; any rank null:
+     none), binned at 0 / 0.5 / 1 / 2 / 4 ms, with the engine interval to the next nonempty execute of the chunk
+     (cadence), the idle-before share and the exposed candidate (queue_native where the stream was idle at launch);
+     descriptive and conditional only (EXPOSED_NOTE). Without the stamp, items 1-7 run unchanged.
   Not computed: client adjacent token gaps; fused-phase / producer-witness copy durations (recipe item 6).
 """
 import argparse
@@ -65,9 +81,16 @@ BOOTSTRAP = 2000
 STAGES = {0: (0, 1), 1: (2, 3)}
 BANDS = ((0, 16384), (16384, 32768), (32768, 49152), (49152, 65536), (65536, 97152), (97152, 1 << 40))
 KINDS = {'handler': 'flash-s5 handler ', 'progress': 'flash-s5 progress ', 'anatomy': 'flash-s5 anatomy ',
-         'gap': 'flash-s5 native-gap '}
+         'gap': 'flash-s5 native-gap ', 'timeline': 'flash-s5 decode-timeline '}
 SCHEMAS = {'handler': 's5-handler-anatomy/1', 'progress': 's5-native-progress/1', 'anatomy': 's5-native-anatomy/1',
-           'gap': 's5-native-gap/1'}
+           'gap': 's5-native-gap/1', 'timeline': 's5-decode-timeline/1'}
+# decode-timeline (Codex 1469bd85, docs/e3-briefs/n3-decode-timeline.md): every session is a new trace, so ``line`` is
+# 0 per session and an incomplete no-forward session has base_ns 0. Parts are keyed by these too.
+TIMELINE_KEY = ('sample', 'txn', 'anchor_sample')
+D_FIELDS = ('seq', 'metadata', 'start_ms', 'end_ms', 'device_ns', 'forward_host_ns', 'observer_ns', 't_enter', 't_exit',
+            't_complete_query')
+OUTSIDE_SCOPE = 'outside-native-progress'
+QUEUE_BINS_MS = (0.0, 0.5, 1.0, 2.0, 4.0)
 M_FIELDS = ('seq', 'kind', 'out', 'flags', 't_enter', 't_exit', 'wall_ns', 'cpu_ns', 'observer_ns',
             'dev_forward_ns', 'dev_sample_ns', 'idle_before_launch', 'idle_after_launch', 'handle_output_ns', 'seams')
 A_FIELDS = ('seq', 'thread', 't_take', 'get_output_ns', 'get_output_cpu_ns', 'mq_write_ns', 't_emit', 'observer_ns')
@@ -186,14 +209,17 @@ def receipt_gaps(identities):
     return gaps
 
 
-def assemble(records):
-    """Whole flushes per writer pid and (side, rank, line, base_ns); counts of what was rejected and why.
+def assemble(records, extra=(), line_gaps=True):
+    """Whole flushes per writer pid and (side, rank, line, base_ns[, extra header fields]); counts of what was
+    rejected and why. ``extra``: decode-timeline sessions add TIMELINE_KEY (line is per session there, so line gaps
+    are not a loss measure for that kind: ``line_gaps`` None).
 
     A flush needs every part 0..parts-1 and one ``sha`` (the record hash written on every part); identical repeated
     parts are deduplicated, a second sha or differing content for one part rejects the flush."""
     groups = {}
     for stamp, body in records:
-        key = (body.get('pid'), body.get('side'), body.get('rank'), body.get('line'), body.get('base_ns'))
+        key = (body.get('pid'), body.get('side'), body.get('rank'), body.get('line'), body.get('base_ns')) + tuple(
+            json.dumps(body.get(k), sort_keys=True) for k in extra)
         groups.setdefault(key, []).append((stamp, body))
     flushes = []
     counts = dict(flushes=0, missing_parts=0, conflicting_duplicates=0, duplicate_parts=0, line_gaps=0, dropped=0)
@@ -229,6 +255,9 @@ def assemble(records):
                             rows=rows, rseq=(min(rseq), max(rseq)) if rseq else None,
                             stamp=min((s for s, _ in by_part.values() if s is not None), default=None)))
     counts['flushes'] = len(flushes)
+    if not line_gaps:
+        counts['line_gaps'] = None
+        return flushes, counts
     lines = {}
     for f in flushes:
         lines.setdefault((f['writer'], f['side'], f['rank']), set()).add(f['line'])
@@ -660,7 +689,10 @@ def contrast(items):
     clusters = {}
     for (b, f), d in zip(pairs, diff):
         clusters.setdefault(b['cluster'], []).append(d)
+    uid_known = [(b['uid'], f['uid']) for b, f in pairs if b.get('uid') and f.get('uid')]
     return dict(pairs=len(pairs), paired_D_diff_ms=dist(diff), host_only_lower_bound_ms=dist(host_lb),
+                pairs_same_uid_set=dict(known=len(uid_known), same=sum(1 for a, b in uid_known if a == b)),
+                pairs_control_outside=sum(1 for _, f in pairs if f.get('send_source') == 'transport-send'),
                 host_only_lower_bound_positive=share([x > 0 for x in host_lb if x is not None]),
                 bootstrap_mean_diff_by_native_chunk=bootstrap(clusters), support=support,
                 insufficient=sum(1 for s in support if s.get('verdict')))
@@ -677,7 +709,10 @@ def describe(items):
                         native_handler_in_queue_ms=dist([ms(i['queue_native']) for i in xs]),
                         handle_output_ms=dist([ms(i['handle_output']) for i in xs]),
                         sample_get_output_ms=dist([ms(i['get_output']) for i in xs]),
-                        mq_write_ms=dist([ms(i['mq']) for i in xs]))
+                        mq_write_ms=dist([ms(i['mq']) for i in xs]),
+                        bracket_U_minus_L_ms=dist([ms(i.get('bracket')) for i in xs]),
+                        send_source={s: sum(1 for i in xs if i.get('send_source') == s)
+                                     for s in ('engine-progress', 'transport-send')})
     return out
 
 
@@ -692,6 +727,7 @@ def read(root, log_override=None):
     hf, loss['handler'] = assemble(records['handler'])
     pf, loss['progress'] = assemble(records['progress'])
     af, loss['anatomy'] = assemble(records['anatomy'])
+    tf, loss['timeline'] = assemble(records['timeline'], extra=TIMELINE_KEY, line_gaps=False)
     arms = {}
     for name in sorted(os.listdir(root)):
         if name.startswith('arm-') and name.endswith('.json'):
@@ -703,7 +739,7 @@ def read(root, log_override=None):
     gaps = receipt_gaps(identities)
     loss['receipt_writers'] = len(identities)
     loss['receipt_seq_missing'] = sum(b - a - 1 for v in gaps.values() for a, b in v)
-    return dict(path=path, handler=hf, progress=pf, anatomy=af, gaps=records['gap'], loss=loss, arms=arms,
+    return dict(path=path, handler=hf, progress=pf, anatomy=af, timeline=tf, gaps=records['gap'], loss=loss, arms=arms,
                 receipt_gaps=gaps)
 
 
@@ -745,9 +781,216 @@ def upper_bound(outs, sample, rank):
     return (row['t_emit'] + QUANT_NS, row) if row else (None, None)
 
 
+# --- decode-timeline stamp (FLASH_S5_DECODE_TIMELINE) -----------------------------------------------------------------
+def timeline_rows(flushes):
+    """d rows per (rank, seq) with their session identity, and the stamp's own loss facts.
+
+    Host ``t_*`` fields are restored like every ProgressTrace (base_ns + offset us x 1000). A second, different d row
+    for one (rank, seq) is a conflict: that forward is inconsistent, never resolved by picking one. Sessions are
+    numbered 1..N per worker process (native ints, outside 'outside-N'); a missing number below the highest seen is a
+    lost session line. Every ``s`` counter is summed as written; nothing is filled."""
+    rows, conflicts = {}, set()
+    stats = dict(sessions_native=0, sessions_outside=0, sessions_incomplete=0, d_rows=0, p_rows=0, dropped=0,
+                 sample_gaps=0, log_budget_exhausted_sessions=0, sessions_without_s_row=0, counters={})
+    numbers = {}
+    for f in flushes:
+        h = f['head']
+        outside = h.get('scope') == OUTSIDE_SCOPE
+        stats['sessions_outside' if outside else 'sessions_native'] += 1
+        stats['dropped'] += num(h.get('dropped')) or 0
+        sample = h.get('sample')
+        if outside and type(sample) is str and sample.startswith('outside-') and sample[8:].isdigit():
+            numbers.setdefault((f['writer'], f['rank'], 'outside'), set()).add(int(sample[8:]))
+        elif not outside and type(sample) is int:
+            numbers.setdefault((f['writer'], f['rank'], 'native'), set()).add(sample)
+        s_rows = f['rows'].get('s', [])
+        if not s_rows:
+            stats['sessions_without_s_row'] += 1
+        for s in s_rows:
+            complete, counters = (s + [None, None])[:2]
+            if complete is not True:
+                stats['sessions_incomplete'] += 1
+            for name, value in (counters or {}).items():
+                if num(value) is not None:
+                    stats['counters'][name] = stats['counters'].get(name, 0) + value
+            if (counters or {}).get('log_budget_exhausted'):
+                stats['log_budget_exhausted_sessions'] += 1
+        stats['p_rows'] += len(f['rows'].get('p', []))
+        for item in f['rows'].get('d', []):
+            r = dict(zip(D_FIELDS, item))
+            for name in ('t_enter', 't_exit', 't_complete_query'):
+                r[name] = at(f['base'], r[name])
+            r.update(rank=f['rank'], writer=f['writer'], stamp=f['stamp'], scope='outside' if outside else 'native',
+                     sample=sample, engine_epoch=h.get('engine_epoch'), stage=h.get('stage'),
+                     engine_send_ns=num(h.get('engine_send_ns')) if outside else None,
+                     execute_seq=h.get('execute_seq') if outside else None)
+            stats['d_rows'] += 1
+            key = (f['rank'], r['seq'])
+            if key in rows and json.dumps(rows[key], sort_keys=True, default=str) != json.dumps(
+                    r, sort_keys=True, default=str):
+                conflicts.add(key)
+            rows.setdefault(key, r)
+    for seen in numbers.values():
+        stats['sample_gaps'] += max(seen) - len(seen) if seen else 0
+    stats['conflicting_d_rows'] = len(conflicts)
+    return rows, conflicts, stats
+
+
+def own_upper_bound(timeline, rank, seq, outs, sample):
+    """Timeline mode: U from this rank's own queried forward completion (t_complete_query + 1 us), never borrowed
+    from another rank's get_output. No own d row: (None, None, 'no_own_completion')."""
+    row = timeline.get((rank, seq))
+    if row is None or row['t_complete_query'] is None:
+        return None, None, 'no_own_completion'
+    return row['t_complete_query'] + QUANT_NS, row, None
+
+
+def outside_arm(lo, hi, windows, owners):
+    """The n3 arm of an outside-native-progress forward [lo, hi] (engine send .. own completion): the engine chunks
+    nearest before lo and after hi, and any overlapping it, must all belong to one arm (each chunk certified by
+    arm_owner). A missing neighbour on either side: None; mixed owners: 'boundary'. Never the log stamp of the
+    timeline line (emission lags the forward by the flush)."""
+    before = [c for c in windows if c['window'][1] <= lo]
+    after = [c for c in windows if c['window'][0] >= hi]
+    if not before or not after:
+        return None
+    near = [max(before, key=lambda c: c['window'][1]), min(after, key=lambda c: c['window'][0])]
+    near += [c for c in windows if c['window'][0] < hi and c['window'][1] > lo]
+    names = {owners[id(c)] for c in near}
+    if len(names) == 1:
+        return names.pop()
+    return 'boundary'
+
+
+def meta_stratum(arm, row):
+    """Exact-cell stratum from the forward's own metadata, or None when unsupported (Codex: forward_calls 1, valid
+    handler flags, a descriptor and host history; multi-forward / sub-cohort membership is unsupported)."""
+    meta = row.get('metadata') if row else None
+    if type(meta) is not dict:
+        return None
+    history = meta.get('history_tokens')
+    if (meta.get('forward_calls') != 1 or meta.get('handler_flags') != 0 or type(history) is not list or not history
+            or any(type(x) is not int for x in history) or meta.get('bank') not in ('split', 'full')
+            or type(meta.get('num_tokens')) is not int or meta.get('cg_mode') is None):
+        return None
+    return (arm, meta['bank'], meta.get('route_generation'), row.get('engine_epoch'), meta.get('bank_sms'),
+            meta['cg_mode'], meta['num_tokens'], meta.get('num_reqs'), meta.get('actual_rows'), band_of(max(history)))
+
+
+def over_stages(values):
+    """The critical PP path over stages: the max (stage 1 waits on stage 0's send), never the sum."""
+    return max(values)
+
+
+def critical(per_rank):
+    """One execute's value on the critical PP path from per-rank values: max of TP peers per stage, then over stages.
+    Any rank's value missing (None): None, never a partial max."""
+    if any(per_rank.get(r) is None for r in range(4)):
+        return None
+    return over_stages([stage_value([per_rank[a], per_rank[b]]) for a, b in STAGES.values()])
+
+
+def cadence(chunks, main, seen):
+    """execute seq -> engine submit interval to the next nonempty execute of the same chunk (READING item: engine
+    successive nonempty execute submission intervals). Every execute between them must be proven empty and every
+    transport seq between them in the record; otherwise no interval."""
+    out = {}
+    for c in chunks:
+        execs = [r for r in c['s'] if r['kind'] == 'execute_model']
+        last = None
+        for r in execs:
+            state = emptiness(main, r['seq'])
+            if state is None:
+                last = None
+                continue
+            if not state:
+                continue
+            if (last is not None and last['t_submit'] is not None and r['t_submit'] is not None
+                    and all(x in seen for x in range(last['seq'] + 1, r['seq']))):
+                out[last['seq']] = r['t_submit'] - last['t_submit']
+            last = r
+    return out
+
+
+def bin_of(ms_value):
+    if ms_value is None:
+        return None
+    if ms_value <= 0:
+        return '0'
+    edges = QUEUE_BINS_MS
+    for lo, hi in zip(edges, edges[1:]):
+        if lo < ms_value <= hi:
+            return '%g-%g' % (lo, hi)
+    return '>%g' % edges[-1]
+
+
+def exposed_wait(items, chunks, main, seen, lost):
+    """How much of the worker queue delay behind native handlers shows up in decode cadence (descriptive).
+
+    Per execute recorded in a native chunk (engine progress send): queue_native per rank, deduplicated to the critical
+    PP path (critical); the exposed candidate is a rank's queue_native when its stream was idle at launch (0 when the
+    host launched behind queued GPU work, None when idle_before is null); binned by the critical queue_native, the
+    median engine interval to the next nonempty execute. Outside samples give the same-arm queue baseline without
+    native handlers. A queue interval touching a loss window is left out."""
+    gaps = cadence(chunks, main, seen)
+    by_seq = {}
+    for i in items:
+        if i['send_source'] != 'engine-progress' or i['q_lo'] is None or i['t'] is None:
+            continue
+        if touches(i['q_lo'], i['t'], lost):
+            continue
+        by_seq.setdefault(i['seq'], {})[i['rank']] = i
+    rows, groups = [], {}
+    skipped = dict(ranks_missing=0)
+    for seq, ranks in sorted(by_seq.items()):
+        qn = critical({r: ranks[r]['queue_native'] if r in ranks else None for r in range(4)})
+        if qn is None:
+            skipped['ranks_missing'] += 1
+            continue
+        exp = critical({r: (None if r not in ranks or num(ranks[r]['idle_before']) is None else
+                            (ranks[r]['queue_native'] if ranks[r]['idle_before'] else 0)) for r in range(4)})
+        any_rank = ranks[0]
+        rows.append(dict(seq=seq, arm=any_rank['arm'], mode=any_rank['ctx_mode'], live=any_rank['ctx_live'],
+                         queue_native_crit=qn, queue_crit=critical({r: ranks[r]['queue'] for r in ranks}),
+                         exposed_candidate=exp, cadence=gaps.get(seq),
+                         idle=[num(ranks[r]['idle_before']) for r in range(4)]))
+    for r in rows:
+        groups.setdefault((r['arm'], r['mode'], r['live'], bin_of(ms(r['queue_native_crit']))), []).append(r)
+    table = []
+    for (arm, mode, live, b), xs in sorted(groups.items(), key=lambda kv: tuple(str(k) for k in kv[0])):
+        table.append(dict(arm=arm, mode=mode, decode_live=live, bin_ms=b, n=len(xs),
+                          cadence_ms=dist([ms(x['cadence']) for x in xs]),
+                          queue_crit_ms=dist([ms(x['queue_crit']) for x in xs]),
+                          queue_native_crit_ms=dist([ms(x['queue_native_crit']) for x in xs]),
+                          exposed_candidate_ms=dist([ms(x['exposed_candidate']) for x in xs]),
+                          exposed_candidate_known=sum(1 for x in xs if x['exposed_candidate'] is not None),
+                          idle_before=share([v for x in xs for v in x['idle']])))
+    base = {}
+    for i in items:
+        if i['send_source'] == 'transport-send' and i['queue'] is not None:
+            base.setdefault('%s rank %d' % (i['arm'], i['rank']), []).append(ms(i['queue']))
+    return dict(rows=len(rows), skipped=skipped, table=table,
+                outside_queue_baseline_ms={k: dist(v) for k, v in sorted(base.items())},
+                note=EXPOSED_NOTE)
+
+
+EXPOSED_NOTE = (
+    'Descriptive and conditional (READING 13 Nov: 1.1-3.2 ms is host occupancy overlapping an execute\'s queue '
+    'interval, not a matched reduction in output cadence; the 515-1499 agent-s ceiling is conditional gross pricing). '
+    'Critical path = max of TP peers per stage, then max over stages, never a sum of rank delays. The exposed '
+    'candidate counts occupancy only where the stream was idle at launch; it is an upper reading, not a removable '
+    'saving: engine t_submit precedes bounded_enqueue, so part of the occupancy can precede availability of the decode '
+    'message in the worker queue, and native commands already executing cannot be overtaken. Cadence differences '
+    'between bins are confounded by whatever native work also slows the busy forward itself. Cadence exists only '
+    'inside recorded native chunks; outside samples give the queue baseline only.')
+
+
 def analyse(data):
     main, outs, hcounters = handler_rows(data['handler'])
     data['loss']['handler_counters'] = hcounters
+    tl, tl_conflicts, tl_stats = timeline_rows(data.get('timeline', []))
+    data['loss']['timeline_stamp'] = tl_stats
+    timeline_mode = bool(tl)                       # own completion bounds; the legacy borrowed U is never used then
     chunks = engine_chunks(data['progress'])
     seen = observed_seqs(data['progress'], main)
     pairs, pairing = pair_samples(chunks, main, seen)
@@ -757,7 +1000,8 @@ def analyse(data):
     lost = merge(loss_windows(data['handler'], 'handler') + loss_windows(data['progress'], 'progress') +
                  loss_windows(data['anatomy'], 'anatomy') + gap_loss +
                  receipt_loss_windows(data.get('receipt_gaps', {}),
-                                      (data['handler'], data['progress'], data['anatomy']), data['gaps']))
+                                      (data['handler'], data['progress'], data['anatomy'], data.get('timeline', [])),
+                                      data['gaps']))
     data['loss']['loss_windows'] = len(lost)
     timeline = Timeline(data['gaps'])
     native_busy = {r: [] for r in range(4)}         # worker RPC-thread time in native (flash_s5_*) handlers
@@ -769,9 +1013,10 @@ def analyse(data):
                     native_busy[f['rank']].append((lo, hi))
     native_busy = {r: merge(v) for r, v in native_busy.items()}
     submit, chunk_of, owner = {}, {}, {}
-    arm_counts = {}
+    arm_counts, owners = {}, {}
     for c in chunks:
         arm = arm_owner(c, data['arms'])
+        owners[id(c)] = arm
         arm_counts[str(arm)] = arm_counts.get(str(arm), 0) + 1
         for r in c['s']:
             submit[r['seq']] = r['t_submit']
@@ -781,6 +1026,10 @@ def analyse(data):
     starts = [c['window'][0] for c in windows]
     excluded = dict(flagged_failed_aborted_install_unresolved_nested=0, no_dev_forward=0, no_engine_send=0,
                     not_n3_arm=0, arm_boundary=0, unpaired=0, record_loss_in_window=0, route_or_epoch_transition=0)
+    if timeline_mode:
+        excluded.update(no_own_completion=0, timeline_mismatch_or_conflict=0, metadata_unsupported=0,
+                        outside_no_neighbour_chunk=0)
+    outside_used = 0
     items, estimated = [], []
     for (rank, seq), row in sorted(main.items(), key=lambda kv: (kv[0][0], kv[0][1])):
         if row['kind'] != 'e' or rank not in blocking:
@@ -792,10 +1041,21 @@ def analyse(data):
         if D is None:
             excluded['no_dev_forward'] += 1
             continue
-        if seq not in owner:
+        d_row = tl.get((rank, seq)) if timeline_mode else None
+        outside = (d_row is not None and d_row['scope'] == 'outside' and d_row['execute_seq'] == seq
+                   and d_row['engine_send_ns'] is not None)
+        if seq in owner:
+            arm, q_lo, send_source = owner[seq], submit.get(seq), 'engine-progress'
+        elif outside:
+            hi = d_row['t_complete_query'] if d_row['t_complete_query'] is not None else row['t_enter']
+            arm = outside_arm(d_row['engine_send_ns'], hi, windows, owners) if hi is not None else None
+            q_lo, send_source = d_row['engine_send_ns'], 'transport-send'
+            if arm is None:
+                excluded['outside_no_neighbour_chunk'] += 1
+                continue
+        else:
             excluded['no_engine_send'] += 1
             continue
-        arm = owner[seq]
         if arm == 'boundary':
             excluded['arm_boundary'] += 1
             continue
@@ -804,12 +1064,24 @@ def analyse(data):
             continue
         L = row['t_enter']
         sample = pairs.get(seq)
-        U, sample_row = None, None
-        if sample is None:
+        U, sample_row, why = None, None, None
+        if timeline_mode:
+            U, own_row, why = own_upper_bound(tl, rank, seq, outs, sample)
+            if why:
+                excluded[why] += 1
+            elif ((rank, seq) in tl_conflicts or own_row['device_ns'] != D or own_row['t_enter'] is None
+                  or L is None or abs(own_row['t_enter'] - L) >= QUANT_NS):
+                excluded['timeline_mismatch_or_conflict'] += 1
+                U, why = None, 'timeline_mismatch_or_conflict'
+            if sample is not None:
+                sample_row = upper_bound(outs, sample, rank)[1]    # get_output column only, never U
+        elif sample is None:
             excluded['unpaired'] += 1
         else:
             U, sample_row = upper_bound(outs, sample, rank)
         cls = classify(L, U, D, blocking[rank], core[rank])
+        if why == 'timeline_mismatch_or_conflict':
+            cls = 'inconsistent'
         if cls in ('far', 'inside', 'ambiguous'):
             if touches(L - GUARD_NS, U + GUARD_NS, lost):
                 excluded['record_loss_in_window'] += 1
@@ -817,15 +1089,29 @@ def analyse(data):
             elif timeline.changes(L, U):
                 excluded['route_or_epoch_transition'] += 1
                 cls = 'transition'
-        ctx = context_chunk(windows, starts, L, U) or chunk_of[seq]
+        ctx = context_chunk(windows, starts, L, U) or chunk_of.get(seq)
         route, epoch = timeline.at(L) if L is not None else (None, None)
-        stratum = (arm, route, epoch, ctx['mode'], ctx['decode_live'], band_of(ctx['chunk_start']), width_of(ctx))
+        if timeline_mode:
+            stratum = meta_stratum(arm, d_row)
+            if stratum is None and cls in ('far', 'inside', 'ambiguous'):
+                excluded['metadata_unsupported'] += 1
+                cls = 'metadata_unsupported'
+            group = 'bank=%s' % ((d_row or {}).get('metadata') or {}).get('bank')
+        else:
+            stratum = (arm, route, epoch, ctx['mode'], ctx['decode_live'], band_of(ctx['chunk_start']), width_of(ctx))
+            group = ctx['decode_live']
+        if outside and cls in ('far', 'inside', 'ambiguous'):
+            outside_used += 1
         fwd = (row['seams'] or {}).get('forward') or {}
         own = outs.get((rank, seq), [])
-        q_lo = submit.get(seq)
-        items.append(dict(rank=rank, seq=seq, arm=arm, cls=cls, t=L, D=D, stratum=stratum,
+        items.append(dict(rank=rank, seq=seq, arm=arm, cls=cls, t=L, D=D, stratum=stratum, group=group,
+                          send_source=send_source, q_lo=q_lo, why=why,
+                          ctx_mode=ctx['mode'] if ctx else None, ctx_live=ctx['decode_live'] if ctx else None,
+                          uid=((d_row or {}).get('metadata') or {}).get('uid_digest'),
+                          bracket=(U - L) if None not in (U, L) else None,
                           clear=clearance(L, U, blocking[rank]) if L is not None and U is not None else None,
-                          cluster=(ctx['writer'], ctx['txn'], ctx['chunk_start']),
+                          cluster=(ctx['writer'], ctx['txn'], ctx['chunk_start']) if ctx and not outside
+                          else ('outside', seq),
                           H=num(fwd.get('ns')), H_cpu=num(fwd.get('cpu_ns')), observer=num(row['observer_ns']),
                           idle_before=num(row['idle_before_launch']), idle_after=num(row['idle_after_launch']),
                           queue=(L - q_lo) if L is not None and q_lo is not None else None,
@@ -846,7 +1132,9 @@ def analyse(data):
     reach = {k: dict(n=len(v), p50_ms=round(statistics.median(v), 3), max_ms=round(max(v), 3),
                      at_least_guard=sum(1 for x in v if x * 1e6 > GUARD_NS)) for k, v in sorted(reach.items())}
     return items, estimated, dict(clearance_of_bracketed=reach, pairing=pairing, envelopes=env_counts, excluded=excluded, chunk_arms=arm_counts,
-                                  engine_chunks=len(chunks), clear_gaps=clear_gaps(chunks, data['arms'], blocking))
+                                  engine_chunks=len(chunks), clear_gaps=clear_gaps(chunks, data['arms'], blocking),
+                                  timeline_mode=timeline_mode, outside_certified_or_ambiguous=outside_used,
+                                  exposed_wait=exposed_wait(items, chunks, main, seen, lost))
 
 
 def clear_gaps(chunks, arms, blocking):
@@ -909,11 +1197,11 @@ def stage_items(items):
 def report(data, items, estimated, meta):
     groups = {}
     for i in items + stage_items(items):
-        groups.setdefault((str(i['rank']), i['arm'], i['stratum'][4]), []).append(i)
+        groups.setdefault((str(i['rank']), i['arm'], i['group']), []).append(i)
     tables = []
     for key, xs in sorted(groups.items(), key=lambda kv: (kv[0][0], str(kv[0][1]), str(kv[0][2]))):
         counts = {c: sum(1 for x in xs if x['cls'] == c) for c in CLASSES}
-        row = dict(rank=key[0], arm=key[1], decode_live=key[2], counts=counts, certified=describe(xs),
+        row = dict(rank=key[0], arm=key[1], decode_live=key[2], group=key[2], counts=counts, certified=describe(xs),
                    contrast=contrast(xs))
         if key[0].startswith('stage'):
             peers = [x['peers'] for x in xs if x['cls'] in ('inside', 'far')]
@@ -927,7 +1215,11 @@ def report(data, items, estimated, meta):
         est.setdefault((e['rank'], e['arm'], e['cls']), []).append(ms(e['D']))
     return dict(schema=SCHEMA, engine_log=data['path'], cannot_say=list(CANNOT_SAY), loss=data['loss'], meta=meta,
                 rules=dict(guard_ms=GUARD_NS / 1e6, inside_share=INSIDE_SHARE, quantisation_ns=QUANT_NS,
-                           bootstrap=BOOTSTRAP, stage_value='max of TP peers', strata=list(STRATUM),
+                           bootstrap=BOOTSTRAP, stage_value='max of TP peers',
+                           strata=list(STRATUM_TIMELINE if meta.get('timeline_mode') else STRATUM),
+                           upper_bound=('own: t_complete_query + 1 us on every rank (decode-timeline stamp); never '
+                                        'borrowed' if meta.get('timeline_mode') else
+                                        'borrowed: rank 2 AsyncOutput t_emit + 1 us for ranks 0/1/2; rank 3 unlocated'),
                            live_and_band='decode_live / chunk band of the overlapping (else nearest) engine chunk header:'
                                          ' a proxy for the cohort, not the forward\'s padded descriptor',
                            not_computed=['client adjacent token gaps (turn journals not joined by this reader)',
@@ -938,8 +1230,11 @@ def report(data, items, estimated, meta):
                                    est.items(), key=lambda kv: (kv[0][0], str(kv[0][1]), kv[0][2]))]))
 
 
-CLASSES = ('far', 'inside', 'ambiguous', 'unlocated', 'inconsistent', 'unsupported_loss', 'transition')
+CLASSES = ('far', 'inside', 'ambiguous', 'unlocated', 'inconsistent', 'unsupported_loss', 'transition',
+           'metadata_unsupported')
 STRATUM = ('arm', 'route_generation', 'engine_epoch', 'merge_mode', 'decode_live', 'history_band', 'chunk_width')
+STRATUM_TIMELINE = ('arm', 'bank', 'route_generation', 'engine_epoch', 'bank_sms', 'cg_mode', 'num_tokens', 'num_reqs',
+                    'actual_rows', 'max_history_band')
 
 
 def loss_line(doc):
@@ -954,7 +1249,20 @@ def loss_line(doc):
                 l['progress']['missing_parts'], l['progress']['conflicting_duplicates'], l['progress']['line_gaps'],
                 l['progress']['dropped'], l['anatomy']['missing_parts'], l['anatomy']['conflicting_duplicates'],
                 l['anatomy']['line_gaps'], l['anatomy']['dropped'], l['native_gap_missing'], l.get('receipt_seq_missing', 0),
-                l.get('receipt_writers', 0), l['loss_windows']))
+                l.get('receipt_writers', 0), l['loss_windows'])) + timeline_loss(l)
+
+
+def timeline_loss(l):
+    if 'timeline' not in l or not l['timeline']['flushes'] and not l['timeline']['missing_parts']:
+        return ''
+    s, a = l['timeline_stamp'], l['timeline']
+    c = s['counters']
+    return (' | timeline missing_parts %d conflicts %d sample_gaps %d incomplete %d of %d sessions dropped %d d-row '
+            'conflicts %d budget_exhausted %d pending %d timing_errors %d unresolved_forward %d metadata_errors %d' % (
+                a['missing_parts'], a['conflicting_duplicates'], s['sample_gaps'], s['sessions_incomplete'],
+                s['sessions_native'] + s['sessions_outside'], s['dropped'], s['conflicting_d_rows'],
+                s['log_budget_exhausted_sessions'], c.get('pending', 0), c.get('timing_errors', 0),
+                c.get('unresolved_forward', 0), c.get('metadata_errors', 0)))
 
 
 def text(doc):
@@ -971,7 +1279,15 @@ def text(doc):
         'clear stretches (between blocking envelopes, n3 arm extent): %s' % json.dumps(m['clear_gaps'], sort_keys=True),
         'clearance of each bracketed forward [L,U] from the nearest blocking envelope (far needs > %g ms): %s' % (
             doc['rules']['guard_ms'], json.dumps(m['clearance_of_bracketed'], sort_keys=True)),
-        'not computed: %s' % '; '.join(doc['rules']['not_computed']), '']
+        'not computed: %s' % '; '.join(doc['rules']['not_computed']),
+        'upper bound: %s' % doc['rules']['upper_bound']]
+    if m.get('timeline_mode'):
+        s = doc['loss']['timeline_stamp']
+        out.append('timeline stamp: sessions native %d outside %d | d rows %d p rows %d | outside forwards certified or '
+                   'ambiguous %d | counters %s' % (s['sessions_native'], s['sessions_outside'], s['d_rows'], s['p_rows'],
+                                                   m['outside_certified_or_ambiguous'],
+                                                   json.dumps(s['counters'], sort_keys=True)))
+    out.append('')
     fmt = lambda d: '-' if not d or not d.get('n') else '%.3f/%.3f (n %d)' % (d['p50'], d['mean'], d['n'])
     out.append('CERTIFIED  rank arm live | far inside ambig unloc loss trans | D far p50/mean | D inside p50/mean | '
                'pairs | paired dD p50/mean | host-only LB p50/mean | boot ci95 (chunks)')
@@ -999,6 +1315,22 @@ def text(doc):
                 if peers:
                     out.append('      peers %-6s %s' % (cls, '  '.join('rank %s %s' % (r, fmt(d)) for r, d in peers.items())))
         out.append('      ' + loss_line(doc))
+        if k.get('pairs'):
+            out.append('      pairs with an outside-sample control %d | same uid set %d of %d known' % (
+                k['pairs_control_outside'], k['pairs_same_uid_set']['same'], k['pairs_same_uid_set']['known']))
+    e = m['exposed_wait']
+    out += ['', 'EXPOSED-WAIT (native-chunk executes, critical PP path; descriptive, conditional) rows %d skipped %s' % (
+        e['rows'], json.dumps(e['skipped'], sort_keys=True)), '  ' + e['note'],
+        '  arm mode live | queue_native bin ms | n | cadence p50/mean | queue p50/mean | queue_native p50/mean | '
+        'exposed candidate p50/mean (known) | idle-before share']
+    for r in e['table']:
+        out.append('  %s %s %s | %s | %d | %s | %s | %s | %s (%d) | %s' % (
+            r['arm'], r['mode'], r['decode_live'], r['bin_ms'], r['n'], fmt(r['cadence_ms']), fmt(r['queue_crit_ms']),
+            fmt(r['queue_native_crit_ms']), fmt(r['exposed_candidate_ms']), r['exposed_candidate_known'],
+            r['idle_before']['share']))
+    for k, d in e['outside_queue_baseline_ms'].items():
+        out.append('  outside-sample queue baseline (send -> enter) %s %s' % (k, fmt(d)))
+    out.append('      ' + loss_line(doc))
     out += ['', 'ESTIMATED (old endpoint reconstruction [U-D, U]; never in the certified contrast)']
     for r in doc['ESTIMATED']['rows']:
         out.append('  %s %s %s D %s' % (r['rank'], r['arm'], r['cls'], fmt(r['D_ms'])))
