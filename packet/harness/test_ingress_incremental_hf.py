@@ -7,7 +7,8 @@ prompt carries the empty think block, history assistant turns do not). Every tur
 through ingress_incremental.Ingress on a renderer shaped like vLLM's (its real BaseRenderer._build_tokens_prompt, real
 make_async) equals the stock call (transformers __call__ with HfRenderer's encode arguments), including tool outputs
 holding special-token text, CRLF, combining marks, emoji and replies holding a think tag. Also: 8 conversations from 8
-threads through the async wrapper; truncation fallbacks. No GPU, CUDA or box claim.
+threads through the async wrapper; truncation fallbacks; per-turn reply budgets through vLLM's TokenizeParams (the
+ingress key fix: the length bound is not in the key). No GPU, CUDA or box claim.
 """
 import asyncio
 from pathlib import Path
@@ -168,6 +169,28 @@ class Differential(unittest.TestCase):
             got = via_async(r, ({'prompt': t}, Params(max_length=n - 1)))
             self.assertEqual(got['prompt_token_ids'], tok(t, **dict(KW, max_length=n - 1))['input_ids'])
         self.assertEqual(ing.splicer.fallbacks['over-truncation-length'], 1)
+
+    def test_per_turn_reply_budget_splices_with_vllm_params(self):
+        """Ingress key fix (lead 13 Nov): vLLM's own TokenizeParams per turn (max_total_tokens 262144, a fresh reply budget):
+        its max_length = 262144 - max_tokens + 1 differs turn to turn, and every non-first turn splices, equal to stock."""
+        from vllm.renderers.params import TokenizeParams
+        tok, r, ing = installed()
+        rng = random.Random(13)
+        lengths, turns = set(), 0
+        for seed in range(4):
+            for text in conversation(seed, 5, unicode=seed % 2 == 0):
+                params = TokenizeParams(max_total_tokens=262144, max_output_tokens=rng.randrange(200, 1000),
+                                        add_special_tokens=False)
+                kw = params.get_encode_kwargs()
+                self.assertEqual(kw['truncation'], True)
+                lengths.add(kw['max_length'])
+                got = via_async(r, ({'prompt': text}, params))
+                self.assertEqual(got['prompt_token_ids'], tok(text, **kw)['input_ids'], (seed, turns))
+                turns += 1
+        snap = ing.snapshot()
+        self.assertEqual((turns, snap['counts']['spliced'], snap['counts']['full']), (20, 16, 4))
+        self.assertEqual(snap['fallbacks'], {'no-entry': 4})
+        self.assertGreater(len(lengths), 10)
 
     def test_eight_threads(self):
         tok, r, ing = installed()

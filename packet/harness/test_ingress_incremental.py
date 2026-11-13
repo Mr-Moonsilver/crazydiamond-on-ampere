@@ -274,6 +274,111 @@ class Fallbacks(unittest.TestCase):
         self.assertEqual(sp.snapshot()['entries'], 0)
 
 
+class LeftTok(FakeTok):
+    """truncation_side='left': a truncated result keeps the END of the ids (not a prefix of the full ids)."""
+
+    def __call__(self, text, add_special_tokens=True, truncation=False, max_length=None):
+        ids = FakeTok.__call__(self, text, add_special_tokens=add_special_tokens)['input_ids']
+        if truncation and max_length is not None and len(ids) > max_length:
+            ids = ids[len(ids) - max_length:]
+        return {'input_ids': ids}
+
+
+def budget_kw(tok, text, rng):
+    """vLLM's encode arguments for one turn: max_length = max_model_len - max_tokens + 1, a fresh reply budget per turn."""
+    return dict(truncation=True, max_length=len(tok.encode(text)) + 1 + rng.randrange(1, 30000), add_special_tokens=False)
+
+
+class KeyFix(unittest.TestCase):
+    """Ingress key fix (lead 13 Nov): the per-request length bound is not in the key; it is applied to every result."""
+
+    def test_turns_differing_only_in_max_length_splice(self):
+        rng = random.Random(5)
+        tok = FakeTok()
+        sp = ii.Splicer(tok, verify_every=0)
+        lengths = set()
+        for seed in range(4):
+            for text in conversation(seed, 6):
+                kw = budget_kw(tok, text, rng)
+                lengths.add(kw['max_length'])
+                got = sp.tokenize(text, dict(kw), lambda: tok(text, **kw)['input_ids'])
+                self.assertEqual(got, tok(text, **kw)['input_ids'])
+                self.assertEqual(got, tok.encode(text))
+        self.assertEqual(len(lengths), 24)                       # no two turns share a bound
+        snap = sp.snapshot()
+        self.assertEqual((snap['counts']['spliced'], snap['counts']['full']), (4 * 5, 4))   # every non-first turn
+        self.assertEqual(snap['fallbacks'], {'no-entry': 4})
+
+    def test_every_max_length_equals_stock(self):
+        tok = FakeTok()
+        a, b = list(conversation(7, 2))
+        n = len(tok.encode(b))
+        for bound in (1, len(tok.encode(a)), n - 2, n - 1, n, n + 1, n + 2, 262145):
+            for truncation in (True, None, False):
+                with self.subTest(bound=bound, truncation=truncation):
+                    kw = dict(truncation=truncation, max_length=bound, add_special_tokens=False)
+                    sp = ii.Splicer(tok, verify_every=0)
+                    warm = dict(KW)
+                    sp.tokenize(a, warm, lambda: tok(a, **warm)['input_ids'])
+                    stock = tok(b, **kw)['input_ids']
+                    got = sp.tokenize(b, dict(kw), lambda: tok(b, **kw)['input_ids'])
+                    self.assertEqual(got, stock)
+                    bounded = truncation is not False
+                    if bounded and n > bound:
+                        self.assertEqual(sp.fallbacks['over-truncation-length'], 1)
+                        self.assertEqual(sp.counts['spliced'], 0)
+                    else:
+                        self.assertEqual(sp.counts['spliced'], 1)
+
+    def test_a_result_at_its_bound_is_never_a_splice_source(self):
+        for tok in (FakeTok(), LeftTok()):
+            a, b = list(conversation(8, 2))
+            for cut in (0, 1, 5):
+                with self.subTest(tok=type(tok).__name__, cut=cut):
+                    sp = ii.Splicer(tok, verify_every=0)
+                    kw = dict(KW, max_length=len(tok.encode(a)) - cut)     # stock truncates a (or meets its bound)
+                    self.assertEqual(sp.tokenize(a, dict(kw), lambda: tok(a, **kw)['input_ids']), tok(a, **kw)['input_ids'])
+                    self.assertEqual((sp.counts['store_length_bound'], sp.snapshot()['entries']), (1, 0))
+                    got = sp.tokenize(b, dict(KW), lambda: tok(b, **KW)['input_ids'])
+                    self.assertEqual(got, tok.encode(b))
+                    self.assertEqual((sp.counts['spliced'], sp.fallbacks['no-entry']), (0, 2))
+
+    def test_other_arguments_still_separate_entries(self):
+        tok = FakeTok()
+        sp = ii.Splicer(tok, verify_every=0)
+        text = next(conversation(9, 1))
+        base = sp.key(text, dict(KW))
+        for kw in (dict(KW, max_length=7), dict(KW, truncation=False), dict(add_special_tokens=False),
+                   dict(KW, truncation=None)):
+            self.assertEqual(sp.key(text, kw), base, kw)          # the bound only: one conversation, one key
+        self.assertNotEqual(sp.key(text, dict(KW, add_special_tokens=True)), base)
+        self.assertNotEqual(sp.key(next(conversation(10, 1)), dict(KW)), base)   # another conversation
+        # stock-only arguments never store, so the next turn finds no entry of theirs
+        a, b = list(conversation(11, 2))
+        for kw in (dict(KW, add_special_tokens=True), dict(KW, return_offsets_mapping=True),
+                   dict(truncation=True, add_special_tokens=False)):       # truncation to model_max_length
+            with self.subTest(kw=kw):
+                sp = ii.Splicer(tok, verify_every=0)
+                sp.tokenize(a, kw, lambda: tok(a, add_special_tokens=kw['add_special_tokens'])['input_ids'])
+                self.assertEqual(sp.fallbacks['encode-arguments'], 1)
+                got = sp.tokenize(b, dict(KW), lambda: tok(b, **KW)['input_ids'])
+                self.assertEqual(got, tok.encode(b))
+                self.assertEqual((sp.counts['spliced'], sp.fallbacks['no-entry']), (0, 1))
+
+    def test_inline_and_async_verify_with_per_turn_bounds(self):
+        rng = random.Random(6)
+        for verify_async in (False, True):
+            tok = FakeTok()
+            sp = ii.Splicer(tok, verify_every=1, verify_async=verify_async)
+            for text in conversation(12, 5):
+                kw = budget_kw(tok, text, rng)
+                self.assertEqual(sp.tokenize(text, dict(kw), lambda: tok(text, **kw)['input_ids']), tok.encode(text))
+            self.assertTrue(sp.drain())
+            snap = sp.snapshot()
+            self.assertEqual((snap['counts']['spliced'], snap['counts'].get('verified'), snap['counts'].get('verify_mismatch', 0),
+                              snap['disabled']), (4, 4, 0, None), verify_async)
+
+
 class Bounds(unittest.TestCase):
     def test_lru_entries(self):
         tok = FakeTok()

@@ -5,9 +5,13 @@ the generation prompt. HF fast tokenizers extract added tokens before normalisat
 on either side of a special added token (special, not normalized, no lstrip/rstrip/single_word, contained in no other
 added token) is tokenised independently. The splice is therefore exact: the cached ids up to the last such token wholly
 inside the common character prefix, plus the tokenisation of the rest of the new text. Anything else (no cached entry,
-no join, other encode arguments, offsets requested, a result above the truncation length, a verify mismatch) takes the
-stock call unchanged. Correctness rests on the text comparison only; the cache key (a hash of the opening text) only
-finds the candidate. Every VERIFY_EVERY-th splice also runs the stock call and uses its ids (a mismatch drops the
+no join, other encode arguments, offsets requested, a result above the request's truncation length, a verify mismatch)
+takes the stock call unchanged. Correctness rests on the text comparison only; the cache key (a hash of the opening
+text, and add_special_tokens) only finds the candidate. The length bound is per request, not per conversation (vLLM's
+max_length = max_model_len - max_tokens + 1 follows each turn's reply budget), so it is not in the key (ingress key fix,
+13 Nov): an entry holds untruncated ids only (a stock result at or past its bound is not stored), the tail is tokenised
+without the bound, and each request's own bound is applied to the spliced ids (above it: the stock call, which
+truncates as stock does). Every VERIFY_EVERY-th splice also runs the stock call and uses its ids (a mismatch drops the
 entry and is counted). The verify rate is settable (FLASH_S5_INGRESS_VERIFY_EVERY, default 16; 1 = every splice, 0 =
 none); with FLASH_S5_INGRESS_VERIFY_ASYNC=1 the spliced ids are returned at once and the stock tokenisation runs on one
 separate verifier thread (the latency reading survives), and the first mismatch disables the splice for the launch
@@ -45,6 +49,8 @@ KEY_CHARS = 4096
 KEY_JOINS = 2               # the key text ends at the second join end (the system or first user message), capped
 PER_KEY = 4                 # candidates per key: conversations sharing a system prompt do not thrash
 STOCK_KWARGS = frozenset(('truncation', 'max_length', 'add_special_tokens'))
+LENGTH_KWARGS = frozenset(('truncation', 'max_length'))  # per request: applied to each result, never in the key
+NO_TRUNCATION = (False, 'do_not_truncate')
 SESSION_NO_CHANGE = frozenset(('resume',))      # stock resume_generation: no native command, no lease
 COUNTER_ENTRIES = 32           # night-pack fix 4 (was 12: an evicted conversation's next append counted as 'first')
 EVICTED_KEEP = 1024
@@ -163,8 +169,17 @@ class Splicer:
             out.append((at, i + 1))
         return out
 
+    @staticmethod
+    def length_bound(kwargs):
+        """The request's truncation bound on the ids: max_length unless truncation is off (stock then ignores it).
+        Conservative: truncation unset with a max_length counts as bounded (HF then truncates longest_first)."""
+        if kwargs.get('truncation') in NO_TRUNCATION:
+            return None
+        return kwargs.get('max_length')
+
     def key(self, text, kwargs):
-        """Stable across a conversation's turns: the opening text up to the KEY_JOINS-th join end, at most KEY_CHARS."""
+        """Stable across a conversation's turns: the opening text up to the KEY_JOINS-th join end, at most KEY_CHARS,
+        and the encode arguments other than the per-request length bound (LENGTH_KWARGS)."""
         head = text[:KEY_CHARS]
         at = 0
         for _ in range(KEY_JOINS):
@@ -176,7 +191,8 @@ class Splicer:
         else:
             head = head[:at]
         raw = head.encode('utf-8', 'surrogatepass')
-        return (hashlib.blake2b(raw, digest_size=16).digest(), tuple(sorted(kwargs.items())))
+        return (hashlib.blake2b(raw, digest_size=16).digest(),
+                tuple(sorted(item for item in kwargs.items() if item[0] not in LENGTH_KWARGS)))
 
     def cut(self, entry, text):
         """(cut char, cut index, position in ends) of the largest join end inside the common prefix, or None."""
@@ -199,11 +215,12 @@ class Splicer:
         if found is None:
             return None, 'no-join'
         cut, k, best = found
-        tail = list(self.tokenizer(text[cut:], **kwargs)['input_ids']) if cut < len(text) else []
+        plain = {name: value for name, value in kwargs.items() if name not in LENGTH_KWARGS}
+        tail = list(self.tokenizer(text[cut:], **plain)['input_ids']) if cut < len(text) else []
         head = old_ids[:k]
         ids = head.tolist() + tail
-        max_length = kwargs.get('max_length')
-        if kwargs.get('truncation') and max_length is not None and len(ids) > max_length:
+        bound = self.length_bound(kwargs)
+        if bound is not None and len(ids) > bound:      # stock truncates: its call, unchanged
             return None, 'over-truncation-length'
         head.extend(tail)
         return (ids, cut, k, ends[:best + 1], head, best == len(ends) - 1), None
@@ -213,9 +230,11 @@ class Splicer:
         if self.disabled is not None:
             self.fallbacks[self.disabled] += 1
             return full()
-        if set(kwargs) - STOCK_KWARGS or kwargs.get('add_special_tokens') is not False:
-            self.fallbacks['encode-arguments'] += 1
+        if (set(kwargs) - STOCK_KWARGS or kwargs.get('add_special_tokens') is not False
+                or (kwargs.get('max_length') is None and kwargs.get('truncation') not in NO_TRUNCATION + (None,))):
+            self.fallbacks['encode-arguments'] += 1      # (truncation to the tokenizer's own model_max_length too)
             return full()
+        bound = self.length_bound(kwargs)
         key = self.key(text, kwargs)
         with self.lock:
             candidates = [(eid, self.cache[eid][1:]) for eid in reversed(self.by_key.get(key, ()))]
@@ -251,7 +270,12 @@ class Splicer:
                 self.counts['verified'] += 1
                 if stock != ids:
                     self.counts['verify_mismatch'] += 1
-                    self._store(key, text, stock, None, replace=used[0])   # never splice from it again
+                    if bound is None or len(stock) < bound:
+                        self._store(key, text, stock, None, replace=used[0])   # never splice from it again
+                    else:
+                        self.counts['store_length_bound'] += 1
+                        with self.lock:
+                            self._drop(used[0])
                     return stock
             self._store(key, text, ids, (cut, k, prefix_ends), packed, replace=replace)
             return ids
@@ -263,7 +287,10 @@ class Splicer:
         self.sums['full_us'] += int(ms * 1000)
         self.sums['full_ids'] += len(ids)
         self.full_ms[_bucket(ms)] += 1
-        self._store(key, text, ids, None)
+        if bound is not None and len(ids) >= bound:         # may be truncated: never a splice source
+            self.counts['store_length_bound'] += 1
+        else:
+            self._store(key, text, ids, None)
         return ids
 
     # -- off-path verification (night-pack fix 3) -------------------------------------------------------------------
