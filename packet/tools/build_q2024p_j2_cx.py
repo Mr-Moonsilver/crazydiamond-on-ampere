@@ -133,7 +133,10 @@ def decode_sample_fast_refusals(source_text, is_ancestor):
 
 BLOCKS = ('b1', 'b2', 'b3', 'b4')
 DRY = 'dry'
-BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control', 'decode_step', 'decode_timeline')
+# decode_timeline is new; Codex's stamp also moves handler_anatomy and native_measurement in the overlay (their
+# timeline hooks), so the parent's regenerate refuses them undeclared (first ayc2t build, 13 Nov 19:15)
+BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control', 'decode_step', 'decode_timeline',
+                                     'handler_anatomy', 'native_measurement')
 ENGINE_MOVED = {'e3/' + n + '.py' for n in BOUND_MODULES}
 # decode_step (13 Nov) and decode_timeline (Codex 1469bd85): new in the overlay
 NEW_OVERLAY_FILES = set(np.NEW_OVERLAY_FILES) | {'e3/decode_step.py', 'e3/decode_timeline.py'}

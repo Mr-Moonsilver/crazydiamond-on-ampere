@@ -381,7 +381,8 @@ class Queues(unittest.TestCase):
             cx.configure(flags, 'zl')
             texts = cx.queues('b1')
             self.assertIn('e3/decode_timeline.py', cx.hgb.NEW_OVERLAY_FILES)
-            self.assertIn('decode_timeline', cx.ing.BOUND_MODULES)
+            for name in ('decode_timeline', 'handler_anatomy', 'native_measurement'):   # every module the stamp moves
+                self.assertIn(name, cx.ing.BOUND_MODULES)
             self.assertIn('test_decode_timeline', cx.SUITES)
             settings = next(t for r, t in texts.items() if r.endswith('_settings.sh'))
             self.assertIn('FLASH_S5_DECODE_ANATOMY=0 FLASH_S5_DECODE_TIMELINE=1 ', settings)
