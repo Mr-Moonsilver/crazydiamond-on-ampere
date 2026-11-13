@@ -11,10 +11,21 @@ with one CTA per row. That is about 0.6-0.8 ms of the 1.76 ms device tail measur
   * softmax over the WIDTH survivors, then FlashInfer's own ``top_p_sampling_from_probs``
     (``sampling_from_probs`` without top-p), already loaded by the stock path;
   * the chosen column's vocab id.
-  Logits, logit bias, temperature, logprobs (from the raw logits) and everything else are stock and unchanged. A step is
+  Logits, logit bias, temperature, logprobs (from the raw logits) and everything else are stock and unchanged.
+  Overflow (lever D reviewed-fix, Codex review 13 Nov): a row whose stock kept set (every logit >= the K-th value) is
+  wider than WIDTH -- more than WIDTH - K ties at the K-th value, which bf16 logits do not rule out -- cannot be sampled
+  from the view. Every row's full-row tie count at its pivot is computed on the device (one compare and one int32
+  cumsum over the vocab, ``ties``); a row with count(>= pivot) > WIDTH is drawn, before the draw is served and per row,
+  from the stock distribution itself: the entries above the pivot (all inside the view) and the whole tie group with
+  its true multiplicity, top-p by FlashInfer's rule (a token is kept when the mass strictly above its probability is
+  below top_p, ties together), then one of the ties uniformly over the whole row (the r-th tie in vocab order). No host
+  sync, no lagged counter: ``torch.where`` picks the exact token for those rows on the device. ``overflow_rows`` (device)
+  counts them for the log only. Limit: the compact softmax and the top-p sums reduce in a different FP32 order than
+  the full-row kernels, so a row whose nucleus boundary sits within rounding of top_p can differ; the measured rate
+  is in SIZING.md (same distribution up to FP32 reduction order). A step is
   eligible only when FlashInfer was chosen anyway, every row's top_k is one K with 0 < K <= K_MAX, there is one fp32
   logit row per request and the vocab is at least MIN_VOCAB wide; any other step runs the stock call. More than
-  WIDTH - K ties at the K-th value would drop tied entries; a device counter sees it (``tie_overflow``), never a sync.
+  WIDTH - K ties at the K-th value: that row takes the exact overflow route above (on the device, never a sync).
 
 ``FLASH_S5_DECODE_ANATOMY=1`` (the free read). The stage-1 handler anatomy (``FLASH_S5_HANDLER_ANATOMY=1``, required)
 only records while native progress rides the RPC, so clean decode has no rows. With this switch the engine core opens
@@ -50,7 +61,7 @@ LINE_ANATOMY = 'flash-s5 decode-anatomy '
 LINE_GATE = 'flash-s5 decode-step-gate '
 LINE_BYTES = 3968            # == native_measurement.PROGRESS_LINE_BYTES
 WIDTH = 256                  # columns kept per row (FlashInfer's own top-k-first fast path cap)
-K_MAX = 128                  # eligible top_k; leaves WIDTH - K >= 128 slots for ties at the pivot
+K_MAX = 128                  # eligible top_k (rows tied past WIDTH take the exact overflow route, any K)
 MIN_VOCAB = 65536            # FlashInfer's own fast-path floor
 WINDOW_S = 20.0
 WINDOW_BUDGET_S = 20.0
@@ -240,7 +251,7 @@ class FastSampler:
     """Wraps one Sampler instance's ``_sample_random`` on the last PP stage (instance attribute, never the class)."""
 
     def __init__(self, sampler, *, torch=None, top_p_sample=None, sample=None, logger=None, width=WIDTH,
-                 k_max=K_MAX, min_vocab=MIN_VOCAB):
+                 k_max=K_MAX, min_vocab=MIN_VOCAB, uniform=None):
         self.sampler = sampler
         self.torch = torch if torch is not None else _torch()
         self.stock = sampler._sample_random
@@ -249,8 +260,10 @@ class FastSampler:
         self.width, self.k_max, self.min_vocab = width, k_max, min_vocab
         self.gated = False                   # set per RPC by the worker from the wire tag
         self.counters = dict(fast=0, stock=0, **{'stock_' + r: 0 for r in REASONS})
-        self.tie_overflow = None             # device counter, read lagged at log points only
+        self.overflow_rows = None            # device counter of rows on the exact overflow route (diagnostic only)
+        self._uniform = uniform              # (n) -> [n, 2] uniforms on the logits' device; default torch.rand
         self._host_overflow = None
+        self._copy_event = None
         self._next_log = 1
         sampler._sample_random = self.sample_random
 
@@ -310,34 +323,85 @@ class FastSampler:
         values, ids = torch.topk(logits, self.width, dim=-1, largest=True, sorted=True)
         pivot = values[:, k - 1:k]
         kept = values.masked_fill(values < pivot, float('-inf'))
-        overflow = (values[:, -1:] >= pivot).sum()
-        self.tie_overflow = overflow if self.tie_overflow is None else self.tie_overflow + overflow
         probs = torch.softmax(kept, dim=-1)
         top_p_sample, sample = self._kernels()
         local = top_p_sample(probs, top_p, ids) if top_p is not None else sample(probs, ids)
-        return ids.gather(1, local.view(-1, 1).to(torch.int64)).view(-1).to(torch.int64)
+        fast = ids.gather(1, local.view(-1, 1).to(torch.int64)).view(-1).to(torch.int64)
+        # the stock kept set's true width: entries above the pivot are all in the view (fewer than K of them), the ties
+        # at the pivot are counted over the whole row
+        ties = torch.cumsum(logits == pivot, dim=-1, dtype=torch.int32)
+        tie_count = ties[:, -1:]
+        overflow = ((values > pivot).sum(dim=-1, keepdim=True) + tie_count) > self.width
+        exact = self.sample_overflow(values, ids, pivot, ties, tie_count, k, top_p)
+        rows = overflow.sum()
+        self.overflow_rows = rows if self.overflow_rows is None else self.overflow_rows + rows
+        return torch.where(overflow.view(-1), exact, fast)
+
+    def overflow_weights(self, values, pivot, tie_count, k, top_p):
+        """[n, k + 1] stock probabilities kept by top-p for an overflowing row: columns 0..k-1 the view's entries above
+        the pivot (0 for ties), column k the whole tie group (its true count times one tie's probability)."""
+        torch = self.torch
+        head = values[:, :k]
+        top = values[:, :1]
+        above = head > pivot
+        w_above = torch.where(above, torch.exp(head - top), torch.zeros_like(head))
+        w_tie = torch.exp(pivot - top)
+        total = w_above.sum(dim=-1, keepdim=True) + w_tie * tie_count.to(head.dtype)
+        p_above = w_above / total
+        p_group = w_tie * tie_count.to(head.dtype) / total
+        if top_p is None:
+            keep_above, keep_group = above, torch.ones_like(pivot, dtype=torch.bool)
+        else:
+            cut = top_p.view(-1, 1).to(head.dtype)
+            greater = torch.where(p_above.unsqueeze(1) > p_above.unsqueeze(2), p_above.unsqueeze(1),
+                                  torch.zeros_like(p_above.unsqueeze(1))).sum(dim=-1)
+            keep_above = above & (greater < cut)
+            keep_group = p_above.sum(dim=-1, keepdim=True) < cut      # mass strictly above a tie: every entry above
+        return torch.cat([p_above * keep_above, p_group * keep_group], dim=-1)
+
+    def sample_overflow(self, values, ids, pivot, ties, tie_count, k, top_p):
+        """One token per row from the stock distribution of an overflowing row (computed for every row; used only where
+        the row overflows)."""
+        torch = self.torch
+        n = values.shape[0]
+        weights = self.overflow_weights(values, pivot, tie_count, k, top_p)
+        u = self._uniform(n) if self._uniform is not None else torch.rand(n, 2, device=values.device)
+        cum = torch.cumsum(weights, dim=-1)
+        pick = torch.searchsorted(cum, (u[:, :1] * cum[:, -1:]).contiguous(), right=True).clamp(max=k)
+        above_id = ids.gather(1, pick.clamp(max=k - 1))
+        rank = (u[:, 1:] * tie_count.to(u.dtype)).floor().to(torch.int32).clamp(min=0)
+        rank = torch.minimum(rank, (tie_count - 1).clamp(min=0))
+        tie_id = torch.searchsorted(ties, (rank + 1).contiguous()).clamp(max=ties.shape[1] - 1)
+        return torch.where(pick == k, tie_id, above_id).view(-1).to(torch.int64)
 
     def overflow_seen(self):
-        """The device tie counter, lagged by one log point (non-blocking copy; never a sync)."""
+        """Overflow rows so far, read from a host copy only once that copy has retired (its CUDA event, or a CPU copy,
+        which is synchronous); None ('unavailable') while it is in flight. Diagnostic only: correctness never reads it."""
         torch = self.torch
-        if self.tie_overflow is None:
+        if self.overflow_rows is None:
             return 0
+        if self._copy_event is not None and not self._copy_event.query():
+            return None                                   # the last copy has not retired: no new copy over it
+        seen = None if self._host_overflow is None else int(self._host_overflow[0])
+        source = self.overflow_rows.view(1)
+        cuda = bool(getattr(source, 'is_cuda', False))
         if self._host_overflow is None:
             try:
-                self._host_overflow = torch.zeros(1, dtype=torch.int64, pin_memory=self.tie_overflow.is_cuda)
-            except Exception:  # noqa: BLE001 - no pinned memory (CPU): a plain host tensor
+                self._host_overflow = torch.zeros(1, dtype=torch.int64, pin_memory=cuda)
+            except Exception:  # noqa: BLE001 - no pinned memory: a plain host tensor
                 self._host_overflow = torch.zeros(1, dtype=torch.int64)
-            seen = None
-        else:
-            seen = int(self._host_overflow[0])
-        self._host_overflow.copy_(self.tie_overflow.view(1), non_blocking=True)
+        self._host_overflow.copy_(source, non_blocking=cuda)
+        self._copy_event = None
+        if cuda:
+            self._copy_event = torch.cuda.Event()
+            self._copy_event.record()
         return seen
 
     def log(self):
         if self.logger is not None:
             _log_line(self.logger, LINE_SAMPLE, dict(schema=SCHEMA, width=self.width, k_max=self.k_max,
                                                      counters=dict(self.counters),
-                                                     tie_overflow_lagged=self.overflow_seen()))
+                                                     overflow_rows_retired=self.overflow_seen()))
 
 
 class WorkerSide:

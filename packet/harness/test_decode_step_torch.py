@@ -11,9 +11,13 @@ D (``decode_step.FastSampler.sample_top``) gets the same keyed sampler over its 
 With the same seeds it must return the same token on every row of every trial:
   * bf16-rounded logits (natural ties), forced ties at the pivot, -inf stop tokens (the min_tokens bias);
   * K in {1, 5, 20, 64, 128}; top_p in {None, 0.5, 0.95, 0.999}.
-Also tested: the stock call for a mixed-K batch, the tie-overflow counter (more than WIDTH - K ties at the pivot), its
-lagged non-blocking read, and four source-text mutants that must each break identity: an exact-K mask (ties dropped),
-no tie slack (width K), the column index instead of the vocab id, and the mixed-K check removed.
+Also tested: the stock call for a mixed-K batch, and four source-text mutants that must each break identity: an exact-K
+mask (ties dropped), no tie slack (width K), the column index instead of the vocab id, and the mixed-K check removed.
+Overflow (lever D reviewed-fix, Codex review 13 Nov): a row whose stock kept set is wider than WIDTH (the reviewer's
+repro: 400 equal highest logits, top_k 20, top_p 0.95) takes the exact overflow route before its draw. Its
+distribution over the whole vocab equals the full-vocab reference (allclose), on mixed batches too. Its draws cover the
+whole tie set; the diagnostic counter is read only from a retired copy. Two more mutants: overflow ignored, and overflow
+routed only after the draw (the next step).
 On the box the RNG differs: FlashInfer draws its own, and flag-off is unseeded, so no two flag-off runs agree either.
 What this suite proves is the restriction to WIDTH columns, not FlashInfer's kernels. No GPU, CUDA or box claim.
 """
@@ -141,7 +145,7 @@ class Identity(unittest.TestCase):
             self.assertEqual(stock, 0)
             self.assertEqual(got.dtype, torch.int64)
             self.assertTrue(torch.equal(ref, got), (ref, got))
-            self.assertEqual(int(fast.tie_overflow), 0)
+            self.assertEqual(int(fast.overflow_rows), 0)
         self.assertEqual(sum(f.counters['fast'] for *_, f in results), TRIALS)
 
     def test_mixed_k_is_the_stock_call(self):
@@ -152,20 +156,32 @@ class Identity(unittest.TestCase):
         self.assertEqual(sampler._sample_random(logits, None, np.arange(ROWS), None, 'k', None, True)[0], 'stock')
         self.assertEqual(fast.counters['stock_k_mixed'], 1)
 
-    def test_tie_overflow_is_counted_and_read_lagged(self):
+    def test_overflow_read_only_from_a_retired_copy(self):
         sampler = Sampler([20] * ROWS)
         noise = keyed_noise(5, ROWS, VOCAB)
         fast = ds.FastSampler(sampler, torch=torch, top_p_sample=kernels(noise)[0], sample=kernels(noise)[1])
         fast.gated = True
         logits = torch.randn(ROWS, VOCAB)
-        logits[0, :400] = 50.0                                   # 400 ties at the top: more than WIDTH - K
+        logits[0, :400] = 50.0                                   # 400 ties at the top: more than WIDTH
         top_p = torch.full((ROWS,), 0.95)
         sampler._sample_random(logits, None, np.arange(ROWS), None, 'k', top_p, True)
-        self.assertEqual(int(fast.tie_overflow), 1)
-        self.assertIsNone(fast.overflow_seen())                  # the first read only starts the copy
+        self.assertEqual(int(fast.overflow_rows), 1)
+        self.assertIsNone(fast.overflow_seen())                  # no copy has retired yet: unavailable
         sampler._sample_random(logits, None, np.arange(ROWS), None, 'k', top_p, True)
-        self.assertEqual(fast.overflow_seen(), 1)                # lagged by one log point
-        self.assertEqual(int(fast.tie_overflow), 2)
+        self.assertEqual(fast.overflow_seen(), 1)                # the CPU copy retired at once (synchronous)
+
+        class Pending:
+            def __init__(self):
+                self.done = False
+
+            def query(self):
+                return self.done
+        event = Pending()
+        fast._copy_event = event                                 # a CUDA copy still in flight
+        self.assertIsNone(fast.overflow_seen())
+        self.assertIs(fast._copy_event, event)                   # no new copy over the pending one
+        event.done = True
+        self.assertEqual(fast.overflow_seen(), 2)                # the copy the second read started (rows then: 2)
 
     def test_logits_and_kept_tensor_untouched(self):
         sampler = Sampler([20] * ROWS)
@@ -177,6 +193,119 @@ class Identity(unittest.TestCase):
         _, kept = sampler._sample_random(logits, None, np.arange(ROWS), None, 'k', torch.full((ROWS,), 0.9), True)
         self.assertIs(kept, logits)
         self.assertTrue(torch.equal(logits, before))
+
+
+def reference_dense(logits, k, top_p):
+    """The full-vocab reference's distribution: >= pivot mask, full softmax, threshold top-p, renormalised."""
+    pivot = torch.topk(logits, k, dim=-1).values[:, -1:]
+    probs = torch.softmax(logits.masked_fill(logits < pivot, float('-inf')).double(), dim=-1)
+    kept = probs * top_p_keep(probs, top_p)
+    return kept / kept.sum(dim=-1, keepdim=True)
+
+
+def overflow_dense(fast, logits, k, top_p):
+    """D's overflow route as a distribution over the vocab (its weights spread back: ties share the group equally)."""
+    values, ids = torch.topk(logits, fast.width, dim=-1, largest=True, sorted=True)
+    pivot = values[:, k - 1:k]
+    tie_mask = logits == pivot
+    count = tie_mask.sum(dim=-1, keepdim=True).to(torch.int32)
+    weights = fast.overflow_weights(values, pivot, count, k, top_p).double()
+    dense = torch.zeros(logits.shape, dtype=torch.float64)
+    dense.scatter_add_(1, ids[:, :k], weights[:, :k])
+    dense += tie_mask.double() * (weights[:, k:] / count.double())
+    return dense / dense.sum(dim=-1, keepdim=True)
+
+
+def overflow_case(rng, k, ties, above, vocab=VOCAB, rows=ROWS):
+    x = torch.from_numpy(rng.standard_normal((rows, vocab)).astype(np.float32) * 3.0)
+    x = x.to(torch.bfloat16).to(torch.float32) / 0.7
+    for r in range(rows):
+        level = float(x[r].max()) + 1.0
+        spots = torch.from_numpy(rng.choice(vocab, size=ties + above, replace=False))
+        x[r, spots[:ties]] = level                               # ties at the K-th value, more than WIDTH - above
+        x[r, spots[ties:]] = level + torch.from_numpy(rng.uniform(0.05, 4.0, size=above).astype(np.float32))
+    return x
+
+
+class Overflow(unittest.TestCase):
+    def fast(self, ks, uniform=None):
+        sampler = Sampler(ks)
+        noise = keyed_noise(3, len(ks), VOCAB)
+        fast = ds.FastSampler(sampler, torch=torch, top_p_sample=kernels(noise)[0], sample=kernels(noise)[1],
+                              uniform=uniform)
+        fast.gated = True
+        return sampler, fast
+
+    def test_reviewer_repro_support_is_the_stock_support(self):
+        """400 equal highest logits, top_k 20, top_p 0.95 (the review's tie-overflow.json): stock keeps 400."""
+        vocab = 65536
+        logits = torch.full((1, vocab), -5.0)
+        logits[0, :400] = 10.0
+        sampler = Sampler([20])
+        g = torch.Generator().manual_seed(1311)
+        fast = ds.FastSampler(sampler, torch=torch, top_p_sample=lambda p, t, i: p.argmax(-1),
+                              sample=lambda p, i: p.argmax(-1), uniform=lambda n: torch.rand(n, 2, generator=g))
+        fast.gated = True
+        tokens = [int(sampler._sample_random(logits, None, np.arange(1), None, 'k', torch.full((1,), 0.95), True)[0][0])
+                  for _ in range(4000)]
+        self.assertEqual(sampler.stock_calls, 0)
+        self.assertEqual(int(fast.overflow_rows), 4000)
+        self.assertTrue(set(tokens) <= set(range(400)))
+        self.assertGreater(len(set(tokens)), 380)                # the whole tie set, not the 256 the view holds
+        self.assertGreater(len([t for t in tokens if t >= 256]), 4000 * 144 / 400 * 0.8)
+        dense = overflow_dense(fast, logits, 20, torch.full((1,), 0.95))
+        self.assertEqual(int((dense > 0).sum()), 400)
+        self.assertTrue(torch.allclose(dense, reference_dense(logits, 20, torch.full((1,), 0.95)), atol=1e-9))
+
+    def test_overflow_distribution_equals_the_full_vocab_reference(self):
+        rng = np.random.default_rng(77)
+        for k, ties, above in ((20, 400, 0), (20, 300, 7), (5, 260, 3), (64, 500, 40), (128, 1000, 100), (1, 257, 0)):
+            for p in (None, 0.5, 0.95, 0.999):
+                logits = overflow_case(rng, k, ties, above)
+                top_p = None if p is None else torch.full((ROWS,), p, dtype=torch.float32)
+                _, fast = self.fast([k] * ROWS)
+                got, want = overflow_dense(fast, logits, k, top_p), reference_dense(logits, k, top_p)
+                self.assertTrue(torch.allclose(got, want, atol=1e-6), (k, ties, above, p, float((got - want).abs().max())))
+                self.assertTrue(torch.equal(got > 0, want > 0), (k, ties, above, p))
+
+    def test_overflow_draws_follow_the_distribution(self):
+        rng = np.random.default_rng(5)
+        logits = overflow_case(rng, 20, 300, 6, vocab=4096, rows=1)
+        top_p = torch.full((1,), 0.95)
+        g = torch.Generator().manual_seed(9)
+        sampler, fast = self.fast([20], uniform=lambda n: torch.rand(n, 2, generator=g))
+        fast.min_vocab = 4096
+        want = reference_dense(logits, 20, top_p)[0]
+        draws = 6000
+        counts = torch.zeros_like(want)
+        for _ in range(draws):
+            counts[int(sampler._sample_random(logits, None, np.arange(1), None, 'k', top_p, True)[0][0])] += 1
+        self.assertEqual(float(counts[want == 0].sum()), 0.0)    # never outside the stock support
+        tie_set = logits[0] == torch.topk(logits[0], 20).values[-1]
+        # the tie group and every token above it: frequency within 5 sigma of the stock probability
+        for mass, seen in [(float(want[tie_set].sum()), float(counts[tie_set].sum()))] + \
+                [(float(want[i]), float(counts[i])) for i in torch.nonzero((want > 0) & ~tie_set).view(-1).tolist()]:
+            sigma = (draws * mass * (1 - mass)) ** 0.5
+            self.assertLess(abs(seen - draws * mass), 5 * sigma + 1, (mass, seen))
+
+    def test_mixed_batch_overflow_rows_exact_the_rest_unchanged(self):
+        rng = np.random.default_rng(21)
+        logits = logits_case(rng, 20, 0)
+        logits[[1, 5]] = overflow_case(rng, 20, 350, 4, rows=2)
+        top_p = torch.full((ROWS,), 0.95)
+        noise = keyed_noise(44, ROWS, VOCAB)
+        sampler = Sampler([20] * ROWS)
+        g = torch.Generator().manual_seed(2)
+        fast = ds.FastSampler(sampler, torch=torch, top_p_sample=kernels(noise)[0], sample=kernels(noise)[1],
+                              uniform=lambda n: torch.rand(n, 2, generator=g))
+        fast.gated = True
+        got, _ = sampler._sample_random(logits, None, np.arange(ROWS), None, 'k', top_p, True)
+        want = reference(logits, 20, top_p, noise)
+        normal = [r for r in range(ROWS) if r not in (1, 5)]
+        self.assertTrue(torch.equal(got[normal], want[normal]))  # the view rows: token-identical as before
+        self.assertEqual(int(fast.overflow_rows), 2)
+        dense = reference_dense(logits, 20, top_p)
+        self.assertTrue(all(float(dense[r, int(got[r])]) > 0 for r in (1, 5)))
 
 
 class Mutants(unittest.TestCase):
@@ -196,8 +325,52 @@ class Mutants(unittest.TestCase):
 
     def test_column_index_instead_of_vocab_id(self):
         self.assertTrue(self.broken(
-            "        return ids.gather(1, local.view(-1, 1).to(torch.int64)).view(-1).to(torch.int64)\n",
-            "        return local.view(-1).to(torch.int64)\n"))
+            "        fast = ids.gather(1, local.view(-1, 1).to(torch.int64)).view(-1).to(torch.int64)\n",
+            "        fast = local.view(-1).to(torch.int64)\n"))
+
+    def overflow_probe(self, old, new):
+        """(distinct first draws over 200 fresh samplers, distinct draws over 1,500 later steps) on the review's repro.
+        The stock support is 0..399; the view holds 256 of them and the fake kernel always takes its first column, so a
+        draw served from the view is one fixed token."""
+        module = load_mutant(old, new)
+        logits = torch.full((1, 4096), -5.0)                 # min_vocab lowered: the probe's cost, not its shape
+        logits[0, :400] = 10.0
+        g = torch.Generator().manual_seed(1311)
+
+        def fresh():
+            sampler = Sampler([20])
+            fast = module.FastSampler(sampler, torch=torch, top_p_sample=lambda p, t, i: p.argmax(-1),
+                                      sample=lambda p, i: p.argmax(-1), uniform=lambda n: torch.rand(n, 2, generator=g),
+                                      min_vocab=4096)
+            fast.gated = True
+            return lambda: int(sampler._sample_random(logits, None, np.arange(1), None, 'k',
+                                                      torch.full((1,), 0.95), True)[0][0])
+        first = {fresh()() for _ in range(200)}
+        draw = fresh()
+        draw()
+        later = {draw() for _ in range(1500)}
+        return len(first), len(later)
+
+    LINE = "        return torch.where(overflow.view(-1), exact, fast)\n"
+
+    def test_control_the_fixed_module(self):
+        first, later = self.overflow_probe(self.LINE, self.LINE)
+        self.assertGreater(first, 100)
+        self.assertGreater(later, 350)
+
+    def test_overflow_ignored_caught(self):
+        first, later = self.overflow_probe(self.LINE, "        return fast\n")
+        self.assertEqual((first, later), (1, 1))
+
+    def test_overflow_routed_after_the_draw_caught(self):
+        """The route decided from the previous step's overflow (a lagged flag): every first overflowing draw is served
+        from the truncated view, although later steps are routed."""
+        first, later = self.overflow_probe(self.LINE, "        late = getattr(self, '_late', None)\n"
+                                                      "        self._late = overflow\n"
+                                                      "        return fast if late is None else "
+                                                      "torch.where(late.view(-1), exact, fast)\n")
+        self.assertEqual(first, 1)
+        self.assertGreater(later, 350)
 
     def test_mixed_k_check_removed(self):
         module = load_mutant("        if not bool((ks == k).all()):\n", "        if False:\n")
