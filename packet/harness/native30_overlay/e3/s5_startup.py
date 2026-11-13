@@ -291,6 +291,10 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     control_inwait = env.get('FLASH_S5_CONTROL_INWAIT', '0')
     if control_inwait not in ('0', '1') or (control_inwait == '1' and auto != '1'):
         raise StartupError('FLASH_S5_CONTROL_INWAIT needs boolean setting and FLASH_S5_AUTO_ARM=1')
+    control_o3 = env.get('FLASH_S5_CONTROL_O3_INWAIT', '0')
+    if control_o3 not in ('0', '1') or (control_o3 == '1' and
+            (control_inwait != '1' or auto != '1' or env.get('FLASH_S5_O3', '0') != '1')):
+        raise StartupError('FLASH_S5_CONTROL_O3_INWAIT needs CONTROL_INWAIT=1, AUTO_ARM=1 and O3=1')
     if auto not in ('0', '1'):
         raise StartupError('invalid boolean setting: FLASH_S5_AUTO_ARM')
     if auto == '1' and (mode_settings(env) is not None or not _enabled(env)):

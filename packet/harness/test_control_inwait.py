@@ -399,12 +399,15 @@ class OrderedWorkers(rpc.Broadcast):
 
 
 class RealCoreOrder(unittest.TestCase):
+    def make_rig(self):
+        return full_rig()
+
     def setUp(self):
         context = mock.patch.object(auto, 'MIN_NATIVE_ROWS', 1)
         context.start(); self.addCleanup(context.stop)
         context = ay.auto_arm_workers()
         context.__enter__(); self.addCleanup(context.__exit__, None, None, None)
-        self.r = r = full_rig()
+        self.r = r = self.make_rig()
         self.executor, self.transport = rpc.install()
         self.addCleanup(self.transport.close, 1)
         self.wire = OrderedWorkers(self.executor, r)

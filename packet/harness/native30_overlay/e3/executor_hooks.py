@@ -1199,7 +1199,8 @@ def _idle_tick(engine):
     if policy is not None and policy.tick():
         return _stock_step_bypass(driver, ({}, False))
     if (policy is not None and getattr(policy, 'control_inwait', None) is not None
-            and policy.phase == 'control_observe'):
+            and (policy.phase == 'control_observe' or (getattr(policy.control_inwait, 'o3', False)
+                 and policy.phase in ('control_o3_observe', 'control_o3_cut')))):
         # Only the policy's read-only identity may share ordinary decode RPC order.
         return None
     tick = getattr(driver, 'control_tick', None)
