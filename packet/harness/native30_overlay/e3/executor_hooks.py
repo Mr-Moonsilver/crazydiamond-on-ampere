@@ -870,6 +870,17 @@ def collective_rpc(executor, stock, method, timeout=None, args=(), kwargs=None,
             # Ring position for in-wait progress: native commands may follow a
             # sample_tokens, never sit between an execute_model and its sample.
             progress.last_stock_kind = kind
+        if os.environ.get('FLASH_S5_DECODE_TIMELINE', '0') == '1':
+            side = executor.__dict__.get('_flash_s5_decode_timeline')
+            if side is not None:
+                try:
+                    from decode_timeline import OUTSIDE_KEY
+                    tag = side.wire(kind, sequence, args, progress is None)
+                    if tag is not None:
+                        wire_kwargs = dict(wire_kwargs)
+                        wire_kwargs[OUTSIDE_KEY] = tag
+                except Exception:
+                    pass  # Diagnostic omission; it never changes a stock dispatch.
         if _DECODE_STEP:
             # decode-step (FLASH_S5_DECODE_SAMPLE_FAST / FLASH_S5_DECODE_ANATOMY): the per-arm tag; popped by the worker.
             side = executor.__dict__.get('_flash_s5_decode_step')
@@ -1059,6 +1070,12 @@ def before_step_with_batch_queue(engine):
     """Bounded engine bypass: drive one typed step; never wait for a layer."""
     driver = _driver(engine)
     if driver is not None:
+        if os.environ.get('FLASH_S5_DECODE_TIMELINE', '0') == '1':
+            try:
+                from decode_timeline import engine_step as timeline_step
+                timeline_step(engine)
+            except Exception:
+                pass  # Diagnostic omission; no scheduler or route change.
         if (side := _decode_step_engine(engine)) is not None:
             side.step(engine)      # decode-step: the per-arm gate and the clean anatomy window (installed only)
         started = time.monotonic_ns()
@@ -1591,6 +1608,18 @@ def _reply_lock(proc):
 def worker_rpc_begin(proc, method, kwargs):
     """Pop the engine's progress meta before dispatch; stock methods never see it."""
     clean = _decode_step_rpc(proc, method, kwargs) if _DECODE_STEP is not False else None
+    if os.environ.get('FLASH_S5_DECODE_TIMELINE', '0') == '1':
+        tag = kwargs.pop('_flash_s5_dt', None) if type(kwargs) is dict else None
+        try:
+            from decode_timeline import worker_rpc as timeline_rpc
+            anatomy = _anatomy(proc) if tag is not None else _ANATOMY
+            sequence = timeline_rpc(proc, method, tag, anatomy or None)
+            if sequence is not None and PROGRESS_META_KEY not in kwargs and clean is None:
+                anatomy.begin(sequence, method)
+                clean = _CleanRpc([sequence, method, time.monotonic_ns(), None, False])
+        except Exception:
+            if _ANATOMY:
+                _ANATOMY.counters['observer_errors'] += 1
     if type(kwargs) is not dict or PROGRESS_META_KEY not in kwargs:
         return clean
     sequence, direct = decode_progress_meta(kwargs.pop(PROGRESS_META_KEY))

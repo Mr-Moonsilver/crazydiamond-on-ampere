@@ -166,6 +166,7 @@ class Recorder:
         self.fresh = True
         self.identity = {}
         self.calibration = {}
+        self.timeline = None
 
     # -- install -------------------------------------------------------------
     def install(self):
@@ -213,6 +214,12 @@ class Recorder:
             async_scheduling=bool(getattr(proc, 'use_async_scheduling', False)),
             runner_async_scheduling=getattr(runner, 'use_async_scheduling', None),
             runner=(type(runner).__module__ + '.' + type(runner).__name__) if runner is not None else None)
+        if os.environ.get('FLASH_S5_DECODE_TIMELINE', '0') == '1':
+            try:
+                from decode_timeline import Timeline
+                self.timeline = Timeline(self, runner)
+            except Exception:
+                self.counters['observer_errors'] += 1
         return self
 
     def _calibrate(self):
@@ -272,10 +279,15 @@ class Recorder:
             self.counters['nested_calls'] += 1
             row[_FLAGS] |= FLAG_NESTED
             return fn(*args, **kwargs)
+        if self.timeline is not None:
+            if seam == SEAM_ID['execute'] and args:
+                self.timeline.inputs(row[_SEQ], args[0])
         pair = stream = None
         try:
             if device is not None:
                 stream = self.torch.cuda.current_stream()
+                if self.timeline is not None and device == _DEVF:
+                    self.timeline.descriptor(row[_SEQ], args, stream)
                 if query:
                     row[_QB] = int(stream.query())
                 if self.pool:
@@ -456,6 +468,12 @@ class Recorder:
             try:
                 if pair[1].query() and pair[0].query():
                     row[slot] = int(round(pair[0].elapsed_time(pair[1]) * 1e6))
+                    if self.timeline is not None and slot == _DEVF:
+                        self.timeline.forward(row[_SEQ], pair, device_ns=row[slot],
+                            forward_host_ns=(row[_SEAMS].get(SEAM_ID['forward']) or [None])[0],
+                            observer_ns=row[_OBS], t_enter=row[_TE], t_exit=row[_TX],
+                            forward_calls=(row[_SEAMS].get(SEAM_ID['forward']) or [None]*4)[3],
+                            handler_flags=row[_FLAGS])
                     if row[_FLAGS] & FLAG_DEV_UNRESOLVED:
                         self.counters['events_late'] += 1
                     self.pool.append(pair)
