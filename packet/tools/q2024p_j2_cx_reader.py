@@ -45,6 +45,7 @@ import importlib.util
 import json
 import math
 from pathlib import Path
+import re
 
 HERE = Path(__file__).resolve().parent
 
@@ -237,15 +238,46 @@ def sample_fast_delta(lines, arm):
 
 ANATOMY_CORE = 'flash-s5 decode-anatomy '
 HANDLER = 'flash-s5 handler '
+HANDLER_SCHEMA = 's5-handler-anatomy/1'      # == tools/stage1_anatomy_report.SCHEMA (patches/s5_engine/handler_anatomy.py)
+# main-row fields and flags as the writer's (patches/s5_engine/handler_anatomy.M_FIELDS / FLAG_*), read the way
+# tools/stage1_anatomy_report.py reads them; that tool and its harness imports are not in a packet bundle, so this
+# reader parses the few fields it needs itself (test_q2024p_j2_cx pins these to the writer and the torn-line rule)
+HANDLER_M_FIELDS = ('seq', 'kind', 'out', 'flags', 't_enter', 't_exit', 'wall_ns', 'cpu_ns', 'observer_ns',
+                    'dev_forward_ns', 'dev_sample_ns', 'idle_before_launch', 'idle_after_launch', 'handle_output_ns',
+                    'seams')
+HANDLER_BAD_FLAGS = 1 | 2 | 4                # FLAG_FAILED | FLAG_ABORTED | FLAG_INSTALL
+INNER_HEADER = re.compile(r'\((?:Worker_\w+|EngineCore\w*) pid=\d+\) ?')   # == harness/step_a_torn_lines.INNER_HEADER
 SAMPLING_RANKS = ('2', '3')        # the last PP stage samples (TP2 x PP2)
-_ANATOMY_REPORT = []
 
 
-def _anatomy_report():
-    """tools/stage1_anatomy_report.py, loaded once and only when a block has handler lines (it reads harness/)."""
-    if not _ANATOMY_REPORT:
-        _ANATOMY_REPORT.append(_load('stage1_anatomy_report', 'stage1_anatomy_report.py'))
-    return _ANATOMY_REPORT[0]
+def handler_body(line):
+    """The handler line's body, or None when it is torn (no JSON dict, or another writer's header inside it)."""
+    body = line[line.find(HANDLER) + len(HANDLER):]
+    if INNER_HEADER.search(body):
+        return None
+    try:
+        value = json.loads(body)
+    except ValueError:
+        return None
+    return value if type(value) is dict else None
+
+
+def handler_rows(records):
+    """Main rows of the whole-or-partial flushes: (stamp, rank, row dict with t_enter in ns), as the anatomy report's
+    assemble (t_enter = base_ns + t_enter_us * 1000); a flush's stamp is its earliest part's."""
+    groups = {}
+    for stamp, body in records:
+        groups.setdefault((body.get('rank'), body.get('line'), body.get('base_ns')), []).append((stamp, body))
+    out = []
+    for (rank, _, base), parts in groups.items():
+        stamps = [s for s, _ in parts if s is not None]
+        when = min(stamps) if stamps else None
+        for _, body in parts:
+            for item in (body.get('rows') or {}).get('m', []):
+                r = dict(zip(HANDLER_M_FIELDS, item))
+                r['t_enter'] = (base or 0) + r['t_enter'] * 1000 if type(r.get('t_enter')) is int else None
+                out.append((when, rank, r))
+    return out
 
 
 def _dist(values):
@@ -264,7 +296,6 @@ def dev_sample(root, arms):
     path = Path(root) / 'engine-stream.log'
     if not path.is_file():
         return None
-    sa = _anatomy_report()
     windows, records, torn, errors = {}, [], 0, 0
     with path.open(errors='replace') as handle:
         for line in handle:
@@ -273,15 +304,19 @@ def dev_sample(root, arms):
                 if d is not None and d.get('kind') == 'core-steps' and type(d.get('open_ns')) is int:
                     windows.setdefault(d.get('window'), (d['open_ns'], d.get('close_ns'), dmp.stamp(line)))
             elif HANDLER in line:
-                if sa.is_torn(line):
+                body = handler_body(line)
+                if body is None:
                     torn += 1
                     continue
-                body = json.loads(line[line.find(HANDLER) + len(HANDLER):])
-                if type(body) is not dict or body.get('schema') != sa.SCHEMA:
+                if body.get('schema') != HANDLER_SCHEMA:
                     errors += 1
                     continue
                 records.append((dmp.stamp(line), body))
-    flushes, incomplete = sa.assemble(records)
+    incomplete = 0
+    for key in {(b.get('rank'), b.get('line'), b.get('base_ns')) for _, b in records}:
+        parts = sorted(b.get('part', -1) for _, b in records if (b.get('rank'), b.get('line'), b.get('base_ns')) == key)
+        count = next((b.get('parts') for _, b in records if (b.get('rank'), b.get('line'), b.get('base_ns')) == key), 0)
+        incomplete += parts != list(range(count or 0))
     spans = {}
     for name, arm in arms.items():
         start = arm.get('replay_start_s') if arm else None
@@ -296,25 +331,23 @@ def dev_sample(root, arms):
             return 'unstamped'
         return 'before-arms' if spans and wall < min(a for a, _ in spans.values()) else 'between'
 
-    bad = sa.FLAG_INSTALL | sa.FLAG_FAILED | sa.FLAG_ABORTED
     clean, native = {}, {}
-    for f in flushes:
-        for r in f['main']:
-            if r['kind'] != 's' or type(r['dev_sample_ns']) is not int or r['flags'] & bad:
-                continue
-            ms = r['dev_sample_ns'] / 1e6
-            hit = [w for w, (a, b, _) in windows.items() if type(b) is int and r['t_enter'] is not None and a <= r['t_enter'] <= b]
-            if hit:
-                clean.setdefault(hit[0], {}).setdefault(str(r['rank']), []).append(ms)
-            else:
-                native.setdefault(arm_at(f['stamp']), {}).setdefault(str(r['rank']), []).append(ms)
+    for when, rank, r in handler_rows(records):
+        if r.get('kind') != 's' or type(r.get('dev_sample_ns')) is not int or (r.get('flags') or 0) & HANDLER_BAD_FLAGS:
+            continue
+        ms = r['dev_sample_ns'] / 1e6
+        hit = [w for w, (a, b, _) in windows.items() if type(b) is int and r['t_enter'] is not None and a <= r['t_enter'] <= b]
+        if hit:
+            clean.setdefault(hit[0], {}).setdefault(str(rank), []).append(ms)
+        else:
+            native.setdefault(arm_at(when), {}).setdefault(str(rank), []).append(ms)
     return dict(
         clean={str(w): dict(arm=arm_at(windows[w][2]), close_minus_open_s=round((windows[w][1] - windows[w][0]) / 1e9, 3)
                             if type(windows[w][1]) is int else None,
                             ranks={k: _dist(v) for k, v in sorted(clean.get(w, {}).items())})
                for w in sorted(windows, key=str)},
         native={a: {k: _dist(v) for k, v in sorted(ranks.items())} for a, ranks in sorted(native.items())},
-        torn_lines=torn, schema_errors=errors, incomplete_flushes=len(incomplete))
+        torn_lines=torn, schema_errors=errors, incomplete_flushes=incomplete)
 
 
 def auto_arm_delta(arm):

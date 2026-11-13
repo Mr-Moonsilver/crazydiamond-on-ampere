@@ -602,6 +602,35 @@ class Reader(unittest.TestCase):
         with (root / 'engine-stream.log').open('a') as handle:
             handle.writelines(lines)
 
+    def test_handler_parse_pinned_to_the_writer_and_the_torn_rule(self):
+        """The reader parses handler lines itself (stage1_anatomy_report is not in a bundle): its schema, main-row
+        fields and dropped flags equal the writer's, its torn rule is step_a_torn_lines.INNER_HEADER."""
+        import ast as ast_
+        path = next(p for p in (HERE.parent / 'patches/s5_engine/handler_anatomy.py',
+                                HERE / 'native30_overlay/e3/handler_anatomy.py',
+                                HERE / 'e3_builder/handler_anatomy.py') if p.is_file())
+        consts = {}
+        for node in ast_.parse(path.read_text()).body:
+            if isinstance(node, ast_.Assign):
+                try:
+                    value = ast_.literal_eval(node.value)
+                except ValueError:
+                    continue
+                for target in node.targets:
+                    if isinstance(target, ast_.Name):
+                        consts[target.id] = value
+                    elif isinstance(target, ast_.Tuple) and isinstance(value, tuple):
+                        consts.update({e.id: v for e, v in zip(target.elts, value) if isinstance(e, ast_.Name)})
+        self.assertEqual(consts['SCHEMA'], reader.HANDLER_SCHEMA)
+        self.assertEqual(tuple(consts['M_FIELDS']), reader.HANDLER_M_FIELDS)
+        self.assertEqual(consts['FLAG_FAILED'] | consts['FLAG_ABORTED'] | consts['FLAG_INSTALL'], reader.HANDLER_BAD_FLAGS)
+        import step_a_torn_lines
+        self.assertEqual(step_a_torn_lines.INNER_HEADER.pattern, reader.INNER_HEADER.pattern)
+        whole = '2026-11-13T00:00:00.000000000Z (Worker_PP1_TP0 pid=1) INFO flash-s5 handler {"schema": "x"}'
+        self.assertEqual(reader.handler_body(whole), {'schema': 'x'})
+        self.assertIsNone(reader.handler_body(whole[:-1] + '(Worker_PP1_TP1 pid=2) INFO }'))
+        self.assertIsNone(reader.handler_body(whole[:-3]))
+
     def test_dev_sample_clean_window_native_context_and_the_d_pair(self):
         out = {}
         for side, env, sample in (('off', {}, (1.0, 1.1, 1.2, 1.3)), ('on', {'FLASH_S5_DECODE_SAMPLE_FAST': '1'},
