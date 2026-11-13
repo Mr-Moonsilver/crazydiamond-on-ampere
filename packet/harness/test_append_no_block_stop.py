@@ -190,7 +190,25 @@ class Plan(unittest.TestCase):
         self.assertEqual(pieces(on), pieces(off))
         self.assertEqual(pieces(off)[:2], (2048, 2000))
         a = controller.append_pieces
-        self.assertEqual((a['appends'], a['fused_pieces'], a['bulk_pieces']), (0, 0, len(on)))
+        self.assertEqual((a['appends'], a['fused_pieces'], a['bulk_pieces'], a['cold_pieces']), (0, 0, 0, len(on)))
+
+    def test_a_cold_turn_of_at_most_max_new_rows_is_not_an_append_and_keeps_its_block_stops(self):
+        # review fix (12 Nov): a cold prompt (start 0) of <= 8192 rows was treated as an append and ran through 4048, so its
+        # block-0 state was withheld; it is stock's split now, the block-0 stop kept
+        for n in (6100, 8100):
+            with self.subTest(n=n):
+                off, *_ = self.run_turn(n, 0, '0')
+                on, controller, *_ = self.run_turn(n, 0, '1')
+                self.assertEqual(pieces(on), pieces(off))
+                self.assertIn(BLOCK, ends(on))
+                a = controller.append_pieces
+                self.assertEqual((a['appends'], a['fused_pieces'], a['stops_skipped'], a['stale_states_unpublished'],
+                                  a['bulk_pieces'], a['cold_pieces'], a['fallbacks'], a['errors']),
+                                 (0, 0, 0, 0, 0, len(on), {}, 0))
+        # an append from a cached start of one unit still fuses (the fix is start 0 only)
+        on, controller, *_ = self.run_turn(6100, 176, '1')
+        self.assertNotIn(BLOCK, ends(on))
+        self.assertEqual(controller.append_pieces['fused_pieces'], 1)
 
     def test_eight_thousand_one_hundred_ninety_two_new_rows_is_an_append_one_more_is_not(self):
         start = 20 * BLOCK + 500

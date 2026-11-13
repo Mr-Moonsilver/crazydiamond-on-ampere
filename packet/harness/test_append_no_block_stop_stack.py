@@ -244,5 +244,23 @@ class Conversation(unittest.TestCase):
                 self.assertEqual(stack.violations, [])
 
 
+    def test_a_cold_prompt_of_at_most_max_new_rows_keeps_its_block_zero_state(self):
+        # review fix (12 Nov): a cold turn is not an append; its block 0 is published with the state after exactly 4048
+        # tokens, so a sibling sharing past 4048 resumes there, flag off and on alike
+        tokens = conversation(6100, ())[0]
+        for flag in ('0', '1'):
+            with self.subTest(flag=flag):
+                stack = Stack(flag)
+                stack.native_turn(stack.request(tokens))
+                sibling = stack.request(tokens[:BLOCK + 50] + [7] * 500)
+                stack.manager.new_step_starts()
+                _blocks, hit, _ = stack.manager.get_computed_blocks(sibling)
+                self.assertEqual(hit, BLOCK, flag)
+                stack.native_turn(sibling)
+                self.assertEqual(stack.violations, [], flag)
+                self.assertEqual(stack.controller.append_pieces['appends'], 1 if flag == '1' else 0)  # the sibling
+                print('cold prompt flag', flag, 'sibling hit', hit, 'block', stack.controller.append_pieces)
+
+
 if __name__ == '__main__':
     unittest.main()

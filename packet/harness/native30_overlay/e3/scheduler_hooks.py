@@ -1760,7 +1760,7 @@ class PrefillAdmissionController:
             raise E3ContractError(APPEND_NO_BLOCK_STOP_ENV + ' must be 0 or 1')
         self.append_no_block_stop = nbs == '1'
         self.append_pieces = dict(appends=0, pieces=0, fused_pieces=0, stops_skipped=0, stale_states_unpublished=0,
-                                  extra_blocks_unpublished=0, bulk_pieces=0, hist={}, fallbacks={}, log_lines=0,
+                                  extra_blocks_unpublished=0, bulk_pieces=0, cold_pieces=0, hist={}, fallbacks={}, log_lines=0,
                                   log_dropped=0, errors=0)
         self._append_turns = {}             # uid -> [num_tokens, turn start, pieces committed]; insertion order is LRU
         self._append_fallback_seen = {}
@@ -1883,8 +1883,8 @@ class PrefillAdmissionController:
         the cap and chunk bound) is stock's, and at most one block boundary lies inside the piece.  The block it leaves
         holds the state at the piece's start, so commit does not publish it (_append_unpublish_stale).
 
-        Not fused, stock's ``size`` returned: not an append (more than APPEND_NO_BLOCK_STOP_MAX_NEW rows past the turn's
-        start), the stop is not a block boundary inside the limit, and the kept stops below (one count and one
+        Not fused, stock's ``size`` returned: not an append (a cold turn, started at 0, of any length: its block-0 state
+        is kept; or more than APPEND_NO_BLOCK_STOP_MAX_NEW rows past the turn's start), the stop is not a block boundary inside the limit, and the kept stops below (one count and one
         numbers-only line each per request and position): ``tail-boundary`` (the block boundary is also the prompt's last
         hash boundary: the next turn's hit), ``junction`` (a shared-prefix junction at or past the block boundary: its stop,
         or its retained block is the one left; one inside the block before it is passed, as stock's split already stops
@@ -1905,6 +1905,8 @@ class PrefillAdmissionController:
                 return size
             if start is None:
                 return self._append_kept(request, position, end, 'no-turn-start', size)
+            if start == 0:                     # a cold turn is not an append: stock's block stops, its block-0 state kept
+                return size
             if prefill_end - start > APPEND_NO_BLOCK_STOP_MAX_NEW:
                 return size
             unit = getattr(scheduler, 'hash_block_size', None)
@@ -1982,6 +1984,11 @@ class PrefillAdmissionController:
         try:
             entry = self._append_turns.get(request.request_id)
             prefill_end = max(request.num_prompt_tokens, request.num_tokens - 1)
+            if entry is not None and entry[0] == request.num_tokens and entry[1] == 0:
+                counts['cold_pieces'] += 1     # a cold turn (start 0) of any length: not an append, never fused
+                if terminal:
+                    self._append_turns.pop(request.request_id, None)
+                return
             if entry is None or entry[0] != request.num_tokens or prefill_end - entry[1] > APPEND_NO_BLOCK_STOP_MAX_NEW:
                 counts['bulk_pieces'] += 1
                 if terminal and entry is not None:
