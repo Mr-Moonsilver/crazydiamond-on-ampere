@@ -244,7 +244,7 @@ RECEIPT_IDENTITY_BYTES = 96
 RECEIPT_PATH_LINE = 'flash-s5 receipts '
 # ``flash-s5 stop `` (one JSON object, no parts) and ``flash-s5 memory-peak `` are the
 # receipt kinds claude/alpha-next added after 5990af80; their emit sites route here when composed.
-RECEIPT_JSON_PREFIXES = (PROGRESS_LINE, 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ', 'flash-s5 native-gap ', 'flash-s5 fused-phase ', 'flash-s5 producer-witness ')
+RECEIPT_JSON_PREFIXES = (PROGRESS_LINE, 'flash-s5 anatomy ', 'flash-s5 handler ', 'flash-s5 stop ', 'flash-s5 native-gap ', 'flash-s5 fused-phase ', 'flash-s5 producer-witness ', 'flash-s5 decode-timeline ')
 # parity-na2: 'flash-s5 ahead-split ' (parity-ahead's receipt; q18a-parity-o3 n1 lost every one here: refused as a fault, nothing written).
 RECEIPT_KV_PREFIXES = (RECEIPT_PATH_LINE, 'flash-s5 native-alloc ', 'flash-s5 memory ',
                        'flash-s5 stage-local ', 'flash-s5 memory-peak ', 'flash-s5 cow ', 'flash-s5 ahead-split ')
@@ -3099,6 +3099,12 @@ class FusedPhaseSpans:
         self.stage = None
         self.route_generation = None
         self.fused_layers = set()
+        self.timeline = getattr(operation.device, 'decode_timeline', None)
+        if self.timeline is not None:
+            try:
+                self.timeline.begin(self)
+            except Exception:
+                self.timeline = None
 
     def begin(self, phase, stream, *, bucket=None, layer_name=None, group=None):
         started = time.monotonic_ns()
@@ -3120,6 +3126,8 @@ class FusedPhaseSpans:
                 raise ValueError('unknown fused diagnostic phase')
             self.markers += 2  # Reserve both endpoints even if an event fails.
             token = (name, phase, stream, self.operation.device.timing_event(stream))
+            if self.timeline is not None:
+                self.timeline.anchor(self, token[-1])
             self.pending[id(token)] = token
             self.details[id(token)] = (bucket, started)
             return token
@@ -3269,3 +3277,5 @@ class FusedPhaseSpans:
                        cpu_emit_ns_excludes_summary=time.monotonic_ns() - emit_started)
         if emit_receipt_lines([self.PREFIX + json.dumps(summary, separators=(',', ':'))], logger) is False:
             raise OSError('fused phase receipt sink refused summary')
+        if self.timeline is not None:
+            self.timeline.finish(self, source_complete=incomplete == 0 and op._cancelled is None)

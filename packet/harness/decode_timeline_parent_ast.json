@@ -1,0 +1,11 @@
+{
+  "parent": "db9d358c",
+  "ast_sha256": {
+    "patches/s5_engine/handler_anatomy.py": "97839f2be06844f6ed4bc0c22dba0f250b139023c1ef9842ffb1358770862b54",
+    "patches/s5_engine/native_measurement.py": "413af0bbf0499701083de9fceb9a4674b53cac557f98c61405ccdc120caeb2f0",
+    "patches/s5_engine/s5_startup.py": "9614ca1a94b4f6ca709836872e834a78c174e51df40dd9cd916690af5b94e402",
+    "patches/s5_engine/decode_probe.py": "704e1956e154eef3afdab2d2614b2edb786614f0d8afba6ce88d58079b0280e2",
+    "patches/s5_engine/make_s5_overlap.py": "3fdf43bf1878d105d4a49aecc4d459dff61e45d74fd2f09df3872c9be4ad7615",
+    "harness/receipt_lines.py": "6204e58f2ff6295d2287ce0282b031c7ca4e729dac88fe83fd4df0e8f68f5fbb"
+  }
+}
