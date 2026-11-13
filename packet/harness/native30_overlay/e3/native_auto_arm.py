@@ -101,6 +101,11 @@ def install(engine, driver, env):
     policy = AutoArmPolicy(engine, driver)
     policy.o3 = o3_enabled(env)
     policy.yield_settle = yield_settle_enabled(env)       # yield-reentry (2)
+    control_inwait = env.get('FLASH_S5_CONTROL_INWAIT', '0')
+    if control_inwait not in ('0', '1'):
+        raise E3ContractError('invalid boolean setting: FLASH_S5_CONTROL_INWAIT')
+    if control_inwait == '1':
+        policy.control_inwait = ControlInWait(policy)
     driver.auto_arm = policy
     return policy
 
@@ -135,9 +140,128 @@ def _generation_logprobs_refused(params):
     return params.logprobs is not None and os.environ.get('FLASH_S5_INWAIT', '0') != '1'
 
 
+class ControlInWait:
+    """Overlap a host-only FULL identity with decode; never overlap a bank switch."""
+
+    def __init__(self, policy):
+        self.policy = policy
+        self.certified = False
+        self.rows = {}
+        self.row = None
+        self.started_ns = self.paused_ns = None
+        self.stall_ns = 0
+        self.members = ()
+        self.cohort = ()
+        self.identity = None
+
+    def snapshot(self):
+        return dict(schema='s5-control-inwait/1', enabled=True,
+                    stall_basis='PAUSED_ALL host interval; not GPU idle or client token gap',
+                    unchanged=('split-kept-handback-cut', 'full-return', 'cancel', 'rollback'),
+                    transitions={key: dict(value, drains_kept=dict(value['drains_kept']))
+                                 for key, value in self.rows.items()})
+
+    def pause(self, state):
+        now = time.monotonic_ns()
+        if self.row is not None and self.paused_ns is not None:
+            self.stall_ns += now - self.paused_ns
+        self.paused_ns = now if getattr(state, 'name', str(state)) == 'PAUSED_ALL' else None
+
+    def begin(self):
+        p, d = self.policy, self.policy.driver
+        if self.row is None:
+            self.kind = 'yield-full-reentry' if p.reentry else 'full-entry'
+            self.row = self.rows.setdefault(self.kind, dict(
+                attempts=0, refused=0, invalidated=0, armed=0, closed=0,
+                drains_skipped=0, drains_kept={'applied-output-cut': 0, 'typed-route-fence': 0},
+                pause_to_arm_ms=0., pause_to_arm_max_ms=0., decoder_stall_ms=0.,
+                decoder_stall_max_ms=0.))
+            self.started_ns = self.paused_ns if self.paused_ns is not None else time.monotonic_ns()
+            self.stall_ns = 0
+        if self.certified:
+            self.row['invalidated'] += 1
+        self.certified = False
+        self.row['attempts'] += 1
+        self.cohort = p.cohort
+        # Keep the actual Request objects alive until this certificate retires.
+        self.members = tuple((r.request_id, r) for r in p.scheduler.running)
+        self.identity = (d.engine_epoch, d.route_generation)
+        p._pause(type(p.old_pause).PAUSED_NEW)
+        p.pending = p._control('identity')
+        p.phase = 'control_observe'
+
+    def poll(self):
+        p, d = self.policy, self.policy.driver
+        d.control_tick()
+        if p.pending is None or not p.pending.done():
+            return False
+        result = p.pending.result()
+        p.pending = None
+        if p._reentry_lost_yield():
+            return True
+        if not p._proof(result, capability=True):
+            self.row['refused'] += 1
+            p.phase = 'drain'
+            if p.reentry:
+                return p._reentry_refused('identity', p._yrs_proof_why(result, capability=True))
+            # Preserve the residue policy's retry classification for a transient census.
+            why = ('worker-graph-support-refused' if p._proof(result, observation=True)
+                   else 'worker-barrier-cohort-refused')
+            p._rollback(why)
+            return True
+        self.certified = True
+        p._pause(type(p.old_pause).PAUSED_ALL)
+        self.row['drains_kept']['applied-output-cut'] += 1
+        p.phase = 'drain'
+        # The outer Core method must retire queued outputs before the NEXT tick.
+        return False
+
+    def current(self):
+        p, d = self.policy, self.policy.driver
+        running = p.scheduler.running
+        return (self.identity == (d.engine_epoch, d.route_generation)
+                and self.cohort == p.cohort and len(self.members) == len(running)
+                and all(any(uid == r.request_id and saved is r for r in running)
+                        for uid, saved in self.members))
+
+    def switching(self):
+        # This replaces only the extra barrier: enter_split still drains real streams.
+        self.row['drains_skipped'] += 1
+        self.row['drains_kept']['typed-route-fence'] += 1
+
+    def acknowledge(self, result):
+        # The omitted barrier's device fence must now be present in EVERY route ACK.
+        rows = result.get('transition_acks', ())
+        if (not self.certified or len(rows) != len(self.policy.driver.ranks)
+                or {row.get('worker_rank') for row in rows} != set(self.policy.driver.ranks)
+                or any(type(row.get('drained_streams')) is not int or row['drained_streams'] <= 0
+                       for row in rows)):
+            raise E3ContractError('control-inwait-transition-fence-unproved; ownership retained')
+
+    def close(self, armed):
+        if self.row is None:
+            return
+        now = time.monotonic_ns()
+        stall = self.stall_ns + (0 if self.paused_ns is None else now - self.paused_ns)
+        self.row['armed' if armed else 'closed'] += 1
+        self.row['decoder_stall_ms'] += stall / 1e6
+        self.row['decoder_stall_max_ms'] = max(self.row['decoder_stall_max_ms'], stall / 1e6)
+        if armed:
+            elapsed = (now - self.started_ns) / 1e6
+            self.row['pause_to_arm_ms'] += elapsed
+            self.row['pause_to_arm_max_ms'] = max(self.row['pause_to_arm_max_ms'], elapsed)
+        self.row = None
+        self.started_ns = self.paused_ns = None
+        self.members = ()
+        self.cohort = ()
+        self.identity = None
+        self.certified = False
+
+
 class AutoArmPolicy:
     o3 = False
     yield_settle = False          # yield-reentry (2): FLASH_S5_YIELD_REENTRY_SETTLE
+    control_inwait = None
 
     def __init__(self, engine, driver):
         self.engine, self.driver = engine, driver
@@ -223,11 +347,14 @@ class AutoArmPolicy:
 
     def snapshot(self):
         request = self.request_ref() if self.request_ref is not None else None
-        return dict(schema='s5-auto-arm/1', phase=self.phase, active=self.active,
+        result = dict(schema='s5-auto-arm/1', phase=self.phase, active=self.active,
                     manual_owned=self.manual_owned, selection_seq=self.selection_seq,
                     request_uid=None if request is None else request.request_id,
                     completed=self.completed, minimum_native_rows=self._floor(),
                     max_cohort=MAX_COHORT)
+        if self.control_inwait is not None:
+            result['control_inwait'] = self.control_inwait.snapshot()
+        return result
 
     def manual_control(self, command, submit):
         if self._internal:
@@ -744,6 +871,8 @@ class AutoArmPolicy:
 
     def _pause(self, state):
         self.scheduler.set_pause_state(state)
+        if self.control_inwait is not None:
+            self.control_inwait.pause(state)
         self._gap('pause', pause=getattr(state, 'name', str(state)))
 
     def _note(self, event, **fields):
@@ -1494,6 +1623,8 @@ class AutoArmPolicy:
         self.cooldown = True
         if not self.external_pause:
             self._pause(self.old_pause)
+        if self.control_inwait is not None:
+            self.control_inwait.close(False)
         self.old_pause = None
 
     def _race_close(self, why):
@@ -1523,7 +1654,7 @@ class AutoArmPolicy:
         else:
             self._restore(reason)
 
-    def _proof(self, result, *, capability=False):
+    def _proof(self, result, *, capability=False, observation=False):
         rows = result.get('workers')
         d = self.driver
         if (type(rows) is not list or len(rows) != len(d.ranks)
@@ -1550,7 +1681,7 @@ class AutoArmPolicy:
                         or cap.get('storage_epoch') != row.get('storage_epoch')
                         or not set(range(1, len(self.cohort) + 1)) <= set(counts)):
                     return False
-            elif row.get('barrier_clean') is not True or row.get('drained_streams', 0) <= 0:
+            elif not observation and (row.get('barrier_clean') is not True or row.get('drained_streams', 0) <= 0):
                 return False
         if capability:
             covered = None
@@ -1641,6 +1772,8 @@ class AutoArmPolicy:
             return True
         if self.deadline is not None and d.clock() > self.deadline:
             raise E3ContractError('auto-arm-entry-or-return-deadline-expired; ownership retained')
+        if self.phase == 'control_observe':
+            return self.control_inwait.poll()
         if self.phase == 'o3_drain':
             if getattr(self.engine, 'batch_queue', None):
                 return False                   # the handback step (and any decode step) lands first
@@ -1648,9 +1781,12 @@ class AutoArmPolicy:
             if not self._o3_census_begin():
                 return False
         if self.phase in ('drain', 'rollback_drain'):
-            if getattr(self.engine, 'batch_queue', None):
+            observation = (self.control_inwait if self.phase == 'drain' else None)
+            if (getattr(self.engine, 'batch_queue', None)
+                    and (observation is None or observation.certified)):
                 return False
-            self._gap('drain_empty')
+            if not getattr(self.engine, 'batch_queue', None):
+                self._gap('drain_empty')
             if self.phase == 'rollback_drain':
                 why, self._o3_return_reason = self._o3_return_reason, None
                 self._rollback(why or 'request-changed-or-admission-refused')
@@ -1674,8 +1810,16 @@ class AutoArmPolicy:
             elif self._request() is None or self._cohort() != self.cohort or self._plan(self._request()) != self.plan:
                 self._restore('selection-changed-during-output-drain')
                 return True
-            self.pending = self._control('barrier')
-            self.phase = 'barrier'
+            if observation is not None:
+                if not observation.certified or not observation.current():
+                    observation.begin()
+                    return False
+                observation.switching()
+                self.pending = self._control('enter_split')
+                self.phase = 'split'
+            else:
+                self.pending = self._control('barrier')
+                self.phase = 'barrier'
         d.control_tick()
         if self.pending is None or not self.pending.done():
             return True
@@ -1707,6 +1851,8 @@ class AutoArmPolicy:
             if (result.get('typed_acks') is not True or result.get('route_after') != 'split'
                     or len(result.get('transition_acks', ())) != len(d.ranks)):
                 raise E3ContractError('auto-arm-split-ack-incomplete; ownership retained')
+            if self.control_inwait is not None:
+                self.control_inwait.acknowledge(result)
             if self.reentry and not d.append_yield_active():
                 self.pending = None
                 self._rollback('yield-ended-during-reentry')
@@ -1724,6 +1870,8 @@ class AutoArmPolicy:
                 d._arm_admission(PHASE)
             finally:
                 self._internal = False
+            if self.control_inwait is not None:
+                self.control_inwait.close(True)
             # lane-o3: this split residency's proven cohort and the generation the identity counts hold for
             self.o3_ledger, self.o3_split_generation, self.o3_joined = frozenset(self.cohort), d.route_generation, None
             self.phase = 'native'

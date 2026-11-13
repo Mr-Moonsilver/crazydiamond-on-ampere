@@ -4976,6 +4976,9 @@ class NativeSegmentDriver:
         counter = getattr(self, '_ingress_prefix', None)
         if counter is not None and type(record) is dict:   # ingress prefix counter: present once an engine arm admitted
             record['ingress_prefix'] = counter.snapshot()
+        observation = getattr(getattr(self, 'auto_arm', None), 'control_inwait', None)
+        if observation is not None and type(record) is dict:
+            record['control_inwait'] = observation.snapshot()
         return record
 
     def note_ingress_prefix(self, engine, request):

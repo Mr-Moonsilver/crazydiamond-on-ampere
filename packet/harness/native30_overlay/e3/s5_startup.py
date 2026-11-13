@@ -288,6 +288,9 @@ def install_engine(engine, *, env=None, clock=time.monotonic):
     """Install the engine-side composition at the generated ``__init__`` seam."""
     env = os.environ if env is None else env
     auto = env.get('FLASH_S5_AUTO_ARM', '0')
+    control_inwait = env.get('FLASH_S5_CONTROL_INWAIT', '0')
+    if control_inwait not in ('0', '1') or (control_inwait == '1' and auto != '1'):
+        raise StartupError('FLASH_S5_CONTROL_INWAIT needs boolean setting and FLASH_S5_AUTO_ARM=1')
     if auto not in ('0', '1'):
         raise StartupError('invalid boolean setting: FLASH_S5_AUTO_ARM')
     if auto == '1' and (mode_settings(env) is not None or not _enabled(env)):

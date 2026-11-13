@@ -1,0 +1,43 @@
+{
+  "schema": "fixture-leaves/1",
+  "scope": "CPU control-inwait ordering only. No GPU completion, numerical, memory or speed claim.",
+  "inherits": ["append_yield_fixture_leaves.json", "native38_fixture_leaves.json"],
+  "leaves": [
+    {
+      "name": "control-inwait-pause-and-cold-start",
+      "test": "test_control_inwait.full_rig, Observation, YieldComposition",
+      "replaces": "Initial EngineCore startup, PauseState and request/model objects from test_append_yield.Rig",
+      "equivalence": "Uses the real disarm and all-rank FULL transition before installing a fresh real AutoArmPolicy. Pause includes UNPAUSED, PAUSED_NEW and PAUSED_ALL; set_pause_state preserves both the scheduler state and Core's is_scheduler_paused semantics. MIN_NATIVE_ROWS=1 scales the existing real chunk planner to the rig's 12-token prompt. KV, graph dispatch and CUDA/PP leaves are inherited. All eight A/Y1/Y2 combinations exercise a real bulk (7 rows left > max_new=6), yield, append, FULL handback and re-entry. Cohort, Request identity, plan, phase, generation and typed route-fence decisions are production code.",
+      "cannot_prove": "Real scheduler throughput, CUDA graph support/counts, numerical identity or physical stream completion.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "control-inwait-four-worker-ordered-mq",
+      "test": "test_control_inwait.OrderedWorkers, RealCoreOrder",
+      "replaces": "MultiprocWorker process loop, shared-memory broadcast ring and model execute/sample kernels",
+      "equivalence": "Four actual CPU threads consume one FIFO each. Native commands call the existing four real NativeWorkerBridge/native_overlap_worker handlers. execute_model sets the runner's outstanding execute state and refreshes CPU prefill counts as pinned update_requests does; sample_tokens clears it and returns a CPU payload. A test gate holds sample_tokens, with identity submitted behind it before output application. Uses real BoundedSender, ReplyTransport and StockLocalFuture plus pinned generated MultiprocExecutor execute/sample/collective_rpc bodies. Native replies cannot steal ordinary replies; every worker order and remaining credits are asserted. Queues represent immediate readable ring credits and do not simulate PP/NCCL or backpressure.",
+      "cannot_prove": "Real multiprocess MQ timing, device execution/fences, inter-GPU sends, ring exhaustion or fatal pipe delivery; existing transport/fatal suites cover their CPU paths separately.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "control-inwait-core-output-application",
+      "test": "test_control_inwait.core_step, RealCoreOrder",
+      "replaces": "Scheduler token selection, GPU ModelRunnerOutput and its contents; logging/iteration metadata",
+      "equivalence": "Executes the SHA-pinned generated EngineCore.step_with_batch_queue unchanged, including enqueue, pop-before-result, abort processing, scheduler.update_from_output and deferred grammar sample. schedule/has_requests produce decode-only CPU work under PAUSED_NEW and none under PAUSED_ALL. update_from_output records real application and may remove a finished decoder; it never edits a control reply or invents completion. Future readiness, queue membership and applied output are distinct. check_for_draft_tokens=False matches the no-MTP launch; capture_iteration_details/log_error_detail are null contexts. The final bank cut is authorized only on the next outer Core tick; no policy tick is injected in Future.result.",
+      "cannot_prove": "Full stock scheduler/KV allocation, real output content, client token gaps or device idle time.",
+      "more_convenient": true,
+      "box_evidence": false
+    },
+    {
+      "name": "control-inwait-proof-mutations",
+      "test": "test_control_inwait.Observation, Mutants, OffAndConfiguration",
+      "replaces": "Fault injection and frozen-parent module loading",
+      "equivalence": "Request replacement, cohort finish, route generation change, worker prefill/count refusal, deadline, yield revocation and a zero drained-stream count are injected individually. Six source mutants must fail connected assertions: no overlap, no output cut, stale request, stale generation, omitted identity proof, omitted device-fence proof. git show reads frozen 46d28946 into a distinct module for default-off command/pause/status equality; no branch, source or reference is changed.",
+      "cannot_prove": "Frequency of real races or transition savings; default-off proof compares semantic receipts, excluding nondeterministic clock values.",
+      "more_convenient": true,
+      "box_evidence": false
+    }
+  ]
+}

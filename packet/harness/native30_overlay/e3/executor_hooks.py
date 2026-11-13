@@ -1189,6 +1189,10 @@ def _idle_tick(engine):
     policy = getattr(driver, 'auto_arm', None)
     if policy is not None and policy.tick():
         return _stock_step_bypass(driver, ({}, False))
+    if (policy is not None and getattr(policy, 'control_inwait', None) is not None
+            and policy.phase == 'control_observe'):
+        # Only the policy's read-only identity may share ordinary decode RPC order.
+        return None
     tick = getattr(driver, 'control_tick', None)
     pump = getattr(driver, 'pump_control', None)
     if not callable(tick) and not callable(pump):
