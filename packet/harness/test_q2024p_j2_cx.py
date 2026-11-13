@@ -111,6 +111,12 @@ class Names(unittest.TestCase):
         with self.assertRaises(SystemExit):
             render.main(['--source-commit', 'HEAD', '--dry', '--set', 'FLASH_S5_YIELD_WINDOW=1',
                          '--out', '/nonexistent/never-made'])
+        for argv in (['--dry', '--single', '--tag', 'q'], ['--single']):      # single: one tagged packet, b1 only
+            with self.assertRaises(SystemExit):
+                render.main(['--source-commit', 'HEAD', '--out', '/nonexistent/never-made'] + argv)
+        with self.assertRaises(SystemExit):     # the single packet's name is checked like a cohort's
+            render.main(['--source-commit', 'HEAD', '--single', '--tag', 'q', '--out', '/nonexistent/never-made',
+                         '--known', cx.name_of('b1', 'q')])
         for bad in ('A', 'x-y', 'toolongtag'):
             with self.assertRaises(AssertionError):
                 cx.name_of('b1', bad)

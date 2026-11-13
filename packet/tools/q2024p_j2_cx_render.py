@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Render a registered q2024p-j2 composition cohort (four blocks cx<tag>-b1 .. b4) or the dry packet (cx-dry) from ONE
-source commit and ONE flag set (lead 12 Nov 2026, branch claude/n3-compose). CPU and hub only.
+source commit and ONE flag set (lead 12 Nov 2026, branch claude/n3-compose); --single renders one packet, block b1 only,
+with its flags (lead 13 Nov: a single packet, not a cohort; its R is its own block's). CPU and hub only.
 
   python3 -I -B tools/q2024p_j2_cx_render.py --source-commit <sha> --tag <t> --set FLAG=VALUE ... --out <fresh dir>
   python3 -I -B tools/q2024p_j2_cx_render.py --source-commit <sha> --dry --out <fresh dir>
+  python3 -I -B tools/q2024p_j2_cx_render.py --source-commit <sha> --single --tag <t> --set FLAG=VALUE ... --out <fresh dir>
 
 Per packet, in parallel (one process each, niced): tools/build_q2024p_j2_cx.py, the bundle's frozen CPU self-run
 (tools/n3j2_frozen_cpu.py; container q2024p-j2-cx-frozen-cpu-<manifest12>, kept), the bundle's precheck, then
@@ -139,6 +141,7 @@ def main(argv=None):
     parser.add_argument('--tag', default='')
     parser.add_argument('--set', dest='flags', action='append', default=[], metavar='FLAG=VALUE')
     parser.add_argument('--dry', action='store_true', help='render only cx<tag>-dry (all flags at default required)')
+    parser.add_argument('--single', action='store_true', help='render only cx<tag>-b1: one packet, not a cohort')
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--known', action='append', default=None, help='QNAMEs already in use (default: np family, V1, dmp)')
     parser.add_argument('--jobs', type=int, default=4)
@@ -146,7 +149,12 @@ def main(argv=None):
     flags = cx.parse_flags(args.flags)
     if args.dry and flags != cx.parse_flags([]):
         parser.error('--dry renders the all-default packet only')
-    variants = (cx.DRY,) if args.dry else cx.BLOCKS
+    if args.dry and args.single:
+        parser.error('--dry and --single exclude each other')
+    if args.single and not args.tag:
+        parser.error('--single needs a tag of its own')
+    variants = (cx.DRY,) if args.dry else (cx.BLOCKS[:1] if args.single else cx.BLOCKS)
+    kind = 'dry' if args.dry else ('single' if args.single else 'cohort')
     names = {v: cx.name_of(v, args.tag) for v in variants}
     known = tuple(args.known) if args.known is not None else KNOWN
     found = clashes(list(names.values()) + [k for k in known if k not in names.values()])
@@ -182,7 +190,7 @@ def main(argv=None):
     proof = name_only(out, list(variants)) if ok and len(variants) > 1 else {}
     reader = ('python3 -I -B tools/q2024p_j2_cx_reader.py --cohort %s %s [--json-out <fresh.json>]' % (
         out / 'cohort.json', ' '.join('%s=<FETCH>/%s' % (v, names[v]) for v in variants)))
-    doc = dict(schema='q2024p-j2-cx-cohort/1', exploratory=True, kind='dry' if args.dry else 'cohort', tag=args.tag,
+    doc = dict(schema='q2024p-j2-cx-cohort/1', exploratory=True, kind=kind, tag=args.tag,
                source_commit=commit, flags=flags, set=list(args.flags), blocks=rows, ok=ok, wall_minutes=minutes,
                name_only=proof, known_names=list(known), parent_qname_prefix=PARENT_QNAME,
                arms='sp.g2-live-0 n3.g2-live-0 n3.g2-live-1 sp.g2-live-1 at 480 s (j2 seeds)', reader=reader,
@@ -190,7 +198,8 @@ def main(argv=None):
     with (out / 'cohort.json').open('x') as handle:
         json.dump(doc, handle, indent=2, sort_keys=True)
         handle.write('\n')
-    lines = ['# %s %s from %s' % ('dry packet' if args.dry else 'cohort', 'cx' + args.tag, commit[:12]), '',
+    lines = ['# %s %s from %s' % (dict(dry='dry packet', single='single packet', cohort='cohort')[kind], 'cx' + args.tag,
+                                  commit[:12]), '',
              'flags: ' + ' '.join('%s=%s' % kv for kv in sorted(flags.items()) if kv[1] is not None), '',
              '| label | QNAME | seq | seq sha256 | DELIVERY-SHA256SUMS | sums sha256 | min nominal/hard |', '|---|---|---|---|---|---|---|']
     for v, r in rows.items():
