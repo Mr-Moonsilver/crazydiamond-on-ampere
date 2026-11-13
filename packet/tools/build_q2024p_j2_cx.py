@@ -20,6 +20,13 @@ Method: the night-pack tool (tools/build_q2024p_j2_np.py, through it the ing, yr
     skipped) in the settings line and asserted; its CPU suite test_control_inwait runs in the frozen CPU with its frozen
     off-path parent (46d28946's native_auto_arm.py, sha-pinned by the suite) copied into the bundle and named by
     CONTROL_INWAIT_PARENT_SOURCE (the container has no git).
+  * FLASH_S5_CONTROL_O3_INWAIT (Codex, a59b1e7f, scope 2: a kept-SPLIT re-entry or entry arms on a finite applied-output
+    prefix while later decode stays queued; a refused census drains before the FULL fallback) in the settings line and
+    asserted; it needs CONTROL_INWAIT=1 (refused otherwise) and AUTO_ARM=1 and O3=1 in the parent's settings (asserted at
+    build time); its suite test_control_o3_inwait runs in the frozen CPU with a15bed1d's native_auto_arm.py as its
+    frozen OFF parent (CONTROL_O3_PARENT_SOURCE).
+  * FLASH_S5_DECODE_SAMPLE_FAST (lever D) is refused: blocked by Codex's engine review until a commit marked as the
+    reviewed fix is on the line (DECODE_SAMPLE_FAST_REVIEWED_FIX). FLASH_S5_DECODE_ANATOMY stays available.
 Refused flag sets: settle with the yield window (settle sits where the window hands off), a decode-group mode other than
 chunk without the liveness observer (the guard would be blind), verify settings without ingress, and CONTROL_INWAIT with
 any of settle, the small-piece batch, ingress, a decode-group mode other than chunk or the liveness observer (none of
@@ -63,11 +70,12 @@ FLAGS = (
     ('FLASH_S5_DECODE_GROUPS', 'decode_groups', ('chunk', 'off', 'off-small'), 'chunk'),
     ('FLASH_S5_DECODE_LIVENESS', 'decode_liveness', ('0', '1'), '0'),
     ('FLASH_S5_CONTROL_INWAIT', 'control_inwait', ('0', '1'), '0'),
+    ('FLASH_S5_CONTROL_O3_INWAIT', 'control_o3_inwait', ('0', '1'), '0'),   # scope 2, kept-SPLIT (Codex a59b1e7f)
     ('FLASH_S5_DECODE_SAMPLE_FAST', 'decode_sample_fast', ('0', '1'), '0'),   # lever D (decode_step, 13 Nov)
     ('FLASH_S5_DECODE_ANATOMY', 'decode_anatomy', ('0', '1'), '0'),           # clean-window anatomy (decode_step)
 )
-EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait', 'decode_sample_fast',
-         'decode_anatomy')                                                     # added on top of np's queues
+EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait', 'control_o3_inwait',
+         'decode_sample_fast', 'decode_anatomy')                                                     # added on top of np's queues
 # CONTROL_INWAIT=1 is refused with each of these (flag, value that is NOT refused): untested together
 CONTROL_INWAIT_UNTESTED = (('FLASH_S5_YIELD_REENTRY_SETTLE', '0'), ('FLASH_S5_SMALL_PIECE_BATCH', '0'),
                            ('FLASH_S5_INGRESS_INCREMENTAL', '0'), ('FLASH_S5_DECODE_GROUPS', 'chunk'),
@@ -75,9 +83,21 @@ CONTROL_INWAIT_UNTESTED = (('FLASH_S5_YIELD_REENTRY_SETTLE', '0'), ('FLASH_S5_SM
 CONTROL_INWAIT_PARENT = ('46d28946', 'patches/s5_engine/native_auto_arm.py',
                          '3d5c813856f0c7acd68225a2df69c157d7d2aca2b653ea19ee0586ea4e1f9672')
 CONTROL_INWAIT_PARENT_FILE = 'control_inwait_parent_native_auto_arm.py.src'   # bundle root = /src/harness; not importable
+# scope 2's suite (test_control_o3_inwait) compares its OFF kept-SPLIT trace with a15bed1d's native_auto_arm.py
+CONTROL_O3_PARENT = ('a15bed1d', 'patches/s5_engine/native_auto_arm.py',
+                     '8090de4a9c349c89666916358b0c26f61c3ec0e8a6366545a4d990b4e89f5ee5')
+CONTROL_O3_PARENT_FILE = 'control_o3_parent_native_auto_arm.py.src'
 CONTROL_INWAIT_ENV = ("'-e','PYTHONDONTWRITEBYTECODE=1',",
                       "'-e','PYTHONDONTWRITEBYTECODE=1','-e','CONTROL_INWAIT_PARENT_SOURCE=/src/harness/%s',"
-                      % CONTROL_INWAIT_PARENT_FILE)
+                      "'-e','CONTROL_O3_PARENT_SOURCE=/src/harness/%s',"
+                      % (CONTROL_INWAIT_PARENT_FILE, CONTROL_O3_PARENT_FILE))
+# scope 2 needs these in the parent's settings line (s5_startup refuses the engine otherwise; refused here first)
+CONTROL_O3_NEEDS = ('FLASH_S5_AUTO_ARM=1 ', 'FLASH_S5_O3=1 ')
+# lever D (FLASH_S5_DECODE_SAMPLE_FAST): BLOCKED (lead note 13 Nov 13:23; Codex's engine review
+# REVIEW-codex-decode-step-20261113.md: more than WIDTH - K ties at the K-th value sample a truncated support, counted
+# but never a fallback). Refused until a commit marked as the reviewed fix is on the line: set this to that commit's
+# full sha; prepare() then requires it to be an ancestor of the source commit.
+DECODE_SAMPLE_FAST_REVIEWED_FIX = None
 BLOCKS = ('b1', 'b2', 'b3', 'b4')
 DRY = 'dry'
 BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control', 'decode_step')
@@ -85,7 +105,7 @@ ENGINE_MOVED = {'e3/' + n + '.py' for n in BOUND_MODULES}
 NEW_OVERLAY_FILES = set(np.NEW_OVERLAY_FILES) | {'e3/decode_step.py'}     # decode_step: new in the overlay (13 Nov)
 SUITES = np.SUITES + ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups',
                       'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_control_inwait',
-                      'test_decode_step', 'test_decode_step_torch')
+                      'test_decode_step', 'test_decode_step_torch', 'test_control_o3_inwait')
 TOOLS = np.TOOLS + ('tools/build_q2024p_j2_dmp.py', 'tools/q2024p_j2_dmp_reader.py', 'tools/build_q2024p_j2_cx.py', 'tools/q2024p_j2_cx_finish.py', 'tools/q2024p_j2_cx_render.py',
                     'tools/q2024p_j2_cx_reader.py')
 CX_CONTAINER = "'q2024p-j2-cx-frozen-cpu-'"
@@ -125,6 +145,13 @@ def parse_flags(pairs):
     if flags['FLASH_S5_DECODE_GROUPS'] != 'chunk' and flags['FLASH_S5_DECODE_LIVENESS'] != '1':
         raise SystemExit('refused: FLASH_S5_DECODE_GROUPS=%s needs FLASH_S5_DECODE_LIVENESS=1 (the arm guard reads it)'
                          % flags['FLASH_S5_DECODE_GROUPS'])
+    if flags['FLASH_S5_CONTROL_O3_INWAIT'] == '1' and flags['FLASH_S5_CONTROL_INWAIT'] != '1':
+        raise SystemExit('refused: FLASH_S5_CONTROL_O3_INWAIT=1 needs FLASH_S5_CONTROL_INWAIT=1 (scope 2 extends scope 1; '
+                         'it also needs AUTO_ARM=1 and O3=1, checked in the settings at build time)')
+    if flags['FLASH_S5_DECODE_SAMPLE_FAST'] == '1' and DECODE_SAMPLE_FAST_REVIEWED_FIX is None:
+        raise SystemExit('refused: FLASH_S5_DECODE_SAMPLE_FAST=1 is blocked (Codex engine review 13 Nov: more than '
+                         'WIDTH - K ties at the K-th value truncate the support without a fallback); no reviewed fix '
+                         'is on the line')
     if flags['FLASH_S5_CONTROL_INWAIT'] == '1':
         for key, safe in CONTROL_INWAIT_UNTESTED:
             if flags[key] != safe:
@@ -180,6 +207,9 @@ def queues(variant):
             if v['decode_anatomy'] == '1':      # decode_step.check_startup refuses the engine otherwise; refuse here first
                 for need in ('FLASH_S5_HANDLER_ANATOMY=1 ', 'FLASH_S5_NATIVE_PROGRESS=burst '):
                     assert need in text, 'FLASH_S5_DECODE_ANATOMY=1 needs %sin the settings' % need
+            if v['control_o3_inwait'] == '1':   # s5_startup refuses the engine without them; refuse here first
+                for need in CONTROL_O3_NEEDS:
+                    assert need in text, 'FLASH_S5_CONTROL_O3_INWAIT=1 needs %sin the settings' % need
             text = hgb.once(text, setting, setting + ''.join('%s=%s ' % kv for kv in extra))
         else:
             text = hgb.once(text, check, check + ''.join(
@@ -201,6 +231,8 @@ def copy_delta(b, commit, bundle):
                  'harness/test_append_no_block_stop.py', 'harness/test_append_no_block_stop_stack.py',
                  'harness/test_q2024p_j2_cx.py', 'harness/test_n3_compose_pairs.py',
                  'harness/test_control_inwait.py', 'harness/control_inwait_fixture_leaves.json',
+                 'harness/test_control_o3_inwait.py', 'harness/control_o3_inwait_fixture_leaves.json',
+                 'patches/s5_engine/native_auto_arm.py',
                  'patches/s5_engine/s5_startup.py', 'patches/s5_engine/executor_hooks.py',
                  'harness/test_decode_step.py', 'harness/test_decode_step_torch.py', 'patches/s5_engine/decode_step.py',
                  'patches/s5_engine/stage_overlap.py',
@@ -209,14 +241,15 @@ def copy_delta(b, commit, bundle):
     return copied
 
 
-def control_inwait_parent(b, bundle):
-    """test_control_inwait's frozen off-path parent, by bytes from git (its sha checked here and again by the suite)."""
-    commit, name, digest = CONTROL_INWAIT_PARENT
-    target = bundle / CONTROL_INWAIT_PARENT_FILE
+def control_inwait_parent(b, bundle, pin=CONTROL_INWAIT_PARENT, file=CONTROL_INWAIT_PARENT_FILE):
+    """A control-inwait suite's frozen off-path parent, by bytes from git (its sha checked here and again by the
+    suite): test_control_inwait's (46d28946) and test_control_o3_inwait's (a15bed1d)."""
+    commit, name, digest = pin
+    target = bundle / file
     assert not target.exists(), target
     target.write_bytes(b.git(ROOT, 'show', commit + ':' + name))
-    assert b.sha(target) == digest, 'control-inwait parent sha differs'
-    return dict(status='A', bundle=CONTROL_INWAIT_PARENT_FILE, sha256=digest, source=commit + ':' + name)
+    assert b.sha(target) == digest, 'control-inwait parent sha differs: ' + file
+    return dict(status='A', bundle=file, sha256=digest, source=commit + ':' + name)
 
 
 def frozen_cpu_tool(bundle):
@@ -241,6 +274,11 @@ def prepare(commit, variant, out, flags, tag=''):
         p.chmod(0o755 if p.is_dir() else 0o644)
     copied = copy_delta(b, commit, bundle)
     copied['control_inwait_parent'] = control_inwait_parent(b, bundle)
+    copied['control_o3_parent'] = control_inwait_parent(b, bundle, CONTROL_O3_PARENT, CONTROL_O3_PARENT_FILE)
+    if flags['FLASH_S5_DECODE_SAMPLE_FAST'] == '1':
+        assert DECODE_SAMPLE_FAST_REVIEWED_FIX is not None, 'lever D is blocked'
+        ok = subprocess.run(['git', 'merge-base', '--is-ancestor', DECODE_SAMPLE_FAST_REVIEWED_FIX, commit], cwd=ROOT)
+        assert ok.returncode == 0, 'lever D: the reviewed fix is not in the source commit'
     box = bundle / 'n3j2_box.py'
     box.write_text(hgb.once(hgb.once(box.read_text(), hgb.BOX_IMPORT, hgb.BOX_IMPORT_NEW), hgb.BOX_ROW, hgb.BOX_ROW_NEW))
     packet = bundle / 'n3j2_packet.py'

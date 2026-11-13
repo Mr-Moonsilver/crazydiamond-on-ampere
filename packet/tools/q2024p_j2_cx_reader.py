@@ -17,9 +17,15 @@ FLASH_S5_CONTROL_INWAIT status delta per transition class (native_admission.cont
 attempts, refusals, invalidations, armed, closed, skipped duplicate drains, mandatory drains by reason; pause-to-arm and
 PAUSED_ALL ms, total and per armed; the max fields are the engine's since start, not per arm) beside the auto-arm
 selections and completions in the same window, or 'off (block absent)' with the same auto-arm delta, so one read shows
-whether the mechanism engaged; identity NOTEs for the four composition settings (FLASH_S5_APPEND_NO_BLOCK_STOP,
-FLASH_S5_DECODE_GROUPS, FLASH_S5_DECODE_LIVENESS, FLASH_S5_CONTROL_INWAIT), for an n3 arm whose recorded decode_merge is
-not the cohort's mode, and for a control_inwait block absent under the flag (or present without it); per arm the lever
+whether the mechanism engaged; for the kept-SPLIT classes of FLASH_S5_CONTROL_O3_INWAIT (split-kept-entry,
+split-kept-yield) also the finite cut's frames issued and applied and the arms with later decode frames still queued, and
+per arm a lane-o3 line: whether the kept-SPLIT in-wait was installed, the stock O3 armed / yield_kept / kept counts and
+the refusals and FULL returns by reason in the window (a scope-2 fallback ends in the stock refusal); identity NOTEs for
+the composition settings (FLASH_S5_APPEND_NO_BLOCK_STOP, FLASH_S5_DECODE_GROUPS, FLASH_S5_DECODE_LIVENESS,
+FLASH_S5_CONTROL_INWAIT, FLASH_S5_CONTROL_O3_INWAIT, lever D and the anatomy), for an n3 arm whose recorded decode_merge
+is not the cohort's mode, for a control_inwait block absent under the flag (or present without it), for the kept-SPLIT
+install absent or present against the flag, and for a kept class whose cut frames issued and applied differ; per arm the
+lever
 D sampler steps per sampling rank from engine-stream.log's docker-stamped 'flash-s5 sample-fast' lines (cumulative,
 one per power of two of the fast count and per 1,024 sampler steps; the last line in the arm less the last one before
 it, so each arm edge is within one period): fast, stock (the fallback) by reason, the fast share and the lagged tie
@@ -52,13 +58,15 @@ DEFAULTS = {
     'FLASH_S5_SMALL_PIECE_BATCH': '0', 'FLASH_S5_YIELD_REENTRY_SETTLE': '0', 'FLASH_S5_YIELD_NO_APPEND_OWNER': '0',
     'FLASH_S5_YIELD_WINDOW': '0', 'FLASH_S5_INGRESS_INCREMENTAL': '0', 'FLASH_S5_INGRESS_VERIFY_EVERY': None,
     'FLASH_S5_INGRESS_VERIFY_ASYNC': None, 'FLASH_S5_APPEND_NO_BLOCK_STOP': '0', 'FLASH_S5_DECODE_GROUPS': 'chunk',
-    'FLASH_S5_DECODE_LIVENESS': '0', 'FLASH_S5_CONTROL_INWAIT': '0', 'FLASH_S5_DECODE_SAMPLE_FAST': '0',
+    'FLASH_S5_DECODE_LIVENESS': '0', 'FLASH_S5_CONTROL_INWAIT': '0', 'FLASH_S5_CONTROL_O3_INWAIT': '0',
+    'FLASH_S5_DECODE_SAMPLE_FAST': '0',
     'FLASH_S5_DECODE_ANATOMY': '0'}
 NP_KEYS = (('batch', 'FLASH_S5_SMALL_PIECE_BATCH'), ('settle', 'FLASH_S5_YIELD_REENTRY_SETTLE'),
            ('y1', 'FLASH_S5_YIELD_NO_APPEND_OWNER'), ('y2', 'FLASH_S5_YIELD_WINDOW'),
            ('ingress', 'FLASH_S5_INGRESS_INCREMENTAL'))
 COMPOSE_ENVS = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS',
-                'FLASH_S5_CONTROL_INWAIT', 'FLASH_S5_DECODE_SAMPLE_FAST', 'FLASH_S5_DECODE_ANATOMY')
+                'FLASH_S5_CONTROL_INWAIT', 'FLASH_S5_CONTROL_O3_INWAIT', 'FLASH_S5_DECODE_SAMPLE_FAST',
+                'FLASH_S5_DECODE_ANATOMY')
 SP_ARMS = ('sp.g2-live-0', 'sp.g2-live-1')
 N3_ARMS = ('n3.g2-live-0', 'n3.g2-live-1')
 PIECES = ('appends', 'pieces', 'fused_pieces', 'stops_skipped', 'errors', 'stale_states_unpublished',
@@ -66,6 +74,11 @@ PIECES = ('appends', 'pieces', 'fused_pieces', 'stops_skipped', 'errors', 'stale
 INWAIT = ('attempts', 'refused', 'invalidated', 'armed', 'closed', 'drains_skipped')
 INWAIT_MS = ('pause_to_arm_ms', 'decoder_stall_ms')            # totals: deltas, and per armed
 INWAIT_MAX = ('pause_to_arm_max_ms', 'decoder_stall_max_ms')   # the engine's max since start (after row), not per arm
+# scope 2 (FLASH_S5_CONTROL_O3_INWAIT, Codex a59b1e7f): only the kept-SPLIT classes carry these
+INWAIT_CUT = ('cut_frames_issued', 'cut_frames_applied', 'arms_with_later_frames')
+KEPT_CLASSES = ('split-kept-entry', 'split-kept-yield')
+O3_SCALARS = ('armed', 'yield_kept', 'kept')
+O3_MAPS = ('refused', 'yield_full', 'full')
 
 
 def flags_of(pairs, cohort=None):
@@ -134,7 +147,33 @@ def inwait_delta(arm):
             d[k.replace('_ms', '_per_armed_ms')] = round(d[k] / d['armed'], 3) if d['armed'] else None
         for k in INWAIT_MAX:
             d[k + '_since_start'] = row.get(k)
+        for k in INWAIT_CUT:
+            if k in row:
+                d[k] = (row.get(k) or 0) - (old.get(k) or 0)
         out[kind] = d
+    return out
+
+
+def o3_delta(arm):
+    """Scope 2 beside the transition rows: whether the kept-SPLIT in-wait was installed (the after row's control_inwait
+    o3_enabled, cut_pending at the after row) and the stock lane-o3 counters in the arm window (append_yield.declines.o3:
+    armed, yield_kept, kept; refused / yield_full / full by reason), where a scope-2 fallback ends (its reason is the stock
+    _o3_refuse reason). None when the after row has no o3 record."""
+    rows = hgb.status_rows(arm)
+    block = lambda row: (((row or {}).get('append_yield') or {}).get('declines') or {}).get('o3')
+    b, a = block(rows.get('before')), block(rows.get('after'))
+    ci = ing.block(rows.get('after'), 'control_inwait')
+    out = dict(o3_inwait=bool(type(ci) is dict and ci.get('o3_enabled')),
+               cut_pending_after=ci.get('cut_pending') if type(ci) is dict else None)
+    if type(a) is not dict:
+        out['o3'] = None
+        return out
+    b = b if type(b) is dict else {}
+    d = {k: (a.get(k) or 0) - (b.get(k) or 0) for k in O3_SCALARS}
+    for k in O3_MAPS:
+        x, y = a.get(k) or {}, b.get(k) or {}
+        d[k] = {r: x.get(r, 0) - y.get(r, 0) for r in sorted(set(x) | set(y)) if x.get(r, 0) - y.get(r, 0)}
+    out['o3'] = d
     return out
 
 
@@ -232,6 +271,15 @@ def collect(root, label, flags):
                 notes_extra.append('control-inwait-absent-%s-%s' % (label, name))
             elif not on and row['control_inwait'] is not None:
                 notes_extra.append('control-inwait-present-%s-%s' % (label, name))
+            row['control_o3'] = o3_delta(arm)
+            o3_on = flags['FLASH_S5_CONTROL_O3_INWAIT'] == '1'
+            if o3_on and not row['control_o3']['o3_inwait']:
+                notes_extra.append('control-o3-inwait-absent-%s-%s' % (label, name))
+            elif not o3_on and row['control_o3']['o3_inwait']:
+                notes_extra.append('control-o3-inwait-present-%s-%s' % (label, name))
+            for kind, d in (row['control_inwait'] or {}).items():
+                if kind in KEPT_CLASSES and d.get('cut_frames_issued') != d.get('cut_frames_applied'):
+                    notes_extra.append('control-o3-cut-unapplied-%s-%s' % (label, name))
             row['sample_fast'] = sample_fast_delta(fast_lines, arm)
             if d_on and name in N3_ARMS and not row['sample_fast']:
                 notes_extra.append('sample-fast-silent-%s-%s' % (label, name))
@@ -271,6 +319,19 @@ def inwait_lines(name, arm):
                          d['drains_skipped'], np.fmt(d['drains_kept']), d['pause_to_arm_ms'],
                          d['pause_to_arm_per_armed_ms'], d['pause_to_arm_max_ms_since_start'], d['decoder_stall_ms'],
                          d['decoder_stall_per_armed_ms'], d['decoder_stall_max_ms_since_start']))
+        if kind in KEPT_CLASSES:
+            lines.append('          %-16s cut issued=%s applied=%s arms_with_later_frames=%s (kept-SPLIT: success leaves '
+                         'typed-route-fence 0; a fallback counts fallback-full-cut and typed-route-fence)' % (
+                             '', d.get('cut_frames_issued'), d.get('cut_frames_applied'),
+                             d.get('arms_with_later_frames')))
+    o3 = arm.get('control_o3')
+    if o3 is not None:
+        x = o3.get('o3')
+        lines.append('        %-18s o3_inwait=%s cut_pending_after=%s %s' % (
+            'lane-o3', 'on' if o3.get('o3_inwait') else 'off', o3.get('cut_pending_after'),
+            '- (no o3 record)' if x is None else 'armed=%s yield_kept=%s kept=%s refused=%s yield_full=%s full=%s' % (
+                x['armed'], x['yield_kept'], x['kept'], np.fmt(x['refused']), np.fmt(x['yield_full']),
+                np.fmt(x['full']))))
     return lines
 
 

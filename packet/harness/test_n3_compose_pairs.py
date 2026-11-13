@@ -38,6 +38,9 @@ throughout), so no anatomy line. Per step the policy's fields, the driver's yiel
 before and after D's step. Mutants: an inverted gate and a D that writes the policy (manual_owned) are caught; the
 Y2 end state alone does not show that write in this rig, the per-step comparison does.
 
+DECODE_ANATOMY x CONTROL_O3_INWAIT (brief 8, 13 Nov): Codex's kept-SPLIT cases from test_control_o3_inwait run
+unchanged with EngineSide (anatomy on, D off) stepped before every tick; no state written, no anatomy window in
+a scope-2 phase.
 D x CONTROL_INWAIT (brief 7, 13 Nov): the CI window flow (A off and on) and both CI races with EngineSide stepped:
 D samples fast on the decode steps CI lets run beside the identity observation (phase control_observe), the anatomy
 window is never eligible there (the policy is not idle), and views, controls, CI counters, call counters and tick
@@ -565,6 +568,57 @@ class DWithCI(DStepped, CIWithY2A):
     test_window_equal_and_reentries_through_the_in_wait_path = None
     test_a_decoder_leaving_after_the_certificate_invalidates_it = None
     test_a_yield_revoked_between_probe_and_switch_never_switches = None
+
+
+
+class AnatomyWithO3(DStepped, unittest.TestCase):
+    """DECODE_ANATOMY x CONTROL_O3_INWAIT (x CONTROL_INWAIT, brief 8): Codex's kept-SPLIT cases (test_control_o3_inwait:
+    the native kept-SPLIT entry with later decode still queued, the changed-cohort fallback drain, the kept yield and the
+    Y2 window's kept yield, the revoked-yield fallback, the eight A/Y1/Y2 vectors) run unchanged with decode_step's
+    EngineSide (anatomy on, lever D off: blocked) stepped before every policy tick. Each case's own assertions pass, the
+    step writes no shared state, and no anatomy window is eligible in a scope-2 phase (control_o3_observe, _cut,
+    _rollback: the policy is active), so no execute_model RPC there would be tagged."""
+    CASES = (('CoreOrder', 'test_kept_census_arms_with_later_decode_still_queued_without_route_change'),
+             ('CoreOrder', 'test_changed_cohort_drains_before_full_fallback'),
+             ('YieldCore', 'test_yield_resumes_the_bulk_at_its_own_committed_frontier'),
+             ('WindowCore', 'test_yield_resumes_the_bulk_at_its_own_committed_frontier'),
+             ('YieldCore', 'test_revoked_yield_falls_back_without_arming_or_moving_the_bulk_frontier'),
+             ('Composition', 'test_all_eight_a_y1_y2_combinations_on_the_real_kept_yield_path'))
+    O3_PHASES = ('control_o3_observe', 'control_o3_cut', 'control_o3_rollback')
+
+    def run_case(self, cls_name, name):
+        import test_control_o3_inwait as co3
+        case = getattr(co3, cls_name)(name)
+        result = unittest.TestResult()
+        case.run(result)
+        return result
+
+    def test_kept_split_cases_unchanged_with_the_anatomy_stepped(self):
+        phases = set()
+        for cls_name, name in self.CASES:
+            self.trace, self.ticks, self.writes = [], 0, []
+            plain = self.run_case(cls_name, name)
+            self.assertTrue(plain.wasSuccessful(), (cls_name, name, plain.failures, plain.errors))
+            self.assertEqual(self.trace, [])
+            lines = []
+            logger = NS(info=lambda fmt, *a: lines.append(fmt % a), warning=lambda *a, **k: None)
+            self.side = ds.EngineSide({ds.ANATOMY_ENV: '1'}, logger=logger)
+            try:
+                stepped = self.run_case(cls_name, name)
+                counters = dict(self.side.counters)
+            finally:
+                self.side = None
+            self.assertTrue(stepped.wasSuccessful(), (cls_name, name, stepped.failures, stepped.errors))
+            self.assertGreater(len(self.trace), 0, name)
+            self.assertEqual(self.writes, [], name)                           # the step wrote no shared state
+            self.assertEqual(counters.get('errors', 0), 0, counters)
+            o3 = [t for t in self.trace if t['phase'] in self.O3_PHASES]
+            self.assertTrue(all(t['active'] and t['execute'] is None for t in o3), name)
+            phases |= {t['phase'] for t in o3}
+            self.assertFalse([x for x in lines if x.startswith(ds.LINE_SAMPLE)])   # D off: no sampler lines
+        # the rig reaches observe and rollback at a tick's start; it never starts a tick in control_o3_cut (the cut
+        # clears inside the poll that enters it), so that phase is covered only by the phase-name rule above
+        self.assertEqual(phases, {'control_o3_observe', 'control_o3_rollback'})
 
 
 if __name__ == '__main__':

@@ -64,8 +64,7 @@ class Flags(unittest.TestCase):
         for pairs in (['FLASH_S5_SMALL_PIECE_BATCH=1'], ['FLASH_S5_YIELD_REENTRY_SETTLE=1'],
                       ['FLASH_S5_YIELD_NO_APPEND_OWNER=1'], ['FLASH_S5_YIELD_WINDOW=1'],
                       ['FLASH_S5_APPEND_NO_BLOCK_STOP=1'], ['FLASH_S5_DECODE_LIVENESS=1'], ['FLASH_S5_CONTROL_INWAIT=1'],
-                      ['FLASH_S5_DECODE_SAMPLE_FAST=1'], ['FLASH_S5_DECODE_ANATOMY=1'],
-                      ['FLASH_S5_DECODE_SAMPLE_FAST=1', 'FLASH_S5_DECODE_ANATOMY=1'],
+                      ['FLASH_S5_CONTROL_INWAIT=1', 'FLASH_S5_CONTROL_O3_INWAIT=1'], ['FLASH_S5_DECODE_ANATOMY=1'],
                       ['FLASH_S5_INGRESS_INCREMENTAL=1', 'FLASH_S5_INGRESS_VERIFY_EVERY=16', 'FLASH_S5_INGRESS_VERIFY_ASYNC=1'],
                       ['FLASH_S5_DECODE_GROUPS=off', 'FLASH_S5_DECODE_LIVENESS=1'],
                       ['FLASH_S5_DECODE_GROUPS=off-small', 'FLASH_S5_DECODE_LIVENESS=1']):
@@ -83,6 +82,10 @@ class Flags(unittest.TestCase):
         ayci = cx.parse_flags(['FLASH_S5_APPEND_NO_BLOCK_STOP=1', 'FLASH_S5_YIELD_NO_APPEND_OWNER=1',
                                'FLASH_S5_YIELD_WINDOW=1', 'FLASH_S5_CONTROL_INWAIT=1'])
         self.assertEqual(ayci['FLASH_S5_CONTROL_INWAIT'], '1')
+        ayc2 = cx.parse_flags(['FLASH_S5_APPEND_NO_BLOCK_STOP=1', 'FLASH_S5_YIELD_NO_APPEND_OWNER=1',
+                               'FLASH_S5_YIELD_WINDOW=1', 'FLASH_S5_CONTROL_INWAIT=1', 'FLASH_S5_CONTROL_O3_INWAIT=1',
+                               'FLASH_S5_DECODE_ANATOMY=1'])
+        self.assertEqual((ayc2['FLASH_S5_CONTROL_O3_INWAIT'], ayc2['FLASH_S5_DECODE_SAMPLE_FAST']), ('1', '0'))
 
     def test_refusals(self):
         self.refuses(['FLASH_S5_YIELD_REENTRY_SETTLE=1', 'FLASH_S5_YIELD_WINDOW=1'])
@@ -110,6 +113,16 @@ class Flags(unittest.TestCase):
             self.assertEqual(cx.parse_flags([])[key], safe)
         self.refuses(['FLASH_S5_DECODE_SAMPLE_FAST=2'])
         self.refuses(['FLASH_S5_DECODE_ANATOMY=yes'])
+        # scope 2 needs scope 1; its untested pairs are scope 1's (refused through CONTROL_INWAIT=1)
+        self.refuses(['FLASH_S5_CONTROL_O3_INWAIT=1'])
+        self.refuses(['FLASH_S5_CONTROL_O3_INWAIT=2', 'FLASH_S5_CONTROL_INWAIT=1'])
+        o3 = ci + ['FLASH_S5_CONTROL_O3_INWAIT=1']
+        self.refuses(o3 + ['FLASH_S5_YIELD_REENTRY_SETTLE=1'])
+        self.refuses(o3 + ['FLASH_S5_DECODE_LIVENESS=1'])
+        # lever D: blocked by Codex's engine review (lead note 13 Nov) until a reviewed fix is on the line
+        self.assertIsNone(cx.DECODE_SAMPLE_FAST_REVIEWED_FIX)
+        for extra in ([], ['FLASH_S5_DECODE_ANATOMY=1'], o3):
+            self.refuses(['FLASH_S5_DECODE_SAMPLE_FAST=1'] + extra)
 
 
 class ControlInWaitParent(unittest.TestCase):
@@ -133,6 +146,26 @@ class ControlInWaitParent(unittest.TestCase):
             self.assertFalse(bundle_copy.exists())
             text = (Path(cx.hgb.PARENT) / 'tools/n3j2_frozen_cpu.py').read_text()
             self.assertIn(old, text)         # the anchor the builder rewrites, in the parent's tool (yrs adds no -e)
+
+
+class ControlO3Parent(unittest.TestCase):
+    def test_parent_pin_and_container_env(self):
+        """test_control_o3_inwait's frozen OFF parent (a15bed1d's native_auto_arm.py): the builder's pin equals the
+        suite's, the frozen CPU line names it, and in a bundle the copy and the env are there."""
+        import hashlib
+        import test_control_o3_inwait as to3
+        commit, name, digest = cx.CONTROL_O3_PARENT
+        text = Path(to3.__file__).read_text()
+        self.assertIn("'%s:%s'" % (commit, name), text)
+        self.assertIn("'%s'" % digest, text)
+        old, new = cx.CONTROL_INWAIT_ENV
+        self.assertIn('CONTROL_O3_PARENT_SOURCE=/src/harness/' + cx.CONTROL_O3_PARENT_FILE, new)
+        bundle_copy = HERE / cx.CONTROL_O3_PARENT_FILE
+        if (HERE / 'n3j2_packet.py').is_file() and (HERE / 'tools' / 'n3j2_frozen_cpu.py').is_file():
+            self.assertEqual(hashlib.sha256(bundle_copy.read_bytes()).hexdigest(), digest)
+            self.assertEqual(os.environ.get('CONTROL_O3_PARENT_SOURCE'), '/src/harness/' + cx.CONTROL_O3_PARENT_FILE)
+        else:
+            self.assertFalse(bundle_copy.exists())
 
 
 class Names(unittest.TestCase):
@@ -169,7 +202,8 @@ class Names(unittest.TestCase):
 
 
 COMPOSE = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS',
-           'FLASH_S5_CONTROL_INWAIT', 'FLASH_S5_DECODE_SAMPLE_FAST', 'FLASH_S5_DECODE_ANATOMY')
+           'FLASH_S5_CONTROL_INWAIT', 'FLASH_S5_CONTROL_O3_INWAIT', 'FLASH_S5_DECODE_SAMPLE_FAST',
+           'FLASH_S5_DECODE_ANATOMY')
 QUEUE = re.compile(r'^q18a_parity_n3s24q2024p_j2_cx([a-z0-9]{0,8})_(b[1-4]|dry)_settings\.sh$')
 
 
@@ -275,29 +309,36 @@ class Queues(unittest.TestCase):
                       next(t for r, t in texts.items() if r.endswith('_settings.sh')))
 
     def test_decode_step_flags_in_the_queues(self):
-        """Lever D and the anatomy window ride the settings line and the asserts; the anatomy window needs the settings'
-        handler anatomy and burst progress (a parent without them is refused at render time, before the engine would)."""
+        """The anatomy window and scope 2 ride the settings line and the asserts (lever D is refused, so its setting is
+        written as 0). The anatomy window needs the settings' handler anatomy and burst progress, scope 2 the settings'
+        AUTO_ARM=1 and O3=1: a parent without them is refused at render time, before the engine would."""
         if (HERE / 'n3j2_packet.py').is_file():
             return                                  # a bundle: its own queue is checked by the test above
         self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
-        flags = cx.parse_flags(['FLASH_S5_DECODE_SAMPLE_FAST=1', 'FLASH_S5_DECODE_ANATOMY=1'])
+        flags = cx.parse_flags(['FLASH_S5_CONTROL_INWAIT=1', 'FLASH_S5_CONTROL_O3_INWAIT=1', 'FLASH_S5_DECODE_ANATOMY=1'])
         saved = dict(cx.CONFIG)
         try:
             cx.configure(flags, 'zd')
             texts = cx.queues('b1')
             self.assertIn('e3/decode_step.py', cx.hgb.NEW_OVERLAY_FILES)
             self.assertIn('decode_step', cx.ing.BOUND_MODULES)
+            self.assertIn('test_control_o3_inwait', cx.SUITES)
             settings = next(t for r, t in texts.items() if r.endswith('_settings.sh'))
-            self.assertIn('FLASH_S5_DECODE_SAMPLE_FAST=1 FLASH_S5_DECODE_ANATOMY=1 ', settings)
+            self.assertIn('FLASH_S5_CONTROL_INWAIT=1 FLASH_S5_CONTROL_O3_INWAIT=1 FLASH_S5_DECODE_SAMPLE_FAST=0 '
+                          'FLASH_S5_DECODE_ANATOMY=1 ', settings)
+            for need in cx.CONTROL_O3_NEEDS:
+                self.assertIn(need, settings)
             self.check_texts(texts, flags, cx.name_of('b1', 'zd'))
             original = cx._np_queues
-            cx._np_queues = lambda variant: {r: t.replace('FLASH_S5_HANDLER_ANATOMY=1 ', 'FLASH_S5_HANDLER_ANATOMY=0 ')
-                                            for r, t in original(variant).items()}
-            try:
-                with self.assertRaises(AssertionError):
-                    cx.queues('b1')
-            finally:
-                cx._np_queues = original
+            for old, new in (('FLASH_S5_HANDLER_ANATOMY=1 ', 'FLASH_S5_HANDLER_ANATOMY=0 '),
+                             ('FLASH_S5_O3=1 ', 'FLASH_S5_O3=0 '), ('FLASH_S5_AUTO_ARM=1 ', 'FLASH_S5_AUTO_ARM=0 ')):
+                cx._np_queues = lambda variant, old=old, new=new: {
+                    r: t.replace(old, new) for r, t in original(variant).items()}
+                try:
+                    with self.assertRaises(AssertionError, msg=old):
+                        cx.queues('b1')
+                finally:
+                    cx._np_queues = original
         finally:
             cx.CONFIG.update(saved)
 
@@ -424,6 +465,56 @@ class Reader(unittest.TestCase):
                          ['control-inwait-absent-b2-' + a for a in sorted(reader.SP_ARMS + reader.N3_ARMS)])
         present = reader.collect(record(control_inwait=True), 'b3', reader.flags_of([]))
         self.assertIn('control-inwait-present-b3-n3.g2-live-0', present['compose_notes'])
+
+    def test_control_o3_inwait_kept_classes_and_lane_o3_line(self):
+        """Scope 2: the kept-SPLIT classes' cut counters beside scope 1's rows, the lane-o3 line (install, stock O3
+        counts and the refusal reasons a fallback ends in) per arm, and the install/cut NOTES."""
+        flags = reader.flags_of(['FLASH_S5_CONTROL_INWAIT=1', 'FLASH_S5_CONTROL_O3_INWAIT=1'])
+        root = record(dict(FLASH_S5_CONTROL_INWAIT='1', FLASH_S5_CONTROL_O3_INWAIT='1'), control_inwait=True)
+        kept = lambda m, applied: dict(attempts=3 * m, refused=m, invalidated=0, armed=2 * m, closed=m,
+                                       drains_skipped=3 * m,
+                                       drains_kept={'applied-output-cut': 3 * m, 'typed-route-fence': m,
+                                                    'fallback-full-cut': m},
+                                       pause_to_arm_ms=6. * m, pause_to_arm_max_ms=4., decoder_stall_ms=1. * m,
+                                       decoder_stall_max_ms=1., cut_frames_issued=4 * m, cut_frames_applied=applied,
+                                       arms_with_later_frames=m)
+        o3 = lambda m: dict(on=1, armed=2 * m, yield_kept=m, kept=3 * m, refused={'census': m} if m else {},
+                            yield_full={'census': m} if m else {}, full={})
+        for label in reader.SP_ARMS + reader.N3_ARMS:
+            path = root / ('arm-' + label + '.json')
+            arm = json.loads(path.read_text())
+            for row, n in zip(arm['statuses'], (0, 1)):
+                m = n if label.startswith('n3') else 0
+                block = row['native_admission']['control_inwait']
+                block.update(o3_enabled=True, cut_pending=0, cut_bound=2)
+                if m:
+                    block['transitions']['split-kept-yield'] = kept(m, 4 * m if label == 'n3.g2-live-0' else 3 * m)
+                row.setdefault('append_yield', {}).setdefault('declines', {})['o3'] = o3(m)
+            path.write_text(json.dumps(arm))
+        r = reader.collect(root, 'b1', flags)
+        n0 = r['arms']['n3.g2-live-0']
+        k = n0['control_inwait']['split-kept-yield']
+        self.assertEqual({x: k[x] for x in reader.INWAIT_CUT}, dict(cut_frames_issued=4, cut_frames_applied=4,
+                                                                    arms_with_later_frames=1))
+        self.assertEqual(k['drains_kept'], {'applied-output-cut': 3, 'fallback-full-cut': 1, 'typed-route-fence': 1})
+        self.assertNotIn('cut_frames_issued', n0['control_inwait']['full-entry'])     # scope 1's rows unchanged
+        self.assertEqual(n0['control_o3'], dict(o3_inwait=True, cut_pending_after=0, o3=dict(
+            armed=2, yield_kept=1, kept=3, refused={'census': 1}, yield_full={'census': 1}, full={})))
+        self.assertEqual(sorted(n for n in r['compose_notes'] if n.startswith('control-')),
+                         ['control-o3-cut-unapplied-b1-n3.g2-live-1'])               # 4 issued, 3 applied
+        text = reader.render([r])
+        self.assertIn('cut issued=4 applied=4 arms_with_later_frames=1 (kept-SPLIT', text)
+        self.assertIn('lane-o3            o3_inwait=on cut_pending_after=0 armed=2 yield_kept=1 kept=3 '
+                      'refused={"census":1} yield_full={"census":1} full={}', text)
+        off = reader.collect(record(dict(FLASH_S5_CONTROL_INWAIT='1'), control_inwait=True), 'b2',
+                             reader.flags_of(['FLASH_S5_CONTROL_INWAIT=1']))
+        self.assertEqual(off['arms']['n3.g2-live-0']['control_o3'], dict(o3_inwait=False, cut_pending_after=None, o3=None))
+        self.assertIn('o3_inwait=off cut_pending_after=None - (no o3 record)', reader.render([off]))
+        self.assertFalse([n for n in off['compose_notes'] if n.startswith('control-o3-')])
+        absent = reader.collect(record(dict(FLASH_S5_CONTROL_INWAIT='1'), control_inwait=True), 'b3', flags)
+        self.assertIn('control-o3-inwait-absent-b3-n3.g2-live-0', absent['compose_notes'])
+        present = reader.collect(root, 'b4', reader.flags_of(['FLASH_S5_CONTROL_INWAIT=1']))
+        self.assertIn('control-o3-inwait-present-b4-sp.g2-live-0', present['compose_notes'])
 
     def test_sample_fast_steps_per_arm_and_rank(self):
         import datetime
