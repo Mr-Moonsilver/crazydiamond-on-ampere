@@ -593,8 +593,17 @@ class AnatomyWithO3(DStepped, unittest.TestCase):
         case.run(result)
         return result
 
+    ENV = {ds.ANATOMY_ENV: '1'}
+
+    def check_o3_steps(self, o3, name):
+        """Per scope-2 step: the policy is active and no execute_model tag (no anatomy window)."""
+        self.assertTrue(all(t['active'] and t['execute'] is None for t in o3), name)
+
     def test_kept_split_cases_unchanged_with_the_anatomy_stepped(self):
-        phases = set()
+        self.stepped_cases()
+
+    def stepped_cases(self):
+        phases, traces = set(), []
         for cls_name, name in self.CASES:
             self.trace, self.ticks, self.writes = [], 0, []
             plain = self.run_case(cls_name, name)
@@ -602,7 +611,7 @@ class AnatomyWithO3(DStepped, unittest.TestCase):
             self.assertEqual(self.trace, [])
             lines = []
             logger = NS(info=lambda fmt, *a: lines.append(fmt % a), warning=lambda *a, **k: None)
-            self.side = ds.EngineSide({ds.ANATOMY_ENV: '1'}, logger=logger)
+            self.side = ds.EngineSide(dict(self.ENV), logger=logger)
             try:
                 stepped = self.run_case(cls_name, name)
                 counters = dict(self.side.counters)
@@ -613,12 +622,37 @@ class AnatomyWithO3(DStepped, unittest.TestCase):
             self.assertEqual(self.writes, [], name)                           # the step wrote no shared state
             self.assertEqual(counters.get('errors', 0), 0, counters)
             o3 = [t for t in self.trace if t['phase'] in self.O3_PHASES]
-            self.assertTrue(all(t['active'] and t['execute'] is None for t in o3), name)
+            self.check_o3_steps(o3, name)
             phases |= {t['phase'] for t in o3}
-            self.assertFalse([x for x in lines if x.startswith(ds.LINE_SAMPLE)])   # D off: no sampler lines
+            traces.append((name, list(self.trace)))
+            self.assertFalse([x for x in lines if x.startswith(ds.LINE_SAMPLE)])   # the worker logs those, not the core
+            self.assertFalse([x for x in lines if x.startswith(ds.LINE_ANATOMY)])  # never a clean window here
         # the rig reaches observe and rollback at a tick's start; it never starts a tick in control_o3_cut (the cut
         # clears inside the poll that enters it), so that phase is covered only by the phase-name rule above
         self.assertEqual(phases, {'control_o3_observe', 'control_o3_rollback'})
+        return traces
+
+
+class DWithO3(AnatomyWithO3):
+    """Lever D (reviewed fix 2eba0dd0) x CONTROL_O3_INWAIT (brief 9, the ayc2d packet: D and the anatomy both on). The
+    same six kept-SPLIT cases with EngineSide({SAMPLE_FAST: 1, ANATOMY: 1}) stepped: each case's assertions pass, no
+    shared write, no anatomy window, and on every scope-2 step the sample_tokens tag is D's gate exactly as on any
+    other step (1 while the native arm owns the lane, 0 under the manual lease), so D keeps sampling beside the cut and
+    the census while scope 2 decides nothing differently. The sampling math itself is test_decode_step_torch."""
+    ENV = {ds.SAMPLE_FAST_ENV: '1', ds.ANATOMY_ENV: '1'}
+
+    def check_o3_steps(self, o3, name):
+        super().check_o3_steps(o3, name)
+        self.assertTrue(all((t['sample'] or [0])[0] == (1 if t['native'] else 0) for t in o3), name)
+
+    test_kept_split_cases_unchanged_with_the_anatomy_stepped = None   # AnatomyWithO3 runs it; here the D pair
+
+    def test_kept_split_cases_unchanged_with_d_and_the_anatomy_stepped(self):
+        traces = self.stepped_cases()
+        o3 = [t for _, trace in traces for t in trace if t['phase'] in self.O3_PHASES]
+        self.assertTrue([t for t in o3 if (t['sample'] or [0])[0] == 1], 'D must be gated on in some scope-2 step')
+        every = [t for _, trace in traces for t in trace]
+        self.assertTrue(all((t['sample'] or [0])[0] == (1 if t['native'] else 0) for t in every))
 
 
 if __name__ == '__main__':

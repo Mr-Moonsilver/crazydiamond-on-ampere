@@ -25,8 +25,12 @@ Method: the night-pack tool (tools/build_q2024p_j2_np.py, through it the ing, yr
     asserted; it needs CONTROL_INWAIT=1 (refused otherwise) and AUTO_ARM=1 and O3=1 in the parent's settings (asserted at
     build time); its suite test_control_o3_inwait runs in the frozen CPU with a15bed1d's native_auto_arm.py as its
     frozen OFF parent (CONTROL_O3_PARENT_SOURCE).
-  * FLASH_S5_DECODE_SAMPLE_FAST (lever D) is refused: blocked by Codex's engine review until a commit marked as the
-    reviewed fix is on the line (DECODE_SAMPLE_FAST_REVIEWED_FIX). FLASH_S5_DECODE_ANATOMY stays available.
+  * FLASH_S5_DECODE_SAMPLE_FAST (lever D) was blocked by Codex's engine review (13 Nov 13:23) until a commit marked as
+    the reviewed fix is on the line. That fix is 2eba0dd0 (Codex re-review 13 Nov, no new blocker), merged onto the
+    compose line with the watermark-sampler refusal kept. D=1 now builds only from a source commit that has
+    DECODE_SAMPLE_FAST_REVIEWED_FIX as an ancestor AND whose regenerated overlay decode_step.py carries both the
+    exact overflow route and the watermark refusal (DECODE_SAMPLE_FAST_MARKERS); anything else is refused.
+    FLASH_S5_DECODE_ANATOMY stays available.
 Refused flag sets: settle with the yield window (settle sits where the window hands off), a decode-group mode other than
 chunk without the liveness observer (the guard would be blind), verify settings without ingress, and CONTROL_INWAIT with
 any of settle, the small-piece batch, ingress, a decode-group mode other than chunk or the liveness observer (none of
@@ -93,11 +97,31 @@ CONTROL_INWAIT_ENV = ("'-e','PYTHONDONTWRITEBYTECODE=1',",
                       % (CONTROL_INWAIT_PARENT_FILE, CONTROL_O3_PARENT_FILE))
 # scope 2 needs these in the parent's settings line (s5_startup refuses the engine otherwise; refused here first)
 CONTROL_O3_NEEDS = ('FLASH_S5_AUTO_ARM=1 ', 'FLASH_S5_O3=1 ')
-# lever D (FLASH_S5_DECODE_SAMPLE_FAST): BLOCKED (lead note 13 Nov 13:23; Codex's engine review
-# REVIEW-codex-decode-step-20261113.md: more than WIDTH - K ties at the K-th value sample a truncated support, counted
-# but never a fallback). Refused until a commit marked as the reviewed fix is on the line: set this to that commit's
-# full sha; prepare() then requires it to be an ancestor of the source commit.
-DECODE_SAMPLE_FAST_REVIEWED_FIX = None
+# lever D (FLASH_S5_DECODE_SAMPLE_FAST): blocked 13 Nov 13:23 (Codex's engine review
+# REVIEW-codex-decode-step-20261113.md: more than WIDTH - K ties at the K-th value sampled a truncated support, counted
+# but never a fallback). The reviewed fix is 2eba0dd0 on claude/n3-decode-step ("lever D reviewed-fix"; Codex re-review
+# REVIEW-codex-decode-step-2eba0dd0-20261113.md: previous blockers fixed, no new blocker). D=1 is accepted only when
+# (1) this full sha is an ancestor of the source commit (git merge-base --is-ancestor) and (2) the bundle's regenerated
+# overlay e3/decode_step.py contains every DECODE_SAMPLE_FAST_MARKERS line: the fix's per-row overflow select and its
+# exact route, and the compose line's watermark-sampler refusal (1cfc2166). Set to None to block D again.
+DECODE_SAMPLE_FAST_REVIEWED_FIX = '2eba0dd0d85f341ac9378c438ac4803c946104d8'
+DECODE_SAMPLE_FAST_MARKERS = (
+    '        return torch.where(overflow.view(-1), exact, fast)\n',            # 2eba0dd0: overflow rows exact, pre-draw
+    '    def sample_overflow(self, values, ids, pivot, ties, tie_count, k, top_p):\n',
+    "                if owner != 'Sampler' or getattr(sampler, 'watermarking', None) is not None:\n",   # 1cfc2166
+)
+
+
+def decode_sample_fast_refusals(source_text, is_ancestor):
+    """Why lever D may not build from this source ([] = it may): no reviewed fix set, the fix not an ancestor of the
+    source commit (``is_ancestor(sha)``), or a DECODE_SAMPLE_FAST_MARKERS line missing from ``source_text`` (the
+    source's, then the regenerated overlay's decode_step.py)."""
+    if DECODE_SAMPLE_FAST_REVIEWED_FIX is None:
+        return ['no-reviewed-fix']
+    out = [] if is_ancestor(DECODE_SAMPLE_FAST_REVIEWED_FIX) else ['reviewed-fix-not-an-ancestor']
+    return out + ['missing-marker-%d' % i for i, m in enumerate(DECODE_SAMPLE_FAST_MARKERS) if m not in source_text]
+
+
 BLOCKS = ('b1', 'b2', 'b3', 'b4')
 DRY = 'dry'
 BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control', 'decode_step')
@@ -276,9 +300,11 @@ def prepare(commit, variant, out, flags, tag=''):
     copied['control_inwait_parent'] = control_inwait_parent(b, bundle)
     copied['control_o3_parent'] = control_inwait_parent(b, bundle, CONTROL_O3_PARENT, CONTROL_O3_PARENT_FILE)
     if flags['FLASH_S5_DECODE_SAMPLE_FAST'] == '1':
-        assert DECODE_SAMPLE_FAST_REVIEWED_FIX is not None, 'lever D is blocked'
-        ok = subprocess.run(['git', 'merge-base', '--is-ancestor', DECODE_SAMPLE_FAST_REVIEWED_FIX, commit], cwd=ROOT)
-        assert ok.returncode == 0, 'lever D: the reviewed fix is not in the source commit'
+        def is_ancestor(sha):
+            return subprocess.run(['git', 'merge-base', '--is-ancestor', sha, commit], cwd=ROOT).returncode == 0
+        source = b.git(ROOT, 'show', commit + ':patches/s5_engine/decode_step.py').decode()
+        refusals = decode_sample_fast_refusals(source, is_ancestor)
+        assert not refusals, 'lever D refused for %s: %s' % (commit, refusals)
     box = bundle / 'n3j2_box.py'
     box.write_text(hgb.once(hgb.once(box.read_text(), hgb.BOX_IMPORT, hgb.BOX_IMPORT_NEW), hgb.BOX_ROW, hgb.BOX_ROW_NEW))
     packet = bundle / 'n3j2_packet.py'
@@ -288,6 +314,10 @@ def prepare(commit, variant, out, flags, tag=''):
         subprocess.run(['bash', '-n', str(bundle / rel)], check=True)
     proof = hgb.regenerate(b, bundle, out)
     assert set(NEW_OVERLAY_FILES) <= set(proof['overlay_changed']), 'new overlay files not in the regenerated overlay'
+    if flags['FLASH_S5_DECODE_SAMPLE_FAST'] == '1':
+        built = (bundle / 'native30_overlay/e3/decode_step.py').read_text()
+        refusals = decode_sample_fast_refusals(built, lambda sha: True)
+        assert not refusals, 'lever D refused: the overlay decode_step.py %s' % refusals
     frozen_cpu_tool(bundle)
     hgb.queue_adapter(bundle, variant)
     for p in bundle.rglob('*.py'):

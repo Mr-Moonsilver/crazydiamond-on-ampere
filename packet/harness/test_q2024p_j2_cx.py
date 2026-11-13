@@ -27,6 +27,7 @@ from pathlib import Path
 import re
 import sys
 import unittest
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 for extra in (HERE, HERE.parent / 'tools', HERE / 'tools', HERE.parent / 'patches' / 's5_engine'):
@@ -119,10 +120,29 @@ class Flags(unittest.TestCase):
         o3 = ci + ['FLASH_S5_CONTROL_O3_INWAIT=1']
         self.refuses(o3 + ['FLASH_S5_YIELD_REENTRY_SETTLE=1'])
         self.refuses(o3 + ['FLASH_S5_DECODE_LIVENESS=1'])
-        # lever D: blocked by Codex's engine review (lead note 13 Nov) until a reviewed fix is on the line
-        self.assertIsNone(cx.DECODE_SAMPLE_FAST_REVIEWED_FIX)
-        for extra in ([], ['FLASH_S5_DECODE_ANATOMY=1'], o3):
-            self.refuses(['FLASH_S5_DECODE_SAMPLE_FAST=1'] + extra)
+        # lever D: blocked by Codex's engine review (lead note 13 Nov 13:23) until a reviewed fix is on the line;
+        # brief 9: the reviewed fix 2eba0dd0 is merged, D=1 parses with the anatomy and with scope 2
+        self.assertEqual(cx.DECODE_SAMPLE_FAST_REVIEWED_FIX, '2eba0dd0d85f341ac9378c438ac4803c946104d8')
+        for extra in ([], ['FLASH_S5_DECODE_ANATOMY=1'], o3, o3 + ['FLASH_S5_DECODE_ANATOMY=1']):
+            self.assertEqual(cx.parse_flags(['FLASH_S5_DECODE_SAMPLE_FAST=1'] + extra)['FLASH_S5_DECODE_SAMPLE_FAST'], '1')
+        with mock.patch.object(cx, 'DECODE_SAMPLE_FAST_REVIEWED_FIX', None):     # None blocks D again
+            for extra in ([], ['FLASH_S5_DECODE_ANATOMY=1'], o3):
+                self.refuses(['FLASH_S5_DECODE_SAMPLE_FAST=1'] + extra)
+
+    def test_decode_sample_fast_gate(self):
+        """How the builder recognises the reviewed-fix tree for D=1 (prepare, before and after the overlay): the fix
+        an ancestor of the source commit AND every marker in decode_step.py (the fix's overflow select and route, the
+        compose line's watermark refusal). This tree's decode_step.py passes; each marker removed is refused."""
+        text = next(p for p in (HERE.parent / 'patches/s5_engine/decode_step.py',          # worktree, frozen CPU /src
+                                HERE / 'native30_overlay/e3/decode_step.py') if p.is_file()).read_text()
+        yes, no = (lambda sha: True), (lambda sha: False)
+        self.assertEqual(cx.decode_sample_fast_refusals(text, yes), [])
+        self.assertEqual(cx.decode_sample_fast_refusals(text, no), ['reviewed-fix-not-an-ancestor'])
+        for i, marker in enumerate(cx.DECODE_SAMPLE_FAST_MARKERS):
+            self.assertEqual(text.count(marker), 1, marker)
+            self.assertEqual(cx.decode_sample_fast_refusals(text.replace(marker, ''), yes), ['missing-marker-%d' % i])
+        with mock.patch.object(cx, 'DECODE_SAMPLE_FAST_REVIEWED_FIX', None):
+            self.assertEqual(cx.decode_sample_fast_refusals(text, yes), ['no-reviewed-fix'])
 
 
 class ControlInWaitParent(unittest.TestCase):
@@ -517,6 +537,134 @@ class Reader(unittest.TestCase):
         self.assertIn('control-o3-inwait-present-b4-sp.g2-live-0', present['compose_notes'])
 
     def test_sample_fast_steps_per_arm_and_rank(self):
+        """Both overflow fields: the reviewed fix's overflow_rows_retired (2eba0dd0) and the pre-fix tie key."""
+        for key in ('overflow_rows_retired', 'tie_overflow_lagged'):
+            with self.subTest(key=key):
+                self.OVERFLOW_KEY = key
+                self.sample_fast_case()
+
+    def test_sample_fast_overflow_in_flight_reads_none(self):
+        """A retired copy not yet read (None, the CUDA event pending) is skipped; an arm without one reads None."""
+        import datetime
+        root = record(dict(FLASH_S5_DECODE_SAMPLE_FAST='1'))
+        t0 = self.arm_times(root)
+
+        def line(t, fast, seen):
+            stamp = datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            body = dict(schema='s5-decode-step/1', rank=3, overflow_rows_retired=seen,
+                        counters=dict(fast=fast, stock=0))
+            return '%s (Worker_PP1_TP1 pid=1) INFO flash-s5 sample-fast %s\n' % (stamp, json.dumps(body))
+        with (root / 'engine-stream.log').open('a') as handle:
+            handle.writelines([line(t0 + 650, 10, 2), line(t0 + 750, 20, 3), line(t0 + 800, 30, None),
+                               line(t0 + 1500, 40, None)])
+        r = reader.collect(root, 'b1', reader.flags_of(['FLASH_S5_DECODE_SAMPLE_FAST=1']))
+        self.assertEqual(r['arms']['n3.g2-live-0']['sample_fast']['3']['overflow_rows'], 1)   # 3 - 2, None skipped
+        self.assertIsNone(r['arms']['n3.g2-live-1']['sample_fast']['3']['overflow_rows'])
+
+    @staticmethod
+    def arm_times(root):
+        t0 = 1794436590.0
+        order = ('sp.g2-live-0', 'n3.g2-live-0', 'n3.g2-live-1', 'sp.g2-live-1')
+        for i, name in enumerate(order):                       # sequential arms, 600 s each, 100 s apart
+            path = root / ('arm-' + name + '.json')
+            arm = json.loads(path.read_text())
+            arm['replay_start_s'] = t0 + 700 * i
+            arm.setdefault('replay_config', {})['DURATION'] = 600
+            path.write_text(json.dumps(arm))
+        return t0
+
+    def anatomy_log(self, root, t0, sample_ms, native_ms):
+        """One clean window (core line in the sm smoke arm, before the graded arms) with sample_tokens rows on ranks
+        2 and 3, an execute_model row, a row outside it in n3.g2-live-0 (native context), a torn handler line."""
+        import datetime
+
+        def stamp(t):
+            return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        base, open_ns, close_ns = 10 ** 12, 10 ** 12 + 5 * 10 ** 9, 10 ** 12 + 25 * 10 ** 9
+        core = dict(schema='s5-decode-step/1', kind='core-steps', window=1, open_ns=open_ns, close_ns=close_ns,
+                    fields=['t_us', 'batch_queue', 'running', 'waiting'], counters={}, part=0, parts=1, stamps=[])
+        lines = ['%s (EngineCore pid=1) INFO flash-s5 decode-anatomy %s\n' % (stamp(t0 - 60), json.dumps(core))]
+
+        def row(seq, kind, t_us, dev_ms):
+            return [seq, kind, 0, 0, t_us, t_us + 900, 900000, 800000, 1000, None if kind == 's' else 700000,
+                    None if dev_ms is None else int(dev_ms * 1e6), None, None, None, []]
+        for rank in (2, 3):
+            m = [row(i, 's', 6 * 10 ** 6 + i * 1000, ms) for i, ms in enumerate(sample_ms[rank])]
+            m.append(row(99, 'e', 7 * 10 ** 6, None))
+            body = dict(schema='s5-handler-anatomy/1', rank=rank, line=1, base_ns=base, part=0, parts=1,
+                        rows=dict(m=m, a=[]))
+            lines.append('%s (Worker_PP1_TP%d pid=1) INFO flash-s5 handler %s\n' % (stamp(t0 - 50), rank - 2,
+                                                                                  json.dumps(body)))
+            native = dict(body, line=2, rows=dict(m=[row(200, 's', 40 * 10 ** 6, native_ms)], a=[]))
+            lines.append('%s (Worker_PP1_TP%d pid=1) INFO flash-s5 handler %s\n' % (stamp(t0 + 800), rank - 2,
+                                                                                  json.dumps(native)))
+        lines.append('%s (Worker_PP1_TP0 pid=1) INFO flash-s5 handler {"schema": "s5-handler-anat\n' % stamp(t0 + 801))
+        with (root / 'engine-stream.log').open('a') as handle:
+            handle.writelines(lines)
+
+    def test_dev_sample_clean_window_native_context_and_the_d_pair(self):
+        out = {}
+        for side, env, sample in (('off', {}, (1.0, 1.1, 1.2, 1.3)), ('on', {'FLASH_S5_DECODE_SAMPLE_FAST': '1'},
+                                                                         (0.8, 0.9, 1.0, 1.1))):
+            env = dict(env, FLASH_S5_DECODE_ANATOMY='1')
+            root = record(env)
+            t0 = self.arm_times(root)
+            self.anatomy_log(root, t0, {2: sample, 3: tuple(x + 0.02 for x in sample)}, 2.0)
+            r = reader.collect(root, side, reader.flags_of(['%s=%s' % kv for kv in sorted(env.items())]))
+            out[side] = r
+        d = out['on']['dev_sample']
+        self.assertEqual(d['clean']['1']['arm'], 'before-arms')
+        self.assertEqual(d['clean']['1']['close_minus_open_s'], 20.0)
+        self.assertEqual(d['clean']['1']['ranks']['2'], dict(n=4, p50=0.9, p90=1.1))     # execute_model row left out
+        self.assertEqual(d['native'], {'n3.g2-live-0': {'2': dict(n=1, p50=2.0, p90=2.0), '3': dict(n=1, p50=2.0, p90=2.0)}})
+        self.assertEqual(d['torn_lines'], 1)
+        self.assertFalse([n for n in out['on']['compose_notes'] if n.startswith('decode-anatomy-')])
+        pair = reader.d_pair(out['off'], out['on'])
+        self.assertEqual((pair['2']['drop_ms'], pair['2']['falls_by_0_1_ms']), (0.2, True))
+        self.assertEqual(pair['3']['off']['p50'], 1.12)
+        text = reader.render([out['on']])
+        self.assertIn('    clean window 1 in before-arms (20.0s) {"2":{"n":4,"p50":0.9,"p90":1.1}', text)
+        self.assertIn('    native-context n3.g2-live-0 {"2":', text)
+        # no clean row: a NOTE; anatomy off: no dev_sample at all
+        root = record(dict(FLASH_S5_DECODE_ANATOMY='1'))
+        self.arm_times(root)
+        quiet = reader.collect(root, 'b9', reader.flags_of(['FLASH_S5_DECODE_ANATOMY=1']))
+        self.assertIn('decode-anatomy-no-clean-sample-rows-b9', quiet['compose_notes'])
+        self.assertNotIn('dev_sample', reader.collect(record(), 'b8', reader.flags_of([])))
+        same = reader.d_pair(out['off'], out['off'])
+        self.assertEqual((same['2']['drop_ms'], same['2']['falls_by_0_1_ms']), (0.0, False))
+
+    def test_d_pair_main_refuses_a_second_difference(self):
+        import contextlib
+        import io
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(prefix='cx-dpair-'))
+        docs = {}
+        for side, flags in (('off', {'FLASH_S5_DECODE_ANATOMY': '1'}),
+                            ('on', {'FLASH_S5_DECODE_ANATOMY': '1', 'FLASH_S5_DECODE_SAMPLE_FAST': '1'}),
+                            ('bad', {'FLASH_S5_DECODE_ANATOMY': '1', 'FLASH_S5_DECODE_SAMPLE_FAST': '1',
+                                     'FLASH_S5_YIELD_WINDOW': '1'})):
+            docs[side] = tmp / (side + '.json')
+            docs[side].write_text(json.dumps(dict(schema='q2024p-j2-cx-cohort/1', flags=flags)))
+        roots = {}
+        for side, env in (('off', {'FLASH_S5_DECODE_ANATOMY': '1'}),
+                          ('on', {'FLASH_S5_DECODE_ANATOMY': '1', 'FLASH_S5_DECODE_SAMPLE_FAST': '1'})):
+            roots[side] = record(env)
+            t0 = self.arm_times(roots[side])
+            self.anatomy_log(roots[side], t0, {2: (1.0, 1.2), 3: (1.0, 1.2)}, 2.0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            reader.main(['--cohort-of', 'off=%s' % docs['off'], '--cohort-of', 'on=%s' % docs['on'],
+                         'off=%s' % roots['off'], 'on=%s' % roots['on']])
+        self.assertIn('== D pair (decode-step builder: keep D only if dev_sample falls by >= 0.1 ms', buf.getvalue())
+        self.assertIn('  rank2 off={"n":2,"p50":1.0,"p90":1.2} on={"n":2,"p50":1.0,"p90":1.2} drop_ms=0.0 '
+                      'falls_by_0.1=False', buf.getvalue())
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()):
+            reader.main(['--cohort-of', 'off=%s' % docs['off'], '--cohort-of', 'on=%s' % docs['bad'],
+                         'off=%s' % roots['off'], 'on=%s' % roots['on']])
+
+    def sample_fast_case(self):
         import datetime
         root = record(dict(FLASH_S5_DECODE_SAMPLE_FAST='1'))
         t0 = 1794436590.0
@@ -530,7 +678,7 @@ class Reader(unittest.TestCase):
 
         def line(t, rank, fast, not_gated, mixed, tie=0):
             stamp = datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-            body = dict(schema='s5-decode-step/1', rank=rank, tie_overflow_lagged=tie,
+            body = dict(schema='s5-decode-step/1', rank=rank, **{self.OVERFLOW_KEY: tie},
                         counters=dict(fast=fast, stock=not_gated + mixed, stock_not_gated=not_gated, stock_k_mixed=mixed,
                                       stock_dtype=0))
             return '%s (Worker_PP1_TP%d pid=1) INFO flash-s5 sample-fast %s\n' % (stamp, rank - 2, json.dumps(body))
@@ -549,15 +697,16 @@ class Reader(unittest.TestCase):
         self.assertEqual(sorted(n0), ['2', '3'])
         self.assertEqual({k: n0['2'][k] for k in ('fast', 'stock', 'stock_by_reason', 'lines')},
                          dict(fast=5000, stock=24, stock_by_reason={'k_mixed': 24}, lines=2))
-        self.assertEqual((n1['3']['fast'], n1['3']['stock'], n1['3']['tie_overflow_lagged']), (8096, 16, 1))
+        self.assertEqual((n1['3']['fast'], n1['3']['stock'], n1['3']['overflow_rows']), (8096, 16, 1))
+        self.assertEqual((n1['2']['steps'], n1['2']['overflow_rows'], n0['2']['overflow_rows']), (8112, 0, 0))
         self.assertEqual(n1['2']['fast_share'], round(8096 / 8112, 4))
         sp1 = r['arms']['sp.g2-live-1']['sample_fast']['2']
         self.assertEqual((sp1['fast'], sp1['stock_by_reason']), (0, {'not_gated': 1024}))
         self.assertEqual(r['arms']['sp.g2-live-0']['sample_fast'], {})     # before D's first line: none
         self.assertFalse([n for n in r['compose_notes'] if n.startswith('sample-fast-')])
         text = reader.render([r])
-        self.assertIn('  n3.g2-live-0  sample_fast rank2 fast=5000 stock=24 share=0.9952 stock_by_reason={"k_mixed":24} '
-                      'tie_overflow_lagged=0 lines=2', text)
+        self.assertIn('  n3.g2-live-0  sample_fast rank2 steps=5024 fast=5000 overflow_rows=0 stock_fallback=24 '
+                      'share=0.9952 stock_by_reason={"k_mixed":24} lines=2', text)
         self.assertIn('  sp.g2-live-0  sample_fast no lines in the arm', text)
         silent = reader.collect(record(dict(FLASH_S5_DECODE_SAMPLE_FAST='1')), 'b2', flags)
         self.assertEqual(sorted(n for n in silent['compose_notes'] if n.startswith('sample-fast-')),

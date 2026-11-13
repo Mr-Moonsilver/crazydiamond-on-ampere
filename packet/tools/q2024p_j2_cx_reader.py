@@ -28,8 +28,14 @@ install absent or present against the flag, and for a kept class whose cut frame
 lever
 D sampler steps per sampling rank from engine-stream.log's docker-stamped 'flash-s5 sample-fast' lines (cumulative,
 one per power of two of the fast count and per 1,024 sampler steps; the last line in the arm less the last one before
-it, so each arm edge is within one period): fast, stock (the fallback) by reason, the fast share and the lagged tie
-counter, with NOTES for an n3 arm without lines under FLASH_S5_DECODE_SAMPLE_FAST=1 or lines without it.
+it, so each arm edge is within one period): sampler steps, D's fast steps, the rows drawn on the reviewed fix's exact
+overflow route (2eba0dd0's retired counter, rows not steps, one line behind), the stock fallback steps by reason and
+the fast share, with NOTES for an n3 arm without lines under FLASH_S5_DECODE_SAMPLE_FAST=1 or lines without it. With
+FLASH_S5_DECODE_ANATOMY=1, dev_sample (ms) per sampling rank: per clean anatomy window (rows inside the core's
+open..close, the sm smoke arm's window first) and per graded arm in native context, with a NOTE when no clean
+sample row was read. A D pair, records off=<dir> on=<dir> each with --cohort-of <label>=<its cohort.json> differing in
+FLASH_S5_DECODE_SAMPLE_FAST only, also prints the decode-step builder's adoption line per sampling rank: the first
+clean window's dev_sample p50, off less on, against 0.1 ms.
 Cohort lines (descriptive, the V1 proposal's arithmetic): per block R = n3 completed turns / sp completed turns pooled
 over the block's two seeds (n3.g2-live-0 + n3.g2-live-1 over sp.g2-live-0 + sp.g2-live-1), and G = the geometric mean
 of the blocks' R; a block with an unread arm has no R and is named.
@@ -181,7 +187,9 @@ SAMPLE_FAST = 'flash-s5 sample-fast '
 
 
 def sample_fast_lines(root):
-    """(wall, rank, counters, tie_overflow_lagged) per lever D line in engine-stream.log; None without the log."""
+    """(wall, rank, counters, overflow) per lever D line in engine-stream.log; None without the log. ``overflow`` is the
+    reviewed fix's ``overflow_rows_retired`` (2eba0dd0: rows drawn on the exact overflow route, read from a retired host
+    copy, so one line behind; None while that copy is in flight), or the pre-fix ``tie_overflow_lagged``."""
     path = Path(root) / 'engine-stream.log'
     if not path.is_file():
         return None
@@ -192,12 +200,16 @@ def sample_fast_lines(root):
                 continue
             d, wall = dmp._json_after(line, SAMPLE_FAST), dmp.stamp(line)
             if d is not None and wall is not None and type(d.get('counters')) is dict:
-                out.append((wall, d.get('rank'), d['counters'], d.get('tie_overflow_lagged')))
+                out.append((wall, d.get('rank'), d['counters'],
+                            d['overflow_rows_retired'] if 'overflow_rows_retired' in d else d.get('tie_overflow_lagged')))
     return out
 
 
 def sample_fast_delta(lines, arm):
-    """Per sampling rank over the arm's replay window: fast and stock steps (stock by reason), the fast share."""
+    """Per sampling rank over the arm's replay window: sampler steps, D's fast steps, the stock fallback steps (by
+    reason), the fast share, and the rows D drew on the exact overflow route (the retired counter's last value in the
+    arm less its last value before; rows, not steps: a step's row count is not on the host without a sync; None when no
+    retired value was read in the arm)."""
     start = arm.get('replay_start_s')
     if lines is None or type(start) not in (int, float):
         return None
@@ -212,12 +224,97 @@ def sample_fast_delta(lines, arm):
         a, b = inside[-1][0], (before[-1] if before else {})
         d = {k: (a.get(k) or 0) - (b.get(k) or 0) for k in a}
         steps = d.get('fast', 0) + d.get('stock', 0)
-        out[str(rank)] = dict(fast=d.get('fast', 0), stock=d.get('stock', 0),
+        seen_in = [x for _, x in inside if type(x) is int]
+        seen_before = [x for w, _, x in rows if w < start and type(x) is int]
+        out[str(rank)] = dict(steps=steps, fast=d.get('fast', 0), stock=d.get('stock', 0),
                               stock_by_reason={k[len('stock_'):]: v for k, v in sorted(d.items())
                                                if k.startswith('stock_') and v},
                               fast_share=round(d.get('fast', 0) / steps, 4) if steps else None,
-                              tie_overflow_lagged=inside[-1][1], lines=len(inside))
+                              overflow_rows=(seen_in[-1] - (seen_before[-1] if seen_before else 0)) if seen_in else None,
+                              lines=len(inside))
     return out
+
+
+ANATOMY_CORE = 'flash-s5 decode-anatomy '
+HANDLER = 'flash-s5 handler '
+SAMPLING_RANKS = ('2', '3')        # the last PP stage samples (TP2 x PP2)
+_ANATOMY_REPORT = []
+
+
+def _anatomy_report():
+    """tools/stage1_anatomy_report.py, loaded once and only when a block has handler lines (it reads harness/)."""
+    if not _ANATOMY_REPORT:
+        _ANATOMY_REPORT.append(_load('stage1_anatomy_report', 'stage1_anatomy_report.py'))
+    return _ANATOMY_REPORT[0]
+
+
+def _dist(values):
+    if not values:
+        return None
+    ordered = sorted(values)
+    return dict(n=len(ordered), p50=round(dmp.quantile(ordered, 0.5), 4), p90=round(dmp.quantile(ordered, 0.9), 4))
+
+
+def dev_sample(root, arms):
+    """dev_sample (device time of the sample_tokens RPC's sampling, handler-anatomy rows) per sampling rank:
+    ``clean`` per FLASH_S5_DECODE_ANATOMY window (rows whose t_enter is inside the core's open_ns..close_ns, the same
+    host monotonic clock; no native progress there by the window's own condition), each window placed in the graded arm
+    whose replay window holds its core line's stamp, else 'before-arms' (the sm smoke arm's window); and ``native`` per
+    graded arm (the other sample_tokens rows, by their flush's stamp). None without engine-stream.log."""
+    path = Path(root) / 'engine-stream.log'
+    if not path.is_file():
+        return None
+    sa = _anatomy_report()
+    windows, records, torn, errors = {}, [], 0, 0
+    with path.open(errors='replace') as handle:
+        for line in handle:
+            if ANATOMY_CORE in line:
+                d = dmp._json_after(line, ANATOMY_CORE)
+                if d is not None and d.get('kind') == 'core-steps' and type(d.get('open_ns')) is int:
+                    windows.setdefault(d.get('window'), (d['open_ns'], d.get('close_ns'), dmp.stamp(line)))
+            elif HANDLER in line:
+                if sa.is_torn(line):
+                    torn += 1
+                    continue
+                body = json.loads(line[line.find(HANDLER) + len(HANDLER):])
+                if type(body) is not dict or body.get('schema') != sa.SCHEMA:
+                    errors += 1
+                    continue
+                records.append((dmp.stamp(line), body))
+    flushes, incomplete = sa.assemble(records)
+    spans = {}
+    for name, arm in arms.items():
+        start = arm.get('replay_start_s') if arm else None
+        if type(start) in (int, float):
+            spans[name] = (start, start + ((arm.get('replay_config') or {}).get('DURATION') or 480.0))
+
+    def arm_at(wall):
+        for name, (a, b) in spans.items():
+            if wall is not None and a <= wall <= b:
+                return name
+        if wall is None:
+            return 'unstamped'
+        return 'before-arms' if spans and wall < min(a for a, _ in spans.values()) else 'between'
+
+    bad = sa.FLAG_INSTALL | sa.FLAG_FAILED | sa.FLAG_ABORTED
+    clean, native = {}, {}
+    for f in flushes:
+        for r in f['main']:
+            if r['kind'] != 's' or type(r['dev_sample_ns']) is not int or r['flags'] & bad:
+                continue
+            ms = r['dev_sample_ns'] / 1e6
+            hit = [w for w, (a, b, _) in windows.items() if type(b) is int and r['t_enter'] is not None and a <= r['t_enter'] <= b]
+            if hit:
+                clean.setdefault(hit[0], {}).setdefault(str(r['rank']), []).append(ms)
+            else:
+                native.setdefault(arm_at(f['stamp']), {}).setdefault(str(r['rank']), []).append(ms)
+    return dict(
+        clean={str(w): dict(arm=arm_at(windows[w][2]), close_minus_open_s=round((windows[w][1] - windows[w][0]) / 1e9, 3)
+                            if type(windows[w][1]) is int else None,
+                            ranks={k: _dist(v) for k, v in sorted(clean.get(w, {}).items())})
+               for w in sorted(windows, key=str)},
+        native={a: {k: _dist(v) for k, v in sorted(ranks.items())} for a, ranks in sorted(native.items())},
+        torn_lines=torn, schema_errors=errors, incomplete_flushes=len(incomplete))
 
 
 def auto_arm_delta(arm):
@@ -257,8 +354,9 @@ def collect(root, label, flags):
     done, notes_extra = {}, []
     fast_lines = sample_fast_lines(root)
     d_on = flags['FLASH_S5_DECODE_SAMPLE_FAST'] == '1'
+    loaded = {}
     for name in SP_ARMS + N3_ARMS:
-        arm = hgb.load(root / ('arm-' + name + '.json'))
+        arm = loaded[name] = hgb.load(root / ('arm-' + name + '.json'))
         # completed turns as the dmp reader counts them (warm turns less those finished after the window), per arm record
         done[name] = None if arm is None else dmp.turns_per_hour(arm)[0]
         if arm is not None and name in N3_ARMS and name in result['arms']:
@@ -285,6 +383,11 @@ def collect(root, label, flags):
                 notes_extra.append('sample-fast-silent-%s-%s' % (label, name))
             elif not d_on and row['sample_fast']:
                 notes_extra.append('sample-fast-present-%s-%s' % (label, name))
+    if flags['FLASH_S5_DECODE_ANATOMY'] == '1':
+        result['dev_sample'] = dev_sample(root, loaded)
+        if result['dev_sample'] is not None and not any(
+                (w['ranks'].get(r) or {}).get('n') for w in result['dev_sample']['clean'].values() for r in SAMPLING_RANKS):
+            notes_extra.append('decode-anatomy-no-clean-sample-rows-%s' % label)
     result['identity_compose'], notes = compose_notes(root, label, flags, dview)
     result['compose_notes'] = notes + notes_extra + ['dmp-' + n for n in dview['notes']]
     result['completed'] = done
@@ -343,9 +446,46 @@ def sample_fast_render(name, arm):
         return ['  %-13s sample_fast - (no engine-stream.log or arm start)' % name]
     if not got:
         return ['  %-13s sample_fast no lines in the arm' % name]
-    return ['  %-13s sample_fast rank%s fast=%s stock=%s share=%s stock_by_reason=%s tie_overflow_lagged=%s lines=%s' % (
-        name, rank, d['fast'], d['stock'], d['fast_share'], np.fmt(d['stock_by_reason']), d['tie_overflow_lagged'],
-        d['lines']) for rank, d in got.items()]
+    return ['  %-13s sample_fast rank%s steps=%s fast=%s overflow_rows=%s stock_fallback=%s share=%s '
+            'stock_by_reason=%s lines=%s' % (
+                name, rank, d.get('steps'), d['fast'], d.get('overflow_rows'), d['stock'], d['fast_share'],
+                np.fmt(d['stock_by_reason']), d['lines']) for rank, d in got.items()]
+
+
+def dev_sample_render(r):
+    got = r.get('dev_sample')
+    if 'dev_sample' not in r:
+        return []
+    if got is None:
+        return ['  dev_sample - (no engine-stream.log)']
+    lines = ['  dev_sample ms (sample_tokens rows, per sampling rank) torn=%s schema_errors=%s incomplete_flushes=%s' % (
+        got['torn_lines'], got['schema_errors'], got['incomplete_flushes'])]
+    for w, d in got['clean'].items():
+        lines.append('    clean window %s in %s (%ss) %s' % (w, d['arm'], d['close_minus_open_s'], np.fmt(d['ranks'])))
+    if not got['clean']:
+        lines.append('    clean - (no decode-anatomy window)')
+    for a, ranks in got['native'].items():
+        lines.append('    native-context %s %s' % (a, np.fmt(ranks)))
+    return lines
+
+
+def d_pair(off, on):
+    """The decode-step builder's adoption line (SIZING.md, STATUS.md): keep D only if dev_sample falls by at least
+    0.1 ms, on ranks 2/3 (the sampling stage), D on against D off. Per sampling rank, the first clean window with rows
+    on that rank is read in each packet (the sm arm's 20 s window; the 20 s budget usually ends the anatomy inside it),
+    its p50 off less its p50 on. Descriptive: the lead applies the line."""
+    out = {}
+    for rank in SAMPLING_RANKS:
+        got = []
+        for r in (off, on):
+            clean = (r.get('dev_sample') or {}).get('clean') or {}
+            first = next((w['ranks'][rank] for _, w in sorted(clean.items(), key=lambda kv: kv[0])
+                          if (w['ranks'].get(rank) or {}).get('n')), None)
+            got.append(first)
+        a, b = got
+        drop = round(a['p50'] - b['p50'], 4) if a and b else None
+        out[rank] = dict(off=a, on=b, drop_ms=drop, falls_by_0_1_ms=None if drop is None else drop >= 0.1)
+    return out
 
 
 def render(results, full=False):
@@ -367,6 +507,7 @@ def render(results, full=False):
             lines.extend(inwait_lines(name, r['arms'].get(name) or {}))
         for name in SP_ARMS + N3_ARMS:
             lines.extend(sample_fast_render(name, r['arms'].get(name) or {}))
+        lines.extend(dev_sample_render(r))
         if r['compose_notes']:
             lines.append('  NOTES %s' % np.fmt(sorted(set(r['compose_notes']))))
     c = cohort_line(results)
@@ -380,6 +521,8 @@ def main(argv=None):
     parser.add_argument('records', nargs='+', help='<block>=<dir>, e.g. b1=<dir> (labels are free; one per record)')
     parser.add_argument('--cohort', type=Path, help="the render's cohort.json (its flags)")
     parser.add_argument('--set', dest='flags', action='append', default=[], metavar='FLAG=VALUE')
+    parser.add_argument('--cohort-of', action='append', default=[], metavar='LABEL=COHORT_JSON',
+                        help="one record's own cohort.json (a D pair: off=<off cohort.json>, on=<on cohort.json>)")
     parser.add_argument('--full', action='store_true')
     parser.add_argument('--json-out', type=Path)
     args = parser.parse_args(argv)
@@ -387,18 +530,40 @@ def main(argv=None):
         flags = flags_of(args.flags, args.cohort)
     except ValueError as exc:
         parser.error(str(exc))
-    results = []
+    own = {}
+    for item in args.cohort_of:
+        label, sep, path = item.partition('=')
+        if not sep:
+            parser.error('--cohort-of is LABEL=COHORT_JSON')
+        own[label] = flags_of(args.flags, Path(path))
+    results, used = [], {}
     for item in args.records:
         label, sep, path = item.partition('=')
         if not sep or not label or '-' in label:
             parser.error('records are <block>=<dir>, the block label without "-"')
-        results.append(collect(Path(path), label, flags))
+        used[label] = own.get(label, flags)
+        results.append(collect(Path(path), label, used[label]))
+    pair = None
+    if set(used) == {'off', 'on'} and set(own) == {'off', 'on'}:
+        diff = sorted(k for k in DEFAULTS if used['off'][k] != used['on'][k])
+        if diff != ['FLASH_S5_DECODE_SAMPLE_FAST'] or used['on']['FLASH_S5_DECODE_SAMPLE_FAST'] != '1' or \
+                used['off']['FLASH_S5_DECODE_ANATOMY'] != '1':
+            parser.error('a D pair differs in FLASH_S5_DECODE_SAMPLE_FAST only (on=1), anatomy on in both; got %s' % diff)
+        by = {r['label']: r for r in results}
+        pair = d_pair(by['off'], by['on'])
     print(render(results, full=args.full))
+    if pair is not None:
+        print('== D pair (decode-step builder: keep D only if dev_sample falls by >= 0.1 ms on ranks 2/3; '
+              'first clean window per rank, p50)')
+        for rank, d in pair.items():
+            print('  rank%s off=%s on=%s drop_ms=%s falls_by_0.1=%s' % (
+                rank, np.fmt(d['off']), np.fmt(d['on']), d['drop_ms'], d['falls_by_0_1_ms']))
     print('EXPLORATORY no rule, no thresholds, no verdict')
     if args.json_out:
         with args.json_out.open('x') as handle:
             json.dump(dict(schema='q2024p-j2-cx-read/1', exploratory=True, flags=flags, results=results,
-                           cohort=cohort_line(results)), handle, indent=2, sort_keys=True, default=str)
+                           cohort=cohort_line(results), flags_per_record=used, d_pair=pair),
+                      handle, indent=2, sort_keys=True, default=str)
             handle.write('\n')
     return 0
 
