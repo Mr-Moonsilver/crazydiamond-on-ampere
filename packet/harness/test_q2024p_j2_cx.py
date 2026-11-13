@@ -58,6 +58,8 @@ class Flags(unittest.TestCase):
         for pairs in (['FLASH_S5_SMALL_PIECE_BATCH=1'], ['FLASH_S5_YIELD_REENTRY_SETTLE=1'],
                       ['FLASH_S5_YIELD_NO_APPEND_OWNER=1'], ['FLASH_S5_YIELD_WINDOW=1'],
                       ['FLASH_S5_APPEND_NO_BLOCK_STOP=1'], ['FLASH_S5_DECODE_LIVENESS=1'],
+                      ['FLASH_S5_DECODE_SAMPLE_FAST=1'], ['FLASH_S5_DECODE_ANATOMY=1'],
+                      ['FLASH_S5_DECODE_SAMPLE_FAST=1', 'FLASH_S5_DECODE_ANATOMY=1'],
                       ['FLASH_S5_INGRESS_INCREMENTAL=1', 'FLASH_S5_INGRESS_VERIFY_EVERY=16', 'FLASH_S5_INGRESS_VERIFY_ASYNC=1'],
                       ['FLASH_S5_DECODE_GROUPS=off', 'FLASH_S5_DECODE_LIVENESS=1'],
                       ['FLASH_S5_DECODE_GROUPS=off-small', 'FLASH_S5_DECODE_LIVENESS=1']):
@@ -87,6 +89,8 @@ class Flags(unittest.TestCase):
         self.refuses(['FLASH_S5_DECODE_MERGE=0'])           # the engine's install switch is not a cohort flag
         self.refuses(['FLASH_S5_APPEND_NO_BLOCK_STOP=2'])
         self.refuses(['FLASH_S5_YIELD_WINDOW'])
+        self.refuses(['FLASH_S5_DECODE_SAMPLE_FAST=2'])
+        self.refuses(['FLASH_S5_DECODE_ANATOMY=yes'])
 
 
 class Names(unittest.TestCase):
@@ -122,7 +126,8 @@ class Names(unittest.TestCase):
                 cx.name_of('b1', bad)
 
 
-COMPOSE = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS')
+COMPOSE = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS',
+           'FLASH_S5_DECODE_SAMPLE_FAST', 'FLASH_S5_DECODE_ANATOMY')
 QUEUE = re.compile(r'^q18a_parity_n3s24q2024p_j2_cx([a-z0-9]{0,8})_(b[1-4]|dry)_settings\.sh$')
 
 
@@ -226,6 +231,33 @@ class Queues(unittest.TestCase):
         self.check_texts(texts, flags, cx.name_of('b3', 'zt'))
         self.assertIn('FLASH_S5_INGRESS_VERIFY_EVERY=16 FLASH_S5_INGRESS_VERIFY_ASYNC=1 FLASH_S5_APPEND_NO_BLOCK_STOP=1 ',
                       next(t for r, t in texts.items() if r.endswith('_settings.sh')))
+
+    def test_decode_step_flags_in_the_queues(self):
+        """Lever D and the anatomy window ride the settings line and the asserts; the anatomy window needs the settings'
+        handler anatomy and burst progress (a parent without them is refused at render time, before the engine would)."""
+        if (HERE / 'n3j2_packet.py').is_file():
+            return                                  # a bundle: its own queue is checked by the test above
+        self.assertTrue(Path(cx.hgb.PARENT).is_dir(), 'hub run needs the parent j2 bundle')
+        flags = cx.parse_flags(['FLASH_S5_DECODE_SAMPLE_FAST=1', 'FLASH_S5_DECODE_ANATOMY=1'])
+        saved = dict(cx.CONFIG)
+        try:
+            cx.configure(flags, 'zd')
+            texts = cx.queues('b1')
+            self.assertIn('e3/decode_step.py', cx.hgb.NEW_OVERLAY_FILES)
+            self.assertIn('decode_step', cx.ing.BOUND_MODULES)
+            settings = next(t for r, t in texts.items() if r.endswith('_settings.sh'))
+            self.assertIn('FLASH_S5_DECODE_SAMPLE_FAST=1 FLASH_S5_DECODE_ANATOMY=1 ', settings)
+            self.check_texts(texts, flags, cx.name_of('b1', 'zd'))
+            original = cx._np_queues
+            cx._np_queues = lambda variant: {r: t.replace('FLASH_S5_HANDLER_ANATOMY=1 ', 'FLASH_S5_HANDLER_ANATOMY=0 ')
+                                            for r, t in original(variant).items()}
+            try:
+                with self.assertRaises(AssertionError):
+                    cx.queues('b1')
+            finally:
+                cx._np_queues = original
+        finally:
+            cx.CONFIG.update(saved)
 
 
 def pieces(n):

@@ -18,12 +18,12 @@ BRANCH = 'claude/n3-compose'
 NOMINAL_MIN, HARD_MIN = 54, 81          # j2's four arms at 480 s; the composition adds no arm
 
 CASES = dict(nfin.CASES)
-for _module in ('stage_overlap', 'native_overlap_control'):
+for _module in ('stage_overlap', 'native_overlap_control', 'decode_step'):
     CASES['cx_source_%s_sha' % _module] = (lambda m: lambda r: r['hgb_source_modules'][m].update(sha256='0' * 64))(_module)
     CASES['cx_generated_%s_sha' % _module] = (lambda m: lambda r: r['hgb_generated_modules'][m].update(sha256='0' * 64))(_module)
     CASES['cx_source_%s_missing' % _module] = (lambda m: lambda r: r['hgb_source_modules'].pop(m))(_module)
 for _suite in ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups', 'test_dmp_reader',
-               'test_q2024p_j2_cx', 'test_n3_compose_pairs'):
+               'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_decode_step', 'test_decode_step_torch'):
     CASES['suite_%s_absent' % _suite] = yfin._suite_absent(_suite)
 
 
@@ -37,7 +37,7 @@ def main(argv=None):
     cpu_path = root / 'frozen-cpu/result.json'
     cpu = json.loads(cpu_path.read_text())
     assert ({'engine_driver', 'scheduler_hooks', 'probe_control', 'ingress_incremental', 'native_auto_arm',
-             'small_piece_batch', 'stage_overlap', 'native_overlap_control'}
+             'small_piece_batch', 'stage_overlap', 'native_overlap_control', 'decode_step'}
             <= set(cpu['hgb_source_modules']) & set(cpu['hgb_generated_modules']))
     precheck = json.loads((root / 'precheck/precheck.json').read_text())
     assert precheck['verdict'] == 'PASS' and precheck['cpu_record_sha256'] == sha(cpu_path)

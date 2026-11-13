@@ -870,6 +870,13 @@ def collective_rpc(executor, stock, method, timeout=None, args=(), kwargs=None,
             # Ring position for in-wait progress: native commands may follow a
             # sample_tokens, never sit between an execute_model and its sample.
             progress.last_stock_kind = kind
+        if _DECODE_STEP:
+            # decode-step (FLASH_S5_DECODE_SAMPLE_FAST / FLASH_S5_DECODE_ANATOMY): the per-arm tag; popped by the worker.
+            side = executor.__dict__.get('_flash_s5_decode_step')
+            tag = side.wire(kind, sequence) if side is not None else None
+            if tag is not None:
+                wire_kwargs = dict(wire_kwargs)
+                wire_kwargs[_DECODE_STEP.WIRE_KEY] = tag
         bounded_enqueue(executor, executor.rpc_broadcast_mq,
                         (send_method, args, wire_kwargs, broadcast_rank))
     sequence = transport.submit(kind, send, ranks=ranks,
@@ -1052,6 +1059,8 @@ def before_step_with_batch_queue(engine):
     """Bounded engine bypass: drive one typed step; never wait for a layer."""
     driver = _driver(engine)
     if driver is not None:
+        if (side := _decode_step_engine(engine)) is not None:
+            side.step(engine)      # decode-step: the per-arm gate and the clean anatomy window (installed only)
         started = time.monotonic_ns()
         result = _stock_step_bypass(driver, driver.advance())
         sync = getattr(driver, 'sync_decode_merge', None)
@@ -1412,6 +1421,73 @@ _progress_log = None
 # first read, False when off, else this process's handler_anatomy.Recorder. Read
 # only under a live progress state, so with progress unset it is never read.
 _ANATOMY = None
+# decode-step (FLASH_S5_DECODE_SAMPLE_FAST=1 or FLASH_S5_DECODE_ANATOMY=1, default off): None until first read, False
+# when both are off, else the decode_step module. Both unset: the module is never imported and no RPC is tagged.
+_DECODE_STEP = None
+_DECODE_STEP_WORKER = None
+
+
+class _CleanRpc(list):
+    """decode-step clean-window RPC state: handler-anatomy rows only, never a native progress trace record."""
+
+
+def _decode_step():
+    global _DECODE_STEP
+    if _DECODE_STEP is None:
+        with _WORKER_PROGRESS_LOCK:
+            if _DECODE_STEP is None:
+                if (os.environ.get('FLASH_S5_DECODE_SAMPLE_FAST', '0') == '1'
+                        or os.environ.get('FLASH_S5_DECODE_ANATOMY', '0') == '1'):
+                    import decode_step
+                    _DECODE_STEP = decode_step
+                else:
+                    _DECODE_STEP = False
+    return _DECODE_STEP or None
+
+
+def _decode_step_engine(engine):
+    """The engine core's decode-step side on its executor, or None (switches off)."""
+    module = _decode_step()
+    if module is None:
+        return None
+    executor = getattr(engine, 'model_executor', None)
+    if executor is None:
+        return None
+    side = executor.__dict__.get('_flash_s5_decode_step')
+    if side is None:
+        side = module.EngineSide(logger=_progress_logger())
+        executor._flash_s5_decode_step = side
+    return side
+
+
+def _decode_step_rpc(proc, method, kwargs):
+    """Worker: pop the tag before dispatch. Returns a clean-window RPC state, or None."""
+    global _DECODE_STEP_WORKER
+    module = _decode_step()
+    if module is None:
+        return None
+    if _DECODE_STEP_WORKER is None:
+        with _WORKER_PROGRESS_LOCK:
+            if _DECODE_STEP_WORKER is None:
+                _DECODE_STEP_WORKER = module.WorkerSide(logger=_progress_logger())
+    name = method if type(method) is str else 'callable'
+    popped = _DECODE_STEP_WORKER.pop(proc, name, kwargs)
+    if popped is None or popped[1] == module.TAG_NONE:
+        return None
+    state = _worker_progress(proc.rank)
+    anatomy = _anatomy(proc) if state is not None else None
+    if anatomy is None:
+        return None
+    if popped[1] == module.TAG_CLOSE:
+        # the window closed on the engine: this rank's clean rows as handler lines; the RPC itself is not a row
+        anatomy.flush(_progress_logger())
+        _DECODE_STEP_WORKER.counters['flushes'] += 1
+        return None
+    anatomy.begin(popped[2], name)
+    _DECODE_STEP_WORKER.counters['clean_rows'] += 1
+    return _CleanRpc([popped[2], name, time.monotonic_ns(), None, False])
+
+
 # decode-merge probe (FLASH_S5_SUBMIT_CPU=1, default off): thread CPU time beside the wall stamps of flash_s5_submit on
 # this worker, cumulative, one 'flash-s5 submit-cpu' line per chunk release. None until first read, False when off.
 _SUBMIT_CPU = None
@@ -1509,8 +1585,9 @@ def _reply_lock(proc):
 
 def worker_rpc_begin(proc, method, kwargs):
     """Pop the engine's progress meta before dispatch; stock methods never see it."""
+    clean = _decode_step_rpc(proc, method, kwargs) if _DECODE_STEP is not False else None
     if type(kwargs) is not dict or PROGRESS_META_KEY not in kwargs:
-        return None
+        return clean
     sequence, direct = decode_progress_meta(kwargs.pop(PROGRESS_META_KEY))
     name = method if type(method) is str else 'callable'
     if direct and name not in PROGRESS_DIRECT_METHODS and not (
@@ -1554,7 +1631,7 @@ def worker_rpc_returned(proc, rpc, output_rank):
     if output_rank is None or proc.rank == output_rank:
         return
     state = _worker_progress(proc.rank)
-    if state is not None:
+    if state is not None and type(rpc) is not _CleanRpc:
         state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], None, int(rpc[4]), 0)
 
 
@@ -1605,7 +1682,8 @@ def worker_enqueue_reply(proc, result):
     except IndexError:
         return
     if rpc is not None:
-        state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], time.monotonic_ns(), 0, 1)
+        if type(rpc) is not _CleanRpc:
+            state[0].record('r', rpc[0], rpc[1], rpc[2], rpc[3], time.monotonic_ns(), 0, 1)
         if (anatomy := _anatomy(proc)) is not None:
             anatomy.replied(rpc)
 
