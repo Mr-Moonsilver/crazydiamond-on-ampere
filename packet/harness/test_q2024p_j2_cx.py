@@ -3,7 +3,9 @@
 
   * flag sets: defaults; every flag accepted alone; the refused combinations (settle with the yield window, a
     decode-group mode other than chunk without the liveness observer, verify settings without ingress, ingress without
-    explicit verify settings), unknown flags and values;
+    explicit verify settings, FLASH_S5_CONTROL_INWAIT with settle, the batch, ingress, a decode-group mode other than
+    chunk or the liveness observer), unknown flags and values; CONTROL_INWAIT with A, Y1 and Y2 accepted;
+  * the control-inwait parent: the bundle copy's sha is the suite's pin, the frozen CPU's docker command names it;
   * names: four blocks and the dry packet per tag, none a '-'-prefix of another or of a known QNAME; a clash refuses;
   * queues: the settings line carries the three composition settings after the ingress one (or its verify mode),
     declaration and draft assert them, the draft exports FLASH_S5_DECODE_GROUPS right after its anchor and its arm gate
@@ -11,12 +13,15 @@
     the hub for a non-default flag set through the builder; in a bundle on the bundle's own built queue (no skip);
   * reader on synthetic records (the night-pack reader fixtures, records in fresh mkdtemp directories left in place):
     R per block pooled over the two seeds, G the geometric mean, a block without R named; the lever A append_pieces
-    delta only where the block exists; identity NOTEs for a composition setting that differs from the cohort's.
+    delta only where the block exists; the control_inwait delta per transition class on every arm (sp and n3) beside
+    the auto-arm delta, 'off (block absent)' without it, NOTEs for a block absent under the flag or present without it;
+    identity NOTEs for a composition setting that differs from the cohort's.
 No engine, torch or box access.
 """
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -57,7 +62,7 @@ class Flags(unittest.TestCase):
     def test_each_flag_alone(self):
         for pairs in (['FLASH_S5_SMALL_PIECE_BATCH=1'], ['FLASH_S5_YIELD_REENTRY_SETTLE=1'],
                       ['FLASH_S5_YIELD_NO_APPEND_OWNER=1'], ['FLASH_S5_YIELD_WINDOW=1'],
-                      ['FLASH_S5_APPEND_NO_BLOCK_STOP=1'], ['FLASH_S5_DECODE_LIVENESS=1'],
+                      ['FLASH_S5_APPEND_NO_BLOCK_STOP=1'], ['FLASH_S5_DECODE_LIVENESS=1'], ['FLASH_S5_CONTROL_INWAIT=1'],
                       ['FLASH_S5_INGRESS_INCREMENTAL=1', 'FLASH_S5_INGRESS_VERIFY_EVERY=16', 'FLASH_S5_INGRESS_VERIFY_ASYNC=1'],
                       ['FLASH_S5_DECODE_GROUPS=off', 'FLASH_S5_DECODE_LIVENESS=1'],
                       ['FLASH_S5_DECODE_GROUPS=off-small', 'FLASH_S5_DECODE_LIVENESS=1']):
@@ -72,6 +77,9 @@ class Flags(unittest.TestCase):
                                 'FLASH_S5_INGRESS_VERIFY_ASYNC=1', 'FLASH_S5_APPEND_NO_BLOCK_STOP=1',
                                 'FLASH_S5_DECODE_GROUPS=off-small', 'FLASH_S5_DECODE_LIVENESS=1'])
         self.assertEqual(flags['FLASH_S5_YIELD_REENTRY_SETTLE'], '0')
+        ayci = cx.parse_flags(['FLASH_S5_APPEND_NO_BLOCK_STOP=1', 'FLASH_S5_YIELD_NO_APPEND_OWNER=1',
+                               'FLASH_S5_YIELD_WINDOW=1', 'FLASH_S5_CONTROL_INWAIT=1'])
+        self.assertEqual(ayci['FLASH_S5_CONTROL_INWAIT'], '1')
 
     def test_refusals(self):
         self.refuses(['FLASH_S5_YIELD_REENTRY_SETTLE=1', 'FLASH_S5_YIELD_WINDOW=1'])
@@ -87,6 +95,39 @@ class Flags(unittest.TestCase):
         self.refuses(['FLASH_S5_DECODE_MERGE=0'])           # the engine's install switch is not a cohort flag
         self.refuses(['FLASH_S5_APPEND_NO_BLOCK_STOP=2'])
         self.refuses(['FLASH_S5_YIELD_WINDOW'])
+        ci = ['FLASH_S5_CONTROL_INWAIT=1']
+        self.refuses(ci + ['FLASH_S5_YIELD_REENTRY_SETTLE=1'])
+        self.refuses(ci + ['FLASH_S5_SMALL_PIECE_BATCH=1'])
+        self.refuses(ci + ['FLASH_S5_INGRESS_INCREMENTAL=1', 'FLASH_S5_INGRESS_VERIFY_EVERY=16',
+                           'FLASH_S5_INGRESS_VERIFY_ASYNC=1'])
+        self.refuses(ci + ['FLASH_S5_DECODE_GROUPS=off', 'FLASH_S5_DECODE_LIVENESS=1'])
+        self.refuses(ci + ['FLASH_S5_DECODE_LIVENESS=1'])
+        self.refuses(['FLASH_S5_CONTROL_INWAIT=2'])
+        for key, safe in cx.CONTROL_INWAIT_UNTESTED:           # each untested pair refused by its own rule
+            self.assertEqual(cx.parse_flags([])[key], safe)
+
+
+class ControlInWaitParent(unittest.TestCase):
+    def test_parent_pin_and_container_env(self):
+        commit, name, digest = cx.CONTROL_INWAIT_PARENT
+        import hashlib
+        import test_control_inwait as tci
+        pinned = re.search(r"hexdigest\(\) == '([0-9a-f]{64})'", Path(tci.__file__).read_text()).group(1)
+        self.assertEqual(digest, pinned)
+        old, new = cx.CONTROL_INWAIT_ENV
+        self.assertIn('CONTROL_INWAIT_PARENT_SOURCE=/src/harness/' + cx.CONTROL_INWAIT_PARENT_FILE, new)
+        self.assertTrue(new.startswith(old))
+        bundle_copy = HERE / cx.CONTROL_INWAIT_PARENT_FILE
+        tool = HERE / 'tools' / 'n3j2_frozen_cpu.py'
+        if (HERE / 'n3j2_packet.py').is_file() and tool.is_file():
+            # a bundle: its own parent copy and frozen CPU tool, built by this builder
+            self.assertEqual(hashlib.sha256(bundle_copy.read_bytes()).hexdigest(), digest)
+            self.assertEqual(tool.read_text().count(new), 1)
+            self.assertEqual(os.environ.get('CONTROL_INWAIT_PARENT_SOURCE'), '/src/harness/' + cx.CONTROL_INWAIT_PARENT_FILE)
+        else:
+            self.assertFalse(bundle_copy.exists())
+            text = (Path(cx.hgb.PARENT) / 'tools/n3j2_frozen_cpu.py').read_text()
+            self.assertIn(old, text)         # the anchor the builder rewrites, in the parent's tool (yrs adds no -e)
 
 
 class Names(unittest.TestCase):
@@ -122,7 +163,8 @@ class Names(unittest.TestCase):
                 cx.name_of('b1', bad)
 
 
-COMPOSE = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS')
+COMPOSE = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS',
+           'FLASH_S5_CONTROL_INWAIT')
 QUEUE = re.compile(r'^q18a_parity_n3s24q2024p_j2_cx([a-z0-9]{0,8})_(b[1-4]|dry)_settings\.sh$')
 
 
@@ -234,11 +276,21 @@ def pieces(n):
                 max_new=8192)
 
 
-def record(compose_env=None, append_pieces=False, done=None):
+def inwait(n):
+    row = lambda m: dict(attempts=3 * m, refused=m, invalidated=m, armed=2 * m, closed=2 * m, drains_skipped=2 * m,
+                         drains_kept={'applied-output-cut': 2 * m, 'typed-route-fence': 2 * m},
+                         pause_to_arm_ms=10. * m, pause_to_arm_max_ms=7. + m, decoder_stall_ms=4. * m,
+                         decoder_stall_max_ms=3. + m)
+    return dict(schema='s5-control-inwait/1', enabled=True,
+                transitions={'full-entry': row(n), 'yield-full-reentry': row(2 * n)} if n else {})
+
+
+def record(compose_env=None, append_pieces=False, done=None, control_inwait=False):
     """An np 'off' fixture record, composition settings in its identity, optional append_pieces blocks, and the
     replay summaries set to the given completed turns per arm."""
     root = npt.build('off', window=False)
-    env = dict(FLASH_S5_APPEND_NO_BLOCK_STOP='0', FLASH_S5_DECODE_GROUPS='chunk', FLASH_S5_DECODE_LIVENESS='0')
+    env = dict(FLASH_S5_APPEND_NO_BLOCK_STOP='0', FLASH_S5_DECODE_GROUPS='chunk', FLASH_S5_DECODE_LIVENESS='0',
+               FLASH_S5_CONTROL_INWAIT='0')
     env.update(compose_env or {})
     for phase in ('start', 'end'):
         path = root / ('engine.identity-%s.json' % phase)
@@ -252,6 +304,11 @@ def record(compose_env=None, append_pieces=False, done=None):
         if append_pieces and label.startswith('n3'):
             for row, n in zip(arm['statuses'], (0, 1)):
                 row.setdefault('native_admission', {})['append_pieces'] = pieces(n)
+        for row, n in zip(arm['statuses'], (0, 1)):
+            row['auto_arm'] = dict(active=False, completed=10 + 7 * n, manual_owned=False, phase='idle',
+                                   request_uid=None, selection_seq=20 + 5 * n)
+            if control_inwait:
+                row.setdefault('native_admission', {})['control_inwait'] = inwait(n if label.startswith('n3') else 0)
         if done is not None:
             cfg = arm.setdefault('replay_config', {})
             cfg.setdefault('DURATION', 480.0)
@@ -300,6 +357,41 @@ class Reader(unittest.TestCase):
         self.assertFalse([n for n in r['compose_notes'] if n.startswith('identity-')])
         plain = reader.collect(record(), 'b1', reader.flags_of([]))
         self.assertIsNone(plain['arms']['n3.g2-live-0']['append_pieces'])
+
+    def test_control_inwait_per_arm_off_beside_on(self):
+        flags = reader.flags_of(['FLASH_S5_CONTROL_INWAIT=1'])
+        r = reader.collect(record(dict(FLASH_S5_CONTROL_INWAIT='1'), control_inwait=True), 'b1', flags)
+        got = r['arms']['n3.g2-live-0']['control_inwait']
+        self.assertEqual(sorted(got), ['full-entry', 'yield-full-reentry'])
+        full = got['full-entry']
+        self.assertEqual({k: full[k] for k in reader.INWAIT},
+                         dict(attempts=3, refused=1, invalidated=1, armed=2, closed=2, drains_skipped=2))
+        self.assertEqual(full['drains_kept'], {'applied-output-cut': 2, 'typed-route-fence': 2})
+        self.assertEqual((full['pause_to_arm_ms'], full['pause_to_arm_per_armed_ms']), (10.0, 5.0))
+        self.assertEqual((full['decoder_stall_ms'], full['decoder_stall_per_armed_ms']), (4.0, 2.0))
+        self.assertEqual(full['pause_to_arm_max_ms_since_start'], 8.0)
+        self.assertEqual(got['yield-full-reentry']['armed'], 4)
+        self.assertEqual(r['arms']['n3.g2-live-0']['auto_arm_delta'], dict(selection_seq=5, completed=7))
+        self.assertEqual(r['arms']['sp.g2-live-0']['control_inwait'], {})          # on, never engaged on sp
+        self.assertFalse([n for n in r['compose_notes'] if n.startswith(('identity-', 'control-inwait-'))])
+        text = reader.render([r])
+        self.assertIn('  sp.g2-live-0  control_inwait on, no transition yet  auto-arm selected=5 completed=7', text)
+        self.assertIn('  n3.g2-live-1  control_inwait on  auto-arm selected=5 completed=7', text)
+        self.assertIn('full-entry         attempts=3 refused=1 invalidated=1 armed=2 closed=2 drains_skipped=2 '
+                      'kept={"applied-output-cut":2,"typed-route-fence":2} pause_to_arm_ms=10.0/armed=5.0', text)
+        off = reader.collect(record(), 'b1', reader.flags_of([]))
+        self.assertIsNone(off['arms']['n3.g2-live-1']['control_inwait'])
+        self.assertIn('  n3.g2-live-1  control_inwait off (block absent)  auto-arm selected=5 completed=7',
+                      reader.render([off]))
+        (off_root := record()).joinpath('arm-sp.g2-live-1.json').rename(off_root / 'arm-sp.g2-live-1.json.moved')
+        self.assertIn('  sp.g2-live-1  control_inwait - (arm unread)',
+                      reader.render([reader.collect(off_root, 'b4', reader.flags_of([]))]))
+        self.assertFalse([n for n in off['compose_notes'] if n.startswith('control-inwait-')])
+        absent = reader.collect(record(dict(FLASH_S5_CONTROL_INWAIT='1')), 'b2', flags)
+        self.assertEqual(sorted(n for n in absent['compose_notes'] if n.startswith('control-inwait-')),
+                         ['control-inwait-absent-b2-' + a for a in sorted(reader.SP_ARMS + reader.N3_ARMS)])
+        present = reader.collect(record(control_inwait=True), 'b3', reader.flags_of([]))
+        self.assertIn('control-inwait-present-b3-n3.g2-live-0', present['compose_notes'])
 
     def test_identity_note(self):
         flags = reader.flags_of(['FLASH_S5_DECODE_GROUPS=off-small', 'FLASH_S5_DECODE_LIVENESS=1'])

@@ -16,8 +16,14 @@ Method: the night-pack tool (tools/build_q2024p_j2_np.py, through it the ing, yr
     bundle's n3j2_box with its status-row line, and the arm gate closed by ENGINE_CRASHED (the dmp-b review fix);
   * the engine modules the composition moved (stage_overlap, native_overlap_control) bound as well, and the CPU suites
     of every lever (test_decode_merge_probe stays a hub suite: its bundle test needs the dmp table and budget).
+  * FLASH_S5_CONTROL_INWAIT (Codex, a15bed1d: FULL-entry identity observed beside decode, the duplicate barrier
+    skipped) in the settings line and asserted; its CPU suite test_control_inwait runs in the frozen CPU with its frozen
+    off-path parent (46d28946's native_auto_arm.py, sha-pinned by the suite) copied into the bundle and named by
+    CONTROL_INWAIT_PARENT_SOURCE (the container has no git).
 Refused flag sets: settle with the yield window (settle sits where the window hands off), a decode-group mode other than
-chunk without the liveness observer (the guard would be blind), verify settings without ingress.
+chunk without the liveness observer (the guard would be blind), verify settings without ingress, and CONTROL_INWAIT with
+any of settle, the small-piece batch, ingress, a decode-group mode other than chunk or the liveness observer (none of
+these pairs is tested together; test_control_inwait covers A/Y1/Y2, test_n3_compose_pairs A x Y2 on the whole window).
 No box command, GPU, VM, deletion or push.
 """
 import argparse
@@ -56,15 +62,26 @@ FLAGS = (
     ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'append_no_block_stop', ('0', '1'), '0'),
     ('FLASH_S5_DECODE_GROUPS', 'decode_groups', ('chunk', 'off', 'off-small'), 'chunk'),
     ('FLASH_S5_DECODE_LIVENESS', 'decode_liveness', ('0', '1'), '0'),
+    ('FLASH_S5_CONTROL_INWAIT', 'control_inwait', ('0', '1'), '0'),
 )
-EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness')     # added by this tool on top of np's queues
+EXTRA = ('append_no_block_stop', 'decode_groups', 'decode_liveness', 'control_inwait')   # added on top of np's queues
+# CONTROL_INWAIT=1 is refused with each of these (flag, value that is NOT refused): untested together
+CONTROL_INWAIT_UNTESTED = (('FLASH_S5_YIELD_REENTRY_SETTLE', '0'), ('FLASH_S5_SMALL_PIECE_BATCH', '0'),
+                           ('FLASH_S5_INGRESS_INCREMENTAL', '0'), ('FLASH_S5_DECODE_GROUPS', 'chunk'),
+                           ('FLASH_S5_DECODE_LIVENESS', '0'))
+CONTROL_INWAIT_PARENT = ('46d28946', 'patches/s5_engine/native_auto_arm.py',
+                         '3d5c813856f0c7acd68225a2df69c157d7d2aca2b653ea19ee0586ea4e1f9672')
+CONTROL_INWAIT_PARENT_FILE = 'control_inwait_parent_native_auto_arm.py.src'   # bundle root = /src/harness; not importable
+CONTROL_INWAIT_ENV = ("'-e','PYTHONDONTWRITEBYTECODE=1',",
+                      "'-e','PYTHONDONTWRITEBYTECODE=1','-e','CONTROL_INWAIT_PARENT_SOURCE=/src/harness/%s',"
+                      % CONTROL_INWAIT_PARENT_FILE)
 BLOCKS = ('b1', 'b2', 'b3', 'b4')
 DRY = 'dry'
 BOUND_MODULES = ing.BOUND_MODULES + ('stage_overlap', 'native_overlap_control')
 ENGINE_MOVED = {'e3/' + n + '.py' for n in BOUND_MODULES}
 NEW_OVERLAY_FILES = np.NEW_OVERLAY_FILES
 SUITES = np.SUITES + ('test_append_no_block_stop', 'test_append_no_block_stop_stack', 'test_n3_decode_groups',
-                      'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs')
+                      'test_dmp_reader', 'test_q2024p_j2_cx', 'test_n3_compose_pairs', 'test_control_inwait')
 TOOLS = np.TOOLS + ('tools/build_q2024p_j2_dmp.py', 'tools/q2024p_j2_dmp_reader.py', 'tools/build_q2024p_j2_cx.py', 'tools/q2024p_j2_cx_finish.py', 'tools/q2024p_j2_cx_render.py',
                     'tools/q2024p_j2_cx_reader.py')
 CX_CONTAINER = "'q2024p-j2-cx-frozen-cpu-'"
@@ -104,6 +121,11 @@ def parse_flags(pairs):
     if flags['FLASH_S5_DECODE_GROUPS'] != 'chunk' and flags['FLASH_S5_DECODE_LIVENESS'] != '1':
         raise SystemExit('refused: FLASH_S5_DECODE_GROUPS=%s needs FLASH_S5_DECODE_LIVENESS=1 (the arm guard reads it)'
                          % flags['FLASH_S5_DECODE_GROUPS'])
+    if flags['FLASH_S5_CONTROL_INWAIT'] == '1':
+        for key, safe in CONTROL_INWAIT_UNTESTED:
+            if flags[key] != safe:
+                raise SystemExit('refused: FLASH_S5_CONTROL_INWAIT=1 with %s=%s (untested together; only lever A, Y1 '
+                                 'and Y2 are composed with it)' % (key, flags[key]))
     return flags
 
 
@@ -170,10 +192,29 @@ def copy_delta(b, commit, bundle):
     for name in ('harness/n3_decode_groups.py', 'harness/decode_liveness_guard.py', 'harness/test_n3_decode_groups.py',
                  'harness/test_append_no_block_stop.py', 'harness/test_append_no_block_stop_stack.py',
                  'harness/test_q2024p_j2_cx.py', 'harness/test_n3_compose_pairs.py',
+                 'harness/test_control_inwait.py', 'harness/control_inwait_fixture_leaves.json',
+                 'patches/s5_engine/s5_startup.py', 'patches/s5_engine/executor_hooks.py',
                  'patches/s5_engine/stage_overlap.py',
                  'patches/s5_engine/native_overlap_control.py', 'patches/s5_engine/scheduler_hooks.py'):
         assert name in copied, name
     return copied
+
+
+def control_inwait_parent(b, bundle):
+    """test_control_inwait's frozen off-path parent, by bytes from git (its sha checked here and again by the suite)."""
+    commit, name, digest = CONTROL_INWAIT_PARENT
+    target = bundle / CONTROL_INWAIT_PARENT_FILE
+    assert not target.exists(), target
+    target.write_bytes(b.git(ROOT, 'show', commit + ':' + name))
+    assert b.sha(target) == digest, 'control-inwait parent sha differs'
+    return dict(status='A', bundle=CONTROL_INWAIT_PARENT_FILE, sha256=digest, source=commit + ':' + name)
+
+
+def frozen_cpu_tool(bundle):
+    """yrs's frozen CPU tool, the container also naming the control-inwait parent source."""
+    yrs.frozen_cpu_tool(bundle)
+    path = bundle / 'tools/n3j2_frozen_cpu.py'
+    path.write_text(hgb.once(path.read_text(), *CONTROL_INWAIT_ENV))
 
 
 def prepare(commit, variant, out, flags, tag=''):
@@ -190,6 +231,7 @@ def prepare(commit, variant, out, flags, tag=''):
     for p in (bundle, *bundle.rglob('*')):
         p.chmod(0o755 if p.is_dir() else 0o644)
     copied = copy_delta(b, commit, bundle)
+    copied['control_inwait_parent'] = control_inwait_parent(b, bundle)
     box = bundle / 'n3j2_box.py'
     box.write_text(hgb.once(hgb.once(box.read_text(), hgb.BOX_IMPORT, hgb.BOX_IMPORT_NEW), hgb.BOX_ROW, hgb.BOX_ROW_NEW))
     packet = bundle / 'n3j2_packet.py'
@@ -199,7 +241,7 @@ def prepare(commit, variant, out, flags, tag=''):
         subprocess.run(['bash', '-n', str(bundle / rel)], check=True)
     proof = hgb.regenerate(b, bundle, out)
     assert set(NEW_OVERLAY_FILES) <= set(proof['overlay_changed']), 'new overlay files not in the regenerated overlay'
-    yrs.frozen_cpu_tool(bundle)
+    frozen_cpu_tool(bundle)
     hgb.queue_adapter(bundle, variant)
     for p in bundle.rglob('*.py'):
         compile(p.read_bytes(), str(p), 'exec')

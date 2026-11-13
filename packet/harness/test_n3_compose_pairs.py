@@ -19,6 +19,14 @@ leaves them as they are), hash unit 2, long_prefill_token_threshold 2 (a block w
 production, block 4048 over budget 1024: stock advances sub-block, no aligned-end floor). With A on and off: the same
 window counters, append-yield event kinds and receipts; with A on the APPEND runs (7, 10) instead of (7, 8), (8, 10),
 one fused piece and one stale block unpublished, the call counters showing lever A's split decided it.
+
+FLASH_S5_CONTROL_INWAIT (CI) x Y2 x lever A (brief 6, 13 Nov), on the same Mamba-split window rig through the whole
+window (two appends, two re-entries, the owner's reopen): with CI on, each re-entry observes the identity under
+PAUSED_NEW and skips the duplicate barrier (identity only, no barrier command), the two re-entries arm through the
+in-wait path; window counters, append-yield event kinds and counters, the event kinds and receipts are equal to CI off
+for A off and on, the APPEND's pieces depend on A only, and lever A's fused split runs under CI (call counters). Races
+inside the window: a decoder that leaves after the identity was certified invalidates it (a fresh identity, the new
+cohort armed); a yield revoked after the certificate (between the probe and the switch) never issues enter_split.
 CPU only; no box, GPU or torch device.
 """
 from pathlib import Path
@@ -30,10 +38,13 @@ for extra in (HERE, HERE.parent / 'patches' / 's5_engine'):
     if extra.is_dir() and str(extra) not in sys.path:
         sys.path.append(str(extra))
 
+import collections  # noqa: E402
+import enum  # noqa: E402
 import types  # noqa: E402
 from types import SimpleNamespace as NS  # noqa: E402
 from unittest import mock  # noqa: E402
 
+import native_auto_arm as auto  # noqa: E402
 import scheduler_hooks as sh  # noqa: E402
 import test_coverage_residue as tcr  # noqa: E402
 import test_yield_window as yw  # noqa: E402
@@ -177,6 +188,149 @@ class Y2WithA(unittest.TestCase):
         self.assertGreater(self.calls['aligned_split'], 0)
         self.assertEqual(self.calls['block_fused'], [])
         self.assertEqual(rig.c.append_pieces['fused_pieces'], 0)
+
+
+class Pause(str, enum.Enum):
+    """The stock PauseState values the control-inwait path sets (test_control_inwait's fixture)."""
+    UNPAUSED = 'UNPAUSED'
+    PAUSED_NEW = 'PAUSED_NEW'
+    PAUSED_ALL = 'PAUSED_ALL'
+
+
+class CIWithY2A(unittest.TestCase):
+    """CONTROL_INWAIT on the Y2 window with lever A (see the module docstring)."""
+
+    def setUp(self):
+        for patch in (mock.patch.object(yw.adm.Request, 'shared_prefix_boundary', 0, create=True),):
+            patch.start()
+            self.addCleanup(patch.stop)
+        context = yw.ay.auto_arm_workers()
+        context.__enter__()
+        self.addCleanup(context.__exit__, None, None, None)
+        self.calls = collections.Counter()
+        self.controls = []                         # every control the policy submits, by action (enter_split included)
+        real_control = auto.AutoArmPolicy._control
+
+        def control(policy, action):
+            self.controls.append(action)
+            return real_control(policy, action)
+        patch = mock.patch.object(auto.AutoArmPolicy, '_control', control)
+        patch.start()
+        self.addCleanup(patch.stop)
+        for cls, name in ((sh.PrefillAdmissionController, '_append_block_fused'), (auto.ControlInWait, 'begin')):
+            real = getattr(cls, name)
+
+            def counted(obj, *a, _real=real, _name=name, **k):
+                value = _real(obj, *a, **k)
+                self.calls[_name] += 1
+                return value
+            patch = mock.patch.object(cls, name, counted)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def rig(self, a, ci):
+        self.calls.clear()
+        del self.controls[:]
+        self.log = yw.Lines(self)
+        rig = yw.window_rig()
+        mamba_split(rig)
+        rig.c.append_no_block_stop = a
+        if ci:
+            rig.p.control_inwait = auto.ControlInWait(rig.p)
+        rig.p.old_pause = Pause.UNPAUSED
+        old = rig.s.set_pause_state
+
+        def pause(state):
+            old(state)
+            rig.s.pause_state = state
+        rig.s.set_pause_state = pause
+        rig.s.pause_state = Pause.UNPAUSED
+        return rig
+
+    def to_second_reentry(self, rig):
+        """The window's first append and its handback, the window's second append run and handed back."""
+        append = yw.ay.run_to_yield(rig, append_cached=7)
+        other = rig.add_held(yw.OTHER_UID, 6)
+        yw.ay.to_append(rig)
+        pieces = [(t.chunk_start, t.chunk_end) for t in yw.ay.run_append(rig)]
+        yw.ay.to_full(rig)
+        rig.stock_handback(append)
+        yw.to_window_append(rig)
+        other_pieces = [(t.chunk_start, t.chunk_end) for t in yw.ay.run_append(rig)]
+        yw.ay.to_full(rig)
+        rig.stock_handback(other)
+        return append, other, pieces, other_pieces
+
+    def flow(self, a, ci):
+        rig = self.rig(a, ci)
+        _, _, pieces, other_pieces = self.to_second_reentry(rig)
+        yw.ay.to_resume(rig)
+        rig.admit()
+        rig.finish_chunk()
+        yw.ay.finish_bulk(rig)
+        receipts = [{k: v for k, v in r.items() if k != 'gap_ms' and not (type(v) in (int, float) and v > 10 ** 6)}
+                    for r in self.log.receipts()]
+        window = {k: v for k, v in yw.counts(rig).items() if k != 'gap_ms'}
+        window['gap_by_path'] = {path: sorted(k for k in row if k not in ('total', 'max'))   # wall-clock ms dropped
+                                 for path, row in window.get('gap_by_path', {}).items()}
+        view = dict(window=window, kinds=yw.kinds(rig),
+                    counters=dict(rig.d.append_yield_counters), receipts=receipts, other_pieces=other_pieces)
+        return rig, view, pieces, collections.Counter(self.controls), dict(self.calls)
+
+    def test_window_equal_and_reentries_through_the_in_wait_path(self):
+        views = {}
+        for a in (False, True):
+            for ci in (False, True):
+                rig, view, pieces, sent, calls = self.flow(a, ci)
+                views[a, ci] = view
+                self.assertEqual(pieces, [(7, 10)] if a else [(7, 8), (8, 10)], (a, ci))
+                self.assertEqual(view['counters']['reentries'], 2)
+                self.assertEqual((view['window']['windows'], view['window']['appends']), (1, 2))
+                if ci:
+                    row = rig.p.control_inwait.snapshot()['transitions']['yield-full-reentry']
+                    self.assertEqual((row['attempts'], row['armed'], row['refused'], row['invalidated'],
+                                      row['drains_skipped']), (2, 2, 0, 0, 2), row)
+                    self.assertEqual(row['drains_kept'], {'applied-output-cut': 2, 'typed-route-fence': 2})
+                    self.assertEqual((sent['identity'], sent['barrier'], sent['enter_split']), (2, 0, 2))
+                    self.assertEqual(calls.get('begin'), 2)
+                else:
+                    self.assertEqual((sent['identity'], sent['barrier'], sent['enter_split']), (2, 2, 2))
+                    self.assertIsNone(calls.get('begin'))
+                if a:
+                    self.assertGreater(calls.get('_append_block_fused', 0), 0)        # lever A reached, CI on or off
+                    self.assertEqual(rig.c.append_pieces['fused_pieces'], 1)
+                else:
+                    self.assertIsNone(calls.get('_append_block_fused'))
+        for a in (False, True):
+            self.assertEqual(views[a, True], views[a, False], a)
+        self.assertEqual(views[True, True], views[False, False])
+
+    def certified_second_reentry(self):
+        rig = self.rig(True, True)
+        append, other, _, _ = self.to_second_reentry(rig)
+        rig.tick(lambda: rig.p.reentry and rig.p.control_inwait.certified)
+        return rig, append, other
+
+    def test_a_decoder_leaving_after_the_certificate_invalidates_it(self):
+        rig, append, other = self.certified_second_reentry()
+        rig.stock_abort(append)                    # a decoder of the certified cohort leaves before the switch
+        yw.ay.to_resume(rig)
+        row = rig.p.control_inwait.snapshot()['transitions']['yield-full-reentry']
+        self.assertEqual((row['attempts'], row['invalidated'], row['armed']), (3, 1, 2), row)
+        self.assertEqual(rig.p.cohort, (yw.OTHER_UID,))
+        self.assertEqual(self.controls.count('identity'), 3)
+        self.assertEqual(rig.d.admission_intent()['request_uid'], yw.BULK_UID)
+
+    def test_a_yield_revoked_between_probe_and_switch_never_switches(self):
+        rig, append, other = self.certified_second_reentry()
+        before = len(self.controls)
+        self.assertEqual(self.controls[-1], 'identity')
+        rig.d.append_yield_end('fixture-client-left')
+        rig.tick(lambda: rig.p.phase == 'idle')
+        self.assertEqual(self.controls[before:], [])          # neither enter_split nor a barrier after the revoke
+        self.assertIsNone(rig.d.admission_intent())
+        self.assertFalse(rig.d._split_ready)
+        self.assertEqual(rig.p.control_inwait.snapshot()['transitions']['yield-full-reentry']['closed'], 1)
 
 
 if __name__ == '__main__':

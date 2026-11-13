@@ -12,9 +12,14 @@ Per block: everything the night-pack reader prints (tools/q2024p_j2_np_reader.py
 verify settings, so its identity NOTEs read against them), then from the decode-merge probe reader
 (tools/q2024p_j2_dmp_reader.py) per arm the completed turns, seed, merge steps (on/off) and the decode liveness status
 and guard record; per n3 arm the lever A append_pieces status delta (present only with FLASH_S5_APPEND_NO_BLOCK_STOP=1:
-appends, pieces, fused pieces, stops skipped, fallbacks, errors; pieces per append); identity NOTEs for the three
-composition settings (FLASH_S5_APPEND_NO_BLOCK_STOP, FLASH_S5_DECODE_GROUPS, FLASH_S5_DECODE_LIVENESS) and for an n3 arm
-whose recorded decode_merge is not the cohort's mode.
+appends, pieces, fused pieces, stops skipped, fallbacks, errors; pieces per append); per arm (sp and n3) the
+FLASH_S5_CONTROL_INWAIT status delta per transition class (native_admission.control_inwait, after less before: query
+attempts, refusals, invalidations, armed, closed, skipped duplicate drains, mandatory drains by reason; pause-to-arm and
+PAUSED_ALL ms, total and per armed; the max fields are the engine's since start, not per arm) beside the auto-arm
+selections and completions in the same window, or 'off (block absent)' with the same auto-arm delta, so one read shows
+whether the mechanism engaged; identity NOTEs for the four composition settings (FLASH_S5_APPEND_NO_BLOCK_STOP,
+FLASH_S5_DECODE_GROUPS, FLASH_S5_DECODE_LIVENESS, FLASH_S5_CONTROL_INWAIT), for an n3 arm whose recorded decode_merge is
+not the cohort's mode, and for a control_inwait block absent under the flag (or present without it).
 Cohort lines (descriptive, the V1 proposal's arithmetic): per block R = n3 completed turns / sp completed turns pooled
 over the block's two seeds (n3.g2-live-0 + n3.g2-live-1 over sp.g2-live-0 + sp.g2-live-1), and G = the geometric mean
 of the blocks' R; a block with an unread arm has no R and is named.
@@ -43,15 +48,19 @@ DEFAULTS = {
     'FLASH_S5_SMALL_PIECE_BATCH': '0', 'FLASH_S5_YIELD_REENTRY_SETTLE': '0', 'FLASH_S5_YIELD_NO_APPEND_OWNER': '0',
     'FLASH_S5_YIELD_WINDOW': '0', 'FLASH_S5_INGRESS_INCREMENTAL': '0', 'FLASH_S5_INGRESS_VERIFY_EVERY': None,
     'FLASH_S5_INGRESS_VERIFY_ASYNC': None, 'FLASH_S5_APPEND_NO_BLOCK_STOP': '0', 'FLASH_S5_DECODE_GROUPS': 'chunk',
-    'FLASH_S5_DECODE_LIVENESS': '0'}
+    'FLASH_S5_DECODE_LIVENESS': '0', 'FLASH_S5_CONTROL_INWAIT': '0'}
 NP_KEYS = (('batch', 'FLASH_S5_SMALL_PIECE_BATCH'), ('settle', 'FLASH_S5_YIELD_REENTRY_SETTLE'),
            ('y1', 'FLASH_S5_YIELD_NO_APPEND_OWNER'), ('y2', 'FLASH_S5_YIELD_WINDOW'),
            ('ingress', 'FLASH_S5_INGRESS_INCREMENTAL'))
-COMPOSE_ENVS = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS')
+COMPOSE_ENVS = ('FLASH_S5_APPEND_NO_BLOCK_STOP', 'FLASH_S5_DECODE_GROUPS', 'FLASH_S5_DECODE_LIVENESS',
+                'FLASH_S5_CONTROL_INWAIT')
 SP_ARMS = ('sp.g2-live-0', 'sp.g2-live-1')
 N3_ARMS = ('n3.g2-live-0', 'n3.g2-live-1')
 PIECES = ('appends', 'pieces', 'fused_pieces', 'stops_skipped', 'errors', 'stale_states_unpublished',
           'extra_blocks_unpublished')
+INWAIT = ('attempts', 'refused', 'invalidated', 'armed', 'closed', 'drains_skipped')
+INWAIT_MS = ('pause_to_arm_ms', 'decoder_stall_ms')            # totals: deltas, and per armed
+INWAIT_MAX = ('pause_to_arm_max_ms', 'decoder_stall_max_ms')   # the engine's max since start (after row), not per arm
 
 
 def flags_of(pairs, cohort=None):
@@ -102,6 +111,37 @@ def pieces_delta(arm):
     return out
 
 
+def inwait_delta(arm):
+    """control_inwait per transition class, after less before; None when the after row has no block (flag off)."""
+    rows = hgb.status_rows(arm)
+    b, a = ing.block(rows.get('before'), 'control_inwait'), ing.block(rows.get('after'), 'control_inwait')
+    if type(a) is not dict:
+        return None
+    before = (b.get('transitions') if type(b) is dict else None) or {}
+    out = {}
+    for kind, row in sorted((a.get('transitions') or {}).items()):
+        old = before.get(kind) or {}
+        d = {k: (row.get(k) or 0) - (old.get(k) or 0) for k in INWAIT}
+        d['drains_kept'] = {k: v - (old.get('drains_kept') or {}).get(k, 0)
+                            for k, v in sorted((row.get('drains_kept') or {}).items())}
+        for k in INWAIT_MS:
+            d[k] = round((row.get(k) or 0.) - (old.get(k) or 0.), 3)
+            d[k.replace('_ms', '_per_armed_ms')] = round(d[k] / d['armed'], 3) if d['armed'] else None
+        for k in INWAIT_MAX:
+            d[k + '_since_start'] = row.get(k)
+        out[kind] = d
+    return out
+
+
+def auto_arm_delta(arm):
+    """Selections and completions in the arm's window (the status rows' auto_arm block), flag on or off."""
+    rows = hgb.status_rows(arm)
+    b, a = (rows.get('before') or {}).get('auto_arm'), (rows.get('after') or {}).get('auto_arm')
+    if type(a) is not dict or type(b) is not dict:
+        return None
+    return {k: (a.get(k) or 0) - (b.get(k) or 0) for k in ('selection_seq', 'completed')}
+
+
 def compose_notes(root, label, flags, dview):
     notes, got = [], {}
     for env in COMPOSE_ENVS:
@@ -127,15 +167,23 @@ def collect(root, label, flags):
                                                        'liveness_guard', 'liveness_lines')}
                         for name, arm in dview['arms'].items()}
     result['decode_engine_crashed'] = dview.get('engine_crashed')
-    done = {}
+    done, notes_extra = {}, []
     for name in SP_ARMS + N3_ARMS:
         arm = hgb.load(root / ('arm-' + name + '.json'))
         # completed turns as the dmp reader counts them (warm turns less those finished after the window), per arm record
         done[name] = None if arm is None else dmp.turns_per_hour(arm)[0]
         if arm is not None and name in N3_ARMS and name in result['arms']:
             result['arms'][name]['append_pieces'] = pieces_delta(arm)
+        if arm is not None:
+            row = result['arms'].setdefault(name, {})
+            row['control_inwait'], row['auto_arm_delta'] = inwait_delta(arm), auto_arm_delta(arm)
+            on = flags['FLASH_S5_CONTROL_INWAIT'] == '1'
+            if on and row['control_inwait'] is None:
+                notes_extra.append('control-inwait-absent-%s-%s' % (label, name))
+            elif not on and row['control_inwait'] is not None:
+                notes_extra.append('control-inwait-present-%s-%s' % (label, name))
     result['identity_compose'], notes = compose_notes(root, label, flags, dview)
-    result['compose_notes'] = notes + ['dmp-' + n for n in dview['notes']]
+    result['compose_notes'] = notes + notes_extra + ['dmp-' + n for n in dview['notes']]
     result['completed'] = done
     if all(type(v) is int for v in done.values()) and sum(done[n] for n in SP_ARMS):
         result['R'] = round(sum(done[n] for n in N3_ARMS) / sum(done[n] for n in SP_ARMS), 4)
@@ -149,6 +197,26 @@ def cohort_line(results):
     missing = [r['label'] for r in results if not r['R']]
     g = round(math.exp(sum(math.log(x) for x in rs) / len(rs)), 4) if rs else None
     return dict(R={r['label']: r['R'] for r in results}, G=g, blocks_with_R=len(rs), blocks_without_R=missing)
+
+
+def inwait_lines(name, arm):
+    if 'control_inwait' not in arm:
+        return ['  %-13s control_inwait - (arm unread)' % name]
+    ci, aa = arm['control_inwait'], arm.get('auto_arm_delta')
+    aa = '-' if aa is None else 'selected=%s completed=%s' % (aa['selection_seq'], aa['completed'])
+    if ci is None:
+        return ['  %-13s control_inwait off (block absent)  auto-arm %s' % (name, aa)]
+    if not ci:
+        return ['  %-13s control_inwait on, no transition yet  auto-arm %s' % (name, aa)]
+    lines = ['  %-13s control_inwait on  auto-arm %s' % (name, aa)]
+    for kind, d in ci.items():
+        lines.append('        %-18s attempts=%s refused=%s invalidated=%s armed=%s closed=%s drains_skipped=%s kept=%s '
+                     'pause_to_arm_ms=%s/armed=%s (max since start %s) PAUSED_ALL_ms=%s/armed=%s (max since start %s)' % (
+                         kind, d['attempts'], d['refused'], d['invalidated'], d['armed'], d['closed'],
+                         d['drains_skipped'], np.fmt(d['drains_kept']), d['pause_to_arm_ms'],
+                         d['pause_to_arm_per_armed_ms'], d['pause_to_arm_max_ms_since_start'], d['decoder_stall_ms'],
+                         d['decoder_stall_per_armed_ms'], d['decoder_stall_max_ms_since_start']))
+    return lines
 
 
 def render(results, full=False):
@@ -166,6 +234,8 @@ def render(results, full=False):
             pieces = (r['arms'].get(name) or {}).get('append_pieces')
             if pieces is not None:
                 lines.append('      append_pieces %s' % np.fmt(pieces))
+        for name in SP_ARMS + N3_ARMS:                 # every arm, sp beside n3, in one place
+            lines.extend(inwait_lines(name, r['arms'].get(name) or {}))
         if r['compose_notes']:
             lines.append('  NOTES %s' % np.fmt(sorted(set(r['compose_notes']))))
     c = cohort_line(results)
