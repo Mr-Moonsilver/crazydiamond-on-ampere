@@ -252,11 +252,13 @@ class EngineLogName(unittest.TestCase):
         return root
 
     def test_a_fetched_record_reads_engine_log(self):
-        for empty in (False, True):
-            res = reader.collect(self.fetched(empty_stream=empty), 'fetch')
-            self.assertEqual((res['notes'], res['engine_log']), ([], 'engine.log'))
-            self.assertAlmostEqual(res['engine']['offset_s'], OFFSET, delta=0.01)
-            self.assertIn('gaps', res['arms']['n3.g2-live-0'])
+        res = reader.collect(self.fetched(), 'fetch')
+        self.assertEqual((res['notes'], res['engine_log']), ([], 'engine.log'))
+        self.assertAlmostEqual(res['engine']['offset_s'], OFFSET, delta=0.01)
+        self.assertIn('gaps', res['arms']['n3.g2-live-0'])
+        res = reader.collect(self.fetched(empty_stream=True), 'empty')     # a present stream is read as before
+        self.assertEqual(res['engine_log'], 'engine-stream.log')
+        self.assertIn('no-native-gap-lines: engine times not mapped', res['notes'])
 
     def test_the_box_stream_wins(self):
         res = reader.collect(self.fetched(keep_stream=True), 'box')

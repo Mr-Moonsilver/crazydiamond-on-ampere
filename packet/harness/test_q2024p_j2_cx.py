@@ -596,6 +596,120 @@ class GuardObserverMutants(unittest.TestCase):
         self.assertEqual(built.count(cx.GUARD_INSTALL_NEW % 'off'), 0)
 
 
+import inspect  # noqa: E402
+
+
+def work_turns():
+    """Agent 0: a finished fresh and append; agent 1: the report's case, a 128k fresh sent at 454 s whose first token
+    lands at 494 s; agent 2: an append-shaped first row open at W with half its chunks in; agent 3: an error row."""
+    chunks = lambda a, b, n: [a + (b - a) * k // (n - 1) for k in range(n)]
+    return [
+        dict(agent=0, session=1, kind='fresh', t=0.0, ttft=10.0, seconds=20.0, prompt_tokens=100000, cached_tokens=0,
+             completion_tokens=500, arrivals_ms=chunks(10000, 20000, 11)),
+        dict(agent=0, session=1, kind='append', t=25.0, ttft=1.0, seconds=5.0, prompt_tokens=103000,
+             cached_tokens=99968, completion_tokens=300, arrivals_ms=chunks(26000, 30000, 5)),
+        dict(agent=1, session=3, kind='fresh', t=454.0, ttft=40.0, seconds=60.0, prompt_tokens=128000, cached_tokens=0,
+             completion_tokens=400, arrivals_ms=chunks(494000, 514000, 11)),
+        dict(agent=2, session=1, kind='append', t=470.0, ttft=2.0, seconds=20.0, prompt_tokens=5000, cached_tokens=4800,
+             completion_tokens=200, arrivals_ms=chunks(472000, 490000, 10)),
+        dict(agent=3, session=1, kind='fresh', t=100.0, error='URLError:boom'),
+    ]
+
+
+def work_rule_holds(fn):
+    w = fn(work_turns(), 480.0, 0.02)
+    return (w['rows_W'], w['out_W'], w['work_W'], w['turns_completed'], len(w['open']), w['open_rows'],
+            w['open_rows_W'], w['errors'], round(w['frac_turns'], 3)) == (
+        191200, 900, 4724.0, 2, 2, 133000, 88200, 1, round(2 + 1664 / 2960 + 200 / 300, 3))
+
+
+def work_mutant(*edits, fn='arm_work'):
+    """reader.<fn> with source edits in a copy of the reader's globals; arm_work rebuilt there to call it."""
+    source = inspect.getsource(getattr(reader, fn))
+    for old, new in edits:
+        assert source.count(old) == 1, old
+        source = source.replace(old, new)
+    space = dict(reader.__dict__)
+    exec(compile(source, fn + '_mutant', 'exec'), space)
+    if fn != 'arm_work':
+        exec(compile(inspect.getsource(reader.arm_work), 'arm_work_copy', 'exec'), space)
+    return space['arm_work']
+
+
+def fake_block(label, R, works):
+    """works: arm -> (seed, work_W, turns, seq_work)."""
+    return dict(label=label, R=R, work={n: dict(seed=s, work_W=w, turns=t, seq_work=q, window_s=480.0, cost_ratio=0.02)
+                                        for n, (s, w, t, q) in works.items()})
+
+
+class WorkInWindow(unittest.TestCase):
+    """Brief 11 B.2: work done inside the window per arm, R_w per block and G_w beside R and G."""
+
+    def test_arm_work(self):
+        self.assertTrue(work_rule_holds(reader.arm_work))
+        w = reader.arm_work(work_turns(), 480.0, 0.02)
+        big = next(x for x in w['open'] if x['agent'] == 1)
+        self.assertEqual((big['rows'], big['rows_W'], big['out_W'], big['kind']), (128000, 83200, 0.0, 'fresh'))
+
+    def test_open_turn_order_and_an_error_reset(self):
+        rows = work_turns()
+        rows.append(dict(agent=3, session=2, kind='fresh', t=200.0, ttft=5.0, seconds=9.0, prompt_tokens=60000,
+                         completion_tokens=300, arrivals_ms=[205000, 209000]))
+        shuffled = list(reversed(rows))
+        self.assertEqual(reader.arm_work(rows, 480.0, 0.02), reader.arm_work(shuffled, 480.0, 0.02))
+        rows.append(dict(agent=3, session=2, kind='append', t=300.0, ttft=1.0, seconds=3.0, prompt_tokens=62000,
+                         completion_tokens=250, arrivals_ms=[301000, 303000]))
+        w = reader.arm_work(rows, 480.0, 0.02)
+        self.assertEqual(w['rows_W'], 191200 + 60000 + 2000)          # the append after the error's fresh: growth only
+
+    def test_cohort_ratio_pinned_turn_work_flag_and_gap(self):
+        blocks = [fake_block('b1', 1.10, {'sp.g2-live-0': (1, 900.0, 10, 9000.0), 'sp.g2-live-1': (2, 800.0, 10, 8000.0),
+                                          'n3.g2-live-0': (1, 990.0, 10, 9000.0), 'n3.g2-live-1': (2, 880.0, 10, 8000.0)}),
+                  fake_block('b2', 1.04, {'sp.g2-live-0': (1, 900.0, 10, 9000.0), 'sp.g2-live-1': (2, 800.0, 10, 8000.0),
+                                          'n3.g2-live-0': (1, 1008.0, 10, 9000.0), 'n3.g2-live-1': (2, 896.0, 10, 8000.0)})]
+        c = reader.work_cohort(blocks)
+        self.assertEqual(c['turn_work'], {'1': 900.0, '2': 800.0})
+        self.assertEqual(c['R_w'], {'b1': 1.1, 'b2': 1.12})
+        self.assertEqual(c['G_w'], round(math.sqrt(1.1 * 1.12), 4))
+        self.assertEqual(c['flagged'], ['b1', 'b2'])                   # R above / below its mean, R_w the other way
+        self.assertEqual(c['gap'], {'b1': 0.0, 'b2': round(math.log(1.04 / 1.12), 4)})
+        pinned = reader.work_cohort(blocks, {1: 450.0, 2: 800.0})
+        self.assertEqual(pinned['turn_work'], {'1': 450.0, '2': 800.0})
+        self.assertEqual(pinned['turn_work_pinned'], ['1', '2'])
+        want = (990 / 450 + 880 / 800) / (900 / 450 + 800 / 800)
+        self.assertEqual(pinned['R_w']['b1'], round(want, 4))
+        blocks[1]['R'] = 1.12
+        self.assertEqual(reader.work_cohort(blocks)['flagged'], [])     # same direction: not flagged
+        blocks[1]['work']['sp.g2-live-1'] = None
+        self.assertEqual(reader.work_cohort(blocks)['blocks_without_R_w'], ['b2'])
+
+    def test_cost_ratio_is_named_in_the_output(self):
+        self.assertEqual(reader.WORK_COST_RATIO, 0.0218)
+        block = fake_block('b1', 1.1, {n: (1, 100.0, 1, 100.0) for n in reader.SP_ARMS + reader.N3_ARMS})
+        self.assertEqual(reader.work_cohort([block])['cost_ratio'], 0.02)
+        with self.assertRaises(SystemExit):
+            reader.main(['b1=/nonexistent', '--cost-ratio', '0'])
+        with self.assertRaises(SystemExit):
+            reader.main(['b1=/nonexistent', '--turn-work', '2=-1'])
+
+
+class WorkMutants(unittest.TestCase):
+    def test_cached_tokens_for_rows_is_caught(self):
+        self.assertFalse(work_rule_holds(work_mutant(
+            ("need = t['prompt_tokens'] if", "need = t['prompt_tokens'] - t.get('cached_tokens', 0) if False and"),
+            fn='turn_rows')))
+
+    def test_no_proration_is_caught(self):
+        self.assertFalse(work_rule_holds(work_mutant(
+            ('pr = need * (1.0 if f <= window else', 'pr = need * (1.0 if True else'))))
+
+    def test_arrivals_shifted_by_send_is_caught(self):
+        self.assertFalse(work_rule_holds(work_mutant(('x / 1000.0 <= window', 't["t"] + x / 1000.0 <= window'))))
+
+    def test_open_turn_counted_done_is_caught(self):
+        self.assertFalse(work_rule_holds(work_mutant(('if e <= window:\n            done += 1', 'if s <= window:\n            done += 1'))))
+
+
 def pieces(n):
     return dict(appends=4 * n, pieces=6 * n, fused_pieces=3 * n, stops_skipped=5 * n, errors=0, stale_states_unpublished=n,
                 extra_blocks_unpublished=2 * n, hist={'1': 2 * n, '2': 2 * n}, fallbacks={'junction': n} if n else {},

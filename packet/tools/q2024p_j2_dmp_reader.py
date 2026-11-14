@@ -450,9 +450,13 @@ ENGINE_LOGS = ('engine-stream.log', 'engine.log')
 
 def engine_stream(root):
     """The engine's stdout stream: the box record's engine-stream.log, else the record's final capture engine.log (the
-    same stream; a hub fetch keeps engine.log and leaves engine-stream.log out: window 13's eight records). None
-    without either (non-empty)."""
-    for name in ENGINE_LOGS:
+    same stream; a hub fetch keeps engine.log and leaves engine-stream.log out: window 13's eight records). An
+    engine-stream.log present is read as it is (empty too, as before); engine.log only when it is absent and not empty.
+    None without either."""
+    first = Path(root) / ENGINE_LOGS[0]
+    if first.is_file():
+        return first
+    for name in ENGINE_LOGS[1:]:
         path = Path(root) / name
         if path.is_file() and path.stat().st_size > 0:
             return path

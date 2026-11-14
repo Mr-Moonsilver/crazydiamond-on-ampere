@@ -39,6 +39,21 @@ clean window's dev_sample p50, off less on, against 0.1 ms.
 Cohort lines (descriptive, the V1 proposal's arithmetic): per block R = n3 completed turns / sp completed turns pooled
 over the block's two seeds (n3.g2-live-0 + n3.g2-live-1 over sp.g2-live-0 + sp.g2-live-1), and G = the geometric mean
 of the blocks' R; a block with an unread arm has no R and is named.
+Work in the window (brief 11 B.2; REPORT-stock-bimodal-20261114 section 2, reproduced): per replay arm from its turns
+journal, with W = the arm's DURATION and arrivals replay-relative:
+  rows    the prefill rows a request needs, engine-independent: a fresh turn's prompt_tokens, an append's growth over the
+          same agent's previous prompt (the last reply + the tool output); never the engine's cached_tokens;
+  rows_W  rows prorated linearly over [send, first token] and clipped at W; out_W a finished turn's completion tokens,
+          an open turn's completion tokens times the share of its stream chunks that arrived by W;
+  work_W  = c * rows_W + out_W in decode-token equivalents, c = the COST RATIO (decode tokens per prefill row; default
+          WORK_COST_RATIO 0.0218, the report's fit on stock's own throughput log; --cost-ratio names another, printed);
+  wn/h    = work_W / m_seed * 3600 / W, m_seed = the TURN WORK of the seed (mean c * rows + completion tokens per turn
+          over every turn of that seed in the records read, or pinned by --turn-work SEED=VALUE; printed);
+  turns completed (t + seconds <= W) and the turns still open at W with their rows, rows_W and out_W.
+Per block R_w = sum n3 wn/h / sum sp wn/h; G_w their geometric mean; sd of ln R and of ln R_w (n - 1). A block is
+FLAGGED when R and R_w sit on opposite sides of their cohort means (ln R - ln G and ln R_w - ln G_w differ in sign);
+the per-block gap ln R - ln R_w is printed beside it (window 13: the B-mode stock block b4 is the outlier of the gap, not
+of the flag).
 """
 import argparse
 import importlib.util
@@ -48,6 +63,7 @@ from pathlib import Path
 import re
 
 HERE = Path(__file__).resolve().parent
+WORK_COST_RATIO = 0.0218        # decode tokens per prefill row (REPORT-stock-bimodal-20261114: 8,088 rows/s vs 176 tok/s)
 
 
 def _load(name, rel):
@@ -376,9 +392,10 @@ def compose_notes(root, label, flags, dview):
     return got, notes
 
 
-def collect(root, label, flags):
+def collect(root, label, flags, cost_ratio=WORK_COST_RATIO):
     root = Path(root)
     result = np_view(root, label, flags)
+    result['work'] = work_of(root, cost_ratio)
     dview = dmp.collect(root, label)
     result['decode'] = {name: {k: arm.get(k) for k in ('completed_turns', 'seed', 'merge', 'step', 'liveness_status',
                                                        'liveness_guard', 'liveness_lines')}
@@ -428,14 +445,143 @@ def collect(root, label, flags):
         result['R'] = round(sum(done[n] for n in N3_ARMS) / sum(done[n] for n in SP_ARMS), 4)
     else:
         result['R'] = None
+    for name, w in result['work'].items():
+        if w is not None and done.get(name) is not None and w['turns_completed'] != done[name]:
+            result['compose_notes'].append('work-completed-differs-%s-%s' % (label, name))
     return result
 
 
-def cohort_line(results):
+def journal(root, name):
+    """(header, turn rows) of an arm's turns journal; None without it. Error rows (no usage) are kept apart."""
+    path = Path(root) / ('arm-%s.json.turns.jsonl' % name)
+    if not path.is_file():
+        return None
+    head, rows = None, []
+    for line in path.read_text().splitlines():
+        if line.strip():
+            row = json.loads(line)
+            if row.get('header'):
+                head = row
+            else:
+                rows.append(row)
+    return head, rows
+
+
+def turn_rows(rows):
+    """Each usable turn with its rows need: fresh = prompt_tokens; append = prompt_tokens less the same agent's previous
+    prompt_tokens. Rows without usage (an error) are counted, not used; the agent's next turn is fresh (driver rule)."""
+    prev, out, errors = {}, [], 0
+    for t in sorted(rows, key=lambda r: r['t']):
+        if type(t.get('prompt_tokens')) is not int or type(t.get('completion_tokens')) is not int or 'error' in t:
+            errors += 1
+            prev.pop(t.get('agent'), None)
+            continue
+        a = t['agent']
+        need = t['prompt_tokens'] if t['kind'] == 'fresh' or a not in prev else t['prompt_tokens'] - prev[a]
+        prev[a] = t['prompt_tokens']
+        out.append((t, need))
+    return out, errors
+
+
+def arm_work(rows, window, c):
+    """Work done inside [0, window] by one arm's turns (see the module text)."""
+    turns, errors = turn_rows(rows)
+    rows_w = out_w = frac = 0.0
+    done, open_turns, seq_work = 0, [], 0.0
+    for t, need in turns:
+        o = t['completion_tokens']
+        s, f, e = t['t'], t['t'] + t['ttft'], t['t'] + t['seconds']
+        pr = need * (1.0 if f <= window else max(0.0, window - s) / max(1e-9, f - s))
+        arrivals = t.get('arrivals_ms') or []
+        od = o * (1.0 if e <= window else
+                  (sum(1 for x in arrivals if x / 1000.0 <= window) / len(arrivals) if arrivals else 0.0))
+        rows_w += pr
+        out_w += od
+        seq_work += need * c + o
+        if e <= window:
+            done += 1
+            frac += 1
+        else:
+            frac += (pr * c + od) / (need * c + o) if need * c + o else 0.0
+            if s < window:
+                open_turns.append(dict(agent=t['agent'], session=t.get('session'), kind=t['kind'], t=s,
+                                       first_token=round(f, 3), rows=need, rows_W=round(pr), out_W=round(od, 1)))
+    return dict(cost_ratio=c, window_s=window, turns=len(turns), errors=errors, turns_completed=done,
+                frac_turns=round(frac, 3), rows_W=round(rows_w), out_W=round(out_w), work_W=round(rows_w * c + out_w, 1),
+                open=open_turns, open_rows=sum(x['rows'] for x in open_turns),
+                open_rows_W=sum(x['rows_W'] for x in open_turns), seq_work=seq_work)
+
+
+def work_of(root, cost_ratio):
+    """Per replay arm: its seed and its arm_work, or None for an arm without a journal."""
+    out = {}
+    for name in SP_ARMS + N3_ARMS:
+        got = journal(root, name)
+        if got is None or got[0] is None:
+            out[name] = None
+            continue
+        head, rows = got
+        cfg = head.get('replay_config') or {}
+        out[name] = dict(seed=cfg.get('SEED'), **arm_work(rows, float(cfg.get('DURATION') or 480.0), cost_ratio))
+    return out
+
+
+def _sd(values):
+    if len(values) < 2:
+        return None
+    mean = sum(values) / len(values)
+    return round(math.sqrt(sum((v - mean) ** 2 for v in values) / (len(values) - 1)), 4)
+
+
+def work_cohort(results, turn_work=None):
+    """R_w per block, G_w, the turn work per seed (pinned or from the records read), sd of ln R and ln R_w, flags."""
+    pinned = dict(turn_work or {})
+    sums = {}
+    for r in results:
+        for name, w in (r.get('work') or {}).items():
+            if w is not None:
+                acc = sums.setdefault(w['seed'], [0.0, 0])
+                acc[0] += w['seq_work']
+                acc[1] += w['turns']
+    m = {seed: pinned.get(seed, acc[0] / acc[1] if acc[1] else None) for seed, acc in sums.items()}
+    m.update({k: v for k, v in pinned.items() if k not in m})
+    rw, wn = {}, {}
+    for r in results:
+        work = r.get('work') or {}
+        arms = {}
+        for name in SP_ARMS + N3_ARMS:
+            w = work.get(name)
+            if w is None or not m.get(w['seed']):
+                arms = None
+                break
+            arms[name] = w['work_W'] / m[w['seed']] * 3600.0 / w['window_s']
+        wn[r['label']] = None if arms is None else {k: round(v, 1) for k, v in arms.items()}
+        rw[r['label']] = None if arms is None else round(sum(arms[n] for n in N3_ARMS) / sum(arms[n] for n in SP_ARMS), 4)
+    both = [r['label'] for r in results if r.get('R') and rw.get(r['label'])]
+    g = math.exp(sum(math.log(next(x['R'] for x in results if x['label'] == k)) for k in both) / len(both)) if both else None
+    gw = math.exp(sum(math.log(rw[k]) for k in both) / len(both)) if both else None
+    flagged = []
+    for k in both:
+        d = math.log(next(x['R'] for x in results if x['label'] == k)) - math.log(g)
+        dw = math.log(rw[k]) - math.log(gw)
+        if d * dw < 0:
+            flagged.append(k)
+    return dict(cost_ratio=next((w['cost_ratio'] for r in results for w in (r.get('work') or {}).values() if w), None),
+                turn_work={str(k): None if v is None else round(v, 1) for k, v in sorted(m.items(), key=lambda kv: str(kv[0]))},
+                turn_work_pinned=sorted(str(k) for k in pinned), wn_per_hour=wn, R_w=rw,
+                G_w=None if gw is None else round(gw, 4),
+                sd_ln_R=_sd([math.log(next(x['R'] for x in results if x['label'] == k)) for k in both]),
+                sd_ln_R_w=_sd([math.log(rw[k]) for k in both]), flagged=flagged,
+                gap={k: round(math.log(next(x['R'] for x in results if x['label'] == k)) - math.log(rw[k]), 4) for k in both},
+                blocks_without_R_w=[k for k, v in rw.items() if v is None])
+
+
+def cohort_line(results, turn_work=None):
     rs = [r['R'] for r in results if r['R']]
     missing = [r['label'] for r in results if not r['R']]
     g = round(math.exp(sum(math.log(x) for x in rs) / len(rs)), 4) if rs else None
-    return dict(R={r['label']: r['R'] for r in results}, G=g, blocks_with_R=len(rs), blocks_without_R=missing)
+    return dict(R={r['label']: r['R'] for r in results}, G=g, blocks_with_R=len(rs), blocks_without_R=missing,
+                work=work_cohort(results, turn_work))
 
 
 def inwait_lines(name, arm):
@@ -521,7 +667,7 @@ def d_pair(off, on):
     return out
 
 
-def render(results, full=False):
+def render(results, full=False, turn_work=None):
     lines = [np.render(results, full=full)]
     for r in results:
         lines.append('== %s composition  completed=%s R(n3/sp pooled)=%s' % (r['label'], np.fmt(r['completed']), r['R']))
@@ -541,11 +687,27 @@ def render(results, full=False):
         for name in SP_ARMS + N3_ARMS:
             lines.extend(sample_fast_render(name, r['arms'].get(name) or {}))
         lines.extend(dev_sample_render(r))
+        for name in SP_ARMS + N3_ARMS:
+            w = (r.get('work') or {}).get(name)
+            if w is None:
+                lines.append('  work %-13s - (no turns journal)' % name)
+                continue
+            lines.append('  work %-13s seed=%s completed=%d open=%d (rows %d, rows_W %d) rows_W=%d out_W=%d work_W=%.1f '
+                         'frac=%.3f errors=%d' % (name, w['seed'], w['turns_completed'], len(w['open']), w['open_rows'],
+                                                  w['open_rows_W'], w['rows_W'], w['out_W'], w['work_W'],
+                                                  w['frac_turns'], w['errors']))
         if r['compose_notes']:
             lines.append('  NOTES %s' % np.fmt(sorted(set(r['compose_notes']))))
-    c = cohort_line(results)
+    c = cohort_line(results, turn_work)
     lines.append('== cohort (descriptive) R=%s G=%s blocks_with_R=%d without=%s' % (
         np.fmt(c['R']), c['G'], c['blocks_with_R'], np.fmt(c['blocks_without_R'])))
+    w = c['work']
+    lines.append('== work in the window (descriptive) COST_RATIO c=%s decode tokens per prefill row; TURN_WORK m=%s '
+                 '(pinned: %s)' % (w['cost_ratio'], np.fmt(w['turn_work']), np.fmt(w['turn_work_pinned'])))
+    lines.append('   R_w=%s G_w=%s sd_ln_R=%s sd_ln_R_w=%s FLAGGED(R vs R_w opposite sides of the cohort mean)=%s '
+                 'without=%s' % (np.fmt(w['R_w']), w['G_w'], w['sd_ln_R'], w['sd_ln_R_w'], np.fmt(w['flagged']),
+                                np.fmt(w['blocks_without_R_w'])))
+    lines.append('   gap ln R - ln R_w per block (the turn count less the work, descriptive)=%s' % np.fmt(w['gap']))
     return '\n'.join(lines)
 
 
@@ -558,7 +720,22 @@ def main(argv=None):
                         help="one record's own cohort.json (a D pair: off=<off cohort.json>, on=<on cohort.json>)")
     parser.add_argument('--full', action='store_true')
     parser.add_argument('--json-out', type=Path)
+    parser.add_argument('--cost-ratio', type=float, default=WORK_COST_RATIO,
+                        help='decode tokens per prefill row for the work reading (default %(default)s)')
+    parser.add_argument('--turn-work', action='append', default=[], metavar='SEED=VALUE',
+                        help='pin the mean work per turn of a seed (decode-token equivalents)')
     args = parser.parse_args(argv)
+    if not args.cost_ratio > 0:
+        parser.error('--cost-ratio must be > 0')
+    turn_work = {}
+    for item in args.turn_work:
+        seed, sep, value = item.partition('=')
+        try:
+            turn_work[int(seed)] = float(value)
+        except ValueError:
+            parser.error('--turn-work is SEED=VALUE')
+        if not sep or not turn_work[int(seed)] > 0:
+            parser.error('--turn-work is SEED=VALUE with VALUE > 0')
     try:
         flags = flags_of(args.flags, args.cohort)
     except ValueError as exc:
@@ -575,7 +752,7 @@ def main(argv=None):
         if not sep or not label or '-' in label:
             parser.error('records are <block>=<dir>, the block label without "-"')
         used[label] = own.get(label, flags)
-        results.append(collect(Path(path), label, used[label]))
+        results.append(collect(Path(path), label, used[label], args.cost_ratio))
     pair = None
     if set(used) == {'off', 'on'} and set(own) == {'off', 'on'}:
         diff = sorted(k for k in DEFAULTS if used['off'][k] != used['on'][k])
@@ -584,7 +761,7 @@ def main(argv=None):
             parser.error('a D pair differs in FLASH_S5_DECODE_SAMPLE_FAST only (on=1), anatomy on in both; got %s' % diff)
         by = {r['label']: r for r in results}
         pair = d_pair(by['off'], by['on'])
-    print(render(results, full=args.full))
+    print(render(results, full=args.full, turn_work=turn_work))
     if pair is not None:
         print('== D pair (decode-step builder: keep D only if dev_sample falls by >= 0.1 ms on ranks 2/3; '
               'first clean window per rank, p50)')
@@ -595,7 +772,7 @@ def main(argv=None):
     if args.json_out:
         with args.json_out.open('x') as handle:
             json.dump(dict(schema='q2024p-j2-cx-read/1', exploratory=True, flags=flags, results=results,
-                           cohort=cohort_line(results), flags_per_record=used, d_pair=pair),
+                           cohort=cohort_line(results, turn_work), flags_per_record=used, d_pair=pair),
                       handle, indent=2, sort_keys=True, default=str)
             handle.write('\n')
     return 0
