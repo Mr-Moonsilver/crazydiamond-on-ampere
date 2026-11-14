@@ -18,6 +18,20 @@ Reply text (brief 11 B.1, 14 Nov 2026): REPLAY_REPLY_TEXT in the environment, re
           length (min_tokens = max_tokens = reply) are unchanged. Turn rows carry reply_text='seeded'; the summary
           carries reply_text='seeded'. The replay config is not changed (the j2 mechanism grade compares it with the
           table). Any other value is refused before the first agent starts.
+
+Fixed work (brief 12, 14 Nov 2026): REPLAY_FIXED_WORK and REPLAY_FIXED_CAP_S in the environment, read once by run().
+  unset/empty (default) the arm sends while the clock is inside DURATION, as before: nothing else changes.
+  SEED=N0,...,N7[/SEED=...]  per seed, each agent's target turn count. The arm then sends past DURATION until EVERY
+          agent has completed its own target (a turn without error), so each agent's first N turns run with all eight
+          agents live; agents that reach their target early keep sending. When the last one gets there no agent sends
+          again; turns already in flight finish (as at DURATION today). REPLAY_FIXED_CAP_S (> DURATION, required) is
+          the hard cap: past it nothing is sent and summary['fixed_work']['cap_hit'] is True (the arm grades INC,
+          e3_compose4_box). Needs REPLAY_REPLY_TEXT=seeded: only then are the first N turns the same work on both
+          engines. The summary's turn counts stay those of the DURATION window (summarize, unchanged); the per-agent
+          completion times are in the turn rows; summary['fixed_work'] holds the targets, the cap, each agent's
+          time to its target and the stop time. The stop and the cap are checked where DURATION is (top of the
+          loop, before the turn's text is built). Latency percentiles in the summary cover every turn sent. The replay
+          config is not changed. A bad setting is refused before the first agent starts.
 """
 import json
 import os
@@ -33,6 +47,8 @@ import compose4_arms as T
 READ_TIMEOUT_S = 420.0            # one read; the arm's own timeout is 1500 s, so a dead engine shows as an error inside the arm
 FINISH_BOUND_S = 300.0            # how long after the end of the duration the turns still open may take; then the arm is called a hang
 REPLY_TEXT_ENV = 'REPLAY_REPLY_TEXT'
+FIXED_WORK_ENV = 'REPLAY_FIXED_WORK'
+FIXED_CAP_ENV = 'REPLAY_FIXED_CAP_S'
 REPLY_TEXT_MODES = ('model', 'seeded')
 
 
@@ -41,6 +57,63 @@ def reply_text_mode(environ=None):
     if value not in REPLY_TEXT_MODES:
         raise ValueError('%s must be one of %s, not %r' % (REPLY_TEXT_ENV, '|'.join(REPLY_TEXT_MODES), value))
     return value
+
+
+def fixed_work_targets(cfg, environ=None, reply_text='model'):
+    """None (fixed work off) or (targets for cfg's seed, one per agent, cap seconds); ValueError on a bad setting."""
+    env = os.environ if environ is None else environ
+    spec, cap = env.get(FIXED_WORK_ENV, ''), env.get(FIXED_CAP_ENV, '')
+    if not spec:
+        if cap:
+            raise ValueError('%s without %s' % (FIXED_CAP_ENV, FIXED_WORK_ENV))
+        return None
+    if reply_text != 'seeded':
+        raise ValueError('%s needs %s=seeded (the first N turns are the same work only then)' % (FIXED_WORK_ENV, REPLY_TEXT_ENV))
+    table = {}
+    for part in spec.split('/'):
+        seed, sep, values = part.partition('=')
+        try:
+            seed, targets = int(seed), [int(v) for v in values.split(',')]
+        except ValueError:
+            raise ValueError('%s must be SEED=N0,...,N7[/SEED=...], not %r' % (FIXED_WORK_ENV, spec)) from None
+        if not sep or seed in table or len(targets) != cfg['AGENTS'] or any(n < 1 for n in targets):
+            raise ValueError('%s must give %d positive targets once per seed, not %r' % (FIXED_WORK_ENV, cfg['AGENTS'], spec))
+        table[seed] = targets
+    if cfg['SEED'] not in table:
+        raise ValueError('%s has no targets for seed %d' % (FIXED_WORK_ENV, cfg['SEED']))
+    try:
+        cap = float(cap)
+    except ValueError:
+        raise ValueError('%s needs %s in seconds' % (FIXED_WORK_ENV, FIXED_CAP_ENV)) from None
+    if not cap > cfg['DURATION']:
+        raise ValueError('%s must be above DURATION (%s s)' % (FIXED_CAP_ENV, cfg['DURATION']))
+    return table[cfg['SEED']], cap
+
+
+class FixedWork:
+    """Each agent's completed turns against its target; the stop when the last agent reaches its target."""
+
+    def __init__(self, targets, cap_s, clock, origin):
+        self.targets, self.cap_s, self.clock, self.origin = list(targets), cap_s, clock, origin
+        self.done = [0] * len(targets)
+        self.reached = [None] * len(targets)
+        self.end_s = None
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+
+    def completed(self, agent):
+        with self.lock:
+            self.done[agent] += 1
+            if self.done[agent] == self.targets[agent]:
+                self.reached[agent] = round(self.clock() - self.origin, 3)
+                if all(r is not None for r in self.reached) and self.end_s is None:
+                    self.end_s = self.reached[agent]
+                    self.stop.set()
+
+    def summary(self):
+        with self.lock:
+            return dict(targets=list(self.targets), cap_s=self.cap_s, completed=list(self.done), reached_s=list(self.reached),
+                        all_reached=self.end_s is not None, end_s=self.end_s, cap_hit=self.end_s is None)
 
 
 def salt_of(run_id, label, agent, session):
@@ -121,13 +194,13 @@ class TurnSink:
         self.handle.close()
 
 
-def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, records, lock, *, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, sink=None, faults=None, reply_text='model'):
+def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, records, lock, *, clock=time.monotonic, sleep=time.sleep, stream=stream_turn, sink=None, faults=None, reply_text='model', fixed=None):
     assert reply_text in REPLY_TEXT_MODES, reply_text
     rng = draws(cfg['SEED'], agent)
     session, history_tokens, messages, salt = 0, 0, [], None
     turn_index = 0
     append_draw = None     # a drawn append that rolled the session is kept for the next: the sequence of draws doesn't depend on the roll
-    while clock() < t_end:
+    while clock() < t_end and (fixed is None or not fixed.stop.is_set()):
         if append_draw is None and messages:
             append_draw = rng['append'].randint(cfg['APPEND_MIN'], cfg['APPEND_MAX'])
         if not messages or history_tokens + append_draw > T.MAX_PROMPT_TOKENS - T.PROMPT_SLACK_TOKENS:
@@ -166,6 +239,9 @@ def agent_loop(agent, url, model, key, cfg, run_id, label, origin, t_end, record
         except Exception as exc:  # noqa: BLE001 - recorded; the agent starts a new session, as agent_replay
             record['error'] = type(exc).__name__ + ':' + str(exc)[:200]
             messages = []
+        else:
+            if fixed is not None:
+                fixed.completed(agent)
         with lock:
             records.append(record)
             if sink is not None:
@@ -197,11 +273,14 @@ def run(url, model, key, run_id, label, *, cfg=None, clock=time.monotonic, sleep
     """The replay; (config, summary, turns, still_open). Same start spacing as agent_replay's."""
     cfg = dict(T.REPLAY if cfg is None else cfg)
     mode = reply_text_mode()
+    work = fixed_work_targets(cfg, reply_text=mode)
     records, lock = [], threading.Lock()
     faults = dict(journal_write_failures=0, agents_finished=0, kinds=set())
     origin = clock()
-    t_end = origin + cfg['DURATION']
-    threads = [threading.Thread(target=_guarded_agent, args=(faults, lock, i, url, model, key, cfg, run_id, label, origin, t_end, records, lock), kwargs=dict(clock=clock, sleep=sleep, stream=stream, sink=sink, faults=faults, reply_text=mode), name='compose4-agent-%d' % i, daemon=True)
+    t_end = origin + (cfg['DURATION'] if work is None else work[1])
+    fixed = None if work is None else FixedWork(work[0], work[1], clock, origin)
+    extra = {} if fixed is None else dict(fixed=fixed)
+    threads = [threading.Thread(target=_guarded_agent, args=(faults, lock, i, url, model, key, cfg, run_id, label, origin, t_end, records, lock), kwargs=dict(clock=clock, sleep=sleep, stream=stream, sink=sink, faults=faults, reply_text=mode, **extra), name='compose4-agent-%d' % i, daemon=True)
                for i in range(cfg['AGENTS'])]
     for thread in threads:
         thread.start()
@@ -217,6 +296,8 @@ def run(url, model, key, run_id, label, *, cfg=None, clock=time.monotonic, sleep
         summary.update(journal_write_failures=faults['journal_write_failures'], agents_died=len(threads) - faults['agents_finished'] - len(still_open), fault_kinds=sorted(faults['kinds']))
         if mode == 'seeded':
             summary['reply_text'] = mode
+    if fixed is not None:
+        summary['fixed_work'] = fixed.summary()
     return cfg, summary, turns, still_open
 
 

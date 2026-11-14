@@ -129,6 +129,11 @@ def replay_arm(a, row, client, poll_client, *, run=None):
             record['reasons'].append('replay-journal-write-failures:%d' % summary['journal_write_failures'])
         if summary.get('agents_died'):
             record['reasons'].append('replay-agents-died:%d' % summary['agents_died'])
+        fixed = summary.get('fixed_work')
+        if fixed is not None and fixed.get('cap_hit') is not False:
+            # brief 12: fixed work (compose4_replay, REPLAY_FIXED_WORK) whose agents did not all reach their target by the cap
+            record['reasons'].append('replay-fixed-work-cap-hit:%d-of-%d-reached' % (
+                sum(1 for r in fixed.get('reached_s') or () if r is not None), len(fixed.get('targets') or ())))
         over = [t['prompt_tokens'] for t in turns if type(t.get('prompt_tokens')) is int and t['prompt_tokens'] > T.MAX_PROMPT_TOKENS]
         if over:
             record['reasons'].append('replay-prompt-over-the-ceiling:%d' % len(over))
