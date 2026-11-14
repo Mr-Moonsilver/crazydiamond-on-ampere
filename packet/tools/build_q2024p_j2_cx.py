@@ -140,6 +140,13 @@ def rule_patch(text):
     return text
 
 
+def rule_unpatch(text):
+    """The parent rule's text from a patched one (each new text once; the import line's old text is inside its new)."""
+    for old, new in reversed(RULE_PATCH):
+        text = hgb.once(text, new, old)
+    return text
+
+
 QUIET_SPLIT_EXPORT = ('export QUIET_SPLIT_CONTROL=1  # brief 11 C: the tail runs the quiet-SPLIT control '
                       '(e3_quiet_split_box), a read\n')
 # brief 11 C: the quiet-SPLIT control as a tail READ (never the queue verdict; the core grade is written before it), on a

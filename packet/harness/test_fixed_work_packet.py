@@ -52,9 +52,9 @@ CLEAR = (fwp.ORDER_ENV, replay.FIXED_WORK_ENV, replay.FIXED_CAP_ENV, replay.REPL
 def parent_rule_text():
     text = RULE_PATH.read_text()
     if '_fwp.' in text:                       # a bundle built with fixed work or a seed order: already patched
-        for old, new in cx.RULE_PATCH:
-            assert text.count(new) == 1 and old not in text, new
-            text = text.replace(new, old)
+        parent = cx.rule_unpatch(text)
+        assert cx.rule_patch(parent) == text and '_fwp' not in parent, 'the bundle rule is not the builder patch'
+        return parent
     return text
 
 
@@ -105,6 +105,8 @@ class Order(unittest.TestCase):
         self.assertEqual(table.REPLAY_SEEDS, {0: 1, 1: 2})
         fwp.wrap_env(lambda: table, {fwp.ORDER_ENV: 'swap'})()
         self.assertEqual(table.REPLAY_SEEDS, {0: 2, 1: 1})
+        inner = lambda: table  # noqa: E731
+        self.assertIs(fwp.wrap_env(inner, {}).j2_configure, inner)     # the chain walk of test_n3_decode_groups
         with self.assertRaises(AssertionError):       # plain over a table left swapped is refused, not silently kept
             fwp.wrap_env(lambda: table, {})()
 
@@ -276,6 +278,22 @@ class Mutants(unittest.TestCase):
         for old, new in cx.RULE_PATCH:
             self.assertEqual(PARENT_TEXT.count(old), 1, old)
             self.assertNotIn(new, PARENT_TEXT)
+        self.assertEqual(cx.rule_unpatch(cx.rule_patch(PARENT_TEXT)), PARENT_TEXT)     # the bundle-side reversal
+
+    def test_the_configure_chain_reaches_the_decode_groups_wrapper(self):
+        """The bundle's n3j2_packet ends with the cx tail, then the seed-order tail: walking the chain as
+        test_n3_decode_groups does in a bundle (j2_configure / decode_groups_inner) still finds the decode groups."""
+        import n3_decode_groups as dg
+        inner = lambda: None  # noqa: E731
+        space = dict(configure=inner)
+        exec(compile(cx.PACKET_TAIL + cx.SEED_PACKET_TAIL, 'n3j2_packet tails', 'exec'), space)
+        chain, seen = space['configure'], []
+        while chain is not None:
+            seen.append(getattr(chain, 'decode_groups_env', None) or getattr(chain, 'seed_order_env', None))
+            last = chain
+            chain = getattr(chain, 'j2_configure', None) or getattr(chain, 'decode_groups_inner', None)
+        self.assertEqual(seen, [fwp.ORDER_ENV, dg.ENV, None])
+        self.assertIs(last, inner)
 
 
 Rule._read = Rule.read

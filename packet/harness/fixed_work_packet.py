@@ -38,7 +38,7 @@ def wrap_env(configure, environ=None):
         assert table.REPLAY_SEEDS == SEEDS[order], (table.REPLAY_SEEDS, order)
         return table
     configured.seed_order_env = ORDER_ENV
-    configured.seed_order_inner = configure
+    configured.j2_configure = configure          # the configure it wraps (n3dmp_packet's name; the bundle walks it)
     return configured
 
 

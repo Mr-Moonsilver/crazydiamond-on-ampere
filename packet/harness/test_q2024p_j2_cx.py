@@ -348,8 +348,12 @@ class Queues(unittest.TestCase):
             on = cx.packet_edits_on(flags)
             self.assertEqual((HERE / 'n3j2_packet.py').read_text().count(cx.SEED_PACKET_TAIL), int(on))
             rule_text = (HERE / 'tools' / 'n3j2_junction_rule.py').read_text()
-            for old, new in cx.RULE_PATCH:
-                self.assertEqual((rule_text.count(old), rule_text.count(new)), (0, 1) if on else (1, 0), new)
+            self.assertEqual('_fwp' in rule_text, on)
+            if on:
+                self.assertEqual(cx.rule_patch(cx.rule_unpatch(rule_text)), rule_text)
+            else:
+                for old, new in cx.RULE_PATCH:
+                    self.assertEqual((rule_text.count(old), rule_text.count(new)), (1, 0), new)
             # brief 11: the built box binds the guard with the observer the settings line launches
             box = (HERE / 'n3j2_box.py').read_text()
             want = cx.GUARD_INSTALL_NEW % cx.OBSERVER_OF[flags['FLASH_S5_DECODE_LIVENESS']]
